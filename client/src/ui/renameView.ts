@@ -1,11 +1,11 @@
-// ui/renameView.ts — thin DOM shell for the profile-rename overlay (pt-c1b, ADR-0133).
+// ui/renameView.ts — thin DOM shell for the profile-rename overlay.
 //
 // First overlay with a text <input>. Three input-hygiene mechanisms the read-only
-// overlays never needed (ADR-0133 D3):
+// overlays never needed:
 //   1. The input's OWN keydown listener calls e.stopPropagation() so field keystrokes
 //      never reach the bubble-phase window keydown (movement + letter hotkeys). It also
 //      handles Enter=submit / Escape=cancel locally.
-//   2. The deferred initial focus is NO LONGER OWNED HERE (m23-s3). `ui/overlayA11y.ts` is the
+//   2. The deferred initial focus is NO LONGER OWNED HERE. `ui/overlayA11y.ts` is the
 //      single owner of the setTimeout(…, 0) defer for all seventeen overlays, and it targets this
 //      overlay's `initialFocusSelector` (#rename-input) from OVERLAY_A11Y. The defer itself is
 //      still load-bearing for the same reason it always was: it lets the opening key event (KeyN)
@@ -13,15 +13,14 @@
 //   3. hide() resets the input value + feedback so a stale draft never survives a re-open.
 //
 // Fully unit-covered via happy-dom (leaderboardView/errorOverlayView precedent) — this
-// file is therefore NOT in vite.config.ts coverage.exclude and NOT in the
-// dom-shell-coverage-exclusion eval's DOM_SHELLS.
+// file is therefore NOT in vite.config.ts coverage.exclude.
 //
 // D2: player-controlled name → textContent ONLY, NEVER innerHTML (XSS firewall).
 // A single #submit() path is shared by the button click AND the input's Enter; a
 // #pending lock reset via .finally() on BOTH resolve and reject (no dead-button-forever,
-// ADR-0085 C6 / shopView precedent).
+// shopView precedent).
 //
-// m24-s5 (ADR-0261) — the submit label is the one string this view owns. It is resolved through
+// The submit label is the one string this view owns. It is resolved through
 // the i18n resolver (`t('chrome.rename.submit')`, ui/i18n/resolver.ts) in show(), on every
 // show(); `index.html` no longer ships the "Rename" text, so the button is EMPTY until the first
 // show(). The current display name is model data, rendered raw.
@@ -107,11 +106,11 @@ export class RenameView {
   }
 
   show(): void {
-    // m23-s3 D1: only the hidden->visible EDGE opens, so a repeat show() cannot re-schedule
+    // Only the hidden->visible EDGE opens, so a repeat show() cannot re-schedule
     // overlayA11y's deferred focus and steal focus back from wherever the player put it.
     const wasVisible = this.visible;
-    // m24-s5 (ADR-0261 D4): the submit label is resolved HERE, on EVERY show() — unconditionally,
-    // after the `wasVisible` read, before the display write (the ADR-0260 D4 shape; see
+    // The submit label is resolved HERE, on EVERY show() — unconditionally,
+    // after the `wasVisible` read, before the display write (see
     // evolutionView.show() for the boot-order / locale-switch reasoning).
     this.#submitBtn.textContent = t('chrome.rename.submit');
     this.#overlay.style.display = '';
@@ -125,11 +124,11 @@ export class RenameView {
     this.#feedback.textContent = '';
     // Release the in-flight lock (shopView/tradeView precedent): onReconnect and the
     // battle auto-show force-hide this overlay, and the SDK never settles an in-flight
-    // reducer promise after a link drop (ADR-0085) — so .finally() may never run.
+    // reducer promise after a link drop — so .finally() may never run.
     // Without this reset, #pending stays true forever → dead submit button (reviewer B-1).
     this.#pending = false;
     this.#submitBtn.disabled = false;
-    // m23-s3 D2: DELIBERATELY UNGUARDED (see pvpView.ts's header) -- the self-healing path.
+    // DELIBERATELY UNGUARDED (see pvpView.ts's header) -- the self-healing path.
     closeOverlayA11y('renameView', null);
   }
 
@@ -152,7 +151,7 @@ export class RenameView {
   // Single shared submit path (Enter + click) ⇒ one #pending lock ⇒ no double-submit.
   #submit(): void {
     if (this.#pending) return;
-    // currentName is irrelevant here — only trimmedDraft/canSubmit are consulted (PTC1B-7).
+    // currentName is irrelevant here — only trimmedDraft/canSubmit are consulted.
     const vm = buildRenameViewModel('', this.#input.value);
     if (!vm.canSubmit) return; // empty-after-trim → no-op, do NOT call onSubmit.
     // Clear any prior feedback so a stale "Name updated!" never lingers under a new

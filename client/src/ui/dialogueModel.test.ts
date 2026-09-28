@@ -1,8 +1,4 @@
 // ui/dialogueModel.test.ts — M12d red-phase tests for buildDialogueViewModel.
-// SOURCE OF TRUTH: docs/m12d-plan.md + docs/adr/0071-m12d-client-dialogue-quest-heal-ui.md
-//
-// Tests are INTENTIONALLY RED until dialogueModel.ts is implemented.
-// Do NOT edit these tests to match a buggy implementation — correct from the spec.
 //
 // Contract: buildDialogueViewModel(conv, npcs, content) -> DialogueViewModel | null
 //   - Returns null when no active conversation (conv undefined)
@@ -17,11 +13,10 @@
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { DIALOGUE_TREES } from './dialogueContent';
-import { buildDialogueViewModel } from './dialogueModel';
+import { buildDialogueViewModel as buildDialogueViewModelReal } from './dialogueModel';
 
 // ---------------------------------------------------------------------------
 // Local type definitions (mirrors of what store.ts + dialogueContent.ts will export).
-// Defined here so tests start red for the right reason (missing impl, not bad imports).
 // ---------------------------------------------------------------------------
 
 interface StorePlayerConversation {
@@ -49,6 +44,16 @@ interface ClientDialogueTree {
   rootNodeId: string;
   nodes: ReadonlyMap<string, ClientDialogueNode>;
 }
+
+// The fixtures use the file-local mirrors above (no `interaction`; choices without
+// `nextNodeId`), which the model tolerates at runtime; the shipped DIALOGUE_TREES and the
+// real-row cases below fit the same parameter types. Re-typing the SAME function to accept
+// them is compile-time only.
+const buildDialogueViewModel = buildDialogueViewModelReal as unknown as (
+  conv: StorePlayerConversation | undefined,
+  npcs: ReadonlyMap<bigint, StoreNpcRow>,
+  content: ReadonlyMap<string, Pick<ClientDialogueTree, 'nodes'>>,
+) => ReturnType<typeof buildDialogueViewModelReal>;
 
 // ---------------------------------------------------------------------------
 // Factories
@@ -579,20 +584,6 @@ describe('buildDialogueViewModel criterion 10: idx is array index (0-based)', ()
 // =============================================================================
 // M12d gating: dialogueContent.ts bundle text must match 000-core.ron
 //
-// FINDING: game-core/content/dialogue_trees/000-core.ron node "greeting" has
-//   text: "The ancient oak spirit greets you."
-// but dialogueContent.ts bundles:
-//   text: 'Welcome, traveler. The forest has been restless of late.'
-// The C6 eval cross-ref checks node IDs and choice *counts* but NOT the actual
-// text. This mismatch is invisible to every passing test and eval because:
-//   - The eval only verifies node id presence and choice count.
-//   - dialogueModel.test.ts Criterion 4 uses inline makeNode() test data, not
-//     the real DIALOGUE_TREES import — it never reads dialogueContent.ts.
-//   - No test imports both the real DIALOGUE_TREES constant and the RON text.
-//
-// A player talking to the Elder Oak NPC will see the wrong greeting. The
-// DIALOGUE_TREES constant used in production is imported from dialogueContent.ts;
-// build the model against it and assert the canonical RON text is rendered.
 // =============================================================================
 
 describe('M12d gating: dialogueContent.ts bundle text matches 000-core.ron (RT-DLG-01)', () => {
@@ -625,7 +616,6 @@ describe('M12d gating: dialogueContent.ts bundle text matches 000-core.ron (RT-D
   });
 
   it('GATING: elder_oak_talk has exactly 1 choice with text "I seek a quest." (matches RON)', () => {
-    // The C6 eval already checks choice count (1) but not the choice text.
     // This pins the exact text so a bundle editor cannot swap choice text silently.
     const conv: StorePlayerConversation = {
       ownerIdentity: 'player-hex',
@@ -651,10 +641,7 @@ describe('M12d gating: dialogueContent.ts bundle text matches 000-core.ron (RT-D
 });
 
 // =============================================================================
-// uxd2 (ADR-0161 D4) — GREET-THEN-SHOP: DialogueViewModel gains `shopAction`.
-// APPENDED BLOCK — nothing above this line is modified.
-//
-// SOURCE OF TRUTH: docs/specs/uxd2-plan.md AC-2 + docs/adr/0161-*.md §D4.
+// GREET-THEN-SHOP: DialogueViewModel gains `shopAction`.
 //
 // CONTRACT:
 //   DialogueViewModel += readonly shopAction: { readonly shopId: number } | null
@@ -668,10 +655,6 @@ describe('M12d gating: dialogueContent.ts bundle text matches 000-core.ron (RT-D
 //   npc row IS present in those arms, so the Shop affordance must survive a content gap
 //   (a shopkeeper whose greeting tree failed to bundle must still be shoppable).
 //   The missing-NPC arm still returns a null VM (no shopAction to speak of).
-//
-// RED TODAY: buildDialogueViewModel returns no `shopAction` key at all, so every
-// `toEqual`/`toBe` below reads `undefined`. The failures are assertion failures on the
-// missing field, not import errors.
 //
 // FIXTURE NOTE: these cases build their NPC rows against the REAL `StoreNpcRow`
 // (imported below) rather than the file-local mirror at the top, so the `interaction`
@@ -743,7 +726,7 @@ describe('uxd2 AC-2: buildDialogueViewModel derives shopAction from npc.interact
   });
 
   it('★ BITES: the MISSING-TREE "..." fallback arm still carries shopAction', () => {
-    // ADR-0161 D4: the Shop affordance is derived from the ENUM, not from content, so a
+    // The Shop affordance is derived from the ENUM, not from content, so a
     // content gap must not remove it. The npc row IS present in this arm.
     // WRONG IMPL KILLED: an impl that computes shopAction only on the happy path and returns
     // the pre-existing `{ npcName, nodeText:'...', choices:[], canDismiss:true }` literal

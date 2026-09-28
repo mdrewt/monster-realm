@@ -1,10 +1,10 @@
-// ui/renameModel.ts — pure view model for the profile-rename overlay (pt-c1b, ADR-0133).
+// ui/renameModel.ts — pure view model for the profile-rename overlay.
 //
 // No DOM, no SDK, no side-effects. Never throws on any input — a throw here would
 // starve sibling store batch-listeners (store.ts one-way flow) and this VM is built
 // from a keydown handler, not a store batch.
 //
-// D2 (ADR-0133): the ONLY client-side name logic is `trim` + non-empty. This model
+// D2: the ONLY client-side name logic is `trim` + non-empty. This model
 // deliberately does NOT re-implement the server `validate_name` ruleset (NFC / length /
 // charset). The server is the validation SSOT (reject-not-clamp); a rejected name
 // returns through the awaited reducer promise. Re-implementing those rules would create

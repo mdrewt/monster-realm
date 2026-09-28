@@ -1,4 +1,4 @@
-// observability/telemetry.ts — m20c (ADR-0180 body amendment): the imperative shell.
+// observability/telemetry.ts — the imperative shell.
 //
 // Everything decision-shaped lives in the pure siblings (names/attributes/config/frameWindow/
 // interpGap/instruments); this file only adapts them onto the OTel Web SDK and makes the whole
@@ -46,7 +46,7 @@ export interface Counter {
 export interface TelemetryInit {
   /** `<configured origin>` + OTLP_METRICS_PATH, exactly. */
   readonly exporterUrl: string;
-  /** Absent (or `{}`): the export request carries no extra request headers, ever (OBS-16). */
+  /** Absent (or `{}`): the export request carries no extra request headers, ever. */
   readonly exporterHeaders?: Record<string, string>;
   /** The resolved config value, verbatim. */
   readonly exportIntervalMillis: number;

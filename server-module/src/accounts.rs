@@ -1,45 +1,32 @@
-//! `accounts` — server-module domain submodule (M21, ADR-0179).
+//! `accounts` — server-module domain submodule.
 //!
-//! WRITE-ISOLATION (D0, WRITE-scoped not table-scoped): this module inserts /
-//! updates / deletes rows ONLY in `account`, `guest_claim`,
-//! `guest_claim_reaper_schedule`, `account_deletion_reaper_schedule` (rb-24,
-//! ADR-0221: the deletion-grace schedule, armed on request and disarmed on
-//! cancel). Every write to any pre-existing table goes
-//! through a `pub(crate)` helper in that table's OWNING module — the
-//! `rekey_*` family (monster_mgmt / inventory / npc / raising / economy /
-//! ranking), `privacy::purge_export_bundles` (rb-22, ADR-0220: the
-//! claim-time purge of the retired guest's export chunks — whose purged count
-//! `complete_guest_claim` publishes through `observability::mr_log` as its
-//! terminal statement, rb-40 / ADR-0235 — and the deletion reaper publishes
-//! its own step-6b count the same way, rb-65 / ADR-0243), and since m22-s3b
-//! the `erase_*` / `anonymize_*` cascade family the deletion reaper delegates
-//! to (ADR-0228 D1 — same delegation precedent, one helper per owning
-//! module). Bare reads of
-//! `player` are permitted (no single owning module); the wallet is not read here
-//! at all (currency-integrity ACCESSOR_BYPASS gates reads too, so
-//! `economy::wallet_exists` delegates); battle liveness reuses
-//! `guards::is_in_ongoing_battle` rather than touching `ctx.db.battle()`.
+//! WRITE-ISOLATION: this module inserts / updates / deletes rows ONLY in
+//! `account`, `guest_claim`, `guest_claim_reaper_schedule`,
+//! `account_deletion_reaper_schedule`. Every write to any pre-existing table goes
+//! through a `pub(crate)` helper in that table's OWNING module — the `rekey_*`
+//! family (monster_mgmt / inventory / npc / raising / economy / ranking),
+//! `privacy::purge_export_bundles`, and the `erase_*` / `anonymize_*` cascade
+//! family the deletion reaper delegates to. Bare reads of `player` are permitted
+//! (no single owning module); the wallet is not read here at all; battle liveness
+//! reuses `guards::is_in_ongoing_battle` rather than touching `ctx.db.battle()`.
 //!
 //! BOTH scheduled reaper table + reducer pairs (`guest_claim_reaper`,
 //! `account_deletion_reaper`) are colocated HERE (not schema.rs / lib.rs) so
-//! each `scheduled(..)` attribute resolves as a bare ident — the ADR-0056
-//! exception, mirroring movement.rs / pvp.rs / playtest.rs.
+//! each `scheduled(..)` attribute resolves as a bare ident.
 //! (A `scheduled(crate::accounts::guest_claim_reaper)` path form compiles but the
 //! `scheduled(`-name scanners would extract the literal `crate`.)
 //!
 //! `has_jwt()` is true for EVERY connection (the SpacetimeDB host mints its own
-//! identity JWT even for a tokenless connect — probed live 2026-08-08), so the
+//! identity JWT even for a tokenless connect), so the
 //! load-bearing "is this an account holder?" predicate is `is_account_holder`
-//! (an `account`-row lookup), never `has_jwt()`. See ADR-0179 D1″/D4′.
-//!
-//! This file name extends the canonical `touches:` vocabulary (ADR-0056) — keep it stable.
+//! (an `account`-row lookup), never `has_jwt()`.
 
 use crate::guards::{is_in_ongoing_battle, log_reject};
 use crate::marshal::now_ms;
 use crate::schema::{account, guest_claim, player, Account, AccountStatus, GuestClaim};
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table, Timestamp};
 
-// --- Deployment config (ADR-0179 D1; provider selection is spec OQ1) ----------
+// --- Deployment config ----------
 
 /// Which OIDC issuers may provision an `account`. Deployment config, not a game
 /// rule — provider selection changes exactly these two constants + a republish.
@@ -48,21 +35,15 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table, Timestamp};
 /// while anonymous play is completely unaffected (D1″). INVARIANT: the host's
 /// own anonymous issuer is NEVER placed here — it is not an account provider,
 /// and that is what keeps the audience-disconnect branch outage-safe.
-/// The URL is assembled from two literals so the SOURCE TEXT carries no
-/// contiguous slash-slash token; it compiles to `https:` + `//auth.monster-realm.invalid/`.
-/// Exactly two gates RED on a bare literal (ADR-0181; re-measured 2026-08-15 @ 7eb6980):
-/// `trade-escrow-guards.eval.mjs`, which strips slash-slash line-comments BEFORE string
-/// literals, so a bare literal unbalances quote-pairing and blanks later files from its
-/// whole-crate blob (TR-11); and `account-e2e.eval.mjs`, whose `ISSUER_NEEDLE` pins this
-/// exact token (N4 throw). `13r-c-2` owns the first. Other scanners are still unmigrated
-/// and can go silently BLIND instead — `evals/scanner-migration-audit.eval.mjs` is the SSOT.
+/// `account-e2e.eval.mjs` patches this exact declaration line (its
+/// `ISSUER_NEEDLE`) to point at a local stub issuer.
 ///
-/// HARD SEQUENCING GATE (ADR-0182 D18): flipping ALLOWED_ISSUERS and ALLOWED_AUDIENCE to their
+/// HARD SEQUENCING GATE: flipping ALLOWED_ISSUERS and ALLOWED_AUDIENCE to their
 /// real deployment values, tightening `audience_allowed` to exact single-value equality, and the
-/// live restore drill are ALL gated on `13r-c-2` landing and are explicitly OUT of the M21b-2
-/// slice. Keep the placeholder values, the `concat!()` construction, and `audience_allowed`
-/// unchanged here until that gate clears.
-pub(crate) const ALLOWED_ISSUERS: &[&str] = &[concat!("https:/", "/auth.monster-realm.invalid/")];
+/// live restore drill are ALL gated on the real-deployment follow-up landing and are explicitly OUT of scope
+/// here. Keep the placeholder values and `audience_allowed` unchanged here until that gate
+/// clears.
+pub(crate) const ALLOWED_ISSUERS: &[&str] = &["https://auth.monster-realm.invalid/"];
 /// Which `aud` values scope a token to THIS application (D1).
 pub(crate) const ALLOWED_AUDIENCE: &[&str] = &["monster-realm"];
 
@@ -74,16 +55,15 @@ pub(crate) const CLAIM_CODE_LEN: usize = 64;
 
 /// Shared reject reason for AUTH-15 (malformed / never-existed) and AUTH-35
 /// (already consumed) — ONE const so the two are indistinguishable to a caller
-/// by construction (no code-existence oracle; ADR-0179 D3).
+/// by construction (no code-existence oracle).
 pub(crate) const ERR_INVALID_CODE: &str = "invalid or already-used code";
 /// Static reject reasons on the connect path (AUTH-36 / G12 no-PII-in-logs);
 /// named so M21c's G12 can value-pin them rather than scan for identifier names.
 const REJECT_UNRECOGNIZED_ISSUER: &str = "unrecognized issuer";
 const REJECT_UNRECOGNIZED_AUDIENCE: &str = "unrecognized audience";
 
-/// PRV1-4 distinct terminal reject reason (M22 spec para 4.5, late cancel).
 /// Deliberately NOT named `REJECT_ACCOUNT_DELETED` — the spec reserves that
-/// name for the operator-blocked PRV1-8(a) alternate (issue #403, ADR-0225).
+/// name for the operator-blocked PRV1-8(a) alternate.
 const REJECT_ALREADY_DELETED: &str = "this account has already been permanently deleted";
 
 /// Rate-limits the unrecognized-issuer reject log (D1″ makes it the modal path —
@@ -127,23 +107,23 @@ pub(crate) fn claim_is_expired(expires_at_ms: i64, now_ms: i64) -> bool {
 
 /// The instant the deletion reaper fires for a request stamped at
 /// `requested_at_ms` — the exact boundary at which `game_core::is_deletion_due`
-/// flips true (rb-24, ADR-0221; the grace constant has ONE SSOT in game-core,
-/// spec para 4.3). Saturating, mirroring `claim_expires_at`. KNOWN BOUND: at a
+/// flips true (the grace constant has ONE SSOT in game-core).
+/// Saturating, mirroring `claim_expires_at`. KNOWN BOUND: at a
 /// stamp above `i64::MAX - GRACE` the clamped fire instant is NOT yet due by
 /// `is_deletion_due` (the sub-then-compare and add-then-compare formulations
 /// diverge only there); unreachable for wall-clock stamps, pinned by its own
-/// test, recorded in ADR-0221 Known limits.
+/// test.
 pub(crate) fn deletion_fire_at_ms(requested_at_ms: i64) -> i64 {
     requested_at_ms.saturating_add(game_core::DELETION_GRACE_MS_DEFAULT)
 }
 
-/// The `Account` legal-state invariant (ADR-0195 D3) — ONE pure predicate,
+/// The `Account` legal-state invariant — ONE pure predicate,
 /// `debug_assert!`ed at the return of every Account-returning constructor
 /// below. True iff ALL of:
 ///   - `Active` implies `deletion_requested_at_ms.is_none()`;
 ///   - `PendingDeletion` implies `deletion_requested_at_ms.is_some()`;
 ///   - `terminal_at_ms.is_some()` implies `PendingDeletion` AND
-///     `deletion_requested_at_ms.is_some()` (M22-S2, spec §4.1: the terminal
+///     `deletion_requested_at_ms.is_some()` (the terminal
 ///     marker is stamped only by a completed deletion cascade, so a marker on
 ///     an `Active` row — or with no request behind it — is a resurrected
 ///     tombstone and must be unrepresentable);
@@ -151,13 +131,11 @@ pub(crate) fn deletion_fire_at_ms(requested_at_ms: i64) -> i64 {
 ///     is a PAIR — set together or not at all).
 ///
 /// The `match` on `status` is deliberately exhaustive with NO wildcard arm:
-/// when M22 extends `delete_account` and adds a variant, this fn fails to
-/// compile until the new state's timestamp rules are derived here. The
-/// struct-shape tripwire in `accounts_tests.rs` pins `Account`'s field list
-/// for the same reason — a shape change forces a conscious re-derivation of
-/// this predicate rather than a silent widening of the state space; the
-/// M22-S2 shape move (`terminal_at_ms`) discharged that contract by adding
-/// the terminal clause here in the same change.
+/// this fn fails to compile until the new state's timestamp rules are derived
+/// here. The struct-shape tripwire in `accounts_tests.rs` pins `Account`'s
+/// field list for the same reason — a shape change forces a conscious
+/// re-derivation of this predicate rather than a silent widening of the state
+/// space.
 pub(crate) fn account_state_is_legal(account: &Account) -> bool {
     let status_stamp_paired = match account.status {
         AccountStatus::Active => account.deletion_requested_at_ms.is_none(),
@@ -190,7 +168,7 @@ pub(crate) fn new_account_row(identity: Identity, auth_issuer: String, now_ms: i
     };
     debug_assert!(
         account_state_is_legal(&out),
-        "new_account_row: illegal Account state (ADR-0195 D3)"
+        "new_account_row: illegal Account state"
     );
     out
 }
@@ -203,7 +181,7 @@ pub(crate) fn touch_login(existing: Account, now_ms: i64) -> Account {
     };
     debug_assert!(
         account_state_is_legal(&out),
-        "touch_login: illegal Account state (ADR-0195 D3)"
+        "touch_login: illegal Account state"
     );
     out
 }
@@ -246,7 +224,7 @@ pub(crate) fn requested_deletion(existing: Account, now_ms: i64) -> Account {
     };
     debug_assert!(
         account_state_is_legal(&out),
-        "requested_deletion: illegal Account state (ADR-0195 D3)"
+        "requested_deletion: illegal Account state"
     );
     out
 }
@@ -261,7 +239,7 @@ pub(crate) fn cancelled_deletion(existing: Account) -> Account {
     };
     debug_assert!(
         account_state_is_legal(&out),
-        "cancelled_deletion: illegal Account state (ADR-0195 D3)"
+        "cancelled_deletion: illegal Account state"
     );
     out
 }
@@ -275,17 +253,17 @@ pub(crate) fn claimed_account(existing: Account, guest: Identity, now_ms: i64) -
     };
     debug_assert!(
         account_state_is_legal(&out),
-        "claimed_account: illegal Account state (ADR-0195 D3)"
+        "claimed_account: illegal Account state"
     );
     out
 }
 
-/// True when the row carries the M22 terminal marker (`terminal_at_ms`).
+/// True when the row carries the terminal marker (`terminal_at_ms`).
 ///
-/// DELIBERATELY THE MARKER HALF ALONE of spec para 4.1, whose defined
+/// DELIBERATELY THE MARKER HALF ALONE, whose defined
 /// `terminal` is the conjunction `status == PendingDeletion &&
 /// terminal_at_ms.is_some()` — hence the name `account_has_terminal_marker`,
-/// not `account_is_terminal` (ADR-0225). On the ILLEGAL `Active` + marker
+/// not `account_is_terminal`. On the ILLEGAL `Active` + marker
 /// shape (a resurrected tombstone, forbidden by `account_state_is_legal` but
 /// only debug_assert-guarded) the marker half still answers true, which is
 /// the fail-closed direction at every call site: an already-erased account
@@ -295,7 +273,7 @@ pub(crate) fn account_has_terminal_marker(account: &Account) -> bool {
     account.terminal_at_ms.is_some()
 }
 
-/// The M22 para-4.7 deletion gate — true when gameplay writes must be
+/// The deletion gate — true when gameplay writes must be
 /// refused: the account is mid-grace (`PendingDeletion`) OR already erased
 /// (terminal marker present).
 ///
@@ -303,14 +281,14 @@ pub(crate) fn account_has_terminal_marker(account: &Account) -> bool {
 /// `PendingDeletion`, so the second arm looks redundant — it is the
 /// fail-closed arm for the illegal `Active` + marker shape and must never be
 /// simplified away. This is the SSOT `is_pending_deletion` delegates to and
-/// the entry point the S5 gameplay-gate fan-out calls (via a `guards.rs`
-/// wrapper that delegates, never re-derives — ADR-0225). A third disjunct
+/// the entry point the gameplay-gate fan-out calls (via a `guards.rs`
+/// wrapper that delegates, never re-derives). A third disjunct
 /// added here widens BOTH consumers: re-derive the delegation first.
 pub(crate) fn should_reject_for_deletion(account: &Account) -> bool {
     account.status == AccountStatus::PendingDeletion || account_has_terminal_marker(account)
 }
 
-/// The rb-47 stamp-aware refinement of the para-4.7 gate (ADR-0237 D1): true
+/// The stamp-aware refinement of the gate: true
 /// when a deletion-gated account must be refused a commitment that was OPENED
 /// at `opened_at_ms` — a trade offer created at that instant, judged for the
 /// accepting counterparty. PRV1-10 keeps commitments that PREDATE the deletion
@@ -322,7 +300,7 @@ pub(crate) fn should_reject_for_deletion(account: &Account) -> bool {
 ///
 /// Composed DIRECTLY over the two SSOT halves, never re-derived: the mid-grace
 /// arm delegates to `should_reject_for_deletion` (a third disjunct added there
-/// widens this consumer with it — ADR-0225), and the terminal marker is tested
+/// widens this consumer with it), and the terminal marker is tested
 /// FIRST and OUTSIDE the stamp comparison, because an already-erased account is
 /// refused every commitment however old — the cascade has emptied it, sweeping
 /// both offer columns in the same transaction that stamps the marker, so this
@@ -335,10 +313,7 @@ pub(crate) fn should_reject_for_deletion(account: &Account) -> bool {
 /// `account_state_is_legal` only debug-asserts away; `None` is the fail-closed
 /// arm and is spelled as an explicit match arm on purpose — every `unwrap_or`
 /// default hides the decision inside a value and admits some stamp range
-/// silently. Declaration count, delegation needles and this file's
-/// conditional-compilation count are pinned by
-/// `rb47_accounts_seam_is_declared_once_and_delegates` in `trading_tests.rs`;
-/// change them together with ADR-0237.
+/// silently.
 pub(crate) fn opened_commitment_is_refused(account: &Account, opened_at_ms: i64) -> bool {
     account_has_terminal_marker(account)
         || (should_reject_for_deletion(account)
@@ -348,7 +323,7 @@ pub(crate) fn opened_commitment_is_refused(account: &Account, opened_at_ms: i64)
             })
 }
 
-/// PRV1-5 — should the deletion-grace reaper run the cascade for this row at
+/// Should the deletion-grace reaper run the cascade for this row at
 /// `now_ms`?
 ///
 /// Defined DIRECTLY (not composed over `should_reject_for_deletion`) so a
@@ -363,7 +338,7 @@ pub(crate) fn reaper_should_run_cascade(account: &Account, now_ms: i64) -> bool 
         && game_core::is_deletion_due(account.deletion_requested_at_ms, now_ms)
 }
 
-/// The not-yet-due re-arm decision (m22-s3b, ADR-0228 D3a): `Some(requested)`
+/// The not-yet-due re-arm decision: `Some(requested)`
 /// iff the row is still `PendingDeletion`, carries no terminal marker, and its
 /// request is not yet due. The runtime deletes a fired one-shot schedule row
 /// regardless of what the reducer does, so this is what keeps a not-yet-due
@@ -385,9 +360,8 @@ pub(crate) fn reaper_rearm_at_ms(account: &Account, now_ms: i64) -> Option<i64> 
     }
 }
 
-/// M22 §4.4 step 6c for the `account` row itself (PRV1-6c, ADR-0228 D2):
 /// tombstone the one PII field, `auth_issuer`. Identity, timestamps and the
-/// claim pair are retained (AUTH-29 / spec §3), so on every row the cascade
+/// claim pair are retained, so on every row the cascade
 /// recheck admits, legality holds by field-disjointness.
 pub(crate) fn anonymized_account(existing: Account) -> Account {
     let out = Account {
@@ -396,17 +370,17 @@ pub(crate) fn anonymized_account(existing: Account) -> Account {
     };
     debug_assert!(
         account_state_is_legal(&out),
-        "anonymized_account: illegal Account state (ADR-0195 D3)"
+        "anonymized_account: illegal Account state"
     );
     out
 }
 
-/// M22 §4.4 step 6e (PRV1-6e, ADR-0228 D2): stamp the terminal marker — only
+/// stamp the terminal marker — only
 /// after steps 6a-6d completed without error, which the single reducer
 /// transaction guarantees structurally (an `Err` aborts every prior write).
 /// Touches nothing but `terminal_at_ms`; the cascade recheck already proved
 /// `PendingDeletion` with a `Some` request stamp, so legality is a theorem
-/// here (ADR-0228 D5 — the reason this stays a `debug_assert`).
+/// here.
 pub(crate) fn terminal_account(existing: Account, now_ms: i64) -> Account {
     let out = Account {
         terminal_at_ms: Some(now_ms),
@@ -414,15 +388,14 @@ pub(crate) fn terminal_account(existing: Account, now_ms: i64) -> Account {
     };
     debug_assert!(
         account_state_is_legal(&out),
-        "terminal_account: illegal Account state (ADR-0195 D3)"
+        "terminal_account: illegal Account state"
     );
     out
 }
 
-/// ADR-0221 R2 sweep planner (m22-s3b, ADR-0228 D3b — pure): which accounts
-/// need a deletion-grace schedule row armed, and at what REQUEST stamp (the
-/// fire instant derives from it inside `arm_deletion_reaper`, the one place
-/// that computes it). Emits, in INPUT ORDER, `(identity, requested_at_ms)`
+/// which accounts need a deletion-grace schedule row armed, and at what REQUEST
+/// stamp (the fire instant derives from it inside `arm_deletion_reaper`, the one
+/// place that computes it). Emits, in INPUT ORDER, `(identity, requested_at_ms)`
 /// for every `PendingDeletion` row with no terminal marker, a present request
 /// stamp, and no already-armed schedule row. Mirrors `plan_schedule_reconcile`'s
 /// pure-planner shape (lib.rs). A past-due stamp is still emitted —
@@ -446,21 +419,20 @@ pub(crate) fn plan_deletion_rearms(
         .collect()
 }
 
-/// rb-83 (ADR-0252 D1): which of the caller's live INCOMING trade offers must
+/// Which of the caller's live INCOMING trade offers must
 /// be declined when a pending deletion is cancelled — given the row as it
 /// stands BEFORE the cancel writes it, and the offers as `(trade_id,
-/// created_at_ms)` pairs, the ids of every offer the rb-47 stamp gate refuses
+/// created_at_ms)` pairs, the ids of every offer the stamp gate refuses
 /// for that row, in input order. Composed DIRECTLY over
-/// `opened_commitment_is_refused` (ADR-0225 delegation, never re-derived): the
-/// inclusive boundary, the terminal arm and the fail-closed missing-stamp arm
-/// are all inherited, so on the illegal stamp-less `PendingDeletion` shape every
-/// incoming offer is swept, and on an `Active` row nothing is. Judged after the
-/// row has flipped to `Active` it would sweep nothing — which is why the call
-/// site reads `&account` before `cancelled_deletion(account)` moves it. Mirrors
-/// the `plan_deletion_rearms` pure-planner shape; the ctx halves live in
-/// `trading` (`open_offers_addressed_to` / `decline_offers`) because only that
-/// module reads and writes `trade_offer` (D0). Body byte-frozen by
-/// `rb83_new_seams_are_declared_once_and_frozen`; change it with ADR-0252.
+/// `opened_commitment_is_refused`: the inclusive boundary, the terminal arm and
+/// the fail-closed missing-stamp arm are all inherited, so on the illegal
+/// stamp-less `PendingDeletion` shape every incoming offer is swept, and on an
+/// `Active` row nothing is. Judged after the row has flipped to `Active` it
+/// would sweep nothing — which is why the call site reads `&account` before
+/// `cancelled_deletion(account)` moves it. Mirrors the `plan_deletion_rearms`
+/// pure-planner shape; the ctx halves live in `trading`
+/// (`open_offers_addressed_to` / `decline_offers`) because only that module
+/// reads and writes `trade_offer`.
 pub(crate) fn plan_declines_at_cancel(account: &Account, offers: &[(u64, i64)]) -> Vec<u64> {
     offers
         .iter()
@@ -471,7 +443,7 @@ pub(crate) fn plan_declines_at_cancel(account: &Account, offers: &[(u64, i64)]) 
 
 // --- Context-bound predicates (SSOT) ------------------------------------------
 
-/// The load-bearing "is this an account holder?" gate (D4′). Only a verified
+/// The load-bearing "is this an account holder?" gate. Only a verified
 /// allowed-issuer/audience token ever produces an `account` row, so this is
 /// strictly more precise than `has_jwt()` (true for every connection).
 pub(crate) fn is_account_holder(ctx: &ReducerContext, identity: Identity) -> bool {
@@ -479,12 +451,9 @@ pub(crate) fn is_account_holder(ctx: &ReducerContext, identity: Identity) -> boo
 }
 
 /// True iff `identity` holds an account the deletion gate refuses (false when
-/// no row). D7 SSOT — reused by `complete_guest_claim` here and by M22
-/// gameplay-gate call sites, never re-derived. Since m22-s3 this DELEGATES to
-/// `should_reject_for_deletion`: on every legal state that is exactly the old
-/// `status == PendingDeletion` test (the marker implies `PendingDeletion`),
-/// and on the illegal `Active` + marker shape it is fail-closed where the old
-/// spelling waved the row through (ADR-0225).
+/// no row). SSOT — reused by `complete_guest_claim` here and by
+/// gameplay-gate call sites, never re-derived. It DELEGATES to
+/// `should_reject_for_deletion`.
 pub(crate) fn is_pending_deletion(ctx: &ReducerContext, identity: Identity) -> bool {
     ctx.db
         .account()
@@ -493,19 +462,15 @@ pub(crate) fn is_pending_deletion(ctx: &ReducerContext, identity: Identity) -> b
         .is_some_and(|a| should_reject_for_deletion(&a))
 }
 
-/// The ctx-bound half of the rb-47 refinement (ADR-0237 D2): does `identity`'s
+/// The ctx-bound half of the refinement: does `identity`'s
 /// account refuse a commitment opened at `opened_at_ms`? False when there is no
 /// row — a guest has no deletion state — exactly as `is_pending_deletion`
-/// decides, and with the same lookup shape on purpose: a shared row helper
-/// would force re-cutting that byte-frozen sibling's pin. Identity-taking like
-/// its sibling, and therefore an oracle primitive: the ONLY sanctioned consumer
-/// is `guards::require_commitment_predates_deletion`, which reads
-/// `ctx.sender()` and cannot be pointed at a third party (ADR-0227 D4). That
-/// line is held mechanically by the rb-47 seam-containment scan in
-/// `trading_tests.rs` (every module `lib.rs` declares, minus this file, the
-/// guards module and the test modules) and by the bypass-ban arrays in
-/// `guards_tests.rs`; a reducer that consults this predicate about another
-/// player is the deletion-status oracle ADR-0227 D4 rejected.
+/// decides, and with the same lookup shape on purpose.
+/// Identity-taking like its sibling, and therefore an oracle primitive: the
+/// ONLY sanctioned consumer is `guards::require_commitment_predates_deletion`,
+/// which reads `ctx.sender()` and cannot be pointed at a third party. a reducer
+/// that consults this predicate about another player is the deletion-status
+/// oracle.
 pub(crate) fn refuses_commitment_opened_at(
     ctx: &ReducerContext,
     identity: Identity,
@@ -533,14 +498,13 @@ pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) ->
 }
 
 /// Re-key every REKEY-policy table from `from` onto `to`, one delegated helper
-/// per table in D6-manifest order. `?` on the fallible monster re-key rolls the
+/// per table. `?` on the fallible monster re-key rolls the
 /// whole claim transaction back (fail-loud on a broken dual-write invariant).
 ///
-/// MANIFEST CROSS-REFERENCE (M22-S2, ADR-0207): the claim-flow re-key policy
-/// (this manifest, transcribed as `REKEY_MANIFEST` in
-/// `evals/guest-claim-integrity.eval.mjs`) is one axis; the DELETION policy
-/// dimension (`deletion_policy` + `basis` + `exportable` per table, spec §3)
-/// lives as `schema::DATA_LIFECYCLE_MANIFEST` beside the table declarations.
+/// MANIFEST CROSS-REFERENCE: the claim-flow re-key policy
+/// is one axis; the DELETION policy dimension (`deletion_policy` + `basis` +
+/// `exportable` per table, spec §3) lives as `schema::DATA_LIFECYCLE_MANIFEST`
+/// beside the table declarations.
 /// A gate test proves every REKEY key's table is also lifecycle-classified,
 /// so the two manifests cannot drift apart on a rename.
 pub(crate) fn rekey_all(ctx: &ReducerContext, from: Identity, to: Identity) -> Result<(), String> {
@@ -563,7 +527,7 @@ fn delete_claim(ctx: &ReducerContext, guest: Identity) {
 }
 
 /// Disarm the reaper schedule row(s) for `guest` (collect-then-delete via the
-/// `guest_identity` btree index, then delete by PK; mirrors ADR-0126).
+/// `guest_identity` btree index, then delete by PK).
 fn disarm_claim_reaper(ctx: &ReducerContext, guest: Identity) {
     let ids: Vec<u64> = ctx
         .db
@@ -642,7 +606,6 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
     }
     let now = now_ms(ctx);
     match ctx.db.account().identity().find(ctx.sender()) {
-        // PRV1-8(b) — the operator's issue-#403 Option B ruling (ADR-0228 D4):
         // a terminal account re-registers FRESH. Every field at
         // `new_account_row` defaults, identity/auth_issuer from the LIVE
         // connection, no pre-deletion value carried forward — the arm body
@@ -688,9 +651,8 @@ pub fn start_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), Strin
     if !is_valid_claim_code(&code) {
         return reject("start_guest_claim", me, "invalid claim code");
     }
-    // guest_name is snapshotted from player.name (AUTH-9); an identity with no
-    // player row has nothing to claim (spec-gap decision — reject, matching the
-    // repo's standard "not joined").
+    // guest_name is snapshotted from player.name; an identity with no
+    // player row has nothing to claim.
     let Some(player) = ctx.db.player().identity().find(me) else {
         return reject("start_guest_claim", me, "not joined");
     };
@@ -723,11 +685,11 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     let Some(account) = ctx.db.account().identity().find(me) else {
         return reject("complete_guest_claim", me, "no account");
     };
-    // Guard 3 (AUTH-13) — deletion gate, terminal first (m22-s3b, ADR-0228
-    // D6): a completed erasure gets the DISTINCT static reason; the mid-grace
-    // state keeps the generic one (reuses the D7 SSOT predicate). Ordering
-    // matters — the disjunction inside `is_pending_deletion` would otherwise
-    // swallow the terminal case into the generic message.
+    // Guard 3 — deletion gate, terminal first:
+    // a completed erasure gets the DISTINCT static reason; the mid-grace
+    // state keeps the generic one. Ordering matters — the disjunction inside
+    // `is_pending_deletion` would otherwise swallow the terminal case into
+    // the generic message.
     if account_has_terminal_marker(&account) {
         return reject("complete_guest_claim", me, REJECT_ALREADY_DELETED);
     }
@@ -776,13 +738,13 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
         return reject("complete_guest_claim", me, "already has game data");
     }
     // Re-key → consume (single-use, AUTH-34) → stamp provenance (AUTH-21). No
-    // TOCTOU: reducers are fully serialized (ADR-0106 D8), atomicity is free.
+    // TOCTOU: reducers are fully serialized, atomicity is free.
     rekey_all(ctx, guest, me)?;
-    // rb-22 (ADR-0220): the guest identity retires at this claim, so its
+    // The guest identity retires at this claim, so its
     // pre-claim export_bundle chunks would orphan — the S3 cascade keys on a
     // live account's own identity and cannot reach them. Purge them here, in
     // the same transaction, via the owning module (G5/D0). The helper reports
-    // how many chunks it deleted (rb-40, ADR-0235); the count is published
+    // how many chunks it deleted; the count is published
     // below, once nothing can roll the claim back.
     let purged = crate::privacy::purge_export_bundles(ctx, guest);
     consume_claim_and_disarm(ctx, guest);
@@ -790,8 +752,8 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
         .account()
         .identity()
         .update(claimed_account(account, guest, now_ms(ctx)));
-    // rb-40 (ADR-0235): the purge is observable — ONE line through the blessed
-    // emission point (ADR-0180 D6), as the TERMINAL statement: a host log
+    // The purge is observable — ONE line through the blessed
+    // emission point, as the TERMINAL statement: a host log
     // line survives a later rollback while the deletes do not, so nothing may
     // run after it. The evt literal is bare on purpose (a const or concat! is
     // invisible to a grep for the event name).
@@ -799,20 +761,19 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     Ok(())
 }
 
-/// The ONE field fragment of the claim-time export-purge line (rb-40,
-/// ADR-0235) — the `heartbeat_fields` precedent: PURE, no `ctx`, no table read,
-/// so the value is unit-testable off-instance. `guest` is the RETIRED guest
-/// identity (the SUBJECT of the erasure; the AUTH-21 provenance column already
+/// The ONE field fragment of the claim-time export-purge line
+/// PURE, no `ctx`, no table read, so the value is unit-testable off-instance.
+/// `guest` is the RETIRED guest identity (the SUBJECT of the erasure; already
 /// persists the guest-to-claimer linkage on the row) rendered through the
 /// `Identity` Display impl — 64 lowercase hex digits, structurally quote-safe.
 /// `chunks` is the count `purge_export_bundles` returned, unquoted. No
 /// player-authored field and no pre-tombstone value may ever join this
-/// fragment (PRV1-17/20 by analogy).
+/// fragment.
 fn purge_fields(guest: Identity, chunks: usize) -> String {
     format!("\"guest\":\"{guest}\",\"chunks\":{chunks}")
 }
 
-/// The ONE field fragment of the deletion-cascade line (rb-65, ADR-0243) —
+/// The ONE field fragment of the deletion-cascade line —
 /// the `purge_fields` shape: PURE, no `ctx`, no table read, unit-tested by
 /// value. `subject` is the ERASED account identity — the SUBJECT of the
 /// erasure, the key an audit is answered by; the Anonymize-policy `account`
@@ -820,16 +781,16 @@ fn purge_fields(guest: Identity, chunks: usize) -> String {
 /// shorter-lived one — rendered through the `Identity` Display impl (64
 /// lowercase hex digits, structurally quote-safe). `export_bundle` is the
 /// count step 6b's `purge_export_bundles` returned, unquoted, keyed by the
-/// helper noun so the deferred per-step counts append beside it (ADR-0243
-/// D4). No player-authored field and no pre-tombstone value may ever join
-/// this fragment (PRV1-17/20, which name this reducer literally).
+/// helper noun so the deferred per-step counts append beside it.
+/// No player-authored field and no pre-tombstone value may ever join
+/// this fragment (which name this reducer literally).
 fn cascade_fields(subject: Identity, export_chunks: usize) -> String {
     format!("\"subject\":\"{subject}\",\"export_bundle\":{export_chunks}")
 }
 
-// --- Deletion (M21 half — AUTH-28/29/37/38, D7; rb-24 arm/disarm, ADR-0221) ---
+// --- Deletion ---
 
-/// Arm the one-shot deletion-grace reaper for `account` (rb-24, PRV1-1). Fire
+/// Arm the one-shot deletion-grace reaper for `account`. Fire
 /// instant derives from the SAME `requested_at_ms` the caller stamped on the
 /// row (never a second clock read), through the pure `deletion_fire_at_ms`
 /// seam. Saturating ms to us, mirroring `arm_claim_reaper`.
@@ -845,10 +806,8 @@ fn arm_deletion_reaper(ctx: &ReducerContext, account: Identity, requested_at_ms:
         });
 }
 
-/// Disarm the pending deletion-reaper schedule row(s) for `account` (rb-24,
-/// PRV1-3; ADR-0126 D4 — collect-then-delete via the `account_identity` btree
-/// index, then delete by PK; mirrors `disarm_claim_reaper`). Owner-GENERIC so
-/// the S3b cascade-era callers can reuse it verbatim (ADR-0225).
+/// Disarm the pending deletion-reaper schedule row(s) for `account`.
+/// Owner-GENERIC.
 fn disarm_deletion_reaper(ctx: &ReducerContext, account: Identity) {
     let ids: Vec<u64> = ctx
         .db
@@ -865,15 +824,13 @@ fn disarm_deletion_reaper(ctx: &ReducerContext, account: Identity) {
     }
 }
 
-/// ADR-0221 R2 sweep (m22-s3b, ADR-0228 D3b): (re-)arm the deletion-grace
-/// reaper for every account sitting `PendingDeletion` with no terminal marker
-/// and no schedule row — the population whose one-shot fired before the
-/// cascade existed, plus any row a crash left unarmed. Called from `init` and
-/// `sync_content` beside `ensure_playtest_reaper` / `ensure_mr_heartbeat`;
-/// the body lives HERE because the sole-writer teeth close the schedule table
-/// to every other module. Idempotent via the pure `plan_deletion_rearms`
-/// seam: an already-armed identity is never re-armed, so repeated publishes
-/// add nothing.
+/// (re-)arm the deletion-grace reaper for every account sitting
+/// `PendingDeletion` with no terminal marker and no schedule row. Called from
+/// `init` and `sync_content` beside `ensure_playtest_reaper` /
+/// `ensure_mr_heartbeat`; the body lives HERE because the sole-writer teeth
+/// close the schedule table to every other module. Idempotent via the pure
+/// `plan_deletion_rearms` seam: an already-armed identity is never re-armed,
+/// so repeated publishes add nothing.
 pub(crate) fn ensure_deletion_reapers_armed(ctx: &ReducerContext) {
     let accounts: Vec<Account> = ctx.db.account().iter().collect();
     let already_armed: Vec<Identity> = ctx
@@ -888,10 +845,7 @@ pub(crate) fn ensure_deletion_reapers_armed(ctx: &ReducerContext) {
 }
 
 /// Request account deletion — sets `PendingDeletion` and arms the deletion-grace
-/// reaper LAST (rb-24/ADR-0221: spec para 4.2 places the schedule-insert after
-/// the status write; the reducer is one transaction, so the two cannot
-/// separate, and the arm-last order is what keeps the M21 pins byte-stable).
-/// Idempotent (AUTH-28): the second call writes nothing and arms nothing.
+/// reaper LAST. Idempotent: the second call writes nothing and arms nothing.
 #[spacetimedb::reducer]
 pub fn delete_account(ctx: &ReducerContext) -> Result<(), String> {
     let me = ctx.sender();
@@ -902,11 +856,11 @@ pub fn delete_account(ctx: &ReducerContext) -> Result<(), String> {
     let Some(account) = ctx.db.account().identity().find(me) else {
         return reject("delete_account", me, "no account");
     };
-    // m22-s3 (ADR-0225): the terminal marker wins over status. On the illegal
-    // Active + marker shape the AUTH-28 gate below would answer yes and
+    // The terminal marker wins over status. On the illegal
+    // Active + marker shape would answer yes and
     // launder the row into a legal PendingDeletion + marker state, arming a
     // SECOND cascade over an already-erased account. `Ok` shape, not a
-    // reject — PRV1-2 keeps its letter (a terminal row IS status-Pending).
+    // reject.
     if account_has_terminal_marker(&account) {
         return Ok(());
     }
@@ -936,10 +890,10 @@ pub fn cancel_account_deletion(ctx: &ReducerContext) -> Result<(), String> {
     let Some(account) = ctx.db.account().identity().find(me) else {
         return reject("cancel_account_deletion", me, "no account");
     };
-    // PRV1-4 (m22-s3, ADR-0225): a completed erasure is not reversible — a
+    // A completed erasure is not reversible — a
     // late cancel gets a DISTINCT error, never a silent success. Guard-first
-    // is fail-closed on the illegal Active + marker shape, where the AUTH-38
-    // gate below would otherwise wave the row through to a silent Ok.
+    // is fail-closed on the illegal Active + marker shape, where
+    // would otherwise wave the row through to a silent Ok.
     if account_has_terminal_marker(&account) {
         return reject("cancel_account_deletion", me, REJECT_ALREADY_DELETED);
     }
@@ -947,13 +901,11 @@ pub fn cancel_account_deletion(ctx: &ReducerContext) -> Result<(), String> {
     if !needs_cancel_write(account.status) {
         return Ok(());
     }
-    // rb-83 (ADR-0252 D3): decline every incoming offer the rb-47 stamp gate
+    // Decline every incoming offer the stamp gate
     // refused for THIS pre-cancel row — the confederate's post-request
-    // proposals — so the cancel cannot launder them into an accept. Behind the
-    // AUTH-38 gate (an Active caller sweeps nothing) and before the status
-    // write, because `account` is moved into the constructor below and a row
-    // judged after the flip refuses nothing. Pinned by
-    // `rb83_cancel_declines_refused_offers_before_the_status_write`.
+    // proposals — so the cancel cannot launder them into an accept.
+    // and before the status write, because `account` is moved into the
+    // constructor below and a row judged after the flip refuses nothing.
     crate::trading::decline_offers(
         ctx,
         &plan_declines_at_cancel(&account, &crate::trading::open_offers_addressed_to(ctx, me)),
@@ -962,20 +914,18 @@ pub fn cancel_account_deletion(ctx: &ReducerContext) -> Result<(), String> {
         .account()
         .identity()
         .update(cancelled_deletion(account));
-    // rb-24 (PRV1-3, ADR-0126 D4): actively disarm the pending reaper row —
-    // inside the gate (an Active account owns no armed row by construction)
-    // and after the status write, mirroring the arm-last rule on the request
-    // side. The PRV1-4 terminal guard above (m22-s3) precedes the AUTH-38
-    // gate, so no terminal row can ever reach this write path.
+    // Actively disarm the pending reaper row — inside the gate (an Active
+    // account owns no armed row by construction) and after the status write,
+    // mirroring the arm-last rule on the request side.
     disarm_deletion_reaper(ctx, me);
     Ok(())
 }
 
 // --- Scheduled TTL reaper (AUTH-27) -------------------------------------------
 
-/// PRIVATE scheduled table colocated with its reducer (ADR-0056 exception).
+/// PRIVATE scheduled table colocated with its reducer.
 /// `guest_identity` carries a btree index so the DISARM path filters instead of
-/// scanning — mirrors `battle_challenge_reaper_schedule.challenge_id` (ADR-0126).
+/// scanning — mirrors `battle_challenge_reaper_schedule.challenge_id`.
 #[spacetimedb::table(accessor = guest_claim_reaper_schedule, scheduled(guest_claim_reaper))]
 pub struct GuestClaimReaperSchedule {
     #[primary_key]
@@ -1013,15 +963,14 @@ pub fn guest_claim_reaper(
     Ok(())
 }
 
-// --- Scheduled deletion-grace reaper (rb-24 ADR-0221; m22-s3 recheck ADR-0225;
-// --- cascade is S3b) -----------------------------------------------------------
+// --- Scheduled deletion-grace reaper
 
-/// PRIVATE scheduled table colocated with its reducer (ADR-0056 exception),
-/// mirroring `guest_claim_reaper_schedule` exactly. Minimal field set per
-/// ADR-0126 D6 — deliberately NO timestamp column, so staleness can only ever
+/// PRIVATE scheduled table colocated with its reducer,
+/// mirroring `guest_claim_reaper_schedule` exactly. Minimal field set
+/// — deliberately NO timestamp column, so staleness can only ever
 /// derive from the live `account` row's own `deletion_requested_at_ms` plus the
 /// injected clock, never from anything a caller could supply.
-/// `account_identity` carries a btree index so the PRV1-3 disarm path filters
+/// `account_identity` carries a btree index so filters
 /// instead of scanning.
 #[spacetimedb::table(accessor = account_deletion_reaper_schedule, scheduled(account_deletion_reaper))]
 pub struct AccountDeletionReaperSchedule {
@@ -1033,19 +982,19 @@ pub struct AccountDeletionReaperSchedule {
     pub account_identity: Identity,
 }
 
-/// Deletion-grace reaper — the M22 §4.4 five-step cascade (m22-s3b,
-/// ADR-0228). Scheduler-only first statement, then a re-read of the live
+/// Deletion-grace reaper.
+/// Scheduler-only first statement, then a re-read of the live
 /// `account` row keyed on the SCHEDULER-supplied identity, then the pure
 /// `reaper_should_run_cascade` recheck. On a not-yet-due row the recheck
 /// branch RE-ARMS from the row's own request stamp (`reaper_rearm_at_ms` —
-/// the runtime has already deleted the fired one-shot row, ADR-0228 D3a)
+/// the runtime has already deleted the fired one-shot row)
 /// before the no-op return; an `Active`, terminal or missing row re-arms
 /// nothing and no-ops.
 ///
 /// The cascade proper, one transaction: 6a force-resolve every live
 /// interaction via the shared `on_disconnect` bundle — FIRST, so nothing
 /// below yanks rows out from under a live battle/trade resolution; 6b the
-/// delegated ERASE sweeps in manifest order (G5 write isolation: every
+/// delegated ERASE sweeps in manifest order (write isolation: every
 /// foreign-table write lives in its owning module, the `rekey_all`
 /// precedent), including the export-bundle purge; 6d `character` strictly
 /// before 6c's player display-name tombstone (the spec's order pin — the join
@@ -1054,13 +1003,12 @@ pub struct AccountDeletionReaperSchedule {
 /// only reachable when everything above returned — one `account` update
 /// stamping the auth-issuer tombstone and the terminal marker. An `Err`
 /// anywhere aborts the whole transaction, so a partially-erased account
-/// cannot persist and the marker can never precede the erasure (PRV1-6e).
-/// Then, TERMINALLY (rb-65, ADR-0243), one `account_deletion_cascade` line
+/// cannot persist and the marker can never precede the erasure.
+/// Then, TERMINALLY, one `account_deletion_cascade` line
 /// through `observability::mr_log` carrying the subject hex and the count
 /// step 6b's purge returned — written pre-commit, at-least-once, never a
 /// commit record: the SSOT for `was X erased` is the row's `terminal_at_ms`.
-/// Scheduler-only: the guard is the entire precondition of the ADR-0195 D6
-/// struct-argument carve-out.
+/// Scheduler-only: the guard is the entire precondition.
 #[spacetimedb::reducer]
 pub fn account_deletion_reaper(
     ctx: &ReducerContext,
@@ -1098,7 +1046,7 @@ pub fn account_deletion_reaper(
         .account()
         .identity()
         .update(terminal_account(anonymized_account(account), now));
-    // rb-65 (ADR-0243): ONE cascade-wide observation, TERMINAL — after the
+    // ONE cascade-wide observation, TERMINAL — after the
     // stamp, after every step, before Ok(()). A host log line survives a
     // later rollback while the writes do not, so nothing may run after it.
     // Unconditional: the zero-chunk cascade is the negative an audit needs.

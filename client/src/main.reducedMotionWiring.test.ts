@@ -94,11 +94,13 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
   return {
     apply_move: () => ({}),
-    // rb-8 / ADR-0212: `-> i64` crosses as a BigInt, so the stub is `1n`, not `1`.
+    // `-> i64` crosses as a BigInt, so the stub is `1n`, not `1`.
     deletion_grace_ms_default: () => 1n,
     move_queue_cap: () => 4,
     party_size: () => 3,
     party_slot_none: () => 255,
+    max_trade_monsters_per_side: () => 64,
+    talk_range: () => 2,
     predict_move: () => ({}),
     predict_tick: () => ({}),
     set_active_zone: () => undefined,
@@ -307,12 +309,7 @@ function makeMatchMediaStub(initialMatches: boolean): MatchMediaStub {
 }
 
 // --- the suite ---------------------------------------------------------------------------
-// `describe(name, { sequential: true }, fn)` — NOT `describe.sequential(...)`. Same isolation,
-// but the literal `describe(` is REQUIRED here: motionPreference.test.ts's S7T-SCAN scans every
-// comment-stripped `.test.ts` under client/src for that exact token, as a tripwire against
-// production code disguised with a spec suffix, and the dotted form does not contain it. The
-// precedent file that uses the dotted form only passes because it happens to carry a nested
-// plain `describe(` for unrelated reasons. Do not 'tidy' this back to the dotted form.
+// `describe(name, { sequential: true }, fn)`.
 describe('main.ts render-loop reduced-motion wiring (17r-a, gate B1)', { sequential: true }, () => {
   let recorded: Recorded[] = [];
   let restoreWindowAdd: (() => void) | undefined;
@@ -383,7 +380,7 @@ describe('main.ts render-loop reduced-motion wiring (17r-a, gate B1)', { sequent
   });
 
   // WRONG IMPL KILLED:
-  //  (1) ★ THE DEFECT (master today): `reduceMotion` key absent from the resolve() call
+  //  (1) ★ THE DEFECT: `reduceMotion` key absent from the resolve() call
   //      entirely — every recorded `input.reduceMotion` is `undefined`, failing the
   //      `toBe(true)` assertions below.
   //  (2) computed-but-not-passed: `const motionPreference = motionPreferenceFromWindow();`
@@ -430,8 +427,7 @@ describe('main.ts render-loop reduced-motion wiring (17r-a, gate B1)', { sequent
   // STRICT toBe(false), never toBeFalsy(): at the fork the `reduceMotion` key is absent from
   // the call entirely, so `input.reduceMotion` is `undefined` — `undefined` is falsy, so a
   // toBeFalsy() assertion would pass at the fork for the WRONG reason (the wiring not existing
-  // at all looks identical to "correctly wired and reporting false"). This is genuinely RED at
-  // the fork today (not a regression pin): `undefined !== false` under strict equality.
+  // at all looks identical to "correctly wired and reporting false").
   it('RM17A-OFF: OS does NOT report reduced motion — every resolve call carries reduceMotion strictly === false', async () => {
     await setupMain(false);
     runFrame(0);

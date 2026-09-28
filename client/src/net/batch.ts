@@ -2,8 +2,8 @@
 //
 // SpacetimeDB 2.6 delivers a transaction's row callbacks (onInsert/onUpdate/
 // onDelete) synchronously with NO per-transaction "applied" connection hook
-// (validation-findings #4). Reconciling per row mid-transaction rubberbands
-// (ADR-0013). This batches a synchronous burst of `schedule()` calls into a single
+// (validation-findings #4). Reconciling per row mid-transaction rubberbands.
+// This batches a synchronous burst of `schedule()` calls into a single
 // `flush` on the next microtask, so the loop reconciles ONCE on a coherent snapshot.
 // Kept tiny + injectable so it is unit-testable without the live SDK.
 export class MicrotaskBatcher {

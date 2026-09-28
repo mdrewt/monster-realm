@@ -75,20 +75,10 @@ import type { RaisingViewCallbacks } from './raisingView';
 import { RaisingView } from './raisingView';
 
 // ---------------------------------------------------------------------------
-// m23-s4 — overlay a11y wiring for RaisingView (constructed-shell, #app-mounted).
-// ADDITIVE ONLY: nothing below this block (the EG4-4 / C1-C6 suite) was weakened
-// or deleted. Declared FIRST in the file, before any pre-existing describe AND
+// Overlay a11y wiring for RaisingView (constructed-shell, #app-mounted).
+// Declared FIRST in the file, before any pre-existing describe AND
 // before the file's own root-level `beforeEach`/`afterEach` (document.body reset /
 // vi.restoreAllMocks()) — so this sweep runs first among the root-level hooks.
-//
-// SOURCE OF TRUTH: specs/monster-realm-v2/M23-accessibility.spec.md §2.2/§2.3, §6
-// (A11Y-13/14/15/16/17); memory/projects/monster-realm-m23-s4-plan.md §0 F1, §1
-// D1/D2/D6/D7; memory/projects/gates/m23-s4.gates.md X1/X2/X3/X6/X7/X8.
-//
-// RED REASON: raisingView.ts's show()/hide()/toggle() do not call
-// openOverlayA11y/closeOverlayA11y today, and its <h2> title carries neither
-// data-testid="raising-title" nor tabindex="-1" — every S4-raisingView-* test
-// below fails now; every pre-existing test below still passes.
 //
 // COMPOSITION NOTE (plan §8 A7): DEFER-FOCUS and CLOSE-RESTORE are folded into
 // S4-raisingView-ANCHOR-FOCUS and S4-raisingView-CLOSE-RESTORE-UNGUARDED — see
@@ -106,7 +96,7 @@ import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
 vi.mock('./overlayA11y', { spy: true });
-// m24s4 (ADR-0260) MECHANISM oracle, same shape as m24s3: records every t()/tf() call AND
+// m24s4 MECHANISM oracle, same shape as m24s3: records every t()/tf() call AND
 // calls through to the real resolver, so RV-01's DOM byte-identity assertions still work.
 vi.mock('./i18n/resolver', { spy: true });
 
@@ -386,15 +376,7 @@ async function flushPromises(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// EG4-4 — the status line swaps its Bond readout for a Trust-tier readout.
-//
-// SOURCE OF TRUTH: spec EARS EG4-4 ("raisingModel.ts/raisingView.ts SHALL swap
-// their `Bond ${mon.bond}` status-line readout for a trust_tier readout") +
-// contract §E ("raisingView.ts:150 `Bond ${mon.bond}` -> `Trust ${mon.trustTier}`").
-//
-// RED REASON (verified against client/src/ui/raisingView.ts:150 this session):
-//   info.textContent = `Lv${mon.level} · Bond ${mon.bond} · HP …`
-// The word "Bond" is still there and `mon.trustTier` is read nowhere in the file.
+// The status line swaps its Bond readout for a Trust-tier readout.
 //
 // WHY BOTH HALVES ARE ASSERTED: a half-swap is the realistic failure. Rendering
 // `Bond ${mon.trustTier}` satisfies "the tier name appears"; rendering
@@ -405,8 +387,7 @@ async function flushPromises(): Promise<void> {
 
 describe('★ RaisingView status line (EG4-4): Trust tier replaces the Bond readout', () => {
   it('★ BITES: the rendered card shows "Trust" AND the tier name, and never the word "Bond"', () => {
-    // WRONG IMPL KILLED (a): the shipped `Bond ${mon.bond}` surviving untouched
-    // (today's state — RED).
+    // WRONG IMPL KILLED (a): the shipped `Bond ${mon.bond}` surviving untouched.
     // WRONG IMPL KILLED (b): the LABEL swapped but the VALUE left on the retired field
     // (`Trust ${mon.bond}`) — with `bond` gone from the view-model that renders the
     // literal text "Trust undefined", which this test's tier-name assertion catches.
@@ -468,10 +449,11 @@ describe('★ RaisingView status line (EG4-4): Trust tier replaces the Bond read
 describe('RaisingView showFeedback(): writes the message (C1, ADR-0159 D1)', () => {
   it('C1 BITES: showFeedback("Cared!") puts "Cared!" in #raising-feedback textContent — kills no-op impl', () => {
     // WRONG IMPL KILLED: an impl where showFeedback() is a no-op, or writes to the
-    // wrong element, or is missing entirely (TypeError — the RED reason today).
+    // wrong element, or is missing entirely.
     const parent = mountParent();
     const view = new RaisingView(parent, makeCallbacks());
 
+    view.show(); // showFeedback is a no-op while hidden
     view.showFeedback('Cared!');
 
     const feedbackEl = document.getElementById('raising-feedback');
@@ -493,7 +475,7 @@ describe('★ RaisingView showFeedback(): CONTAINMENT — feedback node is insid
   it('★ C2 BITES: the #raising-feedback node is a DESCENDANT of the overlay root — kills the exact shipped bug (a node OUTSIDE the z-index:100 overlay, invisible behind it)', () => {
     // WRONG IMPL KILLED: an impl that writes feedback to a node appended to `document.body`
     // (or reuses main.ts's `statusEl`) instead of INSIDE the RaisingView's own overlay root.
-    // The raising overlay is `position:fixed; inset:0; z-index:100` (raisingView.ts:28-31) —
+    // The raising overlay is `position:fixed; inset:0; z-index:100` —
     // a message written OUTSIDE it is painted over and invisible, exactly like the
     // pre-fix statusEl bug this ADR fixes. A textContent-only assertion on a node found
     // by getElementById alone would NOT catch this (the node could exist anywhere in the
@@ -531,6 +513,7 @@ describe('★ RaisingView showFeedback(): NO markup injection — textContent on
     const view = new RaisingView(parent, makeCallbacks());
     const payload = '<img src=x onerror=alert(1)>';
 
+    view.show(); // showFeedback is a no-op while hidden
     view.showFeedback(payload);
 
     const feedbackEl = document.getElementById('raising-feedback');
@@ -554,12 +537,10 @@ describe('★ RaisingView showFeedback(): NO markup injection — textContent on
 
 describe('★ RaisingView Care button: re-entrancy guard (C4, ADR-0159 D1)', () => {
   it('★ C4 BITES: two rapid Care clicks before the first call settles invoke onCare exactly ONCE, and the button is disabled while pending — kills missing-#pending-lock impl', async () => {
-    // WRONG IMPL KILLED: a Care button with no #pending lock (the CURRENT shipped
-    // shape — raisingView.ts:120-124 calls `this.#callbacks.onCare(mon.monsterId)`
-    // directly on every click, unconditionally). Without the guard, a double-click
-    // fires onCare TWICE before the first reducer call settles — the exact
-    // contradictory "Cared!" -> "care cooldown not yet elapsed" flash ADR-0159 D1
-    // exists to prevent.
+    // WRONG IMPL KILLED: a Care button with no #pending lock.
+    // Without the guard, a double-click fires onCare TWICE before the first
+    // reducer call settles — the exact contradictory "Cared!" -> "care cooldown
+    // not yet elapsed" flash ADR-0159 D1 exists to prevent.
     let resolveFlight: (() => void) | undefined;
     const flightPromise = new Promise<void>((res) => {
       resolveFlight = res;
@@ -621,14 +602,10 @@ describe('RaisingView Care button: calls onCare with the correct monsterId (C5, 
 });
 
 // ---------------------------------------------------------------------------
-// ★★ C6 (code-review BUG 2, MINOR-but-a-regression): #pending must be tracked
-// PER MONSTER, not view-wide. The shipped raisingView.ts uses a single class-level
-// `#pending` flag (raisingView.ts:34) shared across every monster's Care button
-// (raisingView.ts:158-174). Two demonstrated symptoms:
+// ★★ C6: #pending must be tracked PER MONSTER, not view-wide.
 //   (1) With >=2 monsters, a care call in flight for monster A holds the SHARED
 //       flag, so clicking monster B's Care button — visually enabled, since only
-//       A's DOM node was disabled — is a SILENT no-op. Before this slice there was
-//       no guard at all, so B worked; this is a genuine regression.
+//       A's DOM node was disabled — is a SILENT no-op.
 //   (2) A batch-triggered refresh() mid-flight rebuilds the Care button via
 //       `#monsterEl.replaceChildren()`; the new button is NOT disabled but the
 //       shared flag still swallows its click — "looks clickable, silently does
@@ -637,12 +614,10 @@ describe('RaisingView Care button: calls onCare with the correct monsterId (C5, 
 
 describe('★★ RaisingView Care button: #pending must be tracked PER MONSTER, not view-wide (C6, code-review BUG 2)', () => {
   it("★★ BITES: with two monsters rendered, A pending does NOT block B — B's onCare fires exactly once and B's button stays enabled, while A's button IS disabled — kills the shared view-wide #pending regression", async () => {
-    // WRONG IMPL KILLED: the CURRENT shipped shape — a single class-level `#pending`
+    // WRONG IMPL KILLED: a single class-level `#pending`
     // boolean shared across every monster row. Clicking A sets it true; clicking B
     // then hits `if (this.#pending) return;` and is silently swallowed, even though
-    // B's own button was never disabled (it looks clickable). Before this slice there
-    // was no guard at all, so B worked — this is a genuine regression this slice
-    // introduced.
+    // B's own button was never disabled (it looks clickable).
     let resolveA: (() => void) | undefined;
     const flightA = new Promise<void>((res) => {
       resolveA = res;
@@ -736,24 +711,14 @@ describe('★★ RaisingView Care button: #pending must be tracked PER MONSTER, 
 });
 
 // ---------------------------------------------------------------------------
-// 20r-a — in-flight guard on the TRAIN buttons (plan D3/D6/D11; matrix RV-1..RV-5).
-// APPENDED BLOCK. C1-C6 above still hold — their ASSERTIONS are unchanged — but rb-120
-// (R-20r-a-CARE-GEN) later ported the Train lock's generation-token shape onto the Care
-// block too (raisingView.ts, the `careBtn.addEventListener` listener): `#pending` became a
-// `Map<bigint, object>` and the release is token-checked, not membership-keyed. See the
-// rb-120 describe block appended after this one. The Train lock remains a SEPARATE map
-// (D6) — a pending Care must never block Train on the same monster, and vice versa.
+// in-flight guard on the TRAIN buttons (plan D3/D6/D11; matrix RV-1..RV-5).
+// The Train lock remains a SEPARATE map (D6) — a pending Care must never block Train on the same
+// monster, and vice versa.
 // Different reducers, different failure modes.
-//
-// SOURCE OF TRUTH: docs/specs/20r-a-plan.md §0 D3/D6/D11, §1 raisingView.ts, §3 RV-*.
 //
 // THE DEFECT (measured): `trainBtn.addEventListener('click', () => this.#callbacks.onTrain(...))`
 // — no lock, no disabled state, so a double-click on "Train: Protein" sends `train` twice and
 // consumes two items for one intended feed.
-//
-// RED REASON: no `#pendingTrain` exists, so the first `disabled === true` assertion on a Train
-// button after a click fails in every RV row. RV-4's Care half is a declared regression
-// (green today); its Train half is red.
 //
 // happy-dom facts, microtask budget and the hostile-re-enable rationale: see the 20r-a
 // section header in battleView.test.ts — the same three facts hold here. `flushPromises`
@@ -1109,9 +1074,7 @@ describe('★ RaisingView 20r-a: in-flight guard on the Train buttons (separate 
     // WRONG IMPL KILLED: `Promise.resolve(cb())` (plan D3) — the throw escapes the listener
     //   after the lock is set and before any `.finally` exists; with happy-dom's error capturing
     //   disabled it comes straight out of `.click()`. The required shape is
-    //   `new Promise((resolve) => resolve(cb()))`. rb-120 (R-20r-a-CARE-GEN) later ported this
-    //   executor shape onto the Care block too — see the rb120-CARE-THROW tooth below; the two
-    //   listeners now carry the same lock shape.
+    //   `new Promise((resolve) => resolve(cb()))`.
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const onTrain = vi.fn(() => {
       throw new Error('20r-a RV-3b: synchronous throw');
@@ -1244,39 +1207,8 @@ describe('★ RaisingView 20r-a: in-flight guard on the Train buttons (separate 
 });
 
 // ---------------------------------------------------------------------------
-// rb-120 — the Care lock carries the Train generation-token shape (residual
-// R-20r-a-CARE-GEN; ADR-0159 D1 rb-120 amendment; docs/specs/20r-a-plan.md D3/D11).
-//
-// SOURCE OF TRUTH: the 20r-a plan's D11 (generation-token release — "a release keyed by SET
-// MEMBERSHIP lets a stale settle release a live generation") and D3 (`new Promise((resolve) =>
-// resolve(cb()))` so a synchronous throw becomes a rejection, not a stranded lock) were applied
-// to the NEW Train lock only (#pendingTrain, raisingView.ts@16fe214:290-327) and never ported back onto
-// the pre-existing Care lock (#pending, raisingView.ts@16fe214:267-287) that plan D6 sits beside.
-// R-20r-a-CARE-GEN is that gap, filed against the Care block specifically.
-//
-// THE DEFECT (measured, raisingView.ts@16fe214:267-287):
-//   (a) membership-keyed release — `.finally(() => { this.#pending.delete(monsterId); ... })`
-//       unconditionally. click Care (P1 in flight) -> hide() clears the set -> show() +
-//       refresh() -> click Care again (P2 in flight, key re-added) -> P1 settles -> deletes
-//       P2's key and re-enables the LIVE Care button while P2 is still in flight; a third click
-//       then double-fires `care`.
-//   (b) `void Promise.resolve(this.#callbacks.onCare(monsterId))` — a synchronously-throwing
-//       onCare throws OUT OF the listener after the lock is taken and before any `.finally`
-//       exists -> the lock is stranded until hide().
-//
-// THE FIX (ports raisingView.ts@16fe214:290-327's shape onto Care): `#pending` becomes
-// `Map<bigint, object>` (the field NAME is unchanged — only its value type moves), a
-// `const lock = {}` token is minted per click, `.finally` releases only if
-// `this.#pending.get(monsterId) === lock`, the re-enable target is
-// `this.#careButtons.get(monsterId) ?? careBtn`, and the callback is wrapped
-// `new Promise<void>((resolve) => resolve(this.#callbacks.onCare(monsterId)))`.
-//
-// RED REASON: raisingView.ts@16fe214 has NEITHER a token NOR the executor-shaped wrap on the Care
-// listener — every `it` below traces its own exact failing assertion against the current
-// shipped code in its leading comment. rb120-CARE-LIVE is the one exception: 16fe214's
-// `.finally` already resolves the live re-enable target via `#careButtons.get(monsterId) ??
-// careBtn` (raisingView.ts@16fe214:277), so that tooth is a REGRESSION GUARD for the port, expected
-// GREEN at 16fe214.
+// The Care lock carries the Train generation-token shape (residual
+// R-20r-a-CARE-GEN; docs/specs/20r-a-plan.md D3/D11).
 //
 // WRONG-IMPL-KILLED index:
 //   rb120-CARE-GEN               -> membership-keyed release (D11): a stale generation's
@@ -1288,21 +1220,13 @@ describe('★ RaisingView 20r-a: in-flight guard on the Train buttons (separate 
 //                                    the listener before any `.finally` exists
 //   rb120-CARE-LIVE              -> CLOSURE_REENABLE: the `.finally` re-enabling the
 //                                    click-closure's captured `careBtn` instead of
-//                                    `#careButtons.get(monsterId)` — regression guard, GREEN at
-//                                    16fe214, must stay GREEN after the port
+//                                    `#careButtons.get(monsterId)` — regression guard
 //   rb120-CARE-TRAIN-INDEPENDENT -> a Care/Train shared pending map, or a release keyed on
 //                                    anything but the Care lock's OWN token (D6 + D11 together)
 // ---------------------------------------------------------------------------
 
 describe('★ RaisingView rb-120: the Care lock carries the Train generation-token shape (R-20r-a-CARE-GEN)', () => {
   it('rb120-CARE-GEN BITES: two overlapping Care generations on the same monster — a stale settle must not release the live lock', async () => {
-    // RED REASON (raisingView.ts@16fe214, pre-port): `#pending` is `Set<bigint>` and the
-    // `.finally` release is `this.#pending.delete(monsterId)` — pure SET MEMBERSHIP, no
-    // generation token. hide() clears the whole set, so after the sequence below the STALE
-    // P1's settle deletes the SAME key generation 2 just re-added and re-enables the LIVE
-    // button while P2 is still in flight — the assertion
-    // `expect(careA1.disabled, '...').toBe(true)` right after `p1.resolve()` + flush FAILS at
-    // 16fe214 (the button comes back enabled instead).
     const p1 = raDeferred();
     const p2 = raDeferred();
     const onCare = vi.fn().mockReturnValueOnce(p1.promise).mockReturnValueOnce(p2.promise);
@@ -1369,13 +1293,6 @@ describe('★ RaisingView rb-120: the Care lock carries the Train generation-tok
   });
 
   it('rb120-CARE-STALE-REJECT BITES: a STALE generation REJECTS — the release must still be token-gated on the reject arm, not just resolve', async () => {
-    // RED REASON (raisingView.ts@16fe214, pre-port): the chain is `Promise.resolve(onCare(id))
-    //   .finally(() => { this.#pending.delete(monsterId); ...re-enable... })
-    //   .catch((err) => console.error(...))` — `.finally` runs on EITHER settlement, and since
-    // `#pending` is a plain Set with no token, generation 1's REJECTION deletes the SAME key
-    // generation 2 holds just as readily as a resolution would — the assertion
-    // `expect(careLive.disabled, '...').toBe(true)` right after `p1.reject(...)` + flush FAILS
-    // at 16fe214 (the live button comes back enabled).
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const p1 = raDeferred();
     const p2 = raDeferred();
@@ -1425,12 +1342,6 @@ describe('★ RaisingView rb-120: the Care lock carries the Train generation-tok
   });
 
   it('rb120-CARE-THROW BITES: onCare THROWS synchronously — the click must not throw, the lock is taken immediately, and one flush later the button is re-clickable', async () => {
-    // RED REASON (raisingView.ts@16fe214, pre-port): the listener wraps the callback as
-    // `Promise.resolve(this.#callbacks.onCare(monsterId))` (raisingView.ts@16fe214:271) —
-    // `Promise.resolve(cb())` calls `cb()` SYNCHRONOUSLY as an argument expression, so a
-    // throwing onCare throws directly out of the click listener, BEFORE `Promise.resolve` is
-    // ever reached. The very first assertion,
-    // `expect(() => careBtn.click(), '...').not.toThrow()`, FAILS at 16fe214 (`.click()` throws).
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const onCare = vi.fn(() => {
       throw new Error('rb120-CARE-THROW: synchronous throw');
@@ -1462,17 +1373,12 @@ describe('★ RaisingView rb-120: the Care lock carries the Train generation-tok
   });
 
   it('rb120-CARE-LIVE BITES: a mid-flight refresh() detaches the clicked Care node — the settle must re-enable the LIVE (rebuilt) node, not the closure-captured stale one [CLOSURE_REENABLE]', async () => {
-    // RED-TEAM MEASURED SURVIVOR — CLOSURE_REENABLE: an impl whose `.finally()` re-enables the
+    // CLOSURE_REENABLE: an impl whose `.finally()` re-enables the
     // click-closure's captured `careBtn` variable instead of consulting
     // `this.#careButtons.get(monsterId)` passes rb120-CARE-GEN and rb120-CARE-THROW (neither
     // rebuilds the node mid-flight) but DIES here: after `refresh()` rebuilds the node,
     // `careBtn !== ` the live node, so `careBtn.disabled = false` writes to the DETACHED node
     // and the re-queried live node stays disabled forever.
-    //
-    // Expected on raisingView.ts@16fe214 (pre-port): GREEN — its release target IS already
-    // `this.#careButtons.get(monsterId) ?? careBtn` (raisingView.ts@16fe214:277). This tooth is a
-    // REGRESSION GUARD for the rb-120 port: it must stay green once #pending becomes a
-    // generation-token Map.
     const d = raDeferred();
     const onCare = vi.fn((monsterId: bigint) => (monsterId === 1n ? d.promise : undefined));
     const parent = mountParent();
@@ -1518,15 +1424,9 @@ describe('★ RaisingView rb-120: the Care lock carries the Train generation-tok
   });
 
   it("rb120-CARE-TRAIN-INDEPENDENT BITES: the Care generation-token lock is a SEPARATE map from Train's — a stale settle on either side must not cross-release the other", async () => {
-    // RED REASON (raisingView.ts@16fe214, pre-port): the scenario below never needs Train's own
-    // lock to misbehave — it is already token-safe (20r-a). What it exercises is Care's OWN
-    // generations surviving a Train click in between. `#pending` is still a plain Set with a
-    // membership release, so the STALE Care generation 1 settle still deletes the SAME
-    // monsterId key generation 2 just re-added, and Aria's LIVE Care re-enables while
-    // generation 2 is in flight — `expect(afterPc.care.disabled, '...').toBe(true)` right after
-    // `pc.resolve()` + flush FAILS at 16fe214. (A wrong impl that shares ONE map between Care
-    // and Train instead fails earlier, at the `onTrain).toHaveBeenCalledTimes(1)` check right
-    // after the Train click, because the shared key is already held by Care.)
+    // (A wrong impl that shares ONE map between Care and Train instead fails earlier, at the
+    // `onTrain).toHaveBeenCalledTimes(1)` check right after the Train click, because the shared
+    // key is already held by Care.)
     const pc = raDeferred();
     const pt = raDeferred();
     const pc2 = raDeferred();
@@ -1586,20 +1486,10 @@ describe('★ RaisingView rb-120: the Care lock carries the Train generation-tok
 });
 
 // =============================================================================
-// m24s4 (ADR-0260) — i18n migration batch B: raisingView.ts routes its migrated
+// i18n migration batch B: raisingView.ts routes its migrated
 // sinks through t()/tf() (ADR-0256/0257/0259/0260 resolver) instead of raw
 // English literals.
 //
-// PREDICTED RED REASON AT HEAD: raisingView.ts calls neither `t()` nor `tf()`
-// anywhere today — every literal below is still a bare string literal or
-// template, and the file imports nothing from `./i18n/resolver`. RV-01/RV-02
-// therefore fail on their very first assertion (the spied `i18nT`/`i18nTf` are
-// never called at all, and the roster-word scan finds unbracketed English);
-// RV-03 fails because `scanSource(stripComments(...))` reports >=16 FAILING
-// sinks (raw English segments), not the required `failing: []`.
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from
-// the plan/ADR-0260 only.
 // =============================================================================
 
 const M24S4_RV_PLAIN_KEYS = new Set([
@@ -1640,7 +1530,7 @@ function m24s4RvIsExpectedSentinelSpan(content: string): boolean {
 }
 
 /** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
- *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span
+ *  indexOf loop — no RegExp) and reports every OTHER `«...»` span
  *  verbatim in `unexpectedSpans`, un-elided, so it stays in `stripped` for the
  *  roster-word scan too — see battleView.test.ts's m24s3SplitSentinels header. */
 function m24s4RvSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
@@ -1997,23 +1887,10 @@ describe('m24s4 (ADR-0260): raisingView.ts scan — zero failing sinks', () => {
 });
 
 // ---------------------------------------------------------------------------
-// rb-121 (ADR-0271, residual R-20r-a-FOCUS) — a settle-released Care/Train lock
+// rb-121 (residual R-20r-a-FOCUS) — a settle-released Care/Train lock
 // re-anchors focus that the no-batch path stranded on <body>, by re-calling
 // openOverlayA11y('raisingView', root) when the release finds
 // `this.#visible && document.activeElement === document.body`.
-//
-// SOURCE OF TRUTH: docs/adr/0271-rb121-settle-release-reanchors-stranded-focus.md;
-// memory/projects/gates/rb-121.gates.md X1/X5.
-//
-// RED REASON: raisingView.ts's Care and Train `.finally()` blocks (the rb-120
-// generation-token release) re-enable buttons but never call openOverlayA11y —
-// every rb121-RAISING-{CARE,TRAIN}-{REJECT,RESOLVE,THROW,DETACH} tooth below fails
-// its final `toBe(anchor)` assertion on master (document.activeElement stays
-// document.body forever). rb121-RAISING-STALE's NEGATIVE half (the stale
-// generation's settle) and every KEEP-*/HIDDEN control pass on master already —
-// master never steals focus, because it never MOVES it either. STALE's POSITIVE
-// half (the LIVE generation's own settle) is what reds the whole STALE tooth on
-// master, proving the suite is not vacuous.
 //
 // WRONG-IMPL-KILLED index (one per tooth, traced to the exact failing assertion):
 //   *-REJECT / *-RESOLVE / *-THROW

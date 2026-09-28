@@ -1,10 +1,10 @@
-// ui/tradeProposeModel.ts — pure view model for the trade-PROPOSE overlay (pt-c2, ADR-0134).
+// ui/tradeProposeModel.ts — pure view model for the trade-PROPOSE overlay.
 //
 // No DOM, no SDK, no side-effects. TOTAL — never throws on any input. It is called
 // from the KeyO handler AND from live DOM input/change listeners; a throw here would
 // starve sibling store batch-listeners (store.ts one-way flow).
 //
-// D3 (ADR-0134): this is a PROJECTION + non-degeneracy gate, NOT a validation SSOT. It
+// D3: this is a PROJECTION + non-degeneracy gate, NOT a validation SSOT. It
 // does NOT re-implement server validation (join / self-trade / balance / ownership /
 // active-trade). The server is the reject-not-clamp SSOT. `canSubmit` mirrors only the
 // server's `total_assets >= 1` non-degeneracy gate (validate_proposal, rules.rs:52-61),
@@ -118,33 +118,23 @@ export function parseCurrency(raw: string): bigint {
 }
 
 /**
- * Per-side monster-count cap for a proposed trade.
- *
- * NOT an SSOT — a MIRROR of `server-module/src/trading.rs:37`
- * (`MAX_TRADE_MONSTERS_PER_SIDE: usize = 64`), kept honest by
- * `evals/trade-cap-parity.eval.mjs`, which reads the Rust literal directly and
- * reds if the two drift or if `buildProposeSubmission` stops reading this name.
- * The server stays authoritative and rejects (never clamps); this exists only so
- * an over-cap offer fails visibly in the UI instead of as an opaque reducer
- * reject.
- *
- * The cap is INCLUSIVE: `trading.rs:44` compares `n_monsters > MAX`, so 64 is a
- * legal offer and 65 is the first rejected one.
- */
-export const MAX_TRADE_MONSTERS_PER_SIDE = 64;
-
-/**
  * Build the submission verdict from the rendered targets + the live draft.
  * - `canSubmit` = target non-empty AND present in `targets` AND at least one of
  *   {≥1 selectedMonsterId, offerCurrency > 0n, requestCurrency > 0n}. Mirrors the server
  *   `total_assets >= 1` non-degeneracy gate (D3) — a "request gold, give nothing" offer is
  *   server-valid and allowed; an empty offer is blocked.
+ * - `canSubmit` additionally requires `selectedMonsterIds.length <= maxMonstersPerSide`.
+ *   The cap is game-core's `MAX_TRADE_MONSTERS_PER_SIDE`, injected from the
+ *   `max_trade_monsters_per_side()` wasm export at boot (never a TS literal). It is
+ *   INCLUSIVE (the server rejects `n > MAX`, so exactly MAX is legal) and UX only: the
+ *   server stays authoritative and rejects, never clamps.
  * - `args` = the typed shape when canSubmit, else `null`.
  * TOTAL — never throws.
  */
 export function buildProposeSubmission(
   targets: readonly TradeProposeTarget[],
   draft: TradeProposeDraft,
+  maxMonstersPerSide: number,
 ): TradeProposeSubmission {
   const offerCurrency = parseCurrency(draft.offerCurrency);
   const requestCurrency = parseCurrency(draft.requestCurrency);
@@ -155,7 +145,7 @@ export function buildProposeSubmission(
     draft.selectedMonsterIds.length > 0 || offerCurrency > 0n || requestCurrency > 0n;
   // A VETO, ANDed in — never one more branch of `hasAsset`, which would let a
   // 65-monster offer through as long as it also carried gold.
-  const withinCap = draft.selectedMonsterIds.length <= MAX_TRADE_MONSTERS_PER_SIDE;
+  const withinCap = draft.selectedMonsterIds.length <= maxMonstersPerSide;
   const canSubmit = targetValid && hasAsset && withinCap;
 
   const args: TradeProposeArgs | null = canSubmit

@@ -1,18 +1,9 @@
 // Cosmetic doc-formatting lint only (Rust 1.96 `doc_overindented_list_items` fires
 // on the 5-space EARS list below); suppressing it changes NO test assertion.
 #![allow(clippy::doc_overindented_list_items)]
-//! M8d gating tests — acceptance criteria for the recruit slice (pure game-core surface).
+//! `build_monster` rolls: determinism, individuality and level postconditions.
 //!
-//! These tests are intentionally RED until the implementer adds:
-//!   - `build_monster(seed: u32, species: &Species, level: Level) -> MonsterInstance`
-//!     in `monster/rolls.rs`
-//!   - `RECRUIT_BASE_RATE: u16` const in `taming/rules.rs`
-//!   - `validate_content` rejection of `recruit_bonus > 1000` in `content.rs`
-//!
-//! They compile-error (missing items) / assert-fail (wrong values) in the RED
-//! state and pass ONLY when the behavior is correct — never trivially.
-//!
-//! EARS criteria covered (M8 spec §4 "Recruit", ADR-0046/0047):
+//! EARS criteria covered:
 //!   A1 — `build_monster` determinism: same (seed, species, level) → identical MonsterInstance.
 //!   A2 — Exact-wild rebuild: IVs+nature from build_monster == roll_individuality(seed).
 //!   A3 — Backward-compat equivalence: build_monster(seed, sp, Level::new(5)) == roll_starter(seed, sp).
@@ -200,9 +191,9 @@ proptest! {
 
 // ---------------------------------------------------------------------------
 // CRITERION A4 — Full HP, correct xp, zero EVs, zero growth state, party_slot None
-// The M8d recruit grants: current_hp == derived HP, xp == xp_for_level(level),
+// current_hp == derived HP, xp == xp_for_level(level),
 // evs == zero, all 8 essence pools + both Trust counters + the Quality-Time
-// total == 0 (EG1-7 replaces the retired bond field), party_slot == None.
+// total == 0, party_slot == None.
 // ---------------------------------------------------------------------------
 
 /// Kills: an impl that starts current_hp at 0, gives non-zero EVs, wrong XP,
@@ -237,7 +228,7 @@ fn build_monster_postconditions_across_levels() {
             "level={lv}: EVs must be zero on recruit"
         );
 
-        // Growth state starts empty (EG1-7): no essence, no Trust history, no
+        // Growth state starts empty: no essence, no Trust history, no
         // Quality Time. `bond` no longer exists on MonsterInstance.
         assert_eq!(
             inst.essence, [0u32; 8],
@@ -430,13 +421,11 @@ fn validate_content_teeth_recruit_bonus_over_limit() {
 // and its value must be a valid per-mille probability.
 // ---------------------------------------------------------------------------
 
-/// Kills: an impl that omits RECRUIT_BASE_RATE entirely (compile error in RED),
+/// Kills: an impl that omits RECRUIT_BASE_RATE entirely,
 /// or that sets it to a value > 1000 (which would make every recruit auto-succeed).
 /// EARS A7: RECRUIT_BASE_RATE is defined and within the per-mille range.
 #[test]
 fn recruit_base_rate_is_valid_per_mille() {
-    // This test also compiles-references the const, so a missing const
-    // causes a compile error — the intended RED state.
     assert!(
         RECRUIT_BASE_RATE <= 1000,
         "RECRUIT_BASE_RATE={RECRUIT_BASE_RATE} exceeds per-mille max 1000 — \
@@ -447,5 +436,5 @@ fn recruit_base_rate_is_valid_per_mille() {
     // We do NOT assert > 0 because a zero base rate is a valid design choice
     // (force the player to use bait or reduce HP). The spec does not constrain
     // the lower bound beyond [0, 1000]. If the designer chose 0, it is legal.
-    let _ = RECRUIT_BASE_RATE; // explicit reference to suppress unused warning in RED state
+    let _ = RECRUIT_BASE_RATE; // explicit reference to suppress unused warning
 }

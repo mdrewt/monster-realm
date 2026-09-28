@@ -1,27 +1,21 @@
-//! `inventory_tests` — rb-41 gating test for the REKEY exists-predicate
-//! `inventory::has_items`, authored from the EARS criterion R-rb-25-X9 (the
-//! ADR-0222 known-limit 2 residual, closed by the ADR-0224 migration to a
-//! native host).
+//! `inventory_tests` the REKEY exists-predicate
+//! `inventory::has_items`.
 //!
 //! Declared from `inventory.rs` as a cfg(test) `#[path = "inventory_tests.rs"]
-//! mod inventory_tests;` (the attribute is not spelled here on purpose — see
-//! native_host_tests.rs on the monster-privacy `[SCOPE]` raw-text branch)
-//! so `super` resolves to the `inventory` module (this file uses absolute
-//! `crate::` paths throughout, so nothing here depends on that resolution).
+//! mod inventory_tests;` so `super` resolves to the `inventory` module (this
+//! file uses absolute `crate::` paths throughout, so nothing here depends on
+//! that resolution).
 //!
-//! WHY IT EXISTS. ADR-0222's guest-claim-integrity gate could only READ the
-//! predicate's source, so a HOLLOWED body — one that still performs the table
-//! read but returns a value decoupled from it — passed every check. The test
-//! below runs the shipped predicate against the in-memory host
-//! (`native_host_tests`, ADR-0224) and pins its answer to the rows that
-//! actually exist, which no source scan can do. Rows are seeded and removed
-//! through the fixture handle, never through a database write path.
+//! The test below runs the shipped predicate against the in-memory host
+//! (`native_host_tests`) and pins its answer to the rows that actually exist,
+//! which no source scan can do. Rows are seeded and removed through the
+//! fixture handle, never through a database write path.
 
 use crate::native_host_tests::fixture;
 use crate::schema::Inventory;
 use spacetimedb::Identity;
 
-/// EARS R-rb-25-X9: `inventory::has_items` must answer from the CURRENT rows of
+/// `inventory::has_items` must answer from the CURRENT rows of
 /// `inventory`, for the ASKED owner — false with no row, false while only a
 /// stranger owns one, true once the owner owns one, false again once the
 /// owner's row is gone (while the stranger's row survives). The paired
@@ -29,7 +23,7 @@ use spacetimedb::Identity;
 /// the six-way `||` chain that decides whether a guest holds game data.
 ///
 /// kills:
-///   - the ADR-0222 known-limit hollow, `{ let _ = <the inventory read>; false }`:
+///   - `{ let _ = <the inventory read>; false }`:
 ///     the owner-row assertion goes red while every source scan stays green.
 ///   - the inverted hollow, `{ let _ = <the inventory read>; true }`: the
 ///     empty-table assertion goes red.
@@ -175,5 +169,60 @@ fn nh_every_grant_path_keeps_one_stack_per_owner_and_item() {
             want
         },
         "grant_item: merged per (owner, item), zero-qty writes nothing"
+    );
+}
+
+/// BUG-inventory-world-readable: `inventory` is a PRIVATE table and clients read it ONLY
+/// through the SHIPPED `my_inventory` view, run here through the runtime's own view entry
+/// point. Each sender sees exactly their own stacks (all of them — it is a multi-row view);
+/// a stranger sees none of the owner's, and a stranger with stacks sees only theirs.
+///
+/// kills: a whole-table view, a view keyed on anything but `ctx.sender()`, a view that
+/// returns only the first row (`find` instead of `filter`), an empty view.
+#[test]
+fn nh_my_inventory_view_returns_only_the_senders_rows() {
+    use crate::native_host_tests::VIEW_MY_INVENTORY;
+    let fx = fixture();
+    let t = fx.table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity);
+    let owner = Identity::from_byte_array([21u8; 32]);
+    let stranger = Identity::from_byte_array([22u8; 32]);
+    let stack = |inv_id: u64, owner_identity: Identity, item_id: u32, count: u32| Inventory {
+        inv_id,
+        owner_identity,
+        item_id,
+        count,
+    };
+    let seen = |who: Identity| {
+        let mut rows: Vec<(u64, Identity, u32, u32)> = fx
+            .call_view::<Inventory>(VIEW_MY_INVENTORY, who)
+            .into_iter()
+            .map(|r| (r.inv_id, r.owner_identity, r.item_id, r.count))
+            .collect();
+        rows.sort_unstable();
+        rows
+    };
+
+    t.seed(&stack(1, owner, 4, 3));
+    t.seed(&stack(2, owner, 5, 9));
+    assert_eq!(
+        seen(owner),
+        vec![(1, owner, 4, 3), (2, owner, 5, 9)],
+        "the owner sees every one of their own stacks"
+    );
+    assert!(
+        seen(stranger).is_empty(),
+        "a stranger with no stacks sees none of the owner's counts"
+    );
+
+    t.seed(&stack(3, stranger, 4, 1));
+    assert_eq!(
+        seen(stranger),
+        vec![(3, stranger, 4, 1)],
+        "a stranger with a stack sees only their own, never the owner's"
+    );
+    assert_eq!(
+        seen(owner),
+        vec![(1, owner, 4, 3), (2, owner, 5, 9)],
+        "the owner's view is unchanged by a stranger's row"
     );
 }

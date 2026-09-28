@@ -7,20 +7,11 @@ import {
   test,
 } from '@playwright/test';
 
-// m16b PvP challenge overlay e2e — client-side UI wiring (ADR-0110).
+// PvP challenge overlay e2e — client-side UI wiring.
 //
 // SCOPE: validates that the PvP challenge overlay DOM is wired, KeyP opens/closes it,
 // the empty-list state renders correctly, Escape closes it, and mutual exclusivity with
 // other overlays is enforced.
-//
-// ROUND-TRIP LIMITATION:
-//   Full challenge/accept/decline flows require two distinct connected players and the
-//   ability to call `challenge_pvp` from the test context.  The SpacetimeDB SDK does
-//   not expose an out-of-band reducer call from the test context (same constraint as
-//   recruit.spec.ts, trade.spec.ts).  Full flow coverage requires a `window.__mrPvp`
-//   test hook — a production code change outside this slice's declared touches.
-//   The evals/dom-shell-coverage-exclusion.eval.mjs registration (pvpView.ts) and
-//   static-analysis in the pvpModel.test.ts unit suite cover the remaining criteria.
 //
 // WHAT THESE TESTS KILL:
 //   "DOM missing"       — regression in index.html that removes a child div;

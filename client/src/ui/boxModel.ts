@@ -1,4 +1,4 @@
-// ui/boxModel.ts — pure view-model for the box/party screen (M6c, ADR-0014).
+// ui/boxModel.ts — pure view-model for the box/party screen.
 //
 // No DOM, no SDK, no side effects. Takes store data, returns view-models.
 // The thin DOM shell (boxView.ts) renders these; the loop refreshes on batch.
@@ -16,7 +16,7 @@ export interface MonsterCardViewModel {
   readonly statHp: number;
   readonly hpPercent: number;
   readonly partySlot: number;
-  /** EG4-8: true IFF this monster has 2+ CURRENTLY-ELIGIBLE evolution paths — the
+  /** True IFF this monster has 2+ CURRENTLY-ELIGIBLE evolution paths — the
    *  ambiguous case the server will never auto-resolve, so it needs the player. */
   readonly evolutionChoicePending: boolean;
 }

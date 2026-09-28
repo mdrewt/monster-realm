@@ -1,11 +1,11 @@
 //! Raising value types — the focus-training result and its reject-not-clamp
-//! error enum. Pure data: no I/O, no clock, no RNG (ADR-0003 / ADR-0058).
+//! error enum. Pure data: no I/O, no clock, no RNG.
 
 use crate::monster::types::{EVs, StatBlock};
 
 /// The two fields focus-training changes on a monster: the topped-off EVs and
-/// the re-derived stat block. The M9b reducer writes both back
-/// (`MonsterInstance { evs, derived_stats, ..old }`) — see ADR-0058 §1.
+/// the re-derived stat block. (`MonsterInstance { evs, derived_stats, ..old
+/// }`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub struct FocusTrainResult {
@@ -13,7 +13,7 @@ pub struct FocusTrainResult {
     pub derived_stats: StatBlock,
 }
 
-/// Why a focus-training application was rejected (reject-not-clamp, ADR-0058 §2).
+/// Why a focus-training application was rejected (reject-not-clamp).
 ///
 /// Closed, game-core-internal: no `serde` / `SpacetimeType` — it is never stored
 /// in a table nor sent on the wire (the M9b reducer consumes the `Result` and
@@ -26,6 +26,6 @@ pub enum FocusTrainError {
     /// The total-EV budget (510) is exhausted while the target stat is below 252.
     BudgetExhausted,
     /// The food grants nothing (`amount == 0`) — a content/contract error,
-    /// checked before the cap guards (ADR-0058 §2: input-validity precedence).
+    /// checked before the cap guards.
     NoEffect,
 }

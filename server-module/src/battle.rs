@@ -1,13 +1,9 @@
-//! `battle` — server-module domain submodule (M8.9, ADR-0056).
+//! `battle` — server-module domain submodule.
 //!
 //! The PvE/wild battle cluster: start/wild-start, the per-turn action reducers
 //! (submit_attack, swap_active, flee), heal, and the encounter + write-back
 //! helpers. Reducers are thin: validate the trust boundary, delegate the rule to
 //! `game-core` (the SSOT), write tables; reject with `Err`, never clamp.
-//!
-//! This file name is part of the canonical `touches:` vocabulary fixed by
-//! ADR-0056 — keep it stable; it could only be wired once the `battle` table
-//! relocated to `schema.rs` (the M8.9a table-name collision constraint).
 
 use crate::economy::grant_currency;
 use crate::evolution::check_and_evolve;
@@ -17,14 +13,15 @@ use crate::guards::{
 };
 use crate::inventory::consume_one;
 use crate::marshal::{
-    battle_monster_from_row, build_ability_store, loser_base_stat_total, now_ms, pub_from_monster,
+    battle_monster_from_row, build_ability_store, loser_base_stat_total, now_ms,
     wild_battle_monster, write_back_hp,
 };
+use crate::monster_mgmt::update_monster_synced;
 use crate::movement::RateLimiter;
 use crate::raising::{accrue_quality_time, grant_essence};
 use crate::schema::{
-    battle, battle_wild, inventory, monster, monster_pub, skill_row, species_row, trade_offer,
-    Battle, BattleWild, Monster, SkillRow,
+    battle, battle_wild, inventory, monster, skill_row, species_row, trade_offer, Battle,
+    BattleWild, Monster, SkillRow,
 };
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
@@ -35,7 +32,7 @@ use game_core::{
 };
 use spacetimedb::{Identity, ReducerContext, Table};
 
-// `start_wild_battle` (dev-only, ADR-0054) is the sole battle-module user of these
+// `start_wild_battle` (dev-only) is the sole battle-module user of these
 // — gate the imports so the default (non-dev) build stays warning-clean.
 #[cfg(feature = "dev_reducers")]
 use crate::marshal::table_from_encounter_row;
@@ -46,16 +43,16 @@ use game_core::resolve_encounter;
 
 /// Start a PvE battle: build BattleMonsters from the player's party and the
 /// opponent's party (owned by opponent_identity), create a BattleState, insert
-/// the Battle row. Each side's lead is the first slot with HP > 0 (ADR-0156 D1);
+/// the Battle row. Each side's lead is the first slot with HP > 0;
 /// a side with no conscious member at all has no legal lead and is rejected.
 ///
-/// Opponent provenance (ADR-0048): only a self/sandbox opponent
+/// Opponent provenance: only a self/sandbox opponent
 /// (`opponent_identity == ctx.sender()`) or the server/NPC sentinel
 /// (`WILD_IDENTITY`) is accepted. A client may NOT name another player as the
 /// opponent — that would conscript their monsters into a `battle` row delivered
-/// to both named participants via the `my_battle` view (ADR-0198).
+/// to both named participants via the `my_battle` view.
 ///
-/// Deletion-gated (ADR-0236, spec para 4.7): a caller whose account is mid-grace
+/// Deletion-gated: a caller whose account is mid-grace
 /// or terminal is refused before any other state read and every write.
 #[spacetimedb::reducer]
 pub fn start_battle(
@@ -81,15 +78,15 @@ pub fn start_battle(
         return Err(e);
     }
 
-    // Opponent-provenance authorization (ADR-0048): accept ONLY self/sandbox
+    // Opponent-provenance authorization: accept ONLY self/sandbox
     // (opponent_identity == ctx.sender()) or the server/NPC sentinel
     // (WILD_IDENTITY). Naming another player would conscript their monsters into
     // a `battle` row the my_battle view then delivers to that player too
-    // (info-leak / grief / XP farm; ADR-0198). Reject before the
+    // (info-leak / grief / XP farm). Reject before the
     // dedup scan and any side-B DB read so a foreign roster never reaches the
     // row. reject-not-clamp.
     if opponent_identity != me && opponent_identity != WILD_IDENTITY {
-        let e = "opponent must be self or server-authored (PvP unsupported; ADR-0048)".to_string();
+        let e = "opponent must be self or server-authored (PvP unsupported)".to_string();
         log_reject("start_battle", me, &e);
         return Err(e);
     }
@@ -115,15 +112,13 @@ pub fn start_battle(
         }
     }
 
-    // Deletion gate (ADR-0236 D2, spec para 4.7): a mid-grace or terminal account
+    // Deletion gate: a mid-grace or terminal account
     // may not OPEN a new battle commitment. The FIRST stateful check on purpose —
     // the gate is a DB read, so the pure caps/provenance/dedup rejects above keep
-    // their place (M8.5a for the caps, ADR-0048 for provenance) — and it runs
-    // before every other-party read and every write. Fully qualified + `?;`: both are pinned (unshadowable path, no
-    // discarded verdict).
+    // their place — and it runs before every other-party read and every write.
     crate::guards::require_not_deleting(ctx, "start_battle")?;
 
-    // Check caller is not already in an ongoing battle — EITHER role (ADR-0122):
+    // Check caller is not already in an ongoing battle — EITHER role:
     // side-B of an ongoing PvP battle must not open a second battle.
     if is_in_ongoing_battle(ctx, me) {
         let e = "already in an ongoing battle".to_string();
@@ -152,7 +147,7 @@ pub fn start_battle(
             log_reject("start_battle", me, &e);
             return Err(e);
         }
-        // Trade escrow guard (TR-11, ADR-0106): party monster cannot be in an active trade.
+        // Trade escrow guard: party monster cannot be in an active trade.
         reject_if_monster_in_trade(
             ctx.db
                 .trade_offer()
@@ -200,7 +195,7 @@ pub fn start_battle(
             log_reject("start_battle", me, &e);
             return Err(e);
         }
-        // Trade escrow guard (TR-11, ADR-0106): opponent monster cannot be in an active trade.
+        // Trade escrow guard: opponent monster cannot be in an active trade.
         reject_if_monster_in_trade(
             ctx.db
                 .trade_offer()
@@ -231,7 +226,7 @@ pub fn start_battle(
         team_b.push(battle_monster_from_row(&m, &sp, &skills)?);
     }
 
-    // Seat each side's lead: the first slot with HP > 0 (ADR-0156 D1). `None`
+    // Seat each side's lead: the first slot with HP > 0. `None`
     // means the side has no conscious monster at all — that is the precondition
     // check, folded into the constructor. Team order is preserved, so
     // `team[i]` stays coupled to `*_monster_ids[i]` for HP write-back and XP.
@@ -254,8 +249,8 @@ pub fn start_battle(
         weather: None,
     };
 
-    // Apply entry abilities for both initial actives (ADR-0100). Abilities come
-    // from the process-wide content cache (ADR-0170 D2).
+    // Apply entry abilities for both initial actives. Abilities come
+    // from the process-wide content cache.
     let ability_defs = crate::content_cache::cached_abilities()?;
     let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, ability_defs);
     let mut status = BattleStatusStore {
@@ -288,15 +283,15 @@ pub fn start_battle(
     Ok(())
 }
 
-// --- Wild encounter (M8c, ADR-0045) -------------------------------------------
+// --- Wild encounter -------------------------------------------
 
 /// Emit window for the bad-lead-level warn: at most one `log::warn!` per
-/// 5000 ms of the caller's injected clock (ADR-0003 — never a wall clock).
+/// 5000 ms of the caller's injected clock.
 const LEAD_LEVEL_ERR_WINDOW_MS: i64 = 5000;
 
 /// Gates `lead_party_bad_level` logging. `lead_party` is reached per character
 /// per tick from the scheduled `movement_tick`, so an unlimited warn on a single
-/// corrupt row is a log flood on the hottest scheduled reducer (ADR-0170 D4).
+/// corrupt row is a log flood on the hottest scheduled reducer.
 /// Making the failure visible must not make it deafening.
 static LEAD_LEVEL_ERR_LIMITER: RateLimiter = RateLimiter::new();
 
@@ -305,14 +300,12 @@ static LEAD_LEVEL_ERR_LIMITER: RateLimiter = RateLimiter::new();
 /// a `Some` is NEVER empty.
 ///
 /// THE BASE HELPER, and deliberately level-free: it parses nothing and therefore
-/// cannot fail for a non-empty party (ADR-0178 D3). The EG2-8/EG2-12 growth tail
-/// on `enqueue_move` consumes THIS, so a corrupt LEAD level can no longer
+/// cannot fail for a non-empty party. so a corrupt LEAD level can no longer
 /// silently disable Quality-Time and auto-evolution for the whole party.
 ///
-/// The dependency direction is load-bearing and scan-pinned: `lead_party` calls
-/// this, never the reverse. Inverting it (or re-adding a level check here, or
-/// hoisting one into the caller) restores the exact defect this closes while
-/// leaving every needle satisfied — that shape was PoC'd during review.
+/// `lead_party` calls this, never the reverse. Inverting it (or re-adding a
+/// level check here, or hoisting one into the caller) restores the exact defect
+/// this closes while leaving every needle satisfied.
 pub(crate) fn lead_party_ids(ctx: &ReducerContext, owner: Identity) -> Option<Vec<u64>> {
     let mut party: Vec<Monster> = ctx
         .db
@@ -367,7 +360,7 @@ pub(crate) fn lead_party(ctx: &ReducerContext, owner: Identity) -> Option<(Vec<u
 
 /// `begin_encounter`'s ROUTINE rejection: the party has zero conscious monsters
 /// (a fainted party walking grass — normal gameplay, not a fault). A shared
-/// `pub(crate)` const (ADR-0170 D4 hardening) so `movement_tick`'s limiter
+/// `pub(crate)` const so `movement_tick`'s limiter
 /// filter compares against this reducer's actual Err text and can never drift
 /// from it — a hostile client must not be able to saturate the
 /// begin-encounter error limiter with this reason and mask genuine faults.
@@ -378,7 +371,7 @@ pub(crate) const NO_CONSCIOUS_MONSTER_REASON: &str = "party has no conscious mon
 /// DIRECTLY (NOT via `start_battle`, so `start_battle`'s owned-opponent guards stay
 /// intact) and inserts the private `battle_wild` row (1:1). Returns the new
 /// `battle_id`. Carries ALL of `start_battle`'s guards (R-D), including lead
-/// selection: side A's active is the first party slot with HP > 0 (ADR-0156 D1),
+/// selection: side A's active is the first party slot with HP > 0,
 /// and a party with no conscious member is rejected. EVERY rejection is an `Err`,
 /// never a panic.
 pub(crate) fn begin_encounter(
@@ -404,13 +397,13 @@ pub(crate) fn begin_encounter(
             }
         }
     }
-    // rb-76 (ADR-0246 D3): a scheduler-opened wild encounter is a para-4.7 new commitment, so
+    // A scheduler-opened wild encounter is a para-4.7 new commitment, so
     // refuse it for a mid-grace or terminal walker. Keyed on the SERVER-derived
     // `player_identity` (the walker), never `ctx.sender()`, which is the module identity on the
-    // `movement_tick` path. Placed after the pure caps, before the first DB read (ADR-0236 D2).
+    // `movement_tick` path. Placed after the pure caps, before the first DB read.
     crate::guards::require_subject_not_deleting(ctx, player_identity)?;
-    // Reject if the player is already in an ongoing battle — EITHER role
-    // (ADR-0122): a side-B PvP participant must not spawn a wild encounter.
+    // Reject if the player is already in an ongoing battle — EITHER role:
+    // a side-B PvP participant must not spawn a wild encounter.
     if is_in_ongoing_battle(ctx, player_identity) {
         return Err("already in an ongoing battle".to_string());
     }
@@ -428,7 +421,7 @@ pub(crate) fn begin_encounter(
         if m.owner_identity != player_identity {
             return Err(format!("monster {mid} not owned by player"));
         }
-        // Trade escrow guard (ME-1, ADR-0106): party monster cannot be in an active trade.
+        // Trade escrow guard (ME-1): party monster cannot be in an active trade.
         reject_if_monster_in_trade(
             ctx.db
                 .trade_offer()
@@ -452,7 +445,7 @@ pub(crate) fn begin_encounter(
         ability_ids_a.push(sp.ability);
         team_a.push(battle_monster_from_row(&m, &sp, &skills)?);
     }
-    // Seat side A's lead: the first slot with HP > 0 (ADR-0156 D1). `None` is
+    // Seat side A's lead: the first slot with HP > 0. `None` is
     // the "party has a conscious monster" precondition. Team order is preserved,
     // keeping `team[i]` coupled to `party_monster_ids[i]`.
     let side_a =
@@ -482,7 +475,7 @@ pub(crate) fn begin_encounter(
     // `opponent_monster_ids.len() == 0` (the wild is UNOWNED — no monster row).
     // Do NOT zip these two: side_b has a BattleMonster but no backing id.
     // A freshly-rolled wild is always conscious, so the `None` arm is unreachable
-    // in practice; it exists because `with_lead` is total (ADR-0156 D1).
+    // in practice; it exists because `with_lead` is total.
     let side_b = BattleSide::with_lead(vec![wild])
         .ok_or_else(|| "wild opponent has no conscious monster".to_string())?;
 
@@ -494,8 +487,8 @@ pub(crate) fn begin_encounter(
         weather: None,
     };
 
-    // Apply entry abilities for both initial actives (ADR-0100). Abilities come
-    // from the process-wide content cache (ADR-0170 D2).
+    // Apply entry abilities for both initial actives. Abilities come
+    // from the process-wide content cache.
     let ability_defs = crate::content_cache::cached_abilities()?;
     let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, ability_defs);
     let mut status = BattleStatusStore {
@@ -536,7 +529,7 @@ pub(crate) fn begin_encounter(
     Ok(battle.battle_id)
 }
 
-/// DEV/TEST entrypoint (gate or remove at M9+): a faithful double of the grass
+/// DEV/TEST entrypoint: a faithful double of the grass
 /// path, since `movement_tick` is scheduler-only. Validates the sender joined +
 /// has a party + is not already in a battle, draws the encounter seed SERVER-side
 /// (`ctx.random()`, NO client-supplied seed → no IV-grind cheat surface), rolls
@@ -553,8 +546,8 @@ pub fn start_wild_battle(ctx: &ReducerContext, zone_id: u32) -> Result<(), Strin
         log_reject("start_wild_battle", me, &e);
         return Err(e);
     };
-    // Deletion gate (ADR-0236 D2/D3): the same caller-only refusal as `start_battle`,
-    // right after the joined check (the challenge_pvp guard-1a precedent).
+    // Deletion gate: the same caller-only refusal as `start_battle`,
+    // right after the joined check.
     crate::guards::require_not_deleting(ctx, "start_wild_battle")?;
     let Some(character) = ctx.db.character().entity_id().find(player.entity_id) else {
         let e = "no character".to_string();
@@ -577,7 +570,7 @@ pub fn start_wild_battle(ctx: &ReducerContext, zone_id: u32) -> Result<(), Strin
         log_reject("start_wild_battle", me, &e);
         return Err(e);
     };
-    // Not already in a battle — EITHER role (ADR-0122 D3; begin_encounter
+    // Not already in a battle — EITHER role (begin_encounter
     // re-checks, this gives a clear error).
     if is_in_ongoing_battle(ctx, me) {
         let e = "already in an ongoing battle".to_string();
@@ -587,7 +580,7 @@ pub fn start_wild_battle(ctx: &ReducerContext, zone_id: u32) -> Result<(), Strin
     // The zone's PRIVATE encounter table, keyed by the SERVER-authoritative
     // character.zone_id (not the raw client arg) — defense-in-depth so the lookup
     // never trusts the client even if the reject check above is later reordered
-    // (MED-1, ADR-0054 §3). (partial-sync: missing row → Err no-op.)
+    // (MED-1). (partial-sync: missing row → Err no-op.)
     let Some(row) = ctx.db.encounter().zone_id().find(character.zone_id) else {
         let e = format!("no encounter table for zone {}", character.zone_id);
         log_reject("start_wild_battle", me, &e);
@@ -628,7 +621,7 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         log_reject("submit_attack", me, &e);
         return Err(e);
     }
-    // PvP-reject guard (ADR-0119 D5, RL-9): the PvE path would let the server
+    // PvP-reject guard (RL-9): the PvE path would let the server
     // AI play the human opponent's side — every PvP turn goes through
     // submit_pvp_action and the pvp.rs funnel.
     if is_ranked_pvp(&battle) {
@@ -636,12 +629,12 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         log_reject("submit_attack", me, &e);
         return Err(e);
     }
-    // Fainted-active reject (ADR-0156 D2). Defence for LEGACY rows persisted with
+    // Fainted-active reject. Defence for LEGACY rows persisted with
     // a 0 HP active: lead selection is start-time-only and does not repair them,
     // and `calc_damage` never reads the attacker's HP, so a corpse would deal
     // FULL damage. Sited before the moveset check so a corpse does not produce
     // the misleading "skill N not in active monster's moveset". Reject-not-clamp:
-    // no silent auto-swap — that is the round-2 surprise this slice removes.
+    // no silent auto-swap.
     if battle.state.side_a.active_monster().is_fainted() {
         let e = "your active monster has fainted — swap to another monster or flee".to_string();
         log_reject("submit_attack", me, &e);
@@ -656,12 +649,11 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         return Err(e);
     }
 
-    // Skills come from the process-wide content cache (cached_skills(), ADR-0089 amended
-    // M14.5e): parsed once per process, &'static on every later call. sets_weather and
-    // applies_status (M14d, ADR-0095) are populated by game_core::load_skills, which is
-    // the LazyLock initializer and runs only once.
+    // Skills come from the process-wide content cache: parsed once per process, &'static
+    // on every later call. sets_weather and applies_status are populated by
+    // game_core::load_skills, which is the LazyLock initializer and runs only once.
     let skill_defs = crate::content_cache::cached_skills()?;
-    // Type chart from the version-keyed cache (ADR-0170 D1): rebuilt only when
+    // Type chart from the version-keyed cache: rebuilt only when
     // the config row's content_version changes, not on every attack.
     let type_chart = crate::content_cache::cached_type_chart(ctx)?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
@@ -682,9 +674,9 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         side_b: battle.state.side_b.team.iter().map(|m| m.status).collect(),
     };
 
-    // Build AbilityStore from species content for this battle's teams (ADR-0100).
-    // Abilities come from the process-wide content cache (ADR-0170 D2, which
-    // completed the ADR-0089 M14.5e follow-up): parsed once per process.
+    // Build AbilityStore from species content for this battle's teams.
+    // Abilities come from the process-wide content cache:
+    // parsed once per process.
     let ability_defs = crate::content_cache::cached_abilities()?;
     let a_ability_ids: Vec<Option<u32>> = battle
         .state
@@ -755,17 +747,15 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
 
     // Write back HP + XP if battle ended.
     if battle.state.outcome != BattleOutcome::Ongoing {
-        // ADR-0185 D1: log-and-commit, never propagate. A `?` here would abort the
+        // log-and-commit, never propagate. A `?` here would abort the
         // whole SpacetimeDB transaction, so the `update(battle)` below would never
-        // run and the row would stay `Ongoing` — and post-ADR-0168 D1 an `Ongoing`
+        // run and the row would stay `Ongoing` — and an `Ongoing`
         // row freezes the player's movement AND blocks begin_encounter/start_battle,
         // turning a rare data-invariant fault into a total softlock that every
-        // retry reproduces identically. Log-and-continue is the ADR-0077 posture
-        // already used by the PvP funnel and the wild-disconnect GC in this file.
-        // Emission goes through `observability::mr_log` (ADR-0185 D6), not a bare
-        // `log::` macro, because the OBS-2 ratchet pins this file's grandfathered
-        // bare-log count. Ordering is unchanged (RT-M16-08): the write-back still
-        // runs while the DB row is `Ongoing`, so its GC sweep cannot delete it.
+        // retry reproduces identically.
+        // Emission goes through `observability::mr_log`, not a bare
+        // `log::` macro. Ordering is unchanged: the write-back still runs while the
+        // DB row is `Ongoing`, so its GC sweep cannot delete it.
         if let Err(e) = write_back_battle_results(ctx, &battle) {
             let escaped = crate::guards::json_escape(&e);
             crate::observability::mr_log(
@@ -795,7 +785,7 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
         log_reject("swap_active", me, &e);
         return Err(e);
     }
-    // PvP-reject guard (ADR-0119 D5, RL-9): swaps in PvP go through the
+    // PvP-reject guard (RL-9): swaps in PvP go through the
     // both-submit secret-pick protocol (submit_pvp_action), never this path.
     if is_ranked_pvp(&battle) {
         let e = "not available in PvP battles".to_string();
@@ -820,27 +810,27 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
     }
 
     // Swap then enemy attacks the new active. Post-turn phases (DoT, weather chip,
-    // status/weather tick) now run on every swap turn (ADR-0098 D1, closes R1).
-    // Skills from process-wide content cache (cached_skills(), ADR-0089/0095):
+    // status/weather tick) now run on every swap turn.
+    // Skills from process-wide content cache:
     // sets_weather/applies_status populated by game_core::load_skills, the LazyLock
     // initializer (runs only once).
     let skill_defs = crate::content_cache::cached_skills()?;
-    // Type chart from the version-keyed cache (ADR-0170 D1): rebuilt only when
+    // Type chart from the version-keyed cache: rebuilt only when
     // the config row's content_version changes, not on every swap.
     let type_chart = crate::content_cache::cached_type_chart(ctx)?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
     let sv = StatusVariance::from_ctx_random(ctx.random());
 
     // Build the per-slot status store from BattleMonster.status fields (same
-    // pattern as submit_attack; ADR-0098 D4).
+    // pattern as submit_attack).
     let mut status = BattleStatusStore {
         side_a: battle.state.side_a.team.iter().map(|m| m.status).collect(),
         side_b: battle.state.side_b.team.iter().map(|m| m.status).collect(),
     };
 
-    // Build AbilityStore from species content for this battle's teams (ADR-0100).
-    // Abilities come from the process-wide content cache (ADR-0170 D2, which
-    // completed the ADR-0089 M14.5e follow-up): parsed once per process.
+    // Build AbilityStore from species content for this battle's teams.
+    // Abilities come from the process-wide content cache:
+    // parsed once per process.
     let ability_defs = crate::content_cache::cached_abilities()?;
     let a_ability_ids: Vec<Option<u32>> = battle
         .state
@@ -906,7 +896,7 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
     }
 
     if battle.state.outcome != BattleOutcome::Ongoing {
-        // ADR-0185 D1 log-and-commit — see the full rationale at the matching
+        // log-and-commit — see the full rationale at the matching
         // block in `submit_attack`. Only the `evt` name differs.
         if let Err(e) = write_back_battle_results(ctx, &battle) {
             let escaped = crate::guards::json_escape(&e);
@@ -937,7 +927,7 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
         log_reject("flee", me, &e);
         return Err(e);
     }
-    // PvP-reject guard (ADR-0119 D5, RL-8): `Fled` is non-decisive — fleeing a
+    // PvP-reject guard (RL-8): `Fled` is non-decisive — fleeing a
     // ranked battle would dodge the rating loss. PvP exit paths are forfeit
     // only (deadline/disconnect); the client's canFlee=false is not authoritative.
     if is_ranked_pvp(&battle) {
@@ -948,7 +938,7 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
     battle.state.outcome = BattleOutcome::Fled;
 
     // Write back HP via the shared path (no XP on flee — outcome != SideAWins).
-    // ADR-0185 D1 log-and-commit — see the full rationale at the matching block
+    // log-and-commit — see the full rationale at the matching block
     // in `submit_attack`. Only the `evt` name differs.
     if let Err(e) = write_back_battle_results(ctx, &battle) {
         let escaped = crate::guards::json_escape(&e);
@@ -964,13 +954,13 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
 }
 
 /// Use a battle item (e.g. Antidote) on the player's active monster during an
-/// ongoing battle (m14e, ADR-0096).
+/// ongoing battle.
 ///
 /// Guard order (reject-not-clamp; decision always before irreversible spend):
 /// 1. require_owner — caller must own the battle.
 /// 2. outcome == Ongoing — items cannot be used in terminal battles.
 /// 3. Load `ItemDef` from content (`cure_status` also lives on `item_row` for
-///    client classification per M14.5d-1a, ADR-0105, but the reducer reads the
+///    client classification, but the reducer reads the
 ///    content SSOT — the table column is client-facing only).
 /// 4. Item must have `cure_status` — non-cure items rejected before consume.
 /// 5. Active monster must have a matching status — item not wasted on healthy
@@ -998,7 +988,7 @@ pub fn use_battle_item(ctx: &ReducerContext, battle_id: u64, item_id: u32) -> Re
         return Err(e);
     }
 
-    // Guard 2.5 — PvP-reject (ADR-0119 D5, RL-9): item use is state mutation
+    // Guard 2.5 — PvP-reject (RL-9): item use is state mutation
     // outside the both-submit secret-pick protocol. PvP items are a deferred
     // feature: reject now, lift deliberately later.
     if is_ranked_pvp(&battle) {
@@ -1035,7 +1025,7 @@ pub fn use_battle_item(ctx: &ReducerContext, battle_id: u64, item_id: u32) -> Re
         return Err(e);
     }
 
-    // Guard 5.5: trade escrow guard (TR-12, ADR-0106): item cannot be from an escrowed stack.
+    // Guard 5.5: trade escrow guard: item cannot be from an escrowed stack.
     let escrowed = escrowed_item_qty(
         ctx.db
             .trade_offer()
@@ -1093,10 +1083,10 @@ pub(crate) fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) -> Resu
             format!("write_back_party_hp: party_monster_ids index {i} out of range")
         })?;
         if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
-            // Abort-on-owner-change contract (M7b-2 spec gap closure, ADR-0106 M15a):
+            // Abort-on-owner-change contract:
             // If escrow guards were bypassed and ownership changed mid-battle, abort the
             // entire write-back rather than writing HP into another player's monster.
-            // In practice the TR-11/ME-1 escrow guards make this unreachable; the check
+            // In practice make this unreachable; the check
             // is defensive depth-of-defence (fail-loud on invariant violation).
             if m.owner_identity != battle.player_identity {
                 return Err(format!(
@@ -1104,28 +1094,21 @@ pub(crate) fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) -> Resu
                 ));
             }
             write_back_hp(&mut m, bm);
-            // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing
-            // monster_pub row — never fabricate a tier.
-            let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(mid) else {
-                return Err(format!("monster_pub row missing for monster {mid}"));
-            };
-            let pub_row = pub_from_monster(&m, existing_pub.tier);
-            ctx.db.monster().monster_id().update(m);
-            ctx.db.monster_pub().monster_id().update(pub_row);
+            update_monster_synced(ctx, m)?;
         }
     }
     Ok(())
 }
 
-// EG2-7: the essence reward (`max(1, loser_bst / 30)` — a divisor 3x steeper
+// The essence reward (`max(1, loser_bst / 30)` — a divisor 3x steeper
 // than currency's `/ 10`, so wins do not clear every authored threshold at
-// once) is game-core SSOT since 20r-b (ADR-0175 amendment):
+// once) is game-core SSOT:
 // `game_core::currency::{ESSENCE_BST_DIVISOR, essence_battle_reward}`. Only
 // the helper is re-exported — the divisor has no server consumer, and an
 // unused re-export would fail `-D warnings`.
 pub(crate) use game_core::currency::essence_battle_reward;
 
-/// EG2-7 / ADR-0175 D4: the UTC-day index of a server timestamp (day =
+/// The UTC-day index of a server timestamp (day =
 /// ms / 86_400_000), SATURATING to `u32::MAX` when the index has no u32
 /// representation. A negative index (clock far behind epoch) also saturates to
 /// the MAXIMUM, so `day > stored` stays false and a rewound clock produces a
@@ -1134,9 +1117,9 @@ pub(crate) fn day_epoch_utc(ms: i64) -> u32 {
     u32::try_from(ms / 86_400_000).unwrap_or(u32::MAX)
 }
 
-/// EG2-7: is this battle row a WILD battle? The ONE predicate that exempts both
+/// Is this battle row a WILD battle? The ONE predicate that exempts both
 /// practice (player == opponent) and PvP (a genuine third identity) from every
-/// EG2 battle credit. Deliberately outcome- and caller-independent — the faint
+/// battle credit. Deliberately outcome- and caller-independent — the faint
 /// penalty must apply on terminal outcomes too (unlike `is_ongoing_wild_battle`).
 pub(crate) fn is_wild_battle(b: &Battle) -> bool {
     b.opponent_identity == WILD_IDENTITY
@@ -1150,21 +1133,20 @@ pub(crate) fn write_back_battle_results(
 ) -> Result<(), String> {
     // Positional coupling invariant: side_a.team[i] pairs with
     // party_monster_ids[i]. Assert it up front (Err, never panic) so the XP loop
-    // below can index by position safely — the §3 criterion requires this
-    // assertion in write_back_battle_results specifically (M8.5a). The same
-    // assertion also lives in write_back_party_hp, which guards the recruit-success
-    // path that calls that helper WITHOUT going through this function.
+    // below can index by position safely. The same assertion also lives in
+    // write_back_party_hp, which guards the recruit-success path that calls that
+    // helper WITHOUT going through this function.
     check_team_coupling(
         battle.state.side_a.team.len(),
         battle.party_monster_ids.len(),
     )?;
 
-    // ADR-0185 D7: both GC steps run BEFORE the fallible `write_back_party_hp`.
-    // Since ADR-0185 D1 the PvE callers log-and-commit instead of aborting, so a
+    // Both GC steps run BEFORE the fallible `write_back_party_hp`.
+    // PvE callers log-and-commit instead of aborting, so a
     // persistent invariant violation would otherwise leak one orphaned
     // `battle_wild` row and one permanently-retained terminal `battle` row per
     // battle, unbounded, still delivered to its participants via the
-    // `my_battle` view (ADR-0198). Both are pure GC of OTHER rows: neither reads anything
+    // `my_battle` view. Both are pure GC of OTHER rows: neither reads anything
     // `write_back_party_hp` writes, and `write_back_party_hp` does not read
     // `battle_wild`, so the hoist is behaviour-preserving on the success path.
     // `check_team_coupling` stays first — it is the fail-loud precondition that
@@ -1176,14 +1158,14 @@ pub(crate) fn write_back_battle_results(
     // loss/flee/win without a recruit attempt).
     ctx.db.battle_wild().battle_id().delete(battle.battle_id);
 
-    // GC prior terminal battles for this player (12.5e-1, ADR-0077).
+    // GC prior terminal battles for this player.
     // Ordering invariant: the current battle's DB row is still Ongoing at this
     // call site — every mutating caller (submit_attack, swap_active, flee,
     // taming::attempt_recruit, pvp::settle_pvp_battle) calls update() AFTER
     // write_back_battle_results returns, and the disconnect caller
-    // (resolve_wild_battle_on_disconnect, ptc5b/ADR-0138) delete()s the row AFTER,
+    // (resolve_wild_battle_on_disconnect) delete()s the row AFTER,
     // so the in-flight row is still Ongoing in the DB here either way. Running
-    // before the HP write (ADR-0185 D7) preserves that precondition a fortiori.
+    // before the HP write preserves that precondition a fortiori.
     // Filtering outcome != Ongoing therefore only targets prior terminals, never
     // the in-flight battle. After the mutating caller's update(), exactly one
     // terminal battle remains per player, preserving the client's M8.7e outcome
@@ -1202,8 +1184,8 @@ pub(crate) fn write_back_battle_results(
         ctx.db.battle().battle_id().delete(id);
     }
 
-    // GC prior terminal battles where this player was the OPPONENT (PvP side-B GC,
-    // RT-M16-03). Wild and self-battles have opponent == WILD_IDENTITY or == player;
+    // GC prior terminal battles where this player was the OPPONENT (PvP side-B GC).
+    // Wild and self-battles have opponent == WILD_IDENTITY or == player;
     // skip those to avoid double-deleting the row just swept above.
     let opponent = battle.opponent_identity;
     if opponent != WILD_IDENTITY && opponent != player {
@@ -1218,11 +1200,11 @@ pub(crate) fn write_back_battle_results(
     }
 
     // Write back HP for player's team (HP-only; the XP block below is separate).
-    // Runs AFTER both GC steps above per ADR-0185 D7 — it is the first fallible
+    // Runs AFTER both GC steps above — it is the first fallible
     // statement whose Err would otherwise skip them.
     write_back_party_hp(ctx, battle)?;
 
-    // EG2-7 faint penalties (ADR-0175 D4): WILD battles only, per fainted party
+    // faint penalties: WILD battles only, per fainted party
     // member, on ANY outcome — its own pass BEFORE the win block, because that
     // block runs only on SideAWins and early-returns on corrupt loser data,
     // while faints must credit on a loss, a flee and the disconnect write-back.
@@ -1239,22 +1221,14 @@ pub(crate) fn write_back_battle_results(
                 continue;
             };
             m.trust_unfavorable_count = m.trust_unfavorable_count.saturating_add(1);
-            // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing
-            // monster_pub row — never fabricate a tier.
-            let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(mid) else {
-                return Err(format!("monster_pub row missing for monster {mid}"));
-            };
-            let pub_row = pub_from_monster(&m, existing_pub.tier);
-            ctx.db.monster().monster_id().update(m);
-            ctx.db.monster_pub().monster_id().update(pub_row);
+            update_monster_synced(ctx, m)?;
         }
     }
 
-    // Grant XP if the player won (12.5e-3: log-and-continue on parse failures —
+    // Grant XP if the player won (log-and-continue on parse failures —
     // one corrupt row must not make a battle unwinnable; mirrors movement_tick
-    // per-character philosophy, ADR-0077).
-    // NOTE: SideBWins XP/currency for the PvP opponent is deferred to M17
-    // (ADR-0109 D10). Only side-A (challenger/player_identity) wins are handled here.
+    // per-character philosophy).
+    // Only side-A (challenger/player_identity) wins are handled here.
     if battle.state.outcome == BattleOutcome::SideAWins {
         // Find the loser's species base stat total for the XP formula.
         // On missing species: log and skip the entire XP section — without the
@@ -1278,7 +1252,7 @@ pub(crate) fn write_back_battle_results(
         let loser_lvl = match game_core::Level::new(loser_active.level) {
             Ok(l) => l,
             Err(e) => {
-                // 12r-d (ADR-0170 D5): validator error text may contain quotes —
+                // Validator error text may contain quotes —
                 // escape before interpolating into the hand-built JSON line.
                 let escaped = crate::guards::json_escape(&e);
                 log::error!(
@@ -1290,12 +1264,11 @@ pub(crate) fn write_back_battle_results(
             }
         };
 
-        // Practice = self-vs-self sandbox battle (ADR-0078). A real PvP opponent
-        // is a different identity, so this correctly returns false for PvP wins
-        // (RT-M16-02: opponent_identity != WILD_IDENTITY is wrong for PvP).
+        // Practice = self-vs-self sandbox battle. A real PvP opponent
+        // is a different identity, so this correctly returns false for PvP wins.
         let is_practice = battle.player_identity == battle.opponent_identity;
 
-        // EG2-7: the win credits are WILD-gated (practice AND PvP exempt) and
+        // The win credits are WILD-gated (practice AND PvP exempt) and
         // computed once per write-back.
         let wild_win = is_wild_battle(battle);
         let today = day_epoch_utc(now_ms(ctx));
@@ -1313,16 +1286,15 @@ pub(crate) fn write_back_battle_results(
                 continue;
             };
 
-            // EG2-7 wild-win credits, INDEPENDENT of the winner-level parse
-            // below (RT-WB-CURRENCY-01 discipline: a corrupt winner level skips
-            // XP ONLY, never essence/Trust — neither uses the winner's level).
+            // wild-win credits, INDEPENDENT of the winner-level parse
+            // below (a corrupt winner level skips XP ONLY, never essence/Trust
+            // — neither uses the winner's level).
             if wild_win {
                 // Essence is typed by the DEFEATED species' affinity and sized
                 // by the shared reward rule ("go fight the type you need").
                 grant_essence(&mut m, loser_species.affinity, essence_battle_reward(bst));
                 // Trust-favorable: at most once per monster per UTC day, strict
-                // `>` so a clock rewind is a bounded lockout, never a re-credit
-                // (ADR-0175 D4).
+                // `>` so a clock rewind is a bounded lockout, never a re-credit.
                 if today > m.trust_favorable_battle_day_epoch {
                     m.trust_favorable_count = m.trust_favorable_count.saturating_add(1);
                     m.trust_favorable_battle_day_epoch = today;
@@ -1342,7 +1314,7 @@ pub(crate) fn write_back_battle_results(
                 if leveled_up {
                     // Recompute derived stats on level-up. Stat-recompute failures are
                     // logged and skipped (XP/level already written above); `level_up_healed_hp`
-                    // remains the SSOT (ADR-0003, ADR-0073).
+                    // remains the SSOT.
                     if let Some(species) = ctx.db.species_row().id().find(m.species_id) {
                         let base = StatBlock {
                             hp: species.base_hp,
@@ -1406,24 +1378,17 @@ pub(crate) fn write_back_battle_results(
                             m.stat_sp_attack = derived.sp_attack;
                             m.stat_sp_defense = derived.sp_defense;
                             // Heal the HP gained from the max-HP growth on level-up
-                            // (SSOT: game_core owns the heal rule, ADR-0003).
+                            // (SSOT: game_core owns the heal rule).
                             m.current_hp = level_up_healed_hp(m.current_hp, bm.max_hp, derived.hp);
                         }
                     }
                 }
             } else {
-                // Corrupt winner level: XP skipped, nothing else (ADR-0175 D4).
+                // Corrupt winner level: XP skipped, nothing else.
                 log::error!("{{\"evt\":\"xp_skip_level\",\"monster_id\":{mid}}}");
             }
-            // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing
-            // monster_pub row — never fabricate a tier.
-            let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(mid) else {
-                return Err(format!("monster_pub row missing for monster {mid}"));
-            };
-            let pub_row = pub_from_monster(&m, existing_pub.tier);
-            ctx.db.monster().monster_id().update(m);
-            ctx.db.monster_pub().monster_id().update(pub_row);
-            // EG2-8/EG2-12 tails (fresh-find, after this monster's own write):
+            update_monster_synced(ctx, m)?;
+            // (fresh-find, after this monster's own write):
             // Quality Time is wild-gated like the other credits; the
             // auto-evolution check is UNCONDITIONAL and LAST — the level can
             // change on practice/PvP wins too.
@@ -1438,10 +1403,10 @@ pub(crate) fn write_back_battle_results(
 }
 
 // ===========================================================================
-// Wild-battle disconnect resolution (ptc5b, ADR-0138)
+// Wild-battle disconnect resolution
 // ===========================================================================
 
-/// SSOT row-predicate (ADR-0138 D1): is `b` an `Ongoing` WILD battle owned by
+/// SSOT row-predicate: is `b` an `Ongoing` WILD battle owned by
 /// `player`? The *selecting* dual of `guards::is_in_ongoing_battle_either_role`
 /// (which *tests* membership) — one definition of "an ongoing wild battle for a
 /// player", shared by `resolve_wild_battle_on_disconnect`, the deletion cascade's
@@ -1452,7 +1417,7 @@ pub(crate) fn is_ongoing_wild_battle(b: &Battle, player: Identity) -> bool {
         && b.state.outcome == BattleOutcome::Ongoing
 }
 
-/// Resolve the disconnecting caller's Ongoing WILD battle (ptc5b, ADR-0138).
+/// Resolve the disconnecting caller's Ongoing WILD battle.
 ///
 /// `pvp::forfeit_on_disconnect` deliberately excludes WILD battles and no
 /// scheduled reaper covers the wild `battle`/`battle_wild` row class, so a
@@ -1461,16 +1426,15 @@ pub(crate) fn is_ongoing_wild_battle(b: &Battle, player: Identity) -> bool {
 /// out of any new battle (`is_in_ongoing_battle`'s player arm has no WILD
 /// exclusion, so any lingering `Ongoing` row blocks `begin_encounter`/`start_battle`).
 ///
-/// Resolution = **auto-flee** (ADR-0138 D2/D3): reuse the exact `flee` write-back
+/// Resolution = **auto-flee**: reuse the exact `flee` write-back
 /// (`write_back_battle_results` — persists damaged HP clamped to `stat_hp`, no XP
 /// on `Fled`, GCs the `battle_wild` sidecar), then DELETE the `battle` row. Unlike
 /// manual `flee`, we do NOT `update()` it to `Fled`: a disconnected client has no
 /// subscription to observe a terminal frame, and a lingering row is a
-/// stale-overlay hazard on reconnect (pre-ADR-0198 it was also a world-readable
-/// leak). Persisting damage (not a pre-battle-HP
-/// restore) keeps disconnect ≈ flee — no "disconnect-to-heal" advantage.
+/// stale-overlay hazard on reconnect. Persisting damage (not a pre-battle-HP restore)
+/// keeps disconnect ≈ flee — no "disconnect-to-heal" advantage.
 ///
-/// Idempotent + caller-scoped (ADR-0138 D4): a no-op when the caller has no wild
+/// Idempotent + caller-scoped: a no-op when the caller has no wild
 /// battle; never touches another player's rows. Reached via
 /// `resolve_all_live_interactions` from `on_disconnect` and the deletion cascade's
 /// step 6a, both BEFORE any row its write-back reads is deleted or erased.
@@ -1516,26 +1480,25 @@ pub(crate) fn resolve_wild_battle_on_disconnect(ctx: &ReducerContext, disconnect
                 "{{\"evt\":\"wild_disconnect_writeback_err\",\"battle_id\":{id},\"reason\":\"{escaped}\"}}"
             );
         }
-        // Belt-and-suspenders (ADR-0138 D4): explicitly delete the private
-        // `battle_wild` sidecar. Post-ADR-0185 D7 the helper's own delete is hoisted
+        // Belt-and-suspenders: explicitly delete the private
+        // `battle_wild` sidecar. helper's own delete is hoisted
         // above the fallible HP write, so only a `check_team_coupling` Err can skip
         // it — this stays as depth-of-defence, idempotent either way. Then delete
-        // the main `battle` row (the new
-        // behavior; unlike `flee` we do not `update()` it). Both deletes idempotent.
+        // the main `battle` row.
+        // Both deletes idempotent.
         ctx.db.battle_wild().battle_id().delete(id);
         ctx.db.battle().battle_id().delete(id);
     }
 }
 
-// --- M22 deletion cascade — battle anonymize (ADR-0228 D1/D2) -----------------
+// --- M22 deletion cascade — battle anonymize -----------------
 
-/// M22 §4.4 step 6c (PRV1-6c/PRV1-19, pure): the battle row with EACH side
-/// that names the deleting identity swapped to the tombstone — a practice
-/// battle (`player_identity == opponent_identity`) gets BOTH sides swapped in
-/// this one call, which is what makes "visited and tombstoned exactly once"
-/// (PRV1-19) hold at the caller. A side naming anyone else (the surviving
-/// opponent, or the all-zero wild sentinel) survives byte-identical, as does
-/// every mechanical field.
+/// the battle row with EACH side that names the deleting identity swapped to
+/// the tombstone — a practice battle (`player_identity == opponent_identity`)
+/// gets BOTH sides swapped in this one call, which is what makes "visited and
+/// tombstoned exactly once" hold at the caller. A side naming anyone else
+/// (the surviving opponent, or the all-zero wild sentinel) survives
+/// byte-identical, as does every mechanical field.
 pub(crate) fn battle_with_tombstoned_party(
     b: Battle,
     deleting: Identity,
@@ -1558,27 +1521,26 @@ pub(crate) fn battle_with_tombstoned_party(
     }
 }
 
-/// M22 §4.4 step 6c backstop (ADR-0274 D1, pure): the battle row with a
-/// still-`Ongoing` outcome forced terminal against the side that names the
-/// deleting identity. Rewrites ONLY `state.outcome` — never an identity column
-/// and no other field. This seam runs BEFORE the tombstone swap: both find the
-/// erased side by the original identities. The rule, in order:
+/// the battle row with a still-`Ongoing` outcome forced terminal against the
+/// side that names the deleting identity. Rewrites ONLY `state.outcome` — never
+/// an identity column and no other field. This seam runs BEFORE the tombstone
+/// swap: both find the erased side by the original identities. The rule, in
+/// order:
 /// - a settled row (any outcome but `Ongoing`) is returned unchanged: settled
 ///   history is never rewritten;
 /// - an `Ongoing` WILD row owned by `deleting`, recognised by the SSOT
 ///   predicate `is_ongoing_wild_battle` and checked FIRST, becomes `Fled` — the
-///   auto-flee the disconnect path applies (ADR-0138 D2);
+///   auto-flee the disconnect path applies;
 /// - a row whose side A names `deleting` (a practice row names it on both
 ///   sides) becomes side A's forfeit, else a row whose side B names it becomes
-///   side B's forfeit, both through `game_core::pvp_forfeit_outcome` — the
-///   ADR-0109 D8 rule `pvp::forfeit_on_disconnect` applies, side-A pass first;
+///   side B's forfeit, both through `game_core::pvp_forfeit_outcome`,
+///   side-A pass first;
 /// - a row naming `deleting` on neither side belongs to bystanders and is
 ///   returned unchanged.
 ///
 /// Postcondition (debug builds, single exit so every path reaches it): a row
 /// naming `deleting` never leaves this seam `Ongoing`. It is a contract check
-/// for honest edits, not a fence — the mechanical guard is the rb129 truth
-/// table, totality matrix and property test in `battle_tests.rs`.
+/// for honest edits, not a fence.
 pub(crate) fn battle_with_forced_terminal(mut b: Battle, deleting: Identity) -> Battle {
     let names_deleting = b.player_identity == deleting || b.opponent_identity == deleting;
     if b.state.outcome == BattleOutcome::Ongoing {
@@ -1597,31 +1559,28 @@ pub(crate) fn battle_with_forced_terminal(mut b: Battle, deleting: Identity) -> 
     b
 }
 
-/// M22 §4.4 steps 6c+6d for `battle` and its JOIN-ONLY children (PRV1-6c/6d,
-/// ADR-0228 D2 deviation b, ADR-0274 D2): for EVERY battle naming `owner` on
-/// either side, sweep the row's `battle_wild` sidecar and its
-/// `pvp_deadline_schedule` rows FIRST (after the identity swap the join key
-/// no longer names the owner, so a later pass has no route back), then FORCE a
-/// still-`Ongoing` row terminal against the erased side through the pure
-/// `battle_with_forced_terminal` seam, then swap the owner's side(s) to
-/// `crate::TOMBSTONE_IDENTITY` via the pure `battle_with_tombstoned_party`
-/// seam. The force runs BEFORE the swap because it needs the original
-/// identities to find the erased side. Both index passes are collected BEFORE
-/// any mutation, and the second pass excludes rows the first already matched
-/// — the `my_battle` dedup idiom, so a practice battle is visited once
-/// (PRV1-19).
+/// for EVERY battle naming `owner` on either side, sweep the row's
+/// `battle_wild` sidecar and its `pvp_deadline_schedule` rows FIRST (after the
+/// identity swap the join key no longer names the owner, so a later pass has
+/// no route back), then FORCE a still-`Ongoing` row terminal against the
+/// erased side through the pure `battle_with_forced_terminal` seam, then swap
+/// the owner's side(s) to `crate::TOMBSTONE_IDENTITY` via the pure
+/// `battle_with_tombstoned_party` seam. The force runs BEFORE the swap because
+/// it needs the original identities to find the erased side. Both index passes
+/// are collected BEFORE any mutation, and the second pass excludes rows the
+/// first already matched — the `my_battle` dedup idiom, so a practice battle
+/// is visited once.
 ///
 /// Disarming the deadline is correct for every row, live ones included: each
 /// row is terminal by the end of this same transaction, so no deadline is left
 /// with anything to settle. An `Ongoing` row reaching this step means the 6a
 /// resolver left it live; forcing it closes the channels through which an
-/// erased identity could later settle it or be handed its win (ADR-0274). The
+/// erased identity could later settle it or be handed its win. The
 /// forced outcome is a degraded settlement — no rating, HP, XP, currency or
 /// evolution write-back, and no `battle_action` sweep. A forced row emits one
 /// `deletion_cascade_forced_battle_terminal` line carrying only the battle id:
 /// it marks a 6a-resolver gap to investigate, and the cascade line carries the
-/// subject. Called only from `accounts::account_deletion_reaper` (D0
-/// write-isolation).
+/// subject. Called only from `accounts::account_deletion_reaper`.
 pub(crate) fn anonymize_battles(ctx: &ReducerContext, owner: Identity) {
     let mut rows: Vec<Battle> = ctx.db.battle().player_identity().filter(owner).collect();
     rows.extend(
@@ -1656,7 +1615,7 @@ pub(crate) fn anonymize_battles(ctx: &ReducerContext, owner: Identity) {
 
 // `battle.rs` is a file-module (declared `mod battle;` in `lib.rs`), so a plain
 // `mod battle_tests;` would resolve under `src/battle/`; `#[path]` keeps the test
-// file a sibling in `src/` (the game-core `*_tests.rs` convention, ADR-0056 map).
+// file a sibling in `src/`.
 #[cfg(test)]
 #[path = "battle_tests.rs"]
 mod battle_tests;

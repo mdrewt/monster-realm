@@ -1,4 +1,4 @@
-//! `taming` domain-submodule tests (M8.9c — test relocation, ADR-0056).
+//! `taming` domain-submodule tests (M8.9c — test relocation).
 //!
 //! Extracted verbatim from the former inline `#[cfg(test)] mod tests` in
 //! `taming.rs`; every assertion, fixture, and helper is unchanged. Declared
@@ -6,26 +6,25 @@
 //! `super` still resolves to `taming` exactly as the inline module did.
 
 // =========================================================================
-// rb-80 — R-rb-46-ERASEWRITERS (ADR-0250 D4/D6/D8): the para-4.7 deletion gate
-// on `grant_bait`.
+// the para-4.7 deletion gate on `grant_bait`.
 //
-// E1 names "the taming recruit grant_item path". MEASURED FINDING (ADR-0250 D4):
+// E1 names "the taming recruit grant_item path". MEASURED FINDING:
 // that path is a MISATTRIBUTION — no recruit path calls `grant_item`. The ONE
-// `grant_item(` call in `taming.rs` is at :297, inside `grant_bait`, a
+// `grant_item(` call in `taming.rs` is inside `grant_bait`, a
 // `cfg(feature = "dev_reducers")` DEV reducer that credits the CALLER's own
 // `inventory` (an ERASE-policy table) with up to 99 items per call. It is gated
 // here on the `battle::start_wild_battle` precedent (ADR-0236 D2/D3: a dev-only
 // reducer that ships in the CI-built dev wasm gets the same gate as a
 // client-callable one).
 //
-// `attempt_recruit` was CLASSIFY-OPEN here (PRV1-10, ADR-0250 D6). rb-128
-// (ADR-0273 D4) withdrew that classification on ADR-0258 D6's basis: on success
+// `attempt_recruit` was CLASSIFY-OPEN here. rb-128
+// withdrew that classification on ADR-0258 D6's basis: on success
 // it inserts a NEW `monster` and `monster_pub` for the caller — it creates the
 // caller's assets, which is what separates class (iv) from the in-battle class
 // (i) — so it is now gated as its first statement. PRV1-10 still holds: the
 // already-open wild battle stays finishable through the ungated `submit_attack`,
 // `swap_active`, `flee` and `use_battle_item`; only the recruit is refused. The
-// behavioural recruit suite is the `nh` module at the end of this file; the executed matrix lives in `guards_tests.rs` (ADR-0273 D9).
+// behavioural recruit suite is the `nh` module at the end of this file; the executed matrix lives in `guards_tests.rs`.
 //
 // HONEST LIMITS. The executed matrix
 // (the test below, the crate's first `cfg(feature = "dev_reducers")`
@@ -37,7 +36,7 @@
 // item stack changed.
 // =========================================================================
 
-/// **E1 (behaviour)** — `grant_bait` refuses a deletion-gated caller, ADMITS
+/// `grant_bait` refuses a deletion-gated caller, ADMITS
 /// everybody else, and answers from the CALLER's own row.
 ///
 /// THE CRATE'S FIRST `cfg(feature = "dev_reducers")` TEST, because the
@@ -59,9 +58,6 @@
 /// and nothing deeper. The ordinary error is pinned EXACTLY rather than as
 /// any-error: otherwise a regression that turned the item lookup into a different
 /// rejection would masquerade as a pass in all three admitted states.
-///
-/// RED AT HEAD on the `PendingDeletion` state: with no gate the reducer returns
-/// the ordinary next-guard error there.
 ///
 /// kills: M4 (the dropped gate) · M5 (a discarded verdict) · M8 (an unreachable
 /// placement) · M11 (a constant reject in `guards` — the three admitted states) ·
@@ -589,6 +585,58 @@ mod nh {
                 "{label}: nothing written, no roll recorded"
             );
         }
+    }
+
+    /// A FAILED roll on an ongoing battle (no bait, full-HP wild: an 8% chance,
+    /// so a run of fixed clocks — each deterministic — yields failures; at least
+    /// one is required). Against a skill-less wild the turn still advances and
+    /// the post-turn status tick runs: the lead's Sleep(2) is written back as
+    /// Sleep(1) on the battle row, the battle stays Ongoing with its battle_wild
+    /// row, and the party's monster row is untouched (no terminal write-back).
+    ///
+    /// kills: the ongoing-only status write-back inverted (Sleep(2) survives);
+    /// the terminal-only write-back inverted (battle_wild GC'd and HP written
+    /// on an ongoing battle).
+    #[test]
+    fn nh_recruit_failure_on_an_ongoing_battle_persists_status_and_keeps_the_wild() {
+        use crate::schema::TypeRelationRow;
+        use game_core::StatusEffect;
+        let mut failures = 0;
+        for k in 0..16i64 {
+            let fx = fixture();
+            let w = world(&fx);
+            let _ = fx
+                .table_keyed::<TypeRelationRow, u64>("type_relation_row", "id", |r| r.id)
+                .scannable();
+            let mut bt = wild_battle(BattleOutcome::Ongoing);
+            bt.state.side_a.team[0].status = Some(StatusEffect::Sleep { turns_remaining: 2 });
+            bt.state.side_b.team[0].known_skill_ids.clear();
+            w.battles.remove(BATTLE);
+            w.battles.seed(&bt);
+            let monsters_before = to_vec(&w.monsters.rows()).unwrap();
+            let got = fx.run_as_at(a(), at(T0 + k * 7_919), |ctx| {
+                attempt_recruit(ctx, BATTLE, None)
+            });
+            assert_eq!(got, Ok(()), "clock {k}");
+            let after = &w.battles.rows()[0];
+            if after.state.outcome == BattleOutcome::SideAWins {
+                continue; // this clock's roll succeeded
+            }
+            failures += 1;
+            assert_eq!(after.state.outcome, BattleOutcome::Ongoing, "clock {k}");
+            assert_eq!(
+                after.state.side_a.team[0].status,
+                Some(StatusEffect::Sleep { turns_remaining: 1 }),
+                "clock {k}: the ticked status is written back"
+            );
+            assert_eq!(w.wilds.rows().len(), 1, "clock {k}: battle_wild kept");
+            assert_eq!(
+                to_vec(&w.monsters.rows()).unwrap(),
+                monsters_before,
+                "clock {k}: no terminal write-back on an ongoing battle"
+            );
+        }
+        assert!(failures > 0, "at least one clock must roll a failure");
     }
 
     /// grant_bait (DEV) credits ONLY the caller, capped at 99 per call, and

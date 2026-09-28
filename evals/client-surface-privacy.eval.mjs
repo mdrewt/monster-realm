@@ -63,6 +63,9 @@ export const HIDDEN_FIELDS = [
   { name: 'claimed_from', source: 'account', allowedIn: ['my_account'] },
   { name: 'deletion_requested_at_ms', source: 'account', allowedIn: ['my_account'] },
   { name: 'payload_json', source: 'export_bundle', allowedIn: ['my_export_bundle'] },
+  // Item counts are owner-private: the inventory row (keyed by inv_id) reaches clients ONLY
+  // through the owner-scoped my_inventory view.
+  { name: 'inv_id', source: 'inventory', allowedIn: ['my_inventory'] },
 ];
 
 // Whole private row / payload types that no accessor may reference.

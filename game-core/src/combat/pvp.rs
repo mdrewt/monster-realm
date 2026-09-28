@@ -1,4 +1,4 @@
-//! Pure PvP orchestration rules (M16, ADR-0109).
+//! Pure PvP orchestration rules.
 //!
 //! All logic here is deterministic and I/O-free — only the imperative shell
 //! in `server-module/src/pvp.rs` touches tables or the scheduler. The server
@@ -20,7 +20,7 @@ use crate::combat::types::{BattleOutcome, SideId, TurnChoice};
 /// passing to `resolve_full_turn`.
 ///
 /// `SpacetimeType` is cfg-gated: the type is stored in the private `battle_action`
-/// table (must-never-leak — ADR-0015, ADR-0109).  Outside the server module the
+/// table (must-never-leak: hidden battle intent).  Outside the server module the
 /// type is pure data for tests and the rule functions below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
@@ -62,7 +62,7 @@ pub fn pvp_forfeit_outcome(forfeited_side: SideId) -> BattleOutcome {
 
 /// Determine which side should forfeit when the turn deadline fires.
 ///
-/// Rules (ADR-0109 D5 — challenger-first tie-break):
+/// Rules:
 /// - `a_submitted` false  → side A forfeits (hasn't acted).
 /// - `b_submitted` false  → side B forfeits (hasn't acted).
 /// - Both false           → side A forfeits (challenger gets the tie-break
@@ -88,10 +88,10 @@ pub fn pvp_deadline_forfeit_side(a_submitted: bool, b_submitted: bool) -> SideId
 }
 
 // ===========================================================================
-// Challenge TTL — liveness bound for Pending battle challenges (m17.5e)
+// Challenge TTL — liveness bound for Pending battle challenges
 // ===========================================================================
 
-/// Pending battle-challenge time-to-live (17.5e-1, ADR-0126).
+/// Pending battle-challenge time-to-live.
 // 2 min — a challenge is an interactive prompt to a player who was online at
 // send time, and a Pending row locks BOTH parties out of new challenges
 // (challenge_pvp guards 5b/6): the TTL directly bounds that lockout window
@@ -99,7 +99,7 @@ pub fn pvp_deadline_forfeit_side(a_submitted: bool, b_submitted: bool) -> SideId
 // survive sessions; challenges must not. Tunable liveness constant, `>=` boundary.
 pub const CHALLENGE_TTL_MS: i64 = 120_000;
 
-/// True if the challenge has outlived `CHALLENGE_TTL_MS` (17.5e-1, ADR-0126).
+/// True if the challenge has outlived `CHALLENGE_TTL_MS`.
 ///
 /// Saturating subtraction: on clock skew (`now_ms` < `created_at_ms`) the
 /// difference goes NEGATIVE — i64 subtraction saturates only at the type
@@ -169,7 +169,7 @@ mod pvp_tests {
         assert_eq!(
             pvp_deadline_forfeit_side(false, false),
             SideId::SideA,
-            "neither submitted → challenger (side A) forfeits (tie-break, ADR-0109 D5)"
+            "neither submitted → challenger (side A) forfeits (tie-break)"
         );
     }
 
@@ -196,7 +196,7 @@ mod pvp_tests {
     }
 
     // -------------------------------------------------------------------------
-    // RT-M16-06: pvp_deadline_forfeit_side ignores b_submitted parameter.
+    // pvp_deadline_forfeit_side ignores b_submitted parameter.
     //
     // Finding: the implementation signature is `(a_submitted: bool, _b_submitted: bool)`
     // — the `_` prefix marks the second parameter intentionally unused. The body
@@ -211,17 +211,6 @@ mod pvp_tests {
     // and any future call site that passes `b_submitted` expecting it to be read
     // will silently get wrong results.
     //
-    // This gating test documents the invariant: the function MUST behave as if
-    // it reads b_submitted (i.e. the outcome for (true, false) must differ from
-    // (true, true)) — once the implementation is corrected to actually inspect
-    // b_submitted. Currently both of these return SideB, which means passing
-    // `true, true` does NOT produce a different result from `true, false` — an
-    // observable bug when the reaper fires on a race where both submitted.
-    //
-    // Proof-of-teeth: after the fix, `pvp_deadline_forfeit_side(true, true)`
-    // should return SideA (safe no-op — neither side should be forfeited when
-    // both submitted; the caller already guards this, but the function should
-    // not silently forfeit B on a both-submitted call).
     // -------------------------------------------------------------------------
 
     #[test]
@@ -246,22 +235,15 @@ mod pvp_tests {
 }
 
 // ===========================================================================
-// m17.5e (ADR-0126): CHALLENGE_TTL_MS + is_challenge_stale boundary suite
-// (RED until the implementation is added ABOVE this test module)
+// CHALLENGE_TTL_MS + is_challenge_stale boundary suite
 //
-// These tests reference `CHALLENGE_TTL_MS` and `is_challenge_stale`, which do
-// NOT yet exist in this module.  The TEST BINARY will not compile until the
-// implementer adds them — that is intentional (RED phase, m17.5e; the m16.5f
-// trading/rules.rs precedent).  `cargo build` stays green: this module is
-// #[cfg(test)]-gated and nothing outside it references the new symbols.
-//
-// EARS criterion 17.5e-1: a Pending battle_challenge whose age reaches
+// a Pending battle_challenge whose age reaches
 // CHALLENGE_TTL_MS SHALL be considered stale (>= boundary, saturating
 // arithmetic — mirrors the is_offer_stale suite in trading/rules.rs).
 //
-// N2 (deliberate): these tests are VALUE-INVARIANT — they reference
+// these tests are VALUE-INVARIANT — they reference
 // CHALLENGE_TTL_MS by name and never assert its numeric value.  Retuning the
-// TTL (plan D1: tunable) must not break this suite; a constant-value mutant is
+// TTL must not break this suite; a constant-value mutant is
 // therefore NOT killed here, by design.
 // ===========================================================================
 
@@ -269,7 +251,7 @@ mod pvp_tests {
 mod challenge_ttl_tests {
     use super::{is_challenge_stale, CHALLENGE_TTL_MS};
 
-    /// 17.5e-1 BOUNDARY: (created=0, now=CHALLENGE_TTL_MS - 1) → false (fresh).
+    /// BOUNDARY: (created=0, now=CHALLENGE_TTL_MS - 1) → false (fresh).
     ///
     /// kills: impl that uses > instead of >= flipped the other way (off-by-one
     ///        marking a challenge stale 1 ms early), or one that hardcodes a
@@ -282,10 +264,10 @@ mod challenge_ttl_tests {
         );
     }
 
-    /// 17.5e-1 BOUNDARY: (created=0, now=CHALLENGE_TTL_MS) → true (exactly at TTL).
+    /// BOUNDARY: (created=0, now=CHALLENGE_TTL_MS) → true (exactly at TTL).
     ///
     /// kills: impl that uses > instead of >= — the spec says elapsed >= TTL is
-    ///        stale, so at exactly TTL the challenge IS stale (plan D1).
+    ///        stale, so at exactly TTL the challenge IS stale.
     #[test]
     fn is_challenge_stale_true_at_exact_ttl() {
         assert!(
@@ -295,7 +277,7 @@ mod challenge_ttl_tests {
         );
     }
 
-    /// 17.5e-1 BOUNDARY: (created=0, now=CHALLENGE_TTL_MS + 1) → true (past TTL).
+    /// BOUNDARY: (created=0, now=CHALLENGE_TTL_MS + 1) → true (past TTL).
     ///
     /// kills: impl that uses == instead of >= (accepts only the exact boundary).
     #[test]
@@ -306,13 +288,13 @@ mod challenge_ttl_tests {
         );
     }
 
-    /// 17.5e-1 CLOCK SKEW: (created=100, now=50) → false (created_at in the future).
+    /// CLOCK SKEW: (created=100, now=50) → false (created_at in the future).
     ///
     /// kills: impl that subtracts in the wrong direction (created - now would be
     ///        +50 here — still fresh, but the extremes tests below separate the
     ///        direction mutant), or one that treats a negative elapsed as stale.
     ///        For i64, `now.saturating_sub(created)` = -50 (NOT saturated to 0 —
-    ///        i64 subtraction only saturates at the type extremes; plan F10);
+    ///        i64 subtraction only saturates at the type extremes);
     ///        a negative elapsed simply compares fresh (-50 < TTL).
     #[test]
     fn is_challenge_stale_false_on_clock_skew() {
@@ -323,7 +305,7 @@ mod challenge_ttl_tests {
         );
     }
 
-    /// 17.5e-1 EXTREMES: (i64::MIN, i64::MAX) must not panic (saturating arithmetic).
+    /// EXTREMES: (i64::MIN, i64::MAX) must not panic (saturating arithmetic).
     ///
     /// kills: impl that uses unchecked `now - created` — i64::MAX - i64::MIN
     ///        overflows and panics in debug builds. With saturating_sub the
@@ -334,7 +316,7 @@ mod challenge_ttl_tests {
         let _ = is_challenge_stale(i64::MIN, i64::MAX);
     }
 
-    /// 17.5e-1 EXTREMES: (i64::MAX, i64::MIN) must not panic AND must be false.
+    /// EXTREMES: (i64::MAX, i64::MIN) must not panic AND must be false.
     ///
     /// kills: impl with unchecked raw subtraction (`now - created` without any
     ///        saturation or wrapping annotation) — in a debug build this panics on
@@ -345,8 +327,8 @@ mod challenge_ttl_tests {
     ///        ACCEPTABLE — wrapping_sub is functionally equivalent to saturating_sub
     ///        for all realistic timestamps; the raw-unchecked subtraction is the
     ///        only dangerous case and a `#[test]` env panic is what this fixture
-    ///        kills (plan F10).  With saturating_sub, elapsed saturates at i64::MIN
-    ///        (a huge NEGATIVE, not 0 — plan F10), which is < TTL → false.
+    ///        kills.  With saturating_sub, elapsed saturates at i64::MIN
+    ///        (a huge NEGATIVE, not 0), which is < TTL → false.
     #[test]
     fn is_challenge_stale_no_panic_on_extreme_max_min() {
         let result = is_challenge_stale(i64::MAX, i64::MIN);
@@ -357,7 +339,7 @@ mod challenge_ttl_tests {
         );
     }
 
-    /// 17.5e-1 TEETH: staleness is monotone across the boundary — the three
+    /// TEETH: staleness is monotone across the boundary — the three
     /// boundary probes must not all agree (kills a constant-true / constant-false
     /// body replacement in one assertion).
     #[test]

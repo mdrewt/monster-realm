@@ -67,7 +67,7 @@ function nonTabKeydown(): KeyboardEvent {
 }
 
 // ---------------------------------------------------------------------------
-// nextFocusTarget — pure list arithmetic (A11Y-6)
+// nextFocusTarget — pure list arithmetic
 // ---------------------------------------------------------------------------
 
 describe('nextFocusTarget — pure list arithmetic (A11Y-6, spec §2.2)', () => {
@@ -94,8 +94,8 @@ describe('nextFocusTarget — pure list arithmetic (A11Y-6, spec §2.2)', () => 
     // WRONG IMPL KILLED: `focusables[((i-1)%len+len)%len]` with i=-1 (indexOf miss) computes
     // `((-1-1)%3+3)%3 === 1`, i.e. it returns `focusables[1]` (`b`) instead of the correct
     // `last` (`c`). That cheat ALSO passes A11Y-6-WRAP-FORWARD, A11Y-6-WRAP-BACKWARD and
-    // A11Y-6-ENTER-FORWARD — this is the ONLY assertion that reds it (red-team Finding 7,
-    // MEASURED, plan adjudication A5). A list of exactly 2 elements would make `b` and `c`
+    // A11Y-6-ENTER-FORWARD — this is the ONLY assertion that reds it.
+    // A list of exactly 2 elements would make `b` and `c`
     // coincide by accident; 3 elements make index 1 (`b`) provably distinct from index 2 (`c`,
     // the true last).
     const [a, b, c] = makeButtons(3);
@@ -137,7 +137,7 @@ describe('nextFocusTarget — pure list arithmetic (A11Y-6, spec §2.2)', () => 
 });
 
 // ---------------------------------------------------------------------------
-// installTrap — Tab-only key handling; must never swallow/hijack other keys (A11Y-7)
+// installTrap — Tab-only key handling; must never swallow/hijack other keys
 // ---------------------------------------------------------------------------
 
 describe('installTrap — Tab-only handling, non-Tab keys pass through untouched (A11Y-7, spec §2.2)', () => {
@@ -157,8 +157,8 @@ describe('installTrap — Tab-only handling, non-Tab keys pass through untouched
 
   it('A11Y-7-NON-TAB-REACHES-APP BITES: a non-Tab key dispatched into the trapped root still reaches an app-level window listener', () => {
     // WRONG IMPL KILLED: a trap that calls e.stopPropagation() on every keydown (not just Tab)
-    // would silently kill main.ts's window-level keydown handler (main.ts:1052) for every key
-    // typed while an overlay is open — including the Escape ladder (main.ts:1300-1409).
+    // would silently kill main.ts's window-level keydown handler for every key
+    // typed while an overlay is open — including the Escape ladder.
     document.body.innerHTML = '<div id="root"><button id="a">a</button></div>';
     const root = document.getElementById('root') as HTMLElement;
     const a = document.getElementById('a') as HTMLButtonElement;
@@ -232,7 +232,7 @@ describe('installTrap — capture-phase registration, live re-query, hidden filt
 
   it('S1-TRAP-LIVE-QUERY BITES: focus moves within a WHOLLY DIFFERENT focusable set swapped in after install — a cached-at-install-time list is dead here', () => {
     // WRONG IMPL KILLED: battleView.ts calls root.replaceChildren() on its skills/action
-    // containers on every server tick (battleView.ts:241,:270). A trap that computed its
+    // containers on every server tick. A trap that computed its
     // focusable list once at installTrap() time would keep trying to focus DETACHED elements
     // forever after the first replaceChildren().
     document.body.innerHTML =
@@ -327,7 +327,7 @@ describe('installTrap — capture-phase registration, live re-query, hidden filt
 });
 
 // ---------------------------------------------------------------------------
-// installTrap — full focusable-type coverage (RED-TEAM ROUND 2, all UNTAGGED)
+// installTrap — full focusable-type coverage
 //
 // Every fixture above uses ONLY <button> elements. A red-team pass measured that narrowing
 // FOCUSABLE_SELECTOR to the single clause 'button:not([disabled])' keeps every test in this
@@ -423,11 +423,9 @@ describe('installTrap — full focusable-type coverage (FOCUSABLE_SELECTOR regre
   });
 
   it('untagged: Ctrl+Tab and Meta+Tab are never trapped (browser/OS chrome shortcuts), but Shift+Tab still is', () => {
-    // REAL FIX, STARTS RED: installTrap's keydown handler currently checks only
-    // `e.key !== 'Tab'` and does not exempt a modified Tab press. Ctrl+Tab (switch browser tab)
-    // and Meta+Tab (OS app switcher) must reach the browser/OS untouched — preventDefault-ing
-    // or moving focus on them breaks a keyboard user's ability to leave the tab entirely while
-    // an overlay is open. This assertion is expected to FAIL against the current implementation.
+    // Ctrl+Tab (switch browser tab) and Meta+Tab (OS app switcher) must reach the browser/OS
+    // untouched — preventDefault-ing or moving focus on them breaks a keyboard user's ability to
+    // leave the tab entirely while an overlay is open.
     document.body.innerHTML =
       '<div id="root"><button id="a">a</button><button id="b">b</button></div>';
     const root = document.getElementById('root') as HTMLElement;
@@ -470,13 +468,10 @@ describe('installTrap — full focusable-type coverage (FOCUSABLE_SELECTOR regre
 });
 
 // ---------------------------------------------------------------------------
-// rb-88 (R-17r-e-E3): refutes focusTrap.ts's now-retracted header claim (module header, lines
-// 58-62 — corrected in place by rb-88, not moved) that the four #app-mounted views share ONE
-// root and that opening the next overlay before closing the previous one stacks two capture
-// listeners on ONE node. The three tests below prove: sibling roots never stack (test 1), the
-// SAME node installed twice DOES double-move focus — what the old comment mis-attributed to
-// siblings (test 2, a characterisation, not a design mandate), and installTrap attaches exactly
-// one capture keydown listener per passed root and none to the shared mount, document, or window
+// rb-88 (R-17r-e-E3): The three tests below prove: sibling roots never stack (test 1), the SAME
+// node installed twice DOES double-move focus — what the old comment mis-attributed to siblings
+// (test 2, a characterisation, not a design mandate), and installTrap attaches exactly one
+// capture keydown listener per passed root and none to the shared mount, document, or window
 // (test 3).
 //
 // WRONG-IMPL-KILLED for this block (see the file header's existing index for the rest):
@@ -542,8 +537,7 @@ describe('rb-88: sibling #app roots vs. the same root installed twice (R-17r-e-E
 
   it('rb-88-SAME-ROOT-TWICE-STACKS BITES: installing the SAME root twice without uninstalling between DOES double-move focus per Tab — the behaviour the retracted comment mis-attributed to sibling roots', () => {
     // CHARACTERISES observed per-node behaviour, for contrast with rb-88-SIBLING-ROOTS-NO-STACK:
-    // this is what the old header comment wrongly attributed to opening a SIBLING root before
-    // closing the previous one. It is NOT a design mandate here — a future slice that adds a
+    // It is NOT a design mandate here — a future slice that adds a
     // same-node dedupe guard to installTrap (e.g. a Map/Set keyed by root) may legitimately
     // rewrite this test to assert a single step instead of two.
     const root = document.createElement('div');

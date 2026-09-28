@@ -1,16 +1,12 @@
 //! `privacy_tests` — behavioural tests for `privacy.rs`: the data-export
 //! serializer and manifest totality (M22-S4), the export-bundle reap planners
-//! and their tick records (rb-48/85/86/87/109/111), export admission tiers
-//! (rb-107/132), and the observation-line envelopes (rb-65).
+//! and their tick records, export admission tiers,
+//! and the observation-line envelopes.
 //!
 //! Declared from `privacy.rs` as a cfg-test-gated `#[path]` module, so `super`
 //! resolves to `privacy`. The reducer-level export owner scope, admission and
 //! the reaper's scheduler guard are exercised natively in `accounts_tests.rs`
 //! (`acct_export_*`).
-//!
-//! SCAN HYGIENE: some evals concatenate every `.rs` file under
-//! `server-module/src` and strip block comments with a naive regex, so this
-//! file carries no block comments, no raw strings and no escaped double quote.
 
 #![cfg(test)]
 
@@ -190,54 +186,29 @@ fn rb22p_dq() -> char {
 }
 
 // ===========================================================================
-// m22-s4 — EXPORT GATING TESTS (PRV1-11 / PRV1-12 / PRV1-13 + the S4 security
-// amendments). APPEND-ONLY BLOCK: everything above this banner is the rb-22
-// suite as later revised by other slices (rb-40, rb-48 and rb-64 among them);
+// EXPORT GATING TESTS (PRV1-11 / PRV1-12 / PRV1-13 + the S4 security
+// amendments).
 // every symbol below carries the `m22s4_` / `M22S4_` prefix so it can never
 // collide with an `rb22p_` helper.
 //
-// WHAT THIS GATES (spec M22 section 5; ADR-0226):
+// WHAT THIS GATES (spec M22 section 5):
 //   PRV1-11  one chunk per exportable:true table, own rows only, per-column JSON.
 //   PRV1-12  no exportable:false table is ever named by the export machinery.
 //   PRV1-13  sub-chunking at game_core::EXPORT_CHUNK_ROWS, request-wide
 //            chunk_index and total_chunks.
 //   plus the S4 guards (subject existence, deletion gate, cooldown), the battle
 //   redaction, and the owner-scoped view that is the entire client read path.
-//   PRV1-14 (the TTL reaper) LANDED in rb-48 (ADR-0238) and is gated by the
+//   PRV1-14 (the TTL reaper) LANDED in rb-48 and is gated by the
 //   rb48_ block at the end of this file: a global hourly interval singleton, a
 //   scheduler-only reducer, and the pure plan_export_reap seam that carries the
 //   whole behavioural proof.
 //
-// THE SPLIT (ADR-0225 D5): a ReducerContext was not constructible off-instance when
+// THE SPLIT: a ReducerContext was not constructible off-instance when
 // this was written (rb-41's native_host_tests changed that; the scans stand as written),
 // so every PURE seam below is EXECUTED and every ctx-bound shell property is a
 // SOURCE-STRUCTURE pin over PRIVACY_RS through this module's existing
 // three-stage strip pipeline. Source pins are the weaker instrument and each
 // one says so; the behavioural tests carry the real teeth.
-//
-// SCAN HYGIENE (this file is scanned by rb22p_scan_hygiene, and concatenated by
-// a dozen evals that strip comments naively):
-//   * line comments only, never a block-comment delimiter, and no regex literal
-//     in a comment (a slash-star or star-slash inside one blanks a span of every
-//     LATER module in a concatenated blob);
-//   * no raw-string prefix, no logging token, no print macro;
-//   * NO backslash immediately followed by a double quote anywhere. Every
-//     backslash below comes from m22s4_bs() and every double quote from
-//     rb22p_dq(), and no string literal ends in a backslash escape;
-//   * no double quote inside a comment (balanced-quote rule) and none inside a
-//     char literal (it desynchronises downstream eval string strippers);
-//   * the purge helper is NEVER spelled contiguously (crate-wide naming census,
-//     accounts_tests.rs) — always a concat! split;
-//   * the wallet row struct is reached through an IMPORT ALIAS and the wallet
-//     accessor spelling is never followed by an empty argument list, because
-//     evals/currency-integrity.eval.mjs scans EVERY .rs under server-module/src
-//     (test files included) and its allowlist is an exact-path match that does
-//     not cover this file. The alternative (adding privacy_tests.rs to that
-//     allowlist, the economy_tests.rs precedent) is recorded as an open review
-//     question in ADR-0226 implementation-time discoveries;
-//   * attribute needles are assembled from concat! fragments (the
-//     accounts_tests.rs house convention) so a scanner that concatenates this
-//     file cannot mistake a pinned literal for a live declaration.
 
 use crate::playtest::{PlaytestEvent, PLAYTEST_EVENT_CAP};
 use crate::schema::PlayerWallet as M22s4WalletRow;
@@ -259,9 +230,7 @@ use spacetimedb::Identity;
 // ===========================================================================
 
 /// A literal backslash, built from its byte so this file never carries a
-/// backslash adjacent to a double quote (the rb22p_scan_hygiene ban, which
-/// exists because that pair desynchronises a naive quote-pairing stripper in
-/// every eval that concatenates this crate).
+/// backslash adjacent to a double quote.
 fn m22s4_bs() -> char {
     char::from(92u8)
 }
@@ -497,6 +466,18 @@ fn m22s4_str(s: &str) -> String {
     let mut out = String::new();
     super::json_str_into(&mut out, s);
     out
+}
+
+/// The control-character escape boundary is EXACTLY below U+0020: U+001F is
+/// escaped as `\u001f`, while the space (U+0020) passes through verbatim.
+///
+/// kills: the control-character test widened from `<` to `<=` (every space in
+/// an exported string would become `\u0020`).
+#[test]
+fn json_escape_boundary_is_below_space() {
+    assert_eq!(m22s4_esc("\u{1f}"), "\\u001f");
+    assert_eq!(m22s4_esc("a b"), "a b");
+    assert_eq!(m22s4_str(" "), "\" \"");
 }
 
 /// `json_u64_into` over a fresh buffer.
@@ -2092,7 +2073,7 @@ fn m22s4_exporter_totality_negative_fixtures() {
          data-lifecycle classification never reviewed."
     );
 
-    // --- negative 3: an exporter for a NON-exportable table (PRV1-12) -------
+    // --- negative 3: an exporter for a NON-exportable table -------
     let exporters_false_table: [(&str, super::ExportRows); 2] =
         [("alpha", reader), ("gamma", reader)];
     assert!(
@@ -3268,7 +3249,7 @@ fn m22s4_cooldown_polarity_differs_from_is_deletion_due() {
 //
 // `plan_export_reap(rows, now_ms, ttl_ms, batch)` collects the ids whose age is
 // AT LEAST ttl_ms under saturating arithmetic, sorts them ascending and
-// truncates to batch. It sorts INTERNALLY (ADR-0238 D3 amendment): the shell has
+// truncates to batch. It sorts INTERNALLY: the shell has
 // no sort statement, so removing a shell sort cannot silently starve old chunks
 // past their expiry, and the batch cap's oldest-first fairness property is a
 // property of the seam rather than of an unpinned caller.
@@ -3541,14 +3522,7 @@ fn rb48_ttl_is_exactly_seven_days_in_milliseconds() {
 }
 
 // ===========================================================================
-// rb-65 (ADR-0243) — BEHAVIOURAL ARM. Applied WITH the fix, never before it.
-//
-// These two tests CALL `export_fields`, so on the pre-fix tree they are a BUILD
-// error rather than a by-name RED — and a build error takes every test in the
-// crate with it, which is indistinguishable from a broken tree and proves
-// nothing about this criterion (the rb-22 EO-6 / rb-40 precedent). The RED arm
-// above lands first and is captured by name; this block lands in the same commit
-// as the implementation.
+// BEHAVIOURAL ARM.
 //
 // WHY THEY EXIST AT ALL. Every other rb-65p clause is a SOURCE SCAN, and a
 // source scan can only ever say that the right TEXT is in the right place. These
@@ -3562,7 +3536,7 @@ fn rb48_ttl_is_exactly_seven_days_in_milliseconds() {
 //
 // `request_data_export` itself is not natively executable (`native_host_tests.rs`
 // models no INSERT, and the reducer reaches the row-count syscall), so there is
-// no behavioural proof of the emission — an honest limit (ADR-0243), not a gap.
+// no behavioural proof of the emission — an honest limit, not a gap.
 // ===========================================================================
 
 /// A deterministic fixture identity. This module owns no `use super::*`, so the
@@ -3593,7 +3567,7 @@ fn rb65p_ident(b: u8) -> spacetimedb::Identity {
 ///        loses precision above 2^53), and which no panel or alert can compare
 ///        numerically;
 ///        a `purged as u32` narrowing through `json_u32_into`, which renders
-///        4_294_967_296 as 0 on the HOST. Scoped honestly (ADR-0243 D3): on
+///        4_294_967_296 as 0 on the HOST. Scoped honestly: on
 ///        wasm32 `usize` IS `u32`, so this input is unreachable in the shipped
 ///        module and the clause pins the ENCODER CONTRACT — the count rendered
 ///        at the width the purge helper returns, with no cast between them —
@@ -3716,13 +3690,13 @@ fn rb65p_export_fields_is_exact() {
 ///        instead of four, and last-key-wins would let the smuggled value forge
 ///        the event type);
 ///        an envelope whose evt is not first (the relay reconstruction and the
-///        Loki label set both key on that position being stable, ADR-0180);
+///        Loki label set both key on that position being stable);
 ///        an empty fragment, which would leave the envelope with one key and the
 ///        re-export purge unobserved.
 #[test]
 fn rb65p_export_line_composes_into_the_envelope() {
     let dq = rb22p_dq();
-    let evt = concat!("data", "_export");
+    let evt = "data_export";
     let hex = rb65p_ident(9).to_string();
     let line = crate::observability::build_log_line(
         evt,
@@ -3805,13 +3779,8 @@ const RB85_MARSHAL_RS: &str = include_str!("marshal.rs");
 const RB85_VIS_WINDOW: usize = 24;
 
 /// The squashed `fn` needle for the injected-clock marshal in marshal.rs.
-///
-/// Fragmented like every other declaration needle in this block: a dozen evals
-/// concatenate every `.rs` under `server-module/src`, this file included, and a
-/// raw-corpus scanner must never be able to mistake a pinned literal here for a
-/// live declaration of a fn that really lives in another module.
 fn rb85_nd_clock_fn() -> String {
-    concat!("fnnow", "_ms(").to_string()
+    "fnnow_ms(".to_string()
 }
 
 /// THE FROZEN INJECTED-CLOCK BODY, squashed (`marshal::now_ms`).
@@ -3827,7 +3796,7 @@ fn rb85_clock_body_pin() -> String {
 
 /// The injected-clock DECLARATION as source text (positive-control input).
 fn rb85_clock_decl_source() -> String {
-    concat!("fn now", "_ms(ctx: &ReducerContext) -> i64 ").to_string()
+    "fn now_ms(ctx: &ReducerContext) -> i64 ".to_string()
 }
 
 /// The injected-clock BODY as whitespace-bearing source text (control input).
@@ -3877,14 +3846,14 @@ const RB85_EXTREMES: [(i64, i64, i64, bool); 7] = [
 // against the shipped seam, and a body equality pin.
 // ===========================================================================
 
-/// T1 (plan §12 roster; ledger X1): `export_reap_cutoff_ms` is exactly the
-/// SATURATING subtraction of the ttl from the clock, checked by value.
+/// T1: `export_reap_cutoff_ms` is exactly the SATURATING subtraction of the ttl
+/// from the clock, checked by value.
 ///
-/// The wall-clock row is the red-team's addition (plan §11 F1): every other row
+/// The wall-clock row is the red-team's addition: every other row
 /// is an extreme or a toy, and a cutoff keyed on a realistic live band would
 /// pass a table made only of extremes while returning `now` in production.
 ///
-/// Kills (plan §6): M4 `saturating_add` for `saturating_sub` — row `(0, TTL)`
+/// Kills: M4 `saturating_add` for `saturating_sub` — row `(0, TTL)`
 /// separates them by sign; M5 a plain `-`, which PANICS on row
 /// `(i64::MIN, TTL)` because overflow checks are on in the dev and release
 /// profiles alike, and a panic inside a scheduled reducer aborts its whole
@@ -3947,9 +3916,8 @@ fn rb85_export_reap_cutoff_is_saturating_ttl_subtraction() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
 
-    /// T2 (plan §12 roster; ledger X1): the btree range `..=cutoff` selects
-    /// EXACTLY the seam's expired set on the reachable domain, and is a
-    /// SUPERSET of it everywhere else.
+    /// T2: the btree range `..=cutoff` selects EXACTLY the seam's expired set on
+    /// the reachable domain, and is a SUPERSET of it everywhere else.
     ///
     /// This is the load-bearing property of the whole slice. The range is an
     /// OPTIMISATION over `plan_export_reap`, never a second retention policy:
@@ -3976,7 +3944,7 @@ proptest! {
     /// retention constant) and the reachable clock range beside the full i64
     /// range, so every case exercises a live branch.
     ///
-    /// Kills (plan §2/§6): any under-reading cutoff, including M2 `..cutoff`
+    /// Kills: any under-reading cutoff, including M2 `..cutoff`
     /// and the ttl-scaled and ttl-transposed families, by the boundary clause;
     /// a cutoff that disagrees with the seam at saturation, by the extremes;
     /// M-RT1's band-keyed cutoff on the sampled cases that land inside the
@@ -3988,7 +3956,7 @@ proptest! {
     /// fns. It does NOT prove the helper passes the cutoff to the range (T6),
     /// that the range is inclusive in the SOURCE (T6), or that a row the range
     /// yields is actually deleted — the execution proof over a real datastore
-    /// is the rb109_ block at the end of this file (ledger X9, closed).
+    /// is the rb109_ block at the end of this file.
     #[test]
     fn rb85_cutoff_range_matches_the_seam_expired_set(
         now in 0i64..=(1i64 << 53),
@@ -4062,9 +4030,9 @@ proptest! {
 // by one four-token fn that had no test at all.
 // ===========================================================================
 
-/// T10 (plan §13 RT-F5, round-3 RT-A1; ledger X1): `marshal::now_ms` converts the
-/// injected MICROSECOND timestamp to MILLISECONDS and clamps at zero, by value —
-/// and its BODY is frozen, because a value table alone cannot say so.
+/// T10: `marshal::now_ms` converts the injected MICROSECOND timestamp to
+/// MILLISECONDS and clamps at zero, by value — and its BODY is frozen, because a
+/// value table alone cannot say so.
 ///
 /// WHY THIS IS rb-85's BUSINESS. Every other pin in this slice is RELATIVE: the
 /// cutoff is `now - ttl`, the seam compares `now - created` against the ttl, and
@@ -4311,7 +4279,7 @@ fn rb86_groups(table: &[(u64, i64, u8)]) -> Vec<((i64, u8), usize)> {
 // source text: T6 and T7 own the source and say so.
 // ===========================================================================
 
-/// T1 (plan §9.4; ledger X1, X7, X8): the bundle-selection seam, by value.
+/// T1: the bundle-selection seam, by value.
 ///
 /// Row order is deliberate — first-failure-wins, so the rows a registered mutant
 /// is designated to die on come first and are not shadowed by a neighbour that
@@ -4507,9 +4475,9 @@ fn rb86_reap_bundle_plan_value_table() {
     );
 }
 
-/// T2 (plan §9.4; ledger X1, X7, X8): the seam's structural post-conditions over
-/// ONE pinned, ragged fixture where window order, id order and stamp order are
-/// three different orders and one stamp carries two rows.
+/// T2: the seam's structural post-conditions over ONE pinned, ragged fixture
+/// where window order, id order and stamp order are three different orders and
+/// one stamp carries two rows.
 ///
 /// The VACUITY clause runs first and the exact value last, deliberately: every
 /// structural clause between them — distinct, ascending, subset, bounded,
@@ -4604,8 +4572,7 @@ fn rb86_reap_bundle_plan_is_distinct_and_oldest_first() {
 // T3 — ONE TICK OVER A SIMULATED TABLE. The oracle is the post-tick table.
 // ===========================================================================
 
-/// T3 (plan §9.4; ledger X1, X7, X8): a tick leaves every bundle whole under an
-/// oversized population.
+/// T3: a tick leaves every bundle whole under an oversized population.
 ///
 /// WHAT THIS PROVES AND WHAT IT DOES NOT, stated rather than implied. The model
 /// here is the DESIGN: window, plan, delete-every-row-carrying-a-planned-stamp.
@@ -4900,7 +4867,7 @@ fn rb86_bundle_reap_is_all_or_nothing_under_an_oversized_population() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
-    /// T4 (plan §9.4; ledger X1): the plan is exactly the distinct creation
+    /// T4: the plan is exactly the distinct creation
     /// stamps of the rows the SHIPPED expiry seam marks expired, oldest first,
     /// truncated to the write budget.
     ///
@@ -4921,7 +4888,7 @@ proptest! {
     /// HONEST LIMIT: this is an arithmetic relationship between two pure fns. It
     /// does not prove the helper hands the seam its window (T7, and the revised
     /// helper body pin), nor that the datastore deletes what the plan names —
-    /// the execution proof over seeded rows is the rb109_ block (ledger X9, closed).
+    /// the execution proof over seeded rows is the rb109_ block.
     #[test]
     fn rb86_reap_bundle_plan_agrees_with_the_shipped_expiry_seam(
         stamps in proptest::collection::vec(
@@ -5011,9 +4978,9 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
 
-    /// T5 (plan §9.4; ledger X1, X7, X8): over random ragged populations, one
-    /// tick leaves every bundle whole, makes progress, touches nothing fresh,
-    /// and does not depend on the order the window arrived in.
+    /// T5: over random ragged populations, one tick leaves every bundle whole,
+    /// makes progress, touches nothing fresh, and does not depend on the order
+    /// the window arrived in.
     ///
     /// The stamp domain is bounded well inside the reachable clock band so the
     /// model's cutoff comparison and `plan_export_reap`'s saturating age test
@@ -5185,7 +5152,7 @@ proptest! {
 /// at all.
 ///
 /// Arguments in RECORD order, `(read, due, planned, reaped)` — the data-flow
-/// order rb-115 (ADR-0269) inserted `due` into. `rb109_tick` returns the same
+/// order rb-115 inserted `due` into. `rb109_tick` returns the same
 /// four counts APPEND-ONLY instead, `(read, planned, reaped, due)`, because its
 /// callers read the first three by position; the two orders differ on purpose.
 fn rb87_tick(read: usize, due: usize, planned: usize, reaped: usize) -> super::ExportReapTick {
@@ -5199,7 +5166,7 @@ fn rb87_tick(read: usize, due: usize, planned: usize, reaped: usize) -> super::E
 
 /// X1 (behavioural, the payload): `reap_fields` renders EXACTLY the sanctioned
 /// keys with BARE counts, in the order read, due, planned, reaped. The NAME keeps
-/// its rb-87 `three` (the ADR-0238 amendment cites it); since rb-115 (ADR-0269)
+/// its rb-87 `three` (the ADR-0238 amendment cites it); since rb-115
 /// it pins FOUR counts.
 ///
 /// The counts are PAIRWISE DISTINCT on the three middle rows (the quiet-hour zero
@@ -5320,7 +5287,7 @@ fn rb87_reap_fields_renders_three_bare_counts() {
 ///        the evt renamed, which retires every operator query keyed on it;
 ///        a key beyond the four counts, or a quoted count, by byte equality
 ///        against a line this test builds key by key (four count keys since
-///        rb-115 inserted `due`, ADR-0269).
+///        rb-115 inserted `due`).
 #[test]
 fn rb87_reap_line_is_the_exact_json_envelope() {
     let q = rb22p_dq();
@@ -5357,14 +5324,14 @@ fn rb87_reap_line_is_the_exact_json_envelope() {
 
 /// The squashed `fn` needle for the tier-selection seam.
 fn rb107_nd_tier_fn() -> String {
-    concat!("fnexport_live", "_row_cap(").to_string()
+    "fnexport_live_row_cap(".to_string()
 }
 
 /// The frozen squashed SIGNATURE slice of the tier seam. It starts at the `fn`
 /// needle, so the (absent) visibility keyword is not part of it and is pinned
 /// separately by the twenty-four-byte window.
 ///
-/// RE-FROZEN BY rb-132 (ADR-0275): two plain bools, account FIRST. Still
+/// RE-FROZEN BY rb-132: two plain bools, account FIRST. Still
 /// context-free, which is the purity property this pin exists for, and the
 /// parameter order is now part of the frozen text as well.
 fn rb107_tier_sig_pin() -> String {
@@ -5378,29 +5345,18 @@ fn rb107_tier_sig_pin() -> String {
 /// THE FROZEN SQUASHED BODY of the tier seam. Names all THREE ceilings, so a
 /// tier collapse that returns one of them from two arms cannot satisfy it.
 ///
-/// RE-FROZEN BY rb-132 (ADR-0275): the account arm is tested first and ignores
+/// RE-FROZEN BY rb-132: the account arm is tested first and ignores
 /// the wallet bit; the wallet bit only splits the callers without an account.
-/// The newcomer name is assembled so that no literal in this file opens with
-/// that constant's full prefix — the rb-110 live-roster rule, which would
-/// otherwise red on the tree before the constant exists.
 fn rb107_tier_body_pin() -> String {
-    [
-        "ifhas_account{",
-        concat!("EXPORT_LIVE", "_ROW_CAP}elseifhas_wallet{"),
-        concat!("EXPORT_ANON", "_LIVE_ROW_CAP}else{"),
-        concat!("EXPORT_", "NEWCOMER_LIVE_ROW_CAP}"),
-    ]
-    .concat()
+    "ifhas_account{EXPORT_LIVE_ROW_CAP}elseifhas_wallet{\
+     EXPORT_ANON_LIVE_ROW_CAP}else{EXPORT_NEWCOMER_LIVE_ROW_CAP}"
+        .to_string()
 }
 
 /// The tier seam's DECLARATION line as whitespace-bearing source text (rb-132's
 /// two-bool form, 68 columns flat, so rustfmt keeps it on one line).
 fn rb107_tier_decl_source() -> String {
-    concat!(
-        "fn export_live",
-        "_row_cap(has_account: bool, has_wallet: bool) -> u64 "
-    )
-    .to_string()
+    "fn export_live_row_cap(has_account: bool, has_wallet: bool) -> u64 ".to_string()
 }
 
 /// The tier seam's BODY as whitespace-bearing source text (rb-132's three arms,
@@ -5408,11 +5364,11 @@ fn rb107_tier_decl_source() -> String {
 fn rb107_tier_body_source() -> String {
     [
         "\n    if has_account {\n        ",
-        concat!("EXPORT_LIVE", "_ROW_CAP\n"),
+        "EXPORT_LIVE_ROW_CAP\n",
         "    } else if has_wallet {\n        ",
-        concat!("EXPORT_ANON", "_LIVE_ROW_CAP\n"),
+        "EXPORT_ANON_LIVE_ROW_CAP\n",
         "    } else {\n        ",
-        concat!("EXPORT_", "NEWCOMER_LIVE_ROW_CAP\n"),
+        "EXPORT_NEWCOMER_LIVE_ROW_CAP\n",
         "    }\n",
     ]
     .concat()
@@ -5429,10 +5385,10 @@ fn rb107_tier_body_source() -> String {
 /// that never held it.
 fn rb107_blind_count(needle: &str) -> usize {
     let mut prose = String::new();
-    prose.push_str(concat!("fn rb107", "_blindness_decoy() "));
+    prose.push_str("fn rb107_blindness_decoy() ");
     prose.push('{');
     prose.push_str("\n    ");
-    prose.push_str(concat!("/", "/ "));
+    prose.push_str("// ");
     prose.push_str(needle);
     prose.push_str("\n    let s = ");
     prose.push(rb22p_dq());
@@ -5679,7 +5635,7 @@ const RB107_ACCOUNTS_RS: &str = include_str!("accounts.rs");
 
 /// The squashed `fn` needle for the crate's account-holder SSOT predicate.
 fn rb107_nd_holder_fn() -> String {
-    concat!("fnis_account", "_holder(").to_string()
+    "fnis_account_holder(".to_string()
 }
 
 /// THE FROZEN SQUASHED BODY of that predicate (accounts.rs).
@@ -5690,19 +5646,14 @@ fn rb107_nd_holder_fn() -> String {
 /// — while the whole suite stays green. The tier is only as true as the question
 /// it asks.
 fn rb107_holder_body_pin() -> String {
-    [
-        concat!("ctx", ".db."),
-        concat!("acc", "ount()"),
-        ".identity().find(identity).is_some()",
-    ]
-    .concat()
+    "ctx.db.account().identity().find(identity).is_some()".to_string()
 }
 
 /// That predicate's DECLARATION line as whitespace-bearing source text — the
 /// positive control's input, spelled independently of the pin above.
 fn rb107_holder_decl_source() -> String {
     [
-        concat!("pub(crate) fn is_account", "_holder(ctx: &ReducerContext, "),
+        "pub(crate) fn is_account_holder(ctx: &ReducerContext, ",
         "identity: Identity) -> bool ",
     ]
     .concat()
@@ -5710,13 +5661,7 @@ fn rb107_holder_decl_source() -> String {
 
 /// That predicate's BODY as whitespace-bearing source text (control input).
 fn rb107_holder_body_source() -> String {
-    [
-        "\n    ",
-        concat!("ctx", ".db."),
-        concat!("acc", "ount()"),
-        ".identity().find(identity).is_some()\n",
-    ]
-    .concat()
+    "\n    ctx.db.account().identity().find(identity).is_some()\n".to_string()
 }
 
 /// X1 (ledger anchor; register rows M1-M5): the admission predicate is EXACT at
@@ -5850,7 +5795,7 @@ fn rb107_admission_is_exact_at_both_caps_and_saturates() {
 }
 
 /// X1 (ledger anchor; register rows M7, M8, M28): the cap a caller gets is
-/// TIERED on whether they hold an account row — and, since rb-132 (ADR-0275),
+/// TIERED on whether they hold an account row — and, since rb-132,
 /// on whether a caller without one holds a wallet row — and the seam that
 /// decides it is declared once, private, with a frozen signature and a frozen
 /// body.
@@ -5967,7 +5912,7 @@ fn rb107_cap_selection_is_tiered_by_account() {
          spellings: an enumerated ban is satisfied by the restricted visibility forms."
     );
     assert!(
-        !window.contains(concat!("#", "[")),
+        !window.contains("#["),
         "[rb107/tier-vis]: `{needle}` is preceded by an ATTRIBUTE — the {RB85_VIS_WINDOW} squashed \
          bytes before it read {window:?}; ZERO is allowed. A conditional-compilation twin of this \
          seam would ship one tier decision to the test target and another to the wasm the database \
@@ -5999,7 +5944,7 @@ fn rb107_cap_selection_is_tiered_by_account() {
 
     // --- [rb107/tier-ssot]: the QUESTION the tier asks ------------------------
     //
-    // The seam above maps two bools onto three ceilings (rb-132). What the
+    // The seam above maps two bools onto three ceilings. What the
     // ACCOUNT bool means lives in another module, and nothing in this crate
     // pinned it before rb-107 (the wallet bool's twin clause is rb-132's): patching
     // `is_account_holder` to `true` deletes the anonymous tier for every caller
@@ -6062,7 +6007,7 @@ fn rb107_cap_selection_is_tiered_by_account() {
          rests on it; accounts.rs owns the decision, and this clause only makes the decision \
          load-bearing visible."
     );
-    let holder_named = concat!("is_account", "_holder(");
+    let holder_named = "is_account_holder(";
     let n_asked = rb22p_count(&squashed, holder_named);
     assert_eq!(
         n_asked, 1,
@@ -6152,7 +6097,7 @@ fn rb107_cap_selection_is_tiered_by_account() {
 // (paren-bearing and paren-less alike).
 //
 // THE HOST LOCK IS NOT REENTRANT. A `ctx.db` range iterator that is still alive
-// holds no lock between syscalls, but the design rule (ADR-0222 amendment, D9)
+// holds no lock between syscalls, but the design rule
 // is that no method that reads or moves the STORE — seed, remove, rows — may be
 // called while one is in scope: the iterator was handed its rows when it opened.
 // `open_iters` reads the iterator COUNT, not the store, and is the one fixture
@@ -6174,17 +6119,6 @@ fn rb107_cap_selection_is_tiered_by_account() {
 // 340) beside the frozen body pin, not the count alone. (d) A cfg attribute above
 // a test attribute disables the test while every text census stays green; only
 // the ledger's filtered run count (E1) and the suite total (X2) see that.
-//
-// SCAN HYGIENE (rb22p_scan_hygiene scans THIS FILE): line comments only, no
-// block-comment delimiter, no raw-string prefix, no output or debug macro token,
-// no backslash before a double quote, and no double quote inside any comment in
-// this section. The table and column names handed to the fixture are assembled
-// from concat! fragments and are never spelled contiguously, so a raw-corpus
-// scanner that concatenates this file cannot mistake a fixture argument for a
-// live declaration. The deliberate exceptions are the LIVE ones: the call to
-// the private helper (`reap_expired_export` + `_bundles`) inside rb109_tick, the
-// three constants read by their real names, and the ctx.db chain the host-side
-// oracles take — a value oracle has to reach the real item.
 // ===========================================================================
 
 // The generated accessor TRAIT for the export chunk table, imported for the
@@ -6213,7 +6147,7 @@ use crate::schema::export_bundle;
 /// Returns the tick record as a bare tuple, so the private record type is never
 /// named here: `(read, planned, reaped, due)` — the rows the bounded window
 /// decoded, the creation stamps the bundle seam planned, the datastore's own count
-/// of the rows the point deletes removed, and (since rb-115, ADR-0269) the
+/// of the rows the point deletes removed, and (since rb-115) the
 /// distinct expired stamps the window held BEFORE the stamp cap. The third can
 /// EXCEED the first: a stamp selected from inside the window carries its tail
 /// beyond the window's edge.
@@ -6284,17 +6218,12 @@ fn rb109_row(
 /// Register the export chunk table with the native host, keyed on the creation
 /// stamp — the single-column btree index the reaper reads and deletes through.
 ///
-/// The two names are the only strings this block hands the host, and they are
-/// assembled from fragments for the reason the module header gives. The index
+/// The two names are the only strings this block hands the host. The index
 /// name itself is DERIVED inside the fixture from these two, never passed in.
 fn rb109_table(
     fx: &crate::native_host_tests::Fixture,
 ) -> crate::native_host_tests::Handle<'_, crate::schema::ExportBundle, i64> {
-    fx.table_keyed(
-        concat!("export", "_bundle"),
-        concat!("created_at", "_ms"),
-        |r| r.created_at_ms,
-    )
+    fx.table_keyed("export_bundle", "created_at_ms", |r| r.created_at_ms)
 }
 
 /// Seed one whole population: every bundle in LIST order, `chunks` rows each, so
@@ -6972,7 +6901,7 @@ fn rb109_stamp_cap_binds_when_the_window_holds_more_than_sixteen_stamps() {
     );
 }
 
-/// THE HOST MODEL'S OWN CONTROL (ADR-0222 amendment): the modelled range scan
+/// THE HOST MODEL'S OWN CONTROL: the modelled range scan
 /// honours every bound kind on each side, orders by DECODED value across
 /// negative keys, and keeps equal keys in seed order.
 ///
@@ -7162,7 +7091,7 @@ fn rb109_host_range_model_honours_every_bound_kind_negative_keys_and_ties() {
     );
 }
 
-/// THE ITERATOR LIFECYCLE (ADR-0222 amendment, D9): two host iterators can be
+/// THE ITERATOR LIFECYCLE: two host iterators can be
 /// live at once without aliasing, an abandoned one is CLOSED rather than
 /// leaked, and a row larger than the pooled buffer is read back whole.
 ///
@@ -7316,17 +7245,12 @@ fn rb111_mint(ctx: &spacetimedb::ReducerContext, now: i64) -> Result<i64, String
 /// through.
 ///
 /// Re-spelled rather than shared with the rb-109 fixture: that block's helper
-/// roster is CLOSED and its tests are a different slice's evidence. The two
-/// names are assembled from fragments and the index name itself is DERIVED
-/// inside the fixture from them, never passed in.
+/// roster is CLOSED and its tests are a different slice's evidence. The index
+/// name itself is DERIVED inside the fixture from the two names, never passed in.
 fn rb111_table(
     fx: &crate::native_host_tests::Fixture,
 ) -> crate::native_host_tests::Handle<'_, crate::schema::ExportBundle, i64> {
-    fx.table_keyed(
-        concat!("export", "_bundle"),
-        concat!("created_at", "_ms"),
-        |r| r.created_at_ms,
-    )
+    fx.table_keyed("export_bundle", "created_at_ms", |r| r.created_at_ms)
 }
 
 /// A distinct owner identity per seeded bundle.
@@ -7419,7 +7343,7 @@ fn rb111_expected_free(occupied: &[i64], now: i64, width: i64) -> Option<i64> {
     None
 }
 
-/// T1 (ledger X1), THE VALUE ORACLE: the creation-stamp mint returns the FIRST
+/// T1, THE VALUE ORACLE: the creation-stamp mint returns the FIRST
 /// FREE millisecond at or after the injected clock, and refuses when the whole
 /// probe window is occupied — EXECUTED against the native host over real rows.
 ///
@@ -7460,8 +7384,8 @@ fn rb111_expected_free(occupied: &[i64], now: i64, width: i64) -> Option<i64> {
 fn rb111_mint_returns_the_first_free_stamp_at_or_after_the_clock() {
     let w = crate::privacy::EXPORT_STAMP_PROBE_WINDOW_MS;
     let now: i64 = 1_760_000_000_000;
-    let reason = concat!("export_reject_stamp", "_contention");
-    let index = concat!("export", "_bundle_created_at", "_ms_idx_btree");
+    let reason = "export_reject_stamp_contention";
+    let index = "export_bundle_created_at_ms_idx_btree";
 
     assert!(
         w >= 2,
@@ -7634,7 +7558,7 @@ fn rb111_mint_returns_the_first_free_stamp_at_or_after_the_clock() {
     );
 }
 
-/// T2 (ledger X1), THE RESIDUAL'S OWN SENTENCE: a burst of requests at ONE
+/// T2, THE RESIDUAL'S OWN SENTENCE: a burst of requests at ONE
 /// millisecond takes W DISTINCT creation stamps, and the next one is refused
 /// until the clock moves.
 ///
@@ -7664,7 +7588,7 @@ fn rb111_mint_returns_the_first_free_stamp_at_or_after_the_clock() {
 #[test]
 fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full() {
     let w = crate::privacy::EXPORT_STAMP_PROBE_WINDOW_MS;
-    let reason = concat!("export_reject_stamp", "_contention");
+    let reason = "export_reject_stamp_contention";
     let now: i64 = 1_760_000_000_000;
     let chunks =
         u32::try_from(m22s4_manifest_exportable().len()).expect("rb111: the manifest fits a u32");
@@ -7750,7 +7674,7 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
     );
 }
 
-/// T3 (ledger X1), THE CRITERION END TO END: eighteen bundles committed through
+/// T3, THE CRITERION END TO END: eighteen bundles committed through
 /// the mint at one clock, then ONE reaper tick — sixteen WHOLE BUNDLES leave,
 /// not one delete unit.
 ///
@@ -7972,7 +7896,7 @@ fn rb111_one_tick_reaps_sixteen_whole_bundles_from_a_same_millisecond_burst() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
 
-    /// T4 (ledger X1), THE RULE rather than a list of cases: over random
+    /// T4, THE RULE rather than a list of cases: over random
     /// occupancy the minted stamp is the MINIMUM FREE millisecond at or after
     /// the clock, and the mint refuses exactly when the whole window is taken.
     ///
@@ -8009,7 +7933,7 @@ proptest! {
         shift in -3i64..4i64,
     ) {
         let w = crate::privacy::EXPORT_STAMP_PROBE_WINDOW_MS;
-        let reason = concat!("export_reject_stamp", "_contention");
+        let reason = "export_reject_stamp_contention";
         let now = base.saturating_add(shift);
         let mut occupied: Vec<i64> = offsets.iter().map(|o| base.saturating_add(*o)).collect();
         occupied.sort_unstable();
@@ -8182,7 +8106,7 @@ fn rb115_tick_over(
     (tick, survivors)
 }
 
-/// T1 (ledger X1), THE VALUE ORACLE: the pure count returns the number of
+/// T1, THE VALUE ORACLE: the pure count returns the number of
 /// DISTINCT expired creation stamps in the window, with NO cap — past the stamp
 /// cap, past the read cap, at both i64 extremes and at a TTL the module does
 /// not ship.
@@ -8382,7 +8306,7 @@ fn rb115_count_is_the_distinct_expired_stamps_before_the_cap() {
     );
 }
 
-/// T2 (ledger X1), THE EARS PROOF, EXECUTED: one tick through the SHIPPED
+/// T2, THE EARS PROOF, EXECUTED: one tick through the SHIPPED
 /// helper in the native host reports `due` beside `planned`, and `due` is a
 /// number no function of the three old counts can recover.
 ///
@@ -8590,7 +8514,7 @@ fn rb132_tier_rows() -> &'static [(&'static str, bool, bool, u64)] {
     ]
 }
 
-/// T0 (ledger X1), THE VALUE ORACLE: the newcomer ceiling is exactly half the
+/// T0, THE VALUE ORACLE: the newcomer ceiling is exactly half the
 /// anonymous one, the three ceilings are strictly ordered, and the tier seam
 /// maps all FOUR inputs onto them, each checked against the named constant AND
 /// the literal.

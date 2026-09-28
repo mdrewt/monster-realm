@@ -1,4 +1,4 @@
-//! `npc` — server-module domain submodule (M12b, ADR-0056/0069).
+//! `npc` — server-module domain submodule.
 //!
 //! NPC wander (seeded, deterministic via game_core::npc_decide), dialogue
 //! reducers (`talk`, `advance_dialogue`, `dismiss_dialogue`), quest trigger
@@ -13,15 +13,14 @@ use crate::schema::{
 use game_core::{
     apply_choice, apply_effects, apply_node_auto_effects, find_entry_node, process_trigger,
     DialogueEffect, PlayerDialogueState, PlayerQuestProgress, QuestAdvance, TriggerEvent,
+    TALK_RANGE,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
 
-const TALK_RANGE: i64 = 2;
-
 /// Emit window for the dangling-`quest_id` warn: at most one `log::warn!` per
-/// 60_000 ms of the caller's injected clock (ADR-0003 — never a wall clock).
+/// 60_000 ms of the caller's injected clock.
 ///
-/// This is the concrete realization of the spec's "once per sync" (ADR-0173 D4):
+/// This is the concrete realization of the spec's "once per sync":
 /// there is no sync-generation counter to hang a literal per-sync gate on, and
 /// quest content can only change via a republish, which reinstantiates the wasm
 /// module and therefore resets this process static — so "once per window per
@@ -29,31 +28,29 @@ const TALK_RANGE: i64 = 2;
 const QUEST_DEF_MISSING_WINDOW_MS: i64 = 60_000;
 
 /// Process-static limiter for the dangling-`quest_id` warn, reusing the
-/// `movement` limiter type (ADR-0170 D4). Deliberately NOT keyed per `quest_id`:
+/// `movement` limiter type. Deliberately NOT keyed per `quest_id`:
 /// in a burst only the first offender's id is logged and the rest collapse into
-/// the `suppressed` count — an accepted trade recorded in ADR-0173 D4.
+/// the `suppressed` count.
 static QUEST_DEF_MISSING_LIMITER: crate::movement::RateLimiter =
     crate::movement::RateLimiter::new();
 
 /// Emit window for the quest-defs LOAD-ERROR line: at most one ERROR emission
-/// per 60_000 ms of the caller's injected clock (ADR-0003 — never a wall
-/// clock). Its OWN constant rather than `QUEST_DEF_MISSING_WINDOW_MS`: the two
+/// per 60_000 ms of the caller's injected clock.
+/// Its OWN constant rather than `QUEST_DEF_MISSING_WINDOW_MS`: the two
 /// sites report different faults at different severities and cardinalities
 /// (one dangling row at WARN vs the whole registry failing to parse at ERROR,
 /// on every `talk`), so retuning one must never silently retune the other —
 /// the same choice `accounts.rs` makes with its own 60 s constant. Same value
-/// today; each is value-pinned by its own tooth, so drift is visible.
+/// today.
 const QUEST_DEFS_LOAD_ERR_WINDOW_MS: i64 = 60_000;
 
-/// Process-static limiter for the quest-defs load-error line — the named
-/// follow-up of ADR-0173 D4, realized with ADR-0170 D4's type. A SECOND,
-/// INDEPENDENT limiter on purpose: `cached_quest_defs()` caches its `Err` for
-/// the process lifetime (LazyLock) and the public `talk` reducer reaches this
-/// arm on every call behind joined/zone/range checks only, so after a
-/// malformed-content republish one player looping `talk` is an unbounded
-/// ERROR-level stream. Sharing `QUEST_DEF_MISSING_LIMITER` would let either
-/// fault mask the other — the independence rationale ADR-0170 D4 records for
-/// the two `movement.rs` statics. Reset by a republish, like its sibling.
+/// Process-static limiter for the quest-defs load-error line.
+/// A SECOND, INDEPENDENT limiter on purpose: `cached_quest_defs()` caches its
+/// `Err` for the process lifetime (LazyLock) and the public `talk` reducer
+/// reaches this arm on every call behind joined/zone/range checks only, so
+/// after a malformed-content republish one player looping `talk` is an
+/// unbounded ERROR-level stream. Sharing `QUEST_DEF_MISSING_LIMITER` would
+/// let either fault mask the other. Reset by a republish, like its sibling.
 static QUEST_DEFS_LOAD_ERR_LIMITER: crate::movement::RateLimiter =
     crate::movement::RateLimiter::new();
 
@@ -132,7 +129,7 @@ fn write_player_dialogue_state(ctx: &ReducerContext, owner: Identity, state: &Pl
 /// `apply_node_auto_effects` or `apply_effects`).
 /// `StartQuest` → inserts a `player_quest` row if not already active/done.
 /// `GrantItem` → calls `grant_item`.
-/// `GrantXp` → no-op (deferred to M12b-tail, D-4).
+/// `GrantXp` → no-op.
 fn apply_effects_to_db(
     ctx: &ReducerContext,
     owner: Identity,
@@ -179,17 +176,17 @@ fn apply_quest_trigger(
     event: &TriggerEvent,
     state: &mut PlayerDialogueState,
 ) {
-    // Quest-defs cache: compile-time-embedded RON, parsed once per process (ADR-0089).
+    // Quest-defs cache: compile-time-embedded RON, parsed once per process.
     let quest_defs = match crate::content_cache::cached_quest_defs() {
         Ok(q) => q,
         Err(e) => {
-            // 12r-d (ADR-0170 D5): RON parse-error text may contain quotes —
+            // RON parse-error text may contain quotes —
             // escape before interpolating into the hand-built JSON line.
-            // 20r-c (ADR-0173 D4 follow-up): the Err is cached for the process
-            // lifetime and `talk` reaches this arm on every call, so the line is
-            // gated by its OWN limiter at QUEST_DEFS_LOAD_ERR_WINDOW_MS of the
-            // injected clock (ADR-0003), reporting `suppressed` so it is never
-            // silently lossy. Control flow is unchanged: swallow and return.
+            // the Err is cached for the process lifetime and `talk` reaches this
+            // arm on every call, so the line is gated by its OWN limiter at
+            // QUEST_DEFS_LOAD_ERR_WINDOW_MS of the injected clock, reporting
+            // `suppressed` so it is never silently lossy. Control flow is
+            // unchanged: swallow and return.
             let escaped = crate::guards::json_escape(&e);
             if let Some(suppressed) = QUEST_DEFS_LOAD_ERR_LIMITER
                 .check(crate::marshal::now_ms(ctx), QUEST_DEFS_LOAD_ERR_WINDOW_MS)
@@ -211,11 +208,11 @@ fn apply_quest_trigger(
         let Some(def) = quest_defs.iter().find(|d| d.id == row.quest_id) else {
             // A `player_quest` row whose id no longer resolves to a loaded
             // definition: the player's quest silently stops advancing. Surface it
-            // (ADR-0173 D4) without changing control flow — the remaining rows
+            // without changing control flow — the remaining rows
             // still process. `quest_id` is content-authored text crossing into a
-            // hand-built JSON log line, so it goes through `json_escape`
-            // (ADR-0170 D5). Rate-limited to at most one emit per
-            // QUEST_DEF_MISSING_WINDOW_MS of the injected clock (ADR-0003), with
+            // hand-built JSON log line, so it goes through `json_escape`.
+            // Rate-limited to at most one emit per
+            // QUEST_DEF_MISSING_WINDOW_MS of the injected clock, with
             // the suppressed count reported so the warn is never silently lossy.
             let escaped_quest_id = crate::guards::json_escape(&row.quest_id);
             if let Some(suppressed) = QUEST_DEF_MISSING_LIMITER
@@ -268,7 +265,7 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
     let Some(p) = ctx.db.player().identity().find(me) else {
         return Err("not joined".to_string());
     };
-    // Deletion gate (ADR-0250 D2, spec para 4.7): right after the joined check, before any NPC read.
+    // Deletion gate: right after the joined check, before any NPC read.
     crate::guards::require_not_deleting(ctx, "talk")?;
     let Some(player_char) = ctx.db.character().entity_id().find(p.entity_id) else {
         return Err("character not found".to_string());
@@ -297,7 +294,7 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
     }
 
     // Step 6: load dialogue tree
-    // Dialogue-trees cache: compile-time-embedded RON, parsed once per process (ADR-0089).
+    // Dialogue-trees cache: compile-time-embedded RON, parsed once per process.
     let trees = crate::content_cache::cached_dialogue_trees()?;
     let Some(tree) = trees.iter().find(|t| t.id == npc_row.dialogue_tree_id) else {
         return Err("dialogue tree not found".to_string());
@@ -311,14 +308,14 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
         return Err("no dialogue available".to_string());
     };
 
-    // Step 9: apply auto_effects BEFORE writing state (ADR-0068)
+    // Step 9: apply auto_effects BEFORE writing state
     apply_node_auto_effects(node, &mut state);
 
     // Step 10: route DB-side effects (StartQuest → player_quest row, GrantItem).
     // SECURITY: auto_effects are re-applied on EVERY talk() call because find_entry_node
     // re-runs each time. A GrantItem in auto_effects without a NotFlag+SetFlag once-only
     // gate is therefore an unlimited item farm. validate_npc_content (game-core) rejects
-    // such content at seed time (13.5f-1, ADR-0068) — this is the enforcement point.
+    // such content at seed time — this is the enforcement point.
     apply_effects_to_db(ctx, me, &state, &node.auto_effects);
 
     // Step 11: upsert player_conversation
@@ -355,7 +352,7 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
 }
 
 /// Advance dialogue by selecting a choice. Security gate: `apply_choice` re-checks
-/// conditions internally. `player_conversation` lookup is PK-scoped to ctx.sender() (F1).
+/// conditions internally. `player_conversation` lookup is PK-scoped to ctx.sender().
 #[spacetimedb::reducer]
 pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), String> {
     let me = ctx.sender();
@@ -365,11 +362,11 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
         return Err("no active conversation".to_string());
     };
 
-    // Step 1.5: zone + proximity re-check (RT-ADV-01 fix, M12c, ADR-0070)
+    // Step 1.5: zone + proximity re-check
     let Some(p) = ctx.db.player().identity().find(me) else {
         return Err("not joined".to_string());
     };
-    // Deletion gate (ADR-0250 D3, spec para 4.7): after the joined check, before the dismissing NPC reads.
+    // Deletion gate: after the joined check, before the dismissing NPC reads.
     crate::guards::require_not_deleting(ctx, "advance_dialogue")?;
     let Some(player_char) = ctx.db.character().entity_id().find(p.entity_id) else {
         return Err("character not found".to_string());
@@ -400,7 +397,7 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
     }
 
     // Step 2: load NPC + dialogue tree
-    // Dialogue-trees cache: compile-time-embedded RON, parsed once per process (ADR-0089).
+    // Dialogue-trees cache: compile-time-embedded RON, parsed once per process.
     let trees = crate::content_cache::cached_dialogue_trees()?;
     let Some(tree) = trees.iter().find(|t| t.id == npc_row.dialogue_tree_id) else {
         return Err("dialogue tree not found".to_string());
@@ -446,7 +443,7 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
 /// Dismiss the current dialogue (no-op if no active conversation).
 #[spacetimedb::reducer]
 pub fn dismiss_dialogue(ctx: &ReducerContext) -> Result<(), String> {
-    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    // Deletion gate: the FIRST statement, before every read and write.
     crate::guards::require_not_deleting(ctx, "dismiss_dialogue")?;
     ctx.db
         .player_conversation()
@@ -455,19 +452,19 @@ pub fn dismiss_dialogue(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
-// --- M21 guest→account re-key (ADR-0179 D6) ----------------------------------
+// --- M21 guest→account re-key ----------------------------------
 
 /// Re-key both NPC-state tables owned by `from` onto `to`: `player_quest`
 /// (progress rows) and `player_dialogue_state` (flags + done-quests). Called
-/// only from `accounts::rekey_all` (D0 write-isolation). `player_conversation`
+/// only from `accounts::rekey_all`. `player_conversation`
 /// is deliberately NOT re-keyed — it is a transient presence row cleared by
 /// `on_disconnect` before the guest's `player` row is deleted, so it is BLOCKED
-/// by `complete_guest_claim`'s liveness guard (ADR-0179 D6 manifest).
+/// by `complete_guest_claim`'s liveness guard.
 ///
 /// `player_quest.pq_id` is the PK and `owner_identity` a non-PK index → update
-/// in place (collect ids first, ADR-0126). `player_dialogue_state.owner_identity`
+/// in place (collect ids first). `player_dialogue_state.owner_identity`
 /// IS the PK → delete-then-insert. The destination owns zero rows in either
-/// table (`complete_guest_claim` guard 3), so neither path can collide.
+/// table, so neither path can collide.
 pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity) {
     let pq_ids: Vec<u64> = ctx
         .db
@@ -494,11 +491,11 @@ pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity
     }
 }
 
-/// M22 §4.4 step 6b (PRV1-6b, ADR-0228 D1/D2): delete every NPC-progress row
+/// delete every NPC-progress row
 /// owned by `owner` — `player_dialogue_state` (PK point delete),
-/// `player_quest` (owner index → collect ids → PK deletes, ADR-0126), and the
+/// `player_quest` (owner index → collect ids → PK deletes), and the
 /// transient `player_conversation` row (PK point delete). Called only from
-/// `accounts::account_deletion_reaper` (D0 write-isolation); never an
+/// `accounts::account_deletion_reaper`; never an
 /// unbounded table iteration.
 pub(crate) fn erase_npc_state(ctx: &ReducerContext, owner: Identity) {
     ctx.db
@@ -519,7 +516,7 @@ pub(crate) fn erase_npc_state(ctx: &ReducerContext, owner: Identity) {
 }
 
 /// True if `owner` has any `player_quest` progress or a `player_dialogue_state`
-/// row (for `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
+/// row (for `accounts::account_has_game_data`). Read-only.
 pub(crate) fn has_quest_or_dialogue_state(ctx: &ReducerContext, owner: Identity) -> bool {
     ctx.db
         .player_quest()

@@ -1,17 +1,17 @@
 //! Content parse caches — `LazyLock` statics for compile-time-embedded registries.
 //!
-//! All registries are `include_str!`-embedded at build time (ADR-0057) and
+//! All registries are `include_str!`-embedded at build time and
 //! immutable at runtime: content is data, not code, and only changes on a fresh
 //! binary deploy. These helpers parse once per server process and return a
 //! `&'static` reference on every subsequent call. Game-core stays pure (no caches
-//! there, per the functional-core/imperative-shell invariant, ADR-0089).
+//! there, per the functional-core/imperative-shell invariant).
 //!
 //! `LazyLock<Result<Vec<T>, String>>` caches both successes and failures. For
 //! compile-time-embedded content, a parse failure is always deterministic, so
 //! caching the error is correct: no retry path exists that could produce a
 //! different result from the same binary.
 //!
-//! The version-keyed type-chart cache at the bottom (ADR-0170 D1) is the one
+//! The version-keyed type-chart cache at the bottom is the one
 //! exception to both rules above: it caches DB-derived data (keyed on the
 //! `config` row's `content_version`, so a reseed invalidates it) and it NEVER
 //! caches a failed rebuild — a later transaction can fix DB rows, unlike an
@@ -24,15 +24,6 @@ use crate::schema::{config, type_relation_row};
 
 static ZONE_MAPS: LazyLock<Result<Vec<game_core::ZoneMapDef>, String>> =
     LazyLock::new(game_core::load_zone_maps);
-
-// EG1 (ADR-0174): the old EVOLUTIONS static (SpeciesEvolutions trigger model)
-// is replaced by the essence-graph EVOLUTION_PATHS registry. The evolve reducer
-// now reads the seeded `evolution_path` TABLE (not this cache), so the cache is
-// currently test-only (`#[cfg(test)]`, the skill_defs_from_rows precedent);
-// drop the gate when an EG2+ production caller lands.
-#[cfg(test)]
-static EVOLUTION_PATHS: LazyLock<Result<Vec<game_core::EvolutionPath>, String>> =
-    LazyLock::new(game_core::load_evolution_paths);
 
 static DIALOGUE_TREES: LazyLock<Result<Vec<game_core::DialogueTree>, String>> =
     LazyLock::new(game_core::load_dialogue_trees);
@@ -58,16 +49,6 @@ static HEAL_LOCATIONS: LazyLock<Result<Vec<game_core::HealLocationDef>, String>>
 /// Returns a clone of the cached parse error if the embedded RON was malformed.
 pub(crate) fn cached_zone_maps() -> Result<&'static Vec<game_core::ZoneMapDef>, String> {
     (*ZONE_MAPS).as_ref().map_err(Clone::clone)
-}
-
-/// Evolution-paths registry: parsed once per process. Test-only in EG1 (see the
-/// static above for the rationale).
-///
-/// # Errors
-/// Returns a clone of the cached parse error if the embedded RON was malformed.
-#[cfg(test)]
-pub(crate) fn cached_evolution_paths() -> Result<&'static Vec<game_core::EvolutionPath>, String> {
-    (*EVOLUTION_PATHS).as_ref().map_err(Clone::clone)
 }
 
 /// Dialogue-trees registry: parsed once per process.
@@ -102,8 +83,7 @@ pub(crate) fn cached_items() -> Result<&'static Vec<game_core::ItemDef>, String>
     (*ITEMS).as_ref().map_err(Clone::clone)
 }
 
-/// Abilities registry: parsed once per process (ADR-0170 D2, completing the
-/// ADR-0089 M14.5e park).
+/// Abilities registry: parsed once per process.
 ///
 /// # Errors
 /// Returns a clone of the cached parse error if the embedded RON was malformed.
@@ -111,8 +91,7 @@ pub(crate) fn cached_abilities() -> Result<&'static Vec<game_core::AbilityDef>, 
     (*ABILITIES).as_ref().map_err(Clone::clone)
 }
 
-/// Heal-locations registry: parsed once per process (the eighth LazyLock,
-/// ADR-0170 D3).
+/// Heal-locations registry: parsed once per process (the eighth LazyLock).
 ///
 /// # Errors
 /// Returns a clone of the cached parse error if the embedded RON was malformed.
@@ -120,17 +99,17 @@ pub(crate) fn cached_heal_locations() -> Result<&'static Vec<game_core::HealLoca
     (*HEAL_LOCATIONS).as_ref().map_err(Clone::clone)
 }
 
-// --- Version-keyed type-chart cache (11r-g, ADR-0170 D1) ----------------------
+// --- Version-keyed type-chart cache ----------------------
 
 /// The type-chart cache cell: `None` until first build, then the
 /// `(content_version, chart)` pair the last successful rebuild produced.
 /// A plain type alias so tests can construct and poison cells directly.
 pub(crate) type TypeChartCell = Mutex<Option<(u32, Arc<game_core::TypeChart>)>>;
 
-/// Pure cache core (ADR-0170 D1): serve the cached `Arc` on a version hit,
+/// Pure cache core: serve the cached `Arc` on a version hit,
 /// otherwise run `rebuild` and store the result — cell, version and rebuild
 /// closure all injected so every decision is unit-testable without a
-/// `ReducerContext` (ADR-0156 P7).
+/// `ReducerContext`.
 ///
 /// Policy, in order:
 /// - version HIT → `Arc::clone` of the cached chart; `rebuild` is NOT called.
@@ -162,23 +141,22 @@ pub(crate) fn type_chart_cache_lookup(
     Ok(chart)
 }
 
-/// Version-keyed type-chart accessor (ADR-0170 D1): serves the cached chart
+/// Version-keyed type-chart accessor: serves the cached chart
 /// while the singleton `config` row's `content_version` matches, rebuilding
 /// from `type_relation_row` on a miss. A missing `config` row keys the cache
 /// at version 0 — the pre-seed sentinel, so a spurious hit merely forces a
 /// rebuild on the next real call.
 ///
-/// CONTRACT (ADR-0170 D1 invariant): never call this from any code path that
+/// CONTRACT: never call this from any code path that
 /// writes `type_relation_row` in the same transaction. `content.rs`
 /// (`sync_content_inner`) and everything transitively reachable from it
 /// (`marshal.rs`, `evolution.rs`) are FORBIDDEN callers: between the row
 /// rewrite and the `content_version` stamp, a call here would cache the pair
 /// (old version, new chart); a later panic rolls the DATABASE back but not
 /// this process static, leaving a permanent version-match hit on a chart
-/// built from rows that no longer exist. Pinned by the
-/// `sync_content_reachable_modules_never_call_cached_type_chart` scan.
+/// built from rows that no longer exist.
 ///
-/// NOTE (ADR-0170 D1 trade-off): the cell lock is HELD across the rebuild
+/// NOTE: the cell lock is HELD across the rebuild
 /// closure (racing rebuilds cannot clobber each other; safe because reducers
 /// are serial). The re-entrancy footgun: any future rebuild path that
 /// reacquires this cache would DEADLOCK — keep the rebuild closure cache-free.

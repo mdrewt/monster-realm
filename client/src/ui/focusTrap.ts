@@ -1,4 +1,4 @@
-// ui/focusTrap.ts — the Tab-only focus trap for the 16 mutual-exclusion overlays (m23-s1, M23 §2.2).
+// ui/focusTrap.ts — the Tab-only focus trap for the 16 mutual-exclusion overlays.
 //
 // Two halves on purpose: `nextFocusTarget` is the PURE list arithmetic (no DOM reads, no events,
 // node-testable) and `installTrap` is the thin DOM shell around it. `FOCUSABLE_SELECTOR` and the
@@ -55,11 +55,11 @@
 // while `ui/overlayA11y.ts` still focuses them programmatically on open — the ARIA APG dialog
 // pattern: the dialog's name is announced on open, but Tab never lands back on the heading.
 //
-// FOUR `#app`-MOUNTED VIEWS DO NOT SHARE ONE ROOT (A12 RETRACTED, ui/overlayA11y.ts:52-54). Each
+// FOUR `#app`-MOUNTED VIEWS DO NOT SHARE ONE ROOT (A12 RETRACTED, ui/overlayA11y.ts). Each
 // `document.createElement`s its OWN root under the shared mount, and `installTrap` listens on the
 // PASSED root, never the mount, so traps on two sibling roots cannot stack. Stacking needs the SAME
 // root installed twice, and `openOverlayA11y`'s same-id branch uninstalls the previous trap first.
-// S4 must NOT close-before-open (`S4-CROSS-VIEW-DISTINCT-ROOTS`, boxView.test.ts:287).
+// S4 must NOT close-before-open (`S4-CROSS-VIEW-DISTINCT-ROOTS`, boxView.test.ts).
 
 /** The tabbable set. `[tabindex="-1"]` is excluded on purpose — see the module header. */
 const FOCUSABLE_SELECTOR = [
@@ -95,7 +95,7 @@ function focusablesIn(root: HTMLElement): HTMLElement[] {
 
 /**
  * Where Tab (`shift=false`) or Shift+Tab (`shift=true`) should send focus next, wrapping at both
- * ends (A11Y-6). Returns `null` ONLY for an empty ring.
+ * ends. Returns `null` ONLY for an empty ring.
  *
  * `noUncheckedIndexedAccess` is OFF (client/tsconfig.json), so `focusables[0]` types as
  * `HTMLElement` while being runtime-`undefined` on an empty list — hence the explicit length guard

@@ -1,26 +1,17 @@
-//! `raising_tests` — M9b gating unit tests for the pure `evaluate_care` seam
-//! (server-module/src/raising.rs). Authored from the M9 spec §3 EARS criteria
-//! and the ADR-0059 proof-of-teeth section.
+//! `raising_tests` — unit tests for the pure `evaluate_care` seam
+//! (server-module/src/raising.rs).
 //!
 //! Declared from `raising.rs` as:
 //!   `#[cfg(test)] #[path = "raising_tests.rs"] mod raising_tests;`
 //! so `super` resolves to the `raising` module — giving access to
 //! `evaluate_care` and `CARE_COOLDOWN_MS` by name.
 //!
-//! RED state: this file does not compile until the implementer creates
-//! `server-module/src/raising.rs` (with `evaluate_care` and `CARE_COOLDOWN_MS`
-//! exported `pub(crate)`) and adds the `#[path]` mod decl.
-//! That is intentional — the tests are the contract, not the implementation.
-//!
-//! EARS criteria covered (from M9 spec §3):
+//! EARS criteria covered:
 //!   - Care cooldown: boundary is `<`, not `<=` (equal-to-cooldown is ALLOWED).
-//!     (Bond and its arithmetic are retired — EG5/ADR-0177 D3; `evaluate_care`
-//!     is the cooldown-only seam and the bond-arithmetic test family went with
-//!     its subject.)
 //!   - Safe-direction clock: future last_care_at_ms only over-rejects (no bypass).
 //!   - Elapsed from nonzero base works correctly.
 //!
-//! EG2 (ADR-0175) adds, at the bottom of this file, the essence-graph raising
+//! EG2 adds, at the bottom of this file, the essence-graph raising
 //! layer: `apply_quality_time_credit`, `grant_essence`, `evaluate_essence_train`,
 //! `evaluate_consume_crystalized`, the revised `care` semantics, and the
 //! source-scan pins for the two new reducers' guard/tail discipline.
@@ -31,16 +22,7 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
-// M9b-tail: evaluate_train seam unit tests
-//
-// The function under test:
-//   pub(crate) fn evaluate_train(
-//       base: &StatBlock, ivs: &IVs, evs: &EVs, nature: &Nature, level: Level,
-//       train_stat: Option<StatKind>, train_amount: u16,
-//   ) -> Result<FocusTrainResult, String>
-//
-// It does NOT exist yet — these tests are RED until the implementer adds it to
-// server-module/src/raising.rs and declares `use super::*;` pulls it into scope.
+// evaluate_train seam unit tests
 //
 // EARS criteria covered:
 //   - WHEN train_stat is None THEN Err containing "not a training food".
@@ -58,7 +40,7 @@ use game_core::focus_train;
 use game_core::{EVs, IVs, Level, Nature, NatureKind, StatBlock, StatKind};
 use proptest::prelude::*;
 
-/// Bulbasaur-like base stats fixture (matches m9a_gating_tests canonical fixture).
+/// Bulbasaur-like base stats fixture (matches the game-core `raising::rules_tests` canonical fixture).
 fn train_base() -> StatBlock {
     StatBlock {
         hp: 45,
@@ -86,7 +68,7 @@ fn train_lv50() -> Level {
 // evaluate_train — example-based
 // ---------------------------------------------------------------------------
 
-/// M9b-tail: evaluate_train with train_stat=None returns Err whose message
+/// evaluate_train with train_stat=None returns Err whose message
 /// contains "not a training food".
 /// kills: an impl that unwraps None / treats a no-stat item as trainable
 ///        (would panic or return a misleading error variant).
@@ -111,7 +93,7 @@ fn evaluate_train_rejects_non_training_food() {
     );
 }
 
-/// M9b-tail: evaluate_train(Some(Attack), amount=10, fresh EVs) must return
+/// evaluate_train(Some(Attack), amount=10, fresh EVs) must return
 /// a FocusTrainResult equal to calling focus_train directly (delegation parity).
 /// kills: an inline EV/stat computation instead of delegating to focus_train
 ///        (any formula divergence surfaces as a value mismatch).
@@ -154,7 +136,7 @@ fn evaluate_train_delegates_to_focus_train() {
     }
 }
 
-/// M9b-tail: evaluate_train surfaces StatAtCap as Err when Attack EV is already 252.
+/// evaluate_train surfaces StatAtCap as Err when Attack EV is already 252.
 /// kills: failure to map FocusTrainError::StatAtCap to Err (would let a maxed stat
 ///        consume food — the reducer would burn the item for zero effect).
 #[test]
@@ -182,7 +164,7 @@ fn evaluate_train_maps_stat_at_cap() {
     );
 }
 
-/// M9b-tail: evaluate_train surfaces BudgetExhausted as Err when total EVs == 510
+/// evaluate_train surfaces BudgetExhausted as Err when total EVs == 510
 /// but Attack is below per-stat cap.
 /// kills: failure to map FocusTrainError::BudgetExhausted (would let a budget-
 ///        exhausted monster consume food without gaining EVs).
@@ -216,7 +198,7 @@ fn evaluate_train_maps_budget_exhausted() {
     );
 }
 
-/// M9b-tail: evaluate_train surfaces NoEffect as Err when train_amount==0.
+/// evaluate_train surfaces NoEffect as Err when train_amount==0.
 /// kills: a 0-amount that silently succeeds as a no-op (would consume the food
 ///        without changing any EV, a silent money-sink for the player).
 #[test]
@@ -235,13 +217,13 @@ fn evaluate_train_maps_no_effect() {
     );
 }
 
-/// M9b-tail: red-team F1 — simultaneous per-stat and budget headroom of exactly 1.
+/// simultaneous per-stat and budget headroom of exactly 1.
 /// EVs: hp=251 (headroom 1), attack=252 (at cap), defense=6 (total=509, budget headroom 1).
 /// Training Hp with amount=10: grant = min(10, 252-251, 510-509) = min(10, 1, 1) = 1.
 /// After: hp=252, total=510 — both constraints hit simultaneously. Must not panic.
 /// Also asserts: Hp==252, total==510, Attack==252 unchanged, Defense==6 unchanged.
 /// kills: a focus_train .expect("by construction") that panics when BOTH headrooms are
-///        exactly 1 at the same time (the F1 red-team finding from the spec).
+///        exactly 1 at the same time.
 #[test]
 fn evaluate_train_double_cap_simultaneous_topoff() {
     let base = train_base();
@@ -324,7 +306,7 @@ fn arb_statkind_for_train() -> impl Strategy<Value = StatKind> {
 }
 
 proptest! {
-    /// M9b-tail: evaluate_train(Some(stat), amount) is a faithful pass-through for
+    /// evaluate_train(Some(stat), amount) is a faithful pass-through for
     /// focus_train — for every valid EV state, stat, and amount in 0..=300, the seam
     /// returns exactly the same Ok/Err as focus_train (with error mapped to String).
     /// kills: any divergence between evaluate_train and the SSOT rule, including an
@@ -469,19 +451,7 @@ fn future_last_care_at_ms_only_over_rejects() {
 }
 
 // ---------------------------------------------------------------------------
-// M12b: evaluate_heal pure seam unit tests
-//
-// The function under test:
-//   pub(crate) fn evaluate_heal(
-//       last_heal_at_ms: i64,
-//       now: i64,
-//       cooldown_ms: i64,
-//   ) -> Result<(), String>
-//
-// It does NOT exist yet — these tests are RED until the implementer adds it to
-// server-module/src/raising.rs along with `HEAL_COOLDOWN_MS: i64`.
-// Declared from `raising.rs` via `#[path = "raising_tests.rs"] mod raising_tests;`
-// so `super::*` pulls in `evaluate_heal` and `HEAL_COOLDOWN_MS`.
+// evaluate_heal pure seam unit tests
 //
 // The function checks only the cooldown gate (no bond/hp arithmetic).
 // Pattern mirrors evaluate_care: strict `<`, saturating_sub, safe-direction clock.
@@ -492,7 +462,7 @@ fn future_last_care_at_ms_only_over_rejects() {
 //   - Future last_heal_at_ms only over-rejects, never bypasses the gate.
 // ---------------------------------------------------------------------------
 
-/// M12b: evaluate_heal allows the heal action when elapsed == cooldown exactly.
+/// evaluate_heal allows the heal action when elapsed == cooldown exactly.
 /// kills: an impl that uses `<=` instead of `<` — `<=` would reject at exactly
 /// the boundary where the spec requires the action to be ALLOWED.
 /// Spec: "IF the heal cooldown has not elapsed THEN reject" — at elapsed ==
@@ -512,7 +482,7 @@ fn evaluate_heal_passes_when_cooldown_elapsed() {
     );
 }
 
-/// M12b: evaluate_heal rejects when one ms remains on the cooldown.
+/// evaluate_heal rejects when one ms remains on the cooldown.
 /// kills: missing cooldown check entirely (always returns Ok), or an off-by-one
 /// where the impl uses `< cooldown - 1` instead of `< cooldown`.
 #[test]
@@ -528,7 +498,7 @@ fn evaluate_heal_rejects_when_within_cooldown() {
     );
 }
 
-/// M12b: a last_heal_at_ms in the future (relative to now) only over-rejects —
+/// a last_heal_at_ms in the future (relative to now) only over-rejects —
 /// it never wraps around to produce a spuriously large elapsed that bypasses the gate.
 /// kills: an impl using wrapping/unchecked subtraction on i64; `0i64 - 10_000`
 /// would yield -10_000 which is less than HEAL_COOLDOWN_MS, so the gate would
@@ -550,20 +520,6 @@ fn evaluate_heal_rejects_future_last_heal() {
     );
 }
 
-// =========================================================================
-// EG1 (ADR-0174 D2): the two M12.5b-4 structural tests
-// (`care_reducer_assigns_evolves_to` and `care_reducer_calls_compute_evolves_to`)
-// were DELETED here — their subject, the care-path `evolves_to` recompute via
-// `compute_evolves_to`, is removed outright: the helper's parameter type
-// (`EvolutionCondition`) no longer exists in game-core, so the pinned
-// implementation is compile-impossible and `evolves_to` is a frozen dead
-// column until Migration B. The bond write in `care` itself is unchanged and
-// stays covered by the behavioral tests above. Removal is the mechanical
-// consequence of the deleted subject, not a weakened assertion. The shared
-// RAISING_SOURCE / strip_raising_comments helpers below survive — the other
-// structural scans in this file still use them.
-// =========================================================================
-
 /// CARE_COOLDOWN_MS must equal exactly 6 hours in milliseconds (21_600_000).
 ///
 /// Kills all 6 mutations at line 37 (positions 44, 49, 54):
@@ -584,7 +540,7 @@ fn care_cooldown_ms_is_six_hours_in_milliseconds() {
 }
 
 // ===========================================================================
-// ptc5a (ADR-0136): care and train must be blocked mid-battle
+// Care and train must be blocked mid-battle
 //
 // EARS criterion: WHEN a player calls `care` or `train` WHILE they are in an
 // Ongoing battle in EITHER role (side-A wild/PvP or side-B PvP), THE SYSTEM
@@ -595,17 +551,9 @@ fn care_cooldown_ms_is_six_hours_in_milliseconds() {
 // extra HP proportional to the EV bump, creating a bounded HP-laundering path
 // (see ADR-0136 §2 and Test 4 differential below).
 //
-// Tests 1+2 are SOURCE-SCAN RED until the implementer adds:
-//   if is_in_ongoing_battle(ctx, ctx.sender()) {
-//       return Err("cannot care/train during an ongoing battle".to_string());
-//   }
-// immediately after `require_owner(ctx, …)?` in each reducer.
-//
-// Test 3 is GREEN (pins the semantics of the pre-existing helper).
-// Test 4 is GREEN (pins the pure math magnitude of the laundering vector).
 // ===========================================================================
 
-/// Minimal Battle row builder for ptc5a tests 3+4.
+/// Minimal Battle row builder.
 /// Only `state.outcome` and `opponent_identity` are read by
 /// `is_in_ongoing_battle_either_role`; teams can be empty.
 fn ongoing_battle(
@@ -635,8 +583,8 @@ fn ongoing_battle(
     }
 }
 
-/// ptc5a Test 3 — both-role predicate scenarios: pins the semantics that the
-/// guard relies on (GREEN against current code; the helper already exists).
+/// both-role predicate scenarios: pins the semantics that the
+/// guard relies on.
 ///
 /// Four sub-assertions covering:
 ///   (a) Wild side-A: player arm fires on an Ongoing wild battle → true.
@@ -702,7 +650,7 @@ fn both_role_predicate_scenarios() {
     );
 }
 
-/// ptc5a Test 4 — differential level-up-heal: documents the magnitude of the
+/// differential level-up-heal: documents the magnitude of the
 /// HP-laundering vector that the guard closes.
 ///
 /// A mid-battle `train` bumps ev_hp by 64 EV. When the monster then levels up
@@ -716,9 +664,6 @@ fn both_role_predicate_scenarios() {
 /// Assertion 2: `is_in_ongoing_battle_either_role` returns true for a wild-battle
 /// scenario — the guard REJECTS care/train mid-battle, so the laundered value
 /// is unreachable and post-level-up current_hp cannot exceed `healed_baseline`.
-///
-/// This is a documentation+regression test for the ptc5a vulnerability closure
-/// (ptc5a-2 differential, ADR-0136 §2).
 #[test]
 fn differential_level_up_heal_documents_laundering_vector() {
     use game_core::combat::xp::level_up_healed_hp;
@@ -785,38 +730,10 @@ fn differential_level_up_heal_documents_laundering_vector() {
 }
 
 // ###########################################################################
-// EG2 (spec M-evolution-essence-graph §2 EG2-3/4/5/6/8/10, ADR-0175) —
-// the essence-graph raising layer.
-//
-// RED STATE, and WHY. Every test below references a production symbol that does
-// not exist yet, so this whole file is RED BY COMPILE ERROR until the specialist
-// lands, in `server-module/src/raising.rs`:
-//
-//   pub(crate) const ESSENCE_TRAIN_COOLDOWN_MS: i64;   // 5 h
-//   pub(crate) const ESSENCE_TRAIN_AMOUNT: u32;        // 5
-//   pub(crate) const ESSENCE_SOFT_CAP: u32;            // 999
-//   pub(crate) const QT_TICK_MS / QT_IDLE_GAP_MS
-//                  / QT_MIN_WRITE_GAP_MS / QT_DAILY_CAP_MS: i64;
-//   pub(crate) fn grant_essence(m: &mut Monster, affinity: Affinity, amount: u32);
-//   pub(crate) fn apply_quality_time_credit(m: &mut Monster, now: i64) -> bool;
-//   pub(crate) fn accrue_quality_time(ctx: &ReducerContext, monster_id: u64);
-//   pub(crate) fn evaluate_essence_train(last_train_ms: i64, now: i64)
-//                  -> Result<(), String>;
-//   pub(crate) fn evaluate_consume_crystalized(
-//                    item: &game_core::ItemDef, last_train_ms: i64, now: i64,
-//                  ) -> Result<(game_core::Affinity, u32), String>;
-//   #[spacetimedb::reducer] pub fn essence_train(..) / consume_crystalized_essence(..)
-//
-// After it compiles, the source-scan block at the bottom stays RED until the two
-// new reducers carry the full guard set and the accrue/check_and_evolve tails.
+// EG2 — the essence-graph raising layer.
 //
 // SHAPE OF THE SUITE. The ms-level accrual rule is exercised DIRECTLY on the pure
-// `apply_quality_time_credit(&mut Monster, now)` seam with hand-built rows — the
-// pattern this file already uses for `evaluate_care`/`evaluate_train`/
-// `evaluate_heal`, and the only pattern available: this crate has NO
-// reducer-executing harness (ADR-0156 P7, restated at
-// `heal_party_reads_the_cached_heal_location_registry`'s honest-limit note), so
-// the ctx shells are pinned structurally instead.
+// `apply_quality_time_credit(&mut Monster, now)` seam with hand-built rows.
 //
 // NOTE ON THE CONSTANTS. ADR-0175 calls all five pacing magnitudes playtest
 // placeholders and the SHAPE the decision. The hand-computed expectations below
@@ -824,7 +741,7 @@ fn differential_level_up_heal_documents_laundering_vector() {
 // ONCE, in the test whose arithmetic depends on it, with a `RETUNE` note —
 // retuning is then a deliberate two-line edit (constant + its one pin), never a
 // silent behaviour change. Everything else references the consts symbolically.
-// Exception since 20r-b: ESSENCE_SOFT_CAP is game-core SSOT and is pinned there
+// Exception: ESSENCE_SOFT_CAP is game-core SSOT and is pinned there
 // too; the RETUNE note in its soft-cap clamp test below names those pins.
 // ###########################################################################
 
@@ -970,7 +887,7 @@ fn training_food_item() -> game_core::ItemDef {
 }
 
 // ===========================================================================
-// EG2-8 / ADR-0175 D1 — `apply_quality_time_credit`: bounded-gap active-playtime
+// `apply_quality_time_credit`: bounded-gap active-playtime
 //
 // The rule, restated from ADR-0175 D1 (this is the contract the 10 tests below
 // encode, in the order the impl must evaluate it):
@@ -986,7 +903,22 @@ fn training_food_item() -> game_core::ItemDef {
 //         accum_ms %= QT_TICK_MS; anchor = now; true
 // ===========================================================================
 
-/// EG2-8: a gap inside the idle window credits, converts whole ticks, and
+/// A call at EXACTLY the anchor is the zero-gap no-op, not the backwards-clock
+/// branch: nothing is mutated and it reports `false` (no row write).
+///
+/// kills: the backwards-clock test widened from `<` to `<=` (a same-instant
+/// call reports a write).
+#[test]
+fn a_call_at_the_anchor_is_a_no_op() {
+    let mut m = qt_monster(QT_ANCHOR, 1_000, 17_000, 7);
+    assert!(
+        !apply_quality_time_credit(&mut m, QT_ANCHOR),
+        "a zero gap writes nothing"
+    );
+    assert_eq!(qt_state(&m), (QT_ANCHOR, 1_000, 17_000, 7));
+}
+
+/// A gap inside the idle window credits, converts whole ticks, and
 /// re-anchors.
 ///
 /// kills: an impl that never advances the anchor (every later call would
@@ -1059,10 +991,10 @@ fn reanchors_without_credit_beyond_idle_gap() {
     );
 }
 
-/// EG2-8: the first-ever call on a fresh monster (anchor 0) only anchors.
+/// The first-ever call on a fresh monster (anchor 0) only anchors.
 ///
 /// A brand-new row carries `quality_time_window_start_ms = 0`, so the gap is the
-/// whole Unix epoch — it lands in the idle branch BY CONSTRUCTION (ADR-0175 D1).
+/// whole Unix epoch — it lands in the idle branch BY CONSTRUCTION.
 ///
 /// kills: an impl that special-cases anchor 0 by crediting the elapsed span —
 ///        `now / QT_TICK_MS` is ~29 million ticks, so the very first `care` would
@@ -1084,7 +1016,7 @@ fn first_call_only_anchors() {
     );
 }
 
-/// EG2-8: a backwards server clock re-anchors and credits nothing.
+/// A backwards server clock re-anchors and credits nothing.
 ///
 /// The `now < anchor` test must be evaluated FIRST — before the min-write-gap
 /// test — because `saturating_sub` collapses a backwards gap to 0, which would
@@ -1114,7 +1046,7 @@ fn reanchors_on_backwards_clock() {
     );
 }
 
-/// EG2-8: credit accumulates across calls and converts to whole ticks, keeping
+/// Credit accumulates across calls and converts to whole ticks, keeping
 /// the sub-tick remainder.
 ///
 /// Two sub-cases: one that lands exactly on a tick boundary, and one that must
@@ -1152,7 +1084,7 @@ fn converts_whole_ticks_and_keeps_remainder() {
     );
 }
 
-/// EG2-8: a sub-threshold gap is a PURE no-op that returns false — and the kept
+/// A sub-threshold gap is a PURE no-op that returns false — and the kept
 /// anchor means the batched time is credited in full by the next call.
 ///
 /// The hot path is `enqueue_move`, which fires roughly once per tile-step for
@@ -1207,7 +1139,7 @@ fn below_min_write_gap_is_a_pure_noop_returning_false() {
     );
 }
 
-/// EG2-8: a gap of EXACTLY `QT_MIN_WRITE_GAP_MS` CREDITS — the no-write rule is
+/// A gap of EXACTLY `QT_MIN_WRITE_GAP_MS` CREDITS — the no-write rule is
 /// strict `<`, so the threshold value itself is on the crediting side.
 ///
 /// Deliberately the same starting row as
@@ -1245,47 +1177,18 @@ fn min_write_gap_boundary_exactly_credits() {
     );
 }
 
-/// EG2-8 / **12r-e E3** — once the day window is full, a further gap credits
+/// once the day window is full, a further gap credits
 /// nothing AND writes nothing: `apply_quality_time_credit` must return `false`
 /// with the row completely untouched.
 ///
-/// THE DEFECT THIS NOW GATES (`raising.rs:524-527`). The capped branch re-anchors
-/// and returns `true`, so `accrue_quality_time` (`:563-583`) performs an
+/// THE DEFECT THIS NOW GATES. The capped branch re-anchors
+/// and returns `true`, so `accrue_quality_time` performs an
 /// unconditional private-row update whose ONLY change is an invisible clock
 /// anchor — no tick, no window, no accum, nothing a player or a gate can
-/// observe. On `movement.rs:181` — the hottest reducer in the game, roughly one
+/// observe. On the hottest reducer in the game, roughly one
 /// call per tile-step per party monster — that is a wasted row write every ~5 s
 /// per party monster for the whole remainder of the UTC day, for every capped
 /// monster. THE FIX: `return false` in that branch, and do NOT re-anchor.
-///
-/// (The private-row update is deliberately NOT spelled out here or in the
-/// assertion messages below. `evals/monster-dual-write.eval.mjs` concatenates
-/// every `.rs` file under `server-module/src` — `*_tests.rs` INCLUDED — splits it
-/// into column-0 `fn` spans and requires any span containing that marker to also
-/// contain the `monster_pub` mirror. It strips `//` comments but NOT string
-/// literals, so writing the marker contiguously inside an assertion message put
-/// it inside this test's span and turned the eval red. See the assembled-at-
-/// runtime marker in the body below.)
-///
-/// THIS TEST WAS REWRITTEN IN 12r-e AND ITS OLD ASSERTIONS SAID THE OPPOSITE.
-/// Recorded honestly, because rewriting a teeth test is the highest-scrutiny move
-/// in a slice:
-///
-///   * `assert!(wrote, ..)` became `assert!(!wrote, ..)`;
-///   * `assert_eq!(qt_state(&m), (now, cap, 0, 120), ..)` became
-///     `(QT_ANCHOR, cap, 0, 120)` — the anchor must NOT move.
-///
-/// CORRECTED IN THE HARDENING ROUND — an earlier draft of this note called the
-/// rewrite "strictly stronger". It is NOT, and the distinction matters. The
-/// no-credit content (`cap, 0, 120`) is IDENTICAL before and after; only the
-/// anchor element and the boolean changed, and `!wrote` versus `wrote` is a
-/// DIRECTIONAL INVERSION, not a strengthening. It is justified by a SPEC
-/// DECISION (E3: a capped call must cost no row write), not by logic. What IS a
-/// strengthening is the pairing: the property the old anchor assertion protected
-/// — that a capped-and-active row's anchor tracks the clock — is re-pinned, and
-/// pinned TIGHTER, by [`capped_and_active_still_reanchors_at_the_idle_bound`],
-/// which brackets that guarantee at exactly `QT_IDLE_GAP_MS` from both sides
-/// instead of buying it with an unconditional hot-path write.
 ///
 /// THE OLD `kills:` RATIONALE, AND WHY IT DOES NOT BLOCK THE FIX. It read: an
 /// impl that keeps the old anchor when capped leaves a stale anchor that "makes
@@ -1302,15 +1205,14 @@ fn min_write_gap_boundary_exactly_credits() {
 ///      can NEVER both be taken on one call, so `return false` here drops exactly
 ///      ONE mutation — the re-anchor — and can never suppress a day reset.
 ///   2. THE RESIDUAL IS BOUNDED AT <= 4 QT TICKS, IN EITHER DIRECTION, PER UTC
-///      ROLLOVER. CORRECTED IN THE HARDENING ROUND: an earlier draft said <= 2,
-///      from a 20 000-trial randomised simulation. An independent Python port
+///      ROLLOVER.
+///      An independent Python port
 ///      searching ~500M call evaluations found divergence up to +/-4. Minimised
 ///      witness: 44 calls across one UTC rollover with `anchor = 83_466_084`,
 ///      `accum = 34_456`, `window = QT_DAILY_CAP_MS` — old behaviour credits 0
 ///      ticks, new credits 3. Four ticks, both directions, per rollover, against
 ///      an unconditional hot-path row write per party monster per ~5 s for the
-///      rest of every capped day. The trade still stands; the NUMBER has to be
-///      reproducible, and 2 was not.
+///      rest of every capped day.
 ///   3. THE SURVIVING ROLLOVER PATH IS INDEPENDENTLY TESTED.
 ///      [`daily_cap_resets_on_next_utc_day`] (below) exercises a real
 ///      day-straddling credit and is UNCHANGED by this slice, as is
@@ -1354,27 +1256,13 @@ fn daily_cap_stops_credit() {
     let mut m = qt_monster(QT_ANCHOR, cap, 0, 120);
     let wrote = apply_quality_time_credit(&mut m, now);
 
-    // EVAL LANDMINE (12r-e hardening round). `evals/monster-dual-write.eval.mjs`
-    // concatenates every `.rs` file under `server-module/src` — `*_tests.rs`
-    // INCLUDED — splits the text into column-0 `fn` spans, and requires every
-    // span containing the private-row update marker to also contain the
-    // `monster_pub` mirror. It strips `//` comments (:148,:159) but does NOT
-    // blank string literals, so spelling that marker contiguously inside the
-    // assertion message below landed it in THIS test's span, which has no mirror
-    // — and the eval went red on a pure documentation string. Assembling it at
-    // runtime keeps the failure message exact while the file text never contains
-    // it. Same landmine family as the `/*` and char-literal-double-quote bans in
-    // this crate, one level out: a needle written as DOCUMENTATION can trip a
-    // DIFFERENT gate that scans the same file.
-    let row_write_marker = ["ctx.db.monster().monster_id()", ".update(m)"].concat();
-
     assert!(
         !wrote,
         "TEETH (12r-e E3): a call whose creditable amount is 0 (day window already \
          at QT_DAILY_CAP_MS) must return FALSE so `accrue_quality_time` performs NO \
          DB write. RED at HEAD: it returns true, and the ctx shell then runs an \
-         unconditional `{row_write_marker}` that changes only the invisible clock \
-         anchor — on `movement.rs:181`, the hottest reducer in the game, that is \
+         unconditional `ctx.db.monster().monster_id().update(m)` that changes \
+         only the invisible clock anchor — on `movement.rs:181`, the hottest reducer in the game, that is \
          one wasted row write per party monster per ~5 s for the rest of the UTC \
          day. The re-anchor it persists buys at most 4 QT ticks in either \
          direction across a single UTC rollover (measured over ~500M call \
@@ -1396,7 +1284,7 @@ fn daily_cap_stops_credit() {
     );
 }
 
-/// **12r-e E3 (the bound)** — a capped monster's anchor staleness is bounded by
+/// a capped monster's anchor staleness is bounded by
 /// the IDLE branch, and the bound is EXACTLY `QT_IDLE_GAP_MS`.
 ///
 /// This is what replaces the property [`daily_cap_stops_credit`]'s old
@@ -1404,7 +1292,7 @@ fn daily_cap_stops_credit() {
 /// row's anchor never goes stale"; it bought that with an unconditional hot-path
 /// row write. The real guarantee — the one that costs nothing — is that staleness
 /// is CAPPED: once the gap exceeds `QT_IDLE_GAP_MS` the idle branch
-/// (`raising.rs:516-519`) re-anchors and returns `true`, entirely independently of
+/// re-anchors and returns `true`, entirely independently of
 /// the daily cap. So a capped monster's anchor can never lag `now` by more than
 /// `QT_IDLE_GAP_MS` while the player is still playing.
 ///
@@ -1423,10 +1311,6 @@ fn daily_cap_stops_credit() {
 ///        (b) an idle comparator written `>=`, which would make the bound
 ///        `QT_IDLE_GAP_MS - 1` and is invisible to the second half alone;
 ///        (c) an idle branch that credits (the window/accum/ticks equality).
-///
-/// RED at HEAD on the FIRST half only (HEAD returns `true` and re-anchors at
-/// exactly the bound); the second half is GREEN at HEAD and stays green — it is
-/// the fence that stops the fix from over-reaching.
 #[test]
 fn capped_and_active_still_reanchors_at_the_idle_bound() {
     let cap = u32::try_from(QT_DAILY_CAP_MS)
@@ -1487,7 +1371,7 @@ fn capped_and_active_still_reanchors_at_the_idle_bound() {
     );
 }
 
-/// EG2-8: crossing into a new UTC day resets the day window, so credit flows
+/// Crossing into a new UTC day resets the day window, so credit flows
 /// again.
 ///
 /// The fixture straddles the day-10/day-11 boundary with a gap still inside the
@@ -1525,19 +1409,18 @@ fn daily_cap_resets_on_next_utc_day() {
     );
 }
 
-/// EG2-8 / ADR-0175 D1 — **the realistic rollover: an IDLE overnight gap must
+/// **the realistic rollover: an IDLE overnight gap must
 /// still reset the day window.** A capped day plus a night away must not become a
 /// permanent lifetime cap.
 ///
-/// THE BUG THIS GATES (found in review at `raising.rs:517-523`): the day-rollover
-/// reset sits BELOW the idle-branch early return. The overwhelmingly common
-/// rollover is not a 90-second straddle of midnight — it is "play until the 2 h
-/// cap on day N, log off, come back on day N+1". That path takes the idle branch,
-/// which re-anchors into day N+1 and returns WITHOUT touching
-/// `quality_time_window_ms`. From then on `day(now) == day(anchor)` on every
-/// subsequent call, so the reset condition can never fire again: the 2 h daily cap
-/// silently degrades into a permanent LIFETIME cap and Quality-Time tiers 3 and 4
-/// become unreachable for that monster, forever.
+/// THE BUG THIS GATES: the day-rollover reset sits BELOW the idle-branch early
+/// return. The overwhelmingly common rollover is not a 90-second straddle of
+/// midnight — it is "play until the 2 h cap on day N, log off, come back on day
+/// N+1". That path takes the idle branch, which re-anchors into day N+1 and returns
+/// WITHOUT touching `quality_time_window_ms`. From then on `day(now) ==
+/// day(anchor)` on every subsequent call, so the reset condition can never fire
+/// again: the 2 h daily cap silently degrades into a permanent LIFETIME cap and
+/// Quality-Time tiers 3 and 4 become unreachable for that monster, forever.
 ///
 /// THE FIX: hoist the day-rollover reset ABOVE the idle branch — and BELOW the
 /// min-write-gap short-circuit, which must keep mutating nothing at all (pinned by
@@ -1628,7 +1511,7 @@ fn daily_cap_resets_after_an_idle_overnight_gap() {
     );
 }
 
-/// EG2-8: `quality_time_ticks_total` saturates instead of wrapping or panicking.
+/// `quality_time_ticks_total` saturates instead of wrapping or panicking.
 ///
 /// The fixture also sits EXACTLY on the idle bound (`gap == QT_IDLE_GAP_MS`),
 /// which ADR-0175 D1 specifies as still-credited (the idle test is strictly
@@ -1656,7 +1539,7 @@ fn saturates_ticks_total() {
     );
 }
 
-/// EG2-8: when the day window is PARTLY full, exactly the remaining headroom is
+/// When the day window is PARTLY full, exactly the remaining headroom is
 /// credited — not the whole gap, and not zero.
 ///
 /// kills: an impl that credits `min(gap, cap)` instead of
@@ -1684,10 +1567,10 @@ fn partial_cap_credit() {
 }
 
 // ===========================================================================
-// EG2-3 / EG1-1 / ADR-0175 D5 — `grant_essence`: clamp, never reject
+// `grant_essence`: clamp, never reject
 // ===========================================================================
 
-/// EG2-3: `grant_essence` writes the ONE column matching the affinity and leaves
+/// `grant_essence` writes the ONE column matching the affinity and leaves
 /// the other seven untouched — exercised for all 8 affinities.
 ///
 /// kills: a mis-wired match arm (e.g. `Light => essence_dark`) — the whole-array
@@ -1713,7 +1596,7 @@ fn adds_to_the_matching_affinity_only() {
     }
 }
 
-/// EG2-3 / EG1-1: the soft cap CLAMPS — it never rejects, and never overshoots.
+/// The soft cap CLAMPS — it never rejects, and never overshoots.
 ///
 /// kills: an impl that returns/propagates an error at the cap (EG1-1 says
 ///        "saturating_add on grant, soft cap, never reject" — a reject would let
@@ -1721,8 +1604,8 @@ fn adds_to_the_matching_affinity_only() {
 ///        all (1_010 here); an impl that clamps to the wrong bound.
 #[test]
 fn clamps_at_soft_cap_999_without_reject() {
-    // RETUNE: a LOCAL pin of ESSENCE_SOFT_CAP's value (ADR-0175 D5 / EG1-1),
-    // re-exported from game-core since 20r-b. The SSOT pins live there:
+    // RETUNE: a LOCAL pin of ESSENCE_SOFT_CAP's value,
+    // re-exported from game-core. The SSOT pins live there:
     // `essence_soft_cap_is_999` (game-core/src/currency.rs) and the R14 boundary
     // fixtures, `r14_essence_amount_999_accepted` / `r14_essence_amount_1000_rejected`
     // among them (game-core/src/content.rs). Retune order per currency.rs: content
@@ -1748,7 +1631,7 @@ fn clamps_at_soft_cap_999_without_reject() {
     );
 }
 
-/// EG2-3: the add SATURATES before the clamp — a near-u32::MAX pool cannot panic.
+/// The add SATURATES before the clamp — a near-u32::MAX pool cannot panic.
 ///
 /// Integer overflow checks are ON in a debug build (which is what `cargo test`
 /// builds), so a plain `+` here would panic and abort the whole reducer
@@ -1771,17 +1654,17 @@ fn saturates_before_clamp() {
 }
 
 // ===========================================================================
-// EG2-3 — `evaluate_essence_train`: the shared 5 h cooldown seam
+// `evaluate_essence_train`: the shared 5 h cooldown seam
 // ===========================================================================
 
-/// EG2-3: a call inside the cooldown is rejected.
+/// A call inside the cooldown is rejected.
 ///
 /// kills: a missing cooldown gate entirely (essence_train would be spammable and
 ///        the 999 cap reachable in one session, collapsing evolution pacing);
 ///        an off-by-one that admits the last millisecond.
 #[test]
 fn rejects_within_cooldown() {
-    // RETUNE: the only pin of ESSENCE_TRAIN_COOLDOWN_MS's value (5 h, ADR-0175 D5).
+    // RETUNE: the only pin of ESSENCE_TRAIN_COOLDOWN_MS's value (5 h).
     assert_eq!(
         ESSENCE_TRAIN_COOLDOWN_MS, 18_000_000,
         "fixture precondition: the essence-training cooldown is 5 h in ms"
@@ -1801,7 +1684,7 @@ fn rejects_within_cooldown() {
     );
 }
 
-/// EG2-3: elapsed EXACTLY equal to the cooldown is allowed.
+/// Elapsed EXACTLY equal to the cooldown is allowed.
 ///
 /// This is `game_core::is_cooldown_ready`'s documented `>=` boundary — the same
 /// SSOT predicate `care` and `heal_party` use.
@@ -1821,7 +1704,7 @@ fn allows_at_exact_boundary() {
     );
 }
 
-/// EG2-3: a monster that has never essence-trained (anchor 0) may train now.
+/// A monster that has never essence-trained (anchor 0) may train now.
 ///
 /// `last_essence_train_at_ms` defaults to 0 exactly like `last_care_at_ms`
 /// (schema.rs: "0 = epoch, cooldown elapsed, first train allowed").
@@ -1841,7 +1724,7 @@ fn zero_anchor_first_train_allowed() {
 }
 
 // ===========================================================================
-// EG2-4 / EG2-10 — `evaluate_consume_crystalized`: the decision that runs
+// `evaluate_consume_crystalized`: the decision that runs
 // BEFORE `consume_one`
 // ===========================================================================
 
@@ -1871,7 +1754,7 @@ fn rejects_item_without_essence_affinity() {
     );
 }
 
-/// EG2-4: consumption shares `essence_train`'s cooldown clock.
+/// Consumption shares `essence_train`'s cooldown clock.
 ///
 /// kills: an impl that skips the cooldown for items (a player could chain-consume
 ///        every purchased crystal in one transaction burst — the exact
@@ -1892,7 +1775,7 @@ fn rejects_within_shared_cooldown() {
     );
 }
 
-/// EG2-4: the accepted case returns the ITEM's affinity and the ITEM's amount.
+/// The accepted case returns the ITEM's affinity and the ITEM's amount.
 ///
 /// kills: an impl that returns `ESSENCE_TRAIN_AMOUNT` (5) instead of the item's
 ///        `essence_amount` (100) — EG3-8 sizes a crystal to fully clear an
@@ -1920,7 +1803,7 @@ fn ok_returns_affinity_and_amount() {
     }
 }
 
-/// EG2-4: the consumption boundary is the SAME instant as `essence_train`'s —
+/// The consumption boundary is the SAME instant as `essence_train`'s —
 /// one clock, one constant, asserted side by side.
 ///
 /// kills: an impl that gives `consume_crystalized_essence` its own private
@@ -1948,18 +1831,15 @@ fn shared_cooldown_boundary_allowed() {
 }
 
 // ===========================================================================
-// rb-41 — R-rb-25-X9 (ADR-0222 known-limit 2, closed by the ADR-0224 native
-// host migration): the REKEY exists-predicate for `heal_cooldown`, exercised
+// the REKEY exists-predicate for `heal_cooldown`, exercised
 // against REAL rows instead of against its own source text.
 //
-// ADR-0222's guest-claim-integrity gate could only READ this predicate's
-// source, so a HOLLOWED body — one that still performs the table read but
-// returns a value decoupled from it — passed every check. The test below runs
-// the shipped predicate against the in-memory host (native_host_tests) and
-// pins its answer to the rows that actually exist, which no source scan can do.
+// The test below runs the shipped predicate against the in-memory host
+// (native_host_tests) and pins its answer to the rows that actually exist,
+// which no source scan can do.
 // ===========================================================================
 
-/// EARS R-rb-25-X9: `raising::has_heal_cooldown` must answer from the CURRENT
+/// `raising::has_heal_cooldown` must answer from the CURRENT
 /// rows of `heal_cooldown`, for the ASKED owner — false with no row, false
 /// while only a stranger owns one, true once the owner owns one, false again
 /// once the owner's row is gone (while the stranger's row survives). The paired
@@ -1968,7 +1848,7 @@ fn shared_cooldown_boundary_allowed() {
 /// data.
 ///
 /// kills:
-///   - the ADR-0222 known-limit hollow, `{ let _ = <the cooldown read>; false }`:
+///   - `{ let _ = <the cooldown read>; false }`:
 ///     the owner-row assertion goes red while every source scan stays green.
 ///   - the inverted hollow, `{ let _ = <the cooldown read>; true }`: the
 ///     empty-table assertion goes red.
@@ -2065,36 +1945,32 @@ fn rb41_has_heal_cooldown_tracks_real_cooldown_rows() {
 }
 
 // ===========================================================================
-// rb-80 — R-rb-46-ERASEWRITERS (ADR-0250 D1/D7/D8): the para-4.7 deletion gate
-// on `heal_party`.
+// the para-4.7 deletion gate on `heal_party`.
 //
-// E1 (spec M22 §4.7): WHEN `raising::heal_party` writes an ERASE-policy table
+// E1: WHEN `raising::heal_party` writes an ERASE-policy table
 // for a mid-grace or terminal caller THE SYSTEM SHALL refuse BEFORE the write.
 // `heal_party` debits `player_wallet` through the shop's own `spend_currency`
-// (raising.rs:364), consumes `inventory` (:372), writes `monster` /
-// `monster_pub` (:395-396) and `heal_cooldown` (:412) — four ERASE-policy
+// (raising.rs:364), consumes `inventory`, writes `monster` /
+// `monster_pub` and `heal_cooldown` — four ERASE-policy
 // tables the cascade is about to erase, so §4.7's trigger predicate selects it
 // exactly as it selected `buy` / `sell` ("the builder does not get to re-decide
 // this").
 //
 // THREE WITNESSES, ONE CRITERION:
 //   * the EXECUTED five-state matrix — the verdict really does change with the
-//     CALLER's own account row (rb-41 native host);
+//     CALLER's own account row;
 //   * the SOURCE pins — the facts execution cannot see: the fully-qualified
 //     spelling, `?;`, brace depth zero, the statement boundary, the FROZEN
 //     prefix above the gate, the ordering against the first write, the tag;
 //   * the FILE census — what this slice deliberately leaves open, mechanically.
-//     Since rb-128 (ADR-0273 D5) nothing in this file is left open: the four
+//     nothing in this file is left open: the four
 //     raising writers carry their own first-statement gates (pinned and executed
 //     in `guards_tests.rs`), and the census counts all five gates.
 //
 // SCAN SUBSTRATE. Every scan reuses THIS file's existing helpers only
 // (`RAISING_SOURCE`, `strip_raising_comments`, `blank_heal_scan_strings`,
 // `assert_no_heal_scan_landmines`, `reducer_body`, `eg2_scan_body`) — no third
-// stripper (ADR-0003). Every production needle is assembled from fragments and
-// the double quote and both braces are spelled as NUMBERS: four evals
-// concatenate every `.rs` under `server-module/src` and take the FIRST hit of a
-// declaration needle, and this file sorts before `taming.rs`.
+// stripper.
 //
 // HONEST LIMITS, stated once for the block. The source pins read text, never
 // behaviour. The executed matrix reads behaviour but stops at the first guard
@@ -2140,10 +2016,10 @@ fn rb80_seed_deleting_stranger(
     ));
 }
 
-/// **E1 (behaviour)** — `heal_party` refuses a deletion-gated caller, ADMITS
+/// `heal_party` refuses a deletion-gated caller, ADMITS
 /// everybody else, and answers from the CALLER's own row.
 ///
-/// The shipped reducer runs under the rb-41 native host through five account
+/// The shipped reducer runs through five account
 /// states with the exact verdict pinned in each: no row, `Active`,
 /// `PendingDeletion`, `PendingDeletion` + the terminal marker, and row removed.
 /// The three admitted states are the positive control and they are what make
@@ -2163,9 +2039,6 @@ fn rb80_seed_deleting_stranger(
 /// (which returns a different error) would masquerade as a pass in all three
 /// admitted states and the whole positive control would go quietly vacuous.
 /// Ordering relative to the spend is owned by the source pin above.
-///
-/// RED AT HEAD on the `PendingDeletion` state: with no gate the reducer returns
-/// the ordinary next-guard error there.
 ///
 /// kills: M1 (the dropped gate) · M5 (a discarded verdict) · M8 (an unreachable
 /// placement) · M11 (a constant reject in `guards` — the three admitted states)
@@ -2288,18 +2161,17 @@ fn rb80_heal_party_is_refused_only_while_the_caller_is_deletion_gated() {
 }
 
 // ===========================================================================
-// Native-host behavioural suite (debloat Phase 2: EV-raising-reducer-security#guards,
-// EV-evolution-reducer-security (essence_train / consume arms), EV-no-idle-accrual,
-// ST-raising_tests).
+// Native-host behavioural suite.
 //
 // The SHIPPED reducers run through `Fixture::run_as(_at)` with a real sender and
 // clock. HOST LIMIT: no transaction rollback, so every rejection is asserted as
 // refusal BEFORE any write (the store byte-identical).
 //
+// heal_party's authorization is the sender-scoped player lookup + spend (every row it
+// touches is keyed by `ctx.sender()`, so there is no separate ownership guard); these
+// tests pin that.
+//
 // Not asserted, on purpose:
-// * heal_party's `require_owner(ctx, "heal_party", me)` — vacuous by construction
-//   (BUG-heal-party-tautological-require-owner); what the reducer really guards is
-//   the sender-scoped lookup + spend, which is what these tests pin.
 // * heal_party's currency-cost branch — live code, but unreachable with shipped
 //   content (the only heal location costs 0 currency in the RON cache); residual.
 // ===========================================================================

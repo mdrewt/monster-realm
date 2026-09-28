@@ -1,18 +1,15 @@
-//! `taming` — server-module domain submodule (M8.9, ADR-0056).
+//! `taming` — server-module domain submodule.
 //!
-//! Recruiting wild monsters (ADR-0047). The inventory helpers it consumes
-//! (`grant_item` / `consume_one`) now live in `inventory.rs` (ADR-0059, the
+//! Recruiting wild monsters. The inventory helpers it consumes
+//! (`grant_item` / `consume_one`) now live in `inventory.rs` (the
 //! single item-mutation surface). The recruit roll is injected (`ctx.random()`),
 //! never a client argument; bait is classified by data (the item's
 //! `recruit_bonus`), consumed BEFORE the roll.
-//!
-//! This file name is part of the canonical `touches:` vocabulary fixed by
-//! ADR-0056 — keep it stable.
 
 use crate::battle::{write_back_battle_results, write_back_party_hp};
 use crate::guards::{escrowed_item_qty, log_reject};
 // `grant_item` is dev-gated (its only caller `grant_bait` is too — an ungated
-// import would be an unused-import warning in the non-dev build, red-team F6);
+// import would be an unused-import warning in the non-dev build);
 // `consume_one` is ungated (its caller `attempt_recruit` always compiles).
 use crate::inventory::consume_one;
 #[cfg(feature = "dev_reducers")]
@@ -31,7 +28,7 @@ use game_core::{
 };
 use spacetimedb::{ReducerContext, Table};
 
-/// Attempt to recruit the wild monster in a wild battle (M8d, ADR-0047). The
+/// Attempt to recruit the wild monster in a wild battle. The
 /// roll is injected (`ctx.random()`), never a client argument. Optional `bait`
 /// is classified by data (the item's `recruit_bonus`), consumed BEFORE the roll.
 ///
@@ -45,7 +42,7 @@ pub fn attempt_recruit(
     battle_id: u64,
     bait_item_id: Option<u32>,
 ) -> Result<(), String> {
-    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    // Deletion gate: the FIRST statement, before every read and write.
     crate::guards::require_not_deleting(ctx, "attempt_recruit")?;
     let me = ctx.sender();
     let mut battle = match ctx.db.battle().battle_id().find(battle_id) {
@@ -56,9 +53,7 @@ pub fn attempt_recruit(
             return Err(e);
         }
     };
-    // Ownership guard — explicit `!=` form required by recruit-reducer-security eval
-    // (which pattern-matches `player_identity != me`). Functionally equivalent to
-    // require_owner; PARK: unify when the eval is updated to accept require_owner.
+    // Ownership guard. Functionally equivalent to require_owner.
     if battle.player_identity != me {
         let e = "not owner".to_string();
         log_reject("attempt_recruit", me, &e);
@@ -95,7 +90,7 @@ pub fn attempt_recruit(
             log_reject("attempt_recruit", me, &e);
             return Err(e);
         }
-        // Trade escrow guard (TR-12, ADR-0106): bait item cannot be from an escrowed stack.
+        // Trade escrow guard: bait item cannot be from an escrowed stack.
         let escrowed = escrowed_item_qty(
             ctx.db
                 .trade_offer()
@@ -133,7 +128,7 @@ pub fn attempt_recruit(
     let roll: u32 = ctx.random();
     let success = game_core::attempt_recruit(chance, roll);
 
-    // pt-b2 (ADR-0131): H1 playtest capture — single site after the roll, before the
+    // H1 playtest capture — single site after the roll, before the
     // branch, so every completed attempt is recorded exactly once with the PRE-roll HP.
     crate::playtest::record_recruit_event(
         ctx,
@@ -162,12 +157,12 @@ pub fn attempt_recruit(
         );
         let row = monster_from_instance(me, &inst, PARTY_SLOT_NONE);
         let inserted = ctx.db.monster().insert(row);
-        // FRESH tier (EG1-8/ADR-0174 D7): creation site — the species row is in hand.
+        // FRESH tier: creation site — the species row is in hand.
         let pub_row = pub_from_monster(&inserted, species_row.tier);
         ctx.db.monster_pub().insert(pub_row);
 
         battle.state.outcome = BattleOutcome::SideAWins;
-        // NO XP on recruit (ADR-0047): do NOT swap for write_back_battle_results.
+        // NO XP on recruit: do NOT swap for write_back_battle_results.
         write_back_party_hp(ctx, &battle)?;
         ctx.db.battle_wild().battle_id().delete(battle_id);
         ctx.db.battle().battle_id().update(battle);
@@ -185,23 +180,23 @@ pub fn attempt_recruit(
     // the SSOT `u16::MAX -> Fled` terminal — NEVER a raw in-shell `turn_number += 1`
     // — and then lets the wild (side B) strike back ONLY if it has a skill and the
     // turn-limit terminal did not fire. Post-turn phases (DoT, weather chip, status/
-    // weather tick) now run on every failed-recruit turn (ADR-0098 D1, closes R3).
-    // Use cached_skills() (process-wide content cache, ADR-0089 amended M14.5e) — not
+    // weather tick) now run on every failed-recruit turn (closes R3).
+    // Use cached_skills() (process-wide content cache) — not
     // skill_defs_from_rows — so sets_weather/applies_status are populated
-    // (ADR-0098 D2, closes RT-W14-DESYNC-01).
+    // (closes RT-W14-DESYNC-01).
     let skill_defs = crate::content_cache::cached_skills()?;
     let type_chart = crate::content_cache::cached_type_chart(ctx)?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
     let sv = StatusVariance::from_ctx_random(ctx.random());
 
     // Build the per-slot status store from BattleMonster.status fields (same
-    // pattern as submit_attack; ADR-0098 D4).
+    // pattern as submit_attack).
     let mut status = BattleStatusStore {
         side_a: battle.state.side_a.team.iter().map(|m| m.status).collect(),
         side_b: battle.state.side_b.team.iter().map(|m| m.status).collect(),
     };
 
-    // Build AbilityStore from species content for this battle's teams (ADR-0100).
+    // Build AbilityStore from species content for this battle's teams.
     let ability_defs = crate::content_cache::cached_abilities()?;
     let a_ability_ids: Vec<Option<u32>> = battle
         .state
@@ -283,7 +278,7 @@ pub fn attempt_recruit(
 #[spacetimedb::reducer]
 pub fn grant_bait(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> {
     let me = ctx.sender();
-    // Deletion gate (ADR-0250 D4, spec para 4.7): the first check, before the item read; no joined check exists.
+    // Deletion gate: the first check, before the item read; no joined check exists.
     crate::guards::require_not_deleting(ctx, "grant_bait")?;
     let Some(item) = ctx.db.item_row().id().find(item_id) else {
         let e = "item not found".to_string();

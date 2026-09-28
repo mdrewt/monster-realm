@@ -1,5 +1,5 @@
 // ui/overlayA11y.ts — open/close ARIA + focus choreography for the 16 mutual-exclusion overlays
-// (m23-s1, M23 §2.1-§2.3; ADR-0205 D1-D3, D7).
+// (M23 §2.1-§2.3).
 //
 // The composition shell of this slice: it is the only module here that writes attributes, schedules
 // a timer, moves focus or holds state. `ui/overlayRegistry.ts` supplies the metadata (role,
@@ -56,7 +56,7 @@
 //       instead of routing through the view's `hide()` (and thus this close), the record survives
 //       with a live listener, a pending timer and a return target that expires — a much later close
 //       then restores focus to a long-dead element. Recommend §4.1 add force-hide ↔ close to its
-//       cross-slice contract list. AMENDED BY rb-11 (ADR-0214, residual R-rb-11-A13): that bypass
+//       cross-slice contract list. Since live-region custody moved here, that bypass
 //       now ALSO strands `#a11y-live` inside the `display:none` subtree, because custody is handed
 //       back by `releaseLive` and nothing else — so the consequence is no longer a stale listener
 //       but TOTAL SILENCE for every announcement until that overlay is opened and closed properly.
@@ -83,7 +83,7 @@ interface OpenRecord {
   readonly timer: ReturnType<typeof setTimeout>;
   /** The focus trap's uninstall handle (ui/focusTrap.ts). */
   readonly uninstall: () => void;
-  /** The live region's custody handle (ui/liveRegion.ts, ADR-0214) — same shape and lifecycle as
+  /** The live region's custody handle (ui/liveRegion.ts) — same shape and lifecycle as
    *  `uninstall`. Never `null`: with no live region in the document `adoptLiveRegion` returns a
    *  no-op, so there is no branch here. */
   readonly releaseLive: () => void;
@@ -117,7 +117,7 @@ export function openOverlayA11y(id: OverlayId, root: HTMLElement): void {
   root.setAttribute('aria-modal', 'true');
   root.setAttribute('aria-label', t(meta.labelKey));
 
-  // ADR-0214: `aria-modal="true"` above tells assistive technology to ignore everything outside
+  // `aria-modal="true"` above tells assistive technology to ignore everything outside
   // `root` — including the live region, which A11Y-10 places as a direct `<body>` child. Move it
   // inside. Three things about this call site are load-bearing:
   //   * it is on the COMMON path, below the fresh/re-open merge, so a re-open with a DIFFERENT root
@@ -165,7 +165,7 @@ export function closeOverlayA11y(id: OverlayId, fallbackFocus: HTMLElement | nul
   record.root.removeAttribute('role');
   record.root.removeAttribute('aria-modal');
   record.root.removeAttribute('aria-label');
-  // ADR-0214: hand the live region back to `<body>`. Inert if a later overlay has since adopted it.
+  // Hand the live region back to `<body>`. Inert if a later overlay has since adopted it.
   record.releaseLive();
 
   let restore: HTMLElement | null = null;

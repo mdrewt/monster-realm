@@ -1,17 +1,17 @@
-// ui/tradeProposeView.ts — thin DOM shell for the trade-PROPOSE overlay (pt-c2, ADR-0134).
+// ui/tradeProposeView.ts — thin DOM shell for the trade-PROPOSE overlay.
 //
-// Mirrors renameView (pt-c1b, ADR-0133) — the same three input-hygiene mechanisms plus a
+// Mirrors renameView — the same three input-hygiene mechanisms plus a
 // multi-field draft (target <select>, monster checkboxes, two currency inputs):
 //   1. Every focusable's OWN keydown listener calls e.stopPropagation() so field keystrokes
 //      never reach the bubble-phase window keydown (movement + letter hotkeys). The currency
 //      inputs additionally handle Enter=submit / Escape=hide locally (D6, red-team H-2).
-//   2. The deferred initial focus is NO LONGER OWNED HERE (m23-s3). `ui/overlayA11y.ts` is the
+//   2. The deferred initial focus is NO LONGER OWNED HERE. `ui/overlayA11y.ts` is the
 //      single owner of the setTimeout(…, 0) defer for all seventeen overlays, and it targets this
 //      overlay's `initialFocusSelector` (#tradepropose-target) from OVERLAY_A11Y. The defer is
 //      still load-bearing: it lets the opening key event fully complete before focus lands.
 //   3. hide() resets the select→placeholder + unchecks all monsters + blanks both currency
 //      inputs + feedback + releases the in-flight lock (#pending=false, submit re-enabled —
-//      dead-button guard, ADR-0085 C6) so a stale draft/lock never survives a re-open.
+//      dead-button guard) so a stale draft/lock never survives a re-open.
 //
 // D6: player-controlled name/nickname → option.textContent / label textContent / value
 // ONLY, NEVER innerHTML (XSS firewall; the dynamic checkbox-label path is the risk site).
@@ -25,7 +25,7 @@
 // #pending lock reset via .finally() on BOTH resolve and reject (no dead-button-forever),
 // with a trailing .catch() so a rejecting onSubmit never emits an unhandled rejection.
 //
-// m24-s5 (ADR-0261) — the two strings this view owns are resolved through the i18n resolver
+// The two strings this view owns are resolved through the i18n resolver
 // (`t()`, ui/i18n/resolver.ts): the target placeholder (`tradePropose.target.placeholder`, in
 // render()) and the submit label (`chrome.tradePropose.submit`, in show() — `index.html` no
 // longer ships the "Offer" text, so the button is EMPTY until the first show()). Target labels
@@ -42,6 +42,9 @@ import {
 
 export interface TradeProposeCallbacks {
   readonly onSubmit: (args: TradeProposeArgs) => Promise<void> | void;
+  /** game-core's per-side monster cap, read once at boot from the
+   *  `max_trade_monsters_per_side()` wasm export (main.ts) — never a TS literal. */
+  readonly maxMonstersPerSide: number;
 }
 
 // The placeholder <option> value — an empty string maps to "no target" (canSubmit:false).
@@ -129,10 +132,10 @@ export class TradeProposeView {
   }
 
   show(): void {
-    // m23-s3 D1: only the hidden->visible EDGE opens (see pvpView.ts's header for why).
+    // Only the hidden->visible EDGE opens (see pvpView.ts's header for why).
     const wasVisible = this.visible;
-    // m24-s5 (ADR-0261 D4): the submit label is resolved HERE, on EVERY show() — unconditionally,
-    // after the `wasVisible` read, before the display write (the ADR-0260 D4 shape; see
+    // The submit label is resolved HERE, on EVERY show() — unconditionally,
+    // after the `wasVisible` read, before the display write (see
     // evolutionView.show() for the boot-order / locale-switch reasoning).
     this.#submitBtn.textContent = t('chrome.tradePropose.submit');
     this.#overlay.style.display = '';
@@ -150,12 +153,12 @@ export class TradeProposeView {
     this.#offerInput.value = '';
     this.#requestInput.value = '';
     this.#feedback.textContent = '';
-    // Release the in-flight lock (ADR-0085 C6): onReconnect and the battle auto-show force-hide
+    // Release the in-flight lock: onReconnect and the battle auto-show force-hide
     // this overlay, and the SDK never settles an in-flight reducer promise after a link drop —
     // so .finally() may never run. Without this reset, #pending stays true forever → dead button.
     this.#pending = false;
     this.#submitBtn.disabled = false;
-    // m23-s3 D2: DELIBERATELY UNGUARDED (see pvpView.ts's header) -- the self-healing path.
+    // DELIBERATELY UNGUARDED (see pvpView.ts's header) -- the self-healing path.
     closeOverlayA11y('tradeProposeView', null);
   }
 
@@ -239,13 +242,21 @@ export class TradeProposeView {
   // Recompute the submit-enabled state from the live draft, via the same
   // buildProposeSubmission SSOT that #submit() uses.
   #refreshSubmitEnabled(): void {
-    this.#submitBtn.disabled = !buildProposeSubmission(this.#targets, this.#readDraft()).canSubmit;
+    this.#submitBtn.disabled = !buildProposeSubmission(
+      this.#targets,
+      this.#readDraft(),
+      this.#cbs.maxMonstersPerSide,
+    ).canSubmit;
   }
 
   // Single shared submit path (Enter + click) ⇒ one #pending lock ⇒ no double-submit.
   #submit(): void {
     if (this.#pending) return;
-    const sub = buildProposeSubmission(this.#targets, this.#readDraft());
+    const sub = buildProposeSubmission(
+      this.#targets,
+      this.#readDraft(),
+      this.#cbs.maxMonstersPerSide,
+    );
     if (!sub.canSubmit || sub.args === null) return; // invalid draft → no-op, no onSubmit call.
     // Clear any prior feedback so a stale "Offer sent!" never lingers under a new submission.
     this.#feedback.textContent = '';

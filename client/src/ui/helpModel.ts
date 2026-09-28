@@ -1,4 +1,4 @@
-// ui/helpModel.ts — pure view model for the in-client help overlay (pt-c2b, ADR-0135).
+// ui/helpModel.ts — pure view model for the in-client help overlay.
 //
 // No DOM, no SDK, no side-effects, no args. Never throws. The content is a typed
 // SSOT `const` (dialogueContent / renameModel precedent) — NOT a RON data file
@@ -7,9 +7,9 @@
 //
 // The controls list documents every load-bearing key so a tester reading the
 // overlay discovers the full keymap: the `?` help key itself, M (the main-menu
-// front door, uxd3/ADR-0162), Escape (close), movement (WASD / arrows), Space
+// front door), Escape (close), movement (WASD / arrows), Space
 // (jump), F9 (bug bundle), and the 10 overlay hotkeys B I E Q U P L N O T (G and
-// H deleted in uxd2, ADR-0161 D5 — shop and heal are reached through the interact
+// H deleted — shop and heal are reached through the interact
 // key T). The menu sources every leaf's shortcut label from this SSOT, so a key
 // that diverges from it fails MM-KEYGLYPH-FROM-HELP-SSOT. buildHelpViewModel() returns a
 // fresh copy so a caller mutating the result cannot poison a later call

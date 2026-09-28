@@ -1,17 +1,16 @@
-//! `schema` — server-module domain submodule (M8.9, ADR-0056).
+//! `schema` — server-module domain submodule.
 //!
 //! The data `#[spacetimedb::table]` structs + their row types. The shared
 //! `game-core` type IS the schema (never re-declared); time columns are `i64` ms
-//! (round-trip `game_core::Millis`). Tables are additive (ADR-0006); world tables
-//! carry an indexed `zone_id` (ADR-0007).
+//! (round-trip `game_core::Millis`). Tables are additive; world tables
+//! carry an indexed `zone_id`.
 //!
-//! Exception (ADR-0056 / spec §6 macro hygiene): the `movement_tick_schedule`
-//! scheduled table lives with its `movement_tick` reducer in `movement.rs` so the
-//! `scheduled(movement_tick)` reference resolves.
+//! Exception: the `movement_tick_schedule` scheduled table lives with its
+//! `movement_tick` reducer in `movement.rs` so the `scheduled(movement_tick)`
+//! reference resolves.
 //!
 //! Cross-module `ctx.db.<table>()` callers must import the generated snake_case
-//! accessor trait (e.g. `use crate::schema::config;`). This file name is part of
-//! the canonical `touches:` vocabulary fixed by ADR-0056 — keep it stable.
+//! accessor trait (e.g. `use crate::schema::config;`).
 
 use game_core::{
     ActionState, Affinity, BattleState, Direction, MoveInput, NatureKind, NpcInteraction, StatKind,
@@ -19,7 +18,7 @@ use game_core::{
 };
 use spacetimedb::{ConnectionId, Identity};
 
-// --- Tables (additive, ADR-0006; world tables carry an indexed zone_id, ADR-0007) ---
+// --- Tables (additive; world tables carry an indexed zone_id) ---
 
 /// One renderable entity. The enum/queue columns are the EXACT M1 `game-core`
 /// types (the shared type IS the schema, never re-declared). `move_queue` is
@@ -73,7 +72,7 @@ pub struct ZoneDefRow {
     pub height: u32,
 }
 
-// --- Content tables (M6b, public, world-readable, module-write-only, ADR-0006) --
+// --- Content tables (public, world-readable, module-write-only) --
 
 /// Species definitions seeded from the `game-core` RON registry by `sync_content`.
 #[derive(Clone)]
@@ -90,10 +89,10 @@ pub struct SpeciesRow {
     pub base_sp_defense: u16,
     pub affinity: Affinity,
     pub learnable_skill_ids: Vec<u32>,
-    pub ability: Option<u32>, // additive (ADR-0006); None = no passive ability
-    // Evolution-graph tier (EG1-3, ADR-0174 D1): 0 = a base, wild-catchable
+    pub ability: Option<u32>, // additive; None = no passive ability
+    // Evolution-graph tier: 0 = a base, wild-catchable
     // form; every evolution edge advances exactly +1 (R5). Tail-appended with an
-    // explicit default (ADR-0173 D5).
+    // explicit default.
     #[default(0)]
     pub tier: u8,
 }
@@ -137,19 +136,18 @@ pub struct ItemRow {
     pub train_stat: Option<StatKind>,
     /// EVs granted toward `train_stat` per use; 0 for non-training items.
     pub train_amount: u16,
-    /// Currency the player receives when selling this item (M13b, ADR-0082).
+    /// Currency the player receives when selling this item.
     /// 0 = item cannot be sold (`sell` reducer rejects). Seeded 1:1 from
     /// `ItemDef.sell_price` (content SSOT).
     pub sell_price: u64,
-    /// Status condition this item cures when used in battle via `use_battle_item`
-    /// (M14e, ADR-0096; exposed to clients here per M14.5d-1a, ADR-0105).
+    /// Status condition this item cures when used in battle via `use_battle_item`.
     /// None for non-cure items. Seeded 1:1 from `ItemDef.cure_status` (content
     /// SSOT) so the client classifies cure items by data, not by hardcoded id
-    /// (additive, ADR-0006).
+    /// (additive).
     pub cure_status: Option<StatusKind>,
 }
 
-// --- Shop tables (M13b, ADR-0082): public content, world-readable ---
+// --- Shop tables: public content, world-readable ---
 
 /// Shop definitions seeded from the `game-core` RON registry.
 /// Public (world-readable content, like `item_row` — shop names are not private).
@@ -175,7 +173,7 @@ pub struct ShopItemRow {
     pub buy_price: u64,
 }
 
-// --- Encounter table (M8b, ADR-0040 second visibility mode: must-never-leak) ----
+// --- Encounter table ----
 
 /// Server-local marshaled encounter entry — flatten-at-boundary (`Level` -> `u8`,
 /// the same pattern as `Millis` -> `i64`). Lives inside the private `EncounterRow`.
@@ -189,7 +187,7 @@ pub struct EncounterEntryRow {
 
 /// PRIVATE encounter table (no `public`). Spawn weights/level bands are
 /// server-only truth that must NEVER reach any client — there is no public
-/// projection and no RLS filter (ADR-0040: the second visibility mode).
+/// projection and no RLS filter.
 #[spacetimedb::table(accessor = encounter)]
 pub struct EncounterRow {
     #[primary_key]
@@ -198,7 +196,7 @@ pub struct EncounterRow {
     pub entries: Vec<EncounterEntryRow>,
 }
 
-// --- Monster tables (M6b, ADR-0015 fallback: split private + public projection) --
+// --- Monster tables --
 
 /// The authoritative monster record — PRIVATE (no `public`). Contains hidden
 /// genes (IVs, EVs, nature) that must NEVER reach a non-owner client. Only
@@ -216,7 +214,7 @@ pub struct Monster {
     // Progression
     pub level: u8,
     pub xp: u32,
-    // Hidden genes — MUST NEVER reach non-owner clients (ADR-0015)
+    // Hidden genes — MUST NEVER reach non-owner clients
     pub iv_hp: u8,
     pub iv_attack: u8,
     pub iv_defense: u8,
@@ -241,20 +239,18 @@ pub struct Monster {
     pub current_hp: u16,
     // Party slot: 255 = in box (not in party), 0..5 = party position
     pub party_slot: u8,
-    // Per-monster care cooldown anchor (M9b, ADR-0059): server clock ms of the
-    // last successful `care`. Additive (ADR-0006). New monsters start at 0 (epoch
+    // Per-monster care cooldown anchor: server clock ms of the
+    // last successful `care`. Additive. New monsters start at 0 (epoch
     // ⇒ cooldown elapsed ⇒ first care allowed). Stays OFF monster_pub (YAGNI).
     pub last_care_at_ms: i64,
-    // (`bond` and `evolves_to` were removed here by Migration B — EG5-6, ADR-0177 D2.
-    // A column removal is always rejected by automatic migration; a live DB on the
-    // Migration-A schema needs the ADR-0177 runbook, never a plain republish.)
-    // --- EG1 Migration A: 16 appended columns (ADR-0174 D1). APPEND-AT-END ONLY:
+    // (`bond` and `evolves_to` were removed here by Migration B.
+    // A column removal is always rejected by automatic migration.
+    // --- EG1 Migration A: 16 appended columns. APPEND-AT-END ONLY:
     // live spacetime 2.6.0 accepts an automatic migration only as tail-appended
-    // columns each carrying an explicit default (ADR-0173 D5); a mid-struct
-    // insert is a live-DB migration rejection. Trust and Quality-Time SEMANTICS
-    // (who writes these, when) land in EG2 — EG1 only freezes the storage.
+    // columns each carrying an explicit default; a mid-struct
+    // insert is a live-DB migration rejection. Trust and Quality-Time SEMANTICS.
     // Per-Affinity essence pools, in Affinity declaration order (Fire..Dark) —
-    // the same order as Affinity::ALL and MonsterInstance.essence (EG1-1/EG1-7).
+    // the same order as Affinity::ALL and MonsterInstance.essence.
     #[default(0)]
     pub essence_fire: u32,
     #[default(0)]
@@ -271,36 +267,35 @@ pub struct Monster {
     pub essence_light: u32,
     #[default(0)]
     pub essence_dark: u32,
-    // Lifetime Trust event counters (EG1-1; tiering via game_core::trust_tier_of).
+    // Lifetime Trust event counters (tiering via game_core::trust_tier_of).
     #[default(0)]
     pub trust_favorable_count: u32,
     #[default(0)]
     pub trust_unfavorable_count: u32,
     // Server-only Trust bookkeeping: day-epoch anchor for the once-per-24h
-    // favorable battle credit (EG2 writes it; 0 = never credited).
+    // favorable battle credit.
     #[default(0)]
     pub trust_favorable_battle_day_epoch: u32,
-    // Lifetime Quality-Time ticks (EG1-1; tiering via quality_time_tier_of).
+    // Lifetime Quality-Time ticks (tiering via quality_time_tier_of).
     #[default(0)]
     pub quality_time_ticks_total: u32,
-    // Server-only Quality-Time accumulators (EG2 semantics; 0 = empty window).
+    // Server-only Quality-Time accumulators.
     #[default(0)]
     pub quality_time_accum_ms: u32,
     #[default(0)]
     pub quality_time_window_ms: u32,
     // NOTE: the two i64 columns carry a TYPED 0i64 literal — an untyped 0 in
     // #[default(..)] BSATN-encodes as 4 bytes and the publish rejects with
-    // "data too short for i64" (measured on live spacetime, EG1).
+    // "data too short for i64" (measured on live spacetime).
     #[default(0i64)]
     pub quality_time_window_start_ms: i64,
-    // Essence-training cooldown anchor, server clock ms (EG2 writes it; 0 =
-    // epoch, cooldown elapsed, first train allowed — mirrors last_care_at_ms).
+    // Essence-training cooldown anchor, server clock ms.
     #[default(0i64)]
     pub last_essence_train_at_ms: i64,
 }
 
 /// Safe projection of the monster table — NO hidden fields (no IVs, EVs,
-/// nature). PRIVATE since issue #284 / ADR-0194 (need-to-know): clients read
+/// nature). PRIVATE (need-to-know): clients read
 /// ONLY their OWN rows through the owner-scoped `my_monster_pub` view below;
 /// other players' rows are never delivered. Server writes this alongside every
 /// `monster` mutation (dual-write discipline, unchanged — visibility is
@@ -325,11 +320,11 @@ pub struct MonsterPub {
     pub stat_sp_attack: u16,
     pub stat_sp_defense: u16,
     pub party_slot: u8,
-    // (`bond` and `evolves_to` were removed here by Migration B — EG5-6, ADR-0177 D2.)
-    // --- EG1 Migration A: 12 appended public columns (ADR-0174 D1). APPEND-AT-
-    // END ONLY with explicit defaults (ADR-0173 D5). The EG4 client requirements
-    // panel reads these — all are derived server-side, never client-written.
-    // Evolution-graph tier of this monster's species (EG1-8): written fresh at
+    // (`bond` and `evolves_to` were removed here by Migration B.)
+    // --- EG1 Migration A: 12 appended public columns. APPEND-AT-
+    // END ONLY with explicit defaults. are derived server-side, never
+    // client-written.
+    // Evolution-graph tier of this monster's species: written fresh at
     // creation/evolve/sync from the species row, copied forward elsewhere.
     #[default(0)]
     pub tier: u8,
@@ -350,28 +345,27 @@ pub struct MonsterPub {
     pub essence_light: u32,
     #[default(0)]
     pub essence_dark: u32,
-    // Derived Trust tier (ADR-0174 D4): with K=10 smoothing, zero history is
+    // Derived Trust tier: with K=10 smoothing, zero history is
     // exactly 0.5 — the 5-band midpoint — so Neutral is the correct default.
     #[default(TrustTier::Neutral)]
     pub trust_tier: TrustTier,
-    // Derived Quality-Time tier (ADR-0174 D6 bands).
+    // Derived Quality-Time tier.
     #[default(0)]
     pub quality_time_tier: u8,
-    // Derived Nutrition percentage of the 510 EV budget (ADR-0174 D3).
+    // Derived Nutrition percentage of the 510 EV budget.
     #[default(0)]
     pub nutrition_pct: u8,
 }
 
-/// Owner-scoped read path for `monster_pub` (ADR-0194, issue #284): each
+/// Owner-scoped read path for `monster_pub`: each
 /// client's subscription sees ONLY its own rows, via the `owner_identity`
 /// btree index — a point index scan, never a table scan. First multi-row
 /// (`Vec`) view in the module: the return type no longer bounds the result
-/// set (ADR-0154 D3's concern), so THIS BODY is the entire security boundary
-/// and is pinned exactly — by `evals/monster-privacy.eval.mjs` and the
-/// `e13r_e` mirror in `evolution_tests.rs` — signature included (a 1.12.0
-/// view accepts extra args; an extra `owner` param is a caller-chosen-owner
-/// leak). Lives next to the table it projects (visibility is a schema
-/// artifact — the `my_conversation`/`my_wallet`/`my_account` convention).
+/// set, so THIS BODY is the entire security boundary
+/// and is pinned exactly signature included (a 1.12.0 view accepts extra
+/// args; an extra `owner` param is a caller-chosen-owner leak). Lives next
+/// to the table it projects (visibility is a schema artifact — the
+/// `my_conversation`/`my_wallet`/`my_account` convention).
 #[spacetimedb::view(accessor = my_monster_pub, public)]
 fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
     ctx.db
@@ -381,21 +375,21 @@ fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
         .collect()
 }
 
-// --- Battle table (M7b, ADR-0042; private since 15r-sec-a, ADR-0198) ----------
+// --- Battle table (private since 15r-sec-a) ----------
 
 /// A single PvE or PvP battle. The `state` column holds the full `BattleState`
-/// (pure data from `game-core`); the server module is the ONLY writer. PRIVATE
-/// since 15r-sec-a (ADR-0198): a public battle table delivered every live
+/// (pure data from `game-core`); the server module is the ONLY writer. PRIVATE:
+/// a public battle table delivered every live
 /// battle's both-side derived stats, HP, skills and status to every connected
-/// client (the exposure ADR-0042:30 flagged before M16 reused the schema).
+/// client.
 /// Participants read ONLY their own rows through the `my_battle` view below.
 /// Hidden fields (IVs/EVs) are NOT in `BattleState` — only derived stats appear
-/// there (ADR-0015 satisfied) — so the view leaks nothing hidden to the two
+/// there — so the view leaks nothing hidden to the two
 /// players who are already in the fight.
 ///
-/// `opponent_identity` gains a btree index in M16a (ADR-0109) to support O(log n)
+/// `opponent_identity` gains a btree index to support O(log n)
 /// lookup in `forfeit_on_disconnect` for the case where the disconnecting player is
-/// the opponent (side B).  Adding an index is additive (ADR-0006): no column or PK
+/// the opponent (side B).  Adding an index is additive: no column or PK
 /// change; the schema-snapshot eval tracks columns+PK only, not index presence.
 #[derive(Clone)]
 #[spacetimedb::table(accessor = battle)]
@@ -413,13 +407,12 @@ pub struct Battle {
     pub created_at_ms: i64,
 }
 
-/// Participant-scoped read path for `battle` (ADR-0198): each client's
+/// Participant-scoped read path for `battle`: each client's
 /// subscription sees ONLY rows where it holds `player_identity` OR
 /// `opponent_identity` — a chain of two point index scans over the btree
 /// indexes above, never a table scan. Like `my_monster_pub`, THIS BODY is the
-/// entire security boundary and is pinned exactly — by
-/// `evals/monster-privacy.eval.mjs` and the `e15r_sec_a` mirror in
-/// `evolution_tests.rs` — signature included (an extra param is a
+/// entire security boundary and is pinned exactly
+/// signature included (an extra param is a
 /// caller-chosen-owner leak). The trailing filter is DEDUP BY CONSTRUCTION,
 /// not an invariant: it excludes the rows the first scan already emitted, so a
 /// practice battle (`player_identity == opponent_identity`, battle.rs) arrives
@@ -441,12 +434,12 @@ fn my_battle(ctx: &spacetimedb::ViewContext) -> Vec<Battle> {
         .collect()
 }
 
-/// PRIVATE wild-individuality side-table (M8c, ADR-0045). Keyed 1:1 by
+/// PRIVATE wild-individuality side-table. Keyed 1:1 by
 /// `battle_id`. Stores the splitmix32 `individuality_seed` that M8d re-feeds to
 /// `roll_individuality` to rebuild the EXACT wild that was fought. NO `public`:
 /// the raw RNG-derived seed must never reach any client (no projection, no RLS
-/// filter, no generated accessor — mirrors the private `encounter` table,
-/// ADR-0044). M8c only WRITES this row; M8d reads/clears it.
+/// filter, no generated accessor — mirrors the private `encounter` table).
+/// M8c only WRITES this row; M8d reads/clears it.
 #[spacetimedb::table(accessor = battle_wild)]
 pub struct BattleWild {
     #[primary_key]
@@ -456,20 +449,15 @@ pub struct BattleWild {
     pub individuality_seed: u32,
 }
 
-/// Player item inventory (M8d, ADR-0046). PUBLIC / world-readable counts:
-/// transport RLS is unavailable — `client_visibility_filter` exists in the
-/// spacetimedb crate only behind `feature = "unstable"`, and its `Filter::Sql`
-/// form cannot express per-id membership in a `Vec<u64>` column (ADR-0194
-/// corrects ADR-0040/0046's "does not exist" wording) — so every client can
-/// read every owner's counts. Owner-scoping is only a CLIENT subscription
-/// filter; per-owner transport scoping would follow the owner-view pattern
-/// (`my_monster_pub`, ADR-0194) if inventory is ever reclassified. Carries ONLY ownership + count — NO gene/seed
-/// fields; individuality stays
-/// in the private `monster` table. Single-stack invariant: at most ONE row per
-/// `(owner_identity, item_id)`, enforced by routing every insert through
-/// `grant_item` (the `inventory-single-stack` parity eval, ADR-0054) — there is
-/// no DB-level composite unique constraint (unsupported in this toolchain).
-#[spacetimedb::table(accessor = inventory, public)]
+/// PRIVATE player item inventory (no `public`): item counts are owner-private
+/// (scouting another player's stock is a competitive leak). Clients read ONLY
+/// their own rows through the `my_inventory` view below; reducers read the
+/// table directly. Carries ONLY ownership + count — NO gene/seed fields;
+/// individuality stays in the private `monster` table. Single-stack invariant:
+/// at most ONE row per `(owner_identity, item_id)`, enforced by routing every
+/// insert through `grant_item` — there is no DB-level composite unique
+/// constraint (unsupported in this toolchain).
+#[spacetimedb::table(accessor = inventory)]
 pub struct Inventory {
     #[primary_key]
     #[auto_inc]
@@ -480,34 +468,42 @@ pub struct Inventory {
     pub count: u32,
 }
 
-// (The `Fusion` recipe table — M10b, ADR-0061 — was removed here by Migration B,
-// EG5-6/ADR-0177 D2. Fusion was deleted as a feature at EG1-9; the table struct
-// survived only because a table removal cannot ride along with Migration A's
-// additive publish. Table removal is always rejected by automatic migration —
-// a live DB on the Migration-A schema needs the ADR-0177 runbook.)
+/// Owner-scoped read path for `inventory`: each client's subscription sees ONLY
+/// its own stacks, via the `owner_identity` btree index (a point index scan).
+/// A multi-row (`Vec`) view, so THIS BODY is the entire security boundary: the
+/// one-parameter signature is load-bearing (an extra `owner` param would be a
+/// caller-chosen-owner leak). Same shape as `my_monster_pub`.
+#[spacetimedb::view(accessor = my_inventory, public)]
+fn my_inventory(ctx: &spacetimedb::ViewContext) -> Vec<Inventory> {
+    ctx.db
+        .inventory()
+        .owner_identity()
+        .filter(ctx.sender())
+        .collect()
+}
 
-// --- EG1 evolution-graph tables (ADR-0174 D1) ---------------------------------
+// --- evolution-graph tables ---------------------------------
 
-/// One per-Affinity essence requirement on an evolution edge (EG1-4). Nested
+/// One per-Affinity essence requirement on an evolution edge. Nested
 /// SpacetimeType, mirroring the EncounterEntryRow precedent above. The field
-/// set is FROZEN at publish (ADR-0174 D8: live automigration rejects nested-
-/// type widening) and Vec semantics are AND-only — every entry must be met.
+/// set is FROZEN at publish and Vec semantics are AND-only — every entry
+/// must be met.
 #[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq, Eq)]
 pub struct EssenceRequirementRow {
     pub affinity: Affinity,
     pub amount: u32,
 }
 
-/// PUBLIC evolution-graph edge table (EG1-4), seeded clear-and-reinsert from
+/// PUBLIC evolution-graph edge table, seeded clear-and-reinsert from
 /// the game-core evolution_paths registry by sync_content. Clients subscribe to
-/// it for the requirements panel (EG4); the evolve reducer reads it for the
+/// it for the requirements panel; the evolve reducer reads it for the
 /// targeted gate lookup.
 ///
-/// IDENTITY (EG1-12): path_id is DB-internal ONLY — an auto_inc value reminted
+/// IDENTITY: path_id is DB-internal ONLY — an auto_inc value reminted
 /// on every reseed, NEVER durable identity. edge_id is THE durable, author-
 /// assigned, append-only edge identity.
 ///
-/// INDEX (ADR-0174 D5): this toolchain has no composite unique constraint, so
+/// INDEX: this toolchain has no composite unique constraint, so
 /// from_species carries a plain btree index for the evolve reducer lookup and
 /// R1 — no duplicate (from, to) pair — has NO DB-level backstop; it is enforced
 /// by validate_evolution_paths at the content gate plus the sync_content
@@ -528,11 +524,10 @@ pub struct EvolutionPathRow {
     pub min_nutrition_pct: Option<u8>,
 }
 
-/// One post-evolve reveal, queued for the monster's owner (20r-d, ADR-0254 D1).
+/// One post-evolve reveal, queued for the monster's owner.
 /// Nested SpacetimeType, mirroring the `EssenceRequirementRow` precedent above.
-/// The field set is FROZEN at publish (ADR-0174 D8: live automigration rejects
-/// nested-type widening), so the display timestamp ships now even though only
-/// the species pair drives the banner text.
+/// The field set is FROZEN at publish, so the display timestamp ships now even
+/// though only the species pair drives the banner text.
 ///
 /// `from_species` and `to_species` are the edge's OWN endpoints, copied off the
 /// immutable `EvolutionPathRow` the transform was applied through — never read
@@ -548,7 +543,7 @@ pub struct EvolutionRevealRow {
 }
 
 /// PRIVATE per-owner queue of evolution reveals the player has not dismissed
-/// yet (20r-d, ADR-0254 D2). One row per owner, keyed by `owner_identity`;
+/// yet. One row per owner, keyed by `owner_identity`;
 /// `entries` is append-ordered, and Vec order IS display order.
 ///
 /// PRIVATE on purpose: a public projection would hand every connected client
@@ -569,14 +564,13 @@ pub struct PendingEvolutionNotice {
     pub entries: Vec<EvolutionRevealRow>,
 }
 
-/// Owner-scoped read path for `pending_evolution_notice` (ADR-0254 D3,
+/// Owner-scoped read path for `pending_evolution_notice` (
 /// mirroring `my_wallet` below): each client's subscription sees ONLY its own
 /// row, via the `owner_identity` primary key — never a whole-table scan. The
 /// table stays PRIVATE, so this view is the single sanctioned client read path.
-/// `Option` is load-bearing (ADR-0154 D3): a single-row primary-key projection
+/// `Option` is load-bearing: a single-row primary-key projection
 /// returns at most one row, so "no row" stays distinguishable from "an empty
-/// queue", and the client store slot this slice ships holds one row by
-/// construction. Lives next to the table it projects (visibility is a schema
+/// queue". Lives next to the table it projects (visibility is a schema
 /// artifact).
 #[spacetimedb::view(accessor = my_pending_evolution_notices, public)]
 fn my_pending_evolution_notices(ctx: &spacetimedb::ViewContext) -> Option<PendingEvolutionNotice> {
@@ -586,7 +580,7 @@ fn my_pending_evolution_notices(ctx: &spacetimedb::ViewContext) -> Option<Pendin
         .find(ctx.sender())
 }
 
-// --- M12b tables: NPC, dialogue, quest, healing (ADR-0069) -------------------
+// --- M12b tables: NPC, dialogue, quest, healing -------------------
 
 /// NPC entity role row. Entity/component: an NPC is a `character` row + this.
 /// `zone_id` mirrors `character.zone_id` (kept in sync on zone crossings, M12c).
@@ -602,14 +596,14 @@ pub struct Npc {
     pub home_y: i32,
     pub wander_radius: u8,
     pub dialogue_tree_id: String,
-    /// Interaction role (uxd2, ADR-0161): appended LAST (BSATN tail-append —
+    /// Interaction role: appended LAST (BSATN tail-append —
     /// widening a public row is wire-safe only at the tail). Threaded from
     /// `NpcDef.interaction` by `npc_row_from_def`.
     pub interaction: NpcInteraction,
 }
 
 /// PRIVATE per-player dialogue state: flags + done-quest history.
-/// Must-never-leak: flags gate content branches (ADR-0015, ADR-0069).
+/// Must-never-leak: flags gate content branches.
 /// `active_quests` is NOT stored here — derived from `player_quest` rows.
 #[spacetimedb::table(accessor = player_dialogue_state)]
 pub struct PlayerDialogueStateRow {
@@ -634,7 +628,7 @@ pub struct PlayerQuestRow {
 }
 
 /// In-progress dialogue node. Single row per player (PK = owner_identity).
-/// PRIVATE since M13.5c (ADR-0087): `npc_entity_id` + `current_node_id` leak
+/// PRIVATE since M13.5c: `npc_entity_id` + `current_node_id` leak
 /// private quest/dialogue progress — clients read ONLY through the owner-scoped
 /// `my_conversation` view below.
 #[spacetimedb::table(accessor = player_conversation)]
@@ -645,7 +639,7 @@ pub struct PlayerConversation {
     pub current_node_id: String,
 }
 
-/// Owner-scoped read path for `player_conversation` (ADR-0087): each client's
+/// Owner-scoped read path for `player_conversation`: each client's
 /// subscription sees ONLY its own row, via the `owner_identity` unique index —
 /// never a whole-table scan. Lives next to the table it projects (visibility is
 /// a schema artifact, like `monster`/`monster_pub`).
@@ -669,16 +663,15 @@ pub struct HealLocationRow {
     pub cost_item_id: Option<u32>,
     pub cost_qty: u32,
     pub cooldown_ms: i64,
-    /// Currency cost charged by `heal_party` (ADR-0083), mirrored to the client so
-    /// the heal UI can display it (12r-d, closes ADR-0170 residual 1). Appended at
-    /// the end with a typed default per ADR-0173 D5 — bare `0` BSATN-encodes as
-    /// 4 bytes and fails the automigration publish.
+    /// Currency cost charged by `heal_party`, mirrored to the client so
+    /// the heal UI can display it. Appended at the end with a typed default —
+    /// bare `0` BSATN-encodes as 4 bytes and fails the automigration publish.
     #[default(0u64)]
     pub cost_currency: u64,
 }
 
 /// PRIVATE per-player heal cooldown anchor.
-/// Must-never-leak: timestamp reveals heal timing (ADR-0015, ADR-0069).
+/// Must-never-leak: timestamp reveals heal timing.
 #[spacetimedb::table(accessor = heal_cooldown)]
 pub struct HealCooldown {
     #[primary_key]
@@ -686,29 +679,29 @@ pub struct HealCooldown {
     pub last_heal_at_ms: i64,
 }
 
-// --- M15a trade tables (ADR-0106) --------------------------------------------
+// --- M15a trade tables --------------------------------------------
 
-/// An active trade offer between two players (M15, ADR-0106).
+/// An active trade offer between two players.
 ///
 /// PUBLIC so both parties can subscribe and see the offer. The display data
 /// (`initiator_cards` / `counterparty_cards`) contains only the public-projection
-/// field set of the offered monsters — no IVs/EVs/nature (ADR-0015 / TR-19).
+/// field set of the offered monsters — no IVs/EVs/nature.
 /// The public `initiator_currency` / `counterparty_currency` fields leak a LOWER
 /// BOUND on the offering party's private balance to all subscribers — an accepted
-/// bounded exposure (offered amounts only, never the full balance; ADR-0117 D6,
-/// amending ADR-0106 M-2). `inventory` is a genuine precedent (world-readable
+/// bounded exposure (offered amounts only, never the full balance).
+/// `inventory` is a genuine precedent (world-readable
 /// pending transport RLS); `player_wallet` is NOT a precedent — it is PRIVATE
-/// must-never-leak (ADR-0015 / ADR-0081). `trade_offer` is flagged for the same
+/// must-never-leak. `trade_offer` is flagged for the same
 /// transport-RLS treatment as `inventory` / `player_wallet` when per-row RLS lands.
 ///
 /// SpacetimeDB reducers execute serially (single-threaded WASM): a `confirm_trade`
-/// read-check-delete is atomic w.r.t. all other reducers — no TOCTOU possible
-/// (ADR-0106 D8). Do NOT add physical escrow rows; the guard-in-place pattern is
+/// read-check-delete is atomic w.r.t. all other reducers — no TOCTOU possible.
+/// Do NOT add physical escrow rows; the guard-in-place pattern is
 /// the SSOT invariant.
 ///
 /// Terminal state: the row is DELETED (not updated to Cancelled) — mirrors battle
-/// terminal GC (M12.5e, ADR-0077). This means no trade history is retained; a
-/// history table is a follow-up concern (M16+).
+/// terminal GC. This means no trade history is retained; a
+/// history table is a follow-up concern.
 #[spacetimedb::table(accessor = trade_offer, public)]
 pub struct TradeOffer {
     #[primary_key]
@@ -732,9 +725,9 @@ pub struct TradeOffer {
     pub counterparty_items: Vec<game_core::TradeItem>,
     /// Currency offered by the counterparty (0 = none).
     pub counterparty_currency: u64,
-    /// Display-only snapshots of the initiator's offered monsters (no hidden genes — ADR-0015 / TR-19).
+    /// Display-only snapshots of the initiator's offered monsters (no hidden genes).
     pub initiator_cards: Vec<game_core::MonsterCard>,
-    /// Display-only snapshots of the counterparty's offered monsters (no hidden genes — ADR-0015 / TR-19).
+    /// Display-only snapshots of the counterparty's offered monsters (no hidden genes).
     pub counterparty_cards: Vec<game_core::MonsterCard>,
     /// Lifecycle state. Pending → ConfirmedByCounterparty → (deleted on swap or cancel).
     pub status: game_core::TradeStatus,
@@ -742,17 +735,15 @@ pub struct TradeOffer {
     pub created_at_ms: i64,
 }
 
-// --- M13a currency table (ADR-0081) ------------------------------------------
+// --- M13a currency table ------------------------------------------
 
 /// PRIVATE per-player wallet — one row per player (PK = owner_identity).
-/// Balance is MUST-NEVER-LEAK: no `public`, no projection, no RLS filter
-/// (ADR-0015/ADR-0081). The single-surface discipline (ADR-0081) requires all
-/// balance mutations to route through `economy::grant_currency` /
-/// `economy::spend_currency` → `game_core::currency::apply_grant` /
-/// `game_core::currency::apply_spend`.
+/// Balance is MUST-NEVER-LEAK: no `public`, no projection, no RLS filter.
+/// The single-surface discipline requires all balance mutations to route
+/// through `economy::grant_currency` / `economy::spend_currency` →
+/// `game_core::currency::apply_grant` / `game_core::currency::apply_spend`.
 ///
-/// STUB: this table declaration is additive (ADR-0006). The implementer must
-/// leave it WITHOUT the `public` attribute (privacy invariant test bites if
+/// WITHOUT the `public` attribute (privacy invariant test bites if
 /// `public` is added).
 #[spacetimedb::table(accessor = player_wallet)]
 pub struct PlayerWallet {
@@ -761,10 +752,10 @@ pub struct PlayerWallet {
     pub balance: u64,
 }
 
-/// Owner-scoped read path for `player_wallet` (ADR-0154): each client's
+/// Owner-scoped read path for `player_wallet`: each client's
 /// subscription sees ONLY its own row, via the `owner_identity` unique index —
-/// never a whole-table scan. The table stays PRIVATE (ADR-0087 precedent set by
-/// `my_conversation` above): this view is the single sanctioned client read
+/// never a whole-table scan. The table stays PRIVATE:
+/// this view is the single sanctioned client read
 /// path, so `Option` is load-bearing — "no row" stays distinguishable from
 /// "balance 0" and must never be flattened through `economy::wallet_balance`.
 /// Lives next to the table it projects (visibility is a schema artifact).
@@ -773,38 +764,35 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     ctx.db.player_wallet().owner_identity().find(ctx.sender())
 }
 
-// --- M21 account tables (ADR-0179 D2) ------------------------------------------
+// --- M21 account tables ------------------------------------------
 
-/// Lifecycle state of an account (ADR-0179 D7). M21 gates `PendingDeletion` in
-/// exactly one place (`complete_guest_claim`) via `accounts::is_pending_deletion`;
-/// M22 extends `delete_account`'s body with the grace window + cascade. Written
-/// one variant per line deliberately — the type-snapshot regex terminates a body
-/// on a newline before the closing brace, so a single-line body is invisible to
-/// the baseline (`spacetime-type-snapshot.eval.mjs`).
+/// Lifecycle state of an account. Written one variant per line deliberately — the
+/// type-snapshot regex terminates a body on a newline before the closing brace, so
+/// a single-line body is invisible to the baseline
+/// (`spacetime-type-snapshot.eval.mjs`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, spacetimedb::SpacetimeType)]
 pub enum AccountStatus {
     Active,
     PendingDeletion,
 }
 
-/// PRIVATE account record (no `public`) — one row per authenticated identity
-/// (ADR-0179 D2). No email, no email hash, no raw JWT `sub` (D9 / AUTH-6):
-/// `Identity = f(iss, sub)` already keys every game-data table since M2, so an
+/// PRIVATE account record (no `public`) — one row per authenticated identity.
+/// No email, no email hash, no raw JWT `sub`:
+/// `Identity = f(iss, sub)` already keys every game-data table, so an
 /// account needs no PII of its own. Clients read ONLY through the `my_account`
-/// view below. Runtime table, not seeded content → NO CONTENT_VERSION bump
-/// (D10, mirrors `trade_offer` / ADR-0106). `Clone` (derived BEFORE the table
-/// attr — the `player_quest` precedent, so the schema-snapshot regex still
-/// matches `#[spacetimedb::table(...)] pub struct`) supports value-style unit
-/// tests over the pure seams that take an `Account` by value.
+/// view below. Runtime table, not seeded content → NO CONTENT_VERSION bump.
+/// `Clone` (derived BEFORE the table attr — the `player_quest` precedent, so
+/// the schema-snapshot regex still matches `#[spacetimedb::table(...)] pub
+/// struct`) supports value-style unit tests over the pure seams that take an
+/// `Account` by value.
 ///
-/// LEGAL-STATE INVARIANT (ADR-0195): the `status`/`deletion_requested_at_ms`
+/// LEGAL-STATE INVARIANT: the `status`/`deletion_requested_at_ms`
 /// pairing and the `claimed_from`/`claimed_at_ms` pairing are enforced by
 /// `accounts::account_state_is_legal`, checked via `debug_assert!` in the five
 /// pure Account-returning constructors, and pinned by
 /// `schema_account_struct_shape_tripwire` in `accounts_tests.rs`. The enum
 /// fold that would make those illegal states unrepresentable is deliberately
-/// deferred: it changes live column TYPES, a non-additive migration
-/// (ADR-0195 D1).
+/// deferred: it changes live column TYPES, a non-additive migration.
 #[derive(Clone)]
 #[spacetimedb::table(accessor = account)]
 pub struct Account {
@@ -812,8 +800,8 @@ pub struct Account {
     pub identity: Identity,
     /// The `iss` claim this account was provisioned under (audit only).
     /// `Identity = f(iss, sub)`, so a different issuer is a different identity,
-    /// hence a different row (ADR-0179 D1). ONE sanctioned update exists
-    /// (M22 §3, ADR-0207): the account-deletion cascade overwrites this column
+    /// hence a different row. ONE sanctioned update exists:
+    /// the account-deletion cascade overwrites this column
     /// with the `game_core::TOMBSTONE_AUTH_ISSUER` sentinel String — a sentinel,
     /// not a widening to `Option<String>`, which would be a non-additive column
     /// edit. No other code path may write it after insert.
@@ -826,32 +814,30 @@ pub struct Account {
     /// must survive by design — set once, never re-keyed, AUTH-21).
     pub claimed_from: Option<Identity>,
     pub claimed_at_ms: Option<i64>,
-    /// M22 terminal marker (spec §4.1, ADR-0207): stamped by the deletion
+    /// terminal marker: stamped by the deletion
     /// reaper ONLY after the whole cascade completed without error. Terminal
     /// predicate: `status == PendingDeletion && terminal_at_ms.is_some()` —
     /// deliberately an additive column, not a third `AccountStatus` variant
-    /// (variant append risks a destructive republish, ADR-0174 D-freeze +
-    /// ADR-0197). Appended LAST with a default so the column is an additive
-    /// automigration under ADR-0006. `Some` is written ONLY by
-    /// `account_deletion_reaper`'s cascade (m22-s3b, ADR-0228 —
-    /// `terminal_account`, the body's last statement).
+    /// (variant append risks a destructive republish).
+    /// Appended LAST with a default so the column is an additive
+    /// automigration. `Some` is written ONLY by
+    /// `account_deletion_reaper`'s cascade.
     #[default(None)]
     pub terminal_at_ms: Option<i64>,
 }
 
-/// Owner-scoped read path for `account` (ADR-0179 D2, mirroring `my_wallet`
-/// above / ADR-0154 D2). `public` on the `#[view]` keyword is a mandatory,
+/// Owner-scoped read path for `account` (mirroring `my_wallet`
+/// above). `public` on the `#[view]` keyword is a mandatory,
 /// inert token — THIS BODY is the entire security boundary and must stay pinned
 /// to exactly this expression, not merely contain it (a decoy `find(ctx.sender())`
-/// followed by `find(other)` compiles clean and leaks; ADR-0154 D2's attack
-/// applies identically here).
+/// followed by `find(other)` compiles clean and leaks).
 #[spacetimedb::view(accessor = my_account, public)]
 fn my_account(ctx: &spacetimedb::ViewContext) -> Option<Account> {
     ctx.db.account().identity().find(ctx.sender())
 }
 
 /// PRIVATE in-flight guest→account claim (no `public`) — one row per guest
-/// identity (ADR-0179 D2/D3). `code` is CLIENT-minted 256-bit entropy
+/// identity. `code` is CLIENT-minted 256-bit entropy
 /// (`crypto.getRandomValues`), stored plaintext; server RNG is never a CSPRNG
 /// here (D3 / AUTH-11). `#[unique]` with NO adjacent `#[index(btree)]` — a
 /// unique column already supports `.find()` (the `npc.npc_id` convention).
@@ -870,34 +856,31 @@ pub struct GuestClaim {
     pub expires_at_ms: i64,
 }
 
-// --- M17a ranked-ladder table (ADR-0119) ---------------------------------------
+// --- M17a ranked-ladder table ---------------------------------------
 
-/// Persistent per-player ranked-ladder record (M17, ADR-0119 D1) — the
+/// Persistent per-player ranked-ladder record — the
 /// progression counterpart to the ephemeral `player` presence row.
 ///
-/// PUBLIC = world-readable leaderboard record (ADR-0015 stakes classification:
-/// public-low-stakes — the name is already public on `player`; rating/W/L are
-/// the leaderboard's whole point). NEVER deleted (ADR-0119 D1): no code path
-/// removes a `profile` row — `on_disconnect` does not touch it (structural
-/// never-deleted scan). Runtime table, not seeded content → NO CONTENT_VERSION
-/// bump (ADR-0106 D7 precedent, mirrors `trade_offer`). No `#[index(btree)]`
-/// on `rating` in m17a — the m17b leaderboard sorts client-side over a full
-/// `profile` subscription; add an index if/when server-side range queries land.
+/// PUBLIC = world-readable leaderboard record. NEVER deleted: no code path
+/// removes a `profile` row — `on_disconnect` does not touch it. Runtime table,
+/// not seeded content → NO CONTENT_VERSION bump. No `#[index(btree)]` on
+/// `rating` client-side over a full `profile` subscription; add an index
+/// if/when server-side range queries land.
 #[spacetimedb::table(accessor = profile, public)]
 pub struct Profile {
     #[primary_key]
     pub identity: Identity,
     /// Display name, seeded from the `player` row at first rating application.
     pub name: String,
-    /// Integer Elo rating; may legitimately go negative (no floor, ADR-0119 D2).
+    /// Integer Elo rating; may legitimately go negative (no floor).
     pub rating: i32,
     pub wins: u32,
     pub losses: u32,
 }
 
-// --- M16a PvP tables (ADR-0109) ----------------------------------------------
+// --- M16a PvP tables ----------------------------------------------
 
-/// Lifecycle state of a PvP challenge (M16a, ADR-0109).
+/// Lifecycle state of a PvP challenge.
 ///
 /// `Pending` → `Accepted` (creates the `battle` row) OR
 /// `Declined` / `Cancelled` (row deleted immediately).
@@ -910,13 +893,13 @@ pub enum ChallengeStatus {
     Cancelled,
 }
 
-/// A pending PvP challenge from one player to another (M16a, ADR-0109).
+/// A pending PvP challenge from one player to another.
 ///
 /// PUBLIC so both the challenger and the target can subscribe and display the
-/// incoming/outgoing challenge UI (m16b).  Terminal challenges (Accepted,
+/// incoming/outgoing challenge UI.  Terminal challenges (Accepted,
 /// Declined, Cancelled) are DELETED immediately after processing — no history
 /// table in M16; follow-up in M17+.
-/// Pending rows expire via the challenge TTL reaper (pvp.rs, ADR-0126).
+/// Pending rows expire via the challenge TTL reaper (pvp.rs).
 #[spacetimedb::table(accessor = battle_challenge, public)]
 pub struct BattleChallenge {
     #[primary_key]
@@ -934,15 +917,13 @@ pub struct BattleChallenge {
     pub created_at_ms: i64,
 }
 
-/// PRIVATE per-turn secret action submitted by one PvP player (M16a, ADR-0109).
+/// PRIVATE per-turn secret action submitted by one PvP player.
 ///
-/// MUST-NEVER-LEAK (ADR-0015, ADR-0109 D2): a leaked pending pick is a
+/// MUST-NEVER-LEAK: a leaked pending pick is a
 /// competitively decisive exploit (opponent adapts their choice). No `public`,
 /// no separate view, no RLS projection. The table is invisible to all clients; they
 /// discover that a turn resolved by watching `battle.state.turn_number`
-/// increment via the `my_battle` view onto the now-private `battle` table
-/// (ADR-0198 — `battle` itself stopped being `public` after this comment was
-/// written).
+/// increment via the `my_battle` view onto the now-private `battle` table.
 ///
 /// Two rows exist per turn (one per side); both are deleted atomically when
 /// `resolve_pvp_turn_if_ready` fires in the same transaction.
@@ -965,32 +946,31 @@ pub struct BattleAction {
     pub submitted_at_ms: i64,
 }
 
-// --- M22 data lifecycle (privacy, deletion, export — spec §3/§5, ADR-0207) ----
+// --- data lifecycle (privacy, deletion, export) ----
 
-/// PRIVATE per-owner data-export chunk (M22 §5, ADR-0207). One row per
+/// PRIVATE per-owner data-export chunk. One row per
 /// `(owner_identity, request_id, table_name)`, sub-chunked at
-/// `game_core::EXPORT_CHUNK_ROWS` via `chunk_index`/`total_chunks` — the frozen
-/// S2↔S4↔S8 chunk contract. S4's `request_data_export` writes rows; the
-/// owner-scoped `my_export_bundle` view (S4) is the ONLY client read path —
-/// like `account`, `public` here would hand one player's whole personal-data
-/// dump to every client. `created_at_ms` is server-stamped at insert; the S4
-/// TTL reaper (rb-48) re-derives staleness from it plus the injected clock, so no
-/// caller can supply it. Since rb-85 (the dated ADR-0238 amendment) that
-/// column also carries a FIELD-level btree index: it is what lets the TTL reaper
-/// read a bounded `..=cutoff` range of expired chunks instead of the whole table
-/// on every tick. Removing the index is NOT compile-coupled (a hand-written
-/// accessor of the same name compiles), so the privacy_tests.rs index pin is
-/// what keeps it; and the generated `created_at_ms()` accessor is a new
-/// crate-wide time-ordered read over EVERY owner's chunks, census-guarded there
-/// (seven sanctioned uses, all in privacy.rs). Row-invisible to clients: the
-/// table is private, `spacetime generate` emits no bindings change and
+/// `game_core::EXPORT_CHUNK_ROWS` via `chunk_index`/`total_chunks`.
+/// `request_data_export` writes rows; the owner-scoped `my_export_bundle` view
+/// is the ONLY client read path — like `account`, `public` here would hand one
+/// player's whole personal-data dump to every client. `created_at_ms` is
+/// server-stamped at insert; reaper re-derives staleness from it plus the
+/// injected clock, so no caller can supply it. that column also carries a
+/// FIELD-level btree index: it is what lets the TTL reaper read a bounded
+/// `..=cutoff` range of expired chunks instead of the whole table on every tick.
+/// Removing the index is NOT compile-coupled (a hand-written accessor of the
+/// same name compiles), so the privacy_tests.rs index pin is what keeps it; and
+/// the generated `created_at_ms()` accessor is a new crate-wide time-ordered
+/// read over EVERY owner's chunks, census-guarded there (seven sanctioned uses,
+/// all in privacy.rs). Row-invisible to clients: the table is private,
+/// `spacetime generate` emits no bindings change and
 /// `evals/baselines/table-schemas.json` records no index information — only the
 /// unauthenticated schema endpoint publishes index METADATA, as it does for
 /// every table, which discloses nothing beyond the column names already there.
 /// Synthetic `chunk_id` PK: views strip primary keys, and
 /// a `#[primary_key]`+`#[auto_inc]` column may carry no default, so the row
-/// needs its own key. `request_id` is MINTED BY S4 (generation strategy is
-/// S4's decision); chunk-tuple uniqueness (owner, request, table, chunk_index)
+/// needs its own key. `request_id` is MINTED BY S4;
+/// chunk-tuple uniqueness (owner, request, table, chunk_index)
 /// is REDUCER-enforced in S4 — a multi-column unique constraint is not
 /// expressible here, and adding `#[unique]` to a live table later is an
 /// automigration-FORBIDDEN change, so the synthetic PK stays the only key.
@@ -1014,7 +994,7 @@ pub struct ExportBundle {
     pub created_at_ms: i64,
 }
 
-/// One row per LIVE client connection (rb-73, ADR-0245): the host-minted
+/// One row per LIVE client connection: the host-minted
 /// `ConnectionId` of the socket and the identity it authenticated as. Written
 /// ONLY by the two lifecycle hooks in `lib.rs` (`on_connect` inserts,
 /// `on_disconnect` deletes its own row) and erased by the deletion cascade;
@@ -1023,8 +1003,8 @@ pub struct ExportBundle {
 /// identity's LAST live connection ends — an ephemeral HTTP reducer call
 /// (one connection per call) can no longer fire them under a live session.
 /// PRIVATE: connection ids are per-session secrets in spirit and must never
-/// leak through a subscription (ADR-0015). Key shape is final on first ship
-/// (ADR-0006): the PK is the connection id (one row per socket, so a
+/// leak through a subscription. Key shape is final on first ship:
+/// the PK is the connection id (one row per socket, so a
 /// re-entrant `client_connected` can never collide on identity), the btree
 /// index on `identity` serves the sole reader. No timestamp column: a row left
 /// behind by a crashed host self-heals when the launch replays
@@ -1032,7 +1012,7 @@ pub struct ExportBundle {
 /// `client_disconnected` transaction that aborts AFTER its own-row delete rolls
 /// that delete back while the host still drops the `st_client` row, and the
 /// phantom then keeps `has_live_session` true for that identity (residual
-/// R-rb-73-ABORT-PHANTOM, ADR-0245; the mitigation path is an additive
+/// still open; the mitigation path is an additive
 /// `connected_at_ms` tail column + an idle-session reaper).
 #[spacetimedb::table(accessor = player_session)]
 pub struct PlayerSession {
@@ -1042,7 +1022,7 @@ pub struct PlayerSession {
     pub identity: Identity,
 }
 
-/// Deletion policy for one table's rows at account-cascade time (M22 §3).
+/// Deletion policy for one table's rows at account-cascade time.
 ///
 /// `ViaJoin` carries the OWNING PARENT table's accessor name: the row has no
 /// `Identity` column of its own and is swept transitively at the parent's
@@ -1062,7 +1042,7 @@ pub enum DeletionPolicy {
     NotOwned,
 }
 
-/// One table's data-lifecycle classification (M22 §3 + §5).
+/// One table's data-lifecycle classification.
 pub struct DataLifecycleEntry {
     /// The table's accessor name, exactly as declared in its table attribute.
     pub table: &'static str,
@@ -1071,32 +1051,24 @@ pub struct DataLifecycleEntry {
     /// Mandatory prose reason. NEVER put a slash in this string: the schema
     /// snapshot gate parses RAW source with a string-unaware comment stripper,
     /// so one comment delimiter inside a string literal silently truncates the
-    /// parsed table set (measured; gate-tested in `accounts_tests.rs`).
+    /// parsed table set.
     pub basis: &'static str,
-    /// Third, orthogonal axis (M22 §5): does `request_data_export` include this
+    /// Third, orthogonal axis: does `request_data_export` include this
     /// table? Export scope is structurally NARROWER than deletion scope.
     pub exportable: bool,
 }
 
-/// THE data-lifecycle manifest (M22 §3, ADR-0207): exactly one entry per live
+/// THE data-lifecycle manifest: exactly one entry per live
 /// table, gate-enforced bidirectionally by
 /// `data_lifecycle_manifest_totality_bidirectional` in `accounts_tests.rs`, so
 /// a new table cannot silently retain personal data — adding a table without
 /// classifying it here is a hard test failure, and a stale entry for a removed
 /// table is too.
 ///
-/// The classification is spec §3's exhaustive partition (12 ERASE + 4
-/// ANONYMIZE + 5 JOIN-ONLY + 17 NOT-OWNED over the 38 pre-M22 tables) plus
-/// m22-s2's `export_bundle` (ERASE), rb-24's `account_deletion_reaper_schedule`
-/// (NOT-OWNED, ADR-0221), rb-48's `export_bundle_reaper_schedule` (NOT-OWNED,
-/// ADR-0238), rb-73's `player_session` (ERASE, ADR-0245) and 20r-d's
-/// `pending_evolution_notice` (ERASE, ADR-0254) — 43 entries. Do not re-partition: add new tables with their own entry. The claim-flow
-/// re-key axis lives separately as `REKEY_MANIFEST` in
-/// `evals/guest-claim-integrity.eval.mjs` (per-column, consumed by G6); a
-/// cross-manifest gate test ties the two together.
+/// Do not re-partition: add new tables with their own entry.
 pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
-    // --- ERASE: rows deleted outright at cascade time (spec §3 twelve, plus
-    // --- this slice's own export_bundle). ---
+    // --- ERASE: rows deleted outright at cascade time.
+    // ---
     DataLifecycleEntry {
         table: "monster",
         policy: DeletionPolicy::Erase,
@@ -1150,7 +1122,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         table: "playtest_event",
         policy: DeletionPolicy::Erase,
         basis: "identity-scoped dev telemetry: the cascade erases it immediately, independent \
-                of the ADR-0131 TTL reaper (a row younger than its TTL must not survive \
+                of the TTL reaper (a row younger than its TTL must not survive \
                 account deletion)",
         exportable: true,
     },
@@ -1184,7 +1156,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "player_session",
         policy: DeletionPolicy::Erase,
-        basis: "per-connection presence bookkeeping naming a live socket and its identity, erased with the presence rows at cascade time (rb-73)",
+        basis: "per-connection presence bookkeeping naming a live socket and its identity, erased with the presence rows at cascade time",
         exportable: false,
     },
     DataLifecycleEntry {
@@ -1204,7 +1176,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "profile",
         policy: DeletionPolicy::Anonymize,
-        basis: "ADR-0119 never-delete invariant: the ladder row survives and name is \
+        basis: "ladder never-delete invariant: the ladder row survives and name is \
                 overwritten with the tombstone (anonymize is a field update, never a delete, \
                 so the invariant holds by construction)",
         exportable: true,
@@ -1287,11 +1259,11 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "account_deletion_reaper_schedule",
         policy: DeletionPolicy::NotOwned,
-        basis: "one-shot deletion-grace schedule (rb-24, ADR-0221): armed only by the \
+        basis: "one-shot deletion-grace schedule: armed only by the \
                 account holder's own delete_account, disarmed by cancel, and the fired \
                 row is deleted by the runtime itself — so no row survives the cascade \
-                its own reducer runs, and an Erase entry would demand the D6 \
-                self-disarm anti-pattern",
+                its own reducer runs, and an Erase entry would force the cascade to \
+                disarm the very schedule whose reducer is running it",
         exportable: false,
     },
     DataLifecycleEntry {
@@ -1351,7 +1323,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "export_bundle_reaper_schedule",
         policy: DeletionPolicy::NotOwned,
-        basis: "global hourly TTL reaper schedule for the export_bundle table (rb-48, ADR-0238): an \
+        basis: "global hourly TTL reaper schedule for the export_bundle table: an \
                 interval singleton with no Identity column, armed by request_data_export \
                 and by init and sync_content, never keyed to any player",
         exportable: false,
@@ -1392,9 +1364,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
 /// carries non-empty basis prose, and every `ViaJoin` names a non-empty parent.
 /// Evaluated in the anonymous const below, so a violation is a COMPILE ERROR —
 /// and that evaluation is also what keeps the manifest (every field, including
-/// the `ViaJoin` payload) live in the lib target under `-D warnings` (S3's
-/// cascade is its first runtime consumer; until then the const-eval read is
-/// the non-test use).
+/// the `ViaJoin` payload) live in the lib target under `-D warnings`.
 const fn manifest_is_wellformed(entries: &[DataLifecycleEntry]) -> bool {
     let mut i = 0;
     while i < entries.len() {

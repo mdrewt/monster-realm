@@ -1,4 +1,4 @@
-// render/viewport.ts — responsive, device-integer viewport scaling (uxd1, ADR-0160).
+// render/viewport.ts — responsive, device-integer viewport scaling.
 //
 // PURE. No DOM, no Pixi, no `window`, no clock — a sibling of `camera.ts`: CSS
 // pixels + devicePixelRatio in, a scale record and pixel transforms out. It lives
@@ -110,8 +110,7 @@ export function appInitOptions(cssW: number, cssH: number, dpr: number, backgrou
  * result (SOURCE px); the result's origin is the canvas top-left. This is the ONE
  * expression of the stage transform — `world.ts` positions the stage with it, so
  * a sign error or a dropped `* stageScale` cannot hide in the shell. Deliberately
- * NOT rounded to a pixel grid: quantizing here would judder the sub-tile slide
- * (ADR-0013).
+ * NOT rounded to a pixel grid: quantizing here would judder the sub-tile slide.
  */
 export function worldToScreen(
   world: { x: number; y: number },
@@ -121,23 +120,5 @@ export function worldToScreen(
   return {
     x: (world.x - offset.x) * stageScale,
     y: (world.y - offset.y) * stageScale,
-  };
-}
-
-/**
- * CSS px -> SOURCE px: the exact inverse of `worldToScreen`. Ships UNWIRED for a
- * future tap-to-move milestone (spec §uxd1 "Out of scope"). CAVEAT for that
- * caller: `screen` is relative to the CANVAS top-left, so a `PointerEvent`'s
- * `clientX/clientY` must have the canvas origin subtracted first — this function
- * does not do it.
- */
-export function screenToWorld(
-  screen: { x: number; y: number },
-  offset: { x: number; y: number },
-  stageScale: number,
-): { x: number; y: number } {
-  return {
-    x: screen.x / stageScale + offset.x,
-    y: screen.y / stageScale + offset.y,
   };
 }

@@ -1,11 +1,11 @@
 //! `movement` server-module tests: the process-static encounter-failure
-//! `RateLimiter` (11r-g, ADR-0170 D4), and a native-host suite (`mod nh`)
+//! `RateLimiter`, and a native-host suite (`mod nh`)
 //! driving the shipped `enqueue_move` / `set_move` / `clear_queue` /
 //! `movement_tick` reducers for the ADR-0168 intake and drain battle locks and
 //! the TR-6 trade-escrow growth skip.
 
 // ===========================================================================
-// 11r-g (ADR-0170 D4) — rate-limited, JSON-escaped wild-encounter failure logs
+// rate-limited, JSON-escaped wild-encounter failure logs
 //
 // EARS criteria covered below:
 //
@@ -24,25 +24,12 @@
 //        feature exists to surface.
 //   M-6  `movement_tick` SHALL pass every interpolated error reason through
 //        `json_escape`, including the two pre-existing `movement_tick_error`
-//        sites (ADR-0170 D4 last bullet).
+//        sites.
 //   M-7  The two swallow sites in the grass-encounter block SHALL become logged
 //        no-ops, each gated by its OWN process-static limiter — a spammy
 //        bad-content zone must not mask `begin_encounter` failures (one of
 //        `begin_encounter`'s Err paths, "party has no conscious monster", is
 //        ROUTINE gameplay and can burst).
-//
-// RED STATE.
-//   * M-1..M-5 are COMPILE-RED: `RateLimiter` does not exist in `movement.rs`,
-//     so `use super::RateLimiter;` cannot resolve and the crate does not build
-//     (the house precedent for a new seam — `content_cache_tests.rs:14-25`).
-//   * M-6 / M-7 and the RateLimiter source-scan are ASSERTION-RED once the type
-//     exists: HEAD has zero limiter statics, zero `json_escape` calls and two
-//     (not four) `log::error!` sites inside `movement_tick`, and it still spells
-//     both swallow sites as `let _ = begin_encounter(..)` and a bare
-//     `let Ok(table) = .. else` binding.
-//   * `movement_tick_grass_block_never_aborts_the_tick` is a GREEN-AT-HEAD
-//     fence, a separate `#[test]` for the reason recorded at line ~917: behind a
-//     failing assertion it could never be observed passing.
 //
 // Same source-scan doctrine as the sections above (no reducer-executing
 // harness, ADR-0156 P7), with one addition: the two new `evt` names live inside
@@ -56,8 +43,8 @@
 
 use super::RateLimiter;
 
-/// The window every `RateLimiter` unit test below uses. Production picks 5000 ms
-/// (ADR-0170 D4); the tests pass it explicitly so they pin the SEMANTICS of the
+/// The window every `RateLimiter` unit test below uses. Production picks 5000 ms;
+/// the tests pass it explicitly so they pin the SEMANTICS of the
 /// parameter rather than a constant that a later tuning slice may legitimately
 /// change.
 const TEST_WINDOW_MS: i64 = 5_000;
@@ -71,8 +58,6 @@ const TEST_WINDOW_MS: i64 = 5_000;
 /// precisely the swallowing this feature exists to end. Also kills an impl whose
 /// first emit reports a non-zero suppressed count (a fabricated backlog in the
 /// first log line an operator ever sees).
-///
-/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
 #[test]
 fn rate_limiter_first_check_emits_zero_suppressed() {
     let limiter = RateLimiter::new();
@@ -103,8 +88,6 @@ fn rate_limiter_first_check_emits_zero_suppressed() {
 /// silently drop the read-decide-write-back atomicity the single lock provides.
 ///
 /// The probe static is function-local, so it shares no state with any other test.
-///
-/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
 #[test]
 fn rate_limiter_new_is_const_and_the_type_is_sync() {
     static PROBE: RateLimiter = RateLimiter::new();
@@ -137,8 +120,6 @@ fn rate_limiter_new_is_const_and_the_type_is_sync() {
 /// instead of 1, so every subsequent log line over-reports a monotonically
 /// growing backlog; (d) an off-by-one in the counter (Some(2) or Some(4) at the
 /// first emit).
-///
-/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
 #[test]
 fn rate_limiter_suppresses_in_window_then_reports_the_exact_count() {
     let limiter = RateLimiter::new();
@@ -206,8 +187,6 @@ fn rate_limiter_suppresses_in_window_then_reports_the_exact_count() {
 /// limiter B return None (the assertion fires); an `elapsed >= window - 1` or a
 /// `>` flipped the other way makes limiter A emit. This is the single most
 /// mutable line in the whole struct, and both directions are covered.
-///
-/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
 #[test]
 fn rate_limiter_window_boundary_is_inclusive() {
     let just_inside = RateLimiter::new();
@@ -267,8 +246,6 @@ fn rate_limiter_window_boundary_is_inclusive() {
 /// catches up, so a real content fault is silently swallowed for as long as the
 /// jump; (b) an impl that emits on backwards but does NOT re-anchor, which leaves
 /// the window computed against a future instant.
-///
-/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
 #[test]
 fn rate_limiter_clock_backwards_emits_and_reanchors() {
     let limiter = RateLimiter::new();
@@ -333,8 +310,6 @@ fn rate_limiter_clock_backwards_emits_and_reanchors() {
 /// other rows cover the backwards branch at the extremes and the `MIN + window`
 /// boundary, all of which a mutant that "fixes" only one subtraction would still
 /// blow up on.
-///
-/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
 #[test]
 fn rate_limiter_extreme_clock_operands_never_panic() {
     // Row 1 — an emit at 0, then the clock jumps to i64::MIN (backwards).
@@ -653,7 +628,7 @@ mod nh {
     /// ADR-0168 D2 intake lock, both roles: while the caller is in an Ongoing
     /// battle as side A (PvE or PvP) OR as the PvP side-B opponent,
     /// `enqueue_move` and `set_move` refuse before any write (no seq ack, no
-    /// queued intent). `clear_queue` is deliberately NOT guarded (ADR-0168 D3)
+    /// queued intent). `clear_queue` is deliberately NOT guarded
     /// and still cancels. Positive control: once the battle is decided the very
     /// same call is admitted and queues the intent.
     ///
@@ -792,7 +767,7 @@ mod nh {
         }
     }
 
-    /// TR-6 / ADR-0106: the `enqueue_move` growth tail credits Quality Time to
+    /// The `enqueue_move` growth tail credits Quality Time to
     /// every party monster EXCEPT one escrowed in an active trade offer, in
     /// either trade role, and never rejects the move. Positive control: the
     /// identical non-escrowed party member ticks in the same call.
@@ -908,5 +883,213 @@ mod nh {
             (zone, warp.from.x, warp.from.y),
             "an NPC walks onto the warp tile but never leaves its home zone"
         );
+    }
+
+    /// The M8c grass trigger: with an always-firing encounter table (rate 1000
+    /// per-mille) a drained step ONTO grass opens exactly one wild battle for
+    /// the walker, while the same walker's step onto plain floor opens none.
+    /// Tiles are found in the shipped zone map (a walkable non-grass, non-warp
+    /// start one step from a grass tile, and one from a plain floor tile).
+    ///
+    /// kills: the grass predicate negated (floor steps roll encounters and
+    /// grass steps never do).
+    #[test]
+    fn nh_movement_tick_rolls_encounters_on_grass_steps_only() {
+        use crate::schema::{BattleWild, EncounterEntryRow, EncounterRow, SkillRow};
+        use game_core::TilePos;
+        let zone = 0u32;
+        let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+        let map = game_core::map_for(zone, zone_maps).expect("zone 0 map");
+        let plain = |p: TilePos| map.is_walkable(p) && !map.is_grass(p) && map.warp_at(p).is_none();
+        let dirs = [
+            Direction::North,
+            Direction::South,
+            Direction::East,
+            Direction::West,
+        ];
+        let find = |want_grass: bool| -> (TilePos, Direction) {
+            (0..map.height)
+                .flat_map(|y| (0..map.width).map(move |x| TilePos { x, y }))
+                .filter(|&p| plain(p))
+                .find_map(|p| {
+                    dirs.iter().find_map(|&d| {
+                        let n = p.step(d);
+                        let ok = if want_grass {
+                            map.is_walkable(n) && map.is_grass(n) && map.warp_at(n).is_none()
+                        } else {
+                            plain(n)
+                        };
+                        ok.then_some((p, d))
+                    })
+                })
+                .expect("zone 0 has the approach tile")
+        };
+        let module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+        let sched = || MovementTickSchedule {
+            id: 1,
+            zone_id: zone,
+            scheduled_at: ScheduleAt::Time(at(T0)),
+        };
+        for (label, grass, want_battles) in [("grass", true, 1usize), ("floor", false, 0)] {
+            let fx = fixture();
+            let w = world(&fx);
+            let battles = fx
+                .table_keyed::<Battle, u64>("battle", "battle_id", |r| r.battle_id)
+                .writable()
+                .unique()
+                .auto_inc(|r| r.battle_id, |r, v| r.battle_id = v);
+            let wilds = fx
+                .table_keyed::<BattleWild, u64>("battle_wild", "battle_id", |r| r.battle_id)
+                .writable()
+                .unique();
+            fx.table_keyed::<SkillRow, u32>("skill_row", "id", |r| r.id)
+                .scannable()
+                .seed(&SkillRow {
+                    id: 1,
+                    name: "s".to_string(),
+                    affinity: Affinity::Fire,
+                    power: 40,
+                    accuracy: 100,
+                    pp: 25,
+                });
+            fx.table_keyed::<EncounterRow, u32>("encounter", "zone_id", |r| r.zone_id)
+                .seed(&EncounterRow {
+                    zone_id: zone,
+                    encounter_rate: 1000,
+                    entries: vec![EncounterEntryRow {
+                        species_id: 1,
+                        weight: 1,
+                        min_level: 1,
+                        max_level: 100,
+                    }],
+                });
+            let (start, dir) = find(grass);
+            let ch = Character {
+                zone_id: zone,
+                tile_x: start.x,
+                tile_y: start.y,
+                ..character(1, vec![MoveInput::Step(dir)], ActionState::Idle)
+            };
+            w.join(a(), 1, ch);
+            w.seed_monster(&monster(11, a(), 0));
+            assert_eq!(
+                fx.run_as_at(module, at(T0), |ctx| movement_tick(ctx, sched())),
+                Ok(()),
+                "{label}"
+            );
+            let moved = w.character(1);
+            assert_eq!(
+                (moved.tile_x, moved.tile_y),
+                (start.step(dir).x, start.step(dir).y),
+                "{label}: the step was applied"
+            );
+            let opened = battles.rows();
+            assert_eq!(opened.len(), want_battles, "{label}: wild battles opened");
+            assert_eq!(
+                wilds.rows().len(),
+                want_battles,
+                "{label}: battle_wild rows"
+            );
+            if let Some(b) = opened.first() {
+                assert_eq!(
+                    (b.player_identity, b.opponent_identity),
+                    (a(), crate::WILD_IDENTITY),
+                    "{label}: the walker fights a wild"
+                );
+            }
+        }
+    }
+
+    /// NPC wander runs on the SERVER tick counter `now / STEP_MS`: for a run of
+    /// tick times, a wandering NPC at home ends each tick exactly where
+    /// `game_core::npc_decide` (fed that counter) and `apply_move` put it. The
+    /// sample is self-checked to contain times where `now % STEP_MS` and
+    /// `now * STEP_MS` would decide differently, so the counter is pinned.
+    ///
+    /// kills: the tick-counter division replaced by `%` or `*`.
+    #[test]
+    fn nh_movement_tick_npc_wander_uses_the_step_tick_counter() {
+        use crate::schema::Npc;
+        use game_core::{Millis, TilePos, STEP_MS};
+        let zone = 0u32;
+        let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+        let map = game_core::map_for(zone, zone_maps).expect("zone 0 map");
+        let dirs = [
+            Direction::North,
+            Direction::South,
+            Direction::East,
+            Direction::West,
+        ];
+        let open = |p: TilePos| map.is_walkable(p) && map.warp_at(p).is_none();
+        let home = (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| TilePos { x, y }))
+            .find(|&p| open(p) && dirs.iter().all(|&d| open(p.step(d))))
+            .expect("zone 0 has an open tile with four open neighbours");
+        const NPC: u64 = 900;
+        const RADIUS: u8 = 2;
+        let start = || Character {
+            zone_id: zone,
+            tile_x: home.x,
+            tile_y: home.y,
+            ..character(NPC, vec![], ActionState::Idle)
+        };
+        let decide =
+            |tick: u64| game_core::npc_decide(home, home, RADIUS, start().facing, NPC, tick, &map);
+        let step = STEP_MS.unsigned_abs();
+        let nows: Vec<i64> = (0..24).map(|k| T0 + k * 200 + 37).collect();
+        let tick = |now: i64| now.unsigned_abs() / step;
+        assert!(
+            nows.iter()
+                .any(|&n| decide(tick(n)) != decide(n.unsigned_abs() % step)),
+            "the sample must discriminate `/` from `%`"
+        );
+        assert!(
+            nows.iter()
+                .any(|&n| decide(tick(n)) != decide(n.unsigned_abs().wrapping_mul(step))),
+            "the sample must discriminate `/` from `*`"
+        );
+        let module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+        let sched = || MovementTickSchedule {
+            id: 1,
+            zone_id: zone,
+            scheduled_at: ScheduleAt::Time(at(T0)),
+        };
+        for now in nows {
+            let fx = fixture();
+            let w = world(&fx);
+            let npcs = fx.table_keyed::<Npc, u64>("npc", "entity_id", |r| r.entity_id);
+            let _ = fx.table_keyed::<Npc, u32>("npc", "zone_id", |r| r.zone_id);
+            npcs.seed(&Npc {
+                entity_id: NPC,
+                npc_id: "wanderer".to_string(),
+                zone_id: zone,
+                home_x: home.x,
+                home_y: home.y,
+                wander_radius: RADIUS,
+                dialogue_tree_id: String::new(),
+                interaction: game_core::NpcInteraction::Dialogue,
+            });
+            w.chars.seed(&start());
+            assert_eq!(
+                fx.run_as_at(module, at(now), |ctx| movement_tick(ctx, sched())),
+                Ok(())
+            );
+            let mut want = start();
+            if let Some(d) = decide(tick(now)) {
+                let next = game_core::apply_move(
+                    &crate::marshal::char_state(&start()),
+                    MoveInput::Step(d),
+                    &map,
+                    Millis(now),
+                );
+                crate::marshal::apply_state(&mut want, &next);
+            }
+            let got = w.character(NPC);
+            assert_eq!(
+                (got.tile_x, got.tile_y, got.facing),
+                (want.tile_x, want.tile_y, want.facing),
+                "NPC position after the tick at {now}"
+            );
+        }
     }
 }

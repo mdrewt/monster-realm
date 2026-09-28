@@ -48,7 +48,7 @@ impl TypeChart {
     /// # Panics
     /// Panics on any value outside {0, 5, 10, 20}. The contract is that callers
     /// only pass values returned by `TypeChart::effectiveness`, which only emits
-    /// these four values (from RON content validated at seed time, ADR-0049).
+    /// these four values (from RON content validated at seed time).
     pub fn classify(value: u8) -> Effectiveness {
         match value {
             0 => Effectiveness::Immune,
@@ -176,7 +176,6 @@ pub(crate) mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: an impl that returns Immune for any non-zero value.
-    /// Starts red because `classify` is `todo!()`.
     #[test]
 
     fn classify_zero_is_immune() {
@@ -184,7 +183,6 @@ pub(crate) mod tests {
     }
 
     /// Kills: an impl that maps 5 to Neutral instead of NVE.
-    /// Starts red because `classify` is `todo!()`.
     #[test]
 
     fn classify_five_is_not_very_effective() {
@@ -192,7 +190,6 @@ pub(crate) mod tests {
     }
 
     /// Kills: an impl that maps 10 to something other than Neutral.
-    /// Starts red because `classify` is `todo!()`.
     #[test]
 
     fn classify_ten_is_neutral() {
@@ -200,7 +197,6 @@ pub(crate) mod tests {
     }
 
     /// Kills: an impl that maps 20 to Neutral or NVE.
-    /// Starts red because `classify` is `todo!()`.
     #[test]
 
     fn classify_twenty_is_super_effective() {
@@ -257,8 +253,7 @@ pub(crate) mod tests {
     /// Kills: an impl that panics on any Affinity combination.
     /// This test drives the property in a loop so we can use #[should_panic]
     /// on the whole test function (the proptest macro doesn't compose with
-    /// #[should_panic] — see game-core-testing.md gotchas).
-    /// Starts red because `effectiveness` is `todo!()`.
+    /// #[should_panic]).
     #[test]
 
     fn effectiveness_is_total_known_pairs() {
@@ -305,14 +300,13 @@ pub(crate) mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Proof-of-teeth: classify panics on out-of-contract values (14.5g-2)
+    // Proof-of-teeth: classify panics on out-of-contract values
     //
     // Kills: the old `_ => Effectiveness::Neutral` fallback that silently
     // accepted corrupt DB rows (e.g. effectiveness=7) as neutral damage.
     // -----------------------------------------------------------------------
 
     /// Verifies classify panics on a value not in {0, 5, 10, 20}.
-    /// Proof-of-teeth for the `unreachable!` arm added in M14.5g.
     #[test]
     #[should_panic(expected = "out-of-contract value 1")]
     fn classify_out_of_contract_panics() {

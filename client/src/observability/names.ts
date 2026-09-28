@@ -1,4 +1,4 @@
-// observability/names.ts — m20c (ADR-0180 body amendment): the S4 wire contract, client side.
+// observability/names.ts — the wire contract, client side.
 //
 // ONE mirror of the Alloy ingest policy (ops/observability/alloy/config.alloy:155-158). The
 // client must never ship a datapoint attribute the ingest is going to delete: a deleted value
@@ -11,7 +11,7 @@
 // matter (`$` vs trailing newline, Unicode digit classes). Character scans state the rule in one
 // engine-neutral form. (The repo also bans dynamic regexes outright — Semgrep.)
 
-/** OBS-25: `mr_client_fps` is load-bearing verbatim — the merged recording rule reads
+/** `mr_client_fps` is load-bearing verbatim — the merged recording rule reads
  *  `mr_client_fps_bucket` (ops/observability/rules/recording.rules.yml:69). */
 export const METRIC_FPS = 'mr_client_fps';
 /** Worst single frame delta per 1s window (a 250ms stall is invisible in an averaged fps). */
@@ -30,7 +30,7 @@ export const METRIC_REDUCER_RTT_MS = 'mr_client_reducer_rtt_ms';
 export const METRIC_WASM_READY_MS = 'mr_client_wasm_ready_ms';
 
 /** The ONLY datapoint attribute keys the S4 ingest keeps — anything else is dropped before
- *  storage, so anything else must never leave the browser (OBS-34). */
+ *  storage, so anything else must never leave the browser. */
 export const ATTR_KEYS: readonly string[] = ['zone_id', 'build_sha', 'device_class'];
 
 const CODE_ZERO = 48; // '0'
@@ -50,7 +50,7 @@ export function isValidZoneId(s: string): boolean {
 
 /** Mirrors `^[0-9a-f]{7,40}$`: lowercase hex only, both length bounds enforced. The upper bound
  *  is load-bearing: a 64-hex value is the shape of a per-player key and must never become a
- *  label (OBS-35), and the `'unknown'` dev fallback fails the alphabet check by design. */
+ *  label, and the `'unknown'` dev fallback fails the alphabet check by design. */
 export function isValidBuildSha(s: string): boolean {
   if (s.length < 7 || s.length > 40) return false;
   for (let i = 0; i < s.length; i += 1) {

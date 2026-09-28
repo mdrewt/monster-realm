@@ -87,8 +87,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 // Type-only, therefore ERASED by the transform: importing it cannot make this
-// file red on its own, which keeps the RED reason unambiguous (the value import
-// below is the one that must fail).
+// file red on its own.
 import type { StoreEvolutionReveal } from '../net/store';
 import {
   EvolutionNoticeBanner,
@@ -143,7 +142,7 @@ function deferred(): {
   return { promise, resolve, reject };
 }
 
-/** rb-125 (ADR-0272): every `new EvolutionNoticeBanner(` call in this file now needs a second
+/** Every `new EvolutionNoticeBanner(` call in this file now needs a second
  *  `sinks` argument. Fresh vi.fn() defaults per call — this file's own assertions are about the
  *  DOM shell, the ack lock and the copy core, never about WHICH sink fired (that behaviour is
  *  gated by evolutionNotice.a11y.test.ts's RB125-ANN-n and RB125-FOCUS-n families). */
@@ -211,7 +210,7 @@ describe('20r-d EN-LABEL — evolutionNoticeLabel renders the reveal copy', () =
     // WRONG IMPL KILLED: a label that drops the FROM species ("Sparky evolved
     //   into Flamewing!") — the whole point of the reveal is that the player may
     //   not have seen which form it left, because an auto-evolution needs no
-    //   player action at all (EG2-11).
+    //   player action at all.
     // WRONG IMPL KILLED: from/to transposed — the sentence still reads fluently
     //   and is exactly backwards, which no shape/regex assertion would catch.
     expect(
@@ -242,7 +241,7 @@ describe('20r-d EN-LABEL — evolutionNoticeLabel renders the reveal copy', () =
     //   `nickname: ''` all the way from the server (`Monster.nickname` is
     //   `String::new()`), so the banner would read
     //   " evolved from Flameling into Flamewing!" with a leading space and no
-    //   subject. See this file's header for why this clause is tester-derived.
+    //   subject.
     expect(
       evolutionNoticeLabel(reveal(7n, 1, 2, 100n), {
         nickname: '',
@@ -295,7 +294,7 @@ describe('20r-d EN-LABEL — evolutionNoticeLabel renders the reveal copy', () =
     //   reuses one id for both reds here too.
     // WRONG IMPL KILLED (b): any lookup/parse that can throw. This function runs
     //   inside a `store.onBatchApplied` listener; `flushBatch` catches per
-    //   listener (store.ts:766-772), but a throw here still costs the WHOLE
+    //   listener, but a throw here still costs the WHOLE
     //   listener its frame — including the render that would have hidden a stale
     //   banner.
     expect(
@@ -394,7 +393,7 @@ describe('20r-d EN-NAMES — resolveEvolutionNoticeNames', () => {
     //   ids below collapse to the same double, so a coerced compare picks the
     //   WRONG monster and the banner names somebody else's nickname. Monster ids
     //   are server auto_inc u64 — this is the T1d bigint rule the store already
-    //   follows for battleId (store.ts:951).
+    //   follows for battleId.
     const names = resolveEvolutionNoticeNames(
       reveal(9007199254740993n, 1, 2, 0n),
       [{ monsterId: 9007199254740992n, nickname: 'Neighbour' }],
@@ -545,7 +544,7 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
   });
 
   it('20r-d EN-BANNER-A11Y BITES: no aria-live, no aria-label, no tabindex on any of the three nodes', () => {
-    // WHY (ADR-0254 D6): `ui/liveRegion.ts` is the SOLE announcement owner. A
+    // WHY: `ui/liveRegion.ts` is the SOLE announcement owner. A
     //   second live region means two utterances race for one AT queue, and this
     //   one would fire on every batch flush. An `aria-label` on the container
     //   would OVERRIDE the visible sentence for AT users with text nobody
@@ -576,7 +575,7 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
   });
 
   it('20r-d EN-BANNER-LAYOUT BITES: z-index 60, container pointer-events none, button pointer-events auto', () => {
-    // WHY EACH NUMBER (ADR-0254 D6): z-index 60 sits ABOVE `#help-hint` (50) so
+    // WHY EACH NUMBER: z-index 60 sits ABOVE `#help-hint` (50) so
     //   the banner is never painted over at narrow widths, and BELOW every
     //   overlay (100) so an open modal's opaque backdrop covers it — which is what
     //   makes "no focus trap, no registry membership" safe.
@@ -592,7 +591,7 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
   });
 
   it('20r-d EN-BANNER-BUTTON BITES: the OK control is a NATIVE button with the literal text OK', () => {
-    // WHY NATIVE (ADR-0254 D6 / evals keyboard-operable-rows): a real <button> is
+    // WHY NATIVE (ADR-0254 D6): a real <button> is
     //   Enter- and Space-operable, focusable and announced as a button for free.
     //   A <div role="button"> needs a keydown handler, a tabindex and a role — and
     //   the tabindex is banned here, so the div shape is unreachable by
@@ -621,7 +620,7 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
 
     clickOk();
     expect(onAck).toHaveBeenCalledTimes(1);
-    // rb-125 (ADR-0272): the LOCK is aria-disabled="true", never the `disabled` PROPERTY — a
+    // The LOCK is aria-disabled="true", never the `disabled` PROPERTY — a
     // focused control that becomes `disabled` is blurred by the HTML focus-fixup rule, which
     // would strand a keyboard player mid-chain.
     expect(
@@ -685,9 +684,9 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
   });
 
   it('20r-d EN-BANNER-RESET BITES: reset() releases an in-flight lock immediately', async () => {
-    // WHY IT EXISTS (ADR-0254 D6): `main.ts` calls `reset()` at the TAIL of
+    // WHY IT EXISTS: `main.ts` calls `reset()` at the TAIL of
     //   onReconnect. The SDK never settles an in-flight reducer promise after a
-    //   link drop (ADR-0085 D3), so without this the OK button is dead for the
+    //   link drop, so without this the OK button is dead for the
     //   rest of the session — for exactly the player whose connection just
     //   flapped mid-chain.
     const d = deferred();
@@ -765,7 +764,7 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
   });
 
   it('20r-d EN-BANNER-REPEAT BITES: a HELD key is prevented on the button; a single press is not', () => {
-    // WHY (ADR-0254 D6): the banner re-renders on every batch, so a 3-entry chain
+    // WHY: the banner re-renders on every batch, so a 3-entry chain
     //   repaints the same button with the NEXT entry one frame after each ack. A
     //   held Enter would auto-dismiss the whole chain in a few dozen ms — the
     //   player is told nothing, which is the exact opposite of the criterion.
@@ -818,8 +817,7 @@ describe('20r-d EN-SOURCE — evolutionNotice.ts carries no banned affordance', 
     //     innerHTML    — the label carries a player-chosen nickname;
     //     replaceChildren — the a11y static-shell ban (it would clear <body>);
     //     matchMedia   — the reduced-motion purity rule; this shell animates
-    //                    nothing, so a motion-preference read is dead weight
-    //                    that the reduced-motion eval would then have to model.
+    //                    nothing, so a motion-preference read is dead weight.
     // Comment-stripped first, so the file may (and should) EXPLAIN in prose why
     // each of these is absent without tripping its own gate.
     const src = readFileSync(

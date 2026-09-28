@@ -1,4 +1,4 @@
-// render/slideClock.ts — the OWN-character self-owned slide clock (M4b, ADR-0013).
+// render/slideClock.ts — the OWN-character self-owned slide clock.
 // PURE. The own character animates on a LOCAL visual clock keyed to TARGET-TILE
 // changes — it deliberately ignores the server's `move_started_at`. This is the
 // core anti-stutter decision: a no-divergence reconcile re-stamps `move_started_at`
@@ -6,7 +6,7 @@
 // every update (jitter/stutter). Keyed to the target tile instead, a redundant
 // re-affirmation of the same tile is a NO-OP, so the slide runs out smoothly.
 //
-// Two clocks (ADR-0013): the predictor advances logical tiles on STEP_MS; THIS
+// Two clocks: the predictor advances logical tiles on STEP_MS; THIS
 // clock advances the visual sub-tile slide on its own local time. Never stores or
 // sends sub-tile position (render-only).
 

@@ -1,7 +1,7 @@
-//! Combat engine — pure, deterministic, integer-only (ADR-0003).
+//! Combat engine — pure, deterministic, integer-only.
 //!
-//! All battle resolution lives here exactly once (ADR-0003 SSOT). The server
-//! resolves battles authoritatively (ADR-0017); the client does NOT predict
+//! All battle resolution lives here exactly once (single source of truth). The server
+//! resolves battles authoritatively; the client does NOT predict
 //! battles (client-wasm prediction applies to movement only). Re-implementing a
 //! battle rule in another crate is the desync bug.
 //!
@@ -10,59 +10,31 @@
 //! - `type_chart` — `TypeChart` lookup struct
 //! - `damage`     — damage formula (`calc_damage`) and accuracy check
 //! - `resolve`    — turn resolution (`resolve_turn`, `resolve_full_turn`, `resolve_enemy_turn`, …)
-//! - `status`     — per-monster status conditions, DoT, action-block rules (M14a, ADR-0010 OCP gate)
-//! - `ability`    — passive per-species ability rules (M14c, ADR-0094)
+//! - `status`     — per-monster status conditions, DoT, action-block rules (exhaustive-match OCP gate)
+//! - `ability`    — passive per-species ability rules
 //! - `ai`         — enemy AI skill picker (`pick_best_skill`)
 //! - `xp`         — XP reward, practice penalty, and level-up (`battle_xp_reward`, `practice_xp_reward`, `apply_xp_gain`)
-//! - `pvp`        — pure PvP orchestration rules: `PvpAction`, forfeit/deadline logic (M16, ADR-0109)
+//! - `pvp`        — pure PvP orchestration rules: `PvpAction`, forfeit/deadline logic
 
 pub mod ability;
+#[cfg(test)]
+pub mod ability_tests;
 pub mod ai;
 #[cfg(test)]
 pub mod battle_0hp_tests;
+#[cfg(test)]
+pub mod battle_core_tests;
 pub mod damage;
-#[cfg(test)]
-pub mod m14_5b_tests;
-#[cfg(test)]
-pub mod m14_5c_tests;
-#[cfg(test)]
-pub mod m14_5h_tests;
-#[cfg(test)]
-pub mod m14a_tests;
-#[cfg(test)]
-pub mod m14b_tests;
-#[cfg(test)]
-pub mod m14c_tests;
-#[cfg(test)]
-pub mod m14d_tests;
-#[cfg(test)]
-pub mod m14e_tests;
-#[cfg(test)]
-pub mod m7b_gating_tests;
-#[cfg(test)]
-pub mod m7b_redteam_tests;
 pub mod pvp;
-#[cfg(test)]
-pub mod redteam_m14_5a_tests;
-#[cfg(test)]
-pub mod redteam_m14a_tests;
-#[cfg(test)]
-pub mod redteam_m14c_tests;
-#[cfg(test)]
-pub mod redteam_m14d_tests;
-#[cfg(test)]
-pub mod redteam_m14d_weather_desync;
-#[cfg(test)]
-pub mod redteam_m14e_tests;
-#[cfg(test)]
-pub mod redteam_m8d_tests;
-#[cfg(test)]
-pub mod redteam_new_findings;
 pub mod resolve;
 pub mod status;
+#[cfg(test)]
+pub mod status_tests;
 pub mod type_chart;
 pub mod types;
 pub mod weather;
+#[cfg(test)]
+pub mod weather_tests;
 pub mod xp;
 
 pub use ability::{

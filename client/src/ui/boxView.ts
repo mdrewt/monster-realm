@@ -1,17 +1,17 @@
-// ui/boxView.ts — thin DOM shell for the box/party screen (M6c, ADR-0014).
+// ui/boxView.ts — thin DOM shell for the box/party screen.
 //
 // Renders MonsterCardViewModels produced by boxModel.ts into a DOM overlay.
 // No game logic, no SDK imports, no store writes — one-way flow only.
 // The loop calls refresh() on batch-applied; the user triggers reducer intents
 // via callbacks passed at construction (never called directly by this module).
 //
-// m24-s4 (ADR-0260) — every player-facing string this view renders is resolved through the i18n
+// Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `box.*` key from ui/i18n/catalog.en.ts —
 // the native `prompt()` label included; the English bytes are unchanged (the catalog pins them).
 // The name row `card.nickname || card.speciesName` is model data, rendered raw. Every `t(`/`tf(`
 // first argument is a string LITERAL.
 //
-// m23-s4 (M23 §2.2, ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
+// Overlay a11y wiring. This view is a CONSTRUCTED shell:
 // its root is `document.createElement`'d here and appended into the shared `#app` MOUNT, so unlike
 // the ten static shells S3 wired it ships NO ARIA of its own from `client/index.html` — every
 // attribute below comes from `openOverlayA11y`, never from a literal in this file.
@@ -32,11 +32,8 @@
 // `.focus()` on a `display:none` node is a silent no-op, so an open-before-paint overlay announces
 // itself and then never receives focus.
 //
-// NO CLOSE-BEFORE-OPEN. `ui/overlayA11y.ts`'s cross-slice contract (a) once claimed the four
-// `#app`-mounted views "share ONE root" and prescribed close-before-open; 17r-e RETRACTED it
-// in place (A12, ui/overlayA11y.ts:52-54); (a) now agrees with this code: each view creates its
-// OWN root under the shared MOUNT — four roots, four `OverlayId`s, four records. Closing a sibling
-// here would close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
+// Each `#app`-mounted view creates its OWN root under the shared mount, so opening this view
+// never closes a sibling (no close-before-open; boxView.test.ts S4-CROSS-VIEW-DISTINCT-ROOTS).
 import type { MonsterCardViewModel } from './boxModel';
 import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
@@ -44,26 +41,28 @@ import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 export interface BoxViewCallbacks {
   /** Called when the user confirms a nickname edit. */
   readonly onSetNickname: (monsterId: bigint, nickname: string) => void;
-  /** Called when the user moves a monster to a party slot (0–5) or to box (255). */
+  /** Called when the user moves a monster to a party slot (0–5), to the next free slot
+   *  (-1), or to box (`partySlotNone`). */
   readonly onSetPartySlot: (monsterId: bigint, slot: number) => void;
   /** Called when the user clicks the Heal Party button (M7c). */
   readonly onHealParty: () => void;
+  /** The "boxed" party-slot sentinel "To Box" emits: game-core's PARTY_SLOT_NONE, read once
+   *  at boot from the `party_slot_none()` wasm export (main.ts) — never a TS literal. */
+  readonly partySlotNone: number;
 }
-
-const BOX_SLOT = 255;
 
 export class BoxView {
   readonly #root: HTMLDivElement;
-  /** The "Party & Box" heading; its text is resolved in show(), not here (m24-s4, see show()). */
+  /** The "Party & Box" heading; its text is resolved in show(), not here (see show()). */
   readonly #titleEl: HTMLHeadingElement;
-  /** The Heal Party button; its label is resolved in show() (m24-s4). */
+  /** The Heal Party button; its label is resolved in show(). */
   readonly #healBtn: HTMLButtonElement;
   readonly #partyEl: HTMLDivElement;
   readonly #boxEl: HTMLDivElement;
-  /** Static box-vs-party explainer (ux4, ADR-0155); never toggled — it states an invariant.
-   *  Its text is resolved in show() (m24-s4). */
+  /** Static box-vs-party explainer; never toggled — it states an invariant.
+   *  Its text is resolved in show(). */
   readonly #hintEl: HTMLDivElement;
-  /** The two section headings; text resolved in show() (m24-s4). */
+  /** The two section headings; text resolved in show(). */
   readonly #partyLabelEl: HTMLHeadingElement;
   readonly #boxLabelEl: HTMLHeadingElement;
   readonly #callbacks: BoxViewCallbacks;
@@ -80,9 +79,9 @@ export class BoxView {
 
     const header = document.createElement('div');
     header.style.cssText = 'display:flex;align-items:center;gap:16px;margin-bottom:16px;';
-    // m24-s4 (ADR-0260): NO text here — `box.title` is resolved in show() (see there for why).
+    // NO text here — `box.title` is resolved in show() (see there for why).
     const title = document.createElement('h2');
-    // m23-s4: the OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
+    // The OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
     // (never "0") makes the heading programmatically focusable WITHOUT adding a permanent tab
     // stop ahead of the overlay's real controls. `setAttribute`, not `dataset` — the selector is
     // frozen in ui/overlayRegistry.ts and the DOM moves to it, never the reverse.
@@ -91,7 +90,7 @@ export class BoxView {
     title.style.cssText = 'margin:0;color:#fff;';
     this.#titleEl = title;
     header.appendChild(title);
-    // Its label (`box.heal`) is resolved in show() (m24-s4), not here.
+    // Its label (`box.heal`) is resolved in show(), not here.
     const healBtn = document.createElement('button');
     healBtn.style.cssText =
       'padding:4px 12px;cursor:pointer;font-family:monospace;background:#2a3a2a;color:#8f8;border:1px solid #4a4;border-radius:3px;';
@@ -100,19 +99,19 @@ export class BoxView {
     header.appendChild(healBtn);
     this.#root.appendChild(header);
 
-    // ux4 (ADR-0155): a direct #root child, so it cannot be wiped by #renderParty / #renderBox,
+    // A direct #root child, so it cannot be wiped by #renderParty / #renderBox,
     // which only touch #partyEl / #boxEl. A SIBLING of `header`, never wrapping it:
     // three client/e2e/recruit.spec.ts sites resolve this root as
     // h2['Party & Box'].parentElement.parentElement, and a wrapper retargets that chain.
     // The copy DESCRIBES the "To Party" button (#renderCard) rather than commanding a click —
     // the empty-box short-circuit below renders no such button in the fresh-player state.
-    // Its text (`box.hint`) is resolved in show() (m24-s4), not here.
+    // Its text (`box.hint`) is resolved in show(), not here.
     this.#hintEl = document.createElement('div');
     this.#hintEl.setAttribute('data-testid', 'box-party-hint');
     this.#hintEl.style.cssText = 'max-width:600px;margin:0 0 12px;font-size:12px;color:#aaa;';
     this.#root.appendChild(this.#hintEl);
 
-    // Its text (`box.section.party`) is resolved in show() (m24-s4), not here.
+    // Its text (`box.section.party`) is resolved in show(), not here.
     const partyLabel = document.createElement('h3');
     partyLabel.style.cssText = 'margin:0 0 8px;color:#aaa;';
     this.#partyLabelEl = partyLabel;
@@ -123,7 +122,7 @@ export class BoxView {
       'display:grid;grid-template-columns:repeat(3,1fr);gap:8px;width:100%;max-width:600px;margin-bottom:16px;';
     this.#root.appendChild(this.#partyEl);
 
-    // Its text (`box.section.box`) is resolved in show() (m24-s4), not here.
+    // Its text (`box.section.box`) is resolved in show(), not here.
     const boxLabel = document.createElement('h3');
     boxLabel.style.cssText = 'margin:0 0 8px;color:#aaa;';
     this.#boxLabelEl = boxLabel;
@@ -148,7 +147,7 @@ export class BoxView {
   show(): void {
     const wasVisible = this.#visible;
     this.#visible = true;
-    // m24-s4 (ADR-0260 D4): the strings set ONCE and never rewritten by a render are resolved
+    // The strings set ONCE and never rewritten by a render are resolved
     // HERE, on EVERY show() — unconditionally, after the `wasVisible` read, before the display
     // write. See evolutionView.show() for the boot-order / locale-switch reasoning.
     this.#titleEl.textContent = t('box.title');
@@ -236,7 +235,7 @@ export class BoxView {
     });
     wrap.appendChild(info);
 
-    // EG4-8: the evolution-choice badge. Built INSIDE the card (so it is per-monster and
+    // The evolution-choice badge. Built INSIDE the card (so it is per-monster and
     // is cleared by #renderParty/#renderBox's replaceChildren), never wrapping `header`
     // and never a #root child: five client/e2e/recruit.spec.ts sites resolve the box root
     // as h2['Party & Box'].parentElement.parentElement, and those helpers scan the root's
@@ -258,7 +257,7 @@ export class BoxView {
       toBoxBtn.textContent = t('box.card.toBox');
       toBoxBtn.style.cssText = 'font-size:11px;cursor:pointer;';
       toBoxBtn.addEventListener('click', () =>
-        this.#callbacks.onSetPartySlot(card.monsterId, BOX_SLOT),
+        this.#callbacks.onSetPartySlot(card.monsterId, this.#callbacks.partySlotNone),
       );
       actions.appendChild(toBoxBtn);
     } else {

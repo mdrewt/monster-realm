@@ -1,4 +1,4 @@
-//! `mr_load_driver` — the m20d load driver (OBS-27 breaking-point measurement).
+//! `mr_load_driver` — the load driver (OBS-27 breaking-point measurement).
 //!
 //! # Usage
 //!
@@ -55,7 +55,7 @@
 //!   parse time with [`SCENARIO_RESERVED_ERR`], exit code 2. It freezes the seam
 //!   M19 will extend; it never produces a report.
 //!
-//! # Determinism posture (ADR-0003 / `clippy.toml`)
+//! # Determinism posture (`clippy.toml`)
 //!
 //! This binary reads NO clock. There is no `Instant::now`, no `SystemTime::now`,
 //! no `elapsed`, and no `#[allow(clippy::disallowed_methods)]` — in the shell or
@@ -79,8 +79,8 @@
 //! `POST /v1/database/<db>/call/<reducer>` is an ephemeral connection, and the
 //! `client_disconnected` reducer `on_disconnect` (in `server-module/src/lib.rs`) resolves its live
 //! trades/PvP/battles and deletes its presence rows BY IDENTITY. Live-verified: `join_game` returns
-//! 200, then `enqueue_move` 5 ms later returns 530 "not joined"; until rb-73
-//! (ADR-0245) it also destroyed a concurrent WS session's join state. On top
+//! 200, then `enqueue_move` 5 ms later returns 530 "not joined"; before the
+//! own-row-only disconnect fix it also destroyed a concurrent WS session's join state. On top
 //! of that, the dominant server cost at concurrency N is
 //! subscription fan-out (every accepted move updates a `character` row broadcast
 //! to N subscribers); with zero subscriptions,
@@ -184,7 +184,7 @@
 //!
 //! Protocol-real, not SDK-real: `spacetimedb-sdk` would drag in tokio +
 //! tokio-tungstenite + generated bindings, all outside this touch set. The
-//! deviation from D9's literal "real SDK clients" is recorded in ADR-0180; the
+//! deviation from D9's literal "real SDK clients" is deliberate; the
 //! core intent — all measurement off S1 — is preserved.
 
 #![forbid(unsafe_code)]
@@ -210,7 +210,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const TRANSPORT: &str = "ws";
 
 /// The movement-tick latency budget in ms. This IS `game_core::STEP_MS`
-/// (ADR-0003 SSOT) — never re-spell it as a literal `200`.
+/// (single source of truth) — never re-spell it as a literal `200`.
 pub const BUDGET_MS: i64 = STEP_MS;
 
 /// The same budget in SECONDS, the unit of the Prometheus histogram.
@@ -254,7 +254,7 @@ pub const READ_TIMEOUT_MS: u64 = 5;
 /// incrementing `drain_cap_hits` (a receive-lag signal, not an error).
 pub const DRAIN_FRAME_CAP: usize = 4096;
 
-/// Prometheus family: movement-tick latency histogram (OBS-24).
+/// Prometheus family: movement-tick latency histogram.
 pub const TXN_ELAPSED_BUCKET_FAMILY: &str = "spacetime_txn_elapsed_time_sec_bucket";
 
 /// Prometheus family: per-reducer transaction counter (accept/reject truth, S1).
@@ -297,8 +297,8 @@ pub const SCENARIO_RESERVED_ERR: &str =
 // §2 CONFIG / CLI PARSE
 // ===========================================================================
 
-/// The load scenario. Only `movement` exists in m20d; `chat-flood` is rejected
-/// at parse time (OBS-28/M19) rather than modelled here.
+/// The load scenario. Only `movement` exists; `chat-flood` is rejected
+/// at parse time rather than modelled here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scenario {
     /// Bots walk row 1 of zone 0 and stream `enqueue_move` intents.
@@ -439,7 +439,7 @@ fn parse_scenario(s: &str) -> Result<Scenario, String> {
 }
 
 /// Process exit code for a top-level error message: 2 for the reserved-scenario
-/// error (OBS-28), 1 otherwise.
+/// error, 1 otherwise.
 #[must_use]
 pub fn exit_code_for_error(msg: &str) -> i32 {
     if msg == SCENARIO_RESERVED_ERR {
@@ -1260,7 +1260,7 @@ pub struct BreakingPoint {
     pub reason: String,
 }
 
-/// OBS-27: the FIRST level that crosses, in ramp order. Invalid levels are
+/// The FIRST level that crosses, in ramp order. Invalid levels are
 /// skipped entirely and can never be the breaking point. When both signals fire
 /// at the same level the p95 reason wins (it is the SLO of record). The breach
 /// comparator is [`p95_breaches_budget`] — inclusive at the budget (AM9).
@@ -2096,8 +2096,7 @@ pub fn client_msg_call_reducer(reducer: &str, args: &str, request_id: u32) -> St
 }
 
 // ===========================================================================
-// §9 SHELL (the only IO; NOT gated by the test module — the implementer may
-// adjust these signatures freely as long as the pure core above is untouched)
+// §9 SHELL (the only IO; NOT gated by the test module)
 // ===========================================================================
 
 /// Cross-thread counters (no mpsc — YAGNI).
@@ -2624,7 +2623,7 @@ fn run(args: &[String]) -> Result<i32, String> {
 }
 
 fn main() {
-    // Thin wrapper: argv in, exit code out (no-logic-in-wrapper, ADR-0051).
+    // Thin wrapper: argv in, exit code out (no-logic-in-wrapper).
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
         Ok(code) => std::process::exit(code),
@@ -2636,7 +2635,7 @@ fn main() {
 }
 
 // ===========================================================================
-// §10 TESTS — tester-owned (T1–T18). The implementer NEVER edits this module.
+// §10 TESTS.
 //
 // Every test is pure: no socket, no clock, no OS entropy, no new dependency.
 // "Property" tests are deterministic seeded loops over `game_core::tick_seed`.
@@ -2645,7 +2644,7 @@ fn main() {
 #[cfg(test)]
 // The frozen T8 module asserts a compile-time-constant precondition
 // (`0.3 >= BUDGET_S`) for documentation; scope the benign `assertions_on_constants`
-// style lint to this module (unrelated to the ADR-0003 determinism gate).
+// style lint to this module (unrelated to the determinism gate).
 #[allow(clippy::assertions_on_constants)]
 mod tests {
     use super::*;
@@ -2782,7 +2781,7 @@ mod tests {
     // T1 — parse_args: happy path and EVERY bound.
     // =======================================================================
 
-    /// T1: only `--run-id` is required; every other flag has the documented
+    /// only `--run-id` is required; every other flag has the documented
     /// default. Kills a parser that silently defaults `--run-id` too.
     #[test]
     fn t01_parse_args_defaults_are_exact() {
@@ -2801,7 +2800,7 @@ mod tests {
         assert_eq!(cfg.report_path, None);
     }
 
-    /// T1: every flag is read into the field it names (kills a parser that
+    /// every flag is read into the field it names (kills a parser that
     /// crosses two numeric flags, e.g. step into start).
     #[test]
     fn t01_parse_args_reads_every_flag_into_its_own_field() {
@@ -2846,7 +2845,7 @@ mod tests {
         assert_eq!(cfg.report_path.as_deref(), Some("/tmp/mr-load.json"));
     }
 
-    /// T1: `--run-id` is REQUIRED. Kills a parser that invents a default label
+    /// `--run-id` is REQUIRED. Kills a parser that invents a default label
     /// (which would silently un-pair every G11 A/B run).
     #[test]
     fn t01_run_id_is_required() {
@@ -2862,13 +2861,13 @@ mod tests {
         );
     }
 
-    /// T1: an empty `--run-id` is not a label.
+    /// an empty `--run-id` is not a label.
     #[test]
     fn t01_run_id_must_be_non_empty() {
         assert!(parse_args(&argv(&["--run-id", ""])).is_err());
     }
 
-    /// T1: `--clients-start` boundary — 0 rejected, 1 accepted.
+    /// `--clients-start` boundary — 0 rejected, 1 accepted.
     #[test]
     fn t01_clients_start_lower_bound() {
         assert!(parse_args(&args_with("--clients-start", "0")).is_err());
@@ -2884,14 +2883,14 @@ mod tests {
         assert_eq!(cfg.clients_start, 1);
     }
 
-    /// T1: `--clients-step` boundary — 0 rejected (an infinite ramp), 1 accepted.
+    /// `--clients-step` boundary — 0 rejected (an infinite ramp), 1 accepted.
     #[test]
     fn t01_clients_step_lower_bound() {
         assert!(parse_args(&args_with("--clients-step", "0")).is_err());
         assert!(parse_args(&args_with("--clients-step", "1")).is_ok());
     }
 
-    /// T1: `--clients-max` must be ≥ start; equal is legal and is exactly how
+    /// `--clients-max` must be ≥ start; equal is legal and is exactly how
     /// G11 runs a fixed-concurrency A/B.
     #[test]
     fn t01_clients_max_must_not_be_below_start() {
@@ -2916,7 +2915,7 @@ mod tests {
         assert_eq!(cfg.clients_start, cfg.clients_max);
     }
 
-    /// T1: the hard client cap. 500 accepted, 501 rejected — kills a `>=` flip
+    /// the hard client cap. 500 accepted, 501 rejected — kills a `>=` flip
     /// on the cap and any parser that ignores MAX_CLIENTS entirely.
     #[test]
     fn t01_clients_max_cap_is_exactly_max_clients() {
@@ -2933,7 +2932,7 @@ mod tests {
         );
     }
 
-    /// T1 + AM6: `--hold-scrapes` ≥ 4 (1 warm-up discard + ≥3 usable readings).
+    /// `--hold-scrapes` ≥ 4 (1 warm-up discard + ≥3 usable readings).
     /// 3 MUST be rejected — that is the value a naive "≥3 readings" reading of
     /// the growth rule would allow, and it leaves only 2 usable readings.
     #[test]
@@ -2947,7 +2946,7 @@ mod tests {
         assert_eq!(cfg.hold_scrapes, 4);
     }
 
-    /// T1: `--scrape-interval-ms` ≥ 100.
+    /// `--scrape-interval-ms` ≥ 100.
     #[test]
     fn t01_scrape_interval_floor() {
         assert!(parse_args(&args_with("--scrape-interval-ms", "99")).is_err());
@@ -2955,7 +2954,7 @@ mod tests {
         assert_eq!(cfg.scrape_interval_ms, MIN_SCRAPE_INTERVAL_MS);
     }
 
-    /// T1: `--move-rate` bounds, both ends.
+    /// `--move-rate` bounds, both ends.
     #[test]
     fn t01_move_rate_bounds() {
         assert!(parse_args(&args_with("--move-rate", "0")).is_err());
@@ -2964,7 +2963,7 @@ mod tests {
         assert!(parse_args(&args_with("--move-rate", "101")).is_err());
     }
 
-    /// T1: an unknown flag is a loud error, never ignored.
+    /// an unknown flag is a loud error, never ignored.
     #[test]
     fn t01_unknown_flag_is_rejected() {
         let err = parse_args(&argv(&["--run-id", "T", "--turbo", "1"]))
@@ -2975,7 +2974,7 @@ mod tests {
         );
     }
 
-    /// T1 + AM25: `--transport` DOES NOT EXIST. WS is the only viable transport
+    /// `--transport` DOES NOT EXIST. WS is the only viable transport
     /// (HTTP calls are swept by `on_disconnect`), so the flag must be rejected
     /// as unknown — not accepted-and-ignored, and not silently defaulted.
     #[test]
@@ -2990,7 +2989,7 @@ mod tests {
         );
     }
 
-    /// T1 + AM17/AM18: neither `--queue-metric` nor `--label` exists.
+    /// neither `--queue-metric` nor `--label` exists.
     #[test]
     fn t01_queue_metric_and_label_flags_do_not_exist() {
         assert!(
@@ -3009,14 +3008,14 @@ mod tests {
         );
     }
 
-    /// T1: a flag whose value is missing is an error, not a silent default.
+    /// a flag whose value is missing is an error, not a silent default.
     #[test]
     fn t01_missing_flag_value_is_rejected() {
         assert!(parse_args(&argv(&["--run-id"])).is_err());
         assert!(parse_args(&argv(&["--run-id", "T", "--clients-max"])).is_err());
     }
 
-    /// T1: a non-numeric value for a numeric flag is an error.
+    /// a non-numeric value for a numeric flag is an error.
     #[test]
     fn t01_non_numeric_value_is_rejected() {
         assert!(parse_args(&args_with("--clients-max", "many")).is_err());
@@ -3024,19 +3023,19 @@ mod tests {
         assert!(parse_args(&args_with("--hold-scrapes", "-4")).is_err());
     }
 
-    /// T1: a bare positional argument is not a flag.
+    /// a bare positional argument is not a flag.
     #[test]
     fn t01_positional_argument_is_rejected() {
         assert!(parse_args(&argv(&["--run-id", "T", "extra"])).is_err());
     }
 
-    /// T1: `--server` must be non-empty (the host is derived from it).
+    /// `--server` must be non-empty (the host is derived from it).
     #[test]
     fn t01_empty_server_is_rejected() {
         assert!(parse_args(&args_with("--server", "")).is_err());
     }
 
-    /// T1: `server_host` strips the scheme, rejects TLS and non-HTTP schemes
+    /// `server_host` strips the scheme, rejects TLS and non-HTTP schemes
     /// (this driver has no TLS — silently connecting in the clear would be worse).
     #[test]
     fn t01_server_host_extraction_and_scheme_guard() {
@@ -3060,7 +3059,7 @@ mod tests {
         assert!(server_host("http://").is_err(), "an empty host is an error");
     }
 
-    /// T1 + AM1: pacing is a pure function of `--move-rate`, clock-free.
+    /// pacing is a pure function of `--move-rate`, clock-free.
     /// 5/sec ⇒ one intent per STEP_MS minus the drain allowance.
     #[test]
     fn t01_pacing_sleep_is_a_pure_function_of_move_rate() {
@@ -3075,10 +3074,10 @@ mod tests {
     }
 
     // =======================================================================
-    // T2 — the reserved chat-flood scenario (OBS-28 / M19).
+    // T2 — the reserved chat-flood scenario.
     // =======================================================================
 
-    /// T2: `--scenario chat-flood` is rejected AT PARSE with the exact reserved
+    /// `--scenario chat-flood` is rejected AT PARSE with the exact reserved
     /// message. Pinned by equality, not `contains`, so the message cannot drift
     /// into something that no longer names its criterion.
     #[test]
@@ -3088,7 +3087,7 @@ mod tests {
         assert_eq!(err, SCENARIO_RESERVED_ERR);
     }
 
-    /// T2: the reserved message names both the criterion and the milestone, so
+    /// the reserved message names both the criterion and the milestone, so
     /// an operator learns WHY without reading the source.
     #[test]
     fn t02_reserved_error_names_obs28_and_m19() {
@@ -3097,7 +3096,7 @@ mod tests {
         assert!(SCENARIO_RESERVED_ERR.contains("chat-flood"));
     }
 
-    /// T2: the reserved scenario exits 2 — distinct from a generic usage error,
+    /// the reserved scenario exits 2 — distinct from a generic usage error,
     /// so a harness can tell "not implemented yet" from "you typed it wrong".
     #[test]
     fn t02_chat_flood_maps_to_exit_code_two() {
@@ -3106,7 +3105,7 @@ mod tests {
         assert_eq!(exit_code_for_error("--run-id is required"), 1);
     }
 
-    /// T2: `movement` is accepted; an unknown scenario is a plain usage error
+    /// `movement` is accepted; an unknown scenario is a plain usage error
     /// (exit 1), NOT the reserved one.
     #[test]
     fn t02_movement_accepted_unknown_scenario_is_a_plain_error() {
@@ -3129,7 +3128,7 @@ mod tests {
     // T3 — Prometheus exposition parse + SUBSET label matching + label pins.
     // =======================================================================
 
-    /// T3: comments and blank lines are skipped, not errors.
+    /// comments and blank lines are skipped, not errors.
     #[test]
     fn t03_parse_line_skips_comments_and_blanks() {
         assert_eq!(
@@ -3144,7 +3143,7 @@ mod tests {
         assert_eq!(parse_line("   "), Ok(None));
     }
 
-    /// T3: a label-less series parses.
+    /// a label-less series parses.
     #[test]
     fn t03_parse_line_without_labels() {
         let s = parse_line("spacetime_worker_wasm_memory_bytes 1048576")
@@ -3155,7 +3154,7 @@ mod tests {
         assert!(close(s.value, 1_048_576.0));
     }
 
-    /// T3: labels parse in text order, with the value after the closing brace.
+    /// labels parse in text order, with the value after the closing brace.
     #[test]
     fn t03_parse_line_with_labels() {
         let s = parse_line(
@@ -3173,7 +3172,7 @@ mod tests {
         assert!(close(s.value, 42.0));
     }
 
-    /// T3: exponent notation and an optional trailing timestamp — both appear in
+    /// exponent notation and an optional trailing timestamp — both appear in
     /// real exposition. Kills a parser that treats the timestamp as the value.
     #[test]
     fn t03_parse_line_handles_exponents_and_trailing_timestamp() {
@@ -3190,7 +3189,7 @@ mod tests {
         );
     }
 
-    /// T3: malformed lines fail LOUD. A silent skip would turn a broken scrape
+    /// malformed lines fail LOUD. A silent skip would turn a broken scrape
     /// into a fake "0" and then into a fake breaking point.
     #[test]
     fn t03_parse_line_fails_loud_on_malformed_input() {
@@ -3203,7 +3202,7 @@ mod tests {
         assert!(parse_line("{a=\"b\"} 1").is_err(), "no family name");
     }
 
-    /// T3: the three legal label escapes round-trip; anything else fails loud
+    /// the three legal label escapes round-trip; anything else fails loud
     /// (memory: fail loud on parse ambiguity, never guess).
     #[test]
     fn t03_label_unescape_handles_the_three_legal_escapes() {
@@ -3221,7 +3220,7 @@ mod tests {
         );
     }
 
-    /// T3: a label value containing an escaped quote and a comma must not split
+    /// a label value containing an escaped quote and a comma must not split
     /// the label list early.
     #[test]
     fn t03_parse_line_label_value_may_contain_escaped_quotes_and_commas() {
@@ -3237,7 +3236,7 @@ mod tests {
         assert_eq!(label_value(&s, "k"), Some("v"));
     }
 
-    /// T3: matching is SUBSET-based. Exact-label-set equality is the classic
+    /// matching is SUBSET-based. Exact-label-set equality is the classic
     /// vacuous-green shape here — real exposition carries extra labels
     /// (`db`, `txn_type`, `le`) that we do not always constrain.
     #[test]
@@ -3270,7 +3269,7 @@ mod tests {
         );
     }
 
-    /// T3: selection filters on family name AND labels.
+    /// selection filters on family name AND labels.
     #[test]
     fn t03_select_subset_filters_on_name_and_labels() {
         let samples = vec![
@@ -3284,7 +3283,7 @@ mod tests {
         assert!(select_subset(&samples, "zzz", &[]).is_empty());
     }
 
-    /// T3 + AM26: an ABSENT family (or an over-pinned match) is a LOUD error,
+    /// an ABSENT family (or an over-pinned match) is a LOUD error,
     /// never a silent 0. A zero would read as "no queue growth" / "no load".
     #[test]
     fn t03_counter_sum_fails_loud_when_nothing_matches() {
@@ -3300,7 +3299,7 @@ mod tests {
         assert!(gauge_sum(&samples, "missing_family", &[]).is_err());
     }
 
-    /// T3: multiple matching series are summed, so silent aggregation is at
+    /// multiple matching series are summed, so silent aggregation is at
     /// least arithmetically honest.
     #[test]
     fn t03_counter_sum_adds_every_matching_series() {
@@ -3315,7 +3314,7 @@ mod tests {
         ));
     }
 
-    /// T3 + AM27 TEETH: the live host exposes an `txn_type="Update"` row
+    /// TEETH: the live host exposes an `txn_type="Update"` row
     /// ALONGSIDE `txn_type="Reducer"` for every reducer. A match that forgets to
     /// pin `txn_type` double-counts every accept/reject delta and halves the
     /// apparent breaking point. This fixture returns 10, never 17.
@@ -3351,7 +3350,7 @@ mod tests {
         );
     }
 
-    /// T3 + AM26 TEETH: two databases on one host. Pinning the resolved identity
+    /// TEETH: two databases on one host. Pinning the resolved identity
     /// must exclude the other database's series entirely.
     #[test]
     fn t03_identity_pinning_excludes_other_databases() {
@@ -3385,7 +3384,7 @@ mod tests {
         );
     }
 
-    /// T3 + AM26: the live LABEL-NAME ASYMMETRY. txn families use `db=`; the
+    /// the live LABEL-NAME ASYMMETRY. txn families use `db=`; the
     /// queue gauges use `database_identity=`. Swapping them yields zero matches
     /// and (thanks to the fail-loud rule) an aborted run rather than a lie.
     #[test]
@@ -3411,7 +3410,7 @@ mod tests {
         assert_eq!(TXN_TYPE_REDUCER, "Reducer");
     }
 
-    /// T3: the queue gauge families are the two OBS-26/27 names, in order.
+    /// the queue gauge families are the two OBS-26/27 names, in order.
     #[test]
     fn t03_queue_families_are_the_two_obs26_gauges() {
         assert_eq!(
@@ -3424,7 +3423,7 @@ mod tests {
         assert_eq!(SUBSCRIBE_QUERIES, ["SELECT * FROM character"]);
     }
 
-    /// T3: whole-body parse keeps every series and propagates a bad line.
+    /// whole-body parse keeps every series and propagates a bad line.
     #[test]
     fn t03_parse_exposition_round_trip_and_failure() {
         let text = "# HELP x help\n# TYPE x gauge\nx{a=\"1\"} 1\nx{a=\"2\"} 2\n";
@@ -3436,7 +3435,7 @@ mod tests {
         );
     }
 
-    /// T3 + AM26: name→identity resolution, `0x` stripped for label matching.
+    /// name→identity resolution, `0x` stripped for label matching.
     #[test]
     fn t03_database_identity_resolution_strips_0x() {
         let body = "{\"database_identity\":{\"__identity__\":\"0xc200abcdef\"},\"owner_identity\":{\"__identity__\":\"0xdead\"}}";
@@ -3469,7 +3468,7 @@ mod tests {
         out
     }
 
-    /// T4: the bound set comes from the `le` labels in the text — including the
+    /// the bound set comes from the `le` labels in the text — including the
     /// live host's NON-default bounds and `+Inf`. Kills any hard-coded bound
     /// array (the prometheus-crate DEFAULT_BUCKETS guess was wrong for this
     /// family, so a hard-coded set would silently mis-bucket every p95).
@@ -3500,7 +3499,7 @@ mod tests {
         assert!(close(s.counts[13], 100.0));
     }
 
-    /// T4: bounds come back ASCENDING even when the text order is shuffled —
+    /// bounds come back ASCENDING even when the text order is shuffled —
     /// Prometheus does not promise bucket-line ordering.
     #[test]
     fn t04_bucket_bounds_are_sorted_ascending_regardless_of_text_order() {
@@ -3516,7 +3515,7 @@ mod tests {
         assert!(close(s.counts[2], 30.0));
     }
 
-    /// T4: two series sharing an `le` set are summed bucket-wise.
+    /// two series sharing an `le` set are summed bucket-wise.
     #[test]
     fn t04_matching_series_are_summed_bucket_wise() {
         let mut text = hist_text("d", "r", "Reducer", &["0.1", "+Inf"], &[1, 2]);
@@ -3530,7 +3529,7 @@ mod tests {
         assert!(close(s.counts[1], 22.0));
     }
 
-    /// T4 + AM14 TEETH: summing series whose `le` sets DIFFER is a silent lie
+    /// TEETH: summing series whose `le` sets DIFFER is a silent lie
     /// (the sum would describe a histogram that never existed). Fail loud.
     #[test]
     fn t04_mismatched_le_sets_fail_loud() {
@@ -3545,7 +3544,7 @@ mod tests {
         );
     }
 
-    /// T4 + AM26: zero matching bucket series is fatal, not an empty histogram.
+    /// zero matching bucket series is fatal, not an empty histogram.
     #[test]
     fn t04_absent_histogram_family_fails_loud() {
         let samples = parse_exposition("other_family 1\n").expect("valid exposition");
@@ -3559,7 +3558,7 @@ mod tests {
     //      boundary, and the AM6 warm-up discard inside the window.
     // =======================================================================
 
-    /// T5 + AM10: the REAL live bucket bounds, with a delta whose p95 lands in
+    /// the REAL live bucket bounds, with a delta whose p95 lands in
     /// the 400 ms-wide `(0.1, 0.5]` bucket that straddles STEP_MS.
     ///
     /// rank = 0.95·100 = 95; cum(0.1) = 90, cum(0.5) = 100
@@ -3588,7 +3587,7 @@ mod tests {
         );
     }
 
-    /// T5 + AM10: the resolution indicator for that same fixture is the FULL
+    /// the resolution indicator for that same fixture is the FULL
     /// 400 ms bucket width — the honest statement of how coarse this p95 is.
     #[test]
     fn t05_p95_bucket_width_exposes_the_400ms_live_bucket() {
@@ -3602,7 +3601,7 @@ mod tests {
         assert!(close(w, 0.4), "expected the (0.1, 0.5] width 0.4, got {w}");
     }
 
-    /// T5: evenly spaced bounds with a HAND-COMPUTED expected value.
+    /// evenly spaced bounds with a HAND-COMPUTED expected value.
     /// rank = 0.95·20 = 19; cum(1) = 10, cum(2) = 20
     /// ⇒ 1 + (2−1)·(19−10)/10 = **1.9**.
     /// Kills a midpoint estimator (1.5) and a "return the upper bound" (2.0).
@@ -3617,7 +3616,7 @@ mod tests {
         ));
     }
 
-    /// T5: when the p95 falls in the FIRST bucket the lower edge is 0, not
+    /// when the p95 falls in the FIRST bucket the lower edge is 0, not
     /// `bounds[-1]`. rank = 19 of 20 in `(0, 1]` ⇒ 0 + 1·19/20 = **0.95**.
     /// Kills an off-by-one that indexes `bounds[i-1]` at i == 0.
     #[test]
@@ -3631,7 +3630,7 @@ mod tests {
         ));
     }
 
-    /// T5: more than 5 % of observations above the top finite bound ⇒ AboveTop,
+    /// more than 5 % of observations above the top finite bound ⇒ AboveTop,
     /// carrying that bound. It is NEVER reported as the p95 value itself.
     #[test]
     fn t05_p95_above_top_is_never_reported_as_the_top_bound() {
@@ -3652,7 +3651,7 @@ mod tests {
         );
     }
 
-    /// T5: AboveTop is a breach only when the top finite bound is already at or
+    /// AboveTop is a breach only when the top finite bound is already at or
     /// over the budget; below it, the reading is INDETERMINATE — never silently
     /// healthy.
     #[test]
@@ -3666,7 +3665,7 @@ mod tests {
         );
     }
 
-    /// T5: an all-zero delta means nothing was observed in the window.
+    /// an all-zero delta means nothing was observed in the window.
     #[test]
     fn t05_p95_too_few_on_an_empty_window() {
         let delta = snap(&[1.0, 2.0, INF], &[0.0, 0.0, 0.0]);
@@ -3676,7 +3675,7 @@ mod tests {
         assert_eq!(p95_bucket_width_s(&delta), None);
     }
 
-    /// T5: a NEGATIVE component means the cumulative counter went backwards —
+    /// a NEGATIVE component means the cumulative counter went backwards —
     /// the host restarted mid-level. Reset, never a (nonsense) percentile.
     #[test]
     fn t05_p95_reset_on_a_decreasing_counter() {
@@ -3726,7 +3725,7 @@ mod tests {
         );
     }
 
-    /// T5 BOUNDARY: `rank == counts[i]` exactly must resolve INSIDE that finite
+    /// BOUNDARY: `rank == counts[i]` exactly must resolve INSIDE that finite
     /// bucket. total = 20 ⇒ rank = 19, and counts[1] = 19, so the documented
     /// `counts[i] >= rank` picks i = 1 and interpolates to the bucket's upper
     /// edge: 1.0 + 1.0 · (19 − 10)/(19 − 10) = **2.0**.
@@ -3745,7 +3744,7 @@ mod tests {
         assert!(close(extract_p95_value(p), 2.0));
     }
 
-    /// T5 + AM9 BOUNDARY: the breach comparator is INCLUSIVE. p95 exactly at
+    /// BOUNDARY: the breach comparator is INCLUSIVE. p95 exactly at
     /// STEP_MS is a BREACH, because OBS-24 is satisfied only by staying UNDER
     /// the budget. Kills a `>` comparator.
     #[test]
@@ -3766,7 +3765,7 @@ mod tests {
         );
     }
 
-    /// T5: a healthy p95 well under the budget is not a breach, and
+    /// a healthy p95 well under the budget is not a breach, and
     /// TooFew/Reset are indeterminate (they make the LEVEL invalid rather than
     /// quietly passing as healthy).
     #[test]
@@ -3776,7 +3775,7 @@ mod tests {
         assert_eq!(p95_breaches_budget(P95::Reset), Breach::Indeterminate);
     }
 
-    /// T5 + AM6/AM8 TEETH: the level p95 is ONE delta over the USABLE window —
+    /// TEETH: the level p95 is ONE delta over the USABLE window —
     /// last usable minus FIRST USABLE, with the warm-up reading discarded.
     ///
     /// Correct (c − a): counts [0,100,100] ⇒ 1 + 1·(95−0)/100 = **1.95**.
@@ -3804,7 +3803,7 @@ mod tests {
         );
     }
 
-    /// T5: fewer than two USABLE readings cannot make a delta.
+    /// fewer than two USABLE readings cannot make a delta.
     #[test]
     fn t05_p95_window_needs_two_usable_readings() {
         let one = vec![snap(&[1.0, INF], &[1.0, 1.0])];
@@ -3830,7 +3829,7 @@ mod tests {
         assert_eq!(p95_windowed(&[]).expect("no le conflict"), P95::TooFew);
     }
 
-    /// T5 + AM14: a bound set that changes mid-level (a re-published module)
+    /// a bound set that changes mid-level (a re-published module)
     /// must fail loud rather than subtract mismatched buckets.
     #[test]
     fn t05_window_delta_fails_loud_on_changed_bounds() {
@@ -3843,7 +3842,7 @@ mod tests {
         assert!(p95_windowed(&raw).is_err());
     }
 
-    /// T5: `Value` reports its number and its state name.
+    /// `Value` reports its number and its state name.
     #[test]
     fn t05_value_state_reporting() {
         assert_eq!(p95_state_name(P95::Value(0.25)), "value");
@@ -3867,7 +3866,7 @@ mod tests {
         );
     }
 
-    /// T6: a flat queue — even a flat queue at a high plateau — is not growth
+    /// a flat queue — even a flat queue at a high plateau — is not growth
     /// (AM7: the server keeps up at that concurrency).
     #[test]
     fn t06_flat_series_is_not_growth() {
@@ -3875,21 +3874,21 @@ mod tests {
         assert!(!is_monotonic_growth(&[900.0, 900.0, 900.0]));
     }
 
-    /// T6: strictly increasing with a real gain IS growth.
+    /// strictly increasing with a real gain IS growth.
     #[test]
     fn t06_strictly_increasing_series_is_growth() {
         assert!(is_monotonic_growth(&[1.0, 2.0, 3.0]));
         assert!(is_monotonic_growth(&[0.0, 10.0, 40.0, 90.0]));
     }
 
-    /// T6: a single flat pair anywhere breaks strictness.
+    /// a single flat pair anywhere breaks strictness.
     #[test]
     fn t06_one_flat_pair_breaks_strictness() {
         assert!(!is_monotonic_growth(&[1.0, 2.0, 2.0, 3.0]));
         assert!(!is_monotonic_growth(&[3.0, 2.0, 1.0]));
     }
 
-    /// T6: fewer than three readings cannot establish a trend.
+    /// fewer than three readings cannot establish a trend.
     #[test]
     fn t06_fewer_than_three_readings_is_not_growth() {
         assert!(!is_monotonic_growth(&[]));
@@ -3897,7 +3896,7 @@ mod tests {
         assert!(!is_monotonic_growth(&[1.0, 99.0]));
     }
 
-    /// T6: increasing but by less than one whole queued item is float noise on
+    /// increasing but by less than one whole queued item is float noise on
     /// an integer-valued gauge, not growth.
     #[test]
     fn t06_sub_unit_drift_is_not_growth() {
@@ -3911,7 +3910,7 @@ mod tests {
         );
     }
 
-    /// T6 + AM6: the window function drops exactly WARMUP_SCRAPES readings from
+    /// the window function drops exactly WARMUP_SCRAPES readings from
     /// the FRONT, uniformly, for any series type.
     #[test]
     fn t06_usable_window_drops_exactly_the_warmup_readings() {
@@ -3944,7 +3943,7 @@ mod tests {
         );
     }
 
-    /// T6 + AM6 TEETH (the other direction): a series whose only "growth" is the
+    /// TEETH (the other direction): a series whose only "growth" is the
     /// discarded warm-up reading must NOT count. Raw `[1, 2, 3]` looks like
     /// growth; the usable window is only `[2, 3]` — two readings, no verdict.
     /// Kills an implementation that forgets the discard in `level_growth`.
@@ -3960,7 +3959,7 @@ mod tests {
         );
     }
 
-    /// T6: a queue that spikes on connect and then sits flat is a server keeping
+    /// a queue that spikes on connect and then sits flat is a server keeping
     /// up — the most common false positive this rule must refuse.
     #[test]
     fn t06_spike_then_plateau_is_not_growth() {
@@ -3968,7 +3967,7 @@ mod tests {
         assert!(!level_growth(&[0.0, 5.0, 4.0, 6.0, 5.0]));
     }
 
-    /// T6: median over the usable window (the AM7 plateau statistic).
+    /// median over the usable window (the AM7 plateau statistic).
     #[test]
     fn t06_median_is_order_independent() {
         assert_eq!(median(&[3.0, 1.0, 2.0]), Some(2.0));
@@ -3978,7 +3977,7 @@ mod tests {
     }
 
     // =======================================================================
-    // T7 — the breaking-point state machine (OBS-27).
+    // T7 — the breaking-point state machine.
     // =======================================================================
 
     /// A healthy, valid verdict at `n`.
@@ -4012,7 +4011,7 @@ mod tests {
         }
     }
 
-    /// T7: the FIRST crossing is the answer, and it is that level's exact
+    /// the FIRST crossing is the answer, and it is that level's exact
     /// concurrency — not the previous level, not the next one.
     #[test]
     fn t07_first_crossing_reports_exactly_that_level() {
@@ -4027,7 +4026,7 @@ mod tests {
         assert_eq!(bp.reason, P95_BREACH_REASON);
     }
 
-    /// T7: no crossing ⇒ None (the `not_reached` outcome, a legitimate result
+    /// no crossing ⇒ None (the `not_reached` outcome, a legitimate result
     /// on a dev box that must never be massaged into a number).
     #[test]
     fn t07_no_crossing_is_none() {
@@ -4036,7 +4035,7 @@ mod tests {
         assert_eq!(breaking_point(&[]), None);
     }
 
-    /// T7: a queue-growth crossing names the offending family.
+    /// a queue-growth crossing names the offending family.
     #[test]
     fn t07_queue_growth_crossing_names_the_family() {
         let verdicts = vec![
@@ -4051,7 +4050,7 @@ mod tests {
         );
     }
 
-    /// T7: an EARLIER p95 breach wins over a LATER queue breach — "first
+    /// an EARLIER p95 breach wins over a LATER queue breach — "first
     /// crosses" is about ramp order, not signal preference.
     #[test]
     fn t07_earlier_p95_breach_beats_a_later_queue_breach() {
@@ -4065,7 +4064,7 @@ mod tests {
         assert_eq!(bp.reason, P95_BREACH_REASON);
     }
 
-    /// T7: an EARLIER queue breach wins over a LATER p95 breach, symmetrically.
+    /// an EARLIER queue breach wins over a LATER p95 breach, symmetrically.
     /// Kills an implementation that scans for p95 breaches first and only then
     /// looks at queues.
     #[test]
@@ -4083,8 +4082,8 @@ mod tests {
         );
     }
 
-    /// T7: both signals at the SAME level ⇒ the p95 reason is reported (it is
-    /// the SLO of record, OBS-24).
+    /// both signals at the SAME level ⇒ the p95 reason is reported (it is
+    /// the SLO of record).
     #[test]
     fn t07_p95_reason_wins_when_both_fire_at_one_level() {
         let both = LevelVerdict {
@@ -4097,7 +4096,7 @@ mod tests {
         assert_eq!(bp.reason, P95_BREACH_REASON);
     }
 
-    /// T7 TEETH: an INVALID level can never be the breaking point, however
+    /// TEETH: an INVALID level can never be the breaking point, however
     /// alarming its numbers look. The run continues to the next valid level.
     #[test]
     fn t07_invalid_level_is_never_the_breaking_point() {
@@ -4116,7 +4115,7 @@ mod tests {
         );
     }
 
-    /// T7 TEETH: if the ONLY breaching level is invalid, the honest answer is
+    /// TEETH: if the ONLY breaching level is invalid, the honest answer is
     /// None — never "the number we happened to see".
     #[test]
     fn t07_only_invalid_breaches_yield_no_breaking_point() {
@@ -4132,7 +4131,7 @@ mod tests {
         );
     }
 
-    /// T7 + AM9: a p95 sitting EXACTLY on STEP_MS crosses. This is the same
+    /// a p95 sitting EXACTLY on STEP_MS crosses. This is the same
     /// inclusive rule as T5, exercised through the state machine.
     #[test]
     fn t07_p95_exactly_at_the_budget_crosses() {
@@ -4142,7 +4141,7 @@ mod tests {
         assert_eq!(bp.reason, P95_BREACH_REASON);
     }
 
-    /// T7: an `AboveTop` whose top bound is already over the budget crosses; a
+    /// an `AboveTop` whose top bound is already over the budget crosses; a
     /// `TooFew`/`Reset` outcome never does (those levels are invalid anyway).
     #[test]
     fn t07_above_top_over_budget_crosses() {
@@ -4176,7 +4175,7 @@ mod tests {
         );
     }
 
-    /// T7 + AM7: two rising levels are not enough, and a non-consecutive rise
+    /// two rising levels are not enough, and a non-consecutive rise
     /// does not count.
     #[test]
     fn t07_cross_level_growth_needs_three_consecutive_levels() {
@@ -4268,7 +4267,7 @@ mod tests {
         }
     }
 
-    /// T8: the healthy baseline is valid, unremarkable, and under budget.
+    /// the healthy baseline is valid, unremarkable, and under budget.
     #[test]
     fn t08_healthy_level_is_valid_with_no_notes() {
         let v = evaluate_level(&base_sample(10)).expect("consistent bounds");
@@ -4322,7 +4321,7 @@ mod tests {
         assert!(!v.notes.contains(&REJECTION_STORM_NOTE.to_string()));
     }
 
-    /// T8 + AM5: NOTHING reached the server — a driver stall or a connection
+    /// NOTHING reached the server — a driver stall or a connection
     /// collapse. Invalid, and therefore never a breaking point.
     #[test]
     fn t08_zero_offered_load_is_invalid_no_load_reached() {
@@ -4336,7 +4335,7 @@ mod tests {
         assert_eq!(v.invalid_reason.as_deref(), Some("no_load_reached"));
     }
 
-    /// T8 + AM5: the join wave came up short — driver-side auth/name/validation
+    /// the join wave came up short — driver-side auth/name/validation
     /// drift. A LOUD TOOL ERROR, never a server verdict.
     #[test]
     fn t08_join_shortfall_is_invalid_join_failed() {
@@ -4349,7 +4348,7 @@ mod tests {
         assert_eq!(v.invalid_reason.as_deref(), Some("join_failed"));
     }
 
-    /// T8 BOUNDARY: exactly enough joins is enough. Kills a `<=` flip that would
+    /// BOUNDARY: exactly enough joins is enough. Kills a `<=` flip that would
     /// invalidate every well-behaved run.
     #[test]
     fn t08_join_count_exactly_equal_to_concurrency_is_valid() {
@@ -4369,7 +4368,7 @@ mod tests {
         );
     }
 
-    /// T8 + AM5: a decreasing cumulative counter means the host restarted.
+    /// a decreasing cumulative counter means the host restarted.
     #[test]
     fn t08_counter_decrease_is_invalid_counter_reset() {
         let s = LevelSample {
@@ -4381,7 +4380,7 @@ mod tests {
         assert_eq!(v.invalid_reason.as_deref(), Some("counter_reset"));
     }
 
-    /// T8: a histogram window that goes backwards is the same restart, seen
+    /// a histogram window that goes backwards is the same restart, seen
     /// through the p95 path.
     #[test]
     fn t08_histogram_reset_is_invalid_counter_reset() {
@@ -4399,7 +4398,7 @@ mod tests {
         assert_eq!(v.p95, P95::Reset);
     }
 
-    /// T8: no usable p95 window ⇒ invalid, never "healthy by default".
+    /// no usable p95 window ⇒ invalid, never "healthy by default".
     #[test]
     fn t08_too_few_p95_samples_is_invalid() {
         let s = LevelSample {
@@ -4411,7 +4410,7 @@ mod tests {
         assert_eq!(v.invalid_reason.as_deref(), Some("insufficient_samples"));
     }
 
-    /// T8: an `AboveTop` under the budget is INDETERMINATE — the level is
+    /// an `AboveTop` under the budget is INDETERMINATE — the level is
     /// invalid rather than silently reported as healthy or as a breach.
     #[test]
     fn t08_indeterminate_above_top_is_invalid() {
@@ -4429,7 +4428,7 @@ mod tests {
         assert_eq!(v.invalid_reason.as_deref(), Some("p95_indeterminate"));
     }
 
-    /// T8: precedence — a host restart explains everything else, so it is
+    /// precedence — a host restart explains everything else, so it is
     /// reported instead of the join shortfall it caused.
     #[test]
     fn t08_counter_reset_takes_precedence_over_join_failed() {
@@ -4444,7 +4443,7 @@ mod tests {
         assert_eq!(v.invalid_reason.as_deref(), Some("counter_reset"));
     }
 
-    /// T8 + AM6/AM7: within-level growth is computed from the RAW gauge series
+    /// within-level growth is computed from the RAW gauge series
     /// with the warm-up reading discarded. The first family's raw series here is
     /// `[9, 1, 5, 20]`: raw it is not monotonic, but the usable `[1, 5, 20]` is.
     #[test]
@@ -4464,7 +4463,7 @@ mod tests {
         );
     }
 
-    /// T8 + AM7: the plateau statistic is the median of the USABLE window, per
+    /// the plateau statistic is the median of the USABLE window, per
     /// family, in input order. `[9, 1, 5, 20]` → median of `[1, 5, 20]` = 5.
     #[test]
     fn t08_plateau_is_the_median_of_the_usable_window() {
@@ -4488,7 +4487,7 @@ mod tests {
         ));
     }
 
-    /// T8: the AM10 resolution indicator rides along on every valid level.
+    /// the AM10 resolution indicator rides along on every valid level.
     #[test]
     fn t08_verdict_carries_the_p95_bucket_width() {
         let v = evaluate_level(&base_sample(10)).expect("consistent bounds");
@@ -4498,7 +4497,7 @@ mod tests {
         ));
     }
 
-    /// T8 TEETH: an `AboveTop` whose top finite bound is at or OVER the budget
+    /// TEETH: an `AboveTop` whose top finite bound is at or OVER the budget
     /// is a real, decidable measurement — the level stays VALID so it can be
     /// reported as the breaking point.
     ///
@@ -4567,7 +4566,7 @@ mod tests {
         assert_eq!(v.invalid_reason.as_deref(), Some("no_load_reached"));
     }
 
-    /// T8 + AM6 TEETH: growth that exists only because the discarded warm-up
+    /// TEETH: growth that exists only because the discarded warm-up
     /// reading was counted must NOT be reported. Raw `[1, 2, 3]` looks like
     /// divergence; the usable window is `[2, 3]` — too few readings to judge.
     ///
@@ -4612,7 +4611,7 @@ mod tests {
         );
     }
 
-    /// T8 + AM14: an `le` set that changes mid-level is a TOOL error, surfaced
+    /// an `le` set that changes mid-level is a TOOL error, surfaced
     /// as `Err` rather than folded into a level verdict.
     #[test]
     fn t08_changed_bounds_mid_level_is_an_error_not_a_verdict() {
@@ -4698,7 +4697,7 @@ mod tests {
         }
     }
 
-    /// T9: the top-level key ORDER is fixed. A stable order is what makes two
+    /// the top-level key ORDER is fixed. A stable order is what makes two
     /// runs diffable and the G11 A/B comparable.
     #[test]
     fn t09_top_level_key_order_is_exact() {
@@ -4706,7 +4705,7 @@ mod tests {
         assert_eq!(object_keys(&report, 0), TOP_KEYS.to_vec());
     }
 
-    /// T9: the per-level key order is fixed too.
+    /// the per-level key order is fixed too.
     #[test]
     fn t09_level_key_order_is_exact() {
         let report = render_report(&run_fixture("T-9", vec![base_sample(5)]));
@@ -4716,7 +4715,7 @@ mod tests {
         assert_eq!(object_keys(&report, at), LEVEL_KEYS.to_vec());
     }
 
-    /// T9: the fixed header values, including the `"transport":"ws"` literal
+    /// the fixed header values, including the `"transport":"ws"` literal
     /// (AM25 — there is no other transport to report).
     #[test]
     fn t09_fixed_header_values() {
@@ -4754,7 +4753,7 @@ mod tests {
         );
     }
 
-    /// T9: run_id escaping — quote, backslash, and control characters. The
+    /// run_id escaping — quote, backslash, and control characters. The
     /// run_id is operator-supplied free text and is the ONLY unconstrained
     /// string in the report.
     #[test]
@@ -4776,7 +4775,7 @@ mod tests {
         );
     }
 
-    /// T9: `json_escape` unit vectors.
+    /// `json_escape` unit vectors.
     #[test]
     fn t09_json_escape_vectors() {
         assert_eq!(json_escape("plain"), "plain");
@@ -4790,7 +4789,7 @@ mod tests {
         assert_eq!(json_escape("Poké"), "Poké", "non-ASCII passes through");
     }
 
-    /// T9: non-finite floats render as `null`, never as the invalid JSON token
+    /// non-finite floats render as `null`, never as the invalid JSON token
     /// `inf` or `NaN` (a `+Inf` bucket width is a real possibility).
     #[test]
     fn t09_json_number_renders_non_finite_as_null() {
@@ -4802,7 +4801,7 @@ mod tests {
         assert_eq!(json_number(f64::NAN), "null");
     }
 
-    /// T9: with no crossing, `breaking_point` is literal `null` and
+    /// with no crossing, `breaking_point` is literal `null` and
     /// `not_reached` is `true` — the legitimate dev-box outcome, reported as
     /// such rather than massaged into a number.
     #[test]
@@ -4812,7 +4811,7 @@ mod tests {
         assert!(report.contains("\"not_reached\":true"));
     }
 
-    /// T9: with a crossing, the object form carries the concurrency and reason,
+    /// with a crossing, the object form carries the concurrency and reason,
     /// and `not_reached` flips. The renderer derives this from the SAME state
     /// machine the verdicts came from, so the two can never disagree.
     #[test]
@@ -4835,7 +4834,7 @@ mod tests {
         assert!(report.contains("\"not_reached\":false"));
     }
 
-    /// T9: level payload values — the raw queue series, the counts, and the
+    /// level payload values — the raw queue series, the counts, and the
     /// validity fields all reach the report.
     #[test]
     fn t09_level_payload_carries_the_raw_series_and_counters() {
@@ -4856,7 +4855,7 @@ mod tests {
         assert!(report.contains("\"queue_growth\":[]"));
     }
 
-    /// T9: an invalid level renders its reason as a STRING, not `null`.
+    /// an invalid level renders its reason as a STRING, not `null`.
     #[test]
     fn t09_invalid_reason_renders_as_a_string() {
         let broken = LevelSample {
@@ -4868,14 +4867,14 @@ mod tests {
         assert!(report.contains("\"invalid_reason\":\"join_failed\""));
     }
 
-    /// T9: run-level notes are emitted (the AM4 co-location caveat is one).
+    /// run-level notes are emitted (the AM4 co-location caveat is one).
     #[test]
     fn t09_run_notes_are_emitted() {
         let report = render_report(&run_fixture("T-9", vec![base_sample(5)]));
         assert!(report.contains(&format!("\"notes\":[\"{CO_LOCATION_NOTE}\"]")));
     }
 
-    /// T9: every level appears, in ramp order.
+    /// every level appears, in ramp order.
     #[test]
     fn t09_every_level_is_reported_in_order() {
         let report = render_report(&run_fixture(
@@ -4892,7 +4891,7 @@ mod tests {
     // T10 — the budget constant IS game_core::STEP_MS.
     // =======================================================================
 
-    /// T10: the driver's budget is the imported `STEP_MS` (ADR-0003 SSOT), not
+    /// the driver's budget is the imported `STEP_MS` (single source of truth), not
     /// a re-spelled literal that could silently drift from the tick cadence.
     #[test]
     fn t10_budget_is_game_core_step_ms() {
@@ -4904,7 +4903,7 @@ mod tests {
         assert!(close(BUDGET_S, game_core::STEP_MS as f64 / 1000.0));
     }
 
-    /// T10: the budget is what the comparator actually uses — a constant nobody
+    /// the budget is what the comparator actually uses — a constant nobody
     /// reads would be a decoration, not an SSOT.
     #[test]
     fn t10_the_comparator_uses_the_step_ms_budget() {
@@ -4918,7 +4917,7 @@ mod tests {
     // T11 — ramp planning (seeded deterministic property loop, 256 cases).
     // =======================================================================
 
-    /// T11: the documented default ramp and the G11 single-level shape.
+    /// the documented default ramp and the G11 single-level shape.
     #[test]
     fn t11_ramp_levels_known_vectors() {
         assert_eq!(
@@ -4939,7 +4938,7 @@ mod tests {
         assert_eq!(ramp_levels(1, 1, 3), vec![1, 2, 3]);
     }
 
-    /// T11: 256 deterministic seeded cases. Every invariant is asserted in a
+    /// 256 deterministic seeded cases. Every invariant is asserted in a
     /// block body so a failure names the case.
     #[test]
     fn t11_ramp_levels_seeded_property_loop() {
@@ -4982,7 +4981,7 @@ mod tests {
         }
     }
 
-    /// T11: the planner is referentially deterministic.
+    /// the planner is referentially deterministic.
     #[test]
     fn t11_ramp_levels_is_deterministic() {
         assert_eq!(ramp_levels(3, 7, 40), ramp_levels(3, 7, 40));
@@ -4992,7 +4991,7 @@ mod tests {
     // T12 — the bot model: names, seqs, and the East/West walk.
     // =======================================================================
 
-    /// T12 + AM15: generated names stay far inside
+    /// generated names stay far inside
     /// `server-module/src/guards.rs::validate_name` — alphanumeric + space only,
     /// NFC-stable ASCII, trimmed, and ≤ 12 chars over the whole client range.
     /// (MAX_NAME_LEN there is 24; the charset allowlist is letters/numbers/space.)
@@ -5013,14 +5012,14 @@ mod tests {
         }
     }
 
-    /// T12: names are distinct per client (each bot is its own player).
+    /// names are distinct per client (each bot is its own player).
     #[test]
     fn t12_bot_names_are_distinct() {
         let set: std::collections::BTreeSet<String> = (0..1000u32).map(bot_name).collect();
         assert_eq!(set.len(), 1000, "bot names collide across clients");
     }
 
-    /// T12: the exact name shape, pinned so the T17 envelope fixture and the
+    /// the exact name shape, pinned so the T17 envelope fixture and the
     /// live-verified wire string cannot drift apart.
     #[test]
     fn t12_bot_name_shape_is_pinned() {
@@ -5029,7 +5028,7 @@ mod tests {
         assert_eq!(bot_name(499), "LoadBot 499");
     }
 
-    /// T12: `seq` starts at 1 and is strictly increasing — the server rejects
+    /// `seq` starts at 1 and is strictly increasing — the server rejects
     /// `seq <= last_input_seq`, so a 0-based or repeating seq would turn every
     /// intent into a "stale seq" rejection and fake a saturated server.
     #[test]
@@ -5046,7 +5045,7 @@ mod tests {
         }
     }
 
-    /// T12: the walk alphabet is East/West ONLY. A North or South intent would
+    /// the walk alphabet is East/West ONLY. A North or South intent would
     /// step the bot off row 1 and onto tall grass, where a wild encounter
     /// battle-locks it forever and silently kills the offered load.
     #[test]
@@ -5065,7 +5064,7 @@ mod tests {
         }
     }
 
-    /// T12: the walk OSCILLATES — within any window of 32 consecutive intents a
+    /// the walk OSCILLATES — within any window of 32 consecutive intents a
     /// client emits both directions. Kills a one-way walker that pins itself
     /// against the wall and stops generating position updates (which would
     /// silently zero the subscription fan-out this test exists to create).
@@ -5091,7 +5090,7 @@ mod tests {
         }
     }
 
-    /// T12: the walk is a pure function of (client, seq, seed) — a run replays
+    /// the walk is a pure function of (client, seq, seed) — a run replays
     /// identically, and two clients are not forced into lockstep.
     #[test]
     fn t12_walk_is_deterministic_per_client_and_seed() {
@@ -5127,7 +5126,7 @@ mod tests {
         }
     }
 
-    /// T13: ≥200 generated intents per client, fed through the REAL rule on the
+    /// ≥200 generated intents per client, fed through the REAL rule on the
     /// REAL map, never land on tall grass and never leave row 1.
     ///
     /// Kills: any walk that emits North/South (row 2 of zone 0 is `#.~~....~#`,
@@ -5170,7 +5169,7 @@ mod tests {
         }
     }
 
-    /// T13 PROOF-OF-TEETH: the oracle CAN fail. Two steps off the generated
+    /// PROOF-OF-TEETH: the oracle CAN fail. Two steps off the generated
     /// alphabet — South then East — reach a grass tile on the real map, so the
     /// assertion above is not vacuous.
     #[test]
@@ -5192,7 +5191,7 @@ mod tests {
         );
     }
 
-    /// T13: row 1 of the real map is entirely grass-free and walkable from x=1
+    /// row 1 of the real map is entirely grass-free and walkable from x=1
     /// to x=8, with walls at both ends. This is the single map fact the bot
     /// model depends on; if content drifts, this fails before the walk test.
     #[test]
@@ -5244,7 +5243,7 @@ mod tests {
         f
     }
 
-    /// T14: RFC 4648 base64 vectors.
+    /// RFC 4648 base64 vectors.
     #[test]
     fn t14_b64_encode_known_vectors() {
         assert_eq!(b64_encode(b""), "");
@@ -5258,7 +5257,7 @@ mod tests {
         assert_eq!(b64_encode(&[0xFF, 0xFF, 0xFF]), "////");
     }
 
-    /// T14: the `Sec-WebSocket-Key` is 16 seeded bytes ⇒ 24 base64 chars ending
+    /// the `Sec-WebSocket-Key` is 16 seeded bytes ⇒ 24 base64 chars ending
     /// `==`, deterministic per seed, and not a constant across seeds.
     #[test]
     fn t14_ws_key_shape_and_seeding() {
@@ -5279,7 +5278,7 @@ mod tests {
         );
     }
 
-    /// T14: masks are seeded and vary per frame — a constant mask (or an
+    /// masks are seeded and vary per frame — a constant mask (or an
     /// all-zero one) would leave the payload in plaintext on the wire.
     #[test]
     fn t14_masks_are_seeded_and_vary_per_frame() {
@@ -5293,7 +5292,7 @@ mod tests {
         );
     }
 
-    /// T14: masking is an involution — the same XOR restores the bytes. This is
+    /// masking is an involution — the same XOR restores the bytes. This is
     /// exactly how the reader would unmask, and it pins the 4-byte cycle.
     #[test]
     fn t14_masking_twice_is_the_identity() {
@@ -5305,7 +5304,7 @@ mod tests {
         assert_eq!(buf, original, "unmasking must restore the payload exactly");
     }
 
-    /// T14: the 7-bit length form with an EMPTY payload — the smallest legal
+    /// the 7-bit length form with an EMPTY payload — the smallest legal
     /// client frame is exactly 6 bytes.
     #[test]
     fn t14_text_frame_zero_length_uses_the_7bit_form() {
@@ -5313,7 +5312,7 @@ mod tests {
         assert_eq!(f, vec![0x81, 0x80, 0x01, 0x02, 0x03, 0x04]);
     }
 
-    /// T14: 125 bytes is the LAST 7-bit length. Kills an off-by-one that
+    /// 125 bytes is the LAST 7-bit length. Kills an off-by-one that
     /// switches to the 16-bit form one byte early.
     #[test]
     fn t14_text_frame_125_bytes_is_the_last_7bit_length() {
@@ -5325,7 +5324,7 @@ mod tests {
         assert_eq!(unmask_payload(&f, 6, M), payload.as_bytes());
     }
 
-    /// T14: 126 bytes is the FIRST 16-bit length (`0x7E` + two big-endian bytes).
+    /// 126 bytes is the FIRST 16-bit length (`0x7E` + two big-endian bytes).
     #[test]
     fn t14_text_frame_126_bytes_switches_to_the_16bit_form() {
         let payload = "a".repeat(126);
@@ -5335,7 +5334,7 @@ mod tests {
         assert_eq!(unmask_payload(&f, 8, M), payload.as_bytes());
     }
 
-    /// T14: 65535 bytes is the LAST 16-bit length.
+    /// 65535 bytes is the LAST 16-bit length.
     #[test]
     fn t14_text_frame_65535_bytes_is_the_last_16bit_length() {
         let payload = "a".repeat(65535);
@@ -5344,7 +5343,7 @@ mod tests {
         assert_eq!(f.len(), 2 + 2 + 4 + 65535);
     }
 
-    /// T14: 65536 bytes is the FIRST 64-bit length (`0x7F` + eight big-endian
+    /// 65536 bytes is the FIRST 64-bit length (`0x7F` + eight big-endian
     /// bytes). Kills a 16-bit truncation that would silently corrupt the stream.
     #[test]
     fn t14_text_frame_65536_bytes_switches_to_the_64bit_form() {
@@ -5369,7 +5368,7 @@ mod tests {
         assert_eq!(unmask_payload(&f, 14, M), payload.as_bytes());
     }
 
-    /// T14: every client→server frame is MASKED and the payload is not sent in
+    /// every client→server frame is MASKED and the payload is not sent in
     /// the clear. A server closes the connection on an unmasked client frame.
     #[test]
     fn t14_client_frames_are_masked_not_plaintext() {
@@ -5385,7 +5384,7 @@ mod tests {
         assert_eq!(unmask_payload(&f, 6, M), payload.as_bytes());
     }
 
-    /// T14: pong echoes the ping payload; close is a bare masked control frame.
+    /// pong echoes the ping payload; close is a bare masked control frame.
     #[test]
     fn t14_pong_and_close_frames() {
         let pong = encode_pong(&[0xDE, 0xAD], M);
@@ -5396,7 +5395,7 @@ mod tests {
         assert_eq!(close, vec![0x88, 0x80, 0x01, 0x02, 0x03, 0x04]);
     }
 
-    /// T14: a complete 7-bit header parses, reporting its own length so the
+    /// a complete 7-bit header parses, reporting its own length so the
     /// caller knows where the payload starts.
     #[test]
     fn t14_parse_header_7bit() {
@@ -5415,7 +5414,7 @@ mod tests {
         );
     }
 
-    /// T14: the 16-bit and 64-bit forms, and a non-FIN continuation.
+    /// the 16-bit and 64-bit forms, and a non-FIN continuation.
     #[test]
     fn t14_parse_header_extended_lengths() {
         let h = parse_frame_header(&[0x81, 0x7E, 0x01, 0x00])
@@ -5436,7 +5435,7 @@ mod tests {
         assert_eq!(h.opcode, 1);
     }
 
-    /// T14: truncated input is "need more bytes", NEVER an error and never a
+    /// truncated input is "need more bytes", NEVER an error and never a
     /// guess — a mis-parse here desynchronises the whole stream.
     #[test]
     fn t14_parse_header_needs_more_bytes() {
@@ -5459,7 +5458,7 @@ mod tests {
         );
     }
 
-    /// T14: a masked header reports the mask bytes in its length.
+    /// a masked header reports the mask bytes in its length.
     #[test]
     fn t14_parse_header_masked_includes_the_mask_bytes() {
         let h = parse_frame_header(&[0x81, 0x85, 0x01, 0x02, 0x03, 0x04])
@@ -5470,14 +5469,14 @@ mod tests {
         assert_eq!(h.header_len, 6, "2 header + 4 mask bytes");
     }
 
-    /// T14: a 64-bit length with the high bit set is illegal (RFC 6455 §5.2).
+    /// a 64-bit length with the high bit set is illegal (RFC 6455 §5.2).
     /// Fail loud rather than allocate a nonsense skip counter.
     #[test]
     fn t14_parse_header_rejects_illegal_64bit_length() {
         assert!(parse_frame_header(&[0x82, 0x7F, 0x80, 0, 0, 0, 0, 0, 0, 0]).is_err());
     }
 
-    /// T14 + AM2: a header SPLIT across two reads resumes on the next feed —
+    /// a header SPLIT across two reads resumes on the next feed —
     /// the buffer survives, nothing is dropped.
     #[test]
     fn t14_drain_resumes_a_header_split_across_feeds() {
@@ -5497,7 +5496,7 @@ mod tests {
         );
     }
 
-    /// T14 + AM2: the skip counter RESUMES across feeds — this is the whole
+    /// the skip counter RESUMES across feeds — this is the whole
     /// point of the streaming reader (no reassembly, no unbounded buffer).
     #[test]
     fn t14_drain_skip_counter_resumes_across_three_feeds() {
@@ -5521,7 +5520,7 @@ mod tests {
         );
     }
 
-    /// T14 + AM2: a control frame interleaved BETWEEN data fragments is
+    /// a control frame interleaved BETWEEN data fragments is
     /// surfaced for a pong while the data stream keeps being skipped. Kills a
     /// reader that treats every frame as data and silently stops answering
     /// pings (the server then closes the connection mid-level).
@@ -5545,7 +5544,7 @@ mod tests {
         assert!(st.buf.is_empty());
     }
 
-    /// T14 + AM2: a control frame split across feeds is NOT surfaced until it is
+    /// a control frame split across feeds is NOT surfaced until it is
     /// complete — answering a truncated ping would send garbage.
     #[test]
     fn t14_drain_waits_for_a_complete_control_frame() {
@@ -5560,7 +5559,7 @@ mod tests {
         assert_eq!(b.control, vec![ControlFrame::Ping(b"ABCD".to_vec())]);
     }
 
-    /// T14 + AM2: a close frame is surfaced and flagged.
+    /// a close frame is surfaced and flagged.
     #[test]
     fn t14_drain_surfaces_close() {
         let mut st = DrainState::default();
@@ -5569,7 +5568,7 @@ mod tests {
         assert!(out.closed, "the caller must stop using this socket");
     }
 
-    /// T14 + AM2: a zero-length data frame counts immediately (no payload to
+    /// a zero-length data frame counts immediately (no payload to
     /// wait for) — kills a machine that stalls on `skip_remaining == 0`.
     #[test]
     fn t14_drain_counts_a_zero_length_data_frame() {
@@ -5579,7 +5578,7 @@ mod tests {
         assert_eq!(st.skip_remaining, 0);
     }
 
-    /// T14 + AM2: many frames in ONE feed are all drained (the per-iteration
+    /// many frames in ONE feed are all drained (the per-iteration
     /// drain runs until the socket would block).
     #[test]
     fn t14_drain_handles_many_frames_in_one_feed() {
@@ -5593,7 +5592,7 @@ mod tests {
         assert!(st.buf.is_empty());
     }
 
-    /// T14 + AM2: protocol violations fail loud rather than desynchronise.
+    /// protocol violations fail loud rather than desynchronise.
     #[test]
     fn t14_drain_fails_loud_on_protocol_violations() {
         let mut st = DrainState::default();
@@ -5623,7 +5622,7 @@ mod tests {
         )
     }
 
-    /// T15: the request line names the live subscribe path.
+    /// the request line names the live subscribe path.
     #[test]
     fn t15_handshake_request_line() {
         let req = handshake_fixture();
@@ -5634,7 +5633,7 @@ mod tests {
         assert_eq!(ws_path("mr-scratch"), "/v1/database/mr-scratch/subscribe");
     }
 
-    /// T15: every header RFC 6455 and this host require.
+    /// every header RFC 6455 and this host require.
     #[test]
     fn t15_handshake_carries_every_required_header() {
         let req = handshake_fixture();
@@ -5680,7 +5679,7 @@ mod tests {
         assert!(!request_line.contains("token"), "no ?token= auth");
     }
 
-    /// T15: only a real `101` counts. `HTTP/1.1 1011` must NOT — that kills a
+    /// only a real `101` counts. `HTTP/1.1 1011` must NOT — that kills a
     /// `starts_with("HTTP/1.1 101")` check, which would accept a bogus status
     /// and then read garbage as frames.
     #[test]
@@ -5699,7 +5698,7 @@ mod tests {
         assert!(!handshake_is_101(""));
     }
 
-    /// T15: HTTP request builders — `Content-Length` is the BYTE length (kills
+    /// HTTP request builders — `Content-Length` is the BYTE length (kills
     /// a `chars().count()`), and no token means no Authorization header at all.
     #[test]
     fn t15_http_request_builders() {
@@ -5726,7 +5725,7 @@ mod tests {
         assert!(get.ends_with("\r\n\r\n"));
     }
 
-    /// T15: status extraction, including the live 530 reducer-error code.
+    /// status extraction, including the live 530 reducer-error code.
     #[test]
     fn t15_http_status_extraction() {
         assert_eq!(http_status("HTTP/1.1 200 OK\r\n\r\n"), Ok(200));
@@ -5753,7 +5752,7 @@ mod tests {
     // block the PR where a local `just ci` cannot see it.
     // =======================================================================
 
-    /// T16: the live `POST /v1/identity` response shape.
+    /// the live `POST /v1/identity` response shape.
     #[test]
     fn t16_extract_identity_and_token_happy_path() {
         let body = r#"{"identity":"c200deadbeef","token":"TOKEN-PLACEHOLDER-abc123"}"#;
@@ -5767,7 +5766,7 @@ mod tests {
         );
     }
 
-    /// T16: the NESTED `__identity__` form from `GET /v1/database/<name>` —
+    /// the NESTED `__identity__` form from `GET /v1/database/<name>` —
     /// extraction must reach into a nested object, not only the top level.
     #[test]
     fn t16_extract_nested_identity_field() {
@@ -5783,7 +5782,7 @@ mod tests {
         );
     }
 
-    /// T16 DECOY: the word `token` appears inside ANOTHER field's value. A
+    /// DECOY: the word `token` appears inside ANOTHER field's value. A
     /// naive substring search finds the decoy first and returns the wrong value
     /// (or garbage).
     #[test]
@@ -5795,7 +5794,7 @@ mod tests {
         );
     }
 
-    /// T16 DECOY, sharper: a KEY-SHAPED substring (quoted, colon-suffixed) sits
+    /// DECOY, sharper: a KEY-SHAPED substring (quoted, colon-suffixed) sits
     /// inside another field's value. Only a string-aware scanner survives this;
     /// a `find("\"token\":")` implementation extracts ` inside` or errors.
     #[test]
@@ -5808,7 +5807,7 @@ mod tests {
         );
     }
 
-    /// T16: the returned value is UNESCAPED.
+    /// the returned value is UNESCAPED.
     #[test]
     fn t16_value_escapes_are_decoded() {
         assert_eq!(
@@ -5826,7 +5825,7 @@ mod tests {
         );
     }
 
-    /// T16: failures are LOUD — a missing key, a non-string value, and a
+    /// failures are LOUD — a missing key, a non-string value, and a
     /// truncated document must never yield an empty string.
     #[test]
     fn t16_extraction_failures_are_loud() {
@@ -5847,7 +5846,7 @@ mod tests {
     // T17 — the client-message envelopes, byte-for-byte as live-verified.
     // =======================================================================
 
-    /// T17: the `Subscribe` envelope, exactly as accepted by the live host.
+    /// the `Subscribe` envelope, exactly as accepted by the live host.
     #[test]
     fn t17_subscribe_envelope_is_byte_exact() {
         assert_eq!(
@@ -5856,7 +5855,7 @@ mod tests {
         );
     }
 
-    /// T17: the `join_game` call, including the crucial detail that `args` is a
+    /// the `join_game` call, including the crucial detail that `args` is a
     /// JSON **string** containing the args array — not a raw array — and that
     /// `flags` is the number 0.
     #[test]
@@ -5868,7 +5867,7 @@ mod tests {
         );
     }
 
-    /// T17: the `enqueue_move` call with a `MoveInput` and a seq.
+    /// the `enqueue_move` call with a `MoveInput` and a seq.
     #[test]
     fn t17_enqueue_move_call_reducer_envelope_is_byte_exact() {
         let args = args_enqueue_move(MoveInput::Step(Direction::East), 7);
@@ -5879,7 +5878,7 @@ mod tests {
         );
     }
 
-    /// T17: the SATS-JSON encoding of every `MoveInput` — externally tagged,
+    /// the SATS-JSON encoding of every `MoveInput` — externally tagged,
     /// with `[]` for the unit payload. Decode-verified against the live module
     /// (the bot moved (1,1)→(2,1) under `movement_tick`).
     #[test]
@@ -5903,7 +5902,7 @@ mod tests {
         assert_eq!(sats_move_input(MoveInput::Jump), r#"{"Jump":[]}"#);
     }
 
-    /// T17: the direction names are exact and distinct — a swapped pair would
+    /// the direction names are exact and distinct — a swapped pair would
     /// send bots north into grass while every local test still passed.
     #[test]
     fn t17_direction_names_are_exact() {
@@ -5913,7 +5912,7 @@ mod tests {
         assert_eq!(sats_direction(Direction::West), "West");
     }
 
-    /// T17: a name needing escapes still produces a valid nested-string
+    /// a name needing escapes still produces a valid nested-string
     /// envelope (the driver's own names never do, but the builder must not be
     /// the place that breaks).
     #[test]
@@ -5925,7 +5924,7 @@ mod tests {
         );
     }
 
-    /// T17: the envelope a real client sends for its first two messages, in
+    /// the envelope a real client sends for its first two messages, in
     /// order, using the driver's own bot name — proving the pieces compose.
     #[test]
     fn t17_per_connection_message_sequence() {
@@ -5942,7 +5941,7 @@ mod tests {
     // T18 — determinism: identical inputs render byte-identical reports.
     // =======================================================================
 
-    /// T18: rendering the SAME run twice is byte-identical. Any set/map
+    /// rendering the SAME run twice is byte-identical. Any set/map
     /// iteration order leaking into the output would break this.
     #[test]
     fn t18_rendering_the_same_run_twice_is_byte_identical() {
@@ -5953,7 +5952,7 @@ mod tests {
         assert_eq!(render_report(&run), render_report(&run));
     }
 
-    /// T18: two INDEPENDENTLY built but equal runs render identically — this is
+    /// two INDEPENDENTLY built but equal runs render identically — this is
     /// what makes a G11 pairing-on / pairing-off A/B comparable at all.
     #[test]
     fn t18_independently_built_equal_runs_render_identically() {
@@ -5963,7 +5962,7 @@ mod tests {
         assert_eq!(render_report(&a), render_report(&b));
     }
 
-    /// T18: the verdict machine is referentially transparent too.
+    /// the verdict machine is referentially transparent too.
     #[test]
     fn t18_level_evaluation_is_deterministic() {
         let s = base_sample(25);
@@ -5973,7 +5972,7 @@ mod tests {
         );
     }
 
-    /// T18: a report with a breaking point is stable as well (the state machine
+    /// a report with a breaking point is stable as well (the state machine
     /// runs inside the renderer).
     #[test]
     fn t18_breaching_report_is_stable() {
@@ -6049,2192 +6048,5 @@ mod tests {
         assert_eq!(P95_BREACH_REASON, "movement_tick_p95_over_step_ms");
         assert_eq!(QUEUE_BREACH_PREFIX, "queue_growth:");
         assert_eq!(REJECTION_STORM_NOTE, "rejection_storm");
-    }
-}
-
-// ===========================================================================
-// rb-71 -- docs/m8.5c-plan.md <-> AGENTS.md citation correspondence oracle.
-// ===========================================================================
-//
-// WHY THIS LIVES HERE (not a new eval, not a new bin, not the frozen `mod
-// tests` above): ADR-0224 bars a new `evals/*.eval.mjs` and bars growing an
-// existing one; a new `.mjs` test file is not auto-discovered by `just test`
-// (it enumerates exactly two files) and wiring one in needs `justfile`,
-// which sits outside this slice's `touches:` (a hidden-dependency STOP); a
-// new file under `sim-harness/src/bin/` becomes another cargo bin target;
-// and the `mod tests` module above this one is tester-frozen by its own
-// banner ("The implementer NEVER edits this module") -- so a SEPARATE
-// module, appended at EOF, changing nothing above it (`docs/adr/0232-*.md:51`
-// cites this file's `:76-89`; an EOF append shifts nothing).
-//
-// Disclosed residual (harness ledger R-rb71-TESTHOME): a docs-correspondence
-// test living in a load-driver binary is not this test's natural home; a
-// future slice that brings `justfile` into `touches:` should relocate it to
-// a `scripts/*.test.mjs` wired into `just test`.
-//
-// THE DEFECT THIS PROVES (measured, not the promoted-residual text -- see
-// `memory/projects/monster-realm-rb-71-plan.md` F1-F9 in the harness repo):
-// `docs/m8.5c-plan.md:85` cites `AGENTS.md:8` for AGENTS.md's `- **Done =**`
-// bullet. The citation was correct when written (commit 9c8521a); commit
-// 3c94216 (ADR-0197) inserted a bullet at AGENTS.md line 7, and the `- **Done
-// =**` bullet has sat at **line 9** ever since. `AGENTS.md:7` -- the text the
-// promoted residual claims is correct -- is WRONG: it is the ADR-0197
-// bullet, not `Done =`. Fixing the number is not enough on its own: Decision
-// 1 of the rb-71 plan requires the citation to carry the `**Done =**`
-// LANDMARK alongside the number, and a shipped tooth to RE-DERIVE the number
-// from that landmark at test time, so the citation can never again drift
-// silently -- it REDs instead.
-//
-// HARD PINS (a mutation-proof gate depends on these literally):
-//   - `rb71_violations`'s local accumulator is named `found`, declared
-//     `let mut found: Vec<String> = Vec::new();`, immediately followed by a
-//     single-line sentinel comment (its exact spelling lives ONLY at that
-//     one declaration site below -- deliberately not quoted a second time
-//     here, since a hand-typed second copy of a pinned marker is exactly
-//     the drift class this slice exists to close, rb-68 lesson) and BEFORE
-//     any push -- so a gate that splices `return found;` at that sentinel
-//     still type-checks (a compile error would mask a gutted oracle instead
-//     of failing its control fixtures).
-//   - The resolved AGENTS.md line number is NEVER hand-typed a second time
-//     anywhere below. A second hand-typed copy of `9` would drift in
-//     lockstep with the real bullet and prove nothing (rb-68 lesson).
-#[cfg(test)]
-mod rb71_doc_citation_tests {
-    /// One accepted `AGENTS.md:<digits>` citation found in a document.
-    /// `byte_pos` is carried purely for diagnostics (surfaced in `[cite/
-    /// count]` failure messages so a RED is self-locating); `digits` is the
-    /// raw digit-run text after the colon, and may be EMPTY if the token
-    /// isn't followed by a digit at all (a distinct bypass shape from a
-    /// wrong number -- see the `no-digit-citation` control fixture).
-    struct Rb71Citation {
-        byte_pos: usize,
-        digits: String,
-    }
-
-    /// Byte ranges of every excluded "hiding" region in `doc`: an HTML
-    /// comment (`<!-- ... -->`, allowed to span multiple lines; an
-    /// unterminated comment hides to EOF rather than being trusted as
-    /// visible) or a fenced code block (a line whose trimmed content starts
-    /// with three backticks, up to the next such line or EOF). A citation
-    /// whose start position falls inside any of these ranges is excluded
-    /// from the census below -- both render invisibly (or as unrelated
-    /// example code) to a human reader, yet are plain bytes to a byte-level
-    /// scanner (rb-71 red-team C2/C3).
-    ///
-    /// Honest limit, disclosed: a plain single-backtick INLINE code span
-    /// that tightly wraps nothing but the citation (`` `AGENTS.md:9` ``) is
-    /// NOT treated as hidden -- that is the established citation format
-    /// used throughout this corpus (and by every fixture below), and
-    /// excluding it would make the oracle uncloseable even by a correct
-    /// fix.
-    pub(super) fn rb71_hidden_ranges(doc: &str) -> Vec<(usize, usize)> {
-        let mut ranges = Vec::new();
-
-        let mut search_start = 0usize;
-        while let Some(rel) = doc[search_start..].find("<!--") {
-            let start = search_start + rel;
-            let after = start + "<!--".len();
-            match doc[after..].find("-->") {
-                Some(rel_end) => {
-                    let end = after + rel_end + "-->".len();
-                    ranges.push((start, end));
-                    search_start = end;
-                }
-                None => {
-                    ranges.push((start, doc.len()));
-                    break;
-                }
-            }
-        }
-
-        let mut in_fence = false;
-        let mut fence_start = 0usize;
-        let mut byte_pos = 0usize;
-        for line in doc.split_inclusive('\n') {
-            if line.trim_start().starts_with("```") {
-                if in_fence {
-                    ranges.push((fence_start, byte_pos + line.len()));
-                    in_fence = false;
-                } else {
-                    in_fence = true;
-                    fence_start = byte_pos;
-                }
-            }
-            byte_pos += line.len();
-        }
-        if in_fence {
-            ranges.push((fence_start, doc.len()));
-        }
-
-        ranges
-    }
-
-    pub(super) fn rb71_in_hidden_range(pos: usize, ranges: &[(usize, usize)]) -> bool {
-        ranges.iter().any(|&(s, e)| pos >= s && pos < e)
-    }
-
-    /// 1-based line number containing byte offset `pos` in `doc`
-    /// (diagnostics only).
-    fn rb71_line_number_at(doc: &str, pos: usize) -> usize {
-        doc[..pos.min(doc.len())].matches('\n').count() + 1
-    }
-
-    /// Census every `AGENTS.md:` occurrence in `doc` whose preceding byte
-    /// is outside `[A-Za-z0-9/._~-]` (so the real harness path
-    /// `../../AGENTS.md:9` is excluded by its preceding `.` -- rb-71
-    /// plan-review D2/D5), which is not markdown LINK TEXT of the shape
-    /// `[AGENTS.md:9](...)` (a link's visible label pointing somewhere else
-    /// is not a prose citation), and which does not sit inside an HTML
-    /// comment or fenced code block per `rb71_hidden_ranges` (rb-71
-    /// red-team C2/C3).
-    ///
-    /// Every byte-level comparison here is safe on non-ASCII input without
-    /// decoding chars: a UTF-8 continuation byte (0x80-0xBF) or a
-    /// multi-byte lead byte can never equal an ASCII allow/deny-set byte,
-    /// so the raw-byte read gives the same answer a full char decode would.
-    fn rb71_agents_citations(doc: &str) -> Vec<Rb71Citation> {
-        const TOKEN: &str = "AGENTS.md:";
-        let bytes = doc.as_bytes();
-        let hidden = rb71_hidden_ranges(doc);
-        let mut hits = Vec::new();
-        let mut search_start = 0usize;
-        while let Some(rel) = doc[search_start..].find(TOKEN) {
-            let pos = search_start + rel;
-            let preceding_excluded = pos > 0
-                && matches!(
-                    bytes[pos - 1],
-                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'_' | b'~' | b'-'
-                );
-
-            let digit_start = pos + TOKEN.len();
-            let mut digit_end = digit_start;
-            while digit_end < bytes.len() && bytes[digit_end].is_ascii_digit() {
-                digit_end += 1;
-            }
-
-            let is_link_text = pos > 0
-                && bytes[pos - 1] == b'['
-                && digit_end + 1 < bytes.len()
-                && bytes[digit_end] == b']'
-                && bytes[digit_end + 1] == b'(';
-
-            let is_hidden = rb71_in_hidden_range(pos, &hidden);
-
-            if !preceding_excluded && !is_link_text && !is_hidden {
-                hits.push(Rb71Citation {
-                    byte_pos: pos,
-                    digits: doc[digit_start..digit_end].to_string(),
-                });
-            }
-
-            search_start = pos + TOKEN.len();
-        }
-        hits
-    }
-
-    /// The 1-based line numbers of every AGENTS.md line starting with the
-    /// literal `- **Done =**` bullet marker. Shared by leg A of
-    /// `rb71_violations` and by the live tests' own diagnostic messages, so
-    /// there is exactly one derivation of this number in the whole module.
-    fn rb71_anchor_lines(agents_md: &str) -> Vec<usize> {
-        agents_md
-            .lines()
-            .enumerate()
-            .filter(|(_, line)| line.starts_with("- **Done =**"))
-            .map(|(idx, _)| idx + 1)
-            .collect()
-    }
-
-    /// Every Doc-reconciliation bullet block in `doc`: for EACH line
-    /// containing `**Doc reconciliation`, the `(start_byte, end_byte,
-    /// text)` of the block running from that line's start up to (excluding)
-    /// the next line starting with `- **` or `## ` (or EOF). Deliberately
-    /// plural and byte-ranged rather than "the first match" -- a decoy
-    /// landmark planted elsewhere in the doc (rb-71 red-team C1) must be
-    /// COUNTED, not silently shadowed by `.position()` picking the first
-    /// hit, and callers need byte ranges to test citation LOCALITY, not
-    /// just block text.
-    fn rb71_doc_reconciliation_blocks(doc: &str) -> Vec<(usize, usize, String)> {
-        let lines: Vec<&str> = doc.split_inclusive('\n').collect();
-        let mut line_starts = Vec::with_capacity(lines.len());
-        let mut acc = 0usize;
-        for line in &lines {
-            line_starts.push(acc);
-            acc += line.len();
-        }
-
-        let mut out = Vec::new();
-        for (i, line) in lines.iter().enumerate() {
-            if !line.contains("**Doc reconciliation") {
-                continue;
-            }
-            let start_byte = line_starts[i];
-            let mut end_idx = lines.len();
-            for (j, l) in lines.iter().enumerate().skip(i + 1) {
-                if l.starts_with("- **") || l.starts_with("## ") {
-                    end_idx = j;
-                    break;
-                }
-            }
-            let end_byte = if end_idx < lines.len() {
-                line_starts[end_idx]
-            } else {
-                doc.len()
-            };
-            out.push((start_byte, end_byte, lines[i..end_idx].concat()));
-        }
-        out
-    }
-
-    /// Seam A: a NON-SHORT-CIRCUITING labelled collector. Every leg below
-    /// runs regardless of whether an earlier leg found a violation, and any
-    /// violation found is APPENDED to `found` -- never returned early --
-    /// so one RED lists every broken clause, and no leg is shadowed by an
-    /// earlier failure (the rb-67/rb-68 precedent).
-    fn rb71_violations(plan_md: &str, agents_md: &str) -> Vec<String> {
-        let mut found: Vec<String> = Vec::new();
-        // RB71-GUT-POINT
-
-        // Leg A -- the `- **Done =**` anchor must be unique.
-        let anchor_lines = rb71_anchor_lines(agents_md);
-        match anchor_lines.len() {
-            0 => found.push(format!(
-                "[anchor/missing] no line in AGENTS.md starts with the literal \
-                 `- **Done =**` bullet marker (scanned {} lines)",
-                agents_md.lines().count()
-            )),
-            1 => {}
-            n => found.push(format!(
-                "[anchor/not-unique] {n} lines in AGENTS.md start with `- **Done =**`, \
-                 expected exactly 1: 1-based lines {anchor_lines:?}"
-            )),
-        }
-
-        // Leg B -- exactly one accepted `AGENTS.md:<n>` citation in the plan.
-        let citations = rb71_agents_citations(plan_md);
-        if citations.len() != 1 {
-            let listed: Vec<String> = citations
-                .iter()
-                .map(|c| format!("AGENTS.md:{}@byte{}", c.digits, c.byte_pos))
-                .collect();
-            found.push(format!(
-                "[cite/count] expected exactly 1 `AGENTS.md:<n>` citation in the plan \
-                 doc (preceding char outside [A-Za-z0-9/._~-], not markdown link \
-                 text), found {}: {listed:?}",
-                citations.len()
-            ));
-        }
-
-        // Leg C -- the cited number must equal the resolved anchor line,
-        // by INTEGER equality against a value derived above, never a
-        // hand-typed literal.
-        if anchor_lines.len() == 1 && citations.len() == 1 {
-            let anchor_idx = anchor_lines[0];
-            let cited_digits = &citations[0].digits;
-            let cited = cited_digits.parse::<usize>().ok();
-            if cited != Some(anchor_idx) {
-                let cited_display = if cited_digits.is_empty() {
-                    "<no digits>".to_string()
-                } else {
-                    cited_digits.clone()
-                };
-                found.push(format!(
-                    "[cite/line-mismatch] plan cites AGENTS.md:{cited_display} but the \
-                     live `- **Done =**` bullet resolves to AGENTS.md:{anchor_idx} \
-                     (1-based, derived at test time)"
-                ));
-            }
-        }
-
-        // Leg D -- the `**Doc reconciliation` landmark line must be
-        // unique, the block it opens must name the `**Done =**` landmark,
-        // AND that SAME block must be the one containing the single
-        // accepted citation from leg B. A decoy landmark elsewhere in the
-        // doc (rb-71 red-team C1) trips the uniqueness arm below
-        // regardless of which copy happens to carry the citation or the
-        // landmark; a citation present in the document but sitting outside
-        // every block (C3) is rejected by the locality check even when it
-        // is plain, unhidden text (a hidden-in-comment/fenced-code
-        // citation never reaches `citations` at all -- C2, handled
-        // upstream by `rb71_hidden_ranges`).
-        let blocks = rb71_doc_reconciliation_blocks(plan_md);
-        match blocks.len() {
-            0 => found.push(
-                "[anchor/doc-missing] no `**Doc reconciliation` landmark line found \
-                 in the plan doc"
-                    .to_string(),
-            ),
-            1 => {
-                let (block_start, block_end, block_text) = &blocks[0];
-                if !block_text.contains("**Done =**") {
-                    found.push(format!(
-                        "[anchor/doc-missing] the Doc-reconciliation block cites a line \
-                         number but never names the `**Done =**` landmark it points at:\n{block_text}"
-                    ));
-                }
-                if citations.len() == 1 {
-                    let cite_pos = citations[0].byte_pos;
-                    if cite_pos < *block_start || cite_pos >= *block_end {
-                        found.push(format!(
-                            "[cite/out-of-block] the plan's single accepted \
-                             `AGENTS.md:<n>` citation is on line {}, but the \
-                             Doc-reconciliation block starts at line {} (block byte \
-                             range {block_start}..{block_end}) -- the citation and \
-                             the landmark that explains it must live in the SAME \
-                             block",
-                            rb71_line_number_at(plan_md, cite_pos),
-                            rb71_line_number_at(plan_md, *block_start),
-                        ));
-                    }
-                }
-            }
-            n => {
-                let landmark_lines: Vec<usize> = blocks
-                    .iter()
-                    .map(|(start, _, _)| rb71_line_number_at(plan_md, *start))
-                    .collect();
-                found.push(format!(
-                    "[block/not-unique] {n} lines in the plan doc contain \
-                     `**Doc reconciliation`, expected exactly 1 (a decoy landmark \
-                     elsewhere is a bypass, not a fix): plan doc lines \
-                     {landmark_lines:?}"
-                ));
-            }
-        }
-
-        // Leg E -- non-emptiness floors. Guards a vacuous pass on a gutted
-        // or missing file rather than trusting the legs above to notice.
-        if plan_md.trim().is_empty() {
-            found.push("[doc/empty] the plan doc is empty".to_string());
-        }
-        if agents_md.trim().is_empty() {
-            found.push("[doc/empty] AGENTS.md is empty".to_string());
-        }
-        // A third floor -- "AGENTS.md has at least as many lines as the
-        // resolved anchor index" -- is deliberately NOT a runtime check:
-        // `anchor_lines` above is derived by enumerating `agents_md.lines()`
-        // itself, so every index it contains is, by construction, already
-        // <= `agents_md.lines().count()`. A branch testing the opposite
-        // could never fire (rb-71 revision-round reviewer note); recorded
-        // here rather than shipped as unreachable code.
-
-        found
-    }
-
-    /// The text starting at the first occurrence of `needle` in `text` and
-    /// extending up to (excluding) the next `.` or `;` -- whichever comes
-    /// first -- or to the end of `text` if neither appears again. A coarse
-    /// proxy for "the clause that is actually about `needle`", so a LATER
-    /// clause on the same line/paragraph that happens to mention unrelated
-    /// tokens (e.g. AGENTS.md's own "...; the nightly workflow ... enforces
-    /// mutation + coverage ..." clause, which is about NIGHTLY, not `just
-    /// ci`) is not folded into the `needle` clause.
-    ///
-    /// Honest limit, disclosed: this is punctuation-based, not
-    /// grammar-based. A clause that relies on an em-dash or a comma instead
-    /// of `.`/`;` to separate an unrelated coverage/mutation mention from a
-    /// `just ci` mention would not be scoped out by this rule.
-    fn rb71_clause_after<'a>(text: &'a str, needle: &str) -> Option<&'a str> {
-        let start = text.find(needle)?;
-        let tail = &text[start..];
-        let end = tail.find(['.', ';']).unwrap_or(tail.len());
-        Some(&tail[..end])
-    }
-
-    /// Seam B: does the plan's Doc-reconciliation TENSE correspond to
-    /// whether AGENTS.md's `just ci` clause actually (mis)attributes
-    /// coverage/mutation to `just ci`?
-    ///
-    /// Non-lexical by construction (rb-71 red-team C4: a fixed phrase like
-    /// `FALSELY claim` is trivially paraphrased away -- e.g. "incorrectly
-    /// assert" -- while leaving the substantive claim intact). Both sides
-    /// are derived with the SAME technique (`rb71_clause_after`, scoped to
-    /// the `just ci` clause) applied to the two different documents, then
-    /// compared as booleans: a cross-check on the actual coverage/mutation
-    /// TOKENS each document's `just ci` clause carries, not on any one
-    /// fixed sentence. Consistent states (both true, or both false) are
-    /// accepted; a mismatch in either direction is flagged under its own
-    /// label.
-    fn rb71_claim_violations(plan_md: &str, agents_md: &str) -> Vec<String> {
-        let mut found: Vec<String> = Vec::new();
-
-        let Some(anchor_line) = agents_md.lines().find(|l| l.starts_with("- **Done =**")) else {
-            // Seam A already reports `[anchor/missing]`; nothing to correlate.
-            return found;
-        };
-        let agents_clause = rb71_clause_after(anchor_line, "just ci")
-            .unwrap_or("")
-            .to_string();
-        let attributes_coverage =
-            agents_clause.contains("coverage") || agents_clause.contains("mutation");
-
-        let blocks = rb71_doc_reconciliation_blocks(plan_md);
-        let plan_clause = if blocks.len() == 1 {
-            rb71_clause_after(&blocks[0].2, "just ci")
-                .unwrap_or("")
-                .to_string()
-        } else {
-            // Seam A already reports `[anchor/doc-missing]` or
-            // `[block/not-unique]`; nothing well-defined to correlate.
-            String::new()
-        };
-        let block_claims_coverage =
-            plan_clause.contains("coverage") || plan_clause.contains("mutation");
-
-        if !attributes_coverage && block_claims_coverage {
-            found.push(format!(
-                "[claim/stale-tense] AGENTS.md's `just ci` clause does NOT \
-                 attribute coverage/mutation to `just ci` ({agents_clause:?}), but \
-                 the plan's Doc-reconciliation block's `just ci` clause still does \
-                 ({plan_clause:?}) -- the claim was corrected, the prose was not"
-            ));
-        }
-        if attributes_coverage && !block_claims_coverage {
-            found.push(format!(
-                "[claim/premature-past] AGENTS.md's `just ci` clause DOES \
-                 attribute coverage/mutation to `just ci` ({agents_clause:?}), but \
-                 the plan's Doc-reconciliation block's `just ci` clause no longer \
-                 flags it ({plan_clause:?}) -- the prose moved past tense before \
-                 the underlying claim was actually fixed"
-            ));
-        }
-
-        found
-    }
-
-    /// Both seams, concatenated -- what every control fixture below is
-    /// actually judged against, so a fixture proves something about the
-    /// SAME shipped path the live tests exercise.
-    fn rb71_all_violations(plan_md: &str, agents_md: &str) -> Vec<String> {
-        let mut all = rb71_violations(plan_md, agents_md);
-        all.extend(rb71_claim_violations(plan_md, agents_md));
-        all
-    }
-
-    /// docs/m8.5c-plan.md:85's `AGENTS.md:<n>` citation must resolve to the
-    /// live `- **Done =**` bullet.
-    ///
-    /// RED now: the plan cites `AGENTS.md:8` (correct when m8.5c was
-    /// written); commit 3c94216 (ADR-0197) inserted a bullet at line 7 and
-    /// the `Done =` bullet has sat at line 9 ever since. Expect
-    /// `[cite/line-mismatch]` (and, until the landmark itself is added
-    /// alongside the number, `[anchor/doc-missing]` too -- this test is a
-    /// non-short-circuiting collector, so BOTH show up in one RED).
-    #[test]
-    fn rb71_m85c_cites_the_live_done_bullet_line() {
-        let plan_md = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../docs/m8.5c-plan.md"
-        ))
-        .expect(
-            "rb71: docs/m8.5c-plan.md must exist at the repo root, one level above \
-             sim-harness/",
-        );
-        let agents_md =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../AGENTS.md")).expect(
-                "rb71: AGENTS.md must exist at the repo root, one level above sim-harness/",
-            );
-
-        let anchor_lines = rb71_anchor_lines(&agents_md);
-        let cited = rb71_agents_citations(&plan_md)
-            .into_iter()
-            .map(|c| c.digits)
-            .collect::<Vec<_>>();
-
-        let violations = rb71_violations(&plan_md, &agents_md);
-        assert!(
-            violations.is_empty(),
-            "rb71 [seam-A]: docs/m8.5c-plan.md's `AGENTS.md:<n>` citation must resolve \
-             to the live `- **Done =**` bullet.\n\
-             Derived facts: the anchor resolves to AGENTS.md 1-based line(s) \
-             {anchor_lines:?}; the plan's accepted citation digit-run(s): {cited:?}.\n\
-             Violations:\n  - {}",
-            violations.join("\n  - ")
-        );
-    }
-
-    /// The plan's Doc-reconciliation prose tense must correspond to whether
-    /// AGENTS.md's `just ci` line actually (mis)attributes coverage/
-    /// mutation to `just ci` today.
-    ///
-    /// RED now: AGENTS.md's `just ci` parenthetical is already accurate
-    /// (`(lint + typecheck + test + eval + security + client checks)` --
-    /// no coverage/mutation), but the plan's block still reads `FALSELY
-    /// claim` in the present/imperative tense, as if the correction were
-    /// still outstanding. Expect `[claim/stale-tense]`. A SEPARATE `#[test]`
-    /// from the one above so first-failure-wins cannot shadow either.
-    #[test]
-    fn rb71_m85c_bullet_matches_the_live_ci_inventory() {
-        let plan_md = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../docs/m8.5c-plan.md"
-        ))
-        .expect(
-            "rb71: docs/m8.5c-plan.md must exist at the repo root, one level above \
-             sim-harness/",
-        );
-        let agents_md =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../AGENTS.md")).expect(
-                "rb71: AGENTS.md must exist at the repo root, one level above sim-harness/",
-            );
-
-        let violations = rb71_claim_violations(&plan_md, &agents_md);
-        assert!(
-            violations.is_empty(),
-            "rb71 [seam-B]: the plan's Doc-reconciliation tense must correspond to \
-             whether AGENTS.md's `just ci` line still (mis)attributes coverage/mutation \
-             to `just ci`.\nViolations:\n  - {}",
-            violations.join("\n  - ")
-        );
-    }
-
-    // -----------------------------------------------------------------
-    // T3 -- synthetic control fixtures. Never reads the live tree, so this
-    // test is GREEN both before and after the citation fix (the rb-67
-    // `rb67p_adr0220_citation_oracle_control` precedent,
-    // server-module/src/privacy_tests.rs:10996-11208).
-    // -----------------------------------------------------------------
-
-    /// Roster floor: fixtures cannot be quietly deleted without this test
-    /// itself going RED (a `-E 'test(rb71_citation_oracle_control)'` filter
-    /// with zero matches is a separate, orthogonal gate -- this floor
-    /// guards the fixture COUNT inside a still-present test).
-    const RB71_FIXTURE_FLOOR: usize = 20;
-
-    /// The oracle must ACCEPT this fixture: it is judged against the SAME
-    /// `rb71_all_violations` path the live tests use.
-    #[track_caller]
-    fn rb71_expect_clean(tooth: &str, plan: &str, agents: &str) {
-        let found = rb71_all_violations(plan, agents);
-        assert!(
-            found.is_empty(),
-            "rb71 [control/{tooth}]: this fixture is a POSITIVE control and must be \
-             accepted. Violations:\n  - {}\n\
-             An over-tight rule reads exactly like a missing fix and sends the next \
-             reader reverse-engineering the test instead of correcting the document.",
-            found.join("\n  - ")
-        );
-    }
-
-    /// The oracle must REJECT this fixture WITH THE NAMED LABEL -- asserting
-    /// the label, not merely non-emptiness, is the point: a rule that reds
-    /// for some other reason has stopped covering the defect this fixture
-    /// encodes.
-    #[track_caller]
-    fn rb71_expect_label(tooth: &str, plan: &str, agents: &str, label: &str) {
-        let found = rb71_all_violations(plan, agents);
-        assert!(
-            found.iter().any(|v| v.contains(label)),
-            "rb71 [control/{tooth}]: this fixture is a MEASURED bypass shape and must \
-             raise `{label}`. The oracle returned:\n  - {}\n\
-             A control that no longer bites means the ORACLE was loosened, not that \
-             the fixture is wrong. Restore the clause; never relax the fixture to \
-             match the code.",
-            found.join("\n  - ")
-        );
-    }
-
-    /// Build a synthetic AGENTS.md: `total_lines` filler lines, with a
-    /// single `- **Done =**` bullet at 1-based `done_at` (or none, if
-    /// `done_at` is `None`), whose `just ci` parenthetical is `ci_scope`.
-    fn rb71_synth_agents(done_at: Option<usize>, total_lines: usize, ci_scope: &str) -> String {
-        let mut out = String::new();
-        for i in 1..=total_lines {
-            if Some(i) == done_at {
-                out.push_str(&format!(
-                    "- **Done =** `just ci` green and meaningful ({ci_scope}); fixture prose.\n"
-                ));
-            } else {
-                out.push_str(&format!("filler line {i} of the fixture\n"));
-            }
-        }
-        out
-    }
-
-    /// Same, but with the `- **Done =**` bullet DUPLICATED at two lines.
-    fn rb71_synth_agents_duplicate(
-        line_a: usize,
-        line_b: usize,
-        total_lines: usize,
-        ci_scope: &str,
-    ) -> String {
-        let mut out = String::new();
-        for i in 1..=total_lines {
-            if i == line_a || i == line_b {
-                out.push_str(&format!(
-                    "- **Done =** `just ci` green and meaningful ({ci_scope}); fixture prose.\n"
-                ));
-            } else {
-                out.push_str(&format!("filler line {i} of the fixture\n"));
-            }
-        }
-        out
-    }
-
-    /// Build a synthetic plan doc with a Doc-reconciliation bullet whose
-    /// citation clause is `citation_clause` and whose remaining prose is
-    /// `rest`, followed by an (optionally decoy-bearing) paragraph after a
-    /// `## ` heading -- out of the block, by construction.
-    fn rb71_synth_plan(citation_clause: &str, rest: &str, decoy: &str) -> String {
-        format!(
-            "# fixture plan\n\n\
-             ## 1. heading\n\
-             Some unrelated prose.\n\n\
-             - **Doc reconciliation (sanctioned, minimal):** {citation_clause} {rest}\n\n\
-             ## 2. next section\n\
-             {decoy}\n"
-        )
-    }
-
-    #[test]
-    fn rb71_citation_oracle_control() {
-        let mut fixture_count = 0usize;
-        let clean_ci_scope = "lint + typecheck + test";
-
-        // 1. CLEAN CORRESPONDING PAIR -- positive control.
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = rb71_synth_plan(
-                "the `- **Done =**` bullet at `AGENTS.md:9`",
-                "correctly states what `just ci` enforces.",
-                "No decoy here.",
-            );
-            rb71_expect_clean("clean-corresponding-pair", &plan, &agents);
-            fixture_count += 1;
-        }
-
-        // 2. WRONG DIGIT.
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = rb71_synth_plan(
-                "the `- **Done =**` bullet at `AGENTS.md:8`",
-                "correctly states what `just ci` enforces.",
-                "No decoy here.",
-            );
-            rb71_expect_label("wrong-digit", &plan, &agents, "[cite/line-mismatch]");
-            fixture_count += 1;
-        }
-
-        // 3. ZERO CITATIONS -- path typo (missing the trailing `S`).
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = rb71_synth_plan(
-                "the `- **Done =**` bullet at `AGENT.md:9`",
-                "correctly states what `just ci` enforces.",
-                "No decoy here.",
-            );
-            rb71_expect_label("path-typo-zero-citations", &plan, &agents, "[cite/count]");
-            fixture_count += 1;
-        }
-
-        // 4. HARNESS REPOINT -- `../../AGENTS.md:9`, excluded by its
-        //    preceding `.` (rb-71 plan-review D2/D5).
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = rb71_synth_plan(
-                "the `- **Done =**` bullet at `../../AGENTS.md:9`",
-                "correctly states what `just ci` enforces.",
-                "No decoy here.",
-            );
-            rb71_expect_label("harness-repoint", &plan, &agents, "[cite/count]");
-            fixture_count += 1;
-        }
-
-        // 5. DECOY SECOND CITATION.
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = rb71_synth_plan(
-                "the `- **Done =**` bullet at `AGENTS.md:9`",
-                "correctly states what `just ci` enforces.",
-                "Also see `AGENTS.md:9` again here for good measure.",
-            );
-            rb71_expect_label("decoy-second-citation", &plan, &agents, "[cite/count]");
-            fixture_count += 1;
-        }
-
-        // 6. ANCHOR MISSING.
-        {
-            let agents = rb71_synth_agents(None, 10, clean_ci_scope);
-            let plan = rb71_synth_plan(
-                "the `- **Done =**` bullet at `AGENTS.md:9`",
-                "correctly states what `just ci` enforces.",
-                "No decoy here.",
-            );
-            rb71_expect_label("anchor-missing", &plan, &agents, "[anchor/missing]");
-            fixture_count += 1;
-        }
-
-        // 7. ANCHOR DUPLICATED.
-        {
-            let agents = rb71_synth_agents_duplicate(4, 9, 10, clean_ci_scope);
-            let plan = rb71_synth_plan(
-                "the `- **Done =**` bullet at `AGENTS.md:9`",
-                "correctly states what `just ci` enforces.",
-                "No decoy here.",
-            );
-            rb71_expect_label("anchor-duplicated", &plan, &agents, "[anchor/not-unique]");
-            fixture_count += 1;
-        }
-
-        // 8. LANDMARK STRIPPED FROM THE BLOCK -- correct number, no
-        //    `**Done =**` mention.
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = rb71_synth_plan(
-                "see `AGENTS.md:9`",
-                "for what `just ci` enforces.",
-                "No decoy here.",
-            );
-            rb71_expect_label(
-                "landmark-stripped-from-block",
-                &plan,
-                &agents,
-                "[anchor/doc-missing]",
-            );
-            fixture_count += 1;
-        }
-
-        // 9. EMPTY PLAN.
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            rb71_expect_label("empty-plan", "", &agents, "[doc/empty]");
-            fixture_count += 1;
-        }
-
-        // 10. EMPTY AGENTS.
-        {
-            let plan = rb71_synth_plan(
-                "the `- **Done =**` bullet at `AGENTS.md:9`",
-                "correctly states what `just ci` enforces.",
-                "No decoy here.",
-            );
-            rb71_expect_label("empty-agents", &plan, "", "[doc/empty]");
-            fixture_count += 1;
-        }
-
-        // 11. STALE-TENSE -- AGENTS.md already accurate, plan block still
-        //     present-tense.
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = rb71_synth_plan(
-                "the `- **Done =**` bullet at `AGENTS.md:9`",
-                "FALSELY claim `just ci` includes coverage and mutation. Correct it.",
-                "No decoy here.",
-            );
-            rb71_expect_label("stale-tense", &plan, &agents, "[claim/stale-tense]");
-            fixture_count += 1;
-        }
-
-        // 12. PREMATURE-PAST -- AGENTS.md regressed to over-claiming, plan
-        //     block already moved past the present-tense flag.
-        {
-            let agents = rb71_synth_agents(
-                Some(9),
-                10,
-                "lint + typecheck + test + eval + security + coverage + mutation",
-            );
-            let plan = rb71_synth_plan(
-                "the `- **Done =**` bullet at `AGENTS.md:9`",
-                "correctly states what `just ci` enforces.",
-                "No decoy here.",
-            );
-            rb71_expect_label("premature-past", &plan, &agents, "[claim/premature-past]");
-            fixture_count += 1;
-        }
-
-        // 13. MARKDOWN-LINK-TEXT DECOY -- `[AGENTS.md:9](#anchor)` is a
-        //     link's visible label, not a prose citation; must not count.
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = rb71_synth_plan(
-                "see [AGENTS.md:9](#done-bullet)",
-                "for what `just ci` enforces.",
-                "No decoy here.",
-            );
-            rb71_expect_label("markdown-link-text-decoy", &plan, &agents, "[cite/count]");
-            fixture_count += 1;
-        }
-
-        // 14. NO-DIGIT CITATION -- the token is present but nothing
-        //     digit-shaped follows the colon; a distinct bypass shape from
-        //     a plain wrong number.
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = rb71_synth_plan(
-                "the `- **Done =**` bullet at `AGENTS.md:` (see below)",
-                "correctly states what `just ci` enforces.",
-                "No decoy here.",
-            );
-            rb71_expect_label("no-digit-citation", &plan, &agents, "[cite/line-mismatch]");
-            fixture_count += 1;
-        }
-
-        // -- rb-71 revision round: red-team C1-C4 (measured GREEN cheats) --
-
-        // 15. TWO `**Doc reconciliation` LANDMARKS (C1) -- a clean decoy
-        //     bullet planted near the top, citation stripped from the real,
-        //     still-broken bullet. Must be rejected on landmark
-        //     UNIQUENESS alone, independent of which copy carries the
-        //     citation or the `**Done =**` mention.
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = "# fixture plan\n\n\
-                 - **Doc reconciliation (decoy, clean):** the `- **Done =**` bullet \
-                 at `AGENTS.md:9` correctly states what `just ci` enforces.\n\n\
-                 ## 2. next section\n\
-                 Some unrelated prose.\n\n\
-                 - **Doc reconciliation (sanctioned, minimal):** the real bullet \
-                 reference was removed here; `just ci` still needs reconciling.\n\n\
-                 ## 3. final section\n\
-                 No decoy here.\n"
-                .to_string();
-            rb71_expect_label(
-                "two-doc-reconciliation-landmarks",
-                &plan,
-                &agents,
-                "[block/not-unique]",
-            );
-            fixture_count += 1;
-        }
-
-        // 16. CITATION HIDDEN IN AN HTML COMMENT, INSIDE THE BLOCK (C2
-        //     exact shape). Invisible when rendered; must not satisfy the
-        //     census.
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = "# fixture plan\n\n\
-                 ## 1. heading\n\
-                 Some unrelated prose.\n\n\
-                 - **Doc reconciliation (sanctioned, minimal):** the `- **Done =**` \
-                 bullet <!-- AGENTS.md:9 --> and `.github/PULL_REQUEST_TEMPLATE.md:5` \
-                 both correctly state what `just ci` enforces.\n\n\
-                 ## 2. next section\n\
-                 No decoy here.\n"
-                .to_string();
-            rb71_expect_label(
-                "citation-in-html-comment-in-block",
-                &plan,
-                &agents,
-                "[cite/count]",
-            );
-            fixture_count += 1;
-        }
-
-        // 17. CITATION HIDDEN IN AN HTML COMMENT, OUTSIDE THE BLOCK (C3
-        //     exact shape from the red-team report).
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = "# fixture plan\n\n\
-                 ## 1. heading\n\
-                 Some unrelated prose.\n\n\
-                 - **Doc reconciliation (sanctioned, minimal):** the `- **Done =**` \
-                 bullet correctly states what `just ci` enforces.\n\n\
-                 ## 2. next section\n\
-                 <!-- housekeeping ref AGENTS.md:9 --> several paragraphs away from \
-                 the reconciliation block.\n"
-                .to_string();
-            rb71_expect_label(
-                "citation-in-html-comment-out-of-block",
-                &plan,
-                &agents,
-                "[cite/count]",
-            );
-            fixture_count += 1;
-        }
-
-        // 18. CITATION MOVED OUT OF THE BLOCK, PLAIN TEXT (C3 generalised --
-        //     no comment trick at all, isolates the NEW locality leg from
-        //     the hidden-range exclusion that fixtures 16/17 exercise).
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = "# fixture plan\n\n\
-                 ## 1. heading\n\
-                 Some unrelated prose.\n\n\
-                 - **Doc reconciliation (sanctioned, minimal):** the `- **Done =**` \
-                 bullet correctly states what `just ci` enforces.\n\n\
-                 ## 2. next section\n\
-                 See `AGENTS.md:9` again here, several paragraphs away from the \
-                 reconciliation block.\n"
-                .to_string();
-            rb71_expect_label(
-                "citation-out-of-block-plaintext",
-                &plan,
-                &agents,
-                "[cite/out-of-block]",
-            );
-            fixture_count += 1;
-        }
-
-        // 19. CITATION INSIDE A FENCED CODE BLOCK -- the "fenced" half of
-        //     the hidden-range rule; renders as example code, not prose.
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = "# fixture plan\n\n\
-                 ## 1. heading\n\
-                 Some unrelated prose.\n\n\
-                 - **Doc reconciliation (sanctioned, minimal):** the `- **Done =**` \
-                 bullet correctly states what `just ci` enforces.\n\n\
-                 ```\n\
-                 AGENTS.md:9\n\
-                 ```\n\n\
-                 ## 2. next section\n\
-                 No decoy here.\n"
-                .to_string();
-            rb71_expect_label(
-                "citation-in-fenced-code-block",
-                &plan,
-                &agents,
-                "[cite/count]",
-            );
-            fixture_count += 1;
-        }
-
-        // 20. STALE-TENSE, PARAPHRASED (C4) -- the exact lexical marker
-        //     `FALSELY claim` is never used; the substantive claim
-        //     ("just ci includes coverage + mutation") is stated with a
-        //     synonym verb instead, proving the detector is non-lexical.
-        {
-            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
-            let plan = rb71_synth_plan(
-                "the `- **Done =**` bullet at `AGENTS.md:9`",
-                "both incorrectly assert `just ci` includes coverage + mutation. \
-                 Correct it.",
-                "No decoy here.",
-            );
-            rb71_expect_label(
-                "stale-tense-paraphrase",
-                &plan,
-                &agents,
-                "[claim/stale-tense]",
-            );
-            fixture_count += 1;
-        }
-
-        assert!(
-            fixture_count >= RB71_FIXTURE_FLOOR,
-            "rb71: fixture roster shrank to {fixture_count}, below the floor of \
-             {RB71_FIXTURE_FLOOR} -- a fixture was quietly deleted rather than a new \
-             bypass shape being added"
-        );
-    }
-}
-
-// rb-75 -- five measured `ADR next-free` non-monotone/rewrite anomalies in
-// ARCHITECTURE.md (R-18r-b-LOGORDER) must each carry a correct, correctly
-// placed `[rb-75: ...]` annotation explaining WHY the numeral sequence at
-// that site is not what a naive reader would expect. This module never
-// asserts a rule over the whole log (18r-b's cut, R-A/R-3/R-4 below) -- only
-// that these five NAMED sites are annotated, and that the annotation's own
-// numeral claims stay truthful as the live document keeps growing.
-#[cfg(test)]
-mod rb75_archlog_tests {
-    use super::rb71_doc_citation_tests::{rb71_hidden_ranges, rb71_in_hidden_range};
-
-    // -----------------------------------------------------------------
-    // Doc model: a byte-indexed line table shared by every position-based
-    // check below, so "same line" / "last byte of line" (RULING R-5) has
-    // exactly one derivation.
-    // -----------------------------------------------------------------
-
-    /// `doc` split into physical lines (each retaining its own trailing
-    /// `\n`, if any) plus each line's starting byte offset, so any absolute
-    /// byte position can be mapped back to "which line is this on" and
-    /// "where does this line's visible content end" without re-scanning
-    /// `doc` from the start every time.
-    struct Rb75Lines<'a> {
-        doc: &'a str,
-        starts: Vec<usize>,
-        raw: Vec<&'a str>,
-    }
-
-    impl<'a> Rb75Lines<'a> {
-        fn new(doc: &'a str) -> Self {
-            let raw: Vec<&str> = doc.split_inclusive('\n').collect();
-            let mut starts = Vec::with_capacity(raw.len());
-            let mut pos = 0usize;
-            for line in &raw {
-                starts.push(pos);
-                pos += line.len();
-            }
-            Rb75Lines { doc, starts, raw }
-        }
-
-        /// The 0-based line index whose byte range contains `pos`.
-        fn line_of(&self, pos: usize) -> usize {
-            match self.starts.binary_search(&pos) {
-                Ok(i) => i,
-                Err(0) => 0,
-                Err(i) => i - 1,
-            }
-        }
-
-        /// The byte offset one past the last VISIBLE byte of line
-        /// `line_idx` -- i.e. excluding a trailing `\n` and, per RULING
-        /// R-5's explicit carve-out, a trailing `\r` immediately before it.
-        fn content_end(&self, line_idx: usize) -> usize {
-            let start = self.starts[line_idx];
-            let raw = self.raw[line_idx];
-            let mut end = start + raw.len();
-            if raw.ends_with('\n') {
-                end -= 1;
-                if self.doc[start..end].ends_with('\r') {
-                    end -= 1;
-                }
-            }
-            end
-        }
-
-        /// 1-based line number, diagnostics only.
-        fn line_number(&self, line_idx: usize) -> usize {
-            line_idx + 1
-        }
-    }
-
-    // -----------------------------------------------------------------
-    // Parser (RULING R-2 / R-1 / R-5): entries, headers, brackets, claims.
-    // -----------------------------------------------------------------
-
-    /// One `**<label>** ( ... )` entry opened at column 0. `entry_idx` is
-    /// this entry's position among ENTRIES ONLY (headers skipped) -- the
-    /// space `PrecededBy`/`RewrittenBy` adjacency checks live in, since an
-    /// intervening header must not silently break an otherwise-adjacent
-    /// pair. `seq_idx` is this entry's position in the COMBINED
-    /// entries+headers sequence -- the space `SectionCrossing` lives in,
-    /// since "does a header sit between these two entries" is meaningless
-    /// without headers sharing the same ordering axis.
-    struct Rb75Entry {
-        label: String,
-        entry_idx: usize,
-        seq_idx: usize,
-        label_line: usize,
-        label_line_text: String,
-        text_start: usize,
-        text_end: usize,
-        text: String,
-        /// The entry's trailing `ADR next-free` numeral: the LAST match in
-        /// `text` of the literal `ADR next-free`, zero or more `*`s, `=` or
-        /// `:`, whitespace, then exactly 4 digits not themselves followed by
-        /// a 5th digit (rb-75 plan note: three real entries carry the token
-        /// TWICE -- a prose quote plus the real trailing note -- so "last"
-        /// is load-bearing, not "first").
-        numeral: Option<u32>,
-        /// Absolute byte offset one past the last digit of that match, used
-        /// by the bracket-placement check (RULING R-5: the bracket must
-        /// start AFTER this point).
-        numeral_match_end: Option<usize>,
-    }
-
-    /// One column-0 `#`-led line, recorded purely so `SectionCrossing` can
-    /// ask "does this header sit between these two entries" on a shared
-    /// ordering axis (see `Rb75Entry::seq_idx`).
-    struct Rb75Header {
-        text: String,
-        seq_idx: usize,
-        line: usize,
-    }
-
-    /// One ` [rb-75: ... ]` bracket found outside every hidden range.
-    /// Brackets do not nest -- `close_pos` is the position of the FIRST
-    /// `]` after `open_pos`, per the ruling text verbatim.
-    struct Rb75Bracket {
-        open_pos: usize,
-        close_pos: usize,
-    }
-
-    /// One `**<label>** (= NNNN` numeral CLAIM found inside a bracket
-    /// (RULING R-1). `digit_start` is recorded so the unbound-numeral scan
-    /// below can exclude exactly this digit run and no other.
-    struct Rb75Claim {
-        label: String,
-        value: u32,
-        digit_start: usize,
-    }
-
-    /// True iff `line` (with any trailing `\n`/`\r` already stripped)
-    /// opens an entry: column-0 `**`, then 1+ of `[A-Za-z0-9.-]`, then a
-    /// closing `**`, then a single space, then `(`. Returns the label text.
-    fn rb75_entry_label(line: &str) -> Option<String> {
-        if !line.starts_with("**") {
-            return None;
-        }
-        let bytes = line.as_bytes();
-        let label_start = 2usize;
-        let mut pos = label_start;
-        while pos < bytes.len()
-            && matches!(bytes[pos], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-')
-        {
-            pos += 1;
-        }
-        if pos == label_start {
-            return None;
-        }
-        let label_end = pos;
-        if line[label_end..].starts_with("** (") {
-            Some(line[label_start..label_end].to_string())
-        } else {
-            None
-        }
-    }
-
-    /// The LAST `ADR next-free` numeral match in `text` (see
-    /// `Rb75Entry::numeral`'s doc comment for the exact grammar). Returns
-    /// `(byte offset one past the last digit, parsed value)`, both
-    /// RELATIVE to the start of `text`.
-    fn rb75_trailing_numeral(text: &str) -> Option<(usize, u32)> {
-        const TOKEN: &str = "ADR next-free";
-        let bytes = text.as_bytes();
-        let mut last = None;
-        let mut search_start = 0usize;
-        while let Some(rel) = text[search_start..].find(TOKEN) {
-            let tok_start = search_start + rel;
-            let mut pos = tok_start + TOKEN.len();
-            while pos < bytes.len() && bytes[pos] == b'*' {
-                pos += 1;
-            }
-            // The live doc spells this two ways: `ADR next-free = 0169`
-            // (a SPACE before the `=`, e.g. 11r-c/11r-f/rb-15/M15a/M14.5b/
-            // uxd2/uxd3-a/uxd3-b/11r-h/M15b/ux2/ux2b) and
-            // `**ADR next-free: 0162.**` (no space before the `:`, since
-            // the bold wraps the whole clause rather than closing right
-            // after `next-free`) -- skip that optional run of spaces/tabs
-            // too, so both spellings reach the `=`/`:` check below.
-            while pos < bytes.len() && (bytes[pos] == b' ' || bytes[pos] == b'\t') {
-                pos += 1;
-            }
-            if pos < bytes.len() && (bytes[pos] == b'=' || bytes[pos] == b':') {
-                pos += 1;
-                let ws_start = pos;
-                while pos < bytes.len() && (bytes[pos] == b' ' || bytes[pos] == b'\t') {
-                    pos += 1;
-                }
-                if pos > ws_start {
-                    let digit_start = pos;
-                    let mut digit_end = digit_start;
-                    while digit_end < bytes.len()
-                        && bytes[digit_end].is_ascii_digit()
-                        && digit_end - digit_start < 4
-                    {
-                        digit_end += 1;
-                    }
-                    if digit_end - digit_start == 4 {
-                        let next_is_digit = bytes.get(digit_end).is_some_and(u8::is_ascii_digit);
-                        if !next_is_digit {
-                            if let Ok(v) = text[digit_start..digit_end].parse::<u32>() {
-                                last = Some((digit_end, v));
-                            }
-                        }
-                    }
-                }
-            }
-            search_start = tok_start + TOKEN.len();
-        }
-        last
-    }
-
-    /// Every entry and every header in `doc`, outside every hidden range
-    /// (`rb71_hidden_ranges` -- rb-71's HTML-comment / fenced-code
-    /// exclusion, reused verbatim rather than re-derived). An entry's text
-    /// runs from its label line's start to the start of the next
-    /// entry-opening OR header line (or EOF).
-    fn rb75_parse_doc(
-        lines: &Rb75Lines,
-        hidden: &[(usize, usize)],
-    ) -> (Vec<Rb75Entry>, Vec<Rb75Header>) {
-        enum Raw {
-            EntryOpen { label: String, line_idx: usize },
-            Header { text: String, line_idx: usize },
-        }
-
-        let mut raws: Vec<Raw> = Vec::new();
-        for (i, line) in lines.raw.iter().enumerate() {
-            let start = lines.starts[i];
-            if rb71_in_hidden_range(start, hidden) {
-                continue;
-            }
-            let trimmed = line.trim_end_matches(['\n', '\r']);
-            if let Some(label) = rb75_entry_label(trimmed) {
-                raws.push(Raw::EntryOpen { label, line_idx: i });
-            } else if trimmed.starts_with('#') {
-                raws.push(Raw::Header {
-                    text: trimmed.to_string(),
-                    line_idx: i,
-                });
-            }
-        }
-
-        let mut entries = Vec::new();
-        let mut headers = Vec::new();
-        let mut entry_idx = 0usize;
-
-        for (seq_idx, raw) in raws.iter().enumerate() {
-            match raw {
-                Raw::EntryOpen { label, line_idx } => {
-                    let text_start = lines.starts[*line_idx];
-                    let text_end = raws
-                        .get(seq_idx + 1)
-                        .map(|next| match next {
-                            Raw::EntryOpen { line_idx, .. } => lines.starts[*line_idx],
-                            Raw::Header { line_idx, .. } => lines.starts[*line_idx],
-                        })
-                        .unwrap_or(lines.doc.len());
-                    let text = lines.doc[text_start..text_end].to_string();
-                    let label_line_text = lines.raw[*line_idx]
-                        .trim_end_matches(['\n', '\r'])
-                        .to_string();
-                    let (numeral, numeral_match_end) = match rb75_trailing_numeral(&text) {
-                        Some((end_rel, v)) => (Some(v), Some(text_start + end_rel)),
-                        None => (None, None),
-                    };
-                    entries.push(Rb75Entry {
-                        label: label.clone(),
-                        entry_idx,
-                        seq_idx,
-                        label_line: lines.line_number(*line_idx),
-                        label_line_text,
-                        text_start,
-                        text_end,
-                        text,
-                        numeral,
-                        numeral_match_end,
-                    });
-                    entry_idx += 1;
-                }
-                Raw::Header { text, line_idx } => {
-                    headers.push(Rb75Header {
-                        text: text.clone(),
-                        seq_idx,
-                        line: lines.line_number(*line_idx),
-                    });
-                }
-            }
-        }
-
-        (entries, headers)
-    }
-
-    /// Every `[rb-75: ... ]` bracket in `doc` outside every hidden range --
-    /// the whole-file roster this module's `[rb75/bracket-roster]` check
-    /// counts, independent of which entry (if any) each one sits inside.
-    ///
-    /// The token is matched with NO required leading byte (artifact
-    /// red-team HIGH finding: a leading-space requirement made a bracket
-    /// planted at column 0, or right after a tab, invisible to both this
-    /// roster and the per-site scan -- a fabricated bracket measured
-    /// GREEN). And per RULING R-5 / artifact red-team MED finding, the
-    /// bracket's span is NOT "up to the first `]` after the token" --
-    /// that truncates on an embedded code span like `` `arr[0]` `` and
-    /// false-REDs `[rb75/bracket-placement]` on an otherwise-correct
-    /// bracket. Since R-5 already requires the closing `]` to be the LAST
-    /// byte of the line, the span is defined as token-start -> end of that
-    /// line; `close_pos` is that line's last byte position, WHATEVER byte
-    /// that is -- `rb75_bracket_placement_ok` below is what actually
-    /// checks it equals `]`.
-    fn rb75_all_brackets(lines: &Rb75Lines, hidden: &[(usize, usize)]) -> Vec<Rb75Bracket> {
-        const TOKEN: &str = "[rb-75:";
-        let doc = lines.doc;
-        let mut out = Vec::new();
-        let mut search_start = 0usize;
-        while let Some(rel) = doc[search_start..].find(TOKEN) {
-            let tok_pos = search_start + rel;
-            if !rb71_in_hidden_range(tok_pos, hidden) {
-                let line_idx = lines.line_of(tok_pos);
-                let close_pos = lines.content_end(line_idx) - 1;
-                out.push(Rb75Bracket {
-                    open_pos: tok_pos,
-                    close_pos,
-                });
-            }
-            search_start = tok_pos + TOKEN.len();
-        }
-        out
-    }
-
-    /// RULING R-5: the bracket must start strictly after `numeral_match_end`,
-    /// on the SAME line as it, with no `<` byte between the two, and its
-    /// closing `]` must be the last visible byte of that line.
-    ///
-    /// `bracket.close_pos` is CONSTRUCTED by `rb75_all_brackets` to already
-    /// be that line's last byte position, so the "is it the last byte"
-    /// half of R-5 collapses to "is that byte actually `]`" -- a bracket
-    /// whose line ends in something else (an unterminated/truncated
-    /// bracket) fails here rather than being silently mis-scoped upstream.
-    fn rb75_bracket_placement_ok(
-        lines: &Rb75Lines,
-        numeral_match_end: usize,
-        bracket: &Rb75Bracket,
-    ) -> bool {
-        if bracket.open_pos <= numeral_match_end {
-            return false;
-        }
-        if lines.doc[numeral_match_end..bracket.open_pos].contains('<') {
-            return false;
-        }
-        let numeral_line = lines.line_of(numeral_match_end.saturating_sub(1));
-        let bracket_line = lines.line_of(bracket.open_pos);
-        if numeral_line != bracket_line {
-            return false;
-        }
-        lines.doc.as_bytes().get(bracket.close_pos) == Some(&b']')
-    }
-
-    /// RULING R-1: every `**<label>** (= NNNN` claim inside `inner` (a
-    /// bracket's content, brackets excluded). No other spelling binds a
-    /// numeral to a label -- an en-dash range, a bare mention, or a
-    /// "nearest preceding label" guess are all explicitly refused by this
-    /// grammar, per the plan-review finding that implicit binding mis-bound
-    /// 4 of the 5 original bracket drafts.
-    fn rb75_find_claims(inner: &str) -> Vec<Rb75Claim> {
-        let bytes = inner.as_bytes();
-        let mut out = Vec::new();
-        let mut search_start = 0usize;
-        while let Some(rel) = inner[search_start..].find("**") {
-            let start = search_start + rel;
-            let label_start = start + 2;
-            let mut pos = label_start;
-            while pos < bytes.len()
-                && matches!(bytes[pos], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-')
-            {
-                pos += 1;
-            }
-            let label_end = pos;
-            if label_end > label_start
-                && inner[label_end..].starts_with("**")
-                && inner[label_end + 2..].starts_with(" (= ")
-            {
-                let digit_start = label_end + 2 + " (= ".len();
-                if digit_start + 4 <= bytes.len() {
-                    // Check the raw BYTES first -- never slice a fixed-width
-                    // window into `&str` before confirming every byte in it
-                    // is single-byte ASCII, since `inner` also carries
-                    // em-dashes/en-dashes/`\u{2192}` and a blind `str` slice
-                    // at a non-boundary offset panics rather than mismatching.
-                    let digit_bytes = &bytes[digit_start..digit_start + 4];
-                    let next_is_digit = bytes.get(digit_start + 4).is_some_and(u8::is_ascii_digit);
-                    if !next_is_digit && digit_bytes.iter().all(|b| b.is_ascii_digit()) {
-                        let digits = &inner[digit_start..digit_start + 4];
-                        if let Ok(value) = digits.parse::<u32>() {
-                            out.push(Rb75Claim {
-                                label: inner[label_start..label_end].to_string(),
-                                value,
-                                digit_start,
-                            });
-                        }
-                    }
-                }
-            }
-            search_start = start + 2;
-        }
-        out
-    }
-
-    /// RULING R-1's residual clause: every OTHER maximal run of exactly 4
-    /// ASCII digits inside `inner`, excluding the digit runs already bound
-    /// by a claim (`exclude_starts`), whose preceding byte is outside
-    /// `[0-9A-Za-z#-]` and whose following byte is outside `[0-9A-Za-z-]`.
-    /// The asymmetric neighbour sets are exactly what excludes `PR #274`
-    /// (preceding `#`), `ADR-0171` (preceding `-`), and a date's trailing
-    /// `-07`/`-31` segments (following `-`) without excluding a bare,
-    /// sentence-embedded 4-digit mention.
-    fn rb75_unbound_numerals(
-        inner: &str,
-        exclude_starts: &std::collections::HashSet<usize>,
-    ) -> Vec<String> {
-        let bytes = inner.as_bytes();
-        let mut out = Vec::new();
-        let mut i = 0usize;
-        while i < bytes.len() {
-            if bytes[i].is_ascii_digit() {
-                let start = i;
-                let mut j = i;
-                while j < bytes.len() && bytes[j].is_ascii_digit() {
-                    j += 1;
-                }
-                if j - start == 4 && !exclude_starts.contains(&start) {
-                    let preceding_excluded = start > 0
-                        && matches!(
-                            bytes[start - 1],
-                            b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'#' | b'-'
-                        );
-                    let following_excluded = j < bytes.len()
-                        && matches!(bytes[j], b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'-');
-                    if !preceding_excluded && !following_excluded {
-                        out.push(inner[start..j].to_string());
-                    }
-                }
-                i = j;
-            } else {
-                i += 1;
-            }
-        }
-        out
-    }
-
-    fn rb75_entries_with_label<'a>(entries: &'a [Rb75Entry], label: &str) -> Vec<&'a Rb75Entry> {
-        entries.iter().filter(|e| e.label == label).collect()
-    }
-
-    /// True iff `token` (e.g. `PR #168`) occurs in `haystack` at a position
-    /// whose NEXT byte is not itself an ASCII digit (the same boundary
-    /// technique `rb75_trailing_numeral` already uses). A plain
-    /// `str::contains` lets `PR #168` be satisfied by a live `PR #1680`
-    /// substring match -- an artifact red-team HIGH finding -- so every
-    /// PR-token correspondence check below goes through this instead of
-    /// `.contains`.
-    fn rb75_contains_token_boundary(haystack: &str, token: &str) -> bool {
-        let bytes = haystack.as_bytes();
-        let mut search_start = 0usize;
-        while let Some(rel) = haystack[search_start..].find(token) {
-            let start = search_start + rel;
-            let end = start + token.len();
-            let next_is_digit = bytes.get(end).is_some_and(u8::is_ascii_digit);
-            if !next_is_digit {
-                return true;
-            }
-            search_start = start + token.len();
-        }
-        false
-    }
-
-    /// Resolves one of the site table's NAMED labels (self or other -- never
-    /// a file-wide scan, per the plan-review finding that a file-wide
-    /// ambiguity census would false-red on pre-existing unrelated bold
-    /// phrases like `**per axis**`). Pushes `[rb75/label-ambiguous:<label>]`
-    /// or `[rb75/named-entry-missing:<label>]` and returns `None` when the
-    /// label does not resolve to exactly one entry.
-    fn rb75_resolve_named<'a>(
-        entries: &'a [Rb75Entry],
-        label: &str,
-        found: &mut Vec<String>,
-    ) -> Option<&'a Rb75Entry> {
-        let matches = rb75_entries_with_label(entries, label);
-        match matches.len() {
-            0 => {
-                found.push(format!(
-                    "[rb75/named-entry-missing:{label}] no entry opens with the label \
-                     `**{label}**`"
-                ));
-                None
-            }
-            1 => Some(matches[0]),
-            n => {
-                let lines: Vec<usize> = matches.iter().map(|e| e.label_line).collect();
-                found.push(format!(
-                    "[rb75/label-ambiguous:{label}] {n} entries open with the label \
-                     `**{label}**`, expected exactly 1: 1-based lines {lines:?}"
-                ));
-                None
-            }
-        }
-    }
-
-    /// The "Common checks" content-based rules (RULING R-1): the site's own
-    /// numeral must appear as a claim in its bracket, every claim's numeral
-    /// must equal the LIVE trailing numeral of the entry it claims to
-    /// describe, and every other bare 4-digit run is unbound.
-    fn rb75_check_bracket_content(
-        entries: &[Rb75Entry],
-        site_label: &str,
-        inner: &str,
-        found: &mut Vec<String>,
-    ) {
-        let claims = rb75_find_claims(inner);
-
-        if !claims.iter().any(|c| c.label == site_label) {
-            found.push(format!(
-                "[rb75/self-claim-missing:{site_label}] no `**{site_label}** (= NNNN` claim \
-                 found in this entry's own bracket"
-            ));
-        }
-
-        let mut claim_starts = std::collections::HashSet::new();
-        for claim in &claims {
-            claim_starts.insert(claim.digit_start);
-            let matches = rb75_entries_with_label(entries, &claim.label);
-            match matches.len() {
-                1 => {
-                    let live = matches[0].numeral;
-                    if live != Some(claim.value) {
-                        let live_display = live
-                            .map(|n| format!("{n:04}"))
-                            .unwrap_or_else(|| "<none>".to_string());
-                        found.push(format!(
-                            "[rb75/numeral-mismatch:{site_label}/{}] claimed {:04} live {live_display}",
-                            claim.label, claim.value
-                        ));
-                    }
-                }
-                _ => {
-                    found.push(format!(
-                        "[rb75/named-entry-missing:{}] a claim inside {site_label}'s bracket \
-                         names a label that does not resolve to exactly one entry",
-                        claim.label
-                    ));
-                }
-            }
-        }
-
-        for digits in rb75_unbound_numerals(inner, &claim_starts) {
-            found.push(format!(
-                "[rb75/unbound-numeral:{site_label}] bare 4-digit run `{digits}` inside the \
-                 bracket is not bound to any `**label** (= ...` claim"
-            ));
-        }
-    }
-
-    /// One row of the rb-75 site table (final, post-adjudication shape).
-    /// `Copy` so the dispatch below can `match site.kind` BY VALUE through
-    /// the `&Rb75Site` the site-table loop iterates -- matching `&site.kind`
-    /// instead would bind every `&'static str` field as `&&'static str`
-    /// under match ergonomics, and `&&str` implements neither `Pattern`
-    /// (`.starts_with`/`.contains`/`.find`) nor anything this dispatch
-    /// needs; every field here is already `Copy` (`&'static str`), so this
-    /// derive changes nothing about ownership, only which type the compiler
-    /// infers at the match arms.
-    #[derive(Clone, Copy)]
-    enum Rb75SiteKind {
-        /// 11r-c: the header's combined-sequence position must lie strictly
-        /// between the two entries', and the site's own numeral must exceed
-        /// the crossed section's.
-        SectionCrossing {
-            other: &'static str,
-            header_prefix: &'static str,
-        },
-        /// 11r-f<-11r-h, rb-15<-rb-17: `other` must be the entries-only
-        /// predecessor, with a strictly larger numeral.
-        PrecededBy { other: &'static str },
-        /// M15a<-M15b: `other` must be the entries-only successor, `other`'s
-        /// LABEL LINE must carry `by_pr`, and the bracket must carry both
-        /// `by_pr` and `own_pr`. All three collapse to one label.
-        RewrittenBy {
-            other: &'static str,
-            by_pr: &'static str,
-            own_pr: &'static str,
-        },
-        /// ux2<-ux2b: `other` need only exist (index+2, ux4 sits between --
-        /// no adjacency requirement); the bracket must carry both PR tokens
-        /// and `claim_text` must occur in the entry's own text BEFORE the
-        /// bracket starts.
-        ClaimCorrespondence {
-            other: &'static str,
-            by_pr: &'static str,
-            own_pr: &'static str,
-            claim_text: &'static str,
-        },
-    }
-
-    struct Rb75Site {
-        label: &'static str,
-        kind: Rb75SiteKind,
-    }
-
-    const RB75_SITES: &[Rb75Site] = &[
-        Rb75Site {
-            label: "11r-c",
-            kind: Rb75SiteKind::SectionCrossing {
-                other: "M14.5b",
-                header_prefix: "## M14 ",
-            },
-        },
-        Rb75Site {
-            label: "11r-f",
-            kind: Rb75SiteKind::PrecededBy { other: "11r-h" },
-        },
-        Rb75Site {
-            label: "rb-15",
-            kind: Rb75SiteKind::PrecededBy { other: "rb-17" },
-        },
-        Rb75Site {
-            label: "M15a",
-            kind: Rb75SiteKind::RewrittenBy {
-                other: "M15b",
-                by_pr: "PR #168",
-                own_pr: "PR #165",
-            },
-        },
-        Rb75Site {
-            label: "ux2",
-            kind: Rb75SiteKind::ClaimCorrespondence {
-                other: "ux2b",
-                by_pr: "PR #273",
-                own_pr: "PR #255",
-                claim_text: "DISCHARGED by ux2b",
-            },
-        },
-    ];
-
-    /// Seam: a NON-SHORT-CIRCUITING labelled collector over `doc` alone
-    /// (synthetic fixtures drive this directly, with no filesystem access).
-    /// Every leg below runs regardless of an earlier leg's outcome, and
-    /// every violation found is APPENDED -- never returned early -- so one
-    /// RED lists every broken clause (the rb-67/rb-68/rb-71 precedent).
-    fn rb75_violations(doc: &str) -> Vec<String> {
-        let mut found: Vec<String> = Vec::new();
-
-        let hidden = rb71_hidden_ranges(doc);
-        let lines = Rb75Lines::new(doc);
-        let (entries, headers) = rb75_parse_doc(&lines, &hidden);
-        let all_brackets = rb75_all_brackets(&lines, &hidden);
-
-        // Whole-file roster (RULING adjudication /simplify: `bracket-foreign`
-        // was merged into per-site `bracket-missing` plus this ceiling-and-
-        // floor count).
-        if all_brackets.len() != 5 {
-            found.push(format!("[rb75/bracket-roster] {} != 5", all_brackets.len()));
-        }
-
-        for site in RB75_SITES {
-            let Some(self_entry) = rb75_resolve_named(&entries, site.label, &mut found) else {
-                continue;
-            };
-
-            let brackets_in_range: Vec<&Rb75Bracket> = all_brackets
-                .iter()
-                .filter(|b| b.open_pos >= self_entry.text_start && b.open_pos < self_entry.text_end)
-                .collect();
-
-            let bracket: Option<&Rb75Bracket> = match brackets_in_range.len() {
-                0 => {
-                    found.push(format!(
-                        "[rb75/bracket-missing:{}] no ` [rb-75: ... ]` bracket found in this \
-                         entry's text (outside hidden ranges)",
-                        site.label
-                    ));
-                    None
-                }
-                1 => Some(brackets_in_range[0]),
-                n => {
-                    found.push(format!(
-                        "[rb75/bracket-count:{}] {n} ` [rb-75: ... ]` brackets found in this \
-                         entry's text, expected exactly 1",
-                        site.label
-                    ));
-                    None
-                }
-            };
-
-            if let Some(b) = bracket {
-                let placement_ok = match self_entry.numeral_match_end {
-                    Some(end) => rb75_bracket_placement_ok(&lines, end, b),
-                    None => false,
-                };
-                if !placement_ok {
-                    found.push(format!(
-                        "[rb75/bracket-placement:{}] the bracket must start after the entry's \
-                         trailing `ADR next-free` numeral on the SAME line, contain no `<` \
-                         between them, and end (`]`) as the last byte of that line",
-                        site.label
-                    ));
-                } else {
-                    let inner = &doc[b.open_pos + 1..b.close_pos];
-                    rb75_check_bracket_content(&entries, site.label, inner, &mut found);
-                }
-            }
-
-            match site.kind {
-                Rb75SiteKind::SectionCrossing {
-                    other,
-                    header_prefix,
-                } => {
-                    if let Some(other_entry) = rb75_resolve_named(&entries, other, &mut found) {
-                        let header = headers.iter().find(|h| h.text.starts_with(header_prefix));
-                        let ok = match header {
-                            Some(h) => {
-                                self_entry.seq_idx < h.seq_idx
-                                    && h.seq_idx < other_entry.seq_idx
-                                    && self_entry.numeral.unwrap_or(0)
-                                        > other_entry.numeral.unwrap_or(0)
-                            }
-                            None => false,
-                        };
-                        if !ok {
-                            let header_line = header.map(|h| h.line);
-                            found.push(format!(
-                                "[rb75/section-crossing:{}] expected `{header_prefix}` (1-based \
-                                 line {header_line:?}) to sit strictly between this entry and \
-                                 `**{other}**`, with this entry's numeral strictly greater",
-                                site.label
-                            ));
-                        }
-                    }
-                }
-                Rb75SiteKind::PrecededBy { other } => {
-                    if let Some(other_entry) = rb75_resolve_named(&entries, other, &mut found) {
-                        if other_entry.entry_idx + 1 != self_entry.entry_idx {
-                            found.push(format!(
-                                "[rb75/not-adjacent:{}/{other}] expected `**{other}**` to be the \
-                                 entry immediately preceding this one (entry_idx {} vs {} - 1)",
-                                site.label, other_entry.entry_idx, self_entry.entry_idx
-                            ));
-                        }
-                        if other_entry.numeral.unwrap_or(0) <= self_entry.numeral.unwrap_or(0) {
-                            found.push(format!(
-                                "[rb75/inequality:{}/{other}] expected `**{other}**`'s numeral to \
-                                 be strictly greater than this entry's",
-                                site.label
-                            ));
-                        }
-                    }
-                }
-                Rb75SiteKind::RewrittenBy {
-                    other,
-                    by_pr,
-                    own_pr,
-                } => {
-                    if let Some(b) = bracket {
-                        if let Some(other_entry) = rb75_resolve_named(&entries, other, &mut found) {
-                            let idx_ok = other_entry.entry_idx == self_entry.entry_idx + 1;
-                            let label_line_ok =
-                                rb75_contains_token_boundary(&other_entry.label_line_text, by_pr);
-                            let inner = &doc[b.open_pos + 1..b.close_pos];
-                            let bracket_ok = rb75_contains_token_boundary(inner, by_pr)
-                                && rb75_contains_token_boundary(inner, own_pr);
-                            if !(idx_ok && label_line_ok && bracket_ok) {
-                                found.push(format!(
-                                    "[rb75/rewrite-correspondence:{}] expected `**{other}**` to be \
-                                     the immediately-following entry, its label line to carry \
-                                     `{by_pr}`, and this entry's bracket to carry both `{by_pr}` \
-                                     and `{own_pr}`",
-                                    site.label
-                                ));
-                            }
-                        }
-                    }
-                }
-                Rb75SiteKind::ClaimCorrespondence {
-                    other,
-                    by_pr,
-                    own_pr,
-                    claim_text,
-                } => {
-                    if let Some(b) = bracket {
-                        if rb75_resolve_named(&entries, other, &mut found).is_some() {
-                            let inner = &doc[b.open_pos + 1..b.close_pos];
-                            let bracket_ok = rb75_contains_token_boundary(inner, by_pr)
-                                && rb75_contains_token_boundary(inner, own_pr);
-                            // Loop over EVERY occurrence of `claim_text` in
-                            // this entry's own text until one is found that
-                            // is both outside every hidden range and sits
-                            // before the bracket -- a raw `.find` accepted
-                            // the FIRST occurrence unconditionally, so
-                            // wrapping the clause in `<!-- -->` (artifact
-                            // red-team HIGH finding) stayed GREEN.
-                            let mut claim_ok = false;
-                            let mut search_start = 0usize;
-                            while let Some(rel) = self_entry.text[search_start..].find(claim_text) {
-                                let match_rel = search_start + rel;
-                                let abs_pos = self_entry.text_start + match_rel;
-                                if !rb71_in_hidden_range(abs_pos, &hidden) && abs_pos < b.open_pos {
-                                    claim_ok = true;
-                                    break;
-                                }
-                                search_start = match_rel + claim_text.len();
-                            }
-                            if !(bracket_ok && claim_ok) {
-                                found.push(format!(
-                                    "[rb75/claim-correspondence:{}] expected this entry's own \
-                                     text to carry `{claim_text}` before its bracket, and the \
-                                     bracket to carry both `{by_pr}` and `{own_pr}`",
-                                    site.label
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        found
-    }
-
-    /// docs/adr/0232-*.md:52 and docs/adr/0245-*.md:13,144 cite
-    /// `mr_load_driver.rs:76-89` by RANGE, so this module is appended at
-    /// EOF and touches nothing above it except the two `pub(super)`
-    /// widenings this module needs.
-    #[test]
-    fn rb75_archlog_sites_are_annotated() {
-        let doc =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ARCHITECTURE.md"))
-                .expect(
-                "rb75: ARCHITECTURE.md must exist at the repo root, one level above sim-harness/",
-            );
-
-        let violations = rb75_violations(&doc);
-        assert!(
-            violations.is_empty(),
-            "rb75: every measured `ADR next-free` anomaly site (11r-c, 11r-f, rb-15, M15a, \
-             ux2) must carry a correct, correctly placed `[rb-75: ...]` annotation.\n\
-             Violations:\n  - {}",
-            violations.join("\n  - ")
-        );
-    }
-
-    /// Anti-lockstep anchor (rb-71 precedent): these thirteen numerals are
-    /// typed ONCE by hand from the 2026-09-11 git-verified measurement in
-    /// the rb-75 plan's adjudication section. They must NEVER be derived
-    /// from the live document -- doing so would make this test incapable of
-    /// catching a historical numeral silently drifting alongside an
-    /// unrelated doc edit, which is the exact defect class rb-75 exists to
-    /// annotate, not to correct.
-    #[test]
-    fn rb75_no_historical_numeral_changed() {
-        let doc =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ARCHITECTURE.md"))
-                .expect(
-                "rb75: ARCHITECTURE.md must exist at the repo root, one level above sim-harness/",
-            );
-
-        const EXPECTED: &[(&str, u32)] = &[
-            ("11r-c", 169),
-            ("11r-f", 172),
-            ("rb-15", 217),
-            ("M15a", 107),
-            ("ux2", 155),
-            ("11r-h", 173),
-            ("rb-17", 218),
-            ("M15b", 108),
-            ("ux2b", 170),
-            ("M14.5b", 100),
-            ("uxd2", 162),
-            ("uxd3-a", 163),
-            ("uxd3-b", 164),
-        ];
-
-        let hidden = rb71_hidden_ranges(&doc);
-        let lines = Rb75Lines::new(&doc);
-        let (entries, _headers) = rb75_parse_doc(&lines, &hidden);
-
-        let mut mismatches = Vec::new();
-        for (label, expected) in EXPECTED {
-            let matches = rb75_entries_with_label(&entries, label);
-            match matches.as_slice() {
-                [entry] => {
-                    if entry.numeral != Some(*expected) {
-                        mismatches.push(format!(
-                            "{label}: expected {expected:04}, live {:?}",
-                            entry.numeral
-                        ));
-                    }
-                }
-                other => mismatches.push(format!(
-                    "{label}: expected exactly 1 entry, found {} (1-based lines {:?})",
-                    other.len(),
-                    other.iter().map(|e| e.label_line).collect::<Vec<_>>()
-                )),
-            }
-        }
-
-        assert!(
-            mismatches.is_empty(),
-            "rb75: a historical `ADR next-free` numeral changed value since the 2026-09-11 \
-             measurement recorded in the rb-75 plan -- these numerals are byte-preserved \
-             history, never corrected in place:\n  - {}",
-            mismatches.join("\n  - ")
-        );
-    }
-
-    // -----------------------------------------------------------------
-    // T3 -- synthetic control fixtures. Never reads the live tree, so this
-    // test is GREEN both before and after the doc annotation lands (the
-    // rb-67/rb-71 precedent).
-    // -----------------------------------------------------------------
-
-    const RB75_BRACKET_11RC: &str = " [rb-75: **11r-c** (= 0169) is this entry's own value; the \
-         notes below it -- **uxd2** (= 0162), **uxd3-a** (= 0163), **uxd3-b** (= 0164) and \
-         **M14.5b** (= 0100) -- all predate it.]";
-    const RB75_BRACKET_11RF: &str = " [rb-75: **11r-f** (= 0172) is this entry's pre-reserved \
-         value, computed before **11r-h** (= 0173, PR #276) merged; 11r-f merged after it as \
-         PR #277 the same day.]";
-    const RB75_BRACKET_11RF_BARE: &str = " [rb-75: **11r-f** (= 0172) is this entry's \
-         pre-reserved value, computed before **11r-h** (= 0173, PR #276) merged; 11r-f merged \
-         after it as PR #277 the same day. Also see 0173 for context.]";
-    const RB75_BRACKET_RB15: &str = " [rb-75: **rb-15** (= 0217, PR #391) and **rb-17** (= 0218, \
-         PR #393) both merged the same day; rb-17 merged AFTER rb-15 but its entry sits above \
-         this one.]";
-    const RB75_BRACKET_M15A: &str = " [rb-75: **M15a** (= 0107) was added by PR #165; rewritten \
-         the next day by **M15b** (= 0108, PR #168) to mark it complete. The numeral was \
-         unchanged.]";
-    const RB75_BRACKET_UX2: &str = " [rb-75: **ux2** (= 0155) was added by PR #255; the clause \
-         above was written into this entry by PR #273, 11r-e = **ux2b** (= 0170). The numeral \
-         was unchanged.]";
-    /// Same content as `RB75_BRACKET_11RF`, plus an embedded inline code
-    /// span containing a literal `]` (`` `arr[0]` ``) BEFORE the bracket's
-    /// real, end-of-line closing `]`. Positive control for the artifact
-    /// red-team MED finding: closing at the FIRST `]` after the token
-    /// truncates here and false-REDs `[rb75/bracket-placement:11r-f]` on an
-    /// otherwise-correct bracket.
-    const RB75_BRACKET_11RF_CODESPAN: &str = " [rb-75: **11r-f** (= 0172) is this entry's \
-         pre-reserved value (see `arr[0]` for context), computed before **11r-h** (= 0173, \
-         PR #276) merged; 11r-f merged after it as PR #277 the same day.]";
-
-    /// The positive-control fixture doc: a minimal synthetic ARCHITECTURE.md
-    /// carrying all ten site/neighbour labels, two headers, and all five
-    /// FINAL bracket texts from the rb-75 plan (adapted to this fixture's
-    /// own labels/numerals), correctly placed and internally consistent.
-    fn rb75_fixture_clean_doc() -> String {
-        format!(
-            "## M11 -- fixture section\n\n\
-             **11r-c** (fixture note) complete. ADR next-free = 0169.{RB75_BRACKET_11RC}\n\n\
-             **uxd2** (fixture note) complete. ADR next-free = 0162.\n\n\
-             **uxd3-a** (fixture note) complete. ADR next-free = 0163.\n\n\
-             **uxd3-b** (fixture note) complete. ADR next-free = 0164.\n\n\
-             ## M14 -- fixture section\n\n\
-             **M14.5b** (fixture note) complete. ADR next-free = 0100.\n\n\
-             **M15a** (fixture note, PR #165) complete. ADR next-free = 0107.{RB75_BRACKET_M15A}\n\n\
-             **M15b** (fixture note, PR #168) complete. ADR next-free = 0108.\n\n\
-             **ux2** (fixture note) complete; the clause above was DISCHARGED by ux2b already. \
-             ADR next-free = 0155.{RB75_BRACKET_UX2}\n\n\
-             **ux4** (fixture note) complete. ADR next-free = 0156.\n\n\
-             **ux2b** (fixture note) complete. ADR next-free = 0170.\n\n\
-             **11r-h** (fixture note) complete. ADR next-free = 0173.\n\n\
-             **11r-f** (fixture note) complete. ADR next-free = 0172.{RB75_BRACKET_11RF}\n\n\
-             **rb-17** (fixture note) complete. ADR next-free = 0218.\n\n\
-             **rb-15** (fixture note) complete (amended in-body). ADR next-free = 0217 \
-             (fixture parenthetical).{RB75_BRACKET_RB15}\n"
-        )
-    }
-
-    /// Swaps the physically-adjacent 11r-h/11r-f blocks so 11r-f now
-    /// precedes 11r-h instead of following it -- kills the PrecededBy
-    /// adjacency check without touching either entry's own numeral.
-    fn rb75_fixture_swapped_11rf_11rh_doc() -> String {
-        let before = format!(
-            "**11r-h** (fixture note) complete. ADR next-free = 0173.\n\n\
-             **11r-f** (fixture note) complete. ADR next-free = 0172.{RB75_BRACKET_11RF}\n\n"
-        );
-        let after = format!(
-            "**11r-f** (fixture note) complete. ADR next-free = 0172.{RB75_BRACKET_11RF}\n\n\
-             **11r-h** (fixture note) complete. ADR next-free = 0173.\n\n"
-        );
-        rb75_fixture_clean_doc().replacen(&before, &after, 1)
-    }
-
-    #[test]
-    fn rb75_archlog_oracle_control() {
-        const RB75_FIXTURE_FLOOR: usize = 12;
-        let mut fixture_count = 0usize;
-
-        // 1. CLEAN -- positive control.
-        {
-            let doc = rb75_fixture_clean_doc();
-            let found = rb75_violations(&doc);
-            assert!(
-                found.is_empty(),
-                "rb75 [control/clean]: this fixture is a POSITIVE control and must be \
-                 accepted. Violations:\n  - {}",
-                found.join("\n  - ")
-            );
-            fixture_count += 1;
-        }
-
-        // 2. BRACKET REMOVED -- 11r-f loses its whole bracket.
-        {
-            let doc = rb75_fixture_clean_doc().replace(RB75_BRACKET_11RF, "");
-            let found = rb75_violations(&doc);
-            assert!(
-                found
-                    .iter()
-                    .any(|v| v.contains("[rb75/bracket-missing:11r-f]")),
-                "rb75 [control/bracket-missing]: expected `[rb75/bracket-missing:11r-f]`, \
-                 found:\n  - {}",
-                found.join("\n  - ")
-            );
-            assert!(
-                found.iter().any(|v| v.contains("[rb75/bracket-roster]")),
-                "rb75 [control/bracket-missing]: expected `[rb75/bracket-roster]`, found:\n  - {}",
-                found.join("\n  - ")
-            );
-            fixture_count += 1;
-        }
-
-        // 3. NUMERAL-MISMATCH -- 11r-f's bracket claims 11r-h is 0174, but
-        //    11r-h's own live numeral is still 0173.
-        {
-            let doc = rb75_fixture_clean_doc().replace("**11r-h** (= 0173", "**11r-h** (= 0174");
-            let found = rb75_violations(&doc);
-            assert!(
-                found
-                    .iter()
-                    .any(|v| v.contains("[rb75/numeral-mismatch:11r-f/11r-h]")),
-                "rb75 [control/numeral-mismatch]: expected \
-                 `[rb75/numeral-mismatch:11r-f/11r-h]`, found:\n  - {}",
-                found.join("\n  - ")
-            );
-            fixture_count += 1;
-        }
-
-        // 4. UNBOUND-NUMERAL -- a bare `0173` sentence added inside 11r-f's
-        //    bracket, not bound by any `**label** (= ...` claim.
-        {
-            let doc = rb75_fixture_clean_doc().replace(RB75_BRACKET_11RF, RB75_BRACKET_11RF_BARE);
-            let found = rb75_violations(&doc);
-            assert!(
-                found
-                    .iter()
-                    .any(|v| v.contains("[rb75/unbound-numeral:11r-f]")),
-                "rb75 [control/unbound-numeral]: expected `[rb75/unbound-numeral:11r-f]`, \
-                 found:\n  - {}",
-                found.join("\n  - ")
-            );
-            fixture_count += 1;
-        }
-
-        // 5. NOT-ADJACENT -- 11r-h and 11r-f entries physically swapped.
-        {
-            let doc = rb75_fixture_swapped_11rf_11rh_doc();
-            let found = rb75_violations(&doc);
-            assert!(
-                found
-                    .iter()
-                    .any(|v| v.contains("[rb75/not-adjacent:11r-f/11r-h]")),
-                "rb75 [control/not-adjacent]: expected `[rb75/not-adjacent:11r-f/11r-h]`, \
-                 found:\n  - {}",
-                found.join("\n  - ")
-            );
-            fixture_count += 1;
-        }
-
-        // 6. LABEL-AMBIGUOUS -- a second column-0 `**11r-f** (decoy)` entry.
-        {
-            let doc = rb75_fixture_clean_doc().replacen(
-                "## M11 -- fixture section\n\n",
-                "## M11 -- fixture section\n\n\
-                 **11r-f** (decoy fixture entry) complete. ADR next-free = 0999.\n\n",
-                1,
-            );
-            let found = rb75_violations(&doc);
-            assert!(
-                found
-                    .iter()
-                    .any(|v| v.contains("[rb75/label-ambiguous:11r-f]")),
-                "rb75 [control/label-ambiguous]: expected `[rb75/label-ambiguous:11r-f]`, \
-                 found:\n  - {}",
-                found.join("\n  - ")
-            );
-            fixture_count += 1;
-        }
-
-        // 7. HTML-COMMENT-HIDDEN -- rb-15's bracket wrapped in `<!-- ... -->`,
-        //    invisible to the census that feeds `[rb75/bracket-missing]`.
-        {
-            let wrapped = format!("<!--{RB75_BRACKET_RB15}-->");
-            let doc = rb75_fixture_clean_doc().replace(RB75_BRACKET_RB15, &wrapped);
-            let found = rb75_violations(&doc);
-            assert!(
-                found
-                    .iter()
-                    .any(|v| v.contains("[rb75/bracket-missing:rb-15]")),
-                "rb75 [control/html-comment-hidden]: expected \
-                 `[rb75/bracket-missing:rb-15]`, found:\n  - {}",
-                found.join("\n  - ")
-            );
-            fixture_count += 1;
-        }
-
-        // 8. BRACKET-PLACEMENT -- rb-15's bracket moved to BEFORE its
-        //    trailing parenthetical, so the line no longer ends with `]`.
-        {
-            let before = format!(
-                "**rb-15** (fixture note) complete (amended in-body). ADR next-free = 0217 \
-                 (fixture parenthetical).{RB75_BRACKET_RB15}\n"
-            );
-            let after = format!(
-                "**rb-15** (fixture note) complete (amended in-body). ADR next-free = \
-                 0217.{RB75_BRACKET_RB15} (fixture parenthetical).\n"
-            );
-            let doc = rb75_fixture_clean_doc().replace(&before, &after);
-            let found = rb75_violations(&doc);
-            assert!(
-                found
-                    .iter()
-                    .any(|v| v.contains("[rb75/bracket-placement:rb-15]")),
-                "rb75 [control/bracket-placement]: expected \
-                 `[rb75/bracket-placement:rb-15]`, found:\n  - {}",
-                found.join("\n  - ")
-            );
-            fixture_count += 1;
-        }
-
-        // 9. COLUMN-0 BRACKET (no leading space) -- a decoy bracket planted
-        //    right after uxd2's note, at the very start of its own line.
-        //    Must still be COUNTED by the whole-file roster.
-        {
-            let doc = rb75_fixture_clean_doc().replacen(
-                "**uxd2** (fixture note) complete. ADR next-free = 0162.\n\n",
-                "**uxd2** (fixture note) complete. ADR next-free = 0162.\n\n\
-                 [rb-75: decoy bracket planted at column 0, no leading space]\n\n",
-                1,
-            );
-            let found = rb75_violations(&doc);
-            assert!(
-                found
-                    .iter()
-                    .any(|v| v.contains("[rb75/bracket-roster] 6 != 5")),
-                "rb75 [control/column-0-bracket]: expected \
-                 `[rb75/bracket-roster] 6 != 5`, found:\n  - {}",
-                found.join("\n  - ")
-            );
-            fixture_count += 1;
-        }
-
-        // 10. PR-TOKEN BOUNDARY -- M15b's heading `PR #168` becomes
-        //     `PR #1680`, which must NOT satisfy a plain-substring match.
-        {
-            let doc = rb75_fixture_clean_doc().replace(
-                "**M15b** (fixture note, PR #168) complete.",
-                "**M15b** (fixture note, PR #1680) complete.",
-            );
-            let found = rb75_violations(&doc);
-            assert!(
-                found
-                    .iter()
-                    .any(|v| v.contains("[rb75/rewrite-correspondence:M15a]")),
-                "rb75 [control/pr-token-boundary]: expected \
-                 `[rb75/rewrite-correspondence:M15a]`, found:\n  - {}",
-                found.join("\n  - ")
-            );
-            fixture_count += 1;
-        }
-
-        // 11. CLAUSE HIDDEN IN AN HTML COMMENT -- ux2's own `DISCHARGED by
-        //     ux2b` clause wrapped in `<!-- ... -->`, so its only
-        //     occurrence is invisible to the claim-correspondence scan.
-        {
-            let doc =
-                rb75_fixture_clean_doc().replace("DISCHARGED by ux2b", "<!--DISCHARGED by ux2b-->");
-            let found = rb75_violations(&doc);
-            assert!(
-                found
-                    .iter()
-                    .any(|v| v.contains("[rb75/claim-correspondence:ux2]")),
-                "rb75 [control/clause-hidden-in-html-comment]: expected \
-                 `[rb75/claim-correspondence:ux2]`, found:\n  - {}",
-                found.join("\n  - ")
-            );
-            fixture_count += 1;
-        }
-
-        // 12. EMBEDDED CODE-SPAN BRACKET -- positive control: 11r-f's
-        //     bracket carries an inline code span containing a literal `]`
-        //     (`` `arr[0]` ``) before its own real, end-of-line `]`. Must
-        //     NOT false-RED `[rb75/bracket-placement]`.
-        {
-            let doc =
-                rb75_fixture_clean_doc().replace(RB75_BRACKET_11RF, RB75_BRACKET_11RF_CODESPAN);
-            let found = rb75_violations(&doc);
-            assert!(
-                found.is_empty(),
-                "rb75 [control/embedded-codespan-bracket]: this fixture is a POSITIVE \
-                 control and must be accepted. Violations:\n  - {}",
-                found.join("\n  - ")
-            );
-            fixture_count += 1;
-        }
-
-        assert!(
-            fixture_count >= RB75_FIXTURE_FLOOR,
-            "rb75: fixture roster shrank to {fixture_count}, below the floor of \
-             {RB75_FIXTURE_FLOOR} -- a fixture was quietly deleted rather than a new bypass \
-             shape being added"
-        );
     }
 }

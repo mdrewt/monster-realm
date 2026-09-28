@@ -1,13 +1,13 @@
 //! Raising rule functions — focus-training (EV top-off → re-derive) and the
-//! shared cooldown-ready predicate. All pure and deterministic (ADR-0003 /
-//! ADR-0058): no clock, no RNG, no I/O. The care cooldown time is read from
-//! `ctx.timestamp` in the M9b reducer, never here.
+//! shared cooldown-ready predicate. All pure and deterministic:
+//! no clock, no RNG, no I/O. The care cooldown time is read from
+//! `ctx.timestamp`, never here.
 //!
 //! `focus_train` is **reject-not-clamp**: a maxed target stat / exhausted EV
 //! budget returns `Err` so the M9b reducer rejects the action and does NOT
-//! consume the food for nothing (M9 spec §3).
+//! consume the food for nothing.
 //! Stat derivation is **not** duplicated here — the topped-off EVs are fed back
-//! through the single-source `derive_stats` (ADR-0016 derive-on-write).
+//! through the single-source `derive_stats`.
 
 use crate::monster::rules::derive_stats;
 use crate::monster::types::{
@@ -17,8 +17,8 @@ use crate::monster::types::{
 use super::types::{FocusTrainError, FocusTrainResult};
 
 // The per-stat (252) and total (510) EV caps are imported from `monster::types`
-// — one SSOT for the caps the `EVs` constructor enforces (ADR-0058 residual (b)
-// resolved). They are NOT re-declared here; a single definition keeps
+// — one SSOT for the caps the `EVs` constructor enforces.
+// They are NOT re-declared here; a single definition keeps
 // `focus_train`'s top-off in lockstep with `EVs::new`'s rejection thresholds, so
 // neither a too-high nor a too-low local copy can drift them apart.
 
@@ -26,17 +26,17 @@ use super::types::{FocusTrainError, FocusTrainResult};
 /// to the per-stat cap (252) AND the total-EV cap (510) — never overflowing —
 /// then re-derive the monster's stats through the single-source `derive_stats`.
 ///
-/// Returns the new `EVs` and re-derived `StatBlock` (the M9b reducer writes both
-/// back). Reject-not-clamp, with precise variants in a pinned guard order
-/// (ADR-0058 §2 — input-validity before state): `NoEffect` if `amount == 0`;
-/// else `StatAtCap` if the target is already 252; else `BudgetExhausted` if the
-/// total is already 510 (target below 252). After the guards the grant is always
-/// `>= 1`, so a successful `Ok` always moves at least one EV (reject-not-no-op).
+/// Returns the new `EVs` and re-derived `StatBlock`.
+/// Reject-not-clamp, with precise variants in a pinned guard order:
+/// `NoEffect` if `amount == 0`; else `StatAtCap` if the target is already 252;
+/// else `BudgetExhausted` if the total is already 510 (target below 252). After
+/// the guards the grant is always `>= 1`, so a successful `Ok` always moves at
+/// least one EV (reject-not-no-op).
 ///
 /// # Errors
 /// `FocusTrainError` whenever the application would move zero EVs (see above).
 /// (The returned `Result` — and `FocusTrainResult` — are both `#[must_use]`, so
-/// the M9b reducer cannot silently drop the re-derived stats.)
+/// silently drop the re-derived stats.)
 pub fn focus_train(
     base: &StatBlock,
     ivs: &IVs,
@@ -75,13 +75,11 @@ pub fn focus_train(
     })
 }
 
-/// Per-monster care cooldown in ms (6 h). Playtest-tunable (M9 spec §6). Moved to
-/// game-core in ptc5e-1 (a single global duration is a sibling of `CHALLENGE_TTL_MS`,
-/// not per-entity data like `heal_location_row.cooldown_ms`).
+/// Per-monster care cooldown in ms (6 h). Playtest-tunable.
 pub const CARE_COOLDOWN_MS: i64 = 6 * 60 * 60 * 1000;
 
 /// True iff a cooldown has fully elapsed: `now_ms - last_ms >= cooldown_ms`
-/// (ptc5e-1, mirroring `is_challenge_stale`). ONE cooldown-ready predicate shared
+/// (mirroring `is_challenge_stale`). ONE cooldown-ready predicate shared
 /// by the `care` and `heal` shells (both previously open-coded the identical
 /// check) — the SSOT for "is this timed action off cooldown yet".
 ///

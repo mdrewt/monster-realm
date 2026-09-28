@@ -74,8 +74,7 @@ describe('TileMap.fromRaw: parse, not validate', () => {
     ).toThrow();
   });
 
-  // M8c — SOURCE OF TRUTH: M8-encounters-recruit.spec §3, PLAN-v2 cross-boundary
-  // contract: `RawTileMap.grass` is additive on the wire; `fromRaw` holds the same
+  // `RawTileMap.grass` is additive on the wire; `fromRaw` holds the same
   // grid invariant for grass as for walkable (parse-don't-validate). Mirrors the
   // existing ragged-`walkable` test.
   it('BITES: rejects a ragged grass length (grass must be width*height too)', () => {
@@ -172,15 +171,7 @@ describe('TileMap walkability matches zone_0 (visual-SSOT)', () => {
 
 // =============================================================================
 // M11c extension: TileMap warp field (C2 — warp field parse + isWarp)
-// SOURCE OF TRUTH: M11c EARS C2 — TileMap warp field.
 //
-// RED REASON: `RawTileMap` has no `warps` field yet, `RawWarpDef` interface does
-// not exist, and `TileMap` has no `isWarp(x, y)` method. All four test blocks
-// below will fail to compile / fail assertions until the implementer adds:
-//   - `RawWarpDef` interface exported from map.ts
-//   - `warps?: readonly RawWarpDef[]` on `RawTileMap`
-//   - `isWarp(x, y): boolean` on `TileMap` (out-of-bounds → false, never throw)
-//   - `fromRaw` must accept a warps array and populate the warp set
 // =============================================================================
 
 import type { RawWarpDef } from './map';
@@ -188,7 +179,6 @@ import type { RawWarpDef } from './map';
 // RawWarpDef mirrors the serde output of game-core's `WarpDef` struct:
 //   { from: TilePos, to_zone: u32, to_tile: TilePos }
 // where TilePos serializes as { x: i32, y: i32 }.
-// The implementer must export `RawWarpDef` from map.ts with exactly this shape.
 // Spec rationale: zone_map() hands the serialized TileMap (including warps) over
 // the wasm boundary via serde; the TS interface must match the wire format.
 

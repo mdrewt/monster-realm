@@ -1,8 +1,7 @@
 //! `native_host_tests` — a test-only, in-memory implementation of the
 //! SpacetimeDB host syscalls that the `#[table]`-generated accessor code calls,
 //! so the SHIPPED reducer-side helpers can run against REAL rows inside an
-//! ordinary native `cargo test` binary (rb-41, ADR-0222 amendment; the
-//! ADR-0224 migration of the guest-claim-integrity exists-half check).
+//! ordinary native `cargo test` binary.
 //!
 //! HOW THE PIECES FIT. `spacetimedb::ReducerContext::__dummy()` (crate 2.8.1,
 //! `src/lib.rs:1043`, `#[doc(hidden)] pub`) yields a context whose `db` is the
@@ -10,37 +9,19 @@
 //! production helper compiles and runs unchanged. That generated code bottoms
 //! out in the `extern "C"` host imports declared by `spacetimedb-bindings-sys`
 //! (`#[link(wasm_import_module = "spacetime_10.x")]`), which the native
-//! test target leaves UNDEFINED — until now the crate linked only because two
-//! test files defined aborting `#[no_mangle]` stubs for them. This module defines every
-//! one of those ELEVEN symbols ONCE (a `#[no_mangle]` symbol is one-definition-per-binary)
-//! and implements SEVEN of them unconditionally: the two name lookups, the index point and
-//! range scans, the row iterator's advance and close, and the index-point DELETE on an index
-//! a fixture registered. The other FOUR — table scan, insert, update, delete_all_by_eq —
-//! stay loudly unmodelled UNLESS the test opts that one table in (`Handle::writable` /
-//! `Handle::scannable`: the ST-native_host_tests extension at the end of this file). A
-//! full-table `.iter()` is the shape this repo bans in owner-scoped readers, so a predicate
-//! reaching for one on a table nobody opted in must fail here, not pass. Tests seed rows
-//! through [`Fixture::table`] / [`Fixture::table_keyed`] — never the db handle.
+//! test target leaves UNDEFINED. This module defines every one of those ELEVEN symbols ONCE
+//! (a `#[no_mangle]` symbol is one-definition-per-binary) and implements SEVEN of them
+//! unconditionally: the two name lookups, the index point and range scans, the row
+//! iterator's advance and close, and the index-point DELETE on an index a fixture
+//! registered. The other FOUR — table scan, insert, update, delete_all_by_eq — stay loudly
+//! unmodelled UNLESS the test opts that one table in (`Handle::writable` /
+//! `Handle::scannable`). A full-table `.iter()` is the shape this repo bans in owner-scoped
+//! readers, so a predicate reaching for one on a table nobody opted in must fail here, not
+//! pass. Tests seed rows through [`Fixture::table`] / [`Fixture::table_keyed`] — never the
+//! db handle.
 //!
-//! NAMING IS LOAD-BEARING. The module name ends in `tests` because the
-//! `accounts_tests.rs` module census (`m22_declared_mod_names`) exempts only
-//! `*tests` names from its "every declared mod has a scanned production file"
-//! rule; the file name ends in `_tests.rs` because that suffix is what the
-//! `_tests.rs`-exempting cross-file eval scanners key on. The declaring `mod`
-//! line in `lib.rs` carries the cfg(test) attribute, and THIS file deliberately
-//! never spells that attribute out: the monster-privacy `[SCOPE]` clause first
-//! looks for the literal in the excluded file's raw text (prose included) and
-//! only then checks the parent declaration — so a file that mentions the
-//! attribute self-certifies — and its parent branch accepts ANY such literal
-//! within 160 characters above the declaration, so the gated module declared
-//! just above this one vouches for it too (both MEASURED in rb-41). The guard
 //! that actually keeps this module out of the published wasm is the compiler:
 //! any non-test reference to it fails the publish build with E0433.
-//!
-//! SCAN HYGIENE. This file never names a table accessor, a row type or a table
-//! attribute: table and index names arrive from the caller as plain strings
-//! and rows arrive already typed, so no accessor-token scanner (currency
-//! integrity, dual-write, single-stack, ...) has anything to match here.
 //!
 //! ISOLATION. `cargo nextest` (what every `just` gate runs) gives each test its
 //! own process, so CI never exercises the lock below; plain `cargo test` shares
@@ -73,7 +54,7 @@ struct Host {
     /// Canonical index name (`{table}_{col}_idx_btree`) -> id. Never reset.
     index_ids: HashMap<String, u32>,
     /// index id -> (table id, key comparator), bound only for indexes THIS
-    /// fixture registered — reset by every [`fixture`] since rb-109, because it
+    /// fixture registered — reset by every [`fixture`] because it
     /// now decides whether a WRITE aborts (D5). An index no test registered has
     /// NO table behind it: READS over it yield no rows — what lets
     /// `account_has_game_data` visit six tables while a test registers one.
@@ -184,7 +165,7 @@ impl Fixture {
     /// The canonical index name `{table}_{column}_idx_btree` is derived HERE,
     /// never passed in: a hand-supplied name could bind another table's index
     /// to this table's rows and let a predicate that reads the wrong table
-    /// pass (red-team, rb-41). Idempotent per name. A test registers exactly
+    /// pass. Idempotent per name. A test registers exactly
     /// the one table its predicate owns; the shim models no constraints, so a
     /// duplicate unique key seeded by mistake surfaces as the bindings' own
     /// `cannot return more than one row` assertion inside `find`.
@@ -198,7 +179,7 @@ impl Fixture {
     }
 
     /// The same registration for an index keyed by any column type (a `u64`
-    /// auto-inc key, say; rb-47). Same derived-name rule and idempotence as
+    /// auto-inc key, say). Same derived-name rule and idempotence as
     /// [`Fixture::table`], its `Identity`-keyed alias. Register SEVERAL indexes of
     /// one table to read it both ways — rows are keyed per index (ST extension).
     pub(crate) fn table_keyed<'a, R, K>(
@@ -484,9 +465,9 @@ unsafe extern "C" fn datastore_delete_by_index_scan_point_bsatn(
 }
 
 // ---------------------------------------------------------------------------
-// rb-109 — THE RANGE MODEL: what the scan below reads off the wire, what it
+// THE RANGE MODEL: what the scan below reads off the wire, what it
 // decides for itself, and which of its answers is a MODEL rather than an
-// observation. (ADR-0222 amendment; the value oracles are the `rb109_` tests.)
+// observation. (the value oracles are the `rb109_` tests.)
 //
 // THE WIRE FORMAT. Each side of a range arrives as the BSATN of a `Bound<T>`:
 // tag byte 0 `Included` followed by the BSATN of the payload, 1 `Excluded`
@@ -650,14 +631,14 @@ impl<R: Serialize, K: Serialize> Handle<'_, R, K> {
     /// generated read path gets. The read-back half of the seeding API, so a
     /// test can compare the store against an expected SET rather than a count.
     ///
-    /// THE LOCK RULE (ADR-0222 amendment, D9). [`host`] is a plain,
-    /// NON-REENTRANT `Mutex`: a call made from inside a host syscall — from a
-    /// comparator, say — would deadlock. A live `ctx.db..filter(..)` iterator
-    /// holds no lock BETWEEN syscalls, so calling this between two `next()`
-    /// calls does not hang; it is banned anyway, because that iterator was
-    /// handed its rows when it opened and a seed or a delete underneath it
-    /// leaves a reader looking at a store that has moved. COLLECT first, assert
-    /// afterwards — which is what every `rb109_` test does.
+    /// THE LOCK RULE. [`host`] is a plain, NON-REENTRANT `Mutex`: a call made
+    /// from inside a host syscall — from a comparator, say — would deadlock. A
+    /// live `ctx.db..filter(..)` iterator holds no lock BETWEEN syscalls, so
+    /// calling this between two `next()` calls does not hang; it is banned
+    /// anyway, because that iterator was handed its rows when it opened and a
+    /// seed or a delete underneath it leaves a reader looking at a store that
+    /// has moved. COLLECT first, assert afterwards — which is what every
+    /// `rb109_` test does.
     pub(crate) fn rows(&self) -> Vec<R>
     where
         R: DeserializeOwned,
@@ -702,7 +683,7 @@ impl Fixture {
 // * OPT-IN WRITES AND SCANS. `Handle::writable()` lets the generated insert /
 //   update / delete_all_by_eq / clear reach THAT table; `Handle::scannable()`
 //   lets `.iter()` / `.count()` reach it. A table nobody opted in keeps the old
-//   wall — the same abort several suites (rb73_session_tests) use as their kill
+//   wall — the same abort several suites (lifecycle_tests) use as their kill
 //   mechanism. `Handle::unique()` makes this handle's index a unique constraint
 //   (insert/update collisions return UNIQUE_ALREADY_EXISTS); `Handle::auto_inc`
 //   models ONE u64 sequence column (0 is the trigger, as in
@@ -1094,6 +1075,21 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_conversation, public)]` in schema.rs.
     #[link_name = "__preinit__20_register_describer_my_conversation"]
     fn register_view_my_conversation();
+    /// `#[spacetimedb::view(accessor = my_monster_pub, public)]` in schema.rs.
+    #[link_name = "__preinit__20_register_describer_my_monster_pub"]
+    fn register_view_my_monster_pub();
+    /// `#[spacetimedb::view(accessor = my_battle, public)]` in schema.rs.
+    #[link_name = "__preinit__20_register_describer_my_battle"]
+    fn register_view_my_battle();
+    /// `#[spacetimedb::view(accessor = my_pending_evolution_notices, public)]` in schema.rs.
+    #[link_name = "__preinit__20_register_describer_my_pending_evolution_notices"]
+    fn register_view_my_pending_evolution_notices();
+    /// `#[spacetimedb::view(accessor = my_export_bundle, public)]` in privacy.rs.
+    #[link_name = "__preinit__20_register_describer_my_export_bundle"]
+    fn register_view_my_export_bundle();
+    /// `#[spacetimedb::view(accessor = my_inventory, public)]` in schema.rs.
+    #[link_name = "__preinit__20_register_describer_my_inventory"]
+    fn register_view_my_inventory();
     /// spacetimedb 2.8.1 `rt.rs:1267` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
@@ -1107,10 +1103,15 @@ unsafe extern "C" {
 }
 
 /// Registered in this order, so a view's `VIEWS` id is its index here.
-const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 3] = [
+const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 8] = [
     register_view_my_wallet,
     register_view_my_account,
     register_view_my_conversation,
+    register_view_my_monster_pub,
+    register_view_my_battle,
+    register_view_my_pending_evolution_notices,
+    register_view_my_export_bundle,
+    register_view_my_inventory,
 ];
 
 /// `VIEWS` id of `my_wallet` (its index in [`VIEW_DESCRIBERS`]).
@@ -1121,6 +1122,21 @@ pub(crate) const VIEW_MY_ACCOUNT: usize = 1;
 
 /// `VIEWS` id of `my_conversation` (its index in [`VIEW_DESCRIBERS`]).
 pub(crate) const VIEW_MY_CONVERSATION: usize = 2;
+
+/// `VIEWS` id of `my_monster_pub` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_MONSTER_PUB: usize = 3;
+
+/// `VIEWS` id of `my_battle` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_BATTLE: usize = 4;
+
+/// `VIEWS` id of `my_pending_evolution_notices` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_PENDING_EVOLUTION_NOTICES: usize = 5;
+
+/// `VIEWS` id of `my_export_bundle` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_EXPORT_BUNDLE: usize = 6;
+
+/// `VIEWS` id of `my_inventory` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_INVENTORY: usize = 7;
 
 const VIEW_SINK: u32 = 0x71E5;
 

@@ -1,4 +1,4 @@
-// ui/sessionModel.ts — the PURE session-lifecycle decision core (ADR-0182 D17, M21b-2).
+// ui/sessionModel.ts — the PURE session-lifecycle decision core.
 //
 // AUTH-46/47/49/56/59. No DOM, no SDK, no clock, no storage — the whole point is that the
 // continue-anonymously affordance can ONLY be reached by an explicit, confirmed action, and a

@@ -1,7 +1,7 @@
 //! Headless model of the M2 authoritative movement loop, for in-CI netcode tests
 //! without a live module: a per-character intent queue + a per-zone tick that
 //! drains ONE move/character/tick via the SAME `game_core::apply_move` the server
-//! reducer calls. It verifies the loop CONTRACT (ADR-0011): drain-one (server pace),
+//! reducer calls. It verifies the loop CONTRACT: drain-one (server pace),
 //! bounded queue (anti-flood), monotonic `seq`, zoned isolation, replay-determinism.
 //! The actual reducer is the thin shell over the same rule; this proves the logic.
 
@@ -80,9 +80,9 @@ impl ServerWorld {
     /// Mirror of the per-zone `movement_tick`: drain ≤1 move per character whose
     /// `zone_id == zone`, via `apply_move`. Snapshots ids before mutating.
     ///
-    /// Warp resolution mirrors `movement_tick` (ADR-0020/0066): if a moved
+    /// Warp resolution mirrors `movement_tick`: if a moved
     /// character lands on a warp tile (`map.warp_at`), their `zone_id` and `pos`
-    /// are updated to the destination and the queue is cleared (12.5f-1). Delta
+    /// are updated to the destination and the queue is cleared. Delta
     /// from `movement_tick`: the harness has NO player/battle tables, so warps are
     /// resolved unconditionally. The battle-guard IS now modeled: characters with
     /// `battle_locked = true` have their move drain skipped each tick (queue remains
@@ -256,7 +256,7 @@ mod tests {
     }
 
     // ===========================================================================
-    // 12.5f-1: warp resolution tests
+    // Warp resolution tests
     //
     // These tests use `load_zone_maps()` (real authored RON) + `map_for` so
     // the harness exercises the SAME content the server loads. Zone 0 has a warp
@@ -432,8 +432,7 @@ mod tests {
     }
 
     // ===========================================================================
-    // M14.5f — battle-lock tests (RED until implementer adds lock_battle /
-    // unlock_battle to ServerWorld and the skip-drain guard to tick_zone).
+    // battle-lock tests.
     //
     // EARS criteria covered:
     //   BL-1 — tick_zone skips move drain for battle-locked characters

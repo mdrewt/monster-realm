@@ -1,7 +1,4 @@
-// Predictor behaviour suite (M3b, ADR-0012/0013) — vitest + fast-check.
-// SOURCE OF TRUTH: specs/monster-realm-v2/M3-client-prediction.spec.md §3.
-// These tests are derived strictly from the acceptance criteria and are written
-// to start RED: `./predictor` does not exist yet (the implementer builds it).
+// Predictor behaviour suite — vitest + fast-check.
 //
 // The Predictor is exercised against a DETERMINISTIC, node-only `applyMove`
 // stand-in injected as a constructor dependency — we never import wasm here (the
@@ -14,7 +11,14 @@ import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { WasmCharacterState, WasmDirection, WasmMoveInput } from '../convert/convert';
 import { HeldDirections, reissueDir } from './heldKeys';
-import { type ApplyMove, boundSeq, type IntentToSend, Predictor, type QueueOp } from './predictor';
+import {
+  type ApplyMove,
+  boundSeq,
+  type IntentToSend,
+  Predictor,
+  type PredictorEpoch,
+  type QueueOp,
+} from './predictor';
 
 const STEP_MS = 200;
 const QUEUE_CAP = 8;
@@ -422,7 +426,7 @@ describe('Predictor: fast-check properties', () => {
 });
 
 // ================================================================================
-// 7. Wall-bump golden case — "the single most valuable assertion" (ADR-0013)
+// 7. Wall-bump golden case — "the single most valuable assertion"
 // ================================================================================
 describe('Predictor: wall-bump golden case', () => {
   it('after a Step into a wall, reconcile leaves predicted position == authoritative', () => {
@@ -441,7 +445,7 @@ describe('Predictor: wall-bump golden case', () => {
 });
 
 // ================================================================================
-// 9. PROOF-OF-TEETH (ADR-0010) — fixtures that BITE: each FAILS if the impl does
+// 9. PROOF-OF-TEETH — fixtures that BITE: each FAILS if the impl does
 //    the wrong thing. These are the load-bearing mutation-killers.
 // ================================================================================
 describe('Predictor: proof-of-teeth', () => {
@@ -491,9 +495,6 @@ describe('Predictor: proof-of-teeth', () => {
 // M8.5f NET-1 / ADR-0052 — Bounded prediction queue (cap enforcement)
 // Uses a cap=2 predictor (mkCapped). The file's mkPredictor() uses cap=8.
 //
-// RED EVIDENCE (before fix):
-//   enqueue always pushes → queueDepth=5, returns object on calls 3-5 (not undefined)
-//   reconcile does not clamp → queueDepth can exceed cap after rebuild
 // ================================================================================
 
 /** Small-cap predictor for NET-1 / ADR-0052 tests (cap=2). */
@@ -503,8 +504,7 @@ function mkCapped(cap: number): Predictor {
 
 describe('NET-1 ADR-0052: enqueue bounded by cap (cap=2)', () => {
   it('BITES: enqueue drops moves past the cap; only calls 1-2 return a defined intent', () => {
-    // RED reason: current enqueue always pushes → calls 3-5 return an IntentToSend (not
-    // undefined) and queueDepth reaches 5. After fix: drops at cap, returns undefined.
+    // drops at cap, returns undefined.
     // Wrong impl killed: unbounded enqueue (never returns undefined, never gates push).
     const p = mkCapped(2);
     // Seed so the predictor is live (the cap check is on #queue.length, not pending).
@@ -675,9 +675,6 @@ describe('NET-1 ADR-0052 §B: lazy #lastDrainAt — regression-guard (invariant 
 //   - Those tests assert queueDepth <= queueCap (the local intent queue bound).
 //   - These tests assert pendingCount <= pendingCap (the unacked-ops bound).
 //
-// RED reason (before impl): Predictor constructor has no 4th param; enqueue()
-// only checks #queue.length, not #pending.length. A 20-iteration no-ack burst
-// accumulates pendingCount=20, far exceeding pendingCap=3 → assertions fail.
 // ================================================================================
 
 /** Small-pendingCap predictor for M8.6c backpressure tests. */
@@ -848,8 +845,6 @@ describe('M8.6c ADR-0013.5: #pending bound / backpressure (pendingCap)', () => {
   // pendingCap. The return type (IntentToSend, not IntentToSend | undefined) is also
   // load-bearing: if the gate were added, the type must change too — these tests
   // additionally protect against a silent undefined return.
-  //
-  // References: predictor.ts §#record comment, spec plan m13.5b-plan.md §2 anti-pattern 1.
   it('ADR-0013.5 §residual: setMove bypasses pendingCap (DESTRUCTIVE op intentionally unbound)', () => {
     const PENDING_CAP = 2;
     const p = mkPendingCapped(/*queueCap*/ 8, PENDING_CAP);
@@ -946,9 +941,6 @@ describe('Predictor: monotonic prediction (ADR-0013 smoothness)', () => {
 // seq is strictly greater than the server's last ack and survives reconcile."
 // (spec/monster-realm-v2/M8.8-fourth-review-residuals.spec.md §3)
 //
-// RED REASON: `Predictor.seedSeq` does not exist yet — TS compile error on every
-// `p.seedSeq(...)` call.  After the implementer adds it all three tests below must
-// turn green; removing / no-op-ing seedSeq makes them go red again.
 // ================================================================================
 describe('M8.8e §A: reconnect re-seed (seedSeq)', () => {
   it('first post-reconnect enqueue seq is > server acked seq and survives reconcile', () => {
@@ -1067,8 +1059,6 @@ describe('M8.8e §A: reconnect re-seed (seedSeq)', () => {
 // (comment + assertion ...)."
 // (spec/monster-realm-v2/M8.8-fourth-review-residuals.spec.md §3)
 //
-// RED REASON: `boundSeq` is not yet exported from `./predictor` — the import at the
-// top of this file causes a TS compile error until the implementer adds the export.
 // ================================================================================
 describe('M8.8e §B: boundSeq — fail-loud u64→number downcast', () => {
   it('boundSeq returns the correct number for values in the safe integer range', () => {
@@ -1139,11 +1129,6 @@ describe('M8.8e §B: boundSeq — fail-loud u64→number downcast', () => {
 // that pins the exact contract main.ts relies on.  main.ts is the thin e2e-only
 // wiring; this test proves the three pieces fit together correctly.
 //
-// RED REASON (until M8.8e is implemented):
-//   - `p.seedSeq` call fails TS compilation (no such method yet).
-//   - Additionally `boundSeq` import at the top fails until that export exists.
-// Both errors propagate to this describe block even though §C only calls seedSeq
-// indirectly via the broader module failing to compile.
 // ================================================================================
 describe('M8.8e §C: divergence re-issue + keyup-not-stuck (composition)', () => {
   it('held key resumes motion after a genuine server pullback (divergence re-issue)', () => {
@@ -1156,8 +1141,8 @@ describe('M8.8e §C: divergence re-issue + keyup-not-stuck (composition)', () =>
     //   4. enqueue({Step:'East'}) is accepted (returns a defined intent with seq > ackedSeq)
     //      → motion resumes from the corrected tile.
     //
-    // Wrong impl killed (§C main bite): if the divergence return is discarded (as in
-    // main.ts:85 before the fix), the re-issue branch is never entered — held motion
+    // Wrong impl killed (§C main bite): if the divergence return is discarded,
+    // the re-issue branch is never entered — held motion
     // stalls until the user re-presses.  This test asserts the reissueDir call would
     // produce 'East' given the post-divergence state, proving main.ts MUST use it.
 
@@ -1249,14 +1234,6 @@ describe('M8.8e §C: divergence re-issue + keyup-not-stuck (composition)', () =>
     // Wrong impl killed: an impl that always re-issues `held.active()` regardless of
     // `lastQueuedDir` would enqueue a duplicate East on top of the already-queued East
     // that came from the server's authQueue, producing a double-move.
-    //
-    // Rationale for the corrected shape (spec-vs-code): the original test enqueued two
-    // East moves and assumed only one drained (leaving one in queue as the tail).
-    // But baseline(now - 2*STEP_MS) gives a 2-step catch-up budget, so drain(now)
-    // applies BOTH enqueued East moves — the queue empties, lastQueuedDir is undefined,
-    // and the assertion `lastQueuedDir === 'East'` fails (wrong fixture, not wrong impl).
-    // The corrected shape uses a divergence reconcile with a non-empty authQueue to
-    // reliably populate the queue tail, which is the real post-divergence scenario.
 
     const p = mkPredictor();
     const now = 10_000;
@@ -1292,10 +1269,9 @@ describe('M8.8e §C: divergence re-issue + keyup-not-stuck (composition)', () =>
 });
 
 // ================================================================================
-// M13.5b ADR-0085 — Predictor.dropRejected(seq, epoch): evict a known-dead pending op
+// Predictor.dropRejected(seq, epoch): evict a known-dead pending op
 //
-// HISTORY: authored RED against a Predictor with no `dropRejected` at all (M13.5b);
-// GREEN since that shipped. nh3 (ADR-0152) added the REQUIRED second parameter, so
+// nh3 added the REQUIRED second parameter, so
 // every call below now passes an epoch read from an intent THAT SAME instance issued
 // (never a literal — see the nh3 banner further down for why a literal would leave
 // the `false`-oracle cases green-and-vacuous). This block is the SAME-EPOCH contract;
@@ -1308,7 +1284,7 @@ describe('M8.8e §C: divergence re-issue + keyup-not-stuck (composition)', () =>
 //   - Does NOT touch #queue (queueDepth unchanged by the call itself).
 //   - Does NOT touch #nextSeq.
 //   - Unknown / already-dropped seq → returns false, no state change (idempotent).
-//   - Foreign epoch → returns false and changes NOTHING (nh3-1; see N3).
+//   - Foreign epoch → returns false and changes NOTHING (see N3).
 // ================================================================================
 
 describe('dropRejected (M13.5b ADR-0085)', () => {
@@ -1349,7 +1325,7 @@ describe('dropRejected (M13.5b ADR-0085)', () => {
     const i1 = p.enqueue(east())!;
 
     const neverIssuedSeq = i1.seq + 9999;
-    // The epoch argument is read from an intent THIS instance issued (nh3 plan A9:
+    // The epoch argument is read from an intent THIS instance issued (
     // never a literal — a plausible `0` can never match the real epoch, which would
     // make the `false` oracle below pass for the wrong reason).
     const removed = p.dropRejected(neverIssuedSeq, i1.epoch);
@@ -1357,11 +1333,11 @@ describe('dropRejected (M13.5b ADR-0085)', () => {
     expect(removed).toBe(false);
     expect(p.pendingCount).toBe(1); // i1 untouched
 
-    // POSITIVE CONTROL (nh3 plan §3 step 3 / reviewer M2), ordered AFTER the
-    // unknown-seq oracle so it cannot invalidate it: the SAME epoch value, paired
-    // with a seq this instance really issued, MUST evict. That proves the epoch
-    // passed above is live — so the `false` above is caused by the unknown seq
-    // alone, not by a silently-mismatching epoch.
+    // POSITIVE CONTROL, ordered AFTER the unknown-seq oracle so it cannot
+    // invalidate it: the SAME epoch value, paired with a seq this instance really
+    // issued, MUST evict. That proves the epoch passed above is live — so the
+    // `false` above is caused by the unknown seq alone, not by a
+    // silently-mismatching epoch.
     expect(p.dropRejected(i1.seq, i1.epoch)).toBe(true);
     expect(p.pendingCount).toBe(0);
     void i1;
@@ -1437,7 +1413,7 @@ describe('dropRejected (M13.5b ADR-0085)', () => {
           const targetSeq = dropIndex < intents.length ? intents[dropIndex]!.seq : 999999; // guaranteed absent
 
           const wasPresent = intents.some((i) => i.seq === targetSeq);
-          // Epoch read from an intent THIS instance issued (nh3 plan A9). Safe:
+          // Epoch read from an intent THIS instance issued. Safe:
           // count >= 1, the loop reconciles BEFORE each enqueue and count <= 5 <
           // QUEUE_CAP (8), so no enqueue is declined → intents[0] always exists.
           const removed = p.dropRejected(targetSeq, intents[0]!.epoch);
@@ -1517,8 +1493,7 @@ describe('dropRejected (M13.5b ADR-0085)', () => {
 });
 
 // ================================================================================
-// M12.5d-3: snapped signal uses last FRAME drain time (not reconcile drain time)
-// SOURCE OF TRUTH: M12.5d spec §3 "Predictor: snap gap timer tracks frame-loop drain"
+// Snapped signal uses last FRAME drain time (not reconcile drain time)
 //
 // THE BUG: predictor.reconcile() calls an internal drain step (#stepForward) that
 // previously updated the same #lastDrainAt field as the public drain() call. This
@@ -1530,13 +1505,6 @@ describe('dropRejected (M13.5b ADR-0085)', () => {
 //   #lastFrameDrainAt — set ONLY by the public drain() call (frame-loop driven)
 //   reconcile's internal step-forward uses a different private path
 //
-// RED REASON (before fix): all three new tests below will see the wrong behaviour:
-//   - "reconcile resets the timer" test: reconcile at T=100_000, then frame drain
-//     computes gap = 0 (from the reconcile's timer update) → snapped=false (BUG)
-//   - "multiple reconciles" test: last reconcile at T=4000, frame drain at T=1100
-//     computes gap = 1100-4000 < 0 or gap relative to T=4000 → wrong snap verdict
-//   - "first frame drain never snaps" test: this relies on the ADR-0052 §B contract
-//     which must be PRESERVED by the fix (first drain with no prior frame = no snap)
 // ================================================================================
 
 describe('Predictor M12.5d-3: snapped signal uses last FRAME drain time (not reconcile drain time)', () => {
@@ -1568,7 +1536,7 @@ describe('Predictor M12.5d-3: snapped signal uses last FRAME drain time (not rec
     // Last frame drain at T=0; reconciles at T=50_000, T=60_000, T=90_000; then frame
     // drain at T=90_100 (100ms after the last reconcile).
     //
-    // Bug (current code): last reconcile sets #lastDrainAt=90_000; frame drain at
+    // Bug: last reconcile sets #lastDrainAt=90_000; frame drain at
     // T=90_100 computes gap = 90_100 - 90_000 = 100ms → snapped=false (misses 90s gap).
     // Fix: #lastFrameDrainAt = 0 still; frame drain at T=90_100 computes gap = 90_100ms
     // → snapped=true (correctly surfaces the large background gap).
@@ -1606,10 +1574,7 @@ describe('Predictor M12.5d-3: snapped signal uses last FRAME drain time (not rec
 });
 
 // ================================================================================
-// ptc5f → nh3-2: the cross-warp eviction pin — was "documented (not fixed)", NOW
-// PINS THE FIX. (ADR-0142 D4 reachability bound → ADR-0085 amendment / ADR-0152.)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M-postgate-netcode-hardening.spec.md §nh3
-// (nh3-2 quoted VERBATIM in the nh3 banner immediately below this block).
+// the cross-warp eviction pin..
 //
 // WHAT ptc5f PINNED (history, unchanged premise): dropRejected is PRECISE within one
 // predictor instance — it removes exactly the pending op with the given seq and never
@@ -1632,8 +1597,6 @@ describe('Predictor M12.5d-3: snapped signal uses last FRAME drain time (not rec
 //     by a pendingCount delta). This is the nh3-2 assertion.
 //   • Arm 4 — a SAME-epoch post-warp rejection still evicts (the Case-M2 behavior
 //     pin). Without it the whole test would pass against `dropRejected(){return false}`.
-// (Arm 3, ptc5f's separate control predictor `c`, is FOLDED into arm 2's comment: it
-// is redundant post-flip, because arm 4 already rules out a never-removes impl.)
 // ================================================================================
 describe('Predictor nh3-2 (was ptc5f): cross-warp stale rejection is epoch-guarded', () => {
   it('normal single-epoch: dropRejected targets EXACTLY the given seq, never a neighbor', () => {
@@ -1676,18 +1639,17 @@ describe('Predictor nh3-2 (was ptc5f): cross-warp stale rejection is epoch-guard
     // THE COLLISION: B's brand-new op reuses A's exact seq — a deterministic
     // consequence of #nextSeq starting at 0 in both instances and seedSeq(0)
     // never rewinding (it's a no-op here since 0 is not > the current #nextSeq).
-    // KEPT ON PURPOSE (plan §5 arm 1): this models the UN-FLOORED pair, so the arms
+    // KEPT ON PURPOSE: this models the UN-FLOORED pair, so the arms
     // below prove the fix is the EPOCH GUARD and not seq-disjointness. The main.ts
     // seq-floor is a separate mechanism (see N6 / W-NH3-FLOOR-*).
     expect(newOp.seq).toBe(preWarpOp.seq);
 
-    // ---- ARM 2 (THE nh3-2 ASSERTION, flipped from ptc5f's `true`) ---------------
+    // ---- ARM 2 (THE nh3-2 ASSERTION) ---------------
     // A stale rejection of A's pre-warp op arrives late and fires against B (the
     // module-scope predictor is now B). It carries A's epoch — a FOREIGN epoch for
     // B — so the guard must make it a TOTAL no-op even though the seq collides.
     //
-    // ARM 3 (ptc5f's separate control predictor `c`) IS FOLDED INTO THIS COMMENT:
-    // post-flip it was redundant. The guard is a no-op on the STALE path only, not a
+    // The guard is a no-op on the STALE path only, not a
     // survive-all — and "b's op survived" cannot be explained by a dropRejected that
     // never removes anything, because arm 4 below makes the same-epoch call evict.
     expect(b.dropRejected(preWarpOp.seq, preWarpOp.epoch)).toBe(false);
@@ -1701,7 +1663,7 @@ describe('Predictor nh3-2 (was ptc5f): cross-warp stale rejection is epoch-guard
     expect(b.queueDepth).toBe(1); // the legit post-warp op replayed from pending
     expect(b.lastQueuedDir).toBe('East');
 
-    // ---- ARM 4: the Case-M2 residual / behavior pin (re-labeled, plan §5) -------
+    // ---- ARM 4: the Case-M2 residual / behavior pin -------
     // A GENUINE post-warp rejection carries B's OWN epoch: the server rejects the
     // colliding seq as "stale seq" (guards.rs `seq <= last_input_seq`), and evicting
     // it IS contractually correct. The guard must NOT suppress this — the mechanism
@@ -1716,10 +1678,10 @@ describe('Predictor nh3-2 (was ptc5f): cross-warp stale rejection is epoch-guard
 });
 
 // ================================================================================
-// nh3 / ADR-0152 — Predictor epoch/generation guard on the eviction seam (+ the
+// Predictor epoch/generation guard on the eviction seam (+ the
 // main.ts send-seq FLOOR it ships with).
 // SOURCE OF TRUTH: specs/monster-realm-v2/M-postgate-netcode-hardening.spec.md §nh3.
-// The criteria, quoted VERBATIM (do not paraphrase — the nh2 banner post-mortem):
+// The criteria, quoted VERBATIM:
 //
 //   nh3-1  `Predictor` SHALL carry an epoch/generation identifier, bumped on every
 //          `resetPredictionState()` rebuild. A rejection `.catch`'s captured epoch
@@ -1731,8 +1693,6 @@ describe('Predictor nh3-2 (was ptc5f): cross-warp stale rejection is epoch-guard
 //          post-rebuild) now asserts the legitimate new op survives, not just that
 //          the gap is reachable. A mutation check: removing the epoch guard
 //          re-fails this assertion.
-//   nh3-3  (doc): amend ADR-0085 to record the guard is built — the accepted-risk
-//          window closes.
 //
 // SPEC-CONFORMANCE NOTE (nh3-1's letter vs. this design): the epoch comparison lives
 // INSIDE `dropRejected` (the CALLEE), not literally inside the `.catch`. Sanctioned by
@@ -1767,16 +1727,10 @@ describe('Predictor nh3-2 (was ptc5f): cross-warp stale rejection is epoch-guard
 //          + W-NH3-EPOCH-CAPTURED (main.wiring.test.ts: the `.catch` capture)
 //   nh3-2  the `Predictor nh3-2 (was ptc5f)` block ABOVE — arm 1 premise kept, arm 2
 //          flipped to `false` + content survival, arm 4 same-epoch still evicts
-//   nh3-3  docs only (ADR-0085 amendment + ADR-0152) — no test
 //   supervisor-added FLOOR (not an EARS criterion): N6 + W-NH3-FLOOR-SEND /
-//          W-NH3-FLOOR-SEED (main.wiring.test.ts)
+//          W-NH3-FLOOR-SEED
 //
-// RED REASON (runtime, NOT tsc — `client/tsconfig.json` excludes `**/*.test.ts`, so
-// these tests are never typechecked): pre-implementation `IntentToSend` has no
-// `epoch` field, so every `intent.epoch` read is `undefined`. Distinctness (N1),
-// stability-with-not-undefined (N5), the foreign-epoch oracles (N3, N4), N6's
-// new-generation assertion and the nh3-2 arm-2 flip therefore fail on VALUES, not on
-// a compile error. N2 and arm 4 (same-epoch paths) are GREEN before AND after — they
+// N2 and arm 4 (same-epoch paths) are GREEN before AND after — they
 // are the anti-over-guard teeth that kill a `!==` → `===` flip. N6's seq-floor
 // assertions are also green before and after (the floor uses only existing public
 // API — `seedSeq`); its RED gating counterpart is W-NH3-FLOOR-SEED in
@@ -1791,7 +1745,7 @@ describe('Predictor nh3-2 (was ptc5f): cross-warp stale rejection is epoch-guard
 describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () => {
   it('N1 (nh3-1): every instance carries a DISTINCT epoch — all constructed FIRST, then probed', () => {
     // Kills: a constant epoch (`#epoch = 0`) — the Set collapses to size 1.
-    // Kills: a `#record`-time read of the static counter (red-team F7). Constructing
+    // Kills: a `#record`-time read of the static counter. Constructing
     // ALL instances BEFORE any enqueue is the load-bearing ordering: with a per-record
     // read every probe below would report the SAME (final) counter value, so the
     // distinct-count would be 1 while a construct-then-probe-interleaved test would
@@ -1802,7 +1756,7 @@ describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () 
         for (let i = 0; i < n; i++) instances.push(mkPredictor());
         // The epoch is only readable via an issued intent (A8: no public getter).
         const epochs = instances.map((p) => p.enqueue(east())!.epoch);
-        // `undefined` = no epoch stamped at all (the pre-impl RED state): the Set below
+        // `undefined` = no epoch stamped at all: the Set below
         // would then collapse to size 1 anyway, but assert it directly for a clear message.
         for (const e of epochs) expect(e).not.toBeUndefined();
         // RELATIVE assertion only (A6): distinctness, never an absolute value.
@@ -1814,7 +1768,6 @@ describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () 
   it('N2 (nh3-1): the SAME-epoch path is unchanged — evicts, then idempotent false', () => {
     // Kills: `!==` → `===` in the guard (every legitimate rejection would then be
     // ignored and the phantom-op desync of M13.5b/ADR-0085 comes straight back).
-    // GREEN before AND after the fix by design (pre-impl: undefined === undefined).
     const p = mkPredictor();
     p.reconcile(baseline(5, 5, 0), [], 0, 0);
     const i1 = p.enqueue(east())!;
@@ -1848,7 +1801,7 @@ describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () 
     expect(live.pendingCount).toBe(pendingBefore);
     expect(live.queueDepth).toBe(depthBefore);
 
-    // POSITIVE CONTROL (reviewer M2): the same seq IS evictable with the live
+    // POSITIVE CONTROL: the same seq IS evictable with the live
     // instance's own epoch — so the `false` above was the GUARD, not an unrelated
     // failure to find the op, and the guard is not a blanket `return false`.
     expect(live.dropRejected(liveOp.seq, liveOp.epoch)).toBe(true);
@@ -1866,9 +1819,9 @@ describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () 
     // mutant kill must not depend on what fc happens to draw. One foreign epoch
     // strictly BELOW and one strictly ABOVE the live value, both against a seq that
     // IS pending: a guard written `epoch < this.#epoch` (or `>`) passes one and fails
-    // the other; only `!==` passes both (red-team F4).
-    expect(p.dropRejected(i1.seq, liveEpoch - 1)).toBe(false);
-    expect(p.dropRejected(i1.seq, liveEpoch + 1)).toBe(false);
+    // the other; only `!==` passes both.
+    expect(p.dropRejected(i1.seq, (liveEpoch - 1) as PredictorEpoch)).toBe(false);
+    expect(p.dropRejected(i1.seq, (liveEpoch + 1) as PredictorEpoch)).toBe(false);
     expect(p.pendingCount).toBe(2); // nothing evicted by either
 
     const pendingBefore = p.pendingCount;
@@ -1877,7 +1830,7 @@ describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () 
     // BREADTH: arbitrary (seq, foreignEpoch) against the SAME live instance — the
     // guard must be idempotent, so no draw may ever mutate it. The seq arbitrary
     // includes the two REALLY pending seqs (otherwise every `false` is excused by
-    // seq-absence); the epoch arbitrary EXCLUDES the live value by `.filter` (F7: an
+    // seq-absence); the epoch arbitrary EXCLUDES the live value by `.filter` (an
     // unconstrained small-integer arbitrary WILL draw the real epoch, which would
     // red a CORRECT impl order-dependently).
     const seqArb = fc.oneof(fc.constantFrom(i1.seq, i2.seq), fc.integer({ min: -5, max: 50 }));
@@ -1888,7 +1841,7 @@ describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () 
     const foreignEpochArb = foreignBase.filter((e) => e !== liveEpoch);
     fc.assert(
       fc.property(seqArb, foreignEpochArb, (seq, foreignEpoch) => {
-        expect(p.dropRejected(seq, foreignEpoch)).toBe(false);
+        expect(p.dropRejected(seq, foreignEpoch as PredictorEpoch)).toBe(false);
         expect(p.pendingCount).toBe(pendingBefore);
         expect(p.queueDepth).toBe(depthBefore);
       }),
@@ -1958,7 +1911,7 @@ describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () 
     // generation, so the old instance's epoch can never match the new one.
     expect(first.epoch).not.toBe(sent2.epoch);
 
-    // BELT AND SUSPENDERS (plan §1): even with the floor in place, a stale rejection
+    // BELT AND SUSPENDERS: even with the floor in place, a stale rejection
     // of A's op is a total no-op on B. HONEST TEETH ACCOUNTING — with the floor there
     // is no seq collision, so this particular `false` is ALSO explainable by
     // seq-absence; the guard's non-vacuous proof is N3 + nh3-2 arm 2, where the seqs
@@ -1972,11 +1925,8 @@ describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () 
 });
 
 // ================================================================================
-// nh2 / ADR-0148 — held-key continuation gating on `outstandingSteps`
-// SOURCE OF TRUTH: specs/monster-realm-v2/M-postgate-netcode-hardening.spec.md.
-// The three criteria, quoted VERBATIM (do not paraphrase these — an earlier
-// revision of this banner restated nh2-2 as "sustains the full walk rate", which
-// is actually the nh2-3 COMPANION, and mis-answered "which test covers nh2-2?"):
+// held-key continuation gating on `outstandingSteps`
+// The three criteria, quoted VERBATIM:
 //
 //   nh2-1  WHEN a held movement key is released (or the player switches to a
 //          different held direction) AND no further input in that direction has
@@ -2013,10 +1963,6 @@ describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () 
 //   ADR-0148 R1 residual (not an EARS criterion): U5b
 //   accessor contract itself: U1a / U1b / U9
 //
-// RED AT AUTHORING TIME (pre-ADR-0148): `Predictor.outstandingSteps` did not
-// exist, so the whole file failed to typecheck — this file's established RED
-// convention (see the M3b banner at the top), red on a MISSING IMPLEMENTATION
-// rather than a typo. They are GREEN now against the shipped ADR-0148 accessor;
 // the `RED-TODAY PROOF` cases below re-create the pre-fix behaviour explicitly
 // (`gateEnabled: false` / `drainFirst: false`) so the teeth stay demonstrably
 // non-vacuous after the fix landed.
@@ -2055,8 +2001,8 @@ describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () 
 //       emission is recorded before `predictor.enqueue`, and a server REJECT
 //       still counts). That is conservative for every `<=` bound below, and it is
 //       faithful to main.ts, which also calls `enqueue` unconditionally.
-//   (d) RESIDUAL (noted, NOT fixed — a cross-language pin is out of this slice's
-//       touch-set): the harness HARDCODES the server queue cap
+//   (d) RESIDUAL:
+//       the harness HARDCODES the server queue cap
 //       (`const cap = opts.cap ?? 2`) instead of deriving it from the Rust SSOT
 //       `game-core/src/world.rs` `MOVE_QUEUE_CAP = 2`, so a server-side cap change
 //       would silently drift this simulation with nothing to catch it. Same
@@ -2170,7 +2116,7 @@ interface SimEvent {
   readonly run: (now: number) => void;
 }
 
-// [mvi] SCOPE NOTE — this runLoop model is DELIBERATELY PRE-mvi and stays that way.
+// SCOPE NOTE — this runLoop model is DELIBERATELY PRE-mvi and stays that way.
 // It gates the nh2/ADR-0148 `outstandingSteps` invariants (bounded in-flight work,
 // drain-first ordering, no press-teleport), so its frame body keeps reading the UNGATED
 // `held.active()` — introducing the hold-commit threshold here would change what these
@@ -2280,7 +2226,7 @@ function runLoop(opts: RunLoopOptions): RunLoopResult {
     const seq = intent.seq;
     // Primitives hoisted at send time — TRUE parity with main.ts's ADR-0085 A2 posture
     // (`const epoch = intent.epoch;` beside `const seq`): the callbacks below close over
-    // primitives only, never the intent object (nh3 plan A9; reviewer nit fixed).
+    // primitives only, never the intent object.
     const epoch = intent.epoch;
     const input: WasmMoveInput = { Step: dir };
     at(now + lat, PRIO_ARRIVAL, (tArr) => {
@@ -2934,33 +2880,26 @@ describe('nh2-1 ADR-0148 U8: switching direction mid-hold commits at most one mo
 });
 
 // --------------------------------------------------------------------------------
-// ADR-0152 residual 1 tripwire (14r-e). NOT a behavioural gate — a DOC-DRIFT alarm.
+// ACCEPTED BEHAVIOUR: a freshly constructed Predictor starts with outstandingSteps === 0.
 //
-// ADR-0152 named, and deliberately did NOT fix, an under-count: a freshly constructed
-// Predictor starts with `#lastAuthQueueLen = 0` while the server may still owe a queued
-// step, so exactly ONE extra continuation can slip through per rebuild (zone warp /
-// reconnect / resetPredictionState). ADR-0187 residual 7 points at this file for the pin.
-//
-// The tripwire is deliberately shaped as "the documented behaviour still holds": if
-// someone fixes the under-count (e.g. by seeding #lastAuthQueueLen from a snapshot at
-// construction), THIS reds — which is the signal to update the two ADRs rather than to
-// "repair" the test. It is intentionally a near-duplicate of U9 above; U9 states the
-// INVARIANT (an uninitialised counter would freeze the player), this states the RESIDUAL.
-// Scope note: the runLoop model above stays pre-mvi (ADR-0158 residual 8) and is not
-// touched here — this constructs a Predictor directly.
+// A fresh Predictor (zone warp / reconnect / resetPredictionState) knows nothing of the
+// server's queue until its first reconcile, so it reports 0 outstanding steps even if the
+// server still owes one. This is bounded and benign by design (ADR-0152, adjudicated in
+// Phase 3 — ledger BUG-predictor-fresh-outstanding-undercount): at most ONE extra
+// continuation can be emitted per rebuild; on a warp the same-flush reconcile rewrites the
+// count, on a reconnect held.clear() leaves nothing to emit into the gap; the server's
+// authoritative queue cap (2) bounds the effect; and seeding the count from a possibly
+// stale store instead risks an over-count that shuts the continuation gate — a freeze
+// (U9 above is that invariant). So the fresh value is 0, on purpose.
 // --------------------------------------------------------------------------------
-describe('ADR-0152 residual 1 tripwire (14r-e)', () => {
-  it('a freshly constructed Predictor reports outstandingSteps === 0 — the DOCUMENTED under-count window', () => {
+describe('fresh Predictor outstanding count (accepted behaviour, ADR-0152)', () => {
+  it('a freshly constructed Predictor reports outstandingSteps === 0 until its first reconcile', () => {
     const p = mkCapped(2);
     expect(
       p.outstandingSteps,
-      'A RED HERE MEANS THE BEHAVIOUR CHANGED, NOT THAT THE TEST IS WRONG: a fresh Predictor ' +
-        'is documented (ADR-0152 residual 1, restated as ADR-0187 residual 7) to report 0 ' +
-        'outstanding steps even though the server may still owe a queued step, which lets ' +
-        'exactly one extra continuation slip through per predictor rebuild. If this value is ' +
-        'no longer 0, the under-count window has been CLOSED — update ADR-0152 residual 1 and ' +
-        'ADR-0187 residual 7 (and re-check main.ts resetPredictionState) instead of adjusting ' +
-        'this expectation',
+      'a fresh Predictor has observed no authoritative queue yet, so it reports 0; this is the ' +
+        'accepted, bounded rebuild window (at most one extra continuation, erased by the next ' +
+        'reconcile) — do not seed it from store state, which risks a stuck-shut gate',
     ).toBe(0);
   });
 });

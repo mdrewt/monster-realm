@@ -6,13 +6,13 @@
 // batch-applied; the user triggers reducer intents via callbacks passed at
 // construction (never called directly by this module). Coverage-excluded shell.
 //
-// m24-s4 (ADR-0260) — every player-facing string this view renders is resolved through the i18n
+// Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `raising.*` key from ui/i18n/catalog.en.ts;
 // the English bytes are unchanged (the catalog pins them). Model data (nickname, item
 // description, the `showFeedback` message, tiers, stats, names, counts) flow through raw or as
 // params, never as catalog text. Every `t(`/`tf(` first argument is a string LITERAL.
 //
-// m23-s4 (M23 §2.2, ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
+// Overlay a11y wiring. This view is a CONSTRUCTED shell:
 // its root is `document.createElement`'d here and appended into the shared `#app` MOUNT, so unlike
 // the ten static shells S3 wired it ships NO ARIA of its own from `client/index.html` — every
 // attribute below comes from `openOverlayA11y`, never from a literal in this file.
@@ -33,11 +33,8 @@
 // `.focus()` on a `display:none` node is a silent no-op, so an open-before-paint overlay announces
 // itself and then never receives focus.
 //
-// NO CLOSE-BEFORE-OPEN. `ui/overlayA11y.ts`'s cross-slice contract (a) once claimed the four
-// `#app`-mounted views "share ONE root" and prescribed close-before-open; 17r-e RETRACTED it
-// in place (A12, ui/overlayA11y.ts:52-54); (a) now agrees with this code: each view creates its
-// OWN root under the shared MOUNT — four roots, four `OverlayId`s, four records. Closing a sibling
-// here would close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
+// Each `#app`-mounted view creates its OWN root under the shared mount, so opening this view
+// never closes a sibling (no close-before-open; boxView.test.ts S4-CROSS-VIEW-DISTINCT-ROOTS).
 
 import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
@@ -47,7 +44,7 @@ export interface RaisingViewCallbacks {
   /**
    * Called when the user feeds a training item to a monster.
    *
-   * May return a promise (20r-a): the per-monster `#pendingTrain` lock is held until it
+   * May return a promise: the per-monster `#pendingTrain` lock is held until it
    * settles — same contract and same reason as `onCare` below (a `=> void` type would let
    * a future implementation silently reduce the lock to a one-microtask no-op, and the
    * server `train` reducer has no idempotency guard: a double-fire spends two food items).
@@ -66,10 +63,10 @@ export interface RaisingViewCallbacks {
 
 export class RaisingView {
   readonly #root: HTMLDivElement;
-  /** The "Raising & Inventory" heading; its text is resolved in show(), not here (m24-s4). */
+  /** The "Raising & Inventory" heading; its text is resolved in show(), not here. */
   readonly #titleEl: HTMLHeadingElement;
   readonly #feedbackEl: HTMLDivElement;
-  /** The two section headings; text resolved in show() (m24-s4, see show()). */
+  /** The two section headings; text resolved in show() (see show()). */
   readonly #monstersLabelEl: HTMLHeadingElement;
   readonly #inventoryLabelEl: HTMLHeadingElement;
   readonly #monsterEl: HTMLDivElement;
@@ -85,7 +82,7 @@ export class RaisingView {
   // never disabled, so it looked clickable), and had no way to express "A is
   // still pending" to a mid-flight refresh() that rebuilds every button.
   //
-  // rb-120 (R-20r-a-CARE-GEN): the VALUE is a generation token, same shape as
+  // the VALUE is a generation token, same shape as
   // #pendingTrain below — `.finally()` releases only if the stored object is still
   // its own. A membership-keyed release (`Set.delete`) let a STALE promise win: click
   // → hide() clears the lock → reopen → click again → the FIRST call's `.finally()`
@@ -97,7 +94,7 @@ export class RaisingView {
   // captured can be detached by the time its call settles — re-enabling that
   // stale node would leave the LIVE one disabled forever.
   readonly #careButtons = new Map<bigint, HTMLButtonElement>();
-  // 20r-a: the Train in-flight lock — a SIBLING of #pending, not a shared map (D6): a Care
+  // The Train in-flight lock — a SIBLING of #pending, not a shared map (D6): a Care
   // rejection (cooldown) must not block Train and vice versa (different reducers, different
   // failure modes). Keyed per monster like Care; ALL of a monster's Train buttons (one per
   // food) disable together, since two different foods in flight is the same double-spend.
@@ -116,9 +113,9 @@ export class RaisingView {
       'display:none;flex-direction:column;align-items:center;padding:24px;' +
       'overflow-y:auto;font-family:monospace;color:#e0e0e0;';
 
-    // m24-s4 (ADR-0260): NO text here — `raising.title` is resolved in show() (see there for why).
+    // NO text here — `raising.title` is resolved in show() (see there for why).
     const title = document.createElement('h2');
-    // m23-s4: the OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
+    // The OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
     // (never "0") makes the heading programmatically focusable WITHOUT adding a permanent tab
     // stop ahead of the overlay's real controls. `setAttribute`, not `dataset` — the selector is
     // frozen in ui/overlayRegistry.ts and the DOM moves to it, never the reverse.
@@ -128,7 +125,7 @@ export class RaisingView {
     this.#titleEl = title;
     this.#root.appendChild(title);
 
-    // ADR-0159 D1: the feedback line lives INSIDE the overlay root. main.ts's
+    // The feedback line lives INSIDE the overlay root. main.ts's
     // statusEl sits in normal document flow, so this `position:fixed; z-index:100`
     // overlay painted over every care message it raised — the player saw nothing.
     this.#feedbackEl = document.createElement('div');
@@ -137,7 +134,7 @@ export class RaisingView {
       'min-height:16px;margin:0 0 12px;font-size:12px;color:#ffd479;';
     this.#root.appendChild(this.#feedbackEl);
 
-    // Its text (`raising.monsters.heading`) is resolved in show() (m24-s4), not here.
+    // Its text (`raising.monsters.heading`) is resolved in show(), not here.
     const monsterLabel = document.createElement('h3');
     monsterLabel.style.cssText = 'margin:0 0 8px;color:#aaa;';
     this.#monstersLabelEl = monsterLabel;
@@ -148,7 +145,7 @@ export class RaisingView {
       'display:grid;grid-template-columns:repeat(2,1fr);gap:8px;width:100%;max-width:700px;margin-bottom:16px;';
     this.#root.appendChild(this.#monsterEl);
 
-    // Its text (`raising.inventory.heading`) is resolved in show() (m24-s4), not here.
+    // Its text (`raising.inventory.heading`) is resolved in show(), not here.
     const inventoryLabel = document.createElement('h3');
     inventoryLabel.style.cssText = 'margin:0 0 8px;color:#aaa;';
     this.#inventoryLabelEl = inventoryLabel;
@@ -173,7 +170,7 @@ export class RaisingView {
   show(): void {
     const wasVisible = this.#visible;
     this.#visible = true;
-    // m24-s4 (ADR-0260 D4): the strings set ONCE and never rewritten by a render are resolved
+    // The strings set ONCE and never rewritten by a render are resolved
     // HERE, on EVERY show() — unconditionally, after the `wasVisible` read, before the display
     // write. See evolutionView.show() for the boot-order / locale-switch reasoning.
     this.#titleEl.textContent = t('raising.title');
@@ -193,13 +190,17 @@ export class RaisingView {
     // no-op; the reopen's refresh() (main.ts pairs show() with it) re-derives the buttons.
     this.#feedbackEl.textContent = '';
     this.#pending.clear();
-    this.#pendingTrain.clear(); // 20r-a: same never-settles-after-drop reason as #pending.
+    this.#pendingTrain.clear(); // Same never-settles-after-drop reason as #pending.
     closeOverlayA11y('raisingView', null);
   }
 
   /** Display a care outcome. textContent ONLY — the message can carry a
-   * server-supplied error reason, so innerHTML would be an injection vector. */
+   * server-supplied error reason, so innerHTML would be an injection vector.
+   * No-op while hidden: KeyB/KeyE force-hide this view (hide() clears the line), so a
+   * care that settles afterwards would otherwise leave a stale message for the NEXT
+   * open, with no click behind it. */
   showFeedback(message: string): void {
+    if (!this.#visible) return;
     this.#feedbackEl.textContent = message;
   }
 
@@ -208,7 +209,7 @@ export class RaisingView {
     this.#renderInventory(vm.items);
   }
 
-  /** rb-121 (ADR-0271): a lock-owning release that finds focus stranded on `<body>` re-asserts the
+  /** A lock-owning release that finds focus stranded on `<body>` re-asserts the
    *  dialog; the idempotent re-open re-installs the trap and defers focus to the registry anchor.
    *  `#visible` is load-bearing: re-opening a hidden view would CREATE an open record. */
   #reanchorStrandedFocus(): void {
@@ -274,10 +275,10 @@ export class RaisingView {
       // click the lock then swallows is worse than no button at all.
       careBtn.disabled = this.#pending.has(monsterId);
       this.#careButtons.set(monsterId, careBtn);
-      // Re-entrancy guard (ADR-0159 D1, shopView/renameView precedent): a genuinely
+      // Re-entrancy guard (shopView/renameView precedent): a genuinely
       // pending care call holds the lock until it settles; .finally() resets on BOTH
       // arms. Keyed by monsterId, so a sibling monster's Care button stays live.
-      // rb-120 (R-20r-a-CARE-GEN) ported the Train shape here: the release is gated on
+      // It carries the Train shape: the release is gated on
       // this click's own token (see #pending), and the call runs INSIDE the executor —
       // `Promise.resolve(onCare(id))` evaluates it as an argument, so a synchronous
       // throw escaped the listener after the lock was taken and stranded it.
@@ -307,7 +308,7 @@ export class RaisingView {
       });
       actions.appendChild(careBtn);
 
-      // 20r-a/rb-120: Train and Care carry the SAME lock shape — re-derived disabled
+      // Train and Care carry the SAME lock shape — re-derived disabled
       // state, the LIVE-button re-enable, the throw-safe `new Promise((resolve) =>
       // resolve(...))` executor, and the generation-token release — but in SEPARATE
       // maps (D6: a Care rejection must not block Train and vice versa). Train's one

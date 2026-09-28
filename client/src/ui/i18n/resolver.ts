@@ -1,7 +1,7 @@
 // ui/i18n/resolver.ts — the catalog registry, the module-level locale cell, and the `t()`/`tf()`
-// resolvers (m24-s1, ADR-0256 D1, M24 §2.3/§2.8).
+// resolvers.
 //
-// WHERE THE LOCALE LIVES (ADR-0256 D1). `t(key): string` is pinned byte-identical to M23 §2.8
+// WHERE THE LOCALE LIVES. `t(key): string` is pinned byte-identical to M23 §2.8
 // (`[I18N-SHAPE-05]`) and `tf(key, params): string` mirrors it — neither takes a locale, so the
 // locale is ONE module-level cell read by both. A `createResolver()` factory was rejected: the
 // shape pin wants a named module `t`, so a factory would need the same singleton underneath.
@@ -9,13 +9,13 @@
 // (`locale.ts`) and calls `setLocale` once.
 //
 // WHY `setLocale` THROWS ON AN UNREGISTERED LOCALE (D1, rejected alternative (c)). Clamping to
-// `en` would make an unwired locale look wired — the vacuity ADR-0205 D4 exists to kill. The cell
+// `en` would make an unwired locale look wired — exactly the vacuity to avoid. The cell
 // is left unchanged on the throw. There is no per-call fallback to `en` in `t`/`tf` either: the
-// `Catalog` type makes every registered locale total (ADR-0256 D2), so a miss can only be a key
+// `Catalog` type makes every registered locale total, so a miss can only be a key
 // that is not a `MessageId` at all, and that is a bug to surface, not paper over.
 //
-// WHY `t`/`tf` THROW RATHER THAN RETURNING THE KEY OR '' — the `a11yCopy.t` reasoning verbatim
-// (ADR-0205 D4): the key text on screen makes an unwired catalog look wired, and '' ships a blank
+// WHY `t`/`tf` THROW RATHER THAN RETURNING THE KEY OR '' — the `a11yCopy.t` reasoning verbatim:
+// the key text on screen makes an unwired catalog look wired, and '' ships a blank
 // label. Both are TOTAL on the domain the types admit (a `PlainMessageId` / `ParamMessageId` is
 // always present in a total catalog), so every throw below is a fail-loud backstop for a caller
 // that lied to the type system (`as never`, a JS caller); each message names the key.

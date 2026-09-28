@@ -1,17 +1,13 @@
 //! Evolution transforms — pure, deterministic `MonsterInstance` constructors.
 //!
 //! `evolve` changes a monster's species while carrying all individuality verbatim
-//! (no re-roll — ADR-0019). `derived_stats` is re-derived from the TARGET species'
+//! (no re-roll). `derived_stats` is re-derived from the TARGET species'
 //! base stats (not the source), and `current_hp` is clamped to the new derived HP
 //! (cannot exceed the new max, but damage is preserved when the new max is higher).
 //!
-//! Per ADR-0174 D2 it ALSO zeroes all 8 essence pools — essence is SPENT by an
-//! evolution (spec §4 "Full essence reset on evolution", confirmed). Trust and
-//! Quality-Time are lifetime history and are carried verbatim, never reset.
-//!
-//! `fuse` and the ADR-0147 taxed-carry math (`FUSION_EFFICIENCY`,
-//! `LEVEL_RETENTION_FLOOR`, `scale_u32`, `avg_u32`) are DELETED — fusion is
-//! removed as a feature (EG1-9), not repurposed.
+//! ALSO zeroes all 8 essence pools — essence is SPENT by an
+//! evolution. Trust and Quality-Time are lifetime history and are carried verbatim,
+//! never reset.
 
 use crate::content::Species;
 use crate::monster::rules::derive_stats;
@@ -26,13 +22,13 @@ use crate::monster::types::MonsterInstance;
 /// `to_species.base_stats` (not the source species' base stats). Clamps
 /// `current_hp` to `new_derived.hp` — damage is preserved when the new max is
 /// higher, but current HP can never exceed the new max HP. Zeroes all 8
-/// essence pools (ADR-0174 D2).
+/// essence pools.
 ///
-/// No re-roll of IVs, nature, or EVs (ADR-0019 carry rule).
+/// No re-roll of IVs, nature, or EVs.
 #[must_use]
 pub fn evolve(monster: &MonsterInstance, to_species: &Species) -> MonsterInstance {
     // Re-derive from the TARGET base stats via the SSOT, carrying the monster's
-    // individuality (no re-roll — ADR-0019).
+    // individuality (no re-roll).
     let derived = derive_stats(
         &to_species.base_stats,
         &monster.ivs,
@@ -48,7 +44,7 @@ pub fn evolve(monster: &MonsterInstance, to_species: &Species) -> MonsterInstanc
     out.derived_stats = derived;
     // Transformation, not a heal: preserve damage but never exceed the new max.
     out.current_hp = monster.current_hp.min(derived.hp);
-    // Essence is SPENT by an evolution (ADR-0174 D2): ALL 8 pools reset, so the
+    // Essence is SPENT by an evolution: ALL 8 pools reset, so the
     // next tier's bar is climbed from zero. Trust/Quality-Time stay untouched —
     // the clone above carries the lifetime history verbatim.
     out.essence = [0; 8];

@@ -1,24 +1,3 @@
-//! M22 slice S1 — gating tests for `game-core/src/accounts/deletion.rs`
-//! (spec `M22-privacy-compliance.spec.md` §4.3, §4.5, §4.7, §5, §8.1).
-//!
-//! Declared from `accounts/mod.rs` as `#[cfg(test)] pub mod deletion_tests;`
-//! (the `combat/mod.rs` / `npc/mod.rs` idiom) — a sibling module of
-//! `deletion`, so the file body is the module itself (no wrapping `mod {}`,
-//! mirroring `combat/m14a_tests.rs`).
-//!
-//! RED-first: `deletion.rs` does not exist yet. This file will not compile
-//! until the implementer adds `DELETION_GRACE_MS_DEFAULT`, `is_deletion_due`,
-//! `TOMBSTONE_IDENTITY_BYTES`, `TOMBSTONE_AUTH_ISSUER`, `EXPORT_CHUNK_ROWS`,
-//! and `STATE_TRANSITION_OWNERS` — that is intentional (m17.5e / m16.5f
-//! precedent: a RED test module that references not-yet-existing symbols).
-//!
-//! Style precedent: `game-core/src/combat/pvp.rs:94-380`'s `CHALLENGE_TTL_MS`
-//! / `is_challenge_stale` suite (`mod pvp_tests` / `mod challenge_ttl_tests`)
-//! — doc-comment-per-test naming the criterion and the mutation KILLED,
-//! boundaries expressed as `CONST +/- 1` never as bare numeric literals, and
-//! an `assert_ne!` transition tooth that catches both constant-body mutants
-//! in one assertion.
-//!
 //! Rules enforced across this whole file (not just individual tests):
 //!   - No test spells a numeric grace literal; every boundary is
 //!     `DELETION_GRACE_MS_DEFAULT +/- 1` (or a scaled offset of it), so an
@@ -27,8 +6,6 @@
 //!     `requested_at_ms`, so the epoch-relative mutant
 //!     (`now_ms >= DELETION_GRACE_MS_DEFAULT`, ignoring `requested_at_ms`) is
 //!     distinguishable — with `t = 0` it is byte-identical to the correct fn.
-//!   - No `#[should_panic]` anywhere: it prints `... ok` identically to a
-//!     pass in CI output and is invisible to a gate that scans for FAILED.
 
 use crate::accounts::deletion::{
     is_deletion_due, DELETION_GRACE_MS_DEFAULT, EXPORT_CHUNK_ROWS, STATE_TRANSITION_OWNERS,
@@ -36,10 +13,10 @@ use crate::accounts::deletion::{
 };
 
 // ===========================================================================
-// is_deletion_due — Some(..) branch: grace-window boundary (spec §4.3)
+// is_deletion_due — Some(..) branch: grace-window boundary
 // ===========================================================================
 
-/// PRV1 §4.3 BOUNDARY: one ms before the grace window elapses -> not due.
+/// BOUNDARY: one ms before the grace window elapses -> not due.
 ///
 /// kills: an off-by-one that uses `>` mirrored the wrong way (marking a
 /// request due one ms early), or an impl that hardcodes a different literal
@@ -52,7 +29,7 @@ fn not_due_one_ms_before_grace() {
     );
 }
 
-/// PRV1 §4.3 BOUNDARY: exactly at the grace window -> due (`>=` semantics,
+/// BOUNDARY: exactly at the grace window -> due (`>=` semantics,
 /// mirroring `is_challenge_stale`'s boundary rule).
 ///
 /// kills: an impl that uses `>` instead of `>=` (would read exactly-at-grace
@@ -65,7 +42,7 @@ fn due_at_exact_grace() {
     );
 }
 
-/// PRV1 §4.3 BOUNDARY: one ms past the grace window -> due.
+/// BOUNDARY: one ms past the grace window -> due.
 ///
 /// kills: an impl that uses `==` instead of `>=` (accepts only the exact
 /// boundary and reads everything past it as not due).
@@ -77,7 +54,7 @@ fn due_past_grace() {
     );
 }
 
-/// PRV1 §4.3: at the exact instant of the request (elapsed = 0), never due.
+/// at the exact instant of the request (elapsed = 0), never due.
 ///
 /// kills: a zero (or effectively zero) grace window — if the implementation
 /// hardcodes or defaults the comparison so that elapsed = 0 already reads as
@@ -92,7 +69,7 @@ fn not_due_at_the_request_instant() {
     );
 }
 
-/// PRV1 §4.3: due-ness is relative to `requested_at_ms`, not to the raw
+/// due-ness is relative to `requested_at_ms`, not to the raw
 /// epoch value of `now_ms`.
 ///
 /// kills: the plausible lazy impl `now_ms >= DELETION_GRACE_MS_DEFAULT` that
@@ -116,16 +93,16 @@ fn due_is_relative_to_the_request_not_the_epoch() {
     );
 }
 
-/// PRV1 §4.3 CLOCK SKEW: a future-dated request (`requested_at_ms > now_ms`)
+/// CLOCK SKEW: a future-dated request (`requested_at_ms > now_ms`)
 /// must never be due.
 ///
 /// kills: an impl that measures elapsed via `(now_ms - requested_at_ms).abs()`
 /// instead of a signed, direction-aware subtraction. `.abs()` misclassifies
 /// clock skew as elapsed time (turning a future-dated request into an
 /// apparently-overdue one) and additionally panics under
-/// `[profile.release] overflow-checks = true` (workspace `Cargo.toml:65-66`)
-/// when `requested_at_ms` is near `i64::MIN` — a panic here would abort the
-/// deletion reaper's transaction in production.
+/// `[profile.release] overflow-checks = true` when `requested_at_ms` is near
+/// `i64::MIN` — a panic here would abort the deletion reaper's transaction in
+/// production.
 #[test]
 fn not_due_when_the_request_is_future_dated() {
     let now: i64 = 5_000;
@@ -136,15 +113,14 @@ fn not_due_when_the_request_is_future_dated() {
     );
 }
 
-/// PRV1 §4.3 EXTREMES: a far-future request evaluated at `i64::MAX` must
+/// EXTREMES: a far-future request evaluated at `i64::MAX` must
 /// still read as not due.
 ///
 /// kills: the add-form `t.saturating_add(GRACE) <= now` (compute the
 /// deadline by adding GRACE to the request, rather than subtracting the
 /// request from now). Near `i64::MAX`, `t.saturating_add(GRACE)` SATURATES
 /// DOWN to `i64::MAX` instead of overflowing past it, so a request that is
-/// genuinely still far from due reads as `deadline == now` -> due. This is
-/// the real bug shape observed at `server-module/src/accounts.rs:102-109`.
+/// genuinely still far from due reads as `deadline == now` -> due.
 #[test]
 fn not_due_near_i64_max_kills_the_add_form() {
     assert!(
@@ -155,7 +131,7 @@ fn not_due_near_i64_max_kills_the_add_form() {
     );
 }
 
-/// PRV1 §4.3 EXTREMES: both saturation directions must resolve without a
+/// EXTREMES: both saturation directions must resolve without a
 /// panic, and resolve to the CORRECT side of due-ness, not the same answer
 /// in both directions.
 ///
@@ -181,10 +157,9 @@ fn extremes_saturate_in_both_directions_without_panic() {
     );
 }
 
-/// PRV1 §4.3 TEETH: crossing the grace boundary must flip the result. A
+/// TEETH: crossing the grace boundary must flip the result. A
 /// single `assert_ne!` kills both a constant-`true`-body mutant and a
-/// constant-`false`-body mutant in one assertion (the `pvp.rs:364-372`
-/// `teeth_boundary_is_a_real_transition` tooth, applied here).
+/// constant-`false`-body mutant in one assertion.
 ///
 /// `B` is deliberately non-zero so this also exercises the request-relative
 /// (not epoch-relative) code path.
@@ -201,10 +176,9 @@ fn crossing_the_boundary_flips_the_result() {
 
 // ===========================================================================
 // is_deletion_due — None branch: a cancelled deletion is never due
-// (spec §4.5 — cancel-account-deletion clears the request timestamp)
 // ===========================================================================
 
-/// PRV1 §4.5: `None` (no pending deletion request) is never due, at any
+/// `None` (no pending deletion request) is never due, at any
 /// `now_ms`, including both `i64` extremes.
 ///
 /// kills: an impl that treats `None` as "request happened at time 0" instead
@@ -222,25 +196,7 @@ fn none_is_never_due_at_zero_and_both_extremes() {
     );
 }
 
-/// PRV1 §4.5/§8.1: `DELETION_GRACE_MS_DEFAULT` must be strictly positive.
-///
-/// This is a PARTIAL tooth, not a kill switch, and this comment must not
-/// overclaim what it catches. The shape it actually leaves standing is an
-/// implementation that special-cases `None => DELETION_GRACE_MS_DEFAULT == 0`
-/// (i.e. `None` internally maps to "compare the grace constant itself to
-/// zero") rather than the correct `None => false`. At any non-zero grace
-/// value that arm evaluates to `false` — identical to the correct arm — so
-/// it is INVISIBLE to every behavioural test in this file, including the
-/// adjacent `none_is_never_due_at_zero_and_both_extremes` (measured: 19/19
-/// still pass with that arm live; it is not caught there or anywhere else
-/// in this file). This assertion does NOT kill that shape; it only keeps
-/// `DELETION_GRACE_MS_DEFAULT` out of the one state (zero) where the
-/// aliasing arm would detonate into "always cascade every cancelled
-/// account" the moment an operator retunes the constant. The shape itself
-/// is killed elsewhere: acceptance gate `[X3]` pins the literal
-/// `None => false` in the function body's comment-stripped source, so a
-/// `None => ... == 0` (or any other non-literal-`false`) arm fails CI
-/// regardless of what the constant is tuned to.
+/// `DELETION_GRACE_MS_DEFAULT` must be strictly positive.
 #[test]
 fn grace_default_is_positive_so_none_cannot_alias_true() {
     let grace: i64 = DELETION_GRACE_MS_DEFAULT;
@@ -254,28 +210,15 @@ fn grace_default_is_positive_so_none_cannot_alias_true() {
 
 // ===========================================================================
 // TOMBSTONE_IDENTITY_BYTES — the battle-row anonymization sentinel
-// (spec §3 "battle" ANONYMIZE entry, §4.5's TOMBSTONE_IDENTITY discussion)
 // ===========================================================================
 
-/// PRV1 §3/§4.5: the tombstone identity must NOT be the all-zero sentinel.
+/// the tombstone identity must NOT be the all-zero sentinel.
 ///
 /// The zero array is written INLINE as a literal here (never lifted into a
 /// named `WILD_IDENTITY_BYTES` const in game-core) — a second, game-core-side
 /// copy of server-module's `WILD_IDENTITY` value would itself be a second
 /// source of truth for that constant, and would make this assertion a
 /// same-file tautology instead of a real comparison.
-///
-/// Cites `server-module/src/lib.rs:84`:
-///   `pub(crate) const WILD_IDENTITY: Identity = Identity::from_byte_array([0u8; 32]);`
-///
-/// The CROSS-CRATE half of this invariant (that game-core's tombstone value
-/// really does differ from server-module's live `WILD_IDENTITY` constant, not
-/// just from a literal written here) is proven by acceptance gate `[X4]`
-/// (or its slice-S2/S6 equivalent), which reads that declaration out of
-/// `server-module/src/lib.rs` with an anchored regex. **This test must not
-/// be pruned as "tautological"** — it is the game-core-side anchor that
-/// gate pins against; removing it does not remove redundancy, it removes
-/// one side of the pin.
 #[test]
 fn tombstone_identity_bytes_is_not_the_wild_zero_sentinel() {
     assert_ne!(
@@ -287,9 +230,8 @@ fn tombstone_identity_bytes_is_not_the_wild_zero_sentinel() {
     );
 }
 
-/// PRV1 §3/§4.5: the tombstone identity is pinned to the exact all-`0xFF`
-/// byte vector the spec names (§3's `battle` ANONYMIZE entry: "e.g.
-/// `[0xFFu8; 32]`").
+/// the tombstone identity is pinned to the exact all-`0xFF`
+/// byte vector the spec names.
 ///
 /// kills: any other non-zero-but-arbitrary sentinel value that would pass
 /// `tombstone_identity_bytes_is_not_the_wild_zero_sentinel` but silently
@@ -303,10 +245,10 @@ fn tombstone_identity_bytes_is_pinned_to_the_all_ff_vector() {
 }
 
 // ===========================================================================
-// TOMBSTONE_AUTH_ISSUER — the account.auth_issuer sentinel (spec §3 "account")
+// TOMBSTONE_AUTH_ISSUER — the account.auth_issuer sentinel
 // ===========================================================================
 
-/// PRV1 §3: the tombstone auth-issuer sentinel must be non-empty and not
+/// the tombstone auth-issuer sentinel must be non-empty and not
 /// whitespace-only.
 ///
 /// kills: an impl that defaults the constant to `""` (or all-whitespace),
@@ -324,7 +266,7 @@ fn tombstone_auth_issuer_is_non_empty() {
     );
 }
 
-/// PRV1 §3: the tombstone auth-issuer sentinel must not resemble a URL.
+/// the tombstone auth-issuer sentinel must not resemble a URL.
 ///
 /// `auth_issuer` is otherwise populated with real OAuth issuer values (a
 /// scheme + host, e.g. an issuer URL); a sentinel that ALSO looks like a URL
@@ -346,10 +288,10 @@ fn tombstone_auth_issuer_has_no_url_punctuation() {
 }
 
 // ===========================================================================
-// EXPORT_CHUNK_ROWS — export sub-chunking boundary (spec §5)
+// EXPORT_CHUNK_ROWS — export sub-chunking boundary
 // ===========================================================================
 
-/// PRV1 §5: `EXPORT_CHUNK_ROWS` must be non-zero.
+/// `EXPORT_CHUNK_ROWS` must be non-zero.
 ///
 /// A zero chunk size makes S4's row-count sub-chunking (`slice::chunks(0)`
 /// or equivalent) PANIC — `chunks(0)` is documented to panic unconditionally
@@ -365,7 +307,7 @@ fn export_chunk_rows_is_non_zero() {
     );
 }
 
-/// PRV1 §5: `EXPORT_CHUNK_ROWS` is pinned at the spec's proposed value, 500.
+/// `EXPORT_CHUNK_ROWS` is pinned at the spec's proposed value, 500.
 #[test]
 fn export_chunk_rows_is_pinned_at_five_hundred() {
     assert_eq!(
@@ -375,10 +317,10 @@ fn export_chunk_rows_is_pinned_at_five_hundred() {
 }
 
 // ===========================================================================
-// STATE_TRANSITION_OWNERS — the §4.7 gate-exemption allowlist
+// STATE_TRANSITION_OWNERS — the gate-exemption allowlist
 // ===========================================================================
 
-/// PRV1 §4.7: `STATE_TRANSITION_OWNERS` is EXACTLY the three spec-named
+/// `STATE_TRANSITION_OWNERS` is EXACTLY the three spec-named
 /// reducers — no more, no fewer — checked against an INDEPENDENTLY written
 /// literal array (never a re-reference to the const itself, which would make
 /// this a tautology).
@@ -409,11 +351,10 @@ fn state_transition_owners_is_exactly_the_three_spec_reducers() {
     }
 }
 
-/// PRV1 §4.7 TEETH: the exemption list admits no empty string, no `"*"`
+/// TEETH: the exemption list admits no empty string, no `"*"`
 /// wildcard, no duplicate entries, and no ordinary gameplay reducer.
 ///
-/// Under S6's `[DEL-06]` CI scan (matching mechanism not yet decided — S6 is
-/// unbuilt), an empty or `"*"` entry would exempt EVERY reducer that writes
+/// an empty or `"*"` entry would exempt EVERY reducer that writes
 /// a manifest-classified table from the deletion gate — silently turning a
 /// targeted 3-reducer allowlist into a blanket bypass.
 /// `propose_trade`/`start_battle` are chosen as negative membership probes
@@ -454,18 +395,8 @@ fn state_transition_owners_admits_no_empty_wildcard_or_gameplay_entry() {
 
 // ===========================================================================
 // TOMBSTONE_DISPLAY_NAME — the M22 §3 player.name / profile.name deletion
-// sentinel (slice rb-7, M22-privacy-compliance.spec.md §3).
+// sentinel.
 //
-// This slice single-sources the deletion-tombstone display name in
-// game-core so S3 (the imperative deletion shell in
-// server-module/src/accounts.rs) has exactly one correct place to reach for
-// it, instead of the M21 GUEST-CLAIM sentinel
-// (server-module/src/ranking.rs's `PROFILE_TOMBSTONE_NAME`, a DIFFERENT
-// sentinel for a DIFFERENT lifecycle event). The cross-crate half of this
-// distinctness — that the two constants stay apart even under case-folding
-// and whitespace-squashing, and that ranking.rs's sentinel is no longer
-// reachable outside its own module — is proven from the server-module side
-// (ranking_tests.rs RB7-B1..B5).
 // ===========================================================================
 
 // Imported by the FLAT crate-root path, deliberately unlike the deep
@@ -475,7 +406,7 @@ fn state_transition_owners_admits_no_empty_wildcard_or_gameplay_entry() {
 // silently leaving S3 without the path every other S1 sentinel offers.
 use crate::TOMBSTONE_DISPLAY_NAME;
 
-/// RB7-A1 (M22 §3): `TOMBSTONE_DISPLAY_NAME` must be non-blank, trim-stable,
+/// `TOMBSTONE_DISPLAY_NAME` must be non-blank, trim-stable,
 /// and composed only of printable ASCII characters.
 ///
 /// Four independent properties, each load-bearing on its own:
@@ -489,13 +420,12 @@ use crate::TOMBSTONE_DISPLAY_NAME;
 ///     this is the clause that kills a zero-width-space or RTL-override
 ///     value: an "un-typable" value (one `validate_name` would reject) can
 ///     still satisfy the first three properties while rendering blank or
-///     visually reversed on a leaderboard (measured red-team finding #13)
+///     visually reversed on a leaderboard
 ///
 /// This test deliberately does NOT assert `<= 24` and does NOT assert the
 /// alphanumeric-charset predicate — `MAX_NAME_LEN` and `validate_name` are
 /// `pub(crate)` in server-module, and hand-copying either rule into
-/// game-core would itself be the SSOT hazard this slice exists to remove.
-/// Those two properties are proven server-module-side (RB7-B1).
+/// game-core would itself be the SSOT hazard.
 ///
 /// kills: a blank-string default; a leading/trailing-whitespace-padded
 /// value; a value containing a zero-width space (U+200B) or an RTL-override
@@ -529,16 +459,14 @@ fn tombstone_display_name_is_non_blank_and_printable() {
     }
 }
 
-/// RB7-A2 (M22 §3): `TOMBSTONE_DISPLAY_NAME` must be distinct from its LIVE
+/// `TOMBSTONE_DISPLAY_NAME` must be distinct from its LIVE
 /// game-core sibling `TOMBSTONE_AUTH_ISSUER`.
 ///
 /// Compares against the live sibling constant, never a hand-typed literal.
 /// game-core must not carry its own copy of server-module's `(claimed
-/// guest)` M21 guest-claim sentinel — that string is `pub(crate)` (going to
-/// module-private under this slice) in server-module, so an un-synced
-/// hand-copy here would itself be the SSOT hazard this slice removes. The
-/// cross-crate distinctness against that LIVE server-module constant is
-/// RB7-B2's job, not this test's.
+/// guest)` M21 guest-claim sentinel — that string is `pub(crate)`
+/// in server-module, so an un-synced hand-copy here would itself be the
+/// SSOT hazard.
 ///
 /// kills: a deletion tombstone accidentally defined as (or copy-pasted
 /// from) the auth-issuer sentinel value, collapsing two distinct

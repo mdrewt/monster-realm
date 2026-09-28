@@ -1,12 +1,8 @@
-// net/warpDetect.test.ts — isOwnZoneChange pure-predicate unit tests (M11c).
+// net/warpDetect.test.ts — isOwnZoneChange pure-predicate unit tests.
 //
 // SOURCE OF TRUTH: M11c EARS C4 — warp detection.
 // `isOwnZoneChange(oldRow, newRow, ownEntityId)` is a pure predicate extracted
 // from the connection.ts onUpdate callback per ADR-0067 Option C.
-//
-// RED REASON: `warpDetect.ts` does not exist yet. Every import will fail to
-// compile until the implementer creates `client/src/net/warpDetect.ts` and
-// exports `isOwnZoneChange(oldRow, newRow, ownEntityId: bigint): boolean`.
 //
 // Why this is testable without the SDK: the predicate is pure — no DbConnection,
 // no subscription, no side effects. It only inspects two row objects and a bigint.

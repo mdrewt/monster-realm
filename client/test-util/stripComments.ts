@@ -5,9 +5,6 @@
 // production tree. Moved here verbatim (typed) from
 // evals/dom-shell-coverage-exclusion.eval.mjs when that eval was deleted (debloat
 // Phase 2, EV-dom-shell-coverage-exclusion); client tests import it by relative path.
-// NOTE: client/tsconfig.json includes only src/e2e/*.config.ts, so this file is
-// not typechecked today — Phase 3's test-typecheck re-inclusion should cover
-// client/test-util too.
 
 /**
  * Strip JS/TS line comments (// …) and block comments (/* … *\/) from source,

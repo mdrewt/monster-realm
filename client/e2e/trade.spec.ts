@@ -7,22 +7,11 @@ import {
   test,
 } from '@playwright/test';
 
-// M15c trade overlay e2e — client-side UI wiring (ADR-0107).
+// M15c trade overlay e2e — client-side UI wiring.
 //
 // SCOPE: validates that the trade overlay DOM is wired, KeyU opens/closes it,
 // the "No active trade" state renders correctly, and mutual exclusivity with
 // other overlays is enforced.  These tests run against a single browser context.
-//
-// ROUND-TRIP LIMITATION (hidden dependency, documented here):
-//   The full propose→respond→confirm flow requires two distinct players and the
-//   ability to call `propose_trade` / `respond_trade` / `confirm_trade` from the
-//   test.  The SpacetimeDB SDK does not expose an out-of-band reducer call from
-//   the test context (DbConnection has no accessible token — same constraint as
-//   recruit.spec.ts).  Full flow coverage would require a `window.__mrTrade`
-//   test hook in main.ts (exposing conn.reducers.proposeTrade etc.) — a production
-//   code change outside this slice's declared touches.  That hook is recorded as a
-//   follow-up dependency; the evals/trade-*.eval.mjs trio provides static-analysis
-//   coverage for TR-2..TR-18 in the interim.
 //
 // WHAT THESE TESTS KILL:
 //   "DOM missing"           — regression in index.html that removes a child div;
@@ -124,8 +113,8 @@ test.describe
 
     // ---------------------------------------------------------------------------
     // Mutual exclusivity: when box overlay is open, KeyU must NOT open trade.
-    // Verifies the 8-view guard in the main.ts KeyU handler (main.ts:478-487).
-    // The box overlay opens with KeyB when no battle is active (shouldToggleBox).
+    // Verifies the 8-view guard in the main.ts KeyU handler.
+    // The box overlay opens with KeyB when no battle is active (overlayVerdict('boxView')).
     // ---------------------------------------------------------------------------
     test('KeyU does not open trade overlay when box overlay is visible', async () => {
       // Ensure trade overlay starts hidden.
@@ -183,7 +172,7 @@ test.describe
     });
 
     // ---------------------------------------------------------------------------
-    // 16.5c-1: overlay guard — G/Q/H keys do NOT open their overlays while trade
+    // Overlay guard — G/Q/H keys do NOT open their overlays while trade
     // is open; trade overlay stays visible throughout.
     //
     // WHAT THIS KILLS:
@@ -193,8 +182,6 @@ test.describe
     //   The m16b review fixed these guards (code is green); this test is the
     //   proof-of-teeth that a regression in those guards would be caught.
     //
-    // The test is RED today only in the sense that it does not yet exist.
-    // Once written it proves the guards actually bite.
     // ---------------------------------------------------------------------------
     test('trade open: G/Q/H keys do not open overlays (16.5c-1)', async () => {
       // Ensure we start with no overlays open.

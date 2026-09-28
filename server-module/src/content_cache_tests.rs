@@ -1,53 +1,16 @@
-//! Gating tests for the `content_cache` module (M13.5d, M14.5e).
+//! Gating tests for the `content_cache` module.
 //!
 //! Declared from `content_cache.rs` with:
 //!   `#[cfg(test)] #[path = "content_cache_tests.rs"] mod content_cache_tests;`
-//!
-//! Historical RED state (M13.5d — resolved, ADR-0089): the original gating
-//! tests for this file required `content_cache.rs` to expose four accessors
-//! (`cached_zone_maps`, `cached_evolutions`, `cached_dialogue_trees`,
-//! `cached_quest_defs`) and `lib.rs` to declare `mod content_cache;`. That
-//! implementation shipped with M13.5d; all four accessors and their LazyLock
-//! statics are present in `content_cache.rs` today. The M13.5d tests below
-//! are GREEN.
-//!
-//! RED state (M14.5e block — tests 1–4 compile-fail; test 5 assertion-fail):
-//!
-//! Tests 1–4 (`cached_skills_*` / `cached_items_*`) are RED via **compile
-//! failure**: `cached_skills()` and `cached_items()` do not yet exist in
-//! `content_cache.rs`. Because compile failure prevents any test in this crate
-//! from running, test 5's red state (`hot_path_reducers_use_cached_content_not_load`)
-//! is demonstrable only after the implementer adds the two accessors and the two
-//! `LazyLock` statics. At that point test 5 is RED via **assertion failure**:
-//! the reducer bodies in `battle.rs` and `taming.rs` still contain
-//! `game_core::load_skills()` / `game_core::load_items()` direct calls and do
-//! NOT yet contain `cached_skills` / `cached_items`. This layered red state is
-//! the same precedent established by M13.5d (ADR-0089).
-//!
-//! EARS criteria covered:
-//!   13.5d-1 transparency (resolved M13.5d): each cached_ fn returns the same
-//!     data as the corresponding game_core::load_*() counterpart.
-//!   13.5d-1 structural LazyLock proof (resolved M13.5d): two calls to the same
-//!     cached_ fn return the SAME pointer address — proves LazyLock actually caches.
-//!   13.5d-1 battle.rs hoist (resolved M13.5d): compute_evolves_to with evolutions
-//!     from cached_evolutions() produces the same result as with load_evolutions().
-//!   13.5d-2 server side (resolved M13.5d): cached_zone_maps() + map_for(0, …) returns Ok.
-//!   14.5e-1 transparency (skills): cached_skills() == game_core::load_skills().
-//!   14.5e-1 transparency (items): cached_items() == game_core::load_items().
-//!   14.5e-1 structural (skills LazyLock): two calls return the SAME pointer.
-//!   14.5e-1 structural (items LazyLock): two calls return the SAME pointer.
-//!   14.5e-2 call-site switch: submit_attack / swap_active / use_battle_item /
-//!     attempt_recruit bodies use cached_skills/cached_items, NOT load_skills/load_items.
 
 // `super` is the `content_cache` module (declared via #[path]).
 use super::*;
 
 // ---------------------------------------------------------------------------
-// 13.5d-1 — observational transparency: cached data == freshly-loaded data
+// Observational transparency: cached data == freshly-loaded data
 // ---------------------------------------------------------------------------
 
-/// CRITERION 13.5d-1 (zone maps): cached_zone_maps() returns the same data
-/// as game_core::load_zone_maps().
+/// cached_zone_maps() returns the same data as game_core::load_zone_maps().
 ///
 /// ZoneMapDef does NOT derive PartialEq (only Serialize/Deserialize), so we
 /// compare via JSON/RON serialization — the canonical round-trip for content.
@@ -105,27 +68,7 @@ fn cached_zone_maps_matches_load() {
     }
 }
 
-/// CRITERION 13.5d-1 (evolution paths, EG1-migrated):
-/// cached_evolution_paths() == load_evolution_paths().
-///
-/// EG1 mechanical migration (ADR-0174): the SpeciesEvolutions trigger registry
-/// was deleted; the cache now fronts the essence-graph evolution_paths
-/// registry. EvolutionPath derives PartialEq, so direct equality is safe.
-///
-/// Wrong impl killed: a static populated with a different content snapshot, or
-/// one whose OnceLock is never seeded (returns empty Vec).
-#[test]
-fn cached_evolution_paths_matches_load() {
-    let cached = cached_evolution_paths().expect("cached_evolution_paths must succeed");
-    let loaded =
-        game_core::load_evolution_paths().expect("game_core::load_evolution_paths must succeed");
-    assert_eq!(
-        *cached, loaded,
-        "cached_evolution_paths() data does not match game_core::load_evolution_paths()"
-    );
-}
-
-/// CRITERION 13.5d-1 (dialogue trees): cached_dialogue_trees() == load_dialogue_trees().
+/// cached_dialogue_trees() == load_dialogue_trees().
 ///
 /// DialogueTree derives PartialEq.
 ///
@@ -142,7 +85,7 @@ fn cached_dialogue_trees_matches_load() {
     );
 }
 
-/// CRITERION 13.5d-1 (quest defs): cached_quest_defs() == load_quest_defs().
+/// cached_quest_defs() == load_quest_defs().
 ///
 /// QuestDef derives PartialEq.
 ///
@@ -159,11 +102,10 @@ fn cached_quest_defs_matches_load() {
 }
 
 // ---------------------------------------------------------------------------
-// 13.5d-1 structural — LazyLock proof: two calls return the SAME pointer
+// LazyLock proof: two calls return the SAME pointer
 // ---------------------------------------------------------------------------
 
-/// CRITERION 13.5d-1 structural (zone maps): two successive calls to
-/// cached_zone_maps() return the SAME Vec pointer.
+/// two successive calls to cached_zone_maps() return the SAME Vec pointer.
 ///
 /// `std::ptr::eq` on two `&'static Vec<T>` references proves that the backing
 /// allocation is the same — i.e., the first call initialized the LazyLock and
@@ -182,29 +124,12 @@ fn cached_zone_maps_ptr_eq_second_call() {
     );
 }
 
-/// CRITERION 13.5d-1 structural (evolution paths, EG1-migrated): two successive
-/// calls to cached_evolution_paths() return the SAME Vec pointer, proving
-/// LazyLock caching.
-///
-/// Wrong impl killed: any impl that calls load_evolution_paths() on every
-/// invocation, or allocates a new Vec<EvolutionPath> on each call.
-#[test]
-fn cached_evolution_paths_ptr_eq_second_call() {
-    let first = cached_evolution_paths().expect("first call must succeed");
-    let second = cached_evolution_paths().expect("second call must succeed");
-    assert!(
-        std::ptr::eq(first as *const _, second as *const _),
-        "cached_evolution_paths() returned different pointers on two calls — \
-         OnceLock is not caching (the Vec was re-allocated or re-parsed)"
-    );
-}
-
 // ---------------------------------------------------------------------------
-// 13.5d-1 zone-map lookup: cached data works through game_core::map_for
+// zone-map lookup: cached data works through game_core::map_for
 // ---------------------------------------------------------------------------
 
-/// CRITERION 13.5d-1 (zone map lookup consistency): verifies that zone 0 can
-/// be found via game_core::map_for(0, cached_zone_maps().unwrap()).
+/// verifies that zone 0 can be found via game_core::map_for(0,
+/// cached_zone_maps().unwrap()).
 ///
 /// This proves the cached data is not only equal to the loaded data in shape,
 /// but also usable by the actual lookup function — the same path the server's
@@ -223,39 +148,17 @@ fn cached_zone_maps_is_consistent_with_map_for() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// EG1 (ADR-0174 D2): the 13.5d-1 battle.rs-hoist parity test
-// (`cached_evolves_to_matches_load_evolves_to`) was DELETED here — its entire
-// subject chain (`compute_evolves_to`, `cached_evolutions`,
-// `game_core::load_evolutions`, the SpeciesEvolutions trigger model, and the
-// battle level-up evolves_to recompute it pinned) is removed outright by the
-// essence-graph redesign. Removal is the mechanical consequence of the deleted
-// subject, not a weakened assertion.
-// ---------------------------------------------------------------------------
-
 // ===========================================================================
-// M14.5e — skills + items cache: EARS 14.5e-1 transparency + LazyLock proof
 // ===========================================================================
 //
-// Tests 1–4 below are RED via compile failure until `content_cache.rs` gains:
-//
-//   static SKILLS: LazyLock<Result<Vec<game_core::SkillDef>, String>> =
-//       LazyLock::new(game_core::load_skills);
-//   static ITEMS:  LazyLock<Result<Vec<game_core::ItemDef>,  String>> =
-//       LazyLock::new(game_core::load_items);
-//   pub(crate) fn cached_skills() -> Result<&'static Vec<game_core::SkillDef>, String>
-//   pub(crate) fn cached_items()  -> Result<&'static Vec<game_core::ItemDef>,  String>
-//
-// Test 5 is RED via assertion failure once those symbols exist (the call sites
-// in battle.rs and taming.rs still call load_skills/load_items directly today).
 // ===========================================================================
 
-/// CRITERION 14.5e-1 (skills transparency): `cached_skills()` returns exactly
-/// the same data as `game_core::load_skills()` — same count and same contents.
+/// `cached_skills()` returns exactly the same data as
+/// `game_core::load_skills()` — same count and same contents.
 ///
-/// `SkillDef` derives `PartialEq + Eq` (game-core/src/content.rs, line 115),
-/// so direct `assert_eq!` is safe and produces a precise diff on failure.
-/// Count is checked first for a clearer failure message (house style).
+/// `SkillDef` derives `PartialEq + Eq`, so direct `assert_eq!` is safe and
+/// produces a precise diff on failure. Count is checked first for a clearer
+/// failure message.
 ///
 /// Wrong impl killed: a static that hard-codes a subset of skills, returns an
 /// empty Vec, parses a stale snapshot, or reorders entries. Any of these will
@@ -278,12 +181,11 @@ fn cached_skills_matches_load() {
     );
 }
 
-/// CRITERION 14.5e-1 (items transparency): `cached_items()` returns exactly
-/// the same data as `game_core::load_items()` — same count and same contents.
+/// `cached_items()` returns exactly the same data as
+/// `game_core::load_items()` — same count and same contents.
 ///
-/// `ItemDef` derives `PartialEq + Eq` (game-core/src/content.rs, line 145),
-/// so direct `assert_eq!` is safe.
-/// Count is checked first for a clearer failure message (house style).
+/// `ItemDef` derives `PartialEq + Eq`, so direct `assert_eq!` is safe. Count
+/// is checked first for a clearer failure message.
 ///
 /// Wrong impl killed: a static that hard-codes a subset of items, returns an
 /// empty Vec, parses a stale snapshot, or reorders entries.
@@ -305,8 +207,7 @@ fn cached_items_matches_load() {
     );
 }
 
-/// CRITERION 14.5e-1 structural (skills LazyLock): two successive calls to
-/// `cached_skills()` return the SAME `Vec` pointer.
+/// two successive calls to `cached_skills()` return the SAME `Vec` pointer.
 ///
 /// `std::ptr::eq` on two `&'static Vec<SkillDef>` references proves the backing
 /// allocation is identical — i.e., the first call initialized the `LazyLock` and
@@ -326,8 +227,7 @@ fn cached_skills_ptr_eq_second_call() {
     );
 }
 
-/// CRITERION 14.5e-1 structural (items LazyLock): two successive calls to
-/// `cached_items()` return the SAME `Vec` pointer.
+/// two successive calls to `cached_items()` return the SAME `Vec` pointer.
 ///
 /// Mirrors `cached_skills_ptr_eq_second_call` for the items registry.
 ///
@@ -345,53 +245,9 @@ fn cached_items_ptr_eq_second_call() {
 }
 
 // ===========================================================================
-// 11r-g (ADR-0170 D1/D2) — abilities + heal-locations caches, and the
+// Abilities + heal-locations caches, and the
 // version-keyed type-chart cache
 //
-// EARS criteria covered by this section:
-//
-//   C-1  `cached_abilities()` SHALL return exactly the data
-//        `game_core::load_abilities()` returns (ADR-0089 M14.5e park, completed).
-//   C-2  `cached_abilities()` SHALL cache: two calls return the SAME pointer.
-//   C-3  `type_chart_cache_lookup` SHALL return the cached `Arc` without calling
-//        the rebuild closure when the cell already holds the requested version.
-//   C-4  It SHALL call the rebuild closure and return the NEW chart when the
-//        content version differs from the cached one.
-//   C-5  It SHALL NOT cache a failed rebuild: the next call at the same version
-//        rebuilds again.
-//   C-5b It SHALL KEEP any previously cached older-version entry across a failed
-//        rebuild, so a later call at that older version still hits.
-//   C-6  It SHALL recover from a POISONED lock rather than propagate the panic.
-//   C-7  No module reachable from `sync_content_inner` (`content.rs`,
-//        `marshal.rs`, `evolution.rs`) SHALL call `cached_type_chart`.
-//   C-8  `start_battle`, `begin_encounter`, `submit_attack` and `swap_active`
-//        SHALL use `content_cache::cached_abilities`, never `load_abilities`.
-//   C-9  `submit_attack` and `swap_active` SHALL use
-//        `content_cache::cached_type_chart`, never `type_chart_from_rows`.
-//   C-10 `battle.rs` SHALL carry no remaining ADR-0089 PARK markers.
-//   H-1  `cached_heal_locations()` SHALL be transparent and SHALL cache
-//        (the same pair as C-1/C-2, for the eighth LazyLock).
-//
-// RED STATE.
-//   * C-1, C-2, C-3, C-4, C-5, C-5b, C-6 and H-1 are COMPILE-RED:
-//     `cached_abilities`, `cached_heal_locations`, `TypeChartCell` and
-//     `type_chart_cache_lookup` do not exist in `content_cache.rs`, so
-//     `use super::*;` cannot resolve them (the same layered red state this
-//     file's header records for M14.5e).
-//   * C-8, C-9 and C-10 are ASSERTION-RED once those symbols exist: `battle.rs`
-//     still calls `load_abilities()` at :242/:412/:596/:733, still calls
-//     `type_chart_from_rows` at :574/:719, and still carries two ADR-0089 PARK
-//     comment blocks at :594-595 and :731-732.
-//   * C-7 is a GREEN-AT-HEAD fence — a separate `#[test]` so it can actually be
-//     observed passing, and it is the ONLY thing standing between the version
-//     key and a rolled-back write being cached forever (see its doc comment).
-//
-// WHY A PURE INNER FUNCTION. There is no reducer-executing harness (ADR-0156
-// P7), so the cache's logic lives in `type_chart_cache_lookup(cell, version,
-// rebuild)` — cell, version and rebuild closure all injected — and the
-// `ReducerContext` wrapper `cached_type_chart` is the ~5 lines that cannot be
-// tested here. Every decision the cache makes is in the inner function and is
-// exercised below with a counting closure and two distinguishable charts.
 // ===========================================================================
 
 /// A one-relation `TypeChart` whose Fire-vs-Water cell is `effectiveness`.
@@ -433,20 +289,16 @@ fn counted_err(
     Err(message.to_string())
 }
 
-/// CRITERION C-1 (abilities transparency): `cached_abilities()` returns exactly
-/// the same data as `game_core::load_abilities()` — same count and same contents.
+/// `cached_abilities()` returns exactly the same data as
+/// `game_core::load_abilities()` — same count and same contents.
 ///
-/// `AbilityDef` derives `PartialEq + Eq` (game-core/src/content.rs:107), so a
-/// direct `assert_eq!` gives a precise diff. Count is checked first for a clearer
-/// message (house style, mirroring `cached_skills_matches_load`).
+/// `AbilityDef` derives `PartialEq + Eq`, so a direct `assert_eq!` gives a
+/// precise diff. Count is checked first for a clearer message.
 ///
 /// Wrong impl killed: a static that hard-codes a subset of abilities, returns an
 /// empty Vec, parses a stale snapshot, or reorders entries. Abilities drive
-/// `apply_entry_ability` and the whole ADR-0100 ability resolution, so a
-/// truncated registry silently disables abilities in every battle rather than
-/// failing loudly.
-///
-/// COMPILE-RED: `cached_abilities` does not exist in `content_cache.rs` yet.
+/// `apply_entry_ability`, so a truncated registry silently disables abilities in
+/// every battle rather than failing loudly.
 #[test]
 fn cached_abilities_matches_load() {
     let cached = cached_abilities().expect("cached_abilities() must succeed");
@@ -465,19 +317,15 @@ fn cached_abilities_matches_load() {
     );
 }
 
-/// CRITERION C-2 (abilities LazyLock proof): two successive calls to
-/// `cached_abilities()` return the SAME `Vec` pointer.
+/// two successive calls to `cached_abilities()` return the SAME `Vec` pointer.
 ///
 /// `std::ptr::eq` on two `&'static Vec<AbilityDef>` references proves the backing
 /// allocation is identical — the first call initialised the `LazyLock` and the
 /// second returned the cached reference without re-parsing.
 ///
 /// Wrong impl killed: an accessor that calls `game_core::load_abilities()` on
-/// every invocation. That is the ADR-0089 M14.5e park being "completed" in name
-/// only — the four battle.rs call sites would still re-parse the abilities RON on
-/// every battle action, which is the whole cost this slice removes.
-///
-/// COMPILE-RED: `cached_abilities` does not exist in `content_cache.rs` yet.
+/// every invocation. four battle.rs call sites would still re-parse the abilities
+/// RON on every battle action.
 #[test]
 fn cached_abilities_ptr_eq_second_call() {
     let first = cached_abilities().expect("first call to cached_abilities() must succeed");
@@ -489,17 +337,15 @@ fn cached_abilities_ptr_eq_second_call() {
     );
 }
 
-/// CRITERION H-1 (heal-locations transparency): `cached_heal_locations()`
-/// returns exactly the same data as `game_core::load_heal_locations()`.
+/// `cached_heal_locations()` returns exactly the same data as
+/// `game_core::load_heal_locations()`.
 ///
-/// `HealLocationDef` derives `PartialEq + Eq` (game-core/src/content.rs:1131).
+/// `HealLocationDef` derives `PartialEq + Eq`.
 ///
 /// Wrong impl killed: a static that drops entries or parses a stale snapshot.
 /// `heal_party` reads `cost_currency` out of this registry, so a wrong snapshot
 /// is a wrong PRICE — either a free heal at a paid location or a charge at a free
-/// one, both of which move real currency (ADR-0083).
-///
-/// COMPILE-RED: `cached_heal_locations` does not exist in `content_cache.rs` yet.
+/// one, both of which move real currency.
 #[test]
 fn cached_heal_locations_matches_load() {
     let cached = cached_heal_locations().expect("cached_heal_locations() must succeed");
@@ -520,14 +366,10 @@ fn cached_heal_locations_matches_load() {
     );
 }
 
-/// CRITERION H-1 (heal-locations LazyLock proof): two successive calls to
-/// `cached_heal_locations()` return the SAME `Vec` pointer.
+/// two successive calls to `cached_heal_locations()` return the SAME `Vec`
+/// pointer.
 ///
-/// Wrong impl killed: an accessor that re-parses the heal registry on every call,
-/// which is exactly what `heal_party` does at HEAD (raising.rs:324) and what
-/// ADR-0170 D3 removes.
-///
-/// COMPILE-RED: `cached_heal_locations` does not exist in `content_cache.rs` yet.
+/// Wrong impl killed: an accessor that re-parses the heal registry on every call.
 #[test]
 fn cached_heal_locations_ptr_eq_second_call() {
     let first = cached_heal_locations().expect("first call must succeed");
@@ -539,7 +381,7 @@ fn cached_heal_locations_ptr_eq_second_call() {
     );
 }
 
-/// CRITERION C-3 (version hit): a lookup at a version the cell already holds
+/// a lookup at a version the cell already holds
 /// returns the cached `Arc` and does NOT call the rebuild closure.
 ///
 /// The second lookup is handed a closure that would build a DIFFERENT chart
@@ -547,13 +389,9 @@ fn cached_heal_locations_ptr_eq_second_call() {
 /// closure was not called (`calls == 1`), the same allocation came back
 /// (`Arc::ptr_eq`), and the returned chart is the FIRST one (`probe == 0`).
 ///
-/// Wrong impl killed: a cache that stores the version but rebuilds anyway (the
-/// whole point of ADR-0170 D1 is removing a full `type_relation_row` scan +
-/// chart rebuild from every `submit_attack` / `swap_active`); and a cache that
-/// returns a fresh `Arc` wrapping a re-cloned chart, which would make the
-/// refcount-bump-per-hit design a lie.
-///
-/// COMPILE-RED: `type_chart_cache_lookup` / `TypeChartCell` do not exist yet.
+/// Wrong impl killed: a cache that stores the version but rebuilds anyway;
+/// and a cache that returns a fresh `Arc` wrapping a re-cloned chart, which
+/// would make the refcount-bump-per-hit design a lie.
 #[test]
 fn type_chart_cache_returns_the_cached_arc_on_a_version_hit() {
     let cell = TypeChartCell::new(None);
@@ -593,11 +431,10 @@ fn type_chart_cache_returns_the_cached_arc_on_a_version_hit() {
     );
 }
 
-/// CRITERION C-4 (version miss): a lookup at a DIFFERENT version rebuilds and
-/// returns the new chart.
+/// a lookup at a DIFFERENT version rebuilds and returns the new chart.
 ///
-/// Wrong impl killed: THE central hazard ADR-0170 D1 rejects a plain `LazyLock`
-/// for. `type_relation_row` is DB data written by `sync_content`, so a cache that
+/// Wrong impl killed:
+/// `type_relation_row` is DB data written by `sync_content`, so a cache that
 /// ignores the version key serves a permanently stale chart after any reseed —
 /// cache poisoning of every battle's damage math, silently, forever. A
 /// version-ignoring impl returns the version-1 chart here, so `probe` reads 0
@@ -606,8 +443,6 @@ fn type_chart_cache_returns_the_cached_arc_on_a_version_hit() {
 /// The `!Arc::ptr_eq` assertion additionally kills an impl that mutates the chart
 /// INSIDE the existing `Arc` (which would change the chart under any reference a
 /// caller is still holding).
-///
-/// COMPILE-RED: `type_chart_cache_lookup` / `TypeChartCell` do not exist yet.
 #[test]
 fn type_chart_cache_rebuilds_when_the_content_version_changes() {
     let cell = TypeChartCell::new(None);
@@ -653,8 +488,8 @@ fn type_chart_cache_rebuilds_when_the_content_version_changes() {
     );
 }
 
-/// CRITERION C-5 (Err is never cached): a failed rebuild surfaces `Err`, and the
-/// NEXT lookup at the same version rebuilds again.
+/// a failed rebuild surfaces `Err`, and the NEXT lookup at the same version
+/// rebuilds again.
 ///
 /// Wrong impl killed: an impl that mirrors the six compile-time-embedded
 /// `LazyLock` registries above and caches the failure. That policy is correct for
@@ -663,8 +498,6 @@ fn type_chart_cache_rebuilds_when_the_content_version_changes() {
 /// a later transaction can fix. Caching the Err would leave every battle
 /// permanently broken after one transient failure, with no retry path short of a
 /// redeploy.
-///
-/// COMPILE-RED: `type_chart_cache_lookup` / `TypeChartCell` do not exist yet.
 #[test]
 fn type_chart_cache_never_caches_a_failed_rebuild() {
     let cell = TypeChartCell::new(None);
@@ -714,13 +547,11 @@ fn type_chart_cache_never_caches_a_failed_rebuild() {
     );
 }
 
-/// CRITERION C-5b (a failed rebuild keeps the older entry): after a good entry at
-/// version 1 and a FAILED rebuild at version 2, a later lookup at version 1 must
-/// HIT — without rebuilding — and return the original chart.
+/// after a good entry at version 1 and a FAILED rebuild at version 2, a later
+/// lookup at version 1 must HIT — without rebuilding — and return the original
+/// chart.
 ///
-/// This is the precise wording of ADR-0170 D1: a failed rebuild "returns `Err`,
-/// keeps any previously cached older-version entry, and retries on the next
-/// call". The three assertions pin all three halves that could go wrong:
+/// The three assertions pin all three halves that could go wrong:
 ///   * `calls == 0` — the entry survived, so no rebuild was needed. An impl that
 ///     CLEARS the cell on failure (the obvious defensive reflex) rebuilds here.
 ///   * `Arc::ptr_eq` — it is the same allocation, not an equal-looking rebuild.
@@ -731,8 +562,6 @@ fn type_chart_cache_never_caches_a_failed_rebuild() {
 /// the wrong version. Stale data is never served; the entry is kept only so that
 /// callers still on the old version keep their fast path while the reseed is
 /// repaired.
-///
-/// COMPILE-RED: `type_chart_cache_lookup` / `TypeChartCell` do not exist yet.
 #[test]
 fn type_chart_cache_keeps_the_older_entry_after_a_failed_rebuild() {
     let cell = TypeChartCell::new(None);
@@ -790,26 +619,22 @@ fn type_chart_cache_keeps_the_older_entry_after_a_failed_rebuild() {
     );
 }
 
-/// CRITERION C-6 (poison recovery): a lock poisoned by an unrelated panic does
-/// not brick the cache.
+/// a lock poisoned by an unrelated panic does not brick the cache.
 ///
 /// A real poisoning, not a source scan: a spawned thread takes the cell's lock
 /// and panics while holding it, the join is asserted to have failed, the cell is
 /// asserted to BE poisoned (so the test cannot pass vacuously if a future std
 /// change stops poisoning mutexes), and only then is the lookup exercised.
 ///
-/// Wrong impl killed: `cell.lock().unwrap()`. ADR-0170 D1 takes this as
-/// defence-in-depth: IF the host unwinds panics and keeps the module instance
+/// Wrong impl killed: `cell.lock().unwrap()`.
+/// IF the host unwinds panics and keeps the module instance
 /// alive, one unrelated panic must not make every subsequent battle action fail
 /// for the process lifetime. (If the host instead traps and recycles the
 /// instance, the recovery path is dead code — harmless either way, and the host's
 /// actual behaviour is not determinable from source.)
 ///
 /// Native-test only, by construction: the wasm target has no threads. That is
-/// fine — this crate's unit tests always run natively (ADR-0156 P7 notes the
-/// module itself is never executed by a test).
-///
-/// COMPILE-RED: `type_chart_cache_lookup` / `TypeChartCell` do not exist yet.
+/// fine — this crate's unit tests always run natively.
 #[test]
 fn type_chart_cache_recovers_from_a_poisoned_lock() {
     let cell = std::sync::Arc::new(TypeChartCell::new(None));

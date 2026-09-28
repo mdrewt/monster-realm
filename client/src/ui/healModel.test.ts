@@ -1,8 +1,4 @@
 // ui/healModel.test.ts — M12d red-phase tests for buildHealViewModel.
-// SOURCE OF TRUTH: docs/m12d-plan.md + docs/adr/0071-m12d-client-dialogue-quest-heal-ui.md
-//
-// Tests are INTENTIONALLY RED until healModel.ts is implemented.
-// Do NOT edit to match a buggy implementation — correct from the spec only.
 //
 // Contract: buildHealViewModel(healLocations, itemDefs) -> HealViewModel
 //   - HealViewModel { locations: readonly HealLocationViewModel[] }
@@ -12,7 +8,7 @@
 //   - costItemName resolved from itemDefs by costItemId (null when not found or free)
 //   - TOTAL: never throws
 //
-// AMENDED 11r-g (ADR-0170 §D3) — nothing above is deleted; the amendment ADDS a
+// AMENDED 11r-g — nothing above is deleted; the amendment ADDS a
 // required VM field and NARROWS isFree:
 //   - HealLocationViewModel gains a REQUIRED `costCurrency`
 //   - isFree = costItemId undefined AND costQty === 0 AND costCurrency === 0
@@ -24,9 +20,6 @@
 //     `HealLocationInputRow` intersection is deleted)
 //   - isFree = costItemId undefined AND costQty === 0 AND costCurrency === 0n
 //   - NEW export `formatHealCostLine(loc: HealLocationViewModel): string`
-// The 11r-g [V-*] block at the foot of this file is REPLACED by the 12r-d [W-*] block,
-// which carries a per-case inventory: every retired V case has a named successor or an
-// explicit moot-by-type entry. Nothing was weakened.
 //
 // Pattern follows raisingModel.test.ts: pure function, no DOM, no SDK.
 
@@ -35,16 +28,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-// 12r-d: the REAL store row type — the local mirror this file used to declare is gone.
+// The REAL store row type — the local mirror this file used to declare is gone.
 // The builders consume `StoreHealLocationRow` directly now, so the fixtures below are
 // typed against the SHIPPED shape and drift between the two is no longer expressible.
 import type { StoreHealLocationRow, StoreItemRow } from '../net/store';
 import {
   buildHealViewModel,
-  // uxd2 (ADR-0161 D5): the bound-location selector. Named import — RED until it exists.
+  // The bound-location selector.
   buildHealViewModelForLocation,
-  // 12r-d: the cost-line renderer healView.ts:25 delegates to. Named import — the WHOLE
-  // file fails to link until the implementer exports it (the established red mode here).
+  // The cost-line renderer healView.ts:25 delegates to.
   formatHealCostLine,
   type HealLocationViewModel,
   healTargetLocationId,
@@ -63,7 +55,7 @@ function makeLocation(overrides: Partial<StoreHealLocationRow> = {}): StoreHealL
     costItemId: undefined,
     costQty: 0,
     cooldownMs: 30000,
-    // 12r-d: `costCurrency` is REQUIRED and bigint, so the default is an explicit 0n
+    // `costCurrency` is REQUIRED and bigint, so the default is an explicit 0n
     // (a FREE pad) rather than 11r-g's deliberate absence — absence is no longer a
     // representable input. Tests that need a currency cost pass it via `overrides`.
     costCurrency: 0n,
@@ -81,7 +73,7 @@ function makeItemDef(id: number, name = `Item-${id}`): StoreItemRow {
     trainAmount: 0,
     // M13d: StoreItemRow gains sellPrice (bigint). Default 0n keeps existing heal tests intact.
     sellPrice: 0n,
-  };
+  } as StoreItemRow;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +257,6 @@ describe('buildHealViewModel criterion 6: locationId and zoneId pass-through', (
     expect(entry).toHaveProperty('costQty', 1);
     expect(entry).toHaveProperty('cooldownMs', 60000);
     expect(entry).toHaveProperty('isFree', false);
-    // 11r-g (ADR-0170 §D3) EXTENSION, MIGRATED BY 12r-d — nothing above removed;
     // `costCurrency` joins the required-key contract, now as a BIGINT. The fixture row is
     // a free-of-currency pad (makeLocation's 0n default), so the required key must be
     // present as 0n — never the number 0, never `undefined`.
@@ -353,10 +344,6 @@ describe('buildHealViewModel criterion 7: total function — never throws', () =
 // ---------------------------------------------------------------------------
 // M13.5b §D / ADR-0085 — healTargetLocationId
 //
-// RED REASON: `healTargetLocationId` is not yet exported from `./healModel` —
-// the named import at the top of this file causes a TS compile error until the
-// implementer adds the export. Every test in this block is red for that reason.
-//
 // API CONTRACT (pinned):
 //   healTargetLocationId(locations: readonly { locationId: number }[]): number | undefined
 //   - []           → undefined  (the SKIP signal — NOT `?? 0`)
@@ -415,13 +402,10 @@ describe('healTargetLocationId (M13.5b ADR-0085 §D)', () => {
 });
 
 // ===========================================================================
-// uxd2 (ADR-0161 D5) — buildHealViewModelForLocation: BOUND location view.
-// APPENDED BLOCK — every case above this line is untouched. The
-// `healTargetLocationId` first-location DEFAULT is deliberately unchanged
-// (AC-10′ / adjudication 2: onHealParty's SEND keeps the first-location default;
-// only the OVERLAY's VIEW binds, until a second heal location is seeded).
-//
-// SOURCE OF TRUTH: docs/specs/uxd2-plan.md I6 / AC-3 + docs/adr/0161-*.md §D5.
+// buildHealViewModelForLocation: BOUND location view.
+// The `healTargetLocationId` first-location DEFAULT is deliberately unchanged (AC-10′
+// / adjudication 2: onHealParty's SEND keeps the first-location default; only the
+// OVERLAY's VIEW binds, until a second heal location is seeded).
 //
 // CONTRACT:
 //   export function buildHealViewModelForLocation(
@@ -432,9 +416,6 @@ describe('healTargetLocationId (M13.5b ADR-0085 §D)', () => {
 //   THIN: filter to that one location, then DELEGATE to buildHealViewModel.
 //   Unknown id → { locations: [] } (never all locations, never a throw).
 //
-// RED TODAY: `buildHealViewModelForLocation` is not exported from ./healModel, so the
-// named import at the top of this file fails to link and the WHOLE file is red — the
-// established red mode for this suite (see the healTargetLocationId block header).
 // ===========================================================================
 
 describe('buildHealViewModelForLocation [uxd2-1]: renders ONLY the bound location', () => {
@@ -527,16 +508,7 @@ describe('buildHealViewModelForLocation [uxd2-2]: unknown id → empty, never a 
 // ===========================================================================
 // 12r-d [W-*] — THE HEAL COST CURRENCY DISPLAY PATH, IN THE BIGINT DOMAIN.
 //
-// This block REPLACES the 11r-g [V-1..V-5] block that stood here. Every case above this
-// line is untouched except three MIGRATIONS forced by the type change (not weakenings):
-// the criterion-6 shape contract now expects `0n` / typeof 'bigint', the criterion-7
-// property's costCurrency arbitrary moved to bigint (its ASSERTION is unchanged), and
-// the local StoreHealLocationRow mirror was replaced by an import of the real type.
-//
-// SOURCE OF TRUTH: 12r-d item 1 (the heal currency display path) +
-//   docs/adr/0170-server-hardening-cache-completion-log-escaping.md §D3 (the seam).
-//
-// CONTRACT (pinned — the implementer builds exactly this in healModel.ts):
+// CONTRACT (pinned):
 //   export interface HealLocationViewModel { …; costCurrency: bigint }  // REQUIRED
 //   buildHealViewModel(
 //     healLocations: readonly StoreHealLocationRow[],       // ← the row type DIRECTLY;
@@ -565,60 +537,6 @@ describe('buildHealViewModelForLocation [uxd2-2]: unknown id → empty, never a 
 //   * both channels      → both renderings present
 // Everything else about the currency phrasing is the implementer's to choose.
 //
-// ---------------------------------------------------------------------------
-// PER-CASE INVENTORY — every retired [11r-g V-*] case, with its successor or an
-// explicit moot-by-type entry. No case was dropped silently.
-//
-//  RETIRED [11r-g V-*] CASE                              → 12r-d DISPOSITION
-//  1. V-1 "costCurrency=50 passed through verbatim"      → W-1a (50n, typeof 'bigint')
-//  2. V-1 "huge 2**40 neither clamped nor bit-truncated" → W-1c (u64::MAX). NOTE the old
-//        prey (`x | 0` / `x >>> 0`) is gone by TYPE — bitwise ops THROW on a bigint — so
-//        the successor's real prey is Number()/clamping, pinned exactly by W-1b/W-1c.
-//  3. V-2 "row with NO costCurrency key → 0"             → MOOT BY TYPE: the field is
-//        REQUIRED on StoreHealLocationRow, so an absent key is unrepresentable in the
-//        builder's input. The no-defaulting rule still has teeth one layer DOWN, where a
-//        malformed SDK row can still arrive: rowConvert.test.ts RC-HL-CC-05.
-//        HONEST LIMIT: store.test.ts's M12d block reaches the store through
-//        `as unknown as Record<…>` casts, so a hand-rolled row COULD still omit the field
-//        at runtime there; that is why RC-HL-CC-05 (converter) and ST-HL-CC-02 (adapter)
-//        exist rather than a re-litigation of absence here.
-//  4. V-2 "explicit costCurrency 0 → 0"                  → W-1d (0n stays 0n, not `0`)
-//  5. V-1 "item cost AND currency cost both surfaced"    → W-1e (75n + 3x Herb)
-//  6. V-1 "each row keeps its OWN costCurrency"          → W-1f ([10n, 0n, 250n])
-//  7. V-3 "no item, qty 0, currency 50 → isFree FALSE"   → W-3a (50n)
-//  8. V-3 "explicit currency 0 → isFree TRUE"            → W-3b (0n)
-//  9. V-3 "ABSENT costCurrency leaves a free pad free"   → MOOT BY TYPE (same reason as 3).
-//        The "free stays free" outcome it protected is pinned by W-3b and by row 1 of the
-//        W-3c truth table.
-// 10. V-3 "truth table: exactly 1 of 8 is free"          → W-3c (8 rows, 0n/50n)
-// 11. V-4 "currency-only invents no item name"           → W-4a (55n)
-// 12. V-4 "populated itemDefs leaks no name"             → W-4b (55n, defs with id 0 and 1)
-// 13. V-5 "negative costCurrency passes through"         → W-1g (-25n)
-// 14. V-5 "NaN survives as NaN (the ?? vs || tooth)"     → MOOT BY TYPE: there is no NaN in
-//        the bigint domain, and `??` vs `||` can only diverge on a falsy-but-present value,
-//        which for bigint is 0n alone — already pinned by W-1d (0n stays 0n) and W-3b
-//        (0n keeps a pad FREE, which `|| 0n` also produces, so no behavioural gap remains).
-//        SUCCESSOR DISCRIMINATOR (the exactness tooth that replaces it): W-1b — 2^53+1
-//        survives byte-identically, which is IMPOSSIBLE under any Number()-based impl.
-// 15. V-5 "fast-check: costCurrency === input, isFree ⇔ …" → W-5a (bigint domain)
-// 16. V-1 bound-arm "ForLocation carries costCurrency"   → W-8a (60n)
-// 17. V-1 bound-arm "ForLocation === default arm"        → W-8b (500n)
-//  (17 retired it() cases → 24 replacements: 15 named successors, 2 moot-by-type, and a
-//   surplus of 9 NEW cases — the formatHealCostLine branch table W-6a..W-6g, the
-//   delegation pin W-7, and the second property W-5b. Net test count strictly UP.)
-// ---------------------------------------------------------------------------
-//
-// RED TODAY: `formatHealCostLine` is not exported from ./healModel, so the named import
-// at the top of this file fails to link and the WHOLE file is red — the established red
-// mode for this suite (see the healTargetLocationId and uxd2 block headers). Underneath
-// that, once the export exists, the VALUE teeth stay red until the projection changes:
-// healModel.ts computes `costCurrency = loc.costCurrency ?? 0` (a NUMBER) and
-// `isFree = … && costCurrency === 0`, and healView.ts:25 renders every non-free pad as
-// `${costQty}x ${costItemName ?? 'Unknown item'}` — so a currency-only pad prints
-// "0x Unknown item" today. The `.costCurrency` member accesses are ALSO a type-level RED
-// (bigint vs number) — note client/tsconfig.json line 15 EXCLUDES `**/*.test.ts`, so that
-// arm surfaces in the editor and NOT in `npm run typecheck`; the gating signal is the
-// runtime failure under vitest.
 // ===========================================================================
 
 /** 2^53 + 1 — the smallest integer a JS `number` cannot represent. Number()-ing it
@@ -674,8 +592,6 @@ describe('buildHealViewModel [12r-d W-1]: costCurrency projection (bigint)', () 
   });
 
   it('★ [W-1b] BITES (DISCRIMINATOR): 2^53 + 1 survives byte-identically — impossible under a Number() projection', () => {
-    // THE successor discriminator to the retired V-5 `?? 0` vs `|| 0` NaN tooth (see the
-    // inventory in this block's header: NaN does not exist in the bigint domain).
     //   Number(9007199254740993n)         === 9007199254740992   (silently off by one)
     //   BigInt(Number(9007199254740993n)) === 9007199254740992n  (right TYPE, wrong VALUE)
     // A `costCurrency: Number(loc.costCurrency)` projection — or a VM field typed `number`
@@ -757,10 +673,10 @@ describe('buildHealViewModel [12r-d W-1]: costCurrency projection (bigint)', () 
 
 describe('buildHealViewModel [12r-d W-3]: isFree requires ALL THREE cost channels empty', () => {
   it('★ [W-3a] BITES: no item, costQty 0, costCurrency 50n → isFree FALSE (the silent-debit trap)', () => {
-    // Successor to V-3 "currency 50 → isFree FALSE". THE decisive case. Kills the pre-0170
-    // predicate `isFree = costItemId === undefined && costQty === 0`, which reports TRUE
-    // here: a pure CONTENT edit (seed a gold cost on a pad) would then paint "Free heal"
-    // over a charge the server happily debits. ADR-0170 Context (3) / §D3.
+    // THE decisive case. Kills the pre-0170 predicate `isFree = costItemId === undefined
+    // && costQty === 0`, which reports TRUE here: a pure CONTENT edit (seed a gold cost on
+    // a pad) would then paint "Free heal" over a charge the server happily debits.
+    // ADR-0170 Context (3) / §D3.
     const loc = makeLocation({ costItemId: undefined, costQty: 0, costCurrency: 50n });
     const vm = buildHealViewModel([loc], new Map());
     expect(vm.locations[0]!.isFree).toBe(false);
@@ -873,7 +789,7 @@ describe('buildHealViewModel [12r-d W-4]: a currency-only cost invents no item n
 describe('formatHealCostLine [12r-d W-6]: the cost-line branches', () => {
   it('★ [W-6a] BITES: a free pad renders EXACTLY the string "Free"', () => {
     // Kills: an impl that decorates the free case ('Free!', 'Free heal', 'No cost') — the
-    // string is the VISUAL CONTRACT today's overlay already ships (healView.ts:25), and
+    // string is the VISUAL CONTRACT today's overlay already ships, and
     // every currently-seeded pad is free, so a reworded free case is a visible regression
     // for 100% of live content. Also kills an impl that ignores isFree and falls into the
     // item branch, which would print '0x Unknown item' for a free pad.
@@ -1030,11 +946,9 @@ describe('formatHealCostLine [12r-d W-6]: the cost-line branches', () => {
 // only appears in a COMMENT — including one hidden by commenting out the real body — cannot
 // satisfy a tooth. Order matters: blocks are stripped FIRST so a `//` living inside a block
 // comment cannot be mis-parsed by the line pass afterwards (it is simply gone by then).
-// Ported from the established precedent at main.wiring.test.ts:1424-1453 (11r-h / ADR-0172
-// D7), which was itself written after a raw `.includes` tooth resolved to a comment 147
-// lines from the real statement. String scanning only: no RegExp, literal or otherwise —
-// and the delimiters are plain literals, matching that precedent byte for byte (a
-// concatenated spelling would trip biome's useless-string-concat lint).
+// String scanning only: no RegExp, literal or otherwise —
+// and the delimiters are plain literals (a concatenated spelling would trip biome's
+// useless-string-concat lint).
 function stripBlockComments(src: string): string {
   let out = '';
   let i = 0;
@@ -1205,11 +1119,11 @@ describe('buildHealViewModel [12r-d W-5]: properties over the bigint domain', ()
 
 describe('buildHealViewModelForLocation [12r-d W-8]: the bound arm carries costCurrency too', () => {
   it('★ [W-8a] BITES: the bound location surfaces its OWN costCurrency (60n) and isFree=false', () => {
-    // Successor to the 11r-g bound-arm case. Kills: a ForLocation body that hand-rolls the
-    // view model instead of delegating — it would miss the new field entirely, and the BOUND
-    // overlay (the KeyT heal arm, main.ts:444-446) is the ONE heal surface a player actually
-    // sees. The fixture puts a DIFFERENT non-zero cost on the unselected pad, so an impl
-    // that filters after projecting the first row also dies here.
+    // Kills: a ForLocation body that hand-rolls the view model instead of delegating — it
+    // would miss the new field entirely, and the BOUND overlay (the KeyT heal arm,
+    // main.ts:444-446) is the ONE heal surface a player actually sees. The fixture puts a
+    // DIFFERENT non-zero cost on the unselected pad, so an impl that filters after
+    // projecting the first row also dies here.
     const locs = [
       makeLocation({ locationId: 1, costCurrency: 10n }),
       makeLocation({ locationId: 2, costCurrency: 60n }),
@@ -1223,11 +1137,9 @@ describe('buildHealViewModelForLocation [12r-d W-8]: the bound arm carries costC
   });
 
   it('[W-8b] CONSISTENCY PIN: ForLocation(id) equals the default arm for a currency-only pad', () => {
-    // Successor to the 11r-g bound-arm consistency pin. Differential re-pin of "thin filter
+    // Differential re-pin of "thin filter
     // + delegate" across the currency field (the uxd2-2 pattern). Kills a future divergence
-    // where one arm learns about costCurrency and the other does not. HONEST NOTE: both arms
-    // are equally wrong at HEAD, so the toEqual here is a DIVERGENCE guard, not one of the
-    // RED value teeth (the file is red at import either way until formatHealCostLine ships).
+    // where one arm learns about costCurrency and the other does not.
     const locs = [makeLocation({ locationId: 4, costCurrency: 500n })];
     expect(buildHealViewModelForLocation(4, locs, new Map())).toEqual(
       buildHealViewModel(locs, new Map()),

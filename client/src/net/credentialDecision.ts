@@ -1,4 +1,4 @@
-// net/credentialDecision.ts — the PURE credential decision (ADR-0182 D13/D17, M21b-2).
+// net/credentialDecision.ts — the PURE credential decision.
 //
 // This module is deliberately importless and side-effect free: zero I/O, zero storage,
 // zero SDK. It owns its own input alphabet (`RenewalOutcome`) so `oidc.ts` imports the
@@ -36,7 +36,7 @@ export type ConnectCredential =
  * How many CONSECUTIVE transient renewal errors a previously-authenticated tab absorbs
  * before it escalates to `auth-service-unreachable` and offers the continue-anonymously
  * affordance. 2, not 1 (one Better-Auth hiccup must not declare the service down), and
- * not large (the tab would retry invisibly forever). ADR-0182 D17.
+ * not large (the tab would retry invisibly forever).
  *
  * Deliberately NOT shared with authToken.ts's AUTH_REJECT_SUPPRESS_THRESHOLD — same value
  * today, independent tuning decision.

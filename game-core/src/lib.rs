@@ -1,6 +1,6 @@
 //! monster-realm `game-core` — the single, pure, deterministic rule layer.
 //!
-//! Every game rule lives here exactly once (ADR-0003, SSOT). The server runs it
+//! Every game rule lives here exactly once (SSOT). The server runs it
 //! for truth; the client runs the *same compiled code* (via `client-wasm`) for
 //! prediction. Re-implementing a rule elsewhere is the desync bug.
 //!
@@ -28,7 +28,7 @@ pub mod types;
 pub mod world;
 
 #[cfg(test)]
-mod m8c_gating_tests;
+mod grass_encounter_tests;
 
 pub use accounts::{
     is_deletion_due, DELETION_GRACE_MS_DEFAULT, EXPORT_CHUNK_ROWS, STATE_TRANSITION_OWNERS,
@@ -73,7 +73,7 @@ pub use monster::{
     xp_for_level, Affinity, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock,
     StatKind, Xp,
 };
-pub use npc::npc_decide;
+pub use npc::{npc_decide, TALK_RANGE};
 pub use quest::{
     can_start_quest, process_trigger, trigger_matches, PlayerQuestProgress, QuestAdvance, QuestDef,
     QuestReward, QuestStep, RewardItem, StepTrigger, TriggerEvent,
@@ -91,7 +91,7 @@ pub use trading::{
     check_item_headroom, is_offer_stale, make_monster_card, validate_proposal, ApplyStep,
     CurrencyTransfer, ItemStack, ItemTransfer, LiveMonsterOwner, MonsterCard, MonsterTransfer,
     ProposalSide, SwapPlan, TradeError, TradeItem, TradeSide, TradeStatus, MAX_ITEM_STACK,
-    TRADE_OFFER_TTL_MS,
+    MAX_TRADE_MONSTERS_PER_SIDE, TRADE_OFFER_TTL_MS,
 };
 pub use types::{
     ActionState, CharacterState, Direction, Millis, MoveInput, NpcInteraction, TileKind, TilePos,
@@ -102,10 +102,10 @@ pub use world::{
     STEP_MS,
 };
 
-/// The trivial M0 proof-rule: a pure, deterministic state transition over an
-/// explicit seed (splitmix64-style mix). It proves the determinism/parity gates
-/// have teeth. Identical `(state, input, seed)` returns byte-identical output on
-/// every target (native server path and the wasm client path).
+/// a pure, deterministic state transition over an
+/// explicit seed (splitmix64-style mix). Identical `(state, input, seed)`
+/// returns byte-identical output on every target (native server path and the
+/// wasm client path).
 #[must_use]
 pub fn tick_seed(state: u64, input: u64, seed: u64) -> u64 {
     let mut z = state
@@ -156,13 +156,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Nightly mutation hardening: known-answer vectors pin the exact
-    // splitmix64 finalizer of `tick_seed`. Any XOR/shift mutation
-    // (`^`->`|`, `^`->`&`, `>>`->`<<`) alters every vector below.
-    // Determinism contract: ADR-0003 (same seed -> same result, forever).
+    // Any XOR/shift mutation (`^`->`|`, `^`->`&`, `>>`->`<<`) alters every
+    // vector below.
     // -----------------------------------------------------------------------
 
-    /// Kills: all bit-mixing mutants in `tick_seed` (9 nightly survivors).
+    /// Kills: all bit-mixing mutants in `tick_seed`.
     /// Vectors computed with an independent Python splitmix64 replica;
     /// `tick_seed(0,0,0)` equals the canonical first splitmix64(0) output.
     #[test]

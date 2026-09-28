@@ -7,18 +7,17 @@ import {
   test,
 } from '@playwright/test';
 
-// 11r-b — PvP side-B battle overlay, production path (ADR-0167, closes ADR-0155 D6)
+// PvP side-B battle overlay, production path
 //
 // THE DEFECT: store.ongoingBattle()/store.latestPlayerBattle() (client/src/net/store.ts)
 // used to filter `playerIdentity === identity` ONLY. A PvP ACCEPTER is stored in the
-// row's `opponentIdentity` (server-module/src/pvp.rs:289-297), so the accepter got NO
-// battle overlay at all in production builds — no cards, no skills, no swap — frozen
-// until the 60s deadline reaper forfeited them. The PRE-EXISTING pvp e2e suite
-// (pvp-full.spec.ts) masked this entirely: it drives BOTH sides through main.ts's
-// DEV-gated role-agnostic test hook, a code path production builds never execute. Green
-// CI, broken real path, for a whole milestone.
+// row's `opponentIdentity`, so the accepter got NO battle overlay at all in production
+// builds — no cards, no skills, no swap — frozen until the 60s deadline reaper forfeited
+// them. The PRE-EXISTING pvp e2e suite (pvp-full.spec.ts) masked this entirely: it drives
+// BOTH sides through main.ts's DEV-gated role-agnostic test hook, a code path production
+// builds never execute. Green CI, broken real path, for a whole milestone.
 //
-// TWO-CONTEXT DESIGN: copied from ranked-forfeit.spec.ts (m17c) — two separate
+// TWO-CONTEXT DESIGN: copied from ranked-forfeit.spec.ts — two separate
 // chromium.launch() instances generate distinct SpacetimeDB identities (the SDK caches
 // its connection+identity in the page's JS module scope, so a shared browser/context
 // would yield ONE identity and challenge_pvp would reject the self-challenge).
@@ -78,26 +77,23 @@ import {
 // the challenge and are therefore entirely outside this window.
 //
 // WHY BOTH PLAYERS ARE RENAMED FIRST (red-team HIGH — the half-fix discriminator):
-// STARTER_SPECIES_ID=1 (server-module/src/lib.rs:72) and roll_starter hardcodes level 5
-// (game-core/src/monster/rolls.rs:75) — the join_game seed perturbs only genes/IVs/
-// nature — so two FRESH players' active starters share identical species, level and
-// known_skill_ids. That makes the turn-advance witness (AC-9) alone UNABLE to
-// discriminate the HALF-FIX (role-agnostic accessors landed, `ownPerspective` never
-// wired into `refreshBattle`) from the real fix: under the half-fix, B's overlay
-// renders the RAW row, so B's Submit buttons are built from the CHALLENGER's
-// known_skill_ids — but those ids are cross-legal for B's own identical starter too, so
-// submit_pvp_action still accepts them and the turn still advances. A rename (via the
-// production KeyN -> rename-input -> rename-submit path, ADR-0133/PTC1B-9) gives each
-// player a distinct, deterministic label with NO such coincidental overlap: the opponent
-// card's header text is resolved from `battle.opponentIdentity` (main.ts:1309-1313,
-// battleView.ts:170,203-214) — on a RAW side-B row `opponentIdentity` IS side B, so the
-// half-fix mislabels B's OWN opponent card with B's OWN name. See the two
-// `getByText(...)` assertions after the Submit-visible check for the exact proof; that
-// pair — not the turn-advance witness — is what makes this file catch the half-fix.
+// STARTER_SPECIES_ID=1 and roll_starter hardcodes level 5
+// — the join_game seed perturbs only genes/IVs/ nature — so two FRESH players' active
+// starters share identical species, level and known_skill_ids. That makes the turn-advance
+// witness (AC-9) alone UNABLE to discriminate the HALF-FIX (role-agnostic accessors
+// landed, `ownPerspective` never wired into `refreshBattle`) from the real fix: under the
+// half-fix, B's overlay renders the RAW row, so B's Submit buttons are built from the
+// CHALLENGER's known_skill_ids — but those ids are cross-legal for B's own identical
+// starter too, so submit_pvp_action still accepts them and the turn still advances. A
+// rename (via the production KeyN -> rename-input -> rename-submit path) gives each player
+// a distinct, deterministic label with NO such coincidental overlap: the opponent card's
+// header text is resolved from `battle.opponentIdentity` — on a RAW side-B row
+// `opponentIdentity` IS side B, so the half-fix mislabels B's OWN opponent card with B's
+// OWN name. See the two `getByText(...)` assertions after the Submit-visible check for the
+// exact proof; that pair — not the turn-advance witness — is what makes this file catch
+// the half-fix.
 //
 // WHAT THIS TEST KILLS:
-//   - The CURRENT defect: side B's client renders no battle overlay at all — the
-//     "Submit:" assertion below is RED today (zero elements match).
 //   - THE HALF-FIX (role-agnostic accessors landed, `ownPerspective` never wired into
 //     `refreshBattle`): the turn-advance witness alone CANNOT see it (see the rename
 //     rationale above — both fresh starters share identical known_skill_ids, so a
@@ -107,14 +103,14 @@ import {
 //   - A silently-rejected side-B action masquerading as success: the poll below requires
 //     `turnNumber === turnNumber0 + 1` WHILE `outcome === 'Ongoing'` — never merely "the
 //     waiting banner hid", because that banner's underlying pending flag is ALSO cleared
-//     on any terminal outcome (main.ts:1301-1306), and the 60s deadline reaper produces a
-//     terminal outcome WITHOUT advancing the turn (pvp.rs:1124-1178). A banner-hidden-only
+//     on any terminal outcome, and the 60s deadline reaper produces a
+//     terminal outcome WITHOUT advancing the turn. A banner-hidden-only
 //     check would pass on a silently-rejected action once the reaper eventually fires;
 //     turn-advance-while-still-Ongoing is unambiguous proof the server ACCEPTED the skill
 //     id B itself submitted (AC-9) — but that alone does not prove PERSPECTIVE (AC-7),
 //     which is why the label assertions are complementary, not a replacement.
 //
-// EARS CRITERIA COVERED: AC-1, AC-7, AC-9 (memory/projects/monster-realm-11r-b-plan.md §4)
+// EARS CRITERIA COVERED: AC-1, AC-7, AC-9
 
 // Runtime property name of the DEV multiplayer test hook, built by array-join so the
 // literal NEVER appears as a contiguous substring anywhere in this file's source text
@@ -152,7 +148,7 @@ async function gameReady(p: Page): Promise<void> {
  * THE load-bearing anti-slide guard (see file header). Must be called BEFORE
  * `page.goto()` — Playwright only applies an init script to navigations that start
  * AFTER it is registered, which is what lets it win the race against main.ts's own
- * DEV-gated hook assignment (main.ts:1834-1838).
+ * DEV-gated hook assignment.
  */
 async function installHookCallCounter(page: Page): Promise<void> {
   await page.addInitScript(
@@ -196,7 +192,7 @@ async function readHookCallCount(page: Page): Promise<number> {
 
 /**
  * Renames `page`'s own player through the REAL production UI (Escape -> KeyN ->
- * rename-input -> rename-submit), copied from rename.spec.ts:228-245 (PTC1B-9). This is
+ * rename-input -> rename-submit), copied from rename.spec.ts:228-245. This is
  * the half-fix discriminator setup — see the file header. Leaves NO overlay open on exit
  * (the rename overlay does NOT auto-close on success, main.ts:2182-2186, so this presses
  * Escape again after the feedback confirms) — required because the incoming-challenge
@@ -305,7 +301,7 @@ test.describe
       await pageB.waitForTimeout(200);
 
       // A opens the PvP overlay and challenges B. Identity-attribute selection is
-      // MANDATORY, not stylistic: every client joins as name:'Player' (main.ts:2271) and
+      // MANDATORY, not stylistic: every client joins as name:'Player' and
       // this scan runs on whatever the challenge list shows at click time — selecting by
       // the `data-player-identity` attribute is robust regardless of the current display
       // name, so it stays the selection method even though both players now have distinct
@@ -339,13 +335,9 @@ test.describe
       await pageB.click('[data-testid="pvp-accept-btn"]');
       const acceptedAt = Date.now();
 
-      // RED TODAY (AC-7): side B renders NO battle overlay at all on master — zero
-      // elements match this selector, because refreshBattle returns early
-      // (store.ongoingBattle(identity) is undefined for the accepter today; see
-      // battleView.ts:252 for the button this selector targets). toBeVisible() — never
-      // toBeAttached() — is deliberate: battleView's root toggles display:none/flex
-      // (battleView.ts:146,151) and real chromium does layout, so visibility here is a
-      // meaningful assertion, not merely a cosmetic one.
+      // toBeVisible() — never toBeAttached() — is deliberate: battleView's root
+      // toggles display:none/flex and real chromium does layout, so visibility here is
+      // a meaningful assertion, not merely a cosmetic one.
       await expect(pageB.getByRole('button', { name: /^Submit: / }).first()).toBeVisible({
         timeout: 15_000,
       });
@@ -362,7 +354,7 @@ test.describe
       await expect(pageB.getByText(`${nameB}: `)).toHaveCount(0);
 
       // Direct production-path witness of AC-1: __game().ongoingBattle is non-null on
-      // side B ONLY because store.ongoingBattle() became role-agnostic (11r-b). Read-only
+      // side B ONLY because store.ongoingBattle() became role-agnostic. Read-only
       // witness — never used to drive the flow.
       const snapB0 = await pageB.evaluate(
         () => (window as unknown as { __game: () => GameSnap }).__game().ongoingBattle,
@@ -386,7 +378,7 @@ test.describe
         .first()
         .click();
 
-      // RED TODAY + the disambiguating assertion (AC-9): see the file header for why the
+      // the disambiguating assertion (AC-9): see the file header for why the
       // predicate must be STRICT turn-advance-while-Ongoing, not merely "banner hidden".
       await pageB.waitForFunction(
         (expected: number) => {

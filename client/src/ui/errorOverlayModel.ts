@@ -1,4 +1,4 @@
-// ui/errorOverlayModel.ts — PURE view-model for the F9 error overlay (pt-b1).
+// ui/errorOverlayModel.ts — PURE view-model for the F9 error overlay.
 //
 // Source-of-truth: M-playtest-b error overlay view-model (EARS S-3).
 //

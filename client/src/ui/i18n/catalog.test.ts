@@ -26,8 +26,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-// The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule). Precedent for a
-// `.ts` test under `ui/i18n/` importing a `.mjs` eval: ./catalog.test.ts:32.
+// The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule).
 import { stripComments } from '../../../test-util/stripComments';
 import { CATALOG_EN } from './catalog.en';
 
@@ -135,14 +134,11 @@ function checkOneOtherUsage(localeTag: string, source: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// m24s3 (ADR-0259) — sample params + expected literals, transcribed from the
+// Sample params + expected literals, transcribed from the
 // PRE-MIGRATION battleView.ts/pvpView.ts source (plan R7: this transcription is
 // independent of the specialist's later catalog.en.ts authoring, since it is
 // written before catalog.en.ts grows past its m24-s1 chrome.* seed).
 //
-// PREDICTED RED REASON: none of the m24s3 keys exist in CATALOG_EN yet, so every
-// lookup below (`(CATALOG_EN as Record<string, unknown>)[key]`) is `undefined`,
-// and the CAT-01/CAT-02 assertions fail on their first `typeof` check.
 // ---------------------------------------------------------------------------
 
 /** Two sample param sets per parameterised (★) MessageId, DIFFERING IN EVERY
@@ -180,7 +176,7 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   ],
   'pvp.incoming.label': [{ challenger: 'Bob' }, { challenger: 'Dana' }],
   'pvp.outgoing.label': [{ target: 'Alice' }, { target: 'Elliot' }],
-  // m24s4 (ADR-0260) — evolution.* (6 ★)
+  // Evolution.* (6 ★)
   'evolution.card.stats': [
     { level: 7, stage: 1, trust: 'Wary', qualityTime: 1, nutrition: 41 },
     { level: 30, stage: 3, trust: 'Devoted', qualityTime: 4, nutrition: 88 },
@@ -196,7 +192,7 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { label: 'Quality time', current: 'Tier 1', required: 'Tier 3' },
   ],
   'evolution.choice.evolve': [{ species: 'Pyrodrake' }, { species: 'Cindermaw' }],
-  // m24s4 — raising.* (4 ★)
+  // Raising.* (4 ★)
   'raising.card.status': [
     { level: 5, trust: 'Neutral', current: 20, max: 20 },
     { level: 12, trust: 'Friendly', current: 15, max: 30 },
@@ -213,19 +209,19 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { name: 'Protein', count: 2 },
     { name: 'Iron', count: 5 },
   ],
-  // m24s4 — box.* (2 ★)
+  // Box.* (2 ★)
   'box.party.emptySlot': [{ slot: 0 }, { slot: 3 }],
   'box.card.stats': [
     { species: 'Sproutle', level: 5, current: 18, max: 20, percent: 90 },
     { species: 'Emberfang', level: 9, current: 21, max: 21, percent: 100 },
   ],
-  // m24s4 — trade.* (2 ★, side.currency.amount is bigint)
+  // Trade.* (2 ★, side.currency.amount is bigint)
   'trade.side.card': [
     { nickname: 'Sproutle', species: 'Mossback', level: 7, current: 3, max: 9 },
     { nickname: 'Kip', species: 'Duskling', level: 12, current: 20, max: 40 },
   ],
   'trade.side.currency': [{ amount: 250n }, { amount: 1000n }],
-  // m24s4 — shop.* (3 ★, row prices are bigint)
+  // Shop.* (3 ★, row prices are bigint)
   'shop.buy.row': [
     { name: 'Herb', price: 50n },
     { name: 'Tonic', price: 120n },
@@ -238,7 +234,7 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { name: 'Charm', count: 2 },
     { name: 'Relic', count: 1 },
   ],
-  // m24s5 (ADR-0261) — the tail batch's 6 ★ keys (leaderboard.row is A's; heal.location,
+  // The tail batch's 6 ★ keys (leaderboard.row is A's; heal.location,
   // questLog.entry, evolutionNotice.species.fallback/reveal.nicknamed/reveal.anonymous are B's).
   'leaderboard.row': [
     { rating: 1200, wins: 10, losses: 2 },
@@ -274,6 +270,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'chrome.status.contentStale': 'content out of date — reload',
   'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
   'chrome.status.healUnavailable': 'heal: no heal location available',
+  'chrome.status.partyFull': 'party is full — move a monster to the box first',
   'battle.title': 'Battle', // battleView.ts:110
   'battle.continueHint': 'Press Esc to continue', // battleView.ts:243
   'battle.swap.hint':
@@ -297,7 +294,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'pvp.outgoing.cancel': 'Cancel Challenge', // pvpView.ts:226
   'pvp.players.none': 'No players online to challenge', // pvpView.ts:241
   'pvp.players.heading': 'Challenge:', // pvpView.ts:241
-  // m24s4 (ADR-0260) — evolution.* (6 plain)
+  // Evolution.* (6 plain)
   'evolution.title': 'Evolution', // evolutionView.ts
   'evolution.hint':
     'Each path lists what it needs and how close this monster is. When two or more ' +
@@ -306,14 +303,14 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'evolution.card.noPaths': 'No evolution paths.', // evolutionView.ts
   'evolution.card.choosePrompt': 'Two or more paths are ready — pick one:', // evolutionView.ts
   'evolution.path.allMet': 'All requirements met.', // evolutionView.ts
-  // m24s4 — raising.* (6 plain)
+  // Raising.* (6 plain)
   'raising.title': 'Raising & Inventory', // raisingView.ts
   'raising.monsters.heading': 'Monsters', // raisingView.ts
   'raising.inventory.heading': 'Inventory', // raisingView.ts
   'raising.monsters.empty': 'No monsters.', // raisingView.ts
   'raising.inventory.empty': 'No items.', // raisingView.ts
   'raising.card.care': 'Care', // raisingView.ts
-  // m24s4 — box.* (11 plain)
+  // Box.* (11 plain)
   'box.title': 'Party & Box', // boxView.ts
   'box.heal': 'Heal Party', // boxView.ts
   'box.hint':
@@ -327,7 +324,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'box.card.toBox': 'To Box', // boxView.ts
   'box.card.toParty': 'To Party', // boxView.ts
   'box.rename.prompt': 'New nickname:', // boxView.ts (hoisted, prompt() argument)
-  // m24s4 — trade.* (8 plain)
+  // Trade.* (8 plain)
   'trade.status.none': 'No active trade', // tradeView.ts
   'trade.side.offer': 'You offer', // tradeView.ts (hoisted, #renderSide heading arg)
   'trade.side.receive': 'You receive', // tradeView.ts (hoisted, #renderSide heading arg)
@@ -336,17 +333,22 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'trade.action.reject': 'Reject', // tradeView.ts (hoisted, #actionLabel)
   'trade.action.confirm': 'Confirm Trade', // tradeView.ts (hoisted, #actionLabel)
   'trade.action.cancel': 'Cancel', // tradeView.ts (hoisted, #actionLabel)
-  // m24s4 — shop.* (6 plain)
+  // Shop.* (6 plain)
   'shop.title': 'Shop', // shopView.ts
   'shop.noShop': 'No shop available.', // shopView.ts
   'shop.forSale.empty': 'Nothing for sale.', // shopView.ts
   'shop.inventory.empty': 'No items to sell.', // shopView.ts
   'shop.buy.submit': 'Buy', // shopView.ts
   'shop.sell.submit': 'Sell', // shopView.ts
-  // m24s5 (ADR-0261) — the tail batch's 10 plain keys.
+  // The tail batch's 10 plain keys.
   'tradePropose.target.placeholder': 'Select a player…', // tradeProposeView.ts:168
   'dialogue.action.shop': 'Shop', // dialogueView.ts:72
   'claim.privacyButton': 'Privacy & Account Data', // claimView.ts (resolved in render()/show())
+  'claim.signInButton': 'Sign in', // claimView.ts (resolved in render()/show())
+  'claim.joinButton': 'Continue playing', // claimView.ts (resolved in render()/show())
+  'claim.declineButton': 'Decline', // claimView.ts (resolved in render()/show())
+  'claim.declineConfirmButton': 'Yes, decline', // claimView.ts (resolved in render()/show())
+  'claim.declineCancelButton': 'Keep my code', // claimView.ts (resolved in render()/show())
   'leaderboard.empty': 'No ranked players yet', // leaderboardView.ts:60
   'errorOverlay.footer': 'F8 dismiss · F9 bug report', // errorOverlayView.ts (resolved in show())
   'privacy.title': 'Privacy & Account Data', // privacyView.ts (resolved in show())
@@ -439,7 +441,7 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { target: 'Elliot' },
     outputB: 'Challenge sent to Elliot — waiting…',
   },
-  // m24s4 (ADR-0260) — evolution.* (6 ★)
+  // Evolution.* (6 ★)
   'evolution.card.stats': {
     inputA: { level: 7, stage: 1, trust: 'Wary', qualityTime: 1, nutrition: 41 },
     outputA: 'Lv.7 · Stage 1 · Trust Wary · Quality time 1 · Nutrition 41%',
@@ -476,7 +478,7 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { species: 'Cindermaw' },
     outputB: 'Evolve into Cindermaw',
   },
-  // m24s4 — raising.* (4 ★)
+  // Raising.* (4 ★)
   'raising.card.status': {
     inputA: { level: 5, trust: 'Neutral', current: 20, max: 20 },
     outputA: 'Lv5 · Trust Neutral · HP 20/20',
@@ -501,7 +503,7 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { name: 'Iron', count: 5 },
     outputB: 'Iron (x5)',
   },
-  // m24s4 — box.* (2 ★)
+  // Box.* (2 ★)
   'box.party.emptySlot': {
     inputA: { slot: 0 },
     outputA: 'Slot 0: (empty)',
@@ -514,7 +516,7 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { species: 'Emberfang', level: 9, current: 21, max: 21, percent: 100 },
     outputB: 'Emberfang · Lv9 · HP 21/21 (100%)',
   },
-  // m24s4 — trade.* (2 ★)
+  // Trade.* (2 ★)
   'trade.side.card': {
     inputA: { nickname: 'Sproutle', species: 'Mossback', level: 7, current: 3, max: 9 },
     outputA: 'Sproutle (Mossback) Lv.7 HP:3/9',
@@ -527,7 +529,7 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { amount: 1000n },
     outputB: '1000 gold',
   },
-  // m24s4 — shop.* (3 ★, trailing space pinned exactly)
+  // Shop.* (3 ★, trailing space pinned exactly)
   'shop.buy.row': {
     inputA: { name: 'Herb', price: 50n },
     outputA: 'Herb — 50 gold ',
@@ -546,7 +548,7 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { name: 'Relic', count: 1 },
     outputB: 'Relic (×1) — Cannot sell',
   },
-  // m24s5 (ADR-0261) — the tail batch's 6 ★ keys, both sample sets differing in every field.
+  // The tail batch's 6 ★ keys, both sample sets differing in every field.
   'leaderboard.row': {
     inputA: { rating: 1200, wins: 10, losses: 2 },
     outputA: ' — 1200 (W10/L2)',
@@ -676,7 +678,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
-    // Belt-and-braces TEXT pin (test-review round), scoped to this OWNED file: `satisfies
+    // Belt-and-braces TEXT pin, scoped to this OWNED file: `satisfies
     // Catalog` restores the excess-property check that `Object.freeze<T>`'s generic signature
     // would otherwise swallow (plan §2 D2), and both structural checks above (Object.isFrozen,
     // the exact key-roster/stowaway checks) remain the REAL runtime backstop if this text pin is
@@ -717,16 +719,9 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 });
 
 // =============================================================================
-// m24s3 (ADR-0259) — the 42-key roster, the SAMPLE_PARAMS bijection, and the
+// The 42-key roster, the SAMPLE_PARAMS bijection, and the
 // byte-identical pinned values (both sample sets) for every m24s3 migrated key.
 //
-// PREDICTED RED REASON AT HEAD: catalog.en.ts carries only the 10 m24-s1 chrome.*
-// keys — every one of the 32 new lookups below reads `undefined` off CATALOG_EN,
-// so CAT-01 fails on its very first `typeof value` check (or the roster-length
-// check, whichever runs first) and CAT-02 fails calling `undefined` as a function.
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from the
-// plan/ADR-0259 only.
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — 42-key roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
   it('m24s3 CAT-01: the roster is exactly 112 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {

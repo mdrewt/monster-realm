@@ -1,7 +1,7 @@
 //! Trade types shared between game-core (pure rules) and server-module (persistence).
 //!
 //! `MonsterCard` is the display-only snapshot stored in `trade_offer`: it mirrors
-//! the public-projection field set of `MonsterPub` (no IVs/EVs/nature — ADR-0015).
+//! the public-projection field set of `MonsterPub` (no IVs/EVs/nature — hidden stats never leak).
 //! `TradeStatus`, `TradeItem`, and `TradeError` drive the offer state machine.
 //!
 //! `SpacetimeType` derives are cfg-gated: only `server-module` (which enables the
@@ -10,7 +10,7 @@
 
 /// Display-only monster snapshot stored inside `trade_offer`.
 ///
-/// MUST NOT contain `iv_*`, `ev_*`, or `nature_kind` fields (ADR-0015 stakes:
+/// MUST NOT contain `iv_*`, `ev_*`, or `nature_kind` fields (the stakes:
 /// opponent must be able to see the offered monster without receiving its hidden
 /// genes). The authoritative swap re-reads the live `monster` row.
 #[derive(Clone, Debug, PartialEq)]
@@ -79,12 +79,12 @@ pub enum TradeError {
         item_id: u32,
     },
     /// Crediting items to the receiver would push their stack above MAX_ITEM_STACK.
-    /// confirm_trade returns Err and rolls back — reject-not-clamp (ADR-0113, 16.5b-1).
+    /// confirm_trade returns Err and rolls back — reject-not-clamp.
     ItemStackCapExceeded {
         item_id: u32,
     },
     /// Crediting currency to the receiver would push their balance above MAX_BALANCE.
-    /// confirm_trade returns Err and rolls back — reject-not-clamp (ADR-0113, 16.5b-1).
+    /// confirm_trade returns Err and rolls back — reject-not-clamp.
     CurrencyCapExceeded,
 }
 
@@ -135,7 +135,7 @@ mod tests {
     use super::*;
 
     /// TradeError variants must display meaningful, non-empty error messages.
-    /// kills: 89:9 replace fmt -> std::fmt::Result with Ok(Default::default()) —
+    /// kills: replace fmt -> std::fmt::Result with Ok(Default::default()) —
     ///        the mutation makes ALL Display calls return Ok(()) with no output,
     ///        so format!("{}", err) returns "" for every variant; the non-empty
     ///        assertion kills the mutant on the very first variant checked.

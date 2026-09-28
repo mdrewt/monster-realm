@@ -1,19 +1,4 @@
-// prediction/heldKeys.test.ts — HeldDirections + reissueDir (M8.6c, ADR-0013.5)
-//
-// RED reason (M8.6c, historical): heldKeys.ts did NOT EXIST YET — the import itself
-// failed and the entire suite stayed red until the implementer created the module.
-//
-// RED reason (mvi, THIS slice): `press` gains a REQUIRED `nowMs` argument, the module
-// gains `export const HOLD_COMMIT_MS = 150`, and `HeldDirections` gains
-// `committedActive(nowMs)` + a `constructor(holdCommitMs = HOLD_COMMIT_MS)`. The
-// import of HOLD_COMMIT_MS and every U-H* tooth below are red until that lands. The
-// pre-existing teeth are migrated MECHANICALLY (every `press(dir)` gains a timestamp;
-// the timestamp is irrelevant to `active()`, so their assertions are BYTE-IDENTICAL) and
-// carry no new obligation — an extra argument is harmless to the current implementation.
-// NOTE on the red: the static `HOLD_COMMIT_MS` import fails at MODULE-LINK time while the
-// export is missing, so the whole FILE reds, not just the U-H* teeth. That is the correct
-// signal (a missing implementation, loudly), and the migrated teeth go green unchanged the
-// moment heldKeys.ts exports it.
+// prediction/heldKeys.test.ts — HeldDirections + reissueDir
 //
 // This suite is pure / node-only. No real timers. The ONE wasm touch is U-H8, which
 // reads the server cadence (game-core STEP_MS) from the built client-wasm binary's
@@ -37,13 +22,13 @@ const WASM_BIN = path.join(
 /**
  * game-core's STEP_MS, read from the BUILT client-wasm binary's `step_ms()` export
  * (the value main.ts feeds the whole client). The wasm-bindgen JS glue is not
- * importable under node vitest (ADR-0142), so the raw module is instantiated with
+ * importable under node vitest, so the raw module is instantiated with
  * every import stubbed to throw — `step_ms` is a constant and calls none of them.
  * Works for both the bundler and nodejs pkg targets (same `_bg.wasm` exports).
  * A missing pkg FAILS (run `just wasm`), never skips.
  */
 function wasmStepMs(): number {
-  let bytes: Buffer;
+  let bytes: Buffer<ArrayBuffer>;
   try {
     bytes = readFileSync(WASM_BIN);
   } catch (err) {
@@ -279,7 +264,7 @@ describe('HeldDirections: fast-check property — active() is the most-recent st
 });
 
 // ================================================================================
-// 4. [mvi] committedActive — the HOLD-COMMIT threshold that separates a TAP from a
+// 4. committedActive — the HOLD-COMMIT threshold that separates a TAP from a
 //    deliberate WALK.
 //
 // SOURCE OF TRUTH: the movement-investigation spec. `committedActive(nowMs)` returns
@@ -421,8 +406,7 @@ describe('[mvi] HeldDirections.committedActive: the hold-commit threshold', () =
     // Kills: any future "tuning" of HOLD_COMMIT_MS that silently breaks one of the two
     // constraints while every behavioural tooth still happens to pass on its own grid —
     // AND a game-core STEP_MS retune that leaves HOLD_COMMIT_MS behind: STEP_MS is read
-    // from the built wasm's step_ms() export, never a literal (debloat Phase 2,
-    // EV-hold-commit-step-budget).
+    // from the built wasm's step_ms() export, never a literal.
     const stepMs = wasmStepMs();
     expect(stepMs, 'step_ms() must be a live cadence').toBeGreaterThan(0);
     expect(HOLD_COMMIT_MS + 1000 / 30 + 1).toBeLessThan(stepMs);
@@ -431,7 +415,7 @@ describe('[mvi] HeldDirections.committedActive: the hold-commit threshold', () =
 });
 
 // ================================================================================
-// 4b. [14r-e / ADR-0187] isHeld — MEMBERSHIP in the held set, deliberately NOT the
+// 4b. isHeld — MEMBERSHIP in the held set, deliberately NOT the
 //     stack top.
 //
 // WHY IT EXISTS: KEY_DIR binds TWO key codes to each direction (ArrowRight AND KeyD →
@@ -441,9 +425,6 @@ describe('[mvi] HeldDirections.committedActive: the hold-commit threshold', () =
 // named it (its residual 3) the SOLE remaining same-direction double-move path. The fix
 // is `if (!held.isHeld(dir)) step(dir);` — a pure NOT-EMIT, nothing cancelled, no
 // predictor state written.
-//
-// RED REASON at authoring time: `HeldDirections.isHeld` DOES NOT EXIST. Every call below
-// throws `held.isHeld is not a function` — a missing implementation, loudly.
 //
 // THE CONTRACT (ADR-0187 (a)): `isHeld(dir)` is `#stack.some(e => e.dir === dir)` — the
 // SAME predicate `press()` already uses for its no-dup guard, so a mutation that breaks
@@ -519,10 +500,10 @@ describe('[14r-e] HeldDirections.isHeld (ADR-0187): membership in the held set',
 });
 
 // ================================================================================
-// 4c. [13r-f / ADR-0192] snapshot / restore — the pure seam that lets the WARP arm's
+// 4c. snapshot / restore — the pure seam that lets the WARP arm's
 //     prediction rebuild keep the player's held keys.
 //
-// THE DEFECT (nh5, ADR-0152 residual #4): `resetPredictionState()` calls `held.clear()`,
+// THE DEFECT (ADR-0152 residual #4): `resetPredictionState()` calls `held.clear()`,
 // and switchZone calls it on every zone change. The keydown handler ignores `e.repeat`,
 // so a key that is PHYSICALLY still down is never re-registered — walking through a zone
 // boundary mid-hold stops the player dead until release + re-press.
@@ -535,9 +516,6 @@ describe('[14r-e] HeldDirections.isHeld (ADR-0187): membership in the held set',
 // re-commit (a mid-tap hold must still earn its window from the original press) nor a
 // fresh 150ms halt (an already-committed hold resumes on the first post-warp frame).
 //
-// RED REASON at authoring time: `HeldDirections.snapshot` / `.restore` DO NOT EXIST, so
-// every tooth below throws `held.snapshot is not a function` — a missing implementation,
-// loudly. (vitest does not typecheck, so this is a runtime TypeError, not a compile error.)
 // ================================================================================
 
 const ALL_DIRS: readonly WasmDirection[] = ['North', 'South', 'East', 'West'];
@@ -927,13 +905,9 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
   });
 
   // ============================================================================
-  // M13.5b §G / T1–T3 — dropRejected integration with the held-key burst pattern
+  // dropRejected integration with the held-key burst pattern
   //
-  // HISTORY: authored RED when `predictor.dropRejected` did not exist at all
-  // (M13.5b); GREEN since it shipped, and retained as the integration-level
-  // regression guard for the burst pattern.
-  //
-  // nh3 (ADR-0152) made the epoch a REQUIRED second parameter, so both calls below
+  // nh3 made the epoch a REQUIRED second parameter, so both calls below
   // pass an epoch read from an intent THAT SAME predictor issued (never a literal).
   // These are SAME-EPOCH paths on purpose: they are the teeth that stay GREEN across
   // nh3 and therefore kill an over-eager guard (a `!==` → `===` flip, or any guard
@@ -1040,9 +1014,8 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
     }
 
     expect(sentIntents.length).toBeGreaterThan(0);
-    // nh3 (plan §3 step 3 / A9): hoisted so the epoch passed to dropRejected below is
-    // read from an intent THIS predictor issued, never a literal. `tailSeq` is the same
-    // value as before the hoist.
+    // hoisted so the epoch passed to dropRejected below is
+    // read from an intent THIS predictor issued, never a literal.
     const tail = sentIntents[sentIntents.length - 1]!;
     const tailSeq = tail.seq;
     const ackedSeqBeforeReject = tailSeq - 1;
@@ -1098,7 +1071,7 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
     expect(predictor.pendingCount).toBe(2); // M and N pending
 
     // Drop N (the one we "reject").
-    // nh3 (A9): `intN` is in scope and was issued by THIS predictor — no hoist needed.
+    // `intN` is in scope and was issued by THIS predictor — no hoist needed.
     const dropped = predictor.dropRejected(intN.seq, intN.epoch);
     expect(dropped).toBe(true);
     expect(predictor.pendingCount).toBe(1); // only M remains (T1 + T3 queueDepth assertion)

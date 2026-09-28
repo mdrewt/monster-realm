@@ -1,33 +1,24 @@
-//! `battle` test module — extracted from `battle.rs` (M8.9c, ADR-0056).
+//! `battle` test module — extracted from `battle.rs`.
 //!
 //! Behavior-preserving relocation of the inline `#[cfg(test)] mod tests` into a
 //! sibling file (matching the game-core `*_tests.rs` convention) so the
 //! production module stays lean.
 
-// 15r-sec-a (ADR-0198): the `battle` table's PRIVACY and the exact body of the
+// the `battle` table's PRIVACY and the exact body of the
 // participant-scoped `my_battle` view are pinned in
 // `evolution_tests.rs::e15r_sec_a_battle_is_private_and_its_view_is_participant_scoped`,
-// NOT here — that file already owns the schema.rs attribute-walk helpers, and a
-// second walker would be a second grammar for one source of truth (ADR-0003).
+// NOT here.
 // Nothing in this file scans schema.rs; look there before adding one.
 
 // ===========================================================================
-// ptc5b (wild-disconnect GC): Tests T1, T2
 //
-// Slice: resolve_wild_battle_on_disconnect — when a player disconnects while
+// resolve_wild_battle_on_disconnect — when a player disconnects while
 // in an Ongoing WILD battle, the battle must be cleaned up automatically so
 // the player is not soft-locked (re-entry blocked) on reconnect.
 //
-// EARS criteria addressed:
-//   ptc5b-2: `is_ongoing_wild_battle` is a pure predicate scoping to
-//             the caller's Ongoing WILD rows only (caller-scoping +
-//             idempotency: no-op when there are no wild rows).
-//   ptc5b-3: After resolve, the player's Ongoing WILD battle is absent from
-//             the battle set, unblocking re-entry (soft-lock proof). The
-//             executed resolution is `bn_disconnect_resolves_only_the_callers_ongoing_wild_battle`.
 // ===========================================================================
 
-/// Minimal `Battle` row builder for ptc5b tests — mirrors `ongoing_battle` in
+/// Minimal `Battle` row builder — mirrors `ongoing_battle` in
 /// raising_tests.rs (same field set, same convention).  The `battle_id` is
 /// supplied by the caller so each fixture is distinct.
 fn battle_fixture(
@@ -60,7 +51,7 @@ fn battle_fixture(
 }
 
 // ---------------------------------------------------------------------------
-// T1 — pure-core selection (EARS ptc5b-2: caller-scoping + idempotency)
+// T1 — pure-core selection
 //
 // Proof-of-teeth: asserts is_ongoing_wild_battle returns true ONLY for the
 // exact combination (player==P, opponent==WILD_IDENTITY, outcome==Ongoing).
@@ -147,7 +138,7 @@ fn ptc5b_1_selection_is_ongoing_wild_battle_predicate() {
 }
 
 // ---------------------------------------------------------------------------
-// T2 — re-entry flip + mutation tooth (EARS ptc5b-3: THE soft-lock proof)
+// T2 — re-entry flip + mutation tooth
 //
 // This is the critical regression test.  The scenario:
 //   1. Player P has an Ongoing WILD battle in the set → is_in_ongoing_battle_either_role
@@ -264,23 +255,7 @@ fn ptc5b_2_reentry_flip_soft_lock_proof() {
 }
 
 // ===========================================================================
-// EG2 — battle-side essence / Trust / Quality-Time credits
-// (spec `M-evolution-essence-graph.spec.md` §2 EG2-7 + EG2-12; ADR-0175 D4)
-//
-// EARS criteria covered in this section:
-//
-//   EG2-7   `write_back_battle_results` SHALL, on a WILD-battle win, grant
-//           `max(1, loser_bst / 30)` essence of the DEFEATED species' Affinity to
-//           each winning active-participant monster; on a WILD-battle faint,
-//           increment `trust_unfavorable_count`; on a WILD-battle win, credit
-//           Trust-favorable at most once per monster per day via
-//           `trust_favorable_battle_day_epoch`; and accrue Quality Time for the
-//           winning participants. ALL THREE credits SHALL be BOTH practice-
-//           AND PvP-exempted — wild battles only.
-//
-//   EG2-12  The auto-evolution check SHALL run as the LAST step, after the
-//           essence / Trust / Quality-Time / level mutation this reducer performs
-//           has actually been written back.
+// battle-side essence / Trust / Quality-Time credits
 //
 // The pure rules (`essence_battle_reward`, `day_epoch_utc`, `is_wild_battle`) are
 // asserted BY VALUE here; the reducer-level behaviour (wild-only credits, the
@@ -288,12 +263,12 @@ fn ptc5b_2_reentry_flip_soft_lock_proof() {
 // in-memory host by the `bn_` native suite at the end of this file.
 // ===========================================================================
 
-/// **EG2-7 (pure)** — the essence reward FLOORS at 1, so a low-BST wild win is
+/// the essence reward FLOORS at 1, so a low-BST wild win is
 /// never a zero-essence win.
 ///
 /// kills: `bst / 30` written without the `max(1, ..)` floor — every species below
 /// BST 30 would award nothing at all, making those encounters silently
-/// evolution-inert (the floor is the literal text of EG2-7: `max(1, loser_bst / 30)`).
+/// evolution-inert.
 /// Also kills a `saturating_sub`-flavoured mis-transcription that returns 0.
 ///
 /// Values are HARDCODED, never derived from `ESSENCE_BST_DIVISOR` — a test that
@@ -328,11 +303,11 @@ fn essence_battle_reward_floors_at_one() {
     );
 }
 
-/// **EG2-7 (pure)** — the essence reward SCALES with the defeated species' BST at
+/// the essence reward SCALES with the defeated species' BST at
 /// the deliberately steeper divisor, three times steeper than currency's.
 ///
 /// kills: reusing `battle_currency_reward`'s `loser_bst / 10` rate for essence.
-/// EG2-7 calls that out by name: at /10 a BST-300 win yields 30, which cleared
+/// at /10 a BST-300 win yields 30, which cleared
 /// every authored essence threshold in 3-5 wins (a real undertuning risk). The
 /// assertions below are 10, not 30 — an aliased or copy-pasted currency formula
 /// fails all three. Also kills a rounding-up variant: 318/30 is 10.6 and must
@@ -361,12 +336,11 @@ fn essence_battle_reward_scales() {
     );
 }
 
-/// **EG2-7 (pure)** — the day epoch is the UTC-day index of a server timestamp,
+/// the day epoch is the UTC-day index of a server timestamp,
 /// and it SATURATES instead of panicking on an out-of-range clock.
 ///
-/// The day-granular epoch is ADR-0175 D4's recorded deviation from EG2-7's
-/// "rolling-24h" prose: the EG1-frozen `trust_favorable_battle_day_epoch` column
-/// is a `u32` and cannot hold a rolling millisecond timestamp.
+/// `trust_favorable_battle_day_epoch` column is a `u32` and cannot hold a rolling
+/// millisecond timestamp.
 ///
 /// kills: (a) a seconds- or minutes-based divisor (86_399_999 would no longer
 /// share day 0 with 0, so the once-per-day cap would fire many times per day);
@@ -410,7 +384,7 @@ fn day_epoch_utc_maps_ms_to_day() {
          TEETH: this assertion is the one that distinguishes \
          `u32::try_from(..).unwrap_or(u32::MAX)` from both."
     );
-    // A backwards clock is representable (`now_ms` is server-injected, ADR-0003).
+    // A backwards clock is representable (`now_ms` is server-injected).
     assert_eq!(
         super::day_epoch_utc(-1),
         0,
@@ -427,15 +401,15 @@ fn day_epoch_utc_maps_ms_to_day() {
     );
 }
 
-/// **EG2-7 (pure)** — `is_wild_battle` is TRUE for wild battles and for nothing
+/// `is_wild_battle` is TRUE for wild battles and for nothing
 /// else: it is the single predicate that exempts BOTH practice and PvP.
 ///
 /// kills:
 ///   * an `opponent_identity != player_identity` formulation (practice would be
 ///     correctly false, but a PvP battle — a genuine third identity — would read
 ///     as WILD and two colluding accounts could farm essence + Trust through
-///     repeated `challenge_pvp` rematches, the exact collusion vector EG2-7's PvP
-///     exemption exists to close, and there is no rematch cooldown in `pvp.rs`);
+///     repeated `challenge_pvp` rematches,
+///     and there is no rematch cooldown in `pvp.rs`);
 ///   * an always-true impl (the practice and PvP cases below fail);
 ///   * an always-false impl (the wild cases fail);
 ///   * copying `is_ongoing_wild_battle`'s shape, which ALSO requires
@@ -456,7 +430,7 @@ fn is_wild_battle_true_only_for_wild_identity() {
          TEETH: kills an always-false impl."
     );
 
-    // Practice = the self-vs-self sandbox (ADR-0078): player == opponent.
+    // Practice = the self-vs-self sandbox: player == opponent.
     let practice_row = battle_fixture(21, p, p, game_core::BattleOutcome::Ongoing);
     assert!(
         !super::is_wild_battle(&practice_row),
@@ -504,18 +478,9 @@ fn is_wild_battle_true_only_for_wild_identity() {
 }
 
 // ===========================================================================
-// m22-s3b (ADR-0228) — THE `battle` ANONYMIZE STEP.
+// THE `battle` ANONYMIZE STEP.
 //
-// EARS criteria (`specs/monster-realm-v2/M22-privacy-compliance.spec.md` §7.4):
-//   PRV1-6c   the deleting party's identity column is swapped to the tombstone
-//             sentinel; the opponent's side and every mechanical field are left
-//             untouched, and the row itself SURVIVES.
-//   PRV1-6d   the row's JOIN-ONLY children (`battle_wild`,
-//             `pvp_deadline_schedule`) are swept at this, the parent's, step.
-//   PRV1-19   a PRACTICE battle (player_identity == opponent_identity) is
-//             visited and tombstoned EXACTLY ONCE, not twice.
-//
-// WHY `battle` IS THE ONE GENUINE IDENTITY-SWAP CASE (spec §3): unlike
+// WHY `battle` IS THE ONE GENUINE IDENTITY-SWAP CASE: unlike
 // `trade_offer` and `battle_challenge`, terminal `battle` rows demonstrably
 // PERSIST — settle updates the row, it never deletes it, and the GC is lazy — so
 // a surviving opponent's `my_battle` view can still resolve a row naming the
@@ -528,15 +493,12 @@ fn is_wild_battle_true_only_for_wild_identity() {
 // game-core's `TOMBSTONE_IDENTITY_BYTES` and is pinned distinct from
 // `WILD_IDENTITY` here as well as at its declaration.
 //
-// SCAN HYGIENE: every needle is assembled from parts per this file's own
-// convention, and this section contains no bare double-quote inside a comment
-// and no block-comment delimiter.
 // ===========================================================================
 
 /// A `battle` row with DISTINCT mechanical fields, so a constructor that
 /// rebuilt the row instead of swapping one column is visible.
 ///
-/// `battle_fixture` (this file, ptc5b) supplies the empty-team `BattleState`;
+/// `battle_fixture` (this file) supplies the empty-team `BattleState`;
 /// the spread adds party ids, opponent ids and a creation stamp that a
 /// field-by-field comparison can actually catch a change in.
 fn m22s3b_battle_row(
@@ -619,8 +581,8 @@ fn m22s3b_assert_mechanical_fields_intact(
     );
 }
 
-/// **PRV1-6c + PRV1-19 (pure, table-driven)** — `battle_with_tombstoned_party`
-/// swaps EVERY side that names the deleting identity, and nothing else.
+/// `battle_with_tombstoned_party` swaps EVERY side that names the deleting
+/// identity, and nothing else.
 ///
 /// FIVE ROWS, EACH KILLING A DIFFERENT WRONG IMPLEMENTATION:
 ///   1. side A only — the deleting player is `player_identity`.
@@ -628,7 +590,7 @@ fn m22s3b_assert_mechanical_fields_intact(
 ///      only ever rewrites `player_identity` passes row 1 and leaves every
 ///      battle the deleted player was CHALLENGED INTO naming them forever.
 ///   3. PRACTICE, both sides — `player_identity == opponent_identity`. This is
-///      PRV1-19: the row is collected ONCE (the caller dedups by construction)
+///      the row is collected ONCE (the caller dedups by construction)
 ///      and this pure seam swaps BOTH sides in that single visit. A helper that
 ///      swaps only the first matching side leaves the practice battle
 ///      half-tombstoned, and one that relies on being called twice re-writes a
@@ -702,7 +664,7 @@ fn m22s3b_battle_tombstone_truth_table() {
     );
     m22s3b_assert_mechanical_fields_intact("side-B swap", &before, &after);
 
-    // --- ROW 3: PRACTICE, both sides, ONE call (PRV1-19) --------------------
+    // --- ROW 3: PRACTICE, both sides, ONE call --------------------
     let before = m22s3b_battle_row(103, deleting, deleting);
     let after = super::battle_with_tombstoned_party(before.clone(), deleting, tombstone);
     assert_eq!(
@@ -759,14 +721,8 @@ fn m22s3b_battle_tombstone_truth_table() {
 }
 
 // ===========================================================================
-// rb-129 (residual R-rb-45-ONGOING-BATTLE, ADR-0274) — the deletion cascade
-// forces a still-Ongoing battle terminal against the erased side.
-//
-// EARS criterion covered here:
-//
-//   [PRV1-6 post-terminal]  WHEN the deletion cascade cannot forfeit a
-//   still-Ongoing PvP battle THE SYSTEM SHALL force that battle terminal (or
-//   delete it) rather than let an erased identity settle it later.
+// the deletion cascade forces a still-Ongoing battle terminal against the
+// erased side.
 //
 // The `rb129_*` tests execute the seam `battle_with_forced_terminal`, the
 // tombstone seam and the SSOT wild predicate by value over constructed rows: a
@@ -776,11 +732,11 @@ fn m22s3b_battle_tombstone_truth_table() {
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// rb-129 pure seam tests. These call `super::battle_with_forced_terminal`
+// pure seam tests. These call `super::battle_with_forced_terminal`
 // directly.
 // ---------------------------------------------------------------------------
 
-/// A combatant for the rb-129 fixtures, with distinct non-default stats so a
+/// A combatant for the fixtures, with distinct non-default stats so a
 /// seam that rebuilt a team instead of passing it through is visible to the
 /// whole-state comparison. A `current_hp` of 0 makes it fainted.
 fn rb129_mon(species_id: u32, current_hp: u16) -> game_core::BattleMonster {
@@ -879,7 +835,7 @@ fn rb129_team_shapes() -> [(&'static str, game_core::BattleSide); 6] {
     ]
 }
 
-/// The rb-129 row: the `m22s3b_battle_row` shape (distinct party ids, opponent
+/// the `m22s3b_battle_row` shape (distinct party ids, opponent
 /// ids and creation stamp) PLUS non-default mechanical fields — turn 7, active
 /// weather, non-empty teams and a non-zero `active` on both sides — so a seam
 /// that rewrote anything but `state.outcome` shows up in the whole-state
@@ -960,16 +916,15 @@ fn rb129_assert_row(
     );
 }
 
-/// **PRV1-6 post-terminal (pure)** — the forced-terminal seam ends EVERY Ongoing
-/// row that names the erased identity, with that side's forfeit (or, for a wild
-/// row, an auto-flee), and touches nothing else.
+/// the forced-terminal seam ends EVERY Ongoing row that names the erased
+/// identity, with that side's forfeit (or, for a wild row, an auto-flee), and
+/// touches nothing else.
 ///
-/// ADR-0274 D1 truth table, executed by value:
 /// - side A names the erased identity: side A forfeits, side B wins;
 /// - side B names it: side B forfeits, side A wins;
 /// - PRACTICE, both sides name it: side A's forfeit, because
-///   `forfeit_on_disconnect` runs its side-A pass first (ADR-0109 D8);
-/// - an Ongoing WILD row: `Fled`, the ADR-0138 D2 auto-flee, recognised by the
+///   `forfeit_on_disconnect` runs its side-A pass first;
+/// - an Ongoing WILD row: `Fled` recognised by the
 ///   SSOT predicate and checked before the player column;
 /// - the counterparty is the TOMBSTONE (a player erased earlier): still a real
 ///   PvP side, so the erased side forfeits exactly as against a live survivor.
@@ -980,23 +935,19 @@ fn rb129_assert_row(
 /// rule maps side A to a side-B win and side B to a side-A win — the literals
 /// below are that rule's output, not a second copy of it.
 ///
-/// (b) BASELINE: the six sides on the rb-129 fixture (turn 7, rain, non-empty
+/// (b) BASELINE: the six sides (turn 7, rain, non-empty
 /// teams, non-zero `active`), with every mechanical field, the whole
 /// `BattleState` bar its outcome, and both identity columns asserted unchanged.
 /// The wild row is production-shaped: a party on side A and NO opponent ids,
 /// because a wild opponent has no `monster` row.
 ///
-/// (c) THE TOTALITY MATRIX (red-team HIGH, widened by the artifact red-team):
-/// a hand-written wrong seam that skipped `turn_number == 0` rows was MEASURED
-/// passing the entire suite, and six more wrong seams (A1-A6 below) were then
-/// measured passing the first version of this matrix. So each of the six sides
-/// is crossed with, independently: turn number 0, 1, 7 and `u16::MAX`; each
-/// side's team as one of the six `rb129_team_shapes`; a creation stamp of zero
-/// or real; party ids empty or some AND opponent ids empty or some, as two
-/// separate axes; no weather or each of the four weather variants (one with
-/// zero turns left); and a battle id of 1, 1290 or `u64::MAX`. That is
-/// 6 x 4 x 36 x 2 x 2 x 2 x 5 x 3 = 103680 rows, the count asserted at the end,
-/// each failure labelled with its parameters.
+/// (c) THE TOTALITY MATRIX each of the six sides is crossed with, independently:
+/// turn number 0, 1, 7 and `u16::MAX`; each side's team as one of the six
+/// `rb129_team_shapes`; a creation stamp of zero or real; party ids empty or
+/// some AND opponent ids empty or some, as two separate axes; no weather or each
+/// of the four weather variants (one with zero turns left); and a battle id of
+/// 1, 1290 or `u64::MAX`. That is 6 x 4 x 36 x 2 x 2 x 2 x 5 x 3 = 103680 rows,
+/// the count asserted at the end, each failure labelled with its parameters.
 ///
 /// Kills:
 /// - a skip keyed on turn 0, a zero creation stamp, or empty ids;
@@ -1017,8 +968,6 @@ fn rb129_assert_row(
 ///
 /// NOT CLAIMED: a skip keyed on a value no axis above takes (a particular
 /// species, HP value or lead index); the seeded property test samples those.
-///
-/// RED BEFORE THE SEAM (013d0b8): compile error E0425.
 #[test]
 fn rb129_forced_terminal_ends_every_ongoing_row_naming_the_erased_identity() {
     let d = spacetimedb::Identity::from_byte_array([0x81u8; 32]);
@@ -1056,7 +1005,7 @@ fn rb129_forced_terminal_ends_every_ongoing_row_naming_the_erased_identity() {
          deliberately, re-derive them from ADR-0109 D8 and ADR-0274 D1 in the same change."
     );
 
-    // --- (b) the six baseline rows on the rb-129 fixture --------------------
+    // --- (b) the six baseline rows --------------------
     let sides = [
         (
             "side A (d vs s)",
@@ -1128,7 +1077,7 @@ fn rb129_forced_terminal_ends_every_ongoing_row_naming_the_erased_identity() {
         rb129_assert_row(&label, why, &before, &after, *want);
     }
 
-    // --- (c) THE TOTALITY MATRIX (red-team HIGH; artifact red-team A1-A6) ---
+    // --- (c) THE TOTALITY MATRIX ---
     let shapes = rb129_team_shapes();
     let mut team_pairs = Vec::new();
     for (label_a, side_a) in &shapes {
@@ -1228,8 +1177,8 @@ fn rb129_forced_terminal_ends_every_ongoing_row_naming_the_erased_identity() {
     );
 }
 
-/// **PRV1-6 post-terminal (pure)** — the forced-terminal seam returns settled
-/// rows, and live rows the erased identity is not part of, UNCHANGED.
+/// the forced-terminal seam returns settled rows, and live rows the erased
+/// identity is not part of, UNCHANGED.
 ///
 /// Settled history is never rewritten: the survivor's rating and record were
 /// computed from it. A bystander's live battle is not the erased identity's to
@@ -1254,8 +1203,6 @@ fn rb129_forced_terminal_ends_every_ongoing_row_naming_the_erased_identity() {
 ///   than on either of them naming `d`: U8 reads a side-B win;
 /// - a seam that rewrites a settled outcome without consulting the identities
 ///   at all: U10.
-///
-/// RED BEFORE THE SEAM (013d0b8): compile error E0425.
 #[test]
 fn rb129_forced_terminal_leaves_settled_and_bystander_rows_untouched() {
     let d = spacetimedb::Identity::from_byte_array([0x81u8; 32]);
@@ -1371,8 +1318,8 @@ fn rb129_forced_terminal_leaves_settled_and_bystander_rows_untouched() {
     }
 }
 
-/// **PRV1-6 post-terminal (pure, composed)** — the shell's two seams, composed
-/// in the ADR-0274 D2 order, leave the erased identity in no Ongoing battle.
+/// the shell's two seams, composed, leave the erased identity in no Ongoing
+/// battle.
 ///
 /// For each of the SIX forced rows — side A, side B, practice, wild, and a
 /// tombstone counterparty on either side — the swept result is terminal, names
@@ -1397,8 +1344,6 @@ fn rb129_forced_terminal_leaves_settled_and_bystander_rows_untouched() {
 /// that resets the weather or heals the fainted members on the way (B4, B5 —
 /// the status half, B6, is `rb129_tombstone_seam_preserves_state_on_rich_rows`);
 /// a composition that leaves either side naming the erased identity.
-///
-/// RED BEFORE THE SEAM (013d0b8): compile error E0425.
 #[test]
 fn rb129_composed_sweep_leaves_the_erased_identity_in_no_ongoing_battle() {
     let d = spacetimedb::Identity::from_byte_array([0x81u8; 32]);
@@ -1524,25 +1469,18 @@ fn rb129_composed_sweep_leaves_the_erased_identity_in_no_ongoing_battle() {
     );
 }
 
-/// **PRV1-6c (pure, rich rows)** — the tombstone seam moves the two identity
-/// columns and NOTHING else, on rows that carry every mechanical fact a wrong
-/// seam could destroy.
+/// the tombstone seam moves the two identity columns and NOTHING else, on rows
+/// that carry every mechanical fact a wrong seam could destroy.
 ///
 /// `m22s3b_battle_tombstone_truth_table` drives the seam over empty-team rows
-/// with no weather, and every other rb-129 test only ever feeds it the forced
-/// seam's output and compares outcomes or identities — so a tombstone seam
-/// that also reset the weather, healed every combatant or cleared every status
-/// was MEASURED passing the whole suite. Here every row carries rain, a fainted
-/// member on each side, a status on each side and non-zero lead indices,
-/// across ALL FOUR outcomes and four sides, and the WHOLE `BattleState` is
-/// compared.
+/// with no weather every row carries rain, a fainted member on each side, a
+/// status on each side and non-zero lead indices, across ALL FOUR outcomes and
+/// four sides, and the WHOLE `BattleState` is compared.
 ///
 /// Kills: B4 (weather reset inside the tombstone seam), B5 (every combatant
 /// healed), B6 (statuses cleared), and any other state rewrite; a swap that
 /// clobbers the wild sentinel or the survivor; a battle id, id list or
 /// creation stamp rebuilt rather than carried.
-///
-/// GREEN on the shipped seam; its value is what it kills.
 #[test]
 fn rb129_tombstone_seam_preserves_state_on_rich_rows() {
     let d = spacetimedb::Identity::from_byte_array([0x81u8; 32]);
@@ -1603,23 +1541,20 @@ fn rb129_tombstone_seam_preserves_state_on_rich_rows() {
     }
 }
 
-/// **ADR-0274 D1 premise (pure)** — the SSOT wild predicate the forced-terminal
-/// seam checks FIRST admits an Ongoing row owned by the erased identity whose
-/// opponent is the wild sentinel, and nothing else.
+/// the SSOT wild predicate the forced-terminal seam checks FIRST admits an
+/// Ongoing row owned by the erased identity whose opponent is the wild
+/// sentinel, and nothing else.
 ///
 /// The seam answers every row this predicate admits with `Fled`. A predicate
-/// that also admitted a TOMBSTONE counterparty (B3, measured CI-clean before
-/// this test) tells the survivor of an earlier deletion that they fled, and
-/// makes the disconnect resolver that shares the predicate auto-flee and
-/// DELETE a PvP row against the tombstone. `ptc5b_1` offers a live PvP
-/// opponent, a settled row and another owner; it never offers the tombstone,
-/// the owner itself, or a query about a different player.
+/// that also admitted a TOMBSTONE counterparty tells the survivor of an earlier
+/// deletion that they fled, and makes the disconnect resolver that shares the
+/// predicate auto-flee and DELETE a PvP row against the tombstone. `ptc5b_1`
+/// offers a live PvP opponent, a settled row and another owner; it never offers
+/// the tombstone, the owner itself, or a query about a different player.
 ///
 /// Kills: B3 (the tombstone counted as wild); a predicate reduced to the
 /// opponent not being a live player; a predicate satisfied by a practice row;
 /// a predicate that drops its outcome conjunct or either identity conjunct.
-///
-/// GREEN on the shipped predicate.
 #[test]
 fn rb129_wild_predicate_rejects_non_wild_opponents() {
     let d = spacetimedb::Identity::from_byte_array([0x81u8; 32]);
@@ -1748,9 +1683,8 @@ fn rb129_weather_from_raw(
     }
 }
 
-/// **PRV1-6 post-terminal (pure, property)** — over 512 seeded random rows,
-/// the forced-terminal seam agrees with the ADR-0274 D1 table and touches
-/// nothing but the outcome.
+/// over 512 seeded random rows, the forced-terminal seam agrees with the and
+/// touches nothing but the outcome.
 ///
 /// The deterministic matrix beside this one enumerates chosen values; this
 /// samples the rest. Each case draws BOTH identity columns independently from
@@ -1761,7 +1695,7 @@ fn rb129_weather_from_raw(
 /// 6 combatants with any species, HP anywhere in `0..=max_hp` (fainted and full
 /// drawn often), any status or none, and a lead index in range.
 ///
-/// THE ORACLE IS THE D1 TABLE, transcribed from the plan, never computed by
+/// THE ORACLE IS THE D1 TABLE never computed by
 /// calling the seam: a settled row comes back unchanged; an Ongoing row owned
 /// by `d` against the wild sentinel comes back `Fled`; else an Ongoing row
 /// whose side A is `d` takes side A's game-core forfeit; else one whose side B
@@ -1782,8 +1716,6 @@ fn rb129_weather_from_raw(
 /// past 2; the settled guard inverted; a bystander forced. It does NOT reliably
 /// kill A4 (battle ids below 1024 are practically never drawn from the full
 /// 64-bit range); the matrix does.
-///
-/// GREEN on the shipped seam.
 #[test]
 fn rb129_forced_terminal_property_over_random_rows() {
     use proptest::prelude::*;
@@ -1841,7 +1773,7 @@ fn rb129_forced_terminal_property_over_random_rows() {
             created_at_ms,
         };
 
-        // THE ORACLE: the ADR-0274 D1 table, transcribed from the plan.
+        // THE ORACLE:
         let (want, class) = if outcome != ongoing {
             (outcome, 0)
         } else if player == d && opponent == wild {
@@ -1914,28 +1846,20 @@ fn rb129_forced_terminal_property_over_random_rows() {
 }
 
 // ===========================================================================
-// rb-46 (residual R-m22-s5-X12, ADR-0236 D2/D3/D4) — the caller-only deletion
-// gate on PvE battle start.
-//
-// EARS criterion covered here:
-//
-//   R-m22-s5-X12 (battle half)  WHILE the caller's account is inside the
-//   para-4.7 deletion gate, WHEN the caller invokes `start_battle` or the
-//   dev-only `start_wild_battle`, the server module SHALL refuse the call
-//   before any write, with the single static reason.
+// the caller-only deletion gate on PvE battle start.
 //
 // EXECUTION (`rb46_start_battle_is_refused_only_while_the_caller_is_deletion_gated`)
-// runs the SHIPPED reducer under the rb-41 native host (`native_host_tests`)
+// runs the SHIPPED reducer (`native_host_tests`)
 // against real `account` rows: the gate refuses the two deleting states, ADMITS
 // the three others, and answers from the CALLER's row rather than from the table
 // (a stranger stays mid-grace throughout). The dev-only `start_wild_battle` is
 // compiled in no default test build.
 // ===========================================================================
 
-/// **R-m22-s5-X12 (behaviour)** — `start_battle` refuses a deletion-gated caller,
+/// `start_battle` refuses a deletion-gated caller,
 /// ADMITS everybody else, and answers from the CALLER's row.
 ///
-/// The shipped reducer runs under the rb-41 native host through five account
+/// The shipped reducer runs through five account
 /// states, with the exact verdict pinned in each: no row, `Active`,
 /// `PendingDeletion`, `PendingDeletion` + the terminal marker, and row removed.
 /// The three admitted states are the positive control, and they are what make the
@@ -1949,10 +1873,10 @@ fn rb129_forced_terminal_property_over_random_rows() {
 ///
 /// WHY THE ADMITTED STATES ERR AT ALL, and why that is the honest claim. The
 /// fixture can seed only `Identity`-keyed rows, so the `monster` content lookup
-/// finds nothing: an unregistered index yields no rows in this host
-/// (`native_host_tests.rs:311-319`), which is exactly why every pre-gate read —
-/// the two ongoing-battle filters, the party lookup — is a no-op instead of an
-/// abort, and why the reducer stops at content lookup rather than at a write.
+/// finds nothing: an unregistered index yields no rows in this host,
+/// which is exactly why every pre-gate read — the two ongoing-battle filters, the
+/// party lookup — is a no-op instead of an abort, and why the reducer stops at
+/// content lookup rather than at a write.
 /// Every write syscall ABORTS the process (uncatchable, so `#[should_panic]`
 /// cannot be used here). The RED this test proves is therefore: a deletion-gated
 /// caller is ADMITTED past every caller-standing check into content lookup — not
@@ -1960,7 +1884,7 @@ fn rb129_forced_terminal_property_over_random_rows() {
 /// reached before the gate would abort this process.
 ///
 /// THE DUMMY SENDER is the all-zero identity, which is also `WILD_IDENTITY`
-/// (lib.rs). That is harmless here: `start_battle`'s provenance rule (ADR-0048)
+/// (lib.rs). That is harmless here: `start_battle`'s provenance rule
 /// admits an opponent equal to the caller, and this test passes the caller's own
 /// identity as the opponent, so the provenance check passes on both of its arms.
 /// It does mean this test cannot distinguish a caller gate from an opponent-keyed
@@ -1969,17 +1893,13 @@ fn rb129_forced_terminal_property_over_random_rows() {
 /// Rows are built with the shipped pure constructors only, so this test can never
 /// assemble a state the module itself cannot; `terminal_account` debug-asserts
 /// legality, which is why the illegal `Active` + marker shape is not reachable
-/// here and is left to `accounts_tests`' truth table (ADR-0236 D5). `seed` PUSHES
+/// here and is left to `accounts_tests`' truth table. `seed` PUSHES
 /// rather than upserting, so each state removes the previous row and asserts that
 /// exactly one row went — and because `remove` is `Identity`-keyed, the stranger's
 /// row never affects that count.
 ///
-/// RED AT HEAD: at HEAD `start_battle` carries no deletion gate, so the
-/// `PendingDeletion` state returns the ordinary next-guard error and the third
-/// assertion fails, naming the admitted mid-grace caller.
-///
 /// kills:
-///   - M1, the dropped gate (and any later deletion of it).
+///   - the dropped gate (and any later deletion of it).
 ///   - a discarded verdict — `let _ = ..`, `.ok();` — which leaves the reducer
 ///     admitting both deleting states.
 ///   - `if false`-wrapped or otherwise unreachable gate: same failure.
@@ -1988,7 +1908,7 @@ fn rb129_forced_terminal_property_over_random_rows() {
 ///     the two admitted-state assertions fail. Inverted, this gate would refuse
 ///     EVERY caller — a total outage of battle start — while every text pin stays
 ///     byte-identical.
-///   - M14, a constant reject at the call site: the three admitted states fail.
+///   - a constant reject at the call site: the three admitted states fail.
 ///   - a row-exists-keyed fake (`is_some()` instead of the status test): the
 ///     `Active` state fails.
 ///   - A TABLE-WIDE SCAN OR ANY-ROW-PENDING FAKE: the three admitted states fail
@@ -2126,37 +2046,28 @@ fn rb46_start_battle_is_refused_only_while_the_caller_is_deletion_gated() {
 }
 
 // ===========================================================================
-// rb-76 (residual R-rb-46-GRASSPATH, ADR-0246) — the scheduler-opened grass-path
-// wild encounter is a gated commitment, refused at the SHARED choke point.
+// the scheduler-opened grass-path wild encounter is a gated commitment, refused
+// at the SHARED choke point.
 //
-// EARS criterion covered here (battle half):
-//
-//   R-rb-46-GRASSPATH  WHILE the WALKING PLAYER's account is inside the para-4.7
-//   deletion gate, WHEN `begin_encounter` is asked to open a wild battle for
-//   that player, the server module SHALL refuse before any write, with the
-//   single static reason, keyed on the `player_identity` ARGUMENT.
-//
-// WHY THE GATE GOES HERE AND NOT IN `movement_tick` (ADR-0246 D3). Both wild
+// WHY THE GATE GOES HERE AND NOT IN `movement_tick`. Both wild
 // encounter openers funnel through `begin_encounter`: the scheduled grass path
 // and the dev-only `start_wild_battle`. Gating the funnel gates both, once.
 // Gating `movement_tick` instead would put account-state vocabulary in
 // `movement.rs` (a second consumer of a wrapper this slice contains to one), and
 // — decisively — a pre-roll `continue` there CHANGES the per-tick `ctx.random()`
 // draw count, so one walker's account state would shift the encounter seeds of
-// every character rolled after them in the same tick. That is the R-E fairness
-// invariant, and it is not negotiable for a privacy gate.
+// every character rolled after them in the same tick.
 //
 // EXECUTION (`rb76_begin_encounter_refuses_only_a_deletion_gated_walker`) runs
-// the SHIPPED helper under the rb-41 native host against real `account` rows: the
+// the SHIPPED helper against real `account` rows: the
 // gate refuses the two deleting states, ADMITS the three others, and answers from
 // the WALKER's row rather than from the table or the sender.
 // ===========================================================================
 
-/// **R-rb-46-GRASSPATH (behaviour)** — `begin_encounter` refuses a
-/// deletion-gated WALKER, ADMITS everybody else, and answers from the
+/// `begin_encounter` refuses a deletion-gated WALKER, ADMITS everybody else, and answers from the
 /// `player_identity` ARGUMENT.
 ///
-/// The shipped helper runs under the rb-41 native host through five walker
+/// The shipped helper runs through five walker
 /// states, with the exact verdict pinned in each: no row, `Active`,
 /// mid-grace, mid-grace plus the terminal marker, and row removed. The three
 /// admitted states are the positive control, and they are what make the two
@@ -2167,9 +2078,7 @@ fn rb46_start_battle_is_refused_only_while_the_caller_is_deletion_gated() {
 /// refuse if ANYBODY is deleting — is observationally identical to the
 /// subject-keyed one in all five states.
 ///
-/// THE TWO SENDER CONTROLS ARE THE POINT OF THIS SLICE, and they are what
-/// distinguish this matrix from `rb46_start_battle_is_refused_only_while_the_caller_is_deletion_gated`
-/// one screen above. `ctx.sender()` under this host is the all-zero identity,
+/// `ctx.sender()` under this host is the all-zero identity,
 /// and on the REAL grass path it is the MODULE identity — never the walker. So:
 ///   (i) the SENDER's own row is driven mid-grace while the WALKER is `Active`,
 ///       and the call must still be ADMITTED. A caller-keyed gate — the obvious
@@ -2183,10 +2092,10 @@ fn rb46_start_battle_is_refused_only_while_the_caller_is_deletion_gated() {
 ///
 /// WHY THE ADMITTED STATES ERR AT ALL, and why that is the honest claim. The
 /// fixture registers only the `account` table, so the `monster` point read finds
-/// nothing: an unregistered index yields no rows in this host
-/// (`native_host_tests.rs:311-319`), which is exactly why every pre-gate read —
-/// the two ongoing-battle filters, the party lookup — is a no-op instead of an
-/// abort, and why the helper stops at the party lookup rather than at a write.
+/// nothing: an unregistered index yields no rows in this host,
+/// which is exactly why every pre-gate read — the two ongoing-battle filters, the party lookup — is
+/// a no-op instead of an abort, and why the helper stops at the party lookup rather than at a
+/// write.
 /// Every write syscall ABORTS the process (uncatchable, so `#[should_panic]`
 /// cannot be used here). The RED this test proves is therefore: a deletion-gated
 /// walker is ADMITTED past every standing check INTO THE PARTY LOOKUP — not that
@@ -2208,10 +2117,6 @@ fn rb46_start_battle_is_refused_only_while_the_caller_is_deletion_gated() {
 /// asserts that exactly one row went — and because `remove` is `Identity`-keyed,
 /// neither the stranger's row nor the sender's affects that count.
 ///
-/// RED AT HEAD: `begin_encounter` carries no deletion gate, so the mid-grace
-/// walker returns the ordinary party-lookup error and the third assertion fails,
-/// naming the admitted mid-grace walker.
-///
 /// kills:
 ///   - the dropped gate (and any later deletion of it);
 ///   - a discarded verdict — `let _ = ..`, `.ok();` — which leaves the helper
@@ -2223,7 +2128,7 @@ fn rb46_start_battle_is_refused_only_while_the_caller_is_deletion_gated() {
 ///     encounters, PvE progression included — while every text pin stays
 ///     byte-identical;
 ///   - a CALLER-KEYED gate, in either direction, through the two sender
-///     controls. This is the mutant the whole slice is about: it is the shape
+///     controls. the shape
 ///     `start_battle`'s gate has, it is one line away in the same file, and it
 ///     is correct THERE and wrong HERE;
 ///   - a table-wide or any-row-pending fake: the three admitted states fail
@@ -2813,8 +2718,8 @@ fn bn_battle_actions_refuse_a_stranger_and_admit_the_owner() {
     }
 }
 
-/// EV-battle-reducer-security (Ongoing gate): every action reducer refuses a terminal
-/// battle with no XP, currency, item or row change.
+/// every action reducer refuses a terminal battle with no XP, currency, item or row
+/// change.
 #[test]
 fn bn_battle_actions_refuse_a_terminal_battle() {
     for outcome in [
@@ -3054,7 +2959,7 @@ fn bn_use_battle_item_consumes_only_a_matching_held_cure() {
 }
 
 /// EV-battle-reducer-security (provenance + ownership): start_battle refuses a
-/// third-party opponent (ADR-0048), a foreign side-A monster, a side-B monster the
+/// third-party opponent, a foreign side-A monster, a side-B monster the
 /// named opponent does not own, a boxed monster, duplicates across the two lists and
 /// an empty party — each before any write. Controls: a self battle and a WILD battle
 /// insert exactly one Ongoing row naming the caller and the opponent as given.
@@ -3075,7 +2980,7 @@ fn bn_start_battle_enforces_provenance_and_ownership() {
             bn_b(),
             vec![11],
             vec![21],
-            "opponent must be self or server-authored (PvP unsupported; ADR-0048)",
+            "opponent must be self or server-authored (PvP unsupported)",
         ),
         (
             "dup in party",
@@ -3186,9 +3091,9 @@ fn bn_start_battle_enforces_provenance_and_ownership() {
     );
 }
 
-/// EV-battle-reducer-security C1/C2 (ADR-0122 both-role guard): a player seated as
-/// SIDE B of an ongoing PvP battle cannot open or act outside it — start_battle,
-/// begin_encounter, heal_party, care, train and evolve all refuse, before any write.
+/// a player seated as SIDE B of an ongoing PvP battle cannot open or act outside it
+/// — start_battle, begin_encounter, heal_party, care, train and evolve all refuse,
+/// before any write.
 /// Control: once that battle is terminal, start_battle and begin_encounter run.
 #[test]
 fn bn_side_b_of_an_ongoing_pvp_battle_is_blocked_everywhere() {
@@ -3821,8 +3726,8 @@ fn bn_disconnect_resolves_only_the_callers_ongoing_wild_battle() {
     w.assert_mirrored("disconnect");
 }
 
-/// ST-battle_tests#writeback-economy (verifier clause): anonymize_battles replaces the
-/// erased identity in BOTH roles of every battle naming it, and touches no other row.
+/// anonymize_battles replaces the erased identity in BOTH roles of every battle naming
+/// it, and touches no other row.
 #[test]
 fn bn_anonymize_battles_scrubs_both_roles() {
     let fx = fixture();
@@ -3872,8 +3777,7 @@ fn bn_anonymize_battles_scrubs_both_roles() {
     );
 }
 
-/// Survivor of the AFTER probe (lead_party_ids, 5 mutants) once the E2 shape pins
-/// were deleted: the party is the owner's slotted monsters ordered by slot (boxed
+/// the party is the owner's slotted monsters ordered by slot (boxed
 /// and foreign monsters excluded), `None` iff there is none; a corrupt LEAD level
 /// disables only `lead_party`, never the level-free id list.
 #[test]

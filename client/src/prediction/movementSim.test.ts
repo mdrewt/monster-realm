@@ -1,9 +1,7 @@
-// movementSim.test.ts — [mvi] the GATING deterministic simulation of the full client↔server
-// movement pipeline. Promoted from movementSim.diag.test.ts (the committed diagnostic that
-// reproduced Drew's r2 defect deterministically); every console.log probe in that file is now
-// an assertion.
+// movementSim.test.ts — the GATING deterministic simulation of the full client↔server
+// movement pipeline.
 //
-// THE DEFECT (r2, ledger 003/015/029/040-042): a single tap sometimes moves TWO tiles. Root
+// THE DEFECT: a single tap sometimes moves TWO tiles. Root
 // cause is CLIENT-side: the held-key continuation re-issue (rAF frame body + the reconcile
 // divergence site) fires on the first frame after the server's movement_tick drain is observed
 // while the key is still down. The tick phase is uniform in [0, 200)ms, so inside a 50-150ms
@@ -16,15 +14,15 @@
 // (ADR-0012 rebase).
 //
 // MODELED line-by-line — citations are the POST-FIX main.ts wiring this slice lands:
-//   keydown movement branch (main.ts:1093-1099):
+//   keydown movement branch:
 //       step(dir);                          // immediate first step — UNGATED
 //       held.press(dir, performance.now()); // the press carries its own timestamp
-//   keyup (main.ts:1107-1110): held.release(dir);
-//   sendIntent (main.ts:470-505) — conn always live here, no overlays;
-//   reconcile batch listener + divergence re-issue (main.ts:366-455), whose emitter is
+//   keyup: held.release(dir);
+//   sendIntent — conn always live here, no overlays;
+//   reconcile batch listener + divergence re-issue, whose emitter is
 //       if (diverged && predictor.outstandingSteps === 0 && !(…overlays…)) {
 //         const heldDir = reissueDir(held.committedActive(now), predictor.lastQueuedDir);
-//   rAF frame body (main.ts:2101-2139): drain FIRST (nh2 R1, ADR-0148), then the SAME emitter
+//   rAF frame body: drain FIRST (nh2 R1), then the SAME emitter
 //       if (predictor.outstandingSteps === 0 && !(…overlays…)) { … committedActive(now) … }
 // Server reducers: guards.rs authorize_move (:66-96), movement.rs enqueue_move (:120-130) and
 // the movement_tick drain arm (:184-237).
@@ -33,14 +31,6 @@
 // DOM/PIXI/wasm side effects) and the server is Rust. The SOURCE-LEVEL proof that main.ts
 // really carries the shape above is main.wiring.test.ts (the W-MVI-* teeth); THIS file proves
 // the shape is behaviourally correct.
-//
-// RED REASON at authoring time: heldKeys.ts exports no `HOLD_COMMIT_MS` and HeldDirections has
-// no `committedActive` / no timestamped `press` — the import and the construction below fail.
-//
-// RED REASON (14r-e, ADR-0187): ClientModel.keydown now mirrors the deduped keydown
-// (`if (!held.isHeld(dir)) step(dir);`), so until `HeldDirections.isHeld` exists EVERY
-// scenario that presses a key throws — see the S10/S11 block at the end of this file for
-// the full statement and for the one deliberate exception (S10-twin).
 //
 // Determinism: one virtual clock, one event queue ordered by (time, insertion-seq). No wall
 // clock, no RNG, no timers, no `new RegExp` (Semgrep ban).
@@ -213,7 +203,7 @@ interface Emission {
 type Send = (input: WasmMoveInput, seq: number, epoch: PredictorEpoch, at: number) => void;
 
 class ClientModel {
-  /** [13r-f, AM4] NOT `readonly`: `rebuildPrediction` below replaces the instance, exactly as
+  /** NOT `readonly`: `rebuildPrediction` below replaces the instance, exactly as
    *  main.ts's `resetPredictionState()` does (`predictor = new Predictor(...)`). */
   predictor: Predictor;
   readonly held: HeldDirections;
@@ -226,7 +216,7 @@ class ClientModel {
   readonly reconciles: { atMs: number; diverged: boolean; outstanding: number }[] = [];
   #send: Send;
   #source: Emission['source'] = 'keydown';
-  /** [14r-e, ADR-0187] Mirrors the shipped keydown `if (!held.isHeld(dir)) step(dir);`.
+  /** Mirrors the shipped keydown `if (!held.isHeld(dir)) step(dir);`.
    *  DEFAULTS TRUE — the model tracks main.ts, and the flag exists ONLY so S10-twin can
    *  run the dedup off and prove the S10 scenario is capable of seeing the double-move. */
   readonly #dedupFirstStep: boolean;
@@ -250,7 +240,7 @@ class ClientModel {
   }
   /** main.ts keydown movement branch (:1093-1099) — POST-FIX: the first step is UNGATED by
    *  hold DURATION and the press carries its own timestamp
-   *  (`held.press(dir, performance.now())`), but it is DEDUPED by held STATE (ADR-0187):
+   *  (`held.press(dir, performance.now())`), but it is DEDUPED by held STATE:
    *      if (!held.isHeld(dir)) step(dir);
    *      held.press(dir, performance.now());
    *  KEY_DIR maps BOTH key codes of a direction to the same `dir` before any held logic
@@ -268,7 +258,7 @@ class ClientModel {
   keyup(dir: WasmDirection): void {
     this.held.release(dir);
   }
-  /** store batch listener → reconcileFromStore (main.ts:366-455), no overlays. */
+  /** store batch listener → reconcileFromStore, no overlays. */
   onRowUpdate(row: ServerRow, at: number): void {
     this.lastRow = row;
     this.reconcileFromStore(at);
@@ -296,7 +286,7 @@ class ClientModel {
       }
     }
   }
-  /** rAF frame body (main.ts:2101-2139): drain FIRST (nh2 R1), then the gated re-issue. */
+  /** rAF frame body: drain FIRST (nh2 R1), then the gated re-issue. */
   frame(at: number): void {
     this.predictor.drain(at);
     if (this.predictor.outstandingSteps === 0) {
@@ -308,7 +298,7 @@ class ClientModel {
     }
   }
 
-  /** [13r-f, ADR-0192] The WARP arm's prediction rebuild, in BOTH policies.
+  /** The WARP arm's prediction rebuild, in BOTH policies.
    *
    *  'clear' is today's shipped shape — `resetPredictionState()` (fresh Predictor, seq floor,
    *  `held.clear()`). 'preserve' is the ADR-0192 bracket that switchZone gains, in the
@@ -318,7 +308,7 @@ class ClientModel {
    *  shadow-log of presses replayed through `press()` would make S12b/c/d self-fulfilling
    *  (they would pass without the production seam ever existing).
    *  AM3: the rebuild ends by reconciling from the last authoritative row IN THE SAME CALL
-   *  STACK — the state-based warp path (main.ts:848-855), where `reconcileFromStore` calls
+   *  STACK — the state-based warp path, where `reconcileFromStore` calls
    *  `switchZone` and then falls through to its own reconcile. */
   rebuildPrediction(mode: 'clear' | 'preserve', atMs: number): void {
     const heldSnapshot = mode === 'preserve' ? this.held.snapshot() : undefined;
@@ -329,7 +319,7 @@ class ClientModel {
     this.reconcileFromStore(atMs);
   }
 
-  /** [13r-f] The RECONNECT shape (ADR-0152 per-path invariant): the same rebuild with NO
+  /** The RECONNECT shape (ADR-0152 per-path invariant): the same rebuild with NO
    *  reconcile — the server's `on_disconnect` deleted the rows, so `reconcileFromStore`
    *  early-returns until `joinGame` round-trips. 'clear' is the shipped body; 'leak' is the
    *  anti-vacuity control that models `held.clear()` being removed from the shared body. */
@@ -350,7 +340,7 @@ interface SimConfig {
   startY: number;
   /** undefined ⇒ construct HeldDirections ARGLESS, i.e. exercise the shipped default. */
   holdCommitMs?: number;
-  /** [14r-e, ADR-0187] undefined ⇒ the SHIPPED deduped keydown. `false` is the S10-twin
+  /** undefined ⇒ the SHIPPED deduped keydown. `false` is the S10-twin
    *  anti-vacuity control only (the pre-fix "every keydown emits" wiring). */
   dedupFirstStep?: boolean;
 }
@@ -390,8 +380,8 @@ function runSim(cfg: SimConfig, script: readonly ScriptEvent[], untilMs: number)
       q.push(sentAt + latency, (at) => {
         const res = server.enqueueMove(input, seq, at);
         if (res === 'ok') {
-          // enqueue txn writes character+player in one batch (movement.rs:127-129,
-          // guards.rs:93-94) → one client reconcile on arrival.
+          // enqueue txn writes character+player in one batch
+          // → one client reconcile on arrival.
           const snap = server.snapshot();
           q.push(at + latency, (a2) => client.onRowUpdate(snap, a2));
         } else {
@@ -598,7 +588,7 @@ describe('[mvi] S1 tap matrix: one tap == one tile, in EVERY (scenario × fps ×
       // lands — which, for a tick phase uniform in [0,200), happens INSIDE a 50-150ms tap about
       // half the time.
       //
-      // WRONG IMPL KILLED (1): no hold-commit gate at all (today's code) — the double-move.
+      // WRONG IMPL KILLED (1): no hold-commit gate at all — the double-move.
       // WRONG IMPL KILLED (2): a threshold set too LOW (anything < ~140ms) — the 140ms column
       //   here is the tap-coverage floor and reds first.
       // WRONG IMPL KILLED (3): a stale press timestamp (scenario c) — see TAP_SCENARIOS.
@@ -853,7 +843,7 @@ describe('[mvi] S6 deliberate holds still walk: a 260ms press moves >= 2 tiles i
 });
 
 // ================================================================================
-// S7 — nh2 (ADR-0148) no-regress: long holds keep their cadence and their throughput
+// S7 — nh2 no-regress: long holds keep their cadence and their throughput
 // ================================================================================
 
 describe('[mvi] S7 nh2 no-regress: a 3s hold keeps perfect cadence and the same tile throughput', () => {
@@ -982,7 +972,7 @@ describe('[mvi] S8 two-key fallback: releasing the newer key resumes the older o
   });
 
   it('S8b BITES: switch-while-held (North held, East pressed on top) — East takes over with no stutter and North stops', () => {
-    // Pre-existing stack semantics (M8.6c, ADR-0013): continuation follows the STACK TOP only.
+    // Pre-existing stack semantics: continuation follows the STACK TOP only.
     // The mvi change must preserve both halves of that:
     //   - North stops being re-issued the moment East is pressed (even though North is still
     //     physically held and still committed) — this is exactly the U-H5 composition;
@@ -1127,7 +1117,7 @@ describe('[mvi] S9 divergence site: the reconcile re-issue uses the same hold-co
 });
 
 // ================================================================================
-// S10 / S11 — [14r-e, ADR-0187] the DUAL-CODE first step (EARS-1)
+// S10 / S11 — the DUAL-CODE first step (EARS-1)
 //
 // KEY_DIR binds TWO key codes to each direction (ArrowRight AND KeyD → East). Pre-fix,
 // main.ts's keydown fired `step(dir)` unconditionally, so the second code fired a SECOND
@@ -1137,15 +1127,6 @@ describe('[mvi] S9 divergence site: the reconcile re-issue uses the same hold-co
 // remaining path (its residual 3), and ADR-0187 closes it with
 // `if (!held.isHeld(dir)) step(dir);` — modelled in ClientModel.keydown above.
 //
-// RED REASON at authoring time, STATED PRECISELY: `HeldDirections.isHeld` does not exist,
-// and ClientModel.keydown now calls it on EVERY press, so every scenario in this file that
-// presses a key throws `this.held.isHeld is not a function` until the implementation lands
-// — not just S10/S11. That is the same (correct, loud) signal this file's own header
-// records for the mvi slice, when the missing `HOLD_COMMIT_MS` export reddened the whole
-// module at link time. The ONE exception is S10-twin: `dedupFirstStep=false` short-circuits
-// before `isHeld` is ever reached, so it is GREEN both before and after the fix — which is
-// exactly what an anti-vacuity control has to be.
-//
 // NOTE on the model's fidelity: main.ts maps BOTH codes to one `dir` via KEY_DIR BEFORE
 // any held logic runs, so "the second key code" and "a second keydown of the same
 // direction" are the same event by the time `held` sees it. The model therefore scripts a
@@ -1153,7 +1134,7 @@ describe('[mvi] S9 divergence site: the reconcile re-issue uses the same hold-co
 // ================================================================================
 
 /** The dual-code tap: first code down at t, second code down at t+60, both released at
- *  t+120 — a 120ms total press, inside the <= 140ms tap-coverage contract (ADR-0158), so
+ *  t+120 — a 120ms total press, inside the <= 140ms tap-coverage contract, so
  *  the hold-commit gate emits NO continuation and every tile observed here comes from a
  *  keydown. */
 const DUAL_TAP_T0 = 500;
@@ -1194,7 +1175,7 @@ describe('[14r-e] S10 dual-code tap: both key codes of ONE direction move exactl
   it(
     'S10 BITES: the second key code emits NOTHING — one tile, one accepted intent, in every cell',
     () => {
-      // ★ THE SLICE DEFECT (EARS-1). WRONG IMPL KILLED (1): today's wiring — `step(dir)`
+      // ★ THE SLICE DEFECT (EARS-1). WRONG IMPL KILLED (1): `step(dir)`
       //   fires on EVERY keydown, so two codes produce two ungated first steps and the
       //   server drains both: 2 tiles from one physical tap.
       // WRONG IMPL KILLED (2): a dedup that also suppresses the FIRST press (e.g. an
@@ -1330,7 +1311,7 @@ describe('[14r-e] S11 interleave: the dedup is MEMBERSHIP in the held set, not t
 });
 
 // ================================================================================
-// S12 — [13r-f, ADR-0192] the HELD KEY survives the WARP arm's prediction rebuild (nh5)
+// S12 — the HELD KEY survives the WARP arm's prediction rebuild
 //
 // THE DEFECT: `resetPredictionState()` calls `held.clear()` and `switchZone` calls it on
 // every zone change. The keydown handler ignores `e.repeat`, so a key that is PHYSICALLY
@@ -1350,10 +1331,6 @@ describe('[14r-e] S11 interleave: the dedup is MEMBERSHIP in the held set, not t
 // measurement. Cell: 60fps / tickPhase 0 / L=1, rebuild at t=2005, i.e. 4ms after the
 // t=2001 drain-snapshot reconcile and 11.67ms before the t=2016.67 frame.
 //
-// RED REASON at authoring time: `HeldDirections.snapshot` / `.restore` do not exist, so
-// every 'preserve' scenario throws `this.held.snapshot is not a function` — S12b/c/d are
-// RED on a MISSING IMPLEMENTATION. S12a (the defect repro under 'clear') and S12e (the
-// reconnect gap) never touch the seam and are GREEN today by design.
 // ================================================================================
 
 type WarpMode = 'clear' | 'preserve' | 'deferred-clear' | 'deferred-leak';
@@ -1533,7 +1510,7 @@ describe('[13r-f] S12 held-key warp continuation (ADR-0192): the WARP rebuild ke
     // ★ THE SLICE'S BEHAVIOURAL GATE (AC-1 + AC-2). Identical script and identical instant to
     // S12a — only the policy differs — so the ≥2 tiles can come from nothing but the
     // preserved held stack.
-    // WRONG IMPL KILLED (1): no seam at all (today) — S12a's freeze, here a hard red.
+    // WRONG IMPL KILLED (1): no seam at all — S12a's freeze, here a hard red.
     // WRONG IMPL KILLED (2): `restore` that drops entries / restores an empty capture.
     // WRONG IMPL KILLED (3), NARROWLY: a rebuild that floors the fresh predictor's seq at
     //   NOTHING — every continuation would carry an already-acked seq, the server would reject
@@ -1543,7 +1520,7 @@ describe('[13r-f] S12 held-key warp continuation (ADR-0192): the WARP rebuild ke
     //   distinction (nh3 Case M2) is owned by predictor.test.ts's nh3-2 block.
     // WRONG IMPL KILLED (4): a preserved hold that DOUBLE-advances (a merge that leaves two
     //   entries, or an emitter that fires twice per slot) — the cadence assertion below pins
-    //   one tile per 200ms movement_tick slot across the whole run (ADR-0013/0141, R3).
+    //   one tile per 200ms movement_tick slot across the whole run (R3).
     const r = runWarpSim({ ...S12_CELL, rebuildMode: 'preserve', untilMs: 3000 }, [
       { kind: 'keydown', atMs: 500, dir: 'East' },
     ]);
@@ -1642,7 +1619,7 @@ describe('[13r-f] S12 held-key warp continuation (ADR-0192): the WARP rebuild ke
         'that re-stamps to the rebuild instant would push it a further 50ms out',
     ).toBeLessThanOrEqual(pressAt + HOLD_COMMIT_MS + r.framePeriodMs + EPS);
 
-    // CONTROL (green today): the SAME script under 'clear' emits nothing at all, so the
+    // CONTROL: the SAME script under 'clear' emits nothing at all, so the
     // emission measured above is produced by the PRESERVED stack and by nothing else.
     const control = runWarpSim({ ...S12_CELL, rebuildMode: 'clear', untilMs: 2400 }, [
       { kind: 'keydown', atMs: pressAt, dir: 'East' },

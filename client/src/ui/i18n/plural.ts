@@ -1,7 +1,7 @@
 // ui/i18n/plural.ts — CLDR-total plural selection and locale-aware number formatting
-// (m24-s1, ADR-0256 D2/D6, I18N-9/I18N-10).
+// (I18N-9/I18N-10).
 //
-// WHY THE FORMS TYPE IS TOTAL AND NEVER `Partial` (ADR-0256 D2). Branching on `n === 1` at a
+// WHY THE FORMS TYPE IS TOTAL AND NEVER `Partial`. Branching on `n === 1` at a
 // call site is structurally incapable of Russian's four categories or Arabic's six, and a
 // `Partial<Record<…>>` would let a Russian catalog omit `few` and ship a runtime blank. So
 // `PluralForms` names all six `Intl.LDMLPluralRule` categories, and a two-category locale fills
@@ -9,7 +9,7 @@
 // is the identity for a locale that genuinely needs all six — it exists so a catalog line reads
 // as a declared intent (`cldr({…})` vs `oneOther(…)`) that SHAPE-06 can check per locale.
 //
-// WHY AN UNSUPPORTED LOCALE THROWS (ADR-0256 D6 — reject, do not clamp, the ADR-0205 D4 stance).
+// WHY AN UNSUPPORTED LOCALE THROWS (reject, do not clamp).
 // `new Intl.PluralRules('xx')` does not fail: it resolves SILENTLY to the runtime default
 // (en-US), so a typo'd tag would ship English plural rules under a foreign catalog with no
 // signal. `supportedLocalesOf` is the only probe that says "no data", so both entry points ask

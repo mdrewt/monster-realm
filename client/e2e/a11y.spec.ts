@@ -9,9 +9,8 @@ import {
 } from '@playwright/test';
 import { t } from '../src/ui/a11yCopy';
 
-// rb-19 (residual R-m23-s11-X10) — the axe-core + real-browser a11y tier that
-// M23-accessibility.spec.md §5.7 DECIDED should exist and that no M23 slice owned.
-// ADR-0218.
+// the axe-core + real-browser a11y tier that M23-accessibility.spec.md §5.7 DECIDED
+// should exist and that no M23 slice owned.
 //
 // WHERE THIS RUNS. playwright.config.ts has `testDir: './e2e'`, so `just e2e` collects
 // this file and the PER-PR `e2e:` job in ci.yml runs it. That is deliberate, not an
@@ -20,7 +19,7 @@ import { t } from '../src/ui/a11yCopy';
 // recipe. If your PR reds here, it red on a real WCAG A/AA violation in the
 // rendered page — read the failure message, it names the rule and the nodes.
 //
-// AND WHERE IT DELIBERATELY DOES NOT RUN (rb-20, ADR-0219 D2). The `reduced-motion`
+// AND WHERE IT DELIBERATELY DOES NOT RUN. The `reduced-motion`
 // project added to `client/playwright.config.ts` carries a `testMatch` naming ONLY
 // `reduced-motion.spec.ts`, so this file is NOT collected under forced reduced
 // motion. That is a decision, not an omission: a second project collecting this file
@@ -40,7 +39,7 @@ import { t } from '../src/ui/a11yCopy';
 // self-heals. Adding a second context here would break that and must not be done
 // without renaming the file.
 //
-// WHY A BROWSER TIER AT ALL, given `just ci` already runs every a11y eval and every
+// WHY A BROWSER TIER AT ALL, given `just ci` already runs every
 // a11y unit spec. Those are SOURCE and JSDOM oracles: they prove an attribute is
 // written, a listener is attached, a class is emitted. They structurally cannot
 // answer "what does the accessibility tree actually look like once Chromium has
@@ -99,10 +98,10 @@ const PASSES_FLOOR_MENU = 20;
 // violation. On this client there is exactly one such rule, stable across runs:
 // `color-contrast`, on text whose background is the game canvas and therefore not
 // computable from the DOM. In the world state those are exactly #build-stamp and
-// #help-hint (client/index.html:124, :138) — and there is NO shipped contrast
+// #help-hint — and there is NO shipped contrast
 // oracle covering them: `evals/contrast-ratio.eval.mjs` and its
 // `baselines/contrast-unresolved.json` were specified but never landed, and remain
-// the open residual rb-14 (see ADR-0216, which records that they did not ship).
+// the open residual rb-14 (which records that they did not ship).
 // So these numbers have no upstream to agree with, which makes the ceiling MORE
 // load-bearing rather than less: until rb-14 lands, this is the only thing in the
 // repo that notices the undecidable set growing.
@@ -278,7 +277,7 @@ test.describe
     });
 
     // CT-src-render-world#canvas-aria: the live canvas carries the world-region ARIA that
-    // render/world.ts writes in init(), and #app itself carries no role (A11Y-08/A11Y-17).
+    // render/world.ts writes in init(), and #app itself carries no role.
     test('the live world canvas is an application region with the catalog name, and #app has no role', async () => {
       const canvas = page.locator('#app canvas');
       await expect(canvas).toHaveCount(1);

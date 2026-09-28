@@ -1,4 +1,4 @@
-// observability/attributes.ts — m20c (ADR-0180 body amendment), OBS-34/35.
+// observability/attributes.ts — OBS-34/35.
 //
 // The ONE place a datapoint attribute set is constructed. Contract (pinned by the sibling test):
 //   1. the key set is a SUBSET of ATTR_KEYS — never a superset, for any input;

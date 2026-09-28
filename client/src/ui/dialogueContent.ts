@@ -1,4 +1,4 @@
-// ui/dialogueContent.ts — static client-side dialogue bundle (M12d, ADR-0071).
+// ui/dialogueContent.ts — static client-side dialogue bundle.
 // Mirrors game-core/content/dialogue_trees/000-core.ron.
 // No imports from SpacetimeDB. No fetch. No dynamic RegExp construction.
 
@@ -26,7 +26,7 @@ export const DIALOGUE_TREES: ReadonlyMap<string, ClientDialogueTree> = new Map([
       ]),
     },
   ],
-  // uxd2 (ADR-0161 D4): the shopkeeper greeting mirror — one inert node with a
+  // The shopkeeper greeting mirror — one inert node with a
   // single conversation-ending Leave choice, matching the RON tree exactly.
   // The Shop affordance is derived from the server NpcInteraction enum in the
   // dialogue view model, NEVER from this content, so the tree stays a plain

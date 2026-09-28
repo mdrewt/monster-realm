@@ -1,24 +1,7 @@
 // ui/i18n/catalogParity.test.ts — the §5.3 parity gate: PARITY-01..04 (I18N-26/27/28) + the
-// per-locale plural-category shape + the `fr` runtime proof (m24-s7, ADR-0263).
+// per-locale plural-category shape + the `fr` runtime proof.
 //
-// SOURCE OF TRUTH:
-//   specs/monster-realm-v2/M24-internationalization.spec.md §5.3, §6 S7 [I18N-26/27/28].
-//   docs/adr/0263 (pending) D3/D4/D5/D8; ADR-0262 D5 (chrome.helpHint DEAD-KEY exemption).
-//   memory/projects/monster-realm-m24-s7-plan.md §2, §8 (review deltas R1-R8, BINDING).
-//
-// VEHICLE (ADR-0224/ADR-0257): the spec's own vocabulary implies a standalone
-// `evals/i18n-catalog-parity.eval.mjs`; that vehicle is retired, so the invariant ships as this
-// ordinary co-located vitest suite, same shape as `catalogShape.test.ts` (S6).
-//
-// RED REASON AT HEAD (m24-s7): `client/src/ui/i18n/catalog.fr.ts` DOES NOT EXIST YET and
-// `resolver.ts`'s `CATALOGS` registry is still `{ en: CATALOG_EN }` — NO static import of
-// `./catalog.fr` appears anywhere below (that would red the WHOLE file at collection instead of
-// the five tests the plan predicts). The registry-equality pin (`['en', 'fr']`) and
-// `CATALOGS.fr` reads below are what carry PARITY-01/PLURAL-01/FR-01/FR-02/FR-03 red until the
-// specialist ships both files. PARITY-02/03/04 reason about the EXISTING S1-S6 tree and are
-// GREEN on arrival (verified against the real `main.ts` + all 18 migrated view files).
-//
-// ZERO RegExp anywhere in this file (ADR-0055): every scan below is `String.indexOf` /
+// ZERO RegExp anywhere in this file: every scan below is `String.indexOf` /
 // `charCodeAt` / a hand-rolled char-class walk, same discipline as `catalogShape.test.ts`.
 //
 // Every BAD/GOOD/vacuity fixture is asserted EXACTLY ONCE — no gate-auditing-the-gate, no
@@ -35,7 +18,7 @@ import { stripComments } from '../../../test-util/stripComments';
 import { a11yCopy } from '../a11yCopy';
 import { CATALOG_EN } from './catalog.en';
 // NO import of './catalog.fr' — see the header. `CATALOGS`, `t`, `tf`, `setLocale`,
-// `currentLocale` are the resolver's public surface (ADR-0256 D1); `CATALOGS.fr` is read
+// `currentLocale` are the resolver's public surface; `CATALOGS.fr` is read
 // dynamically below, which is `undefined` at HEAD (Catalog | undefined via the index type).
 import { CATALOGS, currentLocale, setLocale, t, tf } from './resolver';
 
@@ -686,7 +669,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
         'or double-counts a line diverges from the real catalog roster',
     ).toBe(Object.keys(CATALOG_EN as Record<string, unknown>).length);
 
-    // WRONG IMPL KILLED: a registry that never widens past `{ en: CATALOG_EN }` — RED at HEAD.
+    // WRONG IMPL KILLED: a registry that never widens past `{ en: CATALOG_EN }`.
     expect(
       Object.keys(CATALOGS as Record<string, unknown>).sort(),
       'the registry must be exactly [en, fr] — S7 ships catalog.fr.ts AND registers it',
@@ -808,6 +791,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'chrome.status.disconnected',
       'chrome.status.exportBlocked',
       'chrome.status.healUnavailable',
+      'chrome.status.partyFull',
       'chrome.status.privacyOverlayBusy',
     ]);
     const a11yLiteralKeys = new Set(
@@ -832,7 +816,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       `DYNAMIC-KEY findings over the live tree (i18n binding): ${JSON.stringify(dynamicSites)}`,
     ).toEqual([]);
     // The a11y binding is M23's `t(key: string)` seam, and two of its sites are REGISTRY-DRIVEN by
-    // design (`OVERLAY_A11Y[id].labelKey`, ADR-0205) — a finding, never a skip: the roster below is
+    // design (`OVERLAY_A11Y[id].labelKey`) — a finding, never a skip: the roster below is
     // exact, so a THIRD dynamic a11y site (or a resolver-bound one) is a loud red, not a pass.
     expect(
       dynamicSites.filter((s) => endsWith(s, ':a11y.t')).sort(),
@@ -1071,8 +1055,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
   });
 
   it('m24s7 PLURAL-01: per-locale Intl.PluralRules category set matches the registry', () => {
-    // WRONG IMPL KILLED: a table whose key set never widens to match the registry — RED at HEAD
-    // (registry is still ['en'] only).
+    // WRONG IMPL KILLED: a table whose key set never widens to match the registry.
     expect(
       Object.keys(PLURAL_CATEGORIES).sort(),
       "the plural-category table's locale set must equal Object.keys(CATALOGS)",
@@ -1093,8 +1076,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     it("m24s7 FR-01: every fr closure reads exactly en's param fields, interpolates each, and >=100/112 values differ from en", () => {
       const en = CATALOG_EN as Record<string, unknown>;
       const fr = CATALOGS.fr as unknown as Record<string, unknown> | undefined;
-      // WRONG IMPL KILLED: CATALOGS.fr undefined (unregistered / missing catalog.fr.ts) — RED at
-      // HEAD. A plain property read below would throw with a less legible message; this assertion
+      // WRONG IMPL KILLED: CATALOGS.fr undefined (unregistered / missing catalog.fr.ts).
+      // A plain property read below would throw with a less legible message; this assertion
       // fails cleanly instead.
       expect(
         fr,

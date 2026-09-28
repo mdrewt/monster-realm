@@ -1,11 +1,11 @@
-// ui/leaderboardModel.ts — pure view model for the ranked leaderboard overlay (m17b, ADR-0120).
+// ui/leaderboardModel.ts — pure view model for the ranked leaderboard overlay.
 //
 // No DOM, no SDK, no side-effects. Never throws on any input — a throw
 // here would starve sibling store batch-listeners (store.ts one-way flow).
 //
 // The profile table is PUBLIC (world-readable leaderboard — RL-13) and this model
-// is a pure subscription view with NO write path (RL-15, ADR-0014).
-// Comparator (ADR-0120): a strict TOTAL order so ANY input order yields identical
+// is a pure subscription view with NO write path (RL-15).
+// Comparator: a strict TOTAL order so ANY input order yields identical
 // output — rating desc, then RAW name asc via code-unit ternary compare (never
 // localeCompare/Intl: locale collation is platform-dependent and non-deterministic),
 // then identity hex asc (the PK makes the order total). The '#<hex8>' fallback for

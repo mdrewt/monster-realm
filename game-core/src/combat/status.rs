@@ -1,4 +1,4 @@
-//! Status-effect pure rules — game-core layer (ADR-0003 SSOT).
+//! Status-effect pure rules — game-core layer.
 //!
 //! No I/O, no clock, no RNG. All variance is caller-supplied via [`StatusVariance`].
 //! The faint-cascade in [`apply_post_turn_effects`] mirrors the logic in
@@ -10,9 +10,6 @@ use super::types::{BattleEvent, BattleOutcome, BattleState, SideId};
 pub use super::types::StatusEffect;
 
 /// Tracks the per-slot status for both sides of a battle.
-///
-/// Kept separate from [`BattleState`] so m14a ships as a pure game-core module
-/// with no schema changes (SpacetimeType persistence wired in m14b).
 pub struct BattleStatusStore {
     pub side_a: Vec<Option<StatusEffect>>,
     pub side_b: Vec<Option<StatusEffect>>,
@@ -39,7 +36,7 @@ pub struct StatusVariance {
     pub freeze_thaw_roll_b: u8,
     /// Reserved: future probabilistic wake chance. Currently Sleep cures by
     /// turn-count in `tick_status`; field derived server-side so future wiring
-    /// is deterministic (ADR-0093, parallel to `TurnVariance::from_ctx_random`).
+    /// is deterministic (parallel to `TurnVariance::from_ctx_random`).
     pub sleep_wake_roll_a: u8,
     /// See `sleep_wake_roll_a`.
     pub sleep_wake_roll_b: u8,
@@ -269,8 +266,7 @@ pub fn apply_post_turn_effects(
 /// turn, so it may wake before being swapped back in. This is intentional: status
 /// expiry is time-based (turn-count), not participation-based. The consequence is
 /// that a player can bench-cycle a Sleeping monster across N turns to cure it without
-/// spending an Antidote-tier item — a design-accepted trade-off documented in
-/// ADR-0096 RT-BS-01 (deferred to a future rebalance slice).
+/// spending an Antidote-tier item — a design-accepted trade-off.
 pub fn tick_status(status: &mut BattleStatusStore, variance: &StatusVariance) -> Vec<BattleEvent> {
     let mut events = Vec::new();
 
@@ -339,24 +335,6 @@ fn tick_one_slot(
 // Tests: StatusVariance::from_ctx_random exact known-answer vectors
 // ---------------------------------------------------------------------------
 //
-// AC-M7: these tests kill the following 9 previously-surviving cargo-mutants
-// (line:col as reported by `cargo mutants -p game-core`):
-//
-//   // kills: game-core/src/combat/status.rs:60:20 replace ^ with | in StatusVariance::from_ctx_random
-//   // kills: game-core/src/combat/status.rs:60:20 replace ^ with & in StatusVariance::from_ctx_random
-//   // kills: game-core/src/combat/status.rs:60:25 replace >> with << in StatusVariance::from_ctx_random
-//   // kills: game-core/src/combat/status.rs:61:20 replace ^ with | in StatusVariance::from_ctx_random
-//   // kills: game-core/src/combat/status.rs:61:20 replace ^ with & in StatusVariance::from_ctx_random
-//   // kills: game-core/src/combat/status.rs:61:25 replace >> with << in StatusVariance::from_ctx_random
-//   // kills: game-core/src/combat/status.rs:62:16 replace ^ with | in StatusVariance::from_ctx_random
-//   // kills: game-core/src/combat/status.rs:62:16 replace ^ with & in StatusVariance::from_ctx_random
-//   // kills: game-core/src/combat/status.rs:62:21 replace >> with << in StatusVariance::from_ctx_random
-//
-// The function has 21 additional executable mutants (12 modulo mutations:
-// `% → /` and `% → +` at lines 66–71) that were already caught by
-// m14b_tests.rs range/determinism tests. The exact-value tests here also
-// kill those 12 modulo mutations as a side effect.
-//
 // The mutants change XOR→OR, XOR→AND, or >>→<< inside the splitmix64 mixing
 // steps (lines 60–62). Any such mutation changes the avalanche properties of
 // the mixing function, producing DIFFERENT concrete u32 outputs. Range-only
@@ -377,7 +355,7 @@ mod status_variance_exact_tests {
     /// Any mutation to the production code produces a different output from this reference,
     /// so the proptest comparing the two will fail.
     ///
-    /// Kills: all 9 bit-mixing mutants (XOR→OR, XOR→AND, >>→<< on lines 60–62).
+    /// Kills: all 9 bit-mixing mutants.
     ///
     /// Scope: this reference detects single-operator mutations applied by cargo-mutants to
     /// the production body. It cannot detect a wrong constant or shift amount that is
@@ -408,8 +386,8 @@ mod status_variance_exact_tests {
     // Exact known-answer tests for 6 fixed seeds
     //
     // These pin the concrete output of the correct splitmix64 mixing sequence.
-    // A mutant that replaces XOR with OR, XOR with AND, or >> with << on any
-    // of lines 60–62 produces different concrete u32 values before the % 100
+    // A mutant that replaces XOR with OR, XOR with AND, or >> with <<
+    // produces different concrete u32 values before the % 100
     // reduction, so at least one field will differ from these expected values.
     //
     // Expected values verified by running the reference derivation above.

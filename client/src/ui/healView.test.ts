@@ -156,7 +156,7 @@ afterEach(async () => {
 });
 
 // ---------------------------------------------------------------------------
-// m23-s3 — overlay a11y wiring on the render(vm | null) edge
+// Overlay a11y wiring on the render(vm | null) edge
 // ---------------------------------------------------------------------------
 
 describe('HealView — overlay a11y wiring on the render edge (m23-s3)', () => {
@@ -195,13 +195,13 @@ describe('HealView — overlay a11y wiring on the render edge (m23-s3)', () => {
     view.render(healVm());
 
     // NEGATIVE polarity. WRONG IMPL KILLED: a synchronous focus reintroduces the exact bug the
-    // defer exists to avoid (ui/overlayA11y.ts:9-15) — the letter that OPENED the overlay lands in
+    // defer exists to avoid — the letter that OPENED the overlay lands in
     // the field it just opened.
     expect(document.activeElement, 'the initial focus must NOT have landed synchronously').not.toBe(
       target,
     );
 
-    // The defer must come from the S1 helper, not from a view-local setTimeout (A11Y-15). This is
+    // The defer must come from the S1 helper, not from a view-local setTimeout. This is
     // the clause that reds a view which schedules its OWN focus and never calls the helper.
     expect(
       vi.mocked(openOverlayA11y),
@@ -216,7 +216,7 @@ describe('HealView — overlay a11y wiring on the render edge (m23-s3)', () => {
   });
 
   it('S3-healView-CLOSE-RESTORE BITES: hide() strips role, aria-modal AND aria-label from the root and hands focus back to the pre-overlay element', async () => {
-    // hide() is healView's PRODUCTION close (main.ts:1382, :364) — render(null) is unreachable for
+    // hide() is healView's PRODUCTION close — render(null) is unreachable for
     // this view in production (plan F4/F5), so the restore path is pinned through the path the app
     // actually takes.
     const root = mountHealOverlay();
@@ -235,7 +235,7 @@ describe('HealView — overlay a11y wiring on the render edge (m23-s3)', () => {
     view.hide();
 
     // VACUITY ATTACK V1, closed here: index.html ships role/aria-modal as STATIC LITERALS, so the
-    // only way they can be ABSENT is if closeOverlayA11y really ran (ui/overlayA11y.ts:142-144).
+    // only way they can be ABSENT is if closeOverlayA11y really ran.
     // This is the anti-vacuity partner of S3-healView-OPEN-ARIA and it kills the "rely on the
     // static literals, call nothing" cheat outright.
     expect(
@@ -249,8 +249,8 @@ describe('HealView — overlay a11y wiring on the render edge (m23-s3)', () => {
   });
 
   it('S3-healView-REPEAT-NO-REOPEN BITES: a repeat render(vm) at the SAME nullity neither re-opens nor yanks focus back', async () => {
-    // THE CRUX (plan F6): a re-open clears and re-schedules the deferred-focus timer
-    // (ui/overlayA11y.ts:100-113), so an unguarded delegation yanks focus off whatever the player
+    // THE CRUX (plan F6): a re-open clears and re-schedules the deferred-focus timer,
+    // so an unguarded delegation yanks focus off whatever the player
     // Tabbed to on every re-render and the overlay becomes untabbable. This failure mode is
     // INVISIBLE to every attribute assertion — a re-open rewrites byte-identical values.
     const root = mountHealOverlay();
@@ -356,7 +356,7 @@ describe('HealView — overlay a11y wiring on the render edge (m23-s3)', () => {
     // Half A — a GUARDED hide() would read `visible === false` and skip the close whenever a record
     // desynchronised from the DOM (S1's named A13 leak, ui/overlayA11y.ts:55-59), making a live
     // capture listener, a pending timer and a stale return target PERMANENT. Unguarded, hide()
-    // heals it, and close-without-open is a documented pure no-op (ui/overlayA11y.ts:136-137).
+    // heals it, and close-without-open is a documented pure no-op.
     mountHealOverlay();
     const view = new HealView();
     expect(view.visible, 'precondition: never opened').toBe(false);
@@ -374,7 +374,7 @@ describe('HealView — overlay a11y wiring on the render edge (m23-s3)', () => {
       'unguarded means unguarded: every hide() calls the close',
     ).toHaveBeenCalledTimes(2);
 
-    // Half B — the render(null) path is the one that MUST be guarded (A11Y-34).
+    // Half B — the render(null) path is the one that MUST be guarded.
     vi.clearAllMocks();
     view.render(healVm());
     view.render(null);
@@ -392,8 +392,7 @@ describe('HealView — overlay a11y wiring on the render edge (m23-s3)', () => {
 
 // ---------------------------------------------------------------------------
 // Pre-existing render behaviour — this file is the FIRST spec for healView, so the behaviour the S3
-// tests lean on (the list rebuild, the display flip) is pinned here rather than assumed. These
-// tests pass on master TODAY and must keep passing after the S3 wiring lands.
+// tests lean on (the list rebuild, the display flip) is pinned here rather than assumed.
 // ---------------------------------------------------------------------------
 
 describe('HealView render(): existing paint behaviour (pinned, not changed by m23-s3)', () => {

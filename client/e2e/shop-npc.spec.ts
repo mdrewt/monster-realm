@@ -7,7 +7,7 @@ import {
   test,
 } from '@playwright/test';
 
-// uxd2 — shop-via-NPC context-sensitive interact e2e (plan I8; ADR-0161).
+// shop-via-NPC context-sensitive interact e2e.
 //
 // WHAT THIS PROVES (AC-12, the end-to-end half of AC-1/2/5/6):
 //   1. dist 3 from the shopkeeper: #interact-prompt is HIDDEN and KeyT opens NOTHING.
@@ -19,24 +19,21 @@ import {
 //      #dialogue-overlay HIDDEN — the DEFERRED open (dismissDialogue round-trip, consumed
 //      in the dialogue batch listener's !conv arm), never two overlays at once.
 //
-// RED UNTIL uxd2 SHIPS. On master: there is no shopkeeper NPC in zone 1 at all (content
-// I3), no #interact-prompt element, and no [data-shop-id] button. The first failure is the
-// zone-1 walk finishing with a hidden prompt where the test demands a visible one; the
-// negative-case test at dist 3 is the one case that would pass vacuously today, which is
+// the negative-case test at dist 3 is the one case that would pass vacuously today, which is
 // exactly why it asserts a POSITIVE control first (the prompt must become visible one tile
 // later, in the sibling test) rather than standing alone.
 //
 // DESIGN NOTES
 // ============
 // SINGLE CONTEXT: nothing here needs a second player. One browser / one context / one page
-// (rename.spec.ts precedent). Under `workers: 1` (playwright.config.ts:30) this suite owns
+// (rename.spec.ts precedent). Under `workers: 1` this suite owns
 // the whole world, so presenceCount converges to exactly 1 (golden.spec exact-presence
 // discipline). A foreign player could not corrupt the assertions anyway — the resolver only
 // ranks npc rows and heal_location rows — but the convergence wait keeps a leaked session
 // from turning into a mysterious timeout later.
 //
 // NO RETRY LOOPS: the shopkeeper is seeded with wander_radius 0, and `npc_decide` treats
-// radius 0 as a pinned stationary special case (ADR-0161 D7). Unlike dialogue.spec.ts —
+// radius 0 as a pinned stationary special case. Unlike dialogue.spec.ts —
 // whose elder_oak wanders and therefore needs bounded talk/advance retry loops — every step
 // and every press here is deterministic. If this spec ever needs a retry loop, the
 // shopkeeper's wander_radius has regressed; fix the content, not the spec.
@@ -65,9 +62,9 @@ import {
 //   - elder_oak       : zone 0, home (5,5), wander_radius 2, interaction Dialogue.
 //                       IT NEVER ENTERS ZONE 1, so it cannot interfere with any assertion
 //                       made after the warp. (It is also why the zone-0 leg presses no key.)
-//   - tideglass_shopkeeper (uxd2 I3): zone 1, spawn/home (8,1), wander_radius 0 (STATIONARY),
+//   - tideglass_shopkeeper: zone 1, spawn/home (8,1), wander_radius 0 (STATIONARY),
 //                       dialogue_tree_id "shopkeeper_greeting", interaction Shop(1).
-// dialogue_trees/000-core.ron (uxd2 I3): shopkeeper_greeting = ONE node, text
+// dialogue_trees/000-core.ron: shopkeeper_greeting = ONE node, text
 //   "Hello, customer!", single choice ("Leave", next_node: None) — genuinely inert, so the
 //   Shop action can only come from the NpcInteraction enum, never from choice text.
 // heal_locations/000-core.ron: exactly ONE row — location 1, ZONE 0, (8,3). Zone 1 has NO
@@ -93,7 +90,7 @@ import {
 //                            wall — do not "simplify" this route.
 //     N -> (6,2)  floor   <- NEGATIVE CHECKPOINT: Manhattan to (8,1) = |8-6|+|1-2| = 3
 //     N -> (6,1)  floor   <- POSITIVE CHECKPOINT: Manhattan to (8,1) = |8-6|+|1-1| = 2
-//   The two checkpoints are ADJACENT tiles straddling CLIENT_INTERACT_RANGE = 2, which is
+//   The two checkpoints are ADJACENT tiles straddling TALK_RANGE = 2 (game-core), which is
 //   what makes the pair a real boundary test rather than two unrelated observations.
 
 interface Tile {
@@ -202,10 +199,10 @@ const ZONE1_TO_FAR: readonly string[] = [
   'North', // (6,2) — Manhattan 3 from the shopkeeper at (8,1)
 ];
 
-const FAR_TILE: Tile = { x: 6, y: 2 }; // dist 3 — OUT of CLIENT_INTERACT_RANGE
+const FAR_TILE: Tile = { x: 6, y: 2 }; // dist 3 — OUT of TALK_RANGE
 const NEAR_TILE: Tile = { x: 6, y: 1 }; // dist 2 — the inclusive boundary, IN range
 
-/** The seeded greeting text (dialogue_trees/000-core.ron, uxd2 I3). */
+/** The seeded greeting text (dialogue_trees/000-core.ron). */
 const GREETING = 'Hello, customer!';
 /** The seeded npc_id, which dialogueModel renders as the display name. */
 const SHOPKEEPER_NPC_ID = 'tideglass_shopkeeper';
@@ -303,8 +300,8 @@ test.describe
         .catch(() => false);
       expect(
         dialogueOpened,
-        'KeyT at Manhattan 3 must NOT open the dialogue overlay — CLIENT_INTERACT_RANGE is 2 ' +
-          'and the server re-validates at TALK_RANGE 2 (npc.rs:20)',
+        'KeyT at Manhattan 3 must NOT open the dialogue overlay — the client range (talk_range()) is 2 ' +
+          'and the server re-validates at TALK_RANGE 2',
       ).toBe(false);
 
       const shopOpened = await shop
@@ -338,11 +335,11 @@ test.describe
       const prompt = page.locator('#interact-prompt');
       await expect(
         prompt,
-        'an interactable at exactly CLIENT_INTERACT_RANGE must produce a prompt (inclusive <=)',
+        'an interactable at exactly TALK_RANGE must produce a prompt (inclusive <=)',
       ).toBeVisible({ timeout: 10_000 });
 
-      // The exact copy is the implementer's choice; the CONTRACT is that the label names the
-      // destination ("Shop", not "Talk") and the key that triggers it.
+      // the CONTRACT is that the label names the destination ("Shop", not "Talk") and the
+      // key that triggers it.
       await expect(
         prompt,
         'the prompt must name the DESTINATION — a shopkeeper reads "Shop" (AC-12), which is ' +
@@ -360,10 +357,9 @@ test.describe
     // greeting is the seeded inert tree, and the prompt is suppressed while the
     // overlay is up.
     //
-    // KILLS: a KeyT that opens the shop overlay directly for a Shop NPC (the spec's
-    // pre-adjudication default — Drew's answer is GREET-THEN-SHOP); a dispatch that
-    // targets the wrong NPC; a prompt with no overlay-visible suppression (AC-6),
-    // which would float "Shop / T" on top of the open dialogue.
+    // KILLS: a KeyT that opens the shop overlay directly for a Shop NPC;
+    // a dispatch that targets the wrong NPC; a prompt with no overlay-visible
+    // suppression (AC-6), which would float "Shop / T" on top of the open dialogue.
     // ---------------------------------------------------------------------------
     test('AC-1/2: KeyT opens the greeting "Hello, customer!" and suppresses the prompt (AC-6)', async () => {
       test.setTimeout(120_000);

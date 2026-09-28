@@ -1,6 +1,4 @@
-// net/connectionConfig.test.ts — RED tests for pt-a1-1: connection config resolver.
-//
-// SOURCE OF TRUTH: pt-a1 EARS criterion pt-a1-1
+// net/connectionConfig.test.ts — connection config resolver.
 //
 // EARS criterion:
 //   WHILE isDev===true: resolveConnectionConfig returns
@@ -10,10 +8,6 @@
 //     the dev-default 'monster-realm', THEN throws a descriptive Error (reject-not-clamp).
 //     OTHERWISE returns { uri: trimmedUri || 'ws://127.0.0.1:3000', db: trimmedDb }.
 //     The URI is NOT guarded — only the DB name is the corruption vector.
-//
-// RED REASON: `connectionConfig.ts` does not exist yet. Every import will fail with
-// "does not provide an export named ..." until the implementer creates
-// `client/src/net/connectionConfig.ts` exporting `resolveConnectionConfig`.
 //
 // WRONG IMPL KILLED (each test states which wrong impl it kills):
 //   [T1] A naive `?? default` that silently connects prod to the dev DB (no throw at all).
@@ -140,7 +134,7 @@ describe('resolveConnectionConfig: dev mode — never throws, applies dev defaul
 
   it('dev with explicit uri uses that uri, falls back db to default', () => {
     // WRONG IMPL KILLED: an impl that ignores explicit uri in dev mode.
-    // Intentional insecure localhost WebSocket dev/playtest fixture, not a production endpoint (ADR-0128).
+    // Intentional insecure localhost WebSocket dev/playtest fixture, not a production endpoint.
     // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
     expect(resolveConnectionConfig({ uri: 'ws://0.0.0.0:3000' }, true)).toEqual({
       // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
@@ -159,7 +153,7 @@ describe('resolveConnectionConfig: dev mode — never throws, applies dev defaul
 
   it('dev trims whitespace-padded uri and db', () => {
     // WRONG IMPL KILLED: a no-trim impl that returns raw strings in dev mode.
-    // Intentional insecure localhost WebSocket dev/playtest fixture, not a production endpoint (ADR-0128).
+    // Intentional insecure localhost WebSocket dev/playtest fixture, not a production endpoint.
     expect(
       // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
       resolveConnectionConfig({ uri: '  ws://local:3000  ', db: '  dev-realm  ' }, true),

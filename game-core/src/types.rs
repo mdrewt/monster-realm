@@ -1,7 +1,7 @@
 //! Shared movement value types — the cross-boundary contract (server table cols,
 //! the wasm/TS wire). They derive `serde` always (the wire round-trip) and
 //! `SpacetimeType` ONLY under the `spacetimedb` feature: `server-module` enables
-//! it, `client-wasm` must not (feature-isolation, ADR-0003).
+//! it, `client-wasm` must not (feature-isolation).
 //!
 //! Positions are **integer tiles** (`i32`) — no floats in the rule, so the native
 //! server path and the wasm client path cannot numerically diverge.
@@ -83,8 +83,8 @@ pub enum MoveInput {
     Jump,
 }
 
-/// A tile's kind. Grows with its milestone (`TallGrass` @ M8); the exhaustive
-/// `match` will then compiler-flag every site (OCP-inverted, per principles).
+/// A tile's kind. Grows with its milestone; the exhaustive
+/// `match` will then compiler-flag every site (OCP-inverted).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub enum TileKind {
@@ -118,13 +118,12 @@ impl TileKind {
     }
 }
 
-/// An NPC's interaction role (uxd2, ADR-0161): the server-anchored enum column
+/// An NPC's interaction role: the server-anchored enum column
 /// that drives the client's context-sensitive interact key. Payloads
 /// cross-reference the content registries — `Shop(shop_id)` → `ShopDef.id`,
 /// `Heal(location_id)` → `HealLocationDef.location_id` — validated by
 /// `content::validate_npc_interactions`. Grows with its milestone; the
-/// exhaustive `match` will then compiler-flag every site (OCP-inverted, per
-/// principles — the `TileKind` precedent above).
+/// exhaustive `match` will then compiler-flag every site (OCP-inverted
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub enum NpcInteraction {
@@ -260,7 +259,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: `dir_code`/`action_code` constant-replacement mutants and every
-    /// deleted `dir_from_code`/`action_from_code` match arm (9 survivors).
+    /// deleted `dir_from_code`/`action_from_code` match arm.
     #[test]
     fn flat_codes_are_exact_and_roundtrip() {
         use super::{

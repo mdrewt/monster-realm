@@ -1,11 +1,10 @@
-// ui/exportAssembly.test.ts — PRV1-11 / PRV1-12 / PRV1-13, the client half (M22 S8,
-// ADR-0231). Gates X5 / X6 / X8 of memory/projects/gates/m22-s8.gates.md.
+// ui/exportAssembly.test.ts — PRV1-11 / PRV1-12 / PRV1-13, the client half.
 //
 // EARS COVERED (spec specs/monster-realm-v2/M22-privacy-compliance.spec.md §5, §7.4)
 //   PRV1-11/12 — the export bundle the player downloads contains exactly the data the SERVER
 //                decided to export. `exportable` is a SERVER-side axis: `request_data_export`
 //                filters `DATA_LIFECYCLE_MANIFEST` on `entry.exportable`
-//                (server-module/src/privacy.rs:1496-1498) BEFORE any row is written, so a
+//                BEFORE any row is written, so a
 //                non-exportable table can never arrive as a chunk. The client surfaces what
 //                arrived and applies NO allowlist of its own — a client-side filter would be
 //                a second SSOT for PRV1-12.
@@ -14,34 +13,7 @@
 //                insert loop at :1519-1531); a per-table completeness check passes on real
 //                data by accident and fails only on the day it matters.
 //
-// RED REASON AT AUTHORING TIME: `client/src/ui/exportAssembly.ts` DOES NOT EXIST. The import
-// below fails to resolve, so every test in this file reds on a MISSING IMPLEMENTATION.
-//
-// THE CONTRACT THE IMPLEMENTER BUILDS (verbatim from the m22-s8 plan; the field TYPES are
-// pinned from client/src/module_bindings/my_export_bundle_table.ts):
-//
-//   export interface ExportChunkInput {
-//     readonly chunkId: bigint;      // u64
-//     readonly ownerIdentity: string;// the HEX string — s8b's converter does toHexString()
-//     readonly requestId: bigint;    // u64
-//     readonly tableName: string;
-//     readonly chunkIndex: number;   // u32 — REQUEST-WIDE, 0..totalChunks-1
-//     readonly totalChunks: number;  // u32 — the REQUEST's whole chunk count
-//     readonly payloadJson: string;  // verbatim server JSON
-//     readonly createdAtMs: bigint;  // i64
-//   }
-//   export type ExportAssemblyStatus = 'none' | 'incomplete' | 'inconsistent' | 'complete';
-//   export interface ExportAssembly {
-//     readonly status: ExportAssemblyStatus;
-//     readonly requestId: bigint | undefined;
-//     readonly receivedChunks: number;
-//     readonly totalChunks: number | undefined;
-//     readonly artifact: string | undefined;   // ONLY when 'complete'
-//   }
-//   export function assembleExportBundle(
-//     chunks: readonly ExportChunkInput[], ownerIdentity: string): ExportAssembly;
-//
-// ★ REPORTED FIELDS, resolved during this slice's test phase and authoritative here:
+// ★ REPORTED FIELDS:
 //   * `receivedChunks` counts the own-owner chunks OF THE SELECTED (newest) REQUEST — never
 //     the whole cache, never another owner's rows.
 //   * on `'inconsistent'`, `requestId` IS the selected request (selection precedes
@@ -118,7 +90,7 @@ function countOccurrences(src: string, needle: string): number {
 }
 
 // ===========================================================================
-// PRV1-13 — request-wide multi-chunk assembly. Gate X6.
+// request-wide multi-chunk assembly. Gate X6.
 // ===========================================================================
 
 describe('assembleExportBundle (PRV1-13): assembling one artifact from many chunks', () => {
@@ -130,7 +102,7 @@ describe('assembleExportBundle (PRV1-13): assembling one artifact from many chun
     // WRONG IMPLS KILLED:
     //   (a) splicing in input order — the payloads come out swapped.
     //   (b) `Number(requestId)` / an unquoted `request_id` — the server writes every 64-bit
-    //       integer as a QUOTED decimal (privacy.rs:113-127) and re-encoding reopens the 2^53
+    //       integer as a QUOTED decimal and re-encoding reopens the 2^53
     //       hole. The second assertion uses 2^53+1, the first value a JS number cannot hold.
     //   (c) a JSON.stringify round trip of the payloads — the payload would come back as a
     //       QUOTED STRING inside "chunks", not as embedded JSON.
@@ -355,8 +327,8 @@ describe('assembleExportBundle (PRV1-13): assembling one artifact from many chun
   });
 
   it('★★ BITES: chunks disagreeing on totalChunks, or an index outside the range, are inconsistent', () => {
-    // `total_chunks` is written once per request by the same insert loop
-    // (privacy.rs:1519-1531), so a disagreement means the client is looking at rows it cannot
+    // `total_chunks` is written once per request by the same insert loop,
+    // so a disagreement means the client is looking at rows it cannot
     // reconcile — reporting `incomplete` there would wait forever, and picking one of the two
     // values would invent an answer.
     const disagreeing = assembleExportBundle(
@@ -437,7 +409,7 @@ describe('assembleExportBundle (PRV1-13): assembling one artifact from many chun
 });
 
 // ===========================================================================
-// PRV1-11 / PRV1-12 — no client-side second SSOT. Gate X5.
+// No client-side second SSOT. Gate X5.
 // ===========================================================================
 
 describe('assembleExportBundle (PRV1-11/12): the client re-derives nothing', () => {

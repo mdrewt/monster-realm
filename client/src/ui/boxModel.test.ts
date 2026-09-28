@@ -1,7 +1,4 @@
 // Box/party pure model tests (M6c) — vitest.
-// SOURCE OF TRUTH: specs/monster-realm-v2/M6-box-party.spec.md
-//   + EG4-7/EG4-8 of specs/monster-realm-v2/M-evolution-essence-graph.spec.md
-//   + memory/projects/monster-realm-EG4-contract.md §B (store types), §D (boxModel), §G.
 // Tests the pure functions in ui/boxModel.ts, which has no SDK or PixiJS deps.
 // All inputs are plain objects; deterministic; node-only.
 //
@@ -12,15 +9,13 @@
 // spread-from-a-partial: a field that silently defaults is a field whose gate can never
 // be exercised here.
 //
-// RED-TEAM CORRECTION (D4): an earlier draft of this header called the above a "compile
-// gate". IT IS NOT ONE. `client/tsconfig.json` sets `"exclude": ["**/*.test.ts"]`, and
-// vitest strips types through esbuild without checking them — so NO type annotation in
-// ANY test file in this repo is ever verified. Do not rely on a test-file literal to
-// enforce a store-type change. The teeth that actually enforce EG4-7 are RUNTIME:
+// `just client-typecheck` checks this literal, but vitest strips types through esbuild
+// without checking them, so do not rely on a test-file literal to gate the test run on a
+// store-type change. The teeth that enforce EG4-7 at runtime are:
 // `store.test.ts`'s required-field list (`Object.keys` must contain the five new fields)
 // and `rowConvert.test.ts`'s `expect(keys).not.toContain('bond')` on the converter output.
 //
-// EG4-8: `MonsterCardViewModel.evolutionChoicePending` is TRUE iff the monster has 2+
+// `MonsterCardViewModel.evolutionChoicePending` is TRUE iff the monster has 2+
 // currently-eligible evolution paths — computed in the shared `toCard()` (contract A16),
 // so BOTH `buildPartyViewModel` and `buildBoxViewModel` carry it. The predicate MUST be
 // `eligibleEvolutionPaths` from evolutionModel.ts (contract A4 — no new file, no second
@@ -76,7 +71,7 @@ function monster(
     statSpAttack: 10,
     statSpDefense: 10,
     partySlot,
-    // EG4-7: the five fields Migration A added to MonsterPub. `bond` is gone.
+    // The five fields Migration A added to MonsterPub. `bond` is gone.
     tier: 0,
     essence: essence(),
     trustTier: 'Neutral',
@@ -320,7 +315,6 @@ describe('nextFreePartySlot: first unused slot 0–5', () => {
 
 describe('M8.5f PARTY SSOT: buildPartyViewModel threaded partySize param', () => {
   it('BITES: buildPartyViewModel with partySize=3 returns exactly 3 slots (param is live)', () => {
-    // RED: current impl hardcodes PARTY_SIZE=6, returns length=6 → toHaveLength(3) fails.
     // Kills: any impl that ignores the param and uses a hardcoded 6.
     const monsters = [monster(1n, 1, 0), monster(2n, 2, 1)];
     const speciesMap = new Map([
@@ -328,14 +322,13 @@ describe('M8.5f PARTY SSOT: buildPartyViewModel threaded partySize param', () =>
       [2, species(2)],
     ]);
     const party = buildPartyViewModel(monsters, speciesMap, 3);
-    expect(party).toHaveLength(3); // RED: current impl returns 6
+    expect(party).toHaveLength(3);
     expect(party[0]).not.toBeNull();
     expect(party[1]).not.toBeNull();
     expect(party[2]).toBeNull();
   });
 
   it('BITES: buildPartyViewModel with partySize=6 returns length 6 (canonical value, param-driven)', () => {
-    // GREEN even before fix (hardcoded 6 coincides) — this is the acceptance test.
     // Kept to confirm the param-driven path returns the right length when set to 6.
     const monsters = [monster(1n, 1, 0), monster(2n, 2, 1)];
     const speciesMap = new Map([
@@ -351,13 +344,10 @@ describe('M8.5f PARTY SSOT: buildPartyViewModel threaded partySize param', () =>
 
 describe('M8.5f PARTY SSOT: nextFreePartySlot threaded partySize param', () => {
   it('BITES: nextFreePartySlot with partySize=2 returns null when both slots filled', () => {
-    // RED: current impl hardcodes PARTY_SIZE=6, so with slots 0,1 taken it returns 2
-    // (slot 2 is free in a 6-slot party). But partySize=2 means those 2 slots are the
-    // entire party → should return null. Current impl returns 2 → toBeNull() fails.
     // Kills: any impl that ignores the param and uses a hardcoded 6.
     const monsters = [monster(1n, 1, 0), monster(2n, 1, 1)];
     const slot = nextFreePartySlot(monsters, 2);
-    expect(slot).toBeNull(); // RED: current impl returns 2
+    expect(slot).toBeNull();
   });
 
   it('BITES: nextFreePartySlot with partySize=6 returns 2 when slots 0,1 taken (param-driven)', () => {
@@ -371,16 +361,14 @@ describe('M8.5f PARTY SSOT: nextFreePartySlot threaded partySize param', () => {
 
 describe('M8.5f PARTY SSOT: buildBoxViewModel threaded partySlotNone param', () => {
   it('BITES: buildBoxViewModel with partySlotNone=99 filters on that sentinel (param is live)', () => {
-    // RED: current impl hardcodes BOX_SLOT=255. With the 99 sentinel, monster(2n,1,99)
-    // should be included, but current impl checks `partySlot === 255` → returns [] (length 0).
-    // toHaveLength(1) fails. Kills: re-hardcoding 255 in the impl.
+    // Kills: re-hardcoding 255 in the impl.
     const monsters = [
       monster(1n, 1, 255), // slot=255, excluded under partySlotNone=99
       monster(2n, 1, 99), // slot=99, included under partySlotNone=99
     ];
     const speciesMap = new Map([[1, species(1)]]);
     const box = buildBoxViewModel(monsters, speciesMap, 99);
-    expect(box).toHaveLength(1); // RED: current impl returns []
+    expect(box).toHaveLength(1);
     expect(box[0].monsterId).toBe(2n);
   });
 
@@ -399,7 +387,7 @@ describe('M8.5f PARTY SSOT: buildBoxViewModel threaded partySlotNone param', () 
 });
 
 // ===========================================================================
-// EG4-8 — the evolution-choice badge flag on MonsterCardViewModel
+// The evolution-choice badge flag on MonsterCardViewModel
 //
 // `evolutionChoicePending` is TRUE iff `eligibleEvolutionPaths(m, paths).length >= 2`
 // (contract §D). Two thresholds are wrong in opposite directions and both are killed
@@ -447,7 +435,7 @@ describe('EG4-8 evolutionChoicePending: 0/1/2/3 eligible → false/false/true/tr
 
   it('BITES: exactly 1 eligible path → false', () => {
     // Kills: `>= 1`. At exactly one eligible path the server has ALREADY auto-applied the
-    // evolution (EG2-11) — badging it tells the player to make a choice that does not
+    // evolution — badging it tells the player to make a choice that does not
     // exist, and EG4-8 says explicitly the single-path case needs no badge.
     expect(partyCard(monster(1n, 1, 0), eligibleEdges(1)).evolutionChoicePending).toBe(false);
   });
@@ -466,7 +454,7 @@ describe('EG4-8 evolutionChoicePending: 0/1/2/3 eligible → false/false/true/tr
   it('BITES: 3 paths of which exactly ONE is eligible → false', () => {
     // Kills: `paths.length >= 2` — a count of OUTGOING edges rather than of ELIGIBLE ones.
     // Every non-top-tier species will routinely have 2+ outgoing edges (up to 10 at full
-    // roster scale, EG1-4), so that mutant badges essentially the whole party permanently.
+    // roster scale), so that mutant badges essentially the whole party permanently.
     const m = monster(1n, 1, 0, { level: 10 });
     const paths = [
       evoPath({ edgeId: 1, toSpecies: 2, minLevel: 5 }), // eligible

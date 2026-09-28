@@ -1,4 +1,4 @@
-//! `observability` domain-submodule tests (m20a, ADR-0180 D6) — the pure
+//! `observability` domain-submodule tests — the pure
 //! `build_log_line` / heartbeat envelope, the reserved-key guard on the raw
 //! extra-fields fragment, and the D6 cross-language golden fixture.
 //!
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 // ===========================================================================
-// Behavioral half — the pure `build_log_line` envelope (ADR-0180 D6/D15).
+// Behavioral half — the pure `build_log_line` envelope.
 //
 // Emission contract, fixed deterministic order:
 //   {"evt":"<esc>",<extra_fields_json>,"cause":"<esc>",
@@ -21,7 +21,7 @@ use std::time::Duration;
 // `extra_fields_json` must not leave a dangling comma.
 // ===========================================================================
 
-/// The heartbeat envelope, byte for byte (OBS-1/OBS-4).
+/// The heartbeat envelope, byte for byte.
 ///
 /// Kills: an impl that emits the breadcrumb keys unconditionally (as `null`,
 /// or as empty strings), and one that reorders `evt` after the extra fragment.
@@ -168,7 +168,7 @@ fn build_log_line_escapes_every_breadcrumb_string() {
     );
 }
 
-/// `heartbeat_fields` renders exactly one unquoted numeric field (OBS-4).
+/// `heartbeat_fields` renders exactly one unquoted numeric field.
 ///
 /// Kills: an impl that quotes the version (breaks numeric comparison in the
 /// mismatch panel) or that adds a synthesized id alongside it.
@@ -260,7 +260,7 @@ fn legitimate_extra_fragment_does_not_panic() {
 }
 
 // ===========================================================================
-// m20e (T5) — D6 GOLDEN MIRROR. `ops/observability/relay/fixtures/breadcrumb-golden.json`
+// D6 GOLDEN MIRROR. `ops/observability/relay/fixtures/breadcrumb-golden.json`
 // is read by BOTH this file and `ops/observability/relay/parse.test.mjs`, and
 // the two consumers read DIFFERENT LAYERS of it (AM4). This side asserts only
 // `build_log_line(...) == expected_module_json`, byte for byte; it never looks
@@ -758,4 +758,71 @@ fn d6_golden_fixture_mirrors_build_log_line() {
         "D6 golden: {skipped} cases were skipped as JS-only; the committed split is \
          {GOLDEN_MODULE_CASES} module cases and the rest"
     );
+}
+
+// ===========================================================================
+// Native-host behaviour (debloat Phase 3 mutants triage): the heartbeat's
+// scheduler-only guard and its self-healing singleton arm, run as SHIPPED.
+// ===========================================================================
+
+/// `mr_heartbeat` is scheduler-only: a player and the all-zero identity are
+/// refused; the module identity is admitted.
+///
+/// kills: the reducer body replaced by `Ok(())`; the guard inverted.
+#[test]
+fn nh_mr_heartbeat_is_scheduler_only() {
+    use crate::native_host_tests::fixture;
+    use spacetimedb::{Identity, ScheduleAt, Timestamp};
+
+    let fx = fixture();
+    let module = Identity::from_byte_array([0x7E; 32]);
+    fx.set_database_identity(module);
+    let sched = || MrHeartbeatSchedule {
+        id: 1,
+        scheduled_at: ScheduleAt::Time(Timestamp::from_micros_since_unix_epoch(0)),
+    };
+    let beat = |who: Identity| fx.run_as(who, |ctx| mr_heartbeat(ctx, sched()));
+    for (label, caller) in [
+        ("a player", Identity::from_byte_array([0x11; 32])),
+        ("the all-zero identity", Identity::from_byte_array([0; 32])),
+    ] {
+        assert_eq!(
+            beat(caller),
+            Err("mr_heartbeat is scheduler-only".to_string()),
+            "{label} must be refused"
+        );
+    }
+    assert_eq!(beat(module), Ok(()), "the module identity is admitted");
+}
+
+/// `ensure_mr_heartbeat` arms exactly one 60 s interval row, stays at one on a
+/// repeat call, and collapses duplicates back to one.
+///
+/// kills: the arm replaced by a no-op.
+#[test]
+fn nh_ensure_mr_heartbeat_arms_one_interval_singleton() {
+    use crate::native_host_tests::fixture;
+    use spacetimedb::ScheduleAt;
+
+    let fx = fixture();
+    let rows = fx
+        .table_keyed::<MrHeartbeatSchedule, u64>("mr_heartbeat_schedule", "id", |r| r.id)
+        .writable()
+        .scannable()
+        .unique()
+        .auto_inc(|r| r.id, |r, v| r.id = v);
+    let interval = || ScheduleAt::Interval(MR_HEARTBEAT_INTERVAL.into());
+    let ctx = fx.ctx();
+    ensure_mr_heartbeat(&ctx);
+    let armed = rows.rows();
+    assert_eq!(armed.len(), 1, "one heartbeat row armed");
+    assert_eq!(armed[0].scheduled_at, interval());
+    ensure_mr_heartbeat(&ctx);
+    assert_eq!(rows.rows().len(), 1, "a repeat call keeps one row");
+    rows.seed(&MrHeartbeatSchedule {
+        id: 99,
+        scheduled_at: interval(),
+    });
+    ensure_mr_heartbeat(&ctx);
+    assert_eq!(rows.rows().len(), 1, "duplicates collapse to one");
 }

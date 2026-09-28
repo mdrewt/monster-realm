@@ -88,7 +88,7 @@ import { type TradeProposeCallbacks, TradeProposeView } from './tradeProposeView
 vi.mock('./overlayA11y', { spy: true });
 
 // ---------------------------------------------------------------------------
-// DOM mount helper — installs the index.html shell for tradeProposeView (ADR-0134 D1).
+// DOM mount helper — installs the index.html shell for tradeProposeView.
 // Each test gets a fresh DOM via beforeEach to prevent cross-test contamination.
 // The exact ids and data-testids are pinned from the ADR-0134 D1 contract.
 // ---------------------------------------------------------------------------
@@ -106,10 +106,10 @@ function mountTradeProposeOverlay(): {
   if (existing) existing.remove();
 
   // Exact shell from ADR-0134 D1 — stable ids + data-testids.
-  // m23-s3 FIXTURE FIDELITY (index.html:64): `role`/`aria-modal` have shipped as STATIC LITERALS
+  // m23-s3 FIXTURE FIDELITY: `role`/`aria-modal` have shipped as STATIC LITERALS
   // on this shell since m23-s2. They are copied here NOT to be asserted on their own — that is
   // vacuous, a view calling nothing passes — but so that "all three attributes ABSENT after close"
-  // is a real tooth: only closeOverlayA11y can remove them (ui/overlayA11y.ts:142-144). No
+  // is a real tooth: only closeOverlayA11y can remove them. No
   // `tabindex` is added: this overlay's OVERLAY_A11Y anchor is the #tradepropose-target <select>,
   // natively focusable, exactly as index.html:65 has it.
   document.body.innerHTML = `
@@ -163,21 +163,21 @@ async function flushPromises(): Promise<void> {
 
 // Default no-op callbacks.
 function noop(): TradeProposeCallbacks {
-  return { onSubmit: async (_args: TradeProposeArgs) => {} };
+  return { onSubmit: async (_args: TradeProposeArgs) => {}, maxMonstersPerSide: 64 };
 }
 
 // ---------------------------------------------------------------------------
-// m23-s3 — overlay a11y wiring on the show()/hide() edge.
+// Overlay a11y wiring on the show()/hide() edge.
 // Declared FIRST on purpose (see the file header): later describes call vi.restoreAllMocks().
 // ---------------------------------------------------------------------------
 
-/** m23-s3: one REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
+/** One REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
  *  and fake timers are banned for this defer (plan anti-pattern #10). */
 async function s3FlushMacrotask(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-// m23-s3: NEW file-level isolation hooks. They run BEFORE the describe-level
+// NEW file-level isolation hooks. They run BEFORE the describe-level
 // `mountTradeProposeOverlay` hooks below, so every test still gets the DOM it always got.
 beforeEach(async () => {
   for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
@@ -245,8 +245,8 @@ describe('TradeProposeView — overlay a11y wiring on the show/hide edge (m23-s3
 
     view.show();
 
-    // NEGATIVE polarity — a synchronous focus reintroduces the bug the defer exists to avoid
-    // (ui/overlayA11y.ts:9-15): the key that OPENED the overlay lands in what it just opened.
+    // NEGATIVE polarity — a synchronous focus reintroduces the bug the defer exists to avoid:
+    // the key that OPENED the overlay lands in what it just opened.
     expect(document.activeElement, 'the initial focus must NOT have landed synchronously').not.toBe(
       target,
     );
@@ -293,9 +293,7 @@ describe('TradeProposeView — overlay a11y wiring on the show/hide edge (m23-s3
   });
 
   it('S3-tradeProposeView-REPEAT-NO-REOPEN BITES: show() on an ALREADY-visible overlay neither re-opens nor yanks focus back', async () => {
-    // A re-open clears and re-schedules the deferred-focus timer (ui/overlayA11y.ts:100-113).
-    // On THIS view the focus half is red today for a second reason too: tradeProposeView.ts:124's
-    // own setTimeout fires on every show() and drags focus back to #tradepropose-target.
+    // A re-open clears and re-schedules the deferred-focus timer.
     const { overlay } = mountTradeProposeOverlay();
     const view = new TradeProposeView(noop());
 
@@ -338,10 +336,10 @@ describe('TradeProposeView — overlay a11y wiring on the show/hide edge (m23-s3
     // `visible === false` and SKIPS the close whenever a record ever desynchronised from the DOM
     // (S1's named A13 leak, ui/overlayA11y.ts:55-59) — making a live capture listener, a pending
     // timer and a stale return target PERMANENT. This view is in BATTLE_FORCE_HIDE
-    // (ui/overlayRegistry.ts:274-283) AND is force-hidden on reconnect, so main.ts drives its close
+    // AND is force-hidden on reconnect, so main.ts drives its close
     // through exactly the desync D2 cites — and it owns four focusable form controls, so a leaked
     // capture trap here is user-visible. Unguarded, hide() HEALS it, and a close with no record is
-    // a documented pure no-op (ui/overlayA11y.ts:136-137), so nothing is risked.
+    // a documented pure no-op, so nothing is risked.
     mountTradeProposeOverlay();
     const view = new TradeProposeView(noop());
     expect(view.visible, 'precondition: never opened').toBe(false);
@@ -454,7 +452,7 @@ describe('TradeProposeView visibility: show / hide / visible / toggle', () => {
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-8: render() — paints <select> options and monster checkboxes via textContent
+// render() — paints <select> options and monster checkboxes via textContent
 // ---------------------------------------------------------------------------
 
 describe('TradeProposeView PTC2-8: render() paints options and checkboxes via textContent', () => {
@@ -513,7 +511,7 @@ describe('TradeProposeView PTC2-8: render() paints options and checkboxes via te
   });
 
   it('BITES: each checkbox carries monsterId as value AND data-monster-id — kills missing-data-attr impl', () => {
-    // ADR-0134 D1: `<input type=checkbox>` carries monsterId in `value` AND `data-monster-id`.
+    // `<input type=checkbox>` carries monsterId in `value` AND `data-monster-id`.
     // WRONG IMPL KILLED: an impl that sets value but not data-monster-id (or vice versa) —
     // the e2e reads data-monster-id to assert the SPECIFIC monster transferred.
     const view = new TradeProposeView(noop());
@@ -526,7 +524,7 @@ describe('TradeProposeView PTC2-8: render() paints options and checkboxes via te
   });
 
   it('★ BITES (XSS): target name containing <script> is rendered as literal textContent — kills innerHTML impl', () => {
-    // ADR-0134 D6: "Player-controlled name/nickname → textContent/option.textContent/value ONLY,
+    // "Player-controlled name/nickname → textContent/option.textContent/value ONLY,
     // NEVER innerHTML (XSS firewall; the dynamic checkbox-label path is the risk site)."
     // WRONG IMPL KILLED: an impl that sets option.innerHTML = target.label — the
     // <script> tag would be parsed and executed in a browser context.
@@ -544,7 +542,7 @@ describe('TradeProposeView PTC2-8: render() paints options and checkboxes via te
   });
 
   it('★ BITES (XSS): monster nickname containing <script> is rendered as literal textContent — kills label-innerHTML impl', () => {
-    // ADR-0134 D6: the dynamic checkbox-label path is the specific risk site for XSS.
+    // The dynamic checkbox-label path is the specific risk site for XSS.
     // WRONG IMPL KILLED: `container.innerHTML += '<label>...' + monster.label + '...'`
     // PROOF-OF-TEETH: no <script> node in the monsters container after render.
     const xssNickname = '<script>alert("monster")</script>';
@@ -557,7 +555,7 @@ describe('TradeProposeView PTC2-8: render() paints options and checkboxes via te
   });
 
   it('BITES: render() sets submit disabled=true when no target selected (empty draft) — kills always-enabled impl', () => {
-    // ADR-0134 D6: "set submit disabled from a fresh buildProposeSubmission".
+    // "set submit disabled from a fresh buildProposeSubmission".
     // After render with no pre-selected target, the submit must be disabled.
     const view = new TradeProposeView(noop());
     view.render(makeLists([{ identity: '0xaaa1', label: 'Alice' }], []));
@@ -567,7 +565,7 @@ describe('TradeProposeView PTC2-8: render() paints options and checkboxes via te
   });
 
   it('BITES: render() rebuilds monster checkboxes on successive calls (stale-monster guard)', () => {
-    // ADR-0134 D6: "show() ... REBUILDS the monster-checkbox container from the current
+    // "show() ... REBUILDS the monster-checkbox container from the current
     // offerableMonsters (authoritative rebuild — a monster traded away since the last open
     // must not linger, red-team M-2)."
     // WRONG IMPL KILLED: an impl that appends rather than rebuilding — old monsters linger.
@@ -610,7 +608,7 @@ describe('TradeProposeView showFeedback()', () => {
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-9: stopPropagation on EVERY focusable (ADR-0134 D6)
+// stopPropagation on EVERY focusable
 // Proof-of-teeth: a keydown on each focusable MUST NOT reach window keydown listener.
 // ---------------------------------------------------------------------------
 
@@ -622,7 +620,7 @@ describe('★★ TradeProposeView PTC2-9: stopPropagation on every focusable —
   });
 
   it('★★ BITES: keydown on target <select> does NOT reach window — kills missing-stopProp impl (arrow bleed)', () => {
-    // ADR-0134 D6: "stopPropagation on the `keydown` of the target <select>".
+    // "stopPropagation on the `keydown` of the target <select>".
     // Red-team H-2: a focused <select> scrolled with arrows would otherwise walk the character.
     // WRONG IMPL KILLED: a view that doesn't call stopPropagation on the select's keydown.
     const view = new TradeProposeView(noop());
@@ -636,7 +634,7 @@ describe('★★ TradeProposeView PTC2-9: stopPropagation on every focusable —
   });
 
   it('★★ BITES: keydown on monster checkbox does NOT reach window — kills missing-stopProp impl', () => {
-    // ADR-0134 D6: stopPropagation on EACH monster checkbox.
+    // stopPropagation on EACH monster checkbox.
     // WRONG IMPL KILLED: impl that only stopPropagates the select but forgets checkboxes.
     const view = new TradeProposeView(noop());
     view.render(makeLists([], [{ monsterId: 5n, label: 'Sparky Lv.3' }]));
@@ -651,7 +649,7 @@ describe('★★ TradeProposeView PTC2-9: stopPropagation on every focusable —
   });
 
   it('★★ BITES: keydown on offer currency input does NOT reach window — kills missing-stopProp impl', () => {
-    // ADR-0134 D6: stopPropagation on BOTH currency inputs.
+    // stopPropagation on BOTH currency inputs.
     const view = new TradeProposeView(noop());
     view.show();
     const spy = vi.fn();
@@ -663,7 +661,7 @@ describe('★★ TradeProposeView PTC2-9: stopPropagation on every focusable —
   });
 
   it('★★ BITES: keydown on request currency input does NOT reach window — kills missing-stopProp impl', () => {
-    // ADR-0134 D6: stopPropagation on BOTH currency inputs.
+    // stopPropagation on BOTH currency inputs.
     const view = new TradeProposeView(noop());
     view.show();
     const spy = vi.fn();
@@ -675,7 +673,7 @@ describe('★★ TradeProposeView PTC2-9: stopPropagation on every focusable —
   });
 
   it('★★ BITES: keydown on submit button does NOT reach window — kills button-stopProp-missing impl', () => {
-    // ADR-0134 D6: stopPropagation on the submit <button>.
+    // stopPropagation on the submit <button>.
     // WRONG IMPL KILLED: impl that stopPropagates inputs but forgets the button —
     // tab-focus leaves button focused; then a hotkey keydown would bleed to window.
     const view = new TradeProposeView(noop());
@@ -690,7 +688,7 @@ describe('★★ TradeProposeView PTC2-9: stopPropagation on every focusable —
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-9: Enter and Escape local handling on currency inputs
+// Enter and Escape local handling on currency inputs
 // ---------------------------------------------------------------------------
 
 describe('TradeProposeView PTC2-9: Enter=submit / Escape=hide on currency inputs', () => {
@@ -721,7 +719,7 @@ describe('TradeProposeView PTC2-9: Enter=submit / Escape=hide on currency inputs
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-10: live submit-enable on input/change listeners
+// Live submit-enable on input/change listeners
 // ---------------------------------------------------------------------------
 
 describe('TradeProposeView PTC2-10: live submit-enable recomputes on input/change', () => {
@@ -732,7 +730,7 @@ describe('TradeProposeView PTC2-10: live submit-enable recomputes on input/chang
   });
 
   it('★ BITES: typing a valid offer currency enables submit when target is selected — kills static-disable impl', () => {
-    // ADR-0134 D6: "live submit-enable via input/change listeners recomputing buildProposeSubmission".
+    // "live submit-enable via input/change listeners recomputing buildProposeSubmission".
     // WRONG IMPL KILLED: a view whose submit-disabled state is only set by render() on open
     // (empty draft → disabled) and never re-evaluated as the user types.
     // Real browsers do not fire click on a disabled button, so the overlay would be unusable.
@@ -778,20 +776,42 @@ describe('TradeProposeView PTC2-10: live submit-enable recomputes on input/chang
     offerInput.dispatchEvent(new Event('input', { bubbles: true }));
     expect(btn.disabled, 'submit must be DISABLED when currency cleared and no monster').toBe(true);
   });
+
+  it('★ BITES: the view gates on the INJECTED maxMonstersPerSide — kills a view that drops the option', () => {
+    // main.ts injects game-core's cap (the max_trade_monsters_per_side() wasm export). With
+    // an injected cap of 1, a second ticked monster must veto submission. WRONG IMPL
+    // KILLED: a view passing a literal/undefined cap to buildProposeSubmission (a literal
+    // 64 keeps 2 monsters legal; `n <= undefined` is always false and disables row 1 too).
+    const view = new TradeProposeView({ ...noop(), maxMonstersPerSide: 1 });
+    view.render(
+      makeLists(
+        [{ identity: '0xaaa1', label: 'Alice' }],
+        [
+          { monsterId: 1n, label: 'One' },
+          { monsterId: 2n, label: 'Two' },
+        ],
+      ),
+    );
+    view.show();
+    const select = document.getElementById('tradepropose-target') as HTMLSelectElement;
+    const btn = document.getElementById('tradepropose-submit') as HTMLButtonElement;
+    const boxes = Array.from(
+      document.querySelectorAll('#tradepropose-monsters input[type="checkbox"]'),
+    ) as HTMLInputElement[];
+    select.value = '0xaaa1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    boxes[0].checked = true;
+    boxes[0].dispatchEvent(new Event('change', { bubbles: true }));
+    expect(btn.disabled, 'one monster is at the injected cap → enabled').toBe(false);
+    boxes[1].checked = true;
+    boxes[1].dispatchEvent(new Event('change', { bubbles: true }));
+    expect(btn.disabled, 'two monsters exceed the injected cap of 1 → disabled').toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-11: hide() resets draft/feedback/#pending
+// hide() resets draft/feedback/#pending
 //
-// CORRECTED 2026-08-24 (m23-s3): this banner used to say "show() deferred focus; hide() resets…".
-// show() no longer owns a deferred focus — ui/tradeProposeView.ts:124's
-// `setTimeout(() => this.#target.focus(), 0)` is DELETED by slice m23-s3 and the ONE defer now
-// lives in ui/overlayA11y.ts:111-113, scheduled by openOverlayA11y (M23 §2.2, A11Y-14/A11Y-15,
-// ADR-0205 D1/D2). No test in this describe ever asserted the old behaviour (plan F8), so nothing
-// below changed — only the prose was stale. The replacement contract is pinned by
-// S3-tradeProposeView-DEFER-FOCUS above and, repo-wide, by S3-NO-VIEW-LOCAL-FOCUS in
-// ui/renameView.test.ts. Net user-visible change (plan A13, verified): identical initial focus,
-// PLUS a Tab trap and return-focus restoration.
 // ---------------------------------------------------------------------------
 
 describe('TradeProposeView PTC2-11: hide() resets select, checkboxes, currencies, feedback, #pending', () => {
@@ -847,7 +867,7 @@ describe('TradeProposeView PTC2-11: hide() resets select, checkboxes, currencies
   });
 
   it('★ BITES: hide() while in-flight resets #pending lock — later submit fires again (dead-button guard, ADR-0085 C6)', async () => {
-    // ADR-0134 D6: "hide() ... releases the in-flight lock (#pending=false, submit re-enabled —
+    // "hide() ... releases the in-flight lock (#pending=false, submit re-enabled —
     // dead-button guard, ADR-0085 C6). [...] the SDK never settles an in-flight reducer promise
     // after a link drop — so .finally() may never run."
     // WRONG IMPL KILLED: a hide() that does not reset #pending — onReconnect/battle force-hide
@@ -863,7 +883,7 @@ describe('TradeProposeView PTC2-11: hide() resets select, checkboxes, currencies
           resolveFirst = res;
         }),
     );
-    const viewWithSubmit = new TradeProposeView({ onSubmit });
+    const viewWithSubmit = new TradeProposeView({ onSubmit, maxMonstersPerSide: 64 });
     viewWithSubmit.render(makeLists([{ identity: '0xaaa1', label: 'Alice' }], []));
     viewWithSubmit.show();
 
@@ -914,7 +934,7 @@ describe('TradeProposeView PTC2-11: hide() resets select, checkboxes, currencies
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-12: single #submit() #pending lock + finally-reset + catch
+// Single #submit() #pending lock + finally-reset + catch
 // ---------------------------------------------------------------------------
 
 describe('★ TradeProposeView PTC2-12: #pending lock — two rapid clicks → onSubmit called once', () => {
@@ -931,7 +951,7 @@ describe('★ TradeProposeView PTC2-12: #pending lock — two rapid clicks → o
       resolveFlight = res;
     });
     const onSubmit = vi.fn().mockReturnValue(flightPromise);
-    const view = new TradeProposeView({ onSubmit });
+    const view = new TradeProposeView({ onSubmit, maxMonstersPerSide: 64 });
     view.render(makeLists([{ identity: '0xaaa1', label: 'Alice' }], []));
     view.show();
 
@@ -960,7 +980,7 @@ describe('★ TradeProposeView PTC2-12: #pending lock — two rapid clicks → o
     // is skipped and the button stays disabled forever (ADR-0085 C6 dead-button antipattern).
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const onSubmit = vi.fn().mockRejectedValue(new Error('server rejected'));
-    const view = new TradeProposeView({ onSubmit });
+    const view = new TradeProposeView({ onSubmit, maxMonstersPerSide: 64 });
     view.render(makeLists([{ identity: '0xaaa1', label: 'Alice' }], []));
     view.show();
 
@@ -990,7 +1010,7 @@ describe('★ TradeProposeView PTC2-12: #pending lock — two rapid clicks → o
     // PROOF-OF-TEETH: if this test itself fails (vitest caught unhandled rejection), the
     // impl is missing the .catch(swallow) guard.
     const onSubmit = vi.fn().mockRejectedValue(new Error('network error'));
-    const view = new TradeProposeView({ onSubmit });
+    const view = new TradeProposeView({ onSubmit, maxMonstersPerSide: 64 });
     view.render(makeLists([{ identity: '0xaaa1', label: 'Alice' }], []));
     view.show();
 
@@ -1018,7 +1038,7 @@ describe('★ TradeProposeView PTC2-12: #pending lock — two rapid clicks → o
   it('BITES: submit is a no-op when canSubmit is false — onSubmit NOT called', async () => {
     // WRONG IMPL KILLED: an impl that calls onSubmit even when canSubmit=false (empty offer).
     const onSubmit = vi.fn().mockResolvedValue(undefined);
-    const view = new TradeProposeView({ onSubmit });
+    const view = new TradeProposeView({ onSubmit, maxMonstersPerSide: 64 });
     // Render with a target but empty draft → canSubmit=false
     view.render(makeLists([{ identity: '0xaaa1', label: 'Alice' }], []));
     view.show();

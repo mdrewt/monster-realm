@@ -1,17 +1,13 @@
-//! `observability` — server-module domain submodule (m20a, ADR-0180 D6/D15).
+//! `observability` — server-module domain submodule.
 //!
 //! Layer-1 observability: the ONE blessed structured-log emission point for new
 //! server code (`mr_log` / `mr_log_breadcrumb` over the pure `build_log_line`
 //! envelope builder) plus the 60s `mr_heartbeat` scheduled reducer — a
-//! write-free dead-man beat carrying the deployed `content_version`
-//! (OBS-1/OBS-3/OBS-4). Existing bare `log::` call sites are grandfathered by
-//! the OBS-2 ratchet (`.log-baseline`, gates G1/G7); every NEW emission routes
-//! through here. The heartbeat's scheduled `#[table]` lives HERE (not
-//! `schema.rs`) so the `scheduled(mr_heartbeat)` attribute reference resolves
-//! within the module (ADR-0056 / macro hygiene, the `movement.rs` precedent).
-//!
-//! This file name extends the canonical `touches:` vocabulary (ADR-0056) —
-//! keep it stable.
+//! write-free dead-man beat carrying the deployed `content_version`.
+//! Existing bare `log::` call sites are grandfathered by;
+//! every NEW emission routes through here. The heartbeat's scheduled `#[table]`
+//! lives HERE (not `schema.rs`) so the `scheduled(mr_heartbeat)` attribute
+//! reference resolves within the module.
 
 use crate::guards::json_escape;
 use crate::schema::config;
@@ -19,13 +15,11 @@ use spacetimedb::{ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
 
 /// Optional structured breadcrumbs appended to a log line by
-/// `mr_log_breadcrumb` (ADR-0180 D15). Every field defaults to absent.
+/// `mr_log_breadcrumb`. Every field defaults to absent.
 ///
 /// `phase` is one of the call-site literals `"enter"` / `"exit"` / `"event"`:
-/// m20e's G9 statically scans call sites for paired enter/exit literals, so
 /// the value must be spelled AT the call site, never rendered from an enum
-/// here. The trace-pair set is EMPTY in m20a — zero instrumented reducers;
-/// this is capability only (OBS-50/AM7).
+/// here.
 #[derive(Default)]
 pub(crate) struct Breadcrumb<'a> {
     /// A natural key already present in the domain (a zone id, a battle id)
@@ -73,7 +67,7 @@ pub(crate) fn mr_log(evt: &str, extra_fields_json: &str) {
     mr_log_breadcrumb(evt, extra_fields_json, Breadcrumb::default());
 }
 
-/// The single blessed emission point (ADR-0180 D6): build the envelope, hand
+/// The single blessed emission point: build the envelope, hand
 /// it to the host's log facade. AM6: the pre-rendered fragment must not
 /// smuggle a reserved structural key — downstream JSON parsing is
 /// last-key-wins, so a duplicate would silently forge the event type or a
@@ -88,19 +82,19 @@ pub(crate) fn mr_log_breadcrumb(evt: &str, extra_fields_json: &str, bc: Breadcru
     log::info!("{}", build_log_line(evt, extra_fields_json, bc));
 }
 
-/// The heartbeat's one field (OBS-4): the deployed content version, read from
+/// The heartbeat's one field: the deployed content version, read from
 /// the Config ROW (not the compile-time const) so the line answers "is the
 /// deployed data at the expected version". Unquoted numeric on purpose.
 pub(crate) fn heartbeat_fields(content_version: u32) -> String {
     format!("\"content_version\":{content_version}")
 }
 
-/// 60s: four Prometheus scrapes per beat at the 15s scrape interval (ADR-0180
-/// D2) gives the dead-man alert resolution without putting a write-free
+/// 60s: four Prometheus scrapes per beat at the 15s scrape interval
+/// gives the dead-man alert resolution without putting a write-free
 /// reducer on the scheduler every tick. Name mirrors `PLAYTEST_REAP_INTERVAL`.
 pub(crate) const MR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 
-// PRIVATE scheduled table colocated with its reducer (ADR-0056 exception).
+// PRIVATE scheduled table colocated with its reducer.
 #[spacetimedb::table(accessor = mr_heartbeat_schedule, scheduled(mr_heartbeat))]
 pub struct MrHeartbeatSchedule {
     #[primary_key]
@@ -109,7 +103,7 @@ pub struct MrHeartbeatSchedule {
     pub scheduled_at: ScheduleAt,
 }
 
-/// Scheduler-only, write-free dead-man beat (OBS-1/OBS-3). GUARD FIRST
+/// Scheduler-only, write-free dead-man beat. GUARD FIRST
 /// (`playtest_reaper` precedent); exactly one emission; never a row write.
 #[spacetimedb::reducer]
 pub fn mr_heartbeat(ctx: &ReducerContext, _sched: MrHeartbeatSchedule) -> Result<(), String> {

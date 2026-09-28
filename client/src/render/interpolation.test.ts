@@ -1,9 +1,9 @@
-// render/interpolation.ts behaviour suite (M4b, ADR-0013) — vitest.
+// render/interpolation.ts behaviour suite — vitest.
 // SOURCE OF TRUTH: M4-frontend.spec.md §3 "Rendering" + "Smoothness evals":
 // remote drawn at now - interpDelay between the two bracketing snapshots; HOLD
 // (never extrapolate) past the latest; "remote interpolation no jump > one tile
 // under sub-buffer jitter; a remote renderer WITHOUT the buffer fails the jitter
-// test" (proof-of-teeth, ADR-0010).
+// test" (proof-of-teeth).
 import { describe, expect, it } from 'vitest';
 import { type InterpSample, interpDelayMs, interpolate } from './interpolation';
 
@@ -15,7 +15,7 @@ const s = (tileX: number, tileY: number, receivedAt: number): InterpSample => ({
 
 describe('interpDelayMs: the buffer is sized in STEP_MS multiples (ADR-0013)', () => {
   it('renders remotes 1.0 STEP_MS in the past to absorb jitter without hold/jump (ADR-0013, M12.5d-1)', () => {
-    expect(interpDelayMs(200)).toBe(200); // 1.0 * 200 (M12.5d-1 fix: was 1.5)
+    expect(interpDelayMs(200)).toBe(200); // 1.0 * 200
     expect(interpDelayMs(100)).toBe(100); // 1.0 * 100
     expect(interpDelayMs(200)).toBeGreaterThan(0); // strictly in the past
   });
@@ -106,14 +106,9 @@ describe('interpolation proof-of-teeth (ADR-0010): the buffer is load-bearing', 
 });
 
 // =============================================================================
-// M12.5d-1: INTERP_DELAY_STEPS=1.0 — monotone positions under steady 200ms cadence
-// SOURCE OF TRUTH: M12.5d spec §1 "Smoothness: remote interpolation hold/jump fix"
+// INTERP_DELAY_STEPS=1.0 — monotone positions under steady 200ms cadence
 //
-// RED REASON (before impl): INTERP_DELAY_STEPS is currently 1.5, so interpDelayMs(200)
-// returns 300. With a 300ms delay and 200ms cadence, renderTime=now-300 falls BEFORE
-// the prev snapshot for 100ms after each latest arrival → 100ms hold → ramp to 50%
-// → new update → snap to new prev. Result: non-monotone position sequence (hold/jump).
-// After fix: INTERP_DELAY_STEPS=1.0 → delay=200ms matches cadence → monotone.
+// INTERP_DELAY_STEPS=1.0 → delay=200ms matches cadence → monotone.
 // =============================================================================
 
 describe('interpolation D1: INTERP_DELAY_STEPS=1.0 produces monotone positions under steady 200ms cadence', () => {
@@ -127,9 +122,6 @@ describe('interpolation D1: INTERP_DELAY_STEPS=1.0 produces monotone positions u
     // With INTERP_DELAY=200ms, renderTime=now-200.
     // We sample positions at client-now = 201, 300, 399, 400, 401, 500, 599, 600.
     // Expected: each sample's x-position >= previous (monotone, no holds or jumps).
-    //
-    // This test will be RED until INTERP_DELAY_STEPS changes to 1.0.
-    // (interpDelayMs(200) currently returns 300; after fix it returns 200.)
 
     const STEP_MS = 200;
     const delay = interpDelayMs(STEP_MS); // after fix: 200, currently 300
@@ -170,107 +162,21 @@ describe('interpolation D1: INTERP_DELAY_STEPS=1.0 produces monotone positions u
   });
 
   it('BITES (M12.5d-1): interpDelayMs(200) equals 1.0 * 200 = 200 after the fix', () => {
-    // This test is RED with the current code (returns 300 = 1.5*200).
-    // After fix: returns 200 = 1.0*200.
     expect(interpDelayMs(200)).toBe(200);
   });
 });
 
 // =============================================================================
 // M13.5e §5 e-5: Adaptive interpolation delay
-// SOURCE OF TRUTH: M13.5 §5 e-5 (EARS criterion)
 //
-// Three new exports are required from interpolation.ts:
-//   class JitterEstimator  — EWMA jitter estimator
+// Two exports from interpolation.ts:
 //   function adaptiveInterpDelayMs(jitterMs, stepMs) — returns adaptive delay
 //   function interpolateHistory(snapshots, renderTime) — interpolates over a
 //     history array (>2 snapshots) instead of just prev+latest pair
 //
-// RED REASON: none of these exports exist yet in interpolation.ts. All tests
-// below will fail with "does not provide an export named ..." until implemented.
 // =============================================================================
 
-import { adaptiveInterpDelayMs, interpolateHistory, JitterEstimator } from './interpolation';
-
-// ---------------------------------------------------------------------------
-// JitterEstimator: EWMA inter-arrival jitter measurement
-//
-// The estimator tracks the average deviation of actual inter-arrival intervals
-// from the expected step interval. Steady arrivals → jitterMs near 0.
-// Burst delivery (two snaps at same timestamp) → jitterMs grows significantly.
-//
-// Constructor: new JitterEstimator(alpha: number)
-//   alpha = EWMA smoothing factor (0 < alpha ≤ 1; lower = more smoothing)
-//
-// Method: update(intervalMs: number, stepMs: number): void
-//   intervalMs = actual ms between this arrival and previous arrival
-//   stepMs = expected server tick interval
-//
-// Property: jitterMs — current EWMA estimate of |deviation| from stepMs
-// ---------------------------------------------------------------------------
-describe('JitterEstimator e-5: EWMA jitter estimation', () => {
-  it('new estimator starts at jitterMs = 0', () => {
-    // Baseline: no arrivals observed → no jitter estimated.
-    // WRONG IMPL KILLED: an impl that initialises jitterMs to some nonzero sentinel.
-    const est = new JitterEstimator(0.125);
-    expect(est.jitterMs).toBe(0);
-  });
-
-  it('steady arrivals produce near-zero jitter estimate', () => {
-    // EARS: "steady arrivals → low jitter"
-    // Feed exactly stepMs-spaced arrivals — deviation is always 0 → EWMA stays 0.
-    // WRONG IMPL KILLED: an impl that accumulates total interval time as "jitter".
-    const est = new JitterEstimator(0.125);
-    const stepMs = 200;
-    est.update(200, stepMs); // deviation = |200-200| = 0
-    est.update(200, stepMs);
-    est.update(200, stepMs);
-    est.update(200, stepMs);
-    expect(est.jitterMs).toBeCloseTo(0, 1); // within 0.1ms of 0
-  });
-
-  it('single burst delivery (interval=0) produces detectable jitter', () => {
-    // A burst: second snapshot arrived 0ms after the first (same receivedAt).
-    // Deviation = |0 - 200| = 200ms. EWMA with alpha=0.5: after 2 updates:
-    //   update(200, 200) → ewma = 0.5*|0| + 0.5*0 = 0 (first: deviation=0 for first arrival baseline)
-    //   update(0, 200) → ewma = 0.5*200 + 0.5*0 = 100ms → jitterMs > 10
-    // WRONG IMPL KILLED: an impl that uses interval directly (not deviation from stepMs),
-    // which would give jitter=0 for steady arrivals but also 0 for the burst step.
-    const est = new JitterEstimator(0.5);
-    const stepMs = 200;
-    est.update(200, stepMs); // first arrival: baseline (deviation=0 or used to seed)
-    est.update(0, stepMs); // burst: arrived 0ms after previous → deviation = 200ms
-    expect(est.jitterMs).toBeGreaterThan(10); // must detect the burst
-  });
-
-  it('high alpha converges faster than low alpha', () => {
-    // Alpha controls EWMA smoothing. High alpha (0.9) reacts to new samples more
-    // aggressively than low alpha (0.1). After one burst sample both estimates
-    // increase, but high-alpha estimate is larger.
-    // WRONG IMPL KILLED: an impl that ignores alpha and uses a fixed smoothing factor.
-    const highAlpha = new JitterEstimator(0.9);
-    const lowAlpha = new JitterEstimator(0.1);
-    const stepMs = 200;
-    // Prime both with one normal arrival
-    highAlpha.update(200, stepMs);
-    lowAlpha.update(200, stepMs);
-    // Then one burst
-    highAlpha.update(0, stepMs);
-    lowAlpha.update(0, stepMs);
-    // High alpha should react more strongly (higher jitterMs estimate)
-    expect(highAlpha.jitterMs).toBeGreaterThan(lowAlpha.jitterMs);
-  });
-
-  it('jitterMs is always non-negative', () => {
-    // Jitter is an absolute deviation — it must never go negative.
-    // WRONG IMPL KILLED: an impl that computes signed deviation (can go negative).
-    const est = new JitterEstimator(0.5);
-    est.update(200, 200);
-    est.update(100, 200); // early arrival: interval < stepMs
-    est.update(300, 200); // late arrival: interval > stepMs
-    expect(est.jitterMs).toBeGreaterThanOrEqual(0);
-  });
-});
+import { adaptiveInterpDelayMs, interpolateHistory } from './interpolation';
 
 // ---------------------------------------------------------------------------
 // adaptiveInterpDelayMs: jitter-aware delay budget
@@ -443,11 +349,6 @@ describe('interpolateHistory e-5: multi-snapshot history interpolation', () => {
 // The jump is: renderTime=T-201 → clamps to prev (x=0); renderTime=T-200 → span=0
 // guard returns latest (x=2). Position jumps 2 tiles in one frame — not smooth.
 //
-// RED REASON: this test is EXPECTED TO PASS on the current implementation
-// (it documents the existing broken behaviour). It is a "proof-of-teeth" fixture:
-// it will REMAIN PASSING after the e-5 fix because it tests the OLD function's
-// behaviour, not the new one. But it gates that the old behaviour really is
-// non-smooth, so the "new scheme is smooth" tests are meaningful.
 // ---------------------------------------------------------------------------
 describe('e-5 PROOF-OF-TEETH: current fixed-delay scheme is non-smooth for two-tick burst', () => {
   it('BITES: two snapshots at same receivedAt cause position jump > 1 tile in one frame', () => {
@@ -487,8 +388,6 @@ describe('e-5 PROOF-OF-TEETH: current fixed-delay scheme is non-smooth for two-t
 // Using the new interpolateHistory + adaptiveInterpDelayMs, the same burst
 // scenario that breaks the two-snapshot scheme should produce monotone positions.
 //
-// RED REASON: interpolateHistory and adaptiveInterpDelayMs don't exist yet.
-// After implementation, this test must turn GREEN.
 // ---------------------------------------------------------------------------
 describe('e-5 adaptive scheme: monotone positions for two-tick burst (GREEN after fix)', () => {
   it('interpolateHistory with adaptive delay produces non-decreasing x positions for burst', () => {
@@ -527,28 +426,10 @@ describe('e-5 adaptive scheme: monotone positions for two-tick burst (GREEN afte
       expect(positions[i]).toBeGreaterThanOrEqual((positions[i - 1] ?? 0) - 0.01);
     }
   });
-
-  it('JitterEstimator + adaptiveInterpDelayMs integration: burst → delay increases', () => {
-    // Full pipeline test: feed a burst into JitterEstimator, then use its estimate
-    // to compute an adaptive delay that is larger than the base stepMs.
-    // RED REASON: all three new exports don't exist yet.
-    // WRONG IMPL KILLED: an impl where the estimator doesn't affect the delay.
-    const stepMs = 200;
-    const est = new JitterEstimator(0.5);
-
-    // Feed a normal arrival, then a burst
-    est.update(200, stepMs); // normal
-    est.update(0, stepMs); // burst: 0ms interval → high deviation
-
-    // The adaptive delay must be greater than the base when jitter is detected
-    const delay = adaptiveInterpDelayMs(est.jitterMs, stepMs);
-    expect(est.jitterMs).toBeGreaterThan(0); // estimator detected the jitter
-    expect(delay).toBeGreaterThan(stepMs); // delay adapted upward
-  });
 });
 
 // =============================================================================
-// 11r-f (ADR-0171) D2/D3/D5 — resume-from-idle re-anchored interpolation bracket
+// resume-from-idle re-anchored interpolation bracket
 //
 // SOURCE OF TRUTH: docs/adr/0171-resume-from-idle-interpolation.md (D2 re-anchor,
 // D3 API, D5 constants) + spec M-postgate-eleventh-review-residuals §11r-f EARS E1:
@@ -567,11 +448,7 @@ describe('e-5 adaptive scheme: monotone positions for two-tick burst (GREEN afte
 //   the raw span <= 0 guard are evaluated FIRST and are untouched; multi-bracket
 //   rings re-anchor PER BRACKET.
 //
-// RED REASON (before impl): `interpolateHistory` takes two parameters today, so the
-// third argument is silently ignored (vitest does not typecheck) and every
-// re-anchor expectation below resolves to the legacy whole-gap crawl — e.g. x=5.5
-// where the contract demands exactly x=5. The constant pin reds on
-// `undefined !== 2`. Cases (i), (vii-a), (H-C) and (H-D) are deliberately GREEN both
+// Cases (i), (vii-a), (H-C) and (H-D) are deliberately GREEN both
 // before and after the fix — they pin the legacy / steady-state / clamp behaviour the
 // implementation must NOT disturb (each says so in its own comment).
 // =============================================================================
@@ -628,7 +505,7 @@ describe('11r-f re-anchor (ADR-0171)', () => {
     // exactly-400 bracket would re-anchor to lower = 1400 - 200 = 1200, and
     // renderTime 1200 <= 1200 would HOLD at prev (x=0) instead of lerping to 0.5.
     // Exactly 2 x stepMs is ONE dropped tick — a legitimate two-step slide the
-    // adaptive delay is designed to bridge (ADR-0171 D2).
+    // adaptive delay is designed to bridge.
     const spanExactly400: readonly InterpSample[] = [s(0, 0, 1000), s(1, 0, 1400)];
     expect(interpolateHistory(spanExactly400, 1200, STEP_MS).x).toBe(0.5); // legacy midpoint
 
@@ -742,7 +619,7 @@ describe('11r-f re-anchor (ADR-0171)', () => {
     // "re-anchor" passes all of them while corrupting ordinary steady-state motion.
     // The re-anchor decision is a function of the bracket's SPAN ALONE — a bracket's
     // position in the ring must not enter it.
-    // Deliberately GREEN today and after the fix: it pins the untouched steady state.
+    // it pins the untouched steady state.
     const STEADY_RING: readonly InterpSample[] = [
       s(0, 0, 0),
       s(1, 0, 200),
@@ -764,14 +641,13 @@ describe('11r-f re-anchor (ADR-0171)', () => {
     // a = (800 - 1000)/200 = -1 and renders x = -1: a whole tile BEHIND the oldest
     // position ever observed. The outer clamp/HOLD paths are untouched by ADR-0171
     // (D2) and must be evaluated before any re-anchor logic.
-    // Deliberately GREEN today and after the fix.
     const RING: readonly InterpSample[] = [s(0, 0, 1000), s(1, 0, 1200)];
     expect(interpolateHistory(RING, 800, STEP_MS)).toEqual({ x: 0, y: 0 });
   });
 
   it('(vii-a) degenerate: stepMs <= 0 disables re-anchoring entirely (byte-legacy)', () => {
-    // Deliberately GREEN both before and after the fix — the "no stepMs ⇒ old math"
-    // regression property ADR-0171 D3 keeps the default parameter for.
+    // the "no stepMs ⇒ old math" regression property ADR-0171 D3 keeps the default
+    // parameter for.
     // WRONG IMPL KILLED: `stepMs !== undefined` / truthiness checks that treat a
     // negative or zero step as "enabled" (a caller passing a not-yet-known step_ms()
     // would silently get re-anchoring with a nonsense window).
@@ -825,9 +701,7 @@ describe('11r-f re-anchor (ADR-0171)', () => {
     // make the property arithmetically false rather than test anything.
     //
     // WRONG IMPL KILLED: a broad class — seam discontinuities, off-by-one window
-    // edges, span-dependent slide duration. Today it reds on the `xs[0] === 0`
-    // and transition-duration clauses (legacy math starts the walk mid-crawl at
-    // (G - D)/G, e.g. 0.958 for a 20 s gap).
+    // edges, span-dependent slide duration.
     fc.assert(
       fc.property(
         fc.double({ min: 0, max: 20000, noNaN: true, noDefaultInfinity: true }),
@@ -886,10 +760,7 @@ describe('11r-f re-anchor (ADR-0171)', () => {
   });
 
   it('(ix) PIN: REANCHOR_SPAN_STEPS is exported from interpolation.ts and equals 2 (ADR-0171 D5)', () => {
-    // Literal pin so an implementer cannot silently relax the threshold. Accessed
-    // off the module NAMESPACE rather than as a named import because the export does
-    // not exist yet: a missing named binding is an ESM link error that would abort
-    // collection of this entire FILE; property access reds as `undefined !== 2`.
+    // Literal pin so an implementer cannot silently relax the threshold.
     // The twin pin (JITTER_IDLE_GAP_STEPS === 3) lives in net/store.test.ts; ADR-0171
     // D5 keeps the two constants deliberately independent — do not unify them.
     expect((interpolationModule as unknown as Record<string, unknown>).REANCHOR_SPAN_STEPS).toBe(2);
@@ -899,21 +770,13 @@ describe('11r-f re-anchor (ADR-0171)', () => {
 import type { StoreCharacter } from '../net/store';
 
 // =============================================================================
-// m23-s7 — interpolateReducedMotion (A11Y-27)
+// interpolateReducedMotion
 //
 // SOURCE OF TRUTH: M23-accessibility.spec.md §2.5 — under the OS reduced-motion
 // preference a remote character is drawn AT its authoritative tile: no interpolation,
 // no delay buffer, no rounding, no clamping, no dependence on `now`. The function is
 // the pure half of that rule; renderResolver.test.ts §11 pins the call site.
 //
-// DELIBERATE DEVIATION from the tester brief (which asked for a named import):
-// `interpolateReducedMotion` does not exist yet, and in this repo a missing NAMED
-// binding is an ESM link error that takes the WHOLE FILE's collection down — the very
-// reason case (ix) above reaches for the module NAMESPACE instead (see the comment on
-// the `import * as interpolationModule` line). Going through that same namespace keeps
-// the ~40 pre-existing tests in this file GREEN during the red phase and reds each new
-// test below individually, on its own missing function, which is what a TDD red is
-// supposed to look like.
 // =============================================================================
 
 describe('m23-s7 interpolateReducedMotion (A11Y-27)', () => {

@@ -1,9 +1,8 @@
 import { expect, test } from '@playwright/test';
 
-// rb-20 (residual R-m23-s11-X11) — the browser-tier reduced-motion oracle.
-// ADR-0219.
+// the browser-tier reduced-motion oracle.
 //
-// SCOPE, STATED PLAINLY SO A LATER READER DOES NOT WIDEN IT (ADR-0219 D1). This
+// SCOPE, STATED PLAINLY SO A LATER READER DOES NOT WIDEN IT. This
 // tier covers the STYLESHEET arm of A11Y-27 — `client/src/styles.css:91-99`'s
 // `.hp-fill` transition, neutralised by `@media (prefers-reduced-motion: reduce)`
 // — and NOT the RENDERER arm.
@@ -14,18 +13,6 @@ import { expect, test } from '@playwright/test';
 // Its whole mechanism IS the browser's media-query engine, which is exactly
 // what happy-dom (`renderResolver.test.ts`) cannot model.
 //
-// The RENDERER arm was NOT gated here at rb-20, and MEASURED, could not be fixed
-// from that slice's `touches:`: the `resolver.resolve({ characters, ownEntityId,
-// predicted, snapped, now, currentZoneId })` call in `client/src/main.ts` passed
-// no `reduceMotion` key, so `renderResolver.ts`'s `reduceMotion = false`
-// parameter default applied on every frame of the shipped client, and
-// `motionPreferenceFromWindow` (`client/src/render/motionPreference.ts`) had
-// ZERO production importers.
-//
-// rb-38 added the renderer-arm PAIR below as a DISCLOSURE artifact — the correct
-// expectation, deliberately reding on master — because `client/src/main.ts` was
-// out of scope for rb-38 as it had been for rb-20.
-//
 // 17r-a WIRED IT. `client/src/main.ts` now constructs the preference once at
 // module scope and passes a live `reduceMotion` into that `resolve()` call, so
 // the pair below is an ORDINARY GREEN GATE and its known-defect guard is gone:
@@ -33,12 +20,12 @@ import { expect, test } from '@playwright/test';
 // project because the own slide clock takes its `snapTo` arm. DO NOT "fix" a
 // future red by editing either test to assert broken behaviour — that is
 // precisely the false green ADR-0219 exists to prevent. The EXACTLY-TWO-TESTS
-// accounting below (plan §6 finding 5) is scoped to the STYLESHEET arm only;
+// accounting below is scoped to the STYLESHEET arm only;
 // the renderer-arm pair is separate and additional.
 //
 // WHY THE BUILT-IN `page` FIXTURE, NOT `chromium.launch()` + `browser.newContext()`
 // (rb-19's shape in `a11y.spec.ts`, forced on it by `@axe-core/playwright`
-// refusing a directly-created page). MEASURED (ADR-0219 D5, plan §6 finding 5):
+// refusing a directly-created page). MEASURED:
 // under a manually-created, SHARED context, `emulateMedia` set in one test leaks
 // forward into every later test in the file — a live trap for the RM-7 follow-up
 // this same file is the landing spot for. The `page` fixture is the Playwright
@@ -47,15 +34,14 @@ import { expect, test } from '@playwright/test';
 // `test()` body a fresh context, so Test B's `emulateMedia` call cannot leak
 // into Test A or into any later file the same project collects.
 //
-// EXACTLY TWO TESTS (plan-review outcome, ADR-0219, plan §6 finding 5). An
-// earlier draft carried a third assertion pinning `matchMedia().media` against
-// the `REDUCED_MOTION_QUERY` string constant — cut, because that constant lives
-// on the DEFERRED renderer arm and is already triple-pinned elsewhere in the
-// unit suite, and the typo'd-prelude case it targeted
-// (`(prefers-reduced-motion)` with no `: reduce` value) is caught by the
-// two-polarity pair below anyway: Chromium treats that prelude as truthy in
-// BOTH polarities, so it would report the SAME `transitionDuration` in Test A
-// and Test B, and the mirror-image assertion in Test B would catch it.
+// EXACTLY TWO TESTS. An earlier draft carried a third assertion pinning
+// `matchMedia().media` against the `REDUCED_MOTION_QUERY` string constant — cut,
+// because that constant lives on the DEFERRED renderer arm and is already
+// triple-pinned elsewhere in the unit suite, and the typo'd-prelude case it
+// targeted (`(prefers-reduced-motion)` with no `: reduce` value) is caught by the
+// two-polarity pair below anyway: Chromium treats that prelude as truthy in BOTH
+// polarities, so it would report the SAME `transitionDuration` in Test A and Test
+// B, and the mirror-image assertion in Test B would catch it.
 
 test('the reduced-motion project config reaches Chromium, and the @media guard is evaluated', async ({
   page,
@@ -65,7 +51,7 @@ test('the reduced-motion project config reaches Chromium, and the @media guard i
   // `page.emulateMedia({ reducedMotion: 'reduce' })` here, it would stay green
   // even with `use: { contextOptions: { reducedMotion: 'reduce' } }` deleted
   // from `client/playwright.config.ts` entirely — which is to say it would gate
-  // nothing about the PROJECT CONFIG the residual asks for (ADR-0219 D3 / D5).
+  // nothing about the PROJECT CONFIG the residual asks for.
   await page.goto('/');
 
   // 1) THE END-TO-END CLAIM. This can only read `true` because Chromium was
@@ -91,7 +77,7 @@ test('the reduced-motion project config reaches Chromium, and the @media guard i
   // `.hp-fill` rule at all. Without this, a `'0s'` result in clause 3 below is
   // EXACTLY what "styles.css never loaded" also reports (the UA default
   // transition-duration is `0s`), so a bare `.hp-fill` assertion cannot tell
-  // "the guard fired" from "nothing loaded". `.sr-only` (styles.css:57-67) has
+  // "the guard fired" from "nothing loaded". `.sr-only` has
   // no relationship to motion; its `position: absolute` applies
   // UNCONDITIONALLY, so this proves the <link> resolved and its rules apply at
   // all, independent of anything reduced-motion related.
@@ -142,7 +128,7 @@ test('the reduced-motion project config reaches Chromium, and the @media guard i
 test('with the preference off, the same rule animates (the guard is conditional, not blanket)', async ({
   page,
 }) => {
-  // The mirror image (ADR-0219 D3 / plan §2.3 T3). This flips the OS preference
+  // The mirror image. This flips the OS preference
   // for THIS test's own, freshly-created context only — it cannot contaminate
   // the previous test, because the built-in `page` fixture gives every test() a
   // new context (see the file header: a shared `browser.newContext()`
@@ -170,9 +156,9 @@ test('with the preference off, the same rule animates (the guard is conditional,
     return value;
   });
   // THIS is the assertion the first test's clause 3 alone cannot substitute
-  // for (ADR-0219 D3 / plan §2.3 T3). A '0s' result here — with the OS
-  // preference explicitly OFF — is exactly what EACH of these wrong
-  // implementations would also report on the FIRST test alone:
+  // for. A '0s' result here — with the OS preference explicitly OFF — is
+  // exactly what EACH of these wrong implementations would also report on the
+  // FIRST test alone:
   //   * a stylesheet that never loaded (UA default transition-duration is 0s)
   //   * `transition: none` written on `.hp-fill` UNCONDITIONALLY, outside any
   //     @media block at all
@@ -193,13 +179,8 @@ test('with the preference off, the same rule animates (the guard is conditional,
 });
 
 // ============================================================================
-// rb-38 — THE RENDERER ARM (A11Y-27, EARS gate E1), CLOSED BY 17r-a. Read the
+// THE RENDERER ARM (EARS gate E1), CLOSED BY 17r-a. Read the
 // file header above FIRST — in particular the RENDERER ARM note it now carries.
-//
-// THIS PAIR IS NOW A GREEN GATE. It shipped at rb-38 as a known-defect disclosure
-// because `client/src/main.ts` was out of that slice's scope and the wiring could
-// not land there. 17r-a landed it, so both tests below are ordinary hard gates and
-// the reduce-polarity one asserts `sawFractionalOwnMotion === false` directly.
 //
 // THE THREE IDIOMS CONSIDERED AT rb-38, AND WHY THE NARROW GUARD WON THEN — kept
 // because the reasoning still governs any FUTURE known-defect disclosure in this
@@ -225,7 +206,7 @@ test('with the preference off, the same rule animates (the guard is conditional,
 //
 // DO NOT "fix" a future red here by asserting the broken behaviour (`.toBe(true)`).
 // That would cement the bug and is exactly the false green ADR-0219 exists to
-// prevent. The rb-38 E1 ledger gate is MET as of 17r-a.
+// prevent.
 //
 // KNOWN LIMIT OF THE ALARM, STATED SO IT IS NOT MISTAKEN FOR COVERAGE (rb-38
 // red-team finding 2, MEASURED). The alarm watches the OWN-entity render path
@@ -241,17 +222,14 @@ test('with the preference off, the same rule animates (the guard is conditional,
 // its "Sticky DEV latch" comment, exposed through the `window.__game()` snapshot,
 // and set by the frame loop under its "Sticky latch" comment the first time the own
 // character's RESOLVED render position is not an integer tile. (Landmarks, not line
-// numbers: rb-36 retargeted seven citations that a single main.ts edit had drifted,
-// and 17r-a's own diff moves every line below its insertion points.) Only the own slide clock's `positionAt`
-// (`client/src/render/slideClock.ts:42-48`) can produce a fractional value on
-// that path — the predicted tile fed into `RenderResolver.resolve` is always an
-// integer — so a `true` reading can ONLY have come from an in-flight slide
-// interpolation frame. `renderResolver.ts:106-116` documents the exact
-// mechanism this pins: `reduceMotion` forces `snapTo(tile, now)` EVERY frame,
-// which sets `origin === target === tile`, so `positionAt` can never return a
-// fractional value while it is honoured. The observable is a direct,
-// load-bearing proxy for "did the renderer actually snap under reduced
-// motion" — not an incidental side effect of something else.
+// numbers. Only the own slide clock's `positionAt` (`client/src/render/slideClock.ts:42-48`) can
+// produce a fractional value on that path — the predicted tile fed into `RenderResolver.resolve` is
+// always an integer — so a `true` reading can ONLY have come from an in-flight slide interpolation
+// frame. `renderResolver.ts:106-116` documents the exact mechanism this pins: `reduceMotion` forces
+// `snapTo(tile, now)` EVERY frame, which sets `origin === target === tile`, so `positionAt` can
+// never return a fractional value while it is honoured. The observable is a direct, load-bearing
+// proxy for "did the renderer actually snap under reduced motion" — not an incidental side effect
+// of something else.
 //
 // WHY `__game().step(dir)` AND NOT SYNTHETIC KEYBOARD (contrast with
 // `movement-input.spec.ts`'s header, which explains why THAT file must use
@@ -382,15 +360,12 @@ async function rendererArmStepEastAndSettle(
   await p.waitForTimeout(Math.round(stepMs * 1.5));
 }
 
-// BUG-a11y-renderer-arm-stale-known-defect: this test used to be titled "KNOWN DEFECT —
-// guarded". The defect was fixed in 17r-a and the title pin died with the a11y-e2e recipe,
-// so the title now states what the test actually proves.
 test('RENDERER ARM (E1): under the reduced-motion project, the own character NEVER renders a fractional sub-tile position', async ({
   page,
 }) => {
   // NO emulateMedia call anywhere in this test — same load-bearing absence, and
   // for the identical reason, as the file's first stylesheet-arm test above
-  // (design constraint 1, rb-38): the ENTIRE end-to-end claim rests on the
+  // (design constraint 1): the ENTIRE end-to-end claim rests on the
   // `reduced-motion` Playwright PROJECT (`client/playwright.config.ts`,
   // `use.contextOptions.reducedMotion: 'reduce'`) reaching the renderer, not on
   // anything this test body does. Calling `emulateMedia('reduce')` here would
@@ -463,20 +438,13 @@ test('RENDERER ARM (E1): under the reduced-motion project, the own character NEV
   // WRONG IMPLEMENTATIONS THIS ASSERTION KILLS: (a) reading
   // `motionPreferenceFromWindow()` only ONCE at startup instead of per-frame — NOT
   // detectable by THIS assertion, and deliberately covered instead by the RM17A-LIVE
-  // tooth in `client/src/main.reducedMotionWiring.test.ts` (17r-a); (b) wiring a value that
+  // tooth in `client/src/main.reducedMotionWiring.test.ts`; (b) wiring a value that
   // never actually reaches the `reduceMotion` key of the resolve() call args
-  // (e.g. computed but unused) — this assertion stays red, identically to
-  // today; (c) any wiring that supplies `reduceMotion` correctly for the
-  // remote-character branch (renderResolver.ts:125-153) while leaving the
-  // OWN-entity branch (renderResolver.ts:93-124) on the `false` default — the
-  // remote branch never touches this own-only latch, so a remote-only fix
-  // leaves this exact assertion red.
-  // 17r-a RETIRED THE KNOWN-DEFECT GUARD. rb-38 wrapped the assertion below in a narrow
-  // try/catch whose entire purpose was to flip RED the moment the wiring landed, and to
-  // instruct whoever landed it to come back and delete the guard. 17r-a is that slice:
-  // `client/src/main.ts` now constructs the preference once at module scope and threads a
-  // live `reduceMotion` into the render loop's `resolve()` call. So this is an ORDINARY
-  // HARD GATE again, exactly like every assertion above it.
+  // (e.g. computed but unused) — this assertion stays red;
+  // (c) any wiring that supplies `reduceMotion` correctly for the
+  // remote-character branch while leaving the OWN-entity branch on the `false` default —
+  // the remote branch never touches this own-only latch, so a remote-only fix leaves this
+  // exact assertion red.
   //
   // Do NOT reintroduce the guard, and do NOT invert this assertion to accept fractional
   // motion — `false` is the correct value and a `true` reading is a real regression. If a
@@ -504,8 +472,8 @@ test('RENDERER ARM mirror image: with the OS preference OFF, the own character D
 }) => {
   // Mirrors the file's second stylesheet-arm test: flips the OS preference for
   // THIS test's own fresh context only (page-fixture isolation — see the file
-  // header's WHY-THE-BUILT-IN-page-FIXTURE note). This is design constraint 2
-  // (rb-38): without this half of the pair, an "always snapped" implementation
+  // header's WHY-THE-BUILT-IN-page-FIXTURE note). This is design constraint 2:
+  // without this half of the pair, an "always snapped" implementation
   // — one that ignores the preference entirely and simply never glides the own
   // character — would pass the reduce-polarity test above for the wrong
   // reason, and nothing in this file would be able to tell the two apart.
@@ -551,7 +519,7 @@ test('RENDERER ARM mirror image: with the OS preference OFF, the own character D
       `character to x=${t0.x + 1}; observed x=${after.ownAuthTile?.x}`,
   ).toBe(t0.x + 1);
 
-  // THE MIRROR-IMAGE ASSERTION (design constraint 2, rb-38). This is the ONLY
+  // THE MIRROR-IMAGE ASSERTION (design constraint 2). This is the ONLY
   // thing in this pair that tells "the renderer genuinely reads and honours
   // the OS preference" apart from "the renderer ALWAYS snaps, unconditionally,
   // and reduced motion happens to never matter" — a wrong implementation that

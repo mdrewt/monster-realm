@@ -1,7 +1,7 @@
 //! Dialogue data model — serde-ready, SpacetimeType-free (M12b adds derives).
 //!
 //! All types derive `Debug`, `Clone`, `PartialEq`, `Eq`, `Serialize`,
-//! `Deserialize`. No `SpacetimeType` here — that is M12b's job (ADR-0068).
+//! `Deserialize`. No `SpacetimeType` here — that is M12b's job.
 
 use std::collections::BTreeSet;
 

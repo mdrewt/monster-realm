@@ -1,35 +1,30 @@
-//! `pvp` — server-module domain submodule (M16, ADR-0109).
+//! `pvp` — server-module domain submodule.
 //!
 //! PvP battle orchestration: challenge handshake, secret-pick submission,
 //! both-submit resolution via the existing symmetric `resolve_full_turn`, and
 //! liveness (turn-deadline scheduled reaper + forfeit-on-disconnect).
 //! Challenge liveness: a scheduled TTL reaper deletes Pending challenges older
-//! than `CHALLENGE_TTL_MS` (17.5e-1, ADR-0126); every challenge-deletion path
+//! than `CHALLENGE_TTL_MS`; every challenge-deletion path
 //! disarms its schedule row.
 //!
-//! Design invariants (ADR-0109):
+//! Design invariants:
 //! - `battle_action` is PRIVATE (must-never-leak). Clients detect turn resolution
 //!   by watching `battle.state.turn_number` increment on their own rows of the
-//!   participant-scoped `my_battle` view (ADR-0198; `battle` itself is private).
-//! - `start_battle` (the public reducer) retains its ADR-0048 provenance guard.
+//!   participant-scoped `my_battle` view (`battle` itself is private).
+//! - `start_battle` (the public reducer) retains.
 //!   PvP battles are created by the internal `start_pvp_battle` helper, never
 //!   by routing through `start_battle`.
 //! - Forfeit maps to the existing `SideAWins`/`SideBWins` outcomes; no new
-//!   `BattleOutcome` variant is added (BSATN stability, ADR-0006).
+//!   `BattleOutcome` variant is added (BSATN stability).
 //! - `PvpDeadlineSchedule` is colocated here (not in schema.rs) per the
-//!   `scheduled(pvp_deadline_reaper)` cohabitation rule (ADR-0056 exception,
-//!   same discipline as `movement_tick_schedule` in movement.rs).
+//!   `scheduled(pvp_deadline_reaper)` cohabitation rule.
 //! - `settle_pvp_battle` is the single decisive-commit funnel: every terminal
 //!   PvP outcome (both-submit, deadline forfeit, disconnect forfeit) commits
-//!   through it, and it is the ONLY caller of `ranking::apply_pvp_rating`
-//!   (ADR-0119 D3, amends ADR-0109 — exactly-once rating by construction).
+//!   through it, and it is the ONLY caller of `ranking::apply_pvp_rating`.
 //!   One named exception: the deletion cascade's forced-terminal fallback
-//!   (`battle::anonymize_battles`, ADR-0274) commits `SideAWins`/`SideBWins`
+//!   (`battle::anonymize_battles`) commits `SideAWins`/`SideBWins`
 //!   outside this funnel, without rating, HP, XP, currency or evolution
 //!   write-back and without the `battle_action` sweep.
-//!
-//! This file name is part of the canonical `touches:` vocabulary fixed by
-//! ADR-0056 — keep it stable.
 
 use crate::battle::write_back_battle_results;
 use crate::content_cache::cached_skills;
@@ -37,11 +32,12 @@ use crate::guards::{
     check_monster_in_party, check_party_size, is_in_ongoing_battle, log_reject,
     reject_if_monster_in_trade, require_pvp_participant,
 };
-use crate::marshal::{battle_monster_from_row, build_ability_store, now_ms, pub_from_monster};
+use crate::marshal::{battle_monster_from_row, build_ability_store, now_ms};
+use crate::monster_mgmt::update_monster_synced;
 use crate::ranking;
 use crate::schema::{
-    battle, battle_action, battle_challenge, monster, monster_pub, player, skill_row, species_row,
-    trade_offer, Battle, BattleAction, BattleChallenge, ChallengeStatus, SkillRow,
+    battle, battle_action, battle_challenge, monster, player, skill_row, species_row, trade_offer,
+    Battle, BattleAction, BattleChallenge, ChallengeStatus, SkillRow,
 };
 use crate::WILD_IDENTITY;
 use game_core::{
@@ -56,29 +52,25 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 const PVP_TURN_DEADLINE_MS: i64 = 60_000;
 
 // ===========================================================================
-// Ranked account gate (14r-g, ADR-0189, issue #307)
+// Ranked account gate
 // ===========================================================================
 
 /// The exact fail-closed placeholder committed in `accounts::ALLOWED_ISSUERS`
-/// (SSOT: accounts.rs, ADR-0182 D18 hard sequencing gate). Assembled with the
-/// same `concat!` split so this file's source text carries no contiguous
-/// scheme slashes (server-module source-scan hazard). If this value ever
-/// drifts from accounts.rs, `ranked_enforcement_active()` flips true and the
-/// EA-RA-06a canary reds loudly — drift cannot be silent.
-const RANKED_PLACEHOLDER_ISSUER: &str = concat!("https:/", "/auth.monster-realm.invalid/");
+/// (SSOT: accounts.rs). If this value ever drifts from accounts.rs,
+/// `ranked_enforcement_active()` flips true and the EA-RA-06a canary reds
+/// loudly — drift cannot be silent.
+const RANKED_PLACEHOLDER_ISSUER: &str = "https://auth.monster-realm.invalid/";
 
-/// EARS-1 reject reason, caller leg. The VALUE is a client contract — the
-/// parked EARS-3 affordance keys a sign-in prompt off it. Do not reword
-/// without updating ADR-0189, EA-RA-05, and ranking-security criterion D.
+/// reject reason, caller leg. The VALUE is a client contract.
 const ERR_RANKED_REQUIRES_ACCOUNT: &str = "ranked play requires an account";
 
 /// EARS-1 reject reason, opponent leg (target in `challenge_pvp`, challenger
 /// in `accept_challenge`). Distinct from the caller leg so the EA-RA-01 truth
 /// table can pin which side failed and the client can phrase the two
-/// differently (ADR-0189 D5).
+/// differently.
 const ERR_RANKED_OPPONENT_NEEDS_ACCOUNT: &str = "opponent must have an account for ranked play";
 
-/// PURE (ADR-0189 D6): true iff at least one configured issuer is real, i.e.
+/// PURE: true iff at least one configured issuer is real, i.e.
 /// differs from the committed fail-closed placeholder. Exact equality, not a
 /// substring sniff: a mixed allowlist (real + leftover placeholder) must
 /// ENFORCE, and a real issuer whose host merely contains `.invalid` as a
@@ -88,23 +80,21 @@ fn issuers_configured(issuers: &[&str]) -> bool {
     issuers.iter().any(|i| *i != RANKED_PLACEHOLDER_ISSUER)
 }
 
-/// Deployment-conditional activation (ADR-0189 D6): the ranked account gate is
+/// Deployment-conditional activation: the ranked account gate is
 /// live iff this deployment can actually mint accounts. Today
 /// `ALLOWED_ISSUERS` is the fail-closed placeholder, so the gate is INERT and
-/// every existing PvP flow (including the three merge-gate e2e specs) is
-/// unchanged. The moment a real issuer lands (OQ1 / 13r-c-2), enforcement
-/// activates automatically — the EA-RA-06a canary carries the activation
-/// checklist that slice must complete.
+/// every existing PvP flow is unchanged. The moment a real issuer lands,
+/// enforcement activates automatically.
 fn ranked_enforcement_active() -> bool {
     issuers_configured(crate::accounts::ALLOWED_ISSUERS)
 }
 
-/// The ranked-eligibility decision (ADR-0189 D5). PURE — no ctx, no I/O — so
+/// The ranked-eligibility decision. PURE — no ctx, no I/O — so
 /// it is exhaustively unit-testable in-crate (reducer bodies are not). The
 /// CALLER leg is evaluated first: when both parties are guests the caller
 /// reason wins (EA-RA-01 pins this precedence). `is_account_holder` — never
 /// `has_jwt`, which is true for every connection — supplies both booleans at
-/// the call sites (ADR-0189 D2).
+/// the call sites.
 fn ranked_account_gate(
     enforced: bool,
     caller_has_account: bool,
@@ -123,7 +113,7 @@ fn ranked_account_gate(
 }
 
 // ===========================================================================
-// Scheduled table (colocated with its reducer, per ADR-0056 exception)
+// Scheduled table (colocated with its reducer)
 // ===========================================================================
 
 /// One-shot reaper: fires `PVP_TURN_DEADLINE_MS` after a PvP turn starts.
@@ -164,11 +154,10 @@ fn schedule_deadline(ctx: &ReducerContext, battle_id: u64, turn_number: u16) {
 }
 
 // ===========================================================================
-// Challenge TTL reaper (17.5e-1, ADR-0126) — clone of the trade_offer_reaper
-// (16.5f-4, ADR-0117)
+// Challenge TTL reaper — clone of the trade_offer_reaper
 // ===========================================================================
 
-// Scheduled table colocated with its reducer (ADR-0056 exception, mirrors pvp_deadline_schedule).
+// Scheduled table colocated with its reducer.
 // PRIVATE — prevents client schedule manipulation; the underlying facts are already public via battle_challenge.
 #[spacetimedb::table(accessor = battle_challenge_reaper_schedule, scheduled(battle_challenge_reaper))]
 pub struct BattleChallengeReaperSchedule {
@@ -185,7 +174,7 @@ pub struct BattleChallengeReaperSchedule {
 ///
 /// The deadline is computed FROM THE MS-FLOORED `created_at_ms` (not raw micros) —
 /// kills the ms-truncation edge where the schedule could fire fractionally before
-/// `is_challenge_stale`'s ms clock reaches the TTL boundary (ADR-0117 D4). The
+/// `is_challenge_stale`'s ms clock reaches the TTL boundary. The
 /// adjacent `schedule_deadline` computes from raw now-micros and is NOT the
 /// template here — this is a clone of trading.rs `schedule_trade_reaper`.
 fn schedule_challenge_reaper(ctx: &ReducerContext, challenge_id: u64, created_at_ms: i64) {
@@ -204,8 +193,8 @@ fn schedule_challenge_reaper(ctx: &ReducerContext, challenge_id: u64, created_at
 }
 
 /// Disarm the reaper schedule(s) for `challenge_id`. Called at every
-/// challenge-deletion site so no orphaned schedule row survives its challenge
-/// (ADR-0126). Collect-before-delete (mirrors `disarm_trade_reaper`): gather
+/// challenge-deletion site so no orphaned schedule row survives its challenge.
+/// Collect-before-delete (mirrors `disarm_trade_reaper`): gather
 /// the scheduled_ids via the challenge_id btree filter first, then delete each
 /// via the primary key.
 fn disarm_challenge_reaper(ctx: &ReducerContext, challenge_id: u64) {
@@ -301,7 +290,7 @@ fn build_pvp_team(
     Ok((team, ability_ids))
 }
 
-/// Create a PvP battle row directly (bypassing `start_battle`'s ADR-0048
+/// Create a PvP battle row directly (bypassing `start_battle`'s
 /// provenance guard, which correctly rejects a client naming another player).
 /// This is an internal function — called only from `accept_challenge`.
 ///
@@ -318,8 +307,8 @@ pub(crate) fn start_pvp_battle(
     let (team_b, ability_ids_b) =
         build_pvp_team(ctx, &opponent_party, opponent, "start_pvp_battle")?;
 
-    // Seat each side's lead: the first slot with HP > 0 (ADR-0156 D1, ported to
-    // PvP by ADR-0166 D1). `None` IS the "no conscious monster" precondition, so
+    // Seat each side's lead: the first slot with HP > 0.
+    // `None` IS the "no conscious monster" precondition, so
     // the former `any(|m| !m.is_fainted())` pre-checks are gone rather than kept
     // alongside. Team order is preserved, so `team[i]` stays coupled to
     // `*_monster_ids[i]` for HP write-back and to `ability_ids_*[i]` for the
@@ -345,7 +334,7 @@ pub(crate) fn start_pvp_battle(
         weather: None,
     };
 
-    // Apply entry abilities for both initial actives (ADR-0100).
+    // Apply entry abilities for both initial actives.
     let ability_defs = crate::content_cache::cached_abilities()?;
     let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, ability_defs);
     let mut status = BattleStatusStore {
@@ -380,7 +369,7 @@ pub(crate) fn start_pvp_battle(
 
 /// Apply forfeit to an ongoing PvP battle: set the forfeit outcome, then
 /// delegate the entire terminal-commit sequence to `settle_pvp_battle`
-/// (ADR-0119 D3) — the write-back/update/rating/side-B/sweep ordering
+/// — the write-back/update/rating/side-B/sweep ordering
 /// invariants live on the funnel, not here.
 /// `forfeited_side`: SideA = challenger (player_identity); SideB = opponent.
 fn apply_pvp_forfeit(
@@ -527,16 +516,12 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
 
     if battle.state.outcome != BattleOutcome::Ongoing {
         // Terminal: delegate the entire commit sequence to the settle funnel
-        // (ADR-0119 D3) — the ordering invariants live there.
+        // — the ordering invariants live there.
         settle_pvp_battle(ctx, battle)?;
     } else {
         // Reschedule the deadline for the new turn (turn_number was incremented by resolve_full_turn).
         schedule_deadline(ctx, battle_id, battle.state.turn_number);
-        // Persist the advanced (still-Ongoing) state. Deliberately NOT the
-        // chained `battle().battle_id().update(...)` form: the RT-M16-08 source
-        // scan pins that needle to the TERMINAL commit ordering inside
-        // settle_pvp_battle below; this ongoing-path persist is not a terminal
-        // commit and must not shadow that needle.
+        // Persist the advanced (still-Ongoing) state.
         let battles = ctx.db.battle();
         battles.battle_id().update(battle);
     }
@@ -545,31 +530,31 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
 
 /// Settle a PvP battle that has reached a terminal outcome — the ONE funnel
 /// through which every decisive PvP result (both-submit resolution, deadline
-/// forfeit, disconnect forfeit) commits (ADR-0119 D3, RL-10). Sole caller of
+/// forfeit, disconnect forfeit) commits. Sole caller of
 /// `ranking::apply_pvp_rating`, which makes rating application exactly-once
 /// by construction. One named exception: the deletion cascade's forced-terminal
-/// fallback (`battle::anonymize_battles`, ADR-0274) commits
+/// fallback (`battle::anonymize_battles`) commits
 /// `SideAWins`/`SideBWins` outside this funnel, without rating, HP, XP, currency
 /// or evolution write-back and without the `battle_action` sweep.
 ///
-/// Invariant commit order (unified verbatim from the two pre-M17 sites):
+/// Invariant commit order:
 /// - `write_back_battle_results` runs while the battle row is still Ongoing in
 ///   the DB so its GC sweep targets only prior terminal rows, not the current
-///   one (RT-M16-08). Log-and-continue (ADR-0077): cosmetic HP staleness only.
+///   one. Log-and-continue: cosmetic HP staleness only.
 /// - The battle row update commits the terminal outcome and must precede
 ///   `write_back_party_hp_pvp_side_b` so that a side-B HP write-back failure
-///   (e.g. ownership changed) cannot leave the battle stuck in `Ongoing`
-///   (RT-M16-05). Write-backs use log-and-continue (ADR-0077).
-/// - The rating rides the just-committed outcome (ADR-0119 D3 step 3) and is
-///   infallible by construction (D6) — no error posture needed.
+///   (e.g. ownership changed) cannot leave the battle stuck in `Ongoing`.
+///   Write-backs use log-and-continue.
+/// - The rating rides the just-committed outcome and is
+///   infallible by construction — no error posture needed.
 /// - The stale `battle_action` sweep runs last (hoisted from the forfeit path).
 fn settle_pvp_battle(ctx: &ReducerContext, battle: Battle) -> Result<(), String> {
     let battle_id = battle.battle_id;
 
     // write_back_battle_results first — battle row is still Ongoing in DB so its
-    // GC sweep does not delete the current row (RT-M16-08).
+    // GC sweep does not delete the current row.
     if let Err(e) = write_back_battle_results(ctx, &battle) {
-        // 12r-d (ADR-0170 D5): `e` is error text that may contain quotes — escape
+        // `e` is error text that may contain quotes — escape
         // before interpolating into the hand-built JSON line.
         let escaped = crate::guards::json_escape(&e);
         log::error!(
@@ -577,17 +562,17 @@ fn settle_pvp_battle(ctx: &ReducerContext, battle: Battle) -> Result<(), String>
         );
     }
 
-    // Commit terminal outcome AFTER write_back_battle_results (RT-M16-08) and
-    // BEFORE write_back_party_hp_pvp_side_b (RT-M16-05). The clone is
+    // Commit terminal outcome AFTER write_back_battle_results and
+    // BEFORE write_back_party_hp_pvp_side_b. The clone is
     // load-bearing: `update` consumes a row by value, and `battle` is still
     // borrowed afterwards by apply_pvp_rating and write_back_party_hp_pvp_side_b.
     ctx.db.battle().battle_id().update(battle.clone());
 
-    // Ranked-ladder rating on the just-committed outcome (ADR-0119 D3 step 3;
+    // Ranked-ladder rating on the just-committed outcome (
     // no-op for wild/practice battles and non-decisive outcomes).
     ranking::apply_pvp_rating(ctx, &battle);
 
-    // Side-B HP write-back. Log-and-continue (ADR-0077): outcome already committed.
+    // Side-B HP write-back. Log-and-continue: outcome already committed.
     if let Err(e) = write_back_party_hp_pvp_side_b(ctx, &battle) {
         let escaped = crate::guards::json_escape(&e);
         log::error!(
@@ -630,14 +615,7 @@ fn write_back_party_hp_pvp_side_b(ctx: &ReducerContext, battle: &Battle) -> Resu
                 ));
             }
             crate::marshal::write_back_hp(&mut m, bm);
-            // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing
-            // monster_pub row — never fabricate a tier.
-            let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(mid) else {
-                return Err(format!("monster_pub row missing for monster {mid}"));
-            };
-            let pub_row = pub_from_monster(&m, existing_pub.tier);
-            ctx.db.monster().monster_id().update(m);
-            ctx.db.monster_pub().monster_id().update(pub_row);
+            update_monster_synced(ctx, m)?;
         }
     }
     Ok(())
@@ -654,8 +632,7 @@ fn write_back_party_hp_pvp_side_b(ctx: &ReducerContext, battle: &Battle) -> Resu
 /// cascade's step 6a (before the 6b erasures). An `apply_pvp_forfeit` Err is
 /// logged and the loop continues, with no retry here: on a plain disconnect the
 /// still-armed deadline settles the battle later; on the cascade path step 6c
-/// (`battle::anonymize_battles`) forces any surviving `Ongoing` row terminal
-/// (ADR-0274).
+/// (`battle::anonymize_battles`) forces any surviving `Ongoing` row terminal.
 pub(crate) fn forfeit_on_disconnect(ctx: &ReducerContext, disconnected: Identity) {
     // Collect battle_ids first (collect-then-mutate discipline — never mutate
     // a SpacetimeDB table while iterating over it).
@@ -716,7 +693,7 @@ pub(crate) fn forfeit_on_disconnect(ctx: &ReducerContext, disconnected: Identity
 
 /// Delete pending outgoing challenges from `player` (as challenger) on disconnect.
 /// Incoming challenges targeting `player` remain — the challenger might reconnect
-/// and await. (ADR-0109 D9)
+/// and await.
 pub(crate) fn cancel_challenges_on_disconnect(ctx: &ReducerContext, player: Identity) {
     let pending_ids: Vec<u64> = ctx
         .db
@@ -732,14 +709,13 @@ pub(crate) fn cancel_challenges_on_disconnect(ctx: &ReducerContext, player: Iden
     }
 }
 
-/// M22 §4.4 steps 6b+6d (PRV1-6b/6d, ADR-0228 D1/D2): delete every
-/// `battle_challenge` naming `owner` on EITHER side — challenger AND target,
-/// any status (contrast `cancel_challenges_on_disconnect` above, outgoing
-/// pending only) — disarming each challenge's TTL schedule row (the JOIN_ONLY
-/// sweep riding its parent), then every `battle_action` the owner submitted
-/// (per-turn secret picks; the identity column is unindexed, so this is one
-/// of the cascade's two accepted linear scans — spec §8.3 residual). Called
-/// only from `accounts::account_deletion_reaper` (D0 write-isolation).
+/// delete every `battle_challenge` naming `owner` on EITHER side — challenger
+/// AND target, any status (contrast `cancel_challenges_on_disconnect` above,
+/// outgoing pending only) — disarming each challenge's TTL schedule row (the
+/// JOIN_ONLY sweep riding its parent), then every `battle_action` the owner
+/// submitted (per-turn secret picks; the identity column is unindexed, so
+/// this is one of the cascade's two accepted linear scans). Called only from
+/// `accounts::account_deletion_reaper`.
 pub(crate) fn erase_pvp_rows(ctx: &ReducerContext, owner: Identity) {
     let mut challenge_ids: Vec<u64> = ctx
         .db
@@ -771,13 +747,12 @@ pub(crate) fn erase_pvp_rows(ctx: &ReducerContext, owner: Identity) {
     }
 }
 
-/// M22 §4.4 step 6d (PRV1-6d, ADR-0228 D1): delete every
-/// `pvp_deadline_schedule` row guarding `battle_id`. Lives HERE because
-/// pvp.rs is that table's sole writer (the delegation doctrine's ownership
-/// rule); called per battle row from `battle::anonymize_battles`, BEFORE that
-/// row's identity swap (after the swap the join can no longer find it). The
-/// column is unindexed — a linear scan over a table that holds at most one
-/// row per live PvP battle.
+/// delete every `pvp_deadline_schedule` row guarding
+/// `battle_id`. Lives HERE because pvp.rs is that table's sole writer (the
+/// delegation doctrine's ownership rule); called per battle row from
+/// `battle::anonymize_battles`, BEFORE that row's identity swap (after the
+/// swap the join can no longer find it). The column is unindexed — a linear
+/// scan over a table that holds at most one row per live PvP battle.
 pub(crate) fn disarm_pvp_deadlines(ctx: &ReducerContext, battle_id: u64) {
     let ids: Vec<u64> = ctx
         .db
@@ -799,11 +774,11 @@ pub(crate) fn disarm_pvp_deadlines(ctx: &ReducerContext, battle_id: u64) {
 ///
 /// Guard order (reject-not-clamp, decision-before-irreversible):
 /// 1. Caller must be joined.
-///    1a. Caller is not deletion-gated (ADR-0227 / spec §4.7, PRV1-9) — new challenge
-///    commitments only; live ones are untouched (PRV1-10).
+///    1a. Caller is not deletion-gated — new challenge
+///    commitments only; live ones are untouched.
 /// 2. Cannot challenge self.
 /// 3. Target must be joined and online.
-///    3a. Both parties hold a full account (ranked-only; ADR-0189, issue #307).
+///    3a. Both parties hold a full account (ranked-only, issue #307).
 /// 4. Party size within bounds (1..=MAX_PARTY_SIZE).
 /// 5. Caller not already in an ongoing battle (either role).
 /// 6. Caller has no active outgoing challenge; target has no active incoming challenge targeting caller.
@@ -825,9 +800,9 @@ pub fn challenge_pvp(
         return Err(e);
     }
 
-    // Guard 1a (ADR-0227): a deletion-gated caller cannot OPEN a new challenge.
+    // Guard 1a: a deletion-gated caller cannot OPEN a new challenge.
     // Earlier than guard 3a on purpose: 3a's late placement bounds disclosure of a
-    // THIRD PARTY's account state (ADR-0189 D8); this is a self-property and
+    // THIRD PARTY's account state; this is a self-property and
     // discloses nothing about the target.
     crate::guards::require_not_deleting(ctx, "challenge_pvp")?;
 
@@ -854,11 +829,11 @@ pub fn challenge_pvp(
         _ => {}
     }
 
-    // Guard 3a (ADR-0189, issue #307): ranked play requires a full account —
+    // Guard 3a: ranked play requires a full account —
     // BOTH parties. Placed after guard 3 so account existence is only ever
     // disclosed for a target the caller can already observe online, never for
-    // arbitrary identities (ADR-0189 D8; ADR-0179 G1). The gate is inert
-    // until a real auth issuer is configured (ADR-0189 D6).
+    // arbitrary identities. The gate is inert
+    // until a real auth issuer is configured.
     if let Err(reason) = ranked_account_gate(
         ranked_enforcement_active(),
         crate::accounts::is_account_holder(ctx, me),
@@ -882,14 +857,14 @@ pub fn challenge_pvp(
         return Err(e);
     }
 
-    // Guard 5a: target must not be in an ongoing battle (RT-M16-01).
+    // Guard 5a: target must not be in an ongoing battle.
     if is_in_ongoing_battle(ctx, target) {
         let e = "target is already in an ongoing battle".to_string();
         log_reject("challenge_pvp", me, &e);
         return Err(e);
     }
 
-    // Guard 5b: caller must not have a pending incoming challenge (H-2 reviewer).
+    // Guard 5b: caller must not have a pending incoming challenge.
     // A player with an unresolved incoming challenge cannot open an outgoing one —
     // they must accept or decline first.
     if has_active_incoming_challenge(ctx, me) {
@@ -960,7 +935,7 @@ pub fn challenge_pvp(
     });
 
     // Guard 9: arm the TTL reaper (post-insert — the auto_inc challenge_id only
-    // exists once the insert returns; ADR-0126).
+    // exists once the insert returns).
     schedule_challenge_reaper(ctx, challenge.challenge_id, challenge.created_at_ms);
 
     log::info!(
@@ -976,10 +951,10 @@ pub fn challenge_pvp(
 /// Guard order:
 /// 1. Challenge exists.
 /// 2. ctx.sender() == challenge.target (only the target accepts).
-///    2a. Caller is not deletion-gated (ADR-0227, PRV1-9) — accepting OPENS the battle
-///    commitment; the pending challenge row itself is not force-terminated (PRV1-10).
+///    2a. Caller is not deletion-gated — accepting OPENS the battle
+///    commitment; the pending challenge row itself is not force-terminated.
 /// 3. status == Pending.
-///    3a. Both parties hold a full account (re-checked at accept; ADR-0189 D3).
+///    3a. Both parties hold a full account (re-checked at accept).
 /// 4. Neither party currently in an ongoing battle (re-checked here).
 /// 5. Opponent (target) party size + monster validation.
 /// 6. start_pvp_battle (creates the Battle row) — irreversible.
@@ -1012,9 +987,8 @@ pub fn accept_challenge(
         return Err(e);
     }
 
-    // Guard 2a (ADR-0227): authorization first (ADR-0117 role-first ordering), then
-    // refuse a deletion-gated caller before any state read or write — accepting is
-    // what OPENS the battle commitment.
+    // Guard 2a: authorization first, then refuse a deletion-gated caller before
+    // any state read or write — accepting is what OPENS the battle commitment.
     crate::guards::require_not_deleting(ctx, "accept_challenge")?;
 
     // Guard 3: must be Pending.
@@ -1024,7 +998,7 @@ pub fn accept_challenge(
         return Err(e);
     }
 
-    // Guard 3a (ADR-0189): re-checked at accept time — load-bearing, not
+    // Guard 3a: re-checked at accept time — load-bearing, not
     // redundant. Pending rows created before enforcement activation, and any
     // future account-status revocation, must never create a ranked battle;
     // start_pvp_battle (guard 6, irreversible) is reached ONLY from here.
@@ -1081,7 +1055,7 @@ pub fn accept_challenge(
     schedule_deadline(ctx, battle_id, 0);
 
     // Guard 8: consume the challenge row (Accepted challenges are GC'd immediately —
-    // ADR-0109 D6; mirrors terminal trade_offer deletion in trading.rs).
+    // mirrors terminal trade_offer deletion in trading.rs).
     ctx.db
         .battle_challenge()
         .challenge_id()
@@ -1172,12 +1146,12 @@ pub fn cancel_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), S
 /// 3. battle is PvP (opponent_identity != WILD_IDENTITY).
 /// 4. outcome == Ongoing.
 /// 5. Validate action against caller's active monster: for Attack, reject when the
-///    caller's active monster has fainted (ADR-0166 D2) BEFORE the moveset check,
+///    caller's active monster has fainted BEFORE the moveset check,
 ///    so a corpse gets an actionable "swap to another monster" message rather than
 ///    a misleading "skill N not in active monster's moveset"; for Swap, the target
 ///    index must be in bounds, not fainted, and not already active. `Swap` is
-///    deliberately NOT given the fainted-active guard — see the ADR-0166 D2
-///    anti-decision: it is the only exit from a corpse-active row.
+///    deliberately NOT given the fainted-active guard
+///    it is the only exit from a corpse-active row.
 /// 6. Double-submit guard: no existing BattleAction for (battle_id, caller, turn_number).
 /// 7. Insert BattleAction (irreversible).
 /// 8. Resolve turn if both sides have now submitted.
@@ -1223,10 +1197,8 @@ pub fn submit_pvp_action(
     match action {
         PvpAction::Attack { skill_id } => {
             if my_team.active_monster().is_fainted() {
-                // Names ONLY an action the player can actually take. `battle.rs:556`
-                // says "or flee" and ADR-0166 D2 rejected copying it because PvP has
-                // no flee; the first draft said "or forfeit", which is the SAME defect
-                // — there is no player-callable forfeit reducer either (the only
+                // Names ONLY an action the player can actually take.
+                // there is no player-callable forfeit reducer either (the only
                 // forfeits are `forfeit_on_disconnect` and the 60s deadline reaper).
                 // A message naming an affordance the client cannot render walks a
                 // corpse-active player into the reaper, i.e. a ranked rating loss.
@@ -1293,18 +1265,18 @@ pub fn submit_pvp_action(
 }
 
 /// Scheduled reaper: delete a Pending battle challenge that has outlived
-/// `CHALLENGE_TTL_MS` (17.5e-1, ADR-0126).
+/// `CHALLENGE_TTL_MS`.
 ///
 /// This is a SCHEDULER-ONLY reducer — clients must never call it directly.
-/// Guard: `ctx.sender() != ctx.database_identity()` (identical to `pvp_deadline_reaper`,
-/// ADR-0056). Staleness is re-checked via `is_challenge_stale` so an early
+/// Guard: `ctx.sender() != ctx.database_identity()` (identical to `pvp_deadline_reaper`).
+/// Staleness is re-checked via `is_challenge_stale` so an early
 /// fire or clock skew never reaps a fresh challenge. No status re-check:
-/// non-Pending rows never persist (ADR-0109 D6), so the existence check is
+/// non-Pending rows never persist, so the existence check is
 /// the only row-state defense needed.
 ///
 /// No self-disarm: one-shot `ScheduleAt::Time` rows are deleted BY THE RUNTIME
 /// after the reducer returns ("Scheduled reducers delete the row after execution"
-/// — SpacetimeDB docs, schedule-tables §Row Lifecycle; ADR-0109 D7 precedent).
+/// — SpacetimeDB docs, schedule-tables §Row Lifecycle).
 /// A self-delete here would race the runtime's post-execution delete.
 #[spacetimedb::reducer]
 pub fn battle_challenge_reaper(
@@ -1338,7 +1310,7 @@ pub fn battle_challenge_reaper(
 ///
 /// This is a SCHEDULER-ONLY reducer — clients must never call it directly.
 /// Guard: `ctx.sender() != ctx.database_identity()` (identical to `movement_tick` at
-/// movement.rs:156, ADR-0056).
+/// movement.rs:156).
 #[spacetimedb::reducer]
 pub fn pvp_deadline_reaper(ctx: &ReducerContext, args: PvpDeadlineSchedule) -> Result<(), String> {
     // Scheduler-only guard (mirrors movement_tick).
@@ -1386,7 +1358,7 @@ pub fn pvp_deadline_reaper(ctx: &ReducerContext, args: PvpDeadlineSchedule) -> R
         return Ok(());
     }
 
-    // Apply challenger-first tie-break (ADR-0109 D5).
+    // Apply challenger-first tie-break.
     let forfeited_side = pvp_deadline_forfeit_side(a_submitted, b_submitted);
 
     log::info!(
@@ -1398,7 +1370,7 @@ pub fn pvp_deadline_reaper(ctx: &ReducerContext, args: PvpDeadlineSchedule) -> R
 
 // pvp.rs is a file-module (declared `mod pvp;` in `lib.rs`), so a plain
 // `mod pvp_tests;` would resolve under `src/pvp/`; `#[path]` keeps the test
-// file a sibling in `src/` (the game-core `*_tests.rs` convention, ADR-0056 map).
+// file a sibling in `src/`.
 #[cfg(test)]
 #[path = "pvp_tests.rs"]
 mod pvp_tests;

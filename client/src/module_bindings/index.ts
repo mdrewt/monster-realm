@@ -83,12 +83,12 @@ import CharacterRow from "./character_table";
 import ConfigRow from "./config_table";
 import EvolutionPathRow from "./evolution_path_table";
 import HealLocationRowRow from "./heal_location_row_table";
-import InventoryRow from "./inventory_table";
 import ItemRowRow from "./item_row_table";
 import MyAccountRow from "./my_account_table";
 import MyBattleRow from "./my_battle_table";
 import MyConversationRow from "./my_conversation_table";
 import MyExportBundleRow from "./my_export_bundle_table";
+import MyInventoryRow from "./my_inventory_table";
 import MyMonsterPubRow from "./my_monster_pub_table";
 import MyPendingEvolutionNoticesRow from "./my_pending_evolution_notices_table";
 import MyWalletRow from "./my_wallet_table";
@@ -178,20 +178,6 @@ const tablesSchema = __schema({
       { name: 'heal_location_row_location_id_key', constraint: 'unique', columns: ['locationId'] },
     ],
   }, HealLocationRowRow),
-  inventory: __table({
-    name: 'inventory',
-    indexes: [
-      { accessor: 'inv_id', name: 'inventory_inv_id_idx_btree', algorithm: 'btree', columns: [
-        'invId',
-      ] },
-      { accessor: 'owner_identity', name: 'inventory_owner_identity_idx_btree', algorithm: 'btree', columns: [
-        'ownerIdentity',
-      ] },
-    ],
-    constraints: [
-      { name: 'inventory_inv_id_key', constraint: 'unique', columns: ['invId'] },
-    ],
-  }, InventoryRow),
   itemRow: __table({
     name: 'item_row',
     indexes: [
@@ -374,6 +360,13 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyExportBundleRow),
+  myInventory: __table({
+    name: 'my_inventory',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyInventoryRow),
   myMonsterPub: __table({
     name: 'my_monster_pub',
     indexes: [
@@ -479,6 +472,8 @@ type __SchemaWithTableAccessorAliases = Omit<typeof tablesSchema.schemaType, "ta
     readonly "my_conversation": Omit<typeof tablesSchema.schemaType.tables["myConversation"], "accessorName"> & { readonly accessorName: "my_conversation" };
     /** @deprecated Use `myExportBundle` instead. This alias will be removed in the next major version. */
     readonly "my_export_bundle": Omit<typeof tablesSchema.schemaType.tables["myExportBundle"], "accessorName"> & { readonly accessorName: "my_export_bundle" };
+    /** @deprecated Use `myInventory` instead. This alias will be removed in the next major version. */
+    readonly "my_inventory": Omit<typeof tablesSchema.schemaType.tables["myInventory"], "accessorName"> & { readonly accessorName: "my_inventory" };
     /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */
     readonly "my_monster_pub": Omit<typeof tablesSchema.schemaType.tables["myMonsterPub"], "accessorName"> & { readonly accessorName: "my_monster_pub" };
     /** @deprecated Use `myPendingEvolutionNotices` instead. This alias will be removed in the next major version. */
@@ -519,6 +514,7 @@ const tableAccessorAliases = {
   "my_battle": "myBattle",
   "my_conversation": "myConversation",
   "my_export_bundle": "myExportBundle",
+  "my_inventory": "myInventory",
   "my_monster_pub": "myMonsterPub",
   "my_pending_evolution_notices": "myPendingEvolutionNotices",
   "my_wallet": "myWallet",
@@ -574,6 +570,8 @@ export type DbView = __DbViewBase & {
   readonly "my_conversation": __DbViewBase["myConversation"];
   /** @deprecated Use `myExportBundle` instead. This alias will be removed in the next major version. */
   readonly "my_export_bundle": __DbViewBase["myExportBundle"];
+  /** @deprecated Use `myInventory` instead. This alias will be removed in the next major version. */
+  readonly "my_inventory": __DbViewBase["myInventory"];
   /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */
   readonly "my_monster_pub": __DbViewBase["myMonsterPub"];
   /** @deprecated Use `myPendingEvolutionNotices` instead. This alias will be removed in the next major version. */
@@ -616,6 +614,8 @@ export type Tables = __TablesBase & {
   readonly "my_conversation": __TablesBase["myConversation"];
   /** @deprecated Use `myExportBundle` instead. This alias will be removed in the next major version. */
   readonly "my_export_bundle": __TablesBase["myExportBundle"];
+  /** @deprecated Use `myInventory` instead. This alias will be removed in the next major version. */
+  readonly "my_inventory": __TablesBase["myInventory"];
   /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */
   readonly "my_monster_pub": __TablesBase["myMonsterPub"];
   /** @deprecated Use `myPendingEvolutionNotices` instead. This alias will be removed in the next major version. */

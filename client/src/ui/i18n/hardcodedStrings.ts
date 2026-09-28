@@ -1,17 +1,14 @@
-// ui/i18n/hardcodedStrings.ts — the M24 S2 extraction-lint scanner (ADR-0257 D1-D6, spec §2.2/§5.2).
+// ui/i18n/hardcodedStrings.ts — the M24 S2 extraction-lint scanner.
 //
 // A PURE, fs-free, typed scanner over ALREADY-COMMENT-STRIPPED TypeScript source. The co-located
-// `hardcodedStrings.test.ts` owns the filesystem walk, the comment stripping (it imports the
-// single-owner `stripComments` from `evals/dom-shell-coverage-exclusion.eval.mjs`) and the ceiling;
-// this module owns the rule.
+// `hardcodedStrings.test.ts` owns the filesystem walk, the comment stripping
+// and the ceiling; this module owns the rule.
 //
 // LITERAL MASK ORIGIN. The string/template-literal cursor (which indices are literal TEXT, which
 // are code, with template interpolations `${…}` left UNMASKED and an `unterminated` flag when the
-// scan ends inside a literal) is a minimal TYPED PORT of `stringMask` at
-// `evals/client-no-pii-logs.eval.mjs:166-250`. It is ported, not imported: this file is typechecked
-// by `client-typecheck` (strict, no `allowJs`) and a `.mjs` import is TS7016 (ADR-0257 alt. 3).
+// scan ends inside a literal) is a minimal TYPED PORT of `stringMask`.
 //
-// THE RULE (spec §2.2, default-fail character inversion; ADR-0257 D3 = plan R2/R3):
+// THE RULE (spec §2.2, default-fail character inversion):
 //   * A sink is `.textContent` / `.title` followed by optional whitespace (incl. newlines) and a
 //     plain `=` (not `==`/`===`) or `+=`; `replaceChildren(`; or `setAttribute(` whose FIRST
 //     argument is a bare single/double-quoted literal in SET_ATTRIBUTE_ALLOWLIST — checked BEFORE
@@ -45,10 +42,10 @@
 // (I18N-17); keep new prose here free of DOM API names that are not part of the S2 vocabulary.
 //
 // NO REGULAR EXPRESSIONS, EVER — neither a regex literal (it blinds the imported comment stripper
-// the test feeds this scanner with) nor the constructor form (banned by ADR-0055 / remote
+// the test feeds this scanner with) nor the constructor form (banned by the repo lint / remote
 // semgrep). Every matcher below is `indexOf` / char loops.
 //
-// LAYOUT (m24-s2 T3): `maskLiterals` (the ported cursor, plus a `text` array = literal PAYLOAD
+// LAYOUT: `maskLiterals` (the ported cursor, plus a `text` array = literal PAYLOAD
 // chars only, i.e. the mask minus the delimiters and the `${` / `}` of interpolations) →
 // `scanSource` walks the source for the four tokens → `walkSpan` finds each RHS span through the
 // mask → `collectSegments` takes every maximal run of `text` indices inside the span that is not
@@ -56,14 +53,14 @@
 // (comment-stripped) source in the real scan: the token table below holds bare tokens only, never
 // a token adjacent to an assignment operator.
 
-/** Spec §2.2 E5 / ADR-0257 D2: fewer sinks than this across the whole non-test client tree means
+/** Spec §2.2 E5: fewer sinks than this across the whole non-test client tree means
  *  the scanner stopped seeing the tree — a scanner failure, never a clean tree (`>=`). */
 export const SINK_FLOOR = 169;
 
 /** The 19 spec-named target files (E6, plan R9), relative to `client/src`, sorted. Each must be
  *  present in the walk and non-empty after comment stripping (I18N-HC-05); a missing one is a
  *  hard fail, never a skip. The SCAN scope is the whole non-test tree — this roster is the
- *  presence proof, not the scope (ADR-0257 D2). */
+ *  presence proof, not the scope. */
 export const SCAN_TARGETS: readonly string[] = [
   'main.ts',
   'ui/battleView.ts',
@@ -99,7 +96,7 @@ export const SET_ATTRIBUTE_ALLOWLIST: ReadonlySet<string> = new Set([
 /** Spec §2.2's closed set, verbatim: whitespace ∪ digits ∪ { · × ‰ % / : ( ) [ ] , . - — + # ° ' " }.
  *  Exactly 33 members (4 ASCII whitespace + 10 digits + 19 glyphs). Whitespace is ASCII-only:
  *  U+00A0, en dash U+2013, `…`, `→`, `’` and a backslash escape are NOT members and fail toward
- *  extraction (ADR-0257 Consequences). Grows only by a reviewed PR. */
+ *  extraction. Grows only by a reviewed PR. */
 export const NON_TRANSLATABLE_CHARS: ReadonlySet<string> = new Set([
   ' ',
   '\t',
@@ -136,7 +133,7 @@ export const NON_TRANSLATABLE_CHARS: ReadonlySet<string> = new Set([
   '"',
 ]);
 
-/** ADR-0257 D4: the four-token sink vocabulary. */
+/** The four-token sink vocabulary. */
 type SinkKind = 'textContent' | 'title' | 'replaceChildren' | 'setAttribute';
 
 export interface Sink {
@@ -192,7 +189,7 @@ const DOUBLE_QUOTE = '"';
 const BACKTICK = '`';
 
 // ---------------------------------------------------------------------------
-// Literal mask — typed port of `stringMask` (evals/client-no-pii-logs.eval.mjs:166-250).
+// Literal mask — typed port of `stringMask`.
 // ---------------------------------------------------------------------------
 
 type FrameKind = 'sq' | 'dq' | 'tl' | 'expr';
@@ -414,7 +411,7 @@ function setAttributeValueSpan(
  *  before it is not an identifier char, and `(` follows with no whitespace. Returns the index
  *  just after that `(`, or -1.
  *
- *  rb-130 (R-m24-s4-RT1): a member, private or escape-named call is not the resolver. The char
+ *  A member, private or escape-named call is not the resolver. The char
  *  glued before the name must not be `}` either (`\u{61}t(` is `at(`). Skipping space, tab, CR
  *  and LF backward, the nearest char must not be `.` (`obj.t(`, `obj.\n  t(`), `#` (`this.#t(`)
  *  or outside printable ASCII (another whitespace char in the gap, a non-ASCII letter glued to the
@@ -437,7 +434,7 @@ function exemptCallOpenAt(src: string, mask: LiteralMask, i: number): number {
 }
 
 /** Every maximal run of `text` indices inside `span` that is not inside a `t(` / `tf(` call span,
- *  in source order. Literals at any paren / interpolation depth contribute (ADR-0257 D3). */
+ *  in source order. Literals at any paren / interpolation depth contribute. */
 function collectSegments(src: string, mask: LiteralMask, span: Span): string[] {
   const out: string[] = [];
   let i = span.start;

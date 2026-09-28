@@ -1,28 +1,28 @@
 // heldKeys.ts — tiny pure held-direction tracking for the integrated loop (M8.6c),
-// plus the hold-commit tap/hold discrimination (ADR-0158): a stack-top dir is only
+// plus the hold-commit tap/hold discrimination: a stack-top dir is only
 // eligible for CONTINUATION once it has been physically held for the commit threshold,
 // which is what closes the r2 "one tap moves 2 tiles" defect. The keydown's FIRST step
 // stays ungated — the threshold gates CONTINUATION only (the two main.ts re-issue
 // emitters), never the immediate step.
 //
-// Extracted (like inputGuards.ts) so the held-key fallback + re-issue dedup are
+// Extracted so the held-key fallback + re-issue dedup are
 // unit-testable — main.ts is the thin e2e-only wiring. No DOM, no clock: both times
 // (press stamp and decision instant) are injected parameters.
 import type { WasmDirection } from '../convert/convert';
 
 /** One captured held entry (dir + its ORIGINAL press stamp). Not exported: callers
- *  hold snapshots opaquely and hand them back verbatim (ADR-0192). */
+ *  hold snapshots opaquely and hand them back verbatim. */
 interface HeldEntry {
   readonly dir: WasmDirection;
   readonly pressedAtMs: number;
 }
 
-/** Opaque capture of the held stack for the warp-arm preserve (ADR-0192). */
+/** Opaque capture of the held stack for the warp-arm preserve. */
 export type HeldSnapshot = readonly HeldEntry[];
 
 /**
  * The hold-commit threshold (ms): a held dir earns CONTINUATION re-issues only after
- * being down this long. Squeezed from BOTH sides (ADR-0158):
+ * being down this long. Squeezed from BOTH sides:
  *
  * CEILING — `X + framePeriod(30fps) + latency < STEP_MS(200)`: after the ungated first
  * step drains, walk-start step-2 must reach the server before the next movement_tick
@@ -37,9 +37,9 @@ export const HOLD_COMMIT_MS = 150;
 
 /**
  * Tracks currently-held movement directions as a most-recently-pressed stack so a
- * two-key hold falls back to the still-held key on release (M8.6c, ADR-0013).
+ * two-key hold falls back to the still-held key on release.
  * Each entry carries its own press stamp — INSIDE the stack entry, never a parallel
- * map — so release()/clear() evict the stamp by construction (ADR-0158: a surviving
+ * map — so release()/clear() evict the stamp by construction (a surviving
  * stale stamp is exactly the re-tap double-move mutant).
  */
 export class HeldDirections {
@@ -62,7 +62,7 @@ export class HeldDirections {
     if (!this.isHeld(dir)) this.#stack.push({ dir, pressedAtMs: nowMs });
   }
 
-  /** True iff `dir` is currently held via ANY key code — membership, NOT stack-top (ADR-0187):
+  /** True iff `dir` is currently held via ANY key code — membership, NOT stack-top:
    *  a dir buried under a newer press is still held, so its second key code must not re-emit. */
   isHeld(dir: WasmDirection): boolean {
     return this.#stack.some((e) => e.dir === dir);
@@ -80,14 +80,14 @@ export class HeldDirections {
 
   /** Capture the held stack (order + ORIGINAL press stamps) as entry COPIES — a
    *  snapshot never aliases the live stack, so later mutations can't drain it
-   *  (ADR-0192). */
+   * */
   snapshot(): HeldSnapshot {
     return this.#stack.map((e) => ({ ...e }));
   }
 
   /** REPLACE the held stack with copies of `snap`'s entries — order and original
    *  stamps preserved, never re-stamped (a restore re-stamp would turn every zone
-   *  warp into a fresh commit-window halt, ADR-0158/ADR-0192). Replace (not merge)
+   *  warp into a fresh commit-window halt). Replace (not merge)
    *  is safe: capture and restore run in one synchronous block, so no key event can
    *  interleave — and merge would admit duplicate dirs. */
   restore(snap: HeldSnapshot): void {
@@ -102,7 +102,7 @@ export class HeldDirections {
   /** The active (stack-top) dir iff it has been held for at least the commit
    *  threshold at `nowMs` (>= semantics), else undefined. The press timestamp is
    *  never INTERPRETED by a caller — callers learn committed-or-not; it leaves the
-   *  class only inside an opaque snapshot() capture handed back verbatim (ADR-0192). */
+   *  class only inside an opaque snapshot() capture handed back verbatim. */
   committedActive(nowMs: number): WasmDirection | undefined {
     const top = this.#stack[this.#stack.length - 1];
     if (top === undefined) return undefined;

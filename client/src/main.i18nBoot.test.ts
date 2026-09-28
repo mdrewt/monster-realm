@@ -108,6 +108,8 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
     move_queue_cap: () => 4,
     party_size: () => 3,
     party_slot_none: () => 255,
+    max_trade_monsters_per_side: () => 64,
+    talk_range: () => 2,
     predict_move: () => ({}),
     predict_tick: () => ({}),
     set_active_zone: () => undefined,
@@ -286,9 +288,7 @@ function stubInertRaf(): void {
 }
 
 // --- the suite ---------------------------------------------------------------------------
-// `describe(name, { sequential: true }, fn)` — NOT `describe.sequential(...)`: the literal
-// `describe(` token is required by motionPreference.test.ts's S7T-SCAN tripwire, and happy-dom's
-// document/window/navigator are per-FILE, so sibling tests in this file must not run concurrently.
+// `describe(name, { sequential: true }, fn)`.
 describe('main.ts boot-time locale negotiation wiring (m24-s6, I18N-22)', {
   sequential: true,
 }, () => {

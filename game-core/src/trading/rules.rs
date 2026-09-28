@@ -1,4 +1,4 @@
-//! Pure trade rule functions (M15, ADR-0106; extended M16.5b, ADR-0113; M16.5f, ADR-0117).
+//! Pure trade rule functions (extended M16.5b).
 //!
 //! No I/O, no SpacetimeDB context. Validates proposals, authorizes the state-machine
 //! transitions (`authorize_respond` / `authorize_confirm`), applies the TTL staleness
@@ -8,11 +8,16 @@
 use super::types::{MonsterCard, TradeError, TradeItem, TradeStatus};
 use crate::currency::MAX_BALANCE;
 
-/// Per-stack item cap (domain constant, ADR-0113). Mirrors `MAX_ITEM_STACK` that
-/// was previously defined locally in `server-module/src/inventory.rs`; moved here
-/// so the pure `check_headroom` rule can reference it without a crate boundary.
-// 9999: four-digit UI cap; no game-design constraint — tunable (ADR-0059 residual c).
+/// Per-stack item cap (domain constant).
+// 9999: four-digit UI cap; no game-design constraint — tunable.
 pub const MAX_ITEM_STACK: u32 = 9999;
+
+/// Per-side monster-count cap for one proposed trade — a DoS bound, not a game
+/// rule. `PARTY_SIZE` is deliberately NOT reused: a trade is not a party (boxed
+/// monsters are tradeable), and box-monster trading will bump THIS constant.
+/// INCLUSIVE: `n <= MAX` is legal. The server rejects above it (never clamps);
+/// the client reads the same value through client-wasm to disable Submit.
+pub const MAX_TRADE_MONSTERS_PER_SIDE: usize = 64;
 
 /// Current item stack snapshot for one (owner, item_id) pair.
 /// Passed to `check_headroom` so it can check receiver headroom without DB access.
@@ -32,9 +37,9 @@ pub struct ProposalSide<'a> {
 /// Validate the inputs to a `propose_trade` call (pure, no DB access).
 ///
 /// Checks:
-/// 1. initiator != counterparty (no self-trade, TR-21)
-/// 2. At least one asset on EITHER side (TR-1 / EmptyOffer)
-/// 3. No duplicate monster_ids across both sides (TR-22 guard + DuplicateMonster)
+/// 1. initiator != counterparty (no self-trade)
+/// 2. At least one asset on EITHER side
+/// 3. No duplicate monster_ids across both sides
 /// 4. All items have qty > 0
 pub fn validate_proposal(
     initiator_has_active_trade: bool,
@@ -109,7 +114,7 @@ pub fn validate_proposal(
 /// Build a `MonsterCard` display snapshot from the public fields of a monster row.
 ///
 /// The caller supplies individual fields (not the raw DB row) so game-core stays
-/// independent of SpacetimeDB types. No IVs/EVs/nature_kind (ADR-0015 — TR-19).
+/// independent of SpacetimeDB types. No IVs/EVs/nature_kind.
 pub fn make_monster_card(
     monster_id: u64,
     species_id: u32,
@@ -176,7 +181,7 @@ pub struct SwapPlan {
 }
 
 /// One primitive item/currency mutation in the published apply order for a trade
-/// swap (17.5b-1, ADR-0123).
+/// swap.
 ///
 /// Debit variants carry `from_initiator` (the SENDING party); credit variants
 /// carry `to_initiator` (the RECEIVING party). `ordered_steps()` performs the
@@ -205,7 +210,7 @@ pub enum ApplyStep {
 impl SwapPlan {
     /// Produce this plan's item/currency mutations as a debits-before-credits
     /// sequence — the first-class published ordering contract consumed by
-    /// `confirm_trade` (17.5b-1, ADR-0123; same SSOT standing as `check_headroom`).
+    /// `confirm_trade` (same SSOT standing as `check_headroom`).
     ///
     /// ALL `ItemDebit`/`CurrencyDebit` steps strictly precede ANY `ItemCredit`/
     /// `CurrencyCredit` step. Every transfer in the plan yields exactly one debit
@@ -220,11 +225,11 @@ impl SwapPlan {
     /// bilateral-currency) swap, and the clamping grant primitives would silently
     /// destroy the excess. Debits-first makes the NETTED headroom check exact:
     /// `check_headroom` over post-debit effective counts/balances preserves
-    /// reject-not-clamp (ADR-0113) — any plan that passes the check applies
+    /// reject-not-clamp — any plan that passes the check applies
     /// without ever touching a cap. Monster transfers are ownership flips with no
     /// cap and are NOT part of this sequence.
     ///
-    /// OBLIGATION (ADR-0123 D6): every executor of these steps MUST run the
+    /// OBLIGATION: every executor of these steps MUST run the
     /// NETTED `check_headroom` first — the type system does not enforce the
     /// pairing, and applying steps unchecked reintroduces silent clamp loss.
     #[must_use]
@@ -267,7 +272,7 @@ impl SwapPlan {
 /// Validate ownership at swap time and produce a `SwapPlan`.
 ///
 /// Called by `confirm_trade` after re-reading live rows. Fails if any monster
-/// no longer belongs to its expected party (TR-15 re-read + ownership check).
+/// no longer belongs to its expected party.
 pub fn build_swap_plan(
     initiator_monsters: &[LiveMonsterOwner],
     counterparty_monsters: &[LiveMonsterOwner],
@@ -336,7 +341,7 @@ pub fn build_swap_plan(
     })
 }
 
-/// Single-receiver item-stack headroom check (m17.5c, ADR-0124).
+/// Single-receiver item-stack headroom check.
 ///
 /// Rejects with `ItemStackCapExceeded` when crediting `incoming_qty` to a stack
 /// currently holding `current_count` would exceed `MAX_ITEM_STACK` — strict `>`,
@@ -357,14 +362,13 @@ pub fn check_item_headroom(
     Ok(())
 }
 
-/// Single-receiver currency-balance headroom check (m17.5c, ADR-0124).
+/// Single-receiver currency-balance headroom check.
 ///
 /// The `incoming > 0` gate is the FIRST line: a zero-incoming call ALWAYS
 /// returns `Ok`, even when `balance` already exceeds `MAX_BALANCE`.
 /// Absolute-balance policing is NOT this primitive's contract — it polices the
 /// incoming credit delta only, and callers must pass the balance through
-/// EXACTLY (no normalization such as clamping to `MAX_BALANCE`); this is pinned
-/// by the zero-incoming over-cap test (B-1/F11).
+/// EXACTLY (no normalization such as clamping to `MAX_BALANCE`).
 ///
 /// Rejects with `CurrencyCapExceeded` when crediting `incoming` to `balance`
 /// would exceed `MAX_BALANCE` — strict `>`, so an exact fill to the cap is
@@ -383,9 +387,9 @@ pub fn check_currency_headroom(balance: u64, incoming: u64) -> Result<(), TradeE
 /// Check that crediting the negotiated assets to each receiver won't exceed their
 /// stack/balance caps. Called by `confirm_trade` BEFORE applying any transfers so
 /// the transaction aborts cleanly with `Err` if a receiver is at or near their cap —
-/// reject-not-clamp (ADR-0113, 16.5b-1).
+/// reject-not-clamp.
 ///
-/// m17.5c (ADR-0124): the per-axis cap comparisons are DELEGATED to the
+/// The per-axis cap comparisons are DELEGATED to the
 /// single-receiver primitives `check_item_headroom` / `check_currency_headroom`
 /// (also used by the shop buy/sell paths). Currency delegation is
 /// UNCONDITIONAL — the primitive owns the `incoming > 0` skip-guard, and each
@@ -436,7 +440,7 @@ pub fn check_headroom(
     Ok(())
 }
 
-/// Authorize a `respond_trade` call (16.5f-1, ADR-0117).
+/// Authorize a `respond_trade` call.
 ///
 /// Role is checked BEFORE status: a non-counterparty caller gets `NotCounterparty`
 /// regardless of the offer's state, so the offer status never leaks to a non-party
@@ -451,7 +455,7 @@ pub fn authorize_respond(status: &TradeStatus, is_counterparty: bool) -> Result<
     Ok(())
 }
 
-/// Authorize a `confirm_trade` call (16.5f-1, ADR-0117).
+/// Authorize a `confirm_trade` call.
 ///
 /// Role is checked BEFORE status: a non-initiator caller gets `NotInitiator`
 /// regardless of the offer's state (same no-status-leak ordering as
@@ -466,11 +470,11 @@ pub fn authorize_confirm(status: &TradeStatus, is_initiator: bool) -> Result<(),
     Ok(())
 }
 
-/// Trade offer time-to-live (16.5f-4, ADR-0117).
+/// Trade offer time-to-live.
 // 1 h — tunable liveness constant, no game-design constraint.
 pub const TRADE_OFFER_TTL_MS: i64 = 3_600_000;
 
-/// True if the offer has outlived `TRADE_OFFER_TTL_MS` (16.5f-4, ADR-0117).
+/// True if the offer has outlived `TRADE_OFFER_TTL_MS`.
 ///
 /// Saturating subtraction: clock skew (`now_ms` < `created_at_ms`) yields elapsed 0,
 /// so a fresh offer is never marked stale. Boundary is `>=`: at exactly TTL the
@@ -496,7 +500,7 @@ mod tests {
         vec![TradeItem { item_id, qty }]
     }
 
-    /// TR-21: self-trade is rejected.
+    /// self-trade is rejected.
     /// kills: impl that skips the self-trade check.
     #[test]
     fn validate_rejects_self_trade() {
@@ -523,7 +527,7 @@ mod tests {
         );
     }
 
-    /// TR-20: initiator already has active trade → AlreadyInTrade.
+    /// Initiator already has active trade → AlreadyInTrade.
     /// kills: impl that allows multiple simultaneous offers per player.
     #[test]
     fn validate_rejects_initiator_already_in_trade() {
@@ -546,7 +550,7 @@ mod tests {
         assert_eq!(result.unwrap_err(), TradeError::AlreadyInTrade);
     }
 
-    /// TR-20: counterparty already has active trade → AlreadyInTrade.
+    /// Counterparty already has active trade → AlreadyInTrade.
     /// kills: impl that only checks initiator's trade status.
     #[test]
     fn validate_rejects_counterparty_already_in_trade() {
@@ -569,7 +573,7 @@ mod tests {
         assert_eq!(result.unwrap_err(), TradeError::AlreadyInTrade);
     }
 
-    /// TR-1: empty offer (no assets on either side) → EmptyOffer.
+    /// Empty offer (no assets on either side) → EmptyOffer.
     /// kills: impl that allows a 0-asset trade.
     #[test]
     fn validate_rejects_empty_offer() {
@@ -591,7 +595,7 @@ mod tests {
         assert_eq!(result.unwrap_err(), TradeError::EmptyOffer);
     }
 
-    /// TR-1: currency-only offer (0 monsters, 0 items, currency > 0) is valid.
+    /// currency-only offer (0 monsters, 0 items, currency > 0) is valid.
     /// kills: impl that requires at least one monster.
     #[test]
     fn validate_accepts_currency_only_offer() {
@@ -613,7 +617,7 @@ mod tests {
         assert!(result.is_ok(), "currency-only offer must be accepted");
     }
 
-    /// TR-22: duplicate monster_id across both sides → DuplicateMonster.
+    /// Duplicate monster_id across both sides → DuplicateMonster.
     /// kills: impl that only checks duplicates within one side.
     #[test]
     fn validate_rejects_duplicate_monster_across_sides() {
@@ -635,7 +639,7 @@ mod tests {
         assert_eq!(result.unwrap_err(), TradeError::DuplicateMonster);
     }
 
-    /// TR-22: duplicate monster_id within same side → DuplicateMonster.
+    /// Duplicate monster_id within same side → DuplicateMonster.
     /// kills: impl that only deduplicates across sides (not within).
     #[test]
     fn validate_rejects_duplicate_monster_same_side() {
@@ -657,7 +661,7 @@ mod tests {
         assert_eq!(result.unwrap_err(), TradeError::DuplicateMonster);
     }
 
-    /// TR-1: item with qty=0 → InsufficientInventory.
+    /// Item with qty=0 → InsufficientInventory.
     /// kills: impl that allows 0-qty items in offers.
     #[test]
     fn validate_rejects_zero_qty_item() {
@@ -683,14 +687,13 @@ mod tests {
         ));
     }
 
-    /// TR-19: MonsterCard has no gene fields (structural compile-time check).
+    /// MonsterCard has no gene fields (structural compile-time check).
     /// kills: impl that copies IVs/EVs/nature into the card.
-    /// This test is the authoritative proof-of-teeth for TR-19 — if MonsterCard
-    /// gained an iv_* / ev_* / nature_kind field, the ADR-0015 invariant would be
-    /// violated; a field-exhaustion pattern here would catch that change but would
-    /// be brittle. Instead we assert the public contract: make_monster_card accepts
-    /// ONLY (monster_id, species_id, nickname, level, current_hp, stat_hp) — any
-    /// gene field added to that function signature would break callers.
+    /// MonsterCard gained an iv_* / ev_* / nature_kind field; a field-exhaustion
+    /// pattern here would catch that change but would be brittle. Instead we assert
+    /// the public contract: make_monster_card accepts ONLY (monster_id, species_id,
+    /// nickname, level, current_hp, stat_hp) — any gene field added to that
+    /// function signature would break callers.
     #[test]
     fn monster_card_has_no_gene_fields() {
         let card = make_monster_card(1, 2, "Flamey".to_string(), 10, 30, 45);
@@ -706,7 +709,7 @@ mod tests {
         // require additional parameters — that compilation failure IS the teeth.
     }
 
-    /// TR-15: build_swap_plan fails loud if monster ownership changed.
+    /// build_swap_plan fails loud if monster ownership changed.
     /// kills: impl that trusts cached ownership from the offer row.
     #[test]
     fn swap_plan_rejects_ownership_mismatch() {
@@ -722,7 +725,7 @@ mod tests {
         );
     }
 
-    /// TR-16: swap plan transfers each monster to the other side.
+    /// Swap plan transfers each monster to the other side.
     /// kills: impl that doesn't reverse the direction.
     #[test]
     fn swap_plan_reverses_monster_ownership() {
@@ -759,7 +762,7 @@ mod tests {
         );
     }
 
-    /// TR-16: item transfers preserved with correct direction.
+    /// Item transfers preserved with correct direction.
     /// kills: impl that ignores item direction.
     #[test]
     fn swap_plan_item_transfers_correct_direction() {
@@ -778,7 +781,7 @@ mod tests {
         );
     }
 
-    /// TR-16: currency transfers only included when amount > 0.
+    /// Currency transfers only included when amount > 0.
     /// kills: impl that inserts zero-amount currency transfers.
     #[test]
     fn swap_plan_omits_zero_currency() {
@@ -805,7 +808,7 @@ mod tests {
         );
     }
 
-    /// FINDING-1 (HIGH — FIXED in M15a, ADR-0106): duplicate item_id within one side
+    /// FINDING-1 (HIGH — FIXED in M15a): duplicate item_id within one side
     /// of an offer was not rejected by validate_proposal. An initiator could list
     /// {item_id:5, qty:3} twice, causing the escrow guard (escrowed_item_qty) to see
     /// only 3 escrowed while 6 would be consumed at confirm time — an item-count
@@ -849,7 +852,7 @@ mod tests {
         );
     }
 
-    /// FINDING-2 (MEDIUM — FIXED in M16.5f, ADR-0117): counterparty_currency was not
+    /// FINDING-2 (MEDIUM — FIXED in M16.5f): counterparty_currency was not
     /// balance-checked at propose time. The initiator could name any
     /// counterparty_currency value regardless of the counterparty's actual wallet;
     /// the only backstop was spend_currency at confirm time, so if Bob had 0 currency
@@ -857,7 +860,7 @@ mod tests {
     /// Alice could DoS Bob's trade slot (a MEDIUM-severity griefing vector).
     ///
     /// The propose_trade reducer now balance-checks BOTH parties at propose time
-    /// (server-module/src/trading.rs, ADR-0117), so an inflated counterparty_currency
+    /// (server-module/src/trading.rs), so an inflated counterparty_currency
     /// is rejected before a row is inserted. This test still documents that the PURE
     /// layer, by design, cannot see the live wallet — validate_proposal takes no DB
     /// access, and the enforcement lives in the reducer shell.
@@ -884,7 +887,7 @@ mod tests {
             },
         );
         // Documents that validate_proposal returns Ok (no pure-layer wallet check);
-        // the actual balance enforcement is in propose_trade (server shell, ADR-0117).
+        // the actual balance enforcement is in propose_trade (server shell).
         // If this ever becomes Err, that means the pure layer gained a wallet check
         // (which would require a DB-backed argument — at which point remove this test).
         assert!(
@@ -894,8 +897,8 @@ mod tests {
         );
     }
 
-    /// TR-1: counterparty-monster-only offer (initiator provides nothing) is valid.
-    /// kills: 39:9 replace + with * — mutant: i_items.len() * c_monsters.len() = 0*1 = 0
+    /// counterparty-monster-only offer (initiator provides nothing) is valid.
+    /// kills: replace + with * — mutant: i_items.len() * c_monsters.len() = 0*1 = 0
     ///        making total_assets = 0 → EmptyOffer; original: 0+0+1+0+0+0 = 1 → Ok.
     #[test]
     fn validate_accepts_counterparty_monster_only() {
@@ -920,8 +923,8 @@ mod tests {
         );
     }
 
-    /// TR-1: initiator offers a monster, counterparty offers an item with positive qty → valid.
-    /// kills: 40:9 replace + with — total becomes 1-1=0 → EmptyOffer (original: 2).
+    /// Initiator offers a monster, counterparty offers an item with positive qty → valid.
+    /// kills: replace + with — total becomes 1-1=0 → EmptyOffer (original: 2).
     ///        69:12 delete ! — first counterparty item inserts→true, triggers DuplicateItem.
     ///        84:21 replace == with != — qty=3 != 0 triggers InsufficientInventory.
     #[test]
@@ -945,8 +948,8 @@ mod tests {
         assert!(result.is_ok(), "monster-for-item trade must be valid");
     }
 
-    /// TR-1: counterparty-items-only offer (no monsters on either side) is valid.
-    /// kills: 40:9 replace + with * — mutant: c_monsters.len() * c_items.len() = 0*1 = 0
+    /// counterparty-items-only offer (no monsters on either side) is valid.
+    /// kills: replace + with * — mutant: c_monsters.len() * c_items.len() = 0*1 = 0
     ///        making total_assets = 0 → EmptyOffer; original: 0+0+0+1+0+0 = 1 → Ok.
     #[test]
     fn validate_accepts_counterparty_items_only() {
@@ -972,8 +975,8 @@ mod tests {
         );
     }
 
-    /// TR-1: counterparty-currency-only offer (initiator provides nothing) is valid.
-    /// kills: 42:36 replace > with < — u64 < 0 is always false, so counterparty currency
+    /// counterparty-currency-only offer (initiator provides nothing) is valid.
+    /// kills: replace > with < — u64 < 0 is always false, so counterparty currency
     ///        never counts toward total_assets; original: 0+0+0+0+0+1 = 1 → Ok.
     #[test]
     fn validate_accepts_counterparty_currency_only() {
@@ -998,8 +1001,8 @@ mod tests {
         );
     }
 
-    /// TR-16: build_swap_plan includes a CurrencyTransfer for counterparty_currency > 0.
-    /// kills: 220:30 replace > with < — u64 < 0 is always false, counterparty currency
+    /// build_swap_plan includes a CurrencyTransfer for counterparty_currency > 0.
+    /// kills: replace > with < — u64 < 0 is always false, counterparty currency
     ///        transfer is never pushed → plan.currency_transfers is empty;
     ///        original: counterparty_currency=50 > 0 → pushed with from_initiator=false.
     #[test]
@@ -1021,22 +1024,11 @@ mod tests {
     }
 
     // ===========================================================================
-    // M16.5b: check_headroom — receiver-cap tests (RED until implementation added)
+    // check_headroom — receiver-cap tests
     //
-    // These tests reference `check_headroom`, `ItemStack`, `MAX_ITEM_STACK`, and
-    // `TradeError::ItemStackCapExceeded` / `TradeError::CurrencyCapExceeded`, which
-    // do NOT yet exist. They will not compile until the implementer adds them to
-    // rules.rs and types.rs — that is intentional (RED phase, 16.5b-1 / 16.5b-2).
-    //
-    // EARS criteria:
-    //   16.5b-1  confirm_trade SHALL return Err and roll back if any credit would
-    //            exceed MAX_ITEM_STACK or MAX_BALANCE headroom (reject-not-clamp).
-    //   16.5b-2  Boundary tests at the exact spec thresholds:
-    //            - 9980 + 50 = 10030 > 9999 = MAX_ITEM_STACK → Err
-    //            - (MAX_BALANCE - 49) + 50 > MAX_BALANCE → Err
     // ===========================================================================
 
-    /// 16.5b-2 PRIMARY ITEM BOUNDARY: initiator (receiver) at 9,980 of item_id=1,
+    /// PRIMARY ITEM BOUNDARY: initiator (receiver) at 9,980 of item_id=1,
     /// receiving 50 items → Err(ItemStackCapExceeded { item_id: 1 }).
     /// Spec equation: 9980 + 50 = 10030 > MAX_ITEM_STACK (9999).
     ///
@@ -1071,7 +1063,7 @@ mod tests {
         );
     }
 
-    /// 16.5b-2 PRIMARY CURRENCY BOUNDARY: initiator_balance = MAX_BALANCE - 49,
+    /// PRIMARY CURRENCY BOUNDARY: initiator_balance = MAX_BALANCE - 49,
     /// receives 50 currency → Err(CurrencyCapExceeded).
     /// Spec: (MAX_BALANCE - 49) + 50 = MAX_BALANCE + 1 > MAX_BALANCE.
     ///
@@ -1089,7 +1081,7 @@ mod tests {
         );
     }
 
-    /// 16.5b-2: counterparty (receiver) at 9,980 of item_id=3, receiving 50 → Err.
+    /// Counterparty (receiver) at 9,980 of item_id=3, receiving 50 → Err.
     ///
     /// kills: impl that only checks headroom for the initiator side (the initiator is
     ///        the one calling confirm_trade, so a lazy impl might only verify the
@@ -1122,7 +1114,7 @@ mod tests {
         );
     }
 
-    /// 16.5b-2: counterparty_balance = MAX_BALANCE, receives 1 → Err(CurrencyCapExceeded).
+    /// counterparty_balance = MAX_BALANCE, receives 1 → Err(CurrencyCapExceeded).
     ///
     /// kills: impl that only checks the initiator currency headroom and skips the
     ///        counterparty — a counterparty at MAX_BALANCE receiving any currency would
@@ -1138,7 +1130,7 @@ mod tests {
         );
     }
 
-    /// 16.5b-2: receiver has exactly MAX_ITEM_STACK items, receives 1 → Err.
+    /// Receiver has exactly MAX_ITEM_STACK items, receives 1 → Err.
     ///
     /// kills: impl that uses > instead of >= for the overflow check (off-by-one):
     ///        current_count + qty == MAX_ITEM_STACK + 1 which is strictly > MAX_ITEM_STACK,
@@ -1160,7 +1152,7 @@ mod tests {
         );
     }
 
-    /// 16.5b-1 ACCEPT BOUNDARY (item): receiver at 9,980 receiving exactly 19
+    /// ACCEPT BOUNDARY (item): receiver at 9,980 receiving exactly 19
     /// (9980 + 19 = 9999 = MAX_ITEM_STACK) → Ok (exactly fills the stack).
     ///
     /// kills: impl that uses >= instead of > for the overflow check, incorrectly
@@ -1184,7 +1176,7 @@ mod tests {
         );
     }
 
-    /// 16.5b-1 ACCEPT BOUNDARY (currency): balance = MAX_BALANCE - 49, receives 49 → Ok.
+    /// ACCEPT BOUNDARY (currency): balance = MAX_BALANCE - 49, receives 49 → Ok.
     ///
     /// kills: impl that uses > instead of >= in the headroom check, rejecting a trade
     ///        that exactly fills to MAX_BALANCE — receiving exactly the headroom must be Ok.
@@ -1198,7 +1190,7 @@ mod tests {
         );
     }
 
-    /// 16.5b-1: empty trade (no items, no currency) → Ok (vacuous case, no overflow possible).
+    /// Empty trade (no items, no currency) → Ok (vacuous case, no overflow possible).
     ///
     /// kills: impl that unconditionally returns Err, or one that panics on empty slices.
     #[test]
@@ -1211,7 +1203,7 @@ mod tests {
         );
     }
 
-    /// 16.5b-1: receiver has 0 of item, receives MAX_ITEM_STACK → Ok (full stack from empty).
+    /// Receiver has 0 of item, receives MAX_ITEM_STACK → Ok (full stack from empty).
     ///
     /// kills: impl that confuses "receiver has no row" with "at cap" — a missing
     ///        inventory row means current_count = 0, so headroom = MAX_ITEM_STACK
@@ -1233,14 +1225,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // M16.5b: counterparty accept-boundary tests (nightly-mut-triage gap fill)
+    // counterparty accept-boundary tests
     //
-    // The five tests below target surviving mutants in the counterparty branches
-    // of check_headroom (lines 289–312).  Each test carries a `kills:` annotation
-    // per ADR-0088 convention for line-drift traceability.
     // -----------------------------------------------------------------------
 
-    /// 16.5b-2 ACCEPT BOUNDARY (counterparty item): counterparty has 9,980 of item_id=4,
+    /// ACCEPT BOUNDARY (counterparty item): counterparty has 9,980 of item_id=4,
     /// receives exactly 19 items → Ok (9980 + 19 = 9999 = MAX_ITEM_STACK, exactly fills).
     ///
     /// Mirror of `check_headroom_accepts_exact_headroom_item` but on the counterparty
@@ -1275,7 +1264,7 @@ mod tests {
         );
     }
 
-    /// 16.5b-1 ACCEPT BOUNDARY (counterparty currency): counterparty_balance = MAX_BALANCE - 49,
+    /// ACCEPT BOUNDARY (counterparty currency): counterparty_balance = MAX_BALANCE - 49,
     /// counterparty_receives_currency = 49 → Ok (sum exactly MAX_BALANCE).
     ///
     /// Mirror of `check_headroom_accepts_exact_currency_headroom` but on the counterparty
@@ -1299,19 +1288,17 @@ mod tests {
         );
     }
 
-    /// 16.5b-1 ACCEPT BOUNDARY (counterparty currency, belt-and-suspenders):
+    /// ACCEPT BOUNDARY (counterparty currency, belt-and-suspenders):
     /// counterparty_receives_currency = 50, counterparty_balance = 0 → Ok
     /// (well under MAX_BALANCE; receives > 0 so the branch is entered, sum stays under cap).
     ///
     /// With the real `&&`: (50 > 0) && (0 + 50 > MAX_BALANCE) → false → Ok.
     /// With the `||` mutant: (50 > 0) || (...) → true → balance check evaluated →
-    ///   (0 + 50 > MAX_BALANCE) → false → Ok.  Wait — actually || mutant on line 308:9
-    ///   replaces `&&` with `||` in:
+    ///   (0 + 50 > MAX_BALANCE) → false → Ok.
     ///   `if counterparty_receives_currency > 0 || counterparty_balance.saturating_add(...) > MAX_BALANCE`
     ///   When receives=50>0 (true), the short-circuit makes the whole `if` true, and then
     ///   the balance check is the second operand: with balance=0, 0+50≤MAX_BALANCE → false,
     ///   so `||` gives true → Err.  The real `&&` gives true && false → false → Ok.
-    ///   This test therefore decisively kills the 309:9 || mutant.
     ///
     /// kills: replace && with || (incoming > 0 guard) in check_currency_headroom (delegated
     ///        from check_headroom, counterparty side) — receives=50>0, balance=0,
@@ -1325,7 +1312,7 @@ mod tests {
         );
     }
 
-    /// 16.5b-1 CONTRACT TEST — initiator skip-guard when receives_currency = 0.
+    /// CONTRACT TEST — initiator skip-guard when receives_currency = 0.
     ///
     /// Input: initiator_receives_currency = 0, initiator_balance = MAX_BALANCE + 1,
     /// all other args empty/zero.
@@ -1333,11 +1320,10 @@ mod tests {
     /// The input balance DELIBERATELY violates the wallet invariant
     /// (`balance ≤ MAX_BALANCE`, enforced by economy.rs apply_grant/spend) —
     /// production cannot produce this value.  The test pins the CONTRACT of the
-    /// `initiator_receives_currency > 0` skip-guard at line 302: check_headroom
+    /// `initiator_receives_currency > 0` skip-guard: check_headroom
     /// polices the trade's incoming delta, not pre-existing wallet state, so a
     /// zero-receive side is exempt from the balance check regardless of its
-    /// absolute balance.  Do NOT "fix" this test by also policing absolute balance
-    /// — if the contract ever changes to do that, revise ADR-0118 first.
+    /// absolute balance.
     ///
     /// Under real `> 0`: 0 > 0 is false → balance check skipped → Ok.
     /// Under `>= 0` mutant: 0 >= 0 is true → check runs →
@@ -1357,19 +1343,17 @@ mod tests {
         );
     }
 
-    /// 16.5b-1 CONTRACT TEST — counterparty skip-guard when receives_currency = 0.
+    /// CONTRACT TEST — counterparty skip-guard when receives_currency = 0.
     ///
     /// Symmetric to `check_headroom_zero_receive_initiator_skips_balance_check`,
-    /// targeting the counterparty skip-guard at line 308.
+    /// targeting the counterparty skip-guard.
     ///
     /// The input counterparty_balance = MAX_BALANCE + 1 DELIBERATELY violates the
     /// wallet invariant (`balance ≤ MAX_BALANCE`, enforced by economy.rs apply_grant/spend)
     /// — production cannot produce this value.  The test pins the CONTRACT of the
     /// `counterparty_receives_currency > 0` skip-guard: check_headroom polices the
     /// trade's incoming delta, not pre-existing wallet state, so a zero-receive side
-    /// is exempt from the balance check regardless of its absolute balance.  Do NOT
-    /// "fix" this test by also policing absolute balance — if the contract ever
-    /// changes to do that, revise ADR-0118 first.
+    /// is exempt from the balance check regardless of its absolute balance.
     ///
     /// Under real `> 0`: 0 > 0 is false → balance check skipped → Ok.
     /// Under `>= 0` mutant: 0 >= 0 is true → check runs →
@@ -1443,7 +1427,7 @@ mod tests {
     fn check_headroom_accepts_effective_count_same_item() {
         use crate::currency::MAX_BALANCE;
         // Effective count after subtracting 15 sent: 9990-15=9975; incoming=20 → 9975+20=9995 ≤ 9999 → Ok.
-        // This is the value confirm_trade passes after the net-quantity fix (ADR-0113).
+        // This is the value confirm_trade passes after the net-quantity fix.
         let initiator_receives = [TradeItem {
             item_id: 5,
             qty: 20,
@@ -1469,20 +1453,11 @@ mod tests {
     }
 
     // ===========================================================================
-    // M16.5f: authorize_* + is_offer_stale (RED until implementation added)
+    // authorize_* + is_offer_stale
     //
-    // These tests reference `authorize_respond`, `authorize_confirm`,
-    // `is_offer_stale`, and `TRADE_OFFER_TTL_MS`, which do NOT yet exist in
-    // rules.rs.  They will not compile until the implementer adds them — that is
-    // intentional (RED phase, m16.5f).
-    //
-    // EARS criteria:
-    //   m16.5f-1  authorize_respond checks role BEFORE status (role-first ordering).
-    //   m16.5f-2  authorize_confirm checks role BEFORE status (role-first ordering).
-    //   m16.5f-3  is_offer_stale uses saturating arithmetic and the >= boundary.
     // ===========================================================================
 
-    /// m16.5f-1 HAPPY PATH: (Pending, is_counterparty=true) → Ok(()).
+    /// HAPPY PATH: (Pending, is_counterparty=true) → Ok(()).
     ///
     /// kills: impl that always returns Err, or that requires a different status.
     #[test]
@@ -1495,7 +1470,7 @@ mod tests {
         );
     }
 
-    /// m16.5f-1 ROLE CHECK: (Pending, is_counterparty=false) → Err(NotCounterparty).
+    /// ROLE CHECK: (Pending, is_counterparty=false) → Err(NotCounterparty).
     ///
     /// kills: impl that skips the role check and only checks status — allows the
     ///        initiator to call respond_trade on their own offer.
@@ -1509,7 +1484,7 @@ mod tests {
         );
     }
 
-    /// m16.5f-1 STATUS CHECK: (ConfirmedByCounterparty, is_counterparty=true) → Err(NotPending).
+    /// STATUS CHECK: (ConfirmedByCounterparty, is_counterparty=true) → Err(NotPending).
     ///
     /// kills: impl that skips the status check and returns Ok for any active status —
     ///        counterparty could re-respond to an already-confirmed offer.
@@ -1523,7 +1498,7 @@ mod tests {
         );
     }
 
-    /// m16.5f-1 ORDERING TOOTH: (ConfirmedByCounterparty, is_counterparty=false) →
+    /// ORDERING TOOTH: (ConfirmedByCounterparty, is_counterparty=false) →
     /// Err(NotCounterparty), NOT Err(NotPending).
     ///
     /// kills: a status-first impl that checks status before role.  If status is checked
@@ -1542,7 +1517,7 @@ mod tests {
         );
     }
 
-    /// m16.5f-2 HAPPY PATH: (ConfirmedByCounterparty, is_initiator=true) → Ok(()).
+    /// HAPPY PATH: (ConfirmedByCounterparty, is_initiator=true) → Ok(()).
     ///
     /// kills: impl that always returns Err, or that requires Pending status.
     #[test]
@@ -1555,7 +1530,7 @@ mod tests {
         );
     }
 
-    /// m16.5f-2 ROLE CHECK: (ConfirmedByCounterparty, is_initiator=false) →
+    /// ROLE CHECK: (ConfirmedByCounterparty, is_initiator=false) →
     /// Err(NotInitiator).
     ///
     /// kills: impl that skips the role check — allows the counterparty to call
@@ -1570,7 +1545,7 @@ mod tests {
         );
     }
 
-    /// m16.5f-2 STATUS CHECK: (Pending, is_initiator=true) →
+    /// STATUS CHECK: (Pending, is_initiator=true) →
     /// Err(NotConfirmedByCounterparty).
     ///
     /// kills: impl that skips the status check — allows initiator to confirm before
@@ -1585,7 +1560,7 @@ mod tests {
         );
     }
 
-    /// m16.5f-2 ORDERING TOOTH: (Pending, is_initiator=false) → Err(NotInitiator),
+    /// ORDERING TOOTH: (Pending, is_initiator=false) → Err(NotInitiator),
     /// NOT Err(NotConfirmedByCounterparty).
     ///
     /// kills: a status-first impl.  If status is checked first, (Pending, false) returns
@@ -1602,7 +1577,7 @@ mod tests {
         );
     }
 
-    /// m16.5f-3 BOUNDARY: (created=0, now=TRADE_OFFER_TTL_MS - 1) → false (not yet stale).
+    /// BOUNDARY: (created=0, now=TRADE_OFFER_TTL_MS - 1) → false (not yet stale).
     ///
     /// kills: impl that uses > instead of >= (off-by-one: TTL-1 ms remaining → fresh).
     /// Uses TRADE_OFFER_TTL_MS by name so a constant-value mutant (changing the const)
@@ -1615,7 +1590,7 @@ mod tests {
         );
     }
 
-    /// m16.5f-3 BOUNDARY: (created=0, now=TRADE_OFFER_TTL_MS) → true (exactly at TTL).
+    /// BOUNDARY: (created=0, now=TRADE_OFFER_TTL_MS) → true (exactly at TTL).
     ///
     /// kills: impl that uses > instead of >= for the stale check — the spec says
     ///        elapsed >= TTL is stale, so at exactly TTL the offer IS stale.
@@ -1628,7 +1603,7 @@ mod tests {
         );
     }
 
-    /// m16.5f-3 BOUNDARY: (created=0, now=TRADE_OFFER_TTL_MS + 1) → true (past TTL).
+    /// BOUNDARY: (created=0, now=TRADE_OFFER_TTL_MS + 1) → true (past TTL).
     ///
     /// kills: impl that uses = instead of >= (rejects any elapsed time but the exact boundary).
     #[test]
@@ -1639,7 +1614,7 @@ mod tests {
         );
     }
 
-    /// m16.5f-3 CLOCK SKEW: (created=100, now=50) → false (created_at in the future).
+    /// CLOCK SKEW: (created=100, now=50) → false (created_at in the future).
     ///
     /// kills: impl that does `now - created` without saturating_sub — would underflow
     ///        and panic on debug builds (or wrap to a huge value on release), incorrectly
@@ -1653,7 +1628,7 @@ mod tests {
         );
     }
 
-    /// m16.5f-3 EXTREMES: (i64::MIN, i64::MAX) must not panic (saturating arithmetic).
+    /// EXTREMES: (i64::MIN, i64::MAX) must not panic (saturating arithmetic).
     ///
     /// kills: impl that uses wrapping/checked subtraction rather than saturating_sub —
     ///        i64::MAX - i64::MIN would overflow on a non-saturating impl.
@@ -1664,7 +1639,7 @@ mod tests {
         let _ = is_offer_stale(i64::MIN, i64::MAX);
     }
 
-    /// m16.5f-3 EXTREMES: (i64::MAX, i64::MIN) must not panic (saturating arithmetic).
+    /// EXTREMES: (i64::MAX, i64::MIN) must not panic (saturating arithmetic).
     ///
     /// kills: same as above — reversed direction gives saturating_sub = 0 → false,
     ///        but again the key property is: must not panic.
@@ -1681,26 +1656,12 @@ mod tests {
     }
 
     // ===========================================================================
-    // m17.5b — debits-before-credits ordering + currency netting + conservation
+    // debits-before-credits ordering + currency netting + conservation
     //
-    // These tests reference `SwapPlan::ordered_steps()` and `ApplyStep` (with
-    // variants ItemDebit / CurrencyDebit / ItemCredit / CurrencyCredit), which do
-    // NOT yet exist.  They will not compile until the implementer adds them to
-    // rules.rs — that is intentional (RED phase: EARS 17.5b-1 / 17.5b-2 / 17.5b-3).
-    //
-    // EARS criteria:
-    //   17.5b-1  WHEN confirm_trade executes, ALL debits SHALL be applied before ANY
-    //            credit.  `ordered_steps()` is the published game-core SSOT contract.
-    //   17.5b-2  IF debits-first is adopted, currency headroom inputs SHALL be netted
-    //            (`balance − outgoing`) symmetrically with item stacks.
-    //   17.5b-3  Regression proof-of-teeth: bilateral same-item swap near cap →
-    //            assets conserved; genuine over-cap net → Err before any walk.
-    //
-    // HONESTY NOTE (B-2): The "both inventories unchanged on reject" property proven
+    // The "both inventories unchanged on reject" property proven
     // here rests on `check_headroom` rejecting BEFORE any walk of `ordered_steps()`.
     // Production partial-failure safety rests on SpacetimeDB reducer-Err transaction
-    // rollback — a platform guarantee NOT exercised in unit tests.  This is stated
-    // explicitly in ADR-0123 and the relevant test doc-comments.
+    // rollback — a platform guarantee NOT exercised in unit tests.
     // ===========================================================================
 
     // ---------------------------------------------------------------------------
@@ -1710,7 +1671,7 @@ mod tests {
     // can assert per-party exact deltas after walking `ordered_steps()`.
     //
     // The credit operation MUST assert BEFORE any min/clamp so the tripwire fires
-    // on a clamp-that-engages — the regression signal for credit-before-debit (F6).
+    // on a clamp-that-engages — the regression signal for credit-before-debit.
     // ---------------------------------------------------------------------------
 
     use std::collections::HashMap;
@@ -1746,7 +1707,7 @@ mod tests {
 
         /// Apply a single `ApplyStep` to the model.
         ///
-        /// Credit ops MUST assert BEFORE any clamp (F6): if `old + qty > MAX_ITEM_STACK`
+        /// Credit ops MUST assert BEFORE any clamp: if `old + qty > MAX_ITEM_STACK`
         /// the tripwire fires, proving debits-first was violated (the net headroom check
         /// should have caught this before any steps were walked).
         fn apply(&mut self, step: &ApplyStep) {
@@ -1778,7 +1739,7 @@ mod tests {
                 } => {
                     let party_idx = *to_initiator;
                     let old = *self.items.entry((party_idx, *item_id)).or_insert(0);
-                    // TRIPWIRE — fires BEFORE any min/clamp (F6).
+                    // TRIPWIRE — fires BEFORE any min/clamp.
                     // A credit-before-debit scenario leaves the old count pre-debit, so
                     // `old + qty` hits the cap here.  Debits-first ensures the count is
                     // already reduced before this assertion is evaluated.
@@ -1824,12 +1785,12 @@ mod tests {
     // ---------------------------------------------------------------------------
     // A1 — executed conservation: bilateral same-item swap near-cap
     //
-    // EARS 17.5b-3: counterparty at 9999 and 9998 of item X, with a bilateral swap
+    // counterparty at 9999 and 9998 of item X, with a bilateral swap
     // that nets within headroom — ordered_steps() must walk without tripping the
     // model tripwire AND per-party deltas must be exact.
     // ---------------------------------------------------------------------------
 
-    /// EARS 17.5b-3: bilateral same-item swap, counterparty starts at 9999 of item X.
+    /// bilateral same-item swap, counterparty starts at 9999 of item X.
     ///
     /// Net:  counterparty sends 20, receives 15 → post-trade = 9999 − 20 + 15 = 9994 (valid).
     /// The item-destruction bug would credit +15 at count=9999 (drop), debit −20 → 9979.
@@ -1907,7 +1868,7 @@ mod tests {
             model.apply(step); // tripwire inside apply() catches credit-before-debit
         }
 
-        // Per-party exact deltas (kills identity-swap / recipient-swap mutants — F2/B-1).
+        // Per-party exact deltas (kills identity-swap / recipient-swap mutants).
         let i_final = *model.items.get(&(true, ITEM_X)).unwrap_or(&0);
         let c_final = *model.items.get(&(false, ITEM_X)).unwrap_or(&0);
         assert_eq!(
@@ -1928,7 +1889,7 @@ mod tests {
         );
     }
 
-    /// EARS 17.5b-3: bilateral same-item swap, counterparty starts at 9998 of item X.
+    /// bilateral same-item swap, counterparty starts at 9998 of item X.
     ///
     /// counterparty sends 20, receives 15 → post-trade = 9998 − 20 + 15 = 9993 (valid).
     /// Verifies the regression at 9998 (not just 9999 boundary).
@@ -1999,7 +1960,7 @@ mod tests {
         );
     }
 
-    /// EARS 17.5b-3: genuine over-cap net → check_headroom Err BEFORE any walk.
+    /// genuine over-cap net → check_headroom Err BEFORE any walk.
     ///
     /// counterparty at 9999, receives 20 net (sends 0) — effective count 9999 + 20 > cap.
     /// `check_headroom` must Err; the model is never walked (honesty: no model assertion
@@ -2040,29 +2001,27 @@ mod tests {
             "expected ItemStackCapExceeded for item {ITEM_X}",
         );
         // Model intentionally NOT walked — Err precondition guarantees no mutation.
-        // (Production safety = SpacetimeDB reducer-Err transaction rollback, ADR-0123.)
+        // (Production safety = SpacetimeDB reducer-Err transaction rollback.)
     }
 
     // ---------------------------------------------------------------------------
     // A2 — proptest: constructive near-cap generation, never-trip + conservation
     //
-    // EARS 17.5b-1/2/3 (all): property that for ANY constructively-generated
+    // property that for ANY constructively-generated
     // bilateral swap (qty bounded by remaining netted headroom), walking
     // ordered_steps() never trips the model tripwire and per-party + aggregate
     // totals are conserved exactly.
     //
-    // Constructive generation (N-2/F10): qty bounded so netted headroom passes —
+    // Constructive generation: qty bounded so netted headroom passes —
     // NOT prop_assume! rejection sampling, which would filter out the near-cap region.
     // The near-cap region is exactly the regression territory.
     //
-    // House trap: no inline format captures in prop_assert! messages (prior slice
-    // M17a hit a clippy/build issue).  Use positional args like `{}` + separate vals.
     // ---------------------------------------------------------------------------
 
     use proptest::prelude::*;
 
     proptest! {
-        /// EARS 17.5b-1/2/3 (property): constructive near-cap swap never trips the model
+        /// constructive near-cap swap never trips the model
         /// tripwire and conserves exactly per-party and aggregate item quantities.
         ///
         /// Generation: initiator and counterparty each start with a count in [0, MAX_ITEM_STACK].
@@ -2084,7 +2043,7 @@ mod tests {
             use crate::currency::MAX_BALANCE;
             const ITEM_ID: u32 = 1;
 
-            // AMENDMENT 1 (BLOCKER): build plan quantities constructively so that
+            // build plan quantities constructively so that
             // check_headroom, the model walk, and the expected-delta assertions are
             // all consistent with each other.  No prop_assume!
             //
@@ -2218,7 +2177,7 @@ mod tests {
     // sensitivity, and broke-sender boundary.
     // ---------------------------------------------------------------------------
 
-    /// EARS 17.5b-1: strict partition — ALL ItemDebit/CurrencyDebit strictly before
+    /// strict partition — ALL ItemDebit/CurrencyDebit strictly before
     /// ANY ItemCredit/CurrencyCredit in ordered_steps().
     ///
     /// kills: phase-swap (credits emitted first); interleave (debit between credits).
@@ -2262,7 +2221,7 @@ mod tests {
         }
     }
 
-    /// EARS 17.5b-1: step-content parity (F1) — for every ItemTransfer in the plan,
+    /// step-content parity — for every ItemTransfer in the plan,
     /// ordered_steps() emits exactly ONE ItemDebit and ONE ItemCredit with:
     ///   - ItemDebit:  (from_initiator, item_id, qty) matches the transfer exactly.
     ///   - ItemCredit: (to_initiator == !from_initiator, item_id, SAME qty).
@@ -2469,7 +2428,7 @@ mod tests {
         );
     }
 
-    /// EARS 17.5b-1 (N-1): zero-currency plan emits NO currency steps.
+    /// zero-currency plan emits NO currency steps.
     ///
     /// `build_swap_plan` already filters >0 currency into `currency_transfers`;
     /// `ordered_steps()` must mirror that filter — no phantom CurrencyDebit/Credit
@@ -2504,7 +2463,7 @@ mod tests {
         );
     }
 
-    /// EARS 17.5b-2: currency netting asymmetric sensitivity (F7).
+    /// currency netting asymmetric sensitivity.
     ///
     /// Chosen scenario (correct→Err, swapped→Ok flip):
     ///   initiator_balance = MAX_BALANCE − 50; initiator sends 200; receives 100.
@@ -2521,7 +2480,7 @@ mod tests {
     ///   → swapped result: Ok.
     ///   FLIP: correct=Err, swapped=Ok — the two subtrahends are NOT interchangeable.
     ///
-    /// kills: impl that swaps initiator_outgoing / counterparty_outgoing subtrahends (F7).
+    /// kills: impl that swaps initiator_outgoing / counterparty_outgoing subtrahends.
     #[test]
     fn check_headroom_currency_netting_asymmetric_sensitivity() {
         use crate::currency::MAX_BALANCE;
@@ -2584,16 +2543,16 @@ mod tests {
              return Ok here when the correct netting returns Err; got {:?}",
             swapped_result
         );
-        // The flip: correct=Err, swapped=Ok proves field-swap is detectable (F7/17.5b-2).
+        // The flip: correct=Err, swapped=Ok proves field-swap is detectable.
     }
 
-    /// EARS 17.5b-2: broke-sender boundary (M-2/F3).
+    /// broke-sender boundary.
     ///
     /// Scenario: initiator's outgoing > live balance (broke sender), netted
     /// effective = saturating_sub → 0, incoming 100 → 0 + 100 = 100 ≤ MAX_BALANCE.
     /// check_headroom PASSES (cap-wise); the real rejection site is `spend_currency`
-    /// inside the step loop → whole-reducer transaction rollback (SpacetimeDB atomicity,
-    /// ADR-0123). This division of labor is explicit and documented.
+    /// inside the step loop → whole-reducer transaction rollback.
+    /// This division of labor is explicit and documented.
     ///
     /// kills: impl that adds a broke-sender check in check_headroom (which would
     ///        move the rejection responsibility and change the API contract).
@@ -2630,28 +2589,17 @@ mod tests {
             result.is_ok(),
             "broke-sender boundary: check_headroom must PASS (cap-wise); \
              the real rejection is spend_currency inside the step loop \
-             (SpacetimeDB reducer-Err transaction rollback, ADR-0123). \
+             (SpacetimeDB reducer-Err transaction rollback). \
              Got: {:?}",
             result
         );
-        // Doc-comment: the division of labor is intentional and unchanged by this slice.
         // spend_currency Err causes whole-reducer rollback → both inventories unchanged.
     }
 
     // ===========================================================================
-    // m17.5c — check_item_headroom / check_currency_headroom boundary tests
+    // check_item_headroom / check_currency_headroom boundary tests
     //
-    // These tests reference `check_item_headroom` and `check_currency_headroom`,
-    // which do NOT yet exist in rules.rs.  They will not compile until the
-    // implementer adds them — that is intentional (RED phase, EARS 17.5c-1/-2).
-    //
-    // EARS criteria:
-    //   17.5c-1  buy SHALL return Err and refund (reject-not-destroy) if granting
-    //            qty items would exceed MAX_ITEM_STACK for the buyer.
-    //   17.5c-2  sell SHALL return Err (reject-not-destroy) if granting the
-    //            currency proceeds would exceed MAX_BALANCE for the seller.
-    //
-    // Primitive contracts (plan §Design, gate ownership B-1/F11):
+    // Primitive contracts:
     //   check_item_headroom(current_count, incoming_qty, item_id) → Result<(), TradeError>
     //     Err(ItemStackCapExceeded { item_id }) iff
     //       current_count.saturating_add(incoming_qty) > MAX_ITEM_STACK.
@@ -2671,7 +2619,7 @@ mod tests {
     // check_item_headroom — item stack receiver-cap
     // ---------------------------------------------------------------------------
 
-    /// 17.5c-1 REJECT: 9980 + 50 = 10030 > MAX_ITEM_STACK (9999) → Err.
+    /// REJECT: 9980 + 50 = 10030 > MAX_ITEM_STACK (9999) → Err.
     /// Asserts both the exact variant AND the item_id payload (not just is_err()).
     ///
     /// kills: impl that clamps via grant_item instead of rejecting — a clamp would
@@ -2688,7 +2636,7 @@ mod tests {
         );
     }
 
-    /// 17.5c-1 REJECT AT CAP: current_count = MAX_ITEM_STACK, incoming = 1 → Err.
+    /// REJECT AT CAP: current_count = MAX_ITEM_STACK, incoming = 1 → Err.
     /// The item_id payload must be 7 (the passed argument).
     ///
     /// kills: impl using >= for the cap comparison (would accept this and reject
@@ -2704,7 +2652,7 @@ mod tests {
         );
     }
 
-    /// 17.5c-1 ACCEPT EXACT-FILL: 9980 + 19 = 9999 = MAX_ITEM_STACK → Ok.
+    /// ACCEPT EXACT-FILL: 9980 + 19 = 9999 = MAX_ITEM_STACK → Ok.
     ///
     /// kills: impl using >= for the cap comparison (would incorrectly reject a trade
     ///        that exactly fills the receiver's stack to the cap).
@@ -2717,7 +2665,7 @@ mod tests {
         );
     }
 
-    /// 17.5c-1 ACCEPT NEW RECEIVER: 0 + MAX_ITEM_STACK → Ok.
+    /// ACCEPT NEW RECEIVER: 0 + MAX_ITEM_STACK → Ok.
     ///
     /// kills: impl that treats a missing inventory row as an error, or that defaults
     ///        current_count to something other than 0 (full stack from empty is valid).
@@ -2730,7 +2678,7 @@ mod tests {
         );
     }
 
-    /// 17.5c-1 REJECT NEW RECEIVER OVER CAP: 0 + 10_000 > MAX_ITEM_STACK → Err.
+    /// REJECT NEW RECEIVER OVER CAP: 0 + 10_000 > MAX_ITEM_STACK → Err.
     ///
     /// kills: unwrap_or-style bypass where an impl skips the check when
     ///        current_count == 0 (zero-default early-return), or where the comparison
@@ -2750,7 +2698,7 @@ mod tests {
     // check_currency_headroom — currency balance receiver-cap
     // ---------------------------------------------------------------------------
 
-    /// 17.5c-2 REJECT: (MAX_BALANCE - 49) + 50 = MAX_BALANCE + 1 > MAX_BALANCE → Err.
+    /// REJECT: (MAX_BALANCE - 49) + 50 = MAX_BALANCE + 1 > MAX_BALANCE → Err.
     ///
     /// kills: impl that clamps via grant_currency's saturating add instead of
     ///        rejecting — a clamp would return Ok, silently destroying 1 unit of
@@ -2767,7 +2715,7 @@ mod tests {
         );
     }
 
-    /// 17.5c-2 REJECT AT CAP: balance = MAX_BALANCE, incoming = 1 → Err.
+    /// REJECT AT CAP: balance = MAX_BALANCE, incoming = 1 → Err.
     ///
     /// kills: impl using >= for the cap comparison (would accept this and reject
     ///        the exact-fill case instead).
@@ -2783,7 +2731,7 @@ mod tests {
         );
     }
 
-    /// 17.5c-2 ACCEPT EXACT-FILL: (MAX_BALANCE - 49) + 49 = MAX_BALANCE → Ok.
+    /// ACCEPT EXACT-FILL: (MAX_BALANCE - 49) + 49 = MAX_BALANCE → Ok.
     ///
     /// kills: impl using >= for the cap comparison (would incorrectly reject a sell
     ///        that exactly fills the seller's wallet to the cap).
@@ -2797,7 +2745,7 @@ mod tests {
         );
     }
 
-    /// 17.5c-2 GATE: incoming = 0 → Ok unconditionally (skip-guard).
+    /// GATE: incoming = 0 → Ok unconditionally (skip-guard).
     /// The `incoming > 0` gate is the FIRST line of check_currency_headroom.
     ///
     /// This is the plain zero-incoming accept case (balance exactly at cap,
@@ -2817,8 +2765,7 @@ mod tests {
         );
     }
 
-    /// 17.5c-2 GATE PIN (B-1/F11, anti-normalization): incoming = 0, balance = MAX_BALANCE + 1
-    /// (deliberately over-cap balance) → Ok.
+    /// GATE PIN: incoming = 0, balance = MAX_BALANCE + 1 (deliberately over-cap balance) → Ok.
     ///
     /// The input balance DELIBERATELY exceeds MAX_BALANCE — production cannot produce
     /// this value (economy.rs enforces the invariant).  The test pins the CONTRACT of
@@ -2826,8 +2773,6 @@ mod tests {
     /// incoming credit delta, NOT pre-existing wallet state.  A delegating caller must
     /// pass the balance through EXACTLY — no `.min(MAX_BALANCE)` normalization — so
     /// that the skip-guard of an already-over-cap wallet receiving zero still returns Ok.
-    /// Do NOT "fix" this test by policing absolute balance; if the contract ever
-    /// changes to do that, revise ADR-0124 first.
     ///
     /// kills: an impl that normalizes the balance argument with `.min(MAX_BALANCE)` before
     ///        delegating — such normalization is invisible when balance ≤ MAX_BALANCE but
@@ -2843,11 +2788,11 @@ mod tests {
             "incoming=0, balance=MAX_BALANCE+1 (deliberately over-cap): \
              check_currency_headroom must return Ok — the `incoming > 0` skip-guard \
              must fire BEFORE any balance check, passing balance through unchanged. \
-             A normalizing delegation would break this contract (B-1/F11, ADR-0124)."
+             A normalizing delegation would break this contract."
         );
     }
 
-    /// 17.5c-2 EXTREME: u64::MAX balance, incoming = 1 → Err (saturating_add must not wrap).
+    /// EXTREME: u64::MAX balance, incoming = 1 → Err (saturating_add must not wrap).
     ///
     /// kills: impl that uses wrapping_add instead of saturating_add — wrapping gives
     ///        0, which is ≤ MAX_BALANCE, incorrectly returning Ok.
@@ -2863,8 +2808,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // m17.5c: check_headroom delegates to the single-responsibility primitives
-    // (red-team F6 — delegation SSOT pin)
+    // check_headroom delegates to the single-responsibility primitives
     //
     // EARS: check_headroom must DELEGATE its per-party cap comparisons to
     // check_item_headroom and check_currency_headroom rather than duplicating the
@@ -2876,14 +2820,12 @@ mod tests {
     // this test does not self-match on the marker string), and assert both
     // primitive call-sites appear inside that body.
     //
-    // RED state: this test is RED until the implementer refactors check_headroom
-    // to call check_item_headroom and check_currency_headroom (m17.5c Task 4).
     // ---------------------------------------------------------------------------
 
-    /// m17.5c (red-team F6): `check_headroom` must DELEGATE to
+    /// `check_headroom` must DELEGATE to
     /// `check_item_headroom` and `check_currency_headroom` rather than
     /// re-implementing the cap comparisons inline.  The cap constants and
-    /// comparison operators must live once (ADR-0124 SSOT principle).
+    /// comparison operators must live once.
     ///
     /// Implementation note: the needle strings are built via concat! / split-literal
     /// so that searching rules.rs for the pattern does not self-match on the text
@@ -2903,13 +2845,13 @@ mod tests {
         // Split-literal so the source-scan needle does not match the literal here.
         let fn_marker = ["fn check", "_headroom("].concat();
         let fn_pos = rules_src.find(fn_marker.as_str()).expect(
-            "TEETH(m17.5c F6): fn check_headroom not found in rules.rs — \
-                     add check_headroom or rename it consistently (ADR-0124)",
+            "TEETH(F6): fn check_headroom not found in rules.rs — \
+                     add check_headroom or rename it consistently",
         );
 
         let open_brace_offset = rules_src[fn_pos..]
             .find('{')
-            .expect("TEETH(m17.5c F6): no opening brace found after fn check_headroom");
+            .expect("TEETH(F6): no opening brace found after fn check_headroom");
         let open_brace = fn_pos + open_brace_offset;
 
         let mut depth: usize = 0;
@@ -2930,26 +2872,24 @@ mod tests {
 
         let headroom_body = &rules_src[open_brace..=close_brace];
 
-        // Assert delegation to check_item_headroom (split-literal needle, W-3).
+        // Assert delegation to check_item_headroom (split-literal needle).
         let item_needle = ["check_item", "_headroom("].concat();
         assert!(
             headroom_body.contains(item_needle.as_str()),
-            "TEETH(m17.5c F6 DELEGATION-SSOT): check_headroom body does not contain \
+            "TEETH(F6 DELEGATION-SSOT): check_headroom body does not contain \
              `check_item_headroom(` — the per-item cap comparison must be DELEGATED to \
-             check_item_headroom (ADR-0124 SSOT: one copy of the cap constant and \
-             comparison operator; inline duplication is an invisible divergence risk). \
-             RED until m17.5c Task 4 refactor is complete."
+             check_item_headroom (SSOT: one copy of the cap constant and \
+             comparison operator; inline duplication is an invisible divergence risk)."
         );
 
-        // Assert delegation to check_currency_headroom (split-literal needle, W-3).
+        // Assert delegation to check_currency_headroom (split-literal needle).
         let currency_needle = ["check_currency", "_headroom("].concat();
         assert!(
             headroom_body.contains(currency_needle.as_str()),
-            "TEETH(m17.5c F6 DELEGATION-SSOT): check_headroom body does not contain \
+            "TEETH(F6 DELEGATION-SSOT): check_headroom body does not contain \
              `check_currency_headroom(` — the per-currency cap comparison must be DELEGATED \
-             to check_currency_headroom (ADR-0124 SSOT: one copy of the cap constant and \
-             comparison operator; inline duplication is an invisible divergence risk). \
-             RED until m17.5c Task 4 refactor is complete."
+             to check_currency_headroom (SSOT: one copy of the cap constant and \
+             comparison operator; inline duplication is an invisible divergence risk)."
         );
     }
 }

@@ -1,12 +1,8 @@
 // render/renderResolver.test.ts — M8.6b acceptance suite (vitest, node-only).
 //
-// SOURCE OF TRUTH: M8.6b "render smoothness wiring" acceptance criteria.
-// Every test imports from the (not-yet-existing) renderResolver.ts module so the
-// suite starts RED on a missing implementation — that is the intended state.
-//
 // STEP_MS = 200 throughout. `now` is always injected (never calls performance.now).
 //
-// Proof-of-teeth (ADR-0010): every critical assertion has an inline BAD-renderer
+// Proof-of-teeth: every critical assertion has an inline BAD-renderer
 // model that kills a wrong implementation, making the assertion meaningful (not
 // vacuous). Pattern mirrors slideClock.test.ts §"the test bites".
 
@@ -14,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import type { WasmCharacterState } from '../convert/convert';
 import type { StoredCharacter } from '../net/store';
 import { RenderResolver, type ResolveInput } from './renderResolver';
-// ptc5g: standalone BITES fixture (§9 below) drives the pure SlideClock directly,
+// Standalone BITES fixture (§9 below) drives the pure SlideClock directly,
 // alongside (not through) the RenderResolver, to prove the divergence-snap
 // assertion is meaningful.
 import { SlideClock } from './slideClock';
@@ -299,7 +295,7 @@ describe('RenderResolver — own entity absent / predicted undefined', () => {
 
 describe('RenderResolver — remote entity fractional interpolation', () => {
   it('remote x is fractional ≈ 0.5 at renderTime=100 between snapshots', () => {
-    // interpDelayMs(200) === 200   [1.0 × 200]  (M12.5d-1: was 1.5 → 300ms)
+    // interpDelayMs(200) === 200   [1.0 × 200]
     // now=300 → renderTime = 300 - 200 = 100
     // prev={tileX:0, receivedAt:0}, latest={tileX:1, receivedAt:200}
     // lerp at t=100 between 0 and 200 → alpha=0.5 → x=0.5 (FRACTIONAL)
@@ -500,11 +496,9 @@ describe('RenderResolver — reset() drops the own slide clock', () => {
 // EARS criterion ptc5g-2: when a NEW authoritative own-target arrives that is
 // more than 1 tile away (Chebyshev = max(|dx|,|dy|)) from the slide clock's
 // CURRENT target, the own path must SNAP (jump instantly) instead of gliding —
-// folded into the existing `snapped` branch of RenderResolver.resolve. Today
-// (unmodified source) `resolve` ALWAYS calls `setTarget` when `snapped=false`,
-// so even a 10-tile jump glides smoothly across STEP_MS — the anti-teleport-
-// glide bug this slice fixes. T2/T3 pin the boundary so the fix cannot
-// over-snap (1-tile and 1-tile-diagonal steps must keep sliding).
+// folded into the existing `snapped` branch of RenderResolver.resolve.
+// T2/T3 pin the boundary so the fix cannot over-snap (1-tile and 1-tile-diagonal
+// steps must keep sliding).
 
 describe('RenderResolver — ptc5g: position-divergence snap (Chebyshev > 1 tile)', () => {
   it('T1 CORE: a >1-tile authoritative jump SNAPS instead of gliding', () => {
@@ -514,10 +508,7 @@ describe('RenderResolver — ptc5g: position-divergence snap (Chebyshev > 1 tile
     //           → must SNAP (jump), not setTarget (glide)
     //   now=100 predicted=(10,0) snapped=false → sample
     //
-    // TODAY (RED): resolve() unconditionally calls setTarget on this branch, so
-    // the slide clock glides 0→10 over STEP_MS=200; positionAt(100) =
-    // 0 + 10 * clamp01(100/200) = 10 * 0.5 = 5 (WRONG — a visible teleport-glide).
-    // AFTER THE FIX (GREEN): the large-jump branch calls snapTo instead, so the
+    // the large-jump branch calls snapTo instead, so the
     // origin is already (10,0) by t=0; positionAt(100) = 10 (instant, correct).
     const resolver = new RenderResolver(STEP_MS);
     const char = makeChar(OWN_ID, 0, 0, 0);
@@ -563,9 +554,8 @@ describe('RenderResolver — ptc5g: position-divergence snap (Chebyshev > 1 tile
 
   it('T2 COMPANION: an exactly-1-tile step STILL slides (no false snap)', () => {
     // chebyshev((1,0), (0,0)) = 1, which is NOT > 1 → must keep sliding.
-    // GREEN today (current source always slides on snapped=false) AND after the
-    // fix (a correct fix only snaps strictly above 1 tile). A fix that snapped
-    // on `>= 1` instead of `> 1` would break this test — the anti-over-snap anchor.
+    // A fix that snapped on `>= 1` instead of `> 1` would break this test — the
+    // anti-over-snap anchor.
     const resolver = new RenderResolver(STEP_MS);
     const char = makeChar(OWN_ID, 0, 0, 0);
 
@@ -611,8 +601,7 @@ describe('RenderResolver — ptc5g: position-divergence snap (Chebyshev > 1 tile
     // chebyshev((1,1), (0,0)) = max(|1|,|1|) = 1 → NOT > 1 → must keep sliding.
     // A wrong implementation using MANHATTAN distance (|dx|+|dy| = 2) would treat
     // this as a >1 jump and snap straight to integer (1,1) — this test bites that
-    // wrong metric. GREEN today and after a correct (Chebyshev) fix; RED only
-    // under a Manhattan-metric mutation.
+    // wrong metric.
     const resolver = new RenderResolver(STEP_MS);
     const char = makeChar(OWN_ID, 0, 0, 0);
 
@@ -742,12 +731,8 @@ describe('RenderResolver — ptc5g: position-divergence snap (Chebyshev > 1 tile
 });
 
 // ---------------------------------------------------------------------------
-// 10. 11r-f (ADR-0171) — resolver wiring + evolving-D bounded wobble
+// 10. resolver wiring + evolving-D bounded wobble
 // ---------------------------------------------------------------------------
-// SOURCE OF TRUTH: docs/adr/0171-resume-from-idle-interpolation.md — D3 ("the sole
-// production consumer passes its existing #stepMs") and Consequences ("bounded
-// evolving-D wobble", closed-form worst case 0.2 tile) — plus spec
-// M-postgate-eleventh-review-residuals §11r-f EARS E1.
 //
 // These two tests drive the REAL AuthoritativeStore(200) through the REAL
 // RenderResolver(200) instead of hand-built StoredCharacter fixtures, because the
@@ -755,12 +740,6 @@ describe('RenderResolver — ptc5g: position-divergence snap (Chebyshev > 1 tile
 // adaptive delay, and the resolver must forward its own `#stepMs` into
 // `interpolateHistory`. Every fixture in §§1-9 above uses `snapshots: []` and takes
 // the legacy 2-snapshot fallback — they are deliberately left untouched.
-//
-// RED REASON (before impl), both tests: (a) the store's ungated EWMA turns the 5 s
-// idle into jitterEwma ~600, so the adaptive delay clamps to 500 ms; and (b)
-// `resolve()` calls `interpolateHistory(c.snapshots, now - delay)` with two
-// arguments, so the whole 5000 ms bracket is lerped — the resume frame pops ~0.9
-// tile and the trailing crawl never reaches the new tile inside the walk.
 import { AuthoritativeStore, type StoreCharacter } from '../net/store';
 
 describe('11r-f resolver wiring + evolving-D (ADR-0171)', () => {
@@ -800,7 +779,7 @@ describe('11r-f resolver wiring + evolving-D (ADR-0171)', () => {
     // THE TEST THAT KILLS "renderResolver.ts does not pass stepMs" (its sibling (xix)
     // depends on the same wiring, but this is the headline E1 walk). Every test in
     // interpolation.test.ts calls `interpolateHistory` DIRECTLY, so all of them stay
-    // green if the one-line consumer wiring at renderResolver.ts:110 is reverted or
+    // green if the one-line consumer wiring is reverted or
     // never written — the fix would be inert in production and only this describe
     // would notice. Do not delete it as "an integration duplicate of case (v)".
     const store = new AuthoritativeStore(STEP_MS);
@@ -883,10 +862,10 @@ describe('11r-f resolver wiring + evolving-D (ADR-0171)', () => {
 
   it('(x) T-B: a uniform 700 ms cadence renders hold-then-slide per step, EWMA frozen at base delay', () => {
     // PINS A DELIBERATE SHAPE, NOT A BUG. ADR-0171 Consequences → "Slow-cadence
-    // movers render hold-then-slide, deliberately" (red-team Finding B, adjudicated
-    // INTENDED in PLAN v2). An entity whose rows arrive uniformly every 700 ms
-    // (> 2 x stepMs) renders as rest → one stepMs slide per step: exactly the own
-    // player's SlideClock motion language (slide stepMs, rest until the next step).
+    // movers render hold-then-slide, deliberately". An entity whose rows arrive
+    // uniformly every 700 ms (> 2 x stepMs) renders as rest → one stepMs slide per
+    // step: exactly the own player's SlideClock motion language (slide stepMs, rest
+    // until the next step).
     // The pre-fix "smooth crawl" (one tile of continuous drift per 700 ms) is the
     // DEFECT class the spec names, not a virtue.
     //
@@ -1021,19 +1000,14 @@ describe('11r-f resolver wiring + evolving-D (ADR-0171)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 11. m23-s7 — reduced motion (A11Y-27)
+// 11. reduced motion
 // ---------------------------------------------------------------------------
 // SOURCE OF TRUTH: M23-accessibility.spec.md §2.5 — under the OS reduced-motion
 // preference the renderer draws every character AT its logical tile: the own
 // character at the PREDICTED tile, remotes at their AUTHORITATIVE row tile. No
 // sub-tile slide, no interpolation buffer, no dependence on `now`. `reduceMotion` is
 // injected the way `now` is — a ResolveInput field — never a media query read from
-// inside the renderer (A11Y-28; the source scan for that lives in
-// motionPreference.test.ts).
-//
-// RED BEFORE THE IMPL: `ResolveInput` has no `reduceMotion` field yet, so every
-// fixture below is resolved by today's slide/interpolate code and each position
-// assertion reds on a concrete wrong number (each test names its own).
+// inside the renderer.
 //
 // FIXTURE NOTE (plan §5 AP1/AP4): makeChar builds row === latest, and the own-path
 // tests above additionally keep predicted === row — a MONOCULTURE that cannot tell
@@ -1115,7 +1089,7 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
   const REMOTE_PREV = { tileX: 4, tileY: 5, receivedAt: 0 };
   const REMOTE_LATEST = { tileX: 5, tileY: 5, receivedAt: 200 };
 
-  /** The DECOUPLED remote fixture (plan §8 RT-3). The authoritative row sits on
+  /** The DECOUPLED remote fixture. The authoritative row sits on
    *  (9,9) while every snapshot sits on (4,5)/(5,5).
    *
    *  WHY it violates a production invariant on purpose: the store keeps `row` and
@@ -1147,7 +1121,7 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
   }
 
   it('S7T-OWN-PRED: the own entity renders the PREDICTED tile, never the authoritative row', () => {
-    // THE desync-critical cheat this kills (plan §6 R1): an own path that reads
+    // THE desync-critical cheat this kills: an own path that reads
     // `c.row.tileX/tileY` under reduceMotion. Every other own-path test in this file
     // drives predicted and row to the same tile, so none of them can see it — this is
     // the only own fixture where the two disagree.
@@ -1169,7 +1143,7 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
     const later = ownPos(resolver, char, makePredicted(3, 7), 100000, true);
     expect(later).toEqual({ x: 3, y: 7 });
 
-    // SECOND DATA POINT (plan §8 RT-6) — NEGATIVE tiles on a fresh resolver, so the
+    // SECOND DATA POINT — NEGATIVE tiles on a fresh resolver, so the
     // clock is seeded from scratch. WRONG IMPLS KILLED that positive-only fixtures
     // cannot see: a clamp-to-zero (`Math.max(0, x)`), an abs(), or a
     // floor-toward-zero of the predicted tile.
@@ -1179,8 +1153,6 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
     expect(seeded).toEqual({ x: -2, y: -5 });
 
     // ... and a 1-tile step under reduced motion lands ON the new tile immediately.
-    // TODAY (RED): the slide clock renders -2 at the transition frame (an ordinary
-    // 1-tile step re-roots the origin) and -1.5 half a step later.
     const stepped = ownPos(negResolver, negChar, makePredicted(-1, -5), 100, true);
     expect(stepped).toEqual({ x: -1, y: -5 });
     const settled = ownPos(negResolver, negChar, makePredicted(-1, -5), 200, true);
@@ -1188,7 +1160,7 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
   });
 
   it('S7T-OWN-FREEZE: reduced motion KEEPS the slide clock tracking — a frozen clock lands a tile behind on resume', () => {
-    // THE SHARPEST TOOTH IN THIS SLICE (plan §8 RT-1). The cheat it kills:
+    // THE SHARPEST TOOTH IN THIS SLICE. The cheat it kills:
     //   if (reduceMotion) { pos = tile; }          // <-- never touches #ownClock
     //   else { ...the normal snapTo/setTarget path... }
     // That cheat passes every "renders the exact tile while reduced motion is on"
@@ -1256,7 +1228,6 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
   });
 
   it('S7T-OWN-RESUME: turning reduced motion OFF mid-walk RESUMES the slide from the integer tile (no teleport)', () => {
-    // Corrected T-h1 (plan §8 R-MAJ-1). The original arithmetic was impossible:
     // resolve() calls positionAt with the SAME `now` it just passed to setTarget, so
     // the transition frame ALWAYS renders the slide's origin. The tooth is therefore
     // "origin at f2, half a tile at f3", not "half a tile at f2".
@@ -1274,8 +1245,6 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
     expect(ownPos(resolver, char, makePredicted(0, 0), 0, false)).toEqual({ x: 0, y: 0 });
 
     // f1 — reduced motion ON, one tile east at t=100: exactly the tile, mid-step.
-    // TODAY (RED): this is an ordinary 1-tile step, so the clock starts a slide here
-    // and renders its origin, 0.
     expect(ownPos(resolver, char, makePredicted(1, 0), 100, true)).toEqual({ x: 1, y: 0 });
 
     // f2 — reduced motion OFF at t=300, predicted steps to (2,0): the new slide STARTS
@@ -1319,7 +1288,7 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
     const resolver = new RenderResolver(STEP_MS);
     const c = remoteDecoupled(true);
 
-    // FIXTURE SELF-CHECK (plan §8 RT-3) — the decoupling is the whole point of this
+    // FIXTURE SELF-CHECK — the decoupling is the whole point of this
     // fixture, so assert it before asserting on the render. If a future refactor of
     // this helper re-coupled row and snapshots, these lines fail instead of quietly
     // making the test vacuous.
@@ -1329,7 +1298,7 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
     expect(c.row.tileX).not.toBe(c.prev!.tileX);
     expect(c.row.tileY).not.toBe(c.prev!.tileY);
 
-    // TODAY (RED): now=0 -> renderTime = 0 - 200 = -200, before the oldest snapshot,
+    // now=0 -> renderTime = 0 - 200 = -200, before the oldest snapshot,
     // so the buffer clamps to (4,5); now=500 and now=100000 are past the newest, so
     // it HOLDs at (5,5). None of the three is (9,9).
     expect(remotePos(resolver, c, 0, true)).toEqual({ x: 9, y: 9 });
@@ -1351,16 +1320,16 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
     expect(c.row.tileY).not.toBe(c.latest.tileY);
     expect(c.row.tileX).not.toBe(c.prev!.tileX);
 
-    // TODAY (RED): now=0 clamps to prev (4,5); now=500 and now=100000 HOLD at (5,5).
+    // now=0 clamps to prev (4,5); now=500 and now=100000 HOLD at (5,5).
     expect(remotePos(resolver, c, 0, true)).toEqual({ x: 9, y: 9 });
     expect(remotePos(resolver, c, 500, true)).toEqual({ x: 9, y: 9 });
     expect(remotePos(resolver, c, 100000, true)).toEqual({ x: 9, y: 9 });
   });
 
   it('S7T-ZONE: reduced motion does not bypass the zone filter — off-zone characters stay out', () => {
-    // WRONG IMPL KILLED (plan §6 R3): a reduced-motion arm hoisted ABOVE the
+    // WRONG IMPL KILLED: a reduced-motion arm hoisted ABOVE the
     // `currentZoneId` continue (or above the isOwn split). The global subscription
-    // delivers every zone (M11c, ADR-0067), so that lands every character in the
+    // delivers every zone, so that lands every character in the
     // world on screen — a visible cross-zone leak that only shows up in production.
     const resolver = new RenderResolver(STEP_MS);
     const own = ownRowAt(9, 9); // zoneId 1
@@ -1449,7 +1418,7 @@ describe('m23-s7 reduced motion (A11Y-27)', () => {
   });
 
   it('S7T-BACKCOMPAT: an input with NO reduceMotion field renders exactly the pre-S7 fractional position', () => {
-    // The optional-field ratchet (plan §5 AP12 / §6 R2). GREEN both before and after
+    // The optional-field ratchet. GREEN both before and after
     // the implementation, on purpose: it is what proves the new field is genuinely
     // optional with a `false` default, so the ~30 existing inline ResolveInput
     // literals in this file and the single production call site in main.ts keep their

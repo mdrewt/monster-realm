@@ -46,7 +46,7 @@ function mountLiveNode(): HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
-// 500ms coalescing burst behaviour (A11Y-9)
+// 500ms coalescing burst behaviour
 // ---------------------------------------------------------------------------
 
 describe('LiveRegion — 500ms coalescing burst behaviour (A11Y-9)', () => {
@@ -98,12 +98,12 @@ describe('LiveRegion — 500ms coalescing burst behaviour (A11Y-9)', () => {
 
 describe('LiveRegion — re-announce and consecutive-dedup edge cases (S1-LIVE)', () => {
   it('S1-LIVE-REANNOUNCE BITES: a message equal to the LAST-WRITTEN one, arriving while a DIFFERENT message is pending, is NOT silently dropped', () => {
-    // WRONG IMPL KILLED (plan adjudication A1, MEASURED against the original design): a dedup
-    // rule that compares a new announce() call only against `#lastWritten` (what was last
-    // PAINTED) — rather than against `#pending ?? #lastWritten` (what will actually be emitted
-    // next) — sees this second 'Box' as "unchanged" (because #lastWritten is still 'Box' from
-    // the FIRST flush) and drops it, permanently leaving 'Raising & Inventory' as the region's
-    // final announcement. A real accessibility loss, not a test artefact.
+    // WRONG IMPL KILLED: a dedup rule that compares a new announce() call only against
+    // `#lastWritten` (what was last PAINTED) — rather than against `#pending ?? #lastWritten`
+    // (what will actually be emitted next) — sees this second 'Box' as "unchanged" (because #lastWritten
+    // is still 'Box' from the FIRST flush) and drops it, permanently leaving 'Raising &
+    // Inventory' as the region's final announcement. A real accessibility loss, not a test
+    // artefact.
     const node = mountLiveNode();
     const region = new LiveRegion();
 
@@ -239,19 +239,8 @@ describe('LiveRegion — textContent-only DOM sink, and correct behaviour when t
 
 // ---------------------------------------------------------------------------
 // Live-region custody — adoptLiveRegion unit edges + the channel still works
-// (LRC-EDGE / LRC-CHANNEL, rb-11, residual R-m23-s2-X5)
+// (LRC-EDGE / LRC-CHANNEL, residual R-m23-s2-X5)
 // ---------------------------------------------------------------------------
-//
-// SOURCE OF TRUTH: memory/projects/monster-realm-rb-11-plan.md (reviewer-lens amendments — the
-// seam is `adoptLiveRegion(root): () => void`, a release CLOSURE mirroring `focusTrap.ts:136`'s
-// `installTrap(root): () => void`, NEVER an adopt/release PAIR); memory/projects/gates/
-// rb-11.gates.md X3/X4.
-//
-// RED REASON: `adoptLiveRegion` does not exist in `./liveRegion` yet. Every test below fails to
-// import it (or fails on a runtime assertion once a first cut lands something wrong) until the
-// implementer lands the seam described in the plan.
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from the spec/plan only.
 
 /** The shipped-shape live-region fixture — `aria-live`/`aria-atomic` present, exactly as
  *  `client/index.html:154` ships it — needed by LRC-CHANNEL, which asserts those survive a move. */

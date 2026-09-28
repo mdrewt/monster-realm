@@ -1,5 +1,5 @@
 //! Taming rule functions — encounter triggering, weighted species selection,
-//! and recruit-chance arithmetic. All pure and deterministic (ADR-0003).
+//! and recruit-chance arithmetic. All pure and deterministic.
 //!
 //! Probabilities use **per-mille** (0–1000) integer arithmetic — no floats.
 //! Roll values are injected parameters (the server passes `ctx.random()`);
@@ -89,7 +89,7 @@ pub fn roll_encounter(table: &EncounterTable, roll: u32, player_level: Level) ->
 ///   species (e.g. player out of every band) propagates as `None`.
 /// - The spawned `level` lies within the chosen entry's `[min_level, max_level]`.
 /// - `individuality_seed` is a fixed sub-roll of the INPUT seed, independent of the
-///   species/level outcome (M8d "rebuild THAT exact wild" contract).
+///   species/level outcome.
 #[must_use]
 pub fn resolve_encounter(
     table: &EncounterTable,
@@ -108,8 +108,7 @@ pub fn resolve_encounter(
 
     let species_id = roll_encounter(table, species_roll, player_level)?;
 
-    // Find the chosen entry for its level band (species_id is unique per zone,
-    // ADR-0044 B1).
+    // Find the chosen entry for its level band (species_id is unique per zone
     let entry = table.entries.iter().find(|e| e.species_id == species_id)?;
     let lo = entry.min_level.as_u8();
     let hi = entry.max_level.as_u8();
@@ -335,8 +334,8 @@ mod m8_7c_tests {
     // walk's subtraction step.
     // -----------------------------------------------------------------------
 
-    /// Kills: all bit-mixing mutants inside this module's `splitmix32`
-    /// (9 survivors). Same vectors as `monster::rolls` — same algorithm.
+    /// Kills: all bit-mixing mutants inside this module's `splitmix32`.
+    /// Same vectors as `monster::rolls` — same algorithm.
     #[test]
     fn splitmix32_known_answer_sequence() {
         let mut s: u32 = 0;
@@ -354,10 +353,10 @@ mod m8_7c_tests {
         assert_eq!(splitmix32(&mut s2), 0xF2C8_0841);
     }
 
-    /// Kills: the `target -= w` -> `+=`/`/=` mutants in `roll_encounter`
-    /// (2 survivors). With three equal-weight entries, roll=1 lands in the
+    /// Kills: the `target -= w` -> `+=`/`/=` mutants in `roll_encounter`.
+    /// With three equal-weight entries, roll=1 lands in the
     /// SECOND bucket only if the walk subtracts each passed weight; the
-    /// mutants fall through to the last-entry fallback (303) instead.
+    /// mutants fall through to the last-entry fallback instead.
     #[test]
     fn roll_encounter_weighted_walk_subtracts_passed_weights() {
         let entry = |species_id: u32| EncounterEntry {

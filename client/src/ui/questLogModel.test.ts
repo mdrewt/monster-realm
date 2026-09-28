@@ -1,8 +1,4 @@
 // ui/questLogModel.test.ts — M12d red-phase tests for buildQuestLogViewModel.
-// SOURCE OF TRUTH: docs/m12d-plan.md + docs/adr/0071-m12d-client-dialogue-quest-heal-ui.md
-//
-// Tests are INTENTIONALLY RED until questLogModel.ts is implemented.
-// Do NOT edit to match a buggy implementation — correct from the spec only.
 //
 // Contract: buildQuestLogViewModel(quests) -> QuestLogViewModel
 //   - QuestLogViewModel { active: readonly QuestEntryViewModel[] }
@@ -19,7 +15,6 @@ import { buildQuestLogViewModel } from './questLogModel';
 
 // ---------------------------------------------------------------------------
 // Local type definition (mirrors what store.ts will export as StorePlayerQuest).
-// Defined here so tests are red for missing impl, not bad imports.
 // ---------------------------------------------------------------------------
 
 interface StorePlayerQuest {
@@ -56,7 +51,7 @@ describe('buildQuestLogViewModel criterion 1: empty input → active: []', () =>
   });
 
   it('BITES: returned object has exactly active field (no completed section)', () => {
-    // Quest completion DELETES the server row (ADR-0071). There is NO completed list.
+    // Quest completion DELETES the server row. There is NO completed list.
     // Kills: an impl that adds a "completed" array field — that would violate the
     // spec which says the client has no visibility into completed quests.
     const vm = buildQuestLogViewModel([]);

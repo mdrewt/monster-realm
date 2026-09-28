@@ -1,4 +1,4 @@
-// ui/zoneSyncGuard.test.ts — RED tests for M13.5e e-2: zone-sync failure counting.
+// ui/zoneSyncGuard.test.ts — zone-sync failure counting.
 //
 // SOURCE OF TRUTH: M13.5 §5 e-2 (EARS criterion)
 //
@@ -10,14 +10,7 @@
 // main.ts is a module with side effects (wasm imports, DOM bootstrap) and cannot
 // be unit-tested without a full e2e harness. The zone-sync failure COUNTING LOGIC
 // is extracted into a pure helper function `shouldReportZoneSyncFailure` that
-// encapsulates the N-failure threshold decision. This is TDD: the tests encode the
-// contract; the implementer adds the function to the new module
-// `client/src/ui/zoneSyncGuard.ts` (or wherever they choose) and wires it into
-// main.ts's reconcile listener.
-//
-// RED REASON: `shouldReportZoneSyncFailure` does not exist in any module yet.
-// All tests will fail with "does not provide an export named ..." or TypeError
-// until the implementer creates the function.
+// encapsulates the N-failure threshold decision.
 //
 // WRONG IMPL KILLED (each test states what it kills):
 //   - An impl with threshold=0 is killed by the "0 failures → false" test.

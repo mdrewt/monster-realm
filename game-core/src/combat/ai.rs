@@ -139,8 +139,6 @@ mod tests {
     /// Attacker: Fire type, knows both Fire (SE vs Plant) and Water (NVE vs Plant).
     /// The Fire skill has the same power as Water skill, but it's SE vs Plant
     /// while Water is NVE. AI must pick Fire.
-    ///
-    /// Starts red because `pick_best_skill` is `todo!()`.
     #[test]
 
     fn picks_super_effective_over_not_very_effective() {
@@ -165,8 +163,6 @@ mod tests {
     ///
     /// Attacker: Fire type, knows Fire 40 (id=1) and Fire 65 (id=2).
     /// Against an Electric defender (Fire is neutral to Electric), power decides.
-    ///
-    /// Starts red because `pick_best_skill` is `todo!()`.
     #[test]
 
     fn picks_higher_power_skill_when_same_effectiveness() {
@@ -187,8 +183,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: an impl that panics on a single-skill team, or returns the wrong id.
-    ///
-    /// Starts red because `pick_best_skill` is `todo!()`.
     #[test]
 
     fn single_skill_returns_that_skill() {
@@ -208,8 +202,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: any non-deterministic impl (e.g. relying on HashMap iteration order).
-    ///
-    /// Starts red because `pick_best_skill` is `todo!()`.
     #[test]
 
     fn pick_best_skill_is_deterministic() {
@@ -226,9 +218,6 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Nightly mutation hardening: fixtures + scenarios chosen so each
-    // arithmetic/comparison mutant in `pick_best_skill`'s scoring flips a
-    // winner (5 survivors: STAB `==`, both `*`s, and the `>` tie rule).
     // Score = power * eff * stab, stab = 3 (STAB) / 2 (non-STAB).
     // -----------------------------------------------------------------------
 
@@ -272,7 +261,7 @@ mod tests {
         }
     }
 
-    /// Kills: `score > best_score` -> `>=` (48:43). Exact tie must keep the
+    /// Kills: `score > best_score` -> `>=`. Exact tie must keep the
     /// FIRST known skill; the mutant keeps the last.
     #[test]
     fn exact_score_tie_keeps_first_known_skill() {
@@ -286,7 +275,7 @@ mod tests {
         );
     }
 
-    /// Kills: STAB check `==` -> `!=` (42:42). vs Water both skills are
+    /// Kills: STAB check `==` -> `!=`. vs Water both skills are
     /// eff 5; only STAB separates Fire 40*5*3=600 from Water 40*5*2=400.
     /// The mutant inverts STAB and picks the Water skill.
     #[test]

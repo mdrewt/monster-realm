@@ -1,4 +1,4 @@
-// observability/deviceClass.ts — m20c (ADR-0180 body amendment), OBS-34/35.
+// observability/deviceClass.ts — OBS-34/35.
 //
 // Collapses the high-cardinality, fingerprint-grade User-Agent string to one of exactly three
 // literals INSIDE the browser, before anything is serialised. TOTAL: any hints object — including

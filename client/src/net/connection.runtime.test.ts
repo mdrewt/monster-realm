@@ -7,7 +7,7 @@
  * Replaces the connection.ts text pins (ledger CT-src-net-connection#credential-wiring).
  * credentialDecision.ts's pure logic has its own tests; this file covers its WIRING in connect().
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { writeAuthKind } from './authToken';
 import { claimCode } from './claimCode';
 import { type ConnectionOptions, connect } from './connection';
@@ -23,19 +23,38 @@ interface BuildRec {
   onApplied?: Cb;
   readonly joinGame: ReturnType<typeof vi.fn>;
   readonly completeGuestClaim: ReturnType<typeof vi.fn>;
+  readonly startGuestClaim: ReturnType<typeof vi.fn>;
+  /** The query strings handed to the applied-snapshot subscription (conn0's builder). */
+  queries?: readonly string[];
 }
 
 const H = vi.hoisted(() => ({
   builds: [] as BuildRec[],
   renew: null as null | (() => Promise<RenewalOutcome>),
   renewCalls: 0,
+  /** What the next build's startGuestClaim returns (default: resolves). */
+  startGuestClaimImpl: null as null | (() => Promise<void>),
+  beginSignIn: null as unknown as Mock<() => Promise<{ kind: string }>>,
+  /** Per-table SDK cache contents (`conn.db.<name>.iter()`) and registered row callbacks. */
+  viewRows: {} as Record<string, unknown[]>,
+  rowCbs: {} as Record<string, Cb[]>,
 }));
 
 vi.mock('../module_bindings', () => {
-  const table = new Proxy(
-    {},
-    { get: (_t, k) => (k === 'iter' ? () => [][Symbol.iterator]() : () => undefined) },
-  );
+  const tableFor = (name: string) =>
+    new Proxy(
+      {},
+      {
+        get: (_t, k) => {
+          if (k === 'iter') return () => (H.viewRows[name] ?? [])[Symbol.iterator]();
+          return (cb: Cb) => {
+            if (k === 'onInsert' || k === 'onDelete') {
+              H.rowCbs[name] = [...(H.rowCbs[name] ?? []), cb];
+            }
+          };
+        },
+      },
+    );
   return {
     DbConnection: {
       builder: () => {
@@ -43,6 +62,7 @@ vi.mock('../module_bindings', () => {
           token: 'UNSET',
           joinGame: vi.fn(() => Promise.resolve()),
           completeGuestClaim: vi.fn(() => Promise.resolve()),
+          startGuestClaim: vi.fn(() => (H.startGuestClaimImpl ?? (() => Promise.resolve()))()),
         };
         H.builds.push(rec);
         const sub = {
@@ -54,8 +74,12 @@ vi.mock('../module_bindings', () => {
           subscribe: () => sub,
         };
         const conn = {
-          db: new Proxy({}, { get: () => table }),
-          reducers: { joinGame: rec.joinGame, completeGuestClaim: rec.completeGuestClaim },
+          db: new Proxy({}, { get: (_t, name) => tableFor(String(name)) }),
+          reducers: {
+            joinGame: rec.joinGame,
+            completeGuestClaim: rec.completeGuestClaim,
+            startGuestClaim: rec.startGuestClaim,
+          },
           subscriptionBuilder: () => sub,
         };
         const b = {
@@ -88,7 +112,7 @@ vi.mock('../module_bindings', () => {
 vi.mock('./oidc', () => ({
   createOidcClient: () => ({
     consumeReturnLeg: () => false,
-    beginSignIn: () => Promise.resolve({ kind: 'transient-error' }),
+    beginSignIn: () => H.beginSignIn(),
     renewOrExchange: () => {
       H.renewCalls += 1;
       if (H.renew === null) throw new Error('renewOrExchange reached with no scripted outcome');
@@ -134,6 +158,10 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
     H.builds = [];
     H.renew = null;
     H.renewCalls = 0;
+    H.startGuestClaimImpl = null;
+    H.viewRows = {};
+    H.rowCbs = {};
+    H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
     sessionStorage.clear();
     localStorage.clear();
   });
@@ -274,6 +302,119 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
     expect(opts.onClaimAwaitingAccount).toHaveBeenCalledTimes(1);
   });
 
+  // BUG-client-never-starts-guest-claim. ADR-0179 D3: the client mints the code, stores it,
+  // and registers it with start_guest_claim WHILE STILL CONNECTED AS THE GUEST — only that
+  // reducer inserts the guest_claim row complete_guest_claim later resolves. The OIDC
+  // redirect leaves the page, so registration must SETTLE before the hand-off.
+  it('CLAIM-START: startSignIn registers the stored code via startGuestClaim, and only then begins the OIDC sign-in', async () => {
+    let release: () => void = () => {};
+    H.startGuestClaimImpl = () =>
+      new Promise<void>((r) => {
+        release = r;
+      });
+    const opts = makeOpts();
+    const handle = connect(opts);
+    await settle();
+    H.builds[0].onConnect?.(conn0(H.builds[0]), ID, 'anon-tok');
+    H.builds[0].onApplied?.();
+
+    handle.startSignIn();
+    const codes = stored(sessionStorage).filter((v) => /^[0-9a-f]{64}$/.test(v));
+    expect(codes, 'the code is minted into per-tab storage BEFORE the reducer call').toHaveLength(
+      1,
+    );
+    expect(H.builds[0].startGuestClaim).toHaveBeenCalledTimes(1);
+    expect(H.builds[0].startGuestClaim).toHaveBeenCalledWith({ code: codes[0] });
+    await settle();
+    expect(
+      H.beginSignIn,
+      'the redirect must wait for the claim registration to settle',
+    ).not.toHaveBeenCalled();
+
+    release();
+    await settle();
+    expect(H.beginSignIn).toHaveBeenCalledTimes(1);
+  });
+
+  it('CLAIM-START-UNLOGGED: the claim code (a bearer secret) never reaches the dev reducer-arg logger', async () => {
+    const onSend = vi.fn();
+    const opts = { ...makeOpts(), onSend } as ConnectionOptions;
+    const handle = connect(opts);
+    await settle();
+    H.builds[0].onConnect?.(conn0(H.builds[0]), ID, 'anon-tok');
+    H.builds[0].onApplied?.();
+    handle.startSignIn();
+    await settle();
+    expect(H.builds[0].startGuestClaim).toHaveBeenCalledTimes(1);
+    const code = claimCode.read(globalThis, URI, DB) as string;
+    expect(code).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(onSend.mock.calls)).not.toContain(code);
+  });
+
+  it('CLAIM-START-REJECTED: a refused registration blocks sign-in — code cleared, transient-error reported, no redirect', async () => {
+    H.startGuestClaimImpl = () => Promise.reject(new Error('not joined'));
+    const opts = makeOpts();
+    const handle = connect(opts);
+    await settle();
+    H.builds[0].onConnect?.(conn0(H.builds[0]), ID, 'anon-tok');
+    H.builds[0].onApplied?.();
+
+    handle.startSignIn();
+    await settle();
+    expect(H.builds[0].startGuestClaim).toHaveBeenCalledTimes(1);
+    expect(H.beginSignIn).not.toHaveBeenCalled();
+    expect(opts.onSignInFailed).toHaveBeenCalledWith('transient-error');
+    expect(
+      claimCode.read(globalThis, URI, DB),
+      'an unregistered code must not survive',
+    ).toBeUndefined();
+  });
+
+  it('CLAIM-START-NO-LINK: with no live connection, nothing is minted and sign-in is refused', async () => {
+    const opts = makeOpts();
+    const handle = connect(opts);
+    // Before the first build lands `current` is still undefined (the cold start defers it).
+    handle.startSignIn();
+    await settle();
+    expect(H.beginSignIn).not.toHaveBeenCalled();
+    expect(opts.onSignInFailed).toHaveBeenCalledWith('transient-error');
+    expect(claimCode.read(globalThis, URI, DB)).toBeUndefined();
+  });
+
+  // BUG-inventory-world-readable: inventory is a PRIVATE table read through the owner-scoped
+  // my_inventory Vec view. The client must subscribe the VIEW (subscribing the private table
+  // errors the whole batch) and rebuild its inventory from the view's post-burst cache — the
+  // view has no PK, so no onUpdate ever fires and per-row writes would race insert+delete pairs.
+  it('MY-INVENTORY: subscribes the owner-scoped view, never the private table, and reconciles the store from its cache', async () => {
+    const opts = makeOpts();
+    connect(opts);
+    await settle();
+    H.builds[0].onConnect?.(conn0(H.builds[0]), ID, 'anon-tok');
+    const queries = H.builds[0].queries ?? [];
+    expect(queries).toContain('SELECT * FROM my_inventory');
+    expect(queries).not.toContain('SELECT * FROM inventory');
+
+    const me = ID.toHexString();
+    H.viewRows.my_inventory = [
+      { invId: 1n, ownerIdentity: ID, itemId: 5, count: 3 },
+      { invId: 2n, ownerIdentity: ID, itemId: 6, count: 1 },
+    ];
+    for (const cb of H.rowCbs.my_inventory ?? []) cb();
+    await settle();
+    expect(opts.store.ownInventory(me)).toEqual([
+      { invId: 1n, ownerIdentity: me, itemId: 5, count: 3 },
+      { invId: 2n, ownerIdentity: me, itemId: 6, count: 1 },
+    ]);
+
+    // A count change + a consumed-to-zero stack arrive as a new cache set (no onUpdate).
+    H.viewRows.my_inventory = [{ invId: 1n, ownerIdentity: ID, itemId: 5, count: 2 }];
+    for (const cb of H.rowCbs.my_inventory ?? []) cb();
+    await settle();
+    expect(opts.store.ownInventory(me)).toEqual([
+      { invId: 1n, ownerIdentity: me, itemId: 5, count: 2 },
+    ]);
+  });
+
   it('STALE: a superseded build connecting late cannot save its token or claim the identity', async () => {
     const opts = makeOpts();
     const c = connect(opts);
@@ -298,10 +439,17 @@ function conn0(rec: BuildRec) {
       return sub;
     },
     onError: () => sub,
-    subscribe: () => sub,
+    subscribe: (queries: readonly string[]) => {
+      rec.queries = queries;
+      return sub;
+    },
   };
   return {
     subscriptionBuilder: () => sub,
-    reducers: { joinGame: rec.joinGame, completeGuestClaim: rec.completeGuestClaim },
+    reducers: {
+      joinGame: rec.joinGame,
+      completeGuestClaim: rec.completeGuestClaim,
+      startGuestClaim: rec.startGuestClaim,
+    },
   };
 }

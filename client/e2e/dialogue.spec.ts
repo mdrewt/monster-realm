@@ -7,8 +7,7 @@ import {
   test,
 } from '@playwright/test';
 
-// M13.5c dialogue lifecycle e2e — plan §Test plan c-5(b) + red-team fold
-// "dialogue.spec.ts includes a SECOND identity" (docs/specs/m13.5c-plan.md).
+// M13.5c dialogue lifecycle e2e.
 //
 // ROLE: the stays-green regression net through the player_conversation privacy
 // swap (T5: private table + owner-scoped my_conversation view), plus the runtime
@@ -23,27 +22,6 @@ import {
 // onUpdate). The pair's net-effect gate is unit-tested in
 // client/src/net/viewDelete.test.ts (shouldRemoveOnViewDelete).
 //
-// RED REASON (today, exactly ONE missing client affordance):
-//   No TALK trigger exists anywhere in client/src — verified this session: no
-//   `reducers.talk(` call site; the main.ts keydown handler covers only
-//   KeyB/KeyI/KeyE/KeyQ/KeyH/KeyG/Escape/movement/Space. The dialogue overlay is
-//   pure-subscription (store.ownConversation) and only the `talk` reducer creates
-//   the row; the page cannot call reducers out-of-band (DbConnection has no
-//   accessible token — recruit.spec.ts design note). talkUntilOpen() therefore
-//   times out until the trigger lands.
-//
-// IMPLEMENTER CONTRACT (client-only; unblocks this spec BEFORE the T5 swap):
-//   main.ts keydown gains `KeyT` = TALK: when NO overlay is visible, find the
-//   nearest NPC (store.allNpcs() joined to character rows, same zone as the own
-//   character, Manhattan distance <= 2 — mirrors server TALK_RANGE, npc.rs:20) to
-//   the own AUTHORITATIVE tile and send
-//   `sendGuarded('talk', () => conn?.conn.reducers.talk({ npcEntityId }))`;
-//   no-op when none is in range; e.preventDefault(). The server re-validates zone
-//   + range (npc.rs talk Steps 4-5) — the client check is latency hygiene, not
-//   security. Once KeyT lands, this spec MUST run green against TODAY's module
-//   (public player_conversation) — that run is the pre-swap baseline — and MUST
-//   stay green after the my_conversation view swap.
-//
 // POST-SWAP TEETH (which wrong implementation each test kills):
 //   - "talk opens overlay": a connection.ts swap that subscribes to the view but
 //     never hydrates its inserts (overlay never opens — client dark).
@@ -53,9 +31,7 @@ import {
 //     naive always-remove, is killed at unit level: viewDelete.test.ts.)
 //   - "B never renders the overlay": an unfiltered view leaking A's row to B
 //     combined with any client keying that surfaces it — end-to-end silence is
-//     asserted via a sticky MutationObserver latch, not spot checks. (The
-//     transport-level leak itself is also gated by the conversation-privacy eval;
-//     this is the runtime half — plan red-team fold RT-H2/e2e.)
+//     asserted via a sticky MutationObserver latch, not spot checks.
 //
 // DOCUMENTED CONTENT GAP (not a test weakness — content is outside this
 // client-only chunk): the plan's "advance → text CHANGES and the overlay does NOT
@@ -74,12 +50,12 @@ import {
 //     up to 1 tile per 200ms tick, 4-in-5 move probability (game-core npc_decide),
 //     Manhattan <= 2 of home.
 //   - Entry node text "The ancient oak spirit greets you."; npcName renders as
-//     the npcId "elder_oak" (dialogueModel.ts:31); choice text "I seek a quest."
+//     the npcId "elder_oak"; choice text "I seek a quest."
 //     with effects [StartQuest("quest_001")].
 //   - quest_001 starts at stepIndex 0; the quest log li renders
 //     "quest_001 (step 0)" (questLogModel displayName = questId verbatim;
 //     questLogView li `${displayName} (step ${stepIndex})`).
-//   - TALK_RANGE = 2 Manhattan (npc.rs:20). advance_dialogue RE-CHECKS zone+range
+//   - TALK_RANGE = 2 Manhattan. advance_dialogue RE-CHECKS zone+range
 //     and DELETES the conversation on failure (walked_away, RT-ADV-01 fix) — the
 //     bounded retry loops below exist because the NPC keeps wandering.
 //   - Player spawn (1,1), zone 0. Zone-0 map (content/zone_maps/000-core.ron):
@@ -129,7 +105,7 @@ async function ready(p: Page): Promise<void> {
   );
 }
 
-// Server TALK_RANGE (npc.rs:20) — Manhattan. Mirrored here for the poll predicate.
+// Server TALK_RANGE — Manhattan. Mirrored here for the poll predicate.
 const TALK_RANGE = 2;
 /** Grass-free, warp-free path spawn (1,1) → talk pocket (5,4); see WORLD FACTS. */
 const WALK_PATH: readonly string[] = [
@@ -189,7 +165,7 @@ async function stepOne(p: Page, dir: string, from: Tile): Promise<void> {
   }
 }
 
-/** Press KeyT (the real talk key — implementer contract above) until the dialogue
+/** Press KeyT (the real talk key) until the dialogue
  *  overlay opens. Poll-based: each attempt waits until some non-player character
  *  is within TALK_RANGE of the own authoritative tile before pressing. */
 async function talkUntilOpen(p: Page, playerEntityIds: readonly string[]): Promise<void> {

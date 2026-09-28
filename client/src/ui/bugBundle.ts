@@ -1,4 +1,4 @@
-// ui/bugBundle.ts — PURE F9 bug-bundle assembler (pt-b1, ADR-0130).
+// ui/bugBundle.ts — PURE F9 bug-bundle assembler.
 //
 // Source-of-truth: M-playtest-b F9 bug-bundle assembler (EARS E-10 shape, U-3/H-2/H-3 no-PII).
 //
@@ -63,7 +63,7 @@ export function buildBugBundle(input: BugBundleInput): BugBundle {
 
 /** bigint-total: a smuggled bigint serializes to its decimal string instead of throwing.
  *  Compact (no indent) — the gating test T-BUNDLE-3-POSITIVE asserts `"playerCount":4` with no
- *  space after the colon, which pretty-printing (`, 2`) cannot produce. See pt-b1 report note. */
+ *  space after the colon, which pretty-printing (`, 2`) cannot produce. */
 export function serializeBugBundle(bundle: BugBundle): string {
   return JSON.stringify(bundle, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
 }

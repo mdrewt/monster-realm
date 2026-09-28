@@ -1,5 +1,5 @@
 //! Monster value types — the cross-boundary contract for individual monster
-//! state. All types are pure data; no I/O, no clock, no RNG (ADR-0003).
+//! state. All types are pure data; no I/O, no clock, no RNG.
 //!
 //! Ranges are enforced at construction (parse-don't-validate): `IVs` caps at 31,
 //! `EVs` at 252/510, `Level` at [1,100]. Serde round-trips must preserve these
@@ -24,7 +24,7 @@ pub enum Affinity {
 impl Affinity {
     /// Every affinity in DECLARATION order — the canonical order the 8 flat
     /// essence columns (`essence_fire`..`essence_dark`) and the
-    /// `MonsterInstance.essence` array are laid out in (EG1-1/EG1-7, ADR-0174 D1).
+    /// `MonsterInstance.essence` array are laid out in.
     pub const ALL: [Affinity; 8] = [
         Affinity::Fire,
         Affinity::Water,
@@ -38,7 +38,7 @@ impl Affinity {
 
     /// This affinity's index into `Affinity::ALL` / an `[T; 8]` essence array.
     ///
-    /// An EXHAUSTIVE match with NO wildcard arm (ADR-0174 D7): adding a ninth
+    /// An EXHAUSTIVE match with NO wildcard arm: adding a ninth
     /// `Affinity` variant is a COMPILE error here, never a silent
     /// out-of-bounds or a wrong bucket at runtime.
     #[must_use]
@@ -291,7 +291,7 @@ impl EVs {
 }
 
 // Custom Deserialize for EVs — validates the per-stat and total caps so that
-// a deserialized value can never violate the invariant (proof-of-teeth: test #27).
+// a deserialized value can never violate the invariant.
 impl<'de> Deserialize<'de> for EVs {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -558,13 +558,13 @@ pub struct MonsterInstance {
     pub evs: EVs,
     /// Per-`Affinity` essence balances, indexed by `Affinity::index()`
     /// (declaration order: Fire, Water, Plant, Electric, Earth, Wind, Light,
-    /// Dark). Mirrors the 8 flat `essence_*` schema columns (EG1-1/EG1-7).
+    /// Dark). Mirrors the 8 flat `essence_*` schema columns.
     pub essence: [u32; 8],
     /// Lifetime count of Trust-favorable events (care, capped battle wins).
-    /// Field name matches the schema column EXACTLY (EG1-7).
+    /// Field name matches the schema column EXACTLY.
     pub trust_favorable_count: u32,
     /// Lifetime count of Trust-unfavorable events (faints).
-    /// Field name matches the schema column EXACTLY (EG1-7).
+    /// Field name matches the schema column EXACTLY.
     pub trust_unfavorable_count: u32,
     /// Lifetime Quality-Time ticks earned through player-triggered reducers.
     pub quality_time_ticks_total: u32,
@@ -963,7 +963,7 @@ mod tests {
         }
     }
 
-    /// #27: Proof-of-teeth — deserializing EVs with total > 510 should fail.
+    /// Proof-of-teeth — deserializing EVs with total > 510 should fail.
     /// If EVs uses naive derive(Deserialize) without validation, this catches it.
     /// A correct impl uses a custom Deserialize that validates the caps.
     #[test]

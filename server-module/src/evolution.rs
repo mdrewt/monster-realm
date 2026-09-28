@@ -1,10 +1,9 @@
-//! `evolution` — server-module domain submodule (EG1 rewrite ADR-0174; EG2
-//! reducers ADR-0175).
+//! `evolution` — server-module domain submodule.
 //!
 //! TWO reducers: `evolve(ctx, monster_id, to_species)` — the player-invoked
 //! write path of the essence-graph evolution model — and
 //! `ack_evolution_notices(ctx, count)`, the owner-keyed dismissal of the
-//! post-evolve reveal queue (20r-d, ADR-0254 D5). Plus the two EG2 internal
+//! post-evolve reveal queue. Plus the two EG2 internal
 //! helpers: `apply_evolution` (the ONE transform-and-write path, shared by the
 //! reducer and the auto-evolution driver) and `check_and_evolve` (the bounded
 //! auto-evolution cascade called as a tail from the intent reducers), the pure
@@ -13,13 +12,7 @@
 //! `rekey_evolution_notices`, `has_evolution_notices`). This file
 //! is a ctx/DB shell only: the gate DECISION is `game_core::path_satisfied` /
 //! `game_core::eligible_evolution_paths` and the requirement NAMING is
-//! `game_core::unmet_requirement`; nothing in this file reads a gate field
-//! (EG1-11 source scan, whole production region). Fusion is deleted as a
-//! feature (EG1-9); Migration B (EG5-6/ADR-0177 D2) then removed the `Fusion`
-//! table struct from schema.rs as well.
-//!
-//! This file name is part of the canonical `touches:` vocabulary fixed by
-//! ADR-0056 — keep it stable.
+//! `game_core::unmet_requirement`; nothing in this file reads a gate field.
 
 use crate::guards::{reject_if_in_battle, reject_if_monster_in_trade, require_owner};
 use crate::marshal::{
@@ -32,38 +25,36 @@ use crate::schema::{
 use game_core::Affinity;
 use spacetimedb::{Identity, ReducerContext, Table};
 
-/// Hard cap on the auto-evolution chain cascade (EG2-13, ADR-0175 D3): R11's
+/// Hard cap on the auto-evolution chain cascade: R11's
 /// tier cap 5 plus 2 — generous on purpose and structurally unreachable for
 /// R5-valid content (strict tier +1 per edge). Hitting it mid-chain means an
 /// R5/R11 invariant violation shipped in content.
 pub(crate) const MAX_EVOLUTION_CHAIN_STEPS: u32 = 7;
 
-/// Evolve a monster along one authored evolution-graph edge (EG2-1 shape).
+/// Evolve a monster along one authored evolution-graph edge.
 ///
 /// Steps:
 /// 1. Look up the Monster row (loud reject if not found)
-/// 2. require_owner -> both-role battle guard (ADR-0122) -> trade escrow guard
+/// 2. require_owner -> both-role battle guard -> trade escrow guard
 /// 3. ONE targeted `evolution_path` lookup keyed on BOTH endpoints (btree on
 ///    from_species, then compare to_species) — a client-supplied `to_species`
 ///    can never cross-apply a foreign edge
 /// 4. Marshal to the pure instance + path, gate via the SHARED predicate
-/// 5. Delegate the transform-and-write to `apply_evolution` (EG2-11: an
-///    evolution is NEVER applied through two different code paths)
-/// 6. Tail-call `check_and_evolve` (EG2-13: chain evolution applies to the
+/// 5. Delegate the transform-and-write to `apply_evolution`
+/// 6. Tail-call `check_and_evolve` (chain evolution applies to the
 ///    player-invoked path too — the new form may already satisfy an
 ///    unambiguous next edge on its surviving level/Trust/Quality-Time)
 #[spacetimedb::reducer]
 pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
-    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    // Deletion gate: the FIRST statement, before every read and write.
     crate::guards::require_not_deleting(ctx, "evolve")?;
     let Some(m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());
     };
 
     require_owner(ctx, "evolve", m.owner_identity)?;
-    // Both-role battle guard (ADR-0122): chain the opponent_identity iterator so
-    // a monster whose owner sits on side B of an ongoing PvP battle is caught —
-    // mirrors the m16.5a trading.rs chain shape (ADR-0112 D1/D2).
+    // Both-role battle guard: chain the opponent_identity iterator so
+    // a monster whose owner sits on side B of an ongoing PvP battle is caught.
     reject_if_in_battle(
         ctx.db
             .battle()
@@ -72,7 +63,7 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<
             .chain(ctx.db.battle().opponent_identity().filter(m.owner_identity)),
         monster_id,
     )?;
-    // Trade escrow guard (TR-2, ADR-0106): monster in an active offer cannot be evolved.
+    // Trade escrow guard: monster in an active offer cannot be evolved.
     reject_if_monster_in_trade(
         ctx.db
             .trade_offer()
@@ -82,8 +73,8 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<
         monster_id,
     )?;
 
-    // EG2-1: the ONE targeted row, keyed on BOTH endpoints. R1 guarantees at
-    // most one (from, to) edge; an empty table (the pre-EG3 state) or a foreign
+    // The ONE targeted row, keyed on BOTH endpoints. R1 guarantees at
+    // most one (from, to) edge; an empty table or a foreign
     // edge both land here as a clean rejection.
     let Some(path_row) = ctx
         .db
@@ -100,29 +91,29 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<
     let path = evolution_path_from_row(&path_row)?;
     let instance = monster_to_instance(&m)?;
 
-    // The SHARED gate predicate decides (EG1-11); the game-core describer only
+    // The SHARED gate predicate decides; the game-core describer only
     // turns a failure into a player-facing sentence.
     if !game_core::path_satisfied(&instance, &path) {
         return Err(game_core::unmet_requirement(&instance, &path)
             .unwrap_or_else(|| "evolution requirements not met".to_string()));
     }
 
-    // EG2-11: the transform-and-write is DELEGATED — the player-invoked path
+    // The transform-and-write is DELEGATED — the player-invoked path
     // and the auto-evolution path apply an evolution through exactly one helper.
     apply_evolution(ctx, monster_id, &path_row)?;
 
-    // EG2-13: cascade — the new form may already satisfy an unambiguous next
+    // Cascade — the new form may already satisfy an unambiguous next
     // edge (level/Trust/Quality-Time survive the transform).
     check_and_evolve(ctx, monster_id);
 
     Ok(())
 }
 
-/// Apply ONE evolution edge to a monster: the shared transform-and-write path
-/// (EG2-11, ADR-0175 D3), factored out of `evolve()` so the reducer and
+/// Apply ONE evolution edge to a monster: the shared transform-and-write path,
+/// factored out of `evolve()` so the reducer and
 /// `check_and_evolve` cannot drift.
 ///
-/// Deliberately guard-free (EG2-12 Guard warning): this is an internal helper,
+/// Deliberately guard-free: this is an internal helper,
 /// never wire-reachable, and at the `write_back_battle_results` call site the
 /// battle row is still `Ongoing` — the standard guard would self-reject every
 /// auto-evolution there. It also re-reads the monster row itself, so a caller
@@ -136,7 +127,7 @@ pub(crate) fn apply_evolution(
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());
     };
-    // 20r-d (ADR-0254 D4): capture the owner BEFORE the write-back below moves
+    // Capture the owner BEFORE the write-back below moves
     // `m`. It is the MONSTER's owner and never the caller: this helper is
     // reachable from pvp_deadline_reaper -> apply_pvp_forfeit ->
     // settle_pvp_battle -> write_back_battle_results, where the caller is the
@@ -144,7 +135,7 @@ pub(crate) fn apply_evolution(
     let owner = m.owner_identity;
     let instance = monster_to_instance(&m)?;
 
-    // FRESH target-species lookup — the MonsterPub.tier source (EG1-8) and the
+    // FRESH target-species lookup — the MonsterPub.tier source and the
     // transform's base stats both come from it.
     let Some(to_species_row) = ctx.db.species_row().id().find(path.to_species) else {
         return Err(format!("target species {} not found", path.to_species));
@@ -152,7 +143,7 @@ pub(crate) fn apply_evolution(
     let target = species_from_row(&to_species_row)?;
 
     // Pure transform: carries individuality, re-derives stats from the TARGET
-    // base stats, clamps current_hp, zeroes all 8 essence pools (ADR-0174 D2).
+    // base stats, clamps current_hp, zeroes all 8 essence pools.
     let transformed = game_core::evolve(&instance, &target);
 
     m.species_id = transformed.species_id;
@@ -181,7 +172,7 @@ pub(crate) fn apply_evolution(
     ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
 
-    // 20r-d (ADR-0254 D4): ONE reveal entry per applied edge, appended AFTER
+    // ONE reveal entry per applied edge, appended AFTER
     // both rows are written and inside this same helper, so it rides the
     // caller's transaction by construction. The species come from the IMMUTABLE
     // `path` argument: the monster row above has ALREADY been transformed, so a
@@ -229,20 +220,20 @@ pub(crate) fn apply_evolution(
     Ok(())
 }
 
-/// Auto-evolution driver (EG2-11/EG2-13, ADR-0175 D3): called as a TAIL from
+/// Auto-evolution driver: called as a TAIL from
 /// the intent reducers (care / train / essence_train / consume_crystalized_
 /// essence / enqueue_move) and from the battle write-back — never DIRECTLY
-/// from a scheduled reducer's own body (EG2-9 is direct-call-only). It stays
+/// from a scheduled reducer's own body. It stays
 /// transitively reachable via pvp_deadline_reaper -> apply_pvp_forfeit ->
 /// settle_pvp_battle -> write_back_battle_results, where the only gate value
 /// that can have changed is level/XP from the pre-existing forfeit settlement
 /// — harmless, and the credits at that site are wild-gated anyway.
 ///
 /// Each iteration: FRESH monster read, the DB `evolution_path` rows for the
-/// CURRENT species (the same source `evolve()` and the EG4 client read — never
+/// CURRENT species (the same source `evolve()` read — never
 /// the cfg(test)-gated RON cache), the SHARED `eligible_evolution_paths` query.
-/// 0 eligible -> done; 2+ -> the player owns the choice (EG2-2); exactly 1 ->
-/// apply and loop against the NEW species. Guard-free by design (EG2-12) and
+/// 0 eligible -> done; 2+ -> the player owns the choice; exactly 1 ->
+/// apply and loop against the NEW species. Guard-free by design and
 /// infallible outward: this must never fail the caller's already-performed
 /// write, so every abnormal condition is log-and-stop.
 pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
@@ -258,12 +249,9 @@ pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
         let instance = match monster_to_instance(&m) {
             Ok(instance) => instance,
             Err(e) => {
-                // ADR-0170 D5 / ADR-0188. Every reachable producer of this reason
-                // emits static ASCII or a numeric interpolation today, so no live
-                // injection exists here — but ONE double quote would make the line
-                // unparseable and the ingest would drop the diagnostic for exactly
-                // the corrupt row that produced it. The escape is the SSOT rule, not
-                // a dependency on that audit staying true.
+                // ONE double quote would make the line unparseable and the ingest
+                // would drop the diagnostic for exactly the corrupt row that
+                // produced it. The escape is the SSOT rule.
                 let reason = crate::guards::json_escape(&e);
                 log::warn!(
                     "{{\"evt\":\"check_and_evolve_skip\",\"monster_id\":{monster_id},\"reason\":\"{reason}\"}}",
@@ -272,7 +260,7 @@ pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
             }
         };
         // Candidate edges out of the monster's CURRENT species, via the
-        // from_species btree index (EG1-4 — this runs on the movement hot path).
+        // from_species btree index.
         let mut candidate_rows: Vec<EvolutionPathRow> = Vec::new();
         let mut candidate_paths: Vec<game_core::EvolutionPath> = Vec::new();
         for row in ctx.db.evolution_path().from_species().filter(m.species_id) {
@@ -283,7 +271,7 @@ pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
                 }
                 // A corrupt row is skipped, never fatal: this is a reducer tail.
                 Err(e) => {
-                    // ADR-0170 D5 / ADR-0188 — see the sibling site above.
+                    // See the sibling site above.
                     let reason = crate::guards::json_escape(&e);
                     log::warn!(
                         "{{\"evt\":\"check_and_evolve_skip_edge\",\"monster_id\":{monster_id},\"reason\":\"{reason}\"}}",
@@ -291,14 +279,14 @@ pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
                 }
             }
         }
-        // THE decision: the SHARED full-set query (EG2-11), never a hand-rolled
-        // first-match. 0 -> chain ends; 2+ -> the player picks (EG2-2).
+        // THE decision: the SHARED full-set query, never a hand-rolled
+        // first-match. 0 -> chain ends; 2+ -> the player picks.
         let eligible = game_core::eligible_evolution_paths(&instance, &candidate_paths);
         if eligible.len() != 1 {
             return;
         }
         if let Err(e) = apply_evolution(ctx, monster_id, &candidate_rows[eligible[0]]) {
-            // ADR-0170 D5 / ADR-0188 — see the sibling sites above.
+            // See the sibling sites above.
             let reason = crate::guards::json_escape(&e);
             log::error!(
                 "{{\"evt\":\"check_and_evolve_apply_failed\",\"monster_id\":{monster_id},\"reason\":\"{reason}\"}}",
@@ -310,15 +298,14 @@ pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
     // Cap reached with the loop still live. This can only fire against
     // R5/R11-VIOLATING content (a cycle, or a future tier-cap raise outpacing
     // MAX_EVOLUTION_CHAIN_STEPS): with valid content the loop always exits via
-    // the 0/2+-eligible branch first. Distinct signal, never a silent stop
-    // (ADR-0175 D3).
+    // the 0/2+-eligible branch first. Distinct signal, never a silent stop.
     log::error!(
         "{{\"evt\":\"check_and_evolve_cap_hit\",\"monster_id\":{monster_id},\"steps\":{steps}}}",
     );
 }
 
-/// Drain the acknowledged PREFIX of an owner's reveal queue (20r-d, ADR-0254
-/// D5). The ONE place the ack arithmetic lives, pure and `ctx`-free so the
+/// Drain the acknowledged PREFIX of an owner's reveal queue.
+/// The ONE place the ack arithmetic lives, pure and `ctx`-free so the
 /// truth table is executable without a host.
 ///
 /// REJECT, NEVER CLAMP. A zero count is always a client defect worth
@@ -329,7 +316,7 @@ pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
 ///
 /// The drained values are DROPPED: Vec order is display order, the entries
 /// carry nothing the caller needs back, and this file confines every
-/// collection to `check_and_evolve` (EG1-11).
+/// collection to `check_and_evolve`.
 pub(crate) fn ack_prefix(entries: &mut Vec<EvolutionRevealRow>, count: u32) -> Result<(), String> {
     if count == 0 {
         return Err("ack count must be positive".to_string());
@@ -344,8 +331,7 @@ pub(crate) fn ack_prefix(entries: &mut Vec<EvolutionRevealRow>, count: u32) -> R
     Ok(())
 }
 
-/// Acknowledge the first `count` pending evolution reveals of the CALLER
-/// (20r-d, ADR-0254 D5).
+/// Acknowledge the first `count` pending evolution reveals of the CALLER.
 ///
 /// Owner-keyed by definition: the only row this reducer can ever touch is the
 /// one filed under `ctx.sender()`, so one player can never drain another
@@ -375,7 +361,7 @@ pub fn ack_evolution_notices(ctx: &ReducerContext, count: u32) -> Result<(), Str
     Ok(())
 }
 
-/// Cascade step: erase `owner`'s pending reveal queue (20r-d, ADR-0254 D6).
+/// Cascade step: erase `owner`'s pending reveal queue.
 /// Called by `accounts::account_deletion_reaper` immediately after the monster
 /// erase — the queue is derived bookkeeping about monsters, so it goes with
 /// them. A primary-key delete on a missing row is a no-op, so this is
@@ -387,8 +373,8 @@ pub(crate) fn erase_evolution_notices(ctx: &ReducerContext, owner: Identity) {
         .delete(owner);
 }
 
-/// Claim-flow re-key: move `from`'s pending reveal queue onto `to` (20r-d,
-/// ADR-0254 D6), the `rekey_heal_cooldown` / `rekey_npc_state` PK-rekey shape.
+/// Claim-flow re-key: move `from`'s pending reveal queue onto `to`,
+/// the `rekey_heal_cooldown` / `rekey_npc_state` PK-rekey shape.
 ///
 /// DELETE-THEN-INSERT WITH NO MERGE, and that is deliberate: `complete_guest_
 /// claim`'s guard 11 (`accounts::account_has_game_data`) runs BEFORE
@@ -420,7 +406,7 @@ pub(crate) fn rekey_evolution_notices(ctx: &ReducerContext, from: Identity, to: 
     }
 }
 
-/// True if `owner` holds a pending reveal ROW at all (20r-d, ADR-0254 D6) — the
+/// True if `owner` holds a pending reveal ROW at all — the
 /// `accounts::account_has_game_data` clause for this table.
 ///
 /// ROW-EXISTS, never "the entry list is non-empty": an acked-empty row is still

@@ -1,12 +1,12 @@
-// ui/tradeView.ts — thin DOM shell for the trade overlay (m15b, ADR-0107).
+// ui/tradeView.ts — thin DOM shell for the trade overlay.
 // Pure rendering from TradeScreenViewModel. No logic — all logic is in tradeModel.ts.
 // Coverage-excluded per vite.config.ts (DOM shell; behavior validated by e2e).
 //
-// m24-s4 (ADR-0260) — every player-facing string this view renders is resolved through the i18n
+// Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `trade.*` key from ui/i18n/catalog.en.ts —
 // the `#renderSide` heading arguments and the `#actionLabel` returns included; the English bytes
 // are unchanged (the catalog pins them). The item row `${item.name} ×${item.qty}` is deliberately
-// NOT keyed — a glyph-only compound (ADR-0257 §2.2 tier (e)). `vm.statusLabel` and the
+// NOT keyed — a glyph-only compound (tier (e)). `vm.statusLabel` and the
 // `showFeedback` message are model data, rendered raw. Every `t(`/`tf(` first argument is a
 // string LITERAL. No constructor-time strings: this view renders into the static index.html shell.
 import { t, tf } from './i18n/resolver';
@@ -31,7 +31,7 @@ export class TradeView {
   // In-flight lock: prevents double-send when a reducer Promise is pending.
   #pending = false;
   // Tracks the last rendered offer key (tradeId + statusLabel) to detect state
-  // changes and clear stale feedback (16.5c-3, ADR-0114).
+  // changes and clear stale feedback.
   #lastRenderKey: string | null = null;
 
   constructor(cbs: TradeCallbacks) {
@@ -71,7 +71,7 @@ export class TradeView {
   }
 
   show(): void {
-    // m23-s3 D1: read visibility BEFORE the display write. `show()` is called REPEATEDLY on an
+    // Read visibility BEFORE the display write. `show()` is called REPEATEDLY on an
     // already-open overlay (pvpView.ts is the extreme case, main.ts:1699-1701), and a re-open
     // re-schedules overlayA11y's deferred focus -- which would yank focus back to the initial
     // anchor on every store batch. Only the hidden->visible EDGE opens.
@@ -85,7 +85,7 @@ export class TradeView {
     this.#feedbackEl.textContent = '';
     this.#pending = false;
     this.#lastRenderKey = null;
-    // m23-s3 D2: DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
+    // DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
     // documented no-op with no open record, and leaving it unguarded is what lets a record
     // that ever desynchronised from the DOM self-heal instead of leaking a live trap forever.
     closeOverlayA11y('tradeView', null);
@@ -107,7 +107,7 @@ export class TradeView {
       return;
     }
 
-    // Clear stale feedback on offer-state change (16.5c-3, ADR-0114): a status
+    // Clear stale feedback on offer-state change: a status
     // transition (Pending → ConfirmedByCounterparty, or a new tradeId) means the
     // prior "Trade accepted!" / "Trade rejected." is no longer meaningful.
     const renderKey = `${vm.tradeId}-${vm.statusLabel}`;
@@ -182,7 +182,7 @@ export class TradeView {
       const btn = document.createElement('button');
       btn.dataset.action = action;
       btn.textContent = this.#actionLabel(action);
-      // 16.5c-3: render disabled when in-flight so a mid-flight batch re-render
+      // Render disabled when in-flight so a mid-flight batch re-render
       // doesn't re-enable buttons while a reducer Promise is still pending.
       btn.disabled = this.#pending;
       btn.addEventListener('click', () => {

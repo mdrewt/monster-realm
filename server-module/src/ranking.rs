@@ -1,22 +1,18 @@
-//! `ranking` — server-module domain submodule (M17, ADR-0119).
+//! `ranking` — server-module domain submodule.
 //!
 //! Persistent ranked-ladder progression: the total `profile` find-or-insert
 //! seam (`get_or_init_profile`) and the single rating-application entry point
 //! (`apply_pvp_rating`, called ONLY from the `settle_pvp_battle` funnel in
-//! pvp.rs — RL-10). The `profile` table is module-write-only (ADR-0119 D6):
-//! this module declares exactly one reducer, `set_profile_name` (ADR-0132),
+//! pvp.rs). The `profile` table is module-write-only:
+//! this module declares exactly one reducer, `set_profile_name`,
 //! which writes only `player.name`; `profile` rating/wins/losses stay
 //! module-write-only via `apply_pvp_rating` (no client-callable path writes
 //! them). The rename surfaces on the leaderboard on the caller's next rated
-//! game via the ADR-0125 passive mirror. Rating arithmetic lives in
-//! `game_core::ranking` (the
-//! functional core); this shell only reads and writes rows. Private helpers
+//! game. Rating arithmetic lives in `game_core::ranking` (the functional
+//! core); this shell only reads and writes rows. Private helpers
 //! `refresh_profile_name` + `live_player_name` implement the passive
-//! display-name mirror (ADR-0125) and are exercised directly by
-//! ranking_tests.rs via `super::`.
-//!
-//! This file name extends the canonical `touches:` vocabulary fixed by
-//! ADR-0056 (M8.9) — keep it stable.
+//! display-name mirror and are exercised directly by ranking_tests.rs via
+//! `super::`.
 
 use crate::guards::{log_reject, validate_name};
 use crate::schema::{player, profile, Battle, Player, Profile};
@@ -24,9 +20,9 @@ use game_core::BattleOutcome;
 use spacetimedb::{Identity, ReducerContext, Table};
 
 /// Find-or-insert the `profile` row for `identity` — the total seam that
-/// makes the rating path infallible (ADR-0119 D1, RL-1).
+/// makes the rating path infallible (RL-1).
 ///
-/// Existing rows get a passive display-name refresh (ADR-0125): the `Some`
+/// Existing rows get a passive display-name refresh: the `Some`
 /// arm composes `refresh_profile_name` over `live_player_name`, so the
 /// returned value carries the live `player.name` whenever the presence row
 /// still exists. The refresh is in-memory ONLY — this seam performs no
@@ -57,7 +53,7 @@ pub(crate) fn get_or_init_profile(ctx: &ReducerContext, identity: Identity) -> P
     }
 }
 
-/// Pure core of the passive name mirror (ADR-0125 D1): return `profile` with
+/// Pure core of the passive name mirror: return `profile` with
 /// `name` replaced when a live name is present, unchanged otherwise.
 ///
 /// `None` → keep the last-known name (disconnect race: the counterparty's
@@ -72,15 +68,15 @@ fn refresh_profile_name(profile: Profile, live_name: Option<String>) -> Profile 
     }
 }
 
-/// Live display name from the `player` presence row, if it still exists
-/// (ADR-0125 D3). The single inline `.map` chain is deliberately None-safe
+/// Live display name from the `player` presence row, if it still exists.
+/// The single inline `.map` chain is deliberately None-safe
 /// for the disconnect race — never `.unwrap()` here — and stays a chained
 /// expression with no split-binding, per the RL-2 style convention.
 fn live_player_name(ctx: &ReducerContext, identity: Identity) -> Option<String> {
     ctx.db.player().identity().find(identity).map(|p| p.name)
 }
 
-/// Apply the ranked-ladder rating for a decided PvP battle (ADR-0119 D6, RL-5).
+/// Apply the ranked-ladder rating for a decided PvP battle (RL-5).
 ///
 /// Infallible by construction (returns `()`): `get_or_init_profile` is total,
 /// and both new ratings come from ONE `compute_rating_update` call BEFORE
@@ -122,19 +118,18 @@ pub(crate) fn apply_pvp_rating(ctx: &ReducerContext, battle: &Battle) {
     });
 }
 
-/// Rename the caller's display name (ADR-0132 D1). The single client-callable
+/// Rename the caller's display name. The single client-callable
 /// reducer in this module — it is **profile-untouching**: it validates the name
 /// with `guards::validate_name` (the exact SSOT rules as `join_game`,
 /// reject-not-clamp) and writes ONLY `player.name`, the display-name SSOT. The
 /// rename surfaces on the public leaderboard on the caller's next rated game via
-/// the ADR-0125 passive mirror (`live_player_name` → `apply_pvp_rating`'s update
+/// (`live_player_name` → `apply_pvp_rating`'s update
 /// spreads) — no direct `profile` write here, so the `profile`-write-only
-/// invariant (ADR-0119 D6) is preserved.
+/// invariant is preserved.
 ///
 /// Rejects `"not joined"` when the caller has no `player` row; rejects with the
 /// validation error (no write) when the name is invalid. The `match` form (not a
-/// `let Some(..) = ctx.db.player()` split-binding) mirrors `get_or_init_profile`
-/// and keeps the RL-2 split-binding pins green.
+/// `let Some(..) = ctx.db.player()` split-binding) mirrors `get_or_init_profile`.
 #[spacetimedb::reducer]
 pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
     let me = ctx.sender();
@@ -146,9 +141,9 @@ pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String
             return Err(e);
         }
     };
-    // Deletion gate (m22-s3b, ADR-0228 D7h / spec §4.7): `player` is an
-    // ANONYMIZE-classified table, and without this gate a connected terminal
-    // session un-tombstones its own display name one call after the cascade.
+    // Deletion gate: `player` is an ANONYMIZE-classified table, and without
+    // this gate a connected terminal session un-tombstones its own display
+    // name one call after the cascade.
     crate::guards::require_not_deleting(ctx, "set_profile_name")?;
     let validated = validate_name(&name).inspect_err(|e| log_reject("set_profile_name", me, e))?;
     player.name = validated;
@@ -156,15 +151,15 @@ pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String
     Ok(())
 }
 
-// --- M21 guest→account profile re-key (ADR-0179 D6, AUTH-23/25) ---------------
+// --- M21 guest→account profile re-key (AUTH-23/25) ---------------
 
 /// Tombstone name for a claimed guest's retained (never-deleted) `profile` row.
 /// 15 chars ≤ `MAX_NAME_LEN` (24). Deliberately UN-TYPABLE: the parentheses are
 /// not alphanumeric, so `guards::validate_name` rejects it — no player can mint a
 /// name impersonating a tombstone.
 ///
-/// SCOPED TO THE M21 GUEST-CLAIM FLOW, and MODULE-PRIVATE to keep it that way
-/// (rb-7, ADR-0211). This sentinel means "an unclaimed guest whose ranked stats
+/// SCOPED TO THE M21 GUEST-CLAIM FLOW, and MODULE-PRIVATE to keep it that way.
+/// This sentinel means "an unclaimed guest whose ranked stats
 /// were carried forward", not "a deleted account" — `tombstoned_profile` also
 /// zeroes rating/wins/losses, which is meaningless for a deletion. M22's
 /// deletion cascade writes `game_core::TOMBSTONE_DISPLAY_NAME` instead. The
@@ -192,17 +187,16 @@ pub(crate) fn profile_with_carried_stats(
 }
 
 /// Zero the ranked stats and tombstone the name of a guest's own `profile` row,
-/// preserving its identity. Pure seam. The zero is load-bearing, not cosmetic
-/// (AUTH-25): it is what stops the same guest identity donating the same stats
+/// preserving its identity. Pure seam. The zero is load-bearing, not cosmetic:
+/// it is what stops the same guest identity donating the same stats
 /// to an unbounded number of later fresh accounts.
 ///
-/// MODULE-PRIVATE for the same reason `PROFILE_TOMBSTONE_NAME` is (rb-7): this
+/// MODULE-PRIVATE for the same reason `PROFILE_TOMBSTONE_NAME` is: this
 /// is the only other symbol that WRITES the guest-claim sentinel, so leaving it
 /// crate-visible would have left the wrong tombstone one plausible helper call
 /// away from M22's deletion cascade — and reached this way it also zeroes the
-/// ladder stats, which ADR-0179 D6 scopes to the guest-claim flow alone. Its
-/// sibling `profile_with_carried_stats` stays `pub(crate)`: it writes no
-/// sentinel and carries no such hazard.
+/// ladder stats. Its sibling `profile_with_carried_stats` stays `pub(crate)`:
+/// it writes no sentinel and carries no such hazard.
 fn tombstoned_profile(guest: Profile) -> Profile {
     Profile {
         name: PROFILE_TOMBSTONE_NAME.to_string(),
@@ -215,15 +209,13 @@ fn tombstoned_profile(guest: Profile) -> Profile {
 
 /// Re-key the guest's ranked profile onto `to`: copy stats forward onto the
 /// destination row (created via the single `get_or_init_profile` insert seam if
-/// absent — no new insert site, ADR-0119 D6 / ptc1 insert-count pin), THEN zero
-/// and tombstone the guest's OWN row in place. NEVER deletes a `profile` row
-/// (AUTH-23; ADR-0119 D1 structural never-deleted scan). Called only from
-/// `accounts::rekey_all` (D0). Reads the guest via `match`, not a split-binding
-/// (RL-2 / `=ctx.db` ban). NOT a `#[reducer]` — A1's one-reducer count is
-/// unaffected. No-op when the guest never played ranked.
+/// absent — no new insert site), THEN zero and tombstone the guest's OWN row in
+/// place. NEVER deletes a `profile` row. Called only from
+/// `accounts::rekey_all`. Reads the guest via `match`, not a split-binding.
+/// No-op when the guest never played ranked.
 pub(crate) fn rekey_profile(ctx: &ReducerContext, from: Identity, to: Identity) {
     // Read the guest via `match` (not `if let`/`let Some`) so the whitespace-free
-    // `=ctx.db.profile()` split-binding needle never appears (RL-2 / d1 scan).
+    // `=ctx.db.profile()` split-binding needle never appears.
     let guest = match ctx.db.profile().identity().find(from) {
         Some(g) => g,
         None => return,
@@ -245,14 +237,14 @@ pub(crate) fn rekey_profile(ctx: &ReducerContext, from: Identity, to: Identity) 
 }
 
 /// True if `identity` has a `profile` row (for
-/// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
+/// `accounts::account_has_game_data`). Read-only.
 pub(crate) fn profile_exists(ctx: &ReducerContext, identity: Identity) -> bool {
     ctx.db.profile().identity().find(identity).is_some()
 }
 
-// --- M22 deletion cascade — display-name anonymize (ADR-0228 D1/D2) -----------
+// --- M22 deletion cascade — display-name anonymize -----------
 
-/// M22 §4.4 step 6c (PRV1-6c, pure): the `player` row with its display name
+/// the `player` row with its display name
 /// replaced by the DELETION tombstone — `game_core::TOMBSTONE_DISPLAY_NAME`,
 /// never the module-private guest-claim sentinel above (that one means
 /// "unclaimed guest, stats carried forward" and zeroing semantics ride it).
@@ -264,10 +256,9 @@ pub(crate) fn player_with_deleted_name(p: Player) -> Player {
     }
 }
 
-/// M22 §4.4 step 6c (PRV1-6c, pure): the `profile` row with its display name
+/// the `profile` row with its display name
 /// replaced by the DELETION tombstone. Rating, wins and losses survive by
-/// design (spec §3 anonymizes `name` only; the ladder columns are the
-/// §9.1-class retained history ADR-0228 records).
+/// design.
 pub(crate) fn profile_with_deleted_name(p: Profile) -> Profile {
     Profile {
         name: game_core::TOMBSTONE_DISPLAY_NAME.to_string(),
@@ -275,14 +266,13 @@ pub(crate) fn profile_with_deleted_name(p: Profile) -> Profile {
     }
 }
 
-/// M22 §4.4 step 6c (PRV1-6c, ADR-0228 D1/D2): tombstone `owner`'s display
+/// tombstone `owner`'s display
 /// name on BOTH surviving rows — `player` (the anchor row, after the
-/// cascade's `character` join sweep) and `profile` (ADR-0119 never-delete).
+/// cascade's `character` join sweep) and `profile`.
 /// Field updates only, never a delete, each through its pure seam. Called
-/// only from `accounts::account_deletion_reaper` (D0 write-isolation). The
+/// only from `accounts::account_deletion_reaper`. The
 /// `for`-over-`into_iter` shape is load-bearing: any `let`/`if let` binding
-/// of these reads would reintroduce the RL-2 split-binding needle this file
-/// bans file-wide.
+/// of these reads.
 pub(crate) fn anonymize_display_names(ctx: &ReducerContext, owner: Identity) {
     for p in ctx.db.player().identity().find(owner).into_iter() {
         ctx.db

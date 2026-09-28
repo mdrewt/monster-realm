@@ -3,7 +3,6 @@
 // Tests the pure functions in ui/battleModel.ts, which has no SDK or PixiJS deps.
 // All inputs are plain objects; deterministic; node-only.
 //
-// These tests start RED because battleModel.ts does not exist yet.
 // Every test has a `// Kills:` comment explaining which wrong impl it catches.
 
 import * as fc from 'fast-check';
@@ -54,7 +53,7 @@ function battleMonster(overrides: Partial<StoreBattleMonster> = {}): StoreBattle
     statSpDefense: 10,
     knownSkillIds: [1],
     ...overrides,
-  };
+  } as StoreBattleMonster;
 }
 
 function battleSide(overrides: Partial<StoreBattleSide> = {}): StoreBattleSide {
@@ -64,7 +63,7 @@ function battleSide(overrides: Partial<StoreBattleSide> = {}): StoreBattleSide {
 function makeBattle(overrides: Partial<StoreBattle> = {}): StoreBattle {
   return {
     battleId: 1n,
-    // m16b: PvE/trainer uses playerIdentity===opponentIdentity so isPvP=false.
+    // PvE/trainer uses playerIdentity===opponentIdentity so isPvP=false.
     // PvP tests override opponentIdentity explicitly.
     playerIdentity: 'alice',
     opponentIdentity: 'alice',
@@ -400,8 +399,6 @@ describe('buildBattleViewModel: canFlee follows outcome', () => {
   });
 
   it('BITES: unknown outcome variant returns null (not a VM with canFlee=false)', () => {
-    // CORRECTION (m14.5d, review refinement 5 / red-team 3): prior assertion was
-    // `vm!.canFlee === false`, valid under the old default-arm behaviour. New spec:
     // unknown outcome tag → console.warn + return null (same as corrupt-team guard).
     // The bite is STRENGTHENED: an impl returning a non-null VM for 'Draw' now fails
     // both this test AND the dedicated unknown-outcome describe below.
@@ -478,10 +475,9 @@ describe('buildBattleViewModel: canSwap — ongoing AND valid bench member', () 
   });
 
   it('BITES: unknown outcome variant returns null (not a VM with canSwap=false)', () => {
-    // CORRECTION (m14.5d, review refinement 5 / red-team 3): prior assertion was
-    // `vm!.canSwap === false`. New spec: unknown outcome → null (same null-guard
-    // path as corrupt-team). Bite is preserved and strengthened — a VM returned for
-    // 'Draw' fails this test and the dedicated unknown-outcome describe below.
+    // unknown outcome → null (same null-guard path as corrupt-team). Bite is
+    // preserved and strengthened — a VM returned for 'Draw' fails this test and the
+    // dedicated unknown-outcome describe below.
     const active = battleMonster({ currentHp: 20, maxHp: 20 });
     const bench = battleMonster({ currentHp: 15, maxHp: 20 });
     const b = makeBattle({
@@ -509,7 +505,7 @@ describe('buildBattleViewModel: battleId passthrough', () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildBattleViewModel: canRecruit — ongoing AND wild (M8d, ADR-0045/0047)
+// buildBattleViewModel: canRecruit — ongoing AND wild
 // ---------------------------------------------------------------------------
 
 describe('buildBattleViewModel: canRecruit — wild detection by opponentMonsterIds', () => {
@@ -573,16 +569,9 @@ describe('buildBattleViewModel: baitOptions classify by recruit_bonus, not item 
 });
 
 // ---------------------------------------------------------------------------
-// M8.6c — negative active index: fail-soft (returns null, does NOT throw)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M8.6-residual-hardening.spec.md
+// negative active index: fail-soft (returns null, does NOT throw)
 //
-// RED reason (before impl): the current guard is `sideX.active >= sideX.team.length`
-// which uses strict `>=`. When active === -1:
-//   -1 >= team.length  →  false  (guard does NOT fire)
-//   team[-1]           →  undefined
-//   monsterCard(undefined, …) → crashes (TypeError: Cannot read properties of undefined)
-//
-// After fix: both side guards add `|| sideX.active < 0`, so a negative active
+// both side guards add `|| sideX.active < 0`, so a negative active
 // returns null WITHOUT throwing, matching the existing behavior for out-of-bounds.
 //
 // BITES: the `>=`-only guard which lets -1 through, crashing downstream.
@@ -590,8 +579,7 @@ describe('buildBattleViewModel: baitOptions classify by recruit_bonus, not item 
 
 describe('buildBattleViewModel M8.6c: negative active index → null, no throw', () => {
   it('BITES: sideA.active = -1 returns null and does NOT throw', () => {
-    // RED reason: current guard `-1 >= 1` is false → team[-1] = undefined → crash.
-    // After fix: `active < 0` check fires before the team access → returns null.
+    // `active < 0` check fires before the team access → returns null.
     // Wrong impl killed: a guard that only checks `active >= team.length` (the
     // current `>=`-only impl lets negative actives slip through to `team[-1]`).
     const b = makeBattle({
@@ -603,8 +591,6 @@ describe('buildBattleViewModel M8.6c: negative active index → null, no throw',
   });
 
   it('BITES: sideB.active = -1 returns null and does NOT throw', () => {
-    // RED reason: sideB guard also only uses `>=` today. -1 for sideB passes the
-    // guard and crashes on `sideB.team[-1]`.
     // Wrong impl killed: a guard that patches sideA but forgets sideB.
     const b = makeBattle({
       sideB: { active: -1, team: [battleMonster()] },
@@ -664,11 +650,7 @@ describe('buildBattleViewModel M8.6c: negative active index → null, no throw',
 });
 
 // =============================================================================
-// M8.7e — decideBattleOverlay pure reducer
-// SOURCE OF TRUTH: specs/monster-realm-v2/M8.7-third-review-residuals.spec.md §3
-//   "WHEN a player's battle resolves … THE SYSTEM SHALL render the terminal
-//   outcome frame at least once … explicit dismiss (Escape) … Ongoing auto-show
-//   preserved."
+// decideBattleOverlay pure reducer
 //
 // decideBattleOverlay(latest, state) → { action, dismissedBattleId, synced }
 //
@@ -682,8 +664,6 @@ describe('buildBattleViewModel M8.6c: negative active index → null, no throw',
 //      - dismissedBattleId === latest.battleId → hide (no re-pop).
 //      - else → show (Ongoing auto-shows; mid-session terminal shows once).
 //
-// RED: `decideBattleOverlay`, `OverlayState`, `BattleOverlayAction`, `OverlayResult`
-// do not exist in battleModel.ts yet.
 // =============================================================================
 
 /** Local factory: a minimal valid StoreBattle with a configurable battleId + outcome. */
@@ -890,10 +870,8 @@ describe('battleModel M8.7e: decideBattleOverlay', () => {
 });
 
 // =============================================================================
-// m14.5d — weatherBanner pure function
-// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-2
+// weatherBanner pure function
 //
-// RED REASON: `weatherBanner` does not exist yet in battleModel.ts.
 // =============================================================================
 
 describe('battleModel m14.5d: weatherBanner — tag to label mapping', () => {
@@ -928,7 +906,7 @@ describe('battleModel m14.5d: weatherBanner — tag to label mapping', () => {
   });
 
   it('BITES: weatherBanner("UnknownWeather") warns + returns empty string (reviewer m-1)', () => {
-    // m23-s8: the two contracts DIVERGE here, deliberately - this is no longer "identical to
+    // The two contracts DIVERGE here, deliberately - this is no longer "identical to
     // statusBadge's default arm". statusBadge now returns a VISIBLE derived token (see
     // unknownStatusToken) because a per-monster status badge that renders NOTHING is
     // indistinguishable from "this monster is healthy": the absence is a lie about game state,
@@ -946,13 +924,7 @@ describe('battleModel m14.5d: weatherBanner — tag to label mapping', () => {
 });
 
 // =============================================================================
-// m14.5d — parity guards (js-path-parity-style; red-team 1/3)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-3
-//
-// RED REASON: weatherBanner / BattleOutcomeTag / shouldSkipBattleRefresh / battleVMsEqual
-// do not yet exist; StatusEffect/WeatherEffect/BattleOutcome are imported from
-// module_bindings/types (already present) — those imports succeed now, but the
-// functions under test do not exist.
+// Parity guards (js-path-parity-style)
 //
 // ANTI-PATTERN: never iterate variants without the length anchor + known-member
 // check. An empty variants array must FAIL, never vacuously pass.
@@ -960,7 +932,7 @@ describe('battleModel m14.5d: weatherBanner — tag to label mapping', () => {
 
 describe('battleModel m14.5d: parity — StatusEffect variants all produce non-empty statusBadge', () => {
   it('BITES anchor: StatusEffect has exactly 5 variants and contains "Poison"', () => {
-    // Red-team 3 / proof-of-teeth: anchor BEFORE iterating. An empty variants array
+    // proof-of-teeth: anchor BEFORE iterating. An empty variants array
     // must cause this test to fail (length check), not vacuously pass the loop.
     // Kills: a bindings regen that added/removed a variant without updating statusBadge.
     const variants = (StatusEffect.algebraicType.value as { variants: Array<{ name: string }> })
@@ -1051,7 +1023,7 @@ describe('battleModel m14.5d: parity — BattleOutcome variants all accepted by 
     // Kills: an impl that returns null for a valid BattleOutcome variant name
     // (e.g. if buildBattleViewModel treats all non-Ongoing as unknown → null).
     // The BattleOutcomeTag union must include every variant the server can emit.
-    // Red-team 3: 'Ongoing' → non-null VM, outcome==='Ongoing'; etc.
+    // 'Ongoing' → non-null VM, outcome==='Ongoing'; etc.
     const variants = (BattleOutcome.algebraicType.value as { variants: Array<{ name: string }> })
       .variants;
     for (const v of variants) {
@@ -1067,20 +1039,16 @@ describe('battleModel m14.5d: parity — BattleOutcome variants all accepted by 
 });
 
 // =============================================================================
-// m14.5d — unknown outcome: buildBattleViewModel returns null + warns (red-team 3)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-3
+// Unknown outcome: buildBattleViewModel returns null + warns
 //
-// RED REASON: current buildBattleViewModel returns a VM with outcome:'Draw' (string)
-// rather than returning null. The new spec requires: unknown outcome tag → console.warn
-// + return null (same as corrupt-team guard). This replaces the `default: text = ...`
-// arm in #renderOutcome.
+// unknown outcome tag → console.warn
+// + return null (same as corrupt-team guard).
 // =============================================================================
 
 describe('battleModel m14.5d: unknown outcome → buildBattleViewModel returns null + warns', () => {
   it('BITES: StoreBattle with outcome:"Draw" → buildBattleViewModel returns null', () => {
-    // Red-team 3 / review refinement 5: unknown outcome tag → null (not a VM with
-    // outcome:'Draw'). This is a BEHAVIOUR CHANGE from the existing default arm.
-    // Wrong impl killed: current impl returns a VM with outcome==='Draw' (string).
+    // unknown outcome tag → null (not a VM with outcome:'Draw'). Wrong impl
+    // killed: returns a VM with outcome==='Draw' (string).
     const b = makeBattle({ outcome: 'Draw' });
     const result = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
     expect(result).toBeNull();
@@ -1111,11 +1079,8 @@ describe('battleModel m14.5d: unknown outcome → buildBattleViewModel returns n
 });
 
 // =============================================================================
-// m14.5d — BattleViewModel.weather propagation via buildBattleViewModel
-// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-2
+// BattleViewModel.weather propagation via buildBattleViewModel
 //
-// RED REASON: BattleViewModel does not yet have a `weather` field; StoreBattle
-// does not yet have a `weather` field; weatherBanner does not yet exist.
 // =============================================================================
 
 describe('battleModel m14.5d: BattleViewModel.weather propagation', () => {
@@ -1142,10 +1107,8 @@ describe('battleModel m14.5d: BattleViewModel.weather propagation', () => {
 });
 
 // =============================================================================
-// m14.5d — battleVMsEqual field-by-field equality
-// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-4
+// battleVMsEqual field-by-field equality
 //
-// RED REASON: battleVMsEqual does not exist yet in battleModel.ts.
 // =============================================================================
 
 /** Build a full BattleViewModel for equality tests — uses buildBattleViewModel
@@ -1248,10 +1211,10 @@ describe('battleModel m14.5d: battleVMsEqual — each field class flips equality
   });
 
   it('BITES: weather null vs {tag:"Rain",turnsRemaining:3} → not equal (Escape→weather-arrives→re-show path)', () => {
-    // Red-team 4 / review refinement 4: the shouldSkipBattleRefresh visible-guard
-    // test covers the escape path; this test covers the equality predicate that
-    // makes it work. A stale-hidden escape followed by a weather-effect arriving
-    // must re-render — so two VMs differing only on weather must NOT be equal.
+    // the shouldSkipBattleRefresh visible-guard test covers the escape path; this
+    // test covers the equality predicate that makes it work. A stale-hidden
+    // escape followed by a weather-effect arriving must re-render — so two VMs
+    // differing only on weather must NOT be equal.
     // Kills: an impl that omits weather from battleVMsEqual.
     const a = makeFullVM({ weather: null } as Partial<StoreBattle>);
     const b = makeFullVM({ weather: { tag: 'Rain', turnsRemaining: 3 } } as Partial<StoreBattle>);
@@ -1282,7 +1245,7 @@ describe('battleModel m14.5d: battleVMsEqual — each field class flips equality
   });
 
   it('BITES: skills array length differs → not equal (reviewer B-2: length-first)', () => {
-    // Reviewer B-2: length check FIRST before per-element compare.
+    // length check FIRST before per-element compare.
     // Kills: an impl that iterates elements without checking length first (could
     // produce true when the shorter array is a prefix of the longer one).
     const a = makeFullVM({
@@ -1451,10 +1414,7 @@ describe('battleModel m14.5d: battleVMsEqual — each field class flips equality
 });
 
 // =============================================================================
-// m14.5d — shouldSkipBattleRefresh pure guard (red-team 4 / review refinement 4)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-4
-//
-// RED REASON: shouldSkipBattleRefresh does not exist yet in battleModel.ts.
+// shouldSkipBattleRefresh pure guard
 //
 // Contract: returns true ONLY when visible && both non-null && battleVMsEqual(lastVm, vm).
 // All other combinations → false (never skip).
@@ -1501,10 +1461,10 @@ describe('battleModel m14.5d: shouldSkipBattleRefresh — skip conditions', () =
   });
 
   it('BITES: vmNoWeather vs vmWithWeather → false (Escape→weather-arrives→re-show path)', () => {
-    // Red-team 4 review refinement 4: if the player presses Escape (bare-hide at
-    // main.ts:489) and then a weather effect arrives on the next batch, the next
-    // visible=false call must not skip (already covered), but after re-show the
-    // first call with visible=true must also not skip because the VMs differ.
+    // if the player presses Escape (bare-hide) and then a weather effect arrives on the
+    // next batch, the next visible=false call must not skip (already covered), but
+    // after re-show the first call with visible=true must also not skip because the VMs
+    // differ.
     // This test covers the VM-differ case: noWeather vs withWeather.
     // Kills: an impl that ignores weather in battleVMsEqual or shouldSkipBattleRefresh.
     const vmNoWeather = makeFullVM({ weather: null } as Partial<StoreBattle>);
@@ -1526,21 +1486,12 @@ describe('battleModel m14.5d: shouldSkipBattleRefresh — skip conditions', () =
 });
 
 // =============================================================================
-// m14.5d — battleVMsEqual: weather undefined-safety invariant
-// FINDING: battleVMsEqual crashes (TypeError: Cannot read property 'label' of undefined)
-// when BOTH VMs carry weather=undefined. The current strict null-check (=== null) does
-// not match undefined, so both the null-null early-return and the mixed-null guard are
-// bypassed, and `aw.label` throws. The production path through buildBattleViewModel
-// always produces weather=null (not undefined), so the crash is currently unreachable —
-// but it is latent: any test factory that builds a BattleViewModel without the weather
-// field and then passes it to battleVMsEqual will trigger the crash.
+// battleVMsEqual: weather undefined-safety invariant
 //
-// FIX: replace `=== null` with `== null` (loose equality) in the two weather null-checks
-// at battleVMsEqual lines 410-411. Loose equality treats both null and undefined as
-// "absent weather", which is the correct semantic (both mean no active weather).
+// Loose equality treats both null and undefined as "absent weather", which is the correct
+// semantic (both mean no active weather).
 // The fix has zero behavior change for the production path (weather is always null there).
 //
-// This test is GREEN after the fix and acts as a permanent regression guard.
 // =============================================================================
 
 describe('battleModel m14.5d invariant: battleVMsEqual weather=undefined never throws', () => {
@@ -1560,7 +1511,7 @@ describe('battleModel m14.5d invariant: battleVMsEqual weather=undefined never t
     // Simulate a VM built without the weather field (e.g., from a test factory
     // that predates m14.5d). We must use `as` to bypass TypeScript's required field.
     const vmUndefinedWeather = { ...vmBase } as BattleViewModel;
-    delete (vmUndefinedWeather as Record<string, unknown>).weather;
+    delete (vmUndefinedWeather as unknown as Record<string, unknown>).weather;
 
     // Both VMs have weather=undefined. Must return true (no weather === no weather),
     // not throw TypeError: Cannot read properties of undefined (reading 'label').
@@ -1577,7 +1528,7 @@ describe('battleModel m14.5d invariant: battleVMsEqual weather=undefined never t
     } as Partial<StoreBattle>);
     const vmBase = makeFullVM();
     const vmUndefinedWeather = { ...vmBase } as BattleViewModel;
-    delete (vmUndefinedWeather as Record<string, unknown>).weather;
+    delete (vmUndefinedWeather as unknown as Record<string, unknown>).weather;
 
     expect(() => battleVMsEqual(vmWithWeather, vmUndefinedWeather)).not.toThrow();
     expect(battleVMsEqual(vmWithWeather, vmUndefinedWeather)).toBe(false);
@@ -1585,17 +1536,7 @@ describe('battleModel m14.5d invariant: battleVMsEqual weather=undefined never t
 });
 
 // =============================================================================
-// m14.5d-1b — cureItems in BattleViewModel (classify-by-data, bait-selector pattern)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-1
-//
-// RED REASON: BattleViewModel does not yet have a `cureItems` field; buildBattleViewModel
-// does not yet accept a 5th arg; CureItem type does not yet exist in battleModel.ts.
-// All tests below will fail until the implementer adds:
-//   - `interface CureItem { itemId: number; name: string; cureStatus: string; count: number; }`
-//   - `cureItems: readonly CureItem[]` on BattleViewModel
-//   - 5th arg `cureItems: readonly CureItem[] = []` to buildBattleViewModel
-//   - classify-by-data filter: cureStatus !== null && count > 0, only when battle is ongoing
-//   - cureItems comparison in battleVMsEqual
+// cureItems in BattleViewModel (classify-by-data, bait-selector pattern)
 //
 // Classify-by-data rule (mirroring bait-selector): inclusion is decided by
 // `cureStatus !== null` on the item — never by a hardcoded item id.
@@ -1610,9 +1551,9 @@ interface CureItemStub {
 }
 
 // =============================================================================
-// RT-CI-01 — CureItem.cureStatus runtime null-filter invariant (red-team gating)
+// RT-CI-01 — CureItem.cureStatus runtime null-filter invariant
 //
-// FINDING (red-team m14.5d-1b): CureItem.cureStatus is typed as `string` (non-null),
+// CureItem.cureStatus is typed as `string` (non-null),
 // so the filter `c.cureStatus !== null` in buildBattleViewModel is vacuous at the TS
 // type level. However, the model defends at RUNTIME against a caller that passes a
 // null cureStatus via an `as never` cast (i.e. bypassing the type system). This test
@@ -1642,7 +1583,7 @@ describe('battleModel RT-CI-01: cureItems null-cureStatus runtime filter invaria
       withNull as never,
     );
     expect(vm).not.toBeNull();
-    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    const cureItems = (vm as unknown as Record<string, unknown>).cureItems as CureItemStub[];
     // Only the non-null cureStatus item must appear; the null one must be filtered out.
     expect(cureItems).toHaveLength(1);
     expect(cureItems[0]!.itemId).toBe(1);
@@ -1662,7 +1603,7 @@ describe('battleModel RT-CI-01: cureItems null-cureStatus runtime filter invaria
       input as never,
     );
     expect(vm).not.toBeNull();
-    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    const cureItems = (vm as unknown as Record<string, unknown>).cureItems as CureItemStub[];
     expect(cureItems).toHaveLength(0);
   });
 });
@@ -1684,7 +1625,7 @@ describe('battleModel m14.5d-1b: buildBattleViewModel — cureItems classify-by-
       cureItemsInput as never,
     );
     expect(vm).not.toBeNull();
-    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    const cureItems = (vm as unknown as Record<string, unknown>).cureItems as CureItemStub[];
     expect(cureItems).toHaveLength(1);
     expect(cureItems[0]!.itemId).toBe(1);
     // Kills: an impl that lists all items regardless of cureStatus
@@ -1705,7 +1646,7 @@ describe('battleModel m14.5d-1b: buildBattleViewModel — cureItems classify-by-
       cureItemsInput as never,
     );
     expect(vm).not.toBeNull();
-    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    const cureItems = (vm as unknown as Record<string, unknown>).cureItems as CureItemStub[];
     expect(cureItems).toHaveLength(0);
     // Kills: an impl that shows the cure item even when count is 0
   });
@@ -1725,7 +1666,7 @@ describe('battleModel m14.5d-1b: buildBattleViewModel — cureItems classify-by-
       cureItemsInput as never,
     );
     expect(vm).not.toBeNull();
-    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    const cureItems = (vm as unknown as Record<string, unknown>).cureItems as CureItemStub[];
     expect(cureItems).toHaveLength(0);
     // Kills: an impl that gates only on cureStatus/count but ignores outcome
   });
@@ -1736,7 +1677,7 @@ describe('battleModel m14.5d-1b: buildBattleViewModel — cureItems classify-by-
     const b = makeBattle({ outcome: 'Ongoing' });
     const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
     expect(vm).not.toBeNull();
-    const cureItems = (vm as Record<string, unknown>).cureItems;
+    const cureItems = (vm as unknown as Record<string, unknown>).cureItems;
     // Must be an empty array — not undefined, not null, not throwing
     expect(Array.isArray(cureItems)).toBe(true);
     expect((cureItems as unknown[]).length).toBe(0);
@@ -1813,11 +1754,11 @@ describe('battleModel m14.5d-1b: battleVMsEqual — cureItems comparison', () =>
   });
 });
 
-// --- m16b: isPvp / pvpPendingSubmit / pvpOpponentName (ADR-0110) -----------------
+// --- isPvp / pvpPendingSubmit / pvpOpponentName -----------------
 
 describe('buildBattleViewModel: isPvp detection', () => {
   it('isPvp=false when opponentIdentity equals playerIdentity (wild/PvE: same placeholder)', () => {
-    // Wild battle: server sets opponentIdentity = playerIdentity (ADR-0045).
+    // Wild battle: server sets opponentIdentity = playerIdentity.
     const b = makeBattle({
       playerIdentity: 'alice',
       opponentIdentity: 'alice',
@@ -1961,11 +1902,7 @@ describe('battleVMsEqual: PvP fields', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ptc5e e-3 — isPvpBattle canonical export (ADR-0110 seam)
-//
-// RED state: isPvpBattle is NOT yet exported from ./battleModel.
-//   → import-resolve error (TS2305 / vitest resolution failure) — all three
-//     tests below are red for this reason today.
+// isPvpBattle canonical export (ADR-0110 seam)
 //
 // Contract: isPvpBattle({ opponentMonsterIds, opponentIdentity, playerIdentity })
 //   returns true iff identities differ AND opponentMonsterIds is non-empty.
@@ -2138,8 +2075,8 @@ describe('battleModel m23-s8: statusBadge unknown-tag fallback is visible', () =
     // WHY THIS GOES THROUGH buildBattleViewModel AND NOT THE VIEW. MEASURED:
     // battleView.test.ts:32 imports BattleViewModel as a TYPE only and hand-builds every VM, so
     // it contains zero live calls to buildBattleViewModel. A badge test written on the view
-    // side never exercises the real chain — statusBadge → `... || null` (battleModel.ts:196) →
-    // `if (card.status)` (battleView.ts:277) — and would pass with this fix reverted, because
+    // side never exercises the real chain — statusBadge → `... || null` →
+    // `if (card.status)` — and would pass with this fix reverted, because
     // the hand-built VM supplies the non-null status the production path fails to produce.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -2210,17 +2147,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // =============================================================================
-// rb-55 — statusBadge and A11Y_TOKENS are ONE contract, mechanically linked
-// SOURCE OF TRUTH: residual R-m23-s8-TSDUP, recorded at docs/adr/0233-*.md:179-182
-// ("nothing correlates the two tables"). Do NOT cite content.rs:1621-1625 for that
-// claim — this slice rewrote those lines, and they now say the opposite.
+// statusBadge and A11Y_TOKENS are ONE contract, mechanically linked
 //
 // The five status tokens are hand-written TWICE: as `A11yToken` rows inside
-// `pub const A11Y_TOKENS` (game-core/src/content.rs:1692) and as `case` arms in
-// `statusBadge` (client/src/ui/battleModel.ts). Each side pins its OWN literals
-// and, BEFORE this block existed, was perfectly green while disagreeing with the other
-// (measured: 4 of the 5 tokens). This block reads the Rust const at runtime and compares
-// it to what statusBadge RETURNS, so a drift in EITHER direction is now red.
+// `pub const A11Y_TOKENS` and as `case` arms in `statusBadge`
+// (client/src/ui/battleModel.ts). Each side pins its OWN literals and, BEFORE this block
+// existed, was perfectly green while disagreeing with the other (measured: 4 of the 5
+// tokens). This block reads the Rust const at runtime and compares it to what
+// statusBadge RETURNS, so a drift in EITHER direction is now red.
 //
 // THIS IS NOT A THIRD TRANSCRIPTION. No token literal appears anywhere below, and
 // the keys are derived from the generated StatusEffect roster rather than listed.
@@ -2271,16 +2205,9 @@ const RB55_ONE_CONTRACT =
   '(statusBadge — the mirror) are ONE contract: repair BOTH files, never one. Editing ' +
   'only the side this test names just moves the drift.';
 
-/** The trap that makes "just change the Rust token" the wrong repair. */
-const RB55_CEILING =
-  'CEILING CONTRADICTION — read before choosing a side to edit: A11Y_TOKEN_MAX_LEN is 4 ' +
-  '(game-core/src/content.rs:1749) but the badge pill caps every token at 3 characters ' +
-  '(client/src/ui/battleModel.test.ts:2033). A 4-character Rust token is therefore legal ' +
-  'in content.rs and has NO legal client repair — shorten the token, do not widen the pill.';
-
 /**
- * Read the SSOT, or FAIL LOUD naming the resolved path (the indexShell.test.ts:99-106
- * idiom). Never `?? ''`, never an existsSync guard, never it.skip: a swallowed read turns
+ * Read the SSOT, or FAIL LOUD naming the resolved path.
+ * Never `?? ''`, never an existsSync guard, never it.skip: a swallowed read turns
  * this whole gate into a permanently green no-op the day the crate moves.
  */
 function rb55ReadContentRs(): string {
@@ -2326,12 +2253,11 @@ describe('battleModel rb-55: statusBadge is mechanically linked to A11Y_TOKENS (
 
     // MEASURED BYPASS, DO NOT REMOVE. The slice as first written took the FIRST match and
     // asserted nothing about how many there were. A red-team pass then shipped a decoy that
-    // defeated the whole gate with the ENTIRE CI green (client 3119 passed, cargo nextest
-    // 2238 passed, evals 99 PASS): a `pub const A11Y_TOKENS_SNIPPET: &str = r#"..."#` raw
-    // string placed above the real const, reproducing the anchor line AND a line-initial
-    // `];` of its own. The region then slices over the decoy's stale rows, and the shipped
-    // table is free to drift. A raw string is never touched by the `//` strip below, so
-    // comment-handling cannot help here — only counting can.
+    // defeated the whole gate with the ENTIRE CI green: a `pub const A11Y_TOKENS_SNIPPET:
+    // &str = r#"..."#` raw string placed above the real const, reproducing the anchor line
+    // AND a line-initial `];` of its own. The region then slices over the decoy's stale
+    // rows, and the shipped table is free to drift. A raw string is never touched by the
+    // `//` strip below, so comment-handling cannot help here — only counting can.
     expect(
       src.split(RB55_TOKENS_ANCHOR).length - 1,
       'rb55 ANCHOR UNIQUENESS: the const-opening literal must occur EXACTLY ONCE in ' +
@@ -2432,14 +2358,13 @@ describe('battleModel rb-55: statusBadge is mechanically linked to A11Y_TOKENS (
         'side is the live return value of `statusBadge` in client/src/ui/battleModel.ts; the "expected" ' +
         'side is parsed from game-core/src/content.rs:1692. A screen reader announces the ' +
         'Rust token while the sighted pill renders the client one, so a drift here is two ' +
-        `players being told two different things about the same monster. ${RB55_ONE_CONTRACT} ` +
-        `${RB55_CEILING}`,
+        `players being told two different things about the same monster. ${RB55_ONE_CONTRACT}`,
     ).toEqual(variants.map((v) => [v.name, rustTokenFor(v.name)]).sort());
 
     // MEASURED GAP, DO NOT REMOVE. The assertion above stops at the pure function; production
     // reads the badge through monsterCard (`status: statusBadge(...) || null`), and a red-team
     // pass shipped `statusBadge(mon.status?.tag).replace('BRN', 'BUR')` at that hop with the
-    // WHOLE client suite green (3119 passed) — the view model carried a token the SSOT never
+    // WHOLE client suite green — the view model carried a token the SSOT never
     // authorised. Re-run the same comparison through buildBattleViewModel so the value a card
     // actually carries is bound to the Rust table too, not just the function's return.
     expect(
@@ -2469,14 +2394,8 @@ describe('battleModel rb-55: statusBadge is mechanically linked to A11Y_TOKENS (
 });
 
 // =============================================================================
-// rb-58 — the unknown-status fallback token must spend the entropy its 3-character
+// The unknown-status fallback token must spend the entropy its 3-character
 // budget allows, on EVERY code point of the tag
-//
-// SOURCE OF TRUTH: residual R-m23-s8-postmerge-fallback (the harness slice ledger)
-// == R-m23-s8-FALLBACK-COLLIDE (docs/adr/0233-a11y-colour-independence-token-ssot.md:195).
-// BOTH ids are real: the first is the harness-side ledger name, the second the ADR-side
-// name, and they denote ONE residual. Neither is a typo and neither is fabricated — do
-// not "correct" either spelling to the other (that mis-edit has been made before).
 //
 // THE DEFECT. The shipped fallback derived its two payload characters from the first
 // two code points of the tag only, so any two unknown server statuses sharing a
@@ -2787,7 +2706,7 @@ describe('rb58 unknown-status fallback token entropy', () => {
     // and `diffAt`, the first index at which the two differ, or -1 when one is a proper
     // prefix of the other. MEASURED GUT THIS CLOSES: rewriting pair 1 from
     // "299 x's then a y" to "a y then 299 x's" makes the whole of T2 green on the
-    // UNFIXED implementation (only pair 1 is red today), while `pairs.length` and the
+    // UNFIXED implementation, while `pairs.length` and the
     // now-lying `label`/`kills` prose survive untouched. With the structure pinned, a
     // pair edited to differ somewhere else reds on `diffAt` instead of going quiet.
     const pairs: ReadonlyArray<{
@@ -3145,7 +3064,7 @@ describe('rb58 unknown-status fallback token entropy', () => {
     // loop, exactly one `return`, no ambient name anywhere in its body — and moved the fork
     // into a module-scope helper it calls. A region-scoped scan sees nothing; the bundle
     // ships the defect. The blacklist below is therefore applied to the WHOLE stripped file.
-    // That costs nothing: battleModel.ts is a pure view-model module (its own header at :1-4
+    // That costs nothing: battleModel.ts is a pure view-model module (its own header
     // declares "No DOM, no SDK, no side effects") and has ZERO legitimate uses of any banned
     // name. The region-scoped single-exit clause is kept as well — the two are complementary,
     // not redundant.
@@ -3182,7 +3101,7 @@ describe('rb58 unknown-status fallback token entropy', () => {
 
     // NO COMMENT DELIMITER MAY SURVIVE THE STRIP. After a correct one-pass scan the only way
     // `/*` or `*/` can remain is inside a string literal — which is precisely the desync
-    // payload. Green today; this is the tripwire for the planted-delimiter attack.
+    // payload. this is the tripwire for the planted-delimiter attack.
     expect(
       strippedSrc,
       'rb58 T4 STRIPPER INTEGRITY: no comment delimiter may survive the strip. Surviving ' +

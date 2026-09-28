@@ -1,4 +1,4 @@
-// net/authToken.ts — the reconnect-credential gate (nh4, ADR-0150).
+// net/authToken.ts — the reconnect-credential gate.
 //
 // PURE-ish core for the one decision `connection.ts` must not make inline: which auth
 // token (if any) to hand `DbConnection.builder().withToken(...)` on the NEXT build, and
@@ -7,13 +7,12 @@
 // only be reached when the browser throws on the storage property access itself — is
 // unit-testable in a node environment with no DOM.
 //
-// WHY THIS MODULE EXISTS AT ALL: `connection.ts` is coverage-EXCLUDED (client/vite.config.ts,
-// exact-set-guarded by the dom-shell-coverage-exclusion eval), so logic living there is
-// provable only by source-scan — which can pin wiring but never behavior. Keeping the state
-// machine here is what makes "the classifier was quietly changed to `return true`" a caught
-// bug rather than an invisible one.
+// WHY THIS MODULE EXISTS AT ALL: `connection.ts` is coverage-EXCLUDED (client/vite.config.ts),
+// so logic living there is provable only by source-scan — which can pin wiring but never
+// behavior. Keeping the state machine here is what makes "the classifier was quietly changed
+// to `return true`" a caught bug rather than an invisible one.
 //
-// SUPPRESS, NEVER CLEAR (ADR-0150 D2). The SDK throws the SAME message
+// SUPPRESS, NEVER CLEAR. The SDK throws the SAME message
 // (`Failed to verify token: <statusText>`, dist/index.mjs:5057-5063) for a transient
 // 500/502/503 from the token-verify endpoint as for a genuine 401 — and HTTP/2 mandates an
 // empty `statusText`, collapsing every case to one string. So we never delete a stored
@@ -30,7 +29,7 @@
  * indistinguishable from a real rejection (see the header), so a threshold of 1 would swap
  * the player's identity on a single server hiccup. WHY not higher: a genuinely dead token
  * repeats deterministically, so each extra rung only delays recovery — at 2 the host-reset
- * loop terminates after the 1 s + 2 s backoff rungs (ADR-0085 ladder), about 3 s.
+ * loop terminates after the 1 s + 2 s backoff rungs, about 3 s.
  */
 export const AUTH_REJECT_SUPPRESS_THRESHOLD = 2;
 
@@ -58,7 +57,7 @@ export interface TokenStorageHost {
 export interface AuthTokenGate {
   /** The token to hand `.withToken()` for the NEXT build; `undefined` = connect
    *  anonymously. MUST be called fresh per build — a cached value would make suppression
-   *  inert and a host-reset reconnect loop permanent (ADR-0150 D2). */
+   *  inert and a host-reset reconnect loop permanent. */
   tokenForNextAttempt(): string | undefined;
   /** A build connected: persist this connection's token and reset the rejection state. */
   onConnected(token: string): void;
@@ -81,7 +80,7 @@ export function isStoredCredentialRejected(err: unknown): boolean {
     // The READ itself can throw — a throwing accessor or a Proxy `get` trap. Without this
     // catch the throw escapes through `onConnectFailed` into `.onConnectError`, where it
     // would skip `scheduleRebuild()` and silently strand the client with no timer and no
-    // further attempts: a permanent, invisible freeze (red-team finding, ADR-0150 D5).
+    // further attempts: a permanent, invisible freeze (red-team finding).
     const { message } = err as { message?: unknown };
     return typeof message === 'string' && message.startsWith(CREDENTIAL_REJECTED_PREFIX);
   } catch {
@@ -123,13 +122,13 @@ function storageMethod(host: TokenStorageHost | undefined, name: 'getItem' | 'se
  * Build the per-connection-target credential gate.
  *
  * `host` is the object that may expose `sessionStorage` — per-TAB storage, deliberately not
- * `localStorage` (ADR-0150 D3). When D3 was decided the server's `on_disconnect` keyed purely
+ * `localStorage`. When D3 was decided the server's `on_disconnect` keyed purely
  * on identity with no live-connection check, so two tabs sharing one identity would have let
- * closing either one forfeit the other's PvP battle and delete its character row; since rb-73
- * (ADR-0245) the server runs those side effects only when the identity's LAST live connection
+ * closing either one forfeit the other's PvP battle and delete its character row; now
+ * the server runs those side effects only when the identity's LAST live connection
  * ends. Per-tab storage still keeps a second tab an independent identity (identity hygiene, and
- * one token per tab bounds the R-rb-73-TOKEN-WEDGE surface) while surviving the page reload nh4
- * exists to fix.
+ * one token per tab bounds the open token-wedge residual) while surviving the page reload this
+ * storage exists to fix.
  */
 export function createAuthTokenGate(
   uri: string,
@@ -177,7 +176,7 @@ export function createAuthTokenGate(
       // threshold defeatable by ALTERNATION — a host whose failures interleave
       // rejection/network-error (a load balancer with only some replicas rotated, or a flaky
       // link failing the verify fetch outright) would oscillate 0→1→0→1 forever, never
-      // suppress, and re-supply a dead token indefinitely (red-team finding, ADR-0150 D2).
+      // suppress, and re-supply a dead token indefinitely (red-team finding).
       // Counting since-last-success is strictly stronger AND still safe for the case the
       // reset was protecting: a pure network outage produces no classified rejections at
       // all, so the counter never advances and the stored token is never withheld.
@@ -187,7 +186,7 @@ export function createAuthTokenGate(
 }
 
 // ---------------------------------------------------------------------------
-// M21b (ADR-0179 D8) — the auth-KIND marker.
+// The auth-KIND marker.
 //
 // APPENDED, ADDITIVE ONLY: nothing above this line changed. That is not a
 // courtesy, it is AUTH-31's proof — "the anonymous path behaves exactly as it
@@ -207,8 +206,8 @@ export function createAuthTokenGate(
 // the hole cannot be opened by accident when that path arrives.
 //
 // The marker records INTENT, never FACT: it says which credential class this
-// tab believes it holds, not what the server concluded. Once M21b-2 subscribes
-// the `my_account` view, THAT is authoritative and this is a hint (ADR-0179).
+// tab believes it holds, not what the server concluded. Once the client subscribes
+// the `my_account` view, THAT is authoritative and this is a hint.
 // ---------------------------------------------------------------------------
 
 /** Which credential class the stored token belongs to. */
@@ -240,7 +239,7 @@ export function authKindStorageKey(uri: string, db: string): string {
  * storage accessor. Two reasons this is the safe direction and not merely the
  * lenient one: (1) every tab in existence today has no marker, so failing to
  * `'account'` would break every existing anonymous reconnect the moment storage
- * is blocked, turning a private-mode quirk into total loss of ADR-0150's
+ * is blocked, turning a private-mode quirk into total loss of the reconnect
  * feature; (2) `'anon'` IS today's behaviour, so the fail path is a no-op
  * rather than a new one.
  *
@@ -266,12 +265,12 @@ export function readAuthKind(
  * Record the credential class for this target. Degrades silently on quota /
  * private-mode / blocked-storage failures, exactly as `onConnected` does.
  *
- * LIVE CONSUMERS (M21b-2 landed — the marker is now a complete read/write pair):
+ * LIVE CONSUMERS (the marker is a complete read/write pair):
  * the read side is `wasEverAuthenticated` below (the AUTH-44 attempt gate, which
  * decides only whether a tab may call Better Auth on reconnect), and connection.ts's
  * provenance guard on `credential.kind`. That guard reads the credential this build
  * resolved IN MEMORY, never a storage re-read — the marker is a hint about intent,
- * not the security discriminator (ADR-0182 D14). `writeAuthKind` records the class
+ * not the security discriminator. `writeAuthKind` records the class
  * the connection just established; its behaviour below is unchanged.
  */
 export function writeAuthKind(
@@ -298,7 +297,7 @@ export function writeAuthKind(
  *
  * Delegates to `readAuthKind` (its SINGLE call site — G14(ii)) rather than reading storage
  * itself: one marker, one meaning. It must never decide which token `.withToken()` receives
- * — that is the in-memory provenance of the resolved credential (ADR-0182 D14).
+ * — that is the in-memory provenance of the resolved credential.
  *
  * Fails to `false` on every absent/blocked/corrupt path, for `readAuthKind`'s exact reason
  * (authToken.ts:233-248): a lost marker means "no evidence this tab ever authenticated", so

@@ -1,4 +1,4 @@
-// observability/telemetry.test.ts — m20c (ADR-0180 body amendment): the shell contract.
+// observability/telemetry.test.ts — the shell contract.
 //
 // SOURCE OF TRUTH: EARS OBS-16 ("client SHALL export via the OTel Web SDK over OTLP/HTTP to
 // Alloy, with NO auth credential"), OBS-21 (target the m20b Caddy route), OBS-34/35 (no player
@@ -9,16 +9,16 @@
 //   `startClientTelemetry(config, deps)` receives `deps.loadSdk`, a function that takes a fully
 //   resolved `TelemetryInit` and returns a meter. The real implementation's default loader is a
 //   dynamic `import('@opentelemetry/…')` (which is also what keeps the SDK in a separate chunk
-//   that is never fetched when telemetry is off). These tests NEVER import @opentelemetry: the
-//   packages are not installed at authoring time, vitest runs in the NODE environment
-//   (vite.config.ts:47-53) with no `window`/`fetch` ceremony, and a fake is the only way to
+//   that is never fetched when telemetry is off). These tests NEVER import @opentelemetry:
+//   vitest runs in the NODE environment
+//   with no `window`/`fetch` ceremony, and a fake is the only way to
 //   ASSERT ON the exporter configuration — the one thing OBS-16's "no auth credential" is about.
 //
-// THE INJECTED SEAM, SPELLED OUT (the implementer must match these names exactly):
+// THE INJECTED SEAM, SPELLED OUT:
 //   type SdkLoader = (init: TelemetryInit) => Promise<TelemetryMeter>;
 //   interface TelemetryInit {
 //     exporterUrl: string;                       // <configured origin> + OTLP_METRICS_PATH
-//     exporterHeaders?: Record<string, string>;  // absent, or {} — never anything else (OBS-16)
+//     exporterHeaders?: Record<string, string>;  // absent, or {} — never anything else
 //     exportIntervalMillis: number;              // the resolved config value, verbatim
 //     resourceAttributes: Record<string, string>;// EXACTLY { 'service.name': … } (AM7/R-1)
 //     temporality: 'cumulative';                 // explicit, never the package default (R4)
@@ -29,8 +29,6 @@
 //   }
 //   interface TelemetryDeps { loadSdk: SdkLoader; hints?: DeviceHints; buildSha?: string }
 //   startClientTelemetry(config, deps): Promise<ClientTelemetry>   // NEVER rejects
-//
-// RED REASON: `client/src/observability/telemetry.ts` does not exist yet.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildAttributes } from './attributes';
@@ -139,7 +137,7 @@ interface StartOptions {
 /**
  * Start telemetry against `harness` AND re-assert the whole-init invariants EVERY time.
  *
- * RED-TEAM X2, PROVEN: with the per-test assertions written only where each one was "about" the
+ * with the per-test assertions written only where each one was "about" the
  * subject, an implementation that called `deps.loadSdk` a SECOND time — a second MeterProvider
  * with an `Authorization` header and a `service.instance.id` resource attribute — passed all 97
  * unit tests. T-16a and T-R1 each read `harness.inits[0]`, the FIRST (clean) init, and nothing
@@ -218,7 +216,7 @@ describe('startClientTelemetry (OBS-16): the exporter carries NO credential and 
     //   export fail the preflight — telemetry that silently never arrives.
     // Deep equality is the point: `expect(JSON.stringify(headers)).not.toContain('Authorization')`
     // passes for `{ 'x-mr-token': … }`.
-    // X2: `startWith` additionally proves there is exactly ONE init and re-checks the headers of
+    // `startWith` additionally proves there is exactly ONE init and re-checks the headers of
     // EVERY captured init — a second, header-bearing exporter smuggled in beside the clean one is
     // invisible to an `inits[0]` read.
     const harness = makeHarness();
@@ -444,7 +442,7 @@ describe('startClientTelemetry (AM10/AM15): one frozen attribute object, no fan-
 
   it('AM10-device: the device class is DERIVED from the injected hints (never a raw UA)', async () => {
     // Binds the shell to deviceClass.ts. WRONG IMPL KILLED: passing `navigator.userAgent`
-    // straight into the attribute (OBS-35), or hard-coding 'desktop' so the dimension is
+    // straight into the attribute, or hard-coding 'desktop' so the dimension is
     // constant and useless.
     const harness = makeHarness();
     const telemetry = await startWith(harness, { hints: IPHONE_HINTS });
@@ -453,7 +451,7 @@ describe('startClientTelemetry (AM10/AM15): one frozen attribute object, no fan-
   });
 
   it('AM1: setZone REBUILDS the attribute object — later datapoints carry the new zone_id', async () => {
-    // AM1 (reviewer H1). WRONG IMPL KILLED (1): attributes computed once at init, so every
+    // AM1. WRONG IMPL KILLED (1): attributes computed once at init, so every
     //   datapoint after a zone warp is attributed to the STARTING zone — silently wrong per-zone
     //   panels, which is worse than no zone dimension at all.
     // WRONG IMPL KILLED (2): mutating the existing object (it is frozen, so the write no-ops or

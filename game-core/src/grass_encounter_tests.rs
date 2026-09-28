@@ -1,15 +1,10 @@
 // Cosmetic doc-formatting lint only (Rust 1.96 `doc_overindented_list_items` fires
 // on the 5-space EARS list below); suppressing it changes NO test assertion.
 #![allow(clippy::doc_overindented_list_items)]
-//! M8c gating tests — acceptance criteria for the grass-encounter spine (pure
-//! game-core surface).
+//! Grass-encounter spine: grass tiles, stepping onto grass and encounter
+//! resolution (pure game-core surface).
 //!
-//! These tests are intentionally RED until the implementer adds the new APIs
-//! (`TileKind::TallGrass`, `TileMap::is_grass`, `stepped_onto_grass`, `WildSpawn`,
-//! `resolve_encounter`). They compile-error / `None`-mismatch in the RED state and
-//! pass ONLY when the behavior is correct (never trivially).
-//!
-//! EARS criteria covered (M8 spec §3 "Trigger & encounter", PLAN-v2 R-C / R-J):
+//! EARS criteria covered:
 //!   - "WHEN a player character enters a NEW grass tile (position actually changed
 //!      onto grass — not standing still in grass, not bumping a wall while facing
 //!      grass) THE SYSTEM SHALL [trigger]" → section B (`stepped_onto_grass`).
@@ -62,9 +57,9 @@ fn grass_fixture() -> TileMap {
     TileMap::from_rows(7, &["###", ".~#", "~.#"]).expect("grass fixture art is valid")
 }
 
-/// Find a `~` tile in zone_0's art (the implementer adds at least one interior
-/// grass tile). Returns the first grass tile found, or panics with a clear
-/// message — keeping the test honest about the "zone_0 has grass" criterion.
+/// Find a `~` tile in zone_0's art. Returns the first grass tile found, or
+/// panics with a clear message — keeping the test honest about the "zone_0 has
+/// grass" criterion.
 fn first_zone0_grass_tile() -> TilePos {
     let m = zone_0();
     for y in 0..m.height {
@@ -258,7 +253,7 @@ fn zone_0_grass_survives_serialize() {
 
 // ===========================================================================
 // SECTION B — stepped_onto_grass (trigger geometry; each case bites a distinct
-// over/under-fire). Mirrors PLAN-v2 R-C: fires on a MOVE onto grass, never on a
+// over/under-fire). fires on a MOVE onto grass, never on a
 // non-move (bump / standstill / blocked).
 // ===========================================================================
 

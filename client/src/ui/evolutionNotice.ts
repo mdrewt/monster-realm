@@ -1,8 +1,8 @@
 // ui/evolutionNotice.ts — the POST-EVOLVE REVEAL: a pure copy core plus the small passive
-// banner that shows it (20r-d, ADR-0254 D6; spec §20r-d gate B1 "the player SHALL see"; the
-// announcement and focus-return mechanism below is rb-125, ADR-0272).
+// banner that shows it ("the player SHALL see"; the
+// announcement and focus-return mechanism is described below).
 //
-// WHY A PASSIVE BANNER AND NOT AN ADR-0162 REGISTRY OVERLAY. B1 asks for VISIBILITY, not for a
+// WHY A PASSIVE BANNER AND NOT A REGISTRY OVERLAY. The criterion asks for VISIBILITY, not for a
 // modal: "a visible reveal … a modest overlay/banner … satisfies this slice". Everything in the
 // overlay registry is a thing the player OPENED and can close, with a focus trap, an accessible
 // name in `ui/a11yCopy.ts` and custody of the live region. This surface is none of those — it
@@ -12,7 +12,7 @@
 // `*View.ts`: the two readdir rosters that drive the overlay a11y manifests filter on that
 // suffix, and joining them would force a ~17-file fan-out plus a twelfth static `aria-modal`
 // shell for a surface that is not modal. The cutscene/registry route is the disclosed residual
-// (rb-125 measured that route before choosing this one — see ADR-0272's Context).
+// (that route was measured before choosing this one).
 //
 // WHY z-index 60. `#help-hint` sits at 50 at the bottom of the screen and every overlay sits at
 // 100. 60 is therefore above the hint — so the banner is never painted over or click-stolen at
@@ -20,8 +20,8 @@
 // the OK button. That is what makes "no focus trap, no registry membership" SAFE rather than
 // merely cheap: while a modal is open this banner is neither visible nor reachable.
 //
-// WHY NO aria-live ON THIS ELEMENT, AND WHY THE ANNOUNCEMENT IS INJECTED (ADR-0272 §1). The AT
-// gap ADR-0254 D6 disclosed is closed, but not by turning this banner into a second announcement
+// WHY NO aria-live ON THIS ELEMENT, AND WHY THE ANNOUNCEMENT IS INJECTED. The AT
+// gap is closed, but not by turning this banner into a second announcement
 // owner: the one live region (ui/liveRegion.ts) still owns the single assistive-technology queue,
 // and this file never names it — it reaches it only through the `sinks.announce` callback
 // `main.ts` hands the constructor. An `aria-live` attribute on the container would still be wrong
@@ -44,18 +44,18 @@
 // the last of those is banned here, so the div shape is unreachable by construction.
 //
 // WHY A GENERATION TOKEN AND NOT A BOOLEAN. The ack is count-based and carries no idempotency
-// key (ADR-0254 D4), so a second send drains an entry the player never saw. A plain
+// key, so a second send drains an entry the player never saw. A plain
 // `inFlight = false` release is not enough: `main.ts` calls `reset()` on the reconnect edge, and
-// the SDK never settles a reducer promise issued on a dropped link (ADR-0085 D3) — that stale
+// the SDK never settles a reducer promise issued on a dropped link — that stale
 // promise can settle LATER, after a fresh send is already outstanding, and unlock it. Minting a
 // fresh token per send and releasing only while it is still the current one — by REMOVING the
-// `aria-disabled` lock (ADR-0272 §2), never by writing the `disabled` property or attribute —
+// `aria-disabled` lock, never by writing the `disabled` property or attribute —
 // makes the stale settle a no-op. The release rides `.finally`, never `.then`: the two most
 // likely rejections this button will ever see are the benign two-tab races below, and a `.then`
 // release would leave the banner permanently undismissable after one of them.
 //
 // WHAT IS DELIBERATELY ABSENT FROM THIS FILE, and would be a defect if added: any write to the
-// Tab-order attribute; a live-region attribute; a DIRECT `.focus()` call — ADR-0272 §3 moves the
+// Tab-order attribute; a live-region attribute; a DIRECT `.focus()` call — the design moves the
 // WHERE to `main.ts`'s injected `returnFocus` sink, so this file only decides WHEN, by checking
 // whether `document.activeElement` sat inside the banner the instant before it hides; an
 // HTML-string write (the label is assembled from a player-chosen NICKNAME, so it is an injection
@@ -63,7 +63,7 @@
 // and a motion-preference media query (this shell animates nothing, so reading one is dead
 // weight the reduced-motion eval would then have to model).
 //
-// m24-s5 (ADR-0261) — every player-facing string here is resolved through the i18n resolver
+// Every player-facing string here is resolved through the i18n resolver
 // (`t()`/`tf()`, ui/i18n/resolver.ts): the species fallback and the two reveal sentences as
 // `tf()` return values (species/nickname names are model data, interpolated verbatim — the
 // nickname is plain interpolation, as `pvp.incoming.label`'s challenger is), and the OK label in
@@ -116,7 +116,7 @@ export function evolutionNoticeLabel(
 }
 
 /**
- * The pure per-entry-IDENTITY key (rb-125, ADR-0272 §1): monster id, both species ids and the
+ * The pure per-entry-IDENTITY key: monster id, both species ids and the
  * transaction timestamp, joined with `:`. Every field is written straight into the template
  * literal — a bigint stringifies EXACTLY that way, and `Number(entry.monsterId)` anywhere here
  * would alias 2^53 with 2^53+1 (monster ids are server `#[auto_inc]` u64) and treat two
@@ -141,7 +141,7 @@ export function evolutionNoticeKey(entry: StoreEvolutionReveal): string {
  * The roster match is an EXACT bigint compare. Monster ids are server `#[auto_inc]` u64, so a
  * `Number()`-coerced compare aliases 2^53 with 2^53+1 and names somebody else's monster. A
  * MISS is an ordinary outcome, not an error: a monster may have been traded away between the
- * reveal and the dismissal (a disclosed ADR-0254 residual), so this never asserts a hit.
+ * reveal and the dismissal (a disclosed residual), so this never asserts a hit.
  */
 export function resolveEvolutionNoticeNames(
   entry: StoreEvolutionReveal,
@@ -199,15 +199,15 @@ function ensureElement(id: string, tag: string, parent: HTMLElement): HTMLElemen
 
 /** The content ONE render call shows, or `null` to hide the banner. `key` is
  *  `evolutionNoticeKey(entry)` — the identity `render` edge-triggers the announce sink on;
- *  `label` is the player-facing sentence (rb-125, ADR-0272 §1). */
+ *  `label` is the player-facing sentence. */
 export interface EvolutionNoticeContent {
   readonly key: string;
   readonly label: string;
 }
 
-/** The two effects `main.ts` performs on this banner's behalf (rb-125, ADR-0272). Neither is
+/** The two effects `main.ts` performs on this banner's behalf. Neither is
  *  named by this file: `announce` reaches the one live region (`ui/liveRegion.ts`) and
- *  `returnFocus` reaches the house landing place (ADR-0206) — this module only decides WHEN
+ *  `returnFocus` reaches the house landing place — this module only decides WHEN
  *  each fires, never WHERE it lands. */
 export interface EvolutionNoticeSinks {
   readonly announce: (message: string) => void;
@@ -223,7 +223,7 @@ export interface EvolutionNoticeSinks {
  * before its first label. `render(null)` hides it again — without that arm a dismissed reveal
  * would stay on screen for the life of the page and every further OK press would reject.
  *
- * rb-125 (ADR-0272): the constructor also takes a required `sinks` pair. `announce` fires once
+ * The constructor also takes a required `sinks` pair. `announce` fires once
  * per distinct entry `key`, the first time `render` shows it — this class decides WHEN, `main.ts`
  * decides WHERE the sentence is spoken. `returnFocus` fires from `render(null)` only when focus
  * sat inside this banner the instant before it hid — again, WHEN lives here, WHERE lives in
@@ -241,7 +241,7 @@ export class EvolutionNoticeBanner {
    *  first reveal. Deliberately NEVER cleared — not on `render(null)`, not by `reset()` — a
    *  hide-then-reshow of the SAME key only happens across a reconnect or a store reset, and
    *  re-speaking an entry every AT user already heard on every link flap is exactly the noise
-   *  ADR-0272 §1 bans. */
+   *  this rule bans. */
   #announcedKey: string | null = null;
 
   constructor(onAck: () => Promise<void>, sinks: EvolutionNoticeSinks) {
@@ -284,7 +284,7 @@ export class EvolutionNoticeBanner {
       if (this.#pending !== null) return;
       const token = {};
       this.#pending = token;
-      // ADR-0272 §2: the in-flight lock is `aria-disabled`, never the `disabled` PROPERTY. The
+      // The in-flight lock is `aria-disabled`, never the `disabled` PROPERTY. The
       // HTML focus-fixup rule blurs a focused control the instant `disabled` becomes true, which
       // would strand a keyboard player on <body> mid-chain; `aria-disabled` carries no such
       // fixup, so the button — and the player's place in the Tab order — survives the ack.
@@ -308,10 +308,9 @@ export class EvolutionNoticeBanner {
 
   /** Show `notice`, or hide the banner when it is `null`. The DOM writes come first (label
    *  `textContent` only — the sentence embeds a player-chosen nickname — and the OK label,
-   *  re-resolved on every call, m24-s5), then the announce sink is invoked at most once per
+   *  re-resolved on every call), then the announce sink is invoked at most once per
    *  distinct `key`, then the focus sink is invoked at most once per hide. A throwing sink can
-   *  therefore neither leave a stale banner on screen nor re-fire on the next batch (ADR-0272
-   *  §1).
+   *  therefore neither leave a stale banner on screen nor re-fire on the next batch.
    *
    *  `hadFocus` is read from `document.activeElement` BEFORE the hide's DOM writes run, because
    *  a real browser's blur fixup for a control that leaves the tree is asynchronous — reading it

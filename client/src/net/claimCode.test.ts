@@ -1,4 +1,4 @@
-// net/claimCode.test.ts — AUTH-60 / AUTH-58 + G30 (half) (M21b-2, ADR-0182 D16).
+// net/claimCode.test.ts — AUTH-60 / AUTH-58 + G30 (half).
 //
 // EARS COVERED
 //   AUTH-60 — WHEN the client mints a claim code it SHALL generate EXACTLY 32 bytes via
@@ -7,35 +7,13 @@
 //             `is_valid_claim_code`), and write the code to this tab's sessionStorage
 //             BEFORE `start_guest_claim` is called.
 //   AUTH-58 — no OIDC state / code_verifier / refresh token / CLAIM CODE may be persisted
-//             in `localStorage`; per-tab sessionStorage only (ADR-0150 D3).
+//             in `localStorage`; per-tab sessionStorage only.
 //   AUTH-52/53 — the stored code is what makes the join-veto survive a reconnect, so
 //             `read`/`hasUnconsumed` must agree with each other and must never report a
 //             code the tab cannot actually re-issue.
 //   G30 (half) — claimCode.ts reaches NO ambient storage: no `localStorage`, no
 //             `indexedDB`, no `document.cookie`, no `globalThis`; the host is a PARAMETER.
 //             (oidc.test.ts carries the other half for oidc.ts.)
-//
-// RED REASON AT HEAD (8814416): `client/src/net/claimCode.ts` DOES NOT EXIST. The import
-// below fails to resolve and every test in this file reds on a MISSING IMPLEMENTATION,
-// not on a typo here. The source-scan block reds on `readFileSync` throwing loudly for
-// the same reason (it fails loud rather than passing vacuously).
-//
-// THE CONTRACT THE IMPLEMENTER BUILDS:
-//
-//   import type { TokenStorageHost } from './authToken';   // TYPE-ONLY (G30 allows this)
-//
-//   export interface ClaimCodeHost extends TokenStorageHost { readonly crypto?: unknown }
-//   export const CLAIM_CODE_KEY_PREFIX = 'mr.claimCode.v1';
-//   export function claimCodeStorageKey(uri: string, db: string): string;
-//     // `${CLAIM_CODE_KEY_PREFIX}|${encodeURIComponent(uri)}|${encodeURIComponent(db)}`
-//   export const claimCode: {
-//     mint(host, uri, db): string | undefined;
-//     read(host, uri, db): string | undefined;
-//     hasUnconsumed(host, uri, db): boolean;
-//     clear(host, uri, db): void;
-//     hasSeenFirstRunNudge(host, uri, db): boolean;
-//     markFirstRunNudgeSeen(host, uri, db): void;
-//   };
 //
 // WHY A NAMESPACE OBJECT AND NOT SIX BARE EXPORTS: ADR-0182 D16's join-gate code is pinned
 // by G18 as the contiguous statement
@@ -47,8 +25,7 @@
 // pre-existing tests in authToken.test.ts do. No DOM, no jsdom, no real sessionStorage.
 // The fake-storage family below (FakeSessionStorage / ThrowingSetStorage /
 // ThrowingGetStorage / hostWithStorage / storageReturning) is REUSED VERBATIM from
-// authToken.test.ts:41-94 rather than re-invented — the plan's R8 names a parallel helper
-// family as a known failure mode (connection.test.ts:191-197 records the same mistake).
+// authToken.test.ts:41-94 rather than re-invented.
 //
 // NO `new RegExp(...)` anywhere (Semgrep `detect-non-literal-regexp`, banned repo-wide).
 
@@ -334,8 +311,7 @@ describe('claimCode read / hasUnconsumed / clear (AUTH-52/53)', () => {
     // `complete_guest_claim` (accounts.rs:390 rejects it as ERR_INVALID_CODE before the
     // code is even looked up), so an account-class connection on this tab would be vetoed
     // from `join_game` on EVERY reconnect, forever, with no way for the player to recover.
-    // Parse-don't-validate, exactly as `tokenForNextAttempt` does for a blank token
-    // (authToken.ts:147-150).
+    // Parse-don't-validate, exactly as `tokenForNextAttempt` does for a blank token.
     const malformed: readonly (readonly [string, unknown])[] = [
       ['null (key absent)', null],
       ['a number', 42],

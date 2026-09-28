@@ -52,10 +52,11 @@ pub fn battle_xp_reward(winner_level: Level, loser_base_stat_total: u16, loser_l
     Xp::new(reward)
 }
 
-/// Apply the 0.1× practice-battle XP penalty (ADR-0078).
+/// Apply the 0.1× practice-battle XP penalty.
 ///
-/// `is_practice=true` (opponent != WILD_IDENTITY): `floor(base / 10)`; may yield 0.
-/// `is_practice=false` (wild battle): `base` unchanged.
+/// `is_practice=true` (a self-vs-self battle: player identity == opponent identity):
+/// `floor(base / 10)`; may yield 0.
+/// `is_practice=false` (wild battles AND PvP against another player): `base` unchanged.
 #[must_use]
 pub fn practice_xp_reward(base: Xp, is_practice: bool) -> Xp {
     if is_practice {
@@ -88,7 +89,7 @@ pub fn apply_xp_gain(current_xp: Xp, gained: Xp) -> (Xp, Level, bool) {
 /// On level-up a monster's maximum HP can increase; the engine heals it by
 /// exactly that growth (`new_max_hp - old_max_hp`), so a full-HP monster stays
 /// full and a damaged one preserves its HP deficit across the level boundary.
-/// This is the SSOT for that rule (ADR-0003); the server shell calls it rather
+/// This is the SSOT for that rule; the server shell calls it rather
 /// than re-implementing the formula in the reducer.
 ///
 /// Saturating in both directions: a (defensively impossible) max-HP *decrease*
@@ -403,9 +404,8 @@ mod tests {
         );
     }
 
-    /// is_practice=false returns base unchanged (wild-battle passthrough).
+    /// is_practice=false returns base unchanged (wild and PvP passthrough).
     /// Kills: an impl that always applies the multiplier regardless of the flag.
-    /// RED: compile-RED until `practice_xp_reward` is declared.
     #[test]
     fn practice_xp_passthrough_when_not_practice() {
         assert_eq!(
@@ -465,7 +465,7 @@ mod tests {
     ///
     /// This composition test is orthogonal to the component tests: it verifies
     /// the PIPELINE invariant that the +1 in battle_xp_reward does NOT perturb
-    /// the 0-floor behavior of the practice rule (ADR-0078 §rationale).
+    /// the 0-floor behavior of the practice rule.
     #[test]
     fn rt_px_01_min_battle_xp_through_practice_floors_to_zero() {
         let base = battle_xp_reward(level(100), 1, level(1));
@@ -480,7 +480,7 @@ mod tests {
             0,
             "RT-PX-01: practice_xp_reward(1, true) must be 0 — \
              floor(1/10)=0; a +1 floor inside practice_xp_reward would return 1 \
-             and violate the spec (ADR-0078: minimum is 0, not 1)"
+             and violate the spec (minimum is 0, not 1)"
         );
     }
 
@@ -496,7 +496,7 @@ mod tests {
     ///
     /// This is the first base_xp that yields non-zero practice XP. The crossing
     /// from 0 to 1 is the critical boundary for the "no XP from trivial self-battles"
-    /// design intent (ADR-0078).
+    /// design intent.
     #[test]
     fn rt_px_02_exact_divisor_yields_one_practice_xp() {
         let base = battle_xp_reward(level(1), 1, level(45));
@@ -510,7 +510,7 @@ mod tests {
             practice.value(),
             1,
             "RT-PX-02: practice_xp_reward(10, true) must be 1 (floor(10/10)=1); \
-             this is the first base_xp that yields non-zero practice XP (ADR-0078)"
+             this is the first base_xp that yields non-zero practice XP"
         );
     }
 

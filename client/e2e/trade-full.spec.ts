@@ -7,7 +7,7 @@ import {
   test,
 } from '@playwright/test';
 
-// m16.5d — trade full flow e2e (EARS criteria: m16.5d-1 through m16.5d-4)
+// Trade full flow e2e (EARS criteria: m16.5d-1 through m16.5d-4)
 //
 // TWO-CONTEXT DESIGN
 // ==================
@@ -36,13 +36,6 @@ import {
 //   m16.5d-3  respondTrade(tradeId, true) transitions status to ConfirmedByCounterparty
 //   m16.5d-4  confirmTrade deletes the offer row and transfers ownership; monster
 //             conservation holds (totalMonstersBefore === totalMonstersAfter)
-//
-// TESTS ARE RED UNTIL __mrTrade IS WIRED
-// =======================================
-// window.__mrTrade does not exist in main.ts at the time this file was written.
-// The hook-existence test (m16.5d-1) fails immediately with hasHook=false.
-// The full-flow test fails at the proposeTrade step (hook is undefined).
-// Both become GREEN when the implementer adds __mrTrade to main.ts.
 
 interface GameSnap {
   identity: string;
@@ -151,7 +144,7 @@ test.describe
     });
 
     // -------------------------------------------------------------------------
-    // m16.5d-1: __mrTrade hook is wired in main.ts
+    // __mrTrade hook is wired in main.ts
     //
     // WHAT THIS KILLS:
     //   A refactor of main.ts that removes or renames window.__mrTrade, or omits
@@ -159,9 +152,6 @@ test.describe
     //   moment the hook is absent, surfacing the regression immediately without
     //   waiting for the full-flow test to time out on an undefined call.
     //
-    // RED REASON:
-    //   window.__mrTrade is not assigned in main.ts at the time this file was
-    //   written.  The evaluate returns false → expect(hasHook).toBe(true) fails.
     // -------------------------------------------------------------------------
     test('__mrTrade hook is available on window (m16.5d-1)', async () => {
       const hasHook = await pageA.evaluate(() => {
@@ -199,9 +189,6 @@ test.describe
     //             has their monster and B never gains it (both length=1, but the
     //             monster is in the wrong player's roster)
     //
-    // RED REASON:
-    //   Without window.__mrTrade, the evaluate at the proposeTrade step returns
-    //   undefined and the waitForFunction for allTradeOffers().length > 0 times out.
     // -------------------------------------------------------------------------
     test('full trade flow: propose → respond → confirm; conservation + offer row deleted (m16.5d-2/3/4)', async () => {
       test.setTimeout(60_000);
@@ -294,7 +281,7 @@ test.describe
         ),
       ]);
 
-      // m16.5d-2: offer must be Pending after propose.
+      // Offer must be Pending after propose.
       // WHAT THIS KILLS: a propose_trade impl that inserts with a non-Pending
       // status (e.g. auto-confirms, or writes a garbage status string).
       const offerStatusAfterPropose = await pageA.evaluate(() => {
@@ -319,7 +306,7 @@ test.describe
         return p;
       }, tradeId);
 
-      // m16.5d-3: Player A waits for status to become ConfirmedByCounterparty.
+      // Player A waits for status to become ConfirmedByCounterparty.
       // WHAT THIS KILLS: a respond_trade impl that does not update the status
       // field (or updates it to a different variant name).
       await pageA.waitForFunction(
@@ -341,7 +328,7 @@ test.describe
         return p;
       }, tradeId);
 
-      // m16.5d-4a: both players wait for the offer row to disappear.
+      // Both players wait for the offer row to disappear.
       // WHAT THIS KILLS: a confirm_trade impl that fails to delete the trade_offer
       // row on completion (offer would remain indefinitely, both .length stay > 0).
       await Promise.all([
@@ -365,7 +352,7 @@ test.describe
         ),
       ]);
 
-      // m16.5d-4b: monster conservation.
+      // Monster conservation.
       // After the transfer, A lost 1 monster and B gained 1 monster — the total
       // across both players must equal what it was before (2 → 2).
       // We poll both snapshots together so we do not read A's count before B's
@@ -404,7 +391,7 @@ test.describe
         `Monster conservation violated: before=${totalMonstersBefore} after=${totalMonstersAfter}`,
       ).toBe(totalMonstersBefore);
 
-      // m16.5d-4c: item conservation (neither side offered items).
+      // Item conservation (neither side offered items).
       // WHAT THIS KILLS: an impl that accidentally creates phantom item rows
       // for the "no items offered" side during confirm_trade.
       const totalItemsAfter = snapAAfter.ownInventory.length + snapBAfter.ownInventory.length;

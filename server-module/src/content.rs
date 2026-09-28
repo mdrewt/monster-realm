@@ -1,13 +1,9 @@
-//! `content` — server-module domain submodule (M8.9, ADR-0056).
+//! `content` — server-module domain submodule.
 //!
 //! The SERVER seed-from-game-core path: `sync_content_inner` re-derives the
 //! public content tables (zones, species, skills, type chart, items) and the
 //! private `encounter` tables from the `game-core` RON registries when the
-//! stored content version is stale (ADR-0054). Independent of workstream B
-//! (M8.9e game-core content glob loading).
-//!
-//! This file name is part of the canonical `touches:` vocabulary fixed by
-//! ADR-0056 — keep it stable.
+//! stored content version is stale.
 
 use crate::marshal::{encounter_rows_from_table, pub_from_monster};
 use crate::schema::{
@@ -25,9 +21,6 @@ use game_core::{
     validate_encounters, validate_evolution_paths, validate_npc_content, validate_npc_interactions,
     validate_shops, validate_zone_maps, ActionState, Direction, EVs, IVs, Level, Nature, StatBlock,
 };
-// Species and EvolutionPath are only used by the test-only recheck seam.
-#[cfg(test)]
-use game_core::{EvolutionPath, Species};
 use spacetimedb::{ReducerContext, Table};
 
 pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
@@ -37,7 +30,7 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     // metadata and never touches the database), and below the gate it would be
     // skipped on every already-current database — which is exactly the failure
     // this closes, a drifted roster that only a fresh publish could ever notice.
-    // Version gate (M1/ADR-0054): skip re-seed when content is already current.
+    // Version gate: skip re-seed when content is already current.
     if let Some(cfg) = ctx.db.config().id().find(0) {
         if cfg.content_version == CONTENT_VERSION {
             return Ok(());
@@ -60,22 +53,18 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     let shops = load_shops().map_err(|e| format!("shops: {e}"))?;
     let abilities = load_abilities().map_err(|e| format!("abilities: {e}"))?;
 
-    // ====== VALIDATE PHASE (all-before-any-write, ADR-0073 §12.5b-2) ======
+    // ====== VALIDATE PHASE ======
     game_core::validate_zones(&zones).map_err(|e| format!("zones invalid: {e}"))?;
-    // M2: validate_zone_maps BEFORE zone_def writes (M11b, ADR-0066)
+    // M2: validate_zone_maps BEFORE zone_def writes
     validate_zone_maps(&zone_maps, &zones).map_err(|e| format!("zone_maps invalid: {e}"))?;
     validate_content(&species, &skills, &type_chart, &items)
         .map_err(|e| format!("content invalid: {e}"))?;
     validate_encounters(&encounters, &species, &zones)
         .map_err(|e| format!("encounters invalid: {e}"))?;
-    // EG1-10 (M2 discipline): the R1-R12 content gate runs BEFORE any DB write.
-    // R1 (no duplicate (from, to) pair) is enforced HERE and ONLY here — see
-    // ADR-0178 D2. A second, in-function re-scan of the same unmutated Vec used
-    // to sit directly below this call, calling itself the last line of defense;
-    // it was provably unreachable (nothing between the two could introduce a
-    // duplicate) and is deleted. Do NOT re-add it: the write phase below is a
-    // full clear followed by a total 1:1 map of THIS validated Vec, so a
-    // post-insert re-scan cannot catch anything either.
+    // the R1-R12 content gate runs BEFORE any DB write.
+    // R1 (no duplicate (from, to) pair) is enforced HERE and ONLY here.
+    // the write phase below is a full clear followed by a total 1:1 map of THIS
+    // validated Vec, so a post-insert re-scan cannot catch anything either.
     validate_evolution_paths(&species, &evolution_paths, &encounters, &items)
         .map_err(|e| format!("evolution_paths invalid: {e}"))?;
     validate_npc_content(
@@ -87,7 +76,7 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
         &heal_defs,
     )
     .map_err(|e| format!("npc_content invalid: {e}"))?;
-    // uxd2 (ADR-0161 D2): cross-check NpcDef.interaction payloads against the
+    // cross-check NpcDef.interaction payloads against the
     // shop/heal registries — still in the VALIDATE phase (all-before-any-write).
     validate_npc_interactions(&npc_defs, &shops, &heal_defs)
         .map_err(|e| format!("npc_interactions invalid: {e}"))?;
@@ -95,13 +84,13 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     validate_abilities(&abilities, &species).map_err(|e| format!("abilities invalid: {e}"))?;
 
     // ====== WRITE PHASE ======
-    // zone_def deletions (13.5c-2): zones dropped from the RON registry lose
+    // zone_def deletions: zones dropped from the RON registry lose
     // their row so they stop being joinable and ensure_zone_schedules (which
-    // runs after this) reaps their movement_tick_schedule rows. Delete ALWAYS
-    // (RT-M5): characters still standing in the zone only get a warn — the
-    // disconnect-to-recover contract (respawn in zone 0) is documented in the
-    // ADR draft. NPCs of a removed zone leave the registry in the same sync
-    // (validators force it), so the 13.5c-1 path removes them below.
+    // runs after this) reaps their movement_tick_schedule rows. Delete ALWAYS:
+    // characters still standing in the zone only get a warn — the
+    // disconnect-to-recover contract (respawn in zone 0).
+    // NPCs of a removed zone leave the registry in the same sync
+    // (validators force it), so removes them below.
     let existing_zone_ids: Vec<u32> = ctx.db.zone_def().iter().map(|z| z.zone_id).collect();
     for stale_id in stale_zone_def_ids(&existing_zone_ids, &zones) {
         let stranded = ctx.db.character().zone_id().filter(stale_id).count();
@@ -255,10 +244,8 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
             }
         }
     }
-    // (The fusion clear-only reap — ADR-0174 D3/D8 — is gone: Migration B
-    // removed the `fusion` table itself, EG5-6/ADR-0177 D2.)
     // evolution_path: clear-and-reinsert (path_id is auto_inc and DB-internal
-    // ONLY; edge_id is the durable identity, EG1-12 — reminting path_ids on
+    // ONLY; edge_id is the durable identity — reminting path_ids on
     // reseed is therefore harmless by design).
     for existing in ctx.db.evolution_path().iter().collect::<Vec<_>>() {
         ctx.db.evolution_path().path_id().delete(existing.path_id);
@@ -286,7 +273,7 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     sync_npc_entities_from(ctx, &npc_defs);
     seed_heal_locations_from(ctx, &heal_defs);
 
-    // ====== RE-DERIVE PASS (12.5b-3): update all monster rows for new content ======
+    // ====== RE-DERIVE PASS: update all monster rows for new content ======
     // Log-and-continue per-row: a corrupt row should not abort sync for everyone.
     for mut m in ctx.db.monster().iter().collect::<Vec<_>>() {
         let Some(species_row) = ctx.db.species_row().id().find(m.species_id) else {
@@ -297,7 +284,7 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
             continue;
         };
         recompute_monster_derived_fields(&mut m, &species_row);
-        // FRESH tier (EG1-8/ADR-0174 D7): the species row is already in hand.
+        // FRESH tier: the species row is already in hand.
         let pub_row = pub_from_monster(&m, species_row.tier);
         ctx.db.monster().monster_id().update(m);
         ctx.db.monster_pub().monster_id().update(pub_row);
@@ -317,41 +304,9 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
-/// Pure validation seam (12.5b-2, ADR-0073): verify species + evolution paths
-/// are minimally valid before any DB write. Called from sync_content_inner
-/// (which does the real full validation) and unit-testable without a DB context.
-/// Checks: species non-empty; every path endpoint references a known species_id.
-/// EG1 mechanical migration: the old `SpeciesEvolutions` trigger model was
-/// deleted with the essence-graph redesign (ADR-0174); the seam now takes
-/// `EvolutionPath` edges. Full graph-level validation (R1-R12) is done by
-/// `validate_evolution_paths` in sync_content_inner's validate phase.
-/// Test-only: this function has no production call site. The `#[cfg(test)]` gate
-/// ensures it does not cause a dead_code lint error in `just lint` (clippy -D warnings).
-#[cfg(test)]
-pub(crate) fn sync_content_inner_recheck(
-    species: &[Species],
-    paths: &[EvolutionPath],
-) -> Result<(), String> {
-    if species.is_empty() {
-        return Err(
-            "species registry must not be empty (would wipe all species on seed)".to_string(),
-        );
-    }
-    let species_ids: std::collections::HashSet<u32> = species.iter().map(|s| s.id).collect();
-    for p in paths {
-        if !species_ids.contains(&p.from_species) || !species_ids.contains(&p.to_species) {
-            return Err(format!(
-                "evolution path edge {} references an unknown species id ({} -> {})",
-                p.edge_id, p.from_species, p.to_species
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Pure re-derive seam (12.5b-3, ADR-0073): update a Monster row in-place with
+/// Pure re-derive seam: update a Monster row in-place with
 /// stats derived from `species` (new base stats).
-/// Clamps `current_hp` to the new `stat_hp` (no-idle-accrual, ADR-0058).
+/// Clamps `current_hp` to the new `stat_hp` (no-idle-accrual).
 /// Returns without mutating on invalid IV/EV/level values (data integrity guard).
 pub(crate) fn recompute_monster_derived_fields(monster: &mut Monster, species: &SpeciesRow) {
     let base = StatBlock {
@@ -389,12 +344,12 @@ pub(crate) fn recompute_monster_derived_fields(monster: &mut Monster, species: &
         monster.stat_speed = derived.speed;
         monster.stat_sp_attack = derived.sp_attack;
         monster.stat_sp_defense = derived.sp_defense;
-        // Clamp current_hp — sync_content is not a heal (no-idle-accrual, ADR-0058).
+        // Clamp current_hp — sync_content is not a heal (no-idle-accrual).
         monster.current_hp = monster.current_hp.min(derived.hp);
     }
 }
 
-/// Pure diff seam (13.5c-2): zone ids present in the DB (`existing`) but absent
+/// Pure diff seam: zone ids present in the DB (`existing`) but absent
 /// from the loaded RON registry, sorted ascending — deterministic delete order
 /// (HashSet iteration order must not leak into the write sequence).
 pub(crate) fn stale_zone_def_ids(existing: &[u32], loaded: &[game_core::ZoneDef]) -> Vec<u32> {
@@ -408,7 +363,7 @@ pub(crate) fn stale_zone_def_ids(existing: &[u32], loaded: &[game_core::ZoneDef]
     stale
 }
 
-/// Pure diff seam (ptc5e-2, sibling of `stale_zone_def_ids`): heal-location ids
+/// Pure diff seam (sibling of `stale_zone_def_ids`): heal-location ids
 /// present in the DB (`existing`) but absent from the loaded RON registry
 /// (`loaded`), sorted ascending so the delete order is deterministic (HashSet
 /// iteration order must not leak into the write sequence). Lets
@@ -428,8 +383,8 @@ pub(crate) fn stale_heal_location_ids(
     stale
 }
 
-/// One step of the NPC content-sync plan (13.5c-1). Actions carry COMPLETE
-/// replacement `Npc`/`Character` row values (review fold n1) so the shell is a
+/// One step of the NPC content-sync plan. Actions carry COMPLETE
+/// replacement `Npc`/`Character` row values so the shell is a
 /// pure apply fold — no patch interpretation.
 pub(crate) enum NpcSyncAction {
     /// Def with no live pair — seed a fresh (character, npc) pair. Row
@@ -459,7 +414,7 @@ pub(crate) enum NpcSyncAction {
 
 pub(crate) type NpcSyncPlan = Vec<NpcSyncAction>;
 
-/// Complete replacement npc row derived from a def (13.5c-1).
+/// Complete replacement npc row derived from a def.
 fn npc_row_from_def(def: &game_core::NpcDef, entity_id: u64) -> Npc {
     Npc {
         entity_id,
@@ -473,7 +428,7 @@ fn npc_row_from_def(def: &game_core::NpcDef, entity_id: u64) -> Npc {
     }
 }
 
-/// Fresh spawn-state character row derived from a def (13.5c-1): def spawn
+/// Fresh spawn-state character row derived from a def: def spawn
 /// tile, facing South, Idle, empty queue, `move_started_at_ms` 0.
 fn spawn_character_from_def(def: &game_core::NpcDef, entity_id: u64) -> Character {
     Character {
@@ -499,7 +454,7 @@ fn npc_sync_action_id(action: &NpcSyncAction) -> &str {
     }
 }
 
-/// Pure NPC sync planner (13.5c-1): diff the live `(Npc, Option<Character>)`
+/// Pure NPC sync planner: diff the live `(Npc, Option<Character>)`
 /// pairs against the loaded defs and emit a deterministic, npc_id-sorted plan.
 ///
 /// Rules (ALL diff/preserve/zone logic lives here — the shell is a fold):
@@ -510,7 +465,7 @@ fn npc_sync_action_id(action: &NpcSyncAction) -> &str {
 ///   (cleared queue, facing South, Idle, `move_started_at_ms` 0); zone SAME →
 ///   tile/facing/action/queue/timestamps preserved verbatim (a same-zone home
 ///   move can leave the live tile outside the new wander radius — convergence
-///   from an out-of-radius start is npc_decide's concern, not sync's; fold n2);
+///   from an out-of-radius start is npc_decide's concern, not sync's);
 /// - live wander state is NOT a diff: sync runs on every content-version bump
 ///   and NPCs wander constantly, so def-identical pairs plan NOTHING;
 /// - half-orphan (npc, None) with a def → `Repair`; without a def → `Remove`.
@@ -585,14 +540,14 @@ pub(crate) fn plan_npc_sync(
         }
     }
 
-    // Deterministic plan order (13.5c-1): sorted by npc_id. Each npc_id yields
+    // Deterministic plan order: sorted by npc_id. Each npc_id yields
     // at most one action (defs and live npc_ids are both unique), so the sort
     // is a total order.
     plan.sort_by(|a, b| npc_sync_action_id(a).cmp(npc_sync_action_id(b)));
     plan
 }
 
-/// Imperative shell for the NPC content sync (13.5c-1): read the live
+/// Imperative shell for the NPC content sync: read the live
 /// `(Npc, Option<Character>)` pairs, delegate the diff to the pure
 /// `plan_npc_sync` seam, and apply the plan mechanically (exhaustive fold —
 /// every action variant has an arm; rules live in the planner).
@@ -643,7 +598,7 @@ fn sync_npc_entities_from(ctx: &ReducerContext, npc_defs: &[game_core::NpcDef]) 
                 ctx.db.npc().entity_id().delete(entity_id);
                 ctx.db.character().entity_id().delete(entity_id);
                 removed_entity_ids.push(entity_id);
-                // 12r-d (ADR-0170 D5): npc_id is a content-authored string with no
+                // npc_id is a content-authored string with no
                 // charset validation — escape before the hand-built JSON line.
                 let escaped_npc_id = crate::guards::json_escape(&npc_id);
                 log::info!(
@@ -680,7 +635,7 @@ fn sync_npc_entities_from(ctx: &ReducerContext, npc_defs: &[game_core::NpcDef]) 
         }
     }
 
-    // Cascade (spec T4): player_conversation rows whose npc_entity_id is in
+    // Cascade: player_conversation rows whose npc_entity_id is in
     // the removal set would dangle — delete them (npc.rs's advance guard
     // stays as defense-in-depth).
     if !removed_entity_ids.is_empty() {
@@ -700,7 +655,7 @@ fn sync_npc_entities_from(ctx: &ReducerContext, npc_defs: &[game_core::NpcDef]) 
 }
 
 fn seed_heal_locations_from(ctx: &ReducerContext, defs: &[game_core::HealLocationDef]) {
-    // Reap heal locations removed from the RON registry (ptc5e-2), mirroring the
+    // Reap heal locations removed from the RON registry, mirroring the
     // zone-def stale-delete. Two-pass: fully materialize the existing pks into a
     // Vec FIRST, then delete — never delete inside a live table `iter()` (which
     // would invalidate the iterator).
@@ -921,7 +876,7 @@ mod tests {
         assert!(!skills.is_empty(), "skills registry must have entries");
     }
 
-    // EG1 (ADR-0174 D3): the fusion_registry_parses_and_is_nonempty_for_seeding
+    // The fusion_registry_parses_and_is_nonempty_for_seeding
     // test was DELETED here — its subject (`game_core::load_fusion` and the
     // fusion.ron registry) is removed outright with the fusion feature, so the
     // test could no longer compile. Removal is the mechanical consequence of
@@ -965,26 +920,14 @@ mod tests {
     }
 
     // =========================================================================
-    // 12.5b-1: sync_content guard must use owner_identity (NOT ctx.identity())
+    // sync_content guard must use owner_identity (NOT ctx.identity())
     //
     // Criterion: the `sync_content` guard must check `ctx.sender()` against a stored
     // `owner_identity` in `Config`, NOT against `ctx.identity()` (module identity).
     //
-    // RED state: lib.rs currently contains `ctx.sender() != ctx.identity()` and does NOT
-    // reference `owner_identity` in the guard. Both assertions below will fail today:
-    //   - negative: the forbidden pattern IS present → assertion fires
-    //   - positive: `owner_identity` is NOT in the guard body → assertion fires
-    //
-    // This test starts RED because the current guard in lib.rs reads:
-    //   if ctx.sender() != ctx.identity() {
-    //       return Err("sync_content is module-only".to_string());
-    //   }
-    // The fix requires replacing that with an owner_identity lookup in Config.
     // =========================================================================
 
-    /// 12.5b-1: sync_content must NOT gate on `ctx.identity()` (module identity).
-    /// KILLS: the current guard `ctx.sender() != ctx.identity()` which blocks any DB
-    /// owner from calling sync_content (only the module itself can call ctx.identity()).
+    /// sync_content must NOT gate on `ctx.identity()` (module identity).
     /// The correct guard checks a stored `owner_identity` in the Config row.
     #[test]
     fn sync_content_guard_does_not_use_ctx_identity() {
@@ -1009,7 +952,7 @@ mod tests {
         );
     }
 
-    /// 12.5b-1 positive: the `sync_content` reducer body must reference `owner_identity`
+    /// the `sync_content` reducer body must reference `owner_identity`
     /// (scoped to the function body only, not the full file).
     ///
     /// KILLS: a guard that was removed entirely (no access check) or replaced with a
@@ -1071,18 +1014,15 @@ mod tests {
     }
 
     // =========================================================================
-    // 12.5b-2: sync_content_inner must return Result<(), String>
+    // sync_content_inner must return Result<(), String>
     //
     // Criterion: `sync_content_inner` must return `Result<(), String>` so that a
     // validation failure at ANY registry point can bubble up and leave the DB
     // entirely unchanged (txn atomic).
     //
-    // RED state: current signature is `pub(crate) fn sync_content_inner(ctx: &ReducerContext)`
-    // (returns unit). The structural test below fails because the current source
-    // does NOT contain the required `Result<(), String>` return type annotation.
     // =========================================================================
 
-    /// 12.5b-2: sync_content_inner must declare `-> Result<(), String>` in its signature.
+    /// sync_content_inner must declare `-> Result<(), String>` in its signature.
     /// KILLS: the current unit-return signature — without Result the function cannot
     /// propagate validation errors to the caller, making atomic load-all-then-write-all
     /// impossible to implement correctly.
@@ -1115,7 +1055,7 @@ mod tests {
         );
     }
 
-    /// 12.5b-2: sync_content_inner must use `?` or explicit `Err` propagation, not
+    /// sync_content_inner must use `?` or explicit `Err` propagation, not
     /// silent `return;` on validation failure.
     /// KILLS: an impl that keeps the `return;` pattern — a bare return swallows the
     /// error and continues with incomplete data, violating the load-all-before-write-all
@@ -1124,17 +1064,12 @@ mod tests {
     fn sync_content_inner_no_bare_returns_on_error() {
         let stripped = strip_rust_comments(CONTENT_RS_SOURCE);
 
-        // In the current (unfixed) implementation, all error paths use `return;`
-        // (bare unit return). After the fix, error paths must use `return Err(...)`.
         // We count bare `return;` occurrences inside the function body.
         // A simple proxy: if the source has `return;` (semicolon, no value), those
-        // are the unfixed paths. After the fix all early returns carry an Err value.
         //
         // NOTE: a bare `return;` in a Result-returning function is a compile error
         // (type mismatch: () vs Result<(), String>). So once the signature is fixed
         // and bare `return;` remains, the file does NOT compile → tests stay RED.
-        // This structural test is a belt-and-suspenders assertion documenting the
-        // contract so the criterion is explicit even before compilation.
         let bare_ret = ["return", ";"].concat();
         // Only check production code — test helpers (e.g. early-exit on Option::None)
         // legitimately use bare unit-returns inside #[test] functions. The marker
@@ -1148,83 +1083,6 @@ mod tests {
             "TEETH(12.5b-2): content.rs production code must have zero bare unit-returns              after the sync_content_inner signature change to Result<(), String>;              found {} occurrence(s). Replace each bare unit-return with an Err variant              and propagate with `?`.",
             count
         );
-    }
-
-    // =========================================================================
-    // test-seam-only functions must not leak into production builds as dead code.
-    //
-    // Invariant: any function in content.rs that is ONLY called from #[cfg(test)]
-    // code must itself carry a `#[cfg(test)]` attribute (or be called from production
-    // code). Without this attribute, `cargo clippy --all-targets -D warnings` fails
-    // with `dead_code` — a CI-blocking error (see `just lint`).
-    //
-    // Red-team finding (M12.5b): `sync_content_inner_recheck` was added as a
-    // test-only pure-seam function but declared `pub(crate)` without `#[cfg(test)]`.
-    // It has no production call site → dead_code warning → CI failure.
-    //
-    // This test is the gating guard: it fails if a future developer re-introduces
-    // the pattern (adds a test-only seam to content.rs without `#[cfg(test)]`).
-    // =========================================================================
-
-    /// GATE(test-seam-no-dead-code): every function in content.rs that is declared
-    /// as a test-only seam (pattern: seam functions whose name ends in `_recheck`)
-    /// must have a `#[cfg(test)]` attribute on the line immediately before their
-    /// `pub(crate) fn` declaration, or be called from production code.
-    ///
-    /// KILLS: a test-seam function added without `#[cfg(test)]` — that breaks
-    ///        `just lint` (clippy -D warnings → dead_code error). The canonical
-    ///        correct form is:
-    ///           #[cfg(test)]
-    ///           pub(crate) fn sync_content_inner_recheck(...)
-    ///        OR the function has a production call site in content.rs.
-    ///
-    /// Note: built from assembled parts to avoid self-match (this file is the
-    /// CONTENT_RS_SOURCE). The actual string `#[cfg(test)]` does appear in this
-    /// file (legitimately, before the `mod tests` block); the structural check
-    /// below constrains it to the specific vicinity of `_recheck`.
-    #[test]
-    fn test_seam_recheck_functions_are_cfg_test_gated() {
-        let stripped = strip_rust_comments(CONTENT_RS_SOURCE);
-
-        // Assemble the seam function name from parts to avoid self-match.
-        let recheck_fn = ["sync_content_inner", "_recheck"].concat();
-        let fn_decl = ["pub(crate) fn ", recheck_fn.as_str()].concat();
-
-        // If the function has been removed, the constraint is vacuously satisfied.
-        // Use if-let (not bare return;) to avoid tripping the bare-return counter in
-        // the `sync_content_inner_no_bare_returns_on_error` test above.
-        if let Some(fn_pos) = stripped.find(fn_decl.as_str()) {
-            // Look backward from fn_pos for `#[cfg(test)]` in the preceding ~200 bytes.
-            let window_start = fn_pos.saturating_sub(200);
-            let preceding = &stripped[window_start..fn_pos];
-            let cfg_gate = ["#[cfg", "(test)]"].concat();
-
-            // Detect a genuine production *call* site (not the declaration itself).
-            // Scan the region before any test module for `recheck_fn(` that is NOT
-            // preceded by `fn ` (which would be the declaration, not a call).
-            let tests_mod_marker = ["mod ", "tests"].concat();
-            let tests_mod_pos = stripped
-                .find(tests_mod_marker.as_str())
-                .unwrap_or(stripped.len());
-            let production_region = &stripped[..tests_mod_pos];
-            let call_needle = [recheck_fn.as_str(), "("].concat();
-            let fn_decl_prefix = ["fn ", recheck_fn.as_str(), "("].concat();
-            let called_in_production = production_region.contains(call_needle.as_str())
-                && !production_region.contains(fn_decl_prefix.as_str());
-
-            assert!(
-                preceding.contains(cfg_gate.as_str()) || called_in_production,
-                "GATE(test-seam-no-dead-code): `{}` is a test-only seam function but \
-                 lacks `#[cfg(test)]` before its `pub(crate) fn` declaration AND has no \
-                 production call site. This causes a `dead_code` lint error in `just lint` \
-                 (clippy -D warnings). Fix: add `#[cfg(test)]` on the line immediately \
-                 before `pub(crate) fn {}(...)`, or add a production call site. \
-                 Preceding 80-byte context: {:?}",
-                recheck_fn,
-                recheck_fn,
-                &preceding[preceding.len().saturating_sub(80)..],
-            );
-        }
     }
 }
 

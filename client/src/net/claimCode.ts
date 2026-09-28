@@ -1,6 +1,6 @@
-// net/claimCode.ts — the guest-claim code primitive (AUTH-60 / AUTH-58, ADR-0182 D16).
+// net/claimCode.ts — the guest-claim code primitive (AUTH-60 / AUTH-58).
 //
-// The claim code IS the whole secret (ADR-0179 D3: the server never mints one, so its
+// The claim code IS the whole secret (the server never mints one, so its
 // entropy is entirely client-side). This module owns three things and nothing else:
 //   1. minting a fresh code — exactly 32 bytes of injected CSPRNG, hex-encoded to 64
 //      LOWERCASE characters (the server's AUTH-8 shape, accounts.rs:80-82), persisted to
@@ -20,7 +20,7 @@
 
 import type { TokenStorageHost } from './authToken';
 
-/** The injected host: `sessionStorage` (per-tab, ADR-0150 D3) plus a `crypto` that may
+/** The injected host: `sessionStorage` (per-tab) plus a `crypto` that may
  *  expose `getRandomValues`. Both typed `unknown` — parse-don't-validate happens below. */
 export interface ClaimCodeHost extends TokenStorageHost {
   readonly crypto?: unknown;
@@ -124,7 +124,7 @@ function isValidClaimCode(raw: unknown): raw is string {
  * `claimCode.hasUnconsumed(...)` without an `import *` (banned by G14). Every method degrades
  * silently on a hostile/blocked/absent host and fails to the SAFE direction (no code, no
  * veto). `read` re-reads storage on every call — the join gate depends on a FRESH read inside
- * every `onApplied`, so a memo here would defeat that from underneath (ADR-0182 anti-pattern #3).
+ * every `onApplied`, so a memo here would defeat that from underneath.
  */
 export const claimCode = {
   /** Mint a fresh code, persist it BEFORE returning, and return it — or `undefined` if it

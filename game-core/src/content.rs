@@ -1,6 +1,6 @@
 //! Data-driven content: RON registries parsed by pure loaders
 //! (parse-don't-validate). Content is DATA, not code — adding a zone is a content
-//! edit + a validation test, never a rule change (ADR-0006). Stable ids are
+//! edit + a validation test, never a rule change. Stable ids are
 //! append-only; the append-only-ids eval enforces the cross-version invariant.
 
 use serde::Deserialize;
@@ -11,9 +11,8 @@ use crate::monster::types::{Affinity, Level, StatBlock, StatKind, EV_PER_STAT_CA
 use crate::taming::types::EncounterTable;
 use crate::types::TilePos;
 
-/// A zone definition — the M0 content registry and the first real schema subject
-/// for the zoned-schema + append-only-ids evals. Mirrors the server `zone_def`
-/// table (the server maps these fields onto a row).
+/// A zone definition. Mirrors the server `zone_def` table (the server maps these
+/// fields onto a row).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ZoneDef {
     pub id: u32,
@@ -28,7 +27,7 @@ pub struct ZoneDef {
 
 /// A warp definition: a tile in one zone that transports the player to another
 /// zone (M11a). Warps are stored as an overlay list on `TileMap`, not as tile
-/// glyphs, so the walkability grid stays clean (ADR-0065).
+/// glyphs, so the walkability grid stays clean.
 ///
 /// `WarpDef` derives `Serialize` so it flows through the `zone_map()` wasm
 /// export (M11c intentional ABI).
@@ -90,21 +89,21 @@ pub struct Species {
     pub base_stats: StatBlock,
     pub affinity: Affinity,
     pub learnable_skill_ids: Vec<u32>,
-    /// Passive ability id (optional, additive per ADR-0006).
+    /// Passive ability id.
     /// References an entry in the abilities registry; `None` means no ability.
     /// Defaults to `None` so existing RON files parse without this field.
     #[serde(default)]
     pub ability: Option<u32>,
-    /// Evolution-graph tier (EG1-3). 0 = a base, wild-catchable form; every
+    /// Evolution-graph tier. 0 = a base, wild-catchable form; every
     /// evolution edge advances exactly +1 (R5). `#[serde(default)]` keeps
-    /// existing RON rows valid (additive, ADR-0006) — an authored `tier: 1`
+    /// existing RON rows valid (additive) — an authored `tier: 1`
     /// can therefore ONLY come from explicit content authoring.
     #[serde(default)]
     pub tier: u8,
 }
 
 // ===========================================================================
-// M14c content types — ability definitions (ADR-0094)
+// M14c content types — ability definitions
 // ===========================================================================
 
 /// A passive ability definition — an id, a display name, and the runtime effect.
@@ -126,12 +125,12 @@ pub struct SkillDef {
     pub power: u16,
     pub accuracy: u8,
     pub pp: u8,
-    /// If `Some`, this skill sets the field weather to the given kind on use (M14d, ADR-0095).
-    /// `#[serde(default)]` keeps existing RON files valid (additive, ADR-0006).
+    /// If `Some`, this skill sets the field weather to the given kind on use.
+    /// `#[serde(default)]` keeps existing RON files valid (additive).
     #[serde(default)]
     pub sets_weather: Option<WeatherKind>,
     /// If `Some`, this skill inflicts the named status on a hit target that has no
-    /// current status (m14e, ADR-0096). Status is not applied when: the attack
+    /// current status. Status is not applied when: the attack
     /// misses, hits an immune type, KOs the target, or the target already has a
     /// status (no stacking). `#[serde(default)]` keeps existing RON files valid.
     #[serde(default)]
@@ -164,18 +163,18 @@ pub struct ItemDef {
     /// caps in `focus_train`); 0 for non-training items.
     #[serde(default)]
     pub train_amount: u16,
-    /// Currency the player receives when selling this item (M13b, ADR-0082).
+    /// Currency the player receives when selling this item.
     /// 0 means the item cannot be sold — the `sell` reducer rejects it.
     #[serde(default)]
     pub sell_price: u64,
     /// Status condition this item cures when used via `use_battle_item` during an
-    /// ongoing battle (m14e, ADR-0096). `None` means not a battle-use item.
+    /// ongoing battle. `None` means not a battle-use item.
     /// Reject-not-clamp: `use_battle_item` rejects if the active monster does not
     /// have the matching status (items are not wasted on a healthy monster).
     #[serde(default)]
     pub cure_status: Option<StatusKind>,
-    /// Crystalized-essence affinity granted by `consume_crystalized_essence`
-    /// (EG2-4). `None` means this item grants no essence. R9: when this is
+    /// Crystalized-essence affinity granted by `consume_crystalized_essence`.
+    /// `None` means this item grants no essence. R9: when this is
     /// `Some`, `train_stat` and `cure_status` must both be `None`.
     #[serde(default)]
     pub essence_affinity: Option<Affinity>,
@@ -186,11 +185,11 @@ pub struct ItemDef {
 }
 
 // ===========================================================================
-// M13b content types — shop definitions (ADR-0082)
+// M13b content types — shop definitions
 // ===========================================================================
 
 /// One entry in a shop's stock: the item offered and its buy price.
-/// sell_price lives on ItemDef (global per-item, not per-shop — ADR-0082 §D2).
+/// sell_price lives on ItemDef (global per-item, not per-shop).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ShopStockEntry {
     pub item_id: u32,
@@ -199,7 +198,7 @@ pub struct ShopStockEntry {
 }
 
 /// A shop definition: an id, a display name, and the list of items stocked.
-/// Seeded by `sync_content_inner` into `shop_row`/`shop_item_row` (ADR-0082).
+/// Seeded by `sync_content_inner` into `shop_row`/`shop_item_row`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ShopDef {
     pub id: u32,
@@ -209,21 +208,19 @@ pub struct ShopDef {
 }
 
 // ===========================================================================
-// EG1 content types — the essence-graph evolution model (ADR-0174, spec EG1-5)
+// EG1 content types — the essence-graph evolution model
 //
-// REPLACES `EvolutionTrigger`/`EvolutionCondition`/`SpeciesEvolutions`/
-// `FusionRecipe` outright (deleted, not repurposed — fusion is removed as a
-// feature). Evolution is now a directed graph of `EvolutionPath` edges, each an
+// Evolution is now a directed graph of `EvolutionPath` edges, each an
 // AND-combination of up to five gates (level, per-Affinity essence, Trust,
 // Quality Time, Nutrition). Integrity rules R1-R12 live in
-// `validate_evolution_paths` with a biting fixture per rule (ADR-0010).
+// `validate_evolution_paths` with a biting fixture per rule.
 // ===========================================================================
 
 /// One per-`Affinity` essence requirement on an `EvolutionPath`.
 ///
-/// Mirrors the nested `SpacetimeType` row struct `EssenceRequirementRow`
-/// (EG1-4). `Vec<EssenceRequirement>` semantics are AND-only: EVERY entry must
-/// be satisfied (ADR-0174 D8 records the OR-group foreclosure).
+/// Mirrors the nested `SpacetimeType` row struct `EssenceRequirementRow`.
+/// `Vec<EssenceRequirement>` semantics are AND-only: EVERY entry must
+/// be satisfied.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct EssenceRequirement {
     pub affinity: Affinity,
@@ -231,9 +228,9 @@ pub struct EssenceRequirement {
 }
 
 /// The five Trust tiers, ASCENDING (`Ord`-derived — a `min_trust_tier` gate is
-/// a `>=` comparison, EG1-5 / §4 "Trust-tier granularity").
+/// a `>=` comparison).
 ///
-/// Lives in `content.rs` (not `monster/types.rs`) per spec EG1-5, and carries
+/// Lives in `content.rs` (not `monster/types.rs`) and carries
 /// the same `spacetimedb` cfg_attr shape as `Affinity` so the schema column can
 /// hold it directly.
 #[derive(
@@ -248,17 +245,17 @@ pub enum TrustTier {
     Devoted,
 }
 
-/// One directed edge of the evolution graph — the RON-content struct (EG1-5).
+/// One directed edge of the evolution graph — the RON-content struct.
 ///
 /// DISTINCT from the DB row struct `EvolutionPathRow`, which additionally
 /// carries the DB-internal `path_id` auto_inc PK. `edge_id` is THE durable,
-/// author-assigned, append-only identity for an edge (EG1-12); `path_id` is
+/// author-assigned, append-only identity for an edge; `path_id` is
 /// never durable.
 ///
 /// All five gates are AND-combined by `path_satisfied`. A `None` history gate is
 /// PERMISSIVE (absent, not "requires the lowest tier"). `min_level` is the
 /// `Level` newtype, so 0 / >100 is rejected at the RON parse boundary
-/// (parse-don't-validate, ADR-0174 D4).
+/// (parse-don't-validate).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct EvolutionPath {
     /// Durable, author-assigned, unique, append-only edge identity (R12).
@@ -329,10 +326,10 @@ pub fn parse_zones(ron_str: &str) -> Result<Vec<ZoneDef>, String> {
 /// # Errors
 /// Returns `Err` if any zone has a zero dimension or a duplicate id.
 pub fn validate_zones(zones: &[ZoneDef]) -> Result<(), String> {
-    // RT-ZONE-EMPTY (m13.5c red-team): an empty registry must be Err. Since
-    // 13.5c-2 the server reaps zone_def rows absent from the loaded registry —
-    // an accidentally-empty zones RON would otherwise mark EVERY zone stale
-    // and delete them all (world-destroying; recovery needs --delete-data).
+    // an empty registry must be Err. the server reaps zone_def rows absent
+    // from the loaded registry — an accidentally-empty zones RON would
+    // otherwise mark EVERY zone stale and delete them all (world-destroying;
+    // recovery needs --delete-data).
     if zones.is_empty() {
         return Err(
             "zone registry must not be empty (an empty registry would reap every zone_def row)"
@@ -448,7 +445,7 @@ pub fn parse_items(ron_str: &str) -> Result<Vec<ItemDef>, String> {
 }
 
 // ===========================================================================
-// M13b embedded content — shop registry (ADR-0082)
+// M13b embedded content — shop registry
 // ===========================================================================
 
 /// Parse the embedded shops registry.
@@ -515,7 +512,7 @@ pub fn validate_shops(shops: &[ShopDef], items: &[ItemDef]) -> Result<(), String
 }
 
 // ===========================================================================
-// M14c embedded content — ability registry (ADR-0094)
+// M14c embedded content — ability registry
 // ===========================================================================
 
 /// Parse the embedded abilities registry.
@@ -592,12 +589,10 @@ pub fn validate_abilities(abilities: &[AbilityDef], species: &[Species]) -> Resu
 }
 
 // ===========================================================================
-// EG1 embedded content — the evolution-path graph (ADR-0174, spec EG3-1)
+// EG1 embedded content — the evolution-path graph
 //
-// `content/evolution_paths/` is a glob-loaded ADR-0057 directory like every
-// other registry (`fusion.ron` and `evolutions.ron` are DELETED). It ships
-// empty (`[]`) until EG3 authors the real graph — R1-R12 must be runnable
-// against that empty set (EG1-10).
+// `content/evolution_paths/` is a glob-loaded directory like every
+// other registry.
 // ===========================================================================
 
 /// Parse evolution paths from a RON string (separated for testability + fixtures).
@@ -741,7 +736,7 @@ pub fn validate_encounters(
 /// - Unique item ids
 /// - All `learnable_skill_ids` in species must reference existing skills
 /// - The a11y text-token table covers every `StatusKind` and every `Affinity`
-///   with a unique, visible token (A11Y-29, M23 spec section 2.6; ADR-0233).
+///   with a unique, visible token.
 ///   This one check reads a compile-time constant rather than the parameters
 ///   below, so its result is independent of the registries handed in — it is
 ///   here because this is the function the publish-time seed path calls.
@@ -802,7 +797,7 @@ pub fn validate_content(
                 sk.id, sk.accuracy
             ));
         }
-        // Weather cross-check (M14d, ADR-0095): exhaustive match with no wildcard
+        // Weather cross-check: exhaustive match with no wildcard
         // arm is the compile-time OCP gate — adding a new WeatherKind variant without
         // updating this site is a compile error (unlike `matches!` which has implicit `_`).
         if let Some(kind) = sk.sets_weather {
@@ -813,7 +808,7 @@ pub fn validate_content(
                 | WeatherKind::Hail => {}
             }
         }
-        // Status cross-check (M14e, ADR-0096): same OCP gate for applies_status —
+        // Status cross-check: same OCP gate for applies_status —
         // a new StatusKind variant without updating this site is a compile error.
         if let Some(kind) = sk.applies_status {
             use crate::combat::ability::StatusKind;
@@ -829,7 +824,7 @@ pub fn validate_content(
 
     // Cross-check: every learnable_skill_id in species must exist in skills,
     // and every species must declare at least one learnable skill (an empty moveset
-    // would cause pick_best_skill to panic at battle time — ADR-0049).
+    // would cause pick_best_skill to panic at battle time).
     for sp in species {
         if sp.learnable_skill_ids.is_empty() {
             return Err(format!(
@@ -901,7 +896,7 @@ pub fn validate_content(
                 }
             }
         }
-        // Single-role invariant (M14e, ADR-0096 RT-CV-01): an item that carries
+        // Single-role invariant: an item that carries
         // both cure_status and train_stat is accepted by two independent reducers
         // (use_battle_item + train), making its consumption behaviour non-deterministic.
         if item.cure_status.is_some() && item.train_stat.is_some() {
@@ -912,25 +907,21 @@ pub fn validate_content(
         }
     }
 
-    // A11Y-29 (M23 spec section 2.6, ADR-0233): a status or affinity that ships
-    // with no text token leaves the badge carrying meaning by colour alone.
+    // a status or affinity that ships with no text token leaves the badge
+    // carrying meaning by colour alone.
     validate_a11y_tokens(A11Y_TOKENS)?;
 
     Ok(())
 }
 
-/// Cross-registry content integrity for the essence-graph evolution model
-/// (EG1-10, spec §5 rules R1-R12 plus R14, 20r-b; ADR-0174 D6). The successor to the deleted
-/// `validate_evolution_fusion`. Pure (errors-as-values, no clock/RNG); checks
+/// Cross-registry content integrity for the essence-graph evolution model.
+/// Pure (errors-as-values, no clock/RNG); checks
 /// run in a deterministic order so each proof-of-teeth fixture isolates exactly
-/// one violation (ADR-0010).
+/// one violation.
 ///
-/// - **R1** no duplicate `(from_species, to_species)` pair. NOTE (ADR-0174 D5,
-///   amended by ADR-0178 D2): this toolchain has no composite unique index, so
-///   this gate is the SINGLE enforcement point — the spec's "DB-level
-///   enforcement" claim is a named deviation. `sync_content` used to re-scan the
-///   same validated `Vec` immediately after calling this function; that check
-///   was unreachable and has been deleted.
+/// - **R1** no duplicate `(from_species, to_species)` pair.
+///   this toolchain has no composite unique index, so
+///   this gate is the SINGLE enforcement point.
 /// - **R2** no self-evolution (`from_species != to_species`).
 /// - **R3** no dangling species references (`from_species`/`to_species` must
 ///   exist). Essence affinities are an enum — dangling is unrepresentable — and
@@ -938,7 +929,6 @@ pub fn validate_content(
 /// - **R4** no vacuous path: reject unless at least one gate is BINDING, i.e.
 ///   able to EXCLUDE some monster. A gate that sits at the minimum of its own
 ///   comparison in `path_satisfied` is present-but-toothless and does not count
-///   (ADR-0178 D1).
 /// - **R5** tier monotonicity: `to.tier == from.tier + 1`, strict, no skipping.
 /// - **R6** derived-forms-not-wild: no `to_species` may appear in an encounter table.
 /// - **R7** `essence.len() <= 3` per path (panel legibility cap).
@@ -947,19 +937,16 @@ pub fn validate_content(
 /// - **R9** `ItemDef.essence_affinity.is_some()` implies `train_stat` and
 ///   `cure_status` are both `None`.
 /// - **R10** universal reachability: every `tier > 0` species is the
-///   `to_species` of at least one path. **Carve-out (ADR-0174 D6):** R10 is
+///   `to_species` of at least one path. **Carve-out:** R10 is
 ///   SKIPPED when `paths` is empty — EG1 ships explicit `tier: 1` species while
 ///   the edge set is empty until EG3, and without the skip `sync_content` could
 ///   never succeed and a fresh-DB `init` would panic for the whole window. An
 ///   empty graph is the declared pre-content state, not a shipped graph.
-/// - **R11** tier cap: `Species.tier <= 5` (PROVISIONAL, spec §4).
-/// - **R12** `edge_id` unique across the path set (cross-version append-only
-///   enforcement is the eval gate's job, EG5-1).
-/// - **R13** is RESERVED — ADR-0176 D2's temporal-dominance guard, still a
-///   candidate, not a rule; it is not implemented here.
-/// - **R14** essence satisfiability (20r-b, ADR-0175 amendment): no
+/// - **R11** tier cap: `Species.tier <= 5`.
+/// - **R12** `edge_id` unique across the path set.
+/// - **R14** essence satisfiability: no
 ///   `EssenceRequirement.amount` may exceed `currency::ESSENCE_SOFT_CAP` —
-///   every essence grant clamps there (EG1-1), so a higher threshold is a
+///   every essence grant clamps there, so a higher threshold is a
 ///   permanently unsatisfiable gate. Reject at the content boundary, the
 ///   mirror of the runtime clamp. Consequence: lowering the cap below a shipped
 ///   amount reds `sync_content`; retune content first, then the cap.
@@ -974,13 +961,12 @@ pub fn validate_evolution_paths(
 ) -> Result<(), String> {
     // The rules run in DECLARED order R1 -> R12, then R14: the per-rule proof-of-teeth
     // fixtures (notably R2's `self` message, which a self-edge would otherwise
-    // trip R5's tier arithmetic for) depend on it. Reordering is a spec change,
-    // not a refactor.
+    // trip R5's tier arithmetic for) depend on it.
     let tier_by_id: std::collections::HashMap<u32, u8> =
         species.iter().map(|sp| (sp.id, sp.tier)).collect();
 
     // R1: no duplicate (from_species, to_species) pair. The ONLY enforcement —
-    // no composite unique index exists at the DB level (ADR-0174 D5) — and what
+    // no composite unique index exists at the DB level — and what
     // keeps evolve(monster_id, to_species) an unambiguous wire signature.
     let mut seen_pairs = std::collections::HashSet::new();
     for path in paths {
@@ -1024,8 +1010,8 @@ pub fn validate_evolution_paths(
     // (evolution/eligibility.rs: level -> essence -> trust -> quality time ->
     // nutrition). Testing field PRESENCE instead would accept four toothless
     // encodings — essence amount 0, Some(Hostile), Some(0), Some(0) — each of
-    // which every monster clears, so the edge would fire at creation under
-    // EG2-11 auto-evolution (ADR-0178 D1). Keep this list aligned with the five
+    // which every monster clears, so the edge would fire at creation.
+    // Keep this list aligned with the five
     // *_gate_met helpers; r4_vacuity_floor_agrees_with_path_satisfied_for_the_
     // weakest_representable_monster is the drift gate that enforces it.
     for path in paths {
@@ -1110,7 +1096,7 @@ pub fn validate_evolution_paths(
     }
 
     // R10: universal reachability — every tier > 0 species is the to_species
-    // of at least one edge. CARVE-OUT (ADR-0174 D6): SKIPPED ENTIRELY when the
+    // of at least one edge. CARVE-OUT: SKIPPED ENTIRELY when the
     // path set is EMPTY — EG1 ships explicit `tier: 1` species while the edge
     // set stays empty until EG3, and without the skip `sync_content` could
     // never succeed and a fresh-DB `init` would panic for the whole window. An
@@ -1127,7 +1113,7 @@ pub fn validate_evolution_paths(
         }
     }
 
-    // R11: tier cap (PROVISIONAL, spec §4).
+    // R11: tier cap.
     for sp in species {
         if sp.tier > 5 {
             return Err(format!(
@@ -1137,7 +1123,7 @@ pub fn validate_evolution_paths(
         }
     }
 
-    // R12: edge_id is unique across the set (the durable edge identity, EG1-12).
+    // R12: edge_id is unique across the set (the durable edge identity).
     let mut seen_edge_ids = std::collections::HashSet::new();
     for path in paths {
         if !seen_edge_ids.insert(path.edge_id) {
@@ -1150,9 +1136,9 @@ pub fn validate_evolution_paths(
     }
 
     // R14: essence satisfiability — no requirement may exceed the runtime soft
-    // cap the grants clamp at (EG1-1). LAST by design: a fixture that also
+    // cap the grants clamp at. LAST by design: a fixture that also
     // violates an earlier rule keeps reporting that rule (declared order ==
-    // numeric order; R13 is reserved, see the roster above).
+    // numeric order).
     for path in paths {
         for req in &path.essence {
             if req.amount > crate::currency::ESSENCE_SOFT_CAP {
@@ -1188,7 +1174,7 @@ pub struct NpcDef {
     pub wander_radius: u8,
     pub dialogue_tree_id: String,
     pub sprite_id: u32,
-    /// Interaction role for the context-sensitive interact key (uxd2, ADR-0161).
+    /// Interaction role for the context-sensitive interact key.
     /// Defaults to Dialogue so existing NPC RON files that omit this field remain valid.
     #[serde(default)]
     pub interaction: crate::types::NpcInteraction,
@@ -1203,7 +1189,7 @@ pub struct HealLocationDef {
     pub cost_item_id: Option<u32>,
     pub cost_qty: u32,
     pub cooldown_ms: i64,
-    /// Currency cost charged via `spend_currency` before healing (ADR-0083).
+    /// Currency cost charged via `spend_currency` before healing.
     /// Defaults to 0 so existing heal-location RON files that omit this field remain valid.
     #[serde(default)]
     pub cost_currency: u64,
@@ -1293,7 +1279,7 @@ pub fn load_heal_locations() -> Result<Vec<HealLocationDef>, String> {
 /// 6c. Each GrantItem-bearing node/choice is guarded by a once-only gate: a `NotFlag(f)` in
 ///    the same node's `entry_conditions` (or choice's `conditions`) AND a `SetFlag(f)` in
 ///    the same node's `auto_effects` (or choice's `effects`) — same flag name required.
-///    This prevents unlimited item farming via `talk()` re-entry (ADR-0068, 13.5f-1).
+///    This prevents unlimited item farming via `talk()` re-entry.
 ///
 /// 7. Each QuestDef has ≥1 step
 /// 8. Each quest Collect step's item_id references an existing item
@@ -1435,7 +1421,7 @@ pub fn validate_npc_content(
     // Rationale: `talk` re-applies auto_effects on EVERY call (find_entry_node
     // re-runs each time). A GrantItem without this gate is an unlimited item farm.
     // The pairing must use the SAME flag name — a mismatched (NotFlag("a"),SetFlag("b"))
-    // does NOT close the loop. See ADR-0068 and npc.rs `talk` comment.
+    // does NOT close the loop.
     let once_only_gated = |conditions: &[crate::dialogue::Condition],
                            effects: &[crate::dialogue::DialogueEffect]|
      -> bool {
@@ -1572,10 +1558,8 @@ pub fn validate_npc_content(
     Ok(())
 }
 
-/// Cross-registry integrity check for `NpcDef.interaction` payloads (uxd2,
-/// ADR-0161 D2). A separate function from `validate_npc_content` on purpose:
-/// its 6-arg signature (~40 test call sites) stays untouched, and this check
-/// remains independently falsifiable (ADR-0010).
+/// Cross-registry integrity check for `NpcDef.interaction` payloads.
+/// A separate function from `validate_npc_content` on purpose.
 ///
 /// Checks (deterministic order — npcs in slice order):
 /// 1. `Shop(id)` references an existing `ShopDef.id`
@@ -1623,23 +1607,20 @@ pub fn validate_npc_interactions(
 }
 
 // ===========================================================================
-// A11Y-29 — the accessibility text-token table (M23 spec section 2.6, ADR-0233)
+// The accessibility text-token table
 // ===========================================================================
 //
 // Every `StatusEffect` / `StatusKind` and every `Affinity` a monster can carry
 // must have a SHORT TEXT TOKEN, so no badge ever conveys its meaning by colour
 // alone. The table lives here, as Rust, rather than under `game-core/content/`:
 // `evals/content-version.eval.mjs` hashes EVERY file in that directory against a
-// checked-in baseline keyed to `CONTENT_VERSION`, so a new content file forces
-// an edit outside this slice's touch-set. The keys are enum variants — type
-// space, not designer-authored rows — so ADR-0006's "content is data" rule does
-// not reach them. See ADR-0233 for the full reasoning and the alternatives.
+// checked-in baseline keyed to `CONTENT_VERSION`.
+// The keys are enum variants — type space, not designer-authored rows — so
+// the "content is data" rule does not reach them.
 //
 // TOTALITY. `status_token_key` and `affinity_token_key` are EXHAUSTIVE matches
-// with no wildcard arm, so a new variant is a compile error here. That alone is
-// not enough — a hand-maintained roster left at its old length was MEASURED to
-// let a new variant through with the validator still returning `Ok(())`. The
-// roster below is therefore proved complete by tests that read serde's own
+// with no wildcard arm, so a new variant is a compile error here.
+// proved complete by tests that read serde's own
 // derive-generated variant list, which no new variant can slip past.
 
 /// One accessibility text token: a stable `key` naming an enum variant, and the
@@ -1647,9 +1628,9 @@ pub fn validate_npc_interactions(
 ///
 /// The five status tokens are byte-identical to `statusBadge` in
 /// `client/src/ui/battleModel.ts` — the client badge and this table are one
-/// contract, and rb-55 made that mechanical: a vitest test reads the five
-/// `status.*` rows out of this const and compares them to what `statusBadge`
-/// RETURNS, so a drift in either direction is red (ADR-0240).
+/// contract: a vitest test reads the five `status.*` rows out of this const and
+/// compares them to what `statusBadge` RETURNS, so a drift in either direction
+/// is red.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct A11yToken {
     /// `status.<lowercased variant>` or `affinity.<lowercased variant>`.
@@ -1694,7 +1675,7 @@ pub const fn status_token_key(kind: StatusKind) -> &'static str {
 /// The a11y token key for an elemental affinity.
 ///
 /// EXHAUSTIVE, no wildcard arm: a ninth `Affinity` variant is a COMPILE error
-/// here, mirroring `Affinity::index()` (ADR-0174 D7).
+/// here, mirroring `Affinity::index()`.
 #[must_use]
 pub const fn affinity_token_key(affinity: Affinity) -> &'static str {
     match affinity {
@@ -1713,9 +1694,7 @@ pub const fn affinity_token_key(affinity: Affinity) -> &'static str {
 ///
 /// The eight affinity rows are DELIBERATELY unconsumed by the client today —
 /// `client/src/ui/battleView.ts` already renders the affinity NAME as text, so a
-/// new affinity ships with a text cue for free. They exist because A11Y-29 names
-/// `Affinity` literally. Recorded in ADR-0233 rather than left to be discovered
-/// and deleted as dead weight.
+/// new affinity ships with a text cue for free.
 pub const A11Y_TOKENS: &[A11yToken] = &[
     A11yToken {
         key: "status.poison",
@@ -1772,10 +1751,11 @@ pub const A11Y_TOKENS: &[A11yToken] = &[
 ];
 
 /// Shortest and longest permitted token length, in ASCII-graphic characters.
+/// The ceiling is the client badge pill's rendering width (3 characters).
 const A11Y_TOKEN_MIN_LEN: usize = 2;
-const A11Y_TOKEN_MAX_LEN: usize = 4;
+const A11Y_TOKEN_MAX_LEN: usize = 3;
 
-/// Validate an a11y token table against the two enums it must cover (A11Y-29).
+/// Validate an a11y token table against the two enums it must cover.
 ///
 /// The REQUIRED key set is derived from `STATUS_KIND_ALL` and `Affinity::ALL`
 /// through the two key functions above. It is NEVER derived from `A11Y_TOKENS`:
@@ -1884,11 +1864,10 @@ mod tests {
         assert!(validate_zones(&zones).is_err());
     }
 
-    /// TEETH(RT-ZONE-EMPTY, m13.5c): an empty zones slice must be Err — since
-    /// 13.5c-2 the server reaps zone_def rows absent from the loaded registry,
-    /// so an empty registry would mark every existing zone stale and delete
+    /// TEETH(RT-ZONE-EMPTY): an empty zones slice must be Err
+    /// an empty registry would mark every existing zone stale and delete
     /// them all. KILLS: an impl whose validation loop body simply never runs
-    /// on an empty slice (the pre-m13.5c behavior).
+    /// on an empty slice.
     #[test]
     fn validate_zones_rejects_empty_registry() {
         assert!(
@@ -1978,8 +1957,10 @@ mod tests {
     #[test]
     fn embedded_species_parse_and_validate() {
         let species = load_species().expect("embedded species must parse");
-        // The empty list is valid — content is fleshed out by the implementer.
-        assert!(species.is_empty() || !species.is_empty());
+        assert!(
+            !species.is_empty(),
+            "embedded species registry must have entries"
+        );
     }
 
     /// #56: load_skills() parses the embedded RON without error.
@@ -2118,10 +2099,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Proof-of-teeth (ADR-0010) — these MUST fail if validation passes
+    // Proof-of-teeth — these MUST fail if validation passes
     // -----------------------------------------------------------------------
 
-    /// #65: Proof-of-teeth — dangling skill ref MUST be rejected.
+    /// Proof-of-teeth — dangling skill ref MUST be rejected.
     /// The fixture is bad. The test passes only if validate_content returns Err.
     #[test]
     fn validate_content_teeth_dangling_ref() {
@@ -2136,7 +2117,7 @@ mod tests {
         );
     }
 
-    /// #66: Proof-of-teeth — duplicate species id MUST be rejected.
+    /// Proof-of-teeth — duplicate species id MUST be rejected.
     #[test]
     fn validate_content_teeth_duplicate_id() {
         let species = vec![fixture_species(5, vec![1]), fixture_species(5, vec![1])];
@@ -2150,7 +2131,7 @@ mod tests {
         );
     }
 
-    /// #67: Proof-of-teeth — zero base stat MUST be rejected.
+    /// Proof-of-teeth — zero base stat MUST be rejected.
     #[test]
     fn validate_content_teeth_zero_base_stat() {
         let mut bad = fixture_species(1, vec![1]);
@@ -2244,7 +2225,7 @@ mod tests {
         );
     }
 
-    /// M8.8c: Proof-of-teeth — BOTH accuracy=0 AND accuracy=101 must be rejected.
+    /// Proof-of-teeth — BOTH accuracy=0 AND accuracy=101 must be rejected.
     /// TEETH: a fixture_skill with accuracy outside [1, 100] must never load.
     /// Kills: an impl that checks only one bound, or uses > instead of >= on the
     /// upper check, or uses < instead of == on the lower check.
@@ -2286,27 +2267,12 @@ mod tests {
     }
 
     // =======================================================================
-    // === M8.9e: content-directory glob loading ===
     //
-    // These tests encode the EARS acceptance criteria for the fan-out migration:
-    //   - Five registries move from monolithic <reg>.ron to <reg>/*.ron dirs
-    //   - A new build.rs embeds every *.ron in sorted filename order
-    //   - parse_*_parts fns concatenate parsed Vec<T> from each part in slice order
-    //   - load_* delegates to parse_*_parts over the matching *_RON_PARTS static
-    //   - Adding a content file requires NO content.rs edit (fan-out property)
-    //
-    // All tests reference the NOT-YET-EXISTING interface so the suite compiles RED:
-    //   parse_*_parts(&[(&str, &str)]) -> Result<Vec<T>, String>
-    //   *_RON_PARTS: &[(&str, &str)]  (build-generated, sorted filenames)
     // =======================================================================
 
     // -----------------------------------------------------------------------
     // Golden snapshots: frozen inline copies of each pre-migration monolithic
     // file, captured verbatim before the directory split.
-    //
-    // NOT using include_str! because the implementer DELETES the monolithic
-    // files (content/species.ron → content/species/000-core.ron, etc.), which
-    // would cause include_str! to fail to compile post-migration.
     //
     // NOT repointed at the new 000-core.ron because that would be tautological:
     // the merged loader loads that same file, so a migration that silently
@@ -2411,7 +2377,7 @@ mod tests {
     // that only returns rows from one part.
     // -----------------------------------------------------------------------
 
-    /// M8.9e-1a: parse_species_parts preserves file order — rows from the
+    /// parse_species_parts preserves file order — rows from the
     /// lexicographically-first filename come first, then the second file's rows,
     /// all in original declaration order within each file.
     ///
@@ -2464,7 +2430,7 @@ mod tests {
         );
     }
 
-    /// M8.9e-1b: parse_skills_parts preserves file order — same contract as
+    /// parse_skills_parts preserves file order — same contract as
     /// species, applied to SkillDef rows.
     ///
     /// Kills: an impl that special-cases species but skips order enforcement for
@@ -2500,7 +2466,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Criterion 2 — Migration parity (content-parity gate)
+    // Criterion 2 — Migration parity
     //
     // After the directory split, load_*() must return row-identical content to
     // what parse_* returned against the monolithic files. We assert the merged
@@ -2510,7 +2476,7 @@ mod tests {
     // Kills: an impl that drops rows, reorders them, or parses the wrong file.
     // -----------------------------------------------------------------------
 
-    /// M8.9e-2a: load_species() after migration returns the same rows as
+    /// load_species() after migration returns the same rows as
     /// parse_species(SPECIES_GOLDEN) as a prefix.
     ///
     /// Kills: an impl that drops species, reverses them, or loads from a
@@ -2533,7 +2499,7 @@ mod tests {
         );
     }
 
-    /// M8.9e-2b: load_skills() after migration returns the same rows as
+    /// load_skills() after migration returns the same rows as
     /// parse_skills(SKILLS_GOLDEN) as a prefix.
     ///
     /// Kills: an impl that drops skills or reorders them.
@@ -2555,7 +2521,7 @@ mod tests {
         );
     }
 
-    /// M8.9e-2c: load_zones() after migration returns the same rows as
+    /// load_zones() after migration returns the same rows as
     /// parse_zones(ZONES_GOLDEN) as a prefix.
     ///
     /// Kills: an impl that drops zones or reorders them.
@@ -2577,7 +2543,7 @@ mod tests {
         );
     }
 
-    /// M8.9e-2d: load_items() after migration returns the same rows as
+    /// load_items() after migration returns the same rows as
     /// parse_items(ITEMS_GOLDEN) as a prefix.
     ///
     /// Kills: an impl that drops items or reorders them.
@@ -2599,7 +2565,7 @@ mod tests {
         );
     }
 
-    /// M8.9e-2e: load_encounters() after migration returns the same rows as
+    /// load_encounters() after migration returns the same rows as
     /// parse_encounters(ENCOUNTERS_GOLDEN) as a prefix.
     ///
     /// Kills: an impl that drops encounter tables or reorders them.
@@ -2630,7 +2596,7 @@ mod tests {
     // context, or wraps errors in a message that drops the filename.
     // -----------------------------------------------------------------------
 
-    /// M8.9e-3a: parse_species_parts with a malformed second file must return
+    /// parse_species_parts with a malformed second file must return
     /// Err whose message contains the offending filename "999-malformed.ron".
     ///
     /// Kills: an impl that silently skips the bad file, or that returns an
@@ -2664,7 +2630,7 @@ mod tests {
         );
     }
 
-    /// M8.9e-3b: parse_species_parts with ONLY valid files returns Ok.
+    /// parse_species_parts with ONLY valid files returns Ok.
     /// Symmetric proof that the error path only fires on actual bad input.
     ///
     /// Kills: an over-eager impl that always returns Err regardless of input.
@@ -2696,7 +2662,7 @@ mod tests {
         );
     }
 
-    /// M8.9e-3c: parse_species_parts with a malformed FIRST file still names it.
+    /// parse_species_parts with a malformed FIRST file still names it.
     /// Guards against an impl that only checks the last file, or only propagates
     /// errors for files after index 0.
     ///
@@ -2739,7 +2705,7 @@ mod tests {
     // filenames in OS-dependent traversal order.
     // -----------------------------------------------------------------------
 
-    /// M8.9e-4a: SPECIES_RON_PARTS is non-empty and filenames are sorted.
+    /// SPECIES_RON_PARTS is non-empty and filenames are sorted.
     ///
     /// Kills: a build.rs that emits species parts in OS-dependent traversal
     /// order (e.g. readdir on Linux is not guaranteed to be sorted).
@@ -2758,7 +2724,7 @@ mod tests {
         );
     }
 
-    /// M8.9e-4b: SKILLS_RON_PARTS is non-empty and filenames are sorted.
+    /// SKILLS_RON_PARTS is non-empty and filenames are sorted.
     #[test]
     fn m8_9e_skills_parts_static_sorted() {
         assert!(
@@ -2774,7 +2740,7 @@ mod tests {
         );
     }
 
-    /// M8.9e-4c: ZONES_RON_PARTS is non-empty and filenames are sorted.
+    /// ZONES_RON_PARTS is non-empty and filenames are sorted.
     #[test]
     fn m8_9e_zones_parts_static_sorted() {
         assert!(
@@ -2790,7 +2756,7 @@ mod tests {
         );
     }
 
-    /// M8.9e-4d: ITEMS_RON_PARTS is non-empty and filenames are sorted.
+    /// ITEMS_RON_PARTS is non-empty and filenames are sorted.
     #[test]
     fn m8_9e_items_parts_static_sorted() {
         assert!(
@@ -2806,7 +2772,7 @@ mod tests {
         );
     }
 
-    /// M8.9e-4e: ENCOUNTERS_RON_PARTS is non-empty and filenames are sorted.
+    /// ENCOUNTERS_RON_PARTS is non-empty and filenames are sorted.
     #[test]
     fn m8_9e_encounters_parts_static_sorted() {
         assert!(
@@ -2834,7 +2800,7 @@ mod tests {
     // which has no equivalent in the pre-existing suite at this level.
     // -----------------------------------------------------------------------
 
-    /// M8.9e-5a: merged species+skills+items+type_chart pass validate_content.
+    /// Merged species+skills+items+type_chart pass validate_content.
     /// After the directory migration, load_* must still produce content that
     /// is internally consistent (unique ids, valid stats, no dangling refs).
     ///
@@ -2851,7 +2817,7 @@ mod tests {
             .expect("M8.9e: merged content must pass validate_content");
     }
 
-    /// M8.9e-5b: merged encounters+species+zones pass validate_encounters.
+    /// Merged encounters+species+zones pass validate_encounters.
     /// After the directory migration, encounter tables must still reference
     /// valid zones and species from the merged registries.
     ///
@@ -3000,11 +2966,10 @@ mod tests {
     // This is the headline safety boundary for parallel content authoring:
     // two authors writing SEPARATE part files can each declare the same id,
     // each file parses clean on its own, but validate_content run on the
-    // concatenated Vec must catch the collision. This is a PERMANENT regression
-    // guard — it passes once the implementation exists and must never be removed.
+    // concatenated Vec must catch the collision.
     // -----------------------------------------------------------------------
 
-    /// M8.9e-gate: the fan-out safety boundary. Two part FILES in one registry that
+    /// the fan-out safety boundary. Two part FILES in one registry that
     /// each declare the same id parse cleanly on their own, but the merged registry
     /// must be rejected by validate_content — this is what makes parallel content
     /// slices (different files, same registry) safe. Kills a future loader that
@@ -3033,7 +2998,7 @@ mod tests {
     }
 
     // =======================================================================
-    // === M9b-tail: training food fields on ItemDef ===
+    // === training food fields on ItemDef ===
     //
     // EARS criteria covered:
     //   - WHEN train_stat is Some(...) and train_amount in [1, 252] THEN validate_content Ok.
@@ -3044,9 +3009,6 @@ mod tests {
     //   - WHEN train_stat is None and train_amount == 0 (ordinary item) THEN validate_content Ok.
     //   - Proof-of-teeth: an over-cap training food MUST be rejected.
     //
-    // NOTE: ItemDef will gain `train_stat: Option<StatKind>` + `train_amount: u16`
-    // (both `#[serde(default)]`) in the impl. Until then these tests DO NOT COMPILE
-    // (the fields do not exist yet) — that is the intended RED state.
     // =======================================================================
 
     use crate::monster::types::StatKind;
@@ -3060,7 +3022,6 @@ mod tests {
             name: format!("TrainingFood{id}"),
             description: "A training food.".to_string(),
             recruit_bonus: 0,
-            // These two fields do not exist yet — the suite is RED until the impl adds them.
             train_stat,
             train_amount,
             sell_price: 0,
@@ -3161,7 +3122,7 @@ mod tests {
         );
     }
 
-    /// M9b-tail: PROOF-OF-TEETH — an over-cap training food (Some(Attack), train_amount=300)
+    /// PROOF-OF-TEETH — an over-cap training food (Some(Attack), train_amount=300)
     /// MUST be rejected. This bites a validator missing the upper-bound check.
     /// kills: any validate_content that accepts training foods without checking train_amount <= 252.
     #[test]
@@ -3221,12 +3182,8 @@ mod tests {
     // 010-derived.ron adds new species
     // -----------------------------------------------------------------------
 
-    /// M10a-9: load_species() returns MORE rows than SPECIES_GOLDEN (the m8_9e
-    /// prefix gate) AND still passes validate_content (no new id conflicts).
-    ///
-    /// This confirms the 010-derived.ron addition is additive: it sorts after
-    /// 000-core.ron (the m8_9e_species_migration_parity prefix gate stays green)
-    /// and the expanded registry is internally consistent.
+    /// load_species() returns MORE rows than SPECIES_GOLDEN
+    /// AND still passes validate_content (no new id conflicts).
     ///
     /// Kills: an impl that adds derived species to 000-core.ron (breaking prefix
     /// parity) or introduces id conflicts.
@@ -3244,7 +3201,7 @@ mod tests {
             golden.len()
         );
 
-        // The existing m8_9e prefix gate: first 3 rows are still the golden rows.
+        // first 3 rows are still the golden rows.
         assert_eq!(
             &species[..golden.len()],
             &golden[..],
@@ -3263,17 +3220,14 @@ mod tests {
     }
 
     // =======================================================================
-    // === EG1-content: essence-graph content types + R1-R12 integrity gate ===
-    //
-    // Spec: M-evolution-essence-graph EG1-3 / EG1-5 / EG1-10 + §5 rules R1-R12.
-    // ADR-0174 D4 (Level newtype at the parse boundary) / D6 (R10 carve-out).
+    // essence-graph content types + R1-R12 integrity gate ===
     //
     // ONE biting bad fixture per rule, each constructed so that exactly the rule
     // under test is violated (every other rule stays satisfied) — a validator
     // that implements only the OTHER rules cannot make the fixture pass.
-    // Positives: the empty set (EG1-10 + the R10 carve-out), the R4 one-gate
-    // acceptances, R7's 3-entry acceptance, R8's fan-in pin, R11's tier-5
-    // acceptance, and the live embedded registry.
+    // Positives: the empty set, the R4 one-gate acceptances, R7's 3-entry
+    // acceptance, R8's fan-in pin, R11's tier-5 acceptance, and the live
+    // embedded registry.
     // =======================================================================
 
     use crate::taming::types::EncounterEntry;
@@ -3358,13 +3312,10 @@ mod tests {
     // Positive gates — the pre-content state and the live registry
     // -----------------------------------------------------------------------
 
-    /// EG1-10 + ADR-0174 D6: the validator is runnable against an EMPTY path
+    /// the validator is runnable against an EMPTY path
     /// set, and R10 (universal reachability) is SKIPPED there.
     ///
-    /// Kills: an R10 that ignores the empty-set carve-out. EG1-3 authors
-    /// `tier: 1` species while the edge set stays empty until EG3 — an
-    /// unconditional R10 would reject this fixture, `sync_content` could then
-    /// never succeed, and a fresh-DB `init` would panic for the whole window.
+    /// Kills: an R10 that ignores the empty-set carve-out.
     #[test]
     fn validate_evolution_paths_accepts_empty_set() {
         // Species 2 carries tier 1 and is the to_species of NOTHING — the exact
@@ -3390,8 +3341,7 @@ mod tests {
         );
     }
 
-    /// EG1-10: the LIVE embedded registries pass the gate. `evolution_paths/`
-    /// ships `[]` until EG3, so this is the empty-set path through real content.
+    /// The LIVE embedded registries pass the gate.
     #[test]
     fn eg1_live_registries_pass_validate_evolution_paths() {
         let species = load_species().expect("species registry must parse");
@@ -3405,23 +3355,8 @@ mod tests {
         );
     }
 
-    /// The successor to EG1's self-expiring canary
-    /// `eg1_load_evolution_paths_is_empty_pending_eg3`, which asserted the
-    /// OPPOSITE (an empty registry) and expired the moment EG3 authored the
-    /// real graph. Retired together with entry 4 of `.cargo/mutants.toml` and
-    /// its pin in `evals/mutate-core-recipe-integrity.eval.mjs`, exactly as
-    /// that exclusion's comment block instructed.
-    ///
-    /// Kills `content.rs:624:5 replace load_evolution_paths -> Ok(vec![])`
-    /// for real, which the blessed exclusion could only silence while the
-    /// registry was genuinely empty. `eg1_live_registries_pass_validate_...`
-    /// (above) cannot kill it — an empty path set and a valid non-empty graph
-    /// both validate `Ok(())` via the R10 empty-set carve-out
-    /// (content.rs:1080-1096), so `validate_` cannot distinguish "no rows"
-    /// from "rows, none unreachable". Only a non-emptiness assertion can.
-    ///
-    /// The exact-shape pin lives in `game-core/tests/eg3_evolution_graph.rs`
-    /// (T2); this one deliberately asserts only non-emptiness, so a future
+    /// The exact-shape pin lives in `game-core/tests/eg3_evolution_graph.rs`;
+    /// this one deliberately asserts only non-emptiness, so a future
     /// content pass that adds or retunes edges does not have to edit it.
     #[test]
     fn eg3_load_evolution_paths_returns_the_authored_graph() {
@@ -3436,25 +3371,24 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // EG1-3 — explicit `tier: 1` authoring for the eleven derived species
+    // Explicit `tier: 1` authoring for the eleven derived species
     // -----------------------------------------------------------------------
 
-    /// The eleven currently-shipped derived species (spec EG1-3). Every content
+    /// The eleven currently-shipped derived species. Every content
     /// wave that ships a derived form MUST extend this list in the same commit:
     /// the second loop below asserts every species NOT named here is tier 0, so
     /// an unlisted derived form fails loud rather than silently un-pinning.
-    /// Wave 3 (rw3b, ADR-0204) appended 41 Voltarion and 43 Aurelith.
+    /// Wave 3 (rw3b) appended 41 Voltarion and 43 Aurelith.
     const EG1_TIER_ONE_IDS: [u32; 11] = [4, 5, 6, 9, 10, 22, 23, 30, 31, 41, 43];
 
-    /// EG1-3 TEETH: species 4, 5, 6, 9, 10, 22, 23, 30, 31, 41, 43 each carry
+    /// species 4, 5, 6, 9, 10, 22, 23, 30, 31, 41, 43 each carry
     /// `tier: 1`, and EVERY other shipped species carries `tier: 0`.
     ///
     /// `Species.tier` is `#[serde(default)]`, so the value 1 can ONLY come from
-    /// an explicit RON entry — this test is exactly the "explicit, non-default"
-    /// proof EG1-3 asks for. Kills: shipping the tier column without authoring
+    /// an explicit RON entry. Kills: shipping the tier column without authoring
     /// the nine rows (every migrated edge would then fail R5's tier
-    /// monotonicity simultaneously at first validation), and kills a
-    /// copy-paste that tiers a base, wild-catchable form.
+    /// monotonicity simultaneously at first validation), and kills a copy-paste
+    /// that tiers a base, wild-catchable form.
     #[test]
     fn eg1_3_derived_species_carry_an_explicit_tier_one() {
         let species = load_species().expect("species registry must parse");
@@ -3488,10 +3422,9 @@ mod tests {
 
     /// R1: two edges between the SAME ordered pair are rejected.
     ///
-    /// Kills: a validator with no R1 at all. This is the ONLY enforcement of R1
-    /// — ADR-0174 D5 records that this toolchain has no composite unique index,
-    /// so the spec's "DB-level enforcement" backstop does not exist. Without
-    /// R1, `evolve(monster_id, to_species)` is an ambiguous wire signature.
+    /// Kills: a validator with no R1 at all. This is the ONLY enforcement of R1.
+    /// Without R1, `evolve(monster_id, to_species)` is an ambiguous wire
+    /// signature.
     #[test]
     fn r1_duplicate_from_to_pair_rejected() {
         let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
@@ -3648,7 +3581,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // R4 (12r-e) — vacuity is a SEMANTIC floor, not field presence
+    // R4 — vacuity is a SEMANTIC floor, not field presence
     //
     // R4's job is "a monster must not qualify at birth". Four encodings are
     // structurally present yet impose nothing, because each sits at the MINIMUM
@@ -3657,8 +3590,7 @@ mod tests {
     //   (b) min_trust_tier Some(Hostile)     -> Hostile is the lowest Ord tier
     //   (c) min_quality_time_tier Some(0)    -> tiers are 0..=4
     //   (d) min_nutrition_pct Some(0)        -> percentages are 0..=100
-    // A field-presence R4 accepts all four; under EG2-11 auto-evolution such an
-    // edge then fires at monster creation with no player action.
+    // A field-presence R4 accepts all four.
     //
     // Single-slot fixtures alone are NOT enough: an R4 that hardcodes the five
     // known-bad shapes as literals passes every one of them and still ships a
@@ -3873,17 +3805,14 @@ mod tests {
             amount: 1,
         }];
 
-        // (c) trust at floor + 1. DISCLOSURE, read this before "fixing" the row:
+        // (c) trust at floor + 1.
         // Some(Wary) is binding ONLY in the sense R4 tests — it CAN exclude a
         // monster, namely one whose smoothed Trust has fallen to Hostile. It is
         // NOT a gate against qualifying at birth: `trust_tier_of(0, 0)` is
-        // Neutral (the Bayesian midpoint, eligibility.rs:170-201), so a newborn
-        // ALREADY satisfies Some(Wary) and Some(Neutral). That at-birth gap is
-        // a KNOWN, DISCLOSED residual deliberately left outside this slice,
-        // whose scope is only "the minimum of its own comparison". This row
-        // pins can-ever-exclude semantics and must NOT be read as endorsing
-        // at-birth qualification; tightening R4 to a birth-proof trust floor is
-        // a separate spec decision, not a bug fix to this assertion.
+        // Neutral, so a newborn ALREADY satisfies Some(Wary) and Some(Neutral).
+        // This row pins can-ever-exclude semantics and must NOT be read as
+        // endorsing at-birth qualification; tightening R4 to a birth-proof trust
+        // floor is a separate spec decision, not a bug fix to this assertion.
         let mut trust_row = r4_floor_path();
         trust_row.min_trust_tier = Some(TrustTier::Wary);
 
@@ -4326,11 +4255,10 @@ mod tests {
         );
     }
 
-    // MUTATION SURVIVOR NOTE (content.rs:1041:47, `==` -> `!=` in R6's
-    // `.any(|entry| entry.species_id == path.to_species)`): the test above
-    // cannot kill it — under `!=` the species-1 entry still makes `.any` true,
-    // and the R6 message interpolates `path.to_species` / `table.zone_id`,
-    // never the matched entry, so `expect_err` sees the same `Err` either way.
+    // the test above cannot kill it — under `!=` the species-1 entry still
+    // makes `.any` true, and the R6 message interpolates `path.to_species` /
+    // `table.zone_id`, never the matched entry, so `expect_err` sees the same
+    // `Err` either way.
     // Every OTHER `validate_evolution_paths` test passes `encounters = &[]`,
     // so the loop body never runs. Either test below kills the mutant on its
     // own; both are kept because they pin the two distinct branches — a base
@@ -4439,7 +4367,7 @@ mod tests {
     ///
     /// Kills: an over-eager R1 that dedups on `to_species` alone (the natural
     /// wrong reading of "no duplicate pair"), which would make Steamveil's two
-    /// incoming edges (EG3-2) unshippable.
+    /// incoming edges unshippable.
     #[test]
     fn r8_fan_in_two_sources_one_target_accepted() {
         let species = vec![eg1_species(1, 0), eg1_species(2, 0), eg1_species(3, 1)];
@@ -4586,7 +4514,7 @@ mod tests {
     /// Kills: a validator with no R12. The two edges form a legal fan-in (R1
     /// and R8 are both satisfied — distinct pairs), so ONLY the edge_id check
     /// can reject this. `edge_id` is the durable identity every future
-    /// lineage/append-only check keys on (EG1-12).
+    /// lineage/append-only check keys on.
     #[test]
     fn r12_duplicate_edge_id_rejected() {
         let species = vec![eg1_species(1, 0), eg1_species(2, 0), eg1_species(3, 1)];
@@ -4599,7 +4527,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // ADR-0174 D4 — Level's parse boundary on EvolutionPath.min_level
+    // Level's parse boundary on EvolutionPath.min_level
     // -----------------------------------------------------------------------
 
     /// `min_level` is the `Level` newtype, so `0` and `101` are rejected at
@@ -4635,32 +4563,19 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // R14 — no essence threshold above the soft cap (20r-b, spec B1)
-    //
-    // THE RULE UNDER TEST IS NOT YET IMPLEMENTED — every test in this block
-    // starts RED. `validate_evolution_paths` today returns Ok(()) for an
-    // `EssenceRequirement.amount` of any size.
-    //
-    // EARS: WHEN an evolution path carries an `EssenceRequirement.amount >
-    // ESSENCE_SOFT_CAP`, `validate_evolution_paths` SHALL reject it naming the
-    // path and the cap.
+    // R14 — no essence threshold above the soft cap
     //
     // WHY: `grant_essence` CLAMPS every essence pool at `ESSENCE_SOFT_CAP`
-    // (EG1-1) — it never rejects a grant. A threshold above the clamp is
+    // — it never rejects a grant. A threshold above the clamp is
     // therefore permanently unsatisfiable: the monster can never evolve, the
     // requirements panel shows a bar that never fills, and nothing anywhere in
     // the system says why. Content, not code, is where that must be caught.
-    //
-    // R13 is NOT this rule: ADR-0176 D2 name-reserves R13 for the never-built
-    // temporal-dominance guard, named in ADR-0177, in the evolution-content-
-    // integrity eval and in game-core/tests/eg3_evolution_graph.rs. R14 keeps
-    // every one of those present-tense claims true.
     //
     // ORDER: R14 runs LAST, after R12 and immediately before `Ok(())`. THREE
     // fixtures below hold that ordering — `r14_runs_after_r5_...`,
     // `r14_runs_after_r7_...` and `r14_runs_after_r12_...` — because a path that
     // breaks an EARLIER rule must report the EARLIER rule: the per-rule fixtures
-    // above depend on exactly one rule being reachable at a time (ADR-0010). The
+    // above depend on exactly one rule being reachable at a time. The
     // R12 one is load-bearing on its own: without it, R14 slotted immediately
     // after R7 passes every other test in this block.
     // -----------------------------------------------------------------------
@@ -5286,12 +5201,11 @@ mod tests {
     /// threshold, and a `999` literal inside `validate_evolution_paths` is
     /// behaviourally indistinguishable from the promoted constant TODAY. It
     /// stops being indistinguishable the moment the cap is retuned: the runtime
-    /// clamp would move and the content ceiling would not, re-creating exactly
-    /// the two-definitions desync this slice removes. No fixture can reach that,
-    /// so this test reads the production function's own source.
+    /// clamp would move and the content ceiling would not.
+    /// No fixture can reach that, so this test reads the production function's
+    /// own source.
     ///
-    /// Conventions borrowed from the m23-s8 reachability probe further down this
-    /// module: needles are assembled from fragments (so this test's own text can
+    /// needles are assembled from fragments (so this test's own text can
     /// never satisfy it), the anchor is asserted to occur EXACTLY once (so a
     /// decoy copy cannot steer the region), and the region is cut from the RAW
     /// source and only THEN comment-stripped (so a planted comment cannot forge
@@ -5347,7 +5261,7 @@ mod tests {
             body.contains(cap_name.as_str()),
             "R14 TEETH: validate_evolution_paths never names {cap_name:?}. The content ceiling \
              must BE the promoted game-core constant — otherwise the next retune moves the \
-             runtime clamp and leaves the validator behind, which is the desync 20r-b removes."
+             runtime clamp and leaves the validator behind, which is exactly the desync this check prevents."
         );
 
         let literal_cap = ["9", "99"].concat();
@@ -5434,23 +5348,12 @@ mod tests {
     }
 
     // =======================================================================
-    // === M11a gating tests: ZoneMapDef, WarpDef, load_zone_maps,
-    //     parse_zone_maps, parse_zone_maps_parts (START RED)
+    // ZoneMapDef, WarpDef, load_zone_maps,
+    //     parse_zone_maps, parse_zone_maps_parts
     //
-    // These tests reference types and functions that do NOT exist yet:
-    //   WarpDef              — not yet added to content.rs
-    //   ZoneMapDef           — not yet added to content.rs
-    //   load_zone_maps()     — not yet added to content.rs
-    //   parse_zone_maps()    — not yet added to content.rs
-    //   parse_zone_maps_parts() — not yet added to content.rs
-    //   ZONE_MAPS_RON_PARTS  — generated by build.rs after the registry dir exists
-    //   validate_zone_maps() — lives in crate::world (not content.rs)
-    //
-    // All tests in this section MUST be RED (compile error) until the
-    // implementation lands. That is the correct starting state.
     // =======================================================================
 
-    /// M11a-1: smoke test — load_zone_maps() parses the embedded RON without
+    /// Smoke test — load_zone_maps() parses the embedded RON without
     /// error, and validate_zone_maps (in world.rs) accepts the result.
     ///
     /// Kills: an impl that wires up include_str! incorrectly, returns Err on
@@ -5463,7 +5366,7 @@ mod tests {
         crate::world::validate_zone_maps(&maps, &zones).expect("embedded zone_maps must be valid");
     }
 
-    /// M11a-2: parse_zone_maps rejects garbage RON input with Err.
+    /// parse_zone_maps rejects garbage RON input with Err.
     ///
     /// Kills: an impl that silently returns an empty Vec on parse failure.
     #[test]
@@ -5474,11 +5377,11 @@ mod tests {
         );
     }
 
-    /// M11a-3: parse_zone_maps_parts rejects a malformed part and names the
+    /// parse_zone_maps_parts rejects a malformed part and names the
     /// offending file in the error message.
     ///
     /// Kills: an impl that silently skips bad parts, or wraps the error without
-    /// the filename (mirroring the M8.9e parse_*_parts teeth pattern).
+    /// the filename.
     #[test]
     fn parse_zone_maps_rejects_malformed_part() {
         let result = parse_zone_maps_parts(&[("000-bad.ron", "not ron {{{{")]);
@@ -5493,7 +5396,7 @@ mod tests {
         );
     }
 
-    /// M11a-4: ZONE_MAPS_RON_PARTS static is non-empty (build.rs wired the dir).
+    /// ZONE_MAPS_RON_PARTS static is non-empty (build.rs wired the dir).
     ///
     /// Kills: an impl that adds the type but forgets to add "zone_maps" to
     /// REGISTRIES in build.rs, leaving the static as an empty slice.
@@ -5505,7 +5408,7 @@ mod tests {
         );
     }
 
-    /// M11a-5: ZONE_MAPS_RON_PARTS filenames are in sorted order.
+    /// ZONE_MAPS_RON_PARTS filenames are in sorted order.
     ///
     /// Kills: a build.rs that emits zone_maps parts in OS-dependent traversal
     /// order rather than sorted filename order (same invariant as M8.9e).
@@ -5520,7 +5423,7 @@ mod tests {
         );
     }
 
-    /// M11a-6: parse_zone_maps round-trips a minimal WarpDef-bearing ZoneMapDef.
+    /// parse_zone_maps round-trips a minimal WarpDef-bearing ZoneMapDef.
     ///
     /// This exercises the RON deserialization of both the `warps` field and
     /// the WarpDef sub-struct (from, to_zone, to_tile). Kills: an impl where
@@ -5556,7 +5459,7 @@ mod tests {
         );
     }
 
-    /// M11a-7: parse_zone_maps with `#[serde(default)]` on warps — a ZoneMapDef
+    /// parse_zone_maps with `#[serde(default)]` on warps — a ZoneMapDef
     /// WITHOUT a warps field must parse as `warps: vec![]`.
     ///
     /// Kills: an impl that requires the warps field to be present in RON,
@@ -5575,26 +5478,6 @@ mod tests {
     }
 
     // =======================================================================
-    // === M12c content RON loading tests ===
-    //
-    // EARS criteria covered:
-    //   1. parse_npc_defs / parse_npc_defs_parts / load_npc_defs — RON loaders.
-    //   2. parse_dialogue_trees / load_dialogue_trees — RON loaders (Result).
-    //   3. parse_quest_defs / load_quest_defs — RON loaders (Result).
-    //   4. parse_heal_locations / load_heal_locations — RON loaders (Result).
-    //   5. load_*() returns Ok and non-empty (embedded RON parses and is seeded).
-    //   6. validate_npc_content — cross-registry integrity for NPC content.
-    //
-    // ALL tests below reference NOT-YET-EXISTING functions/signatures so the
-    // suite is RED (compile error) until the implementer adds them. This is
-    // the intended TDD state.
-    //
-    // The existing load_npc_defs() / load_dialogue_trees() / load_quest_defs() /
-    // load_heal_locations() currently return Vec<T> (not Result<Vec<T>, String>).
-    // M12c changes their signatures to Result<Vec<T>, String> following the
-    // parse_parts/*_RON_PARTS pattern. The new parse_*_parts functions and
-    // parse_npc_defs / parse_dialogue_trees / parse_quest_defs /
-    // parse_heal_locations do not exist yet.
     //
     // RON syntax for these types:
     //   NpcDef:         (id: 1, npc_id: "x", zone_id: 0, spawn_x: 0, spawn_y: 0,
@@ -5614,7 +5497,7 @@ mod tests {
     // Criterion 1 — NPC defs RON parse
     // -----------------------------------------------------------------------
 
-    /// M12c-1a: parse_npc_defs parses a minimal valid NPC def from RON.
+    /// parse_npc_defs parses a minimal valid NPC def from RON.
     ///
     /// Kills: an impl that returns Ok for everything regardless of input, or
     /// one that rejects valid input as malformed.
@@ -5653,7 +5536,7 @@ mod tests {
         );
     }
 
-    /// M12c-1b: parse_npc_defs rejects malformed RON loudly (not silently empty).
+    /// parse_npc_defs rejects malformed RON loudly (not silently empty).
     ///
     /// Kills: an impl that returns Ok([]) on bad input instead of Err.
     /// A silent empty return would mask bad content files at load time.
@@ -5672,7 +5555,7 @@ mod tests {
     // Criterion 2 — Dialogue trees RON parse
     // -----------------------------------------------------------------------
 
-    /// M12c-2a: parse_dialogue_trees parses a minimal valid dialogue tree from RON.
+    /// parse_dialogue_trees parses a minimal valid dialogue tree from RON.
     ///
     /// Kills: an impl that panics on load, or rejects valid tree RON.
     #[test]
@@ -5720,7 +5603,7 @@ mod tests {
         );
     }
 
-    /// M12c-2b: parse_dialogue_trees rejects malformed RON loudly.
+    /// parse_dialogue_trees rejects malformed RON loudly.
     ///
     /// Kills: an impl that silently returns Ok([]) on parse failure.
     #[test]
@@ -5738,7 +5621,7 @@ mod tests {
     // Criterion 3 — Quest defs RON parse
     // -----------------------------------------------------------------------
 
-    /// M12c-3a: parse_quest_defs parses a minimal valid quest def from RON.
+    /// parse_quest_defs parses a minimal valid quest def from RON.
     ///
     /// Kills: an impl that fails on the Talk(npc_id:) RON struct-variant syntax.
     #[test]
@@ -5782,7 +5665,7 @@ mod tests {
     // Criterion 4 — Heal locations RON parse
     // -----------------------------------------------------------------------
 
-    /// M12c-4a: parse_heal_locations parses a minimal valid heal location from RON.
+    /// parse_heal_locations parses a minimal valid heal location from RON.
     ///
     /// Kills: an impl that panics on None cost_item_id, or rejects valid RON.
     #[test]
@@ -5822,7 +5705,7 @@ mod tests {
     // Criterion 5-8 — Embedded loaders return Ok and are non-empty
     // -----------------------------------------------------------------------
 
-    /// M12c-5: load_npc_defs() returns Ok (embedded RON parses successfully) and is non-empty.
+    /// load_npc_defs() returns Ok (embedded RON parses successfully) and is non-empty.
     ///
     /// Kills: an impl that panics on load (unwrap on Err), or returns Ok([])
     /// without embedding any content. The existing hardcoded load_npc_defs() returns
@@ -5839,7 +5722,7 @@ mod tests {
         );
     }
 
-    /// M12c-6: load_dialogue_trees() returns Ok and is non-empty.
+    /// load_dialogue_trees() returns Ok and is non-empty.
     ///
     /// Kills: an impl where load_dialogue_trees panics, or the embedded RON is empty.
     /// The existing hardcoded load_dialogue_trees() returns Vec (not Result); this
@@ -5855,7 +5738,7 @@ mod tests {
         );
     }
 
-    /// M12c-7: load_quest_defs() returns Ok and is non-empty.
+    /// load_quest_defs() returns Ok and is non-empty.
     ///
     /// Kills: an impl where load_quest_defs panics, or the embedded RON is empty.
     /// The existing hardcoded load_quest_defs() returns Vec (not Result); this
@@ -5871,7 +5754,7 @@ mod tests {
         );
     }
 
-    /// M12c-8: load_heal_locations() returns Ok and is non-empty.
+    /// load_heal_locations() returns Ok and is non-empty.
     ///
     /// Kills: an impl where load_heal_locations panics, or the embedded RON is empty.
     /// The existing hardcoded load_heal_locations() returns Vec (not Result); this
@@ -5890,9 +5773,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // Criterion 6 — validate_npc_content cross-registry integrity
     //
-    // validate_npc_content does NOT exist yet. All tests in this section
-    // reference it so they FAIL TO COMPILE (RED) until the impl adds it.
-    //
     // The function signature tested here (6-param, including heal_locations):
     //   pub fn validate_npc_content(
     //       npcs: &[NpcDef],
@@ -5903,15 +5783,9 @@ mod tests {
     //       heal_locations: &[HealLocationDef],
     //   ) -> Result<(), String>
     //
-    // The spec shows a 5-param signature but heal location zone_id cross-check
-    // (criterion 10g/10h) requires heal_locations as a parameter. The 6-param
-    // form is the correct target; it is a strict superset of the spec's 5-param
-    // signature. If the implementer uses a different shape for heal location
-    // validation (e.g., a separate validate_heal_locations fn), the tests for
-    // 10g/10h must be updated to match.
     // -----------------------------------------------------------------------
 
-    /// M12c-9: validate_npc_content passes for the embedded data (integrated smoke test).
+    /// validate_npc_content passes for the embedded data (integrated smoke test).
     ///
     /// Kills: an impl that rejects valid embedded data, or one that panics on load.
     #[test]
@@ -5995,7 +5869,7 @@ mod tests {
         }
     }
 
-    /// M12c-10a: validate_npc_content rejects duplicate NPC ids.
+    /// validate_npc_content rejects duplicate NPC ids.
     ///
     /// Kills: an impl that does not check for duplicate NPC definition ids.
     /// Two NPCs with the same id would collide on sync_content and produce
@@ -6016,7 +5890,7 @@ mod tests {
         );
     }
 
-    /// M12c-10b: validate_npc_content rejects an NPC whose dialogue_tree_id
+    /// validate_npc_content rejects an NPC whose dialogue_tree_id
     /// does not exist in the provided dialogue trees slice.
     ///
     /// Kills: an impl that skips cross-registry reference checks between NPCs
@@ -6036,7 +5910,7 @@ mod tests {
         );
     }
 
-    /// M12c-10c: validate_npc_content rejects duplicate dialogue tree ids.
+    /// validate_npc_content rejects duplicate dialogue tree ids.
     ///
     /// Kills: an impl that does not check tree id uniqueness. Two trees with the
     /// same id mean find(|t| t.id == ...) returns whichever was inserted first
@@ -6055,7 +5929,7 @@ mod tests {
         );
     }
 
-    /// M12c-10d: validate_npc_content rejects a dialogue tree whose auto_effects
+    /// validate_npc_content rejects a dialogue tree whose auto_effects
     /// contain StartQuest referencing a quest id not in the quests registry.
     ///
     /// Kills: an impl that does not cross-check DialogueEffect::StartQuest ids.
@@ -6089,7 +5963,7 @@ mod tests {
         );
     }
 
-    /// M12c-10e: validate_npc_content rejects a quest whose reward contains an
+    /// validate_npc_content rejects a quest whose reward contains an
     /// item_id that does not exist in the items registry.
     ///
     /// Kills: an impl that does not cross-check reward item ids against items.
@@ -6130,7 +6004,7 @@ mod tests {
         );
     }
 
-    /// M12c-10f: validate_npc_content rejects a quest with a Collect step whose
+    /// validate_npc_content rejects a quest with a Collect step whose
     /// item_id does not exist in the items registry.
     ///
     /// Kills: an impl that only checks reward item refs but not step trigger refs.
@@ -6170,7 +6044,7 @@ mod tests {
         );
     }
 
-    /// M12c-10g: validate_npc_content rejects a heal location whose zone_id does
+    /// validate_npc_content rejects a heal location whose zone_id does
     /// not exist in the zones registry.
     ///
     /// Kills: an impl that does not cross-check heal_location.zone_id against zones.
@@ -6190,7 +6064,7 @@ mod tests {
         );
     }
 
-    /// M12c-10h: validate_npc_content rejects duplicate heal location ids.
+    /// validate_npc_content rejects duplicate heal location ids.
     ///
     /// Kills: an impl that does not check heal location id uniqueness.
     /// Duplicate location ids would cause server table collisions on sync_content.
@@ -6210,13 +6084,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Criterion 11-12 — parse_npc_defs_parts: merge order + malformed file naming
+    // Criterion 11-12 — parse_npc_defs_parts: merge order + malformed file naming.
     //
-    // These follow the exact same contract as M8.9e parse_species_parts tests
-    // (ADR-0057 fan-out property).
     // -----------------------------------------------------------------------
 
-    /// M12c-11: parse_npc_defs_parts preserves file order — same contract as
+    /// parse_npc_defs_parts preserves file order — same contract as
     /// M8.9e species parts. Rows from the first filename come first.
     ///
     /// Kills: an impl that sorts merged rows by id or reverses part order.
@@ -6282,10 +6154,10 @@ mod tests {
         );
     }
 
-    /// M12c-12: parse_npc_defs_parts with a bad part names the offending file in the error.
+    /// parse_npc_defs_parts with a bad part names the offending file in the error.
     ///
     /// Kills: an impl that silently skips the bad file or returns an error
-    /// without identifying which file caused it (mirrors M8.9e-3a).
+    /// without identifying which file caused it.
     #[test]
     fn m12c_npc_defs_parts_malformed_names_file() {
         let valid_part = r#"[
@@ -6321,10 +6193,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Additional validate_npc_content teeth (H1/H2/H4/RT-M12C-03 from plan review)
+    // Additional validate_npc_content teeth
     // -----------------------------------------------------------------------
 
-    /// M12c-13: validate_npc_content rejects an NPC whose zone_id has no matching zone.
+    /// validate_npc_content rejects an NPC whose zone_id has no matching zone.
     ///
     /// Kills: an impl that omits NPC zone cross-validation — an NPC referencing a
     /// non-existent zone would silently spawn into limbo and be inaccessible to players.
@@ -6348,7 +6220,7 @@ mod tests {
         );
     }
 
-    /// M12c-14a: validate_npc_content rejects a DialogueTree with no nodes.
+    /// validate_npc_content rejects a DialogueTree with no nodes.
     ///
     /// Kills: an impl that doesn't check for empty node lists — an NPC with an empty
     /// tree would cause find_entry_node to always return None, silently breaking dialogue.
@@ -6370,7 +6242,7 @@ mod tests {
         );
     }
 
-    /// M12c-14b: validate_npc_content rejects a DialogueTree whose root_node_id is not
+    /// validate_npc_content rejects a DialogueTree whose root_node_id is not
     /// in its nodes list.
     ///
     /// Kills: an impl that doesn't verify root_node_id resolves — a broken root causes
@@ -6400,7 +6272,7 @@ mod tests {
         );
     }
 
-    /// M12c-15: validate_npc_content rejects a QuestDef with no steps.
+    /// validate_npc_content rejects a QuestDef with no steps.
     ///
     /// Kills: an impl that allows empty steps — a quest with zero steps has no completion
     /// condition and would be immediately completable (or forever stuck at step 0).
@@ -6429,7 +6301,7 @@ mod tests {
         );
     }
 
-    /// M12c-16: validate_npc_content rejects a HealLocationDef whose cost_item_id
+    /// validate_npc_content rejects a HealLocationDef whose cost_item_id
     /// references a non-existent item.
     ///
     /// Kills: an impl that omits cost_item_id cross-validation — a heal location
@@ -6464,9 +6336,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Migration parity tests (RT-M12C-06): frozen golden snapshots assert that
+    // Migration parity tests: frozen golden snapshots assert that
     // load_* fns return data byte-equivalent to the M12b hardcoded baseline.
-    // RED: these fail to compile until load_* returns Result<Vec<T>, String>.
     // -----------------------------------------------------------------------
 
     /// M12c parity: load_npc_defs() output matches the M12b hardcoded golden snapshot.
@@ -6620,10 +6491,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Red-team gating tests (RT-M12C-01 through RT-M12C-04)
-    // Each test documents a confirmed invariant gap found in M12c code review.
-    // They are permanent: they stay GREEN after the fix and guard against
-    // regression.
+    // Red-team gating tests
     // -----------------------------------------------------------------------
 
     /// RT-M12C-01: validate_npc_content must reject two NPCs with the same
@@ -6721,10 +6589,8 @@ mod tests {
         );
     }
 
-    /// RT-M12C-03: validate_npc_content must reject a quest whose Talk step's
+    /// validate_npc_content must reject a quest whose Talk step's
     /// npc_id does not match any NPC in the NPC registry.
-    ///
-    /// Severity: MEDIUM.
     ///
     /// Attack: define a quest with `StepTrigger::Talk { npc_id: "typo_npc" }` but
     /// "typo_npc" is not in the npcs slice. validate_npc_content performs no
@@ -6776,10 +6642,8 @@ mod tests {
         );
     }
 
-    /// RT-M12C-04: validate_npc_content must reject duplicate node ids within
+    /// validate_npc_content must reject duplicate node ids within
     /// a single dialogue tree.
-    ///
-    /// Severity: MEDIUM.
     ///
     /// Attack: a tree with two nodes sharing the same id. All 12 checks pass —
     /// check 4 builds a BTreeSet of node ids (deduplicating silently) and checks
@@ -6830,38 +6694,22 @@ mod tests {
     }
 
     // =======================================================================
-    // === M10.5a: empty-moveset content invariant ===
-    //
-    // EARS criteria covered:
-    //   10.5a-1 (WHERE): validate_content with a Species having
-    //     learnable_skill_ids: [] → Err.
-    //   10.5a-1-pos: validate_content with a Species having ≥1 learnable skill
-    //     (which exists in the skill registry) → Ok (no over-rejection).
     //
     // Upstream panic site: game-core/src/combat/ai.rs `pick_best_skill` calls
     //   .expect("attacker must have at least one known skill in the skill registry")
     // The guard in the cross-check loop (section 3 of validate_content) prevents
     // empty-moveset species from reaching that panic site at runtime.
     //
-    // RED state: the cross-check loop currently only checks for dangling skill
-    // references. It does NOT check `learnable_skill_ids.is_empty()`. Therefore:
-    //   - m10_5a_validate_content_rejects_empty_learnable_skill_ids:
-    //       assert!(result.is_err()) FAILS because validate_content returns Ok.
-    //   - m10_5a_validate_content_accepts_nonempty_learnable_skill_ids:
-    //       assert!(result.is_ok()) PASSES already (positive test is green).
-    //
-    // GREEN state after the guard is added: both tests pass.
     // =======================================================================
 
-    /// M10.5a-1 (WHERE): validate_content must return Err for a species whose
+    /// validate_content must return Err for a species whose
     /// learnable_skill_ids list is empty.
     ///
     /// This fixture is carefully constructed to avoid all earlier error paths:
     ///   - unique species id (99, used nowhere else in this test)
     ///   - all non-zero base stats (valid_base_stats())
     ///   - the skills slice contains skill id 1 (so the id-existence cross-check
-    ///     for other species would pass; this species has none to check, which is
-    ///     exactly the bug — the empty list slips through the current loop)
+    ///     for other species would pass; this species has none to check
     ///
     /// PROOF-OF-TEETH: removing the `learnable_skill_ids.is_empty()` guard causes
     /// validate_content to return Ok for this fixture. The assert!(result.is_err())
@@ -6887,8 +6735,8 @@ mod tests {
         );
     }
 
-    /// M10.5a-1-pos (no over-rejection): validate_content must return Ok for a
-    /// species with exactly one learnable skill that exists in the skill registry.
+    /// validate_content must return Ok for a species with exactly one learnable
+    /// skill that exists in the skill registry.
     ///
     /// Kills: a vacuous guard that rejects ALL species regardless of moveset size,
     /// which would make this positive test RED and break the happy path.
@@ -6908,23 +6756,7 @@ mod tests {
     }
 
     // =======================================================================
-    // === M13b: shop content types + validate_shops (EARS-CONTENT-1/2) ===
     //
-    // EARS criteria covered:
-    //   EARS-CONTENT-1: IF a shop references a non-existent item_id THEN
-    //     validate_shops fails.
-    //   EARS-CONTENT-2: validate_shops passes on valid content.
-    //
-    // Additional tests:
-    //   - validate_shops_passes_empty  — empty shops slice is valid (no error).
-    //   - embedded_shops_parse_and_validate — load_shops() + validate_shops passes.
-    //
-    // RED state: ShopDef, ShopStockEntry, parse_shops, load_shops, and
-    // validate_shops do NOT EXIST YET. These tests will fail to compile until
-    // the implementer adds them to content.rs and lib.rs (intended TDD red state).
-    //
-    // NOTE: ItemDef.sell_price (#[serde(default)]) is also new in M13b. Tests for
-    // that field are in economy_tests.rs (structural schema check) and in the eval.
     // =======================================================================
 
     // -----------------------------------------------------------------------
@@ -6943,7 +6775,7 @@ mod tests {
     }
 
     /// Build a minimal ItemDef that includes the new sell_price field.
-    /// Kills: an ItemDef that does not have sell_price (compile error is the RED state).
+    /// Kills: an ItemDef that does not have sell_price.
     fn fixture_item_with_sell_price(id: u32, sell_price: u64) -> ItemDef {
         ItemDef {
             id,
@@ -6981,10 +6813,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // EARS-CONTENT-1: validate_shops rejects a non-existent item_id — TEETH
+    // validate_shops rejects a non-existent item_id — TEETH
     // -----------------------------------------------------------------------
 
-    /// M13b-CONTENT-1 (TEETH): validate_shops must return Err when a shop's stock
+    /// validate_shops must return Err when a shop's stock
     /// contains an item_id that is not present in the items registry.
     ///
     /// The shop references item_id 9999 which is absent from the items slice.
@@ -7010,7 +6842,7 @@ mod tests {
     // validate_shops_passes_empty — empty shops slice is valid
     // -----------------------------------------------------------------------
 
-    /// M13b: validate_shops returns Ok for an empty shops slice (no shops to validate).
+    /// validate_shops returns Ok for an empty shops slice (no shops to validate).
     ///
     /// Kills: an impl that unconditionally returns Err (e.g. "no shops defined"),
     /// or one that panics on an empty slice.
@@ -7148,18 +6980,14 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // RT-SHOP-BUY-FREE: validate_shops must reject buy_price == 0
+    // validate_shops must reject buy_price == 0
     //
-    // Finding (RED-TEAM M13b): a ShopStockEntry with buy_price == 0 passes
-    // validate_shops today. The `buy` reducer treats a 0-total as a no-op
+    // `buy` reducer treats a 0-total as a no-op
     // spend (`spend_currency` early-returns Ok on amount==0), so the player
     // receives the item for free with no wallet debit. This is an exploitable
     // content configuration bug: any content author who sets buy_price=0
-    // accidentally creates a free item (the RON comment warns against it but
-    // the validator does not enforce it).
+    // accidentally creates a free item.
     //
-    // Fix: validate_shops must return Err for any stock entry with buy_price == 0.
-    // This test starts RED and turns green only once the guard is added.
     // -----------------------------------------------------------------------
 
     /// RT-SHOP-BUY-FREE: validate_shops must reject a stock entry with buy_price == 0.
@@ -7237,19 +7065,8 @@ mod tests {
     }
 
     // =======================================================================
-    // M13c: HealLocationDef.cost_currency tests (ADR-0083)
+    // HealLocationDef.cost_currency tests
     //
-    // These tests are RED until the implementer adds `cost_currency: u64` with
-    // `#[serde(default)]` to `HealLocationDef` in content.rs.
-    //
-    // EARS criteria:
-    //   - EARS-HEAL-CONTENT-1: cost_currency defaults to 0 when absent from RON
-    //     (the field carries `#[serde(default)]` so existing heal locations
-    //     without cost_currency continue to parse correctly — no breakage).
-    //   - EARS-HEAL-CONTENT-2: cost_currency round-trips when present in RON.
-    //
-    // The tests call `parse_heal_locations` which already exists; they use
-    // minimal valid RON for HealLocationDef (all required fields present).
     // =======================================================================
 
     /// M13c (EARS-HEAL-CONTENT-1): parsing a RON HealLocationDef without the
@@ -7321,11 +7138,11 @@ mod tests {
     }
 
     // =======================================================================
-    // fix-nightly (ADR-0088): mutant-killing tests for load_shops /
+    // mutant-killing tests for load_shops /
     // parse_shops_parts / validate_npc_content check #13.
     //
-    // The pre-existing embedded_shops_parse_and_validate test only asserts
-    // load_shops() is Ok — an `Ok(vec![])` body mutant (census 432:5) parses
+    // embedded_shops_parse_and_validate test only asserts
+    // load_shops() is Ok — an `Ok(vec![])` body mutant parses
     // fine and validate_shops(&[], ...) is Ok, so that test PASSES under the
     // mutant. These tests assert NON-EMPTY + pin the known M13b content, so the
     // empty-vec body mutants can no longer survive.
@@ -7370,8 +7187,6 @@ mod tests {
         );
     }
 
-    /// kills: game-core/src/content.rs:440:5: replace parse_shops_parts -> Result<Vec<ShopDef>, String> with Ok(vec![])
-    ///
     /// parse_shops_parts must actually parse + concatenate the RON parts it is
     /// given, NOT return an empty vec. Feeding a small inline parts slice and
     /// asserting the parsed ShopDef rows come back kills the `Ok(vec![])` body
@@ -7451,8 +7266,6 @@ mod tests {
         );
     }
 
-    /// kills: game-core/src/content.rs:1266:53: replace == with != in validate_npc_content
-    ///
     /// This is the PASSES half of the pair: a heal location with cost_item_id =
     /// Some(1) and cost_qty = 1 (a coherent cost) must validate Ok. Under the
     /// `==`→`!=` flip, `1 != 0` is true → check #13 wrongly Errs on valid content,
@@ -7488,7 +7301,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 13.5f-1: validate_npc_content GrantItem cross-ref + once-only gate
+    // validate_npc_content GrantItem cross-ref + once-only gate
     // -----------------------------------------------------------------------
 
     /// Proof-of-teeth A: GrantItem referencing an unknown item id → Err.
@@ -7670,43 +7483,27 @@ mod tests {
     }
 
     // =======================================================================
-    // m14.5d-1a EA-4: content integration — Antidote (id=3) has
+    // content integration — Antidote (id=3) has
     // cure_status == Some(StatusKind::Poison)
     //
-    // This is a pinning/regression test: the field already exists on ItemDef
-    // and the RON already specifies `cure_status: Some(Poison)` for id=3, so
-    // this test is GREEN today.  It stays in the suite to catch any future
-    // regression where the content RON is changed, the field is accidentally
-    // stripped, or a serde default replaces the explicit value with None.
-    //
-    // What a wrong impl this kills:
-    //   - A sync_content_inner that omits `cure_status` from the ItemRow
-    //     construction (EA-3) would be caught by the server-module tests;
-    //     THIS test pins the content SSOT so the chain is traceable from
-    //     RON → ItemDef → item_row.
-    //   - A future RON edit that accidentally removes `cure_status: Some(Poison)`
-    //     from Antidote would silently set it to None (serde default) and make
-    //     Antidote non-functional; this assertion bites immediately.
     // =======================================================================
 
-    /// EA-4 (m14.5d-1a): Antidote (id=3) from load_items() must carry
+    /// Antidote (id=3) from load_items() must carry
     /// `cure_status == Some(StatusKind::Poison)`.
-    ///
-    /// GREEN today (content RON already specifies it); kept as a regression pin.
     #[test]
     fn ears_d1a_4_antidote_has_cure_status_poison() {
         use crate::combat::ability::StatusKind;
 
         let items = load_items().expect("items RON must parse");
 
-        // id=3 is the Antidote — stable append-only id (ADR-0006).
+        // id=3 is the Antidote — stable append-only id.
         let antidote_id: u32 = 3;
         let antidote = items
             .iter()
             .find(|i| i.id == antidote_id)
             .unwrap_or_else(|| {
                 panic!(
-                    "TEETH(EA-4 m14.5d-1a): item id=3 (Antidote) not found in load_items() — \
+                    "TEETH(EA-4): item id=3 (Antidote) not found in load_items() — \
                      the items RON must contain an entry with id=3; \
                      stable append-only ids must not be removed or renumbered"
                 )
@@ -7715,7 +7512,7 @@ mod tests {
         assert_eq!(
             antidote.cure_status,
             Some(StatusKind::Poison),
-            "TEETH(EA-4 m14.5d-1a): Antidote (id=3) must have \
+            "TEETH(EA-4): Antidote (id=3) must have \
              cure_status == Some(StatusKind::Poison). \
              Got: {:?}. \
              Kills: a future RON edit that drops `cure_status: Some(Poison)` \
@@ -7726,28 +7523,13 @@ mod tests {
     }
 
     // =======================================================================
-    // uxd2 (ADR-0161) — `NpcInteraction`: serde default, wire round-trip, and
+    // `NpcInteraction`: serde default, wire round-trip, and
     // the `validate_npc_interactions` cross-registry validator.
     //
-    // RED until I0/I1 land: `crate::NpcInteraction` (types.rs + the lib.rs
-    // re-export) and `validate_npc_interactions` do not exist yet, so this
-    // whole section is compile-RED (E0432/E0433/E0425) — the repo's accepted
-    // red convention (see the M12c section header above).
-    //
-    // Contract under test (plan of record `docs/specs/uxd2-plan.md` §I0/I1/I3):
-    //   pub enum NpcInteraction { #[default] Dialogue, Shop(u32), Heal(u32) }
-    //   NpcDef += `#[serde(default)] pub interaction: NpcInteraction`
-    //   pub fn validate_npc_interactions(
-    //       npcs: &[NpcDef], shops: &[ShopDef], heal_locations: &[HealLocationDef],
-    //   ) -> Result<(), String>      // Err names the npc_id AND the missing id
-    //
-    // The fixtures below are LOCAL (`uxd2_*`) on purpose: `fixture_npc_def_m12c`
-    // belongs to the M12c section and its `interaction` value is not part of
-    // this slice's contract — these tests must never depend on it.
     // =======================================================================
 
-    /// uxd2 fixture: an `NpcDef` with an EXPLICIT interaction (every field set).
-    fn uxd2_npc_def(id: u32, npc_id: &str, interaction: crate::NpcInteraction) -> NpcDef {
+    /// an `NpcDef` with an EXPLICIT interaction (every field set).
+    fn npc_def(id: u32, npc_id: &str, interaction: crate::NpcInteraction) -> NpcDef {
         NpcDef {
             id,
             npc_id: npc_id.to_string(),
@@ -7763,8 +7545,8 @@ mod tests {
         }
     }
 
-    /// uxd2 fixture: a stock-less `ShopDef` (only its `id` matters here).
-    fn uxd2_shop_def(id: u32) -> ShopDef {
+    /// a stock-less `ShopDef` (only its `id` matters here).
+    fn shop_def(id: u32) -> ShopDef {
         ShopDef {
             id,
             name: format!("Shop{id}"),
@@ -7772,8 +7554,8 @@ mod tests {
         }
     }
 
-    /// uxd2 fixture: a free `HealLocationDef` (only its `location_id` matters).
-    fn uxd2_heal_def(location_id: u32) -> HealLocationDef {
+    /// a free `HealLocationDef` (only its `location_id` matters).
+    fn heal_def(location_id: u32) -> HealLocationDef {
         HealLocationDef {
             location_id,
             zone_id: 0,
@@ -7786,7 +7568,7 @@ mod tests {
         }
     }
 
-    /// uxd2 AC-9: a 10-field NPC RON row (no `interaction` key) still parses,
+    /// a 10-field NPC RON row (no `interaction` key) still parses,
     /// and the missing field defaults to `Dialogue`.
     ///
     /// KILLS: an `interaction` field added WITHOUT `#[serde(default)]` — RON
@@ -7796,7 +7578,7 @@ mod tests {
     /// ALSO KILLS: a `Default` impl that picks Shop/Heal, which would silently
     /// hand every legacy NPC a shop affordance.
     #[test]
-    fn uxd2_npc_def_omitting_interaction_defaults_to_dialogue() {
+    fn npc_def_omitting_interaction_defaults_to_dialogue() {
         let ron_10_field = r#"[
     (
         id: 1,
@@ -7812,20 +7594,20 @@ mod tests {
     ),
 ]"#;
         let defs = parse_npc_defs(ron_10_field).expect(
-            "uxd2 AC-9: a 10-field NPC row (no `interaction`) must still parse — \
+            "AC-9: a 10-field NPC row (no `interaction`) must still parse — \
              `interaction` must carry #[serde(default)]",
         );
-        assert_eq!(defs.len(), 1, "uxd2 AC-9: one row in, one row out");
+        assert_eq!(defs.len(), 1, "AC-9: one row in, one row out");
         assert_eq!(
             defs[0].interaction,
             crate::NpcInteraction::Dialogue,
-            "uxd2 AC-9 TEETH: an NPC row omitting `interaction` must default to \
+            "AC-9 TEETH: an NPC row omitting `interaction` must default to \
              Dialogue; got {:?}",
             defs[0].interaction
         );
     }
 
-    /// uxd2 AC-9 (positive arm): an 11-field row with `interaction: Shop(1)`
+    /// an 11-field row with `interaction: Shop(1)`
     /// deserializes to `Shop(1)`.
     ///
     /// KILLS: an impl that hard-wires the field to the default (e.g.
@@ -7833,7 +7615,7 @@ mod tests {
     /// never mark ANY npc as a shopkeeper, and AC-2/AC-12 die silently with a
     /// green serde-default test.
     #[test]
-    fn uxd2_npc_def_parses_explicit_shop_interaction() {
+    fn npc_def_parses_explicit_shop_interaction() {
         let ron_11_field = r#"[
     (
         id: 2,
@@ -7850,23 +7632,23 @@ mod tests {
     ),
 ]"#;
         let defs = parse_npc_defs(ron_11_field)
-            .expect("uxd2: an NPC row carrying `interaction: Shop(1)` must parse");
+            .expect("an NPC row carrying `interaction: Shop(1)` must parse");
         assert_eq!(
             defs[0].interaction,
             crate::NpcInteraction::Shop(1),
-            "uxd2 TEETH: `interaction: Shop(1)` must deserialize to \
+            "TEETH: `interaction: Shop(1)` must deserialize to \
              NpcInteraction::Shop(1) (payload preserved, not dropped); got {:?}",
             defs[0].interaction
         );
     }
 
-    /// uxd2 AC-9 (positive arm): `interaction: Heal(2)` deserializes to
-    /// `Heal(2)` — the payload is the heal-location id, NOT a shop id.
+    /// `interaction: Heal(2)` deserializes to `Heal(2)` — the payload is the
+    /// heal-location id, NOT a shop id.
     ///
     /// KILLS: a single-payload-slot impl that collapses Shop/Heal into one
     /// variant, and any impl that drops the u32 payload (`Heal` unit variant).
     #[test]
-    fn uxd2_npc_def_parses_explicit_heal_interaction() {
+    fn npc_def_parses_explicit_heal_interaction() {
         let ron_11_field = r#"[
     (
         id: 3,
@@ -7883,17 +7665,17 @@ mod tests {
     ),
 ]"#;
         let defs = parse_npc_defs(ron_11_field)
-            .expect("uxd2: an NPC row carrying `interaction: Heal(2)` must parse");
+            .expect("an NPC row carrying `interaction: Heal(2)` must parse");
         assert_eq!(
             defs[0].interaction,
             crate::NpcInteraction::Heal(2),
-            "uxd2 TEETH: `interaction: Heal(2)` must deserialize to \
+            "TEETH: `interaction: Heal(2)` must deserialize to \
              NpcInteraction::Heal(2); got {:?}",
             defs[0].interaction
         );
     }
 
-    /// uxd2 I0: `NpcInteraction::default()` is `Dialogue`.
+    /// `NpcInteraction::default()` is `Dialogue`.
     ///
     /// KILLS: `#[default]` placed on Shop/Heal (both carry a payload, so the
     /// derive would not even compile) or a hand-written `Default` returning a
@@ -7901,16 +7683,16 @@ mod tests {
     /// claim an affordance no content asked for. This is the direct unit
     /// falsification of the default the serde tests above observe indirectly.
     #[test]
-    fn uxd2_npc_interaction_default_trait_is_dialogue() {
+    fn npc_interaction_default_trait_is_dialogue() {
         assert_eq!(
             crate::NpcInteraction::default(),
             crate::NpcInteraction::Dialogue,
-            "uxd2 TEETH(I0): NpcInteraction::default() must be Dialogue — it is \
+            "TEETH(I0): NpcInteraction::default() must be Dialogue — it is \
              the `#[serde(default)]` value every legacy NPC row inherits"
         );
     }
 
-    /// uxd2 I0 wire contract: each variant survives a RON serialize/deserialize
+    /// each variant survives a RON serialize/deserialize
     /// round-trip (mirrors the TilePos round-trip in types.rs).
     ///
     /// KILLS: a serde rename/tag attribute (e.g. `#[serde(rename_all)]` or an
@@ -7919,7 +7701,7 @@ mod tests {
     /// disagree about the tag spelling used by AC-16's client converter.
     /// ALSO KILLS: a payload-dropping `Serialize` (Shop(1) -> Shop(0)).
     #[test]
-    fn uxd2_npc_interaction_ron_round_trip_preserves_each_variant() {
+    fn npc_interaction_ron_round_trip_preserves_each_variant() {
         for variant in [
             crate::NpcInteraction::Dialogue,
             crate::NpcInteraction::Shop(1),
@@ -7929,18 +7711,18 @@ mod tests {
             crate::NpcInteraction::Shop(0),
         ] {
             let s = ron::to_string(&variant)
-                .unwrap_or_else(|e| panic!("uxd2: NpcInteraction must serialize: {e}"));
+                .unwrap_or_else(|e| panic!("NpcInteraction must serialize: {e}"));
             let back: crate::NpcInteraction = ron::from_str(&s).unwrap_or_else(|e| {
-                panic!("uxd2: NpcInteraction must deserialize from its own RON `{s}`: {e}")
+                panic!("NpcInteraction must deserialize from its own RON `{s}`: {e}")
             });
             assert_eq!(
                 back, variant,
-                "uxd2 TEETH: RON round-trip must preserve {variant:?} (emitted `{s}`)"
+                "TEETH: RON round-trip must preserve {variant:?} (emitted `{s}`)"
             );
         }
     }
 
-    /// uxd2 AC-8(a): `Shop(id)` referencing an id absent from the shops
+    /// `Shop(id)` referencing an id absent from the shops
     /// registry is rejected, and the error names BOTH the npc_id and the id.
     ///
     /// The heal registry deliberately CONTAINS 999 while the shop registry does
@@ -7951,65 +7733,65 @@ mod tests {
     /// that omits the npc_id or the dangling id (an operator staring at
     /// "invalid npc interaction" cannot find the offending RON row).
     #[test]
-    fn uxd2_validate_npc_interactions_rejects_shop_id_missing_from_shops() {
-        let npcs = vec![uxd2_npc_def(
+    fn validate_npc_interactions_rejects_shop_id_missing_from_shops() {
+        let npcs = vec![npc_def(
             2,
             "tideglass_shopkeeper",
             crate::NpcInteraction::Shop(999),
         )];
-        let shops = vec![uxd2_shop_def(1)];
-        let heals = vec![uxd2_heal_def(999)]; // 999 exists ONLY as a heal id
+        let shops = vec![shop_def(1)];
+        let heals = vec![heal_def(999)]; // 999 exists ONLY as a heal id
 
         let result = validate_npc_interactions(&npcs, &shops, &heals);
         let err = result.expect_err(
-            "uxd2 AC-8 TEETH: Shop(999) with shops {1} must be Err — a dangling \
+            "AC-8 TEETH: Shop(999) with shops {1} must be Err — a dangling \
              shop id ships a shopkeeper whose overlay can never bind, and the \
              seed must fail loudly at sync time instead",
         );
         assert!(
             err.contains("tideglass_shopkeeper"),
-            "uxd2 AC-8 TEETH: the error must name the offending npc_id \
+            "AC-8 TEETH: the error must name the offending npc_id \
              'tideglass_shopkeeper'; got: {err:?}"
         );
         assert!(
             err.contains("999"),
-            "uxd2 AC-8 TEETH: the error must name the missing id 999; got: {err:?}"
+            "AC-8 TEETH: the error must name the missing id 999; got: {err:?}"
         );
     }
 
-    /// uxd2 AC-8(b): `Heal(id)` referencing an id absent from the heal-location
+    /// `Heal(id)` referencing an id absent from the heal-location
     /// registry is rejected, naming the npc_id and the id.
     ///
     /// Mirror-image trap: 999 exists ONLY as a SHOP id here, so a validator
     /// that checks `Heal(id)` against shop ids returns Ok and is killed.
     #[test]
-    fn uxd2_validate_npc_interactions_rejects_heal_id_missing_from_heal_locations() {
-        let npcs = vec![uxd2_npc_def(
+    fn validate_npc_interactions_rejects_heal_id_missing_from_heal_locations() {
+        let npcs = vec![npc_def(
             3,
             "spring_warden",
             crate::NpcInteraction::Heal(999),
         )];
-        let shops = vec![uxd2_shop_def(999)]; // 999 exists ONLY as a shop id
-        let heals = vec![uxd2_heal_def(1)];
+        let shops = vec![shop_def(999)]; // 999 exists ONLY as a shop id
+        let heals = vec![heal_def(1)];
 
         let result = validate_npc_interactions(&npcs, &shops, &heals);
         let err = result.expect_err(
-            "uxd2 AC-8 TEETH: Heal(999) with heal locations {1} must be Err — \
+            "AC-8 TEETH: Heal(999) with heal locations {1} must be Err — \
              the Heal payload is a heal-location id and must be cross-checked \
              against the heal registry, not the shop registry",
         );
         assert!(
             err.contains("spring_warden"),
-            "uxd2 AC-8 TEETH: the error must name the offending npc_id \
+            "AC-8 TEETH: the error must name the offending npc_id \
              'spring_warden'; got: {err:?}"
         );
         assert!(
             err.contains("999"),
-            "uxd2 AC-8 TEETH: the error must name the missing id 999; got: {err:?}"
+            "AC-8 TEETH: the error must name the missing id 999; got: {err:?}"
         );
     }
 
-    /// uxd2 AC-8(c): a mixed, fully-resolvable set validates Ok.
+    /// a mixed, fully-resolvable set validates Ok.
     ///
     /// Shop ids {7} and heal ids {42} are DISJOINT, so a registry-swapped
     /// validator rejects this set and is killed. A `Dialogue` npc is present to
@@ -8019,39 +7801,39 @@ mod tests {
     /// KILLS: an always-Err validator (which would fail every `sync_content`
     /// and brick the server) and the two mutants above.
     #[test]
-    fn uxd2_validate_npc_interactions_accepts_mixed_valid_set() {
+    fn validate_npc_interactions_accepts_mixed_valid_set() {
         let npcs = vec![
-            uxd2_npc_def(1, "elder_oak", crate::NpcInteraction::Dialogue),
-            uxd2_npc_def(2, "tideglass_shopkeeper", crate::NpcInteraction::Shop(7)),
-            uxd2_npc_def(3, "spring_warden", crate::NpcInteraction::Heal(42)),
+            npc_def(1, "elder_oak", crate::NpcInteraction::Dialogue),
+            npc_def(2, "tideglass_shopkeeper", crate::NpcInteraction::Shop(7)),
+            npc_def(3, "spring_warden", crate::NpcInteraction::Heal(42)),
         ];
-        let shops = vec![uxd2_shop_def(7)];
-        let heals = vec![uxd2_heal_def(42)];
+        let shops = vec![shop_def(7)];
+        let heals = vec![heal_def(42)];
 
         let result = validate_npc_interactions(&npcs, &shops, &heals);
         assert!(
             result.is_ok(),
-            "uxd2 AC-8 TEETH: Dialogue + Shop(7) with shops {{7}} + Heal(42) with \
+            "AC-8 TEETH: Dialogue + Shop(7) with shops {{7}} + Heal(42) with \
              heal locations {{42}} must validate Ok; got: {:?}",
             result.err()
         );
     }
 
-    /// uxd2 AC-8(d): an empty npc list validates Ok.
+    /// an empty npc list validates Ok.
     ///
     /// KILLS: a validator that demands a non-empty npcs slice (or indexes
     /// `npcs[0]`), which would panic/Err on any content set with no NPCs.
     #[test]
-    fn uxd2_validate_npc_interactions_accepts_empty_npc_list() {
-        let result = validate_npc_interactions(&[], &[uxd2_shop_def(1)], &[uxd2_heal_def(1)]);
+    fn validate_npc_interactions_accepts_empty_npc_list() {
+        let result = validate_npc_interactions(&[], &[shop_def(1)], &[heal_def(1)]);
         assert!(
             result.is_ok(),
-            "uxd2 AC-8: zero npcs is vacuously valid; got: {:?}",
+            "AC-8: zero npcs is vacuously valid; got: {:?}",
             result.err()
         );
     }
 
-    /// uxd2 AC-8(e): the validator inspects EVERY npc, not just the first.
+    /// the validator inspects EVERY npc, not just the first.
     /// npc #1 is valid (`Shop(7)`); npc #2 is dangling (`Heal(999)`).
     ///
     /// KILLS: an early `return Ok(())` inside the loop body (a very common
@@ -8059,26 +7841,26 @@ mod tests {
     /// examines `npcs.first()`. Either would let a broken shopkeeper past the
     /// gate as long as some earlier npc happened to be well-formed.
     #[test]
-    fn uxd2_validate_npc_interactions_checks_every_npc_not_just_the_first() {
+    fn validate_npc_interactions_checks_every_npc_not_just_the_first() {
         let npcs = vec![
-            uxd2_npc_def(2, "tideglass_shopkeeper", crate::NpcInteraction::Shop(7)),
-            uxd2_npc_def(3, "spring_warden", crate::NpcInteraction::Heal(999)),
+            npc_def(2, "tideglass_shopkeeper", crate::NpcInteraction::Shop(7)),
+            npc_def(3, "spring_warden", crate::NpcInteraction::Heal(999)),
         ];
-        let shops = vec![uxd2_shop_def(7)];
-        let heals = vec![uxd2_heal_def(42)];
+        let shops = vec![shop_def(7)];
+        let heals = vec![heal_def(42)];
 
         let err = validate_npc_interactions(&npcs, &shops, &heals).expect_err(
-            "uxd2 AC-8 TEETH: a dangling reference on the SECOND npc must still \
+            "AC-8 TEETH: a dangling reference on the SECOND npc must still \
              fail — the validator must iterate the whole slice",
         );
         assert!(
             err.contains("spring_warden") && err.contains("999"),
-            "uxd2 AC-8 TEETH: the error must name the second npc ('spring_warden') \
+            "AC-8 TEETH: the error must name the second npc ('spring_warden') \
              and its missing heal-location id 999; got: {err:?}"
         );
     }
 
-    /// uxd2 AC-8(f): the REAL embedded registries validate Ok (integration
+    /// the REAL embedded registries validate Ok (integration
     /// smoke — the same shape as `m12c_validate_npc_content_passes_for_embedded`).
     ///
     /// KILLS: an I3 RON seed whose `interaction: Shop(n)` points at a shop that
@@ -8086,17 +7868,17 @@ mod tests {
     /// at deploy time, after CI was green), and an over-strict validator that
     /// rejects the plain `Dialogue` NPCs already in the registry.
     #[test]
-    fn uxd2_validate_npc_interactions_passes_for_embedded_content() {
-        let npcs = load_npc_defs().expect("uxd2: load_npc_defs must succeed");
-        let shops = load_shops().expect("uxd2: load_shops must succeed");
-        let heals = load_heal_locations().expect("uxd2: load_heal_locations must succeed");
+    fn validate_npc_interactions_passes_for_embedded_content() {
+        let npcs = load_npc_defs().expect("load_npc_defs must succeed");
+        let shops = load_shops().expect("load_shops must succeed");
+        let heals = load_heal_locations().expect("load_heal_locations must succeed");
         validate_npc_interactions(&npcs, &shops, &heals).expect(
-            "uxd2 AC-8 TEETH: the embedded NPC/shop/heal registries must \
+            "AC-8 TEETH: the embedded NPC/shop/heal registries must \
              cross-validate — a dangling seeded interaction bricks sync_content",
         );
     }
 
-    /// uxd2 I3 content pin: the seeded shopkeeper carries `Shop(1)` and the
+    /// the seeded shopkeeper carries `Shop(1)` and the
     /// placement the e2e route (AC-12) walks to.
     ///
     /// KILLS: a shopkeeper seeded WITHOUT `interaction` (serde-defaults to
@@ -8106,14 +7888,14 @@ mod tests {
     /// NPC would drift out of the range-2 prompt window) and a moved home tile
     /// (the pinned zone-1 route to (8,1) stops being 2 tiles away at (6,1)).
     #[test]
-    fn uxd2_shopkeeper_seed_carries_shop_interaction() {
-        let defs = load_npc_defs().expect("uxd2: load_npc_defs must succeed");
+    fn shopkeeper_seed_carries_shop_interaction() {
+        let defs = load_npc_defs().expect("load_npc_defs must succeed");
         let keeper = defs
             .iter()
             .find(|d| d.npc_id == "tideglass_shopkeeper")
             .unwrap_or_else(|| {
                 panic!(
-                    "uxd2 I3 TEETH: npcs RON must contain an NPC with \
+                    "I3 TEETH: npcs RON must contain an NPC with \
                      npc_id 'tideglass_shopkeeper'; got: {:?}",
                     defs.iter().map(|d| d.npc_id.as_str()).collect::<Vec<_>>()
                 )
@@ -8121,51 +7903,51 @@ mod tests {
         assert_eq!(
             keeper.interaction,
             crate::NpcInteraction::Shop(1),
-            "uxd2 I3 TEETH: the seeded shopkeeper must carry Shop(1) — a Dialogue \
+            "I3 TEETH: the seeded shopkeeper must carry Shop(1) — a Dialogue \
              default renders no Shop button at all; got {:?}",
             keeper.interaction
         );
-        assert_eq!(keeper.zone_id, 1, "uxd2 I3: shopkeeper lives in zone 1");
+        assert_eq!(keeper.zone_id, 1, "I3: shopkeeper lives in zone 1");
         assert_eq!(
             (keeper.home_x, keeper.home_y),
             (8, 1),
-            "uxd2 I3: shopkeeper home tile is (8,1) — the e2e route measures \
+            "I3: shopkeeper home tile is (8,1) — the e2e route measures \
              range from it"
         );
         assert_eq!(
             (keeper.spawn_x, keeper.spawn_y),
             (8, 1),
-            "uxd2 I3: shopkeeper spawns on its home tile"
+            "I3: shopkeeper spawns on its home tile"
         );
         assert_eq!(
             keeper.wander_radius, 0,
-            "uxd2 I3 TEETH: wander_radius MUST be 0 (npc_decide's pinned \
+            "I3 TEETH: wander_radius MUST be 0 (npc_decide's pinned \
              stationary special case) or the e2e prompt/talk steps flake"
         );
         assert_eq!(
             keeper.dialogue_tree_id, "shopkeeper_greeting",
-            "uxd2 I3: shopkeeper greets from the 'shopkeeper_greeting' tree"
+            "I3: shopkeeper greets from the 'shopkeeper_greeting' tree"
         );
     }
 
-    /// uxd2 I3 content pin: the greeting tree is a genuinely INERT one-node
+    /// the greeting tree is a genuinely INERT one-node
     /// tree — "Hello, customer!" plus a single Leave choice, no effects.
     ///
     /// KILLS: a greeting tree that carries effects (a SetFlag/GrantItem/
-    /// StartQuest on the shop path would fire on every re-entry — the ADR-0068
+    /// StartQuest on the shop path would fire on every re-entry — the dialogue-effect
     /// farming class) or that branches into more nodes (the AC-12 e2e asserts
     /// the greeting text directly and the Shop button is derived from the enum,
     /// never from choice text). ALSO KILLS: a text drift that would make the
     /// `#dialogue-overlay` assertion in shop-npc.spec.ts unreproducible.
     #[test]
-    fn uxd2_shopkeeper_greeting_tree_is_inert_single_node() {
-        let trees = load_dialogue_trees().expect("uxd2: load_dialogue_trees must succeed");
+    fn shopkeeper_greeting_tree_is_inert_single_node() {
+        let trees = load_dialogue_trees().expect("load_dialogue_trees must succeed");
         let tree = trees
             .iter()
             .find(|t| t.id == "shopkeeper_greeting")
             .unwrap_or_else(|| {
                 panic!(
-                    "uxd2 I3 TEETH: dialogue_trees RON must contain a \
+                    "I3 TEETH: dialogue_trees RON must contain a \
                      'shopkeeper_greeting' tree; got: {:?}",
                     trees.iter().map(|t| t.id.as_str()).collect::<Vec<_>>()
                 )
@@ -8173,37 +7955,37 @@ mod tests {
         assert_eq!(
             tree.nodes.len(),
             1,
-            "uxd2 I3 TEETH: the greeting tree must have exactly ONE node \
+            "I3 TEETH: the greeting tree must have exactly ONE node \
              (inert greeting); got {} nodes",
             tree.nodes.len()
         );
         let node = &tree.nodes[0];
         assert_eq!(
             tree.root_node_id, node.id,
-            "uxd2 I3: the single node must be the root"
+            "I3: the single node must be the root"
         );
         assert_eq!(
             node.text, "Hello, customer!",
-            "uxd2 I3 TEETH: greeting text is pinned by the AC-12 e2e assertion; \
+            "I3 TEETH: greeting text is pinned by the AC-12 e2e assertion; \
              got {:?}",
             node.text
         );
         assert!(
             node.auto_effects.is_empty(),
-            "uxd2 I3 TEETH: the greeting node must have NO auto_effects — the \
+            "I3 TEETH: the greeting node must have NO auto_effects — the \
              shop path is re-enterable, so any effect fires unbounded; got {:?}",
             node.auto_effects
         );
         assert!(
             node.entry_conditions.is_empty(),
-            "uxd2 I3 TEETH: a gated greeting node can leave the shopkeeper with \
+            "I3 TEETH: a gated greeting node can leave the shopkeeper with \
              no reachable node; got {:?}",
             node.entry_conditions
         );
         assert_eq!(
             node.choices.len(),
             1,
-            "uxd2 I3 TEETH: exactly one (Leave) choice — the Shop affordance is \
+            "I3 TEETH: exactly one (Leave) choice — the Shop affordance is \
              derived from NpcInteraction, NEVER from choice text; got {:?}",
             node.choices
                 .iter()
@@ -8211,19 +7993,16 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         let choice = &node.choices[0];
-        assert_eq!(
-            choice.text, "Leave",
-            "uxd2 I3: the single choice is 'Leave'"
-        );
+        assert_eq!(choice.text, "Leave", "I3: the single choice is 'Leave'");
         assert_eq!(
             choice.next_node, None,
-            "uxd2 I3 TEETH: the Leave choice must END the conversation \
+            "I3 TEETH: the Leave choice must END the conversation \
              (next_node: None); got {:?}",
             choice.next_node
         );
         assert!(
             choice.effects.is_empty() && choice.conditions.is_empty(),
-            "uxd2 I3 TEETH: the Leave choice must be inert (no effects, no \
+            "I3 TEETH: the Leave choice must be inert (no effects, no \
              conditions); got effects {:?} / conditions {:?}",
             choice.effects,
             choice.conditions
@@ -8231,15 +8010,13 @@ mod tests {
     }
 
     // =======================================================================
-    // === m23-s8 (A11Y-29): the a11y text-token table + its validator ===
+    // the a11y text-token table + its validator ===
     //
-    // A11Y-29: every `StatusEffect` and every `Affinity` a monster can carry
+    // Every `StatusEffect` and every `Affinity` a monster can carry
     // must have a SHORT TEXT TOKEN, so colour is never the sole carrier of
     // meaning. `A11Y_TOKENS` is content-shaped DATA and `validate_content`
-    // gates it exactly like every other registry (ADR-0006).
+    // gates it exactly like every other registry.
     //
-    // Four families, all prefixed `m23s8_` so the acceptance ledger can filter
-    // them by name:
     //   m23s8_reject_*       one biting fixture per rejection rule, plus the
     //                        positive `m23s8_shipped_table_is_valid`   (9)
     //   m23s8_totality_*     serde's derive metadata as the variant oracle (3)
@@ -8272,8 +8049,8 @@ mod tests {
     /// (`m23s8_forgery_shipped_pairs_are_pinned`) and the message oracle the
     /// reject tests assert against, so it must not move when the impl moves.
     /// The five status tokens are byte-identical to `statusBadge` in
-    /// `client/src/ui/battleModel.ts`, correlated by the rb-55 parity test
-    /// (ADR-0240); this stays the only pin of all thirteen pairs at once.
+    /// `client/src/ui/battleModel.ts`; this stays the only pin of all
+    /// thirteen pairs at once.
     const M23S8_EXPECTED_PAIRS: [(&str, &str); 13] = [
         ("status.poison", "PSN"),
         ("status.burn", "BRN"),
@@ -8413,10 +8190,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Group X1 — the rejection rules, plus the positive shipped-table gate (9)
+    // the rejection rules, plus the positive shipped-table gate (9)
     // -----------------------------------------------------------------------
 
-    /// A11Y-29 (X1 positive): the SHIPPED table satisfies its own validator.
+    /// the SHIPPED table satisfies its own validator.
     ///
     /// KILLS `validate_a11y_tokens -> Err(String::new())` (an always-Err
     /// validator would fail `validate_content` on every `sync_content` and
@@ -8434,7 +8211,7 @@ mod tests {
         );
     }
 
-    /// A11Y-29: an EMPTY table is rejected, and the error names a missing key.
+    /// An EMPTY table is rejected, and the error names a missing key.
     ///
     /// KILLS a validator whose loop body simply never runs on an empty slice
     /// (the classic vacuous-green shape), and any validator that derives its
@@ -8452,7 +8229,7 @@ mod tests {
         );
     }
 
-    /// A11Y-29: a whitespace-only token — and the empty string — are rejected.
+    /// A whitespace-only token — and the empty string — are rejected.
     ///
     /// `"  "` is the load-bearing case: it is length 2 (inside the 2..=4 window)
     /// and only the `char::is_ascii_graphic` rule can catch it, so a validator
@@ -8473,12 +8250,12 @@ mod tests {
         }
     }
 
-    /// A11Y-29: a token made of U+200B ZERO WIDTH SPACE is rejected.
+    /// A token made of U+200B ZERO WIDTH SPACE is rejected.
     ///
     /// NOT hypothetical: `char::is_whitespace` is FALSE for U+200B (category
     /// Cf), so the obvious `token.trim().is_empty()` guard was MEASURED to
     /// ACCEPT this token — producing a "text token" that renders as nothing at
-    /// all, which is exactly the failure A11Y-29 exists to prevent.
+    /// all.
     /// KILLS a `trim().is_empty()` blankness check.
     #[test]
     fn m23s8_reject_invisible_token() {
@@ -8493,7 +8270,7 @@ mod tests {
         );
     }
 
-    /// A11Y-29: dropping a required STATUS row is rejected.
+    /// Dropping a required STATUS row is rejected.
     ///
     /// KILLS a validator that only checks the rows it was given (well-formed
     /// keys, unique tokens) without ever asking whether every `StatusKind` is
@@ -8510,7 +8287,7 @@ mod tests {
         );
     }
 
-    /// A11Y-29: dropping a required AFFINITY row is rejected.
+    /// Dropping a required AFFINITY row is rejected.
     ///
     /// KILLS the half-implementation that derives its required set from
     /// `STATUS_KIND_ALL` only and never consults `Affinity::ALL`. That impl
@@ -8527,7 +8304,7 @@ mod tests {
         );
     }
 
-    /// A11Y-29: two rows sharing one token are rejected.
+    /// Two rows sharing one token are rejected.
     ///
     /// All 13 required keys are present and unique here, so ONLY the
     /// token-uniqueness rule can catch it. Two identical badges are
@@ -8546,7 +8323,7 @@ mod tests {
         );
     }
 
-    /// A11Y-29: two tokens equal only under ASCII case folding are rejected.
+    /// Two tokens equal only under ASCII case folding are rejected.
     ///
     /// `fir` vs `FIR` is ascii-graphic, in the 2..=4 window, and BYTE-distinct,
     /// so a plain `BTreeSet<&str>` uniqueness check accepts it — while a
@@ -8564,7 +8341,7 @@ mod tests {
         );
     }
 
-    /// A11Y-29: a duplicated KEY is rejected even when every required key is
+    /// A duplicated KEY is rejected even when every required key is
     /// present and every token is distinct.
     ///
     /// The fixture is the 13 shipped rows PLUS a second `status.burn` row with
@@ -8592,7 +8369,7 @@ mod tests {
     // Group m23s8_totality_ — serde derive metadata as the variant oracle (3)
     // -----------------------------------------------------------------------
 
-    /// A11Y-29 totality: every `StatusKind` variant serde knows about has a key
+    /// every `StatusKind` variant serde knows about has a key
     /// in `STATUS_KIND_ALL` (through `status_token_key`) AND a row in
     /// `A11Y_TOKENS`.
     ///
@@ -8643,7 +8420,7 @@ mod tests {
         }
     }
 
-    /// A11Y-29 totality: every `Affinity` variant serde knows about has a key
+    /// every `Affinity` variant serde knows about has a key
     /// in `Affinity::ALL` (through `affinity_token_key`) AND a row in
     /// `A11Y_TOKENS`.
     ///
@@ -8691,7 +8468,6 @@ mod tests {
         }
     }
 
-    /// A11Y-29 covers the criterion's literal `StatusEffect` wording: the
     /// variant-name sets of `StatusKind` and `StatusEffect` are IDENTICAL.
     ///
     /// The token table is keyed on `StatusKind` (the payload-free
@@ -8726,16 +8502,16 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Group m23s8_forgery_ — the measured forged-validator shapes (4)
+    // the measured forged-validator shapes (4)
     //
     // Eight `validate_a11y_tokens` implementations were MEASURED to pass
-    // "rejects empty / blank / missing / orphan / duplicate" while failing
-    // A11Y-29, five of which also survived DELETING a row from the shipped
+    // "rejects empty / blank / missing / orphan / duplicate",
+    // five of which also survived DELETING a row from the shipped
     // table — because they re-derived their required set FROM `A11Y_TOKENS`
     // instead of from the enums. These four tests exist to kill them.
     // -----------------------------------------------------------------------
 
-    /// A11Y-29 forgery: THIRTEEN well-formed rows keyed `junk.0 .. junk.12`,
+    /// THIRTEEN well-formed rows keyed `junk.0 .. junk.12`,
     /// carrying the shipped (distinct, valid) tokens, must be rejected.
     ///
     /// Every surface property of the shipped table is preserved — the row
@@ -8766,7 +8542,7 @@ mod tests {
         );
     }
 
-    /// A11Y-29 forgery: the shipped rows PLUS one extra valid-looking row must
+    /// the shipped rows PLUS one extra valid-looking row must
     /// be rejected.
     ///
     /// KILLS a validator that only asks "is every required key present" and
@@ -8786,7 +8562,7 @@ mod tests {
         );
     }
 
-    /// A11Y-29 forgery: swapping ONE required row for an orphan — leaving the
+    /// swapping ONE required row for an orphan — leaving the
     /// row count at 13 and the token set unchanged — must be rejected.
     ///
     /// KILLS the prefix-census forgery (count the rows, sniff the key prefixes,
@@ -8822,15 +8598,15 @@ mod tests {
         );
     }
 
-    /// A11Y-29 rename tripwire: the exact 13 `(key, token)` pairs are PINNED.
+    /// the exact 13 `(key, token)` pairs are PINNED.
     ///
     /// `A11Y_TOKENS` sits outside `content-hash` and `append-only-ids`
     /// coverage, so for the eight `affinity.*` rows nothing else in the repo
     /// notices a renamed key or a retyped token. The five `status.*` rows are
     /// additionally correlated to `statusBadge` in
-    /// `client/src/ui/battleModel.ts` by the rb-55 parity test (ADR-0240),
-    /// which reads this const and compares it to that function's return value;
-    /// this pin is what makes a COORDINATED rename of both sides still visible.
+    /// `client/src/ui/battleModel.ts` which reads this const and compares it to
+    /// that function's return value; this pin is what makes a COORDINATED
+    /// rename of both sides still visible.
     ///
     /// KILLS `status_token_key`/`affinity_token_key` collapsing to `""` or
     /// `"xyzzy"` in the case where `A11Y_TOKENS` is BUILT from those const fns
@@ -8862,7 +8638,7 @@ mod tests {
     // Group m23s8_reachability_ — the call site inside validate_content (1)
     // -----------------------------------------------------------------------
 
-    /// A11Y-29 reachability: `validate_a11y_tokens(A11Y_TOKENS)?;` really runs
+    /// `validate_a11y_tokens(A11Y_TOKENS)?;` really runs
     /// inside `validate_content`, and the validator it calls really bites.
     ///
     /// The a11y check takes NO parameter from `validate_content`, so it cannot
@@ -8879,8 +8655,8 @@ mod tests {
     ///   3. STRUCTURAL: the call expression appears, verbatim modulo
     ///      whitespace, inside `validate_content`'s own comment-stripped body.
     ///
-    /// Clause 3 is the stronger proof and stays entirely inside content.rs
-    /// (the brief invited one). It reads THIS file via `include_str!`, strips
+    /// Clause 3 is the stronger proof and stays entirely inside content.rs.
+    /// It reads THIS file via `include_str!`, strips
     /// line and block comments so a decoy comment cannot forge the needle,
     /// anchors on a fragment-assembled signature (asserted to occur exactly
     /// once, so a decoy copy of the signature cannot steer the region), and
@@ -8991,7 +8767,7 @@ mod tests {
         );
     }
 
-    /// A11Y-29 forgery resistance: `validate_a11y_tokens` must judge only its
+    /// resistance: `validate_a11y_tokens` must judge only its
     /// ARGUMENT, in every build profile.
     ///
     /// Two forged bodies were MEASURED to pass all of the fixture tests above
@@ -9059,7 +8835,7 @@ mod tests {
         }
     }
 
-    /// A11Y-29: the token length band is enforced at BOTH ends, and both
+    /// The token length band is enforced at BOTH ends, and both
     /// boundary lengths are ACCEPTED.
     ///
     /// KILLS a forged validator that replaces the band with `token.is_empty()`
@@ -9067,7 +8843,10 @@ mod tests {
     /// any fixture uses is the empty string and no fixture uses a long one.
     #[test]
     fn m23s8_reject_out_of_band_token_length() {
-        for bad in ["P", "TOOLONG"] {
+        // "ABCD" is the one-past-the-ceiling token: the badge pill renders at most
+        // 3 characters (client statusBadge), so a 4-character token has no legal
+        // client rendering and must be rejected here.
+        for bad in ["P", "ABCD", "TOOLONG"] {
             let mut rows = shipped_rows();
             let idx = m23s8_row_index(&rows, "status.poison");
             rows[idx].token = bad;
@@ -9077,7 +8856,7 @@ mod tests {
                 "the rejection must name the offending token or its key; got: {err:?}"
             );
         }
-        for good in ["AB", "ABCD"] {
+        for good in ["AB", "ABC"] {
             let mut rows = shipped_rows();
             let idx = m23s8_row_index(&rows, "status.poison");
             rows[idx].token = good;

@@ -8,11 +8,11 @@ import {
   test,
 } from '@playwright/test';
 
-// m17.5f — PvP full flow e2e (EARS 17.5f-1)
+// PvP full flow e2e (EARS 17.5f-1)
 //
 // TWO-CONTEXT DESIGN
 // ==================
-// Mirrors ranked-forfeit.spec.ts (m17c): two separate chromium.launch() instances
+// Mirrors ranked-forfeit.spec.ts: two separate chromium.launch() instances
 // generate distinct SpacetimeDB identities. The SDK caches its connection+identity
 // in the page's JS module scope, so a shared browser or BrowserContext would yield
 // the same identity for both players.
@@ -48,7 +48,7 @@ import {
 //
 // DEADLINE HEADROOM ARITHMETIC (F9)
 // ==================================
-// PVP_TURN_DEADLINE_MS = 60_000 ms = 60s (server constant, ADR-0109).
+// PVP_TURN_DEADLINE_MS = 60_000 ms = 60s (server constant).
 // Turn budget in this test: 30s (waitForFunction timeout below).
 // Headroom = 60s − 30s = 30s — both players submit within the 30s window,
 // leaving ≥30s before any deadline-forfeit can fire.
@@ -94,7 +94,7 @@ interface GameSnap {
 }
 
 // ---------------------------------------------------------------------------
-// MrPvp contract interface — this DEFINES the hook the implementer must build.
+// MrPvp contract interface.
 //
 // Mapping to main.ts / store.ts:
 //   challengePvp(targetHex, partyIds)  → conn.reducers.challengePvp({target: new Identity(targetHex), partyIds: partyIds.map(BigInt)})
@@ -314,7 +314,6 @@ test.describe
     //   - A DEV-gate that accidentally evaluates false in vite dev mode.
     //   - An implementer that ships only some methods.
     //
-    // RED UNTIL __mrPvp IS WIRED in main.ts.
     // -------------------------------------------------------------------------
     test('__mrPvp hook is available on window with all required methods (17.5f-1 hook)', async () => {
       const hasHook = await pageA.evaluate(() => {
@@ -370,7 +369,6 @@ test.describe
     //   - A zero-delta path (Δ=0, rating unchanged despite a result).
     //   - A path that deletes the loser's profile row (hard-fail in parseProfileRows).
     //
-    // RED UNTIL __mrPvp AND the underlying challenge/pvp reducers are wired.
     // -------------------------------------------------------------------------
     test('PvP full flow: challenge → accept → turn exchange → B-disconnect → A wins; zero-sum profile assertion (17.5f-1)', async () => {
       test.setTimeout(120_000);
@@ -517,7 +515,7 @@ test.describe
 
       // Step 8: A reads its active monster's skill IDs via battleById (from sideA).
       // B reads its active monster's skill IDs via battleById (from sideB).
-      // As of ADR-0167 (11r-b), the PRODUCTION path (store.ongoingBattle()/
+      // As of ADR-0167, the PRODUCTION path (store.ongoingBattle()/
       // latestPlayerBattle()) is role-agnostic too, and side B gets a real battle overlay
       // built from its OWN perspective — covered end-to-end by client/e2e/pvp-side-b.spec.ts.
       // battleById is retained here specifically because it reads BOTH sides' internals by
@@ -533,7 +531,7 @@ test.describe
             if (!battle) return false;
             const ids = battle.sideA.activeSkillIds;
             // ids[0] === 0 is falsy — use explicit length+value guard so skillId 0
-            // does not spin the predicate forever (reviewer HIGH-3 fix).
+            // does not spin the predicate forever.
             return ids && ids.length > 0 && ids[0] > 0 ? ids[0] : false;
           },
           battleId,
@@ -549,7 +547,7 @@ test.describe
             const battle = w.__mrPvp.battleById(bid);
             if (!battle) return false;
             const ids = battle.sideB.activeSkillIds;
-            // ids[0] === 0 is falsy — use explicit length+value guard (reviewer HIGH-3 fix).
+            // ids[0] === 0 is falsy — use explicit length+value guard.
             return ids && ids.length > 0 && ids[0] > 0 ? ids[0] : false;
           },
           battleId,
@@ -778,7 +776,7 @@ test.describe
           `rowA=${JSON.stringify(rowA)}, rowB=${JSON.stringify(rowB)}`,
       ).toBe(loserLoss);
 
-      // Rating sum invariant: winner_rating + loser_rating === 2000 (ADR-0119 D2).
+      // Rating sum invariant: winner_rating + loser_rating === 2000.
       const ratingSum = winnerRow.rating + loserRow.rating;
       expect(
         ratingSum,

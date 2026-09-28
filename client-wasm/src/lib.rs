@@ -21,11 +21,11 @@ use wasm_bindgen::prelude::*;
 use game_core::{CharacterState, Millis, MoveInput};
 
 /// The active zone id — set by `set_active_zone()` on every zone transition so
-/// that `apply_move` always walks the correct zone's tile map. (M11c, ADR-0067)
+/// that `apply_move` always walks the correct zone's tile map.
 static ACTIVE_ZONE_ID: AtomicU32 = AtomicU32::new(0);
 
 // Parse the zone registry once per WASM instance lifetime: content is
-// compile-time-embedded (ADR-0057) and immutable between deploys (ADR-0089).
+// compile-time-embedded and immutable between deploys.
 // LazyLock<Result<...>> caches both successes and failures; deterministic for
 // compile-time-embedded content so caching the error is correct.
 static ZONE_MAPS: LazyLock<Result<Vec<game_core::ZoneMapDef>, String>> =
@@ -33,7 +33,7 @@ static ZONE_MAPS: LazyLock<Result<Vec<game_core::ZoneMapDef>, String>> =
 
 // Active-zone TileMap: cached to avoid re-running build_grid on every apply_move.
 // Invalidated (set to None) in set_active_zone so the first apply_move after a
-// zone transition rebuilds for the new zone (ADR-0089). thread_local is idiomatic
+// zone transition rebuilds for the new zone. thread_local is idiomatic
 // for WASM (single-threaded execution model).
 thread_local! {
     static ACTIVE_TILE_MAP: RefCell<Option<game_core::TileMap>> = const { RefCell::new(None) };
@@ -51,11 +51,10 @@ fn cached_zone_maps() -> Result<&'static Vec<game_core::ZoneMapDef>, String> {
 /// by the client on every zone warp BEFORE the first `apply_move` in that zone.
 ///
 /// Clears the cached TileMap so the next `apply_move` rebuilds for the new zone
-/// (ADR-0089). (M11c, ADR-0067)
 #[wasm_bindgen]
 pub fn set_active_zone(zone_id: u32) {
     ACTIVE_ZONE_ID.store(zone_id, Ordering::Relaxed);
-    // Invalidate cached TileMap: the new zone has a different layout (ADR-0089).
+    // Invalidate cached TileMap: the new zone has a different layout.
     ACTIVE_TILE_MAP.with(|m| *m.borrow_mut() = None);
 }
 
@@ -124,10 +123,9 @@ pub fn predict_move(
     Ok(out.to_vec())
 }
 
-// --- M3: the JS-consumable marshaling boundary (NO game rules live here) ------
+// --- the JS-consumable marshaling boundary (NO game rules live here) ------
 // Each export marshals JS -> game-core serde types, delegates to game-core, and
-// marshals the result back. The no-logic-in-wrapper eval proves no rule (a `match`
-// on `Direction`, a walkability check, a `.step`) ever lives in this file.
+// marshals the result back.
 
 /// Predict one move from JS: deserialize `state`/`input`, call the SAME
 /// `game_core::apply_move` the server runs, and serialize the next state back.
@@ -137,7 +135,7 @@ pub fn predict_move(
 /// M11c: uses `ACTIVE_ZONE_ID` (set by `set_active_zone`) to load the correct
 /// zone map. Fails loud (returns Err) on unknown zone rather than silently falling
 /// back to zone_0 — a wrong-map fallback would predict through zone N's walls
-/// using zone 0's layout (ADR-0067). In practice this path never fires because
+/// using zone 0's layout. In practice this path never fires because
 /// `set_active_zone` is only called after `zone_map(id)` succeeds.
 ///
 /// # Errors
@@ -148,7 +146,7 @@ pub fn apply_move(state: JsValue, input: JsValue, now: f64) -> Result<JsValue, J
     let state: CharacterState = serde_wasm_bindgen::from_value(state)?;
     let input: MoveInput = serde_wasm_bindgen::from_value(input)?;
     let zone_id = ACTIVE_ZONE_ID.load(Ordering::Relaxed);
-    // Build or reuse the cached TileMap for the active zone (ADR-0089).
+    // Build or reuse the cached TileMap for the active zone.
     // Invariant: ACTIVE_TILE_MAP holds a TileMap for exactly the current ACTIVE_ZONE_ID.
     // set_active_zone() resets it to None on every zone transition, so a non-None
     // cache here always corresponds to the zone_id read above.
@@ -201,9 +199,8 @@ pub fn party_slot_none() -> u32 {
 }
 
 /// The account-deletion grace window in ms — the window between a deletion
-/// request and irreversible erasure (M22 spec §4.3/§4.5, ADR-0031; consumed
-/// by S8's countdown, spec §7.2),
-/// single-sourced from `game-core` so TS never hard-codes it.
+/// request and irreversible erasure, single-sourced from `game-core` so TS
+/// never hard-codes it.
 ///
 /// Returns `i64`, which crosses the boundary as a JS `BigInt`. That is
 /// deliberate: `deletion_requested_at_ms` is an `Option<i64>` column and
@@ -216,11 +213,134 @@ pub fn party_slot_none() -> u32 {
 /// an operator replaces" (M22 spec §8.1 escalation #1 is UNRESOLVED), NOT that
 /// a runtime override column exists. See the HONESTY NOTE beside the constant
 /// in `game-core/src/accounts/deletion.rs`; the number itself is deliberately
-/// not restated here, so this doc comment can never drift from it. (ADR-0212)
+/// not restated here, so this doc comment can never drift from it.
 #[wasm_bindgen]
 #[must_use]
 pub fn deletion_grace_ms_default() -> i64 {
     game_core::DELETION_GRACE_MS_DEFAULT
+}
+
+/// The per-side monster-count cap of one proposed trade, single-sourced from
+/// `game-core` so TS never hard-codes it (the server rejects above it).
+#[wasm_bindgen]
+#[must_use]
+pub fn max_trade_monsters_per_side() -> u32 {
+    game_core::MAX_TRADE_MONSTERS_PER_SIDE as u32
+}
+
+/// The NPC talk range (Manhattan tiles, inclusive), single-sourced from
+/// `game-core` so the client's interact prompt never hard-codes it.
+#[wasm_bindgen]
+#[must_use]
+pub fn talk_range() -> u32 {
+    game_core::TALK_RANGE as u32
+}
+
+/// Marshaling-only input DTO for [`evolution_eligibility`]: exactly the
+/// `MonsterInstance` fields game-core's evolution gates read (plus the EV spread
+/// the Nutrition gate totals). No rule lives here.
+#[derive(serde::Deserialize)]
+struct EligibilityMonster {
+    species_id: u32,
+    /// `Level` validates 1..=100 at deserialize (parse-don't-validate).
+    level: game_core::Level,
+    /// Indexed by `Affinity::index()` (declaration order Fire..Dark).
+    essence: [u32; 8],
+    trust_favorable_count: u32,
+    trust_unfavorable_count: u32,
+    quality_time_ticks_total: u32,
+    /// `[hp, attack, defense, speed, sp_attack, sp_defense]`, validated by `EVs::new`.
+    evs: [u16; 6],
+}
+
+/// Marshaling-only output DTO for [`evolution_eligibility`]; every field is a
+/// game-core result, index-aligned with the input `paths` where it is a list.
+#[derive(serde::Serialize, Debug, PartialEq)]
+struct EligibilityReport {
+    /// `trust_tier_of` / `quality_time_tier_of` / `nutrition_pct_of` — the three
+    /// derivations the server marshal layer stamps onto `MonsterPub`.
+    trust_tier: game_core::TrustTier,
+    quality_time_tier: u8,
+    nutrition_pct: u8,
+    /// `path_satisfied` per path.
+    satisfied: Vec<bool>,
+    /// `unmet_requirement` per path (`null` exactly when satisfied).
+    unmet: Vec<Option<String>>,
+    /// `eligible_evolution_paths`, mapped from indices to `edge_id`s, in index order.
+    eligible_edge_ids: Vec<u32>,
+}
+
+/// The pure core of [`evolution_eligibility`] (natively testable): build the
+/// `MonsterInstance` and delegate every answer to game-core. Fields no gate reads
+/// (`ivs`, `nature`, `xp`, `current_hp`, `derived_stats`, `party_slot`,
+/// `nickname`) get fixed placeholders.
+fn eligibility_report(
+    m: &EligibilityMonster,
+    paths: &[game_core::EvolutionPath],
+) -> Result<EligibilityReport, String> {
+    let [hp, attack, defense, speed, sp_attack, sp_defense] = m.evs;
+    let instance = game_core::MonsterInstance {
+        species_id: m.species_id,
+        nickname: None,
+        level: m.level,
+        xp: game_core::xp_for_level(m.level),
+        ivs: game_core::IVs::new(0, 0, 0, 0, 0, 0)?,
+        nature: game_core::Nature::new(game_core::NatureKind::Hardy),
+        evs: game_core::EVs::new(hp, attack, defense, speed, sp_attack, sp_defense)?,
+        essence: m.essence,
+        trust_favorable_count: m.trust_favorable_count,
+        trust_unfavorable_count: m.trust_unfavorable_count,
+        quality_time_ticks_total: m.quality_time_ticks_total,
+        current_hp: 0,
+        derived_stats: game_core::StatBlock {
+            hp: 0,
+            attack: 0,
+            defense: 0,
+            speed: 0,
+            sp_attack: 0,
+            sp_defense: 0,
+        },
+        party_slot: None,
+    };
+    Ok(EligibilityReport {
+        trust_tier: game_core::trust_tier_of(m.trust_favorable_count, m.trust_unfavorable_count),
+        quality_time_tier: game_core::quality_time_tier_of(m.quality_time_ticks_total),
+        nutrition_pct: game_core::nutrition_pct_of(&instance.evs),
+        satisfied: paths
+            .iter()
+            .map(|p| game_core::path_satisfied(&instance, p))
+            .collect(),
+        unmet: paths
+            .iter()
+            .map(|p| game_core::unmet_requirement(&instance, p))
+            .collect(),
+        eligible_edge_ids: game_core::eligible_evolution_paths(&instance, paths)
+            .into_iter()
+            .map(|i| paths[i].edge_id)
+            .collect(),
+    })
+}
+
+/// Evolution eligibility across the wasm boundary — game-core's REAL predicate
+/// (`path_satisfied` / `unmet_requirement` / `eligible_evolution_paths`) plus the
+/// three tier derivations, for the executable parity test against the client's TS
+/// port (`client/src/ui/evolutionModel.parity.test.ts`). `monster` is an
+/// [`EligibilityMonster`]-shaped object, `paths` an array of snake_case
+/// `EvolutionPath` objects; returns an [`EligibilityReport`]-shaped object
+/// (`unmet` entries are `null`, never `undefined`, when satisfied).
+///
+/// # Errors
+/// Returns a JS error if either input fails to deserialize (e.g. a level or a
+/// `min_level` outside 1..=100, an unknown affinity/trust tag) or the EVs exceed
+/// their caps.
+#[wasm_bindgen]
+pub fn evolution_eligibility(monster: JsValue, paths: JsValue) -> Result<JsValue, JsValue> {
+    use serde::Serialize as _;
+    let monster: EligibilityMonster = serde_wasm_bindgen::from_value(monster)?;
+    let paths: Vec<game_core::EvolutionPath> = serde_wasm_bindgen::from_value(paths)?;
+    let report = eligibility_report(&monster, &paths).map_err(zone_map_err)?;
+    let serializer = serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true);
+    Ok(report.serialize(&serializer)?)
 }
 
 /// The renderer's map source: the SAME `TileMap` the rule evaluates.
@@ -231,13 +351,13 @@ pub fn deletion_grace_ms_default() -> i64 {
 ///
 /// M11c: zone_id is now meaningful — zone 0 returns zone_0's map, zone 1 returns
 /// zone 1's map, and an unknown zone_id returns a JS Error (never silently
-/// falls back to zone_0). (ADR-0067)
+/// falls back to zone_0).
 ///
 /// # Errors
 /// Returns a JS error if `zone_id` is unknown or serialization fails.
 #[wasm_bindgen]
 pub fn zone_map(zone_id: u32) -> Result<JsValue, JsValue> {
-    // Cached zone registry: parse-once path (ADR-0089).
+    // Cached zone registry: parse-once path.
     let maps = cached_zone_maps().map_err(zone_map_err)?;
     let tile_map = game_core::map_for(zone_id, maps).map_err(zone_map_err)?;
     zone_map_ok(&tile_map)
@@ -254,7 +374,7 @@ pub fn start() {
 // Test-only seams for 13.5d caching assertions (not compiled in prod WASM).
 // ---------------------------------------------------------------------------
 
-/// Expose the cached zone-maps contents for test assertions (ADR-0089).
+/// Expose the cached zone-maps contents for test assertions.
 #[cfg(test)]
 pub(crate) fn cached_zone_maps_for_test() -> &'static Vec<game_core::ZoneMapDef> {
     (*ZONE_MAPS)
@@ -262,13 +382,13 @@ pub(crate) fn cached_zone_maps_for_test() -> &'static Vec<game_core::ZoneMapDef>
         .expect("zone maps must parse successfully in tests")
 }
 
-/// Return whether the ACTIVE_TILE_MAP thread_local is currently Some (ADR-0089).
+/// Return whether the ACTIVE_TILE_MAP thread_local is currently Some.
 #[cfg(test)]
 pub(crate) fn active_tile_map_is_cached_for_test() -> bool {
     ACTIVE_TILE_MAP.with(|cell| cell.borrow().is_some())
 }
 
-/// Pre-populate the ACTIVE_TILE_MAP cache with zone 0's TileMap for test setup (ADR-0089).
+/// Pre-populate the ACTIVE_TILE_MAP cache with zone 0's TileMap for test setup.
 #[cfg(test)]
 pub(crate) fn seed_active_tile_map_for_test() {
     ACTIVE_TILE_MAP.with(|cell| {
@@ -293,15 +413,7 @@ mod tests {
         );
     }
 
-    // M8.5f / ADR-0052 Criterion C — PARTY SSOT parity
-    //
-    // RED-by-non-compilation: `super::party_size()` and `super::party_slot_none()`
-    // do not exist yet; `game_core::PARTY_SIZE` and `game_core::PARTY_SLOT_NONE`
-    // are not exported yet. The implementer adds:
-    //   - `pub const PARTY_SIZE: u8 = 6;` in game-core/src/world.rs + pub use
-    //   - `pub const PARTY_SLOT_NONE: u8 = 255;` in game-core/src/world.rs + pub use
-    //   - `pub fn party_size() -> u32 { game_core::PARTY_SIZE as u32 }` in lib.rs
-    //   - `pub fn party_slot_none() -> u32 { game_core::PARTY_SLOT_NONE as u32 }` in lib.rs
+    // PARTY SSOT parity
     //
     // Wrong impls killed:
     //   party_size() returning a literal `6u32` not sourced from game_core::PARTY_SIZE
@@ -320,17 +432,11 @@ mod tests {
         assert_eq!(super::party_slot_none(), game_core::PARTY_SLOT_NONE as u32);
     }
 
-    // rb-8 / ADR-0212 — DELETION GRACE SSOT parity, on the COMPILED path.
-    //
-    // The eval `evals/deletion-grace-wasm-ssot.eval.mjs` pins the accessor's
-    // SHAPE by text and its value through a real wasm-pack build; this is the
-    // in-process cross-check that neither of those text oracles can drift from.
+    // DELETION GRACE SSOT parity, on the COMPILED path.
     //
     // Wrong impls killed: delegating to a different game-core constant, and any
     // future drift between the two. NOT killed here: an identically-valued
-    // re-typed literal (`604_800_000i64` verbatim) — that is [G1/delegates]'s
-    // exact-shape pin, which is why that clause is load-bearing and must never
-    // be relaxed to a substring check.
+    // re-typed literal (`604_800_000i64` verbatim).
     #[test]
     fn deletion_grace_matches_game_core_const() {
         assert_eq!(
@@ -346,18 +452,82 @@ mod tests {
         assert!(super::deletion_grace_ms_default() > 0);
     }
 
+    // TRADE CAP SSOT parity. The value-identity proof against the retired client
+    // literal (64) lives on the TS side (tradeProposeModel.test.ts EARS-3a), which
+    // reads this export from the BUILT wasm binary.
+    #[test]
+    fn max_trade_monsters_per_side_matches_game_core_const() {
+        assert_eq!(
+            super::max_trade_monsters_per_side() as usize,
+            game_core::MAX_TRADE_MONSTERS_PER_SIDE
+        );
+    }
+
+    // TALK RANGE SSOT parity (value-identity proof vs the retired client literal 2:
+    // interactModel.test.ts A1 reads this export from the built wasm binary).
+    #[test]
+    fn talk_range_matches_game_core_const() {
+        assert_eq!(i64::from(super::talk_range()), game_core::TALK_RANGE);
+    }
+
+    // EVOLUTION ELIGIBILITY marshaling core. The cross-language parity (TS port
+    // == this export) is the fast-check suite evolutionModel.parity.test.ts; these
+    // pin that the core DELEGATES to game-core over the real authored graph.
+    fn sample_monster(level: u8, evs: [u16; 6]) -> super::EligibilityMonster {
+        super::EligibilityMonster {
+            species_id: 1,
+            level: game_core::Level::new(level).expect("valid level"),
+            essence: [30, 0, 5, 0, 0, 0, 0, 12],
+            trust_favorable_count: 40,
+            trust_unfavorable_count: 3,
+            quality_time_ticks_total: 160,
+            evs,
+        }
+    }
+
+    #[test]
+    fn eligibility_report_delegates_to_game_core_over_the_authored_graph() {
+        let paths = game_core::load_evolution_paths().expect("evolution graph parses");
+        let mut eligible_seen = 0usize;
+        let mut ineligible_seen = 0usize;
+        for level in [1u8, 16, 36, 100] {
+            let m = sample_monster(level, [100, 100, 50, 0, 0, 0]);
+            let report = super::eligibility_report(&m, &paths).expect("valid monster");
+            let evs = game_core::EVs::new(100, 100, 50, 0, 0, 0).expect("valid EVs");
+            assert_eq!(report.trust_tier, game_core::trust_tier_of(40, 3));
+            assert_eq!(
+                report.quality_time_tier,
+                game_core::quality_time_tier_of(160)
+            );
+            assert_eq!(report.nutrition_pct, game_core::nutrition_pct_of(&evs));
+            assert_eq!(report.satisfied.len(), paths.len());
+            assert_eq!(report.unmet.len(), paths.len());
+            for (i, sat) in report.satisfied.iter().enumerate() {
+                assert_eq!(*sat, report.unmet[i].is_none(), "path {i}");
+            }
+            let expected: Vec<u32> = paths
+                .iter()
+                .enumerate()
+                .filter(|(i, p)| p.from_species == 1 && report.satisfied[*i])
+                .map(|(_, p)| p.edge_id)
+                .collect();
+            assert_eq!(report.eligible_edge_ids, expected, "level {level}");
+            eligible_seen += report.eligible_edge_ids.len();
+            ineligible_seen += report.unmet.iter().filter(|u| u.is_some()).count();
+        }
+        // Non-vacuity: the sweep must hit both verdicts on the real graph.
+        assert!(eligible_seen > 0, "no path was ever eligible");
+        assert!(ineligible_seen > 0, "no path was ever ineligible");
+    }
+
+    #[test]
+    fn eligibility_report_rejects_evs_over_the_total_cap() {
+        let m = sample_monster(10, [252, 252, 252, 0, 0, 0]);
+        assert!(super::eligibility_report(&m, &[]).is_err());
+    }
+
     // -------------------------------------------------------------------------
-    // M11c C6 — zone_map(zone_id) dispatches on zone_id (not always zone_0)
-    //
-    // RED REASON (zone_map_0_zone_id_matches): `zone_map()` currently calls
-    // `game_core::zone_0()` unconditionally (ignores `_zone_id`). After the fix
-    // it must call `game_core::zone_0()` for zone_id=0 specifically (or dispatch
-    // through a content registry). The test encodes the dispatch contract:
-    // zone_map(0) must produce a map whose zone_id field == 0.
-    //
-    // RED REASON (zone_map_999_returns_error): the current impl always returns
-    // `Ok(...)` regardless of the zone_id argument. After the fix, an unknown
-    // zone_id (999 has no ZoneMapDef) must return `Err(JsValue)`.
+    // zone_map(zone_id) dispatches on zone_id (not always zone_0)
     //
     // Testing strategy: rather than deserializing JsValue (TileMap has no
     // Deserialize), we test the underlying game_core dispatch layer directly —
@@ -379,15 +549,11 @@ mod tests {
 
     #[test]
     fn zone_map_0_zone_id_matches_zone_0() {
-        // Criterion C6a: zone_map(0) SHALL return a map whose zone_id is 0.
+        // zone_map(0) SHALL return a map whose zone_id is 0.
         //
         // We verify the dispatch contract at the game_core level: the map that
         // zone_map(0) must produce is game_core::zone_0(), which has zone_id == 0.
         // The wasm wrapper serializes it; this test confirms the source has zone_id 0.
-        //
-        // RED: the current impl passes `_zone_id` (ignored), so zone_map(1) would
-        // silently return zone_0(). The companion test (zone_map_999_returns_error)
-        // catches the always-Ok path; this test binds the zone_id == 0 contract.
         //
         // Wrong impl killed: `zone_map(_zone_id)` returning zone_0() for zone_id=1
         // (tested by zone_map_999_returns_error which fails on the always-Ok path).
@@ -408,12 +574,8 @@ mod tests {
 
     #[test]
     fn zone_map_999_returns_error() {
-        // Criterion C6b: zone_map(999) (unknown zone) SHALL return a JS Error,
+        // zone_map(999) (unknown zone) SHALL return a JS Error,
         // not a valid map.
-        //
-        // RED: the current impl `zone_map(_zone_id)` ignores the argument and
-        // always calls `game_core::zone_0()`, returning Ok unconditionally.
-        // After fix, zone_id 999 has no ZoneMapDef → the dispatch returns Err.
         //
         // Wrong impl killed: any impl that returns Ok for unknown zone ids — this
         // assert!(result.is_err()) will fail loudly.
@@ -425,45 +587,28 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // M13.5d — client-wasm LazyLock content cache
+    // client-wasm LazyLock content cache
     //
-    // CRITERION 13.5d-2: The client-wasm caches zone maps in a static LazyLock
+    // The client-wasm caches zone maps in a static LazyLock
     // and caches the active-zone TileMap in a thread_local RefCell<Option<TileMap>>.
-    //
-    // RED REASON (wasm_cached_zone_maps_matches_load): calls
-    // `super::cached_zone_maps_for_test()` which does NOT yet exist.
-    // The implementer must add a #[cfg(test)] accessor that exposes the OnceLock
-    // contents so this test can compare against game_core::load_zone_maps().
-    //
-    // RED REASON (wasm_set_active_zone_invalidates_tile_map_cache): calls
-    // `super::active_tile_map_is_cached_for_test()` which does NOT yet exist.
-    // The implementer must add a #[cfg(test)] accessor that returns whether the
-    // ACTIVE_TILE_MAP thread_local currently holds Some(...) or None, and must
-    // also expose `seed_active_tile_map_for_test` to pre-populate the cache.
     //
     // Testing strategy: expose minimal #[cfg(test)] seams rather than making
     // the statics pub. This follows the existing pattern in this file where
     // game_core sub-functions are tested through thin shims.
     // -------------------------------------------------------------------------
 
-    /// CRITERION 13.5d-2 (client-wasm zone map cache transparency):
+    /// (client-wasm zone map cache transparency):
     /// The client-wasm cached zone maps match game_core::load_zone_maps().
     ///
-    /// Calls `super::cached_zone_maps_for_test()` — a #[cfg(test)] helper the
-    /// implementer must expose from lib.rs to give tests access to the LazyLock
-    /// contents without making the static pub.
+    /// Calls `super::cached_zone_maps_for_test()` — a #[cfg(test)] helper
+    /// to give tests access to the LazyLock contents without making the static
+    /// pub.
     ///
     /// Wrong impl killed: a client-wasm LazyLock populated from a stale/wrong
     /// RON snapshot, or one that returns empty even after initialization.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn wasm_cached_zone_maps_matches_load() {
-        // RED: super::cached_zone_maps_for_test() does not exist yet.
-        // The implementer adds:
-        //   #[cfg(test)]
-        //   pub(crate) fn cached_zone_maps_for_test() -> &'static Vec<game_core::ZoneMapDef> {
-        //       (*ZONE_MAPS).as_ref().expect("zone maps must parse successfully in tests")
-        //   }
         let cached = super::cached_zone_maps_for_test();
         let loaded = game_core::load_zone_maps().expect("game_core::load_zone_maps must succeed");
 
@@ -492,13 +637,13 @@ mod tests {
         }
     }
 
-    /// CRITERION 13.5d-2 (set_active_zone invalidates TileMap cache):
+    /// (set_active_zone invalidates TileMap cache):
     /// After calling set_active_zone(0), the ACTIVE_TILE_MAP thread_local
     /// must be None (the old cached TileMap is discarded so the next access
     /// loads the correct zone's map rather than a stale one from a prior zone).
     ///
     /// Calls `super::active_tile_map_is_cached_for_test()` — a #[cfg(test)]
-    /// helper the implementer must expose from lib.rs.
+    /// helper.
     ///
     /// Wrong impl killed: an impl of set_active_zone that updates ACTIVE_ZONE_ID
     /// but neglects to clear the ACTIVE_TILE_MAP thread_local, causing movement
@@ -506,14 +651,6 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn wasm_set_active_zone_invalidates_tile_map_cache() {
-        // RED: super::active_tile_map_is_cached_for_test() does not exist yet.
-        // The implementer adds:
-        //   #[cfg(test)]
-        //   pub(crate) fn active_tile_map_is_cached_for_test() -> bool {
-        //       ACTIVE_TILE_MAP.with(|cell| cell.borrow().is_some())
-        //   }
-        // and updates set_active_zone to clear the thread_local on zone change.
-
         // Pre-populate the cache so the invalidation has something to clear.
         // Without this, the test would pass even if set_active_zone never touched
         // the thread_local (the cache might already be None from test init).

@@ -1,5 +1,5 @@
 // ui/privacyBanner.test.ts — the deletion countdown's player-facing LABEL, the pure half
-// (rb-51; ADR-0231 Amendment A1).
+// (ADR-0231 Amendment A1).
 //
 // ★ SOURCE OF TRUTH — the PROMOTED RESIDUAL, quoted verbatim. Section `rb-51` of
 // `specs/monster-realm-v2/M-residual-backlog.spec.md` (source slice m22-s8, residual
@@ -8,18 +8,9 @@
 //    countdown to the reaper fire in a rendered surface (DOM shell + main.ts frame tick + the
 //    deletion_grace_ms_default() wasm read)"
 //
-// ATTRIBUTION CORRECTION (rb-51 review): this header previously cited "spec §7.4 PRV1-1".
-// M22 §7.4's PRV1-1 is the SERVER criterion — `delete_account` transitions the account status —
-// and is gated in `server-module`. The UI criterion is the residual above. Pointing a reader at
-// §7.4 for this file sends them to a criterion it does not and structurally cannot test.
-//
 // "Ticking" is the load-bearing word: the label must change at least once per second at EVERY
 // magnitude, which is why the grammar below always renders down to seconds instead of stopping
 // at the two largest units.
-//
-// RED REASON AT AUTHORING TIME: `client/src/ui/privacyBanner.ts` DOES NOT EXIST. The import
-// below fails to resolve, so every test in this file reds on a MISSING IMPLEMENTATION — not
-// on a typo here.
 //
 // THE CONTRACT THE IMPLEMENTER BUILDS (do not invent variants):
 //
@@ -45,10 +36,6 @@
 //   the specification; a future copy change is corrected HERE, from the plan, never bent to
 //   match an implementation.
 //
-// ★ NO REAL GRACE VALUE ANYWHERE IN THIS FILE — and no pure-numeric chain that FOLDS to one.
-//   `evals/deletion-grace-wasm-ssot.eval.mjs` G5 scans all of `client/` RAW (comments and
-//   test files included). Every fixture below is a synthetic remaining-time value.
-//
 // NO regex literal and no `new RegExp(...)` anywhere (Semgrep bans the latter repo-wide; the
 // former blinds the repo's own comment strippers). String scanning is split/slice/indexOf only.
 
@@ -56,12 +43,10 @@ import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 // rb-52 (ADR-0231 A2-D7): the M22 section 9 pseudonymization sentence is pinned against a SECOND
 // SOURCE, never a second hand-typed literal — one bad transcription copied into both the pin and
-// the implementation is exactly what a hand-typed pin cannot see. Precedent for a `.ts` spec
-// importing a `.mjs` eval: `client/src/indexShell.test.ts` imports `stripCssComments` from
-// `evals/a11y-static-shell.eval.mjs`. VERIFIED BEFORE ADOPTING: `evals/account-e2e.eval.mjs` has
-// NO top-level side effects (its live phase runs only inside the exported `run()`), and neither do
-// the three modules it imports (`scripts/playtest-report.mjs` is main-guarded via `pathToFileURL`;
-// `deletion-grace-wasm-ssot.eval.mjs` and `e2e-desync-teeth.eval.mjs` end in exported functions).
+// the implementation is exactly what a hand-typed pin cannot see.
+// VERIFIED BEFORE ADOPTING: `evals/account-e2e.eval.mjs` has
+// NO top-level side effects (its live phase runs only inside the exported `run()`).
+// @ts-expect-error -- evals/*.mjs ship no type declarations; the import is a plain string constant.
 import { PIN_PSEUDONYMIZATION } from '../../../evals/account-e2e.eval.mjs';
 import {
   buildPrivacyViewModel,
@@ -192,7 +177,7 @@ function parseDurationSeconds(text: string): bigint | undefined {
 }
 
 // ===========================================================================
-// PRV1-1 — the phases that render nothing at all.
+// The phases that render nothing at all.
 // ===========================================================================
 
 describe('privacyBannerLabel (PRV1-1): the silent phases', () => {
@@ -219,7 +204,7 @@ describe('privacyBannerLabel (PRV1-1): the silent phases', () => {
 });
 
 // ===========================================================================
-// PRV1-1 — the exact strings.
+// The exact strings.
 // ===========================================================================
 
 describe('privacyBannerLabel (PRV1-1): the exact rendered strings', () => {
@@ -302,8 +287,7 @@ describe('privacyBannerLabel (PRV1-1): the exact rendered strings', () => {
     // could stare past for an hour. Here the failure message names the offending code point.
     //
     // indexOf-based membership only: NO `new RegExp` (Semgrep-banned repo-wide) and no regex
-    // literal at all (a `/[0-9]/`-shaped literal containing `/` or `*` is the exact construct
-    // main.wiring.test.ts's W-14RC-BRACE-REGEX-STAR-CEILING bans across client/src).
+    // literal at all.
     const GRACE_ALPHABET = '0123456789dhms ';
     for (const remainingMs of [
       0n,
@@ -339,14 +323,6 @@ describe('privacyBannerLabel (PRV1-1): the exact rendered strings', () => {
   });
 
   it('★ RB51-LABEL-ANTI-VACUITY BITES: the three rendered forms are three DISTINCT, NON-EMPTY strings PRODUCED BY privacyBannerLabel', () => {
-    // ★ REWRITTEN IN THE rb-51 REVIEW, AND WHY — the previous version of this test was itself
-    // vacuous, which is the worst thing an anti-vacuity tooth can be. It built
-    // `new Set([DARK_LABEL, DUE_LABEL, GRACE_PREFIX + '1s'])` out of three string LITERALS
-    // declared in THIS file and never called `privacyBannerLabel` at all. MEASURED: an
-    // implementation whose entire body is `return '';` passed it, because the Set it inspected
-    // was made of the test file's own constants. It asserted that three constants this file
-    // spells differently are spelled differently.
-    //
     // WRONG IMPL KILLED (1) ★ THE MEASURED SURVIVOR: `privacyBannerLabel` stubbed to
     // `return '';`. Every value below now comes OUT of the function, and every one is asserted
     // non-empty, so the stub reds three times over.
@@ -403,14 +379,14 @@ describe('privacyBannerLabel (PRV1-1): the exact rendered strings', () => {
 });
 
 // ===========================================================================
-// PRV1-1 — totality and monotonicity (property tier).
+// Totality and monotonicity (property tier).
 // ===========================================================================
 
 describe('privacyBannerLabel (PRV1-1): totality, round-trip and monotonicity', () => {
   /** Well-typed remaining times, plus the hostile values a wiring slip can deliver. The bound
    *  is 999_999_999n on purpose (≈ 11.5 days — deep into the four-group branch) and must NOT
-   *  be the shipped grace window: `evals/deletion-grace-wasm-ssot.eval.mjs` G5 reads this file
-   *  RAW, fast-check bounds and comments included. */
+   *  be the shipped grace window.
+   * */
   const remainingArb = fc.oneof(
     fc.bigInt({ min: -999_999_999n, max: 999_999_999n }),
     fc.constantFrom(
@@ -515,7 +491,7 @@ describe('privacyBannerLabel (PRV1-1): totality, round-trip and monotonicity', (
 });
 
 // ###########################################################################
-// rb-52 (PRV1-3 / PRV1-4) — the privacy SURFACE's copy layer.
+// The privacy SURFACE's copy layer.
 // ###########################################################################
 //
 // ★ SOURCE OF TRUTH — the PROMOTED RESIDUAL, quoted verbatim. Section `rb-52` of
@@ -528,42 +504,7 @@ describe('privacyBannerLabel (PRV1-1): totality, round-trip and monotonicity', (
 // Design record: `docs/adr/0231-client-privacy-cores-request-wide-chunk-assembly.md`,
 // Amendment A2 (A2-D6 the ROW route, A2-D7 the pinned disclosure, A2-D8 non-delivery).
 //
-// RED REASON AT AUTHORING TIME: `client/src/ui/privacyBanner.ts` exports ONLY
-// `privacyBannerLabel`. `buildPrivacyViewModel`, `PRIVACY_PSEUDONYMIZATION_DISCLOSURE` and
-// `PRIVACY_TERMINAL_NOTICE` DO NOT EXIST, so the import at the top of this file fails to
-// resolve those names and every test below reds on a MISSING IMPLEMENTATION — not on a typo
-// here. (The rb-51 header's own "privacyBanner.ts DOES NOT EXIST" line is a DATED record of
-// that slice's fork and is deliberately left as written.)
-//
-// THE CONTRACT THE IMPLEMENTER BUILDS (do not invent variants):
-//
-//   export const PRIVACY_PSEUDONYMIZATION_DISCLOSURE: string;  // M22 section 9 residual 1
-//   export const PRIVACY_TERMINAL_NOTICE: string;              // PRV1-4's distinct copy
-//   export interface PrivacyViewModel {
-//     readonly statusLabel: string;
-//     readonly deleteLabel: string;  readonly cancelLabel: string;  readonly exportLabel: string;
-//     readonly deleteEnabled: boolean;
-//     readonly cancelEnabled: boolean;
-//     readonly exportEnabled: boolean;
-//     readonly confirmPrompt: string | undefined;
-//     readonly noticeKind:
-//       'none' | 'disconnected' | 'permanently-deleted' | 'request-rejected' | 'terminal-row';
-//     readonly noticeLabel: string | undefined;
-//     // ⚠ AMENDED BY rb-53 (ADR-0231 A3-D6) — THREE MORE FIELDS. The block above is the rb-52
-//     // contract as it was authored and is left as written; the CURRENT contract is the ten
-//     // fields above PLUS these three, and `buildPrivacyViewModel` takes an OPTIONAL second
-//     // argument. The rb-53 section at the foot of this file pins all of it, including the
-//     // whole-object key roster (thirteen keys) that stops a fabricated fourteenth from hiding.
-//     readonly exportStatusLabel: string | undefined;
-//     readonly downloadLabel: string;
-//     readonly downloadEnabled: boolean;
-//   }
-//   export function buildPrivacyViewModel(
-//     state: PrivacyModelState,
-//     exportAssembly?: ExportAssembly,   // rb-53 (A3-D6): OPTIONAL — see the rb-53 header below
-//   ): PrivacyViewModel;
-//
-// ★ ON THE BACKTICKS AROUND Identity — DECIDED AND STATED (the brief asks for this explicitly).
+// ★ ON THE BACKTICKS AROUND Identity — DECIDED AND STATED.
 //   The shipped UI string KEEPS them: M22 section 9 requires the sentence "to be used verbatim
 //   in the ADR, commit messages and any UI copy", and ADR-0231 A2-D7 says the constant is
 //   "asserted equal to PIN_PSEUDONYMIZATION". So the assertion below is a plain
@@ -585,8 +526,8 @@ describe('privacyBannerLabel (PRV1-1): totality, round-trip and monotonicity', (
 // rb-52 fixtures.
 // ---------------------------------------------------------------------------
 
-/** A SYNTHETIC grace window. Nothing in this file may spell the real one (G5 of
- *  `evals/deletion-grace-wasm-ssot.eval.mjs` reads `client/**` RAW, tests included). */
+/** A SYNTHETIC grace window. Nothing in this file may spell the real one.
+ * */
 const RB52_GRACE_MS = 90_000n;
 /** Two DIFFERENT injection points inside that window, so the countdown sentence has two
  *  different remaining times to render (the tooth that kills an authored duration). */
@@ -707,7 +648,7 @@ function rb52VmStrings(state: PrivacyModelState): string[] {
 }
 
 // ===========================================================================
-// PRV1-3/PRV1-4 — the M22 section 9 disclosure, pinned against a SECOND SOURCE.
+// The M22 section 9 disclosure, pinned against a SECOND SOURCE.
 // ===========================================================================
 
 describe('rb-52 privacy copy: the section 9 pseudonymization disclosure', () => {
@@ -787,7 +728,7 @@ describe('rb-52 privacy copy: the section 9 pseudonymization disclosure', () => 
 });
 
 // ===========================================================================
-// PRV1-4 — the distinct terminal notice, from BOTH routes.
+// The distinct terminal notice, from BOTH routes.
 // ===========================================================================
 
 describe('rb-52 privacy view model: PRV1-4 the distinct terminal notice', () => {
@@ -957,16 +898,16 @@ describe('rb-52 privacy view model: PRV1-4 the distinct terminal notice', () => 
 });
 
 // ===========================================================================
-// PRV1-1/PRV1-3 — the status line is FORMATTED, the controls mirror the permissions.
+// The status line is FORMATTED, the controls mirror the permissions.
 // ===========================================================================
 
 describe('rb-52 privacy view model: status line, labels and enabled state', () => {
   it('★ RB52C-STATUS-FORMATTED BITES: two different injected remaining times render two DIFFERENT status lines, both from privacyBannerLabel', () => {
     // WRONG IMPL KILLED (1) ★ THE ONE THE PLAN NAMES: an AUTHORED duration in the surface's
-    // copy — "Your account will be deleted in 7 days". It is invisible to
-    // `evals/deletion-grace-wasm-ssot.eval.mjs` G5, which catches only NUMERIC duplicates, and
-    // it desyncs silently the moment an operator retunes the real constant. Two different
-    // injected windows producing two different sentences is the positive tooth that closes it.
+    // copy — "Your account will be deleted in 7 days". No numeric-duplicate guard sees a PROSE
+    // duration, and it desyncs silently the moment an operator retunes the real constant. Two
+    // different injected windows producing two different sentences is the positive tooth that
+    // closes it.
     // WRONG IMPL KILLED (2): a SECOND copy source for the grace phase — a sentence composed
     // inside `buildPrivacyViewModel` instead of delegating to `privacyBannerLabel`. The two
     // would then drift, and the HUD banner and the modal would disagree about the same
@@ -1114,7 +1055,7 @@ describe('rb-52 privacy view model: status line, labels and enabled state', () =
 });
 
 // ===========================================================================
-// PRV1-1 — the double-submit guard (pure model tier).
+// The double-submit guard (pure model tier).
 // ===========================================================================
 
 describe('rb-52 privacy model: the double-submit guard survives an account refresh', () => {
@@ -1165,7 +1106,7 @@ describe('rb-52 privacy model: the double-submit guard survives an account refre
 });
 
 // ###########################################################################
-// rb-53 (PRV1-11/12/13) — the EXPORT half of the privacy surface's copy layer.
+// The EXPORT half of the privacy surface's copy layer.
 // ###########################################################################
 //
 // ★ SOURCE OF TRUTH — gate E1, verbatim:
@@ -1179,21 +1120,6 @@ describe('rb-52 privacy model: the double-submit guard survives an account refre
 // arrival), A3-D6 (the export state is an OPTIONAL second argument, NOT a privacyModel event),
 // A3-D11 (the filename lives HERE, in the surface's copy layer, not in the frozen assembly core).
 //
-// THE CONTRACT THE IMPLEMENTER BUILDS (do not invent variants):
-//
-//   export function exportBundleFilename(
-//     requestId: bigint | undefined,
-//     capturedAtMs: number,
-//   ): string;
-//   export function buildPrivacyViewModel(
-//     state: PrivacyModelState,
-//     exportAssembly?: ExportAssembly,
-//   ): PrivacyViewModel;
-//   // and PrivacyViewModel gains EXACTLY three fields:
-//   //   readonly exportStatusLabel: string | undefined;   // undefined ⇒ the <p> is hidden
-//   //   readonly downloadLabel: string;                   // ALWAYS present (A3-D4)
-//   //   readonly downloadEnabled: boolean;                // true IFF status === 'complete'
-//
 // ★ WHY THE COPY IS PINNED BY PROPERTY AND NOT BY EXACT STRING, unlike the rb-51 duration
 //   table above. The rb-51 table IS the specification — the grammar was decided in the plan.
 //   The four export sentences are not: A3-D5 fixes their PROPERTIES (one per status, distinct,
@@ -1203,16 +1129,10 @@ describe('rb-52 privacy model: the double-submit guard survives an account refre
 //   NON-EMPTINESS, the digit ban and the artifact ban are asserted; the words are not.
 //
 // ★ WHY THE FIXTURES ARE LITERALS AND NOT `assembleExportBundle(...)` OUTPUT. `exportAssembly.ts`
-//   is a frozen, separately-gated pure core (m22-s8). Deriving the fixtures from it would mean a
+//   is a frozen, separately-gated pure core. Deriving the fixtures from it would mean a
 //   regression there silently changed what THIS file tests; and the four statuses are exactly
 //   the seam the VM must handle, whether or not the core can currently reach them. Same
 //   reasoning as `countdownOf` at :93-95.
-//
-// RED REASON AT AUTHORING TIME: `client/src/ui/privacyBanner.ts` exports no
-// `exportBundleFilename`, and `buildPrivacyViewModel` takes ONE parameter and returns ten
-// fields. So the filename cases fail with "exportBundleFilename is not a function" and every
-// view-model case reads `undefined` where a label or a boolean is required — a MISSING
-// IMPLEMENTATION, not a typo here.
 //
 // NO regex literal, no `new RegExp`: scanning is indexOf/split only. NO numeric duplicate of the
 // grace window — every value here is a small synthetic one.
@@ -1245,7 +1165,7 @@ const RB53_ARTIFACT = `{"request_id":"4242","total_chunks":3,"chunks":[{"k":"${R
 
 /** The four `ExportAssemblyStatus` values, each as a WHOLE `ExportAssembly` in the shape
  *  `exportAssembly.ts` really returns for it — including its documented `totalChunks:
- *  undefined` on `none` and on `inconsistent` (exportAssembly.ts:59-62), which is exactly what
+ *  undefined` on `none` and on `inconsistent`, which is exactly what
  *  makes "print no total on inconsistent" a real constraint rather than a style note. */
 const RB53_ASSEMBLIES: Readonly<Record<ExportAssemblyStatus, ExportAssembly>> = {
   none: {
@@ -1434,7 +1354,7 @@ describe('rb-53 privacy view model: exportStatusLabel says ONE distinct thing pe
     // WRONG IMPL KILLED (2): a default assembly fabricated inside the VM when the argument is
     //   absent (`exportAssembly ?? NONE`) — that would make the surface claim "no export is
     //   ready" before a single batch has been applied, i.e. state a fact the client does not
-    //   have yet. Absent means DARK (ADR-0154), not "none".
+    //   have yet. Absent means DARK, not "none".
     const vm = buildPrivacyViewModel(RB53_STATE);
     expect(vm.exportStatusLabel).toBeUndefined();
     expect(vm.exportStatusLabel).not.toBe('');
@@ -1448,7 +1368,7 @@ describe('rb-53 privacy view model: exportStatusLabel says ONE distinct thing pe
 
   it('★★ RB53C-INCONSISTENT-PRINTS-NO-NUMBER BITES: the `inconsistent` sentence contains NO digit at all', () => {
     // ★ A3-D5, and it is a real leak rather than a style rule: the core deliberately returns
-    // `totalChunks: undefined` on `inconsistent` (exportAssembly.ts:59-62) because the delivered
+    // `totalChunks: undefined` on `inconsistent` because the delivered
     // values DISAGREE — there is no defensible number. A sentence that prints one is either
     // reporting a FABRICATED total or leaking `receivedChunks` as if it were the total ("4 of 4
     // chunks received" for an export that is broken).
@@ -1618,7 +1538,7 @@ describe('rb-53 privacy copy: exportBundleFilename is filesystem-safe and never 
   it('★★ RB53C-FILENAME-SAFE BITES: a normal requestId yields a safe name carrying the request digits', () => {
     // WRONG IMPL KILLED: interpolating a raw ISO timestamp (colons), or building the name from
     // `String(requestId)` with no character-class strip at all. `rowConvert` is a documented
-    // pure pass-through with NO validation (rowConvert.ts:543-566), so a drifted binding can
+    // pure pass-through with NO validation, so a drifted binding can
     // deliver a `requestId` whose `String()` carries a separator — which is why A3-D11 routes
     // this through `bugBundleFilename`'s strip even though the value is nominally a bigint.
     const name = exportBundleFilename(RB53_REQUEST_ID, 1700);

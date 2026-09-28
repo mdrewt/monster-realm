@@ -1,4 +1,4 @@
-// pvpModel.test.ts — unit tests for buildPvpChallengeViewModel (m16b, ADR-0110).
+// pvpModel.test.ts — unit tests for buildPvpChallengeViewModel.
 import { describe, expect, it } from 'vitest';
 import type { StoreBattleChallenge, StorePlayer } from '../net/store';
 import { buildPvpChallengeViewModel } from './pvpModel';

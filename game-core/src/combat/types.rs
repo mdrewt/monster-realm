@@ -1,6 +1,6 @@
 //! Combat value types — the cross-boundary contract for a single battle.
 //!
-//! All types are pure data (no I/O, no clock, no RNG — ADR-0003).
+//! All types are pure data (no I/O, no clock, no RNG).
 //! Serde derives keep server↔client serialisation in sync.
 
 use serde::{Deserialize, Serialize};
@@ -17,10 +17,10 @@ use super::weather::WeatherEffect;
 // ===========================================================================
 
 /// A per-monster status condition. Exhaustive `match` required at every
-/// resolution site — a new variant forces a compile error (ADR-0010 OCP gate).
+/// resolution site — a new variant forces a compile error.
 ///
 /// `SpacetimeType` is cfg-gated: the type is wired into `BattleMonster` which
-/// is nested inside `BattleState` stored in the `battle` table (m14b, ADR-0093).
+/// is nested inside `BattleState` stored in the `battle` table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub enum StatusEffect {
@@ -46,9 +46,9 @@ pub struct BattleMonster {
     pub max_hp: u16,
     pub stats: StatBlock,
     pub known_skill_ids: Vec<u32>,
-    /// Per-monster status condition persisted across turns (m14b, ADR-0093).
+    /// Per-monster status condition persisted across turns.
     /// `#[serde(default)]` ensures additive schema compat: old `battle.state`
-    /// rows deserialize `status = None` (ADR-0006).
+    /// rows deserialize `status = None`.
     #[serde(default)]
     pub status: Option<StatusEffect>,
 }
@@ -61,7 +61,7 @@ impl BattleMonster {
     }
 }
 
-/// Why a checked swap was rejected (game-core-internal; never stored/sent — no serde/SpacetimeType). See ADR-0053.
+/// Why a checked swap was rejected (game-core-internal; never stored/sent — no serde/SpacetimeType).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwapError {
     /// `idx` is past the end of `team` (also covers an empty team).
@@ -77,16 +77,15 @@ pub struct BattleSide {
     /// Index into `team` for the currently-active monster (u32 for SpacetimeType).
     /// Established by [`BattleSide::with_lead`] at construction and mutated ONLY
     /// by [`BattleSide::set_active`] thereafter — those two are the whole
-    /// sanctioned surface (ADR-0053, ADR-0156 D1).
-    /// (Field stays pub this slice; full privatization parked — ADR-0053.)
+    /// sanctioned surface.
     pub active: u32,
     pub team: Vec<BattleMonster>,
 }
 
 impl BattleSide {
     /// Build a side from `team`, seating the FIRST non-fainted member as the
-    /// active lead (ADR-0156 D1). This is the second sanctioned way to establish
-    /// `active`, alongside [`BattleSide::set_active`] (ADR-0053): `set_active` is
+    /// active lead. This is the second sanctioned way to establish
+    /// `active`, alongside [`BattleSide::set_active`]: `set_active` is
     /// the mid-battle swap mutator, `with_lead` is the construction-time selector.
     ///
     /// Returns `None` when `team` is empty or every member has fainted. That
@@ -131,7 +130,7 @@ impl BattleSide {
             .map(|(i, _)| i as u32)
     }
 
-    /// Set the active slot to `idx`, rejecting illegal swaps (reject-not-clamp, ADR-0053).
+    /// Set the active slot to `idx`, rejecting illegal swaps (reject-not-clamp).
     /// The ONLY sanctioned mutator of `active`: makes an out-of-range or fainted active
     /// unreachable via the resolver. Bounds is checked BEFORE the fainted index, so an
     /// out-of-range index can never panic-index `team[idx]`.
@@ -168,8 +167,8 @@ pub struct BattleState {
     pub side_b: BattleSide,
     pub outcome: BattleOutcome,
     pub turn_number: u16,
-    /// Active field weather — ticks down each turn and clears on expiry (M14d,
-    /// ADR-0095). `#[serde(default)]` ensures additive schema compat (ADR-0006):
+    /// Active field weather — ticks down each turn and clears on expiry.
+    /// `#[serde(default)]` ensures additive schema compat:
     /// old `battle.state` rows deserialise `weather = None`.
     #[serde(default)]
     pub weather: Option<WeatherEffect>,
@@ -207,12 +206,9 @@ pub enum Effectiveness {
 
 /// Atomic event emitted by the battle resolver — consumed by UI and logging.
 ///
-/// Marked `#[non_exhaustive]` so M14 can add new variants without breaking
-/// exhaustive matches elsewhere.
-///
 /// DO NOT add `SpacetimeType` here — `BattleEvent` is transient (resolver return
 /// value only, never stored in a table). Adding it would make new variants a
-/// breaking wire-format change for old clients. See ADR-0042.
+/// breaking wire-format change for old clients.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BattleEvent {
@@ -237,7 +233,7 @@ pub enum BattleEvent {
     /// A status condition was applied to the monster at `slot` on the given side this
     /// turn (by a skill with `applies_status`). Emitted by the resolver and applied
     /// to `BattleStatusStore` in `run_post_turn_phases` AFTER the turn's DoT step so
-    /// the newly-applied status takes effect the FOLLOWING turn (ADR-0096 §D1).
+    /// the newly-applied status takes effect the FOLLOWING turn.
     ///
     /// `slot` is `state.side_X.active` captured at emission time inside
     /// `resolve_one_attack`. The targeted monster did not faint from THIS attack
@@ -245,7 +241,7 @@ pub enum BattleEvent {
     /// (Phase 3.5) can subsequently faint it and trigger an auto-switch before
     /// Phase 4.5 writes the status. Carrying the slot in the event makes the target
     /// unambiguous; Phase 4.5 drops the write if the targeted monster is no longer
-    /// conscious (ADR-0099 D1/D2).
+    /// conscious.
     StatusApplied {
         side: SideId,
         /// Team slot index of the targeted monster, captured at emission time.
@@ -464,7 +460,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // BattleSide::set_active — checked swap legality (M8.6a, ADR-0053)
+    // BattleSide::set_active — checked swap legality
     //
     // Contract (parse-don't-validate, reject-not-clamp):
     //   - Err(SwapError::OutOfBounds) if `idx as usize >= team.len()` (incl. empty)
@@ -602,20 +598,20 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // BattleSide::with_lead — lead selection at battle construction
-    // (ADR-0156 D1, EARS E1)
+    // (EARS E1)
     //
     // Contract:
     //   - `active` = the FIRST index with `current_hp > 0` (lowest index wins)
     //   - `None` when the team is empty OR every member is fainted
     //   - `team` is returned UNMODIFIED — never sorted, rotated or filtered
     //
-    // The second sanctioned way to establish `active` alongside `set_active`
-    // (ADR-0053). Vacuity ban: every test below asserts the EXACT index —
+    // The second sanctioned way to establish `active` alongside `set_active`.
+    // Vacuity ban: every test below asserts the EXACT index —
     // `assert!(!side.active_monster().is_fainted())` is true for ANY impl that
     // picks ANY conscious slot and is therefore banned as a sole assertion.
     // -----------------------------------------------------------------------
 
-    /// EARS E1 (ADR-0156 D1): a conscious slot-0 monster stays the lead.
+    /// EARS E1: a conscious slot-0 monster stays the lead.
     ///
     /// Kills: an impl that unconditionally scans for a *later* conscious slot
     /// (e.g. reusing `next_conscious_index`, which skips `active` and would
@@ -633,7 +629,7 @@ mod tests {
         );
     }
 
-    /// EARS E1 (ADR-0156 D1): a 0 HP lead is skipped and the FIRST conscious
+    /// EARS E1: a 0 HP lead is skipped and the FIRST conscious
     /// slot is chosen — this is Drew's r2 defect in its smallest form.
     ///
     /// The fixture deliberately carries TWO conscious slots (1 and 2). With only
@@ -658,7 +654,7 @@ mod tests {
         );
     }
 
-    /// EARS E1 (ADR-0156 D1): a run of leading corpses is skipped entirely.
+    /// EARS E1: a run of leading corpses is skipped entirely.
     ///
     /// Kills: an impl that only checks slot 0 and falls back to slot 1 (an
     /// off-by-one "skip one corpse" shortcut) — it would return 1 here.
@@ -676,7 +672,7 @@ mod tests {
         );
     }
 
-    /// EARS E1 (ADR-0156 D1): `with_lead` computes `active` and NOTHING else —
+    /// EARS E1: `with_lead` computes `active` and NOTHING else —
     /// the team is returned in its original order.
     ///
     /// Why full-`Vec` equality and not `.len()`: `side_a.team[i]` is positionally
@@ -716,7 +712,7 @@ mod tests {
         );
     }
 
-    /// EARS E1 (ADR-0156 D1): an all-fainted team has no legal lead.
+    /// EARS E1: an all-fainted team has no legal lead.
     ///
     /// `None` IS the "has a conscious member" precondition — the shells
     /// (`start_battle` / `begin_encounter`) fold their separate `any(conscious)`
@@ -736,7 +732,7 @@ mod tests {
         );
     }
 
-    /// EARS E1 (ADR-0156 D1): an empty team has no legal lead.
+    /// EARS E1: an empty team has no legal lead.
     ///
     /// `active_monster()` indexes `team[active]` unconditionally, so any
     /// `Some(_)` here is a panic landmine on the first resolver call.
@@ -864,9 +860,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Nightly mutation hardening: known-answer vectors pin the exact
-    // splitmix64-style derivation in `from_ctx_random` (12 survivors:
-    // XOR/shift mixing + the `& 1 == 1` parity gate). Determinism contract:
+    // Determinism contract:
     // replaying a stored seed must reproduce the same battle turn forever.
     // -----------------------------------------------------------------------
 

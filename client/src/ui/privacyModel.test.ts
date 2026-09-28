@@ -1,91 +1,20 @@
-// ui/privacyModel.test.ts — PRV1-1 / PRV1-3 / PRV1-4, the CLIENT-observable half (M22 S8,
-// ADR-0231). Gates X1 / X2 / X3 / X4 / X8 of memory/projects/gates/m22-s8.gates.md.
+// ui/privacyModel.test.ts — PRV1-1 / PRV1-3 / PRV1-4, the CLIENT-observable half.
 //
 // EARS COVERED (spec specs/monster-realm-v2/M22-privacy-compliance.spec.md §7.4)
 //   PRV1-1 — a deletion request shows the player the grace window remaining until the reaper
 //            fires, and is only sent from an explicit, armed confirmation.
 //   PRV1-3 — cancellation is offered and sent while the deletion is cancellable — which the
 //            SERVER defines as "terminal_at_ms is still None", NOT "the deadline has not
-//            passed" (server-module/src/accounts.rs:812-822).
+//            passed".
 //   PRV1-4 — once `terminal_at_ms` is Some the account is permanently deleted: a DISTINCT
 //            state, cancel permanently rejected.
-//
-// RED REASON AT AUTHORING TIME: `client/src/ui/privacyModel.ts` DOES NOT EXIST. The import
-// below fails to resolve, so every test in this file reds on a MISSING IMPLEMENTATION — not
-// on a typo here.
 //
 // PURE MODEL — no DOM, no SDK, no store, NO CLOCK. `nowMs` and `graceMs` are INPUTS
 // (as of rb-51 the shipped wiring in `main.ts` reads `deletion_grace_ms_default()` from the wasm
 // and `Date.now()` for the frame clock, and hands both in); the purity half is enforced twice,
 // once by the signature and once by the source scan at the bottom of this file.
 //
-// ★ WHO CONSUMES THIS SEAM, AS OF rb-51 (this narration was written when NO caller existed and
-// the whole downstream slice was still called "s8b"; it is corrected here to name the real
-// owners rather than a slice id that no longer exists):
-//   * the PER-FRAME caller is `client/src/main.ts` — SHIPPED in rb-51. It reads the account row
-//     from the store, hands `deriveDeletionCountdown` a `DeletionStatusInput` built from it plus
-//     `BigInt(Math.trunc(Date.now()))` and the `deletion_grace_ms_default()` wasm value, and
-//     renders the result through `ui/privacyBanner.ts`. Every "the caller drives this from a
-//     per-frame tick" note below is about THAT code, and it is real code today.
-//   * the REDUCER CALL SITES (delete / cancel / export) and the DELETE-CANCEL UI surface are
-//     rb-52 (residual R-m22-s8-X10) — SHIPPED. `main.ts`'s `applyPrivacy` drives `privacyStep`
-//     and executes its effects through `conn.reducers`, and `ui/privacyView.ts` renders the
-//     surface from `ui/privacyBanner.ts`'s `buildPrivacyViewModel`.
-//   * the EXPORT TRANSPORT + download is rb-53 (residual R-m22-s8-X11) — still deferred.
-// So `privacyStep`, `PrivacyNotice` and `rejectMessage` now have a production caller too.
-//
-// THE CONTRACT THE IMPLEMENTER BUILDS (verbatim from the m22-s8 plan's "Interfaces (frozen
-// seam)" section; do not invent variants):
-//
-//   export type PrivacyPhase = 'unknown' | 'active' | 'grace' | 'due' | 'terminal';
-//   export interface DeletionStatusInput {
-//     readonly status: string | undefined;              // the bare AccountStatus tag
-//     readonly deletionRequestedAtMs: bigint | undefined;
-//     readonly terminalAtMs: bigint | undefined;
-//     readonly nowMs: bigint;
-//     readonly graceMs: bigint;                         // INJECTED, never read here
-//   }
-//   export interface DeletionCountdown {
-//     readonly phase: PrivacyPhase;
-//     readonly deadlineAtMs: bigint | undefined;
-//     readonly remainingMs: bigint | undefined;
-//     readonly cancelPermitted: boolean;
-//     readonly cancelPermanentlyRejected: boolean;
-//     readonly deletePermitted: boolean;
-//     readonly exportPermitted: boolean;
-//   }
-//   export function deriveDeletionCountdown(input: DeletionStatusInput): DeletionCountdown;
-//
-//   export type PrivacyConfirm = 'none' | 'delete-armed';
-//   export type PrivacyRequest = 'none' | 'delete' | 'cancel' | 'export';
-//   export type PrivacyNotice =
-//     'none' | 'disconnected' | 'permanently-deleted' | 'request-rejected';
-//   export interface PrivacyModelState {
-//     readonly countdown: DeletionCountdown;
-//     readonly confirm: PrivacyConfirm;
-//     readonly inFlight: PrivacyRequest;
-//     readonly notice: PrivacyNotice;
-//     readonly rejectMessage: string | undefined;
-//   }
-//   export const PRIVACY_INITIAL: PrivacyModelState;
-//   export type PrivacyEvent =
-//     | { readonly kind: 'account-changed';           readonly countdown: DeletionCountdown }
-//     | { readonly kind: 'delete-requested' }
-//     | { readonly kind: 'delete-confirmed';          readonly hasLiveConnection: boolean }
-//     | { readonly kind: 'confirm-cancelled' }
-//     | { readonly kind: 'cancel-deletion-requested'; readonly hasLiveConnection: boolean }
-//     | { readonly kind: 'export-requested';          readonly hasLiveConnection: boolean }
-//     | { readonly kind: 'request-succeeded';         readonly which: PrivacyRequest }
-//     | { readonly kind: 'request-failed'; readonly which: PrivacyRequest;
-//         readonly message: string };
-//   export type PrivacyEffect =
-//     'none' | 'call-delete-account' | 'call-cancel-account-deletion' | 'call-request-data-export';
-//   export interface PrivacyStep { readonly next: PrivacyModelState; readonly effect: PrivacyEffect }
-//   export function privacyStep(state: PrivacyModelState, event: PrivacyEvent): PrivacyStep;
-//   export const SERVER_ALREADY_DELETED_MESSAGE: string;
-//
-// ★ THE PHASE NEVER DEPENDS ON THE CLOCK (the authoritative rule, revised during this
-//   slice's test phase — it supersedes the plan's first-draft "non-bigint clock → unknown"):
+// ★ THE PHASE NEVER DEPENDS ON THE CLOCK:
 //     * marker present (`!== undefined && !== null`, `0n` INCLUDED) → 'terminal', checked
 //       FIRST, and it returns EARLY: deadlineAtMs / remainingMs are undefined there;
 //     * status 'Active' → 'active';
@@ -104,11 +33,6 @@
 //   Permissions stay a uniform function of the phase: cancelPermitted = grace || due;
 //   cancelPermanentlyRejected = terminal; deletePermitted = active;
 //   exportPermitted = active || unknown.
-//
-// ★ NO REAL GRACE VALUE ANYWHERE IN THIS FILE. `evals/deletion-grace-wasm-ssot.eval.mjs`
-//   scans all of `client/**` — `.test.ts` included — and reds on a numeric duplicate of the
-//   shipped deletion grace. Every fixture below uses a SYNTHETIC window (60_000n / 10_000n /
-//   86_400_000n), which is also why the derivation must take `graceMs` as an input.
 //
 // NO `new RegExp(...)` anywhere (Semgrep `detect-non-literal-regexp`, banned repo-wide).
 
@@ -252,7 +176,7 @@ function show(value: unknown): string {
 }
 
 // ===========================================================================
-// PRV1-1 — the grace countdown derivation. Gate X1.
+// The grace countdown derivation. Gate X1.
 // ===========================================================================
 
 describe('deriveDeletionCountdown (PRV1-1): the grace window', () => {
@@ -264,7 +188,7 @@ describe('deriveDeletionCountdown (PRV1-1): the grace window', () => {
     //   (c) `Number(...)` anywhere on the path — the i64 timestamps are bigints and the
     //       result must stay one (assert on `typeof`, which a Number impl fails outright).
     //   (d) permitting a delete while a deletion is already pending — `delete_account`'s own
-    //       precondition refuses that (accounts.rs:424-430), so the control must be dark.
+    //       precondition refuses that, so the control must be dark.
     const c = deriveDeletionCountdown(
       inputOf({ status: 'PendingDeletion', deletionRequestedAtMs: NOW_MS - 10_000n }),
     );
@@ -313,7 +237,7 @@ describe('deriveDeletionCountdown (PRV1-1): the grace window', () => {
     // ★ THE B1 BLOCKER TOOTH, in its revised (wider) form: the PHASE comes from `status`
     // alone and NEVER from the clock; the clock only decides whether a deadline can be shown.
     // THREE different inputs make the countdown dark and all three must behave identically:
-    //   * a degenerate row — `accountRowToStore` is deliberately fail-SOFT (rowConvert.ts:598-601);
+    //   * a degenerate row — `accountRowToStore` is deliberately fail-SOFT;
     //   * a non-bigint `nowMs` — main.ts's frame call site passes `BigInt(Math.trunc(Date.now()))`
     //     (shipped rb-51), so one wiring slip hands this core a raw number;
     //   * a non-bigint `graceMs` — main.ts reads it from the wasm accessor
@@ -490,7 +414,7 @@ describe('deriveDeletionCountdown (PRV1-1): the grace window', () => {
           // ★ THE B1 INVARIANT, QUANTIFIED — the single most valuable clause in this file.
           // Whatever the clock is or is not, a pending deletion with no terminal marker is
           // ALWAYS cancellable, because the server accepts that cancel until
-          // `terminal_at_ms` is Some (accounts.rs:812-822).
+          // `terminal_at_ms` is Some.
           if (status === 'PendingDeletion' && terminalAtMs === undefined) {
             expect(c.cancelPermitted).toBe(true);
             expect(c.phase === 'grace' || c.phase === 'due').toBe(true);
@@ -548,7 +472,7 @@ describe('deriveDeletionCountdown (PRV1-1): the grace window', () => {
 });
 
 // ===========================================================================
-// PRV1-4 — the terminal marker. Gate X4 (derivation half).
+// The terminal marker. Gate X4 (derivation half).
 // ===========================================================================
 
 describe('deriveDeletionCountdown (PRV1-4): the terminal marker', () => {
@@ -628,7 +552,7 @@ describe('deriveDeletionCountdown (PRV1-4): the terminal marker', () => {
 });
 
 // ===========================================================================
-// PRV1-1 — the armed, confirmed delete request. Gate X2.
+// The armed, confirmed delete request. Gate X2.
 // ===========================================================================
 
 describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', () => {
@@ -752,10 +676,10 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
         deleteStep.next.confirm,
         `delete while ${busy} is in flight must not spend the armed confirmation`,
       ).toBe('delete-armed');
-      // ...and it must not INVENT anything either. WRONG IMPL KILLED (measured by this slice's
-      // artifact red-team, which passed all five mutant teeth without this pair): a busy refusal
-      // that reports `notice: 'request-rejected'` with a `rejectMessage` the server never sent —
-      // a field `PrivacyModelState` documents as the server's message, VERBATIM.
+      // ...and it must not INVENT anything either. WRONG IMPL KILLED:
+      // a busy refusal that reports `notice: 'request-rejected'` with a `rejectMessage` the
+      // server never sent — a field `PrivacyModelState` documents as the server's message,
+      // VERBATIM.
       expect(
         deleteStep.next.notice,
         `delete while ${busy} is in flight: a request that was never sent has no rejection`,
@@ -884,7 +808,7 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
     // A notice is about the LAST attempt. Leaving `'request-rejected'` (and the verbatim
     // server string behind it) on screen after the retry SUCCEEDED tells the player their
     // account deletion was refused when it was in fact accepted — and `rejectMessage` is what
-    // the delete/cancel surface (rb-52, residual R-m22-s8-X10) renders, so a stale one is a
+    // the delete/cancel surface (residual R-m22-s8-X10) renders, so a stale one is a
     // stale sentence in front of the player, not just a stale field.
     //
     // WRONG IMPL KILLED: `{ ...state, inFlight: 'none' }` — structurally tidy, and it keeps
@@ -966,7 +890,7 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
 });
 
 // ===========================================================================
-// PRV1-3 — cancelling while the deletion is cancellable. Gate X3.
+// Cancelling while the deletion is cancellable. Gate X3.
 // ===========================================================================
 
 describe('privacyStep (PRV1-3): cancelling a pending deletion', () => {
@@ -982,7 +906,7 @@ describe('privacyStep (PRV1-3): cancelling a pending deletion', () => {
 
   it('★★ S8T-CANCEL-DUE-STILL-PERMITTED BITES: past the deadline the cancel is STILL sent — the server owns that decision', () => {
     // ★ THE ANTI-SECOND-SSOT TOOTH. The server accepts a late cancel until `terminal_at_ms`
-    // is Some (accounts.rs:812-822): the reaper may not have run yet, and between the
+    // is Some: the reaper may not have run yet, and between the
     // deadline and the reaper fire the player's cancel is REAL. A client that pre-rejects it
     // because its own arithmetic says the window closed invents a second source of truth and
     // costs the player their account.
@@ -1022,7 +946,7 @@ describe('privacyStep (PRV1-3): cancelling a pending deletion', () => {
   it('★ BITES: export is offered on `active` and on `unknown`, and refused on grace / due / terminal', () => {
     // Mirrors `should_reject_for_deletion` (accounts.rs:424-430, called at privacy.rs:1481-1483)
     // exactly — a PRECONDITION mirrored as a dark control, not a DECISION re-derived. A button
-    // that silently fails teaches the player the client is broken (claimModel.ts:157-161).
+    // that silently fails teaches the player the client is broken.
     for (const [label, countdown, expected] of [
       ['active', ACTIVE_COUNTDOWN, 'call-request-data-export'],
       ['unknown', UNKNOWN_COUNTDOWN, 'call-request-data-export'],
@@ -1040,7 +964,7 @@ describe('privacyStep (PRV1-3): cancelling a pending deletion', () => {
 });
 
 // ===========================================================================
-// PRV1-4 — the DISTINCT permanent-rejection state. Gate X4 (reducer half).
+// The DISTINCT permanent-rejection state. Gate X4 (reducer half).
 // ===========================================================================
 
 describe('privacyStep (PRV1-4): the permanently-deleted account', () => {

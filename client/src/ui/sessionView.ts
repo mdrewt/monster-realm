@@ -1,4 +1,4 @@
-// ui/sessionView.ts — DOM shell for the session-lifecycle overlay (M21b-2, ADR-0182 D17).
+// ui/sessionView.ts — DOM shell for the session-lifecycle overlay.
 // DOM shell — coverage-excluded (all logic lives in sessionModel.ts). REGISTRY-EXTERNAL by
 // design: it is NOT an OverlayId member (a second EXCLUSIVE_TOP would break overlayRegistry's
 // decide(), D17). main.ts drives it directly from `conn.sessionState()`, checked first on every

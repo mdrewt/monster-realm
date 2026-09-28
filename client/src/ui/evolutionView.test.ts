@@ -65,18 +65,8 @@ import type {
 import { EvolutionView, type EvolutionViewCallbacks } from './evolutionView';
 
 // ---------------------------------------------------------------------------
-// m23-s4 — overlay a11y wiring for EvolutionView (constructed-shell, #app-mounted).
-// ADDITIVE ONLY: nothing below this block (the EG4-1/2/5, A3, V6/V7 suite) was
-// weakened or deleted. Declared FIRST in the file, before any pre-existing describe.
-//
-// SOURCE OF TRUTH: specs/monster-realm-v2/M23-accessibility.spec.md §2.2/§2.3, §6
-// (A11Y-13/14/15/16/17); memory/projects/monster-realm-m23-s4-plan.md §0 F1, §1
-// D1/D2/D3/D6/D7; memory/projects/gates/m23-s4.gates.md X1/X2/X3/X6/X7/X8.
-//
-// RED REASON: evolutionView.ts's show()/hide()/toggle() do not call
-// openOverlayA11y/closeOverlayA11y today, and its <h2> title carries neither
-// data-testid="evolution-title" nor tabindex="-1" — every S4-evolutionView-* test
-// below fails now; every pre-existing test below still passes.
+// Overlay a11y wiring for EvolutionView (constructed-shell, #app-mounted).
+// Declared FIRST in the file, before any pre-existing describe.
 //
 // COMPOSITION NOTE (plan §8 A7): DEFER-FOCUS and CLOSE-RESTORE are folded into
 // S4-evolutionView-ANCHOR-FOCUS and S4-evolutionView-CLOSE-RESTORE-UNGUARDED — see
@@ -96,7 +86,7 @@ import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
 vi.mock('./overlayA11y', { spy: true });
-// m24s4 (ADR-0260) MECHANISM oracle, same shape as m24s3: records every t()/tf() call AND
+// m24s4 MECHANISM oracle, same shape as m24s3: records every t()/tf() call AND
 // calls through to the real resolver, so EV-01's DOM byte-identity assertions still work.
 vi.mock('./i18n/resolver', { spy: true });
 
@@ -439,7 +429,7 @@ afterEach(() => {
 });
 
 // ===========================================================================
-// V1 (EG4-1) — the requirements/PROGRESS panel
+// V1 — the requirements/PROGRESS panel
 // ===========================================================================
 
 describe('EvolutionView V1 (EG4-1): the progress panel renders a row per path and a row per gate', () => {
@@ -565,13 +555,13 @@ describe('EvolutionView V1 (EG4-1): the progress panel renders a row per path an
 });
 
 // ===========================================================================
-// V2 (EG4-2) — at exactly ONE eligible path there is NO evolve affordance
+// V2 — at exactly ONE eligible path there is NO evolve affordance
 // ===========================================================================
 
 describe('EvolutionView V2 (EG4-2): at eligibleCount === 1 there is NO clickable evolve affordance', () => {
   it('★★ BITES: one eligible path → zero choice controls, and clicking EVERY element never calls onEvolve', () => {
     // ★★ THE EG4-2 TOOTH. The spec is explicit that the client SHALL NOT present an Evolve
-    //   action for the single-eligible case: the server auto-applies it (EG2-11), so a
+    //   action for the single-eligible case: the server auto-applies it, so a
     //   button there is an action the player must never be offered — click it and the
     //   reducer either no-ops or races the auto-apply.
     // KILLS (1): the shipped M10c "Evolve" button surviving the rewrite (today's state).
@@ -635,7 +625,7 @@ describe('EvolutionView V2 (EG4-2): at eligibleCount === 1 there is NO clickable
 });
 
 // ===========================================================================
-// V3 (EG4-2) — at TWO+ eligible, one control per choice, each sending ITS OWN target
+// V3 — at TWO+ eligible, one control per choice, each sending ITS OWN target
 // ===========================================================================
 
 describe('EvolutionView V3 (EG4-2): 2+ eligible renders one control per choice and sends the RIGHT toSpecies', () => {
@@ -724,12 +714,9 @@ describe('EvolutionView V3 (EG4-2): 2+ eligible renders one control per choice a
     //   capture bug) OR over the first — either one evolves the WRONG monster, and
     //   evolution is irreversible.
     //
-    // RED-TEAM SELF-CORRECTION: the first draft of this case clicked only the SECOND
-    // monster's control and asserted `(22n, 3)`. A handler closed over the LAST rendered
-    // monster produces exactly that, so the mutant survived — verified against a scratch
-    // reference render before this file was finalized. Both controls are now clicked, in
-    // order, and the FULL ordered call list is asserted: "always the last id" fails on the
-    // first call, "always the first id" fails on the second. Neither can pass.
+    // Both controls are now clicked, in order, and the FULL ordered call list is asserted:
+    // "always the last id" fails on the first call, "always the first id" fails on the
+    // second. Neither can pass.
     const { parent, view, callbacks } = mount();
     const choicesFor = (a: string, b: string): readonly EvolutionPathViewModel[] => [
       metPathVm({ edgeId: 3, toSpecies: 2, toSpeciesName: a }),
@@ -757,7 +744,7 @@ describe('EvolutionView V3 (EG4-2): 2+ eligible renders one control per choice a
     expect(parent.querySelectorAll(CARD_SELECTOR)).toHaveLength(2);
     expect(parent.querySelectorAll(CHOICE_SELECTOR)).toHaveLength(4);
 
-    // RED-TEAM SELF-CORRECTION: overlay-scoped counts alone let a picker hoisted to the
+    // overlay-scoped counts alone let a picker hoisted to the
     // overlay ROOT pass (the same defect the ready-note containment case pins). Two
     // ambiguous monsters means two INDEPENDENT decisions; a shared picker cannot express
     // them, and a control the player cannot attribute to a monster is not a choice.
@@ -838,12 +825,11 @@ describe('EvolutionView V4 (A3): readyPathName renders as informational copy, an
   });
 
   it('★★ BITES: the note is PER MONSTER — it renders inside the ready card and nowhere else', () => {
-    // RED-TEAM SELF-CORRECTION: every other case in this describe queries `parent`, i.e.
+    // every other case in this describe queries `parent`, i.e.
     // the whole overlay. A note appended to the overlay ROOT instead of to the card
-    // satisfies all of them — verified by mutation against the live shell before this case
-    // was added. That is the same defect boxView X8 kills for the EG4-8 badge: a
-    // notification that is not attributable to a monster tells a player with six monsters
-    // that "something" is ready, and points at nothing.
+    // satisfies all of them. That is the same defect boxView X8 kills for the EG4-8 badge:
+    // a notification that is not attributable to a monster tells a player with six
+    // monsters that "something" is ready, and points at nothing.
     //
     // KILLS (1): a root-level (singleton) note.
     // KILLS (2): a note stamped on every card from a per-LIST predicate — the second
@@ -926,7 +912,7 @@ describe('EvolutionView V4 (A3): readyPathName renders as informational copy, an
 
   it('★ BITES: at 2+ eligible there is NO ready note (the choice list is the surface)', () => {
     // KILLS: `eligibleCount >= 1` on the note, which would tell the player "evolves on
-    //   your next action" about the one case that will NEVER auto-resolve (EG2-11).
+    //   your next action" about the one case that will NEVER auto-resolve.
     const { parent, view } = mount();
     const choices: readonly EvolutionPathViewModel[] = [
       metPathVm({ edgeId: 3, toSpecies: 2, toSpeciesName: 'Pyrodrake' }),
@@ -960,16 +946,11 @@ describe('EvolutionView V4 (A3): readyPathName renders as informational copy, an
 });
 
 // ===========================================================================
-// V5 (EG4-5) — the fusion surface is gone from the overlay
+// V5 — the fusion surface is gone from the overlay
 // ===========================================================================
 
 describe('EvolutionView V5 (EG4-5): no fusion recipe list, no fuse picker, no Fuse button, no onFuse', () => {
   it('★ BITES: refresh() on the EG4 view-model does not throw — the shell no longer reads vm.fusionRecipes', () => {
-    // RED TODAY, and this is the honest first red for this whole file: `refresh()` ends in
-    //   `this.#renderRecipes(vm.fusionRecipes)` and `#renderRecipes` dereferences
-    //   `recipes.length`. The contract's EvolutionViewModel has exactly ONE key
-    //   (`monsters`), so that read is `undefined.length` — a TypeError inside a render
-    //   driven by the store's batch listener.
     // KILLS: a partial EG4-5 that deletes `toFusionRecipe` from the model but leaves the
     //   shell reading the field.
     const { view } = mount();
@@ -1116,13 +1097,8 @@ describe('EvolutionView V7 (totality): show/hide/refresh in any order, no throw'
 });
 
 // ===========================================================================
-// m23-s9 (M23 §2.7) — contrast tokens, `prefers-contrast: more`, em → px
+// Contrast tokens, `prefers-contrast: more`, em → px
 // ===========================================================================
-//
-// SOURCE OF TRUTH: memory/projects/monster-realm-m23-s9-plan.md ("Design (D1–D3) — AMENDED",
-// the token table, "Extra assertions the red-team demanded") and
-// memory/projects/gates/m23-s9.gates.md X1–X4. S8 precedent: battleView.test.ts's s8Rgb /
-// s8Luminance / s8Contrast oracle and its `m23s8 status badge contrast` case.
 //
 // ORACLE = the RENDERED DOM + WCAG 2.x arithmetic — never the view's source text. Every colour
 // operand is read off a LIVE element through happy-dom's CSSStyleDeclaration LONGHANDS
@@ -1131,22 +1107,13 @@ describe('EvolutionView V7 (totality): show/hide/refresh in any order, no throw'
 // `s9NormalisePrelude` — never text slicing), alpha-composited from the innermost
 // surface outward onto BOTH a white and a black page, and ratioed here.
 //
-// RED REASON (verified against client/src/ui/evolutionView.ts and client/src/styles.css in this
-// worktree): the view ships hex literals inline (`#666` empties at 2.2:1 over the worst-case
-// `#333` the translucent root composites to on white; `#fff` on the `#059669` Evolve button at
-// 3.77:1), `em` font sizes (0.85 / 0.8 / 0.75em) and NO `--mr-evo-*` tokens; styles.css has no
-// `:root` block and no `@media (prefers-contrast: more)` block — its header merely MENTIONS that
-// prelude in prose, which is why the census below runs on comment-STRIPPED text.
-//
 // HAPPY-DOM 20.10.6 FACTS THIS SECTION LEANS ON (read from client/node_modules/happy-dom/lib/css/
 // declaration/CSSStyleDeclaration.js and property-manager/*.js — NOT assumed):
 //   * `style.cssText = …` REWRITES the `style` attribute from the property manager's own
 //     serialisation, so `getAttribute('style')` is happy-dom's canonical spelling, not the
 //     author's. A declaration happy-dom cannot parse is DROPPED from both the object model and the
 //     attribute, and an upper-case NAME is stored under a key no getter reads — both render in a
-//     browser. (The raw-write recorder and the X3/X4 token/font-size hygiene audits that
-//     closed this were removed by the de-bloat program, CT-src-ui-evolutionView#X3-X4-and-i18n-scan;
-//     X1/X2 remain.)
+//     browser.
 //   * `rgba(0,0,0,0.8)` reads back re-spaced as `rgba(0, 0, 0, 0.8)`; 4/8-digit hex and named
 //     colours pass happy-dom and are REFUSED here.
 //   * `background: var(--x)` (SHORTHAND) is stored under the `background` key only and leaves
@@ -1161,8 +1128,8 @@ describe('EvolutionView V7 (totality): show/hide/refresh in any order, no throw'
 //     is ALWAYS serialised as the three `border-left-*` longhands.
 //
 // CI HYGIENE: literal regexes and indexOf/includes only (`new RegExp` is Semgrep-banned); no
-// `innerHTML`; plain `describe(` / `it(` (an eval scans for the literal); the four `it` titles
-// below are the ONLY names in this file carrying the ledger's `-t` prefixes (X3/X4 since removed).
+// `innerHTML`; plain `describe(` / `it(`; the four `it` titles
+// below are the ONLY names in this file carrying the ledger's `-t` prefixes.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -1187,9 +1154,8 @@ interface S9Declaration {
 
 // ---------------------------------------------------------------------------
 // Minimal CSS reader — a local, typed port of the parser that used to be imported from
-// evals/reduced-motion-hp-bar.eval.mjs (which the de-bloat program deletes, EV-reduced-motion-hp-bar;
-// CT-src-ui-evolutionView#contrast-X1-X2 keeps X1/X2). Quote-, paren- and url()-aware; THROWS on
-// anything it cannot parse, so an unreadable sheet never reads as a clean one.
+// evals/reduced-motion-hp-bar.eval.mjs. Quote-, paren- and url()-aware; THROWS on anything it
+// cannot parse, so an unreadable sheet never reads as a clean one.
 // ---------------------------------------------------------------------------
 
 // Comment delimiters are COMPOSED so this file holds no raw opener outside a real comment.
@@ -2206,10 +2172,7 @@ describe('EvolutionView — m23-s9 contrast tokens, prefers-contrast: more, em�
 });
 
 // ===========================================================================
-// 20r-a — in-flight guard on the EVOLVE choice buttons (plan D3/D7/D8/D11; matrix EV-1..EV-5).
-// APPENDED BLOCK; nothing above is modified.
-//
-// SOURCE OF TRUTH: docs/specs/20r-a-plan.md §0 D3/D7/D8/D11, §1 evolutionView.ts, §3 EV-*.
+// in-flight guard on the EVOLVE choice buttons (plan D3/D7/D8/D11; matrix EV-1..EV-5).
 //
 // THE DEFECT (measured, `#renderChoice`): `btn.disabled = true; // debounce: re-enabled on the
 // next server-tick refresh` followed by a bare `this.#callbacks.onEvolve(...)`. Two things are
@@ -2219,10 +2182,6 @@ describe('EvolutionView — m23-s9 contrast tokens, prefers-contrast: more, em�
 // both. (2) "re-enabled on the next server-tick refresh" is false in exactly the case that
 // matters: a REJECTED evolve changes no row, so no batch arrives and the button stays dead for
 // the life of the overlay. EV-1 is the seeded acceptance case for (2); EV-2 pins (1).
-//
-// RED REASON: no `#pending` map exists — EV-1 reds on "the other choice is disabled too" (the
-// shipped debounce touches one node), and on "enabled after the rejection with NO refresh()".
-// EV-4 is a declared regression (green today).
 //
 // happy-dom facts, the microtask budget and the hostile-re-enable rationale are stated once in
 // battleView.test.ts's 20r-a header and hold here unchanged. `.click()` is used rather than the
@@ -2617,21 +2576,11 @@ describe('★ EvolutionView 20r-a: in-flight guard on the Evolve choice buttons'
 });
 
 // =============================================================================
-// m24s4 (ADR-0260) — i18n migration batch B: evolutionView.ts routes its migrated
+// i18n migration batch B: evolutionView.ts routes its migrated
 // sinks through t()/tf() (ADR-0256/0257/0259/0260 resolver) instead of raw
 // English literals.
 //
-// PREDICTED RED REASON AT HEAD: evolutionView.ts calls neither `t()` nor `tf()`
-// anywhere today — every literal below is still a bare string literal or
-// template, and the file imports nothing from `./i18n/resolver`. EV-01/EV-02
-// therefore fail on their very first assertion (the spied `i18nT`/`i18nTf` are
-// never called at all, and the roster-word scan finds unbracketed English).
-// (The EV-03 source-scan sibling was removed by the de-bloat program.)
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from
-// the plan/ADR-0260 only.
-//
-// FIXTURE COLLISION RULE (plan, tester brief): this block deliberately does NOT
+// FIXTURE COLLISION RULE: this block deliberately does NOT
 // reuse the file's own `FIVE_GATES` fixture — its labels 'Trust'/'Quality time'/
 // 'Nutrition' are themselves English roster words this view migrates
 // (evolution.card.stats's own template), which would make the m24s4 roster scan
@@ -2679,7 +2628,7 @@ function m24s4EvIsExpectedSentinelSpan(content: string): boolean {
 }
 
 /** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
- *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span
+ *  indexOf loop — no RegExp) and reports every OTHER `«...»` span
  *  verbatim in `unexpectedSpans`, un-elided, so it stays in `stripped` for the
  *  roster-word scan too — see battleView.test.ts's m24s3SplitSentinels header. */
 function m24s4EvSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
@@ -3037,21 +2986,10 @@ describe('m24s4 (ADR-0260): evolutionView.ts routes its migrated sinks through t
 });
 
 // ---------------------------------------------------------------------------
-// rb-121 (ADR-0271, residual R-20r-a-FOCUS) — a settle-released evolve-choice lock
+// rb-121 (residual R-20r-a-FOCUS) — a settle-released evolve-choice lock
 // re-anchors focus that the no-batch path stranded on <body>, by re-calling
 // openOverlayA11y('evolutionView', root) when the release finds
 // `this.#visible && document.activeElement === document.body`.
-//
-// SOURCE OF TRUTH: docs/adr/0271-rb121-settle-release-reanchors-stranded-focus.md;
-// memory/projects/gates/rb-121.gates.md X2/X5.
-//
-// RED REASON: evolutionView.ts's `#renderChoice` click listener's `.finally()` block
-// re-enables the monster's choice buttons but never calls openOverlayA11y — every
-// rb121-EVOLUTION-{REJECT,RESOLVE,THROW,DETACH} tooth below fails its final
-// `toBe(anchor)` assertion on master (document.activeElement stays document.body
-// forever). rb121-EVOLUTION-STALE's negative half and every KEEP-*/HIDDEN control
-// pass on master already; STALE's positive half (the LIVE generation's own settle)
-// is what reds the whole tooth on master.
 //
 // WRONG-IMPL-KILLED index (one per tooth):
 //   REJECT/RESOLVE/THROW -> a `.catch`-only re-anchor (never fires on the dominant

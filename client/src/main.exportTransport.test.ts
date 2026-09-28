@@ -85,7 +85,7 @@ const H = vi.hoisted(() => {
 });
 
 // The wasm pkg — identical shape to main.privacyWiring.test.ts's mock. `deletion_grace_ms_default`
-// crosses as a BigInt (`-> i64`, ADR-0212), so the stub is `1n`, not `1`; it is deliberately a
+// crosses as a BigInt (`-> i64`), so the stub is `1n`, not `1`; it is deliberately a
 // SYNTHETIC window and never the shipped value.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const SIDE = 3;
@@ -96,6 +96,8 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
     move_queue_cap: () => 4,
     party_size: () => 3,
     party_slot_none: () => 255,
+    max_trade_monsters_per_side: () => 64,
+    talk_range: () => 2,
     predict_move: () => ({}),
     predict_tick: () => ({}),
     set_active_zone: () => undefined,
@@ -837,7 +839,7 @@ describe('main.ts export transport (rb-53, PRV1-11/12/13)', () => {
     // ★ WHY THE FOREIGN ROW CARRIES A **NEWER** REQUEST ID, and what this does and does not
     // prove — stated honestly, because the shape matters.
     //   The owner filter exists in TWO places by design: `store.ownExportChunks(identity)`
-    //   (ADR-0015 V1) and `assembleExportBundle`'s own first-line filter (exportAssembly.ts:96).
+    //   (ADR-0015 V1) and `assembleExportBundle`'s own first-line filter.
     //   With a foreign row of the same-or-lower request id, removing EITHER one alone changes
     //   nothing observable here — the surviving filter still produces the correct artifact — so
     //   such a fixture would be a defence-in-depth check with no teeth.
@@ -997,9 +999,9 @@ describe('main.ts export transport (rb-53, PRV1-11/12/13)', () => {
 
   it('★★★ RB53T-NO-LEAK-ON-FAILURE: when createObjectURL throws, nothing escapes the handler and NO log sink or on-screen surface receives the artifact bytes', async () => {
     // ★ ADR-0231 A3-D7, and it is a DELIBERATE DIVERGENCE from the precedent this handler is
-    // otherwise modelled on. `downloadBugBundle` (main.ts:2405-2409) logs its WHOLE PAYLOAD on
+    // otherwise modelled on. `downloadBugBundle` logs its WHOLE PAYLOAD on
     // failure — which is safe there only because `KeyStoreSnapshot` is a no-PII allowlist by
-    // construction (bugBundle.ts:24-33). The export artifact is the exact opposite: every
+    // construction. The export artifact is the exact opposite: every
     // exportable table, including player-authored names and behavioural history. Logging it
     // would retain the player's complete personal-data dump in the devtools buffer for the
     // page's life and — routed through `reportError` — put it ON SCREEN and into the

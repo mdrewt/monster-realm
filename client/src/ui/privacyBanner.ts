@@ -1,12 +1,6 @@
-// ui/privacyBanner.ts — the PURE copy layer for the PRIVACY SURFACE (rb-51 PRV1-1; rb-52
-// PRV1-3/PRV1-4, ADR-0231 Amendment A2).
+// ui/privacyBanner.ts — the PURE copy layer for the PRIVACY SURFACE.
 //
-// RESCOPED BY rb-52. This file was authored as "the copy layer for the deletion-grace countdown";
-// it is now the copy layer for the whole privacy surface — the countdown banner's label AND the
-// delete/cancel/export view model. `ui/privacyModel.ts` reserved that copy to "the slice that
-// renders the delete/cancel surface, where it can be gated", and this is that slice.
-//
-// FUNCTIONAL CORE (ADR-0014). No DOM, no SDK, no store, NO CLOCK: the only input is the
+// FUNCTIONAL CORE. No DOM, no SDK, no store, NO CLOCK: the only input is the
 // `DeletionCountdown` that `ui/privacyModel.ts` already derived. `main.ts` owns the element and
 // the frame tick; this module owns what the player reads. Splitting it this way is what makes the
 // wording exact-string testable — `main.ts` is excluded from the coverage denominator
@@ -14,18 +8,15 @@
 //
 // WHY THE GRACE WINDOW IS NOWHERE IN THIS FILE. The window's single source of truth is
 // `game_core::DELETION_GRACE_MS_DEFAULT`, reached from the client through the
-// `deletion_grace_ms_default()` wasm accessor (ADR-0212). This module never sees it: it formats
+// `deletion_grace_ms_default()` wasm accessor. This module never sees it: it formats
 // the `remainingMs` it is handed. A hard-coded duration here — "7 days" in prose just as much as
-// a number — would desync the moment an operator retunes the real constant, which is precisely
-// the drift `evals/deletion-grace-wasm-ssot.eval.mjs` exists to catch (its own header names this
-// slice's positive tooth: "its countdown label must be FORMATTED FROM this accessor, never
-// authored as a literal duration").
+// a number — would desync the moment an operator retunes the real constant.
 //
 // WHY THE LABEL ALWAYS RUNS DOWN TO SECONDS. PRV1-1 asks for a TICKING countdown. A formatter
 // that renders the two largest units ("6d 23h") stands still for an hour at a time at the top of
 // a week-long window, which reads as a broken clock rather than a deadline.
 //
-// THREE OUTCOMES, THREE SENTENCES — the broke-vs-dark discipline (ADR-0154) the model is built
+// THREE OUTCOMES, THREE SENTENCES — the broke-vs-dark discipline the model is built
 // around. A COMPUTED remaining time gets the countdown; a computed ZERO gets `due` (the reaper may
 // fire at any moment, so a number that keeps counting nothing would be misleading); a DARK window
 // — pending, but the remaining time is unknown — says so in words. Fabricating "0s" there would
@@ -35,8 +26,8 @@ import type { ExportAssembly } from './exportAssembly';
 import type { DeletionCountdown, PrivacyModelState, PrivacyNotice } from './privacyModel';
 
 /** The player-facing copy, spelled once. Authored here rather than in `ui/a11yCopy.ts`: that
- *  catalog is the ACCESSIBLE-NAME catalog for the seventeen overlays (ADR-0205 D4/D5), and this
- *  banner is deliberately not one of them (the rb-52 privacy OVERLAY is). */
+ *  catalog is the ACCESSIBLE-NAME catalog for the seventeen overlays, and this
+ *  banner is deliberately not one of them (the privacy OVERLAY is). */
 const DARK_LABEL = 'Account deletion pending — time remaining unavailable';
 const DUE_LABEL = 'Account deletion is due now';
 const GRACE_PREFIX = 'Account deletion in ';
@@ -103,7 +94,7 @@ export function privacyBannerLabel(countdown: DeletionCountdown): string | null 
 }
 
 // ===========================================================================
-// rb-52 (PRV1-3/PRV1-4) — the delete / cancel / export surface's copy and view model.
+// The delete / cancel / export surface's copy and view model.
 // ===========================================================================
 
 /**
@@ -143,7 +134,7 @@ const PRIVACY_STATUS_ACTIVE = 'This account is active.';
 const PRIVACY_STATUS_UNKNOWN = 'Account status unavailable.';
 const PRIVACY_STATUS_TERMINAL = 'This account has been permanently deleted.';
 
-// rb-53 (PRV1-11/12/13, ADR-0231 A3-D5): ONE sentence per `ExportAssemblyStatus`.
+// ONE sentence per `ExportAssemblyStatus`.
 //
 // `inconsistent` carries NO NUMBER, deliberately: the core reports `totalChunks: undefined` for
 // that status because the delivered rows disagree, so any figure rendered here would be
@@ -232,7 +223,7 @@ export interface PrivacyViewModel {
   readonly confirmPrompt: string | undefined;
   readonly noticeKind: PrivacyNoticeKind;
   readonly noticeLabel: string | undefined;
-  /** rb-53: what the surface says about the data export, or `undefined` when NO assembly has
+  /** What the surface says about the data export, or `undefined` when NO assembly has
    *  been computed yet — which the shell renders by hiding the line entirely. That is a
    *  different state from a computed `'none'`, which has something to say. */
   readonly exportStatusLabel: string | undefined;

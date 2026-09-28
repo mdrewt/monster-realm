@@ -100,17 +100,17 @@ import { TradeView } from './tradeView';
 // The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
 // implementation, so the VALUE oracle (real attribute writes, real focus moves) still works.
 vi.mock('./overlayA11y', { spy: true });
-// m24s4 (ADR-0260) MECHANISM oracle, same shape: records every t()/tf() call AND calls through to
+// m24s4 MECHANISM oracle, same shape: records every t()/tf() call AND calls through to
 // the real resolver, so TV-01's DOM byte-identity assertions still work.
 vi.mock('./i18n/resolver', { spy: true });
 
-/** m23-s3: one REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
+/** One REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
  *  and fake timers are banned for this defer (plan anti-pattern #10). */
 async function flushMacrotask(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-// m23-s3: NEW file-level isolation hooks (this file previously had none — every test mounted and
+// NEW file-level isolation hooks (this file previously had none — every test mounted and
 // removed its own overlay inline, which leaks on a failed assertion).
 beforeEach(async () => {
   for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
@@ -134,16 +134,16 @@ function mountTradeOverlay(): HTMLElement {
   const overlay = document.createElement('div');
   overlay.id = 'trade-overlay';
   overlay.style.display = 'none';
-  // m23-s3 FIXTURE FIDELITY (index.html:36): the shell has shipped these two as STATIC LITERALS
+  // m23-s3 FIXTURE FIDELITY: the shell has shipped these two as STATIC LITERALS
   // since m23-s2. They are copied here NOT to be asserted on their own — that is vacuous, a view
   // calling nothing passes — but so that "all three attributes ABSENT after close" is a real
-  // tooth: only closeOverlayA11y can remove them (ui/overlayA11y.ts:142-144).
+  // tooth: only closeOverlayA11y can remove them.
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-modal', 'true');
 
   const statusEl = document.createElement('div');
   statusEl.id = 'trade-status';
-  // m23-s3 (index.html:37): the OVERLAY_A11Y initialFocusSelector anchor. Copied for fidelity
+  // m23-s3: the OVERLAY_A11Y initialFocusSelector anchor. Copied for fidelity
   // only — happy-dom focuses a bare <div> with no tabindex at all, so this buys ZERO test power
   // (plan A7) and a passing A11Y-14 here is NOT proof a real browser would honour the focus.
   statusEl.setAttribute('tabindex', '-1');
@@ -225,14 +225,6 @@ function makeNoTradeVM(): TradeScreenViewModel {
 //   5. Call render() again with the same VM (simulating a server batch while in-flight)
 //   6. Assert ALL buttons in #trade-actions are disabled=true
 //
-// Why it's RED before fix:
-//   #renderActions() clears actionsEl via replaceChildren() then creates fresh buttons.
-//   Each fresh button is created with no explicit disabled attribute — defaults to
-//   false.  The click handler's finally() (which sets disabled=false) hasn't fired
-//   and won't fire until the reducer resolves.  But #pending=true at the moment
-//   render() runs, so the fix must set btn.disabled=true for new buttons when #pending.
-//   Without the fix, the newly-created buttons have disabled=false → the player can
-//   click again → double-send.
 // ---------------------------------------------------------------------------
 describe('TradeView [m16.5c-TV-1]: buttons render disabled when #pending is true', () => {
   it('BITES: re-render while #pending=true must create buttons with disabled=true', () => {
@@ -286,12 +278,6 @@ describe('TradeView [m16.5c-TV-1]: buttons render disabled when #pending is true
 //   7. render() with CHANGED statusLabel='Accepted — awaiting confirmation'
 //   8. Verify #trade-feedback is now EMPTY (cleared on state change)
 //
-// Why it's RED before fix:
-//   render() never touches #feedbackEl.  After step 7, the statusLabel in
-//   #trade-status updates to 'Accepted — awaiting confirmation', but
-//   #trade-feedback still shows 'Trade accepted!' from step 3.  Misleading UX.
-//   After fix: render() tracks the previous statusLabel; on change, it clears
-//   #feedbackEl.textContent before applying the new VM state.
 // ---------------------------------------------------------------------------
 describe('TradeView [m16.5c-TV-2]: stale feedback cleared when offer statusLabel changes', () => {
   it('BITES: feedback persists on same-status re-render but clears when statusLabel changes', () => {
@@ -341,11 +327,6 @@ describe('TradeView [m16.5c-TV-2]: stale feedback cleared when offer statusLabel
 //   4. render() with kind='trade' (new offer appeared from server)
 //   5. Verify #trade-feedback is empty (cleared on kind transition)
 //
-// Why it's RED before fix:
-//   render() for kind='no-trade' exits early at line 77 without touching #feedbackEl.
-//   render() for kind='trade' also never touches #feedbackEl.  So 'stale!' stays
-//   visible even after the new offer is shown with fresh buttons.
-//   After fix: any state transition (including no-trade→trade) clears #feedbackEl.
 // ---------------------------------------------------------------------------
 describe('TradeView [m16.5c-TV-3]: feedback cleared on kind transition no-trade→trade', () => {
   it('BITES: stale feedback from prior session must be cleared when new offer arrives', () => {
@@ -474,7 +455,7 @@ describe('TradeView [m16.5c-TV-4]: buttons re-enabled after Promise resolves pos
 });
 
 // ---------------------------------------------------------------------------
-// m23-s3 — overlay a11y wiring on the show()/hide() edge (ADDITIVE; see the file header)
+// Overlay a11y wiring on the show()/hide() edge (ADDITIVE; see the file header)
 // ---------------------------------------------------------------------------
 
 const S3_ID: OverlayId = 'tradeView';
@@ -572,7 +553,7 @@ describe('TradeView — overlay a11y wiring on the show/hide edge (m23-s3)', () 
   });
 
   it('S3-tradeView-REPEAT-NO-REOPEN BITES: show() on an ALREADY-visible overlay neither re-opens nor yanks focus back', async () => {
-    // A re-open clears and re-schedules the deferred-focus timer (ui/overlayA11y.ts:100-113).
+    // A re-open clears and re-schedules the deferred-focus timer.
     // INVISIBLE to every attribute assertion, so it is proven twice: by a call COUNT and by the
     // sentinel still holding focus.
     const overlay = mountTradeOverlay();
@@ -616,7 +597,7 @@ describe('TradeView — overlay a11y wiring on the show/hide edge (m23-s3)', () 
     // `visible === false` and SKIPS the close whenever a record ever desynchronised from the DOM
     // (S1's named A13 leak, ui/overlayA11y.ts:55-59) — making a live capture listener, a pending
     // timer and a stale return target PERMANENT. Unguarded, hide() HEALS it, and a close with no
-    // record is a documented pure no-op (ui/overlayA11y.ts:136-137), so nothing is risked.
+    // record is a documented pure no-op, so nothing is risked.
     mountTradeOverlay();
     const view = new TradeView(makeCallbacks());
     expect(view.visible, 'precondition: never opened').toBe(false);
@@ -644,7 +625,7 @@ describe('TradeView — overlay a11y wiring on the show/hide edge (m23-s3)', () 
 });
 
 // ---------------------------------------------------------------------------
-// m24s0 sink elimination (ADR-0255) — tradeView clears (X6c/X6d)
+// m24s0 sink elimination — tradeView clears (X6c/X6d)
 // ---------------------------------------------------------------------------
 
 function tradeCard(monsterId: bigint, nickname: string) {
@@ -660,7 +641,7 @@ function tradeCard(monsterId: bigint, nickname: string) {
 
 describe('m24s0 sink elimination (ADR-0255) — tradeView clears', () => {
   it("m24s0 X6c: #renderSide REPLACES a side's content on re-render rather than appending", () => {
-    // Kills: dropping `el.replaceChildren()` in #renderSide (tradeView.ts:122) — an
+    // Kills: dropping `el.replaceChildren()` in #renderSide — an
     // append-only re-render would leave TWO <h4> and TWO section <ul>s instead of one.
     const overlay = mountTradeOverlay();
     const view = new TradeView(makeCallbacks());
@@ -735,20 +716,10 @@ describe('m24s0 sink elimination (ADR-0255) — tradeView clears', () => {
 });
 
 // =============================================================================
-// m24s4 (ADR-0260) — i18n migration batch B: tradeView.ts routes its migrated
+// i18n migration batch B: tradeView.ts routes its migrated
 // sinks through t()/tf() (ADR-0256/0257/0259/0260 resolver) instead of raw
 // English literals.
 //
-// PREDICTED RED REASON AT HEAD: tradeView.ts calls neither `t()` nor `tf()`
-// anywhere today — every literal below is still a bare string, and the file
-// imports nothing from `./i18n/resolver`. TV-01/TV-02 therefore fail on their
-// very first assertion (the spied `i18nT`/`i18nTf` are never called at all,
-// and the roster-word scan finds unbracketed English); TV-03 fails because
-// `scanSource(stripComments(...))` reports FAILING raw-English sinks, not the
-// required `failing: []`.
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from
-// the plan/ADR-0260 only.
 // =============================================================================
 
 /** RT6: tradeModel's action sets are mutually exclusive — this VM needs an explicit
@@ -760,7 +731,7 @@ describe('m24s0 sink elimination (ADR-0255) — tradeView clears', () => {
  *  fixture value is chosen to contain NONE of the M24S4_TV_ROSTER words. */
 function m24s4TradeVm(
   actions: Array<'accept' | 'reject' | 'confirm' | 'cancel'>,
-): TradeScreenViewModel {
+): Extract<TradeScreenViewModel, { statusLabel: string }> {
   return {
     ...makePendingTradeVM('Awaiting counterparty', actions),
     mySide: {
@@ -777,7 +748,7 @@ function m24s4TradeVm(
       items: [{ itemId: 1, name: 'Charm', qty: 3 }],
       currency: 250n,
     },
-  };
+  } as Extract<TradeScreenViewModel, { statusLabel: string }>;
 }
 
 /** `JSON.stringify` throws on a bare bigint (trade currency IS bigint,
@@ -826,7 +797,7 @@ function m24s4TvIsExpectedSentinelSpan(content: string): boolean {
 }
 
 /** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
- *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span
+ *  indexOf loop — no RegExp) and reports every OTHER `«...»` span
  *  verbatim in `unexpectedSpans`, un-elided, so it stays in `stripped` for the
  *  roster-word scan too — see battleView.test.ts's m24s3SplitSentinels header. */
 function m24s4TvSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {

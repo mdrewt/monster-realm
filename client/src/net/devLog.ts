@@ -1,11 +1,11 @@
-// net/devLog.ts — dev-console outbound reducer log (ADR-0157, slice dev-observability).
+// net/devLog.ts — dev-console outbound reducer log.
 //
-// ZERO runtime imports by design (gated by evals/dev-observability-gating.eval.mjs, E1):
+// ZERO runtime imports by design:
 // a module that imports nothing at run time cannot reach the eventRing / errorRing /
 // bugBundle, so a reducer argument — joinGame({name}), setNickname({nickname}),
 // setProfileName({name}) all carry player free text — can never land in the shared,
-// downloadable F9 bug bundle (pt-b1 U-3; ADR-0157 §4, revisit only under obs-e). It also
-// cannot drag a dependency into the production bundle (spec criterion 2).
+// downloadable F9 bug bundle. It also cannot drag a dependency into the production
+// bundle (spec criterion 2).
 //
 // The sink is INJECTED, never owned here: main.ts passes `(line) => console.log(line)` —
 // console.log, NOT console.debug (Chrome hides debug behind the Verbose level, so the
@@ -13,7 +13,7 @@
 // unit-testable with no globals and no SDK.
 
 /** Line cap. Mirrors ERROR_MSG_MAX_LEN (client/src/ui/errorRing.ts:12) so the repo keeps
- *  ONE truncation rule (the ADR-0130 discipline reuse of ADR-0157 §4). */
+ *  ONE truncation rule. */
 export const MAX_LINE_LEN = 512;
 
 /** The accepted token set. The union below is DERIVED from it, so the levels, the parser's
@@ -54,8 +54,8 @@ export function parseDevLogLevel(raw: string | undefined): DevLogLevel {
 }
 
 /**
- * Shell-facing resolver with the fail-loud asymmetry INVERTED relative to pt-a1's
- * resolveConnectionConfig (§A3, ADR-0157 §2): rethrow in DEV, degrade to 'off' plus exactly
+ * Shell-facing resolver with the fail-loud asymmetry INVERTED relative to
+ * resolveConnectionConfig (§A3): rethrow in DEV, degrade to 'off' plus exactly
  * one call to the INJECTED `warn` sink in PROD (main.ts wires that sink to console.error —
  * this module never names a sink of its own). The eager resolve sits at main.ts module
  * scope, BEFORE the onerror / unhandledrejection listeners are registered, so a throw there
@@ -94,7 +94,7 @@ export function shouldLogReducer(level: DevLogLevel, name: string): boolean {
  * TOTAL on Identity/ConnectionId (their fields are private, so they would otherwise render
  * as `{}`). `toISOString()`/`toDate()` are deliberately NOT duck-typed: they are PARTIAL on
  * the SDK's Timestamp (RangeError out of range), so calling them would turn a debug line
- * into a crash (§A7 / ADR-0157 §5).
+ * into a crash.
  */
 function devLogReplacer(_key: string, value: unknown): unknown {
   if (typeof value === 'bigint') return value.toString();
@@ -121,7 +121,7 @@ export function formatSendLine(name: string, args: readonly unknown[]): string {
 
 /**
  * The settled outcome of an outbound reducer call, reported INBOUND (`<-`). Exactly one
- * fate exists today: `enqueueMove` rejected by the server (ADR-0172 E5.4). The literal
+ * fate exists today: `enqueueMove` rejected by the server. The literal
  * union — not a bare `string` — keeps the module's `as const`-derived-union discipline,
  * so adding a second fate is a deliberate, type-checked edit at every call site.
  */
@@ -142,7 +142,7 @@ export function formatFateLine(name: string, fate: string, args: readonly unknow
 /**
  * The fate sink factory. Mirrors makeSendLogger's strict-identity discipline — `undefined`
  * at level 'off', so the default production build allocates and formats nothing — but
- * deliberately does NOT consult `shouldLogReducer` / NOISY_REDUCERS (ADR-0172 D2).
+ * deliberately does NOT consult `shouldLogReducer` / NOISY_REDUCERS.
  * The asymmetry is the point: enqueueMove SENDS run ~5/second while walking (hence their
  * exclusion at 'send'), while a REJECTION is rare and is precisely the event a developer
  * who turned the log on is trying to see. Filtering it here would suppress signal, not noise.
@@ -158,7 +158,7 @@ export function makeFateLogger(
 }
 
 /**
- * Rate-limit accounting for a repeating diagnostic event (ADR-0172 D1).
+ * Rate-limit accounting for a repeating diagnostic event.
  *  - `lastMs`  the clock reading the last EMIT happened at (the caller owns the clock);
  *  - `emitted` how many emits this session has spent, against the policy cap;
  *  - `pending` how many events have arrived since the last emit, EXCLUSIVE of the tick

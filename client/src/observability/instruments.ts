@@ -1,4 +1,4 @@
-// observability/instruments.ts — m20c (ADR-0180 body amendment), OBS-25 + AM16/AM17.
+// observability/instruments.ts — OBS-25 + AM16/AM17.
 //
 // The instrument catalogue AS DATA, consumed by BOTH the shell (which creates the real
 // instruments from it) and the contract test (which pins names, kinds and the cardinality

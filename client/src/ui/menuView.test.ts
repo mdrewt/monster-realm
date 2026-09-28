@@ -133,17 +133,17 @@ import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 vi.mock('./overlayA11y', { spy: true });
 
 // ---------------------------------------------------------------------------
-// DOM fixture — mirrors the client/index.html block the implementer must deliver
+// DOM fixture — mirrors the client/index.html block
 // (plan §4). Deliberately contains NO #menu-launcher and NO #help-hint: the menu is
 // the zero-DOM-front-door surface (AC-11), so it must never reach for either.
 // ---------------------------------------------------------------------------
 
 const OVERLAY_ID = 'menu-overlay';
 
-// m23-s6: the id of the focusable sentinel the close/re-open teeth park focus on.
+// The id of the focusable sentinel the close/re-open teeth park focus on.
 const OUTSIDE_SENTINEL_ID = 's6-outside-sentinel';
 
-/** m23-s6: ONE REAL macrotask boundary. A microtask flush is NOT enough for the
+/** ONE REAL macrotask boundary. A microtask flush is NOT enough for the
  *  `setTimeout(..., 0)` deferred focus in ui/overlayA11y.ts:111-113, and fake timers are
  *  banned for this defer (the m23-s1/s3 precedent). */
 async function flushMacrotask(): Promise<void> {
@@ -169,11 +169,11 @@ function mountMenuOverlay(omit?: 'menu-heading' | 'menu-rows' | 'menu-back-hint'
   // A sentinel inline style: show()/hide() must write ONLY style.display, so this must
   // survive every toggle (the shell must not clobber the whole style attribute).
   overlay.style.zIndex = '100';
-  // m23-s6 FIXTURE FIDELITY (client/index.html:105-106): the shell has shipped these two as
+  // m23-s6 FIXTURE FIDELITY: the shell has shipped these two as
   // STATIC LITERALS since m23-s2. They are copied here NOT to be asserted on their own —
   // that is VACUOUS, a view that calls nothing passes (plan revision anti-pattern 9) — but
   // so that "the ARIA claim is ABSENT after hide()" is a real tooth: only closeOverlayA11y
-  // removes them (ui/overlayA11y.ts:142-144).
+  // removes them.
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-modal', 'true');
 
@@ -185,7 +185,7 @@ function mountMenuOverlay(omit?: 'menu-heading' | 'menu-rows' | 'menu-back-hint'
   if (omit !== 'menu-rows') {
     const rows = document.createElement('ul');
     rows.id = 'menu-rows';
-    // m23-s6 FIXTURE FIDELITY (client/index.html:117): `tabindex="0"`, NEVER "-1"
+    // m23-s6 FIXTURE FIDELITY: `tabindex="0"`, NEVER "-1"
     // (ADR-0205 D2's named landmine). This is LOAD-BEARING for the tests, not decoration:
     // it is the OVERLAY_A11Y.menuView initialFocusSelector anchor, and ui/focusTrap.ts's
     // ring is built by querySelector over FOCUSABLE_SELECTOR — with no tabindex here the
@@ -203,7 +203,7 @@ function mountMenuOverlay(omit?: 'menu-heading' | 'menu-rows' | 'menu-back-hint'
   return overlay;
 }
 
-// m23-s6 TEST-ISOLATION HOOKS (ui/leaderboardView.test.ts:90-102). File-level, so they cover
+// m23-s6 TEST-ISOLATION HOOKS. File-level, so they cover
 // the pre-existing blocks too — several of those call show(), which schedules a deferred
 // focus and installs a capture listener the moment the wiring lands. These run BEFORE each
 // describe's own `mountMenuOverlay` hook, so every pre-existing test still gets the DOM it
@@ -673,11 +673,11 @@ describe('MenuView — source-level XSS firewall (ADR-0135)', () => {
 
 // ===========================================================================
 // m23-s6 BLOCK G — the ARIA listbox, its options, and aria-activedescendant.
-// (gates X1-X5; M23 §4 row S6, A11Y-24)
+// (gates X1-X5; M23 §4 row S6)
 // ===========================================================================
 
 // Every expectation below is DERIVED from the registry at assert time, never a literal —
-// the m23-s3 V5 rule (ui/leaderboardView.test.ts:538).
+// the m23-s3 V5 rule.
 const S6_ID: OverlayId = 'menuView';
 const S6_META = OVERLAY_A11Y[S6_ID];
 
@@ -694,7 +694,7 @@ describe('MenuView — listbox and option semantics (m23-s6)', () => {
     // WRONG IMPL KILLED (1): setting the role inside render(). replaceChildren rebuilds the
     //   CHILDREN, not the <ul>, so that would look fine — until the very first frame between
     //   construction and the first render(), and until any future edit moves the rebuild up a
-    //   level. The registry anchor is a CONSTRUCTOR-TIME contract (ADR-0205 D1/D2), and this
+    //   level. The registry anchor is a CONSTRUCTOR-TIME contract, and this
     //   test asserts BEFORE any render() has ever run, so a render-time role reds.
     // WRONG IMPL KILLED (2): a hard-coded `aria-labelledby="menu-heading"` string that does not
     //   come from the already-resolved heading element (plan anti-pattern 12 — a second
@@ -743,7 +743,7 @@ describe('MenuView — listbox and option semantics (m23-s6)', () => {
     //   keydown never fires again. The APG activedescendant pattern puts tabindex on the
     //   CONTAINER only, which index.html:117 already ships.
     // WRONG IMPL KILLED (5): a PER-ROW keydown listener instead of one delegated listener on
-    //   the <ul> ([A11Y-T3]; it also leaks N closures per render). The non-bubbling dispatch at
+    //   the <ul> (it also leaks N closures per render). The non-bubbling dispatch at
     //   the end can ONLY be observed by a listener on the <li> itself.
     const { view, onInput } = newView();
     // Shown FIRST, so the per-row-listener probe cannot be excused by a `!this.visible` guard.
@@ -964,11 +964,10 @@ describe('MenuView — listbox and option semantics (m23-s6)', () => {
   });
 
   it('MV-A11Y-ACTIVEDESC-LEVEL-01 BITES: the pointer VALUE changes when the menu descends a level, even though BOTH levels select row.index 0', () => {
-    // THE P1 TOOTH — the one that was missing, and the reason the defect shipped past a green
-    // 37/37 suite. WRONG IMPL KILLED: `aria-activedescendant = menu-option-${row.index}`, with
-    //   no level qualifier. `buildMenuViewModel` (ui/menuModel.ts:320-349) emits `index` = the
+    // THE P1 TOOTH. WRONG IMPL KILLED: `aria-activedescendant = menu-option-${row.index}`, with
+    //   no level qualifier. `buildMenuViewModel` emits `index` = the
     //   ARRAY POSITION at BOTH levels, so the categories list with Party selected and Party's
-    //   leaf list with Monster Box selected BOTH produce index 0 — and therefore, pre-fix, the
+    //   leaf list with Monster Box selected BOTH produce index 0 — and therefore the
     //   IDENTICAL string. NVDA, JAWS and VoiceOver key their option announcement on a CHANGE of
     //   the aria-activedescendant VALUE, so an unchanged string is SILENCE: the menu descends a
     //   level, the whole list is replaced, the heading changes, and a screen-reader user is told
@@ -1029,7 +1028,7 @@ describe('MenuView — listbox and option semantics (m23-s6)', () => {
 
 // ===========================================================================
 // m23-s6 BLOCK H — overlayA11y wiring on the show()/hide() edge.
-// (gates X6-X8; A11Y-13 / A11Y-14 / A11Y-16)
+// (gates X6-X8)
 // ===========================================================================
 
 describe('MenuView — overlay a11y wiring on the show/hide edge (m23-s6)', () => {
@@ -1103,7 +1102,7 @@ describe('MenuView — overlay a11y wiring on the show/hide edge (m23-s6)', () =
     //   registry anchor. The target is RESOLVED from OVERLAY_A11Y.menuView.initialFocusSelector
     //   at assert time, and identity (`toBe`) is asserted — never `root.contains(active)`, which
     //   passes on any decorative wrapper.
-    // WRONG IMPL KILLED (3): a view that focuses anything itself (A11Y-15) — pairs with
+    // WRONG IMPL KILLED (3): a view that focuses anything itself — pairs with
     //   MV-NO-FOCUS-CALL, which bans the literal call from this file's source entirely.
     const target = document.querySelector<HTMLElement>(S6_META.initialFocusSelector);
     expect(
@@ -1165,13 +1164,13 @@ describe('MenuView — overlay a11y wiring on the show/hide edge (m23-s6)', () =
     //   re-open clears and RE-SCHEDULES the deferred-focus timer, but hide() must close every
     //   single time. A guarded hide() reads `visible === false` and SKIPS the close for exactly
     //   the case that needs it most — a record that has desynchronised from the DOM (S1's named
-    //   A13 leak, ui/overlayA11y.ts:55-59). menuView IS a member of BATTLE_FORCE_HIDE
-    //   (ui/overlayRegistry.ts:274-283), so main.ts's battle force-hide path really does drive
+    //   A13 leak, ui/overlayA11y.ts:55-59). menuView IS a member of BATTLE_FORCE_HIDE,
+    //   so main.ts's battle force-hide path really does drive
     //   this close, and if any writer ever sets style.display directly the record survives with
     //   a LIVE capture trap eating every Tab, a pending deferred-focus timer that will steal
     //   focus later, and a return target that expires — permanently, for the rest of the
     //   session. Unguarded, the next hide() HEALS all three, and a close with no record is a
-    //   documented pure no-op (ui/overlayA11y.ts:41-45, :136-137), so nothing is risked.
+    //   documented pure no-op, so nothing is risked.
     // ALSO KILLED: a hide() that closes only ONCE per open (a private `#closed` latch), which
     //   the third phase below catches; and a hide() that passes `undefined`, the overlay
     //   element, or the anchor as fallbackFocus — ADR-0205 A3 makes the literal `null` the
@@ -1255,7 +1254,7 @@ describe('MenuView — overlay a11y wiring on the show/hide edge (m23-s6)', () =
     // WRONG IMPL KILLED: an UNGUARDED show() — one that calls openOverlayA11y every time
     //   instead of only on the hidden->visible EDGE (`const wasVisible = this.visible` read
     //   BEFORE the display write; the helpView.ts:42-50 shape). A re-open clears and
-    //   RE-SCHEDULES the deferred-focus timer (ui/overlayA11y.ts:100-113), so focus is yanked
+    //   RE-SCHEDULES the deferred-focus timer, so focus is yanked
     //   back into the listbox out of nowhere. It is invisible to every attribute assertion,
     //   which is why it is proved by the sentinel still holding focus AND by the call count.
     // ALSO KILLED: reading `this.visible` AFTER writing style.display — that reads a constant
@@ -1325,7 +1324,7 @@ describe('MenuView — delegated keydown, split ownership (m23-s6)', () => {
   });
 
   // The physical codes menuView's own listener OWNS, and the input each must produce.
-  // Sourced from menuKeyInput (ui/menuModel.ts:276-296): the WASD aliases are NOT optional.
+  // Sourced from menuKeyInput: the WASD aliases are NOT optional.
   const MOVEMENT_CASES: readonly (readonly [string, 'up' | 'down' | 'left'])[] = [
     ['ArrowUp', 'up'],
     ['ArrowDown', 'down'],
@@ -1399,7 +1398,7 @@ describe('MenuView — delegated keydown, split ownership (m23-s6)', () => {
     //   and they are deliberately left to bubble so main.ts keeps ownership of them behind
     //   sessionGateBlocks()-first (main.ts:1102, W-M21B2-SESSION-GATE-FIRST / ADR-0182 D17 G20)
     //   and the Escape ladder. A menuView that swallows them routes a guarded action around the
-    //   session gate. This cheat passes 21/21 of the pre-existing tests (measured).
+    //   session gate.
     // WRONG IMPL KILLED (2) — A STOP PLACED ABOVE THE `undefined` CHECK: KeyM is the case that
     //   catches it, and the reason it is in this list. It is the only code here that
     //   `menuKeyInput` does not recognise AT ALL, so it is precisely what an impl that stops the
@@ -1410,7 +1409,7 @@ describe('MenuView — delegated keydown, split ownership (m23-s6)', () => {
     //   scrolling (main.ts:1103-1106 suppresses that first) — it causes SELECTION key-repeat,
     //   which main.ts:1129-1130 explicitly forbids. Asserted as "no emission", not as
     //   defaultPrevented.
-    // ArrowRight is here because menuKeyInput maps it to `enter` (ui/menuModel.ts:284-287), so
+    // ArrowRight is here because menuKeyInput maps it to `enter`, so
     // an impl that filters on the CODE instead of on the resolved input kind reds.
     const { view, onInput } = newView();
     const rows = rowsEl();
@@ -1504,7 +1503,7 @@ describe('MenuView — delegated keydown, split ownership (m23-s6)', () => {
   it('MV-KEYNAV-EFFECT-INERT-01 BITES: every input menuView consumes is provably INERT — menuStep(up|down|left) can only ever produce effect {kind:"none"}', () => {
     // THE SPLIT-OWNERSHIP SAFETY PROOF, MECHANISED. menuView consuming a key is only safe
     // because the three inputs it owns can never close the menu, activate a leaf, or reach a
-    // reducer: handleMenuInput (main.ts:650-661) maps 'none' to renderMenu() alone. That is a
+    // reducer: handleMenuInput maps 'none' to renderMenu() alone. That is a
     // property of menuModel, not of menuView.
     // WRONG IMPL KILLED: a FUTURE menuModel edit — ui/menuModel.ts:245-248 explicitly
     //   contemplates the one that would break it ("closing here would let a stray ArrowLeft
@@ -1662,18 +1661,17 @@ describe('MenuView — m23-s6 source pins (A11Y-15, A11Y-25 shape)', () => {
 
   it('MV-KEYDOWN-PAIRED-SOURCE BITES: #menu-rows carries BOTH a delegated click and a delegated keydown, and both bodies reference the SAME callback identifier', () => {
     // WRONG IMPL KILLED (1): a click-only row list. This is the SHAPE spec §5.4's GOOD fixture
-    //   describes and the shape evals/keyboard-operable-rows.eval.mjs (built by rb-13, ADR-0216,
-    //   after S10 shipped only three of its five declared evals) scans for: a click listener with
+    //   describes:
+    //   a click listener with
     //   no paired keydown and no native button/anchor
-    //   child is a mouse-only control. S6 ships the subject that eval will read, so the shape is
-    //   pinned HERE, in the slice that owns the file.
+    //   child is a mouse-only control.
     // WRONG IMPL KILLED (2): a keydown that calls something OTHER than the click's callback —
     //   e.g. a private method that decides navigation locally, which is the ADR-0014 breach the
     //   whole shell exists to avoid. Both bodies must reach `callbacks.onInput`, so it must
     //   occur at least TWICE (once in the click body, once in the keydown body).
     // WRONG IMPL KILLED (3): a keydown bound to `window`/`document` rather than delegated on
     //   the <ul> — that reintroduces the double-step this slice's split ownership prevents.
-    // WRONG IMPL KILLED (4) — THE DECOY COMMENT (fix cycle 1): deleting the real listener while
+    // WRONG IMPL KILLED (4) — THE DECOY COMMENT: deleting the real listener while
     //   leaving a comment that MENTIONS it. A raw-text `includes` cannot tell the two apart, and
     //   this repo has three measured bypasses of exactly that shape, so every PRESENCE pin below
     //   runs against COMMENT-STRIPPED source. (The BAN pin in MV-NO-FOCUS-CALL deliberately does
@@ -1761,12 +1759,7 @@ describe('MenuView — m23-s6 source pins (A11Y-15, A11Y-25 shape)', () => {
     //   listbox on EVERY arrow keypress, which cancels nothing but does defeat the whole point
     //   of routing through openOverlayA11y's single owned timer. This slice is the one that
     //   makes menuView a focus-RECEIVING overlay, so the ban has to be pinned in this file.
-    // `evals/overlay-a11y-manifest.eval.mjs` [A11Y-15] is now the PRIMARY oracle for a focus CALL
-    // in every `client/src/ui/*View.ts` (18 files, 8 spellings). This test is deliberately RETAINED
-    // for the ONE axis that eval cannot cover: it scans RAW source, so a `.focus(` appearing only
-    // inside a COMMENT reds here and is invisible to the eval, which MUST comment-strip because
-    // five shipped views name `.focus()` in their header comments by design (ADR-0217).
-    // DELIBERATELY NOT COMMENT-STRIPPED, unlike the PRESENCE pins above (fix cycle 1). The
+    // DELIBERATELY NOT COMMENT-STRIPPED, unlike the PRESENCE pins above. The
     // stripping exists because a comment can FORGE evidence that code exists; it must never be
     // used to EXCUSE a banned API, because a comment naming one is a standing invitation to
     // uncomment it, and the A11Y-15 ban is deliberately absolute.

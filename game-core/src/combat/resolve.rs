@@ -35,13 +35,12 @@ fn resolve_one_attack(
     variance: &TurnVariance,
     events: &mut Vec<BattleEvent>,
 ) {
-    // Panic on a missing skill id is a deliberate content-integrity invariant
-    // (ADR-0049): `validate_content` (game-core/src/content.rs) cross-checks at
+    // Panic on a missing skill id is a deliberate content-integrity invariant:
+    // `validate_content` (game-core/src/content.rs) cross-checks at
     // content-load that every species.learnable_skill_ids resolves, and both
     // battler constructors (server `battle_monster_from_row` and `wild_battle_monster`)
     // populate known_skill_ids only from that validated set — so in steady state
-    // this panic is unreachable. (Residual: a sync_content that removes a skill
-    // mid-battle is not repaired retroactively; see ADR-0049.)
+    // this panic is unreachable.
     let skill = skills
         .iter()
         .find(|s| s.id == skill_id)
@@ -134,12 +133,12 @@ fn resolve_one_attack(
             // between Faint and Switch — update apply_ko_switch_entry_abilities accordingly.
             debug_assert!(
                 matches!(events.get(events.len().wrapping_sub(2)), Some(BattleEvent::Faint { side }) if *side == defender_side),
-                "Faint→Switch adjacency invariant: expected Faint{{side:{defender_side:?}}} at events[n-2] before Switch (ADR-0100 D6)"
+                "Faint→Switch adjacency invariant: expected Faint{{side:{defender_side:?}}} at events[n-2] before Switch"
             );
             // D6 wiring: apply_entry_ability is called by apply_ko_switch_entry_abilities
             // in the outer resolver (resolve_full_turn / resolve_player_swap /
             // resolve_recruit_failure) after this function returns, by scanning the
-            // returned event stream for Faint→Switch pairs (ADR-0100 D6, M14.5h).
+            // returned event stream for Faint→Switch pairs.
         } else {
             let winner = acting_side;
             state.outcome = match winner {
@@ -151,7 +150,7 @@ fn resolve_one_attack(
     }
 
     // Set weather AFTER damage + faint resolve — weather-setting move does not boost
-    // its own hit (ADR-0095 D4). Fires even if the move KOs (the weather still changes).
+    // its own hit. Fires even if the move KOs (the weather still changes).
     if let Some(kind) = skill.sets_weather {
         use super::weather::{WeatherEffect, WEATHER_DEFAULT_TURNS};
         state.weather = Some(WeatherEffect::from_kind(kind, WEATHER_DEFAULT_TURNS));
@@ -160,7 +159,7 @@ fn resolve_one_attack(
         });
     }
 
-    // Apply status condition from the skill (m14e, ADR-0096). Only when ALL hold:
+    // Apply status condition from the skill. Only when ALL hold:
     //   1. Not immune (Immune hits return above; eff checked there).
     //   2. Target did NOT faint from this attack (status on a fainted monster is
     //      pointless; a switch-in is a new battle state for the next turn).
@@ -169,7 +168,7 @@ fn resolve_one_attack(
     //
     // We emit StatusApplied here (event only — no direct store write). `resolve_full_turn`
     // applies the event to BattleStatusStore AFTER DoT so newly-applied status
-    // takes effect the FOLLOWING turn (ADR-0096 §D1, correct game semantics).
+    // takes effect the FOLLOWING turn (correct game semantics).
     if let Some(kind) = skill.applies_status {
         use super::ability::StatusKind;
         use super::types::StatusEffect;
@@ -185,7 +184,7 @@ fn resolve_one_attack(
                 side: defender_side,
                 // Capture slot at emission time. The defender did not faint from this
                 // attack (!fainted guard above), so active has not changed for the
-                // defender side yet (ADR-0099 D1).
+                // defender side yet.
                 slot: match defender_side {
                     SideId::SideA => state.side_a.active,
                     SideId::SideB => state.side_b.active,
@@ -198,7 +197,7 @@ fn resolve_one_attack(
 
 /// Advance the battle's turn counter by one, honoring the turn-limit terminal.
 ///
-/// This is the SINGLE owner (ADR-0003 SSOT) of the `turn_number` advance and its
+/// This is the SINGLE owner of the `turn_number` advance and its
 /// `u16::MAX -> Fled` terminal. Every turn-advancing path routes its increment
 /// through here — `resolve_turn` (the normal full turn) and the server's
 /// `attempt_recruit` reducer (via `resolve_recruit_failure`) — so the terminal
@@ -257,8 +256,8 @@ pub fn resolve_turn(
         return events;
     }
 
-    // Advance the turn through the single SSOT owner of the turn-limit terminal
-    // (ADR-0003). `advance_turn` increments `turn_number` and terminates at
+    // Advance the turn through the single SSOT owner of the turn-limit terminal.
+    // `advance_turn` increments `turn_number` and terminates at
     // `u16::MAX -> Fled` BEFORE any swap/attack resolution, so no partial turn is
     // applied when the terminal fires. The recruit path (`attempt_recruit`) routes
     // its increment through the same helper, so the terminal cannot drift here.
@@ -374,14 +373,14 @@ fn skill_id_from(choice: &TurnChoice) -> u32 {
 }
 
 /// Resolve a full turn with status-effect and weather phases layered additively on
-/// [`resolve_turn`]'s existing event pipeline (ADR-0017/0023 — signature unchanged).
+/// [`resolve_turn`]'s existing event pipeline.
 ///
 /// Pipeline order:
 /// 1. Pre-turn: action-block checks (Paralysis/Sleep/Freeze) via [`apply_pre_turn_effects`].
 ///    A blocked side's choice is replaced with [`TurnChoice::Pass`].
 /// 2. Speed-ordered attacks via [`resolve_turn`] (unmodified plain-attack path).
 ///    Weather is read from `state.weather` inside `resolve_one_attack`; `sets_weather`
-///    fires after each attack's damage resolves (ADR-0095 D4).
+///    fires after each attack's damage resolves.
 /// 3. Post-turn: DoT (Poison/Burn) via [`apply_post_turn_effects`].
 /// 4. Status tick: Sleep decrement, Freeze thaw via [`tick_status`].
 /// 5. Weather tick: turn decrement + expiry via [`tick_weather`].
@@ -390,7 +389,7 @@ fn skill_id_from(choice: &TurnChoice) -> u32 {
 ///
 /// With an empty [`BattleStatusStore`], no blocking variance, `state.weather = None`,
 /// and an empty [`AbilityStore`], this is byte-identical to calling [`resolve_turn`]
-/// directly — the M7 regression proof-of-teeth (EARS-1).
+/// directly.
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_full_turn(
     state: &mut BattleState,
@@ -410,7 +409,7 @@ pub fn resolve_full_turn(
 
     // Phase 0: apply per-turn passive modifiers (status immunity, etc.) before
     // any blocking checks. Clears any status the active monster's ability immunises
-    // against so immunity acts before Paralysis/Sleep/Freeze blocking (ADR-0094).
+    // against so immunity acts before Paralysis/Sleep/Freeze blocking.
     apply_ability_modifiers(state, status, abilities);
 
     // Phase 1: pre-turn action-block.
@@ -433,7 +432,7 @@ pub fn resolve_full_turn(
 
     // Phase 2: resolve the turn (turn-number advance + speed-ordered attacks).
     // Weather modifier is read from state.weather inside resolve_one_attack;
-    // sets_weather fires after each hit (ADR-0095 D4 — does not boost own damage).
+    // sets_weather fires after each hit (does not boost own damage).
     let turn_events = resolve_turn(
         state,
         effective_a,
@@ -444,11 +443,11 @@ pub fn resolve_full_turn(
     );
     events.extend(turn_events.iter().cloned());
 
-    // Phase 2.5: apply entry abilities for KO auto-switches (ADR-0100 D6, M14.5h).
+    // Phase 2.5: apply entry abilities for KO auto-switches.
     apply_ko_switch_entry_abilities(state, &turn_events, abilities, status);
     sync_status_to_monsters(state, status);
 
-    // Phases 3–5: post-turn pipeline, shared with swap/recruit paths (ADR-0098 D1, SSOT ADR-0003).
+    // Phases 3–5: post-turn pipeline, shared with swap/recruit paths.
     run_post_turn_phases(state, status, sv, &turn_events, &mut events);
 
     events
@@ -461,8 +460,7 @@ pub fn resolve_full_turn(
 ///
 /// Returns an empty `Vec` without mutating `state` when the battle is already
 /// decided (`outcome != Ongoing`) — total-safety, mirrors `resolve_turn`'s
-/// guard so a stray call on a finished battle can never resolve an action
-/// (red-team R-01).
+/// guard so a stray call on a finished battle can never resolve an action.
 #[must_use = "the returned events are the authoritative turn record; dropping them loses it"]
 pub fn resolve_enemy_turn(
     state: &mut BattleState,
@@ -505,7 +503,7 @@ pub fn resolve_enemy_turn(
 /// Apply a FAILED recruit attempt to the battle state (the recruit roll already
 /// missed; the caller owns the roll and the no-XP rebuild on success).
 ///
-/// SSOT for the failed-recruit battle transition (ADR-0003) so the server's
+/// SSOT for the failed-recruit battle transition so the server's
 /// `attempt_recruit` reducer cannot drift from this rule:
 /// 1. Advance the turn through `advance_turn` (the single owner of the
 ///    `u16::MAX -> Fled` terminal). If it returns `false` — the terminal fired or
@@ -516,7 +514,7 @@ pub fn resolve_enemy_turn(
 /// 3. After the wild's strike-back, run the same post-turn phases as
 ///    `resolve_full_turn` (DoT, weather chip, status tick, StatusApplied write-back,
 ///    weather tick) so status/weather clocks tick every turn, not only on
-///    `submit_attack` turns (ADR-0098 D1, closes R1/R3).
+///    `submit_attack` turns (closes R1/R3).
 ///
 /// Returns all events produced (strike-back + post-turn). Empty when the terminal
 /// fired or the wild is skill-less (post-turn phases still run when the wild is
@@ -537,7 +535,7 @@ pub fn resolve_recruit_failure(
         return Vec::new();
     }
 
-    // Phase 0: apply per-turn passive modifiers before any action resolves (ADR-0094).
+    // Phase 0: apply per-turn passive modifiers before any action resolves.
     super::ability::apply_ability_modifiers(state, status, abilities);
 
     // Phase 1.5: sync BattleMonster.status FROM BattleStatusStore.
@@ -554,11 +552,11 @@ pub fn resolve_recruit_failure(
         events.extend(strike_events.iter().cloned());
     }
 
-    // Phase 2.5: apply entry abilities for KO auto-switches from wild's strike-back (ADR-0100 D6).
+    // Phase 2.5: apply entry abilities for KO auto-switches from wild's strike-back.
     apply_ko_switch_entry_abilities(state, &strike_events, abilities, status);
     sync_status_to_monsters(state, status);
 
-    // Phases 3–5: post-turn pipeline (same as resolve_full_turn; ADR-0098 D1).
+    // Phases 3–5: post-turn pipeline (same as resolve_full_turn).
     // Runs even when the wild is skill-less — the turn advanced, so clocks tick.
     run_post_turn_phases(state, status, sv, &strike_events, &mut events);
 
@@ -566,22 +564,21 @@ pub fn resolve_recruit_failure(
 }
 
 /// Resolve a player swap: swap first, then the enemy side attacks the new active,
-/// then run the post-turn status/weather phases (ADR-0098 D1, closes R1).
+/// then run the post-turn status/weather phases.
 ///
 /// Emits a `Switch` event for the player side, followed by enemy-turn and
 /// post-turn events.
 ///
 /// Swapping is always permitted regardless of the player's active monster status
-/// condition (ADR-0098 D3, D-14.5-1 decision b): this path does not call
-/// `apply_pre_turn_effects`. The swap-on-status-block conversion described in the
-/// original ADR-0092 §D3 is dead code and hereby de-scoped.
+/// condition: this path does not call
+/// `apply_pre_turn_effects`.
 ///
 /// This function does NOT call `advance_turn`; player swaps are not counted as
 /// numbered turns toward the `u16::MAX` terminal.
 /// Returns an empty `Vec` without mutating `state` when the battle is already
 /// decided (`outcome != Ongoing`) — total-safety, mirrors `resolve_turn`'s
 /// guard so a stray call on a finished battle can never switch monsters or
-/// grant the enemy a free turn (red-team R-01).
+/// grant the enemy a free turn.
 #[must_use = "the returned events are the authoritative turn record; dropping them loses it"]
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_player_swap(
@@ -606,14 +603,14 @@ pub fn resolve_player_swap(
         SideId::SideB => state.side_b.set_active(new_active),
     };
     if set.is_err() {
-        return events; // illegal swap rejected: no mutation, no Switch, no enemy turn (ADR-0053)
+        return events; // illegal swap rejected: no mutation, no Switch, no enemy turn
     }
     events.push(BattleEvent::Switch {
         side: swap_side,
         new_active,
     });
 
-    // Entry ability: fires when a monster enters the active slot (ADR-0094).
+    // Entry ability: fires when a monster enters the active slot.
     // Called before Phase 1.5 so EntryHeal HP and StatusImmunity clears are
     // captured in BattleMonster.status by the sync below.
     super::ability::apply_entry_ability(state, swap_side, abilities, status);
@@ -625,11 +622,11 @@ pub fn resolve_player_swap(
     let enemy_events = resolve_enemy_turn(state, enemy_side, skills, type_chart, variance);
     events.extend(enemy_events.iter().cloned());
 
-    // Phase 2.5: apply entry abilities for KO auto-switches from enemy's counter-attack (ADR-0100 D6).
+    // Phase 2.5: apply entry abilities for KO auto-switches from enemy's counter-attack.
     apply_ko_switch_entry_abilities(state, &enemy_events, abilities, status);
     sync_status_to_monsters(state, status);
 
-    // Phases 3–5: post-turn pipeline (same as resolve_full_turn; ADR-0098 D1).
+    // Phases 3–5: post-turn pipeline (same as resolve_full_turn).
     run_post_turn_phases(state, status, sv, &enemy_events, &mut events);
 
     events
@@ -640,8 +637,8 @@ pub fn resolve_player_swap(
 /// `resolve_one_attack` emits adjacent `Faint { side } + Switch { side, .. }` pairs
 /// when a defender is KO'd and the game auto-advances to the next conscious team
 /// member. This function post-processes that event slice and fires
-/// [`super::ability::apply_entry_ability`] for each such pair, closing the ADR-0100
-/// D6 gap without threading `AbilityStore`/`BattleStatusStore` through the
+/// [`super::ability::apply_entry_ability`] for each such pair
+/// without threading `AbilityStore`/`BattleStatusStore` through the
 /// inner `resolve_one_attack` / `resolve_turn` stack.
 ///
 /// Called by `resolve_full_turn`, `resolve_player_swap`, and `resolve_recruit_failure`
@@ -687,8 +684,7 @@ fn sync_status_to_monsters(state: &mut BattleState, status: &super::status::Batt
 
 /// Run post-turn phases 3–5 after the combat action for a turn.
 ///
-/// Shared by `resolve_full_turn`, `resolve_player_swap`, and `resolve_recruit_failure`
-/// (ADR-0003 SSOT, ADR-0098 D1).
+/// Shared by `resolve_full_turn`, `resolve_player_swap`, and `resolve_recruit_failure`.
 ///
 /// `action_events`: the events from the combat action; `StatusApplied` events are
 ///   extracted for phase 4.5 write-back.
@@ -704,7 +700,7 @@ fn run_post_turn_phases(
     use super::weather::{apply_weather_damage, tick_weather};
 
     // Collect StatusApplied triples (side, slot, status) from the combat action for
-    // phase 4.5. The slot is encoded in the event at emission time (ADR-0099 D1),
+    // phase 4.5. The slot is encoded in the event at emission time,
     // so no active-slot capture is needed here — the event carries the correct target
     // even if DoT/weather-chip auto-switches fire in phases 3/3.5.
     let status_applied: Vec<(SideId, u32, super::types::StatusEffect)> = action_events
@@ -740,13 +736,13 @@ fn run_post_turn_phases(
         out_events.extend(tick_events);
     }
 
-    // Phase 4.5: write StatusApplied effects into BattleStatusStore (ADR-0096 §D1).
+    // Phase 4.5: write StatusApplied effects into BattleStatusStore.
     // MUST be after phases 3/4 so newly-inflicted status does NOT cause same-turn
     // DoT or Sleep/Freeze tick — it takes effect the FOLLOWING turn.
     //
-    // Slot comes from the event (ADR-0099 D1), not from state.side_X.active — so a
+    // Slot comes from the event, not from state.side_X.active — so a
     // weather-chip KO + auto-switch in phase 3.5 cannot redirect the write.
-    // Drop the write if the targeted monster fainted in phase 3/3.5 (ADR-0099 D2).
+    // Drop the write if the targeted monster fainted in phase 3/3.5.
     if state.outcome == BattleOutcome::Ongoing {
         for (side, slot, new_status) in status_applied {
             let idx = slot as usize;
@@ -764,7 +760,7 @@ fn run_post_turn_phases(
             }
             .unwrap_or(false);
             if !is_conscious {
-                // Drop: monster fainted between emission and Phase 4.5 (ADR-0099 D2).
+                // Drop: monster fainted between emission and Phase 4.5.
                 continue;
             }
             let store_vec = match side {
@@ -902,7 +898,6 @@ mod tests {
     ///
     /// We use a side A monster with LOW speed and side B with HIGH speed, then
     /// verify that the first Damage event targets Side A (B struck first).
-    /// Starts red because `resolve_turn` is `todo!()`.
     #[test]
 
     fn faster_side_attacks_first() {
@@ -941,7 +936,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: an impl that ignores the tie_breaker on equal speed.
-    /// Starts red because `resolve_turn` is `todo!()`.
     #[test]
 
     fn speed_tie_uses_tie_breaker() {
@@ -980,7 +974,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Proof-of-teeth (ADR-0010): KO by faster side prevents slower side acting
+    // Proof-of-teeth: KO by faster side prevents slower side acting
     //
     // This is the critical "incorrect speed ordering would change the battle
     // outcome" fixture. If the resolver incorrectly lets the SLOWER side act
@@ -999,7 +993,6 @@ mod tests {
     ///
     /// Kills: an impl that resolves both attacks regardless of KO, or that
     /// has incorrect speed ordering (B acting before A when A is faster).
-    /// Starts red because `resolve_turn` is `todo!()`.
     #[test]
 
     fn ko_by_faster_side_prevents_slower_side_from_acting() {
@@ -1062,7 +1055,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: an impl that does not auto-switch when the active monster faints.
-    /// Starts red because `resolve_turn` is `todo!()`.
     #[test]
 
     fn auto_switch_on_faint_when_backup_exists() {
@@ -1147,7 +1139,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: an impl that doesn't emit BattleEnd or set the outcome.
-    /// Starts red because `resolve_turn` is `todo!()`.
     #[test]
 
     fn battle_ends_when_all_members_fainted() {
@@ -1206,7 +1197,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: an impl where the enemy attacks the OLD active instead of the new one.
-    /// Starts red because `resolve_player_swap` is `todo!()`.
     #[test]
 
     fn player_swap_then_enemy_attacks_new_active() {
@@ -1274,7 +1264,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: an impl where both sides act during resolve_enemy_turn.
-    /// Starts red because `resolve_enemy_turn` is `todo!()`.
     #[test]
 
     fn resolve_enemy_turn_only_enemy_acts() {
@@ -1352,7 +1341,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: an impl that doesn't increment turn_number or increments by != 1.
-    /// Starts red because `resolve_turn` is `todo!()`.
     #[test]
 
     fn turn_number_increments_by_one() {
@@ -1395,7 +1383,6 @@ mod tests {
 
     proptest! {
         /// Kills: any non-deterministic impl (e.g. using thread_rng inside resolve_turn).
-        /// Starts red because `resolve_turn` is `todo!()`.
         #[test]
         fn prop_resolve_turn_is_deterministic(
             aff_a in arb_affinity(),
@@ -1449,13 +1436,6 @@ mod tests {
 
     /// Kills: an impl that does `turn_number += 1` unconditionally at u16::MAX,
     /// causing a panic in debug mode (overflow) or a silent wrap to 0 in release.
-    ///
-    /// RED state today: in the debug test profile, `+= 1` on `u16::MAX` panics via
-    /// overflow check → the test function panics → #[should_panic] would pass, but
-    /// the assertions after the call are the real teeth. We instead just call it
-    /// normally and assert the post-conditions, which means:
-    ///   - today (no guard): panics in debug → test FAILS with a panic (runtime-RED)
-    ///   - after the fix: returns cleanly, assertions all pass (GREEN)
     ///
     /// Assertion (c) `turn_number == u16::MAX` is the mutation-killing assertion:
     /// a mutant that increments anyway wraps to 0 → assertion (c) fails.
@@ -1524,9 +1504,7 @@ mod tests {
     /// `advance_turn` from a mid-range turn_number on an Ongoing battle must:
     ///   - return true
     ///   - increment turn_number by exactly 1
-    ///   - leave outcome == BattleOutcome::Ongoing
-    ///
-    /// RED state: compile-RED because `advance_turn` does not exist yet.
+    ///   - leave outcome == BattleOutcome::Ongoing.
     #[test]
     fn advance_turn_mid_range_returns_true_and_increments() {
         let monster_a = make_monster(Affinity::Fire, 200, 50);
@@ -1562,8 +1540,6 @@ mod tests {
     /// This is THE proof-of-teeth for the recruit-path terminal: when turn_number
     /// is already u16::MAX, advance_turn must terminate the battle without
     /// overflowing (no panic, no wrap-to-0) and must set the Fled outcome.
-    ///
-    /// RED state: compile-RED because `advance_turn` does not exist yet.
     #[test]
     fn advance_turn_at_u16_max_is_terminal_without_wrap_or_panic() {
         let monster_a = make_monster(Affinity::Fire, 500, 50);
@@ -1578,7 +1554,7 @@ mod tests {
         assert!(
             !result,
             "TEETH(return): advance_turn must return false at turn_number==u16::MAX; \
-             a mutant returning true fails here (ADR-0003: terminal signals caller to stop)"
+             a mutant returning true fails here (terminal signals caller to stop)"
         );
 
         // (b) outcome: must be Fled specifically — not SideAWins, SideBWins, or Ongoing
@@ -1599,12 +1575,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // M8.8b-A2: advance_turn total-safety guard (runtime-RED today)
+    // advance_turn total-safety guard
     //
     // advance_turn gains a new early-return: if state.outcome != Ongoing it
-    // must return false WITHOUT touching outcome or turn_number.  Today it
-    // does NOT have this guard, so on a SideAWins battle at u16::MAX it
-    // overwrites outcome to Fled — this test is therefore RUNTIME-RED now.
+    // must return false WITHOUT touching outcome or turn_number.
     // -----------------------------------------------------------------------
 
     /// Kills: an impl that overwrites a decided outcome with Fled when
@@ -1613,9 +1587,6 @@ mod tests {
     /// Setup: outcome already SideAWins, turn_number u16::MAX.
     /// After the total-safety guard: advance_turn must return false and leave
     /// outcome == SideAWins (not Fled), turn_number == u16::MAX.
-    ///
-    /// RED today: current advance_turn hits the u16::MAX branch first, sets
-    /// Fled, and returns false — so the outcome assertion (SideAWins) fails.
     #[test]
     fn advance_turn_on_decided_battle_preserves_outcome() {
         let monster_a = make_monster(Affinity::Fire, 200, 50);
@@ -1652,8 +1623,6 @@ mod tests {
     ///
     /// Kills: an impl that only guards the first call but allows wrapping on
     /// subsequent calls (e.g. by checking outcome rather than turn_number).
-    ///
-    /// RED state: compile-RED because `advance_turn` does not exist yet.
     #[test]
     fn advance_turn_at_u16_max_is_idempotent() {
         let monster_a = make_monster(Affinity::Fire, 200, 50);
@@ -1684,9 +1653,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // M8.8b-D: resolve_recruit_failure behavioral teeth
-    //
-    // Tests compile-RED today because resolve_recruit_failure does not exist.
+    // resolve_recruit_failure behavioral teeth
     //
     // Contract:
     //   1. Call advance_turn(state).
@@ -1713,8 +1680,6 @@ mod tests {
     ///     would let the wild hit side_a at the terminal → HP decreases → fails.
     ///   - A missing terminal fires the strike-back → events non-empty → fails.
     ///   - A wrapping impl → turn_number == 0 → fails.
-    ///
-    /// RED state: compile-RED (resolve_recruit_failure absent).
     #[test]
     fn resolve_recruit_failure_at_u16_max_terminates_without_strikeback() {
         let chart = make_type_chart();
@@ -1781,8 +1746,6 @@ mod tests {
     ///
     /// Kills: a mutant that skips the resolve_enemy_turn call (events empty /
     /// HP unchanged). Also kills a mutant that doesn't advance the turn.
-    ///
-    /// RED state: compile-RED (resolve_recruit_failure absent).
     #[test]
     fn resolve_recruit_failure_skilled_wild_advances_and_strikes() {
         let chart = make_type_chart();
@@ -1846,8 +1809,6 @@ mod tests {
     ///
     /// Kills: `wild_has_skills && advance_turn(...)` short-circuit mutant —
     /// turn_number stays 5 → assertion fails.
-    ///
-    /// RED state: compile-RED (resolve_recruit_failure absent).
     #[test]
     fn resolve_recruit_failure_skillless_wild_advances_no_strike() {
         let chart = make_type_chart();
@@ -1908,10 +1869,7 @@ mod tests {
     /// Documents that referencing an unknown skill_id panics with a content-integrity message.
     ///
     /// Kills: an impl that silently ignores or returns an empty event list for an unknown
-    /// skill_id (which violates the ADR-0049 content-integrity invariant). The bare
-    /// `#[should_panic]` was tautological because a trailing `panic!` satisfied it regardless
-    /// of whether `resolve_turn` actually panicked — `expected=` narrows the gate so only
-    /// the real content-lookup panic passes (12.5f-4).
+    /// skill_id.
     #[test]
     #[should_panic(expected = "skill id 9999 not found in skills registry")]
     fn unknown_skill_id_panics() {
@@ -1932,7 +1890,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // M8.6a: pure-core swap legality — PROOF-OF-TEETH (ADR-0053)
+    // pure-core swap legality — PROOF-OF-TEETH
     //
     // The resolver must route every `active = idx` write through the checked
     // `BattleSide::set_active`, so an out-of-bounds or fainted `team_index`
@@ -2173,8 +2131,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Terminal-state guards (#26b): enemy-turn and player-swap on a DECIDED
-    // battle must be total no-ops (red-team R-01).
+    // Terminal-state guards: enemy-turn and player-swap on a DECIDED
+    // battle must be total no-ops.
     // -----------------------------------------------------------------------
 
     /// Kills: an impl of `resolve_enemy_turn` without the `outcome != Ongoing`
@@ -2298,7 +2256,7 @@ mod tests {
         assert_eq!(state.outcome, BattleOutcome::Ongoing);
     }
 
-    /// Kills: `speed_b > speed_a` -> `>=` (232:27). On an exact speed tie the
+    /// Kills: `speed_b > speed_a` -> `>=`. On an exact speed tie the
     /// breaker must decide BOTH directions; the mutant hardwires B-first.
     #[test]
     fn speed_tie_breaker_decides_both_directions() {
@@ -2332,8 +2290,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // M14.5a gating tests — post-turn phase coverage for the two new paths
-    // (EARS 14.5a-2 and EARS 14.5a-4)
+    // post-turn phase coverage for the two new paths
     // -----------------------------------------------------------------------
 
     use crate::combat::types::StatusEffect;
@@ -2352,7 +2309,7 @@ mod tests {
         }
     }
 
-    // EARS 14.5a-2a: weather clock ticks during resolve_recruit_failure
+    // weather clock ticks during resolve_recruit_failure
     //
     // Kills: an impl that runs the turn advance + enemy strike but omits the
     // post-turn phase call (run_post_turn_phases), leaving turns_remaining at 3.
@@ -2389,7 +2346,7 @@ mod tests {
         );
     }
 
-    // EARS 14.5a-2b: Poison DoT fires on the swapped-in monster during resolve_player_swap
+    // Poison DoT fires on the swapped-in monster during resolve_player_swap
     //
     // Kills: an impl that performs the swap + enemy attack but omits
     // run_post_turn_phases, leaving the new active's HP unchanged at 400
@@ -2479,7 +2436,7 @@ mod tests {
         );
     }
 
-    // EARS 14.5a-4: swap is always permitted regardless of the active monster's status
+    // swap is always permitted regardless of the active monster's status
     //
     // Kills: any impl that routes resolve_player_swap through apply_pre_turn_effects
     // and converts a Sleep/Freeze/Paralysis block into a TurnChoice::Pass, which

@@ -1,17 +1,14 @@
-//! `trading` — server-module domain submodule (M15, ADR-0106).
+//! `trading` — server-module domain submodule.
 //!
 //! Thin imperative shell: validate caller + ownership, delegate rule-level checks
 //! to `game_core::trading`, write the `trade_offer` table. The atomic swap re-reads
 //! live `monster`/`inventory`/`player_wallet` rows in one SpacetimeDB transaction
-//! before executing any ownership transfer (TR-15, ADR-0106 D3).
+//! before executing any ownership transfer.
 //!
 //! Flow: propose_trade → respond_trade(accept) → confirm_trade → atomic swap.
 //! Cancellation paths: cancel_trade (either party) + on_disconnect (lib.rs).
-//! Liveness: a scheduled TTL reaper deletes offers older than `TRADE_OFFER_TTL_MS`
-//! (16.5f-4, ADR-0117); every offer-deletion path disarms its schedule row.
-//!
-//! This file name is part of the canonical `touches:` vocabulary fixed by
-//! ADR-0056 — keep it stable.
+//! Liveness: a scheduled TTL reaper deletes offers older than `TRADE_OFFER_TTL_MS`;
+//! every offer-deletion path disarms its schedule row.
 
 use crate::economy::{grant_currency, spend_currency, wallet_balance};
 use crate::guards::{escrowed_currency_amount, escrowed_item_qty, log_reject, reject_if_in_battle};
@@ -21,7 +18,8 @@ use crate::schema::{battle, inventory, monster, monster_pub, player, trade_offer
 use game_core::{
     authorize_confirm, authorize_respond, build_swap_plan, check_headroom, is_offer_stale,
     make_monster_card, validate_proposal, ApplyStep, ItemStack, LiveMonsterOwner, MonsterCard,
-    ProposalSide, TradeItem, TradeSide, TradeStatus, TRADE_OFFER_TTL_MS,
+    ProposalSide, TradeItem, TradeSide, TradeStatus, MAX_TRADE_MONSTERS_PER_SIDE,
+    TRADE_OFFER_TTL_MS,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 
@@ -29,12 +27,9 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// DoS bound, not a game rule (ADR-0166 D3). File-local by scope: guards.rs and
-/// lib.rs are outside this slice. `MAX_PARTY_SIZE` is deliberately NOT reused — a
-/// trade is not a party (boxed monsters are tradeable), and box-monster trading
-/// will bump THIS constant. n == 0 is legal: one-sided trades are valid and
-/// emptiness is validate_proposal's cross-side EmptyOffer rule, not restated here.
-const MAX_TRADE_MONSTERS_PER_SIDE: usize = 64;
+// `MAX_TRADE_MONSTERS_PER_SIDE` is game-core's (imported above). n == 0 is legal:
+// one-sided trades are valid and emptiness is validate_proposal's cross-side
+// EmptyOffer rule, not restated here.
 const MAX_TRADE_ITEMS_PER_SIDE: usize = 64;
 
 /// Bound ONE side of a proposed trade. The two caps are INDEPENDENT limits, not a
@@ -55,7 +50,7 @@ fn check_trade_side_size(n_monsters: usize, n_items: usize) -> Result<(), String
 }
 
 /// Returns true if `owner` has any active (Pending or ConfirmedByCounterparty)
-/// trade offer, as either initiator or counterparty (TR-20, D4).
+/// trade offer, as either initiator or counterparty.
 /// Uses the two btree indexes — O(active_offers_for_owner), not O(total).
 fn has_active_trade(ctx: &ReducerContext, owner: Identity) -> bool {
     ctx.db
@@ -105,10 +100,10 @@ fn build_cards(
 }
 
 // ---------------------------------------------------------------------------
-// TTL reaper (16.5f-4, ADR-0117)
+// TTL reaper
 // ---------------------------------------------------------------------------
 
-// Scheduled table colocated with its reducer (ADR-0056 exception, mirrors pvp_deadline_schedule).
+// Scheduled table colocated with its reducer.
 // PRIVATE — prevents client schedule manipulation; the underlying facts are already public via trade_offer.
 #[spacetimedb::table(accessor = trade_offer_reaper_schedule, scheduled(trade_offer_reaper))]
 pub struct TradeOfferReaperSchedule {
@@ -125,7 +120,7 @@ pub struct TradeOfferReaperSchedule {
 ///
 /// The deadline is computed FROM THE MS-FLOORED `created_at_ms` (not raw micros) —
 /// kills the ms-truncation edge where the schedule could fire fractionally before
-/// `is_offer_stale`'s ms clock reaches the TTL boundary (ADR-0117 D4).
+/// `is_offer_stale`'s ms clock reaches the TTL boundary.
 fn schedule_trade_reaper(ctx: &ReducerContext, trade_id: u64, created_at_ms: i64) {
     let deadline_micros = created_at_ms
         .saturating_mul(1_000)
@@ -161,17 +156,16 @@ fn disarm_trade_reaper(ctx: &ReducerContext, trade_id: u64) {
     }
 }
 
-/// rb-83 (ADR-0252 D2): the caller's live INCOMING offers — every active
+/// The caller's live INCOMING offers — every active
 /// `trade_offer` naming `counterparty` on the counterparty column, read through
 /// its btree index — projected to `(trade_id, created_at_ms)` so the accounts
 /// module can judge them against the deletion request without this module ever
-/// reading account state (the m22-s5 bypass bans). Counterparty column ONLY:
+/// reading account state. Counterparty column ONLY:
 /// `propose_trade` is blanket-gated, so a deletion-gated caller can never have
 /// originated a post-request offer, and every initiator-side offer predates the
-/// request and stays completable (PRV1-10). `is_active()` is the shared liveness
+/// request and stays completable. `is_active()` is the shared liveness
 /// spelling (`cancel_trades_on_disconnect`); both variants are active today, so
-/// the filter is forward-defensive against a future terminal variant. Body
-/// byte-frozen by `rb83_new_seams_are_declared_once_and_frozen`.
+/// the filter is forward-defensive against a future terminal variant.
 pub(crate) fn open_offers_addressed_to(
     ctx: &ReducerContext,
     counterparty: Identity,
@@ -185,12 +179,12 @@ pub(crate) fn open_offers_addressed_to(
         .collect()
 }
 
-/// rb-83 (ADR-0252 D2): decline the given offers — disarm each TTL schedule row
+/// Decline the given offers — disarm each TTL schedule row
 /// first, then delete the offer (the `erase_trade_offers` order). Called only
 /// from `accounts::cancel_account_deletion` with the ids
 /// `accounts::plan_declines_at_cancel` selected; the policy lives there, this
 /// is the write half kept inside the module that owns `trade_offer` (D0). No
-/// assets move: escrow is guard-in-place (ADR-0106 D8), so a delete here is the
+/// assets move: escrow is guard-in-place, so a delete here is the
 /// same effect as the counterparty declining. EA-REAPER-02 site 5.
 pub(crate) fn decline_offers(ctx: &ReducerContext, trade_ids: &[u64]) {
     for &trade_id in trade_ids {
@@ -202,13 +196,13 @@ pub(crate) fn decline_offers(ctx: &ReducerContext, trade_ids: &[u64]) {
 /// Scheduled reaper: delete a trade offer that has outlived `TRADE_OFFER_TTL_MS`.
 ///
 /// This is a SCHEDULER-ONLY reducer — clients must never call it directly.
-/// Guard: `ctx.sender() != ctx.database_identity()` (identical to `pvp_deadline_reaper`,
-/// ADR-0056). Staleness is re-checked via `is_offer_stale` so an early fire or
+/// Guard: `ctx.sender() != ctx.database_identity()` (identical to `pvp_deadline_reaper`).
+/// Staleness is re-checked via `is_offer_stale` so an early fire or
 /// clock skew never reaps a fresh offer.
 ///
 /// No self-disarm: one-shot `ScheduleAt::Time` rows are deleted BY THE RUNTIME
 /// after the reducer returns ("Scheduled reducers delete the row after execution"
-/// — SpacetimeDB docs, schedule-tables §Row Lifecycle; ADR-0109 D7 precedent).
+/// — SpacetimeDB docs, schedule-tables §Row Lifecycle).
 /// A self-delete here would race the runtime's post-execution delete.
 #[spacetimedb::reducer]
 pub fn trade_offer_reaper(
@@ -238,25 +232,25 @@ pub fn trade_offer_reaper(
 ///
 /// Guards (in order):
 /// 0. Both sides' monster/item list lengths are within the per-side DoS caps
-///    (`check_trade_side_size`, ADR-0166 D3) — checked before ANY DB read, so the
+///    (`check_trade_side_size`) — checked before ANY DB read, so the
 ///    unbounded `HashSet` dedups in `validate_proposal` and the per-item inventory
 ///    scans below can never run on an oversized client vector.
 /// 1. Caller must be joined.
-///    1a. Caller is not deletion-gated (ADR-0227 / spec §4.7): an account mid-grace or
-///    terminal cannot OPEN a new trade commitment (PRV1-9); existing trades are
-///    untouched (PRV1-10).
-/// 2. Counterparty != caller (no self-trade, TR-21).
-/// 3. Neither party has an active offer (TR-20 / D4).
-/// 4. validate_proposal (empty offer / duplicate monster IDs / zero-qty items, TR-1/22).
+///    1a. Caller is not deletion-gated: an account mid-grace or
+///    terminal cannot OPEN a new trade commitment; existing trades are
+///    untouched.
+/// 2. Counterparty != caller (no self-trade).
+/// 3. Neither party has an active offer.
+/// 4. validate_proposal (empty offer / duplicate monster IDs / zero-qty items).
 /// 5. All initiator monsters exist and are owned by caller.
 /// 6. All counterparty monsters exist and are owned by counterparty.
 /// 7. No initiator monster is in an Ongoing battle (`reject_if_in_battle`, chains
-///    both `player_identity()` and `opponent_identity()` indexes — ADR-0112 D1/D2).
+///    both `player_identity()` and `opponent_identity()` indexes).
 /// 8. No counterparty monster is in an Ongoing battle (same guard, same coverage).
 ///
 /// On success: inserts a `trade_offer` row with `status = Pending`. Assets are
 /// NOT moved — the `reject_if_monster_in_trade` / `escrowed_*` guards enforce
-/// the escrow invariant in every mutating reducer (ADR-0106 D3).
+/// the escrow invariant in every mutating reducer.
 #[allow(clippy::too_many_arguments)]
 #[spacetimedb::reducer]
 pub fn propose_trade(
@@ -271,7 +265,7 @@ pub fn propose_trade(
 ) -> Result<(), String> {
     let me = ctx.sender();
 
-    // Guard 0 (ADR-0166 D3): bound both sides BEFORE any DB read, following
+    // Guard 0: bound both sides BEFORE any DB read, following
     // battle.rs:62-75's bound-before-any-DB-read ordering.
     check_trade_side_size(initiator_monster_ids.len(), initiator_items.len())?;
     check_trade_side_size(counterparty_monster_ids.len(), counterparty_items.len())?;
@@ -282,14 +276,12 @@ pub fn propose_trade(
         .identity()
         .find(me)
         .ok_or_else(|| "not joined".to_string())?;
-    // Guard 1a (ADR-0227): reject opening a NEW commitment for a deletion-gated caller.
-    // Fully-qualified + `?;` on purpose — both are pinned (unshadowable path, no discarded
-    // verdict). Placed after the caps (ADR-0166 D3 bound-before-DB-read is preserved) and
-    // with the caller-state preamble, before any counterparty read. Review stop:
-    // rb-79 (ADR-0249) byte-freezes the whole prefix above this statement in trading_tests.rs.
+    // Guard 1a: reject opening a NEW commitment for a deletion-gated caller.
+    // Placed after the caps and with the caller-state preamble, before any counterparty
+    // read.
     crate::guards::require_not_deleting(ctx, "propose_trade")?;
 
-    // Counterparty must be a joined player (prevents phantom-offer DoS, ADR-0106).
+    // Counterparty must be a joined player (prevents phantom-offer DoS).
     ctx.db
         .player()
         .identity()
@@ -322,7 +314,7 @@ pub fn propose_trade(
     // Prevents the counterparty_currency=MAX DoS that locks all currency-dependent reducers.
     if initiator_currency > 0 {
         let bal = wallet_balance(ctx, me);
-        // Escrow is provably 0 here under ADR-0106 D4 (one active offer per player — validate_proposal above already rejected active-trade parties); kept symmetric for the auction-house extension (ADR-0117 D3).
+        // Escrow is provably 0 here (one active offer per player — validate_proposal above already rejected active-trade parties); kept symmetric for the auction-house extension.
         let escrowed = escrowed_currency_amount(
             ctx.db
                 .trade_offer()
@@ -339,7 +331,7 @@ pub fn propose_trade(
     }
     if counterparty_currency > 0 {
         let cp_bal = wallet_balance(ctx, counterparty);
-        // Escrow is provably 0 here under ADR-0106 D4 (one active offer per player — validate_proposal above already rejected active-trade parties); kept symmetric for the auction-house extension (ADR-0117 D3).
+        // Escrow is provably 0 here (one active offer per player — validate_proposal above already rejected active-trade parties); kept symmetric for the auction-house extension.
         let escrowed = escrowed_currency_amount(
             ctx.db
                 .trade_offer()
@@ -389,7 +381,7 @@ pub fn propose_trade(
             .find(|r| r.item_id == item.item_id)
             .map(|r| r.count)
             .unwrap_or(0);
-        // Escrow is provably 0 here under ADR-0106 D4 (one active offer per player — validate_proposal above already rejected active-trade parties); kept symmetric for the auction-house extension (ADR-0117 D3).
+        // Escrow is provably 0 here (one active offer per player — validate_proposal above already rejected active-trade parties); kept symmetric for the auction-house extension.
         let escrowed = escrowed_item_qty(
             ctx.db
                 .trade_offer()
@@ -409,10 +401,10 @@ pub fn propose_trade(
         }
     }
 
-    // Battle interlock guards (16.5a-1, 16.5a-2, ADR-0112): reject if any offered monster
+    // Battle interlock guards: reject if any offered monster
     // is in an ongoing battle. Both player_identity and opponent_identity btree indexes are
-    // chained so PvP side-B participants (whose battles index under opponent_identity per
-    // ADR-0109) are caught alongside PvE / PvP side-A participants.
+    // chained so PvP side-B participants (whose battles index under opponent_identity)
+    // are caught alongside PvE / PvP side-A participants.
     for &mid in &initiator_monster_ids {
         let i_battles = ctx
             .db
@@ -442,7 +434,7 @@ pub fn propose_trade(
     )?;
 
     // Capture the insert return — the auto_inc trade_id only exists on the returned
-    // row (ADR-0072 capture-insert).
+    // row.
     let inserted = ctx.db.trade_offer().insert(TradeOffer {
         trade_id: 0, // auto_inc
         initiator: me,
@@ -466,13 +458,12 @@ pub fn propose_trade(
 /// Counterparty responds to a Pending offer.
 ///
 /// Role + status authorization is delegated to the pure `authorize_respond`
-/// (role FIRST — no status leak to non-parties; 16.5f-1, ADR-0117).
+/// (role FIRST — no status leak to non-parties).
 ///
-/// - `accepted = false` → row deleted (escrow released, no assets moved, TR-13).
-/// - `accepted = true` → status → ConfirmedByCounterparty (TR-14), unless the
+/// - `accepted = false` → row deleted (escrow released, no assets moved).
+/// - `accepted = true` → status → ConfirmedByCounterparty, unless the
 ///   caller is deletion-gated and the offer was created at or after their own
-///   deletion request (rb-47, ADR-0237 — offers predating the request stay
-///   completable, PRV1-10).
+///   deletion request.
 #[spacetimedb::reducer]
 pub fn respond_trade(ctx: &ReducerContext, trade_id: u64, accepted: bool) -> Result<(), String> {
     let me = ctx.sender();
@@ -487,25 +478,23 @@ pub fn respond_trade(ctx: &ReducerContext, trade_id: u64, accepted: bool) -> Res
     })?;
 
     if !accepted {
-        // Rejection: delete the row → guard released, no assets move (TR-13).
+        // Rejection: delete the row → guard released, no assets move.
         ctx.db.trade_offer().trade_id().delete(trade_id);
         disarm_trade_reaper(ctx, trade_id);
         return Ok(());
     }
 
-    // Offer-age gate (ADR-0237, PRV1-9 completeness): a deletion-gated caller may
+    // Offer-age gate: a deletion-gated caller may
     // not ACCEPT an offer created at or after their own deletion request — that
     // would consummate a NEW commitment mid-grace through a confederate's
-    // proposal — while offers predating the request stay completable (PRV1-10).
+    // proposal — while offers predating the request stay completable.
     // Below the decline block on purpose (declines unwind; gating them would
-    // freeze the counterparty's escrow), after `authorize_respond` (role first,
-    // ADR-0117 — and it is what proved the caller IS the counterparty), before
-    // the status write. Fully qualified + `?;` + the inline `offer.created_at_ms`
-    // argument are all pinned (unshadowable path, no discarded verdict, no
-    // substituted stamp).
+    // freeze the counterparty's escrow), after `authorize_respond` (role first
+    // — and it is what proved the caller IS the counterparty), before
+    // the status write.
     crate::guards::require_commitment_predates_deletion(ctx, "respond_trade", offer.created_at_ms)?;
 
-    // Acceptance: advance to ConfirmedByCounterparty (TR-14).
+    // Acceptance: advance to ConfirmedByCounterparty.
     let mut updated = offer;
     updated.status = TradeStatus::ConfirmedByCounterparty;
     ctx.db.trade_offer().trade_id().update(updated);
@@ -516,13 +505,13 @@ pub fn respond_trade(ctx: &ReducerContext, trade_id: u64, accepted: bool) -> Res
 /// Initiator confirms a ConfirmedByCounterparty offer → atomic swap.
 ///
 /// Role + status authorization is delegated to the pure `authorize_confirm`
-/// (role FIRST — no status leak to non-parties; 16.5f-1, ADR-0117).
+/// (role FIRST — no status leak to non-parties).
 ///
 /// Re-reads all live rows, verifies ownership still matches the offer, then
 /// executes the ownership/item/currency transfers in one transaction and deletes
-/// the offer row (TR-15/TR-16, ADR-0106 D3). Item/currency mutations follow the
-/// debits-before-credits order published by `SwapPlan::ordered_steps()`
-/// (17.5b-1, ADR-0123), so no credit ever lands on a not-yet-debited stack or
+/// the offer row. Item/currency mutations follow the
+/// debits-before-credits order published by `SwapPlan::ordered_steps()`,
+/// so no credit ever lands on a not-yet-debited stack or
 /// wallet.
 #[spacetimedb::reducer]
 pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> {
@@ -537,7 +526,7 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
         msg
     })?;
 
-    // Re-read live monster rows + verify ownership (TR-15).
+    // Re-read live monster rows + verify ownership.
     let mut i_live: Vec<LiveMonsterOwner> = Vec::with_capacity(offer.initiator_monster_ids.len());
     for &mid in &offer.initiator_monster_ids {
         let m = ctx
@@ -566,7 +555,7 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
         });
     }
 
-    // Battle interlock re-assertion (defense-in-depth, 16.5a-1, ADR-0112).
+    // Battle interlock re-assertion (defense-in-depth).
     // A battle may start between respond_trade (status → ConfirmedByCounterparty) and
     // confirm_trade. Re-check BEFORE build_swap_plan so the transaction aborts cleanly
     // without planning any ownership transfer. Covers PvP side-B via opponent_identity.
@@ -598,7 +587,7 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
         .inspect_err(|e| log_reject("confirm_trade", me, e))?;
     }
 
-    // Receiver cap headroom check (16.5b-1, ADR-0113): reject BEFORE any transfer if
+    // Receiver cap headroom check: reject BEFORE any transfer if
     // crediting items/currency to the receiver would exceed MAX_ITEM_STACK or MAX_BALANCE.
     // Prevents silent value destruction via grant_item/grant_currency clamping.
     {
@@ -657,11 +646,11 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
                 }
             })
             .collect();
-        // Currency balances are netted (17.5b-2, ADR-0123): each party's OWN outgoing
+        // Currency balances are netted: each party's OWN outgoing
         // currency is subtracted from their OWN live balance, so the cap check sees the
         // post-debit effective balance (symmetric with the item netting above). Netting
         // is cap-headroom-only: a broke sender still rejects at spend_currency in the
-        // apply loop, with whole-transaction rollback (ADR-0123).
+        // apply loop, with whole-transaction rollback.
         check_headroom(
             &offer.counterparty_items,
             &i_stacks,
@@ -710,7 +699,7 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
             .ok_or_else(|| format!("monster {} gone during apply", xfer.monster_id))?;
         m.owner_identity = new_owner;
         m.party_slot = crate::PARTY_SLOT_NONE;
-        // Copy-forward tier (ADR-0174 D7/A3): read the existing monster_pub row;
+        // Copy-forward tier: read the existing monster_pub row;
         // a missing row fails loud (same convention as the monster read above).
         let existing_pub = ctx
             .db
@@ -726,10 +715,10 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
     }
 
     // Apply item + currency transfers in the debits-before-credits order published
-    // by game-core (17.5b-1, ADR-0123): ALL debits land before ANY credit, so a
+    // by game-core: ALL debits land before ANY credit, so a
     // same-item bilateral swap near a cap credits into an already-debited stack —
     // the netted headroom check above is exact and no clamping grant ever engages
-    // (reject-not-clamp, ADR-0113). Debit arms read from_initiator (sender); credit
+    // (reject-not-clamp). Debit arms read from_initiator (sender); credit
     // arms read to_initiator (receiver) — game-core inverted at emission, so there
     // is NO inversion here.
     for step in plan.ordered_steps() {
@@ -759,7 +748,7 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
                     offer.counterparty
                 };
                 // spend_currency returns Err if insufficient (broke-sender rejection
-                // site, ADR-0123) — the whole transaction rolls back.
+                // site) — the whole transaction rolls back.
                 spend_currency(ctx, from, amount)?;
             }
             ApplyStep::ItemCredit {
@@ -788,7 +777,7 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
         }
     }
 
-    // Delete the offer row — releases the escrow guard (TR-16).
+    // Delete the offer row — releases the escrow guard.
     ctx.db.trade_offer().trade_id().delete(trade_id);
     disarm_trade_reaper(ctx, trade_id);
 
@@ -797,7 +786,7 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
 
 /// Cancel a trade offer. Either party may cancel before the swap executes.
 ///
-/// Deletes the row → escrow released, no assets moved (TR-17).
+/// Deletes the row → escrow released, no assets moved.
 /// Both Pending and ConfirmedByCounterparty can be cancelled.
 #[spacetimedb::reducer]
 pub fn cancel_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> {
@@ -821,15 +810,15 @@ pub fn cancel_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// M22 §4.4 steps 6b+6d (PRV1-6b/6d, ADR-0228 D1/D2): delete every
-/// `trade_offer` naming `owner` on EITHER side — initiator AND counterparty,
-/// with NO liveness filter (contrast `cancel_trades_on_disconnect` below,
-/// which is active-only by design) — and disarm each offer's TTL schedule row
-/// (the JOIN_ONLY sweep riding its parent, the disarm idiom). After the
-/// cascade's 6a resolve this is defense-in-depth over an already-empty set;
-/// it must still exist and sweep BOTH columns, or an incoming offer the
-/// deleted player never answered survives in a public table naming them.
-/// Called only from `accounts::account_deletion_reaper` (D0 write-isolation).
+/// delete every `trade_offer` naming `owner` on EITHER side — initiator AND
+/// counterparty, with NO liveness filter (contrast
+/// `cancel_trades_on_disconnect` below, which is active-only by design) — and
+/// disarm each offer's TTL schedule row (the JOIN_ONLY sweep riding its
+/// parent, the disarm idiom). After the cascade's 6a resolve this is
+/// defense-in-depth over an already-empty set; it must still exist and sweep
+/// BOTH columns, or an incoming offer the deleted player never answered
+/// survives in a public table naming them. Called only from
+/// `accounts::account_deletion_reaper`.
 pub(crate) fn erase_trade_offers(ctx: &ReducerContext, owner: Identity) {
     let ids: Vec<u64> = ctx
         .db
@@ -851,7 +840,7 @@ pub(crate) fn erase_trade_offers(ctx: &ReducerContext, owner: Identity) {
     }
 }
 
-/// Cancel all active offers for a disconnecting player (TR-18). Called from
+/// Cancel all active offers for a disconnecting player. Called from
 /// `on_disconnect` in lib.rs. Uses indexed filters — O(offers for player), not O(total).
 pub(crate) fn cancel_trades_on_disconnect(ctx: &ReducerContext, player: Identity) {
     // Collect IDs first to avoid mutating while iterating.

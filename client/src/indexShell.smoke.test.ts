@@ -2,9 +2,6 @@
  * indexShell.smoke.test.ts: parses the REAL client/index.html and checks the shell contract
  * against the production overlay registry (OVERLAY_A11Y).
  *
- * Designated new home of ledger row CT-src-indexShell#aria-shell (A1-A5 of the old
- * indexShell.test.ts, collapsed to one table over OVERLAY_A11Y). indexShell.test.ts itself
- * is deleted later, together with the evals that still read it.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -22,7 +19,10 @@ const win = new Window({
     disableJavaScriptEvaluation: true,
   },
 });
-const doc = new win.DOMParser().parseFromString(readFileSync(INDEX_HTML, 'utf8'), 'text/html');
+const doc = new win.DOMParser().parseFromString(
+  readFileSync(INDEX_HTML, 'utf8'),
+  'text/html',
+) as unknown as Document;
 
 /** Overlays whose shells main.ts constructs at runtime: no static anchor in index.html. */
 const CONSTRUCTED: ReadonlySet<OverlayId> = new Set<OverlayId>([

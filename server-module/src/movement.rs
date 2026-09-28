@@ -1,15 +1,12 @@
-//! `movement` — server-module domain submodule (M8.9, ADR-0056).
+//! `movement` — server-module domain submodule.
 //!
-//! Server-paced, per-zone movement (ADR-0011/0007): clients buffer intent; the
+//! Server-paced, per-zone movement: clients buffer intent; the
 //! scheduled `movement_tick` drains at most one move/character/tick (a character
-//! whose player is in an ongoing battle drains none — its queue stays frozen,
-//! ADR-0168) and runs the M8c grass-encounter trigger. The
+//! whose player is in an ongoing battle drains none — its queue stays frozen)
+//! and runs grass-encounter trigger. The
 //! `movement_tick_schedule` scheduled `#[table]`
 //! lives HERE (not `schema.rs`) so the `scheduled(movement_tick)` attribute
-//! reference resolves within the module (ADR-0056 / spec §6 macro hygiene).
-//!
-//! This file name is part of the canonical `touches:` vocabulary fixed by
-//! ADR-0056 — keep it stable.
+//! reference resolves within the module.
 
 use crate::battle::{begin_encounter, lead_party, lead_party_ids, NO_CONSCIOUS_MONSTER_REASON};
 use crate::evolution::check_and_evolve;
@@ -47,7 +44,7 @@ pub struct MovementTickSchedule {
 /// monster). Rejects a double-join within the same session.
 #[spacetimedb::reducer]
 pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
-    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    // Deletion gate: the FIRST statement, before every read and write.
     crate::guards::require_not_deleting(ctx, "join_game")?;
     let me = ctx.sender();
     let name = validate_name(&name).inspect_err(|e| log_reject("join_game", me, e))?;
@@ -111,7 +108,7 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
         let inst = roll_starter(seed, &species_core);
         let row = monster_from_instance(me, &inst, 0); // party slot 0
         let inserted = ctx.db.monster().insert(row);
-        // FRESH tier (EG1-8/ADR-0174 D7): creation site — the species row is in hand.
+        // FRESH tier: creation site — the species row is in hand.
         let pub_row = pub_from_monster(&inserted, species.tier);
         ctx.db.monster_pub().insert(pub_row);
         log::info!(
@@ -128,9 +125,9 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
 /// intent only — NEVER computes movement. Atomic: queue + ack in one transaction.
 #[spacetimedb::reducer]
 pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), String> {
-    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    // Deletion gate: the FIRST statement, before every read and write.
     crate::guards::require_not_deleting(ctx, "enqueue_move")?;
-    // Intake battle lock (ADR-0168 D2): reject-not-clamp movement intent while
+    // Intake battle lock: reject-not-clamp movement intent while
     // the caller is in an ongoing battle, either role. `ctx.sender()` is correct
     // here — this is a player-called reducer (unlike scheduler-only movement_tick).
     if is_in_ongoing_battle(ctx, ctx.sender()) {
@@ -146,12 +143,12 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
     }
     ch.move_queue.push(input);
     ctx.db.character().entity_id().update(ch);
-    // EG2-8/EG2-12 growth tails: THE movement call site — a genuinely
-    // player-triggered reducer (never movement_tick, EG2-9). Once per party
-    // monster over lead_party's FULL id list (not just the lead); accrual
-    // first, auto-evolution check LAST. No party -> credit nothing.
+    // THE movement call site — a genuinely player-triggered reducer
+    // (never movement_tick). Once per party monster over lead_party's
+    // FULL id list (not just the lead); accrual first, auto-evolution
+    // check LAST. No party -> credit nothing.
     if let Some(party_ids) = lead_party_ids(ctx, ctx.sender()) {
-        // Trade escrow (TR-6, ADR-0106): an escrowed party monster keeps its
+        // Trade escrow: an escrowed party monster keeps its
         // party slot until settlement, so without this it would keep accruing
         // Quality Time and could AUTO-EVOLVE out from under the counterparty's
         // propose-time card snapshot (confirm_trade never revalidates it).
@@ -177,10 +174,10 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
             if escrowed.contains(&mid) {
                 continue;
             }
-            // PERF (ADR-0148 latency budget): walking can only move the
-            // Quality-Time gate, so the eligibility read runs only when this
-            // call actually minted a tick. The other call sites check
-            // unconditionally — they mutate other gate values.
+            // PERF: walking can only move the Quality-Time gate, so the
+            // eligibility read runs only when this call actually minted a
+            // tick. The other call sites check unconditionally — they mutate
+            // other gate values.
             if accrue_quality_time(ctx, mid) {
                 check_and_evolve(ctx, mid);
             }
@@ -193,9 +190,9 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
 /// change). Cap-safe (length 1).
 #[spacetimedb::reducer]
 pub fn set_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), String> {
-    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    // Deletion gate: the FIRST statement, before every read and write.
     crate::guards::require_not_deleting(ctx, "set_move")?;
-    // Intake battle lock (ADR-0168 D2): same reject as enqueue_move — set_move
+    // Intake battle lock: same reject as enqueue_move — set_move
     // also ADDS movement intent, and the client is hostile.
     if is_in_ongoing_battle(ctx, ctx.sender()) {
         let e = "cannot move during an ongoing battle".to_string();
@@ -212,9 +209,9 @@ pub fn set_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), 
 /// Empty the queue (key release).
 #[spacetimedb::reducer]
 pub fn clear_queue(ctx: &ReducerContext, seq: u64) -> Result<(), String> {
-    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    // Deletion gate: the FIRST statement, before every read and write.
     crate::guards::require_not_deleting(ctx, "clear_queue")?;
-    // Deliberately NOT battle-guarded (ADR-0168 D3): pure cancellation — it
+    // Deliberately NOT battle-guarded: pure cancellation — it
     // cannot cause movement. Guarding it would force the stale pre-battle queue
     // to survive to battle end and deny an honest key-release cancel while the
     // battle overlay is opening.
@@ -224,9 +221,9 @@ pub fn clear_queue(ctx: &ReducerContext, seq: u64) -> Result<(), String> {
     Ok(())
 }
 
-// --- Rate-limited encounter-failure logging (11r-g, ADR-0170 D4) -------------
+// --- Rate-limited encounter-failure logging -------------
 
-/// A process-static log rate limiter (ADR-0170 D4): at most one emit per
+/// A process-static log rate limiter: at most one emit per
 /// window, counting what was suppressed in between.
 ///
 /// ONE `Mutex` over `(last_emit_ms, suppressed)` makes read-decide-write-back
@@ -256,10 +253,9 @@ impl RateLimiter {
     ///
     /// Emits on the first-ever check, at `elapsed >= window_ms` (boundary
     /// INCLUSIVE), and when the clock runs BACKWARDS — re-anchoring to the new
-    /// earlier instant rather than suppressing until the clock catches up
-    /// (ADR-0170 D4 accepts the jittery-clock trade explicitly). A poisoned
-    /// lock is recovered: one unrelated panic must not silence the encounter
-    /// log path for the process lifetime.
+    /// earlier instant rather than suppressing until the clock catches up.
+    /// A poisoned lock is recovered: one unrelated panic must not silence the
+    /// encounter log path for the process lifetime.
     pub(crate) fn check(&self, now: i64, window_ms: i64) -> Option<u32> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let (last, suppressed) = *state;
@@ -278,16 +274,16 @@ impl RateLimiter {
 }
 
 /// Shared emit window for both grass-block failure limiters: at most one
-/// `log::error!` per limiter per 5000 ms of the tick's injected clock
-/// (ADR-0003 — never a wall clock). A NAMED constant so both arms provably
-/// share one window value instead of drifting apart.
+/// `log::error!` per limiter per 5000 ms of the tick's injected clock.
+/// A NAMED constant so both arms provably share one window value instead
+/// of drifting apart.
 const ENCOUNTER_ERR_WINDOW_MS: i64 = 5000;
 
 /// Gates `encounter_table_error` logging (a failed `table_from_encounter_row`).
 static ENCOUNTER_TABLE_ERR_LIMITER: RateLimiter = RateLimiter::new();
 
 /// Gates `begin_encounter_error` logging. A SECOND, independent limiter on
-/// purpose (ADR-0170 D4): the party-has-no-conscious-monster Err from
+/// purpose: the party-has-no-conscious-monster Err from
 /// `begin_encounter` is routine gameplay (a fainted party walking grass) and
 /// bursts; sharing one limiter would let that burst mask a real content
 /// defect in the encounter table.
@@ -302,17 +298,17 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
     }
     let zone = sched.zone_id;
     let now = Millis(now_ms(ctx));
-    // Zone-maps cache: compile-time-embedded RON, parsed once per process (ADR-0089).
+    // Zone-maps cache: compile-time-embedded RON, parsed once per process.
     let zone_maps = match crate::content_cache::cached_zone_maps() {
         Ok(z) => z,
         Err(e) => {
-            // Reason through json_escape (ADR-0170 D4/D5): a RON parse error is
+            // Reason through json_escape: a RON parse error is
             // exactly the shape that carries a double quote into hand-built JSON.
             log::error!(
                 "{{\"evt\":\"movement_tick_error\",\"zone\":{zone},\"reason\":\"{}\"}}",
                 json_escape(&e)
             );
-            return Ok(()); // logged no-op: a content-load failure must not abort the tick (ADR-0066)
+            return Ok(()); // logged no-op: a content-load failure must not abort the tick
         }
     };
     let map = match map_for(zone, zone_maps) {
@@ -344,7 +340,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
             }
             continue;
         }
-        // Drain-time battle lock (ADR-0168 D1): while this character's player is
+        // Drain-time battle lock: while this character's player is
         // in an ongoing battle in EITHER role, SKIP the drain with the queue
         // INTACT — the same semantics the sim-harness models — normalising
         // `action` to Idle write-on-change; the lock self-releases the tick after
@@ -353,7 +349,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         // here is the MODULE identity and would make the guard always false.
         // `unwrap_or(false)` states a FACT — a character with no `player` row is
         // not a player and can never appear in a `battle` row, so it is not
-        // battle-locked — deliberately OPPOSITE to the warp guard's ADR-0070
+        // battle-locked — deliberately OPPOSITE to the warp guard
         // `unwrap_or(true)` POLICY below (no player row means an NPC, which must
         // stay in its home zone). Do not unify the two defaults.
         let battle_locked = ctx
@@ -377,7 +373,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         apply_state(&mut row, &next);
         let entity_id = row.entity_id; // capture before any move/borrow
 
-        // Server-authoritative warp resolution (ADR-0020/0066).
+        // Server-authoritative warp resolution.
         // Guard 1: only fire when the character actually MOVED (bump = no warp).
         // Guard 2: players in active battles must not be warped (C1 security finding).
         if prev != next.pos {
@@ -385,14 +381,12 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                 // Copy scalars out of the WarpDef borrow BEFORE mutating row.
                 let (to_zone, tx, ty) = (warp.to_zone, warp.to_tile.x, warp.to_tile.y);
                 // Battle guard: skip the warp for a character whose player is in an
-                // ongoing battle in EITHER role (ADR-0122 D1 SSOT — the former inline
-                // filter saw side A only, so a PvP side-B player walked through a warp
-                // tile mid-ranked-battle; ADR-0166 D4). The argument is the CHARACTER's
-                // own `p.identity`: `movement_tick` is scheduler-only, so `ctx.sender()`
+                // ongoing battle in EITHER role. The argument is the CHARACTER's own
+                // `p.identity`: `movement_tick` is scheduler-only, so `ctx.sender()`
                 // here is the MODULE identity and would make the guard always false.
                 // `skip_warp` is named for what it decides, NOT for "is in battle":
                 // `unwrap_or(true)` means "no player row ⇒ an NPC ⇒ SKIP the warp"
-                // (stay in home zone, ADR-0070), so the default must stay `true`.
+                // (stay in home zone), so the default must stay `true`.
                 let skip_warp = ctx
                     .db
                     .player()
@@ -414,10 +408,10 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
             }
         }
 
-        // Normal (non-warp) one-write path — position + drained move_queue (atomic, ADR-0013 §B).
+        // Normal (non-warp) one-write path — position + drained move_queue (atomic).
         ctx.db.character().entity_id().update(row);
 
-        // M8c grass-encounter trigger (ADR-0045). EVERY failure mode below is a
+        // M8c grass-encounter trigger. EVERY failure mode below is a
         // no-op, never a panic. Draw `ctx.random()` AT MOST once per character —
         // only after `stepped_onto_grass` + player + not-already-in-battle pass —
         // so A's hit cannot shift B's roll in the same tick (R-E).
@@ -429,12 +423,10 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
             continue;
         };
         let player_identity = player.identity;
-        // ADR-0166 R4, closed by ADR-0188: ask the ADR-0122 D1 both-role SSOT, not
-        // a second, side-A-only implementation of the same predicate. This is
-        // DEFENSIVE hygiene, not a reachable-bug fix — the ADR-0168 D1 drain lock
-        // above already skipped every battle-locked character before this point,
-        // and begin_encounter re-guards. Killing the divergent copy is what stops a
-        // future edit to that drain lock from silently reopening R4.
+        // ask the both-role SSOT, not a second, side-A-only implementation of the
+        // same predicate. This is DEFENSIVE hygiene, not a reachable-bug fix — the
+        // drain lock above already skipped every battle-locked character before
+        // this point, and begin_encounter re-guards.
         let already = is_in_ongoing_battle(ctx, player_identity);
         if already {
             continue;
@@ -448,8 +440,8 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         let Some(enc_row) = ctx.db.encounter().zone_id().find(zone) else {
             continue;
         };
-        // A malformed encounter row is a rate-limited logged no-op (ADR-0170 D4):
-        // the content fault must never abort the zone tick (ADR-0066), but it must
+        // A malformed encounter row is a rate-limited logged no-op:
+        // the content fault must never abort the zone tick, but it must
         // no longer be silent — it stops all wild encounters in this zone.
         let table = match table_from_encounter_row(&enc_row) {
             Ok(t) => t,
@@ -467,7 +459,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         };
         let seed: u32 = ctx.random();
         if let Some(w) = resolve_encounter(&table, seed, player_level) {
-            // A failed begin_encounter is a rate-limited logged no-op (ADR-0170 D4):
+            // A failed begin_encounter is a rate-limited logged no-op:
             // one character's failure cannot abort the tick, and its own limiter
             // keeps genuine faults visible.
             if let Err(e) = begin_encounter(
@@ -478,20 +470,18 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                 w.level.as_u8(),
                 w.individuality_seed,
             ) {
-                // rb-76 (ADR-0246 D4): a deletion-gated walker is refused the encounter as ROUTINE
+                // A deletion-gated walker is refused the encounter as ROUTINE
                 // gameplay, like a fainted party, so this reason must consume neither the error
                 // log nor the limiter window (client-reachable at tick rate: request deletion,
-                // walk grass). The skip is a SEPARATE statement because the filter below is
-                // pinned as one contiguous sequence; it skips ONLY the log/limiter arm — the
-                // encounter block is the last statement of the per-character loop, so re-examine
-                // if per-character work is ever appended after it. COUPLING: keyed by equality on
-                // the ONE reason constant, so a per-state reason split (the ADR-0227 D2 deferral)
-                // must extend this skip and its pin in the same slice.
+                // walk grass). it skips ONLY the log/limiter arm — the encounter block is the
+                // last statement of the per-character loop, so re-examine if per-character work
+                // is ever appended after it. COUPLING: keyed by equality on the ONE reason
+                // constant, so a per-state reason split must extend this skip.
                 if e == crate::guards::REJECT_DELETION_GATED {
                     continue;
                 }
-                // Routine fainted-party reason filtered at source (shared const,
-                // ADR-0170 D4): normal gameplay, a non-event like a None roll —
+                // Routine fainted-party reason filtered at source (shared const):
+                // normal gameplay, a non-event like a None roll —
                 // it must consume neither the limiter window nor the suppressed
                 // counter, or a client walking grass with an all-fainted party
                 // could saturate the limiter and mask genuine faults
@@ -510,8 +500,8 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         }
     }
 
-    // NPC wander (M12b, ADR-0069): deterministic per-tick wander via game_core::npc_decide.
-    // Tick counter derived from server clock — avoids wall-clock entropy (ADR-0003).
+    // NPC wander: deterministic per-tick wander via game_core::npc_decide.
+    // Tick counter derived from server clock — avoids wall-clock entropy.
     let tick_counter: u64 = now.0.unsigned_abs() / (STEP_MS.unsigned_abs().max(1));
     let npc_entity_ids: Vec<u64> = ctx
         .db
@@ -559,7 +549,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
 
 // movement.rs is a file-module (declared `mod movement;` in `lib.rs`), so a plain
 // `mod movement_tests;` would resolve under `src/movement/`; `#[path]` keeps the
-// test file a sibling in `src/` (the game-core `*_tests.rs` convention, ADR-0056 map).
+// test file a sibling in `src/`.
 #[cfg(test)]
 #[path = "movement_tests.rs"]
 mod movement_tests;

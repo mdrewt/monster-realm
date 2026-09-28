@@ -1,14 +1,14 @@
-// ui/i18n/catalog.fr.ts — the French catalog, the M24 PROOF LOCALE (m24-s7, ADR-0263).
+// ui/i18n/catalog.fr.ts — the French catalog, the M24 PROOF LOCALE.
 //
 // WHY THIS FILE EXISTS. `fr` is the second registered locale: it proves, at runtime and under
-// the §5.3 parity gate (catalogParity.test.ts), that the resolver/catalog seam built by S1-S6
+// the §5.3 parity gate (catalogParity.test.ts), that the resolver/catalog resolver/catalog seam
 // carries a real translation — every `MessageId` resolves, every closure reads exactly the
 // same param fields as its English twin, and the first CLDR plural (`battle.weather.banner`)
 // selects through `selectPlural` rather than an `n === 1` branch. It mirrors catalog.en.ts
 // ENTRY FOR ENTRY, IN THE SAME ORDER, so a side-by-side diff of the two files lines up.
 //
 // ONE ENTRY PER `MessageId`, and the type makes that total: `satisfies Catalog` is load-bearing
-// (ADR-0256 D2) — `Object.freeze<T>` is generic, so without it a stowaway key would be swallowed
+// — `Object.freeze<T>` is generic, so without it a stowaway key would be swallowed
 // into `T`; `satisfies` restores the excess-property check, and the mapped type reports an
 // omitted key by name (TS2741). Frozen for the same reason `CATALOG_EN` is: the type annotation
 // is erased at runtime, and a caller that casts it away must not be able to rewrite the shared
@@ -32,7 +32,7 @@
 // keys. Abbreviations: Lv → Niv., HP → PV, Acc → Préc., W/L → V/D, ATK/DEF/SPD → ATQ/DÉF/VIT.
 // Params are MODEL DATA (affinities, weather labels, species/skill/item/player names, tiers,
 // stats, counts, prices) interpolated verbatim, never catalogued (M24 §2.5); numbers are raw
-// digits — no `fmtNumber` grouping (YAGNI for chrome strings, ADR-0263).
+// digits — no `fmtNumber` grouping (YAGNI for chrome strings).
 
 import type { Catalog } from './messageIds';
 import { cldr, selectPlural } from './plural';
@@ -42,7 +42,7 @@ import { cldr, selectPlural } from './plural';
 // `one` covers BOTH 0 and 1 (« 0 tour », « 1 tour »); `other` is every other integer
 // (« 2 tours »); `many` is CLDR's 10^6 case (1 000 000, 2 000 000 …), rendered with the
 // partitive « de » as in « 1 000 000 de tours ». The three categories fr never selects (`zero`,
-// `two`, `few`) mirror the nearest live form so the record stays total (ADR-0256 D2).
+// `two`, `few`) mirror the nearest live form so the record stays total.
 const WEATHER_TURN_FORMS = cldr({
   zero: 'tour',
   one: 'tour',
@@ -91,6 +91,9 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // available in the current zone.
   // main.ts:2524
   'chrome.status.healUnavailable': 'soins : aucun lieu de soins disponible',
+  // @desc: Status-strip error shown when the player moves a monster from the box to the party
+  // but every party slot is taken; nothing is moved.
+  'chrome.status.partyFull': 'équipe complète — placez d’abord un monstre dans la boîte',
   // @desc: Heading of the battle overlay; the first thing announced when a PvE or PvP battle opens.
   // One word, fits a 320px-wide column.
   // battleView.ts:110 (resolved in show())
@@ -478,6 +481,16 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // this is a BUTTON label. One short line.
   // claimView.ts:96 (resolved in show() and render())
   'claim.privacyButton': 'Confidentialité et données du compte',
+  // @desc: Button on the guest-claim overlay that starts sign-in so guest progress can be claimed onto an account. Short verb phrase.
+  'claim.signInButton': 'Se connecter',
+  // @desc: Button on the guest-claim overlay that returns to the game once the claim is settled or declined. Short phrase.
+  'claim.joinButton': 'Continuer à jouer',
+  // @desc: Button on the guest-claim overlay: first step of declining the claim (a confirmation follows). One word.
+  'claim.declineButton': 'Refuser',
+  // @desc: Button confirming the decline: permanently deletes the claim code. Short phrase.
+  'claim.declineConfirmButton': 'Oui, refuser',
+  // @desc: Button cancelling the decline: keeps the claim code. Short phrase.
+  'claim.declineCancelButton': 'Garder mon code',
   // @desc: Only row of the ranked leaderboard when no player has a rating yet (ratings exist
   // only after a decisive ranked battle). One short line.
   // leaderboardView.ts:60

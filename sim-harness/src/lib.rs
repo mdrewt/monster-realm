@@ -8,8 +8,8 @@
 //!
 //! The convergence driver ([`deliver`] + [`apply_stream`]) feeds that lossy,
 //! reordering `Link` into the authoritative [`world::ServerWorld`] to prove the
-//! headline netcode property (ADR-0013) **given the monotonic-`seq` ordering
-//! contract** (ADR-0012): when each client's intents are applied in `seq` order
+//! headline netcode property **given the monotonic-`seq` ordering
+//! contract**: when each client's intents are applied in `seq` order
 //! ([`ApplyOrder::SeqCanonical`] — provably the same authoritative result the
 //! online reducer produces once intents reach it ordered, since strictly
 //! increasing seqs are all accepted), the final state is delivery-order-INVARIANT
@@ -25,7 +25,7 @@
 //! Scope of the harness's asserted invariants: replay-determinism, link
 //! determinism, convergence (given the seq contract), and reorder-occurs. It
 //! deliberately does NOT model `forfeit-on-disconnect` or `turn-deadline` — those
-//! PvP-orchestration invariants are deferred to **M16-PvP** (ADR-0025) and are NOT
+//! PvP-orchestration invariants are deferred to **M16-PvP** and are NOT
 //! claimed here (M8.8 spec §6 decision), so the harness's stated role matches
 //! exactly what it tests.
 
@@ -127,14 +127,14 @@ impl Link {
 }
 
 // ===========================================================================
-// Convergence driver (M8.8d) — feeds the lossy/reordering `Link` into the
-// authoritative `ServerWorld`, proving the headline netcode property (ADR-0013):
+// Convergence driver — feeds the lossy/reordering `Link` into the
+// authoritative `ServerWorld`, proving the headline netcode property:
 // under latency/jitter/loss/reorder the authoritative final state is
 // *delivery-order-invariant* (convergence — no desync). The naive arrival-order
 // apply is order-DEPENDENT under reorder; that is the known-bad fixture the
 // convergence assertion must reject (proof-of-teeth).
 //
-// Deferred to M16-PvP (ADR-0025), NOT claimed here: forfeit-on-disconnect and
+// Deferred to M16-PvP, NOT claimed here: forfeit-on-disconnect and
 // turn-deadline. This driver asserts convergence + reorder-occurs only.
 // ===========================================================================
 
@@ -169,7 +169,7 @@ pub struct ClientIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyOrder {
     /// Apply each client's intents in `seq` order (the monotonic-`seq` ordering
-    /// contract, ADR-0012). This is the *production* authoritative result: feeding
+    /// contract). This is the *production* authoritative result: feeding
     /// the online seq-reject reducer a seq-ordered stream accepts every intent
     /// (each seq strictly exceeds the last), so a pre-sort is equivalent. Its final
     /// state is delivery-order-invariant (convergence).
@@ -221,7 +221,7 @@ pub fn deliver(intents: &[ClientIntent], link: &Link, seed: u64) -> Vec<ClientIn
 /// Each intent is enqueued (a stale/full `Err` is dropped, mirroring the
 /// authoritative reducer's reject-not-clamp policy) then the zone is ticked once to
 /// drain it — a 1:1 server model of the **flow-controlled steady state** (the
-/// predictor is bounded to `MOVE_QUEUE_CAP`, ADR-0052, so legitimate play never
+/// predictor is bounded to `MOVE_QUEUE_CAP`, so legitimate play never
 /// floods the queue). The cap's "queue full" *anti-flood* path is deliberately out
 /// of scope here (it guards against a misbehaving client, not a convergence
 /// property; the existing `world::tests::server_paced_*` test covers it). The final
@@ -244,7 +244,7 @@ fn zone_maps_for_driver() -> Vec<game_core::ZoneMapDef> {
 #[must_use]
 pub fn apply_stream(ordered: &[ClientIntent], policy: ApplyOrder) -> BTreeMap<u64, TilePos> {
     // Use real authored content (load_zone_maps + map_for) so the harness exercises
-    // the SAME zone map the server loads — including the warp overlay (12.5f-1).
+    // the SAME zone map the server loads — including the warp overlay.
     // Previously `zone_0()` was used, which produces warps:vec![] (no warp tile).
     let zone_maps = zone_maps_for_driver();
     let map = map_for(CONVERGE_ZONE, &zone_maps)
@@ -335,7 +335,7 @@ pub fn scenario() -> Vec<ClientIntent> {
     intents
 }
 
-/// Single-client warp-crossing scenario (12.5f-1): walk client 0 from spawn (1,1)
+/// Single-client warp-crossing scenario: walk client 0 from spawn (1,1)
 /// to the warp tile at (5,5) (zone 0 → zone 1).
 ///
 /// Geometry: the wall at x=4,5 on row y=3 blocks a straight south walk from (5,1).
@@ -552,7 +552,7 @@ pub fn battle_lock_scenario() -> Vec<ClientIntent> {
 }
 
 // ===========================================================================
-// M8.8d convergence gating tests (written by tester; stubs are todo!())
+// convergence gating tests
 //
 // EARS criteria covered:
 //   C1 — convergence: apply_stream(SeqCanonical) is delivery-order-invariant
@@ -562,8 +562,6 @@ pub fn battle_lock_scenario() -> Vec<ClientIntent> {
 //   C5 — determinism: same seed → byte-identical deliver + apply_stream
 //   C6 — scenario sanity: ≥2 distinct clients; both move under lossless apply
 //
-// Every test in this module is RED until the implementer delivers
-// deliver / apply_stream / had_reorder / scenario (no todo!() panic).
 // ===========================================================================
 #[cfg(test)]
 mod convergence_tests {
@@ -977,7 +975,7 @@ mod convergence_tests {
     }
 
     // -----------------------------------------------------------------------
-    // Finding 4 — contract bites on the real scenario (non-vacuity for SeqCanonical)
+    // contract bites on the real scenario (non-vacuity for SeqCanonical)
     // -----------------------------------------------------------------------
     // For the jittered scenario(), there must exist at least one seed where
     // BOTH:
@@ -1030,7 +1028,7 @@ mod convergence_tests {
             }
         }
 
-        // Spec rationale (Finding 4 / bin's `contract_bites_on_scenario`): the
+        // Spec rationale (bin's `contract_bites_on_scenario`): the
         // seq-ordering contract must be PROVABLY load-bearing on the jittered
         // scenario — not merely tautologically satisfied. A reordered seed where
         // Arrival == SeqCanonical is a seed where the contract does no work; we
@@ -1049,7 +1047,7 @@ mod convergence_tests {
     }
 
     // -----------------------------------------------------------------------
-    // 12.5f-1 — warp-crossing convergence scenario
+    // warp-crossing convergence scenario
     //
     // Asserts that SeqCanonical is delivery-order-invariant even when one of
     // the steps is the warp step onto (5,5). Geometry: spawn (1,1), navigable
@@ -1099,8 +1097,8 @@ mod convergence_tests {
 }
 
 // ===========================================================================
-// M14.5f — convergence extensions: random_scenario, warp_scenario_under_link,
-// apply_stream_with_battle_lock (RED until implementer adds these functions).
+// convergence extensions: random_scenario, warp_scenario_under_link,
+// apply_stream_with_battle_lock.
 //
 // EARS criteria covered:
 //   RS-1 — random_scenario(seed, n) is byte-identical for the same seed (determinism)

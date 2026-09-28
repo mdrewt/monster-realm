@@ -1,10 +1,10 @@
-// ui/questLogView.ts — DOM shell for the quest log overlay (M12d, ADR-0071).
+// ui/questLogView.ts — DOM shell for the quest log overlay.
 // DOM shell — coverage-excluded
 //
-// m23-s3 -- THE SECOND WIRING MECHANISM. This overlay has NO `show()`: it is opened and closed by
+// THE SECOND WIRING MECHANISM. This overlay has NO `show()`: it is opened and closed by
 // `render(vm | null)`, driven every store batch from `main.ts`. So the a11y open/close cannot hang
 // off `show()`/`hide()` the way the other seven views' do; it hangs off the null<->non-null EDGE of
-// the vm, detected against `this.visible` BEFORE the display write (M23 spec 2.2, A11Y-34).
+// the vm, detected against `this.visible` BEFORE the display write.
 //
 // WHY THE EDGE IS DERIVED FROM `visible` AND NOT FROM A `#lastVmWasNull` FIELD. A field updated
 // inside `render()` never sees `hide()` -- and for THIS view that is not hypothetical, since it is
@@ -18,7 +18,7 @@
 // guarded -- see the reasoning in `ui/pvpView.ts`'s `hide()`: an unguarded close is the self-healing
 // path, and `closeOverlayA11y` with no open record is a documented no-op.
 //
-// m24-s5 (ADR-0261) — the one string this view owns, the quest row, is resolved through the i18n
+// The one string this view owns, the quest row, is resolved through the i18n
 // resolver (`tf('questLog.entry', { name, step })`, ui/i18n/resolver.ts); `name` is the quest's
 // content id and `step` its index — model data, interpolated verbatim.
 import { tf } from './i18n/resolver';
@@ -50,7 +50,7 @@ export class QuestLogView {
       li.textContent = tf('questLog.entry', { name: entry.displayName, step: entry.stepIndex });
       this.list.appendChild(li);
     });
-    // m23-s3: the null->non-null EDGE, and only the edge -- paint first, then claim the
+    // The null->non-null EDGE, and only the edge -- paint first, then claim the
     // overlay (D7: openOverlayA11y is the LAST statement, so its deferred focus resolves
     // `initialFocusSelector` against a fully-painted root).
     if (!wasVisible) openOverlayA11y('questLogView', this.overlay);
@@ -62,7 +62,7 @@ export class QuestLogView {
 
   hide(): void {
     this.overlay.style.display = 'none';
-    // m23-s3 D2: deliberately UNGUARDED (rationale in ui/pvpView.ts's hide()).
+    // Deliberately UNGUARDED (rationale in ui/pvpView.ts's hide()).
     closeOverlayA11y('questLogView', null);
   }
 }

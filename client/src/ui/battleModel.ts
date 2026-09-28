@@ -1,7 +1,7 @@
-// ui/battleModel.ts — pure view-model for the battle screen (M7c, ADR-0014).
+// ui/battleModel.ts — pure view-model for the battle screen.
 //
 // No DOM, no SDK, no side effects. Takes store data, returns view-models.
-// That purity claim is ENFORCED MECHANICALLY, file-wide: `rb58 T4` in battleModel.test.ts
+// That purity claim is ENFORCED MECHANICALLY, file-wide: the purity scan in battleModel.test.ts
 // scans this whole file and fails if it names `import.meta`, `process.env`, `globalThis`,
 // `Math.random`, `Date`, `crypto`, `window` or `navigator` anywhere — including inside a
 // string. Adding an ambient read here reds that test, by design (a build-mode fork
@@ -12,13 +12,13 @@ import type { StoreBattle, StoreSkillRow, StoreSpeciesRow } from '../net/store';
 import { hpPercent } from './boxModel';
 
 /**
- * Canonical PvP-vs-wild classifier (ptc5e-3 SSOT — was duplicated in eventRing.ts
+ * Canonical PvP-vs-wild classifier (SSOT — was duplicated in eventRing.ts
  * and inline here). True iff a battle is player-vs-player: the opponent must have
  * an owned party (`opponentMonsterIds.length > 0`) AND a distinct identity. The
  * party guard is REQUIRED: a wild battle carries the all-zero WILD_IDENTITY
  * (which is `!==` the player identity) but has no owned opponent monsters — so
  * identity-inequality alone mislabels every wild encounter as PvP. A practice
- * battle has `playerIdentity === opponentIdentity` (ADR-0109, RT-M16-02). The
+ * battle has `playerIdentity === opponentIdentity` (RT-M16-02). The
  * parameter is STRUCTURALLY typed (not `StoreBattle`) so eventRing.ts can
  * re-export it without coupling to net/store.
  */
@@ -40,28 +40,28 @@ export interface BattleMonsterCardVM {
   /** Short status badge label — whatever `statusBadge` returns for the tag: the token
    *  that variant's row carries in `A11Y_TOKENS` (game-core/src/content.rs), an
    *  `unknownStatusToken` fallback shaped as `?` plus two upper-case base-36 digits
-   *  (each of which may be a letter OR a numeral) for a tag this bundle does not know
-   *  (ADR-0233), or null when there is no status. */
+   *  (each of which may be a letter OR a numeral) for a tag this bundle does not know,
+   *  or null when there is no status. */
   readonly status: string | null;
 }
 
 /**
  * The badge shown for a status tag this bundle does not know — a deployed server
- * running ahead of a cached client bundle (M23 §2.6, ADR-0233).
+ * running ahead of a cached client bundle.
  *
  * DERIVATION. A polynomial rolling hash is folded over EVERY code point of the tag and
  * reduced into two base-36 digits, so the whole name feeds the badge. The previous
  * derivation kept only the first two code points, so `Confusion` and `Corrosion`
  * rendered ONE badge — a systematic, guessable collision on any shared prefix, and the
- * exact defect recorded as residual R-m23-s8-postmerge-fallback ==
- * R-m23-s8-FALLBACK-COLLIDE (ADR-0233:195). Both of those ids are real and name one
- * residual; neither is a typo for the other.
+ * exact defect behind the fallback-collision residual. The two
+ * names the residual has been filed under
+ * refer to that one gap.
  *
  * THE `?` PREFIX STAYS, for a reason the new derivation does not disturb: no curated
  * token in the `A11Y_TOKENS` SSOT begins with `?`, so a fallback can never be read as a
  * real label. That is a property of the token roster rather than of this derivation,
  * and two different tests hold its two halves. A curated `case` DELETED here is caught by
- * the m23s8 SHADOW CENSUS in battleModel.test.ts (it flags any variant whose badge is
+ * the SHADOW CENSUS in battleModel.test.ts (it flags any variant whose badge is
  * byte-identical to its own fallback). A curated TOKEN retyped to start with `?` is caught
  * by `m23s8_forgery_shipped_pairs_are_pinned` in game-core/src/content.rs, which pins the
  * exact shipped (key, token) pairs — the census would catch that only by a 1-in-1296
@@ -107,8 +107,8 @@ export function unknownStatusToken(tag: string): string {
  *
  *  These five arms are the client half of a two-file contract whose SSOT is
  *  `A11Y_TOKENS` in game-core/src/content.rs. They are no longer merely *supposed* to
- *  agree: the rb-55 parity test in battleModel.test.ts reads that const and compares it
- *  to what this function RETURNS, so changing a label here alone is red (ADR-0240). */
+ *  agree: the parity test in battleModel.test.ts reads that const and compares it
+ *  to what this function RETURNS, so changing a label here alone is red. */
 export function statusBadge(tag: string | null | undefined): string {
   if (!tag) return '';
   switch (tag) {
@@ -128,12 +128,12 @@ export function statusBadge(tag: string | null | undefined): string {
       console.warn(
         `statusBadge: unknown status tag "${tag}" — update statusBadge in battleModel.ts`,
       );
-      // M23 §2.6 / ADR-0233: return a VISIBLE token, not ''. The empty string is
+      // M23 §2.6: return a VISIBLE token, not ''. The empty string is
       // collapsed to null by the `|| null` at the monsterCard call site below, and
       // battleView.ts's `if (card.status)` then renders no badge at all — so a
       // monster carrying a status the bundle has not learned about looks perfectly
       // healthy. The token SSOT is `A11Y_TOKENS` in game-core/src/content.rs, and the
-      // rb-55 parity test holds the two in step (ADR-0240) — so reaching this arm means
+      // parity test holds the two in step — so reaching this arm means
       // the bindings carry a variant the SSOT has no row for, not merely a stale switch.
       return unknownStatusToken(tag);
   }
@@ -142,8 +142,8 @@ export function statusBadge(tag: string | null | undefined): string {
 /** Map a WeatherEffect tag to a display label. Pure — unit-testable.
  *  Returns a non-empty string for known variants; console.warn + '' for unknown.
  *
- *  The two contracts DIVERGE from statusBadge's here, deliberately (m23-s8,
- *  ADR-0233): statusBadge now returns a VISIBLE fallback because a per-monster
+ *  The two contracts DIVERGE from statusBadge's here, deliberately:
+ *  statusBadge now returns a VISIBLE fallback because a per-monster
  *  status badge that renders nothing is indistinguishable from "this monster is
  *  healthy" — the absence is a lie about game state. No weather banner carries no
  *  such ambiguity: it means no weather, which is the true and common case, so an
@@ -188,7 +188,7 @@ export interface BenchMemberVM {
 
 /**
  * A bait item the player may apply to a recruit attempt. `recruitBonus > 0`
- * (the data-classify rule, ADR-0047) is the ONLY criterion for inclusion — never
+ * (the data-classify rule) is the ONLY criterion for inclusion — never
  * a hardcoded item id. Also serves directly as the selectable bait option in the
  * recruit UI (consumed unchanged — no transformation, so no separate VM type).
  */
@@ -201,7 +201,7 @@ export interface BaitItem {
 
 /**
  * A cure item the player may use in battle. `cureStatus !== null`
- * (classify-by-data, ADR-0047 + ADR-0105) is the ONLY criterion for inclusion.
+ * (classify-by-data) is the ONLY criterion for inclusion.
  * Available in ANY ongoing battle — not gated on wild/recruit (differs from BaitItem).
  */
 export interface CureItem {
@@ -234,7 +234,7 @@ export interface BattleViewModel {
   readonly bench: readonly BenchMemberVM[];
   /**
    * True only in an ONGOING WILD battle. Wild is detected by the documented
-   * asymmetry (ADR-0045): a wild battle has NO owned opponent monster row, so
+   * asymmetry: a wild battle has NO owned opponent monster row, so
    * `opponentMonsterIds.length === 0` while `sideB.team.length === 1`.
    */
   readonly canRecruit: boolean;
@@ -246,15 +246,15 @@ export interface BattleViewModel {
   readonly weather: { readonly label: string; readonly turnsRemaining: number } | null;
   /**
    * True when both sides are human players (not wild). Detected by the asymmetry
-   * complement of ADR-0045: PvP has opponent monster rows but playerIdentity ≠
+   * complement of the wild-battle rule: PvP has opponent monster rows but playerIdentity ≠
    * opponentIdentity. Drives submit_pvp_action routing in main.ts and the view's
-   * "Waiting for opponent" banner (m16b, ADR-0110).
+   * "Waiting for opponent" banner.
    */
   readonly isPvp: boolean;
   /**
    * True after the local player has sent submit_pvp_action but the server has not
    * yet resolved the turn (turnNumber has not incremented). Tracked client-side in
-   * main.ts (battle_action is PRIVATE — ADR-0015 must-never-leak; the client cannot
+   * main.ts (battle_action is PRIVATE — must-never-leak; the client cannot
    * observe whether the server received the action).
    */
   readonly pvpPendingSubmit: boolean;
@@ -357,15 +357,15 @@ export function buildBattleViewModel(
     }
   }
 
-  // Wild detection (ADR-0045): the wild opponent is UNOWNED, so it has no entry
+  // Wild detection: the wild opponent is UNOWNED, so it has no entry
   // in opponentMonsterIds even though sideB.team holds the wild BattleMonster.
   const isWild = battle.opponentMonsterIds.length === 0;
   const canRecruit = ongoing && isWild;
 
-  // PvP detection (ADR-0110 complement of ADR-0045) via the canonical classifier
-  // (ptc5e-3): PvP ⟺ the opponent is owned (opponentMonsterIds non-empty) AND the
+  // PvP detection via the canonical classifier:
+  // PvP ⟺ the opponent is owned (opponentMonsterIds non-empty) AND the
   // identities differ. A practice battle has playerIdentity === opponentIdentity
-  // (ADR-0109, RT-M16-02 fix), so it is not PvP.
+  // (RT-M16-02 fix), so it is not PvP.
   const isPvp = isPvpBattle(battle);
 
   // Bait options: classify by DATA (recruit_bonus > 0), never by item id, and
@@ -435,7 +435,7 @@ export interface OverlayResult {
  * (Ongoing auto-shows; a resolved battle shows its outcome frame) or hides — and
  * tracks the dismiss/first-sight lifecycle so a resolved outcome renders once but
  * never re-pops, and a battle already terminal at first sight (historical/stale on
- * login) is pre-dismissed rather than popped. (M8.7e, EARS §3; ADR-0014.)
+ * login) is pre-dismissed rather than popped. (EARS §3.)
  */
 export function decideBattleOverlay(
   latest: StoreBattle | undefined,
@@ -474,7 +474,7 @@ export function decideBattleOverlay(
 }
 
 // ---------------------------------------------------------------------------
-// m14.5d — VM-compare guard (battleVMsEqual + shouldSkipBattleRefresh)
+// VM-compare guard (battleVMsEqual + shouldSkipBattleRefresh)
 // ---------------------------------------------------------------------------
 
 function cardEqual(a: BattleMonsterCardVM, b: BattleMonsterCardVM): boolean {
@@ -579,7 +579,7 @@ export function battleVMsEqual(a: BattleViewModel, b: BattleViewModel): boolean 
 
   // Weather: null-ness, then label + turnsRemaining.
   // Use loose equality (== null) so that undefined weather (from test factories that
-  // predate m14.5d or future VM construction that omits the field) is treated as
+  // predate the weather field or future VM construction that omits the field) is treated as
   // "no weather" rather than throwing TypeError: Cannot read property 'label' of undefined.
   // biome's noDoubleEquals exempts `== null` (idiomatic null-or-undefined check), so
   // no suppression comment is needed.
@@ -594,7 +594,7 @@ export function battleVMsEqual(a: BattleViewModel, b: BattleViewModel): boolean 
     if (aw.label !== bw.label || aw.turnsRemaining !== bw.turnsRemaining) return false;
   }
 
-  // m16b PvP fields: isPvp / pvpPendingSubmit / pvpOpponentName.
+  // PvP fields: isPvp / pvpPendingSubmit / pvpOpponentName.
   // pvpPendingSubmit drives the "Waiting for opponent" banner — omitting it here
   // would cause shouldSkipBattleRefresh to suppress the re-render when the pending
   // state transitions, leaving the banner stuck on screen (silent dropped render).

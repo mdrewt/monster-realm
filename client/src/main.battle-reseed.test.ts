@@ -134,11 +134,13 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
   return {
     apply_move: () => ({}),
-    // rb-8 / ADR-0212: `-> i64` crosses as a BigInt, so the stub is `1n`, not `1`.
+    // `-> i64` crosses as a BigInt, so the stub is `1n`, not `1`.
     deletion_grace_ms_default: () => 1n,
     move_queue_cap: () => 4,
     party_size: () => 3,
     party_slot_none: () => 255,
+    max_trade_monsters_per_side: () => 64,
+    talk_range: () => 2,
     predict_move: () => ({}),
     predict_tick: () => ({}),
     set_active_zone: () => undefined,
@@ -310,7 +312,7 @@ function makeBattle(battleId: bigint, outcome: string, turnNumber = 1): StoreBat
   };
 }
 
-/** 17r-b: the same row, owned by an ARBITRARY identity. Built by spreading makeBattle() so
+/** The same row, owned by an ARBITRARY identity. Built by spreading makeBattle() so
  *  `opponentMonsterIds: []` (the isPvpBattle=false guarantee) can never drift between the
  *  two constructors. Only `playerIdentity` moves — the opponent stays the wild sentinel, so
  *  the row is a participant row for exactly ONE identity. */
@@ -422,7 +424,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     );
     store = opts.store;
     latestSpy = vi.spyOn(store, 'latestPlayerBattle');
-    // 17r-b: installed BEFORE onReady so the connect edge is inside the control's window.
+    // Installed BEFORE onReady so the connect edge is inside the control's window.
     // vi.spyOn keeps the original implementation (call-through), so a real failure still
     // prints — the control OBSERVES console.error, it does not silence it.
     errorSpy = vi.spyOn(console, 'error') as unknown as MockInstance<(...args: unknown[]) => void>;
@@ -430,7 +432,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   });
 
   afterEach(() => {
-    // THE CONSOLE CONTROL (17r-b, plan §7 reviewer B1 / red-team F1). main.ts:1828-1830
+    // THE CONSOLE CONTROL (plan §7 reviewer B1 / red-team F1). main.ts:1828-1830
     // catches EVERY throw out of the battle-emit listener and reports it only here, so a
     // listener crashing on every flush can still leave a ring that matches the expected
     // projection (mutant #12 does exactly that). Asserted FIRST — before teardown — so it
@@ -485,12 +487,12 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     expect(observed.filter((b) => b !== undefined)).toEqual([]);
   }
 
-  /** 17r-b: flush ONE battle row and PROVE the listener observed exactly it. The anti-vacuity
+  /** Flush ONE battle row and PROVE the listener observed exactly it. The anti-vacuity
    *  twin of flushWithNoBattleRows, for the PRE-HYDRATION flushes of STALEROW / ONGOINGROW /
    *  TWOFLUSH / REARM: without it, "the latch survived this flush" is indistinguishable from
    *  "this flush never reached the listener at all" (a flush over a CLEAN store no-ops), and
    *  the whole fixture would be vacuous. Safe to call twice in a row with the SAME row:
-   *  upsertBattle sets `#dirty = true` unconditionally (store.ts:602-605), so the second call
+   *  upsertBattle sets `#dirty = true` unconditionally, so the second call
    *  really does run a second batch. The id set — not the call count — is asserted, because
    *  the number of listeners that happen to read latestPlayerBattle in one batch is not this
    *  gate's business (main.ts:1852's ranked listener also can, when a profile row exists). */
@@ -516,7 +518,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     opts.onReconnect(id);
   }
 
-  /** 17r-b: the hydration-complete edge. In production this fires from the batcher flush
+  /** The hydration-complete edge. In production this fires from the batcher flush
    *  closure between the view reconcile and store.flushBatch(); here it is its own step. */
   function signalHydrated(): void {
     opts.onHydrated();
@@ -531,10 +533,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     return H.buildBugBundle.mock.calls[0][0].events;
   }
 
-  // GREEN since 16r-f — the original EARS-1 + EARS-2 defect, now a REGRESSION PIN. (The
-  // 16r-f-era "RED at fork" note that stood here described master BEFORE 16r-f shipped.)
-  // RED at the 17r-b fork only for the harness reason: opts.onHydrated does not exist yet.
-  // 17r-b RE-SEQUENCE: the empty flush stays BEFORE the signal on purpose — it now models a
+  // the empty flush stays BEFORE the signal on purpose — it now models a
   // flush landing ahead of the hydration edge, which is the strongest form of EARS-1.
   // WRONG IMPL KILLED: a branch that burns `battleReseedPending` on a flush where
   // latestPlayerBattle() returned undefined, so the battle rows that arrive on the NEXT flush
@@ -570,7 +569,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     expect(battleEvents(pressF9AndReadRing())).toEqual([startOf(B1)]);
   });
 
-  // GREEN (behaviourally) — kills the sticky-forever simplification, AND (17r-b, red-team F3)
+  // GREEN (behaviourally) — kills the sticky-forever simplification, AND (red-team F3)
   // it is one of only two pre-existing tests that prove the latch RESOLVES at all: under
   // mutant #3 (`onHydrated: () => {}` — the signal ignored) the latch never resolves, the
   // re-baseline never happens, activeBattleId stays null and the battleEnd is dropped.
@@ -590,10 +589,10 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     expect(battleEvents(pressF9AndReadRing())).toEqual([startOf(B1), endOf(B1, 'SideAWins', 7)]);
   });
 
-  // GREEN — fresh-login regression pin. No reconnect, no hydration signal: green at the
-  // 17r-b fork too, and the control that a latch armed at STARTUP would red.
+  // GREEN — fresh-login regression pin. No reconnect, no hydration signal:
+  // the control that a latch armed at STARTUP would red.
   // WRONG IMPL KILLED: a fix that arms the reseed latch at startup (rather than only on
-  // reconnect) would swallow the very first battleStart of a session. 17r-b restates it:
+  // reconnect) would swallow the very first battleStart of a session.
   // initialising `hydratedSinceReconnect = true` would NOT save such an implementation.
   it('T4: a fresh login emits battleStart for a new Ongoing wild battle (isPvp false)', () => {
     flushBattles(makeBattle(B1, 'Ongoing'));
@@ -601,7 +600,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     expect(battleEvents(pressF9AndReadRing())).toEqual([startOf(B1)]);
   });
 
-  // GREEN — end-pairing regression pin. No reconnect: green at the 17r-b fork too.
+  // GREEN — end-pairing regression pin. No reconnect.
   // WRONG IMPL KILLED: a fix that clears activeBattleId while clearing the reseed state would
   // strand the terminal row with no witnessed start and drop the battleEnd.
   it('T5: start-to-finish with no reconnect emits battleStart then battleEnd', () => {
@@ -611,7 +610,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     expect(battleEvents(pressF9AndReadRing())).toEqual([startOf(B1), endOf(B1, 'SideAWins', 9)]);
   });
 
-  // GREEN (behaviourally) — kills the weaker "minimal" reading of EARS-1, and (17r-b,
+  // GREEN (behaviourally) — kills the weaker "minimal" reading of EARS-1, and (
   // red-team F3) the second of the two pre-existing tests that prove the latch RESOLVES:
   // under mutant #3 the latch stays armed and B2's battleStart is swallowed entirely.
   // WRONG IMPL KILLED: an implementation that survives the empty flush but then silently
@@ -627,8 +626,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   });
 
   // GREEN (behaviourally) — the latch must clear on ANY post-hydration observation, not only
-  // a match. (16r-f wording: "on any DEFINITE observation" — 17r-b replaces the definition of
-  // the resolving edge, not the outcome.)
+  // a match.
   // Documented residual R2: the battle ended DURING the gap and activeBattleId was reset by
   // resetPredictionState, so no battleEnd is emitted for it — asserting that ABSENCE is the
   // current contract, not an oversight.
@@ -660,8 +658,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     expect(battleEvents(pressF9AndReadRing())).toEqual([startOf(B1), startOf(B2)]);
   });
 
-  // GREEN since 16r-f — a battle that STARTED during the gap. (The 16r-f-era "RED at fork"
-  // note here described master BEFORE 16r-f shipped; it has been a regression pin since.)
+  // a battle that STARTED during the gap.
   // WRONG IMPL KILLED: a reseed branch that matches ANY Ongoing battle adopts B2 as the
   // re-baselined battle and swallows the battleStart of a battle the player never saw begin.
   it('T8 [EARS-2 scope]: a DIFFERENT Ongoing battle after the drop emits its start', () => {
@@ -721,22 +718,19 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   });
 
   // ==========================================================================================
-  // 17r-b — ADR-0130 residual (d): the latch resolves on the HYDRATION EDGE, not on the first
-  // defined read. `my_battle` is a Vec<Battle> of Anonymize-policy rows (schema.rs:428-441),
+  // ADR-0130 residual (d): the latch resolves on the HYDRATION EDGE, not on the first
+  // defined read. `my_battle` is a Vec<Battle> of Anonymize-policy rows,
   // so >= 2 participant rows can hydrate ACROSS flushes and the row observed first need not be
   // the survivor.
   //
   // ⚠ FIXTURE DIRECTION IS LOAD-BEARING (orchestrator trace). store.latestPlayerBattle()
-  // returns the HIGHEST battleId among the caller's participant rows (store.ts:928-938) and
-  // upsertBattle never removes other rows (store.ts:602-605). So the SURVIVOR must be the
+  // returns the HIGHEST battleId among the caller's participant rows and
+  // upsertBattle never removes other rows. So the SURVIVOR must be the
   // HIGHER id (B2 = 202n) and the wrong-row-first row the LOWER (B1 = 101n). The mirror-image
   // fixture (survivor low, stale row high) is NON-DISCRIMINATING: the high stale row would
   // still be `latest` on every later flush and the correct implementation would fail it.
   // ==========================================================================================
 
-  // RED at fork (both reasons): opts.onHydrated does not exist, AND — once it does — 16r-f's
-  // `if (latest === undefined) return;` resolves the latch on the pre-hydration B1 row.
-  //
   // SEQUENCE: B2 Ongoing (start B2) -> reconnect (captures B2) -> flush B1 SideAWins,4 ONLY
   //   (PRE-hydration; anti-vacuity: the listener ran and read a DEFINED row whose id is B1)
   //   -> hydrated -> flush(B1 terminal + B2 Ongoing) -> flush B2 SideBWins,6.
@@ -767,8 +761,6 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     expect(battleEvents(pressF9AndReadRing())).toEqual([startOf(B2), endOf(B2, 'SideBWins', 6)]);
   });
 
-  // RED at fork (both reasons), same as STALEROW.
-  //
   // WHY A SECOND FIXTURE: STALEROW's wrong-first row is TERMINAL, so under the 16r-f clause it
   // burns the latch SILENTLY (a terminal row with activeBattleId === null emits nothing) and
   // the spurious start only appears one flush later. Here the wrong-first row is ONGOING — a
@@ -798,8 +790,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     expect(battleEvents(pressF9AndReadRing())).toEqual([startOf(B2), endOf(B2, 'SideAWins', 3)]);
   });
 
-  // GREEN at the shipped implementation — a CHEAT-KILL, not a defect witness. (RED at the
-  // 17r-b fork like every other signalHydrated() fixture: opts.onHydrated does not exist there.)
+  // GREEN at the shipped implementation — a CHEAT-KILL, not a defect witness.
   //
   // THE SURVIVOR THIS CLOSES (artifact red-team, MEASURED: 260/260 tests green and the
   // acceptance gate green with this cheat in the tree). A listener that SELF-ARMS on its first
@@ -856,9 +847,8 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     ).toEqual([startOf(B2), endOf(B2, 'SideBWins', 6)]);
   });
 
-  // RED at fork (harness reason: two signalHydrated calls). Behaviourally this is the tooth
-  // for plan §7 mutant #11: `hydratedSinceReconnect = false` must be reset UNCONDITIONALLY in
-  // onReconnect, OUTSIDE the `if (!battleReseedPending)` guard that (per 16r-f / T9) still
+  // this is the tooth for plan §7 mutant #11: `hydratedSinceReconnect = false` must be reset
+  // UNCONDITIONALLY in onReconnect, OUTSIDE the `if (!battleReseedPending)` guard that still
   // protects only the `reseedPrevBattleId` capture.
   //
   // SEQUENCE: B2 Ongoing (start B2) -> reconnect#1 (captures B2, arms) -> hydrated (episode 1
@@ -890,8 +880,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     expect(battleEvents(pressF9AndReadRing())).toEqual([startOf(B2)]);
   });
 
-  // RED at fork for the harness reason ONLY (opts.onHydrated is missing). Behaviourally this
-  // is a REGRESSION PIN, green under both 16r-f's `latest === undefined` clause and the
+  // this is a REGRESSION PIN, green under both 16r-f's `latest === undefined` clause and the
   // correct 17r-b implementation — and that is exactly why it exists: the 17r-b rewrite
   // REMOVES the clause that made an `undefined` read unreachable in the resolved branch, so
   // the resolved branch must handle `latest === undefined` explicitly. A player with NO battle
@@ -928,7 +917,7 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   });
 
   // ==========================================================================================
-  // 17r-b — ADR-0130 residual (e): a reconnect can MINT a new anon identity
+  // ADR-0130 residual (e): a reconnect can MINT a new anon identity
   // (continueAnonymously() after a session-expired terminal, or the nh4 token-rejection
   // suppression path) while `hadSession` is already true. connection.ts:659 reassigns its own
   // module-local identity on EVERY connect; before this slice `opts.onReconnect()` carried no
@@ -936,9 +925,6 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   // INCLUDING this reseed listener.
   // ==========================================================================================
 
-  // RED at fork (both reasons): opts.onHydrated is missing, and `onReconnect` takes no
-  // identity, so main.ts's module-local `identity` stays H.identity.
-  //
   // SEQUENCE: onReady(H.identity) [beforeEach] -> reconnect(IDENTITY_2) -> hydrated
   //   -> flush a battle owned by IDENTITY_2.
   //
@@ -980,10 +966,6 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     ).toEqual([H.identity, IDENTITY_2]);
   });
 
-  // RED at fork twice over: `opts.onHydrated` does not exist (the TypeError you see first,
-  // thrown from signalHydrated() in the test body — not from inside the listener`s try/catch),
-  // and — once it does — `onReconnect` carries no identity.
-  //
   // WHY A SECOND (e) FIXTURE: IDROT`s not-reassigned mutant fails LOUDLY (nothing is emitted).
   // This one fails SILENTLY and is the shape that actually ships: the OLD identity still has a
   // live participant row (an "orphan" row for a battle the previous session was in, which the

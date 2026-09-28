@@ -1,45 +1,37 @@
-//! M22 privacy and data-lifecycle module — the owning module for `export_bundle`
-//! writes (spec M22 §7.2 assigns S4's export machinery here; G5/D0 module-write
-//! isolation bans those writes in `accounts.rs`).
+//! privacy and data-lifecycle module — the owning module for `export_bundle`
+//! writes.
 //!
-//! rb-22 (ADR-0220) creates this module ahead of S4 to close the guest-export
-//! orphan: pre-claim `export_bundle` chunks must not survive under a retired
-//! guest identity after `complete_guest_claim` — the S3 deletion cascade keys on
+//! pre-claim `export_bundle` chunks must not survive under a retired
+//! guest identity after `complete_guest_claim` — deletion cascade keys on
 //! a live account's own identity and structurally cannot reach them, and the
-//! 7-day TTL reaper (rb-48, below) is an independent expiry, not a reachability
+//! 7-day TTL reaper (below) is an independent expiry, not a reachability
 //! guarantee.
 //!
-//! m22-s4 (ADR-0226) lands the export itself: `request_data_export` walks every
-//! `exportable` table in `DATA_LIFECYCLE_MANIFEST`, serializes the caller's own
-//! rows to hand-rolled JSON (64-bit integers as quoted decimal strings — the S8
-//! client would silently lose precision above 2^53), sub-chunks at
+//! `request_data_export` walks every `exportable` table in
+//! `DATA_LIFECYCLE_MANIFEST`, serializes the caller's own rows to hand-rolled
+//! JSON (64-bit integers as quoted decimal strings), sub-chunks at
 //! `game_core::EXPORT_CHUNK_ROWS`, and writes `export_bundle` rows read back only
 //! through the owner-scoped `my_export_bundle` view.
 //!
-//! rb-48 (ADR-0238) lands the PRV1-14 TTL reaper at the tail of this file: an
-//! hourly interval-singleton schedule (`export_bundle_reaper_schedule`, no
+//! an hourly interval-singleton schedule (`export_bundle_reaper_schedule`, no
 //! Identity column) drives the scheduler-only `export_bundle_reaper`, which
-//! deletes every `export_bundle` chunk older than `EXPORT_BUNDLE_TTL_MS` (7
-//! days) through the pure `plan_export_reap` seam. Since rb-86 (a second dated
-//! ADR-0238 amendment) a tick deletes WHOLE BUNDLES: the delete unit is the
-//! creation stamp every chunk of one request shares and, since rb-111
-//! (ADR-0268), no other live request shares, so a bundle is never committed
-//! part-gone. `request_data_export` arms the singleton as its last
-//! statement, and `init` / `sync_content` re-arm it on publish, so a chunk can
-//! never exist without its expiry armed.
+//! deletes every `export_bundle` chunk older than `EXPORT_BUNDLE_TTL_MS` (7 days)
+//! through the pure `plan_export_reap` seam. a tick deletes WHOLE BUNDLES: the
+//! delete unit is the creation stamp every chunk of one request shares no other
+//! live request shares, so a bundle is never committed part-gone.
+//! `request_data_export` arms the singleton as its last statement, and `init` /
+//! `sync_content` re-arm it on publish, so a chunk can never exist without its
+//! expiry armed.
 //!
-//! SCAN HYGIENE (gate-enforced by `privacy_tests.rs`, which scans this file AND
-//! itself): line comments only — never a block comment or a path glob spelling
+//! SCAN HYGIENE:
+//! line comments only — never a block comment or a path glob spelling
 //! that contains one; no raw strings; no logging or print macros (the reducer
 //! that calls a helper here owns any logging); no escaped or char-literal double
-//! quote. A dozen evals concatenate every source file in this crate, test files
-//! included, and strip comments naively — one unpaired opener silently blanks
-//! later modules from their view. rb-40 (ADR-0235) is the worked example of that
-//! doctrine: `purge_export_bundles` REPORTS its purged count and never emits;
-//! the observation lines live in the CALLING reducers — `complete_guest_claim`
-//! in accounts.rs, `request_data_export` here (rb-65 / ADR-0243), and since
-//! rb-87 the scheduled `export_bundle_reaper`, its own calling reducer — all
-//! through `observability::mr_log` with a `stringify!` evt. STRENGTHENED for S4:
+//! quote. `purge_export_bundles` REPORTS its purged count and never emits; the
+//! observation lines live in the CALLING reducers — `complete_guest_claim` in
+//! accounts.rs, `request_data_export` here, the scheduled `export_bundle_reaper`,
+//! its own calling reducer — all through `observability::mr_log` with a
+//! `stringify!` evt.
 //! this file carries exactly ONE double-quote pair — the `#[path]` attribute —
 //! and no other quote byte anywhere. Every constant string is `stringify!` and
 //! the quote is the `JSON_QUOTE` unicode-escape char constant.
@@ -63,22 +55,18 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
 
 /// Delete every `export_bundle` chunk owned by `owner` (collect the PKs via the
-/// `owner_identity` btree index, then delete each by PK — the ADR-0126 idiom,
-/// mirroring `disarm_claim_reaper`).
+/// `owner_identity` btree index, then delete each by PK).
 ///
 /// OWNER-GENERIC on purpose: `complete_guest_claim` passes the RETIRED GUEST
-/// identity (rb-22), and the M22-S3 account-deletion cascade reuses the same
+/// identity, and account-deletion cascade reuses the same
 /// helper verbatim for the deleting account's own chunks (`export_bundle` is
-/// `Erase`-policy in `DATA_LIFECYCLE_MANIFEST`). The body is a frozen contract:
-/// `privacy_tests.rs` pins it byte-exactly in squashed form, so ANY reshaping —
-/// a conditional, an extra binding, a second statement — is a deliberate,
-/// test-visible change, never a drive-by edit.
+/// `Erase`-policy in `DATA_LIFECYCLE_MANIFEST`).
 ///
-/// RETURNS the number of chunks it deleted (rb-40, ADR-0235): the count is the
+/// RETURNS the number of chunks it deleted: the count is the
 /// cardinality of the collected key set, taken before the loop moves it, so it
 /// is exactly what the loop then deletes. The helper never emits — the caller
-/// owns any observation of the purge: `complete_guest_claim` (rb-40, ADR-0235),
-/// the deletion cascade and `request_data_export` (both rb-65, ADR-0243) each
+/// owns any observation of the purge: `complete_guest_claim`,
+/// the deletion cascade and `request_data_export` each
 /// bind this count and publish it through `observability::mr_log`.
 pub(crate) fn purge_export_bundles(ctx: &ReducerContext, owner: Identity) -> usize {
     let ids: Vec<u64> = ctx
@@ -98,7 +86,7 @@ pub(crate) fn purge_export_bundles(ctx: &ReducerContext, owner: Identity) -> usi
 // ===========================================================================
 // JSON micro-builder (pure). No string literal may appear in this file, so the
 // quote is a unicode-escape char constant and every keyword token comes from
-// stringify!. Escaping contract (ADR-0226): quote and backslash escaped, every
+// stringify!. Escaping contract: quote and backslash escaped, every
 // byte below 0x20 as a uniform lowercase \u00XX, slash and 0x7F unescaped,
 // non-ASCII passes through as UTF-8.
 // ===========================================================================
@@ -137,7 +125,7 @@ fn json_str_into(out: &mut String, s: &str) {
     out.push(JSON_QUOTE);
 }
 
-// 64-bit integers are QUOTED decimal strings (ADR-0226): JSON number parsing in
+// 64-bit integers are QUOTED decimal strings: JSON number parsing in
 // the S8 client silently loses precision above 2^53, and wallet balances, ids
 // and seqs are u64. Everything 32-bit and below is a bare JSON number.
 fn json_u64_into(out: &mut String, v: u64) {
@@ -156,7 +144,7 @@ fn json_u32_into(out: &mut String, v: u32) {
     out.push_str(&v.to_string());
 }
 
-// A usize count is a bare number too (rb-65, ADR-0243): on wasm32 it is
+// A usize count is a bare number too: on wasm32 it is
 // u32-wide, and the log-line counts it carries are compared numerically in
 // a panel, never reassembled by the S8 client.
 fn json_usize_into(out: &mut String, v: usize) {
@@ -465,16 +453,14 @@ fn json_monster_cards_into(out: &mut String, items: &[MonsterCard]) {
 // returns one compact JSON object: every column, declaration order, keys are
 // the Rust field identifiers. The exhaustive destructure is load-bearing
 // twice: a NEW column fails to compile here (forcing a deliberate export or
-// omit decision — the ADR-0226 privacy posture), and an UNUSED binding fails
-// the -D warnings build (so no destructured column can be silently dropped).
+// omit decision), and an UNUSED binding fails the -D warnings build (so no
+// destructured column can be silently dropped).
 // ===========================================================================
 
 // Field-access spelling, not the destructure the sibling serializers use:
-// the no-idle-accrual eval reads ANY Monster brace literal in production
-// code as a row CONSTRUCTION (its CHECK C cannot tell a destructuring
-// pattern from a builder, and it tracks alias renames). Column totality is
-// enforced by the test fixtures instead — they construct every row with a
-// no-spread struct literal, so a new column reds the test build.
+// Column totality is enforced by the test fixtures instead — they
+// construct every row with a no-spread struct literal, so a new column
+// reds the test build.
 fn json_monster(row: &Monster) -> String {
     let mut out = String::new();
     let mut first = true;
@@ -580,11 +566,9 @@ fn json_monster(row: &Monster) -> String {
 }
 
 // Field-access spelling, not the destructure the sibling serializers use:
-// the no-idle-accrual eval reads ANY MonsterPub brace literal in production
-// code as a row CONSTRUCTION (its CHECK C cannot tell a destructuring
-// pattern from a builder, and it tracks alias renames). Column totality is
-// enforced by the test fixtures instead — they construct every row with a
-// no-spread struct literal, so a new column reds the test build.
+// Column totality is enforced by the test fixtures instead — they construct
+// every row with a no-spread struct literal, so a new column reds the test
+// build.
 fn json_monster_pub(row: &MonsterPub) -> String {
     let mut out = String::new();
     let mut first = true;
@@ -875,8 +859,7 @@ fn json_battle_challenge(row: &BattleChallenge) -> String {
 
 // battle_action redaction is vacuous BY CONSTRUCTION and documented as such:
 // the own-rows predicate admits only rows the requester submitted, so no
-// counterparty row is ever in the serializer's input set (spec §5 satisfied by
-// the filter, not by field surgery).
+// counterparty row is ever in the serializer's input set.
 fn json_battle_action(row: &BattleAction) -> String {
     let BattleAction {
         action_id,
@@ -1030,7 +1013,7 @@ fn json_character(row: &Character) -> String {
 }
 
 // ===========================================================================
-// battle redaction (spec §5, ADR-0226). The one serializer whose output is NOT
+// battle redaction. The one serializer whose output is NOT
 // every column: state is omitted entirely (the counterparty half of a durable
 // artifact; the requester keeps live access via my_battle), and the
 // counterparty identity and monster-id list are the null literal per side. A
@@ -1111,9 +1094,8 @@ fn json_battle(row: &Battle, me: Identity) -> Result<String, String> {
     Ok(out)
 }
 
-// Own-row predicates for the two unindexed scans (ADR-0226 known limit:
-// battle_action and playtest_event carry no identity index; both tables are
-// bounded). Pure so the leak surface gets a behavioral proof, not only a scan.
+// Own-row predicates for the two unindexed scans.
+// Pure so the leak surface gets a behavioral proof, not only a scan.
 fn battle_action_is_own(row: &BattleAction, me: Identity) -> bool {
     row.player_identity == me
 }
@@ -1123,12 +1105,12 @@ fn playtest_event_is_own(row: &PlaytestEvent, me: Identity) -> bool {
 }
 
 // ===========================================================================
-// Chunk planner (pure). Request-wide numbering (ADR-0226): chunk_index is
+// Chunk planner (pure). Request-wide numbering: chunk_index is
 // globally contiguous 0..N-1 in input order and total_chunks (a column, not a
-// payload field) is the request's whole chunk count — the reading that makes
-// the spec §5 client wait rule coherent. An empty table still emits exactly
-// one chunk with an empty rows array; slice chunks() yields ZERO chunks on an
-// empty slice, so the empty case is special-cased.
+// payload field) is the request's whole chunk count.
+// An empty table still emits exactly one chunk with an empty rows array;
+// slice chunks() yields ZERO chunks on an empty slice, so the empty case is
+// special-cased.
 // ===========================================================================
 
 struct PlannedChunk {
@@ -1207,7 +1189,7 @@ fn export_cooldown_elapsed(last_at_ms: Option<i64>, now_ms: i64) -> bool {
 }
 
 // ===========================================================================
-// rb-111 (ADR-0268): a NEW bundle's creation stamp is unique among LIVE rows,
+// A NEW bundle's creation stamp is unique among LIVE rows,
 // so a stamp is exactly one live request and the TTL reaper's per-tick stamp
 // cap counts BUNDLES. Minted here, at the module's one write site, with no
 // schema change: the btree on created_at_ms already exists, a composite index
@@ -1229,7 +1211,7 @@ const EXPORT_STAMP_PROBE_WINDOW_MS: i64 = 16;
 // stamp — a fallback would restore the unbounded delete unit this removes.
 // READS ONLY: no insert, no delete, and an explicit range loop rather than an
 // iterator chain over the table. `now_ms` is a PARAMETER that deliberately
-// SHADOWS the imported clock fn (the rb-85 idiom), so a second clock read in
+// SHADOWS the imported clock fn, so a second clock read in
 // here is a compile error rather than something a text census must catch.
 fn mint_export_stamp(ctx: &ReducerContext, now_ms: i64) -> Result<i64, String> {
     for offset in 0..EXPORT_STAMP_PROBE_WINDOW_MS {
@@ -1487,10 +1469,9 @@ fn rows_player(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, Str
     Ok(rows)
 }
 
-// The match spelling is load-bearing: the m17a RL-2 scan bans the squashed
+// The match spelling is load-bearing: bans the squashed
 // text of an equals sign directly before this table accessor in EVERY file
-// (a bound handle could delete out of sight of the chained-delete needle) —
-// the ranking.rs:223 idiom.
+// (a bound handle could delete out of sight of the chained-delete needle).
 fn rows_profile(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, String> {
     match ctx.db.profile().identity().find(owner) {
         Some(row) => Ok(vec![json_profile(&row)]),
@@ -1531,30 +1512,27 @@ fn rows_character(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, 
 }
 
 // ===========================================================================
-// The reducer (ADR-0226 guard order — this shape IS the security boundary and
-// privacy_tests.rs pins it statement by statement):
-//   subject guard, deletion gate, cooldown, purge-before-write, the rb-107
-//   admission pre-gate (does the smallest possible bundle fit?), the
-//   manifest-order walk, the rb-107 exact gate (does THIS bundle fit?), the
-//   insert loop, the rb-48 self-arm, then the rb-65 observation line (terminal).
+// The reducer
+//   subject guard, deletion gate, cooldown, purge-before-write,
+//   pre-gate (does the smallest possible bundle fit?), the
+//   manifest-order walk, gate (does THIS bundle fit?), the
+//   insert loop, then line (terminal).
 // Three rejects precede the purge; the two admission rejects follow it, share
 // one static reason and one cap binding, and a mid-walk Err — theirs included —
-// rolls that purge back with it (ADR-0106 D8).
+// rolls that purge back with it.
 // ===========================================================================
 
 /// Build the caller a fresh export: one chunk per exportable table (split at
 /// the game-core sub-chunk boundary), all sharing one request_id — the
-/// request's unique creation stamp (rb-111, ADR-0268: the injected clock, or the
-/// first later millisecond no live bundle holds). Rejects (distinct static
-/// reasons, reject-not-clamp) a
-/// caller with no game state at all (anonymous identities are free; an orphaned
-/// bundle now expires via the hourly TTL reaper, rb-48, but a zero-state
-/// identity should not write one in the first place), a caller inside
-/// the deletion grace window (PRV1-7; cancel-then-export stays available), and
-/// a caller inside the flood-control cooldown window. Since rb-107 (ADR-0265)
+/// request's unique creation stamp. Rejects (distinct static reasons,
+/// reject-not-clamp) a caller with no game state at all (anonymous identities
+/// are free; an orphaned bundle now expires via the hourly TTL reaper, but a
+/// zero-state identity should not write one in the first place), a caller
+/// inside the deletion grace window (cancel-then-export stays available), and a
+/// caller inside the flood-control cooldown window.
 /// it also rejects, under ONE further static reason, any caller whose bundle
 /// would take `export_bundle` past the global live-row cap — half of it for a
-/// caller with no `account` row, and since rb-132 (ADR-0275) a quarter of it
+/// caller with no `account` row, a quarter of it
 /// for a caller with no `player_wallet` row either, so join-only sybils are
 /// shed before anonymous players who have earned currency, and both before
 /// account holders.
@@ -1581,20 +1559,18 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
         return Err(stringify!(export_reject_cooldown).to_string());
     }
     let purged = purge_export_bundles(ctx, me);
-    // rb-107 (ADR-0265): admission control, gate one. The cap depends on the
+    // Admission control, gate one. The cap depends on the
     // caller, the shed order does not: an anonymous caller is refused while an
     // account holder still has headroom, so no number of JWT-less identities can
-    // take the whole store. The subject test is the crate SSOT (ADR-0189 D2 /
-    // ADR-0179 D4', accounts.rs:477) — never has_jwt(), which is true for every
-    // connection. Since rb-132 (ADR-0275) the binding asks a SECOND crate SSOT,
-    // the economy module's wallet-row test (economy.rs:324; a wallet row exists
-    // once currency was ever credited), so an identity never credited currency
-    // is shed before any other caller. Both answers are read EAGERLY, one
-    // unique-index point read each, and the tier seam stays pure. This first
+    // take the whole store. The subject test is the crate SSOT
+    // — never has_jwt(), which is true for every
+    // connection. binding asks a SECOND crate SSOT,
+    // the economy module's wallet-row test, so an identity never credited
+    // currency is shed before any other caller. Both answers are read EAGERLY,
+    // one unique-index point read each, and the tier seam stays pure. This first
     // gate asks whether even the SMALLEST possible bundle fits, so a caller who
     // cannot be served is refused BEFORE the manifest walk (which includes two
-    // unindexed own-row scans). An Err here rolls the purge above back with it
-    // (ADR-0106 D8).
+    // unindexed own-row scans). An Err here rolls the purge above back with it.
     let cap = export_live_row_cap(
         crate::accounts::is_account_holder(ctx, me),
         crate::economy::wallet_exists(ctx, me),
@@ -1602,11 +1578,11 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
     if !export_admission_open(ctx.db.export_bundle().count(), EXPORT_MIN_BUNDLE_ROWS, cap) {
         return Err(stringify!(export_reject_admission).to_string());
     }
-    // rb-111 (ADR-0268): this request's UNIQUE creation stamp. AFTER the
+    // This request's UNIQUE creation stamp. AFTER the
     // admission pre-gate, so a caller who cannot be served pays no probe
     // reads; BEFORE the manifest walk, so contention is refused before the
     // two unindexed own-row scans. The `?` is an early exit that rolls the
-    // purge above back with it (ADR-0106 D8), the same contract the two
+    // purge above back with it, the same contract the two
     // admission rejects carry.
     let stamp = mint_export_stamp(ctx, now)?;
     let mut per_table: Vec<(&'static str, Vec<String>)> = Vec::new();
@@ -1624,7 +1600,7 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
             Some(rows) => per_table.push((entry.table, rows)),
             None => {
                 // Unreachable while the const totality assertion holds; kept as
-                // the reachable fail-loud arm PRV1-11 promises.
+                // the reachable fail-loud arm promises.
                 let mut msg = stringify!(export_missing_exporter).to_string();
                 msg.push(':');
                 msg.push_str(entry.table);
@@ -1634,7 +1610,7 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
     }
     let plan = plan_export_chunks(per_table);
     let total = plan.len() as u32;
-    // rb-107 (ADR-0265): admission control, gate two — the same cap, now against
+    // Admission control, gate two — the same cap, now against
     // this request's EXACT row count, so the live population can never EXCEED it.
     if !export_admission_open(ctx.db.export_bundle().count(), total, cap) {
         return Err(stringify!(export_reject_admission).to_string());
@@ -1652,7 +1628,7 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
         });
     }
     ensure_export_bundle_reaper(ctx);
-    // rb-65 (ADR-0243): ONE observation line, TERMINAL — after the self-arm,
+    // ONE observation line, TERMINAL — after the self-arm,
     // whose plain insert can still abort the transaction, so the line may
     // only be written once nothing fallible follows it. The arm is the last
     // WRITE; this is the last STATEMENT. Unconditional, never on a reject.
@@ -1661,14 +1637,14 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
-/// The ONE field fragment of the export line (rb-65, ADR-0243) — the
+/// The ONE field fragment of the export line — the
 /// `purge_fields` shape from accounts.rs, spelled under this module's hygiene
 /// contract: PURE, no `ctx`, no table read, every key a `stringify!` token and
 /// the quote the `JSON_QUOTE` constant. `subject` is the caller (`ctx.sender()`,
 /// the owner of every chunk written), `purged` the count `purge_export_bundles`
 /// returned for the caller's PRIOR bundle, `written` the request's total chunk
 /// count. Counts are bare numbers (panels compare them); no player-authored
-/// field may ever join this fragment (PRV1-17/20 by analogy).
+/// field may ever join this fragment.
 fn export_fields(subject: Identity, purged: usize, written: u32) -> String {
     let mut out = String::new();
     let mut first = true;
@@ -1681,12 +1657,10 @@ fn export_fields(subject: Identity, purged: usize, written: u32) -> String {
     out
 }
 
-// Owner-scoped read path for export_bundle (the my_monster_pub idiom,
-// ADR-0154 D2 / ADR-0194 D2): THIS BODY is the entire security boundary and is
+// Owner-scoped read path for export_bundle (the my_monster_pub idiom):
+// THIS BODY is the entire security boundary and is
 // pinned by equality, signature included — an extra parameter would be a
-// caller-chosen-owner leak. Lives here rather than schema.rs because spec
-// §7.2 assigns all S4 machinery to this module (deviation recorded in
-// ADR-0226).
+// caller-chosen-owner leak.
 #[spacetimedb::view(accessor = my_export_bundle, public)]
 fn my_export_bundle(ctx: &spacetimedb::ViewContext) -> Vec<ExportBundle> {
     ctx.db
@@ -1697,29 +1671,20 @@ fn my_export_bundle(ctx: &spacetimedb::ViewContext) -> Vec<ExportBundle> {
 }
 
 // ===========================================================================
-// PRV1-14 TTL reaper (rb-48, ADR-0238; bounded read since rb-85 and whole-bundle
-// deletes since rb-86, two dated amendments). A GLOBAL hourly interval singleton
-// — not a per-request one-shot: no Identity column (so NotOwned in the manifest,
-// no re-key entry) and reachability-independent. Its read is a BOUNDED btree range over
-// `created_at_ms`, so this module no longer sweeps `export_bundle` at all: the
-// one full-table read of the chunk table that rb-48 had to sanction is gone.
-// (The module's three remaining `.iter()` reads — the schedule singleton in the
-// arm and the two unindexed own-row export scans of ADR-0226 — are unaffected
-// and are censused by privacy_tests.rs.) The behavioural proof is the pair of
-// pure seams below — `plan_export_reap` (which rows have expired) and
-// `plan_export_reap_stamps` (which whole bundles this tick may delete); since
-// rb-109 the native test host models the range read and the index-point delete,
-// never a table scan. The shell, the bundle-selection seam and the private
-// helper that delegates to both are each pinned byte-exactly in squashed form,
-// so any reshaping is a deliberate, test-visible change. Since rb-87 (a third
-// dated amendment) the tick also PUBLISHES what it did: the helper reports a
-// record of raw counts — four since rb-115 (ADR-0269): the rows the window read,
-// the expired stamps it holds, the stamps it planned, the rows it reaped — the
-// pure `reap_fields` seam renders that record, and the reducer emits it as ONE
-// terminal observation.
+// A GLOBAL hourly interval singleton — not a per-request one-shot: no Identity column
+// (so NotOwned in the manifest, no re-key entry) and reachability-independent. Its read
+// is a BOUNDED btree range over `created_at_ms`, so this module no longer sweeps
+// `export_bundle` at all. The behavioural proof is the pair of pure seams below —
+// `plan_export_reap` (which rows have expired) and `plan_export_reap_stamps` (which
+// whole bundles this tick may delete); the native test host models the range read and
+// the index-point delete, never a table scan. the tick also PUBLISHES what it did: the
+// helper reports a record of raw counts — four: the rows the window read,
+// the expired stamps it holds, the stamps it planned, the rows it reaped — the pure
+// `reap_fields` seam renders that record, and the reducer emits it as ONE terminal
+// observation.
 // ===========================================================================
 
-// Retention ceiling for an export snapshot (spec M22 section 5: seven days).
+// Retention ceiling for an export snapshot.
 pub(crate) const EXPORT_BUNDLE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 // Sweep cadence: an hour is 168 times finer than the TTL, and every tick is one
 // bounded range read of at most EXPORT_REAP_MAX_READ_PER_TICK rows plus at most
@@ -1728,17 +1693,15 @@ pub(crate) const EXPORT_BUNDLE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 pub(crate) const EXPORT_REAP_INTERVAL: Duration = Duration::from_secs(3600);
 // Per-tick READ window: how many chunk rows a tick may decode. Export rows carry
 // whole payload chunks, so a small batch that always commits beats a large one
-// that could abort every tick forever. Since rb-86 this bounds the READ ONLY —
+// that could abort every tick forever. this bounds the READ ONLY —
 // the write bound is EXPORT_REAP_MAX_STAMPS_PER_TICK below, because a creation
-// stamp selected from inside this window carries a tail beyond its edge. rb-110
-// (ADR-0267) renamed it for the read it bounds, value and consumers unchanged:
-// the rb-48 spelling said DELETE, false since the stamp cap took the write
-// side, and the EXPORT_LIVE_ROW_CAP derivation below rests on this number.
+// stamp selected from inside this window carries a tail beyond its edge.
+// the EXPORT_LIVE_ROW_CAP derivation below rests on this number.
 pub(crate) const EXPORT_REAP_MAX_READ_PER_TICK: usize = 256;
-// Per-tick STAMP cap (rb-86, ADR-0238 amendment): the WRITE bound. The row cap
+// Per-tick STAMP cap: the WRITE bound. The row cap
 // above bounds what a tick READS; every creation stamp the window touches is then
 // deleted whole — its tail may lie beyond the window — so the write set is at
-// most this many stamps — and since rb-111 (ADR-0268) a stamp is exactly one
+// most this many stamps — and a stamp is exactly one
 // bundle minted since then, because the write site refuses a stamp a live row
 // already carries. Sixteen
 // minimum-size bundles (17 chunks, one per exportable table) is 272 rows, the
@@ -1747,27 +1710,24 @@ pub(crate) const EXPORT_REAP_MAX_READ_PER_TICK: usize = 256;
 pub(crate) const EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16;
 
 // ===========================================================================
-// rb-107 (ADR-0265): the GLOBAL admission ceiling for export_bundle, with ZERO
-// new state, closing residual R-rb-85-EXPORTADMIT. The three constants above
-// bound what ONE tick retires; this is what the reaper retires in one whole
-// retention window, so the write side cannot outpace the drain. The derivation
-// and its trade-offs live ONCE, in ADR-0265 D1 — what must be stated here is the
-// inequality it rests on: EXPORT_REAP_MAX_STAMPS_PER_TICK * EXPORT_MIN_BUNDLE_ROWS
+// The GLOBAL admission ceiling for export_bundle, with ZERO
+// new state. The three constants above bound what ONE tick retires; this is what
+// the reaper retires in one whole retention window, so the write side cannot
+// outpace the drain. the inequality it rests on: EXPORT_REAP_MAX_STAMPS_PER_TICK *
+// EXPORT_MIN_BUNDLE_ROWS
 // >= EXPORT_REAP_MAX_READ_PER_TICK (16 * 17 = 272 >= 256), which is what makes
 // a tick retire at least as many rows as it read. Stamps are deleted WHOLE, so
 // no bundle is ever partly reaped and the floor holds whatever order the window
-// arrives in; [rb86/stamp-cap-throughput] asserts that inequality off the live
-// manifest. Draining a FULL store therefore takes about 158 ticks (6.6 days), so
+// arrives in; Draining a FULL store therefore takes about 158 ticks (6.6 days), so
 // a row's worst case is two retention windows, not one. THREE thresholds, one
 // count, shed in order of what the caller has invested: a caller with no account
-// row gets half, so anonymous identities can never take the account holders'
-// half (ADR-0265 D1b); since rb-132 (ADR-0275) a caller with no wallet row
-// either, a caller never credited currency, gets a quarter, so join-only sybils
-// can never take the credited anonymous players' quarter (the escalation a
-// scripted quest or trade still buys is R-rb-132-WALLETSYBIL). The bound is on
-// ROWS, not bytes: a chunk carries up to EXPORT_CHUNK_ROWS serialized rows
-// (R-rb-107-BYTEBOUND). PRIVATE, like EXPORT_REQUEST_COOLDOWN_MS above: DoS
-// knobs, not legal figures.
+// row gets half, so anonymous identities can never take the account holders' half;
+// a caller with no wallet row either, a caller never credited currency, gets a
+// quarter, so join-only sybils can never take the credited anonymous players'
+// quarter (the escalation a scripted quest or trade still buys is
+// a known open residual). The bound is on ROWS, not bytes: a chunk carries up to
+// EXPORT_CHUNK_ROWS serialized rows. PRIVATE, like EXPORT_REQUEST_COOLDOWN_MS
+// above: DoS knobs, not legal figures.
 // ===========================================================================
 
 const EXPORT_LIVE_ROW_CAP: u64 = (EXPORT_REAP_MAX_READ_PER_TICK as u64)
@@ -1775,7 +1735,7 @@ const EXPORT_LIVE_ROW_CAP: u64 = (EXPORT_REAP_MAX_READ_PER_TICK as u64)
 
 const EXPORT_ANON_LIVE_ROW_CAP: u64 = EXPORT_LIVE_ROW_CAP / 2;
 
-// rb-132 (ADR-0275): the NEWCOMER tier, for a caller with neither an account
+// The NEWCOMER tier, for a caller with neither an account
 // row nor a wallet row. DERIVED from the anonymous ceiling, never transcribed,
 // so re-sizing the drain moves all three together and the order cannot invert.
 const EXPORT_NEWCOMER_LIVE_ROW_CAP: u64 = EXPORT_ANON_LIVE_ROW_CAP / 2;
@@ -1789,7 +1749,7 @@ const EXPORT_MIN_BUNDLE_ROWS: u32 = EXPORTERS.len() as u32;
 // Tier selection. PURE and exhaustive over its two inputs, so all three arms
 // have a value oracle in an ordinary test. An account holder's ceiling ignores
 // the wallet bit: the account bit is tested first, and the wallet bit only
-// splits the callers without one (rb-132, ADR-0275).
+// splits the callers without one.
 fn export_live_row_cap(has_account: bool, has_wallet: bool) -> u64 {
     if has_account {
         EXPORT_LIVE_ROW_CAP
@@ -1813,7 +1773,7 @@ fn export_admission_open(live_rows: u64, requested: u32, cap: u64) -> bool {
     live_rows.saturating_add(u64::from(requested)) <= cap
 }
 
-// PRIVATE scheduled table colocated with its reducer (ADR-0056 exception).
+// PRIVATE scheduled table colocated with its reducer.
 #[spacetimedb::table(accessor = export_bundle_reaper_schedule, scheduled(export_bundle_reaper))]
 pub struct ExportBundleReaperSchedule {
     #[primary_key]
@@ -1843,10 +1803,10 @@ pub(crate) fn plan_export_reap(
     expired
 }
 
-// Pure BUNDLE selection for a per-bundle atomic reap (rb-86, ADR-0238 amendment;
-// closes R-rb-48-PARTIALREAP). A bundle is every chunk sharing one creation
+// Pure BUNDLE selection for a per-bundle atomic reap.
+// A bundle is every chunk sharing one creation
 // stamp: request_data_export stamps all of a request's chunks with the single
-// stamp it minted (rb-111), so deleting a stamp deletes exactly one whole bundle
+// stamp it minted, so deleting a stamp deletes exactly one whole bundle
 // and never part of one.
 // `plan_export_reap` above stays the SSOT expiry predicate — it is run over the
 // WHOLE window (`rows.len()`, not a row cap: the read is already bounded) and
@@ -1855,11 +1815,7 @@ pub(crate) fn plan_export_reap(
 // at `max_stamps`: the write bound from the helper, the window's length from the count.
 //
 // The projection is an EXPLICIT loop over the borrowed window rather than an
-// iterator chain, matching `plan_export_reap` above. That is this module's
-// idiom, and it is load-bearing: `[rb85/iter-census]` budgets `.iter()` in this
-// file against a closed list of three sanctioned TABLE reads, spelled against
-// the verb and against no receiver at all, so a chain here would spend a slot
-// reserved for the thing that census exists to bound.
+// iterator chain, matching `plan_export_reap` above.
 fn plan_export_reap_stamps(
     rows: &[(u64, i64)],
     now_ms: i64,
@@ -1883,24 +1839,21 @@ fn plan_export_reap_stamps(
 // the runtime keeps the row and re-fires it every EXPORT_REAP_INTERVAL. The
 // clock is read HERE, once per tick, and passed down: one instant per tick for
 // every row the tick weighs, and the helper's cutoff is injectable by a future
-// native test (rb-85). The reducer itself reaches no table.
+// native test. The reducer itself reaches no table.
 //
-// rb-87 (ADR-0238 amendment; closes R-rb-48-OBS) gives the tick a VOICE. A
-// scheduled reducer has no caller, so it is ITS OWN calling reducer under the
-// rb-40 / ADR-0235 doctrine, and ADR-0243 D9 already recorded that the hygiene
-// contract above never said this module may not observe its own reducer. ONE
-// line, TERMINAL: the helper runs, the pure fragment seam renders the tick it
+// A scheduled reducer has no caller, so it is ITS OWN calling reducer. ONE line,
+// TERMINAL: the helper runs, the pure fragment seam renders the tick it
 // reported, the line is written, and nothing fallible follows it before Ok. The
 // guard REJECT emits nothing: on the 2.x host a scheduled function is private
 // (owner/collaborators only; the guard is belt-and-braces), and an owner-driven
-// reject line is still an unbounded 30-day-store write for ticks that never
-// ran. ABSENCE of the hourly line is therefore the abort-loop dead-man
-// signal (the mr_heartbeat idiom, at an hourly cadence): a tick that aborts
-// before the last statement writes no line at all. The tick reports its stamp
-// count before the write bound beside what it planned, so a binding cap is
-// observed rather than inferred. A FULL read window says nothing about rows past
-// its edge; only a tick that read less than a full window and planned every
-// stamp it saw has drained every row expired at its instant.
+// reject line is still an unbounded 30-day-store write for ticks that never ran.
+// ABSENCE of the hourly line is therefore the abort-loop dead-man signal (the
+// mr_heartbeat idiom, at an hourly cadence): a tick that aborts before the last
+// statement writes no line at all. The tick reports its stamp count before the
+// write bound beside what it planned, so a binding cap is observed rather than
+// inferred. A FULL read window says nothing about rows past its edge; only a
+// tick that read less than a full window and planned every stamp it saw has
+// drained every row expired at its instant.
 #[spacetimedb::reducer]
 pub fn export_bundle_reaper(
     ctx: &ReducerContext,
@@ -1915,10 +1868,10 @@ pub fn export_bundle_reaper(
     Ok(())
 }
 
-// The one-tick observation record (rb-87, ADR-0238 amendment; closes
-// R-rb-48-OBS). PRIVATE, with private fields: privacy_tests.rs is a child module
-// and reads them directly, and nothing else in the crate has business seeing a
-// tick's shape (the BattleSideOwnership / PlannedChunk precedent above).
+// The one-tick observation record. PRIVATE, with private
+// fields: privacy_tests.rs is a child module and reads them directly, and nothing
+// else in the crate has business seeing a tick's shape (the BattleSideOwnership /
+// PlannedChunk precedent above).
 //
 // FOUR RAW COUNTS, never a derived verdict. `read` is how many chunk rows the
 // bounded window decoded, at most EXPORT_REAP_MAX_READ_PER_TICK; `due` is how
@@ -1934,11 +1887,11 @@ pub fn export_bundle_reaper(
 // 256-row window, so that needs a stamp of at most fifteen rows or a range read
 // that interleaves stamps — for bundles this module writes it is a tripwire, not
 // a backlog signal. A FULL window is silent about rows past its edge (an open
-// residual, ADR-0269).
+// residual).
 //
 // Debug feeds the test failure messages; Copy (hence Clone) lets one tick reach
 // both reap_fields and the envelope builder in the same test. Nothing compares
-// two ticks, so no equality derive (/simplify, YAGNI).
+// two ticks, so no equality derive.
 #[derive(Debug, Clone, Copy)]
 struct ExportReapTick {
     read: usize,
@@ -1947,7 +1900,7 @@ struct ExportReapTick {
     reaped: usize,
 }
 
-// The ONE field fragment of the reaper line (rb-87, ADR-0238 amendment) — the
+// The ONE field fragment of the reaper line — the
 // export_fields shape above, spelled under this module's hygiene contract: PURE,
 // no ctx, no table read, every key a stringify! token and the quote the
 // JSON_QUOTE constant. NO SUBJECT, deliberately: a scheduled tick has no caller,
@@ -1955,7 +1908,7 @@ struct ExportReapTick {
 // would be either the module identity (noise) or a per-tick list of who
 // exported, which is a disclosure in a 30-day store for a job that is about none
 // of them. Counts are bare numbers (panels compare them); no player-authored
-// field may ever join this fragment (PRV1-17/20 by analogy).
+// field may ever join this fragment.
 fn reap_fields(tick: ExportReapTick) -> String {
     let mut out = String::new();
     let mut first = true;
@@ -1970,12 +1923,10 @@ fn reap_fields(tick: ExportReapTick) -> String {
     out
 }
 
-// Cutoff seam (rb-85): the NEWEST creation stamp a chunk may carry and still be
+// Cutoff seam: the NEWEST creation stamp a chunk may carry and still be
 // expired. SATURATING for the reason `plan_export_reap` above records: a panic
 // in a scheduled reducer silently rolls back every tick forever. PURE and ONE
-// LINE on purpose — that is what gives the only new arithmetic this slice ships
-// a return-value oracle as well as a body-equality pin (privacy_tests.rs T1/T2/T8
-// record the measured band-keyed bypass the equality pin closes).
+// LINE on purpose.
 fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
     now_ms.saturating_sub(ttl_ms)
 }
@@ -1988,25 +1939,20 @@ fn count_export_reap_stamps(rows: &[(u64, i64)], now_ms: i64, ttl_ms: i64) -> us
     plan_export_reap_stamps(rows, now_ms, ttl_ms, rows.len()).len()
 }
 
-// The TTL sweep itself (rb-85, ADR-0238 amendment; closes R-rb-48-SCANCOST —
-// and, as re-shaped by rb-86, R-rb-48-PARTIALREAP).
+// The TTL sweep itself.
 //
 // A BOUNDED INDEX READ, not a full scan: the btree range on the creation stamp
 // yields only rows at or below the cutoff, ascending in key order (btree-backed
-// and therefore expected, but undocumented; rb-109 MODELS that order in the
-// native host and EXECUTES this helper against it — the rb109_ tests — a model
-// of the btree contract, not a live-host observation, R-rb-109-ORDERMODEL.
-// Progress never depends on it: every planned bundle is deleted whole, so only
-// FAIRNESS does), and `.take` caps the read at EXPORT_REAP_MAX_READ_PER_TICK,
-// so the module decodes at most that many rows per tick however large the table
-// grows (the host may fill one buffer past the last decoded row). The bound is
-// on ROWS, not bytes: rb-107 (ADR-0265) closed R-rb-85-EXPORTADMIT with a
-// write-side cap sized to this drain, leaving R-rb-107-BYTEBOUND.
+// and therefore expected, but undocumented; Progress never depends on it: every
+// planned bundle is deleted whole, so only FAIRNESS does), and `.take` caps the
+// read at EXPORT_REAP_MAX_READ_PER_TICK, so the module decodes at most that many
+// rows per tick however large the table grows (the host may fill one buffer past
+// the last decoded row). The bound is on ROWS, not bytes:
 //
-// WHOLE BUNDLES, never a fraction of one (rb-86). A bundle is every chunk
+// WHOLE BUNDLES, never a fraction of one. A bundle is every chunk
 // sharing one creation stamp: `request_data_export` stamps all of a request's
-// chunks with the one stamp it minted, which is also the `request_id` the S8
-// client assembles on, and since rb-111 (ADR-0268) no other live request shares
+// chunks with the one stamp it minted, which is also the `request_id`
+// assembles on, and no other live request shares
 // it. So the tick plans STAMPS, through `plan_export_reap_stamps`, and
 // deletes each one with a single index-POINT delete on the `created_at_ms` btree
 // index — which takes the chunks the bounded window never read as well. That
@@ -2025,22 +1971,22 @@ fn count_export_reap_stamps(rows: &[(u64, i64)], now_ms: i64, ttl_ms: i64) -> us
 // TWO bounds with two different jobs. EXPORT_REAP_MAX_READ_PER_TICK bounds the
 // READ at 256 rows; EXPORT_REAP_MAX_STAMPS_PER_TICK bounds the WRITE at 16
 // stamps, because a stamp selected from inside the window carries a tail past
-// its edge. A stamp is ONE request's bundle (rb-111, ADR-0268): the write site
+// its edge. A stamp is ONE request's bundle: the write site
 // stamps every chunk of a request with the one stamp it minted and refuses a
 // stamp a live bundle already carries, so sixteen stamps per tick is sixteen
-// bundles minted since then. A break on either side degrades to the pre-rb-111
+// bundles minted since then. A break on either side degrades to the
 // shape — a shared stamp reaped as one unit — never to destroying a live export.
 //
-// The delete is a RANGED-index point delete, not the unique-column delete this
-// module used until rb-86: it lowers to
-// `datastore_delete_by_index_scan_point_bsatn`, decodes nothing, and returns the
-// datastore's own count of the rows it removed. Every OTHER `.<col>().delete(x)`
-// in this module is `UniqueColumn::delete -> bool` on a `#[primary_key]` column
-// and the chain text is indistinguishable from this one, which is why
-// privacy_tests.rs pins the ARGUMENT as the point `stamp` rather than merely
-// matching the chain: the same accessor with a range argument is a cross-bundle
-// wipe. (`erase_player_sessions` in lib.rs is the crate's existing precedent for
-// the ranged form, on the non-unique `player_session.identity` btree.)
+// The delete is a RANGED-index point delete, not the unique-column delete:
+// it lowers to `datastore_delete_by_index_scan_point_bsatn`, decodes nothing,
+// and returns the datastore's own count of the rows it removed. Every OTHER
+// `.<col>().delete(x)` in this module is `UniqueColumn::delete -> bool` on a
+// `#[primary_key]` column and the chain text is indistinguishable from this one,
+// which is why privacy_tests.rs pins the ARGUMENT as the point `stamp` rather
+// than merely matching the chain: the same accessor with a range argument is a
+// cross-bundle wipe. (`erase_player_sessions` in lib.rs is the crate's existing
+// precedent for the ranged form, on the non-unique `player_session.identity`
+// btree.)
 //
 // `now_ms` is a PARAMETER — a trust input. It deliberately SHADOWS the imported
 // fn of the same name (the file's existing idiom in `plan_export_reap`), which
@@ -2050,7 +1996,7 @@ fn count_export_reap_stamps(rows: &[(u64, i64)], now_ms: i64, ttl_ms: i64) -> us
 // PRIVATE on purpose: the scheduler-only posture lives in the reducer's guard,
 // and nothing else in the crate may reach this delete path — the compiler, not a
 // convention, is what enforces that. It REPORTS the whole tick (`read` /
-// `due` / `planned` / `reaped`) and never emits (the rb-40 / ADR-0235 idiom; the
+// `due` / `planned` / `reaped`) and never emits (the
 // calling reducer owns the line), and its named consumer is that reducer's
 // terminal `mr_log`. `reaped` is the datastore's own count, summed over the
 // tick's point deletes; `read` is what the bounded window decoded, `due` the

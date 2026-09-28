@@ -28,12 +28,12 @@ pub struct RewardItem {
     pub qty: u32,
 }
 
-/// Reward granted on quest completion (M13c adds currency, ADR-0083).
+/// Reward granted on quest completion (M13c adds currency).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestReward {
     pub xp: u32,
     pub items: Vec<RewardItem>,
-    /// Currency reward granted via `grant_currency` on completion (ADR-0083).
+    /// Currency reward granted via `grant_currency` on completion.
     /// Defaults to 0 so existing RON quest definitions that omit this field remain valid.
     #[serde(default)]
     pub currency: u64,
@@ -90,10 +90,7 @@ pub enum QuestAdvance {
 }
 
 // ===========================================================================
-// M13c: QuestReward.currency tests (ADR-0083)
-//
-// These tests are RED until the implementer adds `currency: u64` with
-// `#[serde(default)]` to `QuestReward` in this file.
+// QuestReward.currency tests
 //
 // EARS criteria:
 //   - EARS-QUEST-CONTENT-1: currency defaults to 0 when absent from RON
@@ -101,9 +98,6 @@ pub enum QuestAdvance {
 //     omit currency continue to parse correctly — no breakage).
 //   - EARS-QUEST-CONTENT-2: currency round-trips when present in RON.
 //
-// The tests deserialize QuestReward directly using ron::from_str (no DB
-// context required — pure serde). This matches the existing model.rs pattern
-// of testing at the serde boundary.
 // ===========================================================================
 
 #[cfg(test)]

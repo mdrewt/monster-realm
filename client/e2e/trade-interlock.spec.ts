@@ -8,12 +8,11 @@ import {
   test,
 } from '@playwright/test';
 
-// m17.5f — battle↔trade interlock e2e (EARS 17.5f-2)
+// battle↔trade interlock e2e (EARS 17.5f-2)
 //
 // FILE NAMED `trade-interlock.spec.ts` (not `battle-*`) so it sorts AFTER
 // golden.spec.ts and recruit.spec.ts in Playwright's alphabetical run order,
-// eliminating the presenceCount===2 cross-contamination hazard from golden.spec
-// (red-team F7 / reviewer W-3).
+// eliminating the presenceCount===2 cross-contamination hazard from golden.spec.
 //
 // WHAT THIS KILLS
 // ===============
@@ -25,7 +24,7 @@ import {
 // Trading.rs guard order (relevant excerpt):
 //   G1. joined/self guard          — player must have joined and not be self
 //   G2. active-offer guard         — player must not already have an offer
-//   G3. validate_proposal (TR-1)   — monsters must be non-empty per side
+//   G3. validate_proposal — monsters must be non-empty per side
 //   G4. currency guard             — must have sufficient currency
 //   G5. items guard                — must own offered items
 //   G6. reject_if_in_battle        — checks BOTH initiator's monsters against
@@ -35,7 +34,7 @@ import {
 //                                    A's starter is in counterpartyMonsterIds and
 //                                    A is currently in a wild battle.
 //
-// Paired positive-control design (red-team F1/F2):
+// Paired positive-control design:
 //   Step (b): B successfully proposes a trade (G1-G6 all pass) and it appears.
 //   Step (b-cancel): B cancels the trade (ensuring G2 cannot confound step (c)).
 //   Step (c): B tries the IDENTICAL proposal after A enters a wild battle.
@@ -108,7 +107,6 @@ interface GameSnap {
 
 // ---------------------------------------------------------------------------
 // MrTrade interface — re-declared locally (do NOT cross-import from trade-full.spec.ts).
-// Verified against main.ts mrTradeHook ~:1067-1113 and trade-full.spec.ts.
 // ---------------------------------------------------------------------------
 interface MrTrade {
   proposeTrade(args: {
@@ -147,7 +145,7 @@ const MAX_WALK_STEPS = 80;
 /** Per-step wait timeout (200ms drain + network + margin). */
 const STEP_WAIT_MS = 8_000;
 
-/** shuttleDir: tile-aware direction for the (1,2)↔(2,2) shuttle (recruit.spec.ts:167).
+/** shuttleDir: tile-aware direction for the (1,2)↔(2,2) shuttle.
  *  Only the East step onto (2,2) rolls an encounter. */
 function shuttleDir(tile: Tile): string {
   if (tile.x === 1 && tile.y === 1) return 'South';
@@ -350,15 +348,6 @@ test.describe
     //   Step (b) row NOT appearing → guards G1-G5 have a bug; test would give a
     //            vacuous positive (confounding). The positive control hard-fails here.
     //
-    // GREEN-AT-BIRTH NOTE (reviewer N-3):
-    //   This test covers an ALREADY-SHIPPED guard (reject_if_in_battle, m16.5a).
-    //   It is GREEN when the guard is present. Its teeth = the paired positive
-    //   control (step b) which turns RED if the guard is deleted. The adversarial
-    //   protocol is: run ≥5× to confirm no flake.
-    //
-    // RED-AT-BIRTH conditions:
-    //   - __mrTrade not yet wired (hook-existence test in trade-full.spec.ts covers this).
-    //   - step (b) fails if proposeTrade rejects for a guard other than G6.
     // -------------------------------------------------------------------------
     test('battle↔trade interlock: A in wild battle, B proposeTrade rejected; positive control pre-battle succeeds (17.5f-2)', async () => {
       test.setTimeout(90_000);
@@ -425,7 +414,7 @@ test.describe
 
       // B proposes (pre-battle control). Catch rejection so we can report it as a
       // test failure rather than an unhandled promise rejection — following trade-full
-      // pattern (trade-full.spec.ts:268-270).
+      // pattern.
       const controlProposalError = await pageB
         .evaluate((args: typeof proposeArgs) => {
           const w = window as unknown as { __mrTrade: MrTrade };
@@ -447,7 +436,7 @@ test.describe
       // Scoped to the (initiator===identityB, counterparty===identityA) pair so that
       // offers from other concurrent test runs (or leftover rows) do not produce a
       // false-positive here. Identities are passed as Playwright's second arg (not
-      // captured via closure over page-side values — reviewer HIGH-4 fix).
+      // captured via closure over page-side values).
       const pairArg = { initiator: identityB, counterparty: identityA };
       await Promise.all([
         pageA.waitForFunction(
@@ -519,7 +508,7 @@ test.describe
 
       // Wait for the (B initiator, A counterparty) offer row to disappear from BOTH pages.
       // Scoped to the pair so unrelated offers from other concurrent runs do not block us.
-      // Identities passed as Playwright second arg (reviewer HIGH-4 fix).
+      // Identities passed as Playwright second arg.
       await Promise.all([
         pageA.waitForFunction(
           (pair: { initiator: string; counterparty: string }) => {

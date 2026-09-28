@@ -37,28 +37,12 @@ export interface SdkCharacterFields {
   readonly moveStartedAtMs: bigint;
 }
 
-// --- Direction ------------------------------------------------------------------
-export function directionToWasm(d: SdkDirection): WasmDirection {
-  return d.tag;
-}
-export function directionToSdk(d: WasmDirection): SdkDirection {
-  return { tag: d };
-}
-
 // --- MoveInput ------------------------------------------------------------------
 export function moveInputToWasm(m: SdkMoveInput): WasmMoveInput {
   return m.tag === 'Jump' ? 'Jump' : { Step: m.value.tag };
 }
 export function moveInputToSdk(m: WasmMoveInput): SdkMoveInput {
   return m === 'Jump' ? { tag: 'Jump' } : { tag: 'Step', value: { tag: m.Step } };
-}
-
-// --- move_queue -----------------------------------------------------------------
-export function moveQueueToWasm(q: readonly SdkMoveInput[]): WasmMoveInput[] {
-  return q.map(moveInputToWasm);
-}
-export function moveQueueToSdk(q: readonly WasmMoveInput[]): SdkMoveInput[] {
-  return q.map(moveInputToSdk);
 }
 
 // --- CharacterState -------------------------------------------------------------
@@ -84,7 +68,7 @@ export function characterFieldsFromWasm(s: WasmCharacterState): SdkCharacterFiel
   };
 }
 
-// --- the time-rebasing baseline (ADR-0012; LOSSY, never round-tripped) ----------
+// --- the time-rebasing baseline (LOSSY, never round-tripped) ----------
 // There is no clock sync: the server's `move_started_at` is epoch ms; the local
 // drain runs off `performance.now()` (which starts at 0). Rebase to a LOCAL
 // "two steps ago" so the first queued move is immediately due. `floor` is required

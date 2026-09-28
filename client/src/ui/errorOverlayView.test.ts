@@ -174,7 +174,7 @@ describe('errorOverlayView T-VIEW-5: non-blocking overlay', () => {
 });
 
 // ---------------------------------------------------------------------------
-// T-VIEW-TOTAL (red-team M-2): render is total — swallows a malformed VM.
+// T-VIEW-TOTAL: render is total — swallows a malformed VM.
 // ---------------------------------------------------------------------------
 
 describe('errorOverlayView T-VIEW-TOTAL (M-2): render never throws to caller', () => {

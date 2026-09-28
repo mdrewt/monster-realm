@@ -1,4 +1,4 @@
-// ui/menuView.ts — thin DOM shell for the two-level main menu (uxd3, ADR-0162).
+// ui/menuView.ts — thin DOM shell for the two-level main menu.
 //
 // `helpView.ts` precedent: the constructor resolves its elements once and throws loudly on
 // a missing one; `visible` reads the live DOM; the only STYLE `show()`/`hide()` write is
@@ -8,10 +8,10 @@
 //
 // Deviation from helpView's zero-arg form: the menu is interactive, so it takes a callbacks
 // object (`renameView`/`shopView` precedent). It decides no NAVIGATION — every input is
-// forwarded verbatim to `menuModel.menuStep` (ADR-0014 functional core). The one decision it
+// forwarded verbatim to `menuModel.menuStep` (functional core). The one decision it
 // makes is event ROUTING: which listener owns which key; see the keydown listener below.
 //
-// XSS firewall (ADR-0135): `textContent` / `createElement` / `replaceChildren`, plus the
+// XSS firewall: `textContent` / `createElement` / `replaceChildren`, plus the
 // attribute primitives `setAttribute` / `removeAttribute` that carry the ARIA semantics —
 // ONLY. No markup-parsing DOM API of any kind: none of them ever parses a string as markup,
 // which is the whole property the firewall protects. Pinned by MV-NO-INNERHTML, which scans
@@ -19,8 +19,7 @@
 // comment.
 //
 // Fully happy-dom unit-covered, so this file is deliberately NOT in `vite.config.ts`
-// `coverage.exclude` and NOT in the dom-shell-coverage-exclusion eval's DOM_SHELLS
-// (`findUnsanctionedExclusions` would reject the addition, and `evals/` is out of scope).
+// `coverage.exclude`.
 import type { MenuInput, MenuViewModel } from './menuModel';
 import { menuKeyInput } from './menuModel';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
@@ -52,7 +51,7 @@ export class MenuView {
     if (!backHint) throw new Error('menu-back-hint missing');
     this.#backHintEl = backHint;
 
-    // m23-s6 (ADR-0205 D1/D2, M23 §4 row S6): the listbox anchor is a CONSTRUCTOR-TIME
+    // the listbox anchor is a CONSTRUCTOR-TIME
     // contract, not a render-time one — replaceChildren rebuilds the CHILDREN, never the <ul>
     // itself, so the role and the name must already be in place before the first render(). The
     // name is an IDREF derived from the ALREADY-RESOLVED heading element (never a second lookup
@@ -79,15 +78,15 @@ export class MenuView {
       const index = this.#indexOfEventTarget(e.target);
       if (index !== undefined) callbacks.onInput({ kind: 'hover', index });
     });
-    // m23-s6 SPLIT OWNERSHIP (A11Y-25). Same <ul>, same delegation, same DEFAULT (bubble)
+    // SPLIT OWNERSHIP. Same <ul>, same delegation, same DEFAULT (bubble)
     // phase as the two above. This listener owns ONLY the selection-movement inputs — up,
     // down, left — and consumes them with preventDefault + stopPropagation so main.ts's window
     // listener does not step the menu a SECOND time for one press.
     //
     // WHY only that subset: `enter` and `escape` are the only inputs that can activate a leaf
     // or dismiss the menu, so they are deliberately left to bubble to main.ts, which owns them
-    // behind its ordered guard chain — sessionGateBlocks() FIRST (ADR-0182 D17 /
-    // W-M21B2-SESSION-GATE-FIRST), then the key-repeat gate, then the Escape ladder. Swallowing
+    // behind its ordered guard chain — sessionGateBlocks() FIRST,
+    // then the key-repeat gate, then the Escape ladder. Swallowing
     // them here would route a guarded action around that chain. The three inputs kept are
     // provably inert instead: `menuStep` can only ever return effect {kind:'none'} for up, down
     // and left, so they cannot close the menu, activate a leaf, or reach a reducer — consuming
@@ -126,7 +125,7 @@ export class MenuView {
   }
 
   show(): void {
-    // m23-s6 (helpView.ts precedent): read visibility BEFORE the display write. Only the
+    // read visibility BEFORE the display write. Only the
     // hidden->visible EDGE opens — a repeat show() on an already-open overlay would otherwise
     // re-schedule overlayA11y's deferred initial-focus timer and yank the player back to the
     // listbox out of nowhere.
@@ -157,7 +156,7 @@ export class MenuView {
       li.dataset.menuIndex = String(row.index);
       li.dataset.selected = row.selected ? 'true' : 'false';
       li.dataset.disabled = row.disabled ? 'true' : 'false';
-      // m23-s6: the option id is LEVEL-QUALIFIED and its numeric part comes from `row.index` —
+      // The option id is LEVEL-QUALIFIED and its numeric part comes from `row.index` —
       // the VM's own field, which is what the delegated listeners feed back into menuStep —
       // NEVER the array position. The `vm.level` qualifier is not decoration: buildMenuViewModel
       // emits index = array position at BOTH levels, so without it "categories, Party selected"
@@ -187,7 +186,7 @@ export class MenuView {
     });
     this.#rowsEl.replaceChildren(...items);
 
-    // A11Y-24 — the selection pointer, discharged HERE: this is the write that tracks a
+    // The selection pointer, discharged HERE: this is the write that tracks a
     // changing selection index. AFTER the rebuild, never before: the IDREF must name a LIVE
     // node, not one the replaceChildren just detached. `removeAttribute` is the clear — an
     // empty string is a DANGLING IDREF, i.e. a listbox still claiming an active descendant that

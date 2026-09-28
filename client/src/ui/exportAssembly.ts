@@ -1,6 +1,6 @@
-// ui/exportAssembly.ts — the PURE data-export assembly core (M22 S8, ADR-0231).
+// ui/exportAssembly.ts — the PURE data-export assembly core.
 //
-// FUNCTIONAL CORE (ADR-0014). No DOM, no SDK, no store, no clock, no I/O — the whole module is
+// FUNCTIONAL CORE. No DOM, no SDK, no store, no clock, no I/O — the whole module is
 // one total function over rows the caller has already normalised. PRV1-11/12/13.
 //
 // THE CHUNK FIELDS ARE READ REQUEST-WIDE, VERBATIM FROM THE PRODUCER. `chunk_index` is globally
@@ -23,7 +23,7 @@
 // above 2^53 exact), and it escapes `"`, `\` and every codepoint below 0x20, so a player-authored
 // name cannot break out of the envelope this module splices. Parsing would re-open the precision
 // hole and would throw `SyntaxError` on a torn chunk inside an SDK callback that has no
-// per-listener isolation (ADR-0085 A6).
+// per-listener isolation.
 
 /** One `export_bundle` row, normalised. Field types are pinned from the generated binding
  *  `client/src/module_bindings/my_export_bundle_table.ts`: u64 -> bigint, u32 -> number,

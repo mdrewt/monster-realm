@@ -1,14 +1,13 @@
 import { execSync } from 'node:child_process';
 import { chromium, expect, type Page, test } from '@playwright/test';
 
-// pt-c1b — client profile-rename UI e2e (PTC1B-9, ADR-0133 D5)
+// Client profile-rename UI e2e
 //
 // WHAT THIS PROVES
 // ================
 // PTC1B-9 (round-trip, server-truth): rename via UI => player.name persists the
 // new value (asserted via `spacetime sql SELECT identity, name FROM player`,
-// scoped to own identity). The full ranked->leaderboard-DOM reflection is PARKED
-// to pt-c1b2 (ADR-0133 D5 rationale).
+// scoped to own identity).
 //
 // SINGLE-CONTEXT DESIGN
 // =====================
@@ -40,12 +39,6 @@ import { chromium, expect, type Page, test } from '@playwright/test';
 // EARS CRITERIA COVERED
 // =====================
 //   PTC1B-9 — client rename UI -> reducer -> player.name round-trip (server-truth SQL)
-//
-// RED UNTIL pt-c1b IS IMPLEMENTED
-// =================================
-// The rename overlay (#rename-overlay, KeyN handler, renameView) does not exist
-// in main.ts or index.html yet. The test will time out polling for
-// page.keyboard.press('KeyN') to open the overlay -> test fails RED.
 
 // ---------------------------------------------------------------------------
 // GameSnap interface — matches the snapshot() fn in client/src/main.ts.
@@ -180,7 +173,7 @@ function parsePlayerRow(sqlOutput: string, ownNormalizedIdentity: string): Playe
 test.describe
   .serial('pt-c1b — client profile-rename UI e2e (PTC1B-9)', () => {
     // -------------------------------------------------------------------------
-    // PTC1B-9: rename via UI -> player.name persists (server-truth SQL)
+    // Rename via UI -> player.name persists (server-truth SQL)
     //
     // WHAT THIS TEST KILLS:
     //   - A rename overlay that never calls setProfileName (name unchanged in SQL)
@@ -191,9 +184,6 @@ test.describe
     //   - A stale-row false-pass: the unique timestamp suffix prevents a prior run's
     //     name from satisfying the assertion
     //
-    // RED UNTIL pt-c1b IMPLEMENTED:
-    //   KeyN does not open the overlay → waitForSelector('#rename-overlay[style=""]')
-    //   or '[data-testid="rename-input"]' visible → times out → test fails RED.
     // -------------------------------------------------------------------------
     test('PTC1B-9: rename via overlay -> player.name updated in DB (server-truth SQL)', async () => {
       test.setTimeout(60_000);

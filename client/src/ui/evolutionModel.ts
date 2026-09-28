@@ -1,5 +1,5 @@
 // ui/evolutionModel.ts — pure view-model for the evolution screen + the CLIENT PORT of
-// game-core's evolution eligibility predicate (EG4-1, ADR-0174).
+// game-core's evolution eligibility predicate.
 //
 // No DOM, no SDK, no side effects. Takes store data, returns the view-model.
 // The thin DOM shell (evolutionView.ts) renders these; the loop refreshes on batch.
@@ -12,6 +12,9 @@
 // requirement, essence is matched by AFFINITY and never by list position, and
 // `eligibleEvolutionPaths` returns the FULL eligible set (never a first-match winner).
 // Fusion is DELETED, not repurposed — as are `evolvesTo`, `canEvolve` and `bond`.
+// Parity with game-core is EXECUTABLE: evolutionModel.parity.test.ts runs fast-check cases
+// through this port and through game-core's real predicate (the client-wasm
+// `evolution_eligibility` export) and requires identical answers.
 //
 // TOTAL: never throws on empty/unknown/missing input — a throw here starves sibling
 // store batch-listeners (store.ts one-way flow).
@@ -170,7 +173,7 @@ function walkGates(m: StoreMonsterPub, p: StoreEvolutionPath): readonly GateEntr
 }
 
 /** Every gate this path imposes, with the monster's current value beside each
- *  requirement — the requirements/PROGRESS panel's data (EG4-1). */
+ *  requirement — the requirements/PROGRESS panel's data. */
 export function pathRequirements(
   m: StoreMonsterPub,
   p: StoreEvolutionPath,
@@ -225,7 +228,7 @@ export interface EvolutionMonsterViewModel {
    *  progress panel, which the 0-eligible monster needs most. */
   readonly paths: readonly EvolutionPathViewModel[];
   readonly eligibleCount: number;
-  /** Non-empty IFF `eligibleCount >= 2` (EG4-2). ALWAYS empty at 0 or 1: at exactly one
+  /** Non-empty IFF `eligibleCount >= 2`. ALWAYS empty at 0 or 1: at exactly one
    *  eligible path the server auto-applies the evolution, so offering an action there
    *  offers the player something that does not exist. */
   readonly choices: readonly EvolutionPathViewModel[];

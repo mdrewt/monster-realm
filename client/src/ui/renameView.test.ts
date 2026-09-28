@@ -103,7 +103,7 @@ import { RenameView } from './renameView';
 vi.mock('./overlayA11y', { spy: true });
 
 // ---------------------------------------------------------------------------
-// DOM mount helper — installs the index.html shell for renameView (ADR-0133 D2).
+// DOM mount helper — installs the index.html shell for renameView.
 // Each test gets a fresh DOM via beforeEach to prevent cross-test contamination.
 // ---------------------------------------------------------------------------
 
@@ -117,11 +117,10 @@ function mountRenameOverlay(): {
   const existing = document.getElementById('rename-overlay');
   if (existing) existing.remove();
 
-  // Matches the exact shell specified in docs/specs/pt-c1b-plan.md §index.html shell.
-  // m23-s3 FIXTURE FIDELITY (index.html:57): `role`/`aria-modal` have shipped as STATIC LITERALS
+  // m23-s3 FIXTURE FIDELITY: `role`/`aria-modal` have shipped as STATIC LITERALS
   // on this shell since m23-s2. They are copied here NOT to be asserted on their own — that is
   // vacuous, a view calling nothing passes — but so that "all three attributes ABSENT after close"
-  // is a real tooth: only closeOverlayA11y can remove them (ui/overlayA11y.ts:142-144). No
+  // is a real tooth: only closeOverlayA11y can remove them. No
   // `tabindex` is added: this overlay's OVERLAY_A11Y anchor is #rename-input, natively focusable,
   // exactly as index.html:59 has it.
   document.body.innerHTML = `
@@ -146,7 +145,7 @@ function teardown(): void {
 }
 
 // Minimal ViewModel shape that RenameView.render() accepts.
-// Mirrors buildRenameViewModel's return type (ADR-0133 D2).
+// Mirrors buildRenameViewModel's return type.
 interface RenameViewModel {
   displayCurrentName: string;
   trimmedDraft: string;
@@ -164,17 +163,17 @@ async function flushPromises(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// m23-s3 — overlay a11y wiring. (Its ten-file `.focus(` scan was retired in rb-16 / ADR-0217.)
+// Overlay a11y wiring.
 // Declared FIRST on purpose (see the file header): later describes call vi.restoreAllMocks().
 // ---------------------------------------------------------------------------
 
-/** m23-s3: one REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
+/** One REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
  *  and fake timers are banned for this defer (plan anti-pattern #10). */
 async function s3FlushMacrotask(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-// m23-s3: NEW file-level isolation hooks. They run BEFORE the describe-level `mountRenameOverlay`
+// NEW file-level isolation hooks. They run BEFORE the describe-level `mountRenameOverlay`
 // hooks below, so every test still gets the DOM it always got.
 beforeEach(async () => {
   for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
@@ -290,9 +289,7 @@ describe('RenameView — overlay a11y wiring on the show/hide edge (m23-s3)', ()
   });
 
   it('S3-renameView-REPEAT-NO-REOPEN BITES: show() on an ALREADY-visible overlay neither re-opens nor yanks focus back', async () => {
-    // A re-open clears and re-schedules the deferred-focus timer (ui/overlayA11y.ts:100-113).
-    // On THIS view the focus half is red today for a second reason too: renameView.ts:102's own
-    // setTimeout fires on every show() and drags focus back to #rename-input.
+    // A re-open clears and re-schedules the deferred-focus timer.
     const { overlay } = mountRenameOverlay();
     const view = new RenameView({ onSubmit: async () => {} });
 
@@ -335,10 +332,10 @@ describe('RenameView — overlay a11y wiring on the show/hide edge (m23-s3)', ()
     // `visible === false` and SKIPS the close whenever a record ever desynchronised from the DOM
     // (S1's named A13 leak, ui/overlayA11y.ts:55-59) — making a live capture listener, a pending
     // timer and a stale return target PERMANENT. This view is in BATTLE_FORCE_HIDE
-    // (ui/overlayRegistry.ts:274-283) AND is force-hidden on reconnect, so main.ts drives its close
+    // AND is force-hidden on reconnect, so main.ts drives its close
     // through exactly the desync D2 cites — and this view owns a TEXT INPUT, so a leaked capture
     // trap here is the worst case in the set. Unguarded, hide() HEALS it, and a close with no
-    // record is a documented pure no-op (ui/overlayA11y.ts:136-137), so nothing is risked.
+    // record is a documented pure no-op, so nothing is risked.
     mountRenameOverlay();
     const view = new RenameView({ onSubmit: async () => {} });
     expect(view.visible, 'precondition: never opened').toBe(false);
@@ -536,7 +533,7 @@ describe('★★ RenameView PTC1B-5: input keydown stopPropagation prevents hotk
   });
 
   it('★★ BITES: KeyL typed on input does NOT reach window keydown listener — kills missing-stopPropagation impl', () => {
-    // PTC1B-5: WHILE the input is focused, typing a hotkey letter (KeyL) does NOT toggle
+    // WHILE the input is focused, typing a hotkey letter (KeyL) does NOT toggle
     // the leaderboard overlay. The view's own listener must call e.stopPropagation().
     // PROOF-OF-TEETH: a window keydown spy is NOT called when KeyL bubbles from the input.
     // A view that forgets stopPropagation lets the event bubble → the spy fires → test fails.
@@ -556,7 +553,7 @@ describe('★★ RenameView PTC1B-5: input keydown stopPropagation prevents hotk
   });
 
   it('★★ BITES: KeyW typed on input does NOT reach window keydown listener — kills missing-stopPropagation impl (movement bleed)', () => {
-    // PTC1B-5: typing a movement key (KeyW = forward) inside the input must NOT move the
+    // Typing a movement key (KeyW = forward) inside the input must NOT move the
     // character. The stopPropagation test with KeyW covers the movement-bleed path
     // (the global movement handler fires on WASD).
     // WRONG IMPL KILLED: a view without stopPropagation allows the "W" keydown to reach the
@@ -577,8 +574,8 @@ describe('★★ RenameView PTC1B-5: input keydown stopPropagation prevents hotk
 });
 
 // ---------------------------------------------------------------------------
-// Enter key: calls onSubmit with trimmed value (PTC1B-2)
-// Escape key: hides overlay, does NOT call onSubmit (PTC1B-6)
+// Enter key: calls onSubmit with trimmed value
+// Escape key: hides overlay, does NOT call onSubmit
 // ---------------------------------------------------------------------------
 
 describe('RenameView keyboard: Enter submits; Escape hides without submitting (PTC1B-2/6)', () => {
@@ -642,7 +639,7 @@ describe('RenameView keyboard: Enter submits; Escape hides without submitting (P
 });
 
 // ---------------------------------------------------------------------------
-// PTC1B-7: empty/whitespace submit-click → onSubmit NOT called
+// empty/whitespace submit-click → onSubmit NOT called
 // ---------------------------------------------------------------------------
 
 describe('RenameView PTC1B-7: empty/whitespace submit does not call onSubmit', () => {
@@ -740,7 +737,7 @@ describe('★ RenameView PTC1B-2: double-submit calls onSubmit exactly ONCE (#pe
 
 // ---------------------------------------------------------------------------
 // ★ RT-RN-03: dead-button-forever — a rejecting onSubmit must re-enable the
-//   button via .finally() (ADR-0133 D2, shopView #pending pattern precedent).
+//   button via .finally() (shopView #pending pattern precedent).
 // ---------------------------------------------------------------------------
 
 describe('★ RT-RN-03: rejecting onSubmit re-enables the submit button (.finally() lock reset)', () => {
@@ -924,7 +921,7 @@ describe('RT-RN-08: set_profile_name_reducer.ts declares exactly one field "name
 
 // ---------------------------------------------------------------------------
 // Review-hardening regression tests (impl review — reviewer B-1 / red-team F1 +
-// the e2e-caught button-never-enables bug). All strengthening; no prior test touched.
+// the e2e-caught button-never-enables bug).
 // ---------------------------------------------------------------------------
 describe('RenameView review-hardening: live submit-enable, hide() lock reset, button stopPropagation', () => {
   beforeEach(() => {
@@ -959,7 +956,7 @@ describe('RenameView review-hardening: live submit-enable, hide() lock reset, bu
   it('★ BITES: hide() while a submit is in-flight resets the #pending lock — a later submit fires again (reviewer B-1: dead-button after reconnect force-hide)', async () => {
     // WRONG IMPL KILLED: a hide() that does not reset #pending. onReconnect / battle
     // auto-show force-hide this overlay; the SDK never settles the in-flight promise on
-    // a link drop (ADR-0085), so .finally() may never run → #pending stuck true forever.
+    // a link drop, so .finally() may never run → #pending stuck true forever.
     let resolveFirst: (() => void) | undefined;
     const onSubmit = vi.fn().mockImplementation(
       () =>

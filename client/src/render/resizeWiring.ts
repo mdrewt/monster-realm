@@ -1,4 +1,4 @@
-// render/resizeWiring.ts — wire the renderer's resize() to the window (M8.5f, uxd1).
+// render/resizeWiring.ts — wire the renderer's resize() to the window.
 //
 // Pure structural seam (no real DOM/PixiJS types): the renderer just needs a
 // resize(cssW, cssH, dpr) and the window an addEventListener + innerWidth/
@@ -23,7 +23,7 @@ interface ResizeWindow {
  * live `devicePixelRatio` getter is the whole mechanism, no provider needed.
  *
  * `dpr` is a REQUIRED third argument on purpose: an optional `dpr = 1` default
- * would silently restore the blurry `resolution: 1` path (uxd1, ADR-0160).
+ * would silently restore the blurry `resolution: 1` path.
  */
 export function installResizeHandler(renderer: Resizable, win: ResizeWindow): void {
   // NOT named `fit`: biome's noFocusedTests flags that identifier as Jest's

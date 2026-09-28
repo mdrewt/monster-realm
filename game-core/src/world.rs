@@ -1,7 +1,7 @@
 //! The movement world: a zone-tagged `TileMap` and the SOLE movement rule
-//! `apply_move` — total, pure, deterministic, integer-tile. The server (M2) and
-//! the client predictor (M3) both call THIS function, so prediction can never
-//! numerically diverge from authority (ADR-0003 SSOT).
+//! `apply_move` — total, pure, deterministic, integer-tile. The server and
+//! the client predictor both call THIS function, so prediction can never
+//! numerically diverge from authority.
 
 use crate::types::{
     action_code, action_from_code, dir_code, dir_from_code, ActionState, CharacterState, Millis,
@@ -23,7 +23,7 @@ pub const PARTY_SLOT_NONE: u8 = 255;
 
 /// Why a party-slot assignment was rejected (pure; never stored or sent on wire).
 ///
-/// Mirrors the `SwapError` pattern (`combat/types.rs`, ADR-0053) — a typed error
+/// Mirrors the `SwapError` pattern (`combat/types.rs`) — a typed error
 /// with `Display` so the reducer can log and convert to `String` without losing
 /// context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +46,7 @@ impl std::fmt::Display for SlotError {
     }
 }
 
-/// Legality check for a party-slot assignment (pure; ADR-0053 SwapError pattern).
+/// Legality check for a party-slot assignment (pure).
 ///
 /// `PARTY_SLOT_NONE` (255, "box") is always legal. A party index must satisfy
 /// `slot < PARTY_SIZE` and must not appear in `occupied_slots`. The caller must
@@ -70,7 +70,7 @@ pub fn check_party_slot(slot: u8, occupied_slots: &[u8]) -> Result<(), SlotError
 }
 
 /// The single M1 zone's hand-authored art (`zone_id = 0`). A `const`-style source
-/// until M11 swaps in the Tiled→RON pipeline (ADR-0008); the swap is localized to
+/// until M11 swaps in the Tiled→RON pipeline; the swap is localized to
 /// `zone_0`.
 // `~` = tall grass (walkable floor that can trigger a wild encounter, M8). Grass
 // is placed only on interior `.` tiles NOT asserted plain by the world/zone_0
@@ -449,16 +449,8 @@ mod tests {
     use proptest::prelude::*;
 
     // -----------------------------------------------------------------------
-    // M11a gating tests — map_for, warp_at, validate_zone_maps (START RED)
+    // map_for, warp_at, validate_zone_maps
     //
-    // These tests reference types and functions that do NOT exist yet:
-    //   WarpDef, ZoneMapDef   — in content.rs (not yet added)
-    //   map_for               — in world.rs (not yet added)
-    //   validate_zone_maps    — in world.rs (not yet added)
-    //   TileMap::warp_at      — new method (not yet added)
-    //   TileMap::warps field  — not yet added
-    //
-    // All tests in this block MUST be RED until the implementation lands.
     // -----------------------------------------------------------------------
 
     // --- helper: minimal zone registry for fixture use ---------------------
@@ -485,11 +477,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Backward-compat guard — from_rows must keep warps empty (must stay GREEN
-    // after the warps field is added; included here so the guard lives next to
-    // its kin and fails loud if a refactor breaks the empty-warps invariant).
-    // This test compiles only once TileMap gains the `warps` field (RED until
-    // field added, GREEN after).
+    // Backward-compat guard — from_rows must keep warps empty.
     // -----------------------------------------------------------------------
 
     /// Criterion: `from_rows` stays unchanged and keeps `warps = []` (backward compat).
@@ -546,16 +534,11 @@ mod tests {
         }
     }
 
-    /// Honest drift gate: zone_0() SSOT (ZONE_0_ROWS in code) MUST match the
+    /// zone_0() SSOT (ZONE_0_ROWS in code) MUST match the
     /// authored RON in `content/zone_maps/000-core.ron` (loaded via load_zone_maps).
     ///
-    /// The previous test `map_for_zone_0_matches_zone_0_art` is tautological —
-    /// it builds the comparison ZoneMapDef from the SAME in-code ZONE_0_ROWS
-    /// constant that `zone_0()` reads, so it can never detect drift between the
-    /// code constant and the authored content file (12.5f-1).
-    ///
     /// Kill target: an edit to ZONE_0_ROWS WITHOUT updating the RON (or vice
-    /// versa) — the tautological test passes; THIS test fails loud.
+    /// versa).
     #[test]
     fn zone_0_matches_authored_ron() {
         let zone_maps = crate::content::load_zone_maps()
@@ -704,7 +687,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // TileMap ABI gate: the warps field must survive serialization (M11c contract)
+    // TileMap ABI gate: the warps field must survive serialization
     // -----------------------------------------------------------------------
 
     /// Criterion: serializing a TileMap includes the "warps" key so M11c clients
@@ -887,7 +870,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Red-team gating tests (M11a hardening)
+    // Red-team gating tests
     // -----------------------------------------------------------------------
 
     /// Gate: validate_zone_maps must reject two warps with the same 'from' tile.
@@ -1150,7 +1133,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // f-4: check_party_slot proof-of-teeth (ADR-0053 SlotError pattern).
+    // check_party_slot proof-of-teeth.
     // -----------------------------------------------------------------------
 
     /// Kills: any impl that treats PARTY_SLOT_NONE (255) as out-of-range.
@@ -1290,20 +1273,15 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // M11b anchor: real content integration tests.
+    // real content integration tests.
     //
     // These tests use the REAL embedded zone-map content via `load_zone_maps()`
-    // to prove the M11b contract: the RON content in
-    // `content/zone_maps/000-core.ron` correctly declares mutual warps between
-    // zone 0 and zone 1 at tile (5,5). The server warp runtime (movement_tick)
-    // delegates to map_for + warp_at over this real content, so these tests
-    // are the integration anchor that proves the data is present before the
-    // server logic can be verified.
+    // to prove the RON content in `content/zone_maps/000-core.ron` correctly
+    // declares mutual warps between zone 0 and zone 1 at tile (5,5). The server
+    // warp runtime (movement_tick) delegates to map_for + warp_at over this
+    // real content, so these tests are the integration anchor that proves the
+    // data is present before the server logic can be verified.
     //
-    // These tests START GREEN (map_for and warp_at already exist from M11a).
-    // They are regression anchors — if content is accidentally removed or the
-    // warp coordinates change, these tests go RED and catch the regression
-    // before the server runtime is affected.
     // -----------------------------------------------------------------------
 
     /// Criterion: zone 0 real content has a warp at (5,5) targeting zone 1.
@@ -1342,12 +1320,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // fix-nightly (ADR-0088): boundary tests for check 4 (map dims <= ZoneDef
+    // Boundary tests for check 4 (map dims <= ZoneDef
     // bounds). The existing oversize-map test checks width > max_w (already
     // Errs with both `>` and `>=`) and therefore cannot kill the `>`→`>=`
     // width flip. These tests use EXACT-FIT inputs that pass the real guard
     // (`> max` is false) but FAIL under the flip (`>= max` is true → wrongly
-    // Errs). Three census mutants targeted below.
+    // Errs).
     // -----------------------------------------------------------------------
 
     /// kills: game-core/src/world.rs:250:31: replace > with >= in validate_zone_maps

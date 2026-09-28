@@ -1,4 +1,4 @@
-// render/map.ts — the renderer's tile map (M4b, ADR-0004 visual-SSOT).
+// render/map.ts — the renderer's tile map (visual SSOT).
 //
 // PURE. Parses the SAME `TileMap` the rule evaluates — handed over ONCE from the
 // wasm `zone_map()` export (game-core `zone_0()`), never a hard-coded TS grid
@@ -10,7 +10,7 @@
 
 /** A warp portal definition in the serde wire shape from game-core `WarpDef`.
  *  `from` is the source tile in this zone; `to_zone` and `to_tile` are the
- *  destination zone id and landing tile. (M11c, ADR-0067) */
+ *  destination zone id and landing tile. */
 export interface RawWarpDef {
   readonly from: { readonly x: number; readonly y: number };
   readonly to_zone: number;
@@ -19,7 +19,7 @@ export interface RawWarpDef {
 
 /** The raw object `client-wasm.zone_map()` returns (serde field names, row-major).
  *  `grass` rides along additively (M8c): a row-major `bool[]` parallel to `walkable`.
- *  `warps` carries the warp overlay list (M11c, ADR-0067). Absent ⟹ no warps (backward compat). */
+ *  `warps` carries the warp overlay list. Absent ⟹ no warps (backward compat). */
 export interface RawTileMap {
   readonly zone_id: number;
   readonly width: number;
@@ -98,7 +98,7 @@ export class TileMap {
   /** True iff (x, y) is declared as a warp SOURCE tile in this zone.
    *  Out-of-range is false, never an exception (mirrors the bounds-safe pattern).
    *  Note: `to_tile` (the landing spot) is in a DIFFERENT zone and is never a
-   *  warp source here. (M11c, ADR-0067) */
+   *  warp source here. */
   isWarp(x: number, y: number): boolean {
     return this.#warps.has(`${x},${y}`);
   }

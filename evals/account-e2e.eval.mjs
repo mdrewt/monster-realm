@@ -22,7 +22,7 @@
 //   - literal regexes only; matching prefers indexOf/split/includes (semgrep
 //     detect-non-literal-regexp is remote-only).
 //   - no scheme literal anywhere, INCLUDING in comments. Every URL is assembled
-//     from parts, mirroring the `concat!()` idiom accounts.rs uses.
+//     from parts.
 //   - any credential-shaped fixture value uses the INTERNAL_SECRET_ prefix
 //     allowlisted in .gitleaks.toml.
 import { execFileSync, spawn } from 'node:child_process';
@@ -55,9 +55,10 @@ import { decodeSqlJson } from '../scripts/playtest-report.mjs';
 // already-consumed code. AUTH-35's no-oracle property IS this string being the
 // same in both cases, which is exactly what N2/N3 assert.
 export const ERR_INVALID_CODE = 'invalid or already-used code';
-// accounts.rs:48 — the exact committed token. Written split, as the source
-// writes it, so this file carries no contiguous scheme token either.
-export const ISSUER_NEEDLE = 'concat!("https:/", "/auth.monster-realm.invalid/")';
+// accounts.rs — the exact committed declaration. The scheme is assembled so
+// this file carries no contiguous scheme token.
+const ISSUER_DECL_PREFIX = 'pub(crate) const ALLOWED_ISSUERS: &[&str] = &["';
+export const ISSUER_NEEDLE = `${ISSUER_DECL_PREFIX}https:${'//'}auth.monster-realm.invalid/"];`;
 // accounts.rs:50.
 export const AUDIENCE_NEEDLE = 'pub(crate) const ALLOWED_AUDIENCE: &[&str] = &["monster-realm"];';
 
@@ -186,21 +187,9 @@ export const S9_MILESTONES = [
 
 // --- module patching (N4) --------------------------------------------------
 
-// Split a loopback origin into the two literals the `concat!()` form needs, so
-// the patched Rust source carries no contiguous scheme token either (the same
-// reason accounts.rs:41-47 gives for writing the committed value that way).
-function splitForConcat(url) {
-  const slash = url.indexOf('/');
-  if (slash === -1 || slash === url.length - 1) {
-    throw new Error(`patch: issuer url has no separable prefix: ${url}`);
-  }
-  return [url.slice(0, slash + 1), url.slice(slash + 1)];
-}
-
 /**
- * Replace the committed fail-closed issuer with the stub's, PRESERVING the
- * `concat!()` form. THROWS when the expected token is absent — a silent no-op
- * patch would publish an unpatched module, in which no JWT is ever accepted,
+ * Replace the committed fail-closed issuer with the stub's. THROWS when the
+ * expected token is absent — a silent no-op patch would publish an unpatched module, in which no JWT is ever accepted,
  * and every "no account was provisioned" assertion in the negative controls
  * would be vacuously true. This throw is N4.
  */
@@ -216,8 +205,7 @@ export function patchAllowedIssuers(src, issuerUrl) {
   if (!issuerUrl.endsWith('/')) {
     throw new Error('patchAllowedIssuers: issuer must end with a slash (issuer_allowed is exact)');
   }
-  const [head, tail] = splitForConcat(issuerUrl);
-  return src.replace(ISSUER_NEEDLE, 'concat!("' + head + '", "' + tail + '")');
+  return src.replace(ISSUER_NEEDLE, `${ISSUER_DECL_PREFIX}${issuerUrl}"];`);
 }
 
 /**

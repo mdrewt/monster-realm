@@ -1,4 +1,4 @@
-// ui/interactModel.ts — pure context-sensitive interact core (uxd2, ADR-0161 D3/D6).
+// ui/interactModel.ts — pure context-sensitive interact core.
 //
 // No DOM, no SDK, no reducer identifiers. TOTAL: never throws — the resolver
 // runs EVERY FRAME in main.ts (the prompt) and on every KeyT press; one throw
@@ -7,11 +7,6 @@
 // the prompt can never advertise a target KeyT refuses.
 import type { StoreHealLocationRow, StoreNpcRow } from '../net/store';
 import { TILE_PX } from '../render/config';
-
-/** Client-side interact range in Manhattan tiles — mirrors the server's
- *  `TALK_RANGE: i64 = 2` (server-module/src/npc.rs:20). Latency hygiene ONLY,
- *  never security: the `talk` reducer re-validates zone + range server-side. */
-export const CLIENT_INTERACT_RANGE = 2;
 
 /** The positional subset of a character row the target selection reads. */
 export interface InteractTile {
@@ -22,7 +17,7 @@ export interface InteractTile {
 
 /** A resolved interact target. Anchors are SOURCE px at the TARGET's tile:
  *  X tile-centre `(tileX + 0.5) * TILE_PX`, Y tile-TOP `tileY * TILE_PX` (the
- *  label floats above the head — ADR-0161 D6). The ONLY world→screen transform
+ *  label floats above the head). The ONLY world→screen transform
  *  is WorldRenderer.screenFor; this module never applies camera or scale. */
 export type Interactable =
   | { kind: 'dialogue'; npcEntityId: bigint; anchorWorldX: number; anchorWorldY: number }
@@ -37,7 +32,7 @@ export type Interactable =
 
 /** Descriptor for an NPC-row candidate at its CHARACTER tile. Exhaustive over
  *  the interaction union — NO default arm, so a 4th variant compiler-flags
- *  this site (the enum-SSOT rule, ADR-0161 D1). */
+ *  this site (the enum-SSOT rule). */
 function npcDescriptor(npc: StoreNpcRow, tile: InteractTile): Interactable {
   const anchorWorldX = (tile.tileX + 0.5) * TILE_PX;
   const anchorWorldY = tile.tileY * TILE_PX;
@@ -62,8 +57,11 @@ function npcDescriptor(npc: StoreNpcRow, tile: InteractTile): Interactable {
 }
 
 /**
- * Nearest interactable within CLIENT_INTERACT_RANGE of the own AUTHORITATIVE
- * tile (uxd2, ADR-0161 D3). Same-zone only:
+ * Nearest interactable within `range` Manhattan tiles (INCLUSIVE) of the own
+ * AUTHORITATIVE tile. `range` is game-core's `TALK_RANGE`, injected from the
+ * `talk_range()` wasm export at boot (never a TS literal). Latency hygiene ONLY,
+ * never security: the `talk` reducer re-validates zone + range server-side.
+ * Same-zone only:
  *   - NPC zone comes from the CHARACTER-row join (live wander position), never
  *     the npc registry row's zoneId; NPCs without a character row are skipped.
  *   - Heal rows are filtered by an EXPLICIT `loc.zoneId === own.zoneId` (they
@@ -79,9 +77,10 @@ export function nearestInteractable(
   npcs: readonly StoreNpcRow[],
   characterTiles: ReadonlyMap<bigint, InteractTile>,
   healLocations: readonly StoreHealLocationRow[],
+  range: number,
 ): Interactable | undefined {
   let best: Interactable | undefined;
-  let bestDist = CLIENT_INTERACT_RANGE + 1;
+  let bestDist = range + 1;
   let bestRank: 0 | 1 = 1;
   let bestNpcId = 0n; // id-within-kind, valid only while bestRank === 0
   let bestHealId = 0; // id-within-kind, valid only while bestRank === 1
@@ -91,7 +90,7 @@ export function nearestInteractable(
     const c = characterTiles.get(npc.entityId);
     if (c === undefined || c.zoneId !== own.zoneId) continue;
     const dist = Math.abs(c.tileX - own.tileX) + Math.abs(c.tileY - own.tileY);
-    if (dist > CLIENT_INTERACT_RANGE) continue;
+    if (dist > range) continue;
     const wins =
       best === undefined ||
       dist < bestDist ||
@@ -107,7 +106,7 @@ export function nearestInteractable(
   for (const loc of healLocations) {
     if (loc.zoneId !== own.zoneId) continue;
     const dist = Math.abs(loc.tileX - own.tileX) + Math.abs(loc.tileY - own.tileY);
-    if (dist > CLIENT_INTERACT_RANGE) continue;
+    if (dist > range) continue;
     const wins =
       best === undefined ||
       dist < bestDist ||
@@ -127,7 +126,7 @@ export function nearestInteractable(
   return best;
 }
 
-/** The on-world prompt view model (ADR-0161 D6). `visible` is the literal
+/** The on-world prompt view model. `visible` is the literal
  *  `true`: "hidden" is represented by null and ONLY by null. The anchor stays
  *  in SOURCE px — screenFor applies the one tested transform. */
 export interface InteractPromptViewModel {

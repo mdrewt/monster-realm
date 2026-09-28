@@ -1,9 +1,5 @@
 // ui/statusModel.test.ts — M13.5b ADR-0085 status message pure view model.
 //
-// RED REASON: `./statusModel` does not exist yet — the import itself fails with a
-// module-not-found / TS compile error, keeping every test in this file red until
-// the implementer creates the module.
-//
 // API CONTRACT (pinned):
 //   reduceErrorMessage(err: unknown, where: string): string
 //     - TOTAL: never returns an empty string.
@@ -170,7 +166,7 @@ describe('reduceErrorMessage: unknown errors → generic, no leakage', () => {
     expect(reduceErrorMessage(err, 'evolve')).toBe('evolve: unexpected error');
   });
 
-  // ─── review additions (tester P3): pin EXACT name equality, not substring ─────
+  // ─── review additions: pin EXACT name equality, not substring ─────
   // A `name.includes('SenderError')` classifier survived every earlier test in this
   // file; these two kill it. The C9 contract is equality — a superstring name must
   // fall to the unknown branch, never pass its raw message through (no-leak).

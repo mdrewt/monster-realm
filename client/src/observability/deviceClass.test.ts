@@ -1,4 +1,4 @@
-// observability/deviceClass.test.ts — m20c (ADR-0180 body amendment), OBS-34/35 + T-35b.
+// observability/deviceClass.test.ts — OBS-34/35 + T-35b.
 //
 // SOURCE OF TRUTH: EARS OBS-34/35 ("no player text / no identity in telemetry") plus the Alloy
 // datapoint allowlist `device_class ^(desktop|mobile|tablet)$` (config.alloy:158).
@@ -10,12 +10,10 @@
 // hints object at all, including one assembled from a hostile/spoofed UA, yields one of exactly
 // three strings.
 //
-// HOST ACCESS IS INJECTED (AM21): vitest runs in the NODE environment (vite.config.ts:47-53), so
+// HOST ACCESS IS INJECTED (AM21): vitest runs in the NODE environment, so
 // this module must not read `navigator` / `window` at module scope or anywhere else. The caller
 // (main.ts) reads the host and passes a plain `DeviceHints` record. sourceScan.test.ts enforces
 // the absence of those globals; this file pins the pure behaviour.
-//
-// RED REASON: `client/src/observability/deviceClass.ts` does not exist yet.
 
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';

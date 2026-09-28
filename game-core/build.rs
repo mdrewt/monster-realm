@@ -31,9 +31,9 @@ const REGISTRIES: &[&str] = &[
     "heal_locations",
     "shops",
     "abilities",
-    // EG3-1: replaces the deleted single-file evolutions.ron + fusion.ron.
+    // Replaces the deleted single-file evolutions.ron + fusion.ron.
     // The empty-part guard below is a FILE-count check, so a lone part
-    // containing `[]` is legal (EG1-10's pre-content state).
+    // containing `[]` is legal.
     "evolution_paths",
 ];
 

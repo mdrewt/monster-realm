@@ -1,4 +1,4 @@
-// ui/claimModel.test.ts — AUTH-48/52/54/55/56/59 (M21b-2, ADR-0182 D16).
+// ui/claimModel.test.ts — AUTH-48/52/54/55/56/59.
 //
 // EARS COVERED
 //   AUTH-54 — the FOUR-WAY reject taxonomy, keyed on the EXACT strings
@@ -23,69 +23,10 @@
 // sessionModel.test.ts, where it is mechanical: that model's event vocabulary cannot
 // express `sign-in-failed` at all. This file carries the positive half.
 //
-// RED REASON AT HEAD (8814416): `client/src/ui/claimModel.ts` DOES NOT EXIST. The import
-// below fails to resolve, so every test reds on a MISSING IMPLEMENTATION.
-//
 // PURE MODEL — no DOM, no SDK, no storage, NO CLOCK (that last one is AUTH-55, and it is
 // enforced twice: once on the event vocabulary, once by scanning the module's own source).
 // The storage half lives in `net/claimCode.ts` (claimCode.test.ts); this model receives the
 // nudge flag as a BOOLEAN INPUT rather than reading it, so it stays pure.
-//
-// THE CONTRACT THE IMPLEMENTER BUILDS:
-//
-//   export const CLAIM_REJECT_OUTCOMES = [
-//     'delete-code-and-permit-join',      // ERR_INVALID_CODE, 'code expired'
-//     'retain-destination-terminal',      // 'already has game data', 'account already
-//                                         //  claimed', 'cannot claim your own session'
-//     'retain-transient-no-autoretry',    // 'close your other tab, then retry',
-//                                         //  'already in an ongoing battle'
-//     'retain-not-claim-specific',        // 'sign in required', 'no account',
-//                                         //  'account pending deletion', and ANYTHING
-//                                         //  unrecognised (fail-safe: never destructive)
-//   ] as const;
-//   export type ClaimRejectOutcome = (typeof CLAIM_REJECT_OUTCOMES)[number];
-//   export function classifyClaimReject(message: string): ClaimRejectOutcome;
-//   export function claimRejectDeletesCode(outcome: ClaimRejectOutcome): boolean;
-//   export function claimRejectPermitsJoin(outcome: ClaimRejectOutcome): boolean;
-//
-//   export type InvalidCodeSense = 'claim-already-succeeded' | 'code-unusable';
-//   export function senseInvalidCode(claimedFrom: string | undefined): InvalidCodeSense;
-//
-//   export type ClaimPhase =
-//     | 'hidden' | 'prompt' | 'code-pending' | 'awaiting-account' | 'rejected'
-//     | 'sign-in-failed' | 'claimed';
-//   // M21b-2 UI-completion review: `claim-ui-opened` now enters the VISIBLE 'prompt' phase
-//   // (was 'hidden' — the bug that made the whole claim/sign-in overlay unreachable).
-//   export interface ClaimModelState {
-//     readonly phase: ClaimPhase;
-//     readonly outcome: ClaimRejectOutcome | undefined;
-//     readonly signInReason: string | undefined;
-//     readonly codeRetained: boolean;
-//     readonly joinPermitted: boolean;
-//     readonly confirmPending: boolean;
-//     readonly nudgeShown: boolean;          // once per TAB — the model's own latch
-//     readonly showFirstRunNudge: boolean;   // render it on THIS frame
-//     readonly feedback: string | undefined;
-//   }
-//   export const CLAIM_INITIAL: ClaimModelState;
-//   export const CLAIM_DISCONNECTED_FEEDBACK: string;
-//
-//   export type ClaimEventKind =
-//     | 'claim-ui-opened' | 'claim-pending' | 'claim-awaiting-account' | 'claim-rejected'
-//     | 'claim-succeeded' | 'sign-in-failed' | 'decline-requested' | 'decline-confirmed'
-//     | 'decline-cancelled' | 'join-requested' | 'retry-join-requested';
-//   export const CLAIM_EVENT_KINDS: readonly ClaimEventKind[];
-//   export type ClaimEvent = <one variant per kind — see EVENTS below for the payloads>;
-//   export type ClaimEffect = 'none' | 'join' | 'delete-code-and-permit-join';
-//   export interface ClaimStep { readonly next: ClaimModelState; readonly effect: ClaimEffect }
-//   export function claimStep(state: ClaimModelState, event: ClaimEvent): ClaimStep;
-//
-//   export interface ClaimViewModel {
-//     readonly visible: boolean; readonly title: string; readonly body: string;
-//     readonly confirmPrompt: string | undefined; readonly nudge: string | undefined;
-//     readonly feedback: string | undefined;
-//   }
-//   export function buildClaimViewModel(state: ClaimModelState): ClaimViewModel;
 //
 // NO `new RegExp(...)` anywhere (Semgrep `detect-non-literal-regexp`, banned repo-wide).
 
@@ -104,7 +45,6 @@ import {
   type ClaimModelState,
   type ClaimRejectOutcome,
   claimRejectDeletesCode,
-  claimRejectPermitsJoin,
   claimStep,
   classifyClaimReject,
   senseInvalidCode,
@@ -265,7 +205,7 @@ describe('classifyClaimReject (AUTH-54): the four-way taxonomy over the exact ac
     );
   });
 
-  it('★★ BITES: deletesCode / permitsJoin are TRUE for exactly one outcome (exhaustive over the taxonomy)', () => {
+  it('★★ BITES: deletesCode is TRUE for exactly one outcome (exhaustive over the taxonomy)', () => {
     // The taxonomy only matters through these two consequences, and they must move
     // together: a bucket that deletes the code without permitting join leaves the tab
     // vetoed with no code to complete; one that permits join while retaining the code
@@ -273,8 +213,6 @@ describe('classifyClaimReject (AUTH-54): the four-way taxonomy over the exact ac
     let deleting = 0;
     for (const outcome of CLAIM_REJECT_OUTCOMES) {
       const deletes = claimRejectDeletesCode(outcome);
-      const permits = claimRejectPermitsJoin(outcome);
-      expect(deletes, `${outcome}: delete and permit must agree`).toBe(permits);
       if (outcome === 'delete-code-and-permit-join') {
         expect(deletes, 'the one destructive bucket must actually delete').toBe(true);
         deleting += 1;
@@ -301,8 +239,9 @@ describe('classifyClaimReject (AUTH-54): the four-way taxonomy over the exact ac
         claimedFrom: undefined,
       });
       expect(step.next.outcome, message).toBe(expected);
+      // joinPermitted moves in LOCKSTEP with code deletion.
       expect(step.next.joinPermitted, `${message}: joinPermitted`).toBe(
-        claimRejectPermitsJoin(expected),
+        claimRejectDeletesCode(expected),
       );
       expect(step.next.codeRetained, `${message}: codeRetained`).toBe(
         !claimRejectDeletesCode(expected),
@@ -345,7 +284,7 @@ describe('senseInvalidCode (ADR-0182 D16): the ONE client-side disambiguation of
     // so the client cannot tell "never existed" from "already consumed" — and MUST NOT try.
     // The single legitimate disambiguation is local and non-oracular: if OUR OWN account row
     // now carries `claimed_from`, the code was consumed BY US (the pre-drop promise did
-    // settle server-side, ADR-0085 D3) and the claim SUCCEEDED. Anything else is a dead code.
+    // settle server-side) and the claim SUCCEEDED. Anything else is a dead code.
     expect(senseInvalidCode(GUEST_IDENTITY)).toBe('claim-already-succeeded');
     expect(senseInvalidCode(undefined)).toBe('code-unusable');
     expect(senseInvalidCode(''), 'an empty identity is not a claim').toBe('code-unusable');
@@ -644,7 +583,7 @@ describe('claimModel AUTH-56: declining requires a DISTINCT second step naming t
 
 describe('claimModel AUTH-48: a failed first-time sign-in routes into the claim UI with distinct copy', () => {
   it('★★ BITES: the vocabulary accepts `sign-in-failed` and the model reaches its own phase', () => {
-    // ADR-0182 D17: "a first-time claim-flow redirect whose code exchange fails is not
+    // "a first-time claim-flow redirect whose code exchange fails is not
     // 'session expired' — there was no prior session to expire." The mirror assertion (the
     // session model cannot express this event at all) lives in sessionModel.test.ts.
     expect(CLAIM_EVENT_KINDS).toContain('sign-in-failed');
@@ -702,7 +641,7 @@ describe('claimModel AUTH-48: a failed first-time sign-in routes into the claim 
 });
 
 // ===========================================================================
-// First-run multi-device nudge — once per tab (ADR-0182 D16).
+// First-run multi-device nudge — once per tab.
 // ===========================================================================
 
 describe('claimModel first-run nudge: shown once per tab on the first claim-UI open', () => {
@@ -742,15 +681,6 @@ describe('claimModel first-run nudge: shown once per tab on the first claim-UI o
   });
 
   it('★★ BITES: opening the UI is a VISIBLE transition (hidden → prompt) yet never clobbers an in-progress claim', () => {
-    // ★ REVISED FROM THE SPEC (M21b-2 UI-completion review). The assertion that stood here —
-    // `after.phase === before.phase`, framed "the nudge is decoration, NOT a transition" —
-    // encoded the exact bug the two reviews found: `claim-ui-opened` left the model in its
-    // prior phase (and, from the initial state, in 'hidden'), so buildClaimViewModel(...).visible
-    // was false and the overlay the menu 'account' leaf / KeyC opened rendered NOTHING. The
-    // review MANDATES that opening the claim UI becomes visible, so that old expectation is now
-    // wrong. It is revised, not deleted: the anti-clobber coverage below is carried forward
-    // verbatim, and the corrected positive (hidden → prompt) is added.
-    //
     // (1) the corrected positive: from the initial hidden state, opening IS a transition — into
     //     the new visible 'prompt' phase. WRONG IMPL KILLED: the model stays 'hidden' (the bug).
     const opened = claimStep(CLAIM_INITIAL, {
@@ -786,7 +716,7 @@ describe('claimModel first-run nudge: shown once per tab on the first claim-UI o
 // `claim-ui-opened` returned phase 'hidden', so buildClaimViewModel(...).visible was false
 // and the overlay opened onto nothing. The fix is a new 'prompt' phase, entered by
 // claim-ui-opened, whose view model is VISIBLE and reuses the pending (claim-invitation)
-// copy. These teeth are RED until claimModel.ts gains the phase.
+// copy.
 // ===========================================================================
 
 describe('claimModel M21b-2 review: claim-ui-opened enters a visible prompt phase', () => {
@@ -821,7 +751,7 @@ describe('claimModel M21b-2 review: claim-ui-opened enters a visible prompt phas
   });
 
   it('★★ BITES: the first-run nudge still shows exactly once — on the FIRST prompt open, latched by nudgeShown', () => {
-    // The nudge-once contract (ADR-0182 D16) must survive the phase change: an unseen flag shows
+    // The nudge-once contract must survive the phase change: an unseen flag shows
     // the nudge on the first open and latches; a re-open in the same tab is quiet; and a tab whose
     // stored flag is already set never shows it — all while the phase is now the visible 'prompt'.
     // WRONG IMPL KILLED: the phase change resets or re-fires the nudge latch, so the multi-device
@@ -962,9 +892,9 @@ function stripComments(src: string): string {
 
 describe('AUTH-55 source scan: claimModel.ts names no clock and schedules nothing', () => {
   it('★ CALIBRATION: the stripper is not vacuous, and claimModel.ts carries no scheme literal', () => {
-    // Plan ADDENDUM §C, last bullet. The scheme pin closes `stripComments`'s quote
-    // blindness: it truncates each line at the first two-slash token, so a live line
-    // carrying a URL would hide whatever follows it from the bans below.
+    // The scheme pin closes `stripComments`'s quote blindness: it truncates each
+    // line at the first two-slash token, so a live line carrying a URL would hide
+    // whatever follows it from the bans below.
     const fixture = [
       'const live = 1;',
       '// setTimeout(f, 60000)',
@@ -1006,5 +936,103 @@ describe('AUTH-55 source scan: claimModel.ts names no clock and schedules nothin
           'time as grounds to resume automatic join_game while a claim code is outstanding',
       ).toBe(0);
     }
+  });
+});
+
+// ===========================================================================
+// BUG-claim-overlay-action-buttons-hidden-unlabelled: the view model says WHICH of the
+// five action buttons a player can operate in each state, so the view can show them.
+// Oracle: the claim flow's own copy — the prompt says "Sign in … or decline"; declining is
+// two-step (confirm / cancel); join is offered exactly when the join veto is lifted.
+// ===========================================================================
+describe('buildClaimViewModel actions (which claim buttons are operable)', () => {
+  const run = (...events: ClaimEvent[]): ClaimModelState =>
+    events.reduce((s, e) => claimStep(s, e).next, CLAIM_INITIAL);
+  const opened: ClaimEvent = { kind: 'claim-ui-opened', nudgeAlreadySeen: true };
+  const none = {
+    signIn: false,
+    join: false,
+    decline: false,
+    declineConfirm: false,
+    declineCancel: false,
+  };
+
+  it('hidden: no action is operable', () => {
+    expect(buildClaimViewModel(CLAIM_INITIAL).actions).toEqual(none);
+  });
+
+  it('prompt (a fresh guest opened the overlay): sign in or decline', () => {
+    expect(buildClaimViewModel(run(opened)).actions).toEqual({
+      ...none,
+      signIn: true,
+      decline: true,
+    });
+  });
+
+  it('sign-in-failed: sign in again or decline; re-opening lands on the same pair', () => {
+    const failed = run(opened, { kind: 'sign-in-failed', reason: 'transient-error' });
+    expect(buildClaimViewModel(failed).actions).toEqual({ ...none, signIn: true, decline: true });
+    expect(buildClaimViewModel(claimStep(failed, opened).next).actions).toEqual({
+      ...none,
+      signIn: true,
+      decline: true,
+    });
+  });
+
+  it('decline step one arms ONLY confirm + cancel; cancel returns to the prompt pair', () => {
+    const armed = run(opened, { kind: 'decline-requested' });
+    expect(
+      buildClaimViewModel(armed).confirmPrompt,
+      'an armed decline from the PROMPT must show the confirmation copy (the buttons alone do ' +
+        'not say what is lost)',
+    ).toBeDefined();
+    expect(buildClaimViewModel(armed).actions).toEqual({
+      ...none,
+      declineConfirm: true,
+      declineCancel: true,
+    });
+    const cancelled = claimStep(armed, { kind: 'decline-cancelled' }).next;
+    expect(buildClaimViewModel(cancelled).actions).toEqual({
+      ...none,
+      signIn: true,
+      decline: true,
+    });
+  });
+
+  it('a confirmed decline lifts the veto: only join remains', () => {
+    const declined = run(
+      opened,
+      { kind: 'decline-requested' },
+      { kind: 'decline-confirmed', hasLiveConnection: true },
+    );
+    expect(buildClaimViewModel(declined).actions).toEqual({ ...none, join: true });
+  });
+
+  it('code-pending / awaiting-account: the claim is in flight — decline only', () => {
+    const pendingState = run({ kind: 'claim-pending', code: 'a'.repeat(64) });
+    expect(buildClaimViewModel(pendingState).actions).toEqual({ ...none, decline: true });
+    const awaiting = claimStep(pendingState, { kind: 'claim-awaiting-account' }).next;
+    expect(buildClaimViewModel(awaiting).actions).toEqual({ ...none, decline: true });
+  });
+
+  it('claimed: join only', () => {
+    const claimed = run(
+      { kind: 'claim-pending', code: 'a'.repeat(64) },
+      { kind: 'claim-succeeded' },
+    );
+    expect(buildClaimViewModel(claimed).actions).toEqual({ ...none, join: true });
+  });
+
+  it('rejected: a code-deleting reject offers join; a code-retaining reject offers decline', () => {
+    const deleting = run(
+      { kind: 'claim-pending', code: 'a'.repeat(64) },
+      { kind: 'claim-rejected', message: 'code expired', claimedFrom: undefined },
+    );
+    expect(buildClaimViewModel(deleting).actions).toEqual({ ...none, join: true });
+    const retaining = run(
+      { kind: 'claim-pending', code: 'a'.repeat(64) },
+      { kind: 'claim-rejected', message: 'already in an ongoing battle', claimedFrom: undefined },
+    );
+    expect(buildClaimViewModel(retaining).actions).toEqual({ ...none, decline: true });
   });
 });

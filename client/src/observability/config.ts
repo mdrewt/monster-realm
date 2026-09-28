@@ -1,10 +1,10 @@
-// observability/config.ts — m20c (ADR-0180 body amendment), OBS-21.
+// observability/config.ts — OBS-21.
 //
 // Pure, total resolver for the two VITE telemetry vars. Discriminated union out — an illegal
 // combination is unrepresentable, and the shell branches on `kind` alone.
 //
 //   endpoint  — REJECT-don't-clamp. PROD accepts absolute `https:` origins only (no path, no
-//               query, no fragment, no URL userinfo — the m20b ingest takes no secret of any
+//               query, no fragment, no URL userinfo — the ingest takes no secret of any
 //               kind, and a rejected shape must never be "helpfully" repaired). DEV additionally
 //               accepts the plaintext loopback with an explicit port (`127.0.0.1`/`localhost`
 //               host equality, never a substring test), because the local Caddy terminates TLS
@@ -57,7 +57,7 @@ function resolveEndpoint(raw: string | undefined, isDev: boolean): TelemetryConf
   }
 
   if (url.username !== '' || url.password !== '') {
-    // OBS-16: the ingest takes no secret; reject outright rather than silently stripping.
+    // The ingest takes no secret; reject outright rather than silently stripping.
     return disabled('VITE_MR_OTLP_ENDPOINT carries URL userinfo');
   }
   if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {

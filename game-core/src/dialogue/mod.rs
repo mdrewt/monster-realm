@@ -1,10 +1,10 @@
-//! Dialogue tree model + pure evaluation rules (ADR-0021, ADR-0068).
+//! Dialogue tree model + pure evaluation rules.
 
 pub mod model;
 pub mod rules;
 
 #[cfg(test)]
-pub mod m12a_gating_tests;
+pub mod rules_tests;
 
 pub use model::{
     Condition, DialogueChoice, DialogueEffect, DialogueNode, DialogueTree, PlayerDialogueState,

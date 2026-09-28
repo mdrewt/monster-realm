@@ -149,7 +149,7 @@ afterEach(async () => {
 });
 
 // ---------------------------------------------------------------------------
-// m23-s3 — overlay a11y wiring on the render(vm | null) edge
+// Overlay a11y wiring on the render(vm | null) edge
 // ---------------------------------------------------------------------------
 
 describe('DialogueView — overlay a11y wiring on the render edge (m23-s3)', () => {
@@ -188,13 +188,13 @@ describe('DialogueView — overlay a11y wiring on the render edge (m23-s3)', () 
     view.render(dialogueVm());
 
     // NEGATIVE polarity. WRONG IMPL KILLED: a synchronous focus reintroduces the exact bug the
-    // defer exists to avoid (ui/overlayA11y.ts:9-15) — the letter that OPENED the overlay lands in
+    // defer exists to avoid — the letter that OPENED the overlay lands in
     // the field it just opened.
     expect(document.activeElement, 'the initial focus must NOT have landed synchronously').not.toBe(
       target,
     );
 
-    // The defer must come from the S1 helper, not from a view-local setTimeout (A11Y-15). This
+    // The defer must come from the S1 helper, not from a view-local setTimeout. This
     // clause is what makes the test RED for renameView/tradeProposeView-shaped impls that already
     // defer their own focus; it is the reason a passing positive polarity is not enough.
     expect(
@@ -226,7 +226,7 @@ describe('DialogueView — overlay a11y wiring on the render edge (m23-s3)', () 
     view.render(null);
 
     // VACUITY ATTACK V1, closed here: index.html ships role/aria-modal as STATIC LITERALS, so the
-    // only way they can be ABSENT is if closeOverlayA11y really ran (ui/overlayA11y.ts:142-144).
+    // only way they can be ABSENT is if closeOverlayA11y really ran.
     // This is the anti-vacuity partner of S3-dialogueView-OPEN-ARIA and it kills the
     // "rely on the static literals, call nothing" cheat outright.
     expect(
@@ -240,9 +240,9 @@ describe('DialogueView — overlay a11y wiring on the render edge (m23-s3)', () 
   });
 
   it('S3-dialogueView-REPEAT-NO-REOPEN BITES: a repeat render(vm) at the SAME nullity neither re-opens nor yanks focus back', async () => {
-    // THE CRUX (plan F5/F6): main.ts's M12d store.onBatchApplied listener (`:1627-1641` today)
+    // THE CRUX: main.ts's M12d store.onBatchApplied listener
     // calls dialogueView.render(vm) UNCONDITIONALLY on every store batch. An unguarded delegation
-    // would clear and re-schedule the deferred-focus timer every tick (ui/overlayA11y.ts:100-113),
+    // would clear and re-schedule the deferred-focus timer every tick,
     // so focus is yanked off whatever the player Tabbed to and the overlay is untabbable. This
     // failure mode is INVISIBLE to every attribute assertion — a re-open rewrites byte-identical
     // values.
@@ -287,7 +287,7 @@ describe('DialogueView — overlay a11y wiring on the render edge (m23-s3)', () 
   it('S3-dialogueView-EDGE-COUNTS BITES: 3x render(vm) = ONE open; 3x render(null) = ONE close; and a full cycle fires open -> close -> open IN THAT ORDER', () => {
     // A11Y-34. The close side is NOT DOM-observable (a second close is an idempotent no-op,
     // ui/overlayA11y.ts:136-137), so only a call COUNT can see an unguarded render(null) branch —
-    // and main.ts's M12d store.onBatchApplied listener (`:1627-1641` today) makes that branch run
+    // and main.ts's M12d store.onBatchApplied listener makes that branch run
     // on EVERY batch forever (F5).
     mountDialogueOverlay();
     const view = new DialogueView();
@@ -351,7 +351,7 @@ describe('DialogueView — overlay a11y wiring on the render edge (m23-s3)', () 
     // Half A — a GUARDED hide() would read `visible === false` and skip the close whenever a record
     // desynchronised from the DOM (S1's named A13 leak, ui/overlayA11y.ts:55-59), making a live
     // capture listener, a pending timer and a stale return target PERMANENT. Unguarded, hide()
-    // heals it, and close-without-open is a documented pure no-op (ui/overlayA11y.ts:136-137).
+    // heals it, and close-without-open is a documented pure no-op.
     mountDialogueOverlay();
     const view = new DialogueView();
     expect(view.visible, 'precondition: never opened').toBe(false);
@@ -371,7 +371,7 @@ describe('DialogueView — overlay a11y wiring on the render edge (m23-s3)', () 
 
     // Half B — the render(null) path is the one that MUST be guarded: A11Y-34 forbids a close on a
     // repeat render at the same nullity, and main.ts's M12d store.onBatchApplied listener
-    // (`:1627-1641` today) would otherwise fire one every batch.
+    // would otherwise fire one every batch.
     vi.clearAllMocks();
     view.render(dialogueVm());
     view.render(null);
@@ -390,7 +390,6 @@ describe('DialogueView — overlay a11y wiring on the render edge (m23-s3)', () 
 // ---------------------------------------------------------------------------
 // Pre-existing render behaviour — this file is the FIRST spec for dialogueView, so the behaviour
 // the S3 tests lean on (the choices rebuild, the display flip) is pinned here rather than assumed.
-// These tests pass on master TODAY and must keep passing after the S3 wiring lands.
 // ---------------------------------------------------------------------------
 
 describe('DialogueView render(): existing paint behaviour (pinned, not changed by m23-s3)', () => {

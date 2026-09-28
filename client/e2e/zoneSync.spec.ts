@@ -20,13 +20,6 @@ import {
 //   12.5c-5 — Proof-of-teeth: setRawMapZoneForTest hook exists on window.__game()
 //              and the state-based reconcile path corrects a forced zone mismatch.
 //
-// RED REASON (why these tests start red before implementation):
-//   (A) `window.__game().setRawMapZoneForTest` does not exist → page.evaluate()
-//       call throws TypeError → the test fails immediately.
-//   (B) Even if the hook existed, the state-based zone check in the reconcile
-//       listener (12.5c-1) is not yet implemented: the mismatch induced by
-//       setRawMapZoneForTest would NEVER self-correct → waitForFunction times out.
-//
 // Kills (what wrong implementation each fixture kills):
 //   "zone stays stale"   — removing the state-based check from the reconcile
 //                          listener leaves map.zone_id = 1 forever → BITES on the
@@ -39,7 +32,7 @@ import {
 //                          BITES on the zone-unchanged assertion in the parse-order
 //                          test.
 //
-// NOTE on rAF containment (12.5c-4): the existing golden.spec.ts "sawFractionalOwnMotion"
+// NOTE on rAF containment: the existing golden.spec.ts "sawFractionalOwnMotion"
 // assertion is an inadvertent containment gate — if the rAF loop dies, the slide clock
 // never latches a fractional render position → that test fails.  A dedicated rAF-kill
 // injection test is omitted here because there is no safe in-process way to force a
@@ -109,8 +102,6 @@ async function ready(p: Page): Promise<void> {
 // rawMap.zone_id (1) and calls switchZone(0), correcting the state.
 //
 // WITHOUT 12.5c-1: map.zone_id stays 1 → waitForFunction(zone_id===0) times out.
-// WITHOUT 12.5c-5 hook: setRawMapZoneForTest is undefined → TypeError → RED.
-//
 test.describe
   .serial('M12.5c — zone-sync robustness', () => {
     let browser: Browser;
@@ -169,8 +160,6 @@ test.describe
       expect(before.ownAuthTile).not.toBeNull();
 
       // STEP 1: Force rawMap.zone_id to 1 using the debug hook.
-      // WILL FAIL RED: setRawMapZoneForTest is not yet on window.__game() →
-      // page.evaluate throws TypeError, test fails immediately.
       //
       // DEFLAKE NOTE (m12.5c1-deflake): the set and the read-back are performed
       // in a SINGLE page.evaluate call.  Two separate calls are not atomic: the
@@ -234,7 +223,7 @@ test.describe
     });
 
     // ---------------------------------------------------------------------------
-    // 12.5c-2: idle remote characters remain visible after a zone switch.
+    // Idle remote characters remain visible after a zone switch.
     //
     // Scenario: we have at least one NPC (or remote player) whose character row
     // exists in the store from the global subscription.  After we force a zone
@@ -303,19 +292,12 @@ test.describe
     });
 
     // ---------------------------------------------------------------------------
-    // 12.5c-3: parse-before-mutate — a bad zone map leaves state unchanged.
+    // parse-before-mutate — a bad zone map leaves state unchanged.
     //
     // Scenario: we force a zone switch to an invalid zone id (999) whose
     // zone_map() call will throw (zone 999 is not defined in content).
-    // The CURRENT buggy ordering in onOwnWarp is:
-    //   set_active_zone(newZoneId)   ← mutates wasm before parse
-    //   store.resetCharacters()      ← mutates store
-    //   rawMap = newRawMap           ← mutates module state
-    //   renderer.setMap(rawMap)      ← TileMap.fromRaw throws here
-    // After the throw, state is corrupted (set_active_zone pointed at zone 999,
-    // store empty) even though the comment says "consistent failure".
     //
-    // The fix (12.5c-3) calls TileMap.fromRaw BEFORE any mutation so a throw
+    // The fix calls TileMap.fromRaw BEFORE any mutation so a throw
     // leaves all state unchanged.
     //
     // Proof strategy: call setRawMapZoneForTest(999) to force rawMap.zone_id=999,

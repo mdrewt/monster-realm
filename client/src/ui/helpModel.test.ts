@@ -1,28 +1,11 @@
-// ui/helpModel.test.ts — RED gating tests for the pt-c2b help overlay VM (PTC2B-10/11).
-//
-// Slice: pt-c2b · SSOT spec: docs/specs/pt-c2b-plan.md + docs/adr/0135-pt-c2b-help-overlay.md
-//
-// RED REASON: helpModel.ts does not exist yet.
-// Every test below fails with "Failed to resolve import './helpModel'" (module-not-found)
-// until the implementer ships client/src/ui/helpModel.ts exporting buildHelpViewModel().
-//
-// CONTRACT (the specialist matches this EXACTLY):
-//   export interface HelpViewModel {
-//     readonly controls: readonly { readonly key: string; readonly action: string }[];
-//     readonly goals: readonly string[];
-//   }
-//   export function buildHelpViewModel(): HelpViewModel   // pure, total, no args, no DOM/SDK.
-//   The controls list is a typed SSOT const.
+// ui/helpModel.test.ts — RED gating tests for the pt-c2b help overlay VM.
 //
 // WRONG-IMPL-KILLED list (one per assertion cluster):
-//   - "returns empty controls/goals"                → non-empty assertions (PTC2B-10) catch it
+//   - "returns empty controls/goals"                → non-empty assertions catch it
 //   - "an entry has an empty key or action"         → per-entry non-empty-string checks catch it
 //   - "SSOT omits a load-bearing key (e.g. F9/?/Escape)" → the key-coverage loop catches it
 //   - "the VM is impure / mutable / call-dependent" → deep-equal-across-calls catches it
-//   - "the VM smuggles a callback/submit field"     → the display-only structural scan (PTC2B-11) catches it
-//
-// Do NOT edit tests to match a buggy impl — correct from the spec only; any correction
-// must strengthen or preserve the bite (log a one-line spec rationale).
+//   - "the VM smuggles a callback/submit field"     → the display-only structural scan catches it
 
 import { describe, expect, it } from 'vitest';
 import { buildHelpViewModel } from './helpModel';
@@ -38,7 +21,7 @@ describe('buildHelpViewModel(): content shape — non-empty controls + goals (PT
 
   it('BITES: goals is a non-empty array — kills an empty-goals impl', () => {
     // WRONG IMPL KILLED: a stub that returns { controls: [...], goals: [] } — the session
-    // goals list is a required half of the help content (PTC2B-10).
+    // goals list is a required half of the help content.
     const vm = buildHelpViewModel();
     expect(Array.isArray(vm.goals)).toBe(true);
     expect(vm.goals.length).toBeGreaterThan(0);
@@ -67,7 +50,7 @@ describe('buildHelpViewModel(): content shape — non-empty controls + goals (PT
 });
 
 describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)', () => {
-  // The keymap that the help overlay documents (ADR-0135, amended by ADR-0161 D5): the
+  // The keymap that the help overlay documents (amended by ADR-0161 D5): the
   // `?` help key itself, Escape (close), movement (WASD / arrows), Space (jump), the 10
   // overlay hotkeys B I E Q U P L N O T (G and H deleted in uxd2 — the shop is reached
   // through a shopkeeper and the heal through a heal tile, both via the interact key T),
@@ -124,11 +107,10 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
     // Substring match against the per-entry key blob (case-insensitive). Each letter must
     // appear SOMEWHERE in some control's key text.
     //
-    // uxd2 EDIT (ADR-0161 D5, plan AC-10′ — the ONLY edit to this file): the list shrank
-    // 12 → 10. `g` and `h` were removed because the global KeyG (shop) and KeyH (heal)
-    // handlers are DELETED in uxd2 — shop is reached by interacting with a shopkeeper and
-    // heal by standing on a heal tile, both via the single interact key T. Documenting a
-    // key that no longer does anything is worse than not documenting it.
+    // the list shrank 12 → 10. `g` and `h` were removed because the global KeyG (shop) and
+    // KeyH (heal) handlers are DELETED in uxd2 — shop is reached by interacting with a
+    // shopkeeper and heal by standing on a heal tile, both via the single interact key T.
+    // Documenting a key that no longer does anything is worse than not documenting it.
     // This assertion alone is WEAK (a substring scan would still credit a stray "g"/"h"
     // inside another key's text), so the deletion itself is pinned by the exact-key
     // assertion in the sibling test below — that is the tooth, this is coverage.
@@ -193,8 +175,7 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
   });
 
   it('★ uxd2 BITES: NO controls row has key "G" or "H"; the "T" row still exists', () => {
-    // uxd2 / AC-10′ (ADR-0161 D5). RED TODAY: helpModel.ts:32-33 still ship
-    // `{ key: 'H', action: 'Heal your party' }` and `{ key: 'G', action: 'Open the shop' }`.
+    // uxd2 / AC-10′.
     //
     // WRONG IMPL KILLED (1): an impl that deletes the KeyG/KeyH HANDLERS in main.ts but
     //   leaves the help rows — the overlay would teach a playtester two keys that silently
@@ -218,7 +199,7 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
 
 describe('buildHelpViewModel(): purity / totality — same content across calls (PTC2B-11)', () => {
   it('BITES: two calls return deeply-equal content — kills a mutable / call-dependent impl', () => {
-    // PTC2B-11: display-only means the VM is a pure projection of a static const. Two calls
+    // display-only means the VM is a pure projection of a static const. Two calls
     // must produce structurally identical content (no clock/RNG/store dependence).
     // WRONG IMPL KILLED: an impl that mutates a shared array (so a second call differs) or
     // derives content from a non-deterministic source.
@@ -246,7 +227,7 @@ describe('buildHelpViewModel(): purity / totality — same content across calls 
 
 describe('buildHelpViewModel(): display-only structural guard — no callbacks/submit (PTC2B-11)', () => {
   it('BITES: the VM exposes ONLY { controls, goals } — kills an impl that smuggles a callback/submit field', () => {
-    // PTC2B-11: the help overlay is display-only (no text input, no submit, no reducer). The
+    // The help overlay is display-only (no text input, no submit, no reducer). The
     // VM must carry no function-valued or action-shaped field. This asserts the VM's own keys
     // are exactly the two data arrays — a smuggled `onSubmit` / `submit` / `reducer` field is
     // an immediate structural failure (proves the VM is not a covert action surface).

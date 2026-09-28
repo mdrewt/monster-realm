@@ -2,10 +2,10 @@
 //
 // Real art/spritesheets are a named M4 deferral; these flat, NEUTRALLY-LIT shapes
 // stand in behind the AssetProvider seam so the renderer is asset-agnostic and an
-// HD-2D upgrade stays additive + render-only (ADR-0004). One texture per
+// HD-2D upgrade stays additive + render-only. One texture per
 // (action,facing) is cached so an animation swap is a cheap reference change.
 //
-// Both state axes carry a NON-COLOUR cue (rb-57/ADR-0241): facing is the notch's
+// Both state axes carry a NON-COLOUR cue: facing is the notch's
 // position, action is the glyph's shape. `ACTION_TINT` is redundant reinforcement,
 // never the sole carrier -- a player who cannot separate the three tints, or who is
 // reading a greyscale capture, can still tell the three actions apart.
@@ -38,11 +38,11 @@ interface GlyphBar {
 
 /**
  * The action cue: one bar (Idle, at rest) / two stacked bars (Walking, repeating
- * steps) / a cross (Jumping, lifting off), all in `CUE_INK` (ADR-0241).
+ * steps) / a cross (Jumping, lifting off), all in `CUE_INK`.
  *
  * Constraints these values encode -- change them only against the sibling test:
  * - AXIS-ALIGNED INTEGER RECTS ONLY, no strokes/curves/diagonals. Integer rects
- *   rasterise with no anti-aliasing, and ADR-0160 upscales the stage by a device
+ *   rasterise with no anti-aliasing, and the viewport upscales the stage by a device
  *   INTEGER factor with `nearest`, so the glyph survives every device scale
  *   exactly. A 6px circle or a diagonal would be grey mush before the upscale.
  * - HALF-EXTENT 3 (a 6x6 field), not 4: it leaves 2 clear px against the facing
@@ -52,12 +52,11 @@ interface GlyphBar {
  *
  * `Record<WasmAction, ...>` is load-bearing: once `WasmAction` gains a fourth member,
  * a missing entry here is a COMPILE ERROR, where a `switch` with a `default` would
- * silently ship a colour-only sprite for it -- exactly the defect ADR-0241 closes.
+ * silently ship a colour-only sprite for it -- exactly the colour-only-glyph defect.
  * Note the honest limit: `WasmAction` (convert.ts) is a HAND-WRITTEN mirror of
- * game-core's `ActionState`, and the forcing function for widening it is the
- * sdk-enum-exhaustiveness eval, not tsc. So a Rust-side variant added without that
- * mirror edit reaches here as an unknown key -- which is why the draw below is
- * fail-soft rather than throwing (`rowConvert.ts:82-85`, "fail-soft, NEVER throw").
+ * game-core's `ActionState`. So a Rust-side variant added without that mirror edit
+ * reaches here as an unknown key -- which is why the draw below is fail-soft rather
+ * than throwing (`rowConvert.ts:82-85`, "fail-soft, NEVER throw").
  */
 const ACTION_GLYPH: Record<WasmAction, readonly GlyphBar[]> = {
   Idle: [{ dx: -3, dy: -1, w: 6, h: 2 }],
@@ -124,7 +123,7 @@ export class PlaceholderAssets implements AssetProvider {
       g.rect(centre + bar.dx, centre + bar.dy, bar.w, bar.h);
     }
     g.fill(CUE_INK);
-    // `nearest` (uxd1/ADR-0160): the stage is scaled by a device-INTEGER factor,
+    // `nearest`: the stage is scaled by a device-INTEGER factor,
     // so bilinear filtering would only blur crisp texel edges. `resolution` stays
     // UNSET (defaults to renderer.resolution = dpr) — pinning it to the device
     // scale would force regenerating this whole cache on every resize.

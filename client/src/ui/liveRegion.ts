@@ -1,5 +1,5 @@
 // ui/liveRegion.ts — the 500 ms-coalescing, textContent-only sink for the ARIA live region, and
-// (since rb-11 / ADR-0214) the node's DOM CUSTODY owner (m23-s1, M23 §2.4, A11Y-9).
+// the node's DOM CUSTODY owner.
 //
 // WHY TIME IS AN ARGUMENT AND NEVER A CLOCK. There is not one fake timer in `client/src`; the house
 // pattern is an INJECTED clock (`new ErrorRing(() => Date.now())`, `new EventRing(...)`,
@@ -53,7 +53,7 @@
 // partner's name — and an HTML-parsing sink would be an injection surface), not `setAttribute`. The
 // `aria-live`/`aria-atomic`/`role` attributes belong to S2's markup, not to a runtime write.
 //
-// AMENDED BY rb-11 (ADR-0214), by NAMING THE EXCEPTION RATHER THAN SOFTENING THE CLAIM: this
+// THE ONE NAMED EXCEPTION (named rather than softening the claim): this
 // header used to say `textContent` was the only DOM write of any kind, and explicitly excluded
 // `appendChild`. `adoptLiveRegion` below now calls `appendChild` — it moves the node's PARENT, and
 // never its content, never its attributes. The injection argument above is about CONTENT and is
@@ -66,7 +66,7 @@
  *  HTML, so an id typo in `index.html` is caught by S2's own markup gate, not by this constant. */
 export const LIVE_REGION_ID = 'a11y-live';
 
-/** The coalescing window (A11Y-9). Exported because it is the contract S5's pump reasons about. */
+/** The coalescing window. Exported because it is the contract S5's pump reasons about. */
 export const COALESCE_WINDOW_MS = 500;
 
 /**
@@ -116,7 +116,7 @@ export class LiveRegion {
 
 /**
  * Hand DOM custody of the live region to `root` for as long as it is an open modal, and return the
- * closure that hands it back. rb-11 / ADR-0214; the residual is R-m23-s2-X5.
+ * closure that hands it back.
  *
  * WHY THIS EXISTS. `A11Y-13` puts `aria-modal="true"` on every visible overlay root, and per ARIA
  * that instructs assistive technology to treat everything OUTSIDE the dialog as inert — including
@@ -124,13 +124,6 @@ export class LiveRegion {
  * `<body>` child (`client/index.html:145-154`). NVDA and JAWS usually still speak it; VoiceOver
  * and Safari frequently do not, so the failure is SILENT and AT-dependent. Moving the node inside
  * the open dialog is the fix that needs no cooperation from the AT.
- *
- * WHY IT LIVES HERE AND NOT IN `ui/overlayA11y.ts`, WHICH OWNS THE MODAL CHOREOGRAPHY.
- * `evals/a11y-static-shell.eval.mjs` `[A11Y-05b]` makes this module the SOLE owner of the node's
- * id: any other non-test `client/src` module whose source names `a11y-live` or `LIVE_REGION_ID` is
- * a gate failure. Putting the move in `overlayA11y.ts` would have required widening that ownership
- * rule to two members — weakening the exact gate that protects the node this change makes mobile.
- * Instead the custody policy lives with the id, and `overlayA11y.ts` holds only the opaque closure.
  *
  * WHY A CLOSURE AND NOT AN `adopt`/`release(node, root)` PAIR. `ui/focusTrap.ts`'s
  * `installTrap(root): () => void` already solves this exact "open captures state, close needs it

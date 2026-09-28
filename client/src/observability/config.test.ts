@@ -1,4 +1,4 @@
-// observability/config.test.ts — m20c (ADR-0180 body amendment), OBS-21 + T-I1 + T-21a/T-21b.
+// observability/config.test.ts — OBS-21 + T-I1 + T-21a/T-21b.
 //
 // SOURCE OF TRUTH: EARS OBS-21 ("target the m20b Caddy route policy") + the merged m20b wire
 // contract:
@@ -23,14 +23,11 @@
 //       whether to say anything. (Deliberate divergence from devLog.ts's injected `warn` sink —
 //       the signature adjudicated in the plan has three params and no sink.)
 //
-// RED REASON: `client/src/observability/config.ts` does not exist yet.
-//
 // NOTE ON URL LITERALS: a bare insecure-scheme URL literal — `http` or `ws` written flush
 // against the `://` separator — is banned in this repo's source scans, and the remote Semgrep
-// SAST matches RAW TEXT, comments included (an earlier wording of this very note retripped
-// it). So the two schemes below are BUILT (`['http', '//'].join(':')`) rather than written,
-// and this note keeps scheme and separator apart for the same reason. The https fixtures use
-// the loopback idiom with distinct ports.
+// SAST matches RAW TEXT, comments included. So the two schemes below are BUILT (`['http',
+// '//'].join(':')`) rather than written, and this note keeps scheme and separator apart for the
+// same reason. The https fixtures use the loopback idiom with distinct ports.
 
 import * as fc from 'fast-check';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -168,7 +165,7 @@ describe('resolveTelemetryConfig (T-21a): PROD accepts https: origins ONLY', () 
     // WRONG IMPL KILLED (1): a permissive parser that accepts anything `new URL()` can swallow.
     //   `http:` on a public path is a plaintext ingest; `ws:`/`wss:` is the SpacetimeDB URL
     //   pasted into the wrong env var (and would make the exporter POST to the game socket).
-    // WRONG IMPL KILLED (2, OBS-16): `https://user:pass@host` — a CREDENTIAL in the endpoint.
+    // WRONG IMPL KILLED: `https://user:pass@host` — a CREDENTIAL in the endpoint.
     //   The m20b ingest has no auth by design; accepting userinfo would put a secret in a
     //   client-side env var, in the bundle, and in the request line. Reject it outright rather
     //   than silently stripping it (silent stripping hides an operator mistake).
@@ -187,7 +184,7 @@ describe('resolveTelemetryConfig (T-21a): PROD accepts https: origins ONLY', () 
       '/v1/metrics', // relative
       'otlp.localhost:8443', // scheme-less
       'https://', // unparseable
-      HTTPS_WITH_USERINFO, // OBS-16: a credential in the endpoint
+      HTTPS_WITH_USERINFO, // A credential in the endpoint
       'https://127.0.0.1:8443/v1/metrics', // path
       'https://127.0.0.1:8443/ingest',
       'https://127.0.0.1:8443?zone=1', // query

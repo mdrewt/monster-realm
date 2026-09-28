@@ -78,8 +78,7 @@ pub fn level_for_xp(xp: Xp) -> Level {
     // Bounded `for` (7 iterations always converge: 2^7 = 128 > 100) instead of
     // `while lo < hi`: an arithmetic mutation of the search then terminates
     // with a wrong answer (caught by the exhaustive roundtrip test) instead of
-    // hanging — pre-refactor this function produced 5 nightly cargo-mutants
-    // TIMEOUTs. `saturating_sub` keeps `mid` stable if `hi` dips below `lo`
+    // hanging. `saturating_sub` keeps `mid` stable if `hi` dips below `lo`
     // (only reachable for xp=0, which floors to level 1 as before).
     let mut lo: u8 = 1;
     let mut hi: u8 = 100;
@@ -90,8 +89,7 @@ pub fn level_for_xp(xp: Xp) -> Level {
             lo = mid;
         } else {
             // `saturating_sub`, not `- 1`: `mid >= 1` always, and `hi = mid`
-            // is an EQUIVALENT search (the -1 is a mere optimization) -- as a
-            // bare `-` this line bred an unkillable cargo-mutants survivor.
+            // is an EQUIVALENT search (the -1 is a mere optimization).
             hi = mid.saturating_sub(1);
         }
     }
@@ -611,8 +609,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: every arithmetic/comparison mutant in `level_for_xp`'s bounded
-    /// binary search (1 missed + 5 timeout survivors pre-refactor). Exhaustive
-    /// over all 100 levels plus both cube boundaries and the u32 cap.
+    /// binary search. Exhaustive over all 100 levels plus both cube boundaries
+    /// and the u32 cap.
     #[test]
     fn level_for_xp_roundtrips_all_levels_and_boundaries() {
         for l in 1..=100u8 {

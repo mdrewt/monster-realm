@@ -1,19 +1,19 @@
-// ui/tradeModel.ts — pure view model for the trade overlay (m15b, ADR-0107).
+// ui/tradeModel.ts — pure view model for the trade overlay.
 //
 // No DOM, no SDK, no side-effects. Never throws on any input — a throw
 // here would starve sibling store batch-listeners (store.ts one-way flow).
 //
-// The trade_offer table is PUBLIC (both parties subscribe — ADR-0106 D3).
+// The trade_offer table is PUBLIC (both parties subscribe).
 // The model filters by own identity rather than trusting the store pre-filter:
-// this is defense-in-depth against a future per-row RLS gap (ADR-0015).
-// MonsterCard snapshots contain NO genes (ADR-0015 / ADR-0106 D2).
+// this is defense-in-depth against a future per-row RLS gap.
+// MonsterCard snapshots contain NO genes.
 import type { StoreItemRow, StoreMonsterCard, StoreTradeItem, StoreTradeOffer } from '../net/store';
 
 // ---------------------------------------------------------------------------
 // View model types
 // ---------------------------------------------------------------------------
 
-/** One monster card rendered in a trade offer (no genes — ADR-0015). */
+/** One monster card rendered in a trade offer (no genes). */
 export interface TradeCardViewModel {
   readonly monsterId: bigint;
   readonly speciesName: string;
@@ -38,7 +38,7 @@ export interface TradeSideViewModel {
 }
 
 /**
- * The two server-side TradeStatus variants (m16.5c, ADR-0114).
+ * The two server-side TradeStatus variants.
  * Typed as a literal union so deriveActionsAndLabel can switch exhaustively —
  * adding a third server variant is a TypeScript compile error at the switch site.
  */

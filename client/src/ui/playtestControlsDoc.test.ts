@@ -1,15 +1,5 @@
 // ui/playtestControlsDoc.test.ts — gate proving docs/PLAYTEST.md's §3 Controls table (and
-// its whole-document prose) never drifts from the `helpModel.ts` `CONTROLS` SSOT (12r-b).
-//
-// Slice: 12r-b · plan: memory/projects/monster-realm-12r-b-plan.md
-// Spec: specs/monster-realm-v2/M-postgate-twelfth-review-residuals.spec.md §12r-b, EARS E1.
-//
-// RED REASON (today): docs/PLAYTEST.md still has the uxd2-deleted `G`/`H` rows, is MISSING
-// the `M` row, its `T` action text has drifted from the SSOT, and §4 step 7 prose still says
-// "Shop (`G`) and heal (`H`)". A1 (key set), A2 (action text), and A4 (prose scan) below are
-// RED against the doc as it stands on this branch; only the implementer's docs/PLAYTEST.md
-// edit turns them green. This file does NOT touch docs/PLAYTEST.md, helpModel.ts, main.ts, or
-// vite.config.ts — see the plan's Scope section.
+// its whole-document prose) never drifts from the `helpModel.ts` `CONTROLS` SSOT.
 //
 // PARSER DESIGN (why it lives HERE, not a separate module): a new non-test `.ts` file would
 // enter the 96%-coverage denominator in vite.config.ts and force editing the exact-set-guarded
@@ -28,42 +18,6 @@
 //   - doc's PROSE (outside the table) still says `G`/`H`          → A4 (whole-document span scan)
 //   - a future engineer "fixes" a RED run by skipping this file   → A5 (anti-weakening failure messages)
 //   - a hidden/decoy table hijacks the header anchor (see below)  → parseControlTable's uniqueness check
-//
-// Do NOT edit these tests to match a buggy/unfixed doc — correct from the spec only.
-//
-// RED-TEAM FIX (post-first-pass): a real `npx vitest run` red-team PoC scored a FALSE GREEN by
-// inserting a complete, correct decoy Controls table immediately after the "## 3. Controls"
-// heading, then deleting the `M` row from ONLY the real, tester-visible table further down.
-// `indexOf('| Key | Action |', sectionIdx)` bound to the decoy (first occurrence after the
-// anchor) and validated IT, not the real table; A1-A3 read the decoy as ground truth and went
-// green, and A4 can't help (it only reports EXTRA spans, never a MISSING key). Fixed two ways:
-// (1) fenced (``` ```) blocks are now stripped BEFORE the header search, so a fenced decoy is
-// simply invisible to the anchor; (2) the header must be UNIQUE after the section anchor — a
-// SECOND "| Key | Action |" occurrence (fenced or not) after "## 3. Controls" throws a named
-// ambiguity error instead of silently picking one. A decoy BEFORE "## 3. Controls" is still
-// legitimately ignored (the section anchor already excludes it) — see the "before-anchor"
-// fixture below, which is unchanged and must keep passing.
-//
-// RED-TEAM FIX ROUND 2 (post-doc-fix review + a second red-team pass, both verified live):
-// (1) REVIEWER: `splitRowCells` returns `[]` for a truly blank/pipe-less separator line, so the
-//     "every cell is -/:/whitespace" loop silently runs zero times instead of throwing — not a
-//     false PASS (the next line gets mis-consumed as a row and A1 eventually fails), but the
-//     wrong, confusing diagnostic instead of REV-3's direct separator error. Fixed with an
-//     explicit zero-cells check.
-// (2) RED-TEAM: scored ANOTHER verified 22/22-green PoC (with the full original bug intact) by
-//     wrapping the REAL, tester-visible "## 3. Controls" section in a stray ``` fence and placing
-//     a byte-perfect DECOY "## 3. Controls" + table right after it, unfenced. Fence-stripping
-//     removes the real section before the anchor search ever runs, so only the decoy is visible —
-//     header-uniqueness (round 1's fix) cannot catch this because, post-stripping, there is
-//     exactly ONE heading and exactly ONE header. Fixed orthogonally (does not touch the
-//     fence-stripped anchor logic, so the before-anchor fixture is untouched): the RAW,
-//     CRLF-normalized-but-NOT-fence-stripped document must contain "## 3. Controls" EXACTLY ONCE,
-//     else throw — a duplicated raw heading means the fence-stripped view and the human-rendered
-//     view could disagree about which table is authoritative, and a gate must never silently
-//     prefer one.
-// (3) RED-TEAM: A4's ACCURACY NOTE understated the gap — see the note on A4's `it` block for the
-//     now-disclosed multi-char-span and bold-non-code shapes, plus the accepted false-positive
-//     risk now named in MISMATCH_GUIDANCE.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -72,7 +26,7 @@ import { describe, expect, it } from 'vitest';
 import { buildHelpViewModel } from './helpModel';
 
 // ---------------------------------------------------------------------------------------------
-// Real-file loader (readFileSync/fileURLToPath precedent: main.wiring.test.ts, predictor.test.ts)
+// Real-file loader
 // ---------------------------------------------------------------------------------------------
 
 const PLAYTEST_MD_PATH = path.join(
@@ -111,7 +65,7 @@ interface ParsedRow {
 /**
  * Parse the `## 3. Controls` table out of a PLAYTEST.md-shaped markdown string.
  *
- * Contract (12r-b plan, "Parser contract", hardened post-red-team):
+ * Contract ("Parser contract", hardened post-red-team):
  *  - Fenced (``` ```) code blocks are stripped FIRST (same even-index technique as
  *    `singleCharCodeSpans`) — a decoy table hidden inside a fenced block is simply invisible to
  *    everything below, never silently validated.
@@ -137,7 +91,7 @@ interface ParsedRow {
 function parseControlTable(markdown: string): ParsedRow[] {
   const normalized = markdown.split('\r\n').join('\n');
 
-  // RED-TEAM FIX ROUND 2 (2): this check runs on the RAW (CRLF-normalized but NOT
+  // this check runs on the RAW (CRLF-normalized but NOT
   // fence-stripped) document, deliberately BEFORE fence-stripping — a stray fence can wrap the
   // REAL "## 3. Controls" section, making it invisible to the fence-stripped anchor search below
   // while a byte-perfect DECOY heading + table sits right after it, unfenced. Fence-stripped
@@ -200,7 +154,7 @@ function parseControlTable(markdown: string): ParsedRow[] {
   }
   const separatorCells = splitRowCells(separatorLine);
   if (separatorCells.length === 0) {
-    // REVIEWER FIX: a blank/pipe-less line splits to `[]`, so the per-cell loop below would run
+    // a blank/pipe-less line splits to `[]`, so the per-cell loop below would run
     // zero times and silently skip the diagnostic — the doc would still end up RED eventually
     // (the next line gets mis-consumed as a data row, and A1 fails downstream), but with a
     // confusing "unknown key" message instead of REV-3's direct, on-target separator error.
@@ -680,14 +634,13 @@ describe('singleCharCodeSpans(): pure-fixture behavior', () => {
 
 // =================================================================================================
 // Part 2 — the real gate: read the REAL docs/PLAYTEST.md and compare it against the REAL SSOT
-// (buildHelpViewModel().controls). These are the assertions that must be RED today.
+// (buildHelpViewModel().controls).
 // =================================================================================================
 
 describe('docs/PLAYTEST.md §3 Controls table vs. helpModel.ts CONTROLS SSOT (12r-b, EARS E1)', () => {
   it("A1 BITES: the doc table's key SET exactly equals the SSOT key SET (order-independent, both directions)", () => {
     // WRONG IMPL KILLED: a doc that still has the uxd2-deleted `G`/`H` rows (extra keys not in
-    // the SSOT) and/or is missing the new `M` row (an SSOT key absent from the doc). RED TODAY:
-    // docs/PLAYTEST.md has both G and H (dead) and lacks M.
+    // the SSOT) and/or is missing the new `M` row (an SSOT key absent from the doc).
     //
     // JSON.stringify on the diff sets is deliberate (plan A1): a stray NBSP or double space in
     // a doc key would otherwise look byte-identical to a human reading a terminal diff.
@@ -723,8 +676,6 @@ describe('docs/PLAYTEST.md §3 Controls table vs. helpModel.ts CONTROLS SSOT (12
     // — the red-team PoC'd that a `.includes()` oracle passes this while re-teaching a dead key.
     // Exact equality has ZERO allowed exceptions per the plan (F9's "(see §6)" cross-reference
     // is relocated OUT of the cell precisely so this can be unconditional).
-    // RED TODAY: docs/PLAYTEST.md's `T` row reads "Talk to a nearby NPC", not the SSOT's
-    // em-dash "Interact — talk to an NPC, shop at a shopkeeper, heal at a heal tile" string.
     const vm = buildHelpViewModel();
     const ssotByKey = new Map(vm.controls.map((c) => [c.key, c.action]));
 
@@ -782,8 +733,7 @@ describe('docs/PLAYTEST.md §3 Controls table vs. helpModel.ts CONTROLS SSOT (12
     // WRONG IMPL KILLED: this is the assertion that catches the original bug's LITERAL
     // backticked shape — docs/PLAYTEST.md:74 step 7 says "**Shop** (`G`) and **heal** (`H`) in
     // town." — dead keys living in PROSE as `` `G` ``/`` `H` `` spans, outside the table
-    // entirely, which a table-only gate (A1-A3) is blind to. RED TODAY: `G` and `H` appear as
-    // single-char inline-code spans at :74 (and in the table).
+    // entirely, which a table-only gate (A1-A3) is blind to.
     //
     // ACCURACY NOTE (not overclaiming): this only catches the SINGLE-CHARACTER BACKTICKED form.
     // Three shapes are disclosed, out-of-scope residual gaps (all verified invisible to this

@@ -1,4 +1,4 @@
-// render/renderResolver.ts — the M8.6b smoothness coordinator (M4c, ADR-0013).
+// render/renderResolver.ts — the M8.6b smoothness coordinator.
 //
 // Glue (functional-core/imperative-shell): the pure decision logic lives in
 // `SlideClock` (own char) and `interpolate` (remotes); this stateful coordinator
@@ -7,7 +7,7 @@
 // store or the predictor, and never calls `performance.now()`: `now` is injected, so
 // it stays pure-of-IO and trivially testable.
 //
-// One-way flow (ADR-0013/0014): `server -> store -> resolve -> render`. The own
+// One-way flow: `server -> store -> resolve -> render`. The own
 // character animates on a LOCAL slide clock keyed to the predicted TARGET-TILE (never
 // the server's `move_started_at` — that re-stamps every tick and would restart the
 // slide, the v1 stutter). Remotes HOLD-not-extrapolate via the interpolation buffer.
@@ -26,12 +26,12 @@ import { SlideClock, type SlideTile } from './slideClock';
 import type { RenderEntity } from './world';
 
 /**
- * ptc5g (ADR-0141): a new authoritative own-target farther than this many tiles
+ * A new authoritative own-target farther than this many tiles
  * (Chebyshev) from the slide clock's CURRENT target is a POSITION jump (server
  * correction / same-zone respawn / dropped-update catch-up), not a step — snap
  * through the existing `snapped` path instead of gliding it over one STEP_MS.
  * `1` because a normal single-axis step is exactly Chebyshev 1 and must still
- * slide (the anti-stutter core, ADR-0013). Parallels predictor's `SNAP_GAP_STEPS`.
+ * slide (the anti-stutter core). Parallels predictor's `SNAP_GAP_STEPS`.
  */
 const SNAP_DIVERGENCE_TILES = 1;
 
@@ -51,10 +51,10 @@ export interface ResolveInput {
   readonly snapped: boolean;
   /** Injected render clock (ms) — never `performance.now()` in here. */
   readonly now: number;
-  /** M11c (ADR-0067): only render characters in this zone. When undefined, all
+  /** Only render characters in this zone. When undefined, all
    *  characters are rendered (pre-M11c behaviour, used in unit tests). */
   readonly currentZoneId?: number;
-  /** m23-s7 (A11Y-27, spec §2.5): the OS reduced-motion preference, injected the
+  /** The OS reduced-motion preference, injected the
    *  same way `now` is — this module never reads a global (`motionPreference.ts` is
    *  the sole owner of that read). OPTIONAL with default false, a declared deviation
    *  from §2.5's required-field wording: S7 may not touch main.ts (spec §4 keeps S7
@@ -85,7 +85,7 @@ export class RenderResolver {
     const out: RenderEntity[] = [];
 
     for (const c of characters) {
-      // M11c (ADR-0067): global subscription delivers all zones; only render the current zone.
+      // Global subscription delivers all zones; only render the current zone.
       if (currentZoneId !== undefined && c.row.zoneId !== currentZoneId) continue;
       const isOwn =
         ownEntityId !== undefined && c.row.entityId === ownEntityId && predicted !== undefined;
@@ -97,13 +97,13 @@ export class RenderResolver {
         // starts from the right origin (no teleport from a stale 0,0).
         this.#ownClock ??= new SlideClock(this.#stepMs, tile, now);
         // Snap on the predictor's time-gap signal OR a large authoritative POSITION
-        // divergence (ptc5g, ADR-0141). Compare against the clock's CURRENT target
+        // divergence. Compare against the clock's CURRENT target
         // tile (the spec's referent; positionAt(now) would be frame-timing-sensitive
         // and could under-trigger at slide start). A same-tile re-affirm is a
         // SlideClock no-op (anti-stutter); the seed frame above targets `tile` already
         // → distance 0 → no false snap, and a reset-covered warp re-seeds here → also
         // distance 0 → no double-handling.
-        // m23-s7 (A11Y-27): `reduceMotion` forces the snap arm EVERY frame. That is
+        // `reduceMotion` forces the snap arm EVERY frame. That is
         // safe and deliberate: snapTo sets origin === target === tile, so positionAt
         // returns exactly `tile` for any startedAt (the per-frame re-stamp is
         // observationally inert) — and the clock KEEPS TRACKING the predicted tile,
@@ -123,21 +123,21 @@ export class RenderResolver {
           facing: predicted.facing,
         });
       } else {
-        // m23-s7 (A11Y-27): the reduced-motion arm comes FIRST and bypasses BOTH
+        // The reduced-motion arm comes FIRST and bypasses BOTH
         // interpolation paths — the remote is drawn at its authoritative row tile,
         // and `now` is not even referenced, so clock-independence holds by
         // construction. Otherwise:
-        // ADR-0090: per-character adaptive render time derived from EWMA jitter.
+        // Per-character adaptive render time derived from EWMA jitter.
         // WHY per-character: NPCs and remote players have different jitter profiles;
         // a single global renderTime would over-buffer smooth entities.
-        // Backward compat: when snapshots is empty (pre-ADR-0090 fixtures / tests that
+        // Backward compat: when snapshots is empty (older fixtures / tests that
         // only supply prev+latest), fall back to the fixed delay + 2-snapshot interpolate.
         let pos: RenderPos;
         if (reduceMotion) {
           pos = interpolateReducedMotion(c.row);
         } else if (c.snapshots.length > 0) {
           const delay = adaptiveInterpDelayMs(c.jitterEwma, this.#stepMs);
-          // The stepMs argument arms the ADR-0171 idle-gap re-anchor — without it the
+          // The stepMs argument arms the idle-gap re-anchor — without it the
           // resume-from-idle fix is inert in production (renderResolver.test.ts pins it).
           pos = interpolateHistory(c.snapshots, now - delay, this.#stepMs);
         } else {

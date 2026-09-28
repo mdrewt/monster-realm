@@ -1,20 +1,16 @@
-//! `guards` — server-module domain submodule (M8.9, ADR-0056).
+//! `guards` — server-module domain submodule.
 //!
 //! Validation/authorization helpers shared by the reducer modules: the reject
 //! logger, the name validator, the move authorizer, and the pure battle-input
-//! validators. `require_owner` (the consolidated `owner != ctx.sender()` preamble)
-//! is added in the M8.9b ownership-guard consolidation phase.
-//!
-//! This file name is part of the canonical `touches:` vocabulary fixed by
-//! ADR-0056 — keep it stable.
+//! validators.
 
 use crate::schema::{battle, character, player, Battle, Character};
 use crate::{MAX_NAME_LEN, MAX_PARTY_SIZE, PARTY_SLOT_NONE};
 use game_core::SideId;
 use spacetimedb::{Identity, ReducerContext};
 
-/// Escape a string for interpolation into a hand-built JSON log line
-/// (ADR-0170 D5). Backslash and double quote are escaped; 0x0A / 0x0D / 0x09
+/// Escape a string for interpolation into a hand-built JSON log line.
+/// Backslash and double quote are escaped; 0x0A / 0x0D / 0x09
 /// take their short forms; every other character below 0x20 becomes a
 /// four-digit lowercase backslash-u escape; everything else (0x20, 0x7F DEL,
 /// non-ASCII) passes through unchanged — Rust `char` iteration cannot produce
@@ -27,7 +23,7 @@ use spacetimedb::{Identity, ReducerContext};
 /// The two structural characters are spelled as Unicode escapes in the match
 /// arms, never as raw char literals: the repo's text-level source scanners
 /// have no char-literal lexer, and a bare quote between apostrophes inverts
-/// string/code polarity for the rest of the file (guards_tests G-5a).
+/// string/code polarity for the rest of the file.
 pub(crate) fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -45,7 +41,7 @@ pub(crate) fn json_escape(s: &str) -> String {
 }
 
 pub(crate) fn log_reject(reducer: &str, sender: Identity, reason: &str) {
-    // BOTH parameters go through json_escape (ADR-0170 D5): `reason` carries
+    // BOTH parameters go through json_escape: `reason` carries
     // parser/validator text across the trust boundary, and several helpers
     // forward `reducer` as a `&str` parameter, so a name literal is an
     // unenforced convention. This is the reject path, never a hot path.
@@ -58,7 +54,7 @@ pub(crate) fn log_reject(reducer: &str, sender: Identity, reason: &str) {
 /// Shared resource-ownership guard: reject when the caller (`ctx.sender()`) does not
 /// own `owner`. Generalizes the repeated `owner != ctx.sender() -> log_reject ->
 /// Err("not owner")` preamble that recurs across the ownership-checked reducers
-/// (M8.9b de-dup, ADR-0056). Behavior is identical to the inlined form: same
+/// (M8.9b de-dup). Behavior is identical to the inlined form: same
 /// `"not owner"` `Err` + same `log_reject(reducer, ctx.sender(), "not owner")`.
 pub(crate) fn require_owner(
     ctx: &ReducerContext,
@@ -73,15 +69,13 @@ pub(crate) fn require_owner(
     Ok(())
 }
 
-/// Single static reject reason for the para-4.7 deletion gate (ADR-0225 §2,
-/// ADR-0227, PRV1-9). ONE message for every gated shape on purpose: a
+/// ONE message for every gated shape on purpose: a
 /// per-state message (mid-grace vs terminal) would require this module to
-/// re-derive the state split that `accounts` owns, and PRV1-10 bans that
-/// vocabulary here.
+/// re-derive the state split that `accounts` owns.
 pub(crate) const REJECT_DELETION_GATED: &str =
     "account deletion requested; new trades, battles and challenges are unavailable";
 
-/// Pure decision seam of the para-4.7 deletion gate (ADR-0225 §2, PRV1-9):
+/// Pure decision seam:
 /// maps an already-derived verdict to `Err(REJECT_DELETION_GATED)` or `Ok`.
 /// Takes a `bool`, never a context — the account-state derivation stays with
 /// its SSOT in `accounts`, and this half stays unit-testable without a
@@ -93,29 +87,20 @@ pub(crate) fn deletion_gate(rejected: bool) -> Result<(), &'static str> {
     Ok(())
 }
 
-// rb-78 (ADR-0248): REVIEW STOP for the three deletion-gate wrappers below. A macro
-// invoked above one of their call sites can expand to a conditional early return that
-// carries no textual return keyword at the call site, so the rb-46 early-exit census
-// cannot see it. The rb78 grammar in guards_tests.rs refuses every bang-macro invocation
-// between the enclosing item boundary and a deletion-gate call, admitting only the bare
-// standard string-builder spelling — re-derive that allow-list deliberately before adding
-// a second. A proc-macro attribute is outside it: residual R-rb-78-PROCMACRO (ADR-0248).
-
-/// Reducer preamble for the para-4.7 deletion gate (ADR-0225 §2, ADR-0227,
-/// PRV1-9): reject the CALLER when their account is mid-grace or carries the
+/// Reducer preamble:
+/// reject the CALLER when their account is mid-grace or carries the
 /// terminal marker — such an account may not open a commitment or create,
-/// mutate or discard its own state (ADR-0273); open commitments stay completable.
+/// mutate or discard its own state; open commitments stay completable.
 ///
 /// Caller-only BY SIGNATURE: there is deliberately no identity parameter, so
 /// no call site can ever point this gate at a third party (a counterparty or
 /// challenge target). Delegates TRANSITIVELY — through the ctx-bound accounts
 /// predicate into the pure SSOT decision — and never re-derives the
-/// status-or-marker disjunction here (PRV1-10): the fail-closed arm for the
+/// status-or-marker disjunction here: the fail-closed arm for the
 /// illegal active-plus-marker shape lives in `accounts` alone, and a second
 /// spelling would silently diverge from it. The reason is ONE static string
 /// because a per-state message would require re-deriving exactly that state
-/// split. The fused single-expression body is pinned byte-for-byte by the
-/// m22-s5 gating tests; change it only together with them and the spec.
+/// split.
 pub(crate) fn require_not_deleting(ctx: &ReducerContext, reducer: &str) -> Result<(), String> {
     deletion_gate(crate::accounts::is_pending_deletion(ctx, ctx.sender())).map_err(|e| {
         log_reject(reducer, ctx.sender(), e);
@@ -123,23 +108,18 @@ pub(crate) fn require_not_deleting(ctx: &ReducerContext, reducer: &str) -> Resul
     })
 }
 
-/// The rb-47 stamp-aware sibling of `require_not_deleting` (ADR-0237 D3), for a
+/// The stamp-aware sibling of `require_not_deleting`, for a
 /// reducer that ACCEPTS a commitment somebody else opened — `respond_trade` on
 /// the counterparty side: refuse the CALLER only while their account is
 /// deletion-gated AND the commitment was opened at or after their own deletion
 /// request (`opened_at_ms` is the offer's creation stamp). Commitments that
-/// predate the request stay completable (PRV1-10), which is why this is not,
+/// predate the request stay completable, which is why this is not,
 /// and must never become, a blanket gate on an already-open interaction. Same
 /// shape as its sibling on purpose: caller-only by signature (no identity
 /// parameter), one fused expression delegating transitively through the
 /// accounts predicate into the pure SSOT decision, no account state re-derived
 /// here, the same single static reason (an accepting response consummates a
-/// NEW trade, so the text is true; ADR-0227 D2 fixes ONE reason per gated
-/// shape so this module never learns the state split, and the existing
-/// polarity, PII and distinctness pins cover the constant — the client maps no
-/// server reject string today, and the client tree is outside rb-47), and
-/// `log_reject` on the refuse path. Pinned by the rb-47 tests in
-/// `trading_tests.rs`; change it only together with them and ADR-0237.
+/// NEW trade, so the text is true), and `log_reject` on the refuse path.
 pub(crate) fn require_commitment_predates_deletion(
     ctx: &ReducerContext,
     reducer: &str,
@@ -156,17 +136,17 @@ pub(crate) fn require_commitment_predates_deletion(
     })
 }
 
-/// The rb-76 subject-keyed member of the para-4.7 deletion family (ADR-0246 D2):
+/// The subject-keyed member of the deletion family:
 /// refuse a NAMED subject whose account is mid-grace or terminal, for an opener
 /// the subject did not call — today the scheduler-opened wild encounter, where
 /// the caller is the module itself and the walker is derived server-side from
 /// the character's own row.
 ///
-/// The FIRST identity-PARAMETERISED wrapper in this family. ADR-0227 D2's
-/// structural caller-only guarantee (no identity parameter, so no call site can
-/// ever point the gate at a third party) still holds for the blanket wrapper and
-/// is deliberately NOT claimed for this one. Containment here is MECHANICAL
-/// instead: a crate-wide BARE-name census in `guards_tests.rs`
+/// The FIRST identity-PARAMETERISED wrapper in this family.
+/// (no identity parameter, so no call site can ever point the gate at a third
+/// party) still holds for the blanket wrapper and is deliberately NOT claimed for
+/// this one. Containment here is MECHANICAL instead: a crate-wide BARE-name
+/// census in `guards_tests.rs`
 /// (`rb76_subject_gate_and_begin_encounter_are_contained_crate_wide`) admits
 /// exactly ONE consumer, `battle::begin_encounter`, and zero mentions in every
 /// other module, so a counterparty-keyed second caller is a CI red rather than a
@@ -175,10 +155,9 @@ pub(crate) fn require_commitment_predates_deletion(
 ///
 /// Delegates TRANSITIVELY like both siblings — `deletion_gate` over the ctx-bound
 /// accounts predicate `accounts::is_pending_deletion` — and never re-derives the
-/// account-state disjunction here (ADR-0225, ADR-0227 D1, PRV1-10): the
-/// fail-closed arm for the illegal shape lives in `accounts` alone, and a second
-/// spelling would silently diverge from it. One static reason, as for every
-/// gated shape.
+/// account-state disjunction here: the fail-closed arm for the illegal shape
+/// lives in `accounts` alone, and a second spelling would silently diverge from
+/// it. One static reason, as for every gated shape.
 ///
 /// It deliberately does NOT log, and therefore takes no `reducer` tag: on this
 /// path the CALLER owns observability — `battle::begin_encounter` logs none of
@@ -187,9 +166,6 @@ pub(crate) fn require_commitment_predates_deletion(
 /// on grass for the whole grace window, on a refusal the scheduler treats as a
 /// routine non-event. The client-facing path is unaffected: `start_wild_battle`'s
 /// own caller-only gate fires, and logs, first.
-///
-/// The fused single-expression body is pinned byte-for-byte by the rb-76 gating
-/// tests; change it only together with them and ADR-0246.
 pub(crate) fn require_subject_not_deleting(
     ctx: &ReducerContext,
     subject: Identity,
@@ -247,7 +223,7 @@ pub(crate) fn authorize_move(
         return Err(e);
     };
     // Accept-time ack: record receipt the moment intent is accepted (not applied).
-    // ADR-0052: this ack is safe to write here even though `enqueue_move` may still
+    // this ack is safe to write here even though `enqueue_move` may still
     // reject an over-cap queue with `Err("queue full")` AFTER this returns Ok — that
     // Err rolls the WHOLE SpacetimeDB transaction back (including this update), so
     // "ack only on a successful enqueue" holds by transaction semantics. Do not split
@@ -257,7 +233,7 @@ pub(crate) fn authorize_move(
     Ok(ch)
 }
 
-// --- Battle-input validators (M8.5a, ADR-0048) -------------------------------
+// --- Battle-input validators -------------------------------
 // Pure, total predicates over the trust boundary. Extracted so the rejection
 // rules are unit-testable without a ReducerContext and reused by `start_battle`
 // and the write-back path. Every illegal input is an `Err` — reject-not-clamp.
@@ -297,7 +273,7 @@ pub(crate) fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(),
     Ok(())
 }
 
-// --- Trade escrow guards (M15a, ADR-0106) ------------------------------------
+// --- Trade escrow guards ------------------------------------
 //
 // Three focused helpers that mirror `reject_if_in_battle`: pure predicates over
 // iterators of `TradeOffer` rows. Call sites chain initiator-filtered and
@@ -305,14 +281,10 @@ pub(crate) fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(),
 // regardless of role. "Active" = Pending OR ConfirmedByCounterparty.
 //
 // SpacetimeDB reducers are single-threaded WASM: read-check-write within one
-// reducer is atomic w.r.t. all other reducers — no TOCTOU possible (ADR-0106 D8).
+// reducer is atomic w.r.t. all other reducers — no TOCTOU possible.
 
-/// Reject if the monster is in any active trade offer (TR-2..TR-7, TR-11).
-/// Pure predicate; mirrors `reject_if_in_battle` (ADR-0106 D1).
-///
-/// PROOF-OF-TEETH: removing this call from any reducer's escrow check causes the
-/// corresponding `TEETH(reject_if_monster_in_trade)` test to fail (returns Ok
-/// when the guard is absent).
+/// Reject if the monster is in any active trade offer.
+/// Pure predicate; mirrors `reject_if_in_battle`.
 pub(crate) fn reject_if_monster_in_trade(
     mut trades: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::TradeOffer>>,
     monster_id: u64,
@@ -332,7 +304,7 @@ pub(crate) fn reject_if_monster_in_trade(
 /// Returns the total quantity of `item_id` escrowed in active trade offers for this
 /// player (either as initiator or counterparty — the caller passes an already-filtered
 /// iterator covering both roles). Saturating add prevents overflow on pathological inputs
-/// (MI-2, ADR-0106 D9).
+/// (MI-2).
 ///
 /// Usage at call site: `available = inventory_count - escrowed_item_qty(iter, item_id)`.
 /// Reject if `requested_qty > available`.
@@ -380,7 +352,7 @@ pub(crate) fn escrowed_currency_amount(
         .fold(0u64, |acc, c| acc.saturating_add(c))
 }
 
-/// Reject if the monster is in an ongoing battle (escrowed, ADR-0061).
+/// Reject if the monster is in an ongoing battle (escrowed).
 /// Pure predicate: checks if any battle row has the monster_id in either party
 /// AND has outcome == Ongoing. Used by evolve/fuse reducers (M10b).
 pub(crate) fn reject_if_in_battle(
@@ -402,7 +374,7 @@ pub(crate) fn reject_if_in_battle(
     Ok(())
 }
 
-/// Pure core (ADR-0122 D1): is `identity` in an `Ongoing` battle in EITHER role?
+/// Pure core: is `identity` in an `Ongoing` battle in EITHER role?
 /// The opponent arm counts a row only when `opponent_identity != WILD_IDENTITY`
 /// (hoisted verbatim from the former pvp.rs copy): a wild battle's sentinel
 /// opponent must never match, while that battle's real side-A owner is still
@@ -420,7 +392,7 @@ pub(crate) fn is_in_ongoing_battle_either_role(
         })
 }
 
-/// Thin context wrapper (ADR-0122 D1): the single SSOT ongoing-battle predicate
+/// Thin context wrapper: the single SSOT ongoing-battle predicate
 /// for every reducer, PvE and PvP alike (replaces the former pvp.rs private
 /// copy). Arg order is semantically significant: as_player, then as_opponent.
 pub(crate) fn is_in_ongoing_battle(ctx: &ReducerContext, identity: Identity) -> bool {
@@ -430,8 +402,7 @@ pub(crate) fn is_in_ongoing_battle(ctx: &ReducerContext, identity: Identity) -> 
     )
 }
 
-/// Saturating subtraction helpers — used by economy.rs to stay ADR-0081-C2-compliant
-/// (economy.rs must not call saturating_sub directly; currency-integrity eval enforces this).
+/// Saturating subtraction helpers — used by economy.rs.
 pub(crate) fn saturating_sub_u64(a: u64, b: u64) -> u64 {
     a.saturating_sub(b)
 }
@@ -464,10 +435,10 @@ pub(crate) fn require_pvp_participant(
     }
 }
 
-/// Battle-kind classifier (M17, ADR-0119 D4): a battle is RANKED PvP iff its
+/// Battle-kind classifier: a battle is RANKED PvP iff its
 /// two sides are distinct real players. `player_identity != opponent_identity`
 /// rules out practice self-battles (M12.5e2) and `opponent_identity !=
-/// WILD_IDENTITY` rules out wild encounters (ADR-0045). Wild and practice
+/// WILD_IDENTITY` rules out wild encounters. Wild and practice
 /// self-battles are the "friendly" class: they never touch `profile`, even
 /// when routed through the forfeit paths (RL-6). The single classifying
 /// predicate — rating is gated by battle classification, never by call path.
@@ -476,11 +447,6 @@ pub(crate) fn is_ranked_pvp(battle: &Battle) -> bool {
         && battle.opponent_identity != crate::WILD_IDENTITY
 }
 
-// rb-77 (ADR-0247): the attribute below is the only conditional-compilation
-// attribute this file carries, and cfg(test) is the only spelling the rb77
-// tests admit. A twin of a wrapper selected by target architecture, or a
-// textual source inclusion, would swap what the wasm build compiles while
-// every pin in guards_tests stays green — a review stop.
 #[cfg(test)]
 #[path = "guards_tests.rs"]
 mod guards_tests;

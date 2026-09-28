@@ -11,14 +11,6 @@
 //      the canonical gate order, the ASCENDING TrustTier order) and the
 //      `unmet_requirement` message formats are pinned against it VERBATIM.
 //
-// These tests are INTENTIONALLY RED until evolutionModel.ts is rewritten. Do NOT edit
-// them to match a buggy implementation — correct them FROM THE CONTRACT only, and log a
-// rationale when doing so.
-//
-// The previous fusion/bond/evolvesTo suite is deleted outright, not migrated: `bond`,
-// `evolvesTo`, `canEvolve`, `evolvesToSpeciesName` and `fusionRecipes` are all retired
-// by EG4-5 / contract §C ("Never reintroduced").
-//
 // Pure functions, no DOM, no SDK, no wall clock. All inputs are plain literals;
 // deterministic; node-only. The ONE filesystem read (A8's binding-order parse) uses
 // String.indexOf/slice plus a LITERAL regex — `new RegExp(...)` is banned in this repo
@@ -140,7 +132,7 @@ const SPECIES_MAP: ReadonlyMap<number, StoreSpeciesRow> = new Map([
 /**
  * An SDK enum tag that is NOT in TRUST_TIER_ORDER — i.e. a future server-side
  * variant. This value genuinely reaches the store field at runtime despite the
- * static union: `narrowTag` (rowConvert, ADR-0127) logs an unknown tag and passes
+ * static union: `narrowTag` (rowConvert) logs an unknown tag and passes
  * it through RAW rather than throwing. The single documented cast below is what
  * lets a test express that runtime reality; it is not an `as any` escape hatch.
  */
@@ -207,7 +199,7 @@ describe('EG4-1 pathSatisfied: every gate threshold is INCLUSIVE (>=)', () => {
   });
 
   it('BITES: qualityTimeTier === minQualityTimeTier satisfies; one below does not', () => {
-    // Kills: `>` on the quality-time gate (eligibility.rs:74).
+    // Kills: `>` on the quality-time gate.
     const p = evoPath({ minQualityTimeTier: 3 });
     expect(pathSatisfied(monster({ qualityTimeTier: 3 }), p)).toBe(true);
     expect(pathSatisfied(monster({ qualityTimeTier: 2 }), p)).toBe(false);
@@ -215,7 +207,7 @@ describe('EG4-1 pathSatisfied: every gate threshold is INCLUSIVE (>=)', () => {
   });
 
   it('BITES: nutritionPct === minNutritionPct satisfies; one below does not', () => {
-    // Kills: `>` on the nutrition gate (eligibility.rs:80).
+    // Kills: `>` on the nutrition gate.
     const p = evoPath({ minNutritionPct: 60 });
     expect(pathSatisfied(monster({ nutritionPct: 60 }), p)).toBe(true);
     expect(pathSatisfied(monster({ nutritionPct: 59 }), p)).toBe(false);
@@ -311,7 +303,7 @@ describe('EG4-1 essence gate: every AffinityName reads its OWN column', () => {
 
   it('BITES (A10): duplicate-affinity requirements are ALL checked — no record collapse', () => {
     // Kills: porting the ORDERED requirement list into a Record keyed by affinity
-    // (last-wins). Rust iterates the LIST with `.all()` (eligibility.rs:56-58), so
+    // (last-wins). Rust iterates the LIST with `.all()`, so
     // [(Fire,900),(Fire,150)] needs 900. A collapsed Record keeps only (Fire,150) and
     // would call a Fire=200 monster ELIGIBLE — an over-count that silently evolves a
     // monster 750 essence early.
@@ -362,7 +354,7 @@ describe('EG4-1 pathSatisfied: the five gates are AND-combined', () => {
 
   for (const [gate, breaker] of BREAKERS) {
     it(`BITES: ${gate} unmet with the other four met → NOT satisfied`, () => {
-      // Kills: `&&` -> `||` in path_satisfied's conjunction (eligibility.rs:94-98).
+      // Kills: `&&` -> `||` in path_satisfied's conjunction.
       // Under `||`, four met gates carry the fifth and the monster evolves without
       // ever clearing it. Each of the five must independently veto.
       const m: StoreMonsterPub = { ...FULL_MONSTER, ...breaker };
@@ -500,7 +492,7 @@ describe('EG4-1 (A2) trust gate: unknown tags fail CLOSED, on either side', () =
     expect(pathSatisfied(devoted, p)).toBe(false);
     expect(pathSatisfied(monster({ trustTier: 'Hostile' }), p)).toBe(false);
     expect(eligibleEvolutionPaths(devoted, [p])).toEqual([]);
-    // RED-TEAM ADDITION: pin the SAME verdict on the gate ROW. A5 says pathRequirements
+    // pin the SAME verdict on the gate ROW. A5 says pathRequirements
     // is THE single walk and pathSatisfied derives from it — but nothing here forced the
     // ROW to fail closed. An impl that special-cases the unknown threshold in
     // pathSatisfied while pathRequirements keeps the `-1` sentinel renders an all-green
@@ -522,7 +514,7 @@ describe('EG4-1 (A2) trust gate: unknown tags fail CLOSED, on either side', () =
     expect(pathSatisfied(unknown, p)).toBe(false);
     // Control: a KNOWN lowest tag does clear it, so the assertion above is not vacuous.
     expect(pathSatisfied(monster({ trustTier: 'Hostile' }), p)).toBe(true);
-    // RED-TEAM ADDITION: same row-level pin on the monster side, and the CONTROL row must
+    // same row-level pin on the monster side, and the CONTROL row must
     // read met=true — so "the row is always false" cannot satisfy this pair either.
     const unknownRow = pathRequirements(unknown, p).find((g) => g.kind === 'trust');
     const knownRow = pathRequirements(monster({ trustTier: 'Hostile' }), p).find(
@@ -553,7 +545,7 @@ describe('EG4-1 (A2) trust gate: unknown tags fail CLOSED, on either side', () =
   it('BITES: an unknown monster tag against an ABSENT threshold is still satisfied (permissive wins)', () => {
     // Contract §C: a null threshold emits NO row, so there is no comparison to fail.
     // Kills: a blanket "unknown tag => path unsatisfiable" that would black-hole every
-    // essence-only edge (EG3-7/EG3-8) the moment the server adds a TrustTier variant.
+    // essence-only edge the moment the server adds a TrustTier variant.
     const p = evoPath({ minTrustTier: null });
     expect(pathSatisfied(monster({ trustTier: UNKNOWN_TRUST_TAG }), p)).toBe(true);
   });
@@ -593,13 +585,13 @@ describe('EG4-1 (A11) level gate: minLevel outside 1..=100 is never satisfied', 
   });
 
   it('BITES (A11 row semantics): an out-of-range minLevel emits a level gate row with met === FALSE', () => {
-    // CONTRACT FREEZE (adjudicated: D2 ACCEPTED). §C spells pathSatisfied as "every row
-    // met (AND the A11 level-range check)" — the range check reads as a SEPARATE conjunct,
-    // which left the level ROW free to report met: true for a minLevel the server SKIPS
-    // (marshal.rs:354-362 Level::new rejects 0 and > 100). The panel would then render an
-    // all-green level row on a permanently-blocked path: the requirements half says the
-    // requirement is satisfied while the path stays blocked forever, with the reason
-    // pointing at a gate the player has already cleared. Frozen: met === false.
+    // §C spells pathSatisfied as "every row met (AND the A11 level-range check)" — the
+    // range check reads as a SEPARATE conjunct, which left the level ROW free to report
+    // met: true for a minLevel the server SKIPS (marshal.rs:354-362 Level::new rejects 0
+    // and > 100). The panel would then render an all-green level row on a
+    // permanently-blocked path: the requirements half says the requirement is satisfied
+    // while the path stays blocked forever, with the reason pointing at a gate the player
+    // has already cleared. Frozen: met === false.
     //
     // Kills: an A11 clamp bolted onto pathSatisfied/eligibleEvolutionPaths only, leaving
     // pathRequirements' level row on the naive `level >= minLevel` compare.
@@ -678,7 +670,7 @@ describe('EG4-1 pathRequirements: canonical gate order, labels, and current-vs-r
     // Kills: reordered gate reporting. The order is load-bearing twice over: it is the
     // order the panel reads top-to-bottom, AND it is the order unmetRequirement scans,
     // so a reorder silently changes which reason the server's reject string is compared
-    // against (eligibility.rs:117-149).
+    // against.
     expect(pathRequirements(FULL_MONSTER, FULL_PATH).map((g) => g.kind)).toEqual([
       'level',
       'essence',
@@ -778,7 +770,7 @@ describe('EG4-1 pathRequirements: canonical gate order, labels, and current-vs-r
 describe('EG4-1 unmetRequirement: first unmet gate in canonical order, Rust message formats', () => {
   it('BITES: all five unmet → reports LEVEL first', () => {
     // Kills: reordered reporting. The client message must name the SAME gate the server's
-    // reject string names (eligibility.rs:117-119), or the panel contradicts the reducer.
+    // reject string names, or the panel contradicts the reducer.
     const m = monster({
       level: 19,
       essence: essence({ Fire: 0 }),
@@ -791,7 +783,7 @@ describe('EG4-1 unmetRequirement: first unmet gate in canonical order, Rust mess
 
   it('BITES: level met, rest unmet → reports the ESSENCE entry, naming amount + affinity', () => {
     // Kills: message drift. Rust formats `requires {amount} {Affinity:?} essence`
-    // (eligibility.rs:127-130) — amount FIRST, then the Debug-printed variant name.
+    // — amount FIRST, then the Debug-printed variant name.
     const m = monster({
       level: 20,
       essence: essence({ Fire: 0 }),
@@ -804,7 +796,7 @@ describe('EG4-1 unmetRequirement: first unmet gate in canonical order, Rust mess
 
   it('BITES: the FIRST unmet essence entry is named, in list order', () => {
     // Kills: reporting the last unmet entry (or a Record-collapsed one) — Rust uses
-    // `.find()` over the list (eligibility.rs:122-126).
+    // `.find()` over the list.
     const p = evoPath({
       essence: [
         { affinity: 'Water', amount: 10 },
@@ -816,7 +808,7 @@ describe('EG4-1 unmetRequirement: first unmet gate in canonical order, Rust mess
   });
 
   it('BITES: level+essence met → reports TRUST as "requires trust tier {Tier}"', () => {
-    // Kills: message drift (eligibility.rs:132-137). Note the threshold tier is named,
+    // Kills: message drift. Note the threshold tier is named,
     // never the monster's own tier.
     const m = monster({
       level: 20,
@@ -829,7 +821,7 @@ describe('EG4-1 unmetRequirement: first unmet gate in canonical order, Rust mess
   });
 
   it('BITES: level+essence+trust met → reports "requires quality time tier {n}"', () => {
-    // Kills: message drift (eligibility.rs:138-143) — three words, lowercase, no hyphen.
+    // Kills: message drift — three words, lowercase, no hyphen.
     const m = monster({
       level: 20,
       essence: essence({ Fire: 120 }),
@@ -841,7 +833,7 @@ describe('EG4-1 unmetRequirement: first unmet gate in canonical order, Rust mess
   });
 
   it('BITES: only nutrition unmet → reports "requires nutrition {n}%" with the percent sign', () => {
-    // Kills: message drift (eligibility.rs:144-149) — the trailing `%` is part of the
+    // Kills: message drift — the trailing `%` is part of the
     // server's reject string.
     const m = monster({
       level: 20,
@@ -874,10 +866,10 @@ describe('EG4-1 (A9) eligibleEvolutionPaths: filtered, complete, and sorted by e
     // choice list would silently reorder between sessions, so a muscle-memory click
     // picks a different evolution.
     //
-    // RED-TEAM CORRECTION (fixture, not assertion): pathId is now ANTI-correlated with
-    // edgeId. The authored fixture used pathId = edgeId * 10, so "sort by pathId" — the
-    // single most likely wrong key, since pathId is the store's Map key and the field an
-    // implementer has closest to hand — produced the IDENTICAL order and sailed through.
+    // pathId is now ANTI-correlated with edgeId. The authored fixture used pathId =
+    // edgeId * 10, so "sort by pathId" — the single most likely wrong key, since pathId
+    // is the store's Map key and the field an implementer has closest to hand — produced
+    // the IDENTICAL order and sailed through.
     // toSpecies is anti-correlated for the same reason. Against this fixture, only an
     // edgeId-ascending sort yields [2,4,7,9]; the three anti-key assertions below prove
     // that, so the equality is a genuine discrimination rather than a coincidence.
@@ -923,7 +915,7 @@ describe('EG4-1 (A9) eligibleEvolutionPaths: filtered, complete, and sorted by e
   });
 
   it('BITES: paths whose fromSpecies is not the monster species are excluded, however satisfied', () => {
-    // Kills: a missing fromSpecies filter (eligibility.rs:165). A fully-permissive edge
+    // Kills: a missing fromSpecies filter. A fully-permissive edge
     // out of some OTHER species would otherwise show up as this monster's evolution.
     const m = monster({ speciesId: 1 });
     const paths: readonly StoreEvolutionPath[] = [
@@ -1011,11 +1003,8 @@ function parseTrustTierBindingOrder(): readonly string[] {
 
 describe('EG4-1 (A8) TRUST_TIER_ORDER: mechanically pinned to the generated bindings', () => {
   it('BITES: TRUST_TIER_ORDER equals the __t.enum("TrustTier") key order, element for element', () => {
-    // Kills: a Rust `enum TrustTier` REORDER. `sdk-enum-exhaustiveness.eval.mjs` checks
-    // MEMBERSHIP only, so swapping two variants in game-core is invisible to it — yet it
-    // silently inverts every `Ord >=` trust gate on the server while the client keeps the
-    // old ranks. This is the one in-scope gate on Rust<->TS ordering drift (A14 deferred
-    // the full parity-fixture matrix).
+    // Kills: a Rust `enum TrustTier` REORDER. This is the one in-scope gate on Rust<->TS
+    // ordering drift (A14 deferred the full parity-fixture matrix).
     expect(parseTrustTierBindingOrder()).toEqual([...TRUST_TIER_ORDER]);
   });
 
@@ -1067,12 +1056,12 @@ describe('EG4-2 buildEvolutionViewModel: choices appear ONLY at 2+ eligible', ()
   it('BITES (A9): choices are ascending by edgeId, not by arrival order', () => {
     // Kills: Map-iteration-order dependence leaking into the player-facing choice list.
     //
-    // RED-TEAM CORRECTION (fixture, not assertion): pathId and toSpecies are now both
-    // ANTI-correlated with edgeId. The authored fixture had edge9→to4, edge3→to2,
-    // edge6→to3 — i.e. toSpecies ascending produced the SAME [3,6,9], so an impl that
-    // sorted the choice list by target species (a plausible "alphabetical-ish" choice for
-    // a player-facing picker) passed for free. pathId defaulted to 1n on all three, so a
-    // pathId sort was merely stable and was caught only by luck of arrival order.
+    // pathId and toSpecies are now both ANTI-correlated with edgeId. The authored fixture
+    // had edge9→to4, edge3→to2, edge6→to3 — i.e. toSpecies ascending produced the SAME
+    // [3,6,9], so an impl that sorted the choice list by target species (a plausible
+    // "alphabetical-ish" choice for a player-facing picker) passed for free. pathId
+    // defaulted to 1n on all three, so a pathId sort was merely stable and was caught
+    // only by luck of arrival order.
     const mon = vmFor(monster({ speciesId: 1 }), [
       evoPath({ pathId: 30n, edgeId: 9, toSpecies: 2 }),
       evoPath({ pathId: 90n, edgeId: 3, toSpecies: 4 }),
@@ -1091,8 +1080,8 @@ describe('EG4-2 buildEvolutionViewModel: choices appear ONLY at 2+ eligible', ()
 
   it('BITES: exactly 1 eligible → choices is EMPTY', () => {
     // Kills: `>= 1` on the choice threshold. EG4-2 is explicit: the client SHALL NOT
-    // present an Evolve action for the single-eligible case — the server auto-applies it
-    // (EG2-11), so a choice UI there is an action the player must never be offered.
+    // present an Evolve action for the single-eligible case — the server auto-applies it,
+    // so a choice UI there is an action the player must never be offered.
     const mon = vmFor(monster({ speciesId: 1, level: 30 }), [
       evoPath({ edgeId: 1, toSpecies: 2, minLevel: 20 }),
       evoPath({ edgeId: 2, toSpecies: 3, minLevel: 99 }),
@@ -1133,7 +1122,7 @@ describe('EG4-2 buildEvolutionViewModel: choices appear ONLY at 2+ eligible', ()
 
   it('BITES: paths lists ALL outgoing edges (the progress panel), not just the eligible ones', () => {
     // Kills: `paths = eligible` — the panel would then show nothing at all for the
-    // 0-eligible monster, which is the state a player most needs to read (EG4-1).
+    // 0-eligible monster, which is the state a player most needs to read.
     const mon = vmFor(monster({ speciesId: 1, level: 30 }), [
       evoPath({ edgeId: 1, toSpecies: 2, minLevel: 20 }),
       evoPath({ edgeId: 2, toSpecies: 3, minLevel: 99 }),
@@ -1145,15 +1134,14 @@ describe('EG4-2 buildEvolutionViewModel: choices appear ONLY at 2+ eligible', ()
   });
 
   it('BITES (A9, extended to `paths`): shuffled insertion order → the PROGRESS PANEL is ascending by edgeId', () => {
-    // CONTRACT EXTENSION (adjudicated: D1 ACCEPTED). A9 originally froze only the ELIGIBLE
-    // set's order; `EvolutionMonsterViewModel.paths` — the full outgoing set the EG4-1
-    // progress panel actually renders — was left free, and the two tests above happen to
-    // feed already-sorted input, so "input order" and "edgeId-ascending" were
-    // indistinguishable. `paths` is now frozen ascending by edgeId, on A9's verbatim
-    // rationale: subscription-arrival order is nondeterministic and is RE-SHUFFLED on
-    // every content republish (A1 re-mints path_ids), so a muscle-memory click must not
-    // land on a different evolution between sessions — which applies at least as strongly
-    // to the panel as to the picker.
+    // A9 originally froze only the ELIGIBLE set's order; `EvolutionMonsterViewModel.paths`
+    // — the full outgoing set the EG4-1 progress panel actually renders — was left free,
+    // and the two tests above happen to feed already-sorted input, so "input order" and
+    // "edgeId-ascending" were indistinguishable. `paths` is now frozen ascending by
+    // edgeId, on A9's verbatim rationale: subscription-arrival order is nondeterministic
+    // and is RE-SHUFFLED on every content republish (A1 re-mints path_ids), so a
+    // muscle-memory click must not land on a different evolution between sessions — which
+    // applies at least as strongly to the panel as to the picker.
     //
     // Kills: `paths` built by iterating the store Map / the incoming array unsorted, while
     // only `choices` gets the sort. Same anti-correlation discipline as the eligible-set
@@ -1198,8 +1186,8 @@ describe('EG4-2 buildEvolutionViewModel: choices appear ONLY at 2+ eligible', ()
   });
 
   it('BITES (A1/EG1-12): no path view-model leaks pathId — it is a DB-internal store key', () => {
-    // RED-TEAM ADDITION (contract §B: "DB-internal key ONLY — the store map key (A1).
-    // NEVER read by a model or a view-model (EG1-12)"; §C freezes EvolutionPathViewModel
+    // (contract §B: "DB-internal key ONLY — the store map key (A1).
+    // NEVER read by a model or a view-model "; §C freezes EvolutionPathViewModel
     // to exactly {edgeId, toSpecies, toSpeciesName, met, unmetReason, gates}).
     //
     // Kills: `{ ...path, toSpeciesName, met, ... }` — a spread-the-store-row view-model.
@@ -1276,7 +1264,7 @@ describe('EG4-2 (A3) readyPathName: non-null IFF exactly one path is eligible', 
 
   it('BITES: 2 eligible → readyPathName is null (the choice list is the surface, not this)', () => {
     // Kills: `eligibleCount >= 1` on readyPathName, which would render "Ready — evolves on
-    // your next action" for the ambiguous case that will NEVER auto-resolve (EG2-11).
+    // your next action" for the ambiguous case that will NEVER auto-resolve.
     const mon = vmFor(monster({ speciesId: 1, level: 30 }), [
       evoPath({ edgeId: 1, toSpecies: 2, minLevel: 20 }),
       evoPath({ edgeId: 2, toSpecies: 3, minLevel: 20 }),

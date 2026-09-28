@@ -1,4 +1,4 @@
-// ui/claimModel.ts — the PURE guest-claim decision core (ADR-0182 D16, M21b-2).
+// ui/claimModel.ts — the PURE guest-claim decision core.
 //
 // AUTH-48/52/54/55/56/59. No DOM, no SDK, no storage, and NO CLOCK (AUTH-55 — enforced on the
 // event alphabet AND by a source scan of this file). The storage half lives in net/claimCode.ts;
@@ -45,15 +45,9 @@ export function claimRejectDeletesCode(outcome: ClaimRejectOutcome): boolean {
   return outcome === 'delete-code-and-permit-join';
 }
 
-/** True iff this outcome lifts the join veto. Moves in LOCKSTEP with deletesCode: deleting without
- *  permitting leaves the tab vetoed with no code; permitting while retaining re-opens F2. */
-export function claimRejectPermitsJoin(outcome: ClaimRejectOutcome): boolean {
-  return outcome === 'delete-code-and-permit-join';
-}
-
 export type InvalidCodeSense = 'claim-already-succeeded' | 'code-unusable';
 
-/** The ONE client-side disambiguation of ERR_INVALID_CODE (ADR-0182 D16): if OUR OWN account row
+/** The ONE client-side disambiguation of ERR_INVALID_CODE: if OUR OWN account row
  *  now carries `claimed_from`, the code was consumed BY US and the claim SUCCEEDED. Takes exactly
  *  ONE input — no elapsed time, no attempt count (AUTH-55). */
 export function senseInvalidCode(claimedFrom: string | undefined): InvalidCodeSense {
@@ -278,6 +272,15 @@ export function claimStep(state: ClaimModelState, event: ClaimEvent): ClaimStep 
   }
 }
 
+/** Which of the overlay's five action buttons the player can operate right now. */
+export interface ClaimActions {
+  readonly signIn: boolean;
+  readonly join: boolean;
+  readonly decline: boolean;
+  readonly declineConfirm: boolean;
+  readonly declineCancel: boolean;
+}
+
 export interface ClaimViewModel {
   readonly visible: boolean;
   readonly title: string;
@@ -285,6 +288,33 @@ export interface ClaimViewModel {
   readonly confirmPrompt: string | undefined;
   readonly nudge: string | undefined;
   readonly feedback: string | undefined;
+  readonly actions: ClaimActions;
+}
+
+/** The operable buttons. Sign in is offered from the prompt and after a failed sign-in; decline
+ *  whenever a claim can still be given up (the join veto is up); declining is two-step, so an
+ *  armed decline offers ONLY confirm / cancel; join exactly when the veto is lifted. */
+function claimActions(state: ClaimModelState): ClaimActions {
+  if (state.phase === 'hidden') {
+    return {
+      signIn: false,
+      join: false,
+      decline: false,
+      declineConfirm: false,
+      declineCancel: false,
+    };
+  }
+  const armed = state.confirmPending;
+  return {
+    signIn:
+      !armed &&
+      !state.joinPermitted &&
+      (state.phase === 'prompt' || state.phase === 'sign-in-failed'),
+    join: !armed && state.joinPermitted,
+    decline: !armed && !state.joinPermitted && state.phase !== 'claimed',
+    declineConfirm: armed,
+    declineCancel: armed,
+  };
 }
 
 const NUDGE_COPY = 'Guest progress transfers only from the device you claim it on.';
@@ -339,15 +369,6 @@ export function buildClaimViewModel(state: ClaimModelState): ClaimViewModel {
   let title = PENDING_TITLE;
   let body = PENDING_BODY;
   switch (state.phase) {
-    case 'prompt':
-      return {
-        visible: true,
-        title: PENDING_TITLE,
-        body: PENDING_BODY,
-        confirmPrompt: undefined,
-        nudge: state.showFirstRunNudge ? NUDGE_COPY : undefined,
-        feedback: state.feedback,
-      };
     case 'awaiting-account':
       title = AWAITING_TITLE;
       body = AWAITING_BODY;
@@ -376,5 +397,6 @@ export function buildClaimViewModel(state: ClaimModelState): ClaimViewModel {
     confirmPrompt: state.confirmPending ? CONFIRM_PROMPT : undefined,
     nudge: state.showFirstRunNudge ? NUDGE_COPY : undefined,
     feedback: state.feedback,
+    actions: claimActions(state),
   };
 }

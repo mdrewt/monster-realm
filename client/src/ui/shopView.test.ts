@@ -84,7 +84,7 @@ import { ShopView } from './shopView';
 // The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
 // implementation, so the VALUE oracle (real attribute writes, real focus moves) still works.
 vi.mock('./overlayA11y', { spy: true });
-// m24s4 (ADR-0260) MECHANISM oracle, same shape: records every t()/tf() call AND calls through to
+// m24s4 MECHANISM oracle, same shape: records every t()/tf() call AND calls through to
 // the real resolver, so SV-01's DOM byte-identity assertions still work.
 vi.mock('./i18n/resolver', { spy: true });
 
@@ -94,12 +94,10 @@ vi.mock('./i18n/resolver', { spy: true });
 // (index.html is outside this slice's touch-set, so a fixture that pre-seeds the
 // node would make the "constructor creates it" requirement vacuous).
 // ---------------------------------------------------------------------------
-// happy-dom shares ONE document across the whole file, and every test here is RED
-// by construction — a failed test would otherwise leave its overlay attached and the
+// happy-dom shares ONE document across the whole file
+// — a failed test would otherwise leave its overlay attached and the
 // NEXT constructor's getElementById('shop-overlay') would bind to that stale node,
 // producing cascading failures that hide the real reason. Wipe the body each time.
-// m23-s3: the ux2 body-wipe is preserved verbatim; the overlay-a11y sweep + `vi.clearAllMocks()`
-// are ADDED around it (rationale in the header). `afterEach` is new.
 beforeEach(async () => {
   for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
   await flushMacrotask();
@@ -113,7 +111,7 @@ afterEach(async () => {
   document.body.innerHTML = '';
 });
 
-/** m23-s3: one REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
+/** One REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
  *  and fake timers are banned for this defer (plan anti-pattern #10). */
 async function flushMacrotask(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -123,16 +121,16 @@ function mountShopOverlay(): HTMLElement {
   const overlay = document.createElement('div');
   overlay.id = 'shop-overlay';
   overlay.style.display = 'none';
-  // m23-s3 FIXTURE FIDELITY (index.html:29): the shell has shipped these two as STATIC LITERALS
+  // m23-s3 FIXTURE FIDELITY: the shell has shipped these two as STATIC LITERALS
   // since m23-s2. They are copied here NOT to be asserted on their own — that is vacuous, a view
   // calling nothing passes — but so that "all three attributes ABSENT after close" is a real
-  // tooth: only closeOverlayA11y can remove them (ui/overlayA11y.ts:142-144).
+  // tooth: only closeOverlayA11y can remove them.
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-modal', 'true');
 
   const title = document.createElement('div');
   title.id = 'shop-title';
-  // m23-s3 (index.html:30): the OVERLAY_A11Y initialFocusSelector anchor. Copied for fidelity
+  // m23-s3: the OVERLAY_A11Y initialFocusSelector anchor. Copied for fidelity
   // only — happy-dom focuses a bare <div> with no tabindex at all, so this buys ZERO test power
   // (plan A7) and a passing A11Y-14 here is NOT proof a real browser would honour the focus.
   title.setAttribute('tabindex', '-1');
@@ -249,7 +247,7 @@ describe('ShopView [ux2-V-a]: #shop-balance is created inside #shop-overlay and 
 
 // ---------------------------------------------------------------------------
 // [ux2-V-b] THE LOAD-BEARING ONE — the balance is written BEFORE the no-shop
-// early return (shopView.ts:73)
+// early return
 // ---------------------------------------------------------------------------
 
 describe('ShopView [ux2-V-b]: the no-shop path still updates #shop-balance (write is BEFORE the early return)', () => {
@@ -311,9 +309,9 @@ describe('ShopView [ux2-V-b]: the no-shop path still updates #shop-balance (writ
 
 describe('ShopView [ux2-V-c]: an unknown balance renders hidden with empty text', () => {
   it('[ux2-V-c] BITES: render with balance.kind "unknown" → hidden=true and textContent ""', () => {
-    // §"Accepted residual risk" (b): until ux2b wires main.ts the 5th argument is never
-    // passed, so `unknown` is the state this slice actually ships. It must render as
-    // NOTHING — hidden, empty — rather than a misleading permanent 'Gold: —' or 'Gold: 0'.
+    // `unknown` ships whenever `store.ownWallet` returns undefined (no wallet row yet). It must
+    // render as NOTHING — hidden, empty — rather than a misleading permanent 'Gold: —' or
+    // 'Gold: 0'.
     // Kills: a shell that renders a placeholder string for the unknown arm, and one that
     // only ever sets hidden=false.
     const overlay = mountShopOverlay();
@@ -353,7 +351,7 @@ describe('ShopView [ux2-V-c]: an unknown balance renders hidden with empty text'
 });
 
 // ---------------------------------------------------------------------------
-// m23-s3 — overlay a11y wiring on the show()/hide() edge (ADDITIVE; see the file header)
+// Overlay a11y wiring on the show()/hide() edge (ADDITIVE; see the file header)
 // ---------------------------------------------------------------------------
 
 const S3_ID: OverlayId = 'shopView';
@@ -410,8 +408,8 @@ describe('ShopView — overlay a11y wiring on the show/hide edge (m23-s3)', () =
 
     view.show();
 
-    // NEGATIVE polarity — a synchronous focus reintroduces the bug the defer exists to avoid
-    // (ui/overlayA11y.ts:9-15): the letter that OPENED the overlay lands in what it just opened.
+    // NEGATIVE polarity — a synchronous focus reintroduces the bug the defer exists to avoid:
+    // the letter that OPENED the overlay lands in what it just opened.
     expect(document.activeElement, 'the initial focus must NOT have landed synchronously').not.toBe(
       target,
     );
@@ -444,7 +442,7 @@ describe('ShopView — overlay a11y wiring on the show/hide edge (m23-s3)', () =
     view.hide();
 
     // VACUITY ATTACK V1, closed here: the two static literals can only be ABSENT if
-    // closeOverlayA11y really ran (ui/overlayA11y.ts:142-144).
+    // closeOverlayA11y really ran.
     expect(
       overlay.getAttribute('role'),
       'a display:none node must not keep claiming to be a dialog',
@@ -456,7 +454,7 @@ describe('ShopView — overlay a11y wiring on the show/hide edge (m23-s3)', () =
   });
 
   it('S3-shopView-REPEAT-NO-REOPEN BITES: show() on an ALREADY-visible overlay neither re-opens nor yanks focus back', async () => {
-    // A re-open clears and re-schedules the deferred-focus timer (ui/overlayA11y.ts:100-113), so an
+    // A re-open clears and re-schedules the deferred-focus timer, so an
     // unguarded delegation drags focus off whatever the player Tabbed to. INVISIBLE to every
     // attribute assertion — a re-open rewrites byte-identical values — so it is proven twice: by a
     // call COUNT and by the sentinel still holding focus.
@@ -501,7 +499,7 @@ describe('ShopView — overlay a11y wiring on the show/hide edge (m23-s3)', () =
     // `visible === false` and skip the close whenever a record ever desynchronised from the DOM
     // (S1's named A13 leak, ui/overlayA11y.ts:55-59) — making a live capture listener, a pending
     // timer and a stale return target PERMANENT. Unguarded, hide() HEALS it, and a close with no
-    // record is a documented pure no-op (ui/overlayA11y.ts:136-137), so nothing is risked.
+    // record is a documented pure no-op, so nothing is risked.
     mountShopOverlay();
     const view = new ShopView(makeCallbacks());
     expect(view.visible, 'precondition: never opened').toBe(false);
@@ -529,9 +527,8 @@ describe('ShopView — overlay a11y wiring on the show/hide edge (m23-s3)', () =
 });
 
 // ---------------------------------------------------------------------------
-// m24s0 I18N-5 (ADR-0255 D5) — the no-shop empty-state row is ELEMENT-BUILT.
+// m24s0 I18N-5 — the no-shop empty-state row is ELEMENT-BUILT.
 //
-// SOURCE OF TRUTH: ADR-0255 D5, memory/projects/gates/m24-s0.gates.md X5.
 // `document.createElement('li')` is the direct witness of the spec's own wording
 // ("built by createElement") — a DOM result byte-identical to the old
 // `innerHTML = '<li>x</li>'` markup would pass any textContent-only assertion, so
@@ -539,9 +536,6 @@ describe('ShopView — overlay a11y wiring on the show/hide edge (m23-s3)', () =
 // construction and a POPULATED render (so the no-shop render below must also
 // CLEAR the stale rows, not merely coexist with them).
 //
-// RED REASON AT HEAD: shopView.ts:115/116 assign `innerHTML` markup directly —
-// zero `document.createElement('li')` calls happen during the no-shop render, so
-// the FIRST assertion below (the call-count spy) fails with actual 0, not 1.
 // ---------------------------------------------------------------------------
 
 describe('m24s0 I18N-5 (ADR-0255 D5)', () => {
@@ -615,7 +609,7 @@ describe('m24s0 I18N-5 (ADR-0255 D5)', () => {
   });
 
   it('m24s0 X6a: a second populated render REPLACES the for-sale and inventory rows rather than appending them', () => {
-    // Kills: dropping #forSaleList.replaceChildren() before the loop (shopView.ts:131) or
+    // Kills: dropping #forSaleList.replaceChildren() before the loop or
     // #inventoryList.replaceChildren() (:139) — an append-only render would leave 3 rows
     // (2 stale + 1 new) instead of 1.
     const overlay = mountShopOverlay();
@@ -710,28 +704,10 @@ describe('m24s0 I18N-5 (ADR-0255 D5)', () => {
 });
 
 // =============================================================================
-// m24s4 (ADR-0260) — i18n migration batch B: shopView.ts routes its migrated
+// i18n migration batch B: shopView.ts routes its migrated
 // sinks through t()/tf() (ADR-0256/0257/0259/0260 resolver) instead of raw
 // English literals.
 //
-// PREDICTED RED REASON AT HEAD: shopView.ts calls neither `t()` nor `tf()`
-// anywhere today — every literal below is still a bare string, and the file
-// imports nothing from `./i18n/resolver`. SV-01/SV-02 therefore fail on their
-// very first assertion (the spied `i18nT`/`i18nTf` are never called at all,
-// and the roster-word scan finds unbracketed English); SV-03 fails because
-// `scanSource(stripComments(...))` reports FAILING raw-English sinks, not the
-// required `failing: []`.
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from
-// the plan/ADR-0260 only.
-//
-// m24s0 I18N-5 NOTE (unaffected, no new test needed): `emptyRow` (shopView.ts)
-// still calls `document.createElement('li')` exactly once regardless of
-// whether its `text` argument is a literal or `t('shop.noShop')` — the
-// migration only changes the ARGUMENT VALUE passed into the pre-existing
-// helper, never its call shape, so the existing `m24s0 I18N-5` spy test above
-// (exactly one `createElement('li')` call) stays green under a correct
-// migration without any edit.
 // =============================================================================
 
 /** `JSON.stringify` throws on a bare bigint (buy/sell prices ARE bigint,
@@ -752,12 +728,15 @@ function m24s4NoShopVm(): ShopScreenViewModel {
 }
 
 function m24s4EmptyShopVm(): ShopScreenViewModel {
-  return { ...shopVm(m24s4Balance('Coins: 100')), shopName: 'Wayside Stall' };
+  return {
+    ...shopVm(m24s4Balance('Coins: 100')),
+    shopName: 'Wayside Stall',
+  } as ShopScreenViewModel;
 }
 
 /** One buy row, one sellable row, one unsellable row — every fixture name is
  *  chosen to contain NONE of the M24S4_SV_ROSTER words. Prices are deliberately
- *  non-round (17n / 23n, red-team mutant #4): a catalog closure that hardcodes the
+ *  non-round (17n / 23n): a catalog closure that hardcodes the
  *  obvious `10 gold` decoy must NOT coincide with the fixture. */
 function m24s4PopulatedShopVm(): ShopScreenViewModel {
   return {
@@ -768,7 +747,7 @@ function m24s4PopulatedShopVm(): ShopScreenViewModel {
       { invId: 1n, itemId: 2, name: 'Feather', count: 3, sellPrice: 23n, canSell: true },
       { invId: 2n, itemId: 3, name: 'Talisman', count: 1, sellPrice: 0n, canSell: false },
     ],
-  };
+  } as ShopScreenViewModel;
 }
 
 // m24s4 hardening (mirrors m24s3's H1, battleView.test.ts): the shopView keys this
@@ -809,7 +788,7 @@ function m24s4SvIsExpectedSentinelSpan(content: string): boolean {
 }
 
 /** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
- *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span
+ *  indexOf loop — no RegExp) and reports every OTHER `«...»` span
  *  verbatim in `unexpectedSpans`, un-elided, so it stays in `stripped` for the
  *  roster-word scan too — see battleView.test.ts's m24s3SplitSentinels header. */
 function m24s4SvSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {

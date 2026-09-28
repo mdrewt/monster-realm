@@ -1,16 +1,15 @@
-//! monster-realm server module (`spacetimedb` crate 2.8.1, lockstep with the 2.8.1 host — ADR-0197).
+//! monster-realm server module (`spacetimedb` crate 2.8.1, lockstep with the 2.8.1 host).
 //!
 //! The authoritative imperative shell: tables hold the world's truth; reducers are
 //! the ONLY writers. Reducers are THIN — validate `ctx.sender()` + legality, delegate
 //! the rule to `game-core` (the SSOT `apply_move`), write tables; reject with `Err`,
-//! never clamp. Movement is **server-paced and per-zone** (ADR-0011/0007): clients
+//! never clamp. Movement is **server-paced and per-zone**: clients
 //! buffer intent; a per-zone scheduled `movement_tick` drains one move/character/tick.
 //! Time columns are `i64` ms (round-trip `game_core::Millis`). Syntax: crate 2.x.
 //!
-//! M8.9 (ADR-0056): the former monolith is split into cohesive domain submodules.
+//! The former monolith is split into cohesive domain submodules.
 //! This `lib.rs` is reduced to module wiring + crate-wide constants + the three
-//! lifecycle reducers (`init` / `sync_content` / `on_disconnect`). The module map
-//! below is the canonical `touches:` vocabulary — keep the file names stable.
+//! lifecycle reducers (`init` / `sync_content` / `on_disconnect`).
 
 use crate::content::sync_content_inner;
 use crate::movement::{movement_tick_schedule, MovementTickSchedule};
@@ -21,14 +20,14 @@ use game_core::STEP_MS;
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
 
-// --- Domain modules (the canonical `touches:` vocabulary, ADR-0056) ---------
+// --- Domain modules ---------
 mod accounts;
 mod battle;
 mod content;
 mod content_cache;
 mod economy;
 mod evolution;
-mod guards; // rb-77 (ADR-0247): bare and unconditional by contract — a target-selected wasm twin of this module is a review stop; gated by the rb77_ tests in guards_tests.rs
+mod guards; // Bare and unconditional by contract — a target-selected wasm twin of this module is a review stop; gated by the rb77_ tests in guards_tests.rs
 mod inventory;
 mod marshal;
 mod monster_mgmt;
@@ -45,57 +44,32 @@ mod taming;
 mod trading;
 
 #[cfg(test)]
-#[path = "m14_5d_1a_tests.rs"]
-mod m14_5d_1a_tests;
-
-#[cfg(test)]
 #[path = "native_host_tests.rs"]
 mod native_host_tests;
 
 #[cfg(test)]
-#[path = "rb73_session_tests.rs"]
-mod rb73_session_tests;
+#[path = "privacy_enforcement_tests.rs"]
+mod privacy_enforcement_tests;
+
+#[cfg(test)]
+#[path = "lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 // --- Crate-wide constants ---------------------------------------------------
 pub(crate) const ZONE_0: u32 = 0;
-/// SSOT for the seeded-content version; bump when game-core RON content changes (ADR-0054).
-/// v2 (M9b-tail): items registry gained the "Power Root" training food + the
-/// `train_stat`/`train_amount` columns, so deployed DBs must re-seed.
-/// v3 (M10b): evolution/fusion content registries added to `sync_content` (ADR-0062).
-/// v4 (M12b): NPC entity/heal_location content added to `sync_content` (ADR-0069).
-/// v5 (M12c): RON-loaded NPC/dialogue/quest/heal content + NPC zone policy (ADR-0070).
-/// v6 (M13b): shop items — `sell_price` added to `ItemDef` (ADR-0082).
-/// v7 (M13c): quest_001 currency reward=50 (ADR-0083).
-/// v8 (M14c): abilities registry added (ADR-0094).
-/// v9 (M14d): weather-setting skills 7-10 added (ADR-0095).
-/// v10 (M14e): status skill 11 (Toxic Sting) + Antidote item 3 (ADR-0096).
-/// v11 (M14.5c): ability assignments on Flameling/Sproutlet in species content (ADR-0100).
-/// v12 (M14.5d-1a): item_row gains cure_status column; re-seed required (ADR-0105).
-/// v13 (pt-d1): playtest roster wave 1 — species 7-10 + two evolution blocks (ADR-0143).
-/// v14 (pt-d2): playtest roster wave 2 — species 20-23 + two evolution blocks (ADR-0144).
-/// v15 (pt-d3): tuning pass — zone-1 encounter table (first wild placement of
-///   species 7/8/20/21) + Antidote stocked in shop 1 (ADR-0145).
-/// v16 (B): item-triggered evolution content — species 30/31 + items 4/5 + two Item branches (ADR-0149).
-/// v17 (uxd2): npc row gains the interaction column + the Tideglass shopkeeper
-///   (Shop(1), zone 1) and its inert greeting tree are seeded (ADR-0161).
-/// v18 (EG1): essence-graph Migration A (ADR-0174) — Monster +16 / MonsterPub
-///   +12 / SpeciesRow.tier columns, new public evolution_path table seeded from
-///   the evolution_paths registry; fusion content removed (stale fusion rows
-///   cleared, no reseed) and the evolutions trigger registry deleted.
-/// v22 (rb-82): comment-only correction in two species .ron files — no row
-///   change; bumped only because the content hash covers raw bytes.
+/// SSOT for the seeded-content version; bump when game-core RON content changes.
 pub(crate) const CONTENT_VERSION: u32 = 22;
 pub(crate) const SPRITE_PLAYER: u32 = 0;
 pub(crate) const MAX_NAME_LEN: usize = 24;
-pub(crate) const MAX_PARTY_SIZE: u8 = game_core::PARTY_SIZE; // SSOT (ADR-0052)
+pub(crate) const MAX_PARTY_SIZE: u8 = game_core::PARTY_SIZE; // SSOT
 pub(crate) const STARTER_SPECIES_ID: u32 = 1;
 /// 255 sentinel = monster is in the box (not in any party slot).
-pub(crate) const PARTY_SLOT_NONE: u8 = game_core::PARTY_SLOT_NONE; // SSOT (ADR-0052)
-/// Zero-byte sentinel identity for the unowned wild opponent of a grass encounter
-/// (ADR-0045). No real connection holds this identity, so a wild battle's
+pub(crate) const PARTY_SLOT_NONE: u8 = game_core::PARTY_SLOT_NONE; // SSOT
+/// Zero-byte sentinel identity for the unowned wild opponent of a grass encounter.
+/// No real connection holds this identity, so a wild battle's
 /// `opponent_identity` can never collide with a player's.
 pub(crate) const WILD_IDENTITY: Identity = Identity::from_byte_array([0u8; 32]);
-/// M22 anonymization sentinel (spec §3, ADR-0228 D1): the identity stamped onto
+/// anonymization sentinel: the identity stamped onto
 /// a deleted party's side of a surviving `battle` row. The VALUE is game-core's
 /// `TOMBSTONE_IDENTITY_BYTES` SSOT (all 0xFF) — distinct by construction from
 /// the all-zero `WILD_IDENTITY` above, so an anonymized PvP battle can never be
@@ -106,7 +80,7 @@ pub(crate) const TOMBSTONE_IDENTITY: Identity =
 
 // --- Private helpers --------------------------------------------------------
 
-/// Pure reconcile seam (13.5c-2): given the live zone ids and the currently
+/// Pure reconcile seam: given the live zone ids and the currently
 /// scheduled `(schedule row id, zone_id)` pairs, plan `(row ids to remove,
 /// zone ids to add)`. Extracted from `ensure_zone_schedules` so "no schedule
 /// row remains for a removed zone" is a behavioral test, not a structural one.
@@ -134,12 +108,12 @@ pub(crate) fn plan_schedule_reconcile(
     (to_remove, to_add)
 }
 
-/// Idempotent per-zone schedule management (ADR-0066): inserts a
+/// Idempotent per-zone schedule management: inserts a
 /// `MovementTickSchedule` row for every zone that does not yet have one, and
 /// removes orphaned rows for zones that no longer exist in `zone_def` (orphaned
 /// rows fire `map_for` errors every tick — remove them to prevent log-flood).
 /// Called from both `init` and `sync_content`. Imperative shell: the diff is
-/// owned by the pure `plan_schedule_reconcile` seam above (13.5c-2).
+/// owned by the pure `plan_schedule_reconcile` seam above.
 fn ensure_zone_schedules(ctx: &ReducerContext) {
     let zone_ids: Vec<u32> = ctx.db.zone_def().iter().map(|z| z.zone_id).collect();
     let scheduled: Vec<(u64, u32)> = ctx
@@ -198,7 +172,7 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
     // Zero-identity means the DB was published before M12.5b (owner_identity was not
     // yet stored in Config). `init` runs ONLY at DB creation, so a plain re-publish
     // never re-registers the owner — the only working remedy is
-    // `spacetime publish --delete-data` (destructive), which re-runs `init` (13.5c-4).
+    // `spacetime publish --delete-data` (destructive), which re-runs `init`.
     if cfg.owner_identity == Identity::from_byte_array([0u8; 32]) {
         return Err(
             "sync_content: owner_identity not registered — module was published before \
@@ -221,15 +195,15 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
 }
 
 /// Lifecycle: record the live connection, then lazy-provision or touch an
-/// `account` (M21, ADR-0179 D4). Anonymous play is FIRST-CLASS. Returning `Err`
+/// `account`. Anonymous play is FIRST-CLASS. Returning `Err`
 /// from this hook DISCONNECTS the client (crate doc), so no fallible statement
-/// precedes the `has_jwt()` early return (AUTH-1 / G3): the JWT test is hoisted
-/// into a bool, the session record (`open_player_session`, rb-73 / ADR-0245 D2 —
-/// infallible by construction, pinned single-purpose) runs for EVERY connection
-/// including anonymous ones, and only then does the JWT-less path return `Ok`.
+/// precedes the `has_jwt()` early return: the JWT test is hoisted
+/// into a bool, the session record (`open_player_session`
+/// runs for EVERY connection including anonymous ones, and only then does the
+/// JWT-less path return `Ok`.
 /// The vendor's canonical example for this hook REJECTS JWT-less connections —
 /// that pattern is NOT copied here. All provisioning logic lives in
-/// `accounts.rs` (D0 write-isolation); this hook only branches on presence of a
+/// `accounts.rs`; this hook only branches on presence of a
 /// JWT and delegates.
 #[spacetimedb::reducer(client_connected)]
 pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
@@ -242,8 +216,8 @@ pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
 }
 
 /// Force-resolve every live interaction for `identity` — the four resolver
-/// calls verbatim, in the original `on_disconnect` order (M22 §4.4 step 1,
-/// ADR-0228 D2). Shared by BOTH `on_disconnect` and the deletion cascade
+/// calls verbatim, in the original `on_disconnect` order.
+/// Shared by BOTH `on_disconnect` and the deletion cascade
 /// (`accounts::account_deletion_reaper`), so a future fifth resolver added to
 /// this bundle is picked up by both callers automatically. The bundle is the
 /// DISPATCH list, never a table-census-derived wrapper set — a census-derived
@@ -251,12 +225,11 @@ pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
 /// and soft-locks the abandoned battle forever. Performs no row write itself;
 /// each callee owns its own tables' writes. Call order notes, unchanged from
 /// the original body: trades cancel before any player-row deletion so the
-/// offer lookup still resolves identity (TR-18, ADR-0106; no assets move —
-/// never physically escrowed, D3); the PvP forfeit (M16, ADR-0109 D8) and the
-/// wild resolve (ptc5b, ADR-0138 — auto-flee + GC, since forfeit excludes
-/// WILD) both need identity lookups in write_back to resolve; the
-/// challenge-cancel (ADR-0109 D9) is order-immaterial vs the other three
-/// (disjoint row classes).
+/// offer lookup still resolves identity (no assets move —
+/// never physically escrowed); the PvP forfeit and the
+/// wild resolve both need identity lookups in write_back to resolve; the
+/// challenge-cancel is order-immaterial vs the other three (disjoint row
+/// classes).
 pub(crate) fn resolve_all_live_interactions(ctx: &ReducerContext, identity: Identity) {
     trading::cancel_trades_on_disconnect(ctx, identity);
     pvp::forfeit_on_disconnect(ctx, identity);
@@ -264,19 +237,19 @@ pub(crate) fn resolve_all_live_interactions(ctx: &ReducerContext, identity: Iden
     pvp::cancel_challenges_on_disconnect(ctx, identity);
 }
 
-/// M22 §4.4 step 6d (PRV1-6d, ADR-0228 D2): erase the `character` row
-/// reachable via the live `player` anchor's `entity_id` join — strictly
-/// BEFORE the player display-name tombstone write (the spec's
-/// character-before-player order pin). Usually a no-op: presence rows are
-/// deleted on disconnect, so only a connected-at-fire session has one. Never
-/// touches the `player` row itself (it survives as the anchor).
+/// erase the `character` row reachable via the live `player` anchor's
+/// `entity_id` join — strictly BEFORE the player display-name tombstone
+/// write (the spec's character-before-player order pin). Usually a no-op:
+/// presence rows are deleted on disconnect, so only a connected-at-fire
+/// session has one. Never touches the `player` row itself (it survives as
+/// the anchor).
 pub(crate) fn erase_character_rows(ctx: &ReducerContext, owner: Identity) {
     if let Some(p) = ctx.db.player().identity().find(owner) {
         ctx.db.character().entity_id().delete(p.entity_id);
     }
 }
 
-/// Record the connection that just opened (rb-73, ADR-0245 D2). Infallible on
+/// Record the connection that just opened. Infallible on
 /// purpose — it runs BEFORE `on_connect`'s anonymous early return, where an
 /// `Err` or a panic would reject the connection. `client_connected` always
 /// carries a connection id (vendor lifecycle contract); the `None` arm is the
@@ -296,7 +269,7 @@ fn open_player_session(ctx: &ReducerContext) {
 }
 
 /// Does `identity` still have a live connection on record? THE decision
-/// `on_disconnect` makes (rb-73, ADR-0245 D3): the disconnecting connection's
+/// `on_disconnect` makes: the disconnecting connection's
 /// own row is deleted first, so a `true` here means ANOTHER socket — a second
 /// tab, a reconnect that overlapped the old socket's lagging close, or a real
 /// session shadowed by an ephemeral HTTP reducer call — is still live and the
@@ -310,23 +283,20 @@ pub(crate) fn has_live_session(ctx: &ReducerContext, identity: Identity) -> bool
         .is_some()
 }
 
-/// M22 §4.4 step 6e (ADR-0228 D2 as amended by ADR-0245): erase every
-/// `player_session` row `owner` holds — presence bookkeeping goes with the
-/// presence rows. A subject deleted while connected keeps such a row until
-/// this step; afterwards that socket's own close is last-out and runs the
-/// legacy cleanup, which is right for a tombstoned account.
+/// erase every `player_session` row `owner` holds — presence bookkeeping
+/// goes with the presence rows. A subject deleted while connected keeps
+/// such a row until this step; afterwards that socket's own close is
+/// last-out and runs the legacy cleanup, which is right for a tombstoned
+/// account.
 pub(crate) fn erase_player_sessions(ctx: &ReducerContext, owner: Identity) {
     ctx.db.player_session().identity().delete(owner);
 }
 
 /// Lifecycle: the disconnecting socket's row goes first; the trade / PvP /
 /// wild-battle / challenge force-resolves and the presence deletes run ONLY
-/// when no other connection of this identity is on record (rb-73, ADR-0245 D3
-/// — "last connection out"). Before rb-73 every `client_disconnected` ran them
-/// unconditionally, and since each HTTP reducer call is its own ephemeral
-/// connection, any identity-token holder could fire them on demand under a
-/// live session (R-18r-b-DISCONNECTSELF). A lone ephemeral connection is still
-/// last-out, so a CLI `join_game` still leaves no presence row.
+/// when no other connection of this identity is on record.
+/// A lone ephemeral connection is still last-out, so a CLI `join_game` still
+/// leaves no presence row.
 #[spacetimedb::reducer(client_disconnected)]
 pub fn on_disconnect(ctx: &ReducerContext) {
     let me = ctx.sender();
@@ -337,27 +307,15 @@ pub fn on_disconnect(ctx: &ReducerContext) {
     if has_live_session(ctx, me) {
         return;
     }
-    // Resolve live trades / PvP / wild battles / challenges (extracted m22-s3b;
-    // ordering rationale lives on the shared fn above). Must run before the
-    // player-row deletion below so identity lookups still resolve.
+    // Resolve live trades / PvP / wild battles / challenges.
+    // Must run before the player-row deletion below so identity lookups still
+    // resolve.
     resolve_all_live_interactions(ctx, me);
     // Clean up transient conversation row so a reconnecting player cannot
-    // advance a stale dialogue from a different zone/position (RT-ADV-01).
+    // advance a stale dialogue from a different zone/position.
     ctx.db.player_conversation().owner_identity().delete(me);
     if let Some(p) = ctx.db.player().identity().find(me) {
         ctx.db.character().entity_id().delete(p.entity_id);
         ctx.db.player().identity().delete(me);
     }
 }
-
-// rb-74 gating oracle for the dated citation retarget. APPENDED AT EOF on
-// purpose: inserting it beside the three test modules near the top shifts every
-// later line by +4 and breaks a sibling ADR's executed line pins, which are
-// outside this slice's touch-set. Appending here shifts nothing.
-#[cfg(test)]
-#[path = "rb74_citation_tests.rs"]
-mod rb74_citation_tests;
-
-#[cfg(test)]
-#[path = "privacy_enforcement_tests.rs"]
-mod privacy_enforcement_tests;

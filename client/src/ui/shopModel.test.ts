@@ -1,8 +1,4 @@
 // ui/shopModel.test.ts — M13d red-phase tests for buildShopViewModel.
-// SOURCE OF TRUTH: specs/monster-realm-v2/M13d (shop client UI slice)
-//
-// Tests are INTENTIONALLY RED until shopModel.ts is implemented.
-// Do NOT edit to match a buggy implementation — correct from the spec only.
 //
 // Contract: buildShopViewModel(shops, shopItems, itemDefs, ownInventory) -> ShopScreenViewModel
 //   - ShopScreenViewModel = ShopViewModel | NoShopViewModel
@@ -20,7 +16,7 @@ import { describe, expect, it } from 'vitest';
 import type { StoreInventory, StoreItemRow, StoreWallet } from '../net/store';
 import {
   buildShopViewModel,
-  // uxd2 (ADR-0161 D5): the bound-shop selector. Named import — RED until it exists.
+  // The bound-shop selector.
   buildShopViewModelForShop,
   type NoShopViewModel,
   type ShopBalanceViewModel,
@@ -75,7 +71,7 @@ function makeItemDef(id: number, overrides: Partial<StoreItemRow> = {}): StoreIt
     trainAmount: 0,
     sellPrice: 0n,
     ...overrides,
-  };
+  } as StoreItemRow;
 }
 
 function makeInventoryItem(
@@ -395,7 +391,7 @@ describe('buildShopViewModel [m13d-7]: total safety — never throws on any vali
 // ---------------------------------------------------------------------------
 
 describe('buildShopViewModel [m13d-11]: property — forSale.length === shopItems for selected shopId', () => {
-  // ux2 (ADR-0154) EXTENSION: this property now also carries the OPTIONAL 5th
+  // ux2 EXTENSION: this property now also carries the OPTIONAL 5th
   // `ownWallet` argument (build plan §T5 / "Client unit tests"). The original
   // forSale-length invariant is unchanged — the wallet arbitrary is added on top,
   // so the pre-existing tooth is preserved and a second one is folded in:
@@ -614,11 +610,7 @@ describe('buildShopViewModel [m13d-15]: output structure — ShopViewModel has a
 });
 
 // ===========================================================================
-// ux2 (ADR-0154) — wallet balance view model
-//
-// SOURCE OF TRUTH: ux2 build plan v3 §T5 + "Client unit tests".
-// Tests are INTENTIONALLY RED until shopModel.ts grows the balance arm.
-// Do NOT edit them to match a buggy implementation — correct from the plan only.
+// ux2 — wallet balance view model
 //
 // CONTRACT UNDER TEST
 //   export type ShopBalanceViewModel =
@@ -651,9 +643,7 @@ function makeStoreWallet(balance: bigint, ownerIdentity = 'own-player'): StoreWa
 
 describe('buildShopViewModel [ux2-M1]: 4-argument call (the existing main.ts shape) → balance unknown', () => {
   it('[ux2-M1] BITES: exactly FOUR arguments → balance.kind === "unknown" (no wallet ⇒ dark)', () => {
-    // §T5 / anti-pattern 8: main.ts is FORBIDDEN in this slice and has TWO call sites
-    // (:701-708 KeyG and :1265-1279 the batch listener). Both stay 4-arg, so the 5th
-    // parameter must be optional AND the no-wallet case must degrade to `unknown`.
+    // The 5th (wallet) parameter is optional; a missing wallet must degrade to `unknown`.
     // Kills: (a) a required 5th parameter (this call would be a compile error and the
     //            impl would read `undefined.balance` at runtime);
     //        (b) `balance ?? 0n` zero-conflation — it would report kind:'known' here,
@@ -683,8 +673,8 @@ describe('buildShopViewModel [ux2-M1]: 4-argument call (the existing main.ts sha
 
   it('[ux2-M1] BITES: an explicitly-undefined 5th argument behaves exactly like omitting it', () => {
     // Kills: an impl that distinguishes "argument absent" from "argument undefined"
-    // (e.g. via `arguments.length`), which would diverge once ux2b wires
-    // `store.ownWallet(identity)` — that expression legitimately returns undefined.
+    // (e.g. via `arguments.length`): main.ts passes `store.ownWallet(identity)`, which
+    // legitimately returns undefined.
     const shops = [makeShop(1)];
     const omitted = buildShopViewModel(shops, [], new Map(), []) as ShopViewModel;
     const explicit = buildShopViewModel(shops, [], new Map(), [], undefined) as ShopViewModel;
@@ -874,11 +864,7 @@ describe('buildShopViewModel [ux2-M4]: malformed wallet row → unknown, never t
 });
 
 // ===========================================================================
-// uxd2 (ADR-0161 D5) — buildShopViewModelForShop: BOUND shop selection.
-// APPENDED BLOCK — every case above this line is untouched and is the
-// byte-preservation guard for the first-shop DEFAULT arm (plan AC-10′).
-//
-// SOURCE OF TRUTH: docs/specs/uxd2-plan.md I6 + AC-10′ + docs/adr/0161-*.md §D5.
+// buildShopViewModelForShop: BOUND shop selection.
 //
 // CONTRACT:
 //   export function buildShopViewModelForShop(
@@ -893,10 +879,6 @@ describe('buildShopViewModel [ux2-M4]: malformed wallet row → unknown, never t
 //   unknown id yields `{ kind:'no-shop', balance }` — never a silent fall back to the
 //   first shop (ADR-0161 D5: "never silently swap a bound shop to first-shop").
 //
-// RED TODAY: `buildShopViewModelForShop` is not exported from ./shopModel, so this
-// file's named import fails to link and the WHOLE file is red. That is the intended
-// red state (healModel.test.ts / helpModel.test.ts precedent) — the existing cases
-// come back green the moment the export exists, unchanged.
 // ===========================================================================
 
 describe('buildShopViewModelForShop [uxd2-1]: selects the NAMED shop, not the first', () => {
@@ -972,7 +954,7 @@ describe('buildShopViewModelForShop [uxd2-2]: unknown id → no-shop, never a fa
   });
 
   it('★ [uxd2-2] BITES: the no-shop arm still carries the wallet balance (passthrough)', () => {
-    // ADR-0154: `balance` is present on BOTH arms so the shell never has to decide to clear.
+    // `balance` is present on BOTH arms so the shell never has to decide to clear.
     // WRONG IMPL KILLED: an early `return { kind:'no-shop' }` written inside ForShop instead
     // of delegating — it would drop the balance field and crash the shell on `vm.balance.kind`.
     const wallet = makeStoreWallet(1234n);

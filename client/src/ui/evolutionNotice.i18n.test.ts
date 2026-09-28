@@ -48,7 +48,7 @@ function reveal(
   return { monsterId, fromSpecies, toSpecies, evolvedAtMs };
 }
 
-/** rb-125 (ADR-0272): every `new EvolutionNoticeBanner(` call in this file now needs a second
+/** Every `new EvolutionNoticeBanner(` call in this file now needs a second
  *  `sinks` argument. This file's own assertions are about the i18n resolver call sites, never
  *  about WHICH sink fired — fresh vi.fn() defaults are enough. */
 function bannerSinks(): { announce: (message: string) => void; returnFocus: () => void } {

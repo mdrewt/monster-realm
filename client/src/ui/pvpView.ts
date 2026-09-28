@@ -1,12 +1,12 @@
-// ui/pvpView.ts — thin DOM shell for the PvP challenge overlay (m16b, ADR-0110).
+// ui/pvpView.ts — thin DOM shell for the PvP challenge overlay.
 //
 // Renders PvpChallengeViewModels produced by pvpModel.ts. No game logic, no SDK.
 // Auto-shows when incoming/outgoing challenges are present; also KeyP-toggleable.
 //
-// m24-s3 (ADR-0259): every player-facing string this view renders is resolved through the i18n
+// Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `pvp.*` key from ui/i18n/catalog.en.ts;
 // the English bytes are unchanged. Two sinks stay raw on purpose: the per-player challenge
-// button shows `p.name` (model data, ADR-0259 D3) and `showFeedback(msg)` renders text that
+// button shows `p.name` (model data) and `showFeedback(msg)` renders text that
 // main.ts owns (S6 migrates it there). Every `t(`/`tf(` first argument is a string LITERAL — the
 // player-list heading is a ternary between two CALLS, never between two keys.
 import { t, tf } from './i18n/resolver';
@@ -14,7 +14,7 @@ import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { PvpChallengeViewModel, PvpIncomingChallenge, PvpOutgoingChallenge } from './pvpModel';
 
 /**
- * All four may return a promise (20r-a): the view-wide lifecycle lock is held until it
+ * All four may return a promise: the view-wide lifecycle lock is held until it
  * settles, so the return type must express it — a `=> void` type would let a future
  * implementation silently reduce the lock to a one-microtask no-op (raisingView's onCare
  * makes the same argument). The four reducers are duplicate-safe server-side; this is
@@ -40,7 +40,7 @@ export class PvpView {
   readonly #callbacks: PvpViewCallbacks;
   readonly #root: HTMLElement;
   #visible = false;
-  // 20r-a: ONE view-wide lock for the four lifecycle actions, deliberately not keyed by
+  // ONE view-wide lock for the four lifecycle actions, deliberately not keyed by
   // challengeId — accept/decline/cancel/challenge all mutate the same single challenge
   // state, and a per-button lock would still admit accept-then-decline on one challenge
   // (the contradictory-outcome pair). The object is the generation token: `.finally()`
@@ -85,7 +85,7 @@ export class PvpView {
   }
 
   show(): void {
-    // m23-s3 D1 -- THE EDGE GUARD, AND WHY IT IS LOAD-BEARING (this is the canonical statement;
+    // THE EDGE GUARD, AND WHY IT IS LOAD-BEARING (this is the canonical statement;
     // the other nine views point here). `refresh()` below calls `show()` UNCONDITIONALLY whenever
     // `forceVisible` is true, and main.ts:1697-1709 recomputes `forceVisible` on EVERY store batch
     // -- once this overlay is open, `pvpView.visible` keeps it true. Delegating to
@@ -104,12 +104,12 @@ export class PvpView {
     this.#visible = false;
     this.#root.style.display = 'none';
     this.#feedbackEl.textContent = '';
-    // 20r-a: release the lifecycle lock (tradeProposeView hide()-time precedent): onReconnect
+    // Release the lifecycle lock (tradeProposeView hide()-time precedent): onReconnect
     // and the battle auto-show force-hide this overlay, and the SDK never settles an in-flight
     // reducer promise after a link drop — so `.finally()` may never run. No node re-enable:
     // `show()` is only reached through refresh(), which rebuilds every lifecycle control.
     this.#pending = null;
-    // m23-s3 D2 -- DELIBERATELY UNGUARDED, and the asymmetry with the guarded `render(null)` path
+    // DELIBERATELY UNGUARDED, and the asymmetry with the guarded `render(null)` path
     // in the three render-driven views is a decision, not an oversight. `closeOverlayA11y` is a
     // documented no-op when there is no open record (ui/overlayA11y.ts:136-137), so an unguarded
     // close costs one Map lookup. What it BUYS is self-healing: if a record ever desynchronises
@@ -127,7 +127,7 @@ export class PvpView {
    * Re-render from the latest VM. The caller (main.ts batch listener or KeyP handler)
    * is fully responsible for the show/hide decision via `forceVisible` — this method
    * never auto-shows independently. This prevents pvpView from popping over an active
-   * battle or other overlay when hasActive=true (ADR-0110 D6 mutual-exclusivity).
+   * battle or other overlay when hasActive=true (mutual exclusivity).
    */
   refresh(vm: PvpChallengeViewModel | null, forceVisible: boolean): void {
     const hasActive = vm !== null && (vm.incoming !== null || vm.outgoing !== null);
@@ -151,13 +151,13 @@ export class PvpView {
     this.#renderIncoming(vm.incoming);
     this.#renderOutgoing(vm.outgoing);
     this.#renderPlayerList(vm.challengeablePlayers, !hasActive);
-    // 20r-a: re-derive the lock on the rebuilt controls — a batch can re-render while a
+    // re-derive the lock on the rebuilt controls — a batch can re-render while a
     // lifecycle call is still in flight.
     if (this.#pending !== null) this.#setLifecycleDisabled(true);
   }
 
   /**
-   * 20r-a: every lifecycle click routes through here — no-op while a call is in flight;
+   * Every lifecycle click routes through here — no-op while a call is in flight;
    * otherwise take the lock, disable the lifecycle controls, and release in `.finally()`
    * on BOTH arms (a rejected or short-circuited call must never leave a dead control).
    * `new Promise((resolve) => resolve(run()))` calls `run` synchronously and turns a
@@ -182,7 +182,7 @@ export class PvpView {
       });
   }
 
-  /** rb-121 (ADR-0271): a lock-owning release that finds focus stranded on `<body>` re-asserts the
+  /** A lock-owning release that finds focus stranded on `<body>` re-asserts the
    *  dialog; the idempotent re-open re-installs the trap and defers focus to the registry anchor.
    *  `#visible` is load-bearing: re-opening a hidden view would CREATE an open record. */
   #reanchorStrandedFocus(): void {

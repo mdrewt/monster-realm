@@ -1,6 +1,6 @@
-// ui/announcements.ts — the pure state-delta → announcements reducer (m23-s1, M23 §2.4, A11Y-8).
+// ui/announcements.ts — the pure state-delta → announcements reducer (M23 §2.4, A11Y-8).
 //
-// FUNCTIONAL CORE (ADR-0014), and the purity is MECHANICALLY gated rather than reviewed: its test
+// FUNCTIONAL CORE, and the purity is MECHANICALLY gated rather than reviewed: its test
 // file carries no `@vitest-environment` line, so it runs under vitest's NODE environment where
 // `document` and `window` do not exist and any DOM reference would throw at the point of use. No
 // DOM, no clock, no module state, no IO — same output for the same two arguments, forever.
@@ -15,7 +15,7 @@
 // would announce the same overlay on every single frame it stays open.
 //
 // COPY IS ALWAYS DERIVED, NEVER A LITERAL. The overlay's accessible name comes from
-// `t(OVERLAY_A11Y[id].labelKey)` — the ADR-0205 D5 seam. A literal here would break §2.8's M24
+// `t(OVERLAY_A11Y[id].labelKey)` — the label-key seam. A literal here would break §2.8's M24
 // i18n seam and A11Y-3/4's derived-copy discipline, and it would silently drift from what the
 // overlay's own `aria-label` says (`ui/overlayA11y.ts` resolves the SAME key).
 //
@@ -48,7 +48,7 @@ export interface A11ySnapshot {
 /**
  * What should be announced for the transition `prev → next`, in the order it should be spoken:
  * overlay first, then message (§2.4). Total and pure; returns a fresh array (never a shared
- * constant a caller could mutate). An unchanged snapshot yields `[]` (A11Y-8).
+ * constant a caller could mutate). An unchanged snapshot yields `[]`.
  */
 export function announcementsFor(prev: A11ySnapshot, next: A11ySnapshot): readonly string[] {
   const out: string[] = [];

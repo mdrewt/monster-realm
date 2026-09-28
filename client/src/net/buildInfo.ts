@@ -1,4 +1,4 @@
-// net/buildInfo.ts — pure build-provenance stamp (pt-a1, ADR-0128).
+// net/buildInfo.ts — pure build-provenance stamp.
 //
 // PURE data + formatter. Exposes the git short-SHA + build time captured at BUILD time
 // (injected via `client/vite.config.ts` `define`) so a playtest finding can be pinned to the
@@ -11,7 +11,7 @@
 // string literals). A module-scoped ambient `declare` satisfies tsc (only this file references
 // them). The `typeof … !== 'undefined'` guard keeps the read safe even if the define did not
 // fire (a bundler without it): `typeof <undeclared>` is `'undefined'` in JS — never a
-// ReferenceError. See ADR-0128 Residuals F-4: this fallback branch is not unit-reachable under
+// ReferenceError. This fallback branch is not unit-reachable under
 // vitest (the define always fires), so it is covered by `buildInfoFrom('unknown', …)` below.
 declare const __MR_BUILD_SHA__: string;
 declare const __MR_BUILD_TIME__: string;
@@ -38,8 +38,8 @@ export function formatBuildStamp(info: BuildInfo): string {
 /**
  * The live build info for this bundle. Reads the vite-injected globals with a safe fallback to
  * `'unknown'` when git/define is unavailable. NOT DEV-gated (see the module header). Do NOT
- * assert on this constant's VALUE in tests — it is build-time-injected and non-deterministic
- * (ADR-0128 Residuals F-7); test `buildInfoFrom`/`formatBuildStamp` with literal params instead.
+ * assert on this constant's VALUE in tests — it is build-time-injected and non-deterministic;
+ * test `buildInfoFrom`/`formatBuildStamp` with literal params instead.
  */
 export const BUILD_INFO: BuildInfo = buildInfoFrom(
   typeof __MR_BUILD_SHA__ !== 'undefined' ? __MR_BUILD_SHA__ : 'unknown',

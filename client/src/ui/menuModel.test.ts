@@ -11,12 +11,6 @@
 //     A15 there is NO MenuInput.right variant (ArrowRight maps to `enter`), and
 //         menuKeyInput takes ONLY `code` (the `key` parameter is dropped).
 //
-// RED REASON: client/src/ui/menuModel.ts DOES NOT EXIST. Every test in this file fails at
-// module-link time ("Failed to resolve import './menuModel'") until the implementer ships
-// it; MM-KEYGLYPH-FROM-HELP-SSOT additionally stays red until helpModel.ts gains its
-// { key: 'M', action: 'Open the main menu' } row (plan T1.5). Nothing below guesses at an
-// API shape — the contract is the one the plan hands the specialist verbatim.
-//
 // AMENDED by M21b-2 (ADR-0182 D17 / spec AUTH task checklist): the System category gains an
 // `'account'` leaf (keyGlyph 'C', target 'claimView'), taking the tree to 5 categories / 12
 // leaves. THE MENU LEAF AND THE DIRECT KeyC HOTKEY BOTH SHIP — they are not alternatives: the
@@ -25,36 +19,6 @@
 // be able to reach the claim/account UI — AUTH-48). The leaf is the discoverable path, and
 // AC-18's SSOT rule means adding it MECHANICALLY forces a `C` row in helpModel.ts CONTROLS
 // (and, through playtestControlsDoc.test.ts's bidirectional A1/A3 gate, in docs/PLAYTEST.md).
-//
-// PINNED CONTRACT (the specialist matches this EXACTLY):
-//   export type MenuCategoryId = 'party' | 'world' | 'trade' | 'compete' | 'system';
-//   export type MenuLeafId = 'box' | 'backpack' | 'evolve' | 'interact' | 'journal'
-//     | 'incomingTrade' | 'offerTrade' | 'pvp' | 'leaderboard' | 'rename' | 'account' | 'help';
-//   export interface MenuLeafDef { id; title; keyGlyph; target: OverlayId | 'interact' }
-//   export interface MenuCategoryDef { id; title; leaves: readonly MenuLeafDef[] }
-//   export const MENU_TREE: readonly MenuCategoryDef[];            // 5 categories, 12 leaves
-//   export interface MenuAvailability {
-//     hasInteractTarget: boolean; hasTradeTargets: boolean; hasPvpTargets: boolean }
-//   export function leafAvailable(leaf: MenuLeafId, a: MenuAvailability): boolean;
-//   export type MenuNavState =
-//     | { level: 'categories'; categoryIndex: number }
-//     | { level: 'leaves'; categoryIndex: number; leafIndex: number };
-//   export const MENU_INITIAL: MenuNavState;                       // categories / 0
-//   export type MenuInput = { kind:'up' } | { kind:'down' } | { kind:'enter' }
-//     | { kind:'left' } | { kind:'escape' }
-//     | { kind:'hover'; index:number } | { kind:'click'; index:number };
-//   export type MenuEffect = { kind:'none' } | { kind:'close' }
-//     | { kind:'activate'; leaf: MenuLeafDef };
-//   export interface MenuStep { state: MenuNavState; effect: MenuEffect }
-//   export function menuStep(s: MenuNavState, i: MenuInput, a: MenuAvailability): MenuStep;
-//   export function menuKeyInput(code: string): MenuInput | undefined;   // arity 1 (A15)
-//   export interface MenuRowVm {
-//     index:number; title:string; keyGlyph:string|null; selected:boolean; disabled:boolean }
-//   export interface MenuViewModel {
-//     level:'categories'|'leaves'; heading:string; rows: readonly MenuRowVm[]; backHint:string }
-//   export function buildMenuViewModel(s: MenuNavState, a: MenuAvailability): MenuViewModel;
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from the plan only.
 
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
@@ -130,10 +94,9 @@ const EXPECTED_KEY_GLYPHS: readonly (readonly [MenuLeafId, string])[] = [
   ['pvp', 'P'],
   ['leaderboard', 'L'],
   ['rename', 'N'],
-  // ★ M21b-2 (ADR-0182): 'C' for Claim/aCcount. Deliberately NOT 'A' — `KeyA` is a MOVEMENT
+  // ★ M21b-2: 'C' for Claim/aCcount. Deliberately NOT 'A' — `KeyA` is a MOVEMENT
   // key (menuKeyInput maps it to `left`, and KEY_DIR binds it in the world), so an 'A' glyph
-  // would advertise a shortcut that walks the player left instead. 'C' was verified UNBOUND
-  // in main.ts before this slice, the same check KeyM got in uxd3.
+  // would advertise a shortcut that walks the player left instead.
   ['account', 'C'],
   ['help', '?'],
 ];
@@ -157,7 +120,7 @@ describe('menuModel — MENU_TREE', () => {
     expect(MENU_TREE.map((c) => c.id)).toEqual(['party', 'world', 'trade', 'compete', 'system']);
     expect(MENU_TREE.map((c) => c.title)).toEqual(['Party', 'World', 'Trade', 'Compete', 'System']);
 
-    // ★ M21b-2 (ADR-0182): the 12th leaf. It joins SYSTEM (beside Rename Profile and Controls
+    // ★ M21b-2: the 12th leaf. It joins SYSTEM (beside Rename Profile and Controls
     // & Help), not a new 6th category — anti-pattern 10 forbids a category per feature, and
     // "your account" is exactly the kind of session-level chrome System already holds.
     // Positioned BETWEEN rename and help deliberately: Help stays LAST because it is the
@@ -623,7 +586,7 @@ describe('menuModel — buildMenuViewModel', () => {
 
     const oobCat = buildMenuViewModel(leaves(99, 0), ALL);
     expect(oobCat.heading).toBe('System');
-    // M21b-2: System holds 3 leaves now (rename / account / help).
+    // System holds 3 leaves now (rename / account / help).
     expect(oobCat.rows.length).toBe(3);
   });
 

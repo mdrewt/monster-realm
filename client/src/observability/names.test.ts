@@ -1,4 +1,4 @@
-// observability/names.test.ts — m20c (ADR-0180 body amendment): the S4 wire contract, client side.
+// observability/names.test.ts — the S4 wire contract, client side.
 //
 // SOURCE OF TRUTH (mirrored fixture-for-fixture, never re-derived):
 //   ops/observability/alloy/config.alloy:155-158
@@ -13,9 +13,6 @@
 // the unlabelled series, which silently corrupts every per-zone/per-build panel while the client
 // believes it is reporting. So names.ts owns ONE mirror of the ingest policy and these fixtures
 // pin that mirror to the ops file, character for character.
-//
-// RED REASON: `client/src/observability/names.ts` does not exist. Every import below fails to
-// resolve until the implementer creates it — that is the expected first red.
 //
 // NO `new RegExp(…)` AND NO REGEX LITERAL in the implementation (AM21/T-A2, enforced by
 // sourceScan.test.ts): the predicates must be hand-rolled character scans. Semgrep's

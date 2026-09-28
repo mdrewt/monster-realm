@@ -1,11 +1,5 @@
 // ui/tradeProposeModel.test.ts — RED gating tests for pt-c2 §PTC2-1..7.
 //
-// Slice: pt-c2 · Source-of-truth: docs/specs/pt-c2-plan.md + docs/adr/0134-trade-propose-ui.md
-//
-// RED REASON: tradeProposeModel.ts does not exist yet.
-// Every test below will fail with:
-//   "Failed to resolve import './tradeProposeModel'" (module-not-found)
-//
 // WRONG-IMPL-KILLED list (one per criterion):
 //   PTC2-1: self/empty excluded, '(unnamed)' fallback  → target-filter + label tests
 //   PTC2-2: targets sorted by identity (deterministic)  → sort-order test
@@ -14,26 +8,15 @@
 //   PTC2-5: canSubmit truth table (target-not-in-list→false; each positive branch alone→true)
 //   PTC2-6: proposeArgs shape (bigint ids, args===null when !canSubmit)
 //   PTC2-7: model TOTAL (garbage input never throws)
-//
-// Do NOT edit tests to match a buggy impl — correct from the spec only.
-// Corrections must be traced to the spec and must not weaken the bite.
 
 import { describe, expect, it } from 'vitest';
+import { readWasmU32Constant } from '../../test-util/wasmPkg';
 import type { StoreMonsterPub, StorePlayer } from '../net/store';
-// 14r-f / EARS-3 (ADR-0188): the trade-side monster cap is read through a NAMESPACE
-// import on purpose. A named import of a not-yet-existing export is an ESM LINK error,
-// which reds the WHOLE FILE and would hide the behavioural rows below behind a single
-// module-level failure. Through the namespace the missing export is `undefined`, so the
-// const-pin test reds on its own (`undefined !== 64`) while the 65/1000 boundary rows
-// red for their own, behavioural reason. The exact identifier is still pinned — a rename
-// of the export reds this test.
-import * as tradeProposeModelNs from './tradeProposeModel';
 import {
   buildProposeLists,
   buildProposeSubmission,
   parseCurrency,
   type TradeProposeDraft,
-  type TradeProposeLists,
   type TradeProposeTarget,
 } from './tradeProposeModel';
 
@@ -52,19 +35,6 @@ function makePlayer(identity: string, name: string, extra: Partial<StorePlayer> 
   };
 }
 
-// EG4-7 (blast radius): this file builds `StoreMonsterPub`-shaped literals but
-// tradeProposeModel.ts itself reads NEITHER `bond` NOR `evolvesTo` — so this is a
-// PURE FIXTURE UPDATE. `bond` is dropped (contract §B removes it from the type) and
-// the five essence-graph fields are backfilled so the literal still satisfies
-// StoreMonsterPub. No assertion in this file changes: if any trade-propose behaviour
-// test moves as a result, that is a real regression, not an expected fixture effect.
-//
-// RED-TEAM NOTE (D4): "still satisfies StoreMonsterPub" is a statement of INTENT, not a
-// checked property. `client/tsconfig.json` excludes `**/*.test.ts` and vitest strips
-// types via esbuild, so this literal's conformance to the store type is never verified by
-// anything. This file is GREEN today and gates nothing in EG4 — it is kept in sync so the
-// next reader is not misled, not because it enforces the type change. The runtime EG4-7
-// teeth live in store.test.ts (required-field list) and rowConvert.test.ts (no `bond` key).
 function makeMonster(
   monsterId: bigint,
   ownerIdentity: string,
@@ -118,7 +88,7 @@ function makeDraft(overrides: Partial<TradeProposeDraft> = {}): TradeProposeDraf
 }
 
 // ---------------------------------------------------------------------------
-// PTC2-1a: buildProposeLists — self is excluded from targets
+// buildProposeLists — self is excluded from targets
 // BITES: an impl that includes the calling player in the returned targets list.
 // ---------------------------------------------------------------------------
 
@@ -136,7 +106,7 @@ describe('buildProposeLists PTC2-1a: self excluded from targets', () => {
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-1b: buildProposeLists — empty-identity rows excluded from targets
+// buildProposeLists — empty-identity rows excluded from targets
 // BITES: an impl that includes rows with identity==='' in the targets.
 // ADR-0134 D3: "allPlayers() MINUS self MINUS empty-identity rows".
 // ---------------------------------------------------------------------------
@@ -158,7 +128,7 @@ describe('buildProposeLists PTC2-1b: empty-identity rows excluded from targets',
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-1c: buildProposeLists — name==='' produces label '(unnamed)'
+// buildProposeLists — name==='' produces label '(unnamed)'
 // BITES: an impl that passes empty name through as '' instead of '(unnamed)'.
 // ADR-0134 D3: "label = name or '(unnamed)' for the empty string".
 // ---------------------------------------------------------------------------
@@ -184,7 +154,7 @@ describe("buildProposeLists PTC2-1c: empty name → label '(unnamed)'", () => {
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-1d: ownIdentity==='' → targets EMPTY (guard against misconfigured identity)
+// ownIdentity==='' → targets EMPTY (guard against misconfigured identity)
 // BITES: an impl that doesn't treat ownIdentity==='' as "filter nothing" and
 // accidentally includes '' as the self-to-filter, but since allPlayers includes
 // real rows those still appear — or impl lets empty ownIdentity produce targets.
@@ -193,7 +163,7 @@ describe("buildProposeLists PTC2-1c: empty name → label '(unnamed)'", () => {
 
 describe("buildProposeLists PTC2-1d: ownIdentity==='' → targets EMPTY", () => {
   it("BITES: ownIdentity==='' yields empty targets — kills impl that does not guard on empty own identity", () => {
-    // ADR-0134 D3: the model must produce an empty target list when ownIdentity is ''
+    // The model must produce an empty target list when ownIdentity is ''
     // (the identity guard in the KeyO handler checks identity!=='' before opening,
     // but the model must also be safe if called before the guard runs).
     const players: StorePlayer[] = [
@@ -207,7 +177,7 @@ describe("buildProposeLists PTC2-1d: ownIdentity==='' → targets EMPTY", () => 
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-2: buildProposeLists — targets sorted lexicographically by identity
+// buildProposeLists — targets sorted lexicographically by identity
 // BITES: an impl that returns targets in insertion order (non-deterministic).
 // ADR-0134 D3: "sorted lexicographically by identity (deterministic)".
 // ---------------------------------------------------------------------------
@@ -233,7 +203,7 @@ describe('buildProposeLists PTC2-2: targets sorted lexicographically by identity
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-3a: buildProposeLists — monster label from nickname (non-empty)
+// buildProposeLists — monster label from nickname (non-empty)
 // BITES: an impl that ignores nickname and always uses species name.
 // ADR-0134 D3: "label = nickname (else species name via speciesMap, else Unknown(#id)) + level".
 // ---------------------------------------------------------------------------
@@ -251,7 +221,7 @@ describe('buildProposeLists PTC2-3a: monster label from nickname when non-empty'
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-3b: buildProposeLists — monster label falls back to species name when nickname===''
+// buildProposeLists — monster label falls back to species name when nickname===''
 // BITES: an impl that uses empty string as the label when nickname is empty.
 // ---------------------------------------------------------------------------
 
@@ -268,7 +238,7 @@ describe('buildProposeLists PTC2-3b: empty nickname → species name fallback', 
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-3c: buildProposeLists — monster label falls back to 'Unknown (#id)' when
+// buildProposeLists — monster label falls back to 'Unknown (#id)' when
 //   nickname==='' AND speciesId not in speciesMap.
 // BITES: an impl that crashes on missing speciesMap lookup instead of falling back.
 // ---------------------------------------------------------------------------
@@ -288,7 +258,7 @@ describe('buildProposeLists PTC2-3c: unknown species → "Unknown (#id)" label',
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-3d: buildProposeLists — monster label includes level indicator
+// buildProposeLists — monster label includes level indicator
 // BITES: an impl that omits the level from the label.
 // ADR-0134 D3: "label = nickname/species/Unknown(#id) + level".
 // ---------------------------------------------------------------------------
@@ -305,7 +275,7 @@ describe('buildProposeLists PTC2-3d: monster label includes level', () => {
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-3e: buildProposeLists — offerableMonsters sorted ascending by monsterId (BigInt)
+// buildProposeLists — offerableMonsters sorted ascending by monsterId (BigInt)
 // BITES: an impl that sorts by numeric coercion (Number(monsterId)) — would truncate
 //   very large BigInts and produce wrong ordering.
 // ADR-0134 D3: "sorted ascending by monsterId (BigInt comparator)".
@@ -351,7 +321,7 @@ describe('buildProposeLists PTC2-3e: offerableMonsters sorted ascending by monst
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-3f: buildProposeLists — monsterId preserved as bigint in offerableMonsters
+// buildProposeLists — monsterId preserved as bigint in offerableMonsters
 // BITES: an impl that converts monsterId to string or number in the returned list.
 // ---------------------------------------------------------------------------
 
@@ -367,7 +337,7 @@ describe('buildProposeLists PTC2-3f: monsterId is bigint in offerableMonsters', 
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-4: parseCurrency — all EARS cases from ADR-0134 D5
+// parseCurrency — all EARS cases from ADR-0134 D5
 // ---------------------------------------------------------------------------
 
 describe('parseCurrency PTC2-4: digit-only string → BigInt; everything else → 0n', () => {
@@ -404,7 +374,7 @@ describe('parseCurrency PTC2-4: digit-only string → BigInt; everything else �
   });
 
   it("★ BITES: '-1' → 0n — kills impl that parses negative numbers", () => {
-    // ADR-0134 D5: digits-only scan; '-' is not a digit.
+    // digits-only scan; '-' is not a digit.
     expect(parseCurrency('-1')).toBe(0n);
   });
 
@@ -436,7 +406,7 @@ describe('parseCurrency PTC2-4: digit-only string → BigInt; everything else �
   });
 
   it("BITES: ' 5 ' (spaces) → 0n — kills impl that trims before parsing", () => {
-    // ADR-0134 D5: digit-only scan. A space is not a digit.
+    // digit-only scan. A space is not a digit.
     expect(parseCurrency(' 5 ')).toBe(0n);
   });
 
@@ -455,7 +425,7 @@ describe('parseCurrency PTC2-4: digit-only string → BigInt; everything else �
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-5: buildProposeSubmission — canSubmit truth table
+// buildProposeSubmission — canSubmit truth table
 // ---------------------------------------------------------------------------
 
 describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
@@ -469,7 +439,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: '100',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission([], draft); // empty target list
+    const sub = buildProposeSubmission([], draft, TEST_CAP); // empty target list
     expect(sub.canSubmit).toBe(false);
     expect(sub.args).toBeNull();
   });
@@ -484,7 +454,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: '0',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(false);
     expect(sub.args).toBeNull();
   });
@@ -499,7 +469,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: '0',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(false);
   });
 
@@ -512,7 +482,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: '0',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
   });
 
@@ -525,12 +495,12 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: '50',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
   });
 
   it('★ BITES: target valid + requestCurrency>0 only → canSubmit:true ("request gold, give nothing" is server-valid)', () => {
-    // ADR-0134 D3: "A 'request gold, give nothing' offer (only requestCurrency) IS server-valid
+    // "A 'request gold, give nothing' offer (only requestCurrency) IS server-valid
     // (total_assets=1) and is allowed — the server, not the client, decides whether it is accepted."
     // WRONG IMPL KILLED: an impl that requires something from the INITIATOR side
     // (monsters or offerCurrency>0) — it would block this valid use case.
@@ -541,7 +511,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: '0',
       requestCurrency: '100', // request gold from counterparty, give nothing
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
   });
 
@@ -554,7 +524,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: 'abc',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
   });
 
@@ -567,18 +537,18 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: 'abc',
       requestCurrency: '',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(false);
   });
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-6: buildProposeSubmission — proposeArgs shape
+// buildProposeSubmission — proposeArgs shape
 // ---------------------------------------------------------------------------
 
 describe('buildProposeSubmission PTC2-6: proposeArgs shape when canSubmit', () => {
   it('BITES: args is null when canSubmit:false — kills impl that returns args even on invalid draft', () => {
-    const sub = buildProposeSubmission([], makeDraft());
+    const sub = buildProposeSubmission([], makeDraft(), TEST_CAP);
     expect(sub.canSubmit).toBe(false);
     expect(sub.args).toBeNull();
   });
@@ -591,7 +561,7 @@ describe('buildProposeSubmission PTC2-6: proposeArgs shape when canSubmit', () =
       offerCurrency: '0',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
     expect(sub.args).not.toBeNull();
     expect(sub.args!.targetIdentity).toBe('0xaaa1');
@@ -608,7 +578,7 @@ describe('buildProposeSubmission PTC2-6: proposeArgs shape when canSubmit', () =
       offerCurrency: '0',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
     expect(sub.args).not.toBeNull();
     expect(sub.args!.initiatorMonsterIds).toHaveLength(2);
@@ -628,7 +598,7 @@ describe('buildProposeSubmission PTC2-6: proposeArgs shape when canSubmit', () =
       offerCurrency: '250',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
     expect(sub.args!.initiatorCurrency).toBe(250n);
   });
@@ -641,7 +611,7 @@ describe('buildProposeSubmission PTC2-6: proposeArgs shape when canSubmit', () =
       offerCurrency: '0',
       requestCurrency: '75',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
     expect(sub.args!.counterpartyCurrency).toBe(75n);
   });
@@ -654,14 +624,14 @@ describe('buildProposeSubmission PTC2-6: proposeArgs shape when canSubmit', () =
       offerCurrency: '30',
       requestCurrency: '40',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.offerCurrency).toBe(30n);
     expect(sub.requestCurrency).toBe(40n);
   });
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-7: model TOTAL — buildProposeLists + buildProposeSubmission NEVER throw
+// Model TOTAL — buildProposeLists + buildProposeSubmission NEVER throw
 // ---------------------------------------------------------------------------
 
 describe('buildProposeLists PTC2-7: model is TOTAL — never throws on garbage input', () => {
@@ -692,7 +662,7 @@ describe('buildProposeLists PTC2-7: model is TOTAL — never throws on garbage i
       { targetIdentity: '', selectedMonsterIds: [], offerCurrency: '0', requestCurrency: '0' },
     ];
     for (const draft of garbageDrafts) {
-      expect(() => buildProposeSubmission(targets, draft)).not.toThrow();
+      expect(() => buildProposeSubmission(targets, draft, TEST_CAP)).not.toThrow();
     }
   });
 
@@ -707,33 +677,24 @@ describe('buildProposeLists PTC2-7: model is TOTAL — never throws on garbage i
 });
 
 // ===========================================================================
-// 14r-f EARS-3 (ADR-0188) — the client-side trade-side monster cap.
+// 14r-f EARS-3 — the client-side trade-side monster cap.
 //
 // EARS-3: WHEN a player selects >64 monsters for a trade, THE SYSTEM SHALL
 //         disable submission client-side.
 //
-// SERVER SSOT: `MAX_TRADE_MONSTERS_PER_SIDE: usize = 64`
-// (server-module/src/trading.rs:37). The server check at trading.rs:44 is
+// SSOT: game-core `MAX_TRADE_MONSTERS_PER_SIDE: usize = 64` (trading/rules.rs), read
+// by the client through the `max_trade_monsters_per_side()` wasm export and injected
+// into `buildProposeSubmission`. The server check in trading.rs is
 //     if n_monsters > MAX_TRADE_MONSTERS_PER_SIDE { return Err(..) }
 // so the cap is INCLUSIVE: **64 is LEGAL and 65 rejects**. The client clause must
 // therefore be `<= 64`, NEVER `< 64` — a `< 64` clause disables a perfectly valid
 // 64-monster offer, i.e. a UX regression dressed up as a fix (plan anti-pattern 9).
 //
-// The client constant is a MIRROR of the server SSOT, not a second SSOT: the
-// numeric equality (and the fact that `canSubmit`'s clause actually READS the
-// named constant rather than an inlined literal) is gated by
-// `evals/trade-cap-parity.eval.mjs`. These vitest rows gate the BEHAVIOUR.
-//
-// Server semantics deliberately mirrored, not re-derived (VERIFIED-CLEAN in the
-// 14r-f plan): `check_trade_side_size` runs on the raw `.len()` BEFORE
+// Server semantics deliberately mirrored, not re-derived:
+// `check_trade_side_size` runs on the raw `.len()` BEFORE
 // `validate_proposal`'s duplicate-id rejection, so the client's raw `.length` is
 // the correct mirror — no dedup is applied here on purpose.
 //
-// RED AT HEAD: `tradeProposeModel.ts:129-152` has NO length cap of any kind, so
-// the 65 and 1000 rows currently return `canSubmit === true`, and
-// `MAX_TRADE_MONSTERS_PER_SIDE` is `undefined` on the module namespace.
-//
-// Do NOT edit these tests to match a buggy impl — correct from the spec only.
 // ===========================================================================
 
 /** N distinct monster ids (1n..Nn) — the only axis under test is `.length`. */
@@ -742,6 +703,9 @@ function idsOfLength(n: number): bigint[] {
   for (let i = 0; i < n; i++) out.push(BigInt(i + 1));
   return out;
 }
+
+/** The cap every row injects — pinned to the built wasm export by EARS-3a. */
+const TEST_CAP = 64;
 
 const CAP_TARGETS: TradeProposeTarget[] = [{ identity: '0xaaa1', label: 'Alice' }];
 
@@ -755,15 +719,24 @@ function capDraft(n: number, offerCurrency: string): TradeProposeDraft {
   };
 }
 
-describe('EARS-3a: MAX_TRADE_MONSTERS_PER_SIDE is exported from the model and === 64', () => {
-  it('★ BITES: the model exports MAX_TRADE_MONSTERS_PER_SIDE === 64 — kills a file-private const or an inlined magic 64', () => {
-    // WRONG IMPL KILLED: `const MAX = 64` without `export` (nothing outside the
-    // module can then assert on it, and the parity eval cannot prove the mirror);
-    // and a bare `64` inlined into the clause with no named constant at all.
-    // The VALUE is pinned to the server SSOT at trading.rs:37 — if the server cap
-    // ever moves, evals/trade-cap-parity.eval.mjs reds first and this row second.
-    expect(tradeProposeModelNs.MAX_TRADE_MONSTERS_PER_SIDE).toBe(64);
-    expect(typeof tradeProposeModelNs.MAX_TRADE_MONSTERS_PER_SIDE).toBe('number');
+describe('EARS-3a: the injected cap IS game-core MAX_TRADE_MONSTERS_PER_SIDE (value identity)', () => {
+  it('★ BITES: the BUILT wasm max_trade_monsters_per_side() === 64 === TEST_CAP — the retired TS literal', () => {
+    // Value-identity proof for the SSOT move: the model no longer owns the cap — main.ts
+    // injects `max_trade_monsters_per_side()` at boot. This reads that export from the
+    // compiled client-wasm binary (the value the live client actually gets) and pins it
+    // to the literal the deleted TS mirror carried (64) and to the TEST_CAP every row in
+    // this file injects, so the boundary table below exercises the real value.
+    // WRONG IMPL KILLED: a wasm export sourced from a different game-core constant, or a
+    // game-core edit to the cap that this suite would otherwise not notice.
+    expect(readWasmU32Constant('max_trade_monsters_per_side')).toBe(64);
+    expect(TEST_CAP).toBe(64);
+  });
+
+  it('BITES: the verdict tracks the INJECTED cap — kills a model that re-inlines a magic 64', () => {
+    // With cap 2 a 3-monster offer is vetoed and a 2-monster offer passes: an impl that
+    // ignores the parameter and compares against a literal 64 passes neither row.
+    expect(buildProposeSubmission(CAP_TARGETS, capDraft(2, '1'), 2).canSubmit).toBe(true);
+    expect(buildProposeSubmission(CAP_TARGETS, capDraft(3, '1'), 2).canSubmit).toBe(false);
   });
 });
 
@@ -779,14 +752,14 @@ describe('EARS-3b: canSubmit boundary table on selectedMonsterIds.length (cap is
     },
     { n: 1, expected: true, why: 'one monster is far below the cap' },
     { n: 63, expected: true, why: 'one below the cap' },
-    { n: 64, expected: true, why: 'EXACTLY the cap — trading.rs:44 is `n > MAX`, so 64 is LEGAL' },
-    { n: 65, expected: false, why: 'one OVER the cap — trading.rs:44 rejects at 65' },
+    { n: 64, expected: true, why: 'EXACTLY the cap — trading.rs is `n > MAX`, so 64 is LEGAL' },
+    { n: 65, expected: false, why: 'one OVER the cap — trading.rs rejects at 65' },
     { n: 1000, expected: false, why: 'far over the cap' },
   ];
 
   for (const row of rows) {
     it(`BITES: length ${row.n} → canSubmit ${row.expected} (${row.why})`, () => {
-      const sub = buildProposeSubmission(CAP_TARGETS, capDraft(row.n, '1'));
+      const sub = buildProposeSubmission(CAP_TARGETS, capDraft(row.n, '1'), TEST_CAP);
       expect(sub.canSubmit, `selectedMonsterIds.length=${row.n}: ${row.why}`).toBe(row.expected);
     });
   }
@@ -796,12 +769,10 @@ describe('EARS-3b: canSubmit boundary table on selectedMonsterIds.length (cap is
     // disable a legal 64-monster offer); a missing cap of any kind reds the
     // second (65 would submit and the server would reject with
     // "too many monsters in one trade side: 65 (max 64)").
-    const at = buildProposeSubmission(CAP_TARGETS, capDraft(64, '1'));
-    const over = buildProposeSubmission(CAP_TARGETS, capDraft(65, '1'));
-    expect(at.canSubmit, '64 monsters is LEGAL server-side (trading.rs:44 is `>`)').toBe(true);
-    expect(over.canSubmit, '65 monsters is REJECTED server-side (trading.rs:44 is `>`)').toBe(
-      false,
-    );
+    const at = buildProposeSubmission(CAP_TARGETS, capDraft(64, '1'), TEST_CAP);
+    const over = buildProposeSubmission(CAP_TARGETS, capDraft(65, '1'), TEST_CAP);
+    expect(at.canSubmit, '64 monsters is LEGAL server-side (trading.rs is `>`)').toBe(true);
+    expect(over.canSubmit, '65 monsters is REJECTED server-side (trading.rs is `>`)').toBe(false);
   });
 
   it('★ BITES: over-cap drafts also return args === null — kills an impl that flips canSubmit but still hands main.ts a payload', () => {
@@ -810,7 +781,7 @@ describe('EARS-3b: canSubmit boundary table on selectedMonsterIds.length (cap is
     // exist at all). An impl that only touches the boolean leaves a live
     // 65-monster payload reachable.
     for (const n of [65, 1000]) {
-      const sub = buildProposeSubmission(CAP_TARGETS, capDraft(n, '1'));
+      const sub = buildProposeSubmission(CAP_TARGETS, capDraft(n, '1'), TEST_CAP);
       expect(sub.canSubmit, `n=${n}`).toBe(false);
       expect(sub.args, `n=${n}: args must be null when !canSubmit`).toBeNull();
     }
@@ -820,7 +791,7 @@ describe('EARS-3b: canSubmit boundary table on selectedMonsterIds.length (cap is
     // ADR-0106/0166 D3: the server REJECTS, it never truncates. A client that
     // silently slices the selection to 64 would submit a *different* trade than
     // the player composed. At n=64 nothing may be dropped.
-    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(64, '1'));
+    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(64, '1'), TEST_CAP);
     expect(sub.canSubmit).toBe(true);
     expect(sub.args).not.toBeNull();
     expect(sub.args!.initiatorMonsterIds).toHaveLength(64);
@@ -838,37 +809,45 @@ describe('EARS-3c: the cap is a hard VETO (AND), never one more OR-branch of has
     // asset is present — which is exactly the shape the real UI produces, since
     // a player selecting 65 monsters is very likely also asking for gold.
     // Server truth: check_trade_side_size(n_monsters, n_items) rejects on the
-    // monster count ALONE, currency is not consulted (trading.rs:43-54).
-    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(65, '500'));
+    // monster count ALONE, currency is not consulted.
+    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(65, '500'), TEST_CAP);
     expect(sub.canSubmit).toBe(false);
     expect(sub.args).toBeNull();
   });
 
   it('★ BITES: 65 monsters + requestCurrency 500 → canSubmit false (same veto, other currency side)', () => {
-    const sub = buildProposeSubmission(CAP_TARGETS, {
-      targetIdentity: '0xaaa1',
-      selectedMonsterIds: idsOfLength(65),
-      offerCurrency: '0',
-      requestCurrency: '500',
-    });
+    const sub = buildProposeSubmission(
+      CAP_TARGETS,
+      {
+        targetIdentity: '0xaaa1',
+        selectedMonsterIds: idsOfLength(65),
+        offerCurrency: '0',
+        requestCurrency: '500',
+      },
+      TEST_CAP,
+    );
     expect(sub.canSubmit).toBe(false);
     expect(sub.args).toBeNull();
   });
 
   it('BITES: 65 monsters and no currency → canSubmit false (cap veto survives with no other asset)', () => {
-    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(65, '0'));
+    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(65, '0'), TEST_CAP);
     expect(sub.canSubmit).toBe(false);
     expect(sub.args).toBeNull();
   });
 
   it('BITES: the cap does not resurrect an invalid target — 64 monsters at an unknown target stays false', () => {
     // Anti-regression: the new clause must be ANDed in, not replace targetValid.
-    const sub = buildProposeSubmission(CAP_TARGETS, {
-      targetIdentity: '0xnope',
-      selectedMonsterIds: idsOfLength(64),
-      offerCurrency: '1',
-      requestCurrency: '0',
-    });
+    const sub = buildProposeSubmission(
+      CAP_TARGETS,
+      {
+        targetIdentity: '0xnope',
+        selectedMonsterIds: idsOfLength(64),
+        offerCurrency: '1',
+        requestCurrency: '0',
+      },
+      TEST_CAP,
+    );
     expect(sub.canSubmit).toBe(false);
     expect(sub.args).toBeNull();
   });
@@ -881,8 +860,14 @@ describe('EARS-3d: buildProposeSubmission stays TOTAL across the cap boundary', 
     // never throw. A checkbox handler firing at the 65th tick must return a
     // verdict, not blow up the listener.
     for (const n of [0, 1, 63, 64, 65, 1000, 5000]) {
-      expect(() => buildProposeSubmission(CAP_TARGETS, capDraft(n, '1')), `n=${n}`).not.toThrow();
-      expect(() => buildProposeSubmission(CAP_TARGETS, capDraft(n, 'abc')), `n=${n}`).not.toThrow();
+      expect(
+        () => buildProposeSubmission(CAP_TARGETS, capDraft(n, '1'), TEST_CAP),
+        `n=${n}`,
+      ).not.toThrow();
+      expect(
+        () => buildProposeSubmission(CAP_TARGETS, capDraft(n, 'abc'), TEST_CAP),
+        `n=${n}`,
+      ).not.toThrow();
     }
   });
 
@@ -891,12 +876,16 @@ describe('EARS-3d: buildProposeSubmission stays TOTAL across the cap boundary', 
     // !canSubmit (the existing PTC2-6 row pins this for the valid case); an
     // impl that early-returns a bare `{ canSubmit: false }` on the cap breaks
     // the shape the view reads.
-    const sub = buildProposeSubmission(CAP_TARGETS, {
-      targetIdentity: '0xaaa1',
-      selectedMonsterIds: idsOfLength(65),
-      offerCurrency: '30',
-      requestCurrency: '40',
-    });
+    const sub = buildProposeSubmission(
+      CAP_TARGETS,
+      {
+        targetIdentity: '0xaaa1',
+        selectedMonsterIds: idsOfLength(65),
+        offerCurrency: '30',
+        requestCurrency: '40',
+      },
+      TEST_CAP,
+    );
     expect(sub.canSubmit).toBe(false);
     expect(sub.offerCurrency).toBe(30n);
     expect(sub.requestCurrency).toBe(40n);

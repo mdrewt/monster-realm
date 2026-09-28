@@ -29,7 +29,7 @@ import { closeOverlayA11y } from './overlayA11y';
 // MECHANISM oracle: records every tf() call AND calls through to the real resolver.
 vi.mock('./i18n/resolver', { spy: true });
 
-/** Byte-copy of client/index.html:25-27 — the shell HealView binds to (unchanged by m24-s5). */
+/** Byte-copy of client/index.html:25-27 — the shell HealView binds to. */
 function mountHealOverlay(): HTMLElement {
   document.body.innerHTML = `
     <div id="heal-overlay" role="dialog" aria-modal="true" style="display:none">
@@ -200,7 +200,7 @@ describe('m24s5 (ADR-0261): healView.ts routes its row through tf()', () => {
       vi.mocked(i18nTf).mockRestore();
     }
 
-    // Post-restore call-through control (an existing S3 ★ key, unaffected by this slice).
+    // Post-restore call-through control.
     expect(i18nTf('chrome.status.disconnected', { where: 'trade' })).toBe(
       'trade: disconnected — try again',
     );
