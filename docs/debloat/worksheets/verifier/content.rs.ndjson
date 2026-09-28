@@ -1,6 +1,0 @@
-{"file":"server-module/src/content.rs","test_name":"content_parses_and_validates","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
-{"file":"server-module/src/content.rs","test_name":"sync_content_guard_does_not_use_ctx_identity","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
-{"file":"server-module/src/content.rs","test_name":"sync_content_guard_references_owner_identity","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
-{"file":"server-module/src/content.rs","test_name":"sync_content_inner_returns_result","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
-{"file":"server-module/src/content.rs","test_name":"sync_content_inner_no_bare_returns_on_error","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
-{"file":"server-module/src/content.rs","test_name":"test_seam_recheck_functions_are_cfg_test_gated","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
