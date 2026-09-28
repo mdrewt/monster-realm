@@ -17,4 +17,6 @@ wasm-bindgen = { workspace = true }
 # Marshaling boundary + browser panic hook (M3). serde_wasm_bindgen translates
 # JS values <-> game-core's serde types; no game rules live here.
 serde-wasm-bindgen = { workspace = true }
+# Derive for the marshaling-only DTOs of `evolution_eligibility` (no rules).
+serde = { workspace = true }
 console_error_panic_hook = { workspace = true }

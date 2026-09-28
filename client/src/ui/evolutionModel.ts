@@ -12,6 +12,9 @@
 // requirement, essence is matched by AFFINITY and never by list position, and
 // `eligibleEvolutionPaths` returns the FULL eligible set (never a first-match winner).
 // Fusion is DELETED, not repurposed — as are `evolvesTo`, `canEvolve` and `bond`.
+// Parity with game-core is EXECUTABLE: evolutionModel.parity.test.ts runs fast-check cases
+// through this port and through game-core's real predicate (the client-wasm
+// `evolution_eligibility` export) and requires identical answers.
 //
 // TOTAL: never throws on empty/unknown/missing input — a throw here starves sibling
 // store batch-listeners (store.ts one-way flow).

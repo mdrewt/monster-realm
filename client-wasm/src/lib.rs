@@ -236,6 +236,113 @@ pub fn talk_range() -> u32 {
     game_core::TALK_RANGE as u32
 }
 
+/// Marshaling-only input DTO for [`evolution_eligibility`]: exactly the
+/// `MonsterInstance` fields game-core's evolution gates read (plus the EV spread
+/// the Nutrition gate totals). No rule lives here.
+#[derive(serde::Deserialize)]
+struct EligibilityMonster {
+    species_id: u32,
+    /// `Level` validates 1..=100 at deserialize (parse-don't-validate).
+    level: game_core::Level,
+    /// Indexed by `Affinity::index()` (declaration order Fire..Dark).
+    essence: [u32; 8],
+    trust_favorable_count: u32,
+    trust_unfavorable_count: u32,
+    quality_time_ticks_total: u32,
+    /// `[hp, attack, defense, speed, sp_attack, sp_defense]`, validated by `EVs::new`.
+    evs: [u16; 6],
+}
+
+/// Marshaling-only output DTO for [`evolution_eligibility`]; every field is a
+/// game-core result, index-aligned with the input `paths` where it is a list.
+#[derive(serde::Serialize, Debug, PartialEq)]
+struct EligibilityReport {
+    /// `trust_tier_of` / `quality_time_tier_of` / `nutrition_pct_of` — the three
+    /// derivations the server marshal layer stamps onto `MonsterPub`.
+    trust_tier: game_core::TrustTier,
+    quality_time_tier: u8,
+    nutrition_pct: u8,
+    /// `path_satisfied` per path.
+    satisfied: Vec<bool>,
+    /// `unmet_requirement` per path (`null` exactly when satisfied).
+    unmet: Vec<Option<String>>,
+    /// `eligible_evolution_paths`, mapped from indices to `edge_id`s, in index order.
+    eligible_edge_ids: Vec<u32>,
+}
+
+/// The pure core of [`evolution_eligibility`] (natively testable): build the
+/// `MonsterInstance` and delegate every answer to game-core. Fields no gate reads
+/// (`ivs`, `nature`, `xp`, `current_hp`, `derived_stats`, `party_slot`,
+/// `nickname`) get fixed placeholders.
+fn eligibility_report(
+    m: &EligibilityMonster,
+    paths: &[game_core::EvolutionPath],
+) -> Result<EligibilityReport, String> {
+    let [hp, attack, defense, speed, sp_attack, sp_defense] = m.evs;
+    let instance = game_core::MonsterInstance {
+        species_id: m.species_id,
+        nickname: None,
+        level: m.level,
+        xp: game_core::xp_for_level(m.level),
+        ivs: game_core::IVs::new(0, 0, 0, 0, 0, 0)?,
+        nature: game_core::Nature::new(game_core::NatureKind::Hardy),
+        evs: game_core::EVs::new(hp, attack, defense, speed, sp_attack, sp_defense)?,
+        essence: m.essence,
+        trust_favorable_count: m.trust_favorable_count,
+        trust_unfavorable_count: m.trust_unfavorable_count,
+        quality_time_ticks_total: m.quality_time_ticks_total,
+        current_hp: 0,
+        derived_stats: game_core::StatBlock {
+            hp: 0,
+            attack: 0,
+            defense: 0,
+            speed: 0,
+            sp_attack: 0,
+            sp_defense: 0,
+        },
+        party_slot: None,
+    };
+    Ok(EligibilityReport {
+        trust_tier: game_core::trust_tier_of(m.trust_favorable_count, m.trust_unfavorable_count),
+        quality_time_tier: game_core::quality_time_tier_of(m.quality_time_ticks_total),
+        nutrition_pct: game_core::nutrition_pct_of(&instance.evs),
+        satisfied: paths
+            .iter()
+            .map(|p| game_core::path_satisfied(&instance, p))
+            .collect(),
+        unmet: paths
+            .iter()
+            .map(|p| game_core::unmet_requirement(&instance, p))
+            .collect(),
+        eligible_edge_ids: game_core::eligible_evolution_paths(&instance, paths)
+            .into_iter()
+            .map(|i| paths[i].edge_id)
+            .collect(),
+    })
+}
+
+/// Evolution eligibility across the wasm boundary — game-core's REAL predicate
+/// (`path_satisfied` / `unmet_requirement` / `eligible_evolution_paths`) plus the
+/// three tier derivations, for the executable parity test against the client's TS
+/// port (`client/src/ui/evolutionModel.parity.test.ts`). `monster` is an
+/// [`EligibilityMonster`]-shaped object, `paths` an array of snake_case
+/// `EvolutionPath` objects; returns an [`EligibilityReport`]-shaped object
+/// (`unmet` entries are `null`, never `undefined`, when satisfied).
+///
+/// # Errors
+/// Returns a JS error if either input fails to deserialize (e.g. a level or a
+/// `min_level` outside 1..=100, an unknown affinity/trust tag) or the EVs exceed
+/// their caps.
+#[wasm_bindgen]
+pub fn evolution_eligibility(monster: JsValue, paths: JsValue) -> Result<JsValue, JsValue> {
+    use serde::Serialize as _;
+    let monster: EligibilityMonster = serde_wasm_bindgen::from_value(monster)?;
+    let paths: Vec<game_core::EvolutionPath> = serde_wasm_bindgen::from_value(paths)?;
+    let report = eligibility_report(&monster, &paths).map_err(zone_map_err)?;
+    let serializer = serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true);
+    Ok(report.serialize(&serializer)?)
+}
+
 /// The renderer's map source: the SAME `TileMap` the rule evaluates.
 /// Dispatches on `zone_id` via the content registry (`load_zone_maps`).
 ///
@@ -361,6 +468,62 @@ mod tests {
     #[test]
     fn talk_range_matches_game_core_const() {
         assert_eq!(i64::from(super::talk_range()), game_core::TALK_RANGE);
+    }
+
+    // EVOLUTION ELIGIBILITY marshaling core. The cross-language parity (TS port
+    // == this export) is the fast-check suite evolutionModel.parity.test.ts; these
+    // pin that the core DELEGATES to game-core over the real authored graph.
+    fn sample_monster(level: u8, evs: [u16; 6]) -> super::EligibilityMonster {
+        super::EligibilityMonster {
+            species_id: 1,
+            level: game_core::Level::new(level).expect("valid level"),
+            essence: [30, 0, 5, 0, 0, 0, 0, 12],
+            trust_favorable_count: 40,
+            trust_unfavorable_count: 3,
+            quality_time_ticks_total: 160,
+            evs,
+        }
+    }
+
+    #[test]
+    fn eligibility_report_delegates_to_game_core_over_the_authored_graph() {
+        let paths = game_core::load_evolution_paths().expect("evolution graph parses");
+        let mut eligible_seen = 0usize;
+        let mut ineligible_seen = 0usize;
+        for level in [1u8, 16, 36, 100] {
+            let m = sample_monster(level, [100, 100, 50, 0, 0, 0]);
+            let report = super::eligibility_report(&m, &paths).expect("valid monster");
+            let evs = game_core::EVs::new(100, 100, 50, 0, 0, 0).expect("valid EVs");
+            assert_eq!(report.trust_tier, game_core::trust_tier_of(40, 3));
+            assert_eq!(
+                report.quality_time_tier,
+                game_core::quality_time_tier_of(160)
+            );
+            assert_eq!(report.nutrition_pct, game_core::nutrition_pct_of(&evs));
+            assert_eq!(report.satisfied.len(), paths.len());
+            assert_eq!(report.unmet.len(), paths.len());
+            for (i, sat) in report.satisfied.iter().enumerate() {
+                assert_eq!(*sat, report.unmet[i].is_none(), "path {i}");
+            }
+            let expected: Vec<u32> = paths
+                .iter()
+                .enumerate()
+                .filter(|(i, p)| p.from_species == 1 && report.satisfied[*i])
+                .map(|(_, p)| p.edge_id)
+                .collect();
+            assert_eq!(report.eligible_edge_ids, expected, "level {level}");
+            eligible_seen += report.eligible_edge_ids.len();
+            ineligible_seen += report.unmet.iter().filter(|u| u.is_some()).count();
+        }
+        // Non-vacuity: the sweep must hit both verdicts on the real graph.
+        assert!(eligible_seen > 0, "no path was ever eligible");
+        assert!(ineligible_seen > 0, "no path was ever ineligible");
+    }
+
+    #[test]
+    fn eligibility_report_rejects_evs_over_the_total_cap() {
+        let m = sample_monster(10, [252, 252, 252, 0, 0, 0]);
+        assert!(super::eligibility_report(&m, &[]).is_err());
     }
 
     // -------------------------------------------------------------------------
