@@ -1,5 +1,4 @@
-// otlp.mjs — OTLP/HTTP JSON trace encoder (pure core, m20e T3; OBS-44,
-// ADR-0180 D1/OBS-3).
+// otlp.mjs — OTLP/HTTP JSON trace encoder (pure core).
 //
 // Trace and span ids are LOWERCASE HEX strings of exactly 32/16 characters in
 // the OTLP/HTTP JSON export — never base64, which is what protobuf's JSON

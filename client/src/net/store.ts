@@ -10,7 +10,7 @@
 // **batch-applied** signal (`flushBatch`) lets the loop reconcile once on a coherent
 // snapshot rather than mid-update (the rubberband race) — the live SDK exposes only
 // per-row callbacks, so the adapter coalesces them within a microtask and calls
-// `flushBatch` once per transaction burst (validation-findings: per-tx fallback).
+// `flushBatch` once per transaction burst.
 import type { WasmAction, WasmDirection, WasmMoveInput } from '../convert/convert';
 import { BURST_EPSILON_MS, INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH } from '../shared/interpConfig';
 // Type-only, therefore erased: no runtime import edge, no cycle. `AffinityName` is

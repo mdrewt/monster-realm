@@ -1,5 +1,4 @@
-//! `hot_paths` — the OBS-5/OBS-6 criterion harness + perf-budget gate (m20a
-//! plan §6, ADR-0180 D7). `fn main` is ours (`harness = false`): clean the
+//! `hot_paths` — the criterion harness + perf-budget gate. `fn main` is ours (`harness = false`): clean the
 //! criterion output dirs (AM1), bench the 7 budgeted hot paths over REAL
 //! shipped content (the public `load_*` loaders — never cfg(test) builders),
 //! read criterion's `mean.point_estimate` back, and exit non-zero on any

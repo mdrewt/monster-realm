@@ -1,5 +1,4 @@
-// mr-trace-relay.mjs — batch shell around the pure relay core (m20e T4;
-// ADR-0180, OBS-44/45/50).
+// mr-trace-relay.mjs — batch shell around the pure relay core.
 //
 // Contract: read the module log files under --logs-dir READ-ONLY, reconstruct
 // spans through the pure core, and print ONE OTLP/HTTP JSON trace document on

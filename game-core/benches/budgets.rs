@@ -1,5 +1,4 @@
-//! Perf-budget table + the pure comparison/read-back helpers (OBS-5/OBS-6,
-//! m20a plan §6c, ADR-0180 D7).
+//! Perf-budget table + the pure comparison/read-back helpers.
 //!
 //! Shared VERBATIM by two targets — `hot_paths.rs` (the criterion harness,
 //! `[[bench]]`) via `mod budgets;` and `budget_check_tests.rs` (the nextest

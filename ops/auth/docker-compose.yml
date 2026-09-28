@@ -1,4 +1,4 @@
-# Self-hosted Better Auth issuer for Monster Realm accounts (ADR-0179 / ADR-0182).
+# Self-hosted Better Auth issuer for Monster Realm accounts (see README.md here).
 #
 # Better Auth is a TypeScript library, not a shipped server image, so this compose
 # file runs the stock pinned Node image and installs the exact pinned Better Auth

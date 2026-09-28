@@ -32,7 +32,7 @@ function compareProfiles(a: StoreProfile, b: StoreProfile): number {
   if (a.rating !== b.rating) return b.rating - a.rating;
   if (a.name !== b.name) return a.name < b.name ? -1 : 1;
   // Equal identities return 0 (comparator contract): unreachable with the server
-  // PK, but Array.sort requires compare(a, a) >= 0 and the ADR claims total order.
+  // PK, but Array.sort requires compare(a, a) >= 0 and the ordering is documented as total.
   return a.identity < b.identity ? -1 : a.identity > b.identity ? 1 : 0;
 }
 

@@ -1,6 +1,6 @@
 /*
- * styles.css — the repo's FIRST stylesheet (M23 slice S2, spec §2.7; ADR-0205 governs
- * the a11y metadata this file serves).
+ * styles.css — the client's stylesheet (it serves the a11y metadata in
+ * ui/overlayRegistry.ts).
  *
  * HARD CONSTRAINT: CLASS and `:root` SELECTORS ONLY — ZERO `#id` SELECTORS, EVER.
  * `client/src/indexShell.test.ts` and `client/src/main.wiring.test.ts` pin the exact
@@ -18,7 +18,7 @@
  * `just ci` has no client build step, vitest never applies CSS, and there is no e2e
  * console-error gate.
  *
- * PRESENT since slice S9 (spec §2.7, ADR-0253): the `:root` colour tokens and the
+ * The `:root` colour tokens and the
  * `@media (prefers-contrast: more)` override at the END of this file. Every token is
  * consumed by an inline `var()` in `ui/evolutionView.ts` — a token nothing reads is a
  * decoy, and `evolutionView.test.ts` (m23s9 X3) reds on one.
@@ -69,7 +69,7 @@
 }
 
 /*
- * The battle HP bar's fill (slice rb-10, residual R-m23-s2-X4; M23 §2.5; ADR-0213).
+ * The battle HP bar's fill.
  * `ui/battleView.ts` #renderMonsterCard creates this element and writes `width` and
  * `background` inline, because both are computed per render. The ANIMATION lives here
  * instead: an inline declaration is unreachable by any selector at any specificity, and
@@ -101,7 +101,7 @@
 }
 
 /*
- * Colour tokens for the evolution overlay (slice m23-s9, spec §2.7, ADR-0253).
+ * Colour tokens for the evolution overlay.
  *
  * WHY TOKENS AND NOT LITERALS. `ui/evolutionView.ts` styles every element inline, like its
  * twelve sibling views, and an inline literal is unreachable by any media query. Declaring the

@@ -1,4 +1,4 @@
-// Grafana Alloy — the SOLE telemetry agent for the Monster Realm stack (M20 / ADR-0180 D3).
+// Grafana Alloy — the SOLE telemetry agent for the Monster Realm stack.
 //
 // Two independent data paths live here:
 //   S2  file tail  -> Loki  (+ log-derived counters on Alloy's own /metrics, scraped as S1b)
@@ -125,7 +125,7 @@ otelcol.receiver.otlp "s4" {
 	}
 }
 
-// OBS-34 (ADR-0180 amendment "Correction 2") — the S4 metric-label ALLOWLIST.
+// The S4 metric-label ALLOWLIST.
 //
 // This is the highest-severity control in the file. The ingest above is public and
 // unauthenticated, and OTLP attributes convert 1:1 into Prometheus labels, so without a filter a

@@ -1,4 +1,4 @@
-# Determinism gate (ADR-0003): bans wall-clock reads + unseeded RNG + OS entropy.
+# Determinism gate: bans wall-clock reads + unseeded RNG + OS entropy.
 # WORKSPACE-WIDE. `just lint` runs `clippy --workspace --all-targets --all-features
 # -- -D warnings`, so an impurity is a build failure, not a review note. Time is
 # injected (server: ctx.timestamp -> Millis; client: passed in; tests/sim-harness:

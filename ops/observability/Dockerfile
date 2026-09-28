@@ -1,7 +1,7 @@
 # Caddy + caddy-ratelimit, built with xcaddy.
 #
 # This is the one image in the stack that is BUILT rather than pulled, because stock Caddy has no
-# rate limiting and OBS-21 needs it. ADR-0180 D3 flags this as Caddy's differentiated maintenance
+# rate limiting and the public OTLP route needs it. That makes Caddy the stack's one maintenance
 # line: unlike the other six stock, `docker pull`-able images, this service carries its own
 # build pipeline and upstream-CVE-tracking obligation. Both stages are digest-pinned, and the
 # plugin is version-pinned — an unpinned `--with` reference would silently float.
@@ -15,7 +15,7 @@ FROM caddy:2.11.4-alpine@sha256:98eb57d882ccd5213d1688764db10c1ca2c58a1ca3a6717a
 
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 
-# ADR-0190 D3. The stock caddy binary carries the net-bind file capability, and buildkit
+# The stock caddy binary carries the net-bind file capability, and buildkit
 # preserves file capabilities across `COPY --from=`, so the line above inherits it. A binary
 # whose EFFECTIVE capability set is not a subset of the process bounding set cannot be exec'd
 # at all: with `USER 10001` below plus the compose service's `cap_drop: [ALL]` and

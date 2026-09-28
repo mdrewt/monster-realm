@@ -184,8 +184,7 @@ export class BattleView {
     // without touching either file — it was not taken because a parenthetical after the
     // species name is a weaker announcement than a leading role word, and because the slice
     // was in its landing phase. The successor should pick the spelling on merit.
-    // Do NOT re-home these hexes into `:root` custom properties in styles.css — docs/adr/0233
-    // bans it. It is a convention, not a gate, and styles.css separately expects a later slice
+    // Do NOT re-home these hexes into `:root` custom properties in styles.css. It is a convention, not a gate, and styles.css separately expects a later slice
     // to add :root tokens for OTHER values — the ban is on re-homing THESE border hexes.
     this.#opponentCardEl = document.createElement('div');
     this.#opponentCardEl.style.cssText =

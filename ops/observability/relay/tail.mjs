@@ -1,4 +1,4 @@
-// tail.mjs — the relay's PURE tail state machine (13r-b; ADR-0191, AM9).
+// tail.mjs — the relay's PURE tail state machine.
 //
 // A poll observes a file and this module decides what to read from it. It owns
 // no state, reaches for no builtin, and never performs I/O: the shell hands it
@@ -35,7 +35,7 @@
 // { offset, identity }. A second size in the state is a second thing to get
 // wrong, and nothing here needs it.
 //
-// STATED, DELIBERATE GAPS (ADR-0191), pinned by tests rather than discovered:
+// STATED, DELIBERATE GAPS, pinned by tests rather than discovered:
 //   * a double rotation inside one poll interval loses the middle file whole —
 //     one identity comparison cannot count rotations;
 //   * `truncated` restarts at 0 and therefore RE-EMITS the surviving prefix;

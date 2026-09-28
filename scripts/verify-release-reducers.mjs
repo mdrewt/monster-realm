@@ -1,4 +1,4 @@
-// verify-release-reducers.mjs — pt-a2 (ADR-0129, EARS pt-a2-3)
+// verify-release-reducers.mjs — prove a published module exposes no dev-only reducers.
 //
 // Proves the PUBLISHED playtest module carries NONE of the cfg-gated dev-only
 // reducers. It introspects the live module via `spacetime describe --json <db>`
@@ -33,7 +33,7 @@ export const FORBIDDEN_REDUCERS = ['start_wild_battle', 'grant_bait'];
 // list (§K B-1/H-2: zero reducers means the introspection failed or the JSON
 // path is wrong — a published module always has join_game/sync_content).
 //
-// TWO WIRE SHAPES (ADR-0197). The shape is chosen by the CLI, NOT the host:
+// TWO WIRE SHAPES. The shape is chosen by the CLI, NOT the host:
 // `crates/cli/src/api.rs::module_def` requests schema `version=9` at CLI <= 2.7.1
 // and `version=10` at CLI >= 2.8.0 (falling back to v9 and UPGRADING the result to
 // V10 before printing). So a 2.8.x CLI emits V10 even against an old host.

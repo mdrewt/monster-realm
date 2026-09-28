@@ -1,4 +1,4 @@
-# Caddy — the ONLY process in this stack with an externally-facing policy (ADR-0180 D3/D5).
+# Caddy — the ONLY process in this stack with an externally-facing policy.
 #
 # TWO ROUTES, TWO DIFFERENT POLICIES — not one blanket rule. An earlier draft of this design gave
 # both routes a single "TLS + auth" rule, which is incoherent: an anonymous game client

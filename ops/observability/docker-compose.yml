@@ -1,6 +1,6 @@
-# Monster Realm — self-hosted observability stack (M20 / ADR-0180, slice m20b).
+# Monster Realm — self-hosted observability stack.
 #
-# NETWORK POSTURE (ADR-0180 amendment "Correction 1", m20b plan §5b-A). Every service runs on
+# NETWORK POSTURE. Every service runs on
 # the HOST network and binds 127.0.0.1 ONLY. `ports:` is deliberately absent everywhere: under
 # `network_mode: host` a `ports:` block is silently inert, so it would be false comfort rather
 # than a control. A bridge network is not usable here — a container's 127.0.0.1 is itself, and a
@@ -15,9 +15,8 @@
 # THE ONE VARIABLE that changes if this box is ever exposed (M-playtest-a2) is
 # MR_CADDY_BIND_ADDR. Every other service stays loopback-bound permanently.
 #
-# OQ1 is ANSWERED, not guessed: M-playtest-a-deployment.spec.md fixes deployment as local-only,
-# no hosted deployment (rescoped 2026-07-17), same box. See ../../docs/observability-dr-runbook.md
-# for the drift risk if the operator ever widens SpacetimeDB's own --listen-addr.
+# Deployment is local-only on one box, with no hosted target. See
+# ../../docs/runbooks/observability-dr.md for the drift risk if the operator ever widens SpacetimeDB's own --listen-addr.
 #
 # RESOURCE CAPS BELOW ARE PLACEHOLDERS, honestly labelled. M20 §5 sequences m20b in PARALLEL with
 # m20d (mr-load-driver, the thing that produces a real footprint figure), so no measured number
@@ -60,7 +59,7 @@ services:
     image: grafana/alloy:v1.18.1@sha256:754409730f1a4ed9781f8a2ea3b6a8c55750ee125a267ecf8fb449f9a25c109a
     network_mode: host
     restart: unless-stopped
-    # ADR-0190 D2. The image's ENTRYPOINT runs as uid 0, but it ships /var/lib/alloy and
+    # The image's ENTRYPOINT runs as uid 0, but it ships /var/lib/alloy and
     # /var/lib/alloy/data as mode 0770 owned by 473:473 (`alloy` in the image's own passwd file).
     # Under `cap_drop: [ALL]` even uid 0 has no CAP_DAC_OVERRIDE, so it can neither traverse nor
     # create them: `mkdir: cannot create directory '/var/lib/alloy': Permission denied`, then a
@@ -127,7 +126,7 @@ services:
     volumes:
       - ./tempo/tempo-config.yml:/etc/tempo/tempo-config.yml:ro
       - tempo-data:/var/tempo
-    # PARKED, ADR-0190 D1 — the second flag below DOES NOT EXIST in tempo 2.10.7 (nor 3.0.2):
+    # PARKED — the second flag below DOES NOT EXIST in tempo 2.10.7 (nor 3.0.2):
     # `flag provided but not defined`, and the container dies on start. It is retained only
     # because deleting it reds `checkListenAddrsLoopback` in ops/observability/checks/
     # stack-config-checks.mjs, which is outside slice 13r-a's declared file set. The follow-up
@@ -215,14 +214,14 @@ services:
   # D15/D17/OBS-45/OBS-46 — the trace relay: it tails the SAME read-only replicas bind mount
   # Alloy does, reconstructs enter/exit spans, serves /health as a scrape target and prints its
   # OTLP/HTTP JSON document on stdout. Nothing ingests that document yet (the OTLP POST client is
-  # parked to 13r-c) and `$trace_pair_set` is empty, so today it is a dead-man's-switched process
-  # emitting an empty span list — deliberately, and stated in ADR-0191 rather than implied.
+  # not written yet) and `$trace_pair_set` is empty, so today it is a dead-man's-switched process
+  # emitting an empty span list, deliberately.
   #
-  # Three properties of this block are load-bearing and each is mechanically gated (eval G9n):
+  # Three properties of this block are load-bearing:
   #   * `user: "473:473"` is ALLOY's uid, not a second one. Both services read the same host
   #     directory, so a second identity would force the operator to widen host-side r-x to another
   #     uid for no benefit. The operator precondition is therefore unchanged — see the alloy block
-  #     above and docs/observability-dr-runbook.md; a wrong mode is a SILENT tail stall, which is
+  #     above and docs/runbooks/observability-dr.md; a wrong mode is a SILENT tail stall, which is
   #     what the mr_trace_relay_lines_read_total counter on /health exists to make visible.
   #   * the `command:` list BEGINS with `node`. The node image's entrypoint does `set -- node "$@"`
   #     only when $1 does not start with `-`, so a bare `--logs-dir=...` first item would be parsed

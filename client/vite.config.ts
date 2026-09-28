@@ -3,7 +3,7 @@ import topLevelAwait from 'vite-plugin-top-level-await';
 import wasm from 'vite-plugin-wasm';
 import { coverageConfigDefaults, defineConfig } from 'vitest/config';
 
-// pt-a1 (ADR-0128): capture the build provenance at build time. The git short-SHA +
+// pt-a1: capture the build provenance at build time. The git short-SHA +
 // build time are injected as bareword globals (__MR_BUILD_SHA__ / __MR_BUILD_TIME__),
 // read by src/net/buildInfo.ts and surfaced in-client + at window.__mrBuild for the
 // M-playtest-b F9 bug bundle. Both are env-overridable so the deferred hosted-publish
@@ -25,9 +25,9 @@ const buildTime = process.env.MR_BUILD_TIME ?? new Date().toISOString();
 // wasm-pack) is consumed through these plugins: `vite-plugin-wasm` resolves the
 // ESM `.wasm` import and `vite-plugin-top-level-await` lets the async init run at
 // module top level. M3 wires the build/plugins + the headless prediction layer
-// (convert + Predictor); M4/M5a binds the live module into the loop (ADR-0036).
+// (convert + Predictor); M4/M5a binds the live module into the loop.
 export default defineConfig({
-  // pt-a1 (ADR-0128): build-provenance globals, replaced at build time by Vite's
+  // pt-a1: build-provenance globals, replaced at build time by Vite's
   // define (and applied under vitest too, so importing buildInfo.ts never crashes).
   define: {
     __MR_BUILD_SHA__: JSON.stringify(buildSha),
@@ -51,14 +51,14 @@ export default defineConfig({
     // M10.5d: Verified 2026-07-04 — adding `it.only(...)` locally causes
     // `npm test` to exit non-zero with "allowOnly is false" diagnostic.
     allowOnly: false,
-    // Coverage scope for the nightly `just coverage` line-threshold gate (ADR-0050).
+    // Coverage scope for the nightly `just coverage` line-threshold gate.
     // The gate measures HAND-WRITTEN, UNIT-TESTABLE product LOGIC, so it must scope
     // to that — otherwise it is dominated by code vitest is not responsible for
     // (vendored `art-src/`, generated bindings, and render/DOM shells whose behavior
     // is a Playwright concern), making the number meaningless. Keeping the gate
-    // meaningful (ADR-0009/0010): only non-unit-logic files are excluded — never a
+    // meaningful: only non-unit-logic files are excluded — never a
     // logic module. m13.5a re-measured post-exclusion coverage at 99.35% lines and
-    // ratcheted the justfile threshold 25 -> 96 (ADR-0050 amendment A1); this
+    // ratcheted the justfile threshold 25 -> 96; this
     // include/exclude set is exact-set-guarded by dom-shell-coverage-exclusion
     // (findUnsanctionedExclusions + include-narrowing tooth) so the denominator
     // cannot silently drift.
@@ -67,7 +67,7 @@ export default defineConfig({
       // the Playwright `e2e/` specs, and the vendored `art-src/demo/pixi.min.mjs`).
       include: ['src/**/*.ts'],
       exclude: [
-        // vitest's built-in default excludes. NOTE (ADR-0050 amendment 2026-07-22):
+        // vitest's built-in default excludes. NOTE:
         // vitest 4 empties coverageConfigDefaults.exclude to [] (it dropped the
         // non-Vitest/Vite default patterns), so this spread no longer drops test
         // files / *.d.ts / configs — it is kept only as a forward-compat spread.
@@ -79,9 +79,9 @@ export default defineConfig({
         'src/**/*.test.ts',
         // Generated SpacetimeDB SDK bindings: emitted by `spacetime generate`,
         // regenerated from the server schema and drift-gated by the bindings-drift
-        // eval (`just eval`, ADR-0050). Not hand-written, not meaningfully unit-tested.
+        // eval (`just eval`). Not hand-written, not meaningfully unit-tested.
         'src/module_bindings/**',
-        // Render/DOM/bootstrap imperative shells (ADR-0014 one-way flow): their
+        // Render/DOM/bootstrap imperative shells (one-way data flow): their
         // SUBSTANTIVE decision logic lives in the tested pure cores (map,
         // interpolation, slideClock, zorder, viewRegistry, battleModel, boxModel,
         // store, batch, rowConvert), and their behavior is validated by the M5/M7
@@ -109,7 +109,7 @@ export default defineConfig({
         'src/ui/shopView.ts', // thin DOM shell for the shop overlay (M13d)
         'src/ui/tradeView.ts', // thin DOM shell for the trade overlay (m15b)
         'src/ui/pvpView.ts', // thin DOM shell for the PvP challenge overlay (m16b)
-        'src/ui/claimView.ts', // thin DOM shell for the guest-claim overlay (M21b-2, ADR-0182 D16)
+        'src/ui/claimView.ts', // thin DOM shell for the guest-claim overlay
         'src/ui/sessionView.ts', // thin DOM shell for the session-lifecycle overlay (M21b-2, D17)
       ],
     },

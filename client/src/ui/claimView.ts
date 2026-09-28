@@ -59,7 +59,7 @@ export interface ClaimViewHandlers {
   readonly onDeclineCancelled: () => void;
   /** the front door to the privacy surface. It lives HERE rather than on
    *  a menu leaf of its own because a leaf needs a `keyGlyph` in `helpModel.ts`'s CONTROLS SSOT,
-   *  which is set-equality-gated against `docs/PLAYTEST.md` — a heavier change. Account
+   *  which docs/PLAYTEST.md mirrors — a heavier change. Account
    *  deletion and data export are account management, so this is also where they belong. */
   readonly onPrivacy: () => void;
 }

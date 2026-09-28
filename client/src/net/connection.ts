@@ -985,7 +985,7 @@ export function connect(opts: ConnectionOptions): Connection {
   }
 
   /** AUTH-48: mint the claim code, register it with `start_guest_claim` while still connected as
-   *  the GUEST (ADR-0179 D3: the code is written to storage BEFORE the reducer call, and only that
+   *  the GUEST (the code is written to storage BEFORE the reducer call, and only that
    *  reducer inserts the row `complete_guest_claim` later resolves), and only once the registration
    *  has SETTLED hand off to the OIDC redirect (the redirect leaves the page). A registration that
    *  cannot happen — no live link, no CSPRNG, or a refused reducer — BLOCKS sign-in: the code is
