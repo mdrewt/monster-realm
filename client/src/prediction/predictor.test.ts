@@ -2880,33 +2880,26 @@ describe('nh2-1 ADR-0148 U8: switching direction mid-hold commits at most one mo
 });
 
 // --------------------------------------------------------------------------------
-// ADR-0152 residual 1 tripwire. NOT a behavioural gate — a DOC-DRIFT alarm.
+// ACCEPTED BEHAVIOUR: a freshly constructed Predictor starts with outstandingSteps === 0.
 //
-// ADR-0152 named, and deliberately did NOT fix, an under-count: a freshly constructed
-// Predictor starts with `#lastAuthQueueLen = 0` while the server may still owe a queued
-// step, so exactly ONE extra continuation can slip through per rebuild (zone warp /
-// reconnect / resetPredictionState). ADR-0187 residual 7 points at this file for the pin.
-//
-// The tripwire is deliberately shaped as "the documented behaviour still holds": if
-// someone fixes the under-count (e.g. by seeding #lastAuthQueueLen from a snapshot at
-// construction), THIS reds — which is the signal to update the two ADRs rather than to
-// "repair" the test. It is intentionally a near-duplicate of U9 above; U9 states the
-// INVARIANT (an uninitialised counter would freeze the player), this states the RESIDUAL.
-// Scope note: the runLoop model above stays pre-mvi (ADR-0158 residual 8) and is not
-// touched here — this constructs a Predictor directly.
+// A fresh Predictor (zone warp / reconnect / resetPredictionState) knows nothing of the
+// server's queue until its first reconcile, so it reports 0 outstanding steps even if the
+// server still owes one. This is bounded and benign by design (ADR-0152, adjudicated in
+// Phase 3 — ledger BUG-predictor-fresh-outstanding-undercount): at most ONE extra
+// continuation can be emitted per rebuild; on a warp the same-flush reconcile rewrites the
+// count, on a reconnect held.clear() leaves nothing to emit into the gap; the server's
+// authoritative queue cap (2) bounds the effect; and seeding the count from a possibly
+// stale store instead risks an over-count that shuts the continuation gate — a freeze
+// (U9 above is that invariant). So the fresh value is 0, on purpose.
 // --------------------------------------------------------------------------------
-describe('ADR-0152 residual 1 tripwire (14r-e)', () => {
-  it('a freshly constructed Predictor reports outstandingSteps === 0 — the DOCUMENTED under-count window', () => {
+describe('fresh Predictor outstanding count (accepted behaviour, ADR-0152)', () => {
+  it('a freshly constructed Predictor reports outstandingSteps === 0 until its first reconcile', () => {
     const p = mkCapped(2);
     expect(
       p.outstandingSteps,
-      'A RED HERE MEANS THE BEHAVIOUR CHANGED, NOT THAT THE TEST IS WRONG: a fresh Predictor ' +
-        'is documented (ADR-0152 residual 1, restated as ADR-0187 residual 7) to report 0 ' +
-        'outstanding steps even though the server may still owe a queued step, which lets ' +
-        'exactly one extra continuation slip through per predictor rebuild. If this value is ' +
-        'no longer 0, the under-count window has been CLOSED — update ADR-0152 residual 1 and ' +
-        'ADR-0187 residual 7 (and re-check main.ts resetPredictionState) instead of adjusting ' +
-        'this expectation',
+      'a fresh Predictor has observed no authoritative queue yet, so it reports 0; this is the ' +
+        'accepted, bounded rebuild window (at most one extra continuation, erased by the next ' +
+        'reconcile) — do not seed it from store state, which risks a stuck-shut gate',
     ).toBe(0);
   });
 });
