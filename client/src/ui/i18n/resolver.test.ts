@@ -70,6 +70,22 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
       'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
       'chrome.status.healUnavailable': 'heal: no heal location available',
       'chrome.status.partyFull': 'party is full — move a monster to the box first',
+      // 21r-b: 8 new plain chrome.* keys — the repo-wide disconnected line, the rename
+      // confirmation, and the six session-overlay strings (sessionModel.ts:124-134).
+      'chrome.feedback.disconnected': 'disconnected — try again',
+      'chrome.rename.updated': 'Name updated!',
+      'chrome.session.expired.title': 'Session expired',
+      'chrome.session.expired.body':
+        'Your sign-in has expired. Sign in again to keep saving progress across your devices, ' +
+        'or continue as a guest on this one.',
+      'chrome.session.unreachable.title': 'Sign-in service unavailable',
+      'chrome.session.unreachable.body':
+        'We could not reach the sign-in service. Your account is safe — the game keeps ' +
+        'retrying in the background, or you can continue as a guest for now.',
+      'chrome.session.continue': 'Continue as guest',
+      'chrome.session.confirmPrompt':
+        'Continuing as a guest gives up this account session on this tab and cannot be undone. ' +
+        'Continue as a guest?',
     });
   });
 

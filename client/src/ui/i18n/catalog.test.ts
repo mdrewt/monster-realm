@@ -355,6 +355,31 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'privacy.confirm.delete': 'Confirm deletion', // privacyView.ts
   'privacy.confirm.keep': 'Keep my account', // privacyView.ts
   'evolutionNotice.ok': 'OK', // evolutionNotice.ts (resolved in render())
+  // 21r-b: 15 new plain keys — shop/trade reducer feedback, the rename confirmation, the
+  // trade-propose confirmation and the six session-overlay strings (sessionModel.ts:124-134).
+  // Every value is byte-transcribed from the pre-migration literal at the cited main.ts/
+  // sessionModel.ts line (memory/projects/monster-realm-21r-b-plan.md's key table).
+  'chrome.feedback.disconnected': 'disconnected — try again', // main.ts (10 guarded sites) / careAction.ts / sessionModel.ts
+  'shop.feedback.purchased': 'Purchase complete!', // main.ts:2643
+  'shop.feedback.sold': 'Sale complete!', // main.ts:2658
+  'trade.feedback.accepted': 'Trade accepted!', // main.ts:2675
+  'trade.feedback.rejected': 'Trade rejected.', // main.ts:2687
+  'trade.feedback.completed': 'Trade complete!', // main.ts:2699
+  'trade.feedback.cancelled': 'Trade cancelled.', // main.ts:2711
+  'chrome.rename.updated': 'Name updated!', // main.ts:2829
+  'tradePropose.feedback.sent': 'Offer sent!', // main.ts:2860
+  'chrome.session.expired.title': 'Session expired', // sessionModel.ts:124
+  'chrome.session.expired.body':
+    'Your sign-in has expired. Sign in again to keep saving progress across your devices, or ' +
+    'continue as a guest on this one.', // sessionModel.ts:125-126
+  'chrome.session.unreachable.title': 'Sign-in service unavailable', // sessionModel.ts:127
+  'chrome.session.unreachable.body':
+    'We could not reach the sign-in service. Your account is safe — the game keeps retrying ' +
+    'in the background, or you can continue as a guest for now.', // sessionModel.ts:128-129
+  'chrome.session.continue': 'Continue as guest', // sessionModel.ts:130
+  'chrome.session.confirmPrompt':
+    'Continuing as a guest gives up this account session on this tab and cannot be undone. ' +
+    'Continue as a guest?', // sessionModel.ts:133-134
 };
 
 interface ParamOutputSpec {
@@ -586,9 +611,12 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 112-key roster (m24s5 growth of the m24s4 96-key roster, itself grown from the
- *  m24-s1 10-key `chrome.*` seed), sorted — `EXPECTED_PLAIN` and `SAMPLE_PARAMS` are disjoint
- *  by construction (plain vs. parameterised), so their key union is exactly the roster. */
+/** The full 133-key roster (21r-b growth of the pre-slice 118-key roster by the 15 new
+ *  `chrome.feedback.*`/`shop.feedback.*`/`trade.feedback.*`/`chrome.rename.updated`/
+ *  `tradePropose.feedback.sent`/`chrome.session.*` keys — corrects a stale "112" this comment
+ *  carried forward from before the m24-s5 tail batch), sorted — `EXPECTED_PLAIN` and
+ *  `SAMPLE_PARAMS` are disjoint by construction (plain vs. parameterised), so their key union is
+ *  exactly the roster. */
 const EXPECTED_KEYS = Object.keys(EXPECTED_PLAIN).concat(Object.keys(SAMPLE_PARAMS)).sort();
 
 describe('catalog.en — the English catalog: @desc adjacency, key grammar, and shape invariants (m24-s1, ADR-0256)', () => {
@@ -634,7 +662,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the m24s5 112-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the 21r-b 133-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -723,10 +751,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — 42-key roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3 CAT-01: the roster is exactly 112 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b CAT-01: the roster is exactly 133 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the 112 keys.
+    // (a) roster is exactly the 133 keys.
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
