@@ -1951,7 +1951,7 @@ store.onBatchApplied(() => {
       buildTradeViewModel(store.allTradeOffers(), identity, store.speciesMap(), store.itemDefs()),
     );
   } catch (err) {
-    console.error('[m15b] trade batch listener error', err);
+    console.error('[trade] batch listener error', err);
   }
 });
 
@@ -1970,7 +1970,7 @@ store.onBatchApplied(() => {
       !anyOverlayVisible && (vm.incoming !== null || (pvpView?.visible ?? false));
     pvpView?.refresh(vm, forceVisible);
   } catch (err) {
-    console.error('[m16b] pvpView batch listener error', err);
+    console.error('[pvpView] batch listener error', err);
   }
 });
 
@@ -1983,7 +1983,7 @@ store.onBatchApplied(() => {
   try {
     leaderboardView.render(buildLeaderboardViewModel(store.allProfiles(), identity));
   } catch (err) {
-    console.error('[m17b] leaderboard batch listener error', err);
+    console.error('[leaderboard] batch listener error', err);
   }
 });
 

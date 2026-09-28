@@ -87,7 +87,7 @@ export type AffinityName = (typeof HANDLED_ENUM_VARIANTS.Affinity)[number];
 export function narrowTag<T extends string>(raw: string, known: readonly T[], enumName: string): T {
   if (!known.some((k) => k === raw)) {
     console.warn(
-      `[rowConvert] unknown ${enumName} tag '${raw}' — not in the handled-variant registry; passing through raw (ADR-0127 fail-soft)`,
+      `[rowConvert] unknown ${enumName} tag '${raw}' — not in the handled-variant registry; passing through raw (fail-soft)`,
     );
   }
   // The ONE centralized, audited cast: known tags are provably in T;
