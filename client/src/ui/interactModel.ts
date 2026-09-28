@@ -8,11 +8,6 @@
 import type { StoreHealLocationRow, StoreNpcRow } from '../net/store';
 import { TILE_PX } from '../render/config';
 
-/** Client-side interact range in Manhattan tiles — mirrors the server's
- *  `TALK_RANGE: i64 = 2` (server-module/src/npc.rs:20). Latency hygiene ONLY,
- *  never security: the `talk` reducer re-validates zone + range server-side. */
-export const CLIENT_INTERACT_RANGE = 2;
-
 /** The positional subset of a character row the target selection reads. */
 export interface InteractTile {
   readonly zoneId: number;
@@ -62,8 +57,11 @@ function npcDescriptor(npc: StoreNpcRow, tile: InteractTile): Interactable {
 }
 
 /**
- * Nearest interactable within CLIENT_INTERACT_RANGE of the own AUTHORITATIVE
- * tile. Same-zone only:
+ * Nearest interactable within `range` Manhattan tiles (INCLUSIVE) of the own
+ * AUTHORITATIVE tile. `range` is game-core's `TALK_RANGE`, injected from the
+ * `talk_range()` wasm export at boot (never a TS literal). Latency hygiene ONLY,
+ * never security: the `talk` reducer re-validates zone + range server-side.
+ * Same-zone only:
  *   - NPC zone comes from the CHARACTER-row join (live wander position), never
  *     the npc registry row's zoneId; NPCs without a character row are skipped.
  *   - Heal rows are filtered by an EXPLICIT `loc.zoneId === own.zoneId` (they
@@ -79,9 +77,10 @@ export function nearestInteractable(
   npcs: readonly StoreNpcRow[],
   characterTiles: ReadonlyMap<bigint, InteractTile>,
   healLocations: readonly StoreHealLocationRow[],
+  range: number,
 ): Interactable | undefined {
   let best: Interactable | undefined;
-  let bestDist = CLIENT_INTERACT_RANGE + 1;
+  let bestDist = range + 1;
   let bestRank: 0 | 1 = 1;
   let bestNpcId = 0n; // id-within-kind, valid only while bestRank === 0
   let bestHealId = 0; // id-within-kind, valid only while bestRank === 1
@@ -91,7 +90,7 @@ export function nearestInteractable(
     const c = characterTiles.get(npc.entityId);
     if (c === undefined || c.zoneId !== own.zoneId) continue;
     const dist = Math.abs(c.tileX - own.tileX) + Math.abs(c.tileY - own.tileY);
-    if (dist > CLIENT_INTERACT_RANGE) continue;
+    if (dist > range) continue;
     const wins =
       best === undefined ||
       dist < bestDist ||
@@ -107,7 +106,7 @@ export function nearestInteractable(
   for (const loc of healLocations) {
     if (loc.zoneId !== own.zoneId) continue;
     const dist = Math.abs(loc.tileX - own.tileX) + Math.abs(loc.tileY - own.tileY);
-    if (dist > CLIENT_INTERACT_RANGE) continue;
+    if (dist > range) continue;
     const wins =
       best === undefined ||
       dist < bestDist ||

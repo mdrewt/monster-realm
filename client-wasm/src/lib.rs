@@ -228,6 +228,14 @@ pub fn max_trade_monsters_per_side() -> u32 {
     game_core::MAX_TRADE_MONSTERS_PER_SIDE as u32
 }
 
+/// The NPC talk range (Manhattan tiles, inclusive), single-sourced from
+/// `game-core` so the client's interact prompt never hard-codes it.
+#[wasm_bindgen]
+#[must_use]
+pub fn talk_range() -> u32 {
+    game_core::TALK_RANGE as u32
+}
+
 /// The renderer's map source: the SAME `TileMap` the rule evaluates.
 /// Dispatches on `zone_id` via the content registry (`load_zone_maps`).
 ///
@@ -346,6 +354,13 @@ mod tests {
             super::max_trade_monsters_per_side() as usize,
             game_core::MAX_TRADE_MONSTERS_PER_SIDE
         );
+    }
+
+    // TALK RANGE SSOT parity (value-identity proof vs the retired client literal 2:
+    // interactModel.test.ts A1 reads this export from the built wasm binary).
+    #[test]
+    fn talk_range_matches_game_core_const() {
+        assert_eq!(i64::from(super::talk_range()), game_core::TALK_RANGE);
     }
 
     // -------------------------------------------------------------------------

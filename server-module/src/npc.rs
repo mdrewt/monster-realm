@@ -13,10 +13,9 @@ use crate::schema::{
 use game_core::{
     apply_choice, apply_effects, apply_node_auto_effects, find_entry_node, process_trigger,
     DialogueEffect, PlayerDialogueState, PlayerQuestProgress, QuestAdvance, TriggerEvent,
+    TALK_RANGE,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
-
-const TALK_RANGE: i64 = 2;
 
 /// Emit window for the dangling-`quest_id` warn: at most one `log::warn!` per
 /// 60_000 ms of the caller's injected clock.

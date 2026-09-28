@@ -73,7 +73,7 @@ pub use monster::{
     xp_for_level, Affinity, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock,
     StatKind, Xp,
 };
-pub use npc::npc_decide;
+pub use npc::{npc_decide, TALK_RANGE};
 pub use quest::{
     can_start_quest, process_trigger, trigger_matches, PlayerQuestProgress, QuestAdvance, QuestDef,
     QuestReward, QuestStep, RewardItem, StepTrigger, TriggerEvent,

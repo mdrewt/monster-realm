@@ -5,8 +5,8 @@
 //     position), never from the npc registry row's `zoneId`. An NPC with no character
 //     row is SKIPPED (half-orphan, never a throw). Heal rows are filtered by an
 //     EXPLICIT `loc.zoneId === own.zoneId` (they have no character row to inherit from).
-//   * RANGE: Manhattan distance <= CLIENT_INTERACT_RANGE (2), INCLUSIVE — mirrors the
-//     server TALK_RANGE.
+//   * RANGE: Manhattan distance <= the injected range (game-core TALK_RANGE = 2, read via
+//     the talk_range() wasm export), INCLUSIVE — the server's own bound.
 //   * ORDERING: (distance asc, kindRank asc, id asc WITHIN kind). kindRank is by SOURCE
 //     TABLE — an npc row is 0, a heal_location row is 1 — NOT by the descriptor's `kind`
 //     string. The class rank fires BEFORE any id comparison, so a `bigint` entityId and a
@@ -23,13 +23,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { readWasmU32Constant } from '../../test-util/wasmPkg';
 import type { StoreHealLocationRow, StoreNpcRow } from '../net/store';
-import {
-  CLIENT_INTERACT_RANGE,
-  type InteractTile,
-  interactPrompt,
-  nearestInteractable,
-} from './interactModel';
+import { type InteractTile, interactPrompt, nearestInteractable } from './interactModel';
 
 // ---------------------------------------------------------------------------
 // Fixtures. `StoreNpcRow['interaction']` is the uxd2 addition to store.ts — using the
@@ -93,30 +89,43 @@ const OWN = tile(0, 5, 4);
 const NO_NPCS: readonly StoreNpcRow[] = [];
 const NO_TILES: ReadonlyMap<bigint, InteractTile> = new Map();
 const NO_HEALS: readonly StoreHealLocationRow[] = [];
+/** The range every row injects — pinned to the built wasm talk_range() by A1. */
+const TEST_RANGE = 2;
 
 // ===========================================================================
 // BLOCK A — range / zone / character-join.
 // ===========================================================================
 
 describe('nearestInteractable — Block A: range, zone and the character-row join (ported)', () => {
-  it('A1 BITES: CLIENT_INTERACT_RANGE mirrors the server TALK_RANGE (npc.rs:20) exactly', () => {
+  it('A1 BITES: the injected range IS game-core TALK_RANGE — built wasm talk_range() === 2 === TEST_RANGE', () => {
+    // Value-identity proof for the SSOT move: the model no longer owns the range — main.ts
+    // injects `talk_range()` at boot. This reads that export from the compiled client-wasm
+    // binary and pins it to the literal the deleted CLIENT_INTERACT_RANGE mirror carried (2)
+    // and to the TEST_RANGE every row in this file injects.
     // WRONG IMPL KILLED: a range of 1 (silently un-interactable diagonal neighbours) or 3
     // (the client offers an interact the server then rejects — the latency-hygiene contract
     // requires the client bound to EQUAL the server bound, never exceed it).
-    expect(CLIENT_INTERACT_RANGE).toBe(2);
+    expect(readWasmU32Constant('talk_range')).toBe(2);
+    expect(TEST_RANGE).toBe(2);
+  });
+
+  it('A1b BITES: the bound tracks the INJECTED range — kills a model that re-inlines a literal 2', () => {
+    const chars = new Map([[7n, tile(0, 5, 6)]]); // Manhattan 2
+    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS, 1)).toBeUndefined();
+    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS, 2)).toBeDefined();
   });
 
   it('A2 BITES: nothing anywhere → undefined (KeyT no-ops)', () => {
     // WRONG IMPL KILLED: an impl that throws on empty inputs (a throw in the frame loop's
     // per-frame resolver call would kill the render loop) or fabricates a default target.
-    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, NO_HEALS)).toBeUndefined();
+    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, NO_HEALS, TEST_RANGE)).toBeUndefined();
   });
 
   it('A3 BITES: an NPC at EXACTLY distance 2 is selected (inclusive, like the server <=)', () => {
-    // WRONG IMPL KILLED: a strict `dist < CLIENT_INTERACT_RANGE` comparison — the boundary
+    // WRONG IMPL KILLED: a strict `dist < range` comparison — the boundary
     // tile would be silently un-interactable even though the server accepts it.
     const chars = new Map([[7n, tile(0, 5, 6)]]); // Manhattan 2
-    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS)).toEqual({
+    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS, TEST_RANGE)).toEqual({
       kind: 'dialogue',
       npcEntityId: 7n,
       anchorWorldX: 176, // (5 + 0.5) * 32
@@ -129,7 +138,7 @@ describe('nearestInteractable — Block A: range, zone and the character-row joi
     // (max-of-axes) distance — under Chebyshev (5,7) is distance 3 Manhattan but 3
     // Chebyshev too, so use the sharper A4b case below for the metric itself.
     const chars = new Map([[7n, tile(0, 5, 7)]]); // Manhattan 3
-    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS)).toBeUndefined();
+    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS, TEST_RANGE)).toBeUndefined();
   });
 
   it('A4b BITES: the metric is MANHATTAN, not Chebyshev — (2,2) away is out of range', () => {
@@ -137,7 +146,7 @@ describe('nearestInteractable — Block A: range, zone and the character-row joi
     // Chebyshev = 2 (would be accepted); Manhattan = 4 (must be rejected). The server
     // uses Manhattan, so a Chebyshev client offers interacts the server refuses.
     const chars = new Map([[7n, tile(0, 7, 6)]]);
-    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS)).toBeUndefined();
+    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS, TEST_RANGE)).toBeUndefined();
   });
 
   it('A5 BITES: NPC zone comes from the CHARACTER row — an other-zone NPC on the SAME tile is skipped', () => {
@@ -145,7 +154,7 @@ describe('nearestInteractable — Block A: range, zone and the character-row joi
     // the joined character row's zone, or that skips the zone check entirely. The fixture
     // NPC sits on the player's EXACT tile in zone 1 — distance 0, wrong zone.
     const chars = new Map([[7n, tile(1, 5, 4)]]);
-    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS)).toBeUndefined();
+    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS, TEST_RANGE)).toBeUndefined();
   });
 
   it('A6 BITES: an NPC with NO character row (half-orphan) is skipped without throwing', () => {
@@ -153,12 +162,14 @@ describe('nearestInteractable — Block A: range, zone and the character-row joi
     // reconnect/zone-swap gap the npc registry can be populated before the character rows
     // arrive, and a throw here starves the frame loop.
     const chars = new Map([[9n, tile(0, 5, 5)]]); // only npc 9 has a character row
-    expect(nearestInteractable(OWN, [npcRow(7n), npcRow(9n)], chars, NO_HEALS)).toEqual({
-      kind: 'dialogue',
-      npcEntityId: 9n,
-      anchorWorldX: 176,
-      anchorWorldY: 160,
-    });
+    expect(nearestInteractable(OWN, [npcRow(7n), npcRow(9n)], chars, NO_HEALS, TEST_RANGE)).toEqual(
+      {
+        kind: 'dialogue',
+        npcEntityId: 9n,
+        anchorWorldX: 176,
+        anchorWorldY: 160,
+      },
+    );
   });
 
   it('A7 BITES: picks the NEAREST of several in-range NPCs', () => {
@@ -168,7 +179,7 @@ describe('nearestInteractable — Block A: range, zone and the character-row joi
       [7n, tile(0, 5, 6)], // Manhattan 2
       [9n, tile(0, 5, 5)], // Manhattan 1 — nearest
     ]);
-    const r = nearestInteractable(OWN, [npcRow(7n), npcRow(9n)], chars, NO_HEALS);
+    const r = nearestInteractable(OWN, [npcRow(7n), npcRow(9n)], chars, NO_HEALS, TEST_RANGE);
     expect(r?.kind).toBe('dialogue');
     expect(r).toHaveProperty('npcEntityId', 9n);
   });
@@ -180,8 +191,14 @@ describe('nearestInteractable — Block A: range, zone and the character-row joi
       [9n, tile(0, 6, 4)], // Manhattan 1
       [7n, tile(0, 4, 4)], // Manhattan 1
     ]);
-    const forward = nearestInteractable(OWN, [npcRow(9n), npcRow(7n)], chars, NO_HEALS);
-    const reversed = nearestInteractable(OWN, [npcRow(7n), npcRow(9n)], chars, NO_HEALS);
+    const forward = nearestInteractable(OWN, [npcRow(9n), npcRow(7n)], chars, NO_HEALS, TEST_RANGE);
+    const reversed = nearestInteractable(
+      OWN,
+      [npcRow(7n), npcRow(9n)],
+      chars,
+      NO_HEALS,
+      TEST_RANGE,
+    );
     expect(forward).toHaveProperty('npcEntityId', 7n);
     expect(reversed).toHaveProperty('npcEntityId', 7n);
     expect(forward).toEqual(reversed);
@@ -198,7 +215,7 @@ describe('nearestInteractable — Block B: heal tiles', () => {
     // accepted but never scanned) — heal-via-tile is the ONLY heal affordance after KeyH
     // is deleted, so ignoring the array makes healing unreachable.
     const heals = [healRow(1, 0, 5, 6)]; // Manhattan 2
-    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals)).toEqual({
+    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals, TEST_RANGE)).toEqual({
       kind: 'heal',
       locationId: 1,
       anchorWorldX: 176, // (5 + 0.5) * 32
@@ -210,7 +227,7 @@ describe('nearestInteractable — Block B: heal tiles', () => {
     // WRONG IMPL KILLED: a range check applied to NPCs but forgotten for heal rows — the
     // prompt would claim "Heal" from across the room.
     const heals = [healRow(1, 0, 5, 7)]; // Manhattan 3
-    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals)).toBeUndefined();
+    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals, TEST_RANGE)).toBeUndefined();
   });
 
   it('★ B3 BITES (F7 tooth): a heal row on the SAME tile but a DIFFERENT zone → undefined', () => {
@@ -220,7 +237,7 @@ describe('nearestInteractable — Block B: heal tiles', () => {
     // compare for heal rows. The fixture is deliberately distance-0-in-the-wrong-zone: with
     // no zone filter it is the unbeatable winner, so the omission cannot hide.
     const heals = [healRow(1, 1, 5, 4)]; // identical tile, zone 1 instead of 0
-    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals)).toBeUndefined();
+    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals, TEST_RANGE)).toBeUndefined();
   });
 
   it('B4 BITES: two heal tiles at equal distance break by LOWEST locationId, order-independent', () => {
@@ -228,8 +245,8 @@ describe('nearestInteractable — Block B: heal tiles', () => {
     // store.healLocations() returns Map-insertion order, which is not stable across a
     // reconnect, so the prompt would flip between two adjacent pads.
     const heals = [healRow(9, 0, 6, 4), healRow(4, 0, 4, 4)]; // both Manhattan 1
-    const forward = nearestInteractable(OWN, NO_NPCS, NO_TILES, heals);
-    const reversed = nearestInteractable(OWN, NO_NPCS, NO_TILES, [...heals].reverse());
+    const forward = nearestInteractable(OWN, NO_NPCS, NO_TILES, heals, TEST_RANGE);
+    const reversed = nearestInteractable(OWN, NO_NPCS, NO_TILES, [...heals].reverse(), TEST_RANGE);
     expect(forward).toHaveProperty('locationId', 4);
     expect(reversed).toHaveProperty('locationId', 4);
     expect(forward).toEqual(reversed);
@@ -239,7 +256,7 @@ describe('nearestInteractable — Block B: heal tiles', () => {
     // WRONG IMPL KILLED: an `if (!loc.locationId) continue;` / `locationId || undefined`
     // truthiness guard — location id 0 is representable (u32) and must resolve normally.
     const heals = [healRow(0, 0, 5, 5)];
-    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals)).toEqual({
+    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals, TEST_RANGE)).toEqual({
       kind: 'heal',
       locationId: 0,
       anchorWorldX: 176,
@@ -259,7 +276,7 @@ describe('nearestInteractable — Block C: cross-kind ordering determinism', () 
     // npc-first), i.e. it would be non-deterministic across a refactor.
     const chars = new Map([[7n, tile(0, 6, 4)]]); // Manhattan 1
     const heals = [healRow(1, 0, 4, 4)]; // Manhattan 1
-    const r = nearestInteractable(OWN, [npcRow(7n)], chars, heals);
+    const r = nearestInteractable(OWN, [npcRow(7n)], chars, heals, TEST_RANGE);
     expect(r?.kind).toBe('dialogue');
     expect(r).toHaveProperty('npcEntityId', 7n);
   });
@@ -278,7 +295,7 @@ describe('nearestInteractable — Block C: cross-kind ordering determinism', () 
     const bigEid = 9007199254740993n; // 2^53 + 1
     const chars = new Map([[bigEid, tile(0, 6, 4)]]); // Manhattan 1
     const heals = [healRow(1, 0, 4, 4)]; // Manhattan 1
-    const r = nearestInteractable(OWN, [npcRow(bigEid)], chars, heals);
+    const r = nearestInteractable(OWN, [npcRow(bigEid)], chars, heals, TEST_RANGE);
     expect(r?.kind).toBe('dialogue');
     expect(r).toHaveProperty('npcEntityId', bigEid);
     // The id must survive as a bigint — a Number() round-trip would return 9007199254740992n.
@@ -291,7 +308,7 @@ describe('nearestInteractable — Block C: cross-kind ordering determinism', () 
     // NPC is anywhere in range.
     const chars = new Map([[7n, tile(0, 5, 6)]]); // Manhattan 2
     const heals = [healRow(1, 0, 5, 5)]; // Manhattan 1 — nearer
-    expect(nearestInteractable(OWN, [npcRow(7n)], chars, heals)).toEqual({
+    expect(nearestInteractable(OWN, [npcRow(7n)], chars, heals, TEST_RANGE)).toEqual({
       kind: 'heal',
       locationId: 1,
       anchorWorldX: 176,
@@ -309,7 +326,7 @@ describe('nearestInteractable — Block C: cross-kind ordering determinism', () 
     const chars = new Map([[7n, tile(0, 6, 4)]]); // Manhattan 1
     const heals = [healRow(1, 0, 4, 4)]; // Manhattan 1
     const npcs = [npcRow(7n, { kind: 'heal', locationId: 5 })];
-    expect(nearestInteractable(OWN, npcs, chars, heals)).toEqual({
+    expect(nearestInteractable(OWN, npcs, chars, heals, TEST_RANGE)).toEqual({
       kind: 'heal',
       locationId: 5, // the NPC's location, not the tile's
       anchorWorldX: 208, // (6 + 0.5) * 32 — the NPC's character tile
@@ -328,7 +345,13 @@ describe('nearestInteractable — Block D: descriptor payloads + anchor geometry
     // never appear) or that drops shopId (main.ts could not bind the overlay to a shop).
     const chars = new Map([[7n, tile(0, 5, 5)]]);
     expect(
-      nearestInteractable(OWN, [npcRow(7n, { kind: 'shop', shopId: 3 })], chars, NO_HEALS),
+      nearestInteractable(
+        OWN,
+        [npcRow(7n, { kind: 'shop', shopId: 3 })],
+        chars,
+        NO_HEALS,
+        TEST_RANGE,
+      ),
     ).toEqual({
       kind: 'shop',
       npcEntityId: 7n,
@@ -342,7 +365,13 @@ describe('nearestInteractable — Block D: descriptor payloads + anchor geometry
     // WRONG IMPL KILLED: `shopId: npc.interaction.shopId || undefined` / `?? 1` — shop id 0 is
     // representable (u32) and would silently become a different shop or vanish.
     const chars = new Map([[7n, tile(0, 5, 5)]]);
-    const r = nearestInteractable(OWN, [npcRow(7n, { kind: 'shop', shopId: 0 })], chars, NO_HEALS);
+    const r = nearestInteractable(
+      OWN,
+      [npcRow(7n, { kind: 'shop', shopId: 0 })],
+      chars,
+      NO_HEALS,
+      TEST_RANGE,
+    );
     expect(r?.kind).toBe('shop');
     expect(r).toHaveProperty('shopId', 0);
   });
@@ -351,7 +380,7 @@ describe('nearestInteractable — Block D: descriptor payloads + anchor geometry
     // WRONG IMPL KILLED: a "fat descriptor" that always carries shopId (main.ts would render a
     // Shop button for a plain villager, because the dialogue VM derives it from this union).
     const chars = new Map([[7n, tile(0, 5, 5)]]);
-    const r = nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS);
+    const r = nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS, TEST_RANGE);
     expect(r).toEqual({
       kind: 'dialogue',
       npcEntityId: 7n,
@@ -377,7 +406,7 @@ describe('nearestInteractable — Block D: descriptor payloads + anchor geometry
     //   own is (6,3) and the target is (7,3), so an own-derived anchor reads (208, 96).
     const ownNear = tile(0, 6, 3);
     const chars = new Map([[7n, tile(0, 7, 3)]]); // Manhattan 1 from ownNear
-    const r = nearestInteractable(ownNear, [npcRow(7n)], chars, NO_HEALS);
+    const r = nearestInteractable(ownNear, [npcRow(7n)], chars, NO_HEALS, TEST_RANGE);
     expect(r).toHaveProperty('anchorWorldX', 240); // (7 + 0.5) * 32
     expect(r).toHaveProperty('anchorWorldY', 96); // 3 * 32 (NOT 112)
   });
@@ -386,7 +415,7 @@ describe('nearestInteractable — Block D: descriptor payloads + anchor geometry
     // WRONG IMPL KILLED: an impl that reuses `own` for the heal anchor (the prompt would stick
     // to the player and never point at the pad).
     const heals = [healRow(2, 0, 4, 5)]; // Manhattan 2 from OWN (5,4)
-    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals)).toEqual({
+    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals, TEST_RANGE)).toEqual({
       kind: 'heal',
       locationId: 2,
       anchorWorldX: 144, // (4 + 0.5) * 32
@@ -398,7 +427,7 @@ describe('nearestInteractable — Block D: descriptor payloads + anchor geometry
     // WRONG IMPL KILLED: an impl that guards `if (!tileY) tileY = 1` or clamps the anchor to a
     // positive minimum; y=0 is a legitimate (if wall-adjacent) row and must map to 0.
     const heals = [healRow(3, 0, 0, 0)];
-    expect(nearestInteractable(tile(0, 1, 1), NO_NPCS, NO_TILES, heals)).toEqual({
+    expect(nearestInteractable(tile(0, 1, 1), NO_NPCS, NO_TILES, heals, TEST_RANGE)).toEqual({
       kind: 'heal',
       locationId: 3,
       anchorWorldX: 16, // (0 + 0.5) * 32
@@ -495,7 +524,7 @@ describe('nearestInteractable — Block E: lexicographic-minimum property (AC-4)
         const { npcs, chars, heals } = buildInputs(gNpcs, gHeals);
         const inNpcs = gNpcs.filter((n) => n.zoneId === own.zoneId && manhattan(n, own) <= 2);
         const inHeals = gHeals.filter((h) => h.zoneId === own.zoneId && manhattan(h, own) <= 2);
-        const r = nearestInteractable(own, npcs, chars, heals);
+        const r = nearestInteractable(own, npcs, chars, heals, TEST_RANGE);
 
         if (inNpcs.length === 0 && inHeals.length === 0) {
           expect(r).toBeUndefined();
@@ -560,8 +589,8 @@ describe('nearestInteractable — Block E: lexicographic-minimum property (AC-4)
       fc.property(ownArb, npcArb, healArb, (own, gNpcs, gHeals) => {
         const a = buildInputs(gNpcs, gHeals);
         const b = buildInputs([...gNpcs].reverse(), [...gHeals].reverse());
-        const ra = nearestInteractable(own, a.npcs, a.chars, a.heals);
-        const rb = nearestInteractable(own, b.npcs, b.chars, b.heals);
+        const ra = nearestInteractable(own, a.npcs, a.chars, a.heals, TEST_RANGE);
+        const rb = nearestInteractable(own, b.npcs, b.chars, b.heals, TEST_RANGE);
         expect(rb).toEqual(ra);
       }),
     );
@@ -575,7 +604,7 @@ describe('nearestInteractable — Block E: lexicographic-minimum property (AC-4)
       fc.property(ownArb, npcArb, healArb, (own, gNpcs, gHeals) => {
         const { npcs, chars, heals } = buildInputs(gNpcs, gHeals);
         expect(() => {
-          nearestInteractable(own, npcs, chars, heals);
+          nearestInteractable(own, npcs, chars, heals, TEST_RANGE);
         }).not.toThrow();
       }),
     );
@@ -714,7 +743,7 @@ describe('interactModel supersedes dialogueModel.nearestTalkableNpcId (plan I6)'
     ).toBe(false);
     expect(
       src.includes('CLIENT_TALK_RANGE'),
-      'dialogueModel.ts must NOT declare CLIENT_TALK_RANGE — CLIENT_INTERACT_RANGE replaces it (plan I6)',
+      'dialogueModel.ts must NOT declare CLIENT_TALK_RANGE — the injected talk_range() replaces it (plan I6)',
     ).toBe(false);
   });
 });

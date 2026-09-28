@@ -24,6 +24,7 @@ import {
   party_slot_none,
   set_active_zone,
   step_ms,
+  talk_range,
   zone_map,
 } from '../../client-wasm/pkg/client_wasm.js';
 import {
@@ -239,6 +240,7 @@ const QUEUE_CAP = move_queue_cap();
 const PARTY_SIZE = party_size();
 const PARTY_SLOT_NONE = party_slot_none();
 const MAX_TRADE_MONSTERS_PER_SIDE = max_trade_monsters_per_side();
+const TALK_RANGE = talk_range();
 // The deletion grace window, read ONCE per session — it is a build constant, and
 // re-reading it per frame would cross the wasm boundary ~60x/s for a value that cannot change.
 const DELETION_GRACE_MS_DEFAULT = deletion_grace_ms_default();
@@ -735,6 +737,7 @@ function interactAtNearest(): void {
     store.allNpcs(),
     characterTileMap(),
     store.healLocations(),
+    TALK_RANGE,
   );
   if (target === undefined) return;
   // Exhaustive switch on the descriptor kind — NO default arm, so a 4th
@@ -761,8 +764,13 @@ function menuAvailability(): MenuAvailability {
   const own = store.ownCharacter(identity);
   const hasInteractTarget =
     own !== undefined &&
-    nearestInteractable(own.row, store.allNpcs(), characterTileMap(), store.healLocations()) !==
-      undefined;
+    nearestInteractable(
+      own.row,
+      store.allNpcs(),
+      characterTileMap(),
+      store.healLocations(),
+      TALK_RANGE,
+    ) !== undefined;
   const pvpVm = buildPvpChallengeViewModel(store.allChallenges(), identity, store.allPlayers());
   return {
     hasInteractTarget,
@@ -1485,12 +1493,12 @@ window.addEventListener('keydown', (e) => {
     // INTERACT (generalizes the old TALK key):
     // only when NO overlay is visible, resolve the nearest interactable
     // (store.allNpcs() joined to character rows + heal tiles, same zone,
-    // Manhattan <= 2 of the own AUTHORITATIVE tile) and dispatch by kind:
+    // Manhattan <= TALK_RANGE of the own AUTHORITATIVE tile) and dispatch by kind:
     // dialogue/shop share the ONE existing talk-reducer arm (greet-then-shop);
     // heal binds the heal overlay VIEW to the resolved location — no reducer
     // (interact opens UI, it never transacts). The client-side range check is
     // latency hygiene, NOT security — the server re-validates zone + range
-    // (npc.rs talk Steps 4-5, TALK_RANGE at npc.rs:20).
+    // (npc.rs talk; TALK_RANGE is game-core's, read via the talk_range() wasm export).
     // NOT a canOpen() site — interact opens no overlay of its own, so it
     // has no id to exempt and its guard is the plain "nothing is open" predicate, in the same
     // contiguous shape the AC-12 click front door uses.
@@ -3256,6 +3264,7 @@ async function main(): Promise<void> {
               store.allNpcs(),
               characterTileMap(),
               store.healLocations(),
+              TALK_RANGE,
             )
           : undefined;
       const promptVm = interactPrompt(promptTarget, overlayUp);

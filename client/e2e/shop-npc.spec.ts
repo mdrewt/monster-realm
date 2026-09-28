@@ -90,7 +90,7 @@ import {
 //                            wall — do not "simplify" this route.
 //     N -> (6,2)  floor   <- NEGATIVE CHECKPOINT: Manhattan to (8,1) = |8-6|+|1-2| = 3
 //     N -> (6,1)  floor   <- POSITIVE CHECKPOINT: Manhattan to (8,1) = |8-6|+|1-1| = 2
-//   The two checkpoints are ADJACENT tiles straddling CLIENT_INTERACT_RANGE = 2, which is
+//   The two checkpoints are ADJACENT tiles straddling TALK_RANGE = 2 (game-core), which is
 //   what makes the pair a real boundary test rather than two unrelated observations.
 
 interface Tile {
@@ -199,7 +199,7 @@ const ZONE1_TO_FAR: readonly string[] = [
   'North', // (6,2) — Manhattan 3 from the shopkeeper at (8,1)
 ];
 
-const FAR_TILE: Tile = { x: 6, y: 2 }; // dist 3 — OUT of CLIENT_INTERACT_RANGE
+const FAR_TILE: Tile = { x: 6, y: 2 }; // dist 3 — OUT of TALK_RANGE
 const NEAR_TILE: Tile = { x: 6, y: 1 }; // dist 2 — the inclusive boundary, IN range
 
 /** The seeded greeting text (dialogue_trees/000-core.ron). */
@@ -300,8 +300,8 @@ test.describe
         .catch(() => false);
       expect(
         dialogueOpened,
-        'KeyT at Manhattan 3 must NOT open the dialogue overlay — CLIENT_INTERACT_RANGE is 2 ' +
-          'and the server re-validates at TALK_RANGE 2 (npc.rs:20)',
+        'KeyT at Manhattan 3 must NOT open the dialogue overlay — the client range (talk_range()) is 2 ' +
+          'and the server re-validates at TALK_RANGE 2',
       ).toBe(false);
 
       const shopOpened = await shop
@@ -335,7 +335,7 @@ test.describe
       const prompt = page.locator('#interact-prompt');
       await expect(
         prompt,
-        'an interactable at exactly CLIENT_INTERACT_RANGE must produce a prompt (inclusive <=)',
+        'an interactable at exactly TALK_RANGE must produce a prompt (inclusive <=)',
       ).toBeVisible({ timeout: 10_000 });
 
       // the CONTRACT is that the label names the destination ("Shop", not "Talk") and the

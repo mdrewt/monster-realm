@@ -133,6 +133,7 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
     party_size: () => 3,
     party_slot_none: () => 255,
     max_trade_monsters_per_side: () => 64,
+    talk_range: () => 2,
     predict_move: () => ({}),
     predict_tick: () => ({}),
     set_active_zone: () => undefined,
