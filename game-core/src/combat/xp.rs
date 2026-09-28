@@ -54,8 +54,9 @@ pub fn battle_xp_reward(winner_level: Level, loser_base_stat_total: u16, loser_l
 
 /// Apply the 0.1× practice-battle XP penalty.
 ///
-/// `is_practice=true` (opponent != WILD_IDENTITY): `floor(base / 10)`; may yield 0.
-/// `is_practice=false` (wild battle): `base` unchanged.
+/// `is_practice=true` (a self-vs-self battle: player identity == opponent identity):
+/// `floor(base / 10)`; may yield 0.
+/// `is_practice=false` (wild battles AND PvP against another player): `base` unchanged.
 #[must_use]
 pub fn practice_xp_reward(base: Xp, is_practice: bool) -> Xp {
     if is_practice {
@@ -403,9 +404,8 @@ mod tests {
         );
     }
 
-    /// is_practice=false returns base unchanged (wild-battle passthrough).
+    /// is_practice=false returns base unchanged (wild and PvP passthrough).
     /// Kills: an impl that always applies the multiplier regardless of the flag.
-    /// RED: compile-RED until `practice_xp_reward` is declared.
     #[test]
     fn practice_xp_passthrough_when_not_practice() {
         assert_eq!(
