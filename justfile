@@ -159,8 +159,10 @@ mutate-server cap="324":
     esac
     status=0
     cargo mutants -p monster-realm-module --test-tool nextest || status=$?
-    if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
-        echo "cargo mutants failed with exit $status (build/config error, not 'mutants missed')" >&2
+    # 0 = clean; 2 = missed mutants; 3 = timeouts (a hang is a detection, so they count as
+    # caught; they may accompany missed). Same set as mutate-core. Anything else is not a verdict.
+    if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
+        echo "cargo mutants failed with exit $status (not a mutation verdict)" >&2
         exit "$status"
     fi
     # Not redundant with set -e: without the file, missed="" and the `-gt` test below errors
