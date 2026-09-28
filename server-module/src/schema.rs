@@ -613,8 +613,10 @@ pub struct PlayerDialogueStateRow {
     pub done_quests: Vec<String>,
 }
 
-/// Active quest progress. Public (quest log is world-readable like `inventory`).
-/// Per-owner transport RLS deferred until per-row RLS lands.
+/// Active quest progress. PUBLIC: every client receives every player's quest rows
+/// and the client filters to its own (`store.ownQuests`). `inventory` is no longer a
+/// precedent — it is private behind the owner-scoped `my_inventory` view; moving this
+/// table to the same pattern is possible but not done.
 #[derive(Clone)]
 #[spacetimedb::table(accessor = player_quest, public)]
 pub struct PlayerQuestRow {
