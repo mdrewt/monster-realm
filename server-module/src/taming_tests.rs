@@ -639,6 +639,286 @@ mod nh {
         assert!(failures > 0, "at least one clock must roll a failure");
     }
 
+    // =======================================================================
+    // 21r-a: attempt_recruit's two write-back sites log-and-commit.
+    //
+    // A bare `?` on `write_back_party_hp` (the recruit SUCCESS arm) or on
+    // `write_back_battle_results` (the terminal FAILURE arm) aborts the whole
+    // transaction: the battle row stays `Ongoing` (a softlock every retry
+    // reproduces identically) and, on the success arm, the recruit is rolled
+    // back. The fix mirrors `submit_attack` in battle.rs: log the Err through
+    // `observability::mr_log` and fall through to the terminal `update(battle)`.
+    //
+    // FAILURE INJECTION: party monster 11 is re-seeded as B's, so the SHIPPED
+    // ownership invariant inside `write_back_party_hp` returns Err for A's
+    // battle. HOST LIMIT: no rollback is modelled, so "committed" is read as the
+    // reducer returning `Ok(())` (SpacetimeDB commits on Ok and aborts on Err)
+    // together with the rows it left behind.
+    // =======================================================================
+
+    /// Captures every `log` record as a `(target, line)` pair for this test
+    /// PROCESS. The target is kept so a line emitted by a bare `log::` macro in
+    /// `taming` (target `monster_realm_module::taming`) cannot pass for one routed
+    /// through `observability::mr_log` (target `monster_realm_module::observability`).
+    ///
+    /// NEXTEST-ONLY: nextest runs every test in its own process, and `just test`,
+    /// `just mutate-server` and CI all run nextest. Under plain `cargo test` the
+    /// second `log::set_logger` in one process panics; `battle_tests.rs:3939` is
+    /// the other installer in this binary, and each `nh_21ra_` test installs once.
+    struct TmLogSink(std::sync::Mutex<Vec<(String, String)>>);
+    impl log::Log for TmLogSink {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((record.target().to_string(), record.args().to_string()));
+        }
+        fn flush(&self) {}
+    }
+    static TM_LOGS: TmLogSink = TmLogSink(std::sync::Mutex::new(Vec::new()));
+
+    /// Install `TM_LOGS` as the process logger at `Info`. Called as the FIRST
+    /// statement of each test that reads it (see the sink's nextest-only note).
+    fn install_tm_logs() {
+        log::set_logger(&TM_LOGS).expect("no logger installed in the native test binary");
+        log::set_max_level(log::LevelFilter::Info);
+    }
+
+    /// Every captured `(target, line)` pair whose line names a `writeback_err`
+    /// event, in emission order.
+    fn writeback_err_logs() -> Vec<(String, String)> {
+        TM_LOGS
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, line)| line.contains("writeback_err"))
+            .cloned()
+            .collect()
+    }
+
+    /// Re-seed party monster 11 as B's so `write_back_party_hp` returns its
+    /// ownership Err for A's battle, and assert that the swap landed.
+    fn hand_monster_11_to_b(w: &World<'_>) {
+        assert_eq!(
+            w.monsters.remove(11),
+            1,
+            "fixture: world() seeds A's party monster 11 exactly once"
+        );
+        w.monsters.seed(&party_monster(b()));
+        let owners: Vec<Identity> = w
+            .monsters
+            .rows()
+            .iter()
+            .filter(|m| m.monster_id == 11)
+            .map(|m| m.owner_identity)
+            .collect();
+        assert_eq!(
+            owners,
+            vec![b()],
+            "PRECONDITION: monster 11 must be B's, or write_back_party_hp cannot fail"
+        );
+    }
+
+    /// Monster 11's stored row after the call.
+    fn monster_11(w: &World<'_>) -> Monster {
+        w.monsters
+            .rows()
+            .into_iter()
+            .find(|m| m.monster_id == 11)
+            .expect("monster 11 row")
+    }
+
+    /// The recruit SUCCESS arm with a failing party-HP write-back still commits.
+    /// With monster 11 re-seeded as B's, `attempt_recruit` must return `Ok(())`;
+    /// A keeps the freshly inserted recruit and its `monster_pub` row; the battle
+    /// row leaves `Ongoing` as `SideAWins` with its `battle_wild` row GC'd; the Err
+    /// is logged exactly once through `mr_log` as `recruit_success_writeback_err`;
+    /// and B's monster 11 is untouched (owner B, HP 33). The recruit's species,
+    /// level and public-row bytes are pinned by
+    /// `nh_recruit_success_spends_bait_boxes_the_wild_and_grants_no_xp`, not here.
+    ///
+    /// kills: a retained `?` at site A (the `Ok(())` assertion reads the ownership
+    /// Err); the `update` moved into the write-back's Ok arm (the outcome stays
+    /// `Ongoing`); the recruit or its public row deleted in the Err arm (the recruit
+    /// and `monster_pub` assertions); the `battle_wild` delete moved into the Ok
+    /// arm (the GC assertion); a dropped, renamed, mis-shaped or duplicated log
+    /// line (the exact one-element log vector); a bare `log::` call bypassing
+    /// `mr_log` (its target is `monster_realm_module::taming`); a "fix" that skips
+    /// the ownership check and writes the battle HP into B's monster (the
+    /// untouched monster-11 assertion).
+    #[test]
+    fn nh_21ra_recruit_success_commits_when_the_party_hp_write_back_fails() {
+        install_tm_logs();
+        let fx = fixture();
+        let w = world(&fx);
+        hand_monster_11_to_b(&w);
+
+        let got = fx.run_as_at(a(), at(T0), |ctx| attempt_recruit(ctx, BATTLE, Some(BAIT)));
+        assert_eq!(
+            got,
+            Ok(()),
+            "a failed party-HP write-back must be logged, never propagated: an Err aborts \
+             the transaction, rolling the recruit back and leaving the battle Ongoing"
+        );
+
+        let recruits: Vec<Monster> = w
+            .monsters
+            .rows()
+            .into_iter()
+            .filter(|m| m.monster_id != 11)
+            .collect();
+        assert_eq!(
+            recruits.len(),
+            1,
+            "exactly one recruit survives the failed write-back"
+        );
+        assert_eq!(
+            recruits[0].owner_identity,
+            a(),
+            "the caller owns the recruit"
+        );
+        assert!(
+            w.pubs
+                .rows()
+                .iter()
+                .any(|p| p.monster_id == recruits[0].monster_id),
+            "the recruit's monster_pub row survives the failed write-back"
+        );
+
+        let battles = w.battles.rows();
+        assert_eq!(battles.len(), 1, "the battle row is kept");
+        assert_eq!(
+            (battles[0].battle_id, battles[0].state.outcome),
+            (BATTLE, BattleOutcome::SideAWins),
+            "the terminal update runs despite the Err: the battle leaves Ongoing"
+        );
+        assert!(
+            w.wilds.rows().is_empty(),
+            "battle_wild is GC'd despite the Err"
+        );
+
+        let want = r#"{"evt":"recruit_success_writeback_err","battle_id":7,"reason":"write_back_party_hp: ownership changed mid-battle for monster 11 — aborted"}"#;
+        assert_eq!(
+            writeback_err_logs(),
+            vec![(
+                "monster_realm_module::observability".to_string(),
+                want.to_string()
+            )],
+            "the Err is logged exactly once, through observability::mr_log"
+        );
+
+        let m11 = monster_11(&w);
+        assert_eq!(
+            (m11.owner_identity, m11.current_hp),
+            (b(), 33),
+            "no battle HP is written into another player's monster"
+        );
+    }
+
+    /// The terminal FAILURE arm with a failing results write-back still commits.
+    /// A battle at `turn_number == u16::MAX` makes a failed no-bait roll end it
+    /// deterministically as `Fled` (the turn-limit terminal in `advance_turn`: no
+    /// strike-back, no status writes), so `write_back_battle_results` runs: it
+    /// GCs `battle_wild`, sweeps the caller's prior terminal battles (the
+    /// `player_identity` index is registered so that sweep reads the real rows),
+    /// then fails in the nested `write_back_party_hp` because monster 11 is B's.
+    /// `attempt_recruit` must still return `Ok(())`, leaving exactly one battle
+    /// row, now `Fled`, no `battle_wild` row, exactly one
+    /// `recruit_fail_writeback_err` line emitted through `mr_log`, and B's
+    /// monster 11 untouched. The clock is ONE hard-coded timestamp (the roll is
+    /// the context RNG's first draw, seeded from `ctx.timestamp`), and the first
+    /// assertion is a PRECONDITION that this clock's roll missed.
+    ///
+    /// kills: a retained `?` at site B (the `Ok(())` assertion reads the ownership
+    /// Err); the `update` moved into the write-back's Ok arm (the row stays
+    /// `Ongoing`); the `update` moved BEFORE the write-back (the committed `Fled`
+    /// row is then a prior terminal, the sweep deletes it and no battle row is
+    /// left); site B calling `write_back_party_hp` instead of
+    /// `write_back_battle_results` (nothing GCs `battle_wild`); a dropped, renamed,
+    /// mis-shaped or duplicated log line, including the success arm's event name
+    /// pasted here (the exact one-element log vector); a bare `log::` call
+    /// bypassing `mr_log` (its target is `monster_realm_module::taming`); a "fix"
+    /// that skips the ownership check and writes the battle HP into B's monster
+    /// (the untouched monster-11 assertion).
+    #[test]
+    fn nh_21ra_recruit_terminal_failure_commits_fled_when_the_results_write_back_fails() {
+        use crate::schema::TypeRelationRow;
+        install_tm_logs();
+        let fx = fixture();
+        let w = world(&fx);
+        let _ = fx
+            .table_keyed::<TypeRelationRow, u64>("type_relation_row", "id", |r| r.id)
+            .scannable();
+        // MANDATORY: makes the prior-terminal sweep in write_back_battle_results
+        // read the real battle rows, so a Fled row committed BEFORE the write-back
+        // is swept away and the row-count assertion below catches it.
+        let _ = fx.table::<Battle>("battle", "player_identity", |r| r.player_identity);
+        let mut bt = wild_battle(BattleOutcome::Ongoing);
+        bt.state.turn_number = u16::MAX;
+        assert_eq!(
+            w.battles.remove(BATTLE),
+            1,
+            "fixture: world() seeds battle 7 exactly once"
+        );
+        w.battles.seed(&bt);
+        hand_monster_11_to_b(&w);
+
+        // K = 0 on the `T0 + K * 7_919` clock grid the sibling failure test walks.
+        let got = fx.run_as_at(a(), at(T0), |ctx| attempt_recruit(ctx, BATTLE, None));
+
+        let rolls: Vec<bool> = w.events.rows().iter().map(|e| e.success).collect();
+        assert_eq!(
+            rolls,
+            vec![false],
+            "PRECONDITION: this hard-coded clock must roll a recruit FAILURE (exactly one \
+             playtest event, success == false). A success here is a wrong CLOCK, not the \
+             RED: move to another `T0 + K * 7_919` clock whose first draw misses"
+        );
+        assert_eq!(
+            got,
+            Ok(()),
+            "a failed results write-back must be logged, never propagated: an Err aborts \
+             the transaction and leaves the battle Ongoing"
+        );
+
+        let battles = w.battles.rows();
+        assert_eq!(
+            battles.len(),
+            1,
+            "exactly one battle row: the committed terminal must not be swept"
+        );
+        assert_eq!(
+            (battles[0].battle_id, battles[0].state.outcome),
+            (BATTLE, BattleOutcome::Fled),
+            "the terminal update runs despite the Err: the battle leaves Ongoing"
+        );
+        assert!(
+            w.wilds.rows().is_empty(),
+            "write_back_battle_results GCs battle_wild before its Err"
+        );
+
+        let want = r#"{"evt":"recruit_fail_writeback_err","battle_id":7,"reason":"write_back_party_hp: ownership changed mid-battle for monster 11 — aborted"}"#;
+        assert_eq!(
+            writeback_err_logs(),
+            vec![(
+                "monster_realm_module::observability".to_string(),
+                want.to_string()
+            )],
+            "the Err is logged exactly once, through observability::mr_log"
+        );
+
+        let m11 = monster_11(&w);
+        assert_eq!(
+            (m11.owner_identity, m11.current_hp),
+            (b(), 33),
+            "no battle HP is written into another player's monster"
+        );
+    }
+
     /// grant_bait (DEV) credits ONLY the caller, capped at 99 per call, and
     /// refuses a non-bait item.
     #[cfg(feature = "dev_reducers")]
