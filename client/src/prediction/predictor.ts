@@ -85,7 +85,7 @@ const SNAP_GAP_STEPS = 4;
  * Bound the server's authoritative `last_input_seq` (a u64 `bigint`) before it enters
  * the predictor's number-typed seq space (`reconcile`'s `ackedSeq` and `seedSeq`).
  *
- * The seq increments once per accepted intent; at the ADR-0052 step cadence reaching
+ * The seq increments once per accepted intent; at the step cadence reaching
  * 2^53 would take tens of thousands of years, so the narrowing is safe in practice —
  * but we ASSERT it rather than trust it. A u64 above `MAX_SAFE_INTEGER` cannot be
  * represented exactly as a JS number and would silently alias a LOWER value, which
@@ -110,14 +110,14 @@ export class Predictor {
   readonly #applyMove: ApplyMove;
   readonly #stepMs: number;
   readonly #queueCap: number;
-  readonly #pendingCap: number; // ADR-0013.5: unacked-ops backpressure bound
+  readonly #pendingCap: number; // unacked-ops backpressure bound
   readonly #epoch: PredictorEpoch; // This instance's generation, constructor-assigned ONCE
 
   #predicted: WasmCharacterState | undefined; // undefined until the first own-row seeds it
   #queue: WasmMoveInput[] = []; //               the LOCAL intent queue
   #pending: PendingOp[] = []; //                  unacked ops, in send order
   #nextSeq = 0;
-  // ADR-0052 §B / M12.5d-3: only the FRAME-LOOP drain() updates this — reconcile's
+  // Only the FRAME-LOOP drain() updates this — reconcile's
   // internal #stepForward() does NOT. This prevents a reconcile-drain (fired from the
   // batch listener between rAF frames) from masking a large inter-frame gap; a
   // backgrounded-tab wake correctly produces snapped=true on the next frame drain.
@@ -128,7 +128,7 @@ export class Predictor {
   // held-key continuation gate rides on (see `outstandingSteps`).
   #lastAuthQueueLen = 0;
 
-  // ADR-0013.5: `pendingCap` is OPTIONAL; default 16 ≈ 16·STEP_MS of un-acked
+  // `pendingCap` is OPTIONAL; default 16 ≈ 16·STEP_MS of un-acked
   // prediction — a generous degenerate-no-ack backstop (normal ack cadence keeps
   // `#pending` near 0), comfortably ≥ `queueCap` (=2) so it never inverts the
   // queue cap. Existing 3-arg construction is unaffected by the new bound.
@@ -166,7 +166,7 @@ export class Predictor {
    */
   enqueue(input: WasmMoveInput): IntentToSend | undefined {
     if (this.#queue.length >= this.#queueCap || this.#pending.length >= this.#pendingCap)
-      return undefined; // Queue full / ADR-0013.5: pending full
+      return undefined; // Queue full / pending full
     this.#queue.push(input);
     return this.#record({ kind: 'Enqueue', input });
   }
@@ -212,7 +212,7 @@ export class Predictor {
    * force a reconcile from current store state (main.ts `reconcileFromStore()`);
    * a `false` return needs no forced reconcile — nothing was removed.
    *
-   * nh3 epoch guard (closing the ptc5f/ADR-0142 D4 accepted risk): within
+   * Epoch guard (closing a previously accepted risk): within
    * ONE predictor `#nextSeq` is strictly increasing and never reused, so this evicts
    * exactly the intended dead op. ACROSS an own-zone warp, `resetPredictionState()`
    * rebuilds the predictor on a LIVE socket, so a still-in-flight pre-warp rejection
@@ -240,7 +240,7 @@ export class Predictor {
    * seq strictly greater than `seq`. MONOTONIC — only ever raises `#nextSeq`, never
    * lowers it.
    *
-   * WHY (ADR-0012 reconnect): a reconnect builds a FRESH `Predictor` whose `#nextSeq`
+   * WHY (reconnect): a reconnect builds a FRESH `Predictor` whose `#nextSeq`
    * restarts at 0, while the server has persisted a far-higher `player.last_input_seq`.
    * Without re-seeding, every post-reconnect intent records a seq ≤ the server's ack,
    * so `reconcile`'s `seq > ackedSeq` filter drops it on the next snapshot — the player
@@ -252,7 +252,7 @@ export class Predictor {
     if (seq > this.#nextSeq) this.#nextSeq = seq;
   }
 
-  // --- reconcile: the ADR-0012 four-step against ONE coherent snapshot -----------
+  // --- reconcile: the four-step against ONE coherent snapshot -----------
 
   /**
    * Reconcile against an authoritative own-row update. `authBaseline` is the row's
@@ -269,7 +269,7 @@ export class Predictor {
     now: number,
   ): boolean {
     const before = this.#predicted?.pos;
-    // Record the authoritative queue depth BEFORE the ADR-0012 four-step,
+    // Record the authoritative queue depth BEFORE the four-step,
     // so it is visibly outside it. Reads only the `authQueue` parameter.
     this.#lastAuthQueueLen = authQueue.length;
     // 1. drop acked pending.
@@ -330,7 +330,7 @@ export class Predictor {
    */
   drain(now: number): DrainResult {
     if (this.#predicted === undefined) return { applied: 0, snapped: false };
-    // ADR-0052 §B / M12.5d-3: gap is measured from the last FRAME drain only.
+    // Gap is measured from the last FRAME drain only.
     // First frame drain (#lastFrameDrainAt undefined) never snaps — no prior frame.
     const snapped =
       this.#lastFrameDrainAt !== undefined &&
@@ -363,7 +363,7 @@ export class Predictor {
    * NOT "tiles I will still travel": reconcile step 4 has already drained the authoritative
    * entries into `#predicted`.
    *
-   * `queueDepth` CANNOT serve this role. The ADR-0012 baseline is rebased to
+   * `queueDepth` CANNOT serve this role. The reconcile baseline is rebased to
    * `now - 2*stepMs` (convert.ts `characterToPredictedBaseline`), so every reconcile drains
    * `#queue` to empty — it reads 0 while the server still owes work, which is exactly the
    * over-emission this gate exists to stop.
@@ -385,7 +385,7 @@ export class Predictor {
    * reconcile (the warp's own row burst → MicrotaskBatcher → reconcileFromStore), which
    * rewrites `#lastAuthQueueLen` from the authoritative queue; on a RECONNECT that reconcile
    * may be deferred (when the server's on_disconnect deleted the player/character rows —
-   * since rb-73 / ADR-0245 only if the old socket was the identity's LAST live connection —
+   * only if the old socket was the identity's LAST live connection —
    * reconcileFromStore early-returns until joinGame round-trips; when the rows survived the
    * overlap it runs on the first post-reconnect batch instead), and in the deferred case the
    * guarantee rests on `held.clear()` ALONE — no held continuation survives the rebuild, so

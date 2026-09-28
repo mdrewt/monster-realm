@@ -1,4 +1,4 @@
-// ui/eventRing.ts — bounded, PII-free session event buffer for the F9 bug bundle (pt-b1).
+// ui/eventRing.ts — bounded, PII-free session event buffer for the F9 bug bundle.
 //
 // Source-of-truth: M-playtest-b F9 bug-bundle event ring (EARS U-1 bounded FIFO, U-3 no-PII).
 //
@@ -65,7 +65,7 @@ export function makeRankedMatch(battleId: string, ratingDelta: number): Playtest
 }
 
 // The PvP-vs-wild classifier is defined ONCE, canonically, in battleModel.ts
-// (ptc5e-3 SSOT — it is a battle-model concept). Re-exported here so this module's
+// (SSOT — it is a battle-model concept). Re-exported here so this module's
 // consumers (main.ts, the F9 bundle) keep a single import site. The canonical fn
 // is structurally typed, so this re-export adds no net/store type coupling.
 export { isPvpBattle } from './battleModel';

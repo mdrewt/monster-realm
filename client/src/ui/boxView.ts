@@ -11,7 +11,7 @@
 // The name row `card.nickname || card.speciesName` is model data, rendered raw. Every `t(`/`tf(`
 // first argument is a string LITERAL.
 //
-// m23-s4 (ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
+// Overlay a11y wiring. This view is a CONSTRUCTED shell:
 // its root is `document.createElement`'d here and appended into the shared `#app` MOUNT, so unlike
 // the ten static shells S3 wired it ships NO ARIA of its own from `client/index.html` — every
 // attribute below comes from `openOverlayA11y`, never from a literal in this file.
@@ -33,7 +33,7 @@
 // itself and then never receives focus.
 //
 // NO CLOSE-BEFORE-OPEN. `ui/overlayA11y.ts`'s cross-slice contract (a) once claimed the four
-// `#app`-mounted views "share ONE root" and prescribed close-before-open; 17r-e RETRACTED it
+// `#app`-mounted views "share ONE root" and prescribed close-before-open; it was RETRACTED
 // in place (A12, ui/overlayA11y.ts:52-54); (a) now agrees with this code: each view creates its
 // OWN root under the shared MOUNT — four roots, four `OverlayId`s, four records. Closing a sibling
 // here would close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
@@ -54,13 +54,13 @@ const BOX_SLOT = 255;
 
 export class BoxView {
   readonly #root: HTMLDivElement;
-  /** The "Party & Box" heading; its text is resolved in show(), not here (m24-s4, see show()). */
+  /** The "Party & Box" heading; its text is resolved in show(), not here (see show()). */
   readonly #titleEl: HTMLHeadingElement;
   /** The Heal Party button; its label is resolved in show(). */
   readonly #healBtn: HTMLButtonElement;
   readonly #partyEl: HTMLDivElement;
   readonly #boxEl: HTMLDivElement;
-  /** Static box-vs-party explainer (ux4); never toggled — it states an invariant.
+  /** Static box-vs-party explainer; never toggled — it states an invariant.
    *  Its text is resolved in show(). */
   readonly #hintEl: HTMLDivElement;
   /** The two section headings; text resolved in show(). */
@@ -100,7 +100,7 @@ export class BoxView {
     header.appendChild(healBtn);
     this.#root.appendChild(header);
 
-    // ux4: a direct #root child, so it cannot be wiped by #renderParty / #renderBox,
+    // A direct #root child, so it cannot be wiped by #renderParty / #renderBox,
     // which only touch #partyEl / #boxEl. A SIBLING of `header`, never wrapping it:
     // three client/e2e/recruit.spec.ts sites resolve this root as
     // h2['Party & Box'].parentElement.parentElement, and a wrapper retargets that chain.

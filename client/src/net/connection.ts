@@ -6,7 +6,7 @@
 // (one-way flow). Behavior is validated by the M5 two-window e2e; here it
 // wires the tested cores (store / batch / rowConvert / reconnectPolicy / statusModel).
 // Reducer-rejection routing lands HERE (joinGame + subscription errors) and in
-// main.ts (movement + non-movement sends) per ADR-0085 — SDK 2.6 has no per-reducer
+// main.ts (movement + non-movement sends) — SDK 2.6 has no per-reducer
 // callbacks; the reducer-promise rejection surface is the mechanism.
 import { DbConnection } from '../module_bindings';
 import {
@@ -83,7 +83,7 @@ export interface ConnectionOptions {
   /** Initial subscription applied — the caller starts the loop (gated on wasm + own row). */
   readonly onReady: (identity: string) => void;
   /** Re-established after a drop: the caller resets the predictor + the loop re-seeds. Carries
-   *  THIS connection's identity (ADR-0130 residual e): a rebuild can mint a NEW anon
+   *  THIS connection's identity: a rebuild can mint a NEW anon
    *  identity (continueAnonymously / the nh4 token-rejection path), and a caller that keeps the
    *  old one deafens every identity-gated listener. Test-carried, not type-carried: TS parameter
    *  bivariance still accepts a zero-arg handler, so RSD17B-CARRIES / IDROT pin it. */
@@ -98,7 +98,7 @@ export interface ConnectionOptions {
   readonly onHydrated: () => void;
   /** A non-movement failure to surface (status line). Movement-reducer rejections stay silent (M2 §3). */
   readonly onError: (where: string, message: string) => void;
-  /** Called when the own entity crosses a zone boundary (ADR-0067 Option C).
+  /** Called when the own entity crosses a zone boundary.
    *  Receives the new zone id so the caller can reload the map and reset prediction. */
   readonly onOwnWarp?: (newZoneId: number) => void;
   /** dev-observability: outbound reducer-call sink. `undefined` (the default
@@ -126,7 +126,7 @@ export interface ConnectionOptions {
 
 export interface Connection {
   /** The CURRENT live DbConnection, or undefined while no connection is built (cold start,
-   *  mid-attempt, or a parked terminal state — ADR-0182 D13). Getter-backed. */
+   *  mid-attempt, or a parked terminal state). Getter-backed. */
   readonly conn: DbConnection | undefined;
   /** The current live DbConnection, or undefined — the same slot the getter reads, exposed as
    *  a method so callers `const live = conn?.live()` and guard once (G26). */
@@ -152,7 +152,7 @@ export function connect(opts: ConnectionOptions): Connection {
   let snapshotApplied = false;
   // Reconcile once per transaction: each row callback schedules; the batcher fires
   // store.flushBatch() once on the next microtask (no per-transaction SDK hook in 2.6).
-  // ONE batcher for ALL rebuilds (ADR-0085 C2): a per-build batcher could fire a
+  // ONE batcher for ALL rebuilds: a per-build batcher could fire a
   // stale flush after store.reset() wiped the rows it was coalescing. wireTables
   // re-registers row handlers per build, but every handler schedules through THIS
   // single instance, so a scheduled flush always reflects the current store.
@@ -162,8 +162,7 @@ export function connect(opts: ConnectionOptions): Connection {
     // 1.12.0 bindings, so the SDK never fires onUpdate — every row change is an
     // unordered insert+delete pair; rebuilding membership from the cache is
     // ordering-immune and immune to multi-transaction coalescing. Stale-build
-    // guarded (ADR-0085 C2): `live !== undefined` is the sanctioned spelling —
-    // `current === undefined` would collide with the M21b-2 assignment-count pin.
+    // guarded: `live !== undefined` is the sanctioned spelling.
     const live = current;
     if (live !== undefined) {
       // 15r-sec-a hardening: the reconciles run UPSTREAM of flushBatch in this
@@ -224,20 +223,20 @@ export function connect(opts: ConnectionOptions): Connection {
   // build(): its consecutive-rejection counter lives in this closure and is not persisted,
   // so a per-build gate would reset the counter on every scheduleRebuild() attempt,
   // suppression could never engage, and a host reset would loop forever re-supplying a
-  // permanently rejected token. Pinned by W-NH4-GATE-CONSTRUCTED.
+  // permanently rejected token.
   const auth = createAuthTokenGate(opts.uri, opts.db, globalThis);
   let identity = '';
   let hadSession = false; // distinguishes the first connect from a reconnect (survives rebuilds)
   // App-level reconnect policy: pure transitions live in
   // reconnectPolicy.ts; this shell owns the timers and the current state.
   let state: ReconnectState = initialReconnectState();
-  // ONE timer handle = the double-schedule guard (ADR-0085 A7): onDisconnect and
+  // ONE timer handle = the double-schedule guard: onDisconnect and
   // onConnectError both route through scheduleRebuild(); while a rebuild is already
   // pending, a second schedule attempt is a no-op.
   let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
-  // Teardown guard (ADR-0085 A5): once the page is going away, never rebuild.
+  // Teardown guard: once the page is going away, never rebuild.
   let teardown = false;
-  // Build generation (ADR-0085 review RT-02/RT-04/RT-07): each build() bumps this;
+  // Build generation: each build() bumps this;
   // lifecycle callbacks from a SUPERSEDED build (a late onDisconnect the browser
   // buffered across a bfcache freeze, a slow onConnectError racing a successful
   // retry) compare their captured generation and no-op — a stale socket's events
@@ -265,7 +264,7 @@ export function connect(opts: ConnectionOptions): Connection {
   // authorization code and arms this attempt's gate so the first sign-in exchanges its verifier.
   if (oidc.consumeReturnLeg()) isReturnLegAttempt = true;
 
-  /** Schedule ONE rebuild after the current backoff delay (ADR-0085 D3/A7). */
+  /** Schedule ONE rebuild after the current backoff delay. */
   function scheduleRebuild(): void {
     if (teardown || rebuildTimer !== undefined) return;
     const delay = reconnectDelayMs(state.attempt);
@@ -299,7 +298,7 @@ export function connect(opts: ConnectionOptions): Connection {
   // would double-fire handleDrop and cross the teardown guards — do not add one
   // without extracting removable named handlers first.
   //
-  // pagehide teardown (ADR-0085 A5): clear any pending reconnect timer and suppress
+  // pagehide teardown: clear any pending reconnect timer and suppress
   // future scheduling — a dying page must not spawn a fresh WebSocket.
   window.addEventListener('pagehide', () => {
     teardown = true;
@@ -309,7 +308,7 @@ export function connect(opts: ConnectionOptions): Connection {
     }
   });
 
-  // pageshow inverse (ADR-0085 A5, RT-PH-01): a bfcache restore resumes JS with the
+  // pageshow inverse: a bfcache restore resumes JS with the
   // pre-pagehide state — teardown=true, no timer, and a socket the browser killed
   // while the page was frozen (the SDK's onclose may have fired into the frozen page
   // and been lost). Without this, the client is permanently frozen after Back
@@ -324,7 +323,7 @@ export function connect(opts: ConnectionOptions): Connection {
   /**
    * Register ALL table row handlers on a (re)built connection. Runs once per build:
    * a rebuilt DbConnection starts with ZERO handlers, so forgetting a table here
-   * means the new connection silently ingests nothing for it (ADR-0085 — re-wire
+   * means the new connection silently ingests nothing for it (re-wire
    * everything or the reconnect looks connected but stays empty).
    */
   function wireTables(conn: DbConnection): void {
@@ -364,7 +363,7 @@ export function connect(opts: ConnectionOptions): Connection {
     });
 
     // `my_monster_pub` is a PK-less VIEW — the SDK never
-    // fires onUpdate for it, so do NOT wire one (W-13RE-INGEST tripwire), and
+    // fires onUpdate for it, so do NOT wire one, and
     // per-row store writes are banned here: the batcher's flush closure
     // reconciles the whole monster map from the SDK cache, so these handlers
     // only schedule that flush.
@@ -385,7 +384,7 @@ export function connect(opts: ConnectionOptions): Connection {
     });
 
     // `my_battle` is a PK-less VIEW — the SDK never
-    // fires onUpdate for it, so do NOT wire one (W-15RSECA-INGEST tripwire),
+    // fires onUpdate for it, so do NOT wire one,
     // and per-row store writes are banned here: the batcher's flush closure
     // reconciles the whole battle map from the SDK cache, so these handlers
     // only schedule that flush (the my_monster_pub pattern above).
@@ -581,7 +580,7 @@ export function connect(opts: ConnectionOptions): Connection {
     //   * no onUpdate — a view table has no PK for SDK correlation, so it never fires;
     //     wiring one implies a delivery guarantee the transport does not make.
     // If the server ever grows a wallet-delete path, this absence is the review tripwire:
-    // revisit ADR-0154 D4 first, then wire removal + the store API in the same change.
+    // revisit the no-delete wallet decision first, then wire removal + the store API in the same change.
     conn.db.my_wallet.onInsert((_ctx, row) => {
       store.upsertWallet(playerWalletRowToStore(row as unknown as SdkPlayerWalletRow));
       batcher.schedule();
@@ -627,7 +626,7 @@ export function connect(opts: ConnectionOptions): Connection {
     // profile is a REGULAR table (not a view), so onUpdate fires normally — the
     // my_conversation view-delete gating above does NOT apply here.
     // TRIPWIRE — deliberately NO onDelete: profile rows are never deleted
-    // server-side (RL-2, ADR-0119 D1 — Elo losses update the row, never remove it).
+    // server-side (RL-2 — Elo losses update the row, never remove it).
     // If the server ever starts deleting profile rows, this missing handler is the
     // review tripwire: wire onDelete + a store removal in the same change.
     const ingestProfile = (row: SdkProfileRow): void => {
@@ -691,9 +690,9 @@ export function connect(opts: ConnectionOptions): Connection {
     conn.reducers.joinGame({ name }).catch((err) => {
       const msg = (err as Error)?.message ?? '';
       // "already joined" is benign: either the server has not processed the old session's drop
-      // yet, or (since rb-73 / ADR-0245) it processed it and kept the rows because this rebuilt
+      // yet, or it processed it and kept the rows because this rebuilt
       // connection was still live — either way the rows live and the new subscription
-      // re-hydrates them (ADR-0085 A4). EXACT match.
+      // re-hydrates them. EXACT match.
       if (msg !== 'already joined') onError('join', msg || 'join failed');
     });
   }
@@ -737,11 +736,11 @@ export function connect(opts: ConnectionOptions): Connection {
             // the backoff ladder here (the ONLY attempt reset), and clear any session terminal.
             state = onConnected(state);
             sessionMode = 'hidden';
-            // ADR-0182 D16 join gate, re-evaluated FRESH every applied snapshot. The claim-code
+            // Join gate, re-evaluated FRESH every applied snapshot. The claim-code
             // veto is the SOLE veto and is scoped to account-kind builds; my_account presence is
             // NEVER consulted in it (AUTH-52). Anon builds always join — the idempotent A4 re-join
             // (server on_disconnect deletes the player + character rows when the identity's LAST
-            // live connection ends — rb-73 / ADR-0245 — so a reconnect must still attempt the join).
+            // live connection ends — so a reconnect must still attempt the join).
             const codeUnconsumed = claimCode.hasUnconsumed(globalThis, opts.uri, opts.db);
             const shouldJoin = credential.kind !== 'account' || !codeUnconsumed;
             if (shouldJoin) {
@@ -782,7 +781,7 @@ export function connect(opts: ConnectionOptions): Connection {
             // Warp detection uses character.onUpdate (inline scalar comparison);
             // off-zone characters are excluded at RENDER time by the currentZoneId filter
             // (main.ts) — the real mechanism. (store.resetCharacters() exists but is NOT
-            // wired into switchZone; correcting a stale comment, ptc5e-4.)
+            // wired into switchZone.)
             'SELECT * FROM character',
             'SELECT * FROM player',
             // monster_pub is PRIVATE — subscribe
@@ -799,7 +798,7 @@ export function connect(opts: ConnectionOptions): Connection {
             'SELECT * FROM my_battle',
             'SELECT * FROM skill_row',
             // Unfiltered subscribe + client-side owner filter (store.ownInventory) is the
-            // established defense-in-depth pattern (ADR-0015/0046 V1; transport RLS → M16),
+            // established defense-in-depth pattern (transport RLS is future work),
             // same as monster_pub. item_row is public content (no owner).
             'SELECT * FROM inventory',
             'SELECT * FROM item_row',
@@ -824,15 +823,15 @@ export function connect(opts: ConnectionOptions): Connection {
             // would never fire.
             'SELECT * FROM my_wallet',
             // trade_offer is a PUBLIC runtime table; both parties
-            // subscribe. Per-row RLS is a M16 future (ADR-0106 W3 INFO); until then the
+            // subscribe. Per-row RLS is future work; until then the
             // client sees all offers and filters by own identity in ownTradeOffer().
             'SELECT * FROM trade_offer',
             // battle_challenge is a PUBLIC runtime table; challenger
-            // and target subscribe. battle_action is PRIVATE (ADR-0015 must-never-leak)
+            // and target subscribe. battle_action is PRIVATE (must-never-leak)
             // and MUST NEVER be subscribed here.
             'SELECT * FROM battle_challenge',
             // Profile is a PUBLIC regular table (world-readable leaderboard —
-            // RL-13/ADR-0119); onUpdate fires normally (unlike the my_conversation view).
+            // RL-13); onUpdate fires normally (unlike the my_conversation view).
             'SELECT * FROM profile',
             // my_account is the owner-scoped VIEW over the PRIVATE account
             // table — the sole reconciliation authority for "am I signed in" (AUTH-51). Ingested
@@ -954,7 +953,7 @@ export function connect(opts: ConnectionOptions): Connection {
       // RT-01 preserved: build() can still throw synchronously (malformed URI, SDK version check).
       // A first-time sign-in-failed still gets an ANON connection — never `credential` (whose token
       // field is a reason string) and never no connection at all, which would strand the claimant.
-      // biome-ignore format: ADR-0182 D13 line 220 — pinned single-line literal (W-M21B2-LIVE-IS-CURRENT).
+      // biome-ignore format: kept as one line on purpose.
       current = build(credential.kind === 'sign-in-failed' ? { kind: 'anon', token: auth.tokenForNextAttempt() } : credential);
     } catch (err) {
       opts.onError('connect', err instanceof Error ? err.message : 'rebuild failed');
@@ -972,7 +971,7 @@ export function connect(opts: ConnectionOptions): Connection {
   /** AUTH-48: mint the claim code (so the return-leg reissue has one), then hand off to the OIDC
    *  redirect. beginSignIn is TOTAL (never rejects, oidc.ts C1) — the .catch is a belt only. On a
    *  'ready' result the tab leaves the page; any other kind degrades to the claim UI's failure copy
-   *  (the intended behaviour against the `.invalid` placeholder issuer until 13r-c-2 deploys). */
+   *  (the intended behaviour against the `.invalid` placeholder issuer until a real issuer is deployed). */
   function startSignIn(): void {
     claimCode.mint(globalThis, opts.uri, opts.db);
     // Bound to a short local so biome keeps `oidc.beginSignIn(` on one line (G-teeth pin it
@@ -1006,7 +1005,7 @@ export function connect(opts: ConnectionOptions): Connection {
 
   return {
     // Getter: returns the CURRENT live connection across rebuilds — callers must not cache
-    // `conn.conn` across await points; a rebuild may have replaced the instance (ADR-0085 C9).
+    // `conn.conn` across await points; a rebuild may have replaced the instance.
     get conn() {
       return current;
     },

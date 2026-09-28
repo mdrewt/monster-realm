@@ -8,7 +8,7 @@
 //
 // Deviation from helpView's zero-arg form: the menu is interactive, so it takes a callbacks
 // object (`renameView`/`shopView` precedent). It decides no NAVIGATION — every input is
-// forwarded verbatim to `menuModel.menuStep` (ADR-0014 functional core). The one decision it
+// forwarded verbatim to `menuModel.menuStep` (functional core). The one decision it
 // makes is event ROUTING: which listener owns which key; see the keydown listener below.
 //
 // XSS firewall: `textContent` / `createElement` / `replaceChildren`, plus the
@@ -78,15 +78,15 @@ export class MenuView {
       const index = this.#indexOfEventTarget(e.target);
       if (index !== undefined) callbacks.onInput({ kind: 'hover', index });
     });
-    // m23-s6 SPLIT OWNERSHIP. Same <ul>, same delegation, same DEFAULT (bubble)
+    // SPLIT OWNERSHIP. Same <ul>, same delegation, same DEFAULT (bubble)
     // phase as the two above. This listener owns ONLY the selection-movement inputs — up,
     // down, left — and consumes them with preventDefault + stopPropagation so main.ts's window
     // listener does not step the menu a SECOND time for one press.
     //
     // WHY only that subset: `enter` and `escape` are the only inputs that can activate a leaf
     // or dismiss the menu, so they are deliberately left to bubble to main.ts, which owns them
-    // behind its ordered guard chain — sessionGateBlocks() FIRST (ADR-0182 D17 /
-    // W-M21B2-SESSION-GATE-FIRST), then the key-repeat gate, then the Escape ladder. Swallowing
+    // behind its ordered guard chain — sessionGateBlocks() FIRST,
+    // then the key-repeat gate, then the Escape ladder. Swallowing
     // them here would route a guarded action around that chain. The three inputs kept are
     // provably inert instead: `menuStep` can only ever return effect {kind:'none'} for up, down
     // and left, so they cannot close the menu, activate a leaf, or reach a reducer — consuming

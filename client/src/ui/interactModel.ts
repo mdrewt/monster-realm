@@ -22,7 +22,7 @@ export interface InteractTile {
 
 /** A resolved interact target. Anchors are SOURCE px at the TARGET's tile:
  *  X tile-centre `(tileX + 0.5) * TILE_PX`, Y tile-TOP `tileY * TILE_PX` (the
- *  label floats above the head — ADR-0161 D6). The ONLY world→screen transform
+ *  label floats above the head). The ONLY world→screen transform
  *  is WorldRenderer.screenFor; this module never applies camera or scale. */
 export type Interactable =
   | { kind: 'dialogue'; npcEntityId: bigint; anchorWorldX: number; anchorWorldY: number }

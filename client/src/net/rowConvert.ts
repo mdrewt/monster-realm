@@ -39,7 +39,7 @@ import type {
   StoreWeather,
 } from './store';
 
-// --- m17.5f: SDK-boundary enum exhaustiveness --------------------------
+// --- SDK-boundary enum exhaustiveness --------------------------
 //
 // HANDLED_ENUM_VARIANTS is the client-side registry of every enum whose `.tag`
 // crosses the SDK→store boundary in this file (row READS only — write-direction
@@ -281,7 +281,7 @@ export interface SdkBattleRow {
     readonly sideB: SdkBattleSide;
     readonly outcome: { readonly tag: string };
     readonly turnNumber: number;
-    // Optional: m14d WeatherEffect carries a value (turns_remaining u8); absent when no weather.
+    // Optional: WeatherEffect carries a value (turns_remaining u8); absent when no weather.
     // Optional field keeps existing test factories compiling (no weather field required).
     readonly weather?: { readonly tag: string; readonly value: number } | null;
   };
@@ -314,8 +314,8 @@ function battleMonsterToStore(m: SdkBattleMonster): StoreBattleMonster {
     statSpDefense: m.stats.spDefense,
     knownSkillIds: [...m.knownSkillIds],
     // StatusEffect is deliberately NOT in HANDLED_ENUM_VARIANTS: it feeds a bare-string
-    // store field, so a new server variant flows through unregistered and the eval does
-    // not catch it (ADR-0127 accepted limitation).
+    // store field, so a new server variant flows through unregistered and nothing
+    // catches it (accepted limitation).
     status: m.status ? { tag: m.status.tag, turnsRemaining: m.status.value } : null,
   };
 }
@@ -507,7 +507,7 @@ export function playerConversationRowToStore(row: SdkPlayerConversation): StoreP
 
 /**
  * Net-effect delete gate for the owner-scoped `my_conversation` VIEW subscription
- * (ADR-0087 — T0 spike finding 4): through a view, a row UPDATE arrives as
+ * (spike finding): through a view, a row UPDATE arrives as
  * `onInsert(new)` + `onDelete(old)` — NO onUpdate (the view table has no PK for SDK
  * correlation) — and the pair is UNORDERED. A naive onDelete → remove(owner) would
  * wipe the just-updated conversation on every advance_dialogue.
@@ -552,8 +552,8 @@ export interface SdkPlayerWalletRow {
  * - NO defaulting. `row.balance ?? 0n` (or `|| 0n`, or a `< 0n` clamp) fabricates
  *   "broke" out of "dark": shopModel decides `unknown` vs `known` on
  *   `typeof amount !== 'bigint'`, so an invented `0n` makes the client confidently
- *   report `Gold: 0` when it has no idea — exactly the `.unwrap_or(0)` that ADR-0154
- *   D1/D6 refused to let reach the UI.
+ *   report `Gold: 0` when it has no idea — exactly the `.unwrap_or(0)` that the wallet
+ *   design refused to let reach the UI.
  * - NO validation of its own that can THROW. This runs inside an SDK ROW callback, and
  *   the SDK dispatches those in a bare unguarded loop (`for (const callback of
  *   callbacks) callback.cb();` — spacetimedb/dist/index.browser.mjs
@@ -576,7 +576,7 @@ export function playerWalletRowToStore(row: SdkPlayerWalletRow): StoreWallet {
   };
 }
 
-// --- M21b-2: the owner-scoped `my_account` VIEW row --------------------
+// --- the owner-scoped `my_account` VIEW row --------------------
 
 export interface SdkAccountRow {
   readonly identity: { toHexString(): string };
@@ -598,14 +598,14 @@ export interface SdkAccountRow {
  * pass through as `undefined`, never fabricated to `0n`/`''` — the broke-vs-dark rule at
  * rowConvert.ts:543-568), and NO throw of its own.
  *
- * m22-s8 added the ninth key, `terminalAtMs` (M22 S2's `terminal_at_ms`): the PRV1-4
+ * The ninth key, `terminalAtMs` (M22 S2's `terminal_at_ms`): the PRV1-4
  * permanent-deletion marker `ui/privacyModel.ts` reads as its PRIMARY route to the terminal
  * state. It is `Option<i64>`, so `0n` is a REAL marker and must survive as `0n` — and a `null`
  * is normalised to `undefined`, exactly as `claimedFrom` already is, because a raw `null` would
  * read downstream as "marker present" and make every account look permanently deleted.
  *
  * Fail-SOFT, not fail-loud: this runs inside an SDK row callback whose dispatch loop has no
- * per-listener isolation (ADR-0085 A6), so a throw here starves every sibling table's ingest
+ * per-listener isolation, so a throw here starves every sibling table's ingest
  * for that transaction. `status?.tag` and the nullish `claimedFrom` guard keep a degenerate
  * row from throwing; `status`'s unknown tags pass through raw (never normalised to 'Active').
  */
@@ -626,7 +626,7 @@ export function accountRowToStore(row: SdkAccountRow): StoreAccount {
   };
 }
 
-// --- rb-53 (ADR-0231 A3-D1): the owner-scoped `my_export_bundle` VIEW row ------------
+// --- the owner-scoped `my_export_bundle` VIEW row ------------
 
 /** Field types pinned from the generated binding
  *  `client/src/module_bindings/my_export_bundle_table.ts`: u64 -> bigint, u32 -> number,
@@ -659,7 +659,7 @@ export interface SdkExportChunkRow {
  * conversion here would report `inconsistent` for every correct export.
  *
  * Fail-SOFT, not fail-loud: this runs downstream of an SDK row callback whose dispatch loop has
- * no per-listener isolation (ADR-0085 A6), and it runs inside the shared flush closure where a
+ * no per-listener isolation, and it runs inside the shared flush closure where a
  * throw would starve EVERY batch listener — including the movement reconcile that drives
  * prediction snap. `ownerIdentity?.toHexString?.()` keeps a degenerate row from throwing; an
  * unresolvable owner degrades to `''`, which `assembleExportBundle` refuses outright rather than
@@ -679,7 +679,7 @@ export function exportChunkRowToStore(row: SdkExportChunkRow): StoreExportChunk 
   };
 }
 
-// --- 20r-d: the owner-scoped `my_pending_evolution_notices` VIEW row -----
+// --- the owner-scoped `my_pending_evolution_notices` VIEW row -----
 
 /** One nested `EvolutionRevealRow` as the bindings deliver it. */
 export interface SdkEvolutionRevealRow {
@@ -710,7 +710,7 @@ export interface SdkPendingEvolutionNoticeRow {
  *   interpolates them as `Species #N`, which would render `Species #3n` for a bigint.
  * - NO defaulting of a present value and NO clamping.
  * - Fail-SOFT, never a throw. This runs inside the shared flush closure, where ONE try/catch
- *   wraps all four reconciles (ADR-0085 A6), so a throw here also costs the monster, battle
+ *   wraps all four reconciles, so a throw here also costs the monster, battle
  *   and export reconciles their burst — including the movement reconcile that drives
  *   prediction snap. An unresolvable owner degrades to `''` (the `exportChunkRowToStore`
  *   precedent), which `store.ownEvolutionNotices(identity)`'s exact compare refuses for any
@@ -796,7 +796,7 @@ interface SdkNpcRow {
  *  4th variant) and a missing/non-numeric payload both degrade to dialogue.
  *  `typeof value === 'number'` — never `||`/truthiness — so shop id 0 and
  *  heal-location id 0 survive (falsy-0 trap, the battleRowToStore precedent).
- *  A row cached from a pre-uxd2 module may lack the field entirely — also
+ *  A row cached from an older module may lack the field entirely — also
  *  dialogue. */
 function npcInteractionToStore(
   interaction: { readonly tag: string; readonly value?: number } | undefined,
@@ -821,7 +821,7 @@ export function npcRowToStore(row: SdkNpcRow): StoreNpcRow {
   };
 }
 
-// --- m15b: trade_offer converter ---------------------------------------------
+// --- trade_offer converter ---------------------------------------------
 
 interface SdkMonsterCard {
   readonly monsterId: bigint;
@@ -881,14 +881,14 @@ export function tradeOfferRowToStore(row: SdkTradeOfferRow): StoreTradeOffer {
     counterpartyCurrency: row.counterpartyCurrency,
     initiatorCards: row.initiatorCards.map(sdkCardToStore),
     counterpartyCards: row.counterpartyCards.map(sdkCardToStore),
-    // SDK boundary (supersedes the m16.5c ADR-0114 trust-cast): an unknown
+    // SDK boundary (supersedes the old trust-cast): an unknown
     // TradeStatus variant is logged and passed through raw via narrowTag (fail-soft).
     status: narrowTag(row.status.tag, HANDLED_ENUM_VARIANTS.TradeStatus, 'TradeStatus'),
     createdAtMs: row.createdAtMs,
   };
 }
 
-// --- m16b: battle_challenge conversion -----------------------------------------
+// --- battle_challenge conversion -----------------------------------------
 
 export interface SdkBattleChallengeRow {
   readonly challengeId: bigint;
@@ -912,7 +912,7 @@ export function battleChallengeRowToStore(row: SdkBattleChallengeRow): StoreBatt
   };
 }
 
-// --- m17b: profile conversion ---------------------------------------------------
+// --- profile conversion ---------------------------------------------------
 
 // `type` alias (not `interface`) to match the StoreProfile probe-cast convention
 // (store.ts NOTE at StoreMonsterPub). rating is i32, wins/losses are u32 — all

@@ -1,4 +1,4 @@
-// observability/frameWindow.ts — m20c (ADR-0180 body amendment), OBS-25.
+// observability/frameWindow.ts — OBS-25.
 //
 // A 1-second frame accumulator with an INJECTED clock (the rAF body already computes
 // `performance.now()` once per frame and hands it in — this module never reads a clock).

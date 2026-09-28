@@ -1,5 +1,5 @@
 // ui/overlayA11y.ts — open/close ARIA + focus choreography for the 16 mutual-exclusion overlays
-// (m23-s1, M23 §2.1-§2.3; ADR-0205 D1-D3, D7).
+// (M23 §2.1-§2.3).
 //
 // The composition shell of this slice: it is the only module here that writes attributes, schedules
 // a timer, moves focus or holds state. `ui/overlayRegistry.ts` supplies the metadata (role,
@@ -56,7 +56,7 @@
 //       instead of routing through the view's `hide()` (and thus this close), the record survives
 //       with a live listener, a pending timer and a return target that expires — a much later close
 //       then restores focus to a long-dead element. Recommend §4.1 add force-hide ↔ close to its
-//       cross-slice contract list. AMENDED BY rb-11 (ADR-0214, residual R-rb-11-A13): that bypass
+//       cross-slice contract list. Since live-region custody moved here, that bypass
 //       now ALSO strands `#a11y-live` inside the `display:none` subtree, because custody is handed
 //       back by `releaseLive` and nothing else — so the consequence is no longer a stale listener
 //       but TOTAL SILENCE for every announcement until that overlay is opened and closed properly.

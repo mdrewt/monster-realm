@@ -1,5 +1,4 @@
-// ui/privacyView.ts — DOM shell for the privacy surface (
-// ADR-0231 Amendment A2).
+// ui/privacyView.ts — DOM shell for the privacy surface.
 //
 // DOM shell, but FULLY UNIT-COVERED via happy-dom (the helpView / leaderboardView / renameView
 // precedent), so this file is deliberately NOT in `vite.config.ts` coverage.exclude.
@@ -21,13 +20,13 @@
 // `#privacy-close-btn` (overlayRegistry.ts's `initialFocusSelector`), a NATIVE <button>.
 //
 // ★ hide() CALLS onDismissed (A2-D4). `privacyView` is in BATTLE_FORCE_HIDE, and a force-hide runs
-// `main.ts`'s handle thunk — a byte-identical `privacyView?.hide()` pinned by
-// W-UXD3C-HANDLE-TABLE, so it cannot be widened at the call site. Routing the disarm through
+// `main.ts`'s handle thunk — a byte-identical `privacyView?.hide()` that
+// cannot be widened at the call site. Routing the disarm through
 // `hide()` itself is what stops a battle auto-show from leaving an armed delete confirmation live
 // in the model behind a hidden overlay.
 //
 // NO aria-live / role="status" / role="alert" on the notice: exactly one live region exists and
-// `ui/liveRegion.ts` owns it (the rb-51 A1-D4 call, which applies to this notice too).
+// `ui/liveRegion.ts` owns it (this applies to the notice too).
 //
 // The four strings this view owns are resolved through the i18n resolver
 // (`t()`, ui/i18n/resolver.ts), never in the constructor (S6 may negotiate the locale after this
@@ -37,7 +36,7 @@
 // The close anchor's `display = ''` / `disabled = false` and the title's `display = ''` STAY in
 // the constructor: the never-disabled anchor invariant (A2-D10) must hold before the first
 // show(). `privacy.title` shares its English bytes with `claim.privacyButton` today but is a
-// DIFFERENT key (ADR-0261 D2: a heading, not a button). Every vm label and
+// DIFFERENT key (a heading, not a button). Every vm label and
 // `PRIVACY_PSEUDONYMIZATION_DISCLOSURE` are `privacyBanner.ts` copy, rendered raw.
 
 import { t } from './i18n/resolver';
@@ -96,7 +95,7 @@ export class PrivacyView {
 
   constructor(handlers: PrivacyViewHandlers) {
     this.#overlay = ensureElement('privacy-overlay');
-    // position:fixed WITH inset:0. W-ONE-CORNER-AFFORDANCE pins the set of fixed-but-not-inset-0
+    // position:fixed WITH inset:0. The one-corner-affordance rule limits the set of fixed-but-not-inset-0
     // elements to exactly {build-stamp, help-hint}, so a centred fixed panel is not available.
     this.#overlay.style.position = 'fixed';
     this.#overlay.style.inset = '0';

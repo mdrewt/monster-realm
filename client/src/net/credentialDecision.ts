@@ -36,7 +36,7 @@ export type ConnectCredential =
  * How many CONSECUTIVE transient renewal errors a previously-authenticated tab absorbs
  * before it escalates to `auth-service-unreachable` and offers the continue-anonymously
  * affordance. 2, not 1 (one Better-Auth hiccup must not declare the service down), and
- * not large (the tab would retry invisibly forever). ADR-0182 D17.
+ * not large (the tab would retry invisibly forever).
  *
  * Deliberately NOT shared with authToken.ts's AUTH_REJECT_SUPPRESS_THRESHOLD — same value
  * today, independent tuning decision.

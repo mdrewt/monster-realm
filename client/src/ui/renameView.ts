@@ -18,7 +18,7 @@
 // D2: player-controlled name → textContent ONLY, NEVER innerHTML (XSS firewall).
 // A single #submit() path is shared by the button click AND the input's Enter; a
 // #pending lock reset via .finally() on BOTH resolve and reject (no dead-button-forever,
-// ADR-0085 C6 / shopView precedent).
+// shopView precedent).
 //
 // The submit label is the one string this view owns. It is resolved through
 // the i18n resolver (`t('chrome.rename.submit')`, ui/i18n/resolver.ts) in show(), on every
@@ -106,11 +106,11 @@ export class RenameView {
   }
 
   show(): void {
-    // m23-s3 D1: only the hidden->visible EDGE opens, so a repeat show() cannot re-schedule
+    // Only the hidden->visible EDGE opens, so a repeat show() cannot re-schedule
     // overlayA11y's deferred focus and steal focus back from wherever the player put it.
     const wasVisible = this.visible;
     // The submit label is resolved HERE, on EVERY show() — unconditionally,
-    // after the `wasVisible` read, before the display write (the ADR-0260 D4 shape; see
+    // after the `wasVisible` read, before the display write (see
     // evolutionView.show() for the boot-order / locale-switch reasoning).
     this.#submitBtn.textContent = t('chrome.rename.submit');
     this.#overlay.style.display = '';
@@ -128,7 +128,7 @@ export class RenameView {
     // Without this reset, #pending stays true forever → dead submit button (reviewer B-1).
     this.#pending = false;
     this.#submitBtn.disabled = false;
-    // m23-s3 D2: DELIBERATELY UNGUARDED (see pvpView.ts's header) -- the self-healing path.
+    // DELIBERATELY UNGUARDED (see pvpView.ts's header) -- the self-healing path.
     closeOverlayA11y('renameView', null);
   }
 

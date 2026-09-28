@@ -9,7 +9,7 @@
 // is the identity for a locale that genuinely needs all six — it exists so a catalog line reads
 // as a declared intent (`cldr({…})` vs `oneOther(…)`) that SHAPE-06 can check per locale.
 //
-// WHY AN UNSUPPORTED LOCALE THROWS (ADR-0256 D6 — reject, do not clamp, the ADR-0205 D4 stance).
+// WHY AN UNSUPPORTED LOCALE THROWS (reject, do not clamp).
 // `new Intl.PluralRules('xx')` does not fail: it resolves SILENTLY to the runtime default
 // (en-US), so a typo'd tag would ship English plural rules under a foreign catalog with no
 // signal. `supportedLocalesOf` is the only probe that says "no data", so both entry points ask

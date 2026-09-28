@@ -85,7 +85,7 @@ export class PvpView {
   }
 
   show(): void {
-    // m23-s3 D1 -- THE EDGE GUARD, AND WHY IT IS LOAD-BEARING (this is the canonical statement;
+    // THE EDGE GUARD, AND WHY IT IS LOAD-BEARING (this is the canonical statement;
     // the other nine views point here). `refresh()` below calls `show()` UNCONDITIONALLY whenever
     // `forceVisible` is true, and main.ts:1697-1709 recomputes `forceVisible` on EVERY store batch
     // -- once this overlay is open, `pvpView.visible` keeps it true. Delegating to
@@ -109,7 +109,7 @@ export class PvpView {
     // reducer promise after a link drop — so `.finally()` may never run. No node re-enable:
     // `show()` is only reached through refresh(), which rebuilds every lifecycle control.
     this.#pending = null;
-    // m23-s3 D2 -- DELIBERATELY UNGUARDED, and the asymmetry with the guarded `render(null)` path
+    // DELIBERATELY UNGUARDED, and the asymmetry with the guarded `render(null)` path
     // in the three render-driven views is a decision, not an oversight. `closeOverlayA11y` is a
     // documented no-op when there is no open record (ui/overlayA11y.ts:136-137), so an unguarded
     // close costs one Map lookup. What it BUYS is self-healing: if a record ever desynchronises
@@ -127,7 +127,7 @@ export class PvpView {
    * Re-render from the latest VM. The caller (main.ts batch listener or KeyP handler)
    * is fully responsible for the show/hide decision via `forceVisible` — this method
    * never auto-shows independently. This prevents pvpView from popping over an active
-   * battle or other overlay when hasActive=true (ADR-0110 D6 mutual-exclusivity).
+   * battle or other overlay when hasActive=true (mutual exclusivity).
    */
   refresh(vm: PvpChallengeViewModel | null, forceVisible: boolean): void {
     const hasActive = vm !== null && (vm.incoming !== null || vm.outgoing !== null);

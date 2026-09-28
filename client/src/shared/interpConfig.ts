@@ -3,7 +3,7 @@
 // WHY a shared module: net/store.ts needs INTERP_MAX_DEPTH, BURST_EPSILON_MS, and
 // INTERP_JITTER_ALPHA for upsertCharacter burst detection + jitter EWMA. render/config.ts
 // needs the same three constants for adaptiveInterpDelayMs and the documentary header.
-// A net→render or render→net import would violate ADR-0014 layer separation; this shared
+// A net→render or render→net import would violate layer separation; this shared
 // module (no layer affiliation) keeps the constants SSOT without a cycle.
 
 /** EWMA smoothing factor for the per-character jitter estimator.

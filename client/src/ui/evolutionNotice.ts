@@ -1,8 +1,8 @@
 // ui/evolutionNotice.ts — the POST-EVOLVE REVEAL: a pure copy core plus the small passive
-// banner that shows it (spec §20r-d gate B1 "the player SHALL see"; the
-// announcement and focus-return mechanism below is rb-125).
+// banner that shows it ("the player SHALL see"; the
+// announcement and focus-return mechanism is described below).
 //
-// WHY A PASSIVE BANNER AND NOT AN ADR-0162 REGISTRY OVERLAY. B1 asks for VISIBILITY, not for a
+// WHY A PASSIVE BANNER AND NOT A REGISTRY OVERLAY. The criterion asks for VISIBILITY, not for a
 // modal: "a visible reveal … a modest overlay/banner … satisfies this slice". Everything in the
 // overlay registry is a thing the player OPENED and can close, with a focus trap, an accessible
 // name in `ui/a11yCopy.ts` and custody of the live region. This surface is none of those — it
@@ -12,7 +12,7 @@
 // `*View.ts`: the two readdir rosters that drive the overlay a11y manifests filter on that
 // suffix, and joining them would force a ~17-file fan-out plus a twelfth static `aria-modal`
 // shell for a surface that is not modal. The cutscene/registry route is the disclosed residual
-// (rb-125 measured that route before choosing this one — see ADR-0272's Context).
+// (that route was measured before choosing this one).
 //
 // WHY z-index 60. `#help-hint` sits at 50 at the bottom of the screen and every overlay sits at
 // 100. 60 is therefore above the hint — so the banner is never painted over or click-stolen at
@@ -21,7 +21,7 @@
 // merely cheap: while a modal is open this banner is neither visible nor reachable.
 //
 // WHY NO aria-live ON THIS ELEMENT, AND WHY THE ANNOUNCEMENT IS INJECTED. The AT
-// gap ADR-0254 D6 disclosed is closed, but not by turning this banner into a second announcement
+// gap is closed, but not by turning this banner into a second announcement
 // owner: the one live region (ui/liveRegion.ts) still owns the single assistive-technology queue,
 // and this file never names it — it reaches it only through the `sinks.announce` callback
 // `main.ts` hands the constructor. An `aria-live` attribute on the container would still be wrong
@@ -55,7 +55,7 @@
 // release would leave the banner permanently undismissable after one of them.
 //
 // WHAT IS DELIBERATELY ABSENT FROM THIS FILE, and would be a defect if added: any write to the
-// Tab-order attribute; a live-region attribute; a DIRECT `.focus()` call — ADR-0272 §3 moves the
+// Tab-order attribute; a live-region attribute; a DIRECT `.focus()` call — the design moves the
 // WHERE to `main.ts`'s injected `returnFocus` sink, so this file only decides WHEN, by checking
 // whether `document.activeElement` sat inside the banner the instant before it hides; an
 // HTML-string write (the label is assembled from a player-chosen NICKNAME, so it is an injection
@@ -141,7 +141,7 @@ export function evolutionNoticeKey(entry: StoreEvolutionReveal): string {
  * The roster match is an EXACT bigint compare. Monster ids are server `#[auto_inc]` u64, so a
  * `Number()`-coerced compare aliases 2^53 with 2^53+1 and names somebody else's monster. A
  * MISS is an ordinary outcome, not an error: a monster may have been traded away between the
- * reveal and the dismissal (a disclosed ADR-0254 residual), so this never asserts a hit.
+ * reveal and the dismissal (a disclosed residual), so this never asserts a hit.
  */
 export function resolveEvolutionNoticeNames(
   entry: StoreEvolutionReveal,
@@ -241,7 +241,7 @@ export class EvolutionNoticeBanner {
    *  first reveal. Deliberately NEVER cleared — not on `render(null)`, not by `reset()` — a
    *  hide-then-reshow of the SAME key only happens across a reconnect or a store reset, and
    *  re-speaking an entry every AT user already heard on every link flap is exactly the noise
-   *  ADR-0272 §1 bans. */
+   *  this rule bans. */
   #announcedKey: string | null = null;
 
   constructor(onAck: () => Promise<void>, sinks: EvolutionNoticeSinks) {

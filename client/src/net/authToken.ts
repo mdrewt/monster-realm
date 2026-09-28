@@ -29,7 +29,7 @@
  * indistinguishable from a real rejection (see the header), so a threshold of 1 would swap
  * the player's identity on a single server hiccup. WHY not higher: a genuinely dead token
  * repeats deterministically, so each extra rung only delays recovery — at 2 the host-reset
- * loop terminates after the 1 s + 2 s backoff rungs (ADR-0085 ladder), about 3 s.
+ * loop terminates after the 1 s + 2 s backoff rungs, about 3 s.
  */
 export const AUTH_REJECT_SUPPRESS_THRESHOLD = 2;
 
@@ -124,11 +124,11 @@ function storageMethod(host: TokenStorageHost | undefined, name: 'getItem' | 'se
  * `host` is the object that may expose `sessionStorage` — per-TAB storage, deliberately not
  * `localStorage`. When D3 was decided the server's `on_disconnect` keyed purely
  * on identity with no live-connection check, so two tabs sharing one identity would have let
- * closing either one forfeit the other's PvP battle and delete its character row; since rb-73
+ * closing either one forfeit the other's PvP battle and delete its character row; now
  * the server runs those side effects only when the identity's LAST live connection
  * ends. Per-tab storage still keeps a second tab an independent identity (identity hygiene, and
- * one token per tab bounds the R-rb-73-TOKEN-WEDGE surface) while surviving the page reload nh4
- * exists to fix.
+ * one token per tab bounds the open token-wedge residual) while surviving the page reload this
+ * storage exists to fix.
  */
 export function createAuthTokenGate(
   uri: string,
@@ -206,7 +206,7 @@ export function createAuthTokenGate(
 // the hole cannot be opened by accident when that path arrives.
 //
 // The marker records INTENT, never FACT: it says which credential class this
-// tab believes it holds, not what the server concluded. Once M21b-2 subscribes
+// tab believes it holds, not what the server concluded. Once the client subscribes
 // the `my_account` view, THAT is authoritative and this is a hint.
 // ---------------------------------------------------------------------------
 
@@ -239,7 +239,7 @@ export function authKindStorageKey(uri: string, db: string): string {
  * storage accessor. Two reasons this is the safe direction and not merely the
  * lenient one: (1) every tab in existence today has no marker, so failing to
  * `'account'` would break every existing anonymous reconnect the moment storage
- * is blocked, turning a private-mode quirk into total loss of ADR-0150's
+ * is blocked, turning a private-mode quirk into total loss of the reconnect
  * feature; (2) `'anon'` IS today's behaviour, so the fail path is a no-op
  * rather than a new one.
  *
@@ -265,7 +265,7 @@ export function readAuthKind(
  * Record the credential class for this target. Degrades silently on quota /
  * private-mode / blocked-storage failures, exactly as `onConnected` does.
  *
- * LIVE CONSUMERS (M21b-2 landed — the marker is now a complete read/write pair):
+ * LIVE CONSUMERS (the marker is a complete read/write pair):
  * the read side is `wasEverAuthenticated` below (the AUTH-44 attempt gate, which
  * decides only whether a tab may call Better Auth on reconnect), and connection.ts's
  * provenance guard on `credential.kind`. That guard reads the credential this build

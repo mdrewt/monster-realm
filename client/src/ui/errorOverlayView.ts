@@ -1,4 +1,4 @@
-// ui/errorOverlayView.ts — self-mounting DOM shell for the F9 error overlay (pt-b1).
+// ui/errorOverlayView.ts — self-mounting DOM shell for the F9 error overlay.
 //
 // Source-of-truth: M-playtest-b error overlay DOM shell (EARS U-4 XSS, S-3, M-2 total render).
 //

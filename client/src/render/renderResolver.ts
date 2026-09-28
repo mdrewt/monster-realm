@@ -127,17 +127,17 @@ export class RenderResolver {
         // interpolation paths — the remote is drawn at its authoritative row tile,
         // and `now` is not even referenced, so clock-independence holds by
         // construction. Otherwise:
-        // ADR-0090: per-character adaptive render time derived from EWMA jitter.
+        // Per-character adaptive render time derived from EWMA jitter.
         // WHY per-character: NPCs and remote players have different jitter profiles;
         // a single global renderTime would over-buffer smooth entities.
-        // Backward compat: when snapshots is empty (pre-ADR-0090 fixtures / tests that
+        // Backward compat: when snapshots is empty (older fixtures / tests that
         // only supply prev+latest), fall back to the fixed delay + 2-snapshot interpolate.
         let pos: RenderPos;
         if (reduceMotion) {
           pos = interpolateReducedMotion(c.row);
         } else if (c.snapshots.length > 0) {
           const delay = adaptiveInterpDelayMs(c.jitterEwma, this.#stepMs);
-          // The stepMs argument arms the ADR-0171 idle-gap re-anchor — without it the
+          // The stepMs argument arms the idle-gap re-anchor — without it the
           // resume-from-idle fix is inert in production (renderResolver.test.ts pins it).
           pos = interpolateHistory(c.snapshots, now - delay, this.#stepMs);
         } else {

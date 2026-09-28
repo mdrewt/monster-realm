@@ -1,5 +1,5 @@
 // ui/liveRegion.ts — the 500 ms-coalescing, textContent-only sink for the ARIA live region, and
-// (since rb-11 / ADR-0214) the node's DOM CUSTODY owner.
+// the node's DOM CUSTODY owner.
 //
 // WHY TIME IS AN ARGUMENT AND NEVER A CLOCK. There is not one fake timer in `client/src`; the house
 // pattern is an INJECTED clock (`new ErrorRing(() => Date.now())`, `new EventRing(...)`,
@@ -53,7 +53,7 @@
 // partner's name — and an HTML-parsing sink would be an injection surface), not `setAttribute`. The
 // `aria-live`/`aria-atomic`/`role` attributes belong to S2's markup, not to a runtime write.
 //
-// AMENDED BY rb-11, by NAMING THE EXCEPTION RATHER THAN SOFTENING THE CLAIM: this
+// THE ONE NAMED EXCEPTION (named rather than softening the claim): this
 // header used to say `textContent` was the only DOM write of any kind, and explicitly excluded
 // `appendChild`. `adoptLiveRegion` below now calls `appendChild` — it moves the node's PARENT, and
 // never its content, never its attributes. The injection argument above is about CONTENT and is
@@ -116,7 +116,7 @@ export class LiveRegion {
 
 /**
  * Hand DOM custody of the live region to `root` for as long as it is an open modal, and return the
- * closure that hands it back. rb-11 / ADR-0214; the residual is R-m23-s2-X5.
+ * closure that hands it back.
  *
  * WHY THIS EXISTS. `A11Y-13` puts `aria-modal="true"` on every visible overlay root, and per ARIA
  * that instructs assistive technology to treat everything OUTSIDE the dialog as inert — including

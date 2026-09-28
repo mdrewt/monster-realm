@@ -7,8 +7,8 @@
 // the English bytes are unchanged (the catalog pins them, TRAILING SPACE of the buy/sell rows
 // included). `vm.shopName`, `vm.balance.label` and the `showFeedback` message are model data,
 // rendered raw; item names, counts and bigint prices flow through as params. Every `t(`/`tf(`
-// first argument is a string LITERAL, and the `emptyRow` helper stays (nested `emptyRow(t('…'))`
-// — ADR-0260 D5). No constructor-time strings: this view renders into the static index.html shell.
+// first argument is a string LITERAL, and the `emptyRow` helper stays (nested `emptyRow(t('…'))`).
+// No constructor-time strings: this view renders into the static index.html shell.
 import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type {
@@ -67,7 +67,7 @@ export class ShopView {
       (() => {
         throw new Error('shop-feedback missing');
       })();
-    // ux2: the gold readout is created here, not in index.html, and is
+    // The gold readout is created here, not in index.html, and is
     // inserted directly after the shop title so it reads as part of the shop panel.
     // No inline positioning: #shop-overlay is a plain in-flow shell, and floating
     // just this child would put a naked balance in the viewport corner while the
@@ -95,7 +95,7 @@ export class ShopView {
   }
 
   show(): void {
-    // m23-s3 D1: read visibility BEFORE the display write. `show()` is called REPEATEDLY on an
+    // Read visibility BEFORE the display write. `show()` is called REPEATEDLY on an
     // already-open overlay (pvpView.ts is the extreme case, main.ts:1699-1701), and a re-open
     // re-schedules overlayA11y's deferred focus -- which would yank focus back to the initial
     // anchor on every store batch. Only the hidden->visible EDGE opens.
@@ -108,7 +108,7 @@ export class ShopView {
     this.#overlay.style.display = 'none';
     this.#feedbackEl.textContent = '';
     this.#pending = false;
-    // m23-s3 D2: DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
+    // DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
     // documented no-op with no open record, and leaving it unguarded is what lets a record
     // that ever desynchronised from the DOM self-heal instead of leaking a live trap forever.
     closeOverlayA11y('shopView', null);

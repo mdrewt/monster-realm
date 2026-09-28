@@ -2,7 +2,7 @@
 // DOM shell — coverage-excluded (all logic lives in claimModel.ts). Joins overlayRegistry as
 // GUARD_ONLY, so `anyOverlayVisible()` suppresses movement input for free while it is open.
 //
-// m23-s4 (ADR-0205 D1/D2/A3) — overlay a11y wiring. THREE DOORS, ONE NULLITY SOURCE.
+// Overlay a11y wiring. THREE DOORS, ONE NULLITY SOURCE.
 // This shell is opened and closed through `show()`, `hide()` AND `render(vm)` (whose `vm.visible`
 // drives `display` directly), so all three must agree. They do, because they all read the SAME
 // existing derived `visible` getter below — never a shadow field. A `#lastRenderVisible` field
@@ -41,7 +41,7 @@
 // `vm.visible` is the real open edge) and `show()` (`main.ts`'s `onSignInFailed` calls `show()`
 // BEFORE `renderClaim()`) — unconditionally, on every call, never in the constructor (S6 may
 // negotiate the locale after this view is constructed). It shares its English bytes with
-// `privacy.title` today but is a DIFFERENT key (ADR-0261 D2: a button label, not a heading).
+// `privacy.title` today but is a DIFFERENT key (a button label, not a heading).
 // The vm strings (`title`, `body`, `nudge`, `feedback`, `confirmPrompt`) are model copy from
 // `claimModel.ts`, rendered raw.
 import type { ClaimViewModel } from './claimModel';
@@ -56,7 +56,7 @@ export interface ClaimViewHandlers {
   readonly onDeclineCancelled: () => void;
   /** the front door to the privacy surface. It lives HERE rather than on
    *  a menu leaf of its own because a leaf needs a `keyGlyph` in `helpModel.ts`'s CONTROLS SSOT,
-   *  which is set-equality-gated against `docs/PLAYTEST.md` — outside rb-52's touches. Account
+   *  which is set-equality-gated against `docs/PLAYTEST.md` — a heavier change. Account
    *  deletion and data export are account management, so this is also where they belong. */
   readonly onPrivacy: () => void;
 }
@@ -102,8 +102,8 @@ export class ClaimView {
     // `ensureElement` creates every node `display:none` and `render()` never un-hides the
     // buttons, so the five above ship blank and invisible while a programmatic `.click()` still
     // fires them. That is a real defect (tracked as a follow-up, not fixed here — it is
-    // claimView's own copy, outside rb-52's criterion); this one must not inherit it, because
-    // rb-52's criterion is REACHABILITY. Its label is NOT written here: `render()` and `show()`
+    // claimView's own copy); this one must not inherit it, because
+    // the criterion here is REACHABILITY. Its label is NOT written here: `render()` and `show()`
     // each resolve `t('claim.privacyButton')` (header), so pre-open the button is
     // visible but empty.
     this.#privacyBtn.style.display = '';

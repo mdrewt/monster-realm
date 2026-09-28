@@ -1,7 +1,7 @@
-// ui/i18n/catalog.en.ts — the English (source-locale) catalog (m24-s1, ADR-0256 D2).
+// ui/i18n/catalog.en.ts — the English (source-locale) catalog.
 //
 // ONE ENTRY PER `MessageId`, and the type makes that total: `satisfies Catalog` is load-bearing
-// (ADR-0256 D2) — `Object.freeze<T>` is generic, so without it a stowaway key would be swallowed
+// — `Object.freeze<T>` is generic, so without it a stowaway key would be swallowed
 // into `T`; `satisfies` restores the excess-property check, and the mapped type reports an
 // omitted key by name (TS2741). Frozen for the same reason `a11yCopy` is: the type annotation is
 // erased at runtime, and a caller that casts it away must not be able to rewrite the shared
@@ -13,21 +13,10 @@
 // ICU `description` field, so it is written for a translator, not for us; the `main.ts:NNN` /
 // `index.html:NNN` citations are the S5/S6 migration targets, for the engineer.
 //
-// S1 SEEDED `chrome.*` and migrated zero call sites. S3 (ADR-0259) ADDED `battle.*` and `pvp.*`
-// and MIGRATED their call sites: `battleView.ts` and `pvpView.ts` now resolve every one of these
-// through `t()`/`tf()`, so the `battleView.ts:NNN` / `pvpView.ts:NNN` citations name where the
-// string is rendered (pre-migration line numbers, kept as the translator's "where"). S4
-// (ADR-0260) did the same for the five mid-density views — `evolution.*`, `raising.*`, `box.*`,
-// `trade.*`, `shop.*` — including seven literals the scanner never saw (function arguments and
-// `return` values: tradeView's side headings and action labels, boxView's `prompt()` label).
-// S5 (ADR-0261) finished the tail — `tradePropose.*`, `dialogue.*`, `claim.*`, `leaderboard.*`,
-// `errorOverlay.*`, `questLog.*`, `heal.*`, `privacy.*`, `evolutionNotice.*` — including five
-// more scanner-invisible literals (privacyView's `#paintButton` labels, evolutionNotice's
-// `return` values), and REMOVED the three view-owned `index.html` literals: `chrome.help.title`
-// / `chrome.rename.submit` / `chrome.tradePropose.submit` are now resolved in HelpView /
-// RenameView / TradeProposeView `show()`. `chrome.helpHint` STAYS a static literal in
-// `index.html` (ADR-0261 alternative 3: no slice may own a resolver write for it without
-// amending ADR-0151 D2), and the `main.ts` `chrome.status.*` literals wait for S6.
+// The `<view>.ts:NNN` citations on entries name where each string is rendered
+// (pre-migration line numbers, kept as the translator's "where").
+// `chrome.helpHint` STAYS a static literal in
+// `index.html`.
 // Every value is byte-identical to the literal it replaced — including `’` U+2019 and `…`
 // U+2026, the `—` U+2014 / `→` / `★` / `✓` / `•` / `·` U+00B7 glyphs, the `×` U+00D7 in
 // `shop.sell.*` versus the ASCII `x` in `raising.*`, the TRAILING SPACE in `shop.buy.row` /
@@ -36,8 +25,8 @@
 // element that the catalog text follows) — because catalog.test.ts pins the English bytes and
 // several e2e specs match them. Still no plural key: `(${turns} turns)` keeps its pre-existing
 // English plural defect on purpose — fixing it is a reword, which takes a FRESH key and the
-// first `oneOther` use (ADR-0259 alternatives); likewise `Slot ${slot}` (0-based) and
-// `(x${count})` keep their pre-existing shape (ADR-0260 consequences). Model data (affinities,
+// first `oneOther` use; likewise `Slot ${slot}` (0-based) and
+// `(x${count})` keep their pre-existing shape. Model data (affinities,
 // weather labels, species/skill/item/player names, tiers, stats, counts, prices) are PARAMS,
 // interpolated verbatim, never catalogued (M24 §2.5).
 

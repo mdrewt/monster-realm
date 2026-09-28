@@ -11,7 +11,7 @@
 //      still load-bearing: it lets the opening key event fully complete before focus lands.
 //   3. hide() resets the select→placeholder + unchecks all monsters + blanks both currency
 //      inputs + feedback + releases the in-flight lock (#pending=false, submit re-enabled —
-//      dead-button guard, ADR-0085 C6) so a stale draft/lock never survives a re-open.
+//      dead-button guard) so a stale draft/lock never survives a re-open.
 //
 // D6: player-controlled name/nickname → option.textContent / label textContent / value
 // ONLY, NEVER innerHTML (XSS firewall; the dynamic checkbox-label path is the risk site).
@@ -129,10 +129,10 @@ export class TradeProposeView {
   }
 
   show(): void {
-    // m23-s3 D1: only the hidden->visible EDGE opens (see pvpView.ts's header for why).
+    // Only the hidden->visible EDGE opens (see pvpView.ts's header for why).
     const wasVisible = this.visible;
     // The submit label is resolved HERE, on EVERY show() — unconditionally,
-    // after the `wasVisible` read, before the display write (the ADR-0260 D4 shape; see
+    // after the `wasVisible` read, before the display write (see
     // evolutionView.show() for the boot-order / locale-switch reasoning).
     this.#submitBtn.textContent = t('chrome.tradePropose.submit');
     this.#overlay.style.display = '';
@@ -150,12 +150,12 @@ export class TradeProposeView {
     this.#offerInput.value = '';
     this.#requestInput.value = '';
     this.#feedback.textContent = '';
-    // Release the in-flight lock (ADR-0085 C6): onReconnect and the battle auto-show force-hide
+    // Release the in-flight lock: onReconnect and the battle auto-show force-hide
     // this overlay, and the SDK never settles an in-flight reducer promise after a link drop —
     // so .finally() may never run. Without this reset, #pending stays true forever → dead button.
     this.#pending = false;
     this.#submitBtn.disabled = false;
-    // m23-s3 D2: DELIBERATELY UNGUARDED (see pvpView.ts's header) -- the self-healing path.
+    // DELIBERATELY UNGUARDED (see pvpView.ts's header) -- the self-healing path.
     closeOverlayA11y('tradeProposeView', null);
   }
 

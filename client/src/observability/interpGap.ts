@@ -1,4 +1,4 @@
-// observability/interpGap.ts — m20c (ADR-0180 body amendment), AM2.
+// observability/interpGap.ts — AM2.
 //
 // "How far in the past is the worst remote character being rendered right now." The value IS
 // the renderer's own adaptive delay — imported, never re-derived, so the metric can always be

@@ -19,7 +19,7 @@
 // `hide()` is NOT guarded -- see the reasoning in `ui/pvpView.ts`'s `hide()`: an unguarded close
 // is the self-healing path, and `closeOverlayA11y` with no open record is a documented no-op.
 //
-// `hide()` HAS NO PRODUCTION CALLER and that is pinned: `main.ts`'s UXD3C-HANDLES-delimited
+// `hide()` HAS NO PRODUCTION CALLER : `main.ts`'s
 // `overlayHandles` force-hide table leaves `dialogueView` out (`dialogueView: undefined`;
 // it is the sole NEVER_FORCE_HIDE member -- hiding a live conversation client-side
 // strands the server `player_conversation` row), and `main.wiring.test.ts` asserts zero
@@ -90,7 +90,7 @@ export class DialogueView {
 
   hide(): void {
     this.overlay.style.display = 'none';
-    // m23-s3 D2: deliberately UNGUARDED (rationale in ui/pvpView.ts's hide()).
+    // Deliberately UNGUARDED (rationale in ui/pvpView.ts's hide()).
     closeOverlayA11y('dialogueView', null);
   }
 }

@@ -1,4 +1,4 @@
-// render/map.ts — the renderer's tile map (ADR-0004 visual-SSOT).
+// render/map.ts — the renderer's tile map (visual SSOT).
 //
 // PURE. Parses the SAME `TileMap` the rule evaluates — handed over ONCE from the
 // wasm `zone_map()` export (game-core `zone_0()`), never a hard-coded TS grid

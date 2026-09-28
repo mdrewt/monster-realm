@@ -9,7 +9,7 @@
 type ErrorKind = 'sender' | 'internal' | 'unknown';
 
 /**
- * Classify via `err.name` EQUALITY, not `instanceof` (ADR-0085 C9): the SDK's
+ * Classify via `err.name` EQUALITY, not `instanceof`: the SDK's
  * SenderError/InternalError classes may be duplicated across bundle chunks or
  * realms, where `instanceof` silently fails; the `name` string survives both.
  * No dynamic RegExp anywhere (project ban).
@@ -58,8 +58,8 @@ export function reduceErrorMessage(err: unknown, where: string): string {
 }
 
 /**
- * Extract the user-visible message from a subscription onError context (ADR-0085
- * C7). TOTAL: the SDK's ErrorContextInterface carries `ctx.event` (an Error), but
+ * Extract the user-visible message from a subscription onError context.
+ * TOTAL: the SDK's ErrorContextInterface carries `ctx.event` (an Error), but
  * the shape is fallback-guarded so a payload surprise degrades to the generic
  * 'subscription error' rather than throwing inside the onError callback. Only a
  * non-empty string `event.message` passes through.

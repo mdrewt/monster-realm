@@ -66,7 +66,7 @@ export class WorldRenderer {
     const cssW = window.innerWidth;
     const cssH = window.innerHeight;
     const dpr = window.devicePixelRatio;
-    // viewport-sized canvas; camera offset via stage.position. uxd1: the
+    // viewport-sized canvas; camera offset via stage.position. The
     // DPR-correct backing store (resolution/autoDensity) is decided in viewport.ts.
     await app.init(appInitOptions(cssW, cssH, dpr, FLOOR_COLOR));
     mount.appendChild(app.canvas);
@@ -172,7 +172,7 @@ export class WorldRenderer {
     const app = this.#app;
     if (app !== undefined && map !== undefined) {
       const vs = this.#vs;
-      // offsetFor takes the EFFECTIVE viewport in SOURCE px, never CSS px (uxd1 R1).
+      // offsetFor takes the EFFECTIVE viewport in SOURCE px, never CSS px.
       this.#lastOffset = this.#camera.offsetFor(
         ownTileX,
         ownTileY,

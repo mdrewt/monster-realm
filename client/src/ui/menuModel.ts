@@ -12,8 +12,8 @@
 //    screen the game does not have, which is the worst outcome for a discoverability
 //    surface. So the words ship as leaf TITLES at zero cost, and a Backpack leaf can split
 //    in place if an items-only overlay ever lands.
-//  - "Shop & Trade" became "Trade": uxd2 deleted the global shop/heal hotkeys
-//    on Drew's explicit instruction, so Shop and Heal are world-contextual and reachable
+//  - "Shop & Trade" became "Trade": the global shop/heal hotkeys
+//    hotkeys were deleted on explicit instruction, so Shop and Heal are world-contextual and reachable
 //    only through Interact. A "first shop" leaf would resurrect exactly what was removed.
 //  - `battleView` / `dialogueView` are registry members but NOT leaves — context overlays
 //    that preempt the menu rather than destinations you navigate to.
@@ -269,9 +269,7 @@ export function menuStep(s: MenuNavState, i: MenuInput, a: MenuAvailability): Me
  * Anything unrecognised returns `undefined` so the keydown handler falls through instead of
  * the menu swallowing unrelated hotkeys.
  *
- * Escape is routed through here rather than matched inline in `main.ts`, because the
- * literal `e.code === 'Escape'` appearing before the real Escape branches would silently
- * re-anchor three existing fixed-window wiring teeth (see W-UXD3-ESCAPE-ANCHOR-FIRST).
+ * Escape is routed through here rather than matched inline in `main.ts`.
  */
 export function menuKeyInput(code: string): MenuInput | undefined {
   switch (code) {

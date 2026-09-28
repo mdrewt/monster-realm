@@ -1,7 +1,7 @@
 // ui/overlayRegistry.ts — the pure modality core for the 17 mutual-exclusion overlays.
 //
 // FUNCTIONAL CORE. No DOM, no SDK, no import from `main.ts`, no view handles,
-// no thunks — every export here is a data table, a total pure function, or (since uxd3-b)
+// no thunks — every export here is a data table, a total pure function, or
 // the TYPE of the caller-supplied probe table, so the whole module stays node-testable
 // with zero mocks. `anyVisible` takes the probes as an argument and holds no state of its
 // own: the module owns the SHAPE of the visibility read, never a handle on a view.
@@ -10,20 +10,20 @@
 //
 // WHY A `canOpen` REDUCER AND NOT A BLIND `hideAll()`:
 // the gate this replaces is not uniform. Three tiers behave differently, and collapsing
-// them regresses ptc5c/ADR-0139 — force-hiding `dialogueView` would strand the server
+// them regresses the modal gate — force-hiding `dialogueView` would strand the server
 // `player_conversation` row (its visibility is store-derived and its close routes through
 // the `dismissDialogue` reducer, `main.ts`). `canOpen` makes that distinction explicit and
 // testable instead of implicit in fourteen hand-maintained guard lists.
 //
-// SCOPE (uxd3-a + uxd3-b + uxd3-c): this module holds the DECISIONS, plus the READ substrate
-// — `OverlayProbes` and `anyVisible`, which uxd3-b's five `main.ts` fan-out surfaces consume
-// — plus, since uxd3-c, the WRITE substrate: `visibleIds()` and the
+// SCOPE: this module holds the DECISIONS, plus the READ substrate
+// — `OverlayProbes` and `anyVisible`, which the five `main.ts` fan-out surfaces consume
+// — plus the WRITE substrate: `visibleIds()` and the
 // `OverlayHandles` TYPE, which together let all twelve `main.ts` hotkey open-guards and
 // `refreshBattle` route through `canOpen`/`hideAllExceptPlan` instead of fourteen
 // hand-maintained guard lists. `visibleIds()` is an explicit REVERSAL of A7's deletion, and
-// the reversal is the YAGNI rule working rather than churn: it landed the slice it acquired
+// the reversal is the YAGNI rule working rather than churn: it landed together with
 // its two production consumers (the `canOpen` gate binder and `refreshBattle`'s force-hide
-// loop). What uxd3-c deliberately did NOT ship, for exactly that same reason — zero consumers,
+// loop). What deliberately did NOT ship, for exactly that same reason — zero consumers,
 // the A7/A15 precedent — is per-id `open` thunks, `hideAllExcept` (the pure
 // `hideAllExceptPlan` below is what `refreshBattle` consumes), `isVisible(id)` and
 // `anyVisibleExcept()`.
@@ -72,7 +72,7 @@ export type OverlayTier = 'EXCLUSIVE_TOP' | 'HIDE_SWITCH' | 'GUARD_ONLY';
  * Grounded, tier by tier, against the behaviour this replaces:
  *  - `battleView` is the only overlay any handler refuses to open over unconditionally.
  *  - the box/raising/evolution trio legitimately hide-and-switch within itself.
- *  - everything else is guard-only: the pre-uxd3 gate explicitly refused to accept a
+ *  - everything else is guard-only: the earlier gate explicitly refused to accept a
  *    `.hide()` as satisfying mutual exclusion for a modal, because silently dismissing a
  *    modal on a stray keypress is the wrong UX (and, for dialogue, a server desync).
  */
@@ -107,7 +107,7 @@ export const OVERLAY_IDS: readonly OverlayId[] = Object.keys(OVERLAY_TIERS) as O
  * The a11y contract for ONE overlay, as data: what an assistive technology is told the thing
  * is (`role`), what it is CALLED (`labelKey`, resolved through `ui/a11yCopy.ts`), where focus
  * lands the moment it opens (`initialFocusSelector`), and whether Escape closes it
- * (`dismissible`). M23 §2.1 / ADR-0205.
+ * (`dismissible`). M23 §2.1.
  *
  * `labelKey` is a CATALOG KEY, never a literal name. That is the M24 seam: M24 swaps
  * the resolver and these keys become catalog entries with ZERO renaming.
@@ -146,8 +146,7 @@ export interface A11yMeta {
  * `initialFocusSelector: () => '…'` would drag a live handle back into the functional core and
  * re-open the coupling `anyVisible`'s probes-as-argument shape exists to prevent.
  *
- * `role` IS `'dialog'` FOR ALL SEVENTEEN — the reason is on `A11yMeta` above; ADR-0205 D3 carries
- * the rejected alternatives.
+ * `role` IS `'dialog'` FOR ALL SEVENTEEN — the reason is on `A11yMeta` above.
  *
  * `dismissible` IS THE CONSTRAINT, NOT THE VARIATION: spec §2.1 phrases it over the TIER
  * (`EXCLUSIVE_TOP`/`GUARD_ONLY` ⇒ `true`, `HIDE_SWITCH` unconstrained), and the gate reads
@@ -265,7 +264,7 @@ export const OVERLAY_A11Y: Readonly<Record<OverlayId, A11yMeta>> = {
   privacyView: {
     role: 'dialog',
     labelKey: 'a11y.overlay.privacyView.title',
-    // A NATIVE <button>, not a tabindex-ed heading (ADR-0231 A2-D3).
+    // A NATIVE <button>, not a tabindex-ed heading.
     //
     // THE CLOSE BUTTON, NOT THE DELETE BUTTON (A2-D10). `#privacy-delete-btn` carries `disabled`
     // in every phase except `active` — and a disabled control is unfocusable, so in `grace`
@@ -287,8 +286,7 @@ export const OVERLAY_A11Y: Readonly<Record<OverlayId, A11yMeta>> = {
  * leaves the server `player_conversation` row open, so the player is stuck in a phantom
  * conversation. `shopView`/`tradeView`/`pvpView`/`questLogView`/`healView` are likewise
  * absent because `refreshBattle` does not hide them today. Pinned exactly (not by
- * membership) by OR-FORCEHIDE-EXACT, and cross-checked against `main.ts` by
- * W-BATTLE-FORCEHIDE-SET-MATCHES-MANIFEST.
+ * membership) by OR-FORCEHIDE-EXACT.
  */
 export const BATTLE_FORCE_HIDE: readonly OverlayId[] = [
   'helpView',
@@ -403,8 +401,8 @@ export function visibleIds(probes: OverlayProbes): readonly OverlayId[] {
  *  Total `Record<OverlayId, _>` on purpose, so a 17th overlay is a COMPILE error here rather
  *  than a silently unhidable overlay. The value type admits `undefined`, and exactly the
  *  `NEVER_FORCE_HIDE` members supply it. For `dialogueView` that is not style: `main.ts` must
- *  contain ZERO `dialogueView?.hide` occurrences (ADR-0162 AC-9,
- *  W-ESCAPE-DIALOGUE-NEVER-BARE-HIDE), because a client-side hide strands the server
+ *  contain ZERO `dialogueView?.hide` occurrences,
+ *  because a client-side hide strands the server
  *  `player_conversation` row — so a table of REQUIRED thunks cannot compile in this codebase
  *  at all. Deliberately NOT `Partial<>`: that would let ANY id go missing, not just the one
  *  that must. */

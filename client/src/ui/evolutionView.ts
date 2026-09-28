@@ -26,18 +26,18 @@
 // (no `opacity`/`filter`/`text-shadow`/… — each is a way to dim text the contrast oracle cannot
 // see), and no element may carry a `class` or `id` (a stylesheet rule is the other way around
 // the inline colours). All of it is measured from the rendered DOM by `evolutionView.test.ts`
-// (m23s9 X1–X4), with the four fixture states named there; a new element or colour here must
+// with the four fixture states named there; a new element or colour here must
 // be added to those censuses in the same change.
 //
 // Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with an `evolution.*` key from
 // ui/i18n/catalog.en.ts; the English bytes are unchanged (the catalog pins them). The name row
-// `${nick} (${species})` is deliberately NOT keyed — a glyph-only compound (ADR-0257 §2.2 tier
+// `${nick} (${species})` is deliberately NOT keyed — a glyph-only compound (tier
 // (e)). Model data (species names, tiers, the model's `unmetReason`, gate label/current/required
 // text) flow through as params or raw, never as catalog text. Every `t(`/`tf(` first argument is
 // a string LITERAL — the gate row's ternary picks between two calls, never between two keys.
 //
-// m23-s4 (ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
+// Overlay a11y wiring. This view is a CONSTRUCTED shell:
 // its root is `document.createElement`'d here and appended into the shared `#app` MOUNT, so unlike
 // the ten static shells S3 wired it ships NO ARIA of its own from `client/index.html` — every
 // attribute below comes from `openOverlayA11y`, never from a literal in this file.
@@ -59,7 +59,7 @@
 // itself and then never receives focus.
 //
 // NO CLOSE-BEFORE-OPEN. `ui/overlayA11y.ts`'s cross-slice contract (a) once claimed the four
-// `#app`-mounted views "share ONE root" and prescribed close-before-open; 17r-e RETRACTED it
+// `#app`-mounted views "share ONE root" and prescribed close-before-open; it was RETRACTED
 // in place (A12, ui/overlayA11y.ts:52-54); (a) now agrees with this code: each view creates its
 // OWN root under the shared MOUNT — four roots, four `OverlayId`s, four records. Closing a sibling
 // here would close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
@@ -84,7 +84,7 @@ export interface EvolutionViewCallbacks {
 
 export class EvolutionView {
   readonly #root: HTMLDivElement;
-  /** The "Evolution" heading; its text is resolved in show(), not here (m24-s4, see show()). */
+  /** The "Evolution" heading; its text is resolved in show(), not here (see show()). */
   readonly #titleEl: HTMLHeadingElement;
   /** The static explainer under the heading; text resolved in show(). */
   readonly #hintEl: HTMLParagraphElement;
@@ -291,7 +291,7 @@ export class EvolutionView {
     const row = document.createElement('div');
     row.setAttribute('data-testid', 'evo-gate-row');
     // Two whole-row keys, the ternary OUTSIDE the call — every `tf(` first
-    // argument stays a string literal. One text node in one element (the m23s9 census is
+    // argument stays a string literal. One text node in one element (the census is
     // unaffected).
     const p = { label: gate.label, current: gate.currentText, required: gate.requiredText };
     row.textContent = gate.met ? tf('evolution.gate.metRow', p) : tf('evolution.gate.unmetRow', p);

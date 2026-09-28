@@ -3,14 +3,14 @@
 //
 // PURE: no `navigator`, no `document`, no URL — S6 owns the boot-time wiring that feeds
 // `navigator.languages` in here and hands the answer to `setLocale`. Zero `RegExp` (the module
-// convention ADR-0256 records): every match is `toLowerCase` + `Map`/`Set` membership and a
+// convention): every match is `toLowerCase` + `Map`/`Set` membership and a
 // `lastIndexOf('-')` truncation loop, which is all RFC 4647 §3.4 lookup needs.
 //
 // WHY THE RESULT IS THE `available` SPELLING. The caller indexes the resolver's registry with
 // the returned tag, so it must be a key of that registry byte-for-byte — matching is
 // case-insensitive (BCP-47 tags are), but the returned value is never the requested spelling.
 //
-// WHY AN `en`-LESS REGISTRY THROWS (reject, do not clamp — ADR-0205 D4). `'en'` is the source
+// WHY AN `en`-LESS REGISTRY THROWS (reject, do not clamp). `'en'` is the source
 // locale and the negotiation's final fallback; a registry without it is a programming error, and
 // returning `'en'` anyway would hand the resolver a locale it cannot serve.
 

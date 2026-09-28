@@ -1,8 +1,7 @@
 // ui/leaderboardView.ts — thin DOM shell for the ranked leaderboard overlay.
 // Pure rendering from LeaderboardViewModel. No logic — all logic is in leaderboardModel.ts.
 // NOT coverage-excluded (unlike the sibling DOM shells): fully unit-covered via
-// happy-dom tests — the vite.config.ts exclude list is exact-set-guarded by an
-// m17c-owned eval, so every branch here must stay test-reachable.
+// happy-dom tests, so every branch here must stay test-reachable.
 // RL-15: ZERO-arg constructor — no callbacks, no write path (pure subscription view).
 // displayName is player-controlled (profile.name): textContent + dataset only,
 // NEVER innerHTML with data (XSS).
@@ -37,7 +36,7 @@ export class LeaderboardView {
   }
 
   show(): void {
-    // m23-s3 D1: read visibility BEFORE the display write. `show()` is called REPEATEDLY on an
+    // Read visibility BEFORE the display write. `show()` is called REPEATEDLY on an
     // already-open overlay (pvpView.ts is the extreme case, main.ts:1699-1701), and a re-open
     // re-schedules overlayA11y's deferred focus -- which would yank focus back to the initial
     // anchor on every store batch. Only the hidden->visible EDGE opens.
@@ -48,7 +47,7 @@ export class LeaderboardView {
 
   hide(): void {
     this.#overlay.style.display = 'none';
-    // m23-s3 D2: DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
+    // DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
     // documented no-op with no open record, and leaving it unguarded is what lets a record
     // that ever desynchronised from the DOM self-heal instead of leaking a live trap forever.
     closeOverlayA11y('leaderboardView', null);

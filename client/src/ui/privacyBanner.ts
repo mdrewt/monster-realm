@@ -1,5 +1,4 @@
-// ui/privacyBanner.ts — the PURE copy layer for the PRIVACY SURFACE (
-// ADR-0231 Amendment A2).
+// ui/privacyBanner.ts — the PURE copy layer for the PRIVACY SURFACE.
 //
 // FUNCTIONAL CORE. No DOM, no SDK, no store, NO CLOCK: the only input is the
 // `DeletionCountdown` that `ui/privacyModel.ts` already derived. `main.ts` owns the element and
@@ -28,7 +27,7 @@ import type { DeletionCountdown, PrivacyModelState, PrivacyNotice } from './priv
 
 /** The player-facing copy, spelled once. Authored here rather than in `ui/a11yCopy.ts`: that
  *  catalog is the ACCESSIBLE-NAME catalog for the seventeen overlays, and this
- *  banner is deliberately not one of them (the rb-52 privacy OVERLAY is). */
+ *  banner is deliberately not one of them (the privacy OVERLAY is). */
 const DARK_LABEL = 'Account deletion pending — time remaining unavailable';
 const DUE_LABEL = 'Account deletion is due now';
 const GRACE_PREFIX = 'Account deletion in ';

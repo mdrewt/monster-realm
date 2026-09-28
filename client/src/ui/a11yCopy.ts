@@ -16,7 +16,7 @@
 // with zero mapping table. A kebab-cased key would reintroduce exactly the
 // hand-kept id↔key correspondence the derivation exists to kill.
 //
-// WHY `t` THROWS RATHER THAN RETURNING THE KEY (ADR-0205 D4 — reject, do not clamp; the same
+// WHY `t` THROWS RATHER THAN RETURNING THE KEY (reject, do not clamp; the same
 // reasoning as `anyVisible`'s deliberate absence of a try/catch, ui/overlayRegistry.ts:366).
 // Both silent alternatives have a user-visible cost:
 //   - returning the key announces the literal "a11y.overlay.boxView.title" to a screen-reader
@@ -67,7 +67,7 @@ export const a11yCopy: Readonly<Record<string, string>> = Object.freeze({
   'a11y.overlay.helpView.title': 'Controls & Goals', // index.html:86
   'a11y.overlay.menuView.title': 'Menu', // ui/menuModel.ts:325
   'a11y.overlay.claimView.title': 'Account & Sign-in', // ui/menuModel.ts:103
-  // Reached from the Account & Sign-in overlay (ADR-0231 A2-D5), so the name says what the
+  // Reached from the Account & Sign-in overlay, so the name says what the
   // surface is FOR rather than repeating its parent's label.
   'a11y.overlay.privacyView.title': 'Privacy & Account Data',
   // The canvas world region. NOT an overlay: `render/world.ts` sets

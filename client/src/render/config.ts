@@ -7,7 +7,7 @@
 // and `MOVE_QUEUE_CAP` are NOT duplicated here: they are single-sourced from
 // game-core via the wasm `step_ms()`/`move_queue_cap()` exports and injected.
 //
-// Three ADR-0090 constants (INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH, BURST_EPSILON_MS)
+// Three interpolation constants (INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH, BURST_EPSILON_MS)
 // are single-sourced from `shared/interpConfig.ts` to avoid a net↔render import cycle.
 export { BURST_EPSILON_MS, INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH } from '../shared/interpConfig';
 

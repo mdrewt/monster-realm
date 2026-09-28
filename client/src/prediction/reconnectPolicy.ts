@@ -3,7 +3,7 @@
 // WHAT: backoff delays + a flat link/attempt state with four transitions, feeding
 // connection.ts's rebuild-with-backoff loop and main.ts's input freeze.
 // WHY IT EXISTS: the SDK does NOT auto-reconnect on the raw builder path (its
-// ConnectionManager backoff layer is not root-exported — ADR-0085 SDK evidence),
+// ConnectionManager backoff layer is not root-exported),
 // so the app owns the retry policy. This module is PURE (no Date, no setTimeout,
 // no DOM): the caller (connection.ts) owns all timers, keeping the policy
 // unit/property-testable node-only.
@@ -18,7 +18,7 @@ export const RECONNECT_BASE_DELAY_MS = 1000;
 /**
  * Delay cap. WHY 30_000: prevents a reconnect storm while keeping attempts
  * UNBOUNDED — a game client keeps trying; there is no terminal give-up state
- * (YAGNI, recorded in ADR-0085).
+ * (YAGNI).
  */
 export const RECONNECT_MAX_DELAY_MS = 30_000;
 
@@ -27,7 +27,7 @@ export const RECONNECT_MAX_DELAY_MS = 30_000;
  *
  * WHY `2 ** attempt` and NOT a bitshift: `1 << 31` overflows to a negative i32 and
  * `1 << 1024` wraps to 0; `2 ** 1024` is `Infinity`, which `min` caps safely to MAX
- * (ADR-0085 C5). A negative `attempt` is defensively clamped to 0 — the state
+ * A negative `attempt` is defensively clamped to 0 — the state
  * machine never produces one, but the function stays TOTAL.
  */
 export function reconnectDelayMs(attempt: number): number {
@@ -55,7 +55,7 @@ export interface ReconnectState {
 /**
  * The pre-connection state. WHY 'disconnected' (not 'connected'): the client
  * starts frozen until the first onConnect — sends against a not-yet-open link
- * would be silently queued on the socket and never settle (ADR-0085 evidence).
+ * would be silently queued on the socket and never settle.
  */
 export function initialReconnectState(): ReconnectState {
   return { link: 'disconnected', attempt: 0 };
@@ -85,7 +85,7 @@ export function onConnected(_s: ReconnectState): ReconnectState {
  * The link dropped (onDisconnect). Preserves `attempt` (only onConnected resets
  * it). IDEMPOTENT: on an already-down link it returns `s` UNCHANGED — the SDK
  * fires onerror-then-onclose as a double event on some drop paths, and the second
- * event must not double-transition or double-schedule (ADR-0085 A7).
+ * event must not double-transition or double-schedule.
  */
 export function onDisconnected(s: ReconnectState): ReconnectState {
   if (s.link !== 'connected') return s;

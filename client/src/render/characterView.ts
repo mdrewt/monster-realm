@@ -18,7 +18,7 @@ export function animKey(action: WasmAction, facing: WasmDirection): AnimKey {
 }
 
 /**
- * The renderer's asset seam (ADR-0004 HD-2D readiness). A sprite is an "albedo"
+ * The renderer's asset seam (HD-2D readiness). A sprite is an "albedo"
  * texture today; a later provider can additionally supply normal/material channels
  * for a lighting/post-processing render mode — an ADDITIVE change behind this same
  * interface, `render/`-only. Assets are authored NEUTRALLY-LIT (no baked

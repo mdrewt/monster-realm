@@ -9,7 +9,7 @@
 // (`locale.ts`) and calls `setLocale` once.
 //
 // WHY `setLocale` THROWS ON AN UNREGISTERED LOCALE (D1, rejected alternative (c)). Clamping to
-// `en` would make an unwired locale look wired — the vacuity ADR-0205 D4 exists to kill. The cell
+// `en` would make an unwired locale look wired — exactly the vacuity to avoid. The cell
 // is left unchanged on the throw. There is no per-call fallback to `en` in `t`/`tf` either: the
 // `Catalog` type makes every registered locale total, so a miss can only be a key
 // that is not a `MessageId` at all, and that is a bug to surface, not paper over.

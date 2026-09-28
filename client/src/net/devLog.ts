@@ -13,7 +13,7 @@
 // unit-testable with no globals and no SDK.
 
 /** Line cap. Mirrors ERROR_MSG_MAX_LEN (client/src/ui/errorRing.ts:12) so the repo keeps
- *  ONE truncation rule (the ADR-0130 discipline reuse of ADR-0157 §4). */
+ *  ONE truncation rule. */
 export const MAX_LINE_LEN = 512;
 
 /** The accepted token set. The union below is DERIVED from it, so the levels, the parser's
@@ -54,7 +54,7 @@ export function parseDevLogLevel(raw: string | undefined): DevLogLevel {
 }
 
 /**
- * Shell-facing resolver with the fail-loud asymmetry INVERTED relative to pt-a1's
+ * Shell-facing resolver with the fail-loud asymmetry INVERTED relative to
  * resolveConnectionConfig (§A3): rethrow in DEV, degrade to 'off' plus exactly
  * one call to the INJECTED `warn` sink in PROD (main.ts wires that sink to console.error —
  * this module never names a sink of its own). The eager resolve sits at main.ts module
@@ -94,7 +94,7 @@ export function shouldLogReducer(level: DevLogLevel, name: string): boolean {
  * TOTAL on Identity/ConnectionId (their fields are private, so they would otherwise render
  * as `{}`). `toISOString()`/`toDate()` are deliberately NOT duck-typed: they are PARTIAL on
  * the SDK's Timestamp (RangeError out of range), so calling them would turn a debug line
- * into a crash (§A7 / ADR-0157 §5).
+ * into a crash.
  */
 function devLogReplacer(_key: string, value: unknown): unknown {
   if (typeof value === 'bigint') return value.toString();
@@ -121,7 +121,7 @@ export function formatSendLine(name: string, args: readonly unknown[]): string {
 
 /**
  * The settled outcome of an outbound reducer call, reported INBOUND (`<-`). Exactly one
- * fate exists today: `enqueueMove` rejected by the server (ADR-0172 E5.4). The literal
+ * fate exists today: `enqueueMove` rejected by the server. The literal
  * union — not a bare `string` — keeps the module's `as const`-derived-union discipline,
  * so adding a second fate is a deliberate, type-checked edit at every call site.
  */

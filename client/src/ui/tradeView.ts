@@ -6,7 +6,7 @@
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `trade.*` key from ui/i18n/catalog.en.ts —
 // the `#renderSide` heading arguments and the `#actionLabel` returns included; the English bytes
 // are unchanged (the catalog pins them). The item row `${item.name} ×${item.qty}` is deliberately
-// NOT keyed — a glyph-only compound (ADR-0257 §2.2 tier (e)). `vm.statusLabel` and the
+// NOT keyed — a glyph-only compound (tier (e)). `vm.statusLabel` and the
 // `showFeedback` message are model data, rendered raw. Every `t(`/`tf(` first argument is a
 // string LITERAL. No constructor-time strings: this view renders into the static index.html shell.
 import { t, tf } from './i18n/resolver';
@@ -71,7 +71,7 @@ export class TradeView {
   }
 
   show(): void {
-    // m23-s3 D1: read visibility BEFORE the display write. `show()` is called REPEATEDLY on an
+    // Read visibility BEFORE the display write. `show()` is called REPEATEDLY on an
     // already-open overlay (pvpView.ts is the extreme case, main.ts:1699-1701), and a re-open
     // re-schedules overlayA11y's deferred focus -- which would yank focus back to the initial
     // anchor on every store batch. Only the hidden->visible EDGE opens.
@@ -85,7 +85,7 @@ export class TradeView {
     this.#feedbackEl.textContent = '';
     this.#pending = false;
     this.#lastRenderKey = null;
-    // m23-s3 D2: DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
+    // DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
     // documented no-op with no open record, and leaving it unguarded is what lets a record
     // that ever desynchronised from the DOM self-heal instead of leaking a live trap forever.
     closeOverlayA11y('tradeView', null);

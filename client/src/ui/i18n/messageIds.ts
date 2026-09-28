@@ -1,15 +1,15 @@
 // ui/i18n/messageIds.ts — the i18n module's type SSOT: the `MessageId` literal union, the
-// parameter table, and the compile-total `Catalog` shape (m24-s1, ADR-0256 D2/D4/D7).
+// parameter table, and the compile-total `Catalog` shape.
 //
 // TYPES ONLY, ZERO IMPORTS. Everything the resolver, the catalogs and the compile suite agree on
 // lives here, so a key that is misspelt, omitted from a locale, or handed to the wrong resolver
 // is a `tsc` error and never a runtime blank (M24 §2.0, §2.3). The negative-compile suite
 // (`i18nTypes.compile.test.ts`) proves each guarantee by spawning `tsc` on fixtures that must
-// NOT compile — see ADR-0256 D3 for why that beats `@ts-expect-error`.
+// NOT compile — which, unlike `@ts-expect-error`, cannot pass on an unrelated error.
 //
-// KEY GRAMMAR (ADR-0256 D5): dot-separated segments `[a-z][a-zA-Z0-9]*`, at least two. The
+// KEY GRAMMAR: dot-separated segments `[a-z][a-zA-Z0-9]*`, at least two. The
 // camelCase tail is deliberate — the M23 `OverlayId` stays verbatim inside a key
-// (`a11y.overlay.boxView.title`, ADR-0205 D5), so the spec's own `[a-z0-9]+` is corrected here.
+// (`a11y.overlay.boxView.title`), so the spec's own `[a-z0-9]+` is corrected here.
 
 /** Every message the catalogs must define. S1 seeded the `chrome.*` namespace; S3
  *  added `battle.*` and `pvp.*` as it migrated battleView.ts/pvpView.ts; S4 added
@@ -280,7 +280,7 @@ export type PlainMessageId = Exclude<MessageId, ParamMessageId>;
  * for exactly that). `never` keeps `t(key: A11yKey | PlainMessageId)` byte-identical to M23 §2.8
  * while collapsing to `t(key: PlainMessageId)`, so the future flip is a pure widening.
  *
- * FOLLOW-UP (ADR-0256 consequences (a)): once `a11yCopy.ts` exports a literal-typed
+ * FOLLOW-UP: once `a11yCopy.ts` exports a literal-typed
  * `A11Y_COPY_EN`, set `A11yKey = keyof typeof A11Y_COPY_EN` here — no call site changes.
  */
 export type A11yKey = never;

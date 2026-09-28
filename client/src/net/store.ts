@@ -32,7 +32,7 @@ export type EssenceByAffinity = Readonly<Record<AffinityName, number>>;
  *
  * WHY 3: must exceed 2 — a coalesced-tick spike presents as interval ≈ 2×stepMs of
  * genuine delivery jitter that must stay inside the gate — while capping one admitted
- * sample's delay movement at +0.5 steps. Floor-and-ceiling derivation: ADR-0171 D1.
+ * sample's delay movement at +0.5 steps.
  */
 export const JITTER_IDLE_GAP_STEPS = 3;
 
@@ -61,7 +61,7 @@ export interface StorePlayer {
 // rowConvert.test.ts probe fields via `as Record<string, unknown>`, which TS only
 // permits for object-literal types (an interface lacks the implicit index-signature
 // overlap). Same pattern as StoreInventory/StoreItemRow (M9c comment below).
-/** A monster public projection row, normalized (no hidden IVs/EVs/nature — ADR-0015). */
+/** A monster public projection row, normalized (no hidden IVs/EVs/nature). */
 export type StoreMonsterPub = {
   readonly monsterId: bigint;
   readonly ownerIdentity: string;
@@ -131,7 +131,7 @@ export interface StoreStatusEffect {
 }
 
 /** Active weather effect shape: tag is the WeatherEffect variant name (e.g. "Rain"),
- *  turnsRemaining is the remaining turn count (m14d weather + m14.5d threading). */
+ *  turnsRemaining is the remaining turn count. */
 export interface StoreWeather {
   readonly tag: string;
   readonly turnsRemaining: number;
@@ -172,7 +172,7 @@ export interface StoreBattle {
   readonly partyMonsterIds: readonly bigint[];
   readonly opponentMonsterIds: readonly bigint[];
   readonly createdAtMs: bigint;
-  /** Active weather effect (m14d weather; m14.5d threading). null = no active weather. */
+  /** Active weather effect. null = no active weather. */
   readonly weather: StoreWeather | null;
 }
 
@@ -223,7 +223,7 @@ export type StorePlayerConversation = {
   readonly currentNodeId: string;
 };
 
-/** The caller's own wallet row, normalized (ownerIdentity as hex string; ux2/ADR-0154).
+/** The caller's own wallet row, normalized (ownerIdentity as hex string).
  *  Sourced from the owner-scoped `my_wallet` view — never a whole-table subscription. */
 export type StoreWallet = {
   readonly ownerIdentity: string;
@@ -233,8 +233,8 @@ export type StoreWallet = {
 /** The caller's own account row, normalized (identities as hex strings).
  *  Sourced from the owner-scoped `my_account` VIEW — never a whole-table subscription.
  *  `status` carries the AccountStatus tag bare; the FOUR Option columns pass through as
- *  `undefined` when absent (never fabricated to `0n`/`''` — ADR-0154's broke-vs-dark rule).
- *  `terminalAtMs` (added client-side by m22-s8 / ADR-0231) is the PRV1-4
+ *  `undefined` when absent (never fabricated to `0n`/`''` — the broke-vs-dark rule).
+ *  `terminalAtMs` is the PRV1-4
  *  permanent-deletion marker: `0n` is a real marker value, so it must never be normalised
  *  away. */
 export type StoreAccount = {
@@ -249,7 +249,7 @@ export type StoreAccount = {
   readonly terminalAtMs: bigint | undefined;
 };
 
-/** One `my_export_bundle` view row, normalised at the boundary (ADR-0231 A3-D1).
+/** One `my_export_bundle` view row, normalised at the boundary.
  *
  *  Field-for-field the shape `ui/exportAssembly.ts`'s `ExportChunkInput` reads, so the store's
  *  rows feed `assembleExportBundle` with no adapter in between — but declared HERE rather than
@@ -308,7 +308,7 @@ export type StoreHealLocationRow = {
   readonly costItemId?: number;
   readonly costQty: number;
   readonly cooldownMs: number;
-  // u64 server-side — bigint end-to-end, REQUIRED (12r-d, ADR-0170 residual 1;
+  // u64 server-side — bigint end-to-end, REQUIRED (
   // same no-Number() doctrine as StoreWallet.balance).
   readonly costCurrency: bigint;
 };
@@ -375,7 +375,7 @@ export type StoreTradeOffer = {
   readonly createdAtMs: bigint;
 };
 
-// NOTE: StoreProfile is a `type` alias (not `interface`) — the m17b tests probe
+// NOTE: StoreProfile is a `type` alias (not `interface`) — the tests probe
 // fields via `as Record<string, unknown>`, which TS only permits for object-literal
 // types (same pattern as StoreMonsterPub/StoreInventory above).
 /** A ranked profile row, normalized (identity as its hex key string). */
@@ -457,7 +457,7 @@ export class AuthoritativeStore {
   // leaderboard). Deliberately NO removeProfile: profile rows are never deleted
   // server-side (RL-2), so a remove path would be unreachable dead code.
   readonly #profiles = new Map<string, StoreProfile>();
-  // ux2: the caller's own wallet row. A SLOT, not a Map: the
+  // The caller's own wallet row. A SLOT, not a Map: the
   // `my_wallet` view returns exactly one row — the caller's — so a keyed map
   // would make another player's balance representable in the client cache.
   // Deliberately NO removeWallet: wallet rows are never deleted server-side, so
@@ -469,7 +469,7 @@ export class AuthoritativeStore {
   // `status`), so a view onDelete can only be the old half of an update pair.
   #ownAccount: StoreAccount | undefined;
   // `my_export_bundle` is a PK-less Vec-VIEW, so it takes the `my_monster_pub` /
-  // `my_battle` route (ADR-0231 A3-D1) — the whole map is rebuilt from the post-burst SDK cache
+  // `my_battle` route — the whole map is rebuilt from the post-burst SDK cache
   // by `reconcileExportChunksFromView`, never written per row. Keyed by `chunk_id`, the row's
   // synthetic `#[auto_inc]` primary key: it is the only field unique per row (the view strips
   // the key, so it has to come out of the payload), and keying by `requestId` instead would
@@ -508,7 +508,7 @@ export class AuthoritativeStore {
         Math.abs(row.tileX - existing.row.tileX) > 1 ||
         Math.abs(row.tileY - existing.row.tileY) > 1);
 
-    // ADR-0090 burst detection: when two snapshots for the same entity arrive
+    // Burst detection: when two snapshots for the same entity arrive
     // within BURST_EPSILON_MS of each other (same WebSocket flush), attempt to
     // assign a synthetic receivedAt one nominal step after the existing latest.
     // WHY: burst co-arrivals can share the same receivedAt millisecond, collapsing
@@ -536,7 +536,7 @@ export class AuthoritativeStore {
       // interpolateHistory. Trade-off: for large stepMs this guard prevents synthetic
       // entirely, which is acceptable (see NOTE above).
       //
-      // ptc5f reachability pin: this synthetic assignment fires ONLY when `stepMs <
+      // Reachability: this synthetic assignment fires ONLY when `stepMs <
       // 2*BURST_EPSILON_MS` (= 40 ms). Proof:
       // the outer guard forces `d = now - existing.latest.receivedAt < BURST_EPSILON_MS`,
       // and this inner guard is `existing.latest.receivedAt + stepMs <= now + BURST_EPSILON_MS`
@@ -571,7 +571,7 @@ export class AuthoritativeStore {
     if (this.#stepMs > 0 && existing !== undefined && !shouldSnap) {
       // Use wall-clock now (not synthetic receivedAt) for the true interval measure.
       const interval = now - existing.receivedAt;
-      // ADR-0171 D1 idle-gap gate; the estimate is carried across the gap UNCHANGED,
+      // Idle-gap gate; the estimate is carried across the gap UNCHANGED,
       // never reset — the pre-idle value is the best available prior (D-C).
       if (interval <= JITTER_IDLE_GAP_STEPS * this.#stepMs) {
         const deviation = Math.abs(interval - this.#stepMs);
@@ -811,7 +811,7 @@ export class AuthoritativeStore {
   /** Zone-warp character flush: drop ONLY the character map so remote positions
    *  from the old zone are never interpolated in the new zone. All other tables
    *  (players, monsters, species, battles, skills, inventory, itemDefs, evolutionPaths)
-   *  are untouched — they survive the zone transition. (ADR-0067 Option C) */
+   *  are untouched — they survive the zone transition. */
   resetCharacters(): void {
     if (this.#chars.size === 0) return; // no-op → no dirty mark (no phantom re-render)
     this.#chars.clear();
@@ -842,17 +842,17 @@ export class AuthoritativeStore {
     this.#shopItems.clear();
     // trade_offer rows — cleared on disconnect; no escrow survives a drop
     // (on_disconnect cancels the player's active offer server-side per TR-18 when the
-    // identity's LAST live connection ends — rb-73 / ADR-0245; otherwise the snapshot
+    // identity's LAST live connection ends; otherwise the snapshot
     // re-delivers it).
     this.#tradeOffers.clear();
     // battle_challenge rows — cleared on disconnect; server cancels the player's
     // outgoing pending challenges via on_disconnect (pvp.rs cancel_challenges_on_disconnect)
-    // when the identity's LAST live connection ends — rb-73 / ADR-0245.
+    // when the identity's LAST live connection ends.
     this.#challenges.clear();
     // Profile rows — cleared on disconnect; repopulated from the initial
     // onInsert burst when the subscription re-applies on reconnect.
     this.#profiles.clear();
-    // ux2: own-wallet slot — cleared on disconnect so a previous identity's balance
+    // Own-wallet slot — cleared on disconnect so a previous identity's balance
     // can never be surfaced to the next one; repopulated from the `my_wallet` view's
     // initial onInsert when the subscription re-applies.
     this.#ownWallet = undefined;
@@ -954,14 +954,14 @@ export class AuthoritativeStore {
    *  match left side B with no battle at all. ONE condition shared by
    *  both accessors below, deliberately — two hand-written copies can drift (a fix landed
    *  on one and forgotten on the other). Exact equality against participant columns only.
-   *  Since 15r-sec-a (ADR-0198) the transport already scopes rows to participants via the
+   *  The transport already scopes rows to participants via the
    *  `my_battle` view, so this filter is defense-in-depth, not the primary boundary. */
   #isParticipant(b: StoreBattle, identity: string): boolean {
     return b.playerIdentity === identity || b.opponentIdentity === identity;
   }
 
   /** The player's own ongoing battle — matched in EITHER PvP role, `playerIdentity` OR
-   *  `opponentIdentity` (participant-scoped transport since ADR-0198).
+   *  `opponentIdentity` (participant-scoped transport).
    *  Returns the RAW server row: the store stays a mirror of server truth, and the
    *  own-side-is-sideA view projection lives in `ownPerspective()` below. When more than
    *  one Ongoing row matches, the HIGHEST battleId wins — the same tiebreak
@@ -988,7 +988,7 @@ export class AuthoritativeStore {
   }
 
   /** The player's most-recent battle of ANY outcome (highest battleId among rows where
-   *  `identity` holds EITHER PvP role — 11r-b/ADR-0167 D1). Highest battleId = most recent
+   *  `identity` holds EITHER PvP role). Highest battleId = most recent
    *  (server auto-inc, monotonic; single current battle per player). Returns the RAW server
    *  row (see `ownPerspective()` for the view projection). Feeds the outcome-frame
    *  lifecycle; ongoingBattle() (Ongoing-only) matches the same either-role rule.
@@ -1017,7 +1017,7 @@ export class AuthoritativeStore {
 
   // --- inventory + itemDef read (M9c raising/inventory view reads truth here) ----
 
-  /** The player's own inventory (ADR-0015/0046 V1: public table, client-side owner
+  /** The player's own inventory (public table, client-side owner
    *  filter). A FRESH array of FRESH row copies — a caller mutating the array OR a
    *  returned row's field cannot corrupt the store (one-way `server -> store ->
    *  render` flow; store.test.ts S8 deep-isolation). There is deliberately NO
@@ -1124,7 +1124,7 @@ export class AuthoritativeStore {
     return [...this.#shopItems.values()];
   }
 
-  // --- m16b: battle_challenge ingest (adapter-only) ----------------------------
+  // --- battle_challenge ingest (adapter-only) ----------------------------
 
   upsertChallenge(challenge: StoreBattleChallenge): void {
     this.#challenges.set(challenge.challengeId, challenge);
@@ -1135,7 +1135,7 @@ export class AuthoritativeStore {
     if (this.#challenges.delete(challengeId)) this.#dirty = true;
   }
 
-  // --- m16b: battle_challenge read ---------------------------------------------
+  // --- battle_challenge read ---------------------------------------------
 
   /** All challenge rows (challenger + target subscribe to this public table). */
   allChallenges(): StoreBattleChallenge[] {
@@ -1147,7 +1147,7 @@ export class AuthoritativeStore {
     return [...this.#players.values()];
   }
 
-  // --- m15b: trade_offer ingest (adapter-only) ---------------------------------
+  // --- trade_offer ingest (adapter-only) ---------------------------------
 
   upsertTradeOffer(row: StoreTradeOffer): void {
     this.#tradeOffers.set(row.tradeId, row);
@@ -1158,11 +1158,11 @@ export class AuthoritativeStore {
     if (this.#tradeOffers.delete(tradeId)) this.#dirty = true;
   }
 
-  // --- m15b: trade_offer read --------------------------------------------------
+  // --- trade_offer read --------------------------------------------------
 
   /**
    * The active trade offer where `identity` is initiator OR counterparty, or undefined.
-   * Returns the first match in Map insertion order — not lowest-tradeId. ADR-0106 D4
+   * Returns the first match in Map insertion order — not lowest-tradeId. The server
    * guarantees at most one active offer per player, so tiebreak never matters in practice.
    * For tiebreak-deterministic selection use buildTradeViewModel (passes allTradeOffers()).
    */
@@ -1178,7 +1178,7 @@ export class AuthoritativeStore {
     return [...this.#tradeOffers.values()];
   }
 
-  // --- m17b: profile ingest/read (RL-13 leaderboard; adapter writes, view reads) --
+  // --- profile ingest/read (RL-13 leaderboard; adapter writes, view reads) --
 
   /** Upsert keyed by identity hex — reconnect re-inserts overwrite, never duplicate.
    *  Deliberately NO removeProfile counterpart: profile rows are never deleted
@@ -1198,7 +1198,7 @@ export class AuthoritativeStore {
     return [...this.#profiles.values()];
   }
 
-  // --- ux2: own-wallet slot ingest/read (ADR-0154 `my_wallet` view) --------------
+  // --- own-wallet slot ingest/read (`my_wallet` view) --------------
 
   /** Replace the own-wallet slot (insert-wins: the view re-emits the whole row on
    *  every balance change). Deliberately NO removeWallet counterpart — wallet rows
@@ -1210,7 +1210,7 @@ export class AuthoritativeStore {
   }
 
   /** The own wallet ONLY when it belongs to `identity` — client-side owner filter,
-   *  defense in depth behind the server-side owner-scoped view (ADR-0015 V1). */
+   *  defense in depth behind the server-side owner-scoped view. */
   ownWallet(identity: string): StoreWallet | undefined {
     const slot = this.#ownWallet;
     return slot !== undefined && slot.ownerIdentity === identity ? slot : undefined;
@@ -1233,8 +1233,8 @@ export class AuthoritativeStore {
     return slot !== undefined && slot.identity === identity ? slot : undefined;
   }
 
-  /** Rebuild the whole chunk map from the post-burst `my_export_bundle` cache (
-   *  ADR-0231 A3-D1) — the `reconcileMonstersFromView` / `reconcileBattlesFromView` shape.
+  /** Rebuild the whole chunk map from the post-burst `my_export_bundle` cache —
+   *  the `reconcileMonstersFromView` / `reconcileBattlesFromView` shape.
    *
    *  AUTHORITATIVE: a `chunkId` absent from `rows` is DELETED. That is what makes a server-side
    *  purge (the 7-day TTL reaper, the deletion cascade) withdraw the client's download offer
@@ -1259,7 +1259,7 @@ export class AuthoritativeStore {
     }
   }
 
-  /** This player's export chunks ONLY — client-side owner filter (ADR-0015 V1), defense in
+  /** This player's export chunks ONLY — client-side owner filter, defense in
    *  depth behind the server-side owner-scoped view, and the FIRST of the two independent
    *  filters that keep another player's bytes out of the downloaded file (the second is
    *  `assembleExportBundle`'s own filter-first rule).
@@ -1286,7 +1286,7 @@ export class AuthoritativeStore {
    *
    *  Change detection is `deepRowEq`, NOT `shallowRowEq`: `entries` is an ARRAY of objects
    *  rebuilt fresh by every `pendingEvolutionNoticeRowToStore` call, and the one-level
-   *  compare reports every one of them as changed — the render storm ADR-0198 D5 records for
+   *  compare reports every one of them as changed — the render storm already seen in
    *  the sibling battle reconcile. This reconcile runs on EVERY flush, so an unchanged
    *  re-delivery must cost no listener wake. */
   reconcileEvolutionNoticesFromView(rows: readonly StorePendingEvolutionNotice[]): void {
@@ -1304,7 +1304,7 @@ export class AuthoritativeStore {
   }
 
   /** The queued reveals ONLY when the slot belongs to `identity` — the client-side owner
-   *  filter (ADR-0015 V1), defense in depth behind the server-side owner-scoped view, and
+   *  filter, defense in depth behind the server-side owner-scoped view, and
    *  the AUTH-51 guard `ownWallet` / `ownAccount` already apply: a reconnect can mint a NEW
    *  identity and the slot survives until the next reconcile.
    *
@@ -1317,7 +1317,7 @@ export class AuthoritativeStore {
   }
 }
 
-// --- 11r-b: the ONE view-perspective seam -------------------------
+// --- the ONE view-perspective seam -------------------------
 // Companion to ongoingBattle()/latestPlayerBattle() above, which return RAW server rows
 // in EITHER PvP role. A free function, not a store method, on purpose: it keeps the
 // accessors honestly "a mirror of server truth" and keeps the projection directly
@@ -1383,7 +1383,7 @@ function swapWinnerTag(outcome: string): string {
   return outcome;
 }
 
-/** Generic own-key equality over plain row objects (13r-e reconcile change
+/** Generic own-key equality over plain row objects (reconcile change
  *  detection). Key-set + `===` per field, with ONE level of recursion into
  *  plain-object values: `StoreMonsterPub.essence` is a nested
  *  `Record<AffinityName, number>` rebuilt as a FRESH literal by every

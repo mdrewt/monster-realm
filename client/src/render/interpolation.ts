@@ -83,15 +83,15 @@ export function interpolateReducedMotion(row: AuthoritativeTile): RenderPos {
 }
 
 // =============================================================================
-// ADR-0090 (M13.5e e-5): Adaptive interpolation delay + history interpolation
-// Every part is commented with WHAT and WHY (Drew's rider, D-13.5-1).
+// Adaptive interpolation delay + history interpolation
+// Every part is commented with WHAT and WHY .
 // =============================================================================
 
 /**
  * Compute the adaptive interpolation delay (ms) from the current jitter estimate.
  *
  * WHAT: delay = clamp(base + JITTER_COEFF×jitter, MIN_DELAY, MAX_DELAY),
- * where base = 1.0×stepMs (the ADR-0075 fixed value on a smooth network).
+ * where base = 1.0×stepMs (the fixed value on a smooth network).
  *
  * WHY: The render window must span at least one step so a prior snapshot always
  * brackets it. Extra jitter headroom widens the window during bursts. The upper
@@ -112,7 +112,7 @@ export function adaptiveInterpDelayMs(jitterMs: number, stepMs: number): number 
  *
  * WHY 2: exactly 2×stepMs is one dropped tick — a legitimate two-step slide the
  * adaptive delay is designed to bridge, so it must NOT re-anchor (hence strictly
- * `>`). A threshold of 1 step would re-anchor the very burst windows ADR-0090's
+ * `>`). A threshold of 1 step would re-anchor the very burst windows the
  * depth-4 ring exists to smooth.
  */
 export const REANCHOR_SPAN_STEPS = 2;
@@ -130,13 +130,13 @@ export const REANCHOR_SPAN_STEPS = 2;
  * `receivedAt`) is available as the lower bracket — enabling smooth interpolation
  * even when the two burst snapshots share the same `receivedAt`.
  *
- * ADR-0171 re-anchor: when `stepMs > 0` and a bracket's raw span exceeds
+ * Re-anchor: when `stepMs > 0` and a bracket's raw span exceeds
  * REANCHOR_SPAN_STEPS×stepMs, the lerp window becomes [next.receivedAt − stepMs,
  * next.receivedAt]; at or below its lower edge the position HOLDS at `prev` (the
  * dead zone). Brackets re-anchor per-bracket; the outer HOLD/clamp paths are
- * evaluated first and are untouched. Rationale: ADR-0171 D2.
+ * evaluated first and are untouched.
  *
- * WARNING: omitting `stepMs` DISABLES the ADR-0171 re-anchor — pass the real step
+ * WARNING: omitting `stepMs` DISABLES the re-anchor — pass the real step
  * interval from any new call site. 0/negative = disabled = the legacy math,
  * byte-for-byte (the tested "no stepMs ⇒ old math" regression property, D3).
  *
@@ -204,14 +204,14 @@ export function interpolateHistory(
   // span would put `lower` below `prev` and corrupt the bracket.
   if (span <= 0) return { x: next.tileX, y: next.tileY };
 
-  // ADR-0171 D2 re-anchor. The lower edge is `next − stepMs`, never `prev + stepMs`:
+  // Re-anchor. The lower edge is `next − stepMs`, never `prev + stepMs`:
   // the slide must END when the new authoritative position becomes current (front-
   // anchoring would move the character at gap start and freeze it for the rest).
   let lower = prev.receivedAt;
   if (stepMs > 0 && span > REANCHOR_SPAN_STEPS * stepMs) {
     lower = next.receivedAt - stepMs;
     // Dead zone — the character genuinely stood at `prev` for the whole gap
-    // (ADR-0013 hold-don't-drift applied to the interior of a bracket).
+    // (hold-don't-drift applied to the interior of a bracket).
     if (renderTime <= lower) return { x: prev.tileX, y: prev.tileY };
   }
 

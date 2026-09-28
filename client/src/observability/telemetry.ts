@@ -1,4 +1,4 @@
-// observability/telemetry.ts — m20c (ADR-0180 body amendment): the imperative shell.
+// observability/telemetry.ts — the imperative shell.
 //
 // Everything decision-shaped lives in the pure siblings (names/attributes/config/frameWindow/
 // interpGap/instruments); this file only adapts them onto the OTel Web SDK and makes the whole

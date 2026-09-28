@@ -42,7 +42,7 @@ interface GlyphBar {
  *
  * Constraints these values encode -- change them only against the sibling test:
  * - AXIS-ALIGNED INTEGER RECTS ONLY, no strokes/curves/diagonals. Integer rects
- *   rasterise with no anti-aliasing, and ADR-0160 upscales the stage by a device
+ *   rasterise with no anti-aliasing, and the viewport upscales the stage by a device
  *   INTEGER factor with `nearest`, so the glyph survives every device scale
  *   exactly. A 6px circle or a diagonal would be grey mush before the upscale.
  * - HALF-EXTENT 3 (a 6x6 field), not 4: it leaves 2 clear px against the facing
@@ -52,7 +52,7 @@ interface GlyphBar {
  *
  * `Record<WasmAction, ...>` is load-bearing: once `WasmAction` gains a fourth member,
  * a missing entry here is a COMPILE ERROR, where a `switch` with a `default` would
- * silently ship a colour-only sprite for it -- exactly the defect ADR-0241 closes.
+ * silently ship a colour-only sprite for it -- exactly the colour-only-glyph defect.
  * Note the honest limit: `WasmAction` (convert.ts) is a HAND-WRITTEN mirror of
  * game-core's `ActionState`. So a Rust-side variant added without that mirror edit
  * reaches here as an unknown key -- which is why the draw below is fail-soft rather

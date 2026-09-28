@@ -62,7 +62,7 @@ export class QuestLogView {
 
   hide(): void {
     this.overlay.style.display = 'none';
-    // m23-s3 D2: deliberately UNGUARDED (rationale in ui/pvpView.ts's hide()).
+    // Deliberately UNGUARDED (rationale in ui/pvpView.ts's hide()).
     closeOverlayA11y('questLogView', null);
   }
 }

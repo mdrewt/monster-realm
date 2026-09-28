@@ -9,7 +9,7 @@
 // overlay discovers the full keymap: the `?` help key itself, M (the main-menu
 // front door), Escape (close), movement (WASD / arrows), Space
 // (jump), F9 (bug bundle), and the 10 overlay hotkeys B I E Q U P L N O T (G and
-// H deleted in uxd2, ADR-0161 D5 — shop and heal are reached through the interact
+// H deleted — shop and heal are reached through the interact
 // key T). The menu sources every leaf's shortcut label from this SSOT, so a key
 // that diverges from it fails MM-KEYGLYPH-FROM-HELP-SSOT. buildHelpViewModel() returns a
 // fresh copy so a caller mutating the result cannot poison a later call

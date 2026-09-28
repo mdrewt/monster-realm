@@ -39,7 +39,7 @@ export const HOLD_COMMIT_MS = 150;
  * Tracks currently-held movement directions as a most-recently-pressed stack so a
  * two-key hold falls back to the still-held key on release.
  * Each entry carries its own press stamp — INSIDE the stack entry, never a parallel
- * map — so release()/clear() evict the stamp by construction (ADR-0158: a surviving
+ * map — so release()/clear() evict the stamp by construction (a surviving
  * stale stamp is exactly the re-tap double-move mutant).
  */
 export class HeldDirections {

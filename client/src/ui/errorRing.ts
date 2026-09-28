@@ -1,4 +1,4 @@
-// ui/errorRing.ts — bounded, total-normalized error buffer for the F9 bug bundle (pt-b1).
+// ui/errorRing.ts — bounded, total-normalized error buffer for the F9 bug bundle.
 //
 // Source-of-truth: M-playtest-b F9 bug-bundle error ring (EARS U-2 bounded FIFO,
 // normalizeError totality).

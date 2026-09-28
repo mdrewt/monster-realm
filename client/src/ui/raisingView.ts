@@ -12,7 +12,7 @@
 // description, the `showFeedback` message, tiers, stats, names, counts) flow through raw or as
 // params, never as catalog text. Every `t(`/`tf(` first argument is a string LITERAL.
 //
-// m23-s4 (ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
+// Overlay a11y wiring. This view is a CONSTRUCTED shell:
 // its root is `document.createElement`'d here and appended into the shared `#app` MOUNT, so unlike
 // the ten static shells S3 wired it ships NO ARIA of its own from `client/index.html` — every
 // attribute below comes from `openOverlayA11y`, never from a literal in this file.
@@ -34,7 +34,7 @@
 // itself and then never receives focus.
 //
 // NO CLOSE-BEFORE-OPEN. `ui/overlayA11y.ts`'s cross-slice contract (a) once claimed the four
-// `#app`-mounted views "share ONE root" and prescribed close-before-open; 17r-e RETRACTED it
+// `#app`-mounted views "share ONE root" and prescribed close-before-open; it was RETRACTED
 // in place (A12, ui/overlayA11y.ts:52-54); (a) now agrees with this code: each view creates its
 // OWN root under the shared MOUNT — four roots, four `OverlayId`s, four records. Closing a sibling
 // here would close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
@@ -69,7 +69,7 @@ export class RaisingView {
   /** The "Raising & Inventory" heading; its text is resolved in show(), not here. */
   readonly #titleEl: HTMLHeadingElement;
   readonly #feedbackEl: HTMLDivElement;
-  /** The two section headings; text resolved in show() (m24-s4, see show()). */
+  /** The two section headings; text resolved in show() (see show()). */
   readonly #monstersLabelEl: HTMLHeadingElement;
   readonly #inventoryLabelEl: HTMLHeadingElement;
   readonly #monsterEl: HTMLDivElement;
@@ -281,7 +281,7 @@ export class RaisingView {
       // Re-entrancy guard (shopView/renameView precedent): a genuinely
       // pending care call holds the lock until it settles; .finally() resets on BOTH
       // arms. Keyed by monsterId, so a sibling monster's Care button stays live.
-      // rb-120 (R-20r-a-CARE-GEN) ported the Train shape here: the release is gated on
+      // It carries the Train shape: the release is gated on
       // this click's own token (see #pending), and the call runs INSIDE the executor —
       // `Promise.resolve(onCare(id))` evaluates it as an argument, so a synchronous
       // throw escaped the listener after the lock was taken and stranded it.

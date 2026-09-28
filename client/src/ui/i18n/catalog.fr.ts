@@ -1,14 +1,14 @@
-// ui/i18n/catalog.fr.ts — the French catalog, the M24 PROOF LOCALE (m24-s7, ADR-0263).
+// ui/i18n/catalog.fr.ts — the French catalog, the M24 PROOF LOCALE.
 //
 // WHY THIS FILE EXISTS. `fr` is the second registered locale: it proves, at runtime and under
-// the §5.3 parity gate (catalogParity.test.ts), that the resolver/catalog seam built by S1-S6
+// the §5.3 parity gate (catalogParity.test.ts), that the resolver/catalog resolver/catalog seam
 // carries a real translation — every `MessageId` resolves, every closure reads exactly the
 // same param fields as its English twin, and the first CLDR plural (`battle.weather.banner`)
 // selects through `selectPlural` rather than an `n === 1` branch. It mirrors catalog.en.ts
 // ENTRY FOR ENTRY, IN THE SAME ORDER, so a side-by-side diff of the two files lines up.
 //
 // ONE ENTRY PER `MessageId`, and the type makes that total: `satisfies Catalog` is load-bearing
-// (ADR-0256 D2) — `Object.freeze<T>` is generic, so without it a stowaway key would be swallowed
+// — `Object.freeze<T>` is generic, so without it a stowaway key would be swallowed
 // into `T`; `satisfies` restores the excess-property check, and the mapped type reports an
 // omitted key by name (TS2741). Frozen for the same reason `CATALOG_EN` is: the type annotation
 // is erased at runtime, and a caller that casts it away must not be able to rewrite the shared
@@ -32,7 +32,7 @@
 // keys. Abbreviations: Lv → Niv., HP → PV, Acc → Préc., W/L → V/D, ATK/DEF/SPD → ATQ/DÉF/VIT.
 // Params are MODEL DATA (affinities, weather labels, species/skill/item/player names, tiers,
 // stats, counts, prices) interpolated verbatim, never catalogued (M24 §2.5); numbers are raw
-// digits — no `fmtNumber` grouping (YAGNI for chrome strings, ADR-0263).
+// digits — no `fmtNumber` grouping (YAGNI for chrome strings).
 
 import type { Catalog } from './messageIds';
 import { cldr, selectPlural } from './plural';

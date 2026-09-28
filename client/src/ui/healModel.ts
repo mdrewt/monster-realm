@@ -16,7 +16,7 @@ export interface HealLocationViewModel {
   costItemName: string | null;
   costQty: number;
   // REQUIRED (not optional) so every future consumer must reckon with it —
-  // an optional field could be silently defaulted past (ADR-0170 D3, amended
+  // an optional field could be silently defaulted past (and it is a
   // bigint, not number — a Number() hop lies above 2^53).
   costCurrency: bigint;
   cooldownMs: number;
@@ -29,13 +29,13 @@ export interface HealViewModel {
 
 /**
  * Pick the heal location to target: the FIRST location's id (matching the
- * pre-M13.5b behavior), or `undefined` when none are loaded (ADR-0085 §D).
+ * original behavior), or `undefined` when none are loaded.
  *
  * WHY `undefined` and not 0: the old call site did `locations[0]?.locationId ?? 0`
  * — with no locations loaded it dispatched the heal reducer with locationId 0, a
  * guaranteed-invisible server `Err` (no location 0 exists). `undefined` is the
  * SKIP signal: the caller must not send at all (and surfaces "no heal location
- * available" instead — ADR-0085 A9). TOTAL: never throws (matching this module's
+ * available" instead). TOTAL: never throws (matching this module's
  * contract); a falsy-but-present locationId (0) on a non-empty array is valid.
  */
 export function healTargetLocationId(
@@ -91,8 +91,8 @@ export function buildHealViewModel(
 
 /**
  * The cost line the heal overlay renders for one location (closes
- * ADR-0170 residual 1's display arm). Pure + TOTAL: never throws, never returns
- * an empty string. The item wording is byte-identical to the pre-12r-d shell
+ * the currency display gap). Pure + TOTAL: never throws, never returns
+ * an empty string. The item wording is byte-identical to the old shell
  * (`3x Herb` / `1x Unknown item`) — this function exists so the currency channel
  * cannot be silently dropped by the coverage-excluded DOM shell: a currency-only
  * pad used to render as `0x Unknown item` (the silent-debit trap).

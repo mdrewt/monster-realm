@@ -23,7 +23,7 @@
 // above 2^53 exact), and it escapes `"`, `\` and every codepoint below 0x20, so a player-authored
 // name cannot break out of the envelope this module splices. Parsing would re-open the precision
 // hole and would throw `SyntaxError` on a torn chunk inside an SDK callback that has no
-// per-listener isolation (ADR-0085 A6).
+// per-listener isolation.
 
 /** One `export_bundle` row, normalised. Field types are pinned from the generated binding
  *  `client/src/module_bindings/my_export_bundle_table.ts`: u64 -> bigint, u32 -> number,

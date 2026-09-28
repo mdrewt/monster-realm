@@ -53,13 +53,13 @@ export class HelpView {
   }
 
   show(): void {
-    // m23-s3 D1: read visibility BEFORE the display write. `show()` is called REPEATEDLY on an
+    // Read visibility BEFORE the display write. `show()` is called REPEATEDLY on an
     // already-open overlay (pvpView.ts is the extreme case, main.ts:1699-1701), and a re-open
     // re-schedules overlayA11y's deferred focus -- which would yank focus back to the initial
     // anchor on every store batch. Only the hidden->visible EDGE opens.
     const wasVisible = this.visible;
     // The heading is resolved HERE, on EVERY show() — unconditionally,
-    // after the `wasVisible` read, before the display write (the ADR-0260 D4 shape; see
+    // after the `wasVisible` read, before the display write (see
     // evolutionView.show() for the boot-order / locale-switch reasoning).
     this.#titleEl.textContent = t('chrome.help.title');
     this.#overlay.style.display = '';
@@ -68,7 +68,7 @@ export class HelpView {
 
   hide(): void {
     this.#overlay.style.display = 'none';
-    // m23-s3 D2: DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
+    // DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
     // documented no-op with no open record, and leaving it unguarded is what lets a record
     // that ever desynchronised from the DOM self-heal instead of leaking a live trap forever.
     closeOverlayA11y('helpView', null);

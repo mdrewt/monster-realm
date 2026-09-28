@@ -18,7 +18,7 @@ export interface CareActionDeps {
   /**
    * Invokes the `care` reducer. Returns the SDK promise that settles on the
    * server's keyed TransactionUpdate, or `undefined` when the link is
-   * frozen/disconnected and no call was made at all (ADR-0085 A1: a call against
+   * frozen/disconnected and no call was made at all (a call against
    * a dead connection is silently queued and its promise never settles).
    */
   readonly callCare: () => Promise<unknown> | undefined;

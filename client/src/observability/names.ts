@@ -1,4 +1,4 @@
-// observability/names.ts — m20c (ADR-0180 body amendment): the S4 wire contract, client side.
+// observability/names.ts — the wire contract, client side.
 //
 // ONE mirror of the Alloy ingest policy (ops/observability/alloy/config.alloy:155-158). The
 // client must never ship a datapoint attribute the ingest is going to delete: a deleted value

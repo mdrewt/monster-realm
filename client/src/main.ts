@@ -117,13 +117,6 @@ import {
   resolveEvolutionNoticeNames,
 } from './ui/evolutionNotice';
 import type { EvolutionView } from './ui/evolutionView';
-// this import block is pinned by
-// W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY Part B — the clause that proves every fan-out
-// surface, every hotkey open-guard and the force-hide table resolve to the node-tested
-// registry rather than a local decoy, instead of to a locally-declared shadow (red-team F2 /
-// the W-CARE-IMPORT pattern). The needle is applied AFTER squashWhitespace, so this block is
-// left in Biome's canonical order and wrapping — the tooth pins WHICH VALUES are imported,
-// which is the load-bearing part; the specifier order is incidental and is the formatter's.
 import { assembleExportBundle, type ExportAssembly } from './ui/exportAssembly';
 import {
   buildHealViewModel,
@@ -212,7 +205,7 @@ const { uri: URI, db: DB } = resolveConnectionConfig(
 );
 // dev-observability: resolve VITE_MR_DEVLOG at MODULE scope too, for the same
 // F-3 reason — the resolver RETHROWS in dev, and a throw from inside main() could be
-// swallowed by a try/catch there. Asymmetric on purpose (inverted vs pt-a1): dev rethrows,
+// swallowed by a try/catch there. Asymmetric on purpose (inverted vs the other resolvers): dev rethrows,
 // prod degrades to 'off' with one console.error, because this line runs BEFORE the
 // window.onerror / unhandledrejection listeners below. `sendLogger` is undefined at level
 // 'off', which is what keeps wrapReducerLogging strict identity in the default prod build.
@@ -264,7 +257,7 @@ const TELEMETRY_CONFIG = resolveTelemetryConfig(
 );
 // Seeded with the shared no-op; re-assigned once by the init hunk iff the bootstrap resolves.
 let telemetry: ClientTelemetry = NOOP_TELEMETRY;
-// m20c frame accumulator — created ONCE, carried across rAF frames by the frame hunk.
+// Frame accumulator — created ONCE, carried across rAF frames by the frame hunk.
 let frameWindow = createFrameWindow(performance.now());
 
 // stepMs injected so the store can do burst detection + jitter EWMA.
@@ -347,7 +340,7 @@ let sessionModelState: SessionModelState = SESSION_INITIAL;
 // Tracks the turn number at the time the player submitted a PvP action.
 // When the server resolves the turn (battle.turnNumber increments beyond this),
 // pvpPendingTurnNumber is cleared and pvpPendingSubmit becomes false.
-// battle_action is PRIVATE (ADR-0015 must-never-leak) — this is the ONLY signal
+// battle_action is PRIVATE (must-never-leak) — this is the ONLY signal
 // the client has about its own submission state.
 let pvpPendingTurnNumber: number | null = null;
 // dismissPending: prevents double-sending dismiss_dialogue while server processes it (M12d).
@@ -365,14 +358,12 @@ let pendingShopId: number | null = null;
 let boundShopId: number | null = null;
 let boundHealLocationId: number | null = null;
 
-// UXD3B-PROBES-BEGIN
 // the ONE probe table. Every fan-out surface below reads visibility
 // through it, so a 16th overlay is a COMPILE error here instead of 5 silent omissions.
 // Each entry is intentionally byte-identical `<id>: () => <id>?.visible ?? false` —
-// W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY Part B pins that literal shape, because
+// that literal shape matters because
 // main.ts is coverage-excluded and a single negated or `?? true` probe would corrupt all
 // five surfaces at once while every other tooth stayed green.
-// ⚠ No quoted hotkey literal may appear in this block (W-UXD3-HOTKEY-ANCHORS-AFTER-KEYDOWN).
 const overlayProbes: OverlayProbes = {
   battleView: () => battleView?.visible ?? false,
   boxView: () => boxView?.visible ?? false,
@@ -392,20 +383,17 @@ const overlayProbes: OverlayProbes = {
   claimView: () => claimView?.visible ?? false,
   privacyView: () => privacyView?.visible ?? false,
 };
-// UXD3B-PROBES-END
 
-// UXD3C-HANDLES-BEGIN
 // the ONE force-hide handle table — the WRITE mirror of `overlayProbes`.
 // Typed `OverlayHandles` (a total `Record<OverlayId, _>`), so a 16th overlay is a COMPILE
 // error here rather than an overlay a verdict can name and nothing can hide. Every entry is
-// intentionally byte-identical `<id>: () => <id>?.hide()` — W-UXD3C-HANDLE-TABLE pins that
-// literal per id, because main.ts is coverage-excluded and a copy-pasted sibling thunk
+// intentionally byte-identical `<id>: () => <id>?.hide()` — that
+// shape matters per id, because main.ts is coverage-excluded and a copy-pasted sibling thunk
 // (`raisingView: () => boxView?.hide()`) type-checks perfectly while hiding the wrong overlay.
 // `dialogueView` is the SOLE `undefined` entry and must stay that way: it is the only member
 // of NEVER_FORCE_HIDE, because hiding a live conversation client-side strands the server
-// `player_conversation` row (ADR-0162 AC-9). Consumers read
+// `player_conversation` row. Consumers read
 // `overlayHandles[id]?.()`; only verdicts decide WHICH ids they call.
-// ⚠ No quoted hotkey literal may appear in this block (W-UXD3-HOTKEY-ANCHORS-AFTER-KEYDOWN).
 const overlayHandles: OverlayHandles = {
   battleView: () => battleView?.hide(),
   boxView: () => boxView?.hide(),
@@ -425,26 +413,22 @@ const overlayHandles: OverlayHandles = {
   claimView: () => claimView?.hide(),
   privacyView: () => privacyView?.hide(),
 };
-// UXD3C-HANDLES-END
 
-// UXD3C-CANOPEN-BEGIN
 // the ONE gate binder. Returns the VERDICT, not a boolean, because the
 // three hide-switch handlers consume `forceHide`; each call site spells `.kind === 'allow'`
 // itself, deliberately, so no single `!` can invert eleven gates at once. Re-probes through
 // `visibleIds(overlayProbes)` on EVERY call — this table is built while every view binding is
 // still undefined, so anything cached would be permanently empty.
-// ⚠ No quoted hotkey literal may appear in this block (W-UXD3-HOTKEY-ANCHORS-AFTER-KEYDOWN).
 function overlayVerdict(id: OverlayId): CanOpenVerdict {
   return canOpen(id, visibleIds(overlayProbes));
 }
-// UXD3C-CANOPEN-END
 
-/** uxd2, rewired by uxd3-b: the ONE shared predicate over the
+/** The ONE shared predicate over the
  *  17 mutual-exclusion overlays. Every per-overlay read now lives in `overlayProbes`
  *  above — this body holds none. Six consumers: the four negated fan-out surfaces, the
  *  deferred shop-open gate and the frame-loop prompt. The hotkey handlers still keep
- *  their inline guard lists (each exempts its own overlay); routing those through
- *  `canOpen` is uxd3-c. The NAME is load-bearing (anti-pattern 18). */
+ *  their inline guard lists (each exempts its own overlay).
+ *  The NAME is load-bearing. */
 function anyOverlayVisible(): boolean {
   return anyVisible(overlayProbes);
 }
@@ -472,7 +456,7 @@ function sessionGateBlocks(): boolean {
   return s !== undefined && s !== 'hidden';
 }
 
-// --- M21b-2: claim / session model drivers ------------------------------
+// --- claim / session model drivers ------------------------------
 function renderSession(): void {
   sessionView?.render(buildSessionViewModel(sessionModelState));
 }
@@ -511,9 +495,9 @@ function applyClaim(event: ClaimEvent): void {
   renderClaim();
 }
 
-// --- rb-52: the privacy surface ------------------------------------
+// --- the privacy surface ------------------------------------
 // Decisions live in ui/privacyModel.ts (rules) and ui/privacyBanner.ts (copy); this block only
-// dispatches and paints. Rationale is ADR-0231 Amendment A2, not repeated here.
+// dispatches and paints.
 let privacyModelState: PrivacyModelState = PRIVACY_INITIAL;
 // The last countdown fed to the model. `account-changed` writes `inFlight: 'none'`, so pumping it
 // every frame would give the double-submit guard a ~16ms life (A2-D9).
@@ -539,7 +523,7 @@ function renderPrivacy(): void {
   privacyView?.render(vm);
 }
 
-// --- rb-53: the export transport's client end -----------------------
+// --- the export transport's client end -----------------------
 // The assembly of the moment, or `undefined` when none has been computed for this identity yet.
 // It holds the whole artifact, so it is module state rather than store state — which is exactly
 // why `onReconnect` has to clear it explicitly (A3-D9): `store.reset()` cannot reach it, and a
@@ -555,7 +539,7 @@ let exportAssembly: ExportAssembly | undefined;
 // closed must still be picked up — `openPrivacy()` renders from current state, so the offer is
 // there on open. Only the REPAINT is conditional.
 store.onBatchApplied(() => {
-  // Both owner filters run: the store's client-side one (ADR-0015 V1) and the assembler's own
+  // Both owner filters run: the store's client-side one and the assembler's own
   // filter-first rule. Neither is redundant — the second decides which bytes reach the file.
   exportAssembly = assembleExportBundle(store.ownExportChunks(identity), identity);
   if (privacyView?.visible) renderPrivacy();
@@ -680,12 +664,7 @@ function openClaim(): void {
   claimView?.show();
   renderClaim();
 }
-// --- uxd3: the main menu ------------------------------------------------
-//
-// ⚠ ANCHOR DISCIPLINE (plan anti-pattern 14b): this block sits ABOVE the keydown listener,
-// and many wiring teeth slice forward from the FIRST indexOf of a quoted hotkey literal.
-// No quoted hotkey anchor may appear anywhere below until the listener — describe keys in
-// prose only. Pinned by W-UXD3-HOTKEY-ANCHORS-AFTER-KEYDOWN.
+// --- the main menu ------------------------------------------------
 //
 // ONE OPEN PATH PER OVERLAY: each openX() below is the single build-VM-and-show body for
 // its overlay, called by BOTH its hotkey handler and the menu. The view contract is
@@ -694,7 +673,7 @@ function openClaim(): void {
 
 /** Nav position inside the menu. Reset by openMenu() — four paths (the M toggle-close,
  *  refreshBattle, the dialogue preempt, onReconnect) hide the view WITHOUT going through
- *  menuStep, so resetting on close would miss them. Pinned by W-OPENMENU-RESETS-STATE. */
+ *  menuStep, so resetting on close would miss them. */
 let menuState: MenuNavState = MENU_INITIAL;
 
 function openQuestLog(): void {
@@ -745,7 +724,7 @@ function openHelp(): void {
 
 /** The interact dispatch, extracted so the menu's Interact leaf and the interact hotkey
  *  share ONE exhaustive `switch (target.kind)` — duplicating it would destroy the
- *  single-site compiler flag a 4th NpcInteraction kind relies on (ADR-0161). */
+ *  single-site compiler flag a 4th NpcInteraction kind relies on. */
 function interactAtNearest(): void {
   const own = store.ownCharacter(identity);
   if (own === undefined) return;
@@ -775,7 +754,7 @@ function interactAtNearest(): void {
 /** Store reads → the three plain booleans the pure core consumes. TOTAL: pre-join and
  *  mid-reconnect `ownCharacter` is undefined, and PvP/Offer are online-player EXISTENCE,
  *  never a proximity test (the help copy says "nearby", but no reducer has a range rule —
- *  a distance check would grey both leaves out permanently). W-MENU-AVAILABILITY-SOURCES. */
+ *  a distance check would grey both leaves out permanently). */
 function menuAvailability(): MenuAvailability {
   const own = store.ownCharacter(identity);
   const hasInteractTarget =
@@ -887,12 +866,12 @@ function handleMenuInput(input: MenuInput): void {
 // session (first-sight pre-dismiss of a historical/stale-on-login resolved battle).
 let dismissedBattleId: bigint | null = null;
 let battleSynced = false;
-// m14.5d VM-compare guard: last rendered BattleViewModel — used by shouldSkipBattleRefresh
+// VM-compare guard: last rendered BattleViewModel — used by shouldSkipBattleRefresh
 // to suppress equal-VM re-renders (churn prevention). Reset to null on hide + reset.
 let lastBattleVM: BattleViewModel | null = null;
 
 // --- M13.5b status surface ------------------------------------------
-// A minimal dynamically-created status line (no toast system — recorded ADR-0085
+// A minimal dynamically-created status line (no toast system — a deliberate
 // consequence). `statusEl` is created in main() BEFORE `conn = connect(...)` is
 // assigned (C8: no lifecycle callback can ever report into the void) but held at
 // module scope because send sites OUTSIDE main() (the Escape-dismiss keydown handler
@@ -913,7 +892,7 @@ function clearStatus(): void {
   if (statusEl !== undefined) statusEl.textContent = '';
 }
 
-// --- pt-b1: F9 bug-bundle observability rings + error overlay -----------
+// --- F9 bug-bundle observability rings + error overlay -----------
 // The rings are the SESSION buffer (survive reconnect/zone-switch — only the emit
 // latches re-baseline). tMs comes from Date.now() in production; the rings inject the
 // clock so their unit tests stay deterministic. The overlay is mounted in main().
@@ -956,7 +935,7 @@ window.addEventListener('error', (e) => pushError('uncaught', e.error ?? e.messa
 window.addEventListener('unhandledrejection', (e) => pushError('unhandledrejection', e.reason));
 
 /**
- * Non-movement reducer send guard (ADR-0085 D1 + A1). While the link is frozen it
+ * Non-movement reducer send guard. While the link is frozen it
  * SHORT-CIRCUITS with "disconnected — try again" and NEVER calls the reducer: a call
  * against a dead conn is silently queued on the dead instance and its promise never
  * settles (no-settle-on-drop) — the dead-button black hole. Otherwise it attaches
@@ -991,7 +970,7 @@ function resetPredictionState(): void {
   // sent on this socket — otherwise the server rejects the player's first post-warp
   // move as "stale seq" and it is (correctly, same-epoch) evicted. Floor the fresh
   // instance to the highest seq ever sent; the gap this leaves is legal because the
-  // server's stale-seq guard is monotonic, not consecutive (ADR-0085 SDK-evidence).
+  // server's stale-seq guard is monotonic, not consecutive.
   predictor.seedSeq(lastSentSeq);
   resolver.reset();
   held.clear();
@@ -1035,7 +1014,7 @@ function switchZone(newZoneId: number): void {
     rawMap = newRawMap;
     telemetry.setZone(newZoneId);
     // Preserve the held stack across the WARP rebuild only — the
-    // reconnect arm's clear is load-bearing (ADR-0152 per-path invariant).
+    // reconnect arm's clear is load-bearing (per-path invariant).
     const heldSnapshot = held.snapshot();
     resetPredictionState();
     held.restore(heldSnapshot);
@@ -1066,8 +1045,7 @@ function reconcileFromStore(): void {
     const player = store.player(identity);
     // Early-exit when own/player are absent (store reset mid-gap): SAFE, but
     // transient after a mid-gap dropRejected — #pending already dropped, #queue
-    // still reflects the phantom — self-heals on the next batch reconcile
-    // (ADR-0085 C1).
+    // still reflects the phantom — self-heals on the next batch reconcile.
     if (own === undefined || player === undefined) return;
 
     // State-based zone sync — catches reconnect-strand (a character
@@ -1146,7 +1124,7 @@ store.onBatchApplied(() => {
 // highest seq ever handed to enqueueMove — the seedSeq floor for rebuilds.
 let lastSentSeq = 0;
 
-// --- 11r-h: movement-rejection diagnostics -----------------------------
+// --- movement-rejection diagnostics -----------------------------
 // Rejections stay SILENT to the player (M2 §3), so an F9 bundle from a rubber-banding
 // session used to show nothing. Two sinks close that: the flag-gated console fate line
 // and a rate-limited errorRing breadcrumb (bundle-only, overlay-filtered). ONE prefix
@@ -1158,7 +1136,7 @@ const MOVE_REJECT_POLICY = { minGapMs: 3_000, cap: 16 };
 // MODULE scope: inside the helper this would re-initialise per rejection and the gap and
 // the cap would both silently do nothing.
 let moveRejectLimit = RATE_LIMIT_INITIAL;
-// ADR-0187 (b): DEV e2e observability — intents actually issued / rejection callbacks seen.
+// DEV e2e observability — intents actually issued / rejection callbacks seen.
 let moveSendCount = 0;
 let moveRejectCount = 0;
 /** Record one rejected movement intent. TOTAL — see the catch. */
@@ -1202,7 +1180,7 @@ function sendIntent(input: WasmMoveInput): void {
   const sent = live.reducers.enqueueMove({ input: moveInputToSdk(input), seq: BigInt(seq) });
   sent
     .then(() => {
-      // m20c RTT sample — self-guarded (AM8) so no fault here can reach the rejection handler.
+      // RTT sample — self-guarded (AM8) so no fault here can reach the rejection handler.
       try {
         telemetry.recordRtt(performance.now() - t0);
       } catch {
@@ -1211,7 +1189,7 @@ function sendIntent(input: WasmMoveInput): void {
     })
     .catch(() => {
       // Movement rejections stay SILENT to the user (M2 §3) — prediction repair only.
-      // ADR-0085 A2 (amended by nh3/ADR-0152): this closure captures ONLY PRIMITIVES —
+      // This closure captures ONLY PRIMITIVES —
       // `seq` and `epoch`, both consts read from the intent BEFORE the closure exists —
       // and reads the module-scope `predictor` at fire time. Never capture the intent
       // object or the predictor instance here: a rejection promise may never settle
@@ -1227,7 +1205,7 @@ function sendIntent(input: WasmMoveInput): void {
       // predictor before any rebuild — is hereby DEMOTED to defense-in-depth, not
       // retracted: it still holds, but it rests on observed SDK 2.6.0 behavior, not
       // on a contract, and the epoch guard is the mechanical backstop if it drifts.
-      // ADR-0085 A3: burst rejections (N rejects → N drop+reconcile microtasks in one
+      // Burst rejections (N rejects → N drop+reconcile microtasks in one
       // turn) are harmless — the microtask checkpoint drains before the next rAF, the
       // renderer reads predictor state only in rAF, and each reconcile is a total
       // re-derivation from store truth (idempotent, converging). No coalescing needed.
@@ -1275,7 +1253,6 @@ const suppressNativeMovementDefault = (e: KeyboardEvent): void => {
     e.preventDefault();
 };
 
-// M23S5-WORLDFOCUS-BEGIN
 // the scoped world-focus gate for the twelve overlay-open
 // hotkeys. The `=== document.body` disjunct is LOAD-BEARING and must never be "cleaned up":
 // a store-driven render(null) blurs a focused control back to <body>, and without
@@ -1293,7 +1270,6 @@ const worldHasFocus = (): boolean => {
 // nothing flushes is permanently silent and nothing else reds).
 const liveRegion = new LiveRegion();
 let lastA11ySnapshot: A11ySnapshot = { topOverlay: null, message: '' };
-// M23S5-WORLDFOCUS-END
 
 // the stale-focus discriminator.
 // After a close, real Chromium leaves document.activeElement on a node INSIDE the hidden
@@ -1318,7 +1294,7 @@ const focusInsideHiddenSubtree = (): boolean => {
 };
 
 window.addEventListener('keydown', (e) => {
-  // M21b-2 (ADR-0182 D17, G20): the session terminal outranks every input path — checked FIRST,
+  // The session terminal outranks every input path — checked FIRST,
   // before the menu intercept, the battle-Escape branch and the movement-suppression surface.
   // Suppress the native default (not a bare return) so a held arrow does not scroll on key-repeat.
   // biome-ignore format: pinned single-line session gate (main.wiring.test.ts W-M21B2-SESSION-GATE-FIRST).
@@ -1362,7 +1338,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyB') {
     // the 12-term guard list is GONE — one verdict from the registry
     // reproduces it exactly. WHAT THE LIST USED TO SAY IN PLACE, recorded here because the
-    // retired W-OVERLAY-FANOUT-MUTEX was its last statement in main.ts (KeyI/KeyE below share
+    // old guard list was its last statement in main.ts (KeyI/KeyE below share
     // this note): modals are GUARDED, NEVER DISMISSED. `canOpen` DENIES over every GUARD_ONLY
     // overlay — dialogue, questLog, heal, shop, trade, pvp, leaderboard, rename, tradePropose,
     // help, menu — and over a live battle (EXCLUSIVE_TOP); the only ids it ever returns in
@@ -1406,7 +1382,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyQ') {
     // Quest log overlay — mutual exclusivity with all other overlays,
-    // through the ONE registry verdict since uxd3-c. Self is exempt, so the toggle-close
+    // through the ONE registry verdict. Self is exempt, so the toggle-close
     // below still works while the quest log itself is open.
     if (
       overlayVerdict('questLogView').kind === 'allow' &&
@@ -1436,7 +1412,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyP') {
     // PvP challenge overlay — mutual exclusivity with all other overlays.
-    // Not available during an active battle (ADR-0014 exit ordering) — the registry's
+    // Not available during an active battle (exit ordering) — the registry's
     // EXCLUSIVE_TOP tier is what carries that half now.
     if (overlayVerdict('pvpView').kind === 'allow' && (pvpView?.visible || worldHasFocus())) {
       if (pvpView?.visible) {
@@ -1466,7 +1442,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   // KeyN opens the profile-rename overlay — the first text-input
-  // overlay. Mutual exclusion is the ONE registry verdict since uxd3-c (self exempt). On open:
+  // overlay. Mutual exclusion is the ONE registry verdict (self exempt). On open:
   // held.clear() (RT-RN-01 D3-3) so no held movement key straddles the open/close boundary,
   // render the current name from store.player(identity)?.name (D6), then show (deferred focus).
   // e.preventDefault() (RT-RN-05) stops the opening 'n' from reaching the field.
@@ -1483,7 +1459,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   // KeyO opens the trade-PROPOSE overlay ("Offer"). Mutual-exclusion
-  // is the ONE registry verdict since uxd3-c. identity !== '' (red-team L-1) so we
+  // is the ONE registry verdict. identity !== '' (red-team L-1) so we
   // never open before the player is joined. On open: held.clear() so no held movement key
   // straddles the open/close boundary, build+render the lists, then show (deferred focus).
   // e.preventDefault() suppresses any default action for the 'o' key.
@@ -1504,7 +1480,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'KeyT') {
-    // INTERACT (ADR-0161 D3/D4 — generalizes the M13.5c TALK key):
+    // INTERACT (generalizes the old TALK key):
     // only when NO overlay is visible, resolve the nearest interactable
     // (store.allNpcs() joined to character rows + heal tiles, same zone,
     // Manhattan <= 2 of the own AUTHORITATIVE tile) and dispatch by kind:
@@ -1518,7 +1494,7 @@ window.addEventListener('keydown', (e) => {
     // contiguous shape the AC-12 click front door uses.
     if (!anyOverlayVisible() && identity !== '') {
       // The dispatch body now lives in interactAtNearest() so this hotkey
-      // and the menu's Interact leaf share ONE exhaustive switch (ADR-0161's compiler flag).
+      // and the menu's Interact leaf share ONE exhaustive switch (the compiler flag).
       interactAtNearest();
     }
     e.preventDefault();
@@ -1526,7 +1502,7 @@ window.addEventListener('keydown', (e) => {
   }
   // `?` toggles the display-only help overlay. Sole e.key branch
   // (help is about the glyph, not physical position). Mutual exclusion is the ONE registry
-  // verdict since uxd3-c (self exempt, so the toggle-close survives). held.clear() for consistency
+  // verdict (self exempt, so the toggle-close survives). held.clear() for consistency
   // (help does not capture focus).
   if (e.key === '?') {
     e.preventDefault();
@@ -1543,10 +1519,10 @@ window.addEventListener('keydown', (e) => {
   // The menu front-door. KeyM was verified UNBOUND before this slice — no
   // KEY_DIR/letter/`?` collision and no browser default. Escape is deliberately NOT overloaded
   // to open the menu: it stays a pure close/back key, so mashing Escape never surprises the
-  // player with a menu. This is the 12th open-handler; since uxd3-c its guard is the ONE
+  // player with a menu. This is the 12th open-handler; its guard is the ONE
   // registry verdict plus `identity !== ''` — menuAvailability() reads
   // store.ownCharacter(identity), which is undefined before join, and this listener has no
-  // try/catch. The AC-12 click front door carries the SAME predicate (ADR-0163 D6 closed).
+  // try/catch. The AC-12 click front door carries the SAME predicate.
   if (e.code === 'KeyM') {
     e.preventDefault();
     if (
@@ -1639,7 +1615,7 @@ window.addEventListener('keydown', (e) => {
       // short-circuit then never sets it, so a frozen-link Escape stays a live
       // button (status line says "disconnected") instead of leaning on the
       // next-batch self-heal.
-      // Site-specific catch (ADR-0085 C6): a rejection must RESET dismissPending or
+      // Site-specific catch: a rejection must RESET dismissPending or
       // Escape-dismiss is a dead button forever after one rejection (the flag is
       // otherwise only cleared when the conversation row disappears in a batch).
       // The rethrow keeps sendGuarded's catch as the single status reporter.
@@ -1703,7 +1679,7 @@ window.addEventListener('keydown', (e) => {
   }
   const dir = KEY_DIR[e.code];
   if (dir !== undefined) {
-    // ADR-0187 dualkey-dedup: KEY_DIR binds two codes per dir — a second code while the dir is
+    // Dual-key dedup: KEY_DIR binds two codes per dir — a second code while the dir is
     // already held must not fire another ungated first step (pure not-emit; F3 escape intact).
     if (!held.isHeld(dir)) step(dir); // immediate first step (latency + deliberate double-tap)
     held.press(dir, performance.now()); // mark held (stamped) so the frame loop re-issues it once hold-committed
@@ -1788,14 +1764,12 @@ function refreshBattle(): void {
     // which a battle auto-show leaves standing exactly as before. Deliberately NOT canOpen():
     // a battle auto-show is server truth and must fire even over a GUARD_ONLY overlay that
     // would deny it.
-    // UXD3C-BATTLEHIDE-BEGIN
     for (const id of hideAllExceptPlan('battleView', visibleIds(overlayProbes))) {
       overlayHandles[id]?.();
     }
-    // UXD3C-BATTLEHIDE-END
     // Build baitItems from own inventory × item defs (12.5f-5: wire the 4th arg
     // that was already present in buildBattleViewModel with default []). The
-    // function classifies by recruitBonus > 0 internally (ADR-0047 classify-by-data).
+    // function classifies by recruitBonus > 0 internally (classify-by-data).
     const baitItems: BaitItem[] = store.ownInventory(identity).flatMap((inv) => {
       const def = store.itemDef(inv.itemId);
       if (!def) return [];
@@ -1837,7 +1811,7 @@ function refreshBattle(): void {
       pvpOpponentName,
     );
     if (!vm) console.warn('[battle] battle has corrupt team data; view hidden');
-    // m14.5d VM-compare guard: skip refresh when the view is visible and the VM is
+    // VM-compare guard: skip refresh when the view is visible and the VM is
     // structurally identical to the last rendered VM (suppresses churn on no-op ticks).
     // The visible guard is the primary defense: shouldSkipBattleRefresh returns false
     // while hidden, so the post-Escape re-show always triggers a full render. The
@@ -1870,13 +1844,13 @@ store.onBatchApplied(() => {
     const dialogueVm = buildDialogueViewModel(conv, npcsMap, DIALOGUE_TREES);
     dialogueView?.render(dialogueVm);
     // Reset on server-side dismiss. NOT the reconnect self-heal any more: since
-    // rb-73 on_disconnect keeps the sender's player_conversation row
+    // the own-row-only disconnect fix, on_disconnect keeps the sender's player_conversation row
     // when another connection of the identity is still live (a reconnect that
     // overlapped the old socket), so the post-reconnect snapshot CAN carry the
     // conversation — onReconnect clears dismissPending itself.
     if (!conv) {
       dismissPending = false;
-      // UXD2-SHOPOPEN-BEGIN: the deferred greet-then-shop open.
+      // The deferred greet-then-shop open.
       // Consume-and-clear ATOMICALLY (read to a local, null the module var
       // first), then open ONLY if no overlay is visible at consumption time —
       // a battle that popped during the dismiss round-trip drops the pending
@@ -1899,7 +1873,6 @@ store.onBatchApplied(() => {
           shopView?.show();
         }
       }
-      // UXD2-SHOPOPEN-END
     }
   } catch (err) {
     console.error('[M12d] dialogue batch listener error', err);
@@ -1907,7 +1880,7 @@ store.onBatchApplied(() => {
 });
 
 store.onBatchApplied(() => {
-  // Quest log is user-toggled (KeyQ); only refresh when already open (ADR-0014 pattern).
+  // Quest log is user-toggled (KeyQ); only refresh when already open.
   if (!questLogView?.visible) return;
   try {
     const quests = store.ownQuests(identity);
@@ -1919,7 +1892,7 @@ store.onBatchApplied(() => {
 
 store.onBatchApplied(() => {
   // Heal overlay is user-opened (KeyT on a heal tile); only refresh when
-  // already open (ADR-0014 pattern). uxd2: while bound, refresh
+  // already open. While bound, refresh
   // through the SAME bound-location selector the open used — never let a
   // batch silently widen a bound view to the all-locations default.
   if (!healView?.visible) return;
@@ -1943,7 +1916,7 @@ store.onBatchApplied(() => {
     // While bound to a shopkeeper's shop, refresh through
     // the bound-shop selector — a batch must never silently swap the visible
     // catalogue to the first-shop default. Unbound (defensive: the overlay now
-    // only opens bound) keeps the pre-uxd2 default path unchanged.
+    // only opens bound) keeps the first-shop default path unchanged.
     shopView.render(
       boundShopId !== null
         ? buildShopViewModelForShop(
@@ -1967,7 +1940,7 @@ store.onBatchApplied(() => {
   }
 });
 
-// --- m15b: trade view batch listener ----------------------------------
+// --- trade view batch listener ----------------------------------
 // Re-renders when visible so the overlay stays live as the offer status changes
 // (e.g. Pending → ConfirmedByCounterparty when counterparty calls respond_trade).
 // MUST be total (never throw): defense-in-depth (store.flushBatch has per-listener try/catch).
@@ -1982,7 +1955,7 @@ store.onBatchApplied(() => {
   }
 });
 
-// --- m16b: PvP challenge overlay batch listener -----------------------
+// --- PvP challenge overlay batch listener -----------------------
 // Auto-shows the overlay when an incoming challenge arrives; refreshes when already
 // open (status/list changes). MUST be total (never throw): defense-in-depth.
 store.onBatchApplied(() => {
@@ -2001,8 +1974,8 @@ store.onBatchApplied(() => {
   }
 });
 
-// --- m17b: leaderboard batch listener -----------------------------------
-// Refresh-only-when-visible (ADR-0014 pattern): ratings/W/L stay live while the
+// --- leaderboard batch listener -----------------------------------
+// Refresh-only-when-visible: ratings/W/L stay live while the
 // board is open as profile rows update. MUST be total (never throw): defense-in-depth
 // (store.flushBatch has per-listener try/catch since M10.5d).
 store.onBatchApplied(() => {
@@ -2014,7 +1987,7 @@ store.onBatchApplied(() => {
   }
 });
 
-// --- pt-b1: battleStart / battleEnd emit listener -----------------------
+// --- battleStart / battleEnd emit listener -----------------------
 // Dedicated batch listener (UNCONDITIONAL — not visibility-gated). battleEnd only fires
 // for a battle we saw START (activeBattleId latch): a battle first-seen already terminal
 // has activeBattleId !== its id, so neither branch fires — guarding a stale-terminal login.
@@ -2023,8 +1996,8 @@ store.onBatchApplied(() => {
   try {
     const latest = store.latestPlayerBattle(identity);
     // re-baseline ONLY the battle that survived the drop, without
-    // emitting. The latch resolves on the first flush AFTER hydration-complete (ADR-0130
-    // residual d): a pre-hydration flush — empty OR carrying an older surviving row — must not
+    // emitting. The latch resolves on the first flush AFTER hydration-complete (the
+    // hydration latch): a pre-hydration flush — empty OR carrying an older surviving row — must not
     // burn it. Post-hydration an undefined read is definitive (no battle rows) and resolves it.
     if (battleReseedPending) {
       if (!hydratedSinceReconnect) return;
@@ -2056,7 +2029,7 @@ store.onBatchApplied(() => {
   }
 });
 
-// --- pt-b1: rankedMatch emit listener -----------------------------------
+// --- rankedMatch emit listener -----------------------------------
 // Dedicated batch listener (its OWN, not folded into the visibility-gated leaderboard
 // listener above). Baselines lastOwnRating on first sight, then emits a delta event on
 // each rating change with the current battle id (or '' if none).
@@ -2084,7 +2057,7 @@ store.onBatchApplied(() => {
   }
 });
 
-// --- 20r-d / rb-125: post-evolve reveal banner --------------
+// --- post-evolve reveal banner --------------
 // The HEAD entry only: Vec order IS display order and the ack drains a PREFIX, so the head is
 // the one reveal a `count: 1` ack may acknowledge. The `null` arm hides the banner once the
 // queue drains — without it the last sentence would stay on screen and every further OK reject.
@@ -2113,7 +2086,7 @@ store.onBatchApplied(() => {
 // --- M12d: dialogue choice click handler -----------------------------------------
 // Reads data-choice-idx from the clicked button and calls advance_dialogue.
 document.addEventListener('click', (e) => {
-  // UXD2-SHOPBTN-BEGIN: the greet-then-shop button. It carries
+  // The greet-then-shop button. It carries
   // data-shop-id and NO choice index, so it gets its own branch ABOVE the
   // choice delegation. Record the pending open ALWAYS (last-intent-wins), then
   // end the conversation via dismissDialogue under the dismissPending in-flight
@@ -2140,12 +2113,10 @@ document.addEventListener('click', (e) => {
     }
     return;
   }
-  // UXD2-SHOPBTN-END
-  // UXD3B-LAUNCHER-BEGIN
   // the click front door. Delegated on the data-attribute, the
   // house idiom in this listener — so main.ts still never NAMES the badge and acquires no
-  // reference to it (W-UX1-HINT-NO-JS-OWNER stays green verbatim; ADR-0151 D2's "no owner
-  // that can hide or remove it" survives).
+  // reference to it (so no JS owner exists
+  // that can hide or remove it).
   // the two front doors are UNIFIED — this branch now
   // carries the SAME predicate the menu hotkey does, so a single verdict decides both. The one
   // difference from the retired `!anyOverlayVisible()` form, stated rather than glossed:
@@ -2162,7 +2133,6 @@ document.addEventListener('click', (e) => {
     }
     return;
   }
-  // UXD3B-LAUNCHER-END
   const btn = (e.target as HTMLElement).closest('[data-choice-idx]') as HTMLElement | null;
   if (!btn) return;
   const raw = btn.dataset.choiceIdx;
@@ -2244,7 +2214,7 @@ function snapshot() {
 // boundary that the type system cannot check across. See that file if you change any
 // method signature or return shape here.
 //
-// NOTE (D-17.5-E, ADR-0127 — amends ADR-0115 D1): __game, __mrTrade, and __mrPvp are
+// NOTE: __game, __mrTrade, and __mrPvp are
 // DEV-gated — the window assignments live inside `if (import.meta.env.DEV)` below, so
 // production builds drop them. The guarantee is the minifier's dead-branch elimination
 // after Vite's define-replacement of import.meta.env.DEV (NOT Rollup tree-shaking): a
@@ -2307,8 +2277,8 @@ const mrTradeHook = {
 // boundary that the type system cannot check across. See that file if you change any
 // method signature or return shape here.
 //
-// NOTE: like __game and __mrTrade, this hook is DEV-gated (amends ADR-0115
-// D1) — the window assignment below only exists when import.meta.env.DEV is true, and
+// NOTE: like __game and __mrTrade, this hook is DEV-gated
+// — the window assignment below only exists when import.meta.env.DEV is true, and
 // the dead branch is dropped by the minifier in a default `vite build` (a
 // `--minify false` build would retain it; server-side ctx.sender authz still holds).
 const mrPvpHook = {
@@ -2404,7 +2374,7 @@ if (import.meta.env.DEV) {
 // only non-secret build metadata (short sha + timestamp), so there is no leak/authz concern.
 (window as unknown as { __mrBuild: typeof BUILD_INFO }).__mrBuild = BUILD_INFO;
 
-// F9-BUNDLE-BEGIN (pt-b1): client-only bug bundle — NO network (works when the connection is the bug).
+// Client-only bug bundle — NO network (works when the connection is the bug).
 /** Project the store into the no-PII KeyStoreSnapshot — reads only ids/counts, never a name. */
 function projectKeyStore(): KeyStoreSnapshot {
   const prof = identity !== '' ? store.profile(identity) : undefined;
@@ -2455,7 +2425,6 @@ function downloadBugBundle(): void {
     reportError(i18nT('chrome.status.bugBundleBlocked'));
   }
 }
-// F9-BUNDLE-END
 
 async function main(): Promise<void> {
   // surface the build stamp in the non-intrusive corner element (#build-stamp
@@ -2506,12 +2475,10 @@ async function main(): Promise<void> {
   const mount = document.getElementById('app');
   if (mount !== null) {
     await renderer.init(mount, rawMap);
-    // M23S5-CANVASREF-BEGIN
     // render/world.ts appends app.canvas to this same mount and puts
     // role="application"/tabindex="0" on it. It is out of this slice's touches:, so a
     // querySelector on the mount main.ts already holds is the only in-touches route.
     worldCanvasEl = mount.querySelector('canvas');
-    // M23S5-CANVASREF-END
     installResizeHandler(renderer, window); // fit the stage to the window + on resize
     boxView = new BoxViewClass(mount, {
       onSetNickname: (monsterId, nickname) => {
@@ -2573,7 +2540,7 @@ async function main(): Promise<void> {
         sendGuarded('pvp-attack', () => {
           pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
           // refresh explicitly — the pending flag is client-local, and
-          // since ADR-0198 D5 an unchanged battle row no longer re-notifies the
+          // an unchanged battle row no longer re-notifies the
           // batch (the old banner render piggybacked on that spurious notify).
           refreshBattle();
           return conn
@@ -2615,7 +2582,7 @@ async function main(): Promise<void> {
       // view's #pending lock stays held until the reducer promise settles.
       onCare: (monsterId) =>
         performCare({
-          // ADR-0085 A1 frozen gate (onBuy/onSell shape): a call against a dead
+          // Frozen gate (onBuy/onSell shape): a call against a dead
           // conn is silently queued and never settles — report `undefined` so
           // performCare shows the disconnected line instead of hanging.
           callCare: () =>
@@ -2642,11 +2609,11 @@ async function main(): Promise<void> {
     // buy/sell are awaited: the STDB SDK resolves on server-commit, rejects on server-error
     // (see #reducerCallbacks in the SDK source). This is the correct surface for rejection
     // feedback — not conn.reducers.onBuy (which doesn't exist in STDB 2.6).
-    // ADR-0082 D5: single-unit MVP (infinite stock; multi-unit sell → future slice).
+    // Single-unit MVP (infinite stock; multi-unit sell is future work).
     const SHOP_QTY = 1 as const;
     shopView = new ShopViewClass({
       onBuy: async (shopId, itemId) => {
-        // ADR-0085 A1: gate on frozen FIRST — a call against a dead conn is silently
+        // Gate on frozen FIRST — a call against a dead conn is silently
         // queued and its promise never settles (the feedback line would hang forever).
         if (conn === undefined || conn.linkFrozen()) {
           if (shopView?.visible) shopView.showFeedback('disconnected — try again');
@@ -2656,13 +2623,13 @@ async function main(): Promise<void> {
           await conn.live()?.reducers.buy({ shopId, itemId, qty: SHOP_QTY });
           if (shopView?.visible) shopView.showFeedback('Purchase complete!');
         } catch (err) {
-          // ADR-0085 A6: route through reduceErrorMessage — SenderError reasons pass
+          // Route through reduceErrorMessage — SenderError reasons pass
           // through, InternalError detail never leaks (was a raw err.message leak).
           if (shopView?.visible) shopView.showFeedback(reduceErrorMessage(err, 'buy'));
         }
       },
       onSell: async (itemId) => {
-        // Same frozen gate + no-leak rejection routing as onBuy (ADR-0085 A1/A6).
+        // Same frozen gate + no-leak rejection routing as onBuy.
         if (conn === undefined || conn.linkFrozen()) {
           if (shopView?.visible) shopView.showFeedback('disconnected — try again');
           return;
@@ -2677,7 +2644,7 @@ async function main(): Promise<void> {
     });
     // Trade DOM shell.
     // respond_trade, confirm_trade, cancel_trade are awaited (SDK resolves on server-commit).
-    // ADR-0085 A1: gate on frozen FIRST — a call against a dead conn never settles.
+    // Gate on frozen FIRST — a call against a dead conn never settles.
     tradeView = new TradeViewClass({
       onAccept: async (tradeId) => {
         if (conn === undefined || conn.linkFrozen()) {
@@ -2770,7 +2737,7 @@ async function main(): Promise<void> {
     // leaderboardView precedent). Opened by `?`; content is a static SSOT const.
     helpView = new HelpViewClass();
     // The menu forwards every input to the pure menuStep reducer; it
-    // decides nothing itself (ADR-0014 functional core / imperative shell).
+    // decides nothing itself (functional core / imperative shell).
     menuView = new MenuViewClass({ onInput: handleMenuInput });
     // The guest-claim overlay. Its actions drive the pure claimModel;
     // the AUTHORITATIVE join veto lives in connection.ts's onApplied (G18), so these are UI-only.
@@ -2828,7 +2795,7 @@ async function main(): Promise<void> {
     };
     sessionView = new SessionViewClass(sessionHandlers);
     // Rename overlay. onSubmit calls set_profile_name with the
-    // frozen-link gate FIRST (ADR-0085 A1) — never send on a dead link. Feedback goes into
+    // frozen-link gate FIRST — never send on a dead link. Feedback goes into
     // #rename-feedback via reduceErrorMessage on reject (no InternalError leak);
     // shop/trade feedback pattern, NOT sendGuarded/reportError. The overlay stays open on
     // both success and reject; the view's #pending lock is reset by its own .finally().
@@ -2849,8 +2816,8 @@ async function main(): Promise<void> {
       },
     });
     // trade-PROPOSE overlay. onSubmit consumes the model's typed args
-    // (no DOM re-derive) and calls reducers.proposeTrade with the frozen-link gate FIRST
-    // (ADR-0085 A1). The model's targetIdentity string is wrapped in `new Identity(...)` here
+    // (no DOM re-derive) and calls reducers.proposeTrade with the frozen-link gate FIRST.
+    // The model's targetIdentity string is wrapped in `new Identity(...)` here
     // (the SDK boundary); the counterparty side is currency-only (RLS — D2), so the monster/
     // item request fields are always empty. Feedback into #tradepropose-feedback via
     // reduceErrorMessage on reject (no InternalError leak).
@@ -2944,7 +2911,7 @@ async function main(): Promise<void> {
   // The post-evolve reveal banner — the same runtime-constructed,
   // non-overlay shape as the countdown above. OK acks exactly ONE entry (the head is the only
   // reveal on screen); the two benign stale-banner races are swallowed, everything else is
-  // rethrown into sendGuarded's single status reporter (ADR-0085 C6).
+  // rethrown into sendGuarded's single status reporter.
   // the second constructor argument is the injected sink pair — `announce`
   // reaches the one live region through its existing singleton, `returnFocus` reaches the house
   // landing place. The banner itself decides WHEN each fires; this is only WHERE.
@@ -2989,7 +2956,7 @@ async function main(): Promise<void> {
     name: 'Player',
     store,
     // OIDC config from env. The `?? ''` fallback degrades gracefully
-    // today (no issuer → the flow contacts no network, AUTH-44) and lights up once 13r-c-2 deploys.
+    // today (no issuer → the flow contacts no network, AUTH-44) and lights up once a real issuer is deployed.
     authIssuer: import.meta.env.VITE_MR_OIDC_ISSUER ?? '',
     authClientId: import.meta.env.VITE_MR_OIDC_CLIENT_ID ?? '',
     authRedirectUri: import.meta.env.VITE_MR_OIDC_REDIRECT_URI ?? '',
@@ -3042,7 +3009,7 @@ async function main(): Promise<void> {
       dismissPending = false;
       menuView?.hide(); // grey-out reads store state that the reset invalidated
       // re-baseline a surviving Ongoing battle on the next batch
-      // instead of re-emitting a spurious battleStart for it. 17r-b: armed until onHydrated —
+      // instead of re-emitting a spurious battleStart for it. Armed until onHydrated —
       // reset UNCONDITIONALLY (unlike the guarded capture above) so a second drop re-arms
       // against ITS OWN hydration, never a stale one.
       battleReseedPending = true;
@@ -3050,8 +3017,8 @@ async function main(): Promise<void> {
       // a buy/sell in flight at drop time never settles (SDK — no settle
       // on drop), so the shop's double-spend lock would stay held forever. hide()
       // resets it (shopView.ts is outside this slice's touch-set; the reset rides
-      // the existing public hide()). Escape-only recovery during the gap (uxd2:
-      // the global shop hotkey is gone — ADR-0161 D5).
+      // the existing public hide()). Escape-only recovery during the gap (the
+      // global shop hotkey is gone).
       shopView?.hide();
       // The same never-settling-promise class as the four hides above, for the privacy
       // surface's `inFlight` lock. Clearing the memo makes the next frame re-pump
@@ -3078,7 +3045,7 @@ async function main(): Promise<void> {
       // Hide the leaderboard on reconnect — the store was reset, so a stale/empty
       // board must not linger (no lock to reset; re-renders on the next open/batch).
       leaderboardView?.hide();
-      // The "connection lost — reconnecting…" status line is now stale (ADR-0085 A8).
+      // The "connection lost — reconnecting…" status line is now stale.
       clearStatus();
       // record the reconnect edge as a fresh connect (the refreshed identity).
       eventRing.push(makeConnect(identity));
@@ -3143,12 +3110,11 @@ async function main(): Promise<void> {
       if (sessionGateBlocks()) {
         // The session terminal means the store is no longer a live view of this account, and the
         // person at the keyboard may not be the one who scheduled the deletion — so the deadline
-        // comes DOWN rather than freezing at its last value (ADR-0231 Amendment A1).
+        // comes DOWN rather than freezing at its last value.
         renderPrivacyCountdown(null);
         return;
       }
       const now = performance.now();
-      // M23S5-A11YSNAPSHOT-BEGIN
       // the ONE announcement edge and the ONE focus return, at the TOP
       // of the frame so a recurring throw further down cannot silence the region. The world
       // branch and announcementsFor are disjoint by construction (the reducer emits only when
@@ -3162,12 +3128,11 @@ async function main(): Promise<void> {
       }
       lastA11ySnapshot = nextSnapshot;
       liveRegion.flush(now);
-      // M23S5-A11YSNAPSHOT-END
       // the ticking deletion countdown, ABOVE the render path on purpose — a
       // recurring throw below is swallowed by this frame's catch, and a frozen legal deadline is
       // worse than a blank one.
       const privacyAccount = store.ownAccount(identity);
-      // ONE derivation per frame, reused by the banner AND the rb-52 surface — a second call site
+      // ONE derivation per frame, reused by the banner AND the privacy surface — a second call site
       // would be a second seam for the same fact (and is pinned at exactly one).
       const privacyCountdown = deriveDeletionCountdown({
         status: privacyAccount?.status,
