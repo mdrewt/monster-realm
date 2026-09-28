@@ -656,14 +656,18 @@ mod nh {
     // =======================================================================
 
     /// Captures every `log` record as a `(target, line)` pair for this test
-    /// PROCESS. The target is kept so a line emitted by a bare `log::` macro in
-    /// `taming` (target `monster_realm_module::taming`) cannot pass for one routed
-    /// through `observability::mr_log` (target `monster_realm_module::observability`).
+    /// PROCESS. The target is kept so a default-target `log::` call in `taming`
+    /// (target `monster_realm_module::taming`) cannot pass for one routed through
+    /// `observability::mr_log` (target `monster_realm_module::observability`); an
+    /// explicit `target:` spoof of the latter is runtime-identical and NOT caught.
     ///
-    /// NEXTEST-ONLY: nextest runs every test in its own process, and `just test`,
-    /// `just mutate-server` and CI all run nextest. Under plain `cargo test` the
-    /// second `log::set_logger` in one process panics; `battle_tests.rs:3939` is
-    /// the other installer in this binary, and each `nh_21ra_` test installs once.
+    /// NEXTEST-ONLY. This lib test binary has THREE `log::set_logger` installers:
+    /// `BN_LOGS` (installed by `bn_anonymize_logs_only_the_battles_it_forced_terminal`
+    /// in `battle_tests.rs`) and one per `nh_21ra_` test here. One logger is allowed
+    /// per process, so plain `cargo test -p monster-realm-module` and `just mutate`
+    /// (`cargo mutants --workspace`, which runs plain `cargo test`) fail at least two
+    /// of those three tests. `just test`, `just mutate-server` (`--test-tool nextest`)
+    /// and CI run nextest, one process per test, and are unaffected.
     struct TmLogSink(std::sync::Mutex<Vec<(String, String)>>);
     impl log::Log for TmLogSink {
         fn enabled(&self, _: &log::Metadata<'_>) -> bool {
@@ -732,12 +736,20 @@ mod nh {
     }
 
     /// The recruit SUCCESS arm with a failing party-HP write-back still commits.
-    /// With monster 11 re-seeded as B's, `attempt_recruit` must return `Ok(())`;
-    /// A keeps the freshly inserted recruit and its `monster_pub` row; the battle
-    /// row leaves `Ongoing` as `SideAWins` with its `battle_wild` row GC'd; the Err
-    /// is logged exactly once through `mr_log` as `recruit_success_writeback_err`;
-    /// and B's monster 11 is untouched (owner B, HP 33). The recruit's species,
-    /// level and public-row bytes are pinned by
+    ///
+    /// CONTROL PHASE (runs first): in an untouched world, with monster 11 still A's,
+    /// the same clock and bait recruit successfully and the write-back returns Ok
+    /// (A's lead HP 12 lands on monster 11), so NO `writeback_err` line may be
+    /// logged. Its fixture is then dropped and a fresh one built for the failure
+    /// phase in the SAME process, so `TM_LOGS` carries over: the failure phase's
+    /// exactly-one-line assertion holds only if the control phase logged nothing.
+    ///
+    /// FAILURE PHASE: with monster 11 re-seeded as B's, `attempt_recruit` must
+    /// return `Ok(())`; A keeps the freshly inserted recruit and its `monster_pub`
+    /// row; the battle row leaves `Ongoing` as `SideAWins` with its `battle_wild`
+    /// row GC'd; the Err is logged exactly once through `mr_log` as
+    /// `recruit_success_writeback_err`; and B's monster 11 is untouched (owner B,
+    /// HP 33). The recruit's species, level and public-row bytes are pinned by
     /// `nh_recruit_success_spends_bait_boxes_the_wild_and_grants_no_xp`, not here.
     ///
     /// kills: a retained `?` at site A (the `Ok(())` assertion reads the ownership
@@ -745,13 +757,43 @@ mod nh {
     /// `Ongoing`); the recruit or its public row deleted in the Err arm (the recruit
     /// and `monster_pub` assertions); the `battle_wild` delete moved into the Ok
     /// arm (the GC assertion); a dropped, renamed, mis-shaped or duplicated log
-    /// line (the exact one-element log vector); a bare `log::` call bypassing
-    /// `mr_log` (its target is `monster_realm_module::taming`); a "fix" that skips
-    /// the ownership check and writes the battle HP into B's monster (the
-    /// untouched monster-11 assertion).
+    /// line (the exact one-element log vector); a default-target `log::` call in
+    /// `taming` bypassing `mr_log` (the target half of that log pair); a "fix" that
+    /// skips the ownership check and writes the battle HP into B's monster (the
+    /// untouched monster-11 assertion); an unconditional log on the Ok path (the
+    /// control phase).
     #[test]
     fn nh_21ra_recruit_success_commits_when_the_party_hp_write_back_fails() {
         install_tm_logs();
+
+        // CONTROL PHASE: a healthy party, so write_back_party_hp returns Ok.
+        {
+            let fx = fixture();
+            let w = world(&fx);
+            let got = fx.run_as_at(a(), at(T0), |ctx| attempt_recruit(ctx, BATTLE, Some(BAIT)));
+            assert_eq!(
+                got,
+                Ok(()),
+                "CONTROL: the healthy-party recruit at this clock and bait must succeed"
+            );
+            let outcome = w.battles.rows()[0].state.outcome;
+            let lead_hp = monster_11(&w).current_hp;
+            assert_eq!(
+                (outcome, lead_hp),
+                (BattleOutcome::SideAWins, 12),
+                "PRECONDITION: the control must reach the SUCCESS arm and its write-back must \
+                 return Ok (A's lead HP 12 written into monster 11), or the empty-log check \
+                 below is vacuous"
+            );
+            let logged = writeback_err_logs();
+            assert!(
+                logged.is_empty(),
+                "CONTROL: a successful write-back must not log a writeback_err line (the log \
+                 belongs in the Err arm only), got {logged:?}"
+            );
+        } // drops `w` then `fx`, releasing FIXTURE_LOCK before the next `fixture()`
+
+        // FAILURE PHASE.
         let fx = fixture();
         let w = world(&fx);
         hand_monster_11_to_b(&w);
@@ -839,10 +881,12 @@ mod nh {
     /// left); site B calling `write_back_party_hp` instead of
     /// `write_back_battle_results` (nothing GCs `battle_wild`); a dropped, renamed,
     /// mis-shaped or duplicated log line, including the success arm's event name
-    /// pasted here (the exact one-element log vector); a bare `log::` call
-    /// bypassing `mr_log` (its target is `monster_realm_module::taming`); a "fix"
-    /// that skips the ownership check and writes the battle HP into B's monster
-    /// (the untouched monster-11 assertion).
+    /// pasted here (the exact one-element log vector); a default-target `log::`
+    /// call in `taming` bypassing `mr_log` (the target half of that log pair); a
+    /// "fix" that skips the ownership check and writes the battle HP into B's
+    /// monster (the untouched monster-11 assertion). NOT killed: an unconditional
+    /// log at site B alone, since this test has no Ok-path control phase (the
+    /// success test's control phase covers site A only).
     #[test]
     fn nh_21ra_recruit_terminal_failure_commits_fled_when_the_results_write_back_fails() {
         use crate::schema::TypeRelationRow;
