@@ -2106,3 +2106,70 @@ fn eg1_evolution_path_from_row_allows_empty_essence_and_no_history_gates() {
     assert_eq!(path.min_quality_time_tier, None, "None must stay None");
     assert_eq!(path.min_nutrition_pct, None, "None must stay None");
 }
+
+// =========================================================================
+// Debloat Phase 3 mutants triage: the three marshal decision points no other
+// test reached (js-path-parity drives client-wasm movement only and never
+// loads server-module).
+// =========================================================================
+
+/// `nutrition_pct` is derived from the SUM of all six EV columns. The six EVs
+/// are distinct (10..=60, total 210 -> 41%) so dropping, subtracting or
+/// multiplying any one term lands on a different percentage.
+///
+/// kills: any `+` in the EV sum replaced by `-` (underflow or a smaller total)
+/// or by `*` (a total past the cap reads 100%).
+#[test]
+fn pub_from_monster_nutrition_pct_sums_all_six_evs() {
+    let mut m = m7b_test_monster_row();
+    (m.ev_hp, m.ev_attack, m.ev_defense) = (10, 20, 30);
+    (m.ev_speed, m.ev_sp_attack, m.ev_sp_defense) = (40, 50, 60);
+    let p = pub_from_monster(&m, 0);
+    assert_eq!(p.nutrition_pct, game_core::nutrition_pct_from_ev_total(210));
+    assert_eq!(p.nutrition_pct, 41, "210 * 100 / 510, floored");
+}
+
+/// `monster_to_instance` maps the boxed sentinel to `None` and a real party
+/// slot to `Some(slot)`.
+///
+/// kills: the sentinel comparison inverted (party monsters read as boxed).
+#[test]
+fn monster_to_instance_maps_the_party_slot_sentinel() {
+    let mut m = m7b_test_monster_row();
+    m.party_slot = 2;
+    assert_eq!(monster_to_instance(&m).unwrap().party_slot, Some(2));
+    m.party_slot = PARTY_SLOT_NONE;
+    assert_eq!(monster_to_instance(&m).unwrap().party_slot, None);
+}
+
+/// `build_ability_store` resolves each slot's ability id to THAT def's effect
+/// (a second def ahead of it in the list is never picked), and an id with no
+/// def or no id resolves to no effect.
+///
+/// kills: the id match inverted (the first NON-matching def's effect lands).
+#[test]
+fn build_ability_store_resolves_each_id_to_its_own_def() {
+    use game_core::{AbilityDef, AbilityEffect, StatusKind};
+    let immune = |k: StatusKind| AbilityEffect::StatusImmunity { immune_to: k };
+    let defs = vec![
+        AbilityDef {
+            id: 1,
+            name: "a".to_string(),
+            effect: immune(StatusKind::Burn),
+        },
+        AbilityDef {
+            id: 2,
+            name: "b".to_string(),
+            effect: immune(StatusKind::Sleep),
+        },
+    ];
+    let store = build_ability_store(&[Some(2), Some(1)], &[Some(9), None], &defs);
+    assert_eq!(
+        store.side_a,
+        vec![
+            Some(immune(StatusKind::Sleep)),
+            Some(immune(StatusKind::Burn))
+        ]
+    );
+    assert_eq!(store.side_b, vec![None, None]);
+}
