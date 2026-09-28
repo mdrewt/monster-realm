@@ -1122,7 +1122,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         table: "playtest_event",
         policy: DeletionPolicy::Erase,
         basis: "identity-scoped dev telemetry: the cascade erases it immediately, independent \
-                of the ADR-0131 TTL reaper (a row younger than its TTL must not survive \
+                of the TTL reaper (a row younger than its TTL must not survive \
                 account deletion)",
         exportable: true,
     },
@@ -1156,7 +1156,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "player_session",
         policy: DeletionPolicy::Erase,
-        basis: "per-connection presence bookkeeping naming a live socket and its identity, erased with the presence rows at cascade time (rb-73)",
+        basis: "per-connection presence bookkeeping naming a live socket and its identity, erased with the presence rows at cascade time",
         exportable: false,
     },
     DataLifecycleEntry {
@@ -1176,7 +1176,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "profile",
         policy: DeletionPolicy::Anonymize,
-        basis: "ADR-0119 never-delete invariant: the ladder row survives and name is \
+        basis: "ladder never-delete invariant: the ladder row survives and name is \
                 overwritten with the tombstone (anonymize is a field update, never a delete, \
                 so the invariant holds by construction)",
         exportable: true,
@@ -1259,11 +1259,11 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "account_deletion_reaper_schedule",
         policy: DeletionPolicy::NotOwned,
-        basis: "one-shot deletion-grace schedule (rb-24, ADR-0221): armed only by the \
+        basis: "one-shot deletion-grace schedule: armed only by the \
                 account holder's own delete_account, disarmed by cancel, and the fired \
                 row is deleted by the runtime itself — so no row survives the cascade \
-                its own reducer runs, and an Erase entry would demand the D6 \
-                self-disarm anti-pattern",
+                its own reducer runs, and an Erase entry would force the cascade to \
+                disarm the very schedule whose reducer is running it",
         exportable: false,
     },
     DataLifecycleEntry {
@@ -1323,7 +1323,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "export_bundle_reaper_schedule",
         policy: DeletionPolicy::NotOwned,
-        basis: "global hourly TTL reaper schedule for the export_bundle table (rb-48, ADR-0238): an \
+        basis: "global hourly TTL reaper schedule for the export_bundle table: an \
                 interval singleton with no Identity column, armed by request_data_export \
                 and by init and sync_content, never keyed to any player",
         exportable: false,
