@@ -528,6 +528,39 @@ fn dw_monster_mgmt_sites() {
     }
 }
 
+/// set_party_slot's occupancy set is "the caller's OTHER party monsters": a slot
+/// held by a sibling is refused (nothing written), a monster may be re-seated
+/// in the slot it already holds, and a boxed sibling blocks nothing.
+///
+/// kills: the occupancy filter reading only the moved monster or only boxed
+/// monsters (the sibling's slot 1 is admitted); the filter counting the moved
+/// monster itself (re-seating 11 in its own slot 0 is refused).
+#[test]
+fn nh_set_party_slot_occupancy_is_the_callers_other_party_monsters() {
+    let fx = fixture();
+    let w = dw_world(&fx);
+    w.monster(11, dw_a(), 0);
+    w.monster(12, dw_a(), 1);
+    w.monster(13, dw_a(), crate::PARTY_SLOT_NONE);
+    let call = |slot: u8| {
+        fx.run_as_at(dw_a(), dw_at(DW_T0), |ctx| {
+            crate::monster_mgmt::set_party_slot(ctx, 11, slot)
+        })
+    };
+    let before = w.private_bytes();
+    assert_eq!(
+        call(1),
+        Err(game_core::SlotError::Occupied.to_string()),
+        "a sibling's slot is occupied"
+    );
+    assert_eq!(w.private_bytes(), before, "a refused move writes nothing");
+    assert_eq!(call(0), Ok(()), "re-seating a monster in its own slot");
+    assert_eq!(w.row(11).unwrap().party_slot, 0);
+    assert_eq!(call(2), Ok(()), "a free slot beside a boxed sibling");
+    assert_eq!(w.row(11).unwrap().party_slot, 2);
+    w.assert_mirrored("set_party_slot occupancy");
+}
+
 /// raising.rs: care, train, heal_party, essence_train, consume_crystalized_essence,
 /// accrue_quality_time — each run to Ok on monster 11 and mirrored.
 #[test]

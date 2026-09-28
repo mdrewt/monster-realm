@@ -1306,6 +1306,101 @@ mod nh_dialogue_security {
         );
     }
 
+    /// The StartQuest choice against each prior dialogue state (choice 0 of the
+    /// shipped tree starts quest_001):
+    /// - no prior state: quest_001 starts and a dialogue-state row is written;
+    /// - an unrelated quest already active: quest_001 still starts;
+    /// - quest_001 already active: no duplicate row;
+    /// - quest_001 already DONE (flags `f1`): nothing starts, and the stored
+    ///   flags / done list survive the write-back.
+    ///
+    /// kills: the dialogue-state load returning a default (done list and flags
+    /// lost); the write-back dropped; the already-active match inverted; the
+    /// not-active-and-not-done test widened to `||`.
+    #[test]
+    fn nh_advance_dialogue_start_quest_respects_the_stored_dialogue_state() {
+        let quests_of = |w: &World<'_>| -> Vec<String> {
+            let mut q: Vec<String> = w
+                .quests
+                .rows()
+                .iter()
+                .filter(|r| r.owner_identity == a())
+                .map(|r| r.quest_id.clone())
+                .collect();
+            q.sort();
+            q
+        };
+        type Setup = fn(&World<'_>);
+        let cases: [(&str, Setup, Vec<&str>); 3] = [
+            ("no prior state", |_| {}, vec!["quest_001"]),
+            (
+                "unrelated quest active",
+                |w| {
+                    w.quests.seed(&PlayerQuestRow {
+                        pq_id: 900,
+                        owner_identity: a(),
+                        quest_id: "quest_other".to_string(),
+                        step_index: 0,
+                    })
+                },
+                vec!["quest_001", "quest_other"],
+            ),
+            (
+                "quest_001 already active",
+                |w| {
+                    w.quests.seed(&PlayerQuestRow {
+                        pq_id: 901,
+                        owner_identity: a(),
+                        quest_id: "quest_001".to_string(),
+                        step_index: 0,
+                    })
+                },
+                vec!["quest_001"],
+            ),
+        ];
+        for (label, setup, want) in cases {
+            let fx = fixture();
+            let w = world(&fx);
+            w.convs.seed(&conv(a(), "greeting"));
+            setup(&w);
+            assert_eq!(
+                fx.run_as(a(), |ctx| super::advance_dialogue(ctx, 0)),
+                Ok(()),
+                "{label}"
+            );
+            assert_eq!(quests_of(&w), want, "{label}");
+            assert_eq!(
+                w.states
+                    .rows()
+                    .iter()
+                    .map(|r| r.owner_identity)
+                    .collect::<Vec<_>>(),
+                vec![a()],
+                "{label}: the caller's dialogue state is written back"
+            );
+        }
+
+        let fx = fixture();
+        let w = world(&fx);
+        w.convs.seed(&conv(a(), "greeting"));
+        let done = PlayerDialogueStateRow {
+            owner_identity: a(),
+            flags: vec!["f1".to_string()],
+            done_quests: vec!["quest_001".to_string()],
+        };
+        w.states.seed(&done);
+        assert_eq!(
+            fx.run_as(a(), |ctx| super::advance_dialogue(ctx, 0)),
+            Ok(())
+        );
+        assert!(quests_of(&w).is_empty(), "a done quest never restarts");
+        assert_eq!(
+            w.states.rows().iter().map(bytes).collect::<Vec<_>>(),
+            vec![bytes(&done)],
+            "stored flags and done list survive the write-back"
+        );
+    }
+
     /// C8/C9: the conversation lookup is keyed on the SENDER. A caller with no
     /// conversation of their own is refused even while another player holds one
     /// with the same NPC, and that player's row is left exactly as it was.

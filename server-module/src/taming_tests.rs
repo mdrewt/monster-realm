@@ -587,6 +587,58 @@ mod nh {
         }
     }
 
+    /// A FAILED roll on an ongoing battle (no bait, full-HP wild: an 8% chance,
+    /// so a run of fixed clocks — each deterministic — yields failures; at least
+    /// one is required). Against a skill-less wild the turn still advances and
+    /// the post-turn status tick runs: the lead's Sleep(2) is written back as
+    /// Sleep(1) on the battle row, the battle stays Ongoing with its battle_wild
+    /// row, and the party's monster row is untouched (no terminal write-back).
+    ///
+    /// kills: the ongoing-only status write-back inverted (Sleep(2) survives);
+    /// the terminal-only write-back inverted (battle_wild GC'd and HP written
+    /// on an ongoing battle).
+    #[test]
+    fn nh_recruit_failure_on_an_ongoing_battle_persists_status_and_keeps_the_wild() {
+        use crate::schema::TypeRelationRow;
+        use game_core::StatusEffect;
+        let mut failures = 0;
+        for k in 0..16i64 {
+            let fx = fixture();
+            let w = world(&fx);
+            let _ = fx
+                .table_keyed::<TypeRelationRow, u64>("type_relation_row", "id", |r| r.id)
+                .scannable();
+            let mut bt = wild_battle(BattleOutcome::Ongoing);
+            bt.state.side_a.team[0].status = Some(StatusEffect::Sleep { turns_remaining: 2 });
+            bt.state.side_b.team[0].known_skill_ids.clear();
+            w.battles.remove(BATTLE);
+            w.battles.seed(&bt);
+            let monsters_before = to_vec(&w.monsters.rows()).unwrap();
+            let got = fx.run_as_at(a(), at(T0 + k * 7_919), |ctx| {
+                attempt_recruit(ctx, BATTLE, None)
+            });
+            assert_eq!(got, Ok(()), "clock {k}");
+            let after = &w.battles.rows()[0];
+            if after.state.outcome == BattleOutcome::SideAWins {
+                continue; // this clock's roll succeeded
+            }
+            failures += 1;
+            assert_eq!(after.state.outcome, BattleOutcome::Ongoing, "clock {k}");
+            assert_eq!(
+                after.state.side_a.team[0].status,
+                Some(StatusEffect::Sleep { turns_remaining: 1 }),
+                "clock {k}: the ticked status is written back"
+            );
+            assert_eq!(w.wilds.rows().len(), 1, "clock {k}: battle_wild kept");
+            assert_eq!(
+                to_vec(&w.monsters.rows()).unwrap(),
+                monsters_before,
+                "clock {k}: no terminal write-back on an ongoing battle"
+            );
+        }
+        assert!(failures > 0, "at least one clock must roll a failure");
+    }
+
     /// grant_bait (DEV) credits ONLY the caller, capped at 99 per call, and
     /// refuses a non-bait item.
     #[cfg(feature = "dev_reducers")]

@@ -593,3 +593,88 @@ fn nh_playtest_reaper_is_scheduler_only_and_refuses_before_any_delete() {
     assert_eq!(reap(module), Ok(()), "the module identity is admitted");
     assert_eq!(ids(), vec![3], "the module reaps exactly the expired rows");
 }
+
+/// The shipped reaper's retention window is SEVEN DAYS, stated here as a
+/// literal millisecond count rather than through the constant: a row exactly
+/// 604 800 000 ms old is reaped, one a millisecond younger is kept.
+///
+/// kills: any arithmetic slip in the TTL constant's `7 * 24 * 60 * 60 * 1000`
+/// (the relative-TTL tests above stay green for every value).
+#[test]
+fn nh_playtest_reaper_retains_exactly_seven_days() {
+    use crate::native_host_tests::fixture;
+    use spacetimedb::{ScheduleAt, Timestamp};
+
+    const SEVEN_DAYS_MS: i64 = 604_800_000;
+    let fx = fixture();
+    let events = fx
+        .table_keyed::<super::PlaytestEvent, u64>("playtest_event", "event_id", |r| r.event_id)
+        .writable()
+        .scannable()
+        .unique();
+    let player = Identity::from_byte_array([0x12; 32]);
+    let now = 10 * SEVEN_DAYS_MS;
+    for (event_id, created_at_ms) in [(1, now - SEVEN_DAYS_MS), (2, now - SEVEN_DAYS_MS + 1)] {
+        events.seed(&super::PlaytestEvent {
+            event_id,
+            identity: player,
+            kind: 1,
+            created_at_ms,
+            battle_id: 0,
+            species_id: 1,
+            hp_permille: 500,
+            bait_item_id: 0,
+            success: false,
+        });
+    }
+    let module = Identity::from_byte_array([0x7E; 32]);
+    fx.set_database_identity(module);
+    let sched = super::PlaytestReaperSchedule {
+        id: 1,
+        scheduled_at: ScheduleAt::Time(Timestamp::from_micros_since_unix_epoch(0)),
+    };
+    let at = Timestamp::from_micros_since_unix_epoch(now * 1000);
+    assert_eq!(
+        fx.run_as_at(module, at, |ctx| super::playtest_reaper(ctx, sched)),
+        Ok(())
+    );
+    let left: Vec<u64> = events.rows().iter().map(|e| e.event_id).collect();
+    assert_eq!(left, vec![2], "exactly the seven-day-old row is reaped");
+}
+
+/// `ensure_playtest_reaper` arms exactly one interval row at the reap cadence,
+/// stays at one on a repeat call, and collapses duplicates back to one.
+///
+/// kills: the arm replaced by a no-op.
+#[test]
+fn nh_ensure_playtest_reaper_arms_one_interval_singleton() {
+    use crate::native_host_tests::fixture;
+    use spacetimedb::ScheduleAt;
+
+    let fx = fixture();
+    let rows = fx
+        .table_keyed::<super::PlaytestReaperSchedule, u64>("playtest_reaper_schedule", "id", |r| {
+            r.id
+        })
+        .writable()
+        .scannable()
+        .unique()
+        .auto_inc(|r| r.id, |r, v| r.id = v);
+    let ctx = fx.ctx();
+    super::ensure_playtest_reaper(&ctx);
+    let armed = rows.rows();
+    assert_eq!(armed.len(), 1, "one reaper row armed");
+    assert_eq!(
+        armed[0].scheduled_at,
+        ScheduleAt::Interval(std::time::Duration::from_secs(300).into()),
+        "every five minutes"
+    );
+    super::ensure_playtest_reaper(&ctx);
+    assert_eq!(rows.rows().len(), 1, "a repeat call keeps one row");
+    rows.seed(&super::PlaytestReaperSchedule {
+        id: 99,
+        scheduled_at: ScheduleAt::Interval(std::time::Duration::from_secs(300).into()),
+    });
+    super::ensure_playtest_reaper(&ctx);
+    assert_eq!(rows.rows().len(), 1, "duplicates collapse to one");
+}
