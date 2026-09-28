@@ -55,11 +55,10 @@ const PVP_TURN_DEADLINE_MS: i64 = 60_000;
 // ===========================================================================
 
 /// The exact fail-closed placeholder committed in `accounts::ALLOWED_ISSUERS`
-/// (SSOT: accounts.rs). Assembled with the same `concat!` split so this
-/// file's source text carries no contiguous scheme slashes. If this value
-/// ever drifts from accounts.rs, `ranked_enforcement_active()` flips true and
-/// the EA-RA-06a canary reds loudly — drift cannot be silent.
-const RANKED_PLACEHOLDER_ISSUER: &str = concat!("https:/", "/auth.monster-realm.invalid/");
+/// (SSOT: accounts.rs). If this value ever drifts from accounts.rs,
+/// `ranked_enforcement_active()` flips true and the EA-RA-06a canary reds
+/// loudly — drift cannot be silent.
+const RANKED_PLACEHOLDER_ISSUER: &str = "https://auth.monster-realm.invalid/";
 
 /// reject reason, caller leg. The VALUE is a client contract.
 const ERR_RANKED_REQUIRES_ACCOUNT: &str = "ranked play requires an account";

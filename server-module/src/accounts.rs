@@ -35,20 +35,15 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table, Timestamp};
 /// while anonymous play is completely unaffected (D1″). INVARIANT: the host's
 /// own anonymous issuer is NEVER placed here — it is not an account provider,
 /// and that is what keeps the audience-disconnect branch outage-safe.
-/// The URL is assembled from two literals so the SOURCE TEXT carries no
-/// contiguous slash-slash token; it compiles to `https:` + `//auth.monster-realm.invalid/`.
-/// Exactly two gates RED on a bare literal:
-/// `trade-escrow-guards.eval.mjs`, which strips slash-slash line-comments BEFORE string
-/// literals, so a bare literal unbalances quote-pairing and blanks later files from its
-/// whole-crate blob; and `account-e2e.eval.mjs`, whose `ISSUER_NEEDLE` pins this
-/// exact token (N4 throw).
+/// `account-e2e.eval.mjs` patches this exact declaration line (its
+/// `ISSUER_NEEDLE`) to point at a local stub issuer.
 ///
 /// HARD SEQUENCING GATE: flipping ALLOWED_ISSUERS and ALLOWED_AUDIENCE to their
 /// real deployment values, tightening `audience_allowed` to exact single-value equality, and the
 /// live restore drill are ALL gated on the real-deployment follow-up landing and are explicitly OUT of scope
-/// here. Keep the placeholder values, the `concat!()` construction, and `audience_allowed`
-/// unchanged here until that gate clears.
-pub(crate) const ALLOWED_ISSUERS: &[&str] = &[concat!("https:/", "/auth.monster-realm.invalid/")];
+/// here. Keep the placeholder values and `audience_allowed` unchanged here until that gate
+/// clears.
+pub(crate) const ALLOWED_ISSUERS: &[&str] = &["https://auth.monster-realm.invalid/"];
 /// Which `aud` values scope a token to THIS application (D1).
 pub(crate) const ALLOWED_AUDIENCE: &[&str] = &["monster-realm"];
 
