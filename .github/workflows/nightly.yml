@@ -1,4 +1,4 @@
-# Slow gates kept off the PR path. A red night is triaged per docs/nightly-red-response-policy.md;
+# Slow gates kept off the PR path (see CONTRIBUTING.md for what a red night asks of you);
 # `notify` opens one issue per non-success job.
 name: Nightly
 on:
@@ -93,7 +93,7 @@ jobs:
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       - run: just perf-budget
 
-  # Republish over live data without --delete-data; data must survive and re-seed (ADR-0079).
+  # Republish over live data without --delete-data; data must survive and re-seed.
   smoke-republish:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -134,7 +134,7 @@ jobs:
         if: failure()
         run: cat /tmp/stdb-smoke.log || true
 
-  # One issue per failed, skipped or cancelled job (ADR-0200). A job that times out concludes
+  # One issue per failed, skipped or cancelled job. A job that times out concludes
   # `cancelled`; `!cancelled()` only suppresses a whole-run cancel. No soft-fail anywhere: a
   # notifier that swallows its errors looks like a green night.
   notify:
