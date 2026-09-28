@@ -24,6 +24,8 @@ interface BuildRec {
   readonly joinGame: ReturnType<typeof vi.fn>;
   readonly completeGuestClaim: ReturnType<typeof vi.fn>;
   readonly startGuestClaim: ReturnType<typeof vi.fn>;
+  /** The query strings handed to the applied-snapshot subscription (conn0's builder). */
+  queries?: readonly string[];
 }
 
 const H = vi.hoisted(() => ({
@@ -33,13 +35,26 @@ const H = vi.hoisted(() => ({
   /** What the next build's startGuestClaim returns (default: resolves). */
   startGuestClaimImpl: null as null | (() => Promise<void>),
   beginSignIn: null as unknown as Mock<() => Promise<{ kind: string }>>,
+  /** Per-table SDK cache contents (`conn.db.<name>.iter()`) and registered row callbacks. */
+  viewRows: {} as Record<string, unknown[]>,
+  rowCbs: {} as Record<string, Cb[]>,
 }));
 
 vi.mock('../module_bindings', () => {
-  const table = new Proxy(
-    {},
-    { get: (_t, k) => (k === 'iter' ? () => [][Symbol.iterator]() : () => undefined) },
-  );
+  const tableFor = (name: string) =>
+    new Proxy(
+      {},
+      {
+        get: (_t, k) => {
+          if (k === 'iter') return () => (H.viewRows[name] ?? [])[Symbol.iterator]();
+          return (cb: Cb) => {
+            if (k === 'onInsert' || k === 'onDelete') {
+              H.rowCbs[name] = [...(H.rowCbs[name] ?? []), cb];
+            }
+          };
+        },
+      },
+    );
   return {
     DbConnection: {
       builder: () => {
@@ -59,7 +74,7 @@ vi.mock('../module_bindings', () => {
           subscribe: () => sub,
         };
         const conn = {
-          db: new Proxy({}, { get: () => table }),
+          db: new Proxy({}, { get: (_t, name) => tableFor(String(name)) }),
           reducers: {
             joinGame: rec.joinGame,
             completeGuestClaim: rec.completeGuestClaim,
@@ -144,6 +159,8 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
     H.renew = null;
     H.renewCalls = 0;
     H.startGuestClaimImpl = null;
+    H.viewRows = {};
+    H.rowCbs = {};
     H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
     sessionStorage.clear();
     localStorage.clear();
@@ -364,6 +381,40 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
     expect(claimCode.read(globalThis, URI, DB)).toBeUndefined();
   });
 
+  // BUG-inventory-world-readable: inventory is a PRIVATE table read through the owner-scoped
+  // my_inventory Vec view. The client must subscribe the VIEW (subscribing the private table
+  // errors the whole batch) and rebuild its inventory from the view's post-burst cache — the
+  // view has no PK, so no onUpdate ever fires and per-row writes would race insert+delete pairs.
+  it('MY-INVENTORY: subscribes the owner-scoped view, never the private table, and reconciles the store from its cache', async () => {
+    const opts = makeOpts();
+    connect(opts);
+    await settle();
+    H.builds[0].onConnect?.(conn0(H.builds[0]), ID, 'anon-tok');
+    const queries = H.builds[0].queries ?? [];
+    expect(queries).toContain('SELECT * FROM my_inventory');
+    expect(queries).not.toContain('SELECT * FROM inventory');
+
+    const me = ID.toHexString();
+    H.viewRows.my_inventory = [
+      { invId: 1n, ownerIdentity: ID, itemId: 5, count: 3 },
+      { invId: 2n, ownerIdentity: ID, itemId: 6, count: 1 },
+    ];
+    for (const cb of H.rowCbs.my_inventory ?? []) cb();
+    await settle();
+    expect(opts.store.ownInventory(me)).toEqual([
+      { invId: 1n, ownerIdentity: me, itemId: 5, count: 3 },
+      { invId: 2n, ownerIdentity: me, itemId: 6, count: 1 },
+    ]);
+
+    // A count change + a consumed-to-zero stack arrive as a new cache set (no onUpdate).
+    H.viewRows.my_inventory = [{ invId: 1n, ownerIdentity: ID, itemId: 5, count: 2 }];
+    for (const cb of H.rowCbs.my_inventory ?? []) cb();
+    await settle();
+    expect(opts.store.ownInventory(me)).toEqual([
+      { invId: 1n, ownerIdentity: me, itemId: 5, count: 2 },
+    ]);
+  });
+
   it('STALE: a superseded build connecting late cannot save its token or claim the identity', async () => {
     const opts = makeOpts();
     const c = connect(opts);
@@ -388,7 +439,10 @@ function conn0(rec: BuildRec) {
       return sub;
     },
     onError: () => sub,
-    subscribe: () => sub,
+    subscribe: (queries: readonly string[]) => {
+      rec.queries = queries;
+      return sub;
+    },
   };
   return {
     subscriptionBuilder: () => sub,

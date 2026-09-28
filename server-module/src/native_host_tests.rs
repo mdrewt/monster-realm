@@ -1087,6 +1087,9 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_export_bundle, public)]` in privacy.rs.
     #[link_name = "__preinit__20_register_describer_my_export_bundle"]
     fn register_view_my_export_bundle();
+    /// `#[spacetimedb::view(accessor = my_inventory, public)]` in schema.rs.
+    #[link_name = "__preinit__20_register_describer_my_inventory"]
+    fn register_view_my_inventory();
     /// spacetimedb 2.8.1 `rt.rs:1267` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
@@ -1100,7 +1103,7 @@ unsafe extern "C" {
 }
 
 /// Registered in this order, so a view's `VIEWS` id is its index here.
-const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 7] = [
+const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 8] = [
     register_view_my_wallet,
     register_view_my_account,
     register_view_my_conversation,
@@ -1108,6 +1111,7 @@ const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 7] = [
     register_view_my_battle,
     register_view_my_pending_evolution_notices,
     register_view_my_export_bundle,
+    register_view_my_inventory,
 ];
 
 /// `VIEWS` id of `my_wallet` (its index in [`VIEW_DESCRIBERS`]).
@@ -1130,6 +1134,9 @@ pub(crate) const VIEW_MY_PENDING_EVOLUTION_NOTICES: usize = 5;
 
 /// `VIEWS` id of `my_export_bundle` (its index in [`VIEW_DESCRIBERS`]).
 pub(crate) const VIEW_MY_EXPORT_BUNDLE: usize = 6;
+
+/// `VIEWS` id of `my_inventory` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_INVENTORY: usize = 7;
 
 const VIEW_SINK: u32 = 0x71E5;
 

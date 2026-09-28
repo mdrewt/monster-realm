@@ -706,15 +706,6 @@ export class AuthoritativeStore {
     if (this.#skills.delete(id)) this.#dirty = true;
   }
 
-  upsertInventory(i: StoreInventory): void {
-    this.#inventory.set(i.invId, i);
-    this.#dirty = true;
-  }
-
-  removeInventory(invId: bigint): void {
-    if (this.#inventory.delete(invId)) this.#dirty = true;
-  }
-
   upsertItemDef(d: StoreItemRow): void {
     this.#itemDefs.set(d.id, d);
     this.#dirty = true;
@@ -936,6 +927,15 @@ export class AuthoritativeStore {
     return this.#monsters.size;
   }
 
+  /** Every inventory row the store holds, of ANY owner — the e2e leak witness (the
+   *  `monsterCount` idiom). Fed only by the owner-scoped `my_inventory` view, so it must equal
+   *  `ownInventory(identity).length`; a larger value is another player's stack delivered to
+   *  this client. A COUNT, never a row accessor (there is deliberately no unfiltered
+   *  `inventories()`). */
+  get inventoryRowCount(): number {
+    return this.#inventory.size;
+  }
+
   /** Distinct battle rows currently held — the e2e leak witness (15r-sec-a):
    *  a non-participant client must read 0 here while a battle it is not in
    *  runs elsewhere. */
@@ -1017,8 +1017,8 @@ export class AuthoritativeStore {
 
   // --- inventory + itemDef read (M9c raising/inventory view reads truth here) ----
 
-  /** The player's own inventory (public table, client-side owner
-   *  filter). A FRESH array of FRESH row copies — a caller mutating the array OR a
+  /** The player's own inventory (client-side owner filter, defense in depth behind the
+   *  server-side owner-scoped `my_inventory` view). A FRESH array of FRESH row copies — a caller mutating the array OR a
    *  returned row's field cannot corrupt the store (one-way `server -> store ->
    *  render` flow; store.test.ts S8 deep-isolation). There is deliberately NO
    *  unfiltered `inventories()` accessor. */
@@ -1231,6 +1231,31 @@ export class AuthoritativeStore {
   ownAccount(identity: string): StoreAccount | undefined {
     const slot = this.#ownAccount;
     return slot !== undefined && slot.identity === identity ? slot : undefined;
+  }
+
+  /** Rebuild the whole inventory map from the post-burst `my_inventory` cache — the
+   *  `reconcileMonstersFromView` / `reconcileExportChunksFromView` shape. `my_inventory` is a
+   *  PK-less Vec view, so the SDK never fires onUpdate and a count change arrives as an unordered
+   *  insert+delete pair; rebuilding from the cache is ordering-immune.
+   *
+   *  AUTHORITATIVE: an `invId` absent from `rows` is DELETED (a stack consumed to zero is
+   *  deleted server-side). `#dirty` is set only on a REAL change. */
+  reconcileInventoryFromView(rows: readonly StoreInventory[]): void {
+    const keep = new Set<bigint>();
+    for (const i of rows) {
+      keep.add(i.invId);
+      const prev = this.#inventory.get(i.invId);
+      if (prev === undefined || !shallowRowEq(prev, i)) {
+        this.#inventory.set(i.invId, i);
+        this.#dirty = true;
+      }
+    }
+    for (const id of [...this.#inventory.keys()]) {
+      if (!keep.has(id)) {
+        this.#inventory.delete(id);
+        this.#dirty = true;
+      }
+    }
   }
 
   /** Rebuild the whole chunk map from the post-burst `my_export_bundle` cache —

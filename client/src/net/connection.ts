@@ -209,6 +209,19 @@ export function connect(opts: ConnectionOptions): Connection {
       } catch (err) {
         console.error('[net] view reconcile threw; flushing anyway', err);
       }
+      // `my_inventory` — the owner-scoped Vec view over the private inventory table. PK-less, so
+      // no onUpdate ever fires and a count change is an unordered insert+delete pair: rebuild the
+      // map from the post-burst cache (AUTHORITATIVE — a consumed-to-zero stack disappears). Its
+      // own try: a converter throw in either block cannot starve the other.
+      try {
+        store.reconcileInventoryFromView(
+          [...live.db.my_inventory.iter()].map((row) =>
+            inventoryRowToStore(row as unknown as SdkInventoryRow),
+          ),
+        );
+      } catch (err) {
+        console.error('[net] view reconcile threw; flushing anyway', err);
+      }
     }
     // hydration-complete — AFTER the reconciles (the store now holds the applied snapshot)
     // and BEFORE flushBatch (listeners observe it delivered). Outside the live-guard on purpose:
@@ -402,18 +415,13 @@ export function connect(opts: ConnectionOptions): Connection {
       batcher.schedule();
     });
 
-    const ingestInventory = (row: SdkInventoryRow): void => {
-      store.upsertInventory(inventoryRowToStore(row));
-      batcher.schedule();
-    };
-    conn.db.inventory.onInsert((_ctx, row) => ingestInventory(row as unknown as SdkInventoryRow));
-    conn.db.inventory.onUpdate((_ctx, _old, row) =>
-      ingestInventory(row as unknown as SdkInventoryRow),
-    );
-    conn.db.inventory.onDelete((_ctx, row) => {
-      store.removeInventory((row as unknown as SdkInventoryRow).invId);
-      batcher.schedule();
-    });
+    // `my_inventory` is a PK-less VIEW (the private inventory table's owner-scoped read
+    // path) — the SDK never fires onUpdate for it, so do NOT wire one, and per-row store
+    // writes are banned here: the batcher's flush closure reconciles the whole inventory
+    // from the SDK cache, so these handlers only schedule that flush (the my_monster_pub
+    // pattern above).
+    conn.db.my_inventory.onInsert(() => batcher.schedule());
+    conn.db.my_inventory.onDelete(() => batcher.schedule());
 
     const ingestItemDef = (row: SdkItemRowRow): void => {
       store.upsertItemDef(itemRowToStore(row));
@@ -797,10 +805,11 @@ export function connect(opts: ConnectionOptions): Connection {
             // own-identity filter remains as defense-in-depth.
             'SELECT * FROM my_battle',
             'SELECT * FROM skill_row',
-            // Unfiltered subscribe + client-side owner filter (store.ownInventory) is the
-            // established defense-in-depth pattern (transport RLS is future work),
-            // same as monster_pub. item_row is public content (no owner).
-            'SELECT * FROM inventory',
+            // inventory is PRIVATE — subscribe the owner-scoped my_inventory view instead
+            // (the my_monster_pub pattern; subscribing the private table errors the whole
+            // batch). store.ownInventory's owner filter stays as defense in depth. item_row
+            // is public content (no owner).
+            'SELECT * FROM my_inventory',
             'SELECT * FROM item_row',
             // evolution_path is public content (every authored edge is visible to every
             // player — EG3/EG4). The name is EXACT: a wrong table name errors the WHOLE

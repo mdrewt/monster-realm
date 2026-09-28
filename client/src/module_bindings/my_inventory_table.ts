@@ -11,7 +11,7 @@ import {
 } from "spacetimedb";
 
 export default __t.row({
-  invId: __t.u64().primaryKey().name("inv_id"),
+  invId: __t.u64().name("inv_id"),
   ownerIdentity: __t.identity().name("owner_identity"),
   itemId: __t.u32().name("item_id"),
   count: __t.u32(),

@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import {
   type Browser,
   type BrowserContext,
@@ -251,6 +252,55 @@ async function renamePlayer(page: Page, name: string): Promise<void> {
   await page.waitForTimeout(200);
 }
 
+// ---------------------------------------------------------------------------
+// Inventory privacy (BUG-inventory-world-readable). Stacks are seeded by owner SQL
+// (the CLI runs as the module OWNER, which can write the private table — the
+// wallet-balance.spec / evolution.spec precedent), then each client's store is read:
+// `inventoryRowCount` counts EVERY held row of any owner, so it must equal the
+// caller's own stack count.
+// ---------------------------------------------------------------------------
+interface InventoryView {
+  identity: string;
+  inventoryRowCount: number;
+  ownInventory: Array<{ invId: string; itemId: number; count: number }>;
+}
+
+async function inventoryView(p: Page): Promise<InventoryView> {
+  return p.evaluate(() => {
+    const g = (
+      window as unknown as {
+        __game: () => InventoryView;
+      }
+    ).__game();
+    return {
+      identity: g.identity,
+      inventoryRowCount: g.inventoryRowCount,
+      ownInventory: g.ownInventory,
+    };
+  });
+}
+
+/** Owner-SQL insert of one inventory stack. Every interpolated value is charset-checked
+ *  (literal regexes only) so nothing but hex/digits reaches the shell. */
+function seedInventoryStack(identityHex: string, itemId: number, count: number): void {
+  const server = process.env.STDB_SERVER ?? 'local';
+  const db = process.env.VITE_STDB_DB ?? 'monster-realm';
+  const hex = identityHex.toLowerCase().startsWith('0x') ? identityHex.slice(2) : identityHex;
+  if (
+    !/^[A-Za-z0-9:/._-]+$/.test(server) ||
+    !/^[A-Za-z0-9_-]+$/.test(db) ||
+    !/^[0-9a-f]{64}$/.test(hex.toLowerCase()) ||
+    !Number.isInteger(itemId) ||
+    !Number.isInteger(count)
+  ) {
+    throw new Error(`seedInventoryStack: refusing non-literal-shaped input ${identityHex}`);
+  }
+  execSync(
+    `spacetime sql -s ${server} ${db} "INSERT INTO inventory (inv_id, owner_identity, item_id, count) VALUES (0, 0x${hex.toLowerCase()}, ${itemId}, ${count})"`,
+    { encoding: 'utf8', timeout: 15_000 },
+  );
+}
+
 // ===========================================================================
 // SESSION 1 — join + the PvP battle overlay (EARS 13r-e-1).
 // ===========================================================================
@@ -289,6 +339,55 @@ test.describe
         await browserB?.close();
       } catch {
         // may already be closed on an error path
+      }
+    });
+
+    // -------------------------------------------------------------------------
+    // Inventory privacy — item counts are owner-private: each client receives its
+    // OWN stacks (positive anchor: the seeded stack arrives live) and NONE of the
+    // other player's. RED on the public-table build: B's stack reached A's store.
+    // -------------------------------------------------------------------------
+    test('INVENTORY: each client receives its OWN item stacks and NONE of the other player`s', async () => {
+      test.setTimeout(60_000);
+      const a = await inventoryView(pageA);
+      const b = await inventoryView(pageB);
+      expect(a.identity).not.toBe(b.identity);
+      seedInventoryStack(a.identity, 1, 3);
+      seedInventoryStack(b.identity, 2, 5);
+      const seeded = (p: Page, itemId: number, count: number) =>
+        p.waitForFunction(
+          ([i, c]) =>
+            (
+              window as unknown as {
+                __game: () => InventoryView;
+              }
+            )
+              .__game()
+              .ownInventory.some((s) => s.itemId === i && s.count === c),
+          [itemId, count],
+          { timeout: 20_000 },
+        );
+      // POSITIVE ANCHOR: each client's own stack arrives over the live subscription.
+      await Promise.all([seeded(pageA, 1, 3), seeded(pageB, 2, 5)]);
+      // Settle one more burst so a late-arriving foreign row would also have landed.
+      await pageA.waitForTimeout(500);
+
+      for (const [label, mine, theirs] of [
+        ['client A', await inventoryView(pageA), await inventoryView(pageB)],
+        ['client B', await inventoryView(pageB), await inventoryView(pageA)],
+      ] as const) {
+        expect(mine.ownInventory.length, `${label}: holds its own stack`).toBeGreaterThanOrEqual(1);
+        expect(
+          mine.inventoryRowCount,
+          `${label}: the store's WHOLE inventory map must hold nothing but this client's own ` +
+            `stacks (inventoryRowCount=${mine.inventoryRowCount} vs own=${mine.ownInventory.length}); ` +
+            "every extra row is another player's item counts delivered to this client",
+        ).toBe(mine.ownInventory.length);
+        const theirIds = theirs.ownInventory.map((s) => s.invId);
+        expect(
+          mine.ownInventory.filter((s) => theirIds.includes(s.invId)),
+          `${label}: none of the other player's stack ids may appear`,
+        ).toEqual([]);
       }
     });
 

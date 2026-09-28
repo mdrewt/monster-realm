@@ -650,7 +650,7 @@
   },
   "inventory": {
     "pk": "inv_id",
-    "visibility": "public",
+    "visibility": "private",
     "columns": {
       "inv_id": "u64",
       "owner_identity": "Identity",

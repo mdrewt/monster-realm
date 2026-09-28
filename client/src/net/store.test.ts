@@ -1388,16 +1388,18 @@ function itemDefRow(id: number, trainStat: string | null = null): StoreItemRow {
   } as StoreItemRow;
 }
 
-// --- Inventory: upsert / retrieve / batch signal -------------------------------
+// --- Inventory: whole-set reconcile from the my_inventory view ------------------
+// `my_inventory` is a PK-less Vec view (BUG-inventory-world-readable): the SDK never fires
+// onUpdate for it, so the store is rebuilt from the post-burst cache — AUTHORITATIVE, like the
+// my_monster_pub / my_battle / my_export_bundle reconciles.
 
-describe('AuthoritativeStore M9c: inventory upsert + batch signal', () => {
-  it('BITES: upsertInventory stores the row; ownInventory() retrieves it; flushBatch fires', () => {
-    // Kills: an impl that ignores upsertInventory or never marks the batch dirty.
+describe('AuthoritativeStore: reconcileInventoryFromView', () => {
+  it('BITES: reconcile stores the rows; ownInventory() retrieves them; flushBatch fires', () => {
     const s = new AuthoritativeStore();
     const cb = vi.fn();
     s.onBatchApplied(cb);
     const inv = inventoryRow(1n, 'alice', 5, 10);
-    s.upsertInventory(inv);
+    s.reconcileInventoryFromView([inv]);
     const owned = s.ownInventory('alice');
     expect(owned).toHaveLength(1);
     expect(owned[0]).toEqual(inv);
@@ -1405,49 +1407,40 @@ describe('AuthoritativeStore M9c: inventory upsert + batch signal', () => {
     expect(cb).toHaveBeenCalledTimes(1);
   });
 
-  it('BITES: upsert same invId twice keeps count at 1 (keyed-Map idempotency, no array duplication)', () => {
-    // Kills: an impl that stores inventory rows in an array and appends on re-insert.
+  it('BITES: a changed count in the next set overwrites the row (keyed by invId, no duplication)', () => {
     const s = new AuthoritativeStore();
-    s.upsertInventory(inventoryRow(1n, 'alice', 5, 1));
-    s.upsertInventory(inventoryRow(1n, 'alice', 5, 2)); // same invId — must overwrite
-    const owned = s.ownInventory('alice');
+    s.reconcileInventoryFromView([inventoryRow(7n, 'bob', 3, 5)]);
+    s.reconcileInventoryFromView([{ ...inventoryRow(7n, 'bob', 3, 5), count: 99 }]);
+    const owned = s.ownInventory('bob');
     expect(owned).toHaveLength(1);
-    expect(owned[0]!.count).toBe(2); // last-write wins
+    expect(owned[0]!.count).toBe(99);
   });
 
-  it('BITES: second upsert overwrites the row (last-write wins, count is updated)', () => {
-    // Kills: an impl that silently drops a duplicate upsert instead of updating.
+  it('BITES: AUTHORITATIVE — an invId absent from the next set is deleted and the batch is dirty', () => {
+    // A consumed-to-zero stack is deleted server-side; through a PK-less view that arrives as a
+    // set without the row, never as an onDelete the store could key.
     const s = new AuthoritativeStore();
-    s.upsertInventory(inventoryRow(7n, 'bob', 3, 5));
-    s.upsertInventory({ ...inventoryRow(7n, 'bob', 3, 5), count: 99 });
-    expect(s.ownInventory('bob')[0]!.count).toBe(99);
-  });
-});
-
-// --- Inventory: removeInventory ------------------------------------------------
-
-describe('AuthoritativeStore M9c: removeInventory', () => {
-  it('BITES: removeInventory deletes the row; ownInventory() returns empty; batch is dirty', () => {
-    // Kills: an impl that deletes but forgets to mark dirty, or soft-deletes.
-    const s = new AuthoritativeStore();
-    s.upsertInventory(inventoryRow(5n, 'carol'));
+    s.reconcileInventoryFromView([inventoryRow(5n, 'carol'), inventoryRow(6n, 'carol', 2, 1)]);
     s.flushBatch();
     const cb = vi.fn();
     s.onBatchApplied(cb);
-    s.removeInventory(5n);
-    expect(s.ownInventory('carol')).toHaveLength(0);
+    s.reconcileInventoryFromView([inventoryRow(6n, 'carol', 2, 1)]);
+    expect(s.ownInventory('carol').map((i) => i.invId)).toEqual([6n]);
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(1);
   });
 
-  it('BITES: removeInventory on unknown invId does NOT mark dirty (no phantom re-renders)', () => {
-    // Kills: an impl that marks dirty on a no-op delete.
+  it('BITES: an unchanged set does NOT mark dirty (no phantom re-renders)', () => {
     const s = new AuthoritativeStore();
+    s.reconcileInventoryFromView([inventoryRow(1n, 'dan', 4, 2)]);
+    s.flushBatch();
     const cb = vi.fn();
     s.onBatchApplied(cb);
-    s.removeInventory(999n); // never inserted
+    s.reconcileInventoryFromView([inventoryRow(1n, 'dan', 4, 2)]);
+    s.reconcileInventoryFromView([]);
+    s.reconcileInventoryFromView([]);
     s.flushBatch();
-    expect(cb).toHaveBeenCalledTimes(0);
+    expect(cb).toHaveBeenCalledTimes(1); // only the emptying reconcile was a change
   });
 });
 
@@ -1457,11 +1450,15 @@ describe('AuthoritativeStore M9c: ownInventory identity filter', () => {
   it('BITES: ownInventory returns ONLY rows matching ownerIdentity (non-owner excluded)', () => {
     // Kills: an impl that returns ALL inventory rows regardless of owner.
     const s = new AuthoritativeStore();
-    s.upsertInventory(inventoryRow(1n, 'me', 1, 5));
-    s.upsertInventory(inventoryRow(2n, 'other', 2, 3));
-    s.upsertInventory(inventoryRow(3n, 'me', 3, 1));
+    s.reconcileInventoryFromView([
+      inventoryRow(1n, 'me', 1, 5),
+      inventoryRow(2n, 'other', 2, 3),
+      inventoryRow(3n, 'me', 3, 1),
+    ]);
     const mine = s.ownInventory('me');
     expect(mine).toHaveLength(2);
+    // The e2e leak witness counts EVERY held row, of any owner.
+    expect(s.inventoryRowCount).toBe(3);
     const invIds = mine.map((i) => i.invId);
     expect(invIds).toContain(1n);
     expect(invIds).toContain(3n);
@@ -1471,8 +1468,7 @@ describe('AuthoritativeStore M9c: ownInventory identity filter', () => {
   it('S2: BITES ownInventory uses exact case-sensitive equality ("DEADBEEF" !== "deadbeef")', () => {
     // Kills: an impl that normalizes identity to lower/upper case before comparing.
     const s = new AuthoritativeStore();
-    s.upsertInventory(inventoryRow(1n, 'DEADBEEF'));
-    s.upsertInventory(inventoryRow(2n, 'deadbeef'));
+    s.reconcileInventoryFromView([inventoryRow(1n, 'DEADBEEF'), inventoryRow(2n, 'deadbeef')]);
     expect(s.ownInventory('DEADBEEF')).toHaveLength(1);
     expect(s.ownInventory('deadbeef')).toHaveLength(1);
     expect(s.ownInventory('DEADBEEF')[0]!.invId).toBe(1n);
@@ -1482,7 +1478,7 @@ describe('AuthoritativeStore M9c: ownInventory identity filter', () => {
   it('ownInventory returns empty array when identity has no inventory', () => {
     // Kills: an impl that throws or returns undefined when no match.
     const s = new AuthoritativeStore();
-    s.upsertInventory(inventoryRow(1n, 'alice'));
+    s.reconcileInventoryFromView([inventoryRow(1n, 'alice')]);
     expect(s.ownInventory('nobody')).toEqual([]);
   });
 });
@@ -1506,7 +1502,7 @@ describe('AuthoritativeStore M9c S8: ownInventory returns independent snapshot',
     // Kills: an impl that returns a direct reference to the internal array/values.
     // A caller who pushes/pops/splices the returned array must not affect subsequent reads.
     const s = new AuthoritativeStore();
-    s.upsertInventory(inventoryRow(1n, 'player', 5, 3));
+    s.reconcileInventoryFromView([inventoryRow(1n, 'player', 5, 3)]);
 
     const first = s.ownInventory('player');
     expect(first).toHaveLength(1);
@@ -1525,7 +1521,7 @@ describe('AuthoritativeStore M9c S8: ownInventory returns independent snapshot',
     // Kills: an impl where the returned objects are live references — mutating
     // a field on the returned object corrupts the stored row.
     const s = new AuthoritativeStore();
-    s.upsertInventory(inventoryRow(10n, 'player', 2, 7));
+    s.reconcileInventoryFromView([inventoryRow(10n, 'player', 2, 7)]);
 
     const first = s.ownInventory('player');
     // Attempt to mutate the returned object (TypeScript readonly won't stop this at runtime)
@@ -1635,7 +1631,7 @@ describe('AuthoritativeStore M9c S1: reset() clears inventory and itemDefs', () 
     // Kills: an impl whose reset() does not clear the inventory map,
     // allowing a prior session's items to bleed into a fresh session.
     const s = new AuthoritativeStore();
-    s.upsertInventory(inventoryRow(1n, 'player', 5, 10));
+    s.reconcileInventoryFromView([inventoryRow(1n, 'player', 5, 10)]);
     expect(s.ownInventory('player')).toHaveLength(1);
     s.reset();
     expect(s.ownInventory('player')).toHaveLength(0);
@@ -1658,7 +1654,7 @@ describe('AuthoritativeStore M9c S1: reset() clears inventory and itemDefs', () 
     const s = new AuthoritativeStore();
     const cb = vi.fn();
     s.onBatchApplied(cb);
-    s.upsertInventory(inventoryRow(99n, 'oldUser', 1, 3));
+    s.reconcileInventoryFromView([inventoryRow(99n, 'oldUser', 1, 3)]);
     s.upsertItemDef(itemDefRow(7, 'Attack'));
     s.reset();
     // Both maps must be empty
@@ -1666,7 +1662,7 @@ describe('AuthoritativeStore M9c S1: reset() clears inventory and itemDefs', () 
     expect(s.itemDef(7)).toBeUndefined();
     expect(s.itemDefs().size).toBe(0);
     // Listeners must survive reset
-    s.upsertInventory(inventoryRow(1n, 'newUser', 2, 1));
+    s.reconcileInventoryFromView([inventoryRow(1n, 'newUser', 2, 1)]);
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(1);
   });
@@ -1675,14 +1671,12 @@ describe('AuthoritativeStore M9c S1: reset() clears inventory and itemDefs', () 
 // --- Property: inventory count equals distinct invIds --------------------------
 
 describe('AuthoritativeStore M9c: inventoryCount property (fast-check)', () => {
-  it('BITES: ownInventory size equals distinct invIds for that owner after random upserts', () => {
-    // Kills: an impl that inflates on re-insert (array) or undercounts (wrong key).
+  it('BITES: ownInventory size equals distinct invIds for that owner after a random reconcile', () => {
+    // Kills: an impl that inflates on a repeated invId (array) or undercounts (wrong key).
     fc.assert(
       fc.property(fc.array(fc.bigInt({ min: 0n, max: 30n }), { maxLength: 50 }), (ids) => {
         const s = new AuthoritativeStore();
-        for (const id of ids) {
-          s.upsertInventory(inventoryRow(id, 'owner'));
-        }
+        s.reconcileInventoryFromView(ids.map((id) => inventoryRow(id, 'owner')));
         expect(s.ownInventory('owner')).toHaveLength(new Set(ids).size);
       }),
     );

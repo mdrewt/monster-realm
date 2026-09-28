@@ -2186,6 +2186,7 @@ function snapshot() {
       level: m.level,
       partySlot: m.partySlot,
     })),
+    inventoryRowCount: store.inventoryRowCount,
     ownInventory: store.ownInventory(identity).map((i) => ({
       invId: i.invId.toString(),
       itemId: i.itemId,

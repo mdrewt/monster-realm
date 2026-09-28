@@ -171,3 +171,58 @@ fn nh_every_grant_path_keeps_one_stack_per_owner_and_item() {
         "grant_item: merged per (owner, item), zero-qty writes nothing"
     );
 }
+
+/// BUG-inventory-world-readable: `inventory` is a PRIVATE table and clients read it ONLY
+/// through the SHIPPED `my_inventory` view, run here through the runtime's own view entry
+/// point. Each sender sees exactly their own stacks (all of them — it is a multi-row view);
+/// a stranger sees none of the owner's, and a stranger with stacks sees only theirs.
+///
+/// kills: a whole-table view, a view keyed on anything but `ctx.sender()`, a view that
+/// returns only the first row (`find` instead of `filter`), an empty view.
+#[test]
+fn nh_my_inventory_view_returns_only_the_senders_rows() {
+    use crate::native_host_tests::VIEW_MY_INVENTORY;
+    let fx = fixture();
+    let t = fx.table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity);
+    let owner = Identity::from_byte_array([21u8; 32]);
+    let stranger = Identity::from_byte_array([22u8; 32]);
+    let stack = |inv_id: u64, owner_identity: Identity, item_id: u32, count: u32| Inventory {
+        inv_id,
+        owner_identity,
+        item_id,
+        count,
+    };
+    let seen = |who: Identity| {
+        let mut rows: Vec<(u64, Identity, u32, u32)> = fx
+            .call_view::<Inventory>(VIEW_MY_INVENTORY, who)
+            .into_iter()
+            .map(|r| (r.inv_id, r.owner_identity, r.item_id, r.count))
+            .collect();
+        rows.sort_unstable();
+        rows
+    };
+
+    t.seed(&stack(1, owner, 4, 3));
+    t.seed(&stack(2, owner, 5, 9));
+    assert_eq!(
+        seen(owner),
+        vec![(1, owner, 4, 3), (2, owner, 5, 9)],
+        "the owner sees every one of their own stacks"
+    );
+    assert!(
+        seen(stranger).is_empty(),
+        "a stranger with no stacks sees none of the owner's counts"
+    );
+
+    t.seed(&stack(3, stranger, 4, 1));
+    assert_eq!(
+        seen(stranger),
+        vec![(3, stranger, 4, 1)],
+        "a stranger with a stack sees only their own, never the owner's"
+    );
+    assert_eq!(
+        seen(owner),
+        vec![(1, owner, 4, 3), (2, owner, 5, 9)],
+        "the owner's view is unchanged by a stranger's row"
+    );
+}

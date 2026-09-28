@@ -449,17 +449,15 @@ pub struct BattleWild {
     pub individuality_seed: u32,
 }
 
-/// Player item inventory. PUBLIC / world-readable counts:
-/// transport RLS is unavailable — `client_visibility_filter` exists in the
-/// spacetimedb crate only behind `feature = "unstable"`, and its `Filter::Sql`
-/// form cannot express per-id membership in a `Vec<u64>` column
-/// — so every client can read every owner's counts. Owner-scoping is only a CLIENT subscription
-/// filter; per-owner transport scoping would follow the owner-view pattern (`my_monster_pub`) if
-/// inventory is ever reclassified. Carries ONLY ownership + count — NO gene/seed fields;
-/// individuality stays in the private `monster` table. Single-stack invariant: at most ONE row per
-/// `(owner_identity, item_id)`, enforced by routing every insert through `grant_item` — there is no
-/// DB-level composite unique constraint (unsupported in this toolchain).
-#[spacetimedb::table(accessor = inventory, public)]
+/// PRIVATE player item inventory (no `public`): item counts are owner-private
+/// (scouting another player's stock is a competitive leak). Clients read ONLY
+/// their own rows through the `my_inventory` view below; reducers read the
+/// table directly. Carries ONLY ownership + count — NO gene/seed fields;
+/// individuality stays in the private `monster` table. Single-stack invariant:
+/// at most ONE row per `(owner_identity, item_id)`, enforced by routing every
+/// insert through `grant_item` — there is no DB-level composite unique
+/// constraint (unsupported in this toolchain).
+#[spacetimedb::table(accessor = inventory)]
 pub struct Inventory {
     #[primary_key]
     #[auto_inc]
@@ -468,6 +466,20 @@ pub struct Inventory {
     pub owner_identity: Identity,
     pub item_id: u32,
     pub count: u32,
+}
+
+/// Owner-scoped read path for `inventory`: each client's subscription sees ONLY
+/// its own stacks, via the `owner_identity` btree index (a point index scan).
+/// A multi-row (`Vec`) view, so THIS BODY is the entire security boundary: the
+/// one-parameter signature is load-bearing (an extra `owner` param would be a
+/// caller-chosen-owner leak). Same shape as `my_monster_pub`.
+#[spacetimedb::view(accessor = my_inventory, public)]
+fn my_inventory(ctx: &spacetimedb::ViewContext) -> Vec<Inventory> {
+    ctx.db
+        .inventory()
+        .owner_identity()
+        .filter(ctx.sender())
+        .collect()
 }
 
 // --- evolution-graph tables ---------------------------------
