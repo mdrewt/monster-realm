@@ -903,6 +903,21 @@ fn training_food_item() -> game_core::ItemDef {
 //         accum_ms %= QT_TICK_MS; anchor = now; true
 // ===========================================================================
 
+/// A call at EXACTLY the anchor is the zero-gap no-op, not the backwards-clock
+/// branch: nothing is mutated and it reports `false` (no row write).
+///
+/// kills: the backwards-clock test widened from `<` to `<=` (a same-instant
+/// call reports a write).
+#[test]
+fn a_call_at_the_anchor_is_a_no_op() {
+    let mut m = qt_monster(QT_ANCHOR, 1_000, 17_000, 7);
+    assert!(
+        !apply_quality_time_credit(&mut m, QT_ANCHOR),
+        "a zero gap writes nothing"
+    );
+    assert_eq!(qt_state(&m), (QT_ANCHOR, 1_000, 17_000, 7));
+}
+
 /// A gap inside the idle window credits, converts whole ticks, and
 /// re-anchors.
 ///

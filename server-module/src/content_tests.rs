@@ -1664,6 +1664,35 @@ fn rb54_reflection_returns_declared_variant_names() {
     );
 }
 
+/// The reflection oracle REFUSES a sum it cannot name in full: an empty sum
+/// and a sum of unnamed variants both return `Err`, never a short or empty
+/// name list that a roster could then "match".
+///
+/// kills: the named-variant test's `&&` widened to `||` (an unnamed or empty
+/// sum reflects as `Ok` with too few names).
+#[test]
+fn reflection_refuses_empty_and_unnamed_sums() {
+    use spacetimedb::sats::typespace::TypespaceBuilder;
+    use spacetimedb::sats::{AlgebraicType, SumType};
+    struct EmptySum;
+    impl spacetimedb::SpacetimeType for EmptySum {
+        fn make_type<S: TypespaceBuilder>(_: &mut S) -> AlgebraicType {
+            AlgebraicType::Sum(SumType::new_unnamed(Box::new([])))
+        }
+    }
+    struct UnnamedSum;
+    impl spacetimedb::SpacetimeType for UnnamedSum {
+        fn make_type<S: TypespaceBuilder>(_: &mut S) -> AlgebraicType {
+            AlgebraicType::Sum(SumType::new_unnamed(Box::new([
+                AlgebraicType::U8,
+                AlgebraicType::U16,
+            ])))
+        }
+    }
+    assert!(super::reflected_variant_names::<EmptySum>("EmptySum").is_err());
+    assert!(super::reflected_variant_names::<UnnamedSum>("UnnamedSum").is_err());
+}
+
 /// a roster with a REPEATED entry must be REJECTED.
 ///
 /// The fixture has exactly 5 entries, so the length clause is satisfied: ONLY a
@@ -2246,6 +2275,118 @@ mod nh_sync {
             after_pass1,
             "pass 2: the same one schedule row per zone, same ids"
         );
+    }
+
+    /// A half-orphan npc row (no character) is repaired into a fresh PAIR: the
+    /// re-inserted npc row carries the NEW character's entity_id, never the
+    /// orphan id.
+    ///
+    /// kills: the repaired npc row keeping the planner's entity_id instead of
+    /// the freshly minted character's.
+    #[test]
+    fn nh_sync_repairs_a_half_orphan_npc_onto_its_new_character() {
+        let fx = fixture();
+        let w = world(&fx);
+        let defs = game_core::load_npc_defs().expect("npc RON");
+        let def = &defs[0];
+        const ORPHAN: u64 = 9_999;
+        w.npcs.seed(&super::super::npc_row_from_def(def, ORPHAN));
+        super::super::sync_npc_entities_from(&fx.ctx(), &defs);
+        let rows: Vec<Npc> = w
+            .npcs
+            .rows()
+            .into_iter()
+            .filter(|n| n.npc_id == def.npc_id)
+            .collect();
+        assert_eq!(rows.len(), 1, "one npc row for `{}`", def.npc_id);
+        let e = rows[0].entity_id;
+        assert_ne!(e, ORPHAN, "the orphan id is retired");
+        let chars = fx
+            .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+            .rows();
+        assert!(
+            chars.iter().any(|c| c.entity_id == e),
+            "the repaired npc row points at a live character (entity {e})"
+        );
+    }
+
+    /// A heal location whose item cost has a zero quantity is a content error
+    /// and is NOT seeded; a well-formed item-cost location beside it is.
+    ///
+    /// kills: the zero-quantity guard inverted (the good row skipped, the bad
+    /// one seeded).
+    #[test]
+    fn nh_seed_heal_locations_skips_an_item_cost_with_zero_quantity() {
+        let fx = fixture();
+        let w = world(&fx);
+        let def = |location_id: u32, cost_qty: u32| game_core::HealLocationDef {
+            location_id,
+            zone_id: 0,
+            tile_x: 1,
+            tile_y: 1,
+            cost_item_id: Some(3),
+            cost_qty,
+            cooldown_ms: 1_000,
+            cost_currency: 0,
+        };
+        super::super::seed_heal_locations_from(&fx.ctx(), &[def(41, 2), def(42, 0)]);
+        let mut ids: Vec<u32> = w.heals.rows().iter().map(|h| h.location_id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![41], "only the well-formed item-cost location");
+    }
+
+    /// The zone_def upsert repairs a stale row whose name, width OR height alone
+    /// drifted from the RON registry — each field on its own triggers the update.
+    ///
+    /// kills: any comparison in the upsert's change test inverted, or either
+    /// `||` narrowed to `&&` (a single-field drift is then left in place).
+    #[test]
+    fn nh_sync_content_repairs_a_zone_def_drifted_in_any_one_field() {
+        let zones = game_core::load_zones().expect("zones RON");
+        let z = &zones[0];
+        let base = || ZoneDefRow {
+            zone_id: z.id,
+            name: z.name.clone(),
+            width: z.width,
+            height: z.height,
+        };
+        let drifted = [
+            (
+                "name",
+                ZoneDefRow {
+                    name: format!("{}-stale", z.name),
+                    ..base()
+                },
+            ),
+            (
+                "width",
+                ZoneDefRow {
+                    width: z.width + 1,
+                    ..base()
+                },
+            ),
+            (
+                "height",
+                ZoneDefRow {
+                    height: z.height + 1,
+                    ..base()
+                },
+            ),
+        ];
+        for (label, stale) in drifted {
+            let fx = fixture();
+            let w = world(&fx);
+            seed_config(&w, 0);
+            w.zones.seed(&stale);
+            sync(&fx);
+            let row = w
+                .zones
+                .rows()
+                .into_iter()
+                .find(|r| r.zone_id == z.id)
+                .expect("zone row");
+            assert_eq!(bytes(&row), bytes(&base()), "{label} drift repaired");
+        }
     }
 }
 
