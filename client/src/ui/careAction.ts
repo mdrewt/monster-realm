@@ -10,8 +10,10 @@
 // (careAction.test.ts). main.ts keeps only the adapter that binds the real
 // connection and the real overlay to these two dependencies.
 //
-// No DOM, no SDK, no clock, no globals — the function touches nothing but its
-// injected deps, so the ordering property is provable without a browser.
+// No DOM, no SDK, no clock — the function touches nothing but its injected deps
+// and the i18n locale cell (set once at boot) behind `t()`, so the ordering
+// property is provable without a browser.
+import { t } from './i18n/resolver';
 import { reduceErrorMessage } from './statusModel';
 
 export interface CareActionDeps {
@@ -28,8 +30,6 @@ export interface CareActionDeps {
 
 /** Success confirmation — the EARS "visible confirmation" for a committed care. */
 const CARED_MESSAGE = 'Cared!';
-/** Frozen/disconnected link: no reducer call happened, so this is NOT a success. */
-const DISCONNECTED_MESSAGE = 'disconnected — try again';
 
 /**
  * Run one care click end to end and report EXACTLY ONE outcome message.
@@ -59,8 +59,9 @@ export async function performCare(deps: CareActionDeps): Promise<void> {
   // Branch BEFORE awaiting: `await undefined` resolves without throwing, so a
   // frozen link would otherwise fall straight through to the success arm and
   // report a call that never happened.
+  // Frozen/disconnected link: no reducer call happened, so this is NOT a success.
   if (inFlight === undefined) {
-    deps.showFeedback(DISCONNECTED_MESSAGE);
+    deps.showFeedback(t('chrome.feedback.disconnected'));
     return;
   }
   // The await and its two arms get their OWN try: a single try wrapping both

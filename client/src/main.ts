@@ -2635,12 +2635,12 @@ async function main(): Promise<void> {
         // Gate on frozen FIRST — a call against a dead conn is silently
         // queued and its promise never settles (the feedback line would hang forever).
         if (conn === undefined || conn.linkFrozen()) {
-          if (shopView?.visible) shopView.showFeedback('disconnected — try again');
+          if (shopView?.visible) shopView.showFeedback(i18nT('chrome.feedback.disconnected'));
           return;
         }
         try {
           await conn.live()?.reducers.buy({ shopId, itemId, qty: SHOP_QTY });
-          if (shopView?.visible) shopView.showFeedback('Purchase complete!');
+          if (shopView?.visible) shopView.showFeedback(i18nT('shop.feedback.purchased'));
         } catch (err) {
           // Route through reduceErrorMessage — SenderError reasons pass
           // through, InternalError detail never leaks (was a raw err.message leak).
@@ -2650,12 +2650,12 @@ async function main(): Promise<void> {
       onSell: async (itemId) => {
         // Same frozen gate + no-leak rejection routing as onBuy.
         if (conn === undefined || conn.linkFrozen()) {
-          if (shopView?.visible) shopView.showFeedback('disconnected — try again');
+          if (shopView?.visible) shopView.showFeedback(i18nT('chrome.feedback.disconnected'));
           return;
         }
         try {
           await conn.live()?.reducers.sell({ itemId, qty: SHOP_QTY });
-          if (shopView?.visible) shopView.showFeedback('Sale complete!');
+          if (shopView?.visible) shopView.showFeedback(i18nT('shop.feedback.sold'));
         } catch (err) {
           if (shopView?.visible) shopView.showFeedback(reduceErrorMessage(err, 'sell'));
         }
@@ -2667,48 +2667,48 @@ async function main(): Promise<void> {
     tradeView = new TradeViewClass({
       onAccept: async (tradeId) => {
         if (conn === undefined || conn.linkFrozen()) {
-          if (tradeView?.visible) tradeView.showFeedback('disconnected — try again');
+          if (tradeView?.visible) tradeView.showFeedback(i18nT('chrome.feedback.disconnected'));
           return;
         }
         try {
           await conn.live()?.reducers.respondTrade({ tradeId, accepted: true });
-          if (tradeView?.visible) tradeView.showFeedback('Trade accepted!');
+          if (tradeView?.visible) tradeView.showFeedback(i18nT('trade.feedback.accepted'));
         } catch (err) {
           if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'respond-trade'));
         }
       },
       onReject: async (tradeId) => {
         if (conn === undefined || conn.linkFrozen()) {
-          if (tradeView?.visible) tradeView.showFeedback('disconnected — try again');
+          if (tradeView?.visible) tradeView.showFeedback(i18nT('chrome.feedback.disconnected'));
           return;
         }
         try {
           await conn.live()?.reducers.respondTrade({ tradeId, accepted: false });
-          if (tradeView?.visible) tradeView.showFeedback('Trade rejected.');
+          if (tradeView?.visible) tradeView.showFeedback(i18nT('trade.feedback.rejected'));
         } catch (err) {
           if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'respond-trade'));
         }
       },
       onConfirm: async (tradeId) => {
         if (conn === undefined || conn.linkFrozen()) {
-          if (tradeView?.visible) tradeView.showFeedback('disconnected — try again');
+          if (tradeView?.visible) tradeView.showFeedback(i18nT('chrome.feedback.disconnected'));
           return;
         }
         try {
           await conn.live()?.reducers.confirmTrade({ tradeId });
-          if (tradeView?.visible) tradeView.showFeedback('Trade complete!');
+          if (tradeView?.visible) tradeView.showFeedback(i18nT('trade.feedback.completed'));
         } catch (err) {
           if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'confirm-trade'));
         }
       },
       onCancel: async (tradeId) => {
         if (conn === undefined || conn.linkFrozen()) {
-          if (tradeView?.visible) tradeView.showFeedback('disconnected — try again');
+          if (tradeView?.visible) tradeView.showFeedback(i18nT('chrome.feedback.disconnected'));
           return;
         }
         try {
           await conn.live()?.reducers.cancelTrade({ tradeId });
-          if (tradeView?.visible) tradeView.showFeedback('Trade cancelled.');
+          if (tradeView?.visible) tradeView.showFeedback(i18nT('trade.feedback.cancelled'));
         } catch (err) {
           if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'cancel-trade'));
         }
@@ -2821,12 +2821,12 @@ async function main(): Promise<void> {
     renameView = new RenameViewClass({
       onSubmit: async (name) => {
         if (conn === undefined || conn.linkFrozen()) {
-          if (renameView?.visible) renameView.showFeedback('disconnected — try again');
+          if (renameView?.visible) renameView.showFeedback(i18nT('chrome.feedback.disconnected'));
           return;
         }
         try {
           await conn.live()?.reducers.setProfileName({ name });
-          if (renameView?.visible) renameView.showFeedback('Name updated!');
+          if (renameView?.visible) renameView.showFeedback(i18nT('chrome.rename.updated'));
         } catch (err) {
           if (renameView?.visible) {
             renameView.showFeedback(reduceErrorMessage(err, 'set-profile-name'));
@@ -2844,7 +2844,8 @@ async function main(): Promise<void> {
       maxMonstersPerSide: MAX_TRADE_MONSTERS_PER_SIDE,
       onSubmit: async (args: TradeProposeArgs) => {
         if (conn === undefined || conn.linkFrozen()) {
-          if (tradeProposeView?.visible) tradeProposeView.showFeedback('disconnected — try again');
+          if (tradeProposeView?.visible)
+            tradeProposeView.showFeedback(i18nT('chrome.feedback.disconnected'));
           return;
         }
         try {
@@ -2857,7 +2858,8 @@ async function main(): Promise<void> {
             counterpartyItems: [],
             counterpartyCurrency: args.counterpartyCurrency,
           });
-          if (tradeProposeView?.visible) tradeProposeView.showFeedback('Offer sent!');
+          if (tradeProposeView?.visible)
+            tradeProposeView.showFeedback(i18nT('tradePropose.feedback.sent'));
         } catch (err) {
           if (tradeProposeView?.visible) {
             tradeProposeView.showFeedback(reduceErrorMessage(err, 'propose-trade'));
