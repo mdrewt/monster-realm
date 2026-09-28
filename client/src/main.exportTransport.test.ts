@@ -51,7 +51,7 @@
  * countdown NUMBER, and no export state depends on a clock.
  *
  * NO `new RegExp(...)`, no regex literal, no `eval`, no `new Function` anywhere. NO `innerHTML`
- * (ADR-0135). NO numeric duplicate of the grace window — every fixture value is synthetic.
+ *. NO numeric duplicate of the grace window — every fixture value is synthetic.
  *
  * RED REASON AT AUTHORING TIME: `store.reconcileExportChunksFromView` does not exist, so the
  * harness's own precondition tooth fails first and by name; `main.ts` contains no
@@ -429,7 +429,7 @@ function privacyOverlayVisible(): boolean {
 
 /**
  * The front door: the ONE button inside the Account & Sign-in overlay that opens the privacy
- * surface (ADR-0231 A2-D5). DISCOVERED BY ROLE, not by a hard-coded id, and the count is
+ * surface. DISCOVERED BY ROLE, not by a hard-coded id, and the count is
  * asserted — "exactly one privacy door" is the contract-level statement.
  */
 function privacyOpener(): HTMLButtonElement {

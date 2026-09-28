@@ -69,7 +69,7 @@
 // the former repo-wide; the latter blinds the repo's own comment strippers).
 // String scanning is indexOf / split / slice only.
 //
-// AMENDED BY rb-125 (ADR-0272), STATED HERE RATHER THAN REWRITING THE CONTRACT ABOVE (the
+// AMENDED BY rb-125, STATED HERE RATHER THAN REWRITING THE CONTRACT ABOVE (the
 // EN-LABEL/EN-NAMES/EN-BENIGN core is untouched): `EvolutionNoticeBanner`'s constructor now
 // takes a REQUIRED second `sinks: { announce, returnFocus }` argument and `render` now takes
 // `{ key, label } | null` instead of a bare `string | null`. Every construction/render call in
@@ -591,7 +591,7 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
   });
 
   it('20r-d EN-BANNER-BUTTON BITES: the OK control is a NATIVE button with the literal text OK', () => {
-    // WHY NATIVE (ADR-0254 D6): a real <button> is
+    // WHY NATIVE: a real <button> is
     //   Enter- and Space-operable, focusable and announced as a button for free.
     //   A <div role="button"> needs a keydown handler, a tabindex and a role — and
     //   the tabindex is banned here, so the div shape is unreachable by

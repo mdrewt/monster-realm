@@ -1,4 +1,4 @@
-// Prediction-parity eval (ADR-0003): the rule the client predicts with (the
+// Prediction-parity eval: the rule the client predicts with (the
 // wasm-pack build of `client-wasm`) must produce output byte-identical to the
 // native `game-core` path the server compiles. This is the anti-desync spine —
 // it catches feature-flag/target divergence before any real rule (M1) depends

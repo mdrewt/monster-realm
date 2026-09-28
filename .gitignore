@@ -80,7 +80,7 @@ Thumbs.db
 # ── Better Auth deployment (ops/auth) ─────────────────
 # Deploy-time artifacts: the app entrypoint (created from README's fenced blocks),
 # the SQLite database, and the JWKS signing key. NONE may ever be committed — the
-# signing key especially forges tokens for every player forever (ADR-0182 D20).
+# signing key especially forges tokens for every player forever.
 ops/auth/app/
 ops/auth/data/
 ops/auth/secrets/

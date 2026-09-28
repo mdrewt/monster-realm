@@ -118,7 +118,7 @@ import {
 //   (main.ts:1367-1389, the UXD2-SHOPOPEN region).
 //
 // ---------------------------------------------------------------------------------------
-// WHY A MUTATION-RECORD RECORDER, AND NOT JUST A RETRYING toHaveText (ADR-0169 D7 / R4)
+// WHY A MUTATION-RECORD RECORDER, AND NOT JUST A RETRYING toHaveText
 // ---------------------------------------------------------------------------------------
 // `movement_tick` is scheduled PER ZONE unconditionally, one row per zone_def, at
 // `STEP_MS = 200` — it does not depend on a player being

@@ -46,7 +46,7 @@ export const HIDDEN_FIELDS = [
     { name: `ev_${s}`, source: 'monster', allowedIn: [] },
   ]),
   { name: 'nature_kind', source: 'monster', allowedIn: [] },
-  // Raw trust / quality-time counters: monster_pub projects TIERS only (ADR-0174).
+  // Raw trust / quality-time counters: monster_pub projects TIERS only.
   { name: 'trust_favorable_count', source: 'monster', allowedIn: [] },
   { name: 'trust_unfavorable_count', source: 'monster', allowedIn: [] },
   { name: 'trust_favorable_battle_day_epoch', source: 'monster', allowedIn: [] },

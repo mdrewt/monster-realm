@@ -1,4 +1,4 @@
-// netcode-convergence.eval.mjs — M8.8d / M14.5f convergence gate (ADR-0013).
+// netcode-convergence.eval.mjs — M8.8d / M14.5f convergence gate.
 //
 // The headline netcode property: under latency/jitter/loss/reorder, the
 // authoritative final state is delivery-order-invariant (SeqCanonical policy).

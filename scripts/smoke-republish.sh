@@ -2,7 +2,6 @@
 # Smoke test: publish → edit content → republish WITHOUT --delete-data →
 # assert existing monster data survives AND new content version is served.
 #
-# Implements spec §12.5b-6 / ADR-0079.
 # Runs in nightly.yml only (requires a live SpacetimeDB instance — not CI-fast).
 # macOS: uses GNU sed (sed -i without suffix arg); requires GNU sed in PATH.
 #   Install: brew install gnu-sed && add gnubin to PATH, or use a Linux runner.
@@ -11,9 +10,8 @@
 #   server_url  SpacetimeDB server URL  (default: http://127.0.0.1:3000)
 #   db_name     Database name           (default: monster-realm-smoke)
 #
-# Failure policy (ADR-0079): any failure exits non-zero, causing the nightly
-# job to fail. The supervisor inserts the failure as the NEXT slice in the
-# milestone queue (same priority as fix-red-master, below it in ordering).
+# Failure policy: any failure exits non-zero, causing the nightly
+# job to fail (see CONTRIBUTING.md, "When the nightly run is red").
 set -euo pipefail
 
 SERVER="${1:-http://127.0.0.1:3000}"
@@ -41,7 +39,7 @@ log "Phase 2: calling join_game to create starter monster"
 # Each reducer arg is its own JSON value on the pinned spacetime 2.8.1 CLI (the
 # CLI assembles the args array itself). Wrapping in a JSON array double-nests and
 # the server rejects with "Invalid arguments provided for reducer" — this exact
-# bug kept the smoke job red from its first nightly run (ADR-0088). Re-verified
+# bug kept the smoke job red from its first nightly run. Re-verified
 # live 2026-08-22 against 2.8.1: join_game '"Name"' succeeds, while the wrapped
 # form '["Name"]' STILL fails.
 spacetime call -s "$SERVER" "$DB" join_game '"SmokePlayer"'
@@ -73,7 +71,7 @@ grep -q "CONTENT_VERSION: u32 = ${BUMP_VERSION}" server-module/src/lib.rs \
 log "Phase 3: CONTENT_VERSION patched: $ORIG_VERSION → $BUMP_VERSION"
 
 # Phase 4: rebuild + republish WITHOUT --delete-data (live-content-update path).
-# ADR-0006 / ADR-0037 promise: publish on a live DB must not wipe existing rows.
+# Promise: publish on a live DB must not wipe existing rows.
 log "Phase 4: rebuild + republish WITHOUT --delete-data"
 spacetime build --module-path server-module
 spacetime publish -s "$SERVER" --module-path server-module -y "$DB"
@@ -101,7 +99,7 @@ for i in $(seq 1 10); do
   sleep 1
 done
 log "monster rows after republish: $MONSTER_ROWS_AFTER"
-[ "$FOUND" -eq 1 ] || fail "starter monster LOST after republish WITHOUT --delete-data (ADR-0006/ADR-0037 promise broken)"
+[ "$FOUND" -eq 1 ] || fail "starter monster LOST after republish WITHOUT --delete-data (live-data promise broken)"
 
 log "Phase 6: asserting new content version served"
 CFG_ROWS=$(spacetime sql -s "$SERVER" "$DB" "SELECT content_version FROM config")

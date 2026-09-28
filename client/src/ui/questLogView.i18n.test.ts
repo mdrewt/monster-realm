@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/questLogView.i18n.test.ts — m24s5 (ADR-0261) RED gating tests: questLogView.ts routes its
+// ui/questLogView.i18n.test.ts — m24s5 RED gating tests: questLogView.ts routes its
 // one row sink through tf() from the i18n resolver instead of a raw English template literal.
 //
 // SOURCE OF TRUTH: /tmp/m24-s5/plan.md §Files/`questLogView.ts`, §Key roster `questLog.*`.

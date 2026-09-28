@@ -13,7 +13,7 @@
   </head>
   <body style="margin: 0; background: #0b0d12">
     <div id="app"></div>
-    <!-- M12d overlay shells — hidden by default; managed by JS views (ADR-0071). -->
+    <!-- M12d overlay shells — hidden by default; managed by JS views. -->
     <div id="dialogue-overlay" role="dialog" aria-modal="true" style="display:none">
       <div id="dialogue-npc-name" tabindex="-1"></div>
       <div id="dialogue-node-text"></div>
@@ -25,14 +25,14 @@
     <div id="heal-overlay" role="dialog" aria-modal="true" style="display:none">
       <ul id="heal-list" tabindex="-1"></ul>
     </div>
-    <!-- M13d shop overlay shell — hidden by default; managed by ShopView (ADR-0084). -->
+    <!-- M13d shop overlay shell — hidden by default; managed by ShopView. -->
     <div id="shop-overlay" role="dialog" aria-modal="true" style="display:none">
       <div id="shop-title" tabindex="-1"></div>
       <ul id="shop-for-sale"></ul>
       <ul id="shop-inventory"></ul>
       <div id="shop-feedback"></div>
     </div>
-    <!-- m15b trade overlay shell — hidden by default; managed by TradeView (ADR-0107). -->
+    <!-- m15b trade overlay shell — hidden by default; managed by TradeView. -->
     <div id="trade-overlay" role="dialog" aria-modal="true" style="display:none">
       <div id="trade-status" tabindex="-1"></div>
       <div id="trade-my-side"></div>
@@ -40,7 +40,7 @@
       <div id="trade-actions"></div>
       <div id="trade-feedback"></div>
     </div>
-    <!-- m16b PvP challenge overlay shell — hidden by default; managed by PvpView (ADR-0110). -->
+    <!-- m16b PvP challenge overlay shell — hidden by default; managed by PvpView. -->
     <div id="pvp-challenge-overlay" role="dialog" aria-modal="true" style="display:none">
       <div id="pvp-challenge-status" tabindex="-1"></div>
       <div id="pvp-challenge-incoming"></div>
@@ -48,19 +48,19 @@
       <ul id="pvp-player-list"></ul>
       <div id="pvp-challenge-feedback"></div>
     </div>
-    <!-- m17b leaderboard overlay shell — hidden by default; managed by LeaderboardView (ADR-0120). -->
+    <!-- m17b leaderboard overlay shell — hidden by default; managed by LeaderboardView. -->
     <div id="leaderboard-overlay" role="dialog" aria-modal="true" style="display:none">
       <div id="leaderboard-title" tabindex="-1"></div>
       <ul id="leaderboard-list"></ul>
     </div>
-    <!-- pt-c1b rename overlay shell — hidden by default; managed by RenameView (ADR-0133). -->
+    <!-- pt-c1b rename overlay shell — hidden by default; managed by RenameView. -->
     <div id="rename-overlay" role="dialog" aria-modal="true" style="display:none">
       <div id="rename-current" data-testid="rename-current"></div>
       <input id="rename-input" data-testid="rename-input" type="text" maxlength="24" />
       <button id="rename-submit" data-testid="rename-submit" type="button"></button>
       <div id="rename-feedback" data-testid="rename-feedback"></div>
     </div>
-    <!-- pt-c2 trade-PROPOSE overlay shell — hidden by default; managed by TradeProposeView (ADR-0134). -->
+    <!-- pt-c2 trade-PROPOSE overlay shell — hidden by default; managed by TradeProposeView. -->
     <div id="tradepropose-overlay" role="dialog" aria-modal="true" style="display:none">
       <select id="tradepropose-target" data-testid="tradepropose-target"></select>
       <div id="tradepropose-monsters" data-testid="tradepropose-monsters"></div>
@@ -79,8 +79,8 @@
       <button id="tradepropose-submit" data-testid="tradepropose-submit" type="button"></button>
       <div id="tradepropose-feedback" data-testid="tradepropose-feedback"></div>
     </div>
-    <!-- pt-c2b help overlay shell — hidden by default; managed by HelpView (ADR-0135). Display-only.
-         ux1 (ADR-0151 D1): viewport-anchored — it used to carry ONLY `display:none`, i.e. a static
+    <!-- pt-c2b help overlay shell — hidden by default; managed by HelpView. Display-only.
+         ux1: viewport-anchored — it used to carry ONLY `display:none`, i.e. a static
          in-flow div AFTER the viewport-tall canvas, so show() painted it below the fold (top=724 at
          innerHeight=720). HelpView writes only `style.display`, so the rest survives a toggle. -->
     <div
@@ -93,9 +93,9 @@
       <ul id="help-controls"></ul>
       <ul id="help-goals"></ul>
     </div>
-    <!-- uxd3 (ADR-0162): main-menu overlay shell — hidden by default; managed by MenuView.
-         Carries position:fixed;inset:0;z-index:100 for the SAME reason #help-overlay does
-         (ux1 / ADR-0151 D1): a static in-flow div after the viewport-tall canvas paints below
+    <!-- uxd3: main-menu overlay shell — hidden by default; managed by MenuView.
+         Carries position:fixed;inset:0;z-index:100 for the SAME reason #help-overlay does:
+         a static in-flow div after the viewport-tall canvas paints below
          the fold. MenuView writes only style.display, so the rest survives a toggle.
          inset:0 (not a corner offset) also keeps it out of W-ONE-CORNER-AFFORDANCE's set. -->
     <div
@@ -105,7 +105,7 @@
       style="display:none;position:fixed;inset:0;z-index:100;overflow:auto;background:rgba(0,0,0,0.88);padding:24px;font:14px/1.6 monospace;color:#e0e0e0"
     >
       <div id="menu-heading"></div>
-      <!-- tabindex="0", NEVER "-1" (ADR-0205 D2's named landmine). This is the overlay's
+      <!-- tabindex="0", NEVER "-1". This is the overlay's
            initialFocusSelector AND it carries a delegated click listener, so `-1` would fail
            [A11Y-T3] (a negative tabindex on a listener-bearing element). biome's
            noNoninteractiveTabindex is correct in general and premature here: slice S6 gives
@@ -115,14 +115,14 @@
       <ul id="menu-rows" tabindex="0"></ul>
       <div id="menu-back-hint"></div>
     </div>
-    <!-- pt-a1 (ADR-0128): build-provenance stamp — populated by main.ts from BUILD_INFO
+    <!-- pt-a1: build-provenance stamp — populated by main.ts from BUILD_INFO
          (git sha + build time + mode). Non-intrusive; pins which build a playtest finding
          came from. Present in production (unlike the DEV-gated debug hooks). -->
     <div
       id="build-stamp"
       style="position:fixed;bottom:2px;right:4px;font:10px/1.2 monospace;color:#667;opacity:0.55;pointer-events:none;z-index:9999"
     ></div>
-    <!-- ux1 (ADR-0151 D2), amended by uxd3-b (ADR-0163 D4): persistent help affordance, now ALSO the
+    <!-- ux1, amended by uxd3-b: persistent help affordance, now ALSO the
          click front door for the main menu (AC-12). Still zero-owner: main.ts binds by DELEGATION on
          [data-menu-launcher] and never resolves, mutates, hides or removes this element.
          bottom:16px STACKS it above #build-stamp (bottom:2px) rather than beside it — measured
@@ -149,7 +149,7 @@
          announcement mid-utterance. Deliberately carries NO inline `style` — .sr-only does the
          hiding, and an inline position:fixed here would enter W-ONE-CORNER-AFFORDANCE's
          corner-affordance filter (main.wiring.test.ts) and red a file this slice does not own.
-         THIS IS THE HOME POSITION, NOT THE ONLY POSITION (rb-11, ADR-0214). A11Y-13 puts
+         THIS IS THE HOME POSITION, NOT THE ONLY POSITION. A11Y-13 puts
          aria-modal="true" on every visible overlay root, and per ARIA that tells assistive
          technology to ignore everything outside the open dialog — this node included, even though
          it is a sibling and not a descendant. So while an overlay is open, liveRegion.ts's

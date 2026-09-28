@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-species monster spritesheets (pt-d2, ADR-0144 D2/D3).
+"""Per-species monster spritesheets.
 
 Companion to `generate_art.py`, which it IMPORTS and never edits. `generate_art`
 guards `main()` behind `if __name__ == "__main__"` and derives OUT/PREVIEW from
@@ -120,7 +120,7 @@ PALETTES = {
         ramp("#d8cf9a", "#f4eec4", "#fffbe8"),
         ramp("#081c1e", "#123236", "#1e5250"),
     ),
-    # Roster wave 3 (rw3b, ADR-0204).  Electric is the roster's first high-value
+    # Roster wave 3.  Electric is the roster's first high-value
     # yellow ramp — separated from the Fire lines by HUE (yellow-green, not
     # orange) and from each other by VALUE, so the pair stays readable under
     # colour-vision deficiency.  Light is a warm bone/gold ramp kept lighter

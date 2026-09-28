@@ -597,7 +597,6 @@ describe('AuthoritativeStore M6c: monsterCount property (fast-check)', () => {
 // =============================================================================
 // reconcileMonstersFromView — the view-cache reconcile.
 //
-// SOURCE OF TRUTH: docs/adr/0194-monster-pub-need-to-know-privacy.md D4.
 //
 // WHY THIS METHOD EXISTS AT ALL. `my_monster_pub` is a VIEW, and in spacetimedb
 // 1.12.0 bindings a view has NO primary key, so the SDK never fires onUpdate:

@@ -1,9 +1,8 @@
 // @vitest-environment happy-dom
-// ui/claimView.i18n.test.ts — m24-s5 (ADR-0261) RED gating tests: CV-01/02/03.
+// ui/claimView.i18n.test.ts — m24-s5 RED gating tests: CV-01/02/03.
 //
 // SOURCE OF TRUTH: memory/projects/monster-realm-m24-s5-plan.md (Tests, Key roster claim.*,
 // D2), plan-revisions.md MAJOR-1 (BOTH doors — show() AND render() — write the label),
-// docs/adr/0261-i18n-migration-batch-c.md.
 //
 // RED REASON AT HEAD: claimView.ts's constructor still writes the bare literal
 // 'Privacy & Account Data' into #claim-privacy-btn (claimView.ts:96) and neither show() nor

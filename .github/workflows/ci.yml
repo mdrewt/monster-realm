@@ -67,7 +67,7 @@ jobs:
       - name: SCA (cargo audit)
         run: cargo audit --file Cargo.lock
 
-  # Two-window Playwright e2e against a real, version-pinned SpacetimeDB (ADR-0009, ADR-0039).
+  # Two-window Playwright e2e against a real, version-pinned SpacetimeDB.
   e2e:
     runs-on: ubuntu-latest
     steps:
@@ -95,7 +95,7 @@ jobs:
           spacetime version use 2.8.1
           spacetime --version
       # The e2e suite needs the dev_reducers build; `publish` has no feature passthrough, so
-      # global-setup publishes this prebuilt artifact via --bin-path (ADR-0086). The committed
+      # global-setup publishes this prebuilt artifact via --bin-path. The committed
       # bindings are NOT regenerated from it.
       - name: Build dev_reducers module wasm
         run: cargo build -p monster-realm-module --release --target wasm32-unknown-unknown --features dev_reducers

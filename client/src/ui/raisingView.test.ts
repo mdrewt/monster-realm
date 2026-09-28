@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/raisingView.test.ts — RED gating tests for feel-polish D1 care feedback (ADR-0159).
+// ui/raisingView.test.ts — RED gating tests for feel-polish D1 care feedback.
 //
 // SOURCE OF TRUTH: EARS criterion "WHEN the player presses the care-button/action,
 // THE UI SHALL show a visible confirmation (toast, animation, or stat-delta

@@ -58,7 +58,7 @@ mod lifecycle_tests;
 // --- Crate-wide constants ---------------------------------------------------
 pub(crate) const ZONE_0: u32 = 0;
 /// SSOT for the seeded-content version; bump when game-core RON content changes.
-pub(crate) const CONTENT_VERSION: u32 = 22;
+pub(crate) const CONTENT_VERSION: u32 = 23;
 pub(crate) const SPRITE_PLAYER: u32 = 0;
 pub(crate) const MAX_NAME_LEN: usize = 24;
 pub(crate) const MAX_PARTY_SIZE: u8 = game_core::PARTY_SIZE; // SSOT

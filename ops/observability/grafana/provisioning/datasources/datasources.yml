@@ -1,7 +1,6 @@
-# Grafana datasource provisioning (M20 / ADR-0180 D17).
+# Grafana datasource provisioning.
 #
-# Also carries the CORRELATION PIVOT this milestone's design left as an explicit build-time
-# spike. Verdict, recorded in ADR-0180's m20b amendment: Grafana CORRELATIONS, not Loki derived
+# Also carries the CORRELATION PIVOT: Grafana CORRELATIONS, not Loki derived
 # fields. Derived fields are one-way and Loki-source-only, so they structurally cannot express
 # the Tempo -> Loki leg the connection_id pivot needs. Correlations are any-source -> any-target
 # and — the half that was genuinely unverified — ARE file-provisionable in Grafana OSS, as a

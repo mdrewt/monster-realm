@@ -1,4 +1,4 @@
-// Skill registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
+// Skill registry — DATA, not code. Stable `id`s are APPEND-ONLY.
 [
     (id: 1, name: "Ember",       affinity: Fire,    power: 40, accuracy: 100, pp: 25),
     (id: 2, name: "Fire Fang",   affinity: Fire,    power: 65, accuracy: 95,  pp: 15),
@@ -6,11 +6,11 @@
     (id: 4, name: "Aqua Jet",    affinity: Water,   power: 40, accuracy: 100, pp: 20),
     (id: 5, name: "Vine Whip",   affinity: Plant,   power: 45, accuracy: 100, pp: 25),
     (id: 6, name: "Razor Leaf",  affinity: Plant,   power: 55, accuracy: 95,  pp: 25),
-    // Weather-setting skills (M14d, ADR-0095) — sets_weather fires after damage.
+    // Weather-setting skills — sets_weather fires after damage.
     (id: 7,  name: "Rain Dance",  affinity: Water,   power: 40, accuracy: 100, pp: 10, sets_weather: Some(Rain)),
     (id: 8,  name: "Sunny Slam",  affinity: Fire,    power: 40, accuracy: 100, pp: 10, sets_weather: Some(Sun)),
     (id: 9,  name: "Sandblast",   affinity: Earth,   power: 35, accuracy: 90,  pp: 10, sets_weather: Some(Sandstorm)),
     (id: 10, name: "Hailstrike",  affinity: Wind,    power: 35, accuracy: 90,  pp: 10, sets_weather: Some(Hail)),
-    // Status-applying skills (M14e, ADR-0096) — applies_status fires on hit (non-fainted, unstatused target).
+    // Status-applying skills — applies_status fires on hit (non-fainted, unstatused target).
     (id: 11, name: "Toxic Sting", affinity: Dark,    power: 20, accuracy: 100, pp: 20, applies_status: Some(Poison)),
 ]

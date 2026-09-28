@@ -143,7 +143,7 @@ describe('menuModel — MENU_TREE', () => {
     expect(flat.map((l) => l.title)).toEqual([
       'Monster Box',
       'Backpack & Raising',
-      'Evolve & Fuse',
+      'Evolve',
       'Interact',
       'Journal (Quests)',
       'Incoming Trade',
@@ -556,11 +556,7 @@ describe('menuModel — buildMenuViewModel', () => {
     expect(vm.level).toBe('leaves');
     expect(vm.heading).toBe('Party');
     expect(vm.backHint).toBe('Escape / ← — back');
-    expect(vm.rows.map((r) => r.title)).toEqual([
-      'Monster Box',
-      'Backpack & Raising',
-      'Evolve & Fuse',
-    ]);
+    expect(vm.rows.map((r) => r.title)).toEqual(['Monster Box', 'Backpack & Raising', 'Evolve']);
     expect(vm.rows.map((r) => r.index)).toEqual([0, 1, 2]);
     expect(vm.rows.map((r) => r.keyGlyph)).toEqual(['B', 'I', 'E']);
     expect(vm.rows.filter((r) => r.selected).map((r) => r.index)).toEqual([1]);

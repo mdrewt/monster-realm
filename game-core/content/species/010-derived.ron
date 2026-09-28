@@ -1,5 +1,5 @@
 // Derived species (M10a-content) — evolution targets + fusion results. DATA, not
-// code (ADR-0006/0019/0060). Stable `id`s are APPEND-ONLY (this file sorts AFTER
+// code. Stable `id`s are APPEND-ONLY (this file sorts AFTER
 // 000-core.ron, so the 000-core rows stay the registry prefix). Species 4, 5, 6 are
 // all evolution/fusion-only DERIVED forms and MUST NEVER appear in an encounter table
 // (validate_evolution_fusion enforces it). They are reachable in-game only via a

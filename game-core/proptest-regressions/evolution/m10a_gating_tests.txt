@@ -5,7 +5,7 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 #
-# EG1 (ADR-0174): the three persisted seeds here were shrunk against the
+# EG1: the three persisted seeds here were shrunk against the
 # `fuse` / `evolve` properties of the pre-essence-graph suite, whose
 # `MonsterInstance` shape (with `bond`) and whose subject (`fuse`) no longer
 # exist. Cleared rather than carried — replaying them proves nothing about the

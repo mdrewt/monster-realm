@@ -1324,7 +1324,7 @@ describe('M12d converters', () => {
 });
 
 // =============================================================================
-// uxd2 (ADR-0161 D1/AC-16) — npcRowToStore: the NpcInteraction boundary converter.
+// uxd2 — npcRowToStore: the NpcInteraction boundary converter.
 //
 // CONTRACT:
 //   SdkNpcRow += readonly interaction: { readonly tag: string; readonly value?: number }
@@ -2337,7 +2337,7 @@ describe('rowConvert m17.5f: narrowTag — unknown tag returns raw string AND lo
 describe('rowConvert m17.5f: narrowTag — never throws for any input (T4-3)', () => {
   it('BITES: narrowTag does not throw for an unknown tag (flushBatch has no per-listener isolation)', () => {
     // A throw inside a subscription callback kills the entire flushBatch burst
-    // (ADR-0085 A6). narrowTag must NEVER throw.
+    //. narrowTag must NEVER throw.
     // Kills: an impl that throws when the tag is not in the known array.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -2660,7 +2660,7 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
 //       that looks exactly like "the feature was never wired". RC-PW-01a/01b.
 //   (d) a THROWING converter — it runs inside a subscription row callback
 //       (connection.ts wireTables) and flushBatch has no per-listener isolation
-//       (ADR-0085 A6), so one throw starves every sibling table's ingest for that
+//      , so one throw starves every sibling table's ingest for that
 //       batch. RC-PW-05a/05b.
 //   (e) `{ ...row, ownerIdentity: row.ownerIdentity.toHexString() }` — a spread impl
 //       leaks whatever extra fields the SDK row carries into the store row. RC-PW-04.
@@ -2877,7 +2877,7 @@ describe('rowConvert 11r-e: playerWalletRowToStore — exact key set (RC-PW-04)'
 describe('rowConvert 11r-e: playerWalletRowToStore — totality (RC-PW-05)', () => {
   it('RC-PW-05a BITES: never throws across the full u64 balance domain, and round-trips both fields (property)', () => {
     // ADR-0169 D3 (d): the converter runs inside a subscription row callback and
-    // flushBatch has NO per-listener isolation (ADR-0085 A6) — one throw starves every
+    // flushBatch has NO per-listener isolation — one throw starves every
     // sibling table's ingest for that batch, so the world goes stale, not just the wallet.
     // The property also carries the "byte-identical for ANY u64" half of EARS 11r-e-2:
     // a Number() round trip fails here for every value above 2^53.
@@ -3485,7 +3485,7 @@ describe('rowConvert M22 S8: accountRowToStore carries terminal_at_ms (PRV1-4)',
     expect(stored.terminalAtMs).not.toBeNull();
 
     // Fail-SOFT, like the rest of this converter: a degenerate value must not throw —
-    // a throw inside a row callback kills the whole flushBatch (ADR-0085 A6).
+    // a throw inside a row callback kills the whole flushBatch.
     expect(() =>
       accountRowToStore(makeSdkAccountRow({ terminalAtMs: 'not-a-bigint' as unknown as bigint })),
     ).not.toThrow();
@@ -3834,7 +3834,7 @@ describe('rowConvert rb-53: exportChunkRowToStore — totality (RC-EX-05)', () =
   it('★★ RC-EX-05a BITES: never throws for hostile/degenerate rows (fail-soft, not fail-loud)', () => {
     // WRONG IMPL KILLED: a defensive converter that VALIDATES and throws. Rejecting a bad row
     // loudly is the right instinct in a reducer and the WRONG one here: the throw escapes into
-    // the SDK's row-callback dispatch loop, which has no per-listener isolation (ADR-0085 A6),
+    // the SDK's row-callback dispatch loop, which has no per-listener isolation,
     // so EVERY sibling table's ingest starves for that transaction.
     const hostile: readonly unknown[] = [
       makeSdkExportChunkRow({ chunkId: undefined }),
@@ -3878,7 +3878,7 @@ describe('rowConvert rb-53: exportChunkRowToStore — totality (RC-EX-05)', () =
 //   EXPLICIT field mapping (never a spread), NO numeric coercion (u64/i64 stay
 //   `bigint`, u32 stays `number`), NO defaulting, NO clamping, and TOTAL — this
 //   runs inside the shared flush closure, where a throw starves EVERY batch
-//   listener (ADR-0085 A6), including the movement reconcile that drives
+//   listener, including the movement reconcile that drives
 //   prediction snap.
 // =============================================================================
 

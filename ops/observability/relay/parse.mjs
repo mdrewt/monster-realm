@@ -1,5 +1,4 @@
-// parse.mjs — relay host-envelope parser (pure core, m20e T1; ADR-0180 D6/D15,
-// OBS-42/43/49).
+// parse.mjs — relay host-envelope parser (pure core).
 //
 // Layer contract (AM4): this module consumes the HOST envelope only. The
 // module-rendered JSON inside `message` is lifted byte-exact as `payloadText`
@@ -255,7 +254,7 @@ export function parseBreadcrumb(record) {
 }
 
 /**
- * The correlation key a crumb pairs under (ADR-0180 D15): a non-empty `cause`
+ * The correlation key a crumb pairs under: a non-empty `cause`
  * wins; else the sched identity `target_reducer@scheduled_at`; else null —
  * a keyless crumb is never given a synthesised key.
  */

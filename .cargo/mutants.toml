@@ -1,4 +1,4 @@
-# Blessed equivalent-mutant exclusions (ADR-0088 §Decision 2 + M14.5h).
+# Blessed equivalent-mutant exclusions (each entry states why the mutant is equivalent).
 #
 # 1. toward_home Y-branch (npc/rules.rs:61:15): |dx| < |dy| → dy != 0, so
 #    `dy > 0` and `dy >= 0` are indistinguishable on the reachable domain.

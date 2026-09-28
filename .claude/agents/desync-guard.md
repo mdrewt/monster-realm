@@ -31,15 +31,19 @@ You are **read-only**. You never edit code. You produce a findings report.
 3. For wasm-bindgen specifics (export shapes, async init, generated `.d.ts`, what crosses the
    boundary), confirm against GitMCP (`gitmcp-wasm-bindgen`) rather than memory.
 
-## The checklist (CLAUDE.md Architecture / determinism rules)
+## The checklist (`AGENTS.md` invariants; reasons in `docs/DECISIONS.md`)
 
 - **`game-core` is pure and deterministic.** No `std::net`/`std::fs`. No clock read directly —
-  time is passed in as an argument. No randomness except via a seeded RNG passed in. Same
+  time is passed in as an argument (`Millis`). No randomness except a seed or pre-rolled values
+  passed in (`TurnVariance::from_ctx_random` on the server). `clippy.toml` bans the obvious
+  clock/RNG calls, but not every impurity. Same
   `(state, input, seed)` must yield the same output. Flag any hidden global, ambient clock, or
   unseeded random.
 - **Rules are written ONCE, in `game-core`.** A game rule must not be reimplemented in TS
   (frontend) or hand-rolled in a `server-module` reducer if it exists — or should exist — in
   `game-core`. Flag any logic duplicated across the boundary; that duplication IS the desync.
+  A game-core constant the client needs is exported from `client-wasm/src/lib.rs`, never
+  copied into TypeScript.
 - **Reducers and WASM exports are thin wrappers.** `server-module` reducers and `client-wasm`
   wasm-bindgen exports should marshal at the boundary and delegate to `game-core`. Flag fat
   wrappers that embed rules.
@@ -50,8 +54,9 @@ You are **read-only**. You never edit code. You produce a findings report.
   calls (this is also the real hot path). Flag per-entity boundary chatter.
 - **Parity / determinism tests exist for new rules.** A new or changed rule should have a test
   asserting `(state, input, seed) → identical output`, ideally asserting client-prediction
-  output equals server-module output. This is the desync regression net — its absence is a
-  finding, not a nit.
+  output equals server-module output. The wasm parity evals (`prediction-parity`,
+  `movement-parity`, `js-path-parity`) cover the exported movement path; a new export needs
+  equivalent coverage. Missing coverage is a finding, not a nit.
 
 ## Output format
 

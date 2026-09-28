@@ -1,6 +1,5 @@
 // daemon.mjs — the relay's imperative SHELL: a tail-follow poll loop over the
-// read-only module-log mount, plus the /health scrape endpoint (13r-b;
-// ADR-0191, OBS-45/OBS-46).
+// read-only module-log mount, plus the /health scrape endpoint.
 //
 // Everything decidable is decided in the pure core. This file owns exactly four
 // impure things — the filesystem, the cadence, the listening socket and the
@@ -8,7 +7,7 @@
 // so the whole poll loop is driven in tests with no real timer, no real socket
 // and no file on disk.
 //
-// WHAT IT DOES NOT DO, and why (ADR-0191, the honesty clauses):
+// WHAT IT DOES NOT DO, and why:
 //   * it never writes. Not a log, not an offset checkpoint, not a temp file.
 //     Offsets live in memory only, and the stated cost is that breadcrumbs
 //     written while the relay was down are never exported (D2).
@@ -67,7 +66,7 @@ const FLAG_LISTEN_ADDRESS = ACCEPTED_FLAGS[2];
 export const DEFAULT_POLL_INTERVAL_MS = 5000;
 
 /**
- * AM2/ADR-0191 — the carry-over bounds, exported rather than buried as magic
+ * The carry-over bounds, exported rather than buried as magic
  * numbers because they are the two decisions that keep a cross-poll pairing
  * buffer from becoming an unbounded leak fed by module output.
  *

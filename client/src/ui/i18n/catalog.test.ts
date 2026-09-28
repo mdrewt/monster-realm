@@ -4,13 +4,12 @@
 //
 // SOURCE OF TRUTH:
 //   specs/monster-realm-v2/M24-internationalization.spec.md §2.3, §2.6 [I18N-SHAPE-06].
-//   docs/adr/0256-i18n-module-total-catalog-resolver-cell-negative-compile.md D2, D5.
 //   memory/projects/monster-realm-m24-s1-plan.md §2 catalog.en.ts, §9 M9/L11/L12/L13.
 //
 // RED REASON: `client/src/ui/i18n/catalog.en.ts` DOES NOT EXIST YET. The static import below
 // fails to resolve at collection, redding every test in this file until the specialist ships it.
 //
-// KEY-GRAMMAR DEVIATION (ADR-0256 D5, plan §1): segments `[a-z][a-zA-Z0-9]*`, at least two,
+// KEY-GRAMMAR DEVIATION: segments `[a-z][a-zA-Z0-9]*`, at least two,
 // dot-separated. Spec §5.4's own `[a-z0-9]+` rejects the spec's own `chrome.helpHint` example —
 // `isValidKey` below encodes the ADR-0205-precedented correction, NOT the spec's literal regex.
 //

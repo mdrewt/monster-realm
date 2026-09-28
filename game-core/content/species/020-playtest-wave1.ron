@@ -1,13 +1,13 @@
-// Playtest roster wave 1 (pt-d1, ADR-0143) — DATA, not code (ADR-0006/0057).
+// Playtest roster wave 1 — DATA, not code.
 // This file sorts AFTER 000-core.ron and 010-derived.ron, so those rows stay the
 // registry prefix (the SPECIES_GOLDEN / m8_9e migration-parity prefix gates).
 //
-// ID RESERVATION: pt-d1 owns species ids 7 through 10. A later roster wave MUST
+// ID RESERVATION: this file owns species ids 7 through 10. A later roster wave MUST
 // start at 11. The species registry is a glob-merged directory, so two waves that
 // claim the same numbers merge with NO git conflict and surface only as a
 // "duplicate species id" error from validate_content at publish time.
 //
-// COMMENT HYGIENE (ADR-0143 D7): a TRAILING comment here must never contain the
+// COMMENT HYGIENE: a TRAILING comment here must never contain the
 // sequence id-followed-by-a-colon. Two evals strip whole-line comments only and
 // then regex-scan the remaining text, so such a comment injects a phantom stable
 // content id into the append-only baseline. Use the "id=1" form (as 000-core.ron
@@ -24,9 +24,8 @@
 //
 // NOT WILD-OBTAINABLE YET: encounters/000-core.ron is outside this slice and the
 // starter is hardcoded to species 1, so all four forms are unreachable in a
-// running game until the encounter/tuning slice places 7 and 8. See ADR-0143 D4 —
-// that slice also owns the first live-Sandstorm runtime proof and the recruit e2e
-// flee-predicate generalisation.
+// running game until an encounter table places them (encounters/000-core.ron
+// now places 7 and 8).
 //
 // Species 9 and 10 are evolution-only DERIVED forms and MUST NEVER appear in an
 // encounter table (validate_evolution_fusion step 6 enforces it).
@@ -49,9 +48,9 @@
         // (800 vs 600) — no two-skill Dark moveset changes that until Dark gains a
         // stronger skill. It is NOT unreachable though: against Water and Plant
         // defenders Aqua Jet is not-very-effective (400), so the AI does pick Toxic
-        // Sting and the poison lands. Both halves matter; see ADR-0143 D3.
+        // Sting and the poison lands. Both halves matter.
         learnable_skill_ids: [11, 4],
-        ability: Some(2), // Vital Spirit (id=2): immune to Sleep (ADR-0100)
+        ability: Some(2), // Vital Spirit (id=2): immune to Sleep
     ),
     (
         id: 9,
@@ -61,7 +60,7 @@
         // Sandblast (35x10x3) still beats Vine Whip (45x10x2) neutrally; Vine Whip
         // is the Water answer this bulk-first form would otherwise lack.
         learnable_skill_ids: [9, 5],
-        ability: Some(3), // Regeneration (id=3): heals 1/4 max HP on entry (ADR-0100)
+        ability: Some(3), // Regeneration (id=3): heals 1/4 max HP on entry
         tier: 1,
     ),
     (
@@ -71,7 +70,7 @@
         affinity: Dark,
         // Fire Fang is the sweeper's real damage; Toxic Sting is inherited utility.
         learnable_skill_ids: [11, 2],
-        ability: Some(2), // Vital Spirit (id=2): immune to Sleep (ADR-0100)
+        ability: Some(2), // Vital Spirit (id=2): immune to Sleep
         tier: 1,
     ),
 ]

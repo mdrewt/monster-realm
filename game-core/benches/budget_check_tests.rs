@@ -1,4 +1,4 @@
-//! OBS-6 proof-of-teeth for the perf-budget gate (m20a, ADR-0180 D7).
+//! OBS-6 proof-of-teeth for the perf-budget gate.
 //!
 //! REGISTRATION (the specialist's job, not this file's): `game-core/Cargo.toml`
 //! gains

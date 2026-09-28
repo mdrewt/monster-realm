@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/renameView.i18n.test.ts — m24-s5 (ADR-0261) RED gating tests: RN-01/02/03.
+// ui/renameView.i18n.test.ts — m24-s5 RED gating tests: RN-01/02/03.
 //
 // SOURCE OF TRUTH: memory/projects/monster-realm-m24-s5-plan.md (Tests, Files — renameView.ts
 // show() writes chrome.rename.submit after the wasVisible read), plan-revisions.md D4

@@ -126,8 +126,8 @@ coverage: wasm
 mutate:
     cargo mutants --workspace
 
-# game-core mutation gate, zero tolerance (ADR-0050): any missed mutant fails; timeouts are
-# tolerated only when missed=0 (ADR-0088).
+# game-core mutation gate, zero tolerance: any missed mutant fails; timeouts are
+# tolerated only when missed=0.
 mutate-core:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -145,11 +145,11 @@ mutate-core:
     missed=$(wc -l < mutants.out/missed.txt)
     echo "mutate-core: missed=$missed (zero-tolerance)"
     if [ "$missed" -gt 0 ]; then
-        echo "game-core mutation gate: $missed surviving mutant(s) — zero-tolerance (ADR-0050)" >&2
+        echo "game-core mutation gate: $missed surviving mutant(s) — zero-tolerance" >&2
         exit 1
     fi
 
-# Server-module survivor-count ratchet (ADR-0050 A2); the crate is `monster-realm-module`.
+# Server-module survivor-count ratchet; the crate is `monster-realm-module`.
 # Cap rebaselined by the Phase-3 mutants triage (RC-mutate-server): full run at 428314e = 1151
 # mutants, 31 missed (29 accepted, one MUT-server-* ledger row per file, + 2 stale-build flakes),
 # 1 timeout (evolution.rs check_and_evolve `+=` -> `*=`, counted as caught); cap = 31 + 3 headroom.
@@ -176,16 +176,16 @@ mutate-server cap="34":
     missed=$(grep -c '' mutants.out/missed.txt || true)
     echo "surviving mutants: $missed (cap {{cap}})"
     if [ "$missed" -gt "{{cap}}" ]; then
-        echo "survivor count $missed exceeds cap {{cap}} — mutation ratchet violated (ADR-0050)" >&2
+        echo "survivor count $missed exceeds cap {{cap}} — mutation ratchet violated" >&2
         exit 1
     fi
 
-# Republish over live data with a bumped CONTENT_VERSION and assert data survives + re-seeds
-# (ADR-0079). Needs a running SpacetimeDB; isolated DB name.
+# Republish over live data with a bumped CONTENT_VERSION and assert data survives + re-seeds.
+# Needs a running SpacetimeDB; isolated DB name.
 smoke-republish:
     bash scripts/smoke-republish.sh "${STDB_SERVER:-http://127.0.0.1:3000}" "${MR_SMOKE_DB:-monster-realm-smoke}"
 
-# ---- local playtest ops (ADR-0129; need a live SpacetimeDB) ----
+# ---- local playtest ops (need a live SpacetimeDB; docs/runbooks/playtest-ops.md) ----
 # Env: STDB_SERVER (default http://127.0.0.1:3000), MR_PLAYTEST_DB (default monster-realm-playtest).
 
 # Fail fast when no SpacetimeDB answers. `server ping` resolves nicknames the same way
@@ -204,7 +204,8 @@ playtest-preflight:
 
 # Publish the honest release module (default features) to the isolated playtest DB, seed
 # content, prove no dev reducers / DEV hooks, build the client, and serve the production build.
-playtest-up:
+# Depends on `wasm` so a fresh clone's `npm run build` finds the prediction pkg.
+playtest-up: wasm
     #!/usr/bin/env bash
     set -euo pipefail
     export STDB_SERVER="${STDB_SERVER:-http://127.0.0.1:3000}"
@@ -225,7 +226,7 @@ playtest-up:
         exit 1
     fi
     just playtest-verify-release
-    # The production build refuses an unset/dev-default DB (ADR-0128), so bake the playtest DB in.
+    # The production build refuses an unset/dev-default DB, so bake the playtest DB in.
     ( cd client && VITE_STDB_DB="$MR_PLAYTEST_DB" npm run build )
     just playtest-verify-build
     # `exec` makes $! vite's own PID so playtest-down can stop it; `disown` survives recipe exit.
@@ -273,7 +274,7 @@ playtest-wipe:
     fi
     just playtest-verify-release
 
-# Aggregate playtest_event into the GDD §4 H1/H2 proxy report (ADR-0131).
+# Aggregate playtest_event into the GDD §4 H1/H2 proxy report.
 playtest-report:
     #!/usr/bin/env bash
     set -euo pipefail

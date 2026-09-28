@@ -82,7 +82,7 @@ const EXPECTED_GUARD_ONLY = [
   'helpView',
   'menuView',
   'claimView',
-  // rb-52 (ADR-0231 A2-D1): the privacy surface. GUARD_ONLY for claimView's reason one step
+  // rb-52: the privacy surface. GUARD_ONLY for claimView's reason one step
   // harder — it holds a two-step confirmation for an IRREVERSIBLE action, so a stray keypress
   // that force-hid it would either strand the arming or invite a re-click on a surface the
   // player believes they dismissed.
@@ -103,7 +103,7 @@ const EXPECTED_BATTLE_FORCE_HIDE = [
   'renameView',
   'tradeProposeView',
   'menuView',
-  // rb-52 (ADR-0231 A2-D4): appended. refreshBattle does NOT consult canOpen, so leaving an id
+  // rb-52: appended. refreshBattle does NOT consult canOpen, so leaving an id
   // OUT does not deny the auto-show — it leaves that overlay painted under the battle with a
   // second aria-modal root and a second focus trap. `PrivacyView.hide()` disarms the delete
   // confirmation on its way out, which is what makes force-hiding it safe.
@@ -984,7 +984,7 @@ describe('overlayRegistry — OverlayHandles, the force-hide write table (uxd3-c
     // `export type OverlayHandles = Readonly<Record<OverlayId, (() => void) | undefined>>` — NOT
     // a `{ readonly hide?: () => void }` wrapper. `dialogueView` is the SOLE member allowed to
     // supply `undefined` instead of a thunk: a client-side hide of a live conversation strands
-    // the server `player_conversation` row (ptc5c/ADR-0139), and
+    // the server `player_conversation` row, and
     // `W-ESCAPE-DIALOGUE-NEVER-BARE-HIDE` (main.wiring.test.ts) is a whole-file ZERO-count on
     // `dialogueView?.hide` / `dialogueView.hide` in main.ts — so a table of REQUIRED thunks
     // cannot compile in this codebase at all.
@@ -1028,7 +1028,7 @@ describe('overlayRegistry — OverlayHandles, the force-hide write table (uxd3-c
 });
 
 // ===========================================================================
-// BLOCK 8 — m23-s0 (ADR-0205): OVERLAY_A11Y, the a11y metadata SSOT.
+// BLOCK 8 — m23-s0: OVERLAY_A11Y, the a11y metadata SSOT.
 //
 // SOURCE OF TRUTH:
 //   specs/monster-realm-v2/M23-accessibility.spec.md §2.0, §2.1, §2.8, §5.1, §6 (A11Y-1..A11Y-5).
@@ -1043,12 +1043,12 @@ describe('overlayRegistry — OverlayHandles, the force-hide write table (uxd3-c
 // dynamic import per-test keeps the RED CONFINED to these five new tests; the pre-existing 18
 // stay green throughout.
 //
-// THE NEGATIVE COMPILE MECHANISM (ADR-0205 D6). A deliberately ill-typed line in a test file
+// THE NEGATIVE COMPILE MECHANISM. A deliberately ill-typed line in a test file
 // would fail `just client-typecheck` itself, and `@ts-expect-error` proves only that SOME error
 // occurs. Instead OR-A11Y-TOTALITY-COMPILE
 // and OR-A11Y-ROLE-CLOSED-UNION-COMPILE write small probe `.ts` modules to a fresh temp dir and
 // SPAWN `tsc --noEmit` on each, asserting the POLARITY of the compiler's own verdict — never a
-// text scan, never `@ts-expect-error`. Red-team measured (ADR-0205 D6) that a text-pin
+// text scan, never `@ts-expect-error`. Red-team measured that a text-pin
 // (`OVERLAY_HANDLES_DECL`-style) is bypassable by planting a *used* decoy string constant that
 // holds the byte-exact expected declaration; a real compile has no such bypass.
 //

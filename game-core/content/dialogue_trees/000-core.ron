@@ -19,7 +19,7 @@
             ),
         ],
     ),
-    // uxd2 (ADR-0161 D4): the shopkeeper's genuinely INERT one-node greeting.
+    // The shopkeeper's genuinely INERT one-node greeting.
     // The Shop affordance derives from NpcInteraction, never from choice text,
     // so this tree stays a plain greeting with a single conversation-ending
     // Leave choice — no conditions, no effects (re-enterable without farming).

@@ -1,17 +1,17 @@
-// Roster wave 2 — DERIVED FORMS (evolution targets). DATA, not code
-// (ADR-0006/0057/0060/0144). Stable `id`s are APPEND-ONLY; reserved band
-// 20..=29 (ADR-0144 D1). Mirrors the 000-core/010-derived split so pt-d3's
+// Roster wave 2 — DERIVED FORMS (evolution targets). DATA, not code.
+// Stable `id`s are APPEND-ONLY; reserved band
+// 20..=29. Mirrors the 000-core/010-derived split so an
 // encounter author has an unambiguous rule: wild-legal = 000-core + 050-wave2.
 //
 // Species 22 and 23 are evolution-only DERIVED forms and MUST NEVER appear in
-// an encounter table — `validate_evolution_fusion` enforces it. They are
+// an encounter table. They are
 // reachable in-game only by transforming a wild-obtainable form:
-// Umbraquill (20) evolves into 22 at Level(22); Gustwyrm (21) evolves into 23
-// at Bond(180).
+// Umbraquill (20) evolves into 22 at level 22; Gustwyrm (21) evolves into 23
+// at Trust tier Friendly (evolution_paths/000-core.ron).
 //
 // Every id here must be some evolution's `to_species` exactly once — nothing in
 // the Rust validators catches an ORPHAN derived form (they walk *from*
-// evolutions, never *to* this file), so the pt-d2 eval carries that tooth.
+// evolutions, never *to* this file), so keep it true by hand.
 [
     // Venumbra (Dark, status) — the fastest form in the roster at speed 100
     // (Pyroleo 90), which is the whole point of the line: it applies status
@@ -36,7 +36,7 @@
         base_stats: (hp: 92, attack: 60, defense: 82, speed: 66, sp_attack: 78, sp_defense: 96),
         affinity: Wind,
         learnable_skill_ids: [10, 7, 3],
-        ability: Some(3), // Regeneration (id=3): heals 1/4 max HP on entry (ADR-0100)
+        ability: Some(3), // Regeneration (id=3): heals 1/4 max HP on entry
         tier: 1,
     ),
 ]

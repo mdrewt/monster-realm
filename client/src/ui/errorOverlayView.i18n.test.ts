@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/errorOverlayView.i18n.test.ts — m24s5 (ADR-0261) RED gating tests: errorOverlayView.ts
+// ui/errorOverlayView.i18n.test.ts — m24s5 RED gating tests: errorOverlayView.ts
 // routes its footer through t() from the i18n resolver instead of a raw English literal.
 //
 // SOURCE OF TRUTH: /tmp/m24-s5/plan.md (m24-s5 plan) §Files/`errorOverlayView.ts`, §Key roster

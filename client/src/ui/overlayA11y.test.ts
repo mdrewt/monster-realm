@@ -5,7 +5,6 @@
 //
 // SOURCE OF TRUTH: specs/monster-realm-v2/M23-accessibility.spec.md §2.1-§2.3, §6;
 //   memory/projects/monster-realm-m23-s1-plan.md (§overlayA11y.ts, risk R1, adjudication A2/A3/A6);
-//   docs/adr/0205-overlay-a11y-metadata-ssot-and-copy-catalog.md D1-D3, D7;
 //   memory/projects/gates/m23-s1.gates.md X10/X11/X12.
 //
 // RED REASON: `client/src/ui/overlayA11y.ts` DOES NOT EXIST YET. Every test below fails with

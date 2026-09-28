@@ -65,7 +65,7 @@ export const MENU_TREE: readonly MenuCategoryDef[] = [
     leaves: [
       { id: 'box', title: 'Monster Box', keyGlyph: 'B', target: 'boxView' },
       { id: 'backpack', title: 'Backpack & Raising', keyGlyph: 'I', target: 'raisingView' },
-      { id: 'evolve', title: 'Evolve & Fuse', keyGlyph: 'E', target: 'evolutionView' },
+      { id: 'evolve', title: 'Evolve', keyGlyph: 'E', target: 'evolutionView' },
     ],
   },
   {

@@ -1,4 +1,4 @@
-// Item registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
+// Item registry — DATA, not code. Stable `id`s are APPEND-ONLY.
 [
     (
         id: 1,
@@ -22,22 +22,21 @@
         cure_status: Some(Poison),
         sell_price: 60,
     ),
-    // ---- crystalized-essence consumables (ADR-0149, ADR-0176 D6) ---------
+    // ---- crystalized-essence consumables ---------
     // Items id=4 and id=5 were slice B's discrete evolution TRIGGERS. That
-    // role is deleted with EvolutionTrigger itself (EG1/ADR-0174); under the
+    // role is deleted with EvolutionTrigger itself; under the
     // essence-graph model they are essence SOURCES instead, consumed by
-    // consume_crystalized_essence (EG2-4). They still carry NO
+    // consume_crystalized_essence. They still carry NO
     // recruit/train/cure fields — rule R9 requires an essence item to be
     // single-role, and validate_evolution_paths rejects the combination.
     //
     // Each grants exactly the amount its item-assisted evolution edge
     // requires (edge=6 Water 100, edge=8 Fire 100 in
     // evolution_paths/000-core.ron), so one feed clears the bar in a single
-    // use — the old trigger's one-shot-unlock feel, preserved (EG3-8).
+    // use — the old trigger's one-shot-unlock feel, preserved.
     //
-    // NOW STOCKED in shops/000-core.ron at 500, retiring ADR-0149 D5/D6's
-    // deliberate non-stocking; its stated condition was "stock these once a
-    // reducer can consume them", and EG2-4 is that reducer.
+    // STOCKED in shops/000-core.ron at 500; consume_crystalized_essence is the
+    // reducer that consumes them.
     //
     // COMMENT HYGIENE (gated by pt_d3_tuning.rs t6, which scans this directory
     // for id-shaped needles in BOTH line and block comments): full-line

@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 // M0b e2e: drives the REAL browser against a running SpacetimeDB instance with
 // the `monster-realm` module published. In CI this runs against a containerized
-// spacetime (ADR-0009); locally it reuses a running instance + dev server.
+// spacetime; locally it reuses a running instance + dev server.
 // e2e port env-driven (default 5290) so concurrent suites use distinct ports
 // (set MR_E2E_PORT). Pairs with VITE_STDB_DB (server publish + client connect)
 // to give each run its own db + port; the dev server (vite) reads MR_E2E_PORT too.
@@ -16,7 +16,7 @@ export default defineConfig({
   // iteration. GitHub Actions sets CI=true by default. M10.5d — verified 2026-07-04:
   // `CI=1 npx playwright test` exits non-zero when forbidOnly fires.
   forbidOnly: !!process.env.CI,
-  // ADR-0009 preconditions: republish the module with --delete-data (zero players).
+  // Preconditions: republish the module with --delete-data (zero players).
   globalSetup: './e2e/global-setup.ts',
   timeout: 45_000,
   fullyParallel: false,
@@ -36,7 +36,7 @@ export default defineConfig({
     reuseExistingServer: false,
     timeout: 60_000,
   },
-  // rb-20 (residual R-m23-s11-X11), ADR-0219. Two projects, and the pair is
+  // Two projects, and the pair is
   // TWO-SIDED ON PURPOSE — each side is mandatory for a different reason:
   //
   //   * `default`'s `testIgnore` is NOT optional. Collection here is by
@@ -44,7 +44,7 @@ export default defineConfig({
   //     collected by `default`, runs with NO emulation, and its very first
   //     assertion (`matchMedia('(prefers-reduced-motion: reduce)').matches`)
   //     fails on every PR — `client/package.json`'s `e2e` script is a bare
-  //     `playwright test`, which runs every declared project (ADR-0219 D6).
+  //     `playwright test`, which runs every declared project.
   //
   //   * `reduced-motion`'s `testMatch` is NOT optional either. Without it that
   //     project inherits `testDir` and collects the WHOLE e2e suite under
@@ -53,9 +53,9 @@ export default defineConfig({
   //     an exact `presenceCount === 2`), and which would double half 3's
   //     `stats.expected` floor in `just a11y-e2e`. `testMatch` is deliberately
   //     narrower than a `testIgnore` on this side: it cannot silently widen
-  //     when a future spec file is added (ADR-0219 D2).
+  //     when a future spec file is added.
   //
-  // THE SPELLING IS LOAD-BEARING AND COUNTERINTUITIVE (ADR-0219 D5, MEASURED).
+  // THE SPELLING IS LOAD-BEARING AND COUNTERINTUITIVE (MEASURED).
   // The shorthand every Playwright doc page shows — `use: { reducedMotion:
   // 'reduce' }` — DOES NOT EXIST on this repo's pinned @playwright/test 1.61.1:
   // `node_modules/playwright/types/test.d.ts` contains that string exactly

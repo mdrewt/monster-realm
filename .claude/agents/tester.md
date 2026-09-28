@@ -46,9 +46,8 @@ your role exists to respect.
 3. **Behavior-focused + mutation-ready.** Assert concrete values (tiles, counts,
    return booleans), never just "did not throw". The suite must start red for the
    right reason — a missing implementation, not a typo in your test.
-4. **Every criterion → a test; every gate → a proof-of-teeth fixture that BITES**
-   — one that fails when the invariant is violated. State, per fixture, *which
-   wrong implementation it kills* (e.g. "a SetMove replayed as a raw append lands
+4. **Every criterion → a test that fails when the invariant is violated.** State,
+   per test, *which wrong implementation it catches* (e.g. "a SetMove replayed as a raw append lands
    on the wrong tile — this assertion catches it").
 5. **Report** the test list, the criterion each covers, and the red state. You do
    NOT later edit a gating test to fit a buggy implementation — a wrong test is
@@ -61,5 +60,5 @@ your role exists to respect.
   — fast-check misreads the matcher's return as a `false` and fails spuriously.
   When a property test flakes or the runner picks up the wrong specs, Read
   `~/.claude/skills/vitest-fast-check/SKILL.md` (full gotcha list) before debugging.
-- Use the project's framework + `standards/testing-tdd.md`; scope the runner away
+- Use the project's framework + `~/.claude/harness/standards/testing-tdd.md`; scope the runner away
   from other test types (e.g. Playwright e2e specs the unit runner would grab).

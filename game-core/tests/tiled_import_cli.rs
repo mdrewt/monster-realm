@@ -1,4 +1,4 @@
-//! fix-nightly (ADR-0088): CLI-seam integration tests for the `tiled_import`
+//! fix-nightly: CLI-seam integration tests for the `tiled_import`
 //! binary. These are the ONLY way to kill the two `main` mutants — cargo-mutants
 //! cannot reach `main` from a `#[cfg(test)]` unit test, so we spawn the compiled
 //! binary via `CARGO_BIN_EXE_tiled_import` and assert on its exit code + stdio.

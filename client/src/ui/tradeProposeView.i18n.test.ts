@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/tradeProposeView.i18n.test.ts — m24-s5 (ADR-0261) RED gating tests: TP-01/02/03.
+// ui/tradeProposeView.i18n.test.ts — m24-s5 RED gating tests: TP-01/02/03.
 //
 // SOURCE OF TRUTH: memory/projects/monster-realm-m24-s5-plan.md (Tests, Key roster
 // tradePropose.*), plan-revisions.md (D4 rewrite), docs/adr/0261-i18n-migration-batch-c.md.

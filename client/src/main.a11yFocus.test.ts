@@ -17,7 +17,7 @@
  *      constructed against the REAL static shells. The DOM is built by parsing the REAL
  *      `client/index.html` with `DOMParser` and moving its body children into the live
  *      document via `document.adoptNode` + `replaceChildren` — never `innerHTML`
- *      (ADR-0135). `document.adoptNode` is the spec-correct way to move a node across
+ *     . `document.adoptNode` is the spec-correct way to move a node across
  *      Documents (DOMParser.parseFromString returns nodes owned by a NEW Document); a
  *      bare cross-document `appendChild` is technically a WRONG_DOCUMENT error and this
  *      sidesteps needing to know whether happy-dom is lenient about it.
@@ -67,7 +67,7 @@
  * never pass by the canvas silently being unfocusable instead of by the gate genuinely
  * recognising it).
  *
- * FIX CYCLE 1 (ADR-0206 Amendment A1). RED at this fix's fork: 6× `S5T-GATE-SAMEKEY-CLOSE`
+ * FIX CYCLE 1. RED at this fix's fork: 6× `S5T-GATE-SAMEKEY-CLOSE`
  * and `S5T-GATE-REOPEN-AFTER-SAMEKEY-CLOSE` — the pre-amendment conjunct also gated the
  * toggle-CLOSE half, which killed same-key close for every user (the deferred focus makes
  * "focus is inside the overlay" the universal post-open state). GREEN AT FORK BY DESIGN:
@@ -76,7 +76,7 @@
  * WRONG IMPL KILLED: recorded per test, immediately above each `it`/`it.each`.
  *
  * NO `new RegExp(...)`, no `eval`, no `new Function` (Semgrep bans them — none used here).
- * NO `innerHTML` anywhere (ADR-0135) — DOM construction is `DOMParser` + `adoptNode` +
+ * NO `innerHTML` anywhere — DOM construction is `DOMParser` + `adoptNode` +
  * `replaceChildren` only; DOM reads use `textContent`.
  */
 import { readFileSync } from 'node:fs';
@@ -1172,7 +1172,6 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   // need for the mocked connection to ever deliver a row itself — the seam this whole file's
   // other tests have no reason to reach for.
   //
-  // SOURCE OF TRUTH: docs/adr/0272-evolution-notice-announcement-and-focus.md.
   //
   // ---------------------------------------------------------------------------------------
 

@@ -1,6 +1,6 @@
 // determinism-fail-loud.eval.mjs — M8.8a "Determinism fail-loud (config + teeth)"
 //
-// Gates three orthogonal acceptance criteria from M8.8a (ADR-0055):
+// Gates three orthogonal acceptance criteria from M8.8a:
 //
 //   Part A — Clippy rejects EVERY entropy/clock sink in the detached fixture crate
 //            (evals/determinism-teeth). Uses CLIPPY_CONF_DIR=<workspace root> so the

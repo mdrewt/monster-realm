@@ -1,11 +1,11 @@
-// verify-build-hooks.mjs — pt-a2 (ADR-0129, EARS pt-a2-4)
+// verify-build-hooks.mjs — prove a production client bundle carries no DEV debug hooks.
 //
 // Scans the emitted `client/dist/**/*.js` production bundle and fails loud
 // (non-zero exit) if any DEV debug-hook `window`-binding survives into the
 // honest build. It matches the BINDING form (`.__game=`/`.__mrTrade=`/
 // `.__mrPvp=`, plus the `defineProperty(window,"__x"` escape), NOT a bare
 // substring: an unminified build legitimately retains dead object literals
-// (`{challengePvp,proposeTrade}`) not attached to `window` (ADR-0128 §D3), and
+// (`{challengePvp,proposeTrade}`) not attached to `window`, and
 // the ungated prod build stamp `window.__mrBuild=` must NOT be flagged.
 //
 // It fails loud when `client/dist` is absent or contains zero `.js` files —
@@ -22,7 +22,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-// The canonical DEV-hook fingerprint set (§K F4 + ADR-0128 §D3). The window-
+// The canonical DEV-hook fingerprint set. The window-
 // binding assignment form (leading `.` also catches `w.`/`globalThis.`/`self.`
 // receivers) plus the defineProperty escape. NO bracket `["__game"]` forms (vite
 // emits no sourcemaps by default so they aren't reachable); NO bare `__game`
@@ -66,7 +66,7 @@ export function findDevHooks(bundleText, fingerprints) {
 //
 // A build that forgot VITE_STDB_DB bakes `db: void 0` (undefined), so no `db:"<name>"`
 // value is present → returns false. Accepts the pretty (`db: "x"`) and minified
-// (`db:"x"`) shapes — the honest build is currently pretty (ADR-0128), but we hedge
+// (`db:"x"`) shapes — the honest build is currently pretty, but we hedge
 // like DEV_HOOK_FINGERPRINTS. String methods + literal concatenation only (NO
 // `new RegExp(...)` — Semgrep detect-non-literal-regexp).
 export function bundleBakesDb(bundleText, dbName) {
@@ -137,7 +137,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(1);
   }
 
-  // pt-a2 (ADR-0128/0129): also verify the bundle baked a VALID playtest database.
+  // pt-a2: also verify the bundle baked a VALID playtest database.
   // A client build that never received VITE_STDB_DB bakes `db: undefined`, and the
   // served production bundle then throws the connectionConfig dev-default guard in the
   // user's browser. Catch that misconfiguration HERE, at build time, instead. The
@@ -157,7 +157,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         `database "${expectedDb}" (no db:"${expectedDb}" value in the bundle). The client build did not ` +
         `receive VITE_STDB_DB — build with \`VITE_STDB_DB="$MR_PLAYTEST_DB" npm run build\` (as ` +
         `\`just playtest-up\` does), else the served bundle throws "production build refuses the ` +
-        `dev-default database" at runtime (ADR-0128).`,
+        `dev-default database" at runtime.`,
     );
     process.exit(1);
   }

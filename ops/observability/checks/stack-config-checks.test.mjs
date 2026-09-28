@@ -3,7 +3,7 @@
 //
 // Per security predicate, exactly two tests:
 //   (a) REAL FILES — the predicate accepts the committed config under ops/observability/**
-//       (+ docs/observability-dr-runbook.md for the credential scan), read relative to
+//       (+ docs/runbooks/observability-dr.md for the credential scan), read relative to
 //       import.meta.dirname, never process.cwd();
 //   (b) one BAD fixture it must reject — the positive control that keeps (a) from passing
 //       against a predicate that accepts everything.
@@ -343,7 +343,10 @@ test('REAL FILES: checkNoQuotedCredential passes across every real ops/observabi
       name: 'grafana/provisioning/alerting/contact-points.yml',
       text: readOps('grafana/provisioning/alerting/contact-points.yml'),
     },
-    { name: 'observability-dr-runbook.md', text: readRepoRoot('docs/observability-dr-runbook.md') },
+    {
+      name: 'runbooks/observability-dr.md',
+      text: readRepoRoot('docs/runbooks/observability-dr.md'),
+    },
   ];
   assertOk(
     checkNoQuotedCredential(namedTexts),

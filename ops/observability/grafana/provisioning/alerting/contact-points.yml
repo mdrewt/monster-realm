@@ -3,8 +3,7 @@
 # The webhook target is env-driven and REQUIRED — Grafana resolves `$__env{...}` at provisioning
 # time, and docker-compose.yml declares MR_ALERT_WEBHOOK_URL with `:?` so the stack refuses to
 # start rather than booting with alerting that silently notifies nobody. A self-hosted ntfy
-# topic URL is the intended value (ADR-0180 names ntfy as an acceptable optional contact point);
-# any webhook receiver works.
+# topic URL is the intended value; any webhook receiver works.
 #
 # NEVER commit a literal URL containing a token here. `.env` is gitignored; `.env.example`
 # carries names only.

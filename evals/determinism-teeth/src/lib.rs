@@ -1,4 +1,4 @@
-//! DELIBERATELY IMPURE determinism-gate proof-of-teeth fixture (M8.8a, ADR-0055).
+//! DELIBERATELY IMPURE determinism-gate proof-of-teeth fixture.
 //! Every line below is a determinism violation the workspace `clippy.toml` bans.
 //! This crate is detached from the workspace and is NEVER part of a green build;
 //! `evals/determinism-fail-loud.eval.mjs` runs clippy on it and asserts each sink

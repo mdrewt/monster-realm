@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/evolutionNotice.i18n.test.ts — m24s5 (ADR-0261) RED gating tests: evolutionNotice.ts routes
+// ui/evolutionNotice.i18n.test.ts — m24s5 RED gating tests: evolutionNotice.ts routes
 // the pure reveal copy AND the banner's OK label through t()/tf() from the i18n resolver instead
 // of raw English literals / template composition.
 //

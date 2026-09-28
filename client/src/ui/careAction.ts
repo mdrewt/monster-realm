@@ -1,7 +1,7 @@
 // ui/careAction.ts — the care-button decision core (feel-polish D1).
 //
 // WHY THIS MODULE EXISTS: `onCare` used to live inline in main.ts, which is
-// coverage-excluded and whose wiring closures are not exported — so the ADR's
+// coverage-excluded and whose wiring closures are not exported — so the design's
 // central claim ("the await genuinely reflects the server outcome, so the
 // confirmation can never lie") was only ever checkable by string-scanning
 // main.ts, which red-team defeated twice (an optimistic pre-await 'Cared!' and a

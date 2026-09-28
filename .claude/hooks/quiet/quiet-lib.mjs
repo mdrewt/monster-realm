@@ -14,7 +14,7 @@
 
 // CSI sequences (colour, cursor moves) and OSC strings (the hyperlinks cargo and
 // vitest emit), terminated by BEL or ST. Regex literals only — `new RegExp` is
-// banned in this workspace's eval corpus (ADR-0064) and the ban is a good one.
+// banned in this workspace's eval corpus and the ban is a good one.
 //
 // The ESC bytes below are flagged by biome's noControlCharactersInRegex, which is a
 // good rule and wrong here: matching the control character IS the purpose. Suppressed

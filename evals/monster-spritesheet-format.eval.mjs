@@ -237,7 +237,7 @@ function sha256File(p) {
  * for a non-zero byte: for an all-transparent image every scanline filter byte
  * AND every sample byte is 0, so the inflated stream is all zeros. This is a
  * FLOOR ("something was drawn"), deliberately not a judgement about art quality —
- * distinct silhouettes remain a review criterion (ADR-0143 D5).
+ * distinct silhouettes remain a review criterion.
  */
 export function isBlankPng(buf) {
   if (!buf || buf.length < 29) return true;

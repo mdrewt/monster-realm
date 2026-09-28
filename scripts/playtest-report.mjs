@@ -1,4 +1,4 @@
-// playtest-report.mjs — pt-b2 server observability (ADR-0131)
+// playtest-report.mjs — pt-b2 server observability
 //
 // Aggregates the PRIVATE `playtest_event` table into the GDD §4 H1/H2 proxy
 // report (weaken-first / success / bait / recatch rates). The raw per-identity
@@ -93,13 +93,13 @@ const NUMERIC_ROW_KEYS = ['event_id', 'kind', 'species_id', 'hp_permille', 'bait
 //     unwrapped here. A two-element array through String(...) yields "a,b" and
 //     would silently MERGE two distinct players into one aggregation group key.
 //     A BARE string is rejected too: `decodeSqlJson` never unwraps, so the wire
-//     shape is always the array (ADR-0197 D20) and the bare-string tolerance was
+//     shape is always the array and the bare-string tolerance was
 //     an untested door onto arbitrary garbage. An EMPTY string is rejected for
 //     the same merge reason — it is never a real player, and two malformed rows
 //     both yielding '' would collapse into ONE group key.
 //   - Every rejection message below reports the SHAPE ONLY, never the value:
 //     `playtest_event` is PRIVATE per-identity data and the driver prints these
-//     messages to stderr/CI logs (PII firewall, ADR-0131).
+//     messages to stderr/CI logs (PII firewall).
 //
 // Accepted residual: u64 values above 2^53 lose precision inside JSON.parse
 // before this fn ever sees them; `event_id` is `#[auto_inc]` from 1, so that is
@@ -200,8 +200,8 @@ export function sortByEventId(rows) {
 //
 // WHY JSON and not the default text output: the text form is a human DISPLAY
 // format rendered through the CLI's PsqlWrapper with no stability contract.
-// 2.8.1 silently changed sum-variant rendering from `Mild` to `mild`
-// (ADR-0197), and a display-format change like that is invisible to every gate
+// 2.8.1 silently changed sum-variant rendering from `Mild` to `mild`,
+// and a display-format change like that is invisible to every gate
 // this repo has. The JSON body is the wire shape the server actually returns.
 //
 // Values are left in RAW JSON form here (numbers stay numbers, booleans stay
@@ -222,7 +222,7 @@ export function decodeSqlJson(stdout) {
     // NON-CONTENT diagnostics only. The body is the raw response of a query
     // against the PRIVATE `playtest_event` table — `identity` is column 3 of 7,
     // so it appears early in every row and ANY slice of a truncated/garbled body
-    // would leak a real identity into stderr/CI logs (PII firewall, ADR-0131).
+    // would leak a real identity into stderr/CI logs (PII firewall).
     // The underlying SyntaxError is dropped for the same reason: Node's
     // JSON.parse messages quote the surrounding source text.
     const text = typeof stdout === 'string' ? stdout : String(stdout);

@@ -11,7 +11,7 @@
         dialogue_tree_id: "elder_oak_talk",
         sprite_id: 10,
     ),
-    // uxd2 (ADR-0161 D7): the Tideglass shopkeeper — zone 1, stationary
+    // The Tideglass shopkeeper — zone 1, stationary
     // (wander_radius 0 is npc_decide's pinned special case, keeping the e2e
     // deterministic), greet-then-shop via interaction: Shop(1). APPEND-ONLY:
     // elder_oak stays first (content.rs parity snapshot pins defs.first()).

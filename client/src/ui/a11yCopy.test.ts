@@ -2,7 +2,6 @@
 //
 // SOURCE OF TRUTH:
 //   specs/monster-realm-v2/M23-accessibility.spec.md §2.8, §5.1 [A11Y-04], §6 A11Y-4.
-//   docs/adr/0205-overlay-a11y-metadata-ssot-and-copy-catalog.md D4, D5 (BINDING).
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the spec/ADR only.
 

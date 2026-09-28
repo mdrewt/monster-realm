@@ -7,7 +7,6 @@
 //   specs/monster-realm-v2/M23-accessibility.spec.md §2.2, §6 (A11Y-13/14/15/16/34);
 //   memory/projects/monster-realm-m23-s3-plan.md §0 F1/F2/F4/F7, §1 D1/D2/D3/D7/D8, §4, §7 A1/A3/A6/A7/A8;
 //   memory/projects/gates/m23-s3.gates.md X1/X2/X3/X4/X6/X7/X8/X9;
-//   docs/adr/0205-overlay-a11y-metadata-ssot-and-copy-catalog.md D1-D4, A3;
 //   ui/overlayA11y.ts (the S1 helper this view must DELEGATE to), ui/overlayRegistry.ts (OVERLAY_A11Y).
 //
 // RED REASON: `client/src/ui/healView.ts` DOES NOT CALL openOverlayA11y/closeOverlayA11y AT ALL

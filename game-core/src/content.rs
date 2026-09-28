@@ -2286,7 +2286,7 @@ mod tests {
 
     /// Pre-migration species.ron — frozen inline snapshot (3 species, ids 1–3).
     /// Kills: a migration that drops, reorders, or alters any of the 3 rows.
-    const SPECIES_GOLDEN: &str = r#"// Species registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
+    const SPECIES_GOLDEN: &str = r#"// Species registry — DATA, not code. Stable `id`s are APPEND-ONLY.
 [
     (
         id: 1,
@@ -2316,7 +2316,7 @@ mod tests {
 
     /// Pre-migration skills.ron — frozen inline snapshot (6 skills, ids 1–6).
     /// Kills: a migration that drops, reorders, or alters any of the 6 rows.
-    const SKILLS_GOLDEN: &str = r#"// Skill registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
+    const SKILLS_GOLDEN: &str = r#"// Skill registry — DATA, not code. Stable `id`s are APPEND-ONLY.
 [
     (id: 1, name: "Ember",       affinity: Fire,    power: 40, accuracy: 100, pp: 25),
     (id: 2, name: "Fire Fang",   affinity: Fire,    power: 65, accuracy: 95,  pp: 15),
@@ -2329,7 +2329,7 @@ mod tests {
 
     /// Pre-migration zones.ron — frozen inline snapshot (2 zones, ids 0–1).
     /// Kills: a migration that drops, reorders, or alters any of the 2 rows.
-    const ZONES_GOLDEN: &str = r#"// Zone registry — DATA, not code (ADR-0006). Adding a zone is a content edit +
+    const ZONES_GOLDEN: &str = r#"// Zone registry — DATA, not code. Adding a zone is a content edit +
 // a validation test, never a rule change. Stable `id`s are APPEND-ONLY: never
 // reuse or renumber an existing id (the append-only-ids eval enforces it).
 [
@@ -2340,7 +2340,7 @@ mod tests {
 
     /// Pre-migration items.ron — frozen inline snapshot (1 item, id 1).
     /// Kills: a migration that drops, reorders, or alters the row.
-    const ITEMS_GOLDEN: &str = r#"// Item registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
+    const ITEMS_GOLDEN: &str = r#"// Item registry — DATA, not code. Stable `id`s are APPEND-ONLY.
 [
     (
         id: 1,
@@ -2354,7 +2354,7 @@ mod tests {
 
     /// Pre-migration encounters.ron — frozen inline snapshot (1 table, zone_id 0).
     /// Kills: a migration that drops, reorders, or alters the table or its entries.
-    const ENCOUNTERS_GOLDEN: &str = r#"// Encounter registry — DATA, not code (ADR-0006). Per-zone weighted spawn tables.
+    const ENCOUNTERS_GOLDEN: &str = r#"// Encounter registry — DATA, not code. Per-zone weighted spawn tables.
 [
     (
         zone_id: 0,

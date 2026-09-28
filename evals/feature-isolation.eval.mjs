@@ -1,4 +1,4 @@
-// Feature-isolation eval (ADR-0003): the client prediction crate must NEVER pull
+// Feature-isolation eval: the client prediction crate must NEVER pull
 // the server-only `spacetimedb` feature/dependency. game-core derives
 // `SpacetimeType` only under its `spacetimedb` feature, enabled by `server-module`
 // — never by `client-wasm`. A leak here is a silent client/server coupling that

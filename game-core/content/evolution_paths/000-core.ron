@@ -1,8 +1,8 @@
-// Evolution-path graph — DATA, not code (ADR-0006/0057/0174/0176). Replaces the
-// deleted evolutions.ron and fusion.ron entirely (spec EG3-1).
+// Evolution-path graph — DATA, not code. Replaces the
+// former evolutions.ron and fusion.ron entirely.
 //
 // Each entry is one directed edge with an author-assigned, unique, APPEND-ONLY
-// edge_id (EG1-4/EG1-12, ADR-0176 D1 — never reused, never renumbered, even if
+// edge_id (never reused, never renumbered, even if
 // the edge is later removed). This part file OWNS THE edge_id BAND 1-99; a new
 // part file must claim its own band so two content passes cannot collide into
 // an append-only violation that can never be renumbered away.
@@ -12,9 +12,9 @@
 // AND-combined; a None history gate is PERMISSIVE (absent), not "requires the
 // lowest tier".
 //
-// AUTHORING RULE (ADR-0176 D2) — auto-evolution makes level a RACE, not just a
+// AUTHORING RULE — auto-evolution makes level a RACE, not just a
 // threshold. A monster with exactly one currently-eligible path evolves
-// automatically and immediately (EG2-11), so an unconditional low-min_level
+// automatically and immediately, so an unconditional low-min_level
 // edge silently kills every higher-level sibling branch out of the same
 // species before the player is ever offered a choice. For any species with two
 // or more outgoing edges, either give them all the same min_level, or make the
@@ -27,8 +27,8 @@
 [
     // ---- species=1 Flameling, tier 0 -> three branches ------------------
     //
-    // Common branch to Pyroleo (species=4). The pre-EG1 registry gated this
-    // at level 16; ADR-0176 D2 retunes it to 20 so it ties the Steamveil
+    // Common branch to Pyroleo (species=4). The old registry gated this
+    // at level 16; it is retuned to 20 so it ties the Steamveil
     // branch below instead of racing it to death under auto-evolution.
     (
         edge_id: 1,
@@ -41,7 +41,7 @@
         min_nutrition_pct: None,
     ),
     // Rare branch to Embersworn (species=5). Migrated from the deleted
-    // Bond(200) trigger (EG3-3): 200/255 is roughly .78, mapping to the tier
+    // Bond(200) trigger: 200/255 is roughly .78, mapping to the tier
     // one below max, plus the Fire-essence investment that replaces Bond's
     // accumulator role. A min level of 1 is non-vacuous under R4 because both
     // the essence and the Trust gate are present.
@@ -55,7 +55,7 @@
         min_quality_time_tier: None,
         min_nutrition_pct: None,
     ),
-    // Steamveil (species=6) fan-in, half one (EG3-2). Steamveil was orphaned
+    // Steamveil (species=6) fan-in, half one. Steamveil was orphaned
     // by fusion's removal — it is a tier-1 form with no wild encounter and,
     // until this edge and edge=4 below, no way to obtain it at all. Water
     // essence from a Flameling is the deliberately cross-affinity ask: go
@@ -72,7 +72,7 @@
     ),
     // ---- species=2 Tidalin, tier 0 --------------------------------------
     //
-    // Steamveil fan-in, half two (EG3-2) — the mirror of edge=3, Fire essence
+    // Steamveil fan-in, half two — the mirror of edge=3, Fire essence
     // from a Water base form. R8 (fan-in) is explicitly permitted, and this
     // pair is its positive pin.
     (
@@ -88,7 +88,7 @@
     // ---- species=7 Cragling, tier 0 -> two branches ----------------------
     //
     // Common branch to its tier-1 form (species=9), migrated from the deleted
-    // Level(18) trigger (EG3-7). No species data changes — only the incoming
+    // Level(18) trigger. No species data changes — only the incoming
     // edge is re-authored.
     (
         edge_id: 5,
@@ -101,12 +101,12 @@
         min_nutrition_pct: None,
     ),
     // Item-assisted branch to Tidecrag (species=30), migrated from the
-    // deleted item trigger (EG3-8). The Water requirement equals item 4's
+    // deleted item trigger. The Water requirement equals item 4's
     // full essence grant, so one Tidewell Shard clears the bar in a single
     // feed — the old item's one-shot-unlock feel, preserved. It sits below
     // the common branch's level but carries the essence gate, so it does not
-    // dominate edge=5 unconditionally. See ADR-0176 D3 for the accepted risk
-    // that passive wild-win essence can also clear this bar.
+    // dominate edge=5 unconditionally. Accepted risk: passive wild-win essence
+    // can also clear this bar.
     (
         edge_id: 6,
         from_species: 7,
@@ -147,7 +147,7 @@
     // ---- species=20 Umbraquill, tier 0 -----------------------------------
     //
     // Plain level gate to Venumbra (species=22), migrated verbatim from the
-    // deleted Level(22) trigger (EG3-5). Deliberately NO Trust component:
+    // deleted Level(22) trigger. Deliberately NO Trust component:
     // verified against the pre-EG1 registry, this branch was never Bond-gated
     // — only species 1 and species 21 were.
     (
@@ -162,7 +162,7 @@
     ),
     // ---- species=21 Gustwyrm, tier 0 -------------------------------------
     //
-    // Migrated from the deleted Bond(180) trigger (EG3-4): 180/255 is roughly
+    // Migrated from the deleted Bond(180) trigger: 180/255 is roughly
     // .71, the same tier-one-below-max mapping edge=2 uses. No essence
     // component — Bond's whole role here was the care-action grind, which
     // Trust now carries. Non-vacuous under R4 solely because of the Trust

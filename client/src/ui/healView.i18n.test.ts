@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/healView.i18n.test.ts — m24s5 (ADR-0261) RED gating tests: healView.ts routes its one row
+// ui/healView.i18n.test.ts — m24s5 RED gating tests: healView.ts routes its one row
 // sink through tf() from the i18n resolver instead of a raw English template literal.
 //
 // SOURCE OF TRUTH: /tmp/m24-s5/plan.md §Files/`healView.ts`, §Key roster `heal.*`.

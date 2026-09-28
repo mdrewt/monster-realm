@@ -3,7 +3,7 @@
 # This file is also the SSOT for the `$slo_set` reducer allowlist (OBS-22). It is defined ONCE,
 # here, in the recording rule's own matcher; the Grafana dashboard variable derives from the
 # recorded series via label_values() rather than re-declaring the list. Two independently
-# maintained copies of one allowlist is exactly the drift trap ADR-0180 caught for
+# maintained copies of one allowlist is exactly the drift trap already seen with
 # `$trace_pair_set` — it is not repeated here.
 #
 # Everything the dashboards and alert rules query is either recorded below or a raw host-native
@@ -71,7 +71,7 @@ groups:
   - name: mr-meta
     interval: 15s
     rules:
-      # Pipeline health, distinct from process liveness (ADR-0180 amendment "Correction 3").
+      # Pipeline health, distinct from process liveness.
       # `up{job="alloy"}` only proves Alloy's HTTP server answers. Alloy hosts independent
       # internal components: if the file tail stalls (bind-mount permission drift, a rotation
       # edge case) `up` stays 1 while S2 ingestion is entirely dark. This records the actual
@@ -95,7 +95,7 @@ groups:
         expr: |
           sum(rate(mr_log_events_total{evt="heartbeat"}[5m])) or vector(0)
 
-      # rb-40 / ADR-0235 privacy erasure — how often a guest claim purged its export chunks.
+      # Privacy erasure — how often a guest claim purged its export chunks.
       # Provenance is NUMBERED because four separate decisions meet in these three lines, and
       # each of them has an obvious-looking "fix" that would be wrong.
       #
@@ -119,9 +119,9 @@ groups:
       #       `mr:alloy_log_bytes_read:rate5m` and the AlloyIngestStalled dead-man's switch, not
       #       by this rule. If an alert is ever wired onto this series, revisit this line FIRST.
       #
-      #   (4) DELIBERATELY NO ALERT — decided, not deferred. Recorded here because rb-66 was
-      #       assigned no ADR number and the dashboard JSON carries no comments. There is no
-      #       failure event to alert on: ADR-0235 makes this line terminal, so it exists only
+      #   (4) DELIBERATELY NO ALERT — decided, not deferred. Recorded here because the
+      #       dashboard JSON carries no comments. There is no
+      #       failure event to alert on: the purge log line is the claim's terminal statement, so it exists only
       #       for a transaction that COMMITTED, and alerting on it is alerting on success. A
       #       spike threshold would be invented rather than derived (claims are player-driven,
       #       rare and bursty), and an absence switch would cry wolf every quiet night because
@@ -144,8 +144,7 @@ groups:
       #
       #   (1) 30 ms is SpacetimeDB's OWN late-start threshold, not ours: the host emits a
       #       `log::warn!` when a scheduled function starts more than 30 ms after its due time
-      #       (docs/spacetimedb-2.8.1-upgrade-runbook.md:160 — the 2.8.0 release note's "50ms"
-      #       is wrong; 30 ms is what the source does). 30 ms is not a bucket edge of this
+      #       (the 2.8.0 release note's "50ms" is wrong; 30 ms is what the source does). 30 ms is not a bucket edge of this
       #       histogram, and it is deliberately NOT used below. It belongs to a different
       #       instrument — a log line, read in Loki — while this group reads the histogram.
       #       Naming it here so the next reader does not conflate the two and "correct" the
@@ -187,11 +186,11 @@ groups:
       #           already watched by mr:heartbeat:rate5m above, and alerting on the watchdog's own
       #           lateness is circular.
       #         - `playtest_reaper`: a dev-fixture sweep that does not run in a real deployment.
-      #         - `export_bundle_reaper` (ADR-0238, rb-48): the hourly interval-singleton TTL sweep
+      #         - `export_bundle_reaper`: the hourly interval-singleton TTL sweep
       #           of `export_bundle` chunks — the same long-horizon class as `guest_claim_reaper`;
       #           an hourly sweep that starts minutes late is invisible to the player and to the
       #           operator.
-      #         - `account_deletion_reaper` (ADR-0221, rb-24): the one-shot armed at delete time for
+      #         - `account_deletion_reaper`: the one-shot armed at delete time for
       #           the end of the deletion grace period (days ahead, off the account row's own
       #           request stamp); a start delayed by minutes on a multi-day grace period is
       #           invisible.
@@ -199,22 +198,17 @@ groups:
       #           for a blind spot: `spacetime_scheduled_function_delay_seconds_bucket` measures
       #           SCHEDULER DISPATCH delay only (due time -> actual start). Excluding these two
       #           reapers forfeits no observability of whether an export bundle or an account was
-      #           actually reaped on time — no instrument here measures that, and its absence is a
-      #           separate, already-disclosed gap (R-rb-48-OBS, promoted as rb-87).
+      #           actually reaped on time — no instrument here measures that; that is a
+      #           separate, known gap.
       #
-      #       RULE (rb-84 — assigned no ADR number, so recorded here as mr-meta (4) did for rb-66):
-      #       every scheduled function the module declares (a `scheduled(...)` table attribute in
-      #       server-module/src) appears in EXACTLY ONE of the two lists — the selectors below or
-      #       the bullets above. `server-module/src/observability_tests.rs` (the rb84_ tests)
-      #       derives the roster from those attributes and cross-checks both lists, so a new
-      #       scheduled function fails CI until it is classified here. The block is the run of `#`
-      #       lines from the marker down to the bare `#` line that closes it; keep the bullets
-      #       contiguous inside it, and the marker phrase must appear exactly once in this file.
+      #       RULE: every scheduled function the module declares (a `scheduled(...)` table
+      #       attribute in server-module/src) appears in EXACTLY ONE of the two lists — the
+      #       selectors below or the bullets above. Classify a new scheduled function here.
       #
       # The allowlist appears EXACTLY TWICE below — once in the starts selector, once in the
       # on-time selector. The ratio rule DERIVES from the two recorded series and carries no
       # third copy of the list: two independently maintained copies of one allowlist is the
-      # drift trap ADR-0180 caught for `$trace_pair_set`.
+      # drift trap already seen with `$trace_pair_set`.
       - record: mr:scheduled_function_starts:rate5m
         expr: |
           sum by (function) (rate(spacetime_scheduled_function_delay_seconds_bucket{function=~"movement_tick|trade_offer_reaper|pvp_deadline_reaper|battle_challenge_reaper",le="+Inf"}[5m]))

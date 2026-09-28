@@ -1,48 +1,45 @@
 # AGENTS.md — monster-realm
 
-Project-specific rules. Inherits the workspace `AGENTS.md` and `standards/`.
+Project rules for coding agents. Inherits the workspace `AGENTS.md`. Architecture:
+`ARCHITECTURE.md`. Decisions and their reasons: `docs/DECISIONS.md`.
 
-- **Stack:** spacetimedb-game
-- **Toolchain (pinned):** Rust `1.96.0` (`rust-toolchain.toml` — rustup auto-selects, incl. `wasm32-unknown-unknown` + clippy/rustfmt) · spacetime CLI/host `2.8.1` (global `spacetime version use 2.8.1`; no per-project file — verify with `spacetime --version`) · Node `24.13.1` (`client/package.json` `engines` — `>=24.13.1 <25`) · wasm-pack `0.15.0` (no per-project pin file — `cargo install wasm-pack --version 0.15.0`; CI install action is pinned to `v0.15.0` (M3, ADR-0036); verify with `wasm-pack --version`). Bump deliberately.
-- **SpacetimeDB versions (ADR-0197, upgraded 2026-08-16).** CLI/host **2.8.1** · Rust module crate **2.8.1** · npm `spacetimedb` **2.6.0** (`^2.6.0`, lockfile-pinned — deliberately not yet bumped; 2.7.1 added SDK auto-reconnect that overlaps the hand-rolled reconnect path, ADR-0085/nh3/nh4, and needs live netcode verification first). **The crate version IS the product version — keep it equal to the CLI.** `.github/workflows/{ci,nightly}.yml` pin **2.8.1** in four places — two `Pin spacetime` steps in each file, each step spelling the version twice (`version install` then `version use`); `evals/observability-metrics-contract` B4 fails loudly whenever that pin and the CLI on PATH disagree — that tripwire is correct, do not weaken it. **Write 2.x module syntax** (`#[table(accessor = x)]`, `ctx.sender()`, `ctx.database_identity()`) — see `.claude/skills/spacetimedb-reducer`. (Crate 2.6.0/2.8.1 exist and ship with their CLI; the older "crate ≠ product version" note in `Cargo.toml`/ADR-0180 was **wrong** — ADR-0197 FF1. Since 2026-08-16 the module is in lockstep with the CLI at 2.8.1.)
-- **Run:** `just setup` · `just test` · `just lint` · `just typecheck` · `just eval` · `just security` · `just ci`
-- **Done =** `just ci` green and meaningful (lint + typecheck + test + eval + security + client checks); the nightly workflow (`.github/workflows/nightly.yml`) enforces mutation + coverage off the PR path; ADR present for new deps/patterns.
+## Toolchain (pinned)
 
-## Notes
-- **Specs & ADRs live in two locations — check both.** The authoritative milestone/spec
-  corpus is the **harness**: `../../specs/monster-realm-v2/` (milestone specs `M0`–`M25`
-  incl. `M8.5`/`M8.6`/`M8.7`/`M8.8`/`M8.9`/`M8.95`, `M10.5`, `M12.5`; `PLAN.md`,
-  `game-design.md`, `security-threat-model.md`,
-  `validation-checklist.md`, and the **design ADRs `0001`–`0034`** under `adr/`).
-  Project-local docs are under **`docs/`**: `docs/specs/` (project-scoped specs +
-  `TEMPLATE.md` — see its `README.md`) and `docs/adr/` (**implementation ADRs `0001`,
-  `0035`+**). Resolving a reference: milestone spec or ADR `0002`–`0034` → harness corpus;
-  ADR `0035`+ → `docs/adr/`. (`0001` is mirrored in both.) **Exception:** the harness
-  spec corpus also contains design ADRs numbered `0055`–`0057`; these cover the *same
-  topics* as project ADRs but at *offset numbers* (harness 0055 = project 0056
-  server-module-modularization; harness 0056 = project 0057
-  content-directory-glob-loading; harness 0057 = project 0080
-  generated-knowledge-bundle; project 0055 release-fail-loud-determinism-gate has
-  no harness counterpart). A bare `ADR-0055` citation in this project's context
-  always means the project's `docs/adr/0055-*` unless an explicit `harness adr/0055`
-  path prefix is used.
-- Tests are authored from acceptance criteria; the implementer doesn't grade its own tests.
-- **ADR authoring (ADR-0104):** New ADRs must use the **canonical header block** immediately
-  after the title:
-  `**Status:**` · `**Date:**` · `**Slice:**` · `**Supersedes:**` · `**Amends:**` ·
-  `**Subsystems:**` (1–3 values from the controlled vocabulary) · `**Decision:**` (one
-  sentence, ≤ 240 chars). Add `**Superseded-by:**` if Status = Superseded; add
-  `**Amended-by:**` when a later ADR amends this one. **For "is there a decision about
-  X?": grep the `**Decision:**` lines in `docs/adr/*.md`**; open the full ADR only on a
-  hit. Subsystem vocabulary:
-  `battle` · `evolution-fusion` · `movement-netcode` · `content` · `schema-persistence` ·
-  `client-ui` · `ci-gates` · `tooling-docs` · `security-authz` · `economy-quests`.
-- **Code knowledge graphs (two — route by question type; harness `code-intel` skill is the SSOT):** `codebase-memory-mcp` (cbm query slug: `home-mdrewt-projects-ai-apps-claude-harness-projects-monster-realm`) **and** CodeGraph (`.codegraph/` in this repo — pass `projectPath` when the session root is the harness). **Impact analysis** before changing a shared `game-core` signature/type: enumerate callers via the **UNION of both graphs** + a grep for dynamically-invoked symbols — never a single graph. **Keep the graphs current:** cbm CLI queries serve a snapshot — re-index at each milestone close (`index_repository`; `detect_changes` to probe; a stale index silently returns wrong snippet source); `codegraph status`/`sync` when no MCP daemon runs. Query + index tools are pre-allowlisted in `.claude/settings.json`; `delete_project` intentionally not.
+| Tool | Version | Pin |
+|---|---|---|
+| Rust | 1.96.0 + `wasm32-unknown-unknown`, clippy, rustfmt | `rust-toolchain.toml` |
+| spacetime CLI / host + `spacetimedb` crate | 2.8.1, always equal | root `Cargo.toml`; `Pin spacetime` steps in `.github/workflows/{ci,nightly}.yml` (`spacetime version use 2.8.1`) |
+| npm `spacetimedb` SDK | 2.6.0 | `client/package-lock.json` |
+| Node | 24.13.1 (`>=24.13.1 <25`) | `client/package.json` `engines`, workflows |
+| wasm-pack | 0.15.0 | workflows |
 
-## Principle tiers & inversions (this project)
-Inherits `standards/principles.md`. Declare deviations here, one line of rationale each:
-- Promoted to Tier 1: (none yet)
-- Demoted / skipped: (none yet)
-- Inverted: (none yet — e.g. "Postel inverted: reject out-of-contract input, don't clamp")
+## Run
 
-Record non-obvious calls as ADRs.
+`just setup` · `just wasm` · `just ci` (the merge gate) · `just ci-fast <crate>` ·
+`just test` · `just lint` · `just eval` · `just client-test` · `just gen` · `just e2e`
+(needs a running SpacetimeDB). Local play: `just playtest-up` (see `README.md`).
+
+## Invariants
+
+1. **game-core is the only place rules live.** Server reducers and the TypeScript
+   client call it; they never re-implement a rule. Rust code never reads a wall clock
+   or unseeded RNG (`clippy.toml` fails the lint).
+2. **Reducers are thin and reject instead of clamping.** Identity comes from
+   `ctx.sender()`; validate, call `game-core`, write; refuse with `Err`. Shared checks
+   live in `server-module/src/guards.rs`.
+3. **SpacetimeDB 2.x syntax:** `#[spacetimedb::table(accessor = x)]`, `ctx.sender()`,
+   `ctx.database_identity()`. Details: `.claude/skills/spacetimedb-reducer`.
+4. **Never hand-edit `client/src/module_bindings/`.** Regenerate with `just gen`; the
+   `bindings-drift` eval fails on stale bindings.
+5. **Never copy a game-core constant into TypeScript.** Export it from
+   `client-wasm/src/lib.rs` and import that.
+6. **Live-data safety.** New columns go at the end with a `#[default]`; any edit
+   under `game-core/content/` bumps `CONTENT_VERSION` (`server-module/src/lib.rs`) and
+   regenerates `evals/baselines/content-hash.json` (the eval prints the command).
+   Per-player tables stay private behind an owner-scoped view.
+
+## Code navigation
+
+Two code graphs index this repo: CodeGraph (`.codegraph/`) and codebase-memory-mcp.
+Before changing a shared `game-core` signature, list its callers from both graphs
+plus a grep for dynamically invoked names.

@@ -1,7 +1,7 @@
 // Unit tests for scripts/playtest-report.mjs (just playtest-report): the pure aggregation, the
 // `spacetime sql --format json` decoder, the fail-loud row coercion, and the real driver run as a
 // subprocess against a fake `spacetime`. Wrong output misleads playtest tuning; a leaked identity
-// breaks the aggregate-only privacy posture (ADR-0131).
+// breaks the aggregate-only privacy posture.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

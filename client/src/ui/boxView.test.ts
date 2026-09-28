@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/boxView.test.ts — ux4 (ADR-0155): box-vs-party explainer hint + the client-side
+// ui/boxView.test.ts — ux4: box-vs-party explainer hint + the client-side
 // repro of the roster that yields no swap option.
 //
 // SOURCE OF TRUTH: the reconciled ux4 plan (three lenses), sections B / PROOF-OF-TEETH.
@@ -70,7 +70,7 @@
 // so every assertion in this file proves "the element is PRESENT and is not display:none" —
 // never that it is actually VISIBLE in a viewport. The real visibility proof is the parked
 // real-Chromium `toBeInViewport()` spec (`client/e2e/swap-hint.spec.ts`, deferral D2). ux1
-// (ADR-0151) shipped a badge for an overlay that rendered below the fold precisely because a
+// shipped a badge for an overlay that rendered below the fold precisely because a
 // happy-dom suite cannot see that. boxView's `#root` already carries `overflow-y:auto` in its
 // own constructor cssText and its content is ~425px against a 720px viewport, so the ux1 defect
 // is not expected to apply here — but this file is not what establishes that.

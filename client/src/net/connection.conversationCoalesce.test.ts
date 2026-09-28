@@ -4,7 +4,7 @@
  * connect() (debloat Phase 2: EV-conversation-privacy#ondelete-coalesce).
  *
  * Through a view, a row UPDATE arrives as onInsert(new) + onDelete(old), with no onUpdate
- * and in either order (ADR-0087). A naive onDelete -> remove(owner) wipes the dialogue on
+ * and in either order. A naive onDelete -> remove(owner) wipes the dialogue on
  * every mid-tree advance. shouldRemoveOnViewDelete (viewDelete.test.ts) is the pure gate;
  * this file proves connect() actually routes the view's callbacks through it: the SDK
  * DbConnection builder is mocked with a per-table callback recorder, and the recorded

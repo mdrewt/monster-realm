@@ -1,4 +1,4 @@
-# Tempo — trace storage (M20 / ADR-0180 D3). Stock image, configuration only (OBS-33).
+# Tempo — trace storage. Stock image, configuration only (OBS-33).
 #
 # In slice m20b this stores CLIENT traces only: the browser OTel Web SDK (S4, m20c) pushes to
 # Alloy's OTLP receiver, which forwards here. Server-side causal spans arrive later, from

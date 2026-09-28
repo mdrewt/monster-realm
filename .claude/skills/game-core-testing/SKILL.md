@@ -3,75 +3,85 @@ name: game-core-testing
 description: Writing tests for game-core in monster-realm (v2) — determinism, integer-tile rules, IV/EV/Nature stat derivation, and desync / prediction-parity regression tests.
 ---
 
-# game-core Testing (monster-realm v2)
+# game-core testing (monster-realm v2)
 
-`game-core` is the test center of gravity — pure, deterministic, **integer-only**. No DB, browser, or network. All game-rule tests live here (rules live once — the SSOT).
+`game-core` is where rule tests live: pure, deterministic, integer-only, with no
+database, browser or network. Rules live here once, so their tests do too.
 
-## Unit test — `apply_move` is TOTAL
+## `apply_move` is total
 
-v2 uses **integer-tile authority**; `apply_move` is a **total function** — an illegal move is a legal **no-op** (a bump), not an error. Assert the no-op, not an `Err`:
+Movement is integer-tile. `game_core::apply_move(&state, input, &map, now)` never
+fails: an illegal step is a legal no-op (the character turns to face the wall and
+stays put), and `move_started_at` is stamped on every call. Assert the no-op, not an
+error:
 
 ```rust
 #[test]
-fn move_into_wall_is_a_noop_bump() {
-    let state = TileState { pos: TilePos { x: 0, y: 0 }, ..test_state() };
-    let next = apply_move(&state, MoveIntent::West); // wall to the west
-    assert_eq!(next.pos, state.pos, "bump must leave position unchanged");
+fn step_into_wall_turns_but_does_not_move() {
+    let map = test_map(); // a TileMap with a wall west of (1, 1)
+    let state = CharacterState { pos: TilePos { x: 1, y: 1 }, ..test_state() };
+    let next = apply_move(&state, MoveInput::Step(Direction::West), &map, Millis(1_000));
+    assert_eq!(next.pos, state.pos);
+    assert_eq!(next.facing, Direction::West);
 }
 ```
 
 ## Determinism
 
-Same (state, input, seed) → identical output, always. Inject a seeded RNG — never ambient:
+The same (state, input, seed) always gives the same output. Rules take randomness as
+a seed or as pre-rolled values; never read an RNG or clock inside a rule
+(`clippy.toml` bans the common calls). The server turns one `ctx.random()` value into
+all of a turn's rolls with `TurnVariance::from_ctx_random(seed)`; tests pass explicit
+rolls or a fixed seed:
 
 ```rust
-use rand::SeedableRng; use rand_chacha::ChaCha8Rng;
-fn seed() -> ChaCha8Rng { ChaCha8Rng::seed_from_u64(42) }
-
 #[test]
-fn apply_rule_is_deterministic() {
-    let (s, i) = (test_state(), test_intent());
-    assert_eq!(apply_rule(&s, i.clone(), seed()), apply_rule(&s, i, seed()));
+fn turn_is_reproducible_from_its_seed() {
+    let v = TurnVariance::from_ctx_random(42);
+    assert_eq!(v, TurnVariance::from_ctx_random(42));
+    assert!((85..=100).contains(&v.damage_roll_a));
 }
 ```
 
-## Individuality (IV/EV/Nature) — property tests
+## Individuality (IVs, EVs, Nature): property tests
 
-`derive_stats` is integer and must be bounded/monotonic. Property-test it (proptest):
+`derive_stats` is integer math. EVs cap at 252 per stat and 510 total
+(`EV_PER_STAT_CAP`, `EV_TOTAL_CAP` in `monster/types.rs`); a Nature scales one stat by
+11/10 and another by 9/10 and never touches HP. Property-test the bounds with
+`proptest` and assert exact values for known inputs; there are no floats to
+approximate.
 
-```rust
-proptest! {
-    #[test]
-    fn derive_stats_bounded(ivs in any::<IVs>(), evs in any::<EVs>(), nat in any::<Nature>()) {
-        let s = derive_stats(base_stats(), ivs, evs, nat, level());
-        prop_assert!(s.hp >= MIN_HP && s.hp <= MAX_HP);
-    }
-}
-```
+## Prediction parity (the desync net)
 
-EV caps (252/stat, 510 total) and Nature (±10%) are **integer** math — assert exact values, not approximate.
-
-## Prediction parity (the desync regression net)
-
-The rule the client **predicts** must equal the rule the server **resolves**. An in-process double-call is necessary but NOT sufficient — it never exercises native-vs-WASM codegen. Add a real eval that builds the `wasm-pack` artifact and compares its output to native for the same integer inputs. Add a parity case for every new movement rule.
+The rule the client predicts with must equal the one the server resolves. A native
+double call is necessary but not enough, because it never crosses native-vs-wasm
+codegen. The `prediction-parity`, `movement-parity` and `js-path-parity` evals build
+the `wasm-pack` package and compare it with native output. Extend them when you add
+or change an exported rule.
 
 ## Running
 
-```
-cargo test -p game-core      # the pure rule crate
-cargo test --workspace
-cargo test -- --nocapture
+```sh
+just ci-fast game-core       # clippy + nextest + doctests for the crate
+cargo nextest run -p game-core
+just mutate-core             # nightly gate: zero surviving mutants
 ```
 
-## When to push logic into game-core
+## When to move logic into game-core
 
-If you'd write the same rule in a reducer and in TS, that's the wrong pattern — extract to `game-core`. Signal: if you can't write a `game-core` unit test for a rule, it's in the wrong place.
+If you would write the same rule in a reducer and in TypeScript, it belongs in
+`game-core`. If you cannot write a `game-core` unit test for a rule, it is in the
+wrong place.
 
 ## Gotchas
 
-_Living log — symptom/quirk → cause → **avoid:** action. Append as you hit them._
-
-- **Native vs WASM divergence from floats** → `f32`/`f64` rule math differs across codegen. **Avoid:** keep rules **integer-only** (integer-tile authority); floats are render-only, never in `game-core`.
-- **Determinism/parity broken by ambient RNG or clock** → `thread_rng()` / `std::time`. **Avoid:** inject a seeded `ChaCha8Rng` + timestamp (clippy bans the rest).
-- **In-process "parity" test passes but real desync persists** → a double-call never crosses the native↔WASM boundary. **Avoid:** a real eval that builds the wasm and compares to native.
-- **Asserting `apply_move` returns `Err` on an illegal move** → v2's `apply_move` is **total** (bump = no-op). **Avoid:** assert position unchanged, not an error.
+- **Native and wasm disagree** → float math differs across codegen. **Avoid:**
+  integer-only rules; floats are for rendering only.
+- **A "deterministic" test flakes** → an ambient RNG or clock. **Avoid:** pass the
+  seed or rolls in.
+- **An in-process parity test passes but a real desync persists** → it never crossed
+  the wasm boundary. **Avoid:** cover it in the wasm parity evals.
+- **Expecting `Err` from an illegal move** → `apply_move` is total. **Avoid:** assert
+  the position is unchanged.
+- **A mutant survives `just mutate-core`** → an assertion checks presence, not value.
+  **Avoid:** assert exact values; the game-core gate allows zero survivors.

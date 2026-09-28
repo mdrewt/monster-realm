@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/helpView.i18n.test.ts — m24-s5 (ADR-0261) RED gating tests: HV-01/02/03.
+// ui/helpView.i18n.test.ts — m24-s5 RED gating tests: HV-01/02/03.
 //
 // SOURCE OF TRUTH: memory/projects/monster-realm-m24-s5-plan.md (Tests, Files —
 // helpView.ts constructor resolves #help-title into a readonly #titleEl and throws if missing;

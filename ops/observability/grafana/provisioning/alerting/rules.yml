@@ -21,7 +21,7 @@ groups:
   - orgId: 1
     name: meta-monitoring
     folder: Monster Realm
-    # ADR-0190 D4. Grafana 13's alert scheduler runs on a FIXED 10s base tick and refuses any
+    # Grafana 13's alert scheduler runs on a FIXED 10s base tick and refuses any
     # group interval that is not an exact multiple of it — provisioning aborts with
     # `interval (15s) should be non-zero and divided exactly by scheduler interval: 10` and the
     # container exits, i.e. the dead-man's-switch host itself crash-loops. 20s is the smallest
@@ -34,7 +34,7 @@ groups:
       #
       # THREE DIFFERENT NUMBERS live here and only one of them belongs to this file:
       #   15s — Prometheus `scrape_interval` (and `evaluation_interval`), prometheus.yml:14-15.
-      #         How often Alloy is scraped. UNCHANGED by ADR-0190.
+      #         How often Alloy is scraped.
       #   20s — this group's `interval:` above. How often Grafana evaluates the rule.
       #   60s — the `for:` below. How long the condition must hold before the alert fires.
       # `for:` is 60s and not 45s because Grafana can only transition alert state on an
@@ -110,7 +110,7 @@ groups:
                     params:
                       - 1
 
-      # ADR-0180 amendment "Correction 3" — process liveness is NOT pipeline health.
+      # Process liveness is NOT pipeline health.
       # `up` only proves Alloy's HTTP server answers. Alloy hosts independent internal
       # components: if the file tail stalls (bind-mount permission drift, a log-rotation edge
       # case) or the OTLP receiver rejects everything, `up` stays 1 while ingestion is entirely
