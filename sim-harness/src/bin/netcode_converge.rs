@@ -1,7 +1,7 @@
 //! Convergence check for the `netcode-convergence` eval: feeds
 //! the lossy/reordering `Link` into the authoritative `ServerWorld` and reports
 //! (as JSON) that the authoritative final state is delivery-order-INVARIANT under
-//! the seq-canonical apply (convergence — ADR-0013), that reorder + loss actually
+//! the seq-canonical apply (convergence), that reorder + loss actually
 //! occur on the jittered scenario, and that the naive arrival-order apply DIVERGES
 //! on a known-bad reorder fixture (proof-of-teeth). M14.5f extends the gate with:
 //!   - 128-seed randomized convergence check (random_scenario)

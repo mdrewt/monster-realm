@@ -1,4 +1,4 @@
-//! `mr_load_driver` — the m20d load driver (OBS-27 breaking-point measurement).
+//! `mr_load_driver` — the load driver (OBS-27 breaking-point measurement).
 //!
 //! # Usage
 //!
@@ -55,7 +55,7 @@
 //!   parse time with [`SCENARIO_RESERVED_ERR`], exit code 2. It freezes the seam
 //!   M19 will extend; it never produces a report.
 //!
-//! # Determinism posture (ADR-0003 / `clippy.toml`)
+//! # Determinism posture (`clippy.toml`)
 //!
 //! This binary reads NO clock. There is no `Instant::now`, no `SystemTime::now`,
 //! no `elapsed`, and no `#[allow(clippy::disallowed_methods)]` — in the shell or
@@ -79,8 +79,8 @@
 //! `POST /v1/database/<db>/call/<reducer>` is an ephemeral connection, and the
 //! `client_disconnected` reducer `on_disconnect` (in `server-module/src/lib.rs`) resolves its live
 //! trades/PvP/battles and deletes its presence rows BY IDENTITY. Live-verified: `join_game` returns
-//! 200, then `enqueue_move` 5 ms later returns 530 "not joined"; until rb-73
-//! (ADR-0245) it also destroyed a concurrent WS session's join state. On top
+//! 200, then `enqueue_move` 5 ms later returns 530 "not joined"; before the
+//! own-row-only disconnect fix it also destroyed a concurrent WS session's join state. On top
 //! of that, the dominant server cost at concurrency N is
 //! subscription fan-out (every accepted move updates a `character` row broadcast
 //! to N subscribers); with zero subscriptions,
@@ -184,7 +184,7 @@
 //!
 //! Protocol-real, not SDK-real: `spacetimedb-sdk` would drag in tokio +
 //! tokio-tungstenite + generated bindings, all outside this touch set. The
-//! deviation from D9's literal "real SDK clients" is recorded in ADR-0180; the
+//! deviation from D9's literal "real SDK clients" is deliberate; the
 //! core intent — all measurement off S1 — is preserved.
 
 #![forbid(unsafe_code)]
@@ -210,7 +210,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const TRANSPORT: &str = "ws";
 
 /// The movement-tick latency budget in ms. This IS `game_core::STEP_MS`
-/// (ADR-0003 SSOT) — never re-spell it as a literal `200`.
+/// (single source of truth) — never re-spell it as a literal `200`.
 pub const BUDGET_MS: i64 = STEP_MS;
 
 /// The same budget in SECONDS, the unit of the Prometheus histogram.
@@ -297,7 +297,7 @@ pub const SCENARIO_RESERVED_ERR: &str =
 // §2 CONFIG / CLI PARSE
 // ===========================================================================
 
-/// The load scenario. Only `movement` exists in m20d; `chat-flood` is rejected
+/// The load scenario. Only `movement` exists; `chat-flood` is rejected
 /// at parse time rather than modelled here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scenario {
@@ -2644,7 +2644,7 @@ fn main() {
 #[cfg(test)]
 // The frozen T8 module asserts a compile-time-constant precondition
 // (`0.3 >= BUDGET_S`) for documentation; scope the benign `assertions_on_constants`
-// style lint to this module (unrelated to the ADR-0003 determinism gate).
+// style lint to this module (unrelated to the determinism gate).
 #[allow(clippy::assertions_on_constants)]
 mod tests {
     use super::*;
@@ -4891,7 +4891,7 @@ mod tests {
     // T10 — the budget constant IS game_core::STEP_MS.
     // =======================================================================
 
-    /// the driver's budget is the imported `STEP_MS` (ADR-0003 SSOT), not
+    /// the driver's budget is the imported `STEP_MS` (single source of truth), not
     /// a re-spelled literal that could silently drift from the tick cadence.
     #[test]
     fn t10_budget_is_game_core_step_ms() {
