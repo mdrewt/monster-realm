@@ -76,6 +76,7 @@
 // is not expected to apply here — but this file is not what establishes that.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readWasmU32Constant } from '../../test-util/wasmPkg';
 import type { MonsterCardViewModel } from './boxModel';
 import { BoxView, type BoxViewCallbacks } from './boxView';
 
@@ -333,7 +334,8 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
 
 const BOX_PARTY_HINT_SELECTOR = '[data-testid="box-party-hint"]';
 
-/** The box sentinel `#renderCard`'s "To Box" button emits. Pinned literally by X2. */
+/** The box sentinel injected as `partySlotNone` (main.ts passes the wasm `party_slot_none()`,
+ *  pinned === 255 by X2b) and emitted by `#renderCard`'s "To Box" button. */
 const BOX_SLOT = 255;
 /**
  * The "next free slot, please" sentinel `#renderCard`'s "To Party" button emits.
@@ -343,12 +345,13 @@ const BOX_SLOT = 255;
  */
 const NEXT_FREE_SLOT_SENTINEL = -1;
 
-/** All THREE BoxViewCallbacks keys as spies. */
+/** All three BoxViewCallbacks callbacks as spies, plus the injected box sentinel. */
 function makeBoxCallbacks(): BoxViewCallbacks {
   return {
     onSetNickname: vi.fn(),
     onSetPartySlot: vi.fn(),
     onHealParty: vi.fn(),
+    partySlotNone: BOX_SLOT,
   };
 }
 
@@ -584,6 +587,30 @@ describe('BoxView ux4 X2: box vs party render + slot-sentinel emission (EXPECTED
         '(PARTY_SLOT_NONE). A swapped pair of handlers reads identically in the DOM and is ' +
         'invisible to a presence-only check',
     ).toHaveBeenNthCalledWith(2, 100n, BOX_SLOT);
+  });
+});
+
+describe('BoxView X2b: the box sentinel is game-core PARTY_SLOT_NONE, injected (value identity)', () => {
+  it('★ BITES: the BUILT wasm party_slot_none() === 255 === BOX_SLOT — the retired BOX_SLOT literal', () => {
+    // Value-identity proof: boxView.ts no longer owns a `BOX_SLOT = 255` literal — main.ts
+    // injects `party_slot_none()` as `partySlotNone`. Read from the compiled client-wasm binary.
+    expect(readWasmU32Constant('party_slot_none')).toBe(255);
+    expect(BOX_SLOT).toBe(255);
+  });
+
+  it('BITES: "To Box" emits the INJECTED sentinel — kills a view that re-inlines 255', () => {
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+    const callbacks = { ...makeBoxCallbacks(), partySlotNone: 77 };
+    const view = new BoxView(parent, callbacks);
+    view.refresh(makePartySlots(), []);
+    view.show();
+    const toBox = [...partyGridOf(parent).querySelectorAll('button')].find(
+      (b) => b.textContent === 'To Box',
+    );
+    expect(toBox, 'precondition: the party row carries a "To Box" button').toBeDefined();
+    toBox!.click();
+    expect(callbacks.onSetPartySlot).toHaveBeenCalledWith(100n, 77);
   });
 });
 

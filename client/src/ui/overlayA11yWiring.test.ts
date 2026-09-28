@@ -258,6 +258,7 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
       onSetNickname: noop,
       onSetPartySlot: noop,
       onHealParty: noop,
+      partySlotNone: 255,
     });
     view.show();
     return { root: capturedRoot('boxView'), close: () => view.hide(), reopen: () => view.show() };

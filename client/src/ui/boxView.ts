@@ -44,13 +44,15 @@ import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 export interface BoxViewCallbacks {
   /** Called when the user confirms a nickname edit. */
   readonly onSetNickname: (monsterId: bigint, nickname: string) => void;
-  /** Called when the user moves a monster to a party slot (0–5) or to box (255). */
+  /** Called when the user moves a monster to a party slot (0–5), to the next free slot
+   *  (-1), or to box (`partySlotNone`). */
   readonly onSetPartySlot: (monsterId: bigint, slot: number) => void;
   /** Called when the user clicks the Heal Party button (M7c). */
   readonly onHealParty: () => void;
+  /** The "boxed" party-slot sentinel "To Box" emits: game-core's PARTY_SLOT_NONE, read once
+   *  at boot from the `party_slot_none()` wasm export (main.ts) — never a TS literal. */
+  readonly partySlotNone: number;
 }
-
-const BOX_SLOT = 255;
 
 export class BoxView {
   readonly #root: HTMLDivElement;
@@ -258,7 +260,7 @@ export class BoxView {
       toBoxBtn.textContent = t('box.card.toBox');
       toBoxBtn.style.cssText = 'font-size:11px;cursor:pointer;';
       toBoxBtn.addEventListener('click', () =>
-        this.#callbacks.onSetPartySlot(card.monsterId, BOX_SLOT),
+        this.#callbacks.onSetPartySlot(card.monsterId, this.#callbacks.partySlotNone),
       );
       actions.appendChild(toBoxBtn);
     } else {

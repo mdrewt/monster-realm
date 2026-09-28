@@ -2516,6 +2516,7 @@ async function main(): Promise<void> {
           sendGuarded('heal', () => conn?.live()?.reducers.healParty({ locationId }));
         }
       },
+      partySlotNone: PARTY_SLOT_NONE,
     });
     // The PvE callbacks RETURN the promise (view lock until settle; M-1 pin).
     battleView = new BattleViewClass(mount, {
