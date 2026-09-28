@@ -2169,10 +2169,11 @@ fn rb80_heal_party_is_refused_only_while_the_caller_is_deletion_gated() {
 // clock. HOST LIMIT: no transaction rollback, so every rejection is asserted as
 // refusal BEFORE any write (the store byte-identical).
 //
+// heal_party's authorization is the sender-scoped player lookup + spend (every row it
+// touches is keyed by `ctx.sender()`, so there is no separate ownership guard); these
+// tests pin that.
+//
 // Not asserted, on purpose:
-// * heal_party's `require_owner(ctx, "heal_party", me)` — vacuous by construction
-//   (BUG-heal-party-tautological-require-owner); what the reducer really guards is
-//   the sender-scoped lookup + spend, which is what these tests pin.
 // * heal_party's currency-cost branch — live code, but unreachable with shipped
 //   content (the only heal location costs 0 currency in the RON cache); residual.
 // ===========================================================================
