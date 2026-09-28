@@ -1616,7 +1616,7 @@ pub fn validate_npc_interactions(
 // `evals/content-version.eval.mjs` hashes EVERY file in that directory against a
 // checked-in baseline keyed to `CONTENT_VERSION`.
 // The keys are enum variants — type space, not designer-authored rows — so
-// ADR-0006's "content is data" rule does not reach them.
+// the "content is data" rule does not reach them.
 //
 // TOTALITY. `status_token_key` and `affinity_token_key` are EXHAUSTIVE matches
 // with no wildcard arm, so a new variant is a compile error here.
@@ -7933,7 +7933,7 @@ mod tests {
     /// tree — "Hello, customer!" plus a single Leave choice, no effects.
     ///
     /// KILLS: a greeting tree that carries effects (a SetFlag/GrantItem/
-    /// StartQuest on the shop path would fire on every re-entry — the ADR-0068
+    /// StartQuest on the shop path would fire on every re-entry — the dialogue-effect
     /// farming class) or that branches into more nodes (the AC-12 e2e asserts
     /// the greeting text directly and the Shop button is derived from the enum,
     /// never from choice text). ALSO KILLS: a text drift that would make the

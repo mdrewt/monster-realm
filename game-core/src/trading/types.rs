@@ -1,7 +1,7 @@
 //! Trade types shared between game-core (pure rules) and server-module (persistence).
 //!
 //! `MonsterCard` is the display-only snapshot stored in `trade_offer`: it mirrors
-//! the public-projection field set of `MonsterPub` (no IVs/EVs/nature — ADR-0015).
+//! the public-projection field set of `MonsterPub` (no IVs/EVs/nature — hidden stats never leak).
 //! `TradeStatus`, `TradeItem`, and `TradeError` drive the offer state machine.
 //!
 //! `SpacetimeType` derives are cfg-gated: only `server-module` (which enables the
@@ -10,7 +10,7 @@
 
 /// Display-only monster snapshot stored inside `trade_offer`.
 ///
-/// MUST NOT contain `iv_*`, `ev_*`, or `nature_kind` fields (ADR-0015 stakes:
+/// MUST NOT contain `iv_*`, `ev_*`, or `nature_kind` fields (the stakes:
 /// opponent must be able to see the offered monster without receiving its hidden
 /// genes). The authoritative swap re-reads the live `monster` row.
 #[derive(Clone, Debug, PartialEq)]

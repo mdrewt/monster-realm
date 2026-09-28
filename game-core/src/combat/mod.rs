@@ -1,6 +1,6 @@
 //! Combat engine — pure, deterministic, integer-only.
 //!
-//! All battle resolution lives here exactly once (ADR-0003 SSOT). The server
+//! All battle resolution lives here exactly once (single source of truth). The server
 //! resolves battles authoritatively; the client does NOT predict
 //! battles (client-wasm prediction applies to movement only). Re-implementing a
 //! battle rule in another crate is the desync bug.
@@ -10,7 +10,7 @@
 //! - `type_chart` — `TypeChart` lookup struct
 //! - `damage`     — damage formula (`calc_damage`) and accuracy check
 //! - `resolve`    — turn resolution (`resolve_turn`, `resolve_full_turn`, `resolve_enemy_turn`, …)
-//! - `status`     — per-monster status conditions, DoT, action-block rules (ADR-0010 OCP gate)
+//! - `status`     — per-monster status conditions, DoT, action-block rules (exhaustive-match OCP gate)
 //! - `ability`    — passive per-species ability rules
 //! - `ai`         — enemy AI skill picker (`pick_best_skill`)
 //! - `xp`         — XP reward, practice penalty, and level-up (`battle_xp_reward`, `practice_xp_reward`, `apply_xp_gain`)

@@ -1,8 +1,8 @@
-//! NPC wander decision rules — pure & deterministic (ADR-0003, ADR-0068).
+//! NPC wander decision rules — pure & deterministic.
 //!
 //! `npc_decide` is the only public entry point. It mixes explicit `npc_id` and
 //! `tick` with a non-commutative hash (RT-NPC-01 fix) so that two NPCs with the
-//! same `npc_id + tick` sum produce different outputs. ADR-0159 amends ADR-0068:
+//! same `npc_id + tick` sum produce different outputs. In addition,
 //! the WANDER branch now chooses only LEGAL steps (walkable + inside the radius)
 //! so it never picks a wall; HOMING is unfiltered, `apply_move` still no-ops bumps.
 

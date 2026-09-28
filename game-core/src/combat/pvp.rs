@@ -20,7 +20,7 @@ use crate::combat::types::{BattleOutcome, SideId, TurnChoice};
 /// passing to `resolve_full_turn`.
 ///
 /// `SpacetimeType` is cfg-gated: the type is stored in the private `battle_action`
-/// table (must-never-leak — ADR-0015).  Outside the server module the
+/// table (must-never-leak: hidden battle intent).  Outside the server module the
 /// type is pure data for tests and the rule functions below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]

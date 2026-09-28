@@ -14,7 +14,7 @@
 //! Both hooks are called from `resolve.rs`: `apply_ability_modifiers` in Phase 0
 //! of `resolve_full_turn`, and `apply_entry_ability` in `resolve_player_swap`
 //! (entry). Server reducers construct `AbilityStore` via `build_ability_store`
-//! in `marshal.rs` (ADR-0100).
+//! in `marshal.rs`.
 
 use serde::{Deserialize, Serialize};
 
@@ -46,7 +46,7 @@ pub enum StatusKind {
 
 impl StatusKind {
     /// Returns `true` when `effect` has the same variant as `self`.
-    /// Exhaustive gate (ADR-0010): adding a new `StatusKind` variant without listing
+    /// Exhaustive gate: adding a new `StatusKind` variant without listing
     /// it in the false OR-pattern is a compile error. Adding it only to the false
     /// arm (forgetting the true arm) compiles but is caught by the truth-table test
     /// in `m14c_tests::ears_21_status_kind_matches_full_truth_table`.
@@ -80,7 +80,7 @@ impl StatusKind {
 /// A passive ability's game effect. Exhaustive — do NOT add `#[non_exhaustive]`.
 ///
 /// A new variant forces a compile-time exhaustive-`match` update at every
-/// resolution site (OCP gate, ADR-0010). Every site must handle every variant;
+/// resolution site (OCP gate). Every site must handle every variant;
 /// this is intentional and differs from `BattleEvent` which IS `#[non_exhaustive]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AbilityEffect {
