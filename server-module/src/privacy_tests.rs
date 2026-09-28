@@ -5347,17 +5347,10 @@ fn rb107_tier_sig_pin() -> String {
 ///
 /// RE-FROZEN BY rb-132: the account arm is tested first and ignores
 /// the wallet bit; the wallet bit only splits the callers without an account.
-/// The newcomer name is assembled so that no literal in this file opens with
-/// that constant's full prefix — the rb-110 live-roster rule, which would
-/// otherwise red on the tree before the constant exists.
 fn rb107_tier_body_pin() -> String {
-    [
-        "ifhas_account{",
-        "EXPORT_LIVE_ROW_CAP}elseifhas_wallet{",
-        "EXPORT_ANON_LIVE_ROW_CAP}else{",
-        "EXPORT_NEWCOMER_LIVE_ROW_CAP}",
-    ]
-    .concat()
+    "ifhas_account{EXPORT_LIVE_ROW_CAP}elseifhas_wallet{\
+     EXPORT_ANON_LIVE_ROW_CAP}else{EXPORT_NEWCOMER_LIVE_ROW_CAP}"
+        .to_string()
 }
 
 /// The tier seam's DECLARATION line as whitespace-bearing source text (rb-132's
@@ -5653,12 +5646,7 @@ fn rb107_nd_holder_fn() -> String {
 /// — while the whole suite stays green. The tier is only as true as the question
 /// it asks.
 fn rb107_holder_body_pin() -> String {
-    [
-        "ctx.db.",
-        "account()",
-        ".identity().find(identity).is_some()",
-    ]
-    .concat()
+    "ctx.db.account().identity().find(identity).is_some()".to_string()
 }
 
 /// That predicate's DECLARATION line as whitespace-bearing source text — the
@@ -5673,13 +5661,7 @@ fn rb107_holder_decl_source() -> String {
 
 /// That predicate's BODY as whitespace-bearing source text (control input).
 fn rb107_holder_body_source() -> String {
-    [
-        "\n    ",
-        "ctx.db.",
-        "account()",
-        ".identity().find(identity).is_some()\n",
-    ]
-    .concat()
+    "\n    ctx.db.account().identity().find(identity).is_some()\n".to_string()
 }
 
 /// X1 (ledger anchor; register rows M1-M5): the admission predicate is EXACT at
