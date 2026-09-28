@@ -1,8 +1,8 @@
 ## What & why
-<!-- Link the spec/task. Summarize the change. -->
+<!-- Summarize the change and why it is needed. -->
 
 ## Checklist
-- [ ] `just ci` green and meaningful (lint + typecheck + test + eval + security + client checks; mutation + coverage run in the nightly workflow, not per-PR)
-- [ ] Tests authored from acceptance criteria
-- [ ] ADR added if a dependency or pattern was introduced
-- [ ] No secrets; inputs validated at boundaries
+- [ ] `just ci` green (and `just e2e` if netcode, reducers or client flows changed)
+- [ ] Failing test written before the change
+- [ ] `docs/DECISIONS.md` updated if a design decision changed
+- [ ] No secrets; inputs validated at the reducer boundary
