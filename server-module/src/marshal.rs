@@ -179,7 +179,7 @@ pub(crate) fn wild_battle_monster(
     if known_skill_ids.is_empty() {
         return Err(format!(
             "species {} has no known skills after filtering learnable_skill_ids against loaded skills; \
-             an empty moveset would panic the AI (defense-in-depth, ADR-0049)",
+             an empty moveset would panic the AI (defense-in-depth)",
             species.id
         ));
     }
@@ -424,7 +424,7 @@ pub(crate) fn battle_monster_from_row(
     if known_skill_ids.is_empty() {
         return Err(format!(
             "monster {} (species {}) has no known skills after filtering learnable_skill_ids \
-             against loaded skills; an empty moveset would panic the AI (defense-in-depth, ADR-0049)",
+             against loaded skills; an empty moveset would panic the AI (defense-in-depth)",
             monster.monster_id, species.id
         ));
     }

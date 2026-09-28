@@ -173,7 +173,7 @@ pub(crate) fn new_account_row(identity: Identity, auth_issuer: String, now_ms: i
     };
     debug_assert!(
         account_state_is_legal(&out),
-        "new_account_row: illegal Account state (ADR-0195 D3)"
+        "new_account_row: illegal Account state"
     );
     out
 }
@@ -186,7 +186,7 @@ pub(crate) fn touch_login(existing: Account, now_ms: i64) -> Account {
     };
     debug_assert!(
         account_state_is_legal(&out),
-        "touch_login: illegal Account state (ADR-0195 D3)"
+        "touch_login: illegal Account state"
     );
     out
 }
@@ -229,7 +229,7 @@ pub(crate) fn requested_deletion(existing: Account, now_ms: i64) -> Account {
     };
     debug_assert!(
         account_state_is_legal(&out),
-        "requested_deletion: illegal Account state (ADR-0195 D3)"
+        "requested_deletion: illegal Account state"
     );
     out
 }
@@ -244,7 +244,7 @@ pub(crate) fn cancelled_deletion(existing: Account) -> Account {
     };
     debug_assert!(
         account_state_is_legal(&out),
-        "cancelled_deletion: illegal Account state (ADR-0195 D3)"
+        "cancelled_deletion: illegal Account state"
     );
     out
 }
@@ -258,7 +258,7 @@ pub(crate) fn claimed_account(existing: Account, guest: Identity, now_ms: i64) -
     };
     debug_assert!(
         account_state_is_legal(&out),
-        "claimed_account: illegal Account state (ADR-0195 D3)"
+        "claimed_account: illegal Account state"
     );
     out
 }
@@ -375,7 +375,7 @@ pub(crate) fn anonymized_account(existing: Account) -> Account {
     };
     debug_assert!(
         account_state_is_legal(&out),
-        "anonymized_account: illegal Account state (ADR-0195 D3)"
+        "anonymized_account: illegal Account state"
     );
     out
 }
@@ -393,7 +393,7 @@ pub(crate) fn terminal_account(existing: Account, now_ms: i64) -> Account {
     };
     debug_assert!(
         account_state_is_legal(&out),
-        "terminal_account: illegal Account state (ADR-0195 D3)"
+        "terminal_account: illegal Account state"
     );
     out
 }

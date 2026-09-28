@@ -2980,7 +2980,7 @@ fn bn_start_battle_enforces_provenance_and_ownership() {
             bn_b(),
             vec![11],
             vec![21],
-            "opponent must be self or server-authored (PvP unsupported; ADR-0048)",
+            "opponent must be self or server-authored (PvP unsupported)",
         ),
         (
             "dup in party",

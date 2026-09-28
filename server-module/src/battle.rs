@@ -85,7 +85,7 @@ pub fn start_battle(
     // dedup scan and any side-B DB read so a foreign roster never reaches the
     // row. reject-not-clamp.
     if opponent_identity != me && opponent_identity != WILD_IDENTITY {
-        let e = "opponent must be self or server-authored (PvP unsupported; ADR-0048)".to_string();
+        let e = "opponent must be self or server-authored (PvP unsupported)".to_string();
         log_reject("start_battle", me, &e);
         return Err(e);
     }
