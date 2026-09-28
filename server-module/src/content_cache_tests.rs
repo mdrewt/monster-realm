@@ -68,23 +68,6 @@ fn cached_zone_maps_matches_load() {
     }
 }
 
-/// cached_evolution_paths() == load_evolution_paths().
-///
-/// EvolutionPath derives PartialEq, so direct equality is safe.
-///
-/// Wrong impl killed: a static populated with a different content snapshot, or
-/// one whose OnceLock is never seeded (returns empty Vec).
-#[test]
-fn cached_evolution_paths_matches_load() {
-    let cached = cached_evolution_paths().expect("cached_evolution_paths must succeed");
-    let loaded =
-        game_core::load_evolution_paths().expect("game_core::load_evolution_paths must succeed");
-    assert_eq!(
-        *cached, loaded,
-        "cached_evolution_paths() data does not match game_core::load_evolution_paths()"
-    );
-}
-
 /// cached_dialogue_trees() == load_dialogue_trees().
 ///
 /// DialogueTree derives PartialEq.
@@ -137,22 +120,6 @@ fn cached_zone_maps_ptr_eq_second_call() {
     assert!(
         std::ptr::eq(first as *const _, second as *const _),
         "cached_zone_maps() returned different pointers on two calls — \
-         OnceLock is not caching (the Vec was re-allocated or re-parsed)"
-    );
-}
-
-/// two successive calls to cached_evolution_paths() return the SAME Vec
-/// pointer, proving LazyLock caching.
-///
-/// Wrong impl killed: any impl that calls load_evolution_paths() on every
-/// invocation, or allocates a new Vec<EvolutionPath> on each call.
-#[test]
-fn cached_evolution_paths_ptr_eq_second_call() {
-    let first = cached_evolution_paths().expect("first call must succeed");
-    let second = cached_evolution_paths().expect("second call must succeed");
-    assert!(
-        std::ptr::eq(first as *const _, second as *const _),
-        "cached_evolution_paths() returned different pointers on two calls — \
          OnceLock is not caching (the Vec was re-allocated or re-parsed)"
     );
 }

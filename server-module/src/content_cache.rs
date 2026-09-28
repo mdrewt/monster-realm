@@ -25,12 +25,6 @@ use crate::schema::{config, type_relation_row};
 static ZONE_MAPS: LazyLock<Result<Vec<game_core::ZoneMapDef>, String>> =
     LazyLock::new(game_core::load_zone_maps);
 
-// The evolve reducer now reads the seeded `evolution_path` TABLE (not this
-// cache), so the cache is currently test-only;
-#[cfg(test)]
-static EVOLUTION_PATHS: LazyLock<Result<Vec<game_core::EvolutionPath>, String>> =
-    LazyLock::new(game_core::load_evolution_paths);
-
 static DIALOGUE_TREES: LazyLock<Result<Vec<game_core::DialogueTree>, String>> =
     LazyLock::new(game_core::load_dialogue_trees);
 
@@ -55,15 +49,6 @@ static HEAL_LOCATIONS: LazyLock<Result<Vec<game_core::HealLocationDef>, String>>
 /// Returns a clone of the cached parse error if the embedded RON was malformed.
 pub(crate) fn cached_zone_maps() -> Result<&'static Vec<game_core::ZoneMapDef>, String> {
     (*ZONE_MAPS).as_ref().map_err(Clone::clone)
-}
-
-/// Evolution-paths registry: parsed once per process.
-///
-/// # Errors
-/// Returns a clone of the cached parse error if the embedded RON was malformed.
-#[cfg(test)]
-pub(crate) fn cached_evolution_paths() -> Result<&'static Vec<game_core::EvolutionPath>, String> {
-    (*EVOLUTION_PATHS).as_ref().map_err(Clone::clone)
 }
 
 /// Dialogue-trees registry: parsed once per process.
