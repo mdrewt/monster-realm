@@ -85,7 +85,7 @@ mod tests {
     fn initial_rating_is_1000() {
         assert_eq!(
             INITIAL_RATING, 1000_i32,
-            "INITIAL_RATING must be 1000 (ADR-0119 D2, RL-4 SSOT)"
+            "INITIAL_RATING must be 1000 (RL-4 SSOT)"
         );
     }
 
@@ -273,7 +273,7 @@ mod tests {
             compute_rating_update(1000, 1000),
             (1016_i32, 984_i32),
             "compute_rating_update(1000, 1000) must be (1016, 984): \
-             winner +16, loser −16 (ADR-0119 D2, RL-11)"
+             winner +16, loser −16 (RL-11)"
         );
     }
 
@@ -294,7 +294,7 @@ mod tests {
             new_w,
             i32::MAX,
             "compute_rating_update(i32::MAX, 1000): winner must saturate at i32::MAX \
-             (documented tolerated boundary, ADR-0119 D2 — conservation intentionally violated)"
+             (documented tolerated boundary — conservation intentionally violated)"
         );
         // Loser: i32::MAX vs 1000 → huge diff → apply_elo clamps to 1 → loser loses 1 → 999.
         assert_eq!(
@@ -326,7 +326,7 @@ mod tests {
             new_l,
             i32::MIN,
             "compute_rating_update(1000, i32::MIN): loser must saturate at i32::MIN \
-             (documented tolerated boundary, ADR-0119 D2 — conservation intentionally violated)"
+             (documented tolerated boundary — conservation intentionally violated)"
         );
     }
 
@@ -371,7 +371,7 @@ mod tests {
                 a,
                 b,
                 "apply_elo({}, {}) returned different values on repeated calls: \
-                 {} vs {} — must be deterministic (no ambient entropy, ADR-0055)",
+                 {} vs {} — must be deterministic (no ambient entropy)",
                 winner, loser, a, b
             );
         }

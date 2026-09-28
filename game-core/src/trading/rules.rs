@@ -2582,7 +2582,7 @@ mod tests {
             result.is_ok(),
             "broke-sender boundary: check_headroom must PASS (cap-wise); \
              the real rejection is spend_currency inside the step loop \
-             (SpacetimeDB reducer-Err transaction rollback, ADR-0123). \
+             (SpacetimeDB reducer-Err transaction rollback). \
              Got: {:?}",
             result
         );
@@ -2781,7 +2781,7 @@ mod tests {
             "incoming=0, balance=MAX_BALANCE+1 (deliberately over-cap): \
              check_currency_headroom must return Ok — the `incoming > 0` skip-guard \
              must fire BEFORE any balance check, passing balance through unchanged. \
-             A normalizing delegation would break this contract (B-1/F11, ADR-0124)."
+             A normalizing delegation would break this contract."
         );
     }
 
@@ -2838,13 +2838,13 @@ mod tests {
         // Split-literal so the source-scan needle does not match the literal here.
         let fn_marker = ["fn check", "_headroom("].concat();
         let fn_pos = rules_src.find(fn_marker.as_str()).expect(
-            "TEETH(m17.5c F6): fn check_headroom not found in rules.rs — \
-                     add check_headroom or rename it consistently (ADR-0124)",
+            "TEETH(F6): fn check_headroom not found in rules.rs — \
+                     add check_headroom or rename it consistently",
         );
 
         let open_brace_offset = rules_src[fn_pos..]
             .find('{')
-            .expect("TEETH(m17.5c F6): no opening brace found after fn check_headroom");
+            .expect("TEETH(F6): no opening brace found after fn check_headroom");
         let open_brace = fn_pos + open_brace_offset;
 
         let mut depth: usize = 0;
@@ -2869,22 +2869,20 @@ mod tests {
         let item_needle = ["check_item", "_headroom("].concat();
         assert!(
             headroom_body.contains(item_needle.as_str()),
-            "TEETH(m17.5c F6 DELEGATION-SSOT): check_headroom body does not contain \
+            "TEETH(F6 DELEGATION-SSOT): check_headroom body does not contain \
              `check_item_headroom(` — the per-item cap comparison must be DELEGATED to \
-             check_item_headroom (ADR-0124 SSOT: one copy of the cap constant and \
-             comparison operator; inline duplication is an invisible divergence risk). \
-             RED until m17.5c Task 4 refactor is complete."
+             check_item_headroom (SSOT: one copy of the cap constant and \
+             comparison operator; inline duplication is an invisible divergence risk)."
         );
 
         // Assert delegation to check_currency_headroom (split-literal needle).
         let currency_needle = ["check_currency", "_headroom("].concat();
         assert!(
             headroom_body.contains(currency_needle.as_str()),
-            "TEETH(m17.5c F6 DELEGATION-SSOT): check_headroom body does not contain \
+            "TEETH(F6 DELEGATION-SSOT): check_headroom body does not contain \
              `check_currency_headroom(` — the per-currency cap comparison must be DELEGATED \
-             to check_currency_headroom (ADR-0124 SSOT: one copy of the cap constant and \
-             comparison operator; inline duplication is an invisible divergence risk). \
-             RED until m17.5c Task 4 refactor is complete."
+             to check_currency_headroom (SSOT: one copy of the cap constant and \
+             comparison operator; inline duplication is an invisible divergence risk)."
         );
     }
 }

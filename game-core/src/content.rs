@@ -5260,7 +5260,7 @@ mod tests {
             body.contains(cap_name.as_str()),
             "R14 TEETH: validate_evolution_paths never names {cap_name:?}. The content ceiling \
              must BE the promoted game-core constant — otherwise the next retune moves the \
-             runtime clamp and leaves the validator behind, which is the desync 20r-b removes."
+             runtime clamp and leaves the validator behind, which is exactly the desync this check prevents."
         );
 
         let literal_cap = ["9", "99"].concat();
@@ -7502,7 +7502,7 @@ mod tests {
             .find(|i| i.id == antidote_id)
             .unwrap_or_else(|| {
                 panic!(
-                    "TEETH(EA-4 m14.5d-1a): item id=3 (Antidote) not found in load_items() — \
+                    "TEETH(EA-4): item id=3 (Antidote) not found in load_items() — \
                      the items RON must contain an entry with id=3; \
                      stable append-only ids must not be removed or renumbered"
                 )
@@ -7511,7 +7511,7 @@ mod tests {
         assert_eq!(
             antidote.cure_status,
             Some(StatusKind::Poison),
-            "TEETH(EA-4 m14.5d-1a): Antidote (id=3) must have \
+            "TEETH(EA-4): Antidote (id=3) must have \
              cure_status == Some(StatusKind::Poison). \
              Got: {:?}. \
              Kills: a future RON edit that drops `cure_status: Some(Poison)` \
@@ -7593,14 +7593,14 @@ mod tests {
     ),
 ]"#;
         let defs = parse_npc_defs(ron_10_field).expect(
-            "uxd2 AC-9: a 10-field NPC row (no `interaction`) must still parse — \
+            "AC-9: a 10-field NPC row (no `interaction`) must still parse — \
              `interaction` must carry #[serde(default)]",
         );
-        assert_eq!(defs.len(), 1, "uxd2 AC-9: one row in, one row out");
+        assert_eq!(defs.len(), 1, "AC-9: one row in, one row out");
         assert_eq!(
             defs[0].interaction,
             crate::NpcInteraction::Dialogue,
-            "uxd2 AC-9 TEETH: an NPC row omitting `interaction` must default to \
+            "AC-9 TEETH: an NPC row omitting `interaction` must default to \
              Dialogue; got {:?}",
             defs[0].interaction
         );
@@ -7631,11 +7631,11 @@ mod tests {
     ),
 ]"#;
         let defs = parse_npc_defs(ron_11_field)
-            .expect("uxd2: an NPC row carrying `interaction: Shop(1)` must parse");
+            .expect("an NPC row carrying `interaction: Shop(1)` must parse");
         assert_eq!(
             defs[0].interaction,
             crate::NpcInteraction::Shop(1),
-            "uxd2 TEETH: `interaction: Shop(1)` must deserialize to \
+            "TEETH: `interaction: Shop(1)` must deserialize to \
              NpcInteraction::Shop(1) (payload preserved, not dropped); got {:?}",
             defs[0].interaction
         );
@@ -7664,11 +7664,11 @@ mod tests {
     ),
 ]"#;
         let defs = parse_npc_defs(ron_11_field)
-            .expect("uxd2: an NPC row carrying `interaction: Heal(2)` must parse");
+            .expect("an NPC row carrying `interaction: Heal(2)` must parse");
         assert_eq!(
             defs[0].interaction,
             crate::NpcInteraction::Heal(2),
-            "uxd2 TEETH: `interaction: Heal(2)` must deserialize to \
+            "TEETH: `interaction: Heal(2)` must deserialize to \
              NpcInteraction::Heal(2); got {:?}",
             defs[0].interaction
         );
@@ -7686,7 +7686,7 @@ mod tests {
         assert_eq!(
             crate::NpcInteraction::default(),
             crate::NpcInteraction::Dialogue,
-            "uxd2 TEETH(I0): NpcInteraction::default() must be Dialogue — it is \
+            "TEETH(I0): NpcInteraction::default() must be Dialogue — it is \
              the `#[serde(default)]` value every legacy NPC row inherits"
         );
     }
@@ -7710,13 +7710,13 @@ mod tests {
             crate::NpcInteraction::Shop(0),
         ] {
             let s = ron::to_string(&variant)
-                .unwrap_or_else(|e| panic!("uxd2: NpcInteraction must serialize: {e}"));
+                .unwrap_or_else(|e| panic!("NpcInteraction must serialize: {e}"));
             let back: crate::NpcInteraction = ron::from_str(&s).unwrap_or_else(|e| {
-                panic!("uxd2: NpcInteraction must deserialize from its own RON `{s}`: {e}")
+                panic!("NpcInteraction must deserialize from its own RON `{s}`: {e}")
             });
             assert_eq!(
                 back, variant,
-                "uxd2 TEETH: RON round-trip must preserve {variant:?} (emitted `{s}`)"
+                "TEETH: RON round-trip must preserve {variant:?} (emitted `{s}`)"
             );
         }
     }
@@ -7743,18 +7743,18 @@ mod tests {
 
         let result = validate_npc_interactions(&npcs, &shops, &heals);
         let err = result.expect_err(
-            "uxd2 AC-8 TEETH: Shop(999) with shops {1} must be Err — a dangling \
+            "AC-8 TEETH: Shop(999) with shops {1} must be Err — a dangling \
              shop id ships a shopkeeper whose overlay can never bind, and the \
              seed must fail loudly at sync time instead",
         );
         assert!(
             err.contains("tideglass_shopkeeper"),
-            "uxd2 AC-8 TEETH: the error must name the offending npc_id \
+            "AC-8 TEETH: the error must name the offending npc_id \
              'tideglass_shopkeeper'; got: {err:?}"
         );
         assert!(
             err.contains("999"),
-            "uxd2 AC-8 TEETH: the error must name the missing id 999; got: {err:?}"
+            "AC-8 TEETH: the error must name the missing id 999; got: {err:?}"
         );
     }
 
@@ -7775,18 +7775,18 @@ mod tests {
 
         let result = validate_npc_interactions(&npcs, &shops, &heals);
         let err = result.expect_err(
-            "uxd2 AC-8 TEETH: Heal(999) with heal locations {1} must be Err — \
+            "AC-8 TEETH: Heal(999) with heal locations {1} must be Err — \
              the Heal payload is a heal-location id and must be cross-checked \
              against the heal registry, not the shop registry",
         );
         assert!(
             err.contains("spring_warden"),
-            "uxd2 AC-8 TEETH: the error must name the offending npc_id \
+            "AC-8 TEETH: the error must name the offending npc_id \
              'spring_warden'; got: {err:?}"
         );
         assert!(
             err.contains("999"),
-            "uxd2 AC-8 TEETH: the error must name the missing id 999; got: {err:?}"
+            "AC-8 TEETH: the error must name the missing id 999; got: {err:?}"
         );
     }
 
@@ -7812,7 +7812,7 @@ mod tests {
         let result = validate_npc_interactions(&npcs, &shops, &heals);
         assert!(
             result.is_ok(),
-            "uxd2 AC-8 TEETH: Dialogue + Shop(7) with shops {{7}} + Heal(42) with \
+            "AC-8 TEETH: Dialogue + Shop(7) with shops {{7}} + Heal(42) with \
              heal locations {{42}} must validate Ok; got: {:?}",
             result.err()
         );
@@ -7827,7 +7827,7 @@ mod tests {
         let result = validate_npc_interactions(&[], &[uxd2_shop_def(1)], &[uxd2_heal_def(1)]);
         assert!(
             result.is_ok(),
-            "uxd2 AC-8: zero npcs is vacuously valid; got: {:?}",
+            "AC-8: zero npcs is vacuously valid; got: {:?}",
             result.err()
         );
     }
@@ -7849,12 +7849,12 @@ mod tests {
         let heals = vec![uxd2_heal_def(42)];
 
         let err = validate_npc_interactions(&npcs, &shops, &heals).expect_err(
-            "uxd2 AC-8 TEETH: a dangling reference on the SECOND npc must still \
+            "AC-8 TEETH: a dangling reference on the SECOND npc must still \
              fail — the validator must iterate the whole slice",
         );
         assert!(
             err.contains("spring_warden") && err.contains("999"),
-            "uxd2 AC-8 TEETH: the error must name the second npc ('spring_warden') \
+            "AC-8 TEETH: the error must name the second npc ('spring_warden') \
              and its missing heal-location id 999; got: {err:?}"
         );
     }
@@ -7868,11 +7868,11 @@ mod tests {
     /// rejects the plain `Dialogue` NPCs already in the registry.
     #[test]
     fn uxd2_validate_npc_interactions_passes_for_embedded_content() {
-        let npcs = load_npc_defs().expect("uxd2: load_npc_defs must succeed");
-        let shops = load_shops().expect("uxd2: load_shops must succeed");
-        let heals = load_heal_locations().expect("uxd2: load_heal_locations must succeed");
+        let npcs = load_npc_defs().expect("load_npc_defs must succeed");
+        let shops = load_shops().expect("load_shops must succeed");
+        let heals = load_heal_locations().expect("load_heal_locations must succeed");
         validate_npc_interactions(&npcs, &shops, &heals).expect(
-            "uxd2 AC-8 TEETH: the embedded NPC/shop/heal registries must \
+            "AC-8 TEETH: the embedded NPC/shop/heal registries must \
              cross-validate — a dangling seeded interaction bricks sync_content",
         );
     }
@@ -7888,13 +7888,13 @@ mod tests {
     /// (the pinned zone-1 route to (8,1) stops being 2 tiles away at (6,1)).
     #[test]
     fn uxd2_shopkeeper_seed_carries_shop_interaction() {
-        let defs = load_npc_defs().expect("uxd2: load_npc_defs must succeed");
+        let defs = load_npc_defs().expect("load_npc_defs must succeed");
         let keeper = defs
             .iter()
             .find(|d| d.npc_id == "tideglass_shopkeeper")
             .unwrap_or_else(|| {
                 panic!(
-                    "uxd2 I3 TEETH: npcs RON must contain an NPC with \
+                    "I3 TEETH: npcs RON must contain an NPC with \
                      npc_id 'tideglass_shopkeeper'; got: {:?}",
                     defs.iter().map(|d| d.npc_id.as_str()).collect::<Vec<_>>()
                 )
@@ -7902,30 +7902,30 @@ mod tests {
         assert_eq!(
             keeper.interaction,
             crate::NpcInteraction::Shop(1),
-            "uxd2 I3 TEETH: the seeded shopkeeper must carry Shop(1) — a Dialogue \
+            "I3 TEETH: the seeded shopkeeper must carry Shop(1) — a Dialogue \
              default renders no Shop button at all; got {:?}",
             keeper.interaction
         );
-        assert_eq!(keeper.zone_id, 1, "uxd2 I3: shopkeeper lives in zone 1");
+        assert_eq!(keeper.zone_id, 1, "I3: shopkeeper lives in zone 1");
         assert_eq!(
             (keeper.home_x, keeper.home_y),
             (8, 1),
-            "uxd2 I3: shopkeeper home tile is (8,1) — the e2e route measures \
+            "I3: shopkeeper home tile is (8,1) — the e2e route measures \
              range from it"
         );
         assert_eq!(
             (keeper.spawn_x, keeper.spawn_y),
             (8, 1),
-            "uxd2 I3: shopkeeper spawns on its home tile"
+            "I3: shopkeeper spawns on its home tile"
         );
         assert_eq!(
             keeper.wander_radius, 0,
-            "uxd2 I3 TEETH: wander_radius MUST be 0 (npc_decide's pinned \
+            "I3 TEETH: wander_radius MUST be 0 (npc_decide's pinned \
              stationary special case) or the e2e prompt/talk steps flake"
         );
         assert_eq!(
             keeper.dialogue_tree_id, "shopkeeper_greeting",
-            "uxd2 I3: shopkeeper greets from the 'shopkeeper_greeting' tree"
+            "I3: shopkeeper greets from the 'shopkeeper_greeting' tree"
         );
     }
 
@@ -7940,13 +7940,13 @@ mod tests {
     /// `#dialogue-overlay` assertion in shop-npc.spec.ts unreproducible.
     #[test]
     fn uxd2_shopkeeper_greeting_tree_is_inert_single_node() {
-        let trees = load_dialogue_trees().expect("uxd2: load_dialogue_trees must succeed");
+        let trees = load_dialogue_trees().expect("load_dialogue_trees must succeed");
         let tree = trees
             .iter()
             .find(|t| t.id == "shopkeeper_greeting")
             .unwrap_or_else(|| {
                 panic!(
-                    "uxd2 I3 TEETH: dialogue_trees RON must contain a \
+                    "I3 TEETH: dialogue_trees RON must contain a \
                      'shopkeeper_greeting' tree; got: {:?}",
                     trees.iter().map(|t| t.id.as_str()).collect::<Vec<_>>()
                 )
@@ -7954,37 +7954,37 @@ mod tests {
         assert_eq!(
             tree.nodes.len(),
             1,
-            "uxd2 I3 TEETH: the greeting tree must have exactly ONE node \
+            "I3 TEETH: the greeting tree must have exactly ONE node \
              (inert greeting); got {} nodes",
             tree.nodes.len()
         );
         let node = &tree.nodes[0];
         assert_eq!(
             tree.root_node_id, node.id,
-            "uxd2 I3: the single node must be the root"
+            "I3: the single node must be the root"
         );
         assert_eq!(
             node.text, "Hello, customer!",
-            "uxd2 I3 TEETH: greeting text is pinned by the AC-12 e2e assertion; \
+            "I3 TEETH: greeting text is pinned by the AC-12 e2e assertion; \
              got {:?}",
             node.text
         );
         assert!(
             node.auto_effects.is_empty(),
-            "uxd2 I3 TEETH: the greeting node must have NO auto_effects — the \
+            "I3 TEETH: the greeting node must have NO auto_effects — the \
              shop path is re-enterable, so any effect fires unbounded; got {:?}",
             node.auto_effects
         );
         assert!(
             node.entry_conditions.is_empty(),
-            "uxd2 I3 TEETH: a gated greeting node can leave the shopkeeper with \
+            "I3 TEETH: a gated greeting node can leave the shopkeeper with \
              no reachable node; got {:?}",
             node.entry_conditions
         );
         assert_eq!(
             node.choices.len(),
             1,
-            "uxd2 I3 TEETH: exactly one (Leave) choice — the Shop affordance is \
+            "I3 TEETH: exactly one (Leave) choice — the Shop affordance is \
              derived from NpcInteraction, NEVER from choice text; got {:?}",
             node.choices
                 .iter()
@@ -7992,19 +7992,16 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         let choice = &node.choices[0];
-        assert_eq!(
-            choice.text, "Leave",
-            "uxd2 I3: the single choice is 'Leave'"
-        );
+        assert_eq!(choice.text, "Leave", "I3: the single choice is 'Leave'");
         assert_eq!(
             choice.next_node, None,
-            "uxd2 I3 TEETH: the Leave choice must END the conversation \
+            "I3 TEETH: the Leave choice must END the conversation \
              (next_node: None); got {:?}",
             choice.next_node
         );
         assert!(
             choice.effects.is_empty() && choice.conditions.is_empty(),
-            "uxd2 I3 TEETH: the Leave choice must be inert (no effects, no \
+            "I3 TEETH: the Leave choice must be inert (no effects, no \
              conditions); got effects {:?} / conditions {:?}",
             choice.effects,
             choice.conditions

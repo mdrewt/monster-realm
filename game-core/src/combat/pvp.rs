@@ -169,7 +169,7 @@ mod pvp_tests {
         assert_eq!(
             pvp_deadline_forfeit_side(false, false),
             SideId::SideA,
-            "neither submitted → challenger (side A) forfeits (tie-break, ADR-0109 D5)"
+            "neither submitted → challenger (side A) forfeits (tie-break)"
         );
     }
 

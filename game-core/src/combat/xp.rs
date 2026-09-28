@@ -480,7 +480,7 @@ mod tests {
             0,
             "RT-PX-01: practice_xp_reward(1, true) must be 0 — \
              floor(1/10)=0; a +1 floor inside practice_xp_reward would return 1 \
-             and violate the spec (ADR-0078: minimum is 0, not 1)"
+             and violate the spec (minimum is 0, not 1)"
         );
     }
 
@@ -510,7 +510,7 @@ mod tests {
             practice.value(),
             1,
             "RT-PX-02: practice_xp_reward(10, true) must be 1 (floor(10/10)=1); \
-             this is the first base_xp that yields non-zero practice XP (ADR-0078)"
+             this is the first base_xp that yields non-zero practice XP"
         );
     }
 

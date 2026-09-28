@@ -133,7 +133,7 @@ fn resolve_one_attack(
             // between Faint and Switch — update apply_ko_switch_entry_abilities accordingly.
             debug_assert!(
                 matches!(events.get(events.len().wrapping_sub(2)), Some(BattleEvent::Faint { side }) if *side == defender_side),
-                "Faint→Switch adjacency invariant: expected Faint{{side:{defender_side:?}}} at events[n-2] before Switch (ADR-0100 D6)"
+                "Faint→Switch adjacency invariant: expected Faint{{side:{defender_side:?}}} at events[n-2] before Switch"
             );
             // D6 wiring: apply_entry_ability is called by apply_ko_switch_entry_abilities
             // in the outer resolver (resolve_full_turn / resolve_player_swap /
@@ -1554,7 +1554,7 @@ mod tests {
         assert!(
             !result,
             "TEETH(return): advance_turn must return false at turn_number==u16::MAX; \
-             a mutant returning true fails here (ADR-0003: terminal signals caller to stop)"
+             a mutant returning true fails here (terminal signals caller to stop)"
         );
 
         // (b) outcome: must be Fled specifically — not SideAWins, SideBWins, or Ongoing
