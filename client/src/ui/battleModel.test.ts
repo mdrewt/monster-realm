@@ -2205,13 +2205,6 @@ const RB55_ONE_CONTRACT =
   '(statusBadge — the mirror) are ONE contract: repair BOTH files, never one. Editing ' +
   'only the side this test names just moves the drift.';
 
-/** The trap that makes "just change the Rust token" the wrong repair. */
-const RB55_CEILING =
-  'CEILING CONTRADICTION — read before choosing a side to edit: A11Y_TOKEN_MAX_LEN is 4 ' +
-  '(game-core/src/content.rs:1749) but the badge pill caps every token at 3 characters ' +
-  '(client/src/ui/battleModel.test.ts:2033). A 4-character Rust token is therefore legal ' +
-  'in content.rs and has NO legal client repair — shorten the token, do not widen the pill.';
-
 /**
  * Read the SSOT, or FAIL LOUD naming the resolved path.
  * Never `?? ''`, never an existsSync guard, never it.skip: a swallowed read turns
@@ -2365,8 +2358,7 @@ describe('battleModel rb-55: statusBadge is mechanically linked to A11Y_TOKENS (
         'side is the live return value of `statusBadge` in client/src/ui/battleModel.ts; the "expected" ' +
         'side is parsed from game-core/src/content.rs:1692. A screen reader announces the ' +
         'Rust token while the sighted pill renders the client one, so a drift here is two ' +
-        `players being told two different things about the same monster. ${RB55_ONE_CONTRACT} ` +
-        `${RB55_CEILING}`,
+        `players being told two different things about the same monster. ${RB55_ONE_CONTRACT}`,
     ).toEqual(variants.map((v) => [v.name, rustTokenFor(v.name)]).sort());
 
     // MEASURED GAP, DO NOT REMOVE. The assertion above stops at the pure function; production

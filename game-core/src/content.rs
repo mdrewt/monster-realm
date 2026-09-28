@@ -1751,8 +1751,9 @@ pub const A11Y_TOKENS: &[A11yToken] = &[
 ];
 
 /// Shortest and longest permitted token length, in ASCII-graphic characters.
+/// The ceiling is the client badge pill's rendering width (3 characters).
 const A11Y_TOKEN_MIN_LEN: usize = 2;
-const A11Y_TOKEN_MAX_LEN: usize = 4;
+const A11Y_TOKEN_MAX_LEN: usize = 3;
 
 /// Validate an a11y token table against the two enums it must cover.
 ///
@@ -8842,7 +8843,10 @@ mod tests {
     /// any fixture uses is the empty string and no fixture uses a long one.
     #[test]
     fn m23s8_reject_out_of_band_token_length() {
-        for bad in ["P", "TOOLONG"] {
+        // "ABCD" is the one-past-the-ceiling token: the badge pill renders at most
+        // 3 characters (client statusBadge), so a 4-character token has no legal
+        // client rendering and must be rejected here.
+        for bad in ["P", "ABCD", "TOOLONG"] {
             let mut rows = shipped_rows();
             let idx = m23s8_row_index(&rows, "status.poison");
             rows[idx].token = bad;
@@ -8852,7 +8856,7 @@ mod tests {
                 "the rejection must name the offending token or its key; got: {err:?}"
             );
         }
-        for good in ["AB", "ABCD"] {
+        for good in ["AB", "ABC"] {
             let mut rows = shipped_rows();
             let idx = m23s8_row_index(&rows, "status.poison");
             rows[idx].token = good;
