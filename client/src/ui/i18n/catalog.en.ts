@@ -73,6 +73,39 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Status-strip error shown when the player moves a monster from the box to the party
   // but every party slot is taken; nothing is moved.
   'chrome.status.partyFull': 'party is full — move a monster to the box first',
+  // @desc: Feedback line inside an overlay (shop, trade, trade offer, rename, care, session) when
+  // the player acted while the connection was down, so nothing was sent. Same wording as
+  // chrome.status.disconnected without its {where} prefix.
+  // main.ts:2638 (and 7 sibling reducer sites), careAction.ts:32, sessionModel.ts:31
+  'chrome.feedback.disconnected': 'disconnected — try again',
+  // @desc: Feedback line in the profile-rename dialog after the new display name was saved.
+  // main.ts:2829
+  'chrome.rename.updated': 'Name updated!',
+  // @desc: Heading of the session overlay shown when the player's sign-in has expired.
+  // sessionModel.ts:124
+  'chrome.session.expired.title': 'Session expired',
+  // @desc: Body text of the session-expired overlay; offers signing in again or continuing as a guest
+  // on this device.
+  // sessionModel.ts:125
+  'chrome.session.expired.body':
+    'Your sign-in has expired. Sign in again to keep saving progress across your devices, or continue as a guest on this one.',
+  // @desc: Heading of the session overlay shown when the sign-in service cannot be reached.
+  // sessionModel.ts:127
+  'chrome.session.unreachable.title': 'Sign-in service unavailable',
+  // @desc: Body text of the sign-in-unavailable overlay; reassures the player and offers continuing as
+  // a guest meanwhile.
+  // sessionModel.ts:128
+  'chrome.session.unreachable.body':
+    'We could not reach the sign-in service. Your account is safe — the game keeps retrying in the background, or you can continue as a guest for now.',
+  // @desc: Button on the session overlay that starts continuing as a guest (a confirmation step
+  // follows). Short, fits a button.
+  // sessionModel.ts:130
+  'chrome.session.continue': 'Continue as guest',
+  // @desc: Confirmation question on the session overlay; must name the irreversible consequence
+  // (the account session on this tab is given up) before the player confirms.
+  // sessionModel.ts:133
+  'chrome.session.confirmPrompt':
+    'Continuing as a guest gives up this account session on this tab and cannot be undone. Continue as a guest?',
   // @desc: Heading of the battle overlay; the first thing announced when a PvE or PvP battle opens.
   // One word, fits a 320px-wide column.
   // battleView.ts:110 (resolved in show())
@@ -400,6 +433,18 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // fits a narrow button.
   // tradeView.ts:199 (#actionLabel return)
   'trade.action.cancel': 'Cancel',
+  // @desc: Feedback line in the live-trade overlay after the player accepted the offer.
+  // main.ts:2675
+  'trade.feedback.accepted': 'Trade accepted!',
+  // @desc: Feedback line in the live-trade overlay after the player rejected the offer.
+  // main.ts:2687
+  'trade.feedback.rejected': 'Trade rejected.',
+  // @desc: Feedback line in the live-trade overlay after the player confirmed and the trade went through.
+  // main.ts:2699
+  'trade.feedback.completed': 'Trade complete!',
+  // @desc: Feedback line in the live-trade overlay after the player cancelled the trade.
+  // main.ts:2711
+  'trade.feedback.cancelled': 'Trade cancelled.',
   // @desc: Fallback heading of the shop overlay when no shop is nearby (a real shop shows its
   // own name instead). One word.
   // shopView.ts:124
@@ -439,11 +484,20 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // sign). Carries a spaced em dash. One line.
   // shopView.ts:190
   'shop.sell.unsellable': (p) => `${p.name} (×${p.count}) — Cannot sell`,
+  // @desc: Feedback line in the shop overlay after a purchase succeeded.
+  // main.ts:2643
+  'shop.feedback.purchased': 'Purchase complete!',
+  // @desc: Feedback line in the shop overlay after a sale succeeded.
+  // main.ts:2658
+  'shop.feedback.sold': 'Sale complete!',
   // @desc: Placeholder option of the trade-proposal dialog's target selector, shown before the
   // player picks another player to trade with; ends with an ellipsis. Short, fits a narrow
   // dropdown.
   // tradeProposeView.ts:168
   'tradePropose.target.placeholder': 'Select a player…',
+  // @desc: Feedback line in the trade-proposal dialog after the offer was sent to the other player.
+  // main.ts:2860
+  'tradePropose.feedback.sent': 'Offer sent!',
   // @desc: Button in the NPC dialogue overlay that opens the shop this NPC runs; shown only when
   // the NPC has one. One word, fits a narrow button.
   // dialogueView.ts:72

@@ -34,10 +34,12 @@
 // NO `new RegExp(...)` anywhere (Semgrep `detect-non-literal-regexp`, banned repo-wide).
 
 import * as fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { CATALOG_EN } from './i18n/catalog.en';
+import { CATALOG_FR } from './i18n/catalog.fr';
+import { setLocale } from './i18n/resolver';
 import {
   buildSessionViewModel,
-  SESSION_DISCONNECTED_FEEDBACK,
   SESSION_EVENT_KINDS,
   SESSION_INITIAL,
   type SessionEvent,
@@ -45,6 +47,23 @@ import {
   type SessionState,
   sessionStep,
 } from './sessionModel';
+
+// ---------------------------------------------------------------------------
+// i18n fixtures (slice 21r-b). sessionModel.ts's own `SESSION_DISCONNECTED_FEEDBACK` export is
+// REMOVED by this slice — its only consumers were this file and sessionModel.ts's internals,
+// which now resolve the line through the catalog at event time (AUTH-59 lives at
+// sessionModel.ts:96/108). 'chrome.feedback.disconnected' / 'chrome.session.*' are NOT YET
+// `MessageId`s (this slice is what adds them), so they are read through a widened `Record`
+// cast — this file must fail on a MISSING/WRONG catalog VALUE, never on a TS/import error.
+// ---------------------------------------------------------------------------
+const EN = CATALOG_EN as unknown as Record<string, string>;
+const FR = CATALOG_FR as unknown as Record<string, string>;
+/** The catalog's English disconnected line — `undefined` until catalog.en.ts gains the key. */
+const DISCONNECTED_FEEDBACK_EN = EN['chrome.feedback.disconnected'];
+/** Sample feedback text used ONLY to build exhaustive-sweep FIXTURE states below
+ *  (ALL_MODEL_STATES, the purity sweep) — independent of the catalog migration above and never
+ *  itself asserted against. */
+const SAMPLE_FEEDBACK = 'disconnected — try again';
 
 // ---------------------------------------------------------------------------
 // Fixtures.
@@ -78,9 +97,7 @@ const ALL_EVENTS: readonly SessionEvent[] = [
 /** Every reachable model state, for the exhaustive sweeps. */
 const ALL_MODEL_STATES: readonly SessionModelState[] = ALL_STATES.flatMap((state) =>
   [true, false].flatMap((confirmPending) =>
-    [undefined, SESSION_DISCONNECTED_FEEDBACK].map((feedback) =>
-      stateOf(state, confirmPending, feedback),
-    ),
+    [undefined, SAMPLE_FEEDBACK].map((feedback) => stateOf(state, confirmPending, feedback)),
   ),
 );
 
@@ -125,7 +142,7 @@ describe('sessionModel: the three states (AUTH-46 / AUTH-47 / D17)', () => {
     // overlay appears its second step is already armed — one click away from discarding a
     // session that is now perfectly healthy.
     for (const state of SHOWING_STATES) {
-      const step = sessionStep(stateOf(state, true, SESSION_DISCONNECTED_FEEDBACK), {
+      const step = sessionStep(stateOf(state, true, SAMPLE_FEEDBACK), {
         kind: 'connected',
       });
       expect(step.next, `from ${state}`).toEqual({
@@ -359,14 +376,13 @@ describe('sessionModel AUTH-56: the confirmation is a DISTINCT second step namin
 // ---------------------------------------------------------------------------
 
 describe('sessionModel AUTH-59: an action with no live connection surfaces the ordinary disconnected feedback', () => {
-  it('★★ BITES: the feedback string is EXACTLY the repo-wide disconnected line', () => {
-    // "the SAME visible feedback as an ordinary disconnected action" — the literal is the
-    // one careAction.ts:32 and main.ts's ten guarded reducer sites already use. Pinned BY
-    // VALUE on both sides rather than shared, because careAction.ts's copy is
-    // module-private and exporting it is outside this slice's touch set. Stated as a
-    // NAMED RESIDUAL rather than hidden: if either side drifts, this assertion reds and the
-    // honest fix is to export the constant once.
-    expect(SESSION_DISCONNECTED_FEEDBACK).toBe('disconnected — try again');
+  it('★★ BITES: the feedback string is EXACTLY the repo-wide disconnected line, sourced from the i18n catalog (chrome.feedback.disconnected)', () => {
+    // slice 21r-b: "the SAME visible feedback as an ordinary disconnected action" now names
+    // ONE catalog key shared by careAction.ts/main.ts/sessionModel.ts, not three independently
+    // hand-copied literals. WRONG IMPL KILLED: catalog.en.ts missing the
+    // 'chrome.feedback.disconnected' key entirely (DISCONNECTED_FEEDBACK_EN reads `undefined`
+    // and this fails against the literal below).
+    expect(DISCONNECTED_FEEDBACK_EN).toBe('disconnected — try again');
   });
 
   it('★★ BITES: BOTH actions produce that SAME feedback when no connection exists — and neither emits an effect', () => {
@@ -398,8 +414,9 @@ describe('sessionModel AUTH-59: an action with no live connection surfaces the o
     }
     expect(
       [...feedbacks],
-      'every no-live-connection action must surface the SAME line, not one per handler',
-    ).toEqual([SESSION_DISCONNECTED_FEEDBACK]);
+      'every no-live-connection action must surface the SAME line, not one per handler — ' +
+        'sourced from the catalog (chrome.feedback.disconnected), not a hardcoded literal',
+    ).toEqual([DISCONNECTED_FEEDBACK_EN]);
   });
 
   it('★★ BITES: a dropped confirm leaves the confirmation ARMED (the player can retry the same click)', () => {
@@ -414,12 +431,12 @@ describe('sessionModel AUTH-59: an action with no live connection surfaces the o
   });
 
   it('★ BITES: the feedback reaches the view model (a state field nobody renders is still silent)', () => {
-    const vm = buildSessionViewModel(stateOf('expired', false, SESSION_DISCONNECTED_FEEDBACK));
-    expect(vm.feedback).toBe(SESSION_DISCONNECTED_FEEDBACK);
+    const vm = buildSessionViewModel(stateOf('expired', false, SAMPLE_FEEDBACK));
+    expect(vm.feedback).toBe(SAMPLE_FEEDBACK);
   });
 
   it('★ BITES: a SUCCESSFUL action clears any stale feedback (kills a sticky disconnected line)', () => {
-    const step = sessionStep(stateOf('expired', true, SESSION_DISCONNECTED_FEEDBACK), {
+    const step = sessionStep(stateOf('expired', true, SAMPLE_FEEDBACK), {
       kind: 'continue-anonymously-confirmed',
       hasLiveConnection: true,
     });
@@ -428,6 +445,96 @@ describe('sessionModel AUTH-59: an action with no live connection surfaces the o
       step.next.feedback,
       'the stale disconnected line must not outlive the retry',
     ).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// i18n (slice 21r-b): the six overlay strings and the disconnected feedback line route
+// through the catalog's module-level locale cell (`t()`/the widened casts above), read at
+// EVENT/PROJECTION time — never frozen at module-load time.
+// ---------------------------------------------------------------------------
+
+describe('sessionModel × i18n (21r-b): overlay copy and disconnected feedback route through the catalog', () => {
+  afterEach(() => {
+    // The locale cell is module-level and leaks across tests in one file (header note) —
+    // every test in this describe must restore it, pass or fail.
+    setLocale('en');
+  });
+
+  it('★ BITES: under en, buildSessionViewModel renders the pre-migration literals byte-identically (sessionModel.ts:124-134)', () => {
+    // Regression net, not a red gate: these six literals must stay byte-identical to what
+    // sessionModel.ts hardcoded pre-migration once it is rewired to t()/CATALOG_EN.
+    const expired = buildSessionViewModel(stateOf('expired', true));
+    expect(expired.title).toBe('Session expired');
+    expect(expired.body).toBe(
+      'Your sign-in has expired. Sign in again to keep saving progress across your devices, ' +
+        'or continue as a guest on this one.',
+    );
+    expect(expired.primaryActionLabel).toBe('Continue as guest');
+    expect(expired.confirmPrompt).toBe(
+      'Continuing as a guest gives up this account session on this tab and cannot be undone. ' +
+        'Continue as a guest?',
+    );
+
+    const unreachable = buildSessionViewModel(stateOf('unreachable', true));
+    expect(unreachable.title).toBe('Sign-in service unavailable');
+    expect(unreachable.body).toBe(
+      'We could not reach the sign-in service. Your account is safe — the game keeps ' +
+        'retrying in the background, or you can continue as a guest for now.',
+    );
+    expect(unreachable.primaryActionLabel).toBe('Continue as guest');
+    expect(unreachable.confirmPrompt).toBe(
+      'Continuing as a guest gives up this account session on this tab and cannot be undone. ' +
+        'Continue as a guest?',
+    );
+  });
+
+  it('★★ BITES: under fr, buildSessionViewModel renders CATALOG_FR chrome.session.* copy for BOTH expired and unreachable, distinct from English', () => {
+    // WRONG IMPL KILLED: sessionModel.ts left on its module-scope EXPIRED_TITLE/EXPIRED_BODY/
+    // UNREACHABLE_TITLE/UNREACHABLE_BODY/CONTINUE_LABEL/CONFIRM_PROMPT literals (or a
+    // `const X = t(...)` frozen at IMPORT time, before setLocale('fr') below ever runs) —
+    // either shape renders the English string no matter which locale is active, which this
+    // test tells apart from a live t() call made at PROJECTION time (buildSessionViewModel).
+    setLocale('fr');
+    const expired = buildSessionViewModel(stateOf('expired', true));
+    const unreachable = buildSessionViewModel(stateOf('unreachable', true));
+
+    expect(expired.title).toBe(FR['chrome.session.expired.title']);
+    expect(expired.body).toBe(FR['chrome.session.expired.body']);
+    expect(expired.primaryActionLabel).toBe(FR['chrome.session.continue']);
+    expect(expired.confirmPrompt).toBe(FR['chrome.session.confirmPrompt']);
+
+    expect(unreachable.title).toBe(FR['chrome.session.unreachable.title']);
+    expect(unreachable.body).toBe(FR['chrome.session.unreachable.body']);
+    expect(unreachable.primaryActionLabel).toBe(FR['chrome.session.continue']);
+    expect(unreachable.confirmPrompt).toBe(FR['chrome.session.confirmPrompt']);
+
+    // AUTH-46: same affordance, DISTINCT copy per locale too — a catalog entry that
+    // accidentally copied the English bytes into the French slot would pass every assertion
+    // above yet still fail this one.
+    expect(expired.title).not.toBe(EN['chrome.session.expired.title']);
+    expect(expired.body).not.toBe(EN['chrome.session.expired.body']);
+    expect(expired.confirmPrompt).not.toBe(EN['chrome.session.confirmPrompt']);
+    expect(unreachable.title).not.toBe(EN['chrome.session.unreachable.title']);
+    expect(unreachable.body).not.toBe(EN['chrome.session.unreachable.body']);
+  });
+
+  it('★★ BITES: under fr, a dropped continue-anonymously / retry action surfaces CATALOG_FR chrome.feedback.disconnected, not the English line', () => {
+    // AUTH-59's "same visible feedback" line, in French. WRONG IMPL KILLED: sessionStep's
+    // two no-live-connection arms (sessionModel.ts:96/108) still writing the hardcoded English
+    // literal regardless of locale.
+    setLocale('fr');
+    const confirmStep = sessionStep(stateOf('expired', true), {
+      kind: 'continue-anonymously-confirmed',
+      hasLiveConnection: false,
+    });
+    const retryStep = sessionStep(stateOf('unreachable'), {
+      kind: 'retry-requested',
+      hasLiveConnection: false,
+    });
+    expect(confirmStep.next.feedback).toBe(FR['chrome.feedback.disconnected']);
+    expect(retryStep.next.feedback).toBe(FR['chrome.feedback.disconnected']);
+    expect(confirmStep.next.feedback).not.toBe(EN['chrome.feedback.disconnected']);
   });
 });
 

@@ -2,10 +2,14 @@
 //
 // AUTH-46/47/49/56/59. No DOM, no SDK, no clock, no storage — the whole point is that the
 // continue-anonymously affordance can ONLY be reached by an explicit, confirmed action, and a
-// model whose input alphabet carries no time cannot be driven by a timer (AUTH-49). The DOM
+// model whose input alphabet carries no time cannot be driven by a timer (AUTH-49). The one
+// ambient read is the i18n locale cell (set once at boot) behind `t()`: every player-facing line
+// is resolved at step/projection time, never at module load, which would freeze English. The DOM
 // shell (`sessionView.ts`) is coverage-excluded and binds this core to elements; it is driven
 // directly by `conn.sessionState()` (registry-external, D17). `connection.ts` imports the
 // `SessionState` type from here as the SSOT.
+
+import { t } from './i18n/resolver';
 
 /** The three states the session terminal can be in. `hidden` is the ordinary case (nothing
  *  showing); `expired` and `unreachable` each own DISTINCT copy (AUTH-46/47). The `'hidden'`
@@ -25,10 +29,6 @@ export const SESSION_INITIAL: SessionModelState = {
   confirmPending: false,
   feedback: undefined,
 };
-
-/** The repo-wide disconnected line (AUTH-59). Pinned BY VALUE against careAction.ts / main.ts's
- *  own copy — exporting careAction.ts's module-private constant is outside this slice's touches. */
-export const SESSION_DISCONNECTED_FEEDBACK = 'disconnected — try again';
 
 export type SessionEventKind =
   | 'session-expired'
@@ -93,7 +93,7 @@ export function sessionStep(state: SessionModelState, event: SessionEvent): Sess
       if (!event.hasLiveConnection) {
         // AUTH-59: not silently dropped — the same disconnected line, and the confirmation stays
         // ARMED so the player can retry the exact click that could not be delivered.
-        return { next: { ...state, feedback: SESSION_DISCONNECTED_FEEDBACK }, effect: 'none' };
+        return { next: { ...state, feedback: t('chrome.feedback.disconnected') }, effect: 'none' };
       }
       // Spend the confirmation and clear any stale feedback; the overlay stays until `connected`.
       return {
@@ -105,7 +105,7 @@ export function sessionStep(state: SessionModelState, event: SessionEvent): Sess
       return { next: { ...state, confirmPending: false }, effect: 'none' };
     case 'retry-requested':
       if (!event.hasLiveConnection) {
-        return { next: { ...state, feedback: SESSION_DISCONNECTED_FEEDBACK }, effect: 'none' };
+        return { next: { ...state, feedback: t('chrome.feedback.disconnected') }, effect: 'none' };
       }
       return { next: { ...state, feedback: undefined }, effect: 'retry-connect' };
   }
@@ -121,28 +121,18 @@ export interface SessionViewModel {
   readonly feedback: string | undefined;
 }
 
-const EXPIRED_TITLE = 'Session expired';
-const EXPIRED_BODY =
-  'Your sign-in has expired. Sign in again to keep saving progress across your devices, or continue as a guest on this one.';
-const UNREACHABLE_TITLE = 'Sign-in service unavailable';
-const UNREACHABLE_BODY =
-  'We could not reach the sign-in service. Your account is safe — the game keeps retrying in the background, or you can continue as a guest for now.';
-const CONTINUE_LABEL = 'Continue as guest';
-// AUTH-56: names the irreversible consequence. Longer than 20 chars, and the first step must not
-// already carry it.
-const CONFIRM_PROMPT =
-  'Continuing as a guest gives up this account session on this tab and cannot be undone. Continue as a guest?';
-
 /** Pure projection of the model state into what the DOM shell renders. */
 export function buildSessionViewModel(state: SessionModelState): SessionViewModel {
   const visible = state.state !== 'hidden';
   const expired = state.state === 'expired';
   return {
     visible,
-    title: expired ? EXPIRED_TITLE : UNREACHABLE_TITLE,
-    body: expired ? EXPIRED_BODY : UNREACHABLE_BODY,
-    primaryActionLabel: CONTINUE_LABEL,
-    confirmPrompt: state.confirmPending ? CONFIRM_PROMPT : undefined,
+    title: expired ? t('chrome.session.expired.title') : t('chrome.session.unreachable.title'),
+    body: expired ? t('chrome.session.expired.body') : t('chrome.session.unreachable.body'),
+    primaryActionLabel: t('chrome.session.continue'),
+    // AUTH-56: names the irreversible consequence. Longer than 20 chars, and the first step must
+    // not already carry it.
+    confirmPrompt: state.confirmPending ? t('chrome.session.confirmPrompt') : undefined,
     feedback: state.feedback,
   };
 }

@@ -32,6 +32,14 @@ export type MessageId =
   | 'chrome.status.bugBundleBlocked'
   | 'chrome.status.healUnavailable'
   | 'chrome.status.partyFull'
+  | 'chrome.feedback.disconnected'
+  | 'chrome.rename.updated'
+  | 'chrome.session.expired.title'
+  | 'chrome.session.expired.body'
+  | 'chrome.session.unreachable.title'
+  | 'chrome.session.unreachable.body'
+  | 'chrome.session.continue'
+  | 'chrome.session.confirmPrompt'
   | 'battle.title'
   | 'battle.continueHint'
   | 'battle.swap.hint'
@@ -113,6 +121,10 @@ export type MessageId =
   | 'trade.action.reject'
   | 'trade.action.confirm'
   | 'trade.action.cancel'
+  | 'trade.feedback.accepted'
+  | 'trade.feedback.rejected'
+  | 'trade.feedback.completed'
+  | 'trade.feedback.cancelled'
   // Shop.* : the shop overlay (shopView.ts).
   | 'shop.title'
   | 'shop.noShop'
@@ -123,9 +135,12 @@ export type MessageId =
   | 'shop.sell.row'
   | 'shop.sell.submit'
   | 'shop.sell.unsellable'
+  | 'shop.feedback.purchased'
+  | 'shop.feedback.sold'
   // tradePropose.* : the trade-proposal dialog (tradeProposeView.ts); its
   // submit label is the S1-seeded `chrome.tradePropose.submit`.
   | 'tradePropose.target.placeholder'
+  | 'tradePropose.feedback.sent'
   // Dialogue.* : the NPC dialogue overlay (dialogueView.ts).
   | 'dialogue.action.shop'
   // Claim.* : the guest-claim overlay (claimView.ts). Its button and the

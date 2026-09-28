@@ -743,7 +743,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     ).toEqual(['alive.one', 'alive.two']);
   });
 
-  it('m24s7 PARITY-02: I18N-27 — import-binding resolution + the 19-file resolver roster + main.ts dual bindings', () => {
+  it('m24s7/21r-b PARITY-02: I18N-27 — import-binding resolution + the 21-file resolver roster + main.ts dual bindings', () => {
     const census = computeCensus();
     const i18nRoster = census
       .filter((f) => f.bindings.some((b) => b.module === 'i18n'))
@@ -751,12 +751,13 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       .sort();
     // WRONG IMPL KILLED: a bare global `t(`/`tf(` text scan (never resolving import specifiers)
     // would either miss every file (bindings always empty) or over-match unrelated `t(` calls
-    // (e.g. `total(`) — the exact 19-file roster below is only reachable via real binding
-    // resolution.
+    // (e.g. `total(`) — the exact 21-file roster below (21r-b adds ui/careAction.ts and
+    // ui/sessionModel.ts) is only reachable via real binding resolution.
     expect(i18nRoster, `resolver-importing roster: ${JSON.stringify(i18nRoster)}`).toEqual([
       'main.ts',
       'ui/battleView.ts',
       'ui/boxView.ts',
+      'ui/careAction.ts',
       'ui/claimView.ts',
       'ui/dialogueView.ts',
       'ui/errorOverlayView.ts',
@@ -770,6 +771,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'ui/questLogView.ts',
       'ui/raisingView.ts',
       'ui/renameView.ts',
+      'ui/sessionModel.ts',
       'ui/shopView.ts',
       'ui/tradeProposeView.ts',
       'ui/tradeView.ts',
@@ -785,7 +787,13 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
         .filter((c) => c.module === 'i18n' && c.kind === 'literal' && c.literal !== undefined)
         .map((c) => c.literal as string),
     );
+    // 21r-b adds 9 literal-key call sites in main.ts: the frozen-link disconnected line (shop
+    // onBuy/onSell, trade onAccept/onReject/onConfirm/onCancel, tradePropose onSubmit — one
+    // literal key, many call sites), the rename-success line, the two shop-outcome lines, the
+    // four trade-outcome lines, and the trade-propose "sent" line.
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
+      'chrome.feedback.disconnected',
+      'chrome.rename.updated',
       'chrome.status.bugBundleBlocked',
       'chrome.status.contentStale',
       'chrome.status.disconnected',
@@ -793,6 +801,13 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'chrome.status.healUnavailable',
       'chrome.status.partyFull',
       'chrome.status.privacyOverlayBusy',
+      'shop.feedback.purchased',
+      'shop.feedback.sold',
+      'trade.feedback.accepted',
+      'trade.feedback.cancelled',
+      'trade.feedback.completed',
+      'trade.feedback.rejected',
+      'tradePropose.feedback.sent',
     ]);
     const a11yLiteralKeys = new Set(
       main.calls
@@ -1073,7 +1088,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
   });
 
   describe('catalogFr (the fr runtime proof — CATALOGS.fr, S7)', () => {
-    it("m24s7 FR-01: every fr closure reads exactly en's param fields, interpolates each, and >=100/112 values differ from en", () => {
+    it("m24s7/21r-b FR-01: every fr closure reads exactly en's param fields, interpolates each, and >=100/133 values differ from en", () => {
       const en = CATALOG_EN as Record<string, unknown>;
       const fr = CATALOGS.fr as unknown as Record<string, unknown> | undefined;
       // WRONG IMPL KILLED: CATALOGS.fr undefined (unregistered / missing catalog.fr.ts).
@@ -1149,7 +1164,10 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       }
       expect(
         checked,
-        'anti-vacuity: the full 112-entry en catalog must have been walked',
+        // 21r-b grows the roster from 118 to 133 keys (corrects a stale "112" this comment
+        // carried forward) — the threshold below (>=100) is intentionally UNCHANGED: it is a
+        // lower bound that only gets easier to clear as the roster grows, never weakened.
+        'anti-vacuity: the full 133-entry en catalog must have been walked',
       ).toBeGreaterThan(100);
       expect(
         differCount,
@@ -1217,6 +1235,51 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       } finally {
         setLocale('en');
       }
+    });
+
+    it('21r-b FR-04: every one of the 15 new keys has a CATALOG_FR value strictly different from CATALOG_EN (kills an untranslated copy-through, red-team S3)', () => {
+      // The aggregate FR-01 tally (>=100/133 differ) can pass even while ONE specific key was
+      // copy-pasted from en into fr — this test names each of the 15 new keys individually so a
+      // single untranslated copy-through (e.g. 'trade.feedback.completed': 'Trade complete!'
+      // left unchanged in catalog.fr.ts) fails BY NAME, not just a lowered aggregate count.
+      const NEW_KEYS_21R_B: readonly string[] = [
+        'chrome.feedback.disconnected',
+        'chrome.rename.updated',
+        'chrome.session.expired.title',
+        'chrome.session.expired.body',
+        'chrome.session.unreachable.title',
+        'chrome.session.unreachable.body',
+        'chrome.session.continue',
+        'chrome.session.confirmPrompt',
+        'shop.feedback.purchased',
+        'shop.feedback.sold',
+        'trade.feedback.accepted',
+        'trade.feedback.rejected',
+        'trade.feedback.completed',
+        'trade.feedback.cancelled',
+        'tradePropose.feedback.sent',
+      ];
+      expect(NEW_KEYS_21R_B.length, 'ANTI-VACUITY: the 21r-b plan names exactly 15 new keys').toBe(
+        15,
+      );
+
+      const en = CATALOG_EN as Record<string, unknown>;
+      const fr = CATALOGS.fr as unknown as Record<string, unknown> | undefined;
+      expect(fr, 'CATALOGS.fr must be defined').not.toBe(undefined);
+      const safeFr = fr as Record<string, unknown>;
+
+      let checked = 0;
+      for (const key of NEW_KEYS_21R_B) {
+        expect(typeof en[key], `${key} must be a plain string in en`).toBe('string');
+        expect(typeof safeFr[key], `${key} must be a plain string in fr`).toBe('string');
+        expect(
+          safeFr[key],
+          `${key}: fr must differ from en — an untranslated copy-through (e.g. leaving ` +
+            `'${key}' as the English bytes in catalog.fr.ts) must fail HERE, by name`,
+        ).not.toBe(en[key]);
+        checked += 1;
+      }
+      expect(checked, 'ANTI-VACUITY: all 15 keys must have been checked').toBe(15);
     });
   });
 });

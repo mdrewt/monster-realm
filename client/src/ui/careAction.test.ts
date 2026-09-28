@@ -90,13 +90,23 @@
 //                                  access to (the guard belongs to the caller's
 //                                  showFeedback wrapper, never to performCare)
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 // careAction.ts is now shipped (see the STATUS UPDATE above) — this import resolves
 // against the real module; `performCare` still declares a second `_monsterId: bigint`
 // parameter the tests below no longer pass (code review MINOR finding).
 import type { CareActionDeps } from './careAction';
 import { performCare } from './careAction';
+import { CATALOG_EN } from './i18n/catalog.en';
+import { CATALOG_FR } from './i18n/catalog.fr';
+import { setLocale } from './i18n/resolver';
 import { reduceErrorMessage } from './statusModel';
+
+// slice 21r-b: careAction.ts's module-private `DISCONNECTED_MESSAGE` constant is rewired to
+// `t('chrome.feedback.disconnected')`. The key is NOT YET a `MessageId` (this slice adds it),
+// so it is read through a widened `Record` cast — this file must fail on a MISSING/WRONG
+// catalog VALUE, never on a TS/import error.
+const EN = CATALOG_EN as unknown as Record<string, string>;
+const FR = CATALOG_FR as unknown as Record<string, string>;
 
 // Drain the microtask queue (renameView.test.ts / shopView.test.ts precedent) —
 // used only to prove NOTHING has fired yet while a promise is deliberately held open.
@@ -258,6 +268,43 @@ describe('performCare(): frozen/disconnected arm — callCare() returns undefine
       message.length,
       'the frozen/disconnected feedback message must be non-empty',
     ).toBeGreaterThan(0);
+  });
+
+  describe('i18n (slice 21r-b): the frozen/disconnected message is the SAME catalog key main.ts/sessionModel.ts use', () => {
+    afterEach(() => {
+      // The locale cell is module-level (ui/i18n/resolver.ts) and leaks across tests.
+      setLocale('en');
+    });
+
+    it('★ BITES: under en, callCare() returning undefined shows the exact pre-migration English line', async () => {
+      const callCare = vi.fn().mockReturnValue(undefined);
+      const showFeedback = vi.fn();
+      const deps: CareActionDeps = { callCare, showFeedback };
+
+      await performCare(deps);
+
+      expect(showFeedback).toHaveBeenCalledTimes(1);
+      expect(showFeedback).toHaveBeenCalledWith('disconnected — try again');
+      expect(showFeedback).toHaveBeenCalledWith(EN['chrome.feedback.disconnected']);
+    });
+
+    it('★★ BITES: under fr, callCare() returning undefined shows CATALOG_FR["chrome.feedback.disconnected"], not the hardcoded English literal', async () => {
+      // WRONG IMPL KILLED: careAction.ts's `DISCONNECTED_MESSAGE` staying a module-scope
+      // string literal (or a `const X = t(...)` frozen at IMPORT time, before setLocale('fr')
+      // below ever runs) — either shape shows the English line regardless of the active
+      // locale, which this test tells apart from a live t() call made INSIDE performCare.
+      setLocale('fr');
+      const callCare = vi.fn().mockReturnValue(undefined);
+      const showFeedback = vi.fn();
+      const deps: CareActionDeps = { callCare, showFeedback };
+
+      await performCare(deps);
+
+      expect(showFeedback).toHaveBeenCalledTimes(1);
+      expect(showFeedback).toHaveBeenCalledWith(FR['chrome.feedback.disconnected']);
+      expect(showFeedback).not.toHaveBeenCalledWith('disconnected — try again');
+      expect(showFeedback).not.toHaveBeenCalledWith(EN['chrome.feedback.disconnected']);
+    });
   });
 });
 
