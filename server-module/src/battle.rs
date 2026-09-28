@@ -13,14 +13,15 @@ use crate::guards::{
 };
 use crate::inventory::consume_one;
 use crate::marshal::{
-    battle_monster_from_row, build_ability_store, loser_base_stat_total, now_ms, pub_from_monster,
+    battle_monster_from_row, build_ability_store, loser_base_stat_total, now_ms,
     wild_battle_monster, write_back_hp,
 };
+use crate::monster_mgmt::update_monster_synced;
 use crate::movement::RateLimiter;
 use crate::raising::{accrue_quality_time, grant_essence};
 use crate::schema::{
-    battle, battle_wild, inventory, monster, monster_pub, skill_row, species_row, trade_offer,
-    Battle, BattleWild, Monster, SkillRow,
+    battle, battle_wild, inventory, monster, skill_row, species_row, trade_offer, Battle,
+    BattleWild, Monster, SkillRow,
 };
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
@@ -1093,14 +1094,7 @@ pub(crate) fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) -> Resu
                 ));
             }
             write_back_hp(&mut m, bm);
-            // Copy-forward tier: fail loud on a missing
-            // monster_pub row — never fabricate a tier.
-            let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(mid) else {
-                return Err(format!("monster_pub row missing for monster {mid}"));
-            };
-            let pub_row = pub_from_monster(&m, existing_pub.tier);
-            ctx.db.monster().monster_id().update(m);
-            ctx.db.monster_pub().monster_id().update(pub_row);
+            update_monster_synced(ctx, m)?;
         }
     }
     Ok(())
@@ -1227,14 +1221,7 @@ pub(crate) fn write_back_battle_results(
                 continue;
             };
             m.trust_unfavorable_count = m.trust_unfavorable_count.saturating_add(1);
-            // Copy-forward tier: fail loud on a missing
-            // monster_pub row — never fabricate a tier.
-            let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(mid) else {
-                return Err(format!("monster_pub row missing for monster {mid}"));
-            };
-            let pub_row = pub_from_monster(&m, existing_pub.tier);
-            ctx.db.monster().monster_id().update(m);
-            ctx.db.monster_pub().monster_id().update(pub_row);
+            update_monster_synced(ctx, m)?;
         }
     }
 
@@ -1400,14 +1387,7 @@ pub(crate) fn write_back_battle_results(
                 // Corrupt winner level: XP skipped, nothing else.
                 log::error!("{{\"evt\":\"xp_skip_level\",\"monster_id\":{mid}}}");
             }
-            // Copy-forward tier: fail loud on a missing
-            // monster_pub row — never fabricate a tier.
-            let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(mid) else {
-                return Err(format!("monster_pub row missing for monster {mid}"));
-            };
-            let pub_row = pub_from_monster(&m, existing_pub.tier);
-            ctx.db.monster().monster_id().update(m);
-            ctx.db.monster_pub().monster_id().update(pub_row);
+            update_monster_synced(ctx, m)?;
             // (fresh-find, after this monster's own write):
             // Quality Time is wild-gated like the other credits; the
             // auto-evolution check is UNCONDITIONAL and LAST — the level can

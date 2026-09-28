@@ -20,6 +20,7 @@ use crate::guards::{
 };
 use crate::inventory::consume_one;
 use crate::marshal::{now_ms, pub_from_monster};
+use crate::monster_mgmt::update_monster_synced;
 use crate::schema::{
     character, heal_cooldown, heal_location_row, inventory, item_row, monster, monster_pub, player,
     species_row, trade_offer, HealCooldown, Monster,
@@ -93,13 +94,7 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     // Care is the Trust-favorable writer — saturating, the counter is a
     // u32 lifetime total and a raw increment would overflow-panic mid-reducer.
     m.trust_favorable_count = m.trust_favorable_count.saturating_add(1);
-    // Copy-forward tier: fail loud on a missing monster_pub row.
-    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
-        return Err(format!("monster_pub row missing for monster {monster_id}"));
-    };
-    let pub_row = pub_from_monster(&m, existing_pub.tier);
-    ctx.db.monster().monster_id().update(m);
-    ctx.db.monster_pub().monster_id().update(pub_row);
+    update_monster_synced(ctx, m)?;
     // tails (fresh-find, after this reducer's own dual-write):
     // Quality-Time credit first — it is itself an evolution gate — then the
     // auto-evolution check LAST.
@@ -250,13 +245,7 @@ pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result
     m.stat_sp_attack = result.derived_stats.sp_attack;
     m.stat_sp_defense = result.derived_stats.sp_defense;
 
-    // Copy-forward tier: fail loud on a missing monster_pub row.
-    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
-        return Err(format!("monster_pub row missing for monster {monster_id}"));
-    };
-    let pub_row = pub_from_monster(&m, existing_pub.tier);
-    ctx.db.monster().monster_id().update(m);
-    ctx.db.monster_pub().monster_id().update(pub_row);
+    update_monster_synced(ctx, m)?;
     // the two tails (accrual first, auto-evolution check LAST — nutrition is
     // a gate).
     accrue_quality_time(ctx, monster_id);
@@ -380,14 +369,7 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
     for mid in monster_ids {
         if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
             m.current_hp = m.stat_hp;
-            // Copy-forward tier: fail loud on a missing
-            // monster_pub row — never fabricate a tier.
-            let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(mid) else {
-                return Err(format!("monster_pub row missing for monster {mid}"));
-            };
-            let pub_row = pub_from_monster(&m, existing_pub.tier);
-            ctx.db.monster().monster_id().update(m);
-            ctx.db.monster_pub().monster_id().update(pub_row);
+            update_monster_synced(ctx, m)?;
         }
     }
 
@@ -646,13 +628,7 @@ pub fn essence_train(
     evaluate_essence_train(m.last_essence_train_at_ms, now)?;
     grant_essence(&mut m, affinity, ESSENCE_TRAIN_AMOUNT);
     m.last_essence_train_at_ms = now;
-    // Copy-forward tier: fail loud on a missing monster_pub row.
-    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
-        return Err(format!("monster_pub row missing for monster {monster_id}"));
-    };
-    let pub_row = pub_from_monster(&m, existing_pub.tier);
-    ctx.db.monster().monster_id().update(m);
-    ctx.db.monster_pub().monster_id().update(pub_row);
+    update_monster_synced(ctx, m)?;
     // tails: accrual first (Quality Time is itself a gate), then
     // the auto-evolution check LAST — essence just changed, a gate value.
     accrue_quality_time(ctx, monster_id);
@@ -728,13 +704,7 @@ pub fn consume_crystalized_essence(
     consume_one(ctx, ctx.sender(), item_id)?;
     grant_essence(&mut m, item_affinity, amount);
     m.last_essence_train_at_ms = now;
-    // Copy-forward tier: fail loud on a missing monster_pub row.
-    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
-        return Err(format!("monster_pub row missing for monster {monster_id}"));
-    };
-    let pub_row = pub_from_monster(&m, existing_pub.tier);
-    ctx.db.monster().monster_id().update(m);
-    ctx.db.monster_pub().monster_id().update(pub_row);
+    update_monster_synced(ctx, m)?;
     // tails: the sixth call site — accrual first,
     // auto-evolution check LAST so a full-bar feed evolves immediately.
     accrue_quality_time(ctx, monster_id);

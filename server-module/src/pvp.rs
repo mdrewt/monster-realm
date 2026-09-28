@@ -32,11 +32,12 @@ use crate::guards::{
     check_monster_in_party, check_party_size, is_in_ongoing_battle, log_reject,
     reject_if_monster_in_trade, require_pvp_participant,
 };
-use crate::marshal::{battle_monster_from_row, build_ability_store, now_ms, pub_from_monster};
+use crate::marshal::{battle_monster_from_row, build_ability_store, now_ms};
+use crate::monster_mgmt::update_monster_synced;
 use crate::ranking;
 use crate::schema::{
-    battle, battle_action, battle_challenge, monster, monster_pub, player, skill_row, species_row,
-    trade_offer, Battle, BattleAction, BattleChallenge, ChallengeStatus, SkillRow,
+    battle, battle_action, battle_challenge, monster, player, skill_row, species_row, trade_offer,
+    Battle, BattleAction, BattleChallenge, ChallengeStatus, SkillRow,
 };
 use crate::WILD_IDENTITY;
 use game_core::{
@@ -614,14 +615,7 @@ fn write_back_party_hp_pvp_side_b(ctx: &ReducerContext, battle: &Battle) -> Resu
                 ));
             }
             crate::marshal::write_back_hp(&mut m, bm);
-            // Copy-forward tier: fail loud on a missing
-            // monster_pub row — never fabricate a tier.
-            let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(mid) else {
-                return Err(format!("monster_pub row missing for monster {mid}"));
-            };
-            let pub_row = pub_from_monster(&m, existing_pub.tier);
-            ctx.db.monster().monster_id().update(m);
-            ctx.db.monster_pub().monster_id().update(pub_row);
+            update_monster_synced(ctx, m)?;
         }
     }
     Ok(())

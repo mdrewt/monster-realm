@@ -2,13 +2,37 @@
 //!
 //! Monster-management reducers: rename and party-slot assignment. Both are
 //! ownership-checked and dual-write the private `monster` row and its public
-//! `monster_pub` projection.
+//! `monster_pub` projection through [`update_monster_synced`], the shared
+//! copy-forward dual-write every plain monster update in the crate uses.
 
 use crate::guards::{log_reject, reject_if_monster_in_trade, require_owner, validate_name};
 use crate::marshal::pub_from_monster;
-use crate::schema::{monster, monster_pub, trade_offer};
+use crate::schema::{monster, monster_pub, trade_offer, Monster};
 use crate::PARTY_SLOT_NONE;
 use spacetimedb::{Identity, ReducerContext};
+
+// --- Dual-write ------------------------------------------------------------------
+
+/// Write a mutated `monster` row AND its public `monster_pub` projection.
+///
+/// The projection's tier is copied forward from the existing `monster_pub` row.
+/// A missing projection is a broken dual-write invariant: fail loud before
+/// writing anything, never fabricate a tier. Sites that change the tier, the
+/// owner of a projection mid-trade, or write the projection conditionally
+/// (evolution, trading, content resync, Quality-Time accrual) stay explicit.
+///
+/// # Errors
+/// `monster_pub row missing for monster {id}` when the projection is absent.
+pub(crate) fn update_monster_synced(ctx: &ReducerContext, m: Monster) -> Result<(), String> {
+    let id = m.monster_id;
+    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(id) else {
+        return Err(format!("monster_pub row missing for monster {id}"));
+    };
+    let pub_row = pub_from_monster(&m, existing_pub.tier);
+    ctx.db.monster().monster_id().update(m);
+    ctx.db.monster_pub().monster_id().update(pub_row);
+    Ok(())
+}
 
 // --- Monster management reducers (M6b) ----------------------------------------
 
@@ -40,15 +64,7 @@ pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> 
         validate_name(&nickname).inspect_err(|e| log_reject("set_nickname", me, e))?
     };
     m.nickname = validated;
-    // Copy-forward tier: a missing monster_pub row is a broken
-    // dual-write invariant — fail loud, never fabricate a tier.
-    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
-        return Err(format!("monster_pub row missing for monster {monster_id}"));
-    };
-    let pub_row = pub_from_monster(&m, existing_pub.tier);
-    ctx.db.monster().monster_id().update(m);
-    ctx.db.monster_pub().monster_id().update(pub_row);
-    Ok(())
+    update_monster_synced(ctx, m)
 }
 
 /// Set or clear a monster's party slot. `slot = 255` moves to box; `slot < 6`
@@ -90,14 +106,7 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
         return Err(e);
     }
     m.party_slot = slot;
-    // Copy-forward tier: fail loud on a missing monster_pub row.
-    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
-        return Err(format!("monster_pub row missing for monster {monster_id}"));
-    };
-    let pub_row = pub_from_monster(&m, existing_pub.tier);
-    ctx.db.monster().monster_id().update(m);
-    ctx.db.monster_pub().monster_id().update(pub_row);
-    Ok(())
+    update_monster_synced(ctx, m)
 }
 
 // --- M21 guest→account re-key (AUTH-22) --------------------------
@@ -126,13 +135,8 @@ pub(crate) fn rekey_monsters(
         let Some(mut m) = ctx.db.monster().monster_id().find(id) else {
             continue;
         };
-        let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(id) else {
-            return Err(format!("monster_pub row missing for monster {id}"));
-        };
         m.owner_identity = to;
-        let pub_row = pub_from_monster(&m, existing_pub.tier);
-        ctx.db.monster().monster_id().update(m);
-        ctx.db.monster_pub().monster_id().update(pub_row);
+        update_monster_synced(ctx, m)?;
     }
     Ok(())
 }
