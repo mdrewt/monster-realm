@@ -163,7 +163,7 @@ async function flushPromises(): Promise<void> {
 
 // Default no-op callbacks.
 function noop(): TradeProposeCallbacks {
-  return { onSubmit: async (_args: TradeProposeArgs) => {} };
+  return { onSubmit: async (_args: TradeProposeArgs) => {}, maxMonstersPerSide: 64 };
 }
 
 // ---------------------------------------------------------------------------
@@ -776,6 +776,37 @@ describe('TradeProposeView PTC2-10: live submit-enable recomputes on input/chang
     offerInput.dispatchEvent(new Event('input', { bubbles: true }));
     expect(btn.disabled, 'submit must be DISABLED when currency cleared and no monster').toBe(true);
   });
+
+  it('★ BITES: the view gates on the INJECTED maxMonstersPerSide — kills a view that drops the option', () => {
+    // main.ts injects game-core's cap (the max_trade_monsters_per_side() wasm export). With
+    // an injected cap of 1, a second ticked monster must veto submission. WRONG IMPL
+    // KILLED: a view passing a literal/undefined cap to buildProposeSubmission (a literal
+    // 64 keeps 2 monsters legal; `n <= undefined` is always false and disables row 1 too).
+    const view = new TradeProposeView({ ...noop(), maxMonstersPerSide: 1 });
+    view.render(
+      makeLists(
+        [{ identity: '0xaaa1', label: 'Alice' }],
+        [
+          { monsterId: 1n, label: 'One' },
+          { monsterId: 2n, label: 'Two' },
+        ],
+      ),
+    );
+    view.show();
+    const select = document.getElementById('tradepropose-target') as HTMLSelectElement;
+    const btn = document.getElementById('tradepropose-submit') as HTMLButtonElement;
+    const boxes = Array.from(
+      document.querySelectorAll('#tradepropose-monsters input[type="checkbox"]'),
+    ) as HTMLInputElement[];
+    select.value = '0xaaa1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    boxes[0].checked = true;
+    boxes[0].dispatchEvent(new Event('change', { bubbles: true }));
+    expect(btn.disabled, 'one monster is at the injected cap → enabled').toBe(false);
+    boxes[1].checked = true;
+    boxes[1].dispatchEvent(new Event('change', { bubbles: true }));
+    expect(btn.disabled, 'two monsters exceed the injected cap of 1 → disabled').toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -852,7 +883,7 @@ describe('TradeProposeView PTC2-11: hide() resets select, checkboxes, currencies
           resolveFirst = res;
         }),
     );
-    const viewWithSubmit = new TradeProposeView({ onSubmit });
+    const viewWithSubmit = new TradeProposeView({ onSubmit, maxMonstersPerSide: 64 });
     viewWithSubmit.render(makeLists([{ identity: '0xaaa1', label: 'Alice' }], []));
     viewWithSubmit.show();
 
@@ -920,7 +951,7 @@ describe('★ TradeProposeView PTC2-12: #pending lock — two rapid clicks → o
       resolveFlight = res;
     });
     const onSubmit = vi.fn().mockReturnValue(flightPromise);
-    const view = new TradeProposeView({ onSubmit });
+    const view = new TradeProposeView({ onSubmit, maxMonstersPerSide: 64 });
     view.render(makeLists([{ identity: '0xaaa1', label: 'Alice' }], []));
     view.show();
 
@@ -949,7 +980,7 @@ describe('★ TradeProposeView PTC2-12: #pending lock — two rapid clicks → o
     // is skipped and the button stays disabled forever (ADR-0085 C6 dead-button antipattern).
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const onSubmit = vi.fn().mockRejectedValue(new Error('server rejected'));
-    const view = new TradeProposeView({ onSubmit });
+    const view = new TradeProposeView({ onSubmit, maxMonstersPerSide: 64 });
     view.render(makeLists([{ identity: '0xaaa1', label: 'Alice' }], []));
     view.show();
 
@@ -979,7 +1010,7 @@ describe('★ TradeProposeView PTC2-12: #pending lock — two rapid clicks → o
     // PROOF-OF-TEETH: if this test itself fails (vitest caught unhandled rejection), the
     // impl is missing the .catch(swallow) guard.
     const onSubmit = vi.fn().mockRejectedValue(new Error('network error'));
-    const view = new TradeProposeView({ onSubmit });
+    const view = new TradeProposeView({ onSubmit, maxMonstersPerSide: 64 });
     view.render(makeLists([{ identity: '0xaaa1', label: 'Alice' }], []));
     view.show();
 
@@ -1007,7 +1038,7 @@ describe('★ TradeProposeView PTC2-12: #pending lock — two rapid clicks → o
   it('BITES: submit is a no-op when canSubmit is false — onSubmit NOT called', async () => {
     // WRONG IMPL KILLED: an impl that calls onSubmit even when canSubmit=false (empty offer).
     const onSubmit = vi.fn().mockResolvedValue(undefined);
-    const view = new TradeProposeView({ onSubmit });
+    const view = new TradeProposeView({ onSubmit, maxMonstersPerSide: 64 });
     // Render with a target but empty draft → canSubmit=false
     view.render(makeLists([{ identity: '0xaaa1', label: 'Alice' }], []));
     view.show();

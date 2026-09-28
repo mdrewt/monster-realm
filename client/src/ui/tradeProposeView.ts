@@ -42,6 +42,9 @@ import {
 
 export interface TradeProposeCallbacks {
   readonly onSubmit: (args: TradeProposeArgs) => Promise<void> | void;
+  /** game-core's per-side monster cap, read once at boot from the
+   *  `max_trade_monsters_per_side()` wasm export (main.ts) — never a TS literal. */
+  readonly maxMonstersPerSide: number;
 }
 
 // The placeholder <option> value — an empty string maps to "no target" (canSubmit:false).
@@ -239,13 +242,21 @@ export class TradeProposeView {
   // Recompute the submit-enabled state from the live draft, via the same
   // buildProposeSubmission SSOT that #submit() uses.
   #refreshSubmitEnabled(): void {
-    this.#submitBtn.disabled = !buildProposeSubmission(this.#targets, this.#readDraft()).canSubmit;
+    this.#submitBtn.disabled = !buildProposeSubmission(
+      this.#targets,
+      this.#readDraft(),
+      this.#cbs.maxMonstersPerSide,
+    ).canSubmit;
   }
 
   // Single shared submit path (Enter + click) ⇒ one #pending lock ⇒ no double-submit.
   #submit(): void {
     if (this.#pending) return;
-    const sub = buildProposeSubmission(this.#targets, this.#readDraft());
+    const sub = buildProposeSubmission(
+      this.#targets,
+      this.#readDraft(),
+      this.#cbs.maxMonstersPerSide,
+    );
     if (!sub.canSubmit || sub.args === null) return; // invalid draft → no-op, no onSubmit call.
     // Clear any prior feedback so a stale "Offer sent!" never lingers under a new submission.
     this.#feedback.textContent = '';

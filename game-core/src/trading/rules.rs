@@ -12,6 +12,13 @@ use crate::currency::MAX_BALANCE;
 // 9999: four-digit UI cap; no game-design constraint — tunable.
 pub const MAX_ITEM_STACK: u32 = 9999;
 
+/// Per-side monster-count cap for one proposed trade — a DoS bound, not a game
+/// rule. `PARTY_SIZE` is deliberately NOT reused: a trade is not a party (boxed
+/// monsters are tradeable), and box-monster trading will bump THIS constant.
+/// INCLUSIVE: `n <= MAX` is legal. The server rejects above it (never clamps);
+/// the client reads the same value through client-wasm to disable Submit.
+pub const MAX_TRADE_MONSTERS_PER_SIDE: usize = 64;
+
 /// Current item stack snapshot for one (owner, item_id) pair.
 /// Passed to `check_headroom` so it can check receiver headroom without DB access.
 #[derive(Clone, Debug, PartialEq)]

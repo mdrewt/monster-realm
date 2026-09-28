@@ -79,7 +79,7 @@ function mount(): {
 }
 
 function noop(): TradeProposeCallbacks {
-  return { onSubmit: async (_args: TradeProposeArgs) => {} };
+  return { onSubmit: async (_args: TradeProposeArgs) => {}, maxMonstersPerSide: 64 };
 }
 
 /** No roster word ('Select a player', 'Offer') anywhere in the fixture labels. */

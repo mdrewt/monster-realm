@@ -688,16 +688,14 @@ the guard EXPRESSION and that something BRANCHES on it, not mere presence. When 
 change adds a sanctioned occurrence inside any counted region, re-scope the gate in
 the same PR — a presence/count check that a decoy or telemetry call can satisfy
 reads as coverage while providing none.
-**Client mirrors of server constants are gated as mirrors (14r-f, ADR-0188 D3).**
-`client/src/ui/tradeProposeModel.ts` exports `MAX_TRADE_MONSTERS_PER_SIDE = 64`
-mirroring the private `server-module/src/trading.rs:37` SSOT (inclusive — the server
-compares `>`), so an over-cap trade fails in-UI instead of as an opaque reducer
-reject. The server stays authoritative and rejects, never clamps. A mirrored
-constant is a second source of truth unless mechanically tied to the first, so
-`evals/trade-cap-parity.eval.mjs` reads the Rust literal directly, requires an
-exported named const, asserts equality, and proves by dataflow that the clause
-reading it is a top-level `&&` conjunct of `canSubmit` — a decorative const beside a
-live bare literal is the drift shape it exists to kill.
+**Client copies of rule constants are wasm exports, never TS literals.** The trade
+cap (`MAX_TRADE_MONSTERS_PER_SIDE`, inclusive — the server compares `>`) lives in
+`game-core/src/trading/rules.rs`; the server imports it and the client reads it once
+at boot through the `max_trade_monsters_per_side()` client-wasm export (like
+`party_size()` / `step_ms()`), injecting it into `buildProposeSubmission`, so an
+over-cap trade fails in-UI instead of as an opaque reducer reject. The server stays
+authoritative and rejects, never clamps. A TS test reads the export from the built
+wasm binary and pins its value.
 Two mechanical constraints (recorded in ADR-0056, surfaced by the M8.9a spike): a
 cross-module `ctx.db.<table>()` call must import the generated accessor trait
 (`use crate::schema::<table>;`), and a module name must not equal a table name

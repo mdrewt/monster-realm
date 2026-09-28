@@ -389,7 +389,7 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
     };
   },
   tradeProposeView: () => {
-    const view = new TradeProposeView({ onSubmit: noop });
+    const view = new TradeProposeView({ onSubmit: noop, maxMonstersPerSide: 64 });
     view.show();
     return {
       root: capturedRoot('tradeProposeView'),

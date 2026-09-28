@@ -220,6 +220,14 @@ pub fn deletion_grace_ms_default() -> i64 {
     game_core::DELETION_GRACE_MS_DEFAULT
 }
 
+/// The per-side monster-count cap of one proposed trade, single-sourced from
+/// `game-core` so TS never hard-codes it (the server rejects above it).
+#[wasm_bindgen]
+#[must_use]
+pub fn max_trade_monsters_per_side() -> u32 {
+    game_core::MAX_TRADE_MONSTERS_PER_SIDE as u32
+}
+
 /// The renderer's map source: the SAME `TileMap` the rule evaluates.
 /// Dispatches on `zone_id` via the content registry (`load_zone_maps`).
 ///
@@ -327,6 +335,17 @@ mod tests {
         // redundancy for the day that test moves or is deleted -- not the
         // primary guard, and not load-bearing for the parity assert above.
         assert!(super::deletion_grace_ms_default() > 0);
+    }
+
+    // TRADE CAP SSOT parity. The value-identity proof against the retired client
+    // literal (64) lives on the TS side (tradeProposeModel.test.ts EARS-3a), which
+    // reads this export from the BUILT wasm binary.
+    #[test]
+    fn max_trade_monsters_per_side_matches_game_core_const() {
+        assert_eq!(
+            super::max_trade_monsters_per_side() as usize,
+            game_core::MAX_TRADE_MONSTERS_PER_SIDE
+        );
     }
 
     // -------------------------------------------------------------------------

@@ -18,6 +18,7 @@ import { Identity } from 'spacetimedb';
 import {
   apply_move,
   deletion_grace_ms_default,
+  max_trade_monsters_per_side,
   move_queue_cap,
   party_size,
   party_slot_none,
@@ -237,6 +238,7 @@ const STEP_MS = step_ms();
 const QUEUE_CAP = move_queue_cap();
 const PARTY_SIZE = party_size();
 const PARTY_SLOT_NONE = party_slot_none();
+const MAX_TRADE_MONSTERS_PER_SIDE = max_trade_monsters_per_side();
 // The deletion grace window, read ONCE per session — it is a build constant, and
 // re-reading it per frame would cross the wasm boundary ~60x/s for a value that cannot change.
 const DELETION_GRACE_MS_DEFAULT = deletion_grace_ms_default();
@@ -2822,6 +2824,7 @@ async function main(): Promise<void> {
     // item request fields are always empty. Feedback into #tradepropose-feedback via
     // reduceErrorMessage on reject (no InternalError leak).
     tradeProposeView = new TradeProposeViewClass({
+      maxMonstersPerSide: MAX_TRADE_MONSTERS_PER_SIDE,
       onSubmit: async (args: TradeProposeArgs) => {
         if (conn === undefined || conn.linkFrozen()) {
           if (tradeProposeView?.visible) tradeProposeView.showFeedback('disconnected — try again');

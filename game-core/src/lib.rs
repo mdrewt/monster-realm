@@ -91,7 +91,7 @@ pub use trading::{
     check_item_headroom, is_offer_stale, make_monster_card, validate_proposal, ApplyStep,
     CurrencyTransfer, ItemStack, ItemTransfer, LiveMonsterOwner, MonsterCard, MonsterTransfer,
     ProposalSide, SwapPlan, TradeError, TradeItem, TradeSide, TradeStatus, MAX_ITEM_STACK,
-    TRADE_OFFER_TTL_MS,
+    MAX_TRADE_MONSTERS_PER_SIDE, TRADE_OFFER_TTL_MS,
 };
 pub use types::{
     ActionState, CharacterState, Direction, Millis, MoveInput, NpcInteraction, TileKind, TilePos,

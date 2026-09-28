@@ -14,6 +14,6 @@ pub use rules::{
     authorize_confirm, authorize_respond, build_swap_plan, check_currency_headroom, check_headroom,
     check_item_headroom, is_offer_stale, make_monster_card, validate_proposal, ApplyStep,
     CurrencyTransfer, ItemStack, ItemTransfer, LiveMonsterOwner, MonsterTransfer, ProposalSide,
-    SwapPlan, TradeSide, MAX_ITEM_STACK, TRADE_OFFER_TTL_MS,
+    SwapPlan, TradeSide, MAX_ITEM_STACK, MAX_TRADE_MONSTERS_PER_SIDE, TRADE_OFFER_TTL_MS,
 };
 pub use types::{MonsterCard, TradeError, TradeItem, TradeStatus};

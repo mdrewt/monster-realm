@@ -18,7 +18,8 @@ use crate::schema::{battle, inventory, monster, monster_pub, player, trade_offer
 use game_core::{
     authorize_confirm, authorize_respond, build_swap_plan, check_headroom, is_offer_stale,
     make_monster_card, validate_proposal, ApplyStep, ItemStack, LiveMonsterOwner, MonsterCard,
-    ProposalSide, TradeItem, TradeSide, TradeStatus, TRADE_OFFER_TTL_MS,
+    ProposalSide, TradeItem, TradeSide, TradeStatus, MAX_TRADE_MONSTERS_PER_SIDE,
+    TRADE_OFFER_TTL_MS,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 
@@ -26,11 +27,9 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// DoS bound, not a game rule. `MAX_PARTY_SIZE` is deliberately NOT reused — a
-/// trade is not a party (boxed monsters are tradeable), and box-monster trading
-/// will bump THIS constant. n == 0 is legal: one-sided trades are valid and
-/// emptiness is validate_proposal's cross-side EmptyOffer rule, not restated here.
-const MAX_TRADE_MONSTERS_PER_SIDE: usize = 64;
+// `MAX_TRADE_MONSTERS_PER_SIDE` is game-core's (imported above). n == 0 is legal:
+// one-sided trades are valid and emptiness is validate_proposal's cross-side
+// EmptyOffer rule, not restated here.
 const MAX_TRADE_ITEMS_PER_SIDE: usize = 64;
 
 /// Bound ONE side of a proposed trade. The two caps are INDEPENDENT limits, not a

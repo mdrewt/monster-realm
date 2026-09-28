@@ -10,15 +10,8 @@
 //   PTC2-7: model TOTAL (garbage input never throws)
 
 import { describe, expect, it } from 'vitest';
+import { readWasmU32Constant } from '../../test-util/wasmPkg';
 import type { StoreMonsterPub, StorePlayer } from '../net/store';
-// 14r-f / EARS-3: the trade-side monster cap is read through a NAMESPACE
-// import on purpose. A named import of a not-yet-existing export is an ESM LINK error,
-// which reds the WHOLE FILE and would hide the behavioural rows below behind a single
-// module-level failure. Through the namespace the missing export is `undefined`, so the
-// const-pin test reds on its own (`undefined !== 64`) while the 65/1000 boundary rows
-// red for their own, behavioural reason. The exact identifier is still pinned — a rename
-// of the export reds this test.
-import * as tradeProposeModelNs from './tradeProposeModel';
 import {
   buildProposeLists,
   buildProposeSubmission,
@@ -446,7 +439,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: '100',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission([], draft); // empty target list
+    const sub = buildProposeSubmission([], draft, TEST_CAP); // empty target list
     expect(sub.canSubmit).toBe(false);
     expect(sub.args).toBeNull();
   });
@@ -461,7 +454,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: '0',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(false);
     expect(sub.args).toBeNull();
   });
@@ -476,7 +469,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: '0',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(false);
   });
 
@@ -489,7 +482,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: '0',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
   });
 
@@ -502,7 +495,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: '50',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
   });
 
@@ -518,7 +511,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: '0',
       requestCurrency: '100', // request gold from counterparty, give nothing
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
   });
 
@@ -531,7 +524,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: 'abc',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
   });
 
@@ -544,7 +537,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
       offerCurrency: 'abc',
       requestCurrency: '',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(false);
   });
 });
@@ -555,7 +548,7 @@ describe('buildProposeSubmission PTC2-5: canSubmit truth table', () => {
 
 describe('buildProposeSubmission PTC2-6: proposeArgs shape when canSubmit', () => {
   it('BITES: args is null when canSubmit:false — kills impl that returns args even on invalid draft', () => {
-    const sub = buildProposeSubmission([], makeDraft());
+    const sub = buildProposeSubmission([], makeDraft(), TEST_CAP);
     expect(sub.canSubmit).toBe(false);
     expect(sub.args).toBeNull();
   });
@@ -568,7 +561,7 @@ describe('buildProposeSubmission PTC2-6: proposeArgs shape when canSubmit', () =
       offerCurrency: '0',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
     expect(sub.args).not.toBeNull();
     expect(sub.args!.targetIdentity).toBe('0xaaa1');
@@ -585,7 +578,7 @@ describe('buildProposeSubmission PTC2-6: proposeArgs shape when canSubmit', () =
       offerCurrency: '0',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
     expect(sub.args).not.toBeNull();
     expect(sub.args!.initiatorMonsterIds).toHaveLength(2);
@@ -605,7 +598,7 @@ describe('buildProposeSubmission PTC2-6: proposeArgs shape when canSubmit', () =
       offerCurrency: '250',
       requestCurrency: '0',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
     expect(sub.args!.initiatorCurrency).toBe(250n);
   });
@@ -618,7 +611,7 @@ describe('buildProposeSubmission PTC2-6: proposeArgs shape when canSubmit', () =
       offerCurrency: '0',
       requestCurrency: '75',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.canSubmit).toBe(true);
     expect(sub.args!.counterpartyCurrency).toBe(75n);
   });
@@ -631,7 +624,7 @@ describe('buildProposeSubmission PTC2-6: proposeArgs shape when canSubmit', () =
       offerCurrency: '30',
       requestCurrency: '40',
     };
-    const sub = buildProposeSubmission(targets, draft);
+    const sub = buildProposeSubmission(targets, draft, TEST_CAP);
     expect(sub.offerCurrency).toBe(30n);
     expect(sub.requestCurrency).toBe(40n);
   });
@@ -669,7 +662,7 @@ describe('buildProposeLists PTC2-7: model is TOTAL — never throws on garbage i
       { targetIdentity: '', selectedMonsterIds: [], offerCurrency: '0', requestCurrency: '0' },
     ];
     for (const draft of garbageDrafts) {
-      expect(() => buildProposeSubmission(targets, draft)).not.toThrow();
+      expect(() => buildProposeSubmission(targets, draft, TEST_CAP)).not.toThrow();
     }
   });
 
@@ -689,14 +682,13 @@ describe('buildProposeLists PTC2-7: model is TOTAL — never throws on garbage i
 // EARS-3: WHEN a player selects >64 monsters for a trade, THE SYSTEM SHALL
 //         disable submission client-side.
 //
-// SERVER SSOT: `MAX_TRADE_MONSTERS_PER_SIDE: usize = 64`.
-// The server check at trading.rs:44 is
+// SSOT: game-core `MAX_TRADE_MONSTERS_PER_SIDE: usize = 64` (trading/rules.rs), read
+// by the client through the `max_trade_monsters_per_side()` wasm export and injected
+// into `buildProposeSubmission`. The server check in trading.rs is
 //     if n_monsters > MAX_TRADE_MONSTERS_PER_SIDE { return Err(..) }
 // so the cap is INCLUSIVE: **64 is LEGAL and 65 rejects**. The client clause must
 // therefore be `<= 64`, NEVER `< 64` — a `< 64` clause disables a perfectly valid
 // 64-monster offer, i.e. a UX regression dressed up as a fix (plan anti-pattern 9).
-//
-// The client constant is a MIRROR of the server SSOT, not a second SSOT.
 //
 // Server semantics deliberately mirrored, not re-derived:
 // `check_trade_side_size` runs on the raw `.len()` BEFORE
@@ -712,6 +704,9 @@ function idsOfLength(n: number): bigint[] {
   return out;
 }
 
+/** The cap every row injects — pinned to the built wasm export by EARS-3a. */
+const TEST_CAP = 64;
+
 const CAP_TARGETS: TradeProposeTarget[] = [{ identity: '0xaaa1', label: 'Alice' }];
 
 /** A draft that is submittable on every axis EXCEPT the selection length. */
@@ -724,14 +719,24 @@ function capDraft(n: number, offerCurrency: string): TradeProposeDraft {
   };
 }
 
-describe('EARS-3a: MAX_TRADE_MONSTERS_PER_SIDE is exported from the model and === 64', () => {
-  it('★ BITES: the model exports MAX_TRADE_MONSTERS_PER_SIDE === 64 — kills a file-private const or an inlined magic 64', () => {
-    // WRONG IMPL KILLED: `const MAX = 64` without `export` (nothing outside the
-    // module can then assert on it); and a bare `64` inlined into the clause with
-    // no named constant at all. The VALUE is pinned to the server SSOT at
-    // trading.rs:37.
-    expect(tradeProposeModelNs.MAX_TRADE_MONSTERS_PER_SIDE).toBe(64);
-    expect(typeof tradeProposeModelNs.MAX_TRADE_MONSTERS_PER_SIDE).toBe('number');
+describe('EARS-3a: the injected cap IS game-core MAX_TRADE_MONSTERS_PER_SIDE (value identity)', () => {
+  it('★ BITES: the BUILT wasm max_trade_monsters_per_side() === 64 === TEST_CAP — the retired TS literal', () => {
+    // Value-identity proof for the SSOT move: the model no longer owns the cap — main.ts
+    // injects `max_trade_monsters_per_side()` at boot. This reads that export from the
+    // compiled client-wasm binary (the value the live client actually gets) and pins it
+    // to the literal the deleted TS mirror carried (64) and to the TEST_CAP every row in
+    // this file injects, so the boundary table below exercises the real value.
+    // WRONG IMPL KILLED: a wasm export sourced from a different game-core constant, or a
+    // game-core edit to the cap that this suite would otherwise not notice.
+    expect(readWasmU32Constant('max_trade_monsters_per_side')).toBe(64);
+    expect(TEST_CAP).toBe(64);
+  });
+
+  it('BITES: the verdict tracks the INJECTED cap — kills a model that re-inlines a magic 64', () => {
+    // With cap 2 a 3-monster offer is vetoed and a 2-monster offer passes: an impl that
+    // ignores the parameter and compares against a literal 64 passes neither row.
+    expect(buildProposeSubmission(CAP_TARGETS, capDraft(2, '1'), 2).canSubmit).toBe(true);
+    expect(buildProposeSubmission(CAP_TARGETS, capDraft(3, '1'), 2).canSubmit).toBe(false);
   });
 });
 
@@ -747,14 +752,14 @@ describe('EARS-3b: canSubmit boundary table on selectedMonsterIds.length (cap is
     },
     { n: 1, expected: true, why: 'one monster is far below the cap' },
     { n: 63, expected: true, why: 'one below the cap' },
-    { n: 64, expected: true, why: 'EXACTLY the cap — trading.rs:44 is `n > MAX`, so 64 is LEGAL' },
-    { n: 65, expected: false, why: 'one OVER the cap — trading.rs:44 rejects at 65' },
+    { n: 64, expected: true, why: 'EXACTLY the cap — trading.rs is `n > MAX`, so 64 is LEGAL' },
+    { n: 65, expected: false, why: 'one OVER the cap — trading.rs rejects at 65' },
     { n: 1000, expected: false, why: 'far over the cap' },
   ];
 
   for (const row of rows) {
     it(`BITES: length ${row.n} → canSubmit ${row.expected} (${row.why})`, () => {
-      const sub = buildProposeSubmission(CAP_TARGETS, capDraft(row.n, '1'));
+      const sub = buildProposeSubmission(CAP_TARGETS, capDraft(row.n, '1'), TEST_CAP);
       expect(sub.canSubmit, `selectedMonsterIds.length=${row.n}: ${row.why}`).toBe(row.expected);
     });
   }
@@ -764,12 +769,10 @@ describe('EARS-3b: canSubmit boundary table on selectedMonsterIds.length (cap is
     // disable a legal 64-monster offer); a missing cap of any kind reds the
     // second (65 would submit and the server would reject with
     // "too many monsters in one trade side: 65 (max 64)").
-    const at = buildProposeSubmission(CAP_TARGETS, capDraft(64, '1'));
-    const over = buildProposeSubmission(CAP_TARGETS, capDraft(65, '1'));
-    expect(at.canSubmit, '64 monsters is LEGAL server-side (trading.rs:44 is `>`)').toBe(true);
-    expect(over.canSubmit, '65 monsters is REJECTED server-side (trading.rs:44 is `>`)').toBe(
-      false,
-    );
+    const at = buildProposeSubmission(CAP_TARGETS, capDraft(64, '1'), TEST_CAP);
+    const over = buildProposeSubmission(CAP_TARGETS, capDraft(65, '1'), TEST_CAP);
+    expect(at.canSubmit, '64 monsters is LEGAL server-side (trading.rs is `>`)').toBe(true);
+    expect(over.canSubmit, '65 monsters is REJECTED server-side (trading.rs is `>`)').toBe(false);
   });
 
   it('★ BITES: over-cap drafts also return args === null — kills an impl that flips canSubmit but still hands main.ts a payload', () => {
@@ -778,7 +781,7 @@ describe('EARS-3b: canSubmit boundary table on selectedMonsterIds.length (cap is
     // exist at all). An impl that only touches the boolean leaves a live
     // 65-monster payload reachable.
     for (const n of [65, 1000]) {
-      const sub = buildProposeSubmission(CAP_TARGETS, capDraft(n, '1'));
+      const sub = buildProposeSubmission(CAP_TARGETS, capDraft(n, '1'), TEST_CAP);
       expect(sub.canSubmit, `n=${n}`).toBe(false);
       expect(sub.args, `n=${n}: args must be null when !canSubmit`).toBeNull();
     }
@@ -788,7 +791,7 @@ describe('EARS-3b: canSubmit boundary table on selectedMonsterIds.length (cap is
     // ADR-0106/0166 D3: the server REJECTS, it never truncates. A client that
     // silently slices the selection to 64 would submit a *different* trade than
     // the player composed. At n=64 nothing may be dropped.
-    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(64, '1'));
+    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(64, '1'), TEST_CAP);
     expect(sub.canSubmit).toBe(true);
     expect(sub.args).not.toBeNull();
     expect(sub.args!.initiatorMonsterIds).toHaveLength(64);
@@ -807,36 +810,44 @@ describe('EARS-3c: the cap is a hard VETO (AND), never one more OR-branch of has
     // a player selecting 65 monsters is very likely also asking for gold.
     // Server truth: check_trade_side_size(n_monsters, n_items) rejects on the
     // monster count ALONE, currency is not consulted.
-    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(65, '500'));
+    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(65, '500'), TEST_CAP);
     expect(sub.canSubmit).toBe(false);
     expect(sub.args).toBeNull();
   });
 
   it('★ BITES: 65 monsters + requestCurrency 500 → canSubmit false (same veto, other currency side)', () => {
-    const sub = buildProposeSubmission(CAP_TARGETS, {
-      targetIdentity: '0xaaa1',
-      selectedMonsterIds: idsOfLength(65),
-      offerCurrency: '0',
-      requestCurrency: '500',
-    });
+    const sub = buildProposeSubmission(
+      CAP_TARGETS,
+      {
+        targetIdentity: '0xaaa1',
+        selectedMonsterIds: idsOfLength(65),
+        offerCurrency: '0',
+        requestCurrency: '500',
+      },
+      TEST_CAP,
+    );
     expect(sub.canSubmit).toBe(false);
     expect(sub.args).toBeNull();
   });
 
   it('BITES: 65 monsters and no currency → canSubmit false (cap veto survives with no other asset)', () => {
-    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(65, '0'));
+    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(65, '0'), TEST_CAP);
     expect(sub.canSubmit).toBe(false);
     expect(sub.args).toBeNull();
   });
 
   it('BITES: the cap does not resurrect an invalid target — 64 monsters at an unknown target stays false', () => {
     // Anti-regression: the new clause must be ANDed in, not replace targetValid.
-    const sub = buildProposeSubmission(CAP_TARGETS, {
-      targetIdentity: '0xnope',
-      selectedMonsterIds: idsOfLength(64),
-      offerCurrency: '1',
-      requestCurrency: '0',
-    });
+    const sub = buildProposeSubmission(
+      CAP_TARGETS,
+      {
+        targetIdentity: '0xnope',
+        selectedMonsterIds: idsOfLength(64),
+        offerCurrency: '1',
+        requestCurrency: '0',
+      },
+      TEST_CAP,
+    );
     expect(sub.canSubmit).toBe(false);
     expect(sub.args).toBeNull();
   });
@@ -849,8 +860,14 @@ describe('EARS-3d: buildProposeSubmission stays TOTAL across the cap boundary', 
     // never throw. A checkbox handler firing at the 65th tick must return a
     // verdict, not blow up the listener.
     for (const n of [0, 1, 63, 64, 65, 1000, 5000]) {
-      expect(() => buildProposeSubmission(CAP_TARGETS, capDraft(n, '1')), `n=${n}`).not.toThrow();
-      expect(() => buildProposeSubmission(CAP_TARGETS, capDraft(n, 'abc')), `n=${n}`).not.toThrow();
+      expect(
+        () => buildProposeSubmission(CAP_TARGETS, capDraft(n, '1'), TEST_CAP),
+        `n=${n}`,
+      ).not.toThrow();
+      expect(
+        () => buildProposeSubmission(CAP_TARGETS, capDraft(n, 'abc'), TEST_CAP),
+        `n=${n}`,
+      ).not.toThrow();
     }
   });
 
@@ -859,12 +876,16 @@ describe('EARS-3d: buildProposeSubmission stays TOTAL across the cap boundary', 
     // !canSubmit (the existing PTC2-6 row pins this for the valid case); an
     // impl that early-returns a bare `{ canSubmit: false }` on the cap breaks
     // the shape the view reads.
-    const sub = buildProposeSubmission(CAP_TARGETS, {
-      targetIdentity: '0xaaa1',
-      selectedMonsterIds: idsOfLength(65),
-      offerCurrency: '30',
-      requestCurrency: '40',
-    });
+    const sub = buildProposeSubmission(
+      CAP_TARGETS,
+      {
+        targetIdentity: '0xaaa1',
+        selectedMonsterIds: idsOfLength(65),
+        offerCurrency: '30',
+        requestCurrency: '40',
+      },
+      TEST_CAP,
+    );
     expect(sub.canSubmit).toBe(false);
     expect(sub.offerCurrency).toBe(30n);
     expect(sub.requestCurrency).toBe(40n);
