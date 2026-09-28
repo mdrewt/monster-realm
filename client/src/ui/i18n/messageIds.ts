@@ -131,6 +131,11 @@ export type MessageId =
   // Claim.* : the guest-claim overlay (claimView.ts). Its button and the
   // privacy heading below share English bytes today but are TWO keys.
   | 'claim.privacyButton'
+  | 'claim.signInButton'
+  | 'claim.joinButton'
+  | 'claim.declineButton'
+  | 'claim.declineConfirmButton'
+  | 'claim.declineCancelButton'
   // Leaderboard.* : the ranked leaderboard overlay (leaderboardView.ts).
   | 'leaderboard.empty'
   | 'leaderboard.row'

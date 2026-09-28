@@ -72,6 +72,13 @@ function makeVm(overrides: Partial<ClaimViewModel> = {}): ClaimViewModel {
     confirmPrompt: undefined,
     nudge: undefined,
     feedback: undefined,
+    actions: {
+      signIn: true,
+      join: false,
+      decline: true,
+      declineConfirm: false,
+      declineCancel: false,
+    },
     ...overrides,
   };
 }
@@ -80,7 +87,14 @@ function makeVm(overrides: Partial<ClaimViewModel> = {}): ClaimViewModel {
 // m24s5 SplitSentinels / WalkSubtree / AssertNoRosterWord trio.
 // ---------------------------------------------------------------------------
 
-const M24S5_CV_PLAIN_KEYS = new Set(['claim.privacyButton']);
+const M24S5_CV_PLAIN_KEYS = new Set([
+  'claim.privacyButton',
+  'claim.signInButton',
+  'claim.joinButton',
+  'claim.declineButton',
+  'claim.declineConfirmButton',
+  'claim.declineCancelButton',
+]);
 
 function m24s5CvSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
   let out = '';

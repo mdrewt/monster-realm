@@ -938,3 +938,101 @@ describe('AUTH-55 source scan: claimModel.ts names no clock and schedules nothin
     }
   });
 });
+
+// ===========================================================================
+// BUG-claim-overlay-action-buttons-hidden-unlabelled: the view model says WHICH of the
+// five action buttons a player can operate in each state, so the view can show them.
+// Oracle: the claim flow's own copy — the prompt says "Sign in … or decline"; declining is
+// two-step (confirm / cancel); join is offered exactly when the join veto is lifted.
+// ===========================================================================
+describe('buildClaimViewModel actions (which claim buttons are operable)', () => {
+  const run = (...events: ClaimEvent[]): ClaimModelState =>
+    events.reduce((s, e) => claimStep(s, e).next, CLAIM_INITIAL);
+  const opened: ClaimEvent = { kind: 'claim-ui-opened', nudgeAlreadySeen: true };
+  const none = {
+    signIn: false,
+    join: false,
+    decline: false,
+    declineConfirm: false,
+    declineCancel: false,
+  };
+
+  it('hidden: no action is operable', () => {
+    expect(buildClaimViewModel(CLAIM_INITIAL).actions).toEqual(none);
+  });
+
+  it('prompt (a fresh guest opened the overlay): sign in or decline', () => {
+    expect(buildClaimViewModel(run(opened)).actions).toEqual({
+      ...none,
+      signIn: true,
+      decline: true,
+    });
+  });
+
+  it('sign-in-failed: sign in again or decline; re-opening lands on the same pair', () => {
+    const failed = run(opened, { kind: 'sign-in-failed', reason: 'transient-error' });
+    expect(buildClaimViewModel(failed).actions).toEqual({ ...none, signIn: true, decline: true });
+    expect(buildClaimViewModel(claimStep(failed, opened).next).actions).toEqual({
+      ...none,
+      signIn: true,
+      decline: true,
+    });
+  });
+
+  it('decline step one arms ONLY confirm + cancel; cancel returns to the prompt pair', () => {
+    const armed = run(opened, { kind: 'decline-requested' });
+    expect(
+      buildClaimViewModel(armed).confirmPrompt,
+      'an armed decline from the PROMPT must show the confirmation copy (the buttons alone do ' +
+        'not say what is lost)',
+    ).toBeDefined();
+    expect(buildClaimViewModel(armed).actions).toEqual({
+      ...none,
+      declineConfirm: true,
+      declineCancel: true,
+    });
+    const cancelled = claimStep(armed, { kind: 'decline-cancelled' }).next;
+    expect(buildClaimViewModel(cancelled).actions).toEqual({
+      ...none,
+      signIn: true,
+      decline: true,
+    });
+  });
+
+  it('a confirmed decline lifts the veto: only join remains', () => {
+    const declined = run(
+      opened,
+      { kind: 'decline-requested' },
+      { kind: 'decline-confirmed', hasLiveConnection: true },
+    );
+    expect(buildClaimViewModel(declined).actions).toEqual({ ...none, join: true });
+  });
+
+  it('code-pending / awaiting-account: the claim is in flight — decline only', () => {
+    const pendingState = run({ kind: 'claim-pending', code: 'a'.repeat(64) });
+    expect(buildClaimViewModel(pendingState).actions).toEqual({ ...none, decline: true });
+    const awaiting = claimStep(pendingState, { kind: 'claim-awaiting-account' }).next;
+    expect(buildClaimViewModel(awaiting).actions).toEqual({ ...none, decline: true });
+  });
+
+  it('claimed: join only', () => {
+    const claimed = run(
+      { kind: 'claim-pending', code: 'a'.repeat(64) },
+      { kind: 'claim-succeeded' },
+    );
+    expect(buildClaimViewModel(claimed).actions).toEqual({ ...none, join: true });
+  });
+
+  it('rejected: a code-deleting reject offers join; a code-retaining reject offers decline', () => {
+    const deleting = run(
+      { kind: 'claim-pending', code: 'a'.repeat(64) },
+      { kind: 'claim-rejected', message: 'code expired', claimedFrom: undefined },
+    );
+    expect(buildClaimViewModel(deleting).actions).toEqual({ ...none, join: true });
+    const retaining = run(
+      { kind: 'claim-pending', code: 'a'.repeat(64) },
+      { kind: 'claim-rejected', message: 'already in an ongoing battle', claimedFrom: undefined },
+    );
+    expect(buildClaimViewModel(retaining).actions).toEqual({ ...none, decline: true });
+  });
+});

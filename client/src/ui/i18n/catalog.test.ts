@@ -344,6 +344,11 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'tradePropose.target.placeholder': 'Select a player…', // tradeProposeView.ts:168
   'dialogue.action.shop': 'Shop', // dialogueView.ts:72
   'claim.privacyButton': 'Privacy & Account Data', // claimView.ts (resolved in render()/show())
+  'claim.signInButton': 'Sign in', // claimView.ts (resolved in render()/show())
+  'claim.joinButton': 'Continue playing', // claimView.ts (resolved in render()/show())
+  'claim.declineButton': 'Decline', // claimView.ts (resolved in render()/show())
+  'claim.declineConfirmButton': 'Yes, decline', // claimView.ts (resolved in render()/show())
+  'claim.declineCancelButton': 'Keep my code', // claimView.ts (resolved in render()/show())
   'leaderboard.empty': 'No ranked players yet', // leaderboardView.ts:60
   'errorOverlay.footer': 'F8 dismiss · F9 bug report', // errorOverlayView.ts (resolved in show())
   'privacy.title': 'Privacy & Account Data', // privacyView.ts (resolved in show())

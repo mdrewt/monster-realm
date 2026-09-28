@@ -272,6 +272,15 @@ export function claimStep(state: ClaimModelState, event: ClaimEvent): ClaimStep 
   }
 }
 
+/** Which of the overlay's five action buttons the player can operate right now. */
+export interface ClaimActions {
+  readonly signIn: boolean;
+  readonly join: boolean;
+  readonly decline: boolean;
+  readonly declineConfirm: boolean;
+  readonly declineCancel: boolean;
+}
+
 export interface ClaimViewModel {
   readonly visible: boolean;
   readonly title: string;
@@ -279,6 +288,33 @@ export interface ClaimViewModel {
   readonly confirmPrompt: string | undefined;
   readonly nudge: string | undefined;
   readonly feedback: string | undefined;
+  readonly actions: ClaimActions;
+}
+
+/** The operable buttons. Sign in is offered from the prompt and after a failed sign-in; decline
+ *  whenever a claim can still be given up (the join veto is up); declining is two-step, so an
+ *  armed decline offers ONLY confirm / cancel; join exactly when the veto is lifted. */
+function claimActions(state: ClaimModelState): ClaimActions {
+  if (state.phase === 'hidden') {
+    return {
+      signIn: false,
+      join: false,
+      decline: false,
+      declineConfirm: false,
+      declineCancel: false,
+    };
+  }
+  const armed = state.confirmPending;
+  return {
+    signIn:
+      !armed &&
+      !state.joinPermitted &&
+      (state.phase === 'prompt' || state.phase === 'sign-in-failed'),
+    join: !armed && state.joinPermitted,
+    decline: !armed && !state.joinPermitted && state.phase !== 'claimed',
+    declineConfirm: armed,
+    declineCancel: armed,
+  };
 }
 
 const NUDGE_COPY = 'Guest progress transfers only from the device you claim it on.';
@@ -333,15 +369,6 @@ export function buildClaimViewModel(state: ClaimModelState): ClaimViewModel {
   let title = PENDING_TITLE;
   let body = PENDING_BODY;
   switch (state.phase) {
-    case 'prompt':
-      return {
-        visible: true,
-        title: PENDING_TITLE,
-        body: PENDING_BODY,
-        confirmPrompt: undefined,
-        nudge: state.showFirstRunNudge ? NUDGE_COPY : undefined,
-        feedback: state.feedback,
-      };
     case 'awaiting-account':
       title = AWAITING_TITLE;
       body = AWAITING_BODY;
@@ -370,5 +397,6 @@ export function buildClaimViewModel(state: ClaimModelState): ClaimViewModel {
     confirmPrompt: state.confirmPending ? CONFIRM_PROMPT : undefined,
     nudge: state.showFirstRunNudge ? NUDGE_COPY : undefined,
     feedback: state.feedback,
+    actions: claimActions(state),
   };
 }

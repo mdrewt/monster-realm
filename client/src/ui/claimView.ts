@@ -36,15 +36,18 @@
 // Fixing it needs `claimModel.ts` (a new `ClaimEvent`) or `client/src/main.ts` (route the `KeyC`
 // close through `applyClaim`), both outside this slice's scope and `main.ts` reserved for S5.
 //
-// The privacy button's label is the one string this view owns, resolved
-// through the i18n resolver as `t('claim.privacyButton')` in BOTH open doors — `render()` (whose
-// `vm.visible` is the real open edge) and `show()` (`main.ts`'s `onSignInFailed` calls `show()`
-// BEFORE `renderClaim()`) — unconditionally, on every call, never in the constructor (S6 may
-// negotiate the locale after this view is constructed). It shares its English bytes with
-// `privacy.title` today but is a DIFFERENT key (a button label, not a heading).
+// Button labels are the strings this view owns, resolved through the i18n resolver
+// (`t('claim.privacyButton')` and the five `claim.*Button` action labels) in BOTH open doors —
+// `render()` (whose `vm.visible` is the real open edge) and `show()` (`main.ts`'s
+// `onSignInFailed` calls `show()` BEFORE `renderClaim()`) — unconditionally, on every call, never
+// in the constructor (the locale may be negotiated after this view is constructed). The privacy
+// label shares its English bytes with `privacy.title` today but is a DIFFERENT key (a button
+// label, not a heading). WHICH action buttons are shown is `vm.actions` (claimModel owns the
+// rule); `render()` writes each one's display, so the initial-focus anchor `#claim-signin-btn`
+// is painted whenever the prompt offers sign-in.
 // The vm strings (`title`, `body`, `nudge`, `feedback`, `confirmPrompt`) are model copy from
 // `claimModel.ts`, rendered raw.
-import type { ClaimViewModel } from './claimModel';
+import type { ClaimActions, ClaimViewModel } from './claimModel';
 import { t } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
@@ -81,6 +84,7 @@ export class ClaimView {
   readonly #feedback: HTMLElement;
   readonly #confirm: HTMLElement;
   readonly #privacyBtn: HTMLButtonElement;
+  readonly #actionBtns: Readonly<Record<keyof ClaimActions, HTMLButtonElement>>;
 
   constructor(handlers: ClaimViewHandlers) {
     this.#overlay = ensureElement('claim-overlay');
@@ -92,21 +96,31 @@ export class ClaimView {
     for (const child of [this.#title, this.#body, this.#nudge, this.#feedback, this.#confirm]) {
       if (child.parentElement !== this.#overlay) this.#overlay.appendChild(child);
     }
-    this.#wireButton('claim-signin-btn', handlers.onSignIn);
-    this.#wireButton('claim-join-btn', handlers.onJoin);
-    this.#wireButton('claim-decline-btn', handlers.onDeclineRequested);
-    this.#wireButton('claim-decline-confirm-btn', handlers.onDeclineConfirmed);
-    this.#wireButton('claim-decline-cancel-btn', handlers.onDeclineCancelled);
+    // The five action buttons start hidden (`ensureElement`) and are shown per `vm.actions` by
+    // every `render()`; labels are written by both open doors (header).
+    this.#actionBtns = {
+      signIn: this.#wireButton('claim-signin-btn', handlers.onSignIn),
+      join: this.#wireButton('claim-join-btn', handlers.onJoin),
+      decline: this.#wireButton('claim-decline-btn', handlers.onDeclineRequested),
+      declineConfirm: this.#wireButton('claim-decline-confirm-btn', handlers.onDeclineConfirmed),
+      declineCancel: this.#wireButton('claim-decline-cancel-btn', handlers.onDeclineCancelled),
+    };
     this.#privacyBtn = this.#wireButton('claim-privacy-btn', handlers.onPrivacy);
-    // UNLIKE ITS FIVE SIBLINGS, this button is UN-HIDDEN here and LABELLED by every open door.
-    // `ensureElement` creates every node `display:none` and `render()` never un-hides the
-    // buttons, so the five above ship blank and invisible while a programmatic `.click()` still
-    // fires them. That is a real defect (tracked as a follow-up, not fixed here — it is
-    // claimView's own copy); this one must not inherit it, because
-    // the criterion here is REACHABILITY. Its label is NOT written here: `render()` and `show()`
-    // each resolve `t('claim.privacyButton')` (header), so pre-open the button is
+    // The privacy door is always offered, so it is un-hidden once here. Its label is NOT
+    // written here: `render()` and `show()` each resolve it (header), so pre-open the button is
     // visible but empty.
     this.#privacyBtn.style.display = '';
+  }
+
+  /** Write every button label (both open doors, every call — header). */
+  #writeLabels(): void {
+    this.#privacyBtn.textContent = t('claim.privacyButton');
+    const b = this.#actionBtns;
+    b.signIn.textContent = t('claim.signInButton');
+    b.join.textContent = t('claim.joinButton');
+    b.decline.textContent = t('claim.declineButton');
+    b.declineConfirm.textContent = t('claim.declineConfirmButton');
+    b.declineCancel.textContent = t('claim.declineCancelButton');
   }
 
   #wireButton(id: string, handler: () => void): HTMLButtonElement {
@@ -130,8 +144,11 @@ export class ClaimView {
     this.#feedback.style.display = vm.feedback === undefined ? 'none' : 'block';
     this.#confirm.textContent = vm.confirmPrompt ?? '';
     this.#confirm.style.display = vm.confirmPrompt === undefined ? 'none' : 'block';
-    // Door 1 of 2 for the privacy label — every render, unconditionally.
-    this.#privacyBtn.textContent = t('claim.privacyButton');
+    for (const action of Object.keys(this.#actionBtns) as (keyof ClaimActions)[]) {
+      this.#actionBtns[action].style.display = vm.actions[action] ? '' : 'none';
+    }
+    // Door 1 of 2 for the labels — every render, unconditionally.
+    this.#writeLabels();
     // LAST, after every write above, so the deferred focus resolves against a painted root.
     if (vm.visible && !wasVisible) openOverlayA11y('claimView', this.#overlay);
     else if (!vm.visible && wasVisible) closeOverlayA11y('claimView', null);
@@ -143,9 +160,9 @@ export class ClaimView {
 
   show(): void {
     const wasVisible = this.visible;
-    // Door 2 of 2 for the privacy label — every show(), unconditionally,
+    // Door 2 of 2 for the labels — every show(), unconditionally,
     // after the `wasVisible` read and before the display write.
-    this.#privacyBtn.textContent = t('claim.privacyButton');
+    this.#writeLabels();
     this.#overlay.style.display = 'block';
     if (!wasVisible) openOverlayA11y('claimView', this.#overlay);
   }

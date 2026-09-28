@@ -126,6 +126,13 @@ function makeVm(overrides: Partial<ClaimViewModel> = {}): ClaimViewModel {
     confirmPrompt: undefined,
     nudge: undefined,
     feedback: undefined,
+    actions: {
+      signIn: true,
+      join: false,
+      decline: true,
+      declineConfirm: false,
+      declineCancel: false,
+    },
     ...overrides,
   };
 }
@@ -319,5 +326,93 @@ describe('ClaimView — m23-s4 overlay a11y wiring on the show()/hide()/render()
         'pre-existing display bug); after S4 it also announces and steals focus. Flagged ' +
         'upward, not fixed.',
     ).toHaveBeenCalledTimes(1);
+  });
+});
+
+// BUG-claim-overlay-action-buttons-hidden-unlabelled: ensureElement creates every node
+// display:none, and render() used to un-hide only the overlay and its text nodes — the five
+// action buttons shipped invisible and blank. The view must show exactly the buttons the VM
+// marks operable, each with a non-empty label, and hide the rest.
+describe('ClaimView — action buttons are shown per vm.actions and labelled', () => {
+  const IDS = {
+    signIn: 'claim-signin-btn',
+    join: 'claim-join-btn',
+    decline: 'claim-decline-btn',
+    declineConfirm: 'claim-decline-confirm-btn',
+    declineCancel: 'claim-decline-cancel-btn',
+  } as const;
+  const btn = (id: string): HTMLButtonElement => {
+    const el = document.getElementById(id);
+    expect(el, `#${id} must exist`).not.toBeNull();
+    return el as HTMLButtonElement;
+  };
+  const shown = (id: string): boolean => btn(id).style.display !== 'none';
+
+  it('prompt actions: sign-in and decline are visible and labelled; join/confirm/cancel stay hidden', () => {
+    const { view } = s4Mount();
+    view.render(
+      makeVm({
+        actions: {
+          signIn: true,
+          join: false,
+          decline: true,
+          declineConfirm: false,
+          declineCancel: false,
+        },
+      }),
+    );
+    expect(shown(IDS.signIn)).toBe(true);
+    expect(shown(IDS.decline)).toBe(true);
+    expect(shown(IDS.join)).toBe(false);
+    expect(shown(IDS.declineConfirm)).toBe(false);
+    expect(shown(IDS.declineCancel)).toBe(false);
+    for (const id of Object.values(IDS)) {
+      expect(btn(id).textContent?.trim().length ?? 0, `#${id} must carry a label`).toBeGreaterThan(
+        0,
+      );
+    }
+    expect(
+      new Set(Object.values(IDS).map((id) => btn(id).textContent)).size,
+      'five distinct labels',
+    ).toBe(5);
+  });
+
+  it('a later render flips visibility (armed decline shows confirm + cancel only)', () => {
+    const { view } = s4Mount();
+    view.render(makeVm());
+    view.render(
+      makeVm({
+        actions: {
+          signIn: false,
+          join: false,
+          decline: false,
+          declineConfirm: true,
+          declineCancel: true,
+        },
+      }),
+    );
+    expect(shown(IDS.signIn)).toBe(false);
+    expect(shown(IDS.decline)).toBe(false);
+    expect(shown(IDS.declineConfirm)).toBe(true);
+    expect(shown(IDS.declineCancel)).toBe(true);
+  });
+
+  it('the initial-focus anchor #claim-signin-btn is VISIBLE when the prompt opens, and focus lands on it', async () => {
+    const { view } = s4Mount();
+    view.render(
+      makeVm({
+        actions: {
+          signIn: true,
+          join: false,
+          decline: true,
+          declineConfirm: false,
+          declineCancel: false,
+        },
+      }),
+    );
+    await flushMacrotask();
+    const anchor = btn(IDS.signIn);
+    expect(anchor.style.display).not.toBe('none');
+    expect(document.activeElement).toBe(anchor);
   });
 });

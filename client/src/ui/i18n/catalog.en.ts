@@ -453,6 +453,16 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // this is a BUTTON label. One short line.
   // claimView.ts:96 (resolved in show() and render())
   'claim.privacyButton': 'Privacy & Account Data',
+  // @desc: Button on the guest-claim overlay that starts sign-in so guest progress can be claimed onto an account. Short verb phrase.
+  'claim.signInButton': 'Sign in',
+  // @desc: Button on the guest-claim overlay that returns to the game once the claim is settled or declined. Short phrase.
+  'claim.joinButton': 'Continue playing',
+  // @desc: Button on the guest-claim overlay: first step of declining the claim (a confirmation follows). One word.
+  'claim.declineButton': 'Decline',
+  // @desc: Button confirming the decline: permanently deletes the claim code. Short phrase.
+  'claim.declineConfirmButton': 'Yes, decline',
+  // @desc: Button cancelling the decline: keeps the claim code. Short phrase.
+  'claim.declineCancelButton': 'Keep my code',
   // @desc: Only row of the ranked leaderboard when no player has a rating yet (ratings exist
   // only after a decisive ranked battle). One short line.
   // leaderboardView.ts:60
