@@ -1,8 +1,0 @@
-{"file":"server-module/src/taming_tests.rs","test_name":"attempt_recruit_routes_turn_advance_through_game_core","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
-{"file":"server-module/src/taming_tests.rs","test_name":"rt_ptb2_01a_record_recruit_event_called_exactly_once","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
-{"file":"server-module/src/taming_tests.rs","test_name":"rt_ptb2_01b_record_recruit_event_after_roll_before_branch","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
-{"file":"server-module/src/taming_tests.rs","test_name":"rt_ptb2_01c_record_recruit_event_passes_correct_args","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
-{"file":"server-module/src/taming_tests.rs","test_name":"taming_rs_carries_no_remaining_adr_0089_park_marker","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
-{"file":"server-module/src/taming_tests.rs","test_name":"rb80_grant_bait_carries_the_deletion_gate","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
-{"file":"server-module/src/taming_tests.rs","test_name":"rb80_taming_reducer_roster_and_open_writers_are_pinned","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
-{"file":"server-module/src/taming_tests.rs","test_name":"rb80_grant_bait_is_refused_only_while_the_caller_is_deletion_gated","verdict":"KEEP","reason":"native-host/dummy-ctx test runs shipped reducer/helper against real rows"}

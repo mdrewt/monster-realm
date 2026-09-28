@@ -1,9 +1,0 @@
-{"file":"server-module/src/rb73_session_tests.rs","test_name":"rb73_sessions_live_row_for_the_sender_is_seen","verdict":"KEEP","reason":"native-host/dummy-ctx test runs shipped reducer/helper against real rows"}
-{"file":"server-module/src/rb73_session_tests.rs","test_name":"rb73_sessions_no_rows_means_no_session","verdict":"KEEP","reason":"native-host/dummy-ctx test runs shipped reducer/helper against real rows"}
-{"file":"server-module/src/rb73_session_tests.rs","test_name":"rb73_sessions_stranger_rows_are_not_mine","verdict":"KEEP","reason":"native-host/dummy-ctx test runs shipped reducer/helper against real rows"}
-{"file":"server-module/src/rb73_session_tests.rs","test_name":"rb73_exec_on_disconnect_skips_while_another_session_is_live","verdict":"KEEP","reason":"native-host/dummy-ctx test runs shipped reducer/helper against real rows"}
-{"file":"server-module/src/rb73_session_tests.rs","test_name":"rb73_exec_on_connect_none_branch_writes_nothing","verdict":"KEEP","reason":"native-host/dummy-ctx test runs shipped reducer/helper against real rows"}
-{"file":"server-module/src/rb73_session_tests.rs","test_name":"rb73_wiring_on_connect_body_is_frozen","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
-{"file":"server-module/src/rb73_session_tests.rs","test_name":"rb73_wiring_open_session_body_is_frozen_and_single_purpose","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
-{"file":"server-module/src/rb73_session_tests.rs","test_name":"rb73_wiring_on_disconnect_guard_precedes_and_body_is_frozen","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
-{"file":"server-module/src/rb73_session_tests.rs","test_name":"rb73_schema_session_table_is_private_and_keyed","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
