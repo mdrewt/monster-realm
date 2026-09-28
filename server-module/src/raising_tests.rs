@@ -1256,15 +1256,13 @@ fn daily_cap_stops_credit() {
     let mut m = qt_monster(QT_ANCHOR, cap, 0, 120);
     let wrote = apply_quality_time_credit(&mut m, now);
 
-    let row_write_marker = ["ctx.db.monster().monster_id()", ".update(m)"].concat();
-
     assert!(
         !wrote,
         "TEETH (12r-e E3): a call whose creditable amount is 0 (day window already \
          at QT_DAILY_CAP_MS) must return FALSE so `accrue_quality_time` performs NO \
          DB write. RED at HEAD: it returns true, and the ctx shell then runs an \
-         unconditional `{row_write_marker}` that changes only the invisible clock \
-         anchor — on `movement.rs:181`, the hottest reducer in the game, that is \
+         unconditional `ctx.db.monster().monster_id().update(m)` that changes \
+         only the invisible clock anchor — on `movement.rs:181`, the hottest reducer in the game, that is \
          one wasted row write per party monster per ~5 s for the rest of the UTC \
          day. The re-anchor it persists buys at most 4 QT ticks in either \
          direction across a single UTC rollover (measured over ~500M call \
