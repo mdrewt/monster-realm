@@ -2495,10 +2495,17 @@ async function main(): Promise<void> {
         sendGuarded('nickname', () => conn?.live()?.reducers.setNickname({ monsterId, nickname }));
       },
       onSetPartySlot: (monsterId, slot) => {
-        const finalSlot =
-          slot === -1
-            ? (nextFreePartySlot(store.ownMonsters(identity), PARTY_SIZE) ?? PARTY_SLOT_NONE)
-            : slot;
+        let finalSlot = slot;
+        if (slot === -1) {
+          const free = nextFreePartySlot(store.ownMonsters(identity), PARTY_SIZE);
+          // A full party has no slot to move into. Sending the box sentinel would be an
+          // accepted server no-op the player never sees, so say why instead.
+          if (free === null) {
+            reportError(i18nT('chrome.status.partyFull'));
+            return;
+          }
+          finalSlot = free;
+        }
         sendGuarded('party', () =>
           conn?.live()?.reducers.setPartySlot({ monsterId, slot: finalSlot }),
         );

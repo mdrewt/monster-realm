@@ -31,6 +31,7 @@ export type MessageId =
   | 'chrome.status.contentStale'
   | 'chrome.status.bugBundleBlocked'
   | 'chrome.status.healUnavailable'
+  | 'chrome.status.partyFull'
   | 'battle.title'
   | 'battle.continueHint'
   | 'battle.swap.hint'

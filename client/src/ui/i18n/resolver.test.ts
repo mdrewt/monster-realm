@@ -69,6 +69,7 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
       'chrome.status.contentStale': 'content out of date — reload',
       'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
       'chrome.status.healUnavailable': 'heal: no heal location available',
+      'chrome.status.partyFull': 'party is full — move a monster to the box first',
     });
   });
 

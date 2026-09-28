@@ -791,6 +791,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'chrome.status.disconnected',
       'chrome.status.exportBlocked',
       'chrome.status.healUnavailable',
+      'chrome.status.partyFull',
       'chrome.status.privacyOverlayBusy',
     ]);
     const a11yLiteralKeys = new Set(

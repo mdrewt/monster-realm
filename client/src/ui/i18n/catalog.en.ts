@@ -70,6 +70,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // available in the current zone.
   // main.ts:2524
   'chrome.status.healUnavailable': 'heal: no heal location available',
+  // @desc: Status-strip error shown when the player moves a monster from the box to the party
+  // but every party slot is taken; nothing is moved.
+  'chrome.status.partyFull': 'party is full — move a monster to the box first',
   // @desc: Heading of the battle overlay; the first thing announced when a PvE or PvP battle opens.
   // One word, fits a 320px-wide column.
   // battleView.ts:110 (resolved in show())

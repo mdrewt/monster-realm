@@ -270,6 +270,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'chrome.status.contentStale': 'content out of date — reload',
   'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
   'chrome.status.healUnavailable': 'heal: no heal location available',
+  'chrome.status.partyFull': 'party is full — move a monster to the box first',
   'battle.title': 'Battle', // battleView.ts:110
   'battle.continueHint': 'Press Esc to continue', // battleView.ts:243
   'battle.swap.hint':
