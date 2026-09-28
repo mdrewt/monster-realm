@@ -341,7 +341,6 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
         .map(|d| d.cost_currency)
         .unwrap_or(0);
     if currency_cost > 0 {
-        require_owner(ctx, "heal_party", me)?;
         // Trade escrow guard: reject if currency_cost > available.
         let escrowed = escrowed_currency_amount(
             ctx.db
