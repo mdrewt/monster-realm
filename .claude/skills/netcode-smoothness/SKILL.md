@@ -1,40 +1,77 @@
 ---
 name: netcode-smoothness
-description: Working on client prediction, reconciliation, movement, or rendering in the SpacetimeDB game — anything that could reintroduce v1's desync, stutter, skipping-ahead, or rubberbanding. Encodes ADR-0013 and netcode-quality-review.md.
+description: Working on client prediction, reconciliation, movement, or rendering in the SpacetimeDB game — anything that could reintroduce v1's desync, stutter, skipping-ahead, or rubberbanding. Encodes the netcode decisions in docs/DECISIONS.md.
 ---
 
 # Netcode smoothness (anti desync / stutter / skip / rubberband)
 
-> Single source of truth: `docs/adr/0013-*` and `netcode-quality-review.md`. This skill is the working summary — read those before changing the reconcile path.
+> The reasons live in `docs/DECISIONS.md` (bounded prediction, held keys, remote
+> interpolation) and the mechanics in `ARCHITECTURE.md` ("Prediction and
+> reconciliation", "Rendering"). This skill is the working summary; read those before
+> changing the reconcile path.
 
 ## Spine (do not violate)
 
-- **Rules live once in `game-core`; server is authoritative.** Predict **movement only** — battles are server-resolved. No second rule implementation on the client.
-- **Integer-tile authority + determinism.** Clocks/RNG are **injected** (enforced by `clippy.toml`). `apply_move` is a **total** function — an illegal move is a legal **no-op** (a bump), never an error or a desync.
+- **Rules live once in `game-core`; the server is authoritative.** The client
+  predicts **movement only**, using the wasm `apply_move`. Battles are resolved by the
+  server. There is no second rule implementation on the client.
+- **Integer tiles and determinism.** Clocks and RNG are injected (`clippy.toml`
+  enforces this in Rust). `apply_move` is total: an illegal move is a no-op bump,
+  never an error or a desync.
 
 ## The four root-cause fixes (each maps to a v1 symptom)
 
-1. **Rubberband ← reconciling a half-applied batch.** Reconcile only on a **complete per-transaction snapshot** (`onApplied` / the per-transaction batch hook), never mid-batch. The 4-step reconcile: (a) drop acked ops, (b) rebuild from the server `move_queue` + replay unacked queue-ops, (c) reset to the rebased baseline, (d) re-drain. It must be **atomic** against one transaction.
-2. **Stutter ← snapping own-character to every server tick.** Run a **decoupled own-character slide clock** — interpolate the local avatar smoothly instead of hard-setting position per tick.
-3. **Skipping/teleport on remotes ← rendering at head.** Render remote entities through an **interpolation delay buffer** (a render slightly in the past), so packets smooth out.
-4. **Divergence blowups ← unbounded prediction.** Use **bounded prediction with snap-on-gap**: cap how far prediction may run ahead; on a gap beyond the bound, snap to the authoritative state (a small visible correction beats an accelerating desync). No clock-sync / rebase-time assumptions.
+1. **Rubberband ← reconciling a half-applied batch.** The SDK fires per-row callbacks
+   only. `net/batch.ts` coalesces a transaction's rows in a microtask, the store
+   flushes once, and `Predictor.reconcile` runs once on that consistent snapshot: drop
+   acknowledged ops, rebuild from the server `move_queue` and replay pending queue
+   ops, reset to authority, drain.
+2. **Stutter ← snapping the own character to every tick.** The own character animates
+   on `render/slideClock.ts`, keyed to target-tile changes and ignoring
+   `move_started_at` (the server re-stamps it every tick).
+3. **Remote skipping ← rendering at the head.** `render/interpolation.ts` renders
+   remotes in the past between buffered snapshots, with an adaptive per-character
+   delay, and holds at the newest snapshot instead of extrapolating.
+4. **Divergence blowups ← unbounded prediction.** The predictor refuses enqueues past
+   `MOVE_QUEUE_CAP` and backs off at 16 unacknowledged ops. A long frame gap reports
+   `snapped`, and a correction of more than one tile snaps instead of gliding
+   (`render/renderResolver.ts`). No clock sync.
 
-## Mechanical gates (every change here ships them)
+Also load-bearing: OS key-repeat never drives movement; continuation waits for
+`HOLD_COMMIT_MS` (150 ms) and no outstanding steps (`prediction/heldKeys.ts`); a
+predictor epoch makes stale rejections no-ops after a warp or reconnect; a warp keeps
+the held-key stack.
 
-- **Prediction-parity eval** — the native (`game-core`) rule and the `wasm-pack` build produce **identical** results for the same integer input.
-- **Netcode-smoothness eval** — assert divergence/reconcile rates stay within budget under simulated latency/jitter.
-- **Proof-of-teeth fixture** — a known **half-applied / out-of-order batch** the reconcile must handle without rubberbanding; it must *fail* if someone reconciles mid-batch.
+## Checks
+
+- `prediction-parity`, `movement-parity`, `js-path-parity` (evals): the native rule
+  and the wasm build agree on the same integer inputs.
+- `netcode-determinism`, `netcode-convergence` (evals over `sim-harness`): replay is
+  a pure function of the seed, and clients converge under simulated latency, loss and
+  reorder.
+- Unit tests in `client/src/prediction/*.test.ts` and `client/src/render/*.test.ts`,
+  including half-applied and out-of-order batch cases. A test for a reconcile change
+  must fail if someone reconciles mid-batch.
+- `just e2e` (`client/e2e/movement-input.spec.ts`, `zoneSync.spec.ts`) for real
+  browser input and warps.
 
 ## Red flags in a diff (reject)
 
-Reconciling outside the per-transaction snapshot · per-tick position snapping on the local avatar · rendering remotes at head (no delay buffer) · predicting battle outcomes · unbounded prediction with no snap · reading wall-clock/`rand` instead of injected clock/RNG.
+Reconciling outside the per-transaction flush · per-tick position snapping on the local
+avatar · rendering remotes at the head · predicting battle outcomes · unbounded
+prediction · reading a wall clock or unseeded RNG in a rule · letting key-repeat
+enqueue moves.
 
 ## Gotchas
 
-_Living log — runtime edge cases, bugs, quirks found while building netcode. Per entry: **symptom** → cause → **avoid:** action. (The §"Red flags" list above is the static review checklist; record *observed* quirks here.)_
-
-- **Rubberbanding on movement** → reconciling a half-applied transaction batch. **Avoid:** reconcile only on the complete `onApplied` per-transaction snapshot.
-- **Local avatar stutters** → snapping position to every server tick. **Avoid:** decoupled slide clock (interpolate the local avatar).
-- **Remote players teleport / skip** → rendering remotes at head. **Avoid:** interpolation delay buffer (render slightly in the past).
-- **Desync accelerates instead of correcting** → unbounded prediction. **Avoid:** bounded prediction + snap-on-gap.
-- **Historical note:** v1 felt bad despite clean, correct code — the cause was *feel* (the four above), not logic bugs. Treat smoothness as its own gated property, not a side effect of correctness.
+- **Rubberbanding** → reconcile ran on a half-applied batch. **Avoid:** reconcile only
+  after the coalesced flush.
+- **Local avatar stutters** → position snapped per server tick. **Avoid:** the slide
+  clock.
+- **Remote players teleport** → rendered at the head. **Avoid:** the interpolation
+  buffer.
+- **Desync accelerates** → unbounded prediction. **Avoid:** the queue and pending caps.
+- **One tap moves two tiles** → continuation fired before the hold threshold.
+  **Avoid:** keep continuation behind `HOLD_COMMIT_MS`.
+- v1 felt bad despite correct code; the cause was feel, not logic. Treat smoothness as
+  its own tested property.
