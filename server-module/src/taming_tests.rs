@@ -196,8 +196,7 @@ fn rb80_grant_bait_is_refused_only_while_the_caller_is_deletion_gated() {
 // sender. DETERMINISM: the bait's `recruit_bonus` is 1000, so
 // `recruit_chance` clamps to 1000 per-mille and the recruit succeeds whatever
 // `ctx.random()` draws. HOST LIMIT: no rollback, so every rejection is refusal
-// BEFORE any write — including before the roll (no playtest_event row). The
-// failed-roll branch (resolve_recruit_failure) is covered by game-core.
+// BEFORE any write — including before the roll (no playtest_event row).
 // ===========================================================================
 mod nh {
     use crate::marshal::pub_from_monster;

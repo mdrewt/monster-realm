@@ -163,7 +163,16 @@ pub fn attempt_recruit(
 
         battle.state.outcome = BattleOutcome::SideAWins;
         // NO XP on recruit: do NOT swap for write_back_battle_results.
-        write_back_party_hp(ctx, &battle)?;
+        // log-and-commit, never `?` — rationale at the write-back block in
+        // `battle::submit_attack`. Here a propagated Err would ALSO roll back the
+        // recruit inserted above.
+        if let Err(e) = write_back_party_hp(ctx, &battle) {
+            let escaped = crate::guards::json_escape(&e);
+            crate::observability::mr_log(
+                "recruit_success_writeback_err",
+                &format!("\"battle_id\":{battle_id},\"reason\":\"{escaped}\""),
+            );
+        }
         ctx.db.battle_wild().battle_id().delete(battle_id);
         ctx.db.battle().battle_id().update(battle);
         // Log ONLY public coordinates — NEVER seed/IVs/nature (side-channel).
@@ -262,9 +271,17 @@ pub fn attempt_recruit(
     if battle.state.outcome != BattleOutcome::Ongoing {
         // Terminal: the wild knocked out the player's last monster, OR the
         // turn-limit terminal (Fled) fired in advance_turn. write_back_battle_results
-        // owns terminal GC (it deletes battle_wild unconditionally) and grants XP
-        // only on SideAWins, so the Fled terminal writes back HP without XP.
-        write_back_battle_results(ctx, &battle)?;
+        // owns terminal GC and grants XP only on SideAWins, so the Fled terminal
+        // writes back HP without XP.
+        // log-and-commit, never `?` — rationale at the write-back block in
+        // `battle::submit_attack`.
+        if let Err(e) = write_back_battle_results(ctx, &battle) {
+            let escaped = crate::guards::json_escape(&e);
+            crate::observability::mr_log(
+                "recruit_fail_writeback_err",
+                &format!("\"battle_id\":{battle_id},\"reason\":\"{escaped}\""),
+            );
+        }
     }
     ctx.db.battle().battle_id().update(battle);
     log::info!("{{\"evt\":\"recruit_fail\",\"battle_id\":{battle_id}}}");
