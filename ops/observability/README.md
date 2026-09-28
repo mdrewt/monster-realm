@@ -58,8 +58,7 @@ would do nothing under `network_mode: host`, so each service's own listen flag i
 boundary, and the config checks fail if one is missing. Upstream defaults are
 `0.0.0.0`. A bridge network is not an option: Prometheus could not reach a
 loopback-bound SpacetimeDB, and binding SpacetimeDB wider exposes `/v1/metrics`, which
-has no authentication and exposes table names, row counts, reducer volumes and player
-counts.
+answers without authentication.
 
 `MR_CADDY_BIND_ADDR` (`Caddyfile`) is the one setting meant to change if the box is
 ever exposed. Everything else stays on loopback.
@@ -91,8 +90,8 @@ attributes cannot grow Prometheus series without limit.
 | `validate.mjs` | Runs each config through its upstream validator in the pinned image |
 | `relay/` | `mr-trace-relay` (see `relay/README.md`) |
 
-Tempo is pinned to the 2.x line: 3.0 removed the top-level `compactor` key that the
-7-day `block_retention` setting uses.
+Tempo is pinned to the 2.x line; its 7-day retention is the top-level
+`compactor.compaction.block_retention` block in `tempo/tempo-config.yml`.
 
 ## Alerting
 

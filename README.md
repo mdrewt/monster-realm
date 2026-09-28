@@ -51,7 +51,7 @@ are implemented but inactive until an identity provider is deployed (see
 | Rust | 1.96.0, with `wasm32-unknown-unknown`, clippy and rustfmt | `rust-toolchain.toml` (rustup installs it automatically) |
 | SpacetimeDB CLI | 2.8.1 | root `Cargo.toml` (`spacetimedb = "2.8.1"`) and both workflows; select it with `spacetime version use 2.8.1` |
 | Node.js | 24.13.x (`>=24.13.1 <25`) | `client/package.json` `engines`; CI uses 24.13.1 |
-| wasm-pack | 0.15.0 | CI (`.github/workflows/ci.yml`); install with `cargo install wasm-pack --version 0.15.0` |
+| wasm-pack | 0.15.0 | CI (`.github/workflows/ci.yml`, `jetli/wasm-pack-action` with `version: 'v0.15.0'`); locally, for example `cargo install wasm-pack --version 0.15.0` |
 | just | any recent | runs every recipe in `justfile` |
 | cargo-nextest | any recent | `just test` uses it |
 | Docker | any recent | `just observability-validate` (part of `just ci`) and the monitoring stack |

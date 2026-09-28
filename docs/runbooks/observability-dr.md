@@ -93,8 +93,8 @@ the disk fills.
 
 ## 5. Keep everything on loopback
 
-`/v1/metrics` has no authentication and exposes table names, row counts, reducer call
-volumes and player counts. The monitoring stack runs on the host network with every
+`/v1/metrics` answers without authentication (a plain `curl` returns every series,
+labelled by database). The monitoring stack runs on the host network with every
 service bound to `127.0.0.1`. Start SpacetimeDB with
 `--listen-addr 127.0.0.1:3000`; its default is all interfaces. Check:
 

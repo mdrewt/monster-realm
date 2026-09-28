@@ -298,7 +298,8 @@ progress to an account like this. The browser mints a 256-bit claim code
 (`crypto.getRandomValues`, `client/src/net/claimCode.ts`) and registers it with
 `start_guest_claim` *before* redirecting to sign-in. After sign-in, the account
 identity calls `complete_guest_claim`, which runs every caller-state guard before it
-looks up the code, then re-keys all guest-owned tables onto the account (`rekey_all`),
+looks up the code, then re-keys the guest's persistent game data onto the account
+(`rekey_all`: monsters, inventory, quests, wallet, profile and the rest),
 purges the guest's export bundles, and consumes the code. A claim expires after
 `CLAIM_TTL_MS` (15 min), cleaned up by a scheduled reaper.
 
@@ -398,8 +399,8 @@ node_exporter, Caddy, and a trace relay) lives in `ops/observability/`, bound to
 loopback.
 
 **Why.** Reducers cannot make outbound calls and should not read clocks, so the host
-has to be the source of timings and counters. `/v1/metrics` is unauthenticated and
-exposes table and reducer names, so nothing binds beyond loopback.
+has to be the source of timings and counters. `/v1/metrics` answers without
+authentication and labels its series by database, so everything stays on loopback.
 
 **Rules out.** An exporter or polling reducer; ad-hoc `log::` formats in new code;
 exposing the stack without changing the Caddy bind address on purpose.
@@ -408,9 +409,9 @@ exposing the stack without changing the Caddy bind address on purpose.
 
 **Decision.** Overlays are exclusive, and one pure function decides which may open:
 `canOpen` (`client/src/ui/overlayRegistry.ts`) reads a tier per overlay (a battle on
-top, guard-only modals that are never dismissed by another key, and the Box /
-Inventory / Evolution trio that swap with each other). The dialogue overlay is never
-force-hidden. Hotkeys are discoverable through `M`, a two-level menu. Each view keeps
+top, guard-only modals that another hotkey never dismisses, and the Box, Raising &
+Inventory and Evolution overlays, which swap with each other). A battle that starts
+force-hides most open overlays, but never the dialogue overlay. Hotkeys are discoverable through `M`, a two-level menu. Each view keeps
 its state in a pure model (`*Model.ts`) with a thin DOM view (`*View.ts`). Text-input
 overlays clear held movement keys on open and own their keystrokes. The controls list
 has one source, `CONTROLS` in `client/src/ui/helpModel.ts`. `T` interacts with the

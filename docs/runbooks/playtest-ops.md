@@ -71,8 +71,10 @@ It checks what was published, not the source tree. Output on success:
 
 Runs `node scripts/verify-build-hooks.mjs`, which scans `client/dist/**/*.js` for a
 DEV hook binding (`__game`, `__mrTrade`, `__mrPvp`). It fails if one is present, or
-if `client/dist` is missing or contains no `.js` files. It also reports which database
-the bundle was built for.
+if `client/dist` is missing or contains no `.js` files. It also fails if
+`MR_PLAYTEST_DB` is empty or `monster-realm`, or if the bundle was not built for that
+database (no `db:"<MR_PLAYTEST_DB>"` baked in). Run on its own, it therefore needs the
+same `MR_PLAYTEST_DB` the build used.
 
 ## `just playtest-wipe` (destructive)
 

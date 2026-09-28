@@ -392,9 +392,12 @@ is trapped in modals (`focusTrap.ts`), announcements go through live regions
   account calls `complete_guest_claim(code)`. Guards run in order: signed in, holds
   an account, not deleting, not already claimed, well-formed code, live claim, not
   expired, not its own session, guest no longer connected, neither side in a battle,
-  and the account owns no game data yet. Then `rekey_all` moves every guest-owned
-  table onto the account, the guest's export bundles are purged, the code is
-  consumed, and `claimed_from`/`claimed_at_ms` are stamped.
+  and the account owns no game data yet. Then `rekey_all` moves the guest's persistent
+  game data (monsters and their public projection, evolution notices, inventory,
+  quests and dialogue state, heal cooldown, wallet, profile) onto the account, the
+  guest's export bundles are purged, the code is consumed, and
+  `claimed_from`/`claimed_at_ms` are stamped. Session and in-flight rows (player,
+  conversation, sessions, battles, trades, challenges) are not moved.
 - **Deletion.** `delete_account` sets `PendingDeletion` and arms a reaper 7 days out;
   `cancel_account_deletion` reverses it and declines trade offers made to the account
   after it asked to be deleted. While deletion is pending, the account cannot start
