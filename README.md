@@ -64,7 +64,6 @@ needs Rust, the SpacetimeDB CLI, Node, wasm-pack, `just` and `timeout`.
 
 ```sh
 just setup                                    # cargo fetch + client npm install
-just wasm                                     # build the client's prediction wasm
 spacetime start --listen-addr 127.0.0.1:3000  # in another terminal; leave it running
 just playtest-up                              # publish, seed, verify, build, serve
 ```

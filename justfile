@@ -204,7 +204,8 @@ playtest-preflight:
 
 # Publish the honest release module (default features) to the isolated playtest DB, seed
 # content, prove no dev reducers / DEV hooks, build the client, and serve the production build.
-playtest-up:
+# Depends on `wasm` so a fresh clone's `npm run build` finds the prediction pkg.
+playtest-up: wasm
     #!/usr/bin/env bash
     set -euo pipefail
     export STDB_SERVER="${STDB_SERVER:-http://127.0.0.1:3000}"

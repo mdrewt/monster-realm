@@ -14,7 +14,6 @@ wasm-pack, `just`, and GNU `timeout`) and a local SpacetimeDB:
 
 ```sh
 just setup                                    # first time: cargo fetch + client npm install
-just wasm                                     # first time: build the prediction wasm
 spacetime start --listen-addr 127.0.0.1:3000  # separate terminal; keep it running
 just playtest-up                              # publish + seed + verify + build + serve
 ```
