@@ -3055,6 +3055,51 @@ mod nh {
         assert_eq!(w.snapshot(), before, "2 eligible: the player chooses");
     }
 
+    /// The Phase-3 ruling on branching (BUG-evolution-edge2-forecloses-branches): auto-evolve
+    /// iff EXACTLY ONE path is fulfilled. A sibling that is still waiting on its level does not
+    /// hold the other back — the path the monster's raising cleared first fires alone (that is
+    /// the care-dependent branching design) — and once BOTH are fulfilled nothing auto-fires.
+    #[test]
+    fn nh_check_and_evolve_single_fulfilled_path_fires_even_with_a_pending_sibling() {
+        // 1 -> 2 needs level 20 (unmet at level 7); 1 -> 3 needs level 1 + 10 Fire (met: the
+        // fixture monster holds 10 Fire).
+        let fx = fixture();
+        let w = world(&fx);
+        w.species.seed(&species(1, 30, 0));
+        w.species.seed(&species(2, 40, 1));
+        w.species.seed(&species(3, 50, 1));
+        w.paths.seed(&edge(1, 1, 2, 20, 0));
+        w.paths.seed(&edge(2, 1, 3, 1, 10));
+        w.seed_monster(&monster(11, a(), 1), 0);
+        fx.run_as_at(a(), at(T0), |ctx| check_and_evolve(ctx, 11));
+        assert_eq!(
+            w.monster(11).species_id,
+            3,
+            "the one fulfilled path auto-fires"
+        );
+        assert_eq!(w.entries(a()), Some(vec![reveal(11, 1, 3, T0)]));
+
+        // Same graph, but the monster is level 20: both paths are fulfilled -> player choice.
+        drop(fx);
+        let fx = fixture();
+        let w = world(&fx);
+        w.species.seed(&species(1, 30, 0));
+        w.species.seed(&species(2, 40, 1));
+        w.species.seed(&species(3, 50, 1));
+        w.paths.seed(&edge(1, 1, 2, 20, 0));
+        w.paths.seed(&edge(2, 1, 3, 1, 10));
+        let mut m = monster(11, a(), 1);
+        m.level = 20;
+        w.seed_monster(&m, 0);
+        let before = w.snapshot();
+        fx.run_as_at(a(), at(T0), |ctx| check_and_evolve(ctx, 11));
+        assert_eq!(
+            w.snapshot(),
+            before,
+            "2 fulfilled: nothing auto-fires, the player chooses"
+        );
+    }
+
     /// Degenerate (R5-violating) cycle 1 <-> 2: the chain stops after exactly
     /// MAX_EVOLUTION_CHAIN_STEPS applications instead of looping forever.
     #[test]

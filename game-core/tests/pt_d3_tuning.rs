@@ -5,9 +5,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use game_core::{
-    base_stat_total, battle_currency_reward, derive_stats, load_encounters, load_evolution_paths,
-    load_items, load_shops, load_species, recruit_chance, roll_encounter, EVs, EncounterTable, IVs,
-    Level, Nature, NatureKind, Species, RECRUIT_BASE_RATE,
+    base_stat_total, battle_currency_reward, build_monster, derive_stats, eligible_evolution_paths,
+    load_encounters, load_evolution_paths, load_items, load_shops, load_species, recruit_chance,
+    roll_encounter, EVs, EncounterTable, IVs, Level, Nature, NatureKind, Species,
+    RECRUIT_BASE_RATE,
 };
 
 // ===========================================================================
@@ -326,23 +327,15 @@ fn pt_d3_content_sanity_bands() {
 }
 
 // ===========================================================================
-// Wave-3 tier-0 species are obtainable: wild-legal, and caught below their gate
+// Wave-3 tier-0 species are obtainable (wild-legal)
 // ===========================================================================
 
 // A tier-0 species that is in no encounter table (and is no edge target) can
-// never be obtained. And level_gate_met is inclusive (>=) while auto-evolution
-// fires as soon as exactly one path is eligible, so a wild band reaching the
-// lowest outgoing edge min_level ships catches that evolve on the spot.
-//
-// Scoped to wave 3 (ids 40..=49): species 7 spawns to level 16 in zone 1 while
-// its lowest edge gates at 15. Widening this registry-wide waits on
-// BUG-evolution-edge2-forecloses-branches, whose Phase-3 fix covers that
-// band overlap.
+// never be obtained.
 #[test]
-fn wave3_tier0_species_are_wild_legal_and_caught_below_their_gate() {
+fn wave3_tier0_species_are_wild_legal() {
     let species = load_species().expect("species registry must parse");
     let encounters = load_encounters().expect("encounters registry must parse");
-    let edges = load_evolution_paths().expect("evolution_paths registry must parse");
 
     let tier0: BTreeSet<u32> = species
         .iter()
@@ -363,28 +356,87 @@ fn wave3_tier0_species_are_wild_legal_and_caught_below_their_gate() {
         missing.is_empty(),
         "wave-3 tier-0 species in no encounter table: {missing:?}"
     );
+}
 
+// ===========================================================================
+// No wild catch is evolution-eligible on the spot (every species, every table)
+// ===========================================================================
+
+// Auto-evolution fires as soon as exactly one path is eligible, so a wild catch
+// that is ALREADY eligible evolves the moment it is caught. The oracle is the
+// real eligibility query over a monster built exactly as a recruit is
+// (build_monster at the band's max_level: no essence, no Trust/Quality-Time
+// history) — not a level-only comparison: an edge whose min_level the band
+// reaches is fine when its other gates (essence, trust, ...) cannot be met by a
+// fresh catch. Species 7 is that case (spawns to L16; edge 7->30 gates at L15 but
+// also needs 100 Water essence).
+//
+// KNOWN EXCEPTION, surfaced to the user (ledger BUG-evolution-edge2-forecloses-branches), NOT
+// fixed here because the Phase-3 ruling is "no content change": zone 1 spawns species 1 up to
+// L20 and edge 1 (1->4) gates at exactly L20 with no other requirement, so a max-level wild
+// Flameling is eligible for 1->4 alone and auto-evolves on its first credit, foreclosing 1->6.
+// The exception list is exact: an entry that stops being eligible fails this test too, so the
+// list cannot silently outlive the content it describes.
+const KNOWN_ELIGIBLE_AT_CATCH: &[(u32, u32, u32)] = &[(1, 1, 1)]; // (zone, species, edge)
+
+#[test]
+fn no_wild_catch_is_evolution_eligible_on_the_spot() {
+    let species = load_species().expect("species registry must parse");
+    let encounters = load_encounters().expect("encounters registry must parse");
+    let edges = load_evolution_paths().expect("evolution_paths registry must parse");
+    let by_id: BTreeMap<u32, &Species> = species.iter().map(|s| (s.id, s)).collect();
+
+    let mut checked = 0usize;
+    let mut level_reached = 0usize;
+    let mut excepted: Vec<(u32, u32, u32)> = Vec::new();
     for table in &encounters {
-        for entry in table
-            .entries
-            .iter()
-            .filter(|e| tier0.contains(&e.species_id))
-        {
-            let gate = edges
-                .iter()
-                .filter(|e| e.from_species == entry.species_id)
-                .map(|e| e.min_level.as_u8())
-                .min();
-            if let Some(gate) = gate {
-                assert!(
-                    entry.max_level.as_u8() < gate,
-                    "zone {} species {} spawns up to level {} but its lowest evolution edge \
-                     gates at {gate}: a wild catch at max_level auto-evolves immediately",
-                    table.zone_id,
-                    entry.species_id,
-                    entry.max_level.as_u8()
-                );
+        for entry in &table.entries {
+            let sp = by_id.get(&entry.species_id).unwrap_or_else(|| {
+                panic!(
+                    "encounter species {} is not in the registry",
+                    entry.species_id
+                )
+            });
+            let caught = build_monster(0, sp, entry.max_level);
+            let mut eligible = eligible_evolution_paths(&caught, &edges);
+            eligible.retain(|&i| {
+                let key = (table.zone_id, entry.species_id, edges[i].edge_id);
+                let known = KNOWN_ELIGIBLE_AT_CATCH.contains(&key);
+                if known {
+                    excepted.push(key);
+                }
+                !known
+            });
+            assert!(
+                eligible.is_empty(),
+                "zone {} species {} caught at max_level {} is already eligible for edge(s) {:?}: \
+                 it would auto-evolve the moment it is caught",
+                table.zone_id,
+                entry.species_id,
+                entry.max_level.as_u8(),
+                eligible
+                    .iter()
+                    .map(|&i| edges[i].edge_id)
+                    .collect::<Vec<_>>()
+            );
+            checked += 1;
+            if edges.iter().any(|e| {
+                e.from_species == entry.species_id && e.min_level.as_u8() <= entry.max_level.as_u8()
+            }) {
+                level_reached += 1;
             }
         }
     }
+    assert!(checked > 0, "no encounter entries were checked");
+    assert_eq!(
+        excepted,
+        KNOWN_ELIGIBLE_AT_CATCH.to_vec(),
+        "KNOWN_ELIGIBLE_AT_CATCH is stale: every listed (zone, species, edge) must still be \
+         eligible at catch (remove fixed entries)"
+    );
+    assert!(
+        level_reached > 0,
+        "no band reaches an out-edge min_level, so this test no longer exercises the non-level \
+         gates (species 7 used to): re-check the oracle"
+    );
 }
