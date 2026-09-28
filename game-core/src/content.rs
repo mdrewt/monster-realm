@@ -7529,7 +7529,7 @@ mod tests {
     // =======================================================================
 
     /// an `NpcDef` with an EXPLICIT interaction (every field set).
-    fn uxd2_npc_def(id: u32, npc_id: &str, interaction: crate::NpcInteraction) -> NpcDef {
+    fn npc_def(id: u32, npc_id: &str, interaction: crate::NpcInteraction) -> NpcDef {
         NpcDef {
             id,
             npc_id: npc_id.to_string(),
@@ -7546,7 +7546,7 @@ mod tests {
     }
 
     /// a stock-less `ShopDef` (only its `id` matters here).
-    fn uxd2_shop_def(id: u32) -> ShopDef {
+    fn shop_def(id: u32) -> ShopDef {
         ShopDef {
             id,
             name: format!("Shop{id}"),
@@ -7555,7 +7555,7 @@ mod tests {
     }
 
     /// a free `HealLocationDef` (only its `location_id` matters).
-    fn uxd2_heal_def(location_id: u32) -> HealLocationDef {
+    fn heal_def(location_id: u32) -> HealLocationDef {
         HealLocationDef {
             location_id,
             zone_id: 0,
@@ -7578,7 +7578,7 @@ mod tests {
     /// ALSO KILLS: a `Default` impl that picks Shop/Heal, which would silently
     /// hand every legacy NPC a shop affordance.
     #[test]
-    fn uxd2_npc_def_omitting_interaction_defaults_to_dialogue() {
+    fn npc_def_omitting_interaction_defaults_to_dialogue() {
         let ron_10_field = r#"[
     (
         id: 1,
@@ -7615,7 +7615,7 @@ mod tests {
     /// never mark ANY npc as a shopkeeper, and AC-2/AC-12 die silently with a
     /// green serde-default test.
     #[test]
-    fn uxd2_npc_def_parses_explicit_shop_interaction() {
+    fn npc_def_parses_explicit_shop_interaction() {
         let ron_11_field = r#"[
     (
         id: 2,
@@ -7648,7 +7648,7 @@ mod tests {
     /// KILLS: a single-payload-slot impl that collapses Shop/Heal into one
     /// variant, and any impl that drops the u32 payload (`Heal` unit variant).
     #[test]
-    fn uxd2_npc_def_parses_explicit_heal_interaction() {
+    fn npc_def_parses_explicit_heal_interaction() {
         let ron_11_field = r#"[
     (
         id: 3,
@@ -7683,7 +7683,7 @@ mod tests {
     /// claim an affordance no content asked for. This is the direct unit
     /// falsification of the default the serde tests above observe indirectly.
     #[test]
-    fn uxd2_npc_interaction_default_trait_is_dialogue() {
+    fn npc_interaction_default_trait_is_dialogue() {
         assert_eq!(
             crate::NpcInteraction::default(),
             crate::NpcInteraction::Dialogue,
@@ -7701,7 +7701,7 @@ mod tests {
     /// disagree about the tag spelling used by AC-16's client converter.
     /// ALSO KILLS: a payload-dropping `Serialize` (Shop(1) -> Shop(0)).
     #[test]
-    fn uxd2_npc_interaction_ron_round_trip_preserves_each_variant() {
+    fn npc_interaction_ron_round_trip_preserves_each_variant() {
         for variant in [
             crate::NpcInteraction::Dialogue,
             crate::NpcInteraction::Shop(1),
@@ -7733,14 +7733,14 @@ mod tests {
     /// that omits the npc_id or the dangling id (an operator staring at
     /// "invalid npc interaction" cannot find the offending RON row).
     #[test]
-    fn uxd2_validate_npc_interactions_rejects_shop_id_missing_from_shops() {
-        let npcs = vec![uxd2_npc_def(
+    fn validate_npc_interactions_rejects_shop_id_missing_from_shops() {
+        let npcs = vec![npc_def(
             2,
             "tideglass_shopkeeper",
             crate::NpcInteraction::Shop(999),
         )];
-        let shops = vec![uxd2_shop_def(1)];
-        let heals = vec![uxd2_heal_def(999)]; // 999 exists ONLY as a heal id
+        let shops = vec![shop_def(1)];
+        let heals = vec![heal_def(999)]; // 999 exists ONLY as a heal id
 
         let result = validate_npc_interactions(&npcs, &shops, &heals);
         let err = result.expect_err(
@@ -7765,14 +7765,14 @@ mod tests {
     /// Mirror-image trap: 999 exists ONLY as a SHOP id here, so a validator
     /// that checks `Heal(id)` against shop ids returns Ok and is killed.
     #[test]
-    fn uxd2_validate_npc_interactions_rejects_heal_id_missing_from_heal_locations() {
-        let npcs = vec![uxd2_npc_def(
+    fn validate_npc_interactions_rejects_heal_id_missing_from_heal_locations() {
+        let npcs = vec![npc_def(
             3,
             "spring_warden",
             crate::NpcInteraction::Heal(999),
         )];
-        let shops = vec![uxd2_shop_def(999)]; // 999 exists ONLY as a shop id
-        let heals = vec![uxd2_heal_def(1)];
+        let shops = vec![shop_def(999)]; // 999 exists ONLY as a shop id
+        let heals = vec![heal_def(1)];
 
         let result = validate_npc_interactions(&npcs, &shops, &heals);
         let err = result.expect_err(
@@ -7801,14 +7801,14 @@ mod tests {
     /// KILLS: an always-Err validator (which would fail every `sync_content`
     /// and brick the server) and the two mutants above.
     #[test]
-    fn uxd2_validate_npc_interactions_accepts_mixed_valid_set() {
+    fn validate_npc_interactions_accepts_mixed_valid_set() {
         let npcs = vec![
-            uxd2_npc_def(1, "elder_oak", crate::NpcInteraction::Dialogue),
-            uxd2_npc_def(2, "tideglass_shopkeeper", crate::NpcInteraction::Shop(7)),
-            uxd2_npc_def(3, "spring_warden", crate::NpcInteraction::Heal(42)),
+            npc_def(1, "elder_oak", crate::NpcInteraction::Dialogue),
+            npc_def(2, "tideglass_shopkeeper", crate::NpcInteraction::Shop(7)),
+            npc_def(3, "spring_warden", crate::NpcInteraction::Heal(42)),
         ];
-        let shops = vec![uxd2_shop_def(7)];
-        let heals = vec![uxd2_heal_def(42)];
+        let shops = vec![shop_def(7)];
+        let heals = vec![heal_def(42)];
 
         let result = validate_npc_interactions(&npcs, &shops, &heals);
         assert!(
@@ -7824,8 +7824,8 @@ mod tests {
     /// KILLS: a validator that demands a non-empty npcs slice (or indexes
     /// `npcs[0]`), which would panic/Err on any content set with no NPCs.
     #[test]
-    fn uxd2_validate_npc_interactions_accepts_empty_npc_list() {
-        let result = validate_npc_interactions(&[], &[uxd2_shop_def(1)], &[uxd2_heal_def(1)]);
+    fn validate_npc_interactions_accepts_empty_npc_list() {
+        let result = validate_npc_interactions(&[], &[shop_def(1)], &[heal_def(1)]);
         assert!(
             result.is_ok(),
             "AC-8: zero npcs is vacuously valid; got: {:?}",
@@ -7841,13 +7841,13 @@ mod tests {
     /// examines `npcs.first()`. Either would let a broken shopkeeper past the
     /// gate as long as some earlier npc happened to be well-formed.
     #[test]
-    fn uxd2_validate_npc_interactions_checks_every_npc_not_just_the_first() {
+    fn validate_npc_interactions_checks_every_npc_not_just_the_first() {
         let npcs = vec![
-            uxd2_npc_def(2, "tideglass_shopkeeper", crate::NpcInteraction::Shop(7)),
-            uxd2_npc_def(3, "spring_warden", crate::NpcInteraction::Heal(999)),
+            npc_def(2, "tideglass_shopkeeper", crate::NpcInteraction::Shop(7)),
+            npc_def(3, "spring_warden", crate::NpcInteraction::Heal(999)),
         ];
-        let shops = vec![uxd2_shop_def(7)];
-        let heals = vec![uxd2_heal_def(42)];
+        let shops = vec![shop_def(7)];
+        let heals = vec![heal_def(42)];
 
         let err = validate_npc_interactions(&npcs, &shops, &heals).expect_err(
             "AC-8 TEETH: a dangling reference on the SECOND npc must still \
@@ -7868,7 +7868,7 @@ mod tests {
     /// at deploy time, after CI was green), and an over-strict validator that
     /// rejects the plain `Dialogue` NPCs already in the registry.
     #[test]
-    fn uxd2_validate_npc_interactions_passes_for_embedded_content() {
+    fn validate_npc_interactions_passes_for_embedded_content() {
         let npcs = load_npc_defs().expect("load_npc_defs must succeed");
         let shops = load_shops().expect("load_shops must succeed");
         let heals = load_heal_locations().expect("load_heal_locations must succeed");
@@ -7888,7 +7888,7 @@ mod tests {
     /// NPC would drift out of the range-2 prompt window) and a moved home tile
     /// (the pinned zone-1 route to (8,1) stops being 2 tiles away at (6,1)).
     #[test]
-    fn uxd2_shopkeeper_seed_carries_shop_interaction() {
+    fn shopkeeper_seed_carries_shop_interaction() {
         let defs = load_npc_defs().expect("load_npc_defs must succeed");
         let keeper = defs
             .iter()
@@ -7940,7 +7940,7 @@ mod tests {
     /// never from choice text). ALSO KILLS: a text drift that would make the
     /// `#dialogue-overlay` assertion in shop-npc.spec.ts unreproducible.
     #[test]
-    fn uxd2_shopkeeper_greeting_tree_is_inert_single_node() {
+    fn shopkeeper_greeting_tree_is_inert_single_node() {
         let trees = load_dialogue_trees().expect("load_dialogue_trees must succeed");
         let tree = trees
             .iter()
