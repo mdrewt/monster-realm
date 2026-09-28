@@ -1678,7 +1678,7 @@ fn my_export_bundle(ctx: &spacetimedb::ViewContext) -> Vec<ExportBundle> {
 // `plan_export_reap` (which rows have expired) and `plan_export_reap_stamps` (which
 // whole bundles this tick may delete); the native test host models the range read and
 // the index-point delete, never a table scan. the tick also PUBLISHES what it did: the
-// helper reports a record of raw counts — four since rb-115: the rows the window read,
+// helper reports a record of raw counts — four: the rows the window read,
 // the expired stamps it holds, the stamps it planned, the rows it reaped — the pure
 // `reap_fields` seam renders that record, and the reducer emits it as ONE terminal
 // observation.
@@ -1725,7 +1725,7 @@ pub(crate) const EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16;
 // a caller with no wallet row either, a caller never credited currency, gets a
 // quarter, so join-only sybils can never take the credited anonymous players'
 // quarter (the escalation a scripted quest or trade still buys is
-// R-rb-132-WALLETSYBIL). The bound is on ROWS, not bytes: a chunk carries up to
+// a known open residual). The bound is on ROWS, not bytes: a chunk carries up to
 // EXPORT_CHUNK_ROWS serialized rows. PRIVATE, like EXPORT_REQUEST_COOLDOWN_MS
 // above: DoS knobs, not legal figures.
 // ===========================================================================

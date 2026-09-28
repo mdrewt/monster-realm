@@ -1000,7 +1000,7 @@ pub struct ExportBundle {
 /// `client_disconnected` transaction that aborts AFTER its own-row delete rolls
 /// that delete back while the host still drops the `st_client` row, and the
 /// phantom then keeps `has_live_session` true for that identity (residual
-/// R-rb-73-ABORT-PHANTOM; the mitigation path is an additive
+/// still open; the mitigation path is an additive
 /// `connected_at_ms` tail column + an idle-session reaper).
 #[spacetimedb::table(accessor = player_session)]
 pub struct PlayerSession {

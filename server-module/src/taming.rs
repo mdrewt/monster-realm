@@ -128,7 +128,7 @@ pub fn attempt_recruit(
     let roll: u32 = ctx.random();
     let success = game_core::attempt_recruit(chance, roll);
 
-    // pt-b2: H1 playtest capture — single site after the roll, before the
+    // H1 playtest capture — single site after the roll, before the
     // branch, so every completed attempt is recorded exactly once with the PRE-roll HP.
     crate::playtest::record_recruit_event(
         ctx,

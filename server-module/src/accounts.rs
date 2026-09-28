@@ -45,8 +45,8 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table, Timestamp};
 ///
 /// HARD SEQUENCING GATE: flipping ALLOWED_ISSUERS and ALLOWED_AUDIENCE to their
 /// real deployment values, tightening `audience_allowed` to exact single-value equality, and the
-/// live restore drill are ALL gated on `13r-c-2` landing and are explicitly OUT of the M21b-2
-/// slice. Keep the placeholder values, the `concat!()` construction, and `audience_allowed`
+/// live restore drill are ALL gated on the real-deployment follow-up landing and are explicitly OUT of scope
+/// here. Keep the placeholder values, the `concat!()` construction, and `audience_allowed`
 /// unchanged here until that gate clears.
 pub(crate) const ALLOWED_ISSUERS: &[&str] = &[concat!("https:/", "/auth.monster-realm.invalid/")];
 /// Which `aud` values scope a token to THIS application (D1).
@@ -457,7 +457,7 @@ pub(crate) fn is_account_holder(ctx: &ReducerContext, identity: Identity) -> boo
 
 /// True iff `identity` holds an account the deletion gate refuses (false when
 /// no row). SSOT — reused by `complete_guest_claim` here and by
-/// gameplay-gate call sites, never re-derived. Since m22-s3 this DELEGATES to
+/// gameplay-gate call sites, never re-derived. It DELEGATES to
 /// `should_reject_for_deletion`.
 pub(crate) fn is_pending_deletion(ctx: &ReducerContext, identity: Identity) -> bool {
     ctx.db

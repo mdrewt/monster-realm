@@ -42,7 +42,7 @@ pub(crate) enum PlaytestKind {
 }
 impl PlaytestKind {
     // EXPLICIT literal — never `self as u16` (codes must be reorder-stable). Codes
-    // 2..=5 reserved for pt-b2b (SessionStart/BattleEnd/TradeConfirm/RankedMatch).
+    // 2..=5 reserved for future capture codes (SessionStart/BattleEnd/TradeConfirm/RankedMatch).
     pub(crate) fn code(self) -> u16 {
         match self {
             PlaytestKind::RecruitAttempt => 1,
