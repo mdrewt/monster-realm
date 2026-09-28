@@ -1,4 +1,4 @@
-// Ability registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
+// Ability registry — DATA, not code. Stable `id`s are APPEND-ONLY.
 // AbilityEffect variants: StatusImmunity(immune_to: <StatusKind>) | EntryHeal(denom: <u16 >= 2>)
 // StatusKind values: Poison | Burn | Paralysis | Sleep | Freeze
 [

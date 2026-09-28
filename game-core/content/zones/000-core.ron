@@ -1,4 +1,4 @@
-// Zone registry — DATA, not code (ADR-0006). Adding a zone is a content edit +
+// Zone registry — DATA, not code. Adding a zone is a content edit +
 // a validation test, never a rule change. Stable `id`s are APPEND-ONLY: never
 // reuse or renumber an existing id (the append-only-ids eval enforces it).
 [

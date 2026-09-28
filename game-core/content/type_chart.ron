@@ -1,4 +1,4 @@
-// Type effectiveness chart — DATA, not code (ADR-0006).
+// Type effectiveness chart — DATA, not code.
 // effectiveness: 0 = immune, 5 = half, 10 = neutral (default for unlisted pairs), 20 = super-effective.
 // Only non-neutral (non-10) pairs are listed; TypeChart::effectiveness returns 10 for all unlisted pairs.
 [

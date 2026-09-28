@@ -1,13 +1,11 @@
-// Encounter registry — DATA, not code (ADR-0006). Per-zone weighted spawn tables.
+// Encounter registry — DATA, not code. Per-zone weighted spawn tables.
 //
-// COMMENT HYGIENE (ADR-0143 D7, extended to this directory by ADR-0145):
+// COMMENT HYGIENE:
 // a TRAILING comment here must never contain the sequences id-followed-by-colon,
-// species-id-followed-by-colon, or to-species-followed-by-colon. Two evals strip
-// whole-line comments only and then regex-scan the remainder, so such a comment
+// species-id-followed-by-colon, or to-species-followed-by-colon. The append-only-ids
+// eval strips whole-line comments only and then regex-scans the remainder, so such a comment
 // injects a phantom stable content id. Use the "id=1" form instead. Whole-line
 // comments (like this block) are stripped and are therefore unrestricted.
-// GATED by game-core/tests/pt_d3_tuning.rs::t6_ron_comment_hygiene_over_tuning_dirs,
-// which — unlike the pt-d1 scanner — also sees inside /* ... */ block comments.
 //
 // LEVEL BANDS DO DOUBLE DUTY: roll_encounter filters entries by the PLAYER's
 // lead-party level, and resolve_encounter then picks the SPAWN level uniformly
@@ -28,7 +26,7 @@
     // the rate reds a 25-minute e2e whose failure message points nowhere near
     // the cause.
     //
-    // FORWARD LOCK (ADR-0145 D3): any NEW entry added here must have
+    // FORWARD LOCK: any NEW entry added here must have
     // min_level >= 15. The e2e's provable player-level ceiling is 12; the
     // margin absorbs future XP/level-curve drift. Gated by
     // pt_d3_tuning.rs::pt_d3_2_* — which DERIVES that ceiling from the live
@@ -47,9 +45,9 @@
         ],
     ),
     // ---------------------------------------------------------------------
-    // Zone 1 "Tideglass Cove" (pt-d3, ADR-0145) — carries the full wild-legal
-    // roster. This is the first table in which pt-d1's Earth/Dark lines
-    // (7, 8) and pt-d2's Dark/Wind lines (20, 21) are reachable at all.
+    // Zone 1 "Tideglass Cove" — carries the full wild-legal
+    // roster. This is the first table in which the wave-1 Earth/Dark lines
+    // (7, 8) and the wave-2 Dark/Wind lines (20, 21) are reachable at all.
     //
     // encounter_rate 150 (vs zone 0's 200): zone 1 is 40x28 vs 32x24 and its
     // bands run to level 20, where battles take more turns (higher HP, status,
@@ -88,7 +86,7 @@
             // Rare (late). Rarest late spawn — a non-starter route to a Fire
             // line for players who never picked one.
             (species_id: 1, weight: 3, min_level: 14, max_level: 20),
-            // ---- Roster wave 3 (rw3c, ADR-0204) --------------------------
+            // ---- Roster wave 3 --------------------------
             // Uncommon (mid/late). Voltkit, the Electric line's tier-0 form —
             // weight 6 deliberately equals the existing fast attacker it rivals
             // as an archetype, so Electric is met reliably enough for the
@@ -96,7 +94,7 @@
             //
             // BAND CEILING IS AN INVARIANT, NOT TUNING: max_level 19 sits
             // STRICTLY BELOW this form's only outgoing evolution edge (gate 20).
-            // level_gate_met is an inclusive comparison and ADR-0176 D2
+            // level_gate_met is an inclusive comparison and
             // auto-evolution fires immediately when exactly one path is
             // eligible, so a band that reached the gate would ship wild catches
             // that evolve on capture and the tier-0 form would never be

@@ -1,15 +1,14 @@
 // Roster wave 3 — WILD-LEGAL BASE FORMS (Electric, Light). DATA, not code
-// (ADR-0006/0057/0144/0204). Stable ids are APPEND-ONLY; reserved band
+//. Stable ids are APPEND-ONLY; reserved band
 // 40..=49, pre-claimed in-tree by species/060-item-evo-derived.ron. This file
 // sorts after every existing part file, so the 000-core rows stay the registry
 // prefix that m8_9e_species_migration_parity pins.
 //
 // Wave 3 closes the last content gap in the Affinity enum: Electric and Light
-// were the only two variants with zero species and zero skills (the ADR-0145
-// residual accepted at pt-d3, which doubled Dark instead). Both lines ship
+// were the only two variants with zero species and zero skills. Both lines ship
 // base + derived, so the two new affinities are as deep as the six that exist.
 //
-// ARCHETYPES (ADR-0204). Wave 1 took tanky + fast-sweeper, wave 2 took status +
+// ARCHETYPES. Wave 1 took tanky + fast-sweeper, wave 2 took status +
 // support, so wave 3 takes the two GDD section-5 shapes still unrepresented as
 // a LINE identity: a special glass cannon and a special wall. The type chart
 // forces the split — Light and Dark are mutually super-effective with no resist
@@ -21,7 +20,7 @@
 // banding are slice rw3c. A species absent from every encounter table is valid
 // content, merely not yet wild-obtainable — no reachability validator exists.
 //
-// COMMENT HYGIENE (ADR-0143 D7): full-line comments only, never a bare id field
+// COMMENT HYGIENE: full-line comments only, never a bare id field
 // name in prose — write id=N.
 [
     // Voltkit (Electric, SPECIAL GLASS CANNON) — speed 82 is the fastest base

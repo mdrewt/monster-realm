@@ -1,6 +1,6 @@
-// Zone map registry — DATA, not code (ADR-0006, ADR-0065). String-art tile rows
+// Zone map registry — DATA, not code. String-art tile rows
 // + warp list, keyed by zone_id. Tile glyphs: '.' = floor, '#' = wall, '~' = tall grass.
-// Warps are stored as an overlay list (not a tile glyph) — ADR-0065.
+// Warps are stored as an overlay list (not a tile glyph).
 // zone_id MUST exist in the zones registry (content/zones/). APPEND-ONLY ids.
 [
     (

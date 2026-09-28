@@ -1,5 +1,5 @@
 // Roster wave 3 — DERIVED FORMS (evolution targets). DATA, not code
-// (ADR-0006/0057/0060/0144/0204). Stable ids are APPEND-ONLY; reserved band
+//. Stable ids are APPEND-ONLY; reserved band
 // 40..=49. Mirrors the 000-core/010-derived and 050/051 splits so rw3c's
 // encounter author has an unambiguous rule: wild-legal = 000-core + 070-wave3.
 //
@@ -12,13 +12,13 @@
 //
 // Tier is exactly one greater than the source form (R5, strict +1).
 //
-// COMMENT HYGIENE (ADR-0143 D7): full-line comments only, never a bare id field
+// COMMENT HYGIENE: full-line comments only, never a bare id field
 // name in prose — write id=N.
 [
     // Voltarion (Electric, special glass cannon) — the payoff is sp_attack 102,
     // deliberately BELOW Cindershade's 104, and speed 98, deliberately below
     // Venumbra's 100, so every superlative wave 2 and the item-evolution wave
-    // wrote into their own comments survives this wave intact (ADR-0204).
+    // wrote into their own comments survives this wave intact.
     // Defense 64 stays near the tier-1 floor. BST 470, inside the 450..=479
     // span the shipped tier-1 forms already occupy (Steamveil 450, Pyroleo
     // 479) — a description of the roster, not a gated rail.
