@@ -14,7 +14,10 @@ use crate::economy::{grant_currency, spend_currency, wallet_balance};
 use crate::guards::{escrowed_currency_amount, escrowed_item_qty, log_reject, reject_if_in_battle};
 use crate::inventory::{consume_one, grant_item};
 use crate::marshal::{now_ms, pub_from_monster};
-use crate::schema::{battle, inventory, monster, monster_pub, player, trade_offer, TradeOffer};
+use crate::schema::{
+    battle, inventory, monster, monster_pub, player, trade_offer, Monster, TradeOffer,
+};
+use game_core::raising::rules::{reset_bond_on_trade, TrainerBond};
 use game_core::{
     authorize_confirm, authorize_respond, build_swap_plan, check_headroom, is_offer_stale,
     make_monster_card, validate_proposal, ApplyStep, ItemStack, LiveMonsterOwner, MonsterCard,
@@ -47,6 +50,44 @@ fn check_trade_side_size(n_monsters: usize, n_items: usize) -> Result<(), String
         ));
     }
     Ok(())
+}
+
+/// Trade-time bond reset — the imperative half of game-core's
+/// `reset_bond_on_trade` (decision "Trading resets the bond, not the monster"):
+/// copy the seven Trust / Quality-Time columns into a `TrainerBond`, run the
+/// rule, copy them back. Both copies destructure the bond WITHOUT `..`, so a
+/// bond field added in game-core is a compile error here until the row copies
+/// it; no other column of `m` is named, so this cannot touch level, genes, xp or
+/// essence. Called from `confirm_trade`'s transfer loop only — never from the
+/// guest-claim re-key (`monster_mgmt::rekey_monsters`), which is the SAME
+/// trainer under a new identity.
+fn reset_trainer_bond(m: &mut Monster) {
+    let mut bond = TrainerBond {
+        trust_favorable_count: m.trust_favorable_count,
+        trust_unfavorable_count: m.trust_unfavorable_count,
+        trust_favorable_battle_day_epoch: m.trust_favorable_battle_day_epoch,
+        quality_time_ticks_total: m.quality_time_ticks_total,
+        quality_time_accum_ms: m.quality_time_accum_ms,
+        quality_time_window_ms: m.quality_time_window_ms,
+        quality_time_window_start_ms: m.quality_time_window_start_ms,
+    };
+    reset_bond_on_trade(&mut bond);
+    let TrainerBond {
+        trust_favorable_count,
+        trust_unfavorable_count,
+        trust_favorable_battle_day_epoch,
+        quality_time_ticks_total,
+        quality_time_accum_ms,
+        quality_time_window_ms,
+        quality_time_window_start_ms,
+    } = bond;
+    m.trust_favorable_count = trust_favorable_count;
+    m.trust_unfavorable_count = trust_unfavorable_count;
+    m.trust_favorable_battle_day_epoch = trust_favorable_battle_day_epoch;
+    m.quality_time_ticks_total = quality_time_ticks_total;
+    m.quality_time_accum_ms = quality_time_accum_ms;
+    m.quality_time_window_ms = quality_time_window_ms;
+    m.quality_time_window_start_ms = quality_time_window_start_ms;
 }
 
 /// Returns true if `owner` has any active (Pending or ConfirmedByCounterparty)
@@ -683,7 +724,8 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
         msg
     })?;
 
-    // Apply monster transfers (dual-write monster + monster_pub, clear party_slot).
+    // Apply monster transfers (dual-write monster + monster_pub, clear party_slot,
+    // reset the trainer bond).
     for xfer in &plan.monster_transfers {
         let new_owner = if xfer.new_owner_idx == TradeSide::Counterparty {
             offer.counterparty
@@ -699,6 +741,10 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
             .ok_or_else(|| format!("monster {} gone during apply", xfer.monster_id))?;
         m.owner_identity = new_owner;
         m.party_slot = crate::PARTY_SLOT_NONE;
+        // The monster changes trainer: its Trust / Quality-Time bond returns to the
+        // fresh-monster baseline BEFORE the projection below, so `monster_pub`'s
+        // derived tiers re-derive from the reset counters.
+        reset_trainer_bond(&mut m);
         // Copy-forward tier: read the existing monster_pub row;
         // a missing row fails loud (same convention as the monster read above).
         let existing_pub = ctx
