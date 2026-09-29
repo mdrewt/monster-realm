@@ -71,7 +71,9 @@ content tables in `sync_content` and skips re-seeding while the stored
 `config.content_version` equals `CONTENT_VERSION` (`server-module/src/lib.rs`). The
 `content-version` eval pins `CONTENT_VERSION` to a hash of every content file's bytes
 (`evals/baselines/content-hash.json`), so any content edit — comments included —
-needs a version bump.
+needs a version bump. No content row table carries a `locale` column: content stays
+locale-agnostic, and localization lives in the client catalog layer
+(`client/src/ui/i18n/catalog.en.ts`, `catalog.fr.ts`).
 
 **Why.** Content has to reach the client (prediction, maps) and the server (truth)
 from one source with no runtime loading. Directory-per-registry files let content be
@@ -80,7 +82,8 @@ silently never reach a live database.
 
 **Rules out.** Hard-coding content in Rust or TypeScript; loading content at runtime;
 editing `game-core/content/` without bumping `CONTENT_VERSION` and regenerating the
-baseline (the eval failure message prints the exact command).
+baseline (the eval failure message prints the exact command); a locale column on
+content rows; localized strings in RON content.
 
 ## Server authority: thin reducers in domain modules
 
@@ -148,14 +151,18 @@ ops. It records queue *operations* (`Enqueue`/`SetMove`/`Clear`) rather than raw
 and replays them onto the server's queue on reconcile. Each predictor carries a
 generation id (`PredictorEpoch`), so a rejection addressed to a predictor discarded by
 a warp or reconnect does nothing. A rebuilt predictor starts its sequence numbers
-above the highest one already sent.
+above the highest one already sent. Zone warps resolve only server-side, in
+`movement_tick` (`server-module/src/movement.rs`); the client never predicts a zone
+crossing. `skip_warp` there defaults `true` when the mover has no player row, so an NPC
+never leaves its home zone.
 
 **Why.** A client that runs ahead of authority has to pull the player back, which is
 the rubber-band this architecture exists to prevent. Recording operations instead of
 moves is what makes a mid-flight `SetMove` or `Clear` replay correctly.
 
 **Rules out.** Unbounded local queues; dropping unacknowledged ops to make room;
-reusing a sequence number after a rebuild.
+reusing a sequence number after a rebuild; predicting a zone crossing client-side; an
+NPC crossing zones.
 
 ## Held keys: commit threshold and warp continuity
 
@@ -238,6 +245,31 @@ client can inspect a wild's genes before deciding to catch it.
 
 **Rules out.** Re-rolling the individual at catch time; exposing wild genes to the
 client.
+
+## Trading resets the bond, not the monster
+
+**Decision.** `confirm_trade` (`server-module/src/trading.rs`) resets each transferred
+monster's seven Trust/Quality-Time columns — `trust_favorable_count`,
+`trust_unfavorable_count`, `trust_favorable_battle_day_epoch`,
+`quality_time_ticks_total`, `quality_time_accum_ms`, `quality_time_window_ms`,
+`quality_time_window_start_ms` — to `0` through game-core's `reset_bond_on_trade` over a
+`TrainerBond` value (`game-core/src/raising/rules.rs`); the reducer copies the columns
+through the rule and never zeroes them itself. Level, species, nickname, IVs, EVs,
+nature, xp and the eight essence pools transfer unchanged. `monster_pub`'s derived
+`trust_tier`/`quality_time_tier` re-derive from the reset counters (Neutral / 0) while
+the evolution `tier` copies forward. The guest-claim identity re-key
+(`monster_mgmt::rekey_monsters`) is the same trainer under a new identity and does not
+reset the bond.
+
+**Why.** Trust and Quality-Time measure the relationship with the current trainer;
+essence is the monster's own. Unfavorable trust resets with the rest — a faint
+history is also a relationship with the old trainer — so a round trip through a
+second account clears a Hostile tier; that is the accepted price of the rule. See
+<https://github.com/mdrewt/monster-realm/issues/479>.
+
+**Rules out.** Halving or otherwise taxing essence on trade; carrying the bond across
+owners; re-implementing the zeroing in the reducer or in TypeScript; resetting on the
+guest-claim re-key.
 
 ## Economy: bounded balances, headroom before transfer
 

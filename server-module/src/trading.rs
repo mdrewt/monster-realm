@@ -55,10 +55,10 @@ fn check_trade_side_size(n_monsters: usize, n_items: usize) -> Result<(), String
 /// Trade-time bond reset — the imperative half of game-core's
 /// `reset_bond_on_trade` (decision "Trading resets the bond, not the monster"):
 /// copy the seven Trust / Quality-Time columns into a `TrainerBond`, run the
-/// rule, copy them back. Both copies destructure the bond WITHOUT `..`, so a
-/// bond field added in game-core is a compile error here until the row copies
-/// it; no other column of `m` is named, so this cannot touch level, genes, xp or
-/// essence. Called from `confirm_trade`'s transfer loop only — never from the
+/// rule, copy them back. The struct literal and the destructure both name every
+/// field (no `..`), so a bond field added in game-core is a compile error here
+/// until the row copies it; no other column of `m` is named, so this cannot
+/// touch level, genes, xp or essence. Called from `confirm_trade`'s transfer loop only — never from the
 /// guest-claim re-key (`monster_mgmt::rekey_monsters`), which is the SAME
 /// trainer under a new identity.
 fn reset_trainer_bond(m: &mut Monster) {
