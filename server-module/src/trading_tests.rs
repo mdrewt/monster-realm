@@ -3175,7 +3175,8 @@ fn nh_21re_propose(fx: &Fixture, mine: Vec<u64>, theirs: Vec<u64>) -> Result<(),
 /// kills: a no-op reset; a reset that misses any one of the seven columns; an
 /// anchor or day epoch stamped with `now` instead of 0; a reset that skips a monster
 /// whose tiers are already baseline (13); a reset of only the first monster per side
-/// (13); a reset at propose / respond / cancel time or on a declined offer, on
+/// (13); a reset that skips a base-form, evolution-tier-0 monster (21, whose pub is
+/// seeded at tier 0); a reset at propose / respond / cancel time or on a declined offer, on
 /// either the initiator's or the counterparty's side (12, 22); a sweep
 /// over the owner's whole party, collection or box (12, 14, 22, 23) or a bystander
 /// (31); a reset that rebuilds or drifts any non-bond column (the whole-row byte
@@ -3189,7 +3190,8 @@ fn nh_21re_confirm_trade_resets_bond_and_preserves_everything_else() {
     w.join(nh_b(), true);
     let boxed = crate::PARTY_SLOT_NONE;
     // (row, evolution tier): the tier is distinct per pub, so a fabricated or
-    // swapped tier is visible.
+    // swapped tier is visible; traded 21 is a BASE form (tier 0), so a reset that
+    // skips base-form monsters is visible.
     let seeded: Vec<(Monster, u8)> = vec![
         (nh_21re_bonded(11, nh_a(), 0, 1), 1),
         (nh_21re_bonded(12, nh_a(), 2, 2), 2),
@@ -3203,7 +3205,7 @@ fn nh_21re_confirm_trade_resets_bond_and_preserves_everything_else() {
             3,
         ),
         (nh_21re_bonded(14, nh_a(), boxed, 4), 4),
-        (nh_21re_bonded(21, nh_b(), 0, 5), 5),
+        (nh_21re_bonded(21, nh_b(), 0, 5), 0),
         (nh_21re_bonded(22, nh_b(), 1, 6), 6),
         (nh_21re_bonded(23, nh_b(), boxed, 7), 7),
         (nh_21re_bonded(31, nh_c(), 0, 8), 8),
@@ -3447,8 +3449,9 @@ struct Nh21reDraw {
 
 proptest::prop_compose! {
     /// Every non-bond column arbitrary within its type (level 1..=100, IVs 0..=31,
-    /// EVs 0..=252, slot 0..=5 or boxed, any nature, any cooldown anchor, any tier);
-    /// the seven bond columns zero-biased.
+    /// EVs 0..=252, slot 0..=5 or boxed, any nature, any cooldown anchor); the pub's
+    /// evolution tier BASE-FORM-biased (0 on ~40% of draws, 1..=3 often, any u8
+    /// rarely); the seven bond columns zero-biased.
     fn nh_21re_arb_draw()(
         bond in proptest::array::uniform6(nh_21re_arb_count()),
         anchor in nh_21re_arb_anchor(),
@@ -3468,7 +3471,11 @@ proptest::prop_compose! {
         last_care_at_ms in proptest::arbitrary::any::<i64>(),
         essence in proptest::array::uniform8(proptest::arbitrary::any::<u32>()),
         last_essence_train_at_ms in proptest::arbitrary::any::<i64>(),
-        tier in proptest::arbitrary::any::<u8>()
+        tier in proptest::prop_oneof![
+            proptest::strategy::Just(0u8),
+            0u8..=3,
+            proptest::arbitrary::any::<u8>()
+        ]
     ) -> Nh21reDraw {
         Nh21reDraw {
             bond,
@@ -3547,7 +3554,8 @@ fn nh_21re_row_from_draw(monster_id: u64, owner: Identity, d: &Nh21reDraw) -> Mo
 /// so one-sided sales and gifts in either direction are drawn as often as swaps —
 /// plus a currency leg on each side (0..=200 against 1_000-balance wallets) and an
 /// initiator item leg (0..=3 of item 5, omitted at 0). Every monster column is drawn
-/// (the bond zero-biased) with an arbitrary evolution tier on its pub; the offer is
+/// (the bond zero-biased) with a base-form-biased evolution tier on its pub (tier 0
+/// on ~40% of monsters, 1..=3 often, any u8 rarely); the offer is
 /// already ConfirmedByCounterparty with its reaper, and the initiator confirms at an
 /// arbitrary NONZERO clock. For EVERY transferred monster the row is exactly the
 /// seeded row re-keyed, unslotted and with the seven bond columns at 0, and the pub
@@ -3565,10 +3573,12 @@ fn nh_21re_row_from_draw(monster_id: u64, owner: Identity, d: &Nh21reDraw) -> Mo
 /// drawn, and a currency-free case is ~1 in 40_000); any non-bond column drift on a
 /// transferred monster for ANY drawn value (species, nickname, level, xp, IVs,
 /// nature, EVs, stats, hp, essence, either cooldown anchor); a value-dependent reset
-/// (keyed on a threshold, on a zero or saturated field, on the anchor's sign, on the
-/// slot or tier); an anchor or day epoch set to the drawn clock; a pub whose tiers
-/// are stale or whose other columns disagree with `pub_from_monster` of the expected
-/// row.
+/// keyed on a bond threshold, on a zero or saturated bond field, on the anchor's
+/// sign, on slotted-vs-boxed (both drawn ~half the time), or on the pub's evolution
+/// tier being 0 or nonzero (a base-form skip dies on the ~40% tier-0 draws; a
+/// skip of evolved forms dies on the 1..=3 draws); an anchor or day epoch set to
+/// the drawn clock; a pub whose tiers are stale or whose other columns disagree with
+/// `pub_from_monster` of the expected row.
 #[test]
 fn nh_21re_confirm_trade_property_only_owner_slot_and_bond_change() {
     use proptest::prelude::*;
