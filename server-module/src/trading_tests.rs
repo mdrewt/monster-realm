@@ -3011,9 +3011,12 @@ fn nh_escrowed_items_and_currency_shrink_the_spendable_headroom() {
 // on EACH transferred monster when (and only when) the trade EXECUTES; every other
 // column transfers unchanged and `monster_pub`'s derived tiers follow. The rule is
 // game-core's `reset_bond_on_trade`; these tests prove `confirm_trade` consumes it.
-// Every row seeded here carries a NONZERO, per-row-distinct bond (the conservation
-// test above seeds all-zero bonds, so it cannot see a reset), and every reducer
-// runs at a NONZERO clock, so an anchor stamped with `now` is never mistaken for 0.
+// The EXAMPLE test seeds every row with all seven bond columns nonzero and distinct
+// across rows (within a row too, except monster 13's deliberate fav == unfav); the
+// conservation test above seeds all-zero bonds, so it cannot see a reset. The
+// PROPERTY test draws ZERO-BIASED bonds, so some of its rows start at the baseline.
+// Every reducer runs at a NONZERO clock, so an anchor stamped with `now` is never
+// mistaken for 0.
 // ===========================================================================
 
 /// BSATN bytes of a row (or of a table's rows): `Monster` / `MonsterPub` derive no
@@ -3089,11 +3092,47 @@ fn nh_21re_only_offer(w: &NhWorld<'_>) -> u64 {
 /// What a traded row must be: the seeded row re-keyed to `new_owner` and unslotted,
 /// with EXACTLY the seven bond columns at the fresh-monster baseline 0 and every
 /// other column (species, nickname, level, xp, genes, stats, hp, essence, both
-/// cooldown anchors) carried over unchanged.
+/// cooldown anchors) carried over unchanged. Spelled column by column with NO `..`:
+/// a column added to `Monster` is a compile error here until someone decides
+/// whether a trade keeps or resets it.
 fn nh_21re_expected(seeded: &Monster, new_owner: Identity) -> Monster {
     Monster {
+        monster_id: seeded.monster_id,
         owner_identity: new_owner,
+        species_id: seeded.species_id,
+        nickname: seeded.nickname.clone(),
+        level: seeded.level,
+        xp: seeded.xp,
+        iv_hp: seeded.iv_hp,
+        iv_attack: seeded.iv_attack,
+        iv_defense: seeded.iv_defense,
+        iv_speed: seeded.iv_speed,
+        iv_sp_attack: seeded.iv_sp_attack,
+        iv_sp_defense: seeded.iv_sp_defense,
+        nature_kind: seeded.nature_kind,
+        ev_hp: seeded.ev_hp,
+        ev_attack: seeded.ev_attack,
+        ev_defense: seeded.ev_defense,
+        ev_speed: seeded.ev_speed,
+        ev_sp_attack: seeded.ev_sp_attack,
+        ev_sp_defense: seeded.ev_sp_defense,
+        stat_hp: seeded.stat_hp,
+        stat_attack: seeded.stat_attack,
+        stat_defense: seeded.stat_defense,
+        stat_speed: seeded.stat_speed,
+        stat_sp_attack: seeded.stat_sp_attack,
+        stat_sp_defense: seeded.stat_sp_defense,
+        current_hp: seeded.current_hp,
         party_slot: crate::PARTY_SLOT_NONE,
+        last_care_at_ms: seeded.last_care_at_ms,
+        essence_fire: seeded.essence_fire,
+        essence_water: seeded.essence_water,
+        essence_plant: seeded.essence_plant,
+        essence_electric: seeded.essence_electric,
+        essence_earth: seeded.essence_earth,
+        essence_wind: seeded.essence_wind,
+        essence_light: seeded.essence_light,
+        essence_dark: seeded.essence_dark,
         trust_favorable_count: 0,
         trust_unfavorable_count: 0,
         trust_favorable_battle_day_epoch: 0,
@@ -3101,7 +3140,7 @@ fn nh_21re_expected(seeded: &Monster, new_owner: Identity) -> Monster {
         quality_time_accum_ms: 0,
         quality_time_window_ms: 0,
         quality_time_window_start_ms: 0,
-        ..seeded.clone()
+        last_essence_train_at_ms: seeded.last_essence_train_at_ms,
     }
 }
 
@@ -3130,12 +3169,14 @@ fn nh_21re_propose(fx: &Fixture, mine: Vec<u64>, theirs: Vec<u64>) -> Result<(),
 /// 0 with the evolution tier copied forward. Every monster that did not change hands
 /// — A's slotted 12 and boxed 14, B's slotted 22 and boxed 23, bystander C's 31 —
 /// keeps its whole row, and so does 12 after one offer of it is DECLINED and another
-/// is CANCELLED after acceptance. Monster 13 already reads the baseline TIERS
+/// is CANCELLED after acceptance, and so does B's 22 after A's REQUEST for it (the
+/// counterparty side) is DECLINED. Monster 13 already reads the baseline TIERS
 /// (Neutral 4/4, 5 ticks) but carries nonzero bookkeeping, and is A's SECOND monster.
 /// kills: a no-op reset; a reset that misses any one of the seven columns; an
 /// anchor or day epoch stamped with `now` instead of 0; a reset that skips a monster
 /// whose tiers are already baseline (13); a reset of only the first monster per side
-/// (13); a reset at propose / respond / cancel time or on a declined offer; a sweep
+/// (13); a reset at propose / respond / cancel time or on a declined offer, on
+/// either the initiator's or the counterparty's side (12, 22); a sweep
 /// over the owner's whole party, collection or box (12, 14, 22, 23) or a bystander
 /// (31); a reset that rebuilds or drifts any non-bond column (the whole-row byte
 /// oracle); a `monster_pub` re-projected from the PRE-reset row (stale trust or
@@ -3213,8 +3254,9 @@ fn nh_21re_confirm_trade_resets_bond_and_preserves_everything_else() {
         );
     };
 
-    // (iv) The NON-execution paths first (TR-20: one active offer per player): an
-    // offer of 12 that B declines, then one that B accepts and A cancels.
+    // (iv) The NON-execution paths first, one at a time (TR-20: one active offer per
+    // player): an offer of 12 that B declines; a REQUEST for B's 22 (the counterparty
+    // side) that B declines; then an offer of 12 that B accepts and A cancels.
     assert_eq!(
         nh_21re_propose(&fx, vec![12], vec![]),
         Ok(()),
@@ -3224,6 +3266,15 @@ fn nh_21re_confirm_trade_resets_bond_and_preserves_everything_else() {
     let got = nh_21re_as(&fx, nh_b(), |ctx| super::respond_trade(ctx, tid, false));
     assert_eq!(got, Ok(()), "B declines the offer of 12");
     untouched("after a DECLINED offer of 12");
+    assert_eq!(
+        nh_21re_propose(&fx, vec![], vec![22]),
+        Ok(()),
+        "A requests B's 22, offering nothing (to be declined)"
+    );
+    let tid = nh_21re_only_offer(&w);
+    let got = nh_21re_as(&fx, nh_b(), |ctx| super::respond_trade(ctx, tid, false));
+    assert_eq!(got, Ok(()), "B declines the request for 22");
+    untouched("after a DECLINED request for B's 22");
     assert_eq!(
         nh_21re_propose(&fx, vec![12], vec![]),
         Ok(()),
@@ -3491,24 +3542,33 @@ fn nh_21re_row_from_draw(monster_id: u64, owner: Identity, d: &Nh21reDraw) -> Mo
     }
 }
 
-/// E2's property half, driving the shipped `confirm_trade` once per case: 1..=2
-/// arbitrary monsters per side (every column drawn, the bond zero-biased), each with
-/// an arbitrary evolution tier on its pub, an offer already ConfirmedByCounterparty
-/// plus its reaper, and the initiator confirming at an arbitrary NONZERO clock. For
-/// EVERY transferred monster the row is exactly the seeded row re-keyed, unslotted
-/// and with the seven bond columns at 0, and the pub reads Neutral / Quality-Time 0
-/// and is otherwise exactly `pub_from_monster(expected row, tier)`.
+/// E2's property half, driving the shipped `confirm_trade` once per case. Each case
+/// draws a trade SHAPE — 0..=2 arbitrary monsters per side, at least one in total,
+/// so one-sided sales and gifts in either direction are drawn as often as swaps —
+/// plus a currency leg on each side (0..=200 against 1_000-balance wallets) and an
+/// initiator item leg (0..=3 of item 5, omitted at 0). Every monster column is drawn
+/// (the bond zero-biased) with an arbitrary evolution tier on its pub; the offer is
+/// already ConfirmedByCounterparty with its reaper, and the initiator confirms at an
+/// arbitrary NONZERO clock. For EVERY transferred monster the row is exactly the
+/// seeded row re-keyed, unslotted and with the seven bond columns at 0, and the pub
+/// reads Neutral / Quality-Time 0 and is otherwise exactly
+/// `pub_from_monster(expected row, tier)`; each side ends up holding exactly the
+/// monsters the other gave, and the currency and item legs settle.
 ///
 /// DETERMINISTIC: fixed RNG seed, 48 cases, no regression file. A fresh fixture is
 /// built INSIDE each case — `FIXTURE_LOCK` is non-reentrant, so no fixture may
-/// outlive a case. (Messages are positional: `prop_assert_eq!` goes through
-/// `concat!`.)
-/// kills: a no-op reset; any non-bond column drift on a transferred monster for ANY
-/// drawn value (species, nickname, level, xp, IVs, nature, EVs, stats, hp, essence,
-/// either cooldown anchor); a value-dependent reset (keyed on a threshold, on a zero
-/// or saturated field, on the anchor's sign, on the slot or tier); an anchor or day
-/// epoch set to the drawn clock; a pub whose tiers are stale or whose other columns
-/// disagree with `pub_from_monster` of the expected row.
+/// outlive a case. The shape is MAPPED from an index (never `prop_assume!`), so no
+/// case is rejected, and it shrinks toward the one-sided (1, 0). (Messages are
+/// positional: `prop_assert_eq!` goes through `concat!`.)
+/// kills: a no-op reset; a reset gated on a TWO-SIDED monster swap (one-sided
+/// shapes); a reset gated on the absence of a currency or item leg (both legs are
+/// drawn, and a currency-free case is ~1 in 40_000); any non-bond column drift on a
+/// transferred monster for ANY drawn value (species, nickname, level, xp, IVs,
+/// nature, EVs, stats, hp, essence, either cooldown anchor); a value-dependent reset
+/// (keyed on a threshold, on a zero or saturated field, on the anchor's sign, on the
+/// slot or tier); an anchor or day epoch set to the drawn clock; a pub whose tiers
+/// are stale or whose other columns disagree with `pub_from_monster` of the expected
+/// row.
 #[test]
 fn nh_21re_confirm_trade_property_only_owner_slot_and_bond_change() {
     use proptest::prelude::*;
@@ -3520,17 +3580,26 @@ fn nh_21re_confirm_trade_property_only_owner_slot_and_bond_change() {
         ..ProptestConfig::default()
     };
     proptest!(config, |(
-        a_draws in prop::collection::vec(nh_21re_arb_draw(), 1..=2),
-        b_draws in prop::collection::vec(nh_21re_arb_draw(), 1..=2),
+        shape in 0usize..8,
+        a_pool in prop::collection::vec(nh_21re_arb_draw(), 2),
+        b_pool in prop::collection::vec(nh_21re_arb_draw(), 2),
+        initiator_currency in 0u64..=200,
+        counterparty_currency in 0u64..=200,
+        item_qty in 0u32..=3,
         now in 1i64..=4_000_000_000_000,
     )| {
+        // (monsters A gives, monsters B gives): never (0, 0); index 0 is one-sided.
+        let (a_n, b_n) = [(1, 0), (0, 1), (1, 1), (2, 0), (0, 2), (2, 1), (1, 2), (2, 2)][shape];
         let fx = fixture();
         let w = nh_world(&fx, true);
+        w.wallet(nh_a(), 1_000);
+        w.wallet(nh_b(), 1_000);
+        w.stack(nh_a(), 5, 10);
         // (seeded row, evolution tier, owner after the trade)
         let mut traded: Vec<(Monster, u8, Identity)> = Vec::new();
         let sides = [
-            (11u64, nh_a(), nh_b(), &a_draws),
-            (21u64, nh_b(), nh_a(), &b_draws),
+            (11u64, nh_a(), nh_b(), &a_pool[..a_n]),
+            (21u64, nh_b(), nh_a(), &b_pool[..b_n]),
         ];
         for (first_id, owner, new_owner, draws) in sides {
             for (id, d) in (first_id..).zip(draws.iter()) {
@@ -3548,7 +3617,10 @@ fn nh_21re_confirm_trade_property_only_owner_slot_and_bond_change() {
         };
         w.offers.seed(&TradeOffer {
             initiator_monster_ids: ids_of(nh_a()),
+            initiator_items: if item_qty == 0 { vec![] } else { vec![nh_item(5, item_qty)] },
+            initiator_currency,
             counterparty_monster_ids: ids_of(nh_b()),
+            counterparty_currency,
             ..nh_offer(100, nh_a(), nh_b(), TradeStatus::ConfirmedByCounterparty)
         });
         w.reaper(500, 100);
@@ -3558,6 +3630,26 @@ fn nh_21re_confirm_trade_property_only_owner_slot_and_bond_change() {
         let rows = w.monsters.rows();
         let pubs = w.pubs.rows();
         prop_assert_eq!(rows.len(), traded.len(), "no monster row created or destroyed");
+        let owned_by = |who: Identity| rows.iter().filter(|m| m.owner_identity == who).count();
+        prop_assert_eq!(
+            (owned_by(nh_a()), owned_by(nh_b())),
+            (b_n, a_n),
+            "each side must end up holding exactly the monsters the other side gave (shape {})",
+            shape
+        );
+        prop_assert_eq!(
+            (w.balance(nh_a()), w.balance(nh_b())),
+            (
+                1_000 - initiator_currency + counterparty_currency,
+                1_000 - counterparty_currency + initiator_currency,
+            ),
+            "the currency legs settle"
+        );
+        prop_assert_eq!(
+            (w.count(nh_a(), 5), w.count(nh_b(), 5)),
+            (10 - item_qty, item_qty),
+            "the item leg settles"
+        );
 
         for (seed, tier, new_owner) in &traded {
             let id = seed.monster_id;
