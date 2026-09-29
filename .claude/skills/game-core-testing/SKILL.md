@@ -56,7 +56,10 @@ approximate.
 The rule the client predicts with must equal the one the server resolves. A native
 double call is necessary but not enough, because it never crosses native-vs-wasm
 codegen. The `prediction-parity`, `movement-parity` and `js-path-parity` evals build
-the `wasm-pack` package and compare it with native output. Extend them when you add
+the `wasm-pack` package and compare it with native output. The evals set is CLOSED (harness
+standards/testing-tdd.md): when you add or change an EXPORTED rule, extend the existing parity
+SUITE's cases — never add an eval file — and a server-only rule needs no export and no parity
+case at all. Extend the existing cases when you add
 or change an exported rule.
 
 ## Running
