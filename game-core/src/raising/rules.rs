@@ -122,15 +122,15 @@ pub struct TrainerBond {
 /// EVs, nature, xp and the essence pools — are not this rule's concern and are
 /// untouched by design.
 ///
-/// `0` is the documented fresh-monster state for all seven (the server's
-/// `monster_from_instance` seeds them so): a `0` window anchor makes the new
+/// `0` is the fresh-monster state for all seven: a rolled instance starts with
+/// zero counters (`monster::rolls`) and the server's `monster_from_instance`
+/// writes the four server-only columns as `0`. A `0` window anchor makes the new
 /// owner's first `apply_quality_time_credit` call (server-module/src/raising.rs)
 /// land in its idle re-anchor branch, so no time run under the old trainer is
 /// credited, and a `0` day epoch leaves the once-per-day favorable-battle credit
 /// (`today > trust_favorable_battle_day_epoch`, server-module/src/battle.rs)
-/// available. Unfavorable trust resets with the rest — a faint history is also a
-/// relationship with the old trainer — so a round trip through a second account
-/// clears a Hostile tier; that is the accepted price of the rule.
+/// available. Unfavorable trust resets with the rest; the trade-off is recorded
+/// in docs/DECISIONS.md ("Trading resets the bond, not the monster").
 ///
 /// Takes the bond `&mut` (rather than returning a fresh value) so the zero-miss
 /// mutation gate can kill a no-op body.

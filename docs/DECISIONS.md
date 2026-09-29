@@ -78,7 +78,9 @@ locale-agnostic, and localization lives in the client catalog layer
 **Why.** Content has to reach the client (prediction, maps) and the server (truth)
 from one source with no runtime loading. Directory-per-registry files let content be
 added without editing shared files. Without the version pin, edited content would
-silently never reach a live database.
+silently never reach a live database. Localized strings in content would turn every
+translation fix into a `CONTENT_VERSION` bump and a server reseed, for text only the
+client renders.
 
 **Rules out.** Hard-coding content in Rust or TypeScript; loading content at runtime;
 editing `game-core/content/` without bumping `CONTENT_VERSION` and regenerating the
@@ -158,7 +160,9 @@ never leaves its home zone.
 
 **Why.** A client that runs ahead of authority has to pull the player back, which is
 the rubber-band this architecture exists to prevent. Recording operations instead of
-moves is what makes a mid-flight `SetMove` or `Clear` replay correctly.
+moves is what makes a mid-flight `SetMove` or `Clear` replay correctly. A warp changes
+the map the predictor runs on, so only the server can resolve it; keeping every NPC in
+its home zone keeps NPC movement local to one zone's map.
 
 **Rules out.** Unbounded local queues; dropping unacknowledged ops to make room;
 reusing a sequence number after a rebuild; predicting a zone crossing client-side; an
