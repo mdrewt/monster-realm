@@ -3002,3 +3002,615 @@ fn nh_escrowed_items_and_currency_shrink_the_spendable_headroom() {
         }
     }
 }
+
+// ===========================================================================
+// 21r-e — trade-time bond reset (decision #479; EARS E1/E2).
+//
+// A trade hands the monster to a new trainer, so the bond the OLD trainer built —
+// the seven Trust / Quality-Time columns — returns to the fresh-monster baseline 0
+// on EACH transferred monster when (and only when) the trade EXECUTES; every other
+// column transfers unchanged and `monster_pub`'s derived tiers follow. The rule is
+// game-core's `reset_bond_on_trade`; these tests prove `confirm_trade` consumes it.
+// Every row seeded here carries a NONZERO, per-row-distinct bond (the conservation
+// test above seeds all-zero bonds, so it cannot see a reset), and every reducer
+// runs at a NONZERO clock, so an anchor stamped with `now` is never mistaken for 0.
+// ===========================================================================
+
+/// BSATN bytes of a row (or of a table's rows): `Monster` / `MonsterPub` derive no
+/// `PartialEq`, and canonical BSATN equality IS value equality.
+fn nh_21re_bytes<T: spacetimedb::Serialize>(row: &T) -> Vec<u8> {
+    spacetimedb::sats::bsatn::to_vec(row).expect("a row BSATN-encodes")
+}
+
+/// A row whose SEVEN bond columns are all nonzero and pairwise distinct — within
+/// the row and, through `k`, across rows — with nonzero xp, essence and cooldown
+/// anchors, a level other than `nh_monster`'s 7 and a nature other than its Hardy.
+/// A missed or swapped bond column, a rebuilt row, and a reset that touched a
+/// non-bond column are all visible against it. `k` is 1..=8 here.
+fn nh_21re_bonded(monster_id: u64, owner: Identity, party_slot: u8, k: u8) -> Monster {
+    let n = u32::from(k);
+    let t = i64::from(k);
+    Monster {
+        level: 20 + k,
+        xp: 1_000 * n + 77,
+        nature_kind: game_core::Nature::from_index(k).kind(),
+        last_care_at_ms: NH_T0 - 5_000 - t,
+        essence_fire: 100 * n + 1,
+        essence_water: 100 * n + 2,
+        essence_plant: 100 * n + 3,
+        essence_electric: 100 * n + 4,
+        essence_earth: 100 * n + 5,
+        essence_wind: 100 * n + 6,
+        essence_light: 100 * n + 7,
+        essence_dark: 100 * n + 8,
+        trust_favorable_count: 40 + n,
+        trust_unfavorable_count: 1 + n,
+        trust_favorable_battle_day_epoch: 20_000 + n,
+        quality_time_ticks_total: 60 + n,
+        quality_time_accum_ms: 7_000 + n,
+        quality_time_window_ms: 30_000 + n,
+        quality_time_window_start_ms: NH_T0 - 1_000_000 - t,
+        last_essence_train_at_ms: NH_T0 - 9_000 - t,
+        ..nh_monster(monster_id, owner, party_slot)
+    }
+}
+
+/// Seed `m` and the `monster_pub` projection the server holds for it at `tier`.
+fn nh_21re_seed(w: &NhWorld<'_>, m: &Monster, tier: u8) {
+    w.monsters.seed(m);
+    w.pubs.seed(&crate::marshal::pub_from_monster(m, tier));
+}
+
+/// The live private row of monster `id`.
+fn nh_21re_row(w: &NhWorld<'_>, id: u64) -> Monster {
+    w.monsters
+        .rows()
+        .into_iter()
+        .find(|m| m.monster_id == id)
+        .unwrap_or_else(|| panic!("monster {id}: no private row"))
+}
+
+/// The live projection of monster `id`.
+fn nh_21re_pub(w: &NhWorld<'_>, id: u64) -> MonsterPub {
+    w.pubs
+        .rows()
+        .into_iter()
+        .find(|p| p.monster_id == id)
+        .unwrap_or_else(|| panic!("monster {id}: no monster_pub row"))
+}
+
+/// The one live offer's id (the one the last `propose_trade` inserted).
+fn nh_21re_only_offer(w: &NhWorld<'_>) -> u64 {
+    let ids = w.offer_ids();
+    assert_eq!(ids.len(), 1, "exactly one live offer, got {ids:?}");
+    ids[0]
+}
+
+/// What a traded row must be: the seeded row re-keyed to `new_owner` and unslotted,
+/// with EXACTLY the seven bond columns at the fresh-monster baseline 0 and every
+/// other column (species, nickname, level, xp, genes, stats, hp, essence, both
+/// cooldown anchors) carried over unchanged.
+fn nh_21re_expected(seeded: &Monster, new_owner: Identity) -> Monster {
+    Monster {
+        owner_identity: new_owner,
+        party_slot: crate::PARTY_SLOT_NONE,
+        trust_favorable_count: 0,
+        trust_unfavorable_count: 0,
+        trust_favorable_battle_day_epoch: 0,
+        quality_time_ticks_total: 0,
+        quality_time_accum_ms: 0,
+        quality_time_window_ms: 0,
+        quality_time_window_start_ms: 0,
+        ..seeded.clone()
+    }
+}
+
+/// Run `call` as `who` at the NONZERO clock `NH_T0` — never `run_as`, whose epoch-0
+/// clock would make an anchor stamped with `now` indistinguishable from a reset.
+fn nh_21re_as(
+    fx: &Fixture,
+    who: Identity,
+    call: impl FnOnce(&ReducerContext) -> Result<(), String>,
+) -> Result<(), String> {
+    fx.run_as_at(who, nh_at(NH_T0), call)
+}
+
+/// A proposes to B at `NH_T0`: monsters only, no items or currency.
+fn nh_21re_propose(fx: &Fixture, mine: Vec<u64>, theirs: Vec<u64>) -> Result<(), String> {
+    nh_21re_as(fx, nh_a(), |ctx| {
+        nh_propose(ctx, nh_b(), mine, vec![], 0, theirs, vec![], 0)
+    })
+}
+
+/// E1 + E2 end to end through the shipped reducers: A offers 11 + 13 for B's 21, and
+/// the offer is proposed, accepted and confirmed at the NONZERO clock `NH_T0`. Until
+/// execution no row moves. On execution EACH of the three transferred monsters has
+/// all seven bond columns at 0 (asserted by name) while every other column carries
+/// over byte-for-byte, and its `monster_pub` reads Neutral trust / Quality-Time tier
+/// 0 with the evolution tier copied forward. Every monster that did not change hands
+/// — A's slotted 12 and boxed 14, B's slotted 22 and boxed 23, bystander C's 31 —
+/// keeps its whole row, and so does 12 after one offer of it is DECLINED and another
+/// is CANCELLED after acceptance. Monster 13 already reads the baseline TIERS
+/// (Neutral 4/4, 5 ticks) but carries nonzero bookkeeping, and is A's SECOND monster.
+/// kills: a no-op reset; a reset that misses any one of the seven columns; an
+/// anchor or day epoch stamped with `now` instead of 0; a reset that skips a monster
+/// whose tiers are already baseline (13); a reset of only the first monster per side
+/// (13); a reset at propose / respond / cancel time or on a declined offer; a sweep
+/// over the owner's whole party, collection or box (12, 14, 22, 23) or a bystander
+/// (31); a reset that rebuilds or drifts any non-bond column (the whole-row byte
+/// oracle); a `monster_pub` re-projected from the PRE-reset row (stale trust or
+/// Quality-Time tier) or carrying a fabricated evolution tier.
+#[test]
+fn nh_21re_confirm_trade_resets_bond_and_preserves_everything_else() {
+    let fx = fixture();
+    let w = nh_world(&fx, true);
+    w.join(nh_a(), true);
+    w.join(nh_b(), true);
+    let boxed = crate::PARTY_SLOT_NONE;
+    // (row, evolution tier): the tier is distinct per pub, so a fabricated or
+    // swapped tier is visible.
+    let seeded: Vec<(Monster, u8)> = vec![
+        (nh_21re_bonded(11, nh_a(), 0, 1), 1),
+        (nh_21re_bonded(12, nh_a(), 2, 2), 2),
+        (
+            Monster {
+                trust_favorable_count: 4,
+                trust_unfavorable_count: 4,
+                quality_time_ticks_total: 5,
+                ..nh_21re_bonded(13, nh_a(), 1, 3)
+            },
+            3,
+        ),
+        (nh_21re_bonded(14, nh_a(), boxed, 4), 4),
+        (nh_21re_bonded(21, nh_b(), 0, 5), 5),
+        (nh_21re_bonded(22, nh_b(), 1, 6), 6),
+        (nh_21re_bonded(23, nh_b(), boxed, 7), 7),
+        (nh_21re_bonded(31, nh_c(), 0, 8), 8),
+    ];
+    for (m, tier) in &seeded {
+        nh_21re_seed(&w, m, *tier);
+    }
+    let seed_of = |id: u64| {
+        seeded
+            .iter()
+            .find(|(m, _)| m.monster_id == id)
+            .expect("a seeded monster")
+    };
+
+    // Preconditions: 11 and 21 sit ABOVE the fresh baseline on both derived tiers, so
+    // the reset is a visible transition on the projection; 13 already reads it.
+    for id in [11, 21] {
+        let p = nh_21re_pub(&w, id);
+        assert_ne!(
+            p.trust_tier,
+            game_core::TrustTier::Neutral,
+            "precondition: monster {id} must be seeded off the Neutral trust baseline"
+        );
+        assert!(
+            p.quality_time_tier > 0,
+            "precondition: monster {id} must be seeded above Quality-Time tier 0"
+        );
+    }
+    let p13 = nh_21re_pub(&w, 13);
+    assert_eq!(
+        (p13.trust_tier, p13.quality_time_tier),
+        (game_core::TrustTier::Neutral, 0),
+        "precondition: monster 13 already reads the baseline tiers (its bookkeeping is dirty)"
+    );
+
+    let rows_before = nh_21re_bytes(&w.monsters.rows());
+    let pubs_before = nh_21re_bytes(&w.pubs.rows());
+    let untouched = |stage: &str| {
+        assert_eq!(
+            nh_21re_bytes(&w.monsters.rows()),
+            rows_before,
+            "{stage}: no monster row may change (bond included) before a trade executes"
+        );
+        assert_eq!(
+            nh_21re_bytes(&w.pubs.rows()),
+            pubs_before,
+            "{stage}: no monster_pub row may change before a trade executes"
+        );
+    };
+
+    // (iv) The NON-execution paths first (TR-20: one active offer per player): an
+    // offer of 12 that B declines, then one that B accepts and A cancels.
+    assert_eq!(
+        nh_21re_propose(&fx, vec![12], vec![]),
+        Ok(()),
+        "A offers 12 (to be declined)"
+    );
+    let tid = nh_21re_only_offer(&w);
+    let got = nh_21re_as(&fx, nh_b(), |ctx| super::respond_trade(ctx, tid, false));
+    assert_eq!(got, Ok(()), "B declines the offer of 12");
+    untouched("after a DECLINED offer of 12");
+    assert_eq!(
+        nh_21re_propose(&fx, vec![12], vec![]),
+        Ok(()),
+        "A offers 12 (to be cancelled)"
+    );
+    let tid = nh_21re_only_offer(&w);
+    let got = nh_21re_as(&fx, nh_b(), |ctx| super::respond_trade(ctx, tid, true));
+    assert_eq!(got, Ok(()), "B accepts the offer of 12");
+    let got = nh_21re_as(&fx, nh_a(), |ctx| super::cancel_trade(ctx, tid));
+    assert_eq!(got, Ok(()), "A cancels the accepted offer");
+    assert_eq!(w.offer_ids(), Vec::<u64>::new(), "no offer is live");
+    untouched("after an accepted-then-CANCELLED offer of 12");
+
+    // (i) propose and (ii) accept: still nothing may move.
+    assert_eq!(
+        nh_21re_propose(&fx, vec![11, 13], vec![21]),
+        Ok(()),
+        "A offers 11 + 13 for B's 21; indexes asked: {:?}",
+        fx.requested_indexes()
+    );
+    let tid = nh_21re_only_offer(&w);
+    untouched("after propose_trade");
+    let got = nh_21re_as(&fx, nh_b(), |ctx| super::respond_trade(ctx, tid, true));
+    assert_eq!(got, Ok(()), "B accepts the offer of 11 + 13");
+    untouched("after respond_trade(accept)");
+
+    // (iii) confirm: the trade EXECUTES.
+    let got = nh_21re_as(&fx, nh_a(), |ctx| super::confirm_trade(ctx, tid));
+    assert_eq!(got, Ok(()), "indexes asked: {:?}", fx.requested_indexes());
+    assert_eq!(
+        w.offer_ids(),
+        Vec::<u64>::new(),
+        "the confirmed offer executed and was deleted"
+    );
+
+    for (id, new_owner) in [(11, nh_b()), (13, nh_b()), (21, nh_a())] {
+        let (seed, tier) = seed_of(id);
+        let row = nh_21re_row(&w, id);
+        let Monster {
+            trust_favorable_count,
+            trust_unfavorable_count,
+            trust_favorable_battle_day_epoch,
+            quality_time_ticks_total,
+            quality_time_accum_ms,
+            quality_time_window_ms,
+            quality_time_window_start_ms,
+            ..
+        } = &row;
+        assert_eq!(
+            *trust_favorable_count, 0,
+            "monster {id}: trust_favorable_count must reset to 0 on the executed trade"
+        );
+        assert_eq!(
+            *trust_unfavorable_count, 0,
+            "monster {id}: trust_unfavorable_count must reset to 0 on the executed trade"
+        );
+        assert_eq!(
+            *trust_favorable_battle_day_epoch, 0,
+            "monster {id}: trust_favorable_battle_day_epoch must reset to 0 on the executed trade"
+        );
+        assert_eq!(
+            *quality_time_ticks_total, 0,
+            "monster {id}: quality_time_ticks_total must reset to 0 on the executed trade"
+        );
+        assert_eq!(
+            *quality_time_accum_ms, 0,
+            "monster {id}: quality_time_accum_ms must reset to 0 on the executed trade"
+        );
+        assert_eq!(
+            *quality_time_window_ms, 0,
+            "monster {id}: quality_time_window_ms must reset to 0 on the executed trade"
+        );
+        assert_eq!(
+            *quality_time_window_start_ms, 0,
+            "monster {id}: quality_time_window_start_ms must reset to 0 on the executed trade"
+        );
+        let want = nh_21re_expected(seed, new_owner);
+        assert_eq!(
+            nh_21re_bytes(&row),
+            nh_21re_bytes(&want),
+            "monster {id}: only owner, slot and the seven bond columns may change on a trade; \
+             species, nickname, level, xp, genes, stats, hp, essence and both cooldown \
+             anchors carry over byte-for-byte"
+        );
+
+        let p = nh_21re_pub(&w, id);
+        assert_eq!(
+            p.trust_tier,
+            game_core::TrustTier::Neutral,
+            "monster_pub {id}: the trust tier must be re-derived from the RESET counters \
+             (0/0 is Neutral), not carried over from the pre-trade row"
+        );
+        assert_eq!(
+            p.quality_time_tier, 0,
+            "monster_pub {id}: the Quality-Time tier must be re-derived from the RESET ticks"
+        );
+        assert_eq!(
+            p.tier, *tier,
+            "monster_pub {id}: the evolution tier is copied forward, never fabricated"
+        );
+        assert_eq!(
+            (p.owner_identity, p.party_slot),
+            (new_owner, crate::PARTY_SLOT_NONE),
+            "monster_pub {id}: re-keyed to its new owner and unslotted"
+        );
+        assert_eq!(
+            nh_21re_bytes(&p),
+            nh_21re_bytes(&crate::marshal::pub_from_monster(&want, *tier)),
+            "monster_pub {id}: the whole projection is exactly \
+             pub_from_monster(expected row, copied-forward tier)"
+        );
+    }
+
+    for id in [12, 14, 22, 23, 31] {
+        let (seed, tier) = seed_of(id);
+        assert_eq!(
+            nh_21re_bytes(&nh_21re_row(&w, id)),
+            nh_21re_bytes(seed),
+            "monster {id} did not change hands: its row, bond included, must be byte-identical"
+        );
+        assert_eq!(
+            nh_21re_bytes(&nh_21re_pub(&w, id)),
+            nh_21re_bytes(&crate::marshal::pub_from_monster(seed, *tier)),
+            "monster_pub {id} did not change hands: it must be byte-identical"
+        );
+    }
+}
+
+/// Zero-biased bond counter: 0 and `u32::MAX` are drawn as often as a small or an
+/// arbitrary value, so a reset keyed on a threshold or a magnitude is hit.
+fn nh_21re_arb_count() -> impl proptest::strategy::Strategy<Value = u32> {
+    use proptest::prelude::*;
+    prop_oneof![Just(0u32), 1..10u32, any::<u32>(), Just(u32::MAX)]
+}
+
+/// Zero-biased window anchor: both extremes, both signs, 0 and a realistic ms clock.
+fn nh_21re_arb_anchor() -> impl proptest::strategy::Strategy<Value = i64> {
+    use proptest::prelude::*;
+    prop_oneof![
+        Just(i64::MIN),
+        Just(-1i64),
+        Just(0i64),
+        1..4_000_000_000_000i64,
+        Just(i64::MAX),
+    ]
+}
+
+/// One arbitrary monster row, drawn column by column (`Monster` derives no `Debug`,
+/// which a proptest value needs). `bond` holds the six u32 bond columns in schema
+/// order; `anchor` is `quality_time_window_start_ms`.
+#[derive(Debug, Clone)]
+struct Nh21reDraw {
+    bond: [u32; 6],
+    anchor: i64,
+    species_id: u32,
+    nickname: String,
+    level: u8,
+    xp: u32,
+    ivs: [u8; 6],
+    nature: u8,
+    evs: [u16; 6],
+    stats: [u16; 6],
+    current_hp: u16,
+    party_slot: u8,
+    last_care_at_ms: i64,
+    essence: [u32; 8],
+    last_essence_train_at_ms: i64,
+    tier: u8,
+}
+
+proptest::prop_compose! {
+    /// Every non-bond column arbitrary within its type (level 1..=100, IVs 0..=31,
+    /// EVs 0..=252, slot 0..=5 or boxed, any nature, any cooldown anchor, any tier);
+    /// the seven bond columns zero-biased.
+    fn nh_21re_arb_draw()(
+        bond in proptest::array::uniform6(nh_21re_arb_count()),
+        anchor in nh_21re_arb_anchor(),
+        species_id in proptest::arbitrary::any::<u32>(),
+        nickname in "[a-z]{0,8}",
+        level in 1u8..=100,
+        xp in proptest::arbitrary::any::<u32>(),
+        ivs in proptest::array::uniform6(0u8..=31),
+        nature in 0u8..25,
+        evs in proptest::array::uniform6(0u16..=252),
+        stats in proptest::array::uniform6(proptest::arbitrary::any::<u16>()),
+        current_hp in proptest::arbitrary::any::<u16>(),
+        party_slot in proptest::prop_oneof![
+            0u8..=5,
+            proptest::strategy::Just(crate::PARTY_SLOT_NONE)
+        ],
+        last_care_at_ms in proptest::arbitrary::any::<i64>(),
+        essence in proptest::array::uniform8(proptest::arbitrary::any::<u32>()),
+        last_essence_train_at_ms in proptest::arbitrary::any::<i64>(),
+        tier in proptest::arbitrary::any::<u8>()
+    ) -> Nh21reDraw {
+        Nh21reDraw {
+            bond,
+            anchor,
+            species_id,
+            nickname,
+            level,
+            xp,
+            ivs,
+            nature,
+            evs,
+            stats,
+            current_hp,
+            party_slot,
+            last_care_at_ms,
+            essence,
+            last_essence_train_at_ms,
+            tier,
+        }
+    }
+}
+
+/// The `Monster` row a draw describes — spelled column by column with NO `..`, so a
+/// column added to `Monster` is a compile error here until the property draws it.
+fn nh_21re_row_from_draw(monster_id: u64, owner: Identity, d: &Nh21reDraw) -> Monster {
+    Monster {
+        monster_id,
+        owner_identity: owner,
+        species_id: d.species_id,
+        nickname: d.nickname.clone(),
+        level: d.level,
+        xp: d.xp,
+        iv_hp: d.ivs[0],
+        iv_attack: d.ivs[1],
+        iv_defense: d.ivs[2],
+        iv_speed: d.ivs[3],
+        iv_sp_attack: d.ivs[4],
+        iv_sp_defense: d.ivs[5],
+        nature_kind: game_core::Nature::from_index(d.nature).kind(),
+        ev_hp: d.evs[0],
+        ev_attack: d.evs[1],
+        ev_defense: d.evs[2],
+        ev_speed: d.evs[3],
+        ev_sp_attack: d.evs[4],
+        ev_sp_defense: d.evs[5],
+        stat_hp: d.stats[0],
+        stat_attack: d.stats[1],
+        stat_defense: d.stats[2],
+        stat_speed: d.stats[3],
+        stat_sp_attack: d.stats[4],
+        stat_sp_defense: d.stats[5],
+        current_hp: d.current_hp,
+        party_slot: d.party_slot,
+        last_care_at_ms: d.last_care_at_ms,
+        essence_fire: d.essence[0],
+        essence_water: d.essence[1],
+        essence_plant: d.essence[2],
+        essence_electric: d.essence[3],
+        essence_earth: d.essence[4],
+        essence_wind: d.essence[5],
+        essence_light: d.essence[6],
+        essence_dark: d.essence[7],
+        trust_favorable_count: d.bond[0],
+        trust_unfavorable_count: d.bond[1],
+        trust_favorable_battle_day_epoch: d.bond[2],
+        quality_time_ticks_total: d.bond[3],
+        quality_time_accum_ms: d.bond[4],
+        quality_time_window_ms: d.bond[5],
+        quality_time_window_start_ms: d.anchor,
+        last_essence_train_at_ms: d.last_essence_train_at_ms,
+    }
+}
+
+/// E2's property half, driving the shipped `confirm_trade` once per case: 1..=2
+/// arbitrary monsters per side (every column drawn, the bond zero-biased), each with
+/// an arbitrary evolution tier on its pub, an offer already ConfirmedByCounterparty
+/// plus its reaper, and the initiator confirming at an arbitrary NONZERO clock. For
+/// EVERY transferred monster the row is exactly the seeded row re-keyed, unslotted
+/// and with the seven bond columns at 0, and the pub reads Neutral / Quality-Time 0
+/// and is otherwise exactly `pub_from_monster(expected row, tier)`.
+///
+/// DETERMINISTIC: fixed RNG seed, 48 cases, no regression file. A fresh fixture is
+/// built INSIDE each case — `FIXTURE_LOCK` is non-reentrant, so no fixture may
+/// outlive a case. (Messages are positional: `prop_assert_eq!` goes through
+/// `concat!`.)
+/// kills: a no-op reset; any non-bond column drift on a transferred monster for ANY
+/// drawn value (species, nickname, level, xp, IVs, nature, EVs, stats, hp, essence,
+/// either cooldown anchor); a value-dependent reset (keyed on a threshold, on a zero
+/// or saturated field, on the anchor's sign, on the slot or tier); an anchor or day
+/// epoch set to the drawn clock; a pub whose tiers are stale or whose other columns
+/// disagree with `pub_from_monster` of the expected row.
+#[test]
+fn nh_21re_confirm_trade_property_only_owner_slot_and_bond_change() {
+    use proptest::prelude::*;
+    let config = ProptestConfig {
+        cases: 48,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(479),
+        failure_persistence: None,
+        max_shrink_iters: 512,
+        ..ProptestConfig::default()
+    };
+    proptest!(config, |(
+        a_draws in prop::collection::vec(nh_21re_arb_draw(), 1..=2),
+        b_draws in prop::collection::vec(nh_21re_arb_draw(), 1..=2),
+        now in 1i64..=4_000_000_000_000,
+    )| {
+        let fx = fixture();
+        let w = nh_world(&fx, true);
+        // (seeded row, evolution tier, owner after the trade)
+        let mut traded: Vec<(Monster, u8, Identity)> = Vec::new();
+        let sides = [
+            (11u64, nh_a(), nh_b(), &a_draws),
+            (21u64, nh_b(), nh_a(), &b_draws),
+        ];
+        for (first_id, owner, new_owner, draws) in sides {
+            for (id, d) in (first_id..).zip(draws.iter()) {
+                let m = nh_21re_row_from_draw(id, owner, d);
+                nh_21re_seed(&w, &m, d.tier);
+                traded.push((m, d.tier, new_owner));
+            }
+        }
+        let ids_of = |owner: Identity| -> Vec<u64> {
+            traded
+                .iter()
+                .filter(|(m, _, _)| m.owner_identity == owner)
+                .map(|(m, _, _)| m.monster_id)
+                .collect()
+        };
+        w.offers.seed(&TradeOffer {
+            initiator_monster_ids: ids_of(nh_a()),
+            counterparty_monster_ids: ids_of(nh_b()),
+            ..nh_offer(100, nh_a(), nh_b(), TradeStatus::ConfirmedByCounterparty)
+        });
+        w.reaper(500, 100);
+
+        let got = fx.run_as_at(nh_a(), nh_at(now), |ctx| super::confirm_trade(ctx, 100));
+        prop_assert_eq!(got, Ok(()), "confirm_trade must execute the drawn trade at {}", now);
+        let rows = w.monsters.rows();
+        let pubs = w.pubs.rows();
+        prop_assert_eq!(rows.len(), traded.len(), "no monster row created or destroyed");
+
+        for (seed, tier, new_owner) in &traded {
+            let id = seed.monster_id;
+            let row = rows
+                .iter()
+                .find(|m| m.monster_id == id)
+                .expect("a traded monster keeps its row");
+            prop_assert_eq!(
+                (
+                    row.trust_favorable_count,
+                    row.trust_unfavorable_count,
+                    row.trust_favorable_battle_day_epoch,
+                    row.quality_time_ticks_total,
+                    row.quality_time_accum_ms,
+                    row.quality_time_window_ms,
+                    row.quality_time_window_start_ms,
+                ),
+                (0, 0, 0, 0, 0, 0, 0),
+                "monster {}: all seven bond columns must be 0 after the trade executes at {}",
+                id,
+                now
+            );
+            let want = nh_21re_expected(seed, *new_owner);
+            prop_assert!(
+                nh_21re_bytes(row) == nh_21re_bytes(&want),
+                "monster {}: the row must be the seeded row re-keyed to its new owner, \
+                 unslotted, with ONLY the seven bond columns at 0 (clock {})",
+                id,
+                now
+            );
+            let p = pubs
+                .iter()
+                .find(|p| p.monster_id == id)
+                .expect("a traded monster keeps its monster_pub row");
+            prop_assert_eq!(
+                p.trust_tier,
+                game_core::TrustTier::Neutral,
+                "monster_pub {}: trust tier re-derived from the reset counters",
+                id
+            );
+            prop_assert_eq!(
+                p.quality_time_tier,
+                0,
+                "monster_pub {}: Quality-Time tier re-derived from the reset ticks",
+                id
+            );
+            prop_assert!(
+                nh_21re_bytes(p)
+                    == nh_21re_bytes(&crate::marshal::pub_from_monster(&want, *tier)),
+                "monster_pub {}: must be exactly pub_from_monster(expected row, tier {})",
+                id,
+                tier
+            );
+        }
+    });
+}
