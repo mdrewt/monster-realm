@@ -56,7 +56,10 @@ You are **read-only**. You never edit code. You produce a findings report.
   asserting `(state, input, seed) → identical output`, ideally asserting client-prediction
   output equals server-module output. The wasm parity evals (`prediction-parity`,
   `movement-parity`, `js-path-parity`) cover the exported movement path; a new export needs
-  equivalent coverage. Missing coverage is a finding, not a nit.
+  equivalent coverage inside the EXISTING parity suites (the evals set is closed; a new export
+  extends existing cases, never adds a file). Missing coverage on an EXPORTED rule is a finding.
+  A server-only rule with no wasm export needs no parity coverage — do not push for a pointless
+  export to create some.
 
 ## Output format
 
