@@ -129,8 +129,14 @@ pub struct TrainerBond {
 ///
 /// Takes the bond `&mut` (rather than returning a fresh value) so the zero-miss
 /// mutation gate can kill a no-op body.
-pub fn reset_bond_on_trade(_bond: &mut TrainerBond) {
-    // RED scaffold: intentionally a no-op until the gating tests are watched failing.
+pub fn reset_bond_on_trade(bond: &mut TrainerBond) {
+    bond.trust_favorable_count = 0;
+    bond.trust_unfavorable_count = 0;
+    bond.trust_favorable_battle_day_epoch = 0;
+    bond.quality_time_ticks_total = 0;
+    bond.quality_time_accum_ms = 0;
+    bond.quality_time_window_ms = 0;
+    bond.quality_time_window_start_ms = 0;
 }
 
 /// Rebuild an `EVs` with `target` set to `new_val` and every other stat copied
