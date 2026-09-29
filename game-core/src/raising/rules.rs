@@ -1,7 +1,7 @@
-//! Raising rule functions — focus-training (EV top-off → re-derive) and the
-//! shared cooldown-ready predicate. All pure and deterministic:
-//! no clock, no RNG, no I/O. The care cooldown time is read from
-//! `ctx.timestamp`, never here.
+//! Raising rule functions — focus-training (EV top-off → re-derive), the
+//! shared cooldown-ready predicate, and the trade-time trainer-bond reset.
+//! All pure and deterministic: no clock, no RNG, no I/O. The care cooldown
+//! time is read from `ctx.timestamp`, never here.
 //!
 //! `focus_train` is **reject-not-clamp**: a maxed target stat / exhausted EV
 //! budget returns `Err` so the M9b reducer rejects the action and does NOT
@@ -92,6 +92,56 @@ pub const CARE_COOLDOWN_MS: i64 = 6 * 60 * 60 * 1000;
 #[must_use]
 pub fn is_cooldown_ready(last_ms: i64, now_ms: i64, cooldown_ms: i64) -> bool {
     now_ms.saturating_sub(last_ms) >= cooldown_ms
+}
+
+/// The seven per-trainer bond columns of a monster row — the Trust counters and
+/// the Quality-Time accumulators — carried as one value so the trade-time reset
+/// rule below can own them. Field names mirror the server's `monster` columns
+/// one-to-one (`server-module/src/schema.rs`). The four bookkeeping fields
+/// (`trust_favorable_battle_day_epoch` and the three `quality_time_*` ms/window
+/// fields) have no `MonsterInstance` counterpart, which is why this is its own
+/// value rather than a slice of the instance. Never stored and never on the
+/// wire: no `serde` / `SpacetimeType` derive, and no wasm export — the rule is
+/// server-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrainerBond {
+    pub trust_favorable_count: u32,
+    pub trust_unfavorable_count: u32,
+    pub trust_favorable_battle_day_epoch: u32,
+    pub quality_time_ticks_total: u32,
+    pub quality_time_accum_ms: u32,
+    pub quality_time_window_ms: u32,
+    pub quality_time_window_start_ms: i64,
+}
+
+/// Trade-time bond reset (decision "Trading resets the bond, not the monster",
+/// answered in <https://github.com/mdrewt/monster-realm/issues/479>): every one
+/// of the seven bond fields returns to the fresh-monster baseline `0`. Trust and
+/// Quality-Time measure the relationship with the CURRENT trainer, so a new
+/// owner starts from zero; the monster's own attributes — level, species, IVs,
+/// EVs, nature, xp and the essence pools — are not this rule's concern and are
+/// untouched by design.
+///
+/// `0` is the fresh-monster state for all seven: a rolled instance starts with
+/// zero counters (`monster::rolls`) and the server's `monster_from_instance`
+/// writes the four server-only columns as `0`. A `0` window anchor makes the new
+/// owner's first `apply_quality_time_credit` call (server-module/src/raising.rs)
+/// land in its idle re-anchor branch, so no time run under the old trainer is
+/// credited, and a `0` day epoch leaves the once-per-day favorable-battle credit
+/// (`today > trust_favorable_battle_day_epoch`, server-module/src/battle.rs)
+/// available. Unfavorable trust resets with the rest; the trade-off is recorded
+/// in docs/DECISIONS.md ("Trading resets the bond, not the monster").
+///
+/// Takes the bond `&mut` (rather than returning a fresh value) so the zero-miss
+/// mutation gate can kill a no-op body.
+pub fn reset_bond_on_trade(bond: &mut TrainerBond) {
+    bond.trust_favorable_count = 0;
+    bond.trust_unfavorable_count = 0;
+    bond.trust_favorable_battle_day_epoch = 0;
+    bond.quality_time_ticks_total = 0;
+    bond.quality_time_accum_ms = 0;
+    bond.quality_time_window_ms = 0;
+    bond.quality_time_window_start_ms = 0;
 }
 
 /// Rebuild an `EVs` with `target` set to `new_val` and every other stat copied

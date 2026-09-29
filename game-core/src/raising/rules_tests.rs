@@ -2,12 +2,14 @@
 //!
 //! EARS criteria covered:
 //!   Criterion A — focus_train (EV top-off → re-derive; reject precedence)
+//!   Criterion B — reset_bond_on_trade (trade-time bond reset, 21r-e)
 //!
 //! Each test carries a `/// kills:` comment naming which wrong implementation it
 //! catches.
 
 use crate::monster::rules::derive_stats;
 use crate::monster::types::{EVs, IVs, Level, Nature, NatureKind, StatBlock, StatKind};
+use crate::raising::rules::{reset_bond_on_trade, TrainerBond};
 use crate::raising::{focus_train, is_cooldown_ready, FocusTrainError, CARE_COOLDOWN_MS};
 
 use proptest::prelude::*;
@@ -1018,6 +1020,225 @@ proptest! {
             now_ms,
             cooldown_ms,
             expected
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CRITERION B — reset_bond_on_trade (21r-e)
+//
+// A trade hands the monster to a new trainer, so the bond the OLD trainer built
+// — Trust counters and Quality-Time accumulators, all seven fields of
+// `TrainerBond` — returns to the fresh-monster baseline: every field 0, whatever
+// it held (decision #479). The server's `confirm_trade` consumes this rule; the
+// native-host `nh_21re_` tests in server-module/src/trading_tests.rs prove the
+// wiring.
+// ---------------------------------------------------------------------------
+
+/// The fresh-monster baseline: every bond field 0. Spelled field by field (no
+/// `Default`), so the oracle cannot inherit a wrong default from the impl.
+fn t21re_zero_bond() -> TrainerBond {
+    TrainerBond {
+        trust_favorable_count: 0,
+        trust_unfavorable_count: 0,
+        trust_favorable_battle_day_epoch: 0,
+        quality_time_ticks_total: 0,
+        quality_time_accum_ms: 0,
+        quality_time_window_ms: 0,
+        quality_time_window_start_ms: 0,
+    }
+}
+
+// Test 21r-e-A
+/// Every one of the SEVEN bond fields comes back 0 — asserted field by field from
+/// seven DISTINCT nonzero inputs (a large positive window anchor included), then
+/// over a one-hot table where exactly ONE field is nonzero (value 1, so every
+/// derived tier already reads baseline). The destructure names every field with
+/// NO `..`: a field added to or removed from `TrainerBond` without a reset
+/// decision is a compile error here.
+/// kills: a no-op body; a reset that misses any one field; a reset that copies a
+/// field from its neighbour (distinct inputs); an anchor or day epoch reset to
+/// anything but 0; a CONDITIONAL reset that skips a bond it judges already
+/// baseline / low tier, or keys on one "dirty" field (the one-hot rows).
+#[test]
+fn t21re_reset_bond_on_trade_zeroes_all_seven_fields() {
+    let mut bond = TrainerBond {
+        trust_favorable_count: 41,
+        trust_unfavorable_count: 3,
+        trust_favorable_battle_day_epoch: 20_254,
+        quality_time_ticks_total: 162,
+        quality_time_accum_ms: 7_777,
+        quality_time_window_ms: 1_800_000,
+        quality_time_window_start_ms: 1_750_000_000_000,
+    };
+    reset_bond_on_trade(&mut bond);
+    let TrainerBond {
+        trust_favorable_count,
+        trust_unfavorable_count,
+        trust_favorable_battle_day_epoch,
+        quality_time_ticks_total,
+        quality_time_accum_ms,
+        quality_time_window_ms,
+        quality_time_window_start_ms,
+    } = bond;
+    assert_eq!(
+        trust_favorable_count, 0,
+        "trust_favorable_count must reset to 0 on trade (seeded 41)"
+    );
+    assert_eq!(
+        trust_unfavorable_count, 0,
+        "trust_unfavorable_count must reset to 0 on trade (seeded 3)"
+    );
+    assert_eq!(
+        trust_favorable_battle_day_epoch, 0,
+        "trust_favorable_battle_day_epoch must reset to 0 on trade (seeded 20_254)"
+    );
+    assert_eq!(
+        quality_time_ticks_total, 0,
+        "quality_time_ticks_total must reset to 0 on trade (seeded 162)"
+    );
+    assert_eq!(
+        quality_time_accum_ms, 0,
+        "quality_time_accum_ms must reset to 0 on trade (seeded 7_777)"
+    );
+    assert_eq!(
+        quality_time_window_ms, 0,
+        "quality_time_window_ms must reset to 0 on trade (seeded 1_800_000)"
+    );
+    assert_eq!(
+        quality_time_window_start_ms, 0,
+        "quality_time_window_start_ms must reset to 0 on trade (seeded 1_750_000_000_000)"
+    );
+
+    let one_hot = [
+        (
+            "trust_favorable_count",
+            TrainerBond {
+                trust_favorable_count: 1,
+                ..t21re_zero_bond()
+            },
+        ),
+        (
+            "trust_unfavorable_count",
+            TrainerBond {
+                trust_unfavorable_count: 1,
+                ..t21re_zero_bond()
+            },
+        ),
+        (
+            "trust_favorable_battle_day_epoch",
+            TrainerBond {
+                trust_favorable_battle_day_epoch: 1,
+                ..t21re_zero_bond()
+            },
+        ),
+        (
+            "quality_time_ticks_total",
+            TrainerBond {
+                quality_time_ticks_total: 1,
+                ..t21re_zero_bond()
+            },
+        ),
+        (
+            "quality_time_accum_ms",
+            TrainerBond {
+                quality_time_accum_ms: 1,
+                ..t21re_zero_bond()
+            },
+        ),
+        (
+            "quality_time_window_ms",
+            TrainerBond {
+                quality_time_window_ms: 1,
+                ..t21re_zero_bond()
+            },
+        ),
+        (
+            "quality_time_window_start_ms",
+            TrainerBond {
+                quality_time_window_start_ms: 1,
+                ..t21re_zero_bond()
+            },
+        ),
+    ];
+    for (field, mut row) in one_hot {
+        assert_ne!(
+            row,
+            t21re_zero_bond(),
+            "fixture sanity: the one-hot `{field}` row must not already be the baseline"
+        );
+        reset_bond_on_trade(&mut row);
+        assert_eq!(
+            row,
+            t21re_zero_bond(),
+            "one-hot `{field}`: a bond whose ONLY nonzero field is `{field}` (every derived \
+             tier already baseline) must still reset to all-zero — a reset gated on the tier \
+             or on another field leaves it dirty"
+        );
+    }
+}
+
+/// Zero-biased bond counter: 0 and `u32::MAX` are drawn as often as a small or an
+/// arbitrary value, so a reset keyed on a threshold or a magnitude is hit.
+fn t21re_arb_count() -> impl Strategy<Value = u32> {
+    prop_oneof![Just(0u32), 1..10u32, any::<u32>(), Just(u32::MAX)]
+}
+
+/// Zero-biased window anchor: both extremes, both signs, 0 and a realistic ms clock.
+fn t21re_arb_anchor() -> impl Strategy<Value = i64> {
+    prop_oneof![
+        Just(i64::MIN),
+        Just(-1i64),
+        Just(0i64),
+        1..4_000_000_000_000i64,
+        Just(i64::MAX),
+    ]
+}
+
+// Test 21r-e-B — property over any bond (seeded, reproducible; no regression file
+// is written, so a red run leaves the tree clean).
+// (Messages use positional args: `prop_assert_eq!` expands through `concat!`.)
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 512,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(479),
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
+
+    /// For ANY bond — each u32 drawn zero-biased from {0, 1..10, any, u32::MAX}, the
+    /// anchor from {i64::MIN, -1, 0, 1..4e12, i64::MAX} — the reset returns exactly
+    /// the all-zero bond.
+    /// kills: a conditional or partial reset (skips when some field is already 0,
+    /// below a threshold, or saturated at u32::MAX); a sign-dependent anchor reset
+    /// (clamps a negative anchor, or only zeroes a positive one); a reset that
+    /// computes a field from the others instead of writing 0.
+    #[test]
+    fn t21re_reset_bond_on_trade_zeroes_any_input(
+        trust_favorable_count in t21re_arb_count(),
+        trust_unfavorable_count in t21re_arb_count(),
+        trust_favorable_battle_day_epoch in t21re_arb_count(),
+        quality_time_ticks_total in t21re_arb_count(),
+        quality_time_accum_ms in t21re_arb_count(),
+        quality_time_window_ms in t21re_arb_count(),
+        quality_time_window_start_ms in t21re_arb_anchor(),
+    ) {
+        let input = TrainerBond {
+            trust_favorable_count,
+            trust_unfavorable_count,
+            trust_favorable_battle_day_epoch,
+            quality_time_ticks_total,
+            quality_time_accum_ms,
+            quality_time_window_ms,
+            quality_time_window_start_ms,
+        };
+        let mut bond = input;
+        reset_bond_on_trade(&mut bond);
+        prop_assert_eq!(
+            bond,
+            t21re_zero_bond(),
+            "reset_bond_on_trade({:?}) must leave the all-zero bond",
+            input
         );
     }
 }
