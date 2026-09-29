@@ -72,8 +72,7 @@ content tables in `sync_content` and skips re-seeding while the stored
 `content-version` eval pins `CONTENT_VERSION` to a hash of every content file's bytes
 (`evals/baselines/content-hash.json`), so any content edit — comments included —
 needs a version bump. No content row table carries a `locale` column: content stays
-locale-agnostic, and localization lives in the client catalog layer
-(`client/src/ui/i18n/catalog.en.ts`, `catalog.fr.ts`).
+locale-agnostic; localization lives in the client catalog (`client/src/ui/i18n/`).
 
 **Why.** Content has to reach the client (prediction, maps) and the server (truth)
 from one source with no runtime loading. Directory-per-registry files let content be
