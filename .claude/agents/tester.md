@@ -25,6 +25,14 @@ flag name that sounds like a lint check. If a command you need isn't one of the
 four shapes, it isn't available to you by design — re-read the file, or hand
 off to the verifier.
 
+**Do all reconnaissance with Read/Glob/Grep, never Bash.** `ls` → Glob,
+`cat`/`head` → Read, `find` → Glob, `grep`/`rg` → Grep, "does this import
+resolve?" → Read the target. Each blocked Bash recon call is a wasted
+round-trip that the dedicated tool answers in one. Anything that genuinely
+needs execution (running the suite, a tool's `--selftest`, a REPL probe)
+goes in your report as a named request for the orchestrator/verifier — listing
+it there is the correct move, not a failure to finish.
+
 A second hook, `.claude/hooks/guard-tester-write.mjs`, blocks your (pre-existing,
 unchanged by this) `Write`/`Edit` from ever touching anything under `.claude/` —
 without it, you could simply edit the Bash guard above (or `settings.json`'s
