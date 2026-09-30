@@ -1,10 +1,13 @@
 // ui/privacyBanner.ts — the PURE copy layer for the PRIVACY SURFACE.
 //
-// FUNCTIONAL CORE. No DOM, no SDK, no store, NO CLOCK: the only input is the
-// `DeletionCountdown` that `ui/privacyModel.ts` already derived. `main.ts` owns the element and
-// the frame tick; this module owns what the player reads. Splitting it this way is what makes the
-// wording exact-string testable — `main.ts` is excluded from the coverage denominator
-// (`vite.config.ts`), so copy composed inline in the frame body would be untested by construction.
+// FUNCTIONAL CORE. No DOM, no SDK, no store, NO CLOCK: the inputs are the `DeletionCountdown`
+// that `ui/privacyModel.ts` already derived, its model state and the export assembly. The one
+// ambient read is the i18n locale cell (set once at boot) behind `t()`/`tf()`: every player-facing
+// line is resolved at render time, never at module load, which would freeze English. `main.ts`
+// owns the element and the frame tick; this module owns what the player reads. Splitting it this
+// way is what makes the wording exact-string testable — `main.ts` is excluded from the coverage
+// denominator (`vite.config.ts`), so copy composed inline in the frame body would be untested by
+// construction.
 //
 // WHY THE GRACE WINDOW IS NOWHERE IN THIS FILE. The window's single source of truth is
 // `game_core::DELETION_GRACE_MS_DEFAULT`, reached from the client through the
@@ -23,14 +26,8 @@
 // claim an irreversible deadline had arrived.
 
 import type { ExportAssembly } from './exportAssembly';
+import { t, tf } from './i18n/resolver';
 import type { DeletionCountdown, PrivacyModelState, PrivacyNotice } from './privacyModel';
-
-/** The player-facing copy, spelled once. Authored here rather than in `ui/a11yCopy.ts`: that
- *  catalog is the ACCESSIBLE-NAME catalog for the seventeen overlays, and this
- *  banner is deliberately not one of them (the privacy OVERLAY is). */
-const DARK_LABEL = 'Account deletion pending — time remaining unavailable';
-const DUE_LABEL = 'Account deletion is due now';
-const GRACE_PREFIX = 'Account deletion in ';
 
 // Unit sizes are DERIVED from each other rather than written out. Every constant below is a small
 // ratio, so no expression in this file is a numeric duplicate of any tunable window.
@@ -42,9 +39,11 @@ const SECONDS_PER_HOUR = SECONDS_PER_MINUTE * MINUTES_PER_HOUR;
 const SECONDS_PER_DAY = SECONDS_PER_HOUR * HOURS_PER_DAY;
 
 /**
- * `remainingMs` as `Xd Yh Zm Ws`, truncated to whole seconds and starting at the largest
+ * `remainingMs` as `Xd Yh Zm Ws` (each group's unit text comes from the catalog, so a locale may
+ * space or spell its units differently), truncated to whole seconds and starting at the largest
  * non-zero unit. Every group from that unit down to seconds is present even when zero, so the
- * seconds group — the one that moves every tick — is never dropped.
+ * seconds group — the one that moves every tick — is never dropped. Groups are joined by a plain
+ * space, the one non-translatable character in the line.
  *
  * Truncation, never rounding: inside the final second the honest reading is `0s`, not `1s`.
  */
@@ -59,10 +58,12 @@ function formatDuration(remainingMs: bigint): string {
   const minutes = (totalSeconds / SECONDS_PER_MINUTE) % MINUTES_PER_HOUR;
   const seconds = totalSeconds % SECONDS_PER_MINUTE;
   const groups: string[] = [];
-  if (days > 0n) groups.push(`${days}d`);
-  if (groups.length > 0 || hours > 0n) groups.push(`${hours}h`);
-  if (groups.length > 0 || minutes > 0n) groups.push(`${minutes}m`);
-  groups.push(`${seconds}s`);
+  if (days > 0n) groups.push(tf('privacy.countdown.days', { n: days }));
+  if (groups.length > 0 || hours > 0n) groups.push(tf('privacy.countdown.hours', { n: hours }));
+  if (groups.length > 0 || minutes > 0n) {
+    groups.push(tf('privacy.countdown.minutes', { n: minutes }));
+  }
+  groups.push(tf('privacy.countdown.seconds', { n: seconds }));
   return groups.join(' ');
 }
 
@@ -83,13 +84,13 @@ export function privacyBannerLabel(countdown: DeletionCountdown): string | null 
     case 'terminal':
       return null;
     case 'due':
-      return DUE_LABEL;
+      return t('privacy.countdown.due');
     case 'grace':
       // A non-bigint reaches here only from a wiring slip (the model degrades the NUMBER, never
       // the phase — `privacyModel.ts`). Dark is the honest reading of "we cannot compute it".
       return typeof countdown.remainingMs === 'bigint'
-        ? GRACE_PREFIX + formatDuration(countdown.remainingMs)
-        : DARK_LABEL;
+        ? tf('privacy.countdown.grace', { duration: formatDuration(countdown.remainingMs) })
+        : t('privacy.countdown.dark');
   }
 }
 
@@ -117,51 +118,6 @@ export const PRIVACY_PSEUDONYMIZATION_DISCLOSURE =
   'Direct name/display fields are severed on deletion. The `Identity` key and its associated ' +
   'timestamps/behavioral history are not purged from multi-user or historical rows; this is a ' +
   'documented, accepted pseudonymization limitation, not erasure.';
-
-/**
- * PRV1-4's DISTINCT, non-generic outcome. It must never be the generic rejection copy: the whole
- * point of the criterion is that a player whose account is already gone is told THAT, rather than
- * "your request was rejected".
- */
-export const PRIVACY_TERMINAL_NOTICE =
-  'This account has already been permanently deleted. It cannot be restored.';
-
-/** The disconnected copy — the model's `disconnected` code, which means the click was never
- *  delivered. It is NOT a server rejection and must not read like one. */
-const PRIVACY_DISCONNECTED_NOTICE = 'Not connected — your request was not sent. Try again.';
-
-const PRIVACY_STATUS_ACTIVE = 'This account is active.';
-const PRIVACY_STATUS_UNKNOWN = 'Account status unavailable.';
-const PRIVACY_STATUS_TERMINAL = 'This account has been permanently deleted.';
-
-// ONE sentence per `ExportAssemblyStatus`.
-//
-// `inconsistent` carries NO NUMBER, deliberately: the core reports `totalChunks: undefined` for
-// that status because the delivered rows disagree, so any figure rendered here would be
-// fabricated — or `receivedChunks` masquerading as a total.
-//
-// `incomplete` does NOT promise arrival. The client cannot distinguish "still streaming" from a
-// partial server-side removal (the TTL reaper deletes a bounded number of rows per tick, oldest
-// first, so it can cut across one owner's request), and telling a player to wait for chunks that
-// will never come is worse than telling them what is true.
-const EXPORT_STATUS_NONE = 'No data export has arrived on this device yet.';
-const EXPORT_STATUS_INCOMPLETE_PREFIX = 'Data export incomplete — ';
-const EXPORT_STATUS_INCOMPLETE_SUFFIX = ' chunks delivered.';
-const EXPORT_STATUS_INCOMPLETE_DARK = 'Data export incomplete — some chunks are missing.';
-const EXPORT_STATUS_INCONSISTENT =
-  'Data export could not be assembled — the delivered chunks do not describe one request. ' +
-  'Request it again.';
-const EXPORT_STATUS_COMPLETE_PREFIX = 'Data export ready — ';
-const EXPORT_STATUS_COMPLETE_SUFFIX = ' chunks.';
-
-const DELETE_LABEL = 'Delete my account';
-const CONFIRM_PROMPT = 'This cannot be undone. Confirm deletion?';
-const CANCEL_LABEL = 'Cancel account deletion';
-const EXPORT_LABEL = 'Request my data export';
-// DISTINCT from EXPORT_LABEL on purpose: the two controls sit side by side and do completely
-// different things — one asks the server to BUILD an export, the other saves the one that has
-// already arrived. A shared name would make the second look like a duplicate of the first.
-const DOWNLOAD_LABEL = 'Download my data export';
 
 /** The download filename, composed from data the caller already has (A3-D11).
  *
@@ -233,30 +189,34 @@ export interface PrivacyViewModel {
   readonly downloadEnabled: boolean;
 }
 
-/** The export sentence. Reads ONLY the assembly: the deletion lattice does not gate it, because
- *  `exportPermitted` governs asking the server for a NEW export, never reading one that has
- *  already been delivered to this client. */
+/** The export sentence — ONE per `ExportAssemblyStatus`. Reads ONLY the assembly: the deletion
+ *  lattice does not gate it, because `exportPermitted` governs asking the server for a NEW export,
+ *  never reading one that has already been delivered to this client.
+ *
+ *  `inconsistent` carries NO NUMBER, deliberately: the core reports `totalChunks: undefined` for
+ *  that status because the delivered rows disagree, so any figure rendered here would be
+ *  fabricated — or `receivedChunks` masquerading as a total.
+ *
+ *  `incomplete` does NOT promise arrival. The client cannot distinguish "still streaming" from a
+ *  partial server-side removal (the TTL reaper deletes a bounded number of rows per tick, oldest
+ *  first, so it can cut across one owner's request), and telling a player to wait for chunks that
+ *  will never come is worse than telling them what is true. */
 function exportStatusLabelFor(assembly: ExportAssembly | undefined): string | undefined {
   if (assembly === undefined) return undefined;
   switch (assembly.status) {
     case 'none':
-      return EXPORT_STATUS_NONE;
+      return t('privacy.export.none');
     case 'incomplete':
       return assembly.totalChunks === undefined
-        ? EXPORT_STATUS_INCOMPLETE_DARK
-        : EXPORT_STATUS_INCOMPLETE_PREFIX +
-            String(assembly.receivedChunks) +
-            ' of ' +
-            String(assembly.totalChunks) +
-            EXPORT_STATUS_INCOMPLETE_SUFFIX;
+        ? t('privacy.export.incompleteDark')
+        : tf('privacy.export.incomplete', {
+            received: assembly.receivedChunks,
+            total: assembly.totalChunks,
+          });
     case 'inconsistent':
-      return EXPORT_STATUS_INCONSISTENT;
+      return t('privacy.export.inconsistent');
     case 'complete':
-      return (
-        EXPORT_STATUS_COMPLETE_PREFIX +
-        String(assembly.receivedChunks) +
-        EXPORT_STATUS_COMPLETE_SUFFIX
-      );
+      return tf('privacy.export.complete', { received: assembly.receivedChunks });
   }
 }
 
@@ -270,8 +230,8 @@ function exportStatusLabelFor(assembly: ExportAssembly | undefined): string | un
 function statusLabelFor(countdown: DeletionCountdown): string {
   const banner = privacyBannerLabel(countdown);
   if (banner !== null) return banner;
-  if (countdown.phase === 'terminal') return PRIVACY_STATUS_TERMINAL;
-  return countdown.phase === 'active' ? PRIVACY_STATUS_ACTIVE : PRIVACY_STATUS_UNKNOWN;
+  if (countdown.phase === 'terminal') return t('privacy.status.terminal');
+  return countdown.phase === 'active' ? t('privacy.status.active') : t('privacy.status.unknown');
 }
 
 /** The notice CODE, terminal-first. The ROW outranks `state.notice` so an already-erased account
@@ -281,15 +241,19 @@ function noticeKindFor(state: PrivacyModelState): PrivacyNoticeKind {
   return state.notice;
 }
 
+/** The notice sentence. `disconnected` is the model's own code — the click was never delivered —
+ *  and must not read like a server rejection. Both terminal routes render PRV1-4's DISTINCT,
+ *  non-generic outcome: a player whose account is already gone is told THAT, never "your request
+ *  was rejected". */
 function noticeLabelFor(kind: PrivacyNoticeKind, rejectMessage: string | undefined) {
   switch (kind) {
     case 'none':
       return undefined;
     case 'disconnected':
-      return PRIVACY_DISCONNECTED_NOTICE;
+      return t('privacy.notice.disconnected');
     case 'terminal-row':
     case 'permanently-deleted':
-      return PRIVACY_TERMINAL_NOTICE;
+      return t('privacy.notice.terminal');
     case 'request-rejected':
       // The server's message, VERBATIM — `privacyModel.ts` carries it precisely so the shell does
       // not paraphrase a rejection into something the server never said.
@@ -299,7 +263,7 @@ function noticeLabelFor(kind: PrivacyNoticeKind, rejectMessage: string | undefin
 
 /**
  * The whole surface's copy, derived from the model state. PURE and TOTAL: no DOM, no clock, no
- * SDK, never throws.
+ * SDK, never throws. Every label is resolved here, at render time, through the i18n resolver.
  *
  * Every `*Enabled` flag mirrors the model's permission rather than re-deriving it — a second
  * permission rule here would be a second SSOT, and the one that renders is the one the player
@@ -312,20 +276,23 @@ export function buildPrivacyViewModel(
   const kind = noticeKindFor(state);
   return {
     statusLabel: statusLabelFor(state.countdown),
-    deleteLabel: DELETE_LABEL,
-    cancelLabel: CANCEL_LABEL,
-    exportLabel: EXPORT_LABEL,
+    deleteLabel: t('privacy.action.delete'),
+    cancelLabel: t('privacy.action.cancel'),
+    exportLabel: t('privacy.action.export'),
     // A request in flight disables its own control AND the others: `privacyStep`'s `begin` refuses
     // a second request while one is outstanding, and a control that looks live but is refused
     // teaches the player the client is broken.
     deleteEnabled: state.countdown.deletePermitted && state.inFlight === 'none',
     cancelEnabled: state.countdown.cancelPermitted && state.inFlight === 'none',
     exportEnabled: state.countdown.exportPermitted && state.inFlight === 'none',
-    confirmPrompt: state.confirm === 'delete-armed' ? CONFIRM_PROMPT : undefined,
+    confirmPrompt: state.confirm === 'delete-armed' ? t('privacy.confirm.prompt') : undefined,
     noticeKind: kind,
     noticeLabel: noticeLabelFor(kind, state.rejectMessage),
     exportStatusLabel: exportStatusLabelFor(exportAssembly),
-    downloadLabel: DOWNLOAD_LABEL,
+    // DISTINCT from the export label on purpose: the two controls sit side by side and do
+    // completely different things — one asks the server to BUILD an export, the other saves the
+    // one that has already arrived. A shared name would make the second look like a duplicate.
+    downloadLabel: t('privacy.action.download'),
     // The artifact is present IFF the status is `complete` (exportAssembly.ts's own contract),
     // so this is the ONE fact the control needs. Enabling on `incomplete` would hand the player
     // a truncated personal-data file and call it their export.

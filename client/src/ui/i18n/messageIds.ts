@@ -16,7 +16,9 @@
  *  `evolution.*`, `raising.*`, `box.*`, `trade.*` and `shop.*` for the five mid-density views;
  *  S5 added the tail — `tradePropose.*`, `dialogue.*`, `claim.*`, `leaderboard.*`,
  *  `errorOverlay.*`, `questLog.*`, `heal.*`, `privacy.*`, `evolutionNotice.*` — and gave three
- *  `chrome.*` keys their first call sites; S6 wires boot. Adding a literal here is what forces EVERY
+ *  `chrome.*` keys their first call sites; S6 wires boot; 21r-b2 grew `claim.*` and `privacy.*`
+ *  with the claim overlay's and the privacy surface's own copy (claimModel.ts, privacyBanner.ts).
+ *  Adding a literal here is what forces EVERY
  *  registered catalog to grow (the mapped `Catalog` below is total over this union). Keys are
  *  `<namespace>.<screen>.<element>` (M24 §2.3), semantic — named for what the string IS, never
  *  for the DOM mechanism that shows it (`battle.skill.accuracy`, not `accuracyTitle`). */
@@ -143,7 +145,8 @@ export type MessageId =
   | 'tradePropose.feedback.sent'
   // Dialogue.* : the NPC dialogue overlay (dialogueView.ts).
   | 'dialogue.action.shop'
-  // Claim.* : the guest-claim overlay (claimView.ts). Its button and the
+  // Claim.* : the guest-claim overlay — its buttons (claimView.ts) and, since 21r-b2, its
+  // titles, bodies, prompts and feedback lines (claimModel.ts). The privacy button and the
   // privacy heading below share English bytes today but are TWO keys.
   | 'claim.privacyButton'
   | 'claim.signInButton'
@@ -151,6 +154,29 @@ export type MessageId =
   | 'claim.declineButton'
   | 'claim.declineConfirmButton'
   | 'claim.declineCancelButton'
+  | 'claim.feedback.veto'
+  | 'claim.nudge'
+  | 'claim.decline.confirmPrompt'
+  | 'claim.pending.title'
+  | 'claim.pending.body'
+  | 'claim.awaiting.title'
+  | 'claim.awaiting.body'
+  | 'claim.claimed.title'
+  | 'claim.claimed.body'
+  | 'claim.signInFailed.title'
+  | 'claim.signInFailed.rejected'
+  | 'claim.signInFailed.expired'
+  | 'claim.signInFailed.declined'
+  | 'claim.signInFailed.unreachable'
+  | 'claim.signInFailed.fallback'
+  | 'claim.reject.unusable.title'
+  | 'claim.reject.unusable.body'
+  | 'claim.reject.destination.title'
+  | 'claim.reject.destination.body'
+  | 'claim.reject.transient.title'
+  | 'claim.reject.transient.body'
+  | 'claim.reject.generic.title'
+  | 'claim.reject.generic.body'
   // Leaderboard.* : the ranked leaderboard overlay (leaderboardView.ts).
   | 'leaderboard.empty'
   | 'leaderboard.row'
@@ -160,11 +186,35 @@ export type MessageId =
   | 'questLog.entry'
   // Heal.* : the heal overlay (healView.ts).
   | 'heal.location'
-  // Privacy.* : the privacy surface (privacyView.ts).
+  // Privacy.* : the privacy surface — its heading and buttons (privacyView.ts) and, since
+  // 21r-b2, its copy layer (privacyBanner.ts): the HUD countdown, status/notice lines, export
+  // status lines and control labels.
   | 'privacy.title'
   | 'privacy.close'
   | 'privacy.confirm.delete'
   | 'privacy.confirm.keep'
+  | 'privacy.countdown.dark'
+  | 'privacy.countdown.due'
+  | 'privacy.countdown.grace'
+  | 'privacy.countdown.days'
+  | 'privacy.countdown.hours'
+  | 'privacy.countdown.minutes'
+  | 'privacy.countdown.seconds'
+  | 'privacy.notice.terminal'
+  | 'privacy.notice.disconnected'
+  | 'privacy.status.active'
+  | 'privacy.status.unknown'
+  | 'privacy.status.terminal'
+  | 'privacy.export.none'
+  | 'privacy.export.incomplete'
+  | 'privacy.export.incompleteDark'
+  | 'privacy.export.inconsistent'
+  | 'privacy.export.complete'
+  | 'privacy.action.delete'
+  | 'privacy.confirm.prompt'
+  | 'privacy.action.cancel'
+  | 'privacy.action.export'
+  | 'privacy.action.download'
   // evolutionNotice.* : the post-evolve reveal banner (evolutionNotice.ts).
   | 'evolutionNotice.ok'
   | 'evolutionNotice.species.fallback'
@@ -285,6 +335,17 @@ export interface MessageParams {
     readonly to: string;
   };
   readonly 'evolutionNotice.reveal.anonymous': { readonly from: string; readonly to: string };
+  // 21r-b2 (privacyBanner.ts). `duration` is the ONE param that is not model data: it is the
+  // countdown formatter's output, itself composed from the four catalogued unit closures, so both
+  // halves of the sentence come from the same locale. `n` is the bigint group count the formatter
+  // derived; `received` / `total` are the export assembly's chunk counts.
+  readonly 'privacy.countdown.grace': { readonly duration: string };
+  readonly 'privacy.countdown.days': { readonly n: bigint };
+  readonly 'privacy.countdown.hours': { readonly n: bigint };
+  readonly 'privacy.countdown.minutes': { readonly n: bigint };
+  readonly 'privacy.countdown.seconds': { readonly n: bigint };
+  readonly 'privacy.export.incomplete': { readonly received: number; readonly total: number };
+  readonly 'privacy.export.complete': { readonly received: number };
 }
 
 /** Keys resolved by `tf(key, params)`. */

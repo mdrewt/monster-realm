@@ -40,7 +40,7 @@
 // former blinds the repo's own comment strippers). String scanning is split/slice/indexOf only.
 
 import * as fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 // rb-52: the M22 section 9 pseudonymization sentence is pinned against a SECOND
 // SOURCE, never a second hand-typed literal — one bad transcription copied into both the pin and
 // the implementation is exactly what a hand-typed pin cannot see.
@@ -48,10 +48,12 @@ import { describe, expect, it } from 'vitest';
 // NO top-level side effects (its live phase runs only inside the exported `run()`).
 // @ts-expect-error -- evals/*.mjs ship no type declarations; the import is a plain string constant.
 import { PIN_PSEUDONYMIZATION } from '../../../evals/account-e2e.eval.mjs';
+import { CATALOG_EN } from './i18n/catalog.en';
+import { CATALOG_FR } from './i18n/catalog.fr';
+import { setLocale } from './i18n/resolver';
 import {
   buildPrivacyViewModel,
   PRIVACY_PSEUDONYMIZATION_DISCLOSURE,
-  PRIVACY_TERMINAL_NOTICE,
   privacyBannerLabel,
 } from './privacyBanner';
 import {
@@ -69,6 +71,30 @@ import {
 // ---------------------------------------------------------------------------
 // Fixtures.
 // ---------------------------------------------------------------------------
+
+const EN_CATALOG = CATALOG_EN as unknown as Readonly<Record<string, unknown>>;
+const FR_CATALOG = CATALOG_FR as unknown as Readonly<Record<string, unknown>>;
+
+/** `catalog[key]`, which MUST be an own plain string. Client specs are not typechecked, so a
+ *  mistyped key would otherwise read `undefined` and make every `.not.toBe` against it vacuous —
+ *  this throws instead, naming the locale and the key. */
+function catalogString(
+  catalog: Readonly<Record<string, unknown>>,
+  locale: string,
+  key: string,
+): string {
+  const value = Object.hasOwn(catalog, key) ? catalog[key] : undefined;
+  if (typeof value !== 'string') {
+    throw new Error(
+      `catalog.${locale} has no plain-string entry for '${key}' (got ${typeof value})`,
+    );
+  }
+  return value;
+}
+
+/** PRV1-4's distinct terminal notice. 21r-b2 moved the sentence into the i18n catalog (the
+ *  `PRIVACY_TERMINAL_NOTICE` export is gone), so the rb-52 teeth below read its en entry. */
+const PRIVACY_TERMINAL_NOTICE = catalogString(EN_CATALOG, 'en', 'privacy.notice.terminal');
 
 /** The three copy strings, spelled ONCE. */
 const DARK_LABEL = 'Account deletion pending — time remaining unavailable';
@@ -1606,5 +1632,373 @@ describe('rb-53 privacy copy: exportBundleFilename is filesystem-safe and never 
       name.indexOf('9007199254740992'),
       'the name must NOT carry the Number() round trip of the id',
     ).toBe(-1);
+  });
+});
+
+// ###########################################################################
+// 21r-b2 — the privacy surface's copy resolves through the typed i18n catalog (en + fr).
+// ###########################################################################
+//
+// SOURCE OF TRUTH — spec 21r-b2 (M-postgate-twentyfirst-review-residuals.spec.md):
+//   "WHEN any claim-overlay or privacy-surface text renders THE CLIENT SHALL source it from the
+//    typed catalog (en+fr), with no raw string literals reaching the DOM"
+//
+// Keys are hand-written per arm from the 21r-b2 plan's roster table. Plain values are read with
+// `catalogString`; the PARAMETERISED outputs (durations, chunk counts) are HAND-WRITTEN per locale
+// and never produced by calling a catalog closure, which would let a wrong closure agree with
+// itself. The roster table fixes the export wording too, so unlike the rb-53 block above these
+// sentences are pinned exactly. A French unit group carries a real U+00A0 between the number and
+// the unit (`NBSP` below, built from its code point); groups are joined by a plain U+0020.
+// `./privacyBanner` is imported at the top of this file, BEFORE any `setLocale('fr')` below, so
+// copy resolved at module load stays English and fails the fr half.
+//
+// OUT OF SCOPE BY DESIGN: `PRIVACY_PSEUDONYMIZATION_DISCLOSURE` stays a raw English constant
+// (RB52C-DISCLOSURE-PIN above), so it is in neither sweep nor in the fr erasure census.
+//
+// NO regex literal and no `new RegExp` below: scanning is indexOf only.
+
+/** The fr grace sentence's fixed head (plan: "Suppression du compte dans ${duration}"). */
+const B2_GRACE_PREFIX_FR = 'Suppression du compte dans ';
+
+/** U+00A0 NO-BREAK SPACE, built from its code point so it can never be pasted as (or mistaken
+ *  for) an ordinary space in the expectations below. */
+const NBSP = String.fromCharCode(0x00a0);
+
+/** remainingMs -> [en duration, fr duration]: the four magnitudes (>=1d, >=1h, >=1m, <1m), the
+ *  zero-valued trailing groups a day boundary keeps, and the zero floor. */
+const B2_DURATIONS: readonly (readonly [bigint, string, string])[] = [
+  [183_845_000n, '2d 3h 4m 5s', `2${NBSP}j 3${NBSP}h 4${NBSP}min 5${NBSP}s`],
+  [86_400_000n, '1d 0h 0m 0s', `1${NBSP}j 0${NBSP}h 0${NBSP}min 0${NBSP}s`],
+  [3_661_000n, '1h 1m 1s', `1${NBSP}h 1${NBSP}min 1${NBSP}s`],
+  [119_000n, '1m 59s', `1${NBSP}min 59${NBSP}s`],
+  [58_000n, '58s', `58${NBSP}s`],
+  [0n, '0s', `0${NBSP}s`],
+];
+
+/** `incomplete` with a KNOWN total, `incomplete` DARK (chunks arrived, total unknown) and a
+ *  `complete` of five — literals, per the rb-53 convention above. */
+const B2_INCOMPLETE_2_OF_5: ExportAssembly = {
+  status: 'incomplete',
+  requestId: RB53_REQUEST_ID,
+  receivedChunks: 2,
+  totalChunks: 5,
+  artifact: undefined,
+};
+const B2_INCOMPLETE_DARK: ExportAssembly = {
+  status: 'incomplete',
+  requestId: RB53_REQUEST_ID,
+  receivedChunks: 3,
+  totalChunks: undefined,
+  artifact: undefined,
+};
+const B2_COMPLETE_5: ExportAssembly = {
+  status: 'complete',
+  requestId: RB53_REQUEST_ID,
+  receivedChunks: 5,
+  totalChunks: 5,
+  artifact: RB53_ARTIFACT,
+};
+
+/** One locale's catalog plus its HAND-WRITTEN parameterised outputs. */
+interface B2Locale {
+  readonly tag: 'en' | 'fr';
+  readonly catalog: Readonly<Record<string, unknown>>;
+  readonly gracePrefix: string;
+  /** Which `B2_DURATIONS` column this locale renders. */
+  readonly durationColumn: 1 | 2;
+  readonly exportIncomplete2of5: string;
+  readonly exportComplete5: string;
+}
+
+const B2_EN: B2Locale = {
+  tag: 'en',
+  catalog: EN_CATALOG,
+  gracePrefix: GRACE_PREFIX,
+  durationColumn: 1,
+  exportIncomplete2of5: 'Data export incomplete — 2 of 5 chunks delivered.',
+  exportComplete5: 'Data export ready — 5 chunks.',
+};
+
+const B2_FR: B2Locale = {
+  tag: 'fr',
+  catalog: FR_CATALOG,
+  gracePrefix: B2_GRACE_PREFIX_FR,
+  durationColumn: 2,
+  // Count after a label, so 0 and 1 need no singular form; U+00A0 before the colon.
+  exportIncomplete2of5: `Export de données incomplet — fragments livrés${NBSP}: 2 sur 5.`,
+  exportComplete5: `Export de données prêt — fragments reçus${NBSP}: 5.`,
+};
+
+/** Every privacy-surface string in ONE locale (the caller has already switched to it): the
+ *  banner at every magnitude plus due / dark / silent, the status line in every phase, the four
+ *  control labels, the confirmation prompt, every notice route and every export status. Returns
+ *  the number of arms checked. */
+function expectPrivacyCopyIn(locale: B2Locale): number {
+  const s = (key: string): string => catalogString(locale.catalog, locale.tag, key);
+  const arms: (readonly [string, string | null | undefined, string | null | undefined])[] = [];
+  const arm = (
+    where: string,
+    actual: string | null | undefined,
+    expected: string | null | undefined,
+  ): void => {
+    arms.push([where, actual, expected]);
+  };
+
+  // The countdown banner (main.ts paints privacyBannerLabel into the HUD every frame).
+  for (const row of B2_DURATIONS) {
+    arm(
+      `banner: grace, ${String(row[0])}ms`,
+      privacyBannerLabel(countdownOf({ phase: 'grace', remainingMs: row[0] })),
+      locale.gracePrefix + row[locale.durationColumn],
+    );
+  }
+  arm(
+    'banner: due',
+    privacyBannerLabel(countdownOf({ phase: 'due', remainingMs: 0n })),
+    s('privacy.countdown.due'),
+  );
+  arm(
+    'banner: dark grace window',
+    privacyBannerLabel(countdownOf({ phase: 'grace', remainingMs: undefined })),
+    s('privacy.countdown.dark'),
+  );
+  for (const phase of SILENT_PHASES) {
+    arm(
+      `banner: silent phase ${phase}`,
+      privacyBannerLabel(countdownOf({ phase, remainingMs: 1_000n })),
+      null,
+    );
+  }
+
+  // The status line, in every phase.
+  const statusOf = (countdown: DeletionCountdown): string =>
+    buildPrivacyViewModel(rb52State([{ kind: 'account-changed', countdown }])).statusLabel;
+  arm(
+    'status: unknown (no account row yet)',
+    buildPrivacyViewModel(PRIVACY_INITIAL).statusLabel,
+    s('privacy.status.unknown'),
+  );
+  arm('status: active', statusOf(RB52_ACTIVE), s('privacy.status.active'));
+  arm('status: terminal', statusOf(RB52_TERMINAL), s('privacy.status.terminal'));
+  arm('status: due', statusOf(RB52_DUE), s('privacy.countdown.due'));
+  arm(
+    'status: grace, all four groups',
+    statusOf(countdownOf({ phase: 'grace', remainingMs: 183_845_000n, cancelPermitted: true })),
+    locale.gracePrefix + B2_DURATIONS[0][locale.durationColumn],
+  );
+  arm(
+    'status: dark grace window',
+    statusOf(countdownOf({ phase: 'grace', remainingMs: undefined, cancelPermitted: true })),
+    s('privacy.countdown.dark'),
+  );
+
+  // The four control labels.
+  const base = buildPrivacyViewModel(PRIVACY_INITIAL);
+  arm('control: delete', base.deleteLabel, s('privacy.action.delete'));
+  arm('control: cancel', base.cancelLabel, s('privacy.action.cancel'));
+  arm('control: export', base.exportLabel, s('privacy.action.export'));
+  arm('control: download', base.downloadLabel, s('privacy.action.download'));
+
+  // Step two of the delete confirmation, armed and disarmed.
+  const activeState = rb52State([{ kind: 'account-changed', countdown: RB52_ACTIVE }]);
+  const armedState = rb52State([
+    { kind: 'account-changed', countdown: RB52_ACTIVE },
+    { kind: 'delete-requested' },
+  ]);
+  arm(
+    'confirm: armed',
+    buildPrivacyViewModel(armedState).confirmPrompt,
+    s('privacy.confirm.prompt'),
+  );
+  arm('confirm: disarmed', buildPrivacyViewModel(activeState).confirmPrompt, undefined);
+
+  // Every notice route. The CODE is checked beside each terminal label so each route is proven
+  // to be the one measured.
+  const terminalRow = buildPrivacyViewModel(
+    rb52State([{ kind: 'account-changed', countdown: RB52_TERMINAL }]),
+  );
+  arm('notice code: terminal from the ROW', terminalRow.noticeKind, 'terminal-row');
+  arm('notice: terminal from the ROW', terminalRow.noticeLabel, s('privacy.notice.terminal'));
+  const rejectedCancel = buildPrivacyViewModel(
+    rb52State([
+      { kind: 'account-changed', countdown: RB52_GRACE_EARLY },
+      { kind: 'cancel-deletion-requested', hasLiveConnection: true },
+      { kind: 'request-failed', which: 'cancel', message: RB52_TERMINAL_REJECT_MESSAGE },
+    ]),
+  );
+  arm(
+    'notice code: terminal from a rejected cancel',
+    rejectedCancel.noticeKind,
+    'permanently-deleted',
+  );
+  arm(
+    'notice: terminal from a rejected cancel',
+    rejectedCancel.noticeLabel,
+    s('privacy.notice.terminal'),
+  );
+  const disconnected = buildPrivacyViewModel(
+    rb52State([
+      { kind: 'account-changed', countdown: RB52_GRACE_EARLY },
+      { kind: 'cancel-deletion-requested', hasLiveConnection: false },
+    ]),
+  );
+  arm('notice code: disconnected', disconnected.noticeKind, 'disconnected');
+  arm('notice: disconnected', disconnected.noticeLabel, s('privacy.notice.disconnected'));
+  const plainRejection = buildPrivacyViewModel(
+    rb52State([
+      { kind: 'account-changed', countdown: RB52_GRACE_EARLY },
+      { kind: 'export-requested', hasLiveConnection: true },
+      { kind: 'request-failed', which: 'export', message: RB52_PLAIN_REJECT_MESSAGE },
+    ]),
+  );
+  arm(
+    'notice: a plain server rejection stays VERBATIM in every locale',
+    plainRejection.noticeLabel,
+    RB52_PLAIN_REJECT_MESSAGE,
+  );
+  arm('notice: none', buildPrivacyViewModel(activeState).noticeLabel, undefined);
+
+  // Every export status, including the DARK incomplete one.
+  const exportOf = (assembly: ExportAssembly | undefined): string | undefined =>
+    buildPrivacyViewModel(RB53_STATE, assembly).exportStatusLabel;
+  arm('export: none', exportOf(RB53_ASSEMBLIES.none), s('privacy.export.none'));
+  arm('export: incomplete, 2 of 5', exportOf(B2_INCOMPLETE_2_OF_5), locale.exportIncomplete2of5);
+  arm(
+    'export: incomplete, total unknown',
+    exportOf(B2_INCOMPLETE_DARK),
+    s('privacy.export.incompleteDark'),
+  );
+  arm(
+    'export: inconsistent',
+    exportOf(RB53_ASSEMBLIES.inconsistent),
+    s('privacy.export.inconsistent'),
+  );
+  arm('export: complete, 5 chunks', exportOf(B2_COMPLETE_5), locale.exportComplete5);
+  arm('export: no assembly computed yet', exportOf(undefined), undefined);
+
+  for (const [where, actual, expected] of arms) {
+    expect(actual, `${locale.tag} / ${where}`).toBe(expected);
+  }
+  return arms.length;
+}
+
+describe('21r-b2 privacy copy: every privacy-surface string resolves through the typed catalog, en and fr', () => {
+  afterEach(() => {
+    setLocale('en');
+  });
+
+  it('[21R-B2-PRIVACY-FR] under fr, the banner (every magnitude, due, dark), the status line in every phase, the four control labels, the armed prompt, both terminal-notice routes, the disconnected notice and every export status render their French text', () => {
+    // WRONG IMPL KILLED (1) ★: privacyBanner.ts's raw English constants left in place — every
+    //   arm below renders English under fr.
+    // WRONG IMPL KILLED (2): copy resolved at MODULE LOAD (`const DUE = t(...)`) — the module was
+    //   imported under en, so it keeps rendering English after the switch.
+    // WRONG IMPL KILLED (3): the duration still built from the English letters (`${days}d`) under
+    //   fr, or a French unit glued with an ordinary space — the hand-written groups need
+    //   j / h / min / s after a U+00A0.
+    // WRONG IMPL KILLED (4): the DARK incomplete export routed through the chunk-count sentence
+    //   (rendering "undefined") or collapsed onto the known-total one.
+    // WRONG IMPL KILLED (5): the terminal notice wired on one route only (row vs rejected cancel).
+    // WRONG IMPL KILLED (6): received / total swapped in the fr chunk sentence — ": 2 sur 5" fixes
+    //   the order.
+    setLocale('fr');
+    const checked = expectPrivacyCopyIn(B2_FR);
+    expect(checked, 'ANTI-VACUITY: the sweep must have checked every arm').toBeGreaterThan(30);
+  });
+
+  it('21r-b2 PRIVACY-EN: under en, the same sweep renders each CATALOG_EN entry and the pre-migration English sentences', () => {
+    // Pins WHICH en entry each arm renders; catalog.test.ts's EXPECTED_PLAIN pins those entries to
+    // the pre-migration bytes. The two chunk sentences are hand-written here in full.
+    // WRONG IMPL KILLED (1): an arm wired to a wrong-but-existing key under en (the unknown status
+    //   sentence on the active phase, the export label on the download control).
+    // WRONG IMPL KILLED (2): an en chunk closure that drifts from the old concatenation ("2/5
+    //   chunks", a dropped full stop).
+    setLocale('en');
+    const checked = expectPrivacyCopyIn(B2_EN);
+    expect(checked, 'ANTI-VACUITY: the sweep must have checked every arm').toBeGreaterThan(30);
+  });
+
+  it('21r-b2 COUNTDOWN-ALPHABET-FRENCH: a 1157-day French countdown uses only ASCII digits, the fr unit letters, U+00A0 inside a group and U+0020 between groups', () => {
+    // The fr twin of RB51-LABEL-ASCII. French number formatting groups a four-digit count with a
+    // NARROW no-break space (U+202F), so a "localise the number too" edit — `toLocaleString('fr')`
+    // or `Intl.NumberFormat('fr')` in a unit closure or in the formatter — renders the leading
+    // group with a code point no other count on this surface uses. Grouping only shows from four
+    // digits up, hence 1157 days (the same synthetic magnitude RB51-LABEL-ASCII uses).
+    // WRONG IMPL KILLED (1) ★: a locale number formatter on the day count (U+202F, or ',' under
+    //   an en default) — the alphabet loop names the offending code point.
+    // WRONG IMPL KILLED (2): groups joined by U+00A0, or a unit glued with U+0020 — the exact
+    //   string at the end fixes which space sits where.
+    setLocale('fr');
+    const text = String(
+      privacyBannerLabel(countdownOf({ phase: 'grace', remainingMs: 100_000_000_000n })),
+    );
+    expect(
+      text.startsWith(B2_GRACE_PREFIX_FR),
+      `the 1157-day countdown must render the French grace sentence, got ${JSON.stringify(text)}`,
+    ).toBe(true);
+    const duration = text.slice(B2_GRACE_PREFIX_FR.length);
+    const FR_GRACE_ALPHABET = `0123456789jhmins ${NBSP}`;
+    for (const ch of duration) {
+      expect(
+        FR_GRACE_ALPHABET.indexOf(ch),
+        `the fr duration ${JSON.stringify(duration)} contains code point ${ch.codePointAt(0)}. ` +
+          'Only ASCII digits, the letters of j / h / min / s, U+00A0 and U+0020 may appear — ' +
+          'anything else means the count went through a locale number formatter',
+      ).not.toBe(-1);
+    }
+    expect(text).toBe(`${B2_GRACE_PREFIX_FR}1157${NBSP}j 9${NBSP}h 46${NBSP}min 40${NBSP}s`);
+  });
+
+  it('21r-b2 ERASURE-CENSUS-FRENCH: no French privacy-surface string uses the stems erasure, effac or purg', () => {
+    // The fr twin of RB52C-ERASURE-CENSUS. The server anonymizes the Identity key rather than
+    // erasing it, so a French line promising "effacement" or a "purge" of the account is the same
+    // legally false claim the English census exists for, translated past it. The raw English
+    // disclosure (which legitimately ends in "not erasure.") is not a view-model field, so it is
+    // outside this corpus by construction.
+    // WRONG IMPL KILLED ★: a fr terminal notice / status line / confirm prompt that says the
+    //   account or its data is "effacé" or "purgé".
+    setLocale('fr');
+    const assemblies: readonly (ExportAssembly | undefined)[] = [
+      undefined,
+      ...Object.values(RB53_ASSEMBLIES),
+      B2_INCOMPLETE_2_OF_5,
+      B2_INCOMPLETE_DARK,
+      B2_COMPLETE_5,
+    ];
+    const corpus: string[] = [];
+    for (const [, state] of RB52_MATRIX) {
+      for (const assembly of assemblies) {
+        corpus.push(...rb53AllVmStrings(buildPrivacyViewModel(state, assembly)));
+      }
+    }
+    for (const row of B2_DURATIONS) {
+      corpus.push(String(privacyBannerLabel(countdownOf({ phase: 'grace', remainingMs: row[0] }))));
+    }
+    corpus.push(String(privacyBannerLabel(countdownOf({ phase: 'due', remainingMs: 0n }))));
+    corpus.push(
+      String(privacyBannerLabel(countdownOf({ phase: 'grace', remainingMs: undefined }))),
+    );
+
+    // ANTI-VACUITY: the corpus must really be the FRENCH surface — over English strings the fr
+    // stems would count zero for free.
+    for (const key of [
+      'privacy.notice.terminal',
+      'privacy.status.terminal',
+      'privacy.confirm.prompt',
+    ]) {
+      expect(corpus, `ANTI-VACUITY: the fr corpus must contain the fr '${key}' line`).toContain(
+        catalogString(FR_CATALOG, 'fr', key),
+      );
+    }
+    for (const text of corpus) {
+      const lower = text.toLowerCase();
+      for (const stem of ['erasure', 'effac', 'purg']) {
+        expect(
+          rb52Count(lower, stem),
+          `${JSON.stringify(text)} uses the stem "${stem}". This server anonymizes the Identity ` +
+            'key rather than erasing it — a French line promising erasure is a legally ' +
+            'significant false claim',
+        ).toBe(0);
+      }
+    }
   });
 });

@@ -545,6 +545,119 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'claim.declineConfirmButton': 'Oui, refuser',
   // @desc: Button cancelling the decline: keeps the claim code. Short phrase.
   'claim.declineCancelButton': 'Garder mon code',
+  // @desc: Feedback line on the guest-claim overlay, above its buttons, when the player tries to
+  // rejoin the game while a claim code is still pending — the join is refused until the claim is
+  // finished or declined. One line.
+  // claimModel.ts:96 (resolved in claimStep)
+  'claim.feedback.veto':
+    'Terminez ou refusez le transfert en attente avant de rejoindre la partie.',
+  // @desc: First-run notice on the guest-claim overlay: guest progress can only be claimed from
+  // the device it was made on. One line.
+  // claimModel.ts:320 (resolved in buildClaimViewModel)
+  'claim.nudge':
+    'La progression d’invité ne se transfère que depuis l’appareil sur lequel vous la récupérez.',
+  // @desc: Confirmation prompt shown after the player asks to decline the claim; it names the
+  // irreversible consequence (the claim code is deleted for good) and asks again. Two sentences.
+  // claimModel.ts:321-322 (resolved in buildClaimViewModel)
+  'claim.decline.confirmPrompt':
+    'Refuser supprime définitivement ce code de transfert — votre progression d’invité ne pourra ' +
+    'plus être transférée vers un compte une fois le code disparu. Refuser et continuer en tant ' +
+    'qu’invité ?',
+  // @desc: Heading of the guest-claim overlay while a claim code is pending (also the initial
+  // prompt). One short line.
+  // claimModel.ts:324 (resolved in buildClaimViewModel)
+  'claim.pending.title': 'Conservez votre progression d’invité',
+  // @desc: Body of the guest-claim overlay while a claim code is pending: sign in to claim the
+  // guest progress, or decline and stay a guest on this device. One sentence, two clauses.
+  // claimModel.ts:325-326
+  'claim.pending.body':
+    'Connectez-vous pour récupérer la progression réalisée en tant qu’invité, ou refusez pour ' +
+    'continuer à jouer en tant qu’invité sur cet appareil.',
+  // @desc: Heading of the guest-claim overlay after sign-in while the account is still being
+  // prepared. One short line.
+  // claimModel.ts:327
+  'claim.awaiting.title': 'Finalisation du transfert',
+  // @desc: Body of the guest-claim overlay while waiting for the account to be ready before the
+  // guest progress can transfer. One sentence.
+  // claimModel.ts:328-329
+  'claim.awaiting.body':
+    'En attente que votre compte soit prêt avant que votre progression d’invité puisse être ' +
+    'transférée.',
+  // @desc: Heading of the guest-claim overlay once the guest progress is attached to the account.
+  // One short line.
+  // claimModel.ts:330
+  'claim.claimed.title': 'Progression récupérée',
+  // @desc: Body of the guest-claim overlay once the claim succeeded. One sentence.
+  // claimModel.ts:331
+  'claim.claimed.body': 'Votre progression d’invité est désormais rattachée à votre compte.',
+  // @desc: Heading of the guest-claim overlay after a sign-in attempt failed. One short line.
+  // claimModel.ts:381
+  'claim.signInFailed.title': 'La connexion n’a pas abouti',
+  // @desc: Body of the guest-claim overlay when the sign-in provider rejected the attempt; invites
+  // another try. Two short sentences.
+  // claimModel.ts:353 (resolved in buildClaimViewModel)
+  'claim.signInFailed.rejected':
+    'La connexion a été refusée. Veuillez réessayer de vous connecter.',
+  // @desc: Body of the guest-claim overlay when the sign-in link had expired. Two short sentences.
+  // claimModel.ts:354
+  'claim.signInFailed.expired':
+    'Ce lien de connexion a expiré. Veuillez réessayer de vous connecter.',
+  // @desc: Body of the guest-claim overlay when the player cancelled the sign-in themselves. Two
+  // short sentences.
+  // claimModel.ts:355
+  'claim.signInFailed.declined':
+    'La connexion a été annulée. Vous pourrez réessayer quand vous le souhaitez.',
+  // @desc: Body of the guest-claim overlay when the sign-in service could not be reached;
+  // reassures that guest progress is kept. Two sentences.
+  // claimModel.ts:356-357
+  'claim.signInFailed.unreachable':
+    'Impossible de joindre le service de connexion. Veuillez réessayer dans un instant — votre ' +
+    'progression d’invité est en sécurité.',
+  // @desc: Body of the guest-claim overlay for any other sign-in failure; reassures that guest
+  // progress is kept. Two sentences.
+  // claimModel.ts:363
+  'claim.signInFailed.fallback':
+    'La connexion ne s’est pas terminée. Veuillez réessayer — votre progression d’invité est en ' +
+    'sécurité.',
+  // @desc: Heading of the guest-claim overlay when the server refused the claim because the code
+  // is invalid, already used or expired. One short line.
+  // claimModel.ts:335 (resolved in buildClaimViewModel)
+  'claim.reject.unusable.title': 'Ce code de transfert n’est plus utilisable',
+  // @desc: Body for the unusable-code refusal: the code is spent, and the player keeps playing on
+  // this device. Two sentences.
+  // claimModel.ts:336
+  'claim.reject.unusable.body':
+    'Ce code de transfert a déjà été utilisé ou a expiré. Vous pouvez continuer à jouer sur cet ' +
+    'appareil.',
+  // @desc: Heading when the signed-in account already has its own game data and cannot take the
+  // guest progress. One short line.
+  // claimModel.ts:339
+  'claim.reject.destination.title': 'Ce compte ne peut pas recevoir cette progression',
+  // @desc: Body for that refusal: why the progress cannot move, and that the code still works on
+  // another account. Two sentences.
+  // claimModel.ts:340
+  'claim.reject.destination.body':
+    'Ce compte possède déjà des données de jeu, la progression d’invité ne peut donc pas y être ' +
+    'transférée. Le code de transfert reste valable sur un autre compte.',
+  // @desc: Heading when the claim is refused for a momentary reason (another tab open, a battle
+  // in progress). One short line.
+  // claimModel.ts:343
+  'claim.reject.transient.title': 'Transfert pas encore possible',
+  // @desc: Body for the momentary refusal: close the other tab or finish the battle, then retry.
+  // One sentence.
+  // claimModel.ts:344
+  'claim.reject.transient.body':
+    'Le transfert n’a pas pu aboutir pour le moment — fermez votre autre onglet ou terminez votre ' +
+    'combat en cours, puis réessayez.',
+  // @desc: Heading for any other claim refusal (e.g. not signed in). One short line.
+  // claimModel.ts:347
+  'claim.reject.generic.title': 'Impossible de finaliser le transfert',
+  // @desc: Body for the other refusals: sign-in is required first; guest progress is kept. Two
+  // sentences.
+  // claimModel.ts:348
+  'claim.reject.generic.body':
+    'Vous devez vous connecter avant de pouvoir récupérer cette progression. Votre progression ' +
+    'd’invité est en sécurité.',
   // @desc: Only row of the ranked leaderboard when no player has a rating yet (ratings exist
   // only after a decisive ranked battle). One short line.
   // leaderboardView.ts:60
@@ -583,6 +696,101 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // beside privacy.confirm.delete. Short phrase, fits a narrow button.
   // privacyView.ts:188 (#paintButton label argument)
   'privacy.confirm.keep': 'Garder mon compte',
+  // @desc: Countdown banner in the HUD and the privacy overlay's status line while account
+  // deletion is pending but the remaining time could not be computed. One line.
+  // privacyBanner.ts:31 (resolved in privacyBannerLabel)
+  'privacy.countdown.dark': 'Suppression du compte en attente — temps restant indisponible',
+  // @desc: Countdown banner / status line once the deletion deadline has passed and the account
+  // may be deleted at any moment. One short line.
+  // privacyBanner.ts:32 (resolved in privacyBannerLabel)
+  'privacy.countdown.due': 'Suppression du compte imminente',
+  // @desc: Ticking countdown banner / status line while deletion is pending; {duration} is the
+  // remaining time already formatted from privacy.countdown.days/hours/minutes/seconds (e.g.
+  // "6 j 23 h 59 min 58 s", a no-break space inside each group). One line.
+  // privacyBanner.ts:33 (resolved in privacyBannerLabel)
+  'privacy.countdown.grace': (p) => `Suppression du compte dans ${p.duration}`,
+  // @desc: One group of the countdown duration: {n} whole days followed by the day unit symbol
+  // (a no-break space between them in French). Very short.
+  // privacyBanner.ts:62 (resolved in formatDuration)
+  'privacy.countdown.days': (p) => `${p.n} j`,
+  // @desc: One group of the countdown duration: {n} hours (0-23) and the hour unit symbol. Very
+  // short.
+  // privacyBanner.ts:63 (resolved in formatDuration)
+  'privacy.countdown.hours': (p) => `${p.n} h`,
+  // @desc: One group of the countdown duration: {n} minutes (0-59) and the minute unit symbol.
+  // Very short.
+  // privacyBanner.ts:64 (resolved in formatDuration)
+  'privacy.countdown.minutes': (p) => `${p.n} min`,
+  // @desc: One group of the countdown duration: {n} seconds (0-59) and the second unit symbol;
+  // this group is always present and ticks every second. Very short.
+  // privacyBanner.ts:65 (resolved in formatDuration)
+  'privacy.countdown.seconds': (p) => `${p.n} s`,
+  // @desc: Notice on the privacy overlay when the account has already been permanently deleted
+  // (shown on open, and after a refused cancel). Must not read like a generic rejection. Two
+  // sentences.
+  // privacyBanner.ts:126-127 (resolved in buildPrivacyViewModel)
+  'privacy.notice.terminal':
+    'Ce compte a déjà été définitivement supprimé. Il ne peut pas être restauré.',
+  // @desc: Notice on the privacy overlay when a delete / cancel / export click could not be sent
+  // because the connection is down; it is NOT a server rejection. Two short sentences.
+  // privacyBanner.ts:131 (resolved in buildPrivacyViewModel)
+  'privacy.notice.disconnected': 'Non connecté — votre demande n’a pas été envoyée. Réessayez.',
+  // @desc: Status line of the privacy overlay for an account with no deletion pending. One short
+  // sentence.
+  // privacyBanner.ts:133 (resolved in buildPrivacyViewModel)
+  'privacy.status.active': 'Ce compte est actif.',
+  // @desc: Status line of the privacy overlay before the account row has arrived. One short
+  // sentence.
+  // privacyBanner.ts:134
+  'privacy.status.unknown': 'Statut du compte indisponible.',
+  // @desc: Status line of the privacy overlay for an account that has been permanently deleted.
+  // One short sentence.
+  // privacyBanner.ts:135
+  'privacy.status.terminal': 'Ce compte a été définitivement supprimé.',
+  // @desc: Data-export line of the privacy overlay when no export has been delivered to this
+  // device. One sentence.
+  // privacyBanner.ts:147 (resolved in buildPrivacyViewModel)
+  'privacy.export.none': 'Aucun export de données n’est encore arrivé sur cet appareil.',
+  // @desc: Data-export line while chunks are still missing; {received} chunks of {total} have
+  // arrived (both counts). Deliberately does not promise the rest will arrive. One sentence. The
+  // French puts the counts after a label so 0 and 1 need no singular form.
+  // privacyBanner.ts:148-149
+  'privacy.export.incomplete': (p) =>
+    `Export de données incomplet — fragments livrés : ${p.received} sur ${p.total}.`,
+  // @desc: Data-export line while chunks are missing and the total is unknown; deliberately no
+  // number. One sentence.
+  // privacyBanner.ts:150
+  'privacy.export.incompleteDark': 'Export de données incomplet — certains fragments manquent.',
+  // @desc: Data-export line when the delivered chunks contradict each other and the export must
+  // be requested again; deliberately no number. Two sentences.
+  // privacyBanner.ts:151-153
+  'privacy.export.inconsistent':
+    'L’export de données n’a pas pu être assemblé — les fragments livrés ne décrivent pas une ' +
+    'seule demande. Demandez-le à nouveau.',
+  // @desc: Data-export line once every chunk arrived; {received} is the chunk count. One short
+  // sentence. The French puts the count after a label so 0 and 1 need no singular form.
+  // privacyBanner.ts:154-155
+  'privacy.export.complete': (p) => `Export de données prêt — fragments reçus : ${p.received}.`,
+  // @desc: Button on the privacy overlay that starts the two-step account deletion. Short phrase,
+  // fits a narrow button.
+  // privacyBanner.ts:157 (resolved in buildPrivacyViewModel)
+  'privacy.action.delete': 'Supprimer mon compte',
+  // @desc: Prompt shown beside the second-step buttons after the player asked to delete the
+  // account; names the irreversibility. Two short sentences.
+  // privacyBanner.ts:158
+  'privacy.confirm.prompt': 'Cette action est irréversible. Confirmer la suppression ?',
+  // @desc: Button on the privacy overlay that withdraws a pending account deletion. Short phrase,
+  // fits a narrow button.
+  // privacyBanner.ts:159
+  'privacy.action.cancel': 'Annuler la suppression du compte',
+  // @desc: Button on the privacy overlay that asks the server to build a data export. Short
+  // phrase; it sits beside privacy.action.download, which must read differently.
+  // privacyBanner.ts:160
+  'privacy.action.export': 'Demander l’export de mes données',
+  // @desc: Button on the privacy overlay that saves the data export that has already arrived.
+  // Short phrase, distinct from privacy.action.export.
+  // privacyBanner.ts:164
+  'privacy.action.download': 'Télécharger l’export de mes données',
   // @desc: Dismiss button of the small evolution-reveal banner near the bottom of the screen.
   // Very short — one or two characters wide; "OK" is the same in French.
   // evolutionNotice.ts:209 (resolved in render())

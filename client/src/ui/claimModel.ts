@@ -1,9 +1,13 @@
 // ui/claimModel.ts — the PURE guest-claim decision core.
 //
 // AUTH-48/52/54/55/56/59. No DOM, no SDK, no storage, and NO CLOCK (AUTH-55 — enforced on the
-// event alphabet AND by a source scan of this file). The storage half lives in net/claimCode.ts;
+// event alphabet AND by a source scan of this file). The one ambient read is the i18n locale cell
+// (set once at boot) behind `t()`: every player-facing line is resolved at step/projection time,
+// never at module load, which would freeze English. The storage half lives in net/claimCode.ts;
 // this model receives the nudge flag as a boolean INPUT so it stays pure. The AUTHORITATIVE join
 // veto is connection.ts's `.onApplied` (G18); this model is its UI-visible mirror.
+
+import { t } from './i18n/resolver';
 
 /** The four-way reject taxonomy (AUTH-54), keyed on the EXACT strings complete_guest_claim
  *  returns (server-module/src/accounts.rs). The name of each bucket IS its consequence. */
@@ -89,12 +93,6 @@ export const CLAIM_INITIAL: ClaimModelState = {
   feedback: undefined,
 };
 
-/** The repo-wide disconnected line (AUTH-59), pinned BY VALUE (sessionModel carries the mirror). */
-export const CLAIM_DISCONNECTED_FEEDBACK = 'disconnected — try again';
-
-/** A vetoed-join line — DISTINCT from the disconnected one: the two causes must not share a line. */
-const CLAIM_VETO_FEEDBACK = 'Finish or decline the pending claim before rejoining.';
-
 export type ClaimEventKind =
   | 'claim-ui-opened'
   | 'claim-pending'
@@ -146,15 +144,17 @@ export interface ClaimStep {
   readonly effect: ClaimEffect;
 }
 
-/** Handle a join / retry-join action (identical behaviour, AUTH-52/59). */
+/** Handle a join / retry-join action (identical behaviour, AUTH-52/59). The vetoed-join line is
+ *  DISTINCT from the repo-wide disconnected one (`chrome.feedback.disconnected`, AUTH-59): the
+ *  two causes must not share a line. */
 function joinAction(base: ClaimModelState, hasLiveConnection: boolean): ClaimStep {
   if (!base.joinPermitted) {
     // AUTH-52's UI-visible half: the authoritative veto is connection.ts's, but a button that
     // silently does nothing teaches the player the client is broken.
-    return { next: { ...base, feedback: CLAIM_VETO_FEEDBACK }, effect: 'none' };
+    return { next: { ...base, feedback: t('claim.feedback.veto') }, effect: 'none' };
   }
   if (!hasLiveConnection) {
-    return { next: { ...base, feedback: CLAIM_DISCONNECTED_FEEDBACK }, effect: 'none' };
+    return { next: { ...base, feedback: t('chrome.feedback.disconnected') }, effect: 'none' };
   }
   return { next: base, effect: 'join' };
 }
@@ -255,7 +255,11 @@ export function claimStep(state: ClaimModelState, event: ClaimEvent): ClaimStep 
       if (!event.hasLiveConnection) {
         // AUTH-59: not silently dropped, and the code stays and the confirmation stays ARMED.
         return {
-          next: { ...state, showFirstRunNudge: false, feedback: CLAIM_DISCONNECTED_FEEDBACK },
+          next: {
+            ...state,
+            showFirstRunNudge: false,
+            feedback: t('chrome.feedback.disconnected'),
+          },
           effect: 'none',
         };
       }
@@ -317,85 +321,83 @@ function claimActions(state: ClaimModelState): ClaimActions {
   };
 }
 
-const NUDGE_COPY = 'Guest progress transfers only from the device you claim it on.';
-const CONFIRM_PROMPT =
-  'Declining permanently deletes this claim code — your guest progress cannot be undone once the code is gone. Decline and continue as a guest?';
-
-const PENDING_TITLE = 'Keep your guest progress';
-const PENDING_BODY =
-  'Sign in to claim the progress you made as a guest, or decline to keep playing as a guest on this device.';
-const AWAITING_TITLE = 'Finishing your claim';
-const AWAITING_BODY =
-  'Waiting for your account to be ready before your guest progress can transfer.';
-const CLAIMED_TITLE = 'Progress claimed';
-const CLAIMED_BODY = 'Your guest progress is now attached to your account.';
-
-const REJECT_COPY: Readonly<Record<ClaimRejectOutcome, { title: string; body: string }>> = {
-  'delete-code-and-permit-join': {
-    title: 'That claim code is no longer usable',
-    body: 'This claim code has already been used or has expired. You can keep playing on this device.',
-  },
-  'retain-destination-terminal': {
-    title: 'This account cannot take that progress',
-    body: 'This account already has game data, so the guest progress cannot be moved onto it. The claim code is still valid on another account.',
-  },
-  'retain-transient-no-autoretry': {
-    title: 'Not ready to claim yet',
-    body: 'The claim could not complete right now — close your other tab or finish your current battle, then try again.',
-  },
-  'retain-not-claim-specific': {
-    title: 'Could not complete the claim',
-    body: 'Signing in is required before this progress can be claimed. Your guest progress is safe.',
-  },
-};
-
-const SIGN_IN_FAILED_COPY: Readonly<Record<string, string>> = {
-  'sign-in-rejected': 'Sign-in was rejected. Please try signing in again.',
-  'sign-in-expired': 'That sign-in link expired. Please try signing in again.',
-  'sign-in-declined': 'Sign-in was cancelled. You can try again whenever you are ready.',
-  'auth-service-unreachable':
-    'We could not reach the sign-in service. Please try again in a moment — your guest progress is safe.',
-};
-
-function signInFailedBody(reason: string | undefined): string {
-  return (
-    (reason !== undefined ? SIGN_IN_FAILED_COPY[reason] : undefined) ??
-    'Sign-in did not complete. Please try again — your guest progress is safe.'
-  );
+/** Copy for a refused claim, keyed on the outcome bucket. The fail-safe bucket, an absent
+ *  outcome and — so the projection stays TOTAL — any value the type system did not admit all
+ *  read as the generic refusal. One literal key per arm: a key computed from the outcome would
+ *  be invisible to the catalog's call-site census. */
+function rejectCopy(outcome: ClaimRejectOutcome | undefined): {
+  readonly title: string;
+  readonly body: string;
+} {
+  switch (outcome) {
+    case 'delete-code-and-permit-join':
+      return { title: t('claim.reject.unusable.title'), body: t('claim.reject.unusable.body') };
+    case 'retain-destination-terminal':
+      return {
+        title: t('claim.reject.destination.title'),
+        body: t('claim.reject.destination.body'),
+      };
+    case 'retain-transient-no-autoretry':
+      return { title: t('claim.reject.transient.title'), body: t('claim.reject.transient.body') };
+    default:
+      return { title: t('claim.reject.generic.title'), body: t('claim.reject.generic.body') };
+  }
 }
 
-/** Pure projection into what the DOM shell renders. */
+/** Body for a failed sign-in, keyed on the reason main.ts reports. A `switch`, never a
+ *  `Record[reason]` read: an unrecognised reason — including an `Object.prototype` name — falls
+ *  to the fallback line instead of rendering a prototype member. */
+function signInFailedBody(reason: string | undefined): string {
+  switch (reason) {
+    case 'sign-in-rejected':
+      return t('claim.signInFailed.rejected');
+    case 'sign-in-expired':
+      return t('claim.signInFailed.expired');
+    case 'sign-in-declined':
+      return t('claim.signInFailed.declined');
+    case 'auth-service-unreachable':
+      return t('claim.signInFailed.unreachable');
+    default:
+      return t('claim.signInFailed.fallback');
+  }
+}
+
+/** Pure projection into what the DOM shell renders. Title, body, confirm prompt and nudge are
+ *  resolved HERE, at projection time (a module-level `t()` would freeze the boot locale);
+ *  `feedback` arrives already resolved from `claimStep`. */
 export function buildClaimViewModel(state: ClaimModelState): ClaimViewModel {
-  let title = PENDING_TITLE;
-  let body = PENDING_BODY;
+  let title: string;
+  let body: string;
   switch (state.phase) {
     case 'awaiting-account':
-      title = AWAITING_TITLE;
-      body = AWAITING_BODY;
+      title = t('claim.awaiting.title');
+      body = t('claim.awaiting.body');
       break;
     case 'claimed':
-      title = CLAIMED_TITLE;
-      body = CLAIMED_BODY;
+      title = t('claim.claimed.title');
+      body = t('claim.claimed.body');
       break;
     case 'sign-in-failed':
-      title = 'Sign-in did not finish';
+      title = t('claim.signInFailed.title');
       body = signInFailedBody(state.signInReason);
       break;
     case 'rejected': {
-      const copy = REJECT_COPY[state.outcome ?? 'retain-not-claim-specific'];
+      const copy = rejectCopy(state.outcome);
       title = copy.title;
       body = copy.body;
       break;
     }
     default:
+      title = t('claim.pending.title');
+      body = t('claim.pending.body');
       break;
   }
   return {
     visible: state.phase !== 'hidden',
     title,
     body,
-    confirmPrompt: state.confirmPending ? CONFIRM_PROMPT : undefined,
-    nudge: state.showFirstRunNudge ? NUDGE_COPY : undefined,
+    confirmPrompt: state.confirmPending ? t('claim.decline.confirmPrompt') : undefined,
+    nudge: state.showFirstRunNudge ? t('claim.nudge') : undefined,
     feedback: state.feedback,
     actions: claimActions(state),
   };

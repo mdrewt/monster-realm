@@ -34,10 +34,9 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildClaimViewModel,
-  CLAIM_DISCONNECTED_FEEDBACK,
   CLAIM_EVENT_KINDS,
   CLAIM_INITIAL,
   CLAIM_REJECT_OUTCOMES,
@@ -49,6 +48,37 @@ import {
   classifyClaimReject,
   senseInvalidCode,
 } from './claimModel';
+import { CATALOG_EN } from './i18n/catalog.en';
+import { CATALOG_FR } from './i18n/catalog.fr';
+import { setLocale } from './i18n/resolver';
+
+// ---------------------------------------------------------------------------
+// i18n fixtures (slice 21r-b2). The claim copy lives in the typed catalog, so every expectation
+// below is read from CATALOG_EN / CATALOG_FR by a hand-written key.
+// ---------------------------------------------------------------------------
+
+const EN_CATALOG = CATALOG_EN as unknown as Readonly<Record<string, unknown>>;
+const FR_CATALOG = CATALOG_FR as unknown as Readonly<Record<string, unknown>>;
+
+/** `catalog[key]`, which MUST be an own plain string. Client specs are not typechecked, so a
+ *  mistyped key would otherwise read `undefined` and make every assertion against it vacuous —
+ *  this throws instead, naming the locale and the key. */
+function catalogString(
+  catalog: Readonly<Record<string, unknown>>,
+  locale: string,
+  key: string,
+): string {
+  const value = Object.hasOwn(catalog, key) ? catalog[key] : undefined;
+  if (typeof value !== 'string') {
+    throw new Error(
+      `catalog.${locale} has no plain-string entry for '${key}' (got ${typeof value})`,
+    );
+  }
+  return value;
+}
+
+/** The repo-wide disconnected line (AUTH-59), read from the en catalog. */
+const DISCONNECTED_FEEDBACK_EN = catalogString(EN_CATALOG, 'en', 'chrome.feedback.disconnected');
 
 // ---------------------------------------------------------------------------
 // The ELEVEN exact reject strings `complete_guest_claim` can return, transcribed
@@ -432,7 +462,7 @@ describe('claimModel AUTH-52 / AUTH-59: joining while vetoed, and acting with no
       expect(
         step.next.feedback,
         'a vetoed join is NOT a disconnection — the two causes must not share one line',
-      ).not.toBe(CLAIM_DISCONNECTED_FEEDBACK);
+      ).not.toBe(DISCONNECTED_FEEDBACK_EN);
     }
   });
 
@@ -448,12 +478,15 @@ describe('claimModel AUTH-52 / AUTH-59: joining while vetoed, and acting with no
   });
 
   it('★★ BITES (AUTH-59): the feedback line is EXACTLY the repo-wide disconnected string', () => {
-    // "the SAME visible feedback as an ordinary disconnected action" — the literal
-    // careAction.ts:32 and main.ts's ten guarded reducer sites already use. Pinned BY VALUE
-    // on both sides (sessionModel.test.ts carries the mirror) because careAction.ts's copy
-    // is module-private and exporting it is outside this slice's touch set. NAMED RESIDUAL:
-    // if either side drifts, this reds, and the honest fix is one exported constant.
-    expect(CLAIM_DISCONNECTED_FEEDBACK).toBe('disconnected — try again');
+    // "the SAME visible feedback as an ordinary disconnected action": the model's line is the
+    // catalog's `chrome.feedback.disconnected` entry. Its English bytes are pinned by
+    // catalog.test.ts CAT-01 (c) through `EXPECTED_PLAIN['chrome.feedback.disconnected']`.
+    // WRONG IMPL KILLED: a claim-local copy of the line that drifts from the shared entry.
+    const step = claimStep(stateOf({ phase: 'claimed', joinPermitted: true }), {
+      kind: 'join-requested',
+      hasLiveConnection: false,
+    });
+    expect(step.next.feedback).toBe(DISCONNECTED_FEEDBACK_EN);
   });
 
   it('★★ BITES (AUTH-59): all THREE actions produce that same line with no live connection, and none of them acts', () => {
@@ -482,7 +515,7 @@ describe('claimModel AUTH-52 / AUTH-59: joining while vetoed, and acting with no
       feedbacks.add(step.next.feedback);
     }
     expect([...feedbacks], 'one shared line, not one per handler').toEqual([
-      CLAIM_DISCONNECTED_FEEDBACK,
+      DISCONNECTED_FEEDBACK_EN,
     ]);
   });
 
@@ -1034,5 +1067,297 @@ describe('buildClaimViewModel actions (which claim buttons are operable)', () =>
       { kind: 'claim-rejected', message: 'already in an ongoing battle', claimedFrom: undefined },
     );
     expect(buildClaimViewModel(retaining).actions).toEqual({ ...none, decline: true });
+  });
+});
+
+// ===========================================================================
+// 21r-b2 — the claim overlay's copy resolves through the typed i18n catalog (en + fr).
+//
+// SOURCE OF TRUTH — spec 21r-b2: "WHEN any claim-overlay or privacy-surface text renders THE
+// CLIENT SHALL source it from the typed catalog (en+fr), with no raw string literals reaching the
+// DOM". claimView.ts writes the view model's title / body / confirmPrompt / nudge / feedback
+// straight to textContent, so the view model IS the rendered text.
+//
+// The expected KEY for every arm is hand-written from the 21r-b2 plan's roster table, never
+// derived from claimModel.ts. `./claimModel` is imported at the top of this file, BEFORE any
+// `setLocale('fr')` below, so copy resolved at MODULE LOAD (which freezes the locale the module
+// was imported under) still renders English under fr and fails the fr sweep. Whether each fr
+// value differs from its en twin is catalogParity.test.ts's job, not this file's.
+// ===========================================================================
+
+/** One projected view model and the catalog key each copy field must resolve to. An absent
+ *  `confirmPrompt` / `nudge` means that field must be `undefined`. */
+interface ClaimCopyCase {
+  readonly where: string;
+  readonly state: ClaimModelState;
+  readonly title: string;
+  readonly body: string;
+  readonly confirmPrompt?: string;
+  readonly nudge?: string;
+}
+
+const PENDING_COPY = { title: 'claim.pending.title', body: 'claim.pending.body' } as const;
+const SIGN_IN_FAILED_TITLE = 'claim.signInFailed.title';
+
+function rejectedWith(outcome: ClaimRejectOutcome | undefined): ClaimModelState {
+  return stateOf({ phase: 'rejected', outcome, codeRetained: true });
+}
+
+function signInFailedWith(signInReason: string | undefined): ClaimModelState {
+  return stateOf({ phase: 'sign-in-failed', signInReason });
+}
+
+/** EVERY phase (incl. `hidden`), every reject outcome (incl. `undefined`), every sign-in reason
+ *  (the four known ones, an unknown token, `undefined`, and three Object.prototype names), the
+ *  armed decline confirmation and the first-run nudge frame. */
+const CLAIM_COPY_CASES: readonly ClaimCopyCase[] = [
+  { where: 'hidden (the initial state)', state: CLAIM_INITIAL, ...PENDING_COPY },
+  { where: 'prompt', state: stateOf({ phase: 'prompt' }), ...PENDING_COPY },
+  { where: 'code-pending', state: pending(), ...PENDING_COPY },
+  {
+    where: 'awaiting-account',
+    state: stateOf({ phase: 'awaiting-account', codeRetained: true }),
+    title: 'claim.awaiting.title',
+    body: 'claim.awaiting.body',
+  },
+  {
+    where: 'claimed',
+    state: stateOf({ phase: 'claimed', joinPermitted: true }),
+    title: 'claim.claimed.title',
+    body: 'claim.claimed.body',
+  },
+  {
+    where: 'rejected: delete-code-and-permit-join',
+    state: rejectedWith('delete-code-and-permit-join'),
+    title: 'claim.reject.unusable.title',
+    body: 'claim.reject.unusable.body',
+  },
+  {
+    where: 'rejected: retain-destination-terminal',
+    state: rejectedWith('retain-destination-terminal'),
+    title: 'claim.reject.destination.title',
+    body: 'claim.reject.destination.body',
+  },
+  {
+    where: 'rejected: retain-transient-no-autoretry',
+    state: rejectedWith('retain-transient-no-autoretry'),
+    title: 'claim.reject.transient.title',
+    body: 'claim.reject.transient.body',
+  },
+  {
+    where: 'rejected: retain-not-claim-specific',
+    state: rejectedWith('retain-not-claim-specific'),
+    title: 'claim.reject.generic.title',
+    body: 'claim.reject.generic.body',
+  },
+  {
+    where: 'rejected: outcome undefined',
+    state: rejectedWith(undefined),
+    title: 'claim.reject.generic.title',
+    body: 'claim.reject.generic.body',
+  },
+  // Kills explicit `case 'retain-not-claim-specific': case undefined:` arms with no `default:` —
+  // an untyped null then yields no copy and buildClaimViewModel throws in the render path.
+  {
+    where: 'rejected: an outcome outside the type (null) degrades to the generic copy',
+    state: rejectedWith(null as never),
+    title: 'claim.reject.generic.title',
+    body: 'claim.reject.generic.body',
+  },
+  {
+    where: 'sign-in-failed: sign-in-rejected',
+    state: signInFailedWith('sign-in-rejected'),
+    title: SIGN_IN_FAILED_TITLE,
+    body: 'claim.signInFailed.rejected',
+  },
+  {
+    where: 'sign-in-failed: sign-in-expired',
+    state: signInFailedWith('sign-in-expired'),
+    title: SIGN_IN_FAILED_TITLE,
+    body: 'claim.signInFailed.expired',
+  },
+  {
+    where: 'sign-in-failed: sign-in-declined',
+    state: signInFailedWith('sign-in-declined'),
+    title: SIGN_IN_FAILED_TITLE,
+    body: 'claim.signInFailed.declined',
+  },
+  {
+    where: 'sign-in-failed: auth-service-unreachable',
+    state: signInFailedWith('auth-service-unreachable'),
+    title: SIGN_IN_FAILED_TITLE,
+    body: 'claim.signInFailed.unreachable',
+  },
+  {
+    where: 'sign-in-failed: an unrecognised reason token',
+    state: signInFailedWith('transient-error'),
+    title: SIGN_IN_FAILED_TITLE,
+    body: 'claim.signInFailed.fallback',
+  },
+  {
+    where: 'sign-in-failed: reason undefined',
+    state: signInFailedWith(undefined),
+    title: SIGN_IN_FAILED_TITLE,
+    body: 'claim.signInFailed.fallback',
+  },
+  {
+    where: "sign-in-failed: reason 'constructor' (an Object.prototype name)",
+    state: signInFailedWith('constructor'),
+    title: SIGN_IN_FAILED_TITLE,
+    body: 'claim.signInFailed.fallback',
+  },
+  {
+    where: "sign-in-failed: reason 'toString' (an Object.prototype name)",
+    state: signInFailedWith('toString'),
+    title: SIGN_IN_FAILED_TITLE,
+    body: 'claim.signInFailed.fallback',
+  },
+  {
+    where: "sign-in-failed: reason '__proto__' (an Object.prototype name)",
+    state: signInFailedWith('__proto__'),
+    title: SIGN_IN_FAILED_TITLE,
+    body: 'claim.signInFailed.fallback',
+  },
+  {
+    where: 'armed decline from code-pending',
+    state: pending({ confirmPending: true }),
+    ...PENDING_COPY,
+    confirmPrompt: 'claim.decline.confirmPrompt',
+  },
+  {
+    where: 'armed decline from the prompt',
+    state: stateOf({ phase: 'prompt', confirmPending: true }),
+    ...PENDING_COPY,
+    confirmPrompt: 'claim.decline.confirmPrompt',
+  },
+  {
+    where: 'the first-run nudge frame',
+    state: stateOf({ phase: 'prompt', nudgeShown: true, showFirstRunNudge: true }),
+    ...PENDING_COPY,
+    nudge: 'claim.nudge',
+  },
+];
+
+/** A `claimStep` that writes feedback, and the key that feedback must resolve to. */
+interface ClaimFeedbackCase {
+  readonly where: string;
+  readonly state: ClaimModelState;
+  readonly event: ClaimEvent;
+  readonly key: string;
+}
+
+/** The veto line (both join actions) and the three no-live-connection arms (AUTH-59). */
+const CLAIM_FEEDBACK_CASES: readonly ClaimFeedbackCase[] = [
+  {
+    where: 'join while the claim vetoes joining',
+    state: pending(),
+    event: { kind: 'join-requested', hasLiveConnection: true },
+    key: 'claim.feedback.veto',
+  },
+  {
+    where: 'retry-join while the claim vetoes joining',
+    state: pending(),
+    event: { kind: 'retry-join-requested', hasLiveConnection: true },
+    key: 'claim.feedback.veto',
+  },
+  {
+    where: 'join with no live connection',
+    state: stateOf({ phase: 'claimed', joinPermitted: true }),
+    event: { kind: 'join-requested', hasLiveConnection: false },
+    key: 'chrome.feedback.disconnected',
+  },
+  {
+    where: 'retry-join with no live connection',
+    state: stateOf({ phase: 'claimed', joinPermitted: true }),
+    event: { kind: 'retry-join-requested', hasLiveConnection: false },
+    key: 'chrome.feedback.disconnected',
+  },
+  {
+    where: 'an armed decline confirmed with no live connection',
+    state: pending({ confirmPending: true }),
+    event: { kind: 'decline-confirmed', hasLiveConnection: false },
+    key: 'chrome.feedback.disconnected',
+  },
+];
+
+/** Assert every claim-copy arm against `catalog` (the locale the caller already switched to).
+ *  Returns the number of arms checked so the caller can pin anti-vacuity. */
+function expectClaimCopyFrom(catalog: Readonly<Record<string, unknown>>, locale: string): number {
+  let checked = 0;
+  for (const c of CLAIM_COPY_CASES) {
+    const vm = buildClaimViewModel(c.state);
+    expect(vm.title, `${locale} / ${c.where}: title must be ${c.title}`).toBe(
+      catalogString(catalog, locale, c.title),
+    );
+    expect(vm.body, `${locale} / ${c.where}: body must be ${c.body}`).toBe(
+      catalogString(catalog, locale, c.body),
+    );
+    if (c.confirmPrompt === undefined) {
+      expect(vm.confirmPrompt, `${locale} / ${c.where}: no confirmation prompt`).toBeUndefined();
+    } else {
+      expect(
+        vm.confirmPrompt,
+        `${locale} / ${c.where}: confirmPrompt must be ${c.confirmPrompt}`,
+      ).toBe(catalogString(catalog, locale, c.confirmPrompt));
+    }
+    if (c.nudge === undefined) {
+      expect(vm.nudge, `${locale} / ${c.where}: no nudge`).toBeUndefined();
+    } else {
+      expect(vm.nudge, `${locale} / ${c.where}: nudge must be ${c.nudge}`).toBe(
+        catalogString(catalog, locale, c.nudge),
+      );
+    }
+    checked += 1;
+  }
+  for (const c of CLAIM_FEEDBACK_CASES) {
+    const expected = catalogString(catalog, locale, c.key);
+    const step = claimStep(c.state, c.event);
+    expect(step.effect, `${locale} / ${c.where}: the action must not act`).toBe('none');
+    expect(step.next.feedback, `${locale} / ${c.where}: feedback must be ${c.key}`).toBe(expected);
+    expect(
+      buildClaimViewModel(step.next).feedback,
+      `${locale} / ${c.where}: the view model must carry that same feedback line`,
+    ).toBe(expected);
+    checked += 1;
+  }
+  return checked;
+}
+
+describe('claimModel 21r-b2: every claim-overlay string resolves through the typed catalog, en and fr', () => {
+  afterEach(() => {
+    setLocale('en');
+  });
+
+  it('[21R-B2-CLAIM-FR] under fr, every phase / outcome / sign-in reason, the armed confirmation, the nudge, the veto line and the three disconnected arms render their CATALOG_FR entry', () => {
+    // WRONG IMPL KILLED (1) ★: the raw English literals left in claimModel.ts — every arm below
+    //   renders English under fr.
+    // WRONG IMPL KILLED (2): copy resolved at module load (`const PENDING_TITLE = t(...)`) — the
+    //   module was imported under en, so the resolved value is English for the tab's lifetime.
+    // WRONG IMPL KILLED (3): a wrong key on one arm (destination copy on the transient bucket, the
+    //   rejected body for the expired link) — each arm is compared with its OWN key.
+    // WRONG IMPL KILLED (4): a lookup table indexed by the raw reason (`TABLE[reason] ?? fallback`)
+    //   — 'constructor' / 'toString' / '__proto__' read Object.prototype members instead of
+    //   falling back, and the body renders a function or an object.
+    // WRONG IMPL KILLED (5): the veto or disconnected feedback left as a raw English literal while
+    //   the overlay text moved — the feedback arms are swept in the same locale.
+    setLocale('fr');
+    const checked = expectClaimCopyFrom(FR_CATALOG, 'fr');
+    expect(checked, 'ANTI-VACUITY: every copy arm and every feedback arm was checked').toBe(
+      CLAIM_COPY_CASES.length + CLAIM_FEEDBACK_CASES.length,
+    );
+  });
+
+  it('21r-b2 CLAIM-EN: under en, the same sweep renders each CATALOG_EN entry byte for byte', () => {
+    // Pins WHICH en entry each arm renders; catalog.test.ts's EXPECTED_PLAIN pins those entries to
+    // the pre-migration bytes, so together they are the en byte pin at the site.
+    // WRONG IMPL KILLED (1): an arm wired to a wrong-but-existing key under en (the transient body
+    //   on the generic bucket) — every arm is compared with its own key.
+    // WRONG IMPL KILLED (2): the prototype-name reasons rendering a function / object (the
+    //   pre-migration `SIGN_IN_FAILED_COPY[reason] ?? fallback` shape) — the fallback line is required instead.
+    setLocale('en');
+    const checked = expectClaimCopyFrom(EN_CATALOG, 'en');
+    expect(checked, 'ANTI-VACUITY: every copy arm and every feedback arm was checked').toBe(
+      CLAIM_COPY_CASES.length + CLAIM_FEEDBACK_CASES.length,
+    );
   });
 });

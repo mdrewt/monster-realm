@@ -743,7 +743,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     ).toEqual(['alive.one', 'alive.two']);
   });
 
-  it('m24s7/21r-b PARITY-02: I18N-27 — import-binding resolution + the 21-file resolver roster + main.ts dual bindings', () => {
+  it('m24s7/21r-b PARITY-02: I18N-27 — import-binding resolution + the 23-file resolver roster + main.ts dual bindings', () => {
     const census = computeCensus();
     const i18nRoster = census
       .filter((f) => f.bindings.some((b) => b.module === 'i18n'))
@@ -751,13 +751,15 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       .sort();
     // WRONG IMPL KILLED: a bare global `t(`/`tf(` text scan (never resolving import specifiers)
     // would either miss every file (bindings always empty) or over-match unrelated `t(` calls
-    // (e.g. `total(`) — the exact 21-file roster below (21r-b adds ui/careAction.ts and
-    // ui/sessionModel.ts) is only reachable via real binding resolution.
+    // (e.g. `total(`) — the exact 23-file roster below (21r-b added ui/careAction.ts and
+    // ui/sessionModel.ts; 21r-b2 adds ui/claimModel.ts and ui/privacyBanner.ts) is only reachable
+    // via real binding resolution.
     expect(i18nRoster, `resolver-importing roster: ${JSON.stringify(i18nRoster)}`).toEqual([
       'main.ts',
       'ui/battleView.ts',
       'ui/boxView.ts',
       'ui/careAction.ts',
+      'ui/claimModel.ts',
       'ui/claimView.ts',
       'ui/dialogueView.ts',
       'ui/errorOverlayView.ts',
@@ -766,6 +768,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'ui/healView.ts',
       'ui/helpView.ts',
       'ui/leaderboardView.ts',
+      'ui/privacyBanner.ts',
       'ui/privacyView.ts',
       'ui/pvpView.ts',
       'ui/questLogView.ts',
@@ -1088,7 +1091,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
   });
 
   describe('catalogFr (the fr runtime proof — CATALOGS.fr, S7)', () => {
-    it("m24s7/21r-b FR-01: every fr closure reads exactly en's param fields, interpolates each, and >=100/133 values differ from en", () => {
+    it("m24s7/21r-b FR-01: every fr closure reads exactly en's param fields, interpolates each, and >=100/178 values differ from en", () => {
       const en = CATALOG_EN as Record<string, unknown>;
       const fr = CATALOGS.fr as unknown as Record<string, unknown> | undefined;
       // WRONG IMPL KILLED: CATALOGS.fr undefined (unregistered / missing catalog.fr.ts).
@@ -1164,10 +1167,10 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       }
       expect(
         checked,
-        // 21r-b grows the roster from 118 to 133 keys (corrects a stale "112" this comment
-        // carried forward) — the threshold below (>=100) is intentionally UNCHANGED: it is a
-        // lower bound that only gets easier to clear as the roster grows, never weakened.
-        'anti-vacuity: the full 133-entry en catalog must have been walked',
+        // 21r-b grew the roster from 118 to 133 keys and 21r-b2 grows it to 178 — the threshold
+        // below (>=100) is intentionally UNCHANGED: it is a lower bound that only gets easier to
+        // clear as the roster grows, never weakened.
+        'anti-vacuity: the full 178-entry en catalog must have been walked',
       ).toBeGreaterThan(100);
       expect(
         differCount,
@@ -1280,6 +1283,330 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
         checked += 1;
       }
       expect(checked, 'ANTI-VACUITY: all 15 keys must have been checked').toBe(15);
+    });
+
+    // -------------------------------------------------------------------------------------------
+    // 21r-b2 — the 45 claim.* / privacy.* keys (claimModel.ts + privacyBanner.ts). Key lists are
+    // hand-transcribed from memory/projects/monster-realm-21r-b2-plan.md's roster table.
+    // -------------------------------------------------------------------------------------------
+
+    /** U+00A0 NO-BREAK SPACE and U+2019 RIGHT SINGLE QUOTATION MARK, built from their code points
+     *  so neither can be pasted as (or mistaken for) a plain space / an ASCII apostrophe. */
+    const NBSP = String.fromCharCode(0x00a0);
+    const RSQUO = String.fromCharCode(0x2019);
+
+    /** The 38 plain keys 21r-b2 adds. */
+    const NEW_PLAIN_KEYS_21R_B2: readonly string[] = [
+      'claim.feedback.veto',
+      'claim.nudge',
+      'claim.decline.confirmPrompt',
+      'claim.pending.title',
+      'claim.pending.body',
+      'claim.awaiting.title',
+      'claim.awaiting.body',
+      'claim.claimed.title',
+      'claim.claimed.body',
+      'claim.signInFailed.title',
+      'claim.signInFailed.rejected',
+      'claim.signInFailed.expired',
+      'claim.signInFailed.declined',
+      'claim.signInFailed.unreachable',
+      'claim.signInFailed.fallback',
+      'claim.reject.unusable.title',
+      'claim.reject.unusable.body',
+      'claim.reject.destination.title',
+      'claim.reject.destination.body',
+      'claim.reject.transient.title',
+      'claim.reject.transient.body',
+      'claim.reject.generic.title',
+      'claim.reject.generic.body',
+      'privacy.countdown.dark',
+      'privacy.countdown.due',
+      'privacy.notice.terminal',
+      'privacy.notice.disconnected',
+      'privacy.status.active',
+      'privacy.status.unknown',
+      'privacy.status.terminal',
+      'privacy.export.none',
+      'privacy.export.incompleteDark',
+      'privacy.export.inconsistent',
+      'privacy.action.delete',
+      'privacy.confirm.prompt',
+      'privacy.action.cancel',
+      'privacy.action.export',
+      'privacy.action.download',
+    ];
+
+    /** The 7 parameterised keys 21r-b2 adds, each with ONE concrete sample (no punctuation, so the
+     *  typography sweep below judges only the catalog's own text). */
+    const NEW_PARAM_SAMPLES_21R_B2: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+      ['privacy.countdown.grace', { duration: 'SAMPLE' }],
+      ['privacy.countdown.days', { n: 7n }],
+      ['privacy.countdown.hours', { n: 7n }],
+      ['privacy.countdown.minutes', { n: 7n }],
+      ['privacy.countdown.seconds', { n: 7n }],
+      ['privacy.export.incomplete', { received: 2, total: 5 }],
+      ['privacy.export.complete', { received: 5 }],
+    ];
+
+    /** [key, fr text, en text] for all 45 keys — each value asserted to be the right KIND (plain
+     *  string / closure) in BOTH catalogs first, so no comparison below runs on `undefined`. */
+    function newKeyTexts21rB2(): Array<readonly [string, string, string]> {
+      const en = CATALOG_EN as Record<string, unknown>;
+      const fr = CATALOGS.fr as unknown as Record<string, unknown> | undefined;
+      expect(fr, 'CATALOGS.fr must be defined').not.toBe(undefined);
+      const safeFr = fr as Record<string, unknown>;
+      const out: Array<readonly [string, string, string]> = [];
+      for (const key of NEW_PLAIN_KEYS_21R_B2) {
+        expect(typeof en[key], `${key} must be a plain string in en`).toBe('string');
+        expect(typeof safeFr[key], `${key} must be a plain string in fr`).toBe('string');
+        out.push([key, safeFr[key] as string, en[key] as string]);
+      }
+      for (const [key, sample] of NEW_PARAM_SAMPLES_21R_B2) {
+        expect(typeof en[key], `${key} must be a closure in en`).toBe('function');
+        expect(typeof safeFr[key], `${key} must be a closure in fr`).toBe('function');
+        const enText = (en[key] as (p: Record<string, unknown>) => string)(sample);
+        const frText = (safeFr[key] as (p: Record<string, unknown>) => string)(sample);
+        expect(typeof frText, `${key}(sample) must return a string in fr`).toBe('string');
+        out.push([key, frText, enText]);
+      }
+      return out;
+    }
+
+    it('[21R-B2-FR-DIFFERS] every one of the 45 new claim.* / privacy.* keys has a CATALOG_FR value strictly different from CATALOG_EN (parameterised keys compared through one concrete sample)', () => {
+      // The aggregate FR-01 tally can pass while ONE of these keys was copied through from en —
+      // this names each key, so an untranslated line fails BY NAME.
+      // WRONG IMPL KILLED ★: e.g. 'privacy.status.terminal': 'This account has been permanently
+      //   deleted.' left English in catalog.fr.ts, or a fr unit closure left as `${p.n}s`.
+      const allKeys = [...NEW_PLAIN_KEYS_21R_B2, ...NEW_PARAM_SAMPLES_21R_B2.map(([key]) => key)];
+      expect(allKeys.length, 'ANTI-VACUITY: the 21r-b2 plan names exactly 45 new keys').toBe(45);
+      expect(new Set(allKeys).size, 'ANTI-VACUITY: no key may be listed twice').toBe(45);
+
+      let checked = 0;
+      for (const [key, frText, enText] of newKeyTexts21rB2()) {
+        expect(
+          frText,
+          `${key}: fr must differ from en — an untranslated copy-through of the English bytes ` +
+            'in catalog.fr.ts must fail HERE, by name',
+        ).not.toBe(enText);
+        checked += 1;
+      }
+      expect(checked, 'ANTI-VACUITY: all 45 keys must have been checked').toBe(45);
+    });
+
+    it('21r-b2 FR-TYPO: every new fr value puts U+00A0 before each ? ! : ; and uses no ASCII apostrophe', () => {
+      // catalog.fr.ts's own convention (its header): a REAL no-break space before `:` `;` `!` `?`
+      // and `’` U+2019 for the apostrophe.
+      // WRONG IMPL KILLED (1) ★: "Confirmer la suppression ?" typed with an ordinary space — the
+      //   browser may wrap the "?" of an irreversible-deletion prompt onto a line of its own.
+      // WRONG IMPL KILLED (2): an ASCII apostrophe ("d'invité") — off-convention, and it would
+      //   also close the single-quoted value in the catalog source.
+      let marks = 0;
+      let checked = 0;
+      for (const [key, frText] of newKeyTexts21rB2()) {
+        for (let i = 0; i < frText.length; i++) {
+          const ch = frText.charAt(i);
+          if (ch !== '?' && ch !== '!' && ch !== ':' && ch !== ';') continue;
+          marks += 1;
+          const before = i > 0 ? frText.charAt(i - 1) : '';
+          expect(
+            before === NBSP,
+            `${key}: ${JSON.stringify(frText)} has "${ch}" at index ${i} preceded by ` +
+              `${before === '' ? 'nothing' : `code point ${before.charCodeAt(0)}`}, not U+00A0`,
+          ).toBe(true);
+        }
+        expect(
+          frText.indexOf("'"),
+          `${key}: ${JSON.stringify(frText)} uses an ASCII apostrophe — fr uses U+2019`,
+        ).toBe(-1);
+        checked += 1;
+      }
+      expect(checked, 'ANTI-VACUITY: all 45 keys must have been swept').toBe(45);
+      expect(
+        marks,
+        'ANTI-VACUITY: both confirmation prompts end in a question mark, so the sweep must have ' +
+          'judged at least two marks',
+      ).toBeGreaterThanOrEqual(2);
+    });
+
+    it('21r-b2 FR-PINS: every new plain fr value carries its exact reviewed French bytes', () => {
+      // FR-DIFFERS only proves each line is not English, and the model sweeps compare against
+      // CATALOG_FR itself — so without these pins a placeholder or meaning-inverted French catalog
+      // passes every other test. Every expectation is transcribed from the 21r-b2 plan's French
+      // table, NEVER from catalog.fr.ts. The four destructive labels come first.
+      // WRONG IMPL KILLED (1) ★: the delete and cancel labels swapped in catalog.fr.ts — a French
+      //   player presses "Supprimer mon compte" believing it stops a deletion.
+      // WRONG IMPL KILLED (2): a softened prompt that drops the irreversibility ("Confirmer ?", or
+      //   a decline prompt that no longer says the code is deleted for good).
+      // WRONG IMPL KILLED (3): a placeholder fr catalog ("FR: …", "TODO") that differs from en and
+      //   satisfies every sweep that reads CATALOG_FR back.
+      // WRONG IMPL KILLED (4): a meaning-inverted line (an active status that reads "supprimé", a
+      //   claimed body that says the progress was lost) — fluent, non-English, and wrong.
+      // WRONG IMPL KILLED (5): a parameterised closure that drops the U+00A0 unit spacing, swaps
+      //   received / total, or re-adds a count-before-noun shape that needs a 0/1 singular.
+      const fr = CATALOGS.fr as unknown as Record<string, unknown>;
+      const PLAIN_PINS: ReadonlyArray<readonly [string, string]> = [
+        // The four destructive / irreversible labels.
+        ['privacy.action.delete', 'Supprimer mon compte'],
+        ['privacy.action.cancel', 'Annuler la suppression du compte'],
+        [
+          'privacy.confirm.prompt',
+          `Cette action est irréversible. Confirmer la suppression${NBSP}?`,
+        ],
+        [
+          'claim.decline.confirmPrompt',
+          `Refuser supprime définitivement ce code de transfert — votre progression d${RSQUO}invité ` +
+            'ne pourra plus être transférée vers un compte une fois le code disparu. Refuser et ' +
+            'continuer en tant ' +
+            `qu${RSQUO}invité${NBSP}?`,
+        ],
+        // The rest of the claim overlay.
+        [
+          'claim.feedback.veto',
+          'Terminez ou refusez le transfert en attente avant de rejoindre la partie.',
+        ],
+        [
+          'claim.nudge',
+          `La progression d${RSQUO}invité ne se transfère que depuis l${RSQUO}appareil sur lequel ` +
+            'vous la récupérez.',
+        ],
+        ['claim.pending.title', `Conservez votre progression d${RSQUO}invité`],
+        [
+          'claim.pending.body',
+          `Connectez-vous pour récupérer la progression réalisée en tant qu${RSQUO}invité, ou ` +
+            `refusez pour continuer à jouer en tant qu${RSQUO}invité sur cet appareil.`,
+        ],
+        ['claim.awaiting.title', 'Finalisation du transfert'],
+        [
+          'claim.awaiting.body',
+          'En attente que votre compte soit prêt avant que votre progression ' +
+            `d${RSQUO}invité puisse être transférée.`,
+        ],
+        ['claim.claimed.title', 'Progression récupérée'],
+        [
+          'claim.claimed.body',
+          `Votre progression d${RSQUO}invité est désormais rattachée à votre compte.`,
+        ],
+        ['claim.signInFailed.title', `La connexion n${RSQUO}a pas abouti`],
+        [
+          'claim.signInFailed.rejected',
+          'La connexion a été refusée. Veuillez réessayer de vous connecter.',
+        ],
+        [
+          'claim.signInFailed.expired',
+          'Ce lien de connexion a expiré. Veuillez réessayer de vous connecter.',
+        ],
+        [
+          'claim.signInFailed.declined',
+          'La connexion a été annulée. Vous pourrez réessayer quand vous le souhaitez.',
+        ],
+        [
+          'claim.signInFailed.unreachable',
+          'Impossible de joindre le service de connexion. Veuillez réessayer dans un instant — ' +
+            `votre progression d${RSQUO}invité est en sécurité.`,
+        ],
+        [
+          'claim.signInFailed.fallback',
+          `La connexion ne s${RSQUO}est pas terminée. Veuillez réessayer — votre progression ` +
+            `d${RSQUO}invité est en sécurité.`,
+        ],
+        ['claim.reject.unusable.title', `Ce code de transfert n${RSQUO}est plus utilisable`],
+        [
+          'claim.reject.unusable.body',
+          'Ce code de transfert a déjà été utilisé ou a expiré. Vous pouvez continuer à jouer sur ' +
+            'cet appareil.',
+        ],
+        ['claim.reject.destination.title', 'Ce compte ne peut pas recevoir cette progression'],
+        [
+          'claim.reject.destination.body',
+          'Ce compte possède déjà des données de jeu, la progression ' +
+            `d${RSQUO}invité ne peut donc pas y être transférée. Le code de transfert reste ` +
+            'valable sur un autre compte.',
+        ],
+        ['claim.reject.transient.title', 'Transfert pas encore possible'],
+        [
+          'claim.reject.transient.body',
+          `Le transfert n${RSQUO}a pas pu aboutir pour le moment — fermez votre autre onglet ou ` +
+            'terminez votre combat en cours, puis réessayez.',
+        ],
+        ['claim.reject.generic.title', 'Impossible de finaliser le transfert'],
+        [
+          'claim.reject.generic.body',
+          'Vous devez vous connecter avant de pouvoir récupérer cette progression. Votre ' +
+            `progression d${RSQUO}invité est en sécurité.`,
+        ],
+        // The rest of the privacy surface.
+        ['privacy.countdown.dark', 'Suppression du compte en attente — temps restant indisponible'],
+        ['privacy.countdown.due', 'Suppression du compte imminente'],
+        [
+          'privacy.notice.terminal',
+          'Ce compte a déjà été définitivement supprimé. Il ne peut pas être restauré.',
+        ],
+        [
+          'privacy.notice.disconnected',
+          `Non connecté — votre demande n${RSQUO}a pas été envoyée. Réessayez.`,
+        ],
+        ['privacy.status.active', 'Ce compte est actif.'],
+        ['privacy.status.unknown', 'Statut du compte indisponible.'],
+        ['privacy.status.terminal', 'Ce compte a été définitivement supprimé.'],
+        [
+          'privacy.export.none',
+          `Aucun export de données n${RSQUO}est encore arrivé sur cet appareil.`,
+        ],
+        [
+          'privacy.export.incompleteDark',
+          'Export de données incomplet — certains fragments manquent.',
+        ],
+        [
+          'privacy.export.inconsistent',
+          `L${RSQUO}export de données n${RSQUO}a pas pu être assemblé — les fragments livrés ne ` +
+            'décrivent pas une seule demande. Demandez-le à nouveau.',
+        ],
+        ['privacy.action.export', `Demander l${RSQUO}export de mes données`],
+        ['privacy.action.download', `Télécharger l${RSQUO}export de mes données`],
+      ];
+      /** The 7 closures, each through the ONE sample `NEW_PARAM_SAMPLES_21R_B2` already feeds the
+       *  other 21r-b2 tests. */
+      const PARAM_PINS: ReadonlyArray<readonly [string, string]> = [
+        ['privacy.countdown.grace', 'Suppression du compte dans SAMPLE'],
+        ['privacy.countdown.days', `7${NBSP}j`],
+        ['privacy.countdown.hours', `7${NBSP}h`],
+        ['privacy.countdown.minutes', `7${NBSP}min`],
+        ['privacy.countdown.seconds', `7${NBSP}s`],
+        [
+          'privacy.export.incomplete',
+          `Export de données incomplet — fragments livrés${NBSP}: 2 sur 5.`,
+        ],
+        ['privacy.export.complete', `Export de données prêt — fragments reçus${NBSP}: 5.`],
+      ];
+
+      // ANTI-VACUITY: the pins cover EXACTLY the 21r-b2 key lists above — none missing, none extra.
+      expect(PLAIN_PINS.length, 'ANTI-VACUITY: all 38 new plain keys must be pinned').toBe(38);
+      expect(
+        PLAIN_PINS.map(([key]) => key).sort(),
+        'the plain pins must cover exactly NEW_PLAIN_KEYS_21R_B2',
+      ).toEqual([...NEW_PLAIN_KEYS_21R_B2].sort());
+      expect(
+        PARAM_PINS.map(([key]) => key).sort(),
+        'the parameterised pins must cover exactly NEW_PARAM_SAMPLES_21R_B2',
+      ).toEqual(NEW_PARAM_SAMPLES_21R_B2.map(([key]) => key).sort());
+
+      let checked = 0;
+      for (const [key, expected] of PLAIN_PINS) {
+        expect(fr[key], `${key} must carry its exact reviewed French text`).toBe(expected);
+        checked += 1;
+      }
+      const sampleOf = new Map(NEW_PARAM_SAMPLES_21R_B2);
+      for (const [key, expected] of PARAM_PINS) {
+        const closure = fr[key];
+        expect(typeof closure, `${key} must be a closure in fr`).toBe('function');
+        expect(
+          (closure as (p: Record<string, unknown>) => string)(sampleOf.get(key) ?? {}),
+          `${key}(sample) must render its exact reviewed French text`,
+        ).toBe(expected);
+        checked += 1;
+      }
+      expect(checked, 'ANTI-VACUITY: 38 plain + 7 parameterised pins must have run').toBe(45);
     });
   });
 });

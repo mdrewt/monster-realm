@@ -253,6 +253,19 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { from: 'Flameling', to: 'Flamewing' },
     { from: 'Mossback', to: 'Duskling' },
   ],
+  // 21r-b2: the privacy countdown / export-status closures (privacyBanner.ts). The four unit keys
+  // take a BIGINT `n`: 1157n is past the point where a locale number formatter inserts a grouping
+  // separator, and 2^53 + 1 is past exact `Number` precision.
+  'privacy.countdown.grace': [{ duration: '2d 3h 4m 5s' }, { duration: '58s' }],
+  'privacy.countdown.days': [{ n: 1157n }, { n: 9_007_199_254_740_993n }],
+  'privacy.countdown.hours': [{ n: 1157n }, { n: 9_007_199_254_740_993n }],
+  'privacy.countdown.minutes': [{ n: 1157n }, { n: 9_007_199_254_740_993n }],
+  'privacy.countdown.seconds': [{ n: 1157n }, { n: 9_007_199_254_740_993n }],
+  'privacy.export.incomplete': [
+    { received: 2, total: 5 },
+    { received: 7, total: 9 },
+  ],
+  'privacy.export.complete': [{ received: 5 }, { received: 12 }],
 };
 
 /** Every PLAIN (non-parameterised) MessageId's expected value, byte-transcribed
@@ -380,6 +393,65 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'chrome.session.confirmPrompt':
     'Continuing as a guest gives up this account session on this tab and cannot be undone. ' +
     'Continue as a guest?', // sessionModel.ts:133-134
+  // 21r-b2: 38 new plain keys — the claim overlay's 23 (claimModel.ts) and the privacy surface's
+  // 15 (privacyBanner.ts). Every value is byte-transcribed from the pre-migration literal at the
+  // cited line (memory/projects/monster-realm-21r-b2-plan.md's key table).
+  'claim.feedback.veto': 'Finish or decline the pending claim before rejoining.', // claimModel.ts:96
+  'claim.nudge': 'Guest progress transfers only from the device you claim it on.', // claimModel.ts:320
+  'claim.decline.confirmPrompt':
+    'Declining permanently deletes this claim code — your guest progress cannot be undone once ' +
+    'the code is gone. Decline and continue as a guest?', // claimModel.ts:321-322
+  'claim.pending.title': 'Keep your guest progress', // claimModel.ts:324
+  'claim.pending.body':
+    'Sign in to claim the progress you made as a guest, or decline to keep playing as a guest ' +
+    'on this device.', // claimModel.ts:325-326
+  'claim.awaiting.title': 'Finishing your claim', // claimModel.ts:327
+  'claim.awaiting.body':
+    'Waiting for your account to be ready before your guest progress can transfer.', // claimModel.ts:328-329
+  'claim.claimed.title': 'Progress claimed', // claimModel.ts:330
+  'claim.claimed.body': 'Your guest progress is now attached to your account.', // claimModel.ts:331
+  'claim.signInFailed.title': 'Sign-in did not finish', // claimModel.ts:381
+  'claim.signInFailed.rejected': 'Sign-in was rejected. Please try signing in again.', // claimModel.ts:353
+  'claim.signInFailed.expired': 'That sign-in link expired. Please try signing in again.', // claimModel.ts:354
+  'claim.signInFailed.declined': 'Sign-in was cancelled. You can try again whenever you are ready.', // claimModel.ts:355
+  'claim.signInFailed.unreachable':
+    'We could not reach the sign-in service. Please try again in a moment — your guest ' +
+    'progress is safe.', // claimModel.ts:356-357
+  'claim.signInFailed.fallback':
+    'Sign-in did not complete. Please try again — your guest progress is safe.', // claimModel.ts:363
+  'claim.reject.unusable.title': 'That claim code is no longer usable', // claimModel.ts:335
+  'claim.reject.unusable.body':
+    'This claim code has already been used or has expired. You can keep playing on this ' +
+    'device.', // claimModel.ts:336
+  'claim.reject.destination.title': 'This account cannot take that progress', // claimModel.ts:339
+  'claim.reject.destination.body':
+    'This account already has game data, so the guest progress cannot be moved onto it. The ' +
+    'claim code is still valid on another account.', // claimModel.ts:340
+  'claim.reject.transient.title': 'Not ready to claim yet', // claimModel.ts:343
+  'claim.reject.transient.body':
+    'The claim could not complete right now — close your other tab or finish your current ' +
+    'battle, then try again.', // claimModel.ts:344
+  'claim.reject.generic.title': 'Could not complete the claim', // claimModel.ts:347
+  'claim.reject.generic.body':
+    'Signing in is required before this progress can be claimed. Your guest progress is safe.', // claimModel.ts:348
+  'privacy.countdown.dark': 'Account deletion pending — time remaining unavailable', // privacyBanner.ts:31
+  'privacy.countdown.due': 'Account deletion is due now', // privacyBanner.ts:32
+  'privacy.notice.terminal':
+    'This account has already been permanently deleted. It cannot be restored.', // privacyBanner.ts:126-127
+  'privacy.notice.disconnected': 'Not connected — your request was not sent. Try again.', // privacyBanner.ts:131
+  'privacy.status.active': 'This account is active.', // privacyBanner.ts:133
+  'privacy.status.unknown': 'Account status unavailable.', // privacyBanner.ts:134
+  'privacy.status.terminal': 'This account has been permanently deleted.', // privacyBanner.ts:135
+  'privacy.export.none': 'No data export has arrived on this device yet.', // privacyBanner.ts:147
+  'privacy.export.incompleteDark': 'Data export incomplete — some chunks are missing.', // privacyBanner.ts:150
+  'privacy.export.inconsistent':
+    'Data export could not be assembled — the delivered chunks do not describe one request. ' +
+    'Request it again.', // privacyBanner.ts:151-153
+  'privacy.action.delete': 'Delete my account', // privacyBanner.ts:157
+  'privacy.confirm.prompt': 'This cannot be undone. Confirm deletion?', // privacyBanner.ts:158
+  'privacy.action.cancel': 'Cancel account deletion', // privacyBanner.ts:159
+  'privacy.action.export': 'Request my data export', // privacyBanner.ts:160
+  'privacy.action.download': 'Download my data export', // privacyBanner.ts:164
 };
 
 interface ParamOutputSpec {
@@ -609,12 +681,57 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { from: 'Mossback', to: 'Duskling' },
     outputB: 'Your Mossback evolved into Duskling!',
   },
+  // 21r-b2: the privacy countdown / export-status closures. The unit outputs are the bare decimal
+  // digits of the bigint — `'1,157d'` (a locale formatter) or `'9007199254740992d'` (a `Number`
+  // round trip) both fail here. The chunk sentences keep the pre-migration "N chunks" shape.
+  'privacy.countdown.grace': {
+    inputA: { duration: '2d 3h 4m 5s' },
+    outputA: 'Account deletion in 2d 3h 4m 5s',
+    inputB: { duration: '58s' },
+    outputB: 'Account deletion in 58s',
+  },
+  'privacy.countdown.days': {
+    inputA: { n: 1157n },
+    outputA: '1157d',
+    inputB: { n: 9_007_199_254_740_993n },
+    outputB: '9007199254740993d',
+  },
+  'privacy.countdown.hours': {
+    inputA: { n: 1157n },
+    outputA: '1157h',
+    inputB: { n: 9_007_199_254_740_993n },
+    outputB: '9007199254740993h',
+  },
+  'privacy.countdown.minutes': {
+    inputA: { n: 1157n },
+    outputA: '1157m',
+    inputB: { n: 9_007_199_254_740_993n },
+    outputB: '9007199254740993m',
+  },
+  'privacy.countdown.seconds': {
+    inputA: { n: 1157n },
+    outputA: '1157s',
+    inputB: { n: 9_007_199_254_740_993n },
+    outputB: '9007199254740993s',
+  },
+  'privacy.export.incomplete': {
+    inputA: { received: 2, total: 5 },
+    outputA: 'Data export incomplete — 2 of 5 chunks delivered.',
+    inputB: { received: 7, total: 9 },
+    outputB: 'Data export incomplete — 7 of 9 chunks delivered.',
+  },
+  'privacy.export.complete': {
+    inputA: { received: 5 },
+    outputA: 'Data export ready — 5 chunks.',
+    inputB: { received: 12 },
+    outputB: 'Data export ready — 12 chunks.',
+  },
 };
 
-/** The full 133-key roster (21r-b growth of the pre-slice 118-key roster by the 15 new
+/** The full 178-key roster (21r-b2 growth of 21r-b's 133-key roster by the 45 new `claim.*` /
+ *  `privacy.*` keys; 21r-b had grown the 118-key roster by the 15 new
  *  `chrome.feedback.*`/`shop.feedback.*`/`trade.feedback.*`/`chrome.rename.updated`/
- *  `tradePropose.feedback.sent`/`chrome.session.*` keys — corrects a stale "112" this comment
- *  carried forward from before the m24-s5 tail batch), sorted — `EXPECTED_PLAIN` and
+ *  `tradePropose.feedback.sent`/`chrome.session.*` keys), sorted — `EXPECTED_PLAIN` and
  *  `SAMPLE_PARAMS` are disjoint by construction (plain vs. parameterised), so their key union is
  *  exactly the roster. */
 const EXPECTED_KEYS = Object.keys(EXPECTED_PLAIN).concat(Object.keys(SAMPLE_PARAMS)).sort();
@@ -662,7 +779,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the 21r-b 133-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the 21r-b2 178-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -746,15 +863,15 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 });
 
 // =============================================================================
-// The 42-key roster, the SAMPLE_PARAMS bijection, and the
-// byte-identical pinned values (both sample sets) for every m24s3 migrated key.
+// The full roster, the SAMPLE_PARAMS bijection, and the
+// byte-identical pinned values (both sample sets) for every migrated key.
 //
 // =============================================================================
-describe('m24s3 (ADR-0259): catalog.en.ts — 42-key roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b CAT-01: the roster is exactly 133 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 178 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the 133 keys.
+    // (a) roster is exactly the 178 keys.
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).

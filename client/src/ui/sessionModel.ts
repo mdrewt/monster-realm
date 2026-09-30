@@ -1,6 +1,6 @@
 // ui/sessionModel.ts — the PURE session-lifecycle decision core.
 //
-// AUTH-46/47/49/56/59. No DOM, no SDK, no clock, no storage — the whole point is that the
+// AUTH-49/56/59. No DOM, no SDK, no clock, no storage — the whole point is that the
 // continue-anonymously affordance can ONLY be reached by an explicit, confirmed action, and a
 // model whose input alphabet carries no time cannot be driven by a timer (AUTH-49). The one
 // ambient read is the i18n locale cell (set once at boot) behind `t()`: every player-facing line
@@ -12,7 +12,7 @@
 import { t } from './i18n/resolver';
 
 /** The three states the session terminal can be in. `hidden` is the ordinary case (nothing
- *  showing); `expired` and `unreachable` each own DISTINCT copy (AUTH-46/47). The `'hidden'`
+ *  showing); `expired` and `unreachable` each own DISTINCT copy. The `'hidden'`
  *  literal is a cross-file contract with main.ts's `conn?.sessionState() !== 'hidden'` gate. */
 export type SessionState = 'hidden' | 'expired' | 'unreachable';
 
