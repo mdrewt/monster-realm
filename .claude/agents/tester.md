@@ -54,12 +54,19 @@ your role exists to respect.
 3. **Behavior-focused + mutation-ready.** Assert concrete values (tiles, counts,
    return booleans), never just "did not throw". The suite must start red for the
    right reason — a missing implementation, not a typo in your test.
-4. **Every criterion → a test that fails when the invariant is violated.** State,
-   per test, *which wrong implementation it catches* (e.g. "a SetMove replayed as a raw append lands
-   on the wrong tile — this assertion catches it").
+4. **Every criterion → a test you watch fail for the right reason** (a missing
+   or wrong implementation, not a typo in the test). That one red run is the
+   only bite-proof a check ever needs — once per invariant, never recursively
+   (`~/.claude/harness/standards/testing-tdd.md`). Never write a test that
+   scans source text, pins prose/doc/spec wording, or checks another check.
+   A user-facing criterion is tested through the user-facing surface.
 5. **Report** the test list, the criterion each covers, and the red state. You do
    NOT later edit a gating test to fit a buggy implementation — a wrong test is
-   revised *from the spec*, never to match the code.
+   revised *from the spec*, never to match the code. When a gating test's expected
+   value was wrong **against the spec**, **you** (not the implementer) correct it;
+   the correction must **strengthen or preserve the bite** (still fail a wrong
+   impl), and you **log a one-line rationale** tying the new expected value to the
+   spec — the verifier checks correction-vs-weakening and rejects a silent retarget.
 
 ## Framework gotchas
 
@@ -70,3 +77,14 @@ your role exists to respect.
   `~/.claude/skills/vitest-fast-check/SKILL.md` (full gotcha list) before debugging.
 - Use the project's framework + `~/.claude/harness/standards/testing-tdd.md`; scope the runner away
   from other test types (e.g. Playwright e2e specs the unit runner would grab).
+- **Non-ASCII expectations (U+00A0, ’, …):** build them from NAMED constants
+  (`const NBSP = String.fromCharCode(0x00a0)`; `String.fromCodePoint` for astral
+  characters), never a pasted invisible character (an NBSP is indistinguishable
+  from a space on a Read) and never a `\uXXXX` escape typed into an Edit/Write
+  parameter (it may arrive decoded or doubled). After writing, Grep the file for
+  a stray `\\u[0-9a-f]{4}` to catch a doubled escape.
+- **`node --check` is JS-only and unreliable on `.ts`/`.tsx` BOTH ways** (it passes
+  an unbalanced file that starts with an `import`, and fails any type annotation):
+  never run it on TypeScript. Read the file back instead and report "not
+  syntax-checked; needs the orchestrator's first vitest run" rather than claiming
+  a check you could not make.
