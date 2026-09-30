@@ -545,8 +545,8 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'claim.declineConfirmButton': 'Oui, refuser',
   // @desc: Button cancelling the decline: keeps the claim code. Short phrase.
   'claim.declineCancelButton': 'Garder mon code',
-  // @desc: Feedback line under the guest-claim overlay's buttons when the player tries to rejoin
-  // the game while a claim code is still pending — the join is refused until the claim is
+  // @desc: Feedback line on the guest-claim overlay, above its buttons, when the player tries to
+  // rejoin the game while a claim code is still pending — the join is refused until the claim is
   // finished or declined. One line.
   // claimModel.ts:96 (resolved in claimStep)
   'claim.feedback.veto':
@@ -655,7 +655,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // sentences.
   // claimModel.ts:348
   'claim.reject.generic.body':
-    'Une connexion est requise avant de pouvoir récupérer cette progression. Votre progression ' +
+    'Vous devez vous connecter avant de pouvoir récupérer cette progression. Votre progression ' +
     'd’invité est en sécurité.',
   // @desc: Only row of the ranked leaderboard when no player has a rating yet (ratings exist
   // only after a decisive ranked battle). One short line.
@@ -751,10 +751,11 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // privacyBanner.ts:147 (resolved in buildPrivacyViewModel)
   'privacy.export.none': 'Aucun export de données n’est encore arrivé sur cet appareil.',
   // @desc: Data-export line while chunks are still missing; {received} chunks of {total} have
-  // arrived (both counts). Deliberately does not promise the rest will arrive. One sentence.
+  // arrived (both counts). Deliberately does not promise the rest will arrive. One sentence. The
+  // French puts the counts after a label so 0 and 1 need no singular form.
   // privacyBanner.ts:148-149
   'privacy.export.incomplete': (p) =>
-    `Export de données incomplet — ${p.received} fragments sur ${p.total} livrés.`,
+    `Export de données incomplet — fragments livrés : ${p.received} sur ${p.total}.`,
   // @desc: Data-export line while chunks are missing and the total is unknown; deliberately no
   // number. One sentence.
   // privacyBanner.ts:150
@@ -766,9 +767,9 @@ export const CATALOG_FR: Catalog = Object.freeze({
     'L’export de données n’a pas pu être assemblé — les fragments livrés ne décrivent pas une ' +
     'seule demande. Demandez-le à nouveau.',
   // @desc: Data-export line once every chunk arrived; {received} is the chunk count. One short
-  // sentence.
+  // sentence. The French puts the count after a label so 0 and 1 need no singular form.
   // privacyBanner.ts:154-155
-  'privacy.export.complete': (p) => `Export de données prêt — ${p.received} fragments.`,
+  'privacy.export.complete': (p) => `Export de données prêt — fragments reçus : ${p.received}.`,
   // @desc: Button on the privacy overlay that starts the two-step account deletion. Short phrase,
   // fits a narrow button.
   // privacyBanner.ts:157 (resolved in buildPrivacyViewModel)

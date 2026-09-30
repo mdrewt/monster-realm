@@ -517,8 +517,8 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'claim.declineConfirmButton': 'Yes, decline',
   // @desc: Button cancelling the decline: keeps the claim code. Short phrase.
   'claim.declineCancelButton': 'Keep my code',
-  // @desc: Feedback line under the guest-claim overlay's buttons when the player tries to rejoin
-  // the game while a claim code is still pending — the join is refused until the claim is
+  // @desc: Feedback line on the guest-claim overlay, above its buttons, when the player tries to
+  // rejoin the game while a claim code is still pending — the join is refused until the claim is
   // finished or declined. One line.
   // claimModel.ts:96 (resolved in claimStep)
   'claim.feedback.veto': 'Finish or decline the pending claim before rejoining.',

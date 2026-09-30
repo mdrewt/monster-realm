@@ -321,9 +321,10 @@ function claimActions(state: ClaimModelState): ClaimActions {
   };
 }
 
-/** Copy for a refused claim, keyed on the outcome bucket; the fail-safe bucket (and an absent
- *  outcome) reads as the generic refusal. One literal key per arm — a key computed from the
- *  outcome would be invisible to the catalog's call-site census. */
+/** Copy for a refused claim, keyed on the outcome bucket. The fail-safe bucket, an absent
+ *  outcome and — so the projection stays TOTAL — any value the type system did not admit all
+ *  read as the generic refusal. One literal key per arm: a key computed from the outcome would
+ *  be invisible to the catalog's call-site census. */
 function rejectCopy(outcome: ClaimRejectOutcome | undefined): {
   readonly title: string;
   readonly body: string;
@@ -338,8 +339,7 @@ function rejectCopy(outcome: ClaimRejectOutcome | undefined): {
       };
     case 'retain-transient-no-autoretry':
       return { title: t('claim.reject.transient.title'), body: t('claim.reject.transient.body') };
-    case 'retain-not-claim-specific':
-    case undefined:
+    default:
       return { title: t('claim.reject.generic.title'), body: t('claim.reject.generic.body') };
   }
 }
@@ -362,8 +362,9 @@ function signInFailedBody(reason: string | undefined): string {
   }
 }
 
-/** Pure projection into what the DOM shell renders. Every line is resolved HERE, at projection
- *  time (a module-level `t()` would freeze the boot locale). */
+/** Pure projection into what the DOM shell renders. Title, body, confirm prompt and nudge are
+ *  resolved HERE, at projection time (a module-level `t()` would freeze the boot locale);
+ *  `feedback` arrives already resolved from `claimStep`. */
 export function buildClaimViewModel(state: ClaimModelState): ClaimViewModel {
   let title: string;
   let body: string;
