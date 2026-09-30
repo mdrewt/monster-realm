@@ -1724,8 +1724,9 @@ const B2_FR: B2Locale = {
   catalog: FR_CATALOG,
   gracePrefix: B2_GRACE_PREFIX_FR,
   durationColumn: 2,
-  exportIncomplete2of5: 'Export de données incomplet — 2 fragments sur 5 livrés.',
-  exportComplete5: 'Export de données prêt — 5 fragments.',
+  // Count after a label, so 0 and 1 need no singular form; U+00A0 before the colon.
+  exportIncomplete2of5: `Export de données incomplet — fragments livrés${NBSP}: 2 sur 5.`,
+  exportComplete5: `Export de données prêt — fragments reçus${NBSP}: 5.`,
 };
 
 /** Every privacy-surface string in ONE locale (the caller has already switched to it): the
@@ -1897,8 +1898,8 @@ describe('21r-b2 privacy copy: every privacy-surface string resolves through the
     // WRONG IMPL KILLED (4): the DARK incomplete export routed through the chunk-count sentence
     //   (rendering "undefined") or collapsed onto the known-total one.
     // WRONG IMPL KILLED (5): the terminal notice wired on one route only (row vs rejected cancel).
-    // WRONG IMPL KILLED (6): received / total swapped in the fr chunk sentence — "2 fragments sur
-    //   5" fixes the order.
+    // WRONG IMPL KILLED (6): received / total swapped in the fr chunk sentence — ": 2 sur 5" fixes
+    //   the order.
     setLocale('fr');
     const checked = expectPrivacyCopyIn(B2_FR);
     expect(checked, 'ANTI-VACUITY: the sweep must have checked every arm').toBeGreaterThan(30);

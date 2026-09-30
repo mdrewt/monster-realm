@@ -863,11 +863,11 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 });
 
 // =============================================================================
-// The 42-key roster, the SAMPLE_PARAMS bijection, and the
-// byte-identical pinned values (both sample sets) for every m24s3 migrated key.
+// The full roster, the SAMPLE_PARAMS bijection, and the
+// byte-identical pinned values (both sample sets) for every migrated key.
 //
 // =============================================================================
-describe('m24s3 (ADR-0259): catalog.en.ts — 42-key roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
+describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
   it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 178 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 

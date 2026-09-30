@@ -743,7 +743,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     ).toEqual(['alive.one', 'alive.two']);
   });
 
-  it('m24s7/21r-b PARITY-02: I18N-27 — import-binding resolution + the 21-file resolver roster + main.ts dual bindings', () => {
+  it('m24s7/21r-b PARITY-02: I18N-27 — import-binding resolution + the 23-file resolver roster + main.ts dual bindings', () => {
     const census = computeCensus();
     const i18nRoster = census
       .filter((f) => f.bindings.some((b) => b.module === 'i18n'))
@@ -1091,7 +1091,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
   });
 
   describe('catalogFr (the fr runtime proof — CATALOGS.fr, S7)', () => {
-    it("m24s7/21r-b FR-01: every fr closure reads exactly en's param fields, interpolates each, and >=100/133 values differ from en", () => {
+    it("m24s7/21r-b FR-01: every fr closure reads exactly en's param fields, interpolates each, and >=100/178 values differ from en", () => {
       const en = CATALOG_EN as Record<string, unknown>;
       const fr = CATALOGS.fr as unknown as Record<string, unknown> | undefined;
       // WRONG IMPL KILLED: CATALOGS.fr undefined (unregistered / missing catalog.fr.ts).
@@ -1429,15 +1429,24 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       ).toBeGreaterThanOrEqual(2);
     });
 
-    it('21r-b2 FR-DESTRUCTIVE: the four labels that start, stop or confirm an irreversible deletion carry their exact reviewed French bytes', () => {
-      // FR-DIFFERS only proves each line is not English; these four are where a WRONG French line
-      // costs a player their account or their guest progress, so each is pinned by value.
+    it('21r-b2 FR-PINS: every new plain fr value carries its exact reviewed French bytes', () => {
+      // FR-DIFFERS only proves each line is not English, and the model sweeps compare against
+      // CATALOG_FR itself — so without these pins a placeholder or meaning-inverted French catalog
+      // passes every other test. Every expectation is transcribed from the 21r-b2 plan's French
+      // table, NEVER from catalog.fr.ts. The four destructive labels come first.
       // WRONG IMPL KILLED (1) ★: the delete and cancel labels swapped in catalog.fr.ts — a French
       //   player presses "Supprimer mon compte" believing it stops a deletion.
       // WRONG IMPL KILLED (2): a softened prompt that drops the irreversibility ("Confirmer ?", or
       //   a decline prompt that no longer says the code is deleted for good).
+      // WRONG IMPL KILLED (3): a placeholder fr catalog ("FR: …", "TODO") that differs from en and
+      //   satisfies every sweep that reads CATALOG_FR back.
+      // WRONG IMPL KILLED (4): a meaning-inverted line (an active status that reads "supprimé", a
+      //   claimed body that says the progress was lost) — fluent, non-English, and wrong.
+      // WRONG IMPL KILLED (5): a parameterised closure that drops the U+00A0 unit spacing, swaps
+      //   received / total, or re-adds a count-before-noun shape that needs a 0/1 singular.
       const fr = CATALOGS.fr as unknown as Record<string, unknown>;
-      const PINS: ReadonlyArray<readonly [string, string]> = [
+      const PLAIN_PINS: ReadonlyArray<readonly [string, string]> = [
+        // The four destructive / irreversible labels.
         ['privacy.action.delete', 'Supprimer mon compte'],
         ['privacy.action.cancel', 'Annuler la suppression du compte'],
         [
@@ -1450,10 +1459,153 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
             'ne pourra plus être récupérée une fois le code disparu. Refuser et continuer en tant ' +
             `qu${RSQUO}invité${NBSP}?`,
         ],
+        // The rest of the claim overlay.
+        [
+          'claim.feedback.veto',
+          'Terminez ou refusez le transfert en attente avant de rejoindre la partie.',
+        ],
+        [
+          'claim.nudge',
+          `La progression d${RSQUO}invité ne se transfère que depuis l${RSQUO}appareil sur lequel ` +
+            'vous la récupérez.',
+        ],
+        ['claim.pending.title', `Conservez votre progression d${RSQUO}invité`],
+        [
+          'claim.pending.body',
+          `Connectez-vous pour récupérer la progression réalisée en tant qu${RSQUO}invité, ou ` +
+            `refusez pour continuer à jouer en tant qu${RSQUO}invité sur cet appareil.`,
+        ],
+        ['claim.awaiting.title', 'Finalisation du transfert'],
+        [
+          'claim.awaiting.body',
+          'En attente que votre compte soit prêt avant que votre progression ' +
+            `d${RSQUO}invité puisse être transférée.`,
+        ],
+        ['claim.claimed.title', 'Progression récupérée'],
+        [
+          'claim.claimed.body',
+          `Votre progression d${RSQUO}invité est désormais rattachée à votre compte.`,
+        ],
+        ['claim.signInFailed.title', `La connexion n${RSQUO}a pas abouti`],
+        [
+          'claim.signInFailed.rejected',
+          'La connexion a été refusée. Veuillez réessayer de vous connecter.',
+        ],
+        [
+          'claim.signInFailed.expired',
+          'Ce lien de connexion a expiré. Veuillez réessayer de vous connecter.',
+        ],
+        [
+          'claim.signInFailed.declined',
+          'La connexion a été annulée. Vous pourrez réessayer quand vous le souhaitez.',
+        ],
+        [
+          'claim.signInFailed.unreachable',
+          'Impossible de joindre le service de connexion. Veuillez réessayer dans un instant — ' +
+            `votre progression d${RSQUO}invité est en sécurité.`,
+        ],
+        [
+          'claim.signInFailed.fallback',
+          `La connexion ne s${RSQUO}est pas terminée. Veuillez réessayer — votre progression ` +
+            `d${RSQUO}invité est en sécurité.`,
+        ],
+        ['claim.reject.unusable.title', `Ce code de transfert n${RSQUO}est plus utilisable`],
+        [
+          'claim.reject.unusable.body',
+          'Ce code de transfert a déjà été utilisé ou a expiré. Vous pouvez continuer à jouer sur ' +
+            'cet appareil.',
+        ],
+        ['claim.reject.destination.title', 'Ce compte ne peut pas recevoir cette progression'],
+        [
+          'claim.reject.destination.body',
+          'Ce compte possède déjà des données de jeu, la progression ' +
+            `d${RSQUO}invité ne peut donc pas y être transférée. Le code de transfert reste ` +
+            'valable sur un autre compte.',
+        ],
+        ['claim.reject.transient.title', 'Transfert pas encore possible'],
+        [
+          'claim.reject.transient.body',
+          `Le transfert n${RSQUO}a pas pu aboutir pour le moment — fermez votre autre onglet ou ` +
+            'terminez votre combat en cours, puis réessayez.',
+        ],
+        ['claim.reject.generic.title', 'Impossible de finaliser le transfert'],
+        [
+          'claim.reject.generic.body',
+          'Vous devez vous connecter avant de pouvoir récupérer cette progression. Votre ' +
+            `progression d${RSQUO}invité est en sécurité.`,
+        ],
+        // The rest of the privacy surface.
+        ['privacy.countdown.dark', 'Suppression du compte en attente — temps restant indisponible'],
+        ['privacy.countdown.due', 'Suppression du compte imminente'],
+        [
+          'privacy.notice.terminal',
+          'Ce compte a déjà été définitivement supprimé. Il ne peut pas être restauré.',
+        ],
+        [
+          'privacy.notice.disconnected',
+          `Non connecté — votre demande n${RSQUO}a pas été envoyée. Réessayez.`,
+        ],
+        ['privacy.status.active', 'Ce compte est actif.'],
+        ['privacy.status.unknown', 'Statut du compte indisponible.'],
+        ['privacy.status.terminal', 'Ce compte a été définitivement supprimé.'],
+        [
+          'privacy.export.none',
+          `Aucun export de données n${RSQUO}est encore arrivé sur cet appareil.`,
+        ],
+        [
+          'privacy.export.incompleteDark',
+          'Export de données incomplet — certains fragments manquent.',
+        ],
+        [
+          'privacy.export.inconsistent',
+          `L${RSQUO}export de données n${RSQUO}a pas pu être assemblé — les fragments livrés ne ` +
+            'décrivent pas une seule demande. Demandez-le à nouveau.',
+        ],
+        ['privacy.action.export', `Demander l${RSQUO}export de mes données`],
+        ['privacy.action.download', `Télécharger l${RSQUO}export de mes données`],
       ];
-      for (const [key, expected] of PINS) {
+      /** The 7 closures, each through the ONE sample `NEW_PARAM_SAMPLES_21R_B2` already feeds the
+       *  other 21r-b2 tests. */
+      const PARAM_PINS: ReadonlyArray<readonly [string, string]> = [
+        ['privacy.countdown.grace', 'Suppression du compte dans SAMPLE'],
+        ['privacy.countdown.days', `7${NBSP}j`],
+        ['privacy.countdown.hours', `7${NBSP}h`],
+        ['privacy.countdown.minutes', `7${NBSP}min`],
+        ['privacy.countdown.seconds', `7${NBSP}s`],
+        [
+          'privacy.export.incomplete',
+          `Export de données incomplet — fragments livrés${NBSP}: 2 sur 5.`,
+        ],
+        ['privacy.export.complete', `Export de données prêt — fragments reçus${NBSP}: 5.`],
+      ];
+
+      // ANTI-VACUITY: the pins cover EXACTLY the 21r-b2 key lists above — none missing, none extra.
+      expect(PLAIN_PINS.length, 'ANTI-VACUITY: all 38 new plain keys must be pinned').toBe(38);
+      expect(
+        PLAIN_PINS.map(([key]) => key).sort(),
+        'the plain pins must cover exactly NEW_PLAIN_KEYS_21R_B2',
+      ).toEqual([...NEW_PLAIN_KEYS_21R_B2].sort());
+      expect(
+        PARAM_PINS.map(([key]) => key).sort(),
+        'the parameterised pins must cover exactly NEW_PARAM_SAMPLES_21R_B2',
+      ).toEqual(NEW_PARAM_SAMPLES_21R_B2.map(([key]) => key).sort());
+
+      let checked = 0;
+      for (const [key, expected] of PLAIN_PINS) {
         expect(fr[key], `${key} must carry its exact reviewed French text`).toBe(expected);
+        checked += 1;
       }
+      const sampleOf = new Map(NEW_PARAM_SAMPLES_21R_B2);
+      for (const [key, expected] of PARAM_PINS) {
+        const closure = fr[key];
+        expect(typeof closure, `${key} must be a closure in fr`).toBe('function');
+        expect(
+          (closure as (p: Record<string, unknown>) => string)(sampleOf.get(key) ?? {}),
+          `${key}(sample) must render its exact reviewed French text`,
+        ).toBe(expected);
+        checked += 1;
+      }
+      expect(checked, 'ANTI-VACUITY: 38 plain + 7 parameterised pins must have run').toBe(45);
     });
   });
 });

@@ -479,14 +479,14 @@ describe('claimModel AUTH-52 / AUTH-59: joining while vetoed, and acting with no
 
   it('★★ BITES (AUTH-59): the feedback line is EXACTLY the repo-wide disconnected string', () => {
     // "the SAME visible feedback as an ordinary disconnected action": the model's line is the
-    // catalog's `chrome.feedback.disconnected` entry, and that entry keeps its English bytes.
+    // catalog's `chrome.feedback.disconnected` entry. Its English bytes are pinned by
+    // catalog.test.ts CAT-01 (c) through `EXPECTED_PLAIN['chrome.feedback.disconnected']`.
     // WRONG IMPL KILLED: a claim-local copy of the line that drifts from the shared entry.
     const step = claimStep(stateOf({ phase: 'claimed', joinPermitted: true }), {
       kind: 'join-requested',
       hasLiveConnection: false,
     });
     expect(step.next.feedback).toBe(DISCONNECTED_FEEDBACK_EN);
-    expect(DISCONNECTED_FEEDBACK_EN).toBe('disconnected — try again');
   });
 
   it('★★ BITES (AUTH-59): all THREE actions produce that same line with no live connection, and none of them acts', () => {
@@ -1344,8 +1344,8 @@ describe('claimModel 21r-b2: every claim-overlay string resolves through the typ
     // the pre-migration bytes, so together they are the en byte pin at the site.
     // WRONG IMPL KILLED (1): an arm wired to a wrong-but-existing key under en (the transient body
     //   on the generic bucket) — every arm is compared with its own key.
-    // WRONG IMPL KILLED (2): the prototype-name reasons rendering a function / object (today's
-    //   `SIGN_IN_FAILED_COPY[reason] ?? fallback` shape) — the fallback line is required instead.
+    // WRONG IMPL KILLED (2): the prototype-name reasons rendering a function / object (the
+    //   pre-migration `SIGN_IN_FAILED_COPY[reason] ?? fallback` shape) — the fallback line is required instead.
     setLocale('en');
     const checked = expectClaimCopyFrom(EN_CATALOG, 'en');
     expect(checked, 'ANTI-VACUITY: every copy arm and every feedback arm was checked').toBe(
