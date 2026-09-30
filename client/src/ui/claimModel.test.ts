@@ -1156,6 +1156,14 @@ const CLAIM_COPY_CASES: readonly ClaimCopyCase[] = [
     title: 'claim.reject.generic.title',
     body: 'claim.reject.generic.body',
   },
+  // Kills explicit `case 'retain-not-claim-specific': case undefined:` arms with no `default:` —
+  // an untyped null then yields no copy and buildClaimViewModel throws in the render path.
+  {
+    where: 'rejected: an outcome outside the type (null) degrades to the generic copy',
+    state: rejectedWith(null as never),
+    title: 'claim.reject.generic.title',
+    body: 'claim.reject.generic.body',
+  },
   {
     where: 'sign-in-failed: sign-in-rejected',
     state: signInFailedWith('sign-in-rejected'),

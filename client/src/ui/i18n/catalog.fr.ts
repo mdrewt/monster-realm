@@ -561,7 +561,8 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // claimModel.ts:321-322 (resolved in buildClaimViewModel)
   'claim.decline.confirmPrompt':
     'Refuser supprime définitivement ce code de transfert — votre progression d’invité ne pourra ' +
-    'plus être récupérée une fois le code disparu. Refuser et continuer en tant qu’invité ?',
+    'plus être transférée vers un compte une fois le code disparu. Refuser et continuer en tant ' +
+    'qu’invité ?',
   // @desc: Heading of the guest-claim overlay while a claim code is pending (also the initial
   // prompt). One short line.
   // claimModel.ts:324 (resolved in buildClaimViewModel)

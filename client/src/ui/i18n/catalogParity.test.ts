@@ -1456,7 +1456,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
         [
           'claim.decline.confirmPrompt',
           `Refuser supprime définitivement ce code de transfert — votre progression d${RSQUO}invité ` +
-            'ne pourra plus être récupérée une fois le code disparu. Refuser et continuer en tant ' +
+            'ne pourra plus être transférée vers un compte une fois le code disparu. Refuser et ' +
+            'continuer en tant ' +
             `qu${RSQUO}invité${NBSP}?`,
         ],
         // The rest of the claim overlay.
