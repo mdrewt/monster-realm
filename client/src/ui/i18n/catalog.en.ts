@@ -517,6 +517,110 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'claim.declineConfirmButton': 'Yes, decline',
   // @desc: Button cancelling the decline: keeps the claim code. Short phrase.
   'claim.declineCancelButton': 'Keep my code',
+  // @desc: Feedback line under the guest-claim overlay's buttons when the player tries to rejoin
+  // the game while a claim code is still pending — the join is refused until the claim is
+  // finished or declined. One line.
+  // claimModel.ts:96 (resolved in claimStep)
+  'claim.feedback.veto': 'Finish or decline the pending claim before rejoining.',
+  // @desc: First-run notice on the guest-claim overlay: guest progress can only be claimed from
+  // the device it was made on. One line.
+  // claimModel.ts:320 (resolved in buildClaimViewModel)
+  'claim.nudge': 'Guest progress transfers only from the device you claim it on.',
+  // @desc: Confirmation prompt shown after the player asks to decline the claim; it names the
+  // irreversible consequence (the claim code is deleted for good) and asks again. Two sentences.
+  // claimModel.ts:321-322 (resolved in buildClaimViewModel)
+  'claim.decline.confirmPrompt':
+    'Declining permanently deletes this claim code — your guest progress cannot be undone once ' +
+    'the code is gone. Decline and continue as a guest?',
+  // @desc: Heading of the guest-claim overlay while a claim code is pending (also the initial
+  // prompt). One short line.
+  // claimModel.ts:324 (resolved in buildClaimViewModel)
+  'claim.pending.title': 'Keep your guest progress',
+  // @desc: Body of the guest-claim overlay while a claim code is pending: sign in to claim the
+  // guest progress, or decline and stay a guest on this device. One sentence, two clauses.
+  // claimModel.ts:325-326
+  'claim.pending.body':
+    'Sign in to claim the progress you made as a guest, or decline to keep playing as a guest ' +
+    'on this device.',
+  // @desc: Heading of the guest-claim overlay after sign-in while the account is still being
+  // prepared. One short line.
+  // claimModel.ts:327
+  'claim.awaiting.title': 'Finishing your claim',
+  // @desc: Body of the guest-claim overlay while waiting for the account to be ready before the
+  // guest progress can transfer. One sentence.
+  // claimModel.ts:328-329
+  'claim.awaiting.body':
+    'Waiting for your account to be ready before your guest progress can transfer.',
+  // @desc: Heading of the guest-claim overlay once the guest progress is attached to the account.
+  // One short line.
+  // claimModel.ts:330
+  'claim.claimed.title': 'Progress claimed',
+  // @desc: Body of the guest-claim overlay once the claim succeeded. One sentence.
+  // claimModel.ts:331
+  'claim.claimed.body': 'Your guest progress is now attached to your account.',
+  // @desc: Heading of the guest-claim overlay after a sign-in attempt failed. One short line.
+  // claimModel.ts:381
+  'claim.signInFailed.title': 'Sign-in did not finish',
+  // @desc: Body of the guest-claim overlay when the sign-in provider rejected the attempt; invites
+  // another try. Two short sentences.
+  // claimModel.ts:353 (resolved in buildClaimViewModel)
+  'claim.signInFailed.rejected': 'Sign-in was rejected. Please try signing in again.',
+  // @desc: Body of the guest-claim overlay when the sign-in link had expired. Two short sentences.
+  // claimModel.ts:354
+  'claim.signInFailed.expired': 'That sign-in link expired. Please try signing in again.',
+  // @desc: Body of the guest-claim overlay when the player cancelled the sign-in themselves. Two
+  // short sentences.
+  // claimModel.ts:355
+  'claim.signInFailed.declined': 'Sign-in was cancelled. You can try again whenever you are ready.',
+  // @desc: Body of the guest-claim overlay when the sign-in service could not be reached;
+  // reassures that guest progress is kept. Two sentences.
+  // claimModel.ts:356-357
+  'claim.signInFailed.unreachable':
+    'We could not reach the sign-in service. Please try again in a moment — your guest ' +
+    'progress is safe.',
+  // @desc: Body of the guest-claim overlay for any other sign-in failure; reassures that guest
+  // progress is kept. Two sentences.
+  // claimModel.ts:363
+  'claim.signInFailed.fallback':
+    'Sign-in did not complete. Please try again — your guest progress is safe.',
+  // @desc: Heading of the guest-claim overlay when the server refused the claim because the code
+  // is invalid, already used or expired. One short line.
+  // claimModel.ts:335 (resolved in buildClaimViewModel)
+  'claim.reject.unusable.title': 'That claim code is no longer usable',
+  // @desc: Body for the unusable-code refusal: the code is spent, and the player keeps playing on
+  // this device. Two sentences.
+  // claimModel.ts:336
+  'claim.reject.unusable.body':
+    'This claim code has already been used or has expired. You can keep playing on this ' +
+    'device.',
+  // @desc: Heading when the signed-in account already has its own game data and cannot take the
+  // guest progress. One short line.
+  // claimModel.ts:339
+  'claim.reject.destination.title': 'This account cannot take that progress',
+  // @desc: Body for that refusal: why the progress cannot move, and that the code still works on
+  // another account. Two sentences.
+  // claimModel.ts:340
+  'claim.reject.destination.body':
+    'This account already has game data, so the guest progress cannot be moved onto it. The ' +
+    'claim code is still valid on another account.',
+  // @desc: Heading when the claim is refused for a momentary reason (another tab open, a battle
+  // in progress). One short line.
+  // claimModel.ts:343
+  'claim.reject.transient.title': 'Not ready to claim yet',
+  // @desc: Body for the momentary refusal: close the other tab or finish the battle, then retry.
+  // One sentence.
+  // claimModel.ts:344
+  'claim.reject.transient.body':
+    'The claim could not complete right now — close your other tab or finish your current ' +
+    'battle, then try again.',
+  // @desc: Heading for any other claim refusal (e.g. not signed in). One short line.
+  // claimModel.ts:347
+  'claim.reject.generic.title': 'Could not complete the claim',
+  // @desc: Body for the other refusals: sign-in is required first; guest progress is kept. Two
+  // sentences.
+  // claimModel.ts:348
+  'claim.reject.generic.body':
+    'Signing in is required before this progress can be claimed. Your guest progress is safe.',
   // @desc: Only row of the ranked leaderboard when no player has a rating yet (ratings exist
   // only after a decisive ranked battle). One short line.
   // leaderboardView.ts:60
@@ -555,6 +659,100 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // beside privacy.confirm.delete. Short phrase, fits a narrow button.
   // privacyView.ts:188 (#paintButton label argument)
   'privacy.confirm.keep': 'Keep my account',
+  // @desc: Countdown banner in the HUD and the privacy overlay's status line while account
+  // deletion is pending but the remaining time could not be computed. One line.
+  // privacyBanner.ts:31 (resolved in privacyBannerLabel)
+  'privacy.countdown.dark': 'Account deletion pending — time remaining unavailable',
+  // @desc: Countdown banner / status line once the deletion deadline has passed and the account
+  // may be deleted at any moment. One short line.
+  // privacyBanner.ts:32 (resolved in privacyBannerLabel)
+  'privacy.countdown.due': 'Account deletion is due now',
+  // @desc: Ticking countdown banner / status line while deletion is pending; {duration} is the
+  // remaining time already formatted from privacy.countdown.days/hours/minutes/seconds (e.g.
+  // "6d 23h 59m 58s"). One line.
+  // privacyBanner.ts:33 (resolved in privacyBannerLabel)
+  'privacy.countdown.grace': (p) => `Account deletion in ${p.duration}`,
+  // @desc: One group of the countdown duration: {n} whole days followed by the day unit symbol
+  // (no space in English). Very short.
+  // privacyBanner.ts:62 (resolved in formatDuration)
+  'privacy.countdown.days': (p) => `${p.n}d`,
+  // @desc: One group of the countdown duration: {n} hours (0-23) and the hour unit symbol. Very
+  // short.
+  // privacyBanner.ts:63 (resolved in formatDuration)
+  'privacy.countdown.hours': (p) => `${p.n}h`,
+  // @desc: One group of the countdown duration: {n} minutes (0-59) and the minute unit symbol.
+  // Very short.
+  // privacyBanner.ts:64 (resolved in formatDuration)
+  'privacy.countdown.minutes': (p) => `${p.n}m`,
+  // @desc: One group of the countdown duration: {n} seconds (0-59) and the second unit symbol;
+  // this group is always present and ticks every second. Very short.
+  // privacyBanner.ts:65 (resolved in formatDuration)
+  'privacy.countdown.seconds': (p) => `${p.n}s`,
+  // @desc: Notice on the privacy overlay when the account has already been permanently deleted
+  // (shown on open, and after a refused cancel). Must not read like a generic rejection. Two
+  // sentences.
+  // privacyBanner.ts:126-127 (resolved in buildPrivacyViewModel)
+  'privacy.notice.terminal':
+    'This account has already been permanently deleted. It cannot be restored.',
+  // @desc: Notice on the privacy overlay when a delete / cancel / export click could not be sent
+  // because the connection is down; it is NOT a server rejection. Two short sentences.
+  // privacyBanner.ts:131 (resolved in buildPrivacyViewModel)
+  'privacy.notice.disconnected': 'Not connected — your request was not sent. Try again.',
+  // @desc: Status line of the privacy overlay for an account with no deletion pending. One short
+  // sentence.
+  // privacyBanner.ts:133 (resolved in buildPrivacyViewModel)
+  'privacy.status.active': 'This account is active.',
+  // @desc: Status line of the privacy overlay before the account row has arrived. One short
+  // sentence.
+  // privacyBanner.ts:134
+  'privacy.status.unknown': 'Account status unavailable.',
+  // @desc: Status line of the privacy overlay for an account that has been permanently deleted.
+  // One short sentence.
+  // privacyBanner.ts:135
+  'privacy.status.terminal': 'This account has been permanently deleted.',
+  // @desc: Data-export line of the privacy overlay when no export has been delivered to this
+  // device. One sentence.
+  // privacyBanner.ts:147 (resolved in buildPrivacyViewModel)
+  'privacy.export.none': 'No data export has arrived on this device yet.',
+  // @desc: Data-export line while chunks are still missing; {received} chunks of {total} have
+  // arrived (both counts). Deliberately does not promise the rest will arrive. One sentence.
+  // privacyBanner.ts:148-149
+  'privacy.export.incomplete': (p) =>
+    `Data export incomplete — ${p.received} of ${p.total} chunks delivered.`,
+  // @desc: Data-export line while chunks are missing and the total is unknown; deliberately no
+  // number. One sentence.
+  // privacyBanner.ts:150
+  'privacy.export.incompleteDark': 'Data export incomplete — some chunks are missing.',
+  // @desc: Data-export line when the delivered chunks contradict each other and the export must
+  // be requested again; deliberately no number. Two sentences.
+  // privacyBanner.ts:151-153
+  'privacy.export.inconsistent':
+    'Data export could not be assembled — the delivered chunks do not describe one request. ' +
+    'Request it again.',
+  // @desc: Data-export line once every chunk arrived; {received} is the chunk count. One short
+  // sentence.
+  // privacyBanner.ts:154-155
+  'privacy.export.complete': (p) => `Data export ready — ${p.received} chunks.`,
+  // @desc: Button on the privacy overlay that starts the two-step account deletion. Short phrase,
+  // fits a narrow button.
+  // privacyBanner.ts:157 (resolved in buildPrivacyViewModel)
+  'privacy.action.delete': 'Delete my account',
+  // @desc: Prompt shown beside the second-step buttons after the player asked to delete the
+  // account; names the irreversibility. Two short sentences.
+  // privacyBanner.ts:158
+  'privacy.confirm.prompt': 'This cannot be undone. Confirm deletion?',
+  // @desc: Button on the privacy overlay that withdraws a pending account deletion. Short phrase,
+  // fits a narrow button.
+  // privacyBanner.ts:159
+  'privacy.action.cancel': 'Cancel account deletion',
+  // @desc: Button on the privacy overlay that asks the server to build a data export. Short
+  // phrase; it sits beside privacy.action.download, which must read differently.
+  // privacyBanner.ts:160
+  'privacy.action.export': 'Request my data export',
+  // @desc: Button on the privacy overlay that saves the data export that has already arrived.
+  // Short phrase, distinct from privacy.action.export.
+  // privacyBanner.ts:164
+  'privacy.action.download': 'Download my data export',
   // @desc: Dismiss button of the small evolution-reveal banner near the bottom of the screen.
   // Very short — one or two characters wide.
   // evolutionNotice.ts:209 (resolved in render())
