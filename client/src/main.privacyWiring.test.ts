@@ -15,10 +15,16 @@
  * Amendment A2 — A2-D5 (the open path + the claim-hidden-FIRST ordering), A2-D6 (the ROW
  * route), A2-D8 (non-delivery must be observable), A2-D9 (change-detected dispatch).
  *
- * RED REASON AT AUTHORING TIME: `client/src/ui/privacyBanner.ts` exports ONLY
- * `privacyBannerLabel`. `main.ts` imports `buildPrivacyViewModel` from it and this file imports
- * `PRIVACY_TERMINAL_NOTICE` from it, so BOTH the module under test and this spec fail to
- * resolve and every test below reds on a MISSING IMPLEMENTATION — not on a typo here.
+ * THE TERMINAL NOTICE is read from the en catalog (`privacy.notice.terminal`): 21r-b2 moved the
+ * sentence into the i18n catalog and removed the `PRIVACY_TERMINAL_NOTICE` export. The read is
+ * asserted to be a string when this file loads, so a missing or misspelt key fails loudly instead
+ * of turning the `.not.toBe` checks below vacuous.
+ *
+ * 21r-b2 ADDS A SECOND DESCRIBE that boots the SAME harness under `?locale=fr` (the
+ * main.feedbackI18n.test.ts precedent) through the shared `bootMain(url)`. Its locale probe is a
+ * DYNAMIC import of `./ui/i18n/resolver` taken AFTER the boot: `bootMain` resets the module
+ * registry, so a static import at the top of this file would bind a different resolver instance
+ * than the one main.ts switched, and would read `en` whatever main.ts did.
  *
  * MODELLED ON `main.a11yFocus.test.ts` (which is itself modelled on the sanctioned
  * RUNTIME-import exception documented at `main.wiring.test.ts:20-21`). Same `#app` shell built
@@ -56,8 +62,33 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Connection, ConnectionOptions } from './net/connection';
+import { CATALOG_EN } from './ui/i18n/catalog.en';
+import { CATALOG_FR } from './ui/i18n/catalog.fr';
 import { OVERLAY_A11Y } from './ui/overlayRegistry';
-import { PRIVACY_TERMINAL_NOTICE } from './ui/privacyBanner';
+import { PRIVACY_PSEUDONYMIZATION_DISCLOSURE } from './ui/privacyBanner';
+
+const EN_CATALOG = CATALOG_EN as unknown as Readonly<Record<string, unknown>>;
+const FR_CATALOG = CATALOG_FR as unknown as Readonly<Record<string, unknown>>;
+
+/** `catalog[key]`, which MUST be an own plain string. Client specs are not typechecked, so a
+ *  mistyped key would otherwise read `undefined` and make every assertion against it vacuous —
+ *  this throws instead, naming the locale and the key. */
+function catalogString(
+  catalog: Readonly<Record<string, unknown>>,
+  locale: string,
+  key: string,
+): string {
+  const value = Object.hasOwn(catalog, key) ? catalog[key] : undefined;
+  if (typeof value !== 'string') {
+    throw new Error(
+      `catalog.${locale} has no plain-string entry for '${key}' (got ${typeof value})`,
+    );
+  }
+  return value;
+}
+
+/** PRV1-4's distinct terminal notice, in English. */
+const PRIVACY_TERMINAL_NOTICE = catalogString(EN_CATALOG, 'en', 'privacy.notice.terminal');
 
 // --- hoisted state shared with the mock factories --------------------------------------
 const H = vi.hoisted(() => {
@@ -426,52 +457,70 @@ function expectOnlyReducer(which: 'delete' | 'cancel' | 'export' | 'none'): void
   );
 }
 
+// --- the shared harness: reset, boot, teardown (used by BOTH describes below) ------------
+
+let recorded: Recorded[] = [];
+let restoreWindowAdd: (() => void) | undefined;
+let restoreDocumentAdd: (() => void) | undefined;
+
+/** Everything a test needs BEFORE main.ts boots: fresh spies/fixtures, the real index.html shell,
+ *  the controllable rAF queue and the listener recorder. */
+function setUpHarness(): void {
+  recorded = [];
+  H.connectOpts = null;
+  H.live = H.liveHandle;
+  H.linkFrozen = false;
+  H.account = undefined;
+  H.deleteAccount.mockClear();
+  H.cancelAccountDeletion.mockClear();
+  H.requestDataExport.mockClear();
+  buildAppShellFromRealIndexHtml();
+  stubControllableRaf();
+  restoreWindowAdd = recordListeners(window, recorded);
+  restoreDocumentAdd = recordListeners(document, recorded);
+}
+
+/** Boot the REAL main.ts at `url` (its query string is what main.ts negotiates the locale from),
+ *  wait for `connect()`, and fire `onReady`. Shape copied from main.feedbackI18n.test.ts. */
+async function bootMain(url: string): Promise<void> {
+  window.history.replaceState(null, '', url);
+  vi.resetModules();
+  await import('./main');
+  const opts = (await vi.waitFor(
+    () => {
+      const captured = H.connectOpts;
+      if (captured === null) throw new Error('connect() has not been called by main() yet');
+      return captured;
+    },
+    { timeout: 5_000, interval: 5 },
+  )) as ConnectionOptions;
+  opts.onReady(H.identity);
+}
+
+/** Detach every listener main.ts added, restore the patched adders and globals, empty the DOM. */
+function tearDownHarness(): void {
+  for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+  recorded = [];
+  restoreDocumentAdd?.();
+  restoreWindowAdd?.();
+  restoreDocumentAdd = undefined;
+  restoreWindowAdd = undefined;
+  H.connectOpts = null;
+  vi.unstubAllGlobals();
+  rafCallback = null;
+  document.body.replaceChildren();
+}
+
 // --- the suite ---------------------------------------------------------------------------
 
 describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
-  let recorded: Recorded[] = [];
-  let restoreWindowAdd: (() => void) | undefined;
-  let restoreDocumentAdd: (() => void) | undefined;
-  let opts!: ConnectionOptions;
-
   beforeEach(async () => {
-    recorded = [];
-    H.connectOpts = null;
-    H.live = H.liveHandle;
-    H.linkFrozen = false;
-    H.account = undefined;
-    H.deleteAccount.mockClear();
-    H.cancelAccountDeletion.mockClear();
-    H.requestDataExport.mockClear();
-    buildAppShellFromRealIndexHtml();
-    stubControllableRaf();
-    restoreWindowAdd = recordListeners(window, recorded);
-    restoreDocumentAdd = recordListeners(document, recorded);
-
-    vi.resetModules();
-    await import('./main');
-    opts = (await vi.waitFor(
-      () => {
-        const captured = H.connectOpts;
-        if (captured === null) throw new Error('connect() has not been called by main() yet');
-        return captured;
-      },
-      { timeout: 5_000, interval: 5 },
-    )) as ConnectionOptions;
-    opts.onReady(H.identity);
+    setUpHarness();
+    await bootMain('/');
   });
 
   afterEach(() => {
-    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
-    recorded = [];
-    restoreDocumentAdd?.();
-    restoreWindowAdd?.();
-    restoreDocumentAdd = undefined;
-    restoreWindowAdd = undefined;
-    H.connectOpts = null;
-    vi.unstubAllGlobals();
-    rafCallback = null;
-    document.body.replaceChildren();
+    tearDownHarness();
   });
 
   // ---------------------------------------------------------------------------------------
@@ -914,5 +963,71 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
     ).toBe(true);
     // And the reducer must still have been called exactly once, from the one confirmed click.
     expectOnlyReducer('delete');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// 21r-b2 — the privacy surface renders the FRENCH catalog when main.ts boots under fr.
+//
+// SOURCE OF TRUTH — spec 21r-b2: "WHEN any claim-overlay or privacy-surface text renders THE
+// CLIENT SHALL source it from the typed catalog (en+fr), with no raw string literals reaching the
+// DOM". The pure copy layer is swept key by key in privacyBanner.test.ts; this describe is the
+// one end-to-end proof that main.ts's REAL boot negotiation reaches the painted surface.
+// ---------------------------------------------------------------------------------------------
+
+describe('main.ts privacy surface under a French boot (21r-b2)', () => {
+  beforeEach(() => {
+    setUpHarness();
+  });
+
+  afterEach(async () => {
+    // The resolver main.ts switched lives in the CURRENT module registry (bootMain reset it), so
+    // it is restored through a dynamic import, never a static one (see the file header).
+    const resolver = await import('./ui/i18n/resolver');
+    resolver.setLocale('en');
+    window.history.replaceState(null, '', '/');
+    tearDownHarness();
+  });
+
+  it('[21R-B2-WIRING-FR] booted with ?locale=fr, an already-erased account opens onto the French terminal notice and status line, beside the still-English disclosure', async () => {
+    // WRONG IMPL KILLED (1) ★: privacyBanner.ts copy resolved at MODULE LOAD. main.ts imports
+    //   privacyBanner.ts before its own module-scope `setLocale(LOCALE)` runs, so a module-level
+    //   `t(...)` freezes English and the painted notice/status stay English under fr.
+    // WRONG IMPL KILLED (2): the terminal notice / status left as raw English literals.
+    // WRONG IMPL KILLED (3): the notice wired to the status key or vice versa — each node is
+    //   compared with its OWN key.
+    // WRONG IMPL KILLED (4): a "translate the disclosure too" edit that blanks or drops the raw
+    //   §9 sentence under fr — it stays English (a French rendering needs a DECISIONS.md ruling
+    //   first), and the toContain below pins that it is still on the surface.
+    document.documentElement.removeAttribute('lang');
+    await bootMain('/?locale=fr');
+    const resolver = await import('./ui/i18n/resolver');
+    // ANTI-VACUITY FIRST: the boot really negotiated fr. Without these, an un-awaited or
+    // en-negotiated boot would make every assertion below a comparison against the wrong locale.
+    expect(
+      document.documentElement.lang,
+      'main.ts must have negotiated fr from ?locale=fr and stamped <html lang>',
+    ).toBe('fr');
+    expect(resolver.currentLocale(), "main.ts's resolver must be switched to fr").toBe('fr');
+
+    const noticeFr = catalogString(FR_CATALOG, 'fr', 'privacy.notice.terminal');
+    const statusFr = catalogString(FR_CATALOG, 'fr', 'privacy.status.terminal');
+
+    // The RB52T-TERMINAL-ROW-NO-CLICK flow: terminal row, one frame, open, no privacy click.
+    H.account = ACCOUNT_TERMINAL;
+    runFrame(0);
+    openPrivacySurface();
+    expectOnlyReducer('none');
+
+    const notice = byId('privacy-notice');
+    expect(notice.textContent, 'the terminal notice must render in French').toBe(noticeFr);
+    expect(hiddenAncestorOf(notice), 'and it must be ON SCREEN').toBeNull();
+    expect(byId('privacy-status').textContent, 'the status line must render in French').toBe(
+      statusFr,
+    );
+    expect(
+      byId('privacy-overlay').textContent ?? '',
+      'the raw English section 9 disclosure must still be on the surface under fr',
+    ).toContain(PRIVACY_PSEUDONYMIZATION_DISCLOSURE);
   });
 });

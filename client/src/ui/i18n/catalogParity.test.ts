@@ -751,13 +751,15 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       .sort();
     // WRONG IMPL KILLED: a bare global `t(`/`tf(` text scan (never resolving import specifiers)
     // would either miss every file (bindings always empty) or over-match unrelated `t(` calls
-    // (e.g. `total(`) — the exact 21-file roster below (21r-b adds ui/careAction.ts and
-    // ui/sessionModel.ts) is only reachable via real binding resolution.
+    // (e.g. `total(`) — the exact 23-file roster below (21r-b added ui/careAction.ts and
+    // ui/sessionModel.ts; 21r-b2 adds ui/claimModel.ts and ui/privacyBanner.ts) is only reachable
+    // via real binding resolution.
     expect(i18nRoster, `resolver-importing roster: ${JSON.stringify(i18nRoster)}`).toEqual([
       'main.ts',
       'ui/battleView.ts',
       'ui/boxView.ts',
       'ui/careAction.ts',
+      'ui/claimModel.ts',
       'ui/claimView.ts',
       'ui/dialogueView.ts',
       'ui/errorOverlayView.ts',
@@ -766,6 +768,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'ui/healView.ts',
       'ui/helpView.ts',
       'ui/leaderboardView.ts',
+      'ui/privacyBanner.ts',
       'ui/privacyView.ts',
       'ui/pvpView.ts',
       'ui/questLogView.ts',
@@ -1164,10 +1167,10 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       }
       expect(
         checked,
-        // 21r-b grows the roster from 118 to 133 keys (corrects a stale "112" this comment
-        // carried forward) — the threshold below (>=100) is intentionally UNCHANGED: it is a
-        // lower bound that only gets easier to clear as the roster grows, never weakened.
-        'anti-vacuity: the full 133-entry en catalog must have been walked',
+        // 21r-b grew the roster from 118 to 133 keys and 21r-b2 grows it to 178 — the threshold
+        // below (>=100) is intentionally UNCHANGED: it is a lower bound that only gets easier to
+        // clear as the roster grows, never weakened.
+        'anti-vacuity: the full 178-entry en catalog must have been walked',
       ).toBeGreaterThan(100);
       expect(
         differCount,
@@ -1280,6 +1283,177 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
         checked += 1;
       }
       expect(checked, 'ANTI-VACUITY: all 15 keys must have been checked').toBe(15);
+    });
+
+    // -------------------------------------------------------------------------------------------
+    // 21r-b2 — the 45 claim.* / privacy.* keys (claimModel.ts + privacyBanner.ts). Key lists are
+    // hand-transcribed from memory/projects/monster-realm-21r-b2-plan.md's roster table.
+    // -------------------------------------------------------------------------------------------
+
+    /** U+00A0 NO-BREAK SPACE and U+2019 RIGHT SINGLE QUOTATION MARK, built from their code points
+     *  so neither can be pasted as (or mistaken for) a plain space / an ASCII apostrophe. */
+    const NBSP = String.fromCharCode(0x00a0);
+    const RSQUO = String.fromCharCode(0x2019);
+
+    /** The 38 plain keys 21r-b2 adds. */
+    const NEW_PLAIN_KEYS_21R_B2: readonly string[] = [
+      'claim.feedback.veto',
+      'claim.nudge',
+      'claim.decline.confirmPrompt',
+      'claim.pending.title',
+      'claim.pending.body',
+      'claim.awaiting.title',
+      'claim.awaiting.body',
+      'claim.claimed.title',
+      'claim.claimed.body',
+      'claim.signInFailed.title',
+      'claim.signInFailed.rejected',
+      'claim.signInFailed.expired',
+      'claim.signInFailed.declined',
+      'claim.signInFailed.unreachable',
+      'claim.signInFailed.fallback',
+      'claim.reject.unusable.title',
+      'claim.reject.unusable.body',
+      'claim.reject.destination.title',
+      'claim.reject.destination.body',
+      'claim.reject.transient.title',
+      'claim.reject.transient.body',
+      'claim.reject.generic.title',
+      'claim.reject.generic.body',
+      'privacy.countdown.dark',
+      'privacy.countdown.due',
+      'privacy.notice.terminal',
+      'privacy.notice.disconnected',
+      'privacy.status.active',
+      'privacy.status.unknown',
+      'privacy.status.terminal',
+      'privacy.export.none',
+      'privacy.export.incompleteDark',
+      'privacy.export.inconsistent',
+      'privacy.action.delete',
+      'privacy.confirm.prompt',
+      'privacy.action.cancel',
+      'privacy.action.export',
+      'privacy.action.download',
+    ];
+
+    /** The 7 parameterised keys 21r-b2 adds, each with ONE concrete sample (no punctuation, so the
+     *  typography sweep below judges only the catalog's own text). */
+    const NEW_PARAM_SAMPLES_21R_B2: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+      ['privacy.countdown.grace', { duration: 'SAMPLE' }],
+      ['privacy.countdown.days', { n: 7n }],
+      ['privacy.countdown.hours', { n: 7n }],
+      ['privacy.countdown.minutes', { n: 7n }],
+      ['privacy.countdown.seconds', { n: 7n }],
+      ['privacy.export.incomplete', { received: 2, total: 5 }],
+      ['privacy.export.complete', { received: 5 }],
+    ];
+
+    /** [key, fr text, en text] for all 45 keys — each value asserted to be the right KIND (plain
+     *  string / closure) in BOTH catalogs first, so no comparison below runs on `undefined`. */
+    function newKeyTexts21rB2(): Array<readonly [string, string, string]> {
+      const en = CATALOG_EN as Record<string, unknown>;
+      const fr = CATALOGS.fr as unknown as Record<string, unknown> | undefined;
+      expect(fr, 'CATALOGS.fr must be defined').not.toBe(undefined);
+      const safeFr = fr as Record<string, unknown>;
+      const out: Array<readonly [string, string, string]> = [];
+      for (const key of NEW_PLAIN_KEYS_21R_B2) {
+        expect(typeof en[key], `${key} must be a plain string in en`).toBe('string');
+        expect(typeof safeFr[key], `${key} must be a plain string in fr`).toBe('string');
+        out.push([key, safeFr[key] as string, en[key] as string]);
+      }
+      for (const [key, sample] of NEW_PARAM_SAMPLES_21R_B2) {
+        expect(typeof en[key], `${key} must be a closure in en`).toBe('function');
+        expect(typeof safeFr[key], `${key} must be a closure in fr`).toBe('function');
+        const enText = (en[key] as (p: Record<string, unknown>) => string)(sample);
+        const frText = (safeFr[key] as (p: Record<string, unknown>) => string)(sample);
+        expect(typeof frText, `${key}(sample) must return a string in fr`).toBe('string');
+        out.push([key, frText, enText]);
+      }
+      return out;
+    }
+
+    it('[21R-B2-FR-DIFFERS] every one of the 45 new claim.* / privacy.* keys has a CATALOG_FR value strictly different from CATALOG_EN (parameterised keys compared through one concrete sample)', () => {
+      // The aggregate FR-01 tally can pass while ONE of these keys was copied through from en —
+      // this names each key, so an untranslated line fails BY NAME.
+      // WRONG IMPL KILLED ★: e.g. 'privacy.status.terminal': 'This account has been permanently
+      //   deleted.' left English in catalog.fr.ts, or a fr unit closure left as `${p.n}s`.
+      const allKeys = [...NEW_PLAIN_KEYS_21R_B2, ...NEW_PARAM_SAMPLES_21R_B2.map(([key]) => key)];
+      expect(allKeys.length, 'ANTI-VACUITY: the 21r-b2 plan names exactly 45 new keys').toBe(45);
+      expect(new Set(allKeys).size, 'ANTI-VACUITY: no key may be listed twice').toBe(45);
+
+      let checked = 0;
+      for (const [key, frText, enText] of newKeyTexts21rB2()) {
+        expect(
+          frText,
+          `${key}: fr must differ from en — an untranslated copy-through of the English bytes ` +
+            'in catalog.fr.ts must fail HERE, by name',
+        ).not.toBe(enText);
+        checked += 1;
+      }
+      expect(checked, 'ANTI-VACUITY: all 45 keys must have been checked').toBe(45);
+    });
+
+    it('21r-b2 FR-TYPO: every new fr value puts U+00A0 before each ? ! : ; and uses no ASCII apostrophe', () => {
+      // catalog.fr.ts's own convention (its header): a REAL no-break space before `:` `;` `!` `?`
+      // and `’` U+2019 for the apostrophe.
+      // WRONG IMPL KILLED (1) ★: "Confirmer la suppression ?" typed with an ordinary space — the
+      //   browser may wrap the "?" of an irreversible-deletion prompt onto a line of its own.
+      // WRONG IMPL KILLED (2): an ASCII apostrophe ("d'invité") — off-convention, and it would
+      //   also close the single-quoted value in the catalog source.
+      let marks = 0;
+      let checked = 0;
+      for (const [key, frText] of newKeyTexts21rB2()) {
+        for (let i = 0; i < frText.length; i++) {
+          const ch = frText.charAt(i);
+          if (ch !== '?' && ch !== '!' && ch !== ':' && ch !== ';') continue;
+          marks += 1;
+          const before = i > 0 ? frText.charAt(i - 1) : '';
+          expect(
+            before === NBSP,
+            `${key}: ${JSON.stringify(frText)} has "${ch}" at index ${i} preceded by ` +
+              `${before === '' ? 'nothing' : `code point ${before.charCodeAt(0)}`}, not U+00A0`,
+          ).toBe(true);
+        }
+        expect(
+          frText.indexOf("'"),
+          `${key}: ${JSON.stringify(frText)} uses an ASCII apostrophe — fr uses U+2019`,
+        ).toBe(-1);
+        checked += 1;
+      }
+      expect(checked, 'ANTI-VACUITY: all 45 keys must have been swept').toBe(45);
+      expect(
+        marks,
+        'ANTI-VACUITY: both confirmation prompts end in a question mark, so the sweep must have ' +
+          'judged at least two marks',
+      ).toBeGreaterThanOrEqual(2);
+    });
+
+    it('21r-b2 FR-DESTRUCTIVE: the four labels that start, stop or confirm an irreversible deletion carry their exact reviewed French bytes', () => {
+      // FR-DIFFERS only proves each line is not English; these four are where a WRONG French line
+      // costs a player their account or their guest progress, so each is pinned by value.
+      // WRONG IMPL KILLED (1) ★: the delete and cancel labels swapped in catalog.fr.ts — a French
+      //   player presses "Supprimer mon compte" believing it stops a deletion.
+      // WRONG IMPL KILLED (2): a softened prompt that drops the irreversibility ("Confirmer ?", or
+      //   a decline prompt that no longer says the code is deleted for good).
+      const fr = CATALOGS.fr as unknown as Record<string, unknown>;
+      const PINS: ReadonlyArray<readonly [string, string]> = [
+        ['privacy.action.delete', 'Supprimer mon compte'],
+        ['privacy.action.cancel', 'Annuler la suppression du compte'],
+        [
+          'privacy.confirm.prompt',
+          `Cette action est irréversible. Confirmer la suppression${NBSP}?`,
+        ],
+        [
+          'claim.decline.confirmPrompt',
+          `Refuser supprime définitivement ce code de transfert — votre progression d${RSQUO}invité ` +
+            'ne pourra plus être récupérée une fois le code disparu. Refuser et continuer en tant ' +
+            `qu${RSQUO}invité${NBSP}?`,
+        ],
+      ];
+      for (const [key, expected] of PINS) {
+        expect(fr[key], `${key} must carry its exact reviewed French text`).toBe(expected);
+      }
     });
   });
 });

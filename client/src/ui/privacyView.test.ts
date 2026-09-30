@@ -14,12 +14,11 @@
 // Amendment A2 (A2-D2 constructed shell, A2-D3 native button anchor, A2-D4 hide() disarms,
 // A2-D6 the ROW route, A2-D7 the pinned disclosure).
 //
-// RED REASON AT AUTHORING TIME: `client/src/ui/privacyBanner.ts` exports ONLY
-// `privacyBannerLabel`. `buildPrivacyViewModel`, `PrivacyViewModel`,
-// `PRIVACY_PSEUDONYMIZATION_DISCLOSURE` and `PRIVACY_TERMINAL_NOTICE` DO NOT EXIST, and
-// `ui/privacyView.ts` imports the disclosure from that module — so both the import below AND
-// the shell under test fail to resolve, and every test in this file reds on a MISSING
-// IMPLEMENTATION, not on a typo here.
+// THE TERMINAL NOTICE is read from the en catalog (`privacy.notice.terminal`): 21r-b2 moved the
+// sentence into the i18n catalog and removed the `PRIVACY_TERMINAL_NOTICE` export. The read is
+// asserted to be a string when this file loads, so a missing or misspelt key fails loudly instead
+// of turning the `.not.toBe` checks below vacuous. The disclosure is still imported raw from
+// `ui/privacyBanner.ts`.
 //
 // ★ THE ONE THING THIS FILE EXISTS FOR — REACHABILITY IS VISIBILITY, NOT CLICKABILITY.
 //   The `ensureElement` idiom both constructed shells use sets `display:none` on EVERY node it
@@ -38,12 +37,12 @@
 // NO `innerHTML` — DOM reads are `textContent` only.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CATALOG_EN } from './i18n/catalog.en';
 import { closeOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y } from './overlayRegistry';
 import {
   buildPrivacyViewModel,
   PRIVACY_PSEUDONYMIZATION_DISCLOSURE,
-  PRIVACY_TERMINAL_NOTICE,
   type PrivacyViewModel,
 } from './privacyBanner';
 import {
@@ -56,6 +55,18 @@ import {
   SERVER_ALREADY_DELETED_MESSAGE,
 } from './privacyModel';
 import { PrivacyView, type PrivacyViewHandlers } from './privacyView';
+
+/** PRV1-4's distinct terminal notice — the en catalog entry, asserted to be a string (client specs
+ *  are not typechecked, so a mistyped key would otherwise read `undefined`). */
+const PRIVACY_TERMINAL_NOTICE: string = (() => {
+  const value = (CATALOG_EN as unknown as Readonly<Record<string, unknown>>)[
+    'privacy.notice.terminal'
+  ];
+  if (typeof value !== 'string') {
+    throw new Error("catalog.en has no plain-string entry for 'privacy.notice.terminal'");
+  }
+  return value;
+})();
 
 // ---------------------------------------------------------------------------
 // Element ids — the CONTRACT, spelled once. These are runtime-CONSTRUCTED (A2-D2):
