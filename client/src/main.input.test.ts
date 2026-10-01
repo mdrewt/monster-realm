@@ -1325,3 +1325,617 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(H.sends.length, 'and the fresh hold walks on once it commits').toBe(sent + 2);
   });
 });
+
+// ==========================================================================================
+// ctl-3: server truth reconciled into the stack; a dropped overlay closes through its OWN hide()
+// ==========================================================================================
+//
+// Same harness, one fresh main.ts per case. What is observed: which overlays are on screen, the
+// read-only `__game().stack` hook, and (for the hide path) the one effect only an overlay's own
+// `hide()` produces: the a11y close (`closeOverlayA11y`) strips `role`, `aria-modal` and `aria-label`
+// from the root the overlay was opened with, while a bare `display:none` leaves them standing. The
+// "not shown, so not hidden" half is a sentinel text in a feedback node that `hide()` clears.
+//
+// Every case is synchronous after boot (no awaits), so no overlay's deferred initial focus ever
+// fires and `worldHasFocus()` stays true for the next open.
+
+/** The server opens a conversation with the NPC, in one batch at clock `t`. */
+function startConversation(t: number): void {
+  opts.store.upsertConversation({
+    ownerIdentity: H.identity,
+    npcEntityId: NPC_ENTITY,
+    currentNodeId: 'start',
+  });
+  settle(t);
+}
+/** The server ends the conversation, in one batch at clock `t`. */
+function endConversation(t: number): void {
+  opts.store.removeConversation(H.identity);
+  settle(t);
+}
+/** An Ongoing wild battle row arrives, in one batch at clock `t`. */
+function startBattle(battleId: bigint, t: number): void {
+  opts.store.upsertBattle(battleRow(battleId, 'Ongoing'));
+  settle(t);
+}
+/** The battle row goes, in one batch at clock `t`. */
+function endBattle(battleId: bigint, t: number): void {
+  opts.store.removeBattle(battleId);
+  settle(t);
+}
+const rootOf = (id: string): HTMLElement => {
+  const el = document.getElementById(id);
+  if (el === null) throw new Error(`#${id} is not in the document`);
+  return el;
+};
+const dismissCalls = (): number => H.calls.filter((name) => name === 'dismissDialogue').length;
+
+/** Open the shop the one way the shell does: a conversation, a click on the shop button inside it,
+ *  and the batch that ends the conversation (which performs the deferred open). */
+function openShopViaDialogue(t: number): void {
+  startConversation(t);
+  expect(shownById('dialogue-overlay'), 'precondition: the server opened the dialogue').toBe(true);
+  const before = dismissCalls();
+  const button = document.createElement('button');
+  button.dataset.shopId = '1';
+  document.body.appendChild(button);
+  clock.t = t + 5;
+  button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  button.remove();
+  expect(dismissCalls(), 'precondition: the shop click sent a dismiss').toBe(before + 1);
+  endConversation(t + 10);
+  expect(shownById('shop-overlay'), 'precondition: the deferred open showed the shop').toBe(true);
+}
+
+describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    delete (document as unknown as { visibilityState?: unknown }).visibilityState;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    H.sessionState = 'hidden';
+    rafCallback = null;
+    document.body.replaceChildren();
+  });
+
+  it('CTL3-1-BOOT-BATCH: after a battle batch with an overlay open, the stack is exactly the battle base with nothing above it, read straight after the batch', async () => {
+    // WRONG IMPL KILLED: a reconcile that never runs on the batch (the quest log, which a battle
+    // auto-show never hid, stays on the stack above the battle base), one that runs but leaves the
+    // frame it popped on the stack, one that only runs from the frame loop (the stack read here
+    // happens before any frame), and one that keeps the battle base but forgets to return to the
+    // world when the battle row goes.
+    await bootReady();
+    seedWorld(1000);
+    fire('keydown', 'KeyQ', 1010);
+    expect(shownById('quest-log-overlay'), 'precondition: the quest log opened').toBe(true);
+    expect(stack(), 'precondition: the quest log is a frame over the world').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'questLogView' },
+    ]);
+
+    startBattle(BATTLE_ID, 1100);
+    expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
+    expect(stack(), 'exactly the battle base, no frame above it, before any frame ran').toEqual([
+      { kind: 'battle', battleId: '101' },
+    ]);
+
+    // A further batch that carries nothing new leaves the stack alone.
+    settle(1200);
+    expect(stack(), 'a no-op batch keeps the bare battle base').toEqual([
+      { kind: 'battle', battleId: '101' },
+    ]);
+
+    endBattle(BATTLE_ID, 1300);
+    expect(stack(), 'the battle row goes: the bare world again').toEqual([{ kind: 'world' }]);
+  });
+
+  it('CTL3-2-BOOT-SHOP-UNDER-BATTLE: a shop opened through the dialogue is closed when a battle row arrives, and does not come back when the battle ends', async () => {
+    // WRONG IMPL KILLED (RED today): the battle auto-show force-hid only a fixed list of eight
+    // overlays and left the shop painted under the battle (a second aria-modal root, a second
+    // focus trap, a buy button reachable behind a fight). Also: a reconcile that closes the shop
+    // but re-opens it when the battle ends, and one that hides the shop but leaves its frame on
+    // the stack.
+    await bootReady();
+    seedWorld(1000);
+    openShopViaDialogue(1010);
+    expect(stack(), 'precondition: the shop is a frame over the world').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'shopView' },
+    ]);
+
+    startBattle(BATTLE_ID, 1100);
+    expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
+    expect(shownById('shop-overlay'), 'the shop is hidden once the battle row arrives').toBe(false);
+    expect(stack(), 'and only the battle base is left').toEqual([
+      { kind: 'battle', battleId: '101' },
+    ]);
+
+    endBattle(BATTLE_ID, 1200);
+    expect(battleShown(), 'precondition: the battle is gone').toBe(false);
+    expect(shownById('shop-overlay'), 'the shop does not come back by itself').toBe(false);
+    expect(stack()).toEqual([{ kind: 'world' }]);
+  });
+
+  it('CTL3-3-BOOT-HIDE-PATH: every dropped overlay closes through its OWN hide() (its a11y close runs), and an overlay that was not shown is not hidden', async () => {
+    // WRONG IMPL KILLED: a close that only sets display:none (the root keeps role="dialog",
+    // aria-modal="true" and its label while hidden, and its focus trap and live-region custody
+    // leak: overlayA11y.ts's A13 note), a close that calls hide() on every overlay in the table
+    // whether or not it is shown (a hidden overlay's hide() clears its feedback and resets its
+    // in-flight lock for nothing), and a close that handles only the overlays the old force-hide
+    // list covered. The overlays here are exactly ones that old list did NOT cover.
+    await bootReady();
+    seedWorld(1000);
+
+    // The inverse first: only the quest log is shown; the shop, trade and pvp overlays are hidden
+    // with a sentinel in the feedback node their hide() clears. A battle must leave them alone.
+    fire('keydown', 'KeyQ', 1010);
+    expect(shownById('quest-log-overlay'), 'precondition: the quest log opened').toBe(true);
+    const sentinels = ['shop-feedback', 'trade-feedback', 'pvp-challenge-feedback'];
+    for (const id of sentinels) {
+      expect(shownById(id), `precondition: the overlay holding #${id} is hidden`).toBe(false);
+      rootOf(id).textContent = 'sentinel';
+    }
+    startBattle(BATTLE_ID, 1100);
+    expect(shownById('quest-log-overlay'), 'the shown quest log is closed').toBe(false);
+    for (const id of sentinels) {
+      expect(
+        rootOf(id).textContent,
+        `#${id}: its overlay was not shown, so its hide() must not have run`,
+      ).toBe('sentinel');
+    }
+    endBattle(BATTLE_ID, 1150);
+    expect(battleShown(), 'precondition: the battle ended').toBe(false);
+
+    const overlays: ReadonlyArray<{
+      readonly name: string;
+      readonly rootId: string;
+      readonly open: (t: number) => void;
+    }> = [
+      {
+        name: 'questLogView',
+        rootId: 'quest-log-overlay',
+        open: (t) => void fire('keydown', 'KeyQ', t),
+      },
+      { name: 'tradeView', rootId: 'trade-overlay', open: (t) => void fire('keydown', 'KeyU', t) },
+      {
+        name: 'pvpView',
+        rootId: 'pvp-challenge-overlay',
+        open: (t) => void fire('keydown', 'KeyP', t),
+      },
+      { name: 'claimView', rootId: 'claim-overlay', open: () => opts.onSignInFailed?.('denied') },
+      { name: 'shopView', rootId: 'shop-overlay', open: (t) => openShopViaDialogue(t) },
+    ];
+    let t = 1200;
+    let checked = 0;
+    for (const [i, overlay] of overlays.entries()) {
+      const root = rootOf(overlay.rootId);
+      const battleId = BATTLE_ID + BigInt(i + 1);
+      overlay.open(t);
+      expect(isShown(root), `${overlay.name}: precondition: opened`).toBe(true);
+      expect(
+        root.getAttribute('aria-modal'),
+        `${overlay.name}: precondition: opened through its own a11y path`,
+      ).toBe('true');
+
+      startBattle(battleId, t + 50);
+      expect(battleShown(), `${overlay.name}: precondition: the battle is on screen`).toBe(true);
+      expect(isShown(root), `${overlay.name}: hidden once the battle row arrives`).toBe(false);
+      expect(
+        root.getAttribute('aria-modal'),
+        `${overlay.name}: closed through its OWN hide(): the a11y close strips aria-modal`,
+      ).toBeNull();
+      expect(root.hasAttribute('role'), `${overlay.name}: the a11y close strips role as well`).toBe(
+        false,
+      );
+      expect(stack(), `${overlay.name}: only the battle base is left`).toEqual([
+        { kind: 'battle', battleId: battleId.toString() },
+      ]);
+
+      endBattle(battleId, t + 100);
+      expect(battleShown(), `${overlay.name}: precondition: the battle ended`).toBe(false);
+      t += 200;
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: all five overlays were driven').toBe(5);
+  });
+
+  it('CTL3-4-BOOT-CONV-POPS-PLAYER: a server conversation hides every open player overlay, and the stack ends [world, dialogueView]', async () => {
+    // WRONG IMPL KILLED (RED today for all but the menu): only the menu was preempted by a
+    // conversation, so a help, box, leaderboard or quest-log overlay stayed painted behind the
+    // dialogue (two aria-modal roots, two traps, Escape closing the wrong one first). Also: a
+    // reconcile that pops the player frame but leaves the overlay visible, and one that pops the
+    // dialogue frame the mirror then has to push again.
+    await bootReady();
+    seedWorld(1000);
+    const openers: ReadonlyArray<{
+      readonly name: string;
+      readonly open: (t: number) => void;
+      readonly shown: () => boolean;
+    }> = [
+      {
+        name: 'helpView',
+        open: (t) => void fire('keydown', 'Slash', t, { init: { key: '?' } }),
+        shown: () => shownById('help-overlay'),
+      },
+      { name: 'boxView', open: (t) => void fire('keydown', 'KeyB', t), shown: boxShown },
+      {
+        name: 'leaderboardView',
+        open: (t) => void fire('keydown', 'KeyL', t),
+        shown: () => shownById('leaderboard-overlay'),
+      },
+      {
+        name: 'questLogView',
+        open: (t) => void fire('keydown', 'KeyQ', t),
+        shown: () => shownById('quest-log-overlay'),
+      },
+      {
+        name: 'menuView (control: the one overlay a conversation already preempted)',
+        open: (t) => void fire('keydown', 'KeyM', t),
+        shown: () => shownById('menu-overlay'),
+      },
+    ];
+    let t = 1100;
+    let checked = 0;
+    for (const opener of openers) {
+      opener.open(t);
+      expect(opener.shown(), `${opener.name}: precondition: opened`).toBe(true);
+
+      startConversation(t + 50);
+      expect(shownById('dialogue-overlay'), `${opener.name}: the dialogue is on screen`).toBe(true);
+      expect(opener.shown(), `${opener.name}: hidden by the conversation`).toBe(false);
+      expect(stack(), `${opener.name}: the stack ends [world, dialogueView]`).toEqual([
+        { kind: 'world' },
+        { kind: 'screen', id: 'dialogueView' },
+      ]);
+
+      endConversation(t + 100);
+      expect(
+        shownById('dialogue-overlay'),
+        `${opener.name}: precondition: the dialogue ended`,
+      ).toBe(false);
+      expect(stack(), `${opener.name}: the bare world again`).toEqual([{ kind: 'world' }]);
+      t += 200;
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: all five overlays were driven').toBe(5);
+  });
+});
+
+// ==========================================================================================
+// ctl-3 round 2: the gaps a red-team measured (greet-then-shop gating, either-role battles,
+// every dropped overlay, the same-batch outcome, close-before-show)
+// ==========================================================================================
+
+const CHALLENGER_IDENTITY = 'cd'.repeat(32);
+/** A PvP battle row where the booted player is the OPPONENT (the accepter), not `playerIdentity`. */
+function accepterBattleRow(battleId: bigint, outcome: string): StoreBattle {
+  return {
+    ...battleRow(battleId, outcome),
+    playerIdentity: CHALLENGER_IDENTITY,
+    opponentIdentity: H.identity,
+    opponentMonsterIds: [2n],
+  };
+}
+/** Click a greet-then-shop button, as the dialogue renders one; asserts the dismiss was sent. */
+function clickShop(t: number, shopId = '1'): void {
+  const before = dismissCalls();
+  const button = document.createElement('button');
+  button.dataset.shopId = shopId;
+  document.body.appendChild(button);
+  clock.t = t;
+  button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  button.remove();
+  expect(dismissCalls(), 'precondition: the shop click sent a dismiss').toBe(before + 1);
+}
+/** Let queued microtasks and zero-delay timers run (an overlay's deferred initial focus). */
+const flush = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    delete (document as unknown as { visibilityState?: unknown }).visibilityState;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    H.sessionState = 'hidden';
+    rafCallback = null;
+    document.body.replaceChildren();
+  });
+
+  it('CTL3-5-BOOT-OPEN-BLOCKED: a pending shop open is dropped, and consumed, when the batch that ends the conversation also brings a battle or a terminal outcome', async () => {
+    // WRONG IMPL KILLED: a deferred open that does not consult the stack at all (the shop pops
+    // over the battle it was dropped for: the reconcile has already run, and the tail sync only
+    // mirrors it), one that blocks only on a battle BASE (an outcome over the world is a
+    // battleView frame, not a base, so the shop would pop over the outcome), and a drop that
+    // RETAINS the pending id (a later no-conversation batch would open a stale shop).
+    // (b) is constructible: a first battle makes the session "synced", so a terminal row that
+    // arrives afterwards is a mid-session outcome and is shown (decideBattleOverlay), over the
+    // world base.
+    await bootReady();
+    seedWorld(1000);
+
+    // (a) one batch: the conversation row goes AND an Ongoing battle row arrives.
+    startConversation(1010);
+    expect(shownById('dialogue-overlay'), 'precondition: the dialogue is open').toBe(true);
+    clickShop(1020);
+    opts.store.removeConversation(H.identity);
+    opts.store.upsertBattle(battleRow(BATTLE_ID, 'Ongoing'));
+    settle(1100);
+    expect(battleShown(), 'a: precondition: the battle is on screen').toBe(true);
+    expect(shownById('shop-overlay'), 'a: no shop opens over a battle').toBe(false);
+    expect(stack(), 'a: only the battle base').toEqual([{ kind: 'battle', battleId: '101' }]);
+    endBattle(BATTLE_ID, 1200);
+    expect(battleShown(), 'a: precondition: the battle is gone').toBe(false);
+    settle(1250);
+    expect(shownById('shop-overlay'), 'a: the pending id was consumed: nothing opens later').toBe(
+      false,
+    );
+    expect(stack(), 'a: the bare world').toEqual([{ kind: 'world' }]);
+
+    // (b) one batch: the conversation row goes AND a TERMINAL battle row arrives and is shown as
+    // the outcome. The base is the world: only the outcome (battleView) frame blocks the open.
+    startConversation(1300);
+    expect(shownById('dialogue-overlay'), 'precondition: the dialogue is open again').toBe(true);
+    clickShop(1310);
+    opts.store.removeConversation(H.identity);
+    opts.store.upsertBattle(battleRow(BATTLE_ID + 1n, 'SideAWins'));
+    settle(1400);
+    expect(battleShown(), 'b: precondition: the outcome is on screen').toBe(true);
+    expect(stack()[0], 'b: precondition: the base is the world, not a battle').toEqual({
+      kind: 'world',
+    });
+    expect(shownById('shop-overlay'), 'b: no shop opens over the outcome').toBe(false);
+    expect(stack(), 'b: the outcome is the only frame').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'battleView' },
+    ]);
+    fire('keydown', 'Escape', 1500);
+    expect(battleShown(), 'b: precondition: Escape dismissed the outcome').toBe(false);
+    settle(1600);
+    expect(shownById('shop-overlay'), 'b: the pending id was consumed: nothing opens later').toBe(
+      false,
+    );
+    expect(stack(), 'b: the bare world').toEqual([{ kind: 'world' }]);
+  });
+
+  it('CTL3-2-BOOT-PVP-ACCEPTER: a battle where the player is the opponent identity closes the open overlay, and the stack is the battle base', async () => {
+    // WRONG IMPL KILLED: a reconcile fed the battle only when the player is `playerIdentity`
+    // (a PvP accepter is stored in `opponentIdentity`): the shell's own base derivation still
+    // sees the battle, so the base is right and the stack looks plausible while the overlay the
+    // battle should have dropped stays painted over the accepter's fight.
+    await bootReady();
+    seedWorld(1000);
+    const overlays: ReadonlyArray<{
+      readonly name: string;
+      readonly rootId: string;
+      readonly code: string;
+    }> = [
+      { name: 'questLogView', rootId: 'quest-log-overlay', code: 'KeyQ' },
+      { name: 'tradeView', rootId: 'trade-overlay', code: 'KeyU' },
+    ];
+    let t = 1010;
+    let checked = 0;
+    for (const [i, overlay] of overlays.entries()) {
+      const root = rootOf(overlay.rootId);
+      const battleId = 201n + BigInt(i);
+      fire('keydown', overlay.code, t);
+      expect(isShown(root), `${overlay.name}: precondition: opened`).toBe(true);
+
+      opts.store.upsertBattle(accepterBattleRow(battleId, 'Ongoing'));
+      settle(t + 50);
+      expect(
+        opts.store.ongoingBattle(H.identity)?.battleId,
+        `${overlay.name}: precondition: the store sees the battle in the accepter role`,
+      ).toBe(battleId);
+      expect(battleShown(), `${overlay.name}: precondition: the battle is on screen`).toBe(true);
+      expect(isShown(root), `${overlay.name}: closed when the accepter's battle arrives`).toBe(
+        false,
+      );
+      expect(
+        root.getAttribute('aria-modal'),
+        `${overlay.name}: closed through its hide()`,
+      ).toBeNull();
+      expect(stack(), `${overlay.name}: only the battle base`).toEqual([
+        { kind: 'battle', battleId: battleId.toString() },
+      ]);
+
+      endBattle(battleId, t + 100);
+      t += 200;
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: both overlays were driven').toBe(2);
+  });
+
+  it('CTL3-3-BOOT-HIDE-ALL: rename, tradePropose, heal, raising, evolution and privacy each close through their own hide() when a battle arrives', async () => {
+    // WRONG IMPL KILLED: a close command that skips some overlays (the six here were measured
+    // as skipped by a mutant while every other boot case stayed green: the overlay is left
+    // standing under the battle and, for privacy, its dismissal never runs). Each opens by its
+    // own real path: N, O and T (a heal NPC on the player's own tile, which outranks the guide
+    // one tile away), I and E, and the claim overlay's privacy button.
+    // Not separately observed: privacy's onDismissed effect (it disarms an armed delete
+    // confirmation). Arming needs an Active account row plus the frame loop's account pump, and
+    // the batch's own export listener repaints the overlay before the reconcile, so no cheap
+    // sentinel survives. hide() is onDismissed's ONLY caller, and the aria-modal strip below is
+    // written by the same hide(), so it proves the call that carries it.
+    // Raising and evolution build their own roots, whose ids this suite does not know: they are
+    // checked for visibility and the stack only, not for the a11y strip.
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertNpc({
+      entityId: 12n,
+      npcId: 'healer',
+      zoneId: 0,
+      homeX: 2,
+      homeY: 6,
+      wanderRadius: 0,
+      dialogueTreeId: 'no-such-tree',
+      interaction: { kind: 'heal', locationId: 1 },
+    });
+    opts.store.upsertCharacter(
+      {
+        entityId: 12n,
+        zoneId: 0,
+        tileX: 2,
+        tileY: 6,
+        facing: 'South',
+        action: 'Idle',
+        moveStartedAtMs: 0n,
+        moveQueue: [] as WasmMoveInput[],
+      },
+      1005,
+    );
+    settle(1010);
+
+    const overlays: ReadonlyArray<{
+      readonly name: string;
+      readonly rootId?: string;
+      readonly open: (t: number) => void;
+      readonly shown: () => boolean;
+    }> = [
+      {
+        name: 'renameView',
+        rootId: 'rename-overlay',
+        open: (t) => void fire('keydown', 'KeyN', t),
+        shown: () => shownById('rename-overlay'),
+      },
+      {
+        name: 'tradeProposeView',
+        rootId: 'tradepropose-overlay',
+        open: (t) => void fire('keydown', 'KeyO', t),
+        shown: () => shownById('tradepropose-overlay'),
+      },
+      {
+        name: 'healView',
+        rootId: 'heal-overlay',
+        open: (t) => void fire('keydown', 'KeyT', t),
+        shown: () => shownById('heal-overlay'),
+      },
+      {
+        name: 'raisingView',
+        open: (t) => void fire('keydown', 'KeyI', t),
+        shown: () => shownByTestId('raising-title'),
+      },
+      {
+        name: 'evolutionView',
+        open: (t) => void fire('keydown', 'KeyE', t),
+        shown: () => shownByTestId('evolution-title'),
+      },
+      {
+        name: 'privacyView',
+        rootId: 'privacy-overlay',
+        open: () => {
+          opts.onSignInFailed?.('denied');
+          rootOf('claim-privacy-btn').click();
+        },
+        shown: () => shownById('privacy-overlay'),
+      },
+    ];
+    let t = 1100;
+    let checked = 0;
+    for (const [i, overlay] of overlays.entries()) {
+      const battleId = 301n + BigInt(i);
+      overlay.open(t);
+      expect(overlay.shown(), `${overlay.name}: precondition: opened`).toBe(true);
+      if (overlay.rootId !== undefined) {
+        expect(
+          rootOf(overlay.rootId).getAttribute('aria-modal'),
+          `${overlay.name}: precondition: opened through its own a11y path`,
+        ).toBe('true');
+      }
+
+      startBattle(battleId, t + 50);
+      expect(battleShown(), `${overlay.name}: precondition: the battle is on screen`).toBe(true);
+      expect(overlay.shown(), `${overlay.name}: hidden once the battle row arrives`).toBe(false);
+      if (overlay.rootId !== undefined) {
+        expect(
+          rootOf(overlay.rootId).getAttribute('aria-modal'),
+          `${overlay.name}: closed through its OWN hide(): the a11y close strips aria-modal`,
+        ).toBeNull();
+      }
+      expect(stack(), `${overlay.name}: only the battle base`).toEqual([
+        { kind: 'battle', battleId: battleId.toString() },
+      ]);
+
+      endBattle(battleId, t + 100);
+      expect(battleShown(), `${overlay.name}: precondition: the battle ended`).toBe(false);
+      t += 200;
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: all six overlays were driven').toBe(6);
+  });
+
+  it('CTL3-2-BOOT-OUTCOME-SAME-BATCH: an overlay left up under an Escape-hidden battle is closed by the very batch that turns the row terminal, before any frame runs', async () => {
+    // WRONG IMPL KILLED (the reviewer's finding): a reconcile that knows only the battle BASE.
+    // When the row turns terminal the base returns to the world and the outcome is about to be
+    // shown by a later listener, so with no outcome knowledge the overlay survives this batch
+    // (the outcome frame would only appear, and only then drop it, a batch later) and the
+    // outcome takes focus over a still-painted overlay.
+    await bootReady();
+    seedWorld(1000);
+    startBattle(BATTLE_ID, 1100);
+    expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
+    fire('keydown', 'Escape', 1200);
+    expect(battleShown(), 'precondition: Escape hid the Ongoing battle view').toBe(false);
+    fire('keydown', 'KeyQ', 1210);
+    expect(shownById('quest-log-overlay'), 'precondition: the quest log opened over it').toBe(true);
+    expect(stack(), 'precondition: it is a frame over the battle base').toEqual([
+      { kind: 'battle', battleId: '101' },
+      { kind: 'screen', id: 'questLogView' },
+    ]);
+
+    // No frame runs between here and the assertions: the batch alone must do it.
+    opts.store.upsertBattle(battleRow(BATTLE_ID, 'SideAWins'));
+    settle(1300);
+    expect(battleShown(), 'the outcome is on screen').toBe(true);
+    expect(shownById('quest-log-overlay'), 'the quest log is closed in that same batch').toBe(
+      false,
+    );
+    expect(
+      rootOf('quest-log-overlay').getAttribute('aria-modal'),
+      'through its own hide()',
+    ).toBeNull();
+    expect(stack(), 'the world base with the outcome frame only').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'battleView' },
+    ]);
+  });
+
+  it('CTL3-1-BOOT-CLOSE-BEFORE-SHOW: the overlay a battle drops is closed before the battle shows, so the battle remembers the world, not the closed overlay, as its focus return', async () => {
+    // BEST EFFORT (mutant 7). WRONG IMPL KILLED: a reconcile registered after the battle's
+    // listener. The battle then opens while the quest log still owns focus and records the
+    // quest log's anchor as its return target; when the battle ends, focus is handed back INTO
+    // the closed overlay instead of the world. The order is observed through that return
+    // target: the world canvas is focused before the quest log opens, the quest log's deferred
+    // focus moves into it (precondition), and after the battle has come and gone focus must be
+    // back on the canvas. Final focus is the same on both orders only if the environment's
+    // focus() ignores a hidden element; the precondition asserts focus really moved so a silent
+    // non-discrimination reads as a failed precondition, never as a pass.
+    await bootReady();
+    seedWorld(1000);
+    const canvas = document.querySelector('canvas');
+    if (canvas === null) throw new Error('the renderer stub did not mount a canvas');
+    canvas.focus();
+    expect(document.activeElement, 'precondition: the world canvas has focus').toBe(canvas);
+
+    fire('keydown', 'KeyQ', 1010);
+    expect(shownById('quest-log-overlay'), 'precondition: the quest log opened').toBe(true);
+    await flush();
+    expect(
+      document.activeElement?.id,
+      'precondition: the quest log took focus (its deferred initial focus ran)',
+    ).toBe('quest-log-list');
+
+    startBattle(BATTLE_ID, 1100);
+    expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
+    expect(shownById('quest-log-overlay'), 'precondition: the quest log was closed').toBe(false);
+    endBattle(BATTLE_ID, 1200);
+    expect(battleShown(), 'precondition: the battle is gone').toBe(false);
+    expect(
+      document.activeElement,
+      'focus is back on the world canvas, not inside the closed quest log',
+    ).toBe(canvas);
+  });
+});

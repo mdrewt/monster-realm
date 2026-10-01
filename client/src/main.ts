@@ -99,10 +99,13 @@ import {
 import type { ClaimView, ClaimViewHandlers } from './ui/claimView';
 import {
   baseFor,
+  blocksPlayerOpen,
+  type Command,
   contextStep,
   type Edge,
   mirrorEdges,
   movementEnabled,
+  reconcile,
   type Stack,
   WORLD_STACK,
 } from './ui/contextStack';
@@ -161,7 +164,6 @@ import {
   anyVisible,
   type CanOpenVerdict,
   canOpen,
-  hideAllExceptPlan,
   type OverlayHandles,
   type OverlayId,
   type OverlayProbes,
@@ -198,6 +200,12 @@ import {
 } from './ui/sessionModel';
 import type { SessionView, SessionViewHandlers } from './ui/sessionView';
 import { buildShopViewModel, buildShopViewModelForShop } from './ui/shopModel';
+import {
+  type DismissPath,
+  SHOP_OPEN_INITIAL,
+  type ShopOpenEvent,
+  shopOpenStep,
+} from './ui/shopOpenModel';
 import type { ShopView } from './ui/shopView';
 import { reduceErrorMessage } from './ui/statusModel';
 import { buildTradeViewModel } from './ui/tradeModel';
@@ -359,18 +367,14 @@ let sessionModelState: SessionModelState = SESSION_INITIAL;
 // battle_action is PRIVATE (must-never-leak) — this is the ONLY signal
 // the client has about its own submission state.
 let pvpPendingTurnNumber: number | null = null;
-// dismissPending: prevents double-sending dismiss_dialogue while server processes it (M12d).
-// eslint-disable-next-line prefer-const
-let dismissPending = false;
-// Deferred shop-open + bound-overlay view state.
-// pendingShopId is set by the [data-shop-id] dialogue click branch and
-// consumed-and-cleared atomically by the dialogue batch listener's
-// no-conversation arm — the open is NEVER performed inline (adjudication 1).
+// The dialogue-dismiss / deferred shop-open state (ui/shopOpenModel.ts): whether a
+// dismiss_dialogue is in flight, and the shop the greet-then-shop button will open on the
+// first no-conversation batch — never inline. Stepped only through `stepShopOpen`.
+let shopOpen = SHOP_OPEN_INITIAL;
 // boundShopId / boundHealLocationId record which shop / heal location the
 // visible overlay is bound to, so a refresh batch never silently swaps a bound
-// view back to the first-row default. All three clear on Escape-cancel paths
-// and on reconnect (the store reset invalidates the ids).
-let pendingShopId: number | null = null;
+// view back to the first-row default. Both clear on their Escape paths and on
+// reconnect (the store reset invalidates the ids); every open rebinds them.
 let boundShopId: number | null = null;
 let boundHealLocationId: number | null = null;
 
@@ -406,10 +410,11 @@ const overlayProbes: OverlayProbes = {
 // intentionally byte-identical `<id>: () => <id>?.hide()` — that
 // shape matters per id, because main.ts is coverage-excluded and a copy-pasted sibling thunk
 // (`raisingView: () => boxView?.hide()`) type-checks perfectly while hiding the wrong overlay.
-// `dialogueView` is the SOLE `undefined` entry and must stay that way: it is the only member
-// of NEVER_FORCE_HIDE, because hiding a live conversation client-side strands the server
-// `player_conversation` row. Consumers read
-// `overlayHandles[id]?.()`; only verdicts decide WHICH ids they call.
+// `dialogueView` is the SOLE `undefined` entry and must stay that way: hiding a live
+// conversation client-side strands the server `player_conversation` row. Consumers read
+// `overlayHandles[id]?.()`; only verdicts and the stack's `close` commands decide WHICH ids.
+// A close leaves boundShopId / boundHealLocationId set: every open rebinds them, and their
+// refresh listeners run only while the overlay is visible.
 const overlayHandles: OverlayHandles = {
   battleView: () => battleView?.hide(),
   boxView: () => boxView?.hide(),
@@ -439,24 +444,30 @@ function overlayVerdict(id: OverlayId): CanOpenVerdict {
   return canOpen(id, visibleIds(overlayProbes));
 }
 
-/** The ONE shared predicate over the
- *  17 mutual-exclusion overlays. Every per-overlay read now lives in `overlayProbes`
- *  above — this body holds none. Its one consumer is the deferred shop-open gate; movement,
- *  KeyT and the frame-loop prompt read `movementGate()` below. The hotkey handlers still keep
- *  their inline guard lists (each exempts its own overlay).
- *  The NAME is load-bearing. */
-function anyOverlayVisible(): boolean {
-  return anyVisible(overlayProbes);
-}
-
 // The context stack (ui/contextStack.ts) sits BEHIND the legacy show/hide paths: nothing
-// pushes onto it directly yet. `syncStack()` mirrors the visible overlays into it and derives
+// pushes onto it directly. `syncStack()` mirrors the visible overlays into it and derives
 // the base from the store, so every reader that syncs first sees the overlays and the battle
 // row as they are right now, whichever listener showed them. A push of a new frame (and a
 // change of base kind) clears the held directions (B14). Synced on every movementGate() read,
 // at the top and tail of every keydown, at the top of every frame and at the tail of every
-// batch; `__game().stack` only reads it.
+// batch; `__game().stack` only reads it. Server truth is reconciled into it on every batch
+// (`reconcileStack`), which closes what a battle or a conversation drops.
 let contextStack: Stack = WORLD_STACK;
+function runStackCommands(commands: readonly Command[]): void {
+  for (const command of commands) {
+    switch (command.kind) {
+      case 'clearHeld':
+        held.clear();
+        break;
+      case 'close':
+        // The view's own hide path, so its close callbacks run (CTL3.3); never a hidden one.
+        if (overlayProbes[command.id]()) overlayHandles[command.id]?.();
+        break;
+      default:
+        command satisfies never;
+    }
+  }
+}
 function syncStack(): void {
   const ongoing = store.ongoingBattle(identity);
   const base = baseFor(
@@ -467,18 +478,30 @@ function syncStack(): void {
   const apply = (edge: Edge): void => {
     const next = contextStep(contextStack, edge);
     contextStack = next.stack;
-    for (const command of next.commands) {
-      switch (command.kind) {
-        case 'clearHeld':
-          held.clear();
-          break;
-        default:
-          command.kind satisfies never;
-      }
-    }
+    runStackCommands(next.commands);
   };
   apply({ kind: 'base', base });
   for (const edge of mirrorEdges(contextStack, visibleIds(overlayProbes))) apply(edge);
+}
+
+/** The batch-time reconcile (CTL3.1): mirror first, so an overlay shown since the last sync is
+ *  on the stack, then pop what the battle and the conversation drop and close those overlays. */
+function reconcileStack(): void {
+  syncStack();
+  // The terminal outcome this batch will show: refreshBattle's own decision, read without
+  // committing it, so what the outcome drops closes BEFORE the outcome shows (and takes focus).
+  const latest = store.latestPlayerBattle(identity);
+  const outcome =
+    identity !== '' && latest !== undefined && latest.outcome !== 'Ongoing'
+      ? decideBattleOverlay(latest, { dismissedBattleId, synced: battleSynced }).action.kind
+      : 'hide';
+  const next = reconcile(contextStack, {
+    ongoingBattleId: store.ongoingBattle(identity)?.battleId.toString(),
+    outcomeShown: outcome === 'show',
+    conversation: store.ownConversation(identity) !== undefined,
+  });
+  contextStack = next.stack;
+  runStackCommands(next.commands);
 }
 
 /** The ONE movement gate (CTL2.3): false under any frame, on a battle base (even with the
@@ -503,7 +526,7 @@ function characterTileMap(): Map<bigint, { zoneId: number; tileX: number; tileY:
 }
 
 // True while the session terminal (expired / unreachable) owns the
-// screen. sessionView is registry-EXTERNAL, so anyOverlayVisible() cannot see it — this predicate
+// screen. sessionView is registry-EXTERNAL, so the overlay probes cannot see it — this predicate
 // is the ONE SSOT the keydown handler AND the frame loop both consult, checked first on every
 // input path. `hidden` is the ordinary case and must NOT block.
 function sessionGateBlocks(): boolean {
@@ -1180,6 +1203,9 @@ function reconcileFromStore(): void {
     console.error('[reconcile] uncaught error', err);
   }
 }
+// Server truth into the context stack, FIRST of the UI listeners: what a battle or a
+// conversation drops is closed before any later listener shows the battle or the dialogue.
+store.onBatchApplied(() => reconcileStack());
 store.onBatchApplied(() => {
   // Belt: reconcileFromStore is total by construction (internal catch above); keep
   // the listener-level catch anyway so a future edit inside the body can
@@ -1691,31 +1717,8 @@ const onKeyDown = (e: KeyboardEvent): void => {
     return;
   }
   if (e.code === 'Escape' && dialogueView?.visible) {
-    // Escape CANCELS a pending shop-open (last-intent-wins)
-    // — without this, "click Shop, change your mind, Escape" still pops the
-    // shop when the dismiss lands.
-    pendingShopId = null;
-    // dismissPending guards against double-send while server processes the dismiss.
-    if (!dismissPending) {
-      // The flag is set INSIDE the lambda (reviewer M1): sendGuarded's frozen
-      // short-circuit then never sets it, so a frozen-link Escape stays a live
-      // button (status line says "disconnected") instead of leaning on the
-      // next-batch self-heal.
-      // Site-specific catch: a rejection must RESET dismissPending or
-      // Escape-dismiss is a dead button forever after one rejection (the flag is
-      // otherwise only cleared when the conversation row disappears in a batch).
-      // The rethrow keeps sendGuarded's catch as the single status reporter.
-      sendGuarded('dismiss', () => {
-        dismissPending = true;
-        return conn
-          ?.live()
-          ?.reducers.dismissDialogue({})
-          .catch((err: unknown) => {
-            dismissPending = false;
-            throw err;
-          });
-      });
-    }
+    // Ends the conversation and cancels a pending shop open (last intent wins).
+    stepShopOpen({ kind: 'dismissRequested' });
     e.preventDefault();
     return;
   }
@@ -1836,17 +1839,7 @@ function refreshBattle(): void {
   dismissedBattleId = r.dismissedBattleId;
   battleSynced = r.synced;
   if (r.action.kind === 'show') {
-    // the eight hand-written `if (X?.visible) X.hide();` lines are gone —
-    // BATTLE_FORCE_HIDE (ui/overlayRegistry.ts) now DRIVES the loop, so the manifest and the
-    // code cannot drift apart (they used to be two independently-authored lists kept in sync
-    // only by a test). Same ids, same order, same behaviour: help, box, raising, evolution,
-    // leaderboard, rename, tradePropose, menu — and NOT dialogue/shop/trade/pvp/questLog/heal,
-    // which a battle auto-show leaves standing exactly as before. Deliberately NOT canOpen():
-    // a battle auto-show is server truth and must fire even over a GUARD_ONLY overlay that
-    // would deny it.
-    for (const id of hideAllExceptPlan('battleView', visibleIds(overlayProbes))) {
-      overlayHandles[id]?.();
-    }
+    // What the battle drops was already closed by this batch's `reconcileStack` (SCREEN_POLICY).
     // Build baitItems from own inventory × item defs (12.5f-5: wire the 4th arg
     // that was already present in buildBattleViewModel with default []). The
     // function classifies by recruitBonus > 0 internally (classify-by-data).
@@ -1906,14 +1899,68 @@ function refreshBattle(): void {
 }
 store.onBatchApplied(() => refreshBattle());
 
+// --- dialogue dismiss + deferred shop open (ui/shopOpenModel.ts) ----------------------
+function stepShopOpen(event: ShopOpenEvent): void {
+  const next = shopOpenStep(shopOpen, event);
+  shopOpen = next.state;
+  switch (next.effect?.kind) {
+    case undefined:
+      break;
+    case 'sendDismiss':
+      sendDismiss(next.effect.path);
+      break;
+    case 'openShop':
+      openPendingShop(next.effect.shopId);
+      break;
+    default:
+      next.effect satisfies never;
+  }
+}
+
+/** Send dismiss_dialogue. `delivered` turns true only once a reducer promise exists, so a
+ *  frozen link or a missing live handle reports `dismissNotSent` and leaves no in-flight flag
+ *  behind (B8). The rejection rethrows, keeping sendGuarded the single status reporter. */
+function sendDismiss(path: DismissPath): void {
+  let delivered = false;
+  void sendGuarded('dismiss', () => {
+    const p = conn?.live()?.reducers.dismissDialogue({});
+    if (p === undefined) return undefined;
+    delivered = true;
+    return p.catch((err: unknown) => {
+      stepShopOpen({ kind: 'dismissRejected', path });
+      throw err;
+    });
+  });
+  if (!delivered) stepShopOpen({ kind: 'dismissNotSent', path });
+}
+
+/** The greet-then-shop open, on the first no-conversation batch. Dropped, never retained, when
+ *  a battle, its outcome or another frame holds the screen (a battle that began during the
+ *  dismiss round-trip must not get a shop stacked over it). */
+function openPendingShop(shopId: number): void {
+  // Re-sync first: a battle or outcome this batch's earlier listeners showed must block.
+  syncStack();
+  if (blocksPlayerOpen(contextStack)) return;
+  boundShopId = shopId;
+  shopView?.render(
+    buildShopViewModelForShop(
+      shopId,
+      store.allShops(),
+      store.allShopItems(),
+      store.itemDefs(),
+      store.ownInventory(identity),
+      store.ownWallet(identity),
+    ),
+  );
+  shopView?.show();
+}
+
 // --- M12d: dialogue / quest log / heal views --------------------------
 // All 3 MUST be total (never throw): defense-in-depth (store.flushBatch has per-listener try/catch since M10.5d).
 store.onBatchApplied(() => {
   try {
     const conv = store.ownConversation(identity);
-    // A server-pushed conversation preempts the menu. Guarded on conv so
-    // this per-batch listener cannot close a just-opened menu on the very next batch.
-    if (conv !== undefined && menuView?.visible) menuView?.hide();
+    // A server-pushed conversation has already closed every player screen (reconcileStack).
     // e-4 guard (M13.5e): build npcsMap only when a conversation is open.
     // allNpcs() is O(n) — doing it on every batch is wasteful during normal play.
     // Reconnect-ordering assumption: NPC content rows arrive in the same batch as (or
@@ -1923,37 +1970,10 @@ store.onBatchApplied(() => {
     const npcsMap = new Map(allNpcs.map((n) => [n.entityId, n]));
     const dialogueVm = buildDialogueViewModel(conv, npcsMap, DIALOGUE_TREES);
     dialogueView?.render(dialogueVm);
-    // Reset on server-side dismiss. NOT the reconnect self-heal any more: since
-    // the own-row-only disconnect fix, on_disconnect keeps the sender's player_conversation row
-    // when another connection of the identity is still live (a reconnect that
-    // overlapped the old socket), so the post-reconnect snapshot CAN carry the
-    // conversation — onReconnect clears dismissPending itself.
-    if (!conv) {
-      dismissPending = false;
-      // The deferred greet-then-shop open.
-      // Consume-and-clear ATOMICALLY (read to a local, null the module var
-      // first), then open ONLY if no overlay is visible at consumption time —
-      // a battle that popped during the dismiss round-trip drops the pending
-      // open silently rather than stacking two overlays.
-      if (pendingShopId !== null) {
-        const openShopId = pendingShopId;
-        pendingShopId = null;
-        if (!anyOverlayVisible()) {
-          boundShopId = openShopId;
-          shopView?.render(
-            buildShopViewModelForShop(
-              openShopId,
-              store.allShops(),
-              store.allShopItems(),
-              store.itemDefs(),
-              store.ownInventory(identity),
-              store.ownWallet(identity),
-            ),
-          );
-          shopView?.show();
-        }
-      }
-    }
+    // A no-conversation batch ends the in-flight dismiss and consumes the pending shop open.
+    // Not the reconnect self-heal: on_disconnect keeps the player_conversation row while
+    // another connection of the identity is live, so onReconnect resets the step itself.
+    stepShopOpen({ kind: 'batch', conversationPresent: conv !== undefined });
   } catch (err) {
     console.error('[M12d] dialogue batch listener error', err);
   }
@@ -2172,29 +2192,12 @@ store.onBatchApplied(() => syncStack());
 document.addEventListener('click', (e) => {
   // The greet-then-shop button. It carries
   // data-shop-id and NO choice index, so it gets its own branch ABOVE the
-  // choice delegation. Record the pending open ALWAYS (last-intent-wins), then
-  // end the conversation via dismissDialogue under the dismissPending in-flight
-  // guard (C6 discipline, mirroring the Escape-dismiss branch) — the shop open
-  // itself is DEFERRED to the dialogue batch listener's no-conversation arm.
+  // choice delegation. It records the shop (last intent wins) and ends the conversation;
+  // the open itself waits for the first no-conversation batch (stepShopOpen).
   const shopBtn = (e.target as HTMLElement).closest('[data-shop-id]') as HTMLElement | null;
   if (shopBtn !== null) {
     const clickedShopId = Number(shopBtn.dataset.shopId);
-    if (!Number.isNaN(clickedShopId)) {
-      pendingShopId = clickedShopId;
-      if (!dismissPending) {
-        sendGuarded('dismiss', () => {
-          dismissPending = true;
-          return conn
-            ?.live()
-            ?.reducers.dismissDialogue({})
-            .catch((err: unknown) => {
-              dismissPending = false;
-              pendingShopId = null;
-              throw err;
-            });
-        });
-      }
-    }
+    if (!Number.isNaN(clickedShopId)) stepShopOpen({ kind: 'shopPicked', shopId: clickedShopId });
     return;
   }
   // the click front door. Delegated on the data-attribute, the
@@ -2631,7 +2634,7 @@ async function main(): Promise<void> {
       // PvP action submission. pvpPendingTurnNumber is set INSIDE the lambda
       // so sendGuarded's frozen-check runs first — a frozen-link click must not
       // lock pvpPendingSubmit permanently (the turn never advances on a dropped send).
-      // Cleared on rejection (mirroring dismissPending pattern from dialogue dismiss).
+      // Cleared on rejection (mirroring the dialogue dismiss's rejection rollback).
       onPvpAttack: (battleId, skillId) => {
         sendGuarded('pvp-attack', () => {
           pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
@@ -3060,7 +3063,8 @@ async function main(): Promise<void> {
       // player_conversation row on disconnect; that delete now runs only when the identity's
       // LAST live connection ends, so an overlapping reconnect re-delivers the row and the
       // lock would stay held forever (dead Escape-dismiss + dead greet-then-shop button).
-      dismissPending = false;
+      // The reset also drops a pending shop open, whose id the store reset invalidated.
+      stepShopOpen({ kind: 'reconnect' });
       menuView?.hide(); // grey-out reads store state that the reset invalidated
       // re-baseline a surviving Ongoing battle on the next batch
       // instead of re-emitting a spurious battleStart for it. Armed until onHydrated —
@@ -3080,11 +3084,7 @@ async function main(): Promise<void> {
       // while the phase was already `unknown` (the ordinary guest state) leaves all three controls
       // disabled, with no notice, for the life of the page.
       lastPrivacyCountdown = undefined;
-      // The store was reset, so a pending or bound
-      // shop / heal id refers to rows that may no longer exist — clear all three
-      // (a stale pendingShopId would otherwise pop a shop on the first
-      // post-reconnect dialogue dismissal).
-      pendingShopId = null;
+      // The store was reset, so a bound shop / heal id refers to rows that may no longer exist.
       boundShopId = null;
       boundHealLocationId = null;
       // trade's double-spend lock must also be reset on reconnect (same reason as shop).
