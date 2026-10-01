@@ -101,6 +101,132 @@
 }
 
 /*
+ * Frame chrome and the nav indicator (ui/frame.ts, ui/navRender.ts; design §6, §10).
+ * Styling guidance, not a criterion: the tested contract is the DOM (the `is-active` class plus
+ * `aria-selected`, the frame parts). Every glyph here is a CSS pseudo-element so the TS kit
+ * writes no literal text; the `/ ""` alternative text keeps the decorative marks silent to a
+ * screen reader. No transition or animation, so no reduced-motion guard is needed. Plain colours
+ * (no `--mr-evo-*` reads): high-contrast frame tokens belong to ctl-7a.
+ */
+.mr-frame {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  max-height: 100%;
+  border: 2px solid #e0e0e0;
+  background: #1e1e2e;
+  color: #e0e0e0;
+}
+.mr-frame--side {
+  width: 33%;
+  min-width: 16rem;
+  height: 100%;
+}
+.mr-frame--full {
+  width: 100%;
+  height: 100%;
+}
+.mr-frame--bottom {
+  width: 100%;
+  max-height: 40%;
+}
+.mr-frame--small {
+  width: auto;
+  min-width: 12rem;
+  max-width: 50%;
+}
+.mr-frame-titlebar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-bottom: 2px solid #e0e0e0;
+}
+.mr-frame-title {
+  font-weight: bold;
+}
+.mr-frame-breadcrumb {
+  display: flex;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.mr-frame-crumb + .mr-frame-crumb::before {
+  content: "›" / "";
+  padding: 0 0.25rem;
+}
+.mr-frame-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  width: 100%;
+}
+.mr-frame-tabs[hidden] {
+  display: none;
+}
+.mr-frame-tabslot::before {
+  content: attr(data-button) / "";
+}
+.mr-frame-tabstrip {
+  display: flex;
+  gap: 0.25rem;
+}
+.mr-nav-tab {
+  padding: 0 0.5rem;
+}
+.mr-nav-tab.is-active {
+  background: #e0e0e0;
+  color: #1e1e2e;
+}
+.mr-frame-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.mr-frame-feedback {
+  min-height: 1.5em;
+  padding: 0.25rem 0.5rem;
+  border-top: 2px solid #e0e0e0;
+}
+.mr-frame-feedback[data-feedback="pending"]::before {
+  content: "…" / "";
+  padding-right: 0.25rem;
+}
+.mr-frame-feedback[data-feedback="ok"]::before {
+  content: "✓" / "";
+  padding-right: 0.25rem;
+}
+.mr-frame-feedback[data-feedback="error"]::before {
+  content: "!" / "";
+  padding-right: 0.25rem;
+}
+.mr-nav-row {
+  display: grid;
+}
+.mr-nav-item {
+  padding: 0.125rem 0.5rem 0.125rem 1.25rem;
+}
+.mr-nav-item.is-active {
+  background: #e0e0e0;
+  color: #1e1e2e;
+  outline: 2px solid #1e1e2e;
+  outline-offset: -4px;
+}
+.mr-nav-item.is-active::before {
+  content: "▶" / "";
+  margin-left: -1rem;
+  width: 1rem;
+  display: inline-block;
+}
+.mr-nav-row .mr-nav-item.is-active {
+  outline-width: 3px;
+}
+.mr-nav-item.is-disabled {
+  opacity: 0.5;
+}
+
+/*
  * Colour tokens for the evolution overlay.
  *
  * WHY TOKENS AND NOT LITERALS. `ui/evolutionView.ts` styles every element inline, like its
