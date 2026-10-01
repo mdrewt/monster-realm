@@ -311,6 +311,25 @@ const dialogueShown = (): boolean => {
   if (el === null) throw new Error('#dialogue-overlay is not in the shell');
   return el.style.display !== 'none';
 };
+const shopShown = (): boolean => {
+  const el = document.getElementById('shop-overlay');
+  if (el === null) throw new Error('#shop-overlay is not in the shell');
+  return el.style.display !== 'none';
+};
+/** The server ends the conversation, in one batch at clock `t`. */
+function endConversation(t: number): void {
+  opts.store.removeConversation(H.identity);
+  server(t);
+}
+/** Click a greet-then-shop button, as the dialogue renders one (the document-level delegate). */
+function clickShop(t: number, shopId = '1'): void {
+  const button = document.createElement('button');
+  button.dataset.shopId = shopId;
+  document.body.appendChild(button);
+  clock.t = t;
+  button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  button.remove();
+}
 /** Let queued microtasks and zero-delay timers run (a rejection handler, a deferred focus). */
 const flush = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
@@ -395,5 +414,71 @@ describe('main.ts Escape-in-dialogue dismiss (runtime, ctl-3)', { sequential: tr
     await flush();
     pressEscape(1300);
     expect(dismissCalls(), 'resolved, but the conversation has not ended: no third call').toBe(2);
+  });
+
+  it('CTL3-5-BOOT-SHOP-REJECT: a Shop click whose dismiss REJECTS drops its own pending open, so no shop opens when the conversation later ends', async () => {
+    // WRONG IMPL KILLED: a rejection handler that always reports the Escape path (a rejected Shop
+    // click would then keep its pending shop, and the shop would pop up on the first
+    // no-conversation batch although the player's click visibly failed).
+    await bootReady();
+    seedWorld(1000);
+    startConversation(1010);
+    expect(dialogueShown(), 'precondition: the server opened the dialogue').toBe(true);
+    H.manualDismiss = true;
+
+    clickShop(1100);
+    expect(dismissCalls(), 'precondition: the Shop click sent a dismiss').toBe(1);
+    expect(H.dismissPromises, 'precondition: it is unsettled').toHaveLength(1);
+    H.dismissPromises[0]?.reject(new Error('boom'));
+    await flush();
+
+    endConversation(1200);
+    expect(dialogueShown(), 'precondition: the conversation ended').toBe(false);
+    expect(shopShown(), 'the rejected click opens no shop').toBe(false);
+  });
+
+  it('CTL3-6-BOOT-SHOP-NOT-SENT: a Shop click with no live handle sends nothing and leaves the button alive: the next click after the handle returns sends exactly one dismissDialogue', async () => {
+    // WRONG IMPL KILLED: the not-sent report wired to the Escape path only (a Shop click on a
+    // missing handle would latch the in-flight flag, and the Shop button would be dead for the
+    // rest of the conversation: B8 on the shop path). The link is NOT frozen here.
+    await bootReady();
+    seedWorld(1000);
+    startConversation(1010);
+    expect(dialogueShown(), 'precondition: the server opened the dialogue').toBe(true);
+
+    H.linkLive = false;
+    expect(H.frozen, 'precondition: the link is not frozen').toBe(false);
+    clickShop(1100);
+    expect(dismissCalls(), 'no live handle: the Shop click calls no reducer').toBe(0);
+
+    H.linkLive = true;
+    clickShop(1200);
+    expect(dismissCalls(), 'the handle is back: the next Shop click sends exactly once').toBe(1);
+
+    endConversation(1300);
+    expect(shopShown(), 'and the shop opens once the conversation ends').toBe(true);
+  });
+
+  it('CTL3-5-BOOT-RECONNECT: a reconnect clears the in-flight dismiss, so an Escape after it sends again', async () => {
+    // WRONG IMPL KILLED: a reconnect that does not reset the dismiss step (the SDK never settles
+    // the in-flight promise of a dropped link, and an overlapping reconnect re-delivers the
+    // conversation row: Escape would be a dead button, and a pending shop a stale open).
+    await bootReady();
+    seedWorld(1000);
+    startConversation(1010);
+    expect(dialogueShown(), 'precondition: the server opened the dialogue').toBe(true);
+    H.manualDismiss = true;
+
+    pressEscape(1100);
+    pressEscape(1110);
+    expect(
+      dismissCalls(),
+      'precondition: the first dismiss is in flight and guards the second',
+    ).toBe(1);
+
+    opts.onReconnect?.(H.identity);
+    expect(dialogueShown(), 'precondition: the conversation row is still there').toBe(true);
+    pressEscape(1200);
+    expect(dismissCalls(), 'after the reconnect the next Escape sends again').toBe(2);
   });
 });

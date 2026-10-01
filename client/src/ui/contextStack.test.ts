@@ -563,8 +563,13 @@ describe('context stack: pure core (ctl-2)', () => {
 
 type CloseId = Exclude<OverlayId, 'dialogueView'>;
 const closeCmd = (id: CloseId): Command => ({ kind: 'close', id });
-const serverView = (ongoingBattleId: string | undefined, conversation: boolean): ServerView => ({
+const serverView = (
+  ongoingBattleId: string | undefined,
+  conversation: boolean,
+  outcomeShown = false,
+): ServerView => ({
   ongoingBattleId,
+  outcomeShown,
   conversation,
 });
 const closeIds = (commands: readonly Command[]): readonly string[] =>
@@ -619,6 +624,7 @@ const frameKindsOf = (id: OverlayId): fc.Arbitrary<UpperFrame> =>
   fc.constantFrom<UpperFrame>(screen(id), prompt(id), textEntry(id));
 const serverViewArb: fc.Arbitrary<ServerView> = fc.record({
   ongoingBattleId: fc.constantFrom<string | undefined>(undefined, '1', '42'),
+  outcomeShown: fc.boolean(),
   conversation: fc.boolean(),
 });
 
@@ -1005,14 +1011,81 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
         if (expectedCloses.length >= 3) manyCloses += 1;
         if (resultIds.length === upperIdsOf(from).length) withoutPops += 1;
       }),
-      { numRuns: 400 },
+      { numRuns: 600 },
     );
     expect(withCloses, 'ANTI-VACUITY: many runs popped and closed frames').toBeGreaterThan(100);
     expect(manyCloses, 'ANTI-VACUITY: many runs popped three or more frames').toBeGreaterThan(30);
-    // Roughly 4% of runs (no battle, no conversation, no dialogue frame, no outcome frame): a low
-    // floor on purpose, so a lucky seed cannot flake it, yet it still fails a generator that never
-    // produces a no-pop run.
-    expect(withoutPops, 'ANTI-VACUITY: some runs popped nothing').toBeGreaterThan(2);
+    // Roughly 2% of runs (no battle, no outcome flag, no conversation, no dialogue frame, no
+    // outcome frame): the floor is the lowest non-vacuous one (never zero) on purpose, so a lucky
+    // seed cannot flake it, yet it still fails a generator that never produces a no-pop run.
+    expect(withoutPops, 'ANTI-VACUITY: some runs popped nothing').toBeGreaterThan(0);
+  });
+
+  it('CTL3-2-OUTCOME-BIT: outcomeShown over the world drops every player frame like a battle does, but never pushes or pops a frame by itself', () => {
+    // WRONG IMPL KILLED: a reconcile that ignores outcomeShown (the terminal outcome is about to
+    // be shown by a later listener in the same batch, so the overlays under it would still be
+    // standing when the outcome takes focus: the reviewer's same-batch finding); one that acts on
+    // the flag when it is false; one that drops the outcome frame itself, or any server-owned
+    // frame; one that PUSHES a battleView frame for the flag (the mirror pushes, and a null view
+    // model would strand the frame); one that pops a dialogue frame while the conversation is
+    // still there; and one that emits a clearHeld for a flag (the base did not change).
+    const flagged = reconcile(
+      deepFrozen(stackOf(WORLD, screen('menuView'), screen('helpView'))),
+      serverView(undefined, false, true),
+    );
+    expect(
+      flagged.stack,
+      'outcomeShown, no outcome frame yet: both player frames are dropped',
+    ).toEqual(WORLD_STACK);
+    expect(flagged.commands, 'one close each, in stack order, nothing else').toEqual([
+      closeCmd('menuView'),
+      closeCmd('helpView'),
+    ]);
+
+    const unflagged = reconcile(
+      deepFrozen(stackOf(WORLD, screen('menuView'), screen('helpView'))),
+      serverView(undefined, false, false),
+    );
+    expect(unflagged.stack, 'no flag, no battle, no outcome frame: nothing is dropped').toEqual(
+      stackOf(WORLD, screen('menuView'), screen('helpView')),
+    );
+    expect(unflagged.commands).toEqual([]);
+
+    // Every player id, in every frame kind: the flag drops all 15 exactly as a battle does.
+    const all = reconcile(
+      deepFrozen(stackOf(WORLD, ...PLAYER_FRAMES)),
+      serverView(undefined, false, true),
+    );
+    expect(all.stack).toEqual(WORLD_STACK);
+    expect(all.commands, 'exactly the 15 closes in stack order').toEqual(PLAYER_IDS.map(closeCmd));
+
+    // It never pushes: a bare world stays bare.
+    const bare = reconcile(deepFrozen(WORLD_STACK), serverView(undefined, false, true));
+    expect(bare.stack, 'the flag pushes no battleView frame').toEqual(WORLD_STACK);
+    expect(bare.commands).toEqual([]);
+
+    // It never pops the outcome frame, and a live conversation keeps its dialogue frame.
+    const kept = reconcile(
+      deepFrozen(stackOf(WORLD, screen('boxView'), screen('battleView'), screen('dialogueView'))),
+      serverView(undefined, true, true),
+    );
+    expect(kept.stack, 'the outcome and dialogue frames survive').toEqual(
+      stackOf(WORLD, screen('battleView'), screen('dialogueView')),
+    );
+    expect(kept.commands, 'only the player frame is closed').toEqual([closeCmd('boxView')]);
+
+    // Over a battle base the flag changes nothing: the base already drops.
+    const underBattle = reconcile(
+      deepFrozen(stackOf(battle('7'), screen('menuView'))),
+      serverView('7', false, true),
+    );
+    expect(underBattle.stack).toEqual(stackOf(battle('7')));
+    expect(underBattle.commands).toEqual([closeCmd('menuView')]);
+
+    // The flag is idempotent too: a second pass over its own result emits nothing.
+    const again = reconcile(flagged.stack, serverView(undefined, false, true));
+    expect(again.stack).toEqual(flagged.stack);
+    expect(again.commands).toEqual([]);
   });
 
   it('CTL3-4-CONV-APPEARS: a server conversation pops and closes all 15 player frames, keeps the dialogue frame, and reconcile never pushes one', () => {
