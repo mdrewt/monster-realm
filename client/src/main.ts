@@ -34,6 +34,9 @@ import {
   type WasmDirection,
   type WasmMoveInput,
 } from './convert/convert';
+import type { ButtonEdge } from './input/buttons';
+import { isChord, KeyboardSource } from './input/keyboardSource';
+import { InputRouter, ownership, routerConsumes } from './input/router';
 import type { PvpAction } from './module_bindings/types';
 import { BUILD_INFO, formatBuildStamp } from './net/buildInfo';
 import { claimCode } from './net/claimCode';
@@ -48,9 +51,6 @@ import {
 } from './net/devLog';
 import { AuthoritativeStore, ownPerspective } from './net/store';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
-import type { ButtonEdge } from './input/buttons';
-import { isChord, KeyboardSource } from './input/keyboardSource';
-import { InputRouter, ownership, routerConsumes } from './input/router';
 import { resolveTelemetryConfig } from './observability/config';
 import { createFrameWindow, frameTick } from './observability/frameWindow';
 import { maxRemoteGapMs } from './observability/interpGap';
