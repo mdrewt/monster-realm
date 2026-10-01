@@ -76,10 +76,10 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Feedback line inside an overlay (shop, trade, trade offer, rename, care, session) when
   // the player acted while the connection was down, so nothing was sent. Same wording as
   // chrome.status.disconnected without its {where} prefix.
-  // main.ts:2638 (and 7 sibling reducer sites), careAction.ts:32, sessionModel.ts:31
+  // careAction.ts:72 (performCare, for care + main.ts's 8 overlay-feedback sites), sessionModel.ts:31
   'chrome.feedback.disconnected': 'disconnected — try again',
   // @desc: Feedback line in the profile-rename dialog after the new display name was saved.
-  // main.ts:2829
+  // main.ts:2801
   'chrome.rename.updated': 'Name updated!',
   // @desc: Heading of the session overlay shown when the player's sign-in has expired.
   // sessionModel.ts:124
@@ -338,6 +338,10 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // player carries (the "x" is a plain letter x). Bold, one line.
   // raisingView.ts:318
   'raising.inventory.item': (p) => `${p.name} (x${p.count})`,
+  // @desc: Feedback line in the raising overlay after the server accepted a Care action on a
+  // monster. One short line.
+  // main.ts:2615 (onCare adapter; pre-migration careAction.ts CARED_MESSAGE)
+  'raising.feedback.cared': 'Cared!',
   // @desc: Heading of the party & box overlay, where the player arranges which monsters are in
   // the active party and which stay in storage. One short line.
   // boxView.ts:69 (resolved in show())
@@ -434,16 +438,16 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // tradeView.ts:199 (#actionLabel return)
   'trade.action.cancel': 'Cancel',
   // @desc: Feedback line in the live-trade overlay after the player accepted the offer.
-  // main.ts:2675
+  // main.ts:2668
   'trade.feedback.accepted': 'Trade accepted!',
   // @desc: Feedback line in the live-trade overlay after the player rejected the offer.
-  // main.ts:2687
+  // main.ts:2675
   'trade.feedback.rejected': 'Trade rejected.',
   // @desc: Feedback line in the live-trade overlay after the player confirmed and the trade went through.
-  // main.ts:2699
+  // main.ts:2682
   'trade.feedback.completed': 'Trade complete!',
   // @desc: Feedback line in the live-trade overlay after the player cancelled the trade.
-  // main.ts:2711
+  // main.ts:2689
   'trade.feedback.cancelled': 'Trade cancelled.',
   // @desc: Fallback heading of the shop overlay when no shop is nearby (a real shop shows its
   // own name instead). One word.
@@ -485,10 +489,10 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // shopView.ts:190
   'shop.sell.unsellable': (p) => `${p.name} (×${p.count}) — Cannot sell`,
   // @desc: Feedback line in the shop overlay after a purchase succeeded.
-  // main.ts:2643
+  // main.ts:2648
   'shop.feedback.purchased': 'Purchase complete!',
   // @desc: Feedback line in the shop overlay after a sale succeeded.
-  // main.ts:2658
+  // main.ts:2655
   'shop.feedback.sold': 'Sale complete!',
   // @desc: Placeholder option of the trade-proposal dialog's target selector, shown before the
   // player picks another player to trade with; ends with an ellipsis. Short, fits a narrow
@@ -496,7 +500,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // tradeProposeView.ts:168
   'tradePropose.target.placeholder': 'Select a player…',
   // @desc: Feedback line in the trade-proposal dialog after the offer was sent to the other player.
-  // main.ts:2860
+  // main.ts:2828
   'tradePropose.feedback.sent': 'Offer sent!',
   // @desc: Button in the NPC dialogue overlay that opens the shop this NPC runs; shown only when
   // the NPC has one. One word, fits a narrow button.

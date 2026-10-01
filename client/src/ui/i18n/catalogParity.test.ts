@@ -793,9 +793,10 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // 21r-b adds 9 literal-key call sites in main.ts: the frozen-link disconnected line (shop
     // onBuy/onSell, trade onAccept/onReject/onConfirm/onCancel, tradePropose onSubmit — one
     // literal key, many call sites), the rename-success line, the two shop-outcome lines, the
-    // four trade-outcome lines, and the trade-propose "sent" line.
+    // four trade-outcome lines, and the trade-propose "sent" line. pgcc-a then moved the
+    // disconnected line into careAction.ts's core (only the core resolves it now, so it leaves this
+    // set) and added the care success key, which main.ts's care adapter resolves.
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
-      'chrome.feedback.disconnected',
       'chrome.rename.updated',
       'chrome.status.bugBundleBlocked',
       'chrome.status.contentStale',
@@ -804,6 +805,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'chrome.status.healUnavailable',
       'chrome.status.partyFull',
       'chrome.status.privacyOverlayBusy',
+      'raising.feedback.cared',
       'shop.feedback.purchased',
       'shop.feedback.sold',
       'trade.feedback.accepted',

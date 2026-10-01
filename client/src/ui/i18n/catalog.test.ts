@@ -372,15 +372,15 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // trade-propose confirmation and the six session-overlay strings (sessionModel.ts:124-134).
   // Every value is byte-transcribed from the pre-migration literal at the cited main.ts/
   // sessionModel.ts line (memory/projects/monster-realm-21r-b-plan.md's key table).
-  'chrome.feedback.disconnected': 'disconnected — try again', // main.ts (8 guarded sites) / careAction.ts / sessionModel.ts
-  'shop.feedback.purchased': 'Purchase complete!', // main.ts:2643
-  'shop.feedback.sold': 'Sale complete!', // main.ts:2658
-  'trade.feedback.accepted': 'Trade accepted!', // main.ts:2675
-  'trade.feedback.rejected': 'Trade rejected.', // main.ts:2687
-  'trade.feedback.completed': 'Trade complete!', // main.ts:2699
-  'trade.feedback.cancelled': 'Trade cancelled.', // main.ts:2711
-  'chrome.rename.updated': 'Name updated!', // main.ts:2829
-  'tradePropose.feedback.sent': 'Offer sent!', // main.ts:2860
+  'chrome.feedback.disconnected': 'disconnected — try again', // careAction.ts:72 (performCare) / sessionModel.ts
+  'shop.feedback.purchased': 'Purchase complete!', // main.ts:2648
+  'shop.feedback.sold': 'Sale complete!', // main.ts:2655
+  'trade.feedback.accepted': 'Trade accepted!', // main.ts:2668
+  'trade.feedback.rejected': 'Trade rejected.', // main.ts:2675
+  'trade.feedback.completed': 'Trade complete!', // main.ts:2682
+  'trade.feedback.cancelled': 'Trade cancelled.', // main.ts:2689
+  'chrome.rename.updated': 'Name updated!', // main.ts:2801
+  'tradePropose.feedback.sent': 'Offer sent!', // main.ts:2828
   'chrome.session.expired.title': 'Session expired', // sessionModel.ts:124
   'chrome.session.expired.body':
     'Your sign-in has expired. Sign in again to keep saving progress across your devices, or ' +
@@ -452,6 +452,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'privacy.action.cancel': 'Cancel account deletion', // privacyBanner.ts:159
   'privacy.action.export': 'Request my data export', // privacyBanner.ts:160
   'privacy.action.download': 'Download my data export', // privacyBanner.ts:164
+  'raising.feedback.cared': 'Cared!', // careAction.ts CARED_MESSAGE (pre-migration)
 };
 
 interface ParamOutputSpec {
@@ -728,7 +729,8 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 178-key roster (21r-b2 growth of 21r-b's 133-key roster by the 45 new `claim.*` /
+/** The full 179-key roster (pgcc-a added `raising.feedback.cared` to the 178-key roster below;
+ *  21r-b2 growth of 21r-b's 133-key roster by the 45 new `claim.*` /
  *  `privacy.*` keys; 21r-b had grown the 118-key roster by the 15 new
  *  `chrome.feedback.*`/`shop.feedback.*`/`trade.feedback.*`/`chrome.rename.updated`/
  *  `tradePropose.feedback.sent`/`chrome.session.*` keys), sorted — `EXPECTED_PLAIN` and

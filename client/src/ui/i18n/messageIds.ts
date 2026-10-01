@@ -98,6 +98,7 @@ export type MessageId =
   | 'raising.card.train'
   | 'raising.inventory.empty'
   | 'raising.inventory.item'
+  | 'raising.feedback.cared'
   // Box.* : the party / box screen (boxView.ts).
   | 'box.title'
   | 'box.heal'
