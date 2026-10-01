@@ -279,9 +279,9 @@ function server(t: number, s: { x: number; y: number; ack: number }): void {
 
 /** Ack everything sent so far, the character standing where the predictor already put it.
  *  Only valid for North-only walks from (2, 6): after n sends it stands at (2, 6 - n). */
-function ackAllNorth(t: number): void {
+function ackAllNorth(t: number, startY = 6): void {
   const n = H.sends.length;
-  server(t, { x: 2, y: 6 - n, ack: n });
+  server(t, { x: 2, y: startY - n, ack: n });
 }
 
 interface FireOpts {
@@ -360,43 +360,55 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     // that releases on any visibilitychange (tab-switch back would drop a real hold), a
     // release that clears the shell's held set but not the router/source (the next press
     // would be eaten as a duplicate), and a blur that releases nothing.
+    // Counts are snapshotted before each action instead of asserted absolutely: a server
+    // batch that lands while a key is committed-held can legitimately re-issue a step through
+    // the reconcile-divergence emitter, so only growth / no growth across an action is the
+    // contract. The server is acked at the tile the predictor holds (start y = 7 leaves room
+    // for the handful of North steps this walk can issue).
+    const Y0 = 7;
     await bootReady();
-    server(1000, { x: 2, y: 6, ack: 0 });
+    server(1000, { x: 2, y: Y0, ack: 0 });
     fire('keydown', 'KeyW', 1000);
     expect(dirs()).toEqual(['North']);
-    ackAllNorth(1050);
+    ackAllNorth(1050, Y0);
 
     // Control: a VISIBLE visibilitychange keeps the hold alive, so the continuation fires.
     setVisibility('visible');
+    const beforeVisible = H.sends.length;
     document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
     frame(1160);
-    expect(dirs(), 'visible visibilitychange must not release').toEqual(['North', 'North']);
-    ackAllNorth(1200);
+    expect(H.sends.length, 'visible visibilitychange must not release').toBeGreaterThan(
+      beforeVisible,
+    );
+    ackAllNorth(1200, Y0);
 
-    // Hidden: everything is released, the walk stops.
+    // Hidden: everything is released, the walk stops. After the dispatch the server is
+    // acked, so a still-held key WOULD send on the next frame.
+    const beforeHidden = H.sends.length;
     setVisibility('hidden');
     document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
     setVisibility('visible');
-    frame(1300);
+    ackAllNorth(1300, Y0);
+    frame(1310);
     frame(1400);
-    expect(dirs(), 'hidden visibilitychange must stop the continuation').toEqual([
-      'North',
-      'North',
-    ]);
+    expect(H.sends.length, 'hidden visibilitychange must stop the continuation').toBe(beforeHidden);
 
     // The release reset the router and the source: a fresh press steps again, then holds.
     fire('keydown', 'KeyW', 1500);
-    expect(dirs()).toEqual(['North', 'North', 'North']);
-    ackAllNorth(1550);
+    expect(H.sends.length, 'a fresh press after the release steps').toBe(beforeHidden + 1);
+    ackAllNorth(1550, Y0);
+    const beforeContinuation = H.sends.length;
     frame(1660);
-    expect(dirs(), 'control: the fresh hold continues').toHaveLength(4);
-    ackAllNorth(1700);
+    expect(H.sends.length, 'control: the fresh hold continues').toBeGreaterThan(beforeContinuation);
+    ackAllNorth(1700, Y0);
 
     // Blur releases too.
+    const beforeBlur = H.sends.length;
     window.dispatchEvent(new Event('blur'));
+    ackAllNorth(1750, Y0);
     frame(1800);
     frame(1900);
-    expect(dirs(), 'blur must stop the continuation').toHaveLength(4);
+    expect(H.sends.length, 'blur must stop the continuation').toBe(beforeBlur);
   });
 
   it('CTL1-2-BOOT-REFCOUNT: holding W while pressing and releasing ArrowUp keeps walking north until W is released', async () => {
