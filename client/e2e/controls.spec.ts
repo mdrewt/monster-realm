@@ -15,8 +15,12 @@ interface FakeWin {
 const WORLD = { kind: 'world' } as const;
 const screen = (id: FrameId): UpperFrame => ({ kind: 'screen', id });
 
-/** Installs the fake game. The nth Escape pops the top frame after `pops[n]` ms (0 = at once);
- *  an Escape past the end of `pops` (or any Escape when `pops` is empty) does nothing. */
+/** A `pops` entry meaning "this Escape clears every upper frame at once". */
+const POP_ALL = -1;
+
+/** Installs the fake game. The nth Escape pops the top frame after `pops[n]` ms (0 = at once,
+ *  `POP_ALL` = clears to the base at once); an Escape past the end of `pops` (or any Escape
+ *  when `pops` is empty) does nothing. */
 async function installFake(page: Page, stack: Stack, pops: number[]): Promise<void> {
   await page.setContent('<html><body></body></html>');
   await page.evaluate(
@@ -31,7 +35,8 @@ async function installFake(page: Page, stack: Stack, pops: number[]): Promise<vo
         if (e.code !== 'Escape') return;
         const delay = pops[escapes++];
         if (delay === undefined) return;
-        if (delay === 0) w.__stack.pop();
+        if (delay < 0) w.__stack.length = 1;
+        else if (delay === 0) w.__stack.pop();
         else setTimeout(() => w.__stack.pop(), delay);
       });
     },
@@ -45,9 +50,16 @@ const stackLength = (page: Page): Promise<number> =>
   page.evaluate(() => (window as unknown as FakeWin).__game().stack.length);
 
 test.describe('ctl-6a controls.ts', () => {
-  test('CTL6A.1 stuck screen frame', async ({ page }) => {
+  test('CTL6A.1 stuck prompt frame over a battle base', async ({ page }) => {
     test.setTimeout(60_000);
-    await installFake(page, [WORLD, screen('helpView')], []);
+    await installFake(
+      page,
+      [
+        { kind: 'battle', battleId: '7' },
+        { kind: 'prompt', id: 'helpView' },
+      ],
+      [],
+    );
     const failure = await closeAll(page).then(
       () => null,
       (e: unknown) => (e instanceof Error ? e.message : String(e)),
@@ -78,11 +90,34 @@ test.describe('ctl-6a controls.ts', () => {
   });
 
   test('ctl-6a closeAll pops to base', async ({ page }) => {
-    await installFake(page, [WORLD, screen('menuView'), screen('helpView')], [0, 300]);
+    test.setTimeout(30_000);
+    await installFake(page, [WORLD, screen('menuView'), screen('helpView')], [0, 2_500]);
+    const started = Date.now();
     await closeAll(page);
+    // It waits for the stack to change, not a fixed sleep: any fixed sleep >= 2.5 s costs >= 5 s
+    // over two presses, and a shorter one presses again before the late pop lands.
+    expect(Date.now() - started).toBeLessThan(4_500);
     await page.waitForTimeout(150); // a late over-press would land here
     expect(await stackLength(page)).toBe(1);
     expect(await keysSeen(page)).toEqual(['Escape', 'Escape']);
+  });
+
+  test('ctl-6a closeAll re-reads the stack after each press', async ({ page }) => {
+    await installFake(page, [WORLD, screen('menuView'), screen('helpView')], [POP_ALL]);
+    await closeAll(page);
+    await page.waitForTimeout(150); // a blind second press would land here
+    expect(await stackLength(page)).toBe(1);
+    expect(await keysSeen(page)).toEqual(['Escape']);
+  });
+
+  test('ctl-6a closeAll fails loudly without __game', async ({ page }) => {
+    await page.setContent('<html><body></body></html>');
+    const failure = await closeAll(page).then(
+      () => null,
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+    expect(failure, 'closeAll must reject when there is no __game').not.toBeNull();
+    expect(failure).toContain('__game');
   });
 
   test('ctl-6a closeAll at base presses nothing', async ({ page }) => {

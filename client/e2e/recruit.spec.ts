@@ -7,7 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll } from './controls';
+import { closeAll, StuckStackError } from './controls';
 
 // recruit.spec.ts — gameplay-driven recruit flow (EARS 13.5h-1).
 //
@@ -363,16 +363,18 @@ async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
   const healBtn = p.getByText('Heal Party', { exact: true });
 
   // Open the box (same closeAll+KeyB trick as healViaBox to dismiss overlays). A frame
-  // closeAll cannot close is the latched case below: skip the heal rather than fail.
+  // closeAll cannot close is the latched case: skip the heal rather than fail.
   const MAX_BOX_OPEN_TRIES = 20;
   let boxOpen = false;
   for (let i = 0; i < MAX_BOX_OPEN_TRIES && !boxOpen; i++) {
     if (!(await healBtn.isVisible().catch(() => false))) {
-      const closed = await closeAll(p).then(
-        () => true,
-        () => false,
-      );
-      if (!closed) break;
+      try {
+        await closeAll(p);
+      } catch (e) {
+        if (!(e instanceof StuckStackError)) throw e;
+        console.log(`restoreHpBeforeEncounter: ${e.message}, skipping heal`);
+        return false; // another overlay is latched; skip and proceed
+      }
       await p.keyboard.press('KeyB');
     }
     boxOpen = await healBtn
@@ -786,7 +788,7 @@ test.describe
           }
           if (!partyAlive) {
             // The terminal outcome frame stays visible (lazy GC — see healViaBox);
-            // a fainted party blocks encounters, so recover via Escape-dismiss →
+            // a fainted party blocks encounters, so recover via closeAll →
             // KeyB → "Heal Party" (zone-scoped, currently free, 30s cooldown).
             if (healCount < MAX_HEALS) {
               healCount++;

@@ -22,6 +22,9 @@ export async function pressAccel(page: Page, accel: Accel): Promise<void> {
   await page.keyboard.press(DEFAULT_BINDINGS.accels[accel][0]);
 }
 
+/** `closeAll` gave up: Start did not bring the stack back to its base (CTL6A.1). */
+export class StuckStackError extends Error {}
+
 const readStack = (page: Page): Promise<Stack> =>
   page.evaluate(() => {
     const game = (window as unknown as { __game?: () => { stack: Stack } }).__game;
@@ -53,7 +56,7 @@ export async function closeAll(page: Page): Promise<void> {
     if (before.length <= 1) return;
     if (presses === CLOSE_ALL_MAX_PRESSES) {
       const top = before[before.length - 1];
-      throw new Error(
+      throw new StuckStackError(
         `closeAll: stuck top frame ${frameName(top)} after ${presses} Start (${start}) presses ` +
           `(stack length ${before.length})`,
       );

@@ -306,7 +306,7 @@ test.describe
       }, identityA);
 
       // Step 5: B waits for pvp-accept-btn to appear (auto-show on incoming challenge;
-      // requires !anyOverlayVisible — that is why we pressed Escape on B in step 2).
+      // requires !anyOverlayVisible — that is why B ran closeAll in step 2).
       // WHAT THIS KILLS: a pvp overlay that does not auto-show on incoming challenge,
       // or an accept button that is absent from the rendered incoming section.
       await pageB.waitForSelector('[data-testid="pvp-accept-btn"]', { timeout: 15_000 });
