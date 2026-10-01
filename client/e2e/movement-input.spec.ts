@@ -26,8 +26,10 @@ import {
 //                   W-NH2-NO-CANCEL precedent: mislabelling a green guard as RED is itself
 //                   a defect.)
 //   B  RED PROOF    dual-code overlap tap -> exactly 1 tile. THE slice defect (EARS-1).
-//   C  GREEN GUARD  a hold FREEZES under an overlay and RESUMES after it closes. Kills the
-//                   whole-gate `|| true` fold, which no source scan can see.
+//   C  RED TODAY    (ctl-2) a hold FREEZES under an overlay and does NOT resume after it
+//                   closes (opening a frame clears the held keys); pressing again walks. Still
+//                   kills the whole-gate `|| true` fold, which no source scan can see. Replaces
+//                   the old C, whose "resumes on close" arm ctl-2 deliberately reversed.
 //   D  RED TODAY    a sustained hold stays inside a send budget and is never rejected.
 //                   the only tooth that kills the narrow `&& true ||` outstandingSteps
 //                   mutant, because ADR-0148 MEASURED the reject-storm world at unchanged
@@ -477,19 +479,24 @@ test.describe
     });
 
     // -------------------------------------------------------------------------------
-    // C — GREEN GUARD (passes pre-fix; the runtime killer for the whole-gate fold)
+    // C (ctl-2) — hold-through-overlay: a hold does NOT survive an overlay
     // -------------------------------------------------------------------------------
-    test('C GREEN GUARD: a held key FREEZES under the box overlay and RESUMES when it closes (kills the whole-gate `|| true` fold)', async () => {
-      // ★ THE UN-KILLABLE CLASS THIS CLOSES: `if (true || <predicate>)` around the frame
-      // loop's continuation guard. Every source scan in main.wiring.test.ts matches the text
-      // and the semantics are reverted — only EVALUATING the expression can see it. A folded
-      // gate keeps walking under the overlay, so T3 !== T2 and this test reds.
-      //
-      // KeyB is chosen deliberately: the box toggle does NOT call held.clear() (unlike KeyN /
-      // KeyO / the menu), so the ArrowRight press genuinely survives the open/close cycle.
-      // That is what makes the RESUME arm (T4 > T3) an anti-vacuity proof rather than a
-      // restatement of the freeze: it shows the character stopped because the GATE shut, not
-      // because the held key was wiped. It also pins ADR-0013's resume-after-overlay contract.
+    // The old scenario C ("C GREEN GUARD: a held key FREEZES under the box overlay and RESUMES
+    // when it closes") is DELETED by name, with this test as its named survivor (ctl-2, spec
+    // "Named survivors"). It pinned the behaviour ctl-2 deliberately REVERSES: ADR-0013's
+    // "a held key resumes after an overlay closes". Opening any frame now clears the held keys
+    // (CTL2.4), so a direction held while a frame opens and closes does not walk until it is
+    // pressed again (CTL2.5). Everything else the old test guarded is kept below: the hold
+    // freezes under the overlay (the whole-gate `|| true` fold still reds here), and an
+    // anti-vacuity arm proves the character CAN walk, so a dead world cannot pass.
+    test('C (ctl-2): a direction held through an overlay does not walk when it closes until pressed again', async () => {
+      // ★ THE KEY IS KeyB ON PURPOSE. On master only N / O / ? / M / C cleared the held set
+      // when they opened; the box toggle did not, so a hold survived the open/close cycle and
+      // the character walked on at close. That makes this test RED on master (the spec's menu
+      // key M already cleared held, so an M-only test could not fail on the defect).
+      // WRONG IMPL KILLED: a frame push that does not clear `held` (the character walks the
+      // moment the box closes); a gate that lets the continuation run under the overlay (the
+      // FROZEN arm); a world that cannot walk at all (the anti-vacuity arm).
       await recenter(page, 2);
       await corridorEastWest(page, 1, 8);
       // BoxView's static box-vs-party hint: a direct child of the overlay
@@ -560,23 +567,44 @@ test.describe
       const t3 = await tile(page);
       expect(
         t3,
-        'FROZEN — the kill assertion: with an overlay visible the held-key continuation must ' +
-          'emit nothing, so the character must not have moved at all across 700ms. A whole-gate ' +
-          '`|| true` fold (or any overlay term dropped from the guard) walks here',
+        'FROZEN: with an overlay visible nothing may walk, so the character must not have moved ' +
+          'at all across 700ms. A whole-gate `|| true` fold (or any overlay term dropped from ' +
+          'the guard) walks here',
       ).toEqual(t2);
 
+      // Close the box. The ArrowRight key is STILL physically down: the hold must not resume.
       await page.keyboard.press('KeyB');
-      await expect(overlay).toBeHidden({ timeout: 3_000 });
-      await page.waitForTimeout(600);
-      const t4 = await tile(page);
+      await expect(overlay, 'the box overlay must actually be CLOSED').toBeHidden({
+        timeout: 3_000,
+      });
+      // Settle, then take the baseline AFTER convergence. The poll is swallowed on purpose: in
+      // the defect world the character is already walking again and never settles, so falling
+      // through hands the diagnosis to the precise assertion below.
+      await settle(page, 100);
+      const baseline = await tile(page);
+      await page.waitForTimeout(700); // > 3 cadence slots: a resumed walk travels 3 tiles
+      const afterClose = await tile(page);
       expect(
-        t4.x,
-        'RESUME — the anti-vacuity arm: the key was never released, and KeyB does not clear the ' +
-          'held set, so closing the overlay must resume the walk (ADR-0013). If it does not, the ' +
-          'FROZEN assertion above passed for the wrong reason (a cleared/lost held key rather ' +
-          'than a shut gate) and this whole scenario proves nothing',
-      ).toBeGreaterThan(t3.x);
-      expect(t4.y, 'the resumed walk must stay in the y=1 corridor').toBe(CORRIDOR_Y);
+        afterClose.x,
+        'NO WALK ON CLOSE (the CTL2.5 kill): ArrowRight was held when the box opened and is ' +
+          'still down, but opening a frame clears the held set, so closing it must not resume ' +
+          'the walk. Moving here means the push did not clear `held` (B14: KeyB never did on ' +
+          'master). It also reds if the box open left the hold alive in any other way',
+      ).toBe(baseline.x);
+      expect(afterClose.y, 'the character must stay in the y=1 corridor').toBe(CORRIDOR_Y);
+
+      // Anti-vacuity: pressed AGAIN, the same key walks. The key is released first because a
+      // second keydown without a keyup is an auto-repeat (`repeat: true`) and is ignored.
+      await page.keyboard.up('ArrowRight');
+      await page.keyboard.down('ArrowRight');
+      await page.waitForTimeout(600);
+      const walked = await tile(page);
+      expect(
+        walked.x,
+        'ANTI-VACUITY: a fresh ArrowRight press must walk east. If it does not, the "no walk ' +
+          'on close" assertion above passed on a world that cannot walk, and proves nothing',
+      ).toBeGreaterThan(afterClose.x);
+      expect(walked.y, 'the walk must stay in the y=1 corridor').toBe(CORRIDOR_Y);
 
       await page.keyboard.up('ArrowRight');
       await converged(page);

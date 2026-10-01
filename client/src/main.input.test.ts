@@ -32,6 +32,8 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
+import type { StoreBattle, StoreBattleMonster } from './net/store';
+import { HOLD_COMMIT_MS } from './prediction/heldKeys';
 
 interface Sent {
   readonly input: { readonly tag: string; readonly value?: { readonly tag: string } };
@@ -45,6 +47,9 @@ const H = vi.hoisted(() => ({
   connectOpts: null as ConnectionOptions | null,
   /** Every enqueueMove the client issued, with its promise controls. */
   sends: [] as Sent[],
+  /** What the connection stub's `sessionState()` answers. Reset to 'hidden' by every boot, so
+   *  only a case that sets it sees a session terminal (ctl-2's CTL2-3-BOOT-SESSION). */
+  sessionState: 'hidden' as string,
 }));
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid.
@@ -120,7 +125,7 @@ vi.mock('./net/connection', () => {
     identity: () => H.identity,
     linkFrozen: () => false,
     continueAnonymously: () => undefined,
-    sessionState: () => 'hidden',
+    sessionState: () => H.sessionState,
     startSignIn: () => undefined,
     reconnectNow: () => undefined,
   } as unknown as Connection;
@@ -216,6 +221,7 @@ let opts: ConnectionOptions;
 async function boot(): Promise<void> {
   H.connectOpts = null;
   H.sends = [];
+  H.sessionState = 'hidden';
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   recorded = [];
@@ -748,5 +754,476 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     fire('keydown', 'ArrowUp', 1100);
     expect(H.sends.length, 'ArrowUp steps although W is still physically down').toBe(before + 1);
     expect(step(H.sends[before])).toBe('North');
+  });
+});
+
+// ==========================================================================================
+// ctl-2: the context stack behind the legacy show/hide, the one movement gate, push clears held
+// ==========================================================================================
+//
+// Same harness as above, one fresh main.ts per case. What is observed is only the outputs a
+// player or a server can see: the intents sent to the stubbed enqueueMove reducer, which
+// overlays are on screen, the on-world interact prompt, and the read-only `__game().stack`
+// hook. `__game()` is never used to drive state, and the held-key cases do not read it between
+// an open and the next frame (it must stay a pure observer).
+//
+// The held-key fixture: the character stands at (2, 6) and every server batch echoes (2, 6) with
+// every send acked, so the predictor holds (2, 6) too. A batch therefore never diverges (no
+// reconcile re-issue), the server owes nothing (`outstandingSteps` is 0), and the only steps
+// sent are the ones the input path issues. A case that WANTS a server pullback delivers a tile
+// the predictor does not hold, (2, 7). One NPC stands one tile east of the spawn, so the world
+// shows an interact prompt from every tile used here, which makes "the prompt stays hidden"
+// a real observation rather than an empty one.
+
+const WILD_IDENTITY = '0'.repeat(64);
+const BATTLE_ID = 101n;
+const NPC_ENTITY = 11n;
+
+const BATTLE_MONSTER: StoreBattleMonster = {
+  speciesId: 1,
+  affinity: 'Neutral',
+  level: 5,
+  currentHp: 20,
+  maxHp: 20,
+  statHp: 20,
+  statAttack: 5,
+  statDefense: 5,
+  statSpeed: 5,
+  statSpAttack: 5,
+  statSpDefense: 5,
+  knownSkillIds: [1],
+  status: null,
+};
+
+/** A wild battle row for the booted player. Wild: no owned opponent party. */
+function battleRow(battleId: bigint, outcome: string): StoreBattle {
+  return {
+    battleId,
+    playerIdentity: H.identity,
+    opponentIdentity: WILD_IDENTITY,
+    outcome,
+    turnNumber: 1,
+    sideA: { active: 0, team: [BATTLE_MONSTER] },
+    sideB: { active: 0, team: [BATTLE_MONSTER] },
+    partyMonsterIds: [1n],
+    opponentMonsterIds: [],
+    createdAtMs: 0n,
+    weather: null,
+  };
+}
+
+/** Seed the world: the own player at (2, 6) plus one dialogue NPC at (3, 6), in one batch. */
+function seedWorld(t: number): void {
+  opts.store.upsertNpc({
+    entityId: NPC_ENTITY,
+    npcId: 'guide',
+    zoneId: 0,
+    homeX: 3,
+    homeY: 6,
+    wanderRadius: 0,
+    dialogueTreeId: 'no-such-tree',
+    interaction: { kind: 'dialogue' },
+  });
+  opts.store.upsertCharacter(
+    {
+      entityId: NPC_ENTITY,
+      zoneId: 0,
+      tileX: 3,
+      tileY: 6,
+      facing: 'South',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [] as WasmMoveInput[],
+    },
+    t,
+  );
+  server(t, { x: 2, y: 6, ack: 0 });
+}
+
+/** A batch that acks every send so far with the character where the predictor already holds it
+ *  (2, 6): no divergence, nothing owed, so the reconcile re-issue never fires. */
+function settle(t: number): void {
+  server(t, { x: 2, y: 6, ack: H.sends.length });
+}
+
+/** Start a FRESH committed hold of W at the world and return the time it is settled at. The keyup
+ *  first clears any hold an earlier phase left behind; the fresh press steps at once; the hold
+ *  then commits and takes exactly one continuation step; both are acked. Every precondition is
+ *  asserted, so a later "no further step" cannot be vacuous. */
+function committedHold(t: number): number {
+  fire('keyup', 'KeyW', t);
+  const before = H.sends.length;
+  fire('keydown', 'KeyW', t + 1);
+  expect(H.sends.length, 'precondition: a fresh W press at the world steps at once').toBe(
+    before + 1,
+  );
+  settle(t + 20);
+  frame(t + 1 + HOLD_COMMIT_MS + 10);
+  expect(H.sends.length, 'precondition: a committed hold continues').toBe(before + 2);
+  const settledAt = t + 1 + HOLD_COMMIT_MS + 20;
+  settle(settledAt);
+  return settledAt;
+}
+
+/** Display of the element and every ancestor: shown unless some inline `display` is `none`. */
+const isShown = (el: Element): boolean => {
+  for (let n: Element | null = el; n instanceof HTMLElement; n = n.parentElement) {
+    if (n.style.display === 'none') return false;
+  }
+  return true;
+};
+const shownById = (id: string): boolean => {
+  const el = document.getElementById(id);
+  if (el === null) throw new Error(`#${id} is not in the document`);
+  return isShown(el);
+};
+const shownByTestId = (testId: string): boolean => {
+  const el = document.querySelector(`[data-testid="${testId}"]`);
+  if (el === null) throw new Error(`[data-testid="${testId}"] is not in the document`);
+  return isShown(el);
+};
+const boxShown = (): boolean => shownByTestId('box-title');
+const battleShown = (): boolean => shownByTestId('battle-title');
+const promptShown = (): boolean => shownById('interact-prompt');
+
+interface FrameJson {
+  readonly kind: string;
+  readonly [key: string]: unknown;
+}
+/** The read-only DEV hook. Never used to drive state. */
+const stack = (): FrameJson[] =>
+  (window as unknown as { __game: () => { stack: FrameJson[] } }).__game().stack;
+
+describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    delete (document as unknown as { visibilityState?: unknown }).visibilityState;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    H.sessionState = 'hidden';
+    rafCallback = null;
+    document.body.replaceChildren();
+  });
+
+  it('CTL2-2-BOOT-STACK: __game().stack lists the live frames base-first as overlays open and close; a click-opened overlay appears with the next frame, not on a read', async () => {
+    // WRONG IMPL KILLED: no stack on the hook, a stack without the base (length > 1 must mean
+    // "something is above the base"), a mirror that never pops, an open path that is never
+    // mirrored, and a hook that performs the sync itself (it must be a pure observer: the push
+    // and its held-key clear belong to the input path and the frame loop, never to a read).
+    await bootReady();
+    seedWorld(1000);
+    expect(stack(), 'a fresh world is the bare base').toEqual([{ kind: 'world' }]);
+
+    fire('keydown', 'KeyB', 1010);
+    expect(boxShown(), 'precondition: the box opened').toBe(true);
+    expect(stack(), 'the box is a screen frame above the base').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'boxView' },
+    ]);
+    fire('keydown', 'KeyB', 1020);
+    expect(boxShown(), 'precondition: the box closed').toBe(false);
+    expect(stack(), 'closing pops the frame').toEqual([{ kind: 'world' }]);
+
+    // A click opens the menu with no keydown. Nothing between the click and the next frame
+    // syncs the stack, and reading the hook (twice) must not either.
+    const launcher = document.querySelector('[data-menu-launcher]');
+    if (launcher === null) throw new Error('[data-menu-launcher] is not in the shell');
+    clock.t = 1100;
+    launcher.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(overlayShown('menu-overlay'), 'precondition: the click opened the menu').toBe(true);
+    expect(stack(), 'no frame has run yet: the stack has not seen the menu').toEqual([
+      { kind: 'world' },
+    ]);
+    expect(stack(), 'a second read still does not sync').toEqual([{ kind: 'world' }]);
+    frame(1110);
+    expect(stack(), 'the frame loop mirrors the click-opened menu').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'menuView' },
+    ]);
+
+    fire('keydown', 'Escape', 1200);
+    expect(overlayShown('menu-overlay'), 'precondition: Escape closed the menu').toBe(false);
+    expect(stack(), 'and the close is mirrored').toEqual([{ kind: 'world' }]);
+  });
+
+  it('CTL2-3-BOOT-B17: an Ongoing battle row makes movement dead from the very batch it arrives in, even after Escape hides the battle overlay', async () => {
+    // WRONG IMPL KILLED (B17): a gate that is only "no overlay visible" (Escape hides battleView
+    // and the character predicts a step the server rejects, then rubber-bands back); a base
+    // derived one batch late, or by a listener that runs after the reconcile re-issue (the
+    // pullback batch that carries the battle row still sends a step); a prompt computed from
+    // the overlay probe instead of the gate (it advertises a target KeyT would refuse); and a
+    // base that does not return to the world when the battle row goes.
+    await bootReady();
+    seedWorld(1000);
+    frame(1005);
+    expect(promptShown(), 'control: at the world the NPC in range shows the interact prompt').toBe(
+      true,
+    );
+
+    fire('keydown', 'KeyW', 1010);
+    expect(dirs()).toEqual(['North']);
+    settle(1030);
+    frame(1010 + HOLD_COMMIT_MS + 10);
+    expect(dirs(), 'control: the committed hold continues').toEqual(['North', 'North']);
+    const sent = H.sends.length;
+
+    // ONE batch carries the battle row AND a server pullback to a tile the predictor does not
+    // hold, with every send acked and nothing owed. At the world that is exactly what makes a
+    // held, committed key re-issue a step from the corrected baseline.
+    opts.store.upsertBattle(battleRow(BATTLE_ID, 'Ongoing'));
+    server(1180, { x: 2, y: 7, ack: sent });
+    expect(H.sends.length, 'no step is sent in the batch that brings the battle in').toBe(sent);
+    frame(1190);
+    frame(1400);
+    frame(1600);
+    expect(H.sends.length, 'and none in the frames after it').toBe(sent);
+    expect(battleShown(), 'the battle overlay shows').toBe(true);
+    expect(stack()[0], 'the base is the battle').toEqual({ kind: 'battle', battleId: '101' });
+
+    // Escape hides the overlay (the battle is still Ongoing: the next batch would re-show it).
+    fire('keydown', 'Escape', 1700);
+    expect(battleShown(), 'precondition: Escape hid the battle overlay').toBe(false);
+    frame(1710);
+    expect(stack(), 'the base is still the battle, with nothing above it').toEqual([
+      { kind: 'battle', battleId: '101' },
+    ]);
+    expect(promptShown(), 'the interact prompt stays hidden over a battle base').toBe(false);
+    fire('keyup', 'KeyW', 1720);
+    fire('keydown', 'KeyW', 1730);
+    expect(H.sends.length, 'a D-pad press over a battle base sends nothing').toBe(sent);
+    frame(1740);
+    frame(1900);
+    frame(2100);
+    expect(H.sends.length, 'and the hold it left behind walks nowhere').toBe(sent);
+    expect(promptShown(), 'the prompt is still hidden').toBe(false);
+
+    // The battle row goes: the base returns to the world.
+    opts.store.removeBattle(BATTLE_ID);
+    server(2200, { x: 2, y: 7, ack: sent });
+    frame(2210);
+    frame(2400);
+    expect(stack(), 'the base is the world again').toEqual([{ kind: 'world' }]);
+    expect(H.sends.length, 'nothing walks on its own when the battle ends').toBe(sent);
+    expect(promptShown(), 'control: the prompt is back at the world').toBe(true);
+
+    // Anti-vacuity: the world walks again for a fresh press.
+    fire('keyup', 'KeyW', 2500);
+    fire('keydown', 'KeyW', 2510);
+    expect(dirs(), 'a fresh W press at the world steps once').toEqual(['North', 'North', 'North']);
+  });
+
+  it('CTL2-3-BOOT-BATTLE-HELD: a hold that was live when a battle began does not resume when the battle ends', async () => {
+    // WRONG IMPL KILLED: a battle base that gates movement but never clears the held keys (the
+    // base edge world to battle is the ONLY push-like event here: the battle overlay is the
+    // base's own presentation, not a frame above it). The key stays physically down and is never
+    // released, so a stale hold would walk the instant the battle row goes. The batch that brings
+    // the battle in deliberately does not diverge, so this isolates the clear from the reconcile
+    // re-issue that CTL2-3-BOOT-B17 covers.
+    await bootReady();
+    seedWorld(1000);
+    const t0 = committedHold(1010);
+    const sent = H.sends.length;
+
+    opts.store.upsertBattle(battleRow(BATTLE_ID, 'Ongoing'));
+    settle(t0 + 10);
+    frame(t0 + 100);
+    frame(t0 + 300);
+    expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
+    expect(H.sends.length, 'no step walks into a battle').toBe(sent);
+
+    opts.store.removeBattle(BATTLE_ID);
+    settle(t0 + 500);
+    expect(battleShown(), 'precondition: the battle overlay is gone').toBe(false);
+    frame(t0 + 510);
+    frame(t0 + 700);
+    frame(t0 + 900);
+    expect(
+      H.sends.length,
+      'W was never released, yet the hold from before the battle must not resume',
+    ).toBe(sent);
+
+    // Anti-vacuity: the world walks again for a fresh press.
+    fire('keyup', 'KeyW', t0 + 1000);
+    fire('keydown', 'KeyW', t0 + 1010);
+    expect(H.sends.length, 'a fresh press steps once').toBe(sent + 1);
+  });
+
+  it('CTL2-3-BOOT-NO-HELD: a direction pressed while an overlay is open is never held, so nothing walks when the overlay closes', async () => {
+    // WRONG IMPL KILLED: a router fed a world-active flag that ignores the open frame (the press
+    // would register in the held set, and the walk would start the moment the box closes), and a
+    // gate that lets the continuation run under an open overlay.
+    await bootReady();
+    seedWorld(1000);
+    fire('keydown', 'KeyB', 1010);
+    expect(boxShown(), 'precondition: the box is open').toBe(true);
+    fire('keydown', 'KeyW', 1020);
+    expect(H.sends.length, 'a D-pad press under an overlay sends nothing').toBe(0);
+    frame(1100);
+    frame(1300);
+    frame(1500);
+    expect(H.sends.length, 'and the hold walks nowhere under it').toBe(0);
+
+    fire('keydown', 'KeyB', 1600);
+    expect(boxShown(), 'precondition: the box closed').toBe(false);
+    frame(1600 + HOLD_COMMIT_MS + 10);
+    frame(1600 + HOLD_COMMIT_MS + 200);
+    frame(1600 + HOLD_COMMIT_MS + 400);
+    expect(H.sends.length, 'W is still physically down, but it was never held: nothing walks').toBe(
+      0,
+    );
+
+    // Anti-vacuity: the world walks for a fresh press.
+    fire('keyup', 'KeyW', 2500);
+    fire('keydown', 'KeyW', 2510);
+    expect(dirs(), 'a fresh W press at the world steps once').toEqual(['North']);
+  });
+
+  it('CTL2-3-BOOT-SESSION: a server pullback sends no re-issued step while a session terminal owns the screen', async () => {
+    // WRONG IMPL KILLED: a reconcile re-issue that does not consult the session gate (the
+    // session terminal is registry-external, so an overlay probe cannot see it: today only the
+    // keydown handler and the frame loop check it), one movement gate that forgets the session
+    // gate, and one that holds the session gate permanently (the control below must still send).
+    await bootReady();
+    seedWorld(1000);
+    fire('keydown', 'KeyW', 1010);
+    settle(1030);
+    frame(1010 + HOLD_COMMIT_MS + 10);
+    expect(dirs(), 'precondition: the committed hold is live').toEqual(['North', 'North']);
+
+    // Control: with the session live, a pullback batch re-issues the held step.
+    server(1200, { x: 2, y: 7, ack: 2 });
+    expect(dirs(), 'control: a pullback re-issues the held step').toEqual([
+      'North',
+      'North',
+      'North',
+    ]);
+
+    H.sessionState = 'expired';
+    server(1300, { x: 2, y: 5, ack: 3 });
+    expect(H.sends.length, 'no step while the session is expired').toBe(3);
+    frame(1400);
+    frame(1600);
+    expect(H.sends.length, 'and none from the frame loop').toBe(3);
+  });
+
+  it('CTL2-4-BOOT-CLEAR: opening a screen clears the held direction, so nothing walks while it is open or after it closes', async () => {
+    // WRONG IMPL KILLED (B14): a push that does not clear the held keys. Of the hotkey open
+    // paths only N, O, ?, M and C cleared them; B, I, E, Q, U, P and L left the hold latched,
+    // so it resumed on close. Each opener below is one the defect covers. The hold is committed
+    // and acked before the open, so a surviving hold WOULD walk the moment the gate reopens.
+    const openers: ReadonlyArray<{ readonly code: string; readonly shown: () => boolean }> = [
+      { code: 'KeyB', shown: () => shownByTestId('box-title') },
+      { code: 'KeyI', shown: () => shownByTestId('raising-title') },
+      { code: 'KeyE', shown: () => shownByTestId('evolution-title') },
+      { code: 'KeyQ', shown: () => shownById('quest-log-list') },
+      { code: 'KeyL', shown: () => shownById('leaderboard-title') },
+      { code: 'KeyU', shown: () => shownById('trade-status') },
+      { code: 'KeyP', shown: () => shownById('pvp-challenge-status') },
+    ];
+    await bootReady();
+    seedWorld(1000);
+    let t = 1010;
+    for (const opener of openers) {
+      const settledAt = committedHold(t);
+      const sent = H.sends.length;
+
+      fire('keydown', opener.code, settledAt + 10);
+      expect(opener.shown(), `${opener.code}: precondition: the screen opened`).toBe(true);
+      frame(settledAt + 200);
+      frame(settledAt + 400);
+      frame(settledAt + 600);
+      expect(H.sends.length, `${opener.code}: nothing walks under the open screen`).toBe(sent);
+
+      fire('keydown', opener.code, settledAt + 700);
+      expect(opener.shown(), `${opener.code}: precondition: the screen closed`).toBe(false);
+      frame(settledAt + 800);
+      frame(settledAt + 1000);
+      expect(
+        H.sends.length,
+        `${opener.code}: the hold from before the open must not resume when the screen closes`,
+      ).toBe(sent);
+      t = settledAt + 1100;
+    }
+  });
+
+  it('CTL2-4-BOOT-SERVER-OPEN: an overlay the server opens clears the held direction too, with no keydown involved', async () => {
+    // WRONG IMPL KILLED: a push edge that only the keydown path emits (the box case above is
+    // key-driven): a conversation row opens the dialogue with no key at all, so the held
+    // direction stays latched and walks when the conversation ends. The open batch does not
+    // diverge, so no reconcile re-issue can send in it, and the expectation is exactly zero
+    // steps; a batch that DID diverge could send at most one before the overlay is mirrored,
+    // because the reconcile listener runs ahead of the dialogue listener within one batch.
+    await bootReady();
+    seedWorld(1000);
+    const settledAt = committedHold(1010);
+    const sent = H.sends.length;
+
+    opts.store.upsertConversation({
+      ownerIdentity: H.identity,
+      npcEntityId: NPC_ENTITY,
+      currentNodeId: 'start',
+    });
+    settle(settledAt + 10);
+    expect(shownById('dialogue-overlay'), 'precondition: the server opened the dialogue').toBe(
+      true,
+    );
+    frame(settledAt + 200);
+    frame(settledAt + 400);
+    expect(H.sends.length, 'nothing walks under the server-opened dialogue').toBe(sent);
+
+    opts.store.removeConversation(H.identity);
+    settle(settledAt + 500);
+    expect(shownById('dialogue-overlay'), 'precondition: the server closed the dialogue').toBe(
+      false,
+    );
+    frame(settledAt + 600);
+    frame(settledAt + 800);
+    expect(H.sends.length, 'the hold from before the dialogue must not resume when it ends').toBe(
+      sent,
+    );
+
+    // Anti-vacuity: the world walks again for a fresh press.
+    fire('keyup', 'KeyW', settledAt + 900);
+    fire('keydown', 'KeyW', settledAt + 910);
+    expect(H.sends.length, 'a fresh press steps once').toBe(sent + 1);
+  });
+
+  it('CTL2-5-BOOT-HOLD-THROUGH: a direction held while the box opens and closes does not walk until it is pressed again', async () => {
+    // WRONG IMPL KILLED: a hold that survives an overlay (the old "a held key resumes after an
+    // overlay closes" contract). The ack lands WHILE the box is open, so the server owes
+    // nothing when it closes and a surviving hold would walk on the first frame after.
+    await bootReady();
+    seedWorld(1000);
+    fire('keydown', 'KeyW', 1000);
+    expect(dirs()).toEqual(['North']);
+    settle(1020);
+    frame(1000 + HOLD_COMMIT_MS + 10);
+    expect(dirs(), 'precondition: the committed hold continues').toEqual(['North', 'North']);
+
+    fire('keydown', 'KeyB', 1200);
+    expect(boxShown(), 'precondition: the box opened').toBe(true);
+    settle(1220);
+    frame(1300);
+    fire('keydown', 'KeyB', 1400);
+    expect(boxShown(), 'precondition: the box closed').toBe(false);
+    const sent = H.sends.length;
+    frame(1400 + HOLD_COMMIT_MS + 10);
+    frame(1400 + HOLD_COMMIT_MS + 200);
+    frame(1400 + HOLD_COMMIT_MS + 400);
+    expect(
+      H.sends.length,
+      'the direction was held through the box: it must not walk on close',
+    ).toBe(sent);
+
+    // Anti-vacuity: pressed again, it steps at once and then keeps walking.
+    fire('keyup', 'KeyW', 2300);
+    fire('keydown', 'KeyW', 2310);
+    expect(H.sends.length, 'a fresh press steps immediately').toBe(sent + 1);
+    expect(step(H.sends[sent])).toBe('North');
+    settle(2330);
+    frame(2310 + HOLD_COMMIT_MS + 10);
+    expect(H.sends.length, 'and the fresh hold walks on once it commits').toBe(sent + 2);
   });
 });
