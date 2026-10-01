@@ -4,8 +4,10 @@
 //   specs/monster-realm-v2/M-postgate-ux-design.spec.md §uxd3 — AC-1..AC-6, AC-19, AC-20.
 //   docs/uxd3-plan.md §2 (API + decision table) and §6 (EARS -> tooth map), AS AMENDED BY
 //   §A, which is BINDING and OVERRIDES §1-§9. The amendments this file encodes:
-//     A1  the EXCLUSIVE_TOP-TARGET row (canOpen('battleView', ...) allows + force-hides)
-//     A2  BATTLE_FORCE_HIDE is an EXACT ordered 8-list; NEVER_FORCE_HIDE is an invariant
+//     A1  (SUPERSEDED by ctl-3, see the block below) the EXCLUSIVE_TOP-TARGET row allowed and
+//         force-hid a named subset
+//     A2  (SUPERSEDED by ctl-3, see the block below) BATTLE_FORCE_HIDE exactness and the
+//         NEVER_FORCE_HIDE invariant
 //     A3  canOpen must consider EVERY blocker, not blockers[0]
 //     A4  the GUARD_ONLY loop domain is a HARD-CODED literal, never derived from the table
 //     A14 fileURLToPath(import.meta.url), never __dirname ("type":"module")
@@ -14,15 +16,31 @@
 // AMENDED by M21b-2 (gate G19): `claimView` JOINS the manifest as the 16th
 // member, tiered GUARD_ONLY. `sessionView` DELIBERATELY DOES NOT — it stays registry-external
 // and is exempted by name in the directory scan below, exactly as `errorOverlayView` is.
-// THE REASON, verified against overlayRegistry.ts:140-154 and recorded here because "add the
-// new overlay to the manifest" is the obvious wrong move: `decide()` lets an EXCLUSIVE_TOP
-// TARGET force-hide only BATTLE_FORCE_HIDE's named subset and DENIES it against anything
-// else. `battleView` is the sole EXCLUSIVE_TOP member and is not in its own force-hide list
-// (:73, :108-117). A second EXCLUSIVE_TOP (`sessionView`) opening over a live battle would hit
+// THE REASON, recorded here because "add the new overlay to the manifest" is the obvious wrong
+// move: `decide()` denies an open over a battle (an EXCLUSIVE_TOP blocker denies every other
+// target). A second EXCLUSIVE_TOP (`sessionView`) opening over a live battle would hit
 // `decide(target='sessionView', blocker='battleView')` -> false -> 'deny' — i.e. a session
 // that has EXPIRED could not tell the player so while a battle was on screen, which is
 // precisely backwards. sessionView is therefore driven directly by `conn?.sessionState()`,
 // checked FIRST and unconditionally in main.ts (pinned there by W-M21B2-SESSION-GATE-FIRST).
+//
+// AMENDED by ctl-3 (reconcile server truth into the context stack): a battle is server truth,
+// never a player open request, so `canOpen('battleView', visible)` now DENIES over ANY visible
+// blocker (an empty set still allows, and self is still exempt). The battle's effect on what is
+// already on screen moved out of this module into `reconcile` (ui/contextStack.ts), and
+// BATTLE_FORCE_HIDE, NEVER_FORCE_HIDE and hideAllExceptPlan are DELETED. The cases that pinned
+// them are deleted with them; what each guarded survives under a new tag:
+//   OR-FORCEHIDE-EXACT                          -> CTL3-2-DROP-EXACT (contextStack.test.ts): the
+//                                                  literal list of the 15 dropped ids
+//   OR-NEVER-FORCE-HIDE                         -> CTL3-3-NEVER-CLOSE-DIALOGUE (contextStack.test.ts)
+//   OR-HIDEALLEXCEPT-BATTLE-SUBSET              -> CTL3-2-DROP-EXACT (partial stack, world rows) and
+//                                                  CTL3-2-OUTCOME-KEPT (contextStack.test.ts)
+//   OR-HANDLES-DIALOGUE-HAS-NO-HIDE, invariant -> CTL3-3-NEVER-CLOSE-DIALOGUE; its handle-table
+//     half (the NEVER_FORCE_HIDE half is deleted)   half STAYS below, with a literal ['dialogueView']
+//   OR-CANOPEN-BATTLE-TARGET-MATCHES-FORCEHIDE  -> OR-CANOPEN-BATTLE-TARGET-DENIES (below): the
+//                                                  battle target row is a plain deny
+// The reference oracle (`refDecide`) and the A1 carve-outs in OR-CANOPEN-GUARDONLY-ALL describe the
+// new verdict, not the old one.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -33,11 +51,8 @@ import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
   anyVisible,
-  BATTLE_FORCE_HIDE,
   type CanOpenVerdict,
   canOpen,
-  hideAllExceptPlan,
-  NEVER_FORCE_HIDE,
   OVERLAY_IDS,
   OVERLAY_TIERS,
   type OverlayHandles,
@@ -48,7 +63,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // HARD-CODED expectation literals (A4). These are deliberately NOT derived from
-// OVERLAY_TIERS / BATTLE_FORCE_HIDE: a tooth whose loop domain is computed from the
+// OVERLAY_TIERS: a tooth whose loop domain is computed from the
 // very table it is guarding is tautological — demote `shopView` to HIDE_SWITCH and a
 // derived domain simply shrinks (11x14 -> 10x14) and stays green. Every literal below
 // is transcribed from the spec (`:128`) + plan §2, and is SHARED by the tiers tooth and
@@ -89,27 +104,6 @@ const EXPECTED_GUARD_ONLY = [
   'privacyView',
 ] as const;
 
-/**
- * A2 / plan §2: EXACTLY what refreshBattle force-hides, in main.ts:1178-1190 source order,
- * with `menuView` appended (plan edit 20 inserts its hide after the tradePropose line). The
- * ORDER is contractual so the manifest reads as a line-by-line mirror of refreshBattle.
- */
-const EXPECTED_BATTLE_FORCE_HIDE = [
-  'helpView',
-  'boxView',
-  'raisingView',
-  'evolutionView',
-  'leaderboardView',
-  'renameView',
-  'tradeProposeView',
-  'menuView',
-  // rb-52: appended. refreshBattle does NOT consult canOpen, so leaving an id
-  // OUT does not deny the auto-show — it leaves that overlay painted under the battle with a
-  // second aria-modal root and a second focus trap. `PrivacyView.hide()` disarms the delete
-  // confirmation on its way out, which is what makes force-hiding it safe.
-  'privacyView',
-] as const;
-
 const HIDE_SWITCH_TRIO: readonly OverlayId[] = ['boxView', 'raisingView', 'evolutionView'];
 const PTC5C_MODALS: readonly OverlayId[] = ['dialogueView', 'questLogView', 'healView'];
 
@@ -117,25 +111,23 @@ const has = (xs: readonly string[], x: string): boolean => xs.includes(x);
 const sorted = (xs: readonly string[]): string[] => [...xs].sort();
 
 // ---------------------------------------------------------------------------
-// The reference decision oracle, transcribed from plan §2's table as amended by A1.
+// The reference decision oracle, transcribed from plan §2's table as amended by ctl-3.
 // Built ONLY from the hard-coded literals above, so it is independent of OVERLAY_TIERS.
 //
 //   blocker tier v / target ->   EXCLUSIVE_TOP        HIDE_SWITCH   GUARD_ONLY
-//   EXCLUSIVE_TOP (battle)       (see A1 below)       deny          deny
-//   GUARD_ONLY (11)              (see A1 below)       deny          deny
-//   HIDE_SWITCH (3)              (see A1 below)       hide          deny
+//   EXCLUSIVE_TOP (battle)       deny (ctl-3)         deny          deny
+//   GUARD_ONLY (13)              deny (ctl-3)         deny          deny
+//   HIDE_SWITCH (3)              deny (ctl-3)         hide          deny
 //
-// A1 replaces the whole EXCLUSIVE_TOP-TARGET column: a battle open force-hides every
-// blocker in BATTLE_FORCE_HIDE and is denied by anything else (dialogue/questLog/heal/
-// shop/trade/pvp — precisely the ids refreshBattle does NOT hide).
+// ctl-3 replaces the whole EXCLUSIVE_TOP-TARGET column (A1 had it force-hide a named subset and
+// deny the rest): a battle is server truth, never a player open request, so it is denied over
+// EVERY visible blocker. What a battle does to what is already on screen is `reconcile`'s.
 // ---------------------------------------------------------------------------
 
 type Outcome = 'deny' | 'hide';
 
 function refDecide(target: OverlayId, blocker: OverlayId): Outcome {
-  if (target === 'battleView') {
-    return has(EXPECTED_BATTLE_FORCE_HIDE, blocker) ? 'hide' : 'deny';
-  }
+  if (target === 'battleView') return 'deny';
   if (has(EXPECTED_EXCLUSIVE_TOP, blocker)) return 'deny';
   if (has(EXPECTED_GUARD_ONLY, blocker)) return 'deny';
   // blocker is HIDE_SWITCH: it may be force-hidden UNLESS the target only ever guards.
@@ -336,24 +328,14 @@ describe('overlayRegistry — canOpen decision table', () => {
     // HARD-CODED EXPECTED_GUARD_ONLY literal (A4) — a derived `OVERLAY_IDS.filter(isGuardOnly)`
     // domain would simply shrink when an id is demoted and stay green.
     //
-    // A1 carve-out: the battleView TARGET row is NOT deny-for-everything. refreshBattle really
-    // does force-hide help/leaderboard/rename/tradePropose/menu and then show the battle, so
-    // those six GUARD_ONLY ids yield allow{forceHide:[g]} when the target is the battle. The
-    // other six (dialogue/questLog/heal/shop/trade/pvp) still deny it.
+    // ctl-3: there is NO carve-out any more. The battleView TARGET row used to allow + force-hide
+    // six of these ids (the A1 carve-out); a battle is now server truth, never a player open
+    // request, so the battle target denies over every GUARD_ONLY blocker like every other target.
     let denies = 0;
-    let allows = 0;
     for (const g of EXPECTED_GUARD_ONLY) {
       for (const t of OVERLAY_IDS) {
         if (t === g) continue;
         const verdict = canOpen(t, [g]);
-        if (t === 'battleView' && has(EXPECTED_BATTLE_FORCE_HIDE, g)) {
-          expect(verdict, `canOpen('battleView', ['${g}']) must allow + force-hide (A1)`).toEqual({
-            kind: 'allow',
-            forceHide: [g],
-          });
-          allows += 1;
-          continue;
-        }
         expect(verdict, `canOpen('${t}', ['${g}']) must DENY — '${g}' is GUARD_ONLY`).toEqual({
           kind: 'deny',
           blockedBy: g,
@@ -362,13 +344,9 @@ describe('overlayRegistry — canOpen decision table', () => {
         denies += 1;
       }
     }
-    // ANTI-VACUITY + exactness: 13 GUARD_ONLY blockers x 16 other targets = 208 cells; exactly
-    // the 6 battle-target/BATTLE_FORCE_HIDE pairs allow (202 deny). `claimView` is GUARD_ONLY but
-    // NOT force-hidable, so `canOpen('battleView', ['claimView'])` DENIES: a battle must not be
-    // able to blow away a half-entered single-use claim code.
-    expect(denies + allows, 'ANTI-VACUITY: all 13x16 GUARD_ONLY cells must be exercised').toBe(208);
-    expect(allows, 'exactly the 6 A1 battle-target cells may allow').toBe(6);
-    expect(denies, 'the other 202 cells must deny').toBe(202);
+    // ANTI-VACUITY + exactness: 13 GUARD_ONLY blockers x 16 other targets = 208 cells, every one a
+    // deny (the battle-target cells included).
+    expect(denies, 'ANTI-VACUITY: all 13x16 GUARD_ONLY cells must be exercised and deny').toBe(208);
   });
 
   it('OR-CANOPEN-HIDESWITCH-TRIO BITES: the 3x3 trio matrix allows, force-hiding the sibling; self is exempt (AC-3)', () => {
@@ -411,178 +389,42 @@ describe('overlayRegistry — canOpen decision table', () => {
       checked += 1;
     }
     expect(checked, 'ANTI-VACUITY: all 16 non-battle targets must be exercised').toBe(16);
-    // Self is exempt even for the exclusive top (refreshBattle re-shows a visible battle).
+    // Self is exempt even for the exclusive top (a visible battle re-shows itself).
     expect(canOpen('battleView', ['battleView'])).toEqual({ kind: 'allow', forceHide: [] });
   });
 
-  it('OR-CANOPEN-BATTLE-TARGET-MATCHES-FORCEHIDE BITES: the battle TARGET row allows exactly its force-hide subset and denies everything else (A1)', () => {
-    // WRONG IMPL KILLED: plan §2's original table, which gave "blocker = GUARD_ONLY => deny"
-    // for EVERY target tier and therefore made canOpen('battleView', ['helpView']) a deny —
-    // contradicting refreshBattle, which force-hides help/leaderboard/
-    // rename/tradePropose and shows the battle anyway. Latent in uxd3-a (battle is not a menu
-    // leaf); it detonates in uxd3-b when the battle open routes through canOpen and the battle
-    // silently stops auto-showing over an open help overlay.
-    let allows = 0;
+  it('OR-CANOPEN-BATTLE-TARGET-DENIES BITES: the battle TARGET row denies over ANY visible blocker, allows over an empty set, and exempts itself (ctl-3)', () => {
+    // WRONG IMPL KILLED: the pre-ctl-3 row, which allowed and force-hid nine overlays (the
+    // hide-switch trio included) and denied the rest, as if a battle were a player's open request.
+    // A battle is server truth; canOpen is the player-open gate, so it never allows a battle over
+    // anything that is visible. Also: a deny that names the wrong blocker, a deny that still
+    // carries a forceHide field, and an empty-set verdict that is not a plain allow.
     let denies = 0;
     for (const b of OVERLAY_IDS) {
       if (b === 'battleView') continue;
       const verdict = canOpen('battleView', [b]);
-      if (has(EXPECTED_BATTLE_FORCE_HIDE, b)) {
-        expect(verdict, `canOpen('battleView', ['${b}']) must allow + force-hide it`).toEqual({
-          kind: 'allow',
-          forceHide: [b],
-        });
-        allows += 1;
-      } else {
-        expect(
-          verdict,
-          `canOpen('battleView', ['${b}']) must DENY — battle never hides it`,
-        ).toEqual({ kind: 'deny', blockedBy: b });
-        denies += 1;
-      }
+      expect(verdict, `canOpen('battleView', ['${b}']) must DENY`).toEqual({
+        kind: 'deny',
+        blockedBy: b,
+      });
+      expect('forceHide' in verdict, 'a deny verdict must not carry forceHide').toBe(false);
+      denies += 1;
     }
-    expect(allows, 'ANTI-VACUITY: exactly the 9 BATTLE_FORCE_HIDE ids allow').toBe(9);
-    expect(
-      denies,
-      'the other 7 (dialogue/questLog/heal/shop/trade/pvp/claim) deny. M21b-2 (G19): claimView ' +
-        'is the 7th — it joins the manifest but NOT BATTLE_FORCE_HIDE, so a battle auto-show ' +
-        'is DENIED while the claim overlay is up rather than discarding the code being typed',
-    ).toBe(7);
+    expect(denies, 'ANTI-VACUITY: all 16 non-battle blockers must be exercised').toBe(16);
 
-    // The realistic refreshBattle situation: several force-hidable overlays up at once.
-    const many: readonly OverlayId[] = [
-      'helpView',
-      'leaderboardView',
-      'renameView',
-      'tradeProposeView',
-      'menuView',
-    ];
-    const multi = canOpen('battleView', many);
-    expect(multi.kind).toBe('allow');
-    expect(sorted((multi as { forceHide: readonly OverlayId[] }).forceHide)).toEqual(sorted(many));
-
-    // One non-hidable blocker in the set is enough to deny (a live conversation wins).
+    // Several blockers at once: the OVERLAY_IDS-first denier is named (boxView precedes helpView).
+    expect(canOpen('battleView', ['helpView', 'leaderboardView', 'boxView'])).toEqual({
+      kind: 'deny',
+      blockedBy: 'boxView',
+    });
     expect(canOpen('battleView', ['helpView', 'dialogueView'])).toEqual({
       kind: 'deny',
       blockedBy: 'dialogueView',
     });
-  });
-});
 
-// ===========================================================================
-// BLOCK 4 — force-hide exactness and the NEVER invariant (A2, AC-4, AC-19).
-// ===========================================================================
-
-describe('overlayRegistry — force-hide sets', () => {
-  it('OR-FORCEHIDE-EXACT BITES: BATTLE_FORCE_HIDE is EXACTLY the 9 ordered ids — not a superset, not a spot-check (A2)', () => {
-    // WRONG IMPL KILLED: adding `dialogueView` (or `shopView`, or `tradeView`) to the battle
-    // force-hide set. Only an exact, ordered, hard-coded literal here bites. Force-hiding
-    // dialogueView would strand the server player_conversation row.
-    // A membership check (`.includes('menuView')`) is deliberately NOT used: it cannot see a
-    // 9th member. AC-19's battle half ('menuView' must be in the set) is subsumed here.
-    expect(
-      BATTLE_FORCE_HIDE,
-      "BATTLE_FORCE_HIDE must be exactly refreshBattle's subset (main.ts:1178-1190 source " +
-        'order) with menuView appended: ' +
-        EXPECTED_BATTLE_FORCE_HIDE.join(', '),
-    ).toEqual([...EXPECTED_BATTLE_FORCE_HIDE]);
-    // Every member must be a real manifest id (a typo'd 'helpview' would silently never match).
-    for (const id of BATTLE_FORCE_HIDE) {
-      expect(OVERLAY_IDS.includes(id), `'${id}' is not an OVERLAY_IDS member`).toBe(true);
-    }
-    expect(new Set(BATTLE_FORCE_HIDE).size, 'no duplicate id in BATTLE_FORCE_HIDE').toBe(9);
-  });
-
-  it('OR-NEVER-FORCE-HIDE BITES: dialogueView is NEVER force-hidden by any canOpen verdict, for any target and any blocker set (A2)', () => {
-    // WRONG IMPL KILLED: any future retiering or force-hide-table edit that makes some target
-    // able to force-hide a live conversation. `dialogueView`'s visibility is STORE-DERIVED
-    // and its close must route through `dismissDialogue` — a bare hide
-    // leaves the server player_conversation row set, so the player is stuck in a conversation
-    // the client no longer shows. This invariant is stronger than narrowing `forceHide` to a
-    // 3-member HideSwitchId union (that narrowing is UNSOUND, because A1 requires battle
-    // verdicts to carry GUARD_ONLY ids like helpView).
-    expect(NEVER_FORCE_HIDE, 'NEVER_FORCE_HIDE must be exactly [dialogueView]').toEqual([
-      'dialogueView',
-    ]);
-    for (const id of NEVER_FORCE_HIDE) {
-      expect(
-        BATTLE_FORCE_HIDE.includes(id),
-        `'${id}' must NOT appear in BATTLE_FORCE_HIDE — the two sets are disjoint by design`,
-      ).toBe(false);
-    }
-
-    // Exhaustive over every target x every 1- and 2-element blocker set.
-    let verdicts = 0;
-    for (let i = 0; i < OVERLAY_IDS.length; i += 1) {
-      for (let j = i; j < OVERLAY_IDS.length; j += 1) {
-        const visible = i === j ? [OVERLAY_IDS[i]!] : [OVERLAY_IDS[i]!, OVERLAY_IDS[j]!];
-        for (const target of OVERLAY_IDS) {
-          const verdict = canOpen(target, visible);
-          if (verdict.kind === 'allow') {
-            for (const never of NEVER_FORCE_HIDE) {
-              expect(
-                verdict.forceHide.includes(never),
-                `canOpen('${target}', [${visible.join(', ')}]) force-hides '${never}'`,
-              ).toBe(false);
-            }
-          }
-          verdicts += 1;
-        }
-      }
-    }
-    // ANTI-VACUITY: 17 targets x (17 singletons + 136 pairs) = 2601 verdicts.
-    expect(verdicts, 'ANTI-VACUITY: the exhaustive sweep must have produced 2601 verdicts').toBe(
-      2601,
-    );
-  });
-
-  it('OR-HIDEALLEXCEPT-BATTLE-SUBSET BITES: the battle plan is the VISIBLE intersection of the 9-set, and every other keep plans nothing (AC-4)', () => {
-    // WRONG IMPL KILLED (1): the tautology trap — expressing the expectation as
-    // `BATTLE_FORCE_HIDE.filter(...)` is the SAME expression the implementation evaluates, so
-    // it passes for any force-hide set whatsoever. The expectation below is an INDEPENDENT
-    // hard-coded literal.
-    // WRONG IMPL KILLED (2): a plan that returns the whole BATTLE_FORCE_HIDE regardless of what
-    // is actually visible — refreshBattle guards each hide with `if (X?.visible)`, and hiding a
-    // hidden renameView resets its #pending lock and its draft for no reason.
-    // WRONG IMPL KILLED (3): a plan that includes `keep` itself (the battle would hide itself).
-    // WRONG IMPL KILLED (4): generalising force-hide to every keep — no overlay other than the
-    // battle force-hides anything today, and `hideAllExceptPlan('boxView', all)` returning the
-    // world would blow away a live conversation on a KeyB press.
-    const EXPECTED_PLAN_OVER_ALL_VISIBLE_SORTED = [
-      'boxView',
-      'evolutionView',
-      'helpView',
-      'leaderboardView',
-      'menuView',
-      'privacyView',
-      'raisingView',
-      'renameView',
-      'tradeProposeView',
-    ];
-
-    const plan = hideAllExceptPlan('battleView', OVERLAY_IDS);
-    expect(plan.length, 'ANTI-VACUITY: the all-visible battle plan must hide 9 overlays').toBe(9);
-    expect(sorted(plan)).toEqual(EXPECTED_PLAN_OVER_ALL_VISIBLE_SORTED);
-    expect(plan.includes('battleView'), 'the plan must never hide `keep`').toBe(false);
-    expect(plan.includes('dialogueView'), 'the plan must never hide a live conversation').toBe(
-      false,
-    );
-
-    // Only the intersection with what is actually visible.
-    expect(hideAllExceptPlan('battleView', ['helpView', 'dialogueView', 'shopView'])).toEqual([
-      'helpView',
-    ]);
-    expect(hideAllExceptPlan('battleView', [])).toEqual([]);
-    expect(hideAllExceptPlan('battleView', ['dialogueView'])).toEqual([]);
-
-    // No other keep force-hides anything (plan §2: "do NOT generalize").
-    for (const keep of OVERLAY_IDS) {
-      if (keep === 'battleView') continue;
-      expect(
-        hideAllExceptPlan(keep, OVERLAY_IDS),
-        `hideAllExceptPlan('${keep}', ...) must plan NOTHING — only the battle force-hides`,
-      ).toEqual([]);
-    }
+    // Nothing visible: a plain allow with nothing to hide. Self is still exempt.
+    expect(canOpen('battleView', [])).toEqual({ kind: 'allow', forceHide: [] });
+    expect(canOpen('battleView', ['battleView'])).toEqual({ kind: 'allow', forceHide: [] });
   });
 });
 
@@ -649,7 +491,7 @@ describe('overlayRegistry — canOpen over arbitrary visible sets (A3)', () => {
           expect('forceHide' in actual, 'a deny verdict must not carry forceHide').toBe(false);
         } else {
           // (b) forceHide is the FULL qualifying blocker set, with no duplicates and no
-          //     NEVER_FORCE_HIDE member smuggled in.
+          //     dialogueView smuggled in (a bare hide of a live conversation strands the server row).
           const got = (actual as { forceHide: readonly OverlayId[] }).forceHide;
           expect(sorted(got), `canOpen('${target}', [${visible.join(', ')}]) forceHide`).toEqual(
             sorted(expected.forceHide),
@@ -658,9 +500,10 @@ describe('overlayRegistry — canOpen over arbitrary visible sets (A3)', () => {
           expect(got.includes(target), 'forceHide must never contain the target itself').toBe(
             false,
           );
-          for (const never of NEVER_FORCE_HIDE) {
-            expect(got.includes(never), `forceHide must never contain '${never}'`).toBe(false);
-          }
+          expect(
+            got.includes('dialogueView'),
+            "forceHide must never contain 'dialogueView' (a literal, not a table read)",
+          ).toBe(false);
         }
 
         // (d) permutation invariance — the store hands visibility over in probe-table order,
@@ -979,7 +822,7 @@ describe("overlayRegistry — visibleIds(probes), the write substrate's read hal
 });
 
 describe('overlayRegistry — OverlayHandles, the force-hide write table (uxd3-c, ADR-0164 D7-mandated)', () => {
-  it('OR-HANDLES-DIALOGUE-HAS-NO-HIDE BITES: NEVER_FORCE_HIDE is exactly [dialogueView], and only dialogueView may omit a hide thunk', () => {
+  it('OR-HANDLES-DIALOGUE-HAS-NO-HIDE BITES: only dialogueView may omit a hide thunk (ctl-3: the NEVER_FORCE_HIDE half moved to CTL3-3-NEVER-CLOSE-DIALOGUE)', () => {
     // ADJUDICATION B4 (ADR-0163 D7 mandate): the shipped shape is a BARE optional-thunk table —
     // `export type OverlayHandles = Readonly<Record<OverlayId, (() => void) | undefined>>` — NOT
     // a `{ readonly hide?: () => void }` wrapper. `dialogueView` is the SOLE member allowed to
@@ -994,20 +837,18 @@ describe('overlayRegistry — OverlayHandles, the force-hide write table (uxd3-c
     // `Record<OverlayId, () => void>` (no `| undefined`) simply CANNOT be given
     // `dialogueView: undefined` — `tsc --noEmit` reds on THIS file and on main.ts's own handle
     // table before a single test runs. The runtime assertions here can only prove that a
-    // CONFORMING table built from the imported NEVER_FORCE_HIDE looks right; they CANNOT catch a
+    // CONFORMING table (built here from a literal ['dialogueView']) looks right; they CANNOT catch a
     // LOOSENING of the type to `Partial<Record<OverlayId, () => void>>` (which would let ANY id
     // go missing, not just dialogueView), so asserting the type is not `Partial<>`-loosened is
     // NOT this tooth's job. That loosening is caught instead by
     // `W-UXD3C-HANDLE-TABLE` (main.wiring.test.ts), whose bidirectional per-id loop over
     // `main.ts`'s ACTUAL handle table checks every one of the OTHER 14 ids too, so a `Partial<>`
     // table that dropped a random id (not just dialogueView) reds there.
-    expect(NEVER_FORCE_HIDE, 'NEVER_FORCE_HIDE must be exactly [dialogueView]').toEqual([
-      'dialogueView',
-    ]);
+    const NO_HIDE_THUNK: readonly OverlayId[] = ['dialogueView'];
 
     const built = {} as Record<OverlayId, (() => void) | undefined>;
     for (const id of OVERLAY_IDS) {
-      built[id] = NEVER_FORCE_HIDE.includes(id) ? undefined : () => {};
+      built[id] = NO_HIDE_THUNK.includes(id) ? undefined : () => {};
     }
     const handles: OverlayHandles = built;
 
