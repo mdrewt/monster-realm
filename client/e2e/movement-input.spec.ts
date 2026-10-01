@@ -650,4 +650,76 @@ test.describe
           'from the server side',
       ).toBe(0);
     });
+
+    // -------------------------------------------------------------------------------
+    // E — ctl-1 CTL1.2: two keys of one direction are refcounted (the W/ArrowUp defect)
+    // -------------------------------------------------------------------------------
+    test('E (ctl-1): holding one key of a direction while pressing and releasing its alias keeps the character walking', async () => {
+      // The defect is direction-agnostic (main.ts keyed the release by direction, so letting
+      // go of ANY alias stopped the walk). It is driven here on the East pair, KeyD +
+      // ArrowRight, because this suite's measured world is the y=1 east/west corridor; the
+      // W/ArrowUp pair has the same two-aliases-one-direction shape and the unit suites
+      // (router.test.ts, main.input.test.ts) drive North itself.
+      // WRONG IMPL KILLED: a release keyed by direction (the alias keyup stops the walk after
+      // the first tile), and a refcount that never reaches zero (the walk would not stop when
+      // the held key is finally released).
+      await recenter(page, 1);
+      const t0 = await corridorEastWest(page, 1, 8);
+
+      await page.keyboard.down('KeyD');
+      await page.waitForTimeout(100); // inside the tap band: the hold is not yet committed
+      await page.keyboard.down('ArrowRight'); // the alias of a held direction
+      await page.waitForTimeout(50);
+      await page.keyboard.up('ArrowRight'); // letting go of the alias must NOT stop the walk
+      await page.waitForTimeout(850);
+      const walking = await tile(page);
+      expect(
+        walking.x - t0.x,
+        'KeyD is still held after the alias was released: the character must keep walking (>= 3 ' +
+          'tiles in a second, as scenario D measures). A single tile means the alias keyup ' +
+          'released the whole direction',
+      ).toBeGreaterThanOrEqual(3);
+      expect(walking.y, 'the walk stays in the y=1 corridor').toBe(CORRIDOR_Y);
+
+      // The last holder's release ends the walk: the character settles and stays put.
+      await page.keyboard.up('KeyD');
+      await settle(page, 600);
+      const stopped = await tile(page);
+      await page.waitForTimeout(600);
+      expect(await tile(page), 'KeyD released: the character must stand still').toEqual(stopped);
+    });
+
+    // -------------------------------------------------------------------------------
+    // F — ctl-1 CTL1.3: a Ctrl chord belongs to the browser
+    // -------------------------------------------------------------------------------
+    test('F (ctl-1): Ctrl+P is not prevented and opens no PvP overlay, while bare P still does', async () => {
+      // WRONG IMPL KILLED: a keydown handler with no modifier check (Ctrl+P opens the PvP
+      // overlay and swallows the browser's print dialog, r2-035).
+      const overlay = page.locator('#pvp-challenge-overlay');
+      await expect(overlay, 'precondition: the PvP overlay starts hidden').toBeHidden();
+
+      const prevented = await page.evaluate(() => {
+        const event = new KeyboardEvent('keydown', {
+          code: 'KeyP',
+          key: 'p',
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true,
+        });
+        document.body.dispatchEvent(event);
+        return event.defaultPrevented;
+      });
+      expect(prevented, 'Ctrl+P must reach the browser untouched').toBe(false);
+      await page.waitForTimeout(300);
+      await expect(overlay, 'Ctrl+P must not open PvP').toBeHidden();
+
+      // Control: the bare key opens the overlay in this very page state, then closes it.
+      await page.keyboard.press('KeyP');
+      await expect(
+        overlay,
+        'bare P must open PvP (the chord check is not a dead hotkey)',
+      ).toBeVisible({ timeout: 3_000 });
+      await page.keyboard.press('KeyP');
+      await expect(overlay).toBeHidden({ timeout: 3_000 });
+    });
   });
