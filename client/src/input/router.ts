@@ -1,11 +1,14 @@
 // router.ts — the pure input router: consumes source-agnostic `{button, down}` edges and
 // decides what they do (design §12). It owns the D-pad and X (Jump) at the world; under a nav
 // frame (the main menu, ctl-5) it also owns A, B and Y and synthesizes D-pad auto-repeat. Every
-// other button is unconsumed and the legacy ladder in main.ts keeps those keys.
+// other button goes to the top frame's screen adapter (ctl-6b); what that adapter leaves
+// `unhandled` is unconsumed, and the legacy ladder in main.ts or the page keeps the key.
 //
 // No DOM, SDK, module state or clock: the caller passes `now` and applies the returned effects.
 import type { WasmDirection } from '../convert/convert';
 import type { NavInput } from '../ui/nav';
+import type { Command, ScreenResult } from '../ui/screens/types';
+import type { Bindings } from './bindings';
 import { type ButtonEdge, dpadDir, type VButton } from './buttons';
 
 /** Who owns a key event: the focused element's native behaviour, or the router. */
@@ -45,6 +48,49 @@ export function ownership(target: unknown, e: OwnershipEvent): Owner {
   return 'router';
 }
 
+// The INPUT types that take typed text; every other type (checkbox, range, button…) is a control.
+const TEXT_INPUT_TYPES: ReadonlySet<string> = new Set([
+  '',
+  'text',
+  'search',
+  'email',
+  'password',
+  'tel',
+  'url',
+  'number',
+]);
+
+/** Typing mode (CTL6B.5): Escape in a text field stops typing (the shell moves focus out of the
+ *  field and keeps its text) instead of acting as Start. A composing Escape is the IME's. */
+export function typingKey(target: unknown, e: OwnershipEvent): 'stopTyping' | undefined {
+  if (e.code !== 'Escape' || e.isComposing === true || e.keyCode === 229) return undefined;
+  if (typeof target !== 'object' || target === null) return undefined;
+  const { tagName, type, isContentEditable } = target as {
+    tagName?: unknown;
+    type?: unknown;
+    isContentEditable?: unknown;
+  };
+  const tag = typeof tagName === 'string' ? tagName.toUpperCase() : '';
+  const text =
+    isContentEditable === true ||
+    tag === 'TEXTAREA' ||
+    (tag === 'INPUT' && TEXT_INPUT_TYPES.has(typeof type === 'string' ? type : ''));
+  return text ? 'stopTyping' : undefined;
+}
+
+/** The bindings the router reads while the legacy ladder still owns Q and E (until ctl-11a): LB
+ *  and RB come only from PageUp / PageDown (CTL6B.6). */
+export function routedBindings(b: Bindings): Bindings {
+  return {
+    buttons: {
+      ...b.buttons,
+      LB: b.buttons.LB.filter((c) => c === 'PageUp'),
+      RB: b.buttons.RB.filter((c) => c === 'PageDown'),
+    },
+    accels: b.accels,
+  };
+}
+
 /** The buttons the router consumes (and so `preventDefault`s): the D-pad and X. */
 export const routerConsumes = (b: VButton): boolean => b === 'X' || dpadDir(b) !== undefined;
 
@@ -56,8 +102,8 @@ export type RouterEffect =
   | { readonly kind: 'jump' }
   /** An input for the uncovered nav frame: a press, or a synthesized repeat. */
   | { readonly kind: 'nav'; readonly input: NavInput }
-  /** B over a covered nav frame: close the legacy frame on top. */
-  | { readonly kind: 'pop' };
+  /** A command the top frame's adapter issued for a button. */
+  | { readonly kind: 'command'; readonly command: Command };
 
 export interface RouteContext {
   /** True when no overlay is open, so world input (walk, jump) applies. */
@@ -65,6 +111,8 @@ export interface RouteContext {
   /** Present while a nav frame is on the stack: `covered` when a legacy frame sits above it,
    *  and the injected clock the repeat schedule runs on. */
   readonly nav?: { readonly covered: boolean; readonly now: number };
+  /** The top frame's screen adapter, for every button the D-pad, X and nav paths do not take. */
+  readonly screen?: (btn: NavInput) => ScreenResult;
 }
 
 export interface RouteResult {
@@ -136,10 +184,11 @@ export class InputRouter {
       return down && ctx.worldActive ? { consumed: true, effects: [{ kind: 'jump' }] } : SWALLOWED;
     }
     if (nav !== undefined && NAV_BUTTONS.has(button)) return down ? navPress(button) : SWALLOWED;
-    if (button === 'B' && ctx.nav?.covered === true) {
-      return down ? { consumed: true, effects: [{ kind: 'pop' }] } : SWALLOWED;
-    }
-    return NOT_CONSUMED;
+    if (!down || ctx.screen === undefined) return NOT_CONSUMED;
+    const result = ctx.screen({ button, repeat: false });
+    if (result === 'unhandled') return NOT_CONSUMED;
+    if (result === 'consumed') return SWALLOWED;
+    return { consumed: true, effects: [{ kind: 'command', command: result }] };
   }
 
   /** The frame-loop pump: at most one repeat edge for the armed D-pad button, once it is due,
