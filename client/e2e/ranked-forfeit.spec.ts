@@ -7,6 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { closeAll } from './controls';
 
 // Ranked PvP forfeit e2e (RL-18)
 //
@@ -269,12 +270,10 @@ test.describe
       const normA = normalizeIdentity(identityA);
       const normB = normalizeIdentity(identityB);
 
-      // Step 2: press Escape on B first (AM-5) to ensure no overlay is visible
+      // Step 2: closeAll on B first (AM-5) to ensure no overlay is visible
       // (auto-show on pvp-accept-btn requires !anyOverlayVisible; a stale overlay
       // would suppress the auto-show and leave B unable to accept).
-      await pageB.keyboard.press('Escape');
-      // Small settle delay — Escape handler is synchronous but give the DOM a tick.
-      await pageB.waitForTimeout(200);
+      await closeAll(pageB);
 
       // Step 3: A presses KeyP (opens pvp overlay), THEN polls for the challenge
       // button with a player-identity that is NOT identityA (AM-6 — B's player-row

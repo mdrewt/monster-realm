@@ -6,6 +6,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { closeAll } from './controls';
 
 // PvP side-B battle overlay, production path
 //
@@ -191,16 +192,15 @@ async function readHookCallCount(page: Page): Promise<number> {
 }
 
 /**
- * Renames `page`'s own player through the REAL production UI (Escape -> KeyN ->
+ * Renames `page`'s own player through the REAL production UI (closeAll -> KeyN ->
  * rename-input -> rename-submit), copied from rename.spec.ts:228-245. This is
  * the half-fix discriminator setup — see the file header. Leaves NO overlay open on exit
- * (the rename overlay does NOT auto-close on success, main.ts:2182-2186, so this presses
- * Escape again after the feedback confirms) — required because the incoming-challenge
+ * (the rename overlay does NOT auto-close on success, main.ts:2182-2186, so this runs
+ * closeAll again after the feedback confirms) — required because the incoming-challenge
  * auto-show and A's own KeyP open both need `!anyOverlayVisible`.
  */
 async function renamePlayer(page: Page, name: string): Promise<void> {
-  await page.keyboard.press('Escape'); // dismiss any stale overlay first
-  await page.waitForTimeout(200);
+  await closeAll(page); // dismiss any stale overlay first
   await page.keyboard.press('KeyN');
   await page.waitForSelector('[data-testid="rename-input"]', {
     state: 'visible',
@@ -223,8 +223,7 @@ async function renamePlayer(page: Page, name: string): Promise<void> {
       'discriminator below is meaningless if the rename itself silently failed',
   ).not.toMatch(/error|failed|reject/i);
   // Close the overlay (see doc comment above) before the challenge/accept flow.
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(200);
+  await closeAll(page);
 }
 
 test.describe
@@ -297,8 +296,7 @@ test.describe
       // !anyOverlayVisible (ranked-forfeit.spec.ts:282-287 precedent). renamePlayer already
       // closes its own overlay on exit; this is a defensive re-assert immediately before
       // the challenge, matching the ranked-forfeit.spec.ts placement exactly.
-      await pageB.keyboard.press('Escape');
-      await pageB.waitForTimeout(200);
+      await closeAll(pageB);
 
       // A opens the PvP overlay and challenges B. Identity-attribute selection is
       // MANDATORY, not stylistic: every client joins as name:'Player' and

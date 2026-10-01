@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
 import { chromium, expect, type Page, test } from '@playwright/test';
+import { closeAll } from './controls';
 
 // Client profile-rename UI e2e
 //
@@ -217,8 +218,7 @@ test.describe
 
         // Step 4: open the rename overlay via KeyN.
         // The overlay must be hidden initially; KeyN opens it when no other overlay is visible.
-        await page.keyboard.press('Escape'); // dismiss any stale overlay first
-        await page.waitForTimeout(200);
+        await closeAll(page); // dismiss any stale overlay first
         await page.keyboard.press('KeyN');
 
         // Step 5: wait for the rename input to be visible (overlay opened).
