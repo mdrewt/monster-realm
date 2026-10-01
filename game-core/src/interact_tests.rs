@@ -354,7 +354,11 @@ fn ctl9_1_a_large_mixed_group_with_many_duplicate_keys_is_complete_and_stably_or
             _ => (InteractKind::Player, 2u8),
         };
         let id = (r / 3) % 5;
-        let zone = if (r / 15) % 7 == 0 { OTHER_ZONE } else { ZONE };
+        let zone = if (r / 15).is_multiple_of(7) {
+            OTHER_ZONE
+        } else {
+            ZONE
+        };
         entities.push(ent(kind, ME.x + 1, ME.y, zone, id));
         rank_of_entity.push(rank);
     }
