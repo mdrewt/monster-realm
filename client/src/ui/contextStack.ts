@@ -1,7 +1,7 @@
 // The UI context stack (design §4): a pure, base-first stack of frames over a `world` or
 // `battle` base. Pure — no DOM, SDK, module state or clock. In ctl-2 it lands BEHIND the
 // legacy show/hide paths: main.ts mirrors the visible overlays into it (`mirrorEdges`) and
-// gates movement on it (`movementEnabled`); no key routing reads it yet.
+// gates movement and the KeyT interact guard on it (`movementEnabled`); no other key reads it.
 import type { OverlayId } from './overlayRegistry';
 
 /** The legacy overlays are the frame ids until the screens replace them. */
@@ -36,9 +36,9 @@ export interface ScreenPolicy {
 const PLAYER_DROP: ScreenPolicy = { owner: 'player', onBattle: 'drop', battleSafe: false };
 const PLAYER_DROP_SAFE: ScreenPolicy = { owner: 'player', onBattle: 'drop', battleSafe: true };
 
-/** Total over every frame id, so an omitted id fails client-typecheck. Only the dialogue row
- *  is load-bearing yet; the rest are provisional until ctl-3 (reconcile) and ctl-6c (the
- *  battle-safe policy) consume them. */
+/** Total over every frame id, so an omitted id fails client-typecheck. No production code
+ *  reads it yet: the values are provisional until ctl-3 (reconcile) and ctl-6c (the
+ *  battle-safe policy) consume them; the tests pin totality and the dialogue row only. */
 export const SCREEN_POLICY: Readonly<Record<FrameId, ScreenPolicy>> = {
   battleView: { owner: 'server', onBattle: 'drop', battleSafe: true },
   boxView: PLAYER_DROP,

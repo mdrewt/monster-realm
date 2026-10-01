@@ -50,6 +50,9 @@ const H = vi.hoisted(() => ({
   /** What the connection stub's `sessionState()` answers. Reset to 'hidden' by every boot, so
    *  only a case that sets it sees a session terminal (ctl-2's CTL2-3-BOOT-SESSION). */
   sessionState: 'hidden' as string,
+  /** The name of every reducer called other than enqueueMove, oldest first (ctl-2 asserts on
+   *  `talk`). Reset by every boot. */
+  calls: [] as string[],
 }));
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid.
@@ -114,7 +117,10 @@ vi.mock('./net/connection', () => {
               H.sends.push({ input: args.input, seq: args.seq, resolve, reject });
             });
         }
-        return () => Promise.resolve();
+        return () => {
+          H.calls.push(String(name));
+          return Promise.resolve();
+        };
       },
     },
   );
@@ -222,6 +228,7 @@ async function boot(): Promise<void> {
   H.connectOpts = null;
   H.sends = [];
   H.sessionState = 'hidden';
+  H.calls = [];
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   recorded = [];
@@ -885,6 +892,8 @@ const shownByTestId = (testId: string): boolean => {
 const boxShown = (): boolean => shownByTestId('box-title');
 const battleShown = (): boolean => shownByTestId('battle-title');
 const promptShown = (): boolean => shownById('interact-prompt');
+/** How many times the interact (talk) reducer has been called. */
+const talkCalls = (): number => H.calls.filter((name) => name === 'talk').length;
 
 interface FrameJson {
   readonly kind: string;
@@ -961,6 +970,8 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(promptShown(), 'control: at the world the NPC in range shows the interact prompt').toBe(
       true,
     );
+    fire('keydown', 'KeyT', 1006);
+    expect(talkCalls(), 'control: KeyT at the world talks to the NPC in range').toBe(1);
 
     fire('keydown', 'KeyW', 1010);
     expect(dirs()).toEqual(['North']);
@@ -990,6 +1001,11 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
       { kind: 'battle', battleId: '101' },
     ]);
     expect(promptShown(), 'the interact prompt stays hidden over a battle base').toBe(false);
+    // KeyT shares the movement gate with the prompt: it must refuse what the prompt hides, and
+    // refusing must not disturb the stack.
+    fire('keydown', 'KeyT', 1715);
+    expect(talkCalls(), 'KeyT over a battle base does not dispatch the interact').toBe(1);
+    expect(stack(), 'and the stack is unchanged').toEqual([{ kind: 'battle', battleId: '101' }]);
     fire('keyup', 'KeyW', 1720);
     fire('keydown', 'KeyW', 1730);
     expect(H.sends.length, 'a D-pad press over a battle base sends nothing').toBe(sent);
@@ -1007,6 +1023,8 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(stack(), 'the base is the world again').toEqual([{ kind: 'world' }]);
     expect(H.sends.length, 'nothing walks on its own when the battle ends').toBe(sent);
     expect(promptShown(), 'control: the prompt is back at the world').toBe(true);
+    fire('keydown', 'KeyT', 2450);
+    expect(talkCalls(), 'control: KeyT talks again once the battle is over').toBe(2);
 
     // Anti-vacuity: the world walks again for a fresh press.
     fire('keyup', 'KeyW', 2500);
@@ -1169,6 +1187,12 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(shownById('dialogue-overlay'), 'precondition: the server opened the dialogue').toBe(
       true,
     );
+    // No frame has run since the batch: the batch's own tail must already have mirrored the
+    // dialogue (the last batch listener syncs), so a hold cannot slip past in the gap.
+    expect(
+      stack(),
+      'the batch itself mirrors the server-opened dialogue, before any frame',
+    ).toEqual([{ kind: 'world' }, { kind: 'screen', id: 'dialogueView' }]);
     frame(settledAt + 200);
     frame(settledAt + 400);
     expect(H.sends.length, 'nothing walks under the server-opened dialogue').toBe(sent);
@@ -1187,6 +1211,80 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     // Anti-vacuity: the world walks again for a fresh press.
     fire('keyup', 'KeyW', settledAt + 900);
     fire('keydown', 'KeyW', settledAt + 910);
+    expect(H.sends.length, 'a fresh press steps once').toBe(sent + 1);
+  });
+
+  it('CTL2-3-BOOT-TERMINAL-ROW: a finished battle row left in the store does not hold the battle base', async () => {
+    // WRONG IMPL KILLED: a base derived from the latest battle row of ANY outcome (the store keeps
+    // finished rows, so the base would stay "battle" for the rest of the session and movement
+    // would be dead for good), and one that keeps the battle base until the outcome frame is
+    // dismissed. The base follows the row's outcome: Ongoing is a battle, anything else is the
+    // world, and a finished outcome is only a screen frame over the world.
+    await bootReady();
+    seedWorld(1000);
+    frame(1005);
+
+    opts.store.upsertBattle(battleRow(BATTLE_ID, 'Ongoing'));
+    settle(1010);
+    frame(1020);
+    expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
+    expect(stack(), 'an Ongoing row is a battle base').toEqual([
+      { kind: 'battle', battleId: '101' },
+    ]);
+
+    // The SAME battle finishes: the row stays in the store with a terminal outcome.
+    opts.store.upsertBattle(battleRow(BATTLE_ID, 'SideAWins'));
+    settle(1030);
+    frame(1040);
+    expect(battleShown(), 'precondition: the outcome frame is on screen').toBe(true);
+    expect(stack()[0], 'a finished row is not a battle base').toEqual({ kind: 'world' });
+
+    // Escape dismisses the outcome frame; the finished row is still in the store.
+    fire('keydown', 'Escape', 1100);
+    expect(battleShown(), 'precondition: Escape dismissed the outcome frame').toBe(false);
+    frame(1110);
+    expect(stack(), 'nothing is left on the stack').toEqual([{ kind: 'world' }]);
+
+    // The world walks: one press, one step.
+    expect(H.sends.length, 'precondition: nothing has been sent yet').toBe(0);
+    fire('keydown', 'KeyW', 1200);
+    expect(dirs(), 'a fresh W press at the world steps once').toEqual(['North']);
+  });
+
+  it('CTL2-4-BOOT-CLICK-OPEN: an overlay opened by a connection callback (no key, no batch) still clears the held direction when it is closed before any frame', async () => {
+    // WRONG IMPL KILLED: a stack synced only at the TAIL of a keydown (and in frames and
+    // batches). The sign-in-failed callback shows the claim overlay without touching held; the
+    // overlay is then closed by its toggle key before any frame runs, so a tail-only sync sees
+    // nothing visible, never sees the push, and the hold survives to walk on after the close. The
+    // keydown must sync at its TOP as well, before the handler closes the overlay.
+    // Paths checked for an open that is neither a keydown nor a store batch and does not clear
+    // held itself: the sign-in-failed callback (this one; it shows the claim overlay directly),
+    // and the menu launcher click, which already clears held. A menu leaf click opens its target,
+    // but the menu's open cleared held and the menu swallows the D-pad, so nothing is held then.
+    await bootReady();
+    seedWorld(1000);
+    const settledAt = committedHold(1010);
+    const sent = H.sends.length;
+
+    opts.onSignInFailed?.('denied');
+    expect(shownById('claim-overlay'), 'precondition: the callback opened the claim overlay').toBe(
+      true,
+    );
+    // No frame, no batch, no read of the hook: straight to the closing keydown.
+    fire('keydown', 'KeyC', settledAt + 10);
+    expect(shownById('claim-overlay'), 'precondition: KeyC closed it').toBe(false);
+
+    frame(settledAt + 200);
+    frame(settledAt + 400);
+    frame(settledAt + 600);
+    expect(
+      H.sends.length,
+      'the hold from before the overlay must not resume, though no frame saw the overlay open',
+    ).toBe(sent);
+
+    // Anti-vacuity: the world walks again for a fresh press.
+    fire('keyup', 'KeyW', settledAt + 700);
+    fire('keydown', 'KeyW', settledAt + 710);
     expect(H.sends.length, 'a fresh press steps once').toBe(sent + 1);
   });
 

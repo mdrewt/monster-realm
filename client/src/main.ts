@@ -467,7 +467,15 @@ function syncStack(): void {
   const apply = (edge: Edge): void => {
     const next = contextStep(contextStack, edge);
     contextStack = next.stack;
-    for (const command of next.commands) if (command.kind === 'clearHeld') held.clear();
+    for (const command of next.commands) {
+      switch (command.kind) {
+        case 'clearHeld':
+          held.clear();
+          break;
+        default:
+          command.kind satisfies never;
+      }
+    }
   };
   apply({ kind: 'base', base });
   for (const edge of mirrorEdges(contextStack, visibleIds(overlayProbes))) apply(edge);
@@ -1756,12 +1764,12 @@ const onKeyDown = (e: KeyboardEvent): void => {
   for (const edge of keyboard.keydown(e)) consumed = routeEdge(edge) || consumed;
   if (consumed) e.preventDefault();
 };
-// Sync the context stack on both sides of every keydown: before, so an overlay a click
-// opened since the last frame is pushed (clearing held) before this key can close it; after,
+// Sync the context stack on both sides of every keydown: before, so an overlay opened since
+// the last frame outside a keydown or batch (a click, a connection callback) is pushed (clearing held) before this key can close it; after,
 // so whatever this key opened or closed is mirrored at once.
 window.addEventListener('keydown', (e) => {
-  syncStack();
   try {
+    syncStack();
     onKeyDown(e);
   } finally {
     syncStack();
@@ -3230,9 +3238,8 @@ async function main(): Promise<void> {
       // gate, so it never walks under a frame or a battle + hold-commit tap/hold
       // discrimination. A frame's push clears the held set, so a hold does NOT resume when
       // the frame closes (ctl-2, deliberately reversing the old resume-after-overlay rule).
-      // sendIntent routes through the backpressured
-      // predictor.enqueue + reducer send, and no-ops if declined.
-      // and only while the server owes nothing. Pure NOT-EMIT: it never
+      // Only while the server owes nothing. sendIntent routes through the backpressured
+      // predictor.enqueue + reducer send, and no-ops if declined. Pure NOT-EMIT: it never
       // cancels or writes predictor state, so reconcileFromStore stays the one repair path.
       if (predictor.outstandingSteps === 0 && movementGate()) {
         const heldDir = reissueDir(held.committedActive(now), predictor.lastQueuedDir);
