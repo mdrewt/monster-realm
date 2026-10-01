@@ -220,7 +220,37 @@ export type MessageId =
   | 'evolutionNotice.ok'
   | 'evolutionNotice.species.fallback'
   | 'evolutionNotice.reveal.nicknamed'
-  | 'evolutionNotice.reveal.anonymous';
+  | 'evolutionNotice.reveal.anonymous'
+  // menu.* : the main menu and its sub-lists (menuModel.ts, screens/mainMenuScreen.ts).
+  | 'menu.title'
+  | 'menu.monsters.title'
+  | 'menu.monsters.desc'
+  | 'menu.bag.title'
+  | 'menu.bag.desc'
+  | 'menu.journal.title'
+  | 'menu.journal.desc'
+  | 'menu.social.title'
+  | 'menu.social.desc'
+  | 'menu.profile.title'
+  | 'menu.profile.desc'
+  | 'menu.options.title'
+  | 'menu.options.desc'
+  | 'menu.close.title'
+  | 'menu.close.desc'
+  | 'menu.social.trades.title'
+  | 'menu.social.trades.desc'
+  | 'menu.social.challenges.title'
+  | 'menu.social.challenges.desc'
+  | 'menu.social.rankings.title'
+  | 'menu.social.rankings.desc'
+  | 'menu.profile.name.title'
+  | 'menu.profile.name.desc'
+  | 'menu.profile.account.title'
+  | 'menu.profile.account.desc'
+  | 'menu.profile.privacy.title'
+  | 'menu.profile.privacy.desc'
+  | 'menu.options.help.title'
+  | 'menu.options.help.desc';
 
 /** The ONE hand-written parameter table: a key appears here iff its message takes
  *  parameters, and `ParamMessageId` is DERIVED from it — one table, not two lists to keep in

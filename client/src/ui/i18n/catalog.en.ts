@@ -774,4 +774,91 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // species name and {to} the new one. One line in a small banner.
   // evolutionNotice.ts:95 (evolutionNoticeLabel return)
   'evolutionNotice.reveal.anonymous': (p) => `Your ${p.from} evolved into ${p.to}!`,
+  // @desc: Title of the main menu side panel and the first breadcrumb in its sub-lists.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.title': 'Menu',
+  // @desc: Main-menu entry opening the monster box (party and storage).
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.monsters.title': 'Monsters',
+  // @desc: Feedback-line description of the Monsters main-menu entry, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.monsters.desc': 'See your party and stored monsters.',
+  // @desc: Main-menu entry opening the bag (items, feeding and care).
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.bag.title': 'Bag',
+  // @desc: Feedback-line description of the Bag main-menu entry, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.bag.desc': 'Use items and care for your monsters.',
+  // @desc: Main-menu entry opening the quest journal.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.journal.title': 'Journal',
+  // @desc: Feedback-line description of the Journal main-menu entry, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.journal.desc': 'Review your quests and their progress.',
+  // @desc: Main-menu entry opening the Social sub-list (trades, challenges, rankings).
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.social.title': 'Social',
+  // @desc: Feedback-line description of the Social main-menu entry, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.social.desc': 'Trades, challenges and rankings with other players.',
+  // @desc: Main-menu entry opening the Profile sub-list (name, account, privacy).
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.profile.title': 'Profile',
+  // @desc: Feedback-line description of the Profile main-menu entry, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.profile.desc': 'Your name, account and privacy settings.',
+  // @desc: Main-menu entry opening the Options sub-list (how to play).
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.options.title': 'Options',
+  // @desc: Feedback-line description of the Options main-menu entry, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.options.desc': 'Game help and settings.',
+  // @desc: Main-menu entry that closes the menu and returns to the world.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.close.title': 'Close',
+  // @desc: Feedback-line description of the Close main-menu entry, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.close.desc': 'Close the menu and return to the world.',
+  // @desc: Social sub-list entry opening the incoming-trade screen.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.social.trades.title': 'Trades',
+  // @desc: Feedback-line description of the Trades entry in the Social sub-list, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.social.trades.desc': 'See and answer the trade offered to you.',
+  // @desc: Social sub-list entry opening the battle-challenge screen.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.social.challenges.title': 'Challenges',
+  // @desc: Feedback-line description of the Challenges entry in the Social sub-list, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.social.challenges.desc': 'Challenge a player or answer a challenge.',
+  // @desc: Social sub-list entry opening the ranked leaderboard.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.social.rankings.title': 'Rankings',
+  // @desc: Feedback-line description of the Rankings entry in the Social sub-list, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.social.rankings.desc': 'See the ranked leaderboard.',
+  // @desc: Profile sub-list entry opening the rename form.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.profile.name.title': 'Name',
+  // @desc: Feedback-line description of the Name entry in the Profile sub-list, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.profile.name.desc': 'Change the name other players see.',
+  // @desc: Profile sub-list entry opening the account and sign-in screen.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.profile.account.title': 'Account',
+  // @desc: Feedback-line description of the Account entry in the Profile sub-list, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.profile.account.desc': 'Sign in or keep this guest progress.',
+  // @desc: Profile sub-list entry opening the privacy screen (data export, deletion).
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.profile.privacy.title': 'Privacy',
+  // @desc: Feedback-line description of the Privacy entry in the Profile sub-list, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.profile.privacy.desc': 'Export or delete your data.',
+  // @desc: Options sub-list entry opening the how-to-play help screen.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.options.help.title': 'How to play',
+  // @desc: Feedback-line description of the How to play entry in the Options sub-list, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.options.help.desc': 'Controls and goals of the game.',
 } satisfies Catalog);
