@@ -453,6 +453,37 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'privacy.action.export': 'Request my data export', // privacyBanner.ts:160
   'privacy.action.download': 'Download my data export', // privacyBanner.ts:164
   'raising.feedback.cared': 'Cared!', // careAction.ts CARED_MESSAGE (pre-migration)
+  // ctl-5: 29 new plain keys — the main menu and its three sub-lists (ui/menuModel.ts
+  // MENU_ENTRIES). All plain: titles and Y-feedback descriptions; none take parameters.
+  'menu.title': 'Menu',
+  'menu.monsters.title': 'Monsters',
+  'menu.monsters.desc': 'See your party and stored monsters.',
+  'menu.bag.title': 'Bag',
+  'menu.bag.desc': 'Use items and care for your monsters.',
+  'menu.journal.title': 'Journal',
+  'menu.journal.desc': 'Review your quests and their progress.',
+  'menu.social.title': 'Social',
+  'menu.social.desc': 'Trades, challenges and rankings with other players.',
+  'menu.profile.title': 'Profile',
+  'menu.profile.desc': 'Your name, account and privacy settings.',
+  'menu.options.title': 'Options',
+  'menu.options.desc': 'Help on how to play the game.',
+  'menu.close.title': 'Close',
+  'menu.close.desc': 'Close the menu and return to the world.',
+  'menu.social.trades.title': 'Trades',
+  'menu.social.trades.desc': 'See and answer the trade offered to you.',
+  'menu.social.challenges.title': 'Challenges',
+  'menu.social.challenges.desc': 'Challenge a player or answer a challenge.',
+  'menu.social.rankings.title': 'Rankings',
+  'menu.social.rankings.desc': 'See the ranked leaderboard.',
+  'menu.profile.name.title': 'Name',
+  'menu.profile.name.desc': 'Change the name other players see.',
+  'menu.profile.account.title': 'Account',
+  'menu.profile.account.desc': 'Sign in or keep this guest progress.',
+  'menu.profile.privacy.title': 'Privacy',
+  'menu.profile.privacy.desc': 'Export or delete your data.',
+  'menu.options.help.title': 'How to play',
+  'menu.options.help.desc': 'Controls and goals of the game.',
 };
 
 interface ParamOutputSpec {
@@ -729,7 +760,7 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 179-key roster (pgcc-a added `raising.feedback.cared` to the 178-key roster below;
+/** The full 208-key roster (ctl-5 added the 29 `menu.*` keys to the 179-key roster; pgcc-a added `raising.feedback.cared` to the 178-key roster below;
  *  21r-b2 growth of 21r-b's 133-key roster by the 45 new `claim.*` /
  *  `privacy.*` keys; 21r-b had grown the 118-key roster by the 15 new
  *  `chrome.feedback.*`/`shop.feedback.*`/`trade.feedback.*`/`chrome.rename.updated`/
@@ -781,7 +812,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the 21r-b2 178-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-5 208-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -870,10 +901,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 178 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 208 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the 178 keys.
+    // (a) roster is exactly the 208 keys.
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).

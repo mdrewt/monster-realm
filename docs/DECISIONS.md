@@ -169,20 +169,28 @@ NPC crossing zones.
 
 ## Held keys: commit threshold and warp continuity
 
-**Decision.** OS key-repeat never drives movement (`e.repeat` is ignored in
-`client/src/main.ts`). A keydown sends one step immediately; continuation comes from
-the frame loop re-issuing the held direction only after the key has been held for
-`HOLD_COMMIT_MS` (150 ms, `client/src/prediction/heldKeys.ts`) and only when the
-predictor has no outstanding steps. A zone warp keeps the held-key stack across the
+**Decision.** Movement is driven by virtual D-pad edges from the input router
+(`client/src/input/router.ts`), refcounted across physical keys, so releasing ArrowUp
+does not stop a held W. OS key-repeat drives neither movement nor menus (`e.repeat` is
+ignored). A press sends one step immediately; continuation comes from the frame loop
+re-issuing the held direction only after the key has been held for `HOLD_COMMIT_MS`
+(150 ms, `client/src/prediction/heldKeys.ts`), only when the predictor has no
+outstanding steps, and only while `movementEnabled` (the world base with no frame above
+it and the session gate open). Every push of a non-base frame clears the held set, so a
+direction held through a menu does not resume when the menu closes; the player presses
+again. Menu auto-repeat is synthesized by the router on an injected clock (350 ms, then
+100 ms) and clamps at list ends. A zone warp keeps the held-key stack across the
 prediction reset; a reconnect does not.
 
 **Why.** Key-repeat rates vary by OS and flood the server. The threshold separates a
 tap (one tile) from a hold (walk), and waiting for outstanding steps to clear stops
 the client from queueing moves faster than the server drains them. Keeping the stack
-across a warp lets a player walk through a door without re-pressing the key.
+across a warp lets a player walk through a door without re-pressing the key. A walk
+that resumes behind a closing menu is a step the player did not ask for, and stale hold
+stamps would skip the commit threshold.
 
-**Rules out.** Repeat-driven movement; emitting continuation steps while earlier ones
-are still in flight.
+**Rules out.** Repeat-driven movement or menus; emitting continuation steps while
+earlier ones are still in flight; resuming a held walk after a frame closes.
 
 ## Remote interpolation: adaptive delay, hold rather than extrapolate
 
@@ -204,14 +212,15 @@ as jitter would inflate the delay after every stop.
 ## Integer pixel scaling
 
 **Decision.** The renderer runs Pixi at `resolution = devicePixelRatio` with
-`autoDensity`, and scales the stage by an integer device scale chosen by
+`autoDensity`, and chooses an integer device scale (source pixels to device pixels) in
 `client/src/render/viewport.ts` from the target visible tile count
-(`TARGET_VISIBLE_TILES` 11, clamped to 7..16 in `client/src/render/config.ts`). When
-the map is smaller than the viewport, the camera centres it.
+(`TARGET_VISIBLE_TILES` 11, clamped to 7..16 in `client/src/render/config.ts`). The CSS
+stage scale is that integer divided by `devicePixelRatio`, so it is fractional whenever
+the ratio is not 1. When the map is smaller than the viewport, the camera centres it.
 
 **Why.** Non-integer scaling blurs or shimmers pixel art.
 
-**Rules out.** Fractional stage scales; fitting the map by stretching.
+**Rules out.** Fractional device scales; fitting the map by stretching.
 
 ## Evolution graph and the auto-evolve rule
 
@@ -449,11 +458,15 @@ exposing the stack without changing the Caddy bind address on purpose.
 
 ## Client UI: one overlay registry, keyboard first
 
-**Decision.** Overlays are exclusive, and one pure function decides which may open:
+**Decision.** Overlays are exclusive, except the main menu, which stays open beneath
+the screen it opens and never blocks one (`overlayVerdict` in `client/src/main.ts`).
+One pure function decides which may open:
 `canOpen` (`client/src/ui/overlayRegistry.ts`) reads a tier per overlay (a battle on
 top, guard-only modals that another hotkey never dismisses, and the Box, Raising &
 Inventory and Evolution overlays, which swap with each other). A battle that starts
-force-hides most open overlays, but never the dialogue overlay. Hotkeys are discoverable through `M`, a two-level menu. Each view keeps
+force-hides most open overlays, but never the dialogue overlay. The main menu (`M`) is a D-pad list whose entries open
+their screen above it
+(`client/src/ui/screens/mainMenuScreen.ts`); B closes that screen and returns to the menu. Each view keeps
 its state in a pure model (`*Model.ts`) with a thin DOM view (`*View.ts`). Text-input
 overlays clear held movement keys on open and own their keystrokes. The controls list
 has one source, `CONTROLS` in `client/src/ui/helpModel.ts`. `T` interacts with the

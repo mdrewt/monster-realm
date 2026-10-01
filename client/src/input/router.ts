@@ -1,9 +1,11 @@
 // router.ts — the pure input router: consumes source-agnostic `{button, down}` edges and
-// decides what they do (design §12). In ctl-1 it owns only the D-pad and X (Jump); every
+// decides what they do (design §12). It owns the D-pad and X (Jump) at the world; under a nav
+// frame (the main menu, ctl-5) it also owns A, B and Y and synthesizes D-pad auto-repeat. Every
 // other button is unconsumed and the legacy ladder in main.ts keeps those keys.
 //
-// No DOM, SDK, module state or clock: main.ts applies the returned effects.
+// No DOM, SDK, module state or clock: the caller passes `now` and applies the returned effects.
 import type { WasmDirection } from '../convert/convert';
+import type { NavInput } from '../ui/nav';
 import { type ButtonEdge, dpadDir, type VButton } from './buttons';
 
 /** Who owns a key event: the focused element's native behaviour, or the router. */
@@ -51,11 +53,18 @@ export type RouterEffect =
   | { readonly kind: 'dirDown'; readonly dir: WasmDirection }
   /** The last holder of a direction released it. */
   | { readonly kind: 'dirUp'; readonly dir: WasmDirection }
-  | { readonly kind: 'jump' };
+  | { readonly kind: 'jump' }
+  /** An input for the uncovered nav frame: a press, or a synthesized repeat. */
+  | { readonly kind: 'nav'; readonly input: NavInput }
+  /** B over a covered nav frame: close the legacy frame on top. */
+  | { readonly kind: 'pop' };
 
 export interface RouteContext {
   /** True when no overlay is open, so world input (walk, jump) applies. */
   readonly worldActive: boolean;
+  /** Present while a nav frame is on the stack: `covered` when a legacy frame sits above it,
+   *  and the injected clock the repeat schedule runs on. */
+  readonly nav?: { readonly covered: boolean; readonly now: number };
 }
 
 export interface RouteResult {
@@ -66,18 +75,42 @@ export interface RouteResult {
 const NOT_CONSUMED: RouteResult = { consumed: false, effects: [] };
 const SWALLOWED: RouteResult = { consumed: true, effects: [] };
 
+/** Menu auto-repeat (design §6): the first repeat after this long held, then one per period. */
+export const REPEAT_DELAY_MS = 350;
+export const REPEAT_PERIOD_MS = 100;
+
+/** The buttons an uncovered nav frame takes besides the D-pad. */
+const NAV_BUTTONS: ReadonlySet<VButton> = new Set(['A', 'B', 'Y']);
+
+const navPress = (button: VButton): RouteResult => ({
+  consumed: true,
+  effects: [{ kind: 'nav', input: { button, repeat: false } }],
+});
+
 export class InputRouter {
   // Down edges per D-pad button not yet matched by an up edge, across every source. A
   // direction is released only when its last holder lets go (two keys, or key + pad).
   readonly #holders = new Map<VButton, number>();
+  // The D-pad button that auto-repeats under the nav frame, and when its next repeat is due.
+  // Armed by a press under an uncovered nav frame; only the latest press repeats.
+  #repeat: { readonly button: VButton; nextAt: number } | undefined;
+  // Held D-pad buttons, oldest press first: releasing the repeating one hands the repeat back to
+  // the most recent button still held.
+  #pressOrder: VButton[] = [];
 
   route(edge: ButtonEdge, ctx: RouteContext): RouteResult {
     const { button, down } = edge;
+    const nav = ctx.nav !== undefined && !ctx.nav.covered ? ctx.nav : undefined;
     const dir = dpadDir(button);
     if (dir !== undefined) {
       const count = this.#holders.get(button) ?? 0;
       if (down) {
         this.#holders.set(button, count + 1);
+        this.#pressOrder = [...this.#pressOrder.filter((b) => b !== button), button];
+        if (nav !== undefined) {
+          this.#repeat = { button, nextAt: nav.now + REPEAT_DELAY_MS };
+          return navPress(button);
+        }
         return ctx.worldActive
           ? { consumed: true, effects: [{ kind: 'dirDown', dir }] }
           : SWALLOWED;
@@ -88,13 +121,42 @@ export class InputRouter {
         return SWALLOWED;
       }
       this.#holders.delete(button);
+      this.#pressOrder = this.#pressOrder.filter((b) => b !== button);
+      if (this.#repeat?.button === button) {
+        const still = this.#pressOrder.at(-1);
+        this.#repeat =
+          still === undefined || nav === undefined
+            ? undefined
+            : { button: still, nextAt: nav.now + REPEAT_DELAY_MS };
+      }
       return { consumed: true, effects: [{ kind: 'dirUp', dir }] };
     }
     if (button === 'X') {
       // Jump does not hold-repeat: only the press acts.
       return down && ctx.worldActive ? { consumed: true, effects: [{ kind: 'jump' }] } : SWALLOWED;
     }
+    if (nav !== undefined && NAV_BUTTONS.has(button)) return down ? navPress(button) : SWALLOWED;
+    if (button === 'B' && ctx.nav?.covered === true) {
+      return down ? { consumed: true, effects: [{ kind: 'pop' }] } : SWALLOWED;
+    }
     return NOT_CONSUMED;
+  }
+
+  /** The frame-loop pump: at most one repeat edge for the armed D-pad button, once it is due,
+   *  while the nav frame is uncovered. A stalled clock yields one edge, never a burst. */
+  tick(ctx: RouteContext): readonly RouterEffect[] {
+    const repeat = this.#repeat;
+    if (repeat === undefined || ctx.nav === undefined || ctx.nav.covered) return [];
+    const { now } = ctx.nav;
+    if (now < repeat.nextAt) return [];
+    repeat.nextAt += REPEAT_PERIOD_MS;
+    if (repeat.nextAt <= now) repeat.nextAt = now + REPEAT_PERIOD_MS;
+    return [{ kind: 'nav', input: { button: repeat.button, repeat: true } }];
+  }
+
+  /** Stop any repeat: a held key never repeats into a newly pushed or popped frame. */
+  resetRepeat(): void {
+    this.#repeat = undefined;
   }
 
   /** Release every held button (blur, tab hidden): one `dirUp` per held direction. */
@@ -105,6 +167,8 @@ export class InputRouter {
       if (dir !== undefined) effects.push({ kind: 'dirUp', dir });
     }
     this.#holders.clear();
+    this.#pressOrder = [];
+    this.#repeat = undefined;
     return effects;
   }
 }

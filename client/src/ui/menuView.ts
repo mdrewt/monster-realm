@@ -1,123 +1,82 @@
-// ui/menuView.ts — thin DOM shell for the two-level main menu.
+// ui/menuView.ts — thin DOM shell for the main menu (design §5, CTL5.1). It paints
+// `menuViewModel(state)` from `screens/mainMenuScreen.ts` into one `side` frame of the ctl-4 kit
+// (`frame.ts` chrome, `navRender.ts` list) inside the legacy `#menu-overlay` root, and decides
+// nothing: keys reach the menu only through the input router, and a click on an entry is
+// forwarded as `{kind: 'pick', key}`.
 //
-// `helpView.ts` precedent: the constructor resolves its elements once and throws loudly on
-// a missing one; `visible` reads the live DOM; the only STYLE `show()`/`hide()` write is
-// `style.display`, so the shell's `position:fixed;inset:0;z-index:100` survives a toggle —
-// every ARIA, initial-focus and focus-trap write on that edge is delegated to `overlayA11y`
-// rather than performed here; `render()` rebuilds authoritatively via `replaceChildren`.
+// `#menu-overlay` stays the overlay root (its id, inline style and `display:none` contract are
+// frozen), and `#menu-rows` stays its `initialFocusSelector` and the single tab stop: it moves
+// into the frame body and becomes the nav container. `#menu-heading` and `#menu-back-hint` are
+// hidden — the frame title replaces the heading, and the English back hints are gone (B11).
 //
-// Deviation from helpView's zero-arg form: the menu is interactive, so it takes a callbacks
-// object (`renameView`/`shopView` precedent). It decides no NAVIGATION — every input is
-// forwarded verbatim to `menuModel.menuStep` (functional core). The one decision it
-// makes is event ROUTING: which listener owns which key; see the keydown listener below.
-//
-// XSS firewall: `textContent` / `createElement` / `replaceChildren`, plus the
-// attribute primitives `setAttribute` / `removeAttribute` that carry the ARIA semantics —
-// ONLY. No markup-parsing DOM API of any kind: none of them ever parses a string as markup,
-// which is the whole property the firewall protects. Pinned by MV-NO-INNERHTML, which scans
-// this file's raw source for the banned APIs by name, so they must not appear even inside a
-// comment.
-//
-// Fully happy-dom unit-covered, so this file is deliberately NOT in `vite.config.ts`
-// `coverage.exclude`.
-import type { MenuInput, MenuViewModel } from './menuModel';
-import { menuKeyInput } from './menuModel';
+// The only inline style writes are `display` (show/hide), `visibility` (covered by a child) and
+// the frame's `margin-left` (the right-hand panel); every ARIA, initial-focus and trap write on
+// the open/close edge belongs to `overlayA11y`. Text reaches the DOM through `textContent` only.
+import { createFrame, type FrameChrome, renderFeedback, setFrameTitle } from './frame';
+import { renderNav } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
+import type { MenuViewModel } from './screens/mainMenuScreen';
+
+export type MenuPointerInput = { readonly kind: 'pick'; readonly key: string };
 
 export interface MenuViewCallbacks {
-  readonly onInput: (input: MenuInput) => void;
+  readonly onInput: (input: MenuPointerInput) => void;
+}
+
+function required(id: string): HTMLElement {
+  const el = document.getElementById(id);
+  if (el === null) throw new Error(`${id} element not found in DOM`);
+  return el;
+}
+
+/** The frame around `#menu-rows`, built once per document: a second view over the same markup
+ *  (tests construct several) re-finds the chrome instead of nesting another frame. */
+function menuFrame(overlay: HTMLElement, rows: HTMLElement): FrameChrome {
+  const root = rows.closest<HTMLElement>('.mr-frame');
+  if (root !== null && overlay.contains(root)) {
+    const part = (className: string): HTMLElement =>
+      root.querySelector(`.${className}`) as HTMLElement;
+    return {
+      id: 'menu',
+      root,
+      titleEl: part('mr-frame-title'),
+      breadcrumb: part('mr-frame-breadcrumb'),
+      tabBar: part('mr-frame-tabs'),
+      tabStrip: part('mr-frame-tabstrip'),
+      body: part('mr-frame-body'),
+      feedback: part('mr-frame-feedback'),
+      hintSlot: part('mr-frame-hints'),
+    };
+  }
+  const frame = createFrame(document, { id: 'menu', size: 'side' });
+  frame.root.style.marginLeft = 'auto';
+  frame.body.appendChild(rows);
+  overlay.appendChild(frame.root);
+  return frame;
 }
 
 export class MenuView {
   readonly #overlay: HTMLElement;
-  readonly #headingEl: HTMLElement;
-  readonly #rowsEl: HTMLElement;
-  readonly #backHintEl: HTMLElement;
+  readonly #rows: HTMLElement;
+  readonly #frame: FrameChrome;
 
   constructor(callbacks: MenuViewCallbacks) {
-    const overlay = document.getElementById('menu-overlay');
-    if (!overlay) throw new Error('menu-overlay element not found in DOM');
-    this.#overlay = overlay;
+    this.#overlay = required('menu-overlay');
+    const heading = required('menu-heading');
+    this.#rows = required('menu-rows');
+    const backHint = required('menu-back-hint');
+    heading.hidden = true;
+    backHint.hidden = true;
+    this.#frame = menuFrame(this.#overlay, this.#rows);
 
-    const heading = document.getElementById('menu-heading');
-    if (!heading) throw new Error('menu-heading missing');
-    this.#headingEl = heading;
-
-    const rows = document.getElementById('menu-rows');
-    if (!rows) throw new Error('menu-rows missing');
-    this.#rowsEl = rows;
-
-    const backHint = document.getElementById('menu-back-hint');
-    if (!backHint) throw new Error('menu-back-hint missing');
-    this.#backHintEl = backHint;
-
-    // the listbox anchor is a CONSTRUCTOR-TIME
-    // contract, not a render-time one — replaceChildren rebuilds the CHILDREN, never the <ul>
-    // itself, so the role and the name must already be in place before the first render(). The
-    // name is an IDREF derived from the ALREADY-RESOLVED heading element (never a second lookup
-    // and never a literal): the heading IS the breadcrumb and its TEXT changes per level, so a
-    // frozen aria-label would announce "Menu" from inside the Party submenu.
-    //
-    // KNOWN WINDOW: between construction and the first render() the IDREF names an EMPTY
-    // #menu-heading, i.e. an unnamed listbox. Nothing in THIS file closes that window —
-    // production is safe only because the single open path renders BEFORE it shows
-    // (`openMenu()`, main.ts:585-588). Any future caller that shows without rendering first
-    // re-opens it.
-    // `tabindex` on the <ul> belongs to index.html (it ships exactly "0") — never written here.
-    this.#rowsEl.setAttribute('role', 'listbox');
-    this.#rowsEl.setAttribute('aria-labelledby', this.#headingEl.id);
-
-    // DELEGATED listeners, bound ONCE on the <ul> — not per-<li> in render(). Per-row
-    // listeners leak on every re-render, and re-binding the <ul> per render makes one click
-    // emit N times. Delegation also survives replaceChildren for free.
-    this.#rowsEl.addEventListener('click', (e) => {
-      const index = this.#indexOfEventTarget(e.target);
-      if (index !== undefined) callbacks.onInput({ kind: 'click', index });
+    // ONE delegated listener on the persistent container: rows are diffed by key, so per-row
+    // listeners would leak or double up across renders.
+    this.#rows.addEventListener('click', (e) => {
+      const item =
+        e.target instanceof Element ? e.target.closest<HTMLElement>('[data-nav-key]') : null;
+      const key = item?.dataset.navKey;
+      if (key !== undefined && this.#rows.contains(item)) callbacks.onInput({ kind: 'pick', key });
     });
-    this.#rowsEl.addEventListener('mouseover', (e) => {
-      const index = this.#indexOfEventTarget(e.target);
-      if (index !== undefined) callbacks.onInput({ kind: 'hover', index });
-    });
-    // SPLIT OWNERSHIP. Same <ul>, same delegation, same DEFAULT (bubble)
-    // phase as the two above. This listener owns ONLY the selection-movement inputs — up,
-    // down, left — and consumes them with preventDefault + stopPropagation so main.ts's window
-    // listener does not step the menu a SECOND time for one press.
-    //
-    // WHY only that subset: `enter` and `escape` are the only inputs that can activate a leaf
-    // or dismiss the menu, so they are deliberately left to bubble to main.ts, which owns them
-    // behind its ordered guard chain — sessionGateBlocks() FIRST,
-    // then the key-repeat gate, then the Escape ladder. Swallowing
-    // them here would route a guarded action around that chain. The three inputs kept are
-    // provably inert instead: `menuStep` can only ever return effect {kind:'none'} for up, down
-    // and left, so they cannot close the menu, activate a leaf, or reach a reducer — consuming
-    // them costs main.ts nothing. Anything menuKeyInput does not recognise (KeyM, the menu's
-    // own toggle key, above all) falls through completely untouched, so the menu stays
-    // closeable from the keyboard while the listbox holds focus.
-    this.#rowsEl.addEventListener('keydown', (e) => {
-      if (!this.visible) return;
-      if (e.repeat) return;
-      const input = menuKeyInput(e.code);
-      if (input === undefined) return;
-      if (input.kind !== 'up' && input.kind !== 'down' && input.kind !== 'left') return;
-      e.preventDefault();
-      // stopPropagation, NEVER stopImmediatePropagation: a sibling listener registered on this
-      // same <ul> must still run.
-      e.stopPropagation();
-      callbacks.onInput(input);
-    });
-  }
-
-  /** Resolve the row index of an event target, or undefined for a hit on the bare <ul>.
-   *  Returning undefined (rather than NaN) keeps the shell from manufacturing junk inputs;
-   *  `menuStep` validates the index again anyway, since a click can race a re-render. */
-  #indexOfEventTarget(target: EventTarget | null): number | undefined {
-    if (!(target instanceof HTMLElement)) return undefined;
-    const li = target.closest('li');
-    if (!li) return undefined;
-    const raw = li.dataset.menuIndex;
-    if (raw === undefined) return undefined;
-    const index = Number(raw);
-    return Number.isInteger(index) ? index : undefined;
   }
 
   get visible(): boolean {
@@ -125,10 +84,7 @@ export class MenuView {
   }
 
   show(): void {
-    // read visibility BEFORE the display write. Only the
-    // hidden->visible EDGE opens — a repeat show() on an already-open overlay would otherwise
-    // re-schedule overlayA11y's deferred initial-focus timer and yank the player back to the
-    // listbox out of nowhere.
+    // Only the hidden->visible EDGE opens: a repeat open would re-schedule the deferred focus.
     const wasVisible = this.visible;
     this.#overlay.style.display = '';
     if (!wasVisible) openOverlayA11y('menuView', this.#overlay);
@@ -136,65 +92,33 @@ export class MenuView {
 
   hide(): void {
     this.#overlay.style.display = 'none';
-    // DELIBERATELY UNGUARDED, unlike show() (helpView.ts precedent). A close with no open
-    // record is a documented no-op, so nothing is risked; and every hide() closing is what
-    // heals a record that ever desynchronised from the DOM, instead of leaking a live capture
-    // trap, a pending deferred-focus timer and a stale return target for the whole session.
+    // Unguarded: a close with no open record is a no-op, and closing on every hide heals a record
+    // that ever drifted from the DOM.
     closeOverlayA11y('menuView', null);
   }
 
-  /**
-   * Rebuild authoritatively: heading, one <li> per row, back hint. `replaceChildren` on the
-   * <ul> only — never on the overlay, whose children were resolved once in the constructor.
-   */
+  /** A child screen sits above the menu: stop painting the menu (most child shells are in-flow,
+   *  so a fixed full-screen menu would cover them) while it stays open beneath. On uncover, focus
+   *  returns to the list: the pop's own focus move ran while the menu was still `visibility:
+   *  hidden`, which a browser refuses, so focus would otherwise sit on `<body>` or in the closed
+   *  child. */
+  setCovered(covered: boolean): void {
+    const wasCovered = this.#overlay.style.visibility === 'hidden';
+    this.#overlay.style.visibility = covered ? 'hidden' : '';
+    if (wasCovered && !covered && !this.#overlay.contains(document.activeElement)) {
+      this.#rows.focus();
+    }
+  }
+
   render(vm: MenuViewModel): void {
-    this.#headingEl.textContent = vm.heading;
-    this.#backHintEl.textContent = vm.backHint;
-
-    const items = vm.rows.map((row) => {
-      const li = document.createElement('li');
-      li.dataset.menuIndex = String(row.index);
-      li.dataset.selected = row.selected ? 'true' : 'false';
-      li.dataset.disabled = row.disabled ? 'true' : 'false';
-      // The option id is LEVEL-QUALIFIED and its numeric part comes from `row.index` —
-      // the VM's own field, which is what the delegated listeners feed back into menuStep —
-      // NEVER the array position. The `vm.level` qualifier is not decoration: buildMenuViewModel
-      // emits index = array position at BOTH levels, so without it "categories, Party selected"
-      // and "Party's leaves, Monster Box selected" produce the SAME id, and descending a level
-      // leaves aria-activedescendant at an UNCHANGED string. ATs announce an option on a CHANGE
-      // of that value, so an unchanged string is silence — on KeyM-then-Enter, the default path
-      // into the menu.
-      li.id = `menu-option-${vm.level}-${row.index}`;
-      li.setAttribute('role', 'option');
-      // Every option in a single-select listbox carries an EXPLICIT aria-selected; an absent
-      // 'false' would leave the selection ambiguous to an AT.
-      li.setAttribute('aria-selected', row.selected ? 'true' : 'false');
-      // aria-disabled only when it is true: aria-disabled="false" is semantically identical to
-      // the attribute being absent, so writing it is pure noise.
-      if (row.disabled) li.setAttribute('aria-disabled', 'true');
-      // NEVER a tabindex on a row (APG puts it on the CONTAINER only, and index.html already
-      // ships it there). A negative tabindex makes an <li> MOUSE-focusable: one click focuses
-      // the row, the next replaceChildren destroys that node, the active element falls back to
-      // <body>, and aria-activedescendant — which only speaks while the listbox itself is the
-      // active element — goes permanently silent. Measured, not theoretical.
-      //
-      // Grey-not-hide: an unavailable leaf is always rendered, just dimmed and non-routing.
-      li.style.opacity = row.disabled ? '0.4' : '1';
-      li.style.fontWeight = row.selected ? 'bold' : 'normal';
-      li.textContent = row.keyGlyph === null ? row.title : `${row.keyGlyph} — ${row.title}`;
-      return li;
+    setFrameTitle(this.#frame, vm.title, vm.crumbs);
+    renderNav(this.#rows, vm.layout, vm.nav, {
+      frame: vm.frameId,
+      fill: (el, item) => {
+        el.textContent = vm.labels[item.key] ?? '';
+      },
+      labelledBy: this.#frame.titleEl.id,
     });
-    this.#rowsEl.replaceChildren(...items);
-
-    // The selection pointer, discharged HERE: this is the write that tracks a
-    // changing selection index. AFTER the rebuild, never before: the IDREF must name a LIVE
-    // node, not one the replaceChildren just detached. `removeAttribute` is the clear — an
-    // empty string is a DANGLING IDREF, i.e. a listbox still claiming an active descendant that
-    // does not exist. The value is built from the IDENTICAL expression the rows use, level
-    // qualifier included, so the pointer is a pure function of (vm.level, row.index).
-    const active = vm.rows.find((r) => r.selected);
-    if (active === undefined) this.#rowsEl.removeAttribute('aria-activedescendant');
-    else
-      this.#rowsEl.setAttribute('aria-activedescendant', `menu-option-${vm.level}-${active.index}`);
+    renderFeedback(this.#frame, vm.feedback);
   }
 }

@@ -92,7 +92,8 @@ const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
 // LOWER only in a commit that deliberately removes some, and say which.
 const PASSES_FLOOR_WORLD = 14;
 const PASSES_FLOOR_HELP = 18;
-const PASSES_FLOOR_MENU = 20;
+// ctl-5 re-measured the menu (now a nav frame with chrome): 25 passed, floor two below.
+const PASSES_FLOOR_MENU = 23;
 
 // axe reports `incomplete` for checks it could not DECIDE — neither a pass nor a
 // violation. On this client there is exactly one such rule, stable across runs:
@@ -115,7 +116,8 @@ const PASSES_FLOOR_MENU = 20;
 const INCOMPLETE_ALLOWED_IDS = ['color-contrast'];
 const INCOMPLETE_CEILING_WORLD = 2;
 const INCOMPLETE_CEILING_HELP = 23;
-const INCOMPLETE_CEILING_MENU = 9;
+// ctl-5 re-measured the menu: 2 undecidable nodes (its frame is opaque, not text over the canvas).
+const INCOMPLETE_CEILING_MENU = 2;
 
 async function ready(p: Page): Promise<void> {
   await p.waitForFunction(
@@ -346,16 +348,21 @@ test.describe
       await expect(overlay).toBeVisible();
       await expect(rows).toBeFocused();
       const first = await rows.getAttribute('aria-activedescendant');
-      expect(first, 'menu opened with no active option').toMatch(/^menu-option-categories-/);
+      // The earlier KeyM tests open and close without moving the cursor, so it is still on the
+      // first root entry (the cursor is remembered across opens within a page session).
+      expect(first, 'menu opened with no active option').toBe('menu-root-monsters');
 
-      // ArrowDown moves the selection; Enter descends into that category; ArrowLeft backs out.
+      // ArrowDown x3 moves monsters -> bag -> journal -> social; A (Enter) enters the Social
+      // sub-list; B (Backspace) backs out to the root with the cursor on Social.
       await page.keyboard.press('ArrowDown');
-      await expect(rows).not.toHaveAttribute('aria-activedescendant', first ?? '');
-      await expect(rows).toHaveAttribute('aria-activedescendant', /^menu-option-categories-/);
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-bag');
+      await page.keyboard.press('ArrowDown');
+      await page.keyboard.press('ArrowDown');
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-social');
       await page.keyboard.press('Enter');
-      await expect(rows).toHaveAttribute('aria-activedescendant', /^menu-option-leaves-/);
-      await page.keyboard.press('ArrowLeft');
-      await expect(rows).toHaveAttribute('aria-activedescendant', /^menu-option-categories-/);
+      await expect(rows).toHaveAttribute('aria-activedescendant', /^menuSocial-root-/);
+      await page.keyboard.press('Backspace');
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-social');
       await page.keyboard.press('Escape');
       await expect(overlay).toBeHidden();
 
@@ -364,6 +371,49 @@ test.describe
       await expect(hint).toBeFocused();
       await page.keyboard.press('Space');
       await expect(overlay).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(overlay).toBeHidden();
+    });
+
+    // CTL5.6, the real-browser proof of focus returning to the parent nav container: a child
+    // opened from the menu closes with B, and focus lands on #menu-rows (not <body> or the closed
+    // child), so the next key press still drives the menu. The unit tier cannot see this: happy-dom
+    // does not refuse a focus() on a visibility:hidden element, Chromium does.
+    test('keyboard pass: a child opened over the menu closes with Backspace and focus returns to #menu-rows; Escape then closes the menu', async () => {
+      const overlay = page.locator('#menu-overlay');
+      const rows = page.locator('#menu-rows');
+      const box = page.getByTestId('box-title');
+
+      // KeyM only opens the menu while the world has focus; the previous test leaves focus on
+      // the #help-hint launcher, so hand focus back to the world first.
+      await page.evaluate(() => {
+        (document.activeElement as HTMLElement | null)?.blur();
+      });
+      await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe('BODY');
+
+      await page.keyboard.press('KeyM');
+      await expect(overlay).toBeVisible();
+      await expect(rows).toBeFocused();
+
+      // The cursor is remembered across opens, so walk it to Monsters (ArrowUp wraps, at most 7).
+      for (let i = 0; i < 8; i += 1) {
+        if ((await rows.getAttribute('aria-activedescendant')) === 'menu-root-monsters') break;
+        await page.keyboard.press('ArrowUp');
+      }
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-monsters');
+
+      // A on Monsters opens the box above the menu; the menu stays open beneath it.
+      await page.keyboard.press('Enter');
+      await expect(box).toBeVisible();
+      await expect(overlay).toBeAttached();
+
+      // B closes only the box, and focus is back on the menu's nav container.
+      await page.keyboard.press('Backspace');
+      await expect(box).toBeHidden();
+      await expect(overlay).toBeVisible();
+      await expect(rows).toBeFocused();
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-monsters');
+
       await page.keyboard.press('Escape');
       await expect(overlay).toBeHidden();
     });
