@@ -73,42 +73,78 @@ import { installTrap } from './focusTrap';
 import { adoptLiveRegion } from './liveRegion';
 import { OVERLAY_A11Y, type OverlayId } from './overlayRegistry';
 
-/** Everything a close needs, captured at open time. One per open overlay; see the module header. */
+/** Everything a close needs, captured at open time. One per open overlay; see the module header.
+ *  The three mutable fields change while the record sits under another frame (ctl-5 stacking). */
 interface OpenRecord {
   /** The node the overlay was opened WITH — never re-supplied by the caller at close (A2). */
   readonly root: HTMLElement;
-  /** Where focus was immediately BEFORE the first open of this id; preserved across a re-open. */
-  readonly returnFocus: HTMLElement | null;
+  /** Where focus was immediately BEFORE the first open of this id; preserved across a re-open, and
+   *  replaced by a closed lower frame's own target when it pointed into that frame. */
+  returnFocus: HTMLElement | null;
   /** The pending deferred-focus macrotask, cleared on close so it cannot steal focus afterwards. */
   readonly timer: ReturnType<typeof setTimeout>;
-  /** The focus trap's uninstall handle (ui/focusTrap.ts). */
-  readonly uninstall: () => void;
+  /** The focus trap's uninstall handle (ui/focusTrap.ts); null while suspended under another. */
+  uninstall: (() => void) | null;
   /** The live region's custody handle (ui/liveRegion.ts) — same shape and lifecycle as
    *  `uninstall`. Never `null`: with no live region in the document `adoptLiveRegion` returns a
    *  no-op, so there is no branch here. */
-  readonly releaseLive: () => void;
+  releaseLive: () => void;
 }
 
+// Insertion order is the stack order (ctl-5): the last record is the top frame, every other one
+// is suspended beneath it — `inert`, `aria-hidden`, no trap, no pending focus. A re-open of the
+// top id keeps its place; a re-open of a covered id is a no-op.
 const OPEN_OVERLAYS = new Map<OverlayId, OpenRecord>();
+
+const topRecord = (): OpenRecord | undefined => [...OPEN_OVERLAYS.values()].at(-1);
+
+/** `el` is a connected element inside `root` (`root` included). */
+const connectedInside = (root: HTMLElement, el: Element | null): el is HTMLElement =>
+  el instanceof HTMLElement && el.isConnected && root.contains(el);
+
+/** Push: the frame beneath the new top stops being one. Focus leaves it BEFORE it is hidden, so
+ *  no focused node ever sits in an `aria-hidden` subtree. */
+function suspend(record: OpenRecord): void {
+  clearTimeout(record.timer);
+  record.uninstall?.();
+  record.uninstall = null;
+  if (connectedInside(record.root, document.activeElement)) document.activeElement.blur();
+  record.root.setAttribute('inert', '');
+  record.root.setAttribute('aria-hidden', 'true');
+}
+
+/** Pop: the frame beneath is the top again. Its attributes go BEFORE any focus move. */
+function resume(record: OpenRecord): void {
+  record.root.removeAttribute('inert');
+  record.root.removeAttribute('aria-hidden');
+  record.uninstall = installTrap(record.root);
+  record.releaseLive = adoptLiveRegion(record.root);
+}
 
 /**
  * Make `root` an accessible modal dialog for `id`: label it from the registry, trap Tab inside it,
  * and move focus to its `initialFocusSelector` anchor one macrotask later (header).
  *
  * Idempotent on the same id: a second call tears the previous record down completely — no stacked
- * traps, no orphan timer — while keeping the ORIGINAL return-focus target.
+ * traps, no orphan timer — while keeping the ORIGINAL return-focus target. Opened over another
+ * open overlay, it suspends that one (ctl-5); re-opening an id that is covered changes nothing.
  */
 export function openOverlayA11y(id: OverlayId, root: HTMLElement): void {
   const previous = OPEN_OVERLAYS.get(id);
+  const below = topRecord();
+  if (previous !== undefined && previous !== below) return; // covered: it stays suspended
   // No initializer: both branches below assign unconditionally, and TS's control-flow analysis
   // proves definite assignment — a `= null` here would be a value no read can ever observe.
   let returnFocus: HTMLElement | null;
   if (previous === undefined) {
+    // Read BEFORE the frame beneath is suspended (which blurs it): a frame opened from the menu
+    // returns to the menu's nav container.
     const active = document.activeElement;
     returnFocus = active instanceof HTMLElement ? active : null;
+    if (below !== undefined) suspend(below);
   } else {
     clearTimeout(previous.timer);
-    previous.uninstall();
+    previous.uninstall?.();
     returnFocus = previous.returnFocus;
   }
 
@@ -132,6 +168,9 @@ export function openOverlayA11y(id: OverlayId, root: HTMLElement): void {
 
   const uninstall = installTrap(root);
   const timer = setTimeout(() => {
+    // R-rb-121 (CTL5.7): a click inside the frame in the same macrotask already put focus where
+    // the player wants it; pulling it to the anchor would undo that.
+    if (connectedInside(root, document.activeElement)) return;
     root.querySelector<HTMLElement>(meta.initialFocusSelector)?.focus();
   }, 0);
 
@@ -158,13 +197,41 @@ export function openOverlayA11y(id: OverlayId, root: HTMLElement): void {
 export function closeOverlayA11y(id: OverlayId, fallbackFocus: HTMLElement | null): void {
   const record = OPEN_OVERLAYS.get(id);
   if (record === undefined) return;
+  const wasTop = record === topRecord();
   OPEN_OVERLAYS.delete(id);
 
   clearTimeout(record.timer);
-  record.uninstall();
+  record.uninstall?.();
   record.root.removeAttribute('role');
   record.root.removeAttribute('aria-modal');
   record.root.removeAttribute('aria-label');
+  record.root.removeAttribute('inert');
+  record.root.removeAttribute('aria-hidden');
+
+  if (!wasTop) {
+    // A covered frame closed beneath another (a multi-level pop, base first): no focus move. A
+    // frame whose return target pointed into this one inherits this one's, so the last close of
+    // the pop restores focus once, to where it was before the whole stack opened.
+    for (const other of OPEN_OVERLAYS.values()) {
+      if (other.returnFocus !== null && record.root.contains(other.returnFocus)) {
+        other.returnFocus = record.returnFocus;
+      }
+    }
+    record.releaseLive(); // inert: the top frame holds the live region
+    return;
+  }
+
+  const [nextId, next] = [...OPEN_OVERLAYS].at(-1) ?? [];
+  if (nextId !== undefined && next !== undefined) {
+    // A single pop: the frame beneath resumes and takes focus back on its nav container (or on
+    // the element inside it that opened this one), and the live region with it.
+    resume(next);
+    const anchor = next.root.querySelector<HTMLElement>(OVERLAY_A11Y[nextId].initialFocusSelector);
+    const back = connectedInside(next.root, record.returnFocus) ? record.returnFocus : anchor;
+    back?.focus();
+    return;
+  }
+
   // Hand the live region back to `<body>`. Inert if a later overlay has since adopted it.
   record.releaseLive();
 
