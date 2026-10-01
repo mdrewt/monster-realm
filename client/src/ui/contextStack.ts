@@ -119,6 +119,8 @@ export function mirrorEdges(stack: Stack, visible: readonly FrameId[]): readonly
 export interface ServerView {
   /** The player's Ongoing battle, if any (either role). */
   readonly ongoingBattleId: string | undefined;
+  /** A terminal outcome is (about to be) shown over the world and not yet continued. */
+  readonly outcomeShown: boolean;
   /** The player has a server conversation row. */
   readonly conversation: boolean;
 }
@@ -141,7 +143,8 @@ export function reconcile(
         : { kind: 'battle', battleId: view.ongoingBattleId },
   });
   const [base, ...upper] = based.stack;
-  const battleUp = base.kind === 'battle' || upper.some((f) => idOf(f) === 'battleView');
+  const battleUp =
+    base.kind === 'battle' || view.outcomeShown || upper.some((f) => idOf(f) === 'battleView');
   const commands: Command[] = [...based.commands];
   const kept = upper.filter((f) => {
     const id = idOf(f);

@@ -374,7 +374,7 @@ let shopOpen = SHOP_OPEN_INITIAL;
 // boundShopId / boundHealLocationId record which shop / heal location the
 // visible overlay is bound to, so a refresh batch never silently swaps a bound
 // view back to the first-row default. Both clear on their Escape paths and on
-// reconnect (the store reset invalidates the ids).
+// reconnect (the store reset invalidates the ids); every open rebinds them.
 let boundShopId: number | null = null;
 let boundHealLocationId: number | null = null;
 
@@ -410,10 +410,11 @@ const overlayProbes: OverlayProbes = {
 // intentionally byte-identical `<id>: () => <id>?.hide()` — that
 // shape matters per id, because main.ts is coverage-excluded and a copy-pasted sibling thunk
 // (`raisingView: () => boxView?.hide()`) type-checks perfectly while hiding the wrong overlay.
-// `dialogueView` is the SOLE `undefined` entry and must stay that way: it is the only member
-// of NEVER_FORCE_HIDE, because hiding a live conversation client-side strands the server
-// `player_conversation` row. Consumers read
-// `overlayHandles[id]?.()`; only verdicts decide WHICH ids they call.
+// `dialogueView` is the SOLE `undefined` entry and must stay that way: hiding a live
+// conversation client-side strands the server `player_conversation` row. Consumers read
+// `overlayHandles[id]?.()`; only verdicts and the stack's `close` commands decide WHICH ids.
+// A close leaves boundShopId / boundHealLocationId set: every open rebinds them, and their
+// refresh listeners run only while the overlay is visible.
 const overlayHandles: OverlayHandles = {
   battleView: () => battleView?.hide(),
   boxView: () => boxView?.hide(),
@@ -487,8 +488,16 @@ function syncStack(): void {
  *  on the stack, then pop what the battle and the conversation drop and close those overlays. */
 function reconcileStack(): void {
   syncStack();
+  // The terminal outcome this batch will show: refreshBattle's own decision, read without
+  // committing it, so what the outcome drops closes BEFORE the outcome shows (and takes focus).
+  const latest = store.latestPlayerBattle(identity);
+  const outcome =
+    identity !== '' && latest !== undefined && latest.outcome !== 'Ongoing'
+      ? decideBattleOverlay(latest, { dismissedBattleId, synced: battleSynced }).action.kind
+      : 'hide';
   const next = reconcile(contextStack, {
     ongoingBattleId: store.ongoingBattle(identity)?.battleId.toString(),
+    outcomeShown: outcome === 'show',
     conversation: store.ownConversation(identity) !== undefined,
   });
   contextStack = next.stack;
@@ -1929,6 +1938,8 @@ function sendDismiss(path: DismissPath): void {
  *  a battle, its outcome or another frame holds the screen (a battle that began during the
  *  dismiss round-trip must not get a shop stacked over it). */
 function openPendingShop(shopId: number): void {
+  // Re-sync first: a battle or outcome this batch's earlier listeners showed must block.
+  syncStack();
   if (blocksPlayerOpen(contextStack)) return;
   boundShopId = shopId;
   shopView?.render(

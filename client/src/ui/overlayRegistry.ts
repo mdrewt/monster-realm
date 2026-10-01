@@ -336,7 +336,7 @@ export function visibleIds(probes: OverlayProbes): readonly OverlayId[] {
   return OVERLAY_IDS.filter((id) => probes[id]());
 }
 
-/** Per-id force-hide thunks — the WRITE mirror of `OverlayProbes`, and the same division of
+/** Per-id hide thunks (what the context stack's `close` commands run) — the WRITE mirror of `OverlayProbes`, and the same division of
  *  labour: this module owns the SHAPE of the write, `main.ts` owns the handles.
  *
  *  Total `Record<OverlayId, _>` on purpose, so a 17th overlay is a COMPILE error here rather
