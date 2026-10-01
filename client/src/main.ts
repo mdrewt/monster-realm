@@ -36,7 +36,13 @@ import {
 } from './convert/convert';
 import type { ButtonEdge } from './input/buttons';
 import { isChord, KeyboardSource } from './input/keyboardSource';
-import { InputRouter, ownership, routerConsumes } from './input/router';
+import {
+  InputRouter,
+  ownership,
+  type RouteContext,
+  type RouterEffect,
+  routerConsumes,
+} from './input/router';
 import type { PvpAction } from './module_bindings/types';
 import { BUILD_INFO, formatBuildStamp } from './net/buildInfo';
 import { claimCode } from './net/claimCode';
@@ -149,17 +155,9 @@ import { interactPrompt, nearestInteractable } from './ui/interactModel';
 import { buildLeaderboardViewModel } from './ui/leaderboardModel';
 import type { LeaderboardView } from './ui/leaderboardView';
 import { LiveRegion } from './ui/liveRegion';
-import {
-  buildMenuViewModel,
-  MENU_INITIAL,
-  type MenuAvailability,
-  type MenuInput,
-  type MenuLeafDef,
-  type MenuNavState,
-  menuKeyInput,
-  menuStep,
-} from './ui/menuModel';
-import type { MenuView } from './ui/menuView';
+import type { MenuTarget } from './ui/menuModel';
+import type { MenuPointerInput, MenuView } from './ui/menuView';
+import { EMPTY_NAV_MEMORY } from './ui/nav';
 import {
   anyVisible,
   type CanOpenVerdict,
@@ -191,6 +189,13 @@ import { buildRaisingViewModel } from './ui/raisingModel';
 import type { RaisingView } from './ui/raisingView';
 import { buildRenameViewModel } from './ui/renameModel';
 import type { RenameView } from './ui/renameView';
+import {
+  type MainMenuStep,
+  mainMenuPick,
+  mainMenuStep,
+  menuViewModel,
+  openMainMenu,
+} from './ui/screens/mainMenuScreen';
 import {
   buildSessionViewModel,
   SESSION_INITIAL,
@@ -440,8 +445,12 @@ const overlayHandles: OverlayHandles = {
 // itself, deliberately, so no single `!` can invert eleven gates at once. Re-probes through
 // `visibleIds(overlayProbes)` on EVERY call — this table is built while every view binding is
 // still undefined, so anything cached would be permanently empty.
+//
+// The main menu stays open beneath the screen it opens (ctl-5), so it never blocks another
+// overlay: it is left out of the visible set for every target but itself.
 function overlayVerdict(id: OverlayId): CanOpenVerdict {
-  return canOpen(id, visibleIds(overlayProbes));
+  const visible = visibleIds(overlayProbes);
+  return canOpen(id, id === 'menuView' ? visible : visible.filter((v) => v !== 'menuView'));
 }
 
 // The context stack (ui/contextStack.ts) sits BEHIND the legacy show/hide paths: nothing
@@ -481,7 +490,24 @@ function syncStack(): void {
     runStackCommands(next.commands);
   };
   apply({ kind: 'base', base });
-  for (const edge of mirrorEdges(contextStack, visibleIds(overlayProbes))) apply(edge);
+  for (const edge of mirrorEdges(contextStack, visibleIds(overlayProbes))) {
+    apply(edge);
+    inputRouter.resetRepeat(); // a held key never repeats into a pushed or popped frame
+  }
+  menuView?.setCovered(menuPlace() === 'covered');
+}
+
+/** The overlay ids of the stack's upper frames, bottom first (the base excluded). */
+function upperIds(): OverlayId[] {
+  const [, ...upper] = contextStack;
+  return upper.map((f) => (f.kind === 'textEntry' ? f.owner : f.id));
+}
+
+/** Where the main menu sits on the context stack: the top frame, under another, or absent. */
+function menuPlace(): 'top' | 'covered' | 'absent' {
+  const ids = upperIds();
+  if (!ids.includes('menuView')) return 'absent';
+  return ids.at(-1) === 'menuView' ? 'top' : 'covered';
 }
 
 /** The batch-time reconcile (CTL3.1): mirror first, so an overlay shown since the last sync is
@@ -749,10 +775,9 @@ function openClaim(): void {
 // non-uniform (dialogue/questLog/heal expose render() with no show(); pvp takes
 // refresh(vm, forceVisible)), so these are per-id thunks, never a generic view.show().
 
-/** Nav position inside the menu. Reset by openMenu() — four paths (the M toggle-close,
- *  refreshBattle, the dialogue preempt, onReconnect) hide the view WITHOUT going through
- *  menuStep, so resetting on close would miss them. */
-let menuState: MenuNavState = MENU_INITIAL;
+/** The main menu's screen state. Its nav memory outlives every close, so a reopened menu lands
+ *  on the last entry used this session (CTL5.3). */
+let menuState = openMainMenu(EMPTY_NAV_MEMORY);
 
 function openQuestLog(): void {
   questLogView?.render(buildQuestLogViewModel(store.ownQuests(identity)));
@@ -830,119 +855,81 @@ function interactAtNearest(): void {
   }
 }
 
-/** Store reads → the three plain booleans the pure core consumes. TOTAL: pre-join and
- *  mid-reconnect `ownCharacter` is undefined, and PvP/Offer are online-player EXISTENCE,
- *  never a proximity test (the help copy says "nearby", but no reducer has a range rule —
- *  a distance check would grey both leaves out permanently). */
-function menuAvailability(): MenuAvailability {
-  const own = store.ownCharacter(identity);
-  const hasInteractTarget =
-    own !== undefined &&
-    nearestInteractable(
-      own.row,
-      store.allNpcs(),
-      characterTileMap(),
-      store.healLocations(),
-      TALK_RANGE,
-    ) !== undefined;
-  const pvpVm = buildPvpChallengeViewModel(store.allChallenges(), identity, store.allPlayers());
-  return {
-    hasInteractTarget,
-    hasTradeTargets:
-      buildProposeLists(
-        store.allPlayers(),
-        store.ownMonsters(identity),
-        store.speciesMap(),
-        identity,
-      ).targets.length > 0,
-    hasPvpTargets: pvpVm.challengeablePlayers.length > 0 || pvpVm.incoming !== null,
-  };
-}
-
 function renderMenu(): void {
-  menuView?.render(buildMenuViewModel(menuState, menuAvailability()));
+  menuView?.render(menuViewModel(menuState));
 }
 
-/** The SINGLE entry point. Resets the nav position so the menu always opens at the
- *  top-level category list, whatever hid it last. */
+/** The SINGLE entry point: the root list, on the last entry used. */
 function openMenu(): void {
-  menuState = MENU_INITIAL;
+  menuState = openMainMenu(menuState.memory);
   renderMenu();
   menuView?.show();
 }
 
-/** Route a chosen leaf. The menu has already closed itself, so Escape from the overlay
- *  this opens returns to the world in ONE press and can never re-open the menu. */
-function activateMenuLeaf(leaf: MenuLeafDef): void {
-  menuView?.hide(); // close FIRST — the target opens over the world, never over the menu
-  // Leaf activation is a SECOND route to talk / proposeTrade / store.ownCharacter(identity),
-  // all of which throw or send garbage before the join round-trip completes. The KeyM guard
-  // is not enough: activation happens later. identity is '' until the first onReady and is
-  // REASSIGNED (never cleared) on reconnect, so this is the pre-join gate only.
-  if (identity !== '') {
-    // Exhaustive switch, no default arm: a new leaf compiler-flags this site.
-    switch (leaf.id) {
-      // The menu is GUARD_ONLY, so canOpen denies it over any of the box/raising/evolution
-      // trio — none of them can be visible here, and no force-hide is needed.
-      case 'box':
-        boxView?.show();
-        refreshBox();
-        break;
-      case 'backpack':
-        raisingView?.show();
-        refreshRaising();
-        break;
-      case 'evolve':
-        evolutionView?.show();
-        refreshEvolution();
-        break;
-      case 'interact':
-        interactAtNearest();
-        break;
-      case 'journal':
-        openQuestLog();
-        break;
-      case 'incomingTrade':
-        openTrade();
-        break;
-      case 'offerTrade':
-        openPropose();
-        break;
-      case 'pvp':
-        openPvp();
-        break;
-      case 'leaderboard':
-        openLeaderboard();
-        break;
-      case 'rename':
-        openRename();
-        break;
-      case 'account':
-        openClaim();
-        break;
-      case 'help':
-        openHelp();
-        break;
-    }
+/** Open a menu entry's overlay ABOVE the menu, through that overlay's single open path. The
+ *  menu stays open beneath it, so whichever way the child closes, the menu is back with its
+ *  cursor on the entry. */
+function openMenuTarget(target: MenuTarget): void {
+  // A second route to store reads keyed by identity, which is '' until the first onReady.
+  if (identity === '') return;
+  // Exhaustive switch, no default arm: a new target compiler-flags this site.
+  switch (target) {
+    case 'boxView':
+      boxView?.show();
+      refreshBox();
+      break;
+    case 'raisingView':
+      raisingView?.show();
+      refreshRaising();
+      break;
+    case 'questLogView':
+      openQuestLog();
+      break;
+    case 'tradeView':
+      openTrade();
+      break;
+    case 'pvpView':
+      openPvp();
+      break;
+    case 'leaderboardView':
+      openLeaderboard();
+      break;
+    case 'renameView':
+      openRename();
+      break;
+    case 'claimView':
+      openClaim();
+      break;
+    case 'privacyView':
+      openPrivacy();
+      break;
+    case 'helpView':
+      openHelp();
+      break;
   }
 }
 
-/** Feed one nav input through the pure reducer and apply its effect. */
-function handleMenuInput(input: MenuInput): void {
-  const step = menuStep(menuState, input, menuAvailability());
+/** Apply one menu step: a level change resets auto-repeat, then the effect, then a repaint. */
+function applyMenuStep(step: MainMenuStep): void {
+  if (step.state.level !== menuState.level) inputRouter.resetRepeat();
   menuState = step.state;
   switch (step.effect.kind) {
     case 'none':
-      renderMenu();
+      break;
+    case 'open':
+      openMenuTarget(step.effect.target);
       break;
     case 'close':
       menuView?.hide();
       break;
-    case 'activate': {
-      activateMenuLeaf(step.effect.leaf);
-      break;
-    }
   }
+  renderMenu();
+}
+
+/** A click on an entry; ignored while a child covers the menu. */
+function handleMenuPointer(input: MenuPointerInput): void {
+  if (menuPlace() === 'covered') return;
+  applyMenuStep(mainMenuPick(menuState, input.key));
 }
 
 // Outcome-frame lifecycle (M8.7e): the dismissed battle id (so a resolved outcome
@@ -1320,28 +1307,64 @@ const jump = (): void => sendIntent('Jump');
 const keyboard = new KeyboardSource();
 const inputRouter = new InputRouter();
 
-// Apply one edge's router effects to the movement seam; true when the router consumed it.
-const routeEdge = (edge: ButtonEdge): boolean => {
-  const { consumed, effects } = inputRouter.route(edge, { worldActive: movementGate() });
-  for (const effect of effects) {
-    if (effect.kind === 'dirDown') {
+// What the router needs to know: whether the world takes input, and, while the main menu is on
+// the stack, whether a legacy frame covers it plus the clock its auto-repeat runs on.
+const routeCtx = (): RouteContext => {
+  const place = menuPlace();
+  return {
+    worldActive: movementGate(),
+    nav: place === 'absent' ? undefined : { covered: place === 'covered', now: performance.now() },
+  };
+};
+
+// Apply one router effect to the movement seam, the menu, or the covering frame.
+const applyRouterEffect = (effect: RouterEffect): void => {
+  switch (effect.kind) {
+    case 'dirDown':
       // Dual-key dedup: the router reports every press at the world, so a second key or
       // source for an already-held dir must not fire another ungated first step (pure not-emit).
       if (!held.isHeld(effect.dir)) step(effect.dir); // immediate first step (latency + deliberate double-tap)
       held.press(effect.dir, performance.now()); // mark held (stamped) so the frame loop re-issues it once hold-committed
-    } else if (effect.kind === 'dirUp') {
+      break;
+    case 'dirUp':
       held.release(effect.dir); // a still-held key falls back to the most-recent (M8.6c)
-    } else {
+      break;
+    case 'jump':
       jump(); // Jump does not hold-repeat
+      break;
+    case 'nav':
+      applyMenuStep(mainMenuStep(menuState, effect.input));
+      break;
+    case 'pop': {
+      // B over the menu closes the legacy frame on top through its own hide path (CTL3.3);
+      // dialogue has no handle, so a conversation is never closed client-side.
+      const topId = upperIds().at(-1);
+      if (topId !== undefined && topId !== 'menuView' && overlayProbes[topId]()) {
+        overlayHandles[topId]?.();
+      }
+      break;
     }
+    default:
+      effect satisfies never;
   }
+};
+
+// Route one edge and apply its effects; true when the router consumed it.
+const routeEdge = (edge: ButtonEdge): boolean => {
+  const { consumed, effects } = inputRouter.route(edge, routeCtx());
+  for (const effect of effects) applyRouterEffect(effect);
   return consumed;
 };
+
+// Codes whose press the menu consumed: their OS key-repeats are cancelled until the keyup, so a
+// held Enter that opened a child cannot activate the child's focused button.
+const navHeldCodes = new Set<string>();
 
 // Drop every held button so nothing stays "held" while the page cannot see the keyup.
 const releaseAllInput = (): void => {
   keyboard.releaseAll();
   inputRouter.releaseAll();
+  navHeldCodes.clear();
   held.clear();
 };
 
@@ -1414,6 +1437,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
   if (e.repeat) {
     // ignore OS key-repeat (the frame loop re-issues held keys) — but still cancel its default
     suppressNativeMovementDefault(e);
+    if (navHeldCodes.has(e.code)) e.preventDefault();
     return;
   }
   // a press can arrive INSIDE the stale-focus window, before the frame edge has run — heal
@@ -1434,15 +1458,21 @@ const onKeyDown = (e: KeyboardEvent): void => {
     }
     return;
   }
-  // While the menu is open it owns the arrow/WASD/Enter keys, so this
-  // intercept must precede every movement and hotkey path below. Unrecognised keys fall
-  // through to the normal handlers (and then to the router, which swallows the D-pad and
-  // Space under an open overlay, keeping nh1's preventDefault). Nav does NOT key-repeat: the e.repeat gate at the top of
-  // this listener returns first — accepted, the lists are <= 5 rows and wrap.
-  if (menuView?.visible) {
-    const menuInput = menuKeyInput(e.code);
-    if (menuInput !== undefined) {
-      handleMenuInput(menuInput);
+  // This key's button edges, computed once: KeyboardSource reads a second keydown of a code it
+  // holds as a lost keyup, so the event is routed at exactly one site.
+  let edges: readonly ButtonEdge[] | undefined;
+  const keyEdges = (): readonly ButtonEdge[] => {
+    edges ??= keyboard.keydown(e);
+    return edges;
+  };
+  // While the main menu is the top frame the router drives it (the D-pad, A, B, Y; held D-pad
+  // repeats come from the frame loop), so this precedes every movement and hotkey path below.
+  // Unconsumed keys (Start, accelerators) fall through to the ladder, unrouted a second time.
+  if (menuPlace() === 'top') {
+    let consumed = false;
+    for (const edge of keyEdges()) consumed = routeEdge(edge) || consumed;
+    if (consumed) {
+      navHeldCodes.add(e.code);
       e.preventDefault();
       return;
     }
@@ -1761,10 +1791,18 @@ const onKeyDown = (e: KeyboardEvent): void => {
     e.preventDefault();
     return;
   }
+  // Escape closes the main menu only when it is the top frame: a child above it closes first,
+  // through its own branch above, and a child with no Escape branch keeps the menu beneath it.
+  if (e.code === 'Escape' && menuPlace() === 'top') {
+    menuView?.hide();
+    e.preventDefault();
+    return;
+  }
   // The router owns the D-pad and Space from here: it swallows them while an overlay is open
   // (the page-scroll fix), walks or jumps at the world, and skips keys the target owns.
+  if (edges !== undefined) return; // already routed at the menu intercept
   let consumed = false;
-  for (const edge of keyboard.keydown(e)) consumed = routeEdge(edge) || consumed;
+  for (const edge of keyEdges()) consumed = routeEdge(edge) || consumed;
   if (consumed) e.preventDefault();
 };
 // Sync the context stack on both sides of every keydown: before, so an overlay opened since
@@ -1781,6 +1819,7 @@ window.addEventListener('keydown', (e) => {
 
 // A release ends a hold only when the last key or source holding that direction lets go.
 window.addEventListener('keyup', (e) => {
+  navHeldCodes.delete(e.code);
   for (const edge of keyboard.keyup(e)) routeEdge(edge);
 });
 
@@ -2272,6 +2311,8 @@ function snapshot() {
     // The context stack, base-first and base included (above the base = length > 1). Read
     // as last synced, never synced here, so a read cannot stand in for a missing sync point.
     stack: [...contextStack],
+    // The main menu's active entry key while it is open (under a child too), else null.
+    navActive: menuView?.visible ? menuState.nav.item : null,
     ongoingBattle: (() => {
       const b = store.ongoingBattle(identity);
       if (!b) return null;
@@ -2802,9 +2843,8 @@ async function main(): Promise<void> {
     // display-only help overlay — ZERO-arg construction (no callbacks,
     // leaderboardView precedent). Opened by `?`; content is a static SSOT const.
     helpView = new HelpViewClass();
-    // The menu forwards every input to the pure menuStep reducer; it
-    // decides nothing itself (functional core / imperative shell).
-    menuView = new MenuViewClass({ onInput: handleMenuInput });
+    // The menu view only paints and forwards clicks; keys reach the menu through the router.
+    menuView = new MenuViewClass({ onInput: handleMenuPointer });
     // The guest-claim overlay. Its actions drive the pure claimModel;
     // the AUTHORITATIVE join veto lives in connection.ts's onApplied (G18), so these are UI-only.
     const claimHandlers: ClaimViewHandlers = {
@@ -3065,7 +3105,7 @@ async function main(): Promise<void> {
       // lock would stay held forever (dead Escape-dismiss + dead greet-then-shop button).
       // The reset also drops a pending shop open, whose id the store reset invalidated.
       stepShopOpen({ kind: 'reconnect' });
-      menuView?.hide(); // grey-out reads store state that the reset invalidated
+      menuView?.hide(); // a menu child may read store state that the reset invalidated
       // re-baseline a surviving Ongoing battle on the next batch
       // instead of re-emitting a spurious battleStart for it. Armed until onHydrated —
       // reset UNCONDITIONALLY (unlike the guarded capture above) so a second drop re-arms
@@ -3170,11 +3210,14 @@ async function main(): Promise<void> {
         return;
       }
       const now = performance.now();
+      // Menu auto-repeat: the router synthesizes the held D-pad's repeat edges on this clock.
+      for (const effect of inputRouter.tick(routeCtx())) applyRouterEffect(effect);
       // the ONE announcement edge and the ONE focus return, at the TOP
       // of the frame so a recurring throw further down cannot silence the region. The world
       // branch and announcementsFor are disjoint by construction (the reducer emits only when
-      // next.topOverlay is non-null), so neither transition is ever uttered twice.
-      const top = visibleIds(overlayProbes)[0] ?? null;
+      // next.topOverlay is non-null), so neither transition is ever uttered twice. The top is the
+      // stack's top frame when there is one (a screen opened over the menu is announced).
+      const top = upperIds().at(-1) ?? visibleIds(overlayProbes)[0] ?? null;
       const nextSnapshot: A11ySnapshot = { topOverlay: top, message: '' };
       for (const m of announcementsFor(lastA11ySnapshot, nextSnapshot)) liveRegion.announce(m, now);
       if (lastA11ySnapshot.topOverlay !== null && top === null) {
