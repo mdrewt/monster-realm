@@ -9,7 +9,7 @@ use crate::types::{Direction, TilePos};
 
 /// What an interactable is. Declaration order IS the within-tile priority
 /// (NPC before heal location before player), via the derived `Ord`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InteractKind {
     Npc,
     Heal,
@@ -23,8 +23,8 @@ pub struct InteractEntity {
     pub kind: InteractKind,
     pub pos: TilePos,
     pub zone: u32,
-    /// Numeric id (NPC id, heal `location_id`, player entity id); the tie-break
-    /// after `kind` within one tile.
+    /// Numeric id (the NPC's or player's character `entity_id`, a heal location's
+    /// `location_id`); the tie-break after `kind` within one tile.
     pub id: u64,
 }
 

@@ -273,20 +273,24 @@ fn interact_candidates_core(
 
 /// Parse one [`WireInteractEntity`]; an unknown `kind` or a non-`u64` `id` is
 /// rejected, never skipped or defaulted.
-fn parse_interact_entity(e: &WireInteractEntity) -> Result<game_core::InteractEntity, String> {
-    let kind = match e.kind.as_str() {
+fn parse_interact_entity(wire: &WireInteractEntity) -> Result<game_core::InteractEntity, String> {
+    let kind = match wire.kind.as_str() {
         "npc" => game_core::InteractKind::Npc,
         "heal" => game_core::InteractKind::Heal,
         "player" => game_core::InteractKind::Player,
         other => return Err(format!("unknown interact kind: {other:?}")),
     };
-    let id =
-        e.id.parse::<u64>()
-            .map_err(|err| format!("invalid interact id {:?}: {err}", e.id))?;
+    let id = wire
+        .id
+        .parse::<u64>()
+        .map_err(|err| format!("invalid interact id {:?}: {err}", wire.id))?;
     Ok(game_core::InteractEntity {
         kind,
-        pos: game_core::TilePos { x: e.x, y: e.y },
-        zone: e.zone,
+        pos: game_core::TilePos {
+            x: wire.x,
+            y: wire.y,
+        },
+        zone: wire.zone,
         id,
     })
 }
@@ -297,7 +301,9 @@ fn parse_interact_entity(e: &WireInteractEntity) -> Result<game_core::InteractEn
 ///
 /// # Errors
 /// Returns a JS error for an invalid `facing` code (0=N,1=S,2=E,3=W), an unknown
-/// `kind`, an `id` that is not a decimal `u64`, or a malformed `entities` value.
+/// `kind`, an `id` that `u64::from_str` rejects, or a malformed `entities` value.
+/// wasm-bindgen casts the scalar arguments, so a JS `facing` of 256 or more wraps
+/// before it gets here (as for `predict_move`).
 #[wasm_bindgen]
 pub fn interact_candidates_coded(
     own_x: i32,
@@ -673,6 +679,11 @@ mod tests {
             "1.5",
             "0x10",
             "18446744073709551616", // u64::MAX + 1
+            // Surrounding whitespace is rejected, never trimmed/normalized.
+            " 5",
+            "5 ",
+            "\t5",
+            "5\n",
         ] {
             let entities = [wire("npc", 0, 1, 0, bad)];
             assert!(
@@ -680,6 +691,12 @@ mod tests {
                 "id {bad:?} must be rejected"
             );
         }
+        // Non-vacuity: the same id without whitespace is accepted.
+        let ok = [wire("npc", 0, 1, 0, "5")];
+        assert_eq!(
+            super::interact_candidates_core(0, 0, 1, 0, &ok),
+            Ok(vec![0])
+        );
     }
 
     #[test]

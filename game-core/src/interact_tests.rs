@@ -308,6 +308,79 @@ fn ctl9_1_equal_kind_and_id_tie_break_by_input_index() {
     );
 }
 
+#[test]
+fn ctl9_1_a_large_group_of_identical_keys_keeps_input_order_and_is_never_truncated() {
+    // 200 entities on the faced tile, all the same kind and id: the answer is the
+    // COMPLETE group (the design says "the complete set of same-zone entities on
+    // the winning tile", so no cap such as 8 or 64), in input order. A group this
+    // size is beyond the small-slice insertion-sort range, so an unstable sort has
+    // room to reorder it.
+    for (facing, dx, dy) in FACINGS {
+        let entities: Vec<InteractEntity> = (0..200).map(|_| npc_at(dx, dy, 7)).collect();
+        assert_eq!(
+            interact_candidates(ME, facing, ZONE, &entities),
+            (0..200).collect::<Vec<usize>>(),
+            "facing {facing:?}: all 200 identical-key entities, in input order"
+        );
+    }
+    // The same on the own-tile fallback.
+    let own: Vec<InteractEntity> = (0..200)
+        .map(|_| ent(InteractKind::Heal, ME.x, ME.y, ZONE, 7))
+        .collect();
+    assert_eq!(
+        interact_candidates(ME, Direction::North, ZONE, &own),
+        (0..200).collect::<Vec<usize>>()
+    );
+}
+
+#[test]
+fn ctl9_1_a_large_mixed_group_with_many_duplicate_keys_is_complete_and_stably_ordered() {
+    // 300 entities on the faced tile (East of ME) with kinds and ids scrambled by a
+    // fixed LCG (15 distinct (kind, id) keys, so every key repeats ~20 times), plus
+    // one in seven in another zone (excluded). The expectation is built
+    // independently of the implementation: bucket the input indices per
+    // (kind rank, id) in input order, then concatenate the buckets in key order.
+    let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+    let mut entities = Vec::new();
+    let mut rank_of_entity = Vec::new();
+    for _ in 0..300 {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let r = state >> 33;
+        let (kind, rank) = match r % 3 {
+            0 => (InteractKind::Npc, 0u8),
+            1 => (InteractKind::Heal, 1u8),
+            _ => (InteractKind::Player, 2u8),
+        };
+        let id = (r / 3) % 5;
+        let zone = if (r / 15) % 7 == 0 { OTHER_ZONE } else { ZONE };
+        entities.push(ent(kind, ME.x + 1, ME.y, zone, id));
+        rank_of_entity.push(rank);
+    }
+    let mut buckets: std::collections::BTreeMap<(u8, u64), Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (i, e) in entities.iter().enumerate() {
+        if e.zone == ZONE {
+            buckets
+                .entry((rank_of_entity[i], e.id))
+                .or_default()
+                .push(i);
+        }
+    }
+    let expected: Vec<usize> = buckets.into_values().flatten().collect();
+    // Non-vacuity: far past any plausible cap, and genuinely out of input order.
+    assert!(expected.len() > 200, "fixture size: {}", expected.len());
+    assert!(
+        expected.windows(2).any(|w| w[0] > w[1]),
+        "fixture must need real reordering"
+    );
+    assert_eq!(
+        interact_candidates(ME, Direction::East, ZONE, &entities),
+        expected
+    );
+}
+
 // ---------------------------------------------------------------------------
 // CTL9.1 — extreme coordinates: `step` saturates, never wraps
 // ---------------------------------------------------------------------------
