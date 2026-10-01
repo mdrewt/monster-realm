@@ -97,6 +97,15 @@ import {
   claimStep,
 } from './ui/claimModel';
 import type { ClaimView, ClaimViewHandlers } from './ui/claimView';
+import {
+  baseFor,
+  contextStep,
+  type Edge,
+  mirrorEdges,
+  movementEnabled,
+  type Stack,
+  WORLD_STACK,
+} from './ui/contextStack';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
 import { buildDialogueViewModel } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
@@ -432,12 +441,43 @@ function overlayVerdict(id: OverlayId): CanOpenVerdict {
 
 /** The ONE shared predicate over the
  *  17 mutual-exclusion overlays. Every per-overlay read now lives in `overlayProbes`
- *  above — this body holds none. Six consumers: the four negated fan-out surfaces, the
- *  deferred shop-open gate and the frame-loop prompt. The hotkey handlers still keep
+ *  above — this body holds none. Its one consumer is the deferred shop-open gate; movement,
+ *  KeyT and the frame-loop prompt read `movementGate()` below. The hotkey handlers still keep
  *  their inline guard lists (each exempts its own overlay).
  *  The NAME is load-bearing. */
 function anyOverlayVisible(): boolean {
   return anyVisible(overlayProbes);
+}
+
+// The context stack (ui/contextStack.ts) sits BEHIND the legacy show/hide paths: nothing
+// pushes onto it directly yet. `syncStack()` mirrors the visible overlays into it and derives
+// the base from the store, so every reader that syncs first sees the overlays and the battle
+// row as they are right now, whichever listener showed them. A push of a new frame (and a
+// change of base kind) clears the held directions (B14). Synced on every movementGate() read,
+// at the top and tail of every keydown, at the top of every frame and at the tail of every
+// batch; `__game().stack` only reads it.
+let contextStack: Stack = WORLD_STACK;
+function syncStack(): void {
+  const ongoing = store.ongoingBattle(identity);
+  const base = baseFor(
+    ongoing === undefined
+      ? undefined
+      : { battleId: ongoing.battleId.toString(), outcome: ongoing.outcome },
+  );
+  const apply = (edge: Edge): void => {
+    const next = contextStep(contextStack, edge);
+    contextStack = next.stack;
+    for (const command of next.commands) if (command.kind === 'clearHeld') held.clear();
+  };
+  apply({ kind: 'base', base });
+  for (const edge of mirrorEdges(contextStack, visibleIds(overlayProbes))) apply(edge);
+}
+
+/** The ONE movement gate (CTL2.3): false under any frame, on a battle base (even with the
+ *  battle overlay hidden — B17) and while the session terminal owns the screen. */
+function movementGate(): boolean {
+  syncStack();
+  return movementEnabled(contextStack, sessionGateBlocks());
 }
 
 /** entityId → positional tile snapshot for the interact resolver.
@@ -1124,7 +1164,7 @@ function reconcileFromStore(): void {
     // predicate as the rAF loop. Cost is bounded by the next authoritative batch
     // (<= ~STEP_MS + RTT), never stuck: every server-side queue mutation writes the
     // character row, and the reject path force-reconciles here.
-    if (diverged && predictor.outstandingSteps === 0 && !anyOverlayVisible()) {
+    if (diverged && predictor.outstandingSteps === 0 && movementGate()) {
       const heldDir = reissueDir(held.committedActive(now), predictor.lastQueuedDir);
       if (heldDir !== undefined) sendIntent({ Step: heldDir });
     }
@@ -1248,7 +1288,7 @@ const inputRouter = new InputRouter();
 
 // Apply one edge's router effects to the movement seam; true when the router consumed it.
 const routeEdge = (edge: ButtonEdge): boolean => {
-  const { consumed, effects } = inputRouter.route(edge, { worldActive: !anyOverlayVisible() });
+  const { consumed, effects } = inputRouter.route(edge, { worldActive: movementGate() });
   for (const effect of effects) {
     if (effect.kind === 'dirDown') {
       // Dual-key dedup: the router reports every press at the world, so a second key or
@@ -1328,7 +1368,7 @@ const focusInsideHiddenSubtree = (): boolean => {
   return false;
 };
 
-window.addEventListener('keydown', (e) => {
+const onKeyDown = (e: KeyboardEvent): void => {
   // The session terminal outranks every input path — checked FIRST,
   // before the menu intercept, the battle-Escape branch and the router.
   // Suppress the native default (not a bare return) so a held arrow does not scroll on key-repeat.
@@ -1519,7 +1559,8 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyT') {
     // INTERACT (generalizes the old TALK key):
-    // only when NO overlay is visible, resolve the nearest interactable
+    // only while movement is enabled (the same gate as the on-world prompt, so the prompt
+    // never advertises a target T refuses), resolve the nearest interactable
     // (store.allNpcs() joined to character rows + heal tiles, same zone,
     // Manhattan <= TALK_RANGE of the own AUTHORITATIVE tile) and dispatch by kind:
     // dialogue/shop share the ONE existing talk-reducer arm (greet-then-shop);
@@ -1528,9 +1569,8 @@ window.addEventListener('keydown', (e) => {
     // latency hygiene, NOT security — the server re-validates zone + range
     // (npc.rs talk; TALK_RANGE is game-core's, read via the talk_range() wasm export).
     // NOT a canOpen() site — interact opens no overlay of its own, so it
-    // has no id to exempt and its guard is the plain "nothing is open" predicate, in the same
-    // contiguous shape the AC-12 click front door uses.
-    if (!anyOverlayVisible() && identity !== '') {
+    // has no id to exempt and its guard is the plain movement gate.
+    if (movementGate() && identity !== '') {
       // The dispatch body now lives in interactAtNearest() so this hotkey
       // and the menu's Interact leaf share ONE exhaustive switch (the compiler flag).
       interactAtNearest();
@@ -1715,6 +1755,17 @@ window.addEventListener('keydown', (e) => {
   let consumed = false;
   for (const edge of keyboard.keydown(e)) consumed = routeEdge(edge) || consumed;
   if (consumed) e.preventDefault();
+};
+// Sync the context stack on both sides of every keydown: before, so an overlay a click
+// opened since the last frame is pushed (clearing held) before this key can close it; after,
+// so whatever this key opened or closed is mirrored at once.
+window.addEventListener('keydown', (e) => {
+  syncStack();
+  try {
+    onKeyDown(e);
+  } finally {
+    syncStack();
+  }
 });
 
 // A release ends a hold only when the last key or source holding that direction lets go.
@@ -2104,6 +2155,10 @@ store.onBatchApplied(() => {
   );
 });
 
+// The LAST batch listener: mirror every overlay this batch's listeners showed or hid (a
+// server-opened dialogue, a battle auto-show) so its push clears held before the next frame.
+store.onBatchApplied(() => syncStack());
+
 // --- M12d: dialogue choice click handler -----------------------------------------
 // Reads data-choice-idx from the clicked button and calls advance_dialogue.
 document.addEventListener('click', (e) => {
@@ -2203,6 +2258,9 @@ function snapshot() {
       itemId: i.itemId,
       count: i.count,
     })),
+    // The context stack, base-first and base included (above the base = length > 1). Read
+    // as last synced, never synced here, so a read cannot stand in for a missing sync point.
+    stack: [...contextStack],
     ongoingBattle: (() => {
       const b = store.ongoingBattle(identity);
       if (!b) return null;
@@ -3092,6 +3150,7 @@ async function main(): Promise<void> {
   // on error. The reconcile call is inside the batch-listener's try-catch (above).
   const frame = (): void => {
     try {
+      syncStack(); // mirror any overlay opened outside a keydown or batch (a click, a timer)
       // the session terminal also outranks the render/dispatch loop —
       // skip this frame's held-key re-issue so the predictor never ghost-walks into a dead link.
       // The rAF re-arm lives in this loop's finally, so an early return skips work, not the loop.
@@ -3167,14 +3226,15 @@ async function main(): Promise<void> {
       // RenderResolver's chebyshev>1 snap firing when `predicted` advances two tiles
       // between rendered frames. Do NOT move this back below the block.
       const { snapped } = predictor.drain(now);
-      // Re-issue the held dir so a held key keeps walking — but only when no overlay
-      // is visible, so a held key resumes after an overlay closes yet never walks
-      // under one + hold-commit tap/hold discrimination.
+      // Re-issue the held dir so a held key keeps walking — but only through the movement
+      // gate, so it never walks under a frame or a battle + hold-commit tap/hold
+      // discrimination. A frame's push clears the held set, so a hold does NOT resume when
+      // the frame closes (ctl-2, deliberately reversing the old resume-after-overlay rule).
       // sendIntent routes through the backpressured
       // predictor.enqueue + reducer send, and no-ops if declined.
       // and only while the server owes nothing. Pure NOT-EMIT: it never
       // cancels or writes predictor state, so reconcileFromStore stays the one repair path.
-      if (predictor.outstandingSteps === 0 && !anyOverlayVisible()) {
+      if (predictor.outstandingSteps === 0 && movementGate()) {
         const heldDir = reissueDir(held.committedActive(now), predictor.lastQueuedDir);
         if (heldDir !== undefined) sendIntent({ Step: heldDir });
       }
@@ -3233,7 +3293,7 @@ async function main(): Promise<void> {
       const ownChar = store.ownCharacter(identity);
       // Overlay-open frames skip the resolve entirely (the prompt is guaranteed
       // hidden), so the per-frame map/array allocations only happen in-world.
-      const overlayUp = anyOverlayVisible();
+      const overlayUp = !movementGate();
       const promptTarget =
         !overlayUp && ownChar !== undefined
           ? nearestInteractable(
