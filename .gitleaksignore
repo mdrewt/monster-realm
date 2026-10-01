@@ -1,0 +1,4 @@
+# Exact-fingerprint ignores for historical gitleaks false positives (never a path or rule glob).
+# ctl-5: generic-api-key matched a comma-separated test-id roster comment (MV-KEYNAV-*-01) in
+# commit 438a185a; the comment was reworded at the branch head, this clears the historical commit.
+438a185a5f8f194476f29c3940ef749b01fc034e:client/src/ui/menuView.test.ts:generic-api-key:48

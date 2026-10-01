@@ -45,7 +45,7 @@
 //   MV-A11Y-VISIBLE-READS-DOM-01, -REOPEN-EDGE-01
 //                                 unchanged contract (show/hide keep the edge-guarded open and the
 //                                 unguarded close); kept under the same ids with the new view model.
-//   MV-KEYNAV-OWNS-01, MV-KEYNAV-BUBBLES-01, MV-KEYNAV-HIDDEN-01, MV-KEYNAV-EFFECT-INERT-01
+//   MV-KEYNAV-OWNS-01 / MV-KEYNAV-BUBBLES-01 / MV-KEYNAV-HIDDEN-01 / MV-KEYNAV-EFFECT-INERT-01
 //                                 none: the old keydown/hover/glyph contract is deleted by CTL5.2
 //                                 (the router is the only key driver; `menuStep` is gone).
 //                                 MV-KEYNAV-BUBBLES-01's "the view consumes nothing" half survives
