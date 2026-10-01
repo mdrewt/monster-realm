@@ -684,26 +684,29 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     expect(navActive(), 'the sub-list cursor is where it was').toBe('account');
   });
 
-  it('a screen opened over the menu is announced: after A on Journal and the 500 ms live-region window, #a11y-live reads the quest log label, not the menu label', async () => {
+  it('a screen opened over the menu is announced: after A on Profile > Account and the 500 ms live-region window, #a11y-live reads the claim label, not the menu label', async () => {
     // WRONG IMPL KILLED: an announcement top derived from the overlay registry order alone (the
-    // menu is registered after the quest log, so the covered menu beneath the child would be
-    // announced instead of the screen the player is actually on).
-    await bootAtMenu(2);
-    tap('Enter', 1400);
-    expect(stackNames(), 'precondition: the quest log is above the menu').toEqual([
+    // claim overlay is registered AFTER the menu in OVERLAY_IDS, so a registry-first pick lands on
+    // the covered menu beneath the child instead of the screen the player is actually on).
+    await bootAtMenu(4);
+    tap('Enter', 1500);
+    tap('ArrowDown', 1600);
+    expect(navActive(), 'precondition: the cursor is on Account').toBe('account');
+    tap('Enter', 1700);
+    expect(stackNames(), 'precondition: the claim is above the menu').toEqual([
       'world',
       'menuView',
-      'questLogView',
+      'claimView',
     ]);
-    const questLabel = t(OVERLAY_A11Y.questLogView.labelKey);
+    const claimLabel = t(OVERLAY_A11Y.claimView.labelKey);
     const menuLabel = t(OVERLAY_A11Y.menuView.labelKey);
-    expect(questLabel, 'fixture: the two labels differ').not.toBe(menuLabel);
+    expect(claimLabel, 'fixture: the two labels differ').not.toBe(menuLabel);
 
     // Frames spaced past the 500 ms live-region window (ui/liveRegion.ts flush).
-    for (const at of [2000, 2600, 3200, 3800]) frame(at);
+    for (const at of [2300, 2900, 3500, 4100]) frame(at);
     const region = document.getElementById('a11y-live');
     expect(region, '#a11y-live must exist (client/index.html)').not.toBeNull();
-    expect(region?.textContent).toBe(questLabel);
+    expect(region?.textContent).toBe(claimLabel);
     expect(region?.textContent).not.toBe(menuLabel);
   });
 

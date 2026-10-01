@@ -92,7 +92,8 @@ const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
 // LOWER only in a commit that deliberately removes some, and say which.
 const PASSES_FLOOR_WORLD = 14;
 const PASSES_FLOOR_HELP = 18;
-const PASSES_FLOOR_MENU = 20;
+// ctl-5 re-measured the menu (now a nav frame with chrome): 25 passed, floor two below.
+const PASSES_FLOOR_MENU = 23;
 
 // axe reports `incomplete` for checks it could not DECIDE — neither a pass nor a
 // violation. On this client there is exactly one such rule, stable across runs:
@@ -115,7 +116,8 @@ const PASSES_FLOOR_MENU = 20;
 const INCOMPLETE_ALLOWED_IDS = ['color-contrast'];
 const INCOMPLETE_CEILING_WORLD = 2;
 const INCOMPLETE_CEILING_HELP = 23;
-const INCOMPLETE_CEILING_MENU = 9;
+// ctl-5 re-measured the menu: 2 undecidable nodes (its frame is opaque, not text over the canvas).
+const INCOMPLETE_CEILING_MENU = 2;
 
 async function ready(p: Page): Promise<void> {
   await p.waitForFunction(
@@ -381,6 +383,13 @@ test.describe
       const overlay = page.locator('#menu-overlay');
       const rows = page.locator('#menu-rows');
       const box = page.getByTestId('box-title');
+
+      // KeyM only opens the menu while the world has focus; the previous test leaves focus on
+      // the #help-hint launcher, so hand focus back to the world first.
+      await page.evaluate(() => {
+        (document.activeElement as HTMLElement | null)?.blur();
+      });
+      await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe('BODY');
 
       await page.keyboard.press('KeyM');
       await expect(overlay).toBeVisible();
