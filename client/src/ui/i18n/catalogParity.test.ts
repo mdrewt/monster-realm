@@ -743,7 +743,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     ).toEqual(['alive.one', 'alive.two']);
   });
 
-  it('m24s7/21r-b PARITY-02: I18N-27 — import-binding resolution + the 23-file resolver roster + main.ts dual bindings', () => {
+  it('m24s7/21r-b PARITY-02: I18N-27 — import-binding resolution + the 24-file resolver roster + main.ts dual bindings', () => {
     const census = computeCensus();
     const i18nRoster = census
       .filter((f) => f.bindings.some((b) => b.module === 'i18n'))
@@ -751,9 +751,9 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       .sort();
     // WRONG IMPL KILLED: a bare global `t(`/`tf(` text scan (never resolving import specifiers)
     // would either miss every file (bindings always empty) or over-match unrelated `t(` calls
-    // (e.g. `total(`) — the exact 23-file roster below (21r-b added ui/careAction.ts and
-    // ui/sessionModel.ts; 21r-b2 adds ui/claimModel.ts and ui/privacyBanner.ts) is only reachable
-    // via real binding resolution.
+    // (e.g. `total(`) — the exact 24-file roster below (21r-b added ui/careAction.ts and
+    // ui/sessionModel.ts; 21r-b2 adds ui/claimModel.ts and ui/privacyBanner.ts; ctl-5 adds
+    // ui/menuModel.ts) is only reachable via real binding resolution.
     expect(i18nRoster, `resolver-importing roster: ${JSON.stringify(i18nRoster)}`).toEqual([
       'main.ts',
       'ui/battleView.ts',
@@ -768,6 +768,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'ui/healView.ts',
       'ui/helpView.ts',
       'ui/leaderboardView.ts',
+      'ui/menuModel.ts',
       'ui/privacyBanner.ts',
       'ui/privacyView.ts',
       'ui/pvpView.ts',

@@ -346,16 +346,21 @@ test.describe
       await expect(overlay).toBeVisible();
       await expect(rows).toBeFocused();
       const first = await rows.getAttribute('aria-activedescendant');
-      expect(first, 'menu opened with no active option').toMatch(/^menu-option-categories-/);
+      // The earlier KeyM tests open and close without moving the cursor, so it is still on the
+      // first root entry (the cursor is remembered across opens within a page session).
+      expect(first, 'menu opened with no active option').toBe('menu-root-monsters');
 
-      // ArrowDown moves the selection; Enter descends into that category; ArrowLeft backs out.
+      // ArrowDown x3 moves monsters -> bag -> journal -> social; A (Enter) enters the Social
+      // sub-list; B (Backspace) backs out to the root with the cursor on Social.
       await page.keyboard.press('ArrowDown');
-      await expect(rows).not.toHaveAttribute('aria-activedescendant', first ?? '');
-      await expect(rows).toHaveAttribute('aria-activedescendant', /^menu-option-categories-/);
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-bag');
+      await page.keyboard.press('ArrowDown');
+      await page.keyboard.press('ArrowDown');
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-social');
       await page.keyboard.press('Enter');
-      await expect(rows).toHaveAttribute('aria-activedescendant', /^menu-option-leaves-/);
-      await page.keyboard.press('ArrowLeft');
-      await expect(rows).toHaveAttribute('aria-activedescendant', /^menu-option-categories-/);
+      await expect(rows).toHaveAttribute('aria-activedescendant', /^menuSocial-root-/);
+      await page.keyboard.press('Backspace');
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-social');
       await page.keyboard.press('Escape');
       await expect(overlay).toBeHidden();
 

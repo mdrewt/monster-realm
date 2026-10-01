@@ -458,11 +458,15 @@ exposing the stack without changing the Caddy bind address on purpose.
 
 ## Client UI: one overlay registry, keyboard first
 
-**Decision.** Overlays are exclusive, and one pure function decides which may open:
+**Decision.** Overlays are exclusive, except the main menu, which stays open beneath
+the screen it opens and never blocks one (`overlayVerdict` in `client/src/main.ts`).
+One pure function decides which may open:
 `canOpen` (`client/src/ui/overlayRegistry.ts`) reads a tier per overlay (a battle on
 top, guard-only modals that another hotkey never dismisses, and the Box, Raising &
 Inventory and Evolution overlays, which swap with each other). A battle that starts
-force-hides most open overlays, but never the dialogue overlay. Hotkeys are discoverable through `M`, a two-level menu. Each view keeps
+force-hides most open overlays, but never the dialogue overlay. Every screen is reachable from the main menu (`M`), a D-pad
+list whose entries open their screen above it
+(`client/src/ui/screens/mainMenuScreen.ts`); B closes that screen and returns to the menu. Each view keeps
 its state in a pure model (`*Model.ts`) with a thin DOM view (`*View.ts`). Text-input
 overlays clear held movement keys on open and own their keystrokes. The controls list
 has one source, `CONTROLS` in `client/src/ui/helpModel.ts`. `T` interacts with the
