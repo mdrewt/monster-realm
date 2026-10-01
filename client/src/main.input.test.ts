@@ -19,9 +19,12 @@
  * character at (2, 6) and acks every send with the tile the predictor already holds, so a
  * reconcile never diverges and the only intents sent are the ones the input path issues.
  *
- * RED TODAY (behaviour deltas of ctl-1): releasing one of two keys of a direction stops the
- * walk, a Ctrl/Alt/Meta chord fires hotkeys and movement and is prevented, a movement key
- * typed into a text field moves the character, and visibilitychange releases nothing.
+ * The contract proven here: the keyboard feeds the router through one binding table; two keys
+ * of one direction are refcounted (the walk ends when the last is released); Ctrl/Alt/Meta
+ * chords belong to the browser (no hotkey, no movement, no preventDefault) yet a chorded
+ * keyup still releases; a key a text field or native button owns is not routed or prevented
+ * (also on the key-repeat path); blur and a hidden visibilitychange release every held key;
+ * a consumed D-pad or Space press is prevented, an unbound key is not.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -569,6 +572,7 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     fire('keydown', 'KeyW', 1000);
     ackAllNorth(1005);
     fire('keydown', 'KeyW', 1010, { init: { repeat: false } }); // the first keyup was lost
+    expect(dirs(), 'the re-press is a fresh press and steps at once').toEqual(['North', 'North']);
     ackAllNorth(1015);
     const sentBeforeUp = H.sends.length;
     expect(sentBeforeUp, 'the walk started').toBeGreaterThan(0);
@@ -609,5 +613,140 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     frame(1400);
     frame(1600);
     expect(dirs(), 'the tap must not continue: North has no holder left').toHaveLength(2);
+  });
+
+  it('a blur resets the router as well: press, blur, press, release ends the walk', async () => {
+    // WRONG IMPL KILLED: a release-all that clears the shell's held set and the source but
+    // not the router's counts (the pre-blur press stays counted, so the one release after the
+    // post-blur press leaves the direction held forever).
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0 });
+    fire('keydown', 'KeyW', 1000);
+    ackAllNorth(1005);
+    window.dispatchEvent(new Event('blur'));
+    fire('keydown', 'KeyW', 1100);
+    ackAllNorth(1105);
+    fire('keyup', 'KeyW', 1110);
+    const sent = H.sends.length;
+    expect(sent, 'the post-blur press stepped').toBeGreaterThan(1);
+    frame(1400);
+    ackAllNorth(1410);
+    frame(1600);
+    expect(H.sends.length, 'the release after the blur must end the walk').toBe(sent);
+  });
+
+  it('a keyup carrying Meta or Ctrl still releases the key it presses up', async () => {
+    // WRONG IMPL KILLED: a keyup handler that drops chorded events (macOS reports Cmd while
+    // a key is released; the direction would stay held and the character walk on).
+    await bootReady();
+    server(1000, { x: 2, y: 7, ack: 0 });
+    fire('keydown', 'KeyW', 1000);
+    ackAllNorth(1005, 7);
+    fire('keyup', 'KeyW', 1010, { init: { metaKey: true } });
+    const afterMeta = H.sends.length;
+    frame(1400);
+    ackAllNorth(1410, 7);
+    frame(1600);
+    expect(H.sends.length, 'a Meta keyup must release').toBe(afterMeta);
+
+    fire('keydown', 'KeyW', 1700);
+    expect(H.sends.length, 'a fresh press after the release steps').toBe(afterMeta + 1);
+    ackAllNorth(1705, 7);
+    fire('keyup', 'KeyW', 1710, { init: { ctrlKey: true } });
+    const afterCtrl = H.sends.length;
+    frame(2000);
+    ackAllNorth(2010, 7);
+    frame(2200);
+    expect(H.sends.length, 'a Ctrl keyup must release').toBe(afterCtrl);
+  });
+
+  it('releasing one direction does not release another: hold W and D, release D, W keeps walking', async () => {
+    // WRONG IMPL KILLED: a direction release that clears the whole held set.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0 });
+    fire('keydown', 'KeyW', 1000);
+    fire('keydown', 'KeyD', 1005);
+    fire('keyup', 'KeyD', 1010);
+    expect(dirs(), 'both presses stepped').toEqual(['North', 'East']);
+    server(1020, { x: 3, y: 5, ack: 2 }); // North then East, as predicted
+    frame(1200); // W has been held 200 ms: committed
+    expect(
+      dirs().filter((d) => d === 'North').length,
+      'W is still held: North continues',
+    ).toBeGreaterThan(1);
+    expect(
+      dirs().filter((d) => d === 'East'),
+      'D was released: no East continuation',
+    ).toHaveLength(1);
+  });
+
+  it('key repeat honours ownership and the consumed set: not prevented on a field or for Enter or a chord, prevented for a D-pad key at the world', async () => {
+    // WRONG IMPL KILLED: a repeat path that prevents every bound key (Enter on a focused
+    // control, arrows inside a select), or that ignores the chord filter.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0 });
+
+    // Control: a repeated D-pad key at the world is consumed.
+    const atWorld = fire('keydown', 'ArrowDown', 1000, { init: { repeat: true } });
+    expect(atWorld.defaultPrevented, 'control: repeat ArrowDown at the world').toBe(true);
+
+    const select = document.createElement('select');
+    document.body.appendChild(select);
+    select.focus();
+    const onSelect = fire('keydown', 'ArrowDown', 1010, { target: select, init: { repeat: true } });
+    expect(onSelect.defaultPrevented, 'repeat ArrowDown inside a <select>').toBe(false);
+    select.remove();
+    document.body.focus();
+
+    const enter = fire('keydown', 'Enter', 1020, { init: { repeat: true } });
+    expect(enter.defaultPrevented, 'repeat Enter is not a consumed edge').toBe(false);
+    const chord = fire('keydown', 'ArrowDown', 1030, { init: { repeat: true, ctrlKey: true } });
+    expect(chord.defaultPrevented, 'a chord is never prevented, repeat or not').toBe(false);
+    expect(H.sends, 'none of these moves anything').toHaveLength(0);
+  });
+
+  it('a chord while the main menu is open is left alone: it neither navigates nor is prevented', async () => {
+    // WRONG IMPL KILLED: the chord check sitting below the menu intercept (Ctrl+ArrowDown
+    // would move the menu cursor and be cancelled).
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0 });
+    fire('keydown', 'KeyM', 1000);
+    expect(overlayShown('menu-overlay'), 'precondition: the menu opened').toBe(true);
+    const rows = document.getElementById('menu-rows');
+    if (rows === null) throw new Error('#menu-rows missing');
+    const cursor = (): string | null => rows.getAttribute('aria-activedescendant');
+    const start = cursor();
+    expect(start, 'precondition: the menu has a selected row').not.toBeNull();
+
+    // Control: a bare ArrowDown navigates and is consumed.
+    const bare = fire('keydown', 'ArrowDown', 1010);
+    expect(bare.defaultPrevented, 'control: bare ArrowDown is consumed by the menu').toBe(true);
+    const moved = cursor();
+    expect(moved, 'control: bare ArrowDown moves the cursor').not.toBe(start);
+    fire('keyup', 'ArrowDown', 1015);
+
+    const chord = fire('keydown', 'ArrowDown', 1020, { init: { ctrlKey: true } });
+    expect(chord.defaultPrevented, 'Ctrl+ArrowDown must reach the browser').toBe(false);
+    expect(cursor(), 'Ctrl+ArrowDown must not move the cursor').toBe(moved);
+    fire('keyup', 'ArrowDown', 1025, { init: { ctrlKey: true } });
+  });
+
+  it('after an overlay open clears the held set, a second key of the still-held direction steps again', async () => {
+    // WRONG IMPL KILLED: a router that emits dirDown only for the first holder (count 0 to 1).
+    // Opening an overlay clears the shell's held set but not the physical key, so the next
+    // press of ANY key of that direction must start the walk again.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0 });
+    fire('keydown', 'KeyW', 1000);
+    ackAllNorth(1005);
+    fire('keydown', 'KeyN', 1010);
+    expect(renameShown(), 'precondition: the rename overlay opened').toBe(true);
+    fire('keydown', 'Escape', 1020);
+    expect(renameShown(), 'precondition: the rename overlay closed').toBe(false);
+    ackAllNorth(1050);
+    const before = H.sends.length;
+    fire('keydown', 'ArrowUp', 1100);
+    expect(H.sends.length, 'ArrowUp steps although W is still physically down').toBe(before + 1);
+    expect(step(H.sends[before])).toBe('North');
   });
 });

@@ -4,17 +4,14 @@
 // router's per-button count equal "keys holding this button".
 import { type Bindings, buttonForCode, DEFAULT_BINDINGS } from './bindings';
 import type { ButtonEdge, VButton } from './buttons';
-import { ownership } from './router';
+import { type OwnershipEvent, ownership } from './router';
 
 /** The KeyboardEvent fields the source reads (a real KeyboardEvent satisfies it). */
-export interface KeyEventLike {
-  readonly code: string;
+export interface KeyEventLike extends OwnershipEvent {
   readonly repeat?: boolean;
   readonly ctrlKey?: boolean;
   readonly altKey?: boolean;
   readonly metaKey?: boolean;
-  readonly isComposing?: boolean;
-  readonly keyCode?: number;
   readonly target?: unknown;
 }
 

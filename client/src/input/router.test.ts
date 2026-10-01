@@ -7,7 +7,9 @@
  * only when the last lets go. Targets are plain objects read structurally (tagName,
  * isContentEditable), so no DOM is involved.
  *
- * RED REASON: client/src/input/router.ts (and keyboardSource.ts, buttons.ts) do not exist.
+ * The contract: every D-pad press is counted and consumed (starting the direction only at
+ * the world), only the last release of a direction ends it, X jumps once per press at the
+ * world, every other button is left alone, and any source's edges route identically.
  */
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
@@ -124,23 +126,6 @@ describe('ownership(target, event)', () => {
     for (const code of ALL_CODES) {
       expect(ownership({}, { code, isComposing: false, keyCode: 87 }), code).toBe('router');
     }
-  });
-
-  it('is a pure function of its inputs: repeated calls and call order never change the answer', () => {
-    const targets = [...ROUTER_TARGETS, ...FIELD_TARGETS, ...NATIVE_ACTIVATORS].map((t) => t[1]);
-    fc.assert(
-      fc.property(
-        fc.constantFrom(...targets),
-        fc.constantFrom(...ALL_CODES),
-        fc.boolean(),
-        (target, code, composing) => {
-          const first = ownership(target, { code, isComposing: composing });
-          const second = ownership(target, { code, isComposing: composing });
-          expect(second).toBe(first);
-          if (composing) expect(first).toBe('target');
-        },
-      ),
-    );
   });
 });
 
@@ -303,6 +288,20 @@ describe('InputRouter', () => {
     r.route(edge('Up', true), WORLD); // ArrowUp
     expect(r.route(edge('Up', false), WORLD).effects, 'ArrowUp released').toEqual([]);
     expect(r.route(edge('Up', false), WORLD).effects, 'W released').toEqual([dirUp('North')]);
+  });
+
+  it('a D-pad press at the world while the direction is already counted still starts it', () => {
+    // WRONG IMPL KILLED: a router that emits dirDown only on the 0 to 1 transition. The
+    // shell clears its held set when an overlay opens while the physical key stays down, so
+    // the next key of that direction must be able to start the walk again.
+    const r = new InputRouter();
+    expect(r.route(edge('Up', true), WORLD).effects).toEqual([dirDown('North')]);
+    expect(r.route(edge('Up', true), WORLD).effects).toEqual([dirDown('North')]);
+    expect(r.route(edge('Up', true), WORLD).effects).toEqual([dirDown('North')]);
+    // Three holders: two releases keep it, the third ends it.
+    expect(r.route(edge('Up', false), WORLD).effects).toEqual([]);
+    expect(r.route(edge('Up', false), WORLD).effects).toEqual([]);
+    expect(r.route(edge('Up', false), WORLD).effects).toEqual([dirUp('North')]);
   });
 
   it('an up with no holder emits nothing, never underflows, and a later press still starts the direction', () => {

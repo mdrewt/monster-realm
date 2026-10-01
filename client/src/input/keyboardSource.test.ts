@@ -6,7 +6,9 @@
  * which physical codes it has reported down, so that exactly one `up` edge follows each
  * recorded `down`, whatever the event looks like at keyup time (no stuck keys).
  *
- * RED REASON: client/src/input/keyboardSource.ts (and bindings.ts, buttons.ts) do not exist.
+ * The contract: chords, key-repeat, target-owned and unbound keys give no down edge; a
+ * non-repeat down on an already-recorded code first releases it; a recorded keyup always
+ * releases, whatever its modifiers or target.
  */
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_BINDINGS } from './bindings';

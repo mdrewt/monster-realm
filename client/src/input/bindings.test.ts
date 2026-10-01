@@ -6,7 +6,7 @@
  * future edit of it: a code is bound once, a reserved code is never bound, every virtual
  * button has a key, and the whole table is frozen.
  *
- * RED REASON: client/src/input/{bindings,buttons}.ts do not exist yet.
+ * `buttonForCode` resolves a physical code through a given table to its virtual button.
  */
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';

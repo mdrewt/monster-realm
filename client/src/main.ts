@@ -1251,8 +1251,8 @@ const routeEdge = (edge: ButtonEdge): boolean => {
   const { consumed, effects } = inputRouter.route(edge, { worldActive: !anyOverlayVisible() });
   for (const effect of effects) {
     if (effect.kind === 'dirDown') {
-      // A second key or source for a held dir never reaches here (the router counts holders);
-      // the isHeld dedupe stays as the pure not-emit for a re-press after held.clear().
+      // Dual-key dedup: the router reports every press at the world, so a second key or
+      // source for an already-held dir must not fire another ungated first step (pure not-emit).
       if (!held.isHeld(effect.dir)) step(effect.dir); // immediate first step (latency + deliberate double-tap)
       held.press(effect.dir, performance.now()); // mark held (stamped) so the frame loop re-issues it once hold-committed
     } else if (effect.kind === 'dirUp') {
@@ -1330,7 +1330,7 @@ const focusInsideHiddenSubtree = (): boolean => {
 
 window.addEventListener('keydown', (e) => {
   // The session terminal outranks every input path — checked FIRST,
-  // before the menu intercept, the battle-Escape branch and the movement-suppression surface.
+  // before the menu intercept, the battle-Escape branch and the router.
   // Suppress the native default (not a bare return) so a held arrow does not scroll on key-repeat.
   // biome-ignore format: keep the session gate a single line.
   if (sessionGateBlocks()) { suppressNativeMovementDefault(e); return; }
@@ -1362,8 +1362,8 @@ window.addEventListener('keydown', (e) => {
   }
   // While the menu is open it owns the arrow/WASD/Enter keys, so this
   // intercept must precede every movement and hotkey path below. Unrecognised keys fall
-  // through to the normal handlers (and then to the movement-suppression block, which
-  // keeps nh1's preventDefault). Nav does NOT key-repeat: the e.repeat gate at the top of
+  // through to the normal handlers (and then to the router, which swallows the D-pad and
+  // Space under an open overlay, keeping nh1's preventDefault). Nav does NOT key-repeat: the e.repeat gate at the top of
   // this listener returns first — accepted, the lists are <= 5 rows and wrap.
   if (menuView?.visible) {
     const menuInput = menuKeyInput(e.code);
