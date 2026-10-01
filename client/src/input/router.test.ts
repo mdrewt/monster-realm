@@ -385,3 +385,286 @@ describe('InputRouter', () => {
     expect(lastRelease).toEqual([{ consumed: true, effects: [dirUp('South')] }]);
   });
 });
+
+// ==========================================================================================
+// ctl-5: the router drives a nav frame (the main menu): fresh nav edges, B pops a covered
+// frame, and `tick(ctx)` synthesizes D-pad repeat edges on the injected clock.
+//
+// `ctx.nav` is present while a nav frame is on the stack; `covered` means a legacy frame sits
+// above it. Times are plain numbers (no clock is read), and every case presses at a NON-ZERO
+// `now` so a repeat schedule that forgets the press time (`nextAt = 350`) cannot pass.
+// ==========================================================================================
+
+/** A menu is up (worldActive false); `covered` = a legacy frame sits above it. */
+const navCtx = (now: number, covered = false): RouteContext => ({
+  worldActive: false,
+  nav: { covered, now },
+});
+const navEffect = (button: VButton, repeat: boolean): RouterEffect => ({
+  kind: 'nav',
+  input: { button, repeat },
+});
+const POP: RouterEffect = { kind: 'pop' };
+
+describe('InputRouter under a nav frame (ctl-5)', () => {
+  it('CTL5-2-ROUTER-NAV-BUTTONS: with an uncovered nav frame the D-pad, A, B and Y presses are consumed as fresh nav inputs and their releases carry no nav effect; Start and Select stay with the ladder; no nav ctx leaves A, B and Y alone', () => {
+    // WRONG IMPL KILLED: a router that never emits nav (the menu has no driver), one that tags a
+    // press as a repeat, one that emits a nav effect on the up edge too (a press moves twice), A,
+    // B or Y left unconsumed under the menu (they fall through to the ladder), Start or Select
+    // swallowed (the Escape ladder dies), a D-pad press that still walks, a D-pad release that is
+    // lost (the held count would leak), and A, B or Y consumed with no nav frame (they would
+    // stop reaching the legacy overlays).
+    for (const button of ['Up', 'Down', 'Left', 'Right', 'A', 'B', 'Y'] as const) {
+      const r = new InputRouter();
+      expect(r.route(edge(button, true), navCtx(1000)), `${button} down`).toEqual({
+        consumed: true,
+        effects: [navEffect(button, false)],
+      });
+    }
+
+    for (const button of ['A', 'B', 'Y'] as const) {
+      const r = new InputRouter();
+      r.route(edge(button, true), navCtx(1000));
+      expect(r.route(edge(button, false), navCtx(1100)), `${button} up`).toEqual({
+        consumed: true,
+        effects: [],
+      });
+    }
+
+    // D-pad: the release is counted exactly as before (the shell's held set must be able to
+    // release), and it is never a nav effect.
+    const dpad = new InputRouter();
+    dpad.route(edge('Down', true), navCtx(1000));
+    dpad.route(edge('Down', true), navCtx(1005)); // a second key of the same button
+    const first = dpad.route(edge('Down', false), navCtx(1100));
+    expect(first.consumed).toBe(true);
+    expect(first.effects, 'one holder remains').toEqual([]);
+    expect(dpad.route(edge('Down', false), navCtx(1110))).toEqual({
+      consumed: true,
+      effects: [dirUp('South')],
+    });
+
+    for (const button of ['Start', 'Select', 'LB', 'RB'] as const) {
+      const r = new InputRouter();
+      for (const isDown of [true, false]) {
+        expect(r.route(edge(button, isDown), navCtx(1000)), `${button}`).toEqual({
+          consumed: false,
+          effects: [],
+        });
+      }
+    }
+
+    // X is the world's: under a menu it is swallowed and jumps nothing.
+    expect(new InputRouter().route(edge('X', true), navCtx(1000))).toEqual({
+      consumed: true,
+      effects: [],
+    });
+
+    // Contrast: with no nav ctx A, B and Y are exactly today's unconsumed buttons.
+    for (const button of ['A', 'B', 'Y'] as const) {
+      expect(new InputRouter().route(edge(button, true), GATED), `${button} without nav`).toEqual({
+        consumed: false,
+        effects: [],
+      });
+      expect(new InputRouter().route(edge(button, true), WORLD), `${button} at world`).toEqual({
+        consumed: false,
+        effects: [],
+      });
+    }
+  });
+
+  it('CTL5-2-ROUTER-B-POPS-COVERED: B down under a covered nav frame is one consumed pop; A and Y stay unconsumed; a B the target owns (a text field) routes nothing and so never pops', () => {
+    // WRONG IMPL KILLED: a covered B that does nothing (B could never leave a child), one that
+    // pops on the up edge as well (two pops per press), a pop emitted from an uncovered frame
+    // (B at the menu root must navigate, not pop), a covered A/Y that is consumed (the legacy
+    // child's native Enter would die), a covered D-pad press that navigates the hidden menu, and
+    // a Backspace typed into a text field that pops the screen it is typed in.
+    const r = new InputRouter();
+    expect(r.route(edge('B', true), navCtx(1000, true))).toEqual({
+      consumed: true,
+      effects: [POP],
+    });
+    expect(
+      r.route(edge('B', false), navCtx(1050, true)).effects,
+      'the release pops nothing',
+    ).toEqual([]);
+    expect(r.route(edge('B', true), navCtx(1100, true)).effects, 'every press is one pop').toEqual([
+      POP,
+    ]);
+
+    for (const button of ['A', 'Y'] as const) {
+      expect(new InputRouter().route(edge(button, true), navCtx(1000, true)), button).toEqual({
+        consumed: false,
+        effects: [],
+      });
+    }
+
+    const covered = new InputRouter();
+    const dpad = covered.route(edge('Down', true), navCtx(1000, true));
+    expect(dpad.consumed, 'the D-pad is still swallowed (no page scroll)').toBe(true);
+    expect(
+      dpad.effects.some((e) => e.kind === 'nav' || e.kind === 'pop'),
+      'a covered D-pad press drives nothing in the hidden menu',
+    ).toBe(false);
+
+    expect(
+      new InputRouter().route(edge('B', true), navCtx(1000, false)).effects,
+      'uncovered, B is a nav input, not a pop',
+    ).toEqual([navEffect('B', false)]);
+    expect(
+      new InputRouter().route(edge('B', true), GATED).effects,
+      'with no nav frame there is nothing to pop',
+    ).toEqual([]);
+
+    // Ownership: Backspace typed into a field yields no edge, so the router never sees a B.
+    const typed = new KeyboardSource().keydown({ code: 'Backspace', target: { tagName: 'INPUT' } });
+    expect(typed, 'the field owns Backspace').toEqual([]);
+    const typedRouter = new InputRouter();
+    expect(typed.flatMap((e) => typedRouter.route(e, navCtx(1000, true)).effects)).toEqual([]);
+    // Control: the same key at the page pops.
+    const atPage = new KeyboardSource().keydown({ code: 'Backspace', target: { tagName: 'DIV' } });
+    const pageRouter = new InputRouter();
+    expect(atPage.flatMap((e) => pageRouter.route(e, navCtx(1000, true)).effects)).toEqual([POP]);
+  });
+
+  it('CTL5-5-REPEAT-350-100: a held D-pad button yields one repeat edge 350 ms after the press, then one every 100 ms, at any press time; a stalled clock yields one edge, never a burst', () => {
+    // WRONG IMPL KILLED: a schedule anchored at 0 instead of the press time, a first repeat at
+    // 349 or 351, an interval of 99 or 101, drift (`nextAt = now + 100` on a coarse tick makes the
+    // 17th repeat late), a burst that replays every missed interval after a stalled frame, two
+    // edges for one due time, a repeat flagged `repeat: false` (the list would wrap instead of
+    // clamping), and the wrong button on the repeat.
+    for (const [button] of DIRS) {
+      const r = new InputRouter();
+      expect(r.route(edge(button, true), navCtx(1000)).effects).toEqual([navEffect(button, false)]);
+      expect(r.tick(navCtx(1000)), 'nothing at the press').toEqual([]);
+      expect(r.tick(navCtx(1349)), `${button} 349 ms`).toEqual([]);
+      expect(r.tick(navCtx(1350)), `${button} 350 ms`).toEqual([navEffect(button, true)]);
+      expect(r.tick(navCtx(1350)), 'one edge per due time').toEqual([]);
+      expect(r.tick(navCtx(1449)), `${button} 449 ms`).toEqual([]);
+      expect(r.tick(navCtx(1450)), `${button} 450 ms`).toEqual([navEffect(button, true)]);
+      expect(r.tick(navCtx(1549))).toEqual([]);
+      expect(r.tick(navCtx(1550))).toEqual([navEffect(button, true)]);
+    }
+
+    // The schedule is anchored at the press time, whatever it is (fractional included).
+    const late = new InputRouter();
+    late.route(edge('Up', true), navCtx(98765.5));
+    expect(late.tick(navCtx(98765.5 + 349))).toEqual([]);
+    expect(late.tick(navCtx(98765.5 + 350))).toEqual([navEffect('Up', true)]);
+
+    // No drift on a coarse tick: 17 repeats in the two seconds after a press at 5000, ticking
+    // every 7 ms (due 5350, 5450, ..., 6950).
+    const coarse = new InputRouter();
+    coarse.route(edge('Down', true), navCtx(5000));
+    let repeats = 0;
+    for (let t = 5000; t <= 7000; t += 7) {
+      repeats += coarse.tick(navCtx(t)).length;
+    }
+    expect(repeats, 'the schedule is exact: 350 then every 100').toBe(17);
+
+    // A stalled frame (1000 ms after the press) yields exactly one edge; the next is due 100 ms
+    // after the stalled tick.
+    const stall = new InputRouter();
+    stall.route(edge('Down', true), navCtx(1000));
+    expect(stall.tick(navCtx(2000)), 'one edge, not nine').toEqual([navEffect('Down', true)]);
+    expect(stall.tick(navCtx(2000))).toEqual([]);
+    expect(stall.tick(navCtx(2099))).toEqual([]);
+    expect(stall.tick(navCtx(2100))).toEqual([navEffect('Down', true)]);
+  });
+
+  it('CTL5-5-REPEAT-RESET: releasing the armed button, a reset, a release-all or a newer press changes what repeats; a reset key that is still held stays silent', () => {
+    // WRONG IMPL KILLED: a repeat that outlives its key (a stuck cursor), a resetRepeat that
+    // leaves the key armed (a held key repeats into the NEW frame after a push or pop), one that
+    // re-arms itself on the next tick, a reset that also forgets the holder count (the later
+    // release would then emit nothing), a release-all that leaves a repeat armed, a newer press
+    // that does not take over the repeat, a release of an UNarmed button that disarms the armed
+    // one, and a release of one of two holders that disarms early.
+    const released = new InputRouter();
+    released.route(edge('Down', true), navCtx(1000));
+    released.route(edge('Down', false), navCtx(1100));
+    expect(released.tick(navCtx(1350)), 'released before the first repeat').toEqual([]);
+    expect(released.tick(navCtx(5000))).toEqual([]);
+
+    const reset = new InputRouter();
+    reset.route(edge('Down', true), navCtx(1000));
+    expect(reset.tick(navCtx(1350))).toEqual([navEffect('Down', true)]);
+    reset.resetRepeat();
+    for (let t = 1351; t <= 2350; t += 50) {
+      expect(reset.tick(navCtx(t)), `silent after a reset (t=${t})`).toEqual([]);
+    }
+    // The hold was not forgotten: its release is still reported, and a fresh press repeats again.
+    expect(reset.route(edge('Down', false), navCtx(2400)).effects).toEqual([dirUp('South')]);
+    reset.route(edge('Down', true), navCtx(3000));
+    expect(reset.tick(navCtx(3349))).toEqual([]);
+    expect(reset.tick(navCtx(3350))).toEqual([navEffect('Down', true)]);
+
+    const all = new InputRouter();
+    all.route(edge('Up', true), navCtx(1000));
+    all.releaseAll();
+    expect(all.tick(navCtx(1350)), 'releaseAll disarms').toEqual([]);
+    expect(all.tick(navCtx(9000))).toEqual([]);
+
+    // A newer D-pad press takes over: only the newer button repeats, from ITS press time.
+    const takeover = new InputRouter();
+    takeover.route(edge('Down', true), navCtx(1000));
+    takeover.route(edge('Up', true), navCtx(1200));
+    expect(takeover.tick(navCtx(1350)), 'the older button no longer repeats').toEqual([]);
+    expect(takeover.tick(navCtx(1549))).toEqual([]);
+    expect(takeover.tick(navCtx(1550))).toEqual([navEffect('Up', true)]);
+    // Releasing the armed (newest) button disarms; the older one is not resurrected.
+    takeover.route(edge('Up', false), navCtx(1600));
+    expect(takeover.tick(navCtx(1700))).toEqual([]);
+    expect(takeover.tick(navCtx(5000))).toEqual([]);
+
+    // Releasing a button that is NOT the armed one leaves the repeat running.
+    const other = new InputRouter();
+    other.route(edge('Down', true), navCtx(1000));
+    other.route(edge('Up', true), navCtx(1100));
+    other.route(edge('Down', false), navCtx(1200));
+    expect(other.tick(navCtx(1449))).toEqual([]);
+    expect(other.tick(navCtx(1450))).toEqual([navEffect('Up', true)]);
+
+    // Two holders of the armed button: one release keeps it armed, the last disarms it.
+    const two = new InputRouter();
+    two.route(edge('Left', true), navCtx(1000));
+    two.route(edge('Left', true), navCtx(1010));
+    two.route(edge('Left', false), navCtx(1100));
+    expect(two.tick(navCtx(1360)), 'still held by the other key').toEqual([
+      navEffect('Left', true),
+    ]);
+    two.route(edge('Left', false), navCtx(1370));
+    expect(two.tick(navCtx(1500))).toEqual([]);
+  });
+
+  it('CTL5-5-NO-REPEAT-WORLD-OR-COVERED: nothing repeats at the world, with no nav ctx, under a covered frame, or for A, B and Y', () => {
+    // WRONG IMPL KILLED: a tick that repeats the world's walk (the frame loop already re-issues
+    // held directions, so this would double-step), one that ignores `covered` (the hidden menu
+    // would scroll under a child), one that repeats without a nav ctx at all, one that arms on a
+    // press made while covered, and one that arms on A, B or Y (an Enter held on the menu would
+    // open the child over and over).
+    const world = new InputRouter();
+    expect(world.route(edge('Down', true), WORLD).effects).toEqual([dirDown('South')]);
+    expect(world.tick(WORLD), 'world, no nav ctx').toEqual([]);
+    expect(world.tick({ worldActive: true }), 'repeatedly').toEqual([]);
+
+    const armed = new InputRouter();
+    armed.route(edge('Down', true), navCtx(1000));
+    expect(armed.tick({ worldActive: false }), 'armed, but the nav frame is gone').toEqual([]);
+    expect(armed.tick(navCtx(2000, true)), 'armed, but a legacy frame now covers it').toEqual([]);
+    expect(armed.tick(navCtx(9000, true))).toEqual([]);
+
+    const pressedCovered = new InputRouter();
+    pressedCovered.route(edge('Down', true), navCtx(1000, true));
+    expect(pressedCovered.tick(navCtx(1350, true))).toEqual([]);
+    expect(pressedCovered.tick(navCtx(5000, true))).toEqual([]);
+
+    for (const button of ['A', 'B', 'Y'] as const) {
+      const r = new InputRouter();
+      r.route(edge(button, true), navCtx(1000));
+      expect(r.tick(navCtx(1350)), `${button} does not repeat`).toEqual([]);
+      expect(r.tick(navCtx(5000))).toEqual([]);
+    }
+    const noPress = new InputRouter();
+    expect(noPress.tick(navCtx(5000)), 'nothing pressed, nothing repeats').toEqual([]);
+  });
+});

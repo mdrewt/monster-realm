@@ -51,7 +51,7 @@
 // overlay legitimately earns 'alertdialog', that test reds and forces a real per-id role
 // assertion to be added alongside it.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { a11yCopy } from './a11yCopy';
 import { LIVE_REGION_ID } from './liveRegion';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
@@ -581,5 +581,456 @@ describe('openOverlayA11y/closeOverlayA11y — live-region custody: no-op edges 
     expect(node.parentElement, 'the region is still inside root, just no longer last').toBe(root);
 
     closeOverlayA11y('claimView', null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ctl-5: stacked frames (CTL5.6) and the deferred-focus guard (CTL5.7, R-rb-121)
+// ---------------------------------------------------------------------------
+//
+// A frame opened while another is open SUSPENDS the lower one (`inert` + `aria-hidden="true"`, its
+// trap uninstalled, its pending focus timer cleared); closing the top RESUMES the one beneath
+// (attributes removed BEFORE any focus move, trap re-installed, live region re-adopted, focus to
+// the parent's nav container). Closing a covered frame strips it without moving focus, and
+// hands its return target up so a multi-level pop restores focus exactly once.
+
+function expectSuspended(root: HTMLElement, label: string): void {
+  expect(root.hasAttribute('inert'), `${label}: inert`).toBe(true);
+  expect(root.getAttribute('aria-hidden'), `${label}: aria-hidden`).toBe('true');
+}
+
+function expectActive(root: HTMLElement, label: string): void {
+  expect(root.hasAttribute('inert'), `${label}: not inert`).toBe(false);
+  expect(root.hasAttribute('aria-hidden'), `${label}: no aria-hidden`).toBe(false);
+}
+
+const tabEvent = (): KeyboardEvent =>
+  new KeyboardEvent('keydown', { code: 'Tab', key: 'Tab', bubbles: true, cancelable: true });
+
+function addButton(parent: HTMLElement, id: string): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.id = id;
+  parent.appendChild(button);
+  return button;
+}
+
+/** True when `el` or any ancestor is inert or aria-hidden (what AT and the browser skip). */
+function hiddenFromAt(el: Element | null): boolean {
+  for (let node: Element | null = el; node !== null; node = node.parentElement) {
+    if (node.hasAttribute('inert') || node.getAttribute('aria-hidden') === 'true') return true;
+  }
+  return false;
+}
+
+/** Record every `focus()` call (receiver and the AT-visibility of its ancestry at call time). */
+function recordFocus(): {
+  readonly calls: HTMLElement[];
+  readonly hiddenAtCall: boolean[];
+  restore: () => void;
+} {
+  const original = HTMLElement.prototype.focus;
+  const calls: HTMLElement[] = [];
+  const hiddenAtCall: boolean[] = [];
+  const spy = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions,
+  ): void {
+    calls.push(this);
+    hiddenAtCall.push(hiddenFromAt(this));
+    original.call(this, options);
+  });
+  return { calls, hiddenAtCall, restore: () => spy.mockRestore() };
+}
+
+describe('openOverlayA11y/closeOverlayA11y — stacked frames (ctl-5, CTL5.6)', () => {
+  it('CTL5-6-LOWER-INERT: opening a frame over another makes every frame beneath the top inert and aria-hidden, and only those', () => {
+    // WRONG IMPL KILLED: no suspension at all (the menu stays reachable under its child), a
+    // suspension of every record including the top (the new frame is born inert), a suspension of
+    // only the bottom or only the one just beneath the top (three records tell them apart), only
+    // one of the two attributes, and a single open frame that is suspended.
+    const menu = mountRootFor('menuView');
+    const child = mountRootFor('questLogView');
+    const grand = mountRootFor('helpView');
+
+    openOverlayA11y('menuView', menu.root);
+    expectActive(menu.root, 'a single open frame');
+
+    openOverlayA11y('questLogView', child.root);
+    expectSuspended(menu.root, 'menu under the child');
+    expectActive(child.root, 'child on top');
+
+    openOverlayA11y('helpView', grand.root);
+    expectSuspended(menu.root, 'menu, two deep');
+    expectSuspended(child.root, 'child under the top');
+    expectActive(grand.root, 'the top frame');
+  });
+
+  it('CTL5-6-RESTORE-ON-POP: closing the top frame un-suspends the one beneath it (inert and aria-hidden removed, still a modal dialog) and leaves the others suspended', () => {
+    // WRONG IMPL KILLED: a pop that leaves the parent inert (the menu would be dead on return), a
+    // pop that restores every suspended frame at once, a pop that strips the parent's dialog
+    // role/label, a closed frame that keeps any attribute, and a restore that forgets the frame
+    // two levels down when it finally becomes the top.
+    const menu = mountRootFor('menuView');
+    const child = mountRootFor('questLogView');
+    const grand = mountRootFor('helpView');
+    openOverlayA11y('menuView', menu.root);
+    openOverlayA11y('questLogView', child.root);
+    openOverlayA11y('helpView', grand.root);
+
+    closeOverlayA11y('helpView', null);
+    expectActive(child.root, 'child is the top again');
+    expect(child.root.getAttribute('aria-modal'), 'the resumed child is still a modal').toBe(
+      'true',
+    );
+    expect(child.root.getAttribute('role')).toBe(OVERLAY_A11Y.questLogView.role);
+    expect(child.root.hasAttribute('aria-label')).toBe(true);
+    expectSuspended(menu.root, 'menu is still under the child');
+    expectActive(grand.root, 'the closed frame');
+    expect(grand.root.hasAttribute('role'), 'the closed frame lost its dialog role').toBe(false);
+    expect(grand.root.hasAttribute('aria-modal')).toBe(false);
+
+    closeOverlayA11y('questLogView', null);
+    expectActive(menu.root, 'menu is the top again');
+    expect(menu.root.getAttribute('aria-modal')).toBe('true');
+    expect(menu.root.hasAttribute('aria-label')).toBe(true);
+
+    closeOverlayA11y('menuView', null);
+    for (const [label, root] of [
+      ['menu', menu.root],
+      ['child', child.root],
+      ['grand', grand.root],
+    ] as const) {
+      expectActive(root, `${label} after everything closed`);
+      expect(root.hasAttribute('role'), `${label} role`).toBe(false);
+      expect(root.hasAttribute('aria-modal'), `${label} aria-modal`).toBe(false);
+    }
+  });
+
+  it('CTL5-6-TRAP-SUSPENDED: the lower frame traps no Tab while another is above it, the top frame still does, and the lower trap is back after the pop', () => {
+    // WRONG IMPL KILLED: a lower frame that is only marked inert while its Tab trap keeps stealing
+    // focus into the hidden frame (a keyboard user is dragged under the child), a top frame whose
+    // trap was removed, and a pop that never re-installs the resumed frame's trap.
+    const menu = mountRootFor('menuView');
+    const l1 = addButton(menu.root, 'menu-b1');
+    const l2 = addButton(menu.root, 'menu-b2');
+    const child = mountRootFor('questLogView');
+    const u1 = addButton(child.root, 'child-b1');
+    const u2 = addButton(child.root, 'child-b2');
+
+    openOverlayA11y('menuView', menu.root);
+    openOverlayA11y('questLogView', child.root);
+    u2.focus();
+    expect(document.activeElement, 'precondition: focus is in the top frame').toBe(u2);
+
+    const underChild = tabEvent();
+    l2.dispatchEvent(underChild);
+    expect(underChild.defaultPrevented, 'the suspended frame must not trap Tab').toBe(false);
+    expect(document.activeElement, 'focus did not move into the lower frame').toBe(u2);
+
+    const inTop = tabEvent();
+    u2.dispatchEvent(inTop);
+    expect(inTop.defaultPrevented, 'the top frame still wraps Tab').toBe(true);
+    expect(document.activeElement).toBe(u1);
+
+    closeOverlayA11y('questLogView', null);
+    l2.focus();
+    expect(document.activeElement, 'precondition: focus is in the resumed frame').toBe(l2);
+    const afterPop = tabEvent();
+    l2.dispatchEvent(afterPop);
+    expect(afterPop.defaultPrevented, 'the resumed frame traps Tab again').toBe(true);
+    expect(document.activeElement, 'and wraps to its first control').toBe(l1);
+  });
+
+  it("CTL5-6-FOCUS-PARENT-NAV: popping the top frame puts focus on the parent frame's nav container, not on the element focused before the push when that lies outside the parent", async () => {
+    // WRONG IMPL KILLED: a pop that moves no focus (focus stays on the closed child's hidden
+    // node), one that restores the closed frame's own return target even when it is outside the
+    // parent (focus would jump to the world while the menu is still open beneath), and one that
+    // focuses something other than the parent's registry anchor (#menu-rows).
+    const world = document.createElement('button');
+    world.id = 'world-focus';
+    document.body.appendChild(world);
+    world.focus();
+
+    const menu = mountRootFor('menuView');
+    openOverlayA11y('menuView', menu.root);
+    await flushMacrotask();
+    expect(document.activeElement, 'precondition: the menu focused its nav container').toBe(
+      menu.target,
+    );
+    const child = mountRootFor('questLogView');
+    openOverlayA11y('questLogView', child.root);
+    await flushMacrotask();
+    expect(document.activeElement, 'precondition: the child focused its own anchor').toBe(
+      child.target,
+    );
+
+    closeOverlayA11y('questLogView', world);
+    expect(document.activeElement, 'back on the parent nav container').toBe(menu.target);
+    expect(document.activeElement, 'not the world').not.toBe(world);
+
+    // A return target that lies OUTSIDE the parent is not honoured: the parent's anchor is.
+    for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+    document.body.innerHTML = '';
+    const opener = document.createElement('button');
+    opener.id = 'outside-opener';
+    document.body.appendChild(opener);
+    opener.focus();
+    const menu2 = mountRootFor('menuView');
+    openOverlayA11y('menuView', menu2.root);
+    await flushMacrotask();
+    const outside = document.createElement('button');
+    outside.id = 'outside-after-menu';
+    document.body.appendChild(outside);
+    outside.focus();
+    const child2 = mountRootFor('questLogView');
+    openOverlayA11y('questLogView', child2.root);
+    await flushMacrotask();
+    expect(document.activeElement, 'precondition: the child holds focus').toBe(child2.target);
+
+    closeOverlayA11y('questLogView', null);
+    expect(
+      document.activeElement,
+      'the pop lands on the parent anchor even though the child was opened from outside it',
+    ).toBe(menu2.target);
+  });
+
+  it('CTL5-6-MULTI-POP-FOCUS-ONCE: closing the base and then the child (base first) calls focus() exactly once, on the world fallback, whether or not focus sat in the menu when the child opened', async () => {
+    // WRONG IMPL KILLED: a covered close that moves focus (a focus() into the menu that is
+    // closing), a child whose return target still points INTO the closed menu (focus restored to a
+    // hidden node, not the world), a covered close that does not hand its return target up, and
+    // two restores for one multi-level pop (the canvas would be focused, blurred and refocused).
+    for (const flushBeforePush of [false, true]) {
+      for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+      document.body.innerHTML = '';
+      const canvas = document.createElement('button');
+      canvas.id = `world-canvas-${flushBeforePush ? 'a' : 'b'}`;
+      document.body.appendChild(canvas);
+      canvas.focus();
+
+      const menu = mountRootFor('menuView');
+      openOverlayA11y('menuView', menu.root);
+      if (flushBeforePush) {
+        await flushMacrotask();
+        expect(document.activeElement, 'precondition: focus is in the menu').toBe(menu.target);
+      }
+      const child = mountRootFor('questLogView');
+      openOverlayA11y('questLogView', child.root);
+      await flushMacrotask();
+      expect(document.activeElement, 'precondition: the child holds focus').toBe(child.target);
+
+      const rec = recordFocus();
+      try {
+        closeOverlayA11y('menuView', canvas);
+        expect(rec.calls, 'closing the covered base moves no focus').toEqual([]);
+        expect(document.activeElement, 'the child keeps focus meanwhile').toBe(child.target);
+
+        closeOverlayA11y('questLogView', canvas);
+        expect(rec.calls.length, 'one focus() for the whole multi-level pop').toBe(1);
+        expect(rec.calls[0], 'and it is the world').toBe(canvas);
+        expect(document.activeElement).toBe(canvas);
+      } finally {
+        rec.restore();
+      }
+    }
+  });
+
+  it('CTL5-6-LIVE-REGION-TOP: #a11y-live is adopted by the top frame on every push and pop, is not yanked by a covered close, and returns to <body> at the base', () => {
+    // WRONG IMPL KILLED: a region that stays in the first frame (silent under the child), one
+    // that is not handed back to the menu on the pop (silent after returning), a covered close
+    // that restores it to <body> from under the top frame, a second region (clone), and a region
+    // that is not back under <body> once nothing is open.
+    const node = mountLiveNode();
+    const menu = mountRootFor('menuView');
+    const child = mountRootFor('questLogView');
+
+    openOverlayA11y('menuView', menu.root);
+    expect(node.parentElement, 'menu adopts it').toBe(menu.root);
+    openOverlayA11y('questLogView', child.root);
+    expect(node.parentElement, 'the pushed child adopts it').toBe(child.root);
+    expect(document.querySelectorAll(`#${LIVE_REGION_ID}`).length).toBe(1);
+
+    closeOverlayA11y('questLogView', null);
+    expect(node.parentElement, 'the pop hands it back to the menu').toBe(menu.root);
+
+    openOverlayA11y('questLogView', child.root);
+    expect(node.parentElement).toBe(child.root);
+    closeOverlayA11y('menuView', null);
+    expect(node.parentElement, 'a covered close does not yank it from the top frame').toBe(
+      child.root,
+    );
+    closeOverlayA11y('questLogView', null);
+    expect(node.parentElement, 'at the base it is back under <body>').toBe(document.body);
+    expect(document.getElementById(LIVE_REGION_ID), 'the same node throughout').toBe(node);
+  });
+
+  it('closing a covered frame strips its attributes (inert and aria-hidden included), moves no focus, and leaves the top frame open', () => {
+    // WRONG IMPL KILLED: a covered close that leaves the closed root inert (it would stay dead if
+    // reopened later), one that resumes the wrong frame, and one that moves focus under the top.
+    const menu = mountRootFor('menuView');
+    const child = mountRootFor('questLogView');
+    const grand = mountRootFor('helpView');
+    openOverlayA11y('menuView', menu.root);
+    openOverlayA11y('questLogView', child.root);
+    openOverlayA11y('helpView', grand.root);
+    grand.target.focus();
+
+    const rec = recordFocus();
+    try {
+      closeOverlayA11y('questLogView', null);
+      expect(rec.calls, 'a covered close moves no focus').toEqual([]);
+    } finally {
+      rec.restore();
+    }
+    expectActive(child.root, 'the closed middle frame');
+    expect(child.root.hasAttribute('role')).toBe(false);
+    expect(child.root.hasAttribute('aria-modal')).toBe(false);
+    expect(child.root.hasAttribute('aria-label')).toBe(false);
+    expectSuspended(menu.root, 'the menu is still under the top');
+    expectActive(grand.root, 'the top frame');
+    expect(grand.root.getAttribute('aria-modal')).toBe('true');
+
+    closeOverlayA11y('helpView', null);
+    expectActive(menu.root, 'the menu resumes once the top closes');
+  });
+
+  it('re-opening a frame that is covered is a no-op: it stays suspended, adopts nothing, traps nothing, schedules no focus and keeps its place in the stack', async () => {
+    // WRONG IMPL KILLED (plan A3): a re-open of the menu while its child is up that re-adopts the
+    // live region, installs a second trap, steals focus a macrotask later, un-suspends the menu,
+    // or moves it above the child (so closing the child would no longer resume it).
+    const live = mountLiveNode();
+    const menu = mountRootFor('menuView');
+    const m1 = addButton(menu.root, 'menu-reopen-b1');
+    addButton(menu.root, 'menu-reopen-b2');
+    const child = mountRootFor('questLogView');
+    openOverlayA11y('menuView', menu.root);
+    openOverlayA11y('questLogView', child.root);
+    await flushMacrotask();
+    expect(document.activeElement, 'precondition: the child holds focus').toBe(child.target);
+
+    openOverlayA11y('menuView', menu.root);
+    expectSuspended(menu.root, 'still suspended after a covered re-open');
+    expect(live.parentElement, 'the live region stays with the top frame').toBe(child.root);
+    const tab = tabEvent();
+    m1.dispatchEvent(tab);
+    expect(tab.defaultPrevented, 'no trap was installed on the covered frame').toBe(false);
+    await flushMacrotask();
+    expect(document.activeElement, 'no deferred focus into the covered frame').toBe(child.target);
+
+    closeOverlayA11y('questLogView', null);
+    expectActive(menu.root, 'the menu is still the frame beneath, and resumes');
+    expect(menu.root.contains(document.activeElement), 'focus returned into the menu').toBe(true);
+    expect(live.parentElement).toBe(menu.root);
+  });
+
+  it('no focus() ever lands inside an aria-hidden or inert subtree: a push blurs the lower frame first, a pop un-hides it before moving focus', async () => {
+    // WRONG IMPL KILLED (plan A4): setting aria-hidden/inert while focus is still inside the
+    // lower frame (a focused node inside an aria-hidden tree is an ARIA violation and a stuck
+    // screen-reader cursor), and a resume that focuses the parent before removing its attributes.
+    const menu = mountRootFor('menuView');
+    openOverlayA11y('menuView', menu.root);
+    await flushMacrotask();
+    expect(document.activeElement, 'precondition: focus is in the menu').toBe(menu.target);
+
+    const child = mountRootFor('questLogView');
+    openOverlayA11y('questLogView', child.root);
+    expect(
+      menu.root.contains(document.activeElement),
+      'focus left the lower frame as it was suspended',
+    ).toBe(false);
+    expect(hiddenFromAt(document.activeElement), 'and it is not inside a hidden subtree').toBe(
+      false,
+    );
+    await flushMacrotask();
+    expect(document.activeElement).toBe(child.target);
+
+    const rec = recordFocus();
+    try {
+      closeOverlayA11y('questLogView', null);
+      expect(rec.calls.length, 'the pop moves focus once').toBe(1);
+      expect(rec.calls[0]).toBe(menu.target);
+      expect(rec.hiddenAtCall, 'the parent was un-hidden BEFORE it was focused').toEqual([false]);
+    } finally {
+      rec.restore();
+    }
+    expect(hiddenFromAt(document.activeElement)).toBe(false);
+  });
+});
+
+describe('openOverlayA11y — the deferred focus skips a move that would steal it (ctl-5, CTL5.7)', () => {
+  it('CTL5-7-DEFER-SKIP-INSIDE: when focus is already on a connected element inside the root at the time the deferred callback fires, it stays there', async () => {
+    // WRONG IMPL KILLED (R-rb-121): a callback that always focuses the anchor (a click on a
+    // button in the frame, in the same macrotask as the open, is pulled back to the anchor and the
+    // click's focus is lost), one that reads `document.activeElement` at OPEN time instead of at
+    // callback time (the element is focused AFTER the open call here), one that only accepts the
+    // anchor itself, and one that only looks at direct children (the second case is nested).
+    const { root, target } = mountRootFor('boxView');
+    const inner = addButton(root, 'defer-inner');
+    openOverlayA11y('boxView', root);
+    inner.focus();
+    await flushMacrotask();
+    expect(document.activeElement, 'focus stays on the clicked control').toBe(inner);
+    expect(document.activeElement).not.toBe(target);
+
+    closeOverlayA11y('boxView', null);
+    document.body.innerHTML = '';
+    const nested = mountRootFor('raisingView');
+    const wrapper = document.createElement('div');
+    nested.root.appendChild(wrapper);
+    const deep = addButton(wrapper, 'defer-deep');
+    openOverlayA11y('raisingView', nested.root);
+    deep.focus();
+    await flushMacrotask();
+    expect(document.activeElement, 'a nested descendant counts as inside').toBe(deep);
+  });
+
+  it('CTL5-7-DEFER-FOCUSES-OUTSIDE: when focus is outside the root, on <body>, or on a descendant that has since been disconnected, the deferred callback still focuses the anchor', async () => {
+    // WRONG IMPL KILLED: a guard that skips whenever anything is focused (the anchor would never
+    // be focused when the opener holds focus), one that treats a detached ex-descendant as inside,
+    // one that caches the "was inside" fact from the open call (focus left the root again before
+    // the callback), and a callback that never focuses at all.
+    const outside = document.createElement('button');
+    outside.id = 'defer-outside';
+    document.body.appendChild(outside);
+
+    // Outside the root.
+    outside.focus();
+    const first = mountRootFor('boxView');
+    openOverlayA11y('boxView', first.root);
+    await flushMacrotask();
+    expect(document.activeElement, 'focus outside: the anchor is focused').toBe(first.target);
+    closeOverlayA11y('boxView', null);
+
+    // On <body>.
+    (document.activeElement as HTMLElement | null)?.blur();
+    const onBody = mountRootFor('raisingView');
+    openOverlayA11y('raisingView', onBody.root);
+    expect(document.activeElement, 'precondition: nothing is focused').toBe(document.body);
+    await flushMacrotask();
+    expect(document.activeElement, 'focus on body: the anchor is focused').toBe(onBody.target);
+    closeOverlayA11y('raisingView', null);
+
+    // Moved inside, then back outside before the callback.
+    const bounce = mountRootFor('evolutionView');
+    const innerButton = addButton(bounce.root, 'defer-bounce');
+    openOverlayA11y('evolutionView', bounce.root);
+    innerButton.focus();
+    outside.focus();
+    await flushMacrotask();
+    expect(document.activeElement, 'read at callback time: outside again, so the anchor').toBe(
+      bounce.target,
+    );
+    closeOverlayA11y('evolutionView', null);
+
+    // A descendant that was focused and then removed from the document.
+    const gone = mountRootFor('healView');
+    const ghost = addButton(gone.root, 'defer-ghost');
+    openOverlayA11y('healView', gone.root);
+    ghost.focus();
+    ghost.remove();
+    expect(ghost.isConnected, 'precondition: the ex-descendant is disconnected').toBe(false);
+    await flushMacrotask();
+    expect(document.activeElement, 'a disconnected ex-descendant is not "inside"').toBe(
+      gone.target,
+    );
   });
 });
