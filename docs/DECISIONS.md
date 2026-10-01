@@ -464,8 +464,8 @@ One pure function decides which may open:
 `canOpen` (`client/src/ui/overlayRegistry.ts`) reads a tier per overlay (a battle on
 top, guard-only modals that another hotkey never dismisses, and the Box, Raising &
 Inventory and Evolution overlays, which swap with each other). A battle that starts
-force-hides most open overlays, but never the dialogue overlay. Every screen is reachable from the main menu (`M`), a D-pad
-list whose entries open their screen above it
+force-hides most open overlays, but never the dialogue overlay. The main menu (`M`) is a D-pad list whose entries open
+their screen above it
 (`client/src/ui/screens/mainMenuScreen.ts`); B closes that screen and returns to the menu. Each view keeps
 its state in a pure model (`*Model.ts`) with a thin DOM view (`*View.ts`). Text-input
 overlays clear held movement keys on open and own their keystrokes. The controls list
