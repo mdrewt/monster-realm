@@ -452,6 +452,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'privacy.action.cancel': 'Cancel account deletion', // privacyBanner.ts:159
   'privacy.action.export': 'Request my data export', // privacyBanner.ts:160
   'privacy.action.download': 'Download my data export', // privacyBanner.ts:164
+  'raising.feedback.cared': 'Cared!', // careAction.ts CARED_MESSAGE (pre-migration)
 };
 
 interface ParamOutputSpec {
@@ -728,7 +729,8 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 178-key roster (21r-b2 growth of 21r-b's 133-key roster by the 45 new `claim.*` /
+/** The full 179-key roster (pgcc-a added `raising.feedback.cared` to the 178-key roster below;
+ *  21r-b2 growth of 21r-b's 133-key roster by the 45 new `claim.*` /
  *  `privacy.*` keys; 21r-b had grown the 118-key roster by the 15 new
  *  `chrome.feedback.*`/`shop.feedback.*`/`trade.feedback.*`/`chrome.rename.updated`/
  *  `tradePropose.feedback.sent`/`chrome.session.*` keys), sorted — `EXPECTED_PLAIN` and
