@@ -48,6 +48,9 @@ import {
 } from './net/devLog';
 import { AuthoritativeStore, ownPerspective } from './net/store';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
+import type { ButtonEdge } from './input/buttons';
+import { isChord, KeyboardSource } from './input/keyboardSource';
+import { InputRouter, ownership, routerConsumes } from './input/router';
 import { resolveTelemetryConfig } from './observability/config';
 import { createFrameWindow, frameTick } from './observability/frameWindow';
 import { maxRemoteGapMs } from './observability/interpGap';
@@ -196,8 +199,8 @@ import type { TradeView } from './ui/tradeView';
 // resolve the SpacetimeDB target at MODULE scope (eager, like the old
 // URI/DB consts) so a misconfigured PRODUCTION build fails loud here — before connect() is
 // reachable — rather than silently writing to the dev-default database `monster-realm`.
-// Kept at module scope on purpose (guarded by main.wiring.test.ts F-3): moving it inside
-// main() could let a try/catch swallow the throw.
+// Kept at module scope on purpose: moving it inside main() could let a try/catch
+// swallow the throw.
 const { uri: URI, db: DB } = resolveConnectionConfig(
   {
     uri: import.meta.env.VITE_STDB_URI as string | undefined,
@@ -1237,39 +1240,51 @@ function sendIntent(input: WasmMoveInput): void {
 const step = (dir: WasmDirection): void => sendIntent({ Step: dir });
 const jump = (): void => sendIntent('Jump');
 
-const KEY_DIR: Readonly<Record<string, WasmDirection>> = {
-  ArrowUp: 'North',
-  KeyW: 'North',
-  ArrowDown: 'South',
-  KeyS: 'South',
-  ArrowLeft: 'West',
-  KeyA: 'West',
-  ArrowRight: 'East',
-  KeyD: 'East',
+// The input pipeline (design §12): the keyboard source maps keys through the ONE binding
+// table into `{button, down}` edges; the pure router decides what each edge does. The router
+// owns only the D-pad and X (Jump) so far — every other key is the legacy ladder's below.
+const keyboard = new KeyboardSource();
+const inputRouter = new InputRouter();
+
+// Apply one edge's router effects to the movement seam; true when the router consumed it.
+const routeEdge = (edge: ButtonEdge): boolean => {
+  const { consumed, effects } = inputRouter.route(edge, { worldActive: !anyOverlayVisible() });
+  for (const effect of effects) {
+    if (effect.kind === 'dirDown') {
+      // A second key or source for a held dir never reaches here (the router counts holders);
+      // the isHeld dedupe stays as the pure not-emit for a re-press after held.clear().
+      if (!held.isHeld(effect.dir)) step(effect.dir); // immediate first step (latency + deliberate double-tap)
+      held.press(effect.dir, performance.now()); // mark held (stamped) so the frame loop re-issues it once hold-committed
+    } else if (effect.kind === 'dirUp') {
+      held.release(effect.dir); // a still-held key falls back to the most-recent (M8.6c)
+    } else {
+      jump(); // Jump does not hold-repeat
+    }
+  }
+  return consumed;
 };
 
-// True when the browser's native action for THIS key on THIS target is the
-// target's own and must not be cancelled. Text fields and <select>s consume arrows AND Space;
-// a focused <button>/<a> consumes only Space (activation). Arrows over a button are NOT owned,
-// so the page-scroll fix still applies in the commonest state — a button keeps focus after a
-// click. Only renameView/tradeProposeView stopPropagation their focusables; the other eight
-// overlays' buttons/selects bubble straight here, so this guard is what keeps them usable.
-const targetOwnsKey = (e: KeyboardEvent): boolean => {
-  const t = e.target;
-  if (!(t instanceof HTMLElement)) return false;
-  if (t.isContentEditable) return true;
-  const tag = t.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
-  return e.code === 'Space' && (tag === 'BUTTON' || tag === 'A');
+// Drop every held button so nothing stays "held" while the page cannot see the keyup.
+const releaseAllInput = (): void => {
+  keyboard.releaseAll();
+  inputRouter.releaseAll();
+  held.clear();
 };
 
-// Movement keys and Space carry native browser defaults (page scroll) that MUST
-// be cancelled on the handler's EARLY-RETURN paths too — an open overlay makes the document
-// taller than the viewport-sized canvas, so those defaults scroll the game out from under the
-// player. Called on BOTH early returns; each OS key-repeat keydown carries its own default, so
-// suppressing only the first one would leave a held arrow key scrolling on every repeat tick.
+// Router-consumed keys (the D-pad, Space) carry native browser defaults (page scroll) that
+// MUST be cancelled on the handler's EARLY-RETURN paths too — an open overlay makes the
+// document taller than the viewport-sized canvas, so those defaults scroll the game out from
+// under the player. Each OS key-repeat keydown carries its own default, so suppressing only
+// the first one would leave a held arrow key scrolling on every repeat tick. A chord, or a key
+// the focused element owns (typing, a button's Space), is never cancelled.
 const suppressNativeMovementDefault = (e: KeyboardEvent): void => {
-  if ((KEY_DIR[e.code] !== undefined || e.code === 'Space') && !targetOwnsKey(e))
+  const button = keyboard.buttonFor(e.code);
+  if (
+    button !== undefined &&
+    routerConsumes(button) &&
+    !isChord(e) &&
+    ownership(e.target, e) === 'router'
+  )
     e.preventDefault();
 };
 
@@ -1317,8 +1332,11 @@ window.addEventListener('keydown', (e) => {
   // The session terminal outranks every input path — checked FIRST,
   // before the menu intercept, the battle-Escape branch and the movement-suppression surface.
   // Suppress the native default (not a bare return) so a held arrow does not scroll on key-repeat.
-  // biome-ignore format: pinned single-line session gate (main.wiring.test.ts W-M21B2-SESSION-GATE-FIRST).
+  // biome-ignore format: keep the session gate a single line.
   if (sessionGateBlocks()) { suppressNativeMovementDefault(e); return; }
+  // Ctrl/Alt/Meta chords belong to the browser (Ctrl+P prints): no hotkey, no movement and
+  // no preventDefault. Before every hotkey below, so no letter branch can claim one.
+  if (isChord(e)) return;
   if (e.repeat) {
     // ignore OS key-repeat (the frame loop re-issues held keys) — but still cancel its default
     suppressNativeMovementDefault(e);
@@ -1537,7 +1555,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   // The menu front-door. KeyM was verified UNBOUND before this slice — no
-  // KEY_DIR/letter/`?` collision and no browser default. Escape is deliberately NOT overloaded
+  // D-pad/letter/`?` collision and no browser default. Escape is deliberately NOT overloaded
   // to open the menu: it stays a pure close/back key, so mashing Escape never surprises the
   // player with a menu. This is the 12th open-handler; its guard is the ONE
   // registry verdict plus `identity !== ''` — menuAvailability() reads
@@ -1692,39 +1710,22 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
-  // Suppress movement input while an overlay is open.
-  if (anyOverlayVisible()) {
-    suppressNativeMovementDefault(e);
-    return;
-  }
-  const dir = KEY_DIR[e.code];
-  if (dir !== undefined) {
-    // Dual-key dedup: KEY_DIR binds two codes per dir — a second code while the dir is
-    // already held must not fire another ungated first step (pure not-emit; F3 escape intact).
-    if (!held.isHeld(dir)) step(dir); // immediate first step (latency + deliberate double-tap)
-    held.press(dir, performance.now()); // mark held (stamped) so the frame loop re-issues it once hold-committed
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'Space') {
-    // A focused <button>/<a> OWNS Space (targetOwnsKey) —
-    // jumping here would also cancel its NATIVE activation, leaving the delegated menu badge's
-    // front door Enter-only. Same exemption suppressNativeMovementDefault already applies.
-    if (!targetOwnsKey(e)) {
-      jump(); // Jump does not hold-repeat
-      e.preventDefault();
-    }
-  }
+  // The router owns the D-pad and Space from here: it swallows them while an overlay is open
+  // (the page-scroll fix), walks or jumps at the world, and skips keys the target owns.
+  let consumed = false;
+  for (const edge of keyboard.keydown(e)) consumed = routeEdge(edge) || consumed;
+  if (consumed) e.preventDefault();
 });
 
-// Release a held movement key; a still-held key falls back to the most-recent (M8.6c).
+// A release ends a hold only when the last key or source holding that direction lets go.
 window.addEventListener('keyup', (e) => {
-  const dir = KEY_DIR[e.code];
-  if (dir !== undefined) held.release(dir);
+  for (const edge of keyboard.keyup(e)) routeEdge(edge);
 });
 
-// Drop all held keys on blur so a key isn't stuck "held" while unfocused.
-window.addEventListener('blur', () => held.clear());
+window.addEventListener('blur', releaseAllInput);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') releaseAllInput();
+});
 
 // --- box/party view: refresh on batch when visible ---------------
 function refreshBox(): void {
