@@ -94,6 +94,9 @@ export class InputRouter {
   // The D-pad button that auto-repeats under the nav frame, and when its next repeat is due.
   // Armed by a press under an uncovered nav frame; only the latest press repeats.
   #repeat: { readonly button: VButton; nextAt: number } | undefined;
+  // Held D-pad buttons, oldest press first: releasing the repeating one hands the repeat back to
+  // the most recent button still held.
+  #pressOrder: VButton[] = [];
 
   route(edge: ButtonEdge, ctx: RouteContext): RouteResult {
     const { button, down } = edge;
@@ -103,6 +106,7 @@ export class InputRouter {
       const count = this.#holders.get(button) ?? 0;
       if (down) {
         this.#holders.set(button, count + 1);
+        this.#pressOrder = [...this.#pressOrder.filter((b) => b !== button), button];
         if (nav !== undefined) {
           this.#repeat = { button, nextAt: nav.now + REPEAT_DELAY_MS };
           return navPress(button);
@@ -117,7 +121,14 @@ export class InputRouter {
         return SWALLOWED;
       }
       this.#holders.delete(button);
-      if (this.#repeat?.button === button) this.#repeat = undefined;
+      this.#pressOrder = this.#pressOrder.filter((b) => b !== button);
+      if (this.#repeat?.button === button) {
+        const still = this.#pressOrder.at(-1);
+        this.#repeat =
+          still === undefined || nav === undefined
+            ? undefined
+            : { button: still, nextAt: nav.now + REPEAT_DELAY_MS };
+      }
       return { consumed: true, effects: [{ kind: 'dirUp', dir }] };
     }
     if (button === 'X') {
@@ -156,6 +167,7 @@ export class InputRouter {
       if (dir !== undefined) effects.push({ kind: 'dirUp', dir });
     }
     this.#holders.clear();
+    this.#pressOrder = [];
     this.#repeat = undefined;
     return effects;
   }

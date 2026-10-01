@@ -372,4 +372,40 @@ test.describe
       await page.keyboard.press('Escape');
       await expect(overlay).toBeHidden();
     });
+
+    // CTL5.6, the real-browser proof of focus returning to the parent nav container: a child
+    // opened from the menu closes with B, and focus lands on #menu-rows (not <body> or the closed
+    // child), so the next key press still drives the menu. The unit tier cannot see this: happy-dom
+    // does not refuse a focus() on a visibility:hidden element, Chromium does.
+    test('keyboard pass: a child opened over the menu closes with Backspace and focus returns to #menu-rows; Escape then closes the menu', async () => {
+      const overlay = page.locator('#menu-overlay');
+      const rows = page.locator('#menu-rows');
+      const box = page.getByTestId('box-title');
+
+      await page.keyboard.press('KeyM');
+      await expect(overlay).toBeVisible();
+      await expect(rows).toBeFocused();
+
+      // The cursor is remembered across opens, so walk it to Monsters (ArrowUp wraps, at most 7).
+      for (let i = 0; i < 8; i += 1) {
+        if ((await rows.getAttribute('aria-activedescendant')) === 'menu-root-monsters') break;
+        await page.keyboard.press('ArrowUp');
+      }
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-monsters');
+
+      // A on Monsters opens the box above the menu; the menu stays open beneath it.
+      await page.keyboard.press('Enter');
+      await expect(box).toBeVisible();
+      await expect(overlay).toBeAttached();
+
+      // B closes only the box, and focus is back on the menu's nav container.
+      await page.keyboard.press('Backspace');
+      await expect(box).toBeHidden();
+      await expect(overlay).toBeVisible();
+      await expect(rows).toBeFocused();
+      await expect(rows).toHaveAttribute('aria-activedescendant', 'menu-root-monsters');
+
+      await page.keyboard.press('Escape');
+      await expect(overlay).toBeHidden();
+    });
   });

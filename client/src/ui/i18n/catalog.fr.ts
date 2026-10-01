@@ -851,7 +851,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'menu.options.title': 'Options',
   // @desc: Feedback-line description of the Options main-menu entry, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.options.desc': 'Aide du jeu et réglages.',
+  'menu.options.desc': 'Aide pour apprendre à jouer.',
   // @desc: Main-menu entry that closes the menu and returns to the world.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.close.title': 'Fermer',

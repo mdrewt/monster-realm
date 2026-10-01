@@ -611,10 +611,47 @@ describe('InputRouter under a nav frame (ctl-5)', () => {
     expect(takeover.tick(navCtx(1350)), 'the older button no longer repeats').toEqual([]);
     expect(takeover.tick(navCtx(1549))).toEqual([]);
     expect(takeover.tick(navCtx(1550))).toEqual([navEffect('Up', true)]);
-    // Releasing the armed (newest) button disarms; the older one is not resurrected.
+    // Releasing the repeating (newest) button hands the repeat to the most recently pressed button
+    // that is STILL held (here Down), re-armed at the RELEASE time + 350 ms, then every 100. (The
+    // bug this fixes: hold Down, tap Up, keep holding Down -> Down never repeated again.)
+    // WRONG IMPL KILLED: a release that just disarms, a hand-over anchored at the old press time
+    // (Down's 1000 -> due 1350) or at the repeating button's schedule, an immediate first repeat,
+    // and a hand-over to the oldest rather than the newest held button.
     takeover.route(edge('Up', false), navCtx(1600));
-    expect(takeover.tick(navCtx(1700))).toEqual([]);
-    expect(takeover.tick(navCtx(5000))).toEqual([]);
+    expect(takeover.tick(navCtx(1700)), 'not due until release + 350').toEqual([]);
+    expect(takeover.tick(navCtx(1949))).toEqual([]);
+    expect(takeover.tick(navCtx(1950))).toEqual([navEffect('Down', true)]);
+    expect(takeover.tick(navCtx(1950)), 'one edge per due time').toEqual([]);
+    expect(takeover.tick(navCtx(2049))).toEqual([]);
+    expect(takeover.tick(navCtx(2050))).toEqual([navEffect('Down', true)]);
+    // With no button left held, nothing repeats.
+    takeover.route(edge('Down', false), navCtx(2100));
+    expect(takeover.tick(navCtx(2500))).toEqual([]);
+    expect(takeover.tick(navCtx(9000))).toEqual([]);
+
+    // Three held: the hand-over goes to the most recent still-held button, not the oldest.
+    const three = new InputRouter();
+    three.route(edge('Down', true), navCtx(1000));
+    three.route(edge('Left', true), navCtx(1100));
+    three.route(edge('Up', true), navCtx(1200));
+    three.route(edge('Up', false), navCtx(1300));
+    expect(three.tick(navCtx(1649))).toEqual([]);
+    expect(three.tick(navCtx(1650)), 'Left (newer than Down) repeats').toEqual([
+      navEffect('Left', true),
+    ]);
+
+    // A release under a covered nav frame, or with no nav ctx, disarms: no re-arm.
+    for (const [label, releaseCtx] of [
+      ['covered', navCtx(1600, true)],
+      ['no nav ctx', WORLD],
+    ] as const) {
+      const r = new InputRouter();
+      r.route(edge('Down', true), navCtx(1000));
+      r.route(edge('Up', true), navCtx(1200));
+      r.route(edge('Up', false), releaseCtx);
+      expect(r.tick(navCtx(1950)), `${label}: Down is not re-armed`).toEqual([]);
+      expect(r.tick(navCtx(5000))).toEqual([]);
+    }
 
     // Releasing a button that is NOT the armed one leaves the repeat running.
     const other = new InputRouter();

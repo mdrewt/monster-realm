@@ -467,7 +467,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'menu.profile.title': 'Profile',
   'menu.profile.desc': 'Your name, account and privacy settings.',
   'menu.options.title': 'Options',
-  'menu.options.desc': 'Game help and settings.',
+  'menu.options.desc': 'Help on how to play the game.',
   'menu.close.title': 'Close',
   'menu.close.desc': 'Close the menu and return to the world.',
   'menu.social.trades.title': 'Trades',

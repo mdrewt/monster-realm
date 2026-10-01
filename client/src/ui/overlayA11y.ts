@@ -1,4 +1,4 @@
-// ui/overlayA11y.ts — open/close ARIA + focus choreography for the 16 mutual-exclusion overlays
+// ui/overlayA11y.ts — open/close ARIA + focus choreography for the registry overlays
 // (M23 §2.1-§2.3).
 //
 // The composition shell of this slice: it is the only module here that writes attributes, schedules
@@ -32,10 +32,17 @@
 // pending timer, uninstall handle — lives in ONE record, so there is no half-open state to reason
 // about, and `Map.delete` is the single teardown.
 //
+// THE RECORDS ARE A STACK (ctl-5, CTL5.6). Map insertion order is the open order and the last record
+// is the top frame. Opening over an open overlay suspends the one beneath (focus leaves it, then
+// `inert` + `aria-hidden`, trap removed, pending focus cleared); closing the top resumes the next
+// one down (attributes first, then trap, live region and focus on its nav anchor). Closing a covered
+// record moves no focus and hands its return target up, so a base-first multi-level pop restores
+// focus once. Re-opening a covered id is a no-op.
+//
 // A RE-OPEN PRESERVES THE ORIGINAL RETURN TARGET. By the second `openOverlayA11y(id, root)`, focus
 // is typically already INSIDE the overlay; re-recording `document.activeElement` would make the
-// eventual close restore focus to an element inside the thing it just closed. So a re-open tears
-// the old record down fully (timer cleared, trap uninstalled — no stacked listeners) but carries
+// eventual close restore focus to an element inside the thing it just closed. So a re-open of the top
+// record tears the old record down fully (timer cleared, trap uninstalled — no stacked listeners) but carries
 // the first `returnFocus` forward.
 //
 // CLOSE-WITHOUT-OPEN AND DOUBLE-CLOSE ARE DOCUMENTED NO-OPS. With no record there is no root, so we

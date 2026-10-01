@@ -22,8 +22,10 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
+import { t } from './ui/a11yCopy';
 import { CATALOG_EN } from './ui/i18n/catalog.en';
 import { CATALOG_FR } from './ui/i18n/catalog.fr';
+import { OVERLAY_A11Y } from './ui/overlayRegistry';
 
 const H = vi.hoisted(() => ({
   identity: 'ab'.repeat(32),
@@ -620,5 +622,135 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     fire('keyup', 'Enter', 1600);
     const after = fire('keydown', 'Enter', 1700, { target: button, init: { repeat: true } });
     expect(after.defaultPrevented, 'after the keyup the rule is gone').toBe(false);
+  });
+
+  it('Profile > Privacy from the menu opens the privacy overlay above the menu: the stack ends menuView then privacyView', async () => {
+    // WRONG IMPL KILLED: an `overlayVerdict` that does not filter the open menu out of the visible
+    // set (openPrivacy consults the verdict, the menu is GUARD_ONLY, so the open is silently
+    // refused and the player presses A on Privacy and nothing happens).
+    await bootAtMenu(4);
+    expect(navActive(), 'precondition: the cursor is on Profile').toBe('profile');
+    tap('Enter', 1500);
+    expect(navActive(), 'precondition: the Profile sub-list starts on Name').toBe('name');
+    tap('ArrowDown', 1600);
+    tap('ArrowDown', 1700);
+    expect(navActive(), 'precondition: the cursor is on Privacy').toBe('privacy');
+    expect(stackNames(), 'precondition: no child yet').toEqual(['world', 'menuView']);
+
+    tap('Enter', 1800);
+    expect(stackNames(), 'privacy opened above the menu').toEqual([
+      'world',
+      'menuView',
+      'privacyView',
+    ]);
+    expect(menuShown(), 'the menu stays open beneath it').toBe(true);
+  });
+
+  it('Profile > Account opens the claim overlay over the menu: Escape there (claim has no Escape branch) leaves the menu beneath it open, and Backspace closes the claim and returns to the menu', async () => {
+    // WRONG IMPL KILLED: an Escape-at-menu branch keyed on the menu being VISIBLE rather than on
+    // the menu being the stack TOP (Escape over the claim would close the covered menu beneath it
+    // and leave the claim orphaned over the world), and a B that does not pop the claim.
+    await bootAtMenu(4);
+    tap('Enter', 1500);
+    tap('ArrowDown', 1600);
+    expect(navActive(), 'precondition: the cursor is on Account').toBe('account');
+
+    tap('Enter', 1700);
+    expect(stackNames(), 'the claim opened above the menu').toEqual([
+      'world',
+      'menuView',
+      'claimView',
+    ]);
+    expect(menuShown(), 'precondition: the menu is open beneath it').toBe(true);
+
+    tap('Escape', 1800);
+    expect(menuShown(), 'Escape over the claim does not close the menu beneath it').toBe(true);
+    expect(stackNames(), 'the menu is still under the claim').toEqual([
+      'world',
+      'menuView',
+      'claimView',
+    ]);
+
+    tap('Backspace', 1900);
+    expect(stackNames(), 'B closes the claim and returns to the menu').toEqual([
+      'world',
+      'menuView',
+    ]);
+    expect(menuShown()).toBe(true);
+    expect(
+      (document.getElementById('menu-overlay') as HTMLElement).style.visibility,
+      'and the menu is uncovered',
+    ).not.toBe('hidden');
+    expect(navActive(), 'the sub-list cursor is where it was').toBe('account');
+  });
+
+  it('a screen opened over the menu is announced: after A on Journal and the 500 ms live-region window, #a11y-live reads the quest log label, not the menu label', async () => {
+    // WRONG IMPL KILLED: an announcement top derived from the overlay registry order alone (the
+    // menu is registered after the quest log, so the covered menu beneath the child would be
+    // announced instead of the screen the player is actually on).
+    await bootAtMenu(2);
+    tap('Enter', 1400);
+    expect(stackNames(), 'precondition: the quest log is above the menu').toEqual([
+      'world',
+      'menuView',
+      'questLogView',
+    ]);
+    const questLabel = t(OVERLAY_A11Y.questLogView.labelKey);
+    const menuLabel = t(OVERLAY_A11Y.menuView.labelKey);
+    expect(questLabel, 'fixture: the two labels differ').not.toBe(menuLabel);
+
+    // Frames spaced past the 500 ms live-region window (ui/liveRegion.ts flush).
+    for (const at of [2000, 2600, 3200, 3800]) frame(at);
+    const region = document.getElementById('a11y-live');
+    expect(region, '#a11y-live must exist (client/index.html)').not.toBeNull();
+    expect(region?.textContent).toBe(questLabel);
+    expect(region?.textContent).not.toBe(menuLabel);
+  });
+
+  it('a level change resets the repeat: a held ArrowDown does not keep scrolling the sub-list that Enter just entered', async () => {
+    // WRONG IMPL KILLED: an applyMenuStep that does not reset the router's repeat when the menu
+    // level changes (the Down still held from the root repeats into the new sub-list and walks the
+    // cursor off its first entry with no new press).
+    await bootAtMenu(2);
+    expect(navActive(), 'precondition: the cursor is on Journal').toBe('journal');
+    const t0 = 2000;
+    fire('keydown', 'ArrowDown', t0);
+    expect(navActive(), 'the held Down moved onto Social').toBe('social');
+    fire('keydown', 'Enter', t0 + 100);
+    expect(navActive(), 'Enter (Down still held) entered the Social sub-list').toBe('trades');
+    expect(cursor()).toBe('menuSocial-root-trades');
+
+    for (const dt of [349, 350, 449, 450, 550, 1000]) {
+      frame(t0 + dt);
+      expect(navActive(), `${dt} ms after the Down press, with no new press`).toBe('trades');
+    }
+
+    // Contrast: a fresh press still moves the cursor in the new level.
+    fire('keyup', 'ArrowDown', t0 + 1100);
+    fire('keyup', 'Enter', t0 + 1105);
+    fire('keydown', 'ArrowDown', t0 + 1200);
+    expect(navActive(), 'a new press moves').toBe('challenges');
+    fire('keyup', 'ArrowDown', t0 + 1205);
+  });
+
+  it('a held D-pad does not repeat into a re-opened menu: Down held at the menu, Escape closes it, KeyM reopens it, and a second of frames moves nothing', async () => {
+    // WRONG IMPL KILLED: a syncStack that does not reset the router's repeat on a stack push/pop
+    // (the schedule armed under the first menu survives the close, and the reopened menu scrolls
+    // by itself the moment the nav frame is uncovered again).
+    await bootAtMenu();
+    const t0 = 2000;
+    fire('keydown', 'ArrowDown', t0);
+    expect(navActive(), 'the held Down moved onto Bag').toBe('bag');
+    tap('Escape', t0 + 100);
+    expect(menuShown(), 'precondition: Escape closed the menu (Down is still held)').toBe(false);
+    tap('KeyM', t0 + 200);
+    expect(menuShown(), 'precondition: M reopened the menu').toBe(true);
+    expect(navActive(), 'precondition: the cursor is on the last entry used').toBe('bag');
+
+    for (let dt = 300; dt <= 1300; dt += 100) {
+      frame(t0 + dt);
+      expect(navActive(), `${dt} ms after the press, Down still held`).toBe('bag');
+    }
+    fire('keyup', 'ArrowDown', t0 + 1400);
   });
 });

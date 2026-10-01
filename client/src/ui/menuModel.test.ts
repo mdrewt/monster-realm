@@ -131,7 +131,7 @@ describe('MENU_ENTRIES', () => {
       journal: 'Review your quests and their progress.',
       social: 'Trades, challenges and rankings with other players.',
       profile: 'Your name, account and privacy settings.',
-      options: 'Game help and settings.',
+      options: 'Help on how to play the game.',
       close: 'Close the menu and return to the world.',
       'social/trades': 'See and answer the trade offered to you.',
       'social/challenges': 'Challenge a player or answer a challenge.',

@@ -704,6 +704,66 @@ describe('MenuView — overlay a11y wiring on the show/hide edge', () => {
     await flushMacrotask();
     expect(vi.mocked(openOverlayA11y), 'render and setCovered never open').toHaveBeenCalledTimes(1);
     expect(vi.mocked(closeOverlayA11y), 'nor close').not.toHaveBeenCalled();
-    expect(document.activeElement, 'and never yank focus').toBe(outside);
+    // CHANGED (ctl-5 review): uncovering used to leave focus alone. In a real browser the pop's own
+    // focus move runs while the menu is still `visibility:hidden` and is refused, so focus sits on
+    // <body> or in the closed child; uncovering therefore returns it to the nav container (the
+    // focus is outside the overlay here, so it moves to #menu-rows). It is still a plain focus
+    // call: no open/close record, and a repeat show() above did not re-run the deferred focus.
+    expect(document.activeElement, 'uncovering returns focus to the list').toBe(rowsEl());
+  });
+
+  it('MV-A11Y-UNCOVER-FOCUS-01: uncovering moves focus to #menu-rows when focus is on <body> or on an element outside the overlay', async () => {
+    // WRONG IMPL KILLED: a setCovered(false) that only clears the visibility (focus stranded on
+    // <body> / the closed child after a child screen pops), and one that focuses on every call.
+    const outside = outsideSentinel();
+    const { view } = newView();
+    view.show();
+    await flushMacrotask();
+
+    outside.focus();
+    expect(document.activeElement).toBe(outside);
+    view.setCovered(true);
+    view.setCovered(false);
+    expect(document.activeElement, 'from an element outside the overlay').toBe(rowsEl());
+
+    (document.activeElement as HTMLElement).blur();
+    expect(document.activeElement, 'focus is parked on <body>').toBe(document.body);
+    view.setCovered(true);
+    view.setCovered(false);
+    expect(document.activeElement, 'from <body>').toBe(rowsEl());
+  });
+
+  it('MV-A11Y-UNCOVER-INSIDE-01: uncovering leaves focus where it is when it is already inside the overlay', async () => {
+    // WRONG IMPL KILLED: an unconditional `rows.focus()` on uncover (it would yank focus off a
+    // control the user is already on inside the menu).
+    const overlay = document.getElementById(OVERLAY_ID) as HTMLElement;
+    const inner = document.createElement('button');
+    inner.textContent = 'inside';
+    overlay.appendChild(inner);
+    const { view } = newView();
+    view.show();
+    await flushMacrotask();
+    inner.focus();
+    expect(document.activeElement).toBe(inner);
+    view.setCovered(true);
+    view.setCovered(false);
+    expect(document.activeElement).toBe(inner);
+  });
+
+  it('MV-A11Y-UNCOVER-NOT-COVERED-01: setCovered(false) when the menu was not covered never moves focus', async () => {
+    // WRONG IMPL KILLED: a setCovered(false) that focuses the list on every call rather than only
+    // on the covered -> uncovered edge (it would run on every uncovered syncStack).
+    const outside = outsideSentinel();
+    const { view } = newView();
+    view.show();
+    await flushMacrotask();
+    outside.focus();
+    view.setCovered(false);
+    expect(document.activeElement, 'never covered').toBe(outside);
+    view.setCovered(false);
+    expect(document.activeElement, 'still never covered').toBe(outside);
+    // Covering itself does not move focus either.
+    view.setCovered(true);
+    expect(document.activeElement, 'covering moves nothing').toBe(outside);
   });
 });

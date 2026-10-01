@@ -353,7 +353,7 @@ let tradeProposeView: TradeProposeView | undefined;
 // in-client help overlay — display-only `?` overlay listing
 // controls + goals. No callbacks / reducer (zero-arg construction).
 let helpView: HelpView | undefined;
-// The two-level main menu — the 15th mutual-exclusion overlay.
+// The main menu (ctl-5): a nav-list screen that stays open beneath the overlay it opens.
 let menuView: MenuView | undefined;
 // The guest-claim overlay (registry GUARD_ONLY) and the
 // session-lifecycle overlay (registry-EXTERNAL, driven by conn.sessionState()), each backed by
@@ -1303,7 +1303,8 @@ const jump = (): void => sendIntent('Jump');
 
 // The input pipeline (design §12): the keyboard source maps keys through the ONE binding
 // table into `{button, down}` edges; the pure router decides what each edge does. The router
-// owns only the D-pad and X (Jump) so far — every other key is the legacy ladder's below.
+// owns the D-pad and X (Jump), plus A, B and Y while the main menu is up — every other key is
+// the legacy ladder's below.
 const keyboard = new KeyboardSource();
 const inputRouter = new InputRouter();
 
@@ -1483,7 +1484,8 @@ const onKeyDown = (e: KeyboardEvent): void => {
     // old guard list was its last statement in main.ts (KeyI/KeyE below share
     // this note): modals are GUARDED, NEVER DISMISSED. `canOpen` DENIES over every GUARD_ONLY
     // overlay — dialogue, questLog, heal, shop, trade, pvp, leaderboard, rename, tradePropose,
-    // help, menu — and over a live battle (EXCLUSIVE_TOP); the only ids it ever returns in
+    // help — and over a live battle (EXCLUSIVE_TOP; the main menu is filtered out by
+    // `overlayVerdict`, ctl-5); the only ids it ever returns in
     // `forceHide` are the box/raising/evolution HIDE_SWITCH siblings this trio legitimately
     // switches between. Silently dismissing a modal on a stray keypress is wrong UX, and for
     // dialogue it is a server desync. The tier table (ui/overlayRegistry.ts)
@@ -1661,10 +1663,9 @@ const onKeyDown = (e: KeyboardEvent): void => {
   // The menu front-door. KeyM was verified UNBOUND before this slice — no
   // D-pad/letter/`?` collision and no browser default. Escape is deliberately NOT overloaded
   // to open the menu: it stays a pure close/back key, so mashing Escape never surprises the
-  // player with a menu. This is the 12th open-handler; its guard is the ONE
-  // registry verdict plus `identity !== ''` — menuAvailability() reads
-  // store.ownCharacter(identity), which is undefined before join, and this listener has no
-  // try/catch. The AC-12 click front door carries the SAME predicate.
+  // player with a menu. Its guard is the ONE registry verdict plus `identity !== ''` — the
+  // screens the menu opens read store state keyed by identity, which is '' before join. The
+  // AC-12 click front door carries the SAME predicate.
   if (e.code === 'KeyM') {
     e.preventDefault();
     if (
@@ -2246,12 +2247,11 @@ document.addEventListener('click', (e) => {
   // the two front doors are UNIFIED — this branch now
   // carries the SAME predicate the menu hotkey does, so a single verdict decides both. The one
   // difference from the retired `!anyOverlayVisible()` form, stated rather than glossed:
-  // canOpen exempts self, so with ONLY the menu visible this branch would re-open (resetting
-  // menuState) where it previously dead-clicked. Unreachable in practice — #menu-overlay is
+  // canOpen exempts self, so with ONLY the menu visible this branch would re-open it where it
+  // previously dead-clicked. Unreachable in practice — #menu-overlay is
   // position:fixed;inset:0;z-index:100 over the badge's z-index:50, so a click while the menu
-  // is open never reaches the badge and closest() returns null. The identity guard is
-  // preserved: menuAvailability() reads store.ownCharacter(identity) and this listener has no
-  // try/catch.
+  // is open never reaches the badge; while a child covers the menu, the child's own verdict
+  // denies. The identity guard is preserved: the menu's screens read identity-keyed state.
   if ((e.target as HTMLElement).closest('[data-menu-launcher]') !== null) {
     if (overlayVerdict('menuView').kind === 'allow' && identity !== '') {
       held.clear();

@@ -63,16 +63,14 @@ const NONE: MenuEffect = { kind: 'none' };
 const rowsAt = (level: MenuLevel): readonly MenuEntry[] =>
   level === 'root' ? MENU_ENTRIES : (menuGroup(level)?.children ?? []);
 
-const LAYOUTS = new Map<MenuLevel, NavLayout>();
-/** The level's list; built once (the table is static). No entry is ever disabled. */
-function layoutAt(level: MenuLevel): NavLayout {
-  let layout = LAYOUTS.get(level);
-  if (layout === undefined) {
-    layout = list(rowsAt(level).map((row) => ({ key: row.key, enabled: true })));
-    LAYOUTS.set(level, layout);
-  }
-  return layout;
-}
+/** Each level's list, built once from the static table. No entry is ever disabled. */
+const LAYOUTS = Object.fromEntries(
+  (Object.keys(FRAME_IDS) as MenuLevel[]).map((level) => [
+    level,
+    list(rowsAt(level).map((row) => ({ key: row.key, enabled: true }))),
+  ]),
+) as Readonly<Record<MenuLevel, NavLayout>>;
+const layoutAt = (level: MenuLevel): NavLayout => LAYOUTS[level];
 
 /** A state on `level`, with that level's cursor remembered. */
 function at(

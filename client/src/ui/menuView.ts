@@ -98,9 +98,16 @@ export class MenuView {
   }
 
   /** A child screen sits above the menu: stop painting the menu (most child shells are in-flow,
-   *  so a fixed full-screen menu would cover them) while it stays open beneath. */
+   *  so a fixed full-screen menu would cover them) while it stays open beneath. On uncover, focus
+   *  returns to the list: the pop's own focus move ran while the menu was still `visibility:
+   *  hidden`, which a browser refuses, so focus would otherwise sit on `<body>` or in the closed
+   *  child. */
   setCovered(covered: boolean): void {
+    const wasCovered = this.#overlay.style.visibility === 'hidden';
     this.#overlay.style.visibility = covered ? 'hidden' : '';
+    if (wasCovered && !covered && !this.#overlay.contains(document.activeElement)) {
+      this.#rows.focus();
+    }
   }
 
   render(vm: MenuViewModel): void {
