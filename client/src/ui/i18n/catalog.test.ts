@@ -372,15 +372,15 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // trade-propose confirmation and the six session-overlay strings (sessionModel.ts:124-134).
   // Every value is byte-transcribed from the pre-migration literal at the cited main.ts/
   // sessionModel.ts line (memory/projects/monster-realm-21r-b-plan.md's key table).
-  'chrome.feedback.disconnected': 'disconnected — try again', // main.ts (8 guarded sites) / careAction.ts / sessionModel.ts
-  'shop.feedback.purchased': 'Purchase complete!', // main.ts:2643
-  'shop.feedback.sold': 'Sale complete!', // main.ts:2658
-  'trade.feedback.accepted': 'Trade accepted!', // main.ts:2675
-  'trade.feedback.rejected': 'Trade rejected.', // main.ts:2687
-  'trade.feedback.completed': 'Trade complete!', // main.ts:2699
-  'trade.feedback.cancelled': 'Trade cancelled.', // main.ts:2711
-  'chrome.rename.updated': 'Name updated!', // main.ts:2829
-  'tradePropose.feedback.sent': 'Offer sent!', // main.ts:2860
+  'chrome.feedback.disconnected': 'disconnected — try again', // careAction.ts:72 (performCare) / sessionModel.ts
+  'shop.feedback.purchased': 'Purchase complete!', // main.ts:2648
+  'shop.feedback.sold': 'Sale complete!', // main.ts:2655
+  'trade.feedback.accepted': 'Trade accepted!', // main.ts:2668
+  'trade.feedback.rejected': 'Trade rejected.', // main.ts:2675
+  'trade.feedback.completed': 'Trade complete!', // main.ts:2682
+  'trade.feedback.cancelled': 'Trade cancelled.', // main.ts:2689
+  'chrome.rename.updated': 'Name updated!', // main.ts:2801
+  'tradePropose.feedback.sent': 'Offer sent!', // main.ts:2828
   'chrome.session.expired.title': 'Session expired', // sessionModel.ts:124
   'chrome.session.expired.body':
     'Your sign-in has expired. Sign in again to keep saving progress across your devices, or ' +

@@ -26,14 +26,15 @@
 //
 // FIX: extract the entire onCare decision into an exported, directly-testable
 // function — `performCare` — in a NEW module `client/src/ui/careAction.ts`.
-// `main.ts`'s `onCare` wiring becomes a thin adapter that hands performCare a
-// `callCare`/`showFeedback` dependency pair. This file tests the REAL behaviour: node
+// `main.ts`'s `onCare` wiring becomes a thin adapter that hands performCare its dependencies
+// (`call`/`successMessage`/`where`/`showFeedback` since pgcc-a generalised the core; `call` was
+// first named `callCare`). This file tests the REAL behaviour: node
 // environment, no DOM, no SDK, no wasm — pure async control flow over injected fakes.
 //
 // RED-TEAM ROUND 2 (against the shipped careAction.ts, AFTER the first code-review
-// round below had already landed): BUG 1 — a SYNCHRONOUS throw from `callCare()`
-// shows the player NOTHING. `careAction.ts:46` calls
-// `const inFlight = deps.callCare();` OUTSIDE the try block. If callCare() throws
+// round below had already landed): BUG 1 — a SYNCHRONOUS throw from `call()` (then named
+// `callCare`) showed the player NOTHING. The shipped careAction.ts called
+// `const inFlight = deps.callCare();` OUTSIDE the try block. If call() throws
 // synchronously (rather than returning a rejected promise), the throw escapes
 // performCare entirely as a REJECTED performCare() promise, before any showFeedback
 // call. Reachable, not hypothetical: the real SDK's callReducerWithParams
@@ -76,11 +77,11 @@
 //   resolve arm                -> showFeedback not called, or called with the wrong text
 //   reject arm                 -> showFeedback shows 'Cared!' (the PoC A lie) or a raw
 //                                  err.message leak instead of reduceErrorMessage's text
-//   frozen/disconnected arm    -> callCare()'s undefined return is treated as success
+//   frozen/disconnected arm    -> call()'s undefined return is treated as success
 //                                  (awaiting `undefined` resolves immediately with no
 //                                  throw — a naive impl could easily call showFeedback
 //                                  ('Cared!') on it)
-//   synchronous-throw (BUG 1)  -> callCare() called OUTSIDE any try/catch, so a sync
+//   synchronous-throw (BUG 1)  -> call() invoked OUTSIDE any try/catch, so a sync
 //                                  throw (e.g. BSATN serialization failure) escapes as
 //                                  a rejected performCare() promise with NO
 //                                  showFeedback call — the "no visible effect" bug
@@ -91,9 +92,8 @@
 //                                  showFeedback wrapper, never to performCare)
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-// careAction.ts is now shipped (see the STATUS UPDATE above) — this import resolves
-// against the real module; `performCare` still declares a second `_monsterId: bigint`
-// parameter the tests below no longer pass (code review MINOR finding).
+// careAction.ts is shipped — these imports resolve against the real module. `performCare` takes
+// ONE `CareActionDeps` argument; the monster id is bound into the `call` thunk by the caller.
 import type { CareActionDeps } from './careAction';
 import { performCare } from './careAction';
 import { CATALOG_EN } from './i18n/catalog.en';
@@ -101,10 +101,9 @@ import { CATALOG_FR } from './i18n/catalog.fr';
 import { setLocale, t } from './i18n/resolver';
 import { reduceErrorMessage } from './statusModel';
 
-// slice 21r-b: careAction.ts's module-private `DISCONNECTED_MESSAGE` constant is rewired to
-// `t('chrome.feedback.disconnected')`. The key is NOT YET a `MessageId` (this slice adds it),
-// so it is read through a widened `Record` cast — this file must fail on a MISSING/WRONG
-// catalog VALUE, never on a TS/import error.
+// slice 21r-b rewired careAction.ts's disconnected line to `t('chrome.feedback.disconnected')`.
+// Both catalogs are read here through a widened `Record<string, string>` cast so a missing or
+// wrong catalog VALUE fails an assertion by key name instead of a type error.
 const EN = CATALOG_EN as unknown as Record<string, string>;
 const FR = CATALOG_FR as unknown as Record<string, string>;
 
@@ -144,7 +143,7 @@ function makeInternalError(message: string): Error {
 // ---------------------------------------------------------------------------
 
 describe('★★ performCare(): ORDER — feedback only follows settlement, never precedes it (kills PoC A optimistic-lie)', () => {
-  it('★★ ORDER BITES: showFeedback is NOT called while callCare()\'s promise is still pending; only after it resolves does "Cared!" appear', async () => {
+  it('★★ ORDER BITES: showFeedback is NOT called while call()\'s promise is still pending; only after it resolves does "Cared!" appear', async () => {
     // WRONG IMPL KILLED (PoC A): `showFeedback('Cared!')` fired synchronously before
     // `await`ing the reducer call. Since CARE_COOLDOWN_MS is 6h, most real clicks are
     // rejections — PoC A flashes a false "Cared!" on nearly every click before flipping
@@ -171,7 +170,7 @@ describe('★★ performCare(): ORDER — feedback only follows settlement, neve
 
     expect(
       showFeedback,
-      "showFeedback must NOT be called while callCare()'s promise is still pending — an " +
+      "showFeedback must NOT be called while call()'s promise is still pending — an " +
         'optimistic "Cared!" fired before the server settles can lie on every rejected click ' +
         '(PoC A), and CARE_COOLDOWN_MS being 6h means MOST real clicks are rejections',
     ).not.toHaveBeenCalled();
@@ -189,7 +188,7 @@ describe('★★ performCare(): ORDER — feedback only follows settlement, neve
 // ---------------------------------------------------------------------------
 
 describe('performCare(): resolve arm — success shows "Cared!" exactly once', () => {
-  it('BITES: callCare() resolves -> showFeedback called exactly once with "Cared!" — kills a silent-success or double-flash impl', async () => {
+  it('BITES: call() resolves -> showFeedback called exactly once with "Cared!" — kills a silent-success or double-flash impl', async () => {
     const callCare = vi.fn().mockResolvedValue(undefined);
     const showFeedback = vi.fn();
     const deps: CareActionDeps = {
@@ -212,7 +211,7 @@ describe('performCare(): resolve arm — success shows "Cared!" exactly once', (
 // ---------------------------------------------------------------------------
 
 describe("performCare(): reject arm — failure routes through reduceErrorMessage, NEVER 'Cared!'", () => {
-  it("BITES: callCare() rejects with a SenderError -> showFeedback called exactly once with reduceErrorMessage(err, 'care')'s text, and NEVER with 'Cared!' — kills PoC A's lie and any raw err.message leak", async () => {
+  it("BITES: call() rejects with a SenderError -> showFeedback called exactly once with reduceErrorMessage(err, 'care')'s text, and NEVER with 'Cared!' — kills PoC A's lie and any raw err.message leak", async () => {
     // WRONG IMPL KILLED: PoC A's shape (showFeedback('Cared!') fired unconditionally,
     // THEN a .catch showing the error text) would call showFeedback TWICE here — the
     // `toHaveBeenCalledTimes(1)` assertion alone kills it. The `not.toHaveBeenCalledWith
@@ -237,7 +236,7 @@ describe("performCare(): reject arm — failure routes through reduceErrorMessag
     expect(showFeedback).not.toHaveBeenCalledWith('Cared!');
   });
 
-  it("BITES: callCare() rejects with an InternalError -> showFeedback shows reduceErrorMessage's generic 'care: server error' text, never the raw err.message — kills an InternalError-detail leak", async () => {
+  it("BITES: call() rejects with an InternalError -> showFeedback shows reduceErrorMessage's generic 'care: server error' text, never the raw err.message — kills an InternalError-detail leak", async () => {
     // reduceErrorMessage's 'internal' bucket NEVER includes err.message in its output
     // (statusModel.ts: InternalError detail "can carry stack/state a user must not
     // see"). An impl that shows `err.message` directly (or interpolates it into the
@@ -269,13 +268,13 @@ describe("performCare(): reject arm — failure routes through reduceErrorMessag
 });
 
 // ---------------------------------------------------------------------------
-// frozen/disconnected arm — callCare() returns undefined
+// frozen/disconnected arm — call() returns undefined
 // ---------------------------------------------------------------------------
 
-describe('performCare(): frozen/disconnected arm — callCare() returns undefined', () => {
-  it('BITES: callCare() returns undefined -> a feedback message is shown, the reducer machinery is entered exactly once, and the message is NEVER "Cared!" — kills an impl that treats undefined as success', async () => {
+describe('performCare(): frozen/disconnected arm — call() returns undefined', () => {
+  it('BITES: call() returns undefined -> a feedback message is shown, the reducer machinery is entered exactly once, and the message is NEVER "Cared!" — kills an impl that treats undefined as success', async () => {
     // WRONG IMPL KILLED: `await undefined` resolves immediately with no throw — a naive
-    // impl that does not explicitly branch on `callCare() === undefined` before awaiting
+    // impl that does not explicitly branch on `call() === undefined` before awaiting
     // would fall through to the success path and show 'Cared!' even though the link is
     // frozen/disconnected and NO reducer call was ever actually made.
     const callCare = vi.fn().mockReturnValue(undefined);
@@ -303,13 +302,13 @@ describe('performCare(): frozen/disconnected arm — callCare() returns undefine
     ).toBeGreaterThan(0);
   });
 
-  describe('i18n (slice 21r-b): the frozen/disconnected message is the SAME catalog key main.ts/sessionModel.ts use', () => {
+  describe('i18n (slice 21r-b): the frozen/disconnected message is the SAME catalog key sessionModel.ts uses (resolved inside the careAction core)', () => {
     afterEach(() => {
       // The locale cell is module-level (ui/i18n/resolver.ts) and leaks across tests.
       setLocale('en');
     });
 
-    it('★ BITES: under en, callCare() returning undefined shows the exact pre-migration English line', async () => {
+    it('★ BITES: under en, call() returning undefined shows the exact pre-migration English line', async () => {
       const callCare = vi.fn().mockReturnValue(undefined);
       const showFeedback = vi.fn();
       const deps: CareActionDeps = {
@@ -326,7 +325,7 @@ describe('performCare(): frozen/disconnected arm — callCare() returns undefine
       expect(showFeedback).toHaveBeenCalledWith(EN['chrome.feedback.disconnected']);
     });
 
-    it('★★ BITES: under fr, callCare() returning undefined shows CATALOG_FR["chrome.feedback.disconnected"], not the hardcoded English literal', async () => {
+    it('★★ BITES: under fr, call() returning undefined shows CATALOG_FR["chrome.feedback.disconnected"], not the hardcoded English literal', async () => {
       // WRONG IMPL KILLED: careAction.ts's `DISCONNECTED_MESSAGE` staying a module-scope
       // string literal (or a `const X = t(...)` frozen at IMPORT time, before setLocale('fr')
       // below ever runs) — either shape shows the English line regardless of the active
@@ -352,11 +351,11 @@ describe('performCare(): frozen/disconnected arm — callCare() returns undefine
 });
 
 // ---------------------------------------------------------------------------
-// ★★ BUG 1 (MAJOR) — a SYNCHRONOUS throw from callCare() must still
+// ★★ BUG 1 (MAJOR) — a SYNCHRONOUS throw from call() must still
 // produce exactly one showFeedback call, and performCare must NOT reject.
 //
-// The shipped careAction.ts calls `const inFlight = deps.callCare();` OUTSIDE the
-// try block. If callCare() throws synchronously rather than
+// The guarded failure shape is a careAction.ts that invokes `deps.call()` OUTSIDE the
+// try block. If call() throws synchronously rather than
 // returning a rejected promise, the throw escapes performCare entirely as a
 // REJECTED performCare() promise, before any showFeedback call. This is reachable,
 // not hypothetical: the real SDK's callReducerWithParams BSATN-serializes the
@@ -368,8 +367,8 @@ describe('performCare(): frozen/disconnected arm — callCare() returns undefine
 //
 // ---------------------------------------------------------------------------
 
-describe('★★ performCare(): a SYNCHRONOUSLY-throwing callCare() must still report a message (code-review BUG 1, MAJOR)', () => {
-  it("★★ BITES: callCare() throws SYNCHRONOUSLY -> performCare resolves (does NOT reject) and showFeedback is called exactly once with reduceErrorMessage(err, 'care')'s text, NEVER 'Cared!' — kills the callCare-outside-try shape", async () => {
+describe('★★ performCare(): a SYNCHRONOUSLY-throwing call() must still report a message (code-review BUG 1, MAJOR)', () => {
+  it("★★ BITES: call() throws SYNCHRONOUSLY -> performCare resolves (does NOT reject) and showFeedback is called exactly once with reduceErrorMessage(err, 'care')'s text, NEVER 'Cared!' — kills the call-outside-try shape", async () => {
     const thrownErr = new Error('serialization failure');
     const callCare = vi.fn((): Promise<unknown> | undefined => {
       throw thrownErr;
@@ -388,7 +387,7 @@ describe('★★ performCare(): a SYNCHRONOUSLY-throwing callCare() must still r
     // rejection today but only console.error's it, so the player sees nothing).
     await expect(
       performCare(deps),
-      'performCare must resolve even when callCare() throws synchronously — a rejecting ' +
+      'performCare must resolve even when call() throws synchronously — a rejecting ' +
         'promise here forces every caller to add its own catch, and the shipped ' +
         "raisingView.ts caller's catch only console.error's, showing the player nothing",
     ).resolves.toBeUndefined();
@@ -397,8 +396,8 @@ describe('★★ performCare(): a SYNCHRONOUSLY-throwing callCare() must still r
     expect(callCare).toHaveBeenCalledOnce();
     expect(
       showFeedback,
-      'a synchronously-thrown callCare() error must still produce EXACTLY ONE showFeedback ' +
-        'call — kills the callCare-outside-try shape, where a sync throw propagates as a ' +
+      'a synchronously-thrown call() error must still produce EXACTLY ONE showFeedback ' +
+        'call — kills the call-outside-try shape, where a sync throw propagates as a ' +
         'rejected performCare() promise with NO showFeedback call at all',
     ).toHaveBeenCalledTimes(1);
     expect(showFeedback).toHaveBeenCalledWith(expectedText);
@@ -620,7 +619,7 @@ describe('performCare(): the generalised feedback core takes successMessage + wh
     // main.ts's care adapter resolves the literal key at its call site and hands the string in.
     await performCare({
       call,
-      successMessage: t('raising.feedback.cared' as never),
+      successMessage: t('raising.feedback.cared'),
       where: 'care',
       showFeedback,
     });
@@ -641,7 +640,7 @@ describe('performCare(): the generalised feedback core takes successMessage + wh
     const showFeedback = vi.fn();
     await performCare({
       call,
-      successMessage: t('raising.feedback.cared' as never),
+      successMessage: t('raising.feedback.cared'),
       where: 'care',
       showFeedback,
     });

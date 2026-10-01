@@ -1,34 +1,36 @@
 // @vitest-environment happy-dom
 /**
- * main.feedbackCore.test.ts — booted-app gate for slice pgcc-a (A4 + the A3 care line through the
- * real raising overlay).
- *
- * pgcc-a routes care and the eight inline feedback sites (shop buy/sell, trade x4, rename,
- * trade-propose) through ONE core (`performCare`, ui/careAction.ts). The core is visibility-agnostic
- * by design (careAction.test.ts proves it), so each main.ts call site's `showFeedback` closure owns
- * the "paint only while the overlay is visible" rule. That rule is invisible to the core's unit
- * tests; this file proves it end to end, one test per view, against the REAL main.ts.
+ * main.feedbackCore.test.ts — booted-app gate for slice pgcc-a: the nine main.ts feedback sites
+ * (care, shop buy/sell, trade accept/reject/confirm/cancel, rename, trade-propose) all route through
+ * ONE core (`performCare`, ui/careAction.ts). The core is unit-tested over injected fakes
+ * (careAction.test.ts); what that suite cannot see is each main.ts ADAPTER: the `where` tag it
+ * passes, the success key it resolves, the visibility guard its `showFeedback` closure owns, the
+ * frozen-link path, and whether it RETURNS the core's promise so the view's in-flight lock holds.
+ * This file proves those, per site, against the REAL main.ts.
  *
  * HARNESS — copied from main.feedbackI18n.test.ts (the REAL main.ts booted against the REAL
  * index.html shell; wasm pkg, './net/connection', telemetry and './render/world' mocked; module-scope
- * listeners recorded and detached per test). Reducer spies return promises the test HOLDS OPEN so the
- * overlay can be hidden while a call is in flight.
+ * listeners recorded and detached per test). Reducer spies return promises the test controls.
+ * Table-driven tests boot a fresh app per site (`resetApp()` between rows) inside ONE `it`.
  *
- * HIDING: each view's `visible` getter reads its overlay's own `style.display !== 'none'`, so the
- * tests flip exactly that flag on the overlay element (the same one `hide()` writes) and leave
- * everything else alone. A feedback node that is still EMPTY after the call settles proves the
- * closure did not paint into a hidden overlay. Every hidden test first proves the action really ran
- * (the reducer spy was called once with the expected args), so none of them can pass vacuously.
+ * OPENING: trade (KeyU), rename (KeyN), trade-propose (KeyO) and raising (KeyI) open through their
+ * real shortcuts. Shop is the one documented short-circuit (a real open needs an NPC + dialogue
+ * round-trip): flip `#shop-overlay`'s display — the flag `ShopView.visible` reads — and flush a
+ * store batch so the real listener renders the real Buy/Sell buttons.
  *
- * EXPECTED STATE AT THE RED PHASE: the four PGCCA-A4-HIDDEN-* tests are CHARACTERIZATION tests of a
- * behaviour-preserving refactor — today's inline `if (view?.visible)` guards already satisfy them,
- * so they are expected GREEN now and must STAY green after the refactor (they are the wiring guard
- * that a closure dropped from a routed call site would trip). PGCCA-A4-CARE-BOOT-FR is RED today:
- * main.ts's care adapter hands the core the hardcoded English "Cared!".
+ * HIDING: each view's `visible` getter reads its overlay's own `style.display !== 'none'` (raising
+ * is not hidden here), so the hidden tests flip exactly that flag. A feedback node still EMPTY
+ * after the call settles proves the closure did not paint into a hidden overlay.
  *
- * `raising.feedback.cared` is not yet a `MessageId`, so it is read off CATALOG_FR through a widened
- * `Record<string, string>` cast: the file fails on a MISSING/WRONG catalog value (an assertion),
- * never on a TS/import error.
+ * Every test asserts the reducer spy's call count, so none can pass with the action never firing.
+ *
+ * TESTS (each tag appears in exactly one title):
+ *   PGCCA-A4-HIDDEN-SHOP / -TRADE / -RENAME / -PROPOSE  paint only while the overlay is visible,
+ *                                                        with the reducer's exact args asserted
+ *   PGCCA-A4-WHERE-PER-SITE    a SenderError rejection paints reduceErrorMessage(err, <site tag>)
+ *   PGCCA-A1-FROZEN-PER-SITE   a frozen link paints the disconnected line and calls no reducer
+ *   PGCCA-A1-LOCK-HELD         the view's in-flight lock holds until the core's promise settles
+ *   PGCCA-A4-CARE-BOOT-FR      care's success line is the fr catalog value under `?locale=fr`
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -45,8 +47,11 @@ import type {
   StoreTradeOffer,
   StoreWallet,
 } from './net/store';
+import { CATALOG_EN } from './ui/i18n/catalog.en';
 import { CATALOG_FR } from './ui/i18n/catalog.fr';
+import { reduceErrorMessage } from './ui/statusModel';
 
+const EN = CATALOG_EN as unknown as Record<string, string>;
 const FR = CATALOG_FR as unknown as Record<string, string>;
 
 /** A second identity (64 hex chars, `Identity`-constructible) for the trade counterparty. */
@@ -54,22 +59,54 @@ const OTHER = 'cd'.repeat(32);
 const TRADE_ID = 10n;
 
 const H = vi.hoisted(() => {
-  const buy = vi.fn((_args: unknown) => Promise.resolve());
-  const respondTrade = vi.fn((_args: unknown) => Promise.resolve());
-  const setProfileName = vi.fn((_args: unknown) => Promise.resolve());
-  const proposeTrade = vi.fn((_args: unknown) => Promise.resolve());
-  const care = vi.fn((_args: unknown) => Promise.resolve());
+  const spy = () => vi.fn((_args: unknown) => Promise.resolve());
+  const buy = spy();
+  const sell = spy();
+  const respondTrade = spy();
+  const confirmTrade = spy();
+  const cancelTrade = spy();
+  const setProfileName = spy();
+  const proposeTrade = spy();
+  const care = spy();
   return {
     identity: 'ab'.repeat(32),
     connectOpts: null as unknown,
+    /** Read LIVE by the mocked Connection's `linkFrozen()`; a test flips it AFTER opening a view. */
+    linkFrozen: false,
     buy,
+    sell,
     respondTrade,
+    confirmTrade,
+    cancelTrade,
     setProfileName,
     proposeTrade,
     care,
-    live: { reducers: { buy, respondTrade, setProfileName, proposeTrade, care } } as unknown,
+    live: {
+      reducers: {
+        buy,
+        sell,
+        respondTrade,
+        confirmTrade,
+        cancelTrade,
+        setProfileName,
+        proposeTrade,
+        care,
+      },
+    } as unknown,
   };
 });
+
+type ReducerSpy = typeof H.buy;
+const ALL_SPIES: readonly ReducerSpy[] = [
+  H.buy,
+  H.sell,
+  H.respondTrade,
+  H.confirmTrade,
+  H.cancelTrade,
+  H.setProfileName,
+  H.proposeTrade,
+  H.care,
+];
 
 // Same wasm mock shape as main.feedbackI18n.test.ts / main.partyFull.test.ts.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
@@ -104,7 +141,7 @@ vi.mock('./net/connection', () => {
     conn: undefined,
     live: () => H.live,
     identity: () => H.identity,
-    linkFrozen: () => false,
+    linkFrozen: () => H.linkFrozen,
     continueAnonymously: () => undefined,
     sessionState: () => 'hidden',
     startSignIn: () => undefined,
@@ -165,7 +202,7 @@ interface Recorded {
   readonly options?: boolean | AddEventListenerOptions;
 }
 
-/** Record module-scope listeners so afterEach can detach them (main.ts is re-imported per test). */
+/** Record module-scope listeners so teardown can detach them (main.ts is re-imported per boot). */
 function recordListeners(target: EventTarget, sink: Recorded[]): () => void {
   const hadOwn = Object.hasOwn(target, 'addEventListener');
   const ownDesc = Object.getOwnPropertyDescriptor(target, 'addEventListener');
@@ -231,21 +268,22 @@ async function bootMain(url: string): Promise<void> {
   opts.onReady(H.identity);
 }
 
-beforeEach(() => {
+function setupApp(): void {
   recorded = [];
   H.connectOpts = null;
-  H.buy.mockClear();
-  H.respondTrade.mockClear();
-  H.setProfileName.mockClear();
-  H.proposeTrade.mockClear();
-  H.care.mockClear();
+  H.linkFrozen = false;
+  // mockReset + a fresh default: a queued `...Once` impl from a failed row can never leak forward.
+  for (const s of ALL_SPIES) {
+    s.mockReset();
+    s.mockImplementation(() => Promise.resolve());
+  }
   buildAppShellFromRealIndexHtml();
   vi.stubGlobal('requestAnimationFrame', (): number => 0);
   restoreWindowAdd = recordListeners(window, recorded);
   restoreDocumentAdd = recordListeners(document, recorded);
-});
+}
 
-afterEach(() => {
+function teardownApp(): void {
   for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
   recorded = [];
   restoreDocumentAdd?.();
@@ -253,7 +291,17 @@ afterEach(() => {
   vi.unstubAllGlobals();
   document.body.replaceChildren();
   window.history.replaceState(null, '', '/');
-});
+}
+
+/** Tear the booted app down and stand a clean shell back up — the between-rows reset of the
+ *  table-driven tests, identical to what afterEach + beforeEach do between tests. */
+function resetApp(): void {
+  teardownApp();
+  setupApp();
+}
+
+beforeEach(setupApp);
+afterEach(teardownApp);
 
 /** A reducer promise the test controls: it stays pending until `release()`. */
 function holdOpen(): { readonly promise: Promise<void>; readonly release: () => void } {
@@ -265,7 +313,7 @@ function holdOpen(): { readonly promise: Promise<void>; readonly release: () => 
 }
 
 /** Two macrotask turns: every microtask continuation (the core's await, the view's .finally) has
- *  run by the time this resolves. */
+ *  run by the time this resolves — including a lock that a broken adapter released EARLY. */
 async function settle(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -287,61 +335,11 @@ function focusCanvasAndPressKey(code: string): void {
   window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true }));
 }
 
-/** Seed one shop + one for-sale item, flip `#shop-overlay` open (the flag ShopView.show() writes
- *  and ShopView.visible reads) and flush ONE batch so the REAL listener renders the REAL Buy
- *  button — main.feedbackI18n.test.ts's documented short-circuit (a real open needs an NPC +
- *  dialogue round-trip, orthogonal to this slice). */
-function openShopWithOneItem(): HTMLButtonElement {
-  const store = storeHandle();
-  store.upsertShop({ shopId: 1, name: 'Test Shop' });
-  store.upsertItemDef({
-    id: 1,
-    name: 'Potion',
-    description: '',
-    recruitBonus: 0,
-    trainStat: null,
-    trainAmount: 0,
-    sellPrice: 0n,
-    cureStatus: null,
-  });
-  store.upsertShopItem({ shopItemId: 1n, shopId: 1, itemId: 1, buyPrice: 10n });
-  store.upsertWallet({ ownerIdentity: H.identity, balance: 100n });
-  const overlay = document.getElementById('shop-overlay');
-  expect(overlay, 'shop-overlay must exist in the real index.html shell').not.toBeNull();
-  (overlay as HTMLElement).style.display = '';
-  store.flushBatch();
-  const btn = document.querySelector('#shop-for-sale button');
-  expect(btn, 'the shop overlay must render a Buy button for the seeded item').not.toBeNull();
-  return btn as HTMLButtonElement;
-}
-
-/** Seed ONE pending offer addressed to the viewer, then open the REAL trade overlay via the REAL
- *  KeyU shortcut and return its Accept button. */
-function openTradeAndFindAccept(): HTMLButtonElement {
-  const store = storeHandle();
-  store.upsertTradeOffer({
-    tradeId: TRADE_ID,
-    initiator: OTHER,
-    counterparty: H.identity,
-    initiatorMonsterIds: [],
-    initiatorItems: [],
-    initiatorCurrency: 0n,
-    counterpartyMonsterIds: [],
-    counterpartyItems: [],
-    counterpartyCurrency: 0n,
-    initiatorCards: [],
-    counterpartyCards: [],
-    status: 'Pending',
-    createdAtMs: 0n,
-  });
-  store.flushBatch();
-  focusCanvasAndPressKey('KeyU');
-  const btn = document.querySelector('#trade-actions button[data-action="accept"]');
-  expect(
-    btn,
-    'the trade overlay must render an "accept" button for the seeded offer',
-  ).not.toBeNull();
-  return btn as HTMLButtonElement;
+/** Re-query and click a control: a view may rebuild its nodes, so never hold one across calls. */
+function clickFirst(selector: string, what: string, root: ParentNode = document): void {
+  const el = root.querySelector(selector);
+  expect(el, `the ${what} control must be rendered`).not.toBeNull();
+  (el as HTMLElement).click();
 }
 
 function monster(monsterId: bigint, partySlot: number): StoreMonsterPub {
@@ -368,116 +366,384 @@ function monster(monsterId: bigint, partySlot: number): StoreMonsterPub {
   };
 }
 
+// ---------------------------------------------------------------------------
+// The nine sites. `open()` stands the site's view up and returns an `activate()` that triggers the
+// action once (re-querying its control each time).
+// ---------------------------------------------------------------------------
+
+type Activate = () => void;
+
+function openCare(): Activate {
+  storeHandle().reconcileMonstersFromView([monster(1n, 0)]);
+  storeHandle().flushBatch();
+  // The REAL KeyI shortcut: main.ts toggles the raising overlay and refreshes it from the store.
+  focusCanvasAndPressKey('KeyI');
+  const root = document.getElementById('raising-feedback')?.parentElement;
+  expect(root, 'the raising overlay must be constructed by main.ts').toBeTruthy();
+  return () => clickFirst('button', 'Care', root as HTMLElement);
+}
+
+function openShop(kind: 'buy' | 'sell'): Activate {
+  const store = storeHandle();
+  store.upsertShop({ shopId: 1, name: 'Test Shop' });
+  store.upsertItemDef({
+    id: 1,
+    name: 'Potion',
+    description: '',
+    recruitBonus: 0,
+    trainStat: null,
+    trainAmount: 0,
+    sellPrice: 0n,
+    cureStatus: null,
+  });
+  store.upsertShopItem({ shopItemId: 1n, shopId: 1, itemId: 1, buyPrice: 10n });
+  // A second, sellable item carried in inventory renders the Sell button.
+  store.upsertItemDef({
+    id: 2,
+    name: 'Herb',
+    description: '',
+    recruitBonus: 0,
+    trainStat: null,
+    trainAmount: 0,
+    sellPrice: 5n,
+    cureStatus: null,
+  });
+  store.reconcileInventoryFromView([{ invId: 1n, ownerIdentity: H.identity, itemId: 2, count: 3 }]);
+  store.upsertWallet({ ownerIdentity: H.identity, balance: 100n });
+  const overlay = document.getElementById('shop-overlay');
+  expect(overlay, 'shop-overlay must exist in the real index.html shell').not.toBeNull();
+  (overlay as HTMLElement).style.display = '';
+  store.flushBatch();
+  const selector = kind === 'buy' ? '#shop-for-sale button' : '#shop-inventory button';
+  return () => clickFirst(selector, kind === 'buy' ? 'Buy' : 'Sell');
+}
+
+type TradeAction = 'accept' | 'reject' | 'confirm' | 'cancel';
+
+function openTrade(action: TradeAction): Activate {
+  // Seed an offer shaped so exactly the action under test is available (feedbackI18n's table).
+  const viewerIsInitiator = action === 'confirm' || action === 'cancel';
+  seedOffer({
+    viewerIsInitiator,
+    status: action === 'confirm' ? 'ConfirmedByCounterparty' : 'Pending',
+  });
+  focusCanvasAndPressKey('KeyU');
+  return () => clickFirst(`#trade-actions button[data-action="${action}"]`, `trade ${action}`);
+}
+
+function seedOffer(o: {
+  readonly viewerIsInitiator: boolean;
+  readonly status: 'Pending' | 'ConfirmedByCounterparty';
+}): void {
+  const store = storeHandle();
+  store.upsertTradeOffer({
+    tradeId: TRADE_ID,
+    initiator: o.viewerIsInitiator ? H.identity : OTHER,
+    counterparty: o.viewerIsInitiator ? OTHER : H.identity,
+    initiatorMonsterIds: [],
+    initiatorItems: [],
+    initiatorCurrency: 0n,
+    counterpartyMonsterIds: [],
+    counterpartyItems: [],
+    counterpartyCurrency: 0n,
+    initiatorCards: [],
+    counterpartyCards: [],
+    status: o.status,
+    createdAtMs: 0n,
+  });
+  store.flushBatch();
+}
+
+function openRename(): Activate {
+  focusCanvasAndPressKey('KeyN');
+  const input = document.getElementById('rename-input') as HTMLInputElement;
+  input.value = 'NewName';
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  return () => clickFirst('#rename-submit', 'rename submit');
+}
+
+function openPropose(): Activate {
+  const store = storeHandle();
+  store.upsertPlayer({
+    identity: OTHER,
+    entityId: 1n,
+    name: 'Bob',
+    online: true,
+    lastInputSeq: 0n,
+  });
+  store.reconcileMonstersFromView([monster(5n, 255)]);
+  store.flushBatch();
+  focusCanvasAndPressKey('KeyO');
+  const target = document.getElementById('tradepropose-target') as HTMLSelectElement;
+  target.value = OTHER;
+  target.dispatchEvent(new Event('change', { bubbles: true }));
+  const monsterBox = document.querySelector('#tradepropose-monsters input[type="checkbox"]');
+  expect(monsterBox, 'the seeded monster must render as an offerable checkbox').not.toBeNull();
+  (monsterBox as HTMLInputElement).checked = true;
+  monsterBox?.dispatchEvent(new Event('change', { bubbles: true }));
+  const offer = document.getElementById('tradepropose-offer-currency') as HTMLInputElement;
+  offer.value = '10';
+  offer.dispatchEvent(new Event('input', { bubbles: true }));
+  const request = document.getElementById('tradepropose-request-currency') as HTMLInputElement;
+  request.value = '3';
+  request.dispatchEvent(new Event('input', { bubbles: true }));
+  const submit = document.getElementById('tradepropose-submit') as HTMLButtonElement;
+  expect(submit.disabled, 'submit must be enabled once a target + assets are set').toBe(false);
+  return () => clickFirst('#tradepropose-submit', 'trade-propose submit');
+}
+
+interface Site {
+  readonly name: string;
+  /** The `reduceErrorMessage` tag the site keeps from before the refactor. */
+  readonly tag: string;
+  readonly feedbackId: string;
+  readonly overlayId: string | undefined;
+  readonly reducer: ReducerSpy;
+  /** The exact reducer argument (an asymmetric matcher where an SDK object is involved). */
+  readonly args: unknown;
+  readonly open: () => Activate;
+}
+
+const SITES: readonly Site[] = [
+  {
+    name: 'care',
+    tag: 'care',
+    feedbackId: 'raising-feedback',
+    overlayId: undefined,
+    reducer: H.care,
+    args: { monsterId: 1n },
+    open: openCare,
+  },
+  {
+    name: 'buy',
+    tag: 'buy',
+    feedbackId: 'shop-feedback',
+    overlayId: 'shop-overlay',
+    reducer: H.buy,
+    args: { shopId: 1, itemId: 1, qty: 1 },
+    open: () => openShop('buy'),
+  },
+  {
+    name: 'sell',
+    tag: 'sell',
+    feedbackId: 'shop-feedback',
+    overlayId: 'shop-overlay',
+    reducer: H.sell,
+    args: { itemId: 2, qty: 1 },
+    open: () => openShop('sell'),
+  },
+  {
+    name: 'accept',
+    tag: 'respond-trade',
+    feedbackId: 'trade-feedback',
+    overlayId: 'trade-overlay',
+    reducer: H.respondTrade,
+    args: { tradeId: TRADE_ID, accepted: true },
+    open: () => openTrade('accept'),
+  },
+  {
+    name: 'reject',
+    tag: 'respond-trade',
+    feedbackId: 'trade-feedback',
+    overlayId: 'trade-overlay',
+    reducer: H.respondTrade,
+    args: { tradeId: TRADE_ID, accepted: false },
+    open: () => openTrade('reject'),
+  },
+  {
+    name: 'confirm',
+    tag: 'confirm-trade',
+    feedbackId: 'trade-feedback',
+    overlayId: 'trade-overlay',
+    reducer: H.confirmTrade,
+    args: { tradeId: TRADE_ID },
+    open: () => openTrade('confirm'),
+  },
+  {
+    name: 'cancel',
+    tag: 'cancel-trade',
+    feedbackId: 'trade-feedback',
+    overlayId: 'trade-overlay',
+    reducer: H.cancelTrade,
+    args: { tradeId: TRADE_ID },
+    open: () => openTrade('cancel'),
+  },
+  {
+    name: 'rename',
+    tag: 'set-profile-name',
+    feedbackId: 'rename-feedback',
+    overlayId: 'rename-overlay',
+    reducer: H.setProfileName,
+    args: { name: 'NewName' },
+    open: openRename,
+  },
+  {
+    name: 'propose',
+    tag: 'propose-trade',
+    feedbackId: 'tradepropose-feedback',
+    overlayId: 'tradepropose-overlay',
+    reducer: H.proposeTrade,
+    // Every field but `counterparty` (an SDK Identity, checked by its hex in the HIDDEN test).
+    args: expect.objectContaining({
+      initiatorMonsterIds: [5n],
+      initiatorItems: [],
+      initiatorCurrency: 10n,
+      counterpartyMonsterIds: [],
+      counterpartyItems: [],
+      counterpartyCurrency: 3n,
+    }),
+    open: openPropose,
+  },
+];
+
+function siteNamed(name: string): Site {
+  const site = SITES.find((s) => s.name === name);
+  if (site === undefined) throw new Error(`no site named ${name}`);
+  return site;
+}
+
+/** Open `name`'s view, hold its reducer open, hide the overlay, then settle: nothing may paint. */
+async function expectNoPaintWhenHidden(name: string): Promise<readonly unknown[]> {
+  await bootMain('/');
+  const site = siteNamed(name);
+  const activate = site.open();
+  const held = holdOpen();
+  site.reducer.mockImplementationOnce(() => held.promise);
+
+  activate();
+  expect(site.reducer, `${name}: the action must have reached the reducer`).toHaveBeenCalledOnce();
+  expect(site.reducer).toHaveBeenCalledWith(site.args);
+  expect(textOf(site.feedbackId), `${name}: nothing may paint while pending`).toBe('');
+  const calledWith = site.reducer.mock.calls[0] as readonly unknown[];
+
+  hideOverlay(site.overlayId as string);
+  held.release();
+  await settle();
+
+  expect(textOf(site.feedbackId), `${name}: a hidden overlay must not be painted into`).toBe('');
+  return calledWith;
+}
+
 describe('main.ts feedback sites paint only while their overlay is visible (slice pgcc-a, A4)', () => {
   it('PGCCA-A4-HIDDEN-SHOP: a Buy that settles after #shop-overlay was hidden paints no success line', async () => {
     // WRONG IMPL KILLED: the shop closure routed through the core WITHOUT its visibility guard —
     // the success line would land in the hidden overlay and greet the next open.
-    await bootMain('/');
-    const buyBtn = openShopWithOneItem();
-    const held = holdOpen();
-    H.buy.mockImplementationOnce(() => held.promise);
-
-    buyBtn.click();
-    expect(H.buy, 'the Buy action must have reached the reducer').toHaveBeenCalledOnce();
-    expect(H.buy).toHaveBeenCalledWith({ shopId: 1, itemId: 1, qty: 1 });
-    expect(textOf('shop-feedback'), 'nothing may paint while the call is pending').toBe('');
-
-    hideOverlay('shop-overlay');
-    held.release();
-    await settle();
-
-    expect(textOf('shop-feedback'), 'a hidden shop overlay must not be painted into').toBe('');
+    await expectNoPaintWhenHidden('buy');
   });
 
   it('PGCCA-A4-HIDDEN-TRADE: an Accept that settles after #trade-overlay was hidden paints no success line', async () => {
     // WRONG IMPL KILLED: the trade closure routed through the core WITHOUT its visibility guard.
-    await bootMain('/');
-    const acceptBtn = openTradeAndFindAccept();
-    const held = holdOpen();
-    H.respondTrade.mockImplementationOnce(() => held.promise);
-
-    acceptBtn.click();
-    expect(
-      H.respondTrade,
-      'the Accept action must have reached the reducer',
-    ).toHaveBeenCalledOnce();
-    expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: true });
-    expect(textOf('trade-feedback'), 'nothing may paint while the call is pending').toBe('');
-
-    hideOverlay('trade-overlay');
-    held.release();
-    await settle();
-
-    expect(textOf('trade-feedback'), 'a hidden trade overlay must not be painted into').toBe('');
+    await expectNoPaintWhenHidden('accept');
   });
 
   it('PGCCA-A4-HIDDEN-RENAME: a rename that settles after #rename-overlay was hidden paints no success line', async () => {
     // WRONG IMPL KILLED: the rename closure routed through the core WITHOUT its visibility guard.
-    await bootMain('/');
-    focusCanvasAndPressKey('KeyN');
-    const input = document.getElementById('rename-input') as HTMLInputElement;
-    input.value = 'NewName';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    const submit = document.getElementById('rename-submit') as HTMLButtonElement;
-    expect(submit.disabled, 'submit must be enabled for a non-empty draft').toBe(false);
-    const held = holdOpen();
-    H.setProfileName.mockImplementationOnce(() => held.promise);
-
-    submit.click();
-    expect(H.setProfileName, 'the rename must have reached the reducer').toHaveBeenCalledOnce();
-    expect(H.setProfileName).toHaveBeenCalledWith({ name: 'NewName' });
-    expect(textOf('rename-feedback'), 'nothing may paint while the call is pending').toBe('');
-
-    hideOverlay('rename-overlay');
-    held.release();
-    await settle();
-
-    expect(textOf('rename-feedback'), 'a hidden rename overlay must not be painted into').toBe('');
+    await expectNoPaintWhenHidden('rename');
   });
 
   it('PGCCA-A4-HIDDEN-PROPOSE: a trade proposal that settles after #tradepropose-overlay was hidden paints no success line', async () => {
     // WRONG IMPL KILLED: the trade-propose closure routed through the core WITHOUT its visibility
-    // guard.
-    await bootMain('/');
-    const store = storeHandle();
-    store.upsertPlayer({
-      identity: OTHER,
-      entityId: 1n,
-      name: 'Bob',
-      online: true,
-      lastInputSeq: 0n,
+    // guard; or an args thunk that drops a field (monster ids, either currency, the counterparty).
+    const [args] = (await expectNoPaintWhenHidden('propose')) as [Record<string, unknown>];
+    const { counterparty, ...rest } = args;
+    expect(rest).toEqual({
+      initiatorMonsterIds: [5n],
+      initiatorItems: [],
+      initiatorCurrency: 10n,
+      counterpartyMonsterIds: [],
+      counterpartyItems: [],
+      counterpartyCurrency: 3n,
     });
-    store.flushBatch();
-    focusCanvasAndPressKey('KeyO');
-    const target = document.getElementById('tradepropose-target') as HTMLSelectElement;
-    target.value = OTHER;
-    target.dispatchEvent(new Event('change', { bubbles: true }));
-    const offerCurrency = document.getElementById(
-      'tradepropose-offer-currency',
-    ) as HTMLInputElement;
-    offerCurrency.value = '10';
-    offerCurrency.dispatchEvent(new Event('input', { bubbles: true }));
-    const submit = document.getElementById('tradepropose-submit') as HTMLButtonElement;
-    expect(submit.disabled, 'submit must be enabled once a target + an asset are set').toBe(false);
-    const held = holdOpen();
-    H.proposeTrade.mockImplementationOnce(() => held.promise);
-
-    submit.click();
-    expect(H.proposeTrade, 'the proposal must have reached the reducer').toHaveBeenCalledOnce();
-    expect(H.proposeTrade).toHaveBeenCalledWith(
-      expect.objectContaining({ initiatorCurrency: 10n, counterpartyCurrency: 0n }),
-    );
-    expect(textOf('tradepropose-feedback'), 'nothing may paint while pending').toBe('');
-
-    hideOverlay('tradepropose-overlay');
-    held.release();
-    await settle();
-
-    expect(
-      textOf('tradepropose-feedback'),
-      'a hidden trade-propose overlay must not be painted into',
-    ).toBe('');
+    expect((counterparty as { toHexString(): string }).toHexString()).toBe(OTHER);
   });
+});
+
+describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1/A4)', () => {
+  it('PGCCA-A4-WHERE-PER-SITE: a SenderError rejection paints reduceErrorMessage(err, <the site tag>) at all 9 sites', async () => {
+    // WRONG IMPL KILLED: a site passing the wrong `where` (a copy-pasted care/buy tag), or reverted
+    // to an inline pattern that drops the error arm.
+    expect(SITES.length, 'ANTI-VACUITY: all nine sites').toBe(9);
+    for (const [i, site] of SITES.entries()) {
+      if (i > 0) resetApp();
+      await bootMain('/');
+      const activate = site.open();
+      const err = Object.assign(new Error('nope'), { name: 'SenderError' });
+      site.reducer.mockRejectedValueOnce(err);
+
+      activate();
+      await settle();
+
+      expect(site.reducer, `${site.name}: reducer calls`).toHaveBeenCalledOnce();
+      expect(site.reducer, `${site.name}: reducer args`).toHaveBeenCalledWith(site.args);
+      expect(textOf(site.feedbackId), `${site.name}: the error line`).toBe(
+        reduceErrorMessage(err, site.tag),
+      );
+      expect(textOf(site.feedbackId), `${site.name}: the error line, spelled out`).toBe(
+        `${site.tag}: nope`,
+      );
+    }
+  }, 60_000);
+
+  it('PGCCA-A1-FROZEN-PER-SITE: a frozen link paints the disconnected line and calls no reducer at the 7 sites feedbackI18n does not cover', async () => {
+    // WRONG IMPL KILLED: a site that lost the frozen gate (it would call a dead connection and hang
+    // or paint a false success), or one that paints something other than the disconnected line.
+    const sites = SITES.filter((s) => s.name !== 'buy' && s.name !== 'accept');
+    expect(sites.map((s) => s.name)).toEqual([
+      'care',
+      'sell',
+      'reject',
+      'confirm',
+      'cancel',
+      'rename',
+      'propose',
+    ]);
+    for (const [i, site] of sites.entries()) {
+      if (i > 0) resetApp();
+      await bootMain('/');
+      const activate = site.open();
+      H.linkFrozen = true;
+
+      activate();
+      await settle();
+
+      expect(
+        site.reducer,
+        `${site.name}: a frozen link must never reach the reducer`,
+      ).not.toHaveBeenCalled();
+      expect(textOf(site.feedbackId), `${site.name}: the disconnected line`).toBe(
+        EN['chrome.feedback.disconnected'],
+      );
+      expect(textOf(site.feedbackId)).toBe('disconnected — try again');
+    }
+  }, 60_000);
+
+  it('PGCCA-A1-LOCK-HELD: while a reducer promise is pending a second activation does not fire again; after it settles a third does, at all 9 sites', async () => {
+    // WRONG IMPL KILLED: an adapter that does not RETURN the core's promise (`void performCare(...)`
+    // or a pre-resolved stand-in) — the view's in-flight lock would release at once and a second
+    // click would double-spend. Every view here locks on the handler's returned promise.
+    for (const [i, site] of SITES.entries()) {
+      if (i > 0) resetApp();
+      await bootMain('/');
+      const activate = site.open();
+      const held = holdOpen();
+      site.reducer.mockImplementationOnce(() => held.promise);
+
+      activate();
+      expect(site.reducer, `${site.name}: first activation`).toHaveBeenCalledTimes(1);
+      // A macrotask turn lets a lock released EARLY (a non-returned promise) show itself.
+      await settle();
+      activate();
+      expect(site.reducer, `${site.name}: second activation while pending`).toHaveBeenCalledTimes(
+        1,
+      );
+
+      held.release();
+      await settle();
+      activate();
+      expect(site.reducer, `${site.name}: third activation after settle`).toHaveBeenCalledTimes(2);
+      expect(site.reducer).toHaveBeenLastCalledWith(site.args);
+    }
+  }, 60_000);
 });
 
 describe('main.ts care success line resolves through the catalog under fr (slice pgcc-a, A3 via the real overlay)', () => {
@@ -485,17 +751,9 @@ describe('main.ts care success line resolves through the catalog under fr (slice
     // WRONG IMPL KILLED: main.ts's care adapter handing the core the hardcoded English "Cared!"
     // (the pre-pgcc-a defect), or the key present in en only.
     await bootMain('/?locale=fr');
-    storeHandle().reconcileMonstersFromView([monster(1n, 0)]);
-    storeHandle().flushBatch();
+    const activate = siteNamed('care').open();
 
-    // The REAL KeyI shortcut: main.ts toggles the raising overlay and refreshes it from the store.
-    focusCanvasAndPressKey('KeyI');
-    const feedbackEl = document.getElementById('raising-feedback');
-    expect(feedbackEl, 'the raising overlay must be constructed by main.ts').not.toBeNull();
-    const careBtn = feedbackEl?.parentElement?.querySelector('button');
-    expect(careBtn, 'a Care button must render for the seeded monster').toBeTruthy();
-
-    (careBtn as HTMLButtonElement).click();
+    activate();
     await vi.waitFor(
       () => {
         if (textOf('raising-feedback') === '') throw new Error('raising-feedback not painted yet');
