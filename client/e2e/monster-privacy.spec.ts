@@ -7,6 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { closeAll } from './controls';
 
 // monster_pub need-to-know privacy, end to end
 //
@@ -220,7 +221,7 @@ function expectNoForeignIds(mine: MonsterView, theirs: MonsterView, label: strin
 }
 
 /**
- * Renames `page`'s own player through the REAL production UI (Escape -> KeyN ->
+ * Renames `page`'s own player through the REAL production UI (closeAll -> KeyN ->
  * rename-input -> rename-submit). Copied from pvp-side-b.spec.ts:205.
  * The distinct label is what lets the battle test assert WHOSE card the opponent
  * card is, and it leaves NO overlay open on exit (the rename overlay does not
@@ -228,8 +229,7 @@ function expectNoForeignIds(mine: MonsterView, theirs: MonsterView, label: strin
  * `!anyOverlayVisible`).
  */
 async function renamePlayer(page: Page, name: string): Promise<void> {
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(200);
+  await closeAll(page);
   await page.keyboard.press('KeyN');
   await page.waitForSelector('[data-testid="rename-input"]', { state: 'visible', timeout: 10_000 });
   await page.fill('[data-testid="rename-input"]', name);
@@ -248,8 +248,7 @@ async function renamePlayer(page: Page, name: string): Promise<void> {
     `13r-e: rename feedback for "${name}" must not indicate an error — the opponent-label ` +
       'assertion below is meaningless if the rename itself silently failed',
   ).not.toMatch(/error|failed|reject/i);
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(200);
+  await closeAll(page);
 }
 
 // ---------------------------------------------------------------------------
@@ -455,8 +454,7 @@ test.describe
 
       // B must have no overlay open — the incoming-challenge auto-show requires
       // !anyOverlayVisible (ranked-forfeit.spec.ts:282 precedent).
-      await pageB.keyboard.press('Escape');
-      await pageB.waitForTimeout(200);
+      await closeAll(pageB);
 
       // A challenges B through the production DOM. Selection is by the
       // `data-player-identity` attribute, never the display name.
@@ -710,8 +708,7 @@ test.describe
         [pageA, 'client A'],
         [pageB, 'client B'],
       ] as const) {
-        await page.keyboard.press('Escape');
-        await page.waitForTimeout(200);
+        await closeAll(page);
         if (!(await page.locator('#trade-overlay').isVisible())) {
           await page.keyboard.press('KeyU');
         }

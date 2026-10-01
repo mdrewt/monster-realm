@@ -7,6 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { closeAll, StuckStackError } from './controls';
 
 // recruit.spec.ts — gameplay-driven recruit flow (EARS 13.5h-1).
 //
@@ -279,11 +280,12 @@ async function healViaBox(p: Page): Promise<void> {
   // store), but the battle overlay KEEPS showing the terminal outcome frame — the
   // terminal row is NOT promptly GC'd (write-back sweeps lazily on later battles,
   // M12.5e), and KeyB is guarded by battleView.visible.
-  // The DESIGNED dismissal is the Escape terminal-dismiss latch (main.ts:351-359,
+  // The DESIGNED dismissal is the Start terminal-dismiss latch (main.ts Escape ladder,
   // ADR-0071 priority battle > box; terminal outcome ⇒ permanent dismiss via
-  // dismissedBattleId). So: Escape first (dismisses the frame; safe no-op when no
-  // overlay is visible), then KeyB. KeyB TOGGLES the box, so check visibility
-  // BEFORE each press — Escape/KeyB only fire while the box is closed, never
+  // dismissedBattleId). So: closeAll first (the terminal frame sits above the world
+  // base, so it presses Start; it presses nothing at a base, and fails naming a frame
+  // Start cannot close), then KeyB. KeyB TOGGLES the box, so check visibility
+  // BEFORE each press — closeAll/KeyB only fire while the box is closed, never
   // closing an open box. Keydown handlers run synchronously; the retry bound
   // covers transient races, not a wait for server state.
   const healBtn = p.getByText('Heal Party', { exact: true });
@@ -293,7 +295,7 @@ async function healViaBox(p: Page): Promise<void> {
     if (!(await healBtn.isVisible().catch(() => false))) {
       // Physical-key forms: main.ts matches e.code; press('b') maps to code KeyB
       // only on US layouts, press('KeyB') always does (reviewer L3).
-      await p.keyboard.press('Escape');
+      await closeAll(p);
       await p.keyboard.press('KeyB');
     }
     boxOpen = await healBtn
@@ -303,7 +305,7 @@ async function healViaBox(p: Page): Promise<void> {
   }
   if (!boxOpen) {
     throw new Error(
-      `healViaBox: box did not open after ${MAX_BOX_OPEN_TRIES} Escape+KeyB attempts ` +
+      `healViaBox: box did not open after ${MAX_BOX_OPEN_TRIES} closeAll+KeyB attempts ` +
         '(is another overlay latched open, or did a new battle start?)',
     );
   }
@@ -360,12 +362,19 @@ async function healViaBox(p: Page): Promise<void> {
 async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
   const healBtn = p.getByText('Heal Party', { exact: true });
 
-  // Open the box (same Escape+KeyB trick as healViaBox to dismiss overlays).
+  // Open the box (same closeAll+KeyB trick as healViaBox to dismiss overlays). A frame
+  // closeAll cannot close is the latched case: skip the heal rather than fail.
   const MAX_BOX_OPEN_TRIES = 20;
   let boxOpen = false;
   for (let i = 0; i < MAX_BOX_OPEN_TRIES && !boxOpen; i++) {
     if (!(await healBtn.isVisible().catch(() => false))) {
-      await p.keyboard.press('Escape');
+      try {
+        await closeAll(p);
+      } catch (e) {
+        if (!(e instanceof StuckStackError)) throw e;
+        console.log(`restoreHpBeforeEncounter: ${e.message}, skipping heal`);
+        return false; // another overlay is latched; skip and proceed
+      }
       await p.keyboard.press('KeyB');
     }
     boxOpen = await healBtn
@@ -779,7 +788,7 @@ test.describe
           }
           if (!partyAlive) {
             // The terminal outcome frame stays visible (lazy GC — see healViaBox);
-            // a fainted party blocks encounters, so recover via Escape-dismiss →
+            // a fainted party blocks encounters, so recover via closeAll →
             // KeyB → "Heal Party" (zone-scoped, currently free, 30s cooldown).
             if (healCount < MAX_HEALS) {
               healCount++;

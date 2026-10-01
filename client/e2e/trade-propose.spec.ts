@@ -6,6 +6,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { closeAll } from './controls';
 
 // trade-PROPOSE overlay e2e (EARS criterion PTC2-16)
 //
@@ -202,11 +203,10 @@ test.describe
       expect(counterpartyId).toBe(identityB);
 
       // -----------------------------------------------------------------------
-      // Step 2: Initiator presses Escape to dismiss any stale overlay, then
+      // Step 2: Initiator runs closeAll to dismiss any stale overlay, then
       //   presses KeyO to open the trade-PROPOSE overlay.
       // -----------------------------------------------------------------------
-      await pageA.keyboard.press('Escape');
-      await pageA.waitForTimeout(200);
+      await closeAll(pageA);
       await pageA.keyboard.press('KeyO');
 
       // Wait for the target select to become visible (overlay is open).

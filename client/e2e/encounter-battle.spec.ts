@@ -8,6 +8,7 @@ import {
   test,
 } from '@playwright/test';
 import { t, tf } from '../src/ui/i18n/resolver';
+import { pressButton } from './controls';
 
 // encounter-battle.spec.ts — walk into grass, meet a wild monster, fight it to a WIN (de-bloat
 // Phase 3 gameplay smoke).
@@ -301,8 +302,8 @@ test.describe
       );
       expect(Number(wallet?.balance), 'the win must credit currency').toBeGreaterThan(0);
 
-      // Visible XP: the box card now reads Lv8. Escape first dismisses the terminal frame.
-      await page.keyboard.press('Escape');
+      // Visible XP: the box card now reads Lv8. Start first dismisses the terminal frame.
+      await pressButton(page, 'Start');
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
       await page.keyboard.press('KeyB');
       await expect
