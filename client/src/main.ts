@@ -952,7 +952,8 @@ window.addEventListener('unhandledrejection', (e) => pushError('unhandledrejecti
  * the rejection route: reduceErrorMessage passes SenderError reasons through and
  * never leaks InternalError detail. Documented exceptions (A10): enqueueMove
  * (movement — silent prediction repair in sendIntent, M2 §3), joinGame (handled in
- * connection.ts, A4), buy/sell (shop feedback line — gated inline in main(), A6).
+ * connection.ts, A4), and the overlay-feedback actions (care, shop buy/sell, trade,
+ * rename, trade-propose — routed through performCare in main(), A6).
  * ALWAYS resolves (frozen, dead handle, reported rejection) — views holding an
  * in-flight lock `return` it so the lock lives exactly until the call settles.
  */
@@ -964,6 +965,15 @@ function sendGuarded(where: string, call: () => Promise<void> | undefined): Prom
   const p = call();
   if (p === undefined) return Promise.resolve();
   return p.catch((err: unknown) => reportError(reduceErrorMessage(err, where)));
+}
+
+/**
+ * The live reducer handle for a performCare `call` thunk, or `undefined` when the link is
+ * frozen/disconnected — a call against a dead conn is silently queued and never settles, so
+ * performCare must see `undefined` and show the disconnected line instead of hanging.
+ */
+function liveReducers() {
+  return conn === undefined || conn.linkFrozen() ? undefined : conn.live()?.reducers;
 }
 
 let resolveReady: () => void = () => {};
@@ -2601,13 +2611,9 @@ async function main(): Promise<void> {
       // view's #pending lock stays held until the reducer promise settles.
       onCare: (monsterId) =>
         performCare({
-          // Frozen gate (onBuy/onSell shape): a call against a dead
-          // conn is silently queued and never settles — report `undefined` so
-          // performCare shows the disconnected line instead of hanging.
-          callCare: () =>
-            conn === undefined || conn.linkFrozen()
-              ? undefined
-              : conn.live()?.reducers.care({ monsterId }),
+          call: () => liveReducers()?.care({ monsterId }),
+          successMessage: i18nT('raising.feedback.cared'),
+          where: 'care',
           // RaisingView.showFeedback is a no-op while hidden (stale-message guard).
           showFeedback: (message) => raisingView?.showFeedback(message),
         }),
@@ -2625,94 +2631,65 @@ async function main(): Promise<void> {
     questLogView = new QuestLogViewClass();
     healView = new HealViewClass();
     // shop DOM shell.
-    // buy/sell are awaited: the STDB SDK resolves on server-commit, rejects on server-error
-    // (see #reducerCallbacks in the SDK source). This is the correct surface for rejection
-    // feedback — not conn.reducers.onBuy (which doesn't exist in STDB 2.6).
+    // buy/sell, the trade responses, rename and trade-propose all run through the
+    // performCare core: frozen gate, await of the SDK promise (resolves on server-commit,
+    // rejects on server-error), and exactly one feedback line. Each view's closure owns
+    // the "paint only while the overlay is visible" check — a late settle must not write
+    // a stale line into a closed (and later reopened) overlay.
     // Single-unit MVP (infinite stock; multi-unit sell is future work).
     const SHOP_QTY = 1 as const;
+    const shopFeedback = (message: string): void => {
+      if (shopView?.visible) shopView.showFeedback(message);
+    };
     shopView = new ShopViewClass({
-      onBuy: async (shopId, itemId) => {
-        // Gate on frozen FIRST — a call against a dead conn is silently
-        // queued and its promise never settles (the feedback line would hang forever).
-        if (conn === undefined || conn.linkFrozen()) {
-          if (shopView?.visible) shopView.showFeedback(i18nT('chrome.feedback.disconnected'));
-          return;
-        }
-        try {
-          await conn.live()?.reducers.buy({ shopId, itemId, qty: SHOP_QTY });
-          if (shopView?.visible) shopView.showFeedback(i18nT('shop.feedback.purchased'));
-        } catch (err) {
-          // Route through reduceErrorMessage — SenderError reasons pass
-          // through, InternalError detail never leaks (was a raw err.message leak).
-          if (shopView?.visible) shopView.showFeedback(reduceErrorMessage(err, 'buy'));
-        }
-      },
-      onSell: async (itemId) => {
-        // Same frozen gate + no-leak rejection routing as onBuy.
-        if (conn === undefined || conn.linkFrozen()) {
-          if (shopView?.visible) shopView.showFeedback(i18nT('chrome.feedback.disconnected'));
-          return;
-        }
-        try {
-          await conn.live()?.reducers.sell({ itemId, qty: SHOP_QTY });
-          if (shopView?.visible) shopView.showFeedback(i18nT('shop.feedback.sold'));
-        } catch (err) {
-          if (shopView?.visible) shopView.showFeedback(reduceErrorMessage(err, 'sell'));
-        }
-      },
+      onBuy: (shopId, itemId) =>
+        performCare({
+          call: () => liveReducers()?.buy({ shopId, itemId, qty: SHOP_QTY }),
+          successMessage: i18nT('shop.feedback.purchased'),
+          where: 'buy',
+          showFeedback: shopFeedback,
+        }),
+      onSell: (itemId) =>
+        performCare({
+          call: () => liveReducers()?.sell({ itemId, qty: SHOP_QTY }),
+          successMessage: i18nT('shop.feedback.sold'),
+          where: 'sell',
+          showFeedback: shopFeedback,
+        }),
     });
     // Trade DOM shell.
-    // respond_trade, confirm_trade, cancel_trade are awaited (SDK resolves on server-commit).
-    // Gate on frozen FIRST — a call against a dead conn never settles.
+    const tradeFeedback = (message: string): void => {
+      if (tradeView?.visible) tradeView.showFeedback(message);
+    };
     tradeView = new TradeViewClass({
-      onAccept: async (tradeId) => {
-        if (conn === undefined || conn.linkFrozen()) {
-          if (tradeView?.visible) tradeView.showFeedback(i18nT('chrome.feedback.disconnected'));
-          return;
-        }
-        try {
-          await conn.live()?.reducers.respondTrade({ tradeId, accepted: true });
-          if (tradeView?.visible) tradeView.showFeedback(i18nT('trade.feedback.accepted'));
-        } catch (err) {
-          if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'respond-trade'));
-        }
-      },
-      onReject: async (tradeId) => {
-        if (conn === undefined || conn.linkFrozen()) {
-          if (tradeView?.visible) tradeView.showFeedback(i18nT('chrome.feedback.disconnected'));
-          return;
-        }
-        try {
-          await conn.live()?.reducers.respondTrade({ tradeId, accepted: false });
-          if (tradeView?.visible) tradeView.showFeedback(i18nT('trade.feedback.rejected'));
-        } catch (err) {
-          if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'respond-trade'));
-        }
-      },
-      onConfirm: async (tradeId) => {
-        if (conn === undefined || conn.linkFrozen()) {
-          if (tradeView?.visible) tradeView.showFeedback(i18nT('chrome.feedback.disconnected'));
-          return;
-        }
-        try {
-          await conn.live()?.reducers.confirmTrade({ tradeId });
-          if (tradeView?.visible) tradeView.showFeedback(i18nT('trade.feedback.completed'));
-        } catch (err) {
-          if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'confirm-trade'));
-        }
-      },
-      onCancel: async (tradeId) => {
-        if (conn === undefined || conn.linkFrozen()) {
-          if (tradeView?.visible) tradeView.showFeedback(i18nT('chrome.feedback.disconnected'));
-          return;
-        }
-        try {
-          await conn.live()?.reducers.cancelTrade({ tradeId });
-          if (tradeView?.visible) tradeView.showFeedback(i18nT('trade.feedback.cancelled'));
-        } catch (err) {
-          if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'cancel-trade'));
-        }
-      },
+      onAccept: (tradeId) =>
+        performCare({
+          call: () => liveReducers()?.respondTrade({ tradeId, accepted: true }),
+          successMessage: i18nT('trade.feedback.accepted'),
+          where: 'respond-trade',
+          showFeedback: tradeFeedback,
+        }),
+      onReject: (tradeId) =>
+        performCare({
+          call: () => liveReducers()?.respondTrade({ tradeId, accepted: false }),
+          successMessage: i18nT('trade.feedback.rejected'),
+          where: 'respond-trade',
+          showFeedback: tradeFeedback,
+        }),
+      onConfirm: (tradeId) =>
+        performCare({
+          call: () => liveReducers()?.confirmTrade({ tradeId }),
+          successMessage: i18nT('trade.feedback.completed'),
+          where: 'confirm-trade',
+          showFeedback: tradeFeedback,
+        }),
+      onCancel: (tradeId) =>
+        performCare({
+          call: () => liveReducers()?.cancelTrade({ tradeId }),
+          successMessage: i18nT('trade.feedback.cancelled'),
+          where: 'cancel-trade',
+          showFeedback: tradeFeedback,
+        }),
     });
     // PvP challenge overlay.
     // All action reducers use sendGuarded so a dead link is rejected loudly.
@@ -2813,59 +2790,47 @@ async function main(): Promise<void> {
         }),
     };
     sessionView = new SessionViewClass(sessionHandlers);
-    // Rename overlay. onSubmit calls set_profile_name with the
-    // frozen-link gate FIRST — never send on a dead link. Feedback goes into
-    // #rename-feedback via reduceErrorMessage on reject (no InternalError leak);
-    // shop/trade feedback pattern, NOT sendGuarded/reportError. The overlay stays open on
-    // both success and reject; the view's #pending lock is reset by its own .finally().
+    // Rename overlay. onSubmit calls set_profile_name through the performCare core
+    // (frozen gate first, reduceErrorMessage on reject — no InternalError leak), NOT
+    // sendGuarded/reportError. The overlay stays open on both success and reject; the
+    // view's #pending lock is reset by its own .finally().
     renameView = new RenameViewClass({
-      onSubmit: async (name) => {
-        if (conn === undefined || conn.linkFrozen()) {
-          if (renameView?.visible) renameView.showFeedback(i18nT('chrome.feedback.disconnected'));
-          return;
-        }
-        try {
-          await conn.live()?.reducers.setProfileName({ name });
-          if (renameView?.visible) renameView.showFeedback(i18nT('chrome.rename.updated'));
-        } catch (err) {
-          if (renameView?.visible) {
-            renameView.showFeedback(reduceErrorMessage(err, 'set-profile-name'));
-          }
-        }
-      },
+      onSubmit: (name) =>
+        performCare({
+          call: () => liveReducers()?.setProfileName({ name }),
+          successMessage: i18nT('chrome.rename.updated'),
+          where: 'set-profile-name',
+          showFeedback: (message) => {
+            if (renameView?.visible) renameView.showFeedback(message);
+          },
+        }),
     });
     // trade-PROPOSE overlay. onSubmit consumes the model's typed args
-    // (no DOM re-derive) and calls reducers.proposeTrade with the frozen-link gate FIRST.
+    // (no DOM re-derive) and calls reducers.proposeTrade through the performCare core.
     // The model's targetIdentity string is wrapped in `new Identity(...)` here
-    // (the SDK boundary); the counterparty side is currency-only (RLS — D2), so the monster/
-    // item request fields are always empty. Feedback into #tradepropose-feedback via
-    // reduceErrorMessage on reject (no InternalError leak).
+    // (the SDK boundary) INSIDE the call thunk, so a throw while building the args lands
+    // in the core's error arm; the counterparty side is currency-only (RLS — D2), so the
+    // monster/item request fields are always empty.
     tradeProposeView = new TradeProposeViewClass({
       maxMonstersPerSide: MAX_TRADE_MONSTERS_PER_SIDE,
-      onSubmit: async (args: TradeProposeArgs) => {
-        if (conn === undefined || conn.linkFrozen()) {
-          if (tradeProposeView?.visible)
-            tradeProposeView.showFeedback(i18nT('chrome.feedback.disconnected'));
-          return;
-        }
-        try {
-          await conn.live()?.reducers.proposeTrade({
-            counterparty: new Identity(args.targetIdentity),
-            initiatorMonsterIds: [...args.initiatorMonsterIds],
-            initiatorItems: [],
-            initiatorCurrency: args.initiatorCurrency,
-            counterpartyMonsterIds: [],
-            counterpartyItems: [],
-            counterpartyCurrency: args.counterpartyCurrency,
-          });
-          if (tradeProposeView?.visible)
-            tradeProposeView.showFeedback(i18nT('tradePropose.feedback.sent'));
-        } catch (err) {
-          if (tradeProposeView?.visible) {
-            tradeProposeView.showFeedback(reduceErrorMessage(err, 'propose-trade'));
-          }
-        }
-      },
+      onSubmit: (args: TradeProposeArgs) =>
+        performCare({
+          call: () =>
+            liveReducers()?.proposeTrade({
+              counterparty: new Identity(args.targetIdentity),
+              initiatorMonsterIds: [...args.initiatorMonsterIds],
+              initiatorItems: [],
+              initiatorCurrency: args.initiatorCurrency,
+              counterpartyMonsterIds: [],
+              counterpartyItems: [],
+              counterpartyCurrency: args.counterpartyCurrency,
+            }),
+          successMessage: i18nT('tradePropose.feedback.sent'),
+          where: 'propose-trade',
+          showFeedback: (message) => {
+            if (tradeProposeView?.visible) tradeProposeView.showFeedback(message);
+          },
+        }),
     });
   }
 

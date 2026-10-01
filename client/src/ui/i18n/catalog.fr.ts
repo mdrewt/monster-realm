@@ -364,6 +364,10 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // line.
   // raisingView.ts:318
   'raising.inventory.item': (p) => `${p.name} (x${p.count})`,
+  // @desc: Feedback line in the raising overlay after the server accepted a Care action on a
+  // monster. One short line.
+  // main.ts (onCare adapter; pre-migration careAction.ts CARED_MESSAGE)
+  'raising.feedback.cared': 'Choyé !',
   // @desc: Heading of the party & box overlay, where the player arranges which monsters are in
   // the active party and which stay in storage; quoted inside battle.swap.hint. One short line.
   // boxView.ts:69 (resolved in show())

@@ -559,7 +559,7 @@ describe('performCare(): the generalised feedback core takes successMessage + wh
     // outside the core's try (a rejected performCare with NO feedback), a swallowed throw
     // (zero feedback calls), or a double report (two calls).
     const buildErr = new TypeError('invalid identity hex');
-    const reducer = vi.fn(() => Promise.resolve());
+    const reducer = vi.fn((_args: unknown) => Promise.resolve());
     const buildArgs = (): { readonly targetIdentity: string } => {
       throw buildErr;
     };

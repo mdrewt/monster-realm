@@ -1,4 +1,5 @@
-// ui/careAction.ts — the care-button decision core (feel-polish D1).
+// ui/careAction.ts — the feedback-action decision core: one reducer call with a visible
+// outcome line (care, shop buy/sell, the four trade responses, rename, trade-propose).
 //
 // WHY THIS MODULE EXISTS: `onCare` used to live inline in main.ts, which is
 // coverage-excluded and whose wiring closures are not exported — so the design's
@@ -7,8 +8,9 @@
 // main.ts, which red-team defeated twice (an optimistic pre-await 'Cared!' and a
 // quote-swapped dead-decoy revert). The whole decision therefore lives HERE:
 // exported, coverage-measured, and tested directly over injected fakes
-// (careAction.test.ts). main.ts keeps only the adapter that binds the real
-// connection and the real overlay to these two dependencies.
+// (careAction.test.ts). Care was the first caller; pgcc-a generalised it in place so
+// main.ts's eight inline copies route through it too, and main.ts keeps only the
+// adapters that bind the real connection and the real overlays to these deps.
 //
 // No DOM, no SDK, no clock — the function touches nothing but its injected deps
 // and the i18n locale cell (set once at boot) behind `t()`, so the ordering
@@ -18,28 +20,34 @@ import { reduceErrorMessage } from './statusModel';
 
 export interface CareActionDeps {
   /**
-   * Invokes the `care` reducer. Returns the SDK promise that settles on the
-   * server's keyed TransactionUpdate, or `undefined` when the link is
-   * frozen/disconnected and no call was made at all (a call against
-   * a dead connection is silently queued and its promise never settles).
+   * Invokes the reducer, building its arguments inside the thunk. Returns the
+   * SDK promise that settles on the server's keyed TransactionUpdate, or
+   * `undefined` when the link is frozen/disconnected and no call was made at
+   * all (a call against a dead connection is silently queued and its promise
+   * never settles).
    */
-  readonly callCare: () => Promise<unknown> | undefined;
-  /** Renders a message on the raising overlay's feedback line. */
+  readonly call: () => Promise<unknown> | undefined;
+  /**
+   * The already-resolved success line. The caller resolves it because every
+   * `t()` key must be a literal at its call site (the i18n census).
+   */
+  readonly successMessage: string;
+  /** The `reduceErrorMessage` tag naming the action (`'care'`, `'buy'`, …). */
+  readonly where: string;
+  /** Renders a message on the calling overlay's feedback line. */
   readonly showFeedback: (message: string) => void;
 }
 
-/** Success confirmation — the EARS "visible confirmation" for a committed care. */
-const CARED_MESSAGE = 'Cared!';
-
 /**
- * Run one care click end to end and report EXACTLY ONE outcome message.
+ * Run one feedback action end to end and report EXACTLY ONE outcome message.
  *
  * Ordering is the load-bearing property: `showFeedback` is never called before
- * the reducer promise settles, so a rejection (CARE_COOLDOWN_MS is 6 h — most
- * real clicks ARE rejections) can never be preceded by a false 'Cared!'.
+ * the reducer promise settles, so a rejection (for care, CARE_COOLDOWN_MS is
+ * 6 h — most real clicks ARE rejections) can never be preceded by a false
+ * success line.
  *
- * The monster identity is not a parameter: it is already bound into the
- * `callCare` closure by the caller, and a second, unread copy of it here could
+ * The reducer arguments are not parameters: they are already bound into the
+ * `call` closure by the caller, and a second, unread copy of them here could
  * only ever disagree with the one that is actually sent.
  */
 export async function performCare(deps: CareActionDeps): Promise<void> {
@@ -51,9 +59,9 @@ export async function performCare(deps: CareActionDeps): Promise<void> {
     // escape performCare as a rejected promise before any showFeedback — the
     // caller only console.error's it, so the player saw nothing at all. A sync
     // throw must land in the SAME error arm as a rejection.
-    inFlight = deps.callCare();
+    inFlight = deps.call();
   } catch (err) {
-    deps.showFeedback(reduceErrorMessage(err, 'care'));
+    deps.showFeedback(reduceErrorMessage(err, deps.where));
     return;
   }
   // Branch BEFORE awaiting: `await undefined` resolves without throwing, so a
@@ -65,15 +73,15 @@ export async function performCare(deps: CareActionDeps): Promise<void> {
     return;
   }
   // The await and its two arms get their OWN try: a single try wrapping both
-  // callCare() and the settle arms would re-enter the catch (a second
+  // call() and the settle arms would re-enter the catch (a second
   // showFeedback call) if showFeedback itself ever threw on the success or
   // frozen arm. Exactly one showFeedback call per arm, always.
   try {
     await inFlight;
-    deps.showFeedback(CARED_MESSAGE);
+    deps.showFeedback(deps.successMessage);
   } catch (err) {
     // reduceErrorMessage passes SenderError reasons through and collapses
     // InternalError to a generic line — raw err.message is never shown.
-    deps.showFeedback(reduceErrorMessage(err, 'care'));
+    deps.showFeedback(reduceErrorMessage(err, deps.where));
   }
 }
