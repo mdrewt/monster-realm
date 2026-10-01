@@ -105,7 +105,8 @@
  * Styling guidance, not a criterion: the tested contract is the DOM (the `is-active` class plus
  * `aria-selected`, the frame parts). Every glyph here is a CSS pseudo-element so the TS kit
  * writes no literal text; the `/ ""` alternative text keeps the decorative marks silent to a
- * screen reader. No transition or animation, so no reduced-motion guard is needed. Plain colours
+ * screen reader (an engine without that form drops the glyph; the band and outline remain). Disabled
+ * rows dim by colour, not opacity, so the active disabled row keeps AA contrast. No transition or animation, so no reduced-motion guard is needed. Plain colours
  * (no `--mr-evo-*` reads): high-contrast frame tokens belong to ctl-7a.
  */
 .mr-frame {
@@ -170,6 +171,9 @@
 }
 .mr-frame-tabstrip {
   display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
   gap: 0.25rem;
 }
 .mr-nav-tab {
@@ -178,6 +182,7 @@
 .mr-nav-tab.is-active {
   background: #e0e0e0;
   color: #1e1e2e;
+  text-decoration: underline;
 }
 .mr-frame-body {
   flex: 1 1 auto;
@@ -223,7 +228,10 @@
   outline-width: 3px;
 }
 .mr-nav-item.is-disabled {
-  opacity: 0.5;
+  color: #8a8a9a;
+}
+.mr-nav-item.is-active.is-disabled {
+  color: #55556a;
 }
 
 /*

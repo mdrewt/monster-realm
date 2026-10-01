@@ -5,7 +5,8 @@
 //
 // A fresh D-pad or LB/RB edge wraps at the ends; a repeat-flagged edge (the router's synthesized
 // auto-repeat, ctl-5) clamps. Disabled items stay reachable: A on one reports its reason and acts
-// on nothing. Every function returns the SAME state object when nothing changed.
+// on nothing. `navStep`, `navFocus` and `navReconcile` return the SAME state object when nothing
+// changed. Layouts built through `list`/`grid`/`tabs` are validated; navRender re-checks `cols`.
 import type { VButton } from '../input/buttons';
 
 export interface NavItem {
@@ -71,26 +72,34 @@ export function list(items: readonly NavItem[]): ItemLayout {
   return { kind: 'list', items };
 }
 
-export function grid(items: readonly NavItem[], cols: number): ItemLayout {
+/** Rejects a grid column count that is not an integer >= 1 (navRender re-checks it too). */
+export function checkCols(cols: number): void {
   if (!Number.isInteger(cols) || cols < 1) throw new Error(`nav: invalid cols ${cols}`);
+}
+
+export function grid(items: readonly NavItem[], cols: number): ItemLayout {
+  checkCols(cols);
   checkItems(items);
   return { kind: 'grid', items, cols };
 }
 
 export function tabs(tabList: readonly NavTab[]): NavLayout {
   const tabKeys = new Set<string>();
+  // Every id suffix after `{frame}-`: `tab-{tab}` for tabs, `{tab}-{key}` for items.
   const ids = new Set<string>();
+  const claim = (id: string): void => {
+    if (ids.has(id)) throw new Error(`nav: ambiguous id segment ${JSON.stringify(id)}`);
+    ids.add(id);
+  };
   for (const { key, layout } of tabList) {
     checkKey(key);
     if (RESERVED_TAB_KEYS.has(key)) throw new Error(`nav: reserved tab key ${key}`);
     if (tabKeys.has(key)) throw new Error(`nav: duplicate tab key ${JSON.stringify(key)}`);
     tabKeys.add(key);
+    if (layout.kind === 'grid') checkCols(layout.cols);
     checkItems(layout.items);
-    for (const item of layout.items) {
-      const id = `${key}-${item.key}`;
-      if (ids.has(id)) throw new Error(`nav: ambiguous id segment ${JSON.stringify(id)}`);
-      ids.add(id);
-    }
+    claim(`tab-${key}`);
+    for (const item of layout.items) claim(`${key}-${item.key}`);
   }
   return { kind: 'tabs', tabs: tabList };
 }
@@ -110,33 +119,21 @@ const keyOrFirst = (items: readonly NavItem[], key: string | null | undefined): 
 const remembered = (perTab: Readonly<Record<string, string>>, tab: string): string | undefined =>
   Object.hasOwn(perTab, tab) ? perTab[tab] : undefined;
 
-/** perTab with `tab` set to `item`, or the entry removed when `item` is null. */
+/** perTab with `tab` set to `item`, or the entry removed when `item` is null. Built with
+ *  `Object.fromEntries` (own data properties), never by assignment: `next.__proto__ = …` would
+ *  set the prototype instead of remembering a tab named `__proto__`. */
 function withPerTab(
   perTab: Readonly<Record<string, string>>,
   tab: string,
   item: string | null,
 ): Readonly<Record<string, string>> {
-  if (item === null) {
-    if (!Object.hasOwn(perTab, tab)) return perTab;
-    const next: Record<string, string> = {};
-    for (const k of Object.keys(perTab))
-      if (k !== tab) Object.defineProperty(next, k, own(perTab[k]));
-    return next;
+  if (item === null ? !Object.hasOwn(perTab, tab) : remembered(perTab, tab) === item) {
+    return perTab;
   }
-  if (remembered(perTab, tab) === item) return perTab;
-  const next: Record<string, string> = {};
-  for (const k of Object.keys(perTab)) Object.defineProperty(next, k, own(perTab[k]));
-  // defineProperty, not assignment: `next.__proto__ = …` would set the prototype.
-  Object.defineProperty(next, tab, own(item));
-  return next;
+  const entries = Object.entries(perTab).filter(([k]) => k !== tab);
+  if (item !== null) entries.push([tab, item]);
+  return Object.fromEntries(entries);
 }
-
-const own = (value: string | undefined): PropertyDescriptor => ({
-  value,
-  enumerable: true,
-  writable: true,
-  configurable: true,
-});
 
 const sameState = (a: NavState, b: NavState): boolean =>
   a.tab === b.tab &&
@@ -149,7 +146,7 @@ const sameState = (a: NavState, b: NavState): boolean =>
 const keep = (prev: NavState, next: NavState): NavState => (sameState(prev, next) ? prev : next);
 
 /** The active list/grid of a layout under `state`, or undefined (zero tabs / unknown tab). */
-function activeLayout(layout: NavLayout, state: NavState): ItemLayout | undefined {
+export function activeLayout(layout: NavLayout, state: NavState): ItemLayout | undefined {
   if (layout.kind !== 'tabs') return layout;
   return layout.tabs[tabIndex(layout.tabs, state.tab)]?.layout;
 }
@@ -162,17 +159,15 @@ export function navInit(layout: NavLayout, rememberedState?: NavState): NavState
   const at = tabIndex(tabList, rememberedState?.tab ?? null);
   const tab = tabList[at >= 0 ? at : 0];
   if (tab === undefined) return { tab: null, item: null, perTab: {} };
-  const perTab = rememberedState?.perTab ?? EMPTY_PER_TAB;
-  // Remembered entries are kept as keys and resolved lazily on the next tab switch.
-  const kept: Record<string, string> = {};
-  for (const k of Object.keys(perTab)) {
-    if (tabIndex(tabList, k) >= 0) Object.defineProperty(kept, k, own(perTab[k]));
-  }
-  return {
-    tab: tab.key,
-    item: keyOrFirst(tab.layout.items, at >= 0 ? rememberedState?.item : null),
-    perTab: kept,
-  };
+  // Entries of surviving tabs are kept as keys and resolved lazily on the next tab switch.
+  const perTab = Object.fromEntries(
+    Object.entries(rememberedState?.perTab ?? EMPTY_PER_TAB).filter(
+      ([k]) => tabIndex(tabList, k) >= 0,
+    ),
+  );
+  // The remembered tab vanished: land on the first tab's remembered item, as navReconcile does.
+  const item = at >= 0 ? rememberedState?.item : remembered(perTab, tab.key);
+  return { tab: tab.key, item: keyOrFirst(tab.layout.items, item), perTab };
 }
 
 /** Move the cursor to a declared default (Shop opens on Buy, Fight each turn, Yes/No). */

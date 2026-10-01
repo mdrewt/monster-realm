@@ -35,6 +35,7 @@ import {
   setFrameTitle,
 } from './frame';
 import type { NavLayout, NavState } from './nav';
+import { navTabId } from './navRender';
 
 // --- builders -----------------------------------------------------------------------------
 const itm = (key: string) => ({ key, enabled: true });
@@ -134,7 +135,8 @@ describe('frame chrome', () => {
     expect([...FRAME_SIZES].sort()).toEqual(['bottom', 'full', 'side', 'small']);
     expect(FRAME_SIZES.length).toBe(4);
     for (const size of FRAME_SIZES) {
-      const f = createFrame(document, { id: `f-${size}`, size });
+      // frame ids carry no hyphen (they prefix hyphen-joined element ids)
+      const f = createFrame(document, { id: `f${size}`, size });
       expect(f.root.classList.contains('mr-frame'), size).toBe(true);
       expect(f.root.classList.contains(`mr-frame--${size}`), size).toBe(true);
       for (const other of FRAME_SIZES) {
@@ -226,6 +228,40 @@ describe('frame chrome', () => {
     renderFrameTabs(f, layout, state('x1', 'x'), label);
     expect(g.tabBar.hasAttribute('hidden')).toBe(true);
     expect(g.tabStrip.children.length).toBe(0);
+  });
+
+  it('createFrame validates the frame id: non-empty, no whitespace, no hyphen', () => {
+    for (const bad of ['', 'my frame', 'a-b', ' ', 'a\tb', 'x ', '-']) {
+      expect(
+        () => createFrame(document, { id: bad, size: 'full' }),
+        `frame id ${JSON.stringify(bad)}`,
+      ).toThrow();
+    }
+    for (const good of ['menuView', 'shop', 'f']) {
+      const f = createFrame(document, { id: good, size: 'full' });
+      expect(f.id).toBe(good);
+      expect(f.titleEl.id).toBe(`${good}-title`);
+    }
+  });
+
+  it('frame tab ids follow the frame id', () => {
+    const f = createFrame(document, { id: 'shop', size: 'full' });
+    renderFrameTabs(f, tabsL(['buy', ['b1']], ['sell', ['s1']]), state('b1', 'buy'), label);
+    const ids = Array.from(f.tabStrip.children).map((e) => e.id);
+    expect(ids).toEqual(['shop-tab-buy', 'shop-tab-sell']);
+    expect(ids).toEqual([navTabId('shop', 'buy'), navTabId('shop', 'sell')]);
+  });
+
+  it('setFrameTitle renders every crumb, in order', () => {
+    const f = createFrame(document, { id: 'menu', size: 'side' });
+    setFrameTitle(f, 'Deep', ['One', 'Two', 'Three', 'Four', 'Five']);
+    expect(Array.from(f.breadcrumb.children).map((c) => c.textContent)).toEqual([
+      'One',
+      'Two',
+      'Three',
+      'Four',
+      'Five',
+    ]);
   });
 
   it('CTL4-6-FEEDBACK-RESOLUTION reaches ok only when the CURRENT pending token resolves', () => {

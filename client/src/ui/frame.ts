@@ -9,7 +9,7 @@
 // success is shown only when the caller resolves the action that is still pending, so the line
 // never claims an undelivered success (pgcc-a B7). It is not a live region; `#a11y-live` is.
 import type { NavLayout, NavState, NavTab } from './nav';
-import { renderTabs } from './navRender';
+import { checkFrameId, renderTabs } from './navRender';
 
 export type FrameSize = 'side' | 'full' | 'bottom' | 'small';
 /** Side panel, full, bottom box, small (a prompt or sheet). */
@@ -48,6 +48,7 @@ export function createFrame(
   opts: { readonly id: string; readonly size: FrameSize },
 ): FrameChrome {
   if (!FRAME_SIZES.includes(opts.size)) throw new Error(`frame: unknown size ${opts.size}`);
+  checkFrameId(opts.id);
   const root = doc.createElement('div');
   root.className = `mr-frame mr-frame--${opts.size}`;
   root.dataset.size = opts.size;
@@ -105,6 +106,8 @@ export type FeedbackState =
   | { readonly kind: 'none' }
   | { readonly kind: 'pending'; readonly token: number; readonly text: string }
   | { readonly kind: 'ok' | 'error' | 'info'; readonly text: string };
+/** Tokens are caller-unique per action (e.g. a counter): a reused token would let a late
+ *  resolution of the earlier action settle the later one. */
 export type FeedbackEvent =
   | { readonly kind: 'begin'; readonly token: number; readonly text: string }
   | { readonly kind: 'resolved'; readonly token: number; readonly text: string }

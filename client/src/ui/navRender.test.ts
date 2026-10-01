@@ -443,6 +443,145 @@ describe('nav render', () => {
   });
 });
 
+// --- review-lens hardening (round 2): untagged, so each CTL4 tag stays in exactly one test ------
+describe('nav render hardening', () => {
+  const RUNAWAY = 'runaway render loop';
+
+  /** Run renderNav and return what it threw (undefined when it returned). A createElement budget
+   *  turns an unbounded row loop into a thrown RUNAWAY error instead of hanging the run. */
+  function renderCaught(layout: NavLayout, state: NavState, frame = 'f'): unknown {
+    const real = document.createElement.bind(document);
+    let made = 0;
+    const spy = vi.spyOn(document, 'createElement').mockImplementation(((
+      ...args: Parameters<Document['createElement']>
+    ) => {
+      made += 1;
+      if (made > 5000) throw new Error(RUNAWAY);
+      return real(...args);
+    }) as unknown as Document['createElement']);
+    try {
+      renderNav(container, layout, state, { frame, fill: fillKey });
+      return undefined;
+    } catch (e) {
+      return e;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('renderNav rejects a hand-built grid with an invalid cols instead of looping', () => {
+    for (const cols of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const err = renderCaught(GRID(cols, 'a', 'b', 'c'), st('a'));
+      expect(err, `cols ${cols} must throw`).toBeInstanceOf(Error);
+      expect((err as Error).message, `cols ${cols} must be rejected, not run away`).not.toBe(
+        RUNAWAY,
+      );
+      // the same layout inside a tab is rejected too
+      const tabbed = TABS(['t', GRID(cols, 'a', 'b')]);
+      const tabErr = renderCaught(tabbed, st('a', 't'));
+      expect(tabErr, `tab cols ${cols} must throw`).toBeInstanceOf(Error);
+      expect((tabErr as Error).message).not.toBe(RUNAWAY);
+    }
+    // a valid cols still renders
+    expect(renderCaught(GRID(2, 'a', 'b', 'c'), st('a'))).toBeUndefined();
+  });
+
+  it('renderNav validates the frame id: non-empty, no whitespace, no hyphen', () => {
+    for (const bad of ['', 'my frame', 'a-b', ' ', 'a\tb', 'x ']) {
+      expect(renderCaught(LIST('a'), st('a'), bad), `frame ${JSON.stringify(bad)}`).toBeInstanceOf(
+        Error,
+      );
+    }
+    for (const good of ['menuView', 'shop', 'f']) {
+      expect(renderCaught(LIST('a'), st('a'), good), `frame ${good}`).toBeUndefined();
+      expect(node(container, 'a').id).toBe(`${good}-root-a`);
+    }
+  });
+
+  it('a reused node comes back with the kit classes only: fill-added classes do not stick', () => {
+    // Contract: `fill` owns an item's children, and the kit resets the node's classes every
+    // render. Attributes other than the kit's own are NOT promised to survive or to be cleared.
+    const fill = (el: HTMLElement, it: NavItem): void => {
+      el.textContent = it.key;
+      if (!it.enabled) el.classList.add('x');
+    };
+    const o = { frame: 'f', fill } as const;
+    const mk = (enabled: boolean): ItemLayout => ({
+      kind: 'list',
+      items: [itm('a'), { key: 'b', enabled }],
+    });
+
+    renderNav(container, mk(false), st('a'), o);
+    const b = node(container, 'b');
+    expect(b.classList.contains('x')).toBe(true);
+    expect(b.classList.contains('is-disabled')).toBe(true);
+
+    renderNav(container, mk(true), st('a'), o);
+    expect(node(container, 'b')).toBe(b);
+    expect(b.classList.contains('x')).toBe(false);
+    expect(b.classList.contains('mr-nav-item')).toBe(true);
+    expect(b.classList.contains('is-disabled')).toBe(false);
+    expect(b.classList.contains('is-active')).toBe(false);
+  });
+
+  it('grid rows carry an inline column template naming the column count', () => {
+    for (const cols of [2, 3]) {
+      renderNav(container, GRID(cols, 'a', 'b', 'c', 'd', 'e', 'f', 'g'), st('a'), OPTS);
+      const rows = Array.from(container.querySelectorAll<HTMLElement>('[role="row"]'));
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(row.style.gridTemplateColumns, `cols ${cols}`).toContain(`repeat(${cols}`);
+      }
+    }
+  });
+
+  it('an unchanged re-render moves no item and no row (list and grid)', () => {
+    const cases: ReadonlyArray<readonly [string, ItemLayout]> = [
+      ['list', LIST('a', 'b', 'c', 'd', 'e')],
+      ['grid', GRID(2, 'a', 'b', 'c', 'd', 'e')],
+    ];
+    for (const [name, layout] of cases) {
+      document.body.replaceChildren();
+      container = document.createElement('div');
+      document.body.appendChild(container);
+      renderNav(container, layout, st('b'), OPTS);
+      const before = nodes(container);
+      const observer = new MutationObserver(() => undefined);
+      observer.observe(container, { childList: true, subtree: true });
+      renderNav(container, layout, st('b'), OPTS);
+      const records = observer.takeRecords();
+      observer.disconnect();
+      // fill's own writes land on item elements; the container and the rows are never touched
+      const structural = records.filter(
+        (r) => r.target === container || (r.target as HTMLElement).getAttribute?.('role') === 'row',
+      );
+      expect(structural.length, `${name}: structural childList records`).toBe(0);
+      for (const [key, el] of nodes(container)) {
+        expect(el, `${name}: node ${key} reused`).toBe(before.get(key));
+      }
+    }
+  });
+
+  it('a grid re-render with a different active key keeps the very same row nodes', () => {
+    const layout = GRID(3, 'a', 'b', 'c', 'd', 'e', 'f', 'g');
+    renderNav(container, layout, st('a'), OPTS);
+    const rowsBefore = Array.from(container.children);
+    expect(rowsBefore.length).toBe(3);
+    renderNav(container, layout, st('e'), OPTS);
+    const rowsAfter = Array.from(container.children);
+    expect(rowsAfter.length).toBe(3);
+    rowsAfter.forEach((row, i) => {
+      expect(row, `row ${i} reused`).toBe(rowsBefore[i]);
+    });
+  });
+
+  it('a container pre-set to tabindex -1 becomes the tab stop (0) after renderNav', () => {
+    container.setAttribute('tabindex', '-1');
+    renderNav(container, LIST('a', 'b'), st('a'), OPTS);
+    expect(container.getAttribute('tabindex')).toBe('0');
+  });
+});
+
 // --- scrolling the active item into view ----------------------------------------------------
 describe('nav render scrolling', () => {
   const calls: Array<{ readonly el: unknown; readonly arg: unknown }> = [];
@@ -488,5 +627,24 @@ describe('nav render scrolling', () => {
     renderNav(container, LIST('a', 'b', 'c'), st('a'), OPTS);
     expect(calls.length).toBe(1);
     expect(calls[0].el).toBe(node(container, 'a'));
+  });
+
+  it('a first render into a detached container still scrolls once it is attached and rendered', () => {
+    const detached = document.createElement('div');
+    renderNav(detached, LIST('a', 'b', 'c'), st('c'), OPTS);
+    expect(detached.isConnected).toBe(false);
+    // whatever the detached render did, only the attached render is judged
+    calls.length = 0;
+
+    document.body.appendChild(detached);
+    renderNav(detached, LIST('a', 'b', 'c'), st('c'), OPTS);
+    expect(calls.length).toBe(1);
+    expect(calls[0].el).toBe(nodes(detached).get('c'));
+    expect(calls[0].arg).toEqual({ block: 'nearest' });
+
+    // connected and unchanged: no scroll again
+    calls.length = 0;
+    renderNav(detached, LIST('a', 'b', 'c'), st('c'), OPTS);
+    expect(calls.length).toBe(0);
   });
 });

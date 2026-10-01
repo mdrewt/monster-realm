@@ -6,8 +6,17 @@
 // render — and no item or tab ever gets a tabindex. The active item is marked by the `is-active`
 // class AND `aria-selected`, never by colour alone; the visible mark is CSS (styles.css).
 //
-// The kit writes no text of its own: `fill` writes each row's content, `label` each tab's.
-import type { ItemLayout, NavItem, NavLayout, NavState, NavTab } from './nav';
+// The kit writes no text of its own: `fill` writes each row's content, `label` each tab's. The
+// kit owns the container's children and every item node's classes (reset each render); `fill`
+// owns the item's children only, and that content is never focusable — the container is.
+import {
+  activeLayout,
+  checkCols,
+  type NavItem,
+  type NavLayout,
+  type NavState,
+  type NavTab,
+} from './nav';
 
 export interface NavRenderOptions {
   /** The id prefix: item ids are `{frame}-{tab}-{key}`. */
@@ -21,15 +30,18 @@ export interface NavRenderOptions {
 /** The `{tab}` id segment of a non-tab layout (`root` is a reserved tab key in nav.ts). */
 const ROOT_TAB = 'root';
 
+/** A frame id prefixes every IDREF: non-empty, no whitespace (an IDREF is one token) and no `-`
+ *  (so `{frame}-…` ids of two frames cannot collide). */
+export function checkFrameId(frame: string): void {
+  if (frame === '' || [...frame].some((ch) => ch === '-' || ch.trim() === '')) {
+    throw new Error(`nav: invalid frame id ${JSON.stringify(frame)}`);
+  }
+}
+
 export const navItemId = (frame: string, tab: string | null, key: string): string =>
   `${frame}-${tab ?? ROOT_TAB}-${key}`;
 
 export const navTabId = (frame: string, tab: string): string => `${frame}-tab-${tab}`;
-
-function activeItems(layout: NavLayout, state: NavState): ItemLayout | undefined {
-  if (layout.kind !== 'tabs') return layout;
-  return layout.tabs.find((t) => t.key === state.tab)?.layout;
-}
 
 function setOrRemove(el: HTMLElement, name: string, value: string | undefined): void {
   if (value === undefined) el.removeAttribute(name);
@@ -51,7 +63,9 @@ export function renderNav(
   state: NavState,
   opts: NavRenderOptions,
 ): void {
-  const active = activeItems(layout, state);
+  checkFrameId(opts.frame);
+  const active = activeLayout(layout, state);
+  if (active?.kind === 'grid') checkCols(active.cols);
   const tab = layout.kind === 'tabs' ? state.tab : null;
   const isGrid = active?.kind === 'grid';
   container.setAttribute('role', isGrid ? 'grid' : 'listbox');
@@ -88,7 +102,7 @@ export function renderNav(
     el.dataset.navKey = item.key;
     if (tab === null) delete el.dataset.navTab;
     else el.dataset.navTab = tab;
-    el.classList.add('mr-nav-item');
+    el.className = 'mr-nav-item';
     el.setAttribute('role', isGrid ? 'gridcell' : 'option');
     const selected = item.key === activeKey;
     el.classList.toggle('is-active', selected);
@@ -116,14 +130,18 @@ export function renderNav(
     placeChildren(container, els);
   }
 
-  // The pointer is written AFTER the diff, so it always names a connected node.
-  const before = container.getAttribute('aria-activedescendant');
+  // The pointer is written AFTER the diff, so it always names a node in the container.
   const activeId = activeKey === null ? undefined : navItemId(opts.frame, tab, activeKey);
   setOrRemove(container, 'aria-activedescendant', activeId);
-  if (activeId !== undefined && activeId !== before) {
+  // aria-activedescendant does not scroll; an internally scrolling frame body must. Scroll when
+  // the active item changes — counted only once scrolled while attached, so a first render into
+  // a detached frame still scrolls on its first attached render.
+  if (activeId === undefined) {
+    delete container.dataset.navScrolled;
+  } else if (activeId !== container.dataset.navScrolled && container.isConnected) {
     const el = els[items.findIndex((i) => i.key === activeKey)];
-    // aria-activedescendant does not scroll; an internally scrolling frame body must.
     if (typeof el?.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
+    container.dataset.navScrolled = activeId;
   }
 }
 

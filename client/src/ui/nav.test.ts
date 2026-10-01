@@ -299,7 +299,8 @@ describe('nav layouts', () => {
     const flatState = navReconcile(prev, flat, at('a2', 'a', { b: 'b2' }));
     expect(flatState.tab).toBeNull();
     expect(flatState.perTab).toEqual({});
-    expect(['a2', 'z']).toContain(flatState.item);
+    // tabs -> list reseats like a list: the previous active item key is kept when it is present
+    expect(flatState.item).toBe('a2');
     expect(navReconcile(flat, prev, at('z'))).toEqual({ tab: 'a', item: 'a1', perTab: {} });
 
     // identity: a valid state against an unchanged layout is returned as the same object
@@ -856,6 +857,90 @@ describe('nav init and focus', () => {
     expect(navFocus(layout, start, { tab: 'nope' })).toBe(start);
     expect(navFocus(layout, start, { item: 'zzz' })).toBe(start);
     expect(navFocus(layout, start, { tab: 'a' })).toBe(start);
+  });
+});
+
+// --- review-lens hardening (round 2): untagged, so each CTL4 tag stays in exactly one test ------
+describe('nav hardening', () => {
+  it('tabs() validates every tab layout like grid() and list() do', () => {
+    // a hand-built grid layout inside a tab, bypassing grid(), still needs a sane cols
+    for (const cols of [
+      0,
+      -1,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ]) {
+      const handBuilt: ItemLayout = { kind: 'grid', items: itemsOf('x', 'y'), cols };
+      expect(() => tabs([tab('t', handBuilt)]), `tab grid cols ${cols}`).toThrow();
+      expect(
+        () => tabs([listTab('ok', 'z'), tab('t', handBuilt)]),
+        `second tab cols ${cols}`,
+      ).toThrow();
+    }
+    // a hand-built list with duplicate item keys inside a tab
+    const dupList: ItemLayout = { kind: 'list', items: itemsOf('a', 'b', 'a') };
+    expect(() => tabs([tab('t', dupList)]), 'dup keys in a tab list').toThrow();
+    const dupGrid: ItemLayout = { kind: 'grid', items: itemsOf('a', 'a'), cols: 2 };
+    expect(() => tabs([tab('t', dupGrid)]), 'dup keys in a tab grid').toThrow();
+    // a valid hand-built grid tab is still accepted
+    const okGrid: ItemLayout = { kind: 'grid', items: itemsOf('a', 'b', 'c'), cols: 2 };
+    expect(() => tabs([tab('t', okGrid)])).not.toThrow();
+  });
+
+  it('tabs() rejects an item id that equals another tab id (f-tab-a-b vs the tab a-b)', () => {
+    // item b of tab "tab-a" renders as {frame}-tab-a-b, the tab id of tab "a-b"
+    expect(() => tabs([listTab('tab-a', 'b'), listTab('a-b', 'x')])).toThrow();
+    expect(() => tabs([listTab('a-b', 'x'), listTab('tab-a', 'b')])).toThrow();
+    // a near miss collides with nothing
+    expect(() => tabs([listTab('tab-a', 'c'), listTab('a-b', 'x')])).not.toThrow();
+  });
+
+  it('navInit with a remembered tab that vanished lands on the first tab and its remembered item', () => {
+    const layout = frozen(tabs([listTab('b', 'p', 'q'), listTab('c', 'c1', 'c2')]));
+    const got = navInit(layout, at('x', 'a', { a: 'x', b: 'q' }));
+    expect(got).toMatchObject({ tab: 'b', item: 'q' });
+    // no remembered entry for the first tab: its first item
+    expect(navInit(layout, at('x', 'a', { a: 'x' }))).toMatchObject({ tab: 'b', item: 'p' });
+    // a remembered entry that is no longer an item of the first tab: its first item
+    expect(navInit(layout, at('x', 'a', { b: 'gone' }))).toMatchObject({ tab: 'b', item: 'p' });
+  });
+
+  it("navInit does not carry the vanished tab's item key into the first tab", () => {
+    const layout = frozen(tabs([listTab('b', 'z', 'y')]));
+    const got = navInit(layout, at('y', 'a'));
+    expect(got).toMatchObject({ tab: 'b', item: 'z' });
+  });
+
+  it('navInit prunes remembered entries of tabs that no longer exist', () => {
+    const layout = frozen(tabs([listTab('a', 'a1', 'a2'), listTab('b', 'b1')]));
+    const got = navInit(layout, at('a2', 'a', { a: 'a1', gone: 'g1' }));
+    expect(Object.hasOwn(got.perTab, 'gone')).toBe(false);
+    expect(got.perTab).toEqual({ a: 'a1' });
+    expect(got).toMatchObject({ tab: 'a', item: 'a2' });
+  });
+
+  it('leaving a tab whose item is null removes its old remembered entry', () => {
+    const layout = frozen(tabs([listTab('a', 'a1'), listTab('b', 'b1'), listTab('c')]));
+    const start = at(null, 'c', { c: 'old' });
+    const r = navStep(layout, start, press('RB'));
+    expect(r.outcome).toEqual(MOVED);
+    expect(r.state).toMatchObject({ tab: 'a', item: 'a1' });
+    expect(Object.hasOwn(r.state.perTab, 'c')).toBe(false);
+  });
+
+  it('navFocus with an item key found in the active tab and an earlier tab stays on the active tab', () => {
+    const layout = frozen(tabs([listTab('a', 'x', 'y'), listTab('b', 'w', 'x')]));
+    const onB = at('w', 'b');
+    expect(navFocus(layout, onB, { item: 'x' })).toMatchObject({ tab: 'b', item: 'x' });
+  });
+
+  it('navReconcile to a zero-tabs layout keeps the per-tab memory for a later return', () => {
+    const prev = frozen(tabs([listTab('a', 'a1'), listTab('b', 'b1')]));
+    const state = at('b1', 'b', { a: 'a1' });
+    const got = navReconcile(prev, frozen(tabs([])), state);
+    expect(got).toEqual({ tab: null, item: null, perTab: { a: 'a1' } });
   });
 });
 
