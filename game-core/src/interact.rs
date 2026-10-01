@@ -39,6 +39,23 @@ pub fn interact_candidates(
     zone: u32,
     entities: &[InteractEntity],
 ) -> Vec<usize> {
-    let _ = (pos, facing, zone, entities);
-    Vec::new()
+    let faced = on_tile(pos.step(facing), zone, entities);
+    if faced.is_empty() {
+        on_tile(pos, zone, entities)
+    } else {
+        faced
+    }
+}
+
+/// Indices of the `zone` entities standing on `tile`, ordered by `kind`, then `id`
+/// (a stable sort, so equal `(kind, id)` pairs keep their input order).
+fn on_tile(tile: TilePos, zone: u32, entities: &[InteractEntity]) -> Vec<usize> {
+    let mut hits: Vec<usize> = entities
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.zone == zone && e.pos == tile)
+        .map(|(i, _)| i)
+        .collect();
+    hits.sort_by_key(|&i| (entities[i].kind, entities[i].id));
+    hits
 }

@@ -114,8 +114,8 @@ Content is data, not code. Each registry is a directory under `game-core/content
 ## client-wasm: the prediction boundary
 
 `client-wasm/src/lib.rs` exports `apply_move`, `predict_move`, `predict_tick`,
-`set_active_zone`, `zone_map`, `evolution_eligibility`, and constant accessors
-(`step_ms`, `move_queue_cap`, `party_size`, `party_slot_none`, `talk_range`,
+`set_active_zone`, `zone_map`, `evolution_eligibility`, `interact_candidates_coded`, and
+constant accessors (`step_ms`, `move_queue_cap`, `party_size`, `party_slot_none`, `talk_range`,
 `max_trade_monsters_per_side`, `deletion_grace_ms_default`, the last returned as a
 JS `BigInt`). Values cross the boundary as serde values (`serde-wasm-bindgen`). The
 module parses zone maps once per instance and caches the active zone's tile map
