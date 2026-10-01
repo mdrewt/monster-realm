@@ -17,6 +17,7 @@ pub mod content;
 pub mod currency;
 pub mod dialogue;
 pub mod evolution;
+pub mod interact;
 pub mod monster;
 pub mod npc;
 pub mod quest;
@@ -29,6 +30,8 @@ pub mod world;
 
 #[cfg(test)]
 mod grass_encounter_tests;
+#[cfg(test)]
+mod interact_tests;
 
 pub use accounts::{
     is_deletion_due, DELETION_GRACE_MS_DEFAULT, EXPORT_CHUNK_ROWS, STATE_TRANSITION_OWNERS,
@@ -68,6 +71,7 @@ pub use evolution::{
     path_satisfied, quality_time_tier_of, trust_tier_of, unmet_requirement,
     QUALITY_TIME_TIER_TICKS, TRUST_BAND_PCT, TRUST_K,
 };
+pub use interact::{interact_candidates, InteractEntity, InteractKind};
 pub use monster::{
     build_monster, derive_stats, level_bounds, level_for_xp, roll_individuality, roll_starter,
     xp_for_level, Affinity, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock,

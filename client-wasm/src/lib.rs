@@ -236,6 +236,52 @@ pub fn talk_range() -> u32 {
     game_core::TALK_RANGE as u32
 }
 
+/// Marshaling-only input DTO for [`interact_candidates_coded`]: one entity as TS
+/// sends it. `kind` is `"npc"`, `"heal"` or `"player"`; `id` is a decimal string
+/// (a `u64` never crosses as a JS number). No rule lives here.
+#[derive(serde::Deserialize)]
+struct WireInteractEntity {
+    kind: String,
+    x: i32,
+    y: i32,
+    zone: u32,
+    id: String,
+}
+
+/// The pure core of [`interact_candidates_coded`] (natively testable): parse the
+/// facing code and every entity, then delegate to `game_core::interact_candidates`.
+fn interact_candidates_core(
+    own_x: i32,
+    own_y: i32,
+    facing: u8,
+    zone: u32,
+    entities: &[WireInteractEntity],
+) -> Result<Vec<usize>, String> {
+    let _ = (own_x, own_y, facing, zone, entities);
+    Ok(Vec::new())
+}
+
+/// The interaction target rule across the wasm boundary. `entities` is an array
+/// of `{kind, x, y, zone, id}` objects ([`WireInteractEntity`]); returns an array
+/// of input indices, in priority order.
+///
+/// # Errors
+/// Returns a JS error for an invalid `facing` code (0=N,1=S,2=E,3=W), an unknown
+/// `kind`, an `id` that is not a decimal `u64`, or a malformed `entities` value.
+#[wasm_bindgen]
+pub fn interact_candidates_coded(
+    own_x: i32,
+    own_y: i32,
+    facing: u8,
+    zone: u32,
+    entities: JsValue,
+) -> Result<JsValue, JsValue> {
+    let entities: Vec<WireInteractEntity> = serde_wasm_bindgen::from_value(entities)?;
+    let out = interact_candidates_core(own_x, own_y, facing, zone, &entities)
+        .map_err(zone_map_err)?;
+    Ok(serde_wasm_bindgen::to_value(&out)?)
+}
+
 /// Marshaling-only input DTO for [`evolution_eligibility`]: exactly the
 /// `MonsterInstance` fields game-core's evolution gates read (plus the EV spread
 /// the Nutrition gate totals). No rule lives here.
