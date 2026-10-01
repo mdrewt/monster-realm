@@ -1,7 +1,8 @@
 // The UI context stack (design §4): a pure, base-first stack of frames over a `world` or
-// `battle` base. Pure — no DOM, SDK, module state or clock. In ctl-2 it lands BEHIND the
-// legacy show/hide paths: main.ts mirrors the visible overlays into it (`mirrorEdges`) and
-// gates movement and the KeyT interact guard on it (`movementEnabled`); no other key reads it.
+// `battle` base. Pure — no DOM, SDK, module state or clock. It sits BEHIND the legacy
+// show/hide paths: main.ts mirrors the visible overlays into it (`mirrorEdges`), reconciles
+// server truth into it on every batch (`reconcile`, whose `close` commands run the views' own
+// hide paths), and gates movement and the KeyT interact guard on it (`movementEnabled`).
 import type { OverlayId } from './overlayRegistry';
 
 /** The legacy overlays are the frame ids until the screens replace them. */
@@ -25,7 +26,11 @@ export type Edge =
   | { readonly kind: 'base'; readonly base: BaseFrame }
   | { readonly kind: 'push'; readonly frame: UpperFrame }
   | { readonly kind: 'pop'; readonly id: FrameId };
-export type Command = { readonly kind: 'clearHeld' };
+export type Command =
+  | { readonly kind: 'clearHeld' }
+  /** Close a frame's legacy overlay through its own hide path. Never a dialogue: the client
+   *  does not close a server conversation. */
+  | { readonly kind: 'close'; readonly id: Exclude<FrameId, 'dialogueView'> };
 
 export interface ScreenPolicy {
   readonly owner: 'player' | 'server';
@@ -36,9 +41,8 @@ export interface ScreenPolicy {
 const PLAYER_DROP: ScreenPolicy = { owner: 'player', onBattle: 'drop', battleSafe: false };
 const PLAYER_DROP_SAFE: ScreenPolicy = { owner: 'player', onBattle: 'drop', battleSafe: true };
 
-/** Total over every frame id, so an omitted id fails client-typecheck. No production code
- *  reads it yet: the values are provisional until ctl-3 (reconcile) and ctl-6c (the
- *  battle-safe policy) consume them; the tests pin totality and the dialogue row only. */
+/** Total over every frame id, so an omitted id fails client-typecheck. `reconcile` reads
+ *  `owner` and `onBattle`; `battleSafe` stays provisional until ctl-6c consumes it. */
 export const SCREEN_POLICY: Readonly<Record<FrameId, ScreenPolicy>> = {
   battleView: { owner: 'server', onBattle: 'drop', battleSafe: true },
   boxView: PLAYER_DROP,
@@ -109,6 +113,54 @@ export function mirrorEdges(stack: Stack, visible: readonly FrameId[]): readonly
     .filter((id) => !onStack.includes(id))
     .map((id) => ({ kind: 'push', frame: { kind: 'screen', id } }));
   return [...pops, ...pushes];
+}
+
+/** The server truth the stack reconciles to on every batch. */
+export interface ServerView {
+  /** The player's Ongoing battle, if any (either role). */
+  readonly ongoingBattleId: string | undefined;
+  /** The player has a server conversation row. */
+  readonly conversation: boolean;
+}
+
+/** Server truth into the stack (CTL3.1): the base follows the battle; a battle (or its terminal
+ *  outcome over the world) pops every `drop` frame; a conversation pops every player frame; a
+ *  conversation that ends pops its frame silently, even suspended under a battle. It only pops:
+ *  frames are pushed by the paths that show them (`mirrorEdges`), so it never strands a frame
+ *  whose view is not shown. Each popped frame but dialogue gets a `close`, which runs that
+ *  overlay's own hide path (CTL3.3); the client never closes a dialogue. Idempotent. */
+export function reconcile(
+  stack: Stack,
+  view: ServerView,
+): { stack: Stack; commands: readonly Command[] } {
+  const based = contextStep(stack, {
+    kind: 'base',
+    base:
+      view.ongoingBattleId === undefined
+        ? { kind: 'world' }
+        : { kind: 'battle', battleId: view.ongoingBattleId },
+  });
+  const [base, ...upper] = based.stack;
+  const battleUp = base.kind === 'battle' || upper.some((f) => idOf(f) === 'battleView');
+  const commands: Command[] = [...based.commands];
+  const kept = upper.filter((f) => {
+    const id = idOf(f);
+    if (id === 'dialogueView') return view.conversation;
+    const policy = SCREEN_POLICY[id];
+    const dropped =
+      (battleUp && id !== 'battleView' && policy.onBattle === 'drop') ||
+      (view.conversation && policy.owner === 'player');
+    if (dropped) commands.push({ kind: 'close', id });
+    return !dropped;
+  });
+  return { stack: [base, ...kept], commands };
+}
+
+/** Whether a player-opened frame (the deferred shop open) must not open now: a battle or its
+ *  outcome is up, or another frame than a closing dialogue holds the screen. */
+export function blocksPlayerOpen(stack: Stack): boolean {
+  const [base, ...upper] = stack;
+  return base.kind === 'battle' || upper.some((f) => idOf(f) !== 'dialogueView');
 }
 
 /** The one movement gate: only a bare world stack with the session gate clear walks. */

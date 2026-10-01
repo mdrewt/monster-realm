@@ -16,17 +16,13 @@
 // testable instead of implicit in fourteen hand-maintained guard lists.
 //
 // SCOPE: this module holds the DECISIONS, plus the READ substrate
-// — `OverlayProbes` and `anyVisible`, which the five `main.ts` fan-out surfaces consume
-// — plus the WRITE substrate: `visibleIds()` and the
-// `OverlayHandles` TYPE, which together let all twelve `main.ts` hotkey open-guards and
-// `refreshBattle` route through `canOpen`/`hideAllExceptPlan` instead of fourteen
-// hand-maintained guard lists. `visibleIds()` is an explicit REVERSAL of A7's deletion, and
-// the reversal is the YAGNI rule working rather than churn: it landed together with
-// its two production consumers (the `canOpen` gate binder and `refreshBattle`'s force-hide
-// loop). What deliberately did NOT ship, for exactly that same reason — zero consumers,
-// the A7/A15 precedent — is per-id `open` thunks, `hideAllExcept` (the pure
-// `hideAllExceptPlan` below is what `refreshBattle` consumes), `isVisible(id)` and
-// `anyVisibleExcept()`.
+// — `OverlayProbes` and `anyVisible` — plus the WRITE substrate: `visibleIds()` and the
+// `OverlayHandles` TYPE, which together let all twelve `main.ts` hotkey open-guards route
+// through `canOpen` instead of hand-maintained guard lists, and let `main.ts` run the
+// context stack's `close` commands (ui/contextStack.ts `reconcile`) through each view's own
+// hide path. What a battle or a server conversation closes is NOT decided here: that is
+// `SCREEN_POLICY` in ui/contextStack.ts. What deliberately did NOT ship — zero consumers,
+// the A7/A15 precedent — is per-id `open` thunks, `isVisible(id)` and `anyVisibleExcept()`.
 
 /** The 17 mutual-exclusion overlays. `errorOverlayView` is NOT a member: it is
  *  non-blocking, F8-dismissed, and re-shows itself, so it never participates in
@@ -58,7 +54,7 @@ export type OverlayId =
 
 /**
  * How an overlay behaves when something else wants to open over it.
- * - `EXCLUSIVE_TOP` — outranks everything; may force-hide the `BATTLE_FORCE_HIDE` subset.
+ * - `EXCLUSIVE_TOP` — outranks everything; never itself a player open request.
  * - `HIDE_SWITCH`   — a sibling in the same trio may force-hide it (B/I/E switching).
  * - `GUARD_ONLY`    — deny over it, NEVER force-hide it.
  */
@@ -279,42 +275,6 @@ export const OVERLAY_A11Y: Readonly<Record<OverlayId, A11yMeta>> = {
 };
 
 /**
- * Exactly what a battle auto-show force-hides — `refreshBattle`'s existing subset in its
- * own source order, plus `menuView` (the menu must never occlude a battle, AC-19).
- *
- * `dialogueView` is ABSENT and must stay absent: hiding a live conversation client-side
- * leaves the server `player_conversation` row open, so the player is stuck in a phantom
- * conversation. `shopView`/`tradeView`/`pvpView`/`questLogView`/`healView` are likewise
- * absent because `refreshBattle` does not hide them today. Pinned exactly (not by
- * membership) by OR-FORCEHIDE-EXACT.
- */
-export const BATTLE_FORCE_HIDE: readonly OverlayId[] = [
-  'helpView',
-  'boxView',
-  'raisingView',
-  'evolutionView',
-  'leaderboardView',
-  'renameView',
-  'tradeProposeView',
-  'menuView',
-  // one modal at a time. `refreshBattle` does NOT consult `canOpen`, so
-  // omitting an id does not deny the auto-show — it leaves the omitted overlay painted under the
-  // battle with a second aria-modal root and a second focus trap. Safe to force-hide because
-  // `PrivacyView.hide()` disarms the delete confirmation on its way out.
-  'privacyView',
-];
-
-/**
- * Overlays no verdict may EVER force-hide, whatever the tier table later says.
- *
- * This is a stronger guarantee than narrowing `forceHide`'s element type to the
- * hide-switch trio would be: the EXCLUSIVE_TOP row legitimately force-hides GUARD_ONLY
- * ids (help, leaderboard, rename, tradePropose), so the narrow type is unsound. The
- * invariant is enforced over every (target × blocker-set) pair by OR-NEVER-FORCE-HIDE.
- */
-export const NEVER_FORCE_HIDE: readonly OverlayId[] = ['dialogueView'];
-
-/**
  * The verdict. A `deny` carries NO `forceHide` field at all — the union makes
  * "denied, but hide these anyway" unrepresentable rather than merely untested.
  */
@@ -326,12 +286,9 @@ export type CanOpenVerdict =
 type Outcome = 'deny' | 'hide';
 
 function decide(target: OverlayId, blocker: OverlayId): Outcome {
-  // EXCLUSIVE_TOP as the TARGET: a battle opening is not a normal open. It force-hides
-  // exactly the subset it is allowed to, and is denied by anything outside it — which is
-  // precisely the set `refreshBattle` leaves alone.
-  if (OVERLAY_TIERS[target] === 'EXCLUSIVE_TOP') {
-    return BATTLE_FORCE_HIDE.includes(blocker) ? 'hide' : 'deny';
-  }
+  // EXCLUSIVE_TOP as the TARGET: a battle is server truth, never a player open request. It
+  // arrives through the context stack's `reconcile`, which closes what `SCREEN_POLICY` drops.
+  if (OVERLAY_TIERS[target] === 'EXCLUSIVE_TOP') return 'deny';
   // A battle already up outranks every other open request.
   if (OVERLAY_TIERS[blocker] === 'EXCLUSIVE_TOP') return 'deny';
   // Guard-only means guard: deny over it, never dismiss it.
@@ -357,22 +314,6 @@ export function canOpen(target: OverlayId, currentlyVisible: readonly OverlayId[
   return { kind: 'allow', forceHide: blockers.filter((b) => decide(target, b) === 'hide') };
 }
 
-/**
- * The ids a `hideAllExcept(keep)` would hide, as a PLAN — this function performs nothing.
- *
- * Only the battle force-hides anything; every other `keep` plans an empty list. That is a
- * faithful model of the code as it stands, and deliberately NOT generalised into a
- * per-overlay force-hide table: fourteen empty arrays would be dead weight, and inventing
- * force-hide behaviour no overlay has is how a "unification" refactor grows bugs.
- */
-export function hideAllExceptPlan(
-  keep: OverlayId,
-  currentlyVisible: readonly OverlayId[],
-): readonly OverlayId[] {
-  if (keep !== 'battleView') return [];
-  return BATTLE_FORCE_HIDE.filter((id) => id !== keep && currentlyVisible.includes(id));
-}
-
 /** Per-id visibility probes. `Record<OverlayId, _>` ⇒ omitting an id is a COMPILE error,
  *  not a test failure. Each probe MUST read THIS overlay's own `visible` getter. */
 export type OverlayProbes = Readonly<Record<OverlayId, () => boolean>>;
@@ -386,7 +327,7 @@ export function anyVisible(probes: OverlayProbes, exempt?: OverlayId): boolean {
 }
 
 /** Which overlays are visible right now, in OVERLAY_IDS declaration order — the argument
- *  `canOpen`/`hideAllExceptPlan` take. Re-probes on EVERY call, same contract as
+ *  `canOpen` takes. Re-probes on EVERY call, same contract as
  *  `anyVisible`: `main.ts` builds its probe table at module scope while all seventeen view
  *  bindings are still `undefined`, so a cached list would be permanently empty and mutual
  *  exclusion would never engage. NO try/catch, for `anyVisible`'s reason. The deterministic
@@ -399,8 +340,8 @@ export function visibleIds(probes: OverlayProbes): readonly OverlayId[] {
  *  labour: this module owns the SHAPE of the write, `main.ts` owns the handles.
  *
  *  Total `Record<OverlayId, _>` on purpose, so a 17th overlay is a COMPILE error here rather
- *  than a silently unhidable overlay. The value type admits `undefined`, and exactly the
- *  `NEVER_FORCE_HIDE` members supply it. For `dialogueView` that is not style: `main.ts` must
+ *  than a silently unhidable overlay. The value type admits `undefined`, and only
+ *  `dialogueView` supplies it. That is not style: `main.ts` must
  *  contain ZERO `dialogueView?.hide` occurrences,
  *  because a client-side hide strands the server
  *  `player_conversation` row — so a table of REQUIRED thunks cannot compile in this codebase
