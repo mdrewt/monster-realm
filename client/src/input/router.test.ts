@@ -14,6 +14,9 @@
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { WasmDirection } from '../convert/convert';
+import type { NavInput } from '../ui/nav';
+import type { ScreenResult } from '../ui/screens/types';
+import { DEFAULT_BINDINGS } from './bindings';
 import { type ButtonEdge, VBUTTONS, type VButton } from './buttons';
 import { KeyboardSource } from './keyboardSource';
 import {
@@ -21,7 +24,9 @@ import {
   ownership,
   type RouteContext,
   type RouterEffect,
+  routedBindings,
   routerConsumes,
+  typingKey,
 } from './router';
 
 const WORLD: RouteContext = { worldActive: true };
@@ -404,7 +409,9 @@ const navEffect = (button: VButton, repeat: boolean): RouterEffect => ({
   kind: 'nav',
   input: { button, repeat },
 });
-const POP: RouterEffect = { kind: 'pop' };
+/** The effect a screen's command becomes (ctl-6b: the ctl-5 `pop` router effect is gone). */
+const commandEffect = (command: ScreenResult): RouterEffect =>
+  ({ kind: 'command', command }) as RouterEffect;
 
 describe('InputRouter under a nav frame (ctl-5)', () => {
   it('CTL5-2-ROUTER-NAV-BUTTONS: with an uncovered nav frame the D-pad, A, B and Y presses are consumed as fresh nav inputs and their releases carry no nav effect; Start and Select stay with the ladder; no nav ctx leaves A, B and Y alone', () => {
@@ -473,58 +480,95 @@ describe('InputRouter under a nav frame (ctl-5)', () => {
     }
   });
 
-  it('CTL5-2-ROUTER-B-POPS-COVERED: B down under a covered nav frame is one consumed pop; A and Y stay unconsumed; a B the target owns (a text field) routes nothing and so never pops', () => {
-    // WRONG IMPL KILLED: a covered B that does nothing (B could never leave a child), one that
-    // pops on the up edge as well (two pops per press), a pop emitted from an uncovered frame
-    // (B at the menu root must navigate, not pop), a covered A/Y that is consumed (the legacy
-    // child's native Enter would die), a covered D-pad press that navigates the hidden menu, and
-    // a Backspace typed into a text field that pops the screen it is typed in.
-    const r = new InputRouter();
-    expect(r.route(edge('B', true), navCtx(1000, true))).toEqual({
-      consumed: true,
-      effects: [POP],
+  // ctl-6b CTL6B.1 / CTL6B.3: the `pop` router effect is gone. B over a covered nav frame is no
+  // longer special-cased: it reaches the top frame's screen adapter (ctx.screen), whose legacy
+  // answer is the pop COMMAND, and a router with no screen leaves it unconsumed.
+  it('CTL5-2-ROUTER-B-POPS-COVERED: B down under a covered nav frame reaches ctx.screen and yields its pop command as a consumed command effect (no `pop` router effect); with no screen it is unconsumed; A and Y stay with the screen; a B the target owns routes nothing', () => {
+    // WRONG IMPL KILLED: a covered B that never asks the screen (B could never leave a child),
+    // one that still emits the retired `pop` effect, one that pops on the up edge as well (two pops
+    // per press), a command emitted from an uncovered frame (B at the menu root must navigate),
+    // a covered A/Y that is consumed when the screen says `unhandled` (the legacy child's native
+    // Enter would die), a covered D-pad press that navigates the hidden menu or asks the screen,
+    // a covered B with no screen that still pops, and a Backspace typed into a text field that
+    // pops the screen it is typed in.
+    const POP_COMMAND: ScreenResult = { kind: 'pop' };
+    const seen: NavInput[] = [];
+    const coveredWith = (now: number, answer: ScreenResult): RouteContext => ({
+      ...navCtx(now, true),
+      screen: (btn) => {
+        seen.push(btn);
+        return answer;
+      },
     });
+
+    const r = new InputRouter();
+    expect(r.route(edge('B', true), coveredWith(1000, POP_COMMAND))).toEqual({
+      consumed: true,
+      effects: [commandEffect(POP_COMMAND)],
+    });
+    expect(seen, 'the screen was asked exactly once, with a fresh B').toEqual([
+      { button: 'B', repeat: false },
+    ]);
     expect(
-      r.route(edge('B', false), navCtx(1050, true)).effects,
+      r.route(edge('B', false), coveredWith(1050, POP_COMMAND)).effects,
       'the release pops nothing',
     ).toEqual([]);
-    expect(r.route(edge('B', true), navCtx(1100, true)).effects, 'every press is one pop').toEqual([
-      POP,
-    ]);
+    expect(seen.length, 'and does not ask the screen').toBe(1);
+    expect(
+      r.route(edge('B', true), coveredWith(1100, POP_COMMAND)).effects,
+      'every press is one pop',
+    ).toEqual([commandEffect(POP_COMMAND)]);
+    expect(seen.length).toBe(2);
 
+    // Contrast: the very same press with no screen to ask is unconsumed (the old pop effect is gone).
+    expect(
+      new InputRouter().route(edge('B', true), navCtx(1000, true)),
+      'covered, no screen: nothing pops',
+    ).toEqual({ consumed: false, effects: [] });
+
+    // A and Y are the screen's too: `unhandled` leaves them to the native control, with the screen
+    // actually consulted (so "unconsumed" is the screen's answer, not a router that never asked).
     for (const button of ['A', 'Y'] as const) {
-      expect(new InputRouter().route(edge(button, true), navCtx(1000, true)), button).toEqual({
-        consumed: false,
-        effects: [],
-      });
+      const before = seen.length;
+      expect(
+        new InputRouter().route(edge(button, true), coveredWith(1000, 'unhandled')),
+        button,
+      ).toEqual({ consumed: false, effects: [] });
+      expect(seen.length, `${button}: the screen was asked`).toBe(before + 1);
     }
 
     const covered = new InputRouter();
-    const dpad = covered.route(edge('Down', true), navCtx(1000, true));
+    const askedBefore = seen.length;
+    const dpad = covered.route(edge('Down', true), coveredWith(1000, POP_COMMAND));
     expect(dpad.consumed, 'the D-pad is still swallowed (no page scroll)').toBe(true);
     expect(
-      dpad.effects.some((e) => e.kind === 'nav' || e.kind === 'pop'),
+      dpad.effects.some((e) => e.kind === 'nav' || e.kind === 'command'),
       'a covered D-pad press drives nothing in the hidden menu',
     ).toBe(false);
+    expect(seen.length, 'and never asks the screen').toBe(askedBefore);
 
     expect(
       new InputRouter().route(edge('B', true), navCtx(1000, false)).effects,
-      'uncovered, B is a nav input, not a pop',
+      'uncovered, B is a nav input, not a command',
     ).toEqual([navEffect('B', false)]);
     expect(
       new InputRouter().route(edge('B', true), GATED).effects,
-      'with no nav frame there is nothing to pop',
+      'with no nav frame and no screen there is nothing to pop',
     ).toEqual([]);
 
     // Ownership: Backspace typed into a field yields no edge, so the router never sees a B.
     const typed = new KeyboardSource().keydown({ code: 'Backspace', target: { tagName: 'INPUT' } });
     expect(typed, 'the field owns Backspace').toEqual([]);
     const typedRouter = new InputRouter();
-    expect(typed.flatMap((e) => typedRouter.route(e, navCtx(1000, true)).effects)).toEqual([]);
+    expect(
+      typed.flatMap((e) => typedRouter.route(e, coveredWith(1000, POP_COMMAND)).effects),
+    ).toEqual([]);
     // Control: the same key at the page pops.
     const atPage = new KeyboardSource().keydown({ code: 'Backspace', target: { tagName: 'DIV' } });
     const pageRouter = new InputRouter();
-    expect(atPage.flatMap((e) => pageRouter.route(e, navCtx(1000, true)).effects)).toEqual([POP]);
+    expect(
+      atPage.flatMap((e) => pageRouter.route(e, coveredWith(1000, POP_COMMAND)).effects),
+    ).toEqual([commandEffect(POP_COMMAND)]);
   });
 
   it('CTL5-5-REPEAT-350-100: a held D-pad button yields one repeat edge 350 ms after the press, then one every 100 ms, at any press time; a stalled clock yields one edge, never a burst', () => {
@@ -703,5 +747,279 @@ describe('InputRouter under a nav frame (ctl-5)', () => {
     }
     const noPress = new InputRouter();
     expect(noPress.tick(navCtx(5000)), 'nothing pressed, nothing repeats').toEqual([]);
+  });
+});
+
+// ==========================================================================================
+// ctl-6b: the screen seam (CTL6B.1), Start / B / Select reach the top frame's adapter, LB/RB only
+// from PageUp/PageDown (CTL6B.6) and typing mode (CTL6B.5)
+// ==========================================================================================
+//
+// `ctx.screen(btn)` is the top frame's adapter, bound by the shell. After the D-pad, X and the
+// uncovered-nav A/B/Y paths, a DOWN edge of A/B/Y/LB/RB/Start/Select asks it: `unhandled` is NOT
+// consumed (the key falls to the ladder or to the focused native control), `consumed` is swallowed,
+// a Command is consumed and becomes a `{kind:'command', command}` effect. Up edges of those
+// buttons are not consumed, and a router with no `screen` leaves them all unconsumed.
+
+const SCREEN_BUTTONS: readonly VButton[] = ['A', 'B', 'Y', 'LB', 'RB', 'Start', 'Select'];
+const NAV_OWNED: ReadonlySet<VButton> = new Set<VButton>(['A', 'B', 'Y']);
+
+const SCREEN_CONTEXTS: ReadonlyArray<{
+  readonly name: string;
+  readonly navFrameUncovered: boolean;
+  readonly make: (screen: RouteContext['screen']) => RouteContext;
+}> = [
+  { name: 'world', navFrameUncovered: false, make: (screen) => ({ worldActive: true, screen }) },
+  {
+    name: 'a frame is open (no nav)',
+    navFrameUncovered: false,
+    make: (screen) => ({ worldActive: false, screen }),
+  },
+  {
+    name: 'a covered nav frame',
+    navFrameUncovered: false,
+    make: (screen) => ({ ...navCtx(1000, true), screen }),
+  },
+  {
+    name: 'an uncovered nav frame',
+    navFrameUncovered: true,
+    make: (screen) => ({ ...navCtx(1000, false), screen }),
+  },
+];
+
+const SCREEN_ANSWERS: ReadonlyArray<{
+  readonly name: string;
+  readonly answer: ScreenResult;
+  readonly expected: { readonly consumed: boolean; readonly effects: readonly RouterEffect[] };
+}> = [
+  { name: 'unhandled', answer: 'unhandled', expected: { consumed: false, effects: [] } },
+  { name: 'consumed', answer: 'consumed', expected: { consumed: true, effects: [] } },
+  {
+    name: 'popToBase',
+    answer: { kind: 'popToBase' },
+    expected: { consumed: true, effects: [commandEffect({ kind: 'popToBase' })] },
+  },
+  {
+    name: 'openMenu',
+    answer: { kind: 'openMenu' },
+    expected: { consumed: true, effects: [commandEffect({ kind: 'openMenu' })] },
+  },
+  {
+    name: 'setProfileName',
+    answer: { kind: 'setProfileName', name: 'Zed' },
+    expected: { consumed: true, effects: [commandEffect({ kind: 'setProfileName', name: 'Zed' })] },
+  },
+];
+
+describe('InputRouter screen seam (ctl-6b)', () => {
+  it('CTL6B-1-ROUTER-SCREEN-RESULT: a DOWN edge of A/B/Y/LB/RB/Start/Select asks ctx.screen: unhandled is not consumed, consumed is swallowed, a Command becomes a consumed command effect; up edges are not consumed; nav owns A/B/Y at an uncovered nav frame', () => {
+    // WRONG IMPL KILLED: a router that never asks the screen (Start / B / Select would have no
+    // owner), one that treats `unhandled` as consumed (a focused native button would lose its
+    // Enter, Backspace would be eaten at the page), one that treats `consumed` as unconsumed (the
+    // key would also reach the ladder), one that drops or rewrites the Command, one that asks on
+    // the up edge (two commands per press) or consumes the up edge, one that asks the screen for
+    // the keys the uncovered nav frame owns (a menu A would both activate and be routed twice),
+    // and one that sends a repeat flag.
+    let rows = 0;
+    for (const ctx of SCREEN_CONTEXTS) {
+      for (const button of SCREEN_BUTTONS) {
+        for (const a of SCREEN_ANSWERS) {
+          const label = `${ctx.name} / ${button} / ${a.name}`;
+          const navOwned = ctx.navFrameUncovered && NAV_OWNED.has(button);
+          const seen: NavInput[] = [];
+          const screen = (btn: NavInput): ScreenResult => {
+            seen.push(btn);
+            return a.answer;
+          };
+          const router = new InputRouter();
+
+          const down = router.route(edge(button, true), ctx.make(screen));
+          if (navOwned) {
+            expect(down, `${label}: nav owns the press`).toEqual({
+              consumed: true,
+              effects: [navEffect(button, false)],
+            });
+            expect(seen, `${label}: the screen is not asked`).toEqual([]);
+          } else {
+            expect(down, `${label}: down`).toEqual(a.expected);
+            expect(seen, `${label}: asked once with a fresh press`).toEqual([
+              { button, repeat: false },
+            ]);
+          }
+
+          const up = router.route(edge(button, false), ctx.make(screen));
+          expect(up, `${label}: up`).toEqual(
+            navOwned ? { consumed: true, effects: [] } : { consumed: false, effects: [] },
+          );
+          expect(seen.length, `${label}: the release asks nobody`).toBe(navOwned ? 0 : 1);
+          rows += 1;
+        }
+      }
+    }
+    expect(rows, 'ANTI-VACUITY: every context x button x answer was driven').toBe(
+      SCREEN_CONTEXTS.length * SCREEN_BUTTONS.length * SCREEN_ANSWERS.length,
+    );
+
+    // With no screen bound, every one of those buttons is unconsumed (the nav-owned ones aside).
+    for (const ctx of SCREEN_CONTEXTS) {
+      for (const button of SCREEN_BUTTONS) {
+        const navOwned = ctx.navFrameUncovered && NAV_OWNED.has(button);
+        const down = new InputRouter().route(edge(button, true), ctx.make(undefined));
+        expect(down, `no screen / ${ctx.name} / ${button}`).toEqual(
+          navOwned
+            ? { consumed: true, effects: [navEffect(button, false)] }
+            : { consumed: false, effects: [] },
+        );
+      }
+    }
+
+    // The D-pad and X never ask the screen: the world's walk and jump stay the router's.
+    for (const ctx of SCREEN_CONTEXTS) {
+      for (const button of ['Up', 'Down', 'Left', 'Right', 'X'] as const) {
+        let asked = 0;
+        const screen = (): ScreenResult => {
+          asked += 1;
+          return { kind: 'popToBase' };
+        };
+        const withScreen = new InputRouter();
+        const without = new InputRouter();
+        for (const isDown of [true, false]) {
+          expect(
+            withScreen.route(edge(button, isDown), ctx.make(screen)),
+            `${ctx.name} / ${button} ${isDown ? 'down' : 'up'} is the same with a screen bound`,
+          ).toEqual(without.route(edge(button, isDown), ctx.make(undefined)));
+        }
+        expect(asked, `${ctx.name} / ${button}: the screen is never asked`).toBe(0);
+      }
+    }
+  });
+});
+
+describe('routedBindings (ctl-6b, CTL6B.6)', () => {
+  it('CTL6B-6-ROUTED-BINDINGS: through the routed bindings only PageUp / PageDown are LB / RB, Q and E produce no edge, and every other binding is unchanged', () => {
+    // WRONG IMPL KILLED: a table that keeps Q / E on LB / RB (one key, two owners: the ladder's
+    // Journal / Evolution hotkeys and a tabbed screen), one that drops PageUp / PageDown too (a
+    // tabbed screen could never be reached), one that damages another button's keys, one that
+    // mutates the shared default table in place (the remap and help screens read it), and one that
+    // returns the default table itself.
+    const routed = routedBindings(DEFAULT_BINDINGS);
+    expect(routed, 'a copy, not the default table').not.toBe(DEFAULT_BINDINGS);
+    expect([...routed.buttons.LB]).toEqual(['PageUp']);
+    expect([...routed.buttons.RB]).toEqual(['PageDown']);
+    for (const button of VBUTTONS) {
+      if (button === 'LB' || button === 'RB') continue;
+      expect([...routed.buttons[button]], `${button} is unchanged`).toEqual([
+        ...DEFAULT_BINDINGS.buttons[button],
+      ]);
+    }
+    expect(routed.accels, 'the accelerators are unchanged').toEqual(DEFAULT_BINDINGS.accels);
+
+    // The default table was not edited in place.
+    expect([...DEFAULT_BINDINGS.buttons.LB]).toEqual(['KeyQ', 'PageUp']);
+    expect([...DEFAULT_BINDINGS.buttons.RB]).toEqual(['KeyE', 'PageDown']);
+
+    // Through a real keyboard source: the edges a player would cause.
+    const source = new KeyboardSource(routed);
+    expect(source.keydown({ code: 'PageUp' })).toEqual([{ button: 'LB', down: true }]);
+    expect(source.keyup({ code: 'PageUp' })).toEqual([{ button: 'LB', down: false }]);
+    expect(source.keydown({ code: 'PageDown' })).toEqual([{ button: 'RB', down: true }]);
+    expect(source.keyup({ code: 'PageDown' })).toEqual([{ button: 'RB', down: false }]);
+    for (const code of ['KeyQ', 'KeyE']) {
+      expect(source.keydown({ code }), `${code} produces no edge`).toEqual([]);
+      expect(source.keyup({ code }), `${code} produces no release`).toEqual([]);
+    }
+    // Control: the unrouted default source still maps Q / E (the harness is not simply deaf).
+    const plain = new KeyboardSource(DEFAULT_BINDINGS);
+    expect(plain.keydown({ code: 'KeyQ' })).toEqual([{ button: 'LB', down: true }]);
+    expect(plain.keydown({ code: 'KeyE' })).toEqual([{ button: 'RB', down: true }]);
+    // And the other buttons still resolve through the routed source.
+    expect(source.keydown({ code: 'Escape' })).toEqual([{ button: 'Start', down: true }]);
+    expect(source.keydown({ code: 'KeyW' })).toEqual([{ button: 'Up', down: true }]);
+
+    // A customised table: only the Page keys survive on LB / RB, and nothing else is touched.
+    const custom = {
+      buttons: { ...DEFAULT_BINDINGS.buttons, LB: ['KeyZ', 'PageUp'], RB: ['PageDown', 'KeyX'] },
+      accels: DEFAULT_BINDINGS.accels,
+    };
+    const fromCustom = routedBindings(custom);
+    expect([...fromCustom.buttons.LB]).toEqual(['PageUp']);
+    expect([...fromCustom.buttons.RB]).toEqual(['PageDown']);
+    expect([...fromCustom.buttons.Start]).toEqual([...DEFAULT_BINDINGS.buttons.Start]);
+    expect([...custom.buttons.LB], 'the input table is untouched').toEqual(['KeyZ', 'PageUp']);
+  });
+});
+
+describe('typingKey (ctl-6b, CTL6B.5)', () => {
+  it('CTL6B-5-TYPING-KEY: Escape on a text field (text-like INPUT, TEXTAREA, contentEditable) stops typing; every other key, every non-text target and any composition does not', () => {
+    // WRONG IMPL KILLED: a field that never stops typing (the second Escape could never act as
+    // Start), one that stops on every key (typing "a" would blur the field), a SELECT or a checkbox
+    // treated as a text field (Escape on them would be swallowed instead of acting as Start), a
+    // number input (the trade currency box) not treated as text, a missing `type` not treated as
+    // text, a composing Escape that blurs the field (it cancels the IME composition instead), and
+    // a plain page, canvas or button that "stops typing".
+    const textLike: ReadonlyArray<readonly [string, unknown]> = [
+      ['input text', { tagName: 'INPUT', type: 'text' }],
+      ['input search', { tagName: 'INPUT', type: 'search' }],
+      ['input email', { tagName: 'INPUT', type: 'email' }],
+      ['input password', { tagName: 'INPUT', type: 'password' }],
+      ['input tel', { tagName: 'INPUT', type: 'tel' }],
+      ['input url', { tagName: 'INPUT', type: 'url' }],
+      ['input number', { tagName: 'INPUT', type: 'number' }],
+      ['input without a type', { tagName: 'INPUT' }],
+      ['input with an empty type', { tagName: 'INPUT', type: '' }],
+      ['textarea', { tagName: 'TEXTAREA' }],
+      ['contentEditable', { tagName: 'DIV', isContentEditable: true }],
+      ['lower-case tag name', { tagName: 'input', type: 'text' }],
+    ];
+    const notText: ReadonlyArray<readonly [string, unknown]> = [
+      ['input checkbox', { tagName: 'INPUT', type: 'checkbox' }],
+      ['input radio', { tagName: 'INPUT', type: 'radio' }],
+      ['input range', { tagName: 'INPUT', type: 'range' }],
+      ['input button', { tagName: 'INPUT', type: 'button' }],
+      ['input submit', { tagName: 'INPUT', type: 'submit' }],
+      ['select', { tagName: 'SELECT' }],
+      ['button', { tagName: 'BUTTON' }],
+      ['anchor', { tagName: 'A' }],
+      ['div', { tagName: 'DIV', isContentEditable: false }],
+      ['body', { tagName: 'BODY' }],
+      ['canvas', { tagName: 'CANVAS' }],
+      ['window-like', { addEventListener: () => undefined, document: {} }],
+      ['empty object', {}],
+      ['null', null],
+      ['undefined', undefined],
+      ['number', 7],
+    ];
+
+    for (const [label, target] of textLike) {
+      expect(typingKey(target, { code: 'Escape' }), `${label} / Escape`).toBe('stopTyping');
+      expect(
+        typingKey(target, { code: 'Escape', isComposing: false, keyCode: 27 }),
+        `${label} / Escape, not composing`,
+      ).toBe('stopTyping');
+      for (const code of [
+        'Enter',
+        'NumpadEnter',
+        'KeyA',
+        'Backspace',
+        'Space',
+        'Tab',
+        'ArrowLeft',
+      ]) {
+        expect(typingKey(target, { code }), `${label} / ${code}`).toBeUndefined();
+      }
+      expect(
+        typingKey(target, { code: 'Escape', isComposing: true }),
+        `${label} / composing Escape is the browser's`,
+      ).toBeUndefined();
+      expect(
+        typingKey(target, { code: 'Escape', keyCode: 229 }),
+        `${label} / keyCode 229 Escape is the browser's`,
+      ).toBeUndefined();
+    }
+    for (const [label, target] of notText) {
+      expect(typingKey(target, { code: 'Escape' }), `${label} / Escape is Start`).toBeUndefined();
+      expect(typingKey(target, { code: 'KeyA' }), `${label} / KeyA`).toBeUndefined();
+    }
+    expect(textLike.length + notText.length, 'ANTI-VACUITY: both polarities are driven').toBe(28);
   });
 });
