@@ -82,27 +82,31 @@
     <!-- pt-c2b help overlay shell — hidden by default; managed by HelpView. Display-only.
          ux1: viewport-anchored — it used to carry ONLY `display:none`, i.e. a static
          in-flow div AFTER the viewport-tall canvas, so show() painted it below the fold (top=724 at
-         innerHeight=720). HelpView writes only `style.display`, so the rest survives a toggle. -->
+         innerHeight=720). HelpView writes only `style.display`, so the rest survives a toggle.
+         ctl-6c: z-index:120 is above the battle overlay's 110 (ui/battleView.ts), because the main
+         menu opens help over an ongoing battle. -->
     <div
       id="help-overlay"
       role="dialog"
       aria-modal="true"
-      style="display:none;position:fixed;inset:0;z-index:100;overflow:auto;background:rgba(0,0,0,0.88);padding:24px;font:14px/1.6 monospace;color:#e0e0e0"
+      style="display:none;position:fixed;inset:0;z-index:120;overflow:auto;background:rgba(0,0,0,0.88);padding:24px;font:14px/1.6 monospace;color:#e0e0e0"
     >
       <div id="help-title" tabindex="-1"></div>
       <ul id="help-controls"></ul>
       <ul id="help-goals"></ul>
     </div>
     <!-- uxd3: main-menu overlay shell — hidden by default; managed by MenuView.
-         Carries position:fixed;inset:0;z-index:100 for the SAME reason #help-overlay does:
+         Carries position:fixed;inset:0 for the SAME reason #help-overlay does:
          a static in-flow div after the viewport-tall canvas paints below
          the fold. MenuView writes only style.display, so the rest survives a toggle.
+         ctl-6c: z-index:120 is above the battle overlay's 110 (ui/battleView.ts), because Start
+         opens the menu over an ongoing battle.
          inset:0 (not a corner offset) also keeps it out of W-ONE-CORNER-AFFORDANCE's set. -->
     <div
       id="menu-overlay"
       role="dialog"
       aria-modal="true"
-      style="display:none;position:fixed;inset:0;z-index:100;overflow:auto;background:rgba(0,0,0,0.88);padding:24px;font:14px/1.6 monospace;color:#e0e0e0"
+      style="display:none;position:fixed;inset:0;z-index:120;overflow:auto;background:rgba(0,0,0,0.88);padding:24px;font:14px/1.6 monospace;color:#e0e0e0"
     >
       <div id="menu-heading"></div>
       <!-- tabindex="0", NEVER "-1". This is the overlay's

@@ -232,6 +232,11 @@ export function continuedBattleId(
   return latest !== undefined && latest.outcome !== 'Ongoing' ? latest.battleId : current;
 }
 
+/** The stack is the battle base alone: no menu, dialogue or other frame above it. */
+export function isBareBattle(stack: Stack): boolean {
+  return stack.length === 1 && stack[0].kind === 'battle';
+}
+
 /** How long a terminal outcome is up before A continues it: an A mashed through the battle's last
  *  turn must not skip the result. B and Start continue at once. */
 export const OUTCOME_CONTINUE_GRACE_MS = 400;
@@ -246,14 +251,13 @@ export function battleButton(
   btn: NavInput,
   outcomeAgeMs?: number,
 ): ScreenResult | undefined {
-  const [base] = stack;
   const top = stack[stack.length - 1];
-  if (btn.button === 'Start' && base.kind === 'battle' && stack.length === 1) {
+  if (btn.button === 'Start' && isBareBattle(stack)) {
     return btn.repeat ? 'consumed' : { kind: 'openMenu' };
   }
   if (
     btn.button === 'A' &&
-    base.kind === 'world' &&
+    stack[0].kind === 'world' &&
     top.kind === 'screen' &&
     top.id === 'battleView'
   ) {
@@ -307,8 +311,13 @@ export const COMMAND_BATTLE_POLICY: Readonly<Record<ScreenCommand['kind'], 'safe
   requestDataExport: 'refuse',
 };
 
+/** Whether a battle base allows `command`: the one read of the policy table. */
+export function battleSafeCommand(command: ScreenCommand): boolean {
+  return COMMAND_BATTLE_POLICY[command.kind] === 'safe';
+}
+
 /** Whether `command` must be refused now: the stack holds a battle base and the command is not
  *  battle-safe. */
 export function battleRefused(stack: Stack, command: ScreenCommand): boolean {
-  return stack[0].kind === 'battle' && COMMAND_BATTLE_POLICY[command.kind] === 'refuse';
+  return stack[0].kind === 'battle' && !battleSafeCommand(command);
 }

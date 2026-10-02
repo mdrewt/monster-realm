@@ -110,8 +110,8 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // One word, fits a 320px-wide column.
   // battleView.ts:110 (resolved in show())
   'battle.title': 'Battle',
-  // @desc: Exit hint shown under the outcome banner once a battle has ended; "Esc" is the keyboard
-  // key name and must stay recognisable as such. One short line.
+  // @desc: Exit hint shown under the outcome banner once a battle has ended; "Enter" and "Esc" are
+  // keyboard key names and must stay recognisable as such. One short line.
   // battleView.ts:243 (resolved in show())
   'battle.continueHint': 'Press Enter or Esc to continue',
   // @desc: Explainer shown in place of the swap buttons when the player has no healthy bench
@@ -861,7 +861,8 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Feedback-line description of the How to play entry in the Options sub-list, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.options.help.desc': 'Controls and goals of the game.',
-  // @desc: Feedback-line reason a main-menu entry is disabled while the menu is open over a battle.
+  // @desc: Reason a main-menu entry is disabled while the menu is open over a battle (feedback
+  // line); also the status-line and announced reason when an action is refused during a battle.
   // ui/screens/mainMenuScreen.ts (battleReason); main.ts (dispatch refusal)
   'menu.disabled.inBattle': 'Not during a battle',
   // @desc: Feedback-line reason the Bag main-menu entry is disabled over a battle: use the battle's own Bag command.

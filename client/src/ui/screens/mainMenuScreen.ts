@@ -9,8 +9,9 @@
 // clears it. The cursor of every level is remembered in a session `NavMemory` on every step, so a
 // reopened menu lands on the last entry used.
 //
-// Opened over a battle the menu is read-only (CTL6C.3): an entry whose screen is not battleSafe, and a
-// group with no other, is disabled; A on it opens nothing and shows its reason on the feedback line.
+// Opened over a battle the menu is read-only (CTL6C.3): an entry whose screen is not battleSafe or
+// would open hidden under the battle, and a group whose entries are all disabled, is disabled; A on
+// it opens nothing and shows its reason on the feedback line.
 import { SCREEN_POLICY } from '../contextStack';
 import type { FeedbackState } from '../frame';
 import { feedbackStep, NO_FEEDBACK } from '../frame';
@@ -78,12 +79,18 @@ const LAYOUTS = Object.fromEntries(
   ]),
 ) as Readonly<Record<MenuLevel, NavLayout>>;
 
+/** battleSafe screens whose shells are still in the page flow, below the fold and so under the
+ *  battle overlay: their entries stay disabled over a battle until ctl-7a anchors the shells. */
+const HIDDEN_UNDER_BATTLE: ReadonlySet<MenuTarget> = new Set(['questLogView', 'leaderboardView']);
+
 /** Why `row` is disabled over a battle, or undefined when it is not. Bag points at the battle's own
  *  Bag command; a group is disabled only when every entry in it is. */
 function battleReason(row: MenuEntry): string | undefined {
   switch (row.kind) {
     case 'open':
-      if (SCREEN_POLICY[row.target].battleSafe) return undefined;
+      if (SCREEN_POLICY[row.target].battleSafe && !HIDDEN_UNDER_BATTLE.has(row.target)) {
+        return undefined;
+      }
       return row.target === 'raisingView'
         ? t('menu.disabled.battleBag')
         : t('menu.disabled.inBattle');

@@ -110,17 +110,17 @@ import {
   baseFor,
   battleButton,
   battleRefused,
+  battleSafeCommand,
   blocksPlayerOpen,
-  COMMAND_BATTLE_POLICY,
   contextStep,
   continuedBattleId,
   type Edge,
+  isBareBattle,
   mirrorEdges,
   movementEnabled,
   popToBase,
   popTop,
   reconcile,
-  SCREEN_POLICY,
   type Stack,
   type Command as StackCommand,
   stackDiff,
@@ -494,6 +494,8 @@ function runStackCommands(commands: readonly StackCommand[]): void {
 /** When the terminal outcome frame now on top was first mirrored (performance.now), else null:
  *  A continues it only after `OUTCOME_CONTINUE_GRACE_MS` (CTL6C.2). */
 let outcomeShownAtMs: number | null = null;
+/** The battle refusal reason now on the status line (CTL6C.3), else null. */
+let shownBattleRefusal: string | null = null;
 function syncStack(): void {
   const prevBase = contextStack[0];
   const ongoing = store.ongoingBattle(identity);
@@ -517,6 +519,11 @@ function syncStack(): void {
     contextStack[0].kind === 'world' && top.kind === 'screen' && top.id === 'battleView';
   if (!outcomeUp) outcomeShownAtMs = null;
   else outcomeShownAtMs ??= performance.now();
+  // The battle is over: its refusal reason is stale. Anything reported over it since stays.
+  if (shownBattleRefusal !== null && contextStack[0].kind === 'world') {
+    if (statusEl?.textContent === shownBattleRefusal) clearStatus();
+    shownBattleRefusal = null;
+  }
   menuView?.setCovered(menuPlace() === 'covered');
 }
 
@@ -848,12 +855,10 @@ function openHelp(): void {
   helpView?.show();
 }
 
-/** The interact dispatch, extracted so the menu's Interact leaf and the interact hotkey
- *  share ONE exhaustive `switch (target.kind)` — duplicating it would destroy the
- *  single-site compiler flag a 4th NpcInteraction kind relies on. */
+/** The interact dispatch: ONE exhaustive `switch (target.kind)`, so a 4th NpcInteraction kind
+ *  compiler-flags this single site. Its one caller, the interact hotkey, is movement-gated, which
+ *  is what keeps talking out of a battle (CTL6C.3). */
 function interactAtNearest(): void {
-  // Talking is not battle-safe (CTL6C.3); KeyT is movement-gated too, this guards any other caller.
-  if (contextStack[0].kind === 'battle') return;
   const own = store.ownCharacter(identity);
   if (own === undefined) return;
   const target = nearestInteractable(
@@ -943,8 +948,6 @@ function applyMenuStep(step: MainMenuStep): void {
     case 'none':
       break;
     case 'open':
-      // The battle menu disables these; a menu left over from the world never opens one either.
-      if (contextStack[0].kind === 'battle' && !SCREEN_POLICY[step.effect.target].battleSafe) break;
       openMenuTarget(step.effect.target);
       break;
     case 'close':
@@ -1016,10 +1019,10 @@ function dispatch(command: Command): Promise<void> {
       // The screens the menu opens read store state keyed by identity, which is '' before join.
       // At the bare battle base Start opens it over the battle (CTL6C.1), whose overlay holds focus
       // and outranks every other open request.
-      const atBattle = contextStack.length === 1 && contextStack[0].kind === 'battle';
       if (
         identity !== '' &&
-        (atBattle || (overlayVerdict('menuView').kind === 'allow' && worldHasFocus()))
+        (isBareBattle(contextStack) ||
+          (overlayVerdict('menuView').kind === 'allow' && worldHasFocus()))
       ) {
         openMenu();
       }
@@ -1269,15 +1272,17 @@ function dispatch(command: Command): Promise<void> {
 }
 
 /** A command the battle refuses (CTL6C.3): the stack holds a battle base and the command is not
- *  battle-safe. Its reason goes to the status line and the live region; a refusal is not an error,
- *  so nothing reaches the error ring. Synced first: a click-driven callback may run before the
- *  frame that mirrors a new battle base. */
+ *  battle-safe. Its reason goes to the status line (until the battle is over, `syncStack`) and the
+ *  live region; a refusal is not an error, so nothing reaches the error ring. Synced first, and
+ *  only for a command a battle could refuse: a click-driven callback may run before the frame that
+ *  mirrors a new battle base. */
 function refusedInBattle(command: Command): boolean {
-  if (COMMAND_BATTLE_POLICY[command.kind] === 'safe') return false;
+  if (battleSafeCommand(command)) return false;
   syncStack();
   if (!battleRefused(contextStack, command)) return false;
   const reason = i18nT('menu.disabled.inBattle');
   if (statusEl !== undefined) statusEl.textContent = reason;
+  shownBattleRefusal = reason;
   liveRegion.announce(reason, performance.now());
   return true;
 }
@@ -2067,8 +2072,6 @@ const onKeyDown = (e: KeyboardEvent): void => {
     // NOT a canOpen() site — interact opens no overlay of its own, so it
     // has no id to exempt and its guard is the plain movement gate.
     if (movementGate() && identity !== '') {
-      // The dispatch body now lives in interactAtNearest() so this hotkey
-      // and the menu's Interact leaf share ONE exhaustive switch (the compiler flag).
       interactAtNearest();
     }
     e.preventDefault();
@@ -2553,7 +2556,7 @@ document.addEventListener('click', (e) => {
   // difference from the retired `!anyOverlayVisible()` form, stated rather than glossed:
   // canOpen exempts self, so with ONLY the menu visible this branch would re-open it where it
   // previously dead-clicked. Unreachable in practice — #menu-overlay is
-  // position:fixed;inset:0;z-index:100 over the badge's z-index:50, so a click while the menu
+  // position:fixed;inset:0;z-index:120 over the badge's z-index:50, so a click while the menu
   // is open never reaches the badge; while a child covers the menu, the child's own verdict
   // denies. The identity guard is preserved: the menu's screens read identity-keyed state.
   if ((e.target as HTMLElement).closest('[data-menu-launcher]') !== null) {
@@ -3034,7 +3037,7 @@ async function main(): Promise<void> {
   // The on-world interact prompt — created inline beside
   // the #status precedent. pointer-events:none so it can NEVER shadow the
   // document-level dialogue/shop click delegation; z-index below the overlays
-  // (help sits at 100); translate(-50%,-100%) hangs the label above the anchor
+  // (the lowest sit at 100); translate(-50%,-100%) hangs the label above the anchor
   // (tile-top centre). Positioned each frame via renderer.screenFor(...).
   const interactPromptEl = document.createElement('div');
   interactPromptEl.id = 'interact-prompt';
