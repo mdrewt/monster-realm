@@ -15,7 +15,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { VButton } from '../../input/buttons';
 import { CATALOG_FR } from '../i18n/catalog.fr';
-import { setLocale } from '../i18n/resolver';
+import { setLocale, t } from '../i18n/resolver';
 import type { MenuTarget } from '../menuModel';
 import { EMPTY_NAV_MEMORY, type NavItem, type NavLayout, type NavMemory, recallNav } from '../nav';
 import {
@@ -469,5 +469,292 @@ describe('mainMenu — pick, view model and inert buttons', () => {
       expect(step.state.level, button).toBe('root');
       expect(step.state.nav.item, button).toBe('bag');
     }
+  });
+});
+
+// ==========================================================================================
+// ctl-6c: the menu over a battle (CTL6C.3): only Options (How to play) and Close stay enabled
+// ==========================================================================================
+//
+// `openMainMenu(memory, battle = false)` carries `battle` in the state. Over a battle the layout
+// marks `enabled:false` (with a `reason`) every `open` entry whose target screen is not battleSafe,
+// plus the Journal and Rankings entries, and a `group` whose children are all disabled; nothing
+// else. A (and a pick) on a disabled row does nothing and shows that row's reason on the feedback
+// line; a disabled group is not entered. World mode is unchanged.
+//
+// INTENTIONAL CHANGE (ctl-6c, supervisor decision option-a: Journal/Rankings stay disabled over a
+// battle until ctl-7a anchors their shells). The quest log and the leaderboard are battleSafe in
+// SCREEN_POLICY, but their legacy shells are in-flow and paint UNDER the battle overlay, so the menu
+// disables them over a battle; with Rankings gone every Social child is disabled, so the Social group
+// is disabled too. Before the decision Journal, Social and Rankings were enabled here.
+//
+// The expected sets are HARD-CODED literals (the spec's table and the decision), not derived from
+// SCREEN_POLICY.
+
+type Level = 'root' | 'social' | 'profile' | 'options';
+const IN_BATTLE = 'inBattle';
+const BAG_REASON = 'battleBag';
+type ReasonKind = typeof IN_BATTLE | typeof BAG_REASON;
+/** Disabled rows per level over a battle, with the reason each shows. HARD-CODED. A disabled
+ *  group (Social, Profile) shows the in-battle reason too. */
+const DISABLED_OVER_BATTLE: Readonly<Record<Level, ReadonlyArray<readonly [string, ReasonKind]>>> =
+  {
+    root: [
+      ['monsters', IN_BATTLE],
+      ['bag', BAG_REASON],
+      ['journal', IN_BATTLE],
+      ['social', IN_BATTLE],
+      ['profile', IN_BATTLE],
+    ],
+    social: [
+      ['trades', IN_BATTLE],
+      ['challenges', IN_BATTLE],
+      ['rankings', IN_BATTLE],
+    ],
+    profile: [
+      ['name', IN_BATTLE],
+      ['account', IN_BATTLE],
+      ['privacy', IN_BATTLE],
+    ],
+    options: [],
+  };
+const LEVEL_KEYS: Readonly<Record<Level, readonly string[]>> = {
+  root: ROOT_KEYS,
+  social: GROUPS.social as readonly string[],
+  profile: GROUPS.profile as readonly string[],
+  options: GROUPS.options as readonly string[],
+};
+
+const battleMenu = (): MainMenuState => openMainMenu(EMPTY_NAV_MEMORY, true);
+/** The state on `level` over a battle. The disabled Social and Profile groups cannot be ENTERED
+ *  over a battle, so their sub-lists are built directly (on their first child): the layout still
+ *  has to say what their rows are. Options is entered for real, so a menu that disabled it fails
+ *  here. */
+function battleLevel(level: Level): MainMenuState {
+  if (level === 'root') return battleMenu();
+  if (level === 'options') return intoGroup('options', battleMenu());
+  return {
+    ...battleMenu(),
+    level,
+    nav: { tab: null, item: LEVEL_KEYS[level][0] as string, perTab: {} },
+  };
+}
+const reasonText = (kind: ReasonKind): string =>
+  kind === BAG_REASON ? t('menu.disabled.battleBag') : t('menu.disabled.inBattle');
+
+describe('mainMenu over a battle (ctl-6c)', () => {
+  it('CTL6C-3-MENU-DISABLED-OVER-BATTLE: over a battle only Options (How to play) and Close stay enabled: Monsters, Bag, Journal, the Social group (Trades, Challenges, Rankings) and the Profile group are disabled with their reasons; A or a pick on a disabled row or group does nothing, enters nothing and shows its reason; the world menu is unchanged; en and fr', () => {
+    // WRONG IMPL KILLED: a battle layout keyed to `!battleSafe` alone (the pre-decision rule:
+    // Journal, Social and Rankings stay enabled, so the quest log and the leaderboard open over a
+    // battle that paints over their in-flow shells: red at the root literal and the Social level);
+    // a menu that ignores the battle flag (every row enabled); a menu that disables everything
+    // (Options, How to play or Close disabled: the player could neither read help nor leave the
+    // menu by its Close row); a layout built once and reused (the flag changes, the rows do not); a
+    // flag that is lost on entering a sub-list (Options is entered for real here); a group disabled
+    // only when SOME child is (Options' one child is enabled: it must stay enabled); a group left
+    // enabled when ALL children are (Social, Profile: A would enter a sub-list of dead rows); a
+    // reason missing, the same for every row (Bag has its own), a group reason other than the
+    // in-battle one, or a reason frozen in en under fr; an A on a disabled row that still emits
+    // `open` (the box or the quest log would show over the battle) or that does nothing silently
+    // (CTL6C.3 wants the catalogued reason shown); a pick that bypasses the check; a feedback line
+    // that survives a cursor move; a repeat A that shows it; an enabled row (Close, How to play)
+    // whose effect changed; and a WORLD menu that now disables Journal, Social or Rankings (the
+    // decision holds over a battle only).
+    const KEYS_ROOT_FLAGS = (s: MainMenuState) =>
+      itemsOf(menuViewModel(s).layout).map((i) => [i.key, i.enabled] as const);
+
+    // --- the layouts ------------------------------------------------------------------------
+    for (const level of ['root', 'social', 'profile', 'options'] as const) {
+      const vm = menuViewModel(battleLevel(level));
+      const items = itemsOf(vm.layout);
+      expect(
+        items.map((i) => i.key),
+        `${level}: same rows as the world menu`,
+      ).toEqual([...LEVEL_KEYS[level]]);
+      const disabled = DISABLED_OVER_BATTLE[level];
+      for (const item of items) {
+        const row = disabled.find(([key]) => key === item.key);
+        if (row === undefined) {
+          expect(item.enabled, `${level}/${item.key} stays enabled`).toBe(true);
+          expect(item.reason, `${level}/${item.key}: an enabled row has no reason`).toBeUndefined();
+        } else {
+          expect(item.enabled, `${level}/${item.key} is disabled over a battle`).toBe(false);
+          expect(typeof item.reason, `${level}/${item.key} has a reason`).toBe('string');
+          expect(
+            (item.reason as string).length,
+            `${level}/${item.key}: a non-empty reason`,
+          ).toBeGreaterThan(0);
+          // Groups included: a disabled group carries the in-battle reason exactly.
+          expect(item.reason, `${level}/${item.key} reason`).toBe(reasonText(row[1]));
+        }
+      }
+      expect(
+        items.filter((i) => !i.enabled).map((i) => i.key),
+        `${level}: exactly the literal disabled set`,
+      ).toEqual(disabled.map(([key]) => key));
+    }
+    // INTENTIONAL CHANGE (ctl-6c, supervisor decision option-a: Journal/Rankings stay disabled over a
+    // battle until ctl-7a anchors their shells): Journal and Social were `true` here.
+    // The root, spelled out once: only Options and Close are enabled.
+    expect(KEYS_ROOT_FLAGS(battleMenu())).toEqual([
+      ['monsters', false],
+      ['bag', false],
+      ['journal', false],
+      ['social', false],
+      ['profile', false],
+      ['options', true],
+      ['close', true],
+    ]);
+    expect(
+      itemsOf(menuViewModel(battleLevel('options')).layout).map((i) => [i.key, i.enabled]),
+      'the Options sub-list: How to play stays enabled',
+    ).toEqual([['help', true]]);
+    // The flag survives entering a sub-list and a reopen with the same memory.
+    expect(battleMenu().battle, 'the state carries the flag').toBe(true);
+    // INTENTIONAL CHANGE (ctl-6c, supervisor decision option-a: Journal/Rankings stay disabled over a
+    // battle until ctl-7a anchors their shells): the entered sub-list was Social, which can no longer
+    // be entered over a battle; Options is the one group that can.
+    expect(intoGroup('options', battleMenu()).battle, 'a sub-list keeps it').toBe(true);
+    expect(openMainMenu(battleMenu().memory, true).battle).toBe(true);
+    expect(openMainMenu(battleMenu().memory).battle, 'the default is the world menu').toBe(false);
+    expect(openMainMenu(battleMenu().memory, false).battle).toBe(false);
+    expect(
+      KEYS_ROOT_FLAGS(openMainMenu(battleMenu().memory, false)).every(([, enabled]) => enabled),
+      'a reopen at the world (same memory) enables everything again',
+    ).toBe(true);
+
+    // --- the world menu is unchanged ---------------------------------------------------------
+    for (const level of ['root', 'social', 'profile', 'options'] as const) {
+      const world =
+        level === 'root' ? fresh() : level === 'profile' ? intoGroup('profile') : intoGroup(level);
+      expect(
+        itemsOf(menuViewModel(world).layout).every((i) => i.enabled && i.reason === undefined),
+        `${level}: every world row is enabled with no reason`,
+      ).toBe(true);
+    }
+    expect(fresh().battle, 'a world state is not a battle state').toBe(false);
+    // Concretely, the rows the decision disables over a battle still work at the world.
+    expect(press(toKey(fresh(), 'journal'), 'A').effect, 'world: Journal opens').toEqual(
+      open('questLogView'),
+    );
+    expect(mainMenuPick(fresh(), 'journal').effect).toEqual(open('questLogView'));
+    expect(press(toKey(fresh(), 'social'), 'A').state.level, 'world: Social enters').toBe('social');
+    expect(
+      press(toKey(intoGroup('social'), 'rankings'), 'A').effect,
+      'world: Rankings opens',
+    ).toEqual(open('leaderboardView'));
+    expect(mainMenuPick(intoGroup('social'), 'rankings').effect).toEqual(open('leaderboardView'));
+
+    // --- A and a pick on a disabled row ------------------------------------------------------
+    for (const level of ['root', 'social', 'profile', 'options'] as const) {
+      for (const [key, kind] of DISABLED_OVER_BATTLE[level]) {
+        const at = (from: MainMenuState): MainMenuState => toKey(from, key);
+        const state = at(battleLevel(level));
+        const want = { kind: 'info', text: reasonText(kind) };
+        const a = press(state, 'A');
+        expect(a.effect, `A on disabled ${level}/${key} does nothing`).toEqual(NONE);
+        expect(a.state.feedback, `A on disabled ${level}/${key} shows its reason`).toEqual(want);
+        expect(a.state.level, `A on disabled ${level}/${key} does not change level`).toBe(level);
+        expect(a.state.nav.item, `${level}/${key}: the cursor stays`).toBe(key);
+        expect(a.state.battle, `${level}/${key}: still a battle menu`).toBe(true);
+        expect(menuViewModel(a.state).feedback, 'the view model carries it').toEqual(want);
+
+        const picked = mainMenuPick(battleLevel(level), key);
+        expect(picked.effect, `a pick of disabled ${level}/${key} does nothing`).toEqual(NONE);
+        expect(
+          picked.state.feedback,
+          `a pick of disabled ${level}/${key} shows the reason`,
+        ).toEqual(want);
+        expect(picked.state.level, `a pick of ${level}/${key} does not enter or leave`).toBe(level);
+        expect(picked.state.nav.item, `a pick moves the cursor to ${level}/${key}`).toBe(key);
+
+        // A repeat A shows nothing; a move clears the line.
+        const repeat = press(state, 'A', true);
+        expect(repeat.effect).toEqual(NONE);
+        expect(repeat.state.feedback, 'a repeat A is not an activation').toEqual({ kind: 'none' });
+        const moved = press(a.state, 'Down');
+        expect(moved.state.feedback, 'a cursor move clears the reason').toEqual({ kind: 'none' });
+      }
+    }
+    // Concretely, in order: Monsters, Bag, Journal, the Social group, the Profile group.
+    const monsters = press(battleMenu(), 'A');
+    expect(monsters.effect).toEqual(NONE);
+    expect(monsters.state.feedback).toEqual({ kind: 'info', text: 'Not during a battle' });
+    const bag = press(toKey(battleMenu(), 'bag'), 'A');
+    expect(bag.effect).toEqual(NONE);
+    expect(bag.state.feedback).toEqual({
+      kind: 'info',
+      text: 'Use items from the battle Bag command',
+    });
+    // INTENTIONAL CHANGE (ctl-6c, supervisor decision option-a: Journal/Rankings stay disabled over a
+    // battle until ctl-7a anchors their shells): A and a pick on Journal opened the quest log over
+    // the battle, A on Social entered it, and A or a pick on Rankings opened the leaderboard.
+    const journal = press(toKey(battleMenu(), 'journal'), 'A');
+    expect(journal.effect, 'Journal opens nothing over a battle').toEqual(NONE);
+    expect(journal.state.feedback).toEqual({ kind: 'info', text: 'Not during a battle' });
+    expect(mainMenuPick(battleMenu(), 'journal').effect, 'nor does a pick').toEqual(NONE);
+    const social = press(toKey(battleMenu(), 'social'), 'A');
+    expect(social.effect).toEqual(NONE);
+    expect(social.state.level, 'the disabled Social group is not entered').toBe('root');
+    expect(social.state.nav.item).toBe('social');
+    expect(social.state.feedback).toEqual({ kind: 'info', text: 'Not during a battle' });
+    expect(mainMenuPick(battleMenu(), 'social').state.level, 'nor by a pick').toBe('root');
+    expect(press(toKey(battleLevel('social'), 'rankings'), 'A').effect).toEqual(NONE);
+    expect(mainMenuPick(battleLevel('social'), 'rankings').effect).toEqual(NONE);
+    expect(press(toKey(battleMenu(), 'profile'), 'A').state.level, 'Profile stays shut').toBe(
+      'root',
+    );
+
+    // --- the enabled rows behave exactly as in the world --------------------------------------
+    expect(press(toKey(battleMenu(), 'close'), 'A').effect).toEqual(CLOSE);
+    expect(mainMenuPick(battleMenu(), 'close').effect).toEqual(CLOSE);
+    const options = press(toKey(battleMenu(), 'options'), 'A');
+    expect(options.effect).toEqual(NONE);
+    expect(options.state.level, 'Options enters').toBe('options');
+    expect(options.state.nav.item, 'on How to play').toBe('help');
+    expect(options.state.feedback, 'with no reason shown').toEqual({ kind: 'none' });
+    expect(options.state.battle).toBe(true);
+    const help = press(options.state, 'A');
+    expect(help.effect, 'How to play opens help over the battle').toEqual(open('helpView'));
+    expect(help.state.feedback).toEqual({ kind: 'none' });
+    expect(mainMenuPick(battleLevel('options'), 'help').effect).toEqual(open('helpView'));
+    expect(mainMenuPick(battleMenu(), 'options').state.level, 'a pick enters Options').toBe(
+      'options',
+    );
+    // B from a battle sub-list returns to the root with the group's entry under the cursor.
+    // INTENTIONAL CHANGE (ctl-6c, supervisor decision option-a: Journal/Rankings stay disabled over a
+    // battle until ctl-7a anchors their shells): the sub-list was Social, which can no longer be
+    // entered over a battle; Options is.
+    const back = press(options.state, 'B');
+    expect(back.state.level).toBe('root');
+    expect(back.state.nav.item).toBe('options');
+    expect(back.state.battle, 'the flag survives B').toBe(true);
+
+    // --- locales: the reasons are resolved at press / view time -----------------------------
+    expect(t('menu.disabled.inBattle'), 'the en reason').toBe('Not during a battle');
+    expect(t('menu.disabled.battleBag'), 'the en Bag reason').toBe(
+      'Use items from the battle Bag command',
+    );
+    setLocale('fr');
+    const frId = (CATALOG_FR as unknown as Record<string, string>)['menu.disabled.inBattle'];
+    const frBag = (CATALOG_FR as unknown as Record<string, string>)['menu.disabled.battleBag'];
+    expect(frId, 'fixture: fr has its own reason').toBeTypeOf('string');
+    expect(frId).not.toBe('Not during a battle');
+    expect(frBag).not.toBe('Use items from the battle Bag command');
+    expect(t('menu.disabled.inBattle')).toBe(frId);
+    const frRoot = itemsOf(menuViewModel(battleMenu()).layout);
+    expect(frRoot.find((i) => i.key === 'monsters')?.reason, 'view model reasons are fr').toBe(
+      frId,
+    );
+    expect(frRoot.find((i) => i.key === 'bag')?.reason).toBe(frBag);
+    expect(frRoot.find((i) => i.key === 'journal')?.reason, 'Journal reason in fr').toBe(frId);
+    expect(frRoot.find((i) => i.key === 'social')?.reason, 'Social group reason in fr').toBe(frId);
+    const frA = press(battleMenu(), 'A');
+    expect(frA.state.feedback, 'A shows the fr reason').toEqual({ kind: 'info', text: frId });
+    const frPick = mainMenuPick(battleMenu(), 'bag');
+    expect(frPick.state.feedback, 'a pick shows the fr Bag reason').toEqual({
+      kind: 'info',
+      text: frBag,
+    });
   });
 });

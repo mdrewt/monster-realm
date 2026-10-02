@@ -108,10 +108,13 @@ import {
 import type { ClaimView, ClaimViewHandlers } from './ui/claimView';
 import {
   baseFor,
+  battleButton,
+  battleRefused,
   blocksPlayerOpen,
   contextStep,
   continuedBattleId,
   type Edge,
+  isBareBattle,
   mirrorEdges,
   movementEnabled,
   popToBase,
@@ -470,7 +473,9 @@ function overlayVerdict(id: OverlayId): CanOpenVerdict {
 // change of base kind) clears the held directions (B14). Synced on every movementGate() read,
 // at the top and tail of every keydown, at the top of every frame and at the tail of every
 // batch; `__game().stack` only reads it. Server truth is reconciled into it on every batch
-// (`reconcileStack`), which closes what a battle or a conversation drops.
+// (`reconcileStack`), which closes what a battle or a conversation drops. The sync also keeps two
+// things that follow the stack: when a terminal outcome first topped it (A's grace), and the
+// battle refusal line, cleared once the base is the world again.
 let contextStack: Stack = WORLD_STACK;
 function runStackCommands(commands: readonly StackCommand[]): void {
   for (const command of commands) {
@@ -487,7 +492,14 @@ function runStackCommands(commands: readonly StackCommand[]): void {
     }
   }
 }
+/** When the terminal outcome frame now on top was first mirrored (performance.now), else null:
+ *  A continues it only after `OUTCOME_CONTINUE_GRACE_MS` (CTL6C.2). */
+let outcomeShownAtMs: number | null = null;
+/** The reason of the last battle refusal written to the status line (CTL6C.3), until the base is
+ *  the world again; else null. */
+let shownBattleRefusal: string | null = null;
 function syncStack(): void {
+  const prevBase = contextStack[0];
   const ongoing = store.ongoingBattle(identity);
   const base = baseFor(
     ongoing === undefined
@@ -500,9 +512,19 @@ function syncStack(): void {
     runStackCommands(next.commands);
   };
   apply({ kind: 'base', base });
-  for (const edge of mirrorEdges(contextStack, visibleIds(overlayProbes))) {
+  for (const edge of mirrorEdges(contextStack, visibleIds(overlayProbes), prevBase)) {
     apply(edge);
     inputRouter.resetRepeat(); // a held key never repeats into a pushed or popped frame
+  }
+  const top = contextStack[contextStack.length - 1];
+  const outcomeUp =
+    contextStack[0].kind === 'world' && top.kind === 'screen' && top.id === 'battleView';
+  if (!outcomeUp) outcomeShownAtMs = null;
+  else outcomeShownAtMs ??= performance.now();
+  // The battle is over: its refusal reason is stale. Anything reported over it since stays.
+  if (shownBattleRefusal !== null && contextStack[0].kind === 'world') {
+    if (statusEl?.textContent === shownBattleRefusal) clearStatus();
+    shownBattleRefusal = null;
   }
   menuView?.setCovered(menuPlace() === 'covered');
 }
@@ -835,9 +857,9 @@ function openHelp(): void {
   helpView?.show();
 }
 
-/** The interact dispatch, extracted so the menu's Interact leaf and the interact hotkey
- *  share ONE exhaustive `switch (target.kind)` — duplicating it would destroy the
- *  single-site compiler flag a 4th NpcInteraction kind relies on. */
+/** The interact dispatch: ONE exhaustive `switch (target.kind)`, so a 4th NpcInteraction kind
+ *  compiler-flags this single site. Its one caller, the interact hotkey, is movement-gated, which
+ *  is what keeps talking out of a battle (CTL6C.3). */
 function interactAtNearest(): void {
   const own = store.ownCharacter(identity);
   if (own === undefined) return;
@@ -871,7 +893,8 @@ function renderMenu(): void {
 
 /** The SINGLE entry point: the root list, on the last entry used. */
 function openMenu(): void {
-  menuState = openMainMenu(menuState.memory);
+  // Over a battle the menu is read-only: what is not battle-safe is disabled (CTL6C.3).
+  menuState = openMainMenu(menuState.memory, contextStack[0].kind === 'battle');
   renderMenu();
   menuView?.show();
 }
@@ -986,6 +1009,7 @@ const ownPartyIds = (): bigint[] =>
  *  until it settles), and a synchronous throw stays synchronous. No default arm, so a new
  *  `Command` fails client-typecheck here. */
 function dispatch(command: Command): Promise<void> {
+  if (refusedInBattle(command)) return DONE;
   switch (command.kind) {
     case 'pop':
       applyStack(contextStack, popTop(contextStack));
@@ -993,12 +1017,19 @@ function dispatch(command: Command): Promise<void> {
     case 'popToBase':
       applyStack(contextStack, popToBase(contextStack));
       return DONE;
-    case 'openMenu':
+    case 'openMenu': {
       // The screens the menu opens read store state keyed by identity, which is '' before join.
-      if (overlayVerdict('menuView').kind === 'allow' && identity !== '' && worldHasFocus()) {
+      // At the bare battle base Start opens it over the battle (CTL6C.1), whose overlay holds focus
+      // and outranks every other open request.
+      if (
+        identity !== '' &&
+        (isBareBattle(contextStack) ||
+          (overlayVerdict('menuView').kind === 'allow' && worldHasFocus()))
+      ) {
         openMenu();
       }
       return DONE;
+    }
     case 'toggleHelp':
       if (helpView?.visible) {
         applyStack(contextStack, contextStep(contextStack, { kind: 'pop', id: 'helpView' }).stack);
@@ -1240,6 +1271,20 @@ function dispatch(command: Command): Promise<void> {
     default:
       return command satisfies never;
   }
+}
+
+/** A command the battle refuses (CTL6C.3): the stack holds a battle base and the command is not
+ *  battle-safe. Its reason goes to the status line (until the battle is over, `syncStack`) and the
+ *  live region; a refusal is not an error, so nothing reaches the error ring. No sync here: every
+ *  batch re-derives the base (`reconcileStack`) before any listener that dispatches. A link drop
+ *  can leave it a frame stale, where a refusal on the frozen link changes nothing. */
+function refusedInBattle(command: Command): boolean {
+  if (!battleRefused(contextStack, command)) return false;
+  const reason = i18nT('menu.disabled.inBattle');
+  if (statusEl !== undefined) statusEl.textContent = reason;
+  shownBattleRefusal = reason;
+  liveRegion.announce(reason, performance.now());
+  return true;
 }
 
 /** A PvP action. pvpPendingTurnNumber is set INSIDE the lambda so sendGuarded's frozen check runs
@@ -1685,7 +1730,13 @@ const routeCtx = (): RouteContext => {
   return {
     worldActive: movementGate(),
     nav: place === 'absent' ? undefined : { covered: place === 'covered', now: performance.now() },
-    screen: (btn) => screenButton(contextStack, btn, screenCtx),
+    // The battle's own rules first (Start opens the menu over it, A continues its outcome).
+    screen: (btn) =>
+      battleButton(
+        contextStack,
+        btn,
+        outcomeShownAtMs === null ? undefined : performance.now() - outcomeShownAtMs,
+      ) ?? screenButton(contextStack, btn, screenCtx),
   };
 };
 
@@ -2021,8 +2072,6 @@ const onKeyDown = (e: KeyboardEvent): void => {
     // NOT a canOpen() site — interact opens no overlay of its own, so it
     // has no id to exempt and its guard is the plain movement gate.
     if (movementGate() && identity !== '') {
-      // The dispatch body now lives in interactAtNearest() so this hotkey
-      // and the menu's Interact leaf share ONE exhaustive switch (the compiler flag).
       interactAtNearest();
     }
     e.preventDefault();
@@ -2507,7 +2556,7 @@ document.addEventListener('click', (e) => {
   // difference from the retired `!anyOverlayVisible()` form, stated rather than glossed:
   // canOpen exempts self, so with ONLY the menu visible this branch would re-open it where it
   // previously dead-clicked. Unreachable in practice — #menu-overlay is
-  // position:fixed;inset:0;z-index:100 over the badge's z-index:50, so a click while the menu
+  // position:fixed;inset:0;z-index:120 over the badge's z-index:50, so a click while the menu
   // is open never reaches the badge; while a child covers the menu, the child's own verdict
   // denies. The identity guard is preserved: the menu's screens read identity-keyed state.
   if ((e.target as HTMLElement).closest('[data-menu-launcher]') !== null) {
@@ -2988,7 +3037,7 @@ async function main(): Promise<void> {
   // The on-world interact prompt — created inline beside
   // the #status precedent. pointer-events:none so it can NEVER shadow the
   // document-level dialogue/shop click delegation; z-index below the overlays
-  // (help sits at 100); translate(-50%,-100%) hangs the label above the anchor
+  // (the lowest sit at 100); translate(-50%,-100%) hangs the label above the anchor
   // (tile-top centre). Positioned each frame via renderer.screenFor(...).
   const interactPromptEl = document.createElement('div');
   interactPromptEl.id = 'interact-prompt';
@@ -3140,6 +3189,14 @@ async function main(): Promise<void> {
       // The reset also drops a pending shop open, whose id the store reset invalidated.
       stepShopOpen({ kind: 'reconnect' });
       menuView?.hide(); // a menu child may read store state that the reset invalidated
+      // A frame opened over a battle goes with the reset: a re-delivered row of that battle would
+      // find it still stamped, keep it, and show the battle above it. Hidden, never dismissed: a
+      // conversation is the server's to end.
+      for (const f of contextStack) {
+        if (f.kind === 'screen' && f.overBattle !== undefined && overlayProbes[f.id]()) {
+          overlayHandles[f.id]?.();
+        }
+      }
       // re-baseline a surviving Ongoing battle on the next batch
       // instead of re-emitting a spurious battleStart for it. Armed until onHydrated —
       // reset UNCONDITIONALLY (unlike the guarded capture above) so a second drop re-arms

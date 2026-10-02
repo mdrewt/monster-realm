@@ -957,13 +957,17 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(stack(), 'and the close is mirrored').toEqual([{ kind: 'world' }]);
   });
 
-  it('CTL2-3-BOOT-B17: an Ongoing battle row makes movement dead from the very batch it arrives in, and Escape (which no longer hides the Ongoing battle overlay) changes nothing', async () => {
+  it('CTL2-3-BOOT-B17: an Ongoing battle row makes movement dead from the very batch it arrives in, and Escape opens the main menu over the battle and never hides it; with the menu closed again the bare battle base still walks nowhere and KeyT does not interact', async () => {
     // WRONG IMPL KILLED (B17): a gate that is only "no overlay visible" (Escape hides battleView
     // and the character predicts a step the server rejects, then rubber-bands back); a base
     // derived one batch late, or by a listener that runs after the reconcile re-issue (the
     // pullback batch that carries the battle row still sends a step); a prompt computed from
     // the overlay probe instead of the gate (it advertises a target KeyT would refuse); and a
     // base that does not return to the world when the battle row goes.
+    // ctl-6c: Escape never HIDES the battle: Start opens the main menu above an Ongoing battle
+    // (CTL6C.1) and the second Escape below closes it, after which the bare battle base keeps every
+    // movement and KeyT assertion that follows. A Start that hid the battle, or left the menu open
+    // (the KeyT / W gates would then read a menu frame instead of the bare base), fails here.
     await bootReady();
     seedWorld(1000);
     frame(1005);
@@ -993,10 +997,26 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(battleShown(), 'the battle overlay shows').toBe(true);
     expect(stack()[0], 'the base is the battle').toEqual({ kind: 'battle', battleId: '101' });
 
-    // ctl-6b CTL6B.2: Escape is Start and does nothing on an Ongoing battle (B17: it used to hide the
-    // overlay), so the overlay stays shown and the gate below is checked with the battle still up.
+    // INTENTIONAL CHANGE (ctl-6c CTL6C.1): Escape is Start, and Start over an Ongoing battle now
+    // opens the main menu above it (ctl-6b made it do nothing; B17 still holds: it never hides the
+    // overlay). The battle stays shown, the base stays the battle and the menu is a frame above it;
+    // a second Escape closes the menu again, so the gate below is checked on the bare battle base.
     fire('keydown', 'Escape', 1700);
+    fire('keyup', 'Escape', 1702);
     expect(battleShown(), 'precondition: Escape leaves the Ongoing battle overlay up').toBe(true);
+    expect(
+      stack(),
+      'Escape over the Ongoing battle opens the menu: the base is still the battle, the menu above',
+    ).toEqual([
+      { kind: 'battle', battleId: '101' },
+      { kind: 'screen', id: 'menuView', overBattle: '101' },
+    ]);
+    expect(shownById('menu-overlay'), 'the menu is on screen above the battle').toBe(true);
+    fire('keydown', 'Escape', 1704);
+    fire('keyup', 'Escape', 1706);
+    expect(shownById('menu-overlay'), 'a second Escape closes the menu').toBe(false);
+    expect(battleShown(), 'the battle is still shown after the menu closes').toBe(true);
+    expect(stack(), 'the bare battle base again').toEqual([{ kind: 'battle', battleId: '101' }]);
     frame(1710);
     expect(stack(), 'the base is still the battle, with nothing above it').toEqual([
       { kind: 'battle', battleId: '101' },
@@ -1888,9 +1908,10 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     ).toBe(true);
     expect(battleShown(), 'precondition: the Ongoing battle is still shown').toBe(true);
     frame(1210); // mirrors the callback-opened overlay onto the stack; not a batch
+    // ctl-6c stamps a screen frame pushed over a battle base that was already the base with overBattle.
     expect(stack(), 'precondition: it is a frame over the battle base').toEqual([
       { kind: 'battle', battleId: '101' },
-      { kind: 'screen', id: 'claimView' },
+      { kind: 'screen', id: 'claimView', overBattle: '101' },
     ]);
 
     // No frame runs between here and the assertions: the batch alone must do it.

@@ -28,6 +28,7 @@ import { describe, expect, it } from 'vitest';
 // The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule).
 import { stripComments } from '../../../test-util/stripComments';
 import { CATALOG_EN } from './catalog.en';
+import { CATALOG_FR } from './catalog.fr';
 
 const I18N_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CATALOG_EN_PATH = path.join(I18N_DIR, 'catalog.en.ts');
@@ -284,7 +285,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'chrome.status.healUnavailable': 'heal: no heal location available',
   'chrome.status.partyFull': 'party is full — move a monster to the box first',
   'battle.title': 'Battle', // battleView.ts:110
-  'battle.continueHint': 'Press Esc to continue', // battleView.ts:243
+  'battle.continueHint': 'Press Enter or Esc to continue', // battleView.ts:243
   'battle.swap.hint':
     'No healthy party monster in this battle to swap in. ' +
     'When this battle ends, press Esc, then B for Party & Box.', // battleView.ts:216-218
@@ -484,6 +485,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'menu.profile.privacy.desc': 'Export or delete your data.',
   'menu.options.help.title': 'How to play',
   'menu.options.help.desc': 'Controls and goals of the game.',
+  // ctl-6c: 2 new plain keys — the reasons a main-menu entry is disabled over a battle
+  // (ui/screens/mainMenuScreen.ts), the first also the dispatch refusal line (main.ts).
+  'menu.disabled.inBattle': 'Not during a battle',
+  'menu.disabled.battleBag': 'Use items from the battle Bag command',
 };
 
 interface ParamOutputSpec {
@@ -760,7 +765,7 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 208-key roster (ctl-5 added the 29 `menu.*` keys to the 179-key roster; pgcc-a added `raising.feedback.cared` to the 178-key roster below;
+/** The full 210-key roster (ctl-6c added the 2 `menu.disabled.*` keys to the 208-key roster; ctl-5 added the 29 `menu.*` keys to the 179-key roster; pgcc-a added `raising.feedback.cared` to the 178-key roster below;
  *  21r-b2 growth of 21r-b's 133-key roster by the 45 new `claim.*` /
  *  `privacy.*` keys; 21r-b had grown the 118-key roster by the 15 new
  *  `chrome.feedback.*`/`shop.feedback.*`/`trade.feedback.*`/`chrome.rename.updated`/
@@ -812,7 +817,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-5 208-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-6c 210-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -901,10 +906,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 208 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 210 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the 208 keys.
+    // (a) roster is exactly the 210 keys.
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
@@ -985,5 +990,37 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
       violations,
       `every entry (including the 32 new m24s3 keys) needs an adjacent @desc comment: ${violations.join(', ')}`,
     ).toEqual([]);
+  });
+});
+
+// =============================================================================
+// ctl-6c: the French values of the keys ctl-6c changed (battle.continueHint: A continues an
+// outcome too, so the hint names Enter) or added (the two menu.disabled.* reasons), pinned exactly
+// as the English ones are in EXPECTED_PLAIN above.
+// =============================================================================
+
+/** U+00E9 (e acute), built by code point so the expected French text holds no pasted glyph. */
+const E_ACUTE = String.fromCharCode(0x00e9);
+
+const EXPECTED_FR_CTL6C: Record<string, string> = {
+  'battle.continueHint': `Appuyez sur Entr${E_ACUTE}e ou Esc pour continuer`,
+  'menu.disabled.inBattle': 'Impossible pendant un combat',
+  'menu.disabled.battleBag': 'Utilisez les objets avec la commande Sac du combat',
+};
+
+describe('ctl-6c: catalog.fr.ts, the battle keys ctl-6c changed or added', () => {
+  it('ctl-6c FR-PINS: the French battle.continueHint names Enter as well as Esc, and the two menu.disabled.* reasons are their exact French text, each a translation of its English entry', () => {
+    // WRONG IMPL KILLED (measured): the French continue hint left at, or reverted to, the
+    // pre-ctl-6c "Appuyez sur Esc pour continuer" while the English one names Enter too (a French
+    // player is never told that A continues the outcome); a French reason left as the English copy
+    // or reworded; and an accented "Entree" whose e acute is not the precomposed U+00E9.
+    for (const [key, expected] of Object.entries(EXPECTED_FR_CTL6C)) {
+      const en = EXPECTED_PLAIN[key];
+      expect(typeof en, `fixture: ${key} has an English pin`).toBe('string');
+      const fr = (CATALOG_FR as Record<string, unknown>)[key];
+      expect(typeof fr, `${key} must be a plain string in the fr catalog`).toBe('string');
+      expect(fr, `${key}: the exact French text`).toBe(expected);
+      expect(fr, `${key}: a translation, not the English copy`).not.toBe(en);
+    }
   });
 });
