@@ -103,6 +103,8 @@ interface FocusWitness {
   lostAfterChanges: number | null;
   /** activeElement when the poll ends (tag and data-testid), for the failure message. */
   activeAtEnd: string;
+  /** What the poll threw (it then stopped and reported at once); null = it did not throw. */
+  error: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -380,46 +382,64 @@ test.describe
               const tag = el.tagName.toLowerCase();
               return testId === null ? tag : `${tag}[data-testid=${testId}]`;
             };
-            const accept = document.querySelector<HTMLElement>(selector);
-            if (accept === null) {
-              resolve({
-                focused: false,
-                changes: 0,
-                kept: false,
-                lostAfterChanges: 0,
-                activeAtEnd: describeActive(),
-              });
-              return;
-            }
-            accept.focus();
-            const focused = document.activeElement === accept;
-            const holds = (): boolean => accept.isConnected && document.activeElement === accept;
-            const game = (window as unknown as { __game: () => GameSnap }).__game;
-            const read = (): string => JSON.stringify(game().characters);
-            let last = read();
             let changes = 0;
             let lostAfterChanges: number | null = null;
-            const started = performance.now();
-            const timer = setInterval(() => {
-              const next = read();
-              if (next !== last) {
-                changes += 1;
-                last = next;
-              }
-              if (lostAfterChanges === null && !holds()) lostAfterChanges = changes;
-              if (changes < minChanges && performance.now() - started < deadlineMs) return;
-              clearInterval(timer);
+            const report = (focused: boolean, kept: boolean, error: string | null): void => {
               resolve({
                 focused,
                 changes,
-                kept: holds(),
+                kept,
                 lostAfterChanges,
                 activeAtEnd: describeActive(),
+                error,
               });
+            };
+            const accept = document.querySelector<HTMLElement>(selector);
+            if (accept === null) {
+              report(false, false, null);
+              return;
+            }
+            accept.focus();
+            if (document.activeElement !== accept) {
+              report(false, false, null); // no 15 s poll for a focus that never landed
+              return;
+            }
+            const holds = (): boolean => accept.isConnected && document.activeElement === accept;
+            const game = (window as unknown as { __game: () => GameSnap }).__game;
+            const read = (): string => JSON.stringify(game().characters);
+            let last = '';
+            try {
+              last = read();
+            } catch (err) {
+              report(true, holds(), String(err));
+              return;
+            }
+            const started = performance.now();
+            // A throw inside a tick would otherwise leave this promise pending forever, and
+            // page.evaluate has no timeout of its own.
+            const timer = setInterval(() => {
+              try {
+                const next = read();
+                if (next !== last) {
+                  changes += 1;
+                  last = next;
+                }
+                if (lostAfterChanges === null && !holds()) lostAfterChanges = changes;
+                if (changes < minChanges && performance.now() - started < deadlineMs) return;
+                clearInterval(timer);
+                report(true, holds(), null);
+              } catch (err) {
+                clearInterval(timer);
+                report(true, holds(), String(err));
+              }
             }, pollMs);
           }),
         { selector: acceptSelector, minChanges: minBatchChanges, pollMs: 100, deadlineMs: 15_000 },
       );
+      expect(
+        witness.error,
+        `RL-18 step 5b: the in-page focus/batch poll threw after ${witness.changes} character change(s)`,
+      ).toBeNull();
       expect(
         witness.focused,
         `RL-18 step 5b precondition: focus did not land on the Accept button of B (activeElement: ${witness.activeAtEnd})`,

@@ -27,8 +27,8 @@
 // attribute assertion (a re-open rewrites byte-identical values), so it is proven twice below —
 // once by a call COUNT, once by parking focus on a sentinel INSIDE the root and checking it is
 // still there. m23-s3 left `refresh()` byte-unchanged (its plan T7) and put the guard in `show()`;
-// 20r-a later extended `refresh()` to RE-APPLY the in-flight lifecycle lock after the row rebuild
-// (PV-3 below) — the show()-edge guard still belongs in `show()`, and nothing here re-opens.
+// 20r-a later extended `refresh()` to RE-APPLY the in-flight lifecycle lock on every refresh,
+// after any row rebuild (PV-3 below) — the show()-edge guard still belongs in `show()`, and nothing here re-opens.
 //
 // pvpView ALSO KEEPS ITS OWN `#visible` FIELD (plan D4), and that is a main.ts contract, not an
 // accident: `overlayProbes.pvpView` (main.ts:335), the auto-show predicate (main.ts:1700) and
@@ -390,8 +390,8 @@ describe('PvpView — overlay a11y wiring on the show/hide edge (m23-s3)', () =>
 
 // ---------------------------------------------------------------------------
 // Pre-existing refresh() behaviour — this file is the FIRST spec for pvpView, so the behaviour the
-// S3 tests lean on (the caller-owned show/hide decision, the authoritative row rebuild, the
-// callbacks) is pinned here rather than assumed.
+// S3 tests lean on (the caller-owned show/hide decision, the authoritative row rebuild when the
+// view-model changes, the callbacks) is pinned here rather than assumed.
 // ---------------------------------------------------------------------------
 
 describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchanged by m23-s3)', () => {
@@ -490,7 +490,8 @@ describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchange
     (buttons[0] as HTMLButtonElement).click();
     expect(cbs.onChallenge).toHaveBeenCalledWith('0xaaa1');
 
-    // A second refresh REPLACES the rows — a player who went offline must not linger.
+    // A refresh with a changed roster REPLACES the rows — a player who went offline must not
+    // linger.
     view.refresh(pvpVm({ challengeablePlayers: [{ identity: '0xccc3', name: 'Carol' }] }), true);
     buttons = list.querySelectorAll('[data-testid="pvp-challenge-player-btn"]');
     expect(buttons).toHaveLength(1);
@@ -592,7 +593,8 @@ interface RaPvpControls {
   readonly all: readonly HTMLButtonElement[];
 }
 
-/** The LIVE lifecycle controls (re-query after every refresh — the rows are rebuilt). */
+/** The LIVE lifecycle controls (re-query after a refresh — a section whose shown fields changed
+ *  is rebuilt with new nodes). */
 function raPvpControls(): RaPvpControls {
   const accept = document.querySelector<HTMLButtonElement>('[data-testid="pvp-accept-btn"]');
   const decline = document.querySelector<HTMLButtonElement>('[data-testid="pvp-decline-btn"]');
@@ -805,7 +807,8 @@ describe('★ PvpView 20r-a: ONE view-wide in-flight lock over the challenge-lif
     // WRONG IMPL KILLED (1): refresh() not re-applying the lock after `#renderIncoming` /
     //   `#renderOutgoing` / `#renderPlayerList` rebuild the rows — main.ts calls
     //   `refresh(vm, true)` on EVERY batch while the overlay is up (S3-pvpView-REFRESH-NO-REOPEN
-    //   above), so an unlocked rebuild lands within one tick of any click.
+    //   above), and any batch that changes what a section shows (a challenger renamed, a player
+    //   coming online) rebuilds that section, so an unlocked rebuild can land mid-flight.
     // WRONG IMPL KILLED (2): the `.finally` re-enabling the closure-captured nodes — after the
     //   rebuild they are detached and the LIVE buttons stay disabled.
     mountPvpOverlay();
@@ -1267,8 +1270,8 @@ describe('m24s3 (ADR-0259): pvpView.ts scan — zero failing sinks', () => {
 // is false via refresh() alone (unlike raisingView/evolutionView, whose refresh()
 // has no visibility guard). The HIDDEN tooth below instead shows+renders, then
 // calls `hide()` DIRECTLY (bypassing `refresh(vm, false)`) — `hide()` does NOT
-// clear the rendered `<button>`s from the DOM, only `#pending` and the ARIA
-// record, so the still-live Accept button can be clicked again while `#visible`
+// clear the rendered `<button>`s from the DOM, only `#pending`, the record of what
+// it rendered and the ARIA record, so the still-live Accept button can be clicked again while `#visible`
 // is false, taking a BRAND NEW lock (hide() cleared the old one). This is the
 // pvpView-specific way to reach "a lock owned while not visible" (raisingView/
 // evolutionView reach it by calling refresh() without show() at all).
@@ -1622,6 +1625,12 @@ describe('rb-121 PvpView: a settle-released lifecycle lock re-anchors focus the 
 //   early return before the lock re-derivation    -> LOCK-REAPPLIED
 //   ONE shared key for all three containers       -> ROSTER-CHANGE-KEEPS-INCOMING,
 //                                                    INCOMING-CHANGE-KEEPS-ROSTER
+//   player key over the first rows only           -> ROSTER-THIRD-ADDED / -RENAMED /
+//     (`players.slice(0, 2)`)                        -SAME-NAME-NEW-IDENTITY
+//   order-insensitive (sorted) player key         -> ROSTER-REORDERED
+//   key kept over a render that threw after       -> THROW-RECOVERS-PREVIOUS
+//     emptying its container
+//   key recorded before the render runs           -> THROW-RECOVERS-SAME
 // ---------------------------------------------------------------------------
 
 /** Store rows the way main.ts's batch listener reads them: an incoming challenge from Bob, a
@@ -1680,6 +1689,32 @@ function cifixPlayerButtons(): HTMLButtonElement[] {
     ...document.querySelectorAll<HTMLButtonElement>('[data-testid="pvp-challenge-player-btn"]'),
   ];
 }
+
+/** The challenge-player buttons' identities, in DOM order. */
+function cifixPlayerIdentities(): (string | null)[] {
+  return cifixPlayerButtons().map((b) => b.getAttribute('data-player-identity'));
+}
+
+/** Idle (no challenge) with Alice and Dave first, then `rest`, so a test can vary the third row
+ *  and leave the first two untouched. */
+function cifixRosterVm(
+  ...rest: PvpChallengeViewModel['challengeablePlayers'][number][]
+): PvpChallengeViewModel {
+  return pvpVm({
+    challengeablePlayers: [
+      { identity: '0xaaa1', name: 'Alice' },
+      { identity: '0xddd4', name: 'Dave' },
+      ...rest,
+    ],
+  });
+}
+
+/** An incoming challenge (77n) from `challengerName` and nothing else. */
+function cifixIncomingVm(challengerName: string): PvpChallengeViewModel {
+  return pvpVm({ incoming: { challengeId: 77n, challengerId: '0xbbb', challengerName } });
+}
+
+const CIFIX_TF_THROW = 'cifix0901: the incoming label render throws once';
 
 describe('cifix0901 PvpView refresh(vm, true): a container re-renders only when what it shows changed', () => {
   it('cifix0901-PVP-SAME-VALUE-KEEPS-NODES BITES: two buildPvpChallengeViewModel() calls over the same store rows (main.ts per-batch path) keep Accept, Decline, Cancel and both player buttons as the same connected nodes, and focus on Accept stays there', async () => {
@@ -2105,5 +2140,130 @@ describe('cifix0901 PvpView refresh(vm, true): a container re-renders only when 
     c.accept.click();
     expect(vi.mocked(cbs.onAccept).mock.calls).toEqual([[RA_INCOMING_ID]]);
     await raFlushPromises();
+  });
+
+  it('cifix0901-PVP-ROSTER-THIRD-ADDED BITES: a third player joining a two-player roster adds a third button', () => {
+    // WRONG IMPL KILLED: a player-list key over the first two rows only.
+    mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    view.refresh(cifixRosterVm(), true);
+    expect(cifixPlayerIdentities(), 'precondition: two players').toEqual(['0xaaa1', '0xddd4']);
+
+    view.refresh(cifixRosterVm({ identity: '0xeee5', name: 'Erin' }), true);
+    expect(
+      cifixPlayerIdentities(),
+      'cifix0901: a third player joining must add a third button',
+    ).toEqual(['0xaaa1', '0xddd4', '0xeee5']);
+  });
+
+  it('cifix0901-PVP-ROSTER-THIRD-RENAMED BITES: in a three-player roster, renaming only the THIRD player updates its button text', () => {
+    // WRONG IMPL KILLED: a player-list key over the first two rows only.
+    mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    view.refresh(cifixRosterVm({ identity: '0xeee5', name: 'Erin' }), true);
+    expect(
+      cifixPlayerButtons().map((b) => b.textContent),
+      'precondition',
+    ).toEqual(['Alice', 'Dave', 'Erin']);
+
+    view.refresh(cifixRosterVm({ identity: '0xeee5', name: 'Erika' }), true);
+    expect(
+      cifixPlayerButtons().map((b) => b.textContent),
+      'cifix0901: renaming the third player must update its button',
+    ).toEqual(['Alice', 'Dave', 'Erika']);
+  });
+
+  it('cifix0901-PVP-ROSTER-THIRD-SAME-NAME-NEW-IDENTITY BITES: in a three-player roster, the THIRD player replaced by another identity with the same name re-renders, and its click dispatches the NEW identity', async () => {
+    // WRONG IMPL KILLED: a player-list key over the first two rows only — the third button's
+    // old closure challenges the player who left.
+    mountPvpOverlay();
+    const cbs = makeCallbacks();
+    const view = new PvpView(cbs);
+    view.refresh(cifixRosterVm({ identity: '0xeee5', name: 'Erin' }), true);
+    view.refresh(cifixRosterVm({ identity: '0xfff9', name: 'Erin' }), true);
+
+    const buttons = cifixPlayerButtons();
+    expect(buttons, 'precondition: three challenge-player buttons').toHaveLength(3);
+    buttons[2]!.click();
+    expect(
+      vi.mocked(cbs.onChallenge).mock.calls,
+      'cifix0901: the same-named third player must be challenged by its NEW identity',
+    ).toEqual([['0xfff9']]);
+    await raFlushPromises();
+  });
+
+  it('cifix0901-PVP-ROSTER-REORDERED BITES: the same three players in a different order re-render in the new order', () => {
+    // WRONG IMPL KILLED: an order-insensitive (sorted) player-list key.
+    mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    const alice = { identity: '0xaaa1', name: 'Alice' };
+    const dave = { identity: '0xddd4', name: 'Dave' };
+    const erin = { identity: '0xeee5', name: 'Erin' };
+    view.refresh(pvpVm({ challengeablePlayers: [{ ...alice }, { ...dave }, { ...erin }] }), true);
+    expect(cifixPlayerIdentities(), 'precondition').toEqual(['0xaaa1', '0xddd4', '0xeee5']);
+
+    view.refresh(pvpVm({ challengeablePlayers: [{ ...erin }, { ...alice }, { ...dave }] }), true);
+    expect(
+      cifixPlayerIdentities(),
+      'cifix0901: the buttons must follow the new roster order',
+    ).toEqual(['0xeee5', '0xaaa1', '0xddd4']);
+  });
+
+  it('cifix0901-PVP-THROW-RECOVERS-PREVIOUS BITES: Bob, then a refresh for Robert whose incoming render throws (main.ts catches and logs it), then Bob again: the incoming section shows Bob and Accept again', () => {
+    // WRONG IMPL KILLED: a container key left at its LAST SUCCESSFUL render while the render that
+    // threw had already emptied the container — the key still says Bob, Bob's batch is skipped
+    // and Accept never comes back.
+    mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    view.refresh(cifixIncomingVm('Bob'), true);
+    expect(cifixShown('pvp-accept-btn'), 'precondition: Accept renders for Bob').toBe(true);
+
+    try {
+      vi.mocked(i18nTf).mockImplementationOnce(() => {
+        throw new Error(CIFIX_TF_THROW);
+      });
+      expect(
+        () => view.refresh(cifixIncomingVm('Robert'), true),
+        'precondition: the incoming render for Robert threw',
+      ).toThrow(CIFIX_TF_THROW);
+    } finally {
+      vi.mocked(i18nTf).mockRestore(); // back to the real resolver (the m24s3 PV-02 idiom)
+    }
+
+    view.refresh(cifixIncomingVm('Bob'), true); // the next batch
+    expect(
+      cifixShown('pvp-accept-btn'),
+      'cifix0901: after a render that threw, the next refresh must show Accept again',
+    ).toBe(true);
+    expect(cifixText('pvp-incoming-label')).toBe(
+      i18nTf('pvp.incoming.label', { challenger: 'Bob' }),
+    );
+  });
+
+  it('cifix0901-PVP-THROW-RECOVERS-SAME BITES: a first refresh whose incoming render throws, then the SAME view-model again: the incoming section renders', () => {
+    // WRONG IMPL KILLED: a key recorded before the render runs — the throw leaves "Bob is shown"
+    // over an empty container and every later Bob batch is skipped.
+    mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    try {
+      vi.mocked(i18nTf).mockImplementationOnce(() => {
+        throw new Error(CIFIX_TF_THROW);
+      });
+      expect(
+        () => view.refresh(cifixIncomingVm('Bob'), true),
+        'precondition: the incoming render for Bob threw',
+      ).toThrow(CIFIX_TF_THROW);
+    } finally {
+      vi.mocked(i18nTf).mockRestore(); // back to the real resolver (the m24s3 PV-02 idiom)
+    }
+
+    view.refresh(cifixIncomingVm('Bob'), true); // the next batch, same value
+    expect(
+      cifixShown('pvp-accept-btn'),
+      'cifix0901: after a render that threw, the same view-model must render Accept',
+    ).toBe(true);
+    expect(cifixText('pvp-incoming-label')).toBe(
+      i18nTf('pvp.incoming.label', { challenger: 'Bob' }),
+    );
   });
 });
