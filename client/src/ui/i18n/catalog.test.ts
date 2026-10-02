@@ -284,7 +284,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'chrome.status.healUnavailable': 'heal: no heal location available',
   'chrome.status.partyFull': 'party is full — move a monster to the box first',
   'battle.title': 'Battle', // battleView.ts:110
-  'battle.continueHint': 'Press Esc to continue', // battleView.ts:243
+  'battle.continueHint': 'Press Enter or Esc to continue', // battleView.ts:243
   'battle.swap.hint':
     'No healthy party monster in this battle to swap in. ' +
     'When this battle ends, press Esc, then B for Party & Box.', // battleView.ts:216-218
@@ -484,6 +484,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'menu.profile.privacy.desc': 'Export or delete your data.',
   'menu.options.help.title': 'How to play',
   'menu.options.help.desc': 'Controls and goals of the game.',
+  // ctl-6c: 2 new plain keys — the reasons a main-menu entry is disabled over a battle
+  // (ui/screens/mainMenuScreen.ts), the first also the dispatch refusal line (main.ts).
+  'menu.disabled.inBattle': 'Not during a battle',
+  'menu.disabled.battleBag': 'Use items from the battle Bag command',
 };
 
 interface ParamOutputSpec {
@@ -760,7 +764,7 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 208-key roster (ctl-5 added the 29 `menu.*` keys to the 179-key roster; pgcc-a added `raising.feedback.cared` to the 178-key roster below;
+/** The full 210-key roster (ctl-6c added the 2 `menu.disabled.*` keys to the 208-key roster; ctl-5 added the 29 `menu.*` keys to the 179-key roster; pgcc-a added `raising.feedback.cared` to the 178-key roster below;
  *  21r-b2 growth of 21r-b's 133-key roster by the 45 new `claim.*` /
  *  `privacy.*` keys; 21r-b had grown the 118-key roster by the 15 new
  *  `chrome.feedback.*`/`shop.feedback.*`/`trade.feedback.*`/`chrome.rename.updated`/
@@ -812,7 +816,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-5 208-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-6c 210-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -901,10 +905,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 208 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 210 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the 208 keys.
+    // (a) roster is exactly the 210 keys.
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).

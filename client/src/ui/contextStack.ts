@@ -2,8 +2,12 @@
 // `battle` base. Pure — no DOM, SDK, module state or clock. It sits BEHIND the legacy
 // show/hide paths: main.ts mirrors the visible overlays into it (`mirrorEdges`), reconciles
 // server truth into it on every batch (`reconcile`, whose `close` commands run the views' own
-// hide paths), and gates movement and the KeyT interact guard on it (`movementEnabled`).
+// hide paths), and gates movement and the KeyT interact guard on it (`movementEnabled`). Over a
+// battle it also holds the battle rules (ctl-6c): which frames may stay open over it, what Start and
+// A do there (`battleButton`), and which screen commands it refuses (`battleRefused`).
+import type { NavInput } from './nav';
 import type { OverlayId } from './overlayRegistry';
+import type { Command as ScreenCommand, ScreenResult } from './screens/types';
 
 /** The legacy overlays are the frame ids until the screens replace them. */
 export type FrameId = OverlayId;
@@ -13,7 +17,8 @@ export type BaseFrame =
   | { readonly kind: 'battle'; readonly battleId: string };
 // `nav` joins screen/prompt with the nav core (ctl-4/ctl-5).
 export type UpperFrame =
-  | { readonly kind: 'screen'; readonly id: FrameId }
+  /** `overBattle`: the battle this screen was opened over (absent when opened at the world). */
+  | { readonly kind: 'screen'; readonly id: FrameId; readonly overBattle?: string }
   | { readonly kind: 'prompt'; readonly id: FrameId }
   | { readonly kind: 'textEntry'; readonly owner: FrameId };
 export type Frame = BaseFrame | UpperFrame;
@@ -41,8 +46,9 @@ export interface ScreenPolicy {
 const PLAYER_DROP: ScreenPolicy = { owner: 'player', onBattle: 'drop', battleSafe: false };
 const PLAYER_DROP_SAFE: ScreenPolicy = { owner: 'player', onBattle: 'drop', battleSafe: true };
 
-/** Total over every frame id, so an omitted id fails client-typecheck. `reconcile` reads
- *  `owner` and `onBattle`; `battleSafe` stays provisional until ctl-6c consumes it. */
+/** Total over every frame id, so an omitted id fails client-typecheck. `reconcile` reads all three:
+ *  `battleSafe` marks a screen that may stay open when the player opens it over a battle (its
+ *  screen issues no command the battle refuses); the main menu disables the entries that are not. */
 export const SCREEN_POLICY: Readonly<Record<FrameId, ScreenPolicy>> = {
   battleView: { owner: 'server', onBattle: 'drop', battleSafe: true },
   boxView: PLAYER_DROP,
@@ -101,9 +107,20 @@ export function baseFor(
 
 /** The edges that bring the stack's upper frames in line with the visible legacy overlays:
  *  pops first (stack order), then pushes (visible order). Over a battle base `battleView` is
- *  the base's own presentation, never a frame; over the world it is the terminal outcome. */
-export function mirrorEdges(stack: Stack, visible: readonly FrameId[]): readonly Edge[] {
+ *  the base's own presentation, never a frame; over the world it is the terminal outcome. A push
+ *  over a battle base is stamped with that battle only when `prevBase` (the base before this sync)
+ *  was already it: an overlay first mirrored in the sync that brings the battle was opened at the
+ *  world, and must drop like any other (CTL3.2). */
+export function mirrorEdges(
+  stack: Stack,
+  visible: readonly FrameId[],
+  prevBase: BaseFrame = stack[0],
+): readonly Edge[] {
   const [base, ...upper] = stack;
+  const overBattle =
+    base.kind === 'battle' && prevBase.kind === 'battle' && prevBase.battleId === base.battleId
+      ? base.battleId
+      : undefined;
   const shown = base.kind === 'battle' ? visible.filter((id) => id !== 'battleView') : visible;
   const onStack = upper.map(idOf);
   const pops: Edge[] = onStack
@@ -111,7 +128,10 @@ export function mirrorEdges(stack: Stack, visible: readonly FrameId[]): readonly
     .map((id) => ({ kind: 'pop', id }));
   const pushes: Edge[] = shown
     .filter((id) => !onStack.includes(id))
-    .map((id) => ({ kind: 'push', frame: { kind: 'screen', id } }));
+    .map((id) => ({
+      kind: 'push',
+      frame: overBattle === undefined ? { kind: 'screen', id } : { kind: 'screen', id, overBattle },
+    }));
   return [...pops, ...pushes];
 }
 
@@ -126,7 +146,9 @@ export interface ServerView {
 }
 
 /** Server truth into the stack (CTL3.1): the base follows the battle; a battle (or its terminal
- *  outcome over the world) pops every `drop` frame; a conversation pops every player frame; a
+ *  outcome over the world) pops every `drop` frame but a battleSafe one the player opened over that
+ *  very battle (CTL6C.1); a frame opened over a battle that is no longer the base pops even with no
+ *  outcome shown; a conversation pops every player frame; a
  *  conversation that ends pops its frame silently, even suspended under a battle. It only pops:
  *  frames are pushed by the paths that show them (`mirrorEdges`), so it never strands a frame
  *  whose view is not shown. Each popped frame but dialogue gets a `close`, which runs that
@@ -150,8 +172,14 @@ export function reconcile(
     const id = idOf(f);
     if (id === 'dialogueView') return view.conversation;
     const policy = SCREEN_POLICY[id];
+    const overBattle = f.kind === 'screen' ? f.overBattle : undefined;
+    const overThisBattle = base.kind === 'battle' && overBattle === base.battleId;
     const dropped =
-      (battleUp && id !== 'battleView' && policy.onBattle === 'drop') ||
+      (overBattle !== undefined && !overThisBattle) ||
+      (battleUp &&
+        id !== 'battleView' &&
+        policy.onBattle === 'drop' &&
+        !(overThisBattle && policy.battleSafe)) ||
       (view.conversation && policy.owner === 'player');
     if (dropped) commands.push({ kind: 'close', id });
     return !dropped;
@@ -202,4 +230,85 @@ export function continuedBattleId(
   current: bigint | null,
 ): bigint | null {
   return latest !== undefined && latest.outcome !== 'Ongoing' ? latest.battleId : current;
+}
+
+/** How long a terminal outcome is up before A continues it: an A mashed through the battle's last
+ *  turn must not skip the result. B and Start continue at once. */
+export const OUTCOME_CONTINUE_GRACE_MS = 400;
+
+/** The battle's own button rules, asked before the top frame's adapter; `undefined` leaves the
+ *  button to it. Start at the bare battle base opens the main menu over the battle (CTL6C.1). A on
+ *  a terminal outcome continues it once it has been up `OUTCOME_CONTINUE_GRACE_MS` (`outcomeAgeMs`,
+ *  undefined while none is shown) by popping only the outcome frame, as B does, so a conversation
+ *  suspended beneath it survives (CTL6C.2). A held key acts once. */
+export function battleButton(
+  stack: Stack,
+  btn: NavInput,
+  outcomeAgeMs?: number,
+): ScreenResult | undefined {
+  const [base] = stack;
+  const top = stack[stack.length - 1];
+  if (btn.button === 'Start' && base.kind === 'battle' && stack.length === 1) {
+    return btn.repeat ? 'consumed' : { kind: 'openMenu' };
+  }
+  if (
+    btn.button === 'A' &&
+    base.kind === 'world' &&
+    top.kind === 'screen' &&
+    top.id === 'battleView'
+  ) {
+    if (btn.repeat || outcomeAgeMs === undefined || outcomeAgeMs < OUTCOME_CONTINUE_GRACE_MS) {
+      return 'consumed';
+    }
+    return { kind: 'pop' };
+  }
+  return undefined;
+}
+
+/** Which screen commands a battle base allows (CTL6C.3): the stack moves, the battle's own actions
+ *  and ending a conversation. Total over the `Command` kinds, so a new arm (talk, bag use) fails
+ *  client-typecheck until it is classified here. Reducer guards stay the authority. */
+export const COMMAND_BATTLE_POLICY: Readonly<Record<ScreenCommand['kind'], 'safe' | 'refuse'>> = {
+  pop: 'safe',
+  popToBase: 'safe',
+  openMenu: 'safe',
+  toggleHelp: 'safe',
+  care: 'refuse',
+  train: 'refuse',
+  evolve: 'refuse',
+  setNickname: 'refuse',
+  setPartySlot: 'refuse',
+  healParty: 'refuse',
+  buy: 'refuse',
+  sell: 'refuse',
+  respondTrade: 'refuse',
+  confirmTrade: 'refuse',
+  cancelTrade: 'refuse',
+  proposeTrade: 'refuse',
+  challenge: 'refuse',
+  acceptChallenge: 'refuse',
+  declineChallenge: 'refuse',
+  cancelChallenge: 'refuse',
+  setProfileName: 'refuse',
+  attack: 'safe',
+  flee: 'safe',
+  swap: 'safe',
+  recruit: 'safe',
+  useItem: 'safe',
+  pvpAttack: 'safe',
+  pvpSwap: 'safe',
+  advanceDialogue: 'refuse',
+  dismissDialogue: 'safe',
+  claimSignIn: 'refuse',
+  claimJoin: 'refuse',
+  claimDecline: 'refuse',
+  deleteAccount: 'refuse',
+  cancelAccountDeletion: 'refuse',
+  requestDataExport: 'refuse',
+};
+
+/** Whether `command` must be refused now: the stack holds a battle base and the command is not
+ *  battle-safe. */
+export function battleRefused(stack: Stack, command: ScreenCommand): boolean {
+  return stack[0].kind === 'battle' && COMMAND_BATTLE_POLICY[command.kind] === 'refuse';
 }

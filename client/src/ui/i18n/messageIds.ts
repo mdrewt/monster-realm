@@ -250,7 +250,9 @@ export type MessageId =
   | 'menu.profile.privacy.title'
   | 'menu.profile.privacy.desc'
   | 'menu.options.help.title'
-  | 'menu.options.help.desc';
+  | 'menu.options.help.desc'
+  | 'menu.disabled.inBattle'
+  | 'menu.disabled.battleBag';
 
 /** The ONE hand-written parameter table: a key appears here iff its message takes
  *  parameters, and `ParamMessageId` is DERIVED from it — one table, not two lists to keep in

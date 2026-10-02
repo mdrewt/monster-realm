@@ -108,7 +108,10 @@ import {
 import type { ClaimView, ClaimViewHandlers } from './ui/claimView';
 import {
   baseFor,
+  battleButton,
+  battleRefused,
   blocksPlayerOpen,
+  COMMAND_BATTLE_POLICY,
   contextStep,
   continuedBattleId,
   type Edge,
@@ -117,6 +120,7 @@ import {
   popToBase,
   popTop,
   reconcile,
+  SCREEN_POLICY,
   type Stack,
   type Command as StackCommand,
   stackDiff,
@@ -487,7 +491,11 @@ function runStackCommands(commands: readonly StackCommand[]): void {
     }
   }
 }
+/** When the terminal outcome frame now on top was first mirrored (performance.now), else null:
+ *  A continues it only after `OUTCOME_CONTINUE_GRACE_MS` (CTL6C.2). */
+let outcomeShownAtMs: number | null = null;
 function syncStack(): void {
+  const prevBase = contextStack[0];
   const ongoing = store.ongoingBattle(identity);
   const base = baseFor(
     ongoing === undefined
@@ -500,10 +508,15 @@ function syncStack(): void {
     runStackCommands(next.commands);
   };
   apply({ kind: 'base', base });
-  for (const edge of mirrorEdges(contextStack, visibleIds(overlayProbes))) {
+  for (const edge of mirrorEdges(contextStack, visibleIds(overlayProbes), prevBase)) {
     apply(edge);
     inputRouter.resetRepeat(); // a held key never repeats into a pushed or popped frame
   }
+  const top = contextStack[contextStack.length - 1];
+  const outcomeUp =
+    contextStack[0].kind === 'world' && top.kind === 'screen' && top.id === 'battleView';
+  if (!outcomeUp) outcomeShownAtMs = null;
+  else outcomeShownAtMs ??= performance.now();
   menuView?.setCovered(menuPlace() === 'covered');
 }
 
@@ -839,6 +852,8 @@ function openHelp(): void {
  *  share ONE exhaustive `switch (target.kind)` — duplicating it would destroy the
  *  single-site compiler flag a 4th NpcInteraction kind relies on. */
 function interactAtNearest(): void {
+  // Talking is not battle-safe (CTL6C.3); KeyT is movement-gated too, this guards any other caller.
+  if (contextStack[0].kind === 'battle') return;
   const own = store.ownCharacter(identity);
   if (own === undefined) return;
   const target = nearestInteractable(
@@ -871,7 +886,8 @@ function renderMenu(): void {
 
 /** The SINGLE entry point: the root list, on the last entry used. */
 function openMenu(): void {
-  menuState = openMainMenu(menuState.memory);
+  // Over a battle the menu is read-only: what is not battle-safe is disabled (CTL6C.3).
+  menuState = openMainMenu(menuState.memory, contextStack[0].kind === 'battle');
   renderMenu();
   menuView?.show();
 }
@@ -927,6 +943,8 @@ function applyMenuStep(step: MainMenuStep): void {
     case 'none':
       break;
     case 'open':
+      // The battle menu disables these; a menu left over from the world never opens one either.
+      if (contextStack[0].kind === 'battle' && !SCREEN_POLICY[step.effect.target].battleSafe) break;
       openMenuTarget(step.effect.target);
       break;
     case 'close':
@@ -986,6 +1004,7 @@ const ownPartyIds = (): bigint[] =>
  *  until it settles), and a synchronous throw stays synchronous. No default arm, so a new
  *  `Command` fails client-typecheck here. */
 function dispatch(command: Command): Promise<void> {
+  if (refusedInBattle(command)) return DONE;
   switch (command.kind) {
     case 'pop':
       applyStack(contextStack, popTop(contextStack));
@@ -993,12 +1012,19 @@ function dispatch(command: Command): Promise<void> {
     case 'popToBase':
       applyStack(contextStack, popToBase(contextStack));
       return DONE;
-    case 'openMenu':
+    case 'openMenu': {
       // The screens the menu opens read store state keyed by identity, which is '' before join.
-      if (overlayVerdict('menuView').kind === 'allow' && identity !== '' && worldHasFocus()) {
+      // At the bare battle base Start opens it over the battle (CTL6C.1), whose overlay holds focus
+      // and outranks every other open request.
+      const atBattle = contextStack.length === 1 && contextStack[0].kind === 'battle';
+      if (
+        identity !== '' &&
+        (atBattle || (overlayVerdict('menuView').kind === 'allow' && worldHasFocus()))
+      ) {
         openMenu();
       }
       return DONE;
+    }
     case 'toggleHelp':
       if (helpView?.visible) {
         applyStack(contextStack, contextStep(contextStack, { kind: 'pop', id: 'helpView' }).stack);
@@ -1240,6 +1266,20 @@ function dispatch(command: Command): Promise<void> {
     default:
       return command satisfies never;
   }
+}
+
+/** A command the battle refuses (CTL6C.3): the stack holds a battle base and the command is not
+ *  battle-safe. Its reason goes to the status line and the live region; a refusal is not an error,
+ *  so nothing reaches the error ring. Synced first: a click-driven callback may run before the
+ *  frame that mirrors a new battle base. */
+function refusedInBattle(command: Command): boolean {
+  if (COMMAND_BATTLE_POLICY[command.kind] === 'safe') return false;
+  syncStack();
+  if (!battleRefused(contextStack, command)) return false;
+  const reason = i18nT('menu.disabled.inBattle');
+  if (statusEl !== undefined) statusEl.textContent = reason;
+  liveRegion.announce(reason, performance.now());
+  return true;
 }
 
 /** A PvP action. pvpPendingTurnNumber is set INSIDE the lambda so sendGuarded's frozen check runs
@@ -1685,7 +1725,13 @@ const routeCtx = (): RouteContext => {
   return {
     worldActive: movementGate(),
     nav: place === 'absent' ? undefined : { covered: place === 'covered', now: performance.now() },
-    screen: (btn) => screenButton(contextStack, btn, screenCtx),
+    // The battle's own rules first (Start opens the menu over it, A continues its outcome).
+    screen: (btn) =>
+      battleButton(
+        contextStack,
+        btn,
+        outcomeShownAtMs === null ? undefined : performance.now() - outcomeShownAtMs,
+      ) ?? screenButton(contextStack, btn, screenCtx),
   };
 };
 

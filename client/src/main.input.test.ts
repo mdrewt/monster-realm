@@ -1909,9 +1909,10 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     ).toBe(true);
     expect(battleShown(), 'precondition: the Ongoing battle is still shown').toBe(true);
     frame(1210); // mirrors the callback-opened overlay onto the stack; not a batch
+    // ctl-6c stamps a screen frame pushed over a battle base that was already the base with overBattle.
     expect(stack(), 'precondition: it is a frame over the battle base').toEqual([
       { kind: 'battle', battleId: '101' },
-      { kind: 'screen', id: 'claimView' },
+      { kind: 'screen', id: 'claimView', overBattle: '101' },
     ]);
 
     // No frame runs between here and the assertions: the batch alone must do it.
