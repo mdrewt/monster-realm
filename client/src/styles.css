@@ -269,7 +269,11 @@
   font: 14px / 1.6 monospace;
   pointer-events: auto;
 }
+/* Menu and help open over a battle, whose root is position:fixed at z-index 110 (ctl-6c). Fixed
+ * here too, so the two compete as peers (encounter-battle.spec.ts E0 pins both); #game-screen
+ * fills the viewport and has no transform, so the box is the one .mr-shell gives. */
 .mr-shell--top {
+  position: fixed;
   z-index: 120;
 }
 /* The interact prompt and the deletion countdown are frames too, but small and positioned by

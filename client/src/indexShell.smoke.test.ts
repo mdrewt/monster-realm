@@ -82,32 +82,38 @@ describe('index.html shell contract', () => {
     expect((node.textContent ?? '').trim()).toBe('');
   });
 
-  it.each(
-    OVERLAY_IDS.map((id) => [id]),
-  )('%s: static shell ARIA and anchor focusability match OVERLAY_A11Y', (id) => {
-    const meta = OVERLAY_A11Y[id];
-    const anchor = doc.querySelector(meta.initialFocusSelector);
-    if (CONSTRUCTED.has(id)) {
-      expect(anchor, `${id} is constructed at runtime; its anchor must not be static`).toBeNull();
-      return;
-    }
-    expect(anchor, `${id}: ${meta.initialFocusSelector} must resolve in index.html`).not.toBeNull();
-    if (anchor === null) return;
-    const root = shellRoot(anchor);
-    expect(root, `${id}: anchor must sit inside a direct #frame-layer child`).not.toBeNull();
-    expect(root?.getAttribute('role')).toBe(meta.role);
-    expect(root?.getAttribute('aria-modal')).toBe('true');
-    for (const banned of ['aria-hidden', 'aria-label', 'aria-labelledby']) {
-      expect(root?.hasAttribute(banned), `${id}: shell root must not carry ${banned}`).toBe(false);
-    }
-    const tabindex = anchor.getAttribute('tabindex');
-    if (NATIVE_FOCUSABLE.has(anchor.tagName)) {
-      expect(tabindex, `${id}: a native control must carry no tabindex`).toBeNull();
-    } else {
-      // menuView's listbox holds DOM focus (aria-activedescendant); passive anchors use -1.
-      expect(tabindex).toBe(id === 'menuView' ? '0' : '-1');
-    }
-  });
+  it.each(OVERLAY_IDS.map((id) => [id]))(
+    '%s: static shell ARIA and anchor focusability match OVERLAY_A11Y',
+    (id) => {
+      const meta = OVERLAY_A11Y[id];
+      const anchor = doc.querySelector(meta.initialFocusSelector);
+      if (CONSTRUCTED.has(id)) {
+        expect(anchor, `${id} is constructed at runtime; its anchor must not be static`).toBeNull();
+        return;
+      }
+      expect(
+        anchor,
+        `${id}: ${meta.initialFocusSelector} must resolve in index.html`,
+      ).not.toBeNull();
+      if (anchor === null) return;
+      const root = shellRoot(anchor);
+      expect(root, `${id}: anchor must sit inside a direct #frame-layer child`).not.toBeNull();
+      expect(root?.getAttribute('role')).toBe(meta.role);
+      expect(root?.getAttribute('aria-modal')).toBe('true');
+      for (const banned of ['aria-hidden', 'aria-label', 'aria-labelledby']) {
+        expect(root?.hasAttribute(banned), `${id}: shell root must not carry ${banned}`).toBe(
+          false,
+        );
+      }
+      const tabindex = anchor.getAttribute('tabindex');
+      if (NATIVE_FOCUSABLE.has(anchor.tagName)) {
+        expect(tabindex, `${id}: a native control must carry no tabindex`).toBeNull();
+      } else {
+        // menuView's listbox holds DOM focus (aria-activedescendant); passive anchors use -1.
+        expect(tabindex).toBe(id === 'menuView' ? '0' : '-1');
+      }
+    },
+  );
 
   it('every role-bearing element is a registry shell, and no tabindex exceeds 0', () => {
     const roots = new Set(
@@ -591,19 +597,27 @@ describe('ctl-7a: the game screen, framed shells, frame tokens and hint-bar chip
     }
   });
 
-  it('CTL7A-2-FRAME-IN-VIEWPORT-CSS: .mr-shell is absolutely placed with all four insets set to non-negative lengths and scrolls its own overflow, and .mr-frame-layer fills the screen', () => {
-    // WRONG IMPL KILLED: a shell that stays position:static / relative (it flows below the canvas
-    // and leaves the viewport); position:fixed (leaves #game-screen's clip); a missing inset
-    // (the box is not pinned inside the screen); a negative inset (it hangs off an edge);
-    // `overflow: visible` (tall content spills out of the box); a modifier rule that re-positions
-    // the shell; a frame layer that is not pinned to the screen's four edges.
+  it('CTL7A-2-FRAME-IN-VIEWPORT-CSS: the base .mr-shell is absolutely placed with all four insets set to non-negative lengths and scrolls its own overflow, a .mr-shell--* modifier only ever re-positions to absolute (or, for --top alone, fixed) and never touches an inset or the overflow, and .mr-frame-layer fills the screen', () => {
+    // WRONG IMPL KILLED: a base shell that stays position:static / relative (it flows below the
+    // canvas and leaves the viewport); position:fixed on the BASE .mr-shell (leaves #game-screen's
+    // clip); a missing inset (the box is not pinned inside the screen); a negative inset (it
+    // hangs off an edge); `overflow: visible` (tall content spills out of the box); a modifier
+    // that sets position to anything but absolute / fixed (static / relative / sticky flows the
+    // shell out of the viewport box); position:fixed on any modifier other than --top; any
+    // top / right / bottom / left / inset / overflow override inside a modifier (it can push the
+    // box off-screen or make it spill, and the base-only cascade below would never see it); a
+    // frame layer that is not pinned to the screen's four edges.
+    //
+    // Why --top may be fixed: the existing ctl-6c e2e client/e2e/encounter-battle.spec.ts (E0,
+    // expectStackedAbove) asserts #menu-overlay and #help-overlay compute to position:fixed, as
+    // peers of the fixed battle root (ui/battleView.ts, z-index 110). #game-screen fills the
+    // viewport and has no transform / filter / contain ancestor, so a fixed .mr-shell--top that
+    // inherits the base's four insets occupies the same box inside the viewport.
     expect(
       rulesFor('.mr-shell').length,
       'styles.css must have a top-level .mr-shell rule',
     ).toBeGreaterThan(0);
-    const shellRules = STYLES.filter(
-      (r) => r.at.length === 0 && r.selectors.some((s) => /^\.mr-shell(--[a-z-]+)?$/.test(s)),
-    );
+    const shellRules = rulesFor('.mr-shell');
     const shell = cascade(shellRules);
     expect(shell.get('position'), '.mr-shell is position:absolute').toBe('absolute');
     const sides = insetSides(shellRules);
@@ -616,6 +630,33 @@ describe('ctl-7a: the game screen, framed shells, frame tokens and hint-bar chip
     expect(['auto', 'scroll'], '.mr-shell scrolls its own overflow').toContain(
       shell.get('overflow'),
     );
+
+    // Modifiers, at any at-rule depth (an @media override can mis-place the box just as well).
+    const INSET_PROPS = new Set(['inset', 'top', 'right', 'bottom', 'left']);
+    for (const rule of STYLES) {
+      for (const selector of rule.selectors) {
+        if (!/^\.mr-shell--[a-z-]+$/.test(selector)) continue;
+        const where = `${selector}${rule.at.length > 0 ? ` in ${rule.at.join(' ')}` : ''}`;
+        for (const [prop, rawValue] of rule.decls) {
+          const value = rawValue.replace(/\s*!important$/, '');
+          if (prop === 'position') {
+            const allowed = selector === '.mr-shell--top' ? ['absolute', 'fixed'] : ['absolute'];
+            expect(
+              allowed,
+              `${where}: position "${value}" is not allowed (a modifier may set absolute; only .mr-shell--top may set fixed, for E0 in e2e/encounter-battle.spec.ts)`,
+            ).toContain(value);
+          }
+          expect(
+            INSET_PROPS.has(prop),
+            `${where}: a modifier must not override "${prop}" (the base insets pin the box inside the viewport)`,
+          ).toBe(false);
+          expect(
+            prop === 'overflow' || prop.startsWith('overflow-'),
+            `${where}: a modifier must not override "${prop}" (the base shell scrolls its own overflow)`,
+          ).toBe(false);
+        }
+      }
+    }
 
     const layerRules = rulesFor('.mr-frame-layer');
     expect(

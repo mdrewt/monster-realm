@@ -85,22 +85,23 @@ type GameWindow = { __game?: () => Snap };
 // WCAG 2.2 Level AA, the conformance claim in spec §5.6 — nothing wider.
 const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
 
-// Non-vacuity floors, MEASURED on the reference tree (eca6752), twice, identical
-// both runs: 16 / 21 / 23 rules passed. Pinned two below each measurement so an
-// incidental markup change does not red the gate, while a page that failed to boot
-// (~0 passes) cannot possibly clear it. RAISE these when a state gains content;
-// LOWER only in a commit that deliberately removes some, and say which.
+// Non-vacuity floors, pinned two below each measurement so an incidental markup
+// change does not red the gate, while a page that failed to boot (~0 passes) cannot
+// possibly clear it. RAISE these when a state gains content; LOWER only in a commit
+// that deliberately removes some, and say which.
+// ctl-7a re-measured on its build in Chromium, twice, identical both runs: world 16
+// passes (floor 14), help 21 (floor 19; help is now an opaque .mr-frame), menu 25
+// (floor 23; unchanged since ctl-5, which made the menu a nav frame with chrome).
 const PASSES_FLOOR_WORLD = 14;
-const PASSES_FLOOR_HELP = 18;
-// ctl-5 re-measured the menu (now a nav frame with chrome): 25 passed, floor two below.
+const PASSES_FLOOR_HELP = 19;
 const PASSES_FLOOR_MENU = 23;
 
 // axe reports `incomplete` for checks it could not DECIDE — neither a pass nor a
 // violation. On this client there is exactly one such rule, stable across runs:
 // `color-contrast`, on text whose background is the game canvas and therefore not
-// computable from the DOM. In the world state those were #build-stamp and #help-hint (ctl-7a
-// deleted #help-hint; its hint-bar chips replace it) — and there is NO shipped contrast
-// oracle covering them: `evals/contrast-ratio.eval.mjs` and its
+// computable from the DOM. In the world state that is #build-stamp alone (ctl-7a deleted
+// #help-hint; the opaque Start/Select chips that replace it are decidable) — and there is
+// NO shipped contrast oracle covering it: `evals/contrast-ratio.eval.mjs` and its
 // `baselines/contrast-unresolved.json` were specified but never landed, and remain
 // the open residual rb-14 (which records that they did not ship).
 // So these numbers have no upstream to agree with, which makes the ceiling MORE
@@ -111,13 +112,13 @@ const PASSES_FLOOR_MENU = 23;
 // undecidable rule id appearing is a real signal, not noise, and must red. The NODE
 // COUNT is a per-state CEILING that shrinks and never grows — it is what stops
 // "axe cannot tell" from quietly becoming the answer for more and more of the UI.
-// Measured twice, identical: world 2, help 23, menu 9. The overlays put far more
-// text over the canvas than the persistent chrome does.
+// ctl-7a re-measured on its build in Chromium, twice, identical both runs: world 1
+// (#build-stamp), help 1 (#build-stamp; help is now an opaque .mr-frame, previously 23
+// nodes of text over the canvas), menu 1 (#build-stamp). Each ceiling is that count.
 const INCOMPLETE_ALLOWED_IDS = ['color-contrast'];
-const INCOMPLETE_CEILING_WORLD = 2;
-const INCOMPLETE_CEILING_HELP = 23;
-// ctl-5 re-measured the menu: 2 undecidable nodes (its frame is opaque, not text over the canvas).
-const INCOMPLETE_CEILING_MENU = 2;
+const INCOMPLETE_CEILING_WORLD = 1;
+const INCOMPLETE_CEILING_HELP = 1;
+const INCOMPLETE_CEILING_MENU = 1;
 
 async function ready(p: Page): Promise<void> {
   await p.waitForFunction(
@@ -737,8 +738,14 @@ test.describe
       const m = await page.evaluate(measureFrameInPage, '#rename-overlay');
       expectFrameOk(m, 'rename shell');
 
-      // The input's own Escape handler closes the shell and never reaches the window.
-      await page.keyboard.press('Escape');
+      // Close it for the next test. Escape does NOT work here: with focus on #rename-input
+      // it leaves the overlay shown and moves focus to #rename-submit (a pre-existing
+      // defect, also on master, tracked as a residual). Blur to <body> and press N instead:
+      // main.ts's KeyN branch hides the rename overlay when it is visible.
+      await page.evaluate(() => {
+        (document.activeElement as HTMLElement | null)?.blur();
+      });
+      await page.keyboard.press('KeyN');
       await expect(page.locator('#rename-overlay')).toBeHidden();
     });
   });
