@@ -82,38 +82,32 @@ describe('index.html shell contract', () => {
     expect((node.textContent ?? '').trim()).toBe('');
   });
 
-  it.each(OVERLAY_IDS.map((id) => [id]))(
-    '%s: static shell ARIA and anchor focusability match OVERLAY_A11Y',
-    (id) => {
-      const meta = OVERLAY_A11Y[id];
-      const anchor = doc.querySelector(meta.initialFocusSelector);
-      if (CONSTRUCTED.has(id)) {
-        expect(anchor, `${id} is constructed at runtime; its anchor must not be static`).toBeNull();
-        return;
-      }
-      expect(
-        anchor,
-        `${id}: ${meta.initialFocusSelector} must resolve in index.html`,
-      ).not.toBeNull();
-      if (anchor === null) return;
-      const root = shellRoot(anchor);
-      expect(root, `${id}: anchor must sit inside a direct #frame-layer child`).not.toBeNull();
-      expect(root?.getAttribute('role')).toBe(meta.role);
-      expect(root?.getAttribute('aria-modal')).toBe('true');
-      for (const banned of ['aria-hidden', 'aria-label', 'aria-labelledby']) {
-        expect(root?.hasAttribute(banned), `${id}: shell root must not carry ${banned}`).toBe(
-          false,
-        );
-      }
-      const tabindex = anchor.getAttribute('tabindex');
-      if (NATIVE_FOCUSABLE.has(anchor.tagName)) {
-        expect(tabindex, `${id}: a native control must carry no tabindex`).toBeNull();
-      } else {
-        // menuView's listbox holds DOM focus (aria-activedescendant); passive anchors use -1.
-        expect(tabindex).toBe(id === 'menuView' ? '0' : '-1');
-      }
-    },
-  );
+  it.each(
+    OVERLAY_IDS.map((id) => [id]),
+  )('%s: static shell ARIA and anchor focusability match OVERLAY_A11Y', (id) => {
+    const meta = OVERLAY_A11Y[id];
+    const anchor = doc.querySelector(meta.initialFocusSelector);
+    if (CONSTRUCTED.has(id)) {
+      expect(anchor, `${id} is constructed at runtime; its anchor must not be static`).toBeNull();
+      return;
+    }
+    expect(anchor, `${id}: ${meta.initialFocusSelector} must resolve in index.html`).not.toBeNull();
+    if (anchor === null) return;
+    const root = shellRoot(anchor);
+    expect(root, `${id}: anchor must sit inside a direct #frame-layer child`).not.toBeNull();
+    expect(root?.getAttribute('role')).toBe(meta.role);
+    expect(root?.getAttribute('aria-modal')).toBe('true');
+    for (const banned of ['aria-hidden', 'aria-label', 'aria-labelledby']) {
+      expect(root?.hasAttribute(banned), `${id}: shell root must not carry ${banned}`).toBe(false);
+    }
+    const tabindex = anchor.getAttribute('tabindex');
+    if (NATIVE_FOCUSABLE.has(anchor.tagName)) {
+      expect(tabindex, `${id}: a native control must carry no tabindex`).toBeNull();
+    } else {
+      // menuView's listbox holds DOM focus (aria-activedescendant); passive anchors use -1.
+      expect(tabindex).toBe(id === 'menuView' ? '0' : '-1');
+    }
+  });
 
   it('every role-bearing element is a registry shell, and no tabindex exceeds 0', () => {
     const roots = new Set(
