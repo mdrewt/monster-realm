@@ -246,6 +246,12 @@ let opts: ConnectionOptions;
 /** The i18n resolver instance main.ts runs on (imported AFTER the module reset, so it is shared). */
 let i18n: typeof import('./ui/i18n/resolver');
 
+/** Narrow an optional connection-option callback; a missing one fails loudly rather than skipping the call. */
+function must<T>(v: T | undefined, what: string): T {
+  if (v === undefined) throw new Error(`${what} was not wired by main.ts`);
+  return v;
+}
+
 async function boot(): Promise<void> {
   H.connectOpts = null;
   H.sends = [];
@@ -823,7 +829,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     };
 
     // A permitted join: joining sends joinGame, declining with nothing armed sends nothing.
-    opts.onClaimResult({ ok: true } as never);
+    must(opts.onClaimResult, 'onClaimResult')({ ok: true } as never);
     H.calls = [];
     call('onDeclineConfirmed');
     expect(H.calls, 'decline-confirmed with nothing armed sends nothing').toEqual([]);
@@ -835,7 +841,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     expect(H.signIns, 'onSignIn starts the sign-in once').toBe(1);
 
     // The veto up, a decline armed: a join is refused, the decline then lifts the veto.
-    opts.onClaimPending('CODE-1');
+    must(opts.onClaimPending, 'onClaimPending')('CODE-1');
     call('onDeclineRequested');
     expect(vmOf().actions.declineConfirm, 'precondition: the decline is armed').toBe(true);
     H.calls = [];
@@ -849,7 +855,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     expect(vmOf().actions.declineConfirm, 'and the confirmation is spent').toBe(false);
 
     // A frozen link refuses both, visibly, and keeps the decline armed.
-    opts.onClaimResult({ ok: true } as never);
+    must(opts.onClaimResult, 'onClaimResult')({ ok: true } as never);
     H.frozen = true;
     H.calls = [];
     call('onJoin');
@@ -863,7 +869,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       { name: 'joinGame', args: { name: 'Player' } },
     ]);
 
-    opts.onClaimPending('CODE-2');
+    must(opts.onClaimPending, 'onClaimPending')('CODE-2');
     call('onDeclineRequested');
     H.frozen = true;
     call('onDeclineConfirmed');
