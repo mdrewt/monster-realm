@@ -329,7 +329,11 @@ function overlayFocusAnchor(id: OverlayId): HTMLElement | null {
 interface KeySpec {
   readonly code?: string;
   readonly key?: string;
+  readonly shiftKey?: boolean;
 }
+
+// ctl-6b CTL6B.4: help is Select by physical code (Slash); e.key '?' is retired.
+const HELP_KEY: KeySpec = { code: 'Slash', key: '?', shiftKey: true };
 
 /** Dispatch one `keydown` on `target` (default `window`, the listener main.ts registers
  *  on) and return the event so callers can read `.defaultPrevented`. */
@@ -337,6 +341,7 @@ function pressKey(spec: KeySpec, target: EventTarget = window): KeyboardEvent {
   const init: KeyboardEventInit = { bubbles: true, cancelable: true };
   if (spec.code !== undefined) init.code = spec.code;
   if (spec.key !== undefined) init.key = spec.key;
+  if (spec.shiftKey !== undefined) init.shiftKey = spec.shiftKey;
   const event = new KeyboardEvent('keydown', init);
   target.dispatchEvent(event);
   return event;
@@ -573,7 +578,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     { id: 'evolutionView', openKey: { code: 'KeyE' } },
     { id: 'questLogView', openKey: { code: 'KeyQ' } },
     { id: 'tradeView', openKey: { code: 'KeyU' } },
-    { id: 'helpView', openKey: { key: '?' } },
+    { id: 'helpView', openKey: HELP_KEY },
   ];
 
   it.each(
@@ -736,7 +741,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
         'this test would prove nothing',
     ).toBe(document.body);
 
-    pressKey({ key: '?' }); // helpView — its verdict is DENY over a visible GUARD_ONLY overlay
+    pressKey(HELP_KEY); // helpView — its verdict is DENY over a visible GUARD_ONLY overlay
     expect(
       overlayIsOpen('helpView'),
       'helpView must NOT open over the quest log: `canOpen` denies over a GUARD_ONLY overlay, ' +
@@ -792,7 +797,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // happy-dom's layout fidelity.
     document.body.focus();
     expect(document.activeElement, 'precondition: focus fell back to <body>').toBe(document.body);
-    pressKey({ key: '?' }); // a DIFFERENT overlay's hotkey — proves the fix is general
+    pressKey(HELP_KEY); // a DIFFERENT overlay's hotkey — proves the fix is general
     expect(overlayIsOpen('helpView')).toBe(true);
   });
 
@@ -807,7 +812,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // constant, `now - windowOpenedAt` is identically 0 forever and the region never paints
     // again, which is behaviourally identical to (1) but survives a naive containment scan for
     // `liveRegion.flush(`.
-    pressKey({ key: '?' }); // open helpView from <body>
+    pressKey(HELP_KEY); // open helpView from <body>
     runFrame(0); // registers 'helpView' as lastA11ySnapshot.topOverlay, queues its own name
     pressKey({ code: 'Escape' }); // close it
     runFrame(600); // >=500ms after window 0: flushes the queued overlay name; queues world-region
@@ -888,7 +893,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // connected, so closeOverlayA11y's restore-order picks it FIRST and fallbackFocus is
     // never consulted. Only a frame-loop-owned focus return (S5's own edge) can move focus
     // from body to the canvas; this test fails on any implementation that skips that edge.
-    pressKey({ key: '?' }); // helpView opens from <body>
+    pressKey(HELP_KEY); // helpView opens from <body>
     runFrame(0);
     pressKey({ code: 'Escape' }); // closeOverlayA11y restores focus to <body> (returnFocus)
     expect(document.activeElement, 'closeOverlayA11y restores to <body> here').toBe(document.body);
@@ -939,7 +944,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     //   carries `tabindex="-1"` and NO inline display at all (client/index.html) — only the
     //   overlay ROOT is display:none — so it reads false and the stale window stands. This test
     //   reds on it exactly as it reds on (1); the ancestor walk is the whole mechanism.
-    pressKey({ key: '?' }); // helpView opens from <body>, the pre-milestone path
+    pressKey(HELP_KEY); // helpView opens from <body>, the pre-milestone path
     expect(overlayIsOpen('helpView'), 'helpView must be open after `?`').toBe(true);
     runFrame(0); // registers 'helpView' as lastA11ySnapshot.topOverlay — arms the close edge
 
@@ -955,7 +960,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
       { timeout: 2_000, interval: 5 },
     );
 
-    pressKey({ key: '?' }); // the A1 same-key toggle-CLOSE — one of the three measured e2e paths
+    pressKey(HELP_KEY); // the A1 same-key toggle-CLOSE — one of the three measured e2e paths
     expect(
       overlayIsOpen('helpView'),
       'helpView must be CLOSED by the second `?` (ADR-0206 Amendment A1). If THIS is the ' +
@@ -1064,7 +1069,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
       document.body,
     );
 
-    pressKey({ key: '?' }); // helpView opens from <body>
+    pressKey(HELP_KEY); // helpView opens from <body>
     expect(overlayIsOpen('helpView'), 'helpView must be open after `?`').toBe(true);
 
     // Let the REAL setTimeout(0) deferred focus land INSIDE the overlay — the A11Y-19 post-open
@@ -1078,7 +1083,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
       { timeout: 2_000, interval: 5 },
     );
 
-    pressKey({ key: '?' }); // the A1 same-key toggle-CLOSE
+    pressKey(HELP_KEY); // the A1 same-key toggle-CLOSE
     expect(overlayIsOpen('helpView'), 'helpView must be CLOSED by the second `?` (A1)').toBe(false);
 
     // RE-CREATE THE CHROMIUM STALE STATE (identical to S5T-FOCUS-RETURN-STALE's, and asserted

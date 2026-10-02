@@ -399,10 +399,12 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     expect(navActive(), 'a closed menu has no active entry').toBeNull();
   });
 
-  it('CTL5-2-MAIN-ESCAPE-RETURNS: Escape with the child open closes only the child and returns to the menu on its entry; Escape at the menu then closes it', async () => {
-    // WRONG IMPL KILLED: an Escape that closes the whole stack in one press (the child's legacy
-    // Escape branch must act first), an Escape that leaves the child open, a return that loses the
-    // cursor, and a menu that cannot be closed by Escape.
+  it('CTL5-2-MAIN-ESCAPE-RETURNS: Escape with the child open is Start and pops to the world base, closing the child and the menu together; the next Escape opens the menu again', async () => {
+    // WRONG IMPL KILLED: an Escape that closes only the child (the ctl-5 reading, retired by ctl-6b),
+    // an Escape that leaves the child or the menu open, a pop that leaves the stack mirroring a
+    // closed overlay, and an Escape at the world that cannot open the menu again.
+    // ctl-6b CTL6B.2: Escape is Start now, so with a child over the menu it pops to the base (it used
+    // to close only the child); Backspace (B) keeps returning to the menu (CTL5-2-MAIN-B-RETURNS).
     await bootAtMenu(2);
     tap('Enter', 1400);
     expect(journalShown(), 'precondition: the child is open').toBe(true);
@@ -410,13 +412,16 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     const esc = tap('Escape', 1500);
     expect(esc.defaultPrevented).toBe(true);
     expect(journalShown(), 'the child closed').toBe(false);
-    expect(menuShown(), 'the menu stays').toBe(true);
-    expect(stackNames()).toEqual(['world', 'menuView']);
-    expect(cursor()).toBe('menu-root-journal');
-    expect(navActive()).toBe('journal');
+    expect(menuShown(), 'and the menu with it').toBe(false);
+    expect(stackNames()).toEqual(['world']);
+    expect(navActive(), 'a closed menu has no active entry').toBeNull();
 
+    // Control: Escape at the world base (Start) opens the menu again.
     tap('Escape', 1600);
-    expect(menuShown(), 'the second Escape closes the menu').toBe(false);
+    expect(menuShown(), 'the next Escape opens the menu').toBe(true);
+    expect(stackNames()).toEqual(['world', 'menuView']);
+    tap('Escape', 1700);
+    expect(menuShown(), 'and Escape over the menu closes it').toBe(false);
     expect(stackNames()).toEqual(['world']);
   });
 
@@ -646,10 +651,12 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     expect(menuShown(), 'the menu stays open beneath it').toBe(true);
   });
 
-  it('Profile > Account opens the claim overlay over the menu: Escape there (claim has no Escape branch) leaves the menu beneath it open, and Backspace closes the claim and returns to the menu', async () => {
-    // WRONG IMPL KILLED: an Escape-at-menu branch keyed on the menu being VISIBLE rather than on
-    // the menu being the stack TOP (Escape over the claim would close the covered menu beneath it
-    // and leave the claim orphaned over the world), and a B that does not pop the claim.
+  it('Profile > Account opens the claim overlay over the menu: Backspace closes only the claim and returns to the menu, and Escape (Start) closes the claim and the menu together', async () => {
+    // WRONG IMPL KILLED: a B that does not pop the claim, a B that pops the menu with it, an Escape
+    // that closes only the claim (the ctl-5 reading, retired by ctl-6b: the menu would be left
+    // beneath it), and an Escape that leaves the claim orphaned over the world.
+    // ctl-6b CTL6B.2 / CTL6B.3: Escape is Start now. It used to leave the menu open beneath the claim
+    // (claim had no Escape branch); it now pops to the base. Backspace (B) still closes only the claim.
     await bootAtMenu(4);
     tap('Enter', 1500);
     tap('ArrowDown', 1600);
@@ -663,15 +670,7 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     ]);
     expect(menuShown(), 'precondition: the menu is open beneath it').toBe(true);
 
-    tap('Escape', 1800);
-    expect(menuShown(), 'Escape over the claim does not close the menu beneath it').toBe(true);
-    expect(stackNames(), 'the menu is still under the claim').toEqual([
-      'world',
-      'menuView',
-      'claimView',
-    ]);
-
-    tap('Backspace', 1900);
+    tap('Backspace', 1800);
     expect(stackNames(), 'B closes the claim and returns to the menu').toEqual([
       'world',
       'menuView',
@@ -682,6 +681,21 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
       'and the menu is uncovered',
     ).not.toBe('hidden');
     expect(navActive(), 'the sub-list cursor is where it was').toBe('account');
+
+    // Open the claim again, then Escape: both close.
+    tap('Enter', 1900);
+    expect(stackNames(), 'precondition: the claim is over the menu again').toEqual([
+      'world',
+      'menuView',
+      'claimView',
+    ]);
+    tap('Escape', 2000);
+    expect(stackNames(), 'Escape closes the claim and the menu together').toEqual(['world']);
+    expect(menuShown(), 'the menu is closed').toBe(false);
+    expect(
+      (document.getElementById('claim-overlay') as HTMLElement).style.display,
+      'and so is the claim overlay',
+    ).toBe('none');
   });
 
   it('a screen opened over the menu is announced: after A on Profile > Account and the 500 ms live-region window, #a11y-live reads the claim label, not the menu label', async () => {

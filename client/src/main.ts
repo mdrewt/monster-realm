@@ -34,6 +34,7 @@ import {
   type WasmDirection,
   type WasmMoveInput,
 } from './convert/convert';
+import { DEFAULT_BINDINGS } from './input/bindings';
 import type { ButtonEdge } from './input/buttons';
 import { isChord, KeyboardSource } from './input/keyboardSource';
 import {
@@ -41,7 +42,9 @@ import {
   ownership,
   type RouteContext,
   type RouterEffect,
+  routedBindings,
   routerConsumes,
+  typingKey,
 } from './input/router';
 import type { PvpAction } from './module_bindings/types';
 import { BUILD_INFO, formatBuildStamp } from './net/buildInfo';
@@ -106,13 +109,18 @@ import type { ClaimView, ClaimViewHandlers } from './ui/claimView';
 import {
   baseFor,
   blocksPlayerOpen,
-  type Command,
   contextStep,
+  continuedBattleId,
   type Edge,
   mirrorEdges,
   movementEnabled,
+  popToBase,
+  popTop,
   reconcile,
   type Stack,
+  type Command as StackCommand,
+  stackDiff,
+  type UpperFrame,
   WORLD_STACK,
 } from './ui/contextStack';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
@@ -189,6 +197,7 @@ import { buildRaisingViewModel } from './ui/raisingModel';
 import type { RaisingView } from './ui/raisingView';
 import { buildRenameViewModel } from './ui/renameModel';
 import type { RenameView } from './ui/renameView';
+import { screenButton } from './ui/screens/index';
 import {
   type MainMenuStep,
   mainMenuPick,
@@ -196,6 +205,7 @@ import {
   menuViewModel,
   openMainMenu,
 } from './ui/screens/mainMenuScreen';
+import type { Command, ScreenContext } from './ui/screens/types';
 import {
   buildSessionViewModel,
   SESSION_INITIAL,
@@ -378,8 +388,8 @@ let pvpPendingTurnNumber: number | null = null;
 let shopOpen = SHOP_OPEN_INITIAL;
 // boundShopId / boundHealLocationId record which shop / heal location the
 // visible overlay is bound to, so a refresh batch never silently swaps a bound
-// view back to the first-row default. Both clear on their Escape paths and on
-// reconnect (the store reset invalidates the ids); every open rebinds them.
+// view back to the first-row default. Both clear on reconnect (the store reset
+// invalidates the ids); every open rebinds them.
 let boundShopId: number | null = null;
 let boundHealLocationId: number | null = null;
 
@@ -462,7 +472,7 @@ function overlayVerdict(id: OverlayId): CanOpenVerdict {
 // batch; `__game().stack` only reads it. Server truth is reconciled into it on every batch
 // (`reconcileStack`), which closes what a battle or a conversation drops.
 let contextStack: Stack = WORLD_STACK;
-function runStackCommands(commands: readonly Command[]): void {
+function runStackCommands(commands: readonly StackCommand[]): void {
   for (const command of commands) {
     switch (command.kind) {
       case 'clearHeld':
@@ -932,6 +942,365 @@ function handleMenuPointer(input: MenuPointerInput): void {
   applyMenuStep(mainMenuPick(menuState, input.key));
 }
 
+// --- the screen-adapter seam (design §4, §12) ------------------------------------------
+//
+// The router hands every button the D-pad, X and the menu's nav do not take to the top frame's
+// adapter (`screenButton`); its command, and every view callback, runs through ONE exhaustive
+// `dispatch`. Stack commands compute the next stack and `applyStack` closes what it drops through
+// each view's own hide path; the stack itself stays the mirror of what is shown (`syncStack`).
+
+// The bindings the router reads: LB/RB only from PageUp/PageDown while the legacy ladder owns Q
+// and E (CTL6B.6, until ctl-11a).
+const ROUTED_BINDINGS = routedBindings(DEFAULT_BINDINGS);
+
+/** The read-only context adapters build their view models from. */
+const screenCtx: ScreenContext = {
+  store,
+  get identity() {
+    return identity;
+  },
+  bindings: ROUTED_BINDINGS,
+  now: () => performance.now(),
+};
+
+/** A settled promise for the arms that have no reducer promise to hand back. */
+const DONE: Promise<void> = Promise.resolve();
+
+// Single-unit MVP (infinite stock; multi-unit sell is future work).
+const SHOP_QTY = 1 as const;
+// Each feedback sink paints only while its overlay is visible: a late settle must not write a
+// stale line into a closed (and later reopened) overlay.
+const shopFeedback = (message: string): void => {
+  if (shopView?.visible) shopView.showFeedback(message);
+};
+const tradeFeedback = (message: string): void => {
+  if (tradeView?.visible) tradeView.showFeedback(message);
+};
+const ownPartyIds = (): bigint[] =>
+  store
+    .ownMonsters(identity)
+    .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
+    .map((m) => m.monsterId);
+
+/** Run one command. Not async: each arm hands back its own reducer promise (a view's lock holds
+ *  until it settles), and a synchronous throw stays synchronous. No default arm, so a new
+ *  `Command` fails client-typecheck here. */
+function dispatch(command: Command): Promise<void> {
+  switch (command.kind) {
+    case 'pop':
+      applyStack(contextStack, popTop(contextStack));
+      return DONE;
+    case 'popToBase':
+      applyStack(contextStack, popToBase(contextStack));
+      return DONE;
+    case 'openMenu':
+      // The screens the menu opens read store state keyed by identity, which is '' before join.
+      if (overlayVerdict('menuView').kind === 'allow' && identity !== '' && worldHasFocus()) {
+        openMenu();
+      }
+      return DONE;
+    case 'toggleHelp':
+      if (helpView?.visible) {
+        applyStack(contextStack, contextStep(contextStack, { kind: 'pop', id: 'helpView' }).stack);
+      } else if (overlayVerdict('helpView').kind === 'allow' && worldHasFocus()) {
+        openHelp();
+      }
+      return DONE;
+    case 'care':
+      // The whole decision (frozen gate / await / exactly-one message) lives in the tested
+      // performCare core. RaisingView.showFeedback is a no-op while hidden (stale-message guard).
+      return performCare({
+        call: () => liveReducers()?.care({ monsterId: command.monsterId }),
+        successMessage: i18nT('raising.feedback.cared'),
+        where: 'care',
+        showFeedback: (message) => raisingView?.showFeedback(message),
+      });
+    case 'train': {
+      const { monsterId, foodItemId } = command;
+      return sendGuarded('train', () => conn?.live()?.reducers.train({ monsterId, foodItemId }));
+    }
+    case 'evolve': {
+      // The CHOSEN species, from the panel's path picker: the client never resolves an ambiguous
+      // evolution itself, and the server re-validates the same gates.
+      const { monsterId, toSpecies } = command;
+      return sendGuarded('evolve', () => conn?.live()?.reducers.evolve({ monsterId, toSpecies }));
+    }
+    case 'setNickname': {
+      const { monsterId, nickname } = command;
+      return sendGuarded('nickname', () =>
+        conn?.live()?.reducers.setNickname({ monsterId, nickname }),
+      );
+    }
+    case 'setPartySlot': {
+      const { monsterId } = command;
+      let slot = command.slot;
+      if (slot === -1) {
+        const free = nextFreePartySlot(store.ownMonsters(identity), PARTY_SIZE);
+        // A full party has no slot to move into. Sending the box sentinel would be an accepted
+        // server no-op the player never sees, so say why instead.
+        if (free === null) {
+          reportError(i18nT('chrome.status.partyFull'));
+          return DONE;
+        }
+        slot = free;
+      }
+      return sendGuarded('party', () => conn?.live()?.reducers.setPartySlot({ monsterId, slot }));
+    }
+    case 'healParty': {
+      // The first heal location in live store data (M12d). SKIP the send when none is loaded —
+      // `healParty({locationId: 0})` would be a guaranteed invisible server Err. The skip is
+      // surfaced, never silent; the server still validates zone/range/cooldown on a real send.
+      const locationId = healTargetLocationId(store.healLocations());
+      if (locationId === undefined) {
+        reportError(i18nT('chrome.status.healUnavailable'));
+        return DONE;
+      }
+      return sendGuarded('heal', () => conn?.live()?.reducers.healParty({ locationId }));
+    }
+    case 'buy': {
+      const { shopId, itemId } = command;
+      return performCare({
+        call: () => liveReducers()?.buy({ shopId, itemId, qty: SHOP_QTY }),
+        successMessage: i18nT('shop.feedback.purchased'),
+        where: 'buy',
+        showFeedback: shopFeedback,
+      });
+    }
+    case 'sell': {
+      const { itemId } = command;
+      return performCare({
+        call: () => liveReducers()?.sell({ itemId, qty: SHOP_QTY }),
+        successMessage: i18nT('shop.feedback.sold'),
+        where: 'sell',
+        showFeedback: shopFeedback,
+      });
+    }
+    case 'respondTrade': {
+      const { tradeId, accepted } = command;
+      return performCare({
+        call: () => liveReducers()?.respondTrade({ tradeId, accepted }),
+        successMessage: accepted
+          ? i18nT('trade.feedback.accepted')
+          : i18nT('trade.feedback.rejected'),
+        where: 'respond-trade',
+        showFeedback: tradeFeedback,
+      });
+    }
+    case 'confirmTrade': {
+      const { tradeId } = command;
+      return performCare({
+        call: () => liveReducers()?.confirmTrade({ tradeId }),
+        successMessage: i18nT('trade.feedback.completed'),
+        where: 'confirm-trade',
+        showFeedback: tradeFeedback,
+      });
+    }
+    case 'cancelTrade': {
+      const { tradeId } = command;
+      return performCare({
+        call: () => liveReducers()?.cancelTrade({ tradeId }),
+        successMessage: i18nT('trade.feedback.cancelled'),
+        where: 'cancel-trade',
+        showFeedback: tradeFeedback,
+      });
+    }
+    case 'proposeTrade': {
+      // The model's typed args (no DOM re-derive). The targetIdentity string is wrapped in
+      // `new Identity(...)` (the SDK boundary) INSIDE the call thunk, so a throw while building
+      // the args lands in the core's error arm; the counterparty side is currency-only (RLS —
+      // D2), so its monster/item request fields are always empty.
+      const { args } = command;
+      return performCare({
+        call: () =>
+          liveReducers()?.proposeTrade({
+            counterparty: new Identity(args.targetIdentity),
+            initiatorMonsterIds: [...args.initiatorMonsterIds],
+            initiatorItems: [],
+            initiatorCurrency: args.initiatorCurrency,
+            counterpartyMonsterIds: [],
+            counterpartyItems: [],
+            counterpartyCurrency: args.counterpartyCurrency,
+          }),
+        successMessage: i18nT('tradePropose.feedback.sent'),
+        where: 'propose-trade',
+        showFeedback: (message) => {
+          if (tradeProposeView?.visible) tradeProposeView.showFeedback(message);
+        },
+      });
+    }
+    case 'challenge': {
+      // Party ids are read inside the closure, at send time.
+      const target = command.targetIdentity;
+      return sendGuarded('pvp-challenge', () =>
+        conn
+          ?.live()
+          ?.reducers.challengePvp({ target: new Identity(target), partyIds: ownPartyIds() }),
+      );
+    }
+    case 'acceptChallenge': {
+      const { challengeId } = command;
+      return sendGuarded('pvp-accept', () =>
+        conn?.live()?.reducers.acceptChallenge({ challengeId, partyIds: ownPartyIds() }),
+      );
+    }
+    case 'declineChallenge': {
+      const { challengeId } = command;
+      return sendGuarded('pvp-decline', () =>
+        conn?.live()?.reducers.declineChallenge({ challengeId }),
+      );
+    }
+    case 'cancelChallenge': {
+      const { challengeId } = command;
+      return sendGuarded('pvp-cancel', () =>
+        conn?.live()?.reducers.cancelChallenge({ challengeId }),
+      );
+    }
+    case 'setProfileName': {
+      // performCare (frozen gate first, reduceErrorMessage on reject — no InternalError leak),
+      // not sendGuarded/reportError. The overlay stays open on success and on reject.
+      const { name } = command;
+      return performCare({
+        call: () => liveReducers()?.setProfileName({ name }),
+        successMessage: i18nT('chrome.rename.updated'),
+        where: 'set-profile-name',
+        showFeedback: (message) => {
+          if (renameView?.visible) renameView.showFeedback(message);
+        },
+      });
+    }
+    case 'attack': {
+      const { battleId, skillId } = command;
+      return sendGuarded('attack', () =>
+        conn?.live()?.reducers.submitAttack({ battleId, skillId }),
+      );
+    }
+    case 'flee': {
+      const { battleId } = command;
+      return sendGuarded('flee', () => conn?.live()?.reducers.flee({ battleId }));
+    }
+    case 'swap': {
+      const { battleId, teamIndex } = command;
+      return sendGuarded('swap', () => conn?.live()?.reducers.swapActive({ battleId, teamIndex }));
+    }
+    case 'recruit': {
+      const { battleId, baitItemId } = command;
+      return sendGuarded('recruit', () =>
+        conn?.live()?.reducers.attemptRecruit({ battleId, baitItemId }),
+      );
+    }
+    case 'useItem': {
+      const { battleId, itemId } = command;
+      return sendGuarded('use-item', () =>
+        conn?.live()?.reducers.useBattleItem({ battleId, itemId }),
+      );
+    }
+    case 'pvpAttack':
+      return sendPvpAction('pvp-attack', command.battleId, {
+        tag: 'Attack',
+        value: command.skillId,
+      });
+    case 'pvpSwap':
+      return sendPvpAction('pvp-swap', command.battleId, {
+        tag: 'Swap',
+        value: command.teamIndex,
+      });
+    case 'advanceDialogue': {
+      const { choiceIdx } = command;
+      return sendGuarded('advance', () => conn?.live()?.reducers.advanceDialogue({ choiceIdx }));
+    }
+    case 'dismissDialogue':
+      // Ends the conversation and cancels a pending shop open (last intent wins). The client
+      // never hides the dialogue itself: the server's row deletion does.
+      stepShopOpen({ kind: 'dismissRequested' });
+      return DONE;
+    case 'claimSignIn':
+      conn?.startSignIn();
+      return DONE;
+    case 'claimJoin':
+      applyClaim({
+        kind: 'join-requested',
+        hasLiveConnection: conn !== undefined && !conn.linkFrozen(),
+      });
+      return DONE;
+    case 'claimDecline':
+      applyClaim({
+        kind: 'decline-confirmed',
+        hasLiveConnection: conn !== undefined && !conn.linkFrozen(),
+      });
+      return DONE;
+    case 'deleteAccount':
+      applyPrivacy({ kind: 'delete-confirmed', hasLiveConnection: privacyLinkLive() });
+      return DONE;
+    case 'cancelAccountDeletion':
+      applyPrivacy({ kind: 'cancel-deletion-requested', hasLiveConnection: privacyLinkLive() });
+      return DONE;
+    case 'requestDataExport':
+      applyPrivacy({ kind: 'export-requested', hasLiveConnection: privacyLinkLive() });
+      return DONE;
+    default:
+      return command satisfies never;
+  }
+}
+
+/** A PvP action. pvpPendingTurnNumber is set INSIDE the lambda so sendGuarded's frozen check runs
+ *  first — a frozen-link click must not lock the pending submit permanently (the turn never
+ *  advances on a dropped send) — and cleared on rejection. The explicit refresh paints the
+ *  client-local pending flag: an unchanged battle row no longer re-notifies the batch. */
+function sendPvpAction(where: string, battleId: bigint, action: PvpAction): Promise<void> {
+  return sendGuarded(where, () => {
+    pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
+    refreshBattle();
+    return conn
+      ?.live()
+      ?.reducers.submitPvpAction({ battleId, action })
+      ?.catch((err: unknown) => {
+        pvpPendingTurnNumber = null;
+        refreshBattle();
+        throw err;
+      });
+  });
+}
+
+/** Apply a stack move: close every frame `next` drops, top first (the order the retired Escape
+ *  ladder closed them in, so privacy's dismiss flush still finds the claim shown), each through
+ *  its own path; then re-mirror, so the stack again lists exactly what is shown. */
+function applyStack(prev: Stack, next: Stack): void {
+  for (const frame of stackDiff(prev, next).closed) closeFrame(frame);
+  syncStack();
+}
+
+function closeFrame(frame: UpperFrame): void {
+  // A text-entry frame is typing over its owner: stopping it closes nothing.
+  if (frame.kind === 'textEntry') return;
+  switch (frame.id) {
+    case 'dialogueView':
+      // A server conversation is ended, never hidden: its frame stays until the row goes.
+      void dispatch({ kind: 'dismissDialogue' });
+      break;
+    case 'battleView':
+      // The terminal outcome continues: latch it so the next batch never re-pops it.
+      dismissedBattleId = continuedBattleId(store.latestPlayerBattle(identity), dismissedBattleId);
+      battleView?.hide();
+      lastBattleVM = null;
+      break;
+    default:
+      // The view's own hide path, so its close callbacks run (CTL3.3); never a hidden one.
+      if (overlayProbes[frame.id]()) overlayHandles[frame.id]?.();
+  }
+}
+
+// Where focus goes when typing stops: the first control in the field's frame that is not itself
+// a text field, so the frame's focus trap keeps it and the next Escape routes as Start.
+const STOP_TYPING_TARGETS = 'button, select, input, textarea, [tabindex]:not([tabindex="-1"])';
+function stopTyping(field: HTMLElement): void {
+  const root = field.closest('[aria-modal="true"]');
+  const next = [...(root?.querySelectorAll<HTMLElement>(STOP_TYPING_TARGETS) ?? [])].find(
+    (el) => typingKey(el, { code: 'Escape' }) === undefined && !el.hasAttribute('disabled'),
+  );
+  field.blur();
+  next?.focus();
+}
+
 // Outcome-frame lifecycle (M8.7e): the dismissed battle id (so a resolved outcome
 // renders once but never re-pops) + whether any battle has been observed this
 // session (first-sight pre-dismiss of a historical/stale-on-login resolved battle).
@@ -1303,22 +1672,24 @@ const jump = (): void => sendIntent('Jump');
 
 // The input pipeline (design §12): the keyboard source maps keys through the ONE binding
 // table into `{button, down}` edges; the pure router decides what each edge does. The router
-// owns the D-pad and X (Jump), plus A, B and Y while the main menu is up — every other key is
-// the legacy ladder's below.
-const keyboard = new KeyboardSource();
+// owns the D-pad and X (Jump), plus A, B and Y while the main menu is up, and hands every other
+// button to the top frame's adapter; what that leaves unhandled is the legacy ladder's below.
+const keyboard = new KeyboardSource(ROUTED_BINDINGS);
 const inputRouter = new InputRouter();
 
-// What the router needs to know: whether the world takes input, and, while the main menu is on
-// the stack, whether a legacy frame covers it plus the clock its auto-repeat runs on.
+// What the router needs to know: whether the world takes input, while the main menu is on the
+// stack whether a legacy frame covers it plus the clock its auto-repeat runs on, and the top
+// frame's adapter.
 const routeCtx = (): RouteContext => {
   const place = menuPlace();
   return {
     worldActive: movementGate(),
     nav: place === 'absent' ? undefined : { covered: place === 'covered', now: performance.now() },
+    screen: (btn) => screenButton(contextStack, btn, screenCtx),
   };
 };
 
-// Apply one router effect to the movement seam, the menu, or the covering frame.
+// Apply one router effect to the movement seam, the menu, or a screen command.
 const applyRouterEffect = (effect: RouterEffect): void => {
   switch (effect.kind) {
     case 'dirDown':
@@ -1336,15 +1707,9 @@ const applyRouterEffect = (effect: RouterEffect): void => {
     case 'nav':
       applyMenuStep(mainMenuStep(menuState, effect.input));
       break;
-    case 'pop': {
-      // B over the menu closes the legacy frame on top through its own hide path (CTL3.3);
-      // dialogue has no handle, so a conversation is never closed client-side.
-      const topId = upperIds().at(-1);
-      if (topId !== undefined && topId !== 'menuView' && overlayProbes[topId]()) {
-        overlayHandles[topId]?.();
-      }
+    case 'command':
+      void dispatch(effect.command);
       break;
-    }
     default:
       effect satisfies never;
   }
@@ -1428,7 +1793,7 @@ const focusInsideHiddenSubtree = (): boolean => {
 
 const onKeyDown = (e: KeyboardEvent): void => {
   // The session terminal outranks every input path — checked FIRST,
-  // before the menu intercept, the battle-Escape branch and the router.
+  // before the typing branch, the menu intercept and the router.
   // Suppress the native default (not a bare return) so a held arrow does not scroll on key-repeat.
   // biome-ignore format: keep the session gate a single line.
   if (sessionGateBlocks()) { suppressNativeMovementDefault(e); return; }
@@ -1459,6 +1824,25 @@ const onKeyDown = (e: KeyboardEvent): void => {
     }
     return;
   }
+  // An Escape that cancels an IME composition is the IME's: not prevented and not routed, and kept
+  // from the field's own Escape listener, which would close the frame and drop the draft.
+  if (e.code === 'Escape' && (e.isComposing || e.keyCode === 229)) {
+    e.stopPropagation();
+    return;
+  }
+  // Typing mode (CTL6B.5): Escape in the focused text field stops typing. Focus leaves the field,
+  // its text stays, and the view's own Escape (a close) never runs; the next Escape is Start. A
+  // stale target (focus already healed away from a closed frame's field) is not typing.
+  if (
+    typingKey(e.target, e) === 'stopTyping' &&
+    e.target instanceof HTMLElement &&
+    e.target === document.activeElement
+  ) {
+    stopTyping(e.target);
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
   // This key's button edges, computed once: KeyboardSource reads a second keydown of a code it
   // holds as a lost keyup, so the event is routed at exactly one site.
   let edges: readonly ButtonEdge[] | undefined;
@@ -1468,7 +1852,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
   };
   // While the main menu is the top frame the router drives it (the D-pad, A, B, Y; held D-pad
   // repeats come from the frame loop), so this precedes every movement and hotkey path below.
-  // Unconsumed keys (Start, accelerators) fall through to the ladder, unrouted a second time.
+  // Unconsumed keys (accelerators) fall through to the ladder, unrouted a second time.
   if (menuPlace() === 'top') {
     let consumed = false;
     for (const edge of keyEdges()) consumed = routeEdge(edge) || consumed;
@@ -1644,44 +2028,6 @@ const onKeyDown = (e: KeyboardEvent): void => {
     e.preventDefault();
     return;
   }
-  // `?` toggles the display-only help overlay. Sole e.key branch
-  // (help is about the glyph, not physical position). Mutual exclusion is the ONE registry
-  // verdict (self exempt, so the toggle-close survives). held.clear() for consistency
-  // (help does not capture focus).
-  if (e.key === '?') {
-    e.preventDefault();
-    if (overlayVerdict('helpView').kind === 'allow' && (helpView?.visible || worldHasFocus())) {
-      if (helpView?.visible) {
-        helpView.hide();
-      } else {
-        held.clear();
-        openHelp();
-      }
-    }
-    return;
-  }
-  // The menu front-door. KeyM was verified UNBOUND before this slice — no
-  // D-pad/letter/`?` collision and no browser default. Escape is deliberately NOT overloaded
-  // to open the menu: it stays a pure close/back key, so mashing Escape never surprises the
-  // player with a menu. Its guard is the ONE registry verdict plus `identity !== ''` — the
-  // screens the menu opens read store state keyed by identity, which is '' before join. The
-  // AC-12 click front door carries the SAME predicate.
-  if (e.code === 'KeyM') {
-    e.preventDefault();
-    if (
-      overlayVerdict('menuView').kind === 'allow' &&
-      identity !== '' &&
-      (menuView?.visible || worldHasFocus())
-    ) {
-      if (menuView?.visible) {
-        menuView.hide();
-      } else {
-        held.clear();
-        openMenu();
-      }
-    }
-    return;
-  }
   // the account/claim front door. carriesIdentity is FALSE on
   // purpose — a failed FIRST sign-in has never joined (identity === ''), and the claim overlay
   // reads store.ownAccount(identity) whose own-identity filter returns undefined for '' (no throw).
@@ -1697,108 +2043,6 @@ const onKeyDown = (e: KeyboardEvent): void => {
     }
     return;
   }
-  // Escape closes the rename overlay. Highest priority so a
-  // text-input overlay never traps Escape behind another overlay's branch. The rename
-  // input's OWN keydown listener also handles Escape while focused (D3-1, stopPropagation'd);
-  // this window-level branch covers the (rare) unfocused-overlay case.
-  if (e.code === 'Escape' && renameView?.visible) {
-    renameView.hide();
-    e.preventDefault();
-    return;
-  }
-  // Escape closes the trade-PROPOSE overlay — adjacent to the rename
-  // branch so this text/select-input overlay gets highest Escape priority. The currency
-  // inputs' own keydown listeners also handle Escape while focused (D6, stopPropagation'd);
-  // this window-level branch covers the (rare) unfocused-overlay case.
-  if (e.code === 'Escape' && tradeProposeView?.visible) {
-    tradeProposeView.hide();
-    e.preventDefault();
-    return;
-  }
-  // Escape closes the help overlay — adjacent to the sibling Escape branches.
-  if (e.code === 'Escape' && helpView?.visible) {
-    helpView.hide();
-    e.preventDefault();
-    return;
-  }
-  // Escape priority: battle > box > raising > evolution > dialogue > questLog > heal.
-  if (e.code === 'Escape' && battleView?.visible) {
-    const latest = store.latestPlayerBattle(identity);
-    // Terminal outcome frame: permanent dismiss (don't re-pop next batch). Ongoing:
-    // bare hide — the next batch auto-re-shows the active battle (existing behavior).
-    if (latest !== undefined && latest.outcome !== 'Ongoing') dismissedBattleId = latest.battleId;
-    battleView.hide();
-    lastBattleVM = null;
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'Escape' && boxView?.visible) {
-    boxView.hide();
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'Escape' && raisingView?.visible) {
-    raisingView.hide();
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'Escape' && evolutionView?.visible) {
-    evolutionView.hide();
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'Escape' && dialogueView?.visible) {
-    // Ends the conversation and cancels a pending shop open (last intent wins).
-    stepShopOpen({ kind: 'dismissRequested' });
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'Escape' && questLogView?.visible) {
-    questLogView.hide();
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'Escape' && healView?.visible) {
-    boundHealLocationId = null; // Closing unbinds the heal view
-    healView.hide();
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'Escape' && shopView?.visible) {
-    boundShopId = null; // Closing unbinds the shop view
-    shopView.hide();
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'Escape' && tradeView?.visible) {
-    tradeView.hide();
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'Escape' && pvpView?.visible) {
-    pvpView.hide();
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'Escape' && leaderboardView?.visible) {
-    leaderboardView.hide();
-    e.preventDefault();
-    return;
-  }
-  // LAST in the Escape stack on purpose — the first `e.code === 'Escape'` in this file is
-  // pinned as the rename branch and three teeth slice fixed windows forward from it.
-  if (e.code === 'Escape' && privacyView?.visible) {
-    privacyView.hide();
-    e.preventDefault();
-    return;
-  }
-  // Escape closes the main menu only when it is the top frame: a child above it closes first,
-  // through its own branch above, and a child with no Escape branch keeps the menu beneath it.
-  if (e.code === 'Escape' && menuPlace() === 'top') {
-    menuView?.hide();
-    e.preventDefault();
-    return;
-  }
   // The router owns the D-pad and Space from here: it swallows them while an overlay is open
   // (the page-scroll fix), walks or jumps at the world, and skips keys the target owns.
   if (edges !== undefined) return; // already routed at the menu intercept
@@ -1809,13 +2053,27 @@ const onKeyDown = (e: KeyboardEvent): void => {
 // Sync the context stack on both sides of every keydown: before, so an overlay opened since
 // the last frame outside a keydown or batch (a click, a connection callback) is pushed (clearing held) before this key can close it; after,
 // so whatever this key opened or closed is mirrored at once.
-window.addEventListener('keydown', (e) => {
+const handleKeyDown = (e: KeyboardEvent): void => {
   try {
     syncStack();
     onKeyDown(e);
   } finally {
     syncStack();
   }
+};
+// Escape is routed in the CAPTURE phase, so a view's own stopPropagation can no longer trap it
+// (B5: Escape was dead inside rename and trade-propose). Every other key keeps the bubble phase,
+// where those views' stopPropagation still shields their fields from the letter ladder until
+// their ctl-8 screens replace them.
+window.addEventListener(
+  'keydown',
+  (e) => {
+    if (e.code === 'Escape') handleKeyDown(e);
+  },
+  true,
+);
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'Escape') handleKeyDown(e);
 });
 
 // A release ends a hold only when the last key or source holding that direction lets go.
@@ -1927,8 +2185,8 @@ function refreshBattle(): void {
     // VM-compare guard: skip refresh when the view is visible and the VM is
     // structurally identical to the last rendered VM (suppresses churn on no-op ticks).
     // The visible guard is the primary defense: shouldSkipBattleRefresh returns false
-    // while hidden, so the post-Escape re-show always triggers a full render. The
-    // lastBattleVM = null reset in the Escape handler is invariant hygiene on top.
+    // while hidden, so a re-show always triggers a full render. The lastBattleVM = null
+    // reset in closeFrame (the outcome continue) is invariant hygiene on top.
     if (shouldSkipBattleRefresh(battleView.visible, lastBattleVM, vm)) return;
     battleView.refresh(vm);
     lastBattleVM = vm;
@@ -2264,9 +2522,7 @@ document.addEventListener('click', (e) => {
   const raw = btn.dataset.choiceIdx;
   if (raw === undefined) return;
   const choiceIdx = parseInt(raw, 10);
-  if (!Number.isNaN(choiceIdx)) {
-    sendGuarded('advance', () => conn?.live()?.reducers.advanceDialogue({ choiceIdx }));
-  }
+  if (!Number.isNaN(choiceIdx)) void dispatch({ kind: 'advanceDialogue', choiceIdx });
 });
 
 // --- DEV introspection hook (e2e asserts on this STATE, never pixels) ------------
@@ -2613,268 +2869,79 @@ async function main(): Promise<void> {
     worldCanvasEl = mount.querySelector('canvas');
     installResizeHandler(renderer, window); // fit the stage to the window + on resize
     boxView = new BoxViewClass(mount, {
-      onSetNickname: (monsterId, nickname) => {
-        sendGuarded('nickname', () => conn?.live()?.reducers.setNickname({ monsterId, nickname }));
-      },
-      onSetPartySlot: (monsterId, slot) => {
-        let finalSlot = slot;
-        if (slot === -1) {
-          const free = nextFreePartySlot(store.ownMonsters(identity), PARTY_SIZE);
-          // A full party has no slot to move into. Sending the box sentinel would be an
-          // accepted server no-op the player never sees, so say why instead.
-          if (free === null) {
-            reportError(i18nT('chrome.status.partyFull'));
-            return;
-          }
-          finalSlot = free;
-        }
-        sendGuarded('party', () =>
-          conn?.live()?.reducers.setPartySlot({ monsterId, slot: finalSlot }),
-        );
-      },
-      onHealParty: () => {
-        // Use the first available heal location from live store data (M12d).
-        // SKIP the send when no location is loaded — the
-        // old `?? 0` fallback sent healParty({locationId: 0}), a guaranteed invisible
-        // server Err. The skip is surfaced, never silent. Server still validates
-        // zone/range/cooldown on the real send.
-        const locationId = healTargetLocationId(store.healLocations());
-        if (locationId === undefined) {
-          reportError(i18nT('chrome.status.healUnavailable'));
-        } else {
-          sendGuarded('heal', () => conn?.live()?.reducers.healParty({ locationId }));
-        }
-      },
+      onSetNickname: (monsterId, nickname) =>
+        dispatch({ kind: 'setNickname', monsterId, nickname }),
+      onSetPartySlot: (monsterId, slot) => dispatch({ kind: 'setPartySlot', monsterId, slot }),
+      onHealParty: () => dispatch({ kind: 'healParty' }),
       partySlotNone: PARTY_SLOT_NONE,
     });
     // The PvE callbacks RETURN the promise (view lock until settle; M-1 pin).
     battleView = new BattleViewClass(mount, {
-      onAttack: (battleId, skillId) => {
-        return sendGuarded('attack', () =>
-          conn?.live()?.reducers.submitAttack({ battleId, skillId }),
-        );
-      },
-      onFlee: (battleId) => {
-        return sendGuarded('flee', () => conn?.live()?.reducers.flee({ battleId }));
-      },
-      onSwap: (battleId, teamIndex) => {
-        return sendGuarded('swap', () =>
-          conn?.live()?.reducers.swapActive({ battleId, teamIndex }),
-        );
-      },
-      onRecruit: (battleId, baitItemId) => {
-        return sendGuarded('recruit', () =>
-          conn?.live()?.reducers.attemptRecruit({ battleId, baitItemId }),
-        );
-      },
-      onUseItem: (battleId, itemId) => {
-        return sendGuarded('use-item', () =>
-          conn?.live()?.reducers.useBattleItem({ battleId, itemId }),
-        );
-      },
-      // PvP action submission. pvpPendingTurnNumber is set INSIDE the lambda
-      // so sendGuarded's frozen-check runs first — a frozen-link click must not
-      // lock pvpPendingSubmit permanently (the turn never advances on a dropped send).
-      // Cleared on rejection (mirroring the dialogue dismiss's rejection rollback).
-      onPvpAttack: (battleId, skillId) => {
-        sendGuarded('pvp-attack', () => {
-          pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
-          // refresh explicitly — the pending flag is client-local, and
-          // an unchanged battle row no longer re-notifies the
-          // batch (the old banner render piggybacked on that spurious notify).
-          refreshBattle();
-          return conn
-            ?.live()
-            ?.reducers.submitPvpAction({ battleId, action: { tag: 'Attack', value: skillId } })
-            ?.catch((err: unknown) => {
-              pvpPendingTurnNumber = null;
-              refreshBattle();
-              throw err;
-            });
-        });
-      },
-      onPvpSwap: (battleId, teamIndex) => {
-        sendGuarded('pvp-swap', () => {
-          pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
-          // same explicit refresh as onPvpAttack above.
-          refreshBattle();
-          return conn
-            ?.live()
-            ?.reducers.submitPvpAction({ battleId, action: { tag: 'Swap', value: teamIndex } })
-            ?.catch((err: unknown) => {
-              pvpPendingTurnNumber = null;
-              refreshBattle();
-              throw err;
-            });
-        });
-      },
+      onAttack: (battleId, skillId) => dispatch({ kind: 'attack', battleId, skillId }),
+      onFlee: (battleId) => dispatch({ kind: 'flee', battleId }),
+      onSwap: (battleId, teamIndex) => dispatch({ kind: 'swap', battleId, teamIndex }),
+      onRecruit: (battleId, baitItemId) => dispatch({ kind: 'recruit', battleId, baitItemId }),
+      onUseItem: (battleId, itemId) => dispatch({ kind: 'useItem', battleId, itemId }),
+      onPvpAttack: (battleId, skillId) => dispatch({ kind: 'pvpAttack', battleId, skillId }),
+      onPvpSwap: (battleId, teamIndex) => dispatch({ kind: 'pvpSwap', battleId, teamIndex }),
     });
     raisingView = new RaisingViewClass(mount, {
-      onTrain: (monsterId, foodItemId) => {
-        return sendGuarded('train', () => conn?.live()?.reducers.train({ monsterId, foodItemId }));
-      },
-      // Care used to run through sendGuarded, which attaches ONLY a
-      // .catch — a successful care was acknowledged by nothing, and the rejection
-      // it did raise went to statusEl, which this overlay paints over. The whole
-      // decision (frozen gate / await / exactly-one message) now lives in the
-      // tested performCare core; this closure is the adapter that binds the real
-      // connection and the real overlay to it. Returned (not `void`ed) so the
-      // view's #pending lock stays held until the reducer promise settles.
-      onCare: (monsterId) =>
-        performCare({
-          call: () => liveReducers()?.care({ monsterId }),
-          successMessage: i18nT('raising.feedback.cared'),
-          where: 'care',
-          // RaisingView.showFeedback is a no-op while hidden (stale-message guard).
-          showFeedback: (message) => raisingView?.showFeedback(message),
-        }),
+      onTrain: (monsterId, foodItemId) => dispatch({ kind: 'train', monsterId, foodItemId }),
+      // Returned (not `void`ed) so the view's #pending lock holds until the reducer settles.
+      onCare: (monsterId) => dispatch({ kind: 'care', monsterId }),
     });
     evolutionView = new EvolutionViewClass(mount, {
-      // The CHOSEN species is forwarded from the panel's path picker. The client
-      // never resolves an ambiguous evolution itself — the player picks, and the
-      // server re-validates the same gates before applying.
-      onEvolve: (monsterId, toSpecies) => {
-        return sendGuarded('evolve', () => conn?.live()?.reducers.evolve({ monsterId, toSpecies }));
-      },
+      onEvolve: (monsterId, toSpecies) => dispatch({ kind: 'evolve', monsterId, toSpecies }),
     });
     // dialogue / quest log / heal DOM shells.
     dialogueView = new DialogueViewClass();
     questLogView = new QuestLogViewClass();
     healView = new HealViewClass();
-    // shop DOM shell.
-    // buy/sell, the trade responses, rename and trade-propose all run through the
-    // performCare core: frozen gate, await of the SDK promise (resolves on server-commit,
-    // rejects on server-error), and exactly one feedback line. Each view's closure owns
-    // the "paint only while the overlay is visible" check — a late settle must not write
-    // a stale line into a closed (and later reopened) overlay.
-    // Single-unit MVP (infinite stock; multi-unit sell is future work).
-    const SHOP_QTY = 1 as const;
-    const shopFeedback = (message: string): void => {
-      if (shopView?.visible) shopView.showFeedback(message);
-    };
+    // shop and trade DOM shells: buy/sell, the trade responses, rename and trade-propose all run
+    // through the performCare core (frozen gate, await of the SDK promise, exactly one feedback
+    // line) inside `dispatch`.
     shopView = new ShopViewClass({
-      onBuy: (shopId, itemId) =>
-        performCare({
-          call: () => liveReducers()?.buy({ shopId, itemId, qty: SHOP_QTY }),
-          successMessage: i18nT('shop.feedback.purchased'),
-          where: 'buy',
-          showFeedback: shopFeedback,
-        }),
-      onSell: (itemId) =>
-        performCare({
-          call: () => liveReducers()?.sell({ itemId, qty: SHOP_QTY }),
-          successMessage: i18nT('shop.feedback.sold'),
-          where: 'sell',
-          showFeedback: shopFeedback,
-        }),
+      onBuy: (shopId, itemId) => dispatch({ kind: 'buy', shopId, itemId }),
+      onSell: (itemId) => dispatch({ kind: 'sell', itemId }),
     });
-    // Trade DOM shell.
-    const tradeFeedback = (message: string): void => {
-      if (tradeView?.visible) tradeView.showFeedback(message);
-    };
     tradeView = new TradeViewClass({
-      onAccept: (tradeId) =>
-        performCare({
-          call: () => liveReducers()?.respondTrade({ tradeId, accepted: true }),
-          successMessage: i18nT('trade.feedback.accepted'),
-          where: 'respond-trade',
-          showFeedback: tradeFeedback,
-        }),
-      onReject: (tradeId) =>
-        performCare({
-          call: () => liveReducers()?.respondTrade({ tradeId, accepted: false }),
-          successMessage: i18nT('trade.feedback.rejected'),
-          where: 'respond-trade',
-          showFeedback: tradeFeedback,
-        }),
-      onConfirm: (tradeId) =>
-        performCare({
-          call: () => liveReducers()?.confirmTrade({ tradeId }),
-          successMessage: i18nT('trade.feedback.completed'),
-          where: 'confirm-trade',
-          showFeedback: tradeFeedback,
-        }),
-      onCancel: (tradeId) =>
-        performCare({
-          call: () => liveReducers()?.cancelTrade({ tradeId }),
-          successMessage: i18nT('trade.feedback.cancelled'),
-          where: 'cancel-trade',
-          showFeedback: tradeFeedback,
-        }),
+      onAccept: (tradeId) => dispatch({ kind: 'respondTrade', tradeId, accepted: true }),
+      onReject: (tradeId) => dispatch({ kind: 'respondTrade', tradeId, accepted: false }),
+      onConfirm: (tradeId) => dispatch({ kind: 'confirmTrade', tradeId }),
+      onCancel: (tradeId) => dispatch({ kind: 'cancelTrade', tradeId }),
     });
-    // PvP challenge overlay.
-    // All action reducers use sendGuarded so a dead link is rejected loudly.
-    // lifecycle callbacks RETURN the promise; party ids read inside the closure.
+    // PvP challenge overlay: the lifecycle callbacks RETURN the promise.
     pvpView = new PvpViewClass({
-      onChallenge: (targetIdentity) => {
-        return sendGuarded('pvp-challenge', () => {
-          const partyIds = store
-            .ownMonsters(identity)
-            .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
-            .map((m) => m.monsterId);
-          return conn
-            ?.live()
-            ?.reducers.challengePvp({ target: new Identity(targetIdentity), partyIds });
-        });
-      },
-      onAccept: (challengeId) => {
-        return sendGuarded('pvp-accept', () => {
-          const partyIds = store
-            .ownMonsters(identity)
-            .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
-            .map((m) => m.monsterId);
-          return conn?.live()?.reducers.acceptChallenge({ challengeId, partyIds });
-        });
-      },
-      onDecline: (challengeId) => {
-        return sendGuarded('pvp-decline', () =>
-          conn?.live()?.reducers.declineChallenge({ challengeId }),
-        );
-      },
-      onCancel: (challengeId) => {
-        return sendGuarded('pvp-cancel', () =>
-          conn?.live()?.reducers.cancelChallenge({ challengeId }),
-        );
-      },
+      onChallenge: (targetIdentity) => dispatch({ kind: 'challenge', targetIdentity }),
+      onAccept: (challengeId) => dispatch({ kind: 'acceptChallenge', challengeId }),
+      onDecline: (challengeId) => dispatch({ kind: 'declineChallenge', challengeId }),
+      onCancel: (challengeId) => dispatch({ kind: 'cancelChallenge', challengeId }),
     });
     // Leaderboard DOM shell. ZERO-arg construction — RL-15: the
     // leaderboard is a pure subscription view; there is no client write path to profile.
     leaderboardView = new LeaderboardViewClass();
     // display-only help overlay — ZERO-arg construction (no callbacks,
-    // leaderboardView precedent). Opened by `?`; content is a static SSOT const.
+    // leaderboardView precedent). Opened by Select (R or Slash); content is a static SSOT const.
     helpView = new HelpViewClass();
     // The menu view only paints and forwards clicks; keys reach the menu through the router.
     menuView = new MenuViewClass({ onInput: handleMenuPointer });
     // The guest-claim overlay. Its actions drive the pure claimModel;
     // the AUTHORITATIVE join veto lives in connection.ts's onApplied (G18), so these are UI-only.
     const claimHandlers: ClaimViewHandlers = {
-      onSignIn: () => {
-        conn?.startSignIn();
-      },
-      onJoin: () =>
-        applyClaim({
-          kind: 'join-requested',
-          hasLiveConnection: conn !== undefined && !conn.linkFrozen(),
-        }),
+      onSignIn: () => void dispatch({ kind: 'claimSignIn' }),
+      onJoin: () => void dispatch({ kind: 'claimJoin' }),
       onDeclineRequested: () => applyClaim({ kind: 'decline-requested' }),
-      onDeclineConfirmed: () =>
-        applyClaim({
-          kind: 'decline-confirmed',
-          hasLiveConnection: conn !== undefined && !conn.linkFrozen(),
-        }),
+      onDeclineConfirmed: () => void dispatch({ kind: 'claimDecline' }),
       onDeclineCancelled: () => applyClaim({ kind: 'decline-cancelled' }),
       onPrivacy: () => openPrivacy(),
     };
     claimView = new ClaimViewClass(claimHandlers);
     const privacyHandlers: PrivacyViewHandlers = {
       onDeleteRequested: () => applyPrivacy({ kind: 'delete-requested' }),
-      onDeleteConfirmed: () =>
-        applyPrivacy({ kind: 'delete-confirmed', hasLiveConnection: privacyLinkLive() }),
+      onDeleteConfirmed: () => void dispatch({ kind: 'deleteAccount' }),
       onConfirmCancelled: () => applyPrivacy({ kind: 'confirm-cancelled' }),
-      onCancelDeletion: () =>
-        applyPrivacy({ kind: 'cancel-deletion-requested', hasLiveConnection: privacyLinkLive() }),
-      onExportRequested: () =>
-        applyPrivacy({ kind: 'export-requested', hasLiveConnection: privacyLinkLive() }),
+      onCancelDeletion: () => void dispatch({ kind: 'cancelAccountDeletion' }),
+      onExportRequested: () => void dispatch({ kind: 'requestDataExport' }),
       onExportDownload: () => downloadExportBundle(),
       onDismissed: () => {
         applyPrivacy({ kind: 'confirm-cancelled' });
@@ -2900,47 +2967,14 @@ async function main(): Promise<void> {
         }),
     };
     sessionView = new SessionViewClass(sessionHandlers);
-    // Rename overlay. onSubmit calls set_profile_name through the performCare core
-    // (frozen gate first, reduceErrorMessage on reject — no InternalError leak), NOT
-    // sendGuarded/reportError. The overlay stays open on both success and reject; the
-    // view's #pending lock is reset by its own .finally().
+    // Rename and trade-PROPOSE overlays: their own Enter (and submit click) commits through
+    // `dispatch`; the view's #pending lock is reset by its own .finally().
     renameView = new RenameViewClass({
-      onSubmit: (name) =>
-        performCare({
-          call: () => liveReducers()?.setProfileName({ name }),
-          successMessage: i18nT('chrome.rename.updated'),
-          where: 'set-profile-name',
-          showFeedback: (message) => {
-            if (renameView?.visible) renameView.showFeedback(message);
-          },
-        }),
+      onSubmit: (name) => dispatch({ kind: 'setProfileName', name }),
     });
-    // trade-PROPOSE overlay. onSubmit consumes the model's typed args
-    // (no DOM re-derive) and calls reducers.proposeTrade through the performCare core.
-    // The model's targetIdentity string is wrapped in `new Identity(...)` here
-    // (the SDK boundary) INSIDE the call thunk, so a throw while building the args lands
-    // in the core's error arm; the counterparty side is currency-only (RLS — D2), so the
-    // monster/item request fields are always empty.
     tradeProposeView = new TradeProposeViewClass({
       maxMonstersPerSide: MAX_TRADE_MONSTERS_PER_SIDE,
-      onSubmit: (args: TradeProposeArgs) =>
-        performCare({
-          call: () =>
-            liveReducers()?.proposeTrade({
-              counterparty: new Identity(args.targetIdentity),
-              initiatorMonsterIds: [...args.initiatorMonsterIds],
-              initiatorItems: [],
-              initiatorCurrency: args.initiatorCurrency,
-              counterpartyMonsterIds: [],
-              counterpartyItems: [],
-              counterpartyCurrency: args.counterpartyCurrency,
-            }),
-          successMessage: i18nT('tradePropose.feedback.sent'),
-          where: 'propose-trade',
-          showFeedback: (message) => {
-            if (tradeProposeView?.visible) tradeProposeView.showFeedback(message);
-          },
-        }),
+      onSubmit: (args: TradeProposeArgs) => dispatch({ kind: 'proposeTrade', args }),
     });
   }
 
@@ -3132,7 +3166,7 @@ async function main(): Promise<void> {
       // Hide the PvP overlay on reconnect — any pending challenge state is stale.
       pvpView?.hide();
       // Same never-settles class for the three settle-released locks (+ Care's);
-      // a surviving battle re-shows (and refocuses) on the next batch, as Escape-dismiss does.
+      // a surviving battle re-shows (and refocuses) on the next batch.
       battleView?.hide();
       raisingView?.hide();
       evolutionView?.hide();

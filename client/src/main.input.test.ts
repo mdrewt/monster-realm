@@ -957,7 +957,7 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(stack(), 'and the close is mirrored').toEqual([{ kind: 'world' }]);
   });
 
-  it('CTL2-3-BOOT-B17: an Ongoing battle row makes movement dead from the very batch it arrives in, even after Escape hides the battle overlay', async () => {
+  it('CTL2-3-BOOT-B17: an Ongoing battle row makes movement dead from the very batch it arrives in, and Escape (which no longer hides the Ongoing battle overlay) changes nothing', async () => {
     // WRONG IMPL KILLED (B17): a gate that is only "no overlay visible" (Escape hides battleView
     // and the character predicts a step the server rejects, then rubber-bands back); a base
     // derived one batch late, or by a listener that runs after the reconcile re-issue (the
@@ -993,9 +993,10 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(battleShown(), 'the battle overlay shows').toBe(true);
     expect(stack()[0], 'the base is the battle').toEqual({ kind: 'battle', battleId: '101' });
 
-    // Escape hides the overlay (the battle is still Ongoing: the next batch would re-show it).
+    // ctl-6b CTL6B.2: Escape is Start and does nothing on an Ongoing battle (B17: it used to hide the
+    // overlay), so the overlay stays shown and the gate below is checked with the battle still up.
     fire('keydown', 'Escape', 1700);
-    expect(battleShown(), 'precondition: Escape hid the battle overlay').toBe(false);
+    expect(battleShown(), 'precondition: Escape leaves the Ongoing battle overlay up').toBe(true);
     frame(1710);
     expect(stack(), 'the base is still the battle, with nothing above it').toEqual([
       { kind: 'battle', battleId: '101' },
@@ -1867,36 +1868,39 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     expect(checked, 'ANTI-VACUITY: all six overlays were driven').toBe(6);
   });
 
-  it('CTL3-2-BOOT-OUTCOME-SAME-BATCH: an overlay left up under an Escape-hidden battle is closed by the very batch that turns the row terminal, before any frame runs', async () => {
+  it('CTL3-2-BOOT-OUTCOME-SAME-BATCH: an overlay left up over an Ongoing battle is closed by the very batch that turns the row terminal, before any frame runs', async () => {
     // WRONG IMPL KILLED (the reviewer's finding): a reconcile that knows only the battle BASE.
     // When the row turns terminal the base returns to the world and the outcome is about to be
     // shown by a later listener, so with no outcome knowledge the overlay survives this batch
     // (the outcome frame would only appear, and only then drop it, a batch later) and the
     // outcome takes focus over a still-painted overlay.
+    // ctl-6b CTL6B.2: Escape no longer hides an Ongoing battle (B17), so the overlay is no longer
+    // left up "under an Escape-hidden battle". The claim overlay's sign-in-failed callback shows it
+    // with no verdict, over the still-shown battle, and no batch runs before the terminal one.
     await bootReady();
     seedWorld(1000);
     startBattle(BATTLE_ID, 1100);
     expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
-    fire('keydown', 'Escape', 1200);
-    expect(battleShown(), 'precondition: Escape hid the Ongoing battle view').toBe(false);
-    fire('keydown', 'KeyQ', 1210);
-    expect(shownById('quest-log-overlay'), 'precondition: the quest log opened over it').toBe(true);
+    opts.onSignInFailed?.('denied');
+    expect(
+      shownById('claim-overlay'),
+      'precondition: the claim overlay is up over the battle',
+    ).toBe(true);
+    expect(battleShown(), 'precondition: the Ongoing battle is still shown').toBe(true);
+    frame(1210); // mirrors the callback-opened overlay onto the stack; not a batch
     expect(stack(), 'precondition: it is a frame over the battle base').toEqual([
       { kind: 'battle', battleId: '101' },
-      { kind: 'screen', id: 'questLogView' },
+      { kind: 'screen', id: 'claimView' },
     ]);
 
     // No frame runs between here and the assertions: the batch alone must do it.
     opts.store.upsertBattle(battleRow(BATTLE_ID, 'SideAWins'));
     settle(1300);
     expect(battleShown(), 'the outcome is on screen').toBe(true);
-    expect(shownById('quest-log-overlay'), 'the quest log is closed in that same batch').toBe(
+    expect(shownById('claim-overlay'), 'the claim overlay is closed in that same batch').toBe(
       false,
     );
-    expect(
-      rootOf('quest-log-overlay').getAttribute('aria-modal'),
-      'through its own hide()',
-    ).toBeNull();
+    expect(rootOf('claim-overlay').getAttribute('aria-modal'), 'through its own hide()').toBeNull();
     expect(stack(), 'the world base with the outcome frame only').toEqual([
       { kind: 'world' },
       { kind: 'screen', id: 'battleView' },

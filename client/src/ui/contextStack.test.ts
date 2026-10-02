@@ -28,13 +28,17 @@ import {
   blocksPlayerOpen,
   type Command,
   contextStep,
+  continuedBattleId,
   type Edge,
   mirrorEdges,
   movementEnabled,
+  popToBase,
+  popTop,
   reconcile,
   SCREEN_POLICY,
   type ServerView,
   type Stack,
+  stackDiff,
   type UpperFrame,
   WORLD_STACK,
 } from './contextStack';
@@ -1231,5 +1235,284 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
       rows.filter((r) => !r.blocks),
       'ANTI-VACUITY: both polarities are exercised',
     ).toHaveLength(2);
+  });
+});
+
+// ==========================================================================================
+// ctl-6b: the player-driven pops (Start / B), the close-side diff and the outcome-continue rule
+// ==========================================================================================
+//
+// `popTop(stack)` drops the TOP upper frame positionally (B); `popToBase(stack)` keeps only the
+// base (Start); both hand back the very same stack object when there is nothing above the base.
+// `stackDiff(prev, next).closed` lists the upper frames of `prev` that `next` no longer holds,
+// TOP FIRST (the order the retired Escape ladder closed them in), compared by structural frame key
+// (kind + id, or kind + owner), never by object identity and never by the base.
+// `continuedBattleId(latest, current)` is the pure rule of pgcc-d D3: continuing an outcome sets
+// the dismissed id to the latest battle's id if and only if that battle is terminal.
+
+describe('context stack: player pops, close diff and the outcome rule (ctl-6b)', () => {
+  it('CTL6B-2-POP-TO-BASE: popToBase keeps only the base, whatever the base and the frames, and returns the same object when already bare', () => {
+    // WRONG IMPL KILLED: a pop that removes one frame (Start would leave the menu up under a
+    // child), one that clears the base, one that swaps a battle base for the world (movement would
+    // come back mid-battle: B17), one that returns a fresh equal array for a bare stack (the shell
+    // could not tell "nothing changed" from "something closed"), and one that mutates its input.
+    const rows: ReadonlyArray<{ readonly name: string; readonly from: Stack; readonly to: Stack }> =
+      [
+        {
+          name: 'three frames of three kinds over the world',
+          from: stackOf(WORLD, screen(BOX), prompt(PVP), textEntry(RENAME)),
+          to: WORLD_STACK,
+        },
+        { name: 'one frame over the world', from: stackOf(WORLD, screen(BOX)), to: WORLD_STACK },
+        {
+          name: 'two frames over a battle base keep the base',
+          from: stackOf(battle('7'), screen(BOX), screen(PVP)),
+          to: stackOf(battle('7')),
+        },
+        {
+          name: 'a terminal-outcome frame over the world',
+          from: stackOf(WORLD, screen('battleView')),
+          to: WORLD_STACK,
+        },
+      ];
+    for (const row of rows) {
+      const before = JSON.stringify(row.from);
+      const result = popToBase(deepFrozen(row.from));
+      expect(result, row.name).toEqual(row.to);
+      expect(JSON.stringify(row.from), `${row.name}: the input stack is untouched`).toBe(before);
+    }
+
+    const bareWorld = deepFrozen(WORLD_STACK);
+    expect(popToBase(bareWorld), 'a bare world is returned as is').toBe(bareWorld);
+    const bareBattle = deepFrozen(stackOf(battle('7')));
+    expect(popToBase(bareBattle), 'a bare battle base is returned as is').toBe(bareBattle);
+
+    // What the shell reads off the result: the gate follows the base.
+    expect(
+      movementEnabled(popToBase(stackOf(WORLD, screen(BOX), screen(PVP))), false),
+      'popping to a world base opens the movement gate',
+    ).toBe(true);
+    expect(
+      movementEnabled(popToBase(stackOf(battle('7'), screen(BOX))), false),
+      'popping to a battle base does not',
+    ).toBe(false);
+    // Idempotent.
+    const once = popToBase(stackOf(WORLD, screen(BOX)));
+    expect(popToBase(once)).toBe(once);
+  });
+
+  it('CTL6B-3-POP-TOP: popTop drops exactly the top upper frame by position, never by id, and returns the same object for a bare base', () => {
+    // WRONG IMPL KILLED: a pop that clears everything (Backspace would close the menu with its
+    // child: B4), one keyed by id like contextStep's `pop` (a text-entry frame sharing its owner's
+    // id would take the owner with it), one that pops the BOTTOM frame, one that drops the base,
+    // one that returns a fresh array for a bare stack, and one that mutates its input.
+    const rows: ReadonlyArray<{ readonly name: string; readonly from: Stack; readonly to: Stack }> =
+      [
+        {
+          name: 'three frames: the top one goes',
+          from: stackOf(WORLD, screen(BOX), screen(PVP), screen(TRADE)),
+          to: stackOf(WORLD, screen(BOX), screen(PVP)),
+        },
+        {
+          name: 'two frames: back to the first',
+          from: stackOf(WORLD, screen('menuView'), screen('claimView')),
+          to: stackOf(WORLD, screen('menuView')),
+        },
+        { name: 'one frame closes', from: stackOf(WORLD, screen(BOX)), to: WORLD_STACK },
+        {
+          name: 'a text-entry frame sharing its owner`s id leaves the owner standing',
+          from: stackOf(WORLD, screen(RENAME), textEntry(RENAME)),
+          to: stackOf(WORLD, screen(RENAME)),
+        },
+        {
+          name: 'a prompt on top',
+          from: stackOf(WORLD, screen(BOX), prompt(PVP)),
+          to: stackOf(WORLD, screen(BOX)),
+        },
+        {
+          name: 'over a battle base the base stays',
+          from: stackOf(battle('7'), screen(BOX), screen(PVP)),
+          to: stackOf(battle('7'), screen(BOX)),
+        },
+      ];
+    for (const row of rows) {
+      const before = JSON.stringify(row.from);
+      const result = popTop(deepFrozen(row.from));
+      expect(result, row.name).toEqual(row.to);
+      expect(JSON.stringify(row.from), `${row.name}: the input stack is untouched`).toBe(before);
+    }
+
+    const bareWorld = deepFrozen(WORLD_STACK);
+    expect(popTop(bareWorld), 'a bare world is returned as is').toBe(bareWorld);
+    const bareBattle = deepFrozen(stackOf(battle('7')));
+    expect(popTop(bareBattle), 'a bare battle base is returned as is').toBe(bareBattle);
+
+    // Property: one pop is one frame, the prefix is untouched, and n pops reach the bare base.
+    const frameArb: fc.Arbitrary<UpperFrame> = fc.oneof(
+      fc.constantFrom(...OVERLAY_IDS).map(screen),
+      fc.constantFrom(...OVERLAY_IDS).map(prompt),
+      fc.constantFrom(...OVERLAY_IDS).map(textEntry),
+    );
+    const baseArb: fc.Arbitrary<BaseFrame> = fc.constantFrom(WORLD, battle('1'), battle('42'));
+    fc.assert(
+      fc.property(baseArb, fc.array(frameArb, { maxLength: 6 }), (base, frames) => {
+        const from = stackOf(base, ...frames);
+        const next = popTop(deepFrozen(from));
+        if (frames.length === 0) {
+          expect(next).toEqual(from);
+          return;
+        }
+        expect(next.length, 'exactly one frame fewer').toBe(from.length - 1);
+        expect(next, 'the prefix is untouched').toEqual(from.slice(0, -1));
+        let cursor: Stack = from;
+        for (let i = 0; i < frames.length; i += 1) cursor = popTop(cursor);
+        expect(cursor, 'n pops reach the bare base').toEqual(stackOf(base));
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  it('CTL6B-2-STACK-DIFF: stackDiff lists the closed frames TOP FIRST, by structural key, ignoring the base and object identity', () => {
+    // WRONG IMPL KILLED: a bottom-first list (the privacy overlay's onDismissed -> renderClaim flush
+    // would then run while the claim is still visible), a diff by object identity (a rebuilt equal
+    // stack would close everything), one that treats a text entry and a screen of the same owner as
+    // one frame (the typing frame could never close separately), one that conflates a screen and a
+    // prompt of one id, one that lets a base change close frames, and one that reports a push.
+    const closedOf = (prev: Stack, next: Stack): readonly UpperFrame[] =>
+      stackDiff(deepFrozen(prev), deepFrozen(next)).closed;
+    const rows: ReadonlyArray<{
+      readonly name: string;
+      readonly prev: Stack;
+      readonly next: Stack;
+      readonly closed: readonly UpperFrame[];
+    }> = [
+      {
+        name: 'everything closes, top first',
+        prev: stackOf(WORLD, screen(BOX), prompt(PVP), textEntry(RENAME)),
+        next: stackOf(WORLD),
+        closed: [textEntry(RENAME), prompt(PVP), screen(BOX)],
+      },
+      {
+        name: 'the top two close, top first',
+        prev: stackOf(WORLD, screen(BOX), prompt(PVP), textEntry(RENAME)),
+        next: stackOf(WORLD, screen(BOX)),
+        closed: [textEntry(RENAME), prompt(PVP)],
+      },
+      {
+        name: 'a single pop',
+        prev: stackOf(WORLD, screen('menuView'), screen('claimView')),
+        next: stackOf(WORLD, screen('menuView')),
+        closed: [screen('claimView')],
+      },
+      {
+        name: 'nothing changed',
+        prev: stackOf(WORLD, screen(BOX), screen(PVP)),
+        next: stackOf(WORLD, screen(BOX), screen(PVP)),
+        closed: [],
+      },
+      {
+        name: 'a push closes nothing',
+        prev: stackOf(WORLD),
+        next: stackOf(WORLD, screen(BOX)),
+        closed: [],
+      },
+      {
+        name: 'a frame in the middle closes alone',
+        prev: stackOf(WORLD, screen(BOX), screen(PVP), screen(TRADE)),
+        next: stackOf(WORLD, screen(BOX), screen(TRADE)),
+        closed: [screen(PVP)],
+      },
+      {
+        name: 'a text entry is a different frame from a screen of the same owner',
+        prev: stackOf(WORLD, screen(RENAME)),
+        next: stackOf(WORLD, textEntry(RENAME)),
+        closed: [screen(RENAME)],
+      },
+      {
+        name: 'the text entry closes alone and the owner screen stays',
+        prev: stackOf(WORLD, screen(RENAME), textEntry(RENAME)),
+        next: stackOf(WORLD, screen(RENAME)),
+        closed: [textEntry(RENAME)],
+      },
+      {
+        name: 'a screen is a different frame from a prompt of the same id',
+        prev: stackOf(WORLD, screen(PVP)),
+        next: stackOf(WORLD, prompt(PVP)),
+        closed: [screen(PVP)],
+      },
+      {
+        name: 'a base change alone closes nothing',
+        prev: stackOf(WORLD, screen(BOX)),
+        next: stackOf(battle('7'), screen(BOX)),
+        closed: [],
+      },
+      {
+        name: 'the base change does not hide a real close',
+        prev: stackOf(WORLD, screen(BOX), screen(PVP)),
+        next: stackOf(battle('7'), screen(BOX)),
+        closed: [screen(PVP)],
+      },
+    ];
+    for (const row of rows) {
+      expect(closedOf(row.prev, row.next), row.name).toEqual(row.closed);
+    }
+
+    // Structural, not referential: freshly built equal frames are the same frames.
+    const same = stackDiff(
+      stackOf(WORLD, screen(BOX), prompt(PVP)),
+      stackOf(WORLD, { kind: 'screen', id: BOX }, { kind: 'prompt', id: PVP }),
+    );
+    expect(same.closed).toEqual([]);
+
+    // Property: closed is exactly the prev frames whose key next lacks, in reverse stack order.
+    const keyOf = (f: UpperFrame): string => `${f.kind}:${frameId(f)}`;
+    const frameArb: fc.Arbitrary<UpperFrame> = fc.oneof(
+      fc.constantFrom(...OVERLAY_IDS).map(screen),
+      fc.constantFrom(...OVERLAY_IDS).map(prompt),
+      fc.constantFrom(...OVERLAY_IDS).map(textEntry),
+    );
+    const uniqueFrames = fc.uniqueArray(frameArb, { selector: keyOf, maxLength: 7 });
+    let nonEmpty = 0;
+    fc.assert(
+      fc.property(uniqueFrames, uniqueFrames, (a, b) => {
+        const nextKeys = new Set(b.map(keyOf));
+        const expected = a.filter((f) => !nextKeys.has(keyOf(f))).reverse();
+        const result = closedOf(stackOf(WORLD, ...a), stackOf(WORLD, ...b));
+        expect(result.map(keyOf)).toEqual(expected.map(keyOf));
+        if (expected.length > 0) nonEmpty += 1;
+      }),
+      { numRuns: 300 },
+    );
+    expect(nonEmpty, 'ANTI-VACUITY: many generated pairs closed something').toBeGreaterThan(100);
+  });
+
+  it('CTL6B-2-OUTCOME-RULE: continuing sets the dismissed id to the latest battle if and only if it is terminal; Ongoing or no battle keeps the current id', () => {
+    // WRONG IMPL KILLED: a rule that dismisses an Ongoing battle (Start on a live battle would
+    // then hide it for good: B17), one that never dismisses a terminal outcome (it would re-pop on
+    // the next batch), one that keeps the OLD id for a newer terminal battle (a second outcome would
+    // be hidden), one that clears the id when there is no battle, a case-insensitive Ongoing match,
+    // and an id that goes through Number() (ids past 2^53 collide).
+    const BIG = 9007199254740993n;
+    const TERMINAL = ['SideAWins', 'SideBWins', 'Fled', 'Recruited', 'Forfeit', 'ongoing', ''];
+    const currents: ReadonlyArray<bigint | null> = [null, 5n, 9n, BIG - 1n];
+
+    for (const current of currents) {
+      expect(continuedBattleId(undefined, current), `no battle, current ${current}`).toBe(current);
+      for (const battleId of [9n, BIG]) {
+        expect(
+          continuedBattleId({ battleId, outcome: 'Ongoing' }, current),
+          `Ongoing ${battleId}, current ${current}`,
+        ).toBe(current);
+        for (const outcome of TERMINAL) {
+          expect(
+            continuedBattleId({ battleId, outcome }, current),
+            `${JSON.stringify(outcome)} ${battleId}, current ${current}`,
+          ).toBe(battleId);
+        }
+      }
+    }
+    // The result is the latest id exactly: a neighbour past 2^53 is not rounded onto it.
+    expect(continuedBattleId({ battleId: BIG, outcome: 'Fled' }, BIG - 1n)).toBe(BIG);
+    expect(continuedBattleId({ battleId: BIG, outcome: 'Fled' }, BIG - 1n)).not.toBe(BIG - 1n);
   });
 });

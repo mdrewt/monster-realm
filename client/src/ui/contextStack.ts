@@ -170,3 +170,36 @@ export function blocksPlayerOpen(stack: Stack): boolean {
 export function movementEnabled(stack: Stack, sessionGate: boolean): boolean {
   return !sessionGate && stack.length === 1 && stack[0].kind === 'world';
 }
+
+/** The stack with its top upper frame dropped, by position (B: back one frame). A bare base is
+ *  returned as is. */
+export function popTop(stack: Stack): Stack {
+  if (stack.length === 1) return stack;
+  const [base, ...upper] = stack;
+  return [base, ...upper.slice(0, -1)];
+}
+
+/** The base alone (Start above a base). A bare base is returned as is. */
+export function popToBase(stack: Stack): Stack {
+  return stack.length === 1 ? stack : [stack[0]];
+}
+
+const frameKey = (f: UpperFrame): string => `${f.kind}:${idOf(f)}`;
+
+/** The upper frames `prev` has and `next` lacks, top first (the order the retired Escape ladder
+ *  closed them in), compared by kind and id, never by object identity. */
+export function stackDiff(prev: Stack, next: Stack): { closed: readonly UpperFrame[] } {
+  const [, ...nextUpper] = next;
+  const kept = new Set(nextUpper.map(frameKey));
+  const [, ...prevUpper] = prev;
+  return { closed: prevUpper.filter((f) => !kept.has(frameKey(f))).reverse() };
+}
+
+/** The battle a continued outcome dismisses (pgcc-d D3): the latest battle when it has ended,
+ *  else the current dismissed id unchanged, so continuing never latches an Ongoing battle. */
+export function continuedBattleId(
+  latest: { readonly battleId: bigint; readonly outcome: string } | undefined,
+  current: bigint | null,
+): bigint | null {
+  return latest !== undefined && latest.outcome !== 'Ongoing' ? latest.battleId : current;
+}
