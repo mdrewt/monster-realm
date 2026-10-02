@@ -87,6 +87,7 @@ import type { Connection, ConnectionOptions } from './net/connection';
 import { t } from './ui/a11yCopy';
 import { type A11ySnapshot, announcementsFor } from './ui/announcements';
 import type { BugBundle, BugBundleInput } from './ui/bugBundle';
+import { t as i18nT } from './ui/i18n/resolver';
 import { OVERLAY_A11Y, type OverlayId } from './ui/overlayRegistry';
 
 // --- hoisted state shared with the mock factories --------------------------------------
@@ -94,6 +95,9 @@ const H = vi.hoisted(() => ({
   identity: 'ab'.repeat(32),
   connectOpts: null as ConnectionOptions | null,
   buildBugBundle: vi.fn<(input: BugBundleInput) => BugBundle>(),
+  /** Every element main.ts passed to the world renderer's `init(mount)`, oldest first (ctl-7a:
+   *  CTL7A-1-MAIN-MOUNT-IN-GAME-SCREEN reads which node main.ts really mounts the canvas on). */
+  mounts: [] as HTMLElement[],
 }));
 
 // The wasm pkg — identical shape to main.battle-reseed.test.ts's mock (every name main.ts
@@ -175,6 +179,7 @@ vi.mock('./observability/telemetry', async (importOriginal) => {
 vi.mock('./render/world', () => {
   class WorldRenderer {
     init(mount: HTMLElement): Promise<void> {
+      H.mounts.push(mount);
       const canvas = document.createElement('canvas');
       canvas.setAttribute('tabindex', '0');
       canvas.setAttribute('role', 'application');
@@ -253,11 +258,21 @@ function buildAppShellFromRealIndexHtml(): void {
   }
   const parsed = new DOMParser().parseFromString(html, 'text/html');
   const bodyChildren = Array.from(parsed.body.children).filter((el) => el.tagName !== 'SCRIPT');
+  // ctl-7a (named intentional change): the shipped <body> is now three children (#game-screen,
+  // #build-stamp, #a11y-live), so the old `body children > 5` floor is retired. The vacuity
+  // guard counts the id-bearing elements the parse yielded instead (the real shell has ~60).
+  // The #game-screen wrap itself is asserted by the tagged CTL7A tests below, NOT here, so a
+  // missing wrap reds those tests and not every case in this file.
+  const idCount = parsed.querySelectorAll('[id]').length;
+  expect(
+    idCount,
+    'ANTI-VACUITY: parsed index.html yielded almost no id-bearing elements — the DOM this ' +
+      'whole file depends on would be empty and every test below would fail for the wrong reason',
+  ).toBeGreaterThan(5);
   expect(
     bodyChildren.length,
-    'ANTI-VACUITY: parsed index.html yielded no usable <body> children — the DOM this whole ' +
-      'file depends on would be empty and every test below would fail for the wrong reason',
-  ).toBeGreaterThan(5);
+    'ANTI-VACUITY: the <body> must have a non-script child',
+  ).toBeGreaterThan(0);
   const adopted = bodyChildren.map((el) => document.adoptNode(el));
   document.body.replaceChildren(...adopted);
   // Anti-vacuity: #app really is present (main.ts's mount guard reads it).
@@ -357,6 +372,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   beforeEach(async () => {
     recorded = [];
     H.connectOpts = null;
+    H.mounts.length = 0;
     H.buildBugBundle.mockClear();
     buildAppShellFromRealIndexHtml();
     stubControllableRaf();
@@ -854,17 +870,20 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   // from the world.
   // ---------------------------------------------------------------------------------------
 
-  it('S5T-SPACE-BUTTON: Space on the focused #help-hint button is NOT preventDefault-ed', () => {
-    // WRONG IMPL KILLED: shipping #help-hint as a native <button> WITHOUT the
+  it('S5T-SPACE-BUTTON: Space on the focused #chip-start button is NOT preventDefault-ed', () => {
+    // ctl-7a (named intentional change): this case focused #help-hint, which ctl-7a deletes from
+    // index.html; the Start chip is the world's always-on native <button> that replaces it, so
+    // the case is retargeted (the behaviour under test is unchanged).
+    // WRONG IMPL KILLED: shipping the chip as a native <button> WITHOUT the
     // `targetOwnsKey(e)` guard on the terminal Space branch — A11Y-23's activation half
     // ships silently dead (Enter-only), invisible to every source scan (main.ts is
     // coverage-excluded, client/vite.config.ts:97).
-    const helpHint = document.getElementById('help-hint') as HTMLElement | null;
-    expect(helpHint, '#help-hint must exist (client/index.html)').not.toBeNull();
-    helpHint!.focus();
+    const chip = document.getElementById('chip-start') as HTMLElement | null;
+    expect(chip, '#chip-start must exist (client/index.html)').not.toBeNull();
+    chip!.focus();
     // dispatch ON THE BUTTON (not window) so it bubbles and e.target is the button.
     const event = new KeyboardEvent('keydown', { code: 'Space', bubbles: true, cancelable: true });
-    helpHint!.dispatchEvent(event);
+    chip!.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(false);
   });
 
@@ -1044,10 +1063,12 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
 
     // ---- PHASE 1 — NEGATIVE: a VISIBLE control holds focus, so nothing is healed ----------
     expect(document.activeElement, 'precondition: body is focused at boot').toBe(document.body);
-    const helpHint = document.getElementById('help-hint') as HTMLElement | null;
-    expect(helpHint, '#help-hint must exist (client/index.html)').not.toBeNull();
+    // ctl-7a (named intentional change): the visible focusable control outside every overlay was
+    // #help-hint (deleted); it is now the Start chip, #chip-start — same role, same assertions.
+    const helpHint = document.getElementById('chip-start') as HTMLElement | null;
+    expect(helpHint, '#chip-start must exist (client/index.html)').not.toBeNull();
     helpHint!.focus();
-    expect(document.activeElement, 'anti-vacuity: the badge really is focusable').toBe(helpHint);
+    expect(document.activeElement, 'anti-vacuity: the chip really is focusable').toBe(helpHint);
 
     pressKey({ code: 'KeyB' }); // boxView's verdict is `allow` here — the GATE is the only refusal
     expect(
@@ -1147,10 +1168,12 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // it would yank focus away from #help-hint the instant the menu closes, even though the
     // player never left the world via a hotkey at all (they clicked the badge). ADR-0206 D4's
     // whole point is that this branch must be guarded by worldHasFocus(), which is false here.
-    const helpHint = document.getElementById('help-hint') as HTMLElement | null;
+    // ctl-7a (named intentional change): the badge #help-hint is deleted; the Start chip,
+    // #chip-start, is the click-opened front door ([data-menu-launcher]) that replaces it.
+    const helpHint = document.getElementById('chip-start') as HTMLElement | null;
     expect(helpHint).not.toBeNull();
     helpHint!.focus();
-    expect(document.activeElement, 'anti-vacuity: the badge really is focusable').toBe(helpHint);
+    expect(document.activeElement, 'anti-vacuity: the chip really is focusable').toBe(helpHint);
     helpHint!.click(); // the delegated [data-menu-launcher] front door — opens menuView
     expect(overlayIsOpen('menuView'), 'menuView must have opened from the click').toBe(true);
     // without this frame the snapshot never registers 'menuView', lastA11ySnapshot.topOverlay
@@ -1282,10 +1305,12 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // and a correct implementation's `returnFocus` guard is false here (focus was never inside
     // the banner) on HIDE. It goes RED only against an UNCONDITIONAL `returnFocus()` call on
     // every hide, or a show that steals focus onto its own OK button.
-    const helpHint = document.getElementById('help-hint') as HTMLElement | null;
-    expect(helpHint, '#help-hint must exist (client/index.html)').not.toBeNull();
+    // ctl-7a (named intentional change): #help-hint is deleted; the Start chip replaces it as the
+    // always-on focusable control outside the reveal banner.
+    const helpHint = document.getElementById('chip-start') as HTMLElement | null;
+    expect(helpHint, '#chip-start must exist (client/index.html)').not.toBeNull();
     helpHint!.focus();
-    expect(document.activeElement, 'anti-vacuity: the badge really is focusable').toBe(helpHint);
+    expect(document.activeElement, 'anti-vacuity: the chip really is focusable').toBe(helpHint);
 
     seedEvolutionNotices([{ monsterId: 3n, fromSpecies: 1, toSpecies: 5, evolvedAtMs: 0n }]);
     opts.store.flushBatch();
@@ -1301,6 +1326,138 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
       'hiding a reveal that never held focus must leave the world-focus control alone — an ' +
         'unconditional returnFocus() call would steal it here',
     ).toBe(helpHint);
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // ctl-7a: #game-screen, framed runtime banners, and the Start / Select hint-bar chips
+  // (CTL7A.1 to CTL7A.4). The structure of index.html itself is gated in indexShell.smoke.test.ts;
+  // the cases below prove what main.ts DOES with that structure once booted.
+  // ---------------------------------------------------------------------------------------
+
+  /** The inline `style` attribute text plus the three colour-bearing CSSOM reads, for one node. */
+  function inlineColourOf(el: HTMLElement): {
+    readonly attr: string;
+    readonly color: string;
+    readonly background: string;
+    readonly backgroundColor: string;
+  } {
+    return {
+      attr: (el.getAttribute('style') ?? '').toLowerCase(),
+      color: el.style.color,
+      background: el.style.background,
+      backgroundColor: el.style.backgroundColor,
+    };
+  }
+
+  it('CTL7A-1-MAIN-MOUNT-IN-GAME-SCREEN: main.ts hands the world renderer #app (the canvas mount), and #app sits directly inside #game-screen, itself a direct <body> child', () => {
+    // WRONG IMPL KILLED: a #game-screen wrap that main.ts bypasses by creating its own mount (the
+    // canvas would live outside the wrap and the page would still scroll); a wrap that is added to
+    // index.html but never contains #app; a renderer handed #game-screen itself (the frame layer
+    // and hint bar would be inside the canvas host).
+    const app = document.getElementById('app');
+    const screen = document.getElementById('game-screen');
+    expect(screen, '#game-screen must exist (client/index.html)').not.toBeNull();
+    expect(app, '#app must exist (client/index.html)').not.toBeNull();
+    expect(H.mounts.length, 'main.ts must have initialised the renderer exactly once').toBe(1);
+    expect(H.mounts[0], 'the renderer must be mounted on #app').toBe(app);
+    expect(app?.parentElement, '#app is a direct child of #game-screen').toBe(screen);
+    expect(screen?.parentElement, '#game-screen is a direct <body> child').toBe(document.body);
+    expect(app?.querySelector('canvas'), 'the canvas lives inside #app').not.toBeNull();
+  });
+
+  it('CTL7A-2-PROMPT-COUNTDOWN-FRAMED: the runtime-built #interact-prompt and #privacy-countdown are class-styled .mr-frame banners inside #frame-layer, inside #game-screen', () => {
+    // WRONG IMPL KILLED: banners still appended to <body> (outside #game-screen, so outside the
+    // no-scroll wrap and free to overflow the viewport); banners with no .mr-frame class (they
+    // would not read the frame colour tokens); banners that skip the #frame-layer and land
+    // directly in #game-screen.
+    const layer = document.getElementById('frame-layer');
+    const screen = document.getElementById('game-screen');
+    expect(layer, '#frame-layer must exist (client/index.html)').not.toBeNull();
+    expect(layer?.parentElement, '#frame-layer is a direct child of #game-screen').toBe(screen);
+    const cases = [
+      { id: 'interact-prompt', modifier: 'mr-frame--prompt' },
+      { id: 'privacy-countdown', modifier: 'mr-frame--banner' },
+    ];
+    for (const { id, modifier } of cases) {
+      const el = document.getElementById(id);
+      expect(el, `#${id} must be built at boot`).not.toBeNull();
+      expect(el?.classList.contains('mr-frame'), `#${id} carries .mr-frame`).toBe(true);
+      expect(el?.classList.contains(modifier), `#${id} carries .${modifier}`).toBe(true);
+      expect(el?.parentElement, `#${id} is a direct child of #frame-layer`).toBe(layer);
+      expect(screen?.contains(el), `#${id} is inside #game-screen`).toBe(true);
+    }
+  });
+
+  it('CTL7A-3-RUNTIME-NO-INLINE-COLOUR: #interact-prompt and #privacy-countdown carry no inline colour or background (the .mr-frame class and its tokens own them)', () => {
+    // WRONG IMPL KILLED: banners re-framed by class but still painting an inline `color` /
+    // `background` (an inline declaration beats the class rule, so the 4.5:1 frame tokens would
+    // not apply to the text and a prefers-contrast override could not reach it).
+    for (const id of ['interact-prompt', 'privacy-countdown']) {
+      const el = document.getElementById(id);
+      expect(el, `#${id} must be built at boot`).not.toBeNull();
+      const inline = inlineColourOf(el as HTMLElement);
+      expect(inline.color, `#${id} inline style.color`).toBe('');
+      expect(inline.background, `#${id} inline style.background`).toBe('');
+      expect(inline.backgroundColor, `#${id} inline style.backgroundColor`).toBe('');
+      expect(inline.attr.includes('color'), `#${id} style attr "${inline.attr}"`).toBe(false);
+      expect(inline.attr.includes('background'), `#${id} style attr "${inline.attr}"`).toBe(false);
+    }
+  });
+
+  it('CTL7A-4-CHIP-VERBS: the Start and Select chips carry their verbs from the catalog (Menu / Help), and #help-hint is gone', () => {
+    // WRONG IMPL KILLED: chips left empty (main.ts never writes the labels); labels hard-coded in
+    // the markup (an English literal under fr); the two labels swapped; a leftover #help-hint
+    // badge (the retired one-corner affordance) kept beside the chips.
+    const start = document.getElementById('chip-start');
+    const select = document.getElementById('chip-select');
+    expect(start, '#chip-start must exist (client/index.html)').not.toBeNull();
+    expect(select, '#chip-select must exist (client/index.html)').not.toBeNull();
+    // The EN literals are asserted too, so an empty-string catalog entry cannot satisfy the
+    // catalog-equality below.
+    expect(start?.textContent).toBe('Menu');
+    expect(select?.textContent).toBe('Help');
+    expect(start?.textContent).toBe(i18nT('chrome.chip.menu' as never));
+    expect(select?.textContent).toBe(i18nT('chrome.chip.help' as never));
+    expect(document.getElementById('help-hint'), '#help-hint is retired').toBeNull();
+  });
+
+  it('CTL7A-4-START-OPENS-MENU: clicking the Start chip opens the main menu (and not help)', () => {
+    // WRONG IMPL KILLED: a chip with no [data-menu-launcher] binding (the click is inert); a chip
+    // that opens help instead; a click that toggles a stale overlay state.
+    const chip = document.getElementById('chip-start') as HTMLElement | null;
+    expect(chip, '#chip-start must exist (client/index.html)').not.toBeNull();
+    expect(overlayIsOpen('menuView'), 'precondition: the menu starts closed').toBe(false);
+    // A real pointer press focuses the button first; so does this case (a chip gated on
+    // worldHasFocus() would refuse its own click).
+    chip!.focus();
+    expect(document.activeElement, 'precondition: the chip holds focus').toBe(chip);
+    chip!.click();
+    expect(overlayIsOpen('menuView'), 'the Start chip opens the menu').toBe(true);
+    expect(
+      (document.getElementById('menu-overlay') as HTMLElement).style.display,
+      '#menu-overlay is shown',
+    ).not.toBe('none');
+    expect(overlayIsOpen('helpView'), 'and does not open help').toBe(false);
+  });
+
+  it('CTL7A-4-SELECT-OPENS-HELP: clicking the Select chip opens help (and not the menu)', () => {
+    // WRONG IMPL KILLED: a chip with no [data-help-launcher] branch (the click is inert); a chip
+    // wired to the menu launcher (both chips would open the menu); a help open that bypasses the
+    // overlay verdict.
+    const chip = document.getElementById('chip-select') as HTMLElement | null;
+    expect(chip, '#chip-select must exist (client/index.html)').not.toBeNull();
+    expect(overlayIsOpen('helpView'), 'precondition: help starts closed').toBe(false);
+    // A real pointer press focuses the button first; so does this case (a chip gated on
+    // worldHasFocus() would refuse its own click).
+    chip!.focus();
+    expect(document.activeElement, 'precondition: the chip holds focus').toBe(chip);
+    chip!.click();
+    expect(overlayIsOpen('helpView'), 'the Select chip opens help').toBe(true);
+    expect(
+      (document.getElementById('help-overlay') as HTMLElement).style.display,
+      '#help-overlay is shown',
+    ).not.toBe('none');
+    expect(overlayIsOpen('menuView'), 'and does not open the menu').toBe(false);
   });
 });
 

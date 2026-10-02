@@ -53,10 +53,14 @@ const WEATHER_TURN_FORMS = cldr({
 });
 
 export const CATALOG_FR: Catalog = Object.freeze({
-  // @desc: Menu-launcher button pinned to the bottom-left of the world view, telling the player
-  // how to open help and the menu. One line, at most 47 characters (fits a 320px-wide viewport).
-  // index.html:143
-  'chrome.helpHint': '? pour l’aide · clic ou M pour le menu',
+  // @desc: Verb on the Start button chip in the hint bar at the bottom of the game screen; the
+  // button name "Start" is drawn beside it. One short word (at most 12 characters).
+  // index.html #chip-start (written by main.ts at boot)
+  'chrome.chip.menu': 'Menu',
+  // @desc: Verb on the Select button chip in the hint bar at the bottom of the game screen; the
+  // button name "Select" is drawn beside it. Opens the help screen. One short word (at most 12
+  // characters). index.html #chip-select (written by main.ts at boot)
+  'chrome.chip.help': 'Aide',
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
   // index.html:94 (resolved in HelpView show())
   'chrome.help.title': 'Commandes et objectifs',

@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 describe('resolver — the module-level locale cell and the t()/tf() resolvers (m24-s1, ADR-0256)', () => {
-  it('m24s1 RESOLVER-T: t(key) returns the exact CATALOG_EN value for every m24-s1 plain (string-valued) chrome.* key, and the literal English helpHint value is pinned', () => {
+  it('m24s1 RESOLVER-T: t(key) returns the exact CATALOG_EN value for every m24-s1 plain (string-valued) chrome.* key, and the literal English hint-bar chip labels are pinned', () => {
     // SCOPED to `chrome.*`: S3+ grows CATALOG_EN past the m24-s1 seed with
     // its own `battle.*`/`pvp.*` plain keys — CAT-01 in catalog.test.ts owns the full-roster
     // byte-identity pin for THOSE. This test's job is narrower and stays narrow: it pins that
@@ -45,7 +45,10 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
       'ANTI-VACUITY: at least one plain (string-valued) chrome.* key must have been checked',
     ).toBe(true);
 
-    expect(t('chrome.helpHint' as never)).toBe('Press ? for help · click or M for menu');
+    // ctl-7a (named intentional change): `chrome.helpHint` is deleted with the #help-hint badge;
+    // the two hint-bar chip labels are the literal English values pinned here now.
+    expect(t('chrome.chip.menu' as never)).toBe('Menu');
+    expect(t('chrome.chip.help' as never)).toBe('Help');
 
     // FULL VALUE SNAPSHOT: a punctuation-only change to any one plain
     // value — e.g. dropping the em dash in `contentStale` — passes every check above (it only
@@ -60,7 +63,8 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
     );
     const snapshot = Object.fromEntries(plainKeys.map((key) => [key, t(key as never)]));
     expect(snapshot).toEqual({
-      'chrome.helpHint': 'Press ? for help · click or M for menu',
+      'chrome.chip.menu': 'Menu',
+      'chrome.chip.help': 'Help',
       'chrome.help.title': 'Controls & Goals',
       'chrome.rename.submit': 'Rename',
       'chrome.tradePropose.submit': 'Offer',
@@ -164,7 +168,8 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
     expect(() => t('chrome.status.disconnected' as never)).toThrow();
 
     // A plain key routed through the PARAMETERIZED resolver.
-    expect(() => tf('chrome.helpHint' as never, {} as never)).toThrow();
+    // (ctl-7a: 'chrome.helpHint' was the example plain key; swapped for another plain chrome key.)
+    expect(() => tf('chrome.help.title' as never, {} as never)).toThrow();
   });
 
   it("m24s1 SHAPE-05: t has arity 1, tf has arity 2, and resolver.ts's source declares exactly one `export function t(` and one GENERIC `export function tf<` — no overload, no variadic, no monomorphic tf regression", () => {

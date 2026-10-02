@@ -23,7 +23,8 @@
  *  `<namespace>.<screen>.<element>` (M24 §2.3), semantic — named for what the string IS, never
  *  for the DOM mechanism that shows it (`battle.skill.accuracy`, not `accuracyTitle`). */
 export type MessageId =
-  | 'chrome.helpHint'
+  | 'chrome.chip.menu'
+  | 'chrome.chip.help'
   | 'chrome.help.title'
   | 'chrome.rename.submit'
   | 'chrome.tradePropose.submit'

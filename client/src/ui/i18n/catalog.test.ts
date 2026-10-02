@@ -274,7 +274,11 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
  *  never retype). The 9 `chrome.*` rows are the pre-existing m24-s1 values; the
  *  21 `battle.*`/`pvp.*` rows are m24s3's plain migrated sinks. */
 const EXPECTED_PLAIN: Record<string, string> = {
-  'chrome.helpHint': 'Press ? for help · click or M for menu',
+  // ctl-7a (named intentional change): `chrome.helpHint` is DELETED with the #help-hint button it
+  // labelled; the two hint-bar chip labels (main.ts writes them into #chip-start / #chip-select at
+  // boot) replace it. Net roster delta: -1 +2 = 211 keys.
+  'chrome.chip.menu': 'Menu',
+  'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
   'chrome.rename.submit': 'Rename',
   'chrome.tradePropose.submit': 'Offer',
@@ -765,7 +769,8 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 210-key roster (ctl-6c added the 2 `menu.disabled.*` keys to the 208-key roster; ctl-5 added the 29 `menu.*` keys to the 179-key roster; pgcc-a added `raising.feedback.cared` to the 178-key roster below;
+/** The full 211-key roster (ctl-7a: -`chrome.helpHint` +`chrome.chip.menu` +`chrome.chip.help` over the
+ *  210-key roster below; ctl-6c added the 2 `menu.disabled.*` keys to the 208-key roster; ctl-5 added the 29 `menu.*` keys to the 179-key roster; pgcc-a added `raising.feedback.cared` to the 178-key roster below;
  *  21r-b2 growth of 21r-b's 133-key roster by the 45 new `claim.*` /
  *  `privacy.*` keys; 21r-b had grown the 118-key roster by the 15 new
  *  `chrome.feedback.*`/`shop.feedback.*`/`trade.feedback.*`/`chrome.rename.updated`/
@@ -783,15 +788,21 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     ).toEqual([]);
   });
 
-  it("m24s1 SHAPE-02: CATALOG_EN['chrome.helpHint'] is <=47 characters, and is exactly 38 today", () => {
-    const value = (CATALOG_EN as Record<string, unknown>)['chrome.helpHint'];
-    expect(typeof value, "CATALOG_EN['chrome.helpHint'] must be a string").toBe('string');
-    expect((value as string).length).toBeLessThanOrEqual(47);
-    expect((value as string).length).toBe(38);
+  // ctl-7a (named intentional change): this pin guarded the length of `chrome.helpHint` (a
+  // fixed-position badge that must not overflow a 320px viewport). That key is deleted; the same
+  // concern now applies to the two hint-bar chip labels, which share one row.
+  it("m24s1 SHAPE-02: the hint-bar chip labels CATALOG_EN['chrome.chip.menu'] / ['chrome.chip.help'] are short strings (<=12 characters, exactly 4 today)", () => {
+    for (const key of ['chrome.chip.menu', 'chrome.chip.help']) {
+      const value = (CATALOG_EN as Record<string, unknown>)[key];
+      expect(typeof value, `CATALOG_EN['${key}'] must be a string`).toBe('string');
+      expect((value as string).length).toBeLessThanOrEqual(12);
+      expect((value as string).length).toBe(4);
+    }
   });
 
   it('m24s1 SHAPE-03: the ADR-0256 D5 key grammar (>=2 dot-segments, each [a-z][a-zA-Z0-9]*) accepts the boundary-valid fixtures, rejects the boundary-invalid fixtures, and accepts every real CATALOG_EN key', () => {
-    const validFixtures = ['a.b', 'chrome.helpHint', 'chrome.status.disconnected'];
+    // ctl-7a: 'chrome.helpHint' (deleted key) swapped for another camelCase-segment example.
+    const validFixtures = ['a.b', 'chrome.tradePropose', 'chrome.status.disconnected'];
     const invalidFixtures = [
       'chrome',
       'chrome.',
@@ -801,7 +812,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
       'chrome.help_hint',
       'chrome.1x',
       'chrome.help-hint',
-      'chrome.helpHint ',
+      'chrome.tradePropose ',
     ];
     for (const f of validFixtures) {
       expect(isValidKey(f), `${f} must be VALID`).toBe(true);
@@ -1022,5 +1033,26 @@ describe('ctl-6c: catalog.fr.ts, the battle keys ctl-6c changed or added', () =>
       expect(fr, `${key}: the exact French text`).toBe(expected);
       expect(fr, `${key}: a translation, not the English copy`).not.toBe(en);
     }
+  });
+});
+
+// =============================================================================
+// ctl-7a: the hint-bar chip labels (Start / Select chips in #hint-bar) replace the deleted
+// `chrome.helpHint` badge text.
+// =============================================================================
+
+describe('ctl-7a: the hint-bar chip catalog keys', () => {
+  it('CTL7A-4-CATALOG-KEYS: both catalogs carry chrome.chip.menu (Menu / Menu) and chrome.chip.help (Help / Aide) as plain strings, and chrome.helpHint is gone from both', () => {
+    // WRONG IMPL KILLED: a chip whose label is hard-coded in index.html or main.ts instead of
+    // coming from the catalog (the keys would not exist); a key added to en only (fr falls back
+    // to English in a French boot); `chrome.helpHint` left behind as a dead key.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    expect(en['chrome.chip.menu'], 'en chrome.chip.menu').toBe('Menu');
+    expect(en['chrome.chip.help'], 'en chrome.chip.help').toBe('Help');
+    expect(fr['chrome.chip.menu'], 'fr chrome.chip.menu').toBe('Menu');
+    expect(fr['chrome.chip.help'], 'fr chrome.chip.help').toBe('Aide');
+    expect(Object.hasOwn(en, 'chrome.helpHint'), 'en chrome.helpHint must be deleted').toBe(false);
+    expect(Object.hasOwn(fr, 'chrome.helpHint'), 'fr chrome.helpHint must be deleted').toBe(false);
   });
 });

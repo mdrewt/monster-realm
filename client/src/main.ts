@@ -1829,7 +1829,7 @@ let lastA11ySnapshot: A11ySnapshot = { topOverlay: null, message: '' };
 // shell families hides that way — so the ancestor walk is the exact discriminator, and it
 // is engine-independent. `checkVisibility()` was rejected: this happy-dom version does not
 // implement it, which would make the unit-tier proof vacuous. The walk cannot match the
-// always-on corner affordance (it and every ancestor are display-visible), so the D4
+// always-on hint-bar chips (they and every ancestor are display-visible), so the D4
 // no-steal guarantee survives — pinned by S5T-FOCUS-NO-STEAL.
 const focusInsideHiddenSubtree = (): boolean => {
   for (
@@ -2547,22 +2547,26 @@ document.addEventListener('click', (e) => {
     if (!Number.isNaN(clickedShopId)) stepShopOpen({ kind: 'shopPicked', shopId: clickedShopId });
     return;
   }
-  // the click front door. Delegated on the data-attribute, the
-  // house idiom in this listener — so main.ts still never NAMES the badge and acquires no
-  // reference to it (so no JS owner exists
-  // that can hide or remove it).
-  // the two front doors are UNIFIED — this branch now
-  // carries the SAME predicate the menu hotkey does, so a single verdict decides both. The one
-  // difference from the retired `!anyOverlayVisible()` form, stated rather than glossed:
-  // canOpen exempts self, so with ONLY the menu visible this branch would re-open it where it
-  // previously dead-clicked. Unreachable in practice — #menu-overlay is
-  // position:fixed;inset:0;z-index:120 over the badge's z-index:50, so a click while the menu
-  // is open never reaches the badge; while a child covers the menu, the child's own verdict
-  // denies. The identity guard is preserved: the menu's screens read identity-keyed state.
+  // The hint bar's Start chip (ctl-7a; it replaced the #help-hint badge): the click front door
+  // to the menu. Delegated on the data-attribute, the house idiom in this listener. It carries
+  // the SAME verdict the menu hotkey does, so a single verdict decides both. canOpen exempts
+  // self, so with ONLY the menu visible this branch would re-open it; harmless, and a child
+  // covering the menu denies by its own verdict. The identity guard is preserved: the menu's
+  // screens read identity-keyed state. Opening clears held keys (CTL2.4). Like every input path,
+  // a chip is dead while the session terminal owns the screen.
   if ((e.target as HTMLElement).closest('[data-menu-launcher]') !== null) {
-    if (overlayVerdict('menuView').kind === 'allow' && identity !== '') {
+    if (!sessionGateBlocks() && overlayVerdict('menuView').kind === 'allow' && identity !== '') {
       held.clear();
       openMenu();
+    }
+    return;
+  }
+  // The Select chip: Help, through the same verdict as the `?` hotkey (CTL7A.4). Help reads no
+  // identity-keyed state, so, like `?`, it needs no identity.
+  if ((e.target as HTMLElement).closest('[data-help-launcher]') !== null) {
+    if (!sessionGateBlocks() && overlayVerdict('helpView').kind === 'allow') {
+      held.clear();
+      openHelp();
     }
     return;
   }
@@ -3031,51 +3035,50 @@ async function main(): Promise<void> {
   // assigned so no connection lifecycle callback can ever report into the void.
   const status = document.createElement('div');
   status.id = 'status';
-  document.body.appendChild(status);
+  // ctl-7a: inside the game screen and out of the page flow (.mr-status), so a status line can
+  // never add scroll height. The shell-less boot tests have no #game-screen: body is the fallback.
+  const gameScreen = document.getElementById('game-screen') ?? document.body;
+  // The frame layer hosts the runtime-built frames below (CTL7A.2); same body fallback.
+  const frameLayer = document.getElementById('frame-layer') ?? document.body;
+  status.className = 'mr-status';
+  gameScreen.appendChild(status);
   statusEl = status;
 
-  // The on-world interact prompt — created inline beside
-  // the #status precedent. pointer-events:none so it can NEVER shadow the
-  // document-level dialogue/shop click delegation; z-index below the overlays
-  // (the lowest sit at 100); translate(-50%,-100%) hangs the label above the anchor
-  // (tile-top centre). Positioned each frame via renderer.screenFor(...).
+  // ctl-7a: the hint bar's Start and Select chips name their verbs from the catalog (CTL7A.4).
+  // Their clicks are delegated on [data-menu-launcher] / [data-help-launcher] below. The verbs
+  // go through locals because the hardcoded-string scanner only exempts a bare `t(`, not the
+  // `i18nT` alias main.ts must use.
+  const chipVerbs = { start: i18nT('chrome.chip.menu'), select: i18nT('chrome.chip.help') };
+  const startChip = document.getElementById('chip-start');
+  if (startChip !== null) startChip.textContent = chipVerbs.start;
+  const selectChip = document.getElementById('chip-select');
+  if (selectChip !== null) selectChip.textContent = chipVerbs.select;
+
+  // The on-world interact prompt — a small frame in the frame layer (.mr-frame--prompt:
+  // pointer-events:none so it can NEVER shadow the document-level dialogue/shop click delegation;
+  // z-index below the overlays; translate(-50%,-100%) hangs the label above the anchor, the
+  // tile-top centre). The frame layer fills the viewport, so screenFor()'s viewport coordinates
+  // are its coordinates. Positioned each frame via renderer.screenFor(...).
   const interactPromptEl = document.createElement('div');
   interactPromptEl.id = 'interact-prompt';
-  interactPromptEl.style.position = 'fixed';
-  interactPromptEl.style.pointerEvents = 'none';
+  interactPromptEl.className = 'mr-frame mr-frame--prompt';
   interactPromptEl.style.display = 'none';
-  interactPromptEl.style.transform = 'translate(-50%, -100%)';
-  interactPromptEl.style.zIndex = '40';
-  interactPromptEl.style.font = '12px/1.4 monospace';
-  interactPromptEl.style.color = '#e8ecf5';
-  interactPromptEl.style.background = 'rgba(10, 14, 24, 0.75)';
-  interactPromptEl.style.padding = '1px 6px';
-  interactPromptEl.style.borderRadius = '3px';
-  document.body.appendChild(interactPromptEl);
+  frameLayer.appendChild(interactPromptEl);
   // Memoized last-applied prompt state: style/text writes happen ONLY when the
   // (actionWord, screen position) key changes — never unconditionally per frame.
   let lastPromptKey = 'none';
 
-  // The deletion-grace countdown banner — created at runtime beside the
-  // #status / #interact-prompt precedent, and deliberately NOT an overlay: it must be visible
+  // The deletion-grace countdown banner — created at runtime beside
+  // #interact-prompt, and deliberately NOT an overlay: it must be visible
   // WHENEVER the window is live, not only once the player opens something. It carries no
   // aria-live and no implicit-live role: a region that changes every second would interrupt an
   // assistive-technology user continuously; ui/liveRegion.ts stays the sole announcement owner.
+  // A top-centred frame in the frame layer (.mr-frame--banner), styled by class (CTL7A.2/7A.3).
   const privacyCountdownEl = document.createElement('div');
   privacyCountdownEl.id = 'privacy-countdown';
-  privacyCountdownEl.style.position = 'fixed';
-  privacyCountdownEl.style.top = '4px';
-  privacyCountdownEl.style.left = '50%';
-  privacyCountdownEl.style.transform = 'translateX(-50%)';
-  privacyCountdownEl.style.pointerEvents = 'none';
+  privacyCountdownEl.className = 'mr-frame mr-frame--banner';
   privacyCountdownEl.style.display = 'none';
-  privacyCountdownEl.style.zIndex = '45';
-  privacyCountdownEl.style.font = '12px/1.4 monospace';
-  privacyCountdownEl.style.color = '#ffd9d9';
-  privacyCountdownEl.style.background = 'rgba(60, 12, 12, 0.82)';
-  privacyCountdownEl.style.padding = '2px 8px';
-  privacyCountdownEl.style.borderRadius = '3px';
-  document.body.appendChild(privacyCountdownEl);
+  frameLayer.appendChild(privacyCountdownEl);
   // The memo key is the RENDERED LABEL (`null` when nothing should show): the derived remaining
   // time changes every frame, the label once a second.
   let lastCountdownLabel: string | null = null;

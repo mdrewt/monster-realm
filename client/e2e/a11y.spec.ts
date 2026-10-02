@@ -85,22 +85,23 @@ type GameWindow = { __game?: () => Snap };
 // WCAG 2.2 Level AA, the conformance claim in spec §5.6 — nothing wider.
 const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
 
-// Non-vacuity floors, MEASURED on the reference tree (eca6752), twice, identical
-// both runs: 16 / 21 / 23 rules passed. Pinned two below each measurement so an
-// incidental markup change does not red the gate, while a page that failed to boot
-// (~0 passes) cannot possibly clear it. RAISE these when a state gains content;
-// LOWER only in a commit that deliberately removes some, and say which.
+// Non-vacuity floors, pinned two below each measurement so an incidental markup
+// change does not red the gate, while a page that failed to boot (~0 passes) cannot
+// possibly clear it. RAISE these when a state gains content; LOWER only in a commit
+// that deliberately removes some, and say which.
+// ctl-7a re-measured on its build in Chromium, twice, identical both runs: world 16
+// passes (floor 14), help 21 (floor 19; help is now an opaque .mr-frame), menu 25
+// (floor 23; unchanged since ctl-5, which made the menu a nav frame with chrome).
 const PASSES_FLOOR_WORLD = 14;
-const PASSES_FLOOR_HELP = 18;
-// ctl-5 re-measured the menu (now a nav frame with chrome): 25 passed, floor two below.
+const PASSES_FLOOR_HELP = 19;
 const PASSES_FLOOR_MENU = 23;
 
 // axe reports `incomplete` for checks it could not DECIDE — neither a pass nor a
 // violation. On this client there is exactly one such rule, stable across runs:
 // `color-contrast`, on text whose background is the game canvas and therefore not
-// computable from the DOM. In the world state those are exactly #build-stamp and
-// #help-hint — and there is NO shipped contrast
-// oracle covering them: `evals/contrast-ratio.eval.mjs` and its
+// computable from the DOM. In the world state that is #build-stamp alone (ctl-7a deleted
+// #help-hint; the opaque Start/Select chips that replace it are decidable) — and there is
+// NO shipped contrast oracle covering it: `evals/contrast-ratio.eval.mjs` and its
 // `baselines/contrast-unresolved.json` were specified but never landed, and remain
 // the open residual rb-14 (which records that they did not ship).
 // So these numbers have no upstream to agree with, which makes the ceiling MORE
@@ -111,13 +112,13 @@ const PASSES_FLOOR_MENU = 23;
 // undecidable rule id appearing is a real signal, not noise, and must red. The NODE
 // COUNT is a per-state CEILING that shrinks and never grows — it is what stops
 // "axe cannot tell" from quietly becoming the answer for more and more of the UI.
-// Measured twice, identical: world 2, help 23, menu 9. The overlays put far more
-// text over the canvas than the persistent chrome does.
+// ctl-7a re-measured on its build in Chromium, twice, identical both runs: world 1
+// (#build-stamp), help 1 (#build-stamp; help is now an opaque .mr-frame, previously 23
+// nodes of text over the canvas), menu 1 (#build-stamp). Each ceiling is that count.
 const INCOMPLETE_ALLOWED_IDS = ['color-contrast'];
-const INCOMPLETE_CEILING_WORLD = 2;
-const INCOMPLETE_CEILING_HELP = 23;
-// ctl-5 re-measured the menu: 2 undecidable nodes (its frame is opaque, not text over the canvas).
-const INCOMPLETE_CEILING_MENU = 2;
+const INCOMPLETE_CEILING_WORLD = 1;
+const INCOMPLETE_CEILING_HELP = 1;
+const INCOMPLETE_CEILING_MENU = 1;
 
 async function ready(p: Page): Promise<void> {
   await p.waitForFunction(
@@ -233,6 +234,262 @@ async function expectLiveRegionExposed(
   }
 }
 
+/** What `measureFrameInPage` reports for one open frame. */
+interface FrameMeasure {
+  readonly scrollHeight: number;
+  readonly scrollWidth: number;
+  readonly innerHeight: number;
+  readonly innerWidth: number;
+  /** The frame root's bounding box, or null when `frameSelector` matched nothing. */
+  readonly rect: {
+    readonly left: number;
+    readonly top: number;
+    readonly right: number;
+    readonly bottom: number;
+  } | null;
+  /** How many visible elements with their own non-empty text node were measured. */
+  readonly textElements: number;
+  /** The measured text elements whose contrast is under 4.5:1 (worst case over the backdrop). */
+  readonly lowContrast: ReadonlyArray<{
+    readonly text: string;
+    readonly ratio: number;
+    readonly fg: string;
+    readonly bg: string;
+  }>;
+}
+
+/**
+ * Measure one open frame INSIDE the page (Playwright serialises this function, so it must stay
+ * self-contained: no closure over module scope).
+ *
+ * Contrast is the WCAG 2.x relative-luminance ratio. The effective background is found by walking
+ * up from the text element, compositing every translucent `background-color` until the first
+ * opaque one. A stack that reaches the root without an opaque layer sits over the game canvas,
+ * whose pixels are unknown, so it is composited over BOTH white and black and the WORSE ratio is
+ * kept: an honest bound, never an optimistic one.
+ *
+ * Excluded, each for a stated reason: `.sr-only` nodes (the 1px live region that is re-parented
+ * into an open overlay is not visible text) and the text of a DISABLED form control (WCAG 1.4.3
+ * exempts inactive user-interface components).
+ */
+function measureFrameInPage(frameSelector: string): FrameMeasure {
+  type Rgba = [number, number, number, number];
+  const parse = (css: string): Rgba => {
+    const m = css.match(/rgba?\(([^)]+)\)/);
+    if (m === null) throw new Error(`unparseable computed colour: ${css}`);
+    const parts = m[1]
+      .split(/[ ,/]+/)
+      .filter((s) => s !== '')
+      .map(Number);
+    return [parts[0], parts[1], parts[2], parts.length > 3 ? parts[3] : 1];
+  };
+  const over = (top: Rgba, base: Rgba): Rgba => {
+    const a = top[3];
+    return [
+      top[0] * a + base[0] * (1 - a),
+      top[1] * a + base[1] * (1 - a),
+      top[2] * a + base[2] * (1 - a),
+      1,
+    ];
+  };
+  const channel = (c: number): number => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = (c: Rgba): number =>
+    0.2126 * channel(c[0]) + 0.7152 * channel(c[1]) + 0.0722 * channel(c[2]);
+  const ratioOf = (a: Rgba, b: Rgba): number => {
+    const la = luminance(a);
+    const lb = luminance(b);
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+  };
+  /** Translucent-or-opaque background layers from `el` up, stopping at the first opaque one. */
+  const layersOf = (el: Element): Rgba[] => {
+    const out: Rgba[] = [];
+    for (let n: Element | null = el; n !== null; n = n.parentElement) {
+      const c = parse(getComputedStyle(n).backgroundColor);
+      if (c[3] > 0) out.push(c);
+      if (c[3] === 1) break;
+    }
+    return out;
+  };
+  const worstRatio = (fg: Rgba, layers: Rgba[]): { ratio: number; bg: Rgba } => {
+    const opaque = layers.length > 0 && layers[layers.length - 1][3] === 1;
+    const bases: Rgba[] = opaque
+      ? [[0, 0, 0, 1]]
+      : [
+          [255, 255, 255, 1],
+          [0, 0, 0, 1],
+        ];
+    let worst = { ratio: Number.POSITIVE_INFINITY, bg: [0, 0, 0, 1] as Rgba };
+    for (const base of bases) {
+      let bg: Rgba = base;
+      for (let i = layers.length - 1; i >= 0; i -= 1) bg = over(layers[i], bg);
+      const ratio = ratioOf(over(fg, bg), bg);
+      if (ratio < worst.ratio) worst = { ratio, bg };
+    }
+    return worst;
+  };
+  const hasOwnText = (el: Element): boolean =>
+    Array.from(el.childNodes).some(
+      (n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? '').trim() !== '',
+    );
+  const isVisible = (el: Element): boolean => {
+    const cs = getComputedStyle(el);
+    const box = el.getBoundingClientRect();
+    return (
+      el.getClientRects().length > 0 &&
+      cs.visibility !== 'hidden' &&
+      cs.display !== 'none' &&
+      box.width > 0 &&
+      box.height > 0
+    );
+  };
+
+  const root = document.querySelector(frameSelector);
+  const scroller = document.scrollingElement ?? document.documentElement;
+  const rootBox = root === null ? null : root.getBoundingClientRect();
+  let textElements = 0;
+  const lowContrast: Array<{ text: string; ratio: number; fg: string; bg: string }> = [];
+  if (root !== null) {
+    for (const el of [root, ...Array.from(root.querySelectorAll('*'))]) {
+      if (!hasOwnText(el) || !isVisible(el)) continue;
+      if (el.closest('.sr-only') !== null) continue;
+      if (el.closest('button:disabled, input:disabled, select:disabled, textarea:disabled')) {
+        continue;
+      }
+      textElements += 1;
+      const fgCss = getComputedStyle(el).color;
+      const { ratio, bg } = worstRatio(parse(fgCss), layersOf(el));
+      if (ratio < 4.5) {
+        const text = Array.from(el.childNodes)
+          .filter((n) => n.nodeType === Node.TEXT_NODE)
+          .map((n) => (n.textContent ?? '').trim())
+          .join(' ')
+          .slice(0, 60);
+        lowContrast.push({
+          text,
+          ratio: Math.round(ratio * 100) / 100,
+          fg: fgCss,
+          bg: `rgb(${bg.slice(0, 3).map(Math.round).join(', ')})`,
+        });
+      }
+    }
+  }
+  return {
+    scrollHeight: scroller.scrollHeight,
+    scrollWidth: scroller.scrollWidth,
+    innerHeight: window.innerHeight,
+    innerWidth: window.innerWidth,
+    rect:
+      rootBox === null
+        ? null
+        : { left: rootBox.left, top: rootBox.top, right: rootBox.right, bottom: rootBox.bottom },
+    textElements,
+    lowContrast,
+  };
+}
+
+/** The shared CTL7A.1 / .2 / .3 assertions over one measured frame. */
+function expectFrameOk(m: FrameMeasure, label: string): void {
+  expect(
+    m.scrollHeight,
+    `${label}: the page must never scroll (scrollHeight ${m.scrollHeight} > innerHeight ${m.innerHeight})`,
+  ).toBeLessThanOrEqual(m.innerHeight);
+  expect(
+    m.scrollWidth,
+    `${label}: the page must never scroll sideways (scrollWidth ${m.scrollWidth} > innerWidth ${m.innerWidth})`,
+  ).toBeLessThanOrEqual(m.innerWidth);
+  expect(m.rect, `${label}: the frame root must exist and have a box`).not.toBeNull();
+  const r = m.rect;
+  if (r !== null) {
+    const slack = 0.5;
+    expect(
+      [
+        r.left >= -slack,
+        r.top >= -slack,
+        r.right <= m.innerWidth + slack,
+        r.bottom <= m.innerHeight + slack,
+      ],
+      `${label}: the frame box ${JSON.stringify(r)} must lie within the ${m.innerWidth}x${m.innerHeight} viewport`,
+    ).toEqual([true, true, true, true]);
+  }
+  // NON-VACUITY: a frame with no measurable text would report zero low-contrast nodes too.
+  expect(m.textElements, `${label}: no visible text was measured inside the frame`).toBeGreaterThan(
+    0,
+  );
+  expect(
+    m.lowContrast,
+    `${label}: text under 4.5:1 contrast — ${JSON.stringify(m.lowContrast)}`,
+  ).toEqual([]);
+}
+
+/** What `measureActiveMarkInPage` reports for the active menu row against an inactive sibling. */
+interface ActiveMark {
+  readonly found: boolean;
+  readonly activeBefore: string;
+  readonly inactiveBefore: string;
+  readonly activeOutline: string;
+  readonly inactiveOutline: string;
+  readonly activeBorder: string;
+  readonly inactiveBorder: string;
+  readonly nonColourDiffers: boolean;
+}
+
+/**
+ * The active row's non-colour mark (CTL7A.3): measured INSIDE the page. The row passes when its
+ * `::before` content differs from an inactive sibling's (a glyph), or it carries an outline /
+ * border of at least 2px that the inactive sibling does not.
+ */
+function measureActiveMarkInPage(listSelector: string): ActiveMark {
+  const list = document.querySelector(listSelector);
+  const active = list?.querySelector('[role="option"].is-active') ?? null;
+  const inactive = list?.querySelector('[role="option"]:not(.is-active)') ?? null;
+  const empty: ActiveMark = {
+    found: false,
+    activeBefore: '',
+    inactiveBefore: '',
+    activeOutline: '',
+    inactiveOutline: '',
+    activeBorder: '',
+    inactiveBorder: '',
+    nonColourDiffers: false,
+  };
+  if (active === null || inactive === null) return empty;
+  const before = (el: Element): string => getComputedStyle(el, '::before').content;
+  const outline = (el: Element): string => {
+    const cs = getComputedStyle(el);
+    return `${cs.outlineStyle} ${cs.outlineWidth}`;
+  };
+  const border = (el: Element): string => {
+    const cs = getComputedStyle(el);
+    return `${cs.borderTopStyle} ${cs.borderTopWidth} ${cs.borderLeftStyle} ${cs.borderLeftWidth}`;
+  };
+  const thick = (el: Element, kind: 'outline' | 'border'): boolean => {
+    const cs = getComputedStyle(el);
+    return kind === 'outline'
+      ? cs.outlineStyle !== 'none' && Number.parseFloat(cs.outlineWidth) >= 2
+      : (cs.borderTopStyle !== 'none' && Number.parseFloat(cs.borderTopWidth) >= 2) ||
+          (cs.borderLeftStyle !== 'none' && Number.parseFloat(cs.borderLeftWidth) >= 2);
+  };
+  const glyph = (value: string): boolean => value !== 'none' && value !== 'normal' && value !== '';
+  const activeBefore = before(active);
+  const inactiveBefore = before(inactive);
+  const beforeDiffers = glyph(activeBefore) && activeBefore !== inactiveBefore;
+  const outlineDiffers = thick(active, 'outline') && outline(active) !== outline(inactive);
+  const borderDiffers = thick(active, 'border') && border(active) !== border(inactive);
+  return {
+    found: true,
+    activeBefore,
+    inactiveBefore,
+    activeOutline: outline(active),
+    inactiveOutline: outline(inactive),
+    activeBorder: border(active),
+    inactiveBorder: border(inactive),
+    nonColourDiffers: beforeDiffers || outlineDiffers || borderDiffers,
+  };
+}
+
 test.describe
   .serial('rb-19 — axe-core over the real client', () => {
     let browser: Browser;
@@ -261,8 +518,8 @@ test.describe
     });
 
     test('the help overlay is free of WCAG 2.x A/AA violations while open', async () => {
-      // `?` is the documented opener (client/index.html #help-hint says so, and
-      // main.ts gates it on `e.key === '?'`), which is Shift+Slash as a physical key.
+      // `?` is the documented opener (Select is bound to Slash / Shift+Slash, ctl-6b), which is
+      // Shift+Slash as a physical key.
       await page.keyboard.press('Shift+Slash');
       await expect(page.locator('#help-overlay')).toBeVisible();
       await scanState(page, 'help overlay', PASSES_FLOOR_HELP, INCOMPLETE_CEILING_HELP);
@@ -332,16 +589,19 @@ test.describe
     // EV-keyboard-operable-rows new home: Tab reaches the menu launcher, Enter and Space both
     // activate it, and the menu listbox rows are operable from the keyboard alone.
     test('keyboard pass: Tab reaches the launcher, Enter/Space open the menu, arrows/Enter operate its rows', async () => {
-      const hint = page.locator('#help-hint');
+      // ctl-7a (named intentional change): this pass drove the #help-hint badge, which ctl-7a
+      // deletes; the Start chip in the hint bar is the always-on native launcher that replaces it
+      // (still [data-menu-launcher]), so the same Tab / Enter / Space contract now targets it.
+      const hint = page.locator('#chip-start');
       const overlay = page.locator('#menu-overlay');
       const rows = page.locator('#menu-rows');
 
       let reached = false;
       for (let i = 0; i < 20 && !reached; i += 1) {
         await page.keyboard.press('Tab');
-        reached = await page.evaluate(() => document.activeElement?.id === 'help-hint');
+        reached = await page.evaluate(() => document.activeElement?.id === 'chip-start');
       }
-      expect(reached, 'Tab never reached #help-hint within 20 presses').toBe(true);
+      expect(reached, 'Tab never reached #chip-start within 20 presses').toBe(true);
 
       // Enter on the focused launcher opens the menu, and focus lands on the listbox.
       await page.keyboard.press('Enter');
@@ -385,7 +645,7 @@ test.describe
       const box = page.getByTestId('box-title');
 
       // KeyM only opens the menu while the world has focus; the previous test leaves focus on
-      // the #help-hint launcher, so hand focus back to the world first.
+      // the #chip-start launcher, so hand focus back to the world first.
       await page.evaluate(() => {
         (document.activeElement as HTMLElement | null)?.blur();
       });
@@ -416,5 +676,90 @@ test.describe
 
       await page.keyboard.press('Escape');
       await expect(overlay).toBeHidden();
+    });
+
+    // ctl-7a, WCAG 2.5.3 label-in-name: the chips show a button glyph ("Start", "Select") by CSS
+    // `::before { content: attr(data-button) " " }` ahead of the verb, so the accessible name that
+    // Chromium computes (it includes ::before content) must contain the visible label. Only a real
+    // browser computes that name; happy-dom has no pseudo-element content.
+    test('CTL7A-E2E-CHIP-NAMES: the hint-bar chips are named by their visible button label plus verb', async () => {
+      await expect(page.getByRole('button', { name: 'Start Menu', exact: true })).toHaveAttribute(
+        'id',
+        'chip-start',
+      );
+      await expect(page.getByRole('button', { name: 'Select Help', exact: true })).toHaveAttribute(
+        'id',
+        'chip-select',
+      );
+    });
+
+    // ctl-7a (CTL7A.1 to CTL7A.3), the real-browser half. The unit tier parses styles.css and
+    // index.html; only Chromium can say where a frame really lands and what colour its text really
+    // paints, so each of the three frame kinds is measured here: the menu (a .mr-shell holding the
+    // ui/frame.ts .mr-frame; the shell has no scrim), help (the shell IS the .mr-frame) and one index.html shell
+    // (rename). Per frame: the page does not scroll, the frame's box lies inside the viewport, and
+    // every visible text element reads at >= 4.5:1 against its computed background.
+    test('CTL7A-E2E-MENU: with the Start chip pressing the menu open, the page does not scroll, the frame lies in the viewport, its text reads at >= 4.5:1, and the active row differs from a sibling by more than colour', async () => {
+      await page.evaluate(() => {
+        (document.activeElement as HTMLElement | null)?.blur();
+      });
+      // The chip click is the real-browser proof of CTL7A.4's "clicking a chip presses its button".
+      await page.locator('#chip-start').click();
+      await expect(page.locator('#menu-overlay')).toBeVisible();
+      await expect(page.locator('#menu-rows .is-active')).toHaveCount(1);
+
+      const m = await page.evaluate(measureFrameInPage, '#menu-overlay .mr-frame');
+      expectFrameOk(m, 'menu');
+
+      const mark = await page.evaluate(measureActiveMarkInPage, '#menu-rows');
+      expect(
+        mark.found,
+        `menu: need one .is-active row and one inactive sibling in #menu-rows (${JSON.stringify(mark)})`,
+      ).toBe(true);
+      expect(
+        mark.nonColourDiffers,
+        `menu: the active row must differ from an inactive sibling in a NON-colour computed property (::before content, or an outline / border of at least 2px) — ${JSON.stringify(mark)}`,
+      ).toBe(true);
+
+      await page.keyboard.press('Escape');
+      await expect(page.locator('#menu-overlay')).toBeHidden();
+    });
+
+    test('CTL7A-E2E-HELP: with help open, the page does not scroll, the frame lies in the viewport and its text reads at >= 4.5:1', async () => {
+      await page.evaluate(() => {
+        (document.activeElement as HTMLElement | null)?.blur();
+      });
+      await page.locator('#chip-select').click();
+      await expect(page.locator('#help-overlay')).toBeVisible();
+
+      const m = await page.evaluate(measureFrameInPage, '#help-overlay');
+      expectFrameOk(m, 'help');
+
+      await page.keyboard.press('Escape');
+      await expect(page.locator('#help-overlay')).toBeHidden();
+    });
+
+    test('CTL7A-E2E-SHELL: with an index.html shell open (rename), the page does not scroll, the frame lies in the viewport and its text reads at >= 4.5:1', async () => {
+      await page.evaluate(() => {
+        (document.activeElement as HTMLElement | null)?.blur();
+      });
+      // N opens the rename shell from the world (a GUARD_ONLY overlay with no identity gate).
+      await page.keyboard.press('KeyN');
+      await expect(page.locator('#rename-overlay')).toBeVisible();
+      // A draft enables the submit button, so its label is measured as live (not inactive) text.
+      await page.locator('#rename-input').fill('abc');
+      await expect(page.locator('#rename-submit')).toBeEnabled();
+
+      const m = await page.evaluate(measureFrameInPage, '#rename-overlay');
+      expectFrameOk(m, 'rename shell');
+
+      // Close it for the next test. The first Escape in the text field only leaves typing mode
+      // (focus moves to #rename-submit, ctl-6b), so blur to <body> and press N instead:
+      // main.ts's KeyN branch hides the visible rename overlay.
+      await page.evaluate(() => {
+        (document.activeElement as HTMLElement | null)?.blur();
+      });
+      await page.keyboard.press('KeyN');
+      await expect(page.locator('#rename-overlay')).toBeHidden();
     });
   });

@@ -574,7 +574,10 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
   it('S10-WIRE-REAL-INDEX-HTML BITES: the fixture is the SHIPPED client/index.html, tabindex attributes included — never a hand-copied shell', () => {
     // The whole point of adopting the real file. A per-view byte-copy fixture keeps passing when
     // the shipped markup loses an attribute; this assertion is what makes that deletion red.
-    expect(document.body.children.length).toBeGreaterThan(5);
+    // ctl-7a (named intentional change): the shipped <body> is now three direct children
+    // (#game-screen, #build-stamp, #a11y-live), so the old `body.children > 5` floor is retired;
+    // the vacuity guard counts the id-bearing elements the adopted body holds instead.
+    expect(document.body.querySelectorAll('[id]').length).toBeGreaterThan(5);
     expect(document.getElementById('a11y-live')).not.toBeNull();
     expect(document.getElementById('app')).not.toBeNull();
 
