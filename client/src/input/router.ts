@@ -1,8 +1,9 @@
 // router.ts — the pure input router: consumes source-agnostic `{button, down}` edges and
 // decides what they do (design §12). It owns the D-pad and X (Jump) at the world; under a nav
-// frame (the main menu, ctl-5) it also owns A, B and Y and synthesizes D-pad auto-repeat. Every
-// other button goes to the top frame's screen adapter (ctl-6b); what that adapter leaves
-// `unhandled` is unconsumed, and the legacy ladder in main.ts or the page keeps the key.
+// frame it synthesizes D-pad auto-repeat, and under the main menu (ctl-5) it also owns A, B and Y.
+// Every other button goes to the top frame's screen adapter (ctl-6b), and so does the D-pad of a
+// nav-capable screen (ctl-7c); what that adapter leaves `unhandled` is unconsumed, and the legacy
+// ladder in main.ts or the page keeps the key.
 //
 // No DOM, SDK, module state or clock: the caller passes `now` and applies the returned effects.
 import type { WasmDirection } from '../convert/convert';
@@ -108,10 +109,13 @@ export type RouterEffect =
 export interface RouteContext {
   /** True when no overlay is open, so world input (walk, jump) applies. */
   readonly worldActive: boolean;
-  /** Present while a nav frame is on the stack: `covered` when a legacy frame sits above it,
-   *  and the injected clock the repeat schedule runs on. */
-  readonly nav?: { readonly covered: boolean; readonly now: number };
-  /** The top frame's screen adapter, for every button the D-pad, X and nav paths do not take. */
+  /** Present while a nav frame is on the stack: `covered` when a legacy frame sits above it, the
+   *  injected clock the repeat schedule runs on, and `screen` when that frame is a nav-capable
+   *  screen (CTL7C.1): its D-pad presses and repeats go to `screen` below, as its other buttons
+   *  do, instead of becoming `nav` effects. */
+  readonly nav?: { readonly covered: boolean; readonly now: number; readonly screen?: boolean };
+  /** The top frame's screen adapter: asked for every button but X, the main menu's own (`nav`
+   *  effects) and a D-pad edge no nav-capable screen takes. */
   readonly screen?: (btn: NavInput) => ScreenResult;
 }
 
@@ -127,13 +131,19 @@ const SWALLOWED: RouteResult = { consumed: true, effects: [] };
 export const REPEAT_DELAY_MS = 350;
 export const REPEAT_PERIOD_MS = 100;
 
-/** The buttons an uncovered nav frame takes besides the D-pad. */
+/** The buttons the uncovered main menu takes besides the D-pad. */
 const NAV_BUTTONS: ReadonlySet<VButton> = new Set(['A', 'B', 'Y']);
 
 const navPress = (button: VButton): RouteResult => ({
   consumed: true,
   effects: [{ kind: 'nav', input: { button, repeat: false } }],
 });
+
+/** A D-pad input for a nav-capable screen: its adapter's command, if it answered with one. */
+const dpadToScreen = (ctx: RouteContext, input: NavInput): readonly RouterEffect[] => {
+  const result = ctx.screen?.(input);
+  return typeof result === 'object' ? [{ kind: 'command', command: result }] : [];
+};
 
 export class InputRouter {
   // Down edges per D-pad button not yet matched by an up edge, across every source. A
@@ -142,8 +152,8 @@ export class InputRouter {
   // The D-pad button that auto-repeats under the nav frame, and when its next repeat is due.
   // Armed by a press under an uncovered nav frame; only the latest press repeats.
   #repeat: { readonly button: VButton; nextAt: number } | undefined;
-  // Held D-pad buttons, oldest press first: releasing the repeating one hands the repeat back to
-  // the most recent button still held.
+  // D-pad buttons held since the last repeat reset, oldest press first: releasing the repeating
+  // one hands the repeat back to the most recent of them still held.
   #pressOrder: VButton[] = [];
 
   route(edge: ButtonEdge, ctx: RouteContext): RouteResult {
@@ -157,7 +167,9 @@ export class InputRouter {
         this.#pressOrder = [...this.#pressOrder.filter((b) => b !== button), button];
         if (nav !== undefined) {
           this.#repeat = { button, nextAt: nav.now + REPEAT_DELAY_MS };
-          return navPress(button);
+          if (!nav.screen) return navPress(button);
+          // Always consumed, whatever the adapter answers: an arrow key must not scroll the page.
+          return { consumed: true, effects: dpadToScreen(ctx, { button, repeat: false }) };
         }
         return ctx.worldActive
           ? { consumed: true, effects: [{ kind: 'dirDown', dir }] }
@@ -183,7 +195,9 @@ export class InputRouter {
       // Jump does not hold-repeat: only the press acts.
       return down && ctx.worldActive ? { consumed: true, effects: [{ kind: 'jump' }] } : SWALLOWED;
     }
-    if (nav !== undefined && NAV_BUTTONS.has(button)) return down ? navPress(button) : SWALLOWED;
+    if (nav !== undefined && !nav.screen && NAV_BUTTONS.has(button)) {
+      return down ? navPress(button) : SWALLOWED;
+    }
     if (!down || ctx.screen === undefined) return NOT_CONSUMED;
     const result = ctx.screen({ button, repeat: false });
     if (result === 'unhandled') return NOT_CONSUMED;
@@ -200,12 +214,16 @@ export class InputRouter {
     if (now < repeat.nextAt) return [];
     repeat.nextAt += REPEAT_PERIOD_MS;
     if (repeat.nextAt <= now) repeat.nextAt = now + REPEAT_PERIOD_MS;
-    return [{ kind: 'nav', input: { button: repeat.button, repeat: true } }];
+    const input: NavInput = { button: repeat.button, repeat: true };
+    return ctx.nav.screen ? dpadToScreen(ctx, input) : [{ kind: 'nav', input }];
   }
 
-  /** Stop any repeat: a held key never repeats into a newly pushed or popped frame. */
+  /** Stop any repeat: a held key never repeats into a newly pushed or popped frame, not even
+   *  when a newer key's release would hand the repeat back to it. The holder counts stay, so its
+   *  release is still reported. */
   resetRepeat(): void {
     this.#repeat = undefined;
+    this.#pressOrder = [];
   }
 
   /** Release every held button (blur, tab hidden): one `dirUp` per held direction. */

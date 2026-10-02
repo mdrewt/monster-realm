@@ -1,13 +1,15 @@
 /**
  * legacyAdapter.test.ts: the one adapter every screen uses in legacy DOM-button mode (ctl-6b,
- * CTL6B.1 / CTL6B.2 / CTL6B.3 / CTL6B.4).
+ * CTL6B.1 / CTL6B.2 / CTL6B.3 / CTL6B.4; ctl-7c, CTL7C.2).
  *
- * Pure, node env. `legacyAdapter.onButton(vm, nav, btn)` answers a virtual-button DOWN edge for a
- * frame whose controls are still native DOM buttons: A is `unhandled` (the focused native button
- * owns Enter, so activation stays native), B pops ONE frame, Start pops to the base, Select toggles
- * Help, and every other button is `unhandled` (D-pad, X, Y, LB, RB belong to the page or to a later
- * slice). A repeat-flagged B/Start/Select is swallowed (`consumed`): a held key must neither pop a
- * second frame nor fall through to the ladder.
+ * Pure, node env. `legacyAdapter.onButton(vm, state, btn).result` answers a virtual-button DOWN
+ * edge for a frame whose controls are still native DOM buttons: A is `unhandled` (the focused
+ * native button owns Enter, so activation stays native), B pops ONE frame, Start pops to the base,
+ * Select toggles Help, and every other button is `unhandled` (D-pad, X, Y, LB, RB belong to the
+ * page or to a later slice). A repeat-flagged B/Start/Select is swallowed (`consumed`): a held key
+ * must neither pop a second frame nor fall through to the ladder. ctl-7c: the shell hosts a state
+ * per frame; legacy mode keeps none, so `init` starts it at `undefined` and every step hands back
+ * the very state it was given.
  *
  * The results are interpreted through the REAL pure stack rules (`popTop`, `popToBase`), so each
  * case asserts what the stack becomes, not just which tag came back. Nothing here reads the DOM,
@@ -36,15 +38,19 @@ const CTX = {
   now: () => 0,
 } as unknown as ScreenContext;
 
-/** A nav state the adapter must ignore: legacy mode has no nav of its own. */
+/** A state the adapter must ignore (a nav state handed in as one): legacy mode keeps none. */
 const SOME_NAV: NavState = { tab: null, item: 'monsters', perTab: {} };
 
 const fresh = (button: VButton): NavInput => ({ button, repeat: false });
 const held = (button: VButton): NavInput => ({ button, repeat: true });
 
-/** Ask the adapter exactly as `screenButton` does: the view model first, then the button. */
-const ask = (btn: NavInput, nav: NavState | undefined = undefined): ScreenResult =>
-  legacyAdapter.onButton(legacyAdapter.viewModel(CTX), nav, btn);
+/** Ask the adapter exactly as the screen host does: the view model first, the frame's state (its
+ *  `init` unless one is handed in), then the button; the result is what the shell runs. */
+const ask = (btn: NavInput, nav: NavState | undefined = undefined): ScreenResult => {
+  const vm = legacyAdapter.viewModel(CTX);
+  const state = nav === undefined ? legacyAdapter.init(vm) : (nav as unknown as undefined);
+  return legacyAdapter.onButton(vm, state, btn).result;
+};
 
 const WORLD: BaseFrame = { kind: 'world' };
 const battle = (battleId: string): BaseFrame => ({ kind: 'battle', battleId });
@@ -214,5 +220,56 @@ describe('legacyAdapter (ctl-6b)', () => {
       (['Select', 'B', 'Start'] as const).map((b) => JSON.stringify(ask(fresh(b)))),
     );
     expect(answers.size).toBe(3);
+  });
+
+  it('CTL7C-2-LEGACY-PASSTHROUGH: init starts a legacy frame at undefined, every step hands back the very state it was given beside a result that does not depend on it, and the legacy adapter is neither nav-capable nor painted', () => {
+    // WRONG IMPL KILLED: an init that invents a state (the host would thread a value no legacy
+    // screen reads, and a ctl-8 screen copying the pattern would start from garbage), a step that
+    // drops the state it was given (returns undefined, or a fresh object) so the host's stored
+    // state is lost after one press, a step that returns the state as the result or the result
+    // as the state, a result that depends on the state handed in, a step whose return carries
+    // extra fields, a legacy adapter marked `nav` (every legacy frame would take the D-pad from
+    // the world/swallow path), and one with a `paint` (the shell would paint legacy views).
+    const vm = legacyAdapter.viewModel(CTX);
+    expect(legacyAdapter.init(vm), 'a legacy frame starts with no state').toBeUndefined();
+    // A non-undefined sentinel, so "the same state comes back" is not satisfied by `undefined`.
+    const SENTINEL = { sentinel: 'host state' } as unknown as undefined;
+    let rows = 0;
+    for (const button of VBUTTONS) {
+      for (const repeat of [false, true]) {
+        const btn: NavInput = { button, repeat };
+        const label = `${button} / ${repeat ? 'repeat' : 'fresh'}`;
+        const withSentinel = legacyAdapter.onButton(vm, SENTINEL, btn);
+        const withNone = legacyAdapter.onButton(vm, legacyAdapter.init(vm), btn);
+        expect(withSentinel.state, `${label}: the very state handed in comes back`).toBe(SENTINEL);
+        expect(withNone.state, `${label}: no state in, none out`).toBeUndefined();
+        expect(withSentinel.result, `${label}: the result ignores the state`).toEqual(
+          withNone.result,
+        );
+        expect(withNone.result, `${label}: the result is today's legacy answer`).toEqual(ask(btn));
+        expect(Object.keys(withSentinel).sort(), `${label}: exactly a state and a result`).toEqual([
+          'result',
+          'state',
+        ]);
+        rows += 1;
+      }
+    }
+    expect(rows, 'ANTI-VACUITY: every button, fresh and repeat-flagged').toBe(VBUTTONS.length * 2);
+    // Concrete anchors, so the pass-through is not compared only against itself.
+    expect(legacyAdapter.onButton(vm, SENTINEL, fresh('B'))).toEqual({
+      state: SENTINEL,
+      result: POP,
+    });
+    expect(legacyAdapter.onButton(vm, SENTINEL, held('Start'))).toEqual({
+      state: SENTINEL,
+      result: 'consumed',
+    });
+    expect(legacyAdapter.onButton(vm, SENTINEL, fresh('A'))).toEqual({
+      state: SENTINEL,
+      result: 'unhandled',
+    });
+
+    expect(legacyAdapter.nav, 'legacy frames do not take the D-pad').toBeUndefined();
+    expect(legacyAdapter.paint, 'legacy views paint themselves').toBeUndefined();
   });
 });

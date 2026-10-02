@@ -44,6 +44,7 @@ import type {
 // The test's own resolver instance (main.ts gets a fresh one per boot): both default to English, so
 // `i18nT(id)` here is the text the shell paints for that id.
 import { t as i18nT } from './ui/i18n/resolver';
+import type { NavInput } from './ui/nav';
 
 const H = vi.hoisted(() => ({
   identity: 'ab'.repeat(32),
@@ -52,6 +53,9 @@ const H = vi.hoisted(() => ({
   sends: [] as unknown[],
   /** Every other reducer call, oldest first, with the exact argument object it received. */
   calls: [] as Array<{ name: string; args: unknown }>,
+  /** The screen-adapter table main.ts's host reads: a mutable copy of the real one, re-made by the
+   *  module mock below on every fresh import, so a ctl-7c case can swap ONE frame's adapter. */
+  adapters: {} as Record<string, unknown>,
 }));
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid.
@@ -151,6 +155,14 @@ vi.mock('./observability/telemetry', async (importOriginal) => {
     },
     startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
   };
+});
+
+// The screen-adapter table: the real module with SCREEN_ADAPTERS replaced by a mutable copy of
+// itself (every entry the same legacy adapter, so nothing changes until a case swaps one).
+vi.mock('./ui/screens/index', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./ui/screens/index')>();
+  H.adapters = { ...actual.SCREEN_ADAPTERS };
+  return { ...actual, SCREEN_ADAPTERS: H.adapters };
 });
 
 // The renderer: init(mount) appends a focusable canvas so main.ts can resolve its world focus.
@@ -2402,5 +2414,319 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     expect(menuShown(), 'the menu is back on top').toBe(true);
     expect(battleShown(), 'over the battle').toBe(true);
     expect(stackNames()).toEqual(['battle', 'menuView']);
+  });
+});
+
+// ==========================================================================================
+// ctl-7c: the shell hosts each frame's adapter state and lends it the frame's view (CTL7C.2)
+// ==========================================================================================
+//
+// The adapter table main.ts hands its screen host is the module mock's mutable copy (`H.adapters`),
+// so a case swaps ONE frame's adapter for a recording stand-in and every other frame stays legacy.
+// The subject is the quest log (Q opens and closes it at the world). The stand-in counts its own
+// presses in its state and records every init, step and paint, so "the state threads" and "the
+// shell paints the real view" are read off the stand-in, never off main.ts's internals. The real
+// view class is imported AFTER the boot, so it is the very class main.ts constructed.
+
+/** Swap one frame's adapter for this boot; afterEach (the `restorers` drain) puts it back. */
+function swapAdapter(id: string, adapter: unknown): void {
+  const previous = H.adapters[id];
+  H.adapters[id] = adapter;
+  restorers.push(() => {
+    H.adapters[id] = previous;
+  });
+}
+
+describe('main.ts screen-host state and paint (runtime, ctl-7c)', { sequential: true }, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    rafCallback = null;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  it('CTL7C-2-BOOT-STATE: a nav-capable quest log starts from its init on its first press and each press sees the state the previous one returned, through frames and store batches; closing and reopening starts it again; each press paints the REAL quest log view once (none at open, none on a batch); the OS repeats of an A it consumed are prevented', async () => {
+    // WRONG IMPL KILLED: a shell that keeps no adapter state (every press starts from init: a
+    // cursor that can never move twice), one that re-inits on every frame or store batch (the
+    // cursor jumps home while the player reads), one that never resets on reopen (a dialogue or a
+    // shop reopened on its last node or confirm), an EAGER init or paint at open (the open's paint
+    // is overwritten by the legacy render anyway, and init would read the store mid-batch), a
+    // paint per batch, a paint into a stand-in or a freshly built view instead of the instance on
+    // screen, a view-lending table whose quest log thunk names a sibling view, two paints per
+    // press, a paint of the previous state, and a pre-ladder intercept that does not cover a nav
+    // screen (the OS repeats of the consumed Enter would reach the page and activate the focused
+    // control the press just opened).
+    await bootReady();
+    server(1000);
+    const { QuestLogView } = await import('./ui/questLogView');
+    interface Counter {
+      readonly n: number;
+    }
+    const inits: Array<{ readonly vm: unknown; readonly state: Counter }> = [];
+    const steps: Array<{
+      readonly vm: unknown;
+      readonly state: unknown;
+      readonly next: Counter;
+      readonly btn: NavInput;
+    }> = [];
+    const paints: Array<{ readonly view: unknown; readonly vm: unknown; readonly state: unknown }> =
+      [];
+    let vmSeq = 0;
+    swapAdapter('questLogView', {
+      nav: true,
+      viewModel: () => {
+        vmSeq += 1;
+        return { vmSeq };
+      },
+      init: (vm: unknown) => {
+        const state: Counter = { n: 0 };
+        inits.push({ vm, state });
+        return state;
+      },
+      onButton: (vm: unknown, state: unknown, btn: NavInput) => {
+        const n = (state as Partial<Counter> | undefined)?.n;
+        const next: Counter = { n: typeof n === 'number' ? n + 1 : -100 };
+        steps.push({ vm, state, next, btn });
+        return { state: next, result: 'consumed' };
+      },
+      paint: (view: unknown, vm: unknown, state: unknown) => {
+        paints.push({ view, vm, state });
+      },
+    });
+
+    tap('KeyQ', 1010);
+    expect(questLogShown(), 'precondition: Q opened the quest log').toBe(true);
+    expect(stackNames()).toEqual(['world', 'questLogView']);
+    expect(inits, 'opening runs no adapter code').toEqual([]);
+    expect(paints, 'and paints nothing').toEqual([]);
+
+    // Press 1, A: the first press starts from init, once, and paints the real view once.
+    const enter = fire('keydown', 'Enter', 1100);
+    expect(
+      steps.map((s) => s.btn),
+      'the A press reached the stand-in',
+    ).toEqual([{ button: 'A', repeat: false }]);
+    expect(inits, 'init ran once, on the first press').toHaveLength(1);
+    expect(steps[0]?.state, 'the first press starts from the init state').toBe(inits[0]?.state);
+    expect(enter.defaultPrevented, 'the A the stand-in consumed is prevented').toBe(true);
+    // The OS repeats of that Enter are prevented until its keyup, and are no second press.
+    const osRepeat = fire('keydown', 'Enter', 1130, { init: { repeat: true } });
+    expect(osRepeat.defaultPrevented, 'the OS repeat of the consumed Enter is prevented').toBe(
+      true,
+    );
+    expect(steps, 'an OS repeat is not a press').toHaveLength(1);
+    fire('keyup', 'Enter', 1150);
+    expect(paints, 'exactly one paint for one press').toHaveLength(1);
+    const view = paints[0]?.view;
+    expect(view, 'the shell lends the real quest log view').toBeInstanceOf(QuestLogView);
+    expect((view as { visible?: unknown }).visible, 'the very instance on screen').toBe(true);
+    expect(paints[0]?.vm, 'painted with the view model the press saw').toBe(steps[0]?.vm);
+    expect(paints[0]?.state, 'and the state the press produced').toBe(steps[0]?.next);
+
+    // A frame and a store batch in between reset nothing and paint nothing.
+    frame(1200);
+    server(1300);
+    expect(questLogShown(), 'precondition: the quest log survives the batch').toBe(true);
+    expect(inits, 'no re-init on a frame or a batch').toHaveLength(1);
+    expect(paints, 'no paint on a frame or a batch').toHaveLength(1);
+
+    // Presses 2 (Down) and 3 (LB), a frame and a batch between them: each resumes the last.
+    tap('ArrowDown', 1400);
+    frame(1500);
+    server(1600);
+    tap('PageUp', 1700);
+    expect(
+      steps.map((s) => s.btn.button),
+      'three presses reached the stand-in',
+    ).toEqual(['A', 'Down', 'LB']);
+    expect(inits, 'still the one init').toHaveLength(1);
+    expect(steps[1]?.state, 'press 2 resumes from press 1').toBe(steps[0]?.next);
+    expect(steps[2]?.state, 'press 3 resumes from press 2').toBe(steps[1]?.next);
+    expect(steps[2]?.next.n, 'the count threaded through all three').toBe(3);
+    expect(paints, 'one paint per press').toHaveLength(3);
+    for (const [i, p] of paints.entries()) {
+      expect(p.view, `paint ${i}: the same view instance`).toBe(view);
+      expect(p.vm, `paint ${i}: the view model press ${i} saw`).toBe(steps[i]?.vm);
+      expect(p.state, `paint ${i}: the state press ${i} produced`).toBe(steps[i]?.next);
+    }
+
+    // Close it and reopen it: the reopened frame starts again from a fresh init.
+    tap('KeyQ', 1800);
+    expect(questLogShown(), 'precondition: Q closed the quest log').toBe(false);
+    expect(stackNames()).toEqual(['world']);
+    tap('KeyQ', 1900);
+    expect(questLogShown(), 'precondition: Q reopened it').toBe(true);
+    expect(inits, 'reopening runs no adapter code either').toHaveLength(1);
+    expect(paints, 'and paints nothing').toHaveLength(3);
+    tap('Enter', 2000);
+    expect(steps, 'the reopened frame was pressed').toHaveLength(4);
+    expect(inits, 'it was initialised afresh').toHaveLength(2);
+    expect(steps[3]?.state, 'from the NEW init state').toBe(inits[1]?.state);
+    expect(steps[3]?.next.n, 'the count starts over').toBe(1);
+    expect(paints, 'one more paint').toHaveLength(4);
+    expect(paints[3]?.view, 'into the same real view').toBe(view);
+    expect(paints[3]?.state).toBe(steps[3]?.next);
+  });
+});
+
+// ==========================================================================================
+// ctl-7c round 2: repeats are full steps, and a view that cannot paint is reported (red-team)
+// ==========================================================================================
+//
+// Same harness and stand-in pattern as above. The error overlay is the self-mounted
+// `#mr-error-overlay` that main.frameErrorWiring.test.ts reads: one `.mr-error-row` per ring
+// record, newest first, each carrying its `data-source` and the text `[<source>] <message>`.
+
+/** Every rendered error-overlay row, in DOM order (newest first). */
+const errorOverlayRows = (): Array<{ source: string | undefined; text: string }> =>
+  Array.from(document.querySelectorAll<HTMLElement>('.mr-error-row')).map((el) => ({
+    source: el.dataset.source,
+    text: el.textContent ?? '',
+  }));
+
+describe('main.ts repeats and paint failures (runtime, ctl-7c)', { sequential: true }, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    rafCallback = null;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  it('CTL7C-2-BOOT-REPEAT-STEPS: under a held arrow every synthesized repeat is a full step: it resumes the state the previous step returned and repaints the real view with the next one, exactly as the press does', async () => {
+    // WRONG IMPL KILLED (X8, X9): a shell whose repeats skip the state store or the paint (a held
+    // arrow would move a list cursor one row, then redraw nothing, or restart every repeat from
+    // the press's state), and one that builds the repeat's step from a stale or fresh state.
+    await bootReady();
+    server(1000);
+    const { QuestLogView } = await import('./ui/questLogView');
+    const states: unknown[] = [];
+    const inputs: NavInput[] = [];
+    const paints: Array<{ readonly view: unknown; readonly state: unknown }> = [];
+    swapAdapter('questLogView', {
+      nav: true,
+      viewModel: () => undefined,
+      init: () => 0,
+      onButton: (_vm: unknown, state: unknown, btn: NavInput) => {
+        states.push(state);
+        inputs.push(btn);
+        return { state: typeof state === 'number' ? state + 1 : -100, result: 'consumed' };
+      },
+      paint: (view: unknown, _vm: unknown, state: unknown) => {
+        paints.push({ view, state });
+      },
+    });
+    tap('KeyQ', 1010);
+    expect(questLogShown(), 'precondition: Q opened the quest log').toBe(true);
+
+    fire('keydown', 'ArrowDown', 1100);
+    frame(1450);
+    frame(1550);
+    frame(1650);
+    fire('keyup', 'ArrowDown', 1700);
+    expect(inputs, 'the press and three synthesized repeats reached the stand-in').toEqual([
+      { button: 'Down', repeat: false },
+      { button: 'Down', repeat: true },
+      { button: 'Down', repeat: true },
+      { button: 'Down', repeat: true },
+    ]);
+    expect(states, 'each repeat resumes the state the step before it returned').toEqual([
+      0, 1, 2, 3,
+    ]);
+    expect(
+      paints.map((p) => p.state),
+      'and each repaints with the state it produced',
+    ).toEqual([1, 2, 3, 4]);
+    for (const [i, p] of paints.entries()) {
+      expect(p.view, `paint ${i}: the real quest log view`).toBeInstanceOf(QuestLogView);
+      expect(p.view, `paint ${i}: the same instance every time`).toBe(paints[0]?.view);
+    }
+
+    // A fresh press after the repeats resumes from the last repeat's state.
+    tap('PageUp', 1800);
+    expect(states.at(-1), 'the next press starts where the last repeat left off').toBe(4);
+    expect(paints.at(-1)?.state).toBe(5);
+  });
+
+  it('CTL7C-2-BOOT-PAINT-THROWS: a view whose paint throws never costs a key its result (B still pops the frame) and every failure is logged; it is also surfaced in the error overlay as an `uncaught` row `screen paint: <message>`, once per message', async () => {
+    // WRONG IMPL KILLED (C3, C4): a paint failure that escapes the host (the key handler throws and
+    // B can never close the frame whose view is broken), one that swallows the step's result, one
+    // that is reported nowhere, and (the shell's report, NEW CONTRACT) one that stays in the
+    // console only (a playtester sees a frozen screen with nothing on the error overlay and no
+    // record in the F9 bundle), one pushed untagged or under another source, and one pushed on
+    // every press (a list held down repaints at 10 Hz: one broken view would flood the 64-slot
+    // ring the crash records need), while a DIFFERENT failure must still be recorded.
+    await bootReady();
+    server(1000);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let message = 'broken view';
+    const asked: NavInput[] = [];
+    swapAdapter('questLogView', {
+      nav: true,
+      viewModel: () => undefined,
+      init: () => undefined,
+      onButton: (_vm: unknown, state: unknown, btn: NavInput) => {
+        asked.push(btn);
+        return { state, result: btn.button === 'B' && !btn.repeat ? { kind: 'pop' } : 'consumed' };
+      },
+      paint: () => {
+        throw new Error(message);
+      },
+    });
+    const paintReports = (): unknown[][] =>
+      errors.mock.calls.filter((c) => c[0] === '[screen] paint error');
+    const screenPaintRows = (): Array<{ source: string | undefined; text: string }> =>
+      errorOverlayRows().filter((r) => r.text.includes('screen paint:'));
+
+    tap('KeyQ', 1010);
+    expect(questLogShown(), 'precondition: Q opened the quest log').toBe(true);
+    const overlay = byId('mr-error-overlay');
+    expect(overlay.style.display, 'precondition: the error overlay starts hidden').toBe('none');
+    expect(errorOverlayRows(), 'precondition: no error row yet').toEqual([]);
+
+    // Every observation is taken as it happens and asserted below, so the part that holds today
+    // (B still pops, the console log) is checked before the overlay part.
+    tap('ArrowDown', 1100); // the first throwing paint
+    const shownAfterFirst = overlay.style.display !== 'none';
+    const rowsAfterFirst = screenPaintRows();
+    tap('PageUp', 1200); // the same message again
+    const rowsAfterSame = screenPaintRows();
+    message = 'broken differently';
+    tap('PageUp', 1300); // a different message
+    const rowsAfterDistinct = screenPaintRows();
+    const back = tap('Backspace', 1400); // B: its paint throws the same message again
+    const rowsAfterBack = screenPaintRows();
+
+    // The result is never lost, and every failure is logged.
+    expect(
+      asked.map((b) => b.button),
+      'every press reached the stand-in',
+    ).toEqual(['Down', 'LB', 'LB', 'B']);
+    expect(back.defaultPrevented, 'the B press was consumed').toBe(true);
+    expect(questLogShown(), 'B still closes a frame whose paint throws').toBe(false);
+    expect(stackNames()).toEqual(['world']);
+    expect(
+      paintReports().map((c) => (c[1] as Error | undefined)?.message),
+      'each throwing paint is logged with the error it threw',
+    ).toEqual(['broken view', 'broken view', 'broken differently', 'broken differently']);
+
+    // NEW CONTRACT: surfaced like an uncaught frame error, deduped on the message.
+    expect(shownAfterFirst, 'the first throwing paint shows the error overlay').toBe(true);
+    expect(rowsAfterFirst, 'one tagged `uncaught` row').toEqual([
+      { source: 'uncaught', text: '[uncaught] screen paint: broken view' },
+    ]);
+    expect(rowsAfterSame, 'the same message again adds no row').toEqual(rowsAfterFirst);
+    expect(rowsAfterDistinct, 'a different message adds its own row, newest first').toEqual([
+      { source: 'uncaught', text: '[uncaught] screen paint: broken differently' },
+      { source: 'uncaught', text: '[uncaught] screen paint: broken view' },
+    ]);
+    expect(rowsAfterBack, 'B`s repeat of that message adds none').toEqual(rowsAfterDistinct);
   });
 });

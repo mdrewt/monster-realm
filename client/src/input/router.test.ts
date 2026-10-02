@@ -1023,3 +1023,410 @@ describe('typingKey (ctl-6b, CTL6B.5)', () => {
     expect(textLike.length + notText.length, 'ANTI-VACUITY: both polarities are driven').toBe(28);
   });
 });
+
+// ==========================================================================================
+// ctl-7c: a nav-capable screen frame takes the D-pad (CTL7C.1)
+// ==========================================================================================
+//
+// `ctx.nav.screen` marks the uncovered nav frame as a nav-capable SCREEN rather than the
+// hand-hosted main menu: its D-pad down edges, and the repeats `tick` synthesizes for them, are
+// handed to `ctx.screen` instead of becoming `nav` effects. A Command answer is a `command`
+// effect; `consumed` and `unhandled` are both swallowed (an arrow never scrolls the page under a
+// frame). A, B, Y and the other routed buttons stay on the ordinary screen path, so `unhandled`
+// still leaves them unconsumed. Without `screen` nothing changes. As in the ctl-5 block, every
+// press is at a NON-ZERO `now`.
+
+/** An uncovered nav-capable screen frame, with the top frame's adapter bound when given. */
+const screenNavCtx = (
+  now: number,
+  screen?: RouteContext['screen'],
+  worldActive = false,
+): RouteContext => ({ worldActive, nav: { covered: false, now, screen: true }, screen });
+
+/** A screen that records every input it is asked, answering from `answer`. */
+function askingScreen(answer: (btn: NavInput) => ScreenResult): {
+  readonly seen: NavInput[];
+  readonly screen: (btn: NavInput) => ScreenResult;
+} {
+  const seen: NavInput[] = [];
+  return {
+    seen,
+    screen: (btn) => {
+      seen.push(btn);
+      return answer(btn);
+    },
+  };
+}
+
+const SWALLOWED_EDGE = { consumed: true, effects: [] } as const;
+
+describe('InputRouter under a nav-capable screen (ctl-7c)', () => {
+  it('CTL7C-1-SCREEN-NAV-DPAD: under a nav-capable screen a D-pad press asks ctx.screen once, fresh: a Command becomes a consumed command effect, consumed and unhandled are swallowed, and it never walks or emits a menu nav effect; the release asks nothing; A, B, Y and the other routed buttons stay on the screen path', () => {
+    // WRONG IMPL KILLED: a D-pad that still goes to the world under a nav screen (a dirDown: the
+    // character would step behind the frame), one that is still a menu `nav` effect (the hidden
+    // menu's cursor would move instead of the screen's), one that never asks the screen (a
+    // dialogue, shop or heal frame gets no Up/Down), one that asks with `repeat: true` or twice,
+    // a Command dropped or rewritten, an `unhandled` D-pad left unconsumed (the page scrolls under
+    // the frame), one that asks the screen on the UP edge too (two moves per press) or loses the
+    // release (the held count would leak), A / B / Y captured as nav effects under a screen (an
+    // adapter's `unhandled` would no longer leave Enter to a focused native button), and a
+    // missing ctx.screen that leaves the arrow to the page.
+    const MOVE_COMMAND: ScreenResult = { kind: 'advanceDialogue', choiceIdx: 3 };
+    const answers: ReadonlyArray<{
+      readonly name: string;
+      readonly answer: ScreenResult;
+      readonly expected: { readonly consumed: boolean; readonly effects: readonly RouterEffect[] };
+    }> = [
+      {
+        name: 'a Command',
+        answer: MOVE_COMMAND,
+        expected: { consumed: true, effects: [commandEffect(MOVE_COMMAND)] },
+      },
+      { name: 'consumed', answer: 'consumed', expected: SWALLOWED_EDGE },
+      { name: 'unhandled', answer: 'unhandled', expected: SWALLOWED_EDGE },
+    ];
+    let rows = 0;
+    for (const [button, dir] of DIRS) {
+      for (const a of answers) {
+        // worldActive true too: the screen outranks the world, as the menu's nav does.
+        for (const worldActive of [false, true]) {
+          const label = `${button} / ${a.name} / worldActive ${worldActive}`;
+          const { seen, screen } = askingScreen(() => a.answer);
+          const r = new InputRouter();
+          expect(
+            r.route(edge(button, true), screenNavCtx(1000, screen, worldActive)),
+            label,
+          ).toEqual(a.expected);
+          expect(seen, `${label}: asked once, with a fresh press`).toEqual([
+            { button, repeat: false },
+          ]);
+          expect(
+            r.route(edge(button, false), screenNavCtx(1100, screen, worldActive)),
+            `${label}: the release is counted and reported as before`,
+          ).toEqual({ consumed: true, effects: [dirUp(dir)] });
+          expect(seen.length, `${label}: the release asks nobody`).toBe(1);
+          rows += 1;
+        }
+      }
+    }
+    expect(rows, 'ANTI-VACUITY: every direction x answer x world flag was driven').toBe(
+      DIRS.length * answers.length * 2,
+    );
+
+    // No adapter bound: the arrow is still the router's (swallowed), never the page's.
+    for (const [button] of DIRS) {
+      expect(
+        new InputRouter().route(edge(button, true), screenNavCtx(1000)),
+        `${button} with no screen bound`,
+      ).toEqual(SWALLOWED_EDGE);
+    }
+
+    // A, B, Y and the other routed buttons: the ordinary screen path, unhandled stays unconsumed.
+    for (const button of SCREEN_BUTTONS) {
+      for (const a of SCREEN_ANSWERS) {
+        const label = `${button} / ${a.name}`;
+        const { seen, screen } = askingScreen(() => a.answer);
+        const r = new InputRouter();
+        expect(r.route(edge(button, true), screenNavCtx(1000, screen)), label).toEqual(a.expected);
+        expect(seen, `${label}: the screen is asked once, fresh`).toEqual([
+          { button, repeat: false },
+        ]);
+        expect(r.route(edge(button, false), screenNavCtx(1100, screen)), `${label}: up`).toEqual({
+          consumed: false,
+          effects: [],
+        });
+        expect(seen.length, `${label}: the release asks nobody`).toBe(1);
+      }
+      expect(
+        new InputRouter().route(edge(button, true), screenNavCtx(1000)),
+        `${button} with no screen bound is not a nav effect`,
+      ).toEqual({ consumed: false, effects: [] });
+    }
+  });
+
+  it('CTL7C-1-SCREEN-REPEAT: a D-pad button held under a nav-capable screen repeats into ctx.screen 350 ms after the press and then every 100 ms, flagged repeat; a Command answer is a command effect and a consumed or unhandled one does not stop the schedule; the latest press repeats and its release hands back; a stalled clock asks once; nothing repeats once the frame is covered or gone', () => {
+    // WRONG IMPL KILLED: a tick that still emits a menu `nav` effect under a screen (the hidden
+    // menu scrolls), one that never asks the screen (a held arrow moves a dialogue cursor once),
+    // a repeat not flagged `repeat: true` (a wrapping list would wrap instead of clamping), a
+    // schedule that a `consumed` or `unhandled` answer stops, one anchored at 0 instead of the
+    // press time, a burst after a stalled frame, two asks for one due time, the older of two held
+    // buttons repeating, a release that does not hand the repeat back to the newest held button,
+    // and a repeat that still reaches the screen once a legacy frame covers it or it is gone.
+    for (const [button] of DIRS) {
+      for (const answer of ['consumed', 'unhandled'] as const) {
+        const label = `${button} / ${answer}`;
+        const { seen, screen } = askingScreen(() => answer);
+        const r = new InputRouter();
+        r.route(edge(button, true), screenNavCtx(1000, screen));
+        const at = (t: number): readonly RouterEffect[] => r.tick(screenNavCtx(t, screen));
+        expect(at(1000), `${label}: nothing at the press`).toEqual([]);
+        expect(at(1349), `${label}: 349 ms`).toEqual([]);
+        expect(seen, `${label}: only the press so far`).toEqual([{ button, repeat: false }]);
+        expect(at(1350), `${label}: the repeat is swallowed, never a nav effect`).toEqual([]);
+        expect(seen, `${label}: 350 ms: the screen is asked for a repeat`).toEqual([
+          { button, repeat: false },
+          { button, repeat: true },
+        ]);
+        expect(at(1350), `${label}: one ask per due time`).toEqual([]);
+        expect(seen.length).toBe(2);
+        at(1449);
+        expect(seen.length, `${label}: 449 ms`).toBe(2);
+        at(1450);
+        expect(seen.length, `${label}: 450 ms: the schedule survived the ${answer} answer`).toBe(3);
+        expect(seen.at(-1)).toEqual({ button, repeat: true });
+        at(1550);
+        expect(seen.length, `${label}: 550 ms`).toBe(4);
+      }
+    }
+
+    // A Command answer to a repeat becomes a command effect, every period.
+    const SCROLL: ScreenResult = { kind: 'advanceDialogue', choiceIdx: 2 };
+    const cmd = askingScreen((btn) => (btn.repeat ? SCROLL : 'consumed'));
+    const withCmd = new InputRouter();
+    expect(withCmd.route(edge('Down', true), screenNavCtx(1000, cmd.screen)).effects).toEqual([]);
+    expect(withCmd.tick(screenNavCtx(1350, cmd.screen))).toEqual([commandEffect(SCROLL)]);
+    expect(withCmd.tick(screenNavCtx(1449, cmd.screen))).toEqual([]);
+    expect(withCmd.tick(screenNavCtx(1450, cmd.screen))).toEqual([commandEffect(SCROLL)]);
+
+    // Anchored at the press time, fractional included.
+    const late = askingScreen(() => 'consumed');
+    const lateRouter = new InputRouter();
+    lateRouter.route(edge('Up', true), screenNavCtx(98765.5, late.screen));
+    lateRouter.tick(screenNavCtx(98765.5 + 349, late.screen));
+    expect(late.seen.length, 'not before press + 350').toBe(1);
+    lateRouter.tick(screenNavCtx(98765.5 + 350, late.screen));
+    expect(late.seen).toEqual([
+      { button: 'Up', repeat: false },
+      { button: 'Up', repeat: true },
+    ]);
+
+    // A stalled frame asks once; the next ask is due 100 ms after the stalled tick.
+    const stall = askingScreen(() => 'consumed');
+    const stallRouter = new InputRouter();
+    stallRouter.route(edge('Down', true), screenNavCtx(1000, stall.screen));
+    stallRouter.tick(screenNavCtx(2000, stall.screen));
+    expect(stall.seen.length, 'one ask, not nine').toBe(2);
+    stallRouter.tick(screenNavCtx(2000, stall.screen));
+    stallRouter.tick(screenNavCtx(2099, stall.screen));
+    expect(stall.seen.length).toBe(2);
+    stallRouter.tick(screenNavCtx(2100, stall.screen));
+    expect(stall.seen.length).toBe(3);
+
+    // The latest press repeats; its release hands the repeat back to the newest still-held button,
+    // re-armed at the release time + 350 ms.
+    const two = askingScreen(() => 'consumed');
+    const twoRouter = new InputRouter();
+    const repeats = (): NavInput[] => two.seen.filter((b) => b.repeat);
+    twoRouter.route(edge('Down', true), screenNavCtx(1000, two.screen));
+    twoRouter.route(edge('Up', true), screenNavCtx(1200, two.screen));
+    twoRouter.tick(screenNavCtx(1350, two.screen));
+    twoRouter.tick(screenNavCtx(1549, two.screen));
+    expect(repeats(), 'the older button no longer repeats').toEqual([]);
+    twoRouter.tick(screenNavCtx(1550, two.screen));
+    expect(repeats()).toEqual([{ button: 'Up', repeat: true }]);
+    expect(
+      twoRouter.route(edge('Up', false), screenNavCtx(1600, two.screen)),
+      'the release is reported and asks nothing',
+    ).toEqual({ consumed: true, effects: [dirUp('North')] });
+    twoRouter.tick(screenNavCtx(1949, two.screen));
+    expect(repeats().length, 'not due until release + 350').toBe(1);
+    twoRouter.tick(screenNavCtx(1950, two.screen));
+    expect(repeats().at(-1), 'handed back to Down').toEqual({ button: 'Down', repeat: true });
+    twoRouter.tick(screenNavCtx(2050, two.screen));
+    expect(repeats().length).toBe(3);
+    twoRouter.route(edge('Down', false), screenNavCtx(2100, two.screen));
+    twoRouter.tick(screenNavCtx(2500, two.screen));
+    twoRouter.tick(screenNavCtx(9000, two.screen));
+    expect(repeats().length, 'nothing held, nothing repeats').toBe(3);
+
+    // Covered by a legacy frame, or gone: the armed repeat reaches nobody.
+    const gone = askingScreen(() => ({ kind: 'popToBase' }));
+    const goneRouter = new InputRouter();
+    goneRouter.route(edge('Down', true), screenNavCtx(1000, gone.screen));
+    const coveredScreen: RouteContext = {
+      worldActive: false,
+      nav: { covered: true, now: 1350, screen: true },
+      screen: gone.screen,
+    };
+    expect(goneRouter.tick(coveredScreen), 'covered').toEqual([]);
+    expect(goneRouter.tick({ worldActive: false, screen: gone.screen }), 'no nav frame').toEqual(
+      [],
+    );
+    expect(goneRouter.tick({ ...navCtx(5000, true), screen: gone.screen })).toEqual([]);
+    expect(gone.seen, 'only the press reached the screen').toEqual([
+      { button: 'Down', repeat: false },
+    ]);
+  });
+
+  it('CTL7C-1-RESET-NO-HANDBACK: a key held since before resetRepeat is never handed the repeat when a newer key is released, under the main menu and under a nav screen; a key pressed after the reset still is; the held key`s release is still reported', () => {
+    // WRONG IMPL KILLED: a resetRepeat that clears the armed repeat but keeps the held-press
+    // order (hold Down at the world, a frame opens, tap Up in it: 350 ms after the tap Down
+    // repeats into the new frame with no key pressed in it, on the menu path and on a screen's),
+    // one that forgets the holder counts too (Down's release would report nothing and the held
+    // direction would leak), and one that disables the hand-back altogether after a reset (a
+    // button pressed after the reset must still get it back).
+    // Control: without the reset the same taps DO hand the repeat back (CTL5-5-REPEAT-RESET), so
+    // the silence below is the reset's doing.
+    const control = new InputRouter();
+    control.route(edge('Down', true), navCtx(1000));
+    control.route(edge('Up', true), navCtx(1100));
+    control.route(edge('Up', false), navCtx(1200));
+    expect(control.tick(navCtx(1550)), 'control: no reset, Down is handed back').toEqual([
+      navEffect('Down', true),
+    ]);
+
+    // The menu flavour.
+    const menu = new InputRouter();
+    menu.route(edge('Down', true), navCtx(1000));
+    menu.resetRepeat();
+    expect(menu.route(edge('Up', true), navCtx(1100)).effects).toEqual([navEffect('Up', false)]);
+    expect(menu.route(edge('Up', false), navCtx(1200)).effects).toEqual([dirUp('North')]);
+    for (const t of [1450, 1549, 1550, 1650, 2000, 5000]) {
+      expect(
+        menu.tick(navCtx(t)),
+        `menu: Down held since before the reset is silent at ${t}`,
+      ).toEqual([]);
+    }
+    expect(menu.route(edge('Down', false), navCtx(5100)), 'its release is still reported').toEqual({
+      consumed: true,
+      effects: [dirUp('South')],
+    });
+
+    // The screen flavour.
+    const scr = askingScreen(() => 'consumed');
+    const onScreen = new InputRouter();
+    onScreen.route(edge('Down', true), screenNavCtx(1000, scr.screen));
+    onScreen.resetRepeat();
+    onScreen.route(edge('Up', true), screenNavCtx(1100, scr.screen));
+    onScreen.route(edge('Up', false), screenNavCtx(1200, scr.screen));
+    for (const t of [1450, 1549, 1550, 1650, 2000, 5000]) {
+      onScreen.tick(screenNavCtx(t, scr.screen));
+    }
+    expect(scr.seen, 'screen: only the two presses, no repeat').toEqual([
+      { button: 'Down', repeat: false },
+      { button: 'Up', repeat: false },
+    ]);
+    expect(onScreen.route(edge('Down', false), screenNavCtx(5100, scr.screen))).toEqual({
+      consumed: true,
+      effects: [dirUp('South')],
+    });
+
+    // A button pressed AFTER the reset is in the order again: releasing a newer one hands back to
+    // it, never to the button held from before.
+    const after = new InputRouter();
+    after.route(edge('Down', true), navCtx(1000));
+    after.resetRepeat();
+    after.route(edge('Left', true), navCtx(1100));
+    after.route(edge('Up', true), navCtx(1200));
+    after.route(edge('Up', false), navCtx(1300));
+    expect(after.tick(navCtx(1649))).toEqual([]);
+    expect(after.tick(navCtx(1650)), 'Left (pressed after the reset) gets it back').toEqual([
+      navEffect('Left', true),
+    ]);
+    after.route(edge('Left', false), navCtx(1700));
+    for (const t of [2050, 2150, 5000]) {
+      expect(after.tick(navCtx(t)), `and then not Down (t=${t})`).toEqual([]);
+    }
+  });
+
+  it('CTL7C-1-LEGACY-UNCHANGED: without nav.screen a D-pad edge never asks ctx.screen: it walks at the world, is swallowed under an open frame, is a menu nav effect (and repeats as one) under the main menu, also with screen: false, and a covered frame flagged screen is swallowed like any covered one', () => {
+    // WRONG IMPL KILLED: a router that hands the D-pad to ctx.screen whenever a screen is bound (the
+    // world would stop walking and every legacy frame would get arrows it never asked for), one
+    // keyed on the PRESENCE of `screen` instead of its value (`screen: false` is the menu), and one
+    // that ignores `covered` for a frame flagged screen (a nav screen under a legacy child would
+    // scroll behind it).
+    const contexts: ReadonlyArray<{
+      readonly name: string;
+      readonly make: (screen: RouteContext['screen']) => RouteContext;
+      readonly down: (button: VButton, dir: WasmDirection) => readonly RouterEffect[];
+    }> = [
+      {
+        name: 'the world',
+        make: (screen) => ({ worldActive: true, screen }),
+        down: (_b, dir) => [dirDown(dir)],
+      },
+      {
+        name: 'an open frame (no nav)',
+        make: (screen) => ({ worldActive: false, screen }),
+        down: () => [],
+      },
+      {
+        name: 'the main menu',
+        make: (screen) => ({ ...navCtx(1000), screen }),
+        down: (button) => [navEffect(button, false)],
+      },
+      {
+        name: 'the main menu, screen: false',
+        make: (screen) => ({
+          worldActive: false,
+          nav: { covered: false, now: 1000, screen: false },
+          screen,
+        }),
+        down: (button) => [navEffect(button, false)],
+      },
+      {
+        name: 'a covered nav frame flagged screen',
+        make: (screen) => ({
+          worldActive: false,
+          nav: { covered: true, now: 1000, screen: true },
+          screen,
+        }),
+        down: () => [],
+      },
+    ];
+    for (const ctx of contexts) {
+      for (const [button, dir] of DIRS) {
+        const label = `${ctx.name} / ${button}`;
+        const { seen, screen } = askingScreen(() => ({ kind: 'popToBase' }));
+        const r = new InputRouter();
+        expect(r.route(edge(button, true), ctx.make(screen)), `${label}: down`).toEqual({
+          consumed: true,
+          effects: ctx.down(button, dir),
+        });
+        expect(r.route(edge(button, false), ctx.make(screen)), `${label}: up`).toEqual({
+          consumed: true,
+          effects: [dirUp(dir)],
+        });
+        expect(seen, `${label}: the screen is never asked`).toEqual([]);
+      }
+    }
+
+    // The menu's repeat is still a nav effect and asks nobody, with screen absent or false.
+    for (const flag of [undefined, false] as const) {
+      const { seen, screen } = askingScreen(() => ({ kind: 'popToBase' }));
+      const ctxAt = (now: number): RouteContext => ({
+        worldActive: false,
+        nav: flag === undefined ? { covered: false, now } : { covered: false, now, screen: flag },
+        screen,
+      });
+      const r = new InputRouter();
+      r.route(edge('Down', true), ctxAt(1000));
+      expect(r.tick(ctxAt(1350)), `screen ${String(flag)}: the menu repeat`).toEqual([
+        navEffect('Down', true),
+      ]);
+      expect(seen, `screen ${String(flag)}: asks nobody`).toEqual([]);
+    }
+
+    // A covered frame flagged screen arms nothing and repeats nothing.
+    const covered = askingScreen(() => ({ kind: 'popToBase' }));
+    const coveredAt = (now: number): RouteContext => ({
+      worldActive: false,
+      nav: { covered: true, now, screen: true },
+      screen: covered.screen,
+    });
+    const coveredRouter = new InputRouter();
+    coveredRouter.route(edge('Down', true), coveredAt(1000));
+    expect(coveredRouter.tick(coveredAt(1350))).toEqual([]);
+    expect(coveredRouter.tick(screenNavCtx(1450, covered.screen)), 'uncovered later').toEqual([]);
+    expect(covered.seen, 'nothing reached the screen').toEqual([]);
+
+    // Control: the very same press under an UNCOVERED frame flagged screen is asked, so every
+    // silence above is the flag's doing, not a router that never hands the D-pad to a screen.
+    const flagged = askingScreen(() => ({ kind: 'popToBase' }));
+    const flaggedRouter = new InputRouter();
+    flaggedRouter.route(edge('Down', true), screenNavCtx(1000, flagged.screen));
+    expect(flagged.seen, 'control: screen: true hands the press to the screen').toEqual([
+      { button: 'Down', repeat: false },
+    ]);
+  });
+});

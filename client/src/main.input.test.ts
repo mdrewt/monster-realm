@@ -34,6 +34,7 @@ import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
 import type { StoreBattle, StoreBattleMonster } from './net/store';
 import { HOLD_COMMIT_MS } from './prediction/heldKeys';
+import type { NavInput } from './ui/nav';
 
 interface Sent {
   readonly input: { readonly tag: string; readonly value?: { readonly tag: string } };
@@ -53,6 +54,9 @@ const H = vi.hoisted(() => ({
   /** The name of every reducer called other than enqueueMove, oldest first (ctl-2 asserts on
    *  `talk`). Reset by every boot. */
   calls: [] as string[],
+  /** The screen-adapter table main.ts's host reads: a mutable copy of the real one, re-made by the
+   *  module mock below on every fresh import, so a ctl-7c case can swap ONE frame's adapter. */
+  adapters: {} as Record<string, unknown>,
 }));
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid.
@@ -152,6 +156,14 @@ vi.mock('./observability/telemetry', async (importOriginal) => {
     },
     startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
   };
+});
+
+// The screen-adapter table: the real module with SCREEN_ADAPTERS replaced by a mutable copy of
+// itself (every entry the same legacy adapter, so nothing changes until a case swaps one).
+vi.mock('./ui/screens/index', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./ui/screens/index')>();
+  H.adapters = { ...actual.SCREEN_ADAPTERS };
+  return { ...actual, SCREEN_ADAPTERS: H.adapters };
 });
 
 // The renderer: init(mount) appends a focusable canvas so main.ts can resolve its world
@@ -1966,5 +1978,381 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
       document.activeElement,
       'focus is back on the world canvas, not inside the closed quest log',
     ).toBe(canvas);
+  });
+});
+
+// ==========================================================================================
+// ctl-7c: a nav-capable screen frame takes the D-pad (CTL7C.1)
+// ==========================================================================================
+//
+// Same harness, one fresh main.ts per case. The adapter table main.ts hands its screen host is the
+// module mock's mutable copy (`H.adapters`), so a case swaps ONE frame's adapter for a recording
+// stand-in while every other frame stays legacy. The subject is the quest log: Q opens it at the
+// world, and the main menu's Journal entry opens it above the menu. Observed: the buttons the
+// stand-in is asked, the menu cursor (`__game().navActive`, read-only), the intents sent to the
+// stubbed enqueueMove reducer, and `defaultPrevented`. Every case is synchronous after boot, so no
+// overlay's deferred focus runs and `worldHasFocus()` stays true for the next open.
+
+/** Swap one frame's adapter for this boot; afterEach (the `restorers` drain) puts it back. */
+function swapAdapter(id: string, adapter: unknown): void {
+  const previous = H.adapters[id];
+  H.adapters[id] = adapter;
+  restorers.push(() => {
+    H.adapters[id] = previous;
+  });
+}
+
+/** A stand-in adapter that records every button it is asked. Nav-capable when `nav`. It consumes
+ *  the D-pad and LB, answers B / Start / Select as the legacy adapter does (so the frame still
+ *  closes), and leaves everything else unhandled. Its state is whatever it was handed. */
+function recordingAdapter(seen: NavInput[], nav: boolean): unknown {
+  const legacy: Readonly<Record<string, unknown>> = {
+    B: { kind: 'pop' },
+    Start: { kind: 'popToBase' },
+    Select: { kind: 'toggleHelp' },
+  };
+  const answer = (btn: NavInput): unknown => {
+    if (['Up', 'Down', 'Left', 'Right', 'LB'].includes(btn.button)) return 'consumed';
+    const result = legacy[btn.button];
+    if (result === undefined) return 'unhandled';
+    return btn.repeat ? 'consumed' : result;
+  };
+  return {
+    ...(nav ? { nav: true } : {}),
+    viewModel: () => undefined,
+    init: () => undefined,
+    onButton: (_vm: unknown, state: unknown, btn: NavInput) => {
+      seen.push(btn);
+      return { state, result: answer(btn) };
+    },
+  };
+}
+
+/** A keydown at `t` and its keyup 5 ms later; returns the keydown. */
+function tapKey(code: string, t: number): KeyboardEvent {
+  const down = fire('keydown', code, t);
+  fire('keyup', code, t + 5);
+  return down;
+}
+
+/** The main menu's active entry while it is open (under a child too), else null. */
+const menuCursor = (): string | null =>
+  (window as unknown as { __game: () => { navActive: string | null } }).__game().navActive;
+const questShown = (): boolean => shownById('quest-log-overlay');
+
+describe('main.ts D-pad on a nav-capable screen (runtime, ctl-7c)', { sequential: true }, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    delete (document as unknown as { visibilityState?: unknown }).visibilityState;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    H.sessionState = 'hidden';
+    rafCallback = null;
+    document.body.replaceChildren();
+  });
+
+  it('CTL7C-1-BOOT-DPAD: a nav-capable quest log takes ArrowDown and S as Down (opened at the world and over the open main menu): the press is prevented, nothing walks, the menu cursor stays, and a held arrow repeats into it at +350 then every 100 ms on the frame loop; a Down held when B pops it never repeats into the menu; the menu on top still takes the D-pad; the legacy quest log and a stand-in without nav get no D-pad edge', async () => {
+    // WRONG IMPL KILLED: a nav screen whose D-pad still goes to the world or is swallowed (red
+    // today: a dialogue, shop or heal screen gets no Up/Down), one wired from the menu's place
+    // alone (the quest log over the covered main menu would move the HIDDEN menu's cursor, or
+    // nothing), a `routeCtx` that checks the covered menu before the nav screen (the frame the
+    // player sees gets nothing), repeats that never reach the screen or arrive unflagged, a
+    // repeat armed under the quest log that survives its pop and runs the menu cursor on with no
+    // key pressed in the menu (the mirror edge must reset it), a host that hands the D-pad to a
+    // frame whose adapter is NOT nav-capable (every legacy frame would get arrows it never asked
+    // for), and a menu that loses the D-pad while a nav adapter is merely registered for another
+    // frame. NOT killed here: a pre-ladder intercept that ignores nav screens (the tail route
+    // still delivers and prevents the D-pad press itself); the OS-repeat Enter assertion in
+    // main.controls.test.ts `CTL7C-2-BOOT-STATE` pins that.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0 });
+    const legacyQuestLog = H.adapters.questLogView;
+    expect(
+      legacyQuestLog,
+      'precondition: the mocked table carries the quest log entry',
+    ).toBeDefined();
+    const seen: NavInput[] = [];
+    swapAdapter('questLogView', recordingAdapter(seen, true));
+
+    // --- (a) the quest log opened at the world ----------------------------------------------
+    tapKey('KeyQ', 1010);
+    expect(questShown(), 'a, precondition: Q opened the quest log').toBe(true);
+    expect(stack(), 'a, precondition: one frame over the world').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'questLogView' },
+    ]);
+    expect(seen, 'a, precondition: opening asked the adapter nothing').toEqual([]);
+
+    const arrow = fire('keydown', 'ArrowDown', 1100);
+    expect(seen, 'a: ArrowDown reaches the quest log adapter as a fresh Down').toEqual([
+      { button: 'Down', repeat: false },
+    ]);
+    expect(arrow.defaultPrevented, 'a: the press is prevented').toBe(true);
+    expect(H.sends, 'a: nothing walks').toHaveLength(0);
+    expect(menuCursor(), 'a: no menu is open to move').toBeNull();
+    expect(stack(), 'a: the frame is unchanged').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'questLogView' },
+    ]);
+
+    // Held: the first repeat 350 ms after the press, then one every 100 ms, on the frame loop.
+    frame(1449);
+    expect(seen, 'a: nothing repeats before +350').toHaveLength(1);
+    frame(1450);
+    expect(seen, 'a: the first repeat at +350').toEqual([
+      { button: 'Down', repeat: false },
+      { button: 'Down', repeat: true },
+    ]);
+    frame(1549);
+    expect(seen).toHaveLength(2);
+    frame(1550);
+    expect(seen, 'a: the next at +450').toHaveLength(3);
+    expect(seen.at(-1)).toEqual({ button: 'Down', repeat: true });
+    // An OS key-repeat of the held arrow is prevented and is not a second press.
+    const osRepeat = fire('keydown', 'ArrowDown', 1560, { init: { repeat: true } });
+    expect(osRepeat.defaultPrevented, 'a: the OS repeat is prevented').toBe(true);
+    expect(seen).toHaveLength(3);
+    fire('keyup', 'ArrowDown', 1600);
+    frame(1700);
+    frame(2000);
+    expect(seen, 'a: the release stops the repeat and asks nothing').toHaveLength(3);
+
+    // S is Down and W is Up too.
+    const s = tapKey('KeyS', 2100);
+    expect(seen.at(-1), 'a: S is Down').toEqual({ button: 'Down', repeat: false });
+    expect(s.defaultPrevented).toBe(true);
+    const w = tapKey('KeyW', 2200);
+    expect(seen.at(-1), 'a: W is Up').toEqual({ button: 'Up', repeat: false });
+    expect(w.defaultPrevented).toBe(true);
+    expect(seen).toHaveLength(5);
+    expect(H.sends, 'a: no D-pad press under the screen walked').toHaveLength(0);
+
+    // B closes it through the adapter's own pop.
+    tapKey('Backspace', 2300);
+    expect(seen.at(-1)).toEqual({ button: 'B', repeat: false });
+    expect(questShown(), 'a: B closed the quest log').toBe(false);
+    expect(stack()).toEqual([{ kind: 'world' }]);
+
+    // --- (b) the quest log opened over the open main menu, through the menu --------------------
+    tapKey('KeyM', 2400);
+    expect(overlayShown('menu-overlay'), 'b, precondition: M opened the menu').toBe(true);
+    expect(menuCursor(), 'b, precondition: on the first entry').toBe('monsters');
+    // The menu on top still takes the D-pad while a nav adapter is registered for another frame.
+    tapKey('ArrowDown', 2500);
+    expect(menuCursor(), 'b: the menu on top moves').toBe('bag');
+    tapKey('ArrowDown', 2600);
+    expect(menuCursor(), 'b, precondition: the cursor is on Journal').toBe('journal');
+    const asked = seen.length;
+    expect(asked, 'b: the quest log adapter was not asked for the menu`s presses').toBe(6);
+    tapKey('Enter', 2700);
+    expect(questShown(), 'b, precondition: A on Journal opened the quest log').toBe(true);
+    expect(stack(), 'b, precondition: the quest log is above the covered menu').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'menuView' },
+      { kind: 'screen', id: 'questLogView' },
+    ]);
+
+    const over = fire('keydown', 'ArrowDown', 2800);
+    expect(seen.slice(asked), 'b: ArrowDown reaches the quest log over the menu').toEqual([
+      { button: 'Down', repeat: false },
+    ]);
+    expect(over.defaultPrevented, 'b: the press is prevented').toBe(true);
+    expect(menuCursor(), 'b: the covered menu cursor does not move').toBe('journal');
+    frame(3149);
+    expect(seen.length - asked).toBe(1);
+    frame(3150);
+    expect(seen.slice(asked), 'b: the repeat at +350 reaches the quest log').toEqual([
+      { button: 'Down', repeat: false },
+      { button: 'Down', repeat: true },
+    ]);
+    frame(3249);
+    frame(3250);
+    expect(seen.length - asked, 'b: and the next at +450').toBe(3);
+    expect(menuCursor(), 'b: the covered menu never moved').toBe('journal');
+    fire('keyup', 'ArrowDown', 3260);
+    frame(3400);
+    expect(seen.length - asked).toBe(3);
+    expect(H.sends, 'b: nothing walked').toHaveLength(0);
+
+    // Down held under the quest log, then B pops it: the held Down never repeats into the menu.
+    fire('keydown', 'ArrowDown', 3800);
+    expect(seen.at(-1), 'b: a fresh Down').toEqual({ button: 'Down', repeat: false });
+    tapKey('Backspace', 3900);
+    expect(seen.at(-1)).toEqual({ button: 'B', repeat: false });
+    expect(questShown(), 'b: B popped the quest log').toBe(false);
+    expect(stack(), 'b: the menu is on top again').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'menuView' },
+    ]);
+    const afterPop = seen.length;
+    frame(4150);
+    frame(4250);
+    frame(4500);
+    expect(menuCursor(), 'b: the Down held from the quest log does not walk the menu').toBe(
+      'journal',
+    );
+    expect(seen.length, 'b: nor reach the closed quest log').toBe(afterPop);
+    fire('keyup', 'ArrowDown', 4600);
+    // Control: a fresh press on the menu, now on top, does move it.
+    tapKey('ArrowDown', 4700);
+    expect(menuCursor(), 'b, control: the menu on top moves for a fresh press').toBe('social');
+    expect(seen.length, 'b, control: and the quest log adapter is not asked').toBe(afterPop);
+
+    // --- (c) the shipped legacy quest log adapter: today's behaviour ---------------------------
+    tapKey('Escape', 4800);
+    expect(overlayShown('menu-overlay'), 'c, precondition: Escape closed the menu').toBe(false);
+    swapAdapter('questLogView', legacyQuestLog);
+    tapKey('KeyQ', 4900);
+    expect(questShown(), 'c, precondition: Q opened the quest log').toBe(true);
+    const legacyArrow = fire('keydown', 'ArrowDown', 5000);
+    expect(legacyArrow.defaultPrevented, 'c: still prevented (no page scroll)').toBe(true);
+    frame(5350);
+    frame(5450);
+    fire('keyup', 'ArrowDown', 5460);
+    expect(questShown(), 'c: the quest log is still open').toBe(true);
+    expect(stack()).toEqual([{ kind: 'world' }, { kind: 'screen', id: 'questLogView' }]);
+    expect(seen.length, 'c: the swapped-out stand-in is not asked').toBe(afterPop);
+    tapKey('KeyQ', 5500);
+    expect(questShown(), 'c: Q closed it').toBe(false);
+
+    // --- (c') a recording stand-in WITHOUT nav: the D-pad never reaches it ----------------------
+    const plain: NavInput[] = [];
+    swapAdapter('questLogView', recordingAdapter(plain, false));
+    tapKey('KeyQ', 5600);
+    expect(questShown(), "c', precondition: Q opened the quest log").toBe(true);
+    const plainArrow = fire('keydown', 'ArrowDown', 5700);
+    expect(plainArrow.defaultPrevented, "c': the arrow is still prevented").toBe(true);
+    frame(6050);
+    frame(6150);
+    fire('keyup', 'ArrowDown', 6160);
+    const plainS = tapKey('KeyS', 6200);
+    expect(plainS.defaultPrevented).toBe(true);
+    expect(plain, "c': a frame without a nav-capable adapter gets no D-pad edge").toEqual([]);
+    // Control: the stand-in is live and is asked for a button it does own.
+    tapKey('PageUp', 6300);
+    expect(plain, "c', control: PageUp reaches it as LB").toEqual([
+      { button: 'LB', repeat: false },
+    ]);
+    expect(H.sends, 'no D-pad press in this whole case walked').toHaveLength(0);
+  });
+});
+
+// ==========================================================================================
+// ctl-7c round 2: a held D-pad key never repeats across a context change (red-team findings)
+// ==========================================================================================
+//
+// The router's synthesized repeat belongs to the frame the key was pressed in. Every way the
+// context can change under a held key must stop it: a frame pushed above (the mirror edge), and a
+// base that changes kind under a frame that stays (no frame is pushed or popped then).
+
+describe('main.ts held D-pad and context changes (runtime, ctl-7c)', { sequential: true }, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    delete (document as unknown as { visibilityState?: unknown }).visibilityState;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    H.sessionState = 'hidden';
+    rafCallback = null;
+    document.body.replaceChildren();
+  });
+
+  it('CTL7C-1-BOOT-BASE-RESET: a D-pad key held on a nav-capable dialogue stops repeating into it when a battle row arrives (the dialogue stays on the stack, suspended, over the new battle base); with no battle the same hold does repeat', async () => {
+    // WRONG IMPL KILLED (red-team, a real bug): a base change of kind that clears the world's held
+    // set but leaves the router's repeat armed. The stack goes from [world, dialogueView] to
+    // [battle, dialogueView]: no frame is pushed or popped (no mirror edge) and the reconcile drops
+    // nothing (the conversation suspends), so nothing else resets it, and the arrow held from
+    // before the battle keeps driving the dialogue's cursor at 10 Hz under the fight.
+    await bootReady();
+    seedWorld(1000);
+    const seen: NavInput[] = [];
+    swapAdapter('dialogueView', recordingAdapter(seen, true));
+    const repeats = (): NavInput[] => seen.filter((b) => b.repeat);
+    startConversation(1100);
+    expect(shownById('dialogue-overlay'), 'precondition: the server opened the dialogue').toBe(
+      true,
+    );
+    expect(stack(), 'precondition: the dialogue is the one frame over the world').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'dialogueView' },
+    ]);
+
+    // Control: with no battle, the held arrow repeats into the dialogue at +350 and +450.
+    fire('keydown', 'ArrowDown', 1200);
+    expect(seen, 'control: the press reaches the dialogue').toEqual([
+      { button: 'Down', repeat: false },
+    ]);
+    frame(1549);
+    expect(repeats(), 'control: nothing before +350').toEqual([]);
+    frame(1550);
+    frame(1650);
+    expect(repeats(), 'control: the held arrow repeats into the dialogue').toEqual([
+      { button: 'Down', repeat: true },
+      { button: 'Down', repeat: true },
+    ]);
+    fire('keyup', 'ArrowDown', 1700);
+
+    // The same hold, and a battle row arrives 100 ms into it.
+    fire('keydown', 'ArrowDown', 2000);
+    expect(seen.at(-1), 'precondition: a fresh press reaches the dialogue').toEqual({
+      button: 'Down',
+      repeat: false,
+    });
+    const before = repeats().length;
+    startBattle(BATTLE_ID, 2100);
+    expect(stack(), 'precondition: the dialogue is kept, suspended over the battle base').toEqual([
+      { kind: 'battle', battleId: '101' },
+      { kind: 'screen', id: 'dialogueView' },
+    ]);
+    frame(2350);
+    frame(2450);
+    frame(2550);
+    expect(
+      repeats().length,
+      'the arrow held from before the battle never repeats into the suspended dialogue',
+    ).toBe(before);
+    fire('keyup', 'ArrowDown', 2600);
+    expect(H.sends, 'nothing walked').toHaveLength(0);
+  });
+
+  it('CTL7C-1-BOOT-PUSH-RESET: Up held on the open main menu, A opens the nav-capable Journal above it while Up is still down: the held Up never repeats into the Journal and the covered menu does not move; a fresh Up press in the Journal does reach it', async () => {
+    // WRONG IMPL KILLED (M5d): a push mirror edge that no longer resets the repeat (or resets it
+    // only for a pop). The Up pressed on the menu stays armed, the Journal takes the D-pad, and
+    // 350 ms after the press the player's cursor in a screen they just opened moves with no key
+    // pressed in it.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0 });
+    const seen: NavInput[] = [];
+    swapAdapter('questLogView', recordingAdapter(seen, true));
+    tapKey('KeyM', 1010);
+    tapKey('ArrowDown', 1100);
+    tapKey('ArrowDown', 1200);
+    tapKey('ArrowDown', 1300);
+    expect(menuCursor(), 'precondition: the cursor is on Social').toBe('social');
+
+    fire('keydown', 'ArrowUp', 2000);
+    expect(menuCursor(), 'precondition: Up moved the cursor to Journal').toBe('journal');
+    fire('keydown', 'Enter', 2050); // A opens the Journal; Up is still down (its repeat: 2350)
+    fire('keyup', 'Enter', 2055);
+    expect(questShown(), 'precondition: A on Journal opened the quest log').toBe(true);
+    expect(stack(), 'precondition: the Journal is above the covered menu').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'menuView' },
+      { kind: 'screen', id: 'questLogView' },
+    ]);
+    for (const t of [2349, 2350, 2450, 2700]) frame(t);
+    expect(seen, 'the Up held since before the Journal opened never reaches it').toEqual([]);
+    expect(menuCursor(), 'and the covered menu did not move').toBe('journal');
+    fire('keyup', 'ArrowUp', 2800);
+
+    // Control: a fresh Up in the Journal is the Journal's.
+    tapKey('ArrowUp', 2900);
+    expect(seen, 'control: a fresh press reaches the Journal').toEqual([
+      { button: 'Up', repeat: false },
+    ]);
+    expect(H.sends, 'nothing walked').toHaveLength(0);
   });
 });
