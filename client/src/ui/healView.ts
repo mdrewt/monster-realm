@@ -18,23 +18,64 @@
 // guarded -- see the reasoning in `ui/pvpView.ts`'s `hide()`: an unguarded close is the self-healing
 // path, and `closeOverlayA11y` with no open record is a documented no-op.
 //
-// The one string this view owns, the location row, is resolved through the
-// i18n resolver (`tf('heal.location', { cost })`, ui/i18n/resolver.ts); `cost` is
-// `formatHealCostLine(loc)`'s text — model-owned copy (healModel.ts), interpolated verbatim.
+// The strings this view owns are resolved through the i18n resolver (ui/i18n/resolver.ts): the
+// location row (`tf('heal.location', { cost })`), the question (`tf('heal.prompt.question',
+// { cost })`), its Yes / No and the disabled reason; `cost` is `formatHealCostLine(loc)`'s text —
+// model-owned copy (healModel.ts), interpolated verbatim.
+//
+// THE QUESTION AND THE D-PAD (ctl-8a, CTL8A.3). "Heal party for N?" with Yes / No sits OUTSIDE
+// `#heal-list` (HL-01 / HL-02 pin that list to its rows), in elements this view creates. The heal
+// screen (ui/screens/healScreen.ts) paints the cursor and the cost; the frame opens from a keydown
+// with no store batch, so the hidden→visible edge draws the opening state (Yes, the first row's
+// cost) itself, and the kept paint is re-applied after every batch `render(vm)`.
 
 import { formatHealCostLine, type HealViewModel } from './healModel';
-import { tf } from './i18n/resolver';
+import { t, tf } from './i18n/resolver';
+import { list } from './nav';
+import { renderNav } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
+
+/** The Yes / No option labels by nav key, as thunks (resolved per render; ids stay literals). */
+const OPTION_LABELS: Readonly<Record<string, () => string>> = {
+  yes: () => t('prompt.yes'),
+  no: () => t('prompt.no'),
+};
+
+/** What the heal screen paints: the cursor, and the cost line (null: no bound location, Heal
+ *  disabled with a reason). */
+export interface HealPaint {
+  readonly active: 'yes' | 'no';
+  readonly cost: string | null;
+}
+
+/** Locate-or-create `#id` right after `after` (a second view against the same document creates
+ *  nothing). */
+function part(after: Element, id: string, tag: 'p' | 'div'): HTMLElement {
+  const existing = document.getElementById(id);
+  if (existing !== null) return existing;
+  const el = document.createElement(tag);
+  el.id = id;
+  after.insertAdjacentElement('afterend', el);
+  return el;
+}
 
 export class HealView {
   private overlay: HTMLElement;
   private list: HTMLElement;
+  readonly #question: HTMLElement;
+  readonly #reason: HTMLElement;
+  readonly #options: HTMLElement;
+  #paint: HealPaint = { active: 'yes', cost: null };
 
   constructor() {
     // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.overlay = document.getElementById('heal-overlay')!;
     // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.list = document.getElementById('heal-list')!;
+    // The prompt, after and outside the list. No strings here: text is written per render.
+    this.#question = part(this.list, 'heal-question', 'p');
+    this.#reason = part(this.#question, 'heal-reason', 'p');
+    this.#options = part(this.#reason, 'heal-options', 'div');
   }
 
   render(vm: HealViewModel | null): void {
@@ -45,6 +86,12 @@ export class HealView {
       return;
     }
     this.overlay.style.display = 'block';
+    if (!wasVisible) {
+      // The opening state, from the same facts the screen's `init` reads: at the open the legacy vm
+      // is the bound location's (one row, or none when its id is unknown).
+      const first = vm.locations[0];
+      this.#paint = { active: 'yes', cost: first === undefined ? null : formatHealCostLine(first) };
+    }
     this.list.replaceChildren();
     vm.locations.forEach((loc) => {
       const li = document.createElement('li');
@@ -53,6 +100,7 @@ export class HealView {
       li.dataset.locationId = String(loc.locationId);
       this.list.appendChild(li);
     });
+    this.#apply(this.#paint);
     // The null->non-null EDGE, and only the edge -- paint first, then claim the
     // overlay (D7: openOverlayA11y is the LAST statement, so its deferred focus resolves
     // `initialFocusSelector` against a fully-painted root).
@@ -61,6 +109,36 @@ export class HealView {
 
   get visible(): boolean {
     return this.overlay.style.display !== 'none' && this.overlay.style.display !== '';
+  }
+
+  /** The screen's paint: kept, so the next batch render re-applies it. */
+  paint(p: HealPaint): void {
+    this.#paint = p;
+    this.#apply(p);
+  }
+
+  #apply(p: HealPaint): void {
+    const enabled = p.cost !== null;
+    this.#question.textContent =
+      p.cost === null ? '' : tf('heal.prompt.question', { cost: p.cost });
+    this.#question.hidden = !enabled;
+    this.#reason.textContent = enabled ? '' : t('heal.prompt.unavailable');
+    this.#reason.hidden = enabled;
+    renderNav(
+      this.#options,
+      list([
+        { key: 'yes', enabled },
+        { key: 'no', enabled: true },
+      ]),
+      { tab: null, item: p.active, perTab: {} },
+      {
+        frame: 'heal',
+        labelledBy: enabled ? 'heal-question' : 'heal-reason',
+        fill: (el, item) => {
+          el.textContent = OPTION_LABELS[item.key]?.() ?? '';
+        },
+      },
+    );
   }
 
   hide(): void {

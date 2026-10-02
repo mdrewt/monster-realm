@@ -20,6 +20,8 @@ import {
   buildShopViewModelForShop,
   // ctl-7d: the success-line formatter (CTL7D.4).
   buyFeedback,
+  // ctl-8a: the Y description and the row keys the shop adapter and view share (CTL8A.2).
+  itemDescription,
   type NoShopViewModel,
   type ShopBalanceViewModel,
   type ShopFeedback,
@@ -28,6 +30,8 @@ import {
   type ShopScreenViewModel,
   type ShopViewModel,
   sellFeedback,
+  shopBuyKey,
+  shopSellKey,
   // ctl-7d: the quantity rule (CTL7D.3).
   validShopQty,
 } from './shopModel';
@@ -1370,5 +1374,84 @@ describe('buyFeedback / sellFeedback (ctl-7d, CTL7D.4): what a successful buy or
       [BAIT, BERRY, RELIC, ...listed].every((row) => Object.isFrozen(row)),
       'fixture: every input row is frozen',
     ).toBe(true);
+  });
+});
+
+// ===========================================================================
+// ctl-8a: the Y description and the shared row keys (CTL8A.2).
+//
+// CONTRACT UNDER TEST (`ui/shopModel.ts`, plan §3):
+//   itemDescription(itemId, itemDefs): string | null
+//     the definition's description, or null when the definition is missing or its description is
+//     blank after trim (the view then writes the catalogued "none" mark).
+//   shopBuyKey(item: ShopItemViewModel) = String(item.shopItemId)
+//   shopSellKey(item: ShopInventoryItemViewModel) = String(item.itemId)
+//     the nav keys the shop adapter and the shop view both use, so the cursor the adapter paints
+//     names the very row the view built.
+// ===========================================================================
+
+describe('itemDescription / shopBuyKey / shopSellKey (ctl-8a, CTL8A.2)', () => {
+  it('CTL8A-2-MODEL-DESCRIPTION: itemDescription answers the definition`s description verbatim, and null for a missing definition or a description that is empty or blank after trim; shopBuyKey is the decimal shopItemId and shopSellKey the decimal itemId, exact past 2^53 and for id 0, and distinct rows get distinct keys', () => {
+    // WRONG IMPL KILLED: a description read off another item, a blank description answered as
+    // '   ' or '' (the slot would look empty instead of showing the none mark), a missing
+    // definition answered as '' or undefined or a throw, an `Unknown item` placeholder; a buy key
+    // built from the itemId (two stock rows of one item, in one shop or two, would collide and
+    // the cursor would mark both), a sell key built from the stack's invId (the sell rows are per
+    // item, aggregated across stacks), a key routed through Number (2^53 + 1 collides with 2^53),
+    // and an id 0 key dropped as falsy.
+    const NBSP = String.fromCharCode(0x00a0);
+    const defs: ReadonlyMap<number, StoreItemRow> = new Map(
+      [
+        makeItemDef(7, { name: 'Bait', description: 'Lures a wild monster closer.' }),
+        makeItemDef(8, { name: 'Berry', description: '' }),
+        makeItemDef(9, { name: 'Relic', description: '   ' }),
+        makeItemDef(10, { name: 'Tonic', description: `\t\n ${NBSP}` }),
+        makeItemDef(0, { name: 'Pebble', description: 'Item zero, still an item.' }),
+      ].map((d) => [d.id, d] as const),
+    );
+    const DESCRIBED: ReadonlyArray<readonly [string, number, string | null]> = [
+      ['a description', 7, 'Lures a wild monster closer.'],
+      ['item id 0', 0, 'Item zero, still an item.'],
+      ['an empty description', 8, null],
+      ['spaces only', 9, null],
+      ['tabs, newlines and a no-break space only', 10, null],
+      ['no definition loaded', 12, null],
+    ];
+    for (const [label, itemId, want] of DESCRIBED) {
+      let got: string | null | undefined;
+      expect(() => {
+        got = itemDescription(itemId, defs);
+      }, `${label}: never throws`).not.toThrow();
+      expect(got, label).toBe(want);
+    }
+    expect(itemDescription(7, new Map()), 'no definitions at all').toBeNull();
+
+    const PAST_2_53 = 9_007_199_254_740_993n;
+    const buy = (shopItemId: bigint, itemId: number): ShopItemViewModel => ({
+      shopItemId,
+      itemId,
+      name: 'Bait',
+      buyPrice: 20n,
+    });
+    expect(shopBuyKey(buy(31n, 7))).toBe('31');
+    expect(shopBuyKey(buy(0n, 7)), 'shop item 0').toBe('0');
+    expect(shopBuyKey(buy(PAST_2_53, 7)), 'exact past 2^53').toBe('9007199254740993');
+    expect(shopBuyKey(buy(PAST_2_53, 7))).not.toBe(shopBuyKey(buy(PAST_2_53 - 1n, 7)));
+    expect(shopBuyKey(buy(31n, 7)), 'two rows of one item: two keys').not.toBe(
+      shopBuyKey(buy(32n, 7)),
+    );
+
+    const sell = (invId: bigint, itemId: number): ShopInventoryItemViewModel => ({
+      invId,
+      itemId,
+      name: 'Bait',
+      count: 3,
+      sellPrice: 15n,
+      canSell: true,
+    });
+    expect(shopSellKey(sell(101n, 7))).toBe('7');
+    expect(shopSellKey(sell(101n, 0)), 'item 0').toBe('0');
+    expect(shopSellKey(sell(555n, 7)), 'the item, not the stack').toBe('7');
+    expect(shopSellKey(sell(101n, 7))).not.toBe(shopSellKey(sell(101n, 8)));
   });
 });

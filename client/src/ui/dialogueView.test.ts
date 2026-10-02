@@ -458,3 +458,149 @@ describe('DialogueView render(): existing paint behaviour (pinned, not changed b
     expect(root.style.display).toBe('none');
   });
 });
+
+// ---------------------------------------------------------------------------
+// ctl-8a (CTL8A.1): the bottom box and the painted cursor / reveal.
+//
+// The constructor docks the shell (`mr-dock` on the root) and moves the three content nodes
+// into ONE inner `div.mr-frame.mr-frame--bottom` (`data-size="bottom"`), idempotently.
+// `paint({ active, revealStart })` keeps what it is handed and applies it: the cursor button (the
+// `data-choice-idx` button whose idx is `active`, or the `data-shop-id` button for 'shop') carries
+// `is-active` and `aria-current="true"` and no other button does; `#dialogue-node-text` carries
+// `is-revealing` iff `revealStart` is non-null. Every button in `#dialogue-choices` is an
+// `mr-nav-item`. The kept paint survives each batch's legacy `render(vm)` and resets to
+// `{ active: null, revealStart: null }` on the hidden→visible edge.
+// ---------------------------------------------------------------------------
+
+const ctl8aEl = (id: string): HTMLElement => {
+  const el = document.getElementById(id);
+  if (el === null) throw new Error(`#${id} is missing`);
+  return el;
+};
+
+const ctl8aButtons = (): HTMLButtonElement[] =>
+  Array.from(ctl8aEl('dialogue-choices').querySelectorAll('button'));
+
+/** Every button carrying a cursor mark (`is-active` or `aria-current="true"`), named `c<idx>` or
+ *  `shop`. */
+function ctl8aMarked(): string[] {
+  return ctl8aButtons()
+    .filter((b) => b.classList.contains('is-active') || b.getAttribute('aria-current') === 'true')
+    .map((b) => (b.dataset.shopId !== undefined ? 'shop' : `c${b.dataset.choiceIdx}`));
+}
+
+/** The one button `name` (`c<idx>` or `shop`) carries BOTH halves of the cursor mark. */
+function ctl8aExpectCursor(name: string): void {
+  expect(ctl8aMarked(), 'exactly one button is the cursor').toEqual([name]);
+  const btn = ctl8aButtons().find(
+    (b) => (b.dataset.shopId !== undefined ? 'shop' : `c${b.dataset.choiceIdx}`) === name,
+  );
+  expect(btn?.classList.contains('is-active'), `${name}: is-active`).toBe(true);
+  expect(btn?.getAttribute('aria-current'), `${name}: aria-current`).toBe('true');
+}
+
+describe('DialogueView — the bottom box and paint (ctl-8a, CTL8A.1)', () => {
+  it('CTL8A-1-VIEW-BOTTOM-BOX: the constructor docks the shell and moves the npc name, the node text and the choices, in that order, into ONE div.mr-frame.mr-frame--bottom (data-size bottom) that is a child of the root; a second construction creates nothing more; render still paints into the moved nodes', () => {
+    // WRONG IMPL KILLED: a bottom box made by an inline style or an inset on the shell (A11Y-12,
+    // the CTL7A-2 shell rule) instead of a docked shell with an inner frame; the content left as
+    // direct root children; each node wrapped in its own frame; a frame outside the root or nested
+    // deeper; a second view that wraps the wrapper again; and nodes CLONED into the frame instead
+    // of moved (render would then paint the detached originals and the box would stay blank).
+    const root = mountDialogueOverlay();
+    const name = ctl8aEl('dialogue-npc-name');
+    const text = ctl8aEl('dialogue-node-text');
+    const choices = ctl8aEl('dialogue-choices');
+    new DialogueView();
+
+    // `mr-dock`, not `mr-shell--dock`: battleView.test.ts CTL7B-1-FRAME-CSS-ROSTER pins every
+    // styles.css selector matching /mr-(shell|frame)/, so the dock rule is named outside that family.
+    expect(root.classList.contains('mr-dock'), 'the shell is docked').toBe(true);
+    const frame = name.parentElement as HTMLElement;
+    expect(frame, 'the name moved into an inner frame').not.toBe(root);
+    expect(frame.tagName).toBe('DIV');
+    expect(frame.classList.contains('mr-frame'), 'mr-frame').toBe(true);
+    expect(frame.classList.contains('mr-frame--bottom'), 'mr-frame--bottom').toBe(true);
+    expect(frame.dataset.size).toBe('bottom');
+    expect(frame.parentElement, 'the frame is a child of the root').toBe(root);
+    expect(text.parentElement, 'the text shares the frame').toBe(frame);
+    expect(choices.parentElement, 'the choices share the frame').toBe(frame);
+    expect(
+      Array.from(frame.children).filter((c) => c === name || c === text || c === choices),
+      'in their order',
+    ).toEqual([name, text, choices]);
+
+    const view = new DialogueView();
+    expect(root.querySelectorAll('.mr-frame--bottom'), 'still ONE bottom frame').toHaveLength(1);
+    expect(name.parentElement, 'not wrapped again').toBe(frame);
+    expect(frame.parentElement).toBe(root);
+    const moved: ReadonlyArray<readonly [string, HTMLElement]> = [
+      ['dialogue-npc-name', name],
+      ['dialogue-node-text', text],
+      ['dialogue-choices', choices],
+    ];
+    for (const [id, node] of moved) {
+      expect(document.querySelectorAll(`#${id}`), `one #${id}`).toHaveLength(1);
+      expect(document.getElementById(id), `#${id} is the very node, moved`).toBe(node);
+    }
+
+    view.render(dialogueVm());
+    expect(view.visible).toBe(true);
+    expect(name.textContent).toBe('Elder Rowan');
+    expect(text.textContent).toBe('Welcome, traveller.');
+    expect(choices.querySelectorAll('button')).toHaveLength(2);
+  });
+
+  it('CTL8A-1-VIEW-PAINT: every choice button is an mr-nav-item; before any paint no button is the cursor and the text is not revealing; paint marks exactly the cursor button (a choice by idx, or Shop) with is-active and aria-current and toggles is-revealing; a legacy render(vm) keeps the kept paint; render(null) or hide() then render(vm) is back to the opening state', () => {
+    // WRONG IMPL KILLED: a cursor marked by class alone (no aria-current) or by colour; two buttons
+    // marked (the old cursor left behind); a mark found by list position instead of
+    // data-choice-idx (the Shop button has none); a reveal class that is never removed or is set
+    // with no reveal; a paint lost on the next store batch's render(vm) (the cursor would vanish
+    // on every batch); a paint kept across a close (a reopened talk shows the last one's cursor
+    // and no reveal); and a Shop button without mr-nav-item.
+    mountDialogueOverlay();
+    const view = new DialogueView();
+    const text = ctl8aEl('dialogue-node-text');
+    const vm = dialogueVm({ shopAction: { shopId: 4 } });
+
+    view.render(vm);
+    expect(ctl8aButtons(), 'two choices and Shop').toHaveLength(3);
+    expect(
+      ctl8aButtons().every((b) => b.classList.contains('mr-nav-item')),
+      'every button is a nav item',
+    ).toBe(true);
+    expect(ctl8aMarked(), 'no cursor before any paint').toEqual([]);
+    expect(text.classList.contains('is-revealing'), 'no reveal before any paint').toBe(false);
+
+    view.paint({ active: 1, revealStart: 500 });
+    ctl8aExpectCursor('c1');
+    expect(text.classList.contains('is-revealing'), 'a reveal is painted').toBe(true);
+
+    view.render(vm);
+    ctl8aExpectCursor('c1');
+    expect(text.classList.contains('is-revealing'), 'the batch render keeps the reveal').toBe(true);
+    expect(ctl8aButtons().every((b) => b.classList.contains('mr-nav-item'))).toBe(true);
+
+    view.paint({ active: 'shop', revealStart: null });
+    ctl8aExpectCursor('shop');
+    expect(text.classList.contains('is-revealing'), 'a finished reveal').toBe(false);
+
+    view.paint({ active: null, revealStart: null });
+    expect(ctl8aMarked(), 'no cursor').toEqual([]);
+
+    view.paint({ active: 0, revealStart: 700 });
+    view.render(null);
+    view.render(vm);
+    expect(ctl8aMarked(), 'reopened after render(null): no cursor').toEqual([]);
+    expect(text.classList.contains('is-revealing')).toBe(false);
+
+    view.paint({ active: 1, revealStart: 800 });
+    view.hide();
+    view.render(vm);
+    expect(ctl8aMarked(), 'reopened after hide(): no cursor').toEqual([]);
+    expect(text.classList.contains('is-revealing')).toBe(false);
+
+    view.paint({ active: 0, revealStart: 900 });
+    ctl8aExpectCursor('c0');
+    expect(text.classList.contains('is-revealing'), 'the reopened view paints again').toBe(true);
+  });
+});

@@ -143,6 +143,18 @@ export type MessageId =
   | 'shop.feedback.buy.count'
   | 'shop.feedback.sell.item'
   | 'shop.feedback.sell.count'
+  // ctl-8a: the Buy | Sell tabs, the Y description slot's "none" mark, and the quantity and
+  // confirm prompts of the D-pad shop (shopView.ts, painted by ui/screens/shopScreen.ts).
+  | 'shop.tab.buy'
+  | 'shop.tab.sell'
+  | 'shop.description.none'
+  | 'shop.qty.buy'
+  | 'shop.qty.sell'
+  | 'shop.confirm.buy'
+  | 'shop.confirm.sell'
+  // prompt.* : the Yes / No options every confirm shares (shopView.ts, healView.ts; ctl-8a).
+  | 'prompt.yes'
+  | 'prompt.no'
   // tradePropose.* : the trade-proposal dialog (tradeProposeView.ts); its
   // submit label is the S1-seeded `chrome.tradePropose.submit`.
   | 'tradePropose.target.placeholder'
@@ -190,6 +202,9 @@ export type MessageId =
   | 'questLog.entry'
   // Heal.* : the heal overlay (healView.ts).
   | 'heal.location'
+  // ctl-8a: the heal frame's question and the reason it is disabled with no bound healer.
+  | 'heal.prompt.question'
+  | 'heal.prompt.unavailable'
   // Privacy.* : the privacy surface — its heading and buttons (privacyView.ts) and, since
   // 21r-b2, its copy layer (privacyBanner.ts): the HUD countdown, status/notice lines, export
   // status lines and control labels.
@@ -366,6 +381,20 @@ export interface MessageParams {
     readonly gold: bigint;
   };
   readonly 'shop.feedback.sell.count': { readonly qty: number };
+  // ctl-8a: the D-pad shop's prompts — the item name, the chosen quantity and the total in gold
+  // (unit price × quantity, bigint), all model data.
+  readonly 'shop.qty.buy': { readonly name: string; readonly qty: number };
+  readonly 'shop.qty.sell': { readonly name: string; readonly qty: number };
+  readonly 'shop.confirm.buy': {
+    readonly qty: number;
+    readonly name: string;
+    readonly gold: bigint;
+  };
+  readonly 'shop.confirm.sell': {
+    readonly qty: number;
+    readonly name: string;
+    readonly gold: bigint;
+  };
   // MODEL DATA only, again — ranked numbers, a quest content id and step,
   // the heal model's own cost text, species/nickname names. The leaderboard DISPLAY NAME is
   // deliberately NOT a param (I18N-21): it renders in a sibling `<bdi>`, never through a catalog.
@@ -376,6 +405,7 @@ export interface MessageParams {
   };
   readonly 'questLog.entry': { readonly name: string; readonly step: number };
   readonly 'heal.location': { readonly cost: string };
+  readonly 'heal.prompt.question': { readonly cost: string };
   readonly 'evolutionNotice.species.fallback': { readonly id: number };
   readonly 'evolutionNotice.reveal.nicknamed': {
     readonly nickname: string;
