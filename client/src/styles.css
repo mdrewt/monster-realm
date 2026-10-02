@@ -269,12 +269,18 @@
   font: 14px / 1.6 monospace;
   pointer-events: auto;
 }
-/* Menu and help open over a battle (ctl-6c), whose root is z-index 110. position:fixed because
- * encounter-battle.spec.ts E0 pins all three roots as fixed; #game-screen fills the viewport and
- * has no transform, so the box is the one .mr-shell gives. */
+/* Menu and help open over a battle (ctl-6c), whose root is z-index 110 (.mr-shell--battle).
+ * position:fixed because encounter-battle.spec.ts E0 pins all three roots as fixed; #game-screen
+ * fills the viewport and has no transform, so the box is the one .mr-shell gives. */
 .mr-shell--top {
   position: fixed;
   z-index: 120;
+}
+/* The battle root (ui/battleView.ts, ctl-7b) carries --top for E0's fixed position and this rule
+ * to sit under the menu and help but above the other shells. ORDER IS LOAD-BEARING: both rules are
+ * one class, so this one must follow --top for its z-index to win. */
+.mr-shell--battle {
+  z-index: 110;
 }
 /* The interact prompt and the deletion countdown are frames too, but small and positioned by
  * main.ts (the prompt follows its anchor tile every frame). No click target: pointer-events off. */

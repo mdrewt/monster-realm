@@ -72,10 +72,11 @@ export class BoxView {
     this.#callbacks = callbacks;
 
     this.#root = document.createElement('div');
-    this.#root.style.cssText =
-      'position:fixed;inset:0;z-index:100;background:rgba(0,0,0,0.75);' +
-      'display:none;flex-direction:column;align-items:center;padding:24px;' +
-      'overflow-y:auto;font-family:monospace;color:#e0e0e0;';
+    // ctl-7b: a class-styled frame. `.mr-shell` places it inside `#game-screen` (the `#app` mount
+    // main.ts passes is inside it) and `.mr-frame` paints the frame tokens; inline is only the
+    // display toggle and the centring.
+    this.#root.className = 'mr-frame mr-shell';
+    this.#root.style.cssText = 'display:none;align-items:center;';
 
     const header = document.createElement('div');
     header.style.cssText = 'display:flex;align-items:center;gap:16px;margin-bottom:16px;';
@@ -182,7 +183,8 @@ export class BoxView {
         'border:1px solid #444;border-radius:4px;padding:8px;min-height:80px;background:#1a1a2e;';
       if (card === null) {
         el.textContent = tf('box.party.emptySlot', { slot: i });
-        el.style.opacity = '0.4';
+        // Dimmed by colour, never opacity: #aaa keeps 7:1 on the card (opacity 0.4 fell below AA).
+        el.style.color = '#aaa';
       } else {
         el.appendChild(this.#renderCard(card, true));
       }
@@ -195,7 +197,7 @@ export class BoxView {
     if (monsters.length === 0) {
       const empty = document.createElement('div');
       empty.textContent = t('box.box.empty');
-      empty.style.opacity = '0.4';
+      empty.style.color = '#aaa';
       this.#boxEl.appendChild(empty);
       return;
     }
