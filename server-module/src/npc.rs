@@ -375,9 +375,9 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
     };
     // Deletion gate: after the joined check, before the dismissing NPC reads.
     crate::guards::require_not_deleting(ctx, "advance_dialogue")?;
-    // Both-role ongoing-battle guard, ahead of the dismissing re-checks below:
-    // a mid-battle caller gets this refusal and keeps the conversation, which
-    // `dismiss_dialogue` (deliberately unguarded) can still close.
+    // Both-role ongoing-battle guard, ahead of the NPC / zone / range re-checks,
+    // so a mid-battle caller always gets this refusal. `dismiss_dialogue` is
+    // deliberately unguarded and can still close the conversation.
     if crate::guards::is_in_ongoing_battle(ctx, me) {
         return Err("cannot advance dialogue during an ongoing battle".to_string());
     }

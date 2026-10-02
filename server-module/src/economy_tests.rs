@@ -1139,9 +1139,14 @@ mod ctl16_shop_battle_guard {
     }
 
     /// A battle row in `outcome`, `player` on side A and `opponent` on side B.
-    fn battle(player: Identity, opponent: Identity, outcome: BattleOutcome) -> Battle {
+    fn battle(
+        battle_id: u64,
+        player: Identity,
+        opponent: Identity,
+        outcome: BattleOutcome,
+    ) -> Battle {
         Battle {
-            battle_id: 1,
+            battle_id,
             player_identity: player,
             opponent_identity: opponent,
             state: game_core::BattleState {
@@ -1157,25 +1162,46 @@ mod ctl16_shop_battle_guard {
         }
     }
 
-    /// The caller in an Ongoing battle, in either role: (label, side A, side B).
-    fn ongoing() -> [(&'static str, Identity, Identity); 4] {
+    fn third_player() -> Identity {
+        Identity::from_byte_array([0xE3; 32])
+    }
+
+    /// Worlds where the caller is in an Ongoing battle, in either role, as the battle
+    /// rows to seed in order: each shape alone, then two two-row worlds (production
+    /// keeps each player's latest finished battle next to a new Ongoing one).
+    fn refused_worlds() -> Vec<(&'static str, Vec<Battle>)> {
         let (me, other) = (ec_me(), ec_other());
-        [
-            ("wild, side A", me, crate::WILD_IDENTITY),
+        let (wild, live) = (crate::WILD_IDENTITY, BattleOutcome::Ongoing);
+        let shapes = [
+            ("wild, side A", me, wild),
             ("PvP, side A", me, other),
             ("PvP, side B", other, me),
             ("practice", me, me),
-        ]
+        ];
+        let mut out = Vec::new();
+        for (label, a, b) in shapes {
+            out.push((label, vec![battle(1, a, b, live)]));
+        }
+        let finished_then_live = vec![
+            battle(1, me, other, BattleOutcome::SideAWins),
+            battle(2, me, wild, live),
+        ];
+        out.push(("finished A, then Ongoing A", finished_then_live));
+        let live_then_finished = vec![
+            battle(1, third_player(), me, live),
+            battle(2, other, me, BattleOutcome::Fled),
+        ];
+        out.push(("Ongoing B, then finished B", live_then_finished));
+        out
     }
 
     /// Worlds where the caller is in no Ongoing battle: no battle row; their own battle
     /// finished (every terminal outcome, on side A and on side B); a stranger's Ongoing
     /// battle against the wild and against a third player.
-    fn controls() -> Vec<(&'static str, Option<Battle>)> {
+    fn controls() -> Vec<(&'static str, Vec<Battle>)> {
         let (me, other) = (ec_me(), ec_other());
-        let wild = crate::WILD_IDENTITY;
-        let third = Identity::from_byte_array([0xE3; 32]);
-        let rows = [
+        let (wild, third) = (crate::WILD_IDENTITY, third_player());
+        let shapes = [
             ("A/SideAWins", me, other, BattleOutcome::SideAWins),
             ("A/SideBWins", me, other, BattleOutcome::SideBWins),
             ("A/Fled", me, other, BattleOutcome::Fled),
@@ -1185,9 +1211,9 @@ mod ctl16_shop_battle_guard {
             ("stranger/wild", other, wild, BattleOutcome::Ongoing),
             ("stranger/PvP", other, third, BattleOutcome::Ongoing),
         ];
-        let mut out = vec![("no battle row", None)];
-        for (label, a, b, outcome) in rows {
-            out.push((label, Some(battle(a, b, outcome))));
+        let mut out = vec![("no battle row", vec![])];
+        for (label, a, b, outcome) in shapes {
+            out.push((label, vec![battle(1, a, b, outcome)]));
         }
         out
     }
@@ -1195,15 +1221,18 @@ mod ctl16_shop_battle_guard {
     /// `ec_world` where buying 2 x item 5 at shop 3 (20) and selling 2 x item 5 (8)
     /// would both succeed: 1000 in the wallet, 3 of item 5, and a live offer that
     /// escrows 25 currency and 1 x item 5. Plus the battle table under BOTH participant
-    /// indexes (one row store): seed a battle once, through the returned handle.
-    fn shop_world(fx: &EcFixture) -> (EcWorld<'_>, EcHandle<'_, Battle>) {
+    /// indexes (one row store), with `battles` seeded in order through one handle.
+    fn shop_world<'a>(fx: &'a EcFixture, battles: &[Battle]) -> EcWorld<'a> {
         let w = ec_world(fx);
         w.wallet(ec_me(), 1000);
         w.stack(ec_me(), 5, 3);
         w.escrow(25, 1);
-        let battles = fx.table::<Battle>("battle", "player_identity", |r| r.player_identity);
+        let handle = fx.table::<Battle>("battle", "player_identity", |r| r.player_identity);
         let _ = fx.table::<Battle>("battle", "opponent_identity", |r| r.opponent_identity);
-        (w, battles)
+        for row in battles {
+            handle.seed(row);
+        }
+        w
     }
 
     /// Wallets, stacks, stock and items (`EcWorld::snapshot`) plus the trade offers.
@@ -1216,15 +1245,14 @@ mod ctl16_shop_battle_guard {
     /// CTL16.3 (buy): a buy that would succeed is refused for a caller in an Ongoing
     /// battle, in any role, with the exact message, and wallets, stacks and the escrow
     /// offer stay byte-identical. Also at qty 0: the guard precedes the quantity check.
-    /// kills: no guard in buy; a check of one role only; the guard placed after the qty
-    /// check or after the spend.
+    /// kills: no guard in buy; a check of one role, or of one row per role, only; the
+    /// guard placed after the qty check or after the spend.
     #[test]
     fn ctl16_3_buy_refused_in_ongoing_battle_either_role_store_unchanged() {
-        for (label, a, b) in ongoing() {
+        for (label, rows) in refused_worlds() {
             for qty in [2, 0] {
                 let fx = ec_fixture();
-                let (w, battles) = shop_world(&fx);
-                battles.seed(&battle(a, b, BattleOutcome::Ongoing));
+                let w = shop_world(&fx, &rows);
                 let before = snapshot(&w);
                 assert_eq!(
                     fx.run_as(ec_me(), |ctx| buy(ctx, 3, 5, qty)),
@@ -1240,15 +1268,14 @@ mod ctl16_shop_battle_guard {
     /// for a caller in an Ongoing battle, in any role, with the exact message, and
     /// wallets, stacks and the escrow offer stay byte-identical. Also at qty 0: the
     /// guard precedes the quantity check.
-    /// kills: no guard in sell; a check of one role only; the guard placed after the
-    /// qty check or after the consume.
+    /// kills: no guard in sell; a check of one role, or of one row per role, only; the
+    /// guard placed after the qty check or after the consume.
     #[test]
     fn ctl16_3_sell_refused_in_ongoing_battle_either_role_store_unchanged() {
-        for (label, a, b) in ongoing() {
+        for (label, rows) in refused_worlds() {
             for qty in [2, 0] {
                 let fx = ec_fixture();
-                let (w, battles) = shop_world(&fx);
-                battles.seed(&battle(a, b, BattleOutcome::Ongoing));
+                let w = shop_world(&fx, &rows);
                 let before = snapshot(&w);
                 assert_eq!(
                     fx.run_as(ec_me(), |ctx| sell(ctx, 5, qty)),
@@ -1267,12 +1294,9 @@ mod ctl16_shop_battle_guard {
     /// kills: a guard ignoring the outcome; a table-wide check; refuse-everything.
     #[test]
     fn ctl16_3_buy_and_sell_admitted_without_an_ongoing_battle_of_the_callers() {
-        for (label, row) in controls() {
+        for (label, rows) in controls() {
             let fx = ec_fixture();
-            let (w, battles) = shop_world(&fx);
-            if let Some(row) = &row {
-                battles.seed(row);
-            }
+            let w = shop_world(&fx, &rows);
             assert_eq!(
                 fx.run_as(ec_me(), |ctx| buy(ctx, 3, 5, 2)),
                 Ok(()),

@@ -1493,6 +1493,32 @@ mod ctl16_battle_guard {
         ("practice", ME, ME),
     ];
 
+    /// One battle row: (side A, side B, outcome).
+    type Spec = (Identity, Identity, BattleOutcome);
+
+    /// Production keeps each player's latest finished battle, so a caller can hold a
+    /// finished row next to an Ongoing one: (label, row seeded first, row seeded second).
+    const TWO_ROWS: [(&str, Spec, Spec); 2] = [
+        (
+            "finished A, then Ongoing A",
+            (ME, OTHER, BattleOutcome::SideAWins),
+            (ME, WILD, BattleOutcome::Ongoing),
+        ),
+        (
+            "Ongoing B, then finished B",
+            (THIRD, ME, BattleOutcome::Ongoing),
+            (OTHER, ME, BattleOutcome::Fled),
+        ),
+    ];
+
+    /// talk's sub-cases: (npc entity id, seed the older conversation first, label).
+    const TALK_CASES: [(u64, bool, &str); 4] = [
+        (NPC, true, "elder, older conversation"),
+        (NPC, false, "elder, no conversation"),
+        (404, true, "no such npc, older conversation"),
+        (404, false, "no such npc, no conversation"),
+    ];
+
     /// Battles that leave the caller free: their own finished battle (every terminal
     /// outcome, on side A and on side B) and a stranger's Ongoing battle.
     const ADMITTED: [(&str, Identity, Identity, BattleOutcome); 8] = [
@@ -1514,9 +1540,14 @@ mod ctl16_battle_guard {
     }
 
     /// A battle row in `outcome`, `player` on side A and `opponent` on side B.
-    fn battle(player: Identity, opponent: Identity, outcome: BattleOutcome) -> Battle {
+    fn battle(
+        battle_id: u64,
+        player: Identity,
+        opponent: Identity,
+        outcome: BattleOutcome,
+    ) -> Battle {
         Battle {
-            battle_id: 1,
+            battle_id,
             player_identity: player,
             opponent_identity: opponent,
             state: game_core::BattleState {
@@ -1532,11 +1563,25 @@ mod ctl16_battle_guard {
         }
     }
 
+    /// Every refused world, as the battle rows to seed in order: each `ONGOING` battle
+    /// alone, then each `TWO_ROWS` pair (distinct battle ids).
+    fn refused_worlds() -> Vec<(&'static str, Vec<Battle>)> {
+        let mut out = Vec::new();
+        for (label, a, b) in ONGOING {
+            out.push((label, vec![battle(1, a, b, BattleOutcome::Ongoing)]));
+        }
+        for (label, (a1, b1, o1), (a2, b2, o2)) in TWO_ROWS {
+            let rows = vec![battle(1, a1, b1, o1), battle(2, a2, b2, o2)];
+            out.push((label, rows));
+        }
+        out
+    }
+
     /// Every admitted world: no battle row at all, then each `ADMITTED` battle.
-    fn controls() -> Vec<(&'static str, Option<Battle>)> {
-        let mut out = vec![("no battle row", None)];
+    fn controls() -> Vec<(&'static str, Vec<Battle>)> {
+        let mut out = vec![("no battle row", vec![])];
         for (label, a, b, outcome) in ADMITTED {
-            out.push((label, Some(battle(a, b, outcome))));
+            out.push((label, vec![battle(1, a, b, outcome)]));
         }
         out
     }
@@ -1578,7 +1623,7 @@ mod ctl16_battle_guard {
         def.reward.currency
     }
 
-    /// Every table talk / advance_dialogue / dismiss_dialogue reads or writes.
+    /// The tables these tests seed or compare.
     struct World<'a> {
         npcs: Handle<'a, Npc, u64>,
         battles: Handle<'a, Battle>,
@@ -1682,11 +1727,20 @@ mod ctl16_battle_guard {
         fn wallet_rows(&self) -> Vec<Vec<u8>> {
             self.wallets.rows().iter().map(bytes).collect()
         }
+        /// Seeds `rows` in order, through the one `battles` handle.
+        fn seed_battles(&self, rows: &[Battle]) {
+            for row in rows {
+                self.battles.seed(row);
+            }
+        }
+        /// The caller's older conversation, with another NPC at another node.
+        fn seed_older_conversation(&self) {
+            self.convs.seed(&conv(ME, ELSEWHERE, "elsewhere"));
+        }
     }
 
     /// `world` plus what makes an admitted talk visible: the caller holds quest_001
-    /// (completed by talking to the elder), a wallet of 7, and an older conversation
-    /// with another NPC at another node.
+    /// (completed by talking to the elder) and a wallet of 7.
     fn talk_world(fx: &Fixture) -> World<'_> {
         let w = world(fx);
         w.quests.seed(&PlayerQuestRow {
@@ -1696,7 +1750,6 @@ mod ctl16_battle_guard {
             step_index: 0,
         });
         w.wallets.seed(&wallet(7));
-        w.convs.seed(&conv(ME, ELSEWHERE, "elsewhere"));
         w
     }
 
@@ -1709,19 +1762,23 @@ mod ctl16_battle_guard {
     }
 
     /// CTL16.1: a caller in an Ongoing battle, in any role, is refused `talk` with the
-    /// exact message and nothing is written: the older conversation is neither replaced
-    /// nor removed, no flag is stored, quest_001 is not completed and the wallet is not
-    /// paid. The same refusal when the NPC does not exist: the guard precedes the NPC
-    /// reads.
-    /// kills: no guard in talk; a check of one role only (misses PvP side B, or the
-    /// side-A shapes); the guard placed after a write or after the NPC lookup.
+    /// exact message and nothing is written: no conversation is created (none held) or
+    /// replaced (an older one held), no flag is stored, quest_001 is not completed and
+    /// the wallet is not paid. The same refusal when the NPC does not exist: the guard
+    /// precedes the NPC reads.
+    /// kills: no guard in talk; a check of one role, or of one row per role, only; a
+    /// guard keyed on an existing conversation; the guard after a write or the NPC
+    /// lookup.
     #[test]
     fn ctl16_1_talk_refused_in_ongoing_battle_either_role_store_unchanged() {
-        for (label, a, b) in ONGOING {
-            for (npc, case) in [(NPC, "the elder"), (404, "no such npc")] {
+        for (label, rows) in refused_worlds() {
+            for (npc, older, case) in TALK_CASES {
                 let fx = fixture();
                 let w = talk_world(&fx);
-                w.battles.seed(&battle(a, b, BattleOutcome::Ongoing));
+                if older {
+                    w.seed_older_conversation();
+                }
+                w.seed_battles(&rows);
                 let before = w.snapshot();
                 assert_eq!(
                     fx.run_as(ME, |ctx| super::talk(ctx, npc)),
@@ -1735,60 +1792,72 @@ mod ctl16_battle_guard {
 
     /// CTL16.1 controls: with no battle row, only the caller's finished battles, or a
     /// stranger's Ongoing battle, talk is admitted and its effects are visible. The
-    /// older conversation now points at the elder's greeting, the flag is stored,
-    /// quest_001 is done and its row gone, and the wallet gains exactly the content
-    /// reward. This is what makes the refusal's "unchanged" non-vacuous.
+    /// caller's conversation (created, or the older one replaced) is at the elder's
+    /// greeting, the flag is stored, quest_001 is done and its row gone, and the wallet
+    /// gains exactly the content reward. This makes the refusal's "unchanged"
+    /// non-vacuous.
     /// kills: a guard ignoring the outcome; a table-wide "any Ongoing battle" check; a
     /// guard that refuses everything.
     #[test]
     fn ctl16_1_talk_admitted_without_an_ongoing_battle_of_the_callers() {
         let reward = quest_001_reward();
-        for (label, row) in controls() {
-            let fx = fixture();
-            let w = talk_world(&fx);
-            if let Some(row) = &row {
-                w.battles.seed(row);
+        for (label, rows) in controls() {
+            for (older, case) in [(true, "replaced"), (false, "created")] {
+                let fx = fixture();
+                let w = talk_world(&fx);
+                if older {
+                    w.seed_older_conversation();
+                }
+                w.seed_battles(&rows);
+                assert_eq!(
+                    fx.run_as(ME, |ctx| super::talk(ctx, NPC)),
+                    Ok(()),
+                    "{label}, {case}: talk admitted"
+                );
+                assert_eq!(
+                    w.conv_rows(),
+                    vec![bytes(&conv(ME, NPC, "greeting"))],
+                    "{label}, {case}: the caller's conversation is at the elder's greeting"
+                );
+                let states = w.states.rows();
+                assert_eq!(states.len(), 1, "{label}, {case}: one state");
+                assert!(
+                    states[0].flags.contains(&FLAG.to_string()),
+                    "{label}, {case}: the greeting's flag is stored"
+                );
+                assert_eq!(
+                    states[0].done_quests,
+                    [QUEST],
+                    "{label}, {case}: quest_001 is done"
+                );
+                assert!(
+                    w.quests.rows().is_empty(),
+                    "{label}, {case}: quest_001's row is gone"
+                );
+                assert_eq!(
+                    w.wallet_rows(),
+                    vec![bytes(&wallet(7 + reward))],
+                    "{label}, {case}: credited exactly the content reward"
+                );
             }
-            assert_eq!(
-                fx.run_as(ME, |ctx| super::talk(ctx, NPC)),
-                Ok(()),
-                "{label}: talk admitted"
-            );
-            assert_eq!(
-                w.conv_rows(),
-                vec![bytes(&conv(ME, NPC, "greeting"))],
-                "{label}: the older conversation is replaced by the elder's greeting"
-            );
-            let states = w.states.rows();
-            assert_eq!(states.len(), 1, "{label}: one dialogue state");
-            assert!(
-                states[0].flags.contains(&FLAG.to_string()),
-                "{label}: the greeting's flag is stored"
-            );
-            assert_eq!(states[0].done_quests, [QUEST], "{label}: quest done");
-            assert!(w.quests.rows().is_empty(), "{label}: quest row gone");
-            assert_eq!(
-                w.wallet_rows(),
-                vec![bytes(&wallet(7 + reward))],
-                "{label}: credited exactly the content reward"
-            );
         }
     }
 
     /// CTL16.2: a caller in an Ongoing battle, in any role, is refused
     /// `advance_dialogue` with the exact message before choice 0's StartQuest applies:
     /// no quest row, no dialogue state, the conversation kept. The same when the
-    /// conversation's NPC row is gone, whose branch would otherwise delete the
-    /// conversation: the guard precedes it.
-    /// kills: no guard in advance_dialogue; a check of one role only; the guard placed
-    /// after the NPC / zone / range re-checks or after the effects.
+    /// conversation's NPC row is gone: that branch refuses with another error (and, on
+    /// this host, which has no rollback, also deletes the conversation); the guard
+    /// precedes it.
+    /// kills: no guard in advance_dialogue; a check of one role, or of one row per
+    /// role, only; the guard after the NPC / zone / range re-checks or the effects.
     #[test]
     fn ctl16_2_advance_dialogue_refused_in_ongoing_battle_either_role_store_unchanged() {
-        for (label, a, b) in ONGOING {
+        for (label, rows) in refused_worlds() {
             for (npc_row, case) in [(true, "npc present"), (false, "npc row absent")] {
                 let fx = fixture();
                 let w = advance_world(&fx);
-                w.battles.seed(&battle(a, b, BattleOutcome::Ongoing));
+                w.seed_battles(&rows);
                 if !npc_row {
                     assert_eq!(w.npcs.remove(NPC), 1, "fixture: npc row removed");
                 }
@@ -1809,12 +1878,10 @@ mod ctl16_battle_guard {
     /// kills: a guard ignoring the outcome; a table-wide check; refuse-everything.
     #[test]
     fn ctl16_2_advance_dialogue_admitted_without_an_ongoing_battle_of_the_callers() {
-        for (label, row) in controls() {
+        for (label, rows) in controls() {
             let fx = fixture();
             let w = advance_world(&fx);
-            if let Some(row) = &row {
-                w.battles.seed(row);
-            }
+            w.seed_battles(&rows);
             assert_eq!(
                 fx.run_as(ME, |ctx| super::advance_dialogue(ctx, 0)),
                 Ok(()),
@@ -1828,18 +1895,18 @@ mod ctl16_battle_guard {
         }
     }
 
-    /// CTL16.4: dismiss_dialogue stays available in every battle role (Start can pop a
-    /// dialogue suspended under a battle): Ok, the caller's conversation is gone and a
-    /// stranger's conversation is byte-identical.
+    /// CTL16.4: dismiss_dialogue stays available in every refused world (Start can pop
+    /// a dialogue suspended under a battle): Ok, the caller's conversation is gone and
+    /// a stranger's conversation is byte-identical.
     /// kills: the battle guard copied into dismiss_dialogue; a dismiss that deletes
     /// every conversation.
     #[test]
     fn ctl16_4_dismiss_dialogue_succeeds_during_an_ongoing_battle() {
-        for (label, a, b) in ONGOING {
+        for (label, rows) in refused_worlds() {
             let fx = fixture();
             let w = advance_world(&fx);
             w.convs.seed(&conv(THIRD, NPC, "greeting"));
-            w.battles.seed(&battle(a, b, BattleOutcome::Ongoing));
+            w.seed_battles(&rows);
             assert_eq!(
                 fx.run_as(ME, super::dismiss_dialogue),
                 Ok(()),
