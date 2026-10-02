@@ -35,6 +35,7 @@
 // Each `#app`-mounted view creates its OWN root under the shared mount, so opening this view
 // never closes a sibling (no close-before-open; boxView.test.ts S4-CROSS-VIEW-DISTINCT-ROOTS).
 import type { MonsterCardViewModel } from './boxModel';
+import type { MonstersPaint } from './screens/monstersScreen';
 import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
@@ -165,6 +166,9 @@ export class BoxView {
     this.#root.style.display = 'none';
     closeOverlayA11y('boxView', null);
   }
+
+  /** ctl-8b SKELETON: the Monsters screen's paint (tabs, cursor, sheet, typing row). */
+  paint(_p: MonstersPaint): void {}
 
   refresh(
     partySlots: readonly (MonsterCardViewModel | null)[],
