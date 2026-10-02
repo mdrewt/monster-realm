@@ -2868,29 +2868,28 @@ describe('RaisingView ctl-7b: a refresh re-renders only when the view-model chan
     ).toBeGreaterThan(0);
   });
 
-  it.each(CTL7B_FIELD_CASES)(
-    'CTL7B-RV-KEY-FIELD %s: a one-field change re-renders, and the cards show and forward the new value',
-    (label, change) => {
-      // WRONG IMPLS KILLED: a key that leaves one field out (a stale card / button text / forwarded
-      // id after exactly that change), a key that reads only the monster ids or only their count, a
-      // key over the Care / Train LABELS but not the data behind them, an items key that ignores
-      // order or itemId. Every case checks the DOM against the new view-model, not just identity.
-      const { view, root, onCare, onTrain } = ctl7bSetup();
-      view.refresh(raTrainVm());
-      const before = ctl7bCards(root);
-      expect(before, 'precondition: two cards rendered').toHaveLength(2);
+  it.each(
+    CTL7B_FIELD_CASES,
+  )('CTL7B-RV-KEY-FIELD %s: a one-field change re-renders, and the cards show and forward the new value', (label, change) => {
+    // WRONG IMPLS KILLED: a key that leaves one field out (a stale card / button text / forwarded
+    // id after exactly that change), a key that reads only the monster ids or only their count, a
+    // key over the Care / Train LABELS but not the data behind them, an items key that ignores
+    // order or itemId. Every case checks the DOM against the new view-model, not just identity.
+    const { view, root, onCare, onTrain } = ctl7bSetup();
+    view.refresh(raTrainVm());
+    const before = ctl7bCards(root);
+    expect(before, 'precondition: two cards rendered').toHaveLength(2);
 
-      const changed = change(raTrainVm());
-      view.refresh(changed);
-      const after = ctl7bCards(root);
-      expect(
-        after[0]?.care,
-        `${label}: the monster list was re-rendered, so Care is a new node`,
-      ).not.toBe(before[0]?.care);
-      expect(before[0]?.care.isConnected, `${label}: the old Care node is gone`).toBe(false);
-      ctl7bExpectRendered(root, changed, { onCare, onTrain }, label);
-    },
-  );
+    const changed = change(raTrainVm());
+    view.refresh(changed);
+    const after = ctl7bCards(root);
+    expect(
+      after[0]?.care,
+      `${label}: the monster list was re-rendered, so Care is a new node`,
+    ).not.toBe(before[0]?.care);
+    expect(before[0]?.care.isConnected, `${label}: the old Care node is gone`).toBe(false);
+    ctl7bExpectRendered(root, changed, { onCare, onTrain }, label);
+  });
 
   it('CTL7B-RV-KEY-INVENTORY BITES: a change that only the inventory shows (a description, a non-trainable item) still reaches the screen', () => {
     // WRONG IMPLS KILLED: an inventory key that ignores the description or the non-trainable
