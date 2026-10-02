@@ -559,3 +559,92 @@ describe('dialogueScreen — keying and observe (ctl-8a, CTL8A.1)', () => {
     expect(press(vm, up, 'A').result).toEqual(pick(0));
   });
 });
+
+describe('dialogueScreen — review-lens sync cases (ctl-8a, CTL8A.1)', () => {
+  it('CTL8A-1-SYNC-RESEAT: with the node key unchanged, a cursor whose item vanished (the npc row`s shop action went away) is re-seated on the first item by observe (a new state) and by the next press; a null cursor over items that appeared is seated too; nothing changes when the items are the same', () => {
+    // WRONG IMPL KILLED: a sync keyed on the node alone, so a cursor left on a vanished shop
+    // action paints no cursor and A acts on an item that is not there (or on nothing); a press
+    // that keeps the stale key because only observe re-seats; a leaf's null cursor that stays null
+    // once choices arrive (the player could never pick one); and an observe that answers a new
+    // object for a batch that left the items as they were. The press-side check uses Left (it
+    // moves nothing), so what it reads is the re-seat alone.
+    const T = 100_000;
+    const withShop = litVm(3, 4, T);
+    const onShop = press(withShop, ready(withShop), 'Up').state;
+    expect(cursorOf(withShop, onShop), 'fixture: the cursor on the shop action').toBe('shop');
+    expect(observe(litVm(3, 4, T), onShop, T), 'the same items: the same object').toBe(onShop);
+
+    // Same node key, the shop action gone.
+    const noShop = litVm(3, null, T);
+    expect(noShop.nodeKey, 'fixture: the node key did not change').toBe(withShop.nodeKey);
+    const reseated = observe(noShop, onShop, T);
+    expect(reseated, 'the cursor`s item vanished: a new state').not.toBe(onShop);
+    expect(cursorOf(noShop, reseated), 're-seated on the first item').toBe(0);
+    expect(observe(noShop, reseated, T), 'unchanged since: the same object').toBe(reseated);
+    const leftNoShop = press(noShop, onShop, 'Left');
+    expect(leftNoShop.result).toBe('consumed');
+    expect(
+      cursorOf(noShop, leftNoShop.state),
+      'a press with no observe between re-seats it too',
+    ).toBe(0);
+
+    // A leaf (no items) whose node gains two choices under the same key.
+    const leaf = litVm(0, null, T);
+    const onLeaf = ready(leaf);
+    expect(cursorOf(leaf, onLeaf), 'fixture: a leaf has no cursor').toBeNull();
+    const two = litVm(2, null, T);
+    const seated = observe(two, onLeaf, T);
+    expect(seated, 'items appeared: a new state').not.toBe(onLeaf);
+    expect(cursorOf(two, seated), 'seated on the first item').toBe(0);
+    expect(
+      cursorOf(two, press(two, onLeaf, 'Left').state),
+      'a press with no observe between seats it too',
+    ).toBe(0);
+  });
+
+  it('CTL8A-1-REDUCED-MOTION-RESEND: under reduced motion a node keyed right after an A-issued command swallows an A within DIALOGUE_RESEND_MS of the re-key and acts at DIALOGUE_RESEND_MS; with motion the reveal is the gate and the next node acts once it ends', () => {
+    // WRONG IMPL KILLED: a resend guard lifted by every re-key, which under reduced motion (no
+    // reveal to wait out) lets a double-tap of A land its second press on the NEXT node, a choice
+    // the player never saw; a guard that never expires on the new node; and, with motion, a guard
+    // carried over on top of the reveal (the new node's first A after the reveal would be lost).
+    const W = DIALOGUE_RESEND_MS;
+    expect(R, 'fixture: the reveal ends inside the resend window').toBeLessThan(W);
+    const T = 110_000;
+
+    const calm: DialogueScreenVm = { ...litVm(1, null, T), reduceMotion: true };
+    const calmNext = (now: number): DialogueScreenVm => ({
+      ...litVm(2, null, now),
+      reduceMotion: true,
+      nodeKey: 'literal:other',
+    });
+    const sent = press(calm, ready(calm), 'A');
+    expect(sent.result, 'fixture: A advanced').toEqual(advance(0));
+    const next = observe(calmNext(T), sent.state, T);
+    expect(next, 'a new node is a new state').not.toBe(sent.state);
+    expect(painted(calmNext(T), next), 'revealed at once, on the first item').toEqual([
+      { active: 0, revealStart: null },
+    ]);
+    expect(press(calmNext(T + 1), next, 'A').result, 'an A right after the re-key').toBe(
+      'consumed',
+    );
+    expect(press(calmNext(T + W - 1), next, 'A').result, 'a millisecond short').toBe('consumed');
+    expect(press(calmNext(T + W), next, 'A').result, 'at DIALOGUE_RESEND_MS it acts').toEqual(
+      advance(0),
+    );
+
+    // With motion: the reveal gates the new node, and nothing more.
+    const moving = litVm(1, null, T);
+    const sentMoving = press(moving, ready(moving), 'A');
+    expect(sentMoving.result).toEqual(advance(0));
+    const movingNext = (now: number): DialogueScreenVm => ({
+      ...litVm(2, null, now),
+      nodeKey: 'literal:other',
+    });
+    const nextMoving = observe(movingNext(T), sentMoving.state, T);
+    expect(press(movingNext(T + 1), nextMoving, 'A').result, 'mid-reveal').toBe('consumed');
+    expect(
+      press(movingNext(T + R), nextMoving, 'A').result,
+      'the reveal over, inside the old window: A acts',
+    ).toEqual(advance(0));
+  });
+});

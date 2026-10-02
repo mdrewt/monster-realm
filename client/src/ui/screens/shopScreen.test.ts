@@ -601,3 +601,138 @@ describe('shopScreen — settle and no shop (ctl-8a, CTL8A.2)', () => {
     expect(press(unknown, blank, 'B').result).toEqual(POP);
   });
 });
+
+describe('shopScreen — review-lens settle cases (ctl-8a, CTL8A.2)', () => {
+  // The quantity row and the confirm carry the row's name and unit price as last painted. A
+  // batch that changes the live row's buyPrice (Buy) or sellPrice / name (Sell) makes observe
+  // answer a NEW state that paints the new facts; with nothing changed it is the SAME object. A
+  // press that arrives before any observe has seen the change only paints it ('consumed'); the
+  // next A acts.
+
+  it('CTL8A-2-SETTLE-PRICE: a price or name that changes under an open quantity row or confirm is repainted by observe, and the A that first sees the change only paints (Yes never sends at a price the player has not seen)', () => {
+    // WRONG IMPL KILLED: a confirm that keeps the first price (or name) forever, so the player
+    // confirms "Buy 1 Bait for 20 gold?" and is charged 2000; an A that sends at once at a price
+    // the player has not seen (the batch changed the row between the last paint and the press);
+    // and an observe that answers a new object every batch (the frame repaints at batch rate).
+    const w = world();
+    const vm = vmOf(w);
+    const confirmAt20 = swallowed(vm, shopScreen.init(vm), ['A', 'A']);
+    expect(paintOf(vm, confirmAt20).prompt, 'fixture: Buy 1 Bait at 20').toEqual(
+      confirm('buy', 'Bait', 1, 20n, true),
+    );
+    expect(observe(vmOf(w), confirmAt20), 'nothing changed: the same object').toBe(confirmAt20);
+
+    const dearer: ShopWorld = {
+      ...w,
+      stock: STOCK.map((row) => (row.shopItemId === 31n ? { ...row, buyPrice: 2000n } : row)),
+    };
+    const vm2000 = vmOf(dearer);
+
+    // (a) The batch's observe repaints the confirm; the player then sees 2000 and A buys.
+    const observed = observe(vm2000, confirmAt20);
+    expect(observed, 'the price changed: a new state').not.toBe(confirmAt20);
+    expect(paintOf(vm2000, observed).prompt, 'the new total is painted').toEqual(
+      confirm('buy', 'Bait', 1, 2000n, true),
+    );
+    expect(observe(vmOf(dearer), observed), 'unchanged since: the same object').toBe(observed);
+    expect(press(vm2000, observed, 'A').result, 'A after the repaint buys').toEqual({
+      kind: 'buy',
+      shopId: 3,
+      itemId: 7,
+      qty: 1,
+    });
+
+    // (b) No observe between the change and the press: that A only paints, the next one buys.
+    const first = press(vm2000, confirmAt20, 'A');
+    expect(first.result, 'the A that first sees 2000 sends nothing').toBe('consumed');
+    expect(paintOf(vm2000, first.state).prompt, 'and paints the new total').toEqual(
+      confirm('buy', 'Bait', 1, 2000n, true),
+    );
+    expect(press(vm2000, first.state, 'A').result, 'the next A buys').toEqual({
+      kind: 'buy',
+      shopId: 3,
+      itemId: 7,
+      qty: 1,
+    });
+
+    // Under an open quantity row: observe answers a new state, and the confirm it opens shows
+    // the new price.
+    const qtyOfTwo = swallowed(vm, shopScreen.init(vm), ['A', 'Right']);
+    expect(observe(vmOf(w), qtyOfTwo), 'nothing changed: the same object').toBe(qtyOfTwo);
+    const qtyObserved = observe(vm2000, qtyOfTwo);
+    expect(qtyObserved, 'the price changed under the quantity row: a new state').not.toBe(qtyOfTwo);
+    expect(paintOf(vm2000, qtyObserved).prompt).toEqual(qty('buy', 'Bait', 2));
+    expect(paintOf(vm2000, swallowed(vm2000, qtyObserved, ['A'])).prompt).toEqual(
+      confirm('buy', 'Bait', 2, 4000n, true),
+    );
+
+    // Sell: the item is renamed under an open confirm on Yes.
+    const sellYes = swallowed(vm, shopScreen.init(vm), ['RB', 'A', 'A', 'Down']);
+    expect(paintOf(vm, sellYes).prompt, 'fixture: Sell 1 Bait, Yes').toEqual(
+      confirm('sell', 'Bait', 1, 15n, true),
+    );
+    expect(observe(vmOf(w), sellYes), 'nothing changed: the same object').toBe(sellYes);
+    const renamed = vmOf({
+      ...w,
+      defs: [def(7, 'Golden Bait', BAIT.description, 15n), BERRY, RELIC, POTION],
+    });
+    const renamedObserved = observe(renamed, sellYes);
+    expect(renamedObserved, 'the name changed: a new state').not.toBe(sellYes);
+    expect(paintOf(renamed, renamedObserved).prompt, 'the new name is painted').toEqual(
+      confirm('sell', 'Golden Bait', 1, 15n, true),
+    );
+    const firstSell = press(renamed, sellYes, 'A');
+    expect(firstSell.result, 'the A that first sees the new name sends nothing').toBe('consumed');
+    expect(paintOf(renamed, firstSell.state).prompt).toEqual(
+      confirm('sell', 'Golden Bait', 1, 15n, true),
+    );
+    expect(press(renamed, firstSell.state, 'A').result, 'the next A sells').toEqual({
+      kind: 'sell',
+      itemId: 7,
+      qty: 1,
+    });
+
+    // Sell: the sell price changes under the confirm.
+    const pricier = vmOf({
+      ...w,
+      defs: [def(7, 'Bait', BAIT.description, 40n), BERRY, RELIC, POTION],
+    });
+    const pricierObserved = observe(pricier, sellYes);
+    expect(pricierObserved, 'the sell price changed: a new state').not.toBe(sellYes);
+    expect(paintOf(pricier, pricierObserved).prompt).toEqual(confirm('sell', 'Bait', 1, 40n, true));
+  });
+
+  it('CTL8A-2-SETTLE-INFO: a cursor re-seated by observe (its row gone) drops the Y description; an unchanged cursor keeps it', () => {
+    // WRONG IMPL KILLED: a description that survives the re-seat (the slot would describe Potion
+    // while the cursor sits on Bait), and the reverse, a description dropped by a batch that left
+    // the cursor's row in place.
+    const w = world();
+    const vm = vmOf(w);
+    const onPotion = swallowed(vm, shopScreen.init(vm), ['Down', 'Y']);
+    expect(paintOf(vm, onPotion), 'fixture: Potion described').toEqual({
+      ...browse('buy', buyKey(vm, 1)),
+      description: POTION.description,
+    });
+
+    const soldOut = vmOf({ ...w, stock: STOCK.filter((row) => row.shopItemId !== 32n) });
+    const reseated = observe(soldOut, onPotion);
+    expect(reseated, 'the cursor`s row is gone: a new state').not.toBe(onPotion);
+    expect(paintOf(soldOut, reseated), 'on the first row, nothing described').toEqual(
+      browse('buy', buyKey(soldOut, 0)),
+    );
+
+    expect(observe(vmOf(w), onPotion), 'a batch that changes nothing: the same object').toBe(
+      onPotion,
+    );
+    expect(paintOf(vm, onPotion).description, 'and the description stays').toBe(POTION.description);
+
+    // Another row going away leaves the cursor's row, and its description, in place.
+    const onBait = swallowed(vm, shopScreen.init(vm), ['Y']);
+    const keptBait = observe(soldOut, onBait);
+    expect(keptBait, 'the cursor did not move: the same object').toBe(onBait);
+    expect(paintOf(soldOut, keptBait), 'Bait still described').toEqual({
+      ...browse('buy', buyKey(soldOut, 0)),
+      description: BAIT.description,
+    });
+  });
+});
