@@ -540,6 +540,40 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // One short line.
   // main.ts (dispatch, sell)
   'shop.feedback.sell.count': (p) => `✓ Vendu ×${p.qty}`,
+  // @desc: Label of the shop's Buy tab (the tab strip under the title; the frame opens on it).
+  // One short word.
+  // shopView.ts (paint, the tab strip)
+  'shop.tab.buy': 'Acheter',
+  // @desc: Label of the shop's Sell tab, beside the Buy tab. One short word.
+  // shopView.ts (paint, the tab strip)
+  'shop.tab.sell': 'Vendre',
+  // @desc: The description slot's text when the item under the cursor has no description, shown
+  // after Y. A single em dash (U+2014), a "nothing here" mark.
+  // shopView.ts (paint, the description slot)
+  'shop.description.none': '—',
+  // @desc: The quantity row under the Buy tab after A on an item; {name} is the item, {qty} the
+  // quantity the D-pad is changing, after a multiplication sign. One short line.
+  // shopView.ts (paint, the prompt)
+  'shop.qty.buy': (p) => `Combien de ${p.name} acheter ? ×${p.qty}`,
+  // @desc: The quantity row under the Sell tab; {name} is the item, {qty} the quantity the D-pad
+  // is changing, after a multiplication sign. One short line.
+  // shopView.ts (paint, the prompt)
+  'shop.qty.sell': (p) => `Combien de ${p.name} vendre ? ×${p.qty}`,
+  // @desc: The Yes / No question before a purchase; {qty} items named {name} for {gold} gold in
+  // total. One short line, a question.
+  // shopView.ts (paint, the prompt)
+  'shop.confirm.buy': (p) => `Acheter ${p.qty} ${p.name} pour ${p.gold} or ?`,
+  // @desc: The Yes / No question before a sale; {qty} items named {name} for {gold} gold in
+  // total. One short line, a question.
+  // shopView.ts (paint, the prompt)
+  'shop.confirm.sell': (p) => `Vendre ${p.qty} ${p.name} pour ${p.gold} or ?`,
+  // @desc: The affirmative option of a Yes / No confirm (the shop's buy and sell, the heal
+  // question). One short word.
+  // shopView.ts, healView.ts (the confirm options)
+  'prompt.yes': 'Oui',
+  // @desc: The negative option of a Yes / No confirm, beside Yes. One short word.
+  // shopView.ts, healView.ts (the confirm options)
+  'prompt.no': 'Non',
   // @desc: Placeholder option of the trade-proposal dialog's target selector, shown before the
   // player picks another player to trade with; ends with an ellipsis. Short, fits a narrow
   // dropdown.
@@ -702,6 +736,14 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // text the heal model produces (e.g. "Gratuit" or "25 or"). One short line.
   // healView.ts:47
   'heal.location': (p) => `Se soigner ici (${p.cost})`,
+  // @desc: The heal frame's Yes / No question; {cost} is the price text the heal model produces
+  // (e.g. "Gratuit" or "25 or"), carried verbatim. One short line, a question.
+  // healView.ts (paint, the question)
+  'heal.prompt.question': (p) => `Soigner l’équipe pour ${p.cost} ?`,
+  // @desc: Why the heal frame's Yes is disabled: no healer is bound (the frame was left open
+  // across a reconnect). One short sentence.
+  // healView.ts (paint, the reason)
+  'heal.prompt.unavailable': 'Aucun soigneur à portée. Soin indisponible.',
   // @desc: Heading of the privacy & account-data overlay (account deletion, data export). Same
   // French as claim.privacyButton today, but a different key: this is a HEADING. One short line.
   // privacyView.ts:145 (resolved in show())

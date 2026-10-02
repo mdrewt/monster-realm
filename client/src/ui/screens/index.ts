@@ -6,22 +6,26 @@
 // one host, binds the stack and the context and runs the returned command.
 import type { BaseFrame, FrameId, Stack, UpperFrame } from '../contextStack';
 import type { NavInput } from '../nav';
+import { dialogueScreen } from './dialogueScreen';
+import { healScreen } from './healScreen';
 import { legacyAdapter } from './legacyAdapter';
+import { shopScreen } from './shopScreen';
 import type { ScreenAdapter, ScreenContext, ScreenResult } from './types';
 
 export type ScreenAdapters = Readonly<Record<FrameId, ScreenAdapter<unknown, unknown>>>;
 
 /** Total over every frame id, so a new overlay without an adapter fails client-typecheck. Every
- *  entry is the legacy adapter until its ctl-8 screen slice swaps it. */
+ *  entry is the legacy adapter until its ctl-8 screen slice swaps it (ctl-8a: the dialogue, heal
+ *  and shop frames). */
 export const SCREEN_ADAPTERS: ScreenAdapters = {
   battleView: legacyAdapter,
   boxView: legacyAdapter,
   raisingView: legacyAdapter,
   evolutionView: legacyAdapter,
-  dialogueView: legacyAdapter,
+  dialogueView: dialogueScreen,
   questLogView: legacyAdapter,
-  healView: legacyAdapter,
-  shopView: legacyAdapter,
+  healView: healScreen,
+  shopView: shopScreen,
   tradeView: legacyAdapter,
   pvpView: legacyAdapter,
   leaderboardView: legacyAdapter,

@@ -130,6 +130,11 @@
 .mr-frame--bottom {
   width: 100%;
   max-height: 40%;
+  /* The dialogue's bottom box (ctl-8a): the inner frame of a docked shell takes the shell's
+   * padding and scrolling, and the clicks the docked shell lets through. */
+  padding: 12px 16px;
+  overflow: auto;
+  pointer-events: auto;
 }
 .mr-frame--small {
   width: auto;
@@ -281,6 +286,38 @@
  * one class, so this one must follow --top for its z-index to win. */
 .mr-shell--battle {
   z-index: 110;
+}
+/* A docked shell (the dialogue, ctl-8a CTL8A.1) is a transparent flex column that aligns its one
+ * inner .mr-frame--bottom to the bottom edge, so the bottom box needs no inset of its own (the
+ * CTL7A-2 shell rule). It paints nothing and catches no clicks; the inner frame does both. Written
+ * AFTER the base .mr-shell rule: equal specificity, so source order decides. Named outside the
+ * `mr-shell--*` family on purpose: battleView.test.ts CTL7B-1-FRAME-CSS-ROSTER pins that roster. */
+.mr-dock {
+  justify-content: flex-end;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  pointer-events: none;
+}
+/* The dialogue text reveal (ctl-8a CTL8A.1): a left-to-right wipe as long as
+ * ui/screens/dialogueScreen.ts's DIALOGUE_REVEAL_MS (600 ms; change both together). The class is
+ * set by dialogueView.ts while the screen's state is revealing. The reduced-motion guard follows
+ * the base rule at the same specificity, so source order decides (A11Y-27). */
+.is-revealing {
+  animation: mr-reveal 600ms linear;
+}
+@keyframes mr-reveal {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .is-revealing {
+    animation: none;
+  }
 }
 /* The interact prompt and the deletion countdown are frames too, but small and positioned by
  * main.ts (the prompt follows its anchor tile every frame). No click target: pointer-events off. */

@@ -169,6 +169,27 @@ export function buildShopViewModelForShop(
   );
 }
 
+/** The shop's two tabs. */
+export type ShopTab = 'buy' | 'sell';
+
+/** The nav keys the shop screen (ui/screens/shopScreen.ts) and the shop view share, so the cursor
+ *  the adapter paints names the very row the view built. A buy row is keyed by its stock row (two
+ *  stock rows of one item would collide on the item id); a sell row by its item (the rows are per
+ *  item, aggregated across stacks). Decimal strings, so a bigint id past 2^53 stays exact. */
+export const shopBuyKey = (item: ShopItemViewModel): string => String(item.shopItemId);
+export const shopSellKey = (item: ShopInventoryItemViewModel): string => String(item.itemId);
+
+/** The description the shop's Y slot shows for `itemId`: the definition's text, or null when there
+ *  is no definition or the text is blank (the view then writes its catalogued "none" mark). */
+export function itemDescription(
+  itemId: number,
+  itemDefs: ReadonlyMap<number, StoreItemRow>,
+): string | null {
+  const description = itemDefs.get(itemId)?.description;
+  if (typeof description !== 'string' || description.trim() === '') return null;
+  return description;
+}
+
 /** Whether `qty` fits the buy and sell reducers' u32 quantity: an integer from 1 to 4294967295.
  *  The SDK writes any other value as some u32 without complaint (-1 as 4294967295, 1.5 as 1), so
  *  the caller refuses it instead. False, never a throw, for anything that is not a number. */
