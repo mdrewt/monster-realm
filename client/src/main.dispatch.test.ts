@@ -30,6 +30,8 @@ import type { StoreBattle, StoreBattleMonster, StoreMonsterPub } from './net/sto
 // Read ONLY by the battle case's closing anti-vacuity cross-check (that its literal refuse list
 // covers every kind the policy refuses); the expected split itself is the test's own transcription.
 import { COMMAND_BATTLE_POLICY } from './ui/contextStack';
+// Read ONLY by the ctl-7c view-lending case's closing check that every frame id was driven.
+import { OVERLAY_IDS } from './ui/overlayRegistry';
 
 const H = vi.hoisted(() => {
   interface StubView {
@@ -54,6 +56,9 @@ const H = vi.hoisted(() => {
     signIns: 0,
     /** When set, every non-movement reducer returns it instead of an already-settled promise. */
     gate: null as Promise<void> | null,
+    /** The screen-adapter table main.ts's host reads: a mutable copy of the real one, re-made by
+     *  the module mock below on every fresh import, so a ctl-7c case can swap one frame's adapter. */
+    adapters: {} as Record<string, unknown>,
     /** A recording stand-in for a view class: it keeps its constructor's LAST argument (the handler
      *  object; the box, battle, raising and evolution views take a mount first) and exposes every
      *  method main.ts calls on a view. */
@@ -181,6 +186,14 @@ vi.mock('./observability/telemetry', async (importOriginal) => {
     },
     startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
   };
+});
+
+// The screen-adapter table: the real module with SCREEN_ADAPTERS replaced by a mutable copy of
+// itself (every entry the same legacy adapter, so nothing changes until a case swaps one).
+vi.mock('./ui/screens/index', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./ui/screens/index')>();
+  H.adapters = { ...actual.SCREEN_ADAPTERS };
+  return { ...actual, SCREEN_ADAPTERS: H.adapters };
 });
 
 vi.mock('./render/world', () => {
@@ -1278,5 +1291,406 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       [...new Set([...refused, ...Object.keys(noViewCallback)])].sort(),
       'every refused kind is driven here or named as having no view callback',
     ).toEqual(policyRefused);
+  });
+});
+
+// ==========================================================================================
+// ctl-7c: a screen adapter's heal command (CTL7C.3) and the views the shell lends (CTL7C.2)
+// ==========================================================================================
+//
+// Same harness, one fresh main.ts per case. The adapter table main.ts hands its screen host is the
+// module mock's mutable copy (`H.adapters`), so a case swaps a frame's adapter for a stand-in. The
+// command cases drive a REAL key (PageUp, which the router hands the top frame as LB) through the
+// router into a stand-in on the main menu and read the reducer call its command reached: the main
+// menu is the one frame the player can open at the world AND over an Ongoing battle. The view
+// case reads which view instance each frame's paint was lent.
+
+/** Swap one frame's adapter for this boot; afterEach (the `restorers` drain) puts it back. */
+function swapAdapter(id: string, adapter: unknown): void {
+  const previous = H.adapters[id];
+  H.adapters[id] = adapter;
+  restorers.push(() => {
+    H.adapters[id] = previous;
+  });
+}
+
+/** A keydown at `t` at the window and its keyup 5 ms later; returns the keydown. */
+function press(code: string, t: number): KeyboardEvent {
+  clock.t = t;
+  const down = new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true });
+  window.dispatchEvent(down);
+  clock.t = t + 5;
+  window.dispatchEvent(new KeyboardEvent('keyup', { code, bubbles: true, cancelable: true }));
+  return down;
+}
+
+/** The whole context stack, base first, through the read-only `__game()` DEV hook. */
+const stackNow = (): unknown[] =>
+  (window as unknown as { __game: () => { stack: unknown[] } }).__game().stack;
+
+interface Pressed {
+  readonly button: string;
+  readonly repeat: boolean;
+}
+
+/** A stand-in adapter that answers LB (PageUp) with whatever `issue.command` holds now, and B /
+ *  Start as the legacy adapter does (so its frame still closes). */
+function commandAdapter(issue: { command: unknown }): unknown {
+  return {
+    viewModel: () => undefined,
+    init: () => undefined,
+    onButton: (_vm: unknown, state: unknown, btn: Pressed) => {
+      if (btn.repeat) return { state, result: 'consumed' };
+      if (btn.button === 'LB') return { state, result: issue.command };
+      if (btn.button === 'B') return { state, result: { kind: 'pop' } };
+      if (btn.button === 'Start') return { state, result: { kind: 'popToBase' } };
+      return { state, result: 'unhandled' };
+    },
+  };
+}
+
+/** Open the main menu over the world with M and assert it is the one frame. */
+function openMenuAtWorld(t: number): void {
+  press('KeyM', t);
+  expect(stackNow(), 'precondition: the menu is the one frame over the world').toEqual([
+    { kind: 'world' },
+    { kind: 'screen', id: 'menuView' },
+  ]);
+}
+
+/** Send the menu's stand-in one PageUp and let the reducer promise settle; returns the keydown. */
+async function pageUp(t: number): Promise<KeyboardEvent> {
+  const down = press('PageUp', t);
+  await flush();
+  return down;
+}
+
+/** The recording stand-in view classes main.ts constructs, by the frame id each one backs. */
+const STAND_IN_CLASS: Readonly<Record<string, string>> = {
+  boxView: 'BoxView',
+  battleView: 'BattleView',
+  raisingView: 'RaisingView',
+  evolutionView: 'EvolutionView',
+  shopView: 'ShopView',
+  tradeView: 'TradeView',
+  pvpView: 'PvpView',
+  claimView: 'ClaimView',
+  privacyView: 'PrivacyView',
+  renameView: 'RenameView',
+  tradeProposeView: 'TradeProposeView',
+};
+
+/** A stand-in adapter for `id` that records the view each paint is lent, consumes every button
+ *  but Start, and answers Start with popToBase (so its frame closes). */
+function paintingAdapter(id: string, paints: Array<{ id: string; view: unknown }>): unknown {
+  return {
+    viewModel: () => undefined,
+    init: () => undefined,
+    onButton: (_vm: unknown, state: unknown, btn: Pressed) => ({
+      state,
+      result: btn.button === 'Start' && !btn.repeat ? { kind: 'popToBase' } : 'consumed',
+    }),
+    paint: (view: unknown) => {
+      paints.push({ id, view });
+    },
+  };
+}
+
+const GUIDE_ENTITY = 11n;
+const HEALER_ENTITY = 12n;
+
+/** A dialogue NPC one tile east of the player and a healer on the player's own tile (the healer
+ *  is nearer, so T interacts with it), in one batch at clock `t`. */
+function seedNpcs(t: number): void {
+  for (const [entityId, npcId, tileX, interaction] of [
+    [GUIDE_ENTITY, 'guide', 3, { kind: 'dialogue' }],
+    [HEALER_ENTITY, 'healer', 2, { kind: 'heal', locationId: 1 }],
+  ] as const) {
+    opts.store.upsertNpc({
+      entityId,
+      npcId,
+      zoneId: 0,
+      homeX: tileX,
+      homeY: 6,
+      wanderRadius: 0,
+      dialogueTreeId: 'no-such-tree',
+      interaction,
+    } as never);
+    opts.store.upsertCharacter(
+      {
+        entityId,
+        zoneId: 0,
+        tileX,
+        tileY: 6,
+        facing: 'South',
+        action: 'Idle',
+        moveStartedAtMs: 0n,
+        moveQueue: [] as WasmMoveInput[],
+      },
+      t,
+    );
+  }
+  server(t);
+}
+
+describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequential: true }, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    rafCallback = null;
+    H.gate = null;
+    H.frozen = false;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  it('CTL7C-3-PRESENT: a screen command healParty with a locationId sends exactly that id: 9 while the store`s first pad is 7, 0 as 0, and 9 with no pad loaded at all (with no "unavailable" report); at a battle base it is refused like the absent arm', async () => {
+    // WRONG IMPL KILLED: a healParty arm that ignores a present locationId and sends the store's
+    // first pad (B13: a heal screen bound to one location would heal at another), a `||` fallback
+    // (0 is a present id: it would be replaced by the first pad, or skipped when none is loaded),
+    // a present arm still gated on a loaded pad (nothing sent and "heal unavailable" reported for a
+    // location the screen knows), a present arm that rewrites the argument shape, and one that
+    // skips the battle policy (a heal sent at a battle base).
+    await bootReady();
+    server(1000);
+    const status = document.getElementById('status');
+    if (status === null) throw new Error('#status must exist once booted');
+    const issue: { command: unknown } = { command: { kind: 'healParty' } };
+    swapAdapter('menuView', commandAdapter(issue));
+    openMenuAtWorld(1010);
+
+    // Control: with no pad loaded the ABSENT arm sends nothing and says why, so none is loaded.
+    H.calls = [];
+    status.textContent = '';
+    await pageUp(1100);
+    expect(H.calls, 'control: no pad is loaded, the absent arm sends nothing').toEqual([]);
+    expect(statusText(), 'control: and says why').toBe(i18n.t('chrome.status.healUnavailable'));
+
+    // A present id with no pad loaded is still sent, and nothing is reported.
+    issue.command = { kind: 'healParty', locationId: 9 };
+    H.calls = [];
+    status.textContent = '';
+    const sent = await pageUp(1200);
+    expect(sent.defaultPrevented, 'the routed press is consumed').toBe(true);
+    expect(H.calls, 'the present id is sent with no pad loaded').toEqual([
+      { name: 'healParty', args: { locationId: 9 } },
+    ]);
+    expect(statusText(), 'and nothing is reported').toBe('');
+
+    // Pads 7 and 9 loaded, 7 first: the present id wins over the store's first pad.
+    seedDispatchFixture();
+    server(1300);
+    expect(stackNow(), 'precondition: the menu survived the batch').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'menuView' },
+    ]);
+    H.calls = [];
+    await pageUp(1400);
+    expect(H.calls, 'the present id, not the first pad').toEqual([
+      { name: 'healParty', args: { locationId: 9 } },
+    ]);
+
+    // 0 is a present id.
+    issue.command = { kind: 'healParty', locationId: 0 };
+    H.calls = [];
+    await pageUp(1500);
+    expect(H.calls, 'locationId 0 is sent as 0').toEqual([
+      { name: 'healParty', args: { locationId: 0 } },
+    ]);
+
+    // Control: in the same state the absent arm resolves the store's first pad.
+    issue.command = { kind: 'healParty' };
+    H.calls = [];
+    await pageUp(1600);
+    expect(H.calls, 'control: the absent arm sends the first pad').toEqual([
+      { name: 'healParty', args: { locationId: 7 } },
+    ]);
+
+    // At a battle base the present arm is refused exactly like the absent one.
+    press('Escape', 1700);
+    expect(stackNow(), 'precondition: Start closed the menu').toEqual([{ kind: 'world' }]);
+    putBattle(BATTLE_ID, 1800);
+    expect(stackBase(), 'precondition: the base is the battle').toEqual({
+      kind: 'battle',
+      battleId: '101',
+    });
+    press('Escape', 1900);
+    expect(stackNow(), 'precondition: Start opened the menu over the battle').toEqual([
+      { kind: 'battle', battleId: '101' },
+      { kind: 'screen', id: 'menuView', overBattle: '101' },
+    ]);
+    const reason = i18n.t('menu.disabled.inBattle');
+    let t = 2000;
+    for (const command of [
+      { kind: 'healParty', locationId: 9 },
+      { kind: 'healParty', locationId: 0 },
+      { kind: 'healParty' },
+    ]) {
+      const label = JSON.stringify(command);
+      issue.command = command;
+      H.calls = [];
+      status.textContent = '';
+      await pageUp(t);
+      t += 100;
+      expect(H.calls, `${label}: at a battle base it reaches no reducer`).toEqual([]);
+      expect(statusText(), `${label}: and shows the battle's reason`).toBe(reason);
+    }
+  });
+
+  it('CTL7C-3-ABSENT: a screen command healParty with no locationId keeps the Box behaviour: with no pad loaded nothing is sent and the player is told, and once pads arrive the store`s first one (7) is sent', async () => {
+    // WRONG IMPL KILLED: an absent arm that sends `undefined` or 0 when no pad is loaded (a
+    // guaranteed invisible server Err), one that loses the report, one that sends the last or a
+    // fixed pad instead of the store's first, and a screen command path that never reaches
+    // `dispatch` at all.
+    await bootReady();
+    server(1000);
+    const status = document.getElementById('status');
+    if (status === null) throw new Error('#status must exist once booted');
+    swapAdapter('menuView', commandAdapter({ command: { kind: 'healParty' } }));
+    openMenuAtWorld(1010);
+
+    H.calls = [];
+    status.textContent = '';
+    const unloaded = await pageUp(1100);
+    expect(unloaded.defaultPrevented, 'the routed press is consumed').toBe(true);
+    expect(H.calls, 'no pad loaded: nothing is sent').toEqual([]);
+    expect(statusText(), 'and the player is told').toBe(i18n.t('chrome.status.healUnavailable'));
+
+    seedDispatchFixture();
+    server(1200);
+    H.calls = [];
+    await pageUp(1300);
+    expect(H.calls, 'with pads loaded the first one is sent').toEqual([
+      { name: 'healParty', args: { locationId: 7 } },
+    ]);
+  });
+
+  it('CTL7C-2-BOOT-VIEWS: every frame id lends ITS OWN view instance to its adapter`s paint: each of the eleven recorded stand-in views, and the real dialogue, quest log, heal, leaderboard, help and menu views, each shown alone and sent one routed button', async () => {
+    // WRONG IMPL KILLED: a view-lending table with a copy-pasted sibling thunk (`raisingView:
+    // () => boxView` type-checks, and the raising screen's state would be painted into the box),
+    // one that lends every frame the same view, one that lends a view the shell did not build
+    // (a fresh instance, never shown), and one that lends nothing (no paint at all).
+    await bootReady();
+    server(1000);
+    seedNpcs(1010);
+    // Imported AFTER the boot: the very classes main.ts constructed its views from.
+    const real: Readonly<Record<string, unknown>> = {
+      dialogueView: (await import('./ui/dialogueView')).DialogueView,
+      questLogView: (await import('./ui/questLogView')).QuestLogView,
+      healView: (await import('./ui/healView')).HealView,
+      leaderboardView: (await import('./ui/leaderboardView')).LeaderboardView,
+      helpView: (await import('./ui/helpView')).HelpView,
+      menuView: (await import('./ui/menuView')).MenuView,
+    };
+    const paints: Array<{ id: string; view: unknown }> = [];
+    for (const id of OVERLAY_IDS) swapAdapter(id, paintingAdapter(id, paints));
+    /** The paints one routed button (PageUp = LB) to the top frame produced. */
+    const paintsOfOnePress = (t: number): Array<{ id: string; view: unknown }> => {
+      paints.length = 0;
+      press('PageUp', t);
+      return [...paints];
+    };
+    const covered: string[] = [];
+    let t = 1100;
+
+    // The eleven stand-ins: each shown alone through its own flag, closed by its adapter's Start.
+    for (const [id, cls] of Object.entries(STAND_IN_CLASS)) {
+      const view = H.views[cls];
+      if (view === undefined) throw new Error(`${cls} was never constructed by main.ts`);
+      expect(stackNow(), `${id}: precondition: the bare world`).toEqual([{ kind: 'world' }]);
+      view.visible = true;
+      const painted = paintsOfOnePress(t);
+      expect(stackNow(), `${id}: precondition: the one frame over the world`).toEqual([
+        { kind: 'world' },
+        { kind: 'screen', id },
+      ]);
+      expect(
+        painted.map((p) => p.id),
+        `${id}: one paint, by ${id}'s own adapter`,
+      ).toEqual([id]);
+      expect(painted[0]?.view, `${id}: into ${cls}, the view main.ts built for ${id}`).toBe(view);
+      press('Escape', t + 50);
+      expect(view.visible, `${id}: Start closed it`).toBe(false);
+      expect(stackNow(), `${id}: the bare world again`).toEqual([{ kind: 'world' }]);
+      covered.push(id);
+      t += 100;
+    }
+
+    // The six real views, each opened by its own real path and closed again.
+    const openers: ReadonlyArray<{
+      readonly id: string;
+      readonly open: (at: number) => void;
+      readonly close: (at: number) => void;
+    }> = [
+      {
+        id: 'questLogView',
+        open: (at) => void press('KeyQ', at),
+        close: (at) => void press('Escape', at),
+      },
+      {
+        id: 'leaderboardView',
+        open: (at) => void press('KeyL', at),
+        close: (at) => void press('Escape', at),
+      },
+      {
+        id: 'helpView',
+        open: (at) => void press('KeyR', at),
+        close: (at) => void press('Escape', at),
+      },
+      {
+        id: 'menuView',
+        open: (at) => void press('KeyM', at),
+        close: (at) => void press('Escape', at),
+      },
+      {
+        id: 'healView',
+        open: (at) => void press('KeyT', at),
+        close: (at) => void press('Escape', at),
+      },
+      {
+        id: 'dialogueView',
+        open: (at) => {
+          opts.store.upsertConversation({
+            ownerIdentity: H.identity,
+            npcEntityId: GUIDE_ENTITY,
+            currentNodeId: 'start',
+          });
+          server(at);
+        },
+        close: (at) => {
+          opts.store.removeConversation(H.identity);
+          server(at);
+        },
+      },
+    ];
+    for (const o of openers) {
+      expect(stackNow(), `${o.id}: precondition: the bare world`).toEqual([{ kind: 'world' }]);
+      o.open(t);
+      expect(stackNow(), `${o.id}: precondition: opened alone over the world`).toEqual([
+        { kind: 'world' },
+        { kind: 'screen', id: o.id },
+      ]);
+      const painted = paintsOfOnePress(t + 10);
+      expect(
+        painted.map((p) => p.id),
+        `${o.id}: one paint, by ${o.id}'s own adapter`,
+      ).toEqual([o.id]);
+      const view = painted[0]?.view;
+      expect(view, `${o.id}: into the real view of its own class`).toBeInstanceOf(
+        real[o.id] as never,
+      );
+      expect((view as { visible?: unknown }).visible, `${o.id}: the instance on screen`).toBe(true);
+      o.close(t + 50);
+      expect(stackNow(), `${o.id}: closed again`).toEqual([{ kind: 'world' }]);
+      covered.push(o.id);
+      t += 100;
+    }
+
+    expect([...covered].sort(), 'ANTI-VACUITY: every frame id lent its view').toEqual(
+      [...OVERLAY_IDS].sort(),
+    );
   });
 });
