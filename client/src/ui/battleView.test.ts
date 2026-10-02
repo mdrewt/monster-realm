@@ -6076,7 +6076,7 @@ describe('BattleView ctl-7b: the battle root is a class-styled frame, layered by
     document.body.replaceChildren();
   });
 
-  it('CTL7B-1-BATTLE-FRAME BITES: the battle root is the one child of its parent, carries .mr-frame .mr-shell .mr-shell--top .mr-shell--battle, writes only display / align-items / justify-content inline in every state, and toggles display flex/none', () => {
+  it('CTL7B-1-BATTLE-FRAME BITES: the battle root is the one child of its parent, carries .mr-frame .mr-shell .mr-shell--top .mr-shell--battle, writes only display / align-items / justify-content inline in every state, and toggles display flex/none', async () => {
     // WRONG IMPLS KILLED:
     //  (1) the shipped root (`position:fixed;inset:0;z-index:110;background:rgba(0,0,0,0.85)...`):
     //      the allow-list reds in every state;
@@ -6087,7 +6087,7 @@ describe('BattleView ctl-7b: the battle root is a class-styled frame, layered by
     //      e2e/encounter-battle.spec.ts pins the battle root as position:fixed);
     //  (4) `justify-content: center` instead of `safe center`: a tall battle then centres past the
     //      top edge of a scroll container and its title becomes unreachable (the e2e case measures
-    //      that at 640x360; here the value is pinned wherever happy-dom keeps it);
+    //      that at 640x360; here the inline value is required, happy-dom keeps it verbatim);
     //  (5) a fixed-position / dim / hide declaration smuggled onto a DESCENDANT once the root is
     //      clean (the subtree walk runs in every state);
     //  (6) a show() / hide() that no longer toggles display (the one inline contract left).
@@ -6111,13 +6111,10 @@ describe('BattleView ctl-7b: the battle root is a class-styled frame, layered by
           'place, layer and paint it; any other inline property is the old overlay still drawn ' +
           'by hand',
       ).toEqual([]);
-      const justify = ctl7bInline(root).get('justify-content');
-      if (justify !== undefined) {
-        expect(
-          justify,
-          `CTL7B ${when}: a centred battle must be \`safe center\` so a tall one stays scrollable to its title`,
-        ).toBe('safe center');
-      }
+      expect(
+        ctl7bInline(root).get('justify-content'),
+        `CTL7B ${when}: a centred battle must be \`safe center\` so a tall one stays scrollable to its title`,
+      ).toBe('safe center');
       const all = [...root.querySelectorAll('*')];
       const offenders: string[] = [];
       for (const el of all) {
@@ -6154,6 +6151,26 @@ describe('BattleView ctl-7b: the battle root is a class-styled frame, layered by
       'non-vacuity: an ongoing battle with every control renders well over thirty elements',
     ).toBeGreaterThan(30);
     expect(root.style.display, 'a refresh does not touch visibility').toBe('flex');
+    // A deferred write (a setTimeout that re-adds an inline position after show()) lands here.
+    await s4FlushMacrotask();
+    sample('populated ongoing refresh, one macrotask later');
+    expect(root.style.display).toBe('flex');
+
+    // A PvP battle waiting on the opponent: the "waiting" banner is shown, the controls are not.
+    view.refresh(
+      makeUx4VM({
+        isPvp: true,
+        pvpPendingSubmit: true,
+        pvpOpponentName: 'Rival',
+        canSwap: true,
+        bench: [...UX4_BENCH],
+      }),
+    );
+    expect(
+      (parent.querySelector('[data-testid="pvp-status"]') as HTMLElement | null)?.style.display,
+      'non-vacuity: the pending-submit banner is shown',
+    ).toBe('block');
+    sample('PvP pending-submit refresh');
 
     view.refresh(
       makeUx4VM({
@@ -6258,5 +6275,70 @@ describe('BattleView ctl-7b: the battle root is a class-styled frame, layered by
       'a battle root keeps the layer it always had: above every shell (100), under the menu ' +
         'and help (120)',
     ).toBe(110);
+  });
+
+  it('CTL7B-1-FRAME-CSS-ROSTER BITES: no frame or shell selector appears inside an at-rule, and every top-level frame or shell selector is one the sheet already shipped', () => {
+    // WRONG IMPLS KILLED (each is a stylesheet route around the inline contract that every other
+    // case here would let through): a viewport-conditional shell rule such as
+    // `@media (max-width:900px){.mr-shell{bottom:-400px}}` (the box leaves the screen on small
+    // viewports only); `@media (prefers-reduced-motion:reduce){.mr-frame{opacity:.5}}` (dims every
+    // frame for one user group); `@media (max-height:500px){.mr-frame.mr-shell.mr-shell--top{z-index:90}}`
+    // (re-layers the battle on short screens); an unconditional descendant rule such as
+    // `.mr-shell > div > div > div{color:#666}` (recolours text the inline walk never sees).
+    // The roster is every selector of today's styles.css that names a frame or a shell; the one
+    // ctl-7b addition is `.mr-shell--battle` (its own case pins its declarations).
+    const css = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'styles.css'),
+      'utf8',
+    );
+    const rules = ctl7bParseCss(ctl7bStripCssComments(css));
+    const names = (s: string): boolean => /mr-(shell|frame)/.test(s);
+
+    const inAtRule = rules
+      .filter((r) => r.at.length > 0)
+      .flatMap((r) => r.selectors.filter(names).map((s) => `${s} in ${r.at.join(' ')}`));
+    expect(
+      inAtRule,
+      'no frame or shell selector may sit inside an @media / @supports block',
+    ).toEqual([]);
+
+    const ROSTER: ReadonlySet<string> = new Set([
+      '.mr-frame',
+      '.mr-frame--side',
+      '.mr-frame--full',
+      '.mr-frame--bottom',
+      '.mr-frame--small',
+      '.mr-frame-titlebar',
+      '.mr-frame-title',
+      '.mr-frame-breadcrumb',
+      '.mr-frame-crumb + .mr-frame-crumb::before',
+      '.mr-frame-tabs',
+      '.mr-frame-tabs[hidden]',
+      '.mr-frame-tabslot::before',
+      '.mr-frame-tabstrip',
+      '.mr-frame-body',
+      '.mr-frame-feedback',
+      '.mr-frame-feedback[data-feedback="pending"]::before',
+      '.mr-frame-feedback[data-feedback="ok"]::before',
+      '.mr-frame-feedback[data-feedback="error"]::before',
+      '.mr-frame-layer',
+      '.mr-shell',
+      '.mr-shell--top',
+      '.mr-shell--battle',
+      '.mr-frame--prompt',
+      '.mr-frame--banner',
+    ]);
+    const topLevel = rules
+      .filter((r) => r.at.length === 0)
+      .flatMap((r) => r.selectors.filter(names));
+    expect(
+      topLevel.length,
+      'anti-vacuity: the sheet names well over twenty frame and shell selectors',
+    ).toBeGreaterThan(20);
+    expect(
+      topLevel.filter((s) => !ROSTER.has(s)),
+      'every top-level frame or shell selector must be in the shipped roster — a new one is a new ' +
+        'way to place, layer or recolour a frame without touching the inline contract',
+    ).toEqual([]);
   });
 });

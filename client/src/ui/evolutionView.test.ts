@@ -3352,7 +3352,7 @@ const CTL7B_BANNED_ON_DESCENDANTS: ReadonlySet<string> = new Set([
 ]);
 
 describe('EvolutionView ctl-7b: the evolution root is a class-styled frame, inline only for visibility and its colour tokens', () => {
-  it('CTL7B-1-EVOLUTION-FRAME BITES: the evolution root is the one child of its parent, carries exactly .mr-frame and .mr-shell, writes only display, align-items and the two var(--mr-evo-*) colours inline in every state, and nothing under it carries a class or an id', () => {
+  it('CTL7B-1-EVOLUTION-FRAME BITES: the evolution root is the one child of its parent, carries exactly .mr-frame and .mr-shell, writes only display, align-items and the two var(--mr-evo-*) colours inline in every state, and nothing under it carries a class or an id', async () => {
     // WRONG IMPLS KILLED:
     //  (1) the shipped root (`position:fixed;inset:0;z-index:100;...` in its cssText): the
     //      allow-list reds in every state;
@@ -3429,6 +3429,10 @@ describe('EvolutionView ctl-7b: the evolution root is a class-styled frame, inli
       'non-vacuity: the choices fixture renders more than twenty elements under the root',
     ).toBeGreaterThan(20);
     expect(root.style.display, 'a refresh does not touch visibility').toBe('flex');
+    // A deferred write (a setTimeout that re-adds an inline position after show()) lands here.
+    await s4FlushMacrotask();
+    sample('populated refresh, one macrotask later');
+    expect(root.style.display).toBe('flex');
 
     view.refresh(viewModel());
     sample('empty refresh');

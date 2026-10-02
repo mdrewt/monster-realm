@@ -2538,7 +2538,7 @@ function ctl7bExpectReadableEmpties(emptyEls: readonly Element[], root: HTMLElem
 }
 
 describe('RaisingView ctl-7b: the raising root is a class-styled frame, inline only for visibility', () => {
-  it('CTL7B-1-RAISING-FRAME BITES: the raising root is the one child of its parent, carries exactly .mr-frame and .mr-shell, writes only display and align-items inline in every state, and toggles display flex/none', () => {
+  it('CTL7B-1-RAISING-FRAME BITES: the raising root is the one child of its parent, carries exactly .mr-frame and .mr-shell, writes only display and align-items inline in every state, and toggles display flex/none', async () => {
     // WRONG IMPLS KILLED:
     //  (1) the shipped root: `position:fixed;inset:0;z-index:100;background:rgba(...)` ... in its
     //      cssText (every state reds on the allow-list);
@@ -2602,6 +2602,10 @@ describe('RaisingView ctl-7b: the raising root is a class-styled frame, inline o
       'non-vacuity: two monsters, three items and their buttons render well over 25 elements',
     ).toBeGreaterThan(25);
     expect(root.style.display, 'a refresh does not touch visibility').toBe('flex');
+    // A deferred write (a setTimeout that re-adds an inline position after show()) lands here.
+    await s4FlushMacrotask();
+    sample('populated refresh, one macrotask later');
+    expect(root.style.display).toBe('flex');
 
     view.refresh({ monsters: [], items: [] });
     sample('empty refresh');
@@ -2892,7 +2896,7 @@ describe('RaisingView ctl-7b: a refresh re-renders only when the view-model chan
     // WRONG IMPLS KILLED: an inventory key that ignores the description or the non-trainable
     // items (the monster list never reads them, so a key narrowed to what the cards read would
     // freeze the inventory). NOT pinned either way: whether the monster list is also re-rendered
-    // by such a change — that is a choice of key, and the plan and the brief state it two ways.
+    // by such a change — that is a choice of key, not part of the contract.
     const { view, root } = ctl7bSetup();
     view.refresh(raTrainVm());
 
@@ -2933,9 +2937,16 @@ describe('RaisingView ctl-7b: a refresh re-renders only when the view-model chan
       setLocale('en');
       view.refresh(raTrainVm());
       const before = ctl7bCards(root);
+      // `raising.inventory.item` reads the same in en and fr, so the inventory half of this case
+      // is only observable through NODE IDENTITY: capture an item line before the switch.
+      const itemLine = i18nTf('raising.inventory.item', { name: 'Protein', count: 2 });
+      const itemBefore = ctl7bByOwnText(root, itemLine);
       setLocale('fr');
       view.refresh(raTrainVm()); // deep-equal, but a different locale
       const after = ctl7bCards(root);
+      const itemAfter = ctl7bByOwnText(root, itemLine);
+      expect(itemAfter, 'the inventory was re-rendered under the new locale').not.toBe(itemBefore);
+      expect(itemBefore.isConnected, 'the old inventory line is gone').toBe(false);
       expect(after[0]?.care, 'Care was re-rendered under the new locale').not.toBe(before[0]?.care);
       expect(after[0]?.care.textContent, 'Care reads the new locale').toBe(
         i18nT('raising.card.care'),
@@ -3023,9 +3034,10 @@ describe('RaisingView ctl-7b: a refresh re-renders only when the view-model chan
     ).toBe(inventoryEmpty);
   });
 
-  it('CTL7B-RV-KEY-THROW BITES: a render that throws leaves no key, so the next refresh of the same view-model renders', () => {
+  it('CTL7B-RV-KEY-THROW BITES: a render that throws leaves no key, so the next refresh of the same view-model renders — on a first render and after a changed one', () => {
     // WRONG IMPLS KILLED: a key written BEFORE the render runs (a throw midway leaves the key set
-    // and the half-rendered list is then skipped for as long as the view-model stays the same).
+    // and the half-rendered list is then skipped for as long as the view-model stays the same);
+    // a key never deleted before the render (the second phase: A's stale key survives B's throw).
     // The throw is injected through the resolver the render calls first (the status line).
     try {
       const { view, root, onCare, onTrain } = ctl7bSetup();
@@ -3037,6 +3049,29 @@ describe('RaisingView ctl-7b: a refresh re-renders only when the view-model chan
       const again = raTrainVm(); // deep-equal to the view-model whose render threw
       view.refresh(again);
       ctl7bExpectRendered(root, again, { onCare, onTrain }, 'refresh after a throwing render');
+
+      // CHANGED-render phase, on a fresh view (the oracle's clicks above took Care / Train locks):
+      // A renders; a CHANGED view-model B throws midway (after replaceChildren() cleared the
+      // list); refreshing A again must fully re-render A. A render that never deletes the stale
+      // key BEFORE rendering leaves A's key in place, so the refresh of A is skipped and the
+      // list stays empty.
+      const second = ctl7bSetup();
+      second.view.refresh(raTrainVm());
+      expect(ctl7bCards(second.root), 'precondition: A rendered').toHaveLength(2);
+      vi.mocked(i18nTf).mockImplementationOnce(() => {
+        throw new Error('ctl7b: injected render failure');
+      });
+      expect(() => second.view.refresh(ctl7bMon(raTrainVm(), 0, { level: 6 }))).toThrow(
+        'ctl7b: injected render failure',
+      );
+      const backToA = raTrainVm();
+      second.view.refresh(backToA);
+      ctl7bExpectRendered(
+        second.root,
+        backToA,
+        { onCare: second.onCare, onTrain: second.onTrain },
+        'refresh of A after a changed render threw',
+      );
     } finally {
       vi.mocked(i18nTf).mockRestore();
     }

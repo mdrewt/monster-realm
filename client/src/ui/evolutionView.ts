@@ -25,9 +25,10 @@
 // scaled differently from the rest of the UI. Only declarations on a fixed allow-list may appear
 // (no `opacity`/`filter`/`text-shadow`/… — each is a way to dim text the contrast oracle cannot
 // see), and no element but the root may carry a `class`, none an `id` (a stylesheet rule is the
-// other way around the inline colours; the root's `mr-frame mr-shell` only places it, ctl-7b). All of it is measured from the rendered DOM by `evolutionView.test.ts`
-// with the four fixture states named there; a new element or colour here must
-// be added to those censuses in the same change.
+// other way around the inline colours; the root's `mr-frame mr-shell` only places it, ctl-7b).
+// All of it is measured from the rendered DOM by `evolutionView.test.ts` with the four fixture
+// states named there; a new element or colour here must be added to those censuses in the same
+// change.
 //
 // Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with an `evolution.*` key from

@@ -131,8 +131,8 @@ export class RaisingView {
     this.#root.appendChild(title);
 
     // The feedback line lives INSIDE the overlay root. main.ts's
-    // statusEl sits outside it, so this z-index:100 frame paints over every care message
-    // statusEl raises — the player would see nothing.
+    // statusEl sits outside it, so this `.mr-shell` frame (z-index 100) paints over every care
+    // message statusEl raises — the player would see nothing.
     this.#feedbackEl = document.createElement('div');
     this.#feedbackEl.id = 'raising-feedback';
     this.#feedbackEl.style.cssText =

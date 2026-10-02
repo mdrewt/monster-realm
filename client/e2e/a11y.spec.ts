@@ -879,11 +879,17 @@ test.describe
     // each is found structurally: its title's ancestor whose parent is `#app`.
     // -----------------------------------------------------------------------------------------
 
+    // The blur is INSIDE the polled function: a closing overlay's deferred focus-return can
+    // re-focus the canvas after a single blur, so each poll blurs again before it reads.
     const blurToBody = async (): Promise<void> => {
-      await page.evaluate(() => {
-        (document.activeElement as HTMLElement | null)?.blur();
-      });
-      await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe('BODY');
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            (document.activeElement as HTMLElement | null)?.blur();
+            return document.activeElement?.tagName;
+          }),
+        )
+        .toBe('BODY');
     };
 
     /** Tag the `#app` child that holds `testId`'s title, so `measureFrameInPage` can address it. */

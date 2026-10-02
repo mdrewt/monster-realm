@@ -1894,7 +1894,7 @@ function ctl7bExpectReadableEmpties(emptyEls: readonly Element[], root: HTMLElem
 }
 
 describe('BoxView ctl-7b: the box root is a class-styled frame, inline only for visibility', () => {
-  it('CTL7B-1-BOX-FRAME BITES: the box root is the one child of its parent, carries exactly .mr-frame and .mr-shell, writes only display and align-items inline in every state, and toggles display flex/none', () => {
+  it('CTL7B-1-BOX-FRAME BITES: the box root is the one child of its parent, carries exactly .mr-frame and .mr-shell, writes only display and align-items inline in every state, and toggles display flex/none', async () => {
     // WRONG IMPLS KILLED:
     //  (1) the shipped root: `position:fixed;inset:0;z-index:100;background:rgba(...)` ... in its
     //      cssText (every state reds on the allow-list);
@@ -1944,6 +1944,25 @@ describe('BoxView ctl-7b: the box root is a class-styled frame, inline only for 
       'non-vacuity: a populated box renders well over a dozen elements',
     ).toBeGreaterThan(15);
     expect(root.style.display, 'a refresh does not touch visibility').toBe('flex');
+    // A deferred write (a setTimeout that re-adds an inline position after show()) lands here.
+    await s4FlushMacrotask();
+    sample('populated refresh, one macrotask later');
+    expect(root.style.display).toBe('flex');
+
+    // Cards carrying the evolution-choice badge: a different descendant shape, same ban.
+    view.refresh(partySlotsWithBadge(true), [
+      makeCard({
+        monsterId: 200n,
+        speciesName: 'Emberfang',
+        partySlot: 255,
+        evolutionChoicePending: true,
+      }),
+    ]);
+    expect(
+      parent.querySelectorAll('[data-testid="evo-choice-badge"]').length,
+      'non-vacuity: the badge renders in the party card and in the box card',
+    ).toBe(2);
+    sample('badged refresh');
 
     view.refresh([null, null, null, null, null, null], []);
     sample('empty refresh');
