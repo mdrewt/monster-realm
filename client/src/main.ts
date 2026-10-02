@@ -110,7 +110,6 @@ import {
   baseFor,
   battleButton,
   battleRefused,
-  battleSafeCommand,
   blocksPlayerOpen,
   contextStep,
   continuedBattleId,
@@ -474,7 +473,9 @@ function overlayVerdict(id: OverlayId): CanOpenVerdict {
 // change of base kind) clears the held directions (B14). Synced on every movementGate() read,
 // at the top and tail of every keydown, at the top of every frame and at the tail of every
 // batch; `__game().stack` only reads it. Server truth is reconciled into it on every batch
-// (`reconcileStack`), which closes what a battle or a conversation drops.
+// (`reconcileStack`), which closes what a battle or a conversation drops. The sync also keeps two
+// things that follow the stack: when a terminal outcome first topped it (A's grace), and the
+// battle refusal line, cleared once the base is the world again.
 let contextStack: Stack = WORLD_STACK;
 function runStackCommands(commands: readonly StackCommand[]): void {
   for (const command of commands) {
@@ -494,7 +495,8 @@ function runStackCommands(commands: readonly StackCommand[]): void {
 /** When the terminal outcome frame now on top was first mirrored (performance.now), else null:
  *  A continues it only after `OUTCOME_CONTINUE_GRACE_MS` (CTL6C.2). */
 let outcomeShownAtMs: number | null = null;
-/** The battle refusal reason now on the status line (CTL6C.3), else null. */
+/** The reason of the last battle refusal written to the status line (CTL6C.3), until the base is
+ *  the world again; else null. */
 let shownBattleRefusal: string | null = null;
 function syncStack(): void {
   const prevBase = contextStack[0];
@@ -1273,12 +1275,9 @@ function dispatch(command: Command): Promise<void> {
 
 /** A command the battle refuses (CTL6C.3): the stack holds a battle base and the command is not
  *  battle-safe. Its reason goes to the status line (until the battle is over, `syncStack`) and the
- *  live region; a refusal is not an error, so nothing reaches the error ring. Synced first, and
- *  only for a command a battle could refuse: a click-driven callback may run before the frame that
- *  mirrors a new battle base. */
+ *  live region; a refusal is not an error, so nothing reaches the error ring. The base is current
+ *  without a sync here: `reconcileStack` re-derives it first in every batch. */
 function refusedInBattle(command: Command): boolean {
-  if (battleSafeCommand(command)) return false;
-  syncStack();
   if (!battleRefused(contextStack, command)) return false;
   const reason = i18nT('menu.disabled.inBattle');
   if (statusEl !== undefined) statusEl.textContent = reason;
@@ -3189,6 +3188,14 @@ async function main(): Promise<void> {
       // The reset also drops a pending shop open, whose id the store reset invalidated.
       stepShopOpen({ kind: 'reconnect' });
       menuView?.hide(); // a menu child may read store state that the reset invalidated
+      // A frame opened over a battle goes with the reset: a re-delivered row of that battle would
+      // find it still stamped, keep it, and show the battle above it. Hidden, never dismissed: a
+      // conversation is the server's to end.
+      for (const f of contextStack) {
+        if (f.kind === 'screen' && f.overBattle !== undefined && overlayProbes[f.id]()) {
+          overlayHandles[f.id]?.();
+        }
+      }
       // re-baseline a surviving Ongoing battle on the next batch
       // instead of re-emitting a spurious battleStart for it. Armed until onHydrated —
       // reset UNCONDITIONALLY (unlike the guarded capture above) so a second drop re-arms

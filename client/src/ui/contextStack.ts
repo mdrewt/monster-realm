@@ -48,7 +48,8 @@ const PLAYER_DROP_SAFE: ScreenPolicy = { owner: 'player', onBattle: 'drop', batt
 
 /** Total over every frame id, so an omitted id fails client-typecheck. `reconcile` reads all three:
  *  `battleSafe` marks a screen that may stay open when the player opens it over a battle (its
- *  screen issues no command the battle refuses); the main menu disables the entries that are not. */
+ *  screen issues no command the battle refuses); the main menu disables at least the entries that
+ *  are not (`battleReason` in screens/mainMenuScreen.ts). */
 export const SCREEN_POLICY: Readonly<Record<FrameId, ScreenPolicy>> = {
   battleView: { owner: 'server', onBattle: 'drop', battleSafe: true },
   boxView: PLAYER_DROP,

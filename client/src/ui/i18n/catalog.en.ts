@@ -863,9 +863,10 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'menu.options.help.desc': 'Controls and goals of the game.',
   // @desc: Reason a main-menu entry is disabled while the menu is open over a battle (feedback
   // line); also the status-line and announced reason when an action is refused during a battle.
-  // ui/screens/mainMenuScreen.ts (battleReason); main.ts (dispatch refusal)
+  // ui/screens/mainMenuScreen.ts (battleReason); main.ts (refusedInBattle)
   'menu.disabled.inBattle': 'Not during a battle',
-  // @desc: Feedback-line reason the Bag main-menu entry is disabled over a battle: use the battle's own Bag command.
+  // @desc: Feedback-line reason the Bag main-menu entry is disabled over a battle: use the
+  // battle's own Bag command.
   // ui/screens/mainMenuScreen.ts (battleReason)
   'menu.disabled.battleBag': 'Use items from the battle Bag command',
 } satisfies Catalog);

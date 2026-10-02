@@ -80,7 +80,8 @@ const LAYOUTS = Object.fromEntries(
 ) as Readonly<Record<MenuLevel, NavLayout>>;
 
 /** battleSafe screens whose shells are still in the page flow, below the fold and so under the
- *  battle overlay: their entries stay disabled over a battle until ctl-7a anchors the shells. */
+ *  battle overlay: their entries stay disabled over a battle for as long as the shells do not
+ *  paint above it. */
 const HIDDEN_UNDER_BATTLE: ReadonlySet<MenuTarget> = new Set(['questLogView', 'leaderboardView']);
 
 /** Why `row` is disabled over a battle, or undefined when it is not. Bag points at the battle's own
