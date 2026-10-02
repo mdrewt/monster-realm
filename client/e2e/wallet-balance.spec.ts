@@ -207,7 +207,10 @@ import {
 // loops below. Runner starvation is the second: DialogueView.render() rebuilds every choice
 // button on each store batch (up to ~5/s with no input), and on a starved CI runner a pointer
 // click can time out without ever landing on one stable button — so precondition (a)
-// dispatches its one choice activation instead (see its call site).
+// dispatches its one choice activation instead (see its call site). That is not the whole
+// answer: the two [data-shop-id] clicks below deliberately stay pointer clicks (they are the
+// shop-open flow under test). Bounded by their test timeouts instead of 5 s, they absorb the
+// starvation that reddened (a); measured under far heavier CPU throttle, they starve too.
 // Expected wall clock: ~4-6 min (about 30 steps at well under 1 s each, four
 // dialogue round trips, and three `spacetime sql` invocations — a fourth only on the retry
 // escape valve). Worst case under the declared per-test timeouts (120 + 300 + 300 + 240 +
@@ -766,11 +769,11 @@ const QUEST_CHOICE = 'I seek a quest.';
 const SHOPKEEPER_GREETING = 'Hello, customer!';
 const SHOP_NAME = 'Pebble Town Shop';
 const EXPECTED_BALANCE_TEXT = 'Gold: 50';
-/** Bounded retries per quest phase. Elder_oak wanders, so a talk or an advance can be
- *  rejected as walked_away and the phase must be able to try again. A rejected ADVANCE is
- *  rolled back whole, its conversation-row delete included, so the overlay stays open: that
- *  attempt spends its full 20 s hidden-wait, and the next one re-activates the still-open
- *  dialogue without a fresh talk.
+/** Bounded retries per quest phase. Elder_oak wanders, so a talk ("too far away") or an
+ *  advance (walked_away) can be refused, and the phase must be able to retry. A rejected
+ *  ADVANCE is rolled back whole, its conversation-row delete included, so the overlay stays
+ *  open: that attempt spends its full 20 s hidden-wait, and the next one re-activates the
+ *  still-open dialogue without a fresh talk.
  *  ARITHMETIC, stated honestly: an attempt normally costs ~8 s (one talk round trip, one
  *  dismiss, one quest-log read), so the expected phase is ~10-20 s inside a 300 s budget.
  *  Its THEORETICAL worst case — every internal bound below also running to its limit —
@@ -894,15 +897,27 @@ test.describe
       test.setTimeout(300_000);
       const overlay = a.locator('#dialogue-overlay');
       let started = false;
-      // A per-attempt trail for the failure message. reportError logs every refused or unsent
-      // reducer call once as `[status] <where>: <reason>`; those lines are collected here and
-      // sliced per attempt (by arrival). #status is never read for this: it is sticky, so it
-      // would pin an older refusal on a later attempt and make two identical refusals in a row
-      // look like none.
+      const hiddenWaitMs = 20_000;
+      // A per-attempt trail, printed to stdout as it happens (a throw or the test timeout
+      // would otherwise lose it; a clean first attempt prints nothing) and repeated in the
+      // final failure message. Via sendGuarded, a rejected reducer call and a frozen-link call
+      // each log one `[status] <where>: <reason>` line, printed on arrival and sliced per
+      // attempt; a call never made logs nothing. #status is never read for this: it is sticky,
+      // so it would pin an older refusal on a later attempt and make two identical refusals
+      // in a row look like none. In the trail, `dispatched` only means a click event was fired
+      // at a matching node, so `dispatched` + `overlay still open` + `[status] lines: none`
+      // means either that no reducer call resulted, or that the advance was accepted and its
+      // row delete had not reached this client; in that case the following attempts quote
+      // `advance: no active conversation`, because the server row is already gone.
+      const logLine = (line: string): void => {
+        console.log(`wallet-balance precondition (a): ${line}`);
+      };
       const statusLines: string[] = [];
       const onConsole = (msg: ConsoleMessage): void => {
         const text = msg.text();
-        if (text.startsWith('[status]')) statusLines.push(text);
+        if (!text.startsWith('[status]')) return;
+        statusLines.push(text);
+        logLine(text);
       };
       const trail: string[] = [];
       a.on('console', onConsole);
@@ -921,24 +936,25 @@ test.describe
           // pointer click needs one node to stay attached and stable across animation frames,
           // which a starved CI runner may not see within 5 s. dispatchEvent resolves the node
           // and fires a bubbling click in ONE page task; main.ts's document-level
-          // [data-choice-idx] delegation sends advance_dialogue for it exactly as for a real
-          // click. Whether the choice is pointer-reachable is not this spec's subject.
-          // The overlay can vanish between isVisible() and this dispatch when an earlier
-          // attempt's slow row-delete finally lands. render(null) only hides the overlay, so
-          // its stale button can still take the click; the server then refuses the advance
-          // (no active conversation), which is harmless here — the hidden-wait below picks
-          // the flow back up.
-          const delivery = await a
+          // [data-choice-idx] delegation sends advance_dialogue for it as for a real click,
+          // which relies on that delegation listening for `click`. Pointer reachability is
+          // covered by dialogue.spec.ts's 13.5c-5 test, which presses this same choice with a
+          // real pointer and must STAY a pointer press: copying this dispatch there would
+          // leave no pointer press on a dialogue choice anywhere.
+          // The overlay can vanish between isVisible() and this dispatch (an earlier attempt's
+          // slow row-delete landing); render(null) only hides it, so its stale button can still
+          // take the click, the server refuses the advance and the hidden-wait below recovers.
+          const dispatchResult = await a
             .locator('#dialogue-choices')
             .getByText(QUEST_CHOICE, { exact: true })
             .dispatchEvent('click', undefined, { timeout: 5_000 })
-            .then(() => 'delivered')
-            .catch((err: unknown) => `NOT delivered (${String(err).split('\n')[0]})`);
+            .then(() => 'dispatched')
+            .catch((err: unknown) => `NOT dispatched (${String(err).split('\n')[0]})`);
           const hidden = await overlay
-            .waitFor({ state: 'hidden', timeout: 20_000 })
+            .waitFor({ state: 'hidden', timeout: hiddenWaitMs })
             .then(() => true)
             .catch(() => false);
-          let outcome = 'overlay still open after 20 s';
+          let outcome = `overlay still open after ${hiddenWaitMs / 1000} s`;
           if (hidden) {
             started = await questLogShows(a, QUEST_ID, true, 8_000);
             outcome = `overlay hid, quest log ${started ? 'shows' : 'lacked'} ${QUEST_ID}`;
@@ -948,11 +964,12 @@ test.describe
             // row under A's OWN identity can only have come from quest_001's grant.
             questGrantedDuringRetry = walletBalanceFor(identityA, 'precondition (a)') !== undefined;
           }
-          const said = statusLines.slice(statusFrom).map((line) => JSON.stringify(line));
-          trail.push(
-            `attempt ${attempt + 1}: choice ${delivery}; ${outcome}; ` +
-              `[status] lines: ${said.length > 0 ? said.join(', ') : 'none'}`,
-          );
+          const attemptStatus = statusLines.slice(statusFrom).map((line) => JSON.stringify(line));
+          const entry =
+            `attempt ${attempt + 1}: choice ${dispatchResult}; ${outcome}; ` +
+            `[status] lines: ${attemptStatus.length > 0 ? attemptStatus.join(', ') : 'none'}`;
+          trail.push(entry);
+          if (!started) logLine(entry);
           if (questGrantedDuringRetry) break;
         }
       } finally {
@@ -963,8 +980,8 @@ test.describe
         started || questGrantedDuringRetry,
         `quest_001 was neither started nor already completed after ${MAX_QUEST_ATTEMPTS} attempts. ` +
           "Contract: game-core/content/dialogue_trees/000-core.ron elder_oak_talk's choice " +
-          `"${QUEST_CHOICE}" carries effects: [StartQuest("${QUEST_ID}")], and npc.rs:105-120 ` +
-          'inserts the player_quest row at step 0.' +
+          `"${QUEST_CHOICE}" carries effects: [StartQuest("${QUEST_ID}")], and ` +
+          'server-module/src/npc.rs apply_effects_to_db inserts the player_quest row at step 0.' +
           `\nPer attempt:\n  ${trail.join('\n  ')}`,
       ).toBe(true);
       if (started) {
