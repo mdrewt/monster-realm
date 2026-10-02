@@ -1,7 +1,7 @@
 // ui/pvpView.ts — thin DOM shell for the PvP challenge overlay.
 //
 // Renders PvpChallengeViewModels produced by pvpModel.ts. No game logic, no SDK.
-// Auto-shows when incoming/outgoing challenges are present; also KeyP-toggleable.
+// Its caller decides when it shows (`refresh`'s `forceVisible`); the view never shows itself.
 //
 // Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `pvp.*` key from ui/i18n/catalog.en.ts;
@@ -91,7 +91,7 @@ export class PvpView {
   show(): void {
     // THE EDGE GUARD, AND WHY IT IS LOAD-BEARING (this is the canonical statement;
     // the other nine views point here). `refresh()` below calls `show()` UNCONDITIONALLY whenever
-    // `forceVisible` is true, and main.ts:1697-1709 recomputes `forceVisible` on EVERY store batch
+    // `forceVisible` is true, and main.ts's PvP batch listener recomputes it on EVERY store batch
     // -- once this overlay is open, `pvpView.visible` keeps it true. Delegating to
     // `openOverlayA11y` without the guard would therefore re-open on every batch, and a re-open
     // CLEARS AND RE-SCHEDULES the deferred initial focus (ui/overlayA11y.ts:88-89, :100-113) --
@@ -179,10 +179,12 @@ export class PvpView {
   }
 
   /** Runs `render` for `el` unless `shown` — everything that render reads — is what `el` already
-   *  shows. The key is JSON, never a delimiter join: player names are user-chosen. */
-  #renderIfChanged(el: HTMLElement, shown: unknown, render: () => void): void {
+   *  shows. The key is JSON, never a delimiter join: player names are user-chosen. A render that
+   *  throws leaves `el` with no key, so the next refresh renders it again. */
+  #renderIfChanged(el: HTMLElement, shown: readonly unknown[] | null, render: () => void): void {
     const key = JSON.stringify(shown, (_, v: unknown) => (typeof v === 'bigint' ? `${v}` : v));
     if (this.#rendered.get(el) === key) return;
+    this.#rendered.delete(el);
     render();
     this.#rendered.set(el, key);
   }
