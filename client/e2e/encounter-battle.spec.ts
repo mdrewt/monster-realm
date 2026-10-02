@@ -18,8 +18,9 @@ import { pressButton } from './controls';
 // button -> Flee, and R2 weakens + recruits; its R3 sees "Victory!" only when a win happened by
 // accident. Nothing asserts that an attack's HP drop RENDERS, that a win GRANTS anything, or that
 // the world RESUMES after the terminal frame is dismissed. Those three are this file's tests.
-// E0 (ctl-6c) runs first, on the very battle E1 then fights: it hit-tests that the main menu Start
-// opens over an Ongoing battle, and the help it leads to, are what the player actually sees.
+// E0 (ctl-6c) runs first, on the very battle E1 then fights: it reads PAINT ORDER (a hit-test with
+// `inert` lifted, plus the computed z-index ordering) to check that the main menu Start opens over
+// an Ongoing battle, and the help it leads to, paint above that battle.
 //
 // SEEDING (owner SQL, the recruit.spec R3 / wallet-balance.spec precedent — the dev reducers are
 // not page-callable). The starter is raised to level 7 with xp = 8^3 - 1, so ANY win levels it
@@ -251,22 +252,93 @@ const probePoints = (p: Page): Promise<Point[]> =>
     ];
   });
 
-/** Which overlay the topmost element under each probe belongs to, i.e. what the player sees there:
- *  'help', 'menu', 'battle', or the stray element's tag and id. */
-const hitOwners = (p: Page, points: Point[]): Promise<string[]> =>
-  p.evaluate((pts) => {
-    const battleRoot = document.querySelector('[data-testid="battle-title"]')?.parentElement;
-    const menu = document.getElementById('menu-overlay');
-    const help = document.getElementById('help-overlay');
-    return pts.map(({ x, y }) => {
-      const el = document.elementFromPoint(x, y);
-      if (el === null) return 'nothing';
-      if (help?.contains(el)) return 'help';
-      if (menu?.contains(el)) return 'menu';
-      if (battleRoot?.contains(el)) return 'battle';
-      return `other:${el.tagName.toLowerCase()}#${el.id}`;
-    });
-  }, points);
+/** Which overlay owns the topmost element under each probe: 'help', 'menu', 'battle', or the stray
+ *  element's tag and id (classified in that order).
+ *
+ *  'paint' answers what is PAINTED on top, i.e. what the player sees. ui/overlayA11y.ts marks
+ *  every frame beneath the top one `inert`, and Chromium drops inert subtrees from hit-testing, so
+ *  a plain elementFromPoint skips the suspended battle even where it paints over the menu
+ *  (measured). So 'paint' removes `inert` from every element carrying it, hit-tests every point,
+ *  then restores exactly those attributes in a `finally`, all in ONE synchronous evaluate: no page
+ *  script, task or frame runs while it is lifted, and a throw cannot leave the page altered.
+ *
+ *  'pointer' is the plain, inert-respecting hit-test: what a click would land on. It is NOT a
+ *  layering oracle. */
+const hitOwners = (p: Page, points: Point[], mode: 'paint' | 'pointer'): Promise<string[]> =>
+  p.evaluate(
+    ({ pts, lift }) => {
+      const battleRoot = document.querySelector('[data-testid="battle-title"]')?.parentElement;
+      const menu = document.getElementById('menu-overlay');
+      const help = document.getElementById('help-overlay');
+      const lifted: { el: Element; value: string }[] = lift
+        ? Array.from(document.querySelectorAll('[inert]'), (el) => ({
+            el,
+            value: el.getAttribute('inert') ?? '',
+          }))
+        : [];
+      try {
+        for (const { el } of lifted) el.removeAttribute('inert');
+        return pts.map(({ x, y }) => {
+          const el = document.elementFromPoint(x, y);
+          if (el === null) return 'nothing';
+          if (help?.contains(el)) return 'help';
+          if (menu?.contains(el)) return 'menu';
+          if (battleRoot?.contains(el)) return 'battle';
+          return `other:${el.tagName.toLowerCase()}#${el.id}`;
+        });
+      } finally {
+        for (const { el, value } of lifted) el.setAttribute('inert', value);
+      }
+    },
+    { pts: points, lift: mode === 'paint' },
+  );
+
+/** Whether the battle overlay root carries `inert` (a frame suspended under another one). */
+const battleInert = (p: Page): Promise<boolean> =>
+  p.evaluate(() => {
+    const root = document.querySelector('[data-testid="battle-title"]')?.parentElement;
+    return root?.hasAttribute('inert') === true;
+  });
+
+/** One overlay root's computed `position` and numeric `z-index` ('auto' or a missing root reads as
+ *  NaN, which no ordering assertion accepts). */
+interface Layer {
+  position: string;
+  z: number;
+}
+interface Layers {
+  battle: Layer;
+  menu: Layer;
+  help: Layer;
+}
+
+/** The stacking facts of the battle root, #menu-overlay and #help-overlay. */
+const layers = (p: Page): Promise<Layers> =>
+  p.evaluate(() => {
+    const read = (el: Element | null | undefined): Layer => {
+      if (el === null || el === undefined) return { position: 'missing', z: Number.NaN };
+      const cs = getComputedStyle(el);
+      return { position: cs.position, z: cs.zIndex === 'auto' ? Number.NaN : Number(cs.zIndex) };
+    };
+    return {
+      battle: read(document.querySelector('[data-testid="battle-title"]')?.parentElement),
+      menu: read(document.getElementById('menu-overlay')),
+      help: read(document.getElementById('help-overlay')),
+    };
+  });
+
+/** The second, independent layering oracle: all three roots are `position: fixed` (so each one's
+ *  z-index applies) and the top overlay's computed z-index is strictly above the battle's. Only the
+ *  ORDER is pinned, never a literal value. */
+function expectStackedAbove(l: Layers, top: 'menu' | 'help'): void {
+  expect(
+    { battle: l.battle.position, menu: l.menu.position, help: l.help.position },
+    'every overlay root is position:fixed',
+  ).toEqual({ battle: 'fixed', menu: 'fixed', help: 'fixed' });
+  expect(l[top].z, `the #${top}-overlay z-index is above the battle root's`).toBeGreaterThan(
+    l.battle.z,
+  );
+}
 
 /** Whether keyboard focus sits inside the menu overlay or inside the battle overlay root. */
 const focusInside = (p: Page, where: 'menu' | 'battle'): Promise<boolean> =>
@@ -275,7 +347,7 @@ const focusInside = (p: Page, where: 'menu' | 'battle'): Promise<boolean> =>
       w === 'menu'
         ? document.getElementById('menu-overlay')
         : (document.querySelector('[data-testid="battle-title"]')?.parentElement ?? null);
-    return root !== null && root.contains(document.activeElement);
+    return root?.contains(document.activeElement) === true;
   }, where);
 
 const boxCardPrefix = (species: string, level: number): string =>
@@ -324,15 +396,17 @@ test.describe
     });
 
     test('E0 (CTL6C.1): Start on an Ongoing battle paints the main menu over the battle (hit-tested), Options > How to play paints help over both, B goes back to the menu and Start back to the untouched battle', async () => {
-      // WRONG IMPL KILLED: a menu or help painted UNDER the battle overlay (a z-index below the
-      // battle's: Start opens a menu the player cannot see while it takes every key; red today
-      // at the first menu probe, which still lands on the battle); a Start that hides the
-      // battle to show the menu; a menu not stamped over the battle (the stack shape); focus
-      // left in the battle under the menu; a close that does not return to the battle (the
-      // stack, the focus and the probes); and a menu round trip that submits or skips a turn
-      // (the turn number is unchanged). E1 continues on this SAME battle (huntNonWaterEncounter
-      // returns at once while one is ongoing), so this test neither attacks nor leaves a frame
-      // open.
+      // WRONG IMPL KILLED: a menu or help painted UNDER the battle overlay, a z-index not above
+      // the battle's (Start opens a menu the player cannot see while it takes every key). MEASURED
+      // TRAP: the battle under the menu is `inert` (ui/overlayA11y.ts) and Chromium drops inert
+      // subtrees from hit-testing, so a plain elementFromPoint said 'menu' while the battle painted
+      // over it; the 'paint' probe lifts `inert` to read paint order, and expectStackedAbove pins
+      // the computed z-index order as a second oracle. Also: a Start that hides the battle to show
+      // the menu; a menu not stamped over the battle (the stack shape); focus left in the battle
+      // under the menu; a close that does not return to the battle (the stack, the focus and the
+      // probes); and a menu round trip that submits or skips a turn (the turn number is
+      // unchanged). E1 continues on this SAME battle (huntNonWaterEncounter returns at once while
+      // one is ongoing), so this test neither attacks nor leaves a frame open.
       test.setTimeout(90_000);
       await huntNonWaterEncounter(page);
       await expect(
@@ -346,7 +420,9 @@ test.describe
       expect(points, 'three layering probes').toHaveLength(3);
 
       // ANTI-VACUITY: before Start every probe lands in the battle overlay.
-      await expect.poll(() => hitOwners(page, points), { timeout: 5_000 }).toEqual(all('battle'));
+      await expect
+        .poll(() => hitOwners(page, points, 'paint'), { timeout: 5_000 })
+        .toEqual(all('battle'));
       await expect
         .poll(() => readStack(page), { timeout: 5_000 })
         .toEqual([{ kind: 'battle', battleId: id }]);
@@ -361,7 +437,21 @@ test.describe
           { kind: 'battle', battleId: id },
           { kind: 'screen', id: 'menuView', overBattle: id },
         ]);
-      await expect.poll(() => hitOwners(page, points), { timeout: 5_000 }).toEqual(all('menu'));
+      // ANTI-VACUITY (the measured trap): the battle under the menu is suspended `inert`, which
+      // is why a plain hit-test skips it. A HARD assert, not informational: the suspension is
+      // ctl-5's stack contract (CTL5.6), set synchronously when the menu opens, so it is not
+      // timing-brittle, and if it ever stops this line reds loudly. Without inert the lift below
+      // is a no-op and the 'paint' probe is still valid, so the fix then is to drop this line.
+      expect(await battleInert(page), 'the battle under the menu is inert').toBe(true);
+      await expect
+        .poll(() => hitOwners(page, points, 'paint'), { timeout: 5_000 })
+        .toEqual(all('menu'));
+      expectStackedAbove(await layers(page), 'menu');
+      // What the pointer can hit (inert respected): NOT the layering proof (it said 'menu' on the
+      // unfixed build too); it pins only that the menu itself is live, not suspended.
+      await expect
+        .poll(() => hitOwners(page, points, 'pointer'), { timeout: 5_000 })
+        .toEqual(all('menu'));
       expect(await battleRootShown(page), 'the battle stays shown under the menu').toBe(true);
       expect((await snap(page)).ongoingBattle?.battleId, 'the same battle goes on').toBe(id);
       await expect.poll(() => focusInside(page, 'menu'), { timeout: 5_000 }).toBe(true);
@@ -382,7 +472,10 @@ test.describe
           { kind: 'screen', id: 'menuView', overBattle: id },
           { kind: 'screen', id: 'helpView', overBattle: id },
         ]);
-      await expect.poll(() => hitOwners(page, points), { timeout: 5_000 }).toEqual(all('help'));
+      await expect
+        .poll(() => hitOwners(page, points, 'paint'), { timeout: 5_000 })
+        .toEqual(all('help'));
+      expectStackedAbove(await layers(page), 'help');
       expect(await battleRootShown(page), 'the battle stays shown under help').toBe(true);
 
       // B closes help alone: the menu is what the player sees again.
@@ -394,7 +487,9 @@ test.describe
           { kind: 'battle', battleId: id },
           { kind: 'screen', id: 'menuView', overBattle: id },
         ]);
-      await expect.poll(() => hitOwners(page, points), { timeout: 5_000 }).toEqual(all('menu'));
+      await expect
+        .poll(() => hitOwners(page, points, 'paint'), { timeout: 5_000 })
+        .toEqual(all('menu'));
 
       // Start closes the menu: back to the untouched battle.
       await pressButton(page, 'Start');
@@ -402,7 +497,9 @@ test.describe
       await expect
         .poll(() => readStack(page), { timeout: 5_000 })
         .toEqual([{ kind: 'battle', battleId: id }]);
-      await expect.poll(() => hitOwners(page, points), { timeout: 5_000 }).toEqual(all('battle'));
+      await expect
+        .poll(() => hitOwners(page, points, 'paint'), { timeout: 5_000 })
+        .toEqual(all('battle'));
       await expect.poll(() => focusInside(page, 'battle'), { timeout: 5_000 }).toBe(true);
       const after = (await snap(page)).ongoingBattle;
       expect(after?.battleId, 'the battle is still ongoing').toBe(id);
