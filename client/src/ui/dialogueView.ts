@@ -128,8 +128,7 @@ export class DialogueView {
 
   /** The screen's paint: kept, so the next batch render re-applies it. */
   paint(p: DialoguePaint): void {
-    const restart =
-      p.revealStart !== null && p.revealStart !== this.#paint.revealStart;
+    const restart = p.revealStart !== null && p.revealStart !== this.#paint.revealStart;
     this.#paint = p;
     this.#apply(p, restart);
   }

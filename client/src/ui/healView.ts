@@ -119,7 +119,8 @@ export class HealView {
 
   #apply(p: HealPaint): void {
     const enabled = p.cost !== null;
-    this.#question.textContent = p.cost === null ? '' : tf('heal.prompt.question', { cost: p.cost });
+    this.#question.textContent =
+      p.cost === null ? '' : tf('heal.prompt.question', { cost: p.cost });
     this.#question.hidden = !enabled;
     this.#reason.textContent = enabled ? '' : t('heal.prompt.unavailable');
     this.#reason.hidden = enabled;

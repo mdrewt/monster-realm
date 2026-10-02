@@ -385,7 +385,11 @@ export interface MessageParams {
   // (unit price × quantity, bigint), all model data.
   readonly 'shop.qty.buy': { readonly name: string; readonly qty: number };
   readonly 'shop.qty.sell': { readonly name: string; readonly qty: number };
-  readonly 'shop.confirm.buy': { readonly qty: number; readonly name: string; readonly gold: bigint };
+  readonly 'shop.confirm.buy': {
+    readonly qty: number;
+    readonly name: string;
+    readonly gold: bigint;
+  };
   readonly 'shop.confirm.sell': {
     readonly qty: number;
     readonly name: string;

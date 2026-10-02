@@ -181,7 +181,8 @@ export class ShopView {
       this.#title.insertAdjacentElement('beforebegin', bar);
       bar.append(this.#title, this.#balanceEl);
     }
-    const after = (anchor: Element) => (el: HTMLElement) => anchor.insertAdjacentElement('afterend', el);
+    const after = (anchor: Element) => (el: HTMLElement) =>
+      anchor.insertAdjacentElement('afterend', el);
     this.#tabStrip = part('shop-tabs', 'div', after(bar));
     this.#description = part('shop-description', 'p', after(this.#inventoryList));
     this.#prompt = part('shop-prompt', 'div', after(this.#description));
