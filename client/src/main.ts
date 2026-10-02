@@ -388,8 +388,8 @@ let pvpPendingTurnNumber: number | null = null;
 let shopOpen = SHOP_OPEN_INITIAL;
 // boundShopId / boundHealLocationId record which shop / heal location the
 // visible overlay is bound to, so a refresh batch never silently swaps a bound
-// view back to the first-row default. Both clear on their Escape paths and on
-// reconnect (the store reset invalidates the ids); every open rebinds them.
+// view back to the first-row default. Both clear on reconnect (the store reset
+// invalidates the ids); every open rebinds them.
 let boundShopId: number | null = null;
 let boundHealLocationId: number | null = null;
 
@@ -1793,7 +1793,7 @@ const focusInsideHiddenSubtree = (): boolean => {
 
 const onKeyDown = (e: KeyboardEvent): void => {
   // The session terminal outranks every input path — checked FIRST,
-  // before the menu intercept, the battle-Escape branch and the router.
+  // before the typing branch, the menu intercept and the router.
   // Suppress the native default (not a bare return) so a held arrow does not scroll on key-repeat.
   // biome-ignore format: keep the session gate a single line.
   if (sessionGateBlocks()) { suppressNativeMovementDefault(e); return; }
@@ -1824,9 +1824,20 @@ const onKeyDown = (e: KeyboardEvent): void => {
     }
     return;
   }
-  // Typing mode (CTL6B.5): Escape in a text field stops typing. Focus leaves the field, its text
-  // stays, and the view's own Escape (a close) never runs; the next Escape is Start.
-  if (typingKey(e.target, e) === 'stopTyping' && e.target instanceof HTMLElement) {
+  // An Escape that cancels an IME composition is the IME's: not prevented and not routed, and kept
+  // from the field's own Escape listener, which would close the frame and drop the draft.
+  if (e.code === 'Escape' && (e.isComposing || e.keyCode === 229)) {
+    e.stopPropagation();
+    return;
+  }
+  // Typing mode (CTL6B.5): Escape in the focused text field stops typing. Focus leaves the field,
+  // its text stays, and the view's own Escape (a close) never runs; the next Escape is Start. A
+  // stale target (focus already healed away from a closed frame's field) is not typing.
+  if (
+    typingKey(e.target, e) === 'stopTyping' &&
+    e.target instanceof HTMLElement &&
+    e.target === document.activeElement
+  ) {
     stopTyping(e.target);
     e.preventDefault();
     e.stopPropagation();
@@ -1841,7 +1852,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
   };
   // While the main menu is the top frame the router drives it (the D-pad, A, B, Y; held D-pad
   // repeats come from the frame loop), so this precedes every movement and hotkey path below.
-  // Unconsumed keys (Start, accelerators) fall through to the ladder, unrouted a second time.
+  // Unconsumed keys (accelerators) fall through to the ladder, unrouted a second time.
   if (menuPlace() === 'top') {
     let consumed = false;
     for (const edge of keyEdges()) consumed = routeEdge(edge) || consumed;
@@ -2174,8 +2185,8 @@ function refreshBattle(): void {
     // VM-compare guard: skip refresh when the view is visible and the VM is
     // structurally identical to the last rendered VM (suppresses churn on no-op ticks).
     // The visible guard is the primary defense: shouldSkipBattleRefresh returns false
-    // while hidden, so the post-Escape re-show always triggers a full render. The
-    // lastBattleVM = null reset in the Escape handler is invariant hygiene on top.
+    // while hidden, so a re-show always triggers a full render. The lastBattleVM = null
+    // reset in closeFrame (the outcome continue) is invariant hygiene on top.
     if (shouldSkipBattleRefresh(battleView.visible, lastBattleVM, vm)) return;
     battleView.refresh(vm);
     lastBattleVM = vm;
@@ -2910,7 +2921,7 @@ async function main(): Promise<void> {
     // leaderboard is a pure subscription view; there is no client write path to profile.
     leaderboardView = new LeaderboardViewClass();
     // display-only help overlay — ZERO-arg construction (no callbacks,
-    // leaderboardView precedent). Opened by `?`; content is a static SSOT const.
+    // leaderboardView precedent). Opened by Select (R or Slash); content is a static SSOT const.
     helpView = new HelpViewClass();
     // The menu view only paints and forwards clicks; keys reach the menu through the router.
     menuView = new MenuViewClass({ onInput: handleMenuPointer });
@@ -3155,7 +3166,7 @@ async function main(): Promise<void> {
       // Hide the PvP overlay on reconnect — any pending challenge state is stale.
       pvpView?.hide();
       // Same never-settles class for the three settle-released locks (+ Care's);
-      // a surviving battle re-shows (and refocuses) on the next batch, as Escape-dismiss does.
+      // a surviving battle re-shows (and refocuses) on the next batch.
       battleView?.hide();
       raisingView?.hide();
       evolutionView?.hide();

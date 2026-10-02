@@ -69,7 +69,8 @@ export type Command =
  *  `unhandled` (not the screen's: the page or the legacy ladder keeps the key). */
 export type ScreenResult = Command | 'consumed' | 'unhandled';
 
-/** What an adapter may read to build its view model. Read-only: commands are the only way out. */
+/** What an adapter may read to build its view model. Adapters only read it (the store type is
+ *  not deep-readonly): a command is their only way to change anything. */
 export interface ScreenContext {
   readonly store: Readonly<AuthoritativeStore>;
   readonly identity: string;

@@ -1149,4 +1149,327 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     tap('KeyQ', 1500);
     expect(questLogShown(), 'Q closes it (the toggle)').toBe(false);
   });
+
+  // ------------------------------------------------------------------------------------------
+  // Review additions: IME, stale focus, close order, the world-focus guard, the stop-typing target
+  // ------------------------------------------------------------------------------------------
+
+  /** True when focus is on the page itself (happy-dom reports <body> or null for "nothing"). */
+  const focusOnPage = (): boolean =>
+    document.activeElement === document.body || document.activeElement === null;
+
+  it('a composing Escape (isComposing, keyCode 229, or both) in #rename-input and in a trade-propose currency input is the IME`s: overlay, draft and focus survive, nothing is prevented, and a plain Escape in the same field then stops typing', async () => {
+    // WRONG IMPL KILLED: a typing rule or composing check that reads only isComposing, or only the
+    // legacy keyCode 229 (browsers differ on which they set), a composing Escape that still reaches
+    // the field's own Escape listener (it hides the overlay and wipes the draft), one that is
+    // prevented (the IME needs it to cancel the composition), one that blurs the field, and one that
+    // falls through to Start (the menu would open under a typist). The plain Escape is the control.
+    await bootReady();
+    server(1000);
+    const variants: ReadonlyArray<{ label: string; init: KeyboardEventInit }> = [
+      { label: 'isComposing only', init: { isComposing: true } },
+      { label: 'keyCode 229 only', init: { keyCode: 229 } },
+      { label: 'isComposing and keyCode 229', init: { isComposing: true, keyCode: 229 } },
+    ];
+    const cases = [
+      {
+        name: 'rename',
+        open: 'KeyN',
+        field: 'rename-input',
+        draft: 'Alice',
+        shown: renameShown,
+        frame: 'renameView',
+      },
+      {
+        name: 'trade-propose',
+        open: 'KeyO',
+        field: 'tradepropose-offer-currency',
+        draft: '25',
+        shown: proposeShown,
+        frame: 'tradeProposeView',
+      },
+    ] as const;
+    let t = 1010;
+    for (const c of cases) {
+      tap(c.open, t);
+      t += 100;
+      expect(c.shown(), `${c.name}: precondition: the overlay opened`).toBe(true);
+      const input = byId(c.field) as HTMLInputElement;
+      input.focus();
+      typeInto(input, c.draft);
+      expect(document.activeElement, `${c.name}: precondition: the field has focus`).toBe(input);
+
+      for (const v of variants) {
+        const e = fire('keydown', 'Escape', t, { target: input, init: v.init });
+        fire('keyup', 'Escape', t + 5, { target: input });
+        t += 100;
+        expect(
+          e.isComposing === true || e.keyCode === 229,
+          `${c.name}/${v.label}: precondition: the harness event reads as composing`,
+        ).toBe(true);
+        expect(e.defaultPrevented, `${c.name}/${v.label}: left to the IME`).toBe(false);
+        expect(c.shown(), `${c.name}/${v.label}: the overlay stays`).toBe(true);
+        expect(input.value, `${c.name}/${v.label}: the draft survives`).toBe(c.draft);
+        expect(document.activeElement, `${c.name}/${v.label}: focus stays`).toBe(input);
+        expect(stackNames(), `${c.name}/${v.label}: still the one frame`).toEqual([
+          'world',
+          c.frame,
+        ]);
+        expect(menuShown(), `${c.name}/${v.label}: no menu`).toBe(false);
+      }
+
+      // Control: a plain Escape in the very same field stops typing (so the tests above were live).
+      const plain = fire('keydown', 'Escape', t, { target: input });
+      fire('keyup', 'Escape', t + 5, { target: input });
+      t += 100;
+      expect(plain.defaultPrevented, `${c.name}: a plain Escape is prevented`).toBe(true);
+      expect(document.activeElement, `${c.name}: and leaves the field`).not.toBe(input);
+      expect(c.shown(), `${c.name}: the overlay stays`).toBe(true);
+      expect(input.value, `${c.name}: the draft is kept`).toBe(c.draft);
+
+      // The next Escape (now outside a text field) closes it, so the next case starts clean.
+      const away = document.activeElement as HTMLElement;
+      fire('keydown', 'Escape', t, { target: away });
+      fire('keyup', 'Escape', t + 5, { target: away });
+      t += 100;
+      expect(c.shown(), `${c.name}: the next Escape closes the overlay`).toBe(false);
+      expect(stackNames()).toEqual(['world']);
+    }
+  });
+
+  it('an Escape at a field of an overlay that has just closed is Start, not stop-typing: with the overlay hidden by its own N toggle and focus stale on its input, Escape at that input opens the main menu', async () => {
+    // WRONG IMPL KILLED: a typing branch that trusts the event target alone (a real browser leaves
+    // document.activeElement on the hidden input for a moment after a close, so the Escape would be
+    // swallowed as "stop typing" on an overlay that is gone and the player would need a second
+    // press), a typing branch whose `target === activeElement` guard is gone, and a keydown that no
+    // longer heals focus out of a hidden subtree first (focus would still read the hidden input).
+    // Either removal leaves the menu closed here. happy-dom blurs on close; the stale state a real
+    // browser keeps is reproduced by re-focusing the hidden input.
+    await bootReady();
+    server(1000);
+    tap('KeyN', 1010);
+    expect(renameShown(), 'precondition: N opened the rename overlay').toBe(true);
+    const input = byId('rename-input') as HTMLInputElement;
+    input.focus();
+    typeInto(input, 'Alice');
+    tap('KeyN', 1100); // the overlay's own toggle-close path
+    expect(renameShown(), 'precondition: N closed it').toBe(false);
+    expect(stackNames(), 'precondition: the stack is the bare world').toEqual(['world']);
+    input.focus();
+    expect(document.activeElement, 'precondition: focus is stale on the hidden input').toBe(input);
+
+    const esc = fire('keydown', 'Escape', 1200, { target: input });
+    fire('keyup', 'Escape', 1205, { target: input });
+    expect(menuShown(), 'Escape at the stale field acts as Start and opens the menu').toBe(true);
+    expect(stackNames()).toEqual(['world', 'menuView']);
+    expect(esc.defaultPrevented, 'the consumed Start press is prevented').toBe(true);
+    expect(document.activeElement, 'focus is no longer on the hidden input').not.toBe(input);
+  });
+
+  it('one Escape over Menu then Journal hides the Journal before the menu, and leaves the bare world on the stack', async () => {
+    // WRONG IMPL KILLED: a pop-to-base that closes frames bottom-first (the menu would drop out from
+    // under a child that is still on screen, and the focus restore would land on the menu's anchor
+    // instead of where the player was), a close that skips the child, and a stack that keeps either
+    // frame after the pop.
+    await bootAtMenu(2);
+    tap('Enter', 1400);
+    expect(stackNames(), 'precondition: Journal is open above the menu').toEqual([
+      'world',
+      'menuView',
+      'questLogView',
+    ]);
+    const order: string[] = [];
+    for (const [name, id] of [
+      ['menu', 'menu-overlay'],
+      ['quest', 'quest-log-overlay'],
+    ] as const) {
+      const style = byId(id).style;
+      const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(style), 'display');
+      if (desc?.get === undefined || desc.set === undefined) {
+        throw new Error('the style prototype has no display accessor to record through');
+      }
+      const { get, set } = desc;
+      Object.defineProperty(style, 'display', {
+        configurable: true,
+        get() {
+          return get.call(this);
+        },
+        set(value: string) {
+          if (value === 'none') order.push(name);
+          set.call(this, value);
+        },
+      });
+    }
+
+    tap('Escape', 1500);
+    expect(order.indexOf('quest'), 'the Journal was hidden').toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('menu'), 'the menu was hidden').toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('quest'), 'the Journal is hidden before the menu').toBeLessThan(
+      order.indexOf('menu'),
+    );
+    expect(questLogShown()).toBe(false);
+    expect(menuShown()).toBe(false);
+    expect(stackNames()).toEqual(['world']);
+  });
+
+  it('Start and Select are inert while focus sits on a foreign control, and work with focus on the page or the canvas', async () => {
+    // WRONG IMPL KILLED: a world-focus guard that is gone on Start or on Select (M, Escape, R and
+    // Slash would open the menu or help over a button the player is operating), a guard on only
+    // some of them, and a guard that is always closed (the control below proves each key opens
+    // with focus on <body> and on the canvas).
+    await bootReady();
+    server(1000);
+    const foreign = document.createElement('button');
+    document.body.appendChild(foreign);
+    foreign.focus();
+    expect(document.activeElement, 'precondition: a foreign button has focus').toBe(foreign);
+    for (const [i, code] of ['KeyM', 'Escape', 'KeyR', 'Slash'].entries()) {
+      tap(code, 1100 + i * 100, undefined, foreign);
+      expect(menuShown(), `${code} at a foreign button opens no menu`).toBe(false);
+      expect(helpShown(), `${code} at a foreign button opens no help`).toBe(false);
+      expect(stackNames(), `${code} at a foreign button leaves the bare world`).toEqual(['world']);
+    }
+
+    // Control: with focus back on the page each key opens its screen.
+    foreign.blur();
+    foreign.remove();
+    expect(focusOnPage(), 'precondition: focus is on the page').toBe(true);
+    tap('KeyM', 1600);
+    expect(menuShown(), 'M opens the menu with focus on the page').toBe(true);
+    tap('Escape', 1700);
+    expect(menuShown(), 'Escape closes it').toBe(false);
+    tap('Escape', 1800);
+    expect(menuShown(), 'Escape opens it again from the world').toBe(true);
+    tap('Escape', 1900);
+    tap('KeyR', 2000);
+    expect(helpShown(), 'R opens help with focus on the page').toBe(true);
+    tap('KeyR', 2100);
+    expect(helpShown()).toBe(false);
+
+    const canvas = document.querySelector('canvas');
+    if (canvas === null) throw new Error('the renderer mock must mount a canvas');
+    canvas.focus();
+    expect(document.activeElement, 'precondition: the canvas has focus').toBe(canvas);
+    tap('Slash', 2200, { key: '/' });
+    expect(helpShown(), 'Slash opens help with focus on the canvas').toBe(true);
+  });
+
+  it('stop typing moves focus to the first enabled control that is not a text field: the trade-propose target select, then the first monster checkbox once the select is disabled', async () => {
+    // WRONG IMPL KILLED: a stop-typing that blurs only (the frame's trap would have nothing to
+    // keep), one that picks the LAST control (the submit button or the last checkbox), one that picks
+    // the first control without skipping a disabled one (focus() on it is a no-op, so focus would
+    // end on the page), one that depends on which text field held focus, and one that closes the
+    // overlay or wipes a draft.
+    await bootReady();
+    const ownMonster = (id: bigint) =>
+      ({
+        monsterId: id,
+        ownerIdentity: H.identity,
+        speciesId: 1,
+        nickname: `Mon${id}`,
+        level: 5,
+        xp: 0,
+        currentHp: 20,
+        statHp: 20,
+        statAttack: 5,
+        statDefense: 5,
+        statSpeed: 5,
+        statSpAttack: 5,
+        statSpDefense: 5,
+        partySlot: 255,
+        tier: 0,
+        essence: {},
+        trustTier: 'Unknown',
+        qualityTimeTier: 0,
+        nutritionPct: 0,
+      }) as never;
+    opts.store.upsertMonster(ownMonster(31n));
+    opts.store.upsertMonster(ownMonster(32n));
+    opts.store.upsertPlayer({
+      identity: OTHER_IDENTITY,
+      entityId: 99n,
+      name: 'Zed',
+      online: true,
+      lastInputSeq: 0n,
+    });
+    server(1000);
+    tap('KeyO', 1010);
+    expect(proposeShown(), 'precondition: O opened the trade-propose overlay').toBe(true);
+    const select = byId('tradepropose-target') as HTMLSelectElement;
+    const offer = byId('tradepropose-offer-currency') as HTMLInputElement;
+    const request = byId('tradepropose-request-currency') as HTMLInputElement;
+    const submit = byId('tradepropose-submit') as HTMLButtonElement;
+    const firstBox = document.querySelector(
+      '#tradepropose-monsters input[data-monster-id="31"]',
+    ) as HTMLInputElement | null;
+    const secondBox = document.querySelector(
+      '#tradepropose-monsters input[data-monster-id="32"]',
+    ) as HTMLInputElement | null;
+    expect(firstBox, 'precondition: the first own monster is offerable').not.toBeNull();
+    expect(secondBox, 'precondition: the second own monster is offerable').not.toBeNull();
+
+    // From the offer field: the select, not the last control.
+    offer.focus();
+    typeInto(offer, '25');
+    const esc1 = fire('keydown', 'Escape', 1100, { target: offer });
+    fire('keyup', 'Escape', 1105, { target: offer });
+    expect(esc1.defaultPrevented, 'the stop-typing press is prevented').toBe(true);
+    expect(document.activeElement, 'focus lands on the first control, the select').toBe(select);
+    expect(offer.value, 'the draft is kept').toBe('25');
+
+    // From the request field: the same target.
+    request.focus();
+    typeInto(request, '7');
+    fire('keydown', 'Escape', 1200, { target: request });
+    fire('keyup', 'Escape', 1205, { target: request });
+    expect(document.activeElement, 'from the other text field the target is the same').toBe(select);
+    expect(request.value, 'the draft is kept').toBe('7');
+    expect(document.activeElement, 'and not the submit button').not.toBe(submit);
+
+    // With the select disabled the first ENABLED control is the first monster checkbox.
+    offer.focus();
+    select.setAttribute('disabled', '');
+    fire('keydown', 'Escape', 1300, { target: offer });
+    fire('keyup', 'Escape', 1305, { target: offer });
+    expect(document.activeElement, 'a disabled select is skipped: the first checkbox').toBe(
+      firstBox,
+    );
+    expect(document.activeElement, 'not the later one').not.toBe(secondBox);
+    expect(proposeShown(), 'the overlay stays open throughout').toBe(true);
+    expect(stackNames()).toEqual(['world', 'tradeProposeView']);
+  });
+
+  it('stop typing in the rename field lands on the enabled submit button when there is a draft, and on the page when the draft is empty and submit is disabled, with the overlay open both times', async () => {
+    // WRONG IMPL KILLED: a stop-typing that leaves focus in the field (the second Escape would be
+    // typed into it), one that focuses the disabled submit (a dead target), one that falls back to
+    // closing the overlay when it finds no control, and one that picks the overlay root.
+    await bootReady();
+    server(1000);
+    tap('KeyN', 1010);
+    expect(renameShown(), 'precondition: N opened the rename overlay').toBe(true);
+    const input = byId('rename-input') as HTMLInputElement;
+    const submit = byId('rename-submit') as HTMLButtonElement;
+    expect(submit.disabled, 'precondition: an empty draft disables submit').toBe(true);
+    input.focus();
+    expect(document.activeElement, 'precondition: the field has focus').toBe(input);
+
+    const empty = fire('keydown', 'Escape', 1100, { target: input });
+    fire('keyup', 'Escape', 1105, { target: input });
+    expect(empty.defaultPrevented, 'the stop-typing press is prevented').toBe(true);
+    expect(focusOnPage(), 'no enabled control: focus ends on the page').toBe(true);
+    expect(renameShown(), 'the overlay stays open').toBe(true);
+    expect(input.value, 'the (empty) draft is untouched').toBe('');
+    expect(stackNames()).toEqual(['world', 'renameView']);
+    expect(menuShown(), 'stopping typing is not Start').toBe(false);
+
+    input.focus();
+    typeInto(input, 'Bob');
+    expect(submit.disabled, 'precondition: a draft enables submit').toBe(false);
+    const typed = fire('keydown', 'Escape', 1200, { target: input });
+    fire('keyup', 'Escape', 1205, { target: input });
+    expect(typed.defaultPrevented).toBe(true);
+    expect(document.activeElement, 'with a draft the enabled submit takes focus').toBe(submit);
+    expect(input.value, 'the draft is kept').toBe('Bob');
+    expect(renameShown(), 'the overlay stays open').toBe(true);
+  });
 });

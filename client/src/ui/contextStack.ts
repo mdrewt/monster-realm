@@ -197,9 +197,9 @@ export function stackDiff(prev: Stack, next: Stack): { closed: readonly UpperFra
 
 /** The battle a continued outcome dismisses (pgcc-d D3): the latest battle when it has ended,
  *  else the current dismissed id unchanged, so continuing never latches an Ongoing battle. */
-export function continuedBattleId<Id>(
-  latest: { readonly battleId: Id; readonly outcome: string } | undefined,
-  current: Id | null,
-): Id | null {
+export function continuedBattleId(
+  latest: { readonly battleId: bigint; readonly outcome: string } | undefined,
+  current: bigint | null,
+): bigint | null {
   return latest !== undefined && latest.outcome !== 'Ongoing' ? latest.battleId : current;
 }
