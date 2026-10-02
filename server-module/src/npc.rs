@@ -269,8 +269,7 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
     // Deletion gate: right after the joined check, before any NPC read.
     crate::guards::require_not_deleting(ctx, "talk")?;
     // Both-role ongoing-battle guard: opening a dialogue applies auto_effects and
-    // fires the quest Talk trigger (item + currency rewards), so it is refused
-    // mid-battle like care/train/heal.
+    // fires the quest Talk trigger (item + currency rewards).
     if crate::guards::is_in_ongoing_battle(ctx, me) {
         return Err("cannot talk during an ongoing battle".to_string());
     }
