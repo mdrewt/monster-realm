@@ -9,8 +9,8 @@
 //! spend/consume call.
 
 use crate::guards::{
-    escrowed_currency_amount, escrowed_item_qty, require_owner, saturating_sub_u32,
-    saturating_sub_u64,
+    escrowed_currency_amount, escrowed_item_qty, is_in_ongoing_battle, require_owner,
+    saturating_sub_u32, saturating_sub_u64,
 };
 use crate::inventory::{consume_one, grant_item};
 use crate::schema::{
@@ -84,7 +84,7 @@ pub(crate) fn spend_currency(
 /// Server flow (reject-not-clamp, server-priced, atomic):
 /// 1. Verify caller is a joined player (`require_owner` before any spend), then the
 ///    deletion gate — reject a mid-grace or terminal caller
-///    before any further read.
+///    before any further read — then the ongoing-battle guard (either role).
 /// 2. Look up the `shop_item_row` for `(shop_id, item_id)` — reject if not stocked.
 /// 3. Compute total = `buy_price × qty` (server-side, checked_mul — no overflow).
 /// 4. Trade-escrow guard — reject if the currency is locked in
@@ -113,6 +113,11 @@ pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result
     // mid-grace or terminal account is refused HERE — before the stock lookup, the
     // escrow/headroom reads and the spend.
     crate::guards::require_not_deleting(ctx, "buy")?;
+
+    // Both-role ongoing-battle guard: no shopping mid-battle.
+    if is_in_ongoing_battle(ctx, me) {
+        return Err("cannot buy during an ongoing battle".to_string());
+    }
 
     if qty == 0 {
         return Err("qty must be > 0".to_string());
@@ -175,7 +180,8 @@ pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result
 /// Server flow (reject-not-clamp, server-priced, atomic):
 /// 1. Verify caller is a joined player (`require_owner` before any consume/grant),
 ///    then the deletion gate — reject a mid-grace or
-///    terminal caller before any further read.
+///    terminal caller before any further read — then the ongoing-battle guard
+///    (either role).
 /// 2. Look up `sell_price` from `item_row` — reject if 0 ("item cannot be sold").
 /// 3. Compute total = `sell_price × qty` (server-side, checked_mul) — an
 ///    overflow rejects here, pre-filtering the headroom check in step 5
@@ -207,6 +213,11 @@ pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> 
     // mid-grace or terminal account is refused HERE — before the item lookup, the
     // escrow/headroom reads and the consume.
     crate::guards::require_not_deleting(ctx, "sell")?;
+
+    // Both-role ongoing-battle guard: no shopping mid-battle.
+    if is_in_ongoing_battle(ctx, me) {
+        return Err("cannot sell during an ongoing battle".to_string());
+    }
 
     if qty == 0 {
         return Err("qty must be > 0".to_string());

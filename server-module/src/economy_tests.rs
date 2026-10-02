@@ -1112,3 +1112,205 @@ fn nh_rekey_wallet_credits_forward_and_erase_wallet_deletes_only_the_owner() {
     assert_eq!(w.balance(dest), Some(42), "and no other");
     assert_eq!(w.balance(ec_other()), Some(9));
 }
+
+// ===========================================================================
+// ctl-16 (CTL16.3): no buying or selling during an Ongoing battle. The SHIPPED `buy`
+// and `sell` run as a caller in an Ongoing battle in either role (wild and PvP side
+// A, PvP side B, practice) and must refuse before the quantity check, with wallets,
+// stacks and trade offers byte-identical; the controls (no battle row, the caller's
+// finished battles, a stranger's Ongoing battle) still trade at the server price.
+// Every case gets a fresh fixture, because the host has no rollback.
+// ===========================================================================
+mod ctl16_shop_battle_guard {
+    use super::*;
+
+    use crate::schema::Battle;
+    use game_core::BattleOutcome;
+    use spacetimedb::sats::bsatn::to_vec;
+
+    const BUY_REFUSED: &str = "cannot buy during an ongoing battle";
+    const SELL_REFUSED: &str = "cannot sell during an ongoing battle";
+
+    fn empty_side() -> game_core::BattleSide {
+        game_core::BattleSide {
+            active: 0,
+            team: vec![],
+        }
+    }
+
+    /// A battle row in `outcome`, `player` on side A and `opponent` on side B.
+    fn battle(
+        battle_id: u64,
+        player: Identity,
+        opponent: Identity,
+        outcome: BattleOutcome,
+    ) -> Battle {
+        Battle {
+            battle_id,
+            player_identity: player,
+            opponent_identity: opponent,
+            state: game_core::BattleState {
+                side_a: empty_side(),
+                side_b: empty_side(),
+                outcome,
+                turn_number: 1,
+                weather: None,
+            },
+            party_monster_ids: vec![],
+            opponent_monster_ids: vec![],
+            created_at_ms: 0,
+        }
+    }
+
+    fn third_player() -> Identity {
+        Identity::from_byte_array([0xE3; 32])
+    }
+
+    /// Worlds where the caller is in an Ongoing battle, in either role, as the battle
+    /// rows to seed in order: each shape alone, then two two-row worlds (production
+    /// keeps each player's latest finished battle next to a new Ongoing one).
+    fn refused_worlds() -> Vec<(&'static str, Vec<Battle>)> {
+        let (me, other) = (ec_me(), ec_other());
+        let (wild, live) = (crate::WILD_IDENTITY, BattleOutcome::Ongoing);
+        let shapes = [
+            ("wild, side A", me, wild),
+            ("PvP, side A", me, other),
+            ("PvP, side B", other, me),
+            ("practice", me, me),
+        ];
+        let mut out = Vec::new();
+        for (label, a, b) in shapes {
+            out.push((label, vec![battle(1, a, b, live)]));
+        }
+        let finished_then_live = vec![
+            battle(1, me, other, BattleOutcome::SideAWins),
+            battle(2, me, wild, live),
+        ];
+        out.push(("finished A, then Ongoing A", finished_then_live));
+        let live_then_finished = vec![
+            battle(1, third_player(), me, live),
+            battle(2, other, me, BattleOutcome::Fled),
+        ];
+        out.push(("Ongoing B, then finished B", live_then_finished));
+        out
+    }
+
+    /// Worlds where the caller is in no Ongoing battle: no battle row; their own battle
+    /// finished (every terminal outcome, on side A and on side B); a stranger's Ongoing
+    /// battle against the wild and against a third player.
+    fn controls() -> Vec<(&'static str, Vec<Battle>)> {
+        let (me, other) = (ec_me(), ec_other());
+        let (wild, third) = (crate::WILD_IDENTITY, third_player());
+        let shapes = [
+            ("A/SideAWins", me, other, BattleOutcome::SideAWins),
+            ("A/SideBWins", me, other, BattleOutcome::SideBWins),
+            ("A/Fled", me, other, BattleOutcome::Fled),
+            ("B/SideAWins", other, me, BattleOutcome::SideAWins),
+            ("B/SideBWins", other, me, BattleOutcome::SideBWins),
+            ("B/Fled", other, me, BattleOutcome::Fled),
+            ("stranger/wild", other, wild, BattleOutcome::Ongoing),
+            ("stranger/PvP", other, third, BattleOutcome::Ongoing),
+        ];
+        let mut out = vec![("no battle row", vec![])];
+        for (label, a, b, outcome) in shapes {
+            out.push((label, vec![battle(1, a, b, outcome)]));
+        }
+        out
+    }
+
+    /// `ec_world` where buying 2 x item 5 at shop 3 (20) and selling 2 x item 5 (8)
+    /// would both succeed: 1000 in the wallet, 3 of item 5, and a live offer that
+    /// escrows 25 currency and 1 x item 5. Plus the battle table under BOTH participant
+    /// indexes (one row store), with `battles` seeded in order through one handle.
+    fn shop_world<'a>(fx: &'a EcFixture, battles: &[Battle]) -> EcWorld<'a> {
+        let w = ec_world(fx);
+        w.wallet(ec_me(), 1000);
+        w.stack(ec_me(), 5, 3);
+        w.escrow(25, 1);
+        let handle = fx.table::<Battle>("battle", "player_identity", |r| r.player_identity);
+        let _ = fx.table::<Battle>("battle", "opponent_identity", |r| r.opponent_identity);
+        for row in battles {
+            handle.seed(row);
+        }
+        w
+    }
+
+    /// Wallets, stacks, stock and items (`EcWorld::snapshot`) plus the trade offers.
+    fn snapshot(w: &EcWorld<'_>) -> Vec<Vec<u8>> {
+        let mut all = w.snapshot();
+        all.push(to_vec(&w.offers.rows()).unwrap());
+        all
+    }
+
+    /// CTL16.3 (buy): a buy that would succeed is refused for a caller in an Ongoing
+    /// battle, in any role, with the exact message, and wallets, stacks and the escrow
+    /// offer stay byte-identical. Also at qty 0: the guard precedes the quantity check.
+    /// kills: no guard in buy; a check of one role, or of one row per role, only; the
+    /// guard placed after the qty check or after the spend.
+    #[test]
+    fn ctl16_3_buy_refused_in_ongoing_battle_either_role_store_unchanged() {
+        for (label, rows) in refused_worlds() {
+            for qty in [2, 0] {
+                let fx = ec_fixture();
+                let w = shop_world(&fx, &rows);
+                let before = snapshot(&w);
+                assert_eq!(
+                    fx.run_as(ec_me(), |ctx| buy(ctx, 3, 5, qty)),
+                    Err(BUY_REFUSED.to_string()),
+                    "{label}, qty {qty}"
+                );
+                assert_eq!(snapshot(&w), before, "{label}, qty {qty}: unchanged");
+            }
+        }
+    }
+
+    /// CTL16.3 (sell): a sale that would succeed (2 of 3 held, 1 escrowed) is refused
+    /// for a caller in an Ongoing battle, in any role, with the exact message, and
+    /// wallets, stacks and the escrow offer stay byte-identical. Also at qty 0: the
+    /// guard precedes the quantity check.
+    /// kills: no guard in sell; a check of one role, or of one row per role, only; the
+    /// guard placed after the qty check or after the consume.
+    #[test]
+    fn ctl16_3_sell_refused_in_ongoing_battle_either_role_store_unchanged() {
+        for (label, rows) in refused_worlds() {
+            for qty in [2, 0] {
+                let fx = ec_fixture();
+                let w = shop_world(&fx, &rows);
+                let before = snapshot(&w);
+                assert_eq!(
+                    fx.run_as(ec_me(), |ctx| sell(ctx, 5, qty)),
+                    Err(SELL_REFUSED.to_string()),
+                    "{label}, qty {qty}"
+                );
+                assert_eq!(snapshot(&w), before, "{label}, qty {qty}: unchanged");
+            }
+        }
+    }
+
+    /// CTL16.3 controls: with no battle row, only the caller's finished battles, or a
+    /// stranger's Ongoing battle, buy and then sell are admitted and move exactly the
+    /// server price (shop 3 charges 10 per item 5, item 5 sells for 4). This is what
+    /// makes the refusals' "unchanged" non-vacuous.
+    /// kills: a guard ignoring the outcome; a table-wide check; refuse-everything.
+    #[test]
+    fn ctl16_3_buy_and_sell_admitted_without_an_ongoing_battle_of_the_callers() {
+        for (label, rows) in controls() {
+            let fx = ec_fixture();
+            let w = shop_world(&fx, &rows);
+            assert_eq!(
+                fx.run_as(ec_me(), |ctx| buy(ctx, 3, 5, 2)),
+                Ok(()),
+                "{label}: buy admitted"
+            );
+            assert_eq!(w.balance(ec_me()), Some(980), "{label}: paid 20");
+            assert_eq!(w.count(ec_me(), 5), Some(5), "{label}: got 2");
+            assert_eq!(
+                fx.run_as(ec_me(), |ctx| sell(ctx, 5, 2)),
+                Ok(()),
+                "{label}: sell admitted"
+            );
+            assert_eq!(w.balance(ec_me()), Some(988), "{label}: got 8");
+            assert_eq!(w.count(ec_me(), 5), Some(3), "{label}: sold 2");
+        }
+    }
+}
