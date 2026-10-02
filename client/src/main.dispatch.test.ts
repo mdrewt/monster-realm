@@ -14,6 +14,17 @@
  * overlay each change that record. The same table drives the battle case (ctl-6c, CTL6C.3): at a
  * battle base every callback but the battle's own actions is refused with its reason.
  *
+ * ctl-7c and ctl-7d add cases that swap ONE frame's screen adapter for a stand-in and drive it
+ * through the real router, stack and dispatch. ctl-7d (the screen-context seam) covers what such
+ * an adapter can now read and send: the bound shop and heal-location ids and the reduced-motion
+ * preference on `ScreenContext` (CTL7D.1, CTL7D.2); a `buy` / `sell` quantity that reaches its
+ * reducer verbatim, or is refused before any send (CTL7D.3); the success line naming the
+ * quantity, the item and the gold, read from the store when the command is sent (CTL7D.4); the
+ * `pickShop` command, which the greet-then-shop click now shares and a battle base refuses
+ * (CTL7D.5); and a store batch reaching an open frame's `observe` (CTL7D.6). Two older cases
+ * changed with it (named intentional changes): the shop's success line is now the parameterized
+ * count line for what that fixture sends, and the battle case's refuse list names `pickShop`.
+ *
  * Only the views are replaced. The booted main.ts, the router, the stack, the claim and privacy
  * models and the stubbed SDK connection are the real ones (main.controls.test.ts's harness, with
  * the connection's frozen flag and a reducer gate made controllable). The real client/index.html
@@ -26,7 +37,13 @@ import { Identity } from 'spacetimedb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
-import type { StoreBattle, StoreBattleMonster, StoreMonsterPub } from './net/store';
+import type {
+  StoreBattle,
+  StoreBattleMonster,
+  StoreItemRow,
+  StoreMonsterPub,
+  StoreNpcRow,
+} from './net/store';
 // Read ONLY by the battle case's closing anti-vacuity cross-check (that its literal refuse list
 // covers every kind the policy refuses); the expected split itself is the test's own transcription.
 import { COMMAND_BATTLE_POLICY } from './ui/contextStack';
@@ -273,7 +290,9 @@ function must<T>(v: T | undefined, what: string): T {
   return v;
 }
 
-async function boot(): Promise<void> {
+/** Boot a fresh main.ts. `beforeImport` runs right before the import, for a global main.ts reads
+ *  at module scope (the ctl-7d reduced-motion case installs its `matchMedia` stub there). */
+async function boot(beforeImport?: () => void): Promise<void> {
   H.connectOpts = null;
   H.sends = [];
   H.calls = [];
@@ -294,6 +313,7 @@ async function boot(): Promise<void> {
     return 0;
   });
   vi.resetModules();
+  beforeImport?.();
   await import('./main');
   i18n = await import('./ui/i18n/resolver');
   opts = await vi.waitFor(
@@ -305,8 +325,8 @@ async function boot(): Promise<void> {
   );
 }
 
-async function bootReady(): Promise<void> {
-  await boot();
+async function bootReady(beforeImport?: () => void): Promise<void> {
+  await boot(beforeImport);
   opts.onReady(H.identity);
 }
 
@@ -747,6 +767,26 @@ const stackBase = (): unknown =>
 
 const statusText = (): string => document.getElementById('status')?.textContent ?? '';
 
+// The shop success lines (ctl-7d, CTL7D.4), as LITERAL bytes built here from code points: never
+// read off the catalog under test. U+2713 is the success mark, U+2212 the minus sign (never the
+// ASCII hyphen) and U+00D7 the multiplication sign. `gold` is the TOTAL moved, a plain decimal.
+const CHECK = String.fromCharCode(0x2713);
+const MINUS = String.fromCharCode(0x2212);
+const TIMES = String.fromCharCode(0xd7);
+const E_ACUTE = String.fromCharCode(0xe9);
+const enBought = (qty: number, name: string, gold: bigint): string =>
+  `${CHECK} Bought ${qty} ${name} (${MINUS}${gold}g)`;
+const enSold = (qty: number, name: string, gold: bigint): string =>
+  `${CHECK} Sold ${qty} ${name} (+${gold}g)`;
+const enBoughtCount = (qty: number): string => `${CHECK} Bought ${TIMES}${qty}`;
+const enSoldCount = (qty: number): string => `${CHECK} Sold ${TIMES}${qty}`;
+const frBought = (qty: number, name: string, gold: bigint): string =>
+  `${CHECK} Achet${E_ACUTE} ${qty} ${name} (${MINUS}${gold} or)`;
+const frSold = (qty: number, name: string, gold: bigint): string =>
+  `${CHECK} Vendu ${qty} ${name} (+${gold} or)`;
+const frBoughtCount = (qty: number): string => `${CHECK} Achet${E_ACUTE} ${TIMES}${qty}`;
+const frSoldCount = (qty: number): string => `${CHECK} Vendu ${TIMES}${qty}`;
+
 describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true }, () => {
   afterEach(() => {
     for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
@@ -888,8 +928,14 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     // accepted/rejected line (the player is told the opposite of what they chose), the wrong message
     // for confirm vs cancel, a sink that paints into a hidden overlay (a stale line on the next
     // open), and a feedback that never reaches its view.
+    //
+    // ctl-7d (named intentional change, CTL7D.4): the shop's plain `shop.feedback.purchased` /
+    // `.sold` ids are deleted. A buy or sell now shows a line naming the quantity, the item and the
+    // gold; no item or shop-item row is loaded here, so each shop row expects the literal COUNT
+    // line for the quantity 1 the legacy ShopView sends. Every other row is unchanged.
     await bootReady();
     server(1000);
+    const line = (key: string): string => i18n.t(key as never);
     const all = [
       'BoxView',
       'BattleView',
@@ -901,14 +947,15 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       'RenameView',
       'TradeProposeView',
     ];
+    // The fourth field is the exact line the action must paint.
     const cases: ReadonlyArray<readonly [string, string, readonly unknown[], string]> = [
-      ['TradeView', 'onAccept', [81n], 'trade.feedback.accepted'],
-      ['TradeView', 'onReject', [82n], 'trade.feedback.rejected'],
-      ['TradeView', 'onConfirm', [83n], 'trade.feedback.completed'],
-      ['TradeView', 'onCancel', [84n], 'trade.feedback.cancelled'],
-      ['ShopView', 'onBuy', [11, 22], 'shop.feedback.purchased'],
-      ['ShopView', 'onSell', [23], 'shop.feedback.sold'],
-      ['RenameView', 'onSubmit', ['Zed'], 'chrome.rename.updated'],
+      ['TradeView', 'onAccept', [81n], line('trade.feedback.accepted')],
+      ['TradeView', 'onReject', [82n], line('trade.feedback.rejected')],
+      ['TradeView', 'onConfirm', [83n], line('trade.feedback.completed')],
+      ['TradeView', 'onCancel', [84n], line('trade.feedback.cancelled')],
+      ['ShopView', 'onBuy', [11, 22], enBoughtCount(1)],
+      ['ShopView', 'onSell', [23], enSoldCount(1)],
+      ['RenameView', 'onSubmit', ['Zed'], line('chrome.rename.updated')],
       [
         'TradeProposeView',
         'onSubmit',
@@ -920,13 +967,13 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
             counterpartyCurrency: 4n,
           },
         ],
-        'tradePropose.feedback.sent',
+        line('tradePropose.feedback.sent'),
       ],
-      ['RaisingView', 'onCare', [72n], 'raising.feedback.cared'],
+      ['RaisingView', 'onCare', [72n], line('raising.feedback.cared')],
     ];
     const feedbackOf = (name: string): string[] => H.views[name]?.feedback ?? [];
 
-    for (const [target, name, args, key] of cases) {
+    for (const [target, name, args, expectedLine] of cases) {
       for (const v of all) {
         const view = H.views[v];
         if (view !== undefined) {
@@ -946,7 +993,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       await flush();
       for (const v of all) {
         expect(feedbackOf(v), `${target}.${name}: the feedback of ${v}`).toEqual(
-          v === target ? [i18n.t(key as never)] : [],
+          v === target ? [expectedLine] : [],
         );
       }
     }
@@ -1278,10 +1325,15 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
 
     // Anti-vacuity cross-check against the production policy: every kind it refuses was refused
     // above through a captured view callback, or is named here with the reason it has none.
+    // ctl-7d (named intentional change, CTL7D.5): the policy gains `pickShop: 'refuse'`.
     const noViewCallback: Readonly<Record<string, string>> = {
       advanceDialogue:
         'no view constructor callback: the document-level [data-choice-idx] click delegation ' +
         'dispatches it, and main.controls.test.ts refuses that click at a battle base',
+      pickShop:
+        'no view constructor callback: a dialogue screen adapter and the document-level ' +
+        '[data-shop-id] click delegation dispatch it, and CTL7D-5-BOOT-BATTLE-REFUSED in this ' +
+        'file refuses both at a battle base',
     };
     const policyRefused = Object.entries(COMMAND_BATTLE_POLICY)
       .filter(([, verdict]) => verdict === 'refuse')
@@ -1815,5 +1867,1057 @@ describe('main.ts store batches and a held key (runtime, ctl-7c)', { sequential:
     // Control: the menu, on top again, moves for a fresh press.
     press('ArrowDown', 3200);
     expect(menuCursorNow(), 'b, control: a fresh press moves the menu').not.toBe(cursor);
+  });
+});
+
+// ==========================================================================================
+// ctl-7d: the screen-context seam (CTL7D.1-.6)
+// ==========================================================================================
+//
+// Same harness and stand-in pattern as ctl-7c: one fresh main.ts per case, one frame's adapter
+// swapped for a stand-in, real keys through the real router. A stand-in either reads what an
+// adapter can read (`ScreenContext`) on a routed LB (PageUp) press, or issues the command under
+// test on it. The shop and heal frames are opened by their REAL paths: the greet-then-shop pick
+// over a conversation (the shop opens on the first batch with no conversation) and T beside a
+// healer. The stand-in views' own flags show them where a case needs no open path.
+
+/** The `ScreenContext` fields the ctl-7d stand-ins read. Loosely typed on purpose: the context
+ *  the shell builds today has none of them, so a read shows `undefined` rather than failing to
+ *  build. */
+interface CtxRead {
+  readonly shopId?: unknown;
+  readonly healLocationId?: unknown;
+  readonly reduceMotion?: unknown;
+}
+
+/** A stand-in adapter whose view model is `pick(ctx)`, recorded on every routed LB (PageUp) press;
+ *  B and Start close its frame as the legacy adapter does. It has no `observe`, so the host builds
+ *  its view model only on a button step, and `reads` holds exactly one entry per LB press. */
+function readingAdapter(reads: unknown[], pick: (ctx: CtxRead) => unknown): unknown {
+  return {
+    viewModel: (ctx: CtxRead) => pick(ctx),
+    init: () => undefined,
+    onButton: (vm: unknown, state: unknown, btn: Pressed) => {
+      if (btn.repeat) return { state, result: 'consumed' };
+      if (btn.button === 'LB') {
+        reads.push(vm);
+        return { state, result: 'consumed' };
+      }
+      if (btn.button === 'B') return { state, result: { kind: 'pop' } };
+      if (btn.button === 'Start') return { state, result: { kind: 'popToBase' } };
+      return { state, result: 'unhandled' };
+    },
+  };
+}
+
+/** Both bound ids as one read: `[shopId, healLocationId]`. */
+const boundIds = (ctx: CtxRead): unknown => [ctx.shopId, ctx.healLocationId];
+
+const WORLD_FRAME = { kind: 'world' } as const;
+const screenFrame = (id: string): { kind: 'screen'; id: string } => ({ kind: 'screen', id });
+
+/** The one dismissDialogue call a greet-then-shop pick sends. */
+const ONE_DISMISS = [{ name: 'dismissDialogue', args: {} }];
+
+/** The query render/motionPreference.ts asks the browser (A11Y-28: the one matchMedia read). */
+const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
+
+const HEALER_A = 21n;
+const HEALER_B = 22n;
+
+/** A recorded stand-in view, or a loud failure when main.ts never built it. */
+function stubView(name: string): (typeof H.views)[string] {
+  const view = H.views[name];
+  if (view === undefined) throw new Error(`${name} was never constructed by main.ts`);
+  return view;
+}
+
+/** One NPC row and its character at (`tileX`, 6), with no flush. */
+function placeNpc(
+  entityId: bigint,
+  npcId: string,
+  tileX: number,
+  interaction: StoreNpcRow['interaction'],
+  t: number,
+): void {
+  opts.store.upsertNpc({
+    entityId,
+    npcId,
+    zoneId: 0,
+    homeX: tileX,
+    homeY: 6,
+    wanderRadius: 0,
+    dialogueTreeId: 'no-such-tree',
+    interaction,
+  });
+  opts.store.upsertCharacter(
+    {
+      entityId,
+      zoneId: 0,
+      tileX,
+      tileY: 6,
+      facing: 'South',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [] as WasmMoveInput[],
+    },
+    t,
+  );
+}
+
+/** An NPC row and its character leave, with no flush. */
+function dropNpc(entityId: bigint): void {
+  opts.store.removeNpc(entityId);
+  opts.store.removeCharacter(entityId);
+}
+
+/** An item definition row; only the name and the sell price matter to the shop lines. */
+function itemDef(id: number, name: string, sellPrice: bigint): StoreItemRow {
+  return {
+    id,
+    name,
+    description: '',
+    recruitBonus: 0,
+    trainStat: null,
+    trainAmount: 0,
+    sellPrice,
+    cureStatus: null,
+  };
+}
+
+/** The server opens a conversation with the guide, in one batch at clock `t`. */
+function startConversation(t: number): void {
+  opts.store.upsertConversation({
+    ownerIdentity: H.identity,
+    npcEntityId: GUIDE_ENTITY,
+    currentNodeId: 'start',
+  });
+  server(t);
+}
+
+/** The server ends the conversation, in one batch at clock `t`. */
+function endConversation(t: number): void {
+  opts.store.removeConversation(H.identity);
+  server(t);
+}
+
+/** Click a greet-then-shop button as the dialogue renders one (the document-level delegate). */
+function clickShop(t: number, shopId: string): void {
+  const button = document.createElement('button');
+  button.dataset.shopId = shopId;
+  document.body.appendChild(button);
+  clock.t = t;
+  button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  button.remove();
+}
+
+/** Open the main menu at the world, send its stand-in one LB, and close it again with Start. */
+async function readAtMenu(t: number): Promise<void> {
+  openMenuAtWorld(t);
+  await pageUp(t + 10);
+  press('Escape', t + 20);
+  expect(stackNow(), 'precondition: Start closed the menu').toEqual([WORLD_FRAME]);
+}
+
+/** A REAL greet-then-shop open of `shopId` (the conversation, the Shop click, the batch that ends
+ *  the conversation), one LB to the shop frame's stand-in, then Start closes it. */
+async function openShopAndRead(t: number, shopId: string): Promise<void> {
+  const shop = stubView('ShopView');
+  startConversation(t);
+  expect(stackNow(), `shop ${shopId}: precondition: the conversation is the one frame`).toEqual([
+    WORLD_FRAME,
+    screenFrame('dialogueView'),
+  ]);
+  H.calls = [];
+  clickShop(t + 10, shopId);
+  expect(H.calls, `shop ${shopId}: precondition: the pick sent one dismiss`).toEqual(ONE_DISMISS);
+  expect(shop.visible, `shop ${shopId}: precondition: no shop over the conversation`).toBe(false);
+  endConversation(t + 20);
+  expect(stackNow(), `shop ${shopId}: precondition: the shop frame is the one frame`).toEqual([
+    WORLD_FRAME,
+    screenFrame('shopView'),
+  ]);
+  await pageUp(t + 30);
+  press('Escape', t + 40);
+  expect(stackNow(), `shop ${shopId}: precondition: Start closed the shop`).toEqual([WORLD_FRAME]);
+}
+
+/** T beside the healer opens the heal frame alone, one LB to its stand-in, then Start closes it. */
+async function healAndRead(t: number, label: string): Promise<void> {
+  press('KeyT', t);
+  expect(stackNow(), `${label}: precondition: T opened the heal frame alone`).toEqual([
+    WORLD_FRAME,
+    screenFrame('healView'),
+  ]);
+  await pageUp(t + 10);
+  press('Escape', t + 20);
+  expect(stackNow(), `${label}: precondition: Start closed the heal frame`).toEqual([WORLD_FRAME]);
+}
+
+/** The ctl-7c blocks' afterEach as one function: the ctl-7d blocks run it after each case, and the
+ *  reduced-motion case also between its two boots. */
+function teardownBoot(): void {
+  for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+  recorded = [];
+  while (restorers.length > 0) restorers.pop()?.();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  rafCallback = null;
+  H.gate = null;
+  H.frozen = false;
+  window.history.replaceState(null, '', '/');
+  document.body.replaceChildren();
+}
+
+describe('main.ts screen context reads (runtime, ctl-7d)', { sequential: true }, () => {
+  afterEach(teardownBoot);
+
+  it('CTL7D-1-BOOT-SHOP-ID: ScreenContext.shopId reads null before any shop open, then the id a real greet-then-shop open bound (shop 0 as 0, then shop 4), keeps it after the shop closes, and rebinds on the next open', async () => {
+    // WRONG IMPL KILLED: no `shopId` on the context (every read `undefined`), a truthiness guard
+    // (`boundShopId || null`: shop 0 reads null), a value snapshotted into the context literal at
+    // boot instead of a getter read live (null forever), a getter that answers the heal location
+    // (nothing binds one in this case), a close that clears the binding (the menu would read null
+    // after the shop closes), and an open that does not rebind (shop 4 would read 0).
+    await bootReady();
+    server(1000);
+    seedNpcs(1010);
+    const menuReads: unknown[] = [];
+    const shopReads: unknown[] = [];
+    swapAdapter('menuView', readingAdapter(menuReads, boundIds));
+    swapAdapter('shopView', readingAdapter(shopReads, boundIds));
+
+    await readAtMenu(1100);
+    expect(menuReads, 'before any shop open: [shopId, healLocationId]').toEqual([[null, null]]);
+
+    await openShopAndRead(1200, '0');
+    expect(shopReads, 'the open bound shop 0, read as 0').toEqual([[0, null]]);
+    await readAtMenu(1300);
+    expect(menuReads, 'the close keeps shop 0').toEqual([
+      [null, null],
+      [0, null],
+    ]);
+
+    await openShopAndRead(1400, '4');
+    expect(shopReads, 'the next open rebinds: shop 4').toEqual([
+      [0, null],
+      [4, null],
+    ]);
+    await readAtMenu(1500);
+    expect(menuReads, 'and the close keeps shop 4').toEqual([
+      [null, null],
+      [0, null],
+      [4, null],
+    ]);
+  });
+
+  it('CTL7D-1-BOOT-HEAL-ID: ScreenContext.healLocationId reads null before T, then the location T bound at a healer (location 0 as 0, then 6 at another healer), keeps it after a close, and the shop id and the heal id stay two independent values', async () => {
+    // WRONG IMPL KILLED: no `healLocationId` on the context, a truthiness guard (location 0 reads
+    // null), a boot-time snapshot instead of a live getter, a close that clears it, a T at another
+    // healer that does not rebind (6 would read 0), and ONE variable behind both getters or a bind
+    // that resets the other id: a heal getter answering the shop id ([null, null] where location 0
+    // is bound), a shop open that clears the heal id ([4, null]), a heal bind that clears the shop
+    // id ([null, 6]).
+    await bootReady();
+    server(1000);
+    placeNpc(GUIDE_ENTITY, 'guide', 3, { kind: 'dialogue' }, 1010);
+    placeNpc(HEALER_A, 'healer-a', 2, { kind: 'heal', locationId: 0 }, 1010);
+    server(1010);
+    const menuReads: unknown[] = [];
+    const healReads: unknown[] = [];
+    const shopReads: unknown[] = [];
+    swapAdapter('menuView', readingAdapter(menuReads, boundIds));
+    swapAdapter('healView', readingAdapter(healReads, boundIds));
+    swapAdapter('shopView', readingAdapter(shopReads, boundIds));
+
+    await readAtMenu(1100);
+    expect(menuReads, 'before T: [shopId, healLocationId]').toEqual([[null, null]]);
+
+    await healAndRead(1200, 'the healer at location 0');
+    expect(healReads, 'T bound location 0, read as 0; the shop id is untouched').toEqual([
+      [null, 0],
+    ]);
+    await readAtMenu(1300);
+    expect(menuReads, 'the close keeps location 0').toEqual([
+      [null, null],
+      [null, 0],
+    ]);
+
+    // A shop open binds the shop id and leaves the heal id bound.
+    await openShopAndRead(1400, '4');
+    expect(shopReads, 'a shop open binds shop 4 and keeps location 0').toEqual([[4, 0]]);
+
+    // T at another healer rebinds the heal id and leaves the shop id bound.
+    dropNpc(HEALER_A);
+    placeNpc(HEALER_B, 'healer-b', 2, { kind: 'heal', locationId: 6 }, 1500);
+    server(1500);
+    await healAndRead(1600, 'the healer at location 6');
+    expect(healReads, 'T at another healer rebinds to 6 and keeps shop 4').toEqual([
+      [null, 0],
+      [4, 6],
+    ]);
+    await readAtMenu(1700);
+    expect(menuReads, 'and the close keeps both').toEqual([
+      [null, null],
+      [null, 0],
+      [4, 6],
+    ]);
+  });
+
+  it('CTL7D-1-BOOT-RECONNECT-NULL: with both ids bound (shop 0, heal location 6), the connection`s reconnect path clears both: the heal frame the reconnect leaves open reads [null, null], and so does the menu opened after it', async () => {
+    // WRONG IMPL KILLED: a reconnect that clears neither id, or only one of them (an adapter would
+    // keep acting on a shop or a heal location whose rows the store reset invalidated), and a
+    // getter that caches its first read.
+    await bootReady();
+    server(1000);
+    placeNpc(GUIDE_ENTITY, 'guide', 3, { kind: 'dialogue' }, 1010);
+    placeNpc(HEALER_A, 'healer', 2, { kind: 'heal', locationId: 6 }, 1010);
+    server(1010);
+    const menuReads: unknown[] = [];
+    const healReads: unknown[] = [];
+    const shopReads: unknown[] = [];
+    swapAdapter('menuView', readingAdapter(menuReads, boundIds));
+    swapAdapter('healView', readingAdapter(healReads, boundIds));
+    swapAdapter('shopView', readingAdapter(shopReads, boundIds));
+
+    await openShopAndRead(1100, '0');
+    expect(shopReads, 'precondition: the open bound shop 0').toEqual([[0, null]]);
+    press('KeyT', 1200);
+    expect(stackNow(), 'precondition: T opened the heal frame alone').toEqual([
+      WORLD_FRAME,
+      screenFrame('healView'),
+    ]);
+    await pageUp(1210);
+    expect(healReads, 'precondition: both ids are bound').toEqual([[0, 6]]);
+
+    opts.onReconnect(H.identity);
+    await pageUp(1300);
+    // Pinned as it is (pre-existing; its residual belongs to ctl-10a): the reconnect hides the
+    // shop and the menu, never the heal view, so the heal frame is still open here.
+    expect(stackNow(), 'precondition: the reconnect left the heal frame open').toEqual([
+      WORLD_FRAME,
+      screenFrame('healView'),
+    ]);
+    expect(healReads, 'the next read on the open heal frame: both null').toEqual([
+      [0, 6],
+      [null, null],
+    ]);
+
+    press('Escape', 1400);
+    expect(stackNow(), 'precondition: Start closed the heal frame').toEqual([WORLD_FRAME]);
+    await readAtMenu(1500);
+    expect(menuReads, 'a frame opened after the reconnect reads both null too').toEqual([
+      [null, null],
+    ]);
+  });
+
+  it('CTL7D-2-BOOT-REDUCED-MOTION: ScreenContext.reduceMotion reads the one motion preference live: its initial value, then the value of each change event fired between two presses, from either initial value, with matchMedia asked exactly once for the reduced-motion query', async () => {
+    // WRONG IMPL KILLED: no `reduceMotion` on the context (every read `undefined`), a hardcoded
+    // false or true (one of the two initial values reads wrong), a value snapshotted at boot
+    // instead of a live getter (the read after a change event is stale), a getter that re-queries
+    // `matchMedia(q).matches` (this stub's `.matches` never moves, only its change event does,
+    // and every extra query is counted), and a second motion preference of main.ts's own (a
+    // second matchMedia call).
+    for (const initial of [false, true]) {
+      // The second boot needs the first boot's listeners, stubs and adapter swaps gone.
+      if (initial) teardownBoot();
+      const queries: string[] = [];
+      const listeners: Array<(e: { readonly matches: boolean }) => void> = [];
+      const mql = {
+        // Fixed at the initial value: the preference moves by the change event only.
+        get matches(): boolean {
+          return initial;
+        },
+        addEventListener: (
+          type: string,
+          listener: (e: { readonly matches: boolean }) => void,
+        ): void => {
+          if (type === 'change') listeners.push(listener);
+        },
+      };
+      const matchMediaStub = (query: string): typeof mql => {
+        queries.push(query);
+        return mql;
+      };
+      await bootReady(() => {
+        vi.stubGlobal('matchMedia', matchMediaStub);
+      });
+      expect(window.matchMedia, `initial ${initial}: precondition: the stub is installed`).toBe(
+        matchMediaStub,
+      );
+      server(1000);
+      const reads: unknown[] = [];
+      swapAdapter(
+        'menuView',
+        readingAdapter(reads, (ctx) => ctx.reduceMotion),
+      );
+      openMenuAtWorld(1010);
+
+      await pageUp(1100);
+      expect(
+        listeners.length,
+        `initial ${initial}: precondition: a change listener is registered`,
+      ).toBeGreaterThan(0);
+      for (const listener of listeners) listener({ matches: !initial });
+      await pageUp(1200);
+      for (const listener of listeners) listener({ matches: initial });
+      await pageUp(1300);
+
+      expect(
+        reads,
+        `initial ${initial}: the initial value, then each change event's value`,
+      ).toEqual([initial, !initial, initial]);
+      expect(
+        queries,
+        `initial ${initial}: one matchMedia call in total, for the reduced-motion query`,
+      ).toEqual([REDUCED_MOTION_QUERY]);
+    }
+  });
+});
+
+describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true }, () => {
+  afterEach(teardownBoot);
+
+  it('CTL7D-3-BOOT-QTY-SENT: a screen command buy or sell carrying a quantity sends exactly that quantity to its reducer, verbatim: 1, 3, 2147483648 and 4294967295, one reducer call per command', async () => {
+    // WRONG IMPL KILLED: the old fixed `qty: 1` (or any constant) in place of the command's own, a
+    // signed 32-bit coercion (`qty | 0`: 2147483648 and 4294967295 go negative), a clamp to a
+    // smaller cap, a dropped or renamed field, buy's shopId and itemId swapped, and a second
+    // reducer call per command. (An unsigned `qty >>> 0` is the identity on these values; it dies
+    // with the invalid quantities: -1 and 2^32 + 1 would wrap into range and send.)
+    await bootReady();
+    server(1000);
+    const issue: { command: unknown } = { command: { kind: 'pop' } };
+    swapAdapter('menuView', commandAdapter(issue));
+    openMenuAtWorld(1010);
+    let t = 1100;
+    for (const qty of [1, 3, 2147483648, 4294967295]) {
+      const rows: ReadonlyArray<readonly [string, unknown, unknown]> = [
+        [
+          'buy',
+          { kind: 'buy', shopId: 11, itemId: 22, qty },
+          { name: 'buy', args: { shopId: 11, itemId: 22, qty } },
+        ],
+        ['sell', { kind: 'sell', itemId: 23, qty }, { name: 'sell', args: { itemId: 23, qty } }],
+      ];
+      for (const [kind, command, call] of rows) {
+        issue.command = command;
+        H.calls = [];
+        const down = await pageUp(t);
+        t += 100;
+        expect(down.defaultPrevented, `${kind} ${qty}: the routed press is consumed`).toBe(true);
+        expect(H.calls, `${kind} ${qty}: one call, with exactly that quantity`).toEqual([call]);
+      }
+    }
+  });
+
+  it('CTL7D-3-BOOT-QTY-REJECTED: a buy or sell quantity that is not an integer from 1 to 4294967295 sends nothing, paints no shop line and logs an error naming the command, without throwing; a valid quantity in the same setup sends and paints, before and after the rejected ones', async () => {
+    // WRONG IMPL KILLED: no check at all (each row reaches its reducer), a clamp or a default in
+    // place of a refusal (`Math.max(1, qty)`, `qty || 1`, `Math.trunc`, `qty | 0`, `qty >>> 0`:
+    // 0, 1.5, -1 and 2^32 + 1 would each send an in-range quantity), a check that runs inside or
+    // after performCare (a reducer call or a shop line before the refusal), a JS-coercing check
+    // (`'3'`, `true`, `[3]` and `null` coerce to numbers a bare range compare accepts), an upper
+    // bound of 2^32, MAX_SAFE_INTEGER or none, a check that throws on `3n` or `undefined` (the
+    // press would throw), a silent refusal or one that names no command, and a refusal that
+    // latches (the valid control after the rows must still send).
+    await bootReady();
+    server(1000);
+    const issue: { command: unknown } = { command: { kind: 'pop' } };
+    swapAdapter('shopView', commandAdapter(issue));
+    const shop = stubView('ShopView');
+    // Shown, so the visibility-gated success sink WOULD paint a line for any send.
+    shop.visible = true;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const commandOf = (kind: 'buy' | 'sell', qty: unknown): unknown =>
+      kind === 'buy' ? { kind, shopId: 11, itemId: 22, qty } : { kind, itemId: 23, qty };
+    const callOf = (kind: 'buy' | 'sell', qty: unknown): unknown =>
+      kind === 'buy'
+        ? { name: 'buy', args: { shopId: 11, itemId: 22, qty } }
+        : { name: 'sell', args: { itemId: 23, qty } };
+    let t = 1100;
+    /** One routed LB on the shop frame issuing `kind` at `qty`, on a fresh call record, shop line
+     *  and error log; returns the keydown. */
+    const send = async (kind: 'buy' | 'sell', qty: unknown): Promise<KeyboardEvent> => {
+      issue.command = commandOf(kind, qty);
+      H.calls = [];
+      shop.feedback.length = 0;
+      errorSpy.mockClear();
+      const down = await pageUp(t);
+      t += 100;
+      return down;
+    };
+    const control = async (qty: number, when: string): Promise<void> => {
+      for (const kind of ['buy', 'sell'] as const) {
+        const label = `control ${when}, ${kind} ${qty}`;
+        const down = await send(kind, qty);
+        expect(down.defaultPrevented, `${label}: the press is consumed`).toBe(true);
+        expect(H.calls, `${label}: sent`).toEqual([callOf(kind, qty)]);
+        expect(shop.feedback.length, `${label}: one shop line painted`).toBe(1);
+      }
+    };
+
+    await control(1, 'before the rows');
+    expect(stackNow(), 'precondition: the shop frame takes the presses').toEqual([
+      WORLD_FRAME,
+      screenFrame('shopView'),
+    ]);
+
+    const invalid: ReadonlyArray<readonly [string, unknown]> = [
+      ['0', 0],
+      ['-0', -0],
+      ['-1', -1],
+      ['1.5', 1.5],
+      ['0.9999999999999999', 0.9999999999999999],
+      ['NaN', Number.NaN],
+      ['Infinity', Number.POSITIVE_INFINITY],
+      ['-Infinity', Number.NEGATIVE_INFINITY],
+      ['2^32', 2 ** 32],
+      ['2^32 + 1', 2 ** 32 + 1],
+      ['MAX_SAFE_INTEGER', Number.MAX_SAFE_INTEGER],
+      ['1e21', 1e21],
+      // Untyped at this boundary: to the shell an adapter is plain JS.
+      ['the string 3', '3'],
+      ['the empty string', ''],
+      ['true', true],
+      ['null', null],
+      ['undefined', undefined],
+      ['the array [3]', [3]],
+      ['the bigint 3n', 3n],
+    ];
+    for (const kind of ['buy', 'sell'] as const) {
+      for (const [qtyLabel, qty] of invalid) {
+        const label = `${kind} qty ${qtyLabel}`;
+        const down = await send(kind, qty);
+        expect(down.defaultPrevented, `${label}: the press did not throw (it was consumed)`).toBe(
+          true,
+        );
+        expect(H.calls, `${label}: no reducer call`).toEqual([]);
+        expect(shop.feedback, `${label}: no shop line`).toEqual([]);
+        expect(
+          errorSpy.mock.calls.some(([first]) => typeof first === 'string' && first.includes(kind)),
+          `${label}: console.error names the command`,
+        ).toBe(true);
+      }
+    }
+
+    await control(4294967295, 'after the rows');
+  });
+
+  it('CTL7D-4-BOOT-QTY-LINE: a successful screen buy or sell paints, on the shop only, the line naming the quantity, the item and the TOTAL gold, read from the store for the command`s own shop with bigint arithmetic, under en and fr, and the quantity-only line when a row it needs is missing', async () => {
+    // WRONG IMPL KILLED: the unit price in place of the total (3 Bait at 13 is 39), `Number`
+    // arithmetic (9007199254740993 x 3 is 27021597764222979; in doubles it ends in 976), the first
+    // shop-item row for the item whatever its shop (shop 12's Bait row, at 17, is loaded FIRST),
+    // the bound shop (none is bound here) or a fixed shop in place of the command's shopId (shop
+    // 12's buy is priced at 17), a quantity of 1 (or none) in the line, the buy and sell wording
+    // or sign swapped, a sell priced at a buy price (Bait sells at 7 and buys at 13), a sell that
+    // wants a shop-item or an inventory row (Twig has neither), a partial or `Unknown` line when a
+    // row is missing (item 25 has no definition; only shop 12 stocks Rope), an untranslated line
+    // under fr, and a line painted on another view.
+    await bootReady();
+    server(1000);
+    for (const def of [
+      itemDef(22, 'Bait', 7n),
+      itemDef(24, 'Gem', 9007199254740993n),
+      itemDef(26, 'Rope', 2n),
+      itemDef(27, 'Twig', 3n),
+    ]) {
+      opts.store.upsertItemDef(def);
+    }
+    opts.store.upsertShop({ shopId: 11, name: 'Eleven' });
+    opts.store.upsertShop({ shopId: 12, name: 'Twelve' });
+    for (const row of [
+      { shopItemId: 1n, shopId: 12, itemId: 22, buyPrice: 17n },
+      { shopItemId: 2n, shopId: 11, itemId: 22, buyPrice: 13n },
+      { shopItemId: 3n, shopId: 11, itemId: 24, buyPrice: 9007199254740993n },
+      { shopItemId: 4n, shopId: 11, itemId: 25, buyPrice: 5n },
+      { shopItemId: 5n, shopId: 12, itemId: 26, buyPrice: 9n },
+    ]) {
+      opts.store.upsertShopItem(row);
+    }
+    server(1010);
+    const issue: { command: unknown } = { command: { kind: 'pop' } };
+    swapAdapter('shopView', commandAdapter(issue));
+    const shop = stubView('ShopView');
+    shop.visible = true;
+
+    const buy = (shopId: number, itemId: number, qty: number) => ({
+      command: { kind: 'buy', shopId, itemId, qty },
+      call: { name: 'buy', args: { shopId, itemId, qty } },
+    });
+    const sell = (itemId: number, qty: number) => ({
+      command: { kind: 'sell', itemId, qty },
+      call: { name: 'sell', args: { itemId, qty } },
+    });
+    const BIG = 27021597764222979n;
+    const rows = [
+      {
+        label: 'buy 3 Bait at shop 11',
+        ...buy(11, 22, 3),
+        en: enBought(3, 'Bait', 39n),
+        fr: frBought(3, 'Bait', 39n),
+      },
+      {
+        label: 'buy 4 Bait at shop 12',
+        ...buy(12, 22, 4),
+        en: enBought(4, 'Bait', 68n),
+        fr: frBought(4, 'Bait', 68n),
+      },
+      {
+        label: 'buy 3 Gem above 2^53',
+        ...buy(11, 24, 3),
+        en: enBought(3, 'Gem', BIG),
+        fr: frBought(3, 'Gem', BIG),
+      },
+      {
+        label: 'sell 3 Bait',
+        ...sell(22, 3),
+        en: enSold(3, 'Bait', 21n),
+        fr: frSold(3, 'Bait', 21n),
+      },
+      {
+        label: 'sell 3 Gem above 2^53',
+        ...sell(24, 3),
+        en: enSold(3, 'Gem', BIG),
+        fr: frSold(3, 'Gem', BIG),
+      },
+      {
+        label: 'sell 6 Twig, stocked nowhere',
+        ...sell(27, 6),
+        en: enSold(6, 'Twig', 18n),
+        fr: frSold(6, 'Twig', 18n),
+      },
+      {
+        label: 'buy 4 of item 25, no definition',
+        ...buy(11, 25, 4),
+        en: enBoughtCount(4),
+        fr: frBoughtCount(4),
+      },
+      {
+        label: 'sell 4 of item 25, no definition',
+        ...sell(25, 4),
+        en: enSoldCount(4),
+        fr: frSoldCount(4),
+      },
+      {
+        label: 'buy 5 Rope at shop 11, stocked only by shop 12',
+        ...buy(11, 26, 5),
+        en: enBoughtCount(5),
+        fr: frBoughtCount(5),
+      },
+    ];
+    let t = 1100;
+    const run = async (locale: 'en' | 'fr'): Promise<void> => {
+      for (const row of rows) {
+        issue.command = row.command;
+        H.calls = [];
+        shop.feedback.length = 0;
+        await pageUp(t);
+        t += 100;
+        expect(shop.feedback, `${locale}, ${row.label}: the line`).toEqual([row[locale]]);
+        expect(H.calls, `${locale}, ${row.label}: one reducer call`).toEqual([row.call]);
+      }
+    };
+
+    await run('en');
+    i18n.setLocale('fr');
+    try {
+      await run('fr');
+    } finally {
+      i18n.setLocale('en');
+    }
+    expect(stackNow(), 'precondition: every press reached the shop frame').toEqual([
+      WORLD_FRAME,
+      screenFrame('shopView'),
+    ]);
+    for (const [name, view] of Object.entries(H.views)) {
+      if (name !== 'ShopView') expect(view.feedback, `no shop line on ${name}`).toEqual([]);
+    }
+  });
+
+  it('CTL7D-4-BOOT-SEND-TIME: the success line comes from the store rows as they were when the command was sent: a buy and a sell-all held open while batches rename, reprice and remove their rows show the at-send line once they settle, and nothing while pending', async () => {
+    // WRONG IMPL KILLED: a line resolved when the reducer settles (after these batches it would
+    // read removed rows and print the quantity-only line, or the new name and price), a line
+    // resolved on the next batch after the send (Lure / Husk), and a line painted before the
+    // reducer settles (a rejection could then follow a success line).
+    await bootReady();
+    server(1000);
+    opts.store.upsertItemDef(itemDef(22, 'Bait', 7n));
+    opts.store.upsertItemDef(itemDef(23, 'Berry', 10n));
+    opts.store.upsertShop({ shopId: 11, name: 'Eleven' });
+    opts.store.upsertShopItem({ shopItemId: 1n, shopId: 11, itemId: 22, buyPrice: 13n });
+    opts.store.reconcileInventoryFromView([
+      { invId: 5n, ownerIdentity: H.identity, itemId: 23, count: 3 },
+    ]);
+    server(1010);
+    const issue: { command: unknown } = { command: { kind: 'pop' } };
+    swapAdapter('shopView', commandAdapter(issue));
+    const shop = stubView('ShopView');
+    shop.visible = true;
+    /** Hold every reducer call open until the returned release runs. */
+    const hold = (): (() => void) => {
+      let release: () => void = () => {};
+      H.gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return () => {
+        release();
+        H.gate = null;
+      };
+    };
+
+    // --- buy 3 Bait at 13; renamed and repriced, then removed, while pending -------------------
+    let release = hold();
+    issue.command = { kind: 'buy', shopId: 11, itemId: 22, qty: 3 };
+    H.calls = [];
+    await pageUp(1100);
+    // The exact arguments are the quantity cases' to pin; here only that one buy is in flight.
+    expect(
+      H.calls.map((c) => c.name),
+      'buy: precondition: one buy is in flight',
+    ).toEqual(['buy']);
+    expect(shop.feedback, 'buy: nothing is painted while pending').toEqual([]);
+    opts.store.upsertItemDef(itemDef(22, 'Lure', 70n));
+    opts.store.upsertShopItem({ shopItemId: 1n, shopId: 11, itemId: 22, buyPrice: 130n });
+    server(1200);
+    opts.store.removeShopItem(1n);
+    opts.store.removeItemDef(22);
+    server(1300);
+    await flush();
+    expect(shop.feedback, 'buy: still nothing while pending').toEqual([]);
+    release();
+    await flush();
+    expect(shop.feedback, 'buy: the line from the rows at send').toEqual([
+      enBought(3, 'Bait', 39n),
+    ]);
+
+    // --- sell all 3 Berry at 10: the inventory row goes, the definition is renamed, then removed
+    shop.feedback.length = 0;
+    release = hold();
+    issue.command = { kind: 'sell', itemId: 23, qty: 3 };
+    H.calls = [];
+    await pageUp(1400);
+    expect(
+      H.calls.map((c) => c.name),
+      'sell: precondition: one sell is in flight',
+    ).toEqual(['sell']);
+    expect(shop.feedback, 'sell: nothing is painted while pending').toEqual([]);
+    opts.store.reconcileInventoryFromView([]);
+    opts.store.upsertItemDef(itemDef(23, 'Husk', 1n));
+    server(1500);
+    opts.store.removeItemDef(23);
+    server(1600);
+    await flush();
+    expect(shop.feedback, 'sell: still nothing while pending').toEqual([]);
+    release();
+    await flush();
+    expect(shop.feedback, 'sell: the line from the rows at send').toEqual([
+      enSold(3, 'Berry', 30n),
+    ]);
+  });
+});
+
+describe('main.ts the shop pick command (runtime, ctl-7d)', { sequential: true }, () => {
+  afterEach(teardownBoot);
+
+  it('CTL7D-5-BOOT-PICKSHOP: a pickShop command from the dialogue frame sends one dismissDialogue and opens that shop (0, then 4) on the first batch with no conversation, never before; the last pick wins; the greet-then-shop click takes the same path; a non-numeric shop id sends nothing', async () => {
+    // WRONG IMPL KILLED: no pickShop arm (nothing sent, no shop), a pick that opens the shop at
+    // once over the conversation it ends, one dismiss per pick (the second pick double-sends), a
+    // first-pick-wins open (shop 5 instead of 6), a hardcoded or truthiness-guarded id (shops 0
+    // and 4 each open as themselves), a click that no longer reaches the open, and a click
+    // delegate that lost its non-numeric guard (a NaN pick would send a dismiss and open a shop).
+    await bootReady();
+    server(1000);
+    seedNpcs(1010);
+    const dlg: { command: unknown } = { command: { kind: 'pop' } };
+    swapAdapter('dialogueView', commandAdapter(dlg));
+    const shopReads: unknown[] = [];
+    swapAdapter(
+      'shopView',
+      readingAdapter(shopReads, (ctx) => ctx.shopId),
+    );
+    const shop = stubView('ShopView');
+    let t = 1100;
+
+    /** With the conversation open `pick` runs: one dismiss and no shop yet, not even after a batch
+     *  that still has the conversation; the batch that ends it opens the shop, whose stand-in then
+     *  reads the bound id; Start closes it. Returns that read. */
+    const pickThenOpen = async (
+      label: string,
+      pick: (at: number) => Promise<void>,
+    ): Promise<unknown[]> => {
+      startConversation(t);
+      expect(stackNow(), `${label}: precondition: the conversation is the top frame`).toEqual([
+        WORLD_FRAME,
+        screenFrame('dialogueView'),
+      ]);
+      H.calls = [];
+      await pick(t + 10);
+      expect(H.calls, `${label}: one dismissDialogue`).toEqual(ONE_DISMISS);
+      expect(shop.visible, `${label}: no shop while the conversation is open`).toBe(false);
+      server(t + 20);
+      expect(shop.visible, `${label}: nor after a batch that still has it`).toBe(false);
+      endConversation(t + 30);
+      expect(shop.visible, `${label}: the first batch with no conversation opens it`).toBe(true);
+      expect(stackNow(), `${label}: the shop frame is the one frame`).toEqual([
+        WORLD_FRAME,
+        screenFrame('shopView'),
+      ]);
+      const before = shopReads.length;
+      await pageUp(t + 40);
+      const read = shopReads.slice(before);
+      press('Escape', t + 50);
+      expect(stackNow(), `${label}: precondition: Start closed the shop`).toEqual([WORLD_FRAME]);
+      t += 100;
+      return read;
+    };
+    const pickShop =
+      (shopId: number) =>
+      async (at: number): Promise<void> => {
+        dlg.command = { kind: 'pickShop', shopId };
+        await pageUp(at);
+      };
+
+    expect(await pickThenOpen('pickShop 0', pickShop(0)), 'pickShop 0 opens shop 0').toEqual([0]);
+    expect(await pickThenOpen('pickShop 4', pickShop(4)), 'pickShop 4 opens shop 4').toEqual([4]);
+    expect(
+      await pickThenOpen('pickShop 5 then pickShop 6', async (at) => {
+        await pickShop(5)(at);
+        await pickShop(6)(at + 5);
+      }),
+      'the last pick wins: shop 6',
+    ).toEqual([6]);
+    expect(
+      await pickThenOpen('a click on data-shop-id 7', async (at) => {
+        clickShop(at, '7');
+        await flush();
+      }),
+      'the click takes the same path: shop 7',
+    ).toEqual([7]);
+
+    // A non-numeric data-shop-id sends nothing, and leaves no shop to open.
+    startConversation(t);
+    H.calls = [];
+    clickShop(t + 10, 'abc');
+    await flush();
+    expect(H.calls, 'data-shop-id "abc": nothing is sent').toEqual([]);
+    endConversation(t + 20);
+    expect(shop.visible, 'data-shop-id "abc": no shop opens when the conversation ends').toBe(
+      false,
+    );
+    expect(stackNow(), 'data-shop-id "abc": the bare world').toEqual([WORLD_FRAME]);
+  });
+
+  it('CTL7D-5-BOOT-BATTLE-REFUSED: over a conversation suspended by an Ongoing battle, a pickShop command and a Shop click each send no dismissDialogue, show the battle reason and leave no shop to open; back at the world the same command sends the dismiss', async () => {
+    // WRONG IMPL KILLED (the spec's named intentional change): a click delegate that still steps
+    // the shop open itself (it sends a dismiss at a battle base, past the policy), a pickShop
+    // classified battle-safe, a refusal that reports nothing, one that still records the pick
+    // (the shop would open when the conversation later ends), and one that also refuses at the
+    // world.
+    await bootReady();
+    server(1000);
+    seedNpcs(1010);
+    const dlg: { command: unknown } = { command: { kind: 'pickShop', shopId: 9 } };
+    swapAdapter('dialogueView', commandAdapter(dlg));
+    const shop = stubView('ShopView');
+    const status = document.getElementById('status');
+    if (status === null) throw new Error('#status must exist once booted');
+    const reason = i18n.t('menu.disabled.inBattle');
+    expect(reason, 'fixture: the catalogued reason is real text').not.toBe('');
+
+    startConversation(1100);
+    putBattle(BATTLE_ID, 1200);
+    expect(stackNow(), 'precondition: the conversation is suspended over the battle').toEqual([
+      { kind: 'battle', battleId: '101' },
+      screenFrame('dialogueView'),
+    ]);
+
+    H.calls = [];
+    status.textContent = '';
+    const down = await pageUp(1300);
+    expect(down.defaultPrevented, 'the command: the routed press is consumed').toBe(true);
+    expect(H.calls, 'the command: no dismissDialogue at a battle base').toEqual([]);
+    expect(statusText(), 'the command: the battle reason').toBe(reason);
+
+    H.calls = [];
+    status.textContent = '';
+    clickShop(1400, '9');
+    await flush();
+    expect(H.calls, 'the click: no dismissDialogue at a battle base').toEqual([]);
+    expect(statusText(), 'the click: the battle reason').toBe(reason);
+
+    // The battle ends with the conversation still open, then the conversation ends: nothing was
+    // picked, so no shop opens.
+    dropBattle(BATTLE_ID, 1500);
+    expect(stackNow(), 'precondition: the world again, the conversation on top').toEqual([
+      WORLD_FRAME,
+      screenFrame('dialogueView'),
+    ]);
+    endConversation(1600);
+    expect(shop.visible, 'the refused picks left no shop to open').toBe(false);
+    expect(stackNow(), 'precondition: the conversation ended').toEqual([WORLD_FRAME]);
+
+    // Control: at the world the same command sends the dismiss, and the shop opens.
+    startConversation(1700);
+    H.calls = [];
+    await pageUp(1800);
+    expect(H.calls, 'control: at the world the same command sends one dismiss').toEqual(
+      ONE_DISMISS,
+    );
+    endConversation(1900);
+    expect(shop.visible, 'control: and the shop opens once the conversation ends').toBe(true);
+  });
+});
+
+describe('main.ts batches reach observe (runtime, ctl-7d)', { sequential: true }, () => {
+  afterEach(teardownBoot);
+
+  it('CTL7D-6-BOOT-OBSERVE: every store batch calls an open frame`s observe once, after the batch`s view renders, from init on the batch that pushed the frame and from the last returned state after it; a new state paints once into the frame`s own view, the same state paints nothing, the next button gets the kept state, and neither a frame without observe nor a closed frame is called', async () => {
+    // WRONG IMPL KILLED: no batch observation (adapter code runs only on a button step, so a
+    // dialogue adapter could never see its node replaced), an observe placed before the final
+    // syncStack or in an earlier listener (the frame this batch pushed is not observed on it, or
+    // is observed before its view rendered), an observe that skips init on a fresh frame or asks
+    // it again, that drops the returned state (the next observe or the next button gets an older
+    // one), that paints on every batch, or never, or into another view, or with another view
+    // model, one that runs viewModel / init / paint for an adapter with no observe, and one that
+    // keeps observing a closed frame.
+    await bootReady();
+    server(1000);
+    seedNpcs(1010);
+    const shop = stubView('ShopView');
+    // The dialogue frame's stand-in has no observe: no batch may call any of its methods.
+    const dialogueCalls: string[] = [];
+    swapAdapter('dialogueView', {
+      viewModel: () => {
+        dialogueCalls.push('viewModel');
+        return undefined;
+      },
+      init: () => {
+        dialogueCalls.push('init');
+        return undefined;
+      },
+      onButton: (_vm: unknown, state: unknown) => {
+        dialogueCalls.push('onButton');
+        return { state, result: 'consumed' };
+      },
+      paint: () => {
+        dialogueCalls.push('paint');
+      },
+    });
+    const S0 = { state: 'from init' };
+    const S1 = { state: 'first' };
+    const S2 = { state: 'second' };
+    const vms: object[] = [];
+    const inits: unknown[] = [];
+    const observes: Array<{ vm: unknown; state: unknown; now: unknown; renders: number }> = [];
+    const paints: Array<{ view: unknown; vm: unknown; state: unknown }> = [];
+    const buttons: Array<{ state: unknown; button: string }> = [];
+    let answer: (state: unknown) => unknown = (state) => state;
+    swapAdapter('shopView', {
+      viewModel: () => {
+        const vm = { n: vms.length };
+        vms.push(vm);
+        return vm;
+      },
+      init: (vm: unknown) => {
+        inits.push(vm);
+        return S0;
+      },
+      observe: (vm: unknown, state: unknown, now: unknown) => {
+        observes.push({ vm, state, now, renders: shop.renders.length });
+        return answer(state);
+      },
+      onButton: (_vm: unknown, state: unknown, btn: Pressed) => {
+        buttons.push({ state, button: btn.button });
+        const closes = btn.button === 'Start' && !btn.repeat;
+        return { state, result: closes ? { kind: 'popToBase' } : 'consumed' };
+      },
+      paint: (view: unknown, vm: unknown, state: unknown) => {
+        paints.push({ view, vm, state });
+      },
+    });
+
+    // The conversation: two batches with the dialogue frame open, and no shop frame yet.
+    startConversation(1100);
+    server(1150);
+    expect(stackNow(), 'precondition: the conversation is the one frame').toEqual([
+      WORLD_FRAME,
+      screenFrame('dialogueView'),
+    ]);
+    H.calls = [];
+    clickShop(1200, '3');
+    expect(H.calls, 'precondition: the Shop click sent the dismiss').toEqual(ONE_DISMISS);
+    expect(observes, 'no shop frame yet: nothing is observed').toEqual([]);
+
+    // --- the batch that ends the conversation pushes the shop frame ---------------------------
+    const rendersBefore = shop.renders.length;
+    answer = () => S1;
+    endConversation(1300);
+    expect(stackNow(), 'precondition: this batch pushed the shop frame').toEqual([
+      WORLD_FRAME,
+      screenFrame('shopView'),
+    ]);
+    expect(observes.length, 'push batch: one observe for the frame').toBe(1);
+    const pushed = observes[0];
+    expect(inits.length, 'push batch: init ran once').toBe(1);
+    expect(inits[0], 'push batch: init got the view model observe got').toBe(pushed?.vm);
+    expect(pushed?.state, 'push batch: observe got the state init produced').toBe(S0);
+    expect(pushed?.now, 'push batch: now is the clock').toBe(1300);
+    expect(shop.renders.length, 'precondition: the batch rendered the shop view').toBeGreaterThan(
+      rendersBefore,
+    );
+    // Observe is last: it saw every render this batch made (one run mid-batch, after the shop
+    // open but before the shop listener's render, would see fewer).
+    expect(pushed?.renders, 'push batch: observe ran after every view render of the batch').toBe(
+      shop.renders.length,
+    );
+    expect(paints.length, 'push batch: a new state paints once').toBe(1);
+    expect(paints[0]?.view, 'push batch: into the view of the frame').toBe(shop);
+    expect(paints[0]?.vm, 'push batch: with the view model observe got').toBe(pushed?.vm);
+    expect(paints[0]?.state, 'push batch: and the returned state').toBe(S1);
+
+    // --- a batch whose observe returns the same state -----------------------------------------
+    answer = (state) => state;
+    server(1400);
+    expect(observes.length, 'batch 2: one more observe').toBe(2);
+    expect(observes[1]?.state, 'batch 2: the state the last observe returned').toBe(S1);
+    expect(observes[1]?.now, 'batch 2: now is the clock').toBe(1400);
+    expect(observes[1]?.renders, 'batch 2: after the render of the batch').toBe(
+      shop.renders.length,
+    );
+    expect(paints.length, 'batch 2: the same state paints nothing').toBe(1);
+
+    // --- a batch whose observe returns a new state --------------------------------------------
+    answer = () => S2;
+    server(1500);
+    expect(observes.length, 'batch 3: one more observe').toBe(3);
+    expect(observes[2]?.state, 'batch 3: still the kept state').toBe(S1);
+    expect(paints.length, 'batch 3: a new state paints once').toBe(2);
+    expect(paints[1]?.view, 'batch 3: into the view of the frame').toBe(shop);
+    expect(paints[1]?.vm, 'batch 3: with the view model observe got').toBe(observes[2]?.vm);
+    expect(paints[1]?.state, 'batch 3: and the returned state').toBe(S2);
+
+    answer = (state) => state;
+    server(1600);
+    expect(observes.length, 'batch 4: one more observe').toBe(4);
+    expect(observes[3]?.state, 'batch 4: the state batch 3 returned').toBe(S2);
+    expect(paints.length, 'batch 4: no paint').toBe(2);
+
+    // --- the next button gets the kept state, and init is not asked again ---------------------
+    await pageUp(1700);
+    expect(buttons.length, 'precondition: the press reached the shop frame').toBe(1);
+    expect(buttons[0]?.state, 'the button gets the state the last observe returned').toBe(S2);
+    expect(inits.length, 'init is not asked again').toBe(1);
+    expect(dialogueCalls, 'the dialogue frame (no observe) saw no call from any batch').toEqual([]);
+
+    // --- after the frame closes, a batch calls nothing for it ---------------------------------
+    press('Escape', 1800);
+    expect(stackNow(), 'precondition: Start closed the shop').toEqual([WORLD_FRAME]);
+    const calls = (): unknown => ({
+      viewModel: vms.length,
+      init: inits.length,
+      observe: observes.length,
+      paint: paints.length,
+    });
+    const closed = calls();
+    server(1900);
+    expect(calls(), 'a batch after the close calls nothing for the closed frame').toEqual(closed);
   });
 });

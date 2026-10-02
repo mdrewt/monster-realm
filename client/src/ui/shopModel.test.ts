@@ -18,12 +18,18 @@ import {
   buildShopViewModel,
   // The bound-shop selector.
   buildShopViewModelForShop,
+  // ctl-7d: the success-line formatter (CTL7D.4).
+  buyFeedback,
   type NoShopViewModel,
   type ShopBalanceViewModel,
+  type ShopFeedback,
   type ShopInventoryItemViewModel,
   type ShopItemViewModel,
   type ShopScreenViewModel,
   type ShopViewModel,
+  sellFeedback,
+  // ctl-7d: the quantity rule (CTL7D.3).
+  validShopQty,
 } from './shopModel';
 
 // ---------------------------------------------------------------------------
@@ -1005,5 +1011,293 @@ describe('buildShopViewModelForShop [uxd2-3]: delegation is REAL (sell side + wa
     expect(herb?.count).toBe(7); // 5 + 2 aggregated across two stacks
     expect(herb?.canSell).toBe(true);
     expect(vm.forSaleByPlayer.find((i) => i.itemId === 2)?.canSell).toBe(false);
+  });
+});
+
+// ===========================================================================
+// ctl-7d: the shop quantity rule (CTL7D.3) and the success-line formatter (CTL7D.4).
+//
+// CONTRACT UNDER TEST (memory/projects/monster-realm-ctl-7d-plan.md, `ui/shopModel.ts`):
+//   validShopQty(qty: number): boolean
+//     true exactly for an integer from 1 to 4294967295 (the buy / sell reducers' u32). Adapters
+//     are untyped at runtime, so the rule is total over ANY value and answers the boolean itself.
+//   type ShopFeedback =
+//     | { kind: 'item'; qty: number; name: string; gold: bigint }
+//     | { kind: 'count'; qty: number };
+//   buyFeedback(shopId, itemId, qty, shopItems, itemDefs): ShopFeedback
+//     the name from the item definition, the unit price from the shop-item row of THE COMMAND'S
+//     shop for that item; gold = buyPrice * qty, in bigint.
+//   sellFeedback(itemId, qty, itemDefs): ShopFeedback
+//     the name and sellPrice from the item definition; gold = sellPrice * qty.
+//   A needed row missing, a malformed field, or a qty that is not validShopQty: the count arm,
+//   never a throw, never a partial line, never an `Unknown (#N)` name.
+//
+// main.ts's dispatch call site is not try/catch-wrapped, so a throw here would escape dispatch:
+// totality is load-bearing. Every expectation below is a literal, never derived from the model.
+// ===========================================================================
+
+describe('validShopQty (ctl-7d, CTL7D.3): the u32 quantity a buy or sell may send', () => {
+  it('CTL7D-3-QTY-RULE: validShopQty is true exactly for the integers 1 to 4294967295 and false, without throwing, for zero, negatives, fractions, everything past the u32, the non-finite numbers and every non-number', () => {
+    // WRONG IMPL KILLED: a validator that leans on the coercions the SDK's u32 writer applies
+    // (`DataView.setUint32` turns -1 into 4294967295, 2^32 + 3 into 3, 1.5 into 1, '3' into 3):
+    // `(qty >>> 0) >= 1` (accepts -1 and 2^32 + 1); `qty % 1 === 0 && qty >= 1 && qty <= MAX`
+    // (accepts '3', true, [3], new Number(3) and { valueOf }, and THROWS on 3n and a Symbol); the
+    // global `isFinite` (coerces '3'); an off-by-one at either bound (0 accepted, 1 refused,
+    // 4294967295 refused, 2^32 accepted); `qty > 0` alone (0.9999999999999999 and 1.5 pass); a
+    // clamp that answers a number (`Math.max(1, qty | 0)`) instead of the boolean; and a throw.
+    const ACCEPT: ReadonlyArray<readonly [string, number]> = [
+      ['1 (the lower bound)', 1],
+      ['2', 2],
+      ['2^31 (past the i32 range)', 2 ** 31],
+      ['4294967295 (the u32 maximum)', 4_294_967_295],
+    ];
+    const REJECT: ReadonlyArray<readonly [string, unknown]> = [
+      ['0', 0],
+      ['-0', -0],
+      ['0.9999999999999999 (1 - 2^-53)', 1 - 2 ** -53],
+      ['1.5', 1.5],
+      ['-1 (wraps to 4294967295)', -1],
+      ['2^32 (wraps to 0)', 2 ** 32],
+      ['2^32 + 1 (wraps to 1)', 2 ** 32 + 1],
+      ['2^53', 2 ** 53],
+      ['Number.MAX_SAFE_INTEGER', Number.MAX_SAFE_INTEGER],
+      ['1e21', 1e21],
+      ['Infinity', Number.POSITIVE_INFINITY],
+      ['-Infinity', Number.NEGATIVE_INFINITY],
+      ['NaN', Number.NaN],
+      ["the string '3'", '3'],
+      ['the empty string', ''],
+      ['true', true],
+      ['null', null],
+      ['undefined', undefined],
+      ['the array [3]', [3]],
+      ['{ valueOf: () => 3 }', { valueOf: () => 3 }],
+      ['new Number(3)', Reflect.construct(Number, [3])],
+      ['the bigint 3n', 3n],
+      ["Symbol('q')", Symbol('q')],
+    ];
+    expect(ACCEPT, 'ANTI-VACUITY: four accepted quantities').toHaveLength(4);
+    expect(REJECT, 'ANTI-VACUITY: twenty-three refused values').toHaveLength(23);
+
+    for (const [label, qty] of ACCEPT) {
+      let got: unknown;
+      expect(() => {
+        got = validShopQty(qty);
+      }, `${label}: never throws`).not.toThrow();
+      expect(got, `${label} is a sendable quantity (the boolean true)`).toBe(true);
+    }
+    for (const [label, value] of REJECT) {
+      let got: unknown;
+      expect(() => {
+        // Adapters are untyped at runtime: the value reaches the rule as it is.
+        got = validShopQty(value as number);
+      }, `${label}: never throws`).not.toThrow();
+      expect(got, `${label} is refused (the boolean false)`).toBe(false);
+    }
+  });
+});
+
+describe('buyFeedback / sellFeedback (ctl-7d, CTL7D.4): what a successful buy or sell moved', () => {
+  it('CTL7D-4-FORMATTER: buyFeedback names the item and charges buyPrice x qty from the command`s own shop row, sellFeedback names it and credits sellPrice x qty, in bigint; a missing row gives the quantity alone; malformed rows and an invalid quantity never throw and give the count arm; inputs are not mutated', () => {
+    // WRONG IMPL KILLED: gold computed through Number (2^53 + 1 times 3 comes back ...976n) or
+    // the unit price instead of the total (qty >= 2 with total != unit); the buy price read off
+    // the first row for the ITEM whatever its shop (two shops stock Bait at 20 and 35, in both row
+    // orders), off another item of the same shop, or off the bound / lowest shop instead of the
+    // command's `shopId` (shop 0 is a real, falsy id); the sell credit read off a shop's buy price
+    // instead of the definition's sellPrice; a partial line (`{ kind: 'item', qty, name }` with no
+    // gold) or an `Unknown (#12)` name when a row is missing; a stray key on either arm; a
+    // malformed row coerced into a plausible line (`BigInt(20)` for a number price, `String(42)`
+    // for a number name) or one that throws (Number x BigInt); `BigInt(qty)` on an invalid
+    // quantity (throws on 1.5 and NaN, or prints a zero-gold line for 0); an input edited in place.
+    const PAST_2_53 = 9_007_199_254_740_993n; // 2^53 + 1: Number(PAST_2_53) is ...992
+    const BAIT = Object.freeze(makeItemDef(7, { name: 'Bait', sellPrice: 15n }));
+    const BERRY = Object.freeze(makeItemDef(8, { name: 'Berry', sellPrice: 10n }));
+    const RELIC = Object.freeze(makeItemDef(9, { name: 'Relic', sellPrice: PAST_2_53 }));
+    const defs: ReadonlyMap<number, StoreItemRow> = new Map([
+      [7, BAIT],
+      [8, BERRY],
+      [9, RELIC],
+    ]);
+    // Shop 3 stocks Berry, Bait, the Relic and item 12 (no definition loaded); shop 0 stocks Bait
+    // dearer. Two shops stock Bait, so in each order one shop's Bait row is not the first Bait
+    // row; and a row for ANOTHER item of shop 3 is the very first row in both orders.
+    const listed: readonly StoreShopItemRow[] = Object.freeze(
+      [
+        makeShopItem(1n, 3, 8, 11n),
+        makeShopItem(2n, 3, 7, 20n),
+        makeShopItem(3n, 0, 7, 35n),
+        makeShopItem(4n, 3, 9, PAST_2_53),
+        makeShopItem(5n, 3, 12, 5n),
+      ].map((row) => Object.freeze(row)),
+    );
+    const reversed: readonly StoreShopItemRow[] = Object.freeze([...listed].reverse());
+
+    const item = (qty: number, name: string, gold: bigint): ShopFeedback => ({
+      kind: 'item',
+      qty,
+      name,
+      gold,
+    });
+    const count = (qty: number): ShopFeedback => ({ kind: 'count', qty });
+
+    type Case = readonly [label: string, run: () => ShopFeedback, want: ShopFeedback];
+    const cases: Case[] = [];
+    for (const [order, rows] of [
+      ['rows as listed', listed],
+      ['rows reversed', reversed],
+    ] as const) {
+      cases.push(
+        [
+          `${order}: buy 2 Bait at shop 3`,
+          () => buyFeedback(3, 7, 2, rows, defs),
+          item(2, 'Bait', 40n),
+        ],
+        [
+          `${order}: buy 2 Bait at shop 0`,
+          () => buyFeedback(0, 7, 2, rows, defs),
+          item(2, 'Bait', 70n),
+        ],
+        [
+          `${order}: buy 3 Relic priced past 2^53`,
+          () => buyFeedback(3, 9, 3, rows, defs),
+          item(3, 'Relic', 27_021_597_764_222_979n),
+        ],
+        [`${order}: buy 1 Berry`, () => buyFeedback(3, 8, 1, rows, defs), item(1, 'Berry', 11n)],
+        [
+          `${order}: buy the u32 maximum of Bait`,
+          () => buyFeedback(3, 7, 4_294_967_295, rows, defs),
+          item(4_294_967_295, 'Bait', 85_899_345_900n),
+        ],
+        [
+          `${order}: buy item 12 (stocked, no definition loaded)`,
+          () => buyFeedback(3, 12, 3, rows, defs),
+          count(3),
+        ],
+        [
+          `${order}: buy the Relic at shop 0, which another shop stocks but shop 0 does not`,
+          () => buyFeedback(0, 9, 3, rows, defs),
+          count(3),
+        ],
+        [
+          `${order}: buy Bait at shop 5, which is not loaded`,
+          () => buyFeedback(5, 7, 2, rows, defs),
+          count(2),
+        ],
+        [
+          `${order}: buy with no item definitions loaded`,
+          () => buyFeedback(3, 7, 2, rows, new Map()),
+          count(2),
+        ],
+      );
+    }
+    cases.push(
+      ['buy with no shop-item rows loaded', () => buyFeedback(3, 7, 2, [], defs), count(2)],
+      ['buy with nothing loaded', () => buyFeedback(3, 7, 2, [], new Map()), count(2)],
+      ['sell 3 Berry', () => sellFeedback(8, 3, defs), item(3, 'Berry', 30n)],
+      [
+        'sell 4 Bait (its sellPrice, never a shop`s buy price)',
+        () => sellFeedback(7, 4, defs),
+        item(4, 'Bait', 60n),
+      ],
+      ['sell 1 Bait', () => sellFeedback(7, 1, defs), item(1, 'Bait', 15n)],
+      [
+        'sell 3 Relic priced past 2^53',
+        () => sellFeedback(9, 3, defs),
+        item(3, 'Relic', 27_021_597_764_222_979n),
+      ],
+      ['sell item 12 (no definition loaded)', () => sellFeedback(12, 4, defs), count(4)],
+      ['sell with no item definitions loaded', () => sellFeedback(8, 3, new Map()), count(3)],
+    );
+    expect(cases, 'ANTI-VACUITY: 9 buy cases per row order, 2 more buys and 6 sells').toHaveLength(
+      26,
+    );
+
+    const ITEM_KEYS = ['gold', 'kind', 'name', 'qty'];
+    const COUNT_KEYS = ['kind', 'qty'];
+    for (const [label, run, want] of cases) {
+      let got!: ShopFeedback;
+      expect(() => {
+        got = run();
+      }, `${label}: never throws`).not.toThrow();
+      // toStrictEqual: an extra `name: undefined` or a number `gold` fails as well.
+      expect(got, label).toStrictEqual(want);
+      expect(Object.keys(got).sort(), `${label}: exactly the ${want.kind} arm's keys`).toEqual(
+        want.kind === 'item' ? ITEM_KEYS : COUNT_KEYS,
+      );
+    }
+
+    // Totality: malformed row fields and invalid quantities degrade to the count arm, never throw.
+    const priced = (buyPrice: unknown): StoreShopItemRow =>
+      ({ ...makeShopItem(6n, 4, 7), buyPrice }) as unknown as StoreShopItemRow;
+    const definedAs = (overrides: Record<string, unknown>): ReadonlyMap<number, StoreItemRow> =>
+      new Map([
+        [
+          7,
+          makeItemDef(7, {
+            name: 'Bait',
+            sellPrice: 15n,
+            ...overrides,
+          } as unknown as Partial<StoreItemRow>),
+        ],
+      ]);
+    const degraded: Array<readonly [string, () => ShopFeedback]> = [
+      ['buy: a number buyPrice', () => buyFeedback(4, 7, 2, [priced(20)], defs)],
+      ['buy: an undefined buyPrice', () => buyFeedback(4, 7, 2, [priced(undefined)], defs)],
+      ['buy: a number name', () => buyFeedback(3, 7, 2, listed, definedAs({ name: 42 }))],
+      [
+        'buy: an undefined name',
+        () => buyFeedback(3, 7, 2, listed, definedAs({ name: undefined })),
+      ],
+      ['sell: a number sellPrice', () => sellFeedback(7, 2, definedAs({ sellPrice: 15 }))],
+      [
+        'sell: an undefined sellPrice',
+        () => sellFeedback(7, 2, definedAs({ sellPrice: undefined })),
+      ],
+      ['sell: a null name', () => sellFeedback(7, 2, definedAs({ name: null }))],
+    ];
+    const BAD_QTY: ReadonlyArray<readonly [string, unknown]> = [
+      ['1.5', 1.5],
+      ['NaN', Number.NaN],
+      ['0', 0],
+      ['-1', -1],
+      ['2^32', 2 ** 32],
+      ['Infinity', Number.POSITIVE_INFINITY],
+      ["the string '3'", '3'],
+      ["Symbol('q')", Symbol('q')],
+    ];
+    for (const [label, qty] of BAD_QTY) {
+      degraded.push(
+        [`buy 2 Bait with qty ${label}`, () => buyFeedback(3, 7, qty as number, listed, defs)],
+        [`sell Berry with qty ${label}`, () => sellFeedback(8, qty as number, defs)],
+      );
+    }
+    expect(degraded, 'ANTI-VACUITY: 7 malformed rows and 8 invalid quantities x 2').toHaveLength(
+      23,
+    );
+    for (const [label, run] of degraded) {
+      let got!: ShopFeedback;
+      expect(() => {
+        got = run();
+      }, `${label}: never throws`).not.toThrow();
+      expect(got.kind, `${label}: degrades to the quantity-only line`).toBe('count');
+    }
+
+    // Purity: every row was frozen (an in-place write throws in an ES module), and the definition
+    // map and both row lists are exactly as built after every call above.
+    expect([...defs.entries()], 'the definition map was not edited').toEqual([
+      [7, BAIT],
+      [8, BERRY],
+      [9, RELIC],
+    ]);
+    expect(defs.get(7), 'the very frozen definition row').toBe(BAIT);
+    expect(
+      listed.map((row) => row.shopItemId),
+      'the listed rows kept their order',
+    ).toEqual([1n, 2n, 3n, 4n, 5n]);
+    expect(reversed.map((row) => row.shopItemId)).toEqual([5n, 4n, 3n, 2n, 1n]);
+    expect(
+      [BAIT, BERRY, RELIC, ...listed].every((row) => Object.isFrozen(row)),
+      'fixture: every input row is frozen',
+    ).toBe(true);
   });
 });

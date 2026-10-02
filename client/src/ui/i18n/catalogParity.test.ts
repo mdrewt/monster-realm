@@ -801,6 +801,10 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // four trade-outcome lines, and the trade-propose "sent" line. pgcc-a then moved the
     // disconnected line into careAction.ts's core (only the core resolves it now, so it leaves this
     // set) and added the care success key, which main.ts's care adapter resolves.
+    // ctl-7d (named intentional change, CTL7D.4): the two fixed shop-outcome lines
+    // (`shop.feedback.purchased` / `.sold`) are deleted; dispatch's buy / sell cases resolve one of
+    // the four `shop.feedback.{buy,sell}.{item,count}` lines from the formatter's result instead,
+    // each through its own literal `tf` call.
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
       'chrome.chip.help', // ctl-7a: the Select chip label, written into #chip-select at boot
       'chrome.chip.menu', // ctl-7a: the Start chip label, written into #chip-start at boot
@@ -814,8 +818,10 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'chrome.status.privacyOverlayBusy',
       'menu.disabled.inBattle', // ctl-6c: the dispatch refusal line (CTL6C.3)
       'raising.feedback.cared',
-      'shop.feedback.purchased',
-      'shop.feedback.sold',
+      'shop.feedback.buy.count', // ctl-7d: a buy whose item or shop row is not loaded
+      'shop.feedback.buy.item', // ctl-7d: a buy, naming the quantity, the item and the gold
+      'shop.feedback.sell.count', // ctl-7d: a sell whose item definition is not loaded
+      'shop.feedback.sell.item', // ctl-7d: a sell, naming the quantity, the item and the gold
       'trade.feedback.accepted',
       'trade.feedback.cancelled',
       'trade.feedback.completed',
@@ -1248,11 +1254,15 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       }
     });
 
-    it('21r-b FR-04: every one of the 15 new keys has a CATALOG_FR value strictly different from CATALOG_EN (kills an untranslated copy-through, red-team S3)', () => {
+    it('21r-b FR-04: every one of the 13 surviving 21r-b keys has a CATALOG_FR value strictly different from CATALOG_EN (kills an untranslated copy-through, red-team S3)', () => {
       // The aggregate FR-01 tally (>=100/133 differ) can pass even while ONE specific key was
-      // copy-pasted from en into fr — this test names each of the 15 new keys individually so a
+      // copy-pasted from en into fr — this test names each of the 21r-b keys individually so a
       // single untranslated copy-through (e.g. 'trade.feedback.completed': 'Trade complete!'
       // left unchanged in catalog.fr.ts) fails BY NAME, not just a lowered aggregate count.
+      // ctl-7d (forced by the id deletion): 'shop.feedback.purchased' and 'shop.feedback.sold' are
+      // deleted from both catalogs, so they leave this list (15 -> 13). Their per-key protection
+      // moves to CTL7D-4-CATALOG-BYTES below, which pins the exact en and fr bytes of the four
+      // `shop.feedback.{buy,sell}.{item,count}` lines that replace them.
       const NEW_KEYS_21R_B: readonly string[] = [
         'chrome.feedback.disconnected',
         'chrome.rename.updated',
@@ -1262,17 +1272,16 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
         'chrome.session.unreachable.body',
         'chrome.session.continue',
         'chrome.session.confirmPrompt',
-        'shop.feedback.purchased',
-        'shop.feedback.sold',
         'trade.feedback.accepted',
         'trade.feedback.rejected',
         'trade.feedback.completed',
         'trade.feedback.cancelled',
         'tradePropose.feedback.sent',
       ];
-      expect(NEW_KEYS_21R_B.length, 'ANTI-VACUITY: the 21r-b plan names exactly 15 new keys').toBe(
-        15,
-      );
+      expect(
+        NEW_KEYS_21R_B.length,
+        'ANTI-VACUITY: the 21r-b plan named 15 new keys; ctl-7d deleted 2 of them',
+      ).toBe(13);
 
       const en = CATALOG_EN as Record<string, unknown>;
       const fr = CATALOGS.fr as unknown as Record<string, unknown> | undefined;
@@ -1290,7 +1299,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
         ).not.toBe(en[key]);
         checked += 1;
       }
-      expect(checked, 'ANTI-VACUITY: all 15 keys must have been checked').toBe(15);
+      expect(checked, 'ANTI-VACUITY: all 13 keys must have been checked').toBe(13);
     });
 
     // -------------------------------------------------------------------------------------------
@@ -1616,5 +1625,126 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       }
       expect(checked, 'ANTI-VACUITY: 38 plain + 7 parameterised pins must have run').toBe(45);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ctl-7d — the shop success lines (CTL7D.4), en and fr. They replace the two fixed lines FR-04
+// used to name ('shop.feedback.purchased' / 'shop.feedback.sold'), so their exact bytes are
+// pinned here, in both locales, through the closures themselves. Every expectation is built by
+// code point and transcribed from memory/projects/monster-realm-ctl-7d-plan.md's i18n table,
+// never read back from a catalog.
+// ---------------------------------------------------------------------------
+
+describe('ctl-7d: the shop success lines in both catalogs', () => {
+  /** U+2713 CHECK MARK, U+2212 MINUS SIGN, U+00D7 MULTIPLICATION SIGN, U+00E9 (e acute),
+   *  U+00A0 NO-BREAK SPACE and U+002D HYPHEN-MINUS, built from their code points so no
+   *  expectation holds a pasted glyph. */
+  const CHECK = String.fromCharCode(0x2713);
+  const MINUS = String.fromCharCode(0x2212);
+  const TIMES = String.fromCharCode(0x00d7);
+  const E_ACUTE = String.fromCharCode(0x00e9);
+  const NO_BREAK = String.fromCharCode(0x00a0);
+  const HYPHEN = String.fromCharCode(0x002d);
+
+  it('CTL7D-4-CATALOG-BYTES: the four shop.feedback.{buy,sell}.{item,count} closures render their exact en and fr lines; fr differs from en and buy from sell; the gold carries U+2212 on a buy and + on a sell; no line holds an ASCII hyphen, a U+00A0 or ! : ; ?', () => {
+    // WRONG IMPL KILLED: a fr closure left as the English copy (every fr line must differ); a buy
+    // and a sell that share one line ("Bought" for both, or "Sold" for both); a buy written with
+    // the ASCII hyphen "-40g" instead of U+2212, or with no sign at all, and a sell written with a
+    // minus; the quantity, the item or the gold dropped or swapped (one param set where every
+    // field shows); a count line that prints the ASCII `x` instead of U+00D7; a French line that
+    // adds typographic punctuation (": 40 or", "!") and with it a U+00A0 the line has no use for;
+    // and an "Achete" whose e acute is not the precomposed U+00E9.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOGS.fr as unknown as Record<string, unknown> | undefined;
+    expect(fr, 'CATALOGS.fr must be defined').not.toBe(undefined);
+    const safeFr = fr as Record<string, unknown>;
+    const render = (
+      catalog: Record<string, unknown>,
+      locale: string,
+      id: string,
+      params: Record<string, unknown>,
+    ): string => {
+      const closure = catalog[id];
+      expect(typeof closure, `${locale} ${id} must be a closure`).toBe('function');
+      return (closure as (p: Record<string, unknown>) => string)(params);
+    };
+
+    // The same params for the buy and the sell line, so the two lines are compared like for like.
+    const ITEM = { qty: 2, name: 'Bait', gold: 40n };
+    const COUNT = { qty: 3 };
+    const PINS: ReadonlyArray<{
+      readonly id: string;
+      readonly params: Record<string, unknown>;
+      readonly en: string;
+      readonly fr: string;
+    }> = [
+      {
+        id: 'shop.feedback.buy.item',
+        params: ITEM,
+        en: `${CHECK} Bought 2 Bait (${MINUS}40g)`,
+        fr: `${CHECK} Achet${E_ACUTE} 2 Bait (${MINUS}40 or)`,
+      },
+      {
+        id: 'shop.feedback.sell.item',
+        params: ITEM,
+        en: `${CHECK} Sold 2 Bait (+40g)`,
+        fr: `${CHECK} Vendu 2 Bait (+40 or)`,
+      },
+      {
+        id: 'shop.feedback.buy.count',
+        params: COUNT,
+        en: `${CHECK} Bought ${TIMES}3`,
+        fr: `${CHECK} Achet${E_ACUTE} ${TIMES}3`,
+      },
+      {
+        id: 'shop.feedback.sell.count',
+        params: COUNT,
+        en: `${CHECK} Sold ${TIMES}3`,
+        fr: `${CHECK} Vendu ${TIMES}3`,
+      },
+    ];
+
+    const out = new Map<string, { readonly en: string; readonly fr: string }>();
+    for (const pin of PINS) {
+      const enLine = render(en, 'en', pin.id, pin.params);
+      const frLine = render(safeFr, 'fr', pin.id, pin.params);
+      expect(enLine, `en ${pin.id}: its exact line`).toBe(pin.en);
+      expect(frLine, `fr ${pin.id}: its exact line`).toBe(pin.fr);
+      expect(frLine, `${pin.id}: fr is a translation, not the English copy`).not.toBe(enLine);
+      out.set(pin.id, { en: enLine, fr: frLine });
+    }
+    expect(out.size, 'ANTI-VACUITY: all four ids rendered').toBe(4);
+
+    for (const locale of ['en', 'fr'] as const) {
+      const line = (id: string): string => out.get(id)?.[locale] ?? '';
+      expect(
+        line('shop.feedback.buy.item'),
+        `${locale}: the buy line is not the sell line`,
+      ).not.toBe(line('shop.feedback.sell.item'));
+      expect(
+        line('shop.feedback.buy.count'),
+        `${locale}: the buy count line is not the sell count line`,
+      ).not.toBe(line('shop.feedback.sell.count'));
+      // The sign right before the gold digits.
+      const signBefore40 = (text: string): string => text.charAt(text.indexOf('40') - 1);
+      expect(signBefore40(line('shop.feedback.buy.item')), `${locale}: a buy spends gold`).toBe(
+        MINUS,
+      );
+      expect(signBefore40(line('shop.feedback.sell.item')), `${locale}: a sell earns gold`).toBe(
+        '+',
+      );
+    }
+
+    // The eight lines: no ASCII hyphen, no U+00A0, no ! : ; ? anywhere.
+    const lines = [...out.values()].flatMap((pair) => [pair.en, pair.fr]);
+    expect(lines, 'ANTI-VACUITY: eight lines').toHaveLength(8);
+    for (const text of lines) {
+      expect(text.indexOf(HYPHEN), `${JSON.stringify(text)}: no ASCII hyphen-minus`).toBe(-1);
+      expect(text.indexOf(NO_BREAK), `${JSON.stringify(text)}: no U+00A0`).toBe(-1);
+      for (const mark of ['!', ':', ';', '?']) {
+        expect(text.indexOf(mark), `${JSON.stringify(text)}: no "${mark}"`).toBe(-1);
+      }
+    }
   });
 });

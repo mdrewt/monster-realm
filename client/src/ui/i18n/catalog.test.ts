@@ -267,6 +267,18 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { received: 7, total: 9 },
   ],
   'privacy.export.complete': [{ received: 5 }, { received: 12 }],
+  // ctl-7d: the four shop success lines (4 ★). `gold` is a bigint, past 2^53 in set B; set B's
+  // count quantity is the u32 maximum, past where a locale formatter would group digits.
+  'shop.feedback.buy.item': [
+    { qty: 2, name: 'Bait', gold: 40n },
+    { qty: 3, name: 'Relic', gold: 27_021_597_764_222_979n },
+  ],
+  'shop.feedback.buy.count': [{ qty: 2 }, { qty: 4_294_967_295 }],
+  'shop.feedback.sell.item': [
+    { qty: 3, name: 'Berry', gold: 30n },
+    { qty: 1, name: 'Tonic', gold: 9_007_199_254_740_993n },
+  ],
+  'shop.feedback.sell.count': [{ qty: 3 }, { qty: 12 }],
 };
 
 /** Every PLAIN (non-parameterised) MessageId's expected value, byte-transcribed
@@ -277,6 +289,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // ctl-7a (named intentional change): `chrome.helpHint` is DELETED with the #help-hint button it
   // labelled; the two hint-bar chip labels (main.ts writes them into #chip-start / #chip-select at
   // boot) replace it. Net roster delta: -1 +2 = 211 keys.
+  // ctl-7d (named intentional change): -2 plain `shop.feedback.*` keys here, +4 parameterised ones
+  // in SAMPLE_PARAMS = 213 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -377,9 +391,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // trade-propose confirmation and the six session-overlay strings (sessionModel.ts:124-134).
   // Every value is byte-transcribed from the pre-migration literal at the cited main.ts/
   // sessionModel.ts line (memory/projects/monster-realm-21r-b-plan.md's key table).
+  // ctl-7d (named intentional change): the two fixed shop lines 'shop.feedback.purchased' and
+  // 'shop.feedback.sold' are DELETED; the four parameterised `shop.feedback.{buy,sell}.{item,count}`
+  // lines (SAMPLE_PARAMS / EXPECTED_PARAM_OUTPUTS) replace them, so 13 of these 15 remain.
   'chrome.feedback.disconnected': 'disconnected — try again', // careAction.ts:72 (performCare) / sessionModel.ts
-  'shop.feedback.purchased': 'Purchase complete!', // main.ts:2648
-  'shop.feedback.sold': 'Sale complete!', // main.ts:2655
   'trade.feedback.accepted': 'Trade accepted!', // main.ts:2668
   'trade.feedback.rejected': 'Trade rejected.', // main.ts:2675
   'trade.feedback.completed': 'Trade complete!', // main.ts:2682
@@ -501,6 +516,12 @@ interface ParamOutputSpec {
   readonly inputB: Record<string, unknown>;
   readonly outputB: string;
 }
+
+/** ctl-7d's shop-line glyphs, built by code point so no expectation holds a pasted glyph:
+ *  U+2713 CHECK MARK, U+2212 MINUS SIGN (never the ASCII hyphen) and U+00D7 MULTIPLICATION SIGN. */
+const CHECK_MARK = String.fromCharCode(0x2713);
+const MINUS_SIGN = String.fromCharCode(0x2212);
+const TIMES_SIGN = String.fromCharCode(0x00d7);
 
 /** Every parameterised MessageId's expected output for BOTH `SAMPLE_PARAMS` sets
  *  — pins the EXACT output string (plan R6), which as a consequence also pins
@@ -767,10 +788,38 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { received: 12 },
     outputB: 'Data export ready — 12 chunks.',
   },
+  // ctl-7d: the shop success lines (CTL7D.4) — the quantity, the item and the gold moved, or the
+  // quantity alone. The gold digits are the bigint's own (`27021597764222976` would be a Number
+  // round trip), the quantity's are bare (`4,294,967,295` would be a locale formatter).
+  'shop.feedback.buy.item': {
+    inputA: { qty: 2, name: 'Bait', gold: 40n },
+    outputA: `${CHECK_MARK} Bought 2 Bait (${MINUS_SIGN}40g)`,
+    inputB: { qty: 3, name: 'Relic', gold: 27_021_597_764_222_979n },
+    outputB: `${CHECK_MARK} Bought 3 Relic (${MINUS_SIGN}27021597764222979g)`,
+  },
+  'shop.feedback.buy.count': {
+    inputA: { qty: 2 },
+    outputA: `${CHECK_MARK} Bought ${TIMES_SIGN}2`,
+    inputB: { qty: 4_294_967_295 },
+    outputB: `${CHECK_MARK} Bought ${TIMES_SIGN}4294967295`,
+  },
+  'shop.feedback.sell.item': {
+    inputA: { qty: 3, name: 'Berry', gold: 30n },
+    outputA: `${CHECK_MARK} Sold 3 Berry (+30g)`,
+    inputB: { qty: 1, name: 'Tonic', gold: 9_007_199_254_740_993n },
+    outputB: `${CHECK_MARK} Sold 1 Tonic (+9007199254740993g)`,
+  },
+  'shop.feedback.sell.count': {
+    inputA: { qty: 3 },
+    outputA: `${CHECK_MARK} Sold ${TIMES_SIGN}3`,
+    inputB: { qty: 12 },
+    outputB: `${CHECK_MARK} Sold ${TIMES_SIGN}12`,
+  },
 };
 
-/** The full 211-key roster (ctl-7a: -`chrome.helpHint` +`chrome.chip.menu` +`chrome.chip.help` over the
- *  210-key roster below; ctl-6c added the 2 `menu.disabled.*` keys to the 208-key roster; ctl-5 added the 29 `menu.*` keys to the 179-key roster; pgcc-a added `raising.feedback.cared` to the 178-key roster below;
+/** The full 213-key roster (ctl-7d: -`shop.feedback.purchased` -`shop.feedback.sold`
+ *  +`shop.feedback.{buy,sell}.{item,count}` over the 211-key roster below; ctl-7a: -`chrome.helpHint`
+ *  +`chrome.chip.menu` +`chrome.chip.help` over the 210-key roster below; ctl-6c added the 2 `menu.disabled.*` keys to the 208-key roster; ctl-5 added the 29 `menu.*` keys to the 179-key roster; pgcc-a added `raising.feedback.cared` to the 178-key roster below;
  *  21r-b2 growth of 21r-b's 133-key roster by the 45 new `claim.*` /
  *  `privacy.*` keys; 21r-b had grown the 118-key roster by the 15 new
  *  `chrome.feedback.*`/`shop.feedback.*`/`trade.feedback.*`/`chrome.rename.updated`/
@@ -920,7 +969,7 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
   it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 210 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the 210 keys.
+    // (a) roster is exactly the EXPECTED_KEYS roster (213 keys since ctl-7d).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).

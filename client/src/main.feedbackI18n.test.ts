@@ -57,6 +57,14 @@
  * no NPC/dialogue needed, unlike shop) and drive its REAL submit path, asserting each action's
  * feedback against its OWN catalog key (never just "some key differs from en") plus the right
  * reducer spy + args.
+ *
+ * ctl-7d (CTL7D.4, a named intentional change): the plain shop success ids
+ * `shop.feedback.purchased` / `shop.feedback.sold` are deleted. A successful Buy or Sell now shows
+ * a line naming the quantity, the item and the gold moved (`shop.feedback.buy.item` /
+ * `shop.feedback.sell.item`, or the `.count` line when a row is missing). The three tests that
+ * pinned the old ids were replaced by the two ctl-7d line tests in the shop suite, which pin the
+ * literal en and fr bytes, built from code points, never read off the catalog under test. The
+ * frozen-link tests are unchanged.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -77,6 +85,12 @@ import { CATALOG_FR } from './ui/i18n/catalog.fr';
 
 const EN = CATALOG_EN as unknown as Record<string, string>;
 const FR = CATALOG_FR as unknown as Record<string, string>;
+
+// The ctl-7d shop success lines' glyphs, by code point (never pasted): U+2713 the success mark,
+// U+2212 the minus sign (never the ASCII hyphen), U+00E9 the e-acute of the fr verb.
+const CHECK = String.fromCharCode(0x2713);
+const MINUS = String.fromCharCode(0x2212);
+const E_ACUTE = String.fromCharCode(0xe9);
 
 /** A second identity (64 hex chars, `Identity`-constructible) for the trade/trade-propose
  *  counterparty. */
@@ -337,6 +351,15 @@ async function waitForFeedback(): Promise<void> {
   );
 }
 
+/** Empties `#shop-feedback` and lets one macrotask pass, so the view's in-flight lock (released
+ *  once the previous click's promise settles) is free and the next click paints a fresh line. */
+async function freshShopFeedback(): Promise<void> {
+  const el = document.getElementById('shop-feedback');
+  expect(el, 'shop-feedback must exist in the real index.html shell').not.toBeNull();
+  (el as HTMLElement).textContent = '';
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
 /** Generic sibling of `waitForFeedback` for the trade/rename/trade-propose overlays below —
  *  same "await a reducer promise" reason, parameterised over which feedback node to poll. */
 async function waitForNonEmpty(getText: () => string): Promise<void> {
@@ -476,57 +499,63 @@ describe('main.ts shop feedback routes through the i18n catalog (slice 21r-b, ga
   });
 
   // ---------------------------------------------------------------------------
-  // SUCCESS lines — the §5.3 census roster proves EVERY literal key main.ts requests, but
-  // cannot tell WHICH call site (buy vs. sell vs. trade) claims which key — a implementer could
-  // satisfy the census with 'shop.feedback.purchased' wired to onSell and vice versa and every
-  // roster/parity test would stay green. These tests click the REAL Buy/Sell buttons and assert
-  // the rendered text against the SPECIFIC catalog key, catching exactly that swap.
+  // SUCCESS lines (ctl-7d, CTL7D.4; a named intentional change: the plain
+  // `shop.feedback.purchased` / `.sold` ids the earlier tests here pinned are deleted). A
+  // successful Buy or Sell shows a line naming the quantity, the item and the gold moved, read from
+  // the store rows when the command is sent. These tests click the REAL Buy/Sell buttons and pin
+  // the rendered `#shop-feedback` text against LITERAL bytes built from code points here, never
+  // read off the catalog under test, so a buy/sell id swap, an untranslated copy-through and a
+  // wrong price all change what is pinned. The quantity is 1 here (the legacy ShopView sends 1);
+  // main.dispatch.test.ts drives larger quantities through a screen adapter.
   // ---------------------------------------------------------------------------
 
-  it('★★ BITES: under fr, a successful Buy shows CATALOG_FR["shop.feedback.purchased"], not the hardcoded "Purchase complete!"', async () => {
-    await bootMain('/?locale=fr');
-    openShopWithOneItem();
-    H.linkFrozen = false;
-
-    findBuyButton().click();
-    await waitForFeedback();
-
-    expect(H.buy, 'the real buy reducer must have been called exactly once').toHaveBeenCalledOnce();
-    expect(shopFeedbackText()).toBe(FR['shop.feedback.purchased']);
-    expect(shopFeedbackText()).not.toBe('Purchase complete!');
-    expect(shopFeedbackText()).not.toBe(EN['shop.feedback.purchased']);
-  });
-
-  it('★ BITES: under en, a successful Buy shows the exact pre-migration "Purchase complete!" line', async () => {
+  it('CTL7D-4-BOOT-LINE-EN: under en a real Buy click and then a real Sell click each show the line naming the quantity, the item and the gold moved (1 Potion for 10g, then 1 Herb for 5g), and each sends its reducer with quantity 1', async () => {
+    // WRONG IMPL KILLED: the old fixed "Purchase complete!" / "Sale complete!" lines, the buy
+    // line on a sell (or the reverse), a price read from the wrong row (Potion buys at 10 and
+    // sells at 0; Herb sells at 5), an ASCII hyphen for the minus sign, a missing quantity or
+    // item name, and a Buy or Sell that no longer sends quantity 1.
     await bootMain('/');
     openShopWithOneItem();
     H.linkFrozen = false;
 
     findBuyButton().click();
     await waitForFeedback();
+    expect(H.buy, 'the real buy reducer is called exactly once').toHaveBeenCalledOnce();
+    expect(H.buy).toHaveBeenCalledWith({ shopId: 1, itemId: 1, qty: 1 });
+    expect(shopFeedbackText(), 'the en buy line').toBe(`${CHECK} Bought 1 Potion (${MINUS}10g)`);
 
-    expect(H.buy).toHaveBeenCalledOnce();
-    expect(shopFeedbackText()).toBe('Purchase complete!');
-    expect(shopFeedbackText()).toBe(EN['shop.feedback.purchased']);
+    await freshShopFeedback();
+    findSellButton().click();
+    await waitForFeedback();
+    expect(H.sell, 'the real sell reducer is called exactly once').toHaveBeenCalledOnce();
+    expect(H.sell).toHaveBeenCalledWith({ itemId: 2, qty: 1 });
+    expect(shopFeedbackText(), 'the en sell line').toBe(`${CHECK} Sold 1 Herb (+5g)`);
   });
 
-  it('★★ BITES: under fr, a successful Sell shows CATALOG_FR["shop.feedback.sold"], not "Sale complete!" (kills a purchased/sold key swap)', async () => {
+  it('CTL7D-4-BOOT-LINE-FR: under fr (?locale=fr) a real Buy click and then a real Sell click each show the fr line naming the quantity, the item and the gold moved, which differs from the en line and from each other', async () => {
+    // WRONG IMPL KILLED: an untranslated line (the en bytes under fr), a buy/sell id swap (the
+    // sell line on a buy), the en "g" unit in a fr line, and the old fixed lines.
     await bootMain('/?locale=fr');
     openShopWithOneItem();
     H.linkFrozen = false;
 
+    findBuyButton().click();
+    await waitForFeedback();
+    expect(H.buy, 'the real buy reducer is called exactly once').toHaveBeenCalledOnce();
+    expect(H.buy).toHaveBeenCalledWith({ shopId: 1, itemId: 1, qty: 1 });
+    const bought = shopFeedbackText();
+    expect(bought, 'the fr buy line').toBe(`${CHECK} Achet${E_ACUTE} 1 Potion (${MINUS}10 or)`);
+    expect(bought, 'not the en buy line').not.toBe(`${CHECK} Bought 1 Potion (${MINUS}10g)`);
+
+    await freshShopFeedback();
     findSellButton().click();
     await waitForFeedback();
-
-    expect(
-      H.sell,
-      'the real sell reducer must have been called exactly once',
-    ).toHaveBeenCalledOnce();
-    expect(shopFeedbackText()).toBe(FR['shop.feedback.sold']);
-    expect(shopFeedbackText()).not.toBe('Sale complete!');
-    expect(shopFeedbackText(), 'a purchased/sold key swap must not pass by accident').not.toBe(
-      FR['shop.feedback.purchased'],
-    );
+    expect(H.sell, 'the real sell reducer is called exactly once').toHaveBeenCalledOnce();
+    expect(H.sell).toHaveBeenCalledWith({ itemId: 2, qty: 1 });
+    const sold = shopFeedbackText();
+    expect(sold, 'the fr sell line').toBe(`${CHECK} Vendu 1 Herb (+5 or)`);
+    expect(sold, 'not the en sell line').not.toBe(`${CHECK} Sold 1 Herb (+5g)`);
+    expect(sold, 'the sell line is not the buy line').not.toBe(bought);
   });
 });
 
