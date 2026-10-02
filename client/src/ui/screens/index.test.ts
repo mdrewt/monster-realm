@@ -1449,8 +1449,9 @@ describe('ScreenHost.observe (ctl-7d)', () => {
     // frame's view, or paints only the top frame; a paint with no view lent (it would draw into
     // `undefined` before main() built the views); a call to a missing paint, or to an own
     // `paint: undefined` (a TypeError into the error sink); a state dropped because nothing was
-    // painted (pvp, help and trade); and one frame's paint suppressed because another frame
-    // painted in the same pass (box and leaderboard).
+    // painted (pvp, help and trade); one frame's paint suppressed because another frame
+    // painted in the same pass (box and leaderboard); and a loose `!=` compare (null to undefined,
+    // undefined to null, 0 to false and '' to 0 are changes it would never paint).
     const log = newObsLog();
     const errors: unknown[] = [];
     const boxMode: { value: 'advance' | 'keep' } = { value: 'advance' };
@@ -1558,6 +1559,53 @@ describe('ScreenHost.observe (ctl-7d)', () => {
       log.paints.filter((p) => p.id === 'questLogView'),
       'the quest log, never changed, never painted',
     ).toEqual([]);
+
+    // Loosely equal is not the same: a state that is `==` but not `===` the kept one is a change,
+    // painted once with the new state, which is what the next observe receives.
+    const LOOSE: ReadonlyArray<readonly [string, unknown, unknown]> = [
+      ['null to undefined', null, undefined],
+      ['undefined to null', undefined, null],
+      ['0 to false', 0, false],
+      ["'' to 0", '', 0],
+    ];
+    let loose = 0;
+    for (const [label, from, to] of LOOSE) {
+      const seen: unknown[] = [];
+      const painted: Array<{ readonly view: unknown; readonly state: unknown }> = [];
+      const VIEW = { view: 'quest' };
+      const adapter: ScreenAdapter<unknown, unknown> = {
+        viewModel: () => ({}),
+        init: () => from,
+        // The first observe answers `to`; every later one keeps what it is handed.
+        observe: (_vm, state) => {
+          seen.push(state);
+          return seen.length === 1 ? to : state;
+        },
+        onButton: (_vm, state) => ({ state, result: 'consumed' }),
+        paint: (view, _vm, state) => {
+          painted.push({ view, state });
+        },
+      };
+      const looseHost = new ScreenHost(
+        tableWith({ questLogView: adapter }),
+        (id) => (id === 'questLogView' ? VIEW : undefined),
+        (err) => {
+          errors.push(err);
+        },
+      );
+      const quest = stackOf(WORLD, screen('questLogView'));
+      looseHost.observe(quest, clock.ctx);
+      expect(seen[0], `${label}: fixture: the first observe is handed the init state`).toBe(from);
+      expect(painted.length, `${label}: a loosely equal but different state paints once`).toBe(1);
+      expect(painted[0]?.state, `${label}: with the new state`).toBe(to);
+      expect(painted[0]?.view, `${label}: into the lent view`).toBe(VIEW);
+      looseHost.observe(quest, clock.ctx);
+      expect(seen.length, `${label}: two observes`).toBe(2);
+      expect(seen[1], `${label}: the next observe receives the new state`).toBe(to);
+      expect(painted.length, `${label}: unchanged since, it paints nothing more`).toBe(1);
+      loose += 1;
+    }
+    expect(loose, 'ANTI-VACUITY: four loosely equal pairs').toBe(4);
     expect(errors, 'nothing was reported').toEqual([]);
   });
 

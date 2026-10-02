@@ -1017,7 +1017,7 @@ describe('buildShopViewModelForShop [uxd2-3]: delegation is REAL (sell side + wa
 // ===========================================================================
 // ctl-7d: the shop quantity rule (CTL7D.3) and the success-line formatter (CTL7D.4).
 //
-// CONTRACT UNDER TEST (memory/projects/monster-realm-ctl-7d-plan.md, `ui/shopModel.ts`):
+// CONTRACT UNDER TEST (`ui/shopModel.ts`):
 //   validShopQty(qty: number): boolean
 //     true exactly for an integer from 1 to 4294967295 (the buy / sell reducers' u32). Adapters
 //     are untyped at runtime, so the rule is total over ANY value and answers the boolean itself.
@@ -1029,6 +1029,8 @@ describe('buildShopViewModelForShop [uxd2-3]: delegation is REAL (sell side + wa
 //     shop for that item; gold = buyPrice * qty, in bigint.
 //   sellFeedback(itemId, qty, itemDefs): ShopFeedback
 //     the name and sellPrice from the item definition; gold = sellPrice * qty.
+//   The name is the definition's string VERBATIM (untrimmed, uncut, and '' is a name); gold is
+//   exact at any size (no 64-bit wrap).
 //   A needed row missing, a malformed field, or a qty that is not validShopQty: the count arm,
 //   never a throw, never a partial line, never an `Unknown (#N)` name.
 //
@@ -1108,7 +1110,9 @@ describe('buyFeedback / sellFeedback (ctl-7d, CTL7D.4): what a successful buy or
     // gold) or an `Unknown (#12)` name when a row is missing; a stray key on either arm; a
     // malformed row coerced into a plausible line (`BigInt(20)` for a number price, `String(42)`
     // for a number name) or one that throws (Number x BigInt); `BigInt(qty)` on an invalid
-    // quantity (throws on 1.5 and NaN, or prints a zero-gold line for 0); an input edited in place.
+    // quantity (throws on 1.5 and NaN, or prints a zero-gold line for 0); an input edited in place;
+    // a total wrapped to 64 bits (`BigInt.asUintN(64, ...)`: 2^63 x 4 comes back 0n); and a name
+    // that is not carried verbatim (`name.trim()`, `name.slice(0, 40)`, or '' treated as missing).
     const PAST_2_53 = 9_007_199_254_740_993n; // 2^53 + 1: Number(PAST_2_53) is ...992
     const BAIT = Object.freeze(makeItemDef(7, { name: 'Bait', sellPrice: 15n }));
     const BERRY = Object.freeze(makeItemDef(8, { name: 'Berry', sellPrice: 10n }));
@@ -1208,9 +1212,76 @@ describe('buyFeedback / sellFeedback (ctl-7d, CTL7D.4): what a successful buy or
       ['sell item 12 (no definition loaded)', () => sellFeedback(12, 4, defs), count(4)],
       ['sell with no item definitions loaded', () => sellFeedback(8, 3, new Map()), count(3)],
     );
-    expect(cases, 'ANTI-VACUITY: 9 buy cases per row order, 2 more buys and 6 sells').toHaveLength(
-      26,
+
+    // No 64-bit wrap, and the name carried verbatim. Their own frozen rows, so the fixtures above
+    // (and the purity checks below) are untouched.
+    const TWO_63 = 9_223_372_036_854_775_808n; // 2^63
+    const TWO_65 = 36_893_488_147_419_103_232n; // 2^65 = 2^63 x 4, which wraps to 0n in 64 bits
+    const SPACED = '  Spaced Bait  ';
+    const LONG = 'Grandmaster Ultra Premium Deluxe Golden Lure of the Abyss';
+    expect(LONG.length, 'fixture: the long name is past 40 characters').toBeGreaterThan(40);
+    const extraDefs: ReadonlyMap<number, StoreItemRow> = new Map(
+      [
+        makeItemDef(20, { name: 'Crown', sellPrice: TWO_63 }),
+        makeItemDef(21, { name: SPACED, sellPrice: 7n }),
+        makeItemDef(22, { name: LONG, sellPrice: 9n }),
+        makeItemDef(23, { name: '', sellPrice: 11n }),
+      ].map((def) => [def.id, Object.freeze(def)] as const),
     );
+    const extraRows: readonly StoreShopItemRow[] = Object.freeze(
+      [
+        makeShopItem(20n, 3, 20, TWO_63),
+        makeShopItem(21n, 3, 21, 13n),
+        makeShopItem(22n, 3, 22, 17n),
+        makeShopItem(23n, 3, 23, 19n),
+      ].map((row) => Object.freeze(row)),
+    );
+    cases.push(
+      [
+        'buy 4 Crown at 2^63 each: no 64-bit wrap',
+        () => buyFeedback(3, 20, 4, extraRows, extraDefs),
+        item(4, 'Crown', TWO_65),
+      ],
+      [
+        'sell 4 Crown at 2^63 each: no 64-bit wrap',
+        () => sellFeedback(20, 4, extraDefs),
+        item(4, 'Crown', TWO_65),
+      ],
+      [
+        'buy 2 of a name with leading and trailing spaces: kept untrimmed',
+        () => buyFeedback(3, 21, 2, extraRows, extraDefs),
+        item(2, SPACED, 26n),
+      ],
+      [
+        'sell 2 of a name with leading and trailing spaces: kept untrimmed',
+        () => sellFeedback(21, 2, extraDefs),
+        item(2, SPACED, 14n),
+      ],
+      [
+        'buy 2 of a name past 40 characters: kept whole',
+        () => buyFeedback(3, 22, 2, extraRows, extraDefs),
+        item(2, LONG, 34n),
+      ],
+      [
+        'sell 2 of a name past 40 characters: kept whole',
+        () => sellFeedback(22, 2, extraDefs),
+        item(2, LONG, 18n),
+      ],
+      [
+        "buy 2 of the empty name '': a string, so the item arm",
+        () => buyFeedback(3, 23, 2, extraRows, extraDefs),
+        item(2, '', 38n),
+      ],
+      [
+        "sell 2 of the empty name '': a string, so the item arm",
+        () => sellFeedback(23, 2, extraDefs),
+        item(2, '', 22n),
+      ],
+    );
+    expect(
+      cases,
+      'ANTI-VACUITY: 9 buy cases per row order, 2 more buys, 6 sells, 2 no-wrap and 6 verbatim-name',
+    ).toHaveLength(34);
 
     const ITEM_KEYS = ['gold', 'kind', 'name', 'qty'];
     const COUNT_KEYS = ['kind', 'qty'];

@@ -1631,9 +1631,15 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
 // ---------------------------------------------------------------------------
 // ctl-7d — the shop success lines (CTL7D.4), en and fr. They replace the two fixed lines FR-04
 // used to name ('shop.feedback.purchased' / 'shop.feedback.sold'), so their exact bytes are
-// pinned here, in both locales, through the closures themselves. Every expectation is built by
-// code point and transcribed from memory/projects/monster-realm-ctl-7d-plan.md's i18n table,
-// never read back from a catalog.
+// pinned here, in both locales, through the closures themselves:
+//   shop.feedback.buy.item   { qty, name, gold }  en "✓ Bought {qty} {name} (−{gold}g)"
+//                                                 fr "✓ Acheté {qty} {name} (−{gold} or)"
+//   shop.feedback.sell.item  { qty, name, gold }  en "✓ Sold {qty} {name} (+{gold}g)"
+//                                                 fr "✓ Vendu {qty} {name} (+{gold} or)"
+//   shop.feedback.buy.count  { qty }              en "✓ Bought ×{qty}"   fr "✓ Acheté ×{qty}"
+//   shop.feedback.sell.count { qty }              en "✓ Sold ×{qty}"     fr "✓ Vendu ×{qty}"
+// with ✓ U+2713, − U+2212 (never the ASCII hyphen) and × U+00D7. Every expectation below is
+// built by code point, never read back from a catalog.
 // ---------------------------------------------------------------------------
 
 describe('ctl-7d: the shop success lines in both catalogs', () => {
