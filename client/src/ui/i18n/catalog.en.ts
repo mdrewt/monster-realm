@@ -15,8 +15,6 @@
 //
 // The `<view>.ts:NNN` citations on entries name where each string is rendered
 // (pre-migration line numbers, kept as the translator's "where").
-// `chrome.helpHint` STAYS a static literal in
-// `index.html`.
 // Every value is byte-identical to the literal it replaced — including `’` U+2019 and `…`
 // U+2026, the `—` U+2014 / `→` / `★` / `✓` / `•` / `·` U+00B7 glyphs, the `×` U+00D7 in
 // `shop.sell.*` versus the ASCII `x` in `raising.*`, the TRAILING SPACE in `shop.buy.row` /
@@ -33,10 +31,14 @@
 import type { Catalog } from './messageIds';
 
 export const CATALOG_EN: Catalog = Object.freeze({
-  // @desc: Menu-launcher button pinned to the bottom-left of the world view, telling the player
-  // how to open help and the menu. One line, at most 47 characters (fits a 320px-wide viewport).
-  // index.html:143
-  'chrome.helpHint': 'Press ? for help · click or M for menu',
+  // @desc: Verb on the Start button chip in the hint bar at the bottom of the game screen; the
+  // button name "Start" is drawn beside it. One short word (at most 12 characters).
+  // index.html #chip-start (written by main.ts at boot)
+  'chrome.chip.menu': 'Menu',
+  // @desc: Verb on the Select button chip in the hint bar at the bottom of the game screen; the
+  // button name "Select" is drawn beside it. Opens the help screen. One short word (at most 12
+  // characters). index.html #chip-select (written by main.ts at boot)
+  'chrome.chip.help': 'Help',
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
   // index.html:94 (literal removed from index.html; resolved in HelpView show())
   'chrome.help.title': 'Controls & Goals',

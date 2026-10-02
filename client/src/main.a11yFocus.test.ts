@@ -466,47 +466,53 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     ).toBe(false);
   });
 
-  it.each(DRIVABLE_OVERLAYS)(
-    'S5T-GATE-BLOCKED ($id open with focus inside it; $blockedById hotkey opens nothing and $id stays unchanged)',
-    async ({ id, openKey, blockedById, blockedByKey }) => {
-      // WRONG IMPL KILLED: the `&& worldHasFocus()` conjunct missing at the $blockedById
-      // open-handler site. Without it, $blockedById's canOpen() verdict is ALREADY 'allow'
-      // here (same-tier HIDE_SWITCH sibling — see the fixture comment above), so this second
-      // hotkey WOULD open $blockedById out from under the player mid-read of $id: exactly the
-      // quick-nav collision spec §2.3 exists to close (pressing a letter to jump to the next
-      // control also toggles an overlay). The conjunct is the ONLY thing standing in the way.
-      pressKey(openKey);
-      expect(overlayIsOpen(id), `${id} must be open after its own hotkey`).toBe(true);
-      const anchor = overlayFocusAnchor(id);
-      expect(anchor, `${id}'s initialFocusSelector anchor must resolve`).not.toBeNull();
-      // Let the REAL setTimeout(0) deferred-focus macrotask fire, so
-      // focus is genuinely INSIDE the overlay — the A11Y-19 precondition, not merely open.
-      await vi.waitFor(
-        () => {
-          expect(document.activeElement).toBe(anchor);
-        },
-        { timeout: 2_000, interval: 5 },
-      );
-      pressKey(blockedByKey);
-      expect(overlayIsOpen(blockedById), `${blockedById} must NOT have opened`).toBe(false);
-      expect(overlayIsOpen(id), `${id} must remain open, unchanged`).toBe(true);
-      expect(document.activeElement, 'focus must not have moved').toBe(anchor);
-    },
-  );
+  it.each(
+    DRIVABLE_OVERLAYS,
+  )('S5T-GATE-BLOCKED ($id open with focus inside it; $blockedById hotkey opens nothing and $id stays unchanged)', async ({
+    id,
+    openKey,
+    blockedById,
+    blockedByKey,
+  }) => {
+    // WRONG IMPL KILLED: the `&& worldHasFocus()` conjunct missing at the $blockedById
+    // open-handler site. Without it, $blockedById's canOpen() verdict is ALREADY 'allow'
+    // here (same-tier HIDE_SWITCH sibling — see the fixture comment above), so this second
+    // hotkey WOULD open $blockedById out from under the player mid-read of $id: exactly the
+    // quick-nav collision spec §2.3 exists to close (pressing a letter to jump to the next
+    // control also toggles an overlay). The conjunct is the ONLY thing standing in the way.
+    pressKey(openKey);
+    expect(overlayIsOpen(id), `${id} must be open after its own hotkey`).toBe(true);
+    const anchor = overlayFocusAnchor(id);
+    expect(anchor, `${id}'s initialFocusSelector anchor must resolve`).not.toBeNull();
+    // Let the REAL setTimeout(0) deferred-focus macrotask fire, so
+    // focus is genuinely INSIDE the overlay — the A11Y-19 precondition, not merely open.
+    await vi.waitFor(
+      () => {
+        expect(document.activeElement).toBe(anchor);
+      },
+      { timeout: 2_000, interval: 5 },
+    );
+    pressKey(blockedByKey);
+    expect(overlayIsOpen(blockedById), `${blockedById} must NOT have opened`).toBe(false);
+    expect(overlayIsOpen(id), `${id} must remain open, unchanged`).toBe(true);
+    expect(document.activeElement, 'focus must not have moved').toBe(anchor);
+  });
 
-  it.each(DRIVABLE_OVERLAYS)(
-    'S5T-GATE-ALLOWED-BODY ($id opens from <body> focus, the pre-milestone behaviour)',
-    ({ id, openKey }) => {
-      // WRONG IMPL KILLED: `worldHasFocus` written as `a === worldCanvasEl` only (dropping
-      // BOTH the `null` and `document.body` disjuncts) — every hotkey would be dead from a
-      // fresh page load, before the player has ever Tabbed anywhere. ALSO KILLED: an
-      // inverted conjunct (`!worldHasFocus()`) — every hotkey would open ONLY while focus is
-      // inside some other overlay, exactly backwards.
-      expect(document.activeElement, 'precondition: body is focused at boot').toBe(document.body);
-      pressKey(openKey);
-      expect(overlayIsOpen(id)).toBe(true);
-    },
-  );
+  it.each(
+    DRIVABLE_OVERLAYS,
+  )('S5T-GATE-ALLOWED-BODY ($id opens from <body> focus, the pre-milestone behaviour)', ({
+    id,
+    openKey,
+  }) => {
+    // WRONG IMPL KILLED: `worldHasFocus` written as `a === worldCanvasEl` only (dropping
+    // BOTH the `null` and `document.body` disjuncts) — every hotkey would be dead from a
+    // fresh page load, before the player has ever Tabbed anywhere. ALSO KILLED: an
+    // inverted conjunct (`!worldHasFocus()`) — every hotkey would open ONLY while focus is
+    // inside some other overlay, exactly backwards.
+    expect(document.activeElement, 'precondition: body is focused at boot').toBe(document.body);
+    pressKey(openKey);
+    expect(overlayIsOpen(id)).toBe(true);
+  });
 
   it('S5T-GATE-ALLOWED-CANVAS: a hotkey still opens its overlay when the world CANVAS has focus', () => {
     // It becomes this suite's ONLY REAL BEHAVIOURAL KILLER of the red-team's #1 attack
@@ -591,64 +597,66 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     { id: 'helpView', openKey: HELP_KEY },
   ];
 
-  it.each(SAMEKEY_OVERLAYS)(
-    'S5T-GATE-SAMEKEY-CLOSE ($id toggle-CLOSES on a second press of its OWN hotkey, with focus already inside it)',
-    async ({ id, openKey }) => {
-      // WRONG IMPL KILLED (1) ★ THE DEFECT: the un-amended conjunct at any of the six sites.
-      //   Same-key close is dead for every user and every overlay — spec §2.3's compatibility
-      //   claim ("a sighted player who never Tabs has activeElement === <body>") is false once
-      //   EVERY hotkey open moves focus into the overlay it just opened.
-      // WRONG IMPL KILLED (2): a reshape applied to the HIDE_SWITCH trio ONLY — the minimum edit
-      //   that turns the three e2e specs green. The three non-trio rows above are what see it;
-      //   the twelve `expectedRaw` pins in main.wiring.test.ts see it from the source side.
-      // WRONG IMPL KILLED (3): a reshape that closes the overlay but ALSO opens something else
-      //   (e.g. a self-open disjunct copy-pasted with a sibling's identifier, so KeyB closes the
-      //   box and the sibling's branch then fires) — the whole-set `toEqual([])` catches it,
-      //   where a bare `expect(overlayIsOpen(id)).toBe(false)` would not.
-      // NOT KILLED HERE, stated rather than implied: deleting the `forceHide` loop from the trio
-      //   handlers. `canOpen` exempts SELF, so `forceHide` is empty on this path by construction.
-      //   S5T-ANNOUNCE-TOP below ("boxView must have been force-hidden by the switch") is the
-      //   behavioural killer for that, and the wiring `expectedRaw` pins are the source-side one.
-      expect(document.activeElement, 'precondition: body is focused at boot').toBe(document.body);
+  it.each(
+    SAMEKEY_OVERLAYS,
+  )('S5T-GATE-SAMEKEY-CLOSE ($id toggle-CLOSES on a second press of its OWN hotkey, with focus already inside it)', async ({
+    id,
+    openKey,
+  }) => {
+    // WRONG IMPL KILLED (1) ★ THE DEFECT: the un-amended conjunct at any of the six sites.
+    //   Same-key close is dead for every user and every overlay — spec §2.3's compatibility
+    //   claim ("a sighted player who never Tabs has activeElement === <body>") is false once
+    //   EVERY hotkey open moves focus into the overlay it just opened.
+    // WRONG IMPL KILLED (2): a reshape applied to the HIDE_SWITCH trio ONLY — the minimum edit
+    //   that turns the three e2e specs green. The three non-trio rows above are what see it;
+    //   the twelve `expectedRaw` pins in main.wiring.test.ts see it from the source side.
+    // WRONG IMPL KILLED (3): a reshape that closes the overlay but ALSO opens something else
+    //   (e.g. a self-open disjunct copy-pasted with a sibling's identifier, so KeyB closes the
+    //   box and the sibling's branch then fires) — the whole-set `toEqual([])` catches it,
+    //   where a bare `expect(overlayIsOpen(id)).toBe(false)` would not.
+    // NOT KILLED HERE, stated rather than implied: deleting the `forceHide` loop from the trio
+    //   handlers. `canOpen` exempts SELF, so `forceHide` is empty on this path by construction.
+    //   S5T-ANNOUNCE-TOP below ("boxView must have been force-hidden by the switch") is the
+    //   behavioural killer for that, and the wiring `expectedRaw` pins are the source-side one.
+    expect(document.activeElement, 'precondition: body is focused at boot').toBe(document.body);
 
-      pressKey(openKey);
-      expect(
-        overlayIsOpen(id),
-        `${id} must be open after its own hotkey. If THIS is the assertion that failed, the ` +
-          'defect is in the OPEN half (or the open path has a store dependency this harness does ' +
-          'not satisfy) — not in the toggle-close this test is about',
-      ).toBe(true);
-      expect(openOverlayIds(), `${id} must be the ONLY overlay open at this point`).toEqual([id]);
+    pressKey(openKey);
+    expect(
+      overlayIsOpen(id),
+      `${id} must be open after its own hotkey. If THIS is the assertion that failed, the ` +
+        'defect is in the OPEN half (or the open path has a store dependency this harness does ' +
+        'not satisfy) — not in the toggle-close this test is about',
+    ).toBe(true);
+    expect(openOverlayIds(), `${id} must be the ONLY overlay open at this point`).toEqual([id]);
 
-      // Let the REAL setTimeout(0) deferred-focus macrotask fire, so
-      // focus is genuinely INSIDE the overlay — the A11Y-19 post-open state, and the precise
-      // state in which the pre-amendment gate refuses the close. Without this wait the test
-      // would pass against the UNFIXED implementation (activeElement would still be <body>, so
-      // worldHasFocus() would still be true) — i.e. this await is what makes the test bite.
-      const anchor = overlayFocusAnchor(id);
-      expect(anchor, `${id}'s initialFocusSelector anchor must resolve`).not.toBeNull();
-      await vi.waitFor(
-        () => {
-          expect(document.activeElement).toBe(anchor);
-        },
-        { timeout: 2_000, interval: 5 },
-      );
+    // Let the REAL setTimeout(0) deferred-focus macrotask fire, so
+    // focus is genuinely INSIDE the overlay — the A11Y-19 post-open state, and the precise
+    // state in which the pre-amendment gate refuses the close. Without this wait the test
+    // would pass against the UNFIXED implementation (activeElement would still be <body>, so
+    // worldHasFocus() would still be true) — i.e. this await is what makes the test bite.
+    const anchor = overlayFocusAnchor(id);
+    expect(anchor, `${id}'s initialFocusSelector anchor must resolve`).not.toBeNull();
+    await vi.waitFor(
+      () => {
+        expect(document.activeElement).toBe(anchor);
+      },
+      { timeout: 2_000, interval: 5 },
+    );
 
-      pressKey(openKey); // the SAME key again — a toggle-CLOSE, never an open
-      expect(
-        overlayIsOpen(id),
-        `${id} must be CLOSED by the second press of its own hotkey (ADR-0206 A1: the gate ` +
-          'applies to the OPEN transitions only — canOpen exempts self, so the verdict is still ' +
-          '`allow`, and the self-open disjunct is what lets the close through while focus sits ' +
-          'inside the overlay being closed)',
-      ).toBe(false);
-      expect(
-        openOverlayIds(),
-        'no overlay at all may be open after the toggle-close — the second press must CLOSE, ' +
-          'never switch to something else',
-      ).toEqual([]);
-    },
-  );
+    pressKey(openKey); // the SAME key again — a toggle-CLOSE, never an open
+    expect(
+      overlayIsOpen(id),
+      `${id} must be CLOSED by the second press of its own hotkey (ADR-0206 A1: the gate ` +
+        'applies to the OPEN transitions only — canOpen exempts self, so the verdict is still ' +
+        '`allow`, and the self-open disjunct is what lets the close through while focus sits ' +
+        'inside the overlay being closed)',
+    ).toBe(false);
+    expect(
+      openOverlayIds(),
+      'no overlay at all may be open after the toggle-close — the second press must CLOSE, ' +
+        'never switch to something else',
+    ).toEqual([]);
+  });
 
   it('S5T-GATE-REOPEN-AFTER-SAMEKEY-CLOSE: after a same-key close, focus leaves the overlay and a DIFFERENT hotkey opens again (the pvp.spec.ts:145 cascade)', async () => {
     // The e2e/pvp.spec.ts:145 shape, at the unit tier: a serial spec's cleanup close (KeyB) is

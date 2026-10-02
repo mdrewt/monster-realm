@@ -3,13 +3,10 @@
  * ui/overlayRegistry.ts).
  *
  * HARD CONSTRAINT: CLASS and `:root` SELECTORS ONLY — ZERO `#id` SELECTORS, EVER.
- * `client/src/indexShell.test.ts` and `client/src/main.wiring.test.ts` pin the exact
- * inline `position`, `inset` and `z-index` of `#help-overlay`, `#help-hint` and
- * `#build-stamp` BY TEXT, on the premise that the inline `style` attribute is their
- * complete styling contract. A rule in here reaching one of those ids could silently
- * satisfy or defeat those assertions without changing a single character of the markup
- * they read. Criterion A11Y-12 / `[A11Y-07]` is that ban, and tooth A6 in
- * indexShell.test.ts enforces it mechanically over this exact file.
+ * `#build-stamp`'s inline `style` is its complete styling contract, and every overlay shell
+ * in `client/index.html` is styled by its classes (ctl-7a), so an id rule here could silently
+ * restyle markup that `client/src/indexShell.smoke.test.ts` reads. Criterion A11Y-12 /
+ * `[A11Y-07]` is that ban.
  *
  * LOAD PATH: a `<link rel="stylesheet" href="/src/styles.css">` in `client/index.html`'s
  * `<head>`, NOT an `import` from a `.ts`. `client/src/main.ts` is slice S5's exclusive
@@ -106,17 +103,20 @@
  * `aria-selected`, the frame parts). Every glyph here is a CSS pseudo-element so the TS kit
  * writes no literal text; the `/ ""` alternative text keeps the decorative marks silent to a
  * screen reader (an engine without that form drops the glyph; the band and outline remain). Disabled
- * rows dim by colour, not opacity, so the active disabled row keeps AA contrast. No transition or animation, so no reduced-motion guard is needed. Plain colours
- * (no `--mr-evo-*` reads): high-contrast frame tokens belong to ctl-7a.
+ * rows dim by colour, not opacity, so the active disabled row keeps AA contrast. No transition or animation, so no reduced-motion guard is needed. The frame
+ * colours are the `--mr-frame-*` tokens below (ctl-7a, CTL7A.3).
  */
 .mr-frame {
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
   max-height: 100%;
-  border: 2px solid #e0e0e0;
-  background: #1e1e2e;
-  color: #e0e0e0;
+  border: 2px solid var(--mr-frame-border);
+  background: var(--mr-frame-bg);
+  color: var(--mr-frame-fg);
+  /* Native controls inside a frame (shop buttons, the rename input) paint light-on-dark
+   * instead of the UA's black-on-light default, with no element selector. */
+  color-scheme: dark;
 }
 .mr-frame--side {
   width: 33%;
@@ -232,6 +232,114 @@
 }
 .mr-nav-item.is-active.is-disabled {
   color: #55556a;
+}
+
+/*
+ * The game screen (ctl-7a, CTL7A.1-CTL7A.4; design §10). `#game-screen` holds the canvas mount
+ * (`#app`), the frame layer and the hint bar. It is ONE viewport-tall box that clips its overflow,
+ * so the page never scrolls, and it is deliberately NOT position:fixed: a fixed box always forms a
+ * stacking context, which would trap the menu and help (z-index 120, above the battle overlay's
+ * 110) beneath body-level banners. With position:relative and no z-index, every z-index inside
+ * still competes in the root stacking context exactly as before.
+ *
+ * `.mr-frame-layer` fills the screen without catching clicks; each `.mr-shell` is an overlay root
+ * inset from every edge (and above the hint bar), scrolling its own overflow, so its box is inside
+ * the viewport by construction. Shell visibility stays the inline `display:none` contract the
+ * views toggle; a shown shell with `display: ''` falls back to `.mr-frame`'s flex column.
+ */
+.mr-game-screen {
+  position: relative;
+  height: 100dvh;
+  overflow: hidden;
+}
+.mr-frame-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.mr-shell {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  bottom: 40px;
+  left: 8px;
+  overflow: auto;
+  z-index: 100;
+  padding: 12px 16px;
+  font: 14px / 1.6 monospace;
+  pointer-events: auto;
+}
+.mr-shell--top {
+  z-index: 120;
+}
+/* The interact prompt and the deletion countdown are frames too, but small and positioned by
+ * main.ts (the prompt follows its anchor tile every frame). No click target: pointer-events off. */
+.mr-frame--prompt,
+.mr-frame--banner {
+  position: absolute;
+  max-height: none;
+  border-width: 1px;
+  font: 12px / 1.4 monospace;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.mr-frame--prompt {
+  z-index: 40;
+  padding: 1px 6px;
+  transform: translate(-50%, -100%);
+}
+.mr-frame--banner {
+  z-index: 45;
+  top: 4px;
+  left: 50%;
+  padding: 2px 8px;
+  transform: translateX(-50%);
+}
+/* The status line: out of the page flow, above the hint bar. */
+.mr-status {
+  position: absolute;
+  left: 8px;
+  bottom: 36px;
+  z-index: 45;
+  font: 12px / 1.4 monospace;
+  color: var(--mr-frame-fg);
+  pointer-events: none;
+}
+.mr-hint-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  display: flex;
+  gap: 8px;
+  padding: 4px 8px;
+  pointer-events: none;
+}
+.mr-chip {
+  pointer-events: auto;
+  cursor: pointer;
+  font: 12px / 1.4 monospace;
+  padding: 2px 8px;
+  border: 1px solid var(--mr-frame-border);
+  border-radius: 3px;
+  background: var(--mr-frame-bg);
+  color: var(--mr-frame-fg);
+}
+.mr-chip::before {
+  content: attr(data-button) / "";
+  padding-right: 0.5em;
+  font-weight: bold;
+}
+
+/*
+ * Frame colour tokens (CTL7A.3). fg on bg measures 12.6:1 (WCAG 1.4.3 AA needs 4.5:1); the bg is
+ * opaque, so the ratio holds over any canvas. indexShell.smoke.test.ts recomputes it from here.
+ */
+:root {
+  --mr-frame-bg: #1e1e2e;
+  --mr-frame-fg: #e0e0e0;
+  --mr-frame-border: #e0e0e0;
 }
 
 /*
