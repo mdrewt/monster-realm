@@ -47,6 +47,10 @@ export class PvpView {
   // releases only if the stored lock is still its own, so a stale promise (click →
   // force-hide cleared → re-show → click again → first settles) cannot release the second.
   #pending: object | null = null;
+  // What each dynamic container shows now, as a render key; no entry = nothing current (hidden,
+  // or the bare shell). main.ts refreshes on every store batch: a container whose key is unchanged
+  // keeps its nodes, so a batch neither drops focus from a control nor loses a click in progress.
+  readonly #rendered = new Map<HTMLElement, string>();
 
   constructor(callbacks: PvpViewCallbacks) {
     this.#callbacks = callbacks;
@@ -107,8 +111,10 @@ export class PvpView {
     // Release the lifecycle lock (tradeProposeView hide()-time precedent): onReconnect
     // and the battle auto-show force-hide this overlay, and the SDK never settles an in-flight
     // reducer promise after a link drop — so `.finally()` may never run. No node re-enable:
-    // `show()` is only reached through refresh(), which rebuilds every lifecycle control.
+    // `show()` is only reached through refresh(), which rebuilds every lifecycle control once
+    // what was rendered is forgotten.
     this.#pending = null;
+    this.#rendered.clear();
     // DELIBERATELY UNGUARDED, and the asymmetry with the guarded `render(null)` path
     // in the three render-driven views is a decision, not an oversight. `closeOverlayA11y` is a
     // documented no-op when there is no open record (ui/overlayA11y.ts:136-137), so an unguarded
@@ -128,6 +134,8 @@ export class PvpView {
    * is fully responsible for the show/hide decision via `forceVisible` — this method
    * never auto-shows independently. This prevents pvpView from popping over an active
    * battle or other overlay when hasActive=true (mutual exclusivity).
+   *
+   * Each container is rebuilt only when what it shows changed (`#renderIfChanged`).
    */
   refresh(vm: PvpChallengeViewModel | null, forceVisible: boolean): void {
     const hasActive = vm !== null && (vm.incoming !== null || vm.outgoing !== null);
@@ -144,16 +152,39 @@ export class PvpView {
       this.#incomingEl.replaceChildren();
       this.#outgoingEl.replaceChildren();
       this.#playerListEl.replaceChildren();
+      this.#rendered.clear();
       return;
     }
 
     this.#statusEl.textContent = t('pvp.title.challenge');
-    this.#renderIncoming(vm.incoming);
-    this.#renderOutgoing(vm.outgoing);
-    this.#renderPlayerList(vm.challengeablePlayers, !hasActive);
-    // re-derive the lock on the rebuilt controls — a batch can re-render while a
+    const { incoming, outgoing, challengeablePlayers: players } = vm;
+    this.#renderIfChanged(
+      this.#incomingEl,
+      incoming && [incoming.challengeId, incoming.challengerName],
+      () => this.#renderIncoming(incoming),
+    );
+    this.#renderIfChanged(
+      this.#outgoingEl,
+      outgoing && [outgoing.challengeId, outgoing.targetName, outgoing.status],
+      () => this.#renderOutgoing(outgoing),
+    );
+    this.#renderIfChanged(
+      this.#playerListEl,
+      [!hasActive, players.map((p) => [p.identity, p.name])],
+      () => this.#renderPlayerList(players, !hasActive),
+    );
+    // re-derive the lock on the live controls — a batch can re-render while a
     // lifecycle call is still in flight.
     if (this.#pending !== null) this.#setLifecycleDisabled(true);
+  }
+
+  /** Runs `render` for `el` unless `shown` — everything that render reads — is what `el` already
+   *  shows. The key is JSON, never a delimiter join: player names are user-chosen. */
+  #renderIfChanged(el: HTMLElement, shown: unknown, render: () => void): void {
+    const key = JSON.stringify(shown, (_, v: unknown) => (typeof v === 'bigint' ? `${v}` : v));
+    if (this.#rendered.get(el) === key) return;
+    render();
+    this.#rendered.set(el, key);
   }
 
   /**
@@ -173,7 +204,7 @@ export class PvpView {
       .finally(() => {
         if (this.#pending !== lock) return;
         this.#pending = null;
-        // The LIVE nodes: a refresh() mid-flight replaced the clicked one.
+        // The LIVE nodes: a refresh() mid-flight may have replaced the clicked one.
         this.#setLifecycleDisabled(false);
         this.#reanchorStrandedFocus();
       })
