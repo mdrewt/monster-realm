@@ -77,6 +77,57 @@ interface GameSnap {
     partySlot: number;
   }>;
   ownInventory: Array<{ invId: string; itemId: number; count: number }>;
+  // Every character row in the store (players and wandering NPCs). Step 5b counts changes of
+  // this list as applied store batches.
+  characters: Array<{ entityId: string; tileX: number; tileY: number }>;
+}
+
+// ---------------------------------------------------------------------------
+// FocusWitness: what step 5b's in-page poll reports back from B's page.
+// ---------------------------------------------------------------------------
+interface FocusWitnessArgs {
+  selector: string;
+  minChanges: number;
+  pollMs: number;
+  deadlineMs: number;
+}
+
+interface FocusWitness {
+  /** Focus landed on the Accept button when the poll placed it (precondition). */
+  focused: boolean;
+  /** How many times `__game().characters` changed while polling (each one is a store batch). */
+  changes: number;
+  /** activeElement is still the SAME, connected Accept node when the poll ends. */
+  kept: boolean;
+  /** The change count at which focus was first seen off that node; null = never. */
+  lostAfterChanges: number | null;
+  /** activeElement when the poll ends (tag and data-testid), for the failure message. */
+  activeAtEnd: string;
+  /** What the poll threw (it then stopped and reported at once); null = it did not throw. */
+  error: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// closeWithin: browser.close(), rejecting with an error that names `step` if the close has not
+// finished within `ms`; the timer is cleared when the close settles first. Public API only — a
+// Browser from chromium.launch() exposes no process handle to kill.
+// ---------------------------------------------------------------------------
+function closeWithin(browser: Browser, ms: number, step: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${step}: browser.close() did not finish within ${ms} ms`));
+    }, ms);
+    void browser.close().then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +302,8 @@ test.describe
     //   - A delete path (profile row missing after forfeit → hard-fail on sql parse)
     //   - A wrong-winner path (B gets wins=1 instead of A)
     //   - A non-zero-sum path (winner gain ≠ loser loss → sum ≠ 2000)
+    //   - A PvP overlay that replaces its unchanged Accept button on a store batch (step 5b:
+    //     keyboard focus on Accept is lost)
     //
     // -------------------------------------------------------------------------
     test('ranked forfeit flow: challenge → accept → B-disconnect → A wins; zero-sum profile assertion (RL-18)', async () => {
@@ -309,10 +362,100 @@ test.describe
       // requires !anyOverlayVisible — that is why B ran closeAll in step 2).
       // WHAT THIS KILLS: a pvp overlay that does not auto-show on incoming challenge,
       // or an accept button that is absent from the rendered incoming section.
-      await pageB.waitForSelector('[data-testid="pvp-accept-btn"]', { timeout: 15_000 });
+      const acceptSelector = '[data-testid="pvp-accept-btn"]';
+      await pageB.waitForSelector(acceptSelector, { timeout: 15_000 });
 
-      // B clicks accept → accept_challenge reducer → ranked battle starts.
-      await pageB.click('[data-testid="pvp-accept-btn"]');
+      // Step 5b: keyboard focus placed on B's Accept button is still on it after at least 5 store
+      // batches. main.ts refreshes this overlay on every batch (several a second from NPC wander
+      // alone); a refresh that replaces the button drops focus to <body>, and makes Playwright's
+      // pointer click below retry on a detached node. Witness: each change of
+      // __game().characters means at least one batch was applied. Polled every 100 ms in ONE
+      // evaluate (not per frame: __game() builds a large snapshot), bounded at 15 s in the page.
+      const minBatchChanges = 5;
+      const witness = await pageB.evaluate(
+        ({ selector, minChanges, pollMs, deadlineMs }: FocusWitnessArgs) =>
+          new Promise<FocusWitness>((resolve) => {
+            const describeActive = (): string => {
+              const el = document.activeElement;
+              if (el === null) return 'nothing';
+              const testId = el.getAttribute('data-testid');
+              const tag = el.tagName.toLowerCase();
+              return testId === null ? tag : `${tag}[data-testid=${testId}]`;
+            };
+            let changes = 0;
+            let lostAfterChanges: number | null = null;
+            const report = (focused: boolean, kept: boolean, error: string | null): void => {
+              resolve({
+                focused,
+                changes,
+                kept,
+                lostAfterChanges,
+                activeAtEnd: describeActive(),
+                error,
+              });
+            };
+            const accept = document.querySelector<HTMLElement>(selector);
+            if (accept === null) {
+              report(false, false, null);
+              return;
+            }
+            accept.focus();
+            if (document.activeElement !== accept) {
+              report(false, false, null); // no 15 s poll for a focus that never landed
+              return;
+            }
+            const holds = (): boolean => accept.isConnected && document.activeElement === accept;
+            const game = (window as unknown as { __game: () => GameSnap }).__game;
+            const read = (): string => JSON.stringify(game().characters);
+            let last = '';
+            try {
+              last = read();
+            } catch (err) {
+              report(true, holds(), String(err));
+              return;
+            }
+            const started = performance.now();
+            // A throw inside a tick would otherwise leave this promise pending forever, and
+            // page.evaluate has no timeout of its own.
+            const timer = setInterval(() => {
+              try {
+                const next = read();
+                if (next !== last) {
+                  changes += 1;
+                  last = next;
+                }
+                if (lostAfterChanges === null && !holds()) lostAfterChanges = changes;
+                if (changes < minChanges && performance.now() - started < deadlineMs) return;
+                clearInterval(timer);
+                report(true, holds(), null);
+              } catch (err) {
+                clearInterval(timer);
+                report(true, holds(), String(err));
+              }
+            }, pollMs);
+          }),
+        { selector: acceptSelector, minChanges: minBatchChanges, pollMs: 100, deadlineMs: 15_000 },
+      );
+      expect(
+        witness.error,
+        `RL-18 step 5b: the in-page focus/batch poll threw after ${witness.changes} character change(s)`,
+      ).toBeNull();
+      expect(
+        witness.focused,
+        `RL-18 step 5b precondition: focus did not land on the Accept button of B (activeElement: ${witness.activeAtEnd})`,
+      ).toBe(true);
+      expect(
+        witness.changes,
+        `RL-18 step 5b: no store batches observed on B: __game().characters changed ${witness.changes} time(s) in 15 s (need ${minBatchChanges}), so the focus check below would prove nothing`,
+      ).toBeGreaterThanOrEqual(minBatchChanges);
+      expect(
+        witness.kept,
+        `RL-18 step 5b: keyboard focus left the Accept button of B (first seen after ${witness.lostAfterChanges} character change(s); now on ${witness.activeAtEnd}): a store batch rebuilt the unchanged Accept button`,
+      ).toBe(true);
+
+      // B clicks accept → accept_challenge reducer → ranked battle starts. A real pointer click,
+      // bounded so a starved click fails with Playwright's call log, not a bare test timeout.
+      await pageB.click(acceptSelector, { timeout: 30_000 });
 
       // Step 6: assert battle live on A's page (AM-2).
       // __game().ongoingBattle is non-null for the player_identity (side A). As of ADR-0167,
@@ -335,7 +478,8 @@ test.describe
       // Step 7: forfeit via disconnect — close browserB.
       // pvp::forfeit_on_disconnect fires inside on_disconnect on the server.
       // PVP_TURN_DEADLINE_MS = 60s; our scenario is well within budget.
-      await browserB.close();
+      // Bounded at 30 s so a hung close fails naming this step, not as a bare test timeout.
+      await closeWithin(browserB, 30_000, 'RL-18 step 7 (close browserB)');
 
       // Step 8: A waits for terminal state — ongoingBattle null (battle GC'd) or
       // outcome changed from Ongoing. 20s headroom: local disconnect→forfeit settle
