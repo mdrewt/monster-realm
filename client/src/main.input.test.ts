@@ -964,6 +964,11 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     // pullback batch that carries the battle row still sends a step); a prompt computed from
     // the overlay probe instead of the gate (it advertises a target KeyT would refuse); and a
     // base that does not return to the world when the battle row goes.
+    // ctl-6c: the title's "Escape ... changes nothing" is now "Escape never HIDES the battle": Start
+    // opens the main menu above an Ongoing battle (CTL6C.1) and the second Escape below closes it,
+    // after which the bare battle base keeps every movement and KeyT assertion that follows. A
+    // Start that hid the battle, or left the menu open (the KeyT / W gates would then read a menu
+    // frame instead of the bare base), fails here.
     await bootReady();
     seedWorld(1000);
     frame(1005);
@@ -993,10 +998,26 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(battleShown(), 'the battle overlay shows').toBe(true);
     expect(stack()[0], 'the base is the battle').toEqual({ kind: 'battle', battleId: '101' });
 
-    // ctl-6b CTL6B.2: Escape is Start and does nothing on an Ongoing battle (B17: it used to hide the
-    // overlay), so the overlay stays shown and the gate below is checked with the battle still up.
+    // INTENTIONAL CHANGE (ctl-6c CTL6C.1): Escape is Start, and Start over an Ongoing battle now
+    // opens the main menu above it (ctl-6b made it do nothing; B17 still holds: it never hides the
+    // overlay). The battle stays shown, the base stays the battle and the menu is a frame above it;
+    // a second Escape closes the menu again, so the gate below is checked on the bare battle base.
     fire('keydown', 'Escape', 1700);
+    fire('keyup', 'Escape', 1702);
     expect(battleShown(), 'precondition: Escape leaves the Ongoing battle overlay up').toBe(true);
+    expect(
+      stack(),
+      'Escape over the Ongoing battle opens the menu: the base is still the battle, the menu above',
+    ).toEqual([
+      { kind: 'battle', battleId: '101' },
+      { kind: 'screen', id: 'menuView', overBattle: '101' },
+    ]);
+    expect(shownById('menu-overlay'), 'the menu is on screen above the battle').toBe(true);
+    fire('keydown', 'Escape', 1704);
+    fire('keyup', 'Escape', 1706);
+    expect(shownById('menu-overlay'), 'a second Escape closes the menu').toBe(false);
+    expect(battleShown(), 'the battle is still shown after the menu closes').toBe(true);
+    expect(stack(), 'the bare battle base again').toEqual([{ kind: 'battle', battleId: '101' }]);
     frame(1710);
     expect(stack(), 'the base is still the battle, with nothing above it').toEqual([
       { kind: 'battle', battleId: '101' },

@@ -22,16 +22,21 @@
  */
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import type { VButton } from '../input/buttons';
 import {
   type BaseFrame,
   baseFor,
+  battleButton,
+  battleRefused,
   blocksPlayerOpen,
+  COMMAND_BATTLE_POLICY,
   type Command,
   contextStep,
   continuedBattleId,
   type Edge,
   mirrorEdges,
   movementEnabled,
+  OUTCOME_CONTINUE_GRACE_MS,
   popToBase,
   popTop,
   reconcile,
@@ -43,11 +48,15 @@ import {
   WORLD_STACK,
 } from './contextStack';
 import { OVERLAY_IDS, type OverlayId } from './overlayRegistry';
+import type { Command as ScreenCommand } from './screens/types';
 
 // --- builders -----------------------------------------------------------------------------
 const WORLD: BaseFrame = { kind: 'world' };
 const battle = (battleId: string): BaseFrame => ({ kind: 'battle', battleId });
 const screen = (id: OverlayId): UpperFrame => ({ kind: 'screen', id });
+/** A screen frame opened over battle `battleId` (ctl-6c): the optional `overBattle` stamp. */
+const stamped = (id: OverlayId, battleId: string): UpperFrame =>
+  ({ kind: 'screen', id, overBattle: battleId }) as UpperFrame;
 const prompt = (id: OverlayId): UpperFrame => ({ kind: 'prompt', id });
 const textEntry = (owner: OverlayId): UpperFrame => ({ kind: 'textEntry', owner });
 const stackOf = (base: BaseFrame, ...upper: UpperFrame[]): Stack => [base, ...upper];
@@ -276,8 +285,14 @@ describe('context stack: pure core (ctl-2)', () => {
         ),
     );
 
+    // ctl-6c CORRECTION (CTL6C.1, from the spec): a frame pushed over a battle base is now stamped
+    // with `overBattle: <battleId>` (so reconcile can keep a battleSafe one), where it used to be a
+    // bare `{kind:'screen', id}`. Over the world it stays unstamped. The expected shape below
+    // tracks the base; it is not weakened (a missing or wrong stamp still fails).
     fc.assert(
       fc.property(scenarioArb, ({ base, start, visible }) => {
+        const pushFrame = (id: OverlayId): UpperFrame =>
+          base.kind === 'battle' ? stamped(id, base.battleId) : screen(id);
         const from = stackOf(base, ...start);
         const effective =
           base.kind === 'battle' ? visible.filter((id) => id !== 'battleView') : visible;
@@ -298,7 +313,7 @@ describe('context stack: pure core (ctl-2)', () => {
         expect(
           edges.filter((e) => e.kind === 'push'),
           'pushes are screen frames in visible order',
-        ).toEqual(newIds.map((id) => pushEdge(screen(id))));
+        ).toEqual(newIds.map((id) => pushEdge(pushFrame(id))));
 
         const folded = fold(from, edges);
         expect(folded.stack[0], 'the base is untouched').toEqual(base);
@@ -309,7 +324,7 @@ describe('context stack: pure core (ctl-2)', () => {
         expect(
           folded.stack.slice(1 + keptFrames.length),
           'new frames are screens appended in visible order',
-        ).toEqual(newIds.map(screen));
+        ).toEqual(newIds.map(pushFrame));
         expect(
           (folded.stack.slice(1) as readonly UpperFrame[]).map(frameId),
           'upper-frame ids are exactly the effective visible set',
@@ -345,8 +360,8 @@ describe('context stack: pure core (ctl-2)', () => {
     ).toEqual([]);
     expect(
       mirrorEdges(stackOf(battle('7')), ['battleView', BOX]),
-      'only the other overlays are mirrored over a battle base',
-    ).toEqual([pushEdge(screen(BOX))]);
+      'only the other overlays are mirrored over a battle base, stamped with the battle (ctl-6c)',
+    ).toEqual([pushEdge(stamped(BOX, '7'))]);
     expect(
       mirrorEdges(WORLD_STACK, ['battleView']),
       'over a world base a visible battleView (a terminal outcome frame) is a screen frame',
@@ -1514,5 +1529,587 @@ describe('context stack: player pops, close diff and the outcome rule (ctl-6b)',
     // The result is the latest id exactly: a neighbour past 2^53 is not rounded onto it.
     expect(continuedBattleId({ battleId: BIG, outcome: 'Fled' }, BIG - 1n)).toBe(BIG);
     expect(continuedBattleId({ battleId: BIG, outcome: 'Fled' }, BIG - 1n)).not.toBe(BIG - 1n);
+  });
+});
+
+// ==========================================================================================
+// ctl-6c: Start over an Ongoing battle, the outcome continue, and the battle-safe command policy
+// ==========================================================================================
+//
+// `mirrorEdges(stack, visible, prevBase = stack[0])` stamps a screen frame pushed over a battle base
+// with `overBattle: <battleId>`, but only when the base was ALREADY that battle before this sync
+// (`prevBase`): a frame first mirrored in the very batch that brings the battle was opened at the
+// world and must still drop (CTL3.2). `reconcile` keeps a stamped, battleSafe frame of the CURRENT
+// battle, and drops a stamped frame whose battle is gone even when no outcome is shown (the stale
+// stamp). `battleButton(stack, btn, outcomeAgeMs?)` is the base-level battle rule (Start opens the
+// menu at the bare battle base; A continues a terminal outcome after a grace). `battleRefused`
+// reads `COMMAND_BATTLE_POLICY` (a total table over the `Command` kinds) at a battle base.
+//
+// The expected sets below are HARD-CODED literals, never derived from SCREEN_POLICY or from the
+// policy table: a table read from the very thing it guards shrinks with it and stays green.
+
+/** The four overlays SCREEN_POLICY marks battleSafe besides battleView itself. HARD-CODED. */
+const SAFE_OVER_BATTLE: readonly OverlayId[] = [
+  'questLogView',
+  'leaderboardView',
+  'helpView',
+  'menuView',
+];
+/** The other eleven player overlays: not battleSafe. HARD-CODED. */
+const UNSAFE_OVER_BATTLE: readonly OverlayId[] = [
+  'boxView',
+  'raisingView',
+  'evolutionView',
+  'healView',
+  'shopView',
+  'tradeView',
+  'pvpView',
+  'renameView',
+  'tradeProposeView',
+  'claimView',
+  'privacyView',
+];
+
+const press = (button: VButton, repeat = false) => ({ button, repeat });
+const ALL_BUTTONS: readonly VButton[] = [
+  'Up',
+  'Down',
+  'Left',
+  'Right',
+  'A',
+  'B',
+  'X',
+  'Y',
+  'LB',
+  'RB',
+  'Start',
+  'Select',
+];
+
+describe('context stack: battle semantics (ctl-6c)', () => {
+  it('CTL6C-1-BATTLE-START-OPENS-MENU: Start on a bare battle base is openMenu (a repeat is swallowed), every other stack or button is not the rule`s', () => {
+    // WRONG IMPL KILLED: a Start that stays 'consumed' at the battle (today: the menu never
+    // opens), one that opens the menu while a frame is already above the battle (a second Start
+    // over the menu would reopen it instead of closing it; Start over [battle, dialogue] must keep
+    // dismissing the dialogue, A4), one that opens at the world base (that is baseButton's own
+    // rule, the shell falls through to it), a repeat Start that opens (OS key-repeat would reopen
+    // the menu every tick), and a rule that grabs other buttons at the battle (B and Select must
+    // reach the base's own swallow or toggle).
+    const bare = deepFrozen(stackOf(battle('7')));
+    expect(
+      battleButton(bare, press('Start')),
+      'Start at a bare battle base opens the menu',
+    ).toEqual({ kind: 'openMenu' });
+    expect(battleButton(bare, press('Start', true)), 'a repeat Start is swallowed').toBe(
+      'consumed',
+    );
+    expect(
+      battleButton(bare, press('Start'), 5_000),
+      'the outcome age is irrelevant to Start at a battle base',
+    ).toEqual({ kind: 'openMenu' });
+
+    const notTheRule: ReadonlyArray<{ readonly name: string; readonly stack: Stack }> = [
+      { name: 'the world base', stack: stackOf(WORLD) },
+      { name: 'the world with a menu', stack: stackOf(WORLD, screen('menuView')) },
+      { name: 'the world with the outcome frame', stack: stackOf(WORLD, screen('battleView')) },
+      { name: 'a battle with the menu above it', stack: stackOf(battle('7'), screen('menuView')) },
+      {
+        name: 'a battle with a stamped menu above it',
+        stack: stackOf(battle('7'), stamped('menuView', '7')),
+      },
+      {
+        name: 'a battle with a suspended dialogue (Start dismisses it)',
+        stack: stackOf(battle('7'), screen('dialogueView')),
+      },
+      {
+        name: 'a battle with a stamped screen above a stamped menu',
+        stack: stackOf(battle('7'), stamped('menuView', '7'), stamped('questLogView', '7')),
+      },
+    ];
+    for (const row of notTheRule) {
+      expect(battleButton(deepFrozen(row.stack), press('Start')), `Start over ${row.name}`).toBe(
+        undefined,
+      );
+    }
+
+    for (const button of ALL_BUTTONS.filter((b) => b !== 'Start')) {
+      for (const repeat of [false, true]) {
+        expect(
+          battleButton(bare, press(button, repeat)),
+          `${button}${repeat ? ' (repeat)' : ''} at a bare battle base is not the rule's`,
+        ).toBe(undefined);
+      }
+    }
+  });
+
+  it('mirrorEdges stamps a screen pushed over a battle base with that battle, only when the base was already that battle; the base itself and the world never stamp', () => {
+    // WRONG IMPL KILLED: no stamp at all (a menu opened over the battle is then
+    // indistinguishable from one opened at the world and the next batch closes it), a stamp
+    // carried by a world frame (it would survive a later battle), a stamp with another battle's id,
+    // a stamp that ignores prevBase (the click race: a menu click-opened at the world and first
+    // mirrored in the batch that brings the battle would be kept), a prevBase default other than
+    // stack[0], an `overBattle: undefined` own property on an unstamped frame, a re-stamp of a
+    // frame already on the stack, and a battleView frame pushed over a battle base.
+    const pushed = (edges: readonly Edge[]): readonly UpperFrame[] =>
+      edges.flatMap((e) => (e.kind === 'push' ? [e.frame] : []));
+
+    // Default prevBase is stack[0]: the base was already this battle.
+    expect(mirrorEdges(deepFrozen(stackOf(battle('7'))), ['menuView'])).toEqual([
+      pushEdge(stamped('menuView', '7')),
+    ]);
+    expect(
+      mirrorEdges(deepFrozen(stackOf(battle('7'))), ['menuView'], battle('7')),
+      'an explicit prevBase of the same battle stamps',
+    ).toEqual([pushEdge(stamped('menuView', '7'))]);
+    expect(
+      mirrorEdges(deepFrozen(stackOf(battle('12'))), ['menuView', 'questLogView']),
+      'every pushed frame is stamped with the battle, in visible order',
+    ).toEqual([pushEdge(stamped('menuView', '12')), pushEdge(stamped('questLogView', '12'))]);
+
+    // The base flipped in this sync: unstamped, and the property is OMITTED, not undefined.
+    const flips: ReadonlyArray<{ readonly name: string; readonly prev: BaseFrame }> = [
+      { name: 'the world', prev: WORLD },
+      { name: 'another battle', prev: battle('8') },
+    ];
+    for (const flip of flips) {
+      const edges = mirrorEdges(deepFrozen(stackOf(battle('7'))), ['menuView'], flip.prev);
+      expect(edges, `prevBase ${flip.name}: a bare push`).toEqual([pushEdge(screen('menuView'))]);
+      const [frame] = pushed(edges);
+      expect(frame, `prevBase ${flip.name}: a frame was pushed`).toBeDefined();
+      expect(
+        Object.hasOwn(frame as UpperFrame, 'overBattle'),
+        `prevBase ${flip.name}: no overBattle property at all`,
+      ).toBe(false);
+    }
+
+    // The world never stamps, whatever prevBase says.
+    for (const prev of [WORLD, battle('7')]) {
+      const edges = mirrorEdges(deepFrozen(stackOf(WORLD)), [BOX], prev);
+      expect(edges).toEqual([pushEdge(screen(BOX))]);
+      expect(Object.hasOwn(pushed(edges)[0] as UpperFrame, 'overBattle')).toBe(false);
+    }
+
+    // A frame already on the stack is neither re-pushed nor re-stamped; a stamped one is left alone.
+    expect(
+      mirrorEdges(deepFrozen(stackOf(battle('7'), stamped('menuView', '7'))), ['menuView']),
+      'an already-mirrored stamped frame needs no edge',
+    ).toEqual([]);
+    expect(
+      mirrorEdges(deepFrozen(stackOf(battle('7'), stamped('menuView', '7'))), ['menuView', BOX]),
+      'a new frame is stamped, the old one is left',
+    ).toEqual([pushEdge(stamped(BOX, '7'))]);
+    expect(
+      mirrorEdges(deepFrozen(stackOf(battle('7'))), ['battleView', 'menuView']),
+      'battleView is the base itself: only the menu is pushed, stamped',
+    ).toEqual([pushEdge(stamped('menuView', '7'))]);
+    expect(
+      mirrorEdges(deepFrozen(stackOf(battle('7'), stamped('menuView', '7'))), []),
+      'a hidden stamped frame pops by id',
+    ).toEqual([popEdge('menuView')]);
+  });
+
+  it('CTL6C-1-RECONCILE-KEEPS-SAFE-OVER-BATTLE: a stamped battleSafe frame of the current battle is kept (and stays kept); a different battle, a non-safe id, a conversation, a vanished battle or a shown outcome drops it with one close', () => {
+    // WRONG IMPL KILLED: today's reconcile (every `drop` frame goes while a battle is up, so a menu
+    // opened over the battle closes on the NEXT batch: red today); a keep rule that ignores the
+    // stamp's battle id (a menu opened over battle 7 survives battle 8); one that keeps any
+    // stamped frame (a box opened over the battle survives: the box is not battleSafe); one that
+    // keeps an UNstamped battleSafe frame (a world-opened menu survives the battle that arrives:
+    // CTL3.2); a stale stamp that survives the battle's removal (no outcome is shown then, so the
+    // old battleUp rule never fires: the A1 hole); one that keeps a stamped frame through a
+    // conversation (the dialogue frame would sit under a menu); a keep that is not idempotent (a
+    // second pass re-closes or re-orders); and a reconcile that mutates its input.
+    const M7 = stamped('menuView', '7');
+
+    // (a) kept, with no command, and a second pass changes nothing.
+    const kept = reconcile(deepFrozen(stackOf(battle('7'), M7)), serverView('7', false));
+    expect(kept.stack, 'a: the stamped menu of the current battle is kept').toEqual(
+      stackOf(battle('7'), M7),
+    );
+    expect(kept.commands, 'a: and nothing is closed or cleared').toEqual([]);
+    const again = reconcile(kept.stack, serverView('7', false));
+    expect(again.stack, 'a: the second pass keeps it').toEqual(stackOf(battle('7'), M7));
+    expect(again.commands, 'a: and emits nothing').toEqual([]);
+
+    // (b) every safe id is kept, together, in stack order; a conversation-less outcome-less view.
+    expect(SAFE_OVER_BATTLE, 'ANTI-VACUITY: four safe ids').toHaveLength(4);
+    const allSafe = SAFE_OVER_BATTLE.map((id) => stamped(id, '7'));
+    const b = reconcile(deepFrozen(stackOf(battle('7'), ...allSafe)), serverView('7', false));
+    expect(b.stack, 'b: every battleSafe stamped frame is kept').toEqual(
+      stackOf(battle('7'), ...allSafe),
+    );
+    expect(b.commands, 'b: nothing closed').toEqual([]);
+
+    // (c) every non-safe id is dropped even when stamped; one close each, in stack order.
+    expect(UNSAFE_OVER_BATTLE, 'ANTI-VACUITY: eleven non-safe ids').toHaveLength(11);
+    expect(
+      sortedIds([...SAFE_OVER_BATTLE, ...UNSAFE_OVER_BATTLE]),
+      'ANTI-VACUITY: safe plus non-safe is the 15 player ids',
+    ).toEqual(sortedIds(PLAYER_IDS));
+    const unsafe = UNSAFE_OVER_BATTLE.map((id) => stamped(id, '7'));
+    const c = reconcile(deepFrozen(stackOf(battle('7'), ...unsafe)), serverView('7', false));
+    expect(c.stack, 'c: a stamped non-safe frame is dropped').toEqual(stackOf(battle('7')));
+    expect(closeIds(c.commands), 'c: one close each, in stack order').toEqual([
+      ...UNSAFE_OVER_BATTLE,
+    ]);
+    expect(c.commands, 'c: nothing but the closes').toHaveLength(11);
+    const mixed = reconcile(
+      deepFrozen(stackOf(battle('7'), M7, stamped('boxView', '7'), stamped('questLogView', '7'))),
+      serverView('7', false),
+    );
+    expect(mixed.stack, 'c: the safe frames around a dropped one stay, in order').toEqual(
+      stackOf(battle('7'), M7, stamped('questLogView', '7')),
+    );
+    expect(mixed.commands).toEqual([closeCmd('boxView')]);
+
+    // (d) a different battle is the base now: the stamp does not match.
+    const d = reconcile(deepFrozen(stackOf(battle('7'), M7)), serverView('8', false));
+    expect(d.stack, 'd: another battle drops the stamped menu').toEqual(stackOf(battle('8')));
+    expect(d.commands, 'd: one close, no clearHeld (same base kind)').toEqual([
+      closeCmd('menuView'),
+    ]);
+
+    // (e) a menu opened at the world (unstamped) drops when a battle appears: CTL3.2.
+    const e = reconcile(deepFrozen(stackOf(WORLD, screen('menuView'))), serverView('7', false));
+    expect(e.stack, 'e: the world-opened menu is dropped').toEqual(stackOf(battle('7')));
+    expect(e.commands, 'e: clearHeld for the base change, then the close').toEqual([
+      { kind: 'clearHeld' },
+      closeCmd('menuView'),
+    ]);
+    const eSame = reconcile(
+      deepFrozen(stackOf(battle('7'), screen('menuView'))),
+      serverView('7', false),
+    );
+    expect(eSame.stack, 'e: an unstamped menu over an existing battle is dropped too').toEqual(
+      stackOf(battle('7')),
+    );
+    expect(eSame.commands).toEqual([closeCmd('menuView')]);
+
+    // (f) the outcome shows: the base returns to the world, the stamped menu goes.
+    const f = reconcile(deepFrozen(stackOf(battle('7'), M7)), serverView(undefined, false, true));
+    expect(f.stack, 'f: a shown outcome drops the stamped menu').toEqual(WORLD_STACK);
+    expect(f.commands, 'f: clearHeld for the base change, then the close').toEqual([
+      { kind: 'clearHeld' },
+      closeCmd('menuView'),
+    ]);
+
+    // (g) the battle row vanished with NO outcome shown: the stamp is stale.
+    const g = reconcile(deepFrozen(stackOf(battle('7'), M7)), serverView(undefined, false, false));
+    expect(g.stack, 'g: no battle, no outcome: the stamped menu still goes').toEqual(WORLD_STACK);
+    expect(g.commands).toEqual([{ kind: 'clearHeld' }, closeCmd('menuView')]);
+    const gWorld = reconcile(deepFrozen(stackOf(WORLD, M7)), serverView(undefined, false, false));
+    expect(gWorld.stack, 'g: a stamped frame over a world base goes with nothing shown').toEqual(
+      WORLD_STACK,
+    );
+    expect(gWorld.commands).toEqual([closeCmd('menuView')]);
+    // Control: the same frame, unstamped, over a world with nothing up, stays.
+    const gControl = reconcile(
+      deepFrozen(stackOf(WORLD, screen('menuView'))),
+      serverView(undefined, false, false),
+    );
+    expect(gControl.stack, 'g control: an unstamped world menu stays').toEqual(
+      stackOf(WORLD, screen('menuView')),
+    );
+    expect(gControl.commands).toEqual([]);
+
+    // (h) a conversation drops a stamped player frame; the suspended dialogue frame stays.
+    const h = reconcile(
+      deepFrozen(stackOf(battle('7'), screen('dialogueView'), M7)),
+      serverView('7', true),
+    );
+    expect(h.stack, 'h: the conversation takes the stamped menu, the dialogue frame stays').toEqual(
+      stackOf(battle('7'), screen('dialogueView')),
+    );
+    expect(h.commands, 'h: one close, none for the dialogue').toEqual([closeCmd('menuView')]);
+    const h2 = reconcile(deepFrozen(stackOf(battle('7'), M7)), serverView('7', true));
+    expect(h2.stack).toEqual(stackOf(battle('7')));
+    expect(h2.commands).toEqual([closeCmd('menuView')]);
+
+    // (i) the outcome frame (battleView over the world) is still never dropped by this rule.
+    const i = reconcile(
+      deepFrozen(stackOf(battle('7'), M7, screen('battleView'))),
+      serverView(undefined, false, true),
+    );
+    expect(upperIdsOf(i.stack), 'i: only the stamped menu goes').toEqual(['battleView']);
+    expect(closeIds(i.commands)).toEqual(['menuView']);
+  });
+
+  it('reconcile over generated stacks of stamped, unstamped and foreign-battle frames follows the independent oracle and is idempotent', () => {
+    // WRONG IMPL KILLED: any keep rule that deviates from "stamped with the current battle id, an
+    // id in the literal battleSafe list, and no conversation" for a stamped frame, or from the old
+    // rule (dropped while a battle or an outcome is up, kept otherwise) for an unstamped one; a
+    // second pass that is not a no-op; and a reconcile that reorders survivors or closes twice.
+    // The oracle is written from the spec, never from SCREEN_POLICY.
+    let keptStamped = 0;
+    let droppedStamped = 0;
+    const stampArb = (id: OverlayId): fc.Arbitrary<UpperFrame> =>
+      fc.constantFrom<UpperFrame>(screen(id), stamped(id, '1'), stamped(id, '2'));
+    const scenario = fc
+      .tuple(
+        fc.constantFrom<BaseFrame>(WORLD, battle('1'), battle('2')),
+        fc.shuffledSubarray([...PLAYER_IDS]),
+        fc.record({
+          ongoingBattleId: fc.constantFrom<string | undefined>(undefined, '1', '2'),
+          outcomeShown: fc.boolean(),
+          conversation: fc.boolean(),
+        }),
+      )
+      .chain(([base, ids, view]) =>
+        fc.tuple(...ids.map(stampArb)).map((frames) => ({ from: stackOf(base, ...frames), view })),
+      );
+    fc.assert(
+      fc.property(scenario, ({ from, view }) => {
+        const result = reconcile(deepFrozen(from), view);
+        const upper = from.slice(1) as readonly UpperFrame[];
+        const battleUp = view.ongoingBattleId !== undefined || view.outcomeShown;
+        const expected = upper.filter((f) => {
+          if (view.conversation) return false;
+          const stamp = (f as { readonly overBattle?: string }).overBattle;
+          if (stamp === undefined) return !battleUp;
+          return stamp === view.ongoingBattleId && SAFE_OVER_BATTLE.includes(frameId(f));
+        });
+        expect(result.stack.slice(1), 'survivors').toEqual(expected);
+        expect(closeIds(result.commands), 'closes').toEqual(
+          upper.filter((f) => !expected.includes(f)).map(frameId),
+        );
+        const second = reconcile(result.stack, view);
+        expect(second.stack, 'idempotent stack').toEqual(result.stack);
+        expect(second.commands, 'idempotent commands').toEqual([]);
+        for (const f of upper) {
+          if ((f as { readonly overBattle?: string }).overBattle === undefined) continue;
+          if (expected.includes(f)) keptStamped += 1;
+          else droppedStamped += 1;
+        }
+      }),
+      { numRuns: 500 },
+    );
+    expect(keptStamped, 'ANTI-VACUITY: many stamped frames were kept').toBeGreaterThan(50);
+    expect(droppedStamped, 'ANTI-VACUITY: many stamped frames were dropped').toBeGreaterThan(50);
+  });
+
+  it('CTL6C-2-OUTCOME-A-B-CONTINUE: A on a terminal outcome pops it once it has been up OUTCOME_CONTINUE_GRACE_MS (400), swallows it before, and a repeat; B and Start are left to the legacy adapter', () => {
+    // WRONG IMPL KILLED: an A that stays unhandled on the outcome (today: only Esc/Backspace
+    // continue and the hint tells the player "Press Esc"); an A with no grace (an Enter mashed at
+    // the battle's last turn would skip the result); a grace boundary off by one (399 passes, or
+    // 400 does not); a grace measured the wrong way (an old outcome refused, a new one passed); an
+    // unknown age that continues; a repeat A that continues (a held Enter would skip the result the
+    // instant the grace ends); a B or Start remapped here (they already continue through the
+    // legacy adapter: a second path would double-pop); an A that continues the Ongoing battle's
+    // base (B17), the world, or a non-outcome frame; and one that closes a dialogue instead of
+    // only the outcome (A is a `pop` of the top frame, never popToBase).
+    expect(OUTCOME_CONTINUE_GRACE_MS, 'the grace is 400 ms').toBe(400);
+
+    const outcome = deepFrozen(stackOf(WORLD, screen('battleView')));
+    const ages: ReadonlyArray<readonly [string, number | undefined, 'pop' | 'consumed']> = [
+      ['age 0', 0, 'consumed'],
+      ['age 1', 1, 'consumed'],
+      ['age 399', 399, 'consumed'],
+      ['age 399.9', 399.9, 'consumed'],
+      ['age 400 (the boundary)', 400, 'pop'],
+      ['age 401', 401, 'pop'],
+      ['age 10 minutes', 600_000, 'pop'],
+      ['age unknown', undefined, 'consumed'],
+      ['negative age', -1, 'consumed'],
+    ];
+    for (const [name, age, want] of ages) {
+      const got = battleButton(outcome, press('A'), age);
+      expect(got, `A at ${name}`).toEqual(want === 'pop' ? { kind: 'pop' } : 'consumed');
+    }
+    for (const age of [0, 399, 400, 1_000, undefined]) {
+      expect(
+        battleButton(outcome, press('A', true), age),
+        `a repeat A at age ${String(age)} is swallowed`,
+      ).toBe('consumed');
+    }
+
+    // B and Start, and every other button, are not the rule's on the outcome.
+    for (const button of ALL_BUTTONS.filter((b) => b !== 'A')) {
+      for (const age of [0, 500]) {
+        expect(
+          battleButton(outcome, press(button), age),
+          `${button} on the outcome at age ${age} is the legacy adapter's`,
+        ).toBe(undefined);
+      }
+    }
+
+    // A over a suspended dialogue below the outcome pops only the outcome.
+    const withDialogue = deepFrozen(stackOf(WORLD, screen('dialogueView'), screen('battleView')));
+    expect(battleButton(withDialogue, press('A'), 500)).toEqual({ kind: 'pop' });
+    expect(battleButton(withDialogue, press('A'), 399)).toBe('consumed');
+
+    // Not an outcome: A is not the rule's.
+    const notOutcome: ReadonlyArray<{ readonly name: string; readonly stack: Stack }> = [
+      { name: 'the bare world', stack: stackOf(WORLD) },
+      { name: 'a bare battle base', stack: stackOf(battle('7')) },
+      { name: 'the world with a box', stack: stackOf(WORLD, screen(BOX)) },
+      { name: 'the world with a menu', stack: stackOf(WORLD, screen('menuView')) },
+      {
+        name: 'the outcome with a frame above it',
+        stack: stackOf(WORLD, screen('battleView'), screen('menuView')),
+      },
+      {
+        name: 'the outcome under a suspended dialogue',
+        stack: stackOf(WORLD, screen('battleView'), screen('dialogueView')),
+      },
+      {
+        name: 'a battle base with a battleView frame (not a reachable shape)',
+        stack: stackOf(battle('7'), screen('battleView')),
+      },
+      { name: 'a battleView PROMPT frame', stack: stackOf(WORLD, prompt('battleView')) },
+      { name: 'a battleView TEXT-ENTRY frame', stack: stackOf(WORLD, textEntry('battleView')) },
+    ];
+    for (const row of notOutcome) {
+      expect(battleButton(deepFrozen(row.stack), press('A'), 500), `A over ${row.name}`).toBe(
+        undefined,
+      );
+    }
+  });
+
+  it('CTL6C-3-REFUSAL-TABLE: at a battle base every non-battleSafe command is refused and the twelve safe ones are not; at the world or over an outcome nothing is refused; the policy table is total over the literal kinds', () => {
+    // WRONG IMPL KILLED: a refusal that is a no-op (the policy is never consulted: every row of
+    // the refused list reads false); a policy that refuses everything (a battle's own attack, the
+    // stack moves or dismissDialogue would die: Start over [battle, dialogue] must still
+    // dismiss); one that refuses nothing; one keyed to the TOP frame or to a store read instead of
+    // stack[0] (a menu above the battle, a suspended dialogue or a stack-only battle base must still
+    // refuse); one that refuses at a world base or over an outcome frame (the world would lose
+    // care, shop, trade and challenge); a table with a stray or missing kind (a new Command arm
+    // must classify itself: here the literal 36 kinds are the whole table); and a single row moved
+    // from refuse to safe (each of the named rows below is its own sample).
+    // Named spec rows: Care = care, Feed = train, Move = setPartySlot, Evolve = evolve, challenge
+    // Accept = acceptChallenge, buy, sell. Bag Use and talk have no Command arm yet: Bag Use is
+    // covered by the disabled Bag menu row (CTL6C-3-MENU-DISABLED-OVER-BATTLE in
+    // mainMenuScreen.test.ts), talk by the booted KeyT movement-gate test CTL2-3-BOOT-B17 in
+    // main.input.test.ts, and the total Record makes their future arms classify themselves.
+    const big = 5n;
+    const SAFE: ReadonlyArray<readonly [string, ScreenCommand]> = [
+      ['pop', { kind: 'pop' }],
+      ['popToBase', { kind: 'popToBase' }],
+      ['openMenu', { kind: 'openMenu' }],
+      ['toggleHelp', { kind: 'toggleHelp' }],
+      ['attack', { kind: 'attack', battleId: big, skillId: 1 }],
+      ['flee', { kind: 'flee', battleId: big }],
+      ['swap', { kind: 'swap', battleId: big, teamIndex: 1 }],
+      ['recruit', { kind: 'recruit', battleId: big, baitItemId: undefined }],
+      ['useItem', { kind: 'useItem', battleId: big, itemId: 3 }],
+      ['pvpAttack', { kind: 'pvpAttack', battleId: big, skillId: 1 }],
+      ['pvpSwap', { kind: 'pvpSwap', battleId: big, teamIndex: 1 }],
+      ['dismissDialogue', { kind: 'dismissDialogue' }],
+    ];
+    const proposal = {
+      targetIdentity: 'cd'.repeat(32),
+      initiatorMonsterIds: [1n],
+      initiatorCurrency: 0n,
+      counterpartyCurrency: 0n,
+    } as unknown as Extract<ScreenCommand, { kind: 'proposeTrade' }>['args'];
+    const REFUSE: ReadonlyArray<readonly [string, ScreenCommand]> = [
+      ['Care: care', { kind: 'care', monsterId: big }],
+      ['Feed: train', { kind: 'train', monsterId: big, foodItemId: 2 }],
+      ['Evolve: evolve', { kind: 'evolve', monsterId: big, toSpecies: 9 }],
+      ['setNickname', { kind: 'setNickname', monsterId: big, nickname: 'Zed' }],
+      ['Move: setPartySlot', { kind: 'setPartySlot', monsterId: big, slot: 0 }],
+      ['healParty', { kind: 'healParty' }],
+      ['buy', { kind: 'buy', shopId: 1, itemId: 2 }],
+      ['sell', { kind: 'sell', itemId: 2 }],
+      ['respondTrade', { kind: 'respondTrade', tradeId: big, accepted: true }],
+      ['confirmTrade', { kind: 'confirmTrade', tradeId: big }],
+      ['cancelTrade', { kind: 'cancelTrade', tradeId: big }],
+      ['proposeTrade', { kind: 'proposeTrade', args: proposal }],
+      ['challenge', { kind: 'challenge', targetIdentity: 'cd'.repeat(32) }],
+      ['challenge Accept: acceptChallenge', { kind: 'acceptChallenge', challengeId: big }],
+      ['declineChallenge', { kind: 'declineChallenge', challengeId: big }],
+      ['cancelChallenge', { kind: 'cancelChallenge', challengeId: big }],
+      ['setProfileName', { kind: 'setProfileName', name: 'Zed' }],
+      ['advanceDialogue', { kind: 'advanceDialogue', choiceIdx: 0 }],
+      ['claimSignIn', { kind: 'claimSignIn' }],
+      ['claimJoin', { kind: 'claimJoin' }],
+      ['claimDecline', { kind: 'claimDecline' }],
+      ['deleteAccount', { kind: 'deleteAccount' }],
+      ['cancelAccountDeletion', { kind: 'cancelAccountDeletion' }],
+      ['requestDataExport', { kind: 'requestDataExport' }],
+    ];
+    expect(SAFE, 'ANTI-VACUITY: twelve safe kinds').toHaveLength(12);
+    expect(REFUSE, 'ANTI-VACUITY: twenty-four refused kinds').toHaveLength(24);
+    const kindsOf = (rows: ReadonlyArray<readonly [string, ScreenCommand]>): string[] =>
+      rows.map(([, c]) => c.kind);
+    expect(new Set([...kindsOf(SAFE), ...kindsOf(REFUSE)]).size, 'every kind appears once').toBe(
+      36,
+    );
+    expect(
+      kindsOf(SAFE),
+      'the safe kinds are exactly the battle`s own actions, the stack moves and dismissDialogue',
+    ).toEqual([
+      'pop',
+      'popToBase',
+      'openMenu',
+      'toggleHelp',
+      'attack',
+      'flee',
+      'swap',
+      'recruit',
+      'useItem',
+      'pvpAttack',
+      'pvpSwap',
+      'dismissDialogue',
+    ]);
+
+    // The table itself is total over the 36 literal kinds and says exactly this.
+    expect(sortedIds(Object.keys(COMMAND_BATTLE_POLICY))).toEqual(
+      sortedIds([...kindsOf(SAFE), ...kindsOf(REFUSE)]),
+    );
+    for (const [, command] of SAFE) {
+      expect(COMMAND_BATTLE_POLICY[command.kind], `${command.kind} is safe`).toBe('safe');
+    }
+    for (const [, command] of REFUSE) {
+      expect(COMMAND_BATTLE_POLICY[command.kind], `${command.kind} is refused`).toBe('refuse');
+    }
+
+    // Every battle-base stack shape refuses the refused list and passes the safe list.
+    const battleStacks: ReadonlyArray<{ readonly name: string; readonly stack: Stack }> = [
+      { name: 'a bare battle base (stack only, no store)', stack: stackOf(battle('7')) },
+      { name: 'a battle with a menu above it', stack: stackOf(battle('7'), screen('menuView')) },
+      {
+        name: 'a battle with a stamped menu',
+        stack: stackOf(battle('7'), stamped('menuView', '7')),
+      },
+      {
+        name: 'a battle with a suspended dialogue',
+        stack: stackOf(battle('7'), screen('dialogueView')),
+      },
+      {
+        name: 'a battle with a prompt and a text entry',
+        stack: stackOf(battle('7'), prompt('pvpView'), textEntry('renameView')),
+      },
+    ];
+    for (const { name, stack } of battleStacks) {
+      for (const [label, command] of REFUSE) {
+        expect(battleRefused(deepFrozen(stack), command), `${name}: ${label} is refused`).toBe(
+          true,
+        );
+      }
+      for (const [label, command] of SAFE) {
+        expect(battleRefused(deepFrozen(stack), command), `${name}: ${label} is allowed`).toBe(
+          false,
+        );
+      }
+    }
+
+    // Controls: at the world, over the outcome frame, under the world's own screens: nothing refused.
+    const worldStacks: ReadonlyArray<{ readonly name: string; readonly stack: Stack }> = [
+      { name: 'the bare world', stack: stackOf(WORLD) },
+      { name: 'the world with a box', stack: stackOf(WORLD, screen(BOX)) },
+      { name: 'the world with a menu', stack: stackOf(WORLD, screen('menuView')) },
+      { name: 'the outcome over the world', stack: stackOf(WORLD, screen('battleView')) },
+      {
+        name: 'a conversation at the world',
+        stack: stackOf(WORLD, screen('dialogueView')),
+      },
+    ];
+    for (const { name, stack } of worldStacks) {
+      for (const [label, command] of [...REFUSE, ...SAFE]) {
+        expect(
+          battleRefused(deepFrozen(stack), command),
+          `${name}: ${label} is never refused without a battle base`,
+        ).toBe(false);
+      }
+    }
   });
 });
