@@ -256,7 +256,8 @@ fn apply_quest_trigger(
 // ---------------------------------------------------------------------------
 
 /// Initiate a dialogue with an NPC. Creates/replaces the player_conversation row.
-/// Zone + range checked. auto_effects applied. quest trigger fired for Talk event.
+/// Refused during an ongoing battle. Zone + range checked. auto_effects applied.
+/// quest trigger fired for Talk event.
 #[spacetimedb::reducer]
 pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
     let me = ctx.sender();
@@ -267,6 +268,12 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
     };
     // Deletion gate: right after the joined check, before any NPC read.
     crate::guards::require_not_deleting(ctx, "talk")?;
+    // Both-role ongoing-battle guard: opening a dialogue applies auto_effects and
+    // fires the quest Talk trigger (item + currency rewards), so it is refused
+    // mid-battle like care/train/heal.
+    if crate::guards::is_in_ongoing_battle(ctx, me) {
+        return Err("cannot talk during an ongoing battle".to_string());
+    }
     let Some(player_char) = ctx.db.character().entity_id().find(p.entity_id) else {
         return Err("character not found".to_string());
     };
@@ -353,6 +360,7 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
 
 /// Advance dialogue by selecting a choice. Security gate: `apply_choice` re-checks
 /// conditions internally. `player_conversation` lookup is PK-scoped to ctx.sender().
+/// Refused during an ongoing battle.
 #[spacetimedb::reducer]
 pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), String> {
     let me = ctx.sender();
@@ -368,6 +376,12 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
     };
     // Deletion gate: after the joined check, before the dismissing NPC reads.
     crate::guards::require_not_deleting(ctx, "advance_dialogue")?;
+    // Both-role ongoing-battle guard, ahead of the dismissing re-checks below:
+    // a mid-battle caller gets this refusal and keeps the conversation, which
+    // `dismiss_dialogue` (deliberately unguarded) can still close.
+    if crate::guards::is_in_ongoing_battle(ctx, me) {
+        return Err("cannot advance dialogue during an ongoing battle".to_string());
+    }
     let Some(player_char) = ctx.db.character().entity_id().find(p.entity_id) else {
         return Err("character not found".to_string());
     };
@@ -440,7 +454,8 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
     Ok(())
 }
 
-/// Dismiss the current dialogue (no-op if no active conversation).
+/// Dismiss the current dialogue (no-op if no active conversation). Allowed
+/// during an ongoing battle, so a dialogue left open under one can be closed.
 #[spacetimedb::reducer]
 pub fn dismiss_dialogue(ctx: &ReducerContext) -> Result<(), String> {
     // Deletion gate: the FIRST statement, before every read and write.
