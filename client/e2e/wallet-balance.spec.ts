@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process';
 import {
   type Browser,
   type BrowserContext,
+  type ConsoleMessage,
   chromium,
   expect,
   type Page,
@@ -202,8 +203,12 @@ import {
 // FLAKE BUDGET
 // ---------------------------------------------------------------------------------------
 // Zero RNG by construction: no grass, no encounters, no recruit rolls, no heals, no
-// battles. The ONLY stochastic element is elder_oak's wander, handled by the two bounded
-// loops below. Expected wall clock: ~4-6 min (about 30 steps at well under 1 s each, four
+// battles. Two stochastic elements remain. elder_oak's wander is handled by the two bounded
+// loops below. Runner starvation is the second: DialogueView.render() rebuilds every choice
+// button on each store batch (up to ~5/s with no input), and on a starved CI runner a pointer
+// click can time out without ever landing on one stable button — so precondition (a)
+// dispatches its one choice activation instead (see its call site).
+// Expected wall clock: ~4-6 min (about 30 steps at well under 1 s each, four
 // dialogue round trips, and three `spacetime sql` invocations — a fourth only on the retry
 // escape valve). Worst case under the declared per-test timeouts (120 + 300 + 300 + 240 +
 // 240 + 120 s): ~22 min.
@@ -762,11 +767,14 @@ const SHOPKEEPER_GREETING = 'Hello, customer!';
 const SHOP_NAME = 'Pebble Town Shop';
 const EXPECTED_BALANCE_TEXT = 'Gold: 50';
 /** Bounded retries per quest phase. Elder_oak wanders, so a talk or an advance can be
- *  rejected as walked_away and the phase must be able to try again.
+ *  rejected as walked_away and the phase must be able to try again. A rejected ADVANCE is
+ *  rolled back whole, its conversation-row delete included, so the overlay stays open: that
+ *  attempt spends its full 20 s hidden-wait, and the next one re-activates the still-open
+ *  dialogue without a fresh talk.
  *  ARITHMETIC, stated honestly: an attempt normally costs ~8 s (one talk round trip, one
  *  dismiss, one quest-log read), so the expected phase is ~10-20 s inside a 300 s budget.
  *  Its THEORETICAL worst case — every internal bound below also running to its limit —
- *  is ~207 s (132 s talkUntilOpen + 10 npc-name + 5 click + 20 hidden + 40 quest log), so
+ *  is ~207 s (132 s talkUntilOpen + 10 npc-name + 5 dispatch + 20 hidden + 40 quest log), so
  *  a phase in which several attempts fully degrade trips the 300 s TEST timeout rather
  *  than this loop bound. Both are red and neither can false-pass; this bound exists to
  *  give the FAST failure a named diagnosis, not to cap the phase. */
@@ -868,11 +876,13 @@ test.describe
 
     // -------------------------------------------------------------------------
     // Precondition (a): A STARTS quest_001.
-    //   talk → click "I seek a quest." → advance_dialogue applies
+    //   talk → activate "I seek a quest." → advance_dialogue applies
     //   StartQuest("quest_001") → the quest log shows it at step 0.
-    // Both outcomes of an advance delete the conversation row (success: next_node None
-    // ends the dialogue; rejection: walked_away), so the overlay hides either way and a
-    // slow attempt is treated as a failed attempt rather than failing the test.
+    // Only a SUCCESSFUL advance hides the overlay (next_node None ends the dialogue). A
+    // rejected one (walked_away) returns Err, which rolls back its own conversation-row
+    // delete, so the overlay stays open and the next attempt re-activates it. An attempt
+    // whose overlay does not hide in time is treated as a failed attempt rather than
+    // failing the test.
     // ESCAPE VALVE (the one race two sequential loops cannot absorb): if an attempt's
     // advance SUCCEEDED but its hidden-wait or log-read timed out, the NEXT attempt's
     // re-talk COMPLETES the quest — the log would then never be observed containing
@@ -884,33 +894,69 @@ test.describe
       test.setTimeout(300_000);
       const overlay = a.locator('#dialogue-overlay');
       let started = false;
+      // A per-attempt trail for the failure message. reportError logs every refused or unsent
+      // reducer call once as `[status] <where>: <reason>`; those lines are collected here and
+      // sliced per attempt (by arrival). #status is never read for this: it is sticky, so it
+      // would pin an older refusal on a later attempt and make two identical refusals in a row
+      // look like none.
+      const statusLines: string[] = [];
+      const onConsole = (msg: ConsoleMessage): void => {
+        const text = msg.text();
+        if (text.startsWith('[status]')) statusLines.push(text);
+      };
+      const trail: string[] = [];
+      a.on('console', onConsole);
 
-      for (let attempt = 0; attempt < MAX_QUEST_ATTEMPTS && !started; attempt++) {
-        if (!(await overlay.isVisible())) {
-          await talkUntilOpen(a, playerEntityIds);
-        }
-        await expect(a.locator('#dialogue-npc-name')).toHaveText('elder_oak', { timeout: 10_000 });
-        await a
-          .locator('#dialogue-choices')
-          .getByText(QUEST_CHOICE, { exact: true })
-          .click({ timeout: 5_000 })
-          .catch(() => {
-            // The overlay can vanish between isVisible() and the click when a previous
-            // attempt's slow row-delete finally propagates — not a failure; the
-            // hidden-wait below picks the flow back up.
+      try {
+        for (let attempt = 0; attempt < MAX_QUEST_ATTEMPTS && !started; attempt++) {
+          const statusFrom = statusLines.length;
+          if (!(await overlay.isVisible())) {
+            await talkUntilOpen(a, playerEntityIds);
+          }
+          await expect(a.locator('#dialogue-npc-name')).toHaveText('elder_oak', {
+            timeout: 10_000,
           });
-        const hidden = await overlay
-          .waitFor({ state: 'hidden', timeout: 20_000 })
-          .then(() => true)
-          .catch(() => false);
-        if (!hidden) continue;
-        started = await questLogShows(a, QUEST_ID, true, 8_000);
-        if (!started) {
-          // Identity-scoped: A is a fresh identity created in this file's beforeAll, so a
-          // row under A's OWN identity can only have come from quest_001's grant.
-          questGrantedDuringRetry = walletBalanceFor(identityA, 'precondition (a)') !== undefined;
+          // DISPATCHED, deliberately not a pointer click — do not "restore" one here.
+          // DialogueView.render() rebuilds every choice button on each store batch, and a
+          // pointer click needs one node to stay attached and stable across animation frames,
+          // which a starved CI runner may not see within 5 s. dispatchEvent resolves the node
+          // and fires a bubbling click in ONE page task; main.ts's document-level
+          // [data-choice-idx] delegation sends advance_dialogue for it exactly as for a real
+          // click. Whether the choice is pointer-reachable is not this spec's subject.
+          // The overlay can vanish between isVisible() and this dispatch when an earlier
+          // attempt's slow row-delete finally lands. render(null) only hides the overlay, so
+          // its stale button can still take the click; the server then refuses the advance
+          // (no active conversation), which is harmless here — the hidden-wait below picks
+          // the flow back up.
+          const delivery = await a
+            .locator('#dialogue-choices')
+            .getByText(QUEST_CHOICE, { exact: true })
+            .dispatchEvent('click', undefined, { timeout: 5_000 })
+            .then(() => 'delivered')
+            .catch((err: unknown) => `NOT delivered (${String(err).split('\n')[0]})`);
+          const hidden = await overlay
+            .waitFor({ state: 'hidden', timeout: 20_000 })
+            .then(() => true)
+            .catch(() => false);
+          let outcome = 'overlay still open after 20 s';
+          if (hidden) {
+            started = await questLogShows(a, QUEST_ID, true, 8_000);
+            outcome = `overlay hid, quest log ${started ? 'shows' : 'lacked'} ${QUEST_ID}`;
+          }
+          if (hidden && !started) {
+            // Identity-scoped: A is a fresh identity created in this file's beforeAll, so a
+            // row under A's OWN identity can only have come from quest_001's grant.
+            questGrantedDuringRetry = walletBalanceFor(identityA, 'precondition (a)') !== undefined;
+          }
+          const said = statusLines.slice(statusFrom).map((line) => JSON.stringify(line));
+          trail.push(
+            `attempt ${attempt + 1}: choice ${delivery}; ${outcome}; ` +
+              `[status] lines: ${said.length > 0 ? said.join(', ') : 'none'}`,
+          );
           if (questGrantedDuringRetry) break;
         }
+      } finally {
+        a.off('console', onConsole);
       }
 
       expect(
@@ -918,7 +964,8 @@ test.describe
         `quest_001 was neither started nor already completed after ${MAX_QUEST_ATTEMPTS} attempts. ` +
           "Contract: game-core/content/dialogue_trees/000-core.ron elder_oak_talk's choice " +
           `"${QUEST_CHOICE}" carries effects: [StartQuest("${QUEST_ID}")], and npc.rs:105-120 ` +
-          'inserts the player_quest row at step 0.',
+          'inserts the player_quest row at step 0.' +
+          `\nPer attempt:\n  ${trail.join('\n  ')}`,
       ).toBe(true);
       if (started) {
         // Exact li text — kills a stepIndex mismapping and a displayName drift.
