@@ -25,8 +25,8 @@ pub fn apply_move(state: JsValue, input: JsValue, now: f64) -> Result<JsValue, J
 ```
 
 The exports are `apply_move`, `predict_move`, `predict_tick`, `set_active_zone`,
-`zone_map`, `evolution_eligibility`, and constant accessors (`step_ms`,
-`move_queue_cap`, `party_size`, `party_slot_none`, `talk_range`,
+`zone_map`, `evolution_eligibility`, `interact_candidates_coded`, and constant
+accessors (`step_ms`, `move_queue_cap`, `party_size`, `party_slot_none`, `talk_range`,
 `max_trade_monsters_per_side`, `deletion_grace_ms_default`). **A game-core constant
 the client needs gets an accessor here; it is never copied into TypeScript.** An `i64`
 constant returns as a JS `BigInt` (`deletion_grace_ms_default`), so TypeScript

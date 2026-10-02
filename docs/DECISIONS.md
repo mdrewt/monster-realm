@@ -13,8 +13,8 @@ module calls it for truth; the browser runs the same compiled code through the t
 `wasm-bindgen` shell in `client-wasm` for prediction. Constants the client needs
 (`step_ms`, `move_queue_cap`, `party_size`, `party_slot_none`, `talk_range`,
 `max_trade_monsters_per_side`, `deletion_grace_ms_default`) and derived queries
-(`evolution_eligibility`, `zone_map`) are wasm exports (`client-wasm/src/lib.rs`), not
-TypeScript literals.
+(`evolution_eligibility`, `interact_candidates_coded`, `zone_map`) are wasm exports
+(`client-wasm/src/lib.rs`), not TypeScript literals.
 
 **Why.** A rule implemented twice drifts, and a drifted movement or battle rule is a
 desync: the client predicts one outcome, the server commits another, and the player

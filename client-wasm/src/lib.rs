@@ -236,6 +236,88 @@ pub fn talk_range() -> u32 {
     game_core::TALK_RANGE as u32
 }
 
+/// Marshaling-only input DTO for [`interact_candidates_coded`]: one entity as TS
+/// sends it. `kind` is `"npc"`, `"heal"` or `"player"`; `id` is a decimal string
+/// (a `u64` never crosses as a JS number). No rule lives here.
+#[derive(serde::Deserialize)]
+struct WireInteractEntity {
+    kind: String,
+    x: i32,
+    y: i32,
+    zone: u32,
+    id: String,
+}
+
+/// The pure core of [`interact_candidates_coded`] (natively testable): parse the
+/// facing code and every entity, then delegate to `game_core::interact_candidates`.
+fn interact_candidates_core(
+    own_x: i32,
+    own_y: i32,
+    facing: u8,
+    zone: u32,
+    entities: &[WireInteractEntity],
+) -> Result<Vec<usize>, String> {
+    let facing = game_core::types::dir_from_code(facing)
+        .ok_or_else(|| format!("invalid facing code: {facing}"))?;
+    let entities = entities
+        .iter()
+        .map(parse_interact_entity)
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(game_core::interact_candidates(
+        game_core::TilePos { x: own_x, y: own_y },
+        facing,
+        zone,
+        &entities,
+    ))
+}
+
+/// Parse one [`WireInteractEntity`]; an unknown `kind` or a non-`u64` `id` is
+/// rejected, never skipped or defaulted.
+fn parse_interact_entity(wire: &WireInteractEntity) -> Result<game_core::InteractEntity, String> {
+    let kind = match wire.kind.as_str() {
+        "npc" => game_core::InteractKind::Npc,
+        "heal" => game_core::InteractKind::Heal,
+        "player" => game_core::InteractKind::Player,
+        other => return Err(format!("unknown interact kind: {other:?}")),
+    };
+    let id = wire
+        .id
+        .parse::<u64>()
+        .map_err(|err| format!("invalid interact id {:?}: {err}", wire.id))?;
+    Ok(game_core::InteractEntity {
+        kind,
+        pos: game_core::TilePos {
+            x: wire.x,
+            y: wire.y,
+        },
+        zone: wire.zone,
+        id,
+    })
+}
+
+/// The interaction target rule across the wasm boundary. `entities` is an array
+/// of `{kind, x, y, zone, id}` objects ([`WireInteractEntity`]); returns an array
+/// of input indices, in priority order.
+///
+/// # Errors
+/// Returns a JS error for an invalid `facing` code (0=N,1=S,2=E,3=W), an unknown
+/// `kind`, an `id` that `u64::from_str` rejects, or a malformed `entities` value.
+/// wasm-bindgen casts the scalar arguments, so a JS `facing` of 256 or more wraps
+/// before it gets here (as for `predict_move`).
+#[wasm_bindgen]
+pub fn interact_candidates_coded(
+    own_x: i32,
+    own_y: i32,
+    facing: u8,
+    zone: u32,
+    entities: JsValue,
+) -> Result<JsValue, JsValue> {
+    let entities: Vec<WireInteractEntity> = serde_wasm_bindgen::from_value(entities)?;
+    let out =
+        interact_candidates_core(own_x, own_y, facing, zone, &entities).map_err(zone_map_err)?;
+    Ok(serde_wasm_bindgen::to_value(&out)?)
+}
+
 /// Marshaling-only input DTO for [`evolution_eligibility`]: exactly the
 /// `MonsterInstance` fields game-core's evolution gates read (plus the EV spread
 /// the Nutrition gate totals). No rule lives here.
@@ -468,6 +550,183 @@ mod tests {
     #[test]
     fn talk_range_matches_game_core_const() {
         assert_eq!(i64::from(super::talk_range()), game_core::TALK_RANGE);
+    }
+
+    // INTERACT CANDIDATES marshaling core (CTL9.3). The rule itself is proven in
+    // game-core (interact_tests.rs); these pin the wire contract: x/y/zone/kind/id
+    // marshalling, facing codes 0=N,1=S,2=E,3=W, ids parsed as u64 (so "9" sorts
+    // before "10"), and REJECT-never-clamp on anything malformed.
+    fn wire(kind: &str, x: i32, y: i32, zone: u32, id: &str) -> super::WireInteractEntity {
+        super::WireInteractEntity {
+            kind: kind.to_string(),
+            x,
+            y,
+            zone,
+            id: id.to_string(),
+        }
+    }
+
+    #[test]
+    fn ctl9_3_marshals_position_zone_kind_and_numeric_id_into_priority_order() {
+        // Asymmetric own tile (5,3): an x/y swap anywhere changes the answer.
+        // East of it is (6,3). Indices: 0 player, 1 npc "10", 2 npc "9", 3 heal,
+        // 4 faced but another zone, 5 own tile (loses to the faced tier).
+        let entities = [
+            wire("player", 6, 3, 7, "1"),
+            wire("npc", 6, 3, 7, "10"),
+            wire("npc", 6, 3, 7, "9"),
+            wire("heal", 6, 3, 7, "3"),
+            wire("npc", 6, 3, 8, "2"),
+            wire("npc", 5, 3, 7, "1"),
+        ];
+        assert_eq!(
+            super::interact_candidates_core(5, 3, 2, 7, &entities),
+            Ok(vec![2, 1, 3, 0])
+        );
+    }
+
+    #[test]
+    fn ctl9_3_falls_back_to_the_own_tile_and_excludes_behind() {
+        // Facing North from (5,3): faced tile is (5,2). Own-tile NPC is index 1;
+        // the entity behind at (5,4) is never a candidate.
+        let entities = [wire("npc", 5, 4, 7, "1"), wire("npc", 5, 3, 7, "2")];
+        assert_eq!(
+            super::interact_candidates_core(5, 3, 0, 7, &entities),
+            Ok(vec![1])
+        );
+        let only_behind = [wire("npc", 5, 4, 7, "1")];
+        assert_eq!(
+            super::interact_candidates_core(5, 3, 0, 7, &only_behind),
+            Ok(Vec::new())
+        );
+    }
+
+    #[test]
+    fn ctl9_3_ids_compare_numerically_not_as_strings() {
+        // As strings "10" < "100" < "2" < "9" < "99"; as numbers 2 < 9 < 10 < 99 < 100.
+        let ids = ["100", "2", "99", "10", "9"];
+        let entities: Vec<super::WireInteractEntity> =
+            ids.iter().map(|id| wire("npc", 1, 0, 0, id)).collect();
+        assert_eq!(
+            super::interact_candidates_core(0, 0, 2, 0, &entities),
+            Ok(vec![1, 4, 3, 2, 0])
+        );
+        // The full u64 range parses: u64::MAX sorts after 0.
+        let wide = [
+            wire("npc", 1, 0, 0, "18446744073709551615"),
+            wire("npc", 1, 0, 0, "0"),
+        ];
+        assert_eq!(
+            super::interact_candidates_core(0, 0, 2, 0, &wide),
+            Ok(vec![1, 0])
+        );
+    }
+
+    #[test]
+    fn ctl9_3_facing_codes_map_to_north_south_east_west() {
+        // Own tile (10,20); one NPC on each neighbour, input order N,S,E,W, so the
+        // expected index for facing code c is exactly c.
+        let entities = [
+            wire("npc", 10, 19, 1, "1"),
+            wire("npc", 10, 21, 1, "1"),
+            wire("npc", 11, 20, 1, "1"),
+            wire("npc", 9, 20, 1, "1"),
+        ];
+        for code in 0u8..=3 {
+            assert_eq!(
+                super::interact_candidates_core(10, 20, code, 1, &entities),
+                Ok(vec![usize::from(code)]),
+                "facing code {code}"
+            );
+        }
+    }
+
+    #[test]
+    fn ctl9_3_empty_entity_list_is_ok_and_empty() {
+        assert_eq!(
+            super::interact_candidates_core(0, 0, 0, 0, &[]),
+            Ok(Vec::new())
+        );
+    }
+
+    #[test]
+    fn ctl9_3_rejects_an_invalid_facing_code() {
+        let entities = [wire("npc", 0, 1, 0, "1")];
+        for code in [4u8, 5, 255] {
+            assert!(
+                super::interact_candidates_core(0, 0, code, 0, &entities).is_err(),
+                "facing code {code} must be rejected, not clamped"
+            );
+            // Rejected even when there is nobody to interact with.
+            assert!(
+                super::interact_candidates_core(0, 0, code, 0, &[]).is_err(),
+                "facing code {code} must be rejected on an empty list too"
+            );
+        }
+        // Non-vacuity: the same call with a valid code succeeds.
+        assert_eq!(
+            super::interact_candidates_core(0, 0, 1, 0, &entities),
+            Ok(vec![0])
+        );
+    }
+
+    #[test]
+    fn ctl9_3_rejects_an_unparseable_id() {
+        for bad in [
+            "abc",
+            "-1",
+            "",
+            "1.5",
+            "0x10",
+            "18446744073709551616", // u64::MAX + 1
+            // Surrounding whitespace is rejected, never trimmed/normalized.
+            " 5",
+            "5 ",
+            "\t5",
+            "5\n",
+        ] {
+            let entities = [wire("npc", 0, 1, 0, bad)];
+            assert!(
+                super::interact_candidates_core(0, 0, 1, 0, &entities).is_err(),
+                "id {bad:?} must be rejected"
+            );
+        }
+        // Non-vacuity: the same id without whitespace is accepted.
+        let ok = [wire("npc", 0, 1, 0, "5")];
+        assert_eq!(
+            super::interact_candidates_core(0, 0, 1, 0, &ok),
+            Ok(vec![0])
+        );
+    }
+
+    #[test]
+    fn ctl9_3_rejects_an_unknown_kind() {
+        for bad in ["NPC", "Npc", "sign", "", "heal ", "players"] {
+            let entities = [wire(bad, 0, 1, 0, "1")];
+            assert!(
+                super::interact_candidates_core(0, 0, 1, 0, &entities).is_err(),
+                "kind {bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn ctl9_3_one_invalid_entity_rejects_the_whole_call_even_if_it_is_not_a_candidate() {
+        // A perfectly good candidate first, then an invalid entity that would never
+        // be a candidate anyway (wrong zone, far away): still Err, never skipped.
+        let good = || wire("npc", 0, 1, 0, "1");
+        assert_eq!(
+            super::interact_candidates_core(0, 0, 1, 0, &[good()]),
+            Ok(vec![0]),
+            "fixture: the good entity alone is a candidate"
+        );
+        let bad_id = [good(), wire("npc", 50, 50, 9, "not-a-number")];
+        assert!(super::interact_candidates_core(0, 0, 1, 0, &bad_id).is_err());
+        let bad_kind = [good(), wire("sign", 50, 50, 9, "2")];
+        assert!(super::interact_candidates_core(0, 0, 1, 0, &bad_kind).is_err());
+        // Invalid entity FIRST, good one after.
+        let bad_first = [wire("npc", 50, 50, 9, "-3"), good()];
+        assert!(super::interact_candidates_core(0, 0, 1, 0, &bad_first).is_err());
     }
 
     // EVOLUTION ELIGIBILITY marshaling core. The cross-language parity (TS port
