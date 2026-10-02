@@ -240,10 +240,11 @@ function buildAppShellFromRealIndexHtml(): void {
   const html = readFileSync(htmlPath, 'utf8');
   const parsed = new DOMParser().parseFromString(html, 'text/html');
   const bodyChildren = Array.from(parsed.body.children).filter((e) => e.tagName !== 'SCRIPT');
-  expect(
-    bodyChildren.length,
-    'parsed index.html yielded no usable <body> children',
-  ).toBeGreaterThan(5);
+  // ctl-7a (named intentional change): the shipped <body> is now three children (#game-screen,
+  // #build-stamp, #a11y-live), so the old `body children > 5` floor is retired. The vacuity
+  // guard counts the id-bearing elements the parse yielded instead (the real shell has ~60).
+  const idCount = parsed.querySelectorAll('[id]').length;
+  expect(idCount, 'parsed index.html yielded almost no id-bearing elements').toBeGreaterThan(5);
   document.body.replaceChildren(...bodyChildren.map((e) => document.adoptNode(e)));
 }
 
@@ -579,52 +580,47 @@ const TRADE_CASES: readonly TradeCase[] = [
 const TRADE_FR_KEYS = TRADE_CASES.map((c) => c.frKey);
 
 describe('main.ts trade feedback routes through the i18n catalog, per-action (slice 21r-b red-team S1)', () => {
-  it.each(
-    TRADE_CASES,
-  )('★★ BITES: under fr, trade $action shows CATALOG_FR[$frKey] — never a sibling trade key — and fires the right reducer with the right args', async ({
-    action,
-    viewerIsInitiator,
-    status,
-    frKey,
-    enLiteral,
-  }) => {
-    await bootMain('/?locale=fr');
-    openTradeWithOffer({ viewerIsInitiator, status });
-    H.linkFrozen = false;
+  it.each(TRADE_CASES)(
+    '★★ BITES: under fr, trade $action shows CATALOG_FR[$frKey] — never a sibling trade key — and fires the right reducer with the right args',
+    async ({ action, viewerIsInitiator, status, frKey, enLiteral }) => {
+      await bootMain('/?locale=fr');
+      openTradeWithOffer({ viewerIsInitiator, status });
+      H.linkFrozen = false;
 
-    findTradeActionButton(action).click();
-    await waitForNonEmpty(tradeFeedbackText);
+      findTradeActionButton(action).click();
+      await waitForNonEmpty(tradeFeedbackText);
 
-    expect(tradeFeedbackText(), `${action} must show its OWN fr key`).toBe(FR[frKey]);
-    expect(tradeFeedbackText()).not.toBe(enLiteral);
-    for (const otherKey of TRADE_FR_KEYS) {
-      if (otherKey === frKey) continue;
-      expect(
-        tradeFeedbackText(),
-        `${action} must not show a SIBLING trade key's fr value (${otherKey}) — kills an ` +
-          'accepted<->rejected / completed<->cancelled key swap',
-      ).not.toBe(FR[otherKey]);
-    }
+      expect(tradeFeedbackText(), `${action} must show its OWN fr key`).toBe(FR[frKey]);
+      expect(tradeFeedbackText()).not.toBe(enLiteral);
+      for (const otherKey of TRADE_FR_KEYS) {
+        if (otherKey === frKey) continue;
+        expect(
+          tradeFeedbackText(),
+          `${action} must not show a SIBLING trade key's fr value (${otherKey}) — kills an ` +
+            'accepted<->rejected / completed<->cancelled key swap',
+        ).not.toBe(FR[otherKey]);
+      }
 
-    switch (action) {
-      case 'accept':
-        expect(H.respondTrade).toHaveBeenCalledOnce();
-        expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: true });
-        break;
-      case 'reject':
-        expect(H.respondTrade).toHaveBeenCalledOnce();
-        expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: false });
-        break;
-      case 'confirm':
-        expect(H.confirmTrade).toHaveBeenCalledOnce();
-        expect(H.confirmTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID });
-        break;
-      case 'cancel':
-        expect(H.cancelTrade).toHaveBeenCalledOnce();
-        expect(H.cancelTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID });
-        break;
-    }
-  });
+      switch (action) {
+        case 'accept':
+          expect(H.respondTrade).toHaveBeenCalledOnce();
+          expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: true });
+          break;
+        case 'reject':
+          expect(H.respondTrade).toHaveBeenCalledOnce();
+          expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: false });
+          break;
+        case 'confirm':
+          expect(H.confirmTrade).toHaveBeenCalledOnce();
+          expect(H.confirmTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID });
+          break;
+        case 'cancel':
+          expect(H.cancelTrade).toHaveBeenCalledOnce();
+          expect(H.cancelTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID });
+          break;
+      }
+    },
+  );
 
   it('★ BITES: under fr, a frozen link on trade Accept shows CATALOG_FR["chrome.feedback.disconnected"], not the hardcoded English literal (kills a non-shop raw-literal revert)', async () => {
     await bootMain('/?locale=fr');

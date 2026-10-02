@@ -215,7 +215,11 @@ function mountIndexHtmlShell(): void {
   const htmlPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.html');
   const parsed = new DOMParser().parseFromString(readFileSync(htmlPath, 'utf8'), 'text/html');
   const children = Array.from(parsed.body.children).filter((el) => el.tagName !== 'SCRIPT');
-  expect(children.length, 'index.html must yield a body to mount').toBeGreaterThan(5);
+  // ctl-7a (named intentional change): the shipped <body> is now three children (#game-screen,
+  // #build-stamp, #a11y-live), so the old `body children > 5` floor is retired. The vacuity
+  // guard counts the id-bearing elements the parse yielded instead (the real shell has ~60).
+  const idCount = parsed.querySelectorAll('[id]').length;
+  expect(idCount, 'index.html must yield a body to mount').toBeGreaterThan(5);
   document.body.replaceChildren(...children.map((el) => document.adoptNode(el)));
   expect(document.getElementById('app'), 'index.html must ship <div id="app">').not.toBeNull();
 }

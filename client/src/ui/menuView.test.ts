@@ -87,7 +87,14 @@ async function flushMacrotask(): Promise<void> {
 }
 
 function teardown(): void {
-  for (const id of [OVERLAY_ID, 'menu-launcher', 'help-hint', OUTSIDE_SENTINEL_ID]) {
+  // ctl-7a: `help-hint` is retired from index.html; the fixture sentinels are the hint-bar chips.
+  for (const id of [
+    OVERLAY_ID,
+    'menu-launcher',
+    'chip-start',
+    'chip-select',
+    OUTSIDE_SENTINEL_ID,
+  ]) {
     document.getElementById(id)?.remove();
   }
 }
@@ -567,10 +574,10 @@ describe('MenuView — input', () => {
   });
 
   it('MV-OPENS-WITH-NO-LAUNCHER: show() and render() paint with no launcher and no help hint in the document', () => {
-    // WRONG IMPL KILLED: a shell that resolves or requires #menu-launcher / #help-hint (KeyM is
-    // the zero-DOM front door).
+    // WRONG IMPL KILLED: a shell that resolves or requires #menu-launcher / #chip-start (KeyM is
+    // the zero-DOM front door). ctl-7a: the chip replaced #help-hint as the sentinel id.
     expect(document.getElementById('menu-launcher'), 'fixture has no launcher').toBeNull();
-    expect(document.getElementById('help-hint'), 'fixture has no help hint').toBeNull();
+    expect(document.getElementById('chip-start'), 'fixture has no Start chip').toBeNull();
     const { view } = newView();
     view.show();
     view.render(rootVm());

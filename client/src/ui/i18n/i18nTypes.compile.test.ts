@@ -84,7 +84,9 @@ const FIXTURES: readonly Fixture[] = [
       importFrom('{ negotiateLocale, isRtl }', LOCALE_SPEC),
       '',
       'export const goodTotal: Catalog = CATALOG_EN;',
-      "export const goodT: string = t('chrome.helpHint');",
+      // ctl-7a: every 'chrome.helpHint' below was a mere example plain key; that key is deleted,
+      // so each fixture now uses another existing plain chrome key ('chrome.help.title').
+      "export const goodT: string = t('chrome.help.title');",
       "export const goodTf: string = tf('chrome.status.disconnected', { where: 'x' });",
       "export const goodPlural: string = selectPlural('en', 1, oneOther('a', 'b'));",
       "export const goodCldr = cldr({ zero: 'z', one: 'o', two: 't', few: 'f', many: 'm', other: 'x' });",
@@ -95,7 +97,7 @@ const FIXTURES: readonly Fixture[] = [
       'export const goodCurrent: string = currentLocale();',
       'export const goodCatalogs: typeof CATALOGS = CATALOGS;',
       "setLocale('en');",
-      "export const goodMessageId: MessageId = 'chrome.helpHint';",
+      "export const goodMessageId: MessageId = 'chrome.help.title';",
       "export const goodParamMessageId: ParamMessageId = 'chrome.status.disconnected';",
       "export const goodParams: MessageParams['chrome.status.disconnected'] = { where: 'y' };",
       'export const goodA11yList: A11yKey[] = [];',
@@ -110,7 +112,7 @@ const FIXTURES: readonly Fixture[] = [
     lines: [
       importFrom('type { Catalog }', MESSAGE_IDS_SPEC),
       '',
-      "declare const p: Omit<Catalog, 'chrome.helpHint'>;",
+      "declare const p: Omit<Catalog, 'chrome.help.title'>;",
       'export const badOmit: Catalog = p;',
       '',
     ],
@@ -137,7 +139,7 @@ const FIXTURES: readonly Fixture[] = [
       importFrom('type { Catalog }', MESSAGE_IDS_SPEC),
       '',
       'export function badReadonly(cat: Catalog): void {',
-      "  cat['chrome.helpHint'] = 'x';",
+      "  cat['chrome.help.title'] = 'x';",
       '}',
       '',
     ],
@@ -185,7 +187,7 @@ const FIXTURES: readonly Fixture[] = [
     lines: [
       importFrom('{ tf }', RESOLVER_SPEC),
       '',
-      "export const badPlainTf: string = tf('chrome.helpHint', {});",
+      "export const badPlainTf: string = tf('chrome.help.title', {});",
       '',
     ],
   },
@@ -386,8 +388,8 @@ describe('i18nTypes.compile — the i18n module compile-total guarantees (m24-s1
     expect(omitCodes, `full tsc output:\n${result.output}`).toEqual(['TS2741']);
     const omitLines = result.linesByFile.get('bad-omit.ts') ?? [];
     expect(
-      omitLines.some((l) => l.includes('chrome.helpHint')),
-      `bad-omit.ts's TS2741 message must name the omitted key 'chrome.helpHint':\n${omitLines.join('\n')}`,
+      omitLines.some((l) => l.includes('chrome.help.title')),
+      `bad-omit.ts's TS2741 message must name the omitted key 'chrome.help.title':\n${omitLines.join('\n')}`,
     ).toBe(true);
 
     const partialCodes = result.codesByFile.get('bad-partial.ts') ?? [];

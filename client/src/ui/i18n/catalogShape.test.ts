@@ -379,13 +379,15 @@ describe('catalogShape (M24 S6, ADR-0262 §5.4)', () => {
     expect(violations, `width violations: ${JSON.stringify(violations)}`).toEqual([]);
     const en = discovered.find((d) => d.locale === 'en');
     if (en === undefined) throw new Error('en catalog file not discovered');
-    const enValue = catalogs.en['chrome.helpHint'];
-    expect(typeof enValue, 'chrome.helpHint must be a plain string in en').toBe('string');
+    // ctl-7a (named intentional change): `chrome.helpHint` is deleted; the width-constrained keys
+    // are now the two hint-bar chip labels, which share one row.
+    const enValue = catalogs.en['chrome.chip.menu'];
+    expect(typeof enValue, 'chrome.chip.menu must be a plain string in en').toBe('string');
     expect(
       Array.from((enValue as string).normalize('NFC')).length,
-      'en chrome.helpHint must measure exactly 38 code points — pins the measurement path ' +
+      'en chrome.chip.menu must measure exactly 4 code points — pins the measurement path ' +
         '(Array.from + NFC, not .length) that the fixtures below exercise',
-    ).toBe(38);
+    ).toBe(4);
   });
 
   it('m24s6 SHAPE-02: fixtures — proof-of-teeth for the width checker', () => {
@@ -746,8 +748,11 @@ describe('catalogShape (M24 S6, ADR-0262 §5.4)', () => {
 // SHAPE-02 checker + budget table.
 // ---------------------------------------------------------------------------
 
+// ctl-7a (named intentional change): `chrome.helpHint` (budget 47) is deleted with the badge it
+// labelled; the two hint-bar chip labels (Start / Select chips) take its place, 12 code points each.
 const WIDTH_CONSTRAINED_KEYS: Readonly<Record<string, number>> = Object.freeze({
-  'chrome.helpHint': 47,
+  'chrome.chip.menu': 12,
+  'chrome.chip.help': 12,
 });
 
 interface WidthViolation {

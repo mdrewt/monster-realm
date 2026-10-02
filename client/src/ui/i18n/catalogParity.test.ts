@@ -575,7 +575,10 @@ function checkKeyParity(
 // PARITY-03/UNDEFINED-KEY + PARITY-04/DEAD-KEY classifiers.
 // ---------------------------------------------------------------------------
 
-const DEAD_KEY_EXEMPT: readonly string[] = ['chrome.helpHint'];
+// ctl-7a (named intentional change): the roster was exactly ['chrome.helpHint'] (a key resolved by
+// no call site). ctl-7a deletes that key together with the #help-hint button it labelled, so the
+// exemption roster is now EMPTY: every MessageId must have a literal requester.
+const DEAD_KEY_EXEMPT: readonly string[] = [];
 
 interface UndefinedKeyFinding {
   readonly kind: 'UNDEFINED-KEY';
@@ -799,6 +802,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // disconnected line into careAction.ts's core (only the core resolves it now, so it leaves this
     // set) and added the care success key, which main.ts's care adapter resolves.
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
+      'chrome.chip.help', // ctl-7a: the Select chip label, written into #chip-select at boot
+      'chrome.chip.menu', // ctl-7a: the Start chip label, written into #chip-start at boot
       'chrome.rename.updated',
       'chrome.status.bugBundleBlocked',
       'chrome.status.contentStale',
@@ -1024,7 +1029,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     ).toEqual([{ kind: 'UNDEFINED-KEY', module: 'a11y', key: 'a11y.nope' }]);
   });
 
-  it('m24s7 PARITY-04: I18N-28 — DEAD-KEY over the live tree; the exemption roster is exactly [chrome.helpHint]', () => {
+  it('m24s7 PARITY-04: I18N-28 — DEAD-KEY over the live tree; the exemption roster is exactly [] (ctl-7a deleted chrome.helpHint)', () => {
     const messageIds = parseMessageIdUnion(readFileSync(MESSAGE_IDS_PATH, 'utf8'));
     const census = computeCensus();
     const requested = new Set<string>();
@@ -1035,11 +1040,9 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
         }
       }
     }
-    // WRONG IMPL KILLED: a hand-widened exemption roster ({'chrome.helpHint', 'shop.title', …})
-    // would silently mask real DEAD-KEY findings — pin the roster EXACTLY.
-    expect(DEAD_KEY_EXEMPT, 'the DEAD-KEY exemption roster must be exactly one entry').toEqual([
-      'chrome.helpHint',
-    ]);
+    // WRONG IMPL KILLED: a hand-widened exemption roster ({'shop.title', …}) would silently mask
+    // real DEAD-KEY findings — pin the roster EXACTLY (empty since ctl-7a).
+    expect(DEAD_KEY_EXEMPT, 'the DEAD-KEY exemption roster must be empty').toEqual([]);
     const findings = checkDeadKeys(messageIds, requested, DEAD_KEY_EXEMPT);
     expect(findings, `live-tree DEAD-KEY findings: ${JSON.stringify(findings)}`).toEqual([]);
   });

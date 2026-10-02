@@ -232,10 +232,14 @@ function buildAppShellFromRealIndexHtml(): void {
   }
   const parsed = new DOMParser().parseFromString(html, 'text/html');
   const bodyChildren = Array.from(parsed.body.children).filter((e) => e.tagName !== 'SCRIPT');
+  // ctl-7a (named intentional change): the shipped <body> is now three children (#game-screen,
+  // #build-stamp, #a11y-live), so the old `body children > 5` floor is retired. The vacuity
+  // guard counts the id-bearing elements the parse yielded instead (the real shell has ~60).
+  const idCount = parsed.querySelectorAll('[id]').length;
   expect(
-    bodyChildren.length,
-    'ANTI-VACUITY: parsed index.html yielded no usable <body> children — the DOM this whole ' +
-      'file depends on would be empty and every test below would fail for the wrong reason',
+    idCount,
+    'ANTI-VACUITY: parsed index.html yielded almost no id-bearing elements — the DOM this ' +
+      'whole file depends on would be empty and every test below would fail for the wrong reason',
   ).toBeGreaterThan(5);
   const adopted = bodyChildren.map((e) => document.adoptNode(e));
   document.body.replaceChildren(...adopted);
