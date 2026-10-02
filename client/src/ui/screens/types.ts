@@ -100,7 +100,8 @@ export interface ScreenAdapter<VM, S, V = unknown> {
    *  command may be refused, so a state must not assume it took effect. `btn.repeat` marks a
    *  synthesized auto-repeat: move on it, never act. */
   onButton(vm: VM, state: S, btn: NavInput): ButtonStep<S>;
-  /** Paint the frame's view after a step. The shell lends the view instance; import its class as
-   *  a type only, so the adapter stays free of the DOM. */
+  /** Paint the frame's view after a step. The shell lends the view instance registered for the
+   *  frame's id (nothing checks it against `V`); import its class as a type only, so the adapter
+   *  stays free of the DOM. */
   paint?(view: V, vm: VM, state: S): void;
 }

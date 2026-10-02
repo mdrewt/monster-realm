@@ -69,7 +69,9 @@ export class ScreenHost {
   }
 
   /** A frame opened: its adapter starts over from `init` at its next step. A text-entry frame is
-   *  typing over its owner, whose state stays. Runs no adapter code. */
+   *  typing over its owner, whose state stays. Runs no adapter code. The shell calls it when the
+   *  stack gains the frame, so a frame hidden and shown again between two syncs keeps its state:
+   *  an adapter whose content can be replaced while it is open keys its state on that content. */
   opened(frame: UpperFrame): void {
     if (frame.kind !== 'textEntry') this.#states.delete(frame.id);
   }

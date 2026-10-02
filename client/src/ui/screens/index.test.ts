@@ -843,3 +843,131 @@ describe('ScreenHost (ctl-7c)', () => {
     expect(log.paints.length, 'still one paint per step').toBe(9);
   });
 });
+
+// ==========================================================================================
+// ctl-7c round 2: what every step stores (red-team survivors S1, X6, X7, X8, X9)
+// ==========================================================================================
+//
+// A step's state is whatever the adapter returned, whatever that value is and whatever the step
+// was: `undefined` and `null` are states (a screen with nothing selected), a repeat-flagged input
+// is a step like a press, and a step answered `unhandled` still moved the screen's state. Only
+// `opened()` starts a frame over.
+
+describe('ScreenHost: every step stores and paints (ctl-7c)', () => {
+  it('CTL7C-2-NULLISH-STATE: a state the adapter returns as undefined or null is a real state: the next step receives it, it is painted, and init does not run again; only opened() starts the frame over', () => {
+    // WRONG IMPL KILLED (S1): a host that treats a nullish stored state as "no state yet"
+    // (`stored ?? adapter.init(vm)`, or `=== undefined` as the absent marker): a screen whose
+    // state legitimately becomes empty (a closed sub-modal, nothing selected) would be thrown back
+    // to its opening state on the very next press, and init would run again mid-frame. Also a
+    // host that paints the previous state instead of the empty one, and an opened() that no
+    // longer resets a frame whose stored state is nullish.
+    for (const nullish of [undefined, null] as const) {
+      const label = String(nullish);
+      const INIT = { cursor: 5 };
+      let inits = 0;
+      const seen: unknown[] = [];
+      const painted: unknown[] = [];
+      const adapter: ScreenAdapter<unknown, unknown> = {
+        nav: true,
+        viewModel: () => ({}),
+        init: () => {
+          inits += 1;
+          return INIT;
+        },
+        onButton: (_vm, state, btn) => {
+          seen.push(state);
+          // A empties the state; every other button keeps the state it was given.
+          return { state: btn.button === 'A' ? nullish : state, result: 'consumed' };
+        },
+        paint: (_view, _vm, state) => {
+          painted.push(state);
+        },
+      };
+      const VIEW = { view: 'quest' };
+      const host = new ScreenHost(
+        tableWith({ questLogView: adapter }),
+        (id) => (id === 'questLogView' ? VIEW : undefined),
+        unexpectedPaintError,
+      );
+      const quest = stackOf(WORLD, screen('questLogView'));
+
+      host.button(quest, nav('A'), CTX);
+      host.button(quest, nav('Down'), CTX);
+      host.button(quest, nav('Down', true), CTX);
+      expect(inits, `${label}: init ran once, for the first step only`).toBe(1);
+      expect(seen[0], `${label}: the first step starts from init`).toBe(INIT);
+      expect(seen[1], `${label}: the next step receives the ${label} state`).toBe(nullish);
+      expect(seen[2], `${label}: and so does the one after`).toBe(nullish);
+      expect(painted.length, `${label}: one paint per step`).toBe(3);
+      for (const [i, state] of painted.entries()) {
+        expect(state, `${label}: paint ${i} draws the ${label} state`).toBe(nullish);
+      }
+
+      // Only an open starts the frame over.
+      host.opened(screen('questLogView'));
+      host.button(quest, nav('Down'), CTX);
+      expect(inits, `${label}: the reopened frame inits again`).toBe(2);
+      expect(seen[3], `${label}: from init`).toBe(INIT);
+    }
+  });
+
+  it('CTL7C-2-EVERY-STEP-STORES: a repeat-flagged input and a step answered unhandled each store the state they return and paint it once, exactly like a fresh press', () => {
+    // WRONG IMPL KILLED (X8, X9): a host that stores or paints only for a fresh press
+    // (`if (!btn.repeat)`): a held arrow would move a list cursor once and every synthesized
+    // repeat would restart from the press's state, or move it without redrawing. WRONG IMPL
+    // KILLED (X6, X7): a host that stores or paints only when the adapter's result is not
+    // `unhandled`: a screen that moved its own cursor but left the key to the page would lose the
+    // move on the next press, or show a stale view.
+    const log = newLog();
+    const base = counting('questLogView', log, { paint: 'record' });
+    const adapter: ScreenAdapter<unknown, unknown> = {
+      ...base,
+      onButton(vm, state, btn) {
+        const step = base.onButton(vm, state, btn);
+        // Y moves the screen's state but leaves the key itself to the page.
+        return btn.button === 'Y' ? { state: step.state, result: 'unhandled' } : step;
+      },
+    };
+    const VIEW = { view: 'quest' };
+    const host = new ScreenHost(
+      tableWith({ questLogView: adapter }),
+      (id) => (id === 'questLogView' ? VIEW : undefined),
+      unexpectedPaintError,
+    );
+    const quest = stackOf(WORLD, screen('questLogView'));
+    const inputs: NavInput[] = [
+      nav('A'),
+      nav('Down', true),
+      nav('Y'),
+      nav('Down', true),
+      nav('Y', true),
+      nav('A'),
+    ];
+    const results = inputs.map((btn) => host.button(quest, btn, CTX));
+
+    expect(results, 'each step ran on the state the one before it returned').toEqual([
+      choice(1),
+      choice(2),
+      'unhandled',
+      choice(4),
+      'unhandled',
+      choice(6),
+    ]);
+    expect(log.inits.length, 'init ran once').toBe(1);
+    expect(log.steps.length).toBe(inputs.length);
+    for (const [i, step] of log.steps.entries()) {
+      expect(step.btn, `step ${i}: the input as given`).toEqual(inputs[i]);
+      const expectedFrom = i === 0 ? log.inits[0]?.state : log.steps[i - 1]?.next;
+      expect(step.state, `step ${i}: resumes the state the previous step returned`).toBe(
+        expectedFrom,
+      );
+    }
+    expect(log.paints.length, 'one paint per step, repeats and unhandled ones included').toBe(
+      inputs.length,
+    );
+    for (const [i, p] of log.paints.entries()) {
+      expect(p.view, `paint ${i}: into the lent view`).toBe(VIEW);
+      expect(p.state, `paint ${i}: the state step ${i} produced`).toBe(log.steps[i]?.next);
+    }
+  });
+});

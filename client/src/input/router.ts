@@ -114,7 +114,8 @@ export interface RouteContext {
    *  screen (CTL7C.1): its D-pad presses and repeats go to `screen` below, as its other buttons
    *  do, instead of becoming `nav` effects. */
   readonly nav?: { readonly covered: boolean; readonly now: number; readonly screen?: boolean };
-  /** The top frame's screen adapter, for every button the X and `nav` effect paths do not take. */
+  /** The top frame's screen adapter: asked for every button but X, the main menu's own (`nav`
+   *  effects) and a D-pad edge no nav-capable screen takes. */
   readonly screen?: (btn: NavInput) => ScreenResult;
 }
 
@@ -209,12 +210,12 @@ export class InputRouter {
   tick(ctx: RouteContext): readonly RouterEffect[] {
     const repeat = this.#repeat;
     if (repeat === undefined || ctx.nav === undefined || ctx.nav.covered) return [];
-    const { now, screen } = ctx.nav;
+    const { now } = ctx.nav;
     if (now < repeat.nextAt) return [];
     repeat.nextAt += REPEAT_PERIOD_MS;
     if (repeat.nextAt <= now) repeat.nextAt = now + REPEAT_PERIOD_MS;
     const input: NavInput = { button: repeat.button, repeat: true };
-    return screen ? dpadToScreen(ctx, input) : [{ kind: 'nav', input }];
+    return ctx.nav.screen ? dpadToScreen(ctx, input) : [{ kind: 'nav', input }];
   }
 
   /** Stop any repeat: a held key never repeats into a newly pushed or popped frame, not even

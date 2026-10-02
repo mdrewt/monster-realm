@@ -2572,3 +2572,161 @@ describe('main.ts screen-host state and paint (runtime, ctl-7c)', { sequential: 
     expect(paints[3]?.state).toBe(steps[3]?.next);
   });
 });
+
+// ==========================================================================================
+// ctl-7c round 2: repeats are full steps, and a view that cannot paint is reported (red-team)
+// ==========================================================================================
+//
+// Same harness and stand-in pattern as above. The error overlay is the self-mounted
+// `#mr-error-overlay` that main.frameErrorWiring.test.ts reads: one `.mr-error-row` per ring
+// record, newest first, each carrying its `data-source` and the text `[<source>] <message>`.
+
+/** Every rendered error-overlay row, in DOM order (newest first). */
+const errorOverlayRows = (): Array<{ source: string | undefined; text: string }> =>
+  Array.from(document.querySelectorAll<HTMLElement>('.mr-error-row')).map((el) => ({
+    source: el.dataset.source,
+    text: el.textContent ?? '',
+  }));
+
+describe('main.ts repeats and paint failures (runtime, ctl-7c)', { sequential: true }, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    rafCallback = null;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  it('CTL7C-2-BOOT-REPEAT-STEPS: under a held arrow every synthesized repeat is a full step: it resumes the state the previous step returned and repaints the real view with the next one, exactly as the press does', async () => {
+    // WRONG IMPL KILLED (X8, X9): a shell whose repeats skip the state store or the paint (a held
+    // arrow would move a list cursor one row, then redraw nothing, or restart every repeat from
+    // the press's state), and one that builds the repeat's step from a stale or fresh state.
+    await bootReady();
+    server(1000);
+    const { QuestLogView } = await import('./ui/questLogView');
+    const states: unknown[] = [];
+    const inputs: NavInput[] = [];
+    const paints: Array<{ readonly view: unknown; readonly state: unknown }> = [];
+    swapAdapter('questLogView', {
+      nav: true,
+      viewModel: () => undefined,
+      init: () => 0,
+      onButton: (_vm: unknown, state: unknown, btn: NavInput) => {
+        states.push(state);
+        inputs.push(btn);
+        return { state: typeof state === 'number' ? state + 1 : -100, result: 'consumed' };
+      },
+      paint: (view: unknown, _vm: unknown, state: unknown) => {
+        paints.push({ view, state });
+      },
+    });
+    tap('KeyQ', 1010);
+    expect(questLogShown(), 'precondition: Q opened the quest log').toBe(true);
+
+    fire('keydown', 'ArrowDown', 1100);
+    frame(1450);
+    frame(1550);
+    frame(1650);
+    fire('keyup', 'ArrowDown', 1700);
+    expect(inputs, 'the press and three synthesized repeats reached the stand-in').toEqual([
+      { button: 'Down', repeat: false },
+      { button: 'Down', repeat: true },
+      { button: 'Down', repeat: true },
+      { button: 'Down', repeat: true },
+    ]);
+    expect(states, 'each repeat resumes the state the step before it returned').toEqual([
+      0, 1, 2, 3,
+    ]);
+    expect(
+      paints.map((p) => p.state),
+      'and each repaints with the state it produced',
+    ).toEqual([1, 2, 3, 4]);
+    for (const [i, p] of paints.entries()) {
+      expect(p.view, `paint ${i}: the real quest log view`).toBeInstanceOf(QuestLogView);
+      expect(p.view, `paint ${i}: the same instance every time`).toBe(paints[0]?.view);
+    }
+
+    // A fresh press after the repeats resumes from the last repeat's state.
+    tap('PageUp', 1800);
+    expect(states.at(-1), 'the next press starts where the last repeat left off').toBe(4);
+    expect(paints.at(-1)?.state).toBe(5);
+  });
+
+  it('CTL7C-2-BOOT-PAINT-THROWS: a view whose paint throws never costs a key its result (B still pops the frame) and every failure is logged; it is also surfaced in the error overlay as an `uncaught` row `screen paint: <message>`, once per message', async () => {
+    // WRONG IMPL KILLED (C3, C4): a paint failure that escapes the host (the key handler throws and
+    // B can never close the frame whose view is broken), one that swallows the step's result, one
+    // that is reported nowhere, and (the shell's report, NEW CONTRACT) one that stays in the
+    // console only (a playtester sees a frozen screen with nothing on the error overlay and no
+    // record in the F9 bundle), one pushed untagged or under another source, and one pushed on
+    // every press (a list held down repaints at 10 Hz: one broken view would flood the 64-slot
+    // ring the crash records need), while a DIFFERENT failure must still be recorded.
+    await bootReady();
+    server(1000);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let message = 'broken view';
+    const asked: NavInput[] = [];
+    swapAdapter('questLogView', {
+      nav: true,
+      viewModel: () => undefined,
+      init: () => undefined,
+      onButton: (_vm: unknown, state: unknown, btn: NavInput) => {
+        asked.push(btn);
+        return { state, result: btn.button === 'B' && !btn.repeat ? { kind: 'pop' } : 'consumed' };
+      },
+      paint: () => {
+        throw new Error(message);
+      },
+    });
+    const paintReports = (): unknown[][] =>
+      errors.mock.calls.filter((c) => c[0] === '[screen] paint error');
+    const screenPaintRows = (): Array<{ source: string | undefined; text: string }> =>
+      errorOverlayRows().filter((r) => r.text.includes('screen paint:'));
+
+    tap('KeyQ', 1010);
+    expect(questLogShown(), 'precondition: Q opened the quest log').toBe(true);
+    const overlay = byId('mr-error-overlay');
+    expect(overlay.style.display, 'precondition: the error overlay starts hidden').toBe('none');
+    expect(errorOverlayRows(), 'precondition: no error row yet').toEqual([]);
+
+    // Every observation is taken as it happens and asserted below, so the part that holds today
+    // (B still pops, the console log) is checked before the overlay part.
+    tap('ArrowDown', 1100); // the first throwing paint
+    const shownAfterFirst = overlay.style.display !== 'none';
+    const rowsAfterFirst = screenPaintRows();
+    tap('PageUp', 1200); // the same message again
+    const rowsAfterSame = screenPaintRows();
+    message = 'broken differently';
+    tap('PageUp', 1300); // a different message
+    const rowsAfterDistinct = screenPaintRows();
+    const back = tap('Backspace', 1400); // B: its paint throws the same message again
+    const rowsAfterBack = screenPaintRows();
+
+    // The result is never lost, and every failure is logged.
+    expect(
+      asked.map((b) => b.button),
+      'every press reached the stand-in',
+    ).toEqual(['Down', 'LB', 'LB', 'B']);
+    expect(back.defaultPrevented, 'the B press was consumed').toBe(true);
+    expect(questLogShown(), 'B still closes a frame whose paint throws').toBe(false);
+    expect(stackNames()).toEqual(['world']);
+    expect(
+      paintReports().map((c) => (c[1] as Error | undefined)?.message),
+      'each throwing paint is logged with the error it threw',
+    ).toEqual(['broken view', 'broken view', 'broken differently', 'broken differently']);
+
+    // NEW CONTRACT: surfaced like an uncaught frame error, deduped on the message.
+    expect(shownAfterFirst, 'the first throwing paint shows the error overlay').toBe(true);
+    expect(rowsAfterFirst, 'one tagged `uncaught` row').toEqual([
+      { source: 'uncaught', text: '[uncaught] screen paint: broken view' },
+    ]);
+    expect(rowsAfterSame, 'the same message again adds no row').toEqual(rowsAfterFirst);
+    expect(rowsAfterDistinct, 'a different message adds its own row, newest first').toEqual([
+      { source: 'uncaught', text: '[uncaught] screen paint: broken differently' },
+      { source: 'uncaught', text: '[uncaught] screen paint: broken view' },
+    ]);
+    expect(rowsAfterBack, 'B`s repeat of that message adds none').toEqual(rowsAfterDistinct);
+  });
+});

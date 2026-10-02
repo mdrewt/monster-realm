@@ -477,14 +477,26 @@ const screenViews: Readonly<Record<OverlayId, () => unknown>> = {
   privacyView: () => privacyView,
 };
 
+// A view's paint threw. Logged every time, and surfaced like an uncaught frame error (tagged,
+// deduped on the message: a held D-pad repeats the same step every 100 ms, and the error ring is
+// small).
+let lastPaintErrorMessage: string | null = null;
+function reportPaintError(err: unknown): void {
+  console.error('[screen] paint error', err);
+  let message: string;
+  try {
+    message = `screen paint: ${normalizeError('uncaught', err).message}`;
+  } catch {
+    message = 'screen paint: [unstringifiable error]';
+  }
+  if (message === lastPaintErrorMessage) return;
+  lastPaintErrorMessage = message;
+  pushError('uncaught', message);
+}
+
 // The screen host (ui/screens/index.ts) keeps each open frame's adapter state and paints every
-// step into the frame's view. A paint that throws is reported here and never costs the key its
-// result.
-const screenHost = new ScreenHost(
-  SCREEN_ADAPTERS,
-  (id) => screenViews[id](),
-  (err) => console.error('[screen] paint error', err),
-);
+// step into the frame's view. A paint that throws is reported and never costs the key its result.
+const screenHost = new ScreenHost(SCREEN_ADAPTERS, (id) => screenViews[id](), reportPaintError);
 
 // the ONE gate binder. Returns the VERDICT, not a boolean, because the
 // three hide-switch handlers consume `forceHide`; each call site spells `.kind === 'allow'`
@@ -515,6 +527,9 @@ function runStackCommands(commands: readonly StackCommand[]): void {
     switch (command.kind) {
       case 'clearHeld':
         held.clear();
+        // The menu-side twin: a push or a change of base kind also ends any auto-repeat, so a key
+        // held into a battle never repeats into a frame the battle keeps (a suspended dialogue).
+        inputRouter.resetRepeat();
         break;
       case 'close':
         // The view's own hide path, so its close callbacks run (CTL3.3); never a hidden one.
@@ -1003,11 +1018,11 @@ function handleMenuPointer(input: MenuPointerInput): void {
 
 // --- the screen-adapter seam (design §4, §12) ------------------------------------------
 //
-// The router hands every button X and the menu's nav do not take to the top frame's adapter
-// (`screenHost.button`), the D-pad too when that adapter is nav-capable; its command, and every
-// view callback, runs through ONE exhaustive `dispatch`. Stack commands compute the next stack and
-// `applyStack` closes what it drops through each view's own hide path; the stack itself stays the
-// mirror of what is shown (`syncStack`).
+// The router hands the top frame's adapter (`screenHost.button`) every button but X, the main
+// menu's own nav buttons and the D-pad, and the D-pad too when that adapter is nav-capable; its
+// command, and every view callback, runs through ONE exhaustive `dispatch`. Stack commands compute
+// the next stack and `applyStack` closes what it drops through each view's own hide path; the
+// stack itself stays the mirror of what is shown (`syncStack`).
 
 // The bindings the router reads: LB/RB only from PageUp/PageDown while the legacy ladder owns Q
 // and E (CTL6B.6, until ctl-11a).
@@ -1116,8 +1131,8 @@ function dispatch(command: Command): Promise<void> {
     }
     case 'healParty': {
       // The location a bound heal frame names (B13); the Box button names none, and takes the
-      // first heal location in live store data (M12d). SKIP the send when none is loaded —
-      // `healParty({locationId: 0})` would be a guaranteed invisible server Err. The skip is
+      // first heal location in live store data (M12d). SKIP the send when there is neither —
+      // inventing `locationId: 0` would be a guaranteed invisible server Err. The skip is
       // surfaced, never silent; the server still validates zone/range/cooldown on a real send.
       const locationId = command.locationId ?? healTargetLocationId(store.healLocations());
       if (locationId === undefined) {
@@ -1761,19 +1776,15 @@ const jump = (): void => sendIntent('Jump');
 const keyboard = new KeyboardSource(ROUTED_BINDINGS);
 const inputRouter = new InputRouter();
 
-/** The top frame takes the D-pad: the main menu, or a nav-capable screen (which normally sits
- *  over the menu that opened it). */
-const navOnTop = (): boolean => menuPlace() === 'top' || screenHost.takesNav(contextStack);
-
-// What the router needs to know: whether the world takes input, the nav frame (the main menu on
-// top, else a nav-capable screen on top, else the menu covered by a legacy frame) plus the clock
-// its auto-repeat runs on, and the top frame's adapter.
+// What the router needs to know: whether the world takes input, the nav frame (a nav-capable
+// screen on top, else the main menu, on top or covered by a legacy frame) plus the clock its
+// auto-repeat runs on, and the top frame's adapter.
 const routeCtx = (): RouteContext => {
   const worldActive = movementGate(); // first: it syncs the stack the rest reads
   const place = menuPlace();
   const now = performance.now();
   let nav: RouteContext['nav'];
-  if (place !== 'top' && screenHost.takesNav(contextStack)) {
+  if (screenHost.takesNav(contextStack)) {
     nav = { covered: false, now, screen: true };
   } else if (place !== 'absent') {
     nav = { covered: place === 'covered', now };
@@ -1956,7 +1967,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
   // A, B, Y; held D-pad repeats come from the frame loop), so this precedes every movement and
   // hotkey path below. Unconsumed keys (accelerators) fall through to the ladder, unrouted a
   // second time.
-  if (navOnTop()) {
+  if (menuPlace() === 'top' || screenHost.takesNav(contextStack)) {
     let consumed = false;
     for (const edge of keyEdges()) consumed = routeEdge(edge) || consumed;
     if (consumed) {

@@ -2237,3 +2237,121 @@ describe('main.ts D-pad on a nav-capable screen (runtime, ctl-7c)', { sequential
     expect(H.sends, 'no D-pad press in this whole case walked').toHaveLength(0);
   });
 });
+
+// ==========================================================================================
+// ctl-7c round 2: a held D-pad key never repeats across a context change (red-team findings)
+// ==========================================================================================
+//
+// The router's synthesized repeat belongs to the frame the key was pressed in. Every way the
+// context can change under a held key must stop it: a frame pushed above (the mirror edge), and a
+// base that changes kind under a frame that stays (no frame is pushed or popped then).
+
+describe('main.ts held D-pad and context changes (runtime, ctl-7c)', { sequential: true }, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    delete (document as unknown as { visibilityState?: unknown }).visibilityState;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    H.sessionState = 'hidden';
+    rafCallback = null;
+    document.body.replaceChildren();
+  });
+
+  it('CTL7C-1-BOOT-BASE-RESET: a D-pad key held on a nav-capable dialogue stops repeating into it when a battle row arrives (the dialogue stays on the stack, suspended, over the new battle base); with no battle the same hold does repeat', async () => {
+    // WRONG IMPL KILLED (red-team, a real bug): a base change of kind that clears the world's held
+    // set but leaves the router's repeat armed. The stack goes from [world, dialogueView] to
+    // [battle, dialogueView]: no frame is pushed or popped (no mirror edge) and the reconcile drops
+    // nothing (the conversation suspends), so nothing else resets it, and the arrow held from
+    // before the battle keeps driving the dialogue's cursor at 10 Hz under the fight.
+    await bootReady();
+    seedWorld(1000);
+    const seen: NavInput[] = [];
+    swapAdapter('dialogueView', recordingAdapter(seen, true));
+    const repeats = (): NavInput[] => seen.filter((b) => b.repeat);
+    startConversation(1100);
+    expect(shownById('dialogue-overlay'), 'precondition: the server opened the dialogue').toBe(
+      true,
+    );
+    expect(stack(), 'precondition: the dialogue is the one frame over the world').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'dialogueView' },
+    ]);
+
+    // Control: with no battle, the held arrow repeats into the dialogue at +350 and +450.
+    fire('keydown', 'ArrowDown', 1200);
+    expect(seen, 'control: the press reaches the dialogue').toEqual([
+      { button: 'Down', repeat: false },
+    ]);
+    frame(1549);
+    expect(repeats(), 'control: nothing before +350').toEqual([]);
+    frame(1550);
+    frame(1650);
+    expect(repeats(), 'control: the held arrow repeats into the dialogue').toEqual([
+      { button: 'Down', repeat: true },
+      { button: 'Down', repeat: true },
+    ]);
+    fire('keyup', 'ArrowDown', 1700);
+
+    // The same hold, and a battle row arrives 100 ms into it.
+    fire('keydown', 'ArrowDown', 2000);
+    expect(seen.at(-1), 'precondition: a fresh press reaches the dialogue').toEqual({
+      button: 'Down',
+      repeat: false,
+    });
+    const before = repeats().length;
+    startBattle(BATTLE_ID, 2100);
+    expect(stack(), 'precondition: the dialogue is kept, suspended over the battle base').toEqual([
+      { kind: 'battle', battleId: '101' },
+      { kind: 'screen', id: 'dialogueView' },
+    ]);
+    frame(2350);
+    frame(2450);
+    frame(2550);
+    expect(
+      repeats().length,
+      'the arrow held from before the battle never repeats into the suspended dialogue',
+    ).toBe(before);
+    fire('keyup', 'ArrowDown', 2600);
+    expect(H.sends, 'nothing walked').toHaveLength(0);
+  });
+
+  it('CTL7C-1-BOOT-PUSH-RESET: Up held on the open main menu, A opens the nav-capable Journal above it while Up is still down: the held Up never repeats into the Journal and the covered menu does not move; a fresh Up press in the Journal does reach it', async () => {
+    // WRONG IMPL KILLED (M5d): a push mirror edge that no longer resets the repeat (or resets it
+    // only for a pop). The Up pressed on the menu stays armed, the Journal takes the D-pad, and
+    // 350 ms after the press the player's cursor in a screen they just opened moves with no key
+    // pressed in it.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0 });
+    const seen: NavInput[] = [];
+    swapAdapter('questLogView', recordingAdapter(seen, true));
+    tapKey('KeyM', 1010);
+    tapKey('ArrowDown', 1100);
+    tapKey('ArrowDown', 1200);
+    tapKey('ArrowDown', 1300);
+    expect(menuCursor(), 'precondition: the cursor is on Social').toBe('social');
+
+    fire('keydown', 'ArrowUp', 2000);
+    expect(menuCursor(), 'precondition: Up moved the cursor to Journal').toBe('journal');
+    fire('keydown', 'Enter', 2050); // A opens the Journal; Up is still down (its repeat: 2350)
+    fire('keyup', 'Enter', 2055);
+    expect(questShown(), 'precondition: A on Journal opened the quest log').toBe(true);
+    expect(stack(), 'precondition: the Journal is above the covered menu').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'menuView' },
+      { kind: 'screen', id: 'questLogView' },
+    ]);
+    for (const t of [2349, 2350, 2450, 2700]) frame(t);
+    expect(seen, 'the Up held since before the Journal opened never reaches it').toEqual([]);
+    expect(menuCursor(), 'and the covered menu did not move').toBe('journal');
+    fire('keyup', 'ArrowUp', 2800);
+
+    // Control: a fresh Up in the Journal is the Journal's.
+    tapKey('ArrowUp', 2900);
+    expect(seen, 'control: a fresh press reaches the Journal').toEqual([
+      { button: 'Up', repeat: false },
+    ]);
+    expect(H.sends, 'nothing walked').toHaveLength(0);
+  });
+});

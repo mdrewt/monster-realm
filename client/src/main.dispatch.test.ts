@@ -1694,3 +1694,126 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     );
   });
 });
+
+// ==========================================================================================
+// ctl-7c round 2: a store batch and a held D-pad key (red-team survivors M5, M5b)
+// ==========================================================================================
+//
+// A batch whose reconcile DROPS a frame assigns the stack directly (no mirror edge), so the shell
+// itself must stop a repeat armed in the dropped frame; a batch that drops nothing must leave a
+// running repeat alone. Here the dropped frame is the box stand-in shown by its own flag above
+// the menu over a battle (not battle-safe, so the next batch drops it), as the red-team PoC does.
+
+/** A keydown at the window at clock `t` (no keyup: the key stays held). */
+function keyDown(code: string, t: number): KeyboardEvent {
+  clock.t = t;
+  const down = new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true });
+  window.dispatchEvent(down);
+  return down;
+}
+
+/** The keyup of a held key at clock `t`. */
+function keyUp(code: string, t: number): void {
+  clock.t = t;
+  window.dispatchEvent(new KeyboardEvent('keyup', { code, bubbles: true, cancelable: true }));
+}
+
+/** The main menu's active entry while it is open, else null (the read-only `__game()` hook). */
+const menuCursorNow = (): string | null =>
+  (window as unknown as { __game: () => { navActive: string | null } }).__game().navActive;
+
+describe('main.ts store batches and a held key (runtime, ctl-7c)', { sequential: true }, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    rafCallback = null;
+    H.gate = null;
+    H.frozen = false;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  it('CTL7C-1-BOOT-RECONCILE-RESET: a D-pad key held on a nav-capable frame that a store batch drops never repeats into the menu the drop uncovers; a batch that drops nothing leaves a running menu repeat alone', async () => {
+    // WRONG IMPL KILLED (M5, M5b): a reconcile drop that does not reset the repeat (the drop raises
+    // no mirror edge: the arrow held on the dropped screen walks the menu cursor under it at
+    // 10 Hz with no key pressed in the menu), and the over-correction, a reset on EVERY batch (a
+    // held arrow in a menu would stall on each store batch, which arrive several times a second
+    // in play).
+    await bootReady();
+    server(1000);
+    const seen: Pressed[] = [];
+    swapAdapter('boxView', {
+      nav: true,
+      viewModel: () => undefined,
+      init: () => undefined,
+      onButton: (_vm: unknown, state: unknown, btn: Pressed) => {
+        seen.push(btn);
+        return { state, result: btn.button === 'B' && !btn.repeat ? { kind: 'pop' } : 'consumed' };
+      },
+    });
+
+    // --- (a) a batch that drops nothing: Down held in the open main menu keeps repeating ------
+    openMenuAtWorld(1010);
+    expect(menuCursorNow(), 'a, precondition: the menu opens on its first entry').toBe('monsters');
+    keyDown('ArrowDown', 1100);
+    expect(menuCursorNow(), 'a, precondition: the press moved the cursor').toBe('bag');
+    server(1200); // an unrelated store batch: nothing is dropped
+    expect(stackNow(), 'a, precondition: the batch dropped nothing').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'menuView' },
+    ]);
+    frame(1449);
+    expect(menuCursorNow(), 'a: nothing before +350').toBe('bag');
+    frame(1450);
+    expect(menuCursorNow(), 'a: the repeat survived the batch').toBe('journal');
+    keyUp('ArrowDown', 1460);
+    press('Escape', 1500);
+    expect(stackNow(), 'a: Start closed the menu').toEqual([{ kind: 'world' }]);
+
+    // --- (b) a batch that drops the frame the key is held on ----------------------------------
+    putBattle(BATTLE_ID, 1600);
+    press('Escape', 1700);
+    expect(stackNow(), 'b, precondition: Start opened the menu over the battle').toEqual([
+      { kind: 'battle', battleId: '101' },
+      { kind: 'screen', id: 'menuView', overBattle: '101' },
+    ]);
+    const box = H.views.BoxView;
+    if (box === undefined) throw new Error('BoxView was never constructed by main.ts');
+    box.visible = true; // a nav screen that is not battle-safe, above the battle-safe menu
+    const held = keyDown('ArrowDown', 1800);
+    expect(stackNow(), 'b, precondition: the box is a frame above the menu').toEqual([
+      { kind: 'battle', battleId: '101' },
+      { kind: 'screen', id: 'menuView', overBattle: '101' },
+      { kind: 'screen', id: 'boxView', overBattle: '101' },
+    ]);
+    expect(seen, 'b, precondition: the press reached the box').toEqual([
+      { button: 'Down', repeat: false },
+    ]);
+    expect(held.defaultPrevented).toBe(true);
+    const cursor = menuCursorNow();
+    expect(cursor, 'b, precondition: the covered menu is open').not.toBeNull();
+
+    server(1900); // the batch's reconcile drops the box
+    expect(stackNow(), 'b, precondition: the batch dropped the box').toEqual([
+      { kind: 'battle', battleId: '101' },
+      { kind: 'screen', id: 'menuView', overBattle: '101' },
+    ]);
+    expect(box.visible, 'b, precondition: through its own hide').toBe(false);
+    for (const t of [2149, 2150, 2250, 2500, 3000]) frame(t);
+    expect(menuCursorNow(), 'b: the arrow held on the dropped box never walks the menu').toBe(
+      cursor,
+    );
+    expect(
+      seen.filter((b) => b.repeat),
+      'b: nor repeats into the dropped box',
+    ).toEqual([]);
+    keyUp('ArrowDown', 3100);
+
+    // Control: the menu, on top again, moves for a fresh press.
+    press('ArrowDown', 3200);
+    expect(menuCursorNow(), 'b, control: a fresh press moves the menu').not.toBe(cursor);
+  });
+});
