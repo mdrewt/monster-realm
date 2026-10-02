@@ -1726,3 +1726,278 @@ describe('m24s4 (ADR-0260): boxView.ts scan — zero failing sinks', () => {
     }
   });
 });
+
+// =============================================================================
+// ctl-7b (CTL7B.1): the box is a class-styled `.mr-frame` shell inside `#game-screen`, not an
+// inline position:fixed overlay with a translucent backdrop.
+//
+// WHAT THESE CASES CAN AND CANNOT PROVE: happy-dom does no cascade, no layout and no paint, so
+// they prove the INLINE half of the contract only: which classes the root carries and which inline
+// declarations it (and everything under it) still writes. Where the box lands and how its text
+// paints against the real stylesheet is proved in real Chromium by client/e2e/a11y.spec.ts
+// (CTL7B-E2E-ROOTS / CTL7B-E2E-BOX).
+//
+// The inline declarations are read from the style ATTRIBUTE and split by hand, never through
+// happy-dom's CSSStyleDeclaration: that object expands shorthands (`inset`, `padding`, `background`)
+// into longhands, so a name-set read through it depends on the happy-dom version.
+// =============================================================================
+
+/** The inline declarations of `el` (lower-cased property name -> raw value), from its style attribute. */
+function ctl7bInline(el: Element): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const part of (el.getAttribute('style') ?? '').split(';')) {
+    const colon = part.indexOf(':');
+    if (colon === -1) continue;
+    const prop = part.slice(0, colon).trim().toLowerCase();
+    if (prop !== '') out.set(prop, part.slice(colon + 1).trim());
+  }
+  return out;
+}
+
+/** Inline properties that place, layer, dim, hide or recolour an element outside the stylesheet. */
+const CTL7B_BANNED_ON_DESCENDANTS: ReadonlySet<string> = new Set([
+  'position',
+  'inset',
+  'top',
+  'right',
+  'bottom',
+  'left',
+  'z-index',
+  'opacity',
+  'filter',
+  'transform',
+  'visibility',
+  'mix-blend-mode',
+  '-webkit-text-fill-color',
+]);
+
+/** Fails naming every inline property on `root` that is not in `allowed` (an ALLOW-LIST). */
+function ctl7bExpectOnlyInline(root: HTMLElement, allowed: readonly string[], when: string): void {
+  const stray = [...ctl7bInline(root).keys()].filter((name) => !allowed.includes(name));
+  expect(
+    stray,
+    `CTL7B ${when}: the root may write only ${JSON.stringify(allowed)} inline. The shell class ` +
+      'places it inside the screen and the frame class paints it, so any other inline property ' +
+      '(position, inset, z-index, background, color, padding, overflow, font ...) is the old ' +
+      'overlay still being drawn by hand',
+  ).toEqual([]);
+}
+
+/** Fails naming every descendant of `root` with a banned inline property; returns how many were walked. */
+function ctl7bExpectCleanDescendants(root: HTMLElement, when: string): number {
+  const all = [...root.querySelectorAll('*')];
+  const offenders: string[] = [];
+  for (const el of all) {
+    for (const prop of ctl7bInline(el).keys()) {
+      if (CTL7B_BANNED_ON_DESCENDANTS.has(prop)) {
+        offenders.push(`<${el.tagName.toLowerCase()}> ${prop}`);
+      }
+    }
+  }
+  expect(
+    offenders,
+    `CTL7B ${when}: no element under the root may place, layer, dim, hide or recolour itself ` +
+      'inline — each is a way to leave the frame or to lower its text contrast that the class ' +
+      'rules cannot override',
+  ).toEqual([]);
+  return all.length;
+}
+
+function ctl7bClasses(el: Element): string[] {
+  return el.className
+    .split(/\s+/)
+    .filter((c) => c !== '')
+    .sort();
+}
+
+/** The element's OWN text nodes, concatenated. */
+function ctl7bOwnText(el: Element): string {
+  return [...el.childNodes]
+    .filter((n) => n.nodeType === 3)
+    .map((n) => n.textContent ?? '')
+    .join('');
+}
+
+/** `[r, g, b, a]` from a bare #rgb / #rrggbb / rgb() / rgba() literal; THROWS on anything else. */
+function ctl7bRgba(raw: string): readonly [number, number, number, number] {
+  const value = raw.trim().toLowerCase();
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/.exec(value);
+  if (hex !== null) {
+    const body = hex[1] as string;
+    const wide = body.length === 6;
+    const channel = (i: number): number =>
+      Number.parseInt(wide ? body.slice(i * 2, i * 2 + 2) : (body[i] as string).repeat(2), 16);
+    return [channel(0), channel(1), channel(2), 1];
+  }
+  const fn =
+    /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*(\d*\.?\d+)\s*)?\)$/.exec(value);
+  if (fn !== null) {
+    return [
+      Number.parseInt(fn[1] as string, 10),
+      Number.parseInt(fn[2] as string, 10),
+      Number.parseInt(fn[3] as string, 10),
+      fn[4] === undefined ? 1 : Number.parseFloat(fn[4]),
+    ];
+  }
+  throw new Error(
+    `CTL7B colour refused: ${JSON.stringify(raw)} is not a bare #rgb / #rrggbb / rgb() / rgba() ` +
+      'literal. This reader never defaults an unreadable colour (a default would let the gate ' +
+      'pass by deleting the declaration)',
+  );
+}
+
+function ctl7bContrast(a: readonly number[], b: readonly number[]): number {
+  const lin = (c: number): number => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  const lum = (c: readonly number[]): number =>
+    0.2126 * lin(c[0] as number) + 0.7152 * lin(c[1] as number) + 0.0722 * lin(c[2] as number);
+  return (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
+}
+
+/** `.mr-frame`'s `--mr-frame-fg` default: what text paints in when no inline colour is set. */
+const CTL7B_FRAME_FG = '#e0e0e0';
+/** The two surfaces an empty-state line sits on: the frame (`--mr-frame-bg`) and a card. */
+const CTL7B_SURFACES = ['#1e1e2e', '#1a1a2e'] as const;
+
+/** The inline colour in force for `el`: its own or the nearest ancestor's below `root`, else the frame fg. */
+function ctl7bEffectiveColour(el: HTMLElement, root: HTMLElement): string {
+  for (let n: HTMLElement | null = el; n !== null && n !== root; n = n.parentElement) {
+    const colour = ctl7bInline(n).get('color');
+    if (colour !== undefined) return colour;
+  }
+  return CTL7B_FRAME_FG;
+}
+
+/** Every empty-state element must be opaque and readable on both surfaces. */
+function ctl7bExpectReadableEmpties(emptyEls: readonly Element[], root: HTMLElement): void {
+  for (const el of emptyEls) {
+    const raw = ctl7bEffectiveColour(el as HTMLElement, root);
+    const rgba = ctl7bRgba(raw);
+    const label = JSON.stringify(ctl7bOwnText(el));
+    expect(
+      rgba[3],
+      `CTL7B ${label}: the empty-state colour ${raw} must be fully opaque (alpha 1) — a ` +
+        'translucent colour is opacity by another name',
+    ).toBe(1);
+    for (const surface of CTL7B_SURFACES) {
+      const ratio = ctl7bContrast(rgba, ctl7bRgba(surface));
+      expect(
+        ratio,
+        `CTL7B ${label}: ${raw} on ${surface} measures ${ratio.toFixed(2)}:1, under the 4.5:1 AA ` +
+          'minimum for small text',
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+  }
+}
+
+describe('BoxView ctl-7b: the box root is a class-styled frame, inline only for visibility', () => {
+  it('CTL7B-1-BOX-FRAME BITES: the box root is the one child of its parent, carries exactly .mr-frame and .mr-shell, writes only display and align-items inline in every state, and toggles display flex/none', async () => {
+    // WRONG IMPLS KILLED:
+    //  (1) the shipped root: `position:fixed;inset:0;z-index:100;background:rgba(...)` ... in its
+    //      cssText (every state reds on the allow-list);
+    //  (2) a root with the classes AND the old inline overlay still on it (the inline declaration
+    //      beats the class rule at every specificity, so the shell would never apply);
+    //  (3) `.mr-shell--top` borrowed for the box (z 120 would sit above the battle overlay);
+    //  (4) the frame class on a WRAPPER around the root (identity is pinned through the title);
+    //  (5) a fixed-position / dim / hide declaration smuggled onto a DESCENDANT after the root is
+    //      clean (the subtree walk is run in every state, empty ones included);
+    //  (6) a show() that no longer writes display:flex, or a hide() that no longer writes none
+    //      (visibility is the one inline contract left; e2e/pvp.spec.ts and trade.spec.ts read
+    //      `#app > div` style.display === 'flex' to detect the open box).
+    const { parent, view } = mount();
+    expect(parent.children, 'the view appends exactly ONE root into its parent').toHaveLength(1);
+    const root = parent.firstElementChild as HTMLElement;
+    const title = parent.querySelector('[data-testid="box-title"]');
+    expect(title, 'precondition: the title anchor exists').not.toBeNull();
+    expect(
+      title?.parentElement?.parentElement,
+      'the root is the header\'s parent — the "Party & Box" h2 -> header -> root chain that ' +
+        'client/e2e/recruit.spec.ts resolves it by',
+    ).toBe(root);
+    expect(
+      ctl7bClasses(root),
+      'the root carries exactly the frame and the shell class — and not .mr-shell--top, which ' +
+        'is the menu / help layer',
+    ).toEqual(['mr-frame', 'mr-shell']);
+
+    const allowed = ['display', 'align-items'];
+    const sample = (when: string): number => {
+      ctl7bExpectOnlyInline(root, allowed, when);
+      return ctl7bExpectCleanDescendants(root, when);
+    };
+
+    sample('constructed');
+    expect(root.style.display, 'hidden at construction').toBe('none');
+
+    view.show();
+    sample('shown');
+    expect(root.style.display, 'show() writes display:flex').toBe('flex');
+    expect(ctl7bInline(root).get('display')).toBe('flex');
+
+    view.refresh(makePartySlots(), [makeBoxRecruitCard()]);
+    const walked = sample('populated refresh');
+    expect(
+      walked,
+      'non-vacuity: a populated box renders well over a dozen elements',
+    ).toBeGreaterThan(15);
+    expect(root.style.display, 'a refresh does not touch visibility').toBe('flex');
+    // A deferred write (a setTimeout that re-adds an inline position after show()) lands here.
+    await s4FlushMacrotask();
+    sample('populated refresh, one macrotask later');
+    expect(root.style.display).toBe('flex');
+
+    // Cards carrying the evolution-choice badge: a different descendant shape, same ban.
+    view.refresh(partySlotsWithBadge(true), [
+      makeCard({
+        monsterId: 200n,
+        speciesName: 'Emberfang',
+        partySlot: 255,
+        evolutionChoicePending: true,
+      }),
+    ]);
+    expect(
+      parent.querySelectorAll('[data-testid="evo-choice-badge"]').length,
+      'non-vacuity: the badge renders in the party card and in the box card',
+    ).toBe(2);
+    sample('badged refresh');
+
+    view.refresh([null, null, null, null, null, null], []);
+    sample('empty refresh');
+
+    view.hide();
+    sample('hidden');
+    expect(root.style.display, 'hide() writes display:none').toBe('none');
+    expect(ctl7bInline(root).get('display')).toBe('none');
+  });
+
+  it('CTL7B-1-NO-OPACITY-DIM-BOX BITES: the empty party slots and the empty storage line carry no inline opacity or filter and paint an opaque colour at 4.5:1 on both the frame and the card surface', () => {
+    // WRONG IMPLS KILLED: the shipped empties (`el.style.opacity = '0.4'`): opacity composites
+    // the text below 4.5:1, and it is invisible to any check that reads only a colour; the same
+    // dimming spelled as `filter`; a replacement colour that is translucent (alpha < 1) or too
+    // dim (#666 on #1a1a2e is 2.9:1); an unreadable colour literal (named, hsl, 8-digit hex).
+    const { parent, view } = mount();
+    view.refresh([null, null, null], []);
+    view.show();
+    const root = parent.firstElementChild as HTMLElement;
+
+    const dimmers: string[] = [];
+    for (const el of [root, ...root.querySelectorAll('*')]) {
+      for (const prop of ['opacity', 'filter']) {
+        if (ctl7bInline(el).has(prop)) dimmers.push(`<${el.tagName.toLowerCase()}> ${prop}`);
+      }
+    }
+    expect(dimmers, 'no element in the empty box may dim itself inline').toEqual([]);
+
+    const empties = [...root.querySelectorAll('*')].filter((el) => {
+      const own = ctl7bOwnText(el);
+      return own.includes('(empty)') || own.includes('No monsters in box.');
+    });
+    expect(
+      empties.map((el) => ctl7bOwnText(el)),
+      'precondition: three empty party slots and the empty storage line are rendered',
+    ).toHaveLength(4);
+    ctl7bExpectReadableEmpties(empties, root);
+  });
+});

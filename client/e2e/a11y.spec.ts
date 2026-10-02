@@ -256,6 +256,18 @@ interface FrameMeasure {
     readonly fg: string;
     readonly bg: string;
   }>;
+  /**
+   * Ancestors-or-self of a measured text element that paint through something the contrast oracle
+   * cannot see: a `background-image`, a `filter` or a `mix-blend-mode` (ctl-7b). Each is reported
+   * once, however many text elements sit under it.
+   */
+  readonly hostile: ReadonlyArray<{
+    readonly node: string;
+    readonly prop: string;
+    readonly value: string;
+  }>;
+  /** Measured text elements whose box is not inside the root's box (0.5px slack). */
+  readonly outsideRoot: ReadonlyArray<{ readonly text: string; readonly rect: string }>;
 }
 
 /**
@@ -267,6 +279,17 @@ interface FrameMeasure {
  * opaque one. A stack that reaches the root without an opaque layer sits over the game canvas,
  * whose pixels are unknown, so it is composited over BOTH white and black and the WORSE ratio is
  * kept: an honest bound, never an optimistic one.
+ *
+ * ctl-7b hardens the oracle against four ways of passing it falsely, each measured on the page:
+ *  - OPACITY: the product of `opacity` over the element and every ancestor up to <html> is folded
+ *    into the foreground alpha, so text dimmed by `opacity` (the old `opacity: 0.4` empties)
+ *    cannot read as its undimmed colour;
+ *  - `-webkit-text-fill-color`: when it differs from `color` it is what paints, so it is measured;
+ *  - HOSTILE ANCESTORS: any ancestor-or-self with a `background-image`, a `filter` or a
+ *    `mix-blend-mode` paints through something this colour arithmetic cannot see, and is reported;
+ *  - the canvas mount: a layer walk that reaches `#app` stops there, because under it is the game
+ *    canvas (unknown pixels), not the opaque <body> background the walk would otherwise land on.
+ * It also reports every text element whose box is not inside the root's box.
  *
  * Excluded, each for a stated reason: `.sr-only` nodes (the 1px live region that is re-parented
  * into an open overlay is not visible text) and the text of a DISABLED form control (WCAG 1.4.3
@@ -303,10 +326,14 @@ function measureFrameInPage(frameSelector: string): FrameMeasure {
     const lb = luminance(b);
     return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
   };
-  /** Translucent-or-opaque background layers from `el` up, stopping at the first opaque one. */
+  /**
+   * Translucent-or-opaque background layers from `el` up, stopping at the first opaque one or at
+   * the canvas mount `#app` (whatever sits under it is the game canvas, whose pixels are unknown).
+   */
   const layersOf = (el: Element): Rgba[] => {
     const out: Rgba[] = [];
     for (let n: Element | null = el; n !== null; n = n.parentElement) {
+      if (n.id === 'app') break;
       const c = parse(getComputedStyle(n).backgroundColor);
       if (c[3] > 0) out.push(c);
       if (c[3] === 1) break;
@@ -346,12 +373,52 @@ function measureFrameInPage(frameSelector: string): FrameMeasure {
     );
   };
 
+  /** The product of `opacity` over `el` and every ancestor up to <html>. */
+  const opacityProduct = (el: Element): number => {
+    let product = 1;
+    for (let n: Element | null = el; n !== null; n = n.parentElement) {
+      product *= Number.parseFloat(getComputedStyle(n).opacity);
+    }
+    return product;
+  };
+  const ownText = (el: Element): string =>
+    Array.from(el.childNodes)
+      .filter((n) => n.nodeType === Node.TEXT_NODE)
+      .map((n) => (n.textContent ?? '').trim())
+      .join(' ')
+      .slice(0, 60);
+  const hostile: Array<{ node: string; prop: string; value: string }> = [];
+  const walked = new Set<Element>();
+  /** Report every ancestor-or-self of `el` (once) that paints through an image, filter or blend. */
+  const checkHostile = (el: Element): void => {
+    for (let n: Element | null = el; n !== null; n = n.parentElement) {
+      if (walked.has(n)) break; // an ancestor chain already walked from here upward
+      walked.add(n);
+      const cs = getComputedStyle(n);
+      const probes: Array<[string, string, string]> = [
+        ['background-image', cs.backgroundImage, 'none'],
+        ['filter', cs.filter, 'none'],
+        ['mix-blend-mode', cs.mixBlendMode, 'normal'],
+      ];
+      for (const [prop, value, fine] of probes) {
+        if (value !== fine) {
+          hostile.push({
+            node: `${n.tagName.toLowerCase()}${n.id ? `#${n.id}` : ''}`,
+            prop,
+            value,
+          });
+        }
+      }
+    }
+  };
+
   const root = document.querySelector(frameSelector);
   const scroller = document.scrollingElement ?? document.documentElement;
   const rootBox = root === null ? null : root.getBoundingClientRect();
   let textElements = 0;
   const lowContrast: Array<{ text: string; ratio: number; fg: string; bg: string }> = [];
-  if (root !== null) {
+  const outsideRoot: Array<{ text: string; rect: string }> = [];
+  if (root !== null && rootBox !== null) {
     for (const el of [root, ...Array.from(root.querySelectorAll('*'))]) {
       if (!hasOwnText(el) || !isVisible(el)) continue;
       if (el.closest('.sr-only') !== null) continue;
@@ -359,19 +426,37 @@ function measureFrameInPage(frameSelector: string): FrameMeasure {
         continue;
       }
       textElements += 1;
-      const fgCss = getComputedStyle(el).color;
-      const { ratio, bg } = worstRatio(parse(fgCss), layersOf(el));
+      checkHostile(el);
+      const cs = getComputedStyle(el);
+      // What paints is -webkit-text-fill-color (it defaults to the colour, so it only differs when
+      // something set it), dimmed by the opacity of the element and of every ancestor.
+      const fgCss =
+        cs.webkitTextFillColor !== '' && cs.webkitTextFillColor !== cs.color
+          ? cs.webkitTextFillColor
+          : cs.color;
+      const parsed = parse(fgCss);
+      const dim = opacityProduct(el);
+      const fg: Rgba = [parsed[0], parsed[1], parsed[2], parsed[3] * dim];
+      const { ratio, bg } = worstRatio(fg, layersOf(el));
       if (ratio < 4.5) {
-        const text = Array.from(el.childNodes)
-          .filter((n) => n.nodeType === Node.TEXT_NODE)
-          .map((n) => (n.textContent ?? '').trim())
-          .join(' ')
-          .slice(0, 60);
         lowContrast.push({
-          text,
+          text: ownText(el),
           ratio: Math.round(ratio * 100) / 100,
-          fg: fgCss,
+          fg: dim < 1 ? `${fgCss} at opacity ${Math.round(dim * 100) / 100}` : fgCss,
           bg: `rgb(${bg.slice(0, 3).map(Math.round).join(', ')})`,
+        });
+      }
+      const box = el.getBoundingClientRect();
+      const slack = 0.5;
+      if (
+        box.left < rootBox.left - slack ||
+        box.top < rootBox.top - slack ||
+        box.right > rootBox.right + slack ||
+        box.bottom > rootBox.bottom + slack
+      ) {
+        outsideRoot.push({
+          text: ownText(el),
+          rect: `${Math.round(box.left)},${Math.round(box.top)},${Math.round(box.right)},${Math.round(box.bottom)}`,
         });
       }
     }
@@ -387,11 +472,23 @@ function measureFrameInPage(frameSelector: string): FrameMeasure {
         : { left: rootBox.left, top: rootBox.top, right: rootBox.right, bottom: rootBox.bottom },
     textElements,
     lowContrast,
+    hostile,
+    outsideRoot,
   };
 }
 
-/** The shared CTL7A.1 / .2 / .3 assertions over one measured frame. */
-function expectFrameOk(m: FrameMeasure, label: string): void {
+/**
+ * The shared CTL7A.1 / .2 / .3 assertions over one measured frame, plus (ctl-7b) the oracle's own
+ * integrity: nothing it measured paints through an image, filter or blend mode, and every measured
+ * text element lies inside the root's box. `scrolledText` opts out of the second clause for a root
+ * that is DELIBERATELY shorter than its content (a scroll container in a short viewport), where
+ * text below the fold is not a defect; the caller then proves reachability another way.
+ */
+function expectFrameOk(
+  m: FrameMeasure,
+  label: string,
+  options: { readonly scrolledText?: boolean } = {},
+): void {
   expect(
     m.scrollHeight,
     `${label}: the page must never scroll (scrollHeight ${m.scrollHeight} > innerHeight ${m.innerHeight})`,
@@ -422,6 +519,16 @@ function expectFrameOk(m: FrameMeasure, label: string): void {
     m.lowContrast,
     `${label}: text under 4.5:1 contrast — ${JSON.stringify(m.lowContrast)}`,
   ).toEqual([]);
+  expect(
+    m.hostile,
+    `${label}: an ancestor of measured text paints through a background-image, a filter or a blend mode, which the contrast arithmetic cannot see — ${JSON.stringify(m.hostile)}`,
+  ).toEqual([]);
+  if (options.scrolledText !== true) {
+    expect(
+      m.outsideRoot,
+      `${label}: text must lie inside the frame's box — ${JSON.stringify(m.outsideRoot)}`,
+    ).toEqual([]);
+  }
 }
 
 /** What `measureActiveMarkInPage` reports for the active menu row against an inactive sibling. */
@@ -761,5 +868,290 @@ test.describe
       });
       await page.keyboard.press('KeyN');
       await expect(page.locator('#rename-overlay')).toBeHidden();
+    });
+
+    // -----------------------------------------------------------------------------------------
+    // ctl-7b (CTL7B.1), the real-browser half: battle, box, raising and evolution are class-styled
+    // `.mr-frame` roots under `#game-screen` (the unit tier reads their inline styles and
+    // styles.css; only Chromium says where they land and what their text really paints).
+    //
+    // The four REAL roots are constructed hidden at boot by main.ts and appended to `#app`, so
+    // each is found structurally: its title's ancestor whose parent is `#app`.
+    // -----------------------------------------------------------------------------------------
+
+    // The blur is INSIDE the polled function: a closing overlay's deferred focus-return can
+    // re-focus the canvas after a single blur, so each poll blurs again before it reads.
+    const blurToBody = async (): Promise<void> => {
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            (document.activeElement as HTMLElement | null)?.blur();
+            return document.activeElement?.tagName;
+          }),
+        )
+        .toBe('BODY');
+    };
+
+    /** Tag the `#app` child that holds `testId`'s title, so `measureFrameInPage` can address it. */
+    const tagAppRoot = (testId: string, tag: string): Promise<boolean> =>
+      page.evaluate(
+        ({ id, tagName }) => {
+          let node: Element | null = document.querySelector(`[data-testid="${id}"]`);
+          while (node !== null && node.parentElement?.id !== 'app') node = node.parentElement;
+          if (node !== null) node.setAttribute('data-ctl7b-root', tagName);
+          return node !== null;
+        },
+        { id: testId, tagName: tag },
+      );
+
+    const untagAppRoot = (): Promise<void> =>
+      page.evaluate(() => {
+        document.querySelector('[data-ctl7b-root]')?.removeAttribute('data-ctl7b-root');
+      });
+
+    const computedDisplayOfTagged = (tag: string): Promise<string> =>
+      page.evaluate((tagName) => {
+        const el = document.querySelector(`[data-ctl7b-root="${tagName}"]`);
+        return el === null ? 'missing' : getComputedStyle(el).display;
+      }, tag);
+
+    test('CTL7B-E2E-ROOTS: the four real roots (battle, box, raising, evolution) are .mr-frame children of #app inside #game-screen, and only the battle carries the fixed layer classes', async () => {
+      const roots = await page.evaluate(() =>
+        ['battle', 'box', 'raising', 'evolution'].map((name) => {
+          const titles = document.querySelectorAll(`[data-testid="${name}-title"]`);
+          let node: Element | null = titles[0] ?? null;
+          while (node !== null && node.parentElement?.id !== 'app') node = node.parentElement;
+          const screen = node === null ? null : node.closest('#game-screen');
+          return {
+            name,
+            titles: titles.length,
+            appChild: node !== null,
+            inGameScreen: screen !== null,
+            classes: node === null ? [] : Array.from(node.classList).sort(),
+          };
+        }),
+      );
+      const frame = ['mr-frame', 'mr-shell'];
+      expect(
+        roots,
+        'each real root is a direct child of #app (inside #game-screen) carrying exactly the frame ' +
+          'classes; the battle adds .mr-shell--top (fixed, for E0) and .mr-shell--battle (its layer)',
+      ).toEqual([
+        {
+          name: 'battle',
+          titles: 1,
+          appChild: true,
+          inGameScreen: true,
+          classes: [...frame, 'mr-shell--battle', 'mr-shell--top'],
+        },
+        { name: 'box', titles: 1, appChild: true, inGameScreen: true, classes: frame },
+        { name: 'raising', titles: 1, appChild: true, inGameScreen: true, classes: frame },
+        { name: 'evolution', titles: 1, appChild: true, inGameScreen: true, classes: frame },
+      ]);
+    });
+
+    test('CTL7B-E2E-BOX: with the box open (KeyB), the page does not scroll, the frame lies in the viewport and its text reads at >= 4.5:1; the same key closes it', async () => {
+      await blurToBody();
+      await page.keyboard.press('KeyB');
+      await expect(page.getByTestId('box-title')).toBeVisible();
+      try {
+        expect(await tagAppRoot('box-title', 'box'), 'the box title sits under a #app child').toBe(
+          true,
+        );
+        const m = await page.evaluate(measureFrameInPage, '[data-ctl7b-root="box"]');
+        expectFrameOk(m, 'box');
+        await page.keyboard.press('KeyB');
+        await expect.poll(() => computedDisplayOfTagged('box')).toBe('none');
+      } finally {
+        await untagAppRoot();
+      }
+    });
+
+    test('CTL7B-E2E-RAISING: with the raising screen open (KeyI), the page does not scroll, the frame lies in the viewport and its text reads at >= 4.5:1; the same key closes it', async () => {
+      await blurToBody();
+      await page.keyboard.press('KeyI');
+      await expect(page.getByTestId('raising-title')).toBeVisible();
+      try {
+        expect(
+          await tagAppRoot('raising-title', 'raising'),
+          'the raising title sits under a #app child',
+        ).toBe(true);
+        const m = await page.evaluate(measureFrameInPage, '[data-ctl7b-root="raising"]');
+        expectFrameOk(m, 'raising');
+        await page.keyboard.press('KeyI');
+        await expect.poll(() => computedDisplayOfTagged('raising')).toBe('none');
+      } finally {
+        await untagAppRoot();
+      }
+    });
+
+    test('CTL7B-E2E-EVOLUTION: with the evolution screen open (KeyE), the page does not scroll, the frame lies in the viewport and its text reads at >= 4.5:1; the same key closes it', async () => {
+      await blurToBody();
+      await page.keyboard.press('KeyE');
+      await expect(page.getByTestId('evolution-title')).toBeVisible();
+      try {
+        expect(
+          await tagAppRoot('evolution-title', 'evolution'),
+          'the evolution title sits under a #app child',
+        ).toBe(true);
+        // The backdrop is translucent over the game canvas, so the root-level text is measured
+        // over both a white and a black page (measureFrameInPage stops its layer walk at #app).
+        const m = await page.evaluate(measureFrameInPage, '[data-ctl7b-root="evolution"]');
+        expectFrameOk(m, 'evolution');
+        await page.keyboard.press('KeyE');
+        await expect.poll(() => computedDisplayOfTagged('evolution')).toBe('none');
+      } finally {
+        await untagAppRoot();
+      }
+    });
+
+    // The battle is not reachable without an encounter (a real walk is out of this suite's budget:
+    // e2e/encounter-battle.spec.ts E0 already proves the real layering). So the test imports the
+    // view through the Vite dev server INSIDE the page and mounts a second BattleView into the
+    // real #app with a fixture view-model, tagged `data-ctl7b-fixture`.
+    //
+    // The page-side code is passed to Playwright as a STRING. A function containing `import()` is
+    // serialised after Playwright's own TypeScript transform, which is free to rewrite a dynamic
+    // import into a `require()` that does not exist in the page; a string reaches the page as
+    // written.
+    const BATTLE_SPEC = '/src/ui/battleView.ts';
+    const BATTLE_CARD =
+      "{ speciesName: 'Sproutle', level: 6, currentHp: 16, maxHp: 22, hpPercent: 72, affinity: 'Plant', status: 'PSN' }";
+    const BATTLE_FOE =
+      "{ speciesName: 'Emberfang', level: 5, currentHp: 14, maxHp: 19, hpPercent: 73, affinity: 'Fire', status: 'BRN' }";
+    /** An ongoing PvE battle: both cards with a status badge, a weather banner, two skills, Flee and a Swap. */
+    const BATTLE_ONGOING = `{
+      battleId: 9001n, turnNumber: 3, outcome: 'Ongoing',
+      playerCard: ${BATTLE_CARD}, opponentCard: ${BATTLE_FOE},
+      skills: [
+        { id: 1, name: 'Vine Whip', affinity: 'Plant', power: 40, accuracy: 100 },
+        { id: 2, name: 'Tackle', affinity: 'Normal', power: 35, accuracy: 95 },
+      ],
+      canFlee: true, canSwap: true,
+      bench: [{ teamIndex: 1, speciesName: 'Mossling', currentHp: 12, maxHp: 18 }],
+      canRecruit: false, baitOptions: [], cureItems: [],
+      weather: { label: 'Rain', turnsRemaining: 3 },
+      isPvp: false, pvpPendingSubmit: false, pvpOpponentName: null,
+    }`;
+    /** The same battle won: the outcome banner and the Esc hint show, the controls are gone. */
+    const BATTLE_WON = `{
+      battleId: 9001n, turnNumber: 4, outcome: 'SideAWins',
+      playerCard: ${BATTLE_CARD}, opponentCard: ${BATTLE_FOE},
+      skills: [], canFlee: false, canSwap: false, bench: [],
+      canRecruit: false, baitOptions: [], cureItems: [],
+      weather: null,
+      isPvp: false, pvpPendingSubmit: false, pvpOpponentName: null,
+    }`;
+    const MOUNT_BATTLE = `(async () => {
+      const mod = await import(${JSON.stringify(BATTLE_SPEC)});
+      const noop = () => {};
+      const app = document.getElementById('app');
+      if (app === null) throw new Error('#app is missing');
+      const view = new mod.BattleView(app, {
+        onAttack: noop, onFlee: noop, onSwap: noop, onRecruit: noop,
+        onUseItem: noop, onPvpAttack: noop, onPvpSwap: noop,
+      });
+      app.lastElementChild.setAttribute('data-ctl7b-fixture', '1');
+      window.__ctl7bBattle = view;
+      return true;
+    })()`;
+    const showBattle = async (vm: string): Promise<void> => {
+      await page.evaluate(
+        `(() => { const v = window.__ctl7bBattle; v.refresh(${vm}); v.show(); })()`,
+      );
+    };
+    const REMOVE_BATTLE = `(() => {
+      const v = window.__ctl7bBattle;
+      if (v) v.hide();
+      for (const n of document.querySelectorAll('[data-ctl7b-fixture]')) n.remove();
+      delete window.__ctl7bBattle;
+    })()`;
+
+    test('CTL7B-E2E-BATTLE: a mounted battle, ongoing and won, is a frame inside the viewport at >= 4.5:1, layered between the shells and the menu, and at 640x360 its title stays reachable', async () => {
+      await blurToBody();
+      const original = page.viewportSize();
+      try {
+        await page.evaluate(MOUNT_BATTLE);
+        await showBattle(BATTLE_ONGOING);
+        const fixture = page.locator('[data-ctl7b-fixture]');
+        await expect(fixture).toBeVisible();
+
+        const ongoing = await page.evaluate(measureFrameInPage, '[data-ctl7b-fixture]');
+        expectFrameOk(ongoing, 'battle (ongoing)');
+
+        // The layer, as Chromium cascades it: the fixed position E0 needs, above every shell and
+        // under the menu and help that open over a battle.
+        const layers = await page.evaluate(() => {
+          const z = (selector: string): string => {
+            const el = document.querySelector(selector);
+            return el === null ? 'missing' : getComputedStyle(el).zIndex;
+          };
+          const root = document.querySelector('[data-ctl7b-fixture]');
+          return {
+            position: root === null ? 'missing' : getComputedStyle(root).position,
+            battle: z('[data-ctl7b-fixture]'),
+            shell: z('#rename-overlay'),
+            menu: z('#menu-overlay'),
+            help: z('#help-overlay'),
+          };
+        });
+        expect(
+          layers,
+          'battle z-index sits between the shells (100) and the menu / help (120)',
+        ).toEqual({
+          position: 'fixed',
+          battle: '110',
+          shell: '100',
+          menu: '120',
+          help: '120',
+        });
+
+        await showBattle(BATTLE_WON);
+        await expect(
+          page.locator('[data-ctl7b-fixture] [data-testid="outcome-text"]'),
+        ).toBeVisible();
+        const won = await page.evaluate(measureFrameInPage, '[data-ctl7b-fixture]');
+        expectFrameOk(won, 'battle (won)');
+
+        // A short viewport: the ongoing battle is taller than the box, so it scrolls inside its
+        // frame, and `justify-content: safe center` keeps its top (the title) reachable at
+        // scrollTop 0 — a plain `center` would push the title above the frame's top edge.
+        await page.setViewportSize({ width: 640, height: 360 });
+        await showBattle(BATTLE_ONGOING);
+        const small = await page.evaluate(measureFrameInPage, '[data-ctl7b-fixture]');
+        expectFrameOk(small, 'battle (ongoing, 640x360)', { scrolledText: true });
+        const reach = await page.evaluate(() => {
+          const root = document.querySelector('[data-ctl7b-fixture]') as HTMLElement | null;
+          const title = root?.querySelector('[data-testid="battle-title"]') ?? null;
+          if (root === null || title === null) return null;
+          root.scrollTop = 0;
+          const frame = root.getBoundingClientRect();
+          const head = title.getBoundingClientRect();
+          return {
+            scrollable: root.scrollHeight > root.clientHeight + 1,
+            titleInside:
+              head.top >= frame.top - 0.5 &&
+              head.bottom <= frame.bottom + 0.5 &&
+              head.left >= frame.left - 0.5 &&
+              head.right <= frame.right + 0.5,
+          };
+        });
+        expect(
+          reach,
+          'at 640x360 the ongoing battle must scroll inside its frame (non-vacuity) AND show its ' +
+            'title inside the frame at scrollTop 0',
+        ).toEqual({ scrollable: true, titleInside: true });
+
+        await page.evaluate('window.__ctl7bBattle.hide()');
+        await expect(fixture).toBeHidden();
+        const closed = await page.evaluate(() => {
+          const root = document.querySelector('[data-ctl7b-fixture]');
+          return root === null ? 'missing' : getComputedStyle(root).display;
+        });
+        expect(closed, 'a hidden battle computes display:none').toBe('none');
+      } finally {
+        await page.evaluate(REMOVE_BATTLE);
+        if (original !== null) await page.setViewportSize(original);
+      }
     });
   });

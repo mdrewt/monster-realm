@@ -110,10 +110,12 @@ export class BattleView {
     this.#callbacks = callbacks;
 
     this.#root = document.createElement('div');
-    this.#root.style.cssText =
-      'position:fixed;inset:0;z-index:110;background:rgba(0,0,0,0.85);' +
-      'display:none;flex-direction:column;align-items:center;justify-content:center;' +
-      'padding:24px;font-family:monospace;color:#e0e0e0;';
+    // ctl-7b: a class-styled frame. `.mr-shell--top` is the fixed layer the menu and help share
+    // (encounter-battle.spec E0 pins all three roots as position:fixed) and `.mr-shell--battle`
+    // drops it to z-index 110, under them. `safe center`: a battle taller than the frame scrolls
+    // from its title instead of clipping it above the scrollport.
+    this.#root.className = 'mr-frame mr-shell mr-shell--top mr-shell--battle';
+    this.#root.style.cssText = 'display:none;align-items:center;justify-content:safe center;';
 
     // NO text here — `battle.title` is resolved in show() (see there for why).
     const title = document.createElement('h2');

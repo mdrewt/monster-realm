@@ -5939,3 +5939,405 @@ describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus 
     ).toBeNull();
   });
 });
+
+// =============================================================================
+// ctl-7b (CTL7B.1): the battle is a class-styled `.mr-frame` shell inside `#game-screen`, layered
+// by a `.mr-shell--battle` class instead of an inline `position:fixed;z-index:110;background:...`.
+//
+// WHAT THESE CASES CAN AND CANNOT PROVE: happy-dom does no cascade, no layout and no paint. The
+// frame case proves the INLINE half (which classes the root carries and which declarations it and
+// its subtree still write); the layer case reads the REAL client/src/styles.css. Where the battle
+// lands, whether it scrolls to its title and how its text paints are proved in real Chromium by
+// client/e2e/a11y.spec.ts (CTL7B-E2E-ROOTS / CTL7B-E2E-BATTLE).
+//
+// The inline declarations are read from the style ATTRIBUTE and split by hand: happy-dom's
+// CSSStyleDeclaration expands shorthands into longhands, so a name-set read through it would pin
+// the happy-dom version, not the contract.
+// =============================================================================
+
+/** The inline declarations of `el` (lower-cased property name -> raw value), from its style attribute. */
+function ctl7bInline(el: Element): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const part of (el.getAttribute('style') ?? '').split(';')) {
+    const colon = part.indexOf(':');
+    if (colon === -1) continue;
+    const prop = part.slice(0, colon).trim().toLowerCase();
+    if (prop !== '') out.set(prop, part.slice(colon + 1).trim());
+  }
+  return out;
+}
+
+/**
+ * Inline properties that place, layer, dim, hide or recolour an element outside the stylesheet.
+ * Every battle descendant is clean of all of them today: the HP fill writes only width / height /
+ * background, so the ban is NOT scoped down for it (`background` is not on this list).
+ */
+const CTL7B_BANNED_ON_DESCENDANTS: ReadonlySet<string> = new Set([
+  'position',
+  'inset',
+  'top',
+  'right',
+  'bottom',
+  'left',
+  'z-index',
+  'opacity',
+  'filter',
+  'transform',
+  'visibility',
+  'mix-blend-mode',
+  '-webkit-text-fill-color',
+]);
+
+function ctl7bClasses(el: Element): string[] {
+  return el.className
+    .split(/\s+/)
+    .filter((c) => c !== '')
+    .sort();
+}
+
+/** One declaration of one top-level or nested rule in styles.css, in source order. */
+interface Ctl7bCssRule {
+  /** The at-rule preludes this rule sits inside, outermost first (empty at the top level). */
+  readonly at: readonly string[];
+  readonly selectors: readonly string[];
+  readonly decls: ReadonlyArray<readonly [string, string]>;
+}
+
+/** Comments out of the sheet. (styles.css holds no comment delimiter inside a string.) */
+function ctl7bStripCssComments(css: string): string {
+  let out = '';
+  let i = 0;
+  while (i < css.length) {
+    if (css[i] === '/' && css[i + 1] === '*') {
+      const end = css.indexOf('*/', i + 2);
+      i = end === -1 ? css.length : end + 2;
+      out += ' ';
+    } else {
+      out += css[i];
+      i += 1;
+    }
+  }
+  return out;
+}
+
+/** Every style rule at any depth, in SOURCE order; `@media` / `@supports` blocks are recursed into. */
+function ctl7bParseCss(css: string, at: readonly string[] = []): Ctl7bCssRule[] {
+  const rules: Ctl7bCssRule[] = [];
+  let i = 0;
+  while (i < css.length) {
+    const open = css.indexOf('{', i);
+    if (open === -1) break;
+    let depth = 0;
+    let close = -1;
+    for (let j = open; j < css.length; j += 1) {
+      if (css[j] === '{') depth += 1;
+      else if (css[j] === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          close = j;
+          break;
+        }
+      }
+    }
+    if (close === -1) throw new Error('styles.css: unbalanced braces');
+    const prelude = css.slice(i, open).trim();
+    const body = css.slice(open + 1, close);
+    if (prelude.startsWith('@')) {
+      rules.push(...ctl7bParseCss(body, [...at, prelude.replace(/\s+/g, ' ')]));
+    } else if (prelude !== '') {
+      const decls: Array<readonly [string, string]> = [];
+      for (const raw of body.split(';')) {
+        const colon = raw.indexOf(':');
+        if (colon === -1) continue;
+        const prop = raw.slice(0, colon).trim().toLowerCase();
+        if (prop !== '')
+          decls.push([
+            prop,
+            raw
+              .slice(colon + 1)
+              .trim()
+              .replace(/\s+/g, ' '),
+          ]);
+      }
+      rules.push({
+        at,
+        selectors: prelude.split(',').map((s) => s.trim().replace(/\s+/g, ' ')),
+        decls,
+      });
+    }
+    i = close + 1;
+  }
+  return rules;
+}
+
+describe('BattleView ctl-7b: the battle root is a class-styled frame, layered by a class', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('CTL7B-1-BATTLE-FRAME BITES: the battle root is the one child of its parent, carries .mr-frame .mr-shell .mr-shell--top .mr-shell--battle, writes only display / align-items / justify-content inline in every state, and toggles display flex/none', async () => {
+    // WRONG IMPLS KILLED:
+    //  (1) the shipped root (`position:fixed;inset:0;z-index:110;background:rgba(0,0,0,0.85)...`):
+    //      the allow-list reds in every state;
+    //  (2) a root with the classes AND the old inline overlay left on it (the inline declaration
+    //      beats the class rule, so the shell, its insets and its scrolling never apply);
+    //  (3) a missing `.mr-shell--battle` (the battle would drop to the base shell's z-index 100,
+    //      level with the other shells) or a missing `.mr-shell--top` (E0 in
+    //      e2e/encounter-battle.spec.ts pins the battle root as position:fixed);
+    //  (4) `justify-content: center` instead of `safe center`: a tall battle then centres past the
+    //      top edge of a scroll container and its title becomes unreachable (the e2e case measures
+    //      that at 640x360; here the inline value is required, happy-dom keeps it verbatim);
+    //  (5) a fixed-position / dim / hide declaration smuggled onto a DESCENDANT once the root is
+    //      clean (the subtree walk runs in every state);
+    //  (6) a show() / hide() that no longer toggles display (the one inline contract left).
+    const { parent, view } = s4Mount();
+    expect(parent.children, 'the view appends exactly ONE root into its parent').toHaveLength(1);
+    const root = parent.firstElementChild as HTMLElement;
+    const title = parent.querySelector('[data-testid="battle-title"]');
+    expect(title, 'precondition: the title anchor exists').not.toBeNull();
+    expect(title?.parentElement, "the classed node is the title's parent").toBe(root);
+    expect(
+      ctl7bClasses(root),
+      'the battle root carries the frame, the shell, the fixed layer E0 needs and the battle layer',
+    ).toEqual(['mr-frame', 'mr-shell', 'mr-shell--battle', 'mr-shell--top']);
+
+    const allowed = ['display', 'align-items', 'justify-content'];
+    const sample = (when: string): number => {
+      const stray = [...ctl7bInline(root).keys()].filter((name) => !allowed.includes(name));
+      expect(
+        stray,
+        `CTL7B ${when}: the root may write only ${JSON.stringify(allowed)} inline. The classes ` +
+          'place, layer and paint it; any other inline property is the old overlay still drawn ' +
+          'by hand',
+      ).toEqual([]);
+      expect(
+        ctl7bInline(root).get('justify-content'),
+        `CTL7B ${when}: a centred battle must be \`safe center\` so a tall one stays scrollable to its title`,
+      ).toBe('safe center');
+      const all = [...root.querySelectorAll('*')];
+      const offenders: string[] = [];
+      for (const el of all) {
+        for (const prop of ctl7bInline(el).keys()) {
+          if (CTL7B_BANNED_ON_DESCENDANTS.has(prop)) {
+            offenders.push(`<${el.tagName.toLowerCase()}> ${prop}`);
+          }
+        }
+      }
+      expect(
+        offenders,
+        `CTL7B ${when}: no element under the root may place, layer, dim, hide or recolour itself inline`,
+      ).toEqual([]);
+      return all.length;
+    };
+
+    sample('constructed');
+    expect(root.style.display, 'hidden at construction').toBe('none');
+
+    view.show();
+    sample('shown');
+    expect(root.style.display, 'show() writes display:flex').toBe('flex');
+    expect(ctl7bInline(root).get('display')).toBe('flex');
+
+    // Every control and both cards, a weather banner and two status badges.
+    const populated = makeRaVM({
+      weather: { label: 'Rain', turnsRemaining: 3 },
+      playerCard: { ...RB59_BASE.playerCard, status: 'PSN' },
+      opponentCard: { ...RB59_BASE.opponentCard, status: 'BRN' },
+    });
+    view.refresh(populated);
+    expect(
+      sample('populated ongoing refresh'),
+      'non-vacuity: an ongoing battle with every control renders well over thirty elements',
+    ).toBeGreaterThan(30);
+    expect(root.style.display, 'a refresh does not touch visibility').toBe('flex');
+    // A deferred write (a setTimeout that re-adds an inline position after show()) lands here.
+    await s4FlushMacrotask();
+    sample('populated ongoing refresh, one macrotask later');
+    expect(root.style.display).toBe('flex');
+
+    // A PvP battle waiting on the opponent: the "waiting" banner is shown, the controls are not.
+    view.refresh(
+      makeUx4VM({
+        isPvp: true,
+        pvpPendingSubmit: true,
+        pvpOpponentName: 'Rival',
+        canSwap: true,
+        bench: [...UX4_BENCH],
+      }),
+    );
+    expect(
+      (parent.querySelector('[data-testid="pvp-status"]') as HTMLElement | null)?.style.display,
+      'non-vacuity: the pending-submit banner is shown',
+    ).toBe('block');
+    sample('PvP pending-submit refresh');
+
+    view.refresh(
+      makeUx4VM({
+        outcome: 'SideAWins',
+        canFlee: false,
+        weather: { label: 'Rain', turnsRemaining: 2 },
+      }),
+    );
+    sample('terminal refresh');
+
+    view.hide();
+    sample('hidden');
+    expect(root.style.display, 'hide() writes display:none').toBe('none');
+    expect(ctl7bInline(root).get('display')).toBe('none');
+
+    view.refresh(populated); // refresh(vm) self-shows a hidden view
+    sample('re-shown by refresh');
+    expect(root.style.display).toBe('flex');
+    view.refresh(null); // the null refresh hides it again
+    sample('hidden by refresh(null)');
+    expect(root.style.display).toBe('none');
+  });
+
+  it('CTL7B-1-BATTLE-LAYER-CSS BITES: styles.css declares .mr-shell--battle once, at the top level, as z-index only, strictly between .mr-shell and .mr-shell--top and after both, so a root carrying every class cascades to z-index 110', () => {
+    // WRONG IMPLS KILLED: no `.mr-shell--battle` rule (the battle would sit at the base shell's
+    // z-index 100 and lose to every other shell); the rule declared BEFORE `.mr-shell--top`
+    // (both selectors have specificity (0,1,0), so the later `--top` z-index 120 would win and the
+    // battle would sit level with the menu and help it must stay under); a value at or above 120
+    // (over the menu and help, which open over a battle) or at or below 100 (under a plain shell);
+    // the rule inside an @media / @supports block (only some viewports would layer it); a
+    // modifier that also sets position / an inset / overflow (indexShell.smoke.test.ts bans those
+    // on modifiers because they can push the box out of the viewport); `!important`.
+    const css = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'styles.css'),
+      'utf8',
+    );
+    const rules = ctl7bParseCss(ctl7bStripCssComments(css));
+    const mentioning = rules.filter((r) => r.selectors.some((s) => s.includes('mr-shell--battle')));
+    expect(
+      mentioning.length,
+      'styles.css must declare `.mr-shell--battle` in exactly one rule (none yet means the ' +
+        'battle layer is still an inline z-index)',
+    ).toBe(1);
+    const rule = mentioning[0] as Ctl7bCssRule;
+    expect(rule.at, '.mr-shell--battle is a TOP-LEVEL rule, not inside an at-rule').toEqual([]);
+    expect(rule.selectors, 'the rule is exactly the one class selector').toEqual([
+      '.mr-shell--battle',
+    ]);
+    expect(
+      rule.decls.map(([prop]) => prop),
+      '.mr-shell--battle sets z-index and nothing else',
+    ).toEqual(['z-index']);
+    const rawZ = (rule.decls[0] as readonly [string, string])[1];
+    expect(rawZ, 'the z-index is a bare integer (no !important, no var())').toMatch(/^\d+$/);
+    const battleZ = Number(rawZ);
+
+    const topLevel = (selector: string): Ctl7bCssRule[] =>
+      rules.filter((r) => r.at.length === 0 && r.selectors.includes(selector));
+    const zOf = (selector: string): number => {
+      const declared = topLevel(selector)
+        .flatMap((r) => r.decls)
+        .filter(([prop]) => prop === 'z-index');
+      expect(declared.length, `${selector} declares a z-index`).toBeGreaterThan(0);
+      return Number((declared[declared.length - 1] as readonly [string, string])[1]);
+    };
+    const baseZ = zOf('.mr-shell');
+    const topZ = zOf('.mr-shell--top');
+    expect(baseZ, 'precondition: the base shell layer').toBe(100);
+    expect(topZ, 'precondition: the menu / help layer').toBe(120);
+    expect(
+      battleZ > baseZ && battleZ < topZ,
+      `the battle layer ${battleZ} must sit strictly between the shell (${baseZ}) and the ` +
+        `menu / help layer (${topZ})`,
+    ).toBe(true);
+
+    const indexOfRule = (r: Ctl7bCssRule): number => rules.indexOf(r);
+    const latest = (selector: string): number =>
+      Math.max(...topLevel(selector).map((r) => indexOfRule(r)));
+    expect(
+      indexOfRule(rule),
+      '.mr-shell--battle must be declared AFTER .mr-shell--top (same specificity: source order ' +
+        'decides which z-index wins on a root carrying both)',
+    ).toBeGreaterThan(latest('.mr-shell--top'));
+    expect(indexOfRule(rule), 'and after the base .mr-shell rule').toBeGreaterThan(
+      latest('.mr-shell'),
+    );
+
+    // The cascade of a battle root (.mr-shell, .mr-shell--top and .mr-shell--battle all match):
+    // equal specificity, so the last declaration in source order wins.
+    let cascaded: number | undefined;
+    for (const r of rules) {
+      if (r.at.length !== 0) continue;
+      if (
+        !r.selectors.some((s) => ['.mr-shell', '.mr-shell--top', '.mr-shell--battle'].includes(s))
+      ) {
+        continue;
+      }
+      for (const [prop, value] of r.decls) if (prop === 'z-index') cascaded = Number(value);
+    }
+    expect(
+      cascaded,
+      'a battle root keeps the layer it always had: above every shell (100), under the menu ' +
+        'and help (120)',
+    ).toBe(110);
+  });
+
+  it('CTL7B-1-FRAME-CSS-ROSTER BITES: no frame or shell selector appears inside an at-rule, and every top-level frame or shell selector is one the sheet already shipped', () => {
+    // WRONG IMPLS KILLED (each is a stylesheet route around the inline contract that every other
+    // case here would let through): a viewport-conditional shell rule such as
+    // `@media (max-width:900px){.mr-shell{bottom:-400px}}` (the box leaves the screen on small
+    // viewports only); `@media (prefers-reduced-motion:reduce){.mr-frame{opacity:.5}}` (dims every
+    // frame for one user group); `@media (max-height:500px){.mr-frame.mr-shell.mr-shell--top{z-index:90}}`
+    // (re-layers the battle on short screens); an unconditional descendant rule such as
+    // `.mr-shell > div > div > div{color:#666}` (recolours text the inline walk never sees).
+    // The roster is every selector of today's styles.css that names a frame or a shell; the one
+    // ctl-7b addition is `.mr-shell--battle` (its own case pins its declarations).
+    const css = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'styles.css'),
+      'utf8',
+    );
+    const rules = ctl7bParseCss(ctl7bStripCssComments(css));
+    const names = (s: string): boolean => /mr-(shell|frame)/.test(s);
+
+    const inAtRule = rules
+      .filter((r) => r.at.length > 0)
+      .flatMap((r) => r.selectors.filter(names).map((s) => `${s} in ${r.at.join(' ')}`));
+    expect(
+      inAtRule,
+      'no frame or shell selector may sit inside an @media / @supports block',
+    ).toEqual([]);
+
+    const ROSTER: ReadonlySet<string> = new Set([
+      '.mr-frame',
+      '.mr-frame--side',
+      '.mr-frame--full',
+      '.mr-frame--bottom',
+      '.mr-frame--small',
+      '.mr-frame-titlebar',
+      '.mr-frame-title',
+      '.mr-frame-breadcrumb',
+      '.mr-frame-crumb + .mr-frame-crumb::before',
+      '.mr-frame-tabs',
+      '.mr-frame-tabs[hidden]',
+      '.mr-frame-tabslot::before',
+      '.mr-frame-tabstrip',
+      '.mr-frame-body',
+      '.mr-frame-feedback',
+      '.mr-frame-feedback[data-feedback="pending"]::before',
+      '.mr-frame-feedback[data-feedback="ok"]::before',
+      '.mr-frame-feedback[data-feedback="error"]::before',
+      '.mr-frame-layer',
+      '.mr-shell',
+      '.mr-shell--top',
+      '.mr-shell--battle',
+      '.mr-frame--prompt',
+      '.mr-frame--banner',
+    ]);
+    const topLevel = rules
+      .filter((r) => r.at.length === 0)
+      .flatMap((r) => r.selectors.filter(names));
+    expect(
+      topLevel.length,
+      'anti-vacuity: the sheet names well over twenty frame and shell selectors',
+    ).toBeGreaterThan(20);
+    expect(
+      topLevel.filter((s) => !ROSTER.has(s)),
+      'every top-level frame or shell selector must be in the shipped roster — a new one is a new ' +
+        'way to place, layer or recolour a frame without touching the inline contract',
+    ).toEqual([]);
+  });
+});

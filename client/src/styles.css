@@ -269,12 +269,18 @@
   font: 14px / 1.6 monospace;
   pointer-events: auto;
 }
-/* Menu and help open over a battle (ctl-6c), whose root is z-index 110. position:fixed because
- * encounter-battle.spec.ts E0 pins all three roots as fixed; #game-screen fills the viewport and
- * has no transform, so the box is the one .mr-shell gives. */
+/* Menu and help open over a battle (ctl-6c), whose root is z-index 110 (.mr-shell--battle).
+ * position:fixed because encounter-battle.spec.ts E0 pins all three roots as fixed; #game-screen
+ * fills the viewport and has no transform, so the box is the one .mr-shell gives. */
 .mr-shell--top {
   position: fixed;
   z-index: 120;
+}
+/* The battle root (ui/battleView.ts, ctl-7b) carries --top for E0's fixed position and this rule
+ * to sit under the menu and help but above the other shells. ORDER IS LOAD-BEARING: both rules are
+ * one class, so this one must follow --top for its z-index to win. */
+.mr-shell--battle {
+  z-index: 110;
 }
 /* The interact prompt and the deletion countdown are frames too, but small and positioned by
  * main.ts (the prompt follows its anchor tile every frame). No click target: pointer-events off. */
@@ -356,11 +362,12 @@
 /*
  * Colour tokens for the evolution overlay.
  *
- * WHY TOKENS AND NOT LITERALS. `ui/evolutionView.ts` styles every element inline, like its
- * twelve sibling views, and an inline literal is unreachable by any media query. Declaring the
- * palette here and consuming it as `var(--mr-evo-*)` in that file's `cssText` is the ONE seam
- * that lets `prefers-contrast: more` below re-colour the whole overlay without a class rule
- * (a class rule would need `!important` to beat inline styles — banned by that view's tests).
+ * WHY TOKENS AND NOT LITERALS. `ui/evolutionView.ts` colours every element inline (its root's
+ * `.mr-frame` / `.mr-shell` classes only place it, ctl-7b), and an inline literal is unreachable
+ * by any media query. Declaring the palette here and consuming it as `var(--mr-evo-*)` in that
+ * file's `cssText` is the ONE seam that lets `prefers-contrast: more` below re-colour the whole
+ * overlay without a colour class rule (a class rule would need `!important` to beat inline
+ * styles — banned by that view's tests).
  *
  * EVERY VALUE IS MEASURED, NOT CHOSEN. `ui/evolutionView.test.ts` (m23s9 X1) renders the view
  * in four states, composites the translucent backdrop over a white AND a black page, and

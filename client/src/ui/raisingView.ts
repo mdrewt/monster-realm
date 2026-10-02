@@ -36,7 +36,7 @@
 // Each `#app`-mounted view creates its OWN root under the shared mount, so opening this view
 // never closes a sibling (no close-before-open; boxView.test.ts S4-CROSS-VIEW-DISTINCT-ROOTS).
 
-import { t, tf } from './i18n/resolver';
+import { currentLocale, t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { InventoryItemViewModel, RaisingViewModel } from './raisingModel';
 
@@ -103,15 +103,20 @@ export class RaisingView {
   // The Train buttons currently on screen per monster (same detached-node reason as
   // #careButtons: a refresh() mid-flight rebuilds every node).
   readonly #trainButtons = new Map<bigint, HTMLButtonElement[]>();
+  // What each list container shows, as a render key (R-ci-fix-20261002T0901Z-RAISINGVIEWREBUILD):
+  // a store batch arrives several times a second, and rebuilding unchanged Care/Train buttons on
+  // each one detached them under a click and dropped keyboard focus.
+  readonly #rendered = new Map<HTMLElement, string>();
 
   constructor(parent: HTMLElement, callbacks: RaisingViewCallbacks) {
     this.#callbacks = callbacks;
 
     this.#root = document.createElement('div');
-    this.#root.style.cssText =
-      'position:fixed;inset:0;z-index:100;background:rgba(0,0,0,0.75);' +
-      'display:none;flex-direction:column;align-items:center;padding:24px;' +
-      'overflow-y:auto;font-family:monospace;color:#e0e0e0;';
+    // ctl-7b: a class-styled frame. `.mr-shell` places it inside `#game-screen` (the `#app` mount
+    // main.ts passes is inside it) and `.mr-frame` paints the frame tokens; inline is only the
+    // display toggle and the centring.
+    this.#root.className = 'mr-frame mr-shell';
+    this.#root.style.cssText = 'display:none;align-items:center;';
 
     // NO text here — `raising.title` is resolved in show() (see there for why).
     const title = document.createElement('h2');
@@ -126,8 +131,8 @@ export class RaisingView {
     this.#root.appendChild(title);
 
     // The feedback line lives INSIDE the overlay root. main.ts's
-    // statusEl sits in normal document flow, so this `position:fixed; z-index:100`
-    // overlay painted over every care message it raised — the player saw nothing.
+    // statusEl sits outside it, so this `.mr-shell` frame (z-index 100) paints over every care
+    // message statusEl raises — the player would see nothing.
     this.#feedbackEl = document.createElement('div');
     this.#feedbackEl.id = 'raising-feedback';
     this.#feedbackEl.style.cssText =
@@ -191,6 +196,8 @@ export class RaisingView {
     this.#feedbackEl.textContent = '';
     this.#pending.clear();
     this.#pendingTrain.clear(); // Same never-settles-after-drop reason as #pending.
+    // The cleared locks leave disabled buttons behind, so the reopen's refresh must rebuild.
+    this.#rendered.clear();
     closeOverlayA11y('raisingView', null);
   }
 
@@ -205,8 +212,25 @@ export class RaisingView {
   }
 
   refresh(vm: RaisingViewModel): void {
-    this.#renderMonsters(vm.monsters, vm.items);
-    this.#renderInventory(vm.items);
+    // The monster cards read the items too (one Train button per trainable food).
+    this.#renderIfChanged(this.#monsterEl, [vm.monsters, vm.items], () =>
+      this.#renderMonsters(vm.monsters, vm.items),
+    );
+    this.#renderIfChanged(this.#inventoryEl, [vm.items], () => this.#renderInventory(vm.items));
+  }
+
+  /** Runs `render` for `el` unless `shown` — everything that render reads, plus the locale its
+   *  strings resolve in — is what `el` already shows (the pvpView.ts shape). The key is JSON with
+   *  bigints as decimal strings (never Number: ids past 2^53 would collide). A render that throws
+   *  leaves `el` with no key, so the next refresh renders it again. */
+  #renderIfChanged(el: HTMLElement, shown: readonly unknown[], render: () => void): void {
+    const key = JSON.stringify([currentLocale(), ...shown], (_, v: unknown) =>
+      typeof v === 'bigint' ? `${v}` : v,
+    );
+    if (this.#rendered.get(el) === key) return;
+    this.#rendered.delete(el);
+    render();
+    this.#rendered.set(el, key);
   }
 
   /** A lock-owning release that finds focus stranded on `<body>` re-asserts the
@@ -228,7 +252,8 @@ export class RaisingView {
     if (monsters.length === 0) {
       const empty = document.createElement('div');
       empty.textContent = t('raising.monsters.empty');
-      empty.style.opacity = '0.4';
+      // Dimmed by colour, never opacity: #aaa keeps 7:1 (opacity 0.4 fell below AA).
+      empty.style.color = '#aaa';
       this.#monsterEl.appendChild(empty);
       return;
     }
@@ -360,7 +385,7 @@ export class RaisingView {
     if (items.length === 0) {
       const empty = document.createElement('div');
       empty.textContent = t('raising.inventory.empty');
-      empty.style.opacity = '0.4';
+      empty.style.color = '#aaa';
       this.#inventoryEl.appendChild(empty);
       return;
     }
