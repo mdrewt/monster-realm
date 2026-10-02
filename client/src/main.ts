@@ -1275,8 +1275,9 @@ function dispatch(command: Command): Promise<void> {
 
 /** A command the battle refuses (CTL6C.3): the stack holds a battle base and the command is not
  *  battle-safe. Its reason goes to the status line (until the battle is over, `syncStack`) and the
- *  live region; a refusal is not an error, so nothing reaches the error ring. The base is current
- *  without a sync here: `reconcileStack` re-derives it first in every batch. */
+ *  live region; a refusal is not an error, so nothing reaches the error ring. No sync here: every
+ *  batch re-derives the base (`reconcileStack`) before any listener that dispatches. A link drop
+ *  can leave it a frame stale, where a refusal on the frozen link changes nothing. */
 function refusedInBattle(command: Command): boolean {
   if (!battleRefused(contextStack, command)) return false;
   const reason = i18nT('menu.disabled.inBattle');

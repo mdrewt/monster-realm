@@ -1727,7 +1727,7 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     ]);
   });
 
-  it('CTL6C-1-RECONNECT-DROPS-STAMPED: a link drop closes every frame opened over the battle, so the same battle re-delivered after it is the bare battle base again, live and holding focus, with no shown overlay left inert; help opened at the world survives a drop as it always has', async () => {
+  it('CTL6C-1-RECONNECT-DROPS-STAMPED: a link drop closes every frame opened over the battle, whether or not a frame has re-derived the base as the world before the reconnect runs, so the same battle re-delivered after it is the bare battle base again, live and holding focus, with no shown overlay left inert; help opened at the world survives a drop as it always has', async () => {
     // WRONG IMPL KILLED (red-team F1, measured): a reconnect that hides the menu (onReconnect's
     // menuView.hide()) and leaves help, which the menu opened above itself over the battle and
     // which is stamped with that battle: the re-delivered row keeps the stamped help (reconcile
@@ -1738,6 +1738,15 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     // inert or focus outside it; and an over-reach that also closes help the player opened at the
     // WORLD, which reads no store state, holds no lock and has always survived a drop (that arm
     // runs first, so the red run proves it holds today).
+    // WRONG IMPL KILLED (review lens): a close keyed to the base still being the battle
+    // (`contextStack[0].kind === 'battle' &&` added to onReconnect's stamped-frame loop, or a stamp
+    // compared with the base's battleId). The frame loop keeps running while the link is down, so
+    // in production the empty store has usually re-derived the base as the WORLD by the time
+    // onReconnect runs, with the stamped menu and help still above it and the battle overlay
+    // mirrored as an unstamped frame: such a close finds no battle base, keeps help, and the
+    // re-delivered row keeps it, stamped, over the battle. Pass (a) runs a frame between the drop
+    // and onReconnect and pins that shape as its precondition; pass (b) keeps the drop with no
+    // frame between, where the base still reads as the battle.
     await bootReady();
     server(1000);
 
@@ -1769,50 +1778,95 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     putBattle(BATTLE_ID, 1300);
     await flush();
     expect(battleShown(), 'precondition: the Ongoing battle is on screen').toBe(true);
-    tap('Escape', 1400);
-    expect(menuShown(), 'precondition: Start opened the menu over the battle').toBe(true);
-    for (let i = 0; i < 8 && navActive() !== 'options'; i += 1) tap('ArrowDown', 1500 + i * 100);
-    expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
-    tap('Enter', 2400);
-    expect(navActive(), 'precondition: A entered Options, on How to play').toBe('help');
-    tap('Enter', 2500);
-    await flush();
-    // Control: before the drop help really is up, above the menu, both stamped with the battle.
-    expect(helpShown(), 'control: help is open over the battle').toBe(true);
-    expect(menuShown(), 'control: with the menu beneath it').toBe(true);
-    expect(stack(), 'control: both frames are stamped with the battle').toEqual([
-      { kind: 'battle', battleId: '101' },
+
+    /** Start, then Options > How to play: help above the menu over the battle, both stamped. */
+    const openHelpOverBattle = async (pass: string, t0: number): Promise<void> => {
+      tap('Escape', t0);
+      expect(menuShown(), `${pass}, precondition: Start opened the menu`).toBe(true);
+      for (let i = 0; i < 8 && navActive() !== 'options'; i += 1) {
+        tap('ArrowDown', t0 + 100 + i * 100);
+      }
+      expect(navActive(), `${pass}, precondition: the cursor is on Options`).toBe('options');
+      tap('Enter', t0 + 1000);
+      expect(navActive(), `${pass}, precondition: A entered Options`).toBe('help');
+      tap('Enter', t0 + 1100);
+      await flush();
+      // Control: before the drop help really is up, above the menu, both stamped with the battle.
+      expect(helpShown(), `${pass}, control: help is open over the battle`).toBe(true);
+      expect(menuShown(), `${pass}, control: with the menu beneath it`).toBe(true);
+      expect(battleShown(), `${pass}, control: and the battle under both`).toBe(true);
+      expect(stack(), `${pass}, control: both frames are stamped with the battle`).toEqual([
+        { kind: 'battle', battleId: '101' },
+        { kind: 'screen', id: 'menuView', overBattle: '101' },
+        { kind: 'screen', id: 'helpView', overBattle: '101' },
+      ]);
+    };
+
+    /** The link comes back and the same Ongoing battle is re-delivered, in one batch at `t`. */
+    const reconnectAndRedeliver = async (t: number): Promise<void> => {
+      opts.onReconnect(H.identity);
+      opts.onHydrated();
+      opts.store.upsertBattle(battleRow(BATTLE_ID, 'Ongoing'));
+      server(t);
+      await flush();
+    };
+
+    /** After the drop: every frame opened over the battle is closed and the battle is live. */
+    const expectBareBattle = (pass: string): void => {
+      expect(helpShown(), `${pass}: the drop closes help opened over the battle`).toBe(false);
+      expect(menuShown(), `${pass}: and the menu beneath it`).toBe(false);
+      expect(battleShown(), `${pass}: the re-delivered battle is on screen`).toBe(true);
+      expect(stack(), `${pass}: the stack is the bare battle base`).toEqual([
+        { kind: 'battle', battleId: '101' },
+      ]);
+      const root = battleRoot();
+      expect(root.hasAttribute('inert'), `${pass}: the battle root is not inert`).toBe(false);
+      expect(root.getAttribute('aria-hidden'), `${pass}: and not aria-hidden`).toBeNull();
+      const focused = root.contains(document.activeElement);
+      expect(focused, `${pass}: focus is inside the battle overlay`).toBe(true);
+      const overlays = [
+        ['help', byId('help-overlay')],
+        ['menu', byId('menu-overlay')],
+        ['battle', root],
+      ] as const;
+      for (const [name, el] of overlays) {
+        if (!isShown(el)) continue;
+        const at = `${pass}, ${name}`;
+        expect(el.hasAttribute('inert'), `${at}: a shown overlay root is never inert`).toBe(false);
+        expect(el.getAttribute('aria-hidden'), `${at}: nor aria-hidden`).not.toBe('true');
+      }
+    };
+
+    // --- (a) a frame runs between the drop and onReconnect -----------------------------------
+    await openHelpOverBattle('frame first', 1400);
+    opts.store.reset(); // the drop edge
+    // The frame loop keeps running while the link is down: the empty store re-derives the base as
+    // the world, the stamped menu and help stay above it, and the battle overlay, still on screen,
+    // is mirrored as an unstamped frame (the shape of a terminal outcome over the world). This
+    // precondition is what makes the pass discriminate: a close that waits for a battle base
+    // finds none here.
+    frame(2550);
+    expect(stack(), 'frame first, precondition: a world base under the stamped frames').toEqual([
+      { kind: 'world' },
       { kind: 'screen', id: 'menuView', overBattle: '101' },
       { kind: 'screen', id: 'helpView', overBattle: '101' },
+      { kind: 'screen', id: 'battleView' },
     ]);
+    expect(helpShown(), 'frame first, precondition: help is still shown').toBe(true);
+    expect(menuShown(), 'frame first, precondition: and so is the menu').toBe(true);
+    expect(battleShown(), 'frame first, precondition: and the battle').toBe(true);
+    await reconnectAndRedeliver(2600);
+    expectBareBattle('frame first');
 
-    // The link drops and comes back, and the same Ongoing battle is re-delivered.
-    opts.store.reset();
-    opts.onReconnect(H.identity);
-    opts.onHydrated();
-    opts.store.upsertBattle(battleRow(BATTLE_ID, 'Ongoing'));
-    server(2600);
-    await flush();
-    expect(helpShown(), 'help opened over the battle is closed with the drop').toBe(false);
-    expect(menuShown(), 'and so is the menu beneath it').toBe(false);
-    expect(battleShown(), 'the re-delivered battle is on screen').toBe(true);
-    expect(stack(), 'the stack is the bare battle base').toEqual([
-      { kind: 'battle', battleId: '101' },
-    ]);
-    const root = battleRoot();
-    expect(root.hasAttribute('inert'), 'the battle root is not inert').toBe(false);
-    expect(root.getAttribute('aria-hidden'), 'and not aria-hidden').toBeNull();
-    expect(root.contains(document.activeElement), 'focus is inside the battle overlay').toBe(true);
-    const overlays = [
-      ['help', byId('help-overlay')],
-      ['menu', byId('menu-overlay')],
-      ['battle', root],
-    ] as const;
-    for (const [name, el] of overlays) {
-      if (!isShown(el)) continue;
-      expect(el.hasAttribute('inert'), `${name}: a shown overlay root is never inert`).toBe(false);
-      expect(el.getAttribute('aria-hidden'), `${name}: nor aria-hidden`).not.toBe('true');
-    }
+    // --- (b) no frame between the drop and onReconnect ---------------------------------------
+    await openHelpOverBattle('no frame', 2700);
+    opts.store.reset(); // the drop edge, and straight on to onReconnect
+    expect(stack()[0], 'no frame, precondition: the base still reads as the battle').toEqual({
+      kind: 'battle',
+      battleId: '101',
+    });
+    await reconnectAndRedeliver(3900);
+    expectBareBattle('no frame');
   });
 
   // ------------------------------------------------------------------------------------------
