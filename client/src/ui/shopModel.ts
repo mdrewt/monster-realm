@@ -4,8 +4,11 @@
 // malformed row FIELDS degrade to a safe value rather than throwing (see the
 // wallet malformed-row teeth) — a throw here would starve sibling store batch-listeners
 // (store.ts one-way flow). It is not hardened against a hostile argument (a
-// null `shops`, a throwing getter): unreachable from the store, and the two
-// call sites are try/catch-wrapped with per-listener isolation (M10.5d).
+// null `shops`, a throwing getter): unreachable from the store, and the view-model
+// call sites are try/catch-wrapped with per-listener isolation (M10.5d). The quantity
+// rule and the feedback facts run inside main.ts's `dispatch` with no try around them,
+// where a throw would hold the shop's in-flight lock: they never throw for any quantity
+// or any row field.
 //
 // The wallet table stays PRIVATE; the
 // balance reaches the client through the owner-scoped `my_wallet` view only, as
@@ -164,4 +167,49 @@ export function buildShopViewModelForShop(
     ownInventory,
     ownWallet,
   );
+}
+
+/** Whether `qty` fits the buy and sell reducers' u32 quantity: an integer from 1 to 4294967295.
+ *  The SDK writes any other value as some u32 without complaint (-1 as 4294967295, 1.5 as 1), so
+ *  the caller refuses it instead. False, never a throw, for anything that is not a number. */
+export function validShopQty(qty: number): boolean {
+  return Number.isInteger(qty) && qty >= 1 && qty <= 4294967295;
+}
+
+/** What a buy or sell moved, for its success line: the item and the gold when the rows that
+ *  price it are loaded, else the quantity alone. */
+export type ShopFeedback =
+  | { readonly kind: 'item'; readonly qty: number; readonly name: string; readonly gold: bigint }
+  | { readonly kind: 'count'; readonly qty: number };
+
+/** The one rule buy and sell share. A missing or malformed name or price, or a quantity that is
+ *  not sendable, gives the quantity alone: never a partial line, never a throw. */
+function movedFacts(qty: number, name: unknown, unitPrice: unknown): ShopFeedback {
+  if (typeof name !== 'string' || typeof unitPrice !== 'bigint' || !validShopQty(qty)) {
+    return { kind: 'count', qty };
+  }
+  return { kind: 'item', qty, name, gold: unitPrice * BigInt(qty) };
+}
+
+/** A buy of `qty` of `itemId` at `shopId`: the price is that shop's own stock row, as the
+ *  reducer reads it. */
+export function buyFeedback(
+  shopId: number,
+  itemId: number,
+  qty: number,
+  shopItems: readonly StoreShopItemRow[],
+  itemDefs: ReadonlyMap<number, StoreItemRow>,
+): ShopFeedback {
+  const stock = shopItems.find((si) => si.shopId === shopId && si.itemId === itemId);
+  return movedFacts(qty, itemDefs.get(itemId)?.name, stock?.buyPrice);
+}
+
+/** A sale of `qty` of `itemId`: the price is the item definition's `sellPrice`. */
+export function sellFeedback(
+  itemId: number,
+  qty: number,
+  itemDefs: ReadonlyMap<number, StoreItemRow>,
+): ShopFeedback {
+  const def = itemDefs.get(itemId);
+  return movedFacts(qty, def?.name, def?.sellPrice);
 }

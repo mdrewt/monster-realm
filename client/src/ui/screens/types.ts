@@ -13,8 +13,8 @@ export interface ScreenStep<S, E> {
   readonly effect: E;
 }
 
-/** Every action a screen issues: the stack moves, then one arm per reducer action a screen sends
- *  today (each carrying that view callback's arguments). A new arm without a `dispatch` case fails
+/** Every action a screen issues: the stack moves, then one arm per action a screen takes (each
+ *  carrying what `dispatch` needs to run it). A new arm without a `dispatch` case fails
  *  client-typecheck. */
 export type Command =
   // The stack. `pop` closes the top frame, `popToBase` every frame above the base.
@@ -31,9 +31,15 @@ export type Command =
   // `locationId`: the heal location a bound heal frame names. Absent (the Box button, until
   // ctl-10a), `dispatch` takes the first loaded one.
   | { readonly kind: 'healParty'; readonly locationId?: number }
-  // Shop.
-  | { readonly kind: 'buy'; readonly shopId: number; readonly itemId: number }
-  | { readonly kind: 'sell'; readonly itemId: number }
+  // Shop. `qty` is the reducer's u32: an integer from 1 to 4294967295. `dispatch` sends nothing
+  // for any other value (it never clamps).
+  | {
+      readonly kind: 'buy';
+      readonly shopId: number;
+      readonly itemId: number;
+      readonly qty: number;
+    }
+  | { readonly kind: 'sell'; readonly itemId: number; readonly qty: number }
   // Trades and challenges.
   | { readonly kind: 'respondTrade'; readonly tradeId: bigint; readonly accepted: boolean }
   | { readonly kind: 'confirmTrade'; readonly tradeId: bigint }
@@ -57,9 +63,11 @@ export type Command =
   | { readonly kind: 'useItem'; readonly battleId: bigint; readonly itemId: number }
   | { readonly kind: 'pvpAttack'; readonly battleId: bigint; readonly skillId: number }
   | { readonly kind: 'pvpSwap'; readonly battleId: bigint; readonly teamIndex: number }
-  // Dialogue.
+  // Dialogue. `pickShop` is the greet-then-shop choice: it ends the conversation, and the shop
+  // opens on the first batch with no conversation.
   | { readonly kind: 'advanceDialogue'; readonly choiceIdx: number }
   | { readonly kind: 'dismissDialogue' }
+  | { readonly kind: 'pickShop'; readonly shopId: number }
   // Account claim and privacy.
   | { readonly kind: 'claimSignIn' }
   | { readonly kind: 'claimJoin' }
@@ -73,12 +81,22 @@ export type Command =
 export type ScreenResult = Command | 'consumed' | 'unhandled';
 
 /** What an adapter may read to build its view model. Adapters only read it (the store type is
- *  not deep-readonly): a command is their only way to change anything. */
+ *  not deep-readonly): a command is their only way to change anything. Every value is read live at
+ *  each access. */
 export interface ScreenContext {
   readonly store: Readonly<AuthoritativeStore>;
   readonly identity: string;
   readonly bindings: Bindings;
   readonly now: () => number;
+  /** The shop the last greet-then-shop open bound, else null. It keeps its value after the shop
+   *  closes (every open rebinds it) and reads null after a reconnect. 0 is a shop id. */
+  readonly shopId: number | null;
+  /** The heal location the last interaction with a healer bound, else null. It keeps its value
+   *  after the heal frame closes and reads null after a reconnect, which can leave that frame
+   *  open with no location. 0 is a location id. */
+  readonly healLocationId: number | null;
+  /** The OS reduced-motion preference. */
+  readonly reduceMotion: boolean;
 }
 
 /** What one button did to a screen: its next state and the result the shell applies. */
@@ -94,14 +112,20 @@ export interface ScreenAdapter<VM, S, V = unknown> {
   /** Nav-capable: while this frame is the top one the router hands it the D-pad, with auto-repeat. */
   readonly nav?: true;
   viewModel(ctx: ScreenContext): VM;
-  /** The state a frame starts from, asked at its first step after each time it opens. */
+  /** The state a frame starts from, asked at its first step or observe after each time it opens. */
   init(vm: VM): S;
   /** One button. The next state is kept and painted before the result's command runs, and that
    *  command may be refused, so a state must not assume it took effect. `btn.repeat` marks a
    *  synthesized auto-repeat: move on it, never act. */
   onButton(vm: VM, state: S, btn: NavInput): ButtonStep<S>;
-  /** Paint the frame's view after a step. The shell lends the view instance registered for the
-   *  frame's id (nothing checks it against `V`); import its class as a type only, so the adapter
-   *  stays free of the DOM. */
+  /** A store batch was applied while the frame is open, top frame or not; `now` is the shell's
+   *  clock. Return the state to keep: the SAME object when nothing changed (no paint), or a new
+   *  one, which is painted once. Never change a state in place: the shell compares by identity.
+   *  The batch's own view renders have already run, so a view that redraws on a batch must keep
+   *  what it was last painted. If `paint` throws, the frame keeps its previous state. */
+  observe?(vm: VM, state: S, now: number): S;
+  /** Paint the frame's view after a step, or after an observe that changed the state. The shell
+   *  lends the view instance registered for the frame's id (nothing checks it against `V`); import
+   *  its class as a type only, so the adapter stays free of the DOM. */
   paint?(view: V, vm: VM, state: S): void;
 }

@@ -139,8 +139,10 @@ export type MessageId =
   | 'shop.sell.row'
   | 'shop.sell.submit'
   | 'shop.sell.unsellable'
-  | 'shop.feedback.purchased'
-  | 'shop.feedback.sold'
+  | 'shop.feedback.buy.item'
+  | 'shop.feedback.buy.count'
+  | 'shop.feedback.sell.item'
+  | 'shop.feedback.sell.count'
   // tradePropose.* : the trade-proposal dialog (tradeProposeView.ts); its
   // submit label is the S1-seeded `chrome.tradePropose.submit`.
   | 'tradePropose.target.placeholder'
@@ -352,6 +354,18 @@ export interface MessageParams {
     readonly price: bigint;
   };
   readonly 'shop.sell.unsellable': { readonly name: string; readonly count: number };
+  readonly 'shop.feedback.buy.item': {
+    readonly qty: number;
+    readonly name: string;
+    readonly gold: bigint;
+  };
+  readonly 'shop.feedback.buy.count': { readonly qty: number };
+  readonly 'shop.feedback.sell.item': {
+    readonly qty: number;
+    readonly name: string;
+    readonly gold: bigint;
+  };
+  readonly 'shop.feedback.sell.count': { readonly qty: number };
   // MODEL DATA only, again — ranked numbers, a quest content id and step,
   // the heal model's own cost text, species/nickname names. The leaderboard DISPLAY NAME is
   // deliberately NOT a param (I18N-21): it renders in a sibling `<bdi>`, never through a catalog.

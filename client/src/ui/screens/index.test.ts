@@ -10,12 +10,15 @@
  * ctl-7c: the host also keeps one adapter state per frame id (from `init(vm)` until the frame is
  * opened again), paints each step into the view the shell lends for that id, and says whether the
  * top frame's adapter takes the D-pad (`host.takesNav(stack)`).
+ * ctl-7d (CTL7D.6): after each store batch the shell calls `host.observe(stack, ctx)`, which runs
+ * the optional `adapter.observe(vm, state, now)` of every screen / prompt frame on the stack,
+ * keeps what it returns and paints a frame whose state changed.
  *
  * Adapters are injected as recording stubs, so every routing claim is read off which stub was
  * called, with what, and what came back. The base cases inject adapters that THROW, so "the base
  * never consults an adapter" is a fact the run proves rather than an assumption.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_BINDINGS } from '../../input/bindings';
 import { VBUTTONS, type VButton } from '../../input/buttons';
 import { KeyboardSource } from '../../input/keyboardSource';
@@ -968,6 +971,927 @@ describe('ScreenHost: every step stores and paints (ctl-7c)', () => {
     for (const [i, p] of log.paints.entries()) {
       expect(p.view, `paint ${i}: into the lent view`).toBe(VIEW);
       expect(p.state, `paint ${i}: the state step ${i} produced`).toBe(log.steps[i]?.next);
+    }
+  });
+});
+
+// ==========================================================================================
+// ctl-7d: batch observation (CTL7D.6)
+// ==========================================================================================
+//
+// `host.observe(stack, ctx)` runs after every store batch (main.ts, right after syncStack). It
+// walks the stack bottom up and, for every screen or prompt frame whose adapter defines
+// `observe`, builds that adapter's view model, takes the frame's kept state (or `init(vm)` when
+// none is kept) and keeps what `observe(vm, state, ctx.now())` returns. A DIFFERENT object is
+// painted once into the frame's lent view; the SAME object is not painted. A throw from
+// viewModel, init, observe or paint goes to the paint-error sink and leaves that frame's kept
+// state exactly as it was, and the walk goes on. Base frames, text-entry frames and adapters
+// without `observe` run nothing.
+//
+// The stub states are `Counted`: init answers n = 0, observe a NEW object at n + 100 (or, in
+// `keep` mode, the very object it was handed) and a button a NEW object at n + 1, so the object
+// identity and the count both say which call produced the state a later call received. The
+// clock answers a new value at every read, so `now` names the pass that read it.
+
+type Fault = 'viewModel' | 'init' | 'observe' | 'paint';
+
+/** What each method throws while it is the fault: two non-Error values and two Errors. */
+const THROWN: Readonly<Record<Fault, unknown>> = {
+  viewModel: 'the view model could not be built',
+  init: { reason: 'init failed' },
+  observe: new Error('observe failed'),
+  paint: PAINT_FAILURE,
+};
+
+interface Observed {
+  readonly id: FrameId;
+  readonly vm: unknown;
+  readonly state: unknown;
+  readonly now: unknown;
+  readonly next: unknown;
+}
+interface ObsStep {
+  readonly id: FrameId;
+  readonly vm: unknown;
+  readonly state: unknown;
+  readonly next: Counted;
+}
+interface ObsLog {
+  /** `method:id` for every adapter call, in call order, a call that throws included. */
+  readonly order: string[];
+  readonly vms: Array<{ readonly id: FrameId; readonly ctx: unknown; readonly vm: object }>;
+  readonly inits: Array<{ readonly id: FrameId; readonly vm: unknown; readonly state: Counted }>;
+  readonly observes: Observed[];
+  readonly steps: ObsStep[];
+  readonly paints: Painted[];
+}
+const newObsLog = (): ObsLog => ({
+  order: [],
+  vms: [],
+  inits: [],
+  observes: [],
+  steps: [],
+  paints: [],
+});
+
+interface ObservingOpts {
+  /** `advance` (the default): observe answers a NEW state; `keep`: the very state it was
+   *  handed. Read at every call, so a case can flip it between passes. */
+  readonly mode?: { value: 'advance' | 'keep' };
+  /** While `at` names a method, that method throws `THROWN[at]`. Read at every call. */
+  readonly fault?: { at: Fault | undefined };
+  /** `record` (the default) paints into the log; `absent` has no `paint` key; `undefined` has an
+   *  own `paint` key whose value is undefined. */
+  readonly paint?: 'record' | 'absent' | 'undefined';
+}
+
+/** A recording stub for `id` that defines `observe`. */
+function observing(
+  id: FrameId,
+  log: ObsLog,
+  opts: ObservingOpts = {},
+): ScreenAdapter<unknown, unknown> {
+  const fail = (at: Fault): void => {
+    if (opts.fault?.at === at) throw THROWN[at];
+  };
+  /** The count a state carries, or -1000 for a state that is not this frame's own counter. */
+  const countOf = (state: unknown): number => {
+    const prev = state as Partial<Counted> | null | undefined;
+    return prev?.of === id && typeof prev.n === 'number' ? prev.n : -1000;
+  };
+  const adapter: ScreenAdapter<unknown, unknown> = {
+    viewModel(ctx) {
+      log.order.push(`viewModel:${id}`);
+      fail('viewModel');
+      const vm = { vmOf: id, seq: log.vms.length };
+      log.vms.push({ id, ctx, vm });
+      return vm;
+    },
+    init(vm) {
+      log.order.push(`init:${id}`);
+      fail('init');
+      const state: Counted = { of: id, n: 0 };
+      log.inits.push({ id, vm, state });
+      return state;
+    },
+    observe(vm, state, now) {
+      log.order.push(`observe:${id}`);
+      fail('observe');
+      const next = opts.mode?.value === 'keep' ? state : { of: id, n: countOf(state) + 100 };
+      log.observes.push({ id, vm, state, now, next });
+      return next;
+    },
+    onButton(vm, state) {
+      log.order.push(`onButton:${id}`);
+      const next: Counted = { of: id, n: countOf(state) + 1 };
+      log.steps.push({ id, vm, state, next });
+      return { state: next, result: choice(next.n) };
+    },
+  };
+  if (opts.paint === 'absent') return adapter;
+  if (opts.paint === 'undefined') return { ...adapter, paint: undefined };
+  return {
+    ...adapter,
+    paint(view, vm, state) {
+      log.order.push(`paint:${id}`);
+      log.paints.push({ id, view, vm, state });
+      fail('paint');
+    },
+  };
+}
+
+interface Clock {
+  readonly ctx: ScreenContext;
+  /** Every value `ctx.now()` has returned, in order. */
+  readonly returned: number[];
+}
+/** A context whose clock answers a new value at every read: never 0, never the wall clock. */
+function clockCtx(): Clock {
+  const returned: number[] = [];
+  const ctx = {
+    store: {},
+    identity: 'cd'.repeat(32),
+    bindings: DEFAULT_BINDINGS,
+    now: () => {
+      const value = 4_000.5 + returned.length * 250;
+      returned.push(value);
+      return value;
+    },
+  } as unknown as ScreenContext;
+  return { ctx, returned };
+}
+
+/** What one `host.observe` call read off the clock and added to the log. */
+interface PassRecord {
+  readonly nows: readonly number[];
+  readonly order: readonly string[];
+  readonly vms: ObsLog['vms'];
+  readonly inits: ObsLog['inits'];
+  readonly observes: readonly Observed[];
+  readonly paints: readonly Painted[];
+}
+function observePass(host: ScreenHost, stack: Stack, clock: Clock, log: ObsLog): PassRecord {
+  const at = {
+    nows: clock.returned.length,
+    order: log.order.length,
+    vms: log.vms.length,
+    inits: log.inits.length,
+    observes: log.observes.length,
+    paints: log.paints.length,
+  };
+  host.observe(stack, clock.ctx);
+  return {
+    nows: clock.returned.slice(at.nows),
+    order: log.order.slice(at.order),
+    vms: log.vms.slice(at.vms),
+    inits: log.inits.slice(at.inits),
+    observes: log.observes.slice(at.observes),
+    paints: log.paints.slice(at.paints),
+  };
+}
+
+/** The one row for `id`: the case fails unless there is exactly one. */
+function onlyFor<T extends { readonly id: FrameId }>(
+  rows: readonly T[],
+  id: FrameId,
+  label: string,
+): T {
+  const mine = rows.filter((row) => row.id === id);
+  expect(mine.length, `${label}: exactly one for ${id}`).toBe(1);
+  return mine[0] as T;
+}
+
+/** `now` is a number that `ctx.now()` returned during this very pass. */
+function expectPassClock(now: unknown, nows: readonly number[], label: string): void {
+  expect(typeof now, `${label}: now is the clock's value, not the clock`).toBe('number');
+  expect(
+    nows.includes(now as number),
+    `${label}: now ${String(now)} was read from ctx.now() in this pass (${nows.join(', ')})`,
+  ).toBe(true);
+}
+
+const lastObsStep = (log: ObsLog): ObsStep => log.steps[log.steps.length - 1] as ObsStep;
+
+describe('ScreenHost.observe (ctl-7d)', () => {
+  it('CTL7D-6-OBSERVE-THREADS: observe() calls the observe of every screen and prompt frame once per pass, bottom up in stack order, covered frames included, each with a view model its own adapter built that pass, its own kept state and that pass`s clock value; what observe returns is what that frame`s next observe and next button receive, a button`s state is what its next observe receives, frames stay isolated and the base runs nothing', () => {
+    // WRONG IMPL KILLED: a host that observes only the TOP frame (a dialogue covered by the menu
+    // would never learn that its node was replaced); one that walks top-down, or in the adapter
+    // table's order instead of the stack's (the stack below is box, pvp, quest; the table says
+    // box, quest, pvp); one that observes a frame twice per pass, or a frame that is not on the
+    // stack; init on every pass (a reveal would restart at every batch); a state observe returned
+    // that is not kept (the next observe or button starts from init or from the state before); an
+    // observe that ignores a button's state; one state shared across frames, or keyed by stack
+    // position; a view model cached across passes, borrowed from another frame or built without
+    // the context; the clock FUNCTION, the wall clock, 0 or a value read in an earlier pass handed
+    // over as `now`; and a battle base consulted as battleView's frame.
+    const log = newObsLog();
+    const errors: unknown[] = [];
+    const host = new ScreenHost(
+      tableWith({
+        battleView: observing('battleView', log),
+        boxView: observing('boxView', log),
+        pvpView: observing('pvpView', log),
+        questLogView: observing('questLogView', log),
+      }),
+      noViews,
+      (err) => {
+        errors.push(err);
+      },
+    );
+    const clock = clockCtx();
+    const stack = stackOf(
+      battle('7'),
+      screen('boxView'),
+      prompt('pvpView'),
+      screen('questLogView'),
+    );
+    const IDS = ['boxView', 'pvpView', 'questLogView'] as const;
+
+    // Pass 1: nothing is kept yet, so every frame starts from its own init.
+    const p1 = observePass(host, stack, clock, log);
+    expect(
+      p1.observes.map((o) => o.id),
+      'pass 1: each frame once, bottom up',
+    ).toEqual([...IDS]);
+    for (const id of IDS) {
+      const built = onlyFor(p1.vms, id, 'pass 1 view model');
+      const init = onlyFor(p1.inits, id, 'pass 1 init');
+      const seen = onlyFor(p1.observes, id, 'pass 1 observe');
+      expect(built.ctx, `${id}: its view model is built from the context`).toBe(clock.ctx);
+      expect(init.vm, `${id}: init is fed that pass's view model`).toBe(built.vm);
+      expect(seen.vm, `${id}: observe gets that very view model`).toBe(built.vm);
+      expect(seen.state, `${id}: and the state its own init returned`).toBe(init.state);
+      expectPassClock(seen.now, p1.nows, `${id} pass 1`);
+    }
+
+    // Pass 2: each frame resumes from what its own pass-1 observe returned, with a fresh vm.
+    const p2 = observePass(host, stack, clock, log);
+    expect(
+      p2.observes.map((o) => o.id),
+      'pass 2: each frame once, bottom up',
+    ).toEqual([...IDS]);
+    expect(p2.inits, 'pass 2: no frame starts over').toEqual([]);
+    for (const id of IDS) {
+      const seen = onlyFor(p2.observes, id, 'pass 2 observe');
+      expect(seen.state, `${id}: pass 2 receives what its pass-1 observe returned`).toBe(
+        onlyFor(p1.observes, id, 'pass 1 observe').next,
+      );
+      expect(seen.vm, `${id}: a view model built in pass 2`).toBe(
+        onlyFor(p2.vms, id, 'pass 2 view model').vm,
+      );
+      expect(seen.vm, `${id}: never the pass-1 view model`).not.toBe(
+        onlyFor(p1.vms, id, 'pass 1 view model').vm,
+      );
+      expectPassClock(seen.now, p2.nows, `${id} pass 2`);
+    }
+    expect(
+      p2.observes.map((o) => (o.next as Counted).n),
+      'pass 2: two observes counted on every frame',
+    ).toEqual([200, 200, 200]);
+
+    // A button on the top frame, then one on the box: each steps from its frame's observed state.
+    const p2Next = (id: FrameId): unknown => onlyFor(p2.observes, id, 'pass 2 observe').next;
+    expect(host.button(stack, nav('A'), clock.ctx), 'the quest log steps from n = 200').toEqual(
+      choice(201),
+    );
+    const questStep = lastObsStep(log);
+    expect(questStep.id).toBe('questLogView');
+    expect(questStep.state, 'the button receives what the last observe returned').toBe(
+      p2Next('questLogView'),
+    );
+    expect(
+      host.button(stackOf(WORLD, screen('boxView')), nav('A'), clock.ctx),
+      'the box steps from n = 200',
+    ).toEqual(choice(201));
+    const boxStep = lastObsStep(log);
+    expect(boxStep.id).toBe('boxView');
+    expect(boxStep.state).toBe(p2Next('boxView'));
+    expect(log.inits.length, 'no button started a frame over').toBe(3);
+
+    // Pass 3: a button's state is what the next observe receives; the unstepped pvp resumes its own.
+    const p3 = observePass(host, stack, clock, log);
+    expect(
+      onlyFor(p3.observes, 'questLogView', 'pass 3 observe').state,
+      'the quest log resumes from its button`s state',
+    ).toBe(questStep.next);
+    expect(onlyFor(p3.observes, 'boxView', 'pass 3 observe').state, 'the box too').toBe(
+      boxStep.next,
+    );
+    expect(
+      onlyFor(p3.observes, 'pvpView', 'pass 3 observe').state,
+      'pvp was not stepped: its own pass-2 state',
+    ).toBe(p2Next('pvpView'));
+    expect(p3.observes.map((o) => [o.id, (o.next as Counted).n])).toEqual([
+      ['boxView', 301],
+      ['pvpView', 300],
+      ['questLogView', 301],
+    ]);
+    for (const o of p3.observes) expectPassClock(o.now, p3.nows, `${o.id} pass 3`);
+
+    // The same frames in the opposite stack order are observed in THAT order; a frame off the
+    // stack (pvp) is not observed, and its kept state is untouched.
+    const p4 = observePass(
+      host,
+      stackOf(WORLD, screen('questLogView'), screen('boxView')),
+      clock,
+      log,
+    );
+    expect(
+      p4.observes.map((o) => o.id),
+      'stack order, not table order',
+    ).toEqual(['questLogView', 'boxView']);
+    const p5 = observePass(host, stack, clock, log);
+    expect(
+      onlyFor(p5.observes, 'pvpView', 'pass 5 observe').state,
+      'pvp, off the stack for a pass, resumes its pass-3 state',
+    ).toBe(onlyFor(p3.observes, 'pvpView', 'pass 3 observe').next);
+
+    // Isolation: every observe and every step only ever received its own frame's state.
+    for (const o of log.observes) {
+      expect((o.state as Counted).of, `${o.id}: observed its own state`).toBe(o.id);
+    }
+    for (const s of log.steps) {
+      expect((s.state as Counted).of, `${s.id}: stepped its own state`).toBe(s.id);
+    }
+    // The battle base is not a frame: battleView's adapter never ran.
+    expect(
+      log.order.filter((call) => call.endsWith(':battleView')),
+      'the base ran nothing',
+    ).toEqual([]);
+    expect(errors, 'nothing was reported').toEqual([]);
+  });
+
+  it('CTL7D-6-OBSERVE-INIT: a frame with no kept state is observed from init(vm), init fed that pass`s view model; the state observe returns is kept even when it is the init object itself, so the next button does not init again; opened() makes the next observe start over; and undefined, null, 0, the empty string and false are kept states, never "no state"', () => {
+    // WRONG IMPL KILLED: a host that keeps observe's answer only when it CHANGED (a first observe
+    // that answers its init object leaves nothing kept, so the next button runs init again and a
+    // reveal restarts); `states.get(id) ?? adapter.init(vm)` (an undefined or null state looks
+    // absent), `states.get(id) || adapter.init(vm)` (0, '' and false look absent too) and
+    // `=== undefined` as the absent marker, each of which re-inits a frame mid-life on its next
+    // observe or button; a falsy state that is never stored; init fed a different view model than
+    // observe; an observe that ignores opened() (a reopened dialogue would resume the last
+    // conversation's reveal); and an opened() that cannot clear a falsy state.
+    const log = newObsLog();
+    const errors: unknown[] = [];
+    const record = (err: unknown): void => {
+      errors.push(err);
+    };
+    const host = new ScreenHost(
+      tableWith({ questLogView: observing('questLogView', log, { mode: { value: 'keep' } }) }),
+      noViews,
+      record,
+    );
+    const clock = clockCtx();
+    const quest = stackOf(WORLD, screen('questLogView'));
+
+    const p1 = observePass(host, quest, clock, log);
+    const init1 = onlyFor(p1.inits, 'questLogView', 'pass 1 init');
+    expect(init1.vm, 'init is fed the view model of that pass').toBe(
+      onlyFor(p1.vms, 'questLogView', 'pass 1 view model').vm,
+    );
+    const o1 = onlyFor(p1.observes, 'questLogView', 'pass 1 observe');
+    expect(o1.state, 'the first observe starts from init').toBe(init1.state);
+    expect(o1.vm, 'with the same view model init saw').toBe(init1.vm);
+    expect(o1.next, 'fixture: observe answered the very init object').toBe(init1.state);
+
+    // That unchanged init object was kept: the next button steps from it and runs no init.
+    expect(host.button(quest, nav('A'), clock.ctx), 'the button steps from n = 0').toEqual(
+      choice(1),
+    );
+    expect(log.inits.length, 'init ran once').toBe(1);
+    expect(lastObsStep(log).state, 'the button received the init object').toBe(init1.state);
+    // And the next observe receives the button's state, still with no init.
+    const p2 = observePass(host, quest, clock, log);
+    expect(p2.inits, 'pass 2: no init').toEqual([]);
+    expect(onlyFor(p2.observes, 'questLogView', 'pass 2 observe').state).toBe(
+      lastObsStep(log).next,
+    );
+
+    // opened(): the next observe starts over from a NEW init, fed that pass's view model ...
+    host.opened(screen('questLogView'));
+    const p3 = observePass(host, quest, clock, log);
+    const init2 = onlyFor(p3.inits, 'questLogView', 'pass 3 init');
+    expect(init2.state, 'a new init state').not.toBe(init1.state);
+    expect(init2.vm).toBe(onlyFor(p3.vms, 'questLogView', 'pass 3 view model').vm);
+    expect(onlyFor(p3.observes, 'questLogView', 'pass 3 observe').state).toBe(init2.state);
+    // ... and keeps it: the next observe and the next button receive it, with no third init.
+    const p4 = observePass(host, quest, clock, log);
+    expect(onlyFor(p4.observes, 'questLogView', 'pass 4 observe').state).toBe(init2.state);
+    expect(host.button(quest, nav('A'), clock.ctx), 'the button steps from the new n = 0').toEqual(
+      choice(1),
+    );
+    expect(lastObsStep(log).state).toBe(init2.state);
+    expect(log.inits.length, 'init ran once per open').toBe(2);
+
+    // Falsy and nullish states are real states, whether init or observe produced them.
+    const FALSY: ReadonlyArray<readonly [string, unknown]> = [
+      ['undefined', undefined],
+      ['null', null],
+      ['0', 0],
+      ["''", ''],
+      ['false', false],
+    ];
+    let cases = 0;
+    for (const [label, falsy] of FALSY) {
+      for (const from of ['init', 'observe'] as const) {
+        const tag = `${label} (answered by ${from})`;
+        const OBJ = { initOf: 'questLogView' };
+        let inits = 0;
+        const observed: unknown[] = [];
+        const stepped: unknown[] = [];
+        const adapter: ScreenAdapter<unknown, unknown> = {
+          viewModel: () => ({}),
+          init: () => {
+            inits += 1;
+            return from === 'init' ? falsy : OBJ;
+          },
+          // from 'init': observe keeps what it is handed. From 'observe': its first answer is
+          // the falsy state, and every later one keeps what it is handed.
+          observe: (_vm, state) => {
+            observed.push(state);
+            return from === 'observe' && observed.length === 1 ? falsy : state;
+          },
+          onButton: (_vm, state) => {
+            stepped.push(state);
+            return { state, result: 'consumed' };
+          },
+        };
+        const falsyHost = new ScreenHost(tableWith({ questLogView: adapter }), noViews, record);
+        falsyHost.observe(quest, clock.ctx);
+        falsyHost.observe(quest, clock.ctx);
+        falsyHost.button(quest, nav('A'), clock.ctx);
+        falsyHost.observe(quest, clock.ctx);
+        expect(inits, `${tag}: init ran once`).toBe(1);
+        expect(observed[0], `${tag}: the first observe starts from init`).toBe(
+          from === 'init' ? falsy : OBJ,
+        );
+        expect(observed[1], `${tag}: the second observe receives the ${label} state`).toBe(falsy);
+        expect(stepped.length, `${tag}: one button step`).toBe(1);
+        expect(stepped[0], `${tag}: the button receives the ${label} state`).toBe(falsy);
+        expect(observed[2], `${tag}: and so does the observe after it`).toBe(falsy);
+        // Only opened() starts the frame over, whatever falsy state it holds.
+        falsyHost.opened(screen('questLogView'));
+        falsyHost.observe(quest, clock.ctx);
+        expect(inits, `${tag}: the reopened frame inits again`).toBe(2);
+        expect(observed.length, `${tag}: four observes`).toBe(4);
+        expect(observed[3], `${tag}: from init`).toBe(from === 'init' ? falsy : OBJ);
+        cases += 1;
+      }
+    }
+    expect(cases, 'ANTI-VACUITY: five falsy states x two producers').toBe(10);
+    expect(errors, 'nothing was reported').toEqual([]);
+  });
+
+  it('CTL7D-6-OBSERVE-PAINT: when observe answers a different object the frame is painted exactly once, into its own lent view, with that pass`s view model and the new state; the same object (the init object included) paints nothing; no view lent, no paint key and an own undefined paint paint nothing, report nothing and still keep the state; two frames in one pass paint independently', () => {
+    // WRONG IMPL KILLED: a host that paints every observed frame on every batch (a 60 Hz-ish batch
+    // stream would repaint every open frame: the box answers its state unchanged in pass 2); one
+    // that paints a first observe that answers its init object (the quest log); one that paints
+    // the kept (previous) state, or with a re-built view model; one that paints into the top
+    // frame's view, or paints only the top frame; a paint with no view lent (it would draw into
+    // `undefined` before main() built the views); a call to a missing paint, or to an own
+    // `paint: undefined` (a TypeError into the error sink); a state dropped because nothing was
+    // painted (pvp, help and trade); one frame's paint suppressed because another frame
+    // painted in the same pass (box and leaderboard); and a loose `!=` compare (null to undefined,
+    // undefined to null, 0 to false and '' to 0 are changes it would never paint).
+    const log = newObsLog();
+    const errors: unknown[] = [];
+    const boxMode: { value: 'advance' | 'keep' } = { value: 'advance' };
+    // pvpView has no view lent.
+    const VIEWS: Partial<Record<FrameId, object>> = {
+      boxView: { view: 'box' },
+      questLogView: { view: 'quest' },
+      helpView: { view: 'help' },
+      tradeView: { view: 'trade' },
+      leaderboardView: { view: 'leaderboard' },
+    };
+    const host = new ScreenHost(
+      tableWith({
+        boxView: observing('boxView', log, { mode: boxMode }),
+        questLogView: observing('questLogView', log, { mode: { value: 'keep' } }),
+        pvpView: observing('pvpView', log),
+        helpView: observing('helpView', log, { paint: 'absent' }),
+        tradeView: observing('tradeView', log, { paint: 'undefined' }),
+        leaderboardView: observing('leaderboardView', log),
+      }),
+      (id) => VIEWS[id],
+      (err) => {
+        errors.push(err);
+      },
+    );
+    const clock = clockCtx();
+    const stack = stackOf(
+      WORLD,
+      screen('boxView'),
+      screen('questLogView'),
+      prompt('pvpView'),
+      screen('helpView'),
+      screen('tradeView'),
+      screen('leaderboardView'),
+    );
+    const PAINTERS = ['boxView', 'leaderboardView'] as const;
+
+    // Pass 1: every frame answers a new object except the quest log (its init object).
+    const p1 = observePass(host, stack, clock, log);
+    expect(
+      p1.observes.map((o) => o.id),
+      'ANTI-VACUITY: all six frames were observed',
+    ).toEqual(['boxView', 'questLogView', 'pvpView', 'helpView', 'tradeView', 'leaderboardView']);
+    expect(
+      p1.paints.map((p) => p.id),
+      'pass 1: the two changed frames with a view and a paint, once each, bottom up',
+    ).toEqual([...PAINTERS]);
+    for (const id of PAINTERS) {
+      const painted = onlyFor(p1.paints, id, 'pass 1 paint');
+      const seen = onlyFor(p1.observes, id, 'pass 1 observe');
+      expect(painted.view, `${id}: into its own lent view`).toBe(VIEWS[id]);
+      expect(painted.vm, `${id}: with the view model of that pass`).toBe(
+        onlyFor(p1.vms, id, 'pass 1 view model').vm,
+      );
+      expect(painted.state, `${id}: with the state observe returned`).toBe(seen.next);
+      expect(painted.state, `${id}: not the state it was handed`).not.toBe(seen.state);
+    }
+    expect(
+      onlyFor(p1.observes, 'questLogView', 'pass 1 observe').next,
+      'fixture: the quest log answered its init object',
+    ).toBe(onlyFor(p1.inits, 'questLogView', 'pass 1 init').state);
+    expect(errors, 'a missing or undefined paint is not called and reports nothing').toEqual([]);
+
+    // Pass 2: the box answers the same object (no paint); the leaderboard changes again.
+    boxMode.value = 'keep';
+    const p2 = observePass(host, stack, clock, log);
+    expect(
+      p2.paints.map((p) => p.id),
+      'pass 2: only the frame whose state changed again',
+    ).toEqual(['leaderboardView']);
+    const board2 = onlyFor(p2.paints, 'leaderboardView', 'pass 2 paint');
+    expect(board2.vm).toBe(onlyFor(p2.vms, 'leaderboardView', 'pass 2 view model').vm);
+    expect(board2.state).toBe(onlyFor(p2.observes, 'leaderboardView', 'pass 2 observe').next);
+    expect(board2.view).toBe(VIEWS.leaderboardView);
+    expect(
+      onlyFor(p2.observes, 'boxView', 'pass 2 observe').next,
+      'fixture: the box answered the object it was handed',
+    ).toBe(onlyFor(p1.observes, 'boxView', 'pass 1 observe').next);
+    for (const id of ['pvpView', 'helpView', 'tradeView'] as const) {
+      expect(
+        onlyFor(p2.observes, id, 'pass 2 observe').state,
+        `${id}: its unpainted pass-1 state was still kept`,
+      ).toBe(onlyFor(p1.observes, id, 'pass 1 observe').next);
+    }
+
+    // Pass 3: the box changes again and paints again, with pass 3's view model and state.
+    boxMode.value = 'advance';
+    const p3 = observePass(host, stack, clock, log);
+    expect(
+      p3.paints.map((p) => p.id),
+      'pass 3',
+    ).toEqual([...PAINTERS]);
+    const box3 = onlyFor(p3.paints, 'boxView', 'pass 3 paint');
+    expect(box3.view).toBe(VIEWS.boxView);
+    expect(box3.vm).toBe(onlyFor(p3.vms, 'boxView', 'pass 3 view model').vm);
+    expect(box3.state).toBe(onlyFor(p3.observes, 'boxView', 'pass 3 observe').next);
+
+    // pvp was never painted (no view) yet every observed state was kept: its button steps from n = 300.
+    expect(
+      host.button(stackOf(WORLD, prompt('pvpView')), nav('A'), clock.ctx),
+      'the unpainted pvp state threads into a button',
+    ).toEqual(choice(301));
+    expect(log.paints.length, 'five paints in all: 2 + 1 + 2').toBe(5);
+    expect(
+      log.paints.filter((p) => p.id === 'questLogView'),
+      'the quest log, never changed, never painted',
+    ).toEqual([]);
+
+    // Loosely equal is not the same: a state that is `==` but not `===` the kept one is a change,
+    // painted once with the new state, which is what the next observe receives.
+    const LOOSE: ReadonlyArray<readonly [string, unknown, unknown]> = [
+      ['null to undefined', null, undefined],
+      ['undefined to null', undefined, null],
+      ['0 to false', 0, false],
+      ["'' to 0", '', 0],
+    ];
+    let loose = 0;
+    for (const [label, from, to] of LOOSE) {
+      const seen: unknown[] = [];
+      const painted: Array<{ readonly view: unknown; readonly state: unknown }> = [];
+      const VIEW = { view: 'quest' };
+      const adapter: ScreenAdapter<unknown, unknown> = {
+        viewModel: () => ({}),
+        init: () => from,
+        // The first observe answers `to`; every later one keeps what it is handed.
+        observe: (_vm, state) => {
+          seen.push(state);
+          return seen.length === 1 ? to : state;
+        },
+        onButton: (_vm, state) => ({ state, result: 'consumed' }),
+        paint: (view, _vm, state) => {
+          painted.push({ view, state });
+        },
+      };
+      const looseHost = new ScreenHost(
+        tableWith({ questLogView: adapter }),
+        (id) => (id === 'questLogView' ? VIEW : undefined),
+        (err) => {
+          errors.push(err);
+        },
+      );
+      const quest = stackOf(WORLD, screen('questLogView'));
+      looseHost.observe(quest, clock.ctx);
+      expect(seen[0], `${label}: fixture: the first observe is handed the init state`).toBe(from);
+      expect(painted.length, `${label}: a loosely equal but different state paints once`).toBe(1);
+      expect(painted[0]?.state, `${label}: with the new state`).toBe(to);
+      expect(painted[0]?.view, `${label}: into the lent view`).toBe(VIEW);
+      looseHost.observe(quest, clock.ctx);
+      expect(seen.length, `${label}: two observes`).toBe(2);
+      expect(seen[1], `${label}: the next observe receives the new state`).toBe(to);
+      expect(painted.length, `${label}: unchanged since, it paints nothing more`).toBe(1);
+      loose += 1;
+    }
+    expect(loose, 'ANTI-VACUITY: four loosely equal pairs').toBe(4);
+    expect(errors, 'nothing was reported').toEqual([]);
+  });
+
+  it('CTL7D-6-OBSERVE-THROWS: a throw from viewModel, init, observe or paint is handed to onPaintError exactly once with the thrown value, observe() itself does not throw, the remaining frames are still observed and painted, and THAT frame keeps its previous state (or starts from init again when it had none), wherever it sits on the stack; a paint that throws does not keep the state observe returned', () => {
+    // WRONG IMPL KILLED: an observe() with no try (one broken adapter would throw out of the
+    // store's batch listener and starve every listener and frame after it); one try around the
+    // whole walk (the frames above the throwing one would go unobserved); the state stored
+    // before the paint (a paint that threw would keep a state the view never showed, so the next
+    // observe would answer "unchanged" and never repaint it); init's state stored before observe
+    // runs (a frame whose observe threw would resume from that half-done pass instead of starting
+    // over); a viewModel or init throw swallowed and observe run anyway; an error wrapped,
+    // stringified, reported twice, or not at all; and a throw rethrown after it was reported.
+    const FAULTS = ['viewModel', 'init', 'observe', 'paint'] as const;
+    const IDS = ['boxView', 'pvpView', 'questLogView'] as const;
+    const WHERE: Readonly<Record<(typeof IDS)[number], string>> = {
+      boxView: 'bottom',
+      pvpView: 'middle',
+      questLogView: 'top',
+    };
+    const VIEWS: Partial<Record<FrameId, object>> = {
+      boxView: { view: 'box' },
+      pvpView: { view: 'pvp' },
+      questLogView: { view: 'quest' },
+    };
+    const stack = stackOf(WORLD, screen('boxView'), prompt('pvpView'), screen('questLogView'));
+    let checked = 0;
+    for (const at of FAULTS) {
+      for (const faulty of IDS) {
+        for (const prior of [true, false]) {
+          for (const then of ['observe', 'button'] as const) {
+            // init is never asked while a state is kept (OBSERVE-INIT), so it cannot throw then.
+            if (at === 'init' && prior) continue;
+            const label = `${at} throws in ${faulty} (${WHERE[faulty]}), ${
+              prior ? 'with' : 'without'
+            } a prior state, then ${then}`;
+            const log = newObsLog();
+            const fault: { at: Fault | undefined } = { at: undefined };
+            const own: Partial<Record<FrameId, ScreenAdapter<unknown, unknown>>> = {};
+            for (const id of IDS) own[id] = observing(id, log, id === faulty ? { fault } : {});
+            const errors: unknown[] = [];
+            const host = new ScreenHost(
+              tableWith(own),
+              (id) => VIEWS[id],
+              (err) => {
+                errors.push(err);
+              },
+            );
+            const clock = clockCtx();
+
+            let priorState: unknown;
+            if (prior) {
+              const p0 = observePass(host, stack, clock, log);
+              priorState = onlyFor(p0.observes, faulty, `${label}: the clean pass`).next;
+            }
+            expect(errors, `${label}: the clean pass reported nothing`).toEqual([]);
+
+            fault.at = at;
+            let p1!: PassRecord;
+            expect(() => {
+              p1 = observePass(host, stack, clock, log);
+            }, `${label}: observe() itself does not throw`).not.toThrow();
+            fault.at = undefined;
+            expect(errors.length, `${label}: reported exactly once`).toBe(1);
+            expect(errors[0], `${label}: the very value thrown`).toBe(THROWN[at]);
+            const others = IDS.filter((id) => id !== faulty);
+            expect(
+              p1.observes.filter((o) => o.id !== faulty).map((o) => o.id),
+              `${label}: the remaining frames are still observed, in stack order`,
+            ).toEqual(others);
+            expect(
+              p1.paints.filter((p) => p.id !== faulty).map((p) => p.id),
+              `${label}: and still painted`,
+            ).toEqual(others);
+            const calls = (method: string): number =>
+              p1.order.filter((call) => call === `${method}:${faulty}`).length;
+            expect(
+              calls('observe'),
+              `${label}: observe ran only past a good view model and init`,
+            ).toBe(at === 'viewModel' || at === 'init' ? 0 : 1);
+            expect(calls('paint'), `${label}: paint ran only past a good observe`).toBe(
+              at === 'paint' ? 1 : 0,
+            );
+            // The state a throwing paint was given is the one that must NOT be kept.
+            const dropped =
+              at === 'paint'
+                ? onlyFor(p1.observes, faulty, `${label}: the faulted pass`).next
+                : undefined;
+
+            if (then === 'observe') {
+              const p2 = observePass(host, stack, clock, log);
+              const seen = onlyFor(p2.observes, faulty, `${label}: the next pass`);
+              if (prior) {
+                expect(
+                  seen.state,
+                  `${label}: the next observe receives the state from before the throw`,
+                ).toBe(priorState);
+                expect(p2.inits, `${label}: and nothing starts over`).toEqual([]);
+              } else {
+                const fresh = onlyFor(p2.inits, faulty, `${label}: the next pass inits again`);
+                expect(
+                  seen.state,
+                  `${label}: with no state before the throw it starts from init`,
+                ).toBe(fresh.state);
+              }
+              if (dropped !== undefined) {
+                expect(
+                  seen.state,
+                  `${label}: never the state the throwing paint was given`,
+                ).not.toBe(dropped);
+              }
+              for (const id of others) {
+                expect(
+                  onlyFor(p2.observes, id, `${label}: the next pass`).state,
+                  `${label}: ${id} kept what the faulted pass gave it`,
+                ).toBe(onlyFor(p1.observes, id, `${label}: the faulted pass`).next);
+              }
+            } else {
+              const initsBefore = log.inits.length;
+              host.button(stackOf(WORLD, screen(faulty)), nav('A'), clock.ctx);
+              const step = lastObsStep(log);
+              expect(step.id, `${label}: the button steps the faulty frame`).toBe(faulty);
+              const fresh = log.inits.slice(initsBefore);
+              if (prior) {
+                expect(
+                  step.state,
+                  `${label}: the next button receives the state from before the throw`,
+                ).toBe(priorState);
+                expect(fresh, `${label}: and runs no init`).toEqual([]);
+              } else {
+                expect(
+                  fresh.map((i) => i.id),
+                  `${label}: with no state before the throw the button starts from init`,
+                ).toEqual([faulty]);
+                expect(step.state).toBe(fresh[0]?.state);
+              }
+              if (dropped !== undefined) {
+                expect(
+                  step.state,
+                  `${label}: never the state the throwing paint was given`,
+                ).not.toBe(dropped);
+              }
+            }
+            expect(errors.length, `${label}: nothing more is reported once the fault clears`).toBe(
+              1,
+            );
+            checked += 1;
+          }
+        }
+      }
+    }
+    expect(
+      checked,
+      'ANTI-VACUITY: 4 faults x 3 positions x 2 priors x 2 follow-ups, less init with a prior',
+    ).toBe(42);
+  });
+
+  it('CTL7D-6-OBSERVE-SKIPS: adapters without observe (the legacy adapter, a stand-in without the key, one with an own observe: undefined) run no viewModel, init, onButton or paint and keep their state; a text-entry frame and a bare base are skipped; and the shipped all-legacy table, observed over every overlay id, reports nothing', () => {
+    // WRONG IMPL KILLED: an observe() that builds every frame's view model (or inits it) and only
+    // then checks for `observe` (every legacy adapter would see new calls on every store batch;
+    // the throwing stand-ins below would report); a `'observe' in adapter` check (an own key
+    // holding undefined would be called: a TypeError into the sink); a skip that clears or
+    // replaces the kept state of the frames it skips; a text entry resolved to its owner (an
+    // owner observed twice, or a frame that is not open observed through someone else's field);
+    // a base treated as a frame; and a shipped table that reports an error on every batch.
+    const stepLog = newLog();
+    const obsLog = newObsLog();
+    const errors: unknown[] = [];
+    const record = (err: unknown): void => {
+      errors.push(err);
+    };
+    const VIEWS: Partial<Record<FrameId, object>> = {
+      boxView: { view: 'box' },
+      helpView: { view: 'help' },
+      questLogView: { view: 'quest' },
+    };
+    const host = new ScreenHost(
+      tableWith({
+        // ctl-7c's stateful stub: no observe key.
+        boxView: counting('boxView', stepLog, { paint: 'record' }),
+        helpView: { ...counting('helpView', stepLog, { paint: 'record' }), observe: undefined },
+        menuView: { ...throwingAdapters().menuView, observe: undefined },
+        questLogView: observing('questLogView', obsLog),
+      }),
+      (id) => VIEWS[id],
+      record,
+    );
+    const clock = clockCtx();
+    host.button(stackOf(WORLD, screen('boxView')), nav('A'), clock.ctx);
+    host.button(stackOf(WORLD, screen('helpView')), nav('A'), clock.ctx);
+    const [boxFirst, helpFirst] = stepLog.steps as [Stepped, Stepped];
+    const counts = (): readonly number[] => [
+      stepLog.vms.length,
+      stepLog.inits.length,
+      stepLog.steps.length,
+      stepLog.paints.length,
+    ];
+    const quiet = counts();
+
+    // raisingView is a throwing stand-in with no observe key; menuView one with observe: undefined.
+    const mixed = stackOf(
+      WORLD,
+      screen('boxView'),
+      screen('menuView'),
+      screen('helpView'),
+      prompt('raisingView'),
+      screen('questLogView'),
+    );
+    host.observe(mixed, clock.ctx);
+    host.observe(mixed, clock.ctx);
+    expect(counts(), 'no viewModel, init, onButton or paint for a frame without observe').toEqual(
+      quiet,
+    );
+    expect(errors, 'nothing reported: the throwing stand-ins were never called').toEqual([]);
+    expect(
+      obsLog.observes.map((o) => o.id),
+      'ANTI-VACUITY: the passes ran: the one observing frame, once per pass',
+    ).toEqual(['questLogView', 'questLogView']);
+    expect(
+      host.button(stackOf(WORLD, screen('boxView')), nav('A'), clock.ctx),
+      'the box resumes its own state (n = 1)',
+    ).toEqual(choice(2));
+    expect(lastStep(stepLog).state).toBe(boxFirst.next);
+    expect(
+      host.button(stackOf(WORLD, screen('helpView')), nav('A'), clock.ctx),
+      'help (own observe: undefined) resumes its own state (n = 1)',
+    ).toEqual(choice(2));
+    expect(lastStep(stepLog).state).toBe(helpFirst.next);
+
+    // A text-entry frame is not a frame to observe: its owner is observed through its own frame.
+    const typingLog = newObsLog();
+    const typingHost = new ScreenHost(
+      tableWith({
+        boxView: observing('boxView', typingLog),
+        renameView: observing('renameView', typingLog),
+      }),
+      noViews,
+      record,
+    );
+    typingHost.observe(stackOf(WORLD, screen('boxView'), textEntry('renameView')), clock.ctx);
+    expect(
+      typingLog.order.filter((call) => call.endsWith(':renameView')),
+      'an owner that is not open is not observed through a text entry',
+    ).toEqual([]);
+    expect(typingLog.observes.map((o) => o.id)).toEqual(['boxView']);
+    typingHost.observe(stackOf(WORLD, screen('renameView'), textEntry('renameView')), clock.ctx);
+    expect(
+      typingLog.observes.map((o) => o.id),
+      'the owner is observed once, through its own frame',
+    ).toEqual(['boxView', 'renameView']);
+
+    // A stack of only a base runs nothing (battleView's adapter would observe if it were asked).
+    const baseLog = newObsLog();
+    const baseHost = new ScreenHost(
+      tableWith({ battleView: observing('battleView', baseLog) }),
+      noViews,
+      record,
+    );
+    baseHost.observe(WORLD_STACK, clock.ctx);
+    baseHost.observe(stackOf(battle('7')), clock.ctx);
+    expect(baseLog.order, 'a bare base runs no adapter code').toEqual([]);
+    expect(errors, 'nothing reported').toEqual([]);
+
+    // The shipped table: every entry is the legacy adapter, which defines no observe.
+    const spies = [
+      vi.spyOn(legacyAdapter, 'viewModel'),
+      vi.spyOn(legacyAdapter, 'init'),
+      vi.spyOn(legacyAdapter, 'onButton'),
+    ];
+    try {
+      const shippedErrors: unknown[] = [];
+      const shipped = new ScreenHost(SCREEN_ADAPTERS, noViews, (err) => {
+        shippedErrors.push(err);
+      });
+      shipped.observe(stackOf(WORLD, ...OVERLAY_IDS.map((id) => screen(id))), clock.ctx);
+      shipped.observe(stackOf(battle('7'), ...OVERLAY_IDS.map((id) => prompt(id))), clock.ctx);
+      expect(shippedErrors, 'the shipped table reports nothing').toEqual([]);
+      for (const spy of spies) {
+        expect(spy, 'the legacy adapter ran no code on observe').not.toHaveBeenCalled();
+      }
+      // ANTI-VACUITY: the spies do watch the path a legacy frame's code runs on.
+      shipped.button(stackOf(WORLD, screen('boxView')), nav('B'), clock.ctx);
+      for (const spy of spies) {
+        expect(spy, 'a button does reach the legacy adapter').toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      for (const spy of spies) spy.mockRestore();
     }
   });
 });

@@ -2072,7 +2072,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     // stack[0] (a menu above the battle, a suspended dialogue or a stack-only battle base must still
     // refuse); one that refuses at a world base or over an outcome frame (the world would lose
     // care, shop, trade and challenge); a table with a stray or missing kind (a new Command arm
-    // must classify itself: here the literal 36 kinds are the whole table); a single row moved
+    // must classify itself: here the literal 37 kinds are the whole table); a single row moved
     // from refuse to safe (each of the named rows below is its own sample); and a battleSafeCommand
     // that disagrees with the table or with battleRefused (two readers of one policy drifting
     // apart: the shell's early return and the stack rule would then refuse different commands).
@@ -2081,6 +2081,9 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     // covered by the disabled Bag menu row (CTL6C-3-MENU-DISABLED-OVER-BATTLE in
     // mainMenuScreen.test.ts), talk by the booted KeyT movement-gate test CTL2-3-BOOT-B17 in
     // main.input.test.ts, and the total Record makes their future arms classify themselves.
+    // ctl-7d (named intentional change, CTL7D.3 / CTL7D.5): `buy` and `sell` carry a `qty`, and
+    // the new `pickShop` arm (the greet-then-shop pick) joins the refused list: 12 safe, 25
+    // refused, 37 kinds (were 12 / 24 / 36).
     const big = 5n;
     const SAFE: ReadonlyArray<readonly [string, ScreenCommand]> = [
       ['pop', { kind: 'pop' }],
@@ -2109,8 +2112,8 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['setNickname', { kind: 'setNickname', monsterId: big, nickname: 'Zed' }],
       ['Move: setPartySlot', { kind: 'setPartySlot', monsterId: big, slot: 0 }],
       ['healParty', { kind: 'healParty' }],
-      ['buy', { kind: 'buy', shopId: 1, itemId: 2 }],
-      ['sell', { kind: 'sell', itemId: 2 }],
+      ['buy', { kind: 'buy', shopId: 1, itemId: 2, qty: 3 }],
+      ['sell', { kind: 'sell', itemId: 2, qty: 3 }],
       ['respondTrade', { kind: 'respondTrade', tradeId: big, accepted: true }],
       ['confirmTrade', { kind: 'confirmTrade', tradeId: big }],
       ['cancelTrade', { kind: 'cancelTrade', tradeId: big }],
@@ -2121,6 +2124,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['cancelChallenge', { kind: 'cancelChallenge', challengeId: big }],
       ['setProfileName', { kind: 'setProfileName', name: 'Zed' }],
       ['advanceDialogue', { kind: 'advanceDialogue', choiceIdx: 0 }],
+      ['pickShop', { kind: 'pickShop', shopId: 4 }],
       ['claimSignIn', { kind: 'claimSignIn' }],
       ['claimJoin', { kind: 'claimJoin' }],
       ['claimDecline', { kind: 'claimDecline' }],
@@ -2129,11 +2133,11 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       ['requestDataExport', { kind: 'requestDataExport' }],
     ];
     expect(SAFE, 'ANTI-VACUITY: twelve safe kinds').toHaveLength(12);
-    expect(REFUSE, 'ANTI-VACUITY: twenty-four refused kinds').toHaveLength(24);
+    expect(REFUSE, 'ANTI-VACUITY: twenty-five refused kinds').toHaveLength(25);
     const kindsOf = (rows: ReadonlyArray<readonly [string, ScreenCommand]>): string[] =>
       rows.map(([, c]) => c.kind);
     expect(new Set([...kindsOf(SAFE), ...kindsOf(REFUSE)]).size, 'every kind appears once').toBe(
-      36,
+      37,
     );
     expect(
       kindsOf(SAFE),
@@ -2153,7 +2157,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       'dismissDialogue',
     ]);
 
-    // The table itself is total over the 36 literal kinds and says exactly this.
+    // The table itself is total over the 37 literal kinds and says exactly this.
     expect(sortedIds(Object.keys(COMMAND_BATTLE_POLICY))).toEqual(
       sortedIds([...kindsOf(SAFE), ...kindsOf(REFUSE)]),
     );
@@ -2230,5 +2234,61 @@ describe('context stack: battle semantics (ctl-6c)', () => {
         ).toBe(stack[0].kind === 'battle' && !battleSafeCommand(command));
       }
     }
+  });
+});
+
+describe('the greet-then-shop pick over a battle (ctl-7d, CTL7D.5)', () => {
+  it('CTL7D-5-POLICY-REFUSE: pickShop is refused at every battle-base stack shape (bare, over a suspended dialogue, under a menu) for shop 0 and a non-zero shop, and allowed at a world base and over an outcome frame; battleSafeCommand says false and its policy row is exactly refuse', () => {
+    // WRONG IMPL KILLED: `pickShop` classified `safe`, the likely copy of the `dismissDialogue` row
+    // it sits beside in the Dialogue group (`dismissDialogue` IS safe): a Shop pick over a dialogue
+    // suspended by a battle would dismiss the conversation mid-battle and open the shop under the
+    // battle; `pickShop` left out of the table (the total Record breaks client-typecheck, and the
+    // row read here is undefined); a refusal keyed to the shop id (shop 0 read as "no shop"); and
+    // one keyed to anything but a battle base (a Shop click at the world, or after the battle
+    // ended with its outcome still up, would do nothing). Every expectation is a literal, never
+    // read back from COMMAND_BATTLE_POLICY.
+    expect(COMMAND_BATTLE_POLICY.pickShop, 'the policy row').toBe('refuse');
+    const picks: ReadonlyArray<readonly [string, ScreenCommand]> = [
+      ['pickShop shop 0', { kind: 'pickShop', shopId: 0 }],
+      ['pickShop shop 4', { kind: 'pickShop', shopId: 4 }],
+    ];
+    const atBattle: ReadonlyArray<readonly [string, Stack]> = [
+      ['a bare battle base', stackOf(battle('7'))],
+      [
+        'a battle with a suspended dialogue (where the Shop choice is clicked)',
+        stackOf(battle('7'), screen('dialogueView')),
+      ],
+      ['a battle with a menu above it', stackOf(battle('7'), screen('menuView'))],
+      [
+        'a battle with a stamped menu over a suspended dialogue',
+        stackOf(battle('7'), screen('dialogueView'), stamped('menuView', '7')),
+      ],
+    ];
+    const atWorld: ReadonlyArray<readonly [string, Stack]> = [
+      ['the bare world', stackOf(WORLD)],
+      ['a conversation at the world', stackOf(WORLD, screen('dialogueView'))],
+      ['the outcome frame over the world', stackOf(WORLD, screen('battleView'))],
+      [
+        'the outcome over a suspended dialogue',
+        stackOf(WORLD, screen('dialogueView'), screen('battleView')),
+      ],
+    ];
+    let checked = 0;
+    for (const [pickLabel, pick] of picks) {
+      expect(battleSafeCommand(pick), `${pickLabel}: not battle-safe`).toBe(false);
+      for (const [name, stack] of atBattle) {
+        expect(battleRefused(deepFrozen(stack), pick), `${name}: ${pickLabel} is refused`).toBe(
+          true,
+        );
+        checked += 1;
+      }
+      for (const [name, stack] of atWorld) {
+        expect(battleRefused(deepFrozen(stack), pick), `${name}: ${pickLabel} is allowed`).toBe(
+          false,
+        );
+        checked += 1;
+      }
+    }
+    expect(checked, 'ANTI-VACUITY: 2 picks x (4 battle + 4 world stacks)').toBe(16);
   });
 });

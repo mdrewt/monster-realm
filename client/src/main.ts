@@ -217,7 +217,13 @@ import {
   sessionStep,
 } from './ui/sessionModel';
 import type { SessionView, SessionViewHandlers } from './ui/sessionView';
-import { buildShopViewModel, buildShopViewModelForShop } from './ui/shopModel';
+import {
+  buildShopViewModel,
+  buildShopViewModelForShop,
+  buyFeedback,
+  sellFeedback,
+  validShopQty,
+} from './ui/shopModel';
 import {
   type DismissPath,
   SHOP_OPEN_INITIAL,
@@ -478,9 +484,9 @@ const screenViews: Readonly<Record<OverlayId, () => unknown>> = {
   privacyView: () => privacyView,
 };
 
-// A view's paint threw. Logged every time, and surfaced like an uncaught frame error (tagged,
-// deduped on the message: a held D-pad repeats the same step every 100 ms, and the error ring is
-// small).
+// A view's paint threw, or an adapter threw while observing a batch. Logged every time, and
+// surfaced like an uncaught frame error (tagged, deduped on the message: a held D-pad repeats the
+// same step every 100 ms, a failing observe repeats on every batch, and the error ring is small).
 let lastPaintErrorMessage: string | null = null;
 function reportPaintError(err: unknown): void {
   console.error('[screen] paint error', err);
@@ -496,7 +502,8 @@ function reportPaintError(err: unknown): void {
 }
 
 // The screen host (ui/screens/index.ts) keeps each open frame's adapter state and paints every
-// step into the frame's view. A paint that throws is reported and never costs the key its result.
+// step, and every state a batch changed, into the frame's view. A paint that throws is reported
+// and never costs the key its result.
 const screenHost = new ScreenHost(SCREEN_ADAPTERS, (id) => screenViews[id](), reportPaintError);
 
 // the ONE gate binder. Returns the VERDICT, not a boolean, because the
@@ -1029,7 +1036,8 @@ function handleMenuPointer(input: MenuPointerInput): void {
 // and E (CTL6B.6, until ctl-11a).
 const ROUTED_BINDINGS = routedBindings(DEFAULT_BINDINGS);
 
-/** The read-only context adapters build their view models from. */
+/** The read-only context adapters build their view models from. The getters read live state: the
+ *  bound ids and the one `motionPreference` (never a second `matchMedia` read, A11Y-28). */
 const screenCtx: ScreenContext = {
   store,
   get identity() {
@@ -1037,13 +1045,20 @@ const screenCtx: ScreenContext = {
   },
   bindings: ROUTED_BINDINGS,
   now: () => performance.now(),
+  get shopId() {
+    return boundShopId;
+  },
+  get healLocationId() {
+    return boundHealLocationId;
+  },
+  get reduceMotion() {
+    return motionPreference.reduceMotion;
+  },
 };
 
 /** A settled promise for the arms that have no reducer promise to hand back. */
 const DONE: Promise<void> = Promise.resolve();
 
-// Single-unit MVP (infinite stock; multi-unit sell is future work).
-const SHOP_QTY = 1 as const;
 // Each feedback sink paints only while its overlay is visible: a late settle must not write a
 // stale line into a closed (and later reopened) overlay.
 const shopFeedback = (message: string): void => {
@@ -1143,19 +1158,31 @@ function dispatch(command: Command): Promise<void> {
       return sendGuarded('heal', () => conn?.live()?.reducers.healParty({ locationId }));
     }
     case 'buy': {
-      const { shopId, itemId } = command;
+      const { shopId, itemId, qty } = command;
+      if (refusedShopQty('buy', qty)) return DONE;
+      // The line is resolved now, from the rows as they are at the send.
+      const moved = buyFeedback(shopId, itemId, qty, store.allShopItems(), store.itemDefs());
       return performCare({
-        call: () => liveReducers()?.buy({ shopId, itemId, qty: SHOP_QTY }),
-        successMessage: i18nT('shop.feedback.purchased'),
+        call: () => liveReducers()?.buy({ shopId, itemId, qty }),
+        successMessage:
+          moved.kind === 'item'
+            ? tf('shop.feedback.buy.item', { qty, name: moved.name, gold: moved.gold })
+            : tf('shop.feedback.buy.count', { qty }),
         where: 'buy',
         showFeedback: shopFeedback,
       });
     }
     case 'sell': {
-      const { itemId } = command;
+      const { itemId, qty } = command;
+      if (refusedShopQty('sell', qty)) return DONE;
+      // Resolved now as well: a sell-all removes the inventory row before the line shows.
+      const moved = sellFeedback(itemId, qty, store.itemDefs());
       return performCare({
-        call: () => liveReducers()?.sell({ itemId, qty: SHOP_QTY }),
-        successMessage: i18nT('shop.feedback.sold'),
+        call: () => liveReducers()?.sell({ itemId, qty }),
+        successMessage:
+          moved.kind === 'item'
+            ? tf('shop.feedback.sell.item', { qty, name: moved.name, gold: moved.gold })
+            : tf('shop.feedback.sell.count', { qty }),
         where: 'sell',
         showFeedback: shopFeedback,
       });
@@ -1298,6 +1325,11 @@ function dispatch(command: Command): Promise<void> {
       // never hides the dialogue itself: the server's row deletion does.
       stepShopOpen({ kind: 'dismissRequested' });
       return DONE;
+    case 'pickShop':
+      // The greet-then-shop choice (last pick wins): it ends the conversation, and the shop opens
+      // on the first batch with no conversation.
+      stepShopOpen({ kind: 'shopPicked', shopId: command.shopId });
+      return DONE;
     case 'claimSignIn':
       conn?.startSignIn();
       return DONE;
@@ -1325,6 +1357,15 @@ function dispatch(command: Command): Promise<void> {
     default:
       return command satisfies never;
   }
+}
+
+/** Refuse a buy or sell whose quantity the reducer's u32 cannot carry: nothing is sent and no
+ *  shop line is shown. Reject, never clamp. It is an adapter bug, not player input, so it is
+ *  logged and the player is told nothing. `qty` is its own argument: it may not be printable. */
+function refusedShopQty(kind: 'buy' | 'sell', qty: number): boolean {
+  if (validShopQty(qty)) return false;
+  console.error(`[dispatch] ${kind}: qty is not a quantity the reducer can carry`, qty);
+  return true;
 }
 
 /** A command the battle refuses (CTL6C.3): the stack holds a battle base and the command is not
@@ -2596,19 +2637,24 @@ store.onBatchApplied(() => {
 
 // The LAST batch listener: mirror every overlay this batch's listeners showed or hid (a
 // server-opened dialogue, a battle auto-show) so its push clears held before the next frame.
-store.onBatchApplied(() => syncStack());
+// Then every open frame's adapter observes the batch. It must stay last: a frame this batch
+// pushed starts from its `init`, and every view render of the batch has already run.
+store.onBatchApplied(() => {
+  syncStack();
+  screenHost.observe(contextStack, screenCtx);
+});
 
 // --- M12d: dialogue choice click handler -----------------------------------------
 // Reads data-choice-idx from the clicked button and calls advance_dialogue.
 document.addEventListener('click', (e) => {
   // The greet-then-shop button. It carries
   // data-shop-id and NO choice index, so it gets its own branch ABOVE the
-  // choice delegation. It records the shop (last intent wins) and ends the conversation;
-  // the open itself waits for the first no-conversation batch (stepShopOpen).
+  // choice delegation. The click dispatches `pickShop`, so a battle base refuses it like any
+  // other command.
   const shopBtn = (e.target as HTMLElement).closest('[data-shop-id]') as HTMLElement | null;
   if (shopBtn !== null) {
     const clickedShopId = Number(shopBtn.dataset.shopId);
-    if (!Number.isNaN(clickedShopId)) stepShopOpen({ kind: 'shopPicked', shopId: clickedShopId });
+    if (!Number.isNaN(clickedShopId)) void dispatch({ kind: 'pickShop', shopId: clickedShopId });
     return;
   }
   // The hint bar's Start chip (ctl-7a; it replaced the #help-hint badge): the click front door
@@ -3018,8 +3064,8 @@ async function main(): Promise<void> {
     // through the performCare core (frozen gate, await of the SDK promise, exactly one feedback
     // line) inside `dispatch`.
     shopView = new ShopViewClass({
-      onBuy: (shopId, itemId) => dispatch({ kind: 'buy', shopId, itemId }),
-      onSell: (itemId) => dispatch({ kind: 'sell', itemId }),
+      onBuy: (shopId, itemId) => dispatch({ kind: 'buy', shopId, itemId, qty: 1 }),
+      onSell: (itemId) => dispatch({ kind: 'sell', itemId, qty: 1 }),
     });
     tradeView = new TradeViewClass({
       onAccept: (tradeId) => dispatch({ kind: 'respondTrade', tradeId, accepted: true }),
