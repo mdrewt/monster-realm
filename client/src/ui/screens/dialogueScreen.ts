@@ -79,18 +79,14 @@ const finished = (state: DialogueScreenState): DialogueScreenState =>
   state.revealStart === null ? state : { ...state, revealStart: null };
 
 /** What A does on the cursor once the text is shown; null with nothing to act on. */
-function activate(vm: DialogueScreenVm, state: DialogueScreenState): ScreenResult | null {
-  const dialogue = vm.dialogue;
-  if (dialogue === null) return null;
-  const { outcome } = navStep(layoutOf(dialogue), state.nav, { button: 'A', repeat: false });
-  if (outcome.kind === 'none') return { kind: 'dismissDialogue' }; // a leaf: no item at all
-  if (outcome.kind !== 'activate') return null;
-  if (outcome.key === SHOP_KEY) {
+function activate(dialogue: DialogueViewModel, item: string | null): ScreenResult | null {
+  if (item === null) return { kind: 'dismissDialogue' }; // a leaf: no item at all
+  if (item === SHOP_KEY) {
     return dialogue.shopAction === null
       ? null
       : { kind: 'pickShop', shopId: dialogue.shopAction.shopId };
   }
-  const choice = dialogue.choices.find((c) => choiceKey(c.idx) === outcome.key);
+  const choice = dialogue.choices.find((c) => choiceKey(c.idx) === item);
   return choice === undefined ? null : { kind: 'advanceDialogue', choiceIdx: choice.idx };
 }
 
@@ -153,7 +149,7 @@ export const dialogueScreen: ScreenAdapter<DialogueScreenVm, DialogueScreenState
         if (state.sentAt !== null && vm.now - state.sentAt < DIALOGUE_RESEND_MS) {
           return done('consumed');
         }
-        const result = activate(vm, state);
+        const result = activate(vm.dialogue, state.nav.item);
         if (result === null) return done('consumed');
         return { state: { ...state, sentAt: vm.now }, result };
       }

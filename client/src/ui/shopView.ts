@@ -83,13 +83,14 @@ function promptText(prompt: NonNullable<ShopPaint['prompt']>): string {
     : tf('shop.confirm.sell', { qty, name, gold });
 }
 
-/** Locate-or-create `#id` right after `after`, a `div` unless `tag` says otherwise. */
-function part(after: Element, id: string, tag: 'div' | 'p' = 'div'): HTMLElement {
+/** Locate-or-create `#id` (a second view against the same document creates nothing); `place`
+ *  puts a new element where it belongs. */
+function part(id: string, tag: 'div' | 'p', place: (el: HTMLElement) => void): HTMLElement {
   const existing = document.getElementById(id);
   if (existing !== null) return existing;
   const el = document.createElement(tag);
   el.id = id;
-  after.insertAdjacentElement('afterend', el);
+  place(el);
   return el;
 }
 
@@ -180,13 +181,13 @@ export class ShopView {
       this.#title.insertAdjacentElement('beforebegin', bar);
       bar.append(this.#title, this.#balanceEl);
     }
-    this.#tabStrip = part(bar, 'shop-tabs');
-    this.#description = part(this.#inventoryList, 'shop-description', 'p');
-    this.#prompt = part(this.#description, 'shop-prompt');
-    this.#promptText = part(this.#prompt, 'shop-prompt-text', 'p');
-    this.#confirm = part(this.#promptText, 'shop-confirm');
-    if (this.#promptText.parentElement !== this.#prompt) this.#prompt.append(this.#promptText);
-    if (this.#confirm.parentElement !== this.#prompt) this.#prompt.append(this.#confirm);
+    const after = (anchor: Element) => (el: HTMLElement) => anchor.insertAdjacentElement('afterend', el);
+    this.#tabStrip = part('shop-tabs', 'div', after(bar));
+    this.#description = part('shop-description', 'p', after(this.#inventoryList));
+    this.#prompt = part('shop-prompt', 'div', after(this.#description));
+    const prompt = this.#prompt;
+    this.#promptText = part('shop-prompt-text', 'p', (el) => prompt.append(el));
+    this.#confirm = part('shop-confirm', 'div', (el) => prompt.append(el));
     this.#cbs = cbs;
   }
 

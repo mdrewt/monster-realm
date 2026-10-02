@@ -111,11 +111,6 @@ const rowAt = (vm: ShopScreenVm, tab: ShopTab, key: string | null): Row | undefi
 const rowFor = (vm: ShopScreenVm, tab: ShopTab, itemId: number): Row | undefined =>
   rowsOf(vm, tab).find((r) => r.itemId === itemId && r.enabled);
 
-const CONFIRM_LAYOUT = list([
-  { key: 'yes', enabled: true },
-  { key: 'no', enabled: true },
-]);
-
 /** The quantity `n` clamped into the row's `1..max`: the row never wraps, never leaves the range
  *  the reducer accepts (a sell above the owned count is refused). */
 const clampQty = (n: number, row: Row): number => Math.min(Math.max(1, n), row.max);
@@ -255,12 +250,7 @@ export const shopScreen: ScreenAdapter<ShopScreenVm, ShopScreenState, ShopView> 
           case 'Down': {
             // A Yes/No cursor moves on a fresh press only: a held arrow must not flip the answer.
             if (btn.repeat) return done('consumed');
-            const yes =
-              navStep(
-                CONFIRM_LAYOUT,
-                { tab: null, item: phase.yes ? 'yes' : 'no', perTab: {} },
-                btn,
-              ).state.item === 'yes';
+            const yes = !phase.yes; // two items that wrap: a fresh press toggles
             return yes === phase.yes
               ? done('consumed')
               : to({ ...state, phase: { ...phase, yes } });
