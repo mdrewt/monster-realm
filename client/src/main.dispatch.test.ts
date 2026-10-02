@@ -11,7 +11,8 @@
  * reducer call: its name and its argument object, verbatim. Two arms that were swapped, a field
  * forced to 0 or empty, a dropped argument, a party list that reads the wrong monsters, a promise
  * that is not handed back to the view's in-flight lock, and a feedback line routed to the wrong
- * overlay each change that record.
+ * overlay each change that record. The same table drives the battle case (ctl-6c, CTL6C.3): at a
+ * battle base every callback but the battle's own actions is refused with its reason.
  *
  * Only the views are replaced. The booted main.ts, the router, the stack, the claim and privacy
  * models and the stubbed SDK connection are the real ones (main.controls.test.ts's harness, with
@@ -25,7 +26,10 @@ import { Identity } from 'spacetimedb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
-import type { StoreMonsterPub } from './net/store';
+import type { StoreBattle, StoreBattleMonster, StoreMonsterPub } from './net/store';
+// Read ONLY by the battle case's closing anti-vacuity cross-check (that its literal refuse list
+// covers every kind the policy refuses); the expected split itself is the test's own transcription.
+import { COMMAND_BATTLE_POLICY } from './ui/contextStack';
 
 const H = vi.hoisted(() => {
   interface StubView {
@@ -373,7 +377,356 @@ interface Row {
   readonly handler: string;
   readonly args: readonly unknown[];
   readonly expected: ReadonlyArray<{ name: string; args: unknown }>;
+  /** The `Command` kind the callback dispatches. */
+  readonly kind: string;
+  /** What a battle base does with it (CTL6C.3): the battle's own actions are allowed (`safe`),
+   *  every other reducer-backed callback is refused. Transcribed per row, never read from the
+   *  production policy table. */
+  readonly atBattle: 'refuse' | 'safe';
 }
+
+/** The dispatch fixture: party 51 in slot 2 and 50 in slot 0, 52 boxed (255), so the free slot is 1
+ *  and the party ids in store order are [51, 50]; two heal pads, of which the first one in the
+ *  store (7) is the target. */
+function seedDispatchFixture(): void {
+  opts.store.upsertMonster(monster(51n, 2));
+  opts.store.upsertMonster(monster(50n, 0));
+  opts.store.upsertMonster(monster(52n, 255));
+  for (const locationId of [7, 9]) {
+    opts.store.upsertHealLocation({
+      locationId,
+      zoneId: 0,
+      tileX: 1,
+      tileY: 1,
+      costQty: 0,
+      cooldownMs: 0,
+      costCurrency: 0n,
+    });
+  }
+}
+
+/** One invocation per reducer-backed view callback, with distinct non-zero values per field, and the
+ *  exact reducer call it records against `seedDispatchFixture`. Shared by the world case and the
+ *  battle case, so both drive the same callbacks with the same arguments. */
+function dispatchRows(): readonly Row[] {
+  const party = [51n, 50n];
+  const other = new Identity(OTHER_IDENTITY);
+  return [
+    {
+      label: 'box setNickname',
+      view: 'BoxView',
+      handler: 'onSetNickname',
+      args: [61n, 'Zorp'],
+      expected: [{ name: 'setNickname', args: { monsterId: 61n, nickname: 'Zorp' } }],
+      kind: 'setNickname',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'box setPartySlot explicit (Move)',
+      view: 'BoxView',
+      handler: 'onSetPartySlot',
+      args: [62n, 2],
+      expected: [{ name: 'setPartySlot', args: { monsterId: 62n, slot: 2 } }],
+      kind: 'setPartySlot',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'box setPartySlot -1 takes the free slot (Move)',
+      view: 'BoxView',
+      handler: 'onSetPartySlot',
+      args: [63n, -1],
+      expected: [{ name: 'setPartySlot', args: { monsterId: 63n, slot: 1 } }],
+      kind: 'setPartySlot',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'box healParty targets the first loaded pad',
+      view: 'BoxView',
+      handler: 'onHealParty',
+      args: [],
+      expected: [{ name: 'healParty', args: { locationId: 7 } }],
+      kind: 'healParty',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'battle attack',
+      view: 'BattleView',
+      handler: 'onAttack',
+      args: [901n, 33],
+      expected: [{ name: 'submitAttack', args: { battleId: 901n, skillId: 33 } }],
+      kind: 'attack',
+      atBattle: 'safe',
+    },
+    {
+      label: 'battle flee',
+      view: 'BattleView',
+      handler: 'onFlee',
+      args: [902n],
+      expected: [{ name: 'flee', args: { battleId: 902n } }],
+      kind: 'flee',
+      atBattle: 'safe',
+    },
+    {
+      label: 'battle swap',
+      view: 'BattleView',
+      handler: 'onSwap',
+      args: [903n, 4],
+      expected: [{ name: 'swapActive', args: { battleId: 903n, teamIndex: 4 } }],
+      kind: 'swap',
+      atBattle: 'safe',
+    },
+    {
+      label: 'battle recruit',
+      view: 'BattleView',
+      handler: 'onRecruit',
+      args: [904n, 55],
+      expected: [{ name: 'attemptRecruit', args: { battleId: 904n, baitItemId: 55 } }],
+      kind: 'recruit',
+      atBattle: 'safe',
+    },
+    {
+      label: 'battle useItem',
+      view: 'BattleView',
+      handler: 'onUseItem',
+      args: [905n, 66],
+      expected: [{ name: 'useBattleItem', args: { battleId: 905n, itemId: 66 } }],
+      kind: 'useItem',
+      atBattle: 'safe',
+    },
+    {
+      label: 'battle pvp attack',
+      view: 'BattleView',
+      handler: 'onPvpAttack',
+      args: [906n, 37],
+      expected: [
+        {
+          name: 'submitPvpAction',
+          args: { battleId: 906n, action: { tag: 'Attack', value: 37 } },
+        },
+      ],
+      kind: 'pvpAttack',
+      atBattle: 'safe',
+    },
+    {
+      label: 'battle pvp swap',
+      view: 'BattleView',
+      handler: 'onPvpSwap',
+      args: [907n, 5],
+      expected: [
+        { name: 'submitPvpAction', args: { battleId: 907n, action: { tag: 'Swap', value: 5 } } },
+      ],
+      kind: 'pvpSwap',
+      atBattle: 'safe',
+    },
+    {
+      label: 'raising train (Feed)',
+      view: 'RaisingView',
+      handler: 'onTrain',
+      args: [71n, 44],
+      expected: [{ name: 'train', args: { monsterId: 71n, foodItemId: 44 } }],
+      kind: 'train',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'raising care (Care)',
+      view: 'RaisingView',
+      handler: 'onCare',
+      args: [72n],
+      expected: [{ name: 'care', args: { monsterId: 72n } }],
+      kind: 'care',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'evolution evolve (Evolve)',
+      view: 'EvolutionView',
+      handler: 'onEvolve',
+      args: [73n, 88],
+      expected: [{ name: 'evolve', args: { monsterId: 73n, toSpecies: 88 } }],
+      kind: 'evolve',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'shop buy',
+      view: 'ShopView',
+      handler: 'onBuy',
+      args: [11, 22],
+      expected: [{ name: 'buy', args: { shopId: 11, itemId: 22, qty: 1 } }],
+      kind: 'buy',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'shop sell',
+      view: 'ShopView',
+      handler: 'onSell',
+      args: [23],
+      expected: [{ name: 'sell', args: { itemId: 23, qty: 1 } }],
+      kind: 'sell',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'trade accept',
+      view: 'TradeView',
+      handler: 'onAccept',
+      args: [81n],
+      expected: [{ name: 'respondTrade', args: { tradeId: 81n, accepted: true } }],
+      kind: 'respondTrade',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'trade reject',
+      view: 'TradeView',
+      handler: 'onReject',
+      args: [82n],
+      expected: [{ name: 'respondTrade', args: { tradeId: 82n, accepted: false } }],
+      kind: 'respondTrade',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'trade confirm',
+      view: 'TradeView',
+      handler: 'onConfirm',
+      args: [83n],
+      expected: [{ name: 'confirmTrade', args: { tradeId: 83n } }],
+      kind: 'confirmTrade',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'trade cancel',
+      view: 'TradeView',
+      handler: 'onCancel',
+      args: [84n],
+      expected: [{ name: 'cancelTrade', args: { tradeId: 84n } }],
+      kind: 'cancelTrade',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'pvp challenge',
+      view: 'PvpView',
+      handler: 'onChallenge',
+      args: [OTHER_IDENTITY],
+      expected: [{ name: 'challengePvp', args: { target: other, partyIds: party } }],
+      kind: 'challenge',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'pvp accept (challenge Accept)',
+      view: 'PvpView',
+      handler: 'onAccept',
+      args: [91n],
+      expected: [{ name: 'acceptChallenge', args: { challengeId: 91n, partyIds: party } }],
+      kind: 'acceptChallenge',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'pvp decline',
+      view: 'PvpView',
+      handler: 'onDecline',
+      args: [92n],
+      expected: [{ name: 'declineChallenge', args: { challengeId: 92n } }],
+      kind: 'declineChallenge',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'pvp cancel',
+      view: 'PvpView',
+      handler: 'onCancel',
+      args: [93n],
+      expected: [{ name: 'cancelChallenge', args: { challengeId: 93n } }],
+      kind: 'cancelChallenge',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'rename submit',
+      view: 'RenameView',
+      handler: 'onSubmit',
+      args: ['Zed'],
+      expected: [{ name: 'setProfileName', args: { name: 'Zed' } }],
+      kind: 'setProfileName',
+      atBattle: 'refuse',
+    },
+    {
+      label: 'trade-propose submit',
+      view: 'TradeProposeView',
+      handler: 'onSubmit',
+      args: [
+        {
+          targetIdentity: OTHER_IDENTITY,
+          initiatorMonsterIds: [51n, 52n],
+          initiatorCurrency: 300n,
+          counterpartyCurrency: 700n,
+        },
+      ],
+      expected: [
+        {
+          name: 'proposeTrade',
+          args: {
+            counterparty: other,
+            initiatorMonsterIds: [51n, 52n],
+            initiatorItems: [],
+            initiatorCurrency: 300n,
+            counterpartyMonsterIds: [],
+            counterpartyItems: [],
+            counterpartyCurrency: 700n,
+          },
+        },
+      ],
+      kind: 'proposeTrade',
+      atBattle: 'refuse',
+    },
+  ];
+}
+
+const WILD_IDENTITY = '0'.repeat(64);
+const BATTLE_ID = 101n;
+
+const BATTLE_MONSTER: StoreBattleMonster = {
+  speciesId: 1,
+  affinity: 'Neutral',
+  level: 5,
+  currentHp: 20,
+  maxHp: 20,
+  statHp: 20,
+  statAttack: 5,
+  statDefense: 5,
+  statSpeed: 5,
+  statSpAttack: 5,
+  statSpDefense: 5,
+  knownSkillIds: [1],
+  status: null,
+};
+
+/** A wild battle row for the booted player (main.controls.test.ts's fixture). */
+function battleRow(battleId: bigint, outcome: string): StoreBattle {
+  return {
+    battleId,
+    playerIdentity: H.identity,
+    opponentIdentity: WILD_IDENTITY,
+    outcome,
+    turnNumber: 1,
+    sideA: { active: 0, team: [BATTLE_MONSTER] },
+    sideB: { active: 0, team: [BATTLE_MONSTER] },
+    partyMonsterIds: [1n],
+    opponentMonsterIds: [],
+    createdAtMs: 0n,
+    weather: null,
+  };
+}
+
+/** An Ongoing battle row arrives in one batch at clock `t`, which mirrors the battle base. */
+function putBattle(battleId: bigint, t: number): void {
+  opts.store.upsertBattle(battleRow(battleId, 'Ongoing'));
+  server(t);
+}
+
+/** The battle row vanishes in one batch at clock `t`: the base returns to the world. */
+function dropBattle(battleId: bigint, t: number): void {
+  opts.store.removeBattle(battleId);
+  server(t);
+}
+
+/** The base frame of the context stack, through the read-only `__game()` DEV hook. */
+const stackBase = (): unknown =>
+  (window as unknown as { __game: () => { stack: unknown[] } }).__game().stack[0];
 
 const statusText = (): string => document.getElementById('status')?.textContent ?? '';
 
@@ -403,238 +756,9 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     // promise (the view's in-flight lock would release at once).
     await bootReady();
     server(1000);
-    // Party: 51 in slot 2, 50 in slot 0, 52 boxed (255). Free slot: 1. Party ids, store order.
-    opts.store.upsertMonster(monster(51n, 2));
-    opts.store.upsertMonster(monster(50n, 0));
-    opts.store.upsertMonster(monster(52n, 255));
-    // Two heal pads: the first one in the store is the target.
-    for (const locationId of [7, 9]) {
-      opts.store.upsertHealLocation({
-        locationId,
-        zoneId: 0,
-        tileX: 1,
-        tileY: 1,
-        costQty: 0,
-        cooldownMs: 0,
-        costCurrency: 0n,
-      });
-    }
-    const party = [51n, 50n];
-    const other = new Identity(OTHER_IDENTITY);
+    seedDispatchFixture();
 
-    const rows: readonly Row[] = [
-      {
-        label: 'box setNickname',
-        view: 'BoxView',
-        handler: 'onSetNickname',
-        args: [61n, 'Zorp'],
-        expected: [{ name: 'setNickname', args: { monsterId: 61n, nickname: 'Zorp' } }],
-      },
-      {
-        label: 'box setPartySlot explicit',
-        view: 'BoxView',
-        handler: 'onSetPartySlot',
-        args: [62n, 2],
-        expected: [{ name: 'setPartySlot', args: { monsterId: 62n, slot: 2 } }],
-      },
-      {
-        label: 'box setPartySlot -1 takes the free slot',
-        view: 'BoxView',
-        handler: 'onSetPartySlot',
-        args: [63n, -1],
-        expected: [{ name: 'setPartySlot', args: { monsterId: 63n, slot: 1 } }],
-      },
-      {
-        label: 'box healParty targets the first loaded pad',
-        view: 'BoxView',
-        handler: 'onHealParty',
-        args: [],
-        expected: [{ name: 'healParty', args: { locationId: 7 } }],
-      },
-      {
-        label: 'battle attack',
-        view: 'BattleView',
-        handler: 'onAttack',
-        args: [901n, 33],
-        expected: [{ name: 'submitAttack', args: { battleId: 901n, skillId: 33 } }],
-      },
-      {
-        label: 'battle flee',
-        view: 'BattleView',
-        handler: 'onFlee',
-        args: [902n],
-        expected: [{ name: 'flee', args: { battleId: 902n } }],
-      },
-      {
-        label: 'battle swap',
-        view: 'BattleView',
-        handler: 'onSwap',
-        args: [903n, 4],
-        expected: [{ name: 'swapActive', args: { battleId: 903n, teamIndex: 4 } }],
-      },
-      {
-        label: 'battle recruit',
-        view: 'BattleView',
-        handler: 'onRecruit',
-        args: [904n, 55],
-        expected: [{ name: 'attemptRecruit', args: { battleId: 904n, baitItemId: 55 } }],
-      },
-      {
-        label: 'battle useItem',
-        view: 'BattleView',
-        handler: 'onUseItem',
-        args: [905n, 66],
-        expected: [{ name: 'useBattleItem', args: { battleId: 905n, itemId: 66 } }],
-      },
-      {
-        label: 'battle pvp attack',
-        view: 'BattleView',
-        handler: 'onPvpAttack',
-        args: [906n, 37],
-        expected: [
-          {
-            name: 'submitPvpAction',
-            args: { battleId: 906n, action: { tag: 'Attack', value: 37 } },
-          },
-        ],
-      },
-      {
-        label: 'battle pvp swap',
-        view: 'BattleView',
-        handler: 'onPvpSwap',
-        args: [907n, 5],
-        expected: [
-          { name: 'submitPvpAction', args: { battleId: 907n, action: { tag: 'Swap', value: 5 } } },
-        ],
-      },
-      {
-        label: 'raising train',
-        view: 'RaisingView',
-        handler: 'onTrain',
-        args: [71n, 44],
-        expected: [{ name: 'train', args: { monsterId: 71n, foodItemId: 44 } }],
-      },
-      {
-        label: 'raising care',
-        view: 'RaisingView',
-        handler: 'onCare',
-        args: [72n],
-        expected: [{ name: 'care', args: { monsterId: 72n } }],
-      },
-      {
-        label: 'evolution evolve',
-        view: 'EvolutionView',
-        handler: 'onEvolve',
-        args: [73n, 88],
-        expected: [{ name: 'evolve', args: { monsterId: 73n, toSpecies: 88 } }],
-      },
-      {
-        label: 'shop buy',
-        view: 'ShopView',
-        handler: 'onBuy',
-        args: [11, 22],
-        expected: [{ name: 'buy', args: { shopId: 11, itemId: 22, qty: 1 } }],
-      },
-      {
-        label: 'shop sell',
-        view: 'ShopView',
-        handler: 'onSell',
-        args: [23],
-        expected: [{ name: 'sell', args: { itemId: 23, qty: 1 } }],
-      },
-      {
-        label: 'trade accept',
-        view: 'TradeView',
-        handler: 'onAccept',
-        args: [81n],
-        expected: [{ name: 'respondTrade', args: { tradeId: 81n, accepted: true } }],
-      },
-      {
-        label: 'trade reject',
-        view: 'TradeView',
-        handler: 'onReject',
-        args: [82n],
-        expected: [{ name: 'respondTrade', args: { tradeId: 82n, accepted: false } }],
-      },
-      {
-        label: 'trade confirm',
-        view: 'TradeView',
-        handler: 'onConfirm',
-        args: [83n],
-        expected: [{ name: 'confirmTrade', args: { tradeId: 83n } }],
-      },
-      {
-        label: 'trade cancel',
-        view: 'TradeView',
-        handler: 'onCancel',
-        args: [84n],
-        expected: [{ name: 'cancelTrade', args: { tradeId: 84n } }],
-      },
-      {
-        label: 'pvp challenge',
-        view: 'PvpView',
-        handler: 'onChallenge',
-        args: [OTHER_IDENTITY],
-        expected: [{ name: 'challengePvp', args: { target: other, partyIds: party } }],
-      },
-      {
-        label: 'pvp accept',
-        view: 'PvpView',
-        handler: 'onAccept',
-        args: [91n],
-        expected: [{ name: 'acceptChallenge', args: { challengeId: 91n, partyIds: party } }],
-      },
-      {
-        label: 'pvp decline',
-        view: 'PvpView',
-        handler: 'onDecline',
-        args: [92n],
-        expected: [{ name: 'declineChallenge', args: { challengeId: 92n } }],
-      },
-      {
-        label: 'pvp cancel',
-        view: 'PvpView',
-        handler: 'onCancel',
-        args: [93n],
-        expected: [{ name: 'cancelChallenge', args: { challengeId: 93n } }],
-      },
-      {
-        label: 'rename submit',
-        view: 'RenameView',
-        handler: 'onSubmit',
-        args: ['Zed'],
-        expected: [{ name: 'setProfileName', args: { name: 'Zed' } }],
-      },
-      {
-        label: 'trade-propose submit',
-        view: 'TradeProposeView',
-        handler: 'onSubmit',
-        args: [
-          {
-            targetIdentity: OTHER_IDENTITY,
-            initiatorMonsterIds: [51n, 52n],
-            initiatorCurrency: 300n,
-            counterpartyCurrency: 700n,
-          },
-        ],
-        expected: [
-          {
-            name: 'proposeTrade',
-            args: {
-              counterparty: other,
-              initiatorMonsterIds: [51n, 52n],
-              initiatorItems: [],
-              initiatorCurrency: 300n,
-              counterpartyMonsterIds: [],
-              counterpartyItems: [],
-              counterpartyCurrency: 700n,
-            },
-          },
-        ],
-      },
-    ];
-
-    for (const row of rows) {
+    for (const row of dispatchRows()) {
       H.calls = [];
       const returned = handlerOf(row.view, row.handler)(...row.args);
       await flush();
@@ -882,8 +1006,9 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     expect(vmOf().actions.join, 'the retry on a live link lifts the veto').toBe(true);
   });
 
-  /** Seed the own account row at `status`, deliver it and run one frame so the privacy model sees it. */
-  function seedAccount(status: 'Active' | 'PendingDeletion'): void {
+  /** Seed the own account row at `status`, deliver it at clock `at` and run one frame 50 ms later so
+   *  the privacy model sees it. */
+  function seedAccount(status: 'Active' | 'PendingDeletion', at = 1050): void {
     opts.store.upsertAccount({
       identity: H.identity,
       authIssuer: '',
@@ -895,8 +1020,8 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       claimedAtMs: undefined,
       terminalAtMs: undefined,
     });
-    server(1050);
-    frame(1100);
+    server(at);
+    frame(at + 50);
   }
 
   const privacy = (name: string): (() => void) => {
@@ -979,5 +1104,175 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     H.calls = [];
     privacy('onExportRequested')();
     expect(H.calls, 'and export now sends').toEqual([{ name: 'requestDataExport', args: {} }]);
+  });
+
+  it('at a battle base every view callback of a command the battle refuses reaches no reducer and shows the reason (Care, Feed, Move, Evolve, challenge Accept, buy and sell among them), the battle actions still reach their reducers, and back at the world each refused callback sends again', async () => {
+    // WRONG IMPL KILLED (red-team F2, measured): a refusal that exempts one command (the spec's
+    // acceptChallenge, or buy, sell, setPartySlot, healParty, deleteAccount ...: that row reaches
+    // its reducer at the battle base); a refusal narrowed to the two kinds the booted suite drives
+    // (advanceDialogue and care: every other refused row sends); a refusal that sends and then
+    // reports, or reports nothing (the status line); one that refuses everything at a battle base
+    // (attack, flee, swap, recruit, use item and both PvP actions must still reach their reducers
+    // there); one that also refuses at the world, or spends what the player armed (the world
+    // phase re-runs every refused callback in the same boot and each one sends); and a claim or
+    // privacy arm that bypasses the policy (each is armed first, so an unrefused call would act).
+    await bootReady();
+    server(1000);
+    seedDispatchFixture();
+    const rows = dispatchRows();
+    const reason = i18n.t('menu.disabled.inBattle');
+    expect(reason, 'fixture: the catalogued reason is real text').not.toBe('');
+    const status = document.getElementById('status');
+    if (status === null) throw new Error('#status must exist once booted');
+    // The literal split (CTL6C.3): of the reducer-backed view callbacks, only the battle's own
+    // actions still run at a battle base.
+    expect(
+      rows.filter((r) => r.atBattle === 'safe').map((r) => r.kind),
+      'fixture: the allowed rows are exactly the battle actions',
+    ).toEqual(['attack', 'flee', 'swap', 'recruit', 'useItem', 'pvpAttack', 'pvpSwap']);
+    for (const row of rows) {
+      expect(row.expected.length, `fixture: ${row.label} records a reducer call`).toBe(1);
+    }
+    const claimVm = (): { actions: { join: boolean; declineConfirm: boolean } } =>
+      H.views.ClaimView?.renders.at(-1) as never;
+    /** Run one argument-less claim / privacy callback on a fresh status line and call record. */
+    const act = async (view: string, handler: string): Promise<void> => {
+      H.calls = [];
+      status.textContent = '';
+      handlerOf(view, handler)();
+      await flush();
+    };
+    /** Each refused kind this test drove through a view callback, pushed after its assertions. */
+    const refused: string[] = [];
+
+    // Armed at the world, so each claim / privacy arm below would act if it were not refused.
+    seedAccount('Active', 1050);
+    handlerOf('PrivacyView', 'onDeleteRequested')();
+    must(opts.onClaimResult, 'onClaimResult')({ ok: true } as never);
+
+    // --- battle 101: the table ------------------------------------------------------------
+    putBattle(BATTLE_ID, 1200);
+    expect(stackBase(), 'precondition: the base is the battle').toEqual({
+      kind: 'battle',
+      battleId: '101',
+    });
+    for (const row of rows) {
+      H.calls = [];
+      status.textContent = '';
+      const returned = handlerOf(row.view, row.handler)(...row.args);
+      await flush();
+      if (row.atBattle === 'refuse') {
+        expect(H.calls, `${row.label}: at a battle base it reaches no reducer`).toEqual([]);
+        expect(statusText(), `${row.label}: and the status line shows the reason`).toBe(reason);
+        refused.push(row.kind);
+      } else {
+        expect(H.calls, `${row.label}: a battle action still reaches its reducer`).toEqual(
+          row.expected,
+        );
+        expect(statusText(), `${row.label}: and is not reported as refused`).toBe('');
+      }
+      expect(isThenable(returned), `${row.label}: the view still gets a promise`).toBe(true);
+    }
+    for (const [name, kind] of [
+      ['Care', 'care'],
+      ['Feed', 'train'],
+      ['Move', 'setPartySlot'],
+      ['Evolve', 'evolve'],
+      ['challenge Accept', 'acceptChallenge'],
+      ['buy', 'buy'],
+      ['sell', 'sell'],
+    ] as const) {
+      expect(refused.includes(kind), `the spec row ${name} (${kind}) was refused`).toBe(true);
+    }
+
+    // --- battle 101: the claim and privacy arms (claim-succeeded, delete armed) --------------
+    await act('ClaimView', 'onSignIn');
+    expect(H.signIns, 'claim sign-in: no sign-in starts at a battle base').toBe(0);
+    expect(statusText(), 'claim sign-in: the reason').toBe(reason);
+    refused.push('claimSignIn');
+    await act('ClaimView', 'onJoin');
+    expect(H.calls, 'claim join: no joinGame at a battle base').toEqual([]);
+    expect(statusText(), 'claim join: the reason').toBe(reason);
+    refused.push('claimJoin');
+    await act('PrivacyView', 'onDeleteConfirmed');
+    expect(H.calls, 'privacy delete: no deleteAccount at a battle base').toEqual([]);
+    expect(statusText(), 'privacy delete: the reason').toBe(reason);
+    refused.push('deleteAccount');
+    await act('PrivacyView', 'onExportRequested');
+    expect(H.calls, 'privacy export: no requestDataExport at a battle base').toEqual([]);
+    expect(statusText(), 'privacy export: the reason').toBe(reason);
+    refused.push('requestDataExport');
+
+    // --- the world: every refused callback sends again in this boot --------------------------
+    dropBattle(BATTLE_ID, 1300);
+    expect(stackBase(), 'precondition: the base is the world again').toEqual({ kind: 'world' });
+    for (const row of rows) {
+      H.calls = [];
+      handlerOf(row.view, row.handler)(...row.args);
+      await flush();
+      expect(H.calls, `${row.label}: at the world it reaches its reducer`).toEqual(row.expected);
+    }
+    await act('ClaimView', 'onSignIn');
+    expect(H.signIns, 'control: at the world sign-in starts once').toBe(1);
+    await act('ClaimView', 'onJoin');
+    expect(H.calls, 'control: at the world the join is sent').toEqual([
+      { name: 'joinGame', args: { name: 'Player' } },
+    ]);
+    await act('PrivacyView', 'onDeleteConfirmed');
+    expect(H.calls, 'control: the delete armed before the battle is still armed').toEqual([
+      { name: 'deleteAccount', args: {} },
+    ]);
+    await act('PrivacyView', 'onExportRequested');
+    expect(H.calls, 'control: at the world export is sent').toEqual([
+      { name: 'requestDataExport', args: {} },
+    ]);
+
+    // --- battle 102: the arms that need another state (a pending deletion, an armed decline) ----
+    seedAccount('PendingDeletion', 1400);
+    must(opts.onClaimPending, 'onClaimPending')('CODE-1');
+    handlerOf('ClaimView', 'onDeclineRequested')();
+    expect(claimVm().actions.declineConfirm, 'precondition: the decline is armed').toBe(true);
+    expect(claimVm().actions.join, 'precondition: join is not offered while armed').toBe(false);
+    putBattle(102n, 1500);
+    expect(stackBase(), 'precondition: the base is the second battle').toEqual({
+      kind: 'battle',
+      battleId: '102',
+    });
+    await act('ClaimView', 'onDeclineConfirmed');
+    const refusedDecline = claimVm();
+    expect(refusedDecline.actions.declineConfirm, 'claim decline: still armed').toBe(true);
+    expect(refusedDecline.actions.join, 'claim decline: join is still not offered').toBe(false);
+    expect(statusText(), 'claim decline: the reason').toBe(reason);
+    refused.push('claimDecline');
+    await act('PrivacyView', 'onCancelDeletion');
+    expect(H.calls, 'privacy cancel: no cancelAccountDeletion at a battle base').toEqual([]);
+    expect(statusText(), 'privacy cancel: the reason').toBe(reason);
+    refused.push('cancelAccountDeletion');
+
+    dropBattle(102n, 1600);
+    expect(stackBase(), 'precondition: the base is the world again').toEqual({ kind: 'world' });
+    await act('ClaimView', 'onDeclineConfirmed');
+    expect(claimVm().actions.join, 'control: at the world the decline lifts the veto').toBe(true);
+    expect(claimVm().actions.declineConfirm, 'control: and spends the confirmation').toBe(false);
+    await act('PrivacyView', 'onCancelDeletion');
+    expect(H.calls, 'control: at the world the cancel is sent').toEqual([
+      { name: 'cancelAccountDeletion', args: {} },
+    ]);
+
+    // Anti-vacuity cross-check against the production policy: every kind it refuses was refused
+    // above through a captured view callback, or is named here with the reason it has none.
+    const noViewCallback: Readonly<Record<string, string>> = {
+      advanceDialogue:
+        'no view constructor callback: the document-level [data-choice-idx] click delegation ' +
+        'dispatches it, and main.controls.test.ts refuses that click at a battle base',
+    };
+    const policyRefused = Object.entries(COMMAND_BATTLE_POLICY)
+      .filter(([, verdict]) => verdict === 'refuse')
+      .map(([kind]) => kind)
+      .sort();
+    expect(
+      [...new Set([...refused, ...Object.keys(noViewCallback)])].sort(),
+      'every refused kind is driven here or named as having no view callback',
+    ).toEqual(policyRefused);
   });
 });

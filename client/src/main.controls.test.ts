@@ -1727,6 +1727,94 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     ]);
   });
 
+  it('CTL6C-1-RECONNECT-DROPS-STAMPED: a link drop closes every frame opened over the battle, so the same battle re-delivered after it is the bare battle base again, live and holding focus, with no shown overlay left inert; help opened at the world survives a drop as it always has', async () => {
+    // WRONG IMPL KILLED (red-team F1, measured): a reconnect that hides the menu (onReconnect's
+    // menuView.hide()) and leaves help, which the menu opened above itself over the battle and
+    // which is stamped with that battle: the re-delivered row keeps the stamped help (reconcile
+    // keeps a battleSafe frame stamped with the base's battle), the battle re-shows over it, and
+    // help stays displayed but inert and aria-hidden under the battle, focus on the battle beneath
+    // it, a frame the stack still lists and Start, B and Select act on (red today); a fix that
+    // closes help but leaves another stamped frame on the stack; one that leaves the battle root
+    // inert or focus outside it; and an over-reach that also closes help the player opened at the
+    // WORLD, which reads no store state, holds no lock and has always survived a drop (that arm
+    // runs first, so the red run proves it holds today).
+    await bootReady();
+    server(1000);
+
+    // --- the world arm: help opened at the world survives a drop -------------------------------
+    tap('KeyR', 1010);
+    expect(helpShown(), 'world arm, precondition: R opened help at the world').toBe(true);
+    expect(stack(), 'world arm, precondition: help over the world, unstamped').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'helpView' },
+    ]);
+    opts.store.reset(); // the drop edge
+    opts.onReconnect(H.identity);
+    opts.onHydrated();
+    server(1100);
+    await flush();
+    expect(helpShown(), 'world arm: help opened at the world is still open').toBe(true);
+    expect(stack(), 'world arm: and still on the stack').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'helpView' },
+    ]);
+    const help = byId('help-overlay');
+    expect(help.hasAttribute('inert'), 'world arm: help is live, not inert').toBe(false);
+    expect(help.getAttribute('aria-hidden'), 'world arm: nor aria-hidden').toBeNull();
+    tap('KeyR', 1200);
+    expect(helpShown(), 'world arm: Select still closes it').toBe(false);
+    expect(stack(), 'world arm: the bare world').toEqual([{ kind: 'world' }]);
+
+    // --- the battle arm: Options > How to play over the menu over the battle -----------------
+    putBattle(BATTLE_ID, 1300);
+    await flush();
+    expect(battleShown(), 'precondition: the Ongoing battle is on screen').toBe(true);
+    tap('Escape', 1400);
+    expect(menuShown(), 'precondition: Start opened the menu over the battle').toBe(true);
+    for (let i = 0; i < 8 && navActive() !== 'options'; i += 1) tap('ArrowDown', 1500 + i * 100);
+    expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
+    tap('Enter', 2400);
+    expect(navActive(), 'precondition: A entered Options, on How to play').toBe('help');
+    tap('Enter', 2500);
+    await flush();
+    // Control: before the drop help really is up, above the menu, both stamped with the battle.
+    expect(helpShown(), 'control: help is open over the battle').toBe(true);
+    expect(menuShown(), 'control: with the menu beneath it').toBe(true);
+    expect(stack(), 'control: both frames are stamped with the battle').toEqual([
+      { kind: 'battle', battleId: '101' },
+      { kind: 'screen', id: 'menuView', overBattle: '101' },
+      { kind: 'screen', id: 'helpView', overBattle: '101' },
+    ]);
+
+    // The link drops and comes back, and the same Ongoing battle is re-delivered.
+    opts.store.reset();
+    opts.onReconnect(H.identity);
+    opts.onHydrated();
+    opts.store.upsertBattle(battleRow(BATTLE_ID, 'Ongoing'));
+    server(2600);
+    await flush();
+    expect(helpShown(), 'help opened over the battle is closed with the drop').toBe(false);
+    expect(menuShown(), 'and so is the menu beneath it').toBe(false);
+    expect(battleShown(), 'the re-delivered battle is on screen').toBe(true);
+    expect(stack(), 'the stack is the bare battle base').toEqual([
+      { kind: 'battle', battleId: '101' },
+    ]);
+    const root = battleRoot();
+    expect(root.hasAttribute('inert'), 'the battle root is not inert').toBe(false);
+    expect(root.getAttribute('aria-hidden'), 'and not aria-hidden').toBeNull();
+    expect(root.contains(document.activeElement), 'focus is inside the battle overlay').toBe(true);
+    const overlays = [
+      ['help', byId('help-overlay')],
+      ['menu', byId('menu-overlay')],
+      ['battle', root],
+    ] as const;
+    for (const [name, el] of overlays) {
+      if (!isShown(el)) continue;
+      expect(el.hasAttribute('inert'), `${name}: a shown overlay root is never inert`).toBe(false);
+      expect(el.getAttribute('aria-hidden'), `${name}: nor aria-hidden`).not.toBe('true');
+    }
+  });
+
   // ------------------------------------------------------------------------------------------
   // CTL6C.2: A and B continue a terminal outcome
   // ------------------------------------------------------------------------------------------
@@ -1794,6 +1882,59 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     server(2500);
     expect(battleShown(), 'and it does not re-pop either').toBe(false);
     expect(stackNames()).toEqual(['world']);
+  });
+
+  it('an outcome that arrives already terminal over a player frame open at the world starts its own A grace: with the box, then the menu, up for a second before it, Enter 100 ms after the outcome shows is swallowed and Enter 500 ms after continues', async () => {
+    // WRONG IMPL KILLED (verifier v48, measured): an outcome clock started whenever ANY screen
+    // frame tops the world base (syncStack's `top.id === 'battleView'` test dropped): the box or
+    // the menu starts it when it opens, the outcome that closes that frame in its own batch
+    // inherits the stamp, and the first Enter on the outcome skips the result the 400 ms grace
+    // protects; and a clock never started for an outcome with no Ongoing batch before it (A would
+    // never continue). The arrival shape: a row first seen already terminal shows only once a
+    // battle has been seen this session (the very first one is pre-dismissed as historical), so
+    // battle 101 runs to its end first.
+    await bootReady();
+    seedWorld(1000);
+    putBattle(BATTLE_ID, 1100);
+    putBattle(BATTLE_ID, 1200, 'SideAWins');
+    tap('Backspace', 1300);
+    expect(battleShown(), 'precondition: the first outcome was continued').toBe(false);
+    expect(stack(), 'precondition: the bare world').toEqual([{ kind: 'world' }]);
+
+    const arms = [
+      { name: 'box', key: 'KeyB', shown: boxShown, id: 'boxView', battleId: 102n, at: 1400 },
+      { name: 'menu', key: 'KeyM', shown: menuShown, id: 'menuView', battleId: 103n, at: 3000 },
+    ] as const;
+    for (const arm of arms) {
+      tap(arm.key, arm.at);
+      expect(arm.shown(), `${arm.name}: precondition: it opened at the world`).toBe(true);
+      expect(stackNames(), `${arm.name}: precondition: one frame over the world`).toEqual([
+        'world',
+        arm.id,
+      ]);
+      // It stays up for a second, through batches and a frame.
+      server(arm.at + 300);
+      frame(arm.at + 400);
+      server(arm.at + 800);
+      expect(arm.shown(), `${arm.name}: precondition: still up`).toBe(true);
+
+      // The next battle's first row is already terminal: the outcome first shows at `at + 1000`.
+      putBattle(arm.battleId, arm.at + 1000, 'SideBWins');
+      expect(battleShown(), `${arm.name}: the terminal row shows its outcome`).toBe(true);
+      expect(arm.shown(), `${arm.name}: and the outcome closed the frame`).toBe(false);
+      expect(stackNames(), `${arm.name}: the outcome frame over the world`).toEqual([
+        'world',
+        'battleView',
+      ]);
+
+      const early = tap('Enter', arm.at + 1100); // age 100 of the outcome, 1100 of the frame
+      expect(early.defaultPrevented, `${arm.name}: the early A is swallowed`).toBe(true);
+      expect(battleShown(), `${arm.name}: A at age 100 leaves the outcome up`).toBe(true);
+      expect(stackNames()).toEqual(['world', 'battleView']);
+      tap('Enter', arm.at + 1500); // age 500
+      expect(battleShown(), `${arm.name}: A after the grace continues the outcome`).toBe(false);
+      expect(stackNames(), `${arm.name}: back at the world`).toEqual(['world']);
+    }
   });
 
   it('A on a terminal outcome over a suspended conversation pops only the outcome: the dialogue stays and no dismiss is sent', async () => {
@@ -1901,6 +2042,11 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     // overwrites. The control proves the region is live in this harness (the frame loop already
     // painted the dialogue's announcement into it) and that it did not already hold the reason, so
     // the final read can pass neither on a dead region nor on a pre-filled one.
+    // WRONG IMPL KILLED (verifier v30, measured): an announcement stamped with a clock of 0 (the
+    // measured mutant), or one 200 ms or more stale, instead of the refusal's own
+    // `performance.now()`: its coalescing window (liveRegion.ts, COALESCE_WINDOW_MS = 500) is then
+    // over by the frame at age 10 or age 300, which paints the reason early; both must still show
+    // the earlier announcement.
     await bootReady();
     seedWorld(1000);
     startConversation(1010);
@@ -1921,11 +2067,14 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
       reason,
     );
 
-    clickChoice('2', 1800);
+    clickChoice('2', 1800); // the refusal's coalescing window opens at clock 1800
     expect(callsOf('advanceDialogue'), 'precondition: the click was refused').toEqual([]);
     expect(statusText(), 'precondition: the status line shows the reason').toBe(reason);
-    frame(1810);
-    frame(2400);
+    frame(1810); // age 10: inside the 500 ms window
+    expect(liveText(), 'inside the window (age 10) the reason is not painted yet').toBe(before);
+    frame(2100); // age 300: still inside it
+    expect(liveText(), 'nor at age 300: the window runs from the refusal itself').toBe(before);
+    frame(2400); // age 600: past it
     expect(liveText(), 'the live region announces exactly the catalogued reason').toBe(reason);
   });
 

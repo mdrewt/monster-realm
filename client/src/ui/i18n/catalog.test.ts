@@ -28,6 +28,7 @@ import { describe, expect, it } from 'vitest';
 // The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule).
 import { stripComments } from '../../../test-util/stripComments';
 import { CATALOG_EN } from './catalog.en';
+import { CATALOG_FR } from './catalog.fr';
 
 const I18N_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CATALOG_EN_PATH = path.join(I18N_DIR, 'catalog.en.ts');
@@ -989,5 +990,37 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
       violations,
       `every entry (including the 32 new m24s3 keys) needs an adjacent @desc comment: ${violations.join(', ')}`,
     ).toEqual([]);
+  });
+});
+
+// =============================================================================
+// ctl-6c: the French values of the keys ctl-6c changed (battle.continueHint: A continues an
+// outcome too, so the hint names Enter) or added (the two menu.disabled.* reasons), pinned exactly
+// as the English ones are in EXPECTED_PLAIN above.
+// =============================================================================
+
+/** U+00E9 (e acute), built by code point so the expected French text holds no pasted glyph. */
+const E_ACUTE = String.fromCharCode(0x00e9);
+
+const EXPECTED_FR_CTL6C: Record<string, string> = {
+  'battle.continueHint': `Appuyez sur Entr${E_ACUTE}e ou Esc pour continuer`,
+  'menu.disabled.inBattle': 'Impossible pendant un combat',
+  'menu.disabled.battleBag': 'Utilisez les objets avec la commande Sac du combat',
+};
+
+describe('ctl-6c: catalog.fr.ts, the battle keys ctl-6c changed or added', () => {
+  it('ctl-6c FR-PINS: the French battle.continueHint names Enter as well as Esc, and the two menu.disabled.* reasons are their exact French text, each a translation of its English entry', () => {
+    // WRONG IMPL KILLED (measured): the French continue hint left at, or reverted to, the
+    // pre-ctl-6c "Appuyez sur Esc pour continuer" while the English one names Enter too (a French
+    // player is never told that A continues the outcome); a French reason left as the English copy
+    // or reworded; and an accented "Entree" whose e acute is not the precomposed U+00E9.
+    for (const [key, expected] of Object.entries(EXPECTED_FR_CTL6C)) {
+      const en = EXPECTED_PLAIN[key];
+      expect(typeof en, `fixture: ${key} has an English pin`).toBe('string');
+      const fr = (CATALOG_FR as Record<string, unknown>)[key];
+      expect(typeof fr, `${key} must be a plain string in the fr catalog`).toBe('string');
+      expect(fr, `${key}: the exact French text`).toBe(expected);
+      expect(fr, `${key}: a translation, not the English copy`).not.toBe(en);
+    }
   });
 });
