@@ -1829,7 +1829,7 @@ let lastA11ySnapshot: A11ySnapshot = { topOverlay: null, message: '' };
 // shell families hides that way — so the ancestor walk is the exact discriminator, and it
 // is engine-independent. `checkVisibility()` was rejected: this happy-dom version does not
 // implement it, which would make the unit-tier proof vacuous. The walk cannot match the
-// always-on corner affordance (it and every ancestor are display-visible), so the D4
+// always-on hint-bar chips (they and every ancestor are display-visible), so the D4
 // no-steal guarantee survives — pinned by S5T-FOCUS-NO-STEAL.
 const focusInsideHiddenSubtree = (): boolean => {
   for (
@@ -2552,17 +2552,19 @@ document.addEventListener('click', (e) => {
   // the SAME verdict the menu hotkey does, so a single verdict decides both. canOpen exempts
   // self, so with ONLY the menu visible this branch would re-open it; harmless, and a child
   // covering the menu denies by its own verdict. The identity guard is preserved: the menu's
-  // screens read identity-keyed state. Opening clears held keys (CTL2.4).
+  // screens read identity-keyed state. Opening clears held keys (CTL2.4). Like every input path,
+  // a chip is dead while the session terminal owns the screen.
   if ((e.target as HTMLElement).closest('[data-menu-launcher]') !== null) {
-    if (overlayVerdict('menuView').kind === 'allow' && identity !== '') {
+    if (!sessionGateBlocks() && overlayVerdict('menuView').kind === 'allow' && identity !== '') {
       held.clear();
       openMenu();
     }
     return;
   }
-  // The Select chip: Help, through the same verdict as the `?` hotkey (CTL7A.4).
+  // The Select chip: Help, through the same verdict as the `?` hotkey (CTL7A.4). Help reads no
+  // identity-keyed state, so, like `?`, it needs no identity.
   if ((e.target as HTMLElement).closest('[data-help-launcher]') !== null) {
-    if (overlayVerdict('helpView').kind === 'allow' && identity !== '') {
+    if (!sessionGateBlocks() && overlayVerdict('helpView').kind === 'allow') {
       held.clear();
       openHelp();
     }

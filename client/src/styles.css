@@ -142,7 +142,7 @@
   align-items: baseline;
   gap: 0.5rem;
   padding: 0.25rem 0.5rem;
-  border-bottom: 2px solid #e0e0e0;
+  border-bottom: 2px solid var(--mr-frame-border);
 }
 .mr-frame-title {
   font-weight: bold;
@@ -180,8 +180,8 @@
   padding: 0 0.5rem;
 }
 .mr-nav-tab.is-active {
-  background: #e0e0e0;
-  color: #1e1e2e;
+  background: var(--mr-frame-fg);
+  color: var(--mr-frame-bg);
   text-decoration: underline;
 }
 .mr-frame-body {
@@ -192,7 +192,7 @@
 .mr-frame-feedback {
   min-height: 1.5em;
   padding: 0.25rem 0.5rem;
-  border-top: 2px solid #e0e0e0;
+  border-top: 2px solid var(--mr-frame-border);
 }
 .mr-frame-feedback[data-feedback="pending"]::before {
   content: "…" / "";
@@ -213,9 +213,9 @@
   padding: 0.125rem 0.5rem 0.125rem 1.25rem;
 }
 .mr-nav-item.is-active {
-  background: #e0e0e0;
-  color: #1e1e2e;
-  outline: 2px solid #1e1e2e;
+  background: var(--mr-frame-fg);
+  color: var(--mr-frame-bg);
+  outline: 2px solid var(--mr-frame-bg);
   outline-offset: -4px;
 }
 .mr-nav-item.is-active::before {
@@ -269,9 +269,9 @@
   font: 14px / 1.6 monospace;
   pointer-events: auto;
 }
-/* Menu and help open over a battle, whose root is position:fixed at z-index 110 (ctl-6c). Fixed
- * here too, so the two compete as peers (encounter-battle.spec.ts E0 pins both); #game-screen
- * fills the viewport and has no transform, so the box is the one .mr-shell gives. */
+/* Menu and help open over a battle (ctl-6c), whose root is z-index 110. position:fixed because
+ * encounter-battle.spec.ts E0 pins all three roots as fixed; #game-screen fills the viewport and
+ * has no transform, so the box is the one .mr-shell gives. */
 .mr-shell--top {
   position: fixed;
   z-index: 120;
@@ -299,15 +299,21 @@
   padding: 2px 8px;
   transform: translateX(-50%);
 }
-/* The status line: out of the page flow, above the hint bar. */
+/* The status line: out of the page flow, above the hint bar, on the frame background so it
+ * reads over any terrain. Hidden while empty. */
 .mr-status {
   position: absolute;
   left: 8px;
   bottom: 36px;
   z-index: 45;
+  padding: 1px 6px;
   font: 12px / 1.4 monospace;
   color: var(--mr-frame-fg);
+  background: var(--mr-frame-bg);
   pointer-events: none;
+}
+.mr-status:empty {
+  display: none;
 }
 .mr-hint-bar {
   position: absolute;
@@ -330,9 +336,10 @@
   background: var(--mr-frame-bg);
   color: var(--mr-frame-fg);
 }
+/* The button name is drawn AND spoken ("Start Menu"), so the accessible name contains the visible
+ * label (WCAG 2.5.3, label in name). */
 .mr-chip::before {
-  content: attr(data-button) / "";
-  padding-right: 0.5em;
+  content: attr(data-button) " ";
   font-weight: bold;
 }
 
