@@ -1,8 +1,9 @@
 // ui/screens/index.ts — the adapter table and the screen host (design §4, §12; CTL6B.1, CTL7C.2).
 // The router hands a button to `ScreenHost.button`, which asks ONLY the top frame: the base's own
 // rule (`baseButton`), the typing rule over a text-entry frame, or that screen's adapter fed its own
-// view model and the state the host keeps for it. No DOM, SDK or module state: main.ts holds the
-// one host, binds the stack and the context and runs the returned command.
+// view model and the state the host keeps for it. A store batch goes to `ScreenHost.observe`, which
+// asks every open frame whose adapter observes (CTL7D.6). No DOM, SDK or module state: main.ts
+// holds the one host, binds the stack and the context and runs the returned command.
 import type { BaseFrame, FrameId, Stack, UpperFrame } from '../contextStack';
 import type { NavInput } from '../nav';
 import { legacyAdapter } from './legacyAdapter';
@@ -49,7 +50,7 @@ export function baseButton(base: BaseFrame, btn: NavInput): ScreenResult {
 }
 
 /** The shell's side of the adapter seam (CTL7C.2): one adapter state per frame id, kept from the
- *  frame's first step until it opens again, and the view each step is painted into. */
+ *  frame's first step or observe until it opens again, and the view each state is painted into. */
 export class ScreenHost {
   readonly #states = new Map<FrameId, unknown>();
   readonly #adapters: ScreenAdapters;
@@ -97,6 +98,31 @@ export class ScreenHost {
       case 'screen':
       case 'prompt':
         return this.#step(top.id, btn, ctx);
+    }
+  }
+
+  /** A store batch was applied (CTL7D.6): every screen or prompt frame on the stack whose adapter
+   *  defines `observe` is asked once, bottom up, with its own view model, its kept state (its
+   *  `init` the first time since it opened) and the context's clock. The state it answers is
+   *  kept, and painted once when it is a different object. A throw from the adapter or its paint
+   *  is reported and leaves that frame's state as it was; the frames above are still asked. */
+  observe(stack: Stack, ctx: ScreenContext): void {
+    for (const frame of stack) {
+      if (frame.kind !== 'screen' && frame.kind !== 'prompt') continue;
+      const adapter = this.#adapters[frame.id];
+      if (adapter.observe === undefined) continue;
+      try {
+        const vm = adapter.viewModel(ctx);
+        const kept = this.#states.has(frame.id) ? this.#states.get(frame.id) : adapter.init(vm);
+        const next = adapter.observe(vm, kept, ctx.now());
+        if (next !== kept && adapter.paint !== undefined) {
+          const view = this.#viewOf(frame.id);
+          if (view !== undefined) adapter.paint(view, vm, next);
+        }
+        this.#states.set(frame.id, next);
+      } catch (err) {
+        this.#onPaintError(err);
+      }
     }
   }
 

@@ -520,12 +520,26 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // sign). Carries a spaced em dash. One line.
   // shopView.ts:190
   'shop.sell.unsellable': (p) => `${p.name} (×${p.count}) — Invendable`,
-  // @desc: Feedback line in the shop overlay after a purchase succeeded.
-  // main.ts:2648
-  'shop.feedback.purchased': 'Achat effectué !',
-  // @desc: Feedback line in the shop overlay after a sale succeeded.
-  // main.ts:2655
-  'shop.feedback.sold': 'Vente effectuée !',
+  // @desc: Feedback line in the shop overlay after a purchase succeeded; {qty} is how many were
+  // bought, {name} the item name and {gold} the total gold spent, after a minus sign (U+2212).
+  // Starts with a check mark. One line.
+  // main.ts (dispatch, buy)
+  'shop.feedback.buy.item': (p) => `✓ Acheté ${p.qty} ${p.name} (−${p.gold} or)`,
+  // @desc: Feedback line in the shop overlay after a purchase succeeded while the item or its
+  // price is not loaded; {qty} is how many were bought, after a multiplication sign. Starts with
+  // a check mark. One short line.
+  // main.ts (dispatch, buy)
+  'shop.feedback.buy.count': (p) => `✓ Acheté ×${p.qty}`,
+  // @desc: Feedback line in the shop overlay after a sale succeeded; {qty} is how many were
+  // sold, {name} the item name and {gold} the total gold received, after a plus sign. Starts
+  // with a check mark. One line.
+  // main.ts (dispatch, sell)
+  'shop.feedback.sell.item': (p) => `✓ Vendu ${p.qty} ${p.name} (+${p.gold} or)`,
+  // @desc: Feedback line in the shop overlay after a sale succeeded while the item is not
+  // loaded; {qty} is how many were sold, after a multiplication sign. Starts with a check mark.
+  // One short line.
+  // main.ts (dispatch, sell)
+  'shop.feedback.sell.count': (p) => `✓ Vendu ×${p.qty}`,
   // @desc: Placeholder option of the trade-proposal dialog's target selector, shown before the
   // player picks another player to trade with; ends with an ellipsis. Short, fits a narrow
   // dropdown.

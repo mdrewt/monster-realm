@@ -304,6 +304,7 @@ export const COMMAND_BATTLE_POLICY: Readonly<Record<ScreenCommand['kind'], 'safe
   pvpSwap: 'safe',
   advanceDialogue: 'refuse',
   dismissDialogue: 'safe',
+  pickShop: 'refuse',
   claimSignIn: 'refuse',
   claimJoin: 'refuse',
   claimDecline: 'refuse',
