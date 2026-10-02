@@ -7,7 +7,8 @@
 // null `shops`, a throwing getter): unreachable from the store, and the view-model
 // call sites are try/catch-wrapped with per-listener isolation (M10.5d). The quantity
 // rule and the feedback facts run inside main.ts's `dispatch` with no try around them,
-// where a throw would hold the shop's in-flight lock: they never throw.
+// where a throw would hold the shop's in-flight lock: they never throw for any quantity
+// or any row field.
 //
 // The wallet table stays PRIVATE; the
 // balance reaches the client through the owner-scoped `my_wallet` view only, as
@@ -181,9 +182,9 @@ export type ShopFeedback =
   | { readonly kind: 'item'; readonly qty: number; readonly name: string; readonly gold: bigint }
   | { readonly kind: 'count'; readonly qty: number };
 
-/** The one rule both sides share. A missing or malformed name or price, or a quantity that is
+/** The one rule buy and sell share. A missing or malformed name or price, or a quantity that is
  *  not sendable, gives the quantity alone: never a partial line, never a throw. */
-function shopFeedback(qty: number, name: unknown, unitPrice: unknown): ShopFeedback {
+function movedFacts(qty: number, name: unknown, unitPrice: unknown): ShopFeedback {
   if (typeof name !== 'string' || typeof unitPrice !== 'bigint' || !validShopQty(qty)) {
     return { kind: 'count', qty };
   }
@@ -200,7 +201,7 @@ export function buyFeedback(
   itemDefs: ReadonlyMap<number, StoreItemRow>,
 ): ShopFeedback {
   const stock = shopItems.find((si) => si.shopId === shopId && si.itemId === itemId);
-  return shopFeedback(qty, itemDefs.get(itemId)?.name, stock?.buyPrice);
+  return movedFacts(qty, itemDefs.get(itemId)?.name, stock?.buyPrice);
 }
 
 /** A sale of `qty` of `itemId`: the price is the item definition's `sellPrice`. */
@@ -210,5 +211,5 @@ export function sellFeedback(
   itemDefs: ReadonlyMap<number, StoreItemRow>,
 ): ShopFeedback {
   const def = itemDefs.get(itemId);
-  return shopFeedback(qty, def?.name, def?.sellPrice);
+  return movedFacts(qty, def?.name, def?.sellPrice);
 }

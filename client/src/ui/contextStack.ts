@@ -271,8 +271,9 @@ export function battleButton(
 }
 
 /** Which screen commands a battle base allows (CTL6C.3): the stack moves, the battle's own actions
- *  and ending a conversation. Total over the `Command` kinds, so a new arm (talk, bag use) fails
- *  client-typecheck until it is classified here. Reducer guards stay the authority. */
+ *  and ending a conversation. `pickShop` ends one only to open a shop, so it is refused. Total over
+ *  the `Command` kinds, so a new arm (talk, bag use) fails client-typecheck until it is classified
+ *  here. Reducer guards stay the authority. */
 export const COMMAND_BATTLE_POLICY: Readonly<Record<ScreenCommand['kind'], 'safe' | 'refuse'>> = {
   pop: 'safe',
   popToBase: 'safe',

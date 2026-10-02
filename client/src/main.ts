@@ -1160,7 +1160,7 @@ function dispatch(command: Command): Promise<void> {
     case 'buy': {
       const { shopId, itemId, qty } = command;
       if (refusedShopQty('buy', qty)) return DONE;
-      // The line is resolved now, from the rows as they are at the send (CTL7D.4).
+      // The line is resolved now, from the rows as they are at the send.
       const moved = buyFeedback(shopId, itemId, qty, store.allShopItems(), store.itemDefs());
       return performCare({
         call: () => liveReducers()?.buy({ shopId, itemId, qty }),
@@ -1359,12 +1359,12 @@ function dispatch(command: Command): Promise<void> {
   }
 }
 
-/** Refuse a buy or sell whose quantity the reducer's u32 cannot carry (CTL7D.3): nothing is sent
- *  and no shop line is shown. Reject, never clamp. It is an adapter bug, not player input, so it is
+/** Refuse a buy or sell whose quantity the reducer's u32 cannot carry: nothing is sent and no
+ *  shop line is shown. Reject, never clamp. It is an adapter bug, not player input, so it is
  *  logged and the player is told nothing. `qty` is its own argument: it may not be printable. */
 function refusedShopQty(kind: 'buy' | 'sell', qty: number): boolean {
   if (validShopQty(qty)) return false;
-  console.error(`[dispatch] ${kind}: qty must be an integer from 1 to 4294967295`, qty);
+  console.error(`[dispatch] ${kind}: qty is not a quantity the reducer can carry`, qty);
   return true;
 }
 
@@ -2637,8 +2637,8 @@ store.onBatchApplied(() => {
 
 // The LAST batch listener: mirror every overlay this batch's listeners showed or hid (a
 // server-opened dialogue, a battle auto-show) so its push clears held before the next frame.
-// Then every open frame's adapter observes the batch (CTL7D.6). It must stay last: a frame this
-// batch pushed starts from its `init`, and every view render of the batch has already run.
+// Then every open frame's adapter observes the batch. It must stay last: a frame this batch
+// pushed starts from its `init`, and every view render of the batch has already run.
 store.onBatchApplied(() => {
   syncStack();
   screenHost.observe(contextStack, screenCtx);
@@ -2649,8 +2649,8 @@ store.onBatchApplied(() => {
 document.addEventListener('click', (e) => {
   // The greet-then-shop button. It carries
   // data-shop-id and NO choice index, so it gets its own branch ABOVE the
-  // choice delegation. The click and A on that choice share the one `pickShop` command, so a
-  // battle base refuses both.
+  // choice delegation. The click dispatches `pickShop`, so a battle base refuses it like any
+  // other command.
   const shopBtn = (e.target as HTMLElement).closest('[data-shop-id]') as HTMLElement | null;
   if (shopBtn !== null) {
     const clickedShopId = Number(shopBtn.dataset.shopId);

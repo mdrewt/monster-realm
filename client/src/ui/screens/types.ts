@@ -13,8 +13,8 @@ export interface ScreenStep<S, E> {
   readonly effect: E;
 }
 
-/** Every action a screen issues: the stack moves, then one arm per reducer action a screen sends
- *  today (each carrying that view callback's arguments). A new arm without a `dispatch` case fails
+/** Every action a screen issues: the stack moves, then one arm per action a screen takes (each
+ *  carrying what `dispatch` needs to run it). A new arm without a `dispatch` case fails
  *  client-typecheck. */
 export type Command =
   // The stack. `pop` closes the top frame, `popToBase` every frame above the base.

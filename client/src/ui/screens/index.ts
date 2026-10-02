@@ -2,8 +2,8 @@
 // The router hands a button to `ScreenHost.button`, which asks ONLY the top frame: the base's own
 // rule (`baseButton`), the typing rule over a text-entry frame, or that screen's adapter fed its own
 // view model and the state the host keeps for it. A store batch goes to `ScreenHost.observe`, which
-// asks every open frame whose adapter observes (CTL7D.6). No DOM, SDK or module state: main.ts
-// holds the one host, binds the stack and the context and runs the returned command.
+// asks every open frame whose adapter observes. No DOM, SDK or module state: main.ts holds the
+// one host, binds the stack and the context and runs the returned command.
 import type { BaseFrame, FrameId, Stack, UpperFrame } from '../contextStack';
 import type { NavInput } from '../nav';
 import { legacyAdapter } from './legacyAdapter';
@@ -69,10 +69,11 @@ export class ScreenHost {
     this.#onPaintError = onPaintError;
   }
 
-  /** A frame opened: its adapter starts over from `init` at its next step. A text-entry frame is
-   *  typing over its owner, whose state stays. Runs no adapter code. The shell calls it when the
-   *  stack gains the frame, so a frame hidden and shown again between two syncs keeps its state:
-   *  an adapter whose content can be replaced while it is open keys its state on that content. */
+  /** A frame opened: its adapter starts over from `init` at its next step or observe. A text-entry
+   *  frame is typing over its owner, whose state stays. Runs no adapter code. The shell calls it
+   *  when the stack gains the frame, so a frame hidden and shown again between two syncs keeps its
+   *  state: an adapter whose content can be replaced while it is open keys its state on that
+   *  content. */
   opened(frame: UpperFrame): void {
     if (frame.kind !== 'textEntry') this.#states.delete(frame.id);
   }
@@ -101,7 +102,7 @@ export class ScreenHost {
     }
   }
 
-  /** A store batch was applied (CTL7D.6): every screen or prompt frame on the stack whose adapter
+  /** A store batch was applied: every screen or prompt frame on the stack whose adapter
    *  defines `observe` is asked once, bottom up, with its own view model, its kept state (its
    *  `init` the first time since it opened) and the context's clock. The state it answers is
    *  kept, and painted once when it is a different object. A throw from the adapter or its paint
