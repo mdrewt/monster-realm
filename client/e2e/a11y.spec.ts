@@ -753,10 +753,9 @@ test.describe
       const m = await page.evaluate(measureFrameInPage, '#rename-overlay');
       expectFrameOk(m, 'rename shell');
 
-      // Close it for the next test. Escape does NOT work here: with focus on #rename-input
-      // it leaves the overlay shown and moves focus to #rename-submit (a pre-existing
-      // defect, also on master, tracked as a residual). Blur to <body> and press N instead:
-      // main.ts's KeyN branch hides the rename overlay when it is visible.
+      // Close it for the next test. The first Escape in the text field only leaves typing mode
+      // (focus moves to #rename-submit, ctl-6b), so blur to <body> and press N instead:
+      // main.ts's KeyN branch hides the visible rename overlay.
       await page.evaluate(() => {
         (document.activeElement as HTMLElement | null)?.blur();
       });
