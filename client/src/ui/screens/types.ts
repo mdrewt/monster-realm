@@ -1,9 +1,10 @@
 // ui/screens/types.ts — the shapes a screen adapter shares with the shell (design §4, §12). The
-// router hands each virtual-button edge to the TOP frame's adapter, which answers with a `Command`
-// (or `consumed` / `unhandled`); main.ts runs every command through ONE exhaustive `dispatch`.
+// router hands each virtual-button edge to the TOP frame's adapter, which answers with its next
+// state and a `Command` (or `consumed` / `unhandled`); the shell keeps that state per frame
+// (`ScreenHost`, screens/index.ts) and main.ts runs every command through ONE exhaustive `dispatch`.
 import type { Bindings } from '../../input/bindings';
 import type { AuthoritativeStore } from '../../net/store';
-import type { NavInput, NavState } from '../nav';
+import type { NavInput } from '../nav';
 import type { TradeProposeArgs } from '../tradeProposeModel';
 
 /** The result of one screen step: the next state and the effect the shell applies. */
@@ -27,7 +28,9 @@ export type Command =
   | { readonly kind: 'evolve'; readonly monsterId: bigint; readonly toSpecies: number }
   | { readonly kind: 'setNickname'; readonly monsterId: bigint; readonly nickname: string }
   | { readonly kind: 'setPartySlot'; readonly monsterId: bigint; readonly slot: number }
-  | { readonly kind: 'healParty' }
+  // `locationId`: the heal location a bound heal frame names. Absent (the Box button, until
+  // ctl-10a), `dispatch` takes the first loaded one.
+  | { readonly kind: 'healParty'; readonly locationId?: number }
   // Shop.
   | { readonly kind: 'buy'; readonly shopId: number; readonly itemId: number }
   | { readonly kind: 'sell'; readonly itemId: number }
@@ -78,9 +81,26 @@ export interface ScreenContext {
   readonly now: () => number;
 }
 
-/** One screen's input seam. Method syntax on purpose, so a `ScreenAdapter<SomeVm>` fits the
- *  `ScreenAdapter<unknown>` table. */
-export interface ScreenAdapter<VM> {
+/** What one button did to a screen: its next state and the result the shell applies. */
+export interface ButtonStep<S> {
+  readonly state: S;
+  readonly result: ScreenResult;
+}
+
+/** One screen's input seam: a view model `VM` built from the context, a state `S` the shell keeps
+ *  for the frame while it is open, and the view `V` it paints. Method syntax on purpose, so a
+ *  `ScreenAdapter<SomeVm, SomeState, SomeView>` fits the `ScreenAdapter<unknown, unknown>` table. */
+export interface ScreenAdapter<VM, S, V = unknown> {
+  /** Nav-capable: while this frame is the top one the router hands it the D-pad, with auto-repeat. */
+  readonly nav?: true;
   viewModel(ctx: ScreenContext): VM;
-  onButton(vm: VM, nav: NavState | undefined, btn: NavInput): ScreenResult;
+  /** The state a frame starts from each time it opens. */
+  init(vm: VM): S;
+  /** One button. The next state is kept and painted before the result's command runs, and that
+   *  command may be refused, so a state must not assume it took effect. `btn.repeat` marks a
+   *  synthesized auto-repeat: move on it, never act. */
+  onButton(vm: VM, state: S, btn: NavInput): ButtonStep<S>;
+  /** Paint the frame's view after a step. The shell lends the view instance; import its class as
+   *  a type only, so the adapter stays free of the DOM. */
+  paint?(view: V, vm: VM, state: S): void;
 }
