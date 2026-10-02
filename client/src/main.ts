@@ -455,8 +455,9 @@ const overlayHandles: OverlayHandles = {
 
 // the ONE view-lending table: each frame's view instance, which the screen host hands to that
 // frame's adapter to paint after a step (CTL7C.2). Every entry is intentionally byte-identical
-// `<id>: () => <id>`, the probe table's shape and for its reason: a copy-pasted sibling thunk
-// type-checks perfectly while lending the wrong view. Undefined until main() builds the views.
+// `<id>: () => <id>`, one uniform thunk per id as in the probe table and for its reason: a
+// copy-pasted sibling thunk type-checks perfectly while lending the wrong view. Undefined until
+// main() builds the views.
 const screenViews: Readonly<Record<OverlayId, () => unknown>> = {
   battleView: () => battleView,
   boxView: () => boxView,

@@ -94,7 +94,7 @@ export interface ScreenAdapter<VM, S, V = unknown> {
   /** Nav-capable: while this frame is the top one the router hands it the D-pad, with auto-repeat. */
   readonly nav?: true;
   viewModel(ctx: ScreenContext): VM;
-  /** The state a frame starts from each time it opens. */
+  /** The state a frame starts from, asked at its first step after each time it opens. */
   init(vm: VM): S;
   /** One button. The next state is kept and painted before the result's command runs, and that
    *  command may be refused, so a state must not assume it took effect. `btn.repeat` marks a

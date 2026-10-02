@@ -2058,13 +2058,14 @@ describe('main.ts D-pad on a nav-capable screen (runtime, ctl-7c)', { sequential
     // today: a dialogue, shop or heal screen gets no Up/Down), one wired from the menu's place
     // alone (the quest log over the covered main menu would move the HIDDEN menu's cursor, or
     // nothing), a `routeCtx` that checks the covered menu before the nav screen (the frame the
-    // player sees gets nothing), a pre-ladder intercept that ignores nav screens (the press is
-    // not marked as consumed for its OS repeats), repeats that never reach the screen or arrive
-    // unflagged, a repeat armed under the quest log that survives its pop and runs the menu
-    // cursor on with no key pressed in the menu (the mirror edge must reset it), a host that
-    // hands the D-pad to a frame whose adapter is NOT nav-capable (every legacy frame would get
-    // arrows it never asked for), and a menu that loses the D-pad while a nav adapter is merely
-    // registered for another frame.
+    // player sees gets nothing), repeats that never reach the screen or arrive unflagged, a
+    // repeat armed under the quest log that survives its pop and runs the menu cursor on with no
+    // key pressed in the menu (the mirror edge must reset it), a host that hands the D-pad to a
+    // frame whose adapter is NOT nav-capable (every legacy frame would get arrows it never asked
+    // for), and a menu that loses the D-pad while a nav adapter is merely registered for another
+    // frame. NOT killed here: a pre-ladder intercept that ignores nav screens (the tail route
+    // still delivers and prevents the D-pad press itself); the OS-repeat Enter assertion in
+    // main.controls.test.ts `CTL7C-2-BOOT-STATE` pins that.
     await bootReady();
     server(1000, { x: 2, y: 6, ack: 0 });
     const legacyQuestLog = H.adapters.questLogView;
