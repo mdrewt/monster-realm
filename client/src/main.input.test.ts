@@ -957,18 +957,17 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(stack(), 'and the close is mirrored').toEqual([{ kind: 'world' }]);
   });
 
-  it('CTL2-3-BOOT-B17: an Ongoing battle row makes movement dead from the very batch it arrives in, and Escape (which no longer hides the Ongoing battle overlay) changes nothing', async () => {
+  it('CTL2-3-BOOT-B17: an Ongoing battle row makes movement dead from the very batch it arrives in, and Escape opens the main menu over the battle and never hides it; with the menu closed again the bare battle base still walks nowhere and KeyT does not interact', async () => {
     // WRONG IMPL KILLED (B17): a gate that is only "no overlay visible" (Escape hides battleView
     // and the character predicts a step the server rejects, then rubber-bands back); a base
     // derived one batch late, or by a listener that runs after the reconcile re-issue (the
     // pullback batch that carries the battle row still sends a step); a prompt computed from
     // the overlay probe instead of the gate (it advertises a target KeyT would refuse); and a
     // base that does not return to the world when the battle row goes.
-    // ctl-6c: the title's "Escape ... changes nothing" is now "Escape never HIDES the battle": Start
-    // opens the main menu above an Ongoing battle (CTL6C.1) and the second Escape below closes it,
-    // after which the bare battle base keeps every movement and KeyT assertion that follows. A
-    // Start that hid the battle, or left the menu open (the KeyT / W gates would then read a menu
-    // frame instead of the bare base), fails here.
+    // ctl-6c: Escape never HIDES the battle: Start opens the main menu above an Ongoing battle
+    // (CTL6C.1) and the second Escape below closes it, after which the bare battle base keeps every
+    // movement and KeyT assertion that follows. A Start that hid the battle, or left the menu open
+    // (the KeyT / W gates would then read a menu frame instead of the bare base), fails here.
     await bootReady();
     seedWorld(1000);
     frame(1005);

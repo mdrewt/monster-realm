@@ -7,6 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import type { Stack } from '../src/ui/contextStack';
 import { t, tf } from '../src/ui/i18n/resolver';
 import { pressButton } from './controls';
 
@@ -17,6 +18,8 @@ import { pressButton } from './controls';
 // button -> Flee, and R2 weakens + recruits; its R3 sees "Victory!" only when a win happened by
 // accident. Nothing asserts that an attack's HP drop RENDERS, that a win GRANTS anything, or that
 // the world RESUMES after the terminal frame is dismissed. Those three are this file's tests.
+// E0 (ctl-6c) runs first, on the very battle E1 then fights: it hit-tests that the main menu Start
+// opens over an Ongoing battle, and the help it leads to, are what the player actually sees.
 //
 // SEEDING (owner SQL, the recruit.spec R3 / wallet-balance.spec precedent — the dev reducers are
 // not page-callable). The starter is raised to level 7 with xp = 8^3 - 1, so ANY win levels it
@@ -214,6 +217,67 @@ async function overlayText(p: Page, title: string): Promise<string> {
   }, title);
 }
 
+/** A viewport point the layering probes hit-test. */
+interface Point {
+  x: number;
+  y: number;
+}
+/** The read-only `__game()` fields E0 reads beyond `GameSnap`. */
+type StackWin = Window & { __game: () => { stack: Stack; navActive: string | null } };
+
+const readStack = (p: Page): Promise<Stack> =>
+  p.evaluate(() => (window as unknown as StackWin).__game().stack);
+const navActive = (p: Page): Promise<string | null> =>
+  p.evaluate(() => (window as unknown as StackWin).__game().navActive);
+
+/** The battle overlay root is the parent of its title heading (ui/battleView.ts). */
+const battleRootShown = (p: Page): Promise<boolean> =>
+  p.evaluate(() => {
+    const root = document.querySelector('[data-testid="battle-title"]')?.parentElement;
+    return root !== null && root !== undefined && root.style.display !== 'none';
+  });
+
+/** The layering probes: the viewport centre, the centre of the battle title and a point near the
+ *  top-left corner, all inside the viewport. Taken while the battle title is on screen. */
+const probePoints = (p: Page): Promise<Point[]> =>
+  p.evaluate(() => {
+    const title = document.querySelector('[data-testid="battle-title"]');
+    if (title === null) throw new Error('probe: the battle title is missing');
+    const r = title.getBoundingClientRect();
+    return [
+      { x: Math.round(window.innerWidth / 2), y: Math.round(window.innerHeight / 2) },
+      { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) },
+      { x: 12, y: 12 },
+    ];
+  });
+
+/** Which overlay the topmost element under each probe belongs to, i.e. what the player sees there:
+ *  'help', 'menu', 'battle', or the stray element's tag and id. */
+const hitOwners = (p: Page, points: Point[]): Promise<string[]> =>
+  p.evaluate((pts) => {
+    const battleRoot = document.querySelector('[data-testid="battle-title"]')?.parentElement;
+    const menu = document.getElementById('menu-overlay');
+    const help = document.getElementById('help-overlay');
+    return pts.map(({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      if (el === null) return 'nothing';
+      if (help?.contains(el)) return 'help';
+      if (menu?.contains(el)) return 'menu';
+      if (battleRoot?.contains(el)) return 'battle';
+      return `other:${el.tagName.toLowerCase()}#${el.id}`;
+    });
+  }, points);
+
+/** Whether keyboard focus sits inside the menu overlay or inside the battle overlay root. */
+const focusInside = (p: Page, where: 'menu' | 'battle'): Promise<boolean> =>
+  p.evaluate((w) => {
+    const root =
+      w === 'menu'
+        ? document.getElementById('menu-overlay')
+        : (document.querySelector('[data-testid="battle-title"]')?.parentElement ?? null);
+    return root !== null && root.contains(document.activeElement);
+  }, where);
+
 const boxCardPrefix = (species: string, level: number): string =>
   tf('box.card.stats', { species, level, current: 0, max: 0, percent: 0 }).split(' · HP')[0] ?? '';
 
@@ -257,6 +321,92 @@ test.describe
 
     test.afterAll(async () => {
       await browser.close();
+    });
+
+    test('E0 (CTL6C.1): Start on an Ongoing battle paints the main menu over the battle (hit-tested), Options > How to play paints help over both, B goes back to the menu and Start back to the untouched battle', async () => {
+      // WRONG IMPL KILLED: a menu or help painted UNDER the battle overlay (a z-index below the
+      // battle's: Start opens a menu the player cannot see while it takes every key; red today
+      // at the first menu probe, which still lands on the battle); a Start that hides the
+      // battle to show the menu; a menu not stamped over the battle (the stack shape); focus
+      // left in the battle under the menu; a close that does not return to the battle (the
+      // stack, the focus and the probes); and a menu round trip that submits or skips a turn
+      // (the turn number is unchanged). E1 continues on this SAME battle (huntNonWaterEncounter
+      // returns at once while one is ongoing), so this test neither attacks nor leaves a frame
+      // open.
+      test.setTimeout(90_000);
+      await huntNonWaterEncounter(page);
+      await expect(
+        page.getByRole('heading', { name: t('battle.title'), exact: true }),
+      ).toBeVisible();
+      const started = (await snap(page)).ongoingBattle;
+      if (started === null) throw new Error('E0: no ongoing battle after the hunt');
+      const id = started.battleId;
+      const all = (owner: string): string[] => [owner, owner, owner];
+      const points = await probePoints(page);
+      expect(points, 'three layering probes').toHaveLength(3);
+
+      // ANTI-VACUITY: before Start every probe lands in the battle overlay.
+      await expect.poll(() => hitOwners(page, points), { timeout: 5_000 }).toEqual(all('battle'));
+      await expect
+        .poll(() => readStack(page), { timeout: 5_000 })
+        .toEqual([{ kind: 'battle', battleId: id }]);
+      await expect.poll(() => focusInside(page, 'battle'), { timeout: 5_000 }).toBe(true);
+
+      // Start opens the menu over the battle, and the menu is what the player sees.
+      await pressButton(page, 'Start');
+      await expect(page.locator('#menu-overlay')).toBeVisible({ timeout: 5_000 });
+      await expect
+        .poll(() => readStack(page), { timeout: 5_000 })
+        .toEqual([
+          { kind: 'battle', battleId: id },
+          { kind: 'screen', id: 'menuView', overBattle: id },
+        ]);
+      await expect.poll(() => hitOwners(page, points), { timeout: 5_000 }).toEqual(all('menu'));
+      expect(await battleRootShown(page), 'the battle stays shown under the menu').toBe(true);
+      expect((await snap(page)).ongoingBattle?.battleId, 'the same battle goes on').toBe(id);
+      await expect.poll(() => focusInside(page, 'menu'), { timeout: 5_000 }).toBe(true);
+      expect(await navActive(page), 'the menu opens on its first entry').toBe('monsters');
+
+      // Options > How to play: help opens above the menu over the battle, and is what is seen.
+      await pressButton(page, 'Up'); // wraps from Monsters to Close
+      await pressButton(page, 'Up');
+      await expect.poll(() => navActive(page), { timeout: 5_000 }).toBe('options');
+      await pressButton(page, 'A');
+      await expect.poll(() => navActive(page), { timeout: 5_000 }).toBe('help');
+      await pressButton(page, 'A');
+      await expect(page.locator('#help-overlay')).toBeVisible({ timeout: 5_000 });
+      await expect
+        .poll(() => readStack(page), { timeout: 5_000 })
+        .toEqual([
+          { kind: 'battle', battleId: id },
+          { kind: 'screen', id: 'menuView', overBattle: id },
+          { kind: 'screen', id: 'helpView', overBattle: id },
+        ]);
+      await expect.poll(() => hitOwners(page, points), { timeout: 5_000 }).toEqual(all('help'));
+      expect(await battleRootShown(page), 'the battle stays shown under help').toBe(true);
+
+      // B closes help alone: the menu is what the player sees again.
+      await pressButton(page, 'B');
+      await expect(page.locator('#help-overlay')).toBeHidden({ timeout: 5_000 });
+      await expect
+        .poll(() => readStack(page), { timeout: 5_000 })
+        .toEqual([
+          { kind: 'battle', battleId: id },
+          { kind: 'screen', id: 'menuView', overBattle: id },
+        ]);
+      await expect.poll(() => hitOwners(page, points), { timeout: 5_000 }).toEqual(all('menu'));
+
+      // Start closes the menu: back to the untouched battle.
+      await pressButton(page, 'Start');
+      await expect(page.locator('#menu-overlay')).toBeHidden({ timeout: 5_000 });
+      await expect
+        .poll(() => readStack(page), { timeout: 5_000 })
+        .toEqual([{ kind: 'battle', battleId: id }]);
+      await expect.poll(() => hitOwners(page, points), { timeout: 5_000 }).toEqual(all('battle'));
+      await expect.poll(() => focusInside(page, 'battle'), { timeout: 5_000 }).toBe(true);
+      const after = (await snap(page)).ongoingBattle;
+      expect(after?.battleId, 'the battle is still ongoing').toBe(id);
+      expect(after?.turnNumber, 'and nothing was submitted').toBe(started.turnNumber);
     });
 
     test('E1: a grass encounter opens the battle UI, and a submitted attack renders the opponent HP drop', async () => {

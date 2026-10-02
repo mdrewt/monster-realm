@@ -28,12 +28,14 @@ import {
   baseFor,
   battleButton,
   battleRefused,
+  battleSafeCommand,
   blocksPlayerOpen,
   COMMAND_BATTLE_POLICY,
   type Command,
   contextStep,
   continuedBattleId,
   type Edge,
+  isBareBattle,
   mirrorEdges,
   movementEnabled,
   OUTCOME_CONTINUE_GRACE_MS,
@@ -745,11 +747,12 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
     expect(closeIds(f.commands), 'F: only the player frame is closed').toEqual(['boxView']);
   });
 
-  it('CTL3-2-POLICY-EXACT: SCREEN_POLICY owner and onBattle rows are exactly the literal table (battleSafe is not pinned here)', () => {
+  it('CTL3-2-POLICY-EXACT: SCREEN_POLICY owner and onBattle rows are exactly the literal table', () => {
     // WRONG IMPL KILLED: a table that marks a player overlay server-owned (reconcile would then
     // never close it), one that marks dialogue as droppable on battle (a live server conversation
     // would be torn off the stack), one that marks a player overlay `suspend`, and a row that goes
-    // missing. battleSafe is ctl-6c's and deliberately not asserted.
+    // missing. The third column, battleSafe, is ctl-6c's: its exact literal is pinned in the ctl-6c
+    // block of this file ("the SCREEN_POLICY battleSafe column is exactly the literal table").
     const expected: ReadonlyArray<
       readonly [OverlayId, 'player' | 'server', 'drop' | 'suspend' | undefined]
     > = [
@@ -1543,7 +1546,9 @@ describe('context stack: player pops, close diff and the outcome rule (ctl-6b)',
 // battle, and drops a stamped frame whose battle is gone even when no outcome is shown (the stale
 // stamp). `battleButton(stack, btn, outcomeAgeMs?)` is the base-level battle rule (Start opens the
 // menu at the bare battle base; A continues a terminal outcome after a grace). `battleRefused`
-// reads `COMMAND_BATTLE_POLICY` (a total table over the `Command` kinds) at a battle base.
+// reads `COMMAND_BATTLE_POLICY` (a total table over the `Command` kinds) at a battle base, through
+// `battleSafeCommand`, the one predicate over that table; `isBareBattle(stack)` is the one test for
+// "exactly a battle base, nothing above it".
 //
 // The expected sets below are HARD-CODED literals, never derived from SCREEN_POLICY or from the
 // policy table: a table read from the very thing it guards shrinks with it and stays green.
@@ -1886,6 +1891,101 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     expect(droppedStamped, 'ANTI-VACUITY: many stamped frames were dropped').toBeGreaterThan(50);
   });
 
+  it('the SCREEN_POLICY battleSafe column is exactly the literal table: battleView, questLogView, leaderboardView, helpView and menuView are battle-safe and no other frame id is', () => {
+    // WRONG IMPL KILLED: any single flag flipped. The reconcile cases above see the column only
+    // through the 15 player ids; battleView's and dialogueView's flags are observable nowhere else,
+    // and a dialogue marked battle-safe would read as a screen the battle allows. A box, a shop or a
+    // trade marked battle-safe would stay open over a battle; a menu or help that is not would close
+    // on the next batch after Start opened it (CTL6C.1). A row that goes missing fails the totality.
+    const expected: Readonly<Record<OverlayId, boolean>> = {
+      battleView: true,
+      boxView: false,
+      raisingView: false,
+      evolutionView: false,
+      dialogueView: false,
+      questLogView: true,
+      healView: false,
+      shopView: false,
+      tradeView: false,
+      pvpView: false,
+      leaderboardView: true,
+      renameView: false,
+      tradeProposeView: false,
+      helpView: true,
+      menuView: true,
+      claimView: false,
+      privacyView: false,
+    };
+    expect(sortedIds(Object.keys(expected)), 'ANTI-VACUITY: the literal covers every id').toEqual(
+      sortedIds(OVERLAY_IDS),
+    );
+    expect(sortedIds(Object.keys(SCREEN_POLICY)), 'the policy has no extra row').toEqual(
+      sortedIds(OVERLAY_IDS),
+    );
+    for (const id of OVERLAY_IDS) {
+      expect(SCREEN_POLICY[id].battleSafe, `${id}.battleSafe`).toBe(expected[id]);
+    }
+    expect(
+      OVERLAY_IDS.filter((id) => SCREEN_POLICY[id].battleSafe),
+      'exactly five battle-safe frame ids',
+    ).toHaveLength(5);
+  });
+
+  it('isBareBattle is true only for a stack that is exactly one battle base frame, and Start at the battle opens the menu exactly where it holds', () => {
+    // WRONG IMPL KILLED: a check of the base kind alone (a menu, a stamped frame or a suspended
+    // dialogue above the battle would read as bare: Start there would reopen the menu instead of
+    // closing it, or swallow the dialogue's dismiss, A4); a check of the length alone (the bare world
+    // would read as a battle); one keyed to the top frame (the outcome frame over the world); and a
+    // helper that disagrees with the Start rule it is the single source of.
+    const rows: ReadonlyArray<{
+      readonly name: string;
+      readonly stack: Stack;
+      readonly bare: boolean;
+    }> = [
+      { name: 'a bare battle base', stack: stackOf(battle('7')), bare: true },
+      { name: 'another bare battle base', stack: stackOf(battle('42')), bare: true },
+      { name: 'the bare world', stack: stackOf(WORLD), bare: false },
+      {
+        name: 'a battle with a menu above it',
+        stack: stackOf(battle('7'), screen('menuView')),
+        bare: false,
+      },
+      {
+        name: 'a battle with a stamped menu above it',
+        stack: stackOf(battle('7'), stamped('menuView', '7')),
+        bare: false,
+      },
+      {
+        name: 'a battle with a suspended dialogue',
+        stack: stackOf(battle('7'), screen('dialogueView')),
+        bare: false,
+      },
+      { name: 'a battle with a prompt', stack: stackOf(battle('7'), prompt(PVP)), bare: false },
+      {
+        name: 'a battle with a text entry',
+        stack: stackOf(battle('7'), textEntry(RENAME)),
+        bare: false,
+      },
+      {
+        name: 'the outcome frame over the world',
+        stack: stackOf(WORLD, screen('battleView')),
+        bare: false,
+      },
+      { name: 'the world with a menu', stack: stackOf(WORLD, screen('menuView')), bare: false },
+    ];
+    for (const row of rows) {
+      expect(isBareBattle(deepFrozen(row.stack)), row.name).toBe(row.bare);
+      expect(
+        battleButton(deepFrozen(row.stack), press('Start')),
+        `${row.name}: Start is the menu rule exactly when the battle is bare`,
+      ).toEqual(row.bare ? { kind: 'openMenu' } : undefined);
+    }
+    expect(
+      rows.filter((r) => r.bare),
+      'ANTI-VACUITY: both polarities are exercised',
+    ).toHaveLength(2);
+  });
+
   it('CTL6C-2-OUTCOME-A-B-CONTINUE: A on a terminal outcome pops it once it has been up OUTCOME_CONTINUE_GRACE_MS (400), swallows it before, and a repeat; B and Start are left to the legacy adapter', () => {
     // WRONG IMPL KILLED: an A that stays unhandled on the outcome (today: only Esc/Backspace
     // continue and the hint tells the player "Press Esc"); an A with no grace (an Enter mashed at
@@ -1964,7 +2064,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     }
   });
 
-  it('CTL6C-3-REFUSAL-TABLE: at a battle base every non-battleSafe command is refused and the twelve safe ones are not; at the world or over an outcome nothing is refused; the policy table is total over the literal kinds', () => {
+  it('CTL6C-3-REFUSAL-TABLE: at a battle base every non-battleSafe command is refused and the twelve safe ones are not; at the world or over an outcome nothing is refused; the policy table is total over the literal kinds and battleSafeCommand is the one predicate over it', () => {
     // WRONG IMPL KILLED: a refusal that is a no-op (the policy is never consulted: every row of
     // the refused list reads false); a policy that refuses everything (a battle's own attack, the
     // stack moves or dismissDialogue would die: Start over [battle, dialogue] must still
@@ -1972,8 +2072,10 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     // stack[0] (a menu above the battle, a suspended dialogue or a stack-only battle base must still
     // refuse); one that refuses at a world base or over an outcome frame (the world would lose
     // care, shop, trade and challenge); a table with a stray or missing kind (a new Command arm
-    // must classify itself: here the literal 36 kinds are the whole table); and a single row moved
-    // from refuse to safe (each of the named rows below is its own sample).
+    // must classify itself: here the literal 36 kinds are the whole table); a single row moved
+    // from refuse to safe (each of the named rows below is its own sample); and a battleSafeCommand
+    // that disagrees with the table or with battleRefused (two readers of one policy drifting
+    // apart: the shell's early return and the stack rule would then refuse different commands).
     // Named spec rows: Care = care, Feed = train, Move = setPartySlot, Evolve = evolve, challenge
     // Accept = acceptChallenge, buy, sell. Bag Use and talk have no Command arm yet: Bag Use is
     // covered by the disabled Bag menu row (CTL6C-3-MENU-DISABLED-OVER-BATTLE in
@@ -2061,6 +2163,13 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     for (const [, command] of REFUSE) {
       expect(COMMAND_BATTLE_POLICY[command.kind], `${command.kind} is refused`).toBe('refuse');
     }
+    // The one predicate over the table agrees with it row by row (read off the literal lists).
+    for (const [label, command] of SAFE) {
+      expect(battleSafeCommand(command), `${label}: battleSafeCommand is true`).toBe(true);
+    }
+    for (const [label, command] of REFUSE) {
+      expect(battleSafeCommand(command), `${label}: battleSafeCommand is false`).toBe(false);
+    }
 
     // Every battle-base stack shape refuses the refused list and passes the safe list.
     const battleStacks: ReadonlyArray<{ readonly name: string; readonly stack: Stack }> = [
@@ -2109,6 +2218,16 @@ describe('context stack: battle semantics (ctl-6c)', () => {
           battleRefused(deepFrozen(stack), command),
           `${name}: ${label} is never refused without a battle base`,
         ).toBe(false);
+      }
+    }
+
+    // battleRefused is exactly "a battle base and not battleSafeCommand", on every stack above.
+    for (const { name, stack } of [...battleStacks, ...worldStacks]) {
+      for (const [label, command] of [...REFUSE, ...SAFE]) {
+        expect(
+          battleRefused(deepFrozen(stack), command),
+          `${name}: ${label} is refused iff a battle base and not battle-safe`,
+        ).toBe(stack[0].kind === 'battle' && !battleSafeCommand(command));
       }
     }
   });

@@ -35,7 +35,12 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
-import type { StoreBattle, StoreBattleMonster, StoreTradeOffer } from './net/store';
+import type {
+  StoreBattle,
+  StoreBattleMonster,
+  StoreMonsterPub,
+  StoreTradeOffer,
+} from './net/store';
 // The test's own resolver instance (main.ts gets a fresh one per boot): both default to English, so
 // `i18nT(id)` here is the text the shell paints for that id.
 import { t as i18nT } from './ui/i18n/resolver';
@@ -1505,7 +1510,9 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
 // Start over an Ongoing battle opens the main menu above it (the battle stays shown and its
 // a11y root resumes when the menu closes); A continues a terminal outcome after a 400 ms grace
 // (B and Start already continue it); a command that is not battle-safe is refused at a battle base
-// with its catalogued reason, and the menu rows that would issue one are disabled.
+// with its catalogued reason (on the status line and announced; the line clears when the base
+// returns to the world), and the menu rows that would issue one are disabled, as are Journal and
+// Rankings until ctl-7a anchors their shells (supervisor decision option-a).
 //
 // Time: the shell reads `performance.now()`, which this harness drives from `clock.t` (every
 // `tap`, `fire`, `server` and `frame` sets it). The grace is measured from the batch or key whose
@@ -1534,6 +1541,33 @@ function clickChoice(idx: string, t: number): void {
 }
 
 const statusText = (): string => byId('status').textContent ?? '';
+
+/** What the one polite live region (`#a11y-live`, index.html) last painted. It may be adopted into
+ *  an overlay root, so it is looked up by id, never by position. */
+const liveText = (): string => byId('a11y-live').textContent ?? '';
+
+/** One own monster, enough for the raising view to paint a Care button for it. */
+const RAISED_MONSTER: StoreMonsterPub = {
+  monsterId: 31n,
+  ownerIdentity: H.identity,
+  speciesId: 1,
+  nickname: 'm31',
+  level: 5,
+  xp: 0,
+  currentHp: 10,
+  statHp: 10,
+  statAttack: 5,
+  statDefense: 5,
+  statSpeed: 5,
+  statSpAttack: 5,
+  statSpDefense: 5,
+  partySlot: 0,
+  tier: 0,
+  essence: { Fire: 0, Water: 0, Plant: 0, Electric: 0, Earth: 0, Wind: 0, Light: 0, Dark: 0 },
+  trustTier: 'Neutral',
+  qualityTimeTier: 0,
+  nutritionPct: 0,
+};
 
 describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () => {
   afterEach(() => {
@@ -1806,9 +1840,8 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     // stack read that is a frame stale (the dialogue is up before the battle row arrives).
     // The path is a REAL production one that bypasses the menu: the document-level click
     // delegation on `[data-choice-idx]` runs `dispatch({ kind: 'advanceDialogue' })`.
-    // The reason is announced through the live region as well; that is not asserted here (the
-    // region's flush is debounced and owned by the frame loop) and is the verifier's mutation to
-    // probe.
+    // The same reason is also announced through the live region; CTL6C-3-ANNOUNCE-REFUSAL below
+    // pumps the frame loop past the region's coalescing window and pins that.
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await bootReady();
     seedWorld(1000);
@@ -1860,14 +1893,169 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     ).toHaveLength(1);
   });
 
-  it('CTL6C-3-MAIN-MENU-DISABLED: over a battle the Monsters, Bag and Profile rows are aria-disabled, A or a click on Monsters or Bag opens nothing and shows the reason, and Journal opens above the menu and survives the next batch', async () => {
+  it('CTL6C-3-ANNOUNCE-REFUSAL: a refusal at a battle base is announced: once the frame loop has pumped the live region past its coalescing window, #a11y-live reads exactly the catalogued reason, which it did not carry before the refusal', async () => {
+    // WRONG IMPL KILLED: a refusal that writes the status line but never announces it (a
+    // screen-reader player hears nothing when the click is refused: the status line is not a live
+    // region); an announcement of some other text (the command kind, an error line, the English
+    // copy under another locale); and an announcement the frame loop's own overlay announcement
+    // overwrites. The control proves the region is live in this harness (the frame loop already
+    // painted the dialogue's announcement into it) and that it did not already hold the reason, so
+    // the final read can pass neither on a dead region nor on a pre-filled one.
+    await bootReady();
+    seedWorld(1000);
+    startConversation(1010);
+    putBattle(BATTLE_ID, 1100);
+    expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
+    expect(stackNames(), 'precondition: the conversation is suspended under the battle').toEqual([
+      'battle',
+      'dialogueView',
+    ]);
+    const reason = i18nT('menu.disabled.inBattle');
+
+    // Control: two frames, more than the coalescing window apart, paint the overlay announcement.
+    frame(1110);
+    frame(1700);
+    const before = liveText();
+    expect(before, 'control: the frame loop painted an overlay announcement').not.toBe('');
+    expect(before, 'control: before any refusal the region does not carry the reason').not.toBe(
+      reason,
+    );
+
+    clickChoice('2', 1800);
+    expect(callsOf('advanceDialogue'), 'precondition: the click was refused').toEqual([]);
+    expect(statusText(), 'precondition: the status line shows the reason').toBe(reason);
+    frame(1810);
+    frame(2400);
+    expect(liveText(), 'the live region announces exactly the catalogued reason').toBe(reason);
+  });
+
+  it('CTL6C-3-REFUSE-VIEW-CALLBACK: a second refused command kind, through a real view callback: the raising view`s Care button reaches care at the world, and the same captured button clicked at a battle base reaches no reducer and shows the reason on the status line', async () => {
+    // WRONG IMPL KILLED: a refusal narrowed to the one command the dialogue issues (`command.kind
+    // === 'advanceDialogue'`: care would still reach its reducer at the battle base); a refusal
+    // wired into the dialogue-choice click delegation instead of `dispatch` (a view callback goes
+    // straight to dispatch and would bypass it); a refusal that sends and then reports; and one
+    // that refuses at the world too (the control sends).
+    // HONEST SCOPE: this is not a player-reachable click. The battle's batch closes the raising view
+    // first (it is not battleSafe, CTL3.2), so the button is captured at the world and clicked after
+    // that close: it drives the real view's real callback into the real `dispatch`, and proves the
+    // refusal is the dispatch-wide policy rather than a guard on one path.
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertMonster(RAISED_MONSTER);
+    server(1010);
+    tap('KeyI', 1020);
+    expect(shownByTestId('raising-title'), 'precondition: I opened the raising view').toBe(true);
+    const care = Array.from(document.querySelectorAll('button')).find(
+      (b) => b.textContent === i18nT('raising.card.care'),
+    );
+    if (care === undefined) throw new Error('the raising view painted no Care button');
+
+    // Control: at the world the click reaches care with the monster's id.
+    clock.t = 1030;
+    care.click();
+    expect(callsOf('care'), 'control: at the world Care reaches the care reducer').toEqual([
+      { name: 'care', args: { monsterId: 31n } },
+    ]);
+    expect(statusText(), 'control: nothing is reported at the world').toBe('');
+    await flush(); // the care promise settles and the button's in-flight lock releases
+    expect(care.disabled, 'precondition: the Care button is enabled again').toBe(false);
+
+    // The battle arrives: its batch closes the raising view.
+    putBattle(BATTLE_ID, 1100);
+    expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
+    expect(shownByTestId('raising-title'), 'precondition: the battle closed the raising view').toBe(
+      false,
+    );
+    expect(stack(), 'precondition: the bare battle base').toEqual([
+      { kind: 'battle', battleId: '101' },
+    ]);
+
+    clock.t = 1200;
+    care.click();
+    expect(
+      callsOf('care'),
+      'at a battle base Care reaches no reducer: still the one world call',
+    ).toHaveLength(1);
+    expect(statusText(), 'the status line shows the catalogued reason').toBe(
+      i18nT('menu.disabled.inBattle'),
+    );
+    await flush();
+    expect(callsOf('care'), 'nor later, once the refused promise settles').toHaveLength(1);
+  });
+
+  it('CTL6C-3-STATUS-CLEARS: the refusal reason stays on the status line while the battle goes on and is cleared when the base returns to the world, whether the battle ends or its row vanishes; an error reported after the refusal is left on it', async () => {
+    // WRONG IMPL KILLED: a refusal line that sticks until a reconnect (red today: the base returns
+    // to the world and the player keeps reading "Not during a battle" at the world); a clear on
+    // every batch or frame (the reason would vanish while the battle still goes on); a clear only
+    // on a terminal outcome (a battle row that simply vanishes would leave the line); and a clear of
+    // the whole status line on the base change (an error reported after the refusal, which the
+    // player has not read yet, would be wiped with it).
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await bootReady();
+    seedWorld(1000);
+    startConversation(1010);
+    const reason = i18nT('menu.disabled.inBattle');
+
+    // (a) The battle goes on: the reason stays. Then it ends: the reason is cleared.
+    putBattle(BATTLE_ID, 1100);
+    clickChoice('1', 1200);
+    expect(callsOf('advanceDialogue'), 'precondition: the click was refused').toEqual([]);
+    expect(statusText(), 'precondition: the refusal shows its reason').toBe(reason);
+    server(1300);
+    frame(1310);
+    server(1400);
+    expect(stack()[0], 'precondition: the base is still the battle').toEqual({
+      kind: 'battle',
+      battleId: '101',
+    });
+    expect(statusText(), 'while the battle goes on the reason stays').toBe(reason);
+    putBattle(BATTLE_ID, 1500, 'SideAWins');
+    expect(stack()[0], 'precondition: the base is the world again').toEqual({ kind: 'world' });
+    expect(battleShown(), 'precondition: the outcome is shown').toBe(true);
+    expect(statusText(), 'the battle ended: the stale reason is cleared').toBe('');
+    tap('Backspace', 1600);
+    expect(battleShown(), 'precondition: B continued the outcome').toBe(false);
+
+    // (b) A second battle whose row vanishes with no outcome shown: cleared too.
+    putBattle(102n, 1700);
+    clickChoice('1', 1800);
+    expect(statusText(), 'precondition: refused at the second battle').toBe(reason);
+    opts.store.removeBattle(102n);
+    server(1900);
+    expect(stack()[0], 'precondition: the base is the world again').toEqual({ kind: 'world' });
+    expect(statusText(), 'the battle row vanished: the stale reason is cleared').toBe('');
+
+    // (c) An error reported after the refusal is not the refusal: the base change leaves it.
+    putBattle(103n, 2000);
+    clickChoice('1', 2100);
+    expect(statusText(), 'precondition: refused at the third battle').toBe(reason);
+    opts.onError('subscription', 'quota exceeded');
+    const error = 'subscription: quota exceeded';
+    expect(statusText(), 'precondition: the error replaced the reason').toBe(error);
+    expect(
+      errorSpy.mock.calls.filter((c) => c[0] === '[status]').map((c) => c[1]),
+      'precondition: it went through the error path',
+    ).toEqual([error]);
+    opts.store.removeBattle(103n);
+    server(2200);
+    expect(stack()[0], 'precondition: the base is the world again').toEqual({ kind: 'world' });
+    expect(statusText(), 'the error stays: only the refusal line is cleared').toBe(error);
+    expect(callsOf('advanceDialogue'), 'no refused click ever reached the reducer').toEqual([]);
+  });
+
+  it('CTL6C-3-MAIN-MENU-DISABLED: over a battle every root row but Options and Close is aria-disabled; A or a click on Monsters, Bag or Journal opens nothing and shows the reason, A on the disabled Social group does not enter it, and Q and L open no Journal or Rankings either; Options > How to play opens help above the menu over the battle, it survives a batch and a frame, and Backspace closes just help', async () => {
     // WRONG IMPL KILLED: a menu opened over a battle with every row enabled (Monsters would open
-    // the box over the battle: red today); a disabled row painted but still activatable (A or a
-    // click opens boxView or raisingView); a disabled row with no reason on the feedback line, the
-    // same reason for Bag as for Monsters, or Bag's text missing; an enabled row (Journal, Social,
-    // Options, Close) painted disabled; a keyboard path guarded but not the pointer path (the click
-    // is checked too); and a child opened above the menu over the battle that the next batch
-    // closes (the Journal is battleSafe and stamped: it must survive).
+    // the box over the battle); the pre-decision menu that disables only the non-battleSafe rows
+    // (Journal and Social stay enabled: A on Journal opens the quest log, whose in-flow shell the
+    // battle overlay paints over, so the player sees nothing while the keys go to it: red today);
+    // a disabled row painted but still activatable (A or a click opens boxView, raisingView or the
+    // quest log); a disabled group that A still enters; a disabled row with no reason on the
+    // feedback line, the same reason for Bag as for Monsters, or Bag's text missing; a menu that
+    // disables Options or Close too (help would be unreachable over the battle); a keyboard path
+    // guarded but not the pointer path (the click is checked too); a legacy letter hotkey (Q, L)
+    // that opens the Journal or the Rankings over the battle behind the menu's back; and a child
+    // opened above the menu over the battle that the next batch closes (help is battleSafe and
+    // stamped: it must survive).
     await bootReady();
     seedWorld(1000);
     putBattle(BATTLE_ID, 1100);
@@ -1884,7 +2072,14 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
       aria('profile'),
       'the Profile group (all three children disabled) is aria-disabled',
     ).toBe('true');
-    for (const key of ['journal', 'social', 'options', 'close']) {
+    // INTENTIONAL CHANGE (ctl-6c, supervisor decision option-a: Journal/Rankings stay disabled over a
+    // battle until ctl-7a anchors their shells): Journal and Social were enabled here.
+    expect(aria('journal'), 'Journal is aria-disabled over a battle').toBe('true');
+    expect(
+      aria('social'),
+      'the Social group (Trades, Challenges and Rankings all disabled) is aria-disabled',
+    ).toBe('true');
+    for (const key of ['options', 'close']) {
       expect(aria(key), `${key} stays enabled`).toBeNull();
     }
     expect(menuFeedback(), 'precondition: no reason is shown yet').toBe('');
@@ -1910,28 +2105,95 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     expect(menuFeedback(), 'a click shows the reason too').toBe(i18nT('menu.disabled.inBattle'));
     expect(navActive(), 'the click moved the cursor to Monsters').toBe('monsters');
 
-    // Journal is enabled: it opens above the menu, over the battle, and survives a batch.
+    // INTENTIONAL CHANGE (ctl-6c, supervisor decision option-a: Journal/Rankings stay disabled over a
+    // battle until ctl-7a anchors their shells): A on Journal opened the quest log above the menu
+    // over the battle and it survived the next batch. It now opens nothing and shows the reason; the
+    // surviving-child arm moves to Options > How to play below.
     tap('ArrowDown', 1600);
     tap('ArrowDown', 1700);
     expect(navActive(), 'precondition: the cursor is on Journal').toBe('journal');
+    expect(menuFeedback(), 'precondition: the cursor move cleared the reason').toBe('');
     tap('Enter', 1800);
-    expect(questLogShown(), 'A on Journal opens the quest log above the menu').toBe(true);
-    expect(stackNames(), 'the quest log is a frame above the menu above the battle').toEqual([
+    expect(questLogShown(), 'A on a disabled Journal row does not show the quest log').toBe(false);
+    expect(menuFeedback(), 'it shows the reason').toBe(i18nT('menu.disabled.inBattle'));
+    expect(stackNames(), 'the menu is still the only frame').toEqual(['battle', 'menuView']);
+    tap('ArrowDown', 1850);
+    expect(navActive(), 'precondition: the cursor moved on to Social').toBe('social');
+    expect(menuFeedback(), 'precondition: and the reason is cleared').toBe('');
+    byId('menu-root-journal').click();
+    expect(questLogShown(), 'a click on Journal does not show the quest log').toBe(false);
+    expect(menuFeedback(), 'a click on Journal shows the reason').toBe(
+      i18nT('menu.disabled.inBattle'),
+    );
+    expect(navActive(), 'the click moved the cursor to Journal').toBe('journal');
+    expect(stackNames()).toEqual(['battle', 'menuView']);
+
+    // The disabled Social group is not entered: the root rows stay painted.
+    tap('ArrowDown', 1900);
+    expect(navActive(), 'precondition: the cursor is on Social').toBe('social');
+    expect(menuFeedback(), 'precondition: the reason is cleared').toBe('');
+    tap('Enter', 1950);
+    expect(navActive(), 'A on the disabled Social group leaves the cursor on it').toBe('social');
+    expect(
+      document.getElementById('menu-root-monsters'),
+      'the root list is still painted: Social was not entered',
+    ).not.toBeNull();
+    expect(menuFeedback(), 'it shows the reason').toBe(i18nT('menu.disabled.inBattle'));
+
+    // The legacy letter hotkeys cannot reach the Journal or the Rankings behind the menu's back.
+    tap('KeyQ', 2000);
+    expect(questLogShown(), 'Q with the menu over a battle opens no quest log').toBe(false);
+    tap('KeyL', 2050);
+    expect(rankingsShown(), 'L with the menu over a battle opens no leaderboard').toBe(false);
+    expect(menuShown(), 'the menu is still open').toBe(true);
+    expect(battleShown(), 'over the battle').toBe(true);
+    expect(stack(), 'and the stack is unchanged').toEqual([
+      { kind: 'battle', battleId: '101' },
+      { kind: 'screen', id: 'menuView', overBattle: '101' },
+    ]);
+
+    // Options is enabled: it enters, and How to play opens help above the menu over the battle.
+    tap('ArrowDown', 2100);
+    tap('ArrowDown', 2150);
+    expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
+    expect(aria('options'), 'precondition: Options is enabled').toBeNull();
+    tap('Enter', 2200);
+    expect(navActive(), 'A on Options enters it, on How to play').toBe('help');
+    expect(
+      document.getElementById('menu-root-monsters'),
+      'anti-vacuity: entering a sub-list repaints the rows',
+    ).toBeNull();
+    expect(
+      byId('menuOptions-root-help').getAttribute('aria-disabled'),
+      'How to play is enabled over a battle',
+    ).toBeNull();
+    expect(menuFeedback(), 'and no reason is shown').toBe('');
+    tap('Enter', 2300);
+    expect(helpShown(), 'A on How to play opens help above the menu').toBe(true);
+    expect(battleShown(), 'the battle stays shown').toBe(true);
+    expect(menuShown(), 'with the menu open beneath help').toBe(true);
+    expect(stackNames(), 'help is a frame above the menu above the battle').toEqual([
       'battle',
       'menuView',
-      'questLogView',
+      'helpView',
     ]);
-    server(1900);
-    expect(questLogShown(), 'the quest log survives the next batch').toBe(true);
+    expect(stack(), 'both frames are stamped with the battle').toEqual([
+      { kind: 'battle', battleId: '101' },
+      { kind: 'screen', id: 'menuView', overBattle: '101' },
+      { kind: 'screen', id: 'helpView', overBattle: '101' },
+    ]);
+    server(2400);
+    expect(helpShown(), 'help survives the next batch').toBe(true);
     expect(menuShown(), 'with the menu still open beneath it').toBe(true);
     expect(battleShown(), 'and the battle still shown').toBe(true);
-    frame(1910);
-    expect(stackNames(), 'and a frame').toEqual(['battle', 'menuView', 'questLogView']);
+    frame(2410);
+    expect(stackNames(), 'and a frame').toEqual(['battle', 'menuView', 'helpView']);
 
-    // Backspace closes just the quest log.
-    tap('Backspace', 2000);
-    expect(questLogShown(), 'B closes the quest log').toBe(false);
+    // Backspace closes just help.
+    tap('Backspace', 2500);
+    expect(helpShown(), 'B closes help').toBe(false);
     expect(menuShown(), 'the menu is back on top').toBe(true);
+    expect(battleShown(), 'over the battle').toBe(true);
     expect(stackNames()).toEqual(['battle', 'menuView']);
   });
 });
