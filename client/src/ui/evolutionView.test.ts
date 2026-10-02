@@ -3305,3 +3305,137 @@ describe('rb-121 EvolutionView: a settle-released evolve-choice lock re-anchors 
     ).toBeNull();
   });
 });
+
+// =============================================================================
+// ctl-7b (CTL7B.1): the evolution root is a class-styled `.mr-frame` shell inside `#game-screen`
+// instead of an inline `position:fixed;inset:0;z-index:100;...` overlay.
+//
+// The root KEEPS two inline declarations the shell cannot give it: `background-color` and `color`,
+// both `var(--mr-evo-*)` tokens. They are the only route the `prefers-contrast: more` override
+// has, and the m23s9 gates above measure them. Everything else (placement, layer, padding, scroll,
+// font) comes from the classes. happy-dom does no cascade or layout, so this proves the INLINE
+// half; where the box lands and how its text paints is proved in real Chromium by
+// client/e2e/a11y.spec.ts (CTL7B-E2E-ROOTS / CTL7B-E2E-EVOLUTION).
+//
+// The inline declarations are read from the style ATTRIBUTE and split by hand: happy-dom's
+// CSSStyleDeclaration expands shorthands into longhands, so a name-set read through it would pin
+// the happy-dom version, not the contract.
+// =============================================================================
+
+/** The inline declarations of `el` (lower-cased property name -> raw value), from its style attribute. */
+function ctl7bInline(el: Element): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const part of (el.getAttribute('style') ?? '').split(';')) {
+    const colon = part.indexOf(':');
+    if (colon === -1) continue;
+    const prop = part.slice(0, colon).trim().toLowerCase();
+    if (prop !== '') out.set(prop, part.slice(colon + 1).trim());
+  }
+  return out;
+}
+
+/** Inline properties that place, layer, dim, hide or recolour an element outside the stylesheet. */
+const CTL7B_BANNED_ON_DESCENDANTS: ReadonlySet<string> = new Set([
+  'position',
+  'inset',
+  'top',
+  'right',
+  'bottom',
+  'left',
+  'z-index',
+  'opacity',
+  'filter',
+  'transform',
+  'visibility',
+  'mix-blend-mode',
+  '-webkit-text-fill-color',
+]);
+
+describe('EvolutionView ctl-7b: the evolution root is a class-styled frame, inline only for visibility and its colour tokens', () => {
+  it('CTL7B-1-EVOLUTION-FRAME BITES: the evolution root is the one child of its parent, carries exactly .mr-frame and .mr-shell, writes only display, align-items and the two var(--mr-evo-*) colours inline in every state, and nothing under it carries a class or an id', () => {
+    // WRONG IMPLS KILLED:
+    //  (1) the shipped root (`position:fixed;inset:0;z-index:100;...` in its cssText): the
+    //      allow-list reds in every state;
+    //  (2) a root with the classes AND the old inline overlay left on it (the inline declaration
+    //      beats the class rule at every specificity, so the shell never applies);
+    //  (3) the colour tokens dropped from the root (the high-contrast override and the m23s9
+    //      gates read them there), or swapped for literals (a literal is unreachable by the
+    //      `prefers-contrast: more` block): the two values are pinned to the tokens;
+    //  (4) `.mr-shell--top` borrowed for the evolution overlay (it would sit over the battle);
+    //  (5) a class or id on any DESCENDANT (a stylesheet rule is the other way round the inline
+    //      tokens the m23s9 gates measure: evolutionView.ts forbids both anywhere under the root);
+    //  (6) a fixed-position / dim / hide declaration smuggled onto a descendant once the root is
+    //      clean (the subtree walk runs in every state, the empty one included);
+    //  (7) a show() / hide() that no longer toggles display.
+    const { parent, view } = mount();
+    expect(parent.children, 'the view appends exactly ONE root into its parent').toHaveLength(1);
+    const root = parent.firstElementChild as HTMLElement;
+    const title = parent.querySelector('[data-testid="evolution-title"]');
+    expect(title, 'precondition: the title anchor exists').not.toBeNull();
+    expect(title?.parentElement, "the classed node is the title's parent").toBe(root);
+    expect(
+      root.className
+        .split(/\s+/)
+        .filter((c) => c !== '')
+        .sort(),
+      'the root carries exactly the frame and the shell class',
+    ).toEqual(['mr-frame', 'mr-shell']);
+
+    const allowed = ['display', 'align-items', 'background-color', 'color'];
+    const sample = (when: string): number => {
+      const decls = ctl7bInline(root);
+      expect(
+        [...decls.keys()].filter((name) => !allowed.includes(name)),
+        `CTL7B ${when}: the root may write only ${JSON.stringify(allowed)} inline. The classes ` +
+          'place, layer and scroll it; any other inline property is the old overlay still drawn ' +
+          'by hand',
+      ).toEqual([]);
+      expect(
+        decls.get('background-color'),
+        `CTL7B ${when}: the backdrop stays the token the high-contrast override re-colours`,
+      ).toBe('var(--mr-evo-backdrop)');
+      expect(decls.get('color'), `CTL7B ${when}: the text colour stays its token`).toBe(
+        'var(--mr-evo-fg)',
+      );
+      const all = [...root.querySelectorAll('*')];
+      const offenders: string[] = [];
+      for (const el of all) {
+        const tag = `<${el.tagName.toLowerCase()}>`;
+        for (const prop of ctl7bInline(el).keys()) {
+          if (CTL7B_BANNED_ON_DESCENDANTS.has(prop)) offenders.push(`${tag} ${prop}`);
+        }
+        if (el.hasAttribute('class')) offenders.push(`${tag} class="${el.getAttribute('class')}"`);
+        if (el.hasAttribute('id')) offenders.push(`${tag} id="${el.getAttribute('id')}"`);
+      }
+      expect(
+        offenders,
+        `CTL7B ${when}: no element under the root may place, layer, dim, hide or recolour itself ` +
+          'inline, and none may carry a class or an id (the root is the one classed element)',
+      ).toEqual([]);
+      return all.length;
+    };
+
+    sample('constructed');
+    expect(root.style.display, 'hidden at construction').toBe('none');
+
+    view.show();
+    sample('shown');
+    expect(root.style.display, 'show() writes display:flex').toBe('flex');
+    expect(ctl7bInline(root).get('display')).toBe('flex');
+
+    view.refresh(s9StateVm('S_CHOICES'));
+    expect(
+      sample('populated refresh'),
+      'non-vacuity: the choices fixture renders more than twenty elements under the root',
+    ).toBeGreaterThan(20);
+    expect(root.style.display, 'a refresh does not touch visibility').toBe('flex');
+
+    view.refresh(viewModel());
+    sample('empty refresh');
+
+    view.hide();
+    sample('hidden');
+    expect(root.style.display, 'hide() writes display:none').toBe('none');
+    expect(ctl7bInline(root).get('display')).toBe('none');
+  });
+});

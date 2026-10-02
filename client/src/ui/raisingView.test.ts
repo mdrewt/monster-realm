@@ -91,7 +91,7 @@ import { fileURLToPath } from 'node:url';
 import { stripComments } from '../../test-util/stripComments';
 import { t } from './a11yCopy';
 import { scanSource } from './i18n/hardcodedStrings';
-import { t as i18nT, tf as i18nTf } from './i18n/resolver';
+import { currentLocale, t as i18nT, tf as i18nTf, setLocale } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
@@ -375,6 +375,15 @@ async function flushPromises(): Promise<void> {
   await Promise.resolve();
 }
 
+// ctl-7b (R-ci-fix-20261002T0901Z-RAISINGVIEWREBUILD): RaisingView.refresh now re-renders a list only
+// when its content changed, so a refresh with a deep-equal view-model no longer rebuilds the cards.
+// The tests below that NEED a rebuild (a mid-flight batch that replaces the clicked node) therefore
+// refresh with a CHANGED view-model — every monster one level higher — which is also what a real
+// batch that rebuilds the cards looks like. Equal view-models are covered by the CTL7B-RV-* cases.
+function withBumpedLevel(vm: RaisingViewModel): RaisingViewModel {
+  return { ...vm, monsters: vm.monsters.map((m) => ({ ...m, level: m.level + 1 })) };
+}
+
 // ---------------------------------------------------------------------------
 // The status line swaps its Bond readout for a Trust-tier readout.
 //
@@ -467,15 +476,18 @@ describe('RaisingView showFeedback(): writes the message (C1, ADR-0159 D1)', () 
 
 // ---------------------------------------------------------------------------
 // C2: CONTAINMENT — the tooth that kills the ACTUAL shipped bug. The feedback node
-// must be a descendant of the raising overlay root (position:fixed; inset:0;
-// z-index:100), never a sibling node like statusEl that the overlay paints over.
+// must be a descendant of the raising overlay root (ctl-7b: the class-styled .mr-frame
+// .mr-shell, an absolutely positioned layer at z-index 100 — it was an inline position:fixed
+// overlay when this tooth was written), never a sibling node like statusEl that the overlay
+// paints over.
 // ---------------------------------------------------------------------------
 
 describe('★ RaisingView showFeedback(): CONTAINMENT — feedback node is inside the overlay root (C2, ADR-0159 D1)', () => {
   it('★ C2 BITES: the #raising-feedback node is a DESCENDANT of the overlay root — kills the exact shipped bug (a node OUTSIDE the z-index:100 overlay, invisible behind it)', () => {
     // WRONG IMPL KILLED: an impl that writes feedback to a node appended to `document.body`
     // (or reuses main.ts's `statusEl`) instead of INSIDE the RaisingView's own overlay root.
-    // The raising overlay is `position:fixed; inset:0; z-index:100` —
+    // The raising overlay is a shell layer at z-index 100 (ctl-7b: `.mr-shell`; it was an
+    // inline `position:fixed; inset:0; z-index:100` root when this tooth was written) —
     // a message written OUTSIDE it is painted over and invisible, exactly like the
     // pre-fix statusEl bug this ADR fixes. A textContent-only assertion on a node found
     // by getElementById alone would NOT catch this (the node could exist anywhere in the
@@ -493,7 +505,7 @@ describe('★ RaisingView showFeedback(): CONTAINMENT — feedback node is insid
       overlayRoot.contains(feedbackEl!),
       'the feedback node must be a DESCENDANT of the raising overlay root — a node appended ' +
         'outside the overlay (e.g. a bare document.body child, or reusing main.ts statusEl) is ' +
-        'painted over by the fixed/z-index:100 overlay and is never visible to the player',
+        'painted over by the z-index:100 shell and is never visible to the player',
     ).toBe(true);
   });
 });
@@ -683,7 +695,11 @@ describe('★★ RaisingView Care button: #pending must be tracked PER MONSTER, 
 
     // Simulate a batch-applied refresh() while A's care call is still in flight —
     // #renderMonsters replaces ALL monster DOM nodes via replaceChildren().
-    view.refresh(twoMonsterVm(1n, 2n));
+    // ctl-7b (intentional change): the batch now CHANGES the view-model (a level-up). A refresh
+    // with a deep-equal view-model is skipped (no rebuild at all), so it can no longer stand in
+    // for "a batch that rebuilds the cards"; the `.not.toBe(careA)` below is the precondition that
+    // the rebuild really happened.
+    view.refresh(withBumpedLevel(twoMonsterVm(1n, 2n)));
 
     buttons = overlayRootOf(parent).querySelectorAll('button');
     expect(buttons.length, 'refresh() must still render exactly two Care buttons').toBe(2);
@@ -998,7 +1014,10 @@ describe('★ RaisingView 20r-a: in-flight guard on the Train buttons (separate 
     a0.trains[0]!.click();
     expect(raDisabled(a0.trains), '20r-a RV-2 precondition: locked').toEqual([true, true]);
 
-    view.refresh(raTrainVm()); // batch tick while the call is in flight
+    // ctl-7b (intentional change): the batch tick CHANGES the view-model (a level-up) — a refresh
+    // with a deep-equal one is skipped, so only a changed one rebuilds. The `.not.toBe` below is
+    // the precondition that the rebuild really happened.
+    view.refresh(withBumpedLevel(raTrainVm())); // batch tick while the call is in flight
     const [a, b] = raMonsterControls(parent);
     expect(a.trains[0], '20r-a RV-2 precondition: refresh() rebuilt the node').not.toBe(
       a0.trains[0],
@@ -1390,7 +1409,10 @@ describe('★ RaisingView rb-120: the Care lock carries the Train generation-tok
     careA0.click();
     expect(careA0.disabled, 'precondition: A locked').toBe(true);
 
-    view.refresh(twoMonsterVm(1n, 2n)); // batch tick while A's call is in flight
+    // ctl-7b (intentional change): the batch tick CHANGES the view-model (a level-up) — a refresh
+    // with a deep-equal one is skipped, so only a changed one rebuilds. The `.not.toBe` below is
+    // the precondition that the rebuild really happened.
+    view.refresh(withBumpedLevel(twoMonsterVm(1n, 2n))); // batch tick while A's call is in flight
     buttons = overlayRootOf(parent).querySelectorAll('button');
     const careA1 = buttons[0] as HTMLButtonElement;
     const careB1 = buttons[1] as HTMLButtonElement;
@@ -2058,7 +2080,9 @@ describe('rb-121 RaisingView: a settle-released Care/Train lock re-anchors focus
     expect(onCare).toHaveBeenCalledTimes(1);
     expect(careBtn.disabled).toBe(true);
 
-    view.refresh(oneMonsterVm(104n)); // mid-flight rebuild detaches the focused node
+    // ctl-7b (intentional change): a CHANGED view-model (a level-up) — a deep-equal one is skipped
+    // and would not detach the focused node; the isConnected check is the rebuild precondition.
+    view.refresh(withBumpedLevel(oneMonsterVm(104n))); // mid-flight rebuild detaches the focused node
     expect(careBtn.isConnected, 'precondition: the clicked node is now detached').toBe(false);
     expect(
       document.activeElement,
@@ -2199,7 +2223,9 @@ describe('rb-121 RaisingView: a settle-released Care/Train lock re-anchors focus
     expect(onTrain).toHaveBeenCalledTimes(1);
     expect(aBefore.trains[0]!.disabled).toBe(true);
 
-    view.refresh(raTrainVm()); // mid-flight rebuild detaches the focused node
+    // ctl-7b (intentional change): a CHANGED view-model (a level-up) — a deep-equal one is skipped
+    // and would not detach the focused node; the isConnected check is the rebuild precondition.
+    view.refresh(withBumpedLevel(raTrainVm())); // mid-flight rebuild detaches the focused node
     expect(aBefore.trains[0]!.isConnected, 'precondition: the clicked node is now detached').toBe(
       false,
     );
@@ -2373,5 +2399,764 @@ describe('rb-121 RaisingView: a settle-released Care/Train lock re-anchors focus
       root.getAttribute('role'),
       'rb121-RAISING-HIDDEN: a hidden root must never gain role="dialog"',
     ).toBeNull();
+  });
+});
+
+// =============================================================================
+// ctl-7b (CTL7B.1): the raising screen is a class-styled `.mr-frame` shell inside `#game-screen`
+// instead of an inline `position:fixed;inset:0;z-index:100;background:rgba(...)` overlay.
+//
+// WHAT THESE CASES CAN AND CANNOT PROVE: happy-dom does no cascade, no layout and no paint, so the
+// frame cases prove the INLINE half of the contract (which classes the root carries and which
+// declarations it and its subtree still write); where the screen lands and how its text paints is
+// proved in real Chromium by client/e2e/a11y.spec.ts (CTL7B-E2E-ROOTS / CTL7B-E2E-RAISING).
+//
+// The inline declarations are read from the style ATTRIBUTE and split by hand: happy-dom's
+// CSSStyleDeclaration expands shorthands into longhands, so a name-set read through it would pin
+// the happy-dom version, not the contract.
+// =============================================================================
+
+/** The inline declarations of `el` (lower-cased property name -> raw value), from its style attribute. */
+function ctl7bInline(el: Element): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const part of (el.getAttribute('style') ?? '').split(';')) {
+    const colon = part.indexOf(':');
+    if (colon === -1) continue;
+    const prop = part.slice(0, colon).trim().toLowerCase();
+    if (prop !== '') out.set(prop, part.slice(colon + 1).trim());
+  }
+  return out;
+}
+
+/** Inline properties that place, layer, dim, hide or recolour an element outside the stylesheet. */
+const CTL7B_BANNED_ON_DESCENDANTS: ReadonlySet<string> = new Set([
+  'position',
+  'inset',
+  'top',
+  'right',
+  'bottom',
+  'left',
+  'z-index',
+  'opacity',
+  'filter',
+  'transform',
+  'visibility',
+  'mix-blend-mode',
+  '-webkit-text-fill-color',
+]);
+
+/** The element's OWN text nodes, concatenated. */
+function ctl7bOwnText(el: Element): string {
+  return [...el.childNodes]
+    .filter((n) => n.nodeType === 3)
+    .map((n) => n.textContent ?? '')
+    .join('');
+}
+
+/** The one element under `root` whose own text is exactly `text`. */
+function ctl7bByOwnText(root: HTMLElement, text: string): HTMLElement {
+  const hits = [...root.querySelectorAll('*')].filter((el) => ctl7bOwnText(el) === text);
+  expect(
+    hits,
+    `precondition: exactly one element under the root has the own text "${text}"`,
+  ).toHaveLength(1);
+  return hits[0] as HTMLElement;
+}
+
+/** `[r, g, b, a]` from a bare #rgb / #rrggbb / rgb() / rgba() literal; THROWS on anything else. */
+function ctl7bRgba(raw: string): readonly [number, number, number, number] {
+  const value = raw.trim().toLowerCase();
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/.exec(value);
+  if (hex !== null) {
+    const body = hex[1] as string;
+    const wide = body.length === 6;
+    const channel = (i: number): number =>
+      Number.parseInt(wide ? body.slice(i * 2, i * 2 + 2) : (body[i] as string).repeat(2), 16);
+    return [channel(0), channel(1), channel(2), 1];
+  }
+  const fn =
+    /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*(\d*\.?\d+)\s*)?\)$/.exec(value);
+  if (fn !== null) {
+    return [
+      Number.parseInt(fn[1] as string, 10),
+      Number.parseInt(fn[2] as string, 10),
+      Number.parseInt(fn[3] as string, 10),
+      fn[4] === undefined ? 1 : Number.parseFloat(fn[4]),
+    ];
+  }
+  throw new Error(
+    `CTL7B colour refused: ${JSON.stringify(raw)} is not a bare #rgb / #rrggbb / rgb() / rgba() ` +
+      'literal. This reader never defaults an unreadable colour (a default would let the gate ' +
+      'pass by deleting the declaration)',
+  );
+}
+
+function ctl7bContrast(a: readonly number[], b: readonly number[]): number {
+  const lin = (c: number): number => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  const lum = (c: readonly number[]): number =>
+    0.2126 * lin(c[0] as number) + 0.7152 * lin(c[1] as number) + 0.0722 * lin(c[2] as number);
+  return (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
+}
+
+/** `.mr-frame`'s `--mr-frame-fg` default: what text paints in when no inline colour is set. */
+const CTL7B_FRAME_FG = '#e0e0e0';
+/** The two surfaces an empty-state line sits on: the frame (`--mr-frame-bg`) and a card. */
+const CTL7B_SURFACES = ['#1e1e2e', '#1a1a2e'] as const;
+
+/** The inline colour in force for `el`: its own or the nearest ancestor's below `root`, else the frame fg. */
+function ctl7bEffectiveColour(el: HTMLElement, root: HTMLElement): string {
+  for (let n: HTMLElement | null = el; n !== null && n !== root; n = n.parentElement) {
+    const colour = ctl7bInline(n).get('color');
+    if (colour !== undefined) return colour;
+  }
+  return CTL7B_FRAME_FG;
+}
+
+/** Every empty-state element must be opaque and readable on both surfaces. */
+function ctl7bExpectReadableEmpties(emptyEls: readonly Element[], root: HTMLElement): void {
+  for (const el of emptyEls) {
+    const raw = ctl7bEffectiveColour(el as HTMLElement, root);
+    const rgba = ctl7bRgba(raw);
+    const label = JSON.stringify(ctl7bOwnText(el));
+    expect(
+      rgba[3],
+      `CTL7B ${label}: the empty-state colour ${raw} must be fully opaque (alpha 1) — a ` +
+        'translucent colour is opacity by another name',
+    ).toBe(1);
+    for (const surface of CTL7B_SURFACES) {
+      const ratio = ctl7bContrast(rgba, ctl7bRgba(surface));
+      expect(
+        ratio,
+        `CTL7B ${label}: ${raw} on ${surface} measures ${ratio.toFixed(2)}:1, under the 4.5:1 AA ` +
+          'minimum for small text',
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+  }
+}
+
+describe('RaisingView ctl-7b: the raising root is a class-styled frame, inline only for visibility', () => {
+  it('CTL7B-1-RAISING-FRAME BITES: the raising root is the one child of its parent, carries exactly .mr-frame and .mr-shell, writes only display and align-items inline in every state, and toggles display flex/none', () => {
+    // WRONG IMPLS KILLED:
+    //  (1) the shipped root: `position:fixed;inset:0;z-index:100;background:rgba(...)` ... in its
+    //      cssText (every state reds on the allow-list);
+    //  (2) a root with the classes AND the old inline overlay still on it (the inline declaration
+    //      beats the class rule at every specificity, so the shell would never apply);
+    //  (3) `.mr-shell--top` borrowed for the raising screen (z 120 would sit above the battle);
+    //  (4) the frame class on a WRAPPER around the root (identity is pinned through the title);
+    //  (5) a fixed-position / dim / hide declaration smuggled onto a DESCENDANT after the root is
+    //      clean (the subtree walk is run in every state, empty ones included);
+    //  (6) a show() that no longer writes display:flex, or a hide() that no longer writes none.
+    const { parent, view } = s4Mount();
+    expect(parent.children, 'the view appends exactly ONE root into its parent').toHaveLength(1);
+    const root = overlayRootOf(parent);
+    const title = parent.querySelector('[data-testid="raising-title"]');
+    expect(title, 'precondition: the title anchor exists').not.toBeNull();
+    expect(title?.parentElement, "the classed node is the title's parent").toBe(root);
+    expect(
+      root.className
+        .split(/\s+/)
+        .filter((c) => c !== '')
+        .sort(),
+      'the root carries exactly the frame and the shell class — and not .mr-shell--top, which ' +
+        'is the menu / help layer',
+    ).toEqual(['mr-frame', 'mr-shell']);
+
+    const allowed = ['display', 'align-items'];
+    const sample = (when: string): number => {
+      expect(
+        [...ctl7bInline(root).keys()].filter((name) => !allowed.includes(name)),
+        `CTL7B ${when}: the root may write only ${JSON.stringify(allowed)} inline. The shell ` +
+          'class places it inside the screen and the frame class paints it, so any other inline ' +
+          'property is the old overlay still being drawn by hand',
+      ).toEqual([]);
+      const all = [...root.querySelectorAll('*')];
+      const offenders: string[] = [];
+      for (const el of all) {
+        for (const prop of ctl7bInline(el).keys()) {
+          if (CTL7B_BANNED_ON_DESCENDANTS.has(prop)) {
+            offenders.push(`<${el.tagName.toLowerCase()}> ${prop}`);
+          }
+        }
+      }
+      expect(
+        offenders,
+        `CTL7B ${when}: no element under the root may place, layer, dim, hide or recolour itself inline`,
+      ).toEqual([]);
+      return all.length;
+    };
+
+    sample('constructed');
+    expect(root.style.display, 'hidden at construction').toBe('none');
+
+    view.show();
+    sample('shown');
+    expect(root.style.display, 'show() writes display:flex').toBe('flex');
+    expect(ctl7bInline(root).get('display')).toBe('flex');
+
+    view.refresh(raTrainVm());
+    expect(
+      sample('populated refresh'),
+      'non-vacuity: two monsters, three items and their buttons render well over 25 elements',
+    ).toBeGreaterThan(25);
+    expect(root.style.display, 'a refresh does not touch visibility').toBe('flex');
+
+    view.refresh({ monsters: [], items: [] });
+    sample('empty refresh');
+
+    view.hide();
+    sample('hidden');
+    expect(root.style.display, 'hide() writes display:none').toBe('none');
+    expect(ctl7bInline(root).get('display')).toBe('none');
+  });
+
+  it('CTL7B-1-NO-OPACITY-DIM-RAISING BITES: the empty monster and inventory lines carry no inline opacity or filter and paint an opaque colour at 4.5:1 on both the frame and the card surface', () => {
+    // WRONG IMPLS KILLED: the shipped empties (`empty.style.opacity = '0.4'`): opacity composites
+    // the text below 4.5:1 and is invisible to any check that reads only a colour; the same
+    // dimming spelled as `filter`; a replacement colour that is translucent (alpha < 1) or too
+    // dim (#666 on #1a1a2e is 2.9:1); an unreadable colour literal (named, hsl, 8-digit hex).
+    const { parent, view } = s4Mount();
+    view.refresh({ monsters: [], items: [] });
+    view.show();
+    const root = overlayRootOf(parent);
+
+    const dimmers: string[] = [];
+    for (const el of [root, ...root.querySelectorAll('*')]) {
+      for (const prop of ['opacity', 'filter']) {
+        if (ctl7bInline(el).has(prop)) dimmers.push(`<${el.tagName.toLowerCase()}> ${prop}`);
+      }
+    }
+    expect(dimmers, 'no element in the empty raising screen may dim itself inline').toEqual([]);
+
+    const empties = [ctl7bByOwnText(root, 'No monsters.'), ctl7bByOwnText(root, 'No items.')];
+    ctl7bExpectReadableEmpties(empties, root);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// R-ci-fix-20261002T0901Z-RAISINGVIEWREBUILD: RaisingView.refresh rebuilt every Care / Train button
+// on every store batch, so a click landing between a batch's replaceChildren() and Playwright's
+// next action hit a detached node (e2e/evolution.spec.ts:195, "element was detached"). The fix is a
+// value-keyed render per container, like pvpView.ts #renderIfChanged: a refresh with a view-model
+// that serialises to the same key leaves the container's DOM untouched.
+//
+// The key is the JSON of [currentLocale(), monsters, items] for the monster list and
+// [currentLocale(), items] for the inventory, with bigint written as its decimal string (never
+// Number: 2^53 and 2^53 + 1 are the SAME Number). It is deleted before a render and set after it
+// (a render that throws leaves no key); hide() forgets both keys (the reopen's refresh rebuilds);
+// a fresh view has no key (an empty first view-model still renders its empty text).
+// -----------------------------------------------------------------------------
+
+type Ctl7bMonster = RaisingViewModel['monsters'][number];
+type Ctl7bItem = RaisingViewModel['items'][number];
+
+function ctl7bMon(
+  vm: RaisingViewModel,
+  index: number,
+  patch: Partial<Ctl7bMonster>,
+): RaisingViewModel {
+  return { ...vm, monsters: vm.monsters.map((m, i) => (i === index ? { ...m, ...patch } : m)) };
+}
+
+function ctl7bItem(
+  vm: RaisingViewModel,
+  index: number,
+  patch: Partial<Ctl7bItem>,
+): RaisingViewModel {
+  return { ...vm, items: vm.items.map((it, i) => (i === index ? { ...it, ...patch } : it)) };
+}
+
+interface Ctl7bCard {
+  readonly care: HTMLButtonElement;
+  readonly trains: HTMLButtonElement[];
+}
+
+/** The Care button and Train buttons of every monster card, in render order (no count preconditions). */
+function ctl7bCards(root: HTMLElement): Ctl7bCard[] {
+  const cards: Ctl7bCard[] = [];
+  for (const btn of root.querySelectorAll('button')) {
+    if (btn.textContent === i18nT('raising.card.care')) {
+      cards.push({ care: btn, trains: [] });
+    } else {
+      const last = cards[cards.length - 1];
+      expect(last, 'a Train button follows its card’s Care button').toBeDefined();
+      last?.trains.push(btn);
+    }
+  }
+  return cards;
+}
+
+/** The slice of a vi.fn() the oracle reads. */
+interface Ctl7bSpy {
+  readonly mock: { readonly calls: unknown[][] };
+  mockClear(): unknown;
+}
+
+function ctl7bSetup() {
+  const parent = mountParent();
+  const onCare = vi.fn();
+  const onTrain = vi.fn();
+  const view = new RaisingView(parent, makeCallbacks({ onCare, onTrain }));
+  return { parent, view, onCare, onTrain, root: overlayRootOf(parent) };
+}
+
+/** The inventory half of the oracle: every item's line and description is in the DOM. */
+function ctl7bExpectInventory(root: HTMLElement, vm: RaisingViewModel, why: string): void {
+  const text = root.textContent ?? '';
+  for (const item of vm.items) {
+    expect(
+      text,
+      `${why}: the inventory must show "${item.name}" with its count ${item.count}`,
+    ).toContain(i18nTf('raising.inventory.item', { name: item.name, count: item.count }));
+    expect(text, `${why}: the inventory must show the description of "${item.name}"`).toContain(
+      item.description,
+    );
+  }
+}
+
+/**
+ * The DOM oracle: after the view renders `vm`, the screen SHOWS `vm` — every nickname, status and
+ * stats line, one Train button per trainable item per card with its resolved label, the inventory
+ * — and the buttons FORWARD `vm`'s ids (a Care click per card, and the first / last Train button
+ * of alternate cards, so both the first and the last trainable item's id are read). A stale render
+ * fails here whichever field it forgot.
+ */
+function ctl7bExpectRendered(
+  root: HTMLElement,
+  vm: RaisingViewModel,
+  fns: { onCare: Ctl7bSpy; onTrain: Ctl7bSpy },
+  why: string,
+): void {
+  const text = root.textContent ?? '';
+  const trainable = vm.items.filter((i) => i.count > 0 && i.canTrain);
+  for (const m of vm.monsters) {
+    expect(text, `${why}: the card for "${m.nickname}"`).toContain(m.nickname);
+    expect(text, `${why}: the status line of "${m.nickname}"`).toContain(
+      i18nTf('raising.card.status', {
+        level: m.level,
+        trust: m.trustTier,
+        current: m.currentHp,
+        max: m.statHp,
+      }),
+    );
+    expect(text, `${why}: the stats line of "${m.nickname}"`).toContain(
+      i18nTf('raising.card.stats', {
+        attack: m.statAttack,
+        defense: m.statDefense,
+        speed: m.statSpeed,
+        spAttack: m.statSpAttack,
+        spDefense: m.statSpDefense,
+      }),
+    );
+  }
+  ctl7bExpectInventory(root, vm, why);
+
+  const cards = ctl7bCards(root);
+  expect(cards, `${why}: one card per monster`).toHaveLength(vm.monsters.length);
+  expect(
+    cards.map((c) => c.trains.map((b) => b.textContent)),
+    `${why}: every card carries one Train button per trainable item, in item order`,
+  ).toEqual(
+    vm.monsters.map(() =>
+      trainable.map((i) => i18nTf('raising.card.train', { name: i.name, count: i.count })),
+    ),
+  );
+
+  fns.onCare.mockClear();
+  fns.onTrain.mockClear();
+  for (const c of cards) c.care.click();
+  expect(fns.onCare.mock.calls, `${why}: each Care button forwards its own monster id`).toEqual(
+    vm.monsters.map((m) => [m.monsterId]),
+  );
+  const expectedTrain: unknown[][] = [];
+  cards.forEach((c, i) => {
+    if (c.trains.length === 0) return;
+    const pick = i % 2 === 0 ? 0 : c.trains.length - 1;
+    (c.trains[pick] as HTMLButtonElement).click();
+    expectedTrain.push([vm.monsters[i]?.monsterId, trainable[pick]?.itemId]);
+  });
+  expect(
+    fns.onTrain.mock.calls,
+    `${why}: each Train button forwards its own monster id and its own item id`,
+  ).toEqual(expectedTrain);
+}
+
+const CTL7B_FIELD_CASES: ReadonlyArray<
+  readonly [string, (vm: RaisingViewModel) => RaisingViewModel]
+> = [
+  ['monster nickname', (vm) => ctl7bMon(vm, 0, { nickname: 'Ariel' })],
+  ['monster level', (vm) => ctl7bMon(vm, 0, { level: 6 })],
+  ['monster trustTier', (vm) => ctl7bMon(vm, 0, { trustTier: 'Friendly' })],
+  ['monster currentHp', (vm) => ctl7bMon(vm, 0, { currentHp: 19 })],
+  ['monster statHp', (vm) => ctl7bMon(vm, 0, { statHp: 21 })],
+  ['monster statAttack', (vm) => ctl7bMon(vm, 0, { statAttack: 6 })],
+  ['monster statDefense', (vm) => ctl7bMon(vm, 0, { statDefense: 6 })],
+  ['monster statSpeed', (vm) => ctl7bMon(vm, 0, { statSpeed: 6 })],
+  ['monster statSpAttack', (vm) => ctl7bMon(vm, 0, { statSpAttack: 6 })],
+  ['monster statSpDefense', (vm) => ctl7bMon(vm, 0, { statSpDefense: 6 })],
+  ['monster monsterId', (vm) => ctl7bMon(vm, 0, { monsterId: 3n })],
+  ['second monster level', (vm) => ctl7bMon(vm, 1, { level: 6 })],
+  ['monster order', (vm) => ({ ...vm, monsters: [...vm.monsters].reverse() })],
+  ['trainable item count', (vm) => ctl7bItem(vm, 0, { count: 3 })],
+  ['trainable item name', (vm) => ctl7bItem(vm, 0, { name: 'Powder' })],
+  ['trainable item itemId', (vm) => ctl7bItem(vm, 0, { itemId: 13 })],
+  ['second trainable item itemId', (vm) => ctl7bItem(vm, 1, { itemId: 14 })],
+  ['trainable item canTrain off', (vm) => ctl7bItem(vm, 1, { canTrain: false })],
+  ['trainable item count to zero', (vm) => ctl7bItem(vm, 1, { count: 0 })],
+  ['item order', (vm) => ({ ...vm, items: [...vm.items].reverse() })],
+];
+
+describe('RaisingView ctl-7b: a refresh re-renders only when the view-model changed', () => {
+  it('CTL7B-RV-NO-REBUILD BITES: refresh() with a fresh, deep-equal view-model keeps every Care and Train node, writes nothing to the DOM, and leaves focus on a focused Care button', async () => {
+    // WRONG IMPLS KILLED: the shipped refresh(), which replaceChildren()s the monster list and
+    // the inventory on EVERY store batch (every node below changes identity, the observer sees
+    // the removals and focus falls to <body>) — the e2e flake R-ci-fix-20261002T0901Z-
+    // RAISINGVIEWREBUILD; a skip keyed on view-model IDENTITY (the view-model below is a fresh
+    // object, deep-equal to the last); a skip that still rewrites some text or a class.
+    const { view, onCare, root } = ctl7bSetup();
+    view.show();
+    view.refresh(raTrainVm());
+    await s4FlushMacrotask(); // let the open's deferred focus land before focusing a Care button
+    const before = [...root.querySelectorAll('button')];
+    expect(before, 'precondition: two cards with Care + two Train buttons each').toHaveLength(6);
+    const care = before[0] as HTMLButtonElement;
+    care.focus();
+    expect(document.activeElement, 'precondition: Care holds focus').toBe(care);
+
+    const observer = new MutationObserver(() => {});
+    observer.observe(root, { childList: true, subtree: true });
+    const equal = raTrainVm();
+    view.refresh(equal);
+    const equalAgain = raTrainVm();
+    view.refresh(equalAgain);
+    const written = observer.takeRecords();
+    observer.disconnect();
+
+    expect(
+      written.map(
+        (r) =>
+          `${r.type} on <${(r.target as Element).tagName.toLowerCase()}> +${r.addedNodes.length} -${r.removedNodes.length}`,
+      ),
+      'a refresh with a deep-equal view-model must not add or remove a single node',
+    ).toEqual([]);
+    const after = [...root.querySelectorAll('button')];
+    expect(after, 'the same six buttons').toHaveLength(6);
+    after.forEach((btn, i) => {
+      expect(btn, `button ${i} is the SAME node as before the refresh`).toBe(before[i]);
+    });
+    expect(document.activeElement, 'focus stays on the Care button').toBe(care);
+    care.click();
+    expect(onCare, 'the surviving Care node is still wired to its monster').toHaveBeenCalledWith(
+      1n,
+    );
+
+    // CONTROL: the observer does see a real change, so the zero above is not an inert observer.
+    const control = new MutationObserver(() => {});
+    control.observe(root, { childList: true, subtree: true });
+    view.refresh(ctl7bMon(raTrainVm(), 0, { level: 6 }));
+    const real = control.takeRecords();
+    control.disconnect();
+    expect(
+      real.length,
+      'control: a CHANGED view-model re-renders, and the observer records it',
+    ).toBeGreaterThan(0);
+  });
+
+  it.each(CTL7B_FIELD_CASES)(
+    'CTL7B-RV-KEY-FIELD %s: a one-field change re-renders, and the cards show and forward the new value',
+    (label, change) => {
+      // WRONG IMPLS KILLED: a key that leaves one field out (a stale card / button text / forwarded
+      // id after exactly that change), a key that reads only the monster ids or only their count, a
+      // key over the Care / Train LABELS but not the data behind them, an items key that ignores
+      // order or itemId. Every case checks the DOM against the new view-model, not just identity.
+      const { view, root, onCare, onTrain } = ctl7bSetup();
+      view.refresh(raTrainVm());
+      const before = ctl7bCards(root);
+      expect(before, 'precondition: two cards rendered').toHaveLength(2);
+
+      const changed = change(raTrainVm());
+      view.refresh(changed);
+      const after = ctl7bCards(root);
+      expect(
+        after[0]?.care,
+        `${label}: the monster list was re-rendered, so Care is a new node`,
+      ).not.toBe(before[0]?.care);
+      expect(before[0]?.care.isConnected, `${label}: the old Care node is gone`).toBe(false);
+      ctl7bExpectRendered(root, changed, { onCare, onTrain }, label);
+    },
+  );
+
+  it('CTL7B-RV-KEY-INVENTORY BITES: a change that only the inventory shows (a description, a non-trainable item) still reaches the screen', () => {
+    // WRONG IMPLS KILLED: an inventory key that ignores the description or the non-trainable
+    // items (the monster list never reads them, so a key narrowed to what the cards read would
+    // freeze the inventory). NOT pinned either way: whether the monster list is also re-rendered
+    // by such a change — that is a choice of key, and the plan and the brief state it two ways.
+    const { view, root } = ctl7bSetup();
+    view.refresh(raTrainVm());
+
+    const described = ctl7bItem(raTrainVm(), 0, { description: 'Raises attack a great deal.' });
+    view.refresh(described);
+    ctl7bExpectInventory(root, described, 'description-only change');
+    expect(root.textContent ?? '', 'the old description is gone').not.toContain('Raises attack.');
+
+    const pebble = ctl7bItem(described, 2, { count: 9, name: 'Boulder' });
+    view.refresh(pebble);
+    ctl7bExpectInventory(root, pebble, 'non-trainable item change');
+    expect(root.textContent ?? '', 'the old item line is gone').not.toContain('Pebble');
+  });
+
+  it('CTL7B-RV-KEY-LOCALE BITES: switching locale re-renders an equal view-model — empty and populated — so no list keeps the old language', () => {
+    // WRONG IMPLS KILLED: a key without the locale (the Care / Train / empty / status strings are
+    // resolved at render time, so an equal view-model under a new locale would keep the old
+    // language until the data changed).
+    const original = currentLocale();
+    try {
+      const { view, root } = ctl7bSetup();
+      view.refresh({ monsters: [], items: [] });
+      const monsterEmptyBefore = ctl7bByOwnText(root, i18nT('raising.monsters.empty'));
+      const inventoryEmptyBefore = ctl7bByOwnText(root, i18nT('raising.inventory.empty'));
+      setLocale('fr');
+      view.refresh({ monsters: [], items: [] });
+      const monsterEmptyAfter = ctl7bByOwnText(root, i18nT('raising.monsters.empty'));
+      const inventoryEmptyAfter = ctl7bByOwnText(root, i18nT('raising.inventory.empty'));
+      expect(monsterEmptyAfter, 'the empty monster line was re-rendered').not.toBe(
+        monsterEmptyBefore,
+      );
+      expect(monsterEmptyBefore.isConnected).toBe(false);
+      expect(inventoryEmptyAfter, 'the empty inventory line was re-rendered').not.toBe(
+        inventoryEmptyBefore,
+      );
+      expect(inventoryEmptyBefore.isConnected).toBe(false);
+
+      setLocale('en');
+      view.refresh(raTrainVm());
+      const before = ctl7bCards(root);
+      setLocale('fr');
+      view.refresh(raTrainVm()); // deep-equal, but a different locale
+      const after = ctl7bCards(root);
+      expect(after[0]?.care, 'Care was re-rendered under the new locale').not.toBe(before[0]?.care);
+      expect(after[0]?.care.textContent, 'Care reads the new locale').toBe(
+        i18nT('raising.card.care'),
+      );
+      expect(after[0]?.trains[0]?.textContent, 'Train reads the new locale').toBe(
+        i18nTf('raising.card.train', { name: 'Protein', count: 2 }),
+      );
+      expect(root.textContent ?? '', 'the inventory reads the new locale').toContain(
+        i18nTf('raising.inventory.item', { name: 'Protein', count: 2 }),
+      );
+    } finally {
+      setLocale(original);
+    }
+  });
+
+  it('CTL7B-RV-KEY-MUTATION BITES: mutating the previously rendered view-model in place and refreshing the same object re-renders', () => {
+    // WRONG IMPLS KILLED: a skip keyed on object identity or on a shallow compare against the
+    // PREVIOUS REFERENCE (the previous view-model is the object being mutated, so it always
+    // "equals" itself). The key must be a serialisation taken at render time.
+    const { view, root, onCare, onTrain } = ctl7bSetup();
+    const vm = raTrainVm();
+    view.refresh(vm);
+    const before = ctl7bCards(root);
+
+    (vm.monsters[0] as unknown as { level: number }).level = 9;
+    (vm.items[0] as unknown as { count: number }).count = 7;
+    view.refresh(vm); // the SAME object, mutated in place
+
+    const after = ctl7bCards(root);
+    expect(after[0]?.care, 'the monster list re-rendered').not.toBe(before[0]?.care);
+    ctl7bExpectRendered(root, vm, { onCare, onTrain }, 'in-place mutation');
+  });
+
+  it('CTL7B-RV-KEY-BIGINT BITES: monster ids that differ only past 2^53 are different keys — a swap re-renders and Care forwards the new id', () => {
+    // WRONG IMPLS KILLED: a bigint replacer that goes through Number (2n**53n and 2n**53n + 1n are
+    // the SAME Number, so the key would not change and Care would forward the OLD id: a care call
+    // on the wrong monster); a JSON.stringify with no replacer (throws on a bigint at all).
+    const low = 2n ** 53n;
+    const high = 2n ** 53n + 1n;
+    expect(Number(low), 'precondition: the two ids collapse to one Number').toBe(Number(high));
+    const twin = (id: bigint): Ctl7bMonster => ({
+      ...(oneMonsterVm(id).monsters[0] as Ctl7bMonster),
+      nickname: 'Twin', // identical in every field but the id
+    });
+
+    const swapped = ctl7bSetup();
+    swapped.view.refresh({ monsters: [twin(low), twin(high)], items: [] });
+    swapped.view.refresh({ monsters: [twin(high), twin(low)], items: [] });
+    const cards = ctl7bCards(swapped.root);
+    expect(cards, 'two cards').toHaveLength(2);
+    cards[0]?.care.click();
+    cards[1]?.care.click();
+    expect(
+      swapped.onCare.mock.calls,
+      'after the swap the first card forwards the HIGH id and the second the LOW id',
+    ).toEqual([[high], [low]]);
+
+    const single = ctl7bSetup();
+    single.view.refresh({ monsters: [twin(low)], items: [] });
+    single.view.refresh({ monsters: [twin(high)], items: [] });
+    ctl7bCards(single.root)[0]?.care.click();
+    expect(single.onCare, 'a one-id change past 2^53 forwards the new id').toHaveBeenCalledWith(
+      high,
+    );
+  });
+
+  it('CTL7B-RV-KEY-EMPTY-FIRST BITES: the first refresh of a fresh view renders the empty text even for an empty view-model, and a repeat empty refresh leaves it alone', () => {
+    // WRONG IMPLS KILLED: a key that starts as the key of the EMPTY view-model (or any non-null
+    // initial value that an empty view-model equals), which would skip the first render and leave
+    // both containers blank; a skip that does not apply to empty view-models (the control).
+    const { view, root } = ctl7bSetup();
+    view.refresh({ monsters: [], items: [] });
+    const monsterEmpty = ctl7bByOwnText(root, i18nT('raising.monsters.empty'));
+    const inventoryEmpty = ctl7bByOwnText(root, i18nT('raising.inventory.empty'));
+    expect(monsterEmpty.isConnected).toBe(true);
+
+    view.refresh({ monsters: [], items: [] });
+    expect(
+      ctl7bByOwnText(root, i18nT('raising.monsters.empty')),
+      'an equal empty refresh keeps the empty monster line',
+    ).toBe(monsterEmpty);
+    expect(
+      ctl7bByOwnText(root, i18nT('raising.inventory.empty')),
+      'an equal empty refresh keeps the empty inventory line',
+    ).toBe(inventoryEmpty);
+  });
+
+  it('CTL7B-RV-KEY-THROW BITES: a render that throws leaves no key, so the next refresh of the same view-model renders', () => {
+    // WRONG IMPLS KILLED: a key written BEFORE the render runs (a throw midway leaves the key set
+    // and the half-rendered list is then skipped for as long as the view-model stays the same).
+    // The throw is injected through the resolver the render calls first (the status line).
+    try {
+      const { view, root, onCare, onTrain } = ctl7bSetup();
+      vi.mocked(i18nTf).mockImplementationOnce(() => {
+        throw new Error('ctl7b: injected render failure');
+      });
+      expect(() => view.refresh(raTrainVm())).toThrow('ctl7b: injected render failure');
+
+      const again = raTrainVm(); // deep-equal to the view-model whose render threw
+      view.refresh(again);
+      ctl7bExpectRendered(root, again, { onCare, onTrain }, 'refresh after a throwing render');
+    } finally {
+      vi.mocked(i18nTf).mockRestore();
+    }
+  });
+});
+
+describe('RaisingView ctl-7b: the in-flight locks survive a skipped refresh and a hide / show', () => {
+  it('CTL7B-RV-LOCK-HIDE-CARE BITES: a Care call pending at hide() does not leave the reopened view with a dead Care button', () => {
+    // WRONG IMPLS KILLED: a hide() that forgets the lock but not the render key. The reopen's
+    // refresh then SKIPS (deep-equal view-model), so the OLD Care node — disabled by the click
+    // that hide() has since released — stays on screen: a button that looks dead and, once
+    // hide() cleared the lock, is not even guarding anything.
+    const flight = raDeferred(); // never settles (a link drop)
+    const onCare = vi.fn().mockReturnValue(flight.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare }));
+    view.show();
+    view.refresh(raTrainVm());
+    const [a0] = raMonsterControls(parent);
+    a0.care.click();
+    expect(a0.care.disabled, 'precondition: the click took the lock').toBe(true);
+
+    view.hide();
+    view.show();
+    view.refresh(raTrainVm()); // deep-equal to the pre-hide view-model
+    const [a1] = raMonsterControls(parent);
+    expect(a1.care, 'hide() forgets what was rendered, so the reopen rebuilds').not.toBe(a0.care);
+    expect(a1.care.disabled, 'the reopened Care button is enabled').toBe(false);
+    a1.care.click();
+    expect(onCare, 'and it dispatches').toHaveBeenCalledTimes(2);
+  });
+
+  it('CTL7B-RV-LOCK-HIDE-TRAIN BITES: a Train call pending at hide() does not leave the reopened view with dead Train buttons', () => {
+    // WRONG IMPLS KILLED: as the Care case, for the Train buttons (a separate map, a separate
+    // `clear()` in hide(), and a separate list of nodes the settle would re-enable).
+    const flight = raDeferred(); // never settles
+    const onTrain = vi.fn().mockReturnValue(flight.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onTrain }));
+    view.show();
+    view.refresh(raTrainVm());
+    const [a0] = raMonsterControls(parent);
+    a0.trains[0]?.click();
+    expect(raDisabled(a0.trains), 'precondition: both Train buttons locked').toEqual([true, true]);
+
+    view.hide();
+    view.show();
+    view.refresh(raTrainVm());
+    const [a1] = raMonsterControls(parent);
+    expect(a1.trains[0], 'the reopen rebuilds the Train buttons').not.toBe(a0.trains[0]);
+    expect(raDisabled(a1.trains), 'the reopened Train buttons are enabled').toEqual([false, false]);
+    a1.trains[0]?.click();
+    expect(onTrain, 'and dispatch').toHaveBeenCalledTimes(2);
+  });
+
+  it('CTL7B-RV-LOCK-LIVE-CARE BITES: click Care, a changed refresh, then an EQUAL refresh, then the settle — the LIVE Care node is re-enabled', async () => {
+    // WRONG IMPLS KILLED: a skipped refresh that still clears the live-node registry
+    // (`#careButtons.clear()` before the key check): the settle then re-enables the CLOSURE's
+    // detached node and the live one stays disabled forever; an equal refresh that rebuilds (the
+    // shipped behaviour: the `toBe(a1.care)` below reds).
+    const d = raDeferred();
+    const onCare = vi.fn((monsterId: bigint) => (monsterId === 1n ? d.promise : undefined));
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare }));
+    view.refresh(raTrainVm());
+    const [a0] = raMonsterControls(parent);
+    a0.care.click();
+    expect(a0.care.disabled, 'precondition: Care locked').toBe(true);
+
+    view.refresh(withBumpedLevel(raTrainVm())); // a changed batch: rebuilds
+    const [a1] = raMonsterControls(parent);
+    expect(a1.care, 'precondition: the changed refresh rebuilt Care').not.toBe(a0.care);
+    expect(a1.care.disabled, 'the rebuilt Care comes back disabled (lock re-derived)').toBe(true);
+
+    view.refresh(withBumpedLevel(raTrainVm())); // deep-equal to the last one: skipped
+    const [a2] = raMonsterControls(parent);
+    expect(a2.care, 'the equal refresh skipped, so Care is the same node').toBe(a1.care);
+    expect(a2.care.disabled, 'and it is still locked').toBe(true);
+
+    d.resolve();
+    await flushPromises();
+    expect(a2.care.disabled, 'the settle re-enables the LIVE Care node').toBe(false);
+    a2.care.click();
+    expect(onCare, 'and it dispatches again').toHaveBeenCalledTimes(2);
+    await flushPromises();
+  });
+
+  it('CTL7B-RV-LOCK-LIVE-TRAIN BITES: click Train, a changed refresh, then an EQUAL refresh, then the settle — the LIVE Train nodes are re-enabled', async () => {
+    // WRONG IMPLS KILLED: as the Care case, for `#trainButtons` (a skipped refresh that clears the
+    // registry leaves the settle re-enabling the closure's detached list).
+    const d = raDeferred();
+    const onTrain = vi.fn((monsterId: bigint) => (monsterId === 1n ? d.promise : undefined));
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onTrain }));
+    view.refresh(raTrainVm());
+    const [a0] = raMonsterControls(parent);
+    a0.trains[0]?.click();
+    expect(raDisabled(a0.trains), 'precondition: Train locked').toEqual([true, true]);
+
+    view.refresh(withBumpedLevel(raTrainVm()));
+    const [a1] = raMonsterControls(parent);
+    expect(a1.trains[0], 'precondition: the changed refresh rebuilt Train').not.toBe(a0.trains[0]);
+    expect(raDisabled(a1.trains), 'the rebuilt Train buttons come back disabled').toEqual([
+      true,
+      true,
+    ]);
+
+    view.refresh(withBumpedLevel(raTrainVm())); // deep-equal to the last one: skipped
+    const [a2] = raMonsterControls(parent);
+    expect(a2.trains[0], 'the equal refresh skipped, so Train is the same node').toBe(a1.trains[0]);
+    expect(raDisabled(a2.trains), 'and it is still locked').toEqual([true, true]);
+
+    d.resolve();
+    await flushPromises();
+    expect(raDisabled(a2.trains), 'the settle re-enables the LIVE Train nodes').toEqual([
+      false,
+      false,
+    ]);
+    a2.trains[1]?.click();
+    expect(onTrain, 'and they dispatch again').toHaveBeenCalledTimes(2);
+    await flushPromises();
   });
 });
