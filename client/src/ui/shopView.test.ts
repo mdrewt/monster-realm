@@ -771,6 +771,9 @@ const M24S4_SV_PLAIN_KEYS = new Set([
   'shop.inventory.empty',
   'shop.buy.submit',
   'shop.sell.submit',
+  // ctl-8a (named intentional change): the opening paint renders the Buy | Sell tab strip on every render path.
+  'shop.tab.buy',
+  'shop.tab.sell',
 ]);
 
 const M24S4_SV_PARAM_KEYS = new Set(['shop.buy.row', 'shop.sell.row', 'shop.sell.unsellable']);

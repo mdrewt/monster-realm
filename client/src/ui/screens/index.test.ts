@@ -1913,8 +1913,10 @@ describe('ScreenHost.observe (ctl-7d)', () => {
       const shipped = new ScreenHost(SCREEN_ADAPTERS, noViews, (err) => {
         shippedErrors.push(err);
       });
-      shipped.observe(stackOf(WORLD, ...OVERLAY_IDS.map((id) => screen(id))), clock.ctx);
-      shipped.observe(stackOf(battle('7'), ...OVERLAY_IDS.map((id) => prompt(id))), clock.ctx);
+      // INTENTIONAL CHANGE (ctl-8a): was every overlay id; ctl-8a: the 14 legacy ids — the three
+      // converted adapters observe and read a real store (CTL8A-4-HOST-FLOW covers them).
+      shipped.observe(stackOf(WORLD, ...LEGACY_IDS.map((id) => screen(id))), clock.ctx);
+      shipped.observe(stackOf(battle('7'), ...LEGACY_IDS.map((id) => prompt(id))), clock.ctx);
       expect(shippedErrors, 'the shipped table reports nothing').toEqual([]);
       for (const spy of spies) {
         expect(spy, 'the legacy adapter ran no code on observe').not.toHaveBeenCalled();

@@ -462,7 +462,7 @@ describe('DialogueView render(): existing paint behaviour (pinned, not changed b
 // ---------------------------------------------------------------------------
 // ctl-8a (CTL8A.1): the bottom box and the painted cursor / reveal.
 //
-// The constructor docks the shell (`mr-shell--dock` on the root) and moves the three content nodes
+// The constructor docks the shell (`mr-dock` on the root) and moves the three content nodes
 // into ONE inner `div.mr-frame.mr-frame--bottom` (`data-size="bottom"`), idempotently.
 // `paint({ active, revealStart })` keeps what it is handed and applies it: the cursor button (the
 // `data-choice-idx` button whose idx is `active`, or the `data-shop-id` button for 'shop') carries
@@ -512,7 +512,9 @@ describe('DialogueView — the bottom box and paint (ctl-8a, CTL8A.1)', () => {
     const choices = ctl8aEl('dialogue-choices');
     new DialogueView();
 
-    expect(root.classList.contains('mr-shell--dock'), 'the shell is docked').toBe(true);
+    // `mr-dock`, not `mr-shell--dock`: battleView.test.ts CTL7B-1-FRAME-CSS-ROSTER pins every
+    // styles.css selector matching /mr-(shell|frame)/, so the dock rule is named outside that family.
+    expect(root.classList.contains('mr-dock'), 'the shell is docked').toBe(true);
     const frame = name.parentElement as HTMLElement;
     expect(frame, 'the name moved into an inner frame').not.toBe(root);
     expect(frame.tagName).toBe('DIV');
