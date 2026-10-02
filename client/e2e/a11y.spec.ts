@@ -678,10 +678,25 @@ test.describe
       await expect(overlay).toBeHidden();
     });
 
+    // ctl-7a, WCAG 2.5.3 label-in-name: the chips show a button glyph ("Start", "Select") by CSS
+    // `::before { content: attr(data-button) " " }` ahead of the verb, so the accessible name that
+    // Chromium computes (it includes ::before content) must contain the visible label. Only a real
+    // browser computes that name; happy-dom has no pseudo-element content.
+    test('CTL7A-E2E-CHIP-NAMES: the hint-bar chips are named by their visible button label plus verb', async () => {
+      await expect(page.getByRole('button', { name: 'Start Menu', exact: true })).toHaveAttribute(
+        'id',
+        'chip-start',
+      );
+      await expect(page.getByRole('button', { name: 'Select Help', exact: true })).toHaveAttribute(
+        'id',
+        'chip-select',
+      );
+    });
+
     // ctl-7a (CTL7A.1 to CTL7A.3), the real-browser half. The unit tier parses styles.css and
     // index.html; only Chromium can say where a frame really lands and what colour its text really
-    // paints, so each of the three frame kinds is measured here: the menu (an inner ui/frame.ts
-    // .mr-frame inside a scrim shell), help (the shell IS the .mr-frame) and one index.html shell
+    // paints, so each of the three frame kinds is measured here: the menu (a .mr-shell holding the
+    // ui/frame.ts .mr-frame; the shell has no scrim), help (the shell IS the .mr-frame) and one index.html shell
     // (rename). Per frame: the page does not scroll, the frame's box lies inside the viewport, and
     // every visible text element reads at >= 4.5:1 against its computed background.
     test('CTL7A-E2E-MENU: with the Start chip pressing the menu open, the page does not scroll, the frame lies in the viewport, its text reads at >= 4.5:1, and the active row differs from a sibling by more than colour', async () => {

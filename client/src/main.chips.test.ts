@@ -36,6 +36,9 @@ const H = vi.hoisted(() => ({
   connectOpts: null as ConnectionOptions | null,
   /** Every enqueueMove the client issued. Reset by every boot. */
   sends: [] as Sent[],
+  /** What the stubbed connection's sessionState() returns; 'hidden' is the ordinary case, any
+   *  other value is the session terminal (expired / unreachable). Reset by every boot. */
+  session: 'hidden' as string,
 }));
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid.
@@ -110,7 +113,7 @@ vi.mock('./net/connection', () => {
     identity: () => H.identity,
     linkFrozen: () => false,
     continueAnonymously: () => undefined,
-    sessionState: () => 'hidden',
+    sessionState: () => H.session,
     startSignIn: () => undefined,
     reconnectNow: () => undefined,
   } as unknown as Connection;
@@ -205,6 +208,7 @@ let opts: ConnectionOptions;
 async function boot(url = '/'): Promise<void> {
   H.connectOpts = null;
   H.sends = [];
+  H.session = 'hidden';
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   recorded = [];
@@ -293,6 +297,19 @@ const shown = (id: string): boolean => {
 
 const Y0 = 7;
 
+/** A chip element from the mounted shell; throws (a named failure) when it is missing. */
+function chipEl(chipId: string): HTMLElement {
+  const el = document.getElementById(chipId);
+  if (el === null) throw new Error(`#${chipId} must exist (client/index.html)`);
+  return el;
+}
+
+/** Escape is Start: it pops the top overlay back toward the world base. */
+function closeWithEscape(t: number): void {
+  fire('keydown', 'Escape', t);
+  fire('keyup', 'Escape', t + 5);
+}
+
 /** Hold W until the continuation is proven live, click `chipId`, close what it opened with
  *  Escape, ack the server, then run frames well past the hold-commit window. Returns the send
  *  count before and after those frames. */
@@ -379,5 +396,77 @@ describe('main.ts Start / Select hint-bar chips (runtime, ctl-7a)', { sequential
     expect(select?.textContent).toBe('Aide');
     expect(select?.textContent, 'not the English verb').not.toBe('Help');
     expect(start?.textContent).toBe('Menu');
+  });
+
+  it('CTL7A-4-CHIPS-SESSION-GATED: while the session terminal shows, neither chip opens its overlay; once it is hidden again the same clicks do', async () => {
+    // WRONG IMPL KILLED: a chip branch that opens the menu / help without consulting
+    // sessionGateBlocks() (it would open a Start menu over the expired / unreachable terminal);
+    // a gate applied to only one of the two chips; a gate that blocks always (the anti-vacuity
+    // half: with sessionState 'hidden' the same clicks must open).
+    await bootReady();
+    server(1000, { x: 2, y: Y0, ack: 0 });
+    expect(shown('menu-overlay'), 'precondition: the menu starts closed').toBe(false);
+    expect(shown('help-overlay'), 'precondition: help starts closed').toBe(false);
+
+    H.session = 'expired';
+    chipEl('chip-start').click();
+    expect(shown('menu-overlay'), 'Start chip must not open the menu over the terminal').toBe(
+      false,
+    );
+    chipEl('chip-select').click();
+    expect(shown('help-overlay'), 'Select chip must not open help over the terminal').toBe(false);
+
+    // Same boot, terminal gone: the clicks are live again.
+    H.session = 'hidden';
+    chipEl('chip-select').click();
+    expect(shown('help-overlay'), 'anti-vacuity: Select opens help once hidden').toBe(true);
+    closeWithEscape(1210);
+    expect(shown('help-overlay'), 'Escape closes help').toBe(false);
+    chipEl('chip-start').click();
+    expect(shown('menu-overlay'), 'anti-vacuity: Start opens the menu once hidden').toBe(true);
+  });
+
+  it('CTL7A-4-SELECT-NO-IDENTITY: before the identity is known Select still opens help (like the ? hotkey) while Start does not open the menu', async () => {
+    // WRONG IMPL KILLED: a Select branch that copies the Start identity guard (help is static
+    // text, the hotkey has no such guard); a Start branch that drops the identity guard (the menu
+    // reads store rows keyed by identity, which is '' before the first onReady). The post-onReady
+    // clicks prove the pre-identity refusal was the identity, not a dead chip.
+    await boot(); // connect() reached, onReady NOT delivered: identity is still ''
+    expect(shown('menu-overlay'), 'precondition: the menu starts closed').toBe(false);
+    expect(shown('help-overlay'), 'precondition: help starts closed').toBe(false);
+
+    chipEl('chip-start').click();
+    expect(shown('menu-overlay'), 'Start must not open the menu before identity').toBe(false);
+
+    chipEl('chip-select').click();
+    expect(shown('help-overlay'), 'Select opens help even before identity').toBe(true);
+
+    // Identity arrives; close help the ordinary way; Start now opens the menu.
+    opts.onReady(H.identity);
+    server(1000, { x: 2, y: Y0, ack: 0 });
+    closeWithEscape(1210);
+    expect(shown('help-overlay'), 'Escape closes help').toBe(false);
+    chipEl('chip-start').click();
+    expect(shown('menu-overlay'), 'anti-vacuity: Start opens the menu once identity is known').toBe(
+      true,
+    );
+  });
+
+  it('CTL7A-4-CHIP-TWICE: the Start chip opens the menu again after it was closed', async () => {
+    // WRONG IMPL KILLED: a one-shot latch on the chip (a "launched" flag, a { once: true }
+    // listener, a handler that removes itself): the first click works and every later one is dead.
+    await bootReady();
+    server(1000, { x: 2, y: Y0, ack: 0 });
+    const start = chipEl('chip-start');
+    start.click();
+    expect(shown('menu-overlay'), 'first click opens the menu').toBe(true);
+    closeWithEscape(1210);
+    expect(shown('menu-overlay'), 'Escape closes the menu').toBe(false);
+    start.click();
+    expect(shown('menu-overlay'), 'second click opens it again').toBe(true);
+    closeWithEscape(1300);
+    expect(shown('menu-overlay'), 'Escape closes it again').toBe(false);
+    start.click();
+    expect(shown('menu-overlay'), 'third click opens it again').toBe(true);
   });
 });
