@@ -13,6 +13,8 @@
  * ctl-7d (CTL7D.6): after each store batch the shell calls `host.observe(stack, ctx)`, which runs
  * the optional `adapter.observe(vm, state, now)` of every screen / prompt frame on the stack,
  * keeps what it returns and paints a frame whose state changed.
+ * ctl-8a (CTL8A.4): the shipped table's dialogue, shop and heal frames hold their own
+ * nav-capable screens (`dialogueScreen`, `shopScreen`, `healScreen`); the other 14 stay legacy.
  *
  * Adapters are injected as recording stubs, so every routing claim is read off which stub was
  * called, with what, and what came back. The base cases inject adapters that THROW, so "the base
@@ -33,8 +35,11 @@ import {
 } from '../contextStack';
 import type { NavInput } from '../nav';
 import { OVERLAY_IDS } from '../overlayRegistry';
+import { DIALOGUE_REVEAL_MS, dialogueScreen } from './dialogueScreen';
+import { healScreen } from './healScreen';
 import { baseButton, SCREEN_ADAPTERS, ScreenHost } from './index';
 import { legacyAdapter } from './legacyAdapter';
+import { shopScreen } from './shopScreen';
 import type { ScreenAdapter, ScreenContext, ScreenResult } from './types';
 
 const CTX = {
@@ -138,21 +143,43 @@ const POP_TO_BASE: ScreenResult = { kind: 'popToBase' };
 const OPEN_MENU: ScreenResult = { kind: 'openMenu' };
 const TOGGLE_HELP: ScreenResult = { kind: 'toggleHelp' };
 
+/** The frames ctl-8a converts, each to its own nav-capable screen adapter (CTL8A.4). */
+const CONVERTED: ReadonlyMap<FrameId, unknown> = new Map<FrameId, unknown>([
+  ['dialogueView', dialogueScreen],
+  ['shopView', shopScreen],
+  ['healView', healScreen],
+]);
+/** Every overlay id still on the legacy adapter. */
+const LEGACY_IDS: readonly FrameId[] = OVERLAY_IDS.filter((id) => !CONVERTED.has(id));
+
 describe('SCREEN_ADAPTERS (ctl-6b)', () => {
-  it('CTL6B-1-ADAPTERS-TOTAL: every overlay id has an adapter, every one is the legacy adapter, and the default table answers a legacy screen', () => {
+  it('CTL6B-1-ADAPTERS-TOTAL: every overlay id has an adapter, the dialogue, shop and heal frames hold their own ctl-8a screens and every other one the legacy adapter, and the default table answers a legacy screen', () => {
     // WRONG IMPL KILLED: a table that omits an overlay (that frame would have no way to answer
     // B or Start), carries a stray id, holds a bespoke adapter before its ctl-8 slice lands, and a
     // host over SCREEN_ADAPTERS that does not answer a legacy screen as the legacy adapter does.
+    // INTENTIONAL CHANGE (ctl-8a, CTL8A.4): dialogueView, shopView and healView now hold
+    // dialogueScreen, shopScreen and healScreen (by identity). Was: every id `toBe(legacyAdapter)`,
+    // and the host loop below drove all 17 ids. The other 14 are still the legacy adapter and the
+    // loop still drives each of them exactly as before.
     expect([...Object.keys(SCREEN_ADAPTERS)].sort()).toEqual([...OVERLAY_IDS].sort());
+    expect(LEGACY_IDS, 'ANTI-VACUITY: 14 legacy ids').toHaveLength(14);
+    expect(LEGACY_IDS.length + CONVERTED.size, 'ANTI-VACUITY: every id is one or the other').toBe(
+      OVERLAY_IDS.length,
+    );
     for (const id of OVERLAY_IDS) {
-      expect(SCREEN_ADAPTERS[id], `${id} is the legacy adapter`).toBe(legacyAdapter);
+      const own = CONVERTED.get(id);
+      if (own === undefined) {
+        expect(SCREEN_ADAPTERS[id], `${id} is the legacy adapter`).toBe(legacyAdapter);
+      } else {
+        expect(SCREEN_ADAPTERS[id], `${id} is its own ctl-8a screen`).toBe(own);
+      }
       expect(typeof SCREEN_ADAPTERS[id].viewModel, `${id}.viewModel`).toBe('function');
       expect(typeof SCREEN_ADAPTERS[id].onButton, `${id}.onButton`).toBe('function');
     }
 
     // The default adapter table, read through a host built over SCREEN_ADAPTERS.
     const host = new ScreenHost(SCREEN_ADAPTERS, noViews, unexpectedPaintError);
-    for (const id of OVERLAY_IDS) {
+    for (const id of LEGACY_IDS) {
       const over = stackOf(WORLD, screen(id));
       expect(host.button(over, nav('B'), CTX), `${id} B`).toEqual({ kind: 'pop' });
       expect(host.button(over, nav('Start'), CTX), `${id} Start`).toEqual({ kind: 'popToBase' });
@@ -554,11 +581,18 @@ describe('ScreenHost (ctl-7c)', () => {
     for (const [label, stack] of no) expect(host.takesNav(stack), label).toBe(false);
     expect(yes.length + no.length, 'ANTI-VACUITY: both polarities are driven').toBe(12);
 
-    // The shipped table is all legacy: no frame takes the D-pad until its ctl-8 screen lands.
+    // INTENTIONAL CHANGE (ctl-8a, CTL8A.4): the shipped table's dialogue, shop and heal frames are
+    // nav-capable. Was: every id `false` ("the shipped table is all legacy"). Every other frame is
+    // still legacy and takes no D-pad until its own ctl-8 screen lands.
     const shipped = hostOf(SCREEN_ADAPTERS);
     for (const id of OVERLAY_IDS) {
-      expect(shipped.takesNav(stackOf(WORLD, screen(id))), `${id} screen (shipped)`).toBe(false);
-      expect(shipped.takesNav(stackOf(WORLD, prompt(id))), `${id} prompt (shipped)`).toBe(false);
+      const navCapable = CONVERTED.has(id);
+      expect(shipped.takesNav(stackOf(WORLD, screen(id))), `${id} screen (shipped)`).toBe(
+        navCapable,
+      );
+      expect(shipped.takesNav(stackOf(WORLD, prompt(id))), `${id} prompt (shipped)`).toBe(
+        navCapable,
+      );
     }
   });
 
@@ -1893,5 +1927,202 @@ describe('ScreenHost.observe (ctl-7d)', () => {
     } finally {
       for (const spy of spies) spy.mockRestore();
     }
+  });
+});
+
+// ==========================================================================================
+// ctl-8a: the converted dialogue, shop and heal frames over the SHIPPED table (CTL8A.4)
+// ==========================================================================================
+//
+// T opens these frames through main.ts's legacy paths; what changes is the adapter that answers
+// them once open. A ScreenHost over the shipped SCREEN_ADAPTERS, a fake store carrying what the
+// three view models read, and one recording view per frame: the D-pad and A reach each frame's own
+// adapter, yield its command, and every step paints that frame's lent view exactly once. The
+// dialogue and the shop open inside a store batch (main.ts then runs host.observe); the heal frame
+// opens from a keydown with no batch, so its first adapter call is a button.
+
+const FLOW_ME = 'ef'.repeat(32);
+
+interface FlowClock {
+  t: number;
+}
+
+/** A context whose store holds: a conversation with the keeper of shop 4 (Leave + Shop), heal
+ *  locations 9 and 7 (7 bound, costing 25 gold), and shop 3 stocking Bait then item 8. */
+function flowCtx(clock: FlowClock): ScreenContext {
+  const keeper = {
+    entityId: 21n,
+    npcId: 'keeper',
+    zoneId: 1,
+    homeX: 2,
+    homeY: 2,
+    wanderRadius: 0,
+    dialogueTreeId: 'shopkeeper_greeting',
+    interaction: { kind: 'shop', shopId: 4 },
+  };
+  const bait = {
+    id: 7,
+    name: 'Bait',
+    description: 'Lures a wild monster closer.',
+    recruitBonus: 0,
+    trainStat: null,
+    trainAmount: 0,
+    sellPrice: 15n,
+    cureStatus: null,
+  };
+  const heal = (locationId: number, costCurrency: bigint) => ({
+    locationId,
+    zoneId: 1,
+    tileX: locationId,
+    tileY: 1,
+    costQty: 0,
+    cooldownMs: 0,
+    costCurrency,
+  });
+  const store = {
+    ownConversation: (owner: string) =>
+      owner === FLOW_ME
+        ? { ownerIdentity: FLOW_ME, npcEntityId: 21n, currentNodeId: 'greeting' }
+        : undefined,
+    allNpcs: () => [keeper],
+    ongoingBattle: () => undefined,
+    healLocations: () => [heal(9, 40n), heal(7, 25n)],
+    itemDefs: () => new Map([[7, bait]]),
+    allShops: () => [{ shopId: 3, name: 'Tideglass' }],
+    allShopItems: () => [
+      { shopItemId: 31n, shopId: 3, itemId: 7, buyPrice: 20n },
+      { shopItemId: 32n, shopId: 3, itemId: 8, buyPrice: 5n },
+    ],
+    ownInventory: () => [],
+    ownWallet: (identity: string) =>
+      identity === FLOW_ME ? { ownerIdentity: FLOW_ME, balance: 100n } : undefined,
+  };
+  return {
+    store,
+    identity: FLOW_ME,
+    bindings: DEFAULT_BINDINGS,
+    now: () => clock.t,
+    shopId: 3,
+    healLocationId: 7,
+    reduceMotion: false,
+  } as unknown as ScreenContext;
+}
+
+interface RecordingView {
+  readonly painted: unknown[];
+  paint(p: unknown): void;
+}
+function recordingView(): RecordingView {
+  const painted: unknown[] = [];
+  return {
+    painted,
+    paint(p) {
+      painted.push(p);
+    },
+  };
+}
+
+describe('the converted frames over the shipped table (ctl-8a, CTL8A.4)', () => {
+  it('CTL8A-4-ADAPTERS-SWAPPED: the shipped table holds dialogueScreen, shopScreen and healScreen for the dialogue, shop and heal frames, each nav-capable, so each takes the D-pad on top of the world or a battle; a legacy frame above one takes it back', () => {
+    // WRONG IMPL KILLED: a converted adapter written but never wired into SCREEN_ADAPTERS (T would
+    // still open the legacy frame: no cursor, no quantity row, no heal action); a swap into the
+    // wrong slot (the shop's adapter on the dialogue frame); an adapter without its nav mark (the
+    // router would keep the D-pad for walking under the open frame); and a converted frame that
+    // keeps the D-pad under a legacy child.
+    expect(SCREEN_ADAPTERS.dialogueView, 'the dialogue frame').toBe(dialogueScreen);
+    expect(SCREEN_ADAPTERS.shopView, 'the shop frame').toBe(shopScreen);
+    expect(SCREEN_ADAPTERS.healView, 'the heal frame').toBe(healScreen);
+    expect(dialogueScreen.nav).toBe(true);
+    expect(shopScreen.nav).toBe(true);
+    expect(healScreen.nav).toBe(true);
+    const host = hostOf(SCREEN_ADAPTERS);
+    for (const id of ['dialogueView', 'shopView', 'healView'] as const) {
+      expect(host.takesNav(stackOf(WORLD, screen(id))), `${id} over the world`).toBe(true);
+      expect(host.takesNav(stackOf(battle('7'), screen(id))), `${id} over a battle`).toBe(true);
+      expect(
+        host.takesNav(stackOf(WORLD, screen(id), screen('boxView'))),
+        `${id} under a legacy frame`,
+      ).toBe(false);
+    }
+  });
+
+  it('CTL8A-4-HOST-FLOW: over the shipped table, D-pad and A on the dialogue frame advance the conversation, on the heal frame heal at the bound location, and on the shop frame A, A, A on the first Buy row buys one; each step paints that frame`s lent view exactly once and no other', () => {
+    // WRONG IMPL KILLED: a host still answering these frames through the legacy adapter (A would
+    // be unhandled and nothing would be sent); an adapter whose view model cannot be built from
+    // the real ScreenContext fields (shopId, healLocationId, now); a heal that ignores the bound
+    // location; a shop flow that skips the quantity row or the confirm (a single A would buy); a
+    // D-pad that never reaches the frame; and a paint missed, doubled, or sent to another frame's
+    // view.
+    const clock: FlowClock = { t: 1_000 };
+    const ctx = flowCtx(clock);
+    const views = {
+      dialogueView: recordingView(),
+      shopView: recordingView(),
+      healView: recordingView(),
+    };
+    const lent = (id: FrameId): unknown =>
+      id === 'dialogueView' || id === 'shopView' || id === 'healView' ? views[id] : undefined;
+    const host = new ScreenHost(SCREEN_ADAPTERS, lent, unexpectedPaintError);
+    const counts = (): readonly number[] => [
+      views.dialogueView.painted.length,
+      views.shopView.painted.length,
+      views.healView.painted.length,
+    ];
+
+    // The dialogue opens in a batch: the observe that follows paints its first item and reveal.
+    const talk = stackOf(WORLD, screen('dialogueView'));
+    expect(host.takesNav(talk)).toBe(true);
+    host.opened(screen('dialogueView'));
+    host.observe(talk, ctx);
+    expect(counts(), 'the open`s observe paints the dialogue once').toEqual([1, 0, 0]);
+    expect(views.dialogueView.painted[0]).toEqual({ active: 0, revealStart: 1_000 });
+    clock.t = 1_000 + DIALOGUE_REVEAL_MS;
+    expect(host.button(talk, nav('Down'), ctx)).toBe('consumed');
+    expect(views.dialogueView.painted.at(-1)).toEqual({ active: 'shop', revealStart: 1_000 });
+    expect(host.button(talk, nav('Down'), ctx)).toBe('consumed');
+    expect(views.dialogueView.painted.at(-1)).toEqual({ active: 0, revealStart: 1_000 });
+    expect(host.button(talk, nav('A'), ctx)).toEqual({ kind: 'advanceDialogue', choiceIdx: 0 });
+    expect(counts(), 'one paint per step').toEqual([4, 0, 0]);
+    host.observe(talk, ctx);
+    expect(counts(), 'a batch that changed nothing paints nothing').toEqual([4, 0, 0]);
+
+    // The heal frame opens from T with no batch: its first adapter call is a button.
+    const healing = stackOf(WORLD, screen('healView'));
+    expect(host.takesNav(healing)).toBe(true);
+    host.opened(screen('healView'));
+    expect(host.button(healing, nav('Down'), ctx)).toBe('consumed');
+    expect(views.healView.painted.at(-1)).toEqual({ active: 'no', cost: '25 gold' });
+    expect(host.button(healing, nav('Up'), ctx)).toBe('consumed');
+    expect(views.healView.painted.at(-1)).toEqual({ active: 'yes', cost: '25 gold' });
+    expect(host.button(healing, nav('A'), ctx)).toEqual({ kind: 'healParty', locationId: 7 });
+    expect(counts()).toEqual([4, 0, 3]);
+
+    // The shop opens in a batch; nothing changed since init, so that observe paints nothing.
+    const shopping = stackOf(WORLD, screen('shopView'));
+    expect(host.takesNav(shopping)).toBe(true);
+    host.opened(screen('shopView'));
+    host.observe(shopping, ctx);
+    expect(counts()).toEqual([4, 0, 3]);
+    expect(host.button(shopping, nav('Down'), ctx)).toBe('consumed');
+    expect(host.button(shopping, nav('Up'), ctx)).toBe('consumed');
+    const [down, up] = views.shopView.painted as [{ activeKey: unknown }, { activeKey: unknown }];
+    expect(down.activeKey, 'Down moved the cursor').not.toEqual(up.activeKey);
+    expect(host.button(shopping, nav('A'), ctx)).toBe('consumed');
+    expect(views.shopView.painted.at(-1)).toMatchObject({
+      tab: 'buy',
+      prompt: { kind: 'qty', tab: 'buy', name: 'Bait', qty: 1 },
+    });
+    expect(host.button(shopping, nav('A'), ctx)).toBe('consumed');
+    expect(views.shopView.painted.at(-1)).toMatchObject({
+      prompt: { kind: 'confirm', tab: 'buy', name: 'Bait', qty: 1, gold: 20n, yes: true },
+    });
+    expect(host.button(shopping, nav('A'), ctx)).toEqual({
+      kind: 'buy',
+      shopId: 3,
+      itemId: 7,
+      qty: 1,
+    });
+    expect(views.shopView.painted.at(-1)).toMatchObject({ prompt: null });
+    expect(counts(), 'five shop steps, five shop paints').toEqual([4, 5, 3]);
   });
 });

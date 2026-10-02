@@ -279,7 +279,29 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { qty: 1, name: 'Tonic', gold: 9_007_199_254_740_993n },
   ],
   'shop.feedback.sell.count': [{ qty: 3 }, { qty: 12 }],
+  // ctl-8a: the shop quantity and confirm prompts and the heal question (5 ★). `qty` is a number,
+  // `gold` a bigint (past 2^53 in set B), `cost` the heal model's own cost line.
+  'shop.qty.buy': [
+    { name: 'Herb', qty: 2 },
+    { name: 'Tonic', qty: 99 },
+  ],
+  'shop.qty.sell': [
+    { name: 'Berry', qty: 3 },
+    { name: 'Relic', qty: 1 },
+  ],
+  'shop.confirm.buy': [
+    { qty: 2, name: 'Bait', gold: 40n },
+    { qty: 3, name: 'Relic', gold: 27_021_597_764_222_979n },
+  ],
+  'shop.confirm.sell': [
+    { qty: 3, name: 'Berry', gold: 30n },
+    { qty: 1, name: 'Tonic', gold: 9_007_199_254_740_993n },
+  ],
+  'heal.prompt.question': [{ cost: '25 gold' }, { cost: '2x Herb + 40 gold' }],
 };
+
+/** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
+const EM_DASH = String.fromCharCode(0x2014);
 
 /** Every PLAIN (non-parameterised) MessageId's expected value, byte-transcribed
  *  from the pre-migration literal at its cited source line (plan R7 — copy-paste
@@ -291,6 +313,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // boot) replace it. Net roster delta: -1 +2 = 211 keys.
   // ctl-7d (named intentional change): -2 plain `shop.feedback.*` keys here, +4 parameterised ones
   // in SAMPLE_PARAMS = 213 keys.
+  // ctl-8a (named intentional change): +6 plain keys here (the shop tabs and description mark,
+  // the shared Yes / No, the heal reason), +5 parameterised ones in SAMPLE_PARAMS = 224 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -508,6 +532,15 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // (ui/screens/mainMenuScreen.ts), the first also the dispatch refusal line (main.ts).
   'menu.disabled.inBattle': 'Not during a battle',
   'menu.disabled.battleBag': 'Use items from the battle Bag command',
+  // ctl-8a: 6 new plain keys — the Buy | Sell tab labels and the description slot's "none" mark
+  // (shopView.ts), the shared Yes / No prompt options (shopView.ts, healView.ts), and the reason a
+  // heal frame with no bound healer is disabled (healView.ts).
+  'shop.tab.buy': 'Buy',
+  'shop.tab.sell': 'Sell',
+  'shop.description.none': EM_DASH,
+  'prompt.yes': 'Yes',
+  'prompt.no': 'No',
+  'heal.prompt.unavailable': 'No healer in reach. Healing is unavailable.',
 };
 
 interface ParamOutputSpec {
@@ -815,9 +848,44 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { qty: 12 },
     outputB: `${CHECK_MARK} Sold ${TIMES_SIGN}12`,
   },
+  // ctl-8a: the shop's quantity and confirm prompts (CTL8A.2) and the heal question (CTL8A.3).
+  // The quantity mark is U+00D7; the gold digits are the bigint's own (no grouping, no Number
+  // round trip); the cost is the heal model's line, carried verbatim.
+  'shop.qty.buy': {
+    inputA: { name: 'Herb', qty: 2 },
+    outputA: `Buy how many Herb? ${TIMES_SIGN}2`,
+    inputB: { name: 'Tonic', qty: 99 },
+    outputB: `Buy how many Tonic? ${TIMES_SIGN}99`,
+  },
+  'shop.qty.sell': {
+    inputA: { name: 'Berry', qty: 3 },
+    outputA: `Sell how many Berry? ${TIMES_SIGN}3`,
+    inputB: { name: 'Relic', qty: 1 },
+    outputB: `Sell how many Relic? ${TIMES_SIGN}1`,
+  },
+  'shop.confirm.buy': {
+    inputA: { qty: 2, name: 'Bait', gold: 40n },
+    outputA: 'Buy 2 Bait for 40 gold?',
+    inputB: { qty: 3, name: 'Relic', gold: 27_021_597_764_222_979n },
+    outputB: 'Buy 3 Relic for 27021597764222979 gold?',
+  },
+  'shop.confirm.sell': {
+    inputA: { qty: 3, name: 'Berry', gold: 30n },
+    outputA: 'Sell 3 Berry for 30 gold?',
+    inputB: { qty: 1, name: 'Tonic', gold: 9_007_199_254_740_993n },
+    outputB: 'Sell 1 Tonic for 9007199254740993 gold?',
+  },
+  'heal.prompt.question': {
+    inputA: { cost: '25 gold' },
+    outputA: 'Heal party for 25 gold?',
+    inputB: { cost: '2x Herb + 40 gold' },
+    outputB: 'Heal party for 2x Herb + 40 gold?',
+  },
 };
 
-/** The full 213-key roster (ctl-7d: -`shop.feedback.purchased` -`shop.feedback.sold`
+/** The full 224-key roster (ctl-8a: +`shop.tab.buy` +`shop.tab.sell` +`shop.description.none`
+ *  +`prompt.yes` +`prompt.no` +`heal.prompt.unavailable` +`shop.qty.{buy,sell}`
+ *  +`shop.confirm.{buy,sell}` +`heal.prompt.question` over the 213-key roster below; ctl-7d: -`shop.feedback.purchased` -`shop.feedback.sold`
  *  +`shop.feedback.{buy,sell}.{item,count}` over the 211-key roster below; ctl-7a: -`chrome.helpHint`
  *  +`chrome.chip.menu` +`chrome.chip.help` over the 210-key roster below; ctl-6c added the 2 `menu.disabled.*` keys to the 208-key roster; ctl-5 added the 29 `menu.*` keys to the 179-key roster; pgcc-a added `raising.feedback.cared` to the 178-key roster below;
  *  21r-b2 growth of 21r-b's 133-key roster by the 45 new `claim.*` /
@@ -877,7 +945,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-6c 210-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8a 224-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -966,10 +1034,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 210 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 224 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (213 keys since ctl-7d).
+    // (a) roster is exactly the EXPECTED_KEYS roster (224 keys since ctl-8a).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
@@ -1103,5 +1171,76 @@ describe('ctl-7a: the hint-bar chip catalog keys', () => {
     expect(fr['chrome.chip.help'], 'fr chrome.chip.help').toBe('Aide');
     expect(Object.hasOwn(en, 'chrome.helpHint'), 'en chrome.helpHint must be deleted').toBe(false);
     expect(Object.hasOwn(fr, 'chrome.helpHint'), 'fr chrome.helpHint must be deleted').toBe(false);
+  });
+});
+
+// =============================================================================
+// ctl-8a: the French values of the 11 keys ctl-8a adds (the shop tabs, quantity and confirm
+// prompts and description mark, the shared Yes / No, the heal question and its disabled reason),
+// pinned exactly as the English ones are in EXPECTED_PLAIN / EXPECTED_PARAM_OUTPUTS above. Each
+// French closure is fed the same two sample sets as its English one.
+// =============================================================================
+
+/** U+00E0 (a grave) and U+2019 (right single quotation mark), built by code point. */
+const A_GRAVE = String.fromCharCode(0x00e0);
+const RIGHT_QUOTE = String.fromCharCode(0x2019);
+
+const EXPECTED_FR_CTL8A_PLAIN: Record<string, string> = {
+  'shop.tab.buy': 'Acheter',
+  'shop.tab.sell': 'Vendre',
+  'shop.description.none': EM_DASH,
+  'prompt.yes': 'Oui',
+  'prompt.no': 'Non',
+  'heal.prompt.unavailable': `Aucun soigneur ${A_GRAVE} port${E_ACUTE}e. Soin indisponible.`,
+};
+
+/** The French output for sample A, then sample B, of each new parameterised key. */
+const EXPECTED_FR_CTL8A_PARAMS: Record<string, readonly [string, string]> = {
+  'shop.qty.buy': [
+    `Combien de Herb acheter ? ${TIMES_SIGN}2`,
+    `Combien de Tonic acheter ? ${TIMES_SIGN}99`,
+  ],
+  'shop.qty.sell': [
+    `Combien de Berry vendre ? ${TIMES_SIGN}3`,
+    `Combien de Relic vendre ? ${TIMES_SIGN}1`,
+  ],
+  'shop.confirm.buy': [
+    'Acheter 2 Bait pour 40 or ?',
+    'Acheter 3 Relic pour 27021597764222979 or ?',
+  ],
+  'shop.confirm.sell': ['Vendre 3 Berry pour 30 or ?', 'Vendre 1 Tonic pour 9007199254740993 or ?'],
+  'heal.prompt.question': [
+    `Soigner l${RIGHT_QUOTE}${E_ACUTE}quipe pour 25 gold ?`,
+    `Soigner l${RIGHT_QUOTE}${E_ACUTE}quipe pour 2x Herb + 40 gold ?`,
+  ],
+};
+
+describe('ctl-8a: catalog.fr.ts, the keys ctl-8a adds', () => {
+  it('ctl-8a FR-PINS: the 6 new plain keys and the 5 new parameterised keys carry their exact French text in catalog.fr.ts, each French closure fed both English sample sets', () => {
+    // WRONG IMPL KILLED (measured shapes): a key added to en only (t() throws in a French boot);
+    // a French entry left as the English copy or reworded; a closure that drops or swaps a param;
+    // a gold or quantity run through a locale formatter or a Number; a straight apostrophe (not
+    // U+2019) or a decomposed e acute (not U+00E9) in the heal question's elided article; and a
+    // question mark glued to its word or set off by a no-break space where the catalog table has a
+    // plain space.
+    for (const [key, expected] of Object.entries(EXPECTED_FR_CTL8A_PLAIN)) {
+      expect(typeof EXPECTED_PLAIN[key], `fixture: ${key} has an English pin`).toBe('string');
+      const fr = (CATALOG_FR as Record<string, unknown>)[key];
+      expect(typeof fr, `${key} must be a plain string in the fr catalog`).toBe('string');
+      expect(fr, `${key}: the exact French text`).toBe(expected);
+    }
+    for (const [key, [outputA, outputB]] of Object.entries(EXPECTED_FR_CTL8A_PARAMS)) {
+      const spec = EXPECTED_PARAM_OUTPUTS[key];
+      expect(spec, `fixture: ${key} has English output pins`).toBeDefined();
+      const fr = (CATALOG_FR as Record<string, unknown>)[key];
+      expect(typeof fr, `${key} must be a closure in the fr catalog`).toBe('function');
+      const fn = fr as (p: Record<string, unknown>) => string;
+      expect(fn((spec as ParamOutputSpec).inputA), `${key}(sample A) in French`).toBe(outputA);
+      expect(fn((spec as ParamOutputSpec).inputB), `${key}(sample B) in French`).toBe(outputB);
+    }
+    expect(
+      Object.keys(EXPECTED_FR_CTL8A_PLAIN).length + Object.keys(EXPECTED_FR_CTL8A_PARAMS).length,
+      'ANTI-VACUITY: all 11 ctl-8a keys are pinned in French',
+    ).toBe(11);
   });
 });

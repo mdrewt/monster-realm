@@ -73,6 +73,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from './a11yCopy';
 import { formatHealCostLine, type HealLocationViewModel, type HealViewModel } from './healModel';
 import { HealView } from './healView';
+import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
@@ -465,5 +466,154 @@ describe('HealView render(): existing paint behaviour (pinned, not changed by m2
     view.hide();
     expect(view.visible).toBe(false);
     expect(root.style.display).toBe('none');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ctl-8a (CTL8A.3): the heal question, Yes / No and the disabled reason.
+//
+// The constructor locate-or-creates `#heal-question`, `#heal-reason` and `#heal-options` inside
+// `#heal-overlay`, after and OUTSIDE `#heal-list` (HL-01 / HL-02 pin that list to its rows).
+// `paint({ active, cost })` is kept and applied: with a cost the question reads
+// `tf('heal.prompt.question', { cost })` and the reason is empty and hidden; with a null cost the
+// question is empty and hidden and the reason reads `t('heal.prompt.unavailable')`. The options
+// are `#heal-root-yes` / `#heal-root-no` (`role="option"`, `t('prompt.yes')` / `t('prompt.no')`),
+// the cursor one `is-active` + `aria-selected="true"`, Yes `aria-disabled="true"` with no cost; the
+// options are labelled by the question, or by the reason when there is no cost. On the
+// hidden→visible edge the kept paint resets to Yes with the legacy vm's first location's cost.
+// Expected text is resolved through the real catalog, never retyped.
+// ---------------------------------------------------------------------------
+
+const ctl8aHealEl = (id: string): HTMLElement => {
+  const el = document.getElementById(id);
+  if (el === null) throw new Error(`#${id} is missing`);
+  return el;
+};
+
+describe('HealView — the question and Yes / No (ctl-8a, CTL8A.3)', () => {
+  it('CTL8A-3-VIEW-QUESTION: the constructor creates #heal-question, #heal-reason and #heal-options inside #heal-overlay, after and outside #heal-list, once however often it runs; the open asks the catalogued question with the location`s cost, Yes and No as options with the cursor on Yes, labelled by the question; a paint moves the cursor and survives a legacy render; a reopen is back on Yes; #heal-list keeps its rows', () => {
+    // WRONG IMPL KILLED: the question or the options written into #heal-list (HL-01/HL-02 walk
+    // its rows: foreign text there breaks them); the elements duplicated by a second view; a
+    // question from a retyped literal or with another location's cost; an open on No; a cursor
+    // marked without aria-selected; options with no label; a paint lost on the next batch render;
+    // and a cursor kept across a close (a reopened healer would offer No first).
+    const root = mountHealOverlay();
+    const list = ctl8aHealEl('heal-list');
+    new HealView();
+    const view = new HealView();
+    for (const id of ['heal-question', 'heal-reason', 'heal-options']) {
+      expect(document.querySelectorAll(`#${id}`), `one #${id}`).toHaveLength(1);
+      const el = ctl8aHealEl(id);
+      expect(root.contains(el), `#${id} is inside #heal-overlay`).toBe(true);
+      expect(list.contains(el), `#${id} is outside #heal-list`).toBe(false);
+      expect(
+        list.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING,
+        `#${id} comes after #heal-list`,
+      ).not.toBe(0);
+    }
+
+    const loc = healLocation({
+      locationId: 7,
+      isFree: false,
+      costItemName: 'Herb',
+      costQty: 2,
+      costCurrency: 25n,
+    });
+    const cost = formatHealCostLine(loc);
+    view.render(healVm([loc]));
+
+    const question = ctl8aHealEl('heal-question');
+    const reason = ctl8aHealEl('heal-reason');
+    const options = ctl8aHealEl('heal-options');
+    expect(question.textContent, 'the catalogued question').toBe(
+      i18nTf('heal.prompt.question', { cost }),
+    );
+    expect(question.textContent, 'naming the cost').toContain(cost);
+    expect(question.hidden).toBe(false);
+    expect(reason.hidden, 'no reason with a cost').toBe(true);
+    expect(reason.textContent).toBe('');
+    expect(options.getAttribute('aria-labelledby'), 'the options are labelled by it').toBe(
+      'heal-question',
+    );
+
+    const yes = ctl8aHealEl('heal-root-yes');
+    const no = ctl8aHealEl('heal-root-no');
+    for (const [el, text] of [
+      [yes, i18nT('prompt.yes')],
+      [no, i18nT('prompt.no')],
+    ] as const) {
+      expect(options.contains(el), `#${el.id} is an option of #heal-options`).toBe(true);
+      expect(el.getAttribute('role')).toBe('option');
+      expect(el.textContent).toBe(text);
+    }
+    expect(yes.classList.contains('is-active'), 'the open is on Yes').toBe(true);
+    expect(yes.getAttribute('aria-selected')).toBe('true');
+    expect(yes.getAttribute('aria-disabled'), 'Yes is enabled with a cost').toBeNull();
+    expect(no.classList.contains('is-active')).toBe(false);
+    expect(no.getAttribute('aria-selected')).toBe('false');
+
+    const rows = list.querySelectorAll('li');
+    expect(rows, '#heal-list keeps its one row').toHaveLength(1);
+    expect(rows[0]?.textContent).toBe(`Heal here (${cost})`);
+
+    view.paint({ active: 'no', cost });
+    expect(ctl8aHealEl('heal-root-no').classList.contains('is-active'), 'painted on No').toBe(true);
+    expect(ctl8aHealEl('heal-root-no').getAttribute('aria-selected')).toBe('true');
+    expect(ctl8aHealEl('heal-root-yes').classList.contains('is-active')).toBe(false);
+    view.render(healVm([loc]));
+    expect(ctl8aHealEl('heal-root-no').classList.contains('is-active'), 'kept by a render').toBe(
+      true,
+    );
+
+    view.hide();
+    view.render(healVm([loc]));
+    expect(ctl8aHealEl('heal-root-yes').classList.contains('is-active'), 'reopened on Yes').toBe(
+      true,
+    );
+    expect(ctl8aHealEl('heal-root-no').classList.contains('is-active')).toBe(false);
+    expect(ctl8aHealEl('heal-question').textContent).toBe(i18nTf('heal.prompt.question', { cost }));
+  });
+
+  it('CTL8A-3-VIEW-DISABLED-REASON: opened with no location the question is empty and hidden, the catalogued reason shows, Yes is aria-disabled and the options are labelled by the reason; painting a cost and then null swaps question and reason both ways', () => {
+    // WRONG IMPL KILLED: a disabled Heal with no reason (CTL8A.3: "disabled with a reason"); a
+    // question left showing with no cost ("Heal party for null?"); a Yes that does not say it is
+    // disabled; options labelled by a hidden question; a reason from a retyped literal; and a
+    // reason or a disabled mark that lingers once a cost arrives.
+    mountHealOverlay();
+    const view = new HealView();
+    view.render(healVm([]));
+
+    const question = ctl8aHealEl('heal-question');
+    const reason = ctl8aHealEl('heal-reason');
+    const options = ctl8aHealEl('heal-options');
+    expect(question.hidden, 'no question without a cost').toBe(true);
+    expect(question.textContent).toBe('');
+    expect(reason.hidden).toBe(false);
+    expect(reason.textContent, 'the catalogued reason').toBe(i18nT('heal.prompt.unavailable'));
+    expect(ctl8aHealEl('heal-root-yes').getAttribute('aria-disabled'), 'Yes is disabled').toBe(
+      'true',
+    );
+    expect(ctl8aHealEl('heal-root-yes').classList.contains('is-active'), 'still the cursor').toBe(
+      true,
+    );
+    expect(options.getAttribute('aria-labelledby'), 'labelled by the reason').toBe('heal-reason');
+    expect(ctl8aHealEl('heal-list').querySelectorAll('li'), 'no rows').toHaveLength(0);
+
+    view.paint({ active: 'yes', cost: 'Free' });
+    expect(question.hidden).toBe(false);
+    expect(question.textContent).toBe(i18nTf('heal.prompt.question', { cost: 'Free' }));
+    expect(reason.hidden).toBe(true);
+    expect(reason.textContent).toBe('');
+    expect(ctl8aHealEl('heal-root-yes').getAttribute('aria-disabled')).toBeNull();
+    expect(options.getAttribute('aria-labelledby')).toBe('heal-question');
+
+    view.paint({ active: 'no', cost: null });
+    expect(question.hidden).toBe(true);
+    expect(question.textContent).toBe('');
+    expect(reason.hidden).toBe(false);
+    expect(reason.textContent).toBe(i18nT('heal.prompt.unavailable'));
+    expect(ctl8aHealEl('heal-root-yes').getAttribute('aria-disabled')).toBe('true');
+    expect(ctl8aHealEl('heal-root-no').classList.contains('is-active')).toBe(true);
+    expect(options.getAttribute('aria-labelledby')).toBe('heal-reason');
   });
 });

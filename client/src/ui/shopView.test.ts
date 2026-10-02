@@ -77,8 +77,8 @@ import { scanSource } from './i18n/hardcodedStrings';
 import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
-import type { ShopScreenViewModel } from './shopModel';
-import type { ShopCallbacks } from './shopView';
+import { type ShopScreenViewModel, type ShopViewModel, shopBuyKey, shopSellKey } from './shopModel';
+import type { ShopCallbacks, ShopPaint } from './shopView';
 import { ShopView } from './shopView';
 
 // The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
@@ -238,8 +238,17 @@ describe('ShopView [ux2-V-a]: #shop-balance is created inside #shop-overlay and 
     expect(title).not.toBeNull();
     expect(balance).not.toBeNull();
 
-    const kids = [...overlay.children];
-    expect(kids.indexOf(balance as Element)).toBeGreaterThan(kids.indexOf(title as Element));
+    // INTENTIONAL CHANGE (ctl-8a, CTL8A.2 "the balance in the title"): #shop-title and
+    // #shop-balance now sit together inside ONE .mr-frame-titlebar, so neither is a child of the
+    // overlay and an index over `overlay.children` cannot see them. Was:
+    // `kids.indexOf(balance) > kids.indexOf(title)` over `overlay.children`. The same order is
+    // asserted by document position: the balance FOLLOWS the title, and is not inside it (render()
+    // rewrites the title's text, which would wipe a balance nested in it).
+    const position = (title as Element).compareDocumentPosition(balance as Element);
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING, 'the balance follows the title').not.toBe(
+      0,
+    );
+    expect(position & Node.DOCUMENT_POSITION_CONTAINED_BY, 'and is not inside the title').toBe(0);
 
     removeOverlay(overlay);
   });
@@ -1010,5 +1019,391 @@ describe('m24s4 (ADR-0260): shopView.ts scan — zero failing sinks', () => {
     for (const sink of result.sinks) {
       expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
     }
+  });
+});
+
+// =============================================================================
+// ctl-8a (CTL8A.2): the title bar, the Buy | Sell tabs, the description slot and the prompt.
+//
+// The constructor locate-or-creates (no strings): ONE `div.mr-frame-titlebar` holding #shop-title
+// then #shop-balance; #shop-tabs after it; #shop-description and #shop-prompt (holding
+// #shop-prompt-text and #shop-confirm) after #shop-inventory and before #shop-feedback.
+// `render(vm)` still builds BOTH lists (every keyed row an `li[data-nav-key].mr-nav-item`, keyed
+// by shopModel's shopBuyKey / shopSellKey), then applies the kept paint on every path.
+// `paint(p: ShopPaint)` is kept and applied: the tabs through renderTabs (#shop-tab-buy /
+// #shop-tab-sell), the inactive list only `hidden`, the cursor row `is-active` +
+// `aria-current="true"`, the description slot, and the quantity / confirm prompt (the confirm's
+// Yes / No as #shopConfirm-root-yes / #shopConfirm-root-no). The kept paint resets to the opening
+// one (Buy, the first Buy row, no description, no prompt) on a render while hidden and on show()'s
+// hidden→visible edge. Expected text comes from the real catalog (i18nT / i18nTf call through).
+// =============================================================================
+
+const CTL8A_SHOP: ShopViewModel = {
+  kind: 'shop',
+  shopId: 3,
+  shopName: 'Wayside Stall',
+  forSale: [
+    { shopItemId: 31n, itemId: 7, name: 'Charm', buyPrice: 17n },
+    { shopItemId: 32n, itemId: 10, name: 'Lantern', buyPrice: 40n },
+  ],
+  forSaleByPlayer: [
+    { invId: 101n, itemId: 7, name: 'Charm', count: 5, sellPrice: 9n, canSell: true },
+    { invId: 102n, itemId: 9, name: 'Talisman', count: 1, sellPrice: 0n, canSell: false },
+  ],
+  balance: knownBalance(250n),
+};
+/** The row keys, through the helpers the adapter shares. Computed per case, never at module
+ *  load, so a missing helper reds these cases only and every older case in this file still runs. */
+const ctl8aBuyKeys = (): string[] => CTL8A_SHOP.forSale.map((item) => shopBuyKey(item));
+const ctl8aSellKeys = (): string[] => CTL8A_SHOP.forSaleByPlayer.map((item) => shopSellKey(item));
+
+const ctl8aShopEl = (id: string): HTMLElement => {
+  const el = document.getElementById(id);
+  if (el === null) throw new Error(`#${id} is missing`);
+  return el;
+};
+
+/** A paint over the opening one (Buy, its first row, no description, no prompt). */
+const ctl8aPaint = (over: Partial<ShopPaint> = {}): ShopPaint => ({
+  tab: 'buy',
+  activeKey: ctl8aBuyKeys()[0] as string,
+  description: undefined,
+  prompt: null,
+  ...over,
+});
+
+/** Every row in either list carrying a cursor mark, as `[listId, data-nav-key]`. */
+function ctl8aMarkedRows(): Array<readonly [string, string | undefined]> {
+  const out: Array<readonly [string, string | undefined]> = [];
+  for (const listId of ['shop-for-sale', 'shop-inventory']) {
+    for (const li of Array.from(ctl8aShopEl(listId).querySelectorAll('li'))) {
+      if (li.classList.contains('is-active') || li.getAttribute('aria-current') === 'true') {
+        out.push([listId, li.dataset.navKey]);
+      }
+    }
+  }
+  return out;
+}
+
+/** Exactly one row, `key` in `listId`, is the cursor, with both halves of the mark. */
+function ctl8aExpectRow(listId: string, key: string | undefined): void {
+  expect(ctl8aMarkedRows(), 'exactly one row is the cursor').toEqual([[listId, key]]);
+  const li = Array.from(ctl8aShopEl(listId).querySelectorAll('li')).find(
+    (row) => row.dataset.navKey === key,
+  );
+  expect(li?.classList.contains('is-active'), `${key}: is-active`).toBe(true);
+  expect(li?.getAttribute('aria-current'), `${key}: aria-current`).toBe('true');
+}
+
+/** `tab` is the active, selected tab and its list the shown one; the other list is only hidden. */
+function ctl8aExpectTab(tab: 'buy' | 'sell'): void {
+  const buy = ctl8aShopEl('shop-tab-buy');
+  const sell = ctl8aShopEl('shop-tab-sell');
+  expect(buy.classList.contains('is-active'), 'Buy tab is-active').toBe(tab === 'buy');
+  expect(buy.getAttribute('aria-selected'), 'Buy tab aria-selected').toBe(String(tab === 'buy'));
+  expect(sell.classList.contains('is-active'), 'Sell tab is-active').toBe(tab === 'sell');
+  expect(sell.getAttribute('aria-selected'), 'Sell tab aria-selected').toBe(String(tab === 'sell'));
+  expect(ctl8aShopEl('shop-for-sale').hidden, 'the Buy list is hidden iff Sell').toBe(
+    tab !== 'buy',
+  );
+  expect(ctl8aShopEl('shop-inventory').hidden, 'the Sell list is hidden iff Buy').toBe(
+    tab !== 'sell',
+  );
+}
+
+/** a precedes b in document order and neither contains the other. */
+function ctl8aExpectBefore(a: Element, b: Element, label: string): void {
+  const position = a.compareDocumentPosition(b);
+  expect(position & Node.DOCUMENT_POSITION_FOLLOWING, `${label}: order`).not.toBe(0);
+  expect(position & Node.DOCUMENT_POSITION_CONTAINED_BY, `${label}: not nested`).toBe(0);
+  expect(position & Node.DOCUMENT_POSITION_CONTAINS, `${label}: not nested`).toBe(0);
+}
+
+describe('ShopView — the Buy | Sell frame (ctl-8a, CTL8A.2)', () => {
+  it('CTL8A-2-VIEW-TITLE-BALANCE: the constructor puts #shop-title then #shop-balance in ONE div.mr-frame-titlebar with the #shop-tabs strip after it; a second construction duplicates nothing it creates; the balance keeps its known / unknown semantics inside the title bar', () => {
+    // WRONG IMPL KILLED: the balance left outside the title (CTL8A.2: "with the balance in the
+    // title"); a title bar per construction, or a created element duplicated by the second view
+    // (two #shop-prompt nodes: the paint writes one, the player sees the other); the title cloned
+    // into the bar (render would write the detached original); the tab strip above the title or
+    // inside a list; and a balance that loses its hidden / data-balance-state rules once moved.
+    const overlay = mountShopOverlay();
+    new ShopView(makeCallbacks());
+    const view = new ShopView(makeCallbacks());
+
+    const bars = overlay.querySelectorAll('.mr-frame-titlebar');
+    expect(bars, 'ONE title bar').toHaveLength(1);
+    const bar = bars[0] as HTMLElement;
+    expect(bar.tagName).toBe('DIV');
+    const title = ctl8aShopEl('shop-title');
+    const balance = ctl8aShopEl('shop-balance');
+    expect(title.parentElement, 'the title is in the bar').toBe(bar);
+    expect(balance.parentElement, 'the balance is in the bar').toBe(bar);
+    ctl8aExpectBefore(title, balance, 'the title, then the balance');
+    for (const id of [
+      'shop-title',
+      'shop-balance',
+      'shop-tabs',
+      'shop-description',
+      'shop-prompt',
+      'shop-prompt-text',
+      'shop-confirm',
+    ]) {
+      expect(document.querySelectorAll(`#${id}`), `one #${id}`).toHaveLength(1);
+      expect(overlay.contains(ctl8aShopEl(id)), `#${id} is inside the overlay`).toBe(true);
+    }
+    const tabs = ctl8aShopEl('shop-tabs');
+    ctl8aExpectBefore(bar, tabs, 'the title bar, then the tabs');
+    ctl8aExpectBefore(tabs, ctl8aShopEl('shop-for-sale'), 'the tabs, then the lists');
+
+    view.show();
+    view.render(CTL8A_SHOP);
+    expect(balance.textContent).toBe('Gold: 250');
+    expect(balance.hidden).toBe(false);
+    expect(balance.dataset.balanceState).toBe('known');
+    view.render({ ...CTL8A_SHOP, balance: { kind: 'unknown' } });
+    expect(balance.textContent).toBe('');
+    expect(balance.hidden).toBe(true);
+    expect(balance.dataset.balanceState).toBe('unknown');
+    expect(title.textContent, 'the title still shows the shop name').toBe('Wayside Stall');
+
+    removeOverlay(overlay);
+  });
+
+  it('CTL8A-2-VIEW-TABS: an open renders the Buy tab: #shop-tab-buy and #shop-tab-sell are role="tab" with the catalogued labels, Buy active and selected, the Buy list shown and the Sell list hidden, the cursor on the first Buy row; a Sell paint flips all of it and marks only the Sell row; a legacy render keeps the painted tab and row', () => {
+    // WRONG IMPL KILLED: tabs with retyped labels; a tab marked by class alone (no aria-selected)
+    // or both tabs active; a list switched off by removing its rows; an opening cursor on no row
+    // or on a Sell row; two rows marked at once (one per list); a row mark without aria-current;
+    // and a store batch's render that snaps back to Buy under a player browsing Sell.
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.render(CTL8A_SHOP);
+    view.show();
+
+    const strip = ctl8aShopEl('shop-tabs');
+    for (const [id, text] of [
+      ['shop-tab-buy', i18nT('shop.tab.buy')],
+      ['shop-tab-sell', i18nT('shop.tab.sell')],
+    ] as const) {
+      const tab = ctl8aShopEl(id);
+      expect(strip.contains(tab), `#${id} is in the strip`).toBe(true);
+      expect(tab.getAttribute('role'), `#${id} role`).toBe('tab');
+      expect(tab.textContent, `#${id} label`).toBe(text);
+    }
+    ctl8aExpectTab('buy');
+    ctl8aExpectRow('shop-for-sale', ctl8aBuyKeys()[0]);
+
+    view.paint(ctl8aPaint({ tab: 'sell', activeKey: ctl8aSellKeys()[1] as string }));
+    ctl8aExpectTab('sell');
+    ctl8aExpectRow('shop-inventory', ctl8aSellKeys()[1]);
+
+    view.render(CTL8A_SHOP);
+    ctl8aExpectTab('sell');
+    ctl8aExpectRow('shop-inventory', ctl8aSellKeys()[1]);
+
+    view.paint(ctl8aPaint({ activeKey: ctl8aBuyKeys()[1] as string }));
+    ctl8aExpectTab('buy');
+    ctl8aExpectRow('shop-for-sale', ctl8aBuyKeys()[1]);
+
+    removeOverlay(overlay);
+  });
+
+  it('CTL8A-2-VIEW-BOTH-LISTS-STAY: whichever tab is shown both lists keep every row (li[data-nav-key].mr-nav-item keyed by shopBuyKey / shopSellKey, the unsellable row included) and their Buy / Sell buttons; the inactive list is only hidden, and its buttons still click through', async () => {
+    // WRONG IMPL KILLED: a tab that builds only the active list (main.feedback*.test.ts click
+    // #shop-inventory buttons after a bare batch, with the shop on Buy); a hidden list emptied or
+    // detached; rows keyed by position or by another id than the shared helpers (a paint's
+    // activeKey would mark nothing); an unsellable row left unkeyed (the cursor can rest on it);
+    // and a hidden list whose buttons stop calling back.
+    const overlay = mountShopOverlay();
+    const cbs = makeCallbacks();
+    const view = new ShopView(cbs);
+    view.render(CTL8A_SHOP);
+    view.show();
+
+    const expectBothLists = (when: string): void => {
+      const buyRows = Array.from(ctl8aShopEl('shop-for-sale').querySelectorAll('li'));
+      const sellRows = Array.from(ctl8aShopEl('shop-inventory').querySelectorAll('li'));
+      expect(
+        buyRows.map((li) => li.dataset.navKey),
+        `${when}: the Buy rows`,
+      ).toEqual(ctl8aBuyKeys());
+      expect(
+        sellRows.map((li) => li.dataset.navKey),
+        `${when}: the Sell rows`,
+      ).toEqual(ctl8aSellKeys());
+      expect(
+        [...buyRows, ...sellRows].every((li) => li.classList.contains('mr-nav-item')),
+        `${when}: every row is a nav item`,
+      ).toBe(true);
+      expect(
+        ctl8aShopEl('shop-for-sale').querySelectorAll('button[data-item-id]'),
+        `${when}: both Buy buttons`,
+      ).toHaveLength(2);
+      expect(
+        ctl8aShopEl('shop-inventory').querySelectorAll('button[data-item-id]'),
+        `${when}: the one Sell button (the Talisman has none)`,
+      ).toHaveLength(1);
+    };
+
+    expectBothLists('on Buy');
+    const sellButton = ctl8aShopEl('shop-inventory').querySelector('button') as HTMLButtonElement;
+    expect(ctl8aShopEl('shop-inventory').hidden, 'fixture: the Sell list is hidden').toBe(true);
+    sellButton.click();
+    expect(cbs.onSell, 'a hidden Sell button still sells').toHaveBeenCalledWith(7);
+    await flushMacrotask();
+
+    view.paint(ctl8aPaint({ tab: 'sell', activeKey: ctl8aSellKeys()[0] as string }));
+    expectBothLists('on Sell');
+    view.render(CTL8A_SHOP);
+    expectBothLists('on Sell, after a batch render');
+    const buyButton = ctl8aShopEl('shop-for-sale').querySelector('button') as HTMLButtonElement;
+    expect(ctl8aShopEl('shop-for-sale').hidden, 'fixture: the Buy list is hidden').toBe(true);
+    buyButton.click();
+    expect(cbs.onBuy, 'a hidden Buy button still buys').toHaveBeenCalledWith(3, 7);
+
+    removeOverlay(overlay);
+  });
+
+  it('CTL8A-2-VIEW-DESCRIPTION-SLOT: #shop-description sits after #shop-inventory and before #shop-feedback; it is empty for undefined, the catalogued "none" mark for null and the text itself otherwise, and a legacy render keeps it', () => {
+    // WRONG IMPL KILLED: a slot that prints "null" or "undefined"; a retyped dash instead of the
+    // catalog id (fr has its own entry); an empty slot for null (indistinguishable from "press
+    // Y"); a slot that keeps the last text after the paint clears it; and a batch render that
+    // wipes it.
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.render(CTL8A_SHOP);
+    view.show();
+    const slot = ctl8aShopEl('shop-description');
+    ctl8aExpectBefore(ctl8aShopEl('shop-inventory'), slot, 'the Sell list, then the slot');
+    ctl8aExpectBefore(slot, ctl8aShopEl('shop-feedback'), 'the slot, then the feedback line');
+    expect(slot.textContent, 'empty at the open').toBe('');
+
+    view.paint(ctl8aPaint({ description: null }));
+    expect(slot.textContent, 'the none mark').toBe(i18nT('shop.description.none'));
+    view.paint(ctl8aPaint({ description: 'A lucky charm.' }));
+    expect(slot.textContent).toBe('A lucky charm.');
+    view.render(CTL8A_SHOP);
+    expect(slot.textContent, 'kept by a batch render').toBe('A lucky charm.');
+    view.paint(ctl8aPaint({ description: undefined }));
+    expect(slot.textContent, 'cleared').toBe('');
+
+    removeOverlay(overlay);
+  });
+
+  it('CTL8A-2-VIEW-PROMPT: #shop-prompt (holding #shop-prompt-text and #shop-confirm) sits after #shop-inventory and before #shop-feedback and is hidden with no prompt; a quantity prompt shows the catalogued Buy or Sell question and no confirm; a confirm shows the catalogued question with the total and Yes / No options with the cursor on the painted answer', () => {
+    // WRONG IMPL KILLED: a prompt left visible after it closes; a quantity row that shows Yes/No;
+    // the Buy wording on a Sell; a confirm without the gold (the player confirms a price they
+    // never saw); Yes/No with retyped labels or no cursor mark; a confirm cursor that ignores
+    // `yes`; and a prompt dropped by the next batch render.
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.render(CTL8A_SHOP);
+    view.show();
+    const prompt = ctl8aShopEl('shop-prompt');
+    const text = ctl8aShopEl('shop-prompt-text');
+    const confirm = ctl8aShopEl('shop-confirm');
+    expect(prompt.contains(text), '#shop-prompt-text is in the prompt').toBe(true);
+    expect(prompt.contains(confirm), '#shop-confirm is in the prompt').toBe(true);
+    ctl8aExpectBefore(ctl8aShopEl('shop-inventory'), prompt, 'the Sell list, then the prompt');
+    ctl8aExpectBefore(prompt, ctl8aShopEl('shop-feedback'), 'the prompt, then the feedback line');
+    expect(prompt.hidden, 'no prompt at the open').toBe(true);
+
+    view.paint(ctl8aPaint({ prompt: { kind: 'qty', tab: 'buy', name: 'Charm', qty: 3 } }));
+    expect(prompt.hidden).toBe(false);
+    expect(text.textContent).toBe(i18nTf('shop.qty.buy', { name: 'Charm', qty: 3 }));
+    expect(confirm.hidden, 'no Yes / No on the quantity row').toBe(true);
+    view.paint(ctl8aPaint({ prompt: { kind: 'qty', tab: 'sell', name: 'Charm', qty: 2 } }));
+    expect(text.textContent, 'the Sell wording').toBe(
+      i18nTf('shop.qty.sell', { name: 'Charm', qty: 2 }),
+    );
+
+    const buyConfirm: ShopPaint['prompt'] = {
+      kind: 'confirm',
+      tab: 'buy',
+      name: 'Charm',
+      qty: 3,
+      gold: 51n,
+      yes: true,
+    };
+    view.paint(ctl8aPaint({ prompt: buyConfirm }));
+    expect(prompt.hidden).toBe(false);
+    expect(text.textContent).toBe(i18nTf('shop.confirm.buy', { qty: 3, name: 'Charm', gold: 51n }));
+    expect(confirm.hidden, 'Yes / No are shown').toBe(false);
+    const yes = ctl8aShopEl('shopConfirm-root-yes');
+    const no = ctl8aShopEl('shopConfirm-root-no');
+    expect(confirm.contains(yes) && confirm.contains(no), 'both options in #shop-confirm').toBe(
+      true,
+    );
+    expect(yes.textContent).toBe(i18nT('prompt.yes'));
+    expect(no.textContent).toBe(i18nT('prompt.no'));
+    expect(yes.classList.contains('is-active'), 'the cursor on Yes').toBe(true);
+    expect(yes.getAttribute('aria-selected')).toBe('true');
+    expect(no.classList.contains('is-active')).toBe(false);
+    expect(no.getAttribute('aria-selected')).toBe('false');
+
+    view.render(CTL8A_SHOP);
+    expect(prompt.hidden, 'kept by a batch render').toBe(false);
+    expect(text.textContent).toBe(i18nTf('shop.confirm.buy', { qty: 3, name: 'Charm', gold: 51n }));
+
+    view.paint(
+      ctl8aPaint({
+        tab: 'sell',
+        activeKey: ctl8aSellKeys()[0] as string,
+        prompt: { kind: 'confirm', tab: 'sell', name: 'Charm', qty: 2, gold: 18n, yes: false },
+      }),
+    );
+    expect(text.textContent, 'the Sell confirm').toBe(
+      i18nTf('shop.confirm.sell', { qty: 2, name: 'Charm', gold: 18n }),
+    );
+    expect(ctl8aShopEl('shopConfirm-root-no').classList.contains('is-active'), 'on No').toBe(true);
+    expect(ctl8aShopEl('shopConfirm-root-no').getAttribute('aria-selected')).toBe('true');
+    expect(ctl8aShopEl('shopConfirm-root-yes').classList.contains('is-active')).toBe(false);
+
+    view.paint(ctl8aPaint());
+    expect(prompt.hidden, 'the prompt closes').toBe(true);
+
+    removeOverlay(overlay);
+  });
+
+  it('CTL8A-2-VIEW-REOPEN-RESET: before any paint an open already shows Buy on its first row; a shop closed mid-confirm on Sell and reopened (render(vm) while hidden, then show(), as openPendingShop does) shows the Buy tab, its first row, no prompt and no description; a reopen by show() alone resets the same way', () => {
+    // WRONG IMPL KILLED: a kept paint that survives a close (the reopened shop sits on Sell under
+    // a stale confirm whose Yes the next A would send); a reset on show() only (openPendingShop
+    // renders BEFORE show, so the first frame flashes the old confirm); a reset on a hidden render
+    // only (a reopen with no batch keeps it); and a reset that is not re-applied (the classes and
+    // the prompt stay as they were).
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    const expectOpening = (when: string): void => {
+      ctl8aExpectTab('buy');
+      ctl8aExpectRow('shop-for-sale', ctl8aBuyKeys()[0]);
+      expect(ctl8aShopEl('shop-prompt').hidden, `${when}: no prompt`).toBe(true);
+      expect(ctl8aShopEl('shop-description').textContent, `${when}: no description`).toBe('');
+    };
+    const closeMidConfirmOnSell = (): void => {
+      view.paint({
+        tab: 'sell',
+        activeKey: ctl8aSellKeys()[0] as string,
+        description: 'A lucky charm.',
+        prompt: { kind: 'confirm', tab: 'sell', name: 'Charm', qty: 2, gold: 18n, yes: true },
+      });
+      ctl8aExpectTab('sell');
+      expect(ctl8aShopEl('shop-prompt').hidden, 'fixture: the confirm is open').toBe(false);
+      view.hide();
+    };
+
+    view.render(CTL8A_SHOP);
+    view.show();
+    expectOpening('the first open');
+
+    closeMidConfirmOnSell();
+    view.render(CTL8A_SHOP);
+    expectOpening('rendered while hidden');
+    view.show();
+    expectOpening('reopened by render then show');
+
+    closeMidConfirmOnSell();
+    view.show();
+    expectOpening('reopened by show alone');
+
+    removeOverlay(overlay);
   });
 });
