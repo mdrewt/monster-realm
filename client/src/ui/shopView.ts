@@ -125,7 +125,7 @@ export class ShopView {
   // In-flight lock: prevents double-spend when a reducer Promise is pending.
   #pending = false;
   #paint: ShopPaint = OPENING;
-  /** The cursor row last scrolled into view, so a batch render does not scroll again. */
+  /** The cursor row last scrolled into view (`tab:key`), so a batch render does not scroll again. */
   #scrolledKey: string | null = null;
 
   constructor(cbs: ShopCallbacks) {
@@ -183,7 +183,10 @@ export class ShopView {
     }
     const after = (anchor: Element) => (el: HTMLElement) =>
       anchor.insertAdjacentElement('afterend', el);
-    this.#tabStrip = part('shop-tabs', 'div', after(bar));
+    this.#tabStrip = part('shop-tabs', 'div', (el) => {
+      el.className = 'mr-frame-tabstrip';
+      after(bar)(el);
+    });
     this.#description = part('shop-description', 'p', after(this.#inventoryList));
     this.#prompt = part('shop-prompt', 'div', after(this.#description));
     const prompt = this.#prompt;
@@ -206,6 +209,7 @@ export class ShopView {
     if (!wasVisible) {
       // A reopened shop starts over: the Buy tab, its first row, no prompt from the last visit.
       this.#paint = OPENING;
+      this.#scrolledKey = null;
       this.#apply();
       openOverlayA11y('shopView', this.#overlay);
     }
@@ -298,9 +302,9 @@ export class ShopView {
         li.classList.toggle('is-active', on);
         if (on) li.setAttribute('aria-current', 'true');
         else li.removeAttribute('aria-current');
-        if (on && this.#scrolledKey !== key) {
+        if (on && this.#scrolledKey !== `${p.tab}:${key}`) {
           if (typeof li.scrollIntoView === 'function') li.scrollIntoView({ block: 'nearest' });
-          this.#scrolledKey = key;
+          this.#scrolledKey = `${p.tab}:${key}`;
         }
       }
     }

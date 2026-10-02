@@ -18,7 +18,7 @@ import { DIALOGUE_TREES } from '../dialogueContent';
 import type { DialogueViewModel } from '../dialogueModel';
 import { buildDialogueViewModel } from '../dialogueModel';
 import type { DialoguePaint, DialogueView } from '../dialogueView';
-import { type ItemLayout, list, type NavState, navInit, navStep } from '../nav';
+import { type ItemLayout, list, type NavState, navInit, navReconcile, navStep } from '../nav';
 import type { ButtonStep, ScreenAdapter, ScreenContext, ScreenResult } from './types';
 
 /** How long a node's text reveal runs. The same length as the `mr-reveal` animation in
@@ -63,12 +63,19 @@ function layoutOf(dialogue: DialogueViewModel | null): ItemLayout {
 /** `state` if it belongs to the view model's node, else a fresh state for that node: the cursor
  *  on the first item and a reveal starting `now` (none under reduced motion or with no node). */
 function sync(vm: DialogueScreenVm, state: DialogueScreenState, now: number): DialogueScreenState {
-  if (state.nodeKey === vm.nodeKey) return state;
+  const layout = layoutOf(vm.dialogue);
+  if (state.nodeKey === vm.nodeKey) {
+    // The same node, but its items may have changed under it (an npc row replaced): re-seat.
+    const nav = navReconcile(layout, layout, state.nav);
+    return nav === state.nav ? state : { ...state, nav };
+  }
   return {
     nodeKey: vm.nodeKey,
     revealStart: vm.reduceMotion || vm.nodeKey === null ? null : now,
-    nav: navInit(layoutOf(vm.dialogue)),
-    sentAt: null,
+    nav: navInit(layout),
+    // Under reduced motion the new node has no reveal to gate A, so a node that follows an
+    // A-issued command keeps the resend guard from its arrival (a double tap must not land on it).
+    sentAt: vm.reduceMotion && state.sentAt !== null ? now : null,
   };
 }
 

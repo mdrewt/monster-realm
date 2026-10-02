@@ -40,16 +40,21 @@ export interface ShopScreenVm {
   readonly descriptions: ReadonlyMap<number, string>;
 }
 
+/** An open prompt's row facts as the player last saw them painted. `settle` refreshes them from
+ *  the live row, and a press that had to refresh them only paints: Yes never sends at a price or
+ *  for a name the player has not seen. */
+interface PromptRow {
+  readonly tab: ShopTab;
+  readonly itemId: number;
+  readonly name: string;
+  readonly unitPrice: bigint;
+  readonly qty: number;
+}
+
 export type ShopPhase =
   | { readonly kind: 'browse' }
-  | { readonly kind: 'qty'; readonly tab: ShopTab; readonly itemId: number; readonly qty: number }
-  | {
-      readonly kind: 'confirm';
-      readonly tab: ShopTab;
-      readonly itemId: number;
-      readonly qty: number;
-      readonly yes: boolean;
-    };
+  | ({ readonly kind: 'qty' } & PromptRow)
+  | ({ readonly kind: 'confirm'; readonly yes: boolean } & PromptRow);
 
 export interface ShopScreenState {
   /** The tab and the cursor row in each list (keys from `shopBuyKey` / `shopSellKey`). */
@@ -116,19 +121,27 @@ const rowFor = (vm: ShopScreenVm, tab: ShopTab, itemId: number): Row | undefined
 const clampQty = (n: number, row: Row): number => Math.min(Math.max(1, n), row.max);
 
 /** `state` settled against the view model's rows: the SAME object when nothing changed. A gone or
- *  null cursor is re-seated (on the first row); a prompt whose row is gone or disabled closes; a
- *  sell quantity above the stack drops to it. */
+ *  null cursor is re-seated (on the first row, its description cleared); a prompt whose row is
+ *  gone or disabled closes; a sell quantity above the stack drops to it; a prompt whose price or
+ *  name changed takes the live ones (so it is repainted before Yes can act on them). */
 function settle(vm: ShopScreenVm, state: ShopScreenState): ShopScreenState {
   const layout = layoutOf(vm);
   const nav = navReconcile(layout, layout, state.nav);
   let phase = state.phase;
   if (phase.kind !== 'browse') {
     const row = rowFor(vm, phase.tab, phase.itemId);
-    if (row === undefined) phase = BROWSE;
-    else if (phase.qty > row.max) phase = { ...phase, qty: row.max };
+    if (row === undefined) {
+      phase = BROWSE;
+    } else if (
+      phase.qty > row.max ||
+      phase.name !== row.name ||
+      phase.unitPrice !== row.unitPrice
+    ) {
+      phase = { ...phase, qty: clampQty(phase.qty, row), name: row.name, unitPrice: row.unitPrice };
+    }
   }
   if (nav === state.nav && phase === state.phase) return state;
-  return { nav, phase, info: state.info };
+  return { nav, phase, info: nav === state.nav && state.info };
 }
 
 /** A step that only moves the cursor: the description is cleared with it. */
@@ -199,7 +212,8 @@ export const shopScreen: ScreenAdapter<ShopScreenVm, ShopScreenState, ShopView> 
             if (btn.repeat) return done('consumed');
             const row = rowAt(vm, tab, state.nav.item);
             if (row === undefined || !row.enabled) return done('consumed');
-            return to({ ...state, phase: { kind: 'qty', tab, itemId: row.itemId, qty: 1 } });
+            const { itemId, name, unitPrice } = row;
+            return to({ ...state, phase: { kind: 'qty', tab, itemId, name, unitPrice, qty: 1 } });
           }
           case 'Y':
             if (btn.repeat || rowAt(vm, tab, state.nav.item) === undefined) return done('consumed');
@@ -210,8 +224,10 @@ export const shopScreen: ScreenAdapter<ShopScreenVm, ShopScreenState, ShopView> 
             return done('unhandled');
         }
       case 'qty': {
+        // `settle` closed the prompt if its row went away, so the row is there; the guard keeps
+        // the function total.
         const row = rowFor(vm, phase.tab, phase.itemId);
-        if (row === undefined) return to({ ...state, phase: BROWSE }); // settled away meanwhile
+        if (row === undefined) return to({ ...state, phase: BROWSE });
         switch (btn.button) {
           case 'Left':
           case 'Right': {
@@ -221,17 +237,9 @@ export const shopScreen: ScreenAdapter<ShopScreenVm, ShopScreenState, ShopView> 
               : to({ ...state, phase: { ...phase, qty } });
           }
           case 'A':
-            if (btn.repeat) return done('consumed');
-            return to({
-              ...state,
-              phase: {
-                kind: 'confirm',
-                tab: phase.tab,
-                itemId: phase.itemId,
-                qty: phase.qty,
-                yes: phase.tab === 'buy',
-              },
-            });
+            // A prompt `settle` just changed under the player only paints its new facts.
+            if (btn.repeat || phase !== kept.phase) return done('consumed');
+            return to({ ...state, phase: { ...phase, kind: 'confirm', yes: phase.tab === 'buy' } });
           case 'B':
             return btn.repeat ? done('consumed') : to({ ...state, phase: BROWSE });
           case 'Up':
@@ -256,7 +264,9 @@ export const shopScreen: ScreenAdapter<ShopScreenVm, ShopScreenState, ShopView> 
               : to({ ...state, phase: { ...phase, yes } });
           }
           case 'A': {
-            if (btn.repeat) return done('consumed');
+            // A prompt `settle` just changed under the player (a new price, name or quantity cap)
+            // only paints: Yes never sends what the player has not seen.
+            if (btn.repeat || phase !== kept.phase) return done('consumed');
             const back = { ...state, phase: BROWSE };
             if (!phase.yes || vm.shop.kind !== 'shop') return to(back);
             const { itemId, qty } = phase;
@@ -287,23 +297,21 @@ export const shopScreen: ScreenAdapter<ShopScreenVm, ShopScreenState, ShopView> 
   paint(view, vm, state): void {
     const tab = tabOf(state.nav);
     const cursor = rowAt(vm, tab, state.nav.item);
-    let prompt: ShopPaint['prompt'] = null;
     const { phase } = state;
+    let prompt: ShopPaint['prompt'] = null;
     if (phase.kind !== 'browse') {
-      const row = rowFor(vm, phase.tab, phase.itemId);
-      if (row !== undefined) {
-        prompt =
-          phase.kind === 'qty'
-            ? { kind: 'qty', tab: phase.tab, name: row.name, qty: phase.qty }
-            : {
-                kind: 'confirm',
-                tab: phase.tab,
-                name: row.name,
-                qty: phase.qty,
-                gold: row.unitPrice * BigInt(phase.qty),
-                yes: phase.yes,
-              };
-      }
+      const { tab: promptTab, name, qty } = phase;
+      prompt =
+        phase.kind === 'qty'
+          ? { kind: 'qty', tab: promptTab, name, qty }
+          : {
+              kind: 'confirm',
+              tab: promptTab,
+              name,
+              qty,
+              gold: phase.unitPrice * BigInt(qty),
+              yes: phase.yes,
+            };
     }
     view.paint({
       tab,
