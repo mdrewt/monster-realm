@@ -3431,6 +3431,34 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
     paintSheet('summary', false, false);
     expectDisabled('feed', i18nT('box.sheet.feed'), i18nT('box.sheet.feedNone'), 'both');
     expectDisabled('evolve', i18nT('box.sheet.evolve'), i18nT('evolution.card.noPaths'), 'both');
+
+    // WRONG IMPL KILLED (round 2): a null sheet that only hides its list (display:none) but keeps
+    // the rows and their reasons in the root: the e2e helpers read the root's textContent, hidden
+    // descendants included, so "Feed…No food" / "No evolution paths." would linger in every scan
+    // after the sheet closed; and the over-correction, a sheet that never comes back.
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: null }));
+    const closedText = root.textContent ?? '';
+    for (const gone of [
+      i18nT('box.sheet.feed'),
+      i18nT('box.sheet.evolve'),
+      i18nT('box.sheet.feedNone'),
+      i18nT('evolution.card.noPaths'),
+    ]) {
+      expect(closedText, `a closed sheet leaves no "${gone}" in the root`).not.toContain(gone);
+    }
+    expect(closedText, 'English bytes').not.toContain('No food');
+    expect(closedText, 'English bytes').not.toContain('No evolution paths.');
+    expect(
+      root.querySelectorAll('[id^="monstersSheet-root-"]'),
+      'a closed sheet holds no rows',
+    ).toHaveLength(0);
+    paintSheet('summary', false, false);
+    expect(
+      c8cOptions(c8cListOf(root, 'monstersSheet-root-summary')).map((r) => r.id),
+      'a later sheet shows its six rows again',
+    ).toEqual(ACTIONS.map((a) => `monstersSheet-root-${a}`));
+    expectDisabled('feed', i18nT('box.sheet.feed'), i18nT('box.sheet.feedNone'), 'reopened');
+
     paintSheet('summary', true, true);
     expectEnabled('feed', i18nT('box.sheet.feed'), 'enabled again');
     expectEnabled('evolve', i18nT('box.sheet.evolve'), 'enabled again');
@@ -3463,6 +3491,11 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
     const list = c8cListOf(root, 'monstersFeed-root-7');
     const sheetList = c8cListOf(root, 'monstersSheet-root-feed');
     expect(list, 'the food list is its own list, not the sheet').not.toBe(sheetList);
+    // WRONG IMPL KILLED (round 2): an unlabelled food list, or one labelled by another sheet row
+    // (a screen reader would announce the list with no name, or as the Evolve… list).
+    expect(list.getAttribute('aria-labelledby'), 'labelled by the Feed row that opened it').toBe(
+      'monstersSheet-root-feed',
+    );
     expect(c8cOptions(list).map((r) => r.id)).toEqual([
       'monstersFeed-root-7',
       'monstersFeed-root-40',
@@ -3533,6 +3566,11 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
     const list = c8cListOf(root, 'monstersEvolve-root-10');
     expect(list, 'its own list, not the sheet').not.toBe(
       c8cListOf(root, 'monstersSheet-root-evolve'),
+    );
+    // WRONG IMPL KILLED (round 2): an unlabelled Evolve list, or one labelled by another sheet row
+    // (a screen reader would announce the paths with no name, or as the Feed… list).
+    expect(list.getAttribute('aria-labelledby'), 'labelled by the Evolve row that opened it').toBe(
+      'monstersSheet-root-evolve',
     );
     expect(
       c8cOptions(list).map((r) => r.id),
@@ -3622,6 +3660,16 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
     expect(c8cById(root, 'monstersConfirm-root-yes').textContent, 'English bytes').toBe('Yes');
     expect(c8cById(root, 'monstersConfirm-root-no').textContent, 'English bytes').toBe('No');
     expect(c8cActiveIds(answers), 'No is painted').toEqual(['monstersConfirm-root-no']);
+    // WRONG IMPL KILLED (round 2): a Yes or No row laid out disabled (`enabled: false` in the
+    // confirm layout): a screen reader hears "dimmed" on an answer A does act on, and the row is
+    // styled as unavailable while it is the default.
+    const expectAnswersEnabled = (when: string): void => {
+      for (const id of ['monstersConfirm-root-yes', 'monstersConfirm-root-no']) {
+        expect(c8cById(root, id).getAttribute('aria-disabled'), `${when}: ${id}`).toBeNull();
+        expect(c8cById(root, id).classList.contains('is-disabled'), `${when}: ${id}`).toBe(false);
+      }
+    };
+    expectAnswersEnabled('No painted');
     expect(c8bHidden(answers, root)).toBe(false);
     c8cBeforeHintAndPanels(parent, root, question, 'the confirm question');
     c8cBeforeHintAndPanels(parent, root, answers, 'the Yes / No list');
@@ -3629,6 +3677,10 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
     expect(list.textContent, 'and empty').toBe('');
     view.paint(confirmPaint(true));
     expect(c8cActiveIds(answers), 'Yes is painted').toEqual(['monstersConfirm-root-yes']);
+    expectAnswersEnabled('Yes painted');
+    expect(answers.getAttribute('aria-labelledby'), 'still labelled by the question').toBe(
+      'monsters-evolve-question',
+    );
 
     // A nickname is text, never markup.
     view.paint(confirmPaint(false, '<i>Kip</i>'));
