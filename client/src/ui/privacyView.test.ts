@@ -55,6 +55,7 @@ import {
   SERVER_ALREADY_DELETED_MESSAGE,
 } from './privacyModel';
 import { PrivacyView, type PrivacyViewHandlers } from './privacyView';
+import type { RowOp } from './screens/profileScreen';
 
 /** PRV1-4's distinct terminal notice — the en catalog entry, asserted to be a string (client specs
  *  are not typechecked, so a mistyped key would otherwise read `undefined`). */
@@ -474,30 +475,27 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
     { id: EXPORT_BTN_ID, label: 'SYNTHETIC EXPORT', handler: 'onExportRequested' },
   ];
 
-  it.each(
-    CONTROLS,
-  )('RB52V-CONTROL-REACHABLE ($id is visible, labelled, enabled — and fires $handler and NOTHING else)', ({
-    id,
-    label,
-    handler,
-  }) => {
-    // WRONG IMPL KILLED (1) ★ THE MEASURED ONE: copying `claimView.ts`'s `#wireButton`
-    // verbatim. `ensureElement` creates every node `display:none` and claimView never
-    // un-hides its buttons, so that shell ships five blank invisible controls whose handlers
-    // a `.click()` still fires. Every click-only test passes; the human sees an empty box.
-    // The walk + the label assertion inside `expectReachableControl` are what see it.
-    // WRONG IMPL KILLED (2): a control wired to the wrong handler (delete -> cancel). The
-    // five zero-count assertions in `expectOnly` are what see THAT; a bare "some handler
-    // fired" check cannot.
-    // WRONG IMPL KILLED (3): a handler bound at construction to a stale closure so a second
-    // click fires nothing — the call count is exact, not `toHaveBeenCalled`.
-    view.show();
-    view.render(vmOf());
-    clearSpies();
-    const node = expectReachableControl(id, label, true);
-    node.click();
-    expectOnly(handler);
-  });
+  it.each(CONTROLS)(
+    'RB52V-CONTROL-REACHABLE ($id is visible, labelled, enabled — and fires $handler and NOTHING else)',
+    ({ id, label, handler }) => {
+      // WRONG IMPL KILLED (1) ★ THE MEASURED ONE: copying `claimView.ts`'s `#wireButton`
+      // verbatim. `ensureElement` creates every node `display:none` and claimView never
+      // un-hides its buttons, so that shell ships five blank invisible controls whose handlers
+      // a `.click()` still fires. Every click-only test passes; the human sees an empty box.
+      // The walk + the label assertion inside `expectReachableControl` are what see it.
+      // WRONG IMPL KILLED (2): a control wired to the wrong handler (delete -> cancel). The
+      // five zero-count assertions in `expectOnly` are what see THAT; a bare "some handler
+      // fired" check cannot.
+      // WRONG IMPL KILLED (3): a handler bound at construction to a stale closure so a second
+      // click fires nothing — the call count is exact, not `toHaveBeenCalled`.
+      view.show();
+      view.render(vmOf());
+      clearSpies();
+      const node = expectReachableControl(id, label, true);
+      node.click();
+      expectOnly(handler);
+    },
+  );
 
   it('RB52V-DISABLED-MIRROR: `disabled` follows the view model in BOTH directions, per control', () => {
     // WRONG IMPL KILLED (1) ★: never writing `disabled` at all. Every control would stay live,
@@ -676,28 +674,27 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
   // TOOTH 7 — the section 9 disclosure is on screen in EVERY state.
   // -------------------------------------------------------------------------
 
-  it.each(
-    RB52_MATRIX.map(([where, state]) => ({ where, state })),
-  )('RB52V-DISCLOSURE-ALWAYS ($where still shows the full section 9 pseudonymization sentence)', ({
-    state,
-  }) => {
-    // WRONG IMPL KILLED ★: a render path that blanks or replaces the disclosure on ONE branch
-    // — the terminal one being the obvious candidate ("the account is gone, the caveat no
-    // longer applies"). It is exactly backwards: the sentence explains that the Identity key
-    // and its behavioral history are NOT purged, which is most load-bearing precisely when
-    // the account has just been erased. A single-state assertion cannot see a one-branch
-    // blank; the matrix can.
-    // WRONG IMPL KILLED (2): a disclosure written once at construction and then destroyed by
-    // a later `replaceChildren()`-style rebuild — the assertion runs AFTER a render.
-    view.show();
-    view.render(buildPrivacyViewModel(state));
-    const disclosure = el(DISCLOSURE_ID);
-    expect(disclosure.textContent).toBe(PRIVACY_PSEUDONYMIZATION_DISCLOSURE);
-    expect(
-      hiddenAncestorOf(disclosure),
-      'the disclosure must be ON SCREEN in this state, not merely present in the DOM',
-    ).toBeNull();
-  });
+  it.each(RB52_MATRIX.map(([where, state]) => ({ where, state })))(
+    'RB52V-DISCLOSURE-ALWAYS ($where still shows the full section 9 pseudonymization sentence)',
+    ({ state }) => {
+      // WRONG IMPL KILLED ★: a render path that blanks or replaces the disclosure on ONE branch
+      // — the terminal one being the obvious candidate ("the account is gone, the caveat no
+      // longer applies"). It is exactly backwards: the sentence explains that the Identity key
+      // and its behavioral history are NOT purged, which is most load-bearing precisely when
+      // the account has just been erased. A single-state assertion cannot see a one-branch
+      // blank; the matrix can.
+      // WRONG IMPL KILLED (2): a disclosure written once at construction and then destroyed by
+      // a later `replaceChildren()`-style rebuild — the assertion runs AFTER a render.
+      view.show();
+      view.render(buildPrivacyViewModel(state));
+      const disclosure = el(DISCLOSURE_ID);
+      expect(disclosure.textContent).toBe(PRIVACY_PSEUDONYMIZATION_DISCLOSURE);
+      expect(
+        hiddenAncestorOf(disclosure),
+        'the disclosure must be ON SCREEN in this state, not merely present in the DOM',
+      ).toBeNull();
+    },
+  );
 
   it('RB52V-ERASURE-CENSUS-DOM: "erasure" appears exactly once in the rendered surface, and only inside the disclosure element', () => {
     // ⚠ A "the surface must not contain the word erasure" scan is the WRONG gate and would fail
@@ -1067,5 +1064,295 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
       el(EXPORT_STATUS_ID).tagName,
       'the export status line is a paragraph, not a button',
     ).toBe('P');
+  });
+});
+
+// ===========================================================================================
+// ctl-8h (CTL8H.4): the privacy frame's rows, its default-No and B3.
+//
+// The rows are the overlay's real shown AND enabled buttons in DOM order (close, delete, [confirm,
+// keep while armed], cancel, export, download); the cursor IS document.activeElement. privacyScreen
+// hands the view one-shot row tokens through `view.applyRowOp(op)` (see renameView.test.ts for the
+// contract's wording). Re-seating on a render happens ONLY when the overlay was already visible
+// before it: the arm edge focuses Keep (#privacy-confirm-cancel-btn), never Confirm; the disarm
+// edge focuses the arming button (#privacy-delete-btn); a focused control that the render hid or
+// DISABLED goes to the default row (the first row, or Keep when armed). A plain re-render with the
+// same vm never moves focus.
+//
+// INTENTIONAL CHANGE (ctl-8h): privacyView.ts's header said "NO .focus() ANYWHERE IN THIS FILE";
+// the view now moves focus in applyRowOp and on the arm / disarm / hidden-control re-seat. Nothing in
+// this file pinned that sentence.
+// ===========================================================================================
+
+describe('PrivacyView ctl-8h: rows, default-No and B3', () => {
+  beforeEach(() => {
+    document.body.replaceChildren();
+    spies = freshSpies();
+    view = new PrivacyView(spies as unknown as PrivacyViewHandlers);
+  });
+
+  afterEach(() => {
+    closeOverlayA11y('privacyView', null);
+    document.body.replaceChildren();
+  });
+
+  const move = (delta: -1 | 1): RowOp => ({ kind: 'move', delta });
+  const activate = (): RowOp => ({ kind: 'activate' });
+  const focusedId = (): string => (document.activeElement as HTMLElement | null)?.id ?? '';
+  const blurAll = (): void => (document.activeElement as HTMLElement | null)?.blur();
+  const ARMED = 'SYNTHETIC CONFIRM PROMPT';
+  const fired = (): HandlerName[] =>
+    HANDLER_NAMES.filter((name) => spies[name].mock.calls.length > 0);
+
+  /** The ids of the focusable rows, found by pressing the view's own D-pad: seat the default row,
+   *  walk to the first row (clamped), then walk down until the cursor stops. */
+  function walkRows(): string[] {
+    blurAll();
+    view.applyRowOp(move(-1));
+    for (let i = 0; i < 12; i += 1) view.applyRowOp(move(-1));
+    const out = [focusedId()];
+    for (let i = 0; i < 12; i += 1) {
+      view.applyRowOp(move(1));
+      const id = focusedId();
+      if (id === out[out.length - 1]) break;
+      out.push(id);
+    }
+    return out;
+  }
+
+  it('CTL8H-4-VIEW-ROW-OPS: applyRowOp walks the shown AND enabled buttons in DOM order with focus as the cursor (disabled and hidden ones skipped, clamped, no wrap), no row focused seats the first row, activate clicks the focused button once and fires nothing when no row is focused, and the same op object applies once', () => {
+    // WRONG IMPL KILLED: rows that include a disabled control (the disabled Cancel in the active
+    // phase, the disabled Download until an artifact arrives: focus() on them is a no-op and the
+    // cursor sticks) or a hidden Confirm / Keep row while disarmed (a bare "Confirm" one key from
+    // Delete); rows that omit Download once it is enabled; a wrap; an activate that routes to the
+    // wrong handler (Delete -> Cancel is the difference between starting and aborting a deletion);
+    // an activate with no focused row that fires the default; and an op applied again by shape.
+    view.show();
+    view.render(vmOf());
+
+    expect(walkRows(), 'rows: Download is disabled, Confirm / Keep are hidden').toEqual([
+      CLOSE_BTN_ID,
+      DELETE_BTN_ID,
+      CANCEL_BTN_ID,
+      EXPORT_BTN_ID,
+    ]);
+
+    // --- no row focused: the first row, for either direction; the ends clamp ---------------------
+    blurAll();
+    view.applyRowOp(move(1));
+    expect(focusedId(), 'move +1 with nothing focused: the first row').toBe(CLOSE_BTN_ID);
+    blurAll();
+    view.applyRowOp(move(-1));
+    expect(focusedId(), 'move -1 with nothing focused: the first row').toBe(CLOSE_BTN_ID);
+    view.applyRowOp(move(-1));
+    expect(focusedId(), 'no wrap above the first row').toBe(CLOSE_BTN_ID);
+    btn(EXPORT_BTN_ID).focus();
+    view.applyRowOp(move(1));
+    expect(focusedId(), 'no wrap below the last row (Download is disabled)').toBe(EXPORT_BTN_ID);
+
+    // --- disabled rows are skipped, enabled ones appear ---------------------------------------
+    view.render(vmOf({ cancelEnabled: false }));
+    expect(walkRows(), 'a disabled Cancel is not a row').toEqual([
+      CLOSE_BTN_ID,
+      DELETE_BTN_ID,
+      EXPORT_BTN_ID,
+    ]);
+    view.render(vmOf({ downloadEnabled: true, exportStatusLabel: 'SYNTHETIC EXPORT COMPLETE' }));
+    expect(walkRows(), 'an enabled Download is the last row').toEqual([
+      CLOSE_BTN_ID,
+      DELETE_BTN_ID,
+      CANCEL_BTN_ID,
+      EXPORT_BTN_ID,
+      DOWNLOAD_BTN_ID,
+    ]);
+    view.render(vmOf({ confirmPrompt: ARMED }));
+    expect(walkRows(), 'armed: Confirm and Keep join the rows, in DOM order').toEqual([
+      CLOSE_BTN_ID,
+      DELETE_BTN_ID,
+      CONFIRM_BTN_ID,
+      CONFIRM_CANCEL_BTN_ID,
+      CANCEL_BTN_ID,
+      EXPORT_BTN_ID,
+    ]);
+
+    // --- activate clicks the focused button, once, and only that handler -----------------------
+    view.render(vmOf({ downloadEnabled: true }));
+    const presses: ReadonlyArray<readonly [string, HandlerName]> = [
+      [DELETE_BTN_ID, 'onDeleteRequested'],
+      [CANCEL_BTN_ID, 'onCancelDeletion'],
+      [EXPORT_BTN_ID, 'onExportRequested'],
+      [DOWNLOAD_BTN_ID, 'onExportDownload'],
+    ];
+    for (const [id, handler] of presses) {
+      clearSpies();
+      btn(id).focus();
+      view.applyRowOp(activate());
+      expectOnly(handler);
+    }
+
+    // --- activate with no row focused: seat the first row, fire nothing --------------------------
+    clearSpies();
+    blurAll();
+    view.applyRowOp(activate());
+    expect(focusedId(), 'A with no row focused seats the first row').toBe(CLOSE_BTN_ID);
+    expect(fired(), 'and fires nothing (not even the row it seated)').toEqual([]);
+
+    // --- the identity memo ----------------------------------------------------------------
+    const hop = move(1);
+    btn(CLOSE_BTN_ID).focus();
+    view.applyRowOp(hop);
+    expect(focusedId(), 'the first application moves').toBe(DELETE_BTN_ID);
+    btn(CLOSE_BTN_ID).focus();
+    view.applyRowOp(hop);
+    expect(focusedId(), 'the same op object is not applied twice').toBe(CLOSE_BTN_ID);
+    view.applyRowOp(move(1));
+    expect(focusedId(), 'an equal but fresh op is a new press').toBe(DELETE_BTN_ID);
+
+    clearSpies();
+    const press = activate();
+    view.applyRowOp(press);
+    view.applyRowOp(press);
+    expect(spies.onDeleteRequested, 'the same activate token clicks once').toHaveBeenCalledTimes(1);
+    view.applyRowOp(activate());
+    expect(spies.onDeleteRequested, 'a fresh token clicks again').toHaveBeenCalledTimes(2);
+  });
+
+  it('CTL8H-4-DEFAULT-NO: arming focuses Keep and never Confirm (from Delete, from another control, from the page), disarming focuses Delete, a focused control that a render disabled goes to the default row, a re-render with the same vm moves nothing, the open edge moves nothing, and an armed overlay with no focused row seats Keep on move and on A without confirming', () => {
+    // WRONG IMPL KILLED: a default-No on the click edge only (the arm edge is a render: the
+    // Delete button stays but the player's next Enter lands on whatever holds focus); a focus on
+    // Confirm (one Enter deletes the account); a re-seat on every render (the export status
+    // changes on every chunk batch and would yank focus from a player's own move to Confirm); a
+    // disabled Export that keeps focus (the control stays focused but dead: the player is stuck
+    // in a modal whose trap has nothing to hand focus to); a re-seat on the open edge; and an A
+    // with nothing focused that fires Confirm.
+    // (a) the open edge: a hidden overlay painted armed moves nothing.
+    const outside = document.createElement('button');
+    outside.id = 'ctl8h-outside';
+    document.body.appendChild(outside);
+    outside.focus();
+    view.render(vmOf({ confirmPrompt: ARMED }));
+    expect(document.activeElement, 'a render of a hidden overlay moves no focus').toBe(outside);
+    outside.remove();
+
+    // (b) the arm edge, from the Delete button.
+    view.show();
+    view.render(vmOf());
+    btn(DELETE_BTN_ID).focus();
+    view.render(vmOf({ confirmPrompt: ARMED }));
+    expect(focusedId(), 'armed from Delete: focus on Keep').toBe(CONFIRM_CANCEL_BTN_ID);
+    expect(focusedId(), 'never Confirm').not.toBe(CONFIRM_BTN_ID);
+
+    // (c) the arm edge, from a control the render keeps, and from the page.
+    view.render(vmOf());
+    btn(EXPORT_BTN_ID).focus();
+    view.render(vmOf({ confirmPrompt: ARMED }));
+    expect(focusedId(), 'armed from Export: focus on Keep').toBe(CONFIRM_CANCEL_BTN_ID);
+    view.render(vmOf());
+    blurAll();
+    view.render(vmOf({ confirmPrompt: ARMED }));
+    expect(focusedId(), 'armed with focus on the page: focus on Keep').toBe(CONFIRM_CANCEL_BTN_ID);
+
+    // (d) the disarm edge: back to the button that armed it.
+    btn(CONFIRM_BTN_ID).focus();
+    view.render(vmOf());
+    expect(focusedId(), 'disarmed: focus on Delete').toBe(DELETE_BTN_ID);
+
+    // (e) a plain re-render moves nothing, armed or not.
+    btn(EXPORT_BTN_ID).focus();
+    view.render(vmOf());
+    view.render(vmOf({ exportStatusLabel: 'SYNTHETIC EXPORT INCOMPLETE' }));
+    expect(focusedId(), 'unarmed re-renders leave Export focused').toBe(EXPORT_BTN_ID);
+    view.render(vmOf({ confirmPrompt: ARMED }));
+    btn(CONFIRM_BTN_ID).focus();
+    view.render(vmOf({ confirmPrompt: ARMED }));
+    view.render(vmOf({ confirmPrompt: ARMED, exportStatusLabel: 'SYNTHETIC EXPORT COMPLETE' }));
+    expect(focusedId(), 'the player moved to Confirm: armed re-renders leave it').toBe(
+      CONFIRM_BTN_ID,
+    );
+
+    // (f) a focused control that a render DISABLED goes to the default row, inside the overlay.
+    view.render(vmOf());
+    btn(EXPORT_BTN_ID).focus();
+    view.render(vmOf({ exportEnabled: false }));
+    expect(btn(EXPORT_BTN_ID).disabled, 'precondition: Export is now disabled').toBe(true);
+    expect(
+      el(OVERLAY_ID).contains(document.activeElement),
+      'focus stays inside the overlay, not on the page',
+    ).toBe(true);
+    expect((document.activeElement as HTMLButtonElement).disabled, 'on an enabled control').toBe(
+      false,
+    );
+    expect(focusedId(), 'the default row: the first').toBe(CLOSE_BTN_ID);
+    view.render(vmOf({ downloadEnabled: true }));
+    btn(DOWNLOAD_BTN_ID).focus();
+    view.render(vmOf({ downloadEnabled: false }));
+    expect(focusedId(), 'Download disabled under focus (the reaped export): the first row').toBe(
+      CLOSE_BTN_ID,
+    );
+
+    // (g) armed, with no row focused: the default row is Keep.
+    view.render(vmOf({ confirmPrompt: ARMED }));
+    clearSpies();
+    blurAll();
+    view.applyRowOp(move(1));
+    expect(focusedId(), 'armed, nothing focused: move seats Keep, not the first row').toBe(
+      CONFIRM_CANCEL_BTN_ID,
+    );
+    blurAll();
+    view.applyRowOp(move(-1));
+    expect(focusedId(), 'armed, nothing focused: move -1 seats Keep too').toBe(
+      CONFIRM_CANCEL_BTN_ID,
+    );
+    blurAll();
+    view.applyRowOp(activate());
+    expect(focusedId(), 'armed, nothing focused: A seats Keep').toBe(CONFIRM_CANCEL_BTN_ID);
+    expect(fired(), 'and confirms nothing, cancels nothing').toEqual([]);
+    expect(spies.onDeleteConfirmed).not.toHaveBeenCalled();
+  });
+
+  it('CTL8H-4-B3-ANCHOR: the overlay is attached under #frame-layer when present, else under #game-screen, else directly under <body>, and carries the classes mr-frame and mr-shell with all its controls inside it', () => {
+    // WRONG IMPL KILLED: an overlay appended to <body> whatever the page has (fixed + inset:0
+    // over the canvas instead of a frame in the game screen: B3); an anchor by a parent id alone;
+    // a frame-layer lookup that only works inside #game-screen; a lookup that prefers
+    // #game-screen when #frame-layer exists; a missing class; children left outside the overlay.
+    const div = (id: string): HTMLElement => {
+      const node = document.createElement('div');
+      node.id = id;
+      return node;
+    };
+    const build = (...nodes: HTMLElement[]): HTMLElement => {
+      document.body.replaceChildren(...nodes);
+      const fresh = new PrivacyView(spies as unknown as PrivacyViewHandlers);
+      expect(fresh.visible, 'constructed hidden').toBe(false);
+      const overlay = el(OVERLAY_ID);
+      expect(overlay.classList.contains('mr-frame'), 'class mr-frame').toBe(true);
+      expect(overlay.classList.contains('mr-shell'), 'class mr-shell').toBe(true);
+      for (const id of ALL_PRIVACY_IDS) {
+        if (id === OVERLAY_ID) continue;
+        expect(overlay.contains(el(id)), `#${id} is inside the overlay`).toBe(true);
+      }
+      return overlay;
+    };
+
+    const gameScreen = div('game-screen');
+    const frameLayer = div('frame-layer');
+    gameScreen.appendChild(frameLayer);
+    let overlay = build(gameScreen, div('app'));
+    expect(frameLayer.contains(overlay), 'under #frame-layer').toBe(true);
+    expect(gameScreen.contains(overlay), 'and so inside #game-screen').toBe(true);
+    expect(overlay.parentElement, 'not parked on <body>').not.toBe(document.body);
+
+    const lonely = div('game-screen');
+    overlay = build(lonely, div('app'));
+    expect(lonely.contains(overlay), 'else under #game-screen').toBe(true);
+
+    const looseLayer = div('frame-layer');
+    overlay = build(div('app'), looseLayer);
+    expect(looseLayer.contains(overlay), 'a lone #frame-layer is still the anchor').toBe(true);
+
+    const app = div('app');
+    overlay = build(app);
+    expect(overlay.parentElement, 'else directly under <body>').toBe(document.body);
+    expect(app.contains(overlay), 'and not inside an unrelated node').toBe(false);
   });
 });

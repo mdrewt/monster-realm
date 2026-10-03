@@ -228,8 +228,21 @@ test.describe
           timeout: 10_000,
         });
 
+        // Step 5b (ctl-8h, CTL8H.5): KeyN opens the Name screen in typing mode, so the deferred
+        // initial focus puts the caret in the field.
+        await expect(page.locator('[data-testid="rename-input"]')).toBeFocused();
+
         // Step 6: fill the rename input with the unique name.
         await page.fill('[data-testid="rename-input"]', newName);
+
+        // Step 6b (ctl-8h, CTL8H.2): Escape stops typing. It keeps the typed text and moves focus
+        // out of the field into the frame, onto the (now enabled) save button, and it does not
+        // close the overlay.
+        await page.keyboard.press('Escape');
+        await expect(page.locator('[data-testid="rename-input"]')).toHaveValue(newName);
+        await expect(page.locator('[data-testid="rename-input"]')).not.toBeFocused();
+        await expect(page.locator('[data-testid="rename-submit"]')).toBeFocused();
+        await expect(page.locator('[data-testid="rename-input"]')).toBeVisible();
 
         // Step 7: click the submit button.
         await page.click('[data-testid="rename-submit"]');
