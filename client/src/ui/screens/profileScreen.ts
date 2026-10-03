@@ -8,7 +8,9 @@
 // screen's reach), so an adapter keeps no cursor: a press becomes a one-shot row TOKEN (a new object
 // each press, compared by identity: the tradeProposeScreen precedent) that the view applies once.
 // Every step's state holds the new token or null, so the host's paint after a later button never
-// re-applies an old one. B pops the frame: closing is always No (claim and privacy disarm on close).
+// re-applies an old one. B pops the frame, which never confirms anything: privacy disarms on close;
+// a claim decline stays armed (claimModel cannot represent a dismissal), but a re-shown armed frame
+// seats No on the first press and presses nothing.
 import type { ButtonStep, ScreenAdapter, ScreenResult } from './types';
 
 /** One press on the rows: move the focus up or down, or press the focused row. */
@@ -41,10 +43,12 @@ export function rowStep<T>(
 }
 
 /** Where a render of an OPEN frame with a two-step confirm moves focus (CTL8H.3-4; confirms
- *  default to No): arming seats `no`, disarming seats the `armer` (else the first row), and a
- *  focused control the render hid or disabled seats the default row. `focused` is the focused
- *  control inside the frame, or null for the page. Anything else (a plain re-render) moves nothing,
- *  so a player who chose Confirm keeps it. */
+ *  default to No): arming seats `no`, disarming seats the `armer` while it is still a row (after a
+ *  Confirm it is not, and nothing is seated: the first row is Join, which a second Enter would
+ *  press), and a focused control the render hid or disabled seats the default row (the render runs
+ *  before the browser's own blur, so it still sees that control). `focused` is the focused control
+ *  inside the frame, or null for the page. Anything else (a plain re-render) moves nothing, so a
+ *  player who chose Confirm keeps it. */
 export function reseatRow<T>(
   rows: readonly T[],
   focused: T | null,
@@ -53,7 +57,7 @@ export function reseatRow<T>(
   armer: T,
 ): T | undefined {
   if (armed.now && !armed.was) return no;
-  if (armed.was && !armed.now) return rows.includes(armer) ? armer : rows[0];
+  if (armed.was && !armed.now) return rows.includes(armer) ? armer : undefined;
   if (focused !== null && !rows.includes(focused)) return armed.now ? no : rows[0];
   return undefined;
 }

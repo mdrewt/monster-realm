@@ -88,7 +88,7 @@ export class PrivacyView {
   readonly #notice: HTMLElement;
   readonly #disclosure: HTMLElement;
   readonly #confirm: HTMLElement;
-  // Typed HTMLButtonElement, not HTMLElement — see the header's keyboard-operable-rows note.
+  // Typed HTMLButtonElement, not HTMLElement: a native <button> is keyboard-operable.
   // FIRST in DOM order and enabled in every phase — it is the a11y anchor (A2-D10).
   readonly #closeBtn: HTMLButtonElement;
   readonly #deleteBtn: HTMLButtonElement;
