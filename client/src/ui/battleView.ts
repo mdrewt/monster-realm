@@ -37,9 +37,36 @@
 //
 // Each `#app`-mounted view creates its OWN root under the shared mount, so opening this view
 // never closes a sibling (no close-before-open; boxView.test.ts S4-CROSS-VIEW-DISTINCT-ROOTS).
-import type { BattleMonsterCardVM, BattleViewModel } from './battleModel';
+import {
+  BATTLE_COMMANDS,
+  type BattleCommand,
+  type BattleCommandRow,
+  type BattleMonsterCardVM,
+  type BattleViewModel,
+  battleCommands,
+  cursorStep,
+  skillCursor,
+} from './battleModel';
 import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
+import type { BattleOp, BattleOpsView } from './screens/battleScreen';
+
+/** The lists the battle cursor walks (ctl-8i): the command list, and the controls each command
+ *  leads to. Every cursor row carries its list's name in `data-battle-list`; the bait and cure
+ *  <select>s and the legacy Flee button are in none (a select owns the arrows, so the cursor never
+ *  enters one: CTL8J.1 turns them into lists). */
+type CursorList = 'commands' | 'skills' | 'recruit' | 'swap' | 'bag';
+const LIST_ATTR = 'data-battle-list';
+/** The list a command leads to (Run acts at once). */
+const SUBLIST: Readonly<Record<Exclude<BattleCommand, 'run'>, CursorList>> = {
+  fight: 'skills',
+  recruit: 'recruit',
+  swap: 'swap',
+  bag: 'bag',
+};
+/** The visible cue on the cursor row: focus alone is lost to the menu and to <body>. */
+const CURSOR_OUTLINE = '2px solid #ffd700';
+let runReasonIds = 0;
 
 /**
  * The five PvE callbacks may return a promise: the view's per-battle in-flight
@@ -69,7 +96,7 @@ export interface BattleViewCallbacks {
   readonly onPvpSwap: (battleId: bigint, teamIndex: number) => void;
 }
 
-export class BattleView {
+export class BattleView implements BattleOpsView {
   readonly #root: HTMLDivElement;
   /** The "Battle" heading; its text is resolved in show(), not here (see show()). */
   readonly #titleEl: HTMLHeadingElement;
@@ -78,6 +105,13 @@ export class BattleView {
   readonly #opponentCardEl: HTMLDivElement;
   readonly #skillsEl: HTMLDivElement;
   readonly #actionsEl: HTMLDivElement;
+  /** The command list (ctl-8i): built once, so focus on a row survives every re-render. */
+  readonly #commandsEl: HTMLDivElement;
+  readonly #commandBtns: ReadonlyMap<BattleCommand, HTMLButtonElement>;
+  /** "Waiting for {name}…" over the greyed list while a PvP move waits on the opponent. */
+  readonly #waitingEl: HTMLDivElement;
+  /** Why Run is greyed in a player battle; Run's aria-describedby. */
+  readonly #runReasonEl: HTMLDivElement;
   /** Empty-swap explainer; shown only on an ongoing battle with no swap. */
   readonly #swapHintEl: HTMLDivElement;
   readonly #outcomeEl: HTMLDivElement;
@@ -105,6 +139,16 @@ export class BattleView {
   // Keyed by battleId so a refresh() of a different battle renders enabled controls and a
   // late settle for the old battle cannot touch them.
   #pending: { readonly battleId: bigint } | null = null;
+  /** The last rendered model: the cursor reads its skills and active monster. */
+  #vm: BattleViewModel | null = null;
+  /** The command rows of the last render (the lock greys them on top). */
+  #commandRows: readonly BattleCommandRow[] = [];
+  /** The kept cursor. It outlives focus (the menu, <body>) and a re-render of the same turn. */
+  #cursor: { list: CursorList; index: number } = { list: 'commands', index: 0 };
+  /** The (battle, turn) of the last render: a new one resets the cursor to Fight (CTL8I.1). */
+  #turnKey: { readonly battleId: bigint; readonly turnNumber: number } | null = null;
+  /** The skill each monster (by team slot) last used in this battle (CTL8I.2). */
+  readonly #lastSkill = new Map<number, number>();
 
   constructor(parent: HTMLElement, callbacks: BattleViewCallbacks) {
     this.#callbacks = callbacks;
@@ -199,6 +243,45 @@ export class BattleView {
       'border:2px solid #484;border-radius:4px;padding:8px;width:100%;max-width:320px;' +
       'background:#1a2a1a;margin-bottom:12px;';
     this.#root.appendChild(this.#playerCardEl);
+
+    // The command list (ctl-8i): Fight, Recruit, Swap, Bag, Run. A greyed row is aria-disabled,
+    // never `disabled`, so the cursor can rest on it (and Run's reason is read). Labels are
+    // resolved per render (see show() for why not here).
+    this.#commandsEl = document.createElement('div');
+    this.#commandsEl.setAttribute('data-testid', 'battle-commands');
+    this.#commandsEl.setAttribute('role', 'group');
+    this.#commandsEl.style.cssText =
+      'display:flex;flex-wrap:wrap;gap:6px;width:100%;max-width:320px;margin-bottom:12px;';
+    this.#waitingEl = document.createElement('div');
+    this.#waitingEl.setAttribute('data-testid', 'battle-commands-waiting');
+    this.#waitingEl.style.cssText = 'flex-basis:100%;font-size:12px;color:#aab;display:none;';
+    this.#commandsEl.appendChild(this.#waitingEl);
+    const commandBtns = new Map<BattleCommand, HTMLButtonElement>();
+    for (const id of BATTLE_COMMANDS) {
+      const btn = document.createElement('button');
+      btn.setAttribute('data-testid', `battle-command-${id}`);
+      btn.setAttribute(LIST_ATTR, 'commands');
+      btn.style.cssText =
+        'padding:6px 10px;font-family:monospace;font-size:12px;border:1px solid #666;' +
+        'border-radius:3px;background:#2a2a3e;color:#e0e0e0;';
+      btn.addEventListener('click', () => this.#chooseCommand(id, btn));
+      commandBtns.set(id, btn);
+      this.#commandsEl.appendChild(btn);
+    }
+    this.#commandBtns = commandBtns;
+    this.#runReasonEl = document.createElement('div');
+    this.#runReasonEl.setAttribute('data-testid', 'battle-run-reason');
+    runReasonIds += 1;
+    this.#runReasonEl.id = `battle-run-reason-${runReasonIds}`;
+    this.#runReasonEl.style.cssText = 'flex-basis:100%;font-size:12px;color:#aab;display:none;';
+    this.#commandsEl.appendChild(this.#runReasonEl);
+    this.#root.appendChild(this.#commandsEl);
+    // A held Enter or Space would re-click whatever the cursor lands on next (Fight -> a skill ->
+    // the next turn's Fight); only the first press is the browser's.
+    this.#root.addEventListener('keydown', (e) => {
+      const activation = e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space';
+      if (e.repeat && activation && e.target instanceof HTMLButtonElement) e.preventDefault();
+    });
 
     // Skills grid
     this.#skillsEl = document.createElement('div');
@@ -299,6 +382,20 @@ export class BattleView {
       return;
     }
     if (!this.#visible) this.show();
+    // Read before the rebuild detaches a focused row: a reset takes focus only from the page or
+    // from inside this view (never from the menu over it), a same-turn render only re-focuses the
+    // cursor row when it had focus.
+    const active = document.activeElement;
+    const focusHere = active === null || active === document.body || this.#root.contains(active);
+    const onCursor =
+      active instanceof HTMLElement &&
+      this.#root.contains(active) &&
+      active.getAttribute('aria-current') === 'true';
+    const newBattle = this.#turnKey?.battleId !== vm.battleId;
+    if (newBattle) this.#lastSkill.clear();
+    const newTurn = newBattle || this.#turnKey?.turnNumber !== vm.turnNumber;
+    this.#turnKey = { battleId: vm.battleId, turnNumber: vm.turnNumber };
+    this.#vm = vm;
 
     this.#renderWeather(vm);
     // Show opponent name for PvP battles so the player knows who they are fighting. The name is
@@ -308,6 +405,7 @@ export class BattleView {
     this.#renderMonsterCard(this.#opponentCardEl, vm.opponentCard, opponentLabel);
     this.#renderMonsterCard(this.#playerCardEl, vm.playerCard, t('battle.card.you'));
     this.#renderPvpStatus(vm);
+    this.#renderCommands(vm);
     this.#renderSkills(vm);
     this.#renderActions(vm);
     this.#renderOutcome(vm);
@@ -315,6 +413,140 @@ export class BattleView {
     // a batch can re-render this battle while its call is still in flight, and a fresh
     // enabled-looking button whose click the lock then swallows is worse than no button.
     if (this.#pending?.battleId === vm.battleId) this.#setActionButtonsDisabled(true);
+    // A new turn starts on Fight; so does a PvP wait, whose grid and bench are not rendered.
+    const reset = newTurn || vm.pvpPendingSubmit;
+    if (reset) this.#cursor = { list: 'commands', index: 0 };
+    this.#paintCursor(reset ? focusHere : onCursor);
+  }
+
+  /** One cursor op from the battle screen (CTL8I.1-3). With focus off the cursor rows (the
+   *  heading, the page, Flee, a select) it only seats the kept cursor: an A must never press a row
+   *  the player is not on. On a row the cursor first follows focus (Tab and the mouse move it too). */
+  applyBattleOp(op: BattleOp): void {
+    if (!this.#visible || this.#vm?.outcome !== 'Ongoing') return;
+    const active = document.activeElement;
+    const list =
+      active instanceof HTMLElement && this.#root.contains(active)
+        ? (active.getAttribute(LIST_ATTR) as CursorList | null)
+        : null;
+    if (list === null) {
+      this.#paintCursor(true);
+      return;
+    }
+    const rows = this.#rows(list);
+    this.#cursor = { list, index: rows.indexOf(active as HTMLElement) };
+    switch (op.kind) {
+      case 'move':
+        this.#cursor.index = cursorStep(
+          this.#cursor.index,
+          rows.length,
+          op.dir,
+          list === 'skills' ? 2 : 1,
+        );
+        this.#paintCursor(true);
+        return;
+      case 'activate':
+        this.#paintCursor(false);
+        rows[this.#cursor.index]?.click();
+        return;
+      case 'back': {
+        const command = BATTLE_COMMANDS.find((id) => id !== 'run' && SUBLIST[id] === list);
+        if (command !== undefined) {
+          this.#cursor = { list: 'commands', index: BATTLE_COMMANDS.indexOf(command) };
+        }
+        this.#paintCursor(true);
+        return;
+      }
+    }
+  }
+
+  /** The rows of `list`, in DOM order. */
+  #rows(list: CursorList): HTMLElement[] {
+    return [...this.#root.querySelectorAll<HTMLElement>(`[${LIST_ATTR}="${list}"]`)];
+  }
+
+  /** Mark the cursor row (one aria-current, with the outline), focusing it when asked. A list
+   *  that emptied falls back to Fight; a finished battle has no cursor. */
+  #paintCursor(focus: boolean): void {
+    for (const el of this.#root.querySelectorAll<HTMLElement>('[aria-current="true"]')) {
+      el.removeAttribute('aria-current');
+      el.style.outline = '';
+    }
+    if (this.#vm?.outcome !== 'Ongoing') return;
+    let rows = this.#rows(this.#cursor.list);
+    if (rows.length === 0) {
+      this.#cursor = { list: 'commands', index: 0 };
+      rows = this.#rows('commands');
+    }
+    this.#cursor.index = Math.min(rows.length - 1, Math.max(0, this.#cursor.index));
+    const el = rows[this.#cursor.index];
+    if (el === undefined) return;
+    el.setAttribute('aria-current', 'true');
+    el.style.outline = CURSOR_OUTLINE;
+    el.style.outlineOffset = '2px';
+    // A row the PvE lock disabled cannot take focus in a browser; the settle re-anchors it.
+    if (focus && !(el instanceof HTMLButtonElement && el.disabled)) el.focus();
+  }
+
+  /** A command row was pressed (a click, native Enter, or the cursor's A). Greyed: nothing. Run
+   *  flees under the shared lock; the others move the cursor into their controls, Fight onto the
+   *  skill this monster last used in this battle. */
+  #chooseCommand(id: BattleCommand, btn: HTMLButtonElement): void {
+    const vm = this.#vm;
+    if (vm === null || btn.getAttribute('aria-disabled') === 'true') return;
+    if (id === 'run') {
+      this.#cursor = { list: 'commands', index: BATTLE_COMMANDS.indexOf('run') };
+      this.#dispatch(vm.battleId, () => this.#callbacks.onFlee(vm.battleId));
+      return;
+    }
+    const index = id === 'fight' ? skillCursor(vm.skills, this.#lastSkill.get(vm.activeIndex)) : 0;
+    this.#cursor = { list: SUBLIST[id], index };
+    this.#paintCursor(true);
+  }
+
+  #renderCommands(vm: BattleViewModel): void {
+    this.#commandRows = battleCommands(vm);
+    this.#commandsEl.setAttribute('aria-label', t('battle.commands.label'));
+    this.#commandsEl.style.display = vm.outcome === 'Ongoing' ? 'flex' : 'none';
+    const labels: Record<BattleCommand, string> = {
+      fight: t('battle.command.fight'),
+      recruit: t('battle.command.recruit'),
+      swap: t('battle.command.swap'),
+      bag: t('battle.command.bag'),
+      run: t('battle.command.run'),
+    };
+    for (const row of this.#commandRows) {
+      const btn = this.#commandBtns.get(row.id);
+      if (btn === undefined) continue;
+      btn.textContent = labels[row.id];
+      this.#greyCommand(btn, !row.enabled);
+    }
+    const run = this.#commandBtns.get('run');
+    if (this.#commandRows.some((row) => row.reason === 'runPvp')) {
+      this.#runReasonEl.textContent = t('battle.command.runPvpReason');
+      this.#runReasonEl.style.display = 'block';
+      run?.setAttribute('aria-describedby', this.#runReasonEl.id);
+    } else {
+      this.#runReasonEl.textContent = '';
+      this.#runReasonEl.style.display = 'none';
+      run?.removeAttribute('aria-describedby');
+    }
+    if (vm.pvpPendingSubmit && vm.outcome === 'Ongoing') {
+      // The rival's name is model data; the catalog's role word stands in when it is unknown.
+      const name = vm.pvpOpponentName ?? t('battle.card.opponent');
+      this.#waitingEl.textContent = tf('battle.commands.waiting', { name });
+      this.#waitingEl.style.display = 'block';
+    } else {
+      this.#waitingEl.textContent = '';
+      this.#waitingEl.style.display = 'none';
+    }
+  }
+
+  /** Grey a command row (focusable still) or make it live. The text stays >= 4.5:1 either way. */
+  #greyCommand(btn: HTMLButtonElement, greyed: boolean): void {
+    btn.setAttribute('aria-disabled', String(greyed));
+    btn.style.color = greyed ? '#aab' : '#e0e0e0';
+    btn.style.cursor = greyed ? 'default' : 'pointer';
   }
 
   /**
@@ -362,6 +594,12 @@ export class BattleView {
   #setActionButtonsDisabled(disabled: boolean): void {
     for (const el of [this.#skillsEl, this.#actionsEl]) {
       for (const btn of el.querySelectorAll('button')) btn.disabled = disabled;
+    }
+    // The command rows grey with them (a locked Run or Fight is a second action in this turn),
+    // and fall back to their own availability on release.
+    for (const row of this.#commandRows) {
+      const btn = this.#commandBtns.get(row.id);
+      if (btn !== undefined) this.#greyCommand(btn, disabled || !row.enabled);
     }
   }
 
@@ -476,19 +714,33 @@ export class BattleView {
       // PvP still says "Submit:" to distinguish it from PvE "use now" semantics.
       // The two label shapes live in ui/i18n/catalog.en.ts (`battle.skill.pvpSubmit` /
       // `battle.skill.pveLabel`) — the ordering constraint above now binds THOSE entries.
+      // ctl-8i (R-rb-56-FOLLOWUP-ACC): the cell gives power and accuracy too, in both modes; the
+      // hover-only accuracy title is gone.
+      const label = {
+        name: skill.name,
+        power: skill.power,
+        affinity: skill.affinity,
+        accuracy: skill.accuracy,
+      };
       btn.textContent = vm.isPvp
-        ? tf('battle.skill.pvpSubmit', { name: skill.name, affinity: skill.affinity })
-        : tf('battle.skill.pveLabel', {
-            name: skill.name,
-            power: skill.power,
-            affinity: skill.affinity,
-          });
-      btn.title = tf('battle.skill.accuracy', { accuracy: skill.accuracy });
+        ? tf('battle.skill.pvpSubmit', label)
+        : tf('battle.skill.pveLabel', label);
+      btn.setAttribute(LIST_ATTR, 'skills');
+      // A press is remembered for this monster only once it is accepted (PvE: the lock taken).
+      const used = (): void => {
+        this.#lastSkill.set(vm.activeIndex, skill.id);
+      };
       if (vm.isPvp) {
-        btn.addEventListener('click', () => this.#callbacks.onPvpAttack(vm.battleId, skill.id));
+        btn.addEventListener('click', () => {
+          used();
+          this.#callbacks.onPvpAttack(vm.battleId, skill.id);
+        });
       } else {
         btn.addEventListener('click', () =>
-          this.#dispatch(vm.battleId, () => this.#callbacks.onAttack(vm.battleId, skill.id)),
+          this.#dispatch(vm.battleId, () => {
+            used();
+            return this.#callbacks.onAttack(vm.battleId, skill.id);
+          }),
         );
       }
       this.#skillsEl.appendChild(btn);
@@ -576,6 +828,7 @@ export class BattleView {
 
     const recruitBtn = document.createElement('button');
     recruitBtn.setAttribute('data-testid', 'recruit-action');
+    recruitBtn.setAttribute(LIST_ATTR, 'recruit');
     recruitBtn.style.cssText =
       'padding:6px 12px;cursor:pointer;font-family:monospace;background:#2a3a2a;' +
       'color:#e0e0e0;border:1px solid #6a6;border-radius:3px;';
@@ -619,6 +872,7 @@ export class BattleView {
 
     const useBtn = document.createElement('button');
     useBtn.setAttribute('data-testid', 'use-item-action');
+    useBtn.setAttribute(LIST_ATTR, 'bag');
     useBtn.style.cssText =
       'padding:6px 12px;cursor:pointer;font-family:monospace;background:#3a3a2a;' +
       'color:#e0e0e0;border:1px solid #886;border-radius:3px;';
@@ -639,6 +893,7 @@ export class BattleView {
     if (vm.isPvp && vm.pvpPendingSubmit) return;
     for (const member of vm.bench) {
       const btn = document.createElement('button');
+      btn.setAttribute(LIST_ATTR, 'swap');
       btn.style.cssText =
         'padding:6px 12px;cursor:pointer;font-family:monospace;background:#2a2a3a;' +
         'color:#e0e0e0;border:1px solid #448;border-radius:3px;';

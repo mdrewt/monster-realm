@@ -224,6 +224,8 @@ export type BattleOutcomeTag = 'Ongoing' | 'SideAWins' | 'SideBWins' | 'Fled';
 export interface BattleViewModel {
   readonly battleId: bigint;
   readonly turnNumber: number;
+  /** The player's active team slot (sideA.active): the monster a remembered skill belongs to. */
+  readonly activeIndex: number;
   readonly outcome: BattleOutcomeTag;
   readonly playerCard: BattleMonsterCardVM;
   readonly opponentCard: BattleMonsterCardVM;
@@ -393,6 +395,7 @@ export function buildBattleViewModel(
   return {
     battleId: battle.battleId,
     turnNumber: battle.turnNumber,
+    activeIndex: sideA.active,
     outcome: outcomeTag,
     playerCard: monsterCard(playerMon, speciesMap),
     opponentCard: monsterCard(opponentMon, speciesMap),
@@ -500,6 +503,7 @@ function cardEqual(a: BattleMonsterCardVM, b: BattleMonsterCardVM): boolean {
 export function battleVMsEqual(a: BattleViewModel, b: BattleViewModel): boolean {
   if (a.battleId !== b.battleId) return false;
   if (a.turnNumber !== b.turnNumber) return false;
+  if (a.activeIndex !== b.activeIndex) return false;
   if (a.outcome !== b.outcome) return false;
   if (a.canFlee !== b.canFlee) return false;
   if (a.canSwap !== b.canSwap) return false;
@@ -619,4 +623,70 @@ export function shouldSkipBattleRefresh(
   vm: BattleViewModel | null,
 ): boolean {
   return visible && vm !== null && lastVm !== null && battleVMsEqual(lastVm, vm);
+}
+
+// --- the battle command list and its cursor (ctl-8i, design §5 Battle) ---------------------------
+
+/** The command list, in cursor order. */
+export const BATTLE_COMMANDS = ['fight', 'recruit', 'swap', 'bag', 'run'] as const;
+export type BattleCommand = (typeof BATTLE_COMMANDS)[number];
+
+/** One command row: whether it acts now, and why not when the player may ask (Run in PvP). */
+export interface BattleCommandRow {
+  readonly id: BattleCommand;
+  readonly enabled: boolean;
+  readonly reason: 'runPvp' | null;
+}
+
+/** The five rows, always all five, in BATTLE_COMMANDS order. Each is enabled by the same flag that
+ *  renders its controls; a finished battle, or a PvP move waiting on the opponent, greys them all. */
+export function battleCommands(vm: BattleViewModel): readonly BattleCommandRow[] {
+  const ongoing = vm.outcome === 'Ongoing';
+  const open = ongoing && !vm.pvpPendingSubmit;
+  const enabled: Record<BattleCommand, boolean> = {
+    fight: vm.skills.length > 0,
+    recruit: vm.canRecruit,
+    swap: vm.canSwap,
+    bag: vm.cureItems.length > 0,
+    run: vm.canFlee,
+  };
+  return BATTLE_COMMANDS.map((id) => ({
+    id,
+    enabled: open && enabled[id],
+    reason: id === 'run' && ongoing && vm.isPvp ? 'runPvp' : null,
+  }));
+}
+
+export type CursorDir = 'Up' | 'Down' | 'Left' | 'Right';
+
+/** One cursor move over `count` cells. One column: Left/Up step back and Right/Down forward. Two
+ *  columns (the skill grid, row-major): a move with no cell in its direction stays put; nothing
+ *  wraps or snaps. Clamped to [0, count - 1]; an empty list is 0. */
+export function cursorStep(index: number, count: number, dir: CursorDir, cols: 1 | 2): number {
+  if (count <= 0) return 0;
+  const at = Math.min(count - 1, Math.max(0, index));
+  if (cols === 1) {
+    const delta = dir === 'Left' || dir === 'Up' ? -1 : 1;
+    return Math.min(count - 1, Math.max(0, at + delta));
+  }
+  const col = at % 2;
+  switch (dir) {
+    case 'Left':
+      return col === 1 ? at - 1 : at;
+    case 'Right':
+      return col === 0 && at + 1 < count ? at + 1 : at;
+    case 'Up':
+      return at - 2 >= 0 ? at - 2 : at;
+    case 'Down':
+      return at + 2 < count ? at + 2 : at;
+  }
+}
+
+/** Where Fight puts the cursor: the skill this monster last used in this battle, else the first. */
+export function skillCursor(
+  skills: readonly BattleSkillVM[],
+  lastSkillId: number | undefined,
+): number {
+  const at = lastSkillId === undefined ? -1 : skills.findIndex((s) => s.id === lastSkillId);
+  return at < 0 ? 0 : at;
 }

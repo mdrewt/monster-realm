@@ -174,21 +174,18 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // small text.
   // battleView.ts:407
   'battle.card.hpLine': (p) => `PV ${p.current}/${p.max} · ${p.affinity}`,
-  // @desc: PvP skill button: submits the move rather than using it at once, hence the leading
-  // "Valider :"; {name} is the skill name, {affinity} its elemental type. Keep {affinity} LAST and
-  // keep the "Valider :" prefix first (tests match the start of the text). Fits a half-width
-  // button.
-  // battleView.ts:443
-  'battle.skill.pvpSubmit': (p) => `Valider : ${p.name} · ${p.affinity}`,
-  // @desc: PvE skill button, used at once; {name} is the skill name, {power} its damage value and
-  // {affinity} its elemental type. Keep {affinity} LAST (tests match the start of the text). Fits a
-  // half-width button. Glyph-only in English, so identical here.
-  // battleView.ts:444
-  'battle.skill.pveLabel': (p) => `${p.name} (${p.power}) · ${p.affinity}`,
-  // @desc: Hover tooltip on a skill button giving its hit chance; {accuracy} is a percentage and
-  // "Préc." abbreviates "Précision". Very short.
-  // battleView.ts:445
-  'battle.skill.accuracy': (p) => `Préc. ${p.accuracy} %`,
+  // @desc: PvP skill cell of the two-column skill grid: submits the move rather than using it at
+  // once, hence the leading "Valider :"; {name} is the skill name, {power} its damage value,
+  // {affinity} its elemental type and {accuracy} its hit chance ("Préc." abbreviates "Précision").
+  // Keep the "Valider :" prefix first. Fits a half-width button.
+  // battleView.ts (#renderSkills)
+  'battle.skill.pvpSubmit': (p) =>
+    `Valider : ${p.name} (${p.power}) · ${p.affinity} · Préc. ${p.accuracy} %`,
+  // @desc: PvE skill cell of the two-column skill grid, used at once; {name} is the skill name,
+  // {power} its damage value, {affinity} its elemental type and {accuracy} its hit chance ("Préc."
+  // abbreviates "Précision"). Keep {name} first. Fits a half-width button.
+  // battleView.ts (#renderSkills)
+  'battle.skill.pveLabel': (p) => `${p.name} (${p.power}) · ${p.affinity} · Préc. ${p.accuracy} %`,
   // @desc: Button label to run from an ongoing PvE battle. Short verb, fits a narrow button.
   // battleView.ts:470
   'battle.action.flee': 'Fuir',
@@ -233,6 +230,38 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // short phrase.
   // battleView.ts:635
   'battle.outcome.fled': 'Fuite réussie !',
+  // @desc: Battle command list entry that opens the skill grid. One short word; the five command
+  // entries share one narrow row.
+  // battleView.ts (#renderCommands)
+  'battle.command.fight': 'Attaque',
+  // @desc: Battle command list entry that moves to the recruit controls (wild battles only). One
+  // short verb; the five command entries share one narrow row.
+  // battleView.ts (#renderCommands)
+  'battle.command.recruit': 'Recruter',
+  // @desc: Battle command list entry that moves to the bench monsters to swap in. One short verb;
+  // the five command entries share one narrow row.
+  // battleView.ts (#renderCommands)
+  'battle.command.swap': 'Changer',
+  // @desc: Battle command list entry that moves to the battle items (status cures). One short
+  // noun; the five command entries share one narrow row.
+  // battleView.ts (#renderCommands)
+  'battle.command.bag': 'Sac',
+  // @desc: Battle command list entry that runs from a wild battle at once. One short verb; the five
+  // command entries share one narrow row.
+  // battleView.ts (#renderCommands)
+  'battle.command.run': 'Fuir',
+  // @desc: Accessible name of the battle command list (Fight, Recruit, Swap, Bag, Run), read by a
+  // screen reader as the group's label. One word.
+  // battleView.ts (constructor)
+  'battle.commands.label': 'Commandes',
+  // @desc: Caption over the greyed battle command list after the player has submitted a PvP move;
+  // {name} is the rival's display name. Ends with an ellipsis. One line.
+  // battleView.ts (#renderCommands)
+  'battle.commands.waiting': (p) => `En attente de ${p.name}…`,
+  // @desc: Why Run is disabled in a battle against another player, shown under the command list.
+  // One short sentence.
+  // battleView.ts (#renderCommands)
+  'battle.command.runPvpReason': 'Impossible de fuir un combat entre joueurs.',
   // @desc: Title of the PvP challenge overlay when the player has no incoming or outgoing
   // challenge; "PvP" is the player-versus-player abbreviation, kept as-is. One word.
   // pvpView.ts:135

@@ -21,7 +21,7 @@
  *  Adding a literal here is what forces EVERY
  *  registered catalog to grow (the mapped `Catalog` below is total over this union). Keys are
  *  `<namespace>.<screen>.<element>` (M24 §2.3), semantic — named for what the string IS, never
- *  for the DOM mechanism that shows it (`battle.skill.accuracy`, not `accuracyTitle`). */
+ *  for the DOM mechanism that shows it (`battle.commands.waiting`, not `captionText`). */
 export type MessageId =
   | 'chrome.chip.menu'
   | 'chrome.chip.help'
@@ -54,7 +54,7 @@ export type MessageId =
   | 'battle.card.hpLine'
   | 'battle.skill.pvpSubmit'
   | 'battle.skill.pveLabel'
-  | 'battle.skill.accuracy'
+  | 'battle.commands.waiting'
   | 'battle.action.flee'
   | 'battle.recruit.noBait'
   | 'battle.recruit.submit'
@@ -66,6 +66,14 @@ export type MessageId =
   | 'battle.outcome.victory'
   | 'battle.outcome.defeat'
   | 'battle.outcome.fled'
+  // ctl-8i: the battle command list (battleView.ts).
+  | 'battle.command.fight'
+  | 'battle.command.recruit'
+  | 'battle.command.swap'
+  | 'battle.command.bag'
+  | 'battle.command.run'
+  | 'battle.commands.label'
+  | 'battle.command.runPvpReason'
   | 'pvp.title.idle'
   | 'pvp.title.challenge'
   | 'pvp.incoming.label'
@@ -342,13 +350,19 @@ export interface MessageParams {
     readonly max: number;
     readonly affinity: string;
   };
-  readonly 'battle.skill.pvpSubmit': { readonly name: string; readonly affinity: string };
+  readonly 'battle.skill.pvpSubmit': {
+    readonly name: string;
+    readonly power: number;
+    readonly affinity: string;
+    readonly accuracy: number;
+  };
   readonly 'battle.skill.pveLabel': {
     readonly name: string;
     readonly power: number;
     readonly affinity: string;
+    readonly accuracy: number;
   };
-  readonly 'battle.skill.accuracy': { readonly accuracy: number };
+  readonly 'battle.commands.waiting': { readonly name: string };
   readonly 'battle.cure.option': {
     readonly name: string;
     readonly cureStatus: string;

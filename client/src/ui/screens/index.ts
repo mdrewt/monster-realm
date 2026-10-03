@@ -7,6 +7,7 @@
 import type { BaseFrame, FrameId, Stack, UpperFrame } from '../contextStack';
 import type { NavInput } from '../nav';
 import { bagScreen } from './bagScreen';
+import { battleScreen } from './battleScreen';
 import { dialogueScreen } from './dialogueScreen';
 import { healScreen } from './healScreen';
 import { journalScreen } from './journalScreen';
@@ -20,7 +21,9 @@ import type { ScreenAdapter, ScreenContext, ScreenResult } from './types';
 
 export type ScreenAdapters = Readonly<Record<FrameId, ScreenAdapter<unknown, unknown>>>;
 
-/** Total over every frame id, so a new overlay without an adapter fails client-typecheck. Every
+/** Total over every frame id, so a new overlay without an adapter fails client-typecheck. (The
+ *  battle BASE is not a frame: the host steps `battleScreen` there itself, ctl-8i; `battleView`'s
+ *  entry answers only the outcome frame over the world.) Every
  *  entry is the legacy adapter until its ctl-8 screen slice swaps it (ctl-8a: the dialogue, heal
  *  and shop frames; ctl-8b: the box frame, as Monsters; ctl-8d: the Social frame; ctl-8e: the
  *  trade-propose wizard; ctl-8f: the raising frame, as Bag, and the quest log, as Journal; ctl-8h:
@@ -50,7 +53,9 @@ export const SCREEN_ADAPTERS: ScreenAdapters = {
 
 /** A button with nothing above the base. Start opens the menu at the world and does nothing on a
  *  battle (B17: an ongoing battle is never hidden; ctl-6c gives it the menu). B is swallowed: its
- *  world meaning (dismiss the top notice) has no notice to act on yet. */
+ *  world meaning (dismiss the top notice) has no notice to act on yet. The host asks it only at the
+ *  world: a bare battle base is `battleScreen`'s (ctl-8i), which keeps these answers for B, Start
+ *  and Select. */
 export function baseButton(base: BaseFrame, btn: NavInput): ScreenResult {
   switch (btn.button) {
     case 'Start':
@@ -126,10 +131,11 @@ export class ScreenHost {
     }
   }
 
-  /** Whether the top frame takes the D-pad (CTL7C.1): a screen or prompt whose adapter is
-   *  nav-capable. */
+  /** Whether the top frame takes the D-pad (CTL7C.1): a bare battle base (CTL8I.1), or a screen or
+   *  prompt whose adapter is nav-capable. */
   takesNav(stack: Stack): boolean {
     const top = stack[stack.length - 1];
+    if (top.kind === 'battle') return battleScreen.nav === true;
     return (top.kind === 'screen' || top.kind === 'prompt') && this.#adapters[top.id].nav === true;
   }
 
@@ -139,8 +145,10 @@ export class ScreenHost {
     const top = stack[stack.length - 1];
     switch (top.kind) {
       case 'world':
-      case 'battle':
         return baseButton(top, btn);
+      // The battle's cursor ops paint into the battle view, whose frame id keys their state.
+      case 'battle':
+        return this.#step('battleView', btn, ctx, battleScreen as ScreenAdapter<unknown, unknown>);
       case 'textEntry':
         if (btn.button === 'Start') return { kind: 'pop' };
         return btn.button === 'A' ? this.#step(top.owner, btn, ctx) : 'unhandled';
@@ -175,9 +183,13 @@ export class ScreenHost {
   /** One adapter step: the frame's kept state (its `init` the first time since it opened) goes in,
    *  the next one is kept and painted once into the frame's view, and the result comes back. A
    *  paint that throws never loses the result: B and Start must still close a frame whose view is
-   *  broken. */
-  #step(id: FrameId, btn: NavInput, ctx: ScreenContext): ScreenResult {
-    const adapter = this.#adapters[id];
+   *  broken. `adapter` defaults to the frame's own. */
+  #step(
+    id: FrameId,
+    btn: NavInput,
+    ctx: ScreenContext,
+    adapter: ScreenAdapter<unknown, unknown> = this.#adapters[id],
+  ): ScreenResult {
     const vm = adapter.viewModel(ctx);
     const step = adapter.onButton(vm, this.#start(id, adapter, vm), btn);
     this.#states.set(id, step.state);
