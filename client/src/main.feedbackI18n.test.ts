@@ -377,7 +377,8 @@ function focusCanvasAndPressKey(code: string): void {
 }
 
 /** Seeds ONE trade offer involving `H.identity` (initiator or counterparty per `opts`), then
- *  opens the REAL trade overlay via the REAL `KeyU` shortcut (`main.ts`'s `openTrade()` —
+ *  opens the REAL trade overlay via the REAL `KeyU` shortcut (`main.ts`'s `openSocial('trades')`,
+ *  which shows the trade panel of the Social frame, gated by
  *  `overlayVerdict('tradeView').kind === 'allow' && worldHasFocus()`), the same "real input,
  *  no NPC/dialogue" path `main.partyFull.test.ts`'s `openBoxAndFindToParty` uses for Box/KeyB. */
 function openTradeWithOffer(opts: {
@@ -609,52 +610,47 @@ const TRADE_CASES: readonly TradeCase[] = [
 const TRADE_FR_KEYS = TRADE_CASES.map((c) => c.frKey);
 
 describe('main.ts trade feedback routes through the i18n catalog, per-action (slice 21r-b red-team S1)', () => {
-  it.each(
-    TRADE_CASES,
-  )('★★ BITES: under fr, trade $action shows CATALOG_FR[$frKey] — never a sibling trade key — and fires the right reducer with the right args', async ({
-    action,
-    viewerIsInitiator,
-    status,
-    frKey,
-    enLiteral,
-  }) => {
-    await bootMain('/?locale=fr');
-    openTradeWithOffer({ viewerIsInitiator, status });
-    H.linkFrozen = false;
+  it.each(TRADE_CASES)(
+    '★★ BITES: under fr, trade $action shows CATALOG_FR[$frKey] — never a sibling trade key — and fires the right reducer with the right args',
+    async ({ action, viewerIsInitiator, status, frKey, enLiteral }) => {
+      await bootMain('/?locale=fr');
+      openTradeWithOffer({ viewerIsInitiator, status });
+      H.linkFrozen = false;
 
-    findTradeActionButton(action).click();
-    await waitForNonEmpty(tradeFeedbackText);
+      findTradeActionButton(action).click();
+      await waitForNonEmpty(tradeFeedbackText);
 
-    expect(tradeFeedbackText(), `${action} must show its OWN fr key`).toBe(FR[frKey]);
-    expect(tradeFeedbackText()).not.toBe(enLiteral);
-    for (const otherKey of TRADE_FR_KEYS) {
-      if (otherKey === frKey) continue;
-      expect(
-        tradeFeedbackText(),
-        `${action} must not show a SIBLING trade key's fr value (${otherKey}) — kills an ` +
-          'accepted<->rejected / completed<->cancelled key swap',
-      ).not.toBe(FR[otherKey]);
-    }
+      expect(tradeFeedbackText(), `${action} must show its OWN fr key`).toBe(FR[frKey]);
+      expect(tradeFeedbackText()).not.toBe(enLiteral);
+      for (const otherKey of TRADE_FR_KEYS) {
+        if (otherKey === frKey) continue;
+        expect(
+          tradeFeedbackText(),
+          `${action} must not show a SIBLING trade key's fr value (${otherKey}) — kills an ` +
+            'accepted<->rejected / completed<->cancelled key swap',
+        ).not.toBe(FR[otherKey]);
+      }
 
-    switch (action) {
-      case 'accept':
-        expect(H.respondTrade).toHaveBeenCalledOnce();
-        expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: true });
-        break;
-      case 'reject':
-        expect(H.respondTrade).toHaveBeenCalledOnce();
-        expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: false });
-        break;
-      case 'confirm':
-        expect(H.confirmTrade).toHaveBeenCalledOnce();
-        expect(H.confirmTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID });
-        break;
-      case 'cancel':
-        expect(H.cancelTrade).toHaveBeenCalledOnce();
-        expect(H.cancelTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID });
-        break;
-    }
-  });
+      switch (action) {
+        case 'accept':
+          expect(H.respondTrade).toHaveBeenCalledOnce();
+          expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: true });
+          break;
+        case 'reject':
+          expect(H.respondTrade).toHaveBeenCalledOnce();
+          expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: false });
+          break;
+        case 'confirm':
+          expect(H.confirmTrade).toHaveBeenCalledOnce();
+          expect(H.confirmTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID });
+          break;
+        case 'cancel':
+          expect(H.cancelTrade).toHaveBeenCalledOnce();
+          expect(H.cancelTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID });
+          break;
+      }
+    },
+  );
 
   it('★ BITES: under fr, a frozen link on trade Accept shows CATALOG_FR["chrome.feedback.disconnected"], not the hardcoded English literal (kills a non-shop raw-literal revert)', async () => {
     await bootMain('/?locale=fr');

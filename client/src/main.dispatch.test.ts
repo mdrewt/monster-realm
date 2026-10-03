@@ -32,7 +32,9 @@
  * menu. Named intentional changes: CTL7C-2-BOOT-VIEWS (trade, pvp and leaderboard are no longer
  * frames of their own: the `social` frame lends the composite), and the stub view class (its
  * `refresh` now shows and hides the PvP stand-in by `forceVisible`, as the real PvpView does, and
- * every stub records `hostChrome`).
+ * every stub records `hostChrome`). Round 2 adds the legacy U / P / L keys after the adapter switched
+ * the shown panel (CTL8S-3-BOOT-HOTKEY-AFTER-SWITCH) and an outgoing-only challenge to the
+ * auto-show case.
  *
  * Only the views are replaced. The booted main.ts, the router, the stack, the claim and privacy
  * models and the stubbed SDK connection are the real ones (main.controls.test.ts's harness, with
@@ -3261,6 +3263,18 @@ function incomingChallenge(challengeId: bigint): StoreBattleChallenge {
   };
 }
 
+/** A Pending challenge the booted player sent to another one (nothing incoming). */
+function outgoingChallenge(challengeId: bigint): StoreBattleChallenge {
+  return {
+    challengeId,
+    challenger: H.identity,
+    target: OTHER_IDENTITY,
+    challengerPartyIds: [],
+    status: 'Pending',
+    createdAtMs: 0n,
+  };
+}
+
 /** Open the main menu at the world and pick Social › `leaf` with the real menu keys (Down and
  *  Enter). The menu remembers its cursor, so each level is walked with Down until the entry is
  *  active. Returns the clock after the last press. */
@@ -3779,13 +3793,17 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
     expect(stackNow()).toEqual([WORLD_FRAME]);
   });
 
-  it('CTL8S-3-BOOT-AUTO-SHOW: an incoming challenge does not open Social while the quest log is open, nor over an Ongoing battle (also in the batch that brings it), and opens Social on Challenges (the pvp root alone, socialTab challenges) on the first batch with no overlay open and a world base', async () => {
+  it('CTL8S-3-BOOT-AUTO-SHOW: a pending challenge the player SENT (outgoing only, nothing incoming) never opens Social; an incoming challenge does not open Social while the quest log is open, nor over an Ongoing battle (also in the batch that brings it), and opens Social on Challenges (the pvp root alone, socialTab challenges) on the first batch with no overlay open and a world base', async () => {
     // WRONG IMPL KILLED: today's auto-show (it pushes a `pvpView` frame of its own); an auto-show
     // that fires over another overlay (two dialogs) or over an Ongoing battle (a challenge dialog
     // over the fight; today the only guard is whether the battle VIEW is visible, never the stack's
     // base, and this harness's battle stand-in never shows); one that opens Social on the trade or
     // leaderboard root; and one that does not bind the tab (Social would open on what U last
     // bound).
+    // ctl-8s round 2, WRONG IMPL KILLED (a measured round-1 survivor, pinned here): the auto-show
+    // condition widened from `vm.incoming !== null` to `vm.incoming !== null || vm.outgoing !==
+    // null` (the player's OWN pending challenge would pop the Challenges dialog over the world on
+    // the next batch, every batch until it is answered).
     await bootReady();
     server(1000);
     const seatReads: unknown[] = [];
@@ -3800,6 +3818,24 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
         result: btn.button === 'Start' && !btn.repeat ? { kind: 'popToBase' } : 'consumed',
       }),
     });
+
+    // Not for a challenge the player sent: nothing open, a world base, an outgoing one only.
+    expect(stackNow(), 'outgoing: precondition: nothing open over the world').toEqual([
+      WORLD_FRAME,
+    ]);
+    opts.store.upsertChallenge(outgoingChallenge(50n));
+    server(1050);
+    expect(
+      opts.store.allChallenges().map((c) => [c.challengeId, c.challenger, c.target, c.status]),
+      'outgoing: precondition: the batch carried the player`s own pending challenge, and no other',
+    ).toEqual([[50n, H.identity, OTHER_IDENTITY, 'Pending']]);
+    expect(stackNow(), 'outgoing: no Social frame').toEqual([WORLD_FRAME]);
+    expect(socialShown(), 'outgoing: no Social root shown').toEqual([]);
+    expect(seatReads, 'outgoing: nothing was seated').toEqual([]);
+    server(1060);
+    expect(stackNow(), 'outgoing: nor on the next batch').toEqual([WORLD_FRAME]);
+    expect(socialShown()).toEqual([]);
+    opts.store.removeChallenge(50n);
 
     // Not while the quest log is open.
     press('KeyQ', 1100);
@@ -3857,5 +3893,156 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
       screenFrame('social'),
     ]);
     expect(socialShown()).toEqual(['challenges']);
+  });
+
+  it('CTL8S-3-BOOT-HOTKEY-AFTER-SWITCH: after the Social adapter switched the shown panel through its lent view, a Social key closes the frame when it is the key of the panel now shown or the key whose tab the open bound, and any other Social key changes nothing (the frame, the shown root and socialTab stay, nothing is seated again); every such keydown is consumed; and while another frame covers Social no Social key closes it', async () => {
+    // WRONG IMPL KILLED: today's rule, where only the key of the SHOWN panel may close (U opened
+    // Trades, the adapter switched to Challenges, and U is now refused by the trade panel's own
+    // verdict over the pvp root: the key that opened the frame no longer closes it, the Red; the
+    // same for L after Rankings switched to Trades); the opposite rule, where only the bound key
+    // closes (P on the switched-to pvp panel would do nothing); an "any Social key closes" rule (L
+    // over a pvp panel U opened); a third key that switches the panel or rebinds the requested tab
+    // (`openSocial` re-run for it); a close that bypasses the verdict (a key closing Social from
+    // under the claim frame that covers it); and a branch that drops `preventDefault` on a key it
+    // refuses.
+    await bootReady();
+    server(1000);
+    const views: SocialFrameView[] = [];
+    const ctxs: CtxRead[] = [];
+    let inits = 0;
+    swapAdapter('social', {
+      viewModel: (ctx: CtxRead) => {
+        ctxs.push(ctx);
+        return undefined;
+      },
+      init: () => {
+        inits += 1;
+        return { n: inits };
+      },
+      onButton: (_vm: unknown, state: unknown, btn: Pressed) => ({
+        state,
+        result: btn.button === 'Start' && !btn.repeat ? { kind: 'popToBase' } : 'consumed',
+      }),
+      paint: (view: unknown) => {
+        views.push(view as SocialFrameView);
+      },
+    });
+    const SOCIAL_STACK = [WORLD_FRAME, screenFrame('social')];
+    const TAB_OF: Readonly<Record<SocialPanelId, string>> = {
+      tradeView: 'trades',
+      pvpView: 'challenges',
+      leaderboardView: 'rankings',
+    };
+    /** The requested tab, read live through a context the stand-in was handed. */
+    const socialTabNow = (): unknown => ctxs.at(-1)?.socialTab;
+    const keydowns: KeyboardEvent[] = [];
+    const key = (code: string, at: number): void => {
+      keydowns.push(press(code, at));
+    };
+    /** Open Social with `code`, then switch to `panel` through the view the open painted. */
+    const openThenSwitch = (code: string, tab: string, panel: SocialPanelId, at: number): void => {
+      key(code, at);
+      expect(stackNow(), `${code}: precondition: the Social frame opened`).toEqual(SOCIAL_STACK);
+      expect(socialTabNow(), `${code}: precondition: the open bound ${tab}`).toBe(tab);
+      const view = views.at(-1);
+      if (view === undefined) throw new Error(`${code}: precondition: the open painted its view`);
+      view.show(panel);
+      expect(socialShown(), `${code}, show(${panel}): precondition: that root alone`).toEqual([
+        TAB_OF[panel],
+      ]);
+      expect(stackNow(), `${code}, show(${panel}): precondition: the same frame`).toEqual(
+        SOCIAL_STACK,
+      );
+    };
+    let t = 1100;
+
+    // (1) The key that opened it: U opened Trades, the adapter showed Challenges, U closes Social.
+    openThenSwitch('KeyU', 'trades', 'pvpView', t);
+    key('KeyU', t + 10);
+    expect(stackNow(), 'U after the switch to Challenges: the opening key closes Social').toEqual([
+      WORLD_FRAME,
+    ]);
+    expect(socialShown(), 'U after the switch: no root is left shown').toEqual([]);
+    t += 100;
+
+    // (2) The key of the panel now shown: P closes the Social frame U opened.
+    openThenSwitch('KeyU', 'trades', 'pvpView', t);
+    key('KeyP', t + 10);
+    expect(stackNow(), 'P on the shown Challenges panel: closes Social').toEqual([WORLD_FRAME]);
+    expect(socialShown(), 'P: no root is left shown').toEqual([]);
+    t += 100;
+
+    // (3) Neither: L over the Challenges panel U opened changes nothing.
+    openThenSwitch('KeyU', 'trades', 'pvpView', t);
+    const initsBefore = inits;
+    key('KeyL', t + 10);
+    expect(stackNow(), 'L (neither key): the frame stays').toEqual(SOCIAL_STACK);
+    expect(socialShown(), 'L: the pvp root is still the one shown').toEqual(['challenges']);
+    expect(socialTabNow(), 'L: socialTab is not rebound').toBe('trades');
+    expect(inits, 'L: the frame is not seated again').toBe(initsBefore);
+    key('KeyP', t + 20);
+    expect(stackNow(), 'precondition: P closed it').toEqual([WORLD_FRAME]);
+    t += 100;
+
+    // (4) L opened Rankings, the adapter showed Trades: P (neither key) does nothing, L closes.
+    openThenSwitch('KeyL', 'rankings', 'tradeView', t);
+    key('KeyP', t + 10);
+    expect(stackNow(), 'P over Trades opened by L: the frame stays').toEqual(SOCIAL_STACK);
+    expect(socialShown(), 'P: the trade root is still the one shown').toEqual(['trades']);
+    expect(socialTabNow(), 'P: socialTab is not rebound').toBe('rankings');
+    key('KeyL', t + 20);
+    expect(stackNow(), 'L after the switch to Trades: the opening key closes Social').toEqual([
+      WORLD_FRAME,
+    ]);
+    expect(socialShown(), 'L after the switch: no root is left shown').toEqual([]);
+    t += 100;
+
+    // (5) Control, no switch: the round-1 rule holds (another key does nothing, the same closes).
+    key('KeyP', t);
+    expect(stackNow(), 'control: P opened Social').toEqual(SOCIAL_STACK);
+    expect(socialShown(), 'control: on Challenges').toEqual(['challenges']);
+    key('KeyU', t + 10);
+    expect(stackNow(), 'control: U over Challenges opened by P: the frame stays').toEqual(
+      SOCIAL_STACK,
+    );
+    expect(socialShown(), 'control: U switched nothing').toEqual(['challenges']);
+    expect(socialTabNow(), 'control: U rebound nothing').toBe('challenges');
+    key('KeyP', t + 20);
+    expect(stackNow(), 'control: P closes it').toEqual([WORLD_FRAME]);
+    t += 100;
+
+    // (6) Covered: the claim frame above Social. Neither the opening key (U), the shown panel's
+    // key (P) nor the third one closes it, and none switches it.
+    openThenSwitch('KeyU', 'trades', 'pvpView', t);
+    stubView('ClaimView').visible = true;
+    server(t + 10);
+    const COVERED = [...SOCIAL_STACK, screenFrame('claimView')];
+    expect(stackNow(), 'covered: precondition: the claim frame covers Social').toEqual(COVERED);
+    let refused = 0;
+    for (const code of ['KeyU', 'KeyP', 'KeyL']) {
+      key(code, t + 20 + refused * 10);
+      expect(stackNow(), `covered: ${code} closes nothing`).toEqual(COVERED);
+      expect(socialShown(), `covered: ${code} leaves the pvp root shown`).toEqual(['challenges']);
+      expect(stubView('ClaimView').visible, `covered: ${code} leaves the claim frame up`).toBe(
+        true,
+      );
+      refused += 1;
+    }
+    expect(refused, 'ANTI-VACUITY: three covered presses').toBe(3);
+    expect(socialTabNow(), 'covered: socialTab is not rebound').toBe('trades');
+    stubView('ClaimView').visible = false;
+    server(t + 100);
+    expect(stackNow(), 'covered: precondition: the claim frame closed').toEqual(SOCIAL_STACK);
+    key('KeyP', t + 110);
+    expect(stackNow(), 'control: uncovered, the shown panel`s key closes Social').toEqual([
+      WORLD_FRAME,
+    ]);
+
+    // Every Social keydown above, closing or refused, was consumed.
+    expect(keydowns.length, 'ANTI-VACUITY: eighteen Social keydowns').toBe(18);
+    expect(
+      keydowns.filter((e) => !e.defaultPrevented).map((e) => e.code),
+      'every Social keydown is consumed',
+    ).toEqual([]);
   });
 });
