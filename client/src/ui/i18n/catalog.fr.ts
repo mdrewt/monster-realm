@@ -621,6 +621,50 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: The negative option of a Yes / No confirm, beside Yes. One short word.
   // shopView.ts, healView.ts, boxView.ts (the confirm options)
   'prompt.no': 'Non',
+  // @desc: Tab of the Social screen that will list the players online. One word, fits a narrow tab.
+  // tradeView.ts (the Social tab strip)
+  'social.tab.players': 'Joueurs',
+  // @desc: Tab of the Social screen showing the trade offered to or by the player. One word, fits a
+  // narrow tab.
+  // tradeView.ts (the Social tab strip)
+  'social.tab.trades': 'Échanges',
+  // @desc: Tab of the Social screen showing PvP challenges sent to or by the player. One word, fits
+  // a narrow tab.
+  // tradeView.ts (the Social tab strip)
+  'social.tab.challenges': 'Défis',
+  // @desc: Tab of the Social screen showing the ranked leaderboard. One word, fits a narrow tab.
+  // tradeView.ts (the Social tab strip)
+  'social.tab.rankings': 'Classement',
+  // @desc: Line shown on the Social screen's Players tab while the player list is not built yet. One
+  // short sentence.
+  // tradeView.ts (the Players tab)
+  'social.players.placeholder': 'La liste des joueurs n’est pas encore disponible.',
+  // @desc: Row of the action sheet opened on a trade offer or a PvP challenge: accept it. One short
+  // verb.
+  // tradeView.ts (the Social action sheet)
+  'social.action.accept': 'Accepter',
+  // @desc: Row of the action sheet opened on a trade offer or a PvP challenge: decline it (a Yes /
+  // No question follows). One short verb.
+  // tradeView.ts (the Social action sheet)
+  'social.action.decline': 'Refuser',
+  // @desc: Row of the action sheet opened on an accepted trade: complete it (a Yes / No question
+  // follows). One short verb.
+  // tradeView.ts (the Social action sheet)
+  'social.action.confirm': 'Confirmer',
+  // @desc: Row of the action sheet opened on the player's own trade offer or challenge: withdraw it.
+  // One short verb.
+  // tradeView.ts (the Social action sheet)
+  'social.action.cancel': 'Annuler',
+  // @desc: The Yes / No question before a trade offer is declined; No is the default answer.
+  // tradeView.ts (the Social prompt)
+  'social.confirm.declineTrade': 'Refuser cet échange ?',
+  // @desc: The Yes / No question before an accepted trade is completed, which cannot be reversed; No
+  // is the default answer.
+  // tradeView.ts (the Social prompt)
+  'social.confirm.confirmTrade': 'Conclure cet échange ? Cette action est irréversible.',
+  // @desc: The Yes / No question before a PvP challenge is declined; No is the default answer.
+  // tradeView.ts (the Social prompt)
+  'social.confirm.declineChallenge': 'Refuser ce défi ?',
   // @desc: Placeholder option of the trade-proposal dialog's target selector, shown before the
   // player picks another player to trade with; ends with an ellipsis. Short, fits a narrow
   // dropdown.

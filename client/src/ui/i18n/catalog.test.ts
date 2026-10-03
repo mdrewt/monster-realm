@@ -333,6 +333,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // ctl-8c (named intentional change): +4 plain keys (`box.sheet.{care,feed,evolve,feedNone}`)
   // here, +3 parameterised ones (`box.feed.item`, `box.evolve.confirm`, `box.feedback.fed`) in
   // SAMPLE_PARAMS = 237 keys.
+  // ctl-8d (named intentional change): +12 plain keys here (`social.tab.{players,trades,
+  // challenges,rankings}`, `social.players.placeholder`, `social.action.{accept,decline,confirm,
+  // cancel}`, `social.confirm.{declineTrade,confirmTrade,declineChallenge}`) = 249 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -574,6 +577,20 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'prompt.yes': 'Yes',
   'prompt.no': 'No',
   'heal.prompt.unavailable': 'No healer in reach. Healing is unavailable.',
+  // ctl-8d: 12 new plain keys — the Social frame's four tab labels, the Players tab's placeholder,
+  // the action sheet's four rows and the three Yes / No questions (all painted by tradeView.ts).
+  'social.tab.players': 'Players',
+  'social.tab.trades': 'Trades',
+  'social.tab.challenges': 'Challenges',
+  'social.tab.rankings': 'Rankings',
+  'social.players.placeholder': 'The player list is not available yet.',
+  'social.action.accept': 'Accept',
+  'social.action.decline': 'Decline',
+  'social.action.confirm': 'Confirm',
+  'social.action.cancel': 'Cancel',
+  'social.confirm.declineTrade': 'Decline this trade?',
+  'social.confirm.confirmTrade': 'Complete this trade? It cannot be undone.',
+  'social.confirm.declineChallenge': 'Decline this challenge?',
 };
 
 interface ParamOutputSpec {
@@ -936,7 +953,10 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 237-key roster (ctl-8c: +`box.sheet.{care,feed,evolve,feedNone}` +`box.feed.item`
+/** The full 249-key roster (ctl-8d: +`social.tab.{players,trades,challenges,rankings}`
+ *  +`social.players.placeholder` +`social.action.{accept,decline,confirm,cancel}`
+ *  +`social.confirm.{declineTrade,confirmTrade,declineChallenge}` over the 237-key roster below;
+ *  ctl-8c: +`box.sheet.{care,feed,evolve,feedNone}` +`box.feed.item`
  *  +`box.evolve.confirm` +`box.feedback.fed` over the 230-key roster below; ctl-8b:
  *  -`box.card.rename` +`box.tab.{party,storage}`
  *  +`box.sheet.{summary,nickname,move}` +`box.feedback.{movedToParty,movedToBox}` over the 224-key
@@ -1002,7 +1022,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8c 237-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8d 249-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1091,10 +1111,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 237 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 249 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (237 keys since ctl-8c).
+    // (a) roster is exactly the EXPECTED_KEYS roster (249 keys since ctl-8d).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
@@ -1299,5 +1319,55 @@ describe('ctl-8a: catalog.fr.ts, the keys ctl-8a adds', () => {
       Object.keys(EXPECTED_FR_CTL8A_PLAIN).length + Object.keys(EXPECTED_FR_CTL8A_PARAMS).length,
       'ANTI-VACUITY: all 11 ctl-8a keys are pinned in French',
     ).toBe(11);
+  });
+});
+
+// =============================================================================
+// ctl-8d: the French values of the 12 keys ctl-8d adds (the Social tabs, the Players placeholder,
+// the action sheet's rows and its three Yes / No questions), pinned exactly as the English ones are
+// in EXPECTED_PLAIN above. Before each `?` stands a U+00A0 NO-BREAK SPACE: the French typography
+// convention catalog.fr.ts documents in its header and follows in `box.evolve.confirm`.
+// =============================================================================
+
+/** U+00C9 (capital E acute) and U+00A0 (no-break space), built by code point so the expected
+ *  French text holds no pasted glyph (E_ACUTE and RIGHT_QUOTE are the ones declared above). */
+const CAPITAL_E_ACUTE = String.fromCharCode(0x00c9);
+const NO_BREAK_SPACE = String.fromCharCode(0x00a0);
+
+const EXPECTED_FR_CTL8D_PLAIN: Record<string, string> = {
+  'social.tab.players': 'Joueurs',
+  'social.tab.trades': `${CAPITAL_E_ACUTE}changes`,
+  'social.tab.challenges': `D${E_ACUTE}fis`,
+  'social.tab.rankings': 'Classement',
+  'social.players.placeholder': `La liste des joueurs n${RIGHT_QUOTE}est pas encore disponible.`,
+  'social.action.accept': 'Accepter',
+  'social.action.decline': 'Refuser',
+  'social.action.confirm': 'Confirmer',
+  'social.action.cancel': 'Annuler',
+  'social.confirm.declineTrade': `Refuser cet ${E_ACUTE}change${NO_BREAK_SPACE}?`,
+  'social.confirm.confirmTrade': `Conclure cet ${E_ACUTE}change${NO_BREAK_SPACE}? Cette action est irr${E_ACUTE}versible.`,
+  'social.confirm.declineChallenge': `Refuser ce d${E_ACUTE}fi${NO_BREAK_SPACE}?`,
+};
+
+describe('ctl-8d: catalog.fr.ts, the keys ctl-8d adds', () => {
+  it('ctl-8d FR-PINS: the 12 new plain keys carry their exact French text in catalog.fr.ts, each a translation of its English entry', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot); a French entry left
+    // as the English copy, reworded, or swapped with a sibling (Accepter / Refuser, the two
+    // trade questions); a confirm question that drops the irreversibility; a straight apostrophe
+    // (not U+2019) in the placeholder; a decomposed or missing accent; and a question mark glued
+    // to its word or set off by a plain breaking space instead of the catalog's U+00A0 (a browser
+    // could wrap the `?` onto a line of its own).
+    for (const [key, expected] of Object.entries(EXPECTED_FR_CTL8D_PLAIN)) {
+      const en = EXPECTED_PLAIN[key];
+      expect(typeof en, `fixture: ${key} has an English pin`).toBe('string');
+      const fr = (CATALOG_FR as Record<string, unknown>)[key];
+      expect(typeof fr, `${key} must be a plain string in the fr catalog`).toBe('string');
+      expect(fr, `${key}: the exact French text`).toBe(expected);
+      expect(fr, `${key}: a translation, not the English copy`).not.toBe(en);
+    }
+    expect(
+      Object.keys(EXPECTED_FR_CTL8D_PLAIN).length,
+      'ANTI-VACUITY: all 12 ctl-8d keys are pinned in French',
+    ).toBe(12);
   });
 });

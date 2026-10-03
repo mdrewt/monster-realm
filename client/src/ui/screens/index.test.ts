@@ -27,6 +27,12 @@
  * CTL7C-1-NAV-CAPABLE's shipped loop, CTL7C-2-RESET-ON-OPEN's throwing loop, CTL7D-6-OBSERVE-SKIPS'
  * shipped observe and CTL8B-4-ADAPTER-SWAPPED) now covers it. The host gains cross-open memory
  * (`remember`, `forget`) and `seat`: the CTL8S-1-* cases at the end.
+ * ctl-8d (CTL8D.1-.3): the Social frame holds `socialScreen` (nav-capable, opted in to memory); the
+ * other 13 stay legacy. Named intentional changes in this file: the CONVERTED roster gains `social`
+ * (so CTL6B-1-ADAPTERS-TOTAL reads 13 legacy ids and the Social frame holding socialScreen,
+ * CTL7C-1-NAV-CAPABLE's shipped loop expects the Social frame nav-capable, and
+ * CTL7D-6-OBSERVE-SKIPS' storeless shipped observe no longer reaches it), and the new
+ * CTL8D-1-HOST-REMEMBERS case at the end.
  *
  * Adapters are injected as recording stubs, so every routing claim is read off which stub was
  * called, with what, and what came back. The base cases inject adapters that THROW, so "the base
@@ -38,6 +44,7 @@ import { DEFAULT_BINDINGS } from '../../input/bindings';
 import { VBUTTONS, type VButton } from '../../input/buttons';
 import { KeyboardSource } from '../../input/keyboardSource';
 import { InputRouter, type RouteContext, routedBindings } from '../../input/router';
+import type { StoreBattleChallenge } from '../../net/store';
 import {
   type BaseFrame,
   type FrameId,
@@ -54,7 +61,8 @@ import { baseButton, SCREEN_ADAPTERS, ScreenHost } from './index';
 import { legacyAdapter } from './legacyAdapter';
 import { monstersScreen } from './monstersScreen';
 import { shopScreen } from './shopScreen';
-import type { ScreenAdapter, ScreenContext, ScreenResult } from './types';
+import { socialScreen } from './socialScreen';
+import type { ScreenAdapter, ScreenContext, ScreenResult, SocialTab } from './types';
 
 const CTX = {
   store: {},
@@ -165,19 +173,23 @@ const OPEN_MENU: ScreenResult = { kind: 'openMenu' };
 const TOGGLE_HELP: ScreenResult = { kind: 'toggleHelp' };
 
 /** The frames the ctl-8 slices have converted, each to its own nav-capable screen adapter
- *  (ctl-8a: dialogue, shop, heal; ctl-8b: the box frame, which is the Monsters frame). */
+ *  (ctl-8a: dialogue, shop, heal; ctl-8b: the box frame, which is the Monsters frame; ctl-8d: the
+ *  Social frame). */
 const CONVERTED: ReadonlyMap<FrameId, unknown> = new Map<FrameId, unknown>([
   ['dialogueView', dialogueScreen],
   ['shopView', shopScreen],
   ['healView', healScreen],
   ['boxView', monstersScreen],
+  // ctl-8d (named intentional change): the Social frame holds its own screen.
+  ['social', socialScreen],
 ]);
 /** Every frame id still on the legacy adapter. ctl-8s (named intentional change): the Social frame
- *  is one of them until ctl-8d (was: every OVERLAY id still on the legacy adapter). */
+ *  is one of them until ctl-8d (was: every OVERLAY id still on the legacy adapter). ctl-8d (named
+ *  intentional change): the Social frame left it, so it holds 13 ids again. */
 const LEGACY_IDS: readonly FrameId[] = FRAME_IDS.filter((id) => !CONVERTED.has(id));
 
 describe('SCREEN_ADAPTERS (ctl-6b)', () => {
-  it('CTL6B-1-ADAPTERS-TOTAL: every frame id (the overlay ids and the Social frame) has an adapter, the dialogue, shop and heal frames hold their own ctl-8a screens, the box frame its ctl-8b Monsters screen and every other one, the Social frame included, the legacy adapter, and the default table answers a legacy screen', () => {
+  it('CTL6B-1-ADAPTERS-TOTAL: every frame id (the overlay ids and the Social frame) has an adapter, the dialogue, shop and heal frames hold their own ctl-8a screens, the box frame its ctl-8b Monsters screen, the Social frame its ctl-8d Social screen and every other one the legacy adapter, and the default table answers a legacy screen', () => {
     // WRONG IMPL KILLED: a table that omits an overlay (that frame would have no way to answer
     // B or Start), carries a stray id, holds a bespoke adapter before its ctl-8 slice lands, and a
     // host over SCREEN_ADAPTERS that does not answer a legacy screen as the legacy adapter does.
@@ -191,12 +203,16 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
     // `social` (the Social frame) to the overlay ids, and `social` holds the legacy adapter until
     // ctl-8d: the legacy roster is 14 ids and the loops below drive it too. Was: the key set was
     // OVERLAY_IDS and the legacy roster 13 ids.
+    // INTENTIONAL CHANGE (ctl-8d, CTL8D.1-.3): `social` now holds socialScreen (by identity), so the
+    // legacy roster is 13 ids again and the host loop below no longer drives the Social frame
+    // (its screen reads the store's trade and challenge rows; CTL8D-1-HOST-REMEMBERS drives it over
+    // a store that has them). Was: `social` was the legacy adapter and the roster 14 ids.
     expect([...Object.keys(SCREEN_ADAPTERS)].sort()).toEqual([...FRAME_IDS].sort());
     expect(FRAME_IDS, 'ANTI-VACUITY: 17 overlay ids and the Social frame').toHaveLength(18);
-    expect(SCREEN_ADAPTERS.social, 'the Social frame is the legacy adapter').toBe(legacyAdapter);
-    expect(LEGACY_IDS, 'ANTI-VACUITY: 14 legacy ids').toHaveLength(14);
+    expect(SCREEN_ADAPTERS.social, 'the Social frame is its ctl-8d screen').toBe(socialScreen);
+    expect(LEGACY_IDS, 'ANTI-VACUITY: 13 legacy ids').toHaveLength(13);
     expect(LEGACY_IDS.includes('boxView'), 'boxView is no longer legacy').toBe(false);
-    expect(LEGACY_IDS.includes('social'), 'the Social frame is legacy').toBe(true);
+    expect(LEGACY_IDS.includes('social'), 'the Social frame is no longer legacy').toBe(false);
     expect(LEGACY_IDS.length + CONVERTED.size, 'ANTI-VACUITY: every id is one or the other').toBe(
       FRAME_IDS.length,
     );
@@ -622,6 +638,8 @@ describe('ScreenHost (ctl-7c)', () => {
     // D-pad too; the 13 legacy ids still do not.
     // INTENTIONAL CHANGE (ctl-8s): every FRAME id; the Social frame is legacy, so it takes no
     // D-pad until ctl-8d (was OVERLAY_IDS).
+    // INTENTIONAL CHANGE (ctl-8d, CTL8D.1): the Social frame holds socialScreen (CONVERTED holds
+    // it), so it takes the D-pad too, as a screen and as a prompt. Was: false (legacy).
     const shipped = hostOf(SCREEN_ADAPTERS);
     for (const id of FRAME_IDS) {
       const navCapable = CONVERTED.has(id);
@@ -1955,6 +1973,10 @@ describe('ScreenHost.observe (ctl-7d)', () => {
       // INTENTIONAL CHANGE (ctl-8a): was every overlay id; ctl-8a: the 14 legacy ids — the three
       // converted adapters observe and read a real store (CTL8A-4-HOST-FLOW covers them).
       // ctl-8s: LEGACY_IDS spans the frame ids, so the legacy Social frame is observed here too.
+      // INTENTIONAL CHANGE (ctl-8d): the Social frame holds socialScreen now, which observes and
+      // reads the store's trade and challenge rows (CTL8D-1-HOST-REMEMBERS drives it over a store
+      // that has them), so it left LEGACY_IDS and this storeless pass no longer reaches it. Was:
+      // the legacy Social frame was observed here.
       shipped.observe(stackOf(WORLD, ...LEGACY_IDS.map((id) => screen(id))), clock.ctx);
       shipped.observe(stackOf(battle('7'), ...LEGACY_IDS.map((id) => prompt(id))), clock.ctx);
       expect(shippedErrors, 'the shipped table reports nothing').toEqual([]);
@@ -2870,5 +2892,153 @@ describe('ScreenHost cross-open memory and seat (ctl-8s, CTL8S.1)', () => {
     }
     expect(faults, 'ANTI-VACUITY: three faults').toBe(3);
     expect(errors.length, 'nothing more is reported once the fault clears').toBe(1);
+  });
+});
+
+// ==========================================================================================
+// ctl-8d: the Social frame over the SHIPPED table (CTL8D.1)
+// ==========================================================================================
+//
+// main.ts's `openSocial(tab)` binds `ctx.socialTab`, syncs the stack (the push edge runs
+// `host.opened`, which moves the frame's kept state into the host's memory) and seats the frame
+// (`host.seat`: `init(vm, remembered)` and one paint). A ScreenHost over the shipped table, a
+// context whose requested tab and challenge rows the case controls, and a recording stand-in for
+// the `SocialFrameView` the shell lends: the tab a closed frame was left on is the tab the next
+// plain open paints, `forget()` (a reconnect) drops it, and a challenge to the viewer is accepted
+// through the host with A, A.
+
+const SOCIAL_ME = 'aa'.repeat(32);
+
+interface SocialHostWorld {
+  tab: SocialTab | null;
+  challenges: readonly StoreBattleChallenge[];
+}
+
+function socialHostCtx(w: SocialHostWorld): ScreenContext {
+  const store = {
+    allTradeOffers: () => [],
+    allChallenges: () => w.challenges.map((c) => ({ ...c })),
+  };
+  return {
+    store,
+    identity: SOCIAL_ME,
+    bindings: DEFAULT_BINDINGS,
+    now: () => 0,
+    shopId: null,
+    healLocationId: null,
+    socialTab: w.tab,
+    reduceMotion: false,
+  } as unknown as ScreenContext;
+}
+
+interface RecordingSocialView {
+  readonly view: object;
+  /** Every `show(panel)`, in order. */
+  readonly shown: unknown[];
+  /** Every paint `trades.paintSocial(chrome, p)` was handed, in order. */
+  readonly painted: unknown[];
+  /** Every `challenges.paintCursor(row)`, in order. */
+  readonly cursors: unknown[];
+}
+
+function recordingSocialView(): RecordingSocialView {
+  const shown: unknown[] = [];
+  const painted: unknown[] = [];
+  const cursors: unknown[] = [];
+  const view = {
+    chrome: { part: 'the Social chrome' },
+    trades: {
+      paintSocial: (_chrome: unknown, p: unknown) => {
+        painted.push(p);
+      },
+    },
+    challenges: {
+      paintCursor: (row: unknown) => {
+        cursors.push(row);
+      },
+    },
+    rankings: undefined,
+    show: (panel: unknown) => {
+      shown.push(panel);
+    },
+  };
+  return { view, shown, painted, cursors };
+}
+
+describe('the Social frame over the shipped table (ctl-8d, CTL8D.1)', () => {
+  it('CTL8D-1-HOST-REMEMBERS: over the shipped table a plain open (no requested tab) of the Social frame paints Players; RB, RB, RB walks to Rankings, and after a close the next plain open paints Rankings, the tab it was left on; after forget() a plain open paints Players again; and with a challenge to the viewer, an open on Challenges lands on it and A, A through the host accepts it', () => {
+    // WRONG IMPL KILLED: a shipped table still holding the legacy adapter for `social` (nothing
+    // paints, RB is unhandled and A is the page's); a Social screen that does not opt in to memory
+    // (the reopen paints Players again: the remembered tab is lost) or whose init ignores the
+    // remembered state; one whose memory outlives `forget()` (a reconnect would reopen on the old
+    // session's tab); a seat that paints nothing; a view model that cannot be built from the real
+    // context fields (`socialTab`, the store's challenge rows); and an A, A that sends nothing, or
+    // sends for another challenge, through the real host's fresh view model per step.
+    const social = recordingSocialView();
+    const host = new ScreenHost(
+      SCREEN_ADAPTERS,
+      (id) => (id === 'social' ? social.view : undefined),
+      unexpectedPaintError,
+    );
+    const w: SocialHostWorld = { tab: null, challenges: [] };
+    const stack = stackOf(WORLD, screen('social'));
+    const lastTab = (): unknown =>
+      (social.painted.at(-1) as { readonly tab?: unknown } | undefined)?.tab;
+    /** The open path's two host calls: the push edge, then the seat. */
+    const openSocial = (): void => {
+      host.opened(screen('social'));
+      host.seat(screen('social'), socialHostCtx(w));
+    };
+
+    expect(host.takesNav(stack), 'the Social frame takes the D-pad').toBe(true);
+    openSocial();
+    expect(social.painted.length, 'the seat paints once').toBe(1);
+    expect(lastTab(), 'a first plain open: Players').toBe('players');
+    expect(social.shown.at(-1), 'on the trade root').toBe('tradeView');
+
+    for (const tab of ['trades', 'challenges', 'rankings'] as const) {
+      expect(host.button(stack, nav('RB'), socialHostCtx(w)), `RB to ${tab}`).toBe('consumed');
+      expect(lastTab(), `RB to ${tab}`).toBe(tab);
+    }
+    expect(social.shown.at(-1), 'Rankings shows the leaderboard root').toBe('leaderboardView');
+
+    openSocial();
+    expect(lastTab(), 'the next plain open paints the tab it was left on').toBe('rankings');
+    expect(social.shown.at(-1)).toBe('leaderboardView');
+    expect(social.painted.length, 'ANTI-VACUITY: two seats and three steps, one paint each').toBe(
+      5,
+    );
+
+    host.forget();
+    openSocial();
+    expect(lastTab(), 'after a reconnect nothing is remembered: Players').toBe('players');
+    expect(social.shown.at(-1)).toBe('tradeView');
+
+    // A challenge to the viewer, the frame opened on Challenges (P, or the auto-show): A, A.
+    w.tab = 'challenges';
+    w.challenges = [
+      {
+        challengeId: 21n,
+        challenger: 'bb'.repeat(32),
+        target: SOCIAL_ME,
+        challengerPartyIds: [],
+        status: 'Pending',
+        createdAtMs: 2_000n,
+      },
+    ];
+    openSocial();
+    expect(lastTab(), 'the requested Challenges').toBe('challenges');
+    expect(social.shown.at(-1)).toBe('pvpView');
+    expect(social.cursors.at(-1), 'the cursor on the request').toBe('incoming');
+    expect(host.button(stack, nav('A'), socialHostCtx(w)), 'A opens the sheet').toBe('consumed');
+    expect(social.painted.at(-1), 'the sheet, on Accept').toMatchObject({
+      tab: 'challenges',
+      sheet: { actions: ['accept', 'decline'], active: 'accept' },
+      confirm: null,
+    });
+    expect(host.button(stack, nav('A'), socialHostCtx(w)), 'A on Accept').toEqual({
+      kind: 'acceptChallenge',
+      challengeId: 21n,
+    });
   });
 });

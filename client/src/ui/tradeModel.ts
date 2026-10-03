@@ -90,19 +90,21 @@ function deriveActionsAndLabel(
   isInitiator: boolean,
   status: TradeStatus,
 ): { actions: readonly TradeAction[]; statusLabel: string } {
-  if (isInitiator) {
-    switch (status) {
-      case 'ConfirmedByCounterparty':
-        return { actions: ['confirm', 'cancel'], statusLabel: 'Accepted — confirm to finalize' };
-      case 'Pending':
-        return { actions: ['cancel'], statusLabel: 'Waiting for response' };
-    }
-  }
   switch (status) {
-    case 'ConfirmedByCounterparty':
-      return { actions: ['cancel'], statusLabel: 'Accepted — awaiting confirmation' };
     case 'Pending':
-      return { actions: ['accept', 'reject'], statusLabel: 'Offer received' };
+      return isInitiator
+        ? { actions: ['cancel'], statusLabel: 'Waiting for response' }
+        : { actions: ['accept', 'reject'], statusLabel: 'Offer received' };
+    case 'ConfirmedByCounterparty':
+      return isInitiator
+        ? { actions: ['confirm', 'cancel'], statusLabel: 'Accepted — confirm to finalize' }
+        : { actions: ['cancel'], statusLabel: 'Accepted — awaiting confirmation' };
+    default:
+      // A status this client does not know (version skew: the row converter passes an unknown
+      // variant through raw). No action is offered and the raw status is shown; a throw here would
+      // reach the Social frame's button path, which nothing catches.
+      status satisfies never;
+      return { actions: [], statusLabel: String(status) };
   }
 }
 
@@ -154,13 +156,33 @@ function buildSideViewModel(
 // ---------------------------------------------------------------------------
 
 /**
+ * The offer the trade panel shows: the one `identity` is a party to (the table is PUBLIC, so the
+ * filter is defense-in-depth), and of several (impossible per TR-20 / D4 one-active-per-player)
+ * the lowest tradeId, for determinism. The Social frame's Trades row selects through it too.
+ */
+export function shownTradeOffer(
+  offers: readonly StoreTradeOffer[],
+  identity: string,
+): StoreTradeOffer | undefined {
+  let shown: StoreTradeOffer | undefined;
+  for (const offer of offers) {
+    if (offer.initiator !== identity && offer.counterparty !== identity) continue;
+    if (shown === undefined || offer.tradeId < shown.tradeId) shown = offer;
+  }
+  return shown;
+}
+
+/** The actions `identity` may take on `offer` (the action-derivation table above); none for a
+ *  status this client does not know. */
+export function tradeActions(offer: StoreTradeOffer, identity: string): readonly TradeAction[] {
+  return deriveActionsAndLabel(offer.initiator === identity, offer.status).actions;
+}
+
+/**
  * Build the trade overlay view model from pure subscription data.
  *
- * Filters `offers` to the single offer where `identity` is initiator OR
- * counterparty; if multiple (should be impossible per TR-20 / D4 one-active-per-player),
- * selects the lowest tradeId for determinism (mirrors shopModel's sort idiom).
- *
- * Returns NoTradeViewModel when no offer involves the viewer.
+ * Shows `shownTradeOffer(offers, identity)`; returns NoTradeViewModel when no offer involves the
+ * viewer.
  * TOTAL: never throws. Missing species/item defs → "Unknown (#N)".
  */
 export function buildTradeViewModel(
@@ -169,15 +191,8 @@ export function buildTradeViewModel(
   speciesMap: ReadonlyMap<number, { readonly name: string }>,
   itemDefs: ReadonlyMap<number, StoreItemRow>,
 ): TradeScreenViewModel {
-  // Filter to offers where viewer is a party (defense-in-depth — PUBLIC table).
-  const ownOffers = offers.filter((o) => o.initiator === identity || o.counterparty === identity);
-  if (ownOffers.length === 0) return { kind: 'no-trade' };
-
-  // Deterministic selection: lowest tradeId wins (TR-20 means only one should exist).
-  // biome-ignore lint/style/noNonNullAssertion: length > 0 checked above
-  const offer = ownOffers.sort((a, b) =>
-    a.tradeId < b.tradeId ? -1 : a.tradeId > b.tradeId ? 1 : 0,
-  )[0]!;
+  const offer = shownTradeOffer(offers, identity);
+  if (offer === undefined) return { kind: 'no-trade' };
 
   const isInitiator = offer.initiator === identity;
   const { actions, statusLabel } = deriveActionsAndLabel(isInitiator, offer.status);

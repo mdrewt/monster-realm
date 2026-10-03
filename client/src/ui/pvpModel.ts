@@ -27,12 +27,40 @@ export interface PvpChallengeablePlayer {
 }
 
 export interface PvpChallengeViewModel {
-  /** The first Pending challenge targeting this player, or null. */
+  /** The oldest Pending challenge targeting this player, or null. */
   readonly incoming: PvpIncomingChallenge | null;
-  /** This player's most-recent outgoing challenge (any status), or null. */
+  /** This player's most-recent Pending outgoing challenge, or null. */
   readonly outgoing: PvpOutgoingChallenge | null;
   /** Online players this player can challenge (excludes self + challenge participants). */
   readonly challengeablePlayers: readonly PvpChallengeablePlayer[];
+}
+
+/** The request the Challenges panel shows: the OLDEST Pending challenge targeting `identity` (the
+ *  lowest challengeId; the server's auto-inc is monotonic). The Social frame's Challenges rows
+ *  select through this and `outgoingChallenge` too, so a row is always the block the panel shows. */
+export function incomingChallenge(
+  challenges: readonly StoreBattleChallenge[],
+  identity: string,
+): StoreBattleChallenge | undefined {
+  let oldest: StoreBattleChallenge | undefined;
+  for (const c of challenges) {
+    if (c.target !== identity || c.status !== 'Pending') continue;
+    if (oldest === undefined || c.challengeId < oldest.challengeId) oldest = c;
+  }
+  return oldest;
+}
+
+/** `identity`'s most recent Pending outgoing challenge (the highest challengeId). */
+export function outgoingChallenge(
+  challenges: readonly StoreBattleChallenge[],
+  identity: string,
+): StoreBattleChallenge | undefined {
+  let newest: StoreBattleChallenge | undefined;
+  for (const c of challenges) {
+    if (c.challenger !== identity || c.status !== 'Pending') continue;
+    if (newest === undefined || c.challengeId > newest.challengeId) newest = c;
+  }
+  return newest;
 }
 
 /**
@@ -53,37 +81,29 @@ export function buildPvpChallengeViewModel(
     nameMap.set(p.identity, p.name);
   }
 
-  // Find first Pending challenge targeting this player (incoming)
-  let incoming: PvpIncomingChallenge | null = null;
-  for (const c of challenges) {
-    if (c.target === identity && c.status === 'Pending') {
-      incoming = {
-        challengeId: c.challengeId,
-        challengerId: c.challenger,
-        challengerName: nameMap.get(c.challenger) ?? c.challenger.slice(0, 8),
-      };
-      break;
-    }
-  }
-
-  // Find this player's most-recent PENDING outgoing challenge.
-  // "Most recent" = highest challengeId (server auto-inc, monotonic).
-  // Declined/Cancelled/Accepted are terminal; the server GCs them, but we filter
-  // client-side too — a non-Pending outgoing must not trigger pvpView auto-show
-  // (pvpView.refresh treats vm.outgoing !== null as hasActive).
-  let outgoing: PvpOutgoingChallenge | null = null;
-  for (const c of challenges) {
-    if (c.challenger === identity && c.status === 'Pending') {
-      if (outgoing === null || c.challengeId > outgoing.challengeId) {
-        outgoing = {
-          challengeId: c.challengeId,
-          targetId: c.target,
-          targetName: nameMap.get(c.target) ?? c.target.slice(0, 8),
-          status: c.status,
+  const request = incomingChallenge(challenges, identity);
+  const incoming: PvpIncomingChallenge | null =
+    request === undefined
+      ? null
+      : {
+          challengeId: request.challengeId,
+          challengerId: request.challenger,
+          challengerName: nameMap.get(request.challenger) ?? request.challenger.slice(0, 8),
         };
-      }
-    }
-  }
+
+  // Declined/Cancelled/Accepted are terminal; the server GCs them, but the selector filters
+  // client-side too — a non-Pending outgoing must not read as an active challenge
+  // (pvpView.refresh treats vm.outgoing !== null as hasActive).
+  const sent = outgoingChallenge(challenges, identity);
+  const outgoing: PvpOutgoingChallenge | null =
+    sent === undefined
+      ? null
+      : {
+          challengeId: sent.challengeId,
+          targetId: sent.target,
+          targetName: nameMap.get(sent.target) ?? sent.target.slice(0, 8),
+          status: sent.status,
+        };
 
   // Collect identities involved in any Pending challenge (both sides)
   const busyIdentities = new Set<string>();

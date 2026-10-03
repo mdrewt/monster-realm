@@ -19,12 +19,14 @@ import type { StoreItemRow, StoreMonsterCard, StoreTradeItem, StoreTradeOffer } 
 import {
   buildTradeViewModel,
   type NoTradeViewModel,
+  shownTradeOffer,
   type TradeAction,
   type TradeCardViewModel,
   type TradeItemViewModel,
   type TradeOfferViewModel,
   type TradeScreenViewModel,
   type TradeSideViewModel,
+  tradeActions,
 } from './tradeModel';
 
 // ---------------------------------------------------------------------------
@@ -846,5 +848,68 @@ describe('buildTradeViewModel [m16.5c-TM-12]: exhaustive switch — all 4 role×
     expect(cell4.statusLabel).toBe('Accepted — awaiting confirmation');
     // Explicit length check: exactly 1 action, no extras.
     expect(cell4.actions).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ctl-8d: the trade panel's selectors. The Social frame's Trades row and the trade root select
+// through the same two, so a Social row is always the offer the root shows, with its actions.
+// ---------------------------------------------------------------------------
+
+describe('ctl-8d: shownTradeOffer and tradeActions', () => {
+  it('ctl-8d: shownTradeOffer is the offer buildTradeViewModel shows (the lowest tradeId the viewer is a party to, never another pair`s; undefined when there is none) and tradeActions is the role x status action table the view model carries', () => {
+    // WRONG IMPL KILLED: a selector without the party check (another pair's offer has the lowest
+    // id), one that takes the first in store order or the highest id, a store-style tie-break
+    // that differs from the root's (a Social row acting on an offer the root does not show), and
+    // an action table that differs from the one the view model renders.
+    const offers = [
+      makeOffer(1n, BOB, CAROL),
+      makeOffer(15n, ALICE, BOB),
+      makeOffer(12n, CAROL, ALICE),
+    ];
+    expect(shownTradeOffer(offers, ALICE)?.tradeId, 'the lowest of the viewer`s').toBe(12n);
+    const vm = buildTradeViewModel(offers, ALICE, new Map(), new Map()) as TradeOfferViewModel;
+    expect(vm.tradeId, 'the root shows the same offer').toBe(12n);
+    expect(
+      shownTradeOffer(offers, 'dave-hex-identity'),
+      'no offer of the viewer`s',
+    ).toBeUndefined();
+    expect(shownTradeOffer([], ALICE), 'no offers').toBeUndefined();
+
+    const TABLE: ReadonlyArray<readonly [StoreTradeOffer, readonly TradeAction[]]> = [
+      [makeOffer(3n, ALICE, BOB, { status: 'Pending' }), ['cancel']],
+      [makeOffer(3n, BOB, ALICE, { status: 'Pending' }), ['accept', 'reject']],
+      [makeOffer(3n, ALICE, BOB, { status: 'ConfirmedByCounterparty' }), ['confirm', 'cancel']],
+      [makeOffer(3n, BOB, ALICE, { status: 'ConfirmedByCounterparty' }), ['cancel']],
+    ];
+    for (const [offer, actions] of TABLE) {
+      const label = `${offer.initiator === ALICE ? 'initiator' : 'counterparty'}, ${offer.status}`;
+      expect(tradeActions(offer, ALICE), label).toEqual(actions);
+      const one = buildTradeViewModel([offer], ALICE, new Map(), new Map()) as TradeOfferViewModel;
+      expect(one.actions, `${label}: the view model carries the same`).toEqual(actions);
+    }
+  });
+
+  it('ctl-8d: an offer in a status this client does not know (version skew: the row converter passes it through raw) offers no action, for the viewer as initiator and as counterparty: tradeActions is [] and buildTradeViewModel shows the offer with no actions and the raw status as its label, never throwing', () => {
+    // WRONG IMPL KILLED: the pre-fix table that falls off its switch and returns undefined (a
+    // TypeError on `.actions` that reaches the Social frame's view model, which the host builds
+    // uncaught on every button, so B and Start would break); an unknown status read as Pending or
+    // as ConfirmedByCounterparty (an action offered on a row the server would refuse); and a label
+    // that hides the raw status.
+    const WEIRD = 'Weird' as StoreTradeOffer['status'];
+    for (const [role, offer] of [
+      ['initiator', makeOffer(6n, ALICE, BOB, { status: WEIRD })],
+      ['counterparty', makeOffer(6n, BOB, ALICE, { status: WEIRD })],
+    ] as const) {
+      expect(tradeActions(offer, ALICE), `${role}: no action`).toEqual([]);
+      // Called directly: a throw fails the case.
+      const vm: TradeScreenViewModel = buildTradeViewModel([offer], ALICE, new Map(), new Map());
+      expect(vm, `${role}: the offer is shown, with no action and the raw status`).toMatchObject({
+        kind: 'trade',
+        tradeId: 6n,
+        actions: [],
+        statusLabel: 'Weird',
+      });
+    }
   });
 });

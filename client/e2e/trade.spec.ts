@@ -210,4 +210,54 @@ test.describe
       await page.keyboard.press('u');
       await expect(page.locator('#trade-overlay')).toBeHidden({ timeout: 5_000 });
     });
+
+    // ---------------------------------------------------------------------------
+    // ctl-8d (CTL8D.1, CTL8D.3): U opens the Social frame on its Trades tab. The tab strip
+    // (Players | Trades | Challenges | Rankings) sits in the shown panel's root, and RB / LB switch
+    // the panel: Challenges is the pvp root, Trades the trade root. PageDown / PageUp are pressed
+    // by name, not through controls.ts's pressButton: LB / RB reach a screen only from PageUp /
+    // PageDown (CTL6B.6), and their primary keys (KeyQ / KeyE) are not those.
+    //
+    // WHAT THIS KILLS: a Social frame with no tab strip, or one whose strip stays in the hidden
+    // root; tabs in another order or with other labels; RB / LB that do not switch the shown
+    // panel; and a close that leaves a Social root painted.
+    // ---------------------------------------------------------------------------
+    test('ctl-8d: U opens Social on Trades with four tabs; PageDown / PageUp switch the panel', async () => {
+      await expect(page.locator('#trade-overlay')).toBeHidden();
+
+      await page.keyboard.press('u');
+      await expect(page.locator('#trade-overlay')).toBeVisible({ timeout: 5_000 });
+      await expect(page.locator('#social-tabs')).toHaveCount(1);
+      await expect(page.locator('#social-tabs [role="tab"]')).toHaveText([
+        'Players',
+        'Trades',
+        'Challenges',
+        'Rankings',
+      ]);
+      await expect(page.locator('#trade-overlay #social-tabs [aria-selected="true"]')).toHaveText(
+        'Trades',
+      );
+
+      // RB: the Challenges tab, over the pvp root; the strip moved with it.
+      await page.keyboard.press('PageDown');
+      await expect(page.locator('#pvp-challenge-overlay')).toBeVisible({ timeout: 5_000 });
+      await expect(page.locator('#trade-overlay')).toBeHidden();
+      await expect(page.locator('#social-tabs')).toHaveCount(1);
+      await expect(
+        page.locator('#pvp-challenge-overlay #social-tabs [aria-selected="true"]'),
+      ).toHaveText('Challenges');
+
+      // LB: back to the Trades tab, over the trade root.
+      await page.keyboard.press('PageUp');
+      await expect(page.locator('#trade-overlay')).toBeVisible({ timeout: 5_000 });
+      await expect(page.locator('#pvp-challenge-overlay')).toBeHidden();
+      await expect(page.locator('#trade-overlay #social-tabs [aria-selected="true"]')).toHaveText(
+        'Trades',
+      );
+
+      // Cleanup: Start closes the Social frame, whichever panel shows.
+      await page.keyboard.press('Escape');
+      await expect(page.locator('#trade-overlay')).toBeHidden({ timeout: 5_000 });
+      await expect(page.locator('#pvp-challenge-overlay')).toBeHidden();
+    });
   });

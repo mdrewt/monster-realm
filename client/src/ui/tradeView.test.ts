@@ -93,8 +93,10 @@ import { scanSource } from './i18n/hardcodedStrings';
 import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
+import type { SocialTab } from './screens/types';
+import type { SocialAction } from './socialModel';
 import type { TradeScreenViewModel } from './tradeModel';
-import type { TradeCallbacks } from './tradeView';
+import type { SocialPaint, SocialQuestion, TradeCallbacks } from './tradeView';
 import { TradeView } from './tradeView';
 
 // The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
@@ -1135,6 +1137,607 @@ describe('TradeView.hostChrome (ctl-8s, CTL8S.3)', () => {
     expect(overlay.firstElementChild).toBe(chrome);
     expect(overlay.childElementCount).toBe(before.length + 1);
     expect(view.visible, 'the shown panel stays shown').toBe(true);
+
+    removeOverlay(overlay);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ctl-8d (CTL8D.1, CTL8D.2): the Social frame's one painter. The Social adapter paints through
+// `TradeView.paintSocial(chrome, p)`: its chrome half (the tab strip, the action sheet and the
+// Yes / No prompt) is painted INSIDE the chrome element main.ts moves into whichever panel shows,
+// on every paint, whether or not the trade root is the shown panel; its root half (the Players
+// placeholder and the trade row's cursor mark) applies to the trade root and is kept while that
+// root is visible, re-applied after every batch `render`, and dropped by `hide()`.
+//
+// Expected copy is resolved through the real (spied) resolver from its literal catalog ids, never
+// hand-typed English, as the m24s4 cases above do.
+// ---------------------------------------------------------------------------
+
+/** The Social tabs in strip order (design §5: Players | Trades | Challenges | Rankings). */
+const SOCIAL_TAB_ORDER: readonly SocialTab[] = ['players', 'trades', 'challenges', 'rankings'];
+
+/** The catalogued label of each tab, each action and each question, as thunks (resolved when a
+ *  case asserts, never at collection). */
+const SOCIAL_TAB_LABEL: Readonly<Record<SocialTab, () => string>> = {
+  players: () => i18nT('social.tab.players'),
+  trades: () => i18nT('social.tab.trades'),
+  challenges: () => i18nT('social.tab.challenges'),
+  rankings: () => i18nT('social.tab.rankings'),
+};
+const SOCIAL_ACTION_LABEL: Readonly<Record<SocialAction, () => string>> = {
+  accept: () => i18nT('social.action.accept'),
+  decline: () => i18nT('social.action.decline'),
+  confirm: () => i18nT('social.action.confirm'),
+  cancel: () => i18nT('social.action.cancel'),
+};
+const SOCIAL_QUESTION_TEXT: Readonly<Record<SocialQuestion, () => string>> = {
+  declineTrade: () => i18nT('social.confirm.declineTrade'),
+  confirmTrade: () => i18nT('social.confirm.confirmTrade'),
+  declineChallenge: () => i18nT('social.confirm.declineChallenge'),
+};
+
+/** Every id the chrome half may create: each at most once in the document, always in the chrome. */
+const SOCIAL_PART_IDS = [
+  'social-tabs',
+  'social-tab-players',
+  'social-tab-trades',
+  'social-tab-challenges',
+  'social-tab-rankings',
+  'social-sheet',
+  'social-prompt',
+  'social-prompt-text',
+  'social-confirm',
+];
+
+/** The five trade-shell parts, in shell order. */
+const TRADE_PARTS = [
+  'trade-status',
+  'trade-my-side',
+  'trade-their-side',
+  'trade-actions',
+  'trade-feedback',
+];
+
+/** What the Players tab hides: both sides and the legacy actions (never the status or feedback). */
+const PLAYERS_HIDDEN = ['trade-my-side', 'trade-their-side', 'trade-actions'];
+
+/** The cursor mark on a legacy row: the nav-item class, the active class, aria-current. */
+const MARKED = [true, true, 'true'] as const;
+const UNMARKED = [false, false, null] as const;
+
+function socialPaint(overrides: Partial<SocialPaint> = {}): SocialPaint {
+  return { tab: 'trades', tradeCursor: false, sheet: null, confirm: null, ...overrides };
+}
+
+function byId(id: string): HTMLElement {
+  const el = document.getElementById(id);
+  if (el === null) throw new Error(`#${id} must be in the document`);
+  return el;
+}
+
+const hiddenTradeParts = (): string[] => TRADE_PARTS.filter((id) => byId(id).hidden);
+
+function statusMark(): [boolean, boolean, string | null] {
+  const status = byId('trade-status');
+  return [
+    status.classList.contains('mr-nav-item'),
+    status.classList.contains('is-active'),
+    status.getAttribute('aria-current'),
+  ];
+}
+
+interface NavRows {
+  readonly keys: readonly string[];
+  readonly texts: readonly string[];
+  readonly activeByClass: readonly string[];
+  readonly activeByAria: readonly string[];
+}
+
+/** The `[data-nav-key]` rows of a nav container: keys and texts in order, and which carry the
+ *  active class and which `aria-selected="true"`. */
+function navRows(container: HTMLElement): NavRows {
+  const rows = [...container.querySelectorAll<HTMLElement>('[data-nav-key]')];
+  const key = (r: HTMLElement): string => r.dataset.navKey ?? '';
+  return {
+    keys: rows.map(key),
+    texts: rows.map((r) => r.textContent ?? ''),
+    activeByClass: rows.filter((r) => r.classList.contains('is-active')).map(key),
+    activeByAria: rows.filter((r) => r.getAttribute('aria-selected') === 'true').map(key),
+  };
+}
+
+/** `root`'s element children are exactly `expected`, by identity and in order. */
+function expectChildren(root: HTMLElement, expected: readonly Element[], label: string): void {
+  expect(root.children.length, `${label}: the root's child count`).toBe(expected.length);
+  expected.forEach((child, i) => {
+    expect(root.children[i], `${label}: child ${i} is unchanged`).toBe(child);
+  });
+}
+
+/** The tab strip inside `chrome`: one tablist with the frame's tab-strip class, first of the
+ *  chrome's three parts (strip, sheet, prompt), the four tabs in order with their catalogued
+ *  labels, exactly `active` selected; every chrome part at most once, and inside the chrome. */
+function expectStrip(chrome: HTMLElement, active: SocialTab, label: string): void {
+  expect(document.querySelectorAll('#social-tabs').length, `${label}: one #social-tabs`).toBe(1);
+  const strip = byId('social-tabs');
+  expect(strip !== chrome && chrome.contains(strip), `${label}: the strip is in the chrome`).toBe(
+    true,
+  );
+  expect(strip.getAttribute('role'), `${label}: a tablist`).toBe('tablist');
+  expect(
+    strip.classList.contains('mr-frame-tabstrip'),
+    `${label}: the strip carries the frame's tab-strip class`,
+  ).toBe(true);
+  expect(
+    [...chrome.children].map((c) => c.id),
+    `${label}: the chrome holds the strip, then the sheet, then the prompt`,
+  ).toEqual(['social-tabs', 'social-sheet', 'social-prompt']);
+  const tabs = [...strip.children] as HTMLElement[];
+  expect(
+    tabs.map((t) => t.id),
+    `${label}: the four tabs, in order`,
+  ).toEqual(SOCIAL_TAB_ORDER.map((t) => `social-tab-${t}`));
+  expect(
+    tabs.map((t) => t.getAttribute('role')),
+    `${label}: each a tab`,
+  ).toEqual(SOCIAL_TAB_ORDER.map(() => 'tab'));
+  expect(
+    tabs.map((t) => t.textContent),
+    `${label}: the catalogued labels`,
+  ).toEqual(SOCIAL_TAB_ORDER.map((t) => SOCIAL_TAB_LABEL[t]()));
+  expect(
+    tabs.map((t) => t.getAttribute('aria-selected')),
+    `${label}: only ${active} is aria-selected`,
+  ).toEqual(SOCIAL_TAB_ORDER.map((t) => (t === active ? 'true' : 'false')));
+  expect(
+    tabs.map((t) => t.classList.contains('is-active')),
+    `${label}: only ${active} is-active`,
+  ).toEqual(SOCIAL_TAB_ORDER.map((t) => t === active));
+  for (const id of SOCIAL_PART_IDS) {
+    const found = document.querySelectorAll(`#${id}`);
+    expect(found.length, `${label}: #${id} at most once`).toBeLessThanOrEqual(1);
+    const part = found[0];
+    if (part !== undefined) {
+      expect(chrome.contains(part), `${label}: #${id} is inside the chrome`).toBe(true);
+    }
+  }
+}
+
+interface SheetCase {
+  readonly tab: SocialTab;
+  readonly actions: readonly SocialAction[];
+  readonly active: SocialAction;
+}
+
+interface PromptCase extends SheetCase {
+  readonly question: SocialQuestion;
+  readonly yes: boolean;
+}
+
+/** The action sheet shows `c.actions` in order, labelled from the catalog, the cursor on
+ *  `c.active` alone. */
+function expectSheet(chrome: HTMLElement, c: SheetCase, label: string): void {
+  const sheet = byId('social-sheet');
+  expect(chrome.contains(sheet), `${label}: #social-sheet is in the chrome`).toBe(true);
+  expect(sheet.hidden, `${label}: the sheet shows`).toBe(false);
+  expect(sheet.getAttribute('aria-labelledby'), `${label}: the sheet is named by its tab`).toBe(
+    `social-tab-${c.tab}`,
+  );
+  const namingTab = document.getElementById(`social-tab-${c.tab}`);
+  expect(
+    namingTab !== null && chrome.contains(namingTab),
+    `${label}: the tab naming the sheet is in the chrome`,
+  ).toBe(true);
+  expect(navRows(sheet), `${label}: one row per legal action, the cursor on ${c.active}`).toEqual({
+    keys: [...c.actions],
+    texts: c.actions.map((a) => SOCIAL_ACTION_LABEL[a]()),
+    activeByClass: [c.active],
+    activeByAria: [c.active],
+  });
+}
+
+/** No prompt: `#social-prompt` hidden and empty, or not created yet (before any prompt). */
+function expectNoPrompt(label: string): void {
+  const prompt = document.getElementById('social-prompt');
+  if (prompt === null) return;
+  expect(prompt.hidden, `${label}: #social-prompt is hidden`).toBe(true);
+  expect(prompt.textContent, `${label}: #social-prompt is empty`).toBe('');
+  expect(
+    prompt.querySelectorAll('[data-nav-key]').length,
+    `${label}: no Yes / No row is left`,
+  ).toBe(0);
+}
+
+describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
+  it('CTL8D-1-VIEW-TABS: paintSocial paints a tablist #social-tabs inside the chrome holding the four tabs Players, Trades, Challenges, Rankings in that order with their catalogued labels and exactly the painted tab selected (is-active and aria-selected); it paints on every call, with the trade root hidden and never rendered too, reuses its parts (one strip, no duplicate id) and never adds a child to #trade-overlay', () => {
+    // WRONG IMPL KILLED: a paintSocial that returns early while the trade root is hidden (on
+    // Challenges and Rankings the strip would keep the last tab painted over the trade root); a
+    // strip that keeps the first tab selected, or marks a tab by class only or by aria only; tabs
+    // in another order or with hand-typed labels; a strip created again on every paint (two
+    // #social-tabs, two of each tab id); a part created in the trade root, or in the document,
+    // instead of in the chrome element it is handed; a strip without the frame's tab-strip class
+    // (the tabs stack); and the prompt created before the sheet (DOM, visual and Tab order).
+    const overlay = mountTradeOverlay();
+    const view = new TradeView(makeCallbacks());
+    const shell = [...overlay.children];
+    // While another panel shows, production keeps the chrome in that panel's root.
+    const otherRoot = document.createElement('div');
+    document.body.appendChild(otherRoot);
+    const chrome = document.createElement('div');
+    otherRoot.appendChild(chrome);
+
+    // (a) The trade root hidden and never rendered: the strip is painted all the same.
+    expect(view.visible, 'precondition: the trade root is hidden').toBe(false);
+    view.paintSocial(chrome, socialPaint({ tab: 'challenges' }));
+    expectStrip(chrome, 'challenges', 'hidden root, Challenges');
+    const strip = byId('social-tabs');
+    view.paintSocial(chrome, socialPaint({ tab: 'rankings' }));
+    expectStrip(chrome, 'rankings', 'hidden root, Rankings');
+    expect(byId('social-tabs'), 'a repaint reuses the strip').toBe(strip);
+    expectChildren(overlay, shell, 'hidden root');
+    expect(hiddenTradeParts(), 'the hidden trade root hides nothing').toEqual([]);
+    expect(statusMark(), 'and marks nothing').toEqual(UNMARKED);
+
+    // (b) The trade root shown, hosting the chrome as its first child.
+    view.show();
+    view.render(makeNoTradeVM());
+    view.hostChrome(chrome);
+    for (const tab of ['players', 'trades'] as const) {
+      view.paintSocial(chrome, socialPaint({ tab }));
+      expectStrip(chrome, tab, `hosted, ${tab}`);
+    }
+    expect(byId('social-tabs'), 'still the same strip').toBe(strip);
+    expectChildren(overlay, [chrome, ...shell], 'hosted');
+
+    // (c) Hidden again, the chrome moved back to the other root: the strip follows the paint.
+    view.hide();
+    otherRoot.prepend(chrome);
+    view.paintSocial(chrome, socialPaint({ tab: 'challenges' }));
+    expectStrip(chrome, 'challenges', 'hidden again, Challenges');
+    expect(byId('social-tabs'), 'still the same strip').toBe(strip);
+    expectChildren(overlay, shell, 'hidden again');
+
+    removeOverlay(overlay);
+  });
+
+  it('CTL8D-1-VIEW-PLACEHOLDER: on the Players tab the shown trade root reads the catalogued placeholder in #trade-status with both sides and the actions hidden and the status and feedback shown; a no-trade and a trade render keep it; Players to Trades with no render in between restores the last rendered status and unhides everything; hide() drops it; a view never painted renders as before', () => {
+    // WRONG IMPL KILLED: a placeholder written once and overwritten by the next batch render (the
+    // trade render writes its status label, the no-trade render returns early before re-applying
+    // the paint); a placeholder that survives the switch to Trades when no render runs between
+    // (the status keeps reading "not available" over a live trade); one that survives hide() or a
+    // reopen; a Players tab that also hides the feedback line (a trade result vanishes) or the
+    // status (the dialog's focus anchor); a Players tab that hides a focused legacy button and
+    // strands the focus on <body>, or pulls the focus from outside the root; a paint kept on a
+    // hidden root (a stale placeholder or mark at the next open); and a paint that changes a view
+    // nobody painted.
+    const overlay = mountTradeOverlay();
+    const view = new TradeView(makeCallbacks());
+    const status = byId('trade-status');
+    const feedback = byId('trade-feedback');
+    const offerStatus = 'Offer received';
+    const offer = makePendingTradeVM(offerStatus, ['accept', 'reject']);
+    const none = i18nT('trade.status.none');
+    const placeholder = i18nT('social.players.placeholder');
+    expect([none, offerStatus].includes(placeholder), 'fixture: three distinct status texts').toBe(
+      false,
+    );
+
+    // Never painted: both renders as today.
+    view.show();
+    view.render(makeNoTradeVM());
+    expect(status.textContent, 'never painted: the no-trade status').toBe(none);
+    expect(hiddenTradeParts(), 'never painted: nothing hidden').toEqual([]);
+    view.render(offer);
+    expect(status.textContent, 'never painted: the offer status').toBe(offerStatus);
+    expect(hiddenTradeParts(), 'never painted: nothing hidden').toEqual([]);
+    expect(statusMark(), 'never painted: no mark').toEqual(UNMARKED);
+
+    const chrome = document.createElement('div');
+    view.hostChrome(chrome);
+
+    // Players hides the actions under a Tab-focused legacy button: the focus goes to #trade-status,
+    // the dialog's anchor, never stranded on <body> in a real browser.
+    const legacy = overlay.querySelector<HTMLButtonElement>('#trade-actions button');
+    if (legacy === null) throw new Error('precondition: the legacy trade buttons are rendered');
+    legacy.focus();
+    expect(document.activeElement, 'precondition: a legacy button holds the focus').toBe(legacy);
+    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
+    expect(document.activeElement, 'Players: the hidden button hands the focus to the anchor').toBe(
+      status,
+    );
+    // Control: the same paint with the focus outside the root moves nothing.
+    view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'precondition: the focus is outside the root').toBe(outside);
+    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
+    expect(document.activeElement, 'Players with the focus outside the root moves nothing').toBe(
+      outside,
+    );
+    view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
+
+    // Players: the placeholder; the sides and the actions hidden; the status and feedback shown.
+    view.showFeedback('a trade result line');
+    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
+    expect(status.textContent, 'Players: the placeholder').toBe(placeholder);
+    expect(hiddenTradeParts(), 'Players: the sides and the actions hidden').toEqual(PLAYERS_HIDDEN);
+    expect(feedback.textContent, 'Players: the feedback line stays').toBe('a trade result line');
+
+    // Batch renders keep it, on both render branches.
+    view.render(offer);
+    expect(status.textContent, 'a trade render keeps the placeholder').toBe(placeholder);
+    expect(hiddenTradeParts(), 'a trade render keeps the parts hidden').toEqual(PLAYERS_HIDDEN);
+    view.render(makeNoTradeVM());
+    expect(status.textContent, 'a no-trade render keeps the placeholder').toBe(placeholder);
+    expect(hiddenTradeParts(), 'a no-trade render keeps the parts hidden').toEqual(PLAYERS_HIDDEN);
+    view.render(offer);
+    expect(status.textContent, 'a second trade render keeps it').toBe(placeholder);
+    expect(hiddenTradeParts()).toEqual(PLAYERS_HIDDEN);
+
+    // Players to Trades with no render between: the status last rendered, nothing hidden.
+    view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
+    expect(status.textContent, 'Trades: the offer status is back').toBe(offerStatus);
+    expect(hiddenTradeParts(), 'Trades: nothing hidden').toEqual([]);
+
+    // The same over a no-trade render.
+    view.render(makeNoTradeVM());
+    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
+    expect(status.textContent, 'precondition: Players over no trade').toBe(placeholder);
+    view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
+    expect(status.textContent, 'Trades: the no-trade status is back').toBe(none);
+    expect(hiddenTradeParts(), 'Trades over no trade: nothing hidden').toEqual([]);
+
+    // hide() drops the paint: the hidden root holds no placeholder, and a reopen starts clean.
+    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
+    expect(status.textContent, 'precondition: Players again').toBe(placeholder);
+    view.hide();
+    expect(status.textContent, 'hidden: no placeholder left').toBe(none);
+    expect(hiddenTradeParts(), 'hidden: nothing left hidden').toEqual([]);
+    // A paint on the hidden root is not kept: no mark, no placeholder, nothing hidden, and the
+    // reopen below shows none of it (a kept Players paint would greet the next open).
+    view.paintSocial(chrome, socialPaint({ tab: 'trades', tradeCursor: true }));
+    expect(statusMark(), 'hidden root, tradeCursor: no mark').toEqual(UNMARKED);
+    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
+    expect(status.textContent, 'hidden root, Players: the last rendered status').toBe(none);
+    expect(hiddenTradeParts(), 'hidden root, Players: nothing hidden').toEqual([]);
+    view.render(makeNoTradeVM());
+    view.show();
+    expect(status.textContent, 'reopened: the no-trade status').toBe(none);
+    expect(hiddenTradeParts(), 'reopened: nothing hidden').toEqual([]);
+    expect(statusMark(), 'reopened: no mark').toEqual(UNMARKED);
+
+    removeOverlay(overlay);
+  });
+
+  it('CTL8D-2-VIEW-SHEET: a sheet paints #social-sheet in the chrome with one row per legal action in order, labelled from the catalog, exactly the active row marked; a prompt paints its question and the Yes / No rows with the cursor row marked while the sheet stays painted beneath; no prompt leaves #social-prompt hidden and empty, no sheet leaves #social-sheet hidden and empty; a part hidden while it holds the focus hands it to the trade root`s anchor and focus elsewhere stays put', async () => {
+    // WRONG IMPL KILLED: a sheet with no cursor, two cursors, or the cursor on the first row
+    // whatever `active` says; rows in a fixed order or with the legacy trade labels ("Reject",
+    // "Confirm Trade"); a prompt that hides the sheet beneath it or marks Yes when `yes` is false
+    // (the default-No prompt would read as a default Yes); a question text swapped between the
+    // three questions; a closed prompt or sheet that is only hidden and keeps its stale rows; a
+    // hidden part that strands the focus inside itself (on <body> in a real browser); a handoff
+    // that pulls the focus to the anchor on every paint (a Tab-focused legacy button would lose
+    // it); a handoff hard-coded to #trade-status (hidden on Challenges: the focus is stranded);
+    // and a nameless sheet or Yes / No listbox (no aria-labelledby).
+    const overlay = mountTradeOverlay();
+    const view = new TradeView(makeCallbacks());
+    view.show();
+    await flushMacrotask(); // the open's deferred focus lands now, so it cannot move focus later
+    view.render(makePendingTradeVM('Offer received', ['accept', 'reject']));
+    const chrome = document.createElement('div');
+    view.hostChrome(chrome);
+    const anchor = byId('trade-status');
+
+    // Sheets: every action label, every cursor position.
+    const sheets: readonly SheetCase[] = [
+      { tab: 'trades', actions: ['accept', 'decline'], active: 'accept' },
+      { tab: 'trades', actions: ['accept', 'decline'], active: 'decline' },
+      { tab: 'trades', actions: ['confirm', 'cancel'], active: 'cancel' },
+      { tab: 'trades', actions: ['confirm', 'cancel'], active: 'confirm' },
+      { tab: 'challenges', actions: ['cancel'], active: 'cancel' },
+    ];
+    for (const c of sheets) {
+      const label = `sheet ${c.actions.join('/')} on ${c.active}`;
+      view.paintSocial(
+        chrome,
+        socialPaint({ tab: c.tab, sheet: { actions: c.actions, active: c.active } }),
+      );
+      expectSheet(chrome, c, label);
+      expectNoPrompt(label);
+    }
+
+    // Prompts: each question, Yes and No; the sheet stays painted beneath.
+    const prompts: readonly PromptCase[] = [
+      {
+        tab: 'trades',
+        actions: ['accept', 'decline'],
+        active: 'decline',
+        question: 'declineTrade',
+        yes: false,
+      },
+      {
+        tab: 'trades',
+        actions: ['confirm', 'cancel'],
+        active: 'confirm',
+        question: 'confirmTrade',
+        yes: true,
+      },
+      {
+        tab: 'challenges',
+        actions: ['accept', 'decline'],
+        active: 'decline',
+        question: 'declineChallenge',
+        yes: false,
+      },
+    ];
+    for (const c of prompts) {
+      const label = `prompt ${c.question}, ${c.yes ? 'Yes' : 'No'}`;
+      view.paintSocial(
+        chrome,
+        socialPaint({
+          tab: c.tab,
+          sheet: { actions: c.actions, active: c.active },
+          confirm: { question: c.question, yes: c.yes },
+        }),
+      );
+      const prompt = byId('social-prompt');
+      const text = byId('social-prompt-text');
+      const confirm = byId('social-confirm');
+      expect(chrome.contains(prompt), `${label}: #social-prompt is in the chrome`).toBe(true);
+      expect(prompt.hidden, `${label}: the prompt shows`).toBe(false);
+      expect(
+        prompt.contains(text) && prompt.contains(confirm),
+        `${label}: the question and the Yes / No rows are in #social-prompt`,
+      ).toBe(true);
+      expect(text.textContent, `${label}: the catalogued question`).toBe(
+        SOCIAL_QUESTION_TEXT[c.question](),
+      );
+      expect(
+        confirm.getAttribute('aria-labelledby'),
+        `${label}: the Yes / No rows are named by the question`,
+      ).toBe('social-prompt-text');
+      const cursor = c.yes ? 'yes' : 'no';
+      expect(navRows(confirm), `${label}: Yes then No, the cursor on ${cursor}`).toEqual({
+        keys: ['yes', 'no'],
+        texts: [i18nT('prompt.yes'), i18nT('prompt.no')],
+        activeByClass: [cursor],
+        activeByAria: [cursor],
+      });
+      expectSheet(chrome, c, `${label}: the sheet beneath`);
+    }
+
+    // The prompt closes; the sheet stays on its action.
+    const decline: SheetCase = {
+      tab: 'challenges',
+      actions: ['accept', 'decline'],
+      active: 'decline',
+    };
+    view.paintSocial(
+      chrome,
+      socialPaint({
+        tab: decline.tab,
+        sheet: { actions: decline.actions, active: decline.active },
+      }),
+    );
+    expect(document.getElementById('social-prompt'), 'precondition: a prompt was painted').not.toBe(
+      null,
+    );
+    expectNoPrompt('the prompt closed');
+    expectSheet(chrome, decline, 'the sheet after the prompt closed');
+
+    // No sheet: hidden and empty.
+    view.paintSocial(chrome, socialPaint({ tab: 'challenges' }));
+    const sheet = byId('social-sheet');
+    expect(sheet.hidden, 'no sheet: #social-sheet is hidden').toBe(true);
+    expect(sheet.childElementCount, 'no sheet: no row is left').toBe(0);
+    expect(sheet.textContent, 'no sheet: no text is left').toBe('');
+    expectNoPrompt('no sheet');
+
+    // A part hidden while it holds the focus hands it to the trade root's [tabindex="-1"] anchor.
+    view.paintSocial(
+      chrome,
+      socialPaint({ tab: 'trades', sheet: { actions: ['accept', 'decline'], active: 'accept' } }),
+    );
+    byId('social-sheet').focus();
+    expect(document.activeElement, 'precondition: the sheet holds the focus').toBe(
+      byId('social-sheet'),
+    );
+    view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
+    expect(document.activeElement, 'the closed sheet hands the focus to the anchor').toBe(anchor);
+
+    view.paintSocial(
+      chrome,
+      socialPaint({
+        tab: 'trades',
+        sheet: { actions: ['accept', 'decline'], active: 'decline' },
+        confirm: { question: 'declineTrade', yes: false },
+      }),
+    );
+    byId('social-confirm').focus();
+    expect(document.activeElement, 'precondition: the Yes / No rows hold the focus').toBe(
+      byId('social-confirm'),
+    );
+    view.paintSocial(
+      chrome,
+      socialPaint({ tab: 'trades', sheet: { actions: ['accept', 'decline'], active: 'decline' } }),
+    );
+    expect(document.activeElement, 'the closed prompt hands the focus to the anchor').toBe(anchor);
+
+    // Control: a part hidden while the focus is elsewhere moves nothing.
+    const legacy = overlay.querySelector<HTMLButtonElement>('#trade-actions button');
+    if (legacy === null) throw new Error('precondition: the legacy trade buttons are rendered');
+    legacy.focus();
+    expect(document.activeElement, 'precondition: a legacy button holds the focus').toBe(legacy);
+    view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
+    expect(document.activeElement, 'focus outside the hidden sheet stays put').toBe(legacy);
+
+    // On another panel the chrome is that panel's root's first child (the pvp shell's shape), so
+    // the hand-off goes to THAT root's anchor: #trade-status is hidden there, and focus sent to it
+    // would be stranded.
+    view.hide();
+    const standInRoot = document.createElement('div');
+    const standInAnchor = document.createElement('div');
+    standInAnchor.setAttribute('tabindex', '-1');
+    document.body.appendChild(standInRoot);
+    standInRoot.append(chrome, standInAnchor);
+    view.paintSocial(
+      chrome,
+      socialPaint({
+        tab: 'challenges',
+        sheet: { actions: ['accept', 'decline'], active: 'accept' },
+      }),
+    );
+    byId('social-sheet').focus();
+    expect(document.activeElement, 'precondition: the sheet holds the focus on Challenges').toBe(
+      byId('social-sheet'),
+    );
+    view.paintSocial(chrome, socialPaint({ tab: 'challenges' }));
+    expect(
+      document.activeElement,
+      'the closed sheet hands the focus to the hosting root`s anchor',
+    ).toBe(standInAnchor);
+    expect(document.activeElement, 'never to the hidden #trade-status').not.toBe(anchor);
+
+    removeOverlay(overlay);
+  });
+
+  it('CTL8D-2-VIEW-TRADE-CURSOR: tradeCursor on the Trades tab marks #trade-status with mr-nav-item, is-active and aria-current="true", and a batch render of the same offer keeps the mark; tradeCursor false, another tab and hide() leave none of the three, and a reopened root carries no mark', () => {
+    // WRONG IMPL KILLED: a mark lost on the next batch render (the adapter does not repaint an
+    // unchanged state); a mark that is never cleared when the cursor leaves the row or the tab
+    // changes, or that ignores the tab; a mark by class alone (no aria-current, invisible to
+    // assistive technology); and one that survives hide(), so a reopened panel shows a stale cursor.
+    const overlay = mountTradeOverlay();
+    const view = new TradeView(makeCallbacks());
+    const offer = makePendingTradeVM('Offer received', ['accept', 'reject']);
+    view.show();
+    view.render(offer);
+    const chrome = document.createElement('div');
+    view.hostChrome(chrome);
+    expect(statusMark(), 'precondition: no mark before any paint').toEqual(UNMARKED);
+
+    view.paintSocial(chrome, socialPaint({ tab: 'trades', tradeCursor: true }));
+    expect(statusMark(), 'tradeCursor on Trades: marked').toEqual(MARKED);
+    view.render(offer);
+    expect(statusMark(), 'the mark survives a batch render of the same offer').toEqual(MARKED);
+    view.paintSocial(chrome, socialPaint({ tab: 'trades', tradeCursor: false }));
+    expect(statusMark(), 'tradeCursor false: no mark').toEqual(UNMARKED);
+
+    view.paintSocial(chrome, socialPaint({ tab: 'trades', tradeCursor: true }));
+    expect(statusMark(), 'precondition: marked again').toEqual(MARKED);
+    view.paintSocial(chrome, socialPaint({ tab: 'challenges' }));
+    expect(statusMark(), 'another tab: no mark').toEqual(UNMARKED);
+    view.paintSocial(chrome, socialPaint({ tab: 'players', tradeCursor: true }));
+    expect(statusMark(), 'tradeCursor off the Trades tab: no mark').toEqual(UNMARKED);
+
+    view.paintSocial(chrome, socialPaint({ tab: 'trades', tradeCursor: true }));
+    expect(statusMark(), 'precondition: marked once more').toEqual(MARKED);
+    view.hide();
+    expect(statusMark(), 'hide(): no mark').toEqual(UNMARKED);
+    view.render(offer);
+    view.show();
+    expect(statusMark(), 'reopened: no mark from the last visit').toEqual(UNMARKED);
 
     removeOverlay(overlay);
   });
