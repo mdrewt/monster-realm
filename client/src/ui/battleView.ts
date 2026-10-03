@@ -117,7 +117,7 @@ export class BattleView implements BattleOpsView {
   readonly #outcomeEl: HTMLDivElement;
   /** PvP status banner ("Waiting for opponent…" / ""); hidden when not in PvP. */
   readonly #pvpStatusEl: HTMLDivElement;
-  /** "Press Esc to continue" hint; shown only on a terminal outcome. */
+  /** "Press Enter or Esc to continue" hint; shown only on a terminal outcome. */
   readonly #continueHintEl: HTMLDivElement;
   readonly #callbacks: BattleViewCallbacks;
   /** The bait `<select>` for the current recruit render (null when not wild). */
@@ -276,8 +276,9 @@ export class BattleView implements BattleOpsView {
     this.#runReasonEl.style.cssText = 'flex-basis:100%;font-size:12px;color:#aab;display:none;';
     this.#commandsEl.appendChild(this.#runReasonEl);
     this.#root.appendChild(this.#commandsEl);
-    // A held Enter or Space would re-click whatever the cursor lands on next (Fight -> a skill ->
-    // the next turn's Fight); only the first press is the browser's.
+    // A held Enter re-clicks whatever the cursor lands on next (Fight -> a skill -> the next
+    // turn's Fight); only the first press is the browser's. Space clicks on keyup, so its
+    // repeats are refused too rather than relied on.
     this.#root.addEventListener('keydown', (e) => {
       const activation = e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space';
       if (e.repeat && activation && e.target instanceof HTMLButtonElement) e.preventDefault();
@@ -364,7 +365,8 @@ export class BattleView implements BattleOpsView {
     // onReconnect and the battle-end paths hide this overlay, and the SDK never settles
     // an in-flight reducer promise after a link drop — so `.finally()` may never run.
     // Without this reset the next battle's controls would render dead. No node re-enable
-    // here: the view is only ever re-shown through refresh(), which rebuilds every control.
+    // here: the view is only ever re-shown through refresh(), which rebuilds every control and
+    // re-greys the command rows.
     this.#pending = null;
     closeOverlayA11y('battleView', null);
   }
@@ -385,8 +387,13 @@ export class BattleView implements BattleOpsView {
     // Read before the rebuild detaches a focused row: a reset takes focus only from the page or
     // from inside this view (never from the menu over it), a same-turn render only re-focuses the
     // cursor row when it had focus.
+    // The world canvas counts as the page: a battle that starts while the player walks takes it.
     const active = document.activeElement;
-    const focusHere = active === null || active === document.body || this.#root.contains(active);
+    const focusHere =
+      active === null ||
+      active === document.body ||
+      active instanceof HTMLCanvasElement ||
+      this.#root.contains(active);
     const onCursor =
       active instanceof HTMLElement &&
       this.#root.contains(active) &&
@@ -484,7 +491,8 @@ export class BattleView implements BattleOpsView {
     el.setAttribute('aria-current', 'true');
     el.style.outline = CURSOR_OUTLINE;
     el.style.outlineOffset = '2px';
-    // A row the PvE lock disabled cannot take focus in a browser; the settle re-anchors it.
+    // A row the PvE lock disabled cannot take focus in a browser (its settle re-anchors a focus
+    // left on <body> to the heading; the next op seats the cursor).
     if (focus && !(el instanceof HTMLButtonElement && el.disabled)) el.focus();
   }
 
@@ -496,6 +504,7 @@ export class BattleView implements BattleOpsView {
     if (vm === null || btn.getAttribute('aria-disabled') === 'true') return;
     if (id === 'run') {
       this.#cursor = { list: 'commands', index: BATTLE_COMMANDS.indexOf('run') };
+      this.#paintCursor(false);
       this.#dispatch(vm.battleId, () => this.#callbacks.onFlee(vm.battleId));
       return;
     }
@@ -542,10 +551,12 @@ export class BattleView implements BattleOpsView {
     }
   }
 
-  /** Grey a command row (focusable still) or make it live. The text stays >= 4.5:1 either way. */
+  /** Grey a command row (focusable still) or make it live. The text stays >= 4.5:1 either way, so
+   *  the border style (dashed) carries the difference without relying on luminance. */
   #greyCommand(btn: HTMLButtonElement, greyed: boolean): void {
     btn.setAttribute('aria-disabled', String(greyed));
     btn.style.color = greyed ? '#aab' : '#e0e0e0';
+    btn.style.borderStyle = greyed ? 'dashed' : 'solid';
     btn.style.cursor = greyed ? 'default' : 'pointer';
   }
 

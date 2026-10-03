@@ -378,13 +378,13 @@ export function buildBattleViewModel(
     : [];
 
   // Cure items: classify by DATA (cure_status !== null), never by item id, and
-  // only surface stacks the player actually holds (count > 0). Available in ANY
-  // ongoing battle (not gated on wild/recruit — differs from baitOptions).
+  // only surface stacks the player actually holds (count > 0). Available in any
+  // ongoing PvE battle (not gated on wild/recruit — differs from baitOptions); never in
+  // PvP, where use_battle_item rejects every item (server-module battle.rs, RL-9).
   // The cureStatus !== null guard enforces classify-by-data at the model layer;
   // main.ts pre-filters by the same rule but the model defends independently.
-  const cureOptions: readonly CureItem[] = ongoing
-    ? cureItems.filter((c) => c.cureStatus !== null && c.count > 0)
-    : [];
+  const cureOptions: readonly CureItem[] =
+    ongoing && !isPvp ? cureItems.filter((c) => c.cureStatus !== null && c.count > 0) : [];
 
   // Weather: map StoreBattle.weather → VM weather (label + turnsRemaining).
   // != null tolerates undefined from any untyped runtime input; store guarantees null.
@@ -496,7 +496,7 @@ function cardEqual(a: BattleMonsterCardVM, b: BattleMonsterCardVM): boolean {
  * Explicit field-by-field equality for BattleViewModels. Arrays are length-checked
  * first, then compared per-element. bigint battleId uses === directly — NEVER
  * JSON.stringify (bigint throws) or Number() (lossy above 2^53). Covers outcome,
- * turnNumber, both cards (all fields incl. status), skills, bench, baitOptions
+ * turnNumber, activeIndex, both cards (all fields incl. status), skills, bench, baitOptions
  * (itemId + name + recruitBonus + count), canFlee/canSwap/canRecruit, and weather
  * (null-ness, label, turnsRemaining). Used by shouldSkipBattleRefresh.
  */

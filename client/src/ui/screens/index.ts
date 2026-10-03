@@ -1,7 +1,8 @@
 // ui/screens/index.ts — the adapter table and the screen host (design §4, §12; CTL6B.1, CTL7C.2).
-// The router hands a button to `ScreenHost.button`, which asks ONLY the top frame: the base's own
-// rule (`baseButton`), the typing rule over a text-entry frame, or that screen's adapter fed its own
-// view model and the state the host keeps for it. A store batch goes to `ScreenHost.observe`, which
+// The router hands a button to `ScreenHost.button`, which asks ONLY the top frame: the world's own
+// rule (`baseButton`), the battle's cursor adapter at a bare battle base (`battleScreen`, ctl-8i),
+// the typing rule over a text-entry frame, or that screen's adapter fed its own view model and the
+// state the host keeps for it. A store batch goes to `ScreenHost.observe`, which
 // asks every open frame whose adapter observes. No DOM, SDK or module state: main.ts holds the
 // one host, binds the stack and the context and runs the returned command.
 import type { BaseFrame, FrameId, Stack, UpperFrame } from '../contextStack';
@@ -51,11 +52,11 @@ export const SCREEN_ADAPTERS: ScreenAdapters = {
   social: socialScreen,
 };
 
-/** A button with nothing above the base. Start opens the menu at the world and does nothing on a
- *  battle (B17: an ongoing battle is never hidden; ctl-6c gives it the menu). B is swallowed: its
- *  world meaning (dismiss the top notice) has no notice to act on yet. The host asks it only at the
- *  world: a bare battle base is `battleScreen`'s (ctl-8i), which keeps these answers for B, Start
- *  and Select. */
+/** A button with nothing above the base. Start opens the menu at the world and is swallowed on a
+ *  battle (B17: an ongoing battle is never hidden; main.ts's `battleButton` opens the menu over a
+ *  bare battle before any screen is asked, ctl-6c). B is swallowed: its world meaning (dismiss the
+ *  top notice) has no notice to act on yet. The host asks it only at the world: a bare battle base
+ *  is `battleScreen`'s (ctl-8i), which gives B, Start and Select these same answers. */
 export function baseButton(base: BaseFrame, btn: NavInput): ScreenResult {
   switch (btn.button) {
     case 'Start':
@@ -148,7 +149,7 @@ export class ScreenHost {
         return baseButton(top, btn);
       // The battle's cursor ops paint into the battle view, whose frame id keys their state.
       case 'battle':
-        return this.#step('battleView', btn, ctx, battleScreen as ScreenAdapter<unknown, unknown>);
+        return this.#step('battleView', btn, ctx, battleScreen);
       case 'textEntry':
         if (btn.button === 'Start') return { kind: 'pop' };
         return btn.button === 'A' ? this.#step(top.owner, btn, ctx) : 'unhandled';

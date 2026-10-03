@@ -246,13 +246,13 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // noun; the five command entries share one narrow row.
   // battleView.ts (#renderCommands)
   'battle.command.bag': 'Sac',
-  // @desc: Battle command list entry that runs from a wild battle at once. One short verb; the five
-  // command entries share one narrow row.
+  // @desc: Battle command list entry that runs from a wild battle at once (greyed, with a reason,
+  // in a player battle). One short verb; the five command entries share one narrow row.
   // battleView.ts (#renderCommands)
   'battle.command.run': 'Fuir',
   // @desc: Accessible name of the battle command list (Fight, Recruit, Swap, Bag, Run), read by a
   // screen reader as the group's label. One word.
-  // battleView.ts (constructor)
+  // battleView.ts (#renderCommands)
   'battle.commands.label': 'Commandes',
   // @desc: Caption over the greyed battle command list after the player has submitted a PvP move;
   // {name} is the rival's display name. Ends with an ellipsis. One line.
