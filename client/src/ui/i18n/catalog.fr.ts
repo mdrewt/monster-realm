@@ -639,6 +639,18 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // short sentence.
   // tradeView.ts (the Players tab)
   'social.players.placeholder': 'La liste des joueurs n’est pas encore disponible.',
+  // @desc: Badge after a player's name on the Social screen's Players tab: that player is in the
+  // same zone, a short walk away. One short word, fits a narrow badge.
+  // leaderboardView.ts (the Players tab)
+  'social.players.nearby': 'À proximité',
+  // @desc: Line shown on the Social screen's Players tab when no other player is online. One short
+  // sentence.
+  // leaderboardView.ts (the Players tab)
+  'social.players.none': 'Aucun autre joueur en ligne',
+  // @desc: Hint shown after choosing a player on the Social screen's Players tab: trading and
+  // challenging are face to face. {name} is the player's display name. One short sentence.
+  // leaderboardView.ts (the Players tab)
+  'social.players.walkUp': (p) => `Approchez-vous de ${p.name} et appuyez sur A`,
   // @desc: Row of the action sheet opened on a trade offer or a PvP challenge: accept it. One short
   // verb.
   // tradeView.ts (the Social action sheet)
