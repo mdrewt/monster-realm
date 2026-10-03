@@ -188,6 +188,15 @@ export type MessageId =
   // submit label is the S1-seeded `chrome.tradePropose.submit`.
   | 'tradePropose.target.placeholder'
   | 'tradePropose.feedback.sent'
+  | 'tradePropose.step.target'
+  | 'tradePropose.step.offer'
+  | 'tradePropose.step.coins'
+  | 'tradePropose.step.ask'
+  | 'tradePropose.step.review'
+  | 'tradePropose.review.prompt'
+  | 'tradePropose.review.incomplete'
+  | 'tradePropose.review.yes'
+  | 'tradePropose.review.no'
   // Dialogue.* : the NPC dialogue overlay (dialogueView.ts).
   | 'dialogue.action.shop'
   // Claim.* : the guest-claim overlay — its buttons (claimView.ts) and, since 21r-b2, its
@@ -233,6 +242,7 @@ export type MessageId =
   | 'heal.location'
   // ctl-8a: the heal frame's question and the reason it is disabled with no bound healer.
   | 'heal.prompt.question'
+  | 'tradePropose.review.summary'
   | 'heal.prompt.unavailable'
   // Privacy.* : the privacy surface — its heading and buttons (privacyView.ts) and, since
   // 21r-b2, its copy layer (privacyBanner.ts): the HUD countdown, status/notice lines, export
@@ -438,6 +448,12 @@ export interface MessageParams {
   readonly 'questLog.entry': { readonly name: string; readonly step: number };
   readonly 'heal.location': { readonly cost: string };
   readonly 'heal.prompt.question': { readonly cost: string };
+  readonly 'tradePropose.review.summary': {
+    readonly target: string;
+    readonly monsters: number;
+    readonly offer: string;
+    readonly ask: string;
+  };
   readonly 'evolutionNotice.species.fallback': { readonly id: number };
   readonly 'evolutionNotice.reveal.nicknamed': {
     readonly nickname: string;

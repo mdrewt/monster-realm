@@ -673,6 +673,35 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Feedback line in the trade-proposal dialog after the offer was sent to the other player.
   // main.ts:2828
   'tradePropose.feedback.sent': 'Offre envoyée !',
+  // @desc: Step names in the trade-proposal wizard's header (ctl-8e), in order: pick the player,
+  // pick your monsters, type the coins you give, type the coins you ask for, confirm. One word each.
+  // tradeProposeView.ts
+  'tradePropose.step.target': 'Joueur',
+  // @desc: Wizard step name: choose which of your monsters to offer. One word.
+  // tradeProposeView.ts
+  'tradePropose.step.offer': 'Offre',
+  // @desc: Wizard step name: type how many coins you give. One word.
+  // tradeProposeView.ts
+  'tradePropose.step.coins': 'Pièces',
+  // @desc: Wizard step name: type how many coins you ask for in return. One word.
+  // tradeProposeView.ts
+  'tradePropose.step.ask': 'Demande',
+  // @desc: Wizard step name: check the offer and send it. One word.
+  // tradeProposeView.ts
+  'tradePropose.step.review': 'Vérifier',
+  // @desc: Question on the wizard's last step, above Yes / No; Yes sends the trade offer.
+  // tradeProposeView.ts
+  'tradePropose.review.prompt': 'Envoyer cette offre ?',
+  // @desc: Shown on the wizard's last step instead of the question when no player is chosen or
+  // nothing is offered or asked for, so the offer cannot be sent yet.
+  // tradeProposeView.ts
+  'tradePropose.review.incomplete': 'Cette offre n’est pas complète.',
+  // @desc: Answer that sends the trade offer. One word.
+  // tradeProposeView.ts
+  'tradePropose.review.yes': 'Oui',
+  // @desc: Answer that does not send the trade offer and goes back a step. One word.
+  // tradeProposeView.ts
+  'tradePropose.review.no': 'Non',
   // @desc: Button in the NPC dialogue overlay that opens the shop this NPC runs; shown only when
   // the NPC has one. One word, fits a narrow button.
   // dialogueView.ts:72
@@ -831,6 +860,11 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // (e.g. "Gratuit" or "25 or"), carried verbatim. One short line, a question.
   // healView.ts (paint, the question)
   'heal.prompt.question': (p) => `Soigner l’équipe pour ${p.cost} ?`,
+  // @desc: Summary line on the wizard's last step: the chosen player's name, how many of your
+  // monsters are ticked, the coins you give and the coins you ask for. Numbers are digits.
+  // tradeProposeView.ts
+  'tradePropose.review.summary': (p) =>
+    `Pour ${p.target} : ${p.monsters} monstres et ${p.offer} pièces, contre ${p.ask} pièces`,
   // @desc: Why the heal frame's Yes is disabled: no healer is bound (the frame was left open
   // across a reconnect). One short sentence.
   // healView.ts (paint, the reason)
