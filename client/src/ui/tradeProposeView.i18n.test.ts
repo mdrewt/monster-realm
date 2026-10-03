@@ -97,6 +97,13 @@ function makeLists(
 const M24S5_TP_PLAIN_KEYS = new Set([
   'tradePropose.target.placeholder',
   'chrome.tradePropose.submit',
+  // INTENTIONAL CHANGE (ctl-8e): the wizard's step header is rendered at open (render() paints it
+  // on Target), so its five catalogued step names are expected sentinels after show+render.
+  'tradePropose.step.target',
+  'tradePropose.step.offer',
+  'tradePropose.step.coins',
+  'tradePropose.step.ask',
+  'tradePropose.step.review',
 ]);
 
 function m24s5TpIsExpectedSentinelSpan(content: string): boolean {
@@ -223,6 +230,12 @@ describe('m24s5 (ADR-0261): tradeProposeView.ts routes its migrated sinks throug
       const joined = texts.join('\n');
       expect(joined).toContain('«tradePropose.target.placeholder»');
       expect(joined).toContain('«chrome.tradePropose.submit»');
+      // INTENTIONAL CHANGE (ctl-8e): the header's five step names appear, each as a sentinel.
+      for (const step of ['target', 'offer', 'coins', 'ask', 'review']) {
+        expect(joined, `the step header renders «tradePropose.step.${step}»`).toContain(
+          `«tradePropose.step.${step}»`,
+        );
+      }
       expect(joined, 't.label stays raw').toContain('Zed');
       expect(joined, 'the checkbox label (m.label) stays raw').toContain('Kip');
     } finally {

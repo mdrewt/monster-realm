@@ -643,6 +643,35 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Feedback line in the trade-proposal dialog after the offer was sent to the other player.
   // main.ts:2828
   'tradePropose.feedback.sent': 'Offer sent!',
+  // @desc: Step names in the trade-proposal wizard's header (ctl-8e), in order: pick the player,
+  // pick your monsters, type the coins you give, type the coins you ask for, confirm. One word each.
+  // tradeProposeView.ts
+  'tradePropose.step.target': 'Target',
+  // @desc: Wizard step name: choose which of your monsters to offer. One word.
+  // tradeProposeView.ts
+  'tradePropose.step.offer': 'Offer',
+  // @desc: Wizard step name: type how many coins you give. One word.
+  // tradeProposeView.ts
+  'tradePropose.step.coins': 'Coins',
+  // @desc: Wizard step name: type how many coins you ask for in return. One word.
+  // tradeProposeView.ts
+  'tradePropose.step.ask': 'Ask',
+  // @desc: Wizard step name: check the offer and send it. One word.
+  // tradeProposeView.ts
+  'tradePropose.step.review': 'Review',
+  // @desc: Question on the wizard's last step, above Yes / No; Yes sends the trade offer.
+  // tradeProposeView.ts
+  'tradePropose.review.prompt': 'Send this offer?',
+  // @desc: Shown on the wizard's last step instead of the question when no player is chosen or
+  // nothing is offered or asked for, so the offer cannot be sent yet.
+  // tradeProposeView.ts
+  'tradePropose.review.incomplete': 'This offer is not complete.',
+  // @desc: Answer that sends the trade offer. One word.
+  // tradeProposeView.ts
+  'tradePropose.review.yes': 'Yes',
+  // @desc: Answer that does not send the trade offer and goes back a step. One word.
+  // tradeProposeView.ts
+  'tradePropose.review.no': 'No',
   // @desc: Button in the NPC dialogue overlay that opens the shop this NPC runs; shown only when
   // the NPC has one. One word, fits a narrow button.
   // dialogueView.ts:72
@@ -796,6 +825,11 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // across a reconnect). One short sentence.
   // healView.ts (paint, the reason)
   'heal.prompt.unavailable': 'No healer in reach. Healing is unavailable.',
+  // @desc: Summary line on the wizard's last step: the chosen player's name, how many of your
+  // monsters are ticked, the coins you give and the coins you ask for. Numbers are digits.
+  // tradeProposeView.ts
+  'tradePropose.review.summary': (p) =>
+    `To ${p.target} · Monsters: ${p.monsters} · Coins: ${p.offer} · Asking: ${p.ask}`,
   // @desc: Heading of the privacy & account-data overlay (account deletion, data export). Same
   // English as claim.privacyButton today, but a different key: this is a HEADING. One short line.
   // privacyView.ts:145 (resolved in show())

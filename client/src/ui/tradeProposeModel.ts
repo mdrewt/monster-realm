@@ -159,3 +159,16 @@ export function buildProposeSubmission(
 
   return { canSubmit, offerCurrency, requestCurrency, args };
 }
+
+/** A step of the trade-propose wizard (ctl-8e, CTL8E.1). */
+export type ProposeStep = 'target' | 'offer' | 'coins' | 'ask' | 'review';
+
+/**
+ * The wizard's steps in order: Target only when no target was supplied (ctl-10b supplies one from
+ * the face-to-face picker), then Offer, Coins, Ask and Review. A fresh array on every call.
+ */
+export function proposeSteps(targetSupplied: boolean): ProposeStep[] {
+  return targetSupplied
+    ? ['offer', 'coins', 'ask', 'review']
+    : ['target', 'offer', 'coins', 'ask', 'review'];
+}
