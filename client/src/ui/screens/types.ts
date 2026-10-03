@@ -4,8 +4,11 @@
 // (`ScreenHost`, screens/index.ts) and main.ts runs every command through ONE exhaustive `dispatch`.
 import type { Bindings } from '../../input/bindings';
 import type { AuthoritativeStore } from '../../net/store';
+import type { LeaderboardView } from '../leaderboardView';
 import type { NavInput } from '../nav';
+import type { PvpView } from '../pvpView';
 import type { TradeProposeArgs } from '../tradeProposeModel';
+import type { TradeView } from '../tradeView';
 
 /** The result of one screen step: the next state and the effect the shell applies. */
 export interface ScreenStep<S, E> {
@@ -80,6 +83,26 @@ export type Command =
  *  `unhandled` (not the screen's: the page or the legacy ladder keeps the key). */
 export type ScreenResult = Command | 'consumed' | 'unhandled';
 
+/** A tab of the Social frame (design §5 row 4). */
+export type SocialTab = 'players' | 'trades' | 'challenges' | 'rankings';
+
+/** The overlays the Social frame shows as its panels, one at a time (ui/contextStack.ts). */
+export type SocialPanelId = 'tradeView' | 'pvpView' | 'leaderboardView';
+
+/** The view the shell lends the Social frame's adapter (CTL8S.3): its three panel views
+ *  (undefined until main() builds them) and the frame's own parts. */
+export interface SocialFrameView {
+  readonly trades: TradeView | undefined;
+  readonly challenges: PvpView | undefined;
+  readonly rankings: LeaderboardView | undefined;
+  /** The frame's shared chrome: one element, hosted by whichever panel is shown. */
+  readonly chrome: HTMLElement;
+  /** Show `panel` alone, with the chrome in it. The frame stays the one Social frame: no stack
+   *  edge, so the adapter's state survives. Nothing happens for the panel already shown, or while
+   *  another frame covers the Social frame. */
+  show(panel: SocialPanelId): void;
+}
+
 /** What an adapter may read to build its view model. Adapters only read it (the store type is
  *  not deep-readonly): a command is their only way to change anything. Every value is read live at
  *  each access. */
@@ -95,6 +118,9 @@ export interface ScreenContext {
    *  after the heal frame closes and reads null after a reconnect, which can leave that frame
    *  open with no location. 0 is a location id. */
   readonly healLocationId: number | null;
+  /** The Social tab the last open path asked for, else null (a plain open). It is bound before
+   *  the frame shows, keeps its value after the frame closes and reads null after a reconnect. */
+  readonly socialTab: SocialTab | null;
   /** The OS reduced-motion preference. */
   readonly reduceMotion: boolean;
 }
@@ -111,9 +137,14 @@ export interface ButtonStep<S> {
 export interface ScreenAdapter<VM, S, V = unknown> {
   /** Nav-capable: while this frame is the top one the router hands it the D-pad, with auto-repeat. */
   readonly nav?: true;
+  /** Keep this frame's state across its closes (CTL8S.1): `init` is handed the state the frame
+   *  had when it last closed, until a reconnect. Without it every open starts over. */
+  readonly remember?: true;
   viewModel(ctx: ScreenContext): VM;
-  /** The state a frame starts from, asked at its first step or observe after each time it opens. */
-  init(vm: VM): S;
+  /** The state a frame starts from, asked at its first step or observe after each time it opens
+   *  (the Social frame's at the open itself). `remembered` is the state the frame last closed
+   *  with, for an adapter that opted in through `remember`; else undefined. */
+  init(vm: VM, remembered?: S): S;
   /** One button. The next state is kept and painted before the result's command runs, and that
    *  command may be refused, so a state must not assume it took effect. `btn.repeat` marks a
    *  synthesized auto-repeat: move on it, never act. */

@@ -129,8 +129,14 @@ export class PvpView {
     this.#feedbackEl.textContent = msg;
   }
 
+  /** Host the Social frame's shared chrome (CTL8S.3): `el` becomes this root's first child. A
+   *  no-op when it already is, so a repeat never detaches it (focus inside it would be lost). */
+  hostChrome(el: HTMLElement): void {
+    if (this.#root.firstElementChild !== el) this.#root.prepend(el);
+  }
+
   /**
-   * Re-render from the latest VM. The caller (main.ts batch listener or KeyP handler)
+   * Re-render from the latest VM. The caller (main.ts's batch listener or its Social open path)
    * is fully responsible for the show/hide decision via `forceVisible` — this method
    * never auto-shows independently. This prevents pvpView from popping over an active
    * battle or other overlay when hasActive=true (mutual exclusivity).

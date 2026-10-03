@@ -58,6 +58,12 @@ export class LeaderboardView {
     else this.show();
   }
 
+  /** Host the Social frame's shared chrome (CTL8S.3): `el` becomes this root's first child. A
+   *  no-op when it already is, so a repeat never detaches it (focus inside it would be lost). */
+  hostChrome(el: HTMLElement): void {
+    if (this.#overlay.firstElementChild !== el) this.#overlay.prepend(el);
+  }
+
   /** Render or re-render the board. Rows render in VM order — never re-sort here
    *  (the comparator is the model's contract). replaceChildren keeps
    *  re-renders replace-not-append. */
