@@ -308,6 +308,13 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { qty: 1, name: 'Tonic', gold: 9_007_199_254_740_993n },
   ],
   'heal.prompt.question': [{ cost: '25 gold' }, { cost: '2x Herb + 40 gold' }],
+  // ctl-8e: the Review summary of the PARSED on-screen draft (1 ★). `offer` and `ask` are the
+  // parsed coin amounts as decimal strings, `monsters` the checked count; every field differs
+  // between the two sets, numbers included.
+  'tradePropose.review.summary': [
+    { target: 'Zed', monsters: 2, offer: '25', ask: '7' },
+    { target: 'Amy', monsters: 3, offer: '1000', ask: '4' },
+  ],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -336,6 +343,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // ctl-8d (named intentional change): +12 plain keys here (`social.tab.{players,trades,
   // challenges,rankings}`, `social.players.placeholder`, `social.action.{accept,decline,confirm,
   // cancel}`, `social.confirm.{declineTrade,confirmTrade,declineChallenge}`) = 249 keys.
+  // ctl-8e (named intentional change): +9 plain keys here (`tradePropose.step.{target,offer,coins,
+  // ask,review}`, `tradePropose.review.{prompt,incomplete,yes,no}`), +1 parameterised one
+  // (`tradePropose.review.summary`) in SAMPLE_PARAMS = 259 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -591,6 +601,18 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'social.confirm.declineTrade': 'Decline this trade?',
   'social.confirm.confirmTrade': 'Complete this trade? It cannot be undone.',
   'social.confirm.declineChallenge': 'Decline this challenge?',
+  // ctl-8e: 9 new plain keys — the trade-propose wizard's step header (five steps), the Review
+  // question, the line shown when the on-screen draft cannot be sent, and the Yes / No answers
+  // (all painted by tradeProposeView.ts).
+  'tradePropose.step.target': 'Target',
+  'tradePropose.step.offer': 'Offer',
+  'tradePropose.step.coins': 'Coins',
+  'tradePropose.step.ask': 'Ask',
+  'tradePropose.step.review': 'Review',
+  'tradePropose.review.prompt': 'Send this offer?',
+  'tradePropose.review.incomplete': 'This offer is not complete.',
+  'tradePropose.review.yes': 'Yes',
+  'tradePropose.review.no': 'No',
 };
 
 interface ParamOutputSpec {
@@ -951,9 +973,18 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { cost: '2x Herb + 40 gold' },
     outputB: 'Heal party for 2x Herb + 40 gold?',
   },
+  // ctl-8e: the trade-propose Review summary (CTL8E.1).
+  'tradePropose.review.summary': {
+    inputA: { target: 'Zed', monsters: 2, offer: '25', ask: '7' },
+    outputA: 'To Zed: 2 monsters and 25 coins, asking 7 coins',
+    inputB: { target: 'Amy', monsters: 3, offer: '1000', ask: '4' },
+    outputB: 'To Amy: 3 monsters and 1000 coins, asking 4 coins',
+  },
 };
 
-/** The full 249-key roster (ctl-8d: +`social.tab.{players,trades,challenges,rankings}`
+/** The full 259-key roster (ctl-8e: +`tradePropose.step.{target,offer,coins,ask,review}`
+ *  +`tradePropose.review.{prompt,incomplete,yes,no,summary}` over the 249-key roster below;
+ *  ctl-8d: +`social.tab.{players,trades,challenges,rankings}`
  *  +`social.players.placeholder` +`social.action.{accept,decline,confirm,cancel}`
  *  +`social.confirm.{declineTrade,confirmTrade,declineChallenge}` over the 237-key roster below;
  *  ctl-8c: +`box.sheet.{care,feed,evolve,feedNone}` +`box.feed.item`
@@ -1022,7 +1053,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8d 249-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8e 259-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1111,10 +1142,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 249 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 259 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (249 keys since ctl-8d).
+    // (a) roster is exactly the EXPECTED_KEYS roster (259 keys since ctl-8e).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
@@ -1369,5 +1400,66 @@ describe('ctl-8d: catalog.fr.ts, the keys ctl-8d adds', () => {
       Object.keys(EXPECTED_FR_CTL8D_PLAIN).length,
       'ANTI-VACUITY: all 12 ctl-8d keys are pinned in French',
     ).toBe(12);
+  });
+});
+
+// =============================================================================
+// ctl-8e: the French side of the 10 keys ctl-8e adds (the wizard's step header, the Review
+// question, the incomplete line, Yes / No and the summary). The exact French wording is the
+// translator's; what is pinned is that every key EXISTS in catalog.fr.ts with the right shape (a
+// missing key makes t() throw in a French boot, the whole wizard blank), that the three sentences
+// are translations rather than the English copy, and that the summary closure carries every param
+// through.
+// =============================================================================
+
+describe('ctl-8e: catalog.fr.ts, the keys ctl-8e adds', () => {
+  it('CTL8E-1-VIEW-PAINT: the 9 new plain keys are non-empty strings and the summary a closure in catalog.fr.ts; the prompt, the incomplete line and the summary are not the English copy; and the summary closure echoes every param, both sample sets, with two different outputs', () => {
+    // WRONG IMPL KILLED: a key added to en only (the French wizard header and Review would throw);
+    // a French sentence left as the English copy; a summary closure that drops or swaps a param
+    // (the target, the count or a coin amount); and a closure that ignores the numeric params
+    // (both sample sets would print the same line).
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const plainKeys = Object.keys(EXPECTED_PLAIN).filter((k) => k.startsWith('tradePropose.'));
+    const wizardPlain = plainKeys.filter(
+      (k) => k !== 'tradePropose.target.placeholder' && k !== 'tradePropose.feedback.sent',
+    );
+    expect(wizardPlain.slice().sort(), 'fixture: the 9 ctl-8e plain keys').toEqual([
+      'tradePropose.review.incomplete',
+      'tradePropose.review.no',
+      'tradePropose.review.prompt',
+      'tradePropose.review.yes',
+      'tradePropose.step.ask',
+      'tradePropose.step.coins',
+      'tradePropose.step.offer',
+      'tradePropose.step.review',
+      'tradePropose.step.target',
+    ]);
+    for (const key of wizardPlain) {
+      expect(typeof fr[key], `${key} must be a plain string in the fr catalog`).toBe('string');
+      expect((fr[key] as string).length > 0, `${key} must be non-empty`).toBe(true);
+    }
+    for (const key of ['tradePropose.review.prompt', 'tradePropose.review.incomplete']) {
+      expect(fr[key], `${key}: a translation, not the English copy`).not.toBe(EXPECTED_PLAIN[key]);
+    }
+
+    const key = 'tradePropose.review.summary';
+    const spec = EXPECTED_PARAM_OUTPUTS[key] as ParamOutputSpec;
+    expect(spec, 'fixture: the English output pins exist').toBeDefined();
+    expect(typeof fr[key], `${key} must be a closure in the fr catalog`).toBe('function');
+    const fn = fr[key] as (p: Record<string, unknown>) => string;
+    const outA = fn(spec.inputA);
+    const outB = fn(spec.inputB);
+    expect(outA, 'a translation, not the English line').not.toBe(spec.outputA);
+    expect(outA, 'the two sample sets print different lines').not.toBe(outB);
+    for (const [out, input] of [
+      [outA, spec.inputA],
+      [outB, spec.inputB],
+    ] as const) {
+      for (const [field, value] of Object.entries(input)) {
+        expect(out.includes(String(value)), `${field}=${String(value)} appears in ${out}`).toBe(
+          true,
+        );
+      }
+    }
   });
 });

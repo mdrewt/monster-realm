@@ -6,17 +6,27 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll } from './controls';
+import { closeAll, pressButton } from './controls';
 
-// trade-PROPOSE overlay e2e (EARS criterion PTC2-16)
+// trade-PROPOSE overlay e2e (EARS criterion PTC2-16; ctl-8e CTL8E.1, defect B5)
 //
 // TWO-CONTEXT DESIGN
 // ==================
 // Mirrors trade-full.spec.ts: two separate browser instances, each generating a
-// distinct SpacetimeDB identity. The initiator (pageA) drives the REAL UI (KeyO →
-// select → check monster → submit). The counterparty (pageB) responds+confirms via
-// __mrTrade. This is the one test that proves the KeyO overlay (not the hook)
-// initiates a trade — trade-full.spec.ts cannot.
+// distinct SpacetimeDB identity. The initiator (pageA) drives the REAL UI by KEYS (KeyO →
+// pick the target on the focused select → A → A toggles the cursor monster → RB → A → A →
+// A on Yes). The counterparty (pageB) responds+confirms via __mrTrade. This is the one test
+// that proves the KeyO overlay (not the hook) initiates a trade — trade-full.spec.ts cannot.
+//
+// INTENTIONAL CHANGE (ctl-8e): the propose leg was "set the checkbox in page.evaluate and click
+// #tradepropose-submit". It is now the wizard by keys: the converted overlay's step header is the
+// observable state (`[data-testid="tradepropose-steps"] li[aria-current="step"]`), DOM focus
+// follows the step (Offer = #tradepropose-monsters, Coins = the offer field, Review = the review
+// row), and the cursor monster's label carries aria-current="true". The submit button is left
+// alone: the legacy click path is still pinned by the unit suites.
+//
+// KEY NOTE: RB is PageDown here, not KeyE: until ctl-11a the legacy ladder owns Q and E and the
+// router resolves LB / RB only from PageUp / PageDown (CTL6B.6).
 //
 // WHY NOT __mrTrade FOR THE PROPOSE LEG (D8 / red-team L-3)
 // =========================================================
@@ -110,6 +120,21 @@ async function getSnap(p: Page): Promise<{
 }
 
 // ---------------------------------------------------------------------------
+// Wizard locators (ctl-8e). Each is a data-testid / id the converted overlay paints.
+// ---------------------------------------------------------------------------
+const TARGET = '[data-testid="tradepropose-target"]';
+const MONSTERS = '#tradepropose-monsters';
+const OFFER_FIELD = '[data-testid="tradepropose-offer-currency"]';
+const CURSOR_BOX = '#tradepropose-monsters label[aria-current="true"] input';
+const REVIEW_ROW = '[data-testid="tradepropose-review"]';
+const ACTIVE_STEP = '[data-testid="tradepropose-steps"] li[aria-current="step"]';
+
+/** The wizard is on `step`: the header's one aria-current="step" item says so. */
+async function expectStep(p: Page, step: string): Promise<void> {
+  await expect(p.locator(ACTIVE_STEP)).toHaveAttribute('data-step', step);
+}
+
+// ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
 test.describe
@@ -143,6 +168,53 @@ test.describe
     });
 
     // -------------------------------------------------------------------------
+    // B5: Escape on a freshly opened wizard closes it (it was dead: every control's own
+    // stopPropagation swallowed it, and the initial focus is the target select).
+    //
+    // WHAT THESE TESTS KILL:
+    //   - A view whose select / field shield still swallows Escape → the overlay stays open
+    //   - An Escape in a field that closes the overlay and drops the text (CTL6B.5 says the first
+    //     Escape only stops typing and keeps the text; the next one is Start)
+    // -------------------------------------------------------------------------
+    test('CTL8E-1-BOOT-ESCAPE: KeyO then Escape on the focused select closes the overlay (B5)', async () => {
+      test.setTimeout(30_000);
+      await closeAll(pageA);
+      await pageA.keyboard.press('KeyO');
+      await expect(pageA.locator(TARGET)).toBeVisible({ timeout: 10_000 });
+      // The deferred initial focus (one macrotask after the opening key) lands on the select.
+      await expect(pageA.locator(TARGET)).toBeFocused();
+      await expectStep(pageA, 'target');
+
+      await pressButton(pageA, 'Start');
+      await expect(pageA.locator('#tradepropose-overlay')).toBeHidden();
+      await closeAll(pageA);
+    });
+
+    test('CTL8E-1-BOOT-ESCAPE: Escape in the offer field keeps the typed text and the overlay, the next Escape closes it', async () => {
+      test.setTimeout(30_000);
+      await closeAll(pageA);
+      await pageA.keyboard.press('KeyO');
+      await expect(pageA.locator(TARGET)).toBeFocused();
+      await pressButton(pageA, 'A'); // Target -> Offer
+      await expectStep(pageA, 'offer');
+      await expect(pageA.locator(MONSTERS)).toBeFocused();
+      await pageA.keyboard.press('PageDown'); // RB: Offer -> Coins
+      await expectStep(pageA, 'coins');
+      await expect(pageA.locator(OFFER_FIELD)).toBeFocused();
+      await pageA.keyboard.type('25');
+
+      await pressButton(pageA, 'Start'); // stops typing
+      await expect(pageA.locator('#tradepropose-overlay')).toBeVisible();
+      await expect(pageA.locator(OFFER_FIELD)).toHaveValue('25');
+      await expect(pageA.locator(OFFER_FIELD)).not.toBeFocused();
+      await expectStep(pageA, 'coins');
+
+      await pressButton(pageA, 'Start'); // Start proper
+      await expect(pageA.locator('#tradepropose-overlay')).toBeHidden();
+      await closeAll(pageA);
+    });
+
+    // -------------------------------------------------------------------------
     // UI-driven propose → respond+confirm → specific monsterId transfers
     //
     // WHAT THIS TEST KILLS:
@@ -155,7 +227,7 @@ test.describe
     //   - A propose UI that sends the wrong counterparty identity → server rejects
     //
     // -------------------------------------------------------------------------
-    test('PTC2-16: KeyO→select→check monster→submit → respond+confirm → specific monsterId transfers (identity) + offer row deleted', async () => {
+    test('PTC2-16: KeyO→pick target→A→A toggles the cursor monster→RB→A→A→A on Yes → respond+confirm → specific monsterId transfers (identity) + offer row deleted', async () => {
       test.setTimeout(90_000);
 
       // Snapshots before trade.
@@ -204,26 +276,29 @@ test.describe
 
       // -----------------------------------------------------------------------
       // Step 2: Initiator runs closeAll to dismiss any stale overlay, then
-      //   presses KeyO to open the trade-PROPOSE overlay.
+      //   presses KeyO to open the trade-PROPOSE overlay on its Target step.
       // -----------------------------------------------------------------------
       await closeAll(pageA);
       await pageA.keyboard.press('KeyO');
 
-      // Wait for the target select to become visible (overlay is open).
-      // This is the first structural gate: the overlay MUST open on KeyO.
-      await pageA.waitForSelector('[data-testid="tradepropose-target"]', {
-        state: 'visible',
-        timeout: 10_000,
-      });
+      // Wait for the target select to become visible (overlay is open) and take the deferred
+      // initial focus. This is the first structural gate: the overlay MUST open on KeyO.
+      await pageA.waitForSelector(TARGET, { state: 'visible', timeout: 10_000 });
+      await expect(pageA.locator(TARGET)).toBeFocused();
+      await expectStep(pageA, 'target');
 
       // -----------------------------------------------------------------------
-      // Step 3: Select the counterparty in the <select>.
+      // Step 3: Pick the counterparty on the focused <select> (selectOption sets the value and
+      //   fires change, as a user's arrow keys would), then A (Enter) moves to the Offer step.
       //   The target <select> must have an option with value=counterpartyId.
-      //   selectOption waits for the option to exist.
       // -----------------------------------------------------------------------
-      await pageA.selectOption('[data-testid="tradepropose-target"]', {
-        value: counterpartyId,
-      });
+      await pageA.selectOption(TARGET, { value: counterpartyId });
+      await pageA.locator(TARGET).focus(); // keys must go to the select, whatever selectOption did
+      await pressButton(pageA, 'A');
+      await expectStep(pageA, 'offer');
+      // DOM focus follows the step: the monsters container, a non-form element, so the D-pad
+      // and A reach the router from here on.
+      await expect(pageA.locator(MONSTERS)).toBeFocused();
 
       // -----------------------------------------------------------------------
       // Step 4: Check the first monster checkbox in #tradepropose-monsters.
@@ -234,36 +309,51 @@ test.describe
       //   The checkbox must carry its monsterId in data-monster-id.
       //   BigInt does NOT cross page.evaluate() — carry as string.
       // -----------------------------------------------------------------------
-      const offeredMonsterIdStr = await pageA.evaluate(() => {
-        const container = document.getElementById('tradepropose-monsters');
-        if (!container) throw new Error('#tradepropose-monsters container not found');
-        const cb = container.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
-        if (!cb)
-          throw new Error(
-            'No monster checkbox found in #tradepropose-monsters — ' +
-              'render() must build checkboxes from ownMonsters',
-          );
-        const monId = cb.getAttribute('data-monster-id');
-        if (!monId)
-          throw new Error(
-            'Checkbox missing data-monster-id attribute — ' +
-              'ADR-0134 D1 requires value AND data-monster-id on each checkbox',
-          );
-        cb.checked = true;
-        // Fire change so the view's live-enable listener picks up the selection
-        cb.dispatchEvent(new Event('change', { bubbles: true }));
-        return monId; // monsterId as string (BigInt boundary rule)
-      });
-
+      //
+      //   ctl-8e: the cursor's checkbox label carries aria-current="true" (the cursor opens on
+      //   the first monster); A (Enter) ticks THAT monster. Read its id BEFORE the press, so the
+      //   identity assertion names the monster the wizard marked, not whichever box is first.
+      // -----------------------------------------------------------------------
+      await expect(pageA.locator(CURSOR_BOX)).toHaveCount(1);
+      const offeredMonsterIdStr = await pageA.locator(CURSOR_BOX).getAttribute('data-monster-id');
       expect(offeredMonsterIdStr, 'offered monsterId string must be non-empty').toBeTruthy();
+      await expect(pageA.locator(CURSOR_BOX)).not.toBeChecked();
+
+      await pressButton(pageA, 'A'); // toggles the cursor monster in place
+      await expect(pageA.locator(CURSOR_BOX)).toBeChecked();
+      await expectStep(pageA, 'offer');
 
       // -----------------------------------------------------------------------
-      // Step 5: Click the submit button.
-      //   The submit button must be enabled at this point (target selected + monster checked).
-      //   This click drives the REAL onSubmit → reducers.proposeTrade() path.
-      //   NOT __mrTrade — this is the D8 / red-team L-3 gate.
+      // Step 4b: RB (PageDown) to Coins, A to Ask, A to Review: the coin fields stay empty (the
+      //   monster is the whole offer). Focus follows: the offer field, then the request field,
+      //   then the review row.
       // -----------------------------------------------------------------------
-      await pageA.click('[data-testid="tradepropose-submit"]');
+      await pageA.keyboard.press('PageDown');
+      await expectStep(pageA, 'coins');
+      await expect(pageA.locator(OFFER_FIELD)).toBeFocused();
+      await pressButton(pageA, 'A');
+      await expectStep(pageA, 'ask');
+      await expect(pageA.locator('[data-testid="tradepropose-request-currency"]')).toBeFocused();
+      await pressButton(pageA, 'A');
+      await expectStep(pageA, 'review');
+      await expect(pageA.locator(REVIEW_ROW)).toBeVisible();
+      await expect(pageA.locator(REVIEW_ROW)).toBeFocused();
+      await expect(
+        pageA.locator('[data-testid="tradepropose-review-yes"]'),
+        'Review confirms with Yes as the default',
+      ).toHaveAttribute('aria-current', 'true');
+
+      // -----------------------------------------------------------------------
+      // Step 5: A on Yes (the Review default) confirms.
+      //   The commit sends the ON-SCREEN draft through the REAL onSubmit →
+      //   reducers.proposeTrade() path. NOT __mrTrade — this is the D8 / red-team L-3 gate.
+      //   The cursor then moves to No, so a second A cannot send twice.
+      // -----------------------------------------------------------------------
+      await pressButton(pageA, 'A');
+      await expect(
+        pageA.locator('[data-testid="tradepropose-review-no"]'),
+        'after Yes the cursor is on No',
+      ).toHaveAttribute('aria-current', 'true');
 
       // -----------------------------------------------------------------------
       // Step 6: Both players wait for the offer row to appear (Pending).
@@ -298,6 +388,14 @@ test.describe
         offerStatusAfterPropose,
         'offer must be Pending immediately after UI-driven propose',
       ).toBe('Pending');
+
+      // Exactly ONE offer row: the commit sent once (a double-tap of A, or a send per paint,
+      // would have tried a second proposal for the same monster).
+      const offerCountAfterPropose = await pageA.evaluate(() => {
+        const w = window as unknown as { __mrTrade: MrTrade };
+        return w.__mrTrade.allTradeOffers().length;
+      });
+      expect(offerCountAfterPropose, 'one UI-driven propose makes exactly one offer').toBe(1);
 
       // -----------------------------------------------------------------------
       // Step 7: Counterparty (B) responds and initiator (A) confirms via __mrTrade.

@@ -78,10 +78,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from './a11yCopy';
+// ctl-8e: the wizard's own strings come from the i18n resolver (the file's `t` above is a11yCopy's).
+import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
-import type { TradeProposeArgs, TradeProposeLists } from './tradeProposeModel';
-import { type TradeProposeCallbacks, TradeProposeView } from './tradeProposeView';
+import { proposeSteps, type TradeProposeArgs, type TradeProposeLists } from './tradeProposeModel';
+import {
+  type TradeProposeCallbacks,
+  type TradeProposePaint,
+  TradeProposeView,
+} from './tradeProposeView';
 
 // The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
 // implementation, so the VALUE oracle (real attribute writes, real focus moves) still works.
@@ -691,31 +697,69 @@ describe('★★ TradeProposeView PTC2-9: stopPropagation on every focusable —
 // Enter and Escape local handling on currency inputs
 // ---------------------------------------------------------------------------
 
-describe('TradeProposeView PTC2-9: Enter=submit / Escape=hide on currency inputs', () => {
+describe('TradeProposeView PTC2-9: Escape and Enter on the currency inputs belong to the router', () => {
   beforeEach(() => mountTradeProposeOverlay());
   afterEach(() => {
     teardown();
     vi.restoreAllMocks();
   });
 
-  it('BITES: Escape on offer-currency input hides the overlay — kills missing-Escape impl', async () => {
-    const view = new TradeProposeView(noop());
-    view.show();
-    expect(view.visible).toBe(true);
-    const input = document.getElementById('tradepropose-offer-currency') as HTMLInputElement;
-    input.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true }));
-    await flushPromises();
-    expect(view.visible).toBe(false);
-  });
+  // INTENTIONAL CHANGE (ctl-8e, CTL8E.1 / CTL6B.5): was "Escape on the offer / request input hides
+  // the overlay" (the input's own Escape listener) and "Enter submits". Now the currency inputs
+  // hold neither: main.ts routes Escape in the CAPTURE phase (it stops typing, then the next Escape
+  // is Start) and Enter reaches the router as A, which steps the wizard. Pinned the other way round:
+  // Escape leaves the overlay open and reaches the window, Enter sends nothing.
+  for (const [id, label] of [
+    ['tradepropose-offer-currency', 'offer'],
+    ['tradepropose-request-currency', 'request'],
+  ] as const) {
+    it(`CTL8E-1-VIEW-KEYS: Escape on the ${label}-currency input no longer hides the overlay on its own (the router owns it) and still reaches the window`, async () => {
+      // WRONG IMPL KILLED: the pre-ctl-8e local `else if (e.code === 'Escape') this.hide()` (it would
+      // close the overlay under the router's typing-mode rule, losing the draft the rule keeps), and
+      // a blanket stopPropagation (the window would never see the Escape that stops typing).
+      const view = new TradeProposeView(noop());
+      view.show();
+      expect(view.visible).toBe(true);
+      const spy = vi.fn();
+      window.addEventListener('keydown', spy);
+      const input = document.getElementById(id) as HTMLInputElement;
+      input.value = '25';
+      input.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true }));
+      await flushPromises();
+      window.removeEventListener('keydown', spy);
+      expect(view.visible, 'Escape must not hide the overlay from the field').toBe(true);
+      expect(input.value, 'and the typed text is kept').toBe('25');
+      expect(spy, 'Escape reaches the window listeners').toHaveBeenCalledTimes(1);
+    });
 
-  it('BITES: Escape on request-currency input hides the overlay — kills missing-Escape impl', async () => {
-    const view = new TradeProposeView(noop());
-    view.show();
-    const input = document.getElementById('tradepropose-request-currency') as HTMLInputElement;
-    input.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true }));
-    await flushPromises();
-    expect(view.visible).toBe(false);
-  });
+    it(`CTL8E-1-VIEW-KEYS: Enter on the ${label}-currency input no longer submits (it is the router's A) and still reaches the window`, async () => {
+      // WRONG IMPL KILLED: the pre-ctl-8e `if (e.code === 'Enter') this.#submit()` (an Enter on Coins
+      // would send the half-built draft instead of stepping to Ask), and a blanket stopPropagation
+      // (the router would never see the A that steps the wizard).
+      const onSubmit = vi.fn().mockResolvedValue(undefined);
+      const view = new TradeProposeView({ onSubmit, maxMonstersPerSide: 64 });
+      view.render(makeLists([{ identity: '0xaaa1', label: 'Alice' }], []));
+      view.show();
+      const select = document.getElementById('tradepropose-target') as HTMLSelectElement;
+      select.value = '0xaaa1';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      const input = document.getElementById(id) as HTMLInputElement;
+      input.value = '100';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const spy = vi.fn();
+      window.addEventListener('keydown', spy);
+      for (const code of ['Enter', 'NumpadEnter']) {
+        input.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true }));
+      }
+      await flushPromises();
+      window.removeEventListener('keydown', spy);
+      expect(
+        onSubmit,
+        'a complete draft, but Enter in the field sends nothing',
+      ).not.toHaveBeenCalled();
+      expect(spy, 'both Enter keys reach the window listeners').toHaveBeenCalledTimes(2);
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1078,5 +1122,736 @@ describe('★ tradeProposeView.ts source scan: no .innerHTML assignment with dat
       'tradeProposeView.ts must not contain ".innerHTML =" — player-controlled names/nicknames ' +
         'must only be written via textContent or option.textContent/value (RT-XSS, ADR-0134 D6)',
     ).toBe(false);
+  });
+});
+
+// ===========================================================================================
+// ctl-8e (CTL8E.1, defect B5): the trade-propose wizard's view.
+//
+// `paint(p)` is how the converted screen drives this view (screens/tradeProposeScreen.ts). The
+// DOM stays the ONE draft: the target is the select's value, the offer is the checked boxes, the
+// coins are the two fields. The screen holds only the step, the cursors and two ONE-SHOT TOKENS
+// (toggle, commit) that the view applies to the DOM, compared by object identity. So what is on
+// screen is exactly what is sent, and the mouse and the D-pad compose with no divergence.
+//
+// Paint order (the plan's adjudication): a commit token not seen before is remembered FIRST; the
+// select and the boxes are rebuilt from `p.lists` PRESERVING the DOM draft; a toggle token not seen
+// before flips its box once; the header, cursor mark and review row follow; focus moves ONLY when
+// the step changed; the submit button is refreshed from the DOM draft; and the new commit token
+// runs the existing submit path once.
+// ===========================================================================================
+
+const WIZ_ALICE = { identity: '0xaaa1', label: 'Alice' };
+const WIZ_BOB = { identity: '0xbbb2', label: 'Bob' };
+const WIZ_CY = { identity: '0xccc3', label: 'Cy' };
+const WIZ_LISTS: TradeProposeLists = makeLists(
+  [WIZ_ALICE, WIZ_BOB],
+  [
+    { monsterId: 5n, label: 'Sparky Lv.3' },
+    { monsterId: 12n, label: 'Flame Lv.1' },
+    { monsterId: 30n, label: 'Third Lv.2' },
+  ],
+);
+
+/** A paint on the Target step with the cursor on monster 5, overridden per case. */
+function wizPaint(over: Partial<TradeProposePaint> = {}): TradeProposePaint {
+  return {
+    steps: proposeSteps(false),
+    step: 'target',
+    lists: WIZ_LISTS,
+    offerCursor: '5',
+    yes: true,
+    toggle: null,
+    commit: null,
+    ...over,
+  };
+}
+
+/** A NEW commit token each call (the view compares tokens by identity). */
+const newCommit = (): { readonly kind: 'commit' } => ({ kind: 'commit' });
+
+const wizEl = (id: string): HTMLElement => {
+  const el = document.getElementById(id);
+  if (el === null) throw new Error(`#${id} is not in the document`);
+  return el;
+};
+const wizTest = (testId: string): HTMLElement => {
+  const el = document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+  if (el === null) throw new Error(`[data-testid="${testId}"] is not in the document`);
+  return el;
+};
+const wizSelect = (): HTMLSelectElement => wizEl('tradepropose-target') as HTMLSelectElement;
+const wizMonsters = (): HTMLElement => wizEl('tradepropose-monsters');
+const wizOffer = (): HTMLInputElement => wizEl('tradepropose-offer-currency') as HTMLInputElement;
+const wizRequest = (): HTMLInputElement =>
+  wizEl('tradepropose-request-currency') as HTMLInputElement;
+const wizSubmit = (): HTMLButtonElement => wizEl('tradepropose-submit') as HTMLButtonElement;
+const wizBox = (monsterId: number | string): HTMLInputElement => {
+  const el = document.querySelector<HTMLInputElement>(
+    `#tradepropose-monsters input[data-monster-id="${monsterId}"]`,
+  );
+  if (el === null) throw new Error(`no checkbox for monster ${monsterId}`);
+  return el;
+};
+const wizCheckedIds = (): (string | null)[] =>
+  Array.from(
+    document.querySelectorAll<HTMLInputElement>(
+      '#tradepropose-monsters input[type="checkbox"]:checked',
+    ),
+  ).map((b) => b.getAttribute('data-monster-id'));
+const wizAllBoxIds = (): (string | null)[] =>
+  Array.from(
+    document.querySelectorAll<HTMLInputElement>('#tradepropose-monsters input[type="checkbox"]'),
+  ).map((b) => b.getAttribute('data-monster-id'));
+
+/** What the user does with the mouse and keyboard on the DOM draft. */
+function userSelect(identity: string): void {
+  wizSelect().value = identity;
+  wizSelect().dispatchEvent(new Event('change', { bubbles: true }));
+}
+function userCheck(monsterId: number | string, checked: boolean): void {
+  const box = wizBox(monsterId);
+  box.checked = checked;
+  box.dispatchEvent(new Event('change', { bubbles: true }));
+}
+function userType(input: HTMLInputElement, text: string): void {
+  input.value = text;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+/** Bob, Flame (12), 25 coins offered and 7 asked: a draft that can submit. */
+function fillValidDraft(): void {
+  userSelect(WIZ_BOB.identity);
+  userCheck(12, true);
+  userType(wizOffer(), '25');
+  userType(wizRequest(), '7');
+}
+const VALID_ARGS: TradeProposeArgs = {
+  targetIdentity: WIZ_BOB.identity,
+  initiatorMonsterIds: [12n],
+  initiatorCurrency: 25n,
+  counterpartyCurrency: 7n,
+};
+
+interface Wizard {
+  readonly view: TradeProposeView;
+  readonly onSubmit: ReturnType<typeof vi.fn>;
+}
+/** A mounted, rendered, shown wizard whose onSubmit resolves at once (override per case). */
+function mountWizard(onSubmit = vi.fn().mockResolvedValue(undefined)): Wizard {
+  mountTradeProposeOverlay();
+  const view = new TradeProposeView({ onSubmit, maxMonstersPerSide: 64 });
+  view.render(WIZ_LISTS);
+  view.show();
+  return { view, onSubmit };
+}
+
+type StepKey = 'target' | 'offer' | 'coins' | 'ask' | 'review';
+function stepLabel(step: StepKey): string {
+  switch (step) {
+    case 'target':
+      return i18nT('tradePropose.step.target');
+    case 'offer':
+      return i18nT('tradePropose.step.offer');
+    case 'coins':
+      return i18nT('tradePropose.step.coins');
+    case 'ask':
+      return i18nT('tradePropose.step.ask');
+    case 'review':
+      return i18nT('tradePropose.step.review');
+  }
+}
+const WIZ_STEPS: readonly StepKey[] = ['target', 'offer', 'coins', 'ask', 'review'];
+
+/** The review summary line for these draft facts, resolved through the catalog. */
+function summaryOf(target: string, monsters: number, offer: string, ask: string): string {
+  return i18nTf('tradePropose.review.summary', { target, monsters, offer, ask } as never);
+}
+
+const headerOf = (): HTMLElement => wizTest('tradepropose-steps');
+const headerSteps = (): (string | null)[] =>
+  Array.from(headerOf().querySelectorAll('li')).map((li) => li.getAttribute('data-step'));
+const headerCurrent = (): (string | null)[] =>
+  Array.from(headerOf().querySelectorAll('li'))
+    .filter((li) => li.getAttribute('aria-current') !== null)
+    .map((li) => `${li.getAttribute('data-step')}=${li.getAttribute('aria-current')}`);
+
+describe('TradeProposeView ctl-8e: the step header, the cursor mark and the review row (CTL8E.1)', () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it('CTL8E-1-VIEW-PAINT: paint draws ONE ordered list of steps before the select, one catalogued item per step of p.steps with aria-current="step" on the active one alone, and a repeat paint moves the mark without adding a second header', () => {
+    // WRONG IMPL KILLED: a header appended on every paint (N paints, N headers); the active mark
+    // on every item, on none, or as aria-selected / aria-current="true" (a screen reader announces
+    // the step only for aria-current="step"); items in a fixed order instead of p.steps' (a
+    // supplied target would still show Target); step names hard-coded English instead of the
+    // catalog; the list placed after the select or outside the overlay.
+    const { view } = mountWizard();
+    view.paint(wizPaint({ step: 'coins' }));
+
+    expect(document.querySelectorAll('[data-testid="tradepropose-steps"]')).toHaveLength(1);
+    const header = headerOf();
+    expect(header.tagName, 'an ordered list').toBe('OL');
+    const select = wizSelect();
+    expect(header.parentElement, 'a sibling of the select').toBe(select.parentElement);
+    const siblings = Array.from(select.parentElement?.children ?? []);
+    expect(siblings.indexOf(header), 'before the select').toBeGreaterThanOrEqual(0);
+    expect(siblings.indexOf(header)).toBeLessThan(siblings.indexOf(select));
+
+    expect(headerSteps()).toEqual([...WIZ_STEPS]);
+    expect(
+      Array.from(header.querySelectorAll('li')).map((li) => li.textContent),
+      'the catalogued names, in order',
+    ).toEqual(WIZ_STEPS.map(stepLabel));
+    expect(headerCurrent(), 'the active step alone').toEqual(['coins=step']);
+
+    view.paint(wizPaint({ step: 'review' }));
+    expect(
+      document.querySelectorAll('[data-testid="tradepropose-steps"]'),
+      'still one',
+    ).toHaveLength(1);
+    expect(headerSteps(), 'still five items').toEqual([...WIZ_STEPS]);
+    expect(headerCurrent(), 'the mark moved').toEqual(['review=step']);
+
+    // A supplied target: p.steps has no Target, so the header has none.
+    view.paint(wizPaint({ steps: proposeSteps(true), step: 'offer' }));
+    expect(document.querySelectorAll('[data-testid="tradepropose-steps"]')).toHaveLength(1);
+    expect(headerSteps(), 'four items, no Target').toEqual(['offer', 'coins', 'ask', 'review']);
+    expect(headerCurrent()).toEqual(['offer=step']);
+  });
+
+  it('CTL8E-1-VIEW-PAINT: render (the open path in main.ts, before any paint) draws the opening header on Target with all five steps and keeps one header across repeated renders', () => {
+    // WRONG IMPL KILLED: a header that exists only after the first button (the wizard opens with no
+    // sign of where it is); an opening header with no active step or on the wrong step; and a
+    // render that appends a fresh header each time the overlay opens.
+    const { view } = mountWizard();
+    expect(document.querySelectorAll('[data-testid="tradepropose-steps"]')).toHaveLength(1);
+    expect(headerSteps()).toEqual([...WIZ_STEPS]);
+    expect(headerCurrent(), 'opens on Target').toEqual(['target=step']);
+    view.paint(wizPaint({ step: 'ask' }));
+    view.hide();
+    view.render(WIZ_LISTS);
+    view.show();
+    expect(
+      document.querySelectorAll('[data-testid="tradepropose-steps"]'),
+      'one after reopen',
+    ).toHaveLength(1);
+    expect(headerCurrent(), 'a reopen starts over on Target').toEqual(['target=step']);
+  });
+
+  it('CTL8E-1-VIEW-PAINT: the offer cursor`s checkbox label carries aria-current="true" and no other label does, the mark follows p.offerCursor across paints and clears for null, and the monsters container is the programmatic focus target (tabindex -1)', () => {
+    // WRONG IMPL KILLED: a cursor mark on every label or none; one that sticks to the first paint's
+    // monster; a mark on the checkbox instead of the label (the label is what a sighted user
+    // sees); a cursor index in place of the monster id; a container that cannot take focus (the
+    // Offer step's focus would silently fail and keys would keep going to the select).
+    const { view } = mountWizard();
+    const marked = (): (string | null)[] =>
+      wizAllBoxIds().filter((id) => {
+        const label = wizBox(id as string).closest('label');
+        return label?.getAttribute('aria-current') === 'true';
+      });
+    view.paint(wizPaint({ step: 'offer', offerCursor: '12' }));
+    expect(wizMonsters().getAttribute('tabindex')).toBe('-1');
+    expect(marked(), 'the mark is on monster 12`s label').toEqual(['12']);
+    expect(
+      wizBox(12).closest('label')?.getAttribute('aria-current'),
+      'exactly the string "true"',
+    ).toBe('true');
+    for (const id of ['5', '30']) {
+      expect(wizBox(id).closest('label')?.hasAttribute('aria-current'), `${id}: no mark`).toBe(
+        false,
+      );
+    }
+    view.paint(wizPaint({ step: 'offer', offerCursor: '30' }));
+    expect(marked(), 'it follows the cursor').toEqual(['30']);
+    view.paint(wizPaint({ step: 'offer', offerCursor: null }));
+    expect(marked(), 'no cursor, no mark').toEqual([]);
+  });
+
+  it('CTL8E-1-VIEW-PAINT: the review row follows the submit button, takes programmatic focus (tabindex -1), is shown only on the Review step, and its Yes / No are two non-focusable catalogued spans with aria-current="true" on the cursor one', () => {
+    // WRONG IMPL KILLED: a row shown on every step (the confirm question visible while typing
+    // coins); a row hidden on Review; one placed before the submit button; a Yes / No that are
+    // buttons (Tab stops and a second Enter owner: native buttons own Enter, so the router never
+    // sees A); the cursor mark on both, on neither, or inverted; raw English labels.
+    const { view } = mountWizard();
+    view.paint(wizPaint({ step: 'target' }));
+    const row = wizTest('tradepropose-review');
+    expect(row.getAttribute('tabindex'), 'focusable by script only').toBe('-1');
+    const submit = wizSubmit();
+    expect(row.parentElement, 'a sibling of the submit button').toBe(submit.parentElement);
+    const kids = Array.from(submit.parentElement?.children ?? []);
+    expect(kids.indexOf(row), 'after the submit button').toBeGreaterThan(kids.indexOf(submit));
+
+    for (const step of WIZ_STEPS) {
+      view.paint(wizPaint({ step }));
+      expect(row.style.display, `step ${step}`).toBe(step === 'review' ? '' : 'none');
+    }
+
+    view.paint(wizPaint({ step: 'review', yes: true }));
+    const yes = wizTest('tradepropose-review-yes');
+    const no = wizTest('tradepropose-review-no');
+    expect(yes.textContent).toBe(i18nT('tradePropose.review.yes'));
+    expect(no.textContent).toBe(i18nT('tradePropose.review.no'));
+    for (const span of [yes, no]) {
+      expect(span.tagName, 'a span, not a control').toBe('SPAN');
+      expect(span.hasAttribute('tabindex'), 'not focusable').toBe(false);
+    }
+    expect([yes.getAttribute('aria-current'), no.getAttribute('aria-current')]).toEqual([
+      'true',
+      null,
+    ]);
+    view.paint(wizPaint({ step: 'review', yes: false }));
+    expect([yes.getAttribute('aria-current'), no.getAttribute('aria-current')]).toEqual([
+      null,
+      'true',
+    ]);
+  });
+
+  it('CTL8E-1-VIEW-PAINT: the review prompt and summary are read from the ON-SCREEN draft at each paint: an empty draft reads "incomplete" with an empty target and zeros, a complete one reads the prompt with the selected target`s LABEL, the checked count and the PARSED coins', () => {
+    // WRONG IMPL KILLED: a prompt computed from the paint payload (the screen cannot see the DOM
+    // draft, so it would call an empty draft sendable); a prompt that is set once and never
+    // refreshed; a summary of the raw field text ('025' and 'abc' instead of the parsed 25 and 0:
+    // what is printed must be what is sent); the target identity instead of its label; a monster
+    // count taken from p.lists (3) instead of the checked boxes (2); and a summary line outside
+    // the catalog.
+    const { view } = mountWizard();
+    view.paint(wizPaint({ step: 'review' }));
+    const prompt = wizTest('tradepropose-review-prompt');
+    const summary = wizTest('tradepropose-review-summary');
+    expect(prompt.textContent, 'nothing chosen yet').toBe(i18nT('tradePropose.review.incomplete'));
+    expect(summary.textContent).toBe(summaryOf('', 0, '0', '0'));
+
+    userSelect(WIZ_BOB.identity);
+    userCheck(5, true);
+    userCheck(30, true);
+    userType(wizOffer(), '025');
+    userType(wizRequest(), 'abc');
+    view.paint(wizPaint({ step: 'review' }));
+    expect(prompt.textContent, 'a complete draft').toBe(i18nT('tradePropose.review.prompt'));
+    expect(summary.textContent, 'label, checked count, parsed coins').toBe(
+      summaryOf('Bob', 2, '25', '0'),
+    );
+    expect(
+      i18nT('tradePropose.review.prompt'),
+      'fixture: the two prompts differ, so the assertions above can tell them apart',
+    ).not.toBe(i18nT('tradePropose.review.incomplete'));
+
+    // The draft empties again: the same elements follow it back.
+    userCheck(5, false);
+    userCheck(30, false);
+    userType(wizOffer(), '');
+    userType(wizRequest(), '');
+    view.paint(wizPaint({ step: 'review' }));
+    expect(prompt.textContent).toBe(i18nT('tradePropose.review.incomplete'));
+    expect(summary.textContent).toBe(summaryOf('Bob', 0, '0', '0'));
+  });
+
+  it('CTL8E-1-VIEW-PAINT: paint rebuilds the select and the boxes from p.lists but PRESERVES the on-screen draft: the chosen target and the checked monsters still offered stay, a monster that left is gone, a target that left falls back to the placeholder, and the typed coins are untouched', () => {
+    // WRONG IMPL KILLED: a paint that rebuilds and loses the player's mouse input (every D-pad
+    // press would uncheck what was clicked and reset the target); one that never rebuilds (a
+    // traded-away monster would linger as an offerable box); one that keeps a stale select value
+    // after its option left (an empty value that reads as a valid target); one that carries a
+    // checked mark onto a different monster by position; and one that clears the coin fields.
+    const { view } = mountWizard();
+    userSelect(WIZ_BOB.identity);
+    userCheck(12, true);
+    userCheck(30, true);
+    userType(wizOffer(), '40');
+    view.paint(wizPaint({ step: 'offer' }));
+    expect(wizSelect().value).toBe(WIZ_BOB.identity);
+    expect(wizCheckedIds()).toEqual(['12', '30']);
+    expect(wizOffer().value).toBe('40');
+
+    // Alice and monster 12 leave, Cy and monster 31 arrive.
+    const next = makeLists(
+      [WIZ_BOB, WIZ_CY],
+      [
+        { monsterId: 5n, label: 'Sparky Lv.3' },
+        { monsterId: 30n, label: 'Third Lv.2' },
+        { monsterId: 31n, label: 'Fresh Lv.1' },
+      ],
+    );
+    view.paint(wizPaint({ step: 'offer', lists: next }));
+    expect(
+      Array.from(wizSelect().options).map((o) => o.value),
+      'the placeholder, then the new targets',
+    ).toEqual(['', WIZ_BOB.identity, WIZ_CY.identity]);
+    expect(wizSelect().value, 'Bob is still offered: still chosen').toBe(WIZ_BOB.identity);
+    expect(wizAllBoxIds(), 'the new monster list').toEqual(['5', '30', '31']);
+    expect(wizCheckedIds(), '30 stays checked; 12 left; nothing shifted onto 31').toEqual(['30']);
+    expect(wizOffer().value, 'the coins are untouched').toBe('40');
+
+    // The chosen target leaves: back to the placeholder, and the submit button follows the DOM.
+    view.paint(
+      wizPaint({
+        step: 'offer',
+        lists: makeLists(
+          [WIZ_CY],
+          next.offerableMonsters.map((m) => m),
+        ),
+      }),
+    );
+    expect(wizSelect().value, 'a chosen target that left falls back to the placeholder').toBe('');
+    expect(wizSubmit().disabled, 'no target: cannot submit').toBe(true);
+  });
+
+  it('CTL8E-1-VIEW-PAINT: a repaint with new lists also updates the targets the submission is validated against, so a target that only arrived with the repaint can be sent', async () => {
+    // WRONG IMPL KILLED: a rebuild that updates the visible options but not the submission's target
+    // list (the new counterparty would be rejected as "not in the list": a silent no-send).
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const { view } = mountWizard(onSubmit);
+    view.paint(wizPaint({ step: 'offer', lists: makeLists([WIZ_BOB, WIZ_CY], []) }));
+    userSelect(WIZ_CY.identity);
+    userType(wizOffer(), '9');
+    expect(wizSubmit().disabled, 'Cy is a valid target after the repaint').toBe(false);
+    wizSubmit().click();
+    await flushPromises();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith({
+      targetIdentity: WIZ_CY.identity,
+      initiatorMonsterIds: [],
+      initiatorCurrency: 9n,
+      counterpartyCurrency: 0n,
+    });
+  });
+
+  it('CTL8E-1-VIEW-PAINT: a toggle token flips its monster`s checkbox EXACTLY once however many times the same token object is painted, a NEW token object flips it again, a token for a monster that is not listed flips nothing, and a toggle never overwrites a box the mouse set', () => {
+    // WRONG IMPL KILLED: a toggle applied on every paint (a step change or any later key would
+    // flip the box back and forth); tokens compared by monster id instead of identity (the second
+    // A on one monster would never untick it); a toggle that throws on an unknown id; a paint that
+    // resets every box to the screen's idea of the draft (a ticked box clicked with the mouse
+    // would be wiped); and a toggle that does not enable the submit button.
+    const { view } = mountWizard();
+    userSelect(WIZ_BOB.identity);
+    expect(wizSubmit().disabled, 'fixture: a target but no asset').toBe(true);
+
+    const first = { monsterId: 12n };
+    view.paint(wizPaint({ step: 'offer', toggle: first }));
+    expect(wizCheckedIds(), 'first paint of the token: ticked').toEqual(['12']);
+    expect(wizSubmit().disabled, 'a ticked monster is an asset: submit enabled').toBe(false);
+    view.paint(wizPaint({ step: 'offer', toggle: first }));
+    expect(wizCheckedIds(), 'the same object again: not flipped back').toEqual(['12']);
+    view.paint(wizPaint({ step: 'coins', toggle: first }));
+    expect(wizCheckedIds(), 'a later step, the same object: still ticked').toEqual(['12']);
+
+    const second = { monsterId: 12n };
+    view.paint(wizPaint({ step: 'coins', toggle: second }));
+    expect(wizCheckedIds(), 'a new object for the same monster: unticked').toEqual([]);
+    expect(wizSubmit().disabled, 'and the submit button follows').toBe(true);
+
+    view.paint(wizPaint({ toggle: { monsterId: 30n } }));
+    expect(wizCheckedIds()).toEqual(['30']);
+    view.paint(wizPaint({ toggle: { monsterId: 99n } }));
+    expect(wizCheckedIds(), 'an unlisted monster flips nothing').toEqual(['30']);
+
+    // The mouse ticks 5 between two paints; the next toggle (for 12) must leave that tick alone.
+    userCheck(5, true);
+    view.paint(wizPaint({ toggle: { monsterId: 12n } }));
+    expect(wizCheckedIds(), 'the mouse tick survives a toggle of another box').toEqual([
+      '5',
+      '12',
+      '30',
+    ]);
+  });
+});
+
+describe('TradeProposeView ctl-8e: focus follows the step (CTL8E.1)', () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it('CTL8E-1-VIEW-FOCUS: the first paint of each step moves focus to that step`s control, by identity: Target the select, Offer the monsters container, Coins the offer field, Ask the request field, Review the review row', () => {
+    // WRONG IMPL KILLED: no focus move at all (the wizard's keys would keep going to whatever was
+    // focused); one focus target for every step; Offer focusing the first checkbox (a native
+    // checkbox owns Space and the D-pad would stop reaching the router); Review focusing the
+    // submit button (a native button owns Enter, so the A press would never reach the router, and
+    // a held Enter could click it); and a focus handed to a different field (Coins to Ask).
+    const expected: ReadonlyArray<readonly [StepKey, () => HTMLElement]> = [
+      ['target', wizSelect],
+      ['offer', wizMonsters],
+      ['coins', wizOffer],
+      ['ask', wizRequest],
+      ['review', () => wizTest('tradepropose-review')],
+    ];
+    for (const [step, target] of expected) {
+      const { view } = mountWizard();
+      // Arrive from a DIFFERENT step, so the move is a real step change whatever render() remembers.
+      view.paint(wizPaint({ step: step === 'coins' ? 'ask' : 'coins' }));
+      view.paint(wizPaint({ step }));
+      expect(document.activeElement, `the ${step} step focuses its control`).toBe(target());
+      expect(document.activeElement, `the ${step} step never focuses submit`).not.toBe(wizSubmit());
+      view.hide();
+      teardown();
+    }
+  });
+
+  it('CTL8E-1-VIEW-FOCUS: focus moves ONLY when the step changed since the last paint: a repaint of the same step (a cursor move, a toggle, a batch) leaves focus where the player put it, and the next step change moves it again', () => {
+    // WRONG IMPL KILLED: a paint that refocuses every time (a cursor move would yank focus back
+    // from the field the player clicked; a store batch would steal the keyboard from a typist); one
+    // that remembers the step only on the first paint; and one that never moves again after the
+    // first move.
+    const { view } = mountWizard();
+    view.paint(wizPaint({ step: 'offer' }));
+    expect(document.activeElement).toBe(wizMonsters());
+
+    wizOffer().focus();
+    expect(document.activeElement, 'fixture: the player moved focus to the offer field').toBe(
+      wizOffer(),
+    );
+    view.paint(wizPaint({ step: 'offer', offerCursor: '12' }));
+    view.paint(wizPaint({ step: 'offer', offerCursor: '12', toggle: { monsterId: 12n } }));
+    expect(document.activeElement, 'same step: focus is left alone').toBe(wizOffer());
+
+    view.paint(wizPaint({ step: 'coins' }));
+    expect(document.activeElement, 'a changed step moves it').toBe(wizOffer());
+    wizRequest().focus();
+    view.paint(wizPaint({ step: 'coins' }));
+    expect(document.activeElement, 'coins painted twice: no second move').toBe(wizRequest());
+    view.paint(wizPaint({ step: 'ask' }));
+    expect(document.activeElement, 'Ask moves it to the request field').toBe(wizRequest());
+    view.paint(wizPaint({ step: 'offer' }));
+    expect(document.activeElement, 'stepping BACK moves it too').toBe(wizMonsters());
+  });
+
+  it('CTL8E-1-VIEW-FOCUS: leaving Review moves focus off the review row before it is hidden: stepping back from Review lands on the Ask field with the row hidden, never on a hidden element', () => {
+    // WRONG IMPL KILLED: a paint that hides the row first and focuses second (or never): focus
+    // would sit inside display:none, main.ts would heal it to the canvas on the next key, and the
+    // wizard's keys would stop reaching the field the player expects.
+    const { view } = mountWizard();
+    view.paint(wizPaint({ step: 'review' }));
+    const row = wizTest('tradepropose-review');
+    expect(document.activeElement).toBe(row);
+    view.paint(wizPaint({ step: 'ask' }));
+    expect(row.style.display, 'the row is hidden').toBe('none');
+    expect(document.activeElement, 'and focus left it for the Ask field').toBe(wizRequest());
+    expect(row.contains(document.activeElement), 'not inside the hidden row').toBe(false);
+  });
+
+  it('CTL8E-1-VIEW-FOCUS: hide() forgets the last painted step so a reopen`s first paint moves focus again, while show() and render() never move focus themselves', () => {
+    // WRONG IMPL KILLED: a view that keeps its last step across a close (the reopened wizard's
+    // first paint on the same step would leave focus on the page: the D-pad stays with the world);
+    // a render() or show() that focuses the select or the container itself (it would fight the
+    // overlay helper's deferred initial focus on the select and the S10-WIRE-FOCUS-IDENTITY pin).
+    const { view } = mountWizard();
+    const outside = document.createElement('button');
+    outside.id = 'wiz-outside-sentinel';
+    document.body.appendChild(outside);
+
+    view.paint(wizPaint({ step: 'offer' }));
+    expect(document.activeElement).toBe(wizMonsters());
+    outside.focus();
+    view.render(WIZ_LISTS);
+    expect(document.activeElement, 'render() moves no focus').toBe(outside);
+    view.show();
+    expect(document.activeElement, 'show() on a visible overlay moves no focus').toBe(outside);
+
+    view.paint(wizPaint({ step: 'offer' }));
+    expect(document.activeElement, 'same step, no second move').toBe(outside);
+
+    view.hide();
+    outside.focus();
+    view.render(WIZ_LISTS);
+    view.show();
+    expect(document.activeElement, 'the reopen itself moves no focus synchronously').toBe(outside);
+    view.paint(wizPaint({ step: 'offer' }));
+    expect(document.activeElement, 'but the first paint after the reopen does').toBe(wizMonsters());
+  });
+});
+
+describe('TradeProposeView ctl-8e: the commit token sends the on-screen draft once (CTL8E.1)', () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it('CTL8E-1-VIEW-COMMIT: a new commit token sends the ON-SCREEN draft through onSubmit exactly once (the typed target, the ticked monsters and the PARSED coins as bigints), the same token object painted again sends nothing, and the legacy submit click sends the same draft', async () => {
+    // WRONG IMPL KILLED: a view that sends on every paint that carries a commit (the next key press
+    // would send again); one that sends a draft held by the screen instead of the DOM's (what is
+    // sent would not be what the player saw); coins as numbers or strings instead of bigints; a
+    // view that drops the legacy click path (Tab then Enter on the button must still send).
+    const { view, onSubmit } = mountWizard();
+    fillValidDraft();
+    const commit = newCommit();
+    view.paint(wizPaint({ step: 'review', commit }));
+    await flushPromises();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith(VALID_ARGS);
+
+    view.paint(wizPaint({ step: 'review', commit }));
+    view.paint(wizPaint({ step: 'ask', commit }));
+    await flushPromises();
+    expect(onSubmit, 'the same token object never sends twice').toHaveBeenCalledTimes(1);
+
+    const later = newCommit();
+    expect(later, 'fixture: equal by value, distinct by identity').toEqual(commit);
+    view.paint(wizPaint({ step: 'review', commit: later }));
+    await flushPromises();
+    expect(onSubmit, 'a NEW token object sends again').toHaveBeenCalledTimes(2);
+    expect(onSubmit).toHaveBeenLastCalledWith(VALID_ARGS);
+
+    wizSubmit().click();
+    await flushPromises();
+    expect(onSubmit, 'the legacy click still sends the same draft').toHaveBeenCalledTimes(3);
+    expect(onSubmit).toHaveBeenLastCalledWith(VALID_ARGS);
+  });
+
+  it('CTL8E-1-VIEW-COMMIT: a commit token on a draft that cannot submit sends nothing AND is spent: completing the draft afterwards and repainting the same token still sends nothing, while a new token then sends', async () => {
+    // WRONG IMPL KILLED: a commit that is kept pending until the draft turns valid (the player
+    // fixes the draft on the Offer step and the stale Yes fires out of nowhere, unseen); one that
+    // sends a half-built draft; and one that compares by value so the second, later Yes is
+    // ignored as "already seen".
+    const { view, onSubmit } = mountWizard();
+    userSelect(WIZ_BOB.identity);
+    const stale = newCommit();
+    view.paint(wizPaint({ step: 'review', commit: stale }));
+    await flushPromises();
+    expect(onSubmit, 'no asset: nothing to send').not.toHaveBeenCalled();
+
+    userCheck(12, true);
+    view.paint(wizPaint({ step: 'review', commit: stale }));
+    await flushPromises();
+    expect(onSubmit, 'the spent token does not fire later').not.toHaveBeenCalled();
+
+    view.paint(wizPaint({ step: 'review', commit: newCommit() }));
+    await flushPromises();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith({
+      targetIdentity: WIZ_BOB.identity,
+      initiatorMonsterIds: [12n],
+      initiatorCurrency: 0n,
+      counterpartyCurrency: 0n,
+    });
+  });
+
+  it('CTL8E-1-VIEW-COMMIT: the in-flight lock still holds: while a send is pending a new commit token sends nothing, and once it settles the next new token sends', async () => {
+    // WRONG IMPL KILLED: a commit path that bypasses #pending (a second Yes while the first offer
+    // is in flight would propose the same trade twice); a lock that never releases (the wizard
+    // could send only once).
+    let settle: () => void = () => undefined;
+    const onSubmit = vi.fn().mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    const { view } = mountWizard(onSubmit);
+    fillValidDraft();
+    view.paint(wizPaint({ step: 'review', commit: newCommit() }));
+    view.paint(wizPaint({ step: 'review', commit: newCommit() }));
+    await flushPromises();
+    expect(onSubmit, 'one in flight: the second token is refused').toHaveBeenCalledTimes(1);
+    settle();
+    await flushPromises();
+    view.paint(wizPaint({ step: 'review', commit: newCommit() }));
+    await flushPromises();
+    expect(onSubmit, 'settled: the next token sends').toHaveBeenCalledTimes(2);
+  });
+
+  it('CTL8E-1-VIEW-COMMIT: one paint carrying a toggle token AND a commit token applies the toggle to the on-screen draft BEFORE it sends, so the sent offer contains the toggled monster', async () => {
+    // WRONG IMPL KILLED: a paint that runs the send before applying the toggle (the offer would
+    // go without the monster the player just ticked, or not go at all on an otherwise-empty
+    // draft), and one that applies the toggle but sends a draft snapshot taken before it.
+    const { view, onSubmit } = mountWizard();
+    userSelect(WIZ_BOB.identity);
+    view.paint(wizPaint({ step: 'review', toggle: { monsterId: 12n }, commit: newCommit() }));
+    await flushPromises();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith({
+      targetIdentity: WIZ_BOB.identity,
+      initiatorMonsterIds: [12n],
+      initiatorCurrency: 0n,
+      counterpartyCurrency: 0n,
+    });
+  });
+
+  it('CTL8E-1-VIEW-COMMIT: every paint leaves the submit button enabled exactly when the ON-SCREEN draft can submit, whatever the payload says', () => {
+    // WRONG IMPL KILLED: a paint that does not refresh the button (it stays at the state the last
+    // input event left, but a rebuild or toggle changed the draft); one that enables it from the
+    // payload; one that leaves it disabled after a draft turned valid by a toggle token.
+    const { view } = mountWizard();
+    view.paint(wizPaint({ step: 'offer' }));
+    expect(wizSubmit().disabled, 'empty draft').toBe(true);
+    userSelect(WIZ_BOB.identity);
+    view.paint(wizPaint({ step: 'offer' }));
+    expect(wizSubmit().disabled, 'a target but no asset').toBe(true);
+    view.paint(wizPaint({ step: 'offer', toggle: { monsterId: 5n } }));
+    expect(wizSubmit().disabled, 'a ticked monster').toBe(false);
+    userCheck(5, false);
+    view.paint(wizPaint({ step: 'offer' }));
+    expect(wizSubmit().disabled, 'unticked again').toBe(true);
+  });
+});
+
+describe('TradeProposeView ctl-8e: which keys the controls keep (CTL8E.1, CTL6B.5)', () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  const RELEASED = ['Escape', 'Enter', 'NumpadEnter'] as const;
+  const SHIELDED = [
+    'ArrowUp',
+    'ArrowDown',
+    'ArrowLeft',
+    'ArrowRight',
+    'KeyW',
+    'KeyS',
+    'KeyO',
+    'KeyU',
+    'Space',
+    'PageUp',
+    'PageDown',
+    'Backspace',
+  ] as const;
+
+  /** Dispatch `code` as a keydown on `el` and say whether a window listener saw it. */
+  function reachesWindow(el: HTMLElement, code: string): boolean {
+    const spy = vi.fn();
+    window.addEventListener('keydown', spy);
+    el.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true }));
+    window.removeEventListener('keydown', spy);
+    return spy.mock.calls.length > 0;
+  }
+
+  it('CTL8E-1-VIEW-KEYS: the select, a monster checkbox and both currency inputs let Escape, Enter and NumpadEnter reach the window (the router`s Start and A) and keep every other key to themselves (letters, arrows, Space, paging, Backspace)', () => {
+    // WRONG IMPL KILLED: the pre-ctl-8e blanket stopPropagation (Escape and Enter never reach the
+    // router: B5, and the A press that steps the wizard is dead); the opposite, no shield at all
+    // (a typed letter would reach the hotkey ladder, ArrowDown on the select would walk the
+    // character, Backspace would pop the frame in the middle of typing); and a shield on only
+    // some of the four control kinds.
+    const { view } = mountWizard();
+    view.paint(wizPaint({ step: 'offer' }));
+    const controls: ReadonlyArray<readonly [string, HTMLElement]> = [
+      ['select', wizSelect()],
+      ['checkbox', wizBox(5)],
+      ['offer input', wizOffer()],
+      ['request input', wizRequest()],
+    ];
+    for (const [label, el] of controls) {
+      for (const code of RELEASED) {
+        expect(reachesWindow(el, code), `${label}: ${code} reaches the router`).toBe(true);
+      }
+      for (const code of SHIELDED) {
+        expect(reachesWindow(el, code), `${label}: ${code} stays with the control`).toBe(false);
+      }
+    }
+  });
+
+  it('CTL8E-1-VIEW-KEYS: checkboxes rebuilt by a paint carry the same shield, so a rebuilt box never leaks a letter or lets Enter be swallowed', () => {
+    // WRONG IMPL KILLED: a paint that rebuilds the boxes with a bare createElement (no keydown
+    // listener): after the first D-pad press every box would pass letters to the hotkey ladder and
+    // the Offer step would lose its shield; or with a shield that stops Enter (A would die there).
+    const { view } = mountWizard();
+    view.paint(
+      wizPaint({
+        step: 'offer',
+        lists: makeLists([WIZ_BOB], [{ monsterId: 77n, label: 'Rebuilt Lv.2' }]),
+      }),
+    );
+    const rebuilt = wizBox(77);
+    for (const code of RELEASED) {
+      expect(reachesWindow(rebuilt, code), `rebuilt box: ${code}`).toBe(true);
+    }
+    for (const code of SHIELDED) {
+      expect(reachesWindow(rebuilt, code), `rebuilt box: ${code}`).toBe(false);
+    }
   });
 });

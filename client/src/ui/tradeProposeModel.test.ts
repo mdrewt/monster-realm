@@ -15,7 +15,9 @@ import type { StoreMonsterPub, StorePlayer } from '../net/store';
 import {
   buildProposeLists,
   buildProposeSubmission,
+  type ProposeStep,
   parseCurrency,
+  proposeSteps,
   type TradeProposeDraft,
   type TradeProposeTarget,
 } from './tradeProposeModel';
@@ -86,6 +88,39 @@ function makeDraft(overrides: Partial<TradeProposeDraft> = {}): TradeProposeDraf
     ...overrides,
   };
 }
+
+// ---------------------------------------------------------------------------
+// ctl-8e (CTL8E.1): the wizard's step list. A Target step appears first only when no target was
+// supplied (ctl-10b always supplies one); Offer, Coins, Ask and Review always follow in that order.
+// ---------------------------------------------------------------------------
+
+describe('proposeSteps (ctl-8e, CTL8E.1)', () => {
+  it('CTL8E-1-MODEL-STEPS: with no target supplied the wizard steps through Target, Offer, Coins, Ask, Review in that order, and with a target supplied the Target step is gone and the other four keep their order', () => {
+    // WRONG IMPL KILLED: a list that always starts with Target (ctl-10b's supplied target would
+    // still be asked for again); one with the flag inverted (the legacy O, which supplies no
+    // target, would skip the only place the player picks one); Coins and Ask swapped (the Ask
+    // draft is typed before the Offer's); Review anywhere but last (the confirm comes before the
+    // draft is complete); and a list that drops or repeats a step.
+    const full: readonly ProposeStep[] = ['target', 'offer', 'coins', 'ask', 'review'];
+    expect(proposeSteps(false)).toEqual(full);
+    expect(proposeSteps(true)).toEqual(['offer', 'coins', 'ask', 'review']);
+    // The supplied-target list is the full list minus Target, order kept: nothing else differs.
+    expect(proposeSteps(true)).toEqual(proposeSteps(false).filter((s) => s !== 'target'));
+  });
+
+  it('CTL8E-1-MODEL-STEPS: proposeSteps answers a fresh, independent list on each call, so one caller reordering its copy cannot change the next wizard`s steps', () => {
+    // WRONG IMPL KILLED: a module-level array handed out by reference (a caller that splices Target
+    // out for one open would remove it for every later open).
+    const first = [...proposeSteps(false)];
+    const handed = proposeSteps(false) as ProposeStep[];
+    try {
+      handed.length = 0; // a frozen list throws here, which is just as safe as a fresh copy
+    } catch {
+      /* frozen: nothing can be corrupted */
+    }
+    expect(proposeSteps(false)).toEqual(first);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // buildProposeLists — self is excluded from targets
