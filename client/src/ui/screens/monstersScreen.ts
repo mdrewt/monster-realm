@@ -14,10 +14,11 @@
 // count below what it was at the press (the name is taken at the press: a batch may rename or
 // evolve the monster before it lands). Evolve… opens every outgoing path, the cursor on the first
 // choice; only a choice (the evolution port's `choices`, 2+ eligible) opens the Yes/No confirm,
-// which defaults to No; Yes sends `evolve` with that path's target. A confirm a batch just changed
-// (the path gone, or no longer a choice) only paints its fallback under the player's A — the shop's
-// rule: Yes never sends what the player has not seen. Feed… and Evolve… are disabled (reachable,
-// acting on nothing) with no food or no path.
+// which defaults to No; Yes sends `evolve` with that path's target, re-checked live. Any phase the
+// settle just changed under the player's A only paints (the shop's rule: Yes never sends what the
+// player has not seen); in the shipped loop `observe` settles each batch first, so this is the
+// belt to that brace. Feed… and Evolve… are disabled (reachable, acting on nothing) with no food or
+// no path.
 //
 // The nickname row is a DOM text field (typing mode, CTL6B.5): the field owns the keys, Enter
 // reaches this adapter as A and B (after Escape stopped typing) cancels. The text never enters
@@ -90,7 +91,7 @@ export type MonstersFeedback =
 
 /** A feed sent and not yet seen landing: resolved once `itemId`'s live count drops below `count`
  *  while the monster is still listed. `name` is the monster's name at the press. */
-export interface PendingFeed {
+interface PendingFeed {
   readonly monsterId: bigint;
   readonly itemId: number;
   readonly count: number;
@@ -168,7 +169,9 @@ const sheet = (monsterId: bigint, action: SheetAction): MonstersPhase => ({
   action,
 });
 
-/** The signature of what the view paints from the sheet-derived data for the phase's monster. */
+/** The signature of what the view paints from the sheet-derived data for the phase's monster: the
+ *  foods (so the disabled Feed… row and the counts), the paths (the disabled Evolve… row, each
+ *  row's status and species) and the name the confirm quotes. */
 function shownOf(vm: MonstersVm, phase: MonstersPhase): string {
   if (phase.kind === 'list') return '';
   const mon = findEvolution(vm, phase.monsterId);
@@ -182,12 +185,8 @@ function shownOf(vm: MonstersVm, phase: MonstersPhase): string {
           p.unmetReason,
           p.toSpeciesName,
         ]);
-  return JSON.stringify([
-    vm.foods.length > 0,
-    mon !== undefined && canEvolve(mon),
-    vm.foods,
-    paths,
-  ]);
+  const card = findMonster(vm, phase.monsterId)?.card;
+  return JSON.stringify([vm.foods, paths, card === undefined ? null : cardName(card)]);
 }
 
 /** The state with its `shown` brought up to `vm`: the SAME object when it already is. */
@@ -231,7 +230,7 @@ function settle(vm: MonstersVm, state: MonstersScreenState): MonstersScreenState
       next = { ...next, phase: sheet(phase.monsterId, 'evolve') };
     } else if (phase.kind === 'evolveConfirm') {
       if (!isChoice(mon, phase.path)) {
-        // Still listed but no longer a choice: the list on that path. Gone: the first choice.
+        // Still listed but no longer a choice: the list on that path. Gone: where the list opens.
         const path = findPath(mon, phase.path) === undefined ? first : phase.path;
         next = { ...next, phase: { kind: 'evolve', monsterId: phase.monsterId, path } };
       }

@@ -262,9 +262,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // evolutionView.ts:187-189
   'evolution.card.stats': (p) =>
     `Lv.${p.level} · Stage ${p.stage} · Trust ${p.trust} · Quality time ${p.qualityTime} · Nutrition ${p.nutrition}%`,
-  // @desc: Line on a monster's evolution card when the species has no evolution path at all.
-  // One short line of small text.
-  // evolutionView.ts:195
+  // @desc: Line on a monster's evolution card when the species has no evolution path at all; also
+  // the reason after the Monsters sheet's disabled Evolve… row. One short line of small text.
+  // evolutionView.ts:195, boxView.ts (the Monsters frame)
   'evolution.card.noPaths': 'No evolution paths.',
   // @desc: Informational note on a monster's card when exactly one path is ready: the server
   // evolves it automatically on the player's next action; {species} is the species it becomes.
@@ -419,8 +419,8 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // check mark before it. Short phrase.
   // boxView.ts (the Monsters frame)
   'box.feedback.movedToBox': 'Moved to storage',
-  // @desc: Action on a monster's action sheet that sends it a care visit (the daily care action,
-  // the same action as the raising screen's Care button). One word.
+  // @desc: Action on a monster's action sheet that sends it a care visit (the raising screen's Care
+  // action, on a server cooldown). One word.
   // boxView.ts (the Monsters frame)
   'box.sheet.care': 'Care',
   // @desc: Action on a monster's action sheet that opens the list of foods to feed it; the
@@ -585,11 +585,11 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // shopView.ts (paint, the prompt)
   'shop.confirm.sell': (p) => `Sell ${p.qty} ${p.name} for ${p.gold} gold?`,
   // @desc: The affirmative option of a Yes / No confirm (the shop's buy and sell, the heal
-  // question). One short word.
-  // shopView.ts, healView.ts (the confirm options)
+  // question, the Monsters sheet's Evolve confirm). One short word.
+  // shopView.ts, healView.ts, boxView.ts (the confirm options)
   'prompt.yes': 'Yes',
   // @desc: The negative option of a Yes / No confirm, beside Yes. One short word.
-  // shopView.ts, healView.ts (the confirm options)
+  // shopView.ts, healView.ts, boxView.ts (the confirm options)
   'prompt.no': 'No',
   // @desc: Placeholder option of the trade-proposal dialog's target selector, shown before the
   // player picks another player to trade with; ends with an ellipsis. Short, fits a narrow

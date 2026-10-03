@@ -6,8 +6,9 @@
 // via callbacks passed at construction (never called directly by this module).
 //
 // Every player-facing string this view renders is resolved through the i18n
-// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `box.*` key from ui/i18n/catalog.en.ts;
-// the English bytes are unchanged (the catalog pins them).
+// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `box.*` key from ui/i18n/catalog.en.ts (the
+// Evolve list and its confirm reuse the `evolution.path.*` / `evolution.card.*` lines and the shared
+// `prompt.yes` / `prompt.no`); the English bytes are unchanged (the catalog pins them).
 // The name row `card.nickname || card.speciesName` is model data, rendered raw. Every `t(`/`tf(`
 // first argument is a string LITERAL.
 //
@@ -49,6 +50,7 @@
 import type { MonsterCardViewModel } from './boxModel';
 import { t, tf } from './i18n/resolver';
 import {
+  cardName,
   findPath,
   foodKey,
   foodLayoutOf,
@@ -57,7 +59,7 @@ import {
   sheetLayout,
 } from './monstersModel';
 import { list, type NavTab, tabs } from './nav';
-import { renderNav, renderTabs } from './navRender';
+import { navItemId, renderNav, renderTabs } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { MonstersFeedback, MonstersPaint, NicknameCommit } from './screens/monstersScreen';
 
@@ -129,8 +131,6 @@ function feedbackText(feedback: MonstersFeedback): string {
       return tf('box.feedback.fed', { name: feedback.name });
   }
 }
-
-const nameOf = (card: MonsterCardViewModel): string => card.nickname || card.speciesName;
 
 export interface BoxViewCallbacks {
   /** Called with the nickname field's text when the Monsters screen commits it (CTL8B.3). */
@@ -429,30 +429,29 @@ export class BoxView {
 
     const sheet = p.sheet;
     setShown(this.#sheetEl, sheet !== null, '');
-    this.#sheetName.textContent = sheet === null ? '' : nameOf(live(sheet.card));
-    if (sheet !== null) {
-      renderNav(
-        this.#sheetList,
-        sheetLayout(sheet.canFeed, sheet.canEvolve),
-        { tab: null, item: sheet.action, perTab: {} },
-        {
-          frame: 'monstersSheet',
-          labelledBy: this.#sheetName.id,
-          fill: (el, item) => {
-            const key = item.key as SheetAction;
-            el.textContent = SHEET_LABELS[key]();
-            // A disabled row says why, after its label (the row itself carries aria-disabled).
-            const reason = item.enabled ? undefined : SHEET_REASONS[key];
-            if (reason !== undefined) {
-              const why = document.createElement('span');
-              why.textContent = ` ${reason()}`;
-              why.style.color = '#aaa';
-              el.appendChild(why);
-            }
-          },
+    this.#sheetName.textContent = sheet === null ? '' : cardName(live(sheet.card));
+    // Rendered empty when there is no sheet, so the hidden list holds no text either.
+    renderNav(
+      this.#sheetList,
+      sheet === null ? EMPTY_LIST : sheetLayout(sheet.canFeed, sheet.canEvolve),
+      { tab: null, item: sheet === null ? null : sheet.action, perTab: {} },
+      {
+        frame: 'monstersSheet',
+        labelledBy: this.#sheetName.id,
+        fill: (el, item) => {
+          const key = item.key as SheetAction;
+          el.textContent = SHEET_LABELS[key]();
+          // A disabled row says why, after its label (the row itself carries aria-disabled). No
+          // inline colour: the cursor row's background is light, and `.is-disabled` dims it.
+          const reason = item.enabled ? undefined : SHEET_REASONS[key];
+          if (reason !== undefined) {
+            const why = document.createElement('span');
+            why.textContent = ` ${reason()}`;
+            el.appendChild(why);
+          }
         },
-      );
-    }
+      },
+    );
 
     // ctl-8c: the food list, the Evolve list and the confirm. A hidden part is rendered EMPTY as
     // well as hidden: the e2e helpers read the root's textContent, hidden descendants included.
@@ -464,7 +463,8 @@ export class BoxView {
       { tab: null, item: feed === null ? null : feed.activeKey, perTab: {} },
       {
         frame: 'monstersFeed',
-        labelledBy: this.#sheetName.id,
+        // Named by the sheet row that opened it (the sheet is painted under the list).
+        labelledBy: navItemId('monstersSheet', null, 'feed'),
         fill: (el, item) => {
           const food = feed?.foods.find((f) => foodKey(f.itemId) === item.key);
           if (food !== undefined) {
@@ -482,7 +482,7 @@ export class BoxView {
       { tab: null, item: evolve === null ? null : evolve.activeKey, perTab: {} },
       {
         frame: 'monstersEvolve',
-        labelledBy: this.#sheetName.id,
+        labelledBy: navItemId('monstersSheet', null, 'evolve'),
         fill: (el, item) => {
           const path = evolve === null ? undefined : findPath(evolve.mon, item.key);
           if (path === undefined) return;
@@ -491,7 +491,7 @@ export class BoxView {
           // The model's reason stays raw (it is the server's reject wording). A met path that is
           // no choice is the one the server applies itself: it reads as ready, never as offered.
           const status = document.createElement('div');
-          status.style.cssText = 'font-size:12px;color:#aaa;';
+          status.style.fontSize = '12px'; // colour inherits: the cursor row's background is light
           status.textContent =
             path.unmetReason ??
             (item.enabled
@@ -523,7 +523,7 @@ export class BoxView {
 
     const summary = p.summary === null ? null : live(p.summary);
     setShown(this.#summaryEl, summary !== null, '');
-    this.#summaryName.textContent = summary === null ? '' : nameOf(summary);
+    this.#summaryName.textContent = summary === null ? '' : cardName(summary);
     this.#summaryStats.textContent =
       summary === null
         ? ''
