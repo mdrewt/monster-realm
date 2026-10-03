@@ -7,10 +7,10 @@
 //
 // The controls list documents every load-bearing key so a tester reading the
 // overlay discovers the full keymap: the `?` help key itself, M (the main-menu
-// front door), Escape (close), movement (WASD / arrows), Space
-// (jump), Enter and F (act on what you face; shop and heal are reached through them, ctl-10a
-// retired T), F9 (bug bundle), and the overlay hotkeys B I E Q U P L N O C. The menu sources every leaf's shortcut label from this SSOT, so a key
-// that diverges from it fails MM-KEYGLYPH-FROM-HELP-SSOT. buildHelpViewModel() returns a
+// front door), Escape (close), movement (WASD / arrows), Space (jump), Enter and F (act on what
+// you face; shop and heal are reached through them, ctl-10a retired T), F9 (bug bundle), and the
+// overlay hotkeys. The menu sources every leaf's shortcut label from this SSOT, so a key that
+// diverges from it fails MM-KEYGLYPH-FROM-HELP-SSOT. buildHelpViewModel() returns a
 // fresh copy so a caller mutating the result cannot poison a later call
 // (purity / totality).
 
