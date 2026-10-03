@@ -263,6 +263,54 @@ function outsideButton(): HTMLButtonElement {
   return button;
 }
 
+/** A text field OUTSIDE the overlay (a page control the player is typing in). */
+function outsideInput(): HTMLInputElement {
+  const input = document.createElement('input');
+  input.id = 'outside-input';
+  input.type = 'text';
+  document.body.appendChild(input);
+  return input;
+}
+
+/** Focus is on the page: <body>, or nothing at all (a browser reports <body> either way). */
+function onPage(): boolean {
+  const active = document.activeElement;
+  return !(active instanceof HTMLElement) || active === document.body;
+}
+
+/** Drop whatever holds focus, so the player is "on the page", and prove the fixture took. */
+function blurToPage(): void {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active !== document.body) active.blur();
+  expect(onPage(), 'fixture: focus is on <body>, not in the frame').toBe(true);
+}
+
+const KEY_OF_CODE: Record<string, string> = {
+  Enter: 'Enter',
+  NumpadEnter: 'Enter',
+  Space: ' ',
+  Tab: 'Tab',
+  KeyA: 'a',
+};
+
+/** Dispatch one bubbling, cancelable key event on `target` and hand it back. */
+function dispatchKey(
+  target: HTMLElement,
+  type: 'keydown' | 'keyup',
+  code: string,
+  repeat = false,
+): KeyboardEvent {
+  const event = new KeyboardEvent(type, {
+    key: KEY_OF_CODE[code] ?? code,
+    code,
+    repeat,
+    bubbles: true,
+    cancelable: true,
+  });
+  target.dispatchEvent(event);
+  return event;
+}
+
 beforeEach(() => {
   HTMLElement.prototype.focus = function recordedFocus(this: HTMLElement, options?: FocusOptions) {
     focusCalls.push({ target: this, hiddenAtCall: hiddenReason(this) });
@@ -447,6 +495,26 @@ describe('SessionView (ctl-8k, CTL8K.1): the session gate as an in-frame system 
     expect(document.activeElement?.textContent).toBe('No');
     expect(focusedIds()).toEqual([NO_ID]);
     expectNoFocusOnHidden();
+
+    // Opening already armed AND carrying feedback (a dropped confirm re-shown): still No, once.
+    // WRONG IMPL KILLED: an open edge that seats Retry when feedback is present, or that skips
+    // the seat because a feedback line is already on screen.
+    for (const fresh of [
+      vmOf({ confirmPrompt: 'SENT PROMPT', feedback: 'SENT FEEDBACK' }),
+      buildSessionViewModel(armedWithFeedback(EXPIRED)),
+    ]) {
+      view = freshView();
+      expect(fresh.confirmPrompt, 'fixture: armed').toBeDefined();
+      expect(fresh.feedback, 'fixture: carrying feedback').toBeDefined();
+      view.render(fresh);
+      expect(focusedIds(), 'armed + feedback open edge: exactly one focus(), on No').toEqual([
+        NO_ID,
+      ]);
+      expectNoFocusOnHidden();
+      expect(activeId()).toBe(NO_ID);
+      expectShown(FEEDBACK_ID, fresh.feedback as string);
+      expectActionButton(NO_ID, fresh.confirmNoLabel);
+    }
   });
 
   it('CTL8K-1-NO-STEAL: a re-render of an open gate never moves or takes focus that is on an outside control or on Continue', () => {
@@ -490,6 +558,21 @@ describe('SessionView (ctl-8k, CTL8K.1): the session gate as an in-frame system 
     }
     expect(focusedIds(), 'a plain re-render makes zero focus() calls').toEqual([]);
     expectShown(TITLE_ID, EN['chrome.session.unreachable.title']);
+
+    // Focus on <body> (blurred after the open edge): a plain re-render of an open gate neither
+    // takes focus nor seats the default row. WRONG IMPL KILLED: a reseat that treats "focus on the
+    // page" as "a focused control the render hid" and seats Retry (unarmed) or No (armed).
+    view = freshView();
+    view.render(buildSessionViewModel(EXPIRED));
+    blurToPage();
+    resetFocusLog();
+    // The same vm, a feedback change, expired -> unreachable, and the same vm again.
+    for (const state of [EXPIRED, withFeedback(EXPIRED), UNREACHABLE, UNREACHABLE]) {
+      view.render(buildSessionViewModel(state));
+      expect(onPage(), `focus stays on <body> (${state.state})`).toBe(true);
+    }
+    expect(focusedIds(), 'a plain re-render over <body> makes zero focus() calls').toEqual([]);
+    expectShown(TITLE_ID, EN['chrome.session.unreachable.title']);
   });
 
   it('CTL8K-1-ARM-NO-DEFAULT: arming on an open gate moves focus to No exactly once (from Retry or Continue), No is labelled No and cancels, and an armed re-render leaves focus where it is', () => {
@@ -526,6 +609,33 @@ describe('SessionView (ctl-8k, CTL8K.1): the session gate as an in-frame system 
     view.render(vmOf({ confirmPrompt: 'SENT PROMPT', feedback: 'SENT FEEDBACK 2' }));
     expect(activeId(), 'armed -> armed keeps Yes when the player is on Yes').toBe(YES_ID);
     expect(focusedIds(), 'and makes no focus() call').toEqual([]);
+
+    // The player is on <body> (not in the frame): arming still seats No exactly once, disarming
+    // seats Continue exactly once, and an armed re-render moves nothing. WRONG IMPL KILLED: a
+    // reseat that passes <body> as the focused control (the arm edge would be skipped by an
+    // "outside" guard, or the armed re-render would seat No); an arm edge that seats Retry or Yes.
+    view = freshView();
+    view.render(vmOf());
+    blurToPage();
+    resetFocusLog();
+    view.render(vmOf({ confirmPrompt: 'SENT PROMPT' }));
+    expect(focusedIds(), 'arming from <body>: exactly one focus(), on No').toEqual([NO_ID]);
+    expectNoFocusOnHidden();
+    expect(activeId()).toBe(NO_ID);
+
+    blurToPage();
+    resetFocusLog();
+    view.render(vmOf({ confirmPrompt: 'SENT PROMPT', feedback: 'SENT FEEDBACK' }));
+    expect(focusedIds(), 'armed -> armed from <body>: zero focus() calls').toEqual([]);
+    expect(onPage(), 'and focus stays on <body>').toBe(true);
+
+    resetFocusLog();
+    view.render(vmOf());
+    expect(focusedIds(), 'disarming from <body>: exactly one focus(), on Continue').toEqual([
+      CONTINUE_ID,
+    ]);
+    expectNoFocusOnHidden();
+    expect(activeId()).toBe(CONTINUE_ID);
   });
 
   it('CTL8K-1-UNARMED-HIDDEN: an unarmed gate hides the prompt, Yes and No and shows Retry and Continue; arming swaps them; disarming swaps them back', () => {
@@ -783,6 +893,55 @@ describe('SessionView (ctl-8k, CTL8K.1): the session gate as an in-frame system 
         false,
       );
     }
+
+    // Both Enter spellings, on every button of both steps: a repeat is prevented, a first press is
+    // not. Any OTHER repeating key on a focused button (Tab walking the frame, Space, a letter) is
+    // NOT prevented: only a repeat that would CLICK the button is the guard's business.
+    // WRONG IMPL KILLED: a guard on Enter only (a held NumpadEnter floods Retry); a guard that
+    // prevents EVERY repeat (a held Tab stalls inside the frame); a guard on the first press.
+    for (const armed of [false, true]) {
+      view.render(armed ? vmOf({ confirmPrompt: 'SENT PROMPT' }) : vmOf());
+      for (const id of armed ? [YES_ID, NO_ID] : [RETRY_ID, CONTINUE_ID]) {
+        const button = el(id);
+        button.focus();
+        for (const code of ['Enter', 'NumpadEnter']) {
+          expect(
+            dispatchKey(button, 'keydown', code, true).defaultPrevented,
+            `a repeat ${code} on #${id} is prevented`,
+          ).toBe(true);
+          expect(
+            dispatchKey(button, 'keydown', code, false).defaultPrevented,
+            `a first ${code} on #${id} is native`,
+          ).toBe(false);
+        }
+        for (const code of ['Tab', 'Space', 'KeyA']) {
+          expect(
+            dispatchKey(button, 'keydown', code, true).defaultPrevented,
+            `a repeat ${code} on a focused #${id} is NOT prevented`,
+          ).toBe(false);
+        }
+      }
+    }
+
+    // Outside the root, after the gate is open: the guard lives on the frame, not on window or
+    // <body>, so a repeat Enter on a page button or in a page text field is left alone.
+    // WRONG IMPL KILLED: a guard bound to document / window / body.
+    view.render(vmOf());
+    for (const make of [outsideButton, outsideInput]) {
+      const outside = make();
+      outside.focus();
+      expect(el(ROOT_ID).contains(outside), 'fixture: the control is outside the frame').toBe(
+        false,
+      );
+      expect(
+        dispatchKey(outside, 'keydown', 'Enter', true).defaultPrevented,
+        `a repeat Enter on #${outside.id} is NOT prevented`,
+      ).toBe(false);
+      expect(
+        dispatchKey(outside, 'keydown', 'NumpadEnter', true).defaultPrevented,
+        `a repeat NumpadEnter on #${outside.id} is NOT prevented`,
+      ).toBe(false);
+    }
   });
 
   it('CTL8K-1-LOCALE: every shown label, title, body and hint follows the active locale on every render (open edge, arm, disarm, state switch), and a new render re-paints every label', () => {
@@ -875,6 +1034,233 @@ describe('SessionView (ctl-8k, CTL8K.1): the session gate as an in-frame system 
         el(ROOT_ID).contains(document.activeElement),
         'no focus is left inside the hidden gate',
       ).toBe(false);
+    }
+
+    // (a) A DIRECT hide() blurs a focused control too (main.ts may call it without a render).
+    // WRONG IMPL KILLED: a blur only in render()'s hidden branch while hide() just writes display.
+    for (const armed of [false, true]) {
+      view = freshView();
+      view.render(armed ? vmOf({ confirmPrompt: 'SENT PROMPT' }) : vmOf());
+      const focused = el(armed ? NO_ID : RETRY_ID);
+      expect(document.activeElement, 'fixture: the open gate holds focus').toBe(focused);
+      view.hide();
+      expect(el(ROOT_ID).style.display, 'the root is hidden').toBe('none');
+      expect(
+        el(ROOT_ID).contains(document.activeElement),
+        `a direct hide() from #${focused.id} leaves no focus inside the root`,
+      ).toBe(false);
+      expect(document.activeElement, 'the hidden control no longer holds focus').not.toBe(focused);
+    }
+
+    // (b) Focus on an OUTSIDE control is none of the gate's business: closing it, by render or by
+    // hide(), must not blur it. WRONG IMPL KILLED: an unconditional document.activeElement.blur()
+    // (the player's typing in a page field would be cut off by a session event).
+    for (const make of [outsideButton, outsideInput]) {
+      for (const close of ['render', 'hide']) {
+        view = freshView();
+        view.render(vmOf());
+        const outside = make();
+        outside.focus();
+        expect(document.activeElement, 'fixture: the player is on an outside control').toBe(
+          outside,
+        );
+        if (close === 'render') view.render(vmOf({ visible: false }));
+        else view.hide();
+        expect(el(ROOT_ID).style.display, `${close}: the root is hidden`).toBe('none');
+        expect(document.activeElement, `${close}: focus stays on the outside #${outside.id}`).toBe(
+          outside,
+        );
+      }
+    }
+  });
+
+  it('CTL8K-1-INLINE-STYLE: in every painted state the root and each child carry only an inline display declaration and the attributes id, class (root), type (buttons), style; and view-model text is written as text, never parsed as markup', () => {
+    // WRONG IMPL KILLED: a paint that sets visibility, opacity, position or any other inline style
+    // (the stylesheet owns the look); a stray aria-label / role / title / tabindex / hidden /
+    // data-* attribute on a node; a `type` on a non-button; a button without type=button (a
+    // submit); and `innerHTML` for the text (a title carrying `<b>` would grow child elements, and
+    // a translator's entity would be decoded).
+    const declarations = (node: HTMLElement): string[] =>
+      (node.getAttribute('style') ?? '')
+        .split(';')
+        .map((d) => d.trim())
+        .filter((d) => d !== '');
+    const expectOnlyDisplay = (node: HTMLElement, where: string): void => {
+      for (const decl of declarations(node)) {
+        expect(decl.split(':')[0]?.trim(), `${where}: only display is written inline`).toBe(
+          'display',
+        );
+      }
+      expect(node.style.length, `${where}: at most one inline declaration`).toBeLessThanOrEqual(1);
+    };
+    const expectAttributes = (node: HTMLElement, allowed: readonly string[], where: string) => {
+      const names = Array.from(node.attributes)
+        .map((a) => a.name)
+        .filter((name) => name !== 'style')
+        .sort();
+      expect(names, `${where}: the only attributes (style aside)`).toEqual([...allowed].sort());
+    };
+    const checkFrame = (stage: string): void => {
+      const root = el(ROOT_ID);
+      expectAttributes(root, ['id', 'class'], `${stage} root`);
+      expectOnlyDisplay(root, `${stage} root`);
+      expect(declarations(root), `${stage} root: display is always written`).toHaveLength(1);
+      for (const id of CHILD_IDS) {
+        const isButton = BUTTON_IDS.includes(id);
+        expectAttributes(el(id), isButton ? ['id', 'type'] : ['id'], `${stage} #${id}`);
+        expectOnlyDisplay(el(id), `${stage} #${id}`);
+      }
+    };
+
+    // A fresh gate that is told to stay hidden: nothing was ever shown, nothing may be decorated.
+    view.render(vmOf({ visible: false }));
+    checkFrame('hidden, never shown');
+
+    const stages: ReadonlyArray<readonly [string, SessionViewModel]> = [
+      ['unarmed', vmOf()],
+      ['armed', vmOf({ confirmPrompt: 'SENT PROMPT' })],
+      ['unarmed with feedback', vmOf({ feedback: 'SENT FEEDBACK' })],
+      ['armed with feedback', vmOf({ confirmPrompt: 'SENT PROMPT', feedback: 'SENT FEEDBACK' })],
+      ['real expired', buildSessionViewModel(EXPIRED)],
+      ['real armed', buildSessionViewModel(arm(UNREACHABLE))],
+      ['hidden again', vmOf({ visible: false })],
+    ];
+    for (const [stage, vm] of stages) {
+      view.render(vm);
+      checkFrame(stage);
+    }
+
+    // Markup-looking copy is text: no child elements, textContent is the raw string.
+    const RAW: Record<string, string> = {
+      [TITLE_ID]: '<b>title</b>',
+      [BODY_ID]: '<i>body &amp; more</i>',
+      [FEEDBACK_ID]: '<u>feedback</u>',
+      [CONFIRM_ID]: '<s>prompt</s>',
+      [RETRY_ID]: '<b>retry</b>',
+      [CONTINUE_ID]: '<b>continue</b>',
+      [YES_ID]: '<b>yes</b>',
+      [NO_ID]: '<b>no</b>',
+      [HINT_ID]: '<img src="x">hint',
+    };
+    const markupVm = (armed: boolean): SessionViewModel =>
+      vmOf({
+        title: RAW[TITLE_ID],
+        body: RAW[BODY_ID],
+        feedback: armed ? RAW[FEEDBACK_ID] : undefined,
+        confirmPrompt: armed ? RAW[CONFIRM_ID] : undefined,
+        retryLabel: RAW[RETRY_ID],
+        primaryActionLabel: RAW[CONTINUE_ID],
+        confirmYesLabel: RAW[YES_ID],
+        confirmNoLabel: RAW[NO_ID],
+        hint: RAW[HINT_ID],
+      });
+    view = freshView();
+    for (const armed of [true, false]) {
+      view.render(markupVm(armed));
+      const shownIds = armed
+        ? [TITLE_ID, BODY_ID, FEEDBACK_ID, CONFIRM_ID, YES_ID, NO_ID, HINT_ID]
+        : [TITLE_ID, BODY_ID, RETRY_ID, CONTINUE_ID, HINT_ID];
+      for (const id of shownIds) {
+        expect(el(id).children.length, `#${id}: markup-looking copy grows no child element`).toBe(
+          0,
+        );
+        expect(el(id).textContent, `#${id}: the raw string, not parsed`).toBe(RAW[id]);
+      }
+      expect(
+        el(ROOT_ID).querySelectorAll('b, i, u, s, img').length,
+        'no parsed element anywhere under the root',
+      ).toBe(0);
+      expect(Array.from(el(ROOT_ID).children).map((c) => c.id)).toEqual([...CHILD_IDS]);
+      checkFrame(armed ? 'markup armed' : 'markup unarmed');
+    }
+  });
+
+  it('CTL8K-1-TAB-REACH: every shown button keeps its native tab stop (no tabindex attribute, enabled, behaving as a plain button), and no other node under the root carries a tabindex', () => {
+    // WRONG IMPL KILLED: `tabIndex = -1` on a button (the keyboard player cannot Tab to it);
+    // a tabindex on a heading or paragraph (a stray tab stop between the controls, or a
+    // programmatic-focus target); a tabindex on the root.
+    // Not `button.tabIndex === 0`: happy-dom reports -1 for ANY attribute-less element, so the
+    // oracle is a plain `<button>` made here, which a browser would report as 0.
+    const plain = document.createElement('button');
+    const stages: ReadonlyArray<readonly [string, SessionViewModel]> = [
+      ['unarmed', vmOf()],
+      ['armed', vmOf({ confirmPrompt: 'SENT PROMPT' })],
+      ['armed with feedback', vmOf({ confirmPrompt: 'SENT PROMPT', feedback: 'SENT FEEDBACK' })],
+      ['unarmed again', vmOf({ feedback: 'SENT FEEDBACK' })],
+    ];
+    for (const [stage, vm] of stages) {
+      view.render(vm);
+      let shownButtons = 0;
+      for (const id of CHILD_IDS) {
+        const node = el(id);
+        expect(node.hasAttribute('tabindex'), `${stage}: #${id} has no tabindex attribute`).toBe(
+          false,
+        );
+        if (BUTTON_IDS.includes(id) && hiddenReason(node) === null) {
+          shownButtons += 1;
+          const button = node as HTMLButtonElement;
+          expect(button.disabled, `${stage}: #${id} is enabled`).toBe(false);
+          expect(button.tabIndex, `${stage}: #${id} is as tabbable as a plain button`).toBe(
+            plain.tabIndex,
+          );
+        }
+      }
+      expect(el(ROOT_ID).hasAttribute('tabindex'), `${stage}: the root has no tabindex`).toBe(
+        false,
+      );
+      expect(shownButtons, `${stage}: ANTI-VACUITY: two buttons are shown`).toBe(2);
+    }
+  });
+
+  it('CTL8K-1-CLICK-ONLY: the buttons act on click only: a first Enter, NumpadEnter or Space keydown, or a Space keyup, on a shown button fires none of the four handlers', () => {
+    // WRONG IMPL KILLED: a keydown / keyup / keypress listener bound to the buttons that acts on
+    // Enter or Space. A browser synthesizes a click from the same key press, so such a listener
+    // would fire the handler TWICE (a double Retry; an arm that the second call disarms). happy-dom
+    // does not synthesize the click, so the key events alone must fire nothing here.
+    const probes: ReadonlyArray<readonly ['keydown' | 'keyup', string]> = [
+      ['keydown', 'Enter'],
+      ['keydown', 'NumpadEnter'],
+      ['keydown', 'Space'],
+      ['keyup', 'Space'],
+      ['keyup', 'Enter'],
+    ];
+    const rowsByStep: ReadonlyArray<
+      readonly [SessionViewModel, ReadonlyArray<readonly [string, HandlerName]>]
+    > = [
+      [
+        vmOf(),
+        [
+          [RETRY_ID, 'onRetry'],
+          [CONTINUE_ID, 'onContinueRequested'],
+        ],
+      ],
+      [
+        vmOf({ confirmPrompt: 'SENT PROMPT' }),
+        [
+          [YES_ID, 'onContinueConfirmed'],
+          [NO_ID, 'onConfirmCancelled'],
+        ],
+      ],
+    ];
+    for (const [vm, rows] of rowsByStep) {
+      view.render(vm);
+      for (const [id, handler] of rows) {
+        const button = el(id);
+        expect(hiddenReason(button), `fixture: #${id} is shown`).toBeNull();
+        clearSpies();
+        for (const [type, code] of probes) {
+          dispatchKey(button, type, code);
+        }
+        for (const name of HANDLER_NAMES) {
+          expect(
+            spies[name],
+            `${name} must NOT fire on a key event on #${id}`,
+          ).toHaveBeenCalledTimes(0);
+        }
+        // ANTI-VACUITY: the same button does fire its own handler, once, on a click.
+        button.click();
+        expectOnly(handler);
+      }
     }
   });
 

@@ -138,7 +138,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Line at the foot of the session overlay; says the B and Start buttons do nothing while it
   // is up, and names the keys that move between its buttons and choose one.
   // sessionModel.ts (buildSessionViewModel)
-  'session.hint': 'B et Start sont sans effet ici. Tab pour changer, Entrée pour choisir.',
+  'session.hint': 'B et Start sont sans effet ici. Tab pour naviguer, Entrée pour choisir.',
   // @desc: Heading of the battle overlay; the first thing announced when a PvE or PvP battle opens.
   // One word, fits a 320px-wide column.
   // battleView.ts:110 (resolved in show())

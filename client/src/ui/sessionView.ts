@@ -84,9 +84,10 @@ export class SessionView {
       this.#overlay.appendChild(child);
     }
     // The gate returns before main.ts's repeat check, so a held Enter on a focused button would
-    // click it on every OS repeat (a Retry flood, an arm/disarm flap). Only the first press acts.
+    // click it on every OS repeat (a Retry flood, an arm/disarm flap). Only the first press acts;
+    // Space clicks on keyup and a held Tab still walks the buttons.
     this.#overlay.addEventListener('keydown', (e) => {
-      if (e.repeat) e.preventDefault();
+      if (e.repeat && (e.code === 'Enter' || e.code === 'NumpadEnter')) e.preventDefault();
     });
   }
 
@@ -132,8 +133,8 @@ export class SessionView {
     el.style.display = shown ? '' : 'none';
   }
 
-  /** On an open gate: arming seats No, disarming seats Continue, a focused control the render hid
-   *  seats the default; a plain re-render, or focus outside the frame, moves nothing. */
+  /** On an open gate: arming seats No and disarming seats Continue, from a gate button or the page;
+   *  a plain re-render, or focus outside the frame, moves nothing. */
   #reseat(wasArmed: boolean, armed: boolean): void {
     const active = document.activeElement;
     const onPage = !(active instanceof HTMLElement) || active === document.body;

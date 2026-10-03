@@ -1718,7 +1718,7 @@ describe('ctl-8j: catalog.fr.ts, the keys ctl-8j adds and retires', () => {
 
 const EXPECTED_FR_CTL8K_PLAIN: Record<string, string> = {
   'session.retry': `R${E_ACUTE}essayer`,
-  'session.hint': `B et Start sont sans effet ici. Tab pour changer, Entr${E_ACUTE}e pour choisir.`,
+  'session.hint': `B et Start sont sans effet ici. Tab pour naviguer, Entr${E_ACUTE}e pour choisir.`,
 };
 
 describe('ctl-8k: catalog.fr.ts, the keys ctl-8k adds', () => {

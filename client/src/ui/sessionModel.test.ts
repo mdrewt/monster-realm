@@ -615,7 +615,7 @@ describe('sessionModel ctl-8k: the gate labels and the hint are projected by the
     expect(vm.confirmYesLabel).toBe('Oui');
     expect(vm.confirmNoLabel).toBe('Non');
     expect(vm.hint).toBe(
-      `B et Start sont sans effet ici. Tab pour changer, Entr${E_ACUTE}e pour choisir.`,
+      `B et Start sont sans effet ici. Tab pour naviguer, Entr${E_ACUTE}e pour choisir.`,
     );
   });
 
@@ -756,5 +756,89 @@ describe('sessionModel: purity and totality', () => {
       for (const event of ALL_EVENTS) reached.add(sessionStep(state, event).next.state);
     }
     expect([...reached].sort()).toEqual(['expired', 'hidden', 'unreachable']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ctl-8k red-team: pins of the CURRENT reducer behaviour the gate's view relies on (the shell
+// repaints from one projection, so a reducer that dropped any of these would repaint a stale
+// prompt or a stale feedback line). Not a behaviour change: each holds on the shipped reducer.
+// `retry-requested` on a hidden state is deliberately NOT pinned here, either way.
+// ---------------------------------------------------------------------------
+
+describe('ctl-8k red-team: reducer pins', () => {
+  it('retry-requested with a live connection clears stale feedback, emits retry-connect and leaves the state and the armed flag as they were', () => {
+    // WRONG IMPL KILLED: a retry that keeps the "disconnected" line on screen after the retry was
+    // delivered (the player would read a stale failure beside a working retry); a retry that
+    // disarms or re-arms the confirmation.
+    for (const state of SHOWING_STATES) {
+      for (const armed of [false, true]) {
+        const step = sessionStep(stateOf(state, armed, SAMPLE_FEEDBACK), {
+          kind: 'retry-requested',
+          hasLiveConnection: true,
+        });
+        expect(step.effect, `${state} armed=${armed}`).toBe('retry-connect');
+        expect(step.next.feedback, `${state} armed=${armed}: stale feedback cleared`).toBe(
+          undefined,
+        );
+        expect(step.next.state).toBe(state);
+        expect(step.next.confirmPending, `${state}: the armed flag is untouched`).toBe(armed);
+      }
+    }
+  });
+
+  it('retry-requested while armed leaves the confirmation armed, with or without a live connection', () => {
+    // WRONG IMPL KILLED: a retry that spends the confirmation (a Retry click would silently drop
+    // the guest confirmation the player was part-way through).
+    for (const state of SHOWING_STATES) {
+      for (const hasLiveConnection of [true, false]) {
+        const step = sessionStep(stateOf(state, true), {
+          kind: 'retry-requested',
+          hasLiveConnection,
+        });
+        expect(step.next.confirmPending, `${state} live=${hasLiveConnection}`).toBe(true);
+        expect(step.next.state).toBe(state);
+      }
+    }
+  });
+
+  it('a fresh session-expired / auth-service-unreachable while armed with feedback resets the confirmation and the feedback, whatever state it replaces', () => {
+    // WRONG IMPL KILLED: a state change that keeps an armed second step or a stale disconnected
+    // line across a different terminal (the new copy would open already one click from "yes").
+    for (const from of ALL_STATES) {
+      const armedWithLine = stateOf(from, true, SAMPLE_FEEDBACK);
+      const expired = sessionStep(armedWithLine, { kind: 'session-expired' });
+      expect(expired.next, `from ${from}`).toEqual({
+        state: 'expired',
+        confirmPending: false,
+        feedback: undefined,
+      });
+      expect(expired.effect).toBe('none');
+      const unreachable = sessionStep(armedWithLine, { kind: 'auth-service-unreachable' });
+      expect(unreachable.next, `from ${from}`).toEqual({
+        state: 'unreachable',
+        confirmPending: false,
+        feedback: undefined,
+      });
+      expect(unreachable.effect).toBe('none');
+    }
+  });
+
+  it('continue-anonymously-requested keeps the feedback that is already showing and emits nothing', () => {
+    // WRONG IMPL KILLED: arming that rebuilds the state from scratch (the disconnected line
+    // vanishes the moment the player presses Continue); arming that clears feedback.
+    for (const state of SHOWING_STATES) {
+      for (const armed of [false, true]) {
+        const step = sessionStep(stateOf(state, armed, SAMPLE_FEEDBACK), {
+          kind: 'continue-anonymously-requested',
+        });
+        expect(step.next, `${state} armed=${armed}`).toEqual({
+          state,
+          confirmPending: true,
+          feedback: SAMPLE_FEEDBACK,
+        });
+        expect(step.effect).toBe('none');
+      }
+    }
   });
 });
