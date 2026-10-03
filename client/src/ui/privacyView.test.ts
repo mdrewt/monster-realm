@@ -1359,4 +1359,95 @@ describe('PrivacyView ctl-8h: rows, default-No and B3', () => {
     expect(overlay.parentElement, 'else directly under <body>').toBe(document.body);
     expect(app.contains(overlay), 'and not inside an unrelated node').toBe(false);
   });
+
+  it('CTL8H-RT-PRIVACY-NO-STEAL: a render of an open frame never moves focus that is on the page behind it (a sentinel outside the frame across the arm edge, the disarm edge, a render that disables a control and a plain re-render) nor focus on <body> (an unarmed or armed same-vm re-render, a status-only re-render, a render that disables a control), and a disarm while Delete is disabled seats no row', () => {
+    // WRONG IMPL KILLED: a #reseat without its "focus outside the overlay -> return" guard (any
+    // focused element that is not a row reads as "a control the render disabled" and is yanked
+    // to the first row, or to Keep / Delete on an edge); <body> treated as a focused row (`active`
+    // passed to reseatRow instead of null) or a reseatRow that no longer tells "the page" (null)
+    // from "a disabled control" (the first row is seated by every plain re-render while focus is
+    // on the page: the deletion countdown re-renders every second); and a disarm that, with Delete
+    // disabled, falls back to the last or the first row instead of seating nothing.
+    const open = (vm: PrivacyViewModel): void => {
+      blurAll();
+      closeOverlayA11y('privacyView', null);
+      document.body.replaceChildren();
+      view = new PrivacyView(spies as unknown as PrivacyViewHandlers);
+      view.show();
+      view.render(vm);
+    };
+    const parked = (): HTMLButtonElement => {
+      const sentinel = document.createElement('button');
+      sentinel.id = 'ctl8h-rt-sentinel';
+      document.body.appendChild(sentinel);
+      sentinel.focus();
+      expect(document.activeElement, 'precondition: focus is on the page behind the frame').toBe(
+        sentinel,
+      );
+      return sentinel;
+    };
+
+    // --- a focused element OUTSIDE the frame ---------------------------------------------------
+    open(vmOf());
+    let sentinel = parked();
+    view.render(vmOf({ confirmPrompt: ARMED }));
+    expect(document.activeElement, 'the arm edge leaves focus outside the frame alone').toBe(
+      sentinel,
+    );
+
+    open(vmOf({ confirmPrompt: ARMED }));
+    sentinel = parked();
+    view.render(vmOf());
+    expect(document.activeElement, 'the disarm edge leaves focus outside the frame alone').toBe(
+      sentinel,
+    );
+
+    open(vmOf());
+    sentinel = parked();
+    view.render(vmOf({ exportEnabled: false }));
+    expect(btn(EXPORT_BTN_ID).disabled, 'precondition: the render disabled Export').toBe(true);
+    expect(document.activeElement, 'a render that disables a control leaves outside focus').toBe(
+      sentinel,
+    );
+
+    open(vmOf());
+    sentinel = parked();
+    view.render(vmOf());
+    view.render(vmOf({ statusLabel: 'SYNTHETIC TICK' }));
+    expect(document.activeElement, 'a plain re-render leaves outside focus alone').toBe(sentinel);
+
+    // --- focus on <body> ----------------------------------------------------------------------
+    open(vmOf());
+    expect(document.activeElement, 'precondition: focus is on the page').toBe(document.body);
+    view.render(vmOf());
+    expect(document.activeElement, 'an unarmed same-vm re-render seats no row').toBe(document.body);
+    view.render(vmOf({ statusLabel: 'SYNTHETIC TICK' }));
+    expect(document.activeElement, 'a status-only re-render seats no row').toBe(document.body);
+    view.render(vmOf({ exportStatusLabel: 'SYNTHETIC EXPORT COMPLETE' }));
+    expect(document.activeElement, 'an export-status re-render seats no row').toBe(document.body);
+    view.render(vmOf({ exportEnabled: false }));
+    expect(document.activeElement, 'a render that disables Export seats nothing for the page').toBe(
+      document.body,
+    );
+
+    open(vmOf({ confirmPrompt: ARMED }));
+    blurAll(); // the arm edge of open() seated Keep; put focus back on the page
+    expect(document.activeElement, 'precondition: focus is on the page').toBe(document.body);
+    view.render(vmOf({ confirmPrompt: ARMED }));
+    expect(document.activeElement, 'an armed same-vm re-render seats no row').toBe(document.body);
+    view.render(vmOf({ confirmPrompt: ARMED, statusLabel: 'SYNTHETIC TICK' }));
+    expect(document.activeElement, 'an armed status-only re-render seats no row').toBe(
+      document.body,
+    );
+
+    // --- a disarm while Delete is disabled: Delete is not a row, so nothing is seated -----------
+    open(vmOf({ confirmPrompt: ARMED }));
+    btn(CONFIRM_BTN_ID).focus();
+    expect(focusedId(), 'precondition: focus is on Confirm').toBe(CONFIRM_BTN_ID);
+    view.render(vmOf({ deleteEnabled: false }));
+    expect(btn(DELETE_BTN_ID).disabled, 'precondition: Delete is disabled').toBe(true);
+    expect(focusedId(), 'the disarm does not fall back to the last row').not.toBe(EXPORT_BTN_ID);
+    expect(focusedId(), 'nor to the first row').not.toBe(CLOSE_BTN_ID);
+    expect(focusedId(), 'nor to the disabled Delete').not.toBe(DELETE_BTN_ID);
+  });
 });

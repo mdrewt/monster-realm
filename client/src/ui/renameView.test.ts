@@ -1190,4 +1190,41 @@ describe('RenameView ctl-8h: applyRowOp rows and the submit key shield', () => {
     view.render(ENABLED);
     expect(btn.disabled, 'a draft still enables it').toBe(false);
   });
+
+  it('CTL8H-RT-RENAME-DISABLED-SAVE-NOT-A-ROW: with an empty draft (Save disabled) and focus on the field, a move and an A neither focus the disabled Save nor leave the field; once the draft enables Save, a move does focus it', () => {
+    // WRONG IMPL KILLED: rows that always include the Save button. happy-dom may refuse
+    // focus() on a disabled button, which hides the bug from an activeElement check, so the
+    // button's own focus() is spied: a disabled Save must never be asked to take focus.
+    const view = new RenameView({ onSubmit: vi.fn() });
+    view.show();
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    const submit = document.getElementById('rename-submit') as HTMLButtonElement;
+    view.render(DISABLED);
+    expect(submit.disabled, 'precondition: an empty draft disables Save').toBe(true);
+    input.focus();
+    expect(focusedId(), 'precondition: focus is on the field').toBe('rename-input');
+
+    const submitFocus = vi.spyOn(submit, 'focus');
+    try {
+      view.applyRowOp(move(1));
+      expect(
+        submitFocus,
+        'a move never asks the disabled Save to take focus',
+      ).not.toHaveBeenCalled();
+      expect(focusedId(), 'and focus stays on the field').toBe('rename-input');
+      view.applyRowOp(activate());
+      expect(submitFocus, 'nor does an A').not.toHaveBeenCalled();
+      expect(focusedId(), 'and focus stays on the field').toBe('rename-input');
+
+      // ANTI-VACUITY: the same spy sees the focus once Save is a row.
+      view.render(ENABLED);
+      expect(submit.disabled, 'precondition: a draft enables Save').toBe(false);
+      input.focus();
+      view.applyRowOp(move(1));
+      expect(submitFocus, 'an enabled Save is focused by a move').toHaveBeenCalledTimes(1);
+      expect(focusedId()).toBe('rename-submit');
+    } finally {
+      submitFocus.mockRestore();
+    }
+  });
 });
