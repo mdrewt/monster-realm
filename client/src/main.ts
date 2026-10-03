@@ -588,7 +588,8 @@ function syncStack(): void {
   apply({ kind: 'base', base });
   for (const edge of mirrorEdges(contextStack, visibleIds(overlayProbes), prevBase)) {
     apply(edge);
-    if (edge.kind === 'push') screenHost.opened(edge.frame); // a reopened frame's adapter starts over
+    // A reopened frame's adapter starts over (from what it remembers, when it opted in).
+    if (edge.kind === 'push') screenHost.opened(edge.frame);
     inputRouter.resetRepeat(); // a held key never repeats into a pushed or popped frame
   }
   const top = contextStack[contextStack.length - 1];
