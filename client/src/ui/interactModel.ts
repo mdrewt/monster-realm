@@ -6,6 +6,7 @@
 import type { WasmDirection } from '../convert/convert';
 import type { StoreCharacter, StoreHealLocationRow, StoreNpcRow, StorePlayer } from '../net/store';
 import { TILE_PX } from '../render/config';
+import { pickerEntries } from './actionSheetModel';
 
 /** What A or a sheet row does. A shopkeeper's `shop` is sent as the talk reducer (greet-then-shop);
  *  `heal` opens the heal frame bound to that location, it never transacts. */
@@ -152,8 +153,8 @@ export function resolveCandidates(
   return picked;
 }
 
-/** The world chip: what A does with these candidates. Counts actionable candidates only, so a
- *  player beside an npc leaves the npc's single action. */
+/** The world chip: what A does with these candidates. Counts their actions, so a player (no
+ *  action yet) beside an npc leaves the npc's single action. */
 export type InteractChip =
   | {
       readonly kind: 'single';
@@ -163,11 +164,11 @@ export type InteractChip =
   | { readonly kind: 'choose'; readonly anchorWorldX: number; readonly anchorWorldY: number };
 
 export function interactChip(cands: readonly InteractCandidate[]): InteractChip | null {
-  const actionable = cands.filter((c) => c.actions.length > 0);
-  const first = actionable[0];
+  // The picker's rows, so the chip always says what A (worldButton) does with them.
+  const [first, second] = pickerEntries(cands);
   if (first === undefined) return null;
-  if (actionable.length === 1 && first.actions.length === 1) {
-    return { kind: 'single', candidate: first, action: first.actions[0] as InteractAction };
-  }
-  return { kind: 'choose', anchorWorldX: first.anchorWorldX, anchorWorldY: first.anchorWorldY };
+  if (second === undefined)
+    return { kind: 'single', candidate: first.candidate, action: first.action };
+  const { anchorWorldX, anchorWorldY } = first.candidate;
+  return { kind: 'choose', anchorWorldX, anchorWorldY };
 }

@@ -77,6 +77,7 @@ import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
 import { t } from './ui/a11yCopy';
+import { sheetLayout } from './ui/actionSheetModel';
 import { type A11ySnapshot, announcementsFor } from './ui/announcements';
 import {
   type BaitItem,
@@ -176,7 +177,7 @@ import type { LeaderboardView } from './ui/leaderboardView';
 import { LiveRegion } from './ui/liveRegion';
 import type { MenuTarget } from './ui/menuModel';
 import type { MenuPointerInput, MenuView } from './ui/menuView';
-import { EMPTY_NAV_MEMORY, list } from './ui/nav';
+import { EMPTY_NAV_MEMORY } from './ui/nav';
 import { renderNav } from './ui/navRender';
 import {
   anyVisible,
@@ -661,7 +662,8 @@ function reconcileStack(): void {
 }
 
 /** The ONE movement gate (CTL2.3): false under any frame, on a battle base (even with the
- *  battle overlay hidden — B17) and while the session terminal owns the screen. */
+ *  battle overlay hidden — B17), while the session terminal owns the screen and while the world
+ *  picker or action sheet is open (ctl-10a). */
 function movementGate(): boolean {
   return worldBaseLive() && screenHost.sheet === null;
 }
@@ -678,7 +680,7 @@ function worldBaseLive(): boolean {
 /** The export, read lazily: a test's wasm mock that lacks it gives no candidates, not a throw. */
 function interactCandidatesFn(): CandidatesFn | undefined {
   try {
-    return interact_candidates_coded as CandidatesFn;
+    return interact_candidates_coded;
   } catch {
     return undefined;
   }
@@ -2039,12 +2041,23 @@ const routeCtx = (): RouteContext => {
     worldActive,
     nav,
     // The battle's own rules first (Start opens the menu over it, A continues its outcome).
-    screen: (btn) =>
-      battleButton(
-        contextStack,
-        btn,
-        outcomeShownAtMs === null ? undefined : performance.now() - outcomeShownAtMs,
-      ) ?? screenHost.button(contextStack, btn, screenCtx, identity === '' ? undefined : worldPort),
+    screen: (btn) => {
+      const sheetWas = screenHost.sheet !== null;
+      const result =
+        battleButton(
+          contextStack,
+          btn,
+          outcomeShownAtMs === null ? undefined : performance.now() - outcomeShownAtMs,
+        ) ??
+        screenHost.button(contextStack, btn, screenCtx, identity === '' ? undefined : worldPort);
+      // The world sheet opening or closing is a frame edge for held input (B14): no walk or
+      // D-pad repeat straddles it.
+      if ((screenHost.sheet !== null) !== sheetWas) {
+        held.clear();
+        inputRouter.resetRepeat();
+      }
+      return result;
+    },
   };
 };
 
@@ -2616,7 +2629,7 @@ store.onBatchApplied(() => {
 });
 
 store.onBatchApplied(() => {
-  // Heal overlay is user-opened (KeyT on a heal tile); only refresh when
+  // Heal overlay is user-opened (A at a healer); only refresh when
   // already open. While bound, refresh
   // through the SAME bound-location selector the open used — never let a
   // batch silently widen a bound view to the all-locations default.
@@ -3742,43 +3755,43 @@ async function main(): Promise<void> {
         anchor !== undefined
           ? renderer?.screenFor({ x: anchor.anchorWorldX, y: anchor.anchorWorldY })
           : undefined;
-      const promptText =
+      const promptSig =
         sheet !== null
           ? `sheet|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}`
           : chip !== null
             ? interactChipText(chip)
             : null;
       const promptKey =
-        promptText !== null && promptPos !== undefined
-          ? `${promptText}|${promptPos.x}|${promptPos.y}`
+        promptSig !== null && promptPos !== undefined
+          ? `${promptSig}|${promptPos.x}|${promptPos.y}`
           : 'none';
       if (promptKey !== lastPromptKey) {
         lastPromptKey = promptKey;
-        if (promptText !== null && promptPos !== undefined) {
+        if (promptSig !== null && promptPos !== undefined) {
           if (sheet !== null) {
             interactChipTextEl.textContent = '';
             const rows = new Map(sheet.entries.map((e) => [e.key, e]));
-            renderNav(
-              interactSheetEl,
-              list(sheet.entries.map((e) => ({ key: e.key, enabled: true }))),
-              sheet.nav,
-              {
-                frame: 'interact',
-                fill: (el, item) => {
-                  const row = rows.get(item.key);
-                  el.textContent =
-                    row === undefined
-                      ? ''
-                      : tf('interact.entry', {
-                          verb: interactVerb(row.action),
-                          name: interactName(row.candidate),
-                        });
-                },
+            renderNav(interactSheetEl, sheetLayout(sheet.entries), sheet.nav, {
+              frame: 'interact',
+              fill: (el, item) => {
+                const row = rows.get(item.key);
+                el.textContent =
+                  row === undefined
+                    ? ''
+                    : tf('interact.entry', {
+                        verb: interactVerb(row.action),
+                        name: interactName(row.candidate),
+                      });
               },
+            });
+            // The listbox's accessible name (renderNav names only a tabbed container).
+            interactSheetEl.setAttribute(
+              'aria-label',
+              tf('interact.choose', { key: interactKeycap() }),
             );
             interactSheetEl.style.display = '';
           } else {
-            interactChipTextEl.textContent = promptText;
+            interactChipTextEl.textContent = promptSig;
           }
           interactPromptEl.style.left = `${promptPos.x}px`;
           interactPromptEl.style.top = `${promptPos.y}px`;

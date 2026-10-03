@@ -33,13 +33,14 @@ export function pickerEntries(cands: readonly InteractCandidate[]): readonly She
   return cands.flatMap(sheetEntries);
 }
 
-const layoutOf = (entries: readonly SheetEntry[]): NavLayout =>
+/** The rows as a nav list: what `sheetStep` steps and the shell renders. */
+export const sheetLayout = (entries: readonly SheetEntry[]): NavLayout =>
   list(entries.map((e) => ({ key: e.key, enabled: true })));
 
 /** A sheet on its first row; null when there is no row to show. */
 export function openSheet(entries: readonly SheetEntry[]): SheetState | null {
   if (entries.length === 0) return null;
-  return { entries, nav: navInit(layoutOf(entries)) };
+  return { entries, nav: navInit(sheetLayout(entries)) };
 }
 
 /** One button on an open sheet. A runs the row under the cursor and closes, but only while that
@@ -51,7 +52,7 @@ export function sheetStep(
   current: readonly InteractCandidate[],
 ): { readonly state: SheetState | null; readonly run?: InteractAction } {
   if (btn.button === 'B' || btn.button === 'Start') return { state: null };
-  const { state: nav, outcome } = navStep(layoutOf(s.entries), s.nav, btn);
+  const { state: nav, outcome } = navStep(sheetLayout(s.entries), s.nav, btn);
   if (outcome.kind !== 'activate') return { state: nav === s.nav ? s : { ...s, nav } };
   const live = pickerEntries(current).find((e) => e.key === outcome.key);
   return live === undefined ? { state: null } : { state: null, run: live.action };

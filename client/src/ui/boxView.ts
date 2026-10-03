@@ -138,8 +138,7 @@ export interface BoxViewCallbacks {
   /** Called when the user moves a monster to a party slot (0–5), to the next free slot
    *  (-1), or to box (`partySlotNone`). */
   readonly onSetPartySlot: (monsterId: bigint, slot: number) => void;
-  /** Unread since ctl-10a retired the Box's Heal Party button (healing is at a bound healer only,
-   *  B13). Kept optional only because overlayA11yWiring.test.ts still passes it. */
+  /** Unread: the Box's Heal Party button is retired (ctl-10a, B13). */
   readonly onHealParty?: () => void;
   /** The "boxed" party-slot sentinel "To Box" emits: game-core's PARTY_SLOT_NONE, read once
    *  at boot from the `party_slot_none()` wasm export (main.ts) — never a TS literal. */

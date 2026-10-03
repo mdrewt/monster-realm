@@ -3,8 +3,9 @@
 // rule (`worldButton`'s picker and action sheet, ctl-10a, then `baseButton`), the battle's cursor
 // adapter at a bare battle base (`battleScreen`, ctl-8i), the typing rule over a text-entry frame,
 // or that screen's adapter fed its own view model and the state the host keeps for it. A store
-// batch goes to `ScreenHost.observe`, which asks every open frame whose adapter observes. No DOM, SDK or module state: main.ts holds the
-// one host, binds the stack and the context and runs the returned command.
+// batch goes to `ScreenHost.observe`, which asks every open frame whose adapter observes. No DOM,
+// SDK or module state: main.ts holds the one host, binds the stack and the context and runs the
+// returned command.
 import type { SheetState } from '../actionSheetModel';
 import type { BaseFrame, FrameId, Stack, UpperFrame } from '../contextStack';
 import type { InteractAction, InteractCandidate } from '../interactModel';
