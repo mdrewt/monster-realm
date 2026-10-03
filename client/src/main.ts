@@ -18,13 +18,13 @@ import { Identity } from 'spacetimedb';
 import {
   apply_move,
   deletion_grace_ms_default,
+  interact_candidates_coded,
   max_trade_monsters_per_side,
   move_queue_cap,
   party_size,
   party_slot_none,
   set_active_zone,
   step_ms,
-  talk_range,
   zone_map,
 } from '../../client-wasm/pkg/client_wasm.js';
 import {
@@ -156,23 +156,28 @@ import {
 } from './ui/evolutionNotice';
 import type { EvolutionView } from './ui/evolutionView';
 import { assembleExportBundle, type ExportAssembly } from './ui/exportAssembly';
-import {
-  buildHealViewModel,
-  buildHealViewModelForLocation,
-  healTargetLocationId,
-} from './ui/healModel';
+import { buildHealViewModel, buildHealViewModelForLocation } from './ui/healModel';
 import type { HealView } from './ui/healView';
 import { buildHelpViewModel } from './ui/helpModel';
 import type { HelpView } from './ui/helpView';
 import { isRtl, negotiateLocale } from './ui/i18n/locale';
 import { CATALOGS, t as i18nT, setLocale, tf } from './ui/i18n/resolver';
-import { interactPrompt, nearestInteractable } from './ui/interactModel';
+import {
+  type CandidatesFn,
+  type InteractAction,
+  type InteractCandidate,
+  type InteractChip,
+  interactChip,
+  marshalInteract,
+  resolveCandidates,
+} from './ui/interactModel';
 import { buildLeaderboardViewModel } from './ui/leaderboardModel';
 import type { LeaderboardView } from './ui/leaderboardView';
 import { LiveRegion } from './ui/liveRegion';
 import type { MenuTarget } from './ui/menuModel';
 import type { MenuPointerInput, MenuView } from './ui/menuView';
-import { EMPTY_NAV_MEMORY } from './ui/nav';
+import { EMPTY_NAV_MEMORY, list } from './ui/nav';
+import { renderNav } from './ui/navRender';
 import {
   anyVisible,
   type CanOpenVerdict,
@@ -204,7 +209,7 @@ import { buildRaisingViewModel } from './ui/raisingModel';
 import type { RaisingView } from './ui/raisingView';
 import { buildRenameViewModel } from './ui/renameModel';
 import type { RenameView } from './ui/renameView';
-import { SCREEN_ADAPTERS, ScreenHost } from './ui/screens/index';
+import { SCREEN_ADAPTERS, ScreenHost, type WorldPort } from './ui/screens/index';
 import {
   type MainMenuStep,
   mainMenuPick,
@@ -294,7 +299,6 @@ const QUEUE_CAP = move_queue_cap();
 const PARTY_SIZE = party_size();
 const PARTY_SLOT_NONE = party_slot_none();
 const MAX_TRADE_MONSTERS_PER_SIDE = max_trade_monsters_per_side();
-const TALK_RANGE = talk_range();
 // The deletion grace window, read ONCE per session — it is a build constant, and
 // re-reading it per frame would cross the wasm boundary ~60x/s for a value that cannot change.
 const DELETION_GRACE_MS_DEFAULT = deletion_grace_ms_default();
@@ -659,22 +663,78 @@ function reconcileStack(): void {
 /** The ONE movement gate (CTL2.3): false under any frame, on a battle base (even with the
  *  battle overlay hidden — B17) and while the session terminal owns the screen. */
 function movementGate(): boolean {
-  syncStack();
-  return movementEnabled(contextStack, sessionGateBlocks());
+  return worldBaseLive() && screenHost.sheet === null;
 }
 
-/** entityId → positional tile snapshot for the interact resolver.
- *  store.characters() is the WHOLE character table (players + NPCs); entityId is
- *  globally unique (one auto_inc sequence), so joining the NPC registry against
- *  this map always lands on the NPC's own row. Shared by the KeyT dispatch and
- *  the frame-loop prompt so the two sites can never diverge. */
-function characterTileMap(): Map<bigint, { zoneId: number; tileX: number; tileY: number }> {
-  return new Map(
-    [...store.characters()].map((c) => [
-      c.row.entityId,
-      { zoneId: c.row.zoneId, tileX: c.row.tileX, tileY: c.row.tileY },
-    ]),
-  );
+/** The world base takes input: the movement gate before the world sheet (ctl-10a) is counted.
+ *  Anything else (a frame, a battle base, the session terminal) closes that sheet. */
+function worldBaseLive(): boolean {
+  syncStack();
+  const live = movementEnabled(contextStack, sessionGateBlocks());
+  if (!live) screenHost.closeSheet();
+  return live;
+}
+
+/** The export, read lazily: a test's wasm mock that lacks it gives no candidates, not a throw. */
+function interactCandidatesFn(): CandidatesFn | undefined {
+  try {
+    return interact_candidates_coded as CandidatesFn;
+  } catch {
+    return undefined;
+  }
+}
+
+// A real Err from the export (a malformed entity) is logged and surfaced once per message, never
+// silent; the world then offers nothing.
+let lastInteractErrorMessage: string | null = null;
+function reportInteractError(err: unknown): void {
+  let message: string;
+  try {
+    message = `interact: ${normalizeError('uncaught', err).message}`;
+  } catch {
+    message = 'interact: [unstringifiable error]';
+  }
+  if (message === lastInteractErrorMessage) return;
+  lastInteractErrorMessage = message;
+  console.error('[interact] candidates error', err);
+  pushError('uncaught', message);
+}
+
+// What the character faces (ctl-10a): the wasm rule's candidates from the PREDICTED tile and
+// facing (what is drawn; the authoritative row until there is one), in the authoritative zone.
+// Memoised on (batch, identity, zone, tile, facing), so the chip asks once per change, never per
+// frame, and A and Y reuse the chip's answer.
+let interactBatch = 0;
+store.onBatchApplied(() => {
+  interactBatch++;
+});
+let interactMemo: { readonly key: string; readonly cands: readonly InteractCandidate[] } | null =
+  null;
+function worldCandidates(): readonly InteractCandidate[] {
+  const own = store.ownCharacter(identity);
+  if (own === undefined) return [];
+  const pred = predictor.predicted;
+  const origin = {
+    x: pred?.pos.x ?? own.row.tileX,
+    y: pred?.pos.y ?? own.row.tileY,
+    facing: pred?.facing ?? own.row.facing,
+    zone: own.row.zoneId,
+  };
+  const key = `${interactBatch}|${identity}|${origin.zone}|${origin.x}|${origin.y}|${origin.facing}`;
+  if (interactMemo?.key !== key) {
+    const input = marshalInteract(
+      store.allNpcs(),
+      Array.from(store.characters(), (c) => c.row),
+      store.allPlayers(),
+      store.healLocations(),
+      store.ownEntityId(identity),
+    );
+    interactMemo = {
+      key,
+      cands: resolveCandidates(interactCandidatesFn(), origin, input, reportInteractError),
+    };
+  }
+  return interactMemo.cands;
 }
 
 // True while the session terminal (expired / unreachable) owns the
@@ -1029,34 +1089,64 @@ function openHelp(): void {
   helpView?.show();
 }
 
-/** The interact dispatch: ONE exhaustive `switch (target.kind)`, so a 4th NpcInteraction kind
- *  compiler-flags this single site. Its one caller, the interact hotkey, is movement-gated, which
- *  is what keeps talking out of a battle (CTL6C.3). */
-function interactAtNearest(): void {
-  const own = store.ownCharacter(identity);
-  if (own === undefined) return;
-  const target = nearestInteractable(
-    own.row,
-    store.allNpcs(),
-    characterTileMap(),
-    store.healLocations(),
-    TALK_RANGE,
-  );
-  if (target === undefined) return;
-  // Exhaustive switch on the descriptor kind — NO default arm, so a 4th
-  // NpcInteraction-driven kind compiler-flags this dispatch site.
-  switch (target.kind) {
-    case 'dialogue':
+/** Run what A or a sheet row chose at the world (ctl-10a). Exhaustive, no default arm. Only the
+ *  world base asks (`ScreenHost.button`), which keeps it out of a battle and from under a frame
+ *  (CTL6C.3). Talk and shop share the talk reducer (greet-then-shop); heal binds the heal frame to
+ *  that location and transacts nothing. The server re-validates zone and range on every send. */
+function runInteract(action: InteractAction): void {
+  switch (action.kind) {
+    case 'talk':
     case 'shop':
-      sendGuarded('talk', () => conn?.live()?.reducers.talk({ npcEntityId: target.npcEntityId }));
+      sendGuarded('talk', () => conn?.live()?.reducers.talk({ npcEntityId: action.npcEntityId }));
       break;
     case 'heal':
-      boundHealLocationId = target.locationId;
+      boundHealLocationId = action.locationId;
       healView?.render(
-        buildHealViewModelForLocation(target.locationId, store.healLocations(), store.itemDefs()),
+        buildHealViewModelForLocation(action.locationId, store.healLocations(), store.itemDefs()),
       );
       break;
   }
+}
+
+const worldPort: WorldPort = { candidates: worldCandidates, run: runInteract };
+
+/** The chip's and the sheet's words, each a literal catalog key (the catalog parity scan). */
+function interactVerb(action: InteractAction): string {
+  switch (action.kind) {
+    case 'talk':
+      return i18nT('interact.verb.talk');
+    case 'shop':
+      return i18nT('interact.verb.shop');
+    case 'heal':
+      return i18nT('interact.verb.heal');
+  }
+}
+
+function interactName(c: InteractCandidate): string {
+  return c.kind === 'heal' ? i18nT('interact.healer') : c.name;
+}
+
+/** The A button's keycap, from the live binding. */
+function interactKeycap(): string {
+  const code = ROUTED_BINDINGS.buttons.A[0] ?? '';
+  switch (code) {
+    case 'Enter':
+    case 'NumpadEnter':
+      return i18nT('key.enter');
+    default:
+      return code;
+  }
+}
+
+function interactChipText(chip: InteractChip): string {
+  const key = interactKeycap();
+  return chip.kind === 'single'
+    ? tf('interact.chip', {
+        key,
+        verb: interactVerb(chip.action),
+        name: interactName(chip.candidate),
+      })
+    : tf('interact.choose', { key });
 }
 
 function renderMenu(): void {
@@ -1262,11 +1352,10 @@ function dispatch(command: Command): Promise<void> {
       return sendGuarded('party', () => conn?.live()?.reducers.setPartySlot({ monsterId, slot }));
     }
     case 'healParty': {
-      // The location a bound heal frame names (B13); the Box button names none, and takes the
-      // first heal location in live store data (M12d). SKIP the send when there is neither —
-      // inventing `locationId: 0` would be a guaranteed invisible server Err. The skip is
-      // surfaced, never silent; the server still validates zone/range/cooldown on a real send.
-      const locationId = command.locationId ?? healTargetLocationId(store.healLocations());
+      // The location a bound heal frame names: healing happens only at a healer (B13; ctl-10a
+      // retired the Box button and its first-location guess). With none bound the send is
+      // skipped, surfaced, never silent; the server still validates zone and cooldown.
+      const locationId = command.locationId;
       if (locationId === undefined) {
         reportError(i18nT('chrome.status.healUnavailable'));
         return DONE;
@@ -1955,7 +2044,7 @@ const routeCtx = (): RouteContext => {
         contextStack,
         btn,
         outcomeShownAtMs === null ? undefined : performance.now() - outcomeShownAtMs,
-      ) ?? screenHost.button(contextStack, btn, screenCtx),
+      ) ?? screenHost.button(contextStack, btn, screenCtx, identity === '' ? undefined : worldPort),
   };
 };
 
@@ -2262,25 +2351,6 @@ const onKeyDown = (e: KeyboardEvent): void => {
     }
     return;
   }
-  if (e.code === 'KeyT') {
-    // INTERACT (generalizes the old TALK key):
-    // only while movement is enabled (the same gate as the on-world prompt, so the prompt
-    // never advertises a target T refuses), resolve the nearest interactable
-    // (store.allNpcs() joined to character rows + heal tiles, same zone,
-    // Manhattan <= TALK_RANGE of the own AUTHORITATIVE tile) and dispatch by kind:
-    // dialogue/shop share the ONE existing talk-reducer arm (greet-then-shop);
-    // heal binds the heal overlay VIEW to the resolved location — no reducer
-    // (interact opens UI, it never transacts). The client-side range check is
-    // latency hygiene, NOT security — the server re-validates zone + range
-    // (npc.rs talk; TALK_RANGE is game-core's, read via the talk_range() wasm export).
-    // NOT a canOpen() site — interact opens no overlay of its own, so it
-    // has no id to exempt and its guard is the plain movement gate.
-    if (movementGate() && identity !== '') {
-      interactAtNearest();
-    }
-    e.preventDefault();
-    return;
-  }
   // the account/claim front door. carriesIdentity is FALSE on
   // purpose — a failed FIRST sign-in has never joined (identity === ''), and the claim overlay
   // reads store.ownAccount(identity) whose own-identity filter returns undefined for '' (no throw).
@@ -2301,7 +2371,11 @@ const onKeyDown = (e: KeyboardEvent): void => {
   if (edges !== undefined) return; // already routed at the menu intercept
   let consumed = false;
   for (const edge of keyEdges()) consumed = routeEdge(edge) || consumed;
-  if (consumed) e.preventDefault();
+  if (consumed) {
+    // A press the world consumed (A opening the heal frame) cancels its OS repeats too.
+    navHeldCodes.add(e.code);
+    e.preventDefault();
+  }
 };
 // Sync the context stack on both sides of every keydown: before, so an overlay opened since
 // the last frame outside a keydown or batch (a click, a connection callback) is pushed (clearing held) before this key can close it; after,
@@ -3140,7 +3214,6 @@ async function main(): Promise<void> {
       onSetNickname: (monsterId, nickname) =>
         dispatch({ kind: 'setNickname', monsterId, nickname }),
       onSetPartySlot: (monsterId, slot) => dispatch({ kind: 'setPartySlot', monsterId, slot }),
-      onHealParty: () => dispatch({ kind: 'healParty' }),
       partySlotNone: PARTY_SLOT_NONE,
     });
     // The PvE callbacks RETURN the promise (view lock until settle; M-1 pin).
@@ -3279,8 +3352,13 @@ async function main(): Promise<void> {
   interactPromptEl.className = 'mr-frame mr-frame--prompt';
   interactPromptEl.style.display = 'none';
   frameLayer.appendChild(interactPromptEl);
-  // Memoized last-applied prompt state: style/text writes happen ONLY when the
-  // (actionWord, screen position) key changes — never unconditionally per frame.
+  // ctl-10a: it holds either the chip text or, while the world sheet is open, its rows (a nav
+  // list rendered into one child). Memoized last-applied state: DOM writes happen ONLY when the
+  // (text or rows, screen position) key changes — never unconditionally per frame.
+  const interactChipTextEl = document.createElement('span');
+  const interactSheetEl = document.createElement('div');
+  interactSheetEl.style.display = 'none';
+  interactPromptEl.append(interactChipTextEl, interactSheetEl);
   let lastPromptKey = 'none';
 
   // The deletion-grace countdown banner — created at runtime beside
@@ -3647,43 +3725,71 @@ async function main(): Promise<void> {
               ),
         );
       }
-      // Recompute the on-world interact prompt EVERY frame
-      // — the SAME resolver KeyT dispatches on, so the prompt can never
-      // advertise a target KeyT refuses, and it self-heals on zone switch /
-      // reconnect / overlay open. Positioned via renderer.screenFor — the
-      // exact camera offset + stageScale the stage applied THIS frame.
-      const ownChar = store.ownCharacter(identity);
-      // Overlay-open frames skip the resolve entirely (the prompt is guaranteed
-      // hidden), so the per-frame map/array allocations only happen in-world.
-      const overlayUp = !movementGate();
-      const promptTarget =
-        !overlayUp && ownChar !== undefined
-          ? nearestInteractable(
-              ownChar.row,
-              store.allNpcs(),
-              characterTileMap(),
-              store.healLocations(),
-              TALK_RANGE,
-            )
-          : undefined;
-      const promptVm = interactPrompt(promptTarget, overlayUp);
+      // The world interaction chip (ctl-10a): what A does with what the character faces, or the
+      // open picker / action sheet. Hidden under any frame, on a battle base and under the
+      // session terminal. Positioned via renderer.screenFor — the exact camera offset +
+      // stageScale the stage applied THIS frame.
+      const live = worldBaseLive(); // first: it closes a sheet the world no longer owns
+      const sheet = screenHost.sheet;
+      const chip = live && sheet === null ? interactChip(worldCandidates()) : null;
+      const anchor =
+        sheet !== null
+          ? sheet.entries[0]?.candidate
+          : chip?.kind === 'single'
+            ? chip.candidate
+            : (chip ?? undefined);
       const promptPos =
-        promptVm !== null
-          ? renderer?.screenFor({ x: promptVm.anchorWorldX, y: promptVm.anchorWorldY })
+        anchor !== undefined
+          ? renderer?.screenFor({ x: anchor.anchorWorldX, y: anchor.anchorWorldY })
           : undefined;
+      const promptText =
+        sheet !== null
+          ? `sheet|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}`
+          : chip !== null
+            ? interactChipText(chip)
+            : null;
       const promptKey =
-        promptVm !== null && promptPos !== undefined
-          ? `${promptVm.actionWord}|${promptPos.x}|${promptPos.y}`
+        promptText !== null && promptPos !== undefined
+          ? `${promptText}|${promptPos.x}|${promptPos.y}`
           : 'none';
       if (promptKey !== lastPromptKey) {
         lastPromptKey = promptKey;
-        if (promptVm !== null && promptPos !== undefined) {
-          interactPromptEl.textContent = `${promptVm.actionWord} [${promptVm.keyGlyph}]`;
+        if (promptText !== null && promptPos !== undefined) {
+          if (sheet !== null) {
+            interactChipTextEl.textContent = '';
+            const rows = new Map(sheet.entries.map((e) => [e.key, e]));
+            renderNav(
+              interactSheetEl,
+              list(sheet.entries.map((e) => ({ key: e.key, enabled: true }))),
+              sheet.nav,
+              {
+                frame: 'interact',
+                fill: (el, item) => {
+                  const row = rows.get(item.key);
+                  el.textContent =
+                    row === undefined
+                      ? ''
+                      : tf('interact.entry', {
+                          verb: interactVerb(row.action),
+                          name: interactName(row.candidate),
+                        });
+                },
+              },
+            );
+            interactSheetEl.style.display = '';
+          } else {
+            interactChipTextEl.textContent = promptText;
+          }
           interactPromptEl.style.left = `${promptPos.x}px`;
           interactPromptEl.style.top = `${promptPos.y}px`;
           interactPromptEl.style.display = 'block';
         } else {
           interactPromptEl.style.display = 'none';
+        }
+        // Rows never outlive their sheet, shown or not.
+        if (sheet === null) {
+          interactSheetEl.replaceChildren();
+          interactSheetEl.style.display = 'none';
         }
       }
       lastFrameErrorMessage = null;

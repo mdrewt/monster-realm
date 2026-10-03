@@ -25,6 +25,15 @@
 export type MessageId =
   | 'chrome.chip.menu'
   | 'chrome.chip.help'
+  // interact.* / key.* : the world interaction chip and picker (main.ts, ctl-10a).
+  | 'interact.chip'
+  | 'interact.choose'
+  | 'interact.entry'
+  | 'interact.verb.talk'
+  | 'interact.verb.shop'
+  | 'interact.verb.heal'
+  | 'interact.healer'
+  | 'key.enter'
   | 'chrome.help.title'
   | 'chrome.rename.submit'
   | 'chrome.tradePropose.submit'
@@ -116,7 +125,6 @@ export type MessageId =
   | 'raising.feedback.cared'
   // Box.* : the party / box screen (boxView.ts).
   | 'box.title'
-  | 'box.heal'
   | 'box.hint'
   | 'box.section.party'
   | 'box.section.box'
@@ -346,6 +354,9 @@ export type MessageId =
  *  indexing, so no separate subset assert is needed. */
 export interface MessageParams {
   readonly 'chrome.status.disconnected': { readonly where: string };
+  readonly 'interact.chip': { readonly key: string; readonly verb: string; readonly name: string };
+  readonly 'interact.choose': { readonly key: string };
+  readonly 'interact.entry': { readonly verb: string; readonly name: string };
   // Every param below is MODEL DATA — affinity names, weather labels,
   // status names, species/skill/item names, player display names and counts — interpolated
   // verbatim, never catalogued (M24 §2.5: content stays English this milestone).

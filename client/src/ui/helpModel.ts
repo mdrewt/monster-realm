@@ -8,9 +8,8 @@
 // The controls list documents every load-bearing key so a tester reading the
 // overlay discovers the full keymap: the `?` help key itself, M (the main-menu
 // front door), Escape (close), movement (WASD / arrows), Space
-// (jump), F9 (bug bundle), and the 10 overlay hotkeys B I E Q U P L N O T (G and
-// H deleted — shop and heal are reached through the interact
-// key T). The menu sources every leaf's shortcut label from this SSOT, so a key
+// (jump), Enter and F (act on what you face; shop and heal are reached through them, ctl-10a
+// retired T), F9 (bug bundle), and the overlay hotkeys B I E Q U P L N O C. The menu sources every leaf's shortcut label from this SSOT, so a key
 // that diverges from it fails MM-KEYGLYPH-FROM-HELP-SSOT. buildHelpViewModel() returns a
 // fresh copy so a caller mutating the result cannot poison a later call
 // (purity / totality).
@@ -22,14 +21,15 @@ export interface HelpViewModel {
 }
 
 // The typed SSOT const. `?` = Help, Escape = close overlays, WASD/Arrows = move,
-// Space = jump, F9 = bug bundle, plus the 10 overlay hotkeys incl. Interact (T).
+// Space = jump, Enter / F = interact, F9 = bug bundle, plus the overlay hotkeys.
 const CONTROLS: readonly { readonly key: string; readonly action: string }[] = [
   { key: '?', action: 'Toggle this help overlay' },
   { key: 'M', action: 'Open the main menu' },
   { key: 'WASD / Arrows', action: 'Move around the world' },
   { key: 'Space', action: 'Jump' },
   { key: 'Escape', action: 'Close the open overlay' },
-  { key: 'T', action: 'Interact — talk to an NPC, shop at a shopkeeper, heal at a heal tile' },
+  { key: 'Enter', action: 'Interact with what you face — talk, shop or heal' },
+  { key: 'F', action: 'Show every action for what you face' },
   { key: 'B', action: 'Open the monster Box' },
   { key: 'I', action: 'Open Inventory / raise a monster' },
   { key: 'E', action: 'Open Evolution' },

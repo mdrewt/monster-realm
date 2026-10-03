@@ -1,170 +1,173 @@
-// ui/interactModel.ts — pure context-sensitive interact core.
-//
-// No DOM, no SDK, no reducer identifiers. TOTAL: never throws — the resolver
-// runs EVERY FRAME in main.ts (the prompt) and on every KeyT press; one throw
-// would starve the render loop. Replaces dialogueModel's nearestTalkableNpcId
-// (deleted, plan I6): ONE resolver drives both the prompt and the dispatch, so
-// the prompt can never advertise a target KeyT refuses.
-import type { StoreHealLocationRow, StoreNpcRow } from '../net/store';
+// ui/interactModel.ts — the world interaction adapter (ctl-10a). Pure: no DOM, SDK or reducer
+// identifiers, and NO interaction rule: which entities you can act on is game-core's
+// `interact_candidates` ("the tile in front, then your own tile"), reached through the client-wasm
+// export `interact_candidates_coded`. This module only marshals store rows into that export's
+// input, maps its answer (indices) back to candidates, and names what each candidate offers.
+import type { WasmDirection } from '../convert/convert';
+import type { StoreCharacter, StoreHealLocationRow, StoreNpcRow, StorePlayer } from '../net/store';
 import { TILE_PX } from '../render/config';
 
-/** The positional subset of a character row the target selection reads. */
-export interface InteractTile {
-  readonly zoneId: number;
-  readonly tileX: number;
-  readonly tileY: number;
-}
+/** What A or a sheet row does. A shopkeeper's `shop` is sent as the talk reducer (greet-then-shop);
+ *  `heal` opens the heal frame bound to that location, it never transacts. */
+export type InteractAction =
+  | { readonly kind: 'talk'; readonly npcEntityId: bigint }
+  | { readonly kind: 'shop'; readonly npcEntityId: bigint }
+  | { readonly kind: 'heal'; readonly locationId: number };
 
-/** A resolved interact target. Anchors are SOURCE px at the TARGET's tile:
- *  X tile-centre `(tileX + 0.5) * TILE_PX`, Y tile-TOP `tileY * TILE_PX` (the
- *  label floats above the head). The ONLY world→screen transform
- *  is WorldRenderer.screenFor; this module never applies camera or scale. */
-export type Interactable =
-  | { kind: 'dialogue'; npcEntityId: bigint; anchorWorldX: number; anchorWorldY: number }
-  | {
-      kind: 'shop';
-      npcEntityId: bigint;
-      shopId: number;
-      anchorWorldX: number;
-      anchorWorldY: number;
-    }
-  | { kind: 'heal'; locationId: number; anchorWorldX: number; anchorWorldY: number };
-
-/** Descriptor for an NPC-row candidate at its CHARACTER tile. Exhaustive over
- *  the interaction union — NO default arm, so a 4th variant compiler-flags
- *  this site (the enum-SSOT rule). */
-function npcDescriptor(npc: StoreNpcRow, tile: InteractTile): Interactable {
-  const anchorWorldX = (tile.tileX + 0.5) * TILE_PX;
-  const anchorWorldY = tile.tileY * TILE_PX;
-  const interaction = npc.interaction;
-  switch (interaction.kind) {
-    case 'dialogue':
-      return { kind: 'dialogue', npcEntityId: npc.entityId, anchorWorldX, anchorWorldY };
-    case 'shop':
-      return {
-        kind: 'shop',
-        npcEntityId: npc.entityId,
-        shopId: interaction.shopId,
-        anchorWorldX,
-        anchorWorldY,
-      };
-    case 'heal':
-      // A Heal-variant NPC yields a heal descriptor carrying ITS enum payload,
-      // anchored at ITS character tile — but it RANKS as an npc-row candidate
-      // (kindRank by SOURCE TABLE, not by this descriptor's kind — D3).
-      return { kind: 'heal', locationId: interaction.locationId, anchorWorldX, anchorWorldY };
-  }
-}
-
-/**
- * Nearest interactable within `range` Manhattan tiles (INCLUSIVE) of the own
- * AUTHORITATIVE tile. `range` is game-core's `TALK_RANGE`, injected from the
- * `talk_range()` wasm export at boot (never a TS literal). Latency hygiene ONLY,
- * never security: the `talk` reducer re-validates zone + range server-side.
- * Same-zone only:
- *   - NPC zone comes from the CHARACTER-row join (live wander position), never
- *     the npc registry row's zoneId; NPCs without a character row are skipped.
- *   - Heal rows are filtered by an EXPLICIT `loc.zoneId === own.zoneId` (they
- *     have no character row to inherit from).
- * Ordering is lexicographic on (distance asc, kindRank asc, id asc WITHIN
- * kind); kindRank is by SOURCE TABLE — npc row = 0, heal_location row = 1 — so
- * a bigint entityId and a number locationId are NEVER compared to each other
- * (a cross-kind compare inverts NPC-before-tile for every real entity_id).
- * Returns undefined when nothing is in range. TOTAL: never throws.
- */
-export function nearestInteractable(
-  own: InteractTile,
-  npcs: readonly StoreNpcRow[],
-  characterTiles: ReadonlyMap<bigint, InteractTile>,
-  healLocations: readonly StoreHealLocationRow[],
-  range: number,
-): Interactable | undefined {
-  let best: Interactable | undefined;
-  let bestDist = range + 1;
-  let bestRank: 0 | 1 = 1;
-  let bestNpcId = 0n; // id-within-kind, valid only while bestRank === 0
-  let bestHealId = 0; // id-within-kind, valid only while bestRank === 1
-
-  // npc-row candidates (kindRank 0).
-  for (const npc of npcs) {
-    const c = characterTiles.get(npc.entityId);
-    if (c === undefined || c.zoneId !== own.zoneId) continue;
-    const dist = Math.abs(c.tileX - own.tileX) + Math.abs(c.tileY - own.tileY);
-    if (dist > range) continue;
-    const wins =
-      best === undefined ||
-      dist < bestDist ||
-      (dist === bestDist && (bestRank === 1 || npc.entityId < bestNpcId));
-    if (!wins) continue;
-    bestDist = dist;
-    bestRank = 0;
-    bestNpcId = npc.entityId;
-    best = npcDescriptor(npc, c);
-  }
-
-  // heal_location-row candidates (kindRank 1) — explicit zone filter.
-  for (const loc of healLocations) {
-    if (loc.zoneId !== own.zoneId) continue;
-    const dist = Math.abs(loc.tileX - own.tileX) + Math.abs(loc.tileY - own.tileY);
-    if (dist > range) continue;
-    const wins =
-      best === undefined ||
-      dist < bestDist ||
-      (dist === bestDist && bestRank === 1 && loc.locationId < bestHealId);
-    if (!wins) continue;
-    bestDist = dist;
-    bestRank = 1;
-    bestHealId = loc.locationId;
-    best = {
-      kind: 'heal',
-      locationId: loc.locationId,
-      anchorWorldX: (loc.tileX + 0.5) * TILE_PX,
-      anchorWorldY: loc.tileY * TILE_PX,
-    };
-  }
-
-  return best;
-}
-
-/** The on-world prompt view model. `visible` is the literal
- *  `true`: "hidden" is represented by null and ONLY by null. The anchor stays
- *  in SOURCE px — screenFor applies the one tested transform. */
-export interface InteractPromptViewModel {
-  readonly visible: true;
-  readonly actionWord: 'Talk' | 'Shop' | 'Heal';
-  readonly keyGlyph: 'T';
+export interface InteractCandidate {
+  /** `npc:<entityId>`, `heal:<locationId>` or `player:<entityId>`. */
+  readonly key: string;
+  readonly kind: 'npc' | 'heal' | 'player';
+  /** An npc's npcId, a player's name; '' for a heal location (the shell names it). */
+  readonly name: string;
+  /** In default-first order. A player has none until ctl-10b adds Trade and Challenge. */
+  readonly actions: readonly InteractAction[];
+  /** SOURCE px at the entity's tile: X tile-centre, Y tile-top (the label floats above it). */
   readonly anchorWorldX: number;
   readonly anchorWorldY: number;
 }
 
-/**
- * Prompt VM for the resolved target: null when there is no target OR any of
- * the 14 mutual-exclusion overlays is visible (AC-6 — the world label never
- * renders over an open UI). The actionWord names the DESTINATION (a shopkeeper
- * prompts "Shop" even though KeyT dispatches the talk reducer — AC-12).
- */
-export function interactPrompt(
-  target: Interactable | undefined,
-  anyOverlayVisible: boolean,
-): InteractPromptViewModel | null {
-  if (target === undefined || anyOverlayVisible) return null;
-  let actionWord: 'Talk' | 'Shop' | 'Heal';
-  switch (target.kind) {
+/** One entity as `interact_candidates_coded` reads it; `id` is decimal (a u64 never crosses the
+ *  boundary as a JS number). */
+export interface WireInteractEntity {
+  readonly kind: 'npc' | 'heal' | 'player';
+  readonly x: number;
+  readonly y: number;
+  readonly zone: number;
+  readonly id: string;
+}
+
+/** `wire[i]` is `candidates[i]` as the export sees it. */
+export interface InteractInput {
+  readonly wire: readonly WireInteractEntity[];
+  readonly candidates: readonly InteractCandidate[];
+}
+
+/** client-wasm's facing codes (`dir_from_code`). */
+export const FACING_CODE: Readonly<Record<WasmDirection, 0 | 1 | 2 | 3>> = {
+  North: 0,
+  South: 1,
+  East: 2,
+  West: 3,
+};
+
+/** What the character stands on and faces, in the zone it is in. */
+export interface InteractOrigin {
+  readonly x: number;
+  readonly y: number;
+  readonly facing: WasmDirection;
+  readonly zone: number;
+}
+
+/** The export's shape: `(ownX, ownY, facing, zone, entities) -> indices`. */
+export type CandidatesFn = (
+  ownX: number,
+  ownY: number,
+  facing: number,
+  zone: number,
+  entities: unknown,
+) => unknown;
+
+/** The actions an npc offers, by its interaction. Exhaustive, no default arm: a new interaction
+ *  kind fails client-typecheck here. */
+function npcActions(npc: StoreNpcRow): readonly InteractAction[] {
+  const interaction = npc.interaction;
+  switch (interaction.kind) {
     case 'dialogue':
-      actionWord = 'Talk';
-      break;
+      return [{ kind: 'talk', npcEntityId: npc.entityId }];
     case 'shop':
-      actionWord = 'Shop';
-      break;
+      return [{ kind: 'shop', npcEntityId: npc.entityId }];
     case 'heal':
-      actionWord = 'Heal';
-      break;
+      return [{ kind: 'heal', locationId: interaction.locationId }];
   }
-  return {
-    visible: true,
-    actionWord,
-    keyGlyph: 'T',
-    anchorWorldX: target.anchorWorldX,
-    anchorWorldY: target.anchorWorldY,
+}
+
+/** Every npc (at its character row; one with no row has no position and is left out), every heal
+ *  location and every other player, as the export's input. Nothing is filtered by zone, distance
+ *  or facing: that is the rule's. */
+export function marshalInteract(
+  npcs: readonly StoreNpcRow[],
+  characters: Iterable<StoreCharacter>,
+  players: readonly StorePlayer[],
+  heals: readonly StoreHealLocationRow[],
+  ownEntityId: bigint | undefined,
+): InteractInput {
+  const wire: WireInteractEntity[] = [];
+  const candidates: InteractCandidate[] = [];
+  const add = (w: WireInteractEntity, name: string, actions: readonly InteractAction[]): void => {
+    wire.push(w);
+    candidates.push({
+      key: `${w.kind}:${w.id}`,
+      kind: w.kind,
+      name,
+      actions,
+      anchorWorldX: (w.x + 0.5) * TILE_PX,
+      anchorWorldY: w.y * TILE_PX,
+    });
   };
+  const npcById = new Map(npcs.map((n) => [n.entityId, n]));
+  const playerById = new Map(players.map((p) => [p.entityId, p]));
+  for (const c of characters) {
+    if (c.entityId === ownEntityId) continue;
+    const at = { x: c.tileX, y: c.tileY, zone: c.zoneId, id: c.entityId.toString() };
+    const npc = npcById.get(c.entityId);
+    if (npc !== undefined) {
+      add({ kind: 'npc', ...at }, npc.npcId, npcActions(npc));
+      continue;
+    }
+    const player = playerById.get(c.entityId);
+    if (player !== undefined) add({ kind: 'player', ...at }, player.name, []);
+  }
+  for (const h of heals) {
+    add({ kind: 'heal', x: h.tileX, y: h.tileY, zone: h.zoneId, id: h.locationId.toString() }, '', [
+      { kind: 'heal', locationId: h.locationId },
+    ]);
+  }
+  return { wire, candidates };
+}
+
+/** The candidates `fn` names for `origin`, in its order. TOTAL: no export, a throw (reported to
+ *  `onError`), a non-array answer or any index that is not one of `input`'s gives none. */
+export function resolveCandidates(
+  fn: CandidatesFn | undefined,
+  origin: InteractOrigin,
+  input: InteractInput,
+  onError?: (err: unknown) => void,
+): readonly InteractCandidate[] {
+  if (fn === undefined) return [];
+  let out: unknown;
+  try {
+    out = fn(origin.x, origin.y, FACING_CODE[origin.facing], origin.zone, input.wire);
+  } catch (err) {
+    onError?.(err);
+    return [];
+  }
+  if (!Array.isArray(out)) return [];
+  const picked: InteractCandidate[] = [];
+  for (const i of out) {
+    const c = Number.isInteger(i) ? input.candidates[i as number] : undefined;
+    if (c === undefined) return [];
+    picked.push(c);
+  }
+  return picked;
+}
+
+/** The world chip: what A does with these candidates. Counts actionable candidates only, so a
+ *  player beside an npc leaves the npc's single action. */
+export type InteractChip =
+  | {
+      readonly kind: 'single';
+      readonly candidate: InteractCandidate;
+      readonly action: InteractAction;
+    }
+  | { readonly kind: 'choose'; readonly anchorWorldX: number; readonly anchorWorldY: number };
+
+export function interactChip(cands: readonly InteractCandidate[]): InteractChip | null {
+  const actionable = cands.filter((c) => c.actions.length > 0);
+  const first = actionable[0];
+  if (first === undefined) return null;
+  if (actionable.length === 1 && first.actions.length === 1) {
+    return { kind: 'single', candidate: first, action: first.actions[0] as InteractAction };
+  }
+  return { kind: 'choose', anchorWorldX: first.anchorWorldX, anchorWorldY: first.anchorWorldY };
 }
