@@ -1,6 +1,6 @@
 // ui/screens/socialScreen.ts — the Social frame as a pure screen over the nav kit (design §5 row 4,
-// CTL8D.1-.3). No DOM, SDK, module state or clock; `tradeView.ts` and `pvpView.ts` paint what
-// `paint` hands them.
+// CTL8D.1-.3, CTL8G.1-.2). No DOM, SDK, module state or clock; `tradeView.ts`, `pvpView.ts` and
+// `leaderboardView.ts` paint what `paint` hands them.
 //
 // Tabs Players | Trades | Challenges | Rankings, switched by LB/RB, each keeping its own cursor.
 // The frame opens on the tab its open path asked for (`ctx.socialTab`: U, P, L, the menu leaves,
@@ -25,7 +25,6 @@
 // A sent command has no in-flight lock here (the views' locks guard their own buttons): the
 // reducers are the authority and refuse a duplicate.
 import { socialPanel } from '../contextStack';
-import type { SocialRankingsPaint } from '../leaderboardView';
 import { list, type NavState, navFocus, navInit, navReconcile, navStep } from '../nav';
 import {
   buildSocialVm,
@@ -308,13 +307,12 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
       cursor === undefined || cursor.kind === 'trade' ? null : cursor.kind,
     );
     if (tab === 'players' || tab === 'rankings') {
-      const paint: SocialRankingsPaint = {
+      view.rankings?.paintSocial({
         tab,
         players: vm.players,
         cursor: state.nav.item,
         walkUp: phase.kind === 'walkUp' ? (playerAt(vm, phase.row)?.name ?? null) : null,
-      };
-      view.rankings?.paintSocial(paint);
+      });
     }
   },
 };

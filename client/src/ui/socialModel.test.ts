@@ -866,6 +866,55 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
     );
     expect(socialPeopleKey(withRows([])), 'empty').not.toBe(socialPeopleKey(withRows(rowsAB)));
 
+    // Nothing is truncated: a rename that differs only after the eighth character, and two full
+    // 64-character identities that differ only in their last character, each change the key.
+    // WRONG IMPL KILLED: a key built from `name.slice(0, 8)` or `key.slice(0, 8)` (the `#hex8`
+    // display length): a long name edited past its eighth character, or two players whose identity
+    // hexes share a long prefix, would read as "no change" and keep stale rows.
+    const renameKey = (name: string): string =>
+      key({
+        players: [
+          base.players[0] as StorePlayer,
+          person(BOB, name, 2n),
+          base.players[2] as StorePlayer,
+        ],
+      });
+    expect(renameKey('Alexander1'), 'Alexander1 -> Alexander2').not.toBe(renameKey('Alexander2'));
+    expect(renameKey('Alexander'), 'a name extended past eight characters').not.toBe(
+      renameKey('Alexander1'),
+    );
+    const LONG_PREFIX = 'ab'.repeat(31);
+    const HEX_A = `${LONG_PREFIX}c0`;
+    const HEX_B = `${LONG_PREFIX}c1`;
+    expect(HEX_A.length, 'fixture: a full 64-character identity').toBe(64);
+    expect(HEX_A.slice(0, 63), 'fixture: they differ only in the last character').toBe(
+      HEX_B.slice(0, 63),
+    );
+    const twinRows = (first: string, second: string): readonly SocialPlayerRow[] => [
+      { key: first, name: 'twin', nearby: false },
+      { key: second, name: 'twin', nearby: false },
+    ];
+    expect(
+      socialPeopleKey(withRows(twinRows(HEX_A, HEX_B))),
+      'two identities that differ only in the last character, swapped',
+    ).not.toBe(socialPeopleKey(withRows(twinRows(HEX_B, HEX_A))));
+    expect(
+      socialPeopleKey(withRows(twinRows(HEX_A, HEX_B))),
+      'a different last character is a different list',
+    ).not.toBe(socialPeopleKey(withRows(twinRows(HEX_A, HEX_A.slice(0, 63) + '2'))));
+    // The same through socialPlayers: two unnamed players share the `#abababab` display name, so
+    // only the full identity (and the nearby flag riding on it) tells which of them walked up.
+    const twinsVm = (nearEntity: bigint): string =>
+      key({
+        players: [base.players[0] as StorePlayer, person(HEX_A, '', 20n), person(HEX_B, '', 21n)],
+        characters: [
+          at(ME_EID, 50, 50),
+          at(nearEntity, 50, 51),
+          at(nearEntity === 20n ? 21n : 20n, 50, 90),
+        ],
+      });
+    expect(twinsVm(20n), 'the first twin walks up').not.toBe(twinsVm(21n));
+
     // Delimiter forgery: a one-row list whose name spells out another list's whole encoding under
     // an assumed `key<in>name<in>nearby` joined by `<out>` format, for each pair of common
     // separators and each spelling of the boolean.
@@ -962,6 +1011,46 @@ describe('socialModel — the Players and Rankings rows (ctl-8g)', () => {
       });
       expect(again.rankings.map((r) => r.identityHex)).toEqual([BOB, DAN, EVE, CAROL, ME]);
     }
+    // A long board: every ranked identity, the LAST included, is a Rankings key, in leaderboard
+    // order. WRONG IMPL KILLED: a layout (or a vm) that caps the tab at the first few rows
+    // (`rows.slice(0, 5)`): the cursor could never reach the sixth ranked player.
+    const LONG = 9;
+    const longProfiles: StoreProfile[] = [];
+    for (let i = 0; i < LONG; i++) {
+      // Hex pairs 10..18, ratings strictly descending with the index: the expected order is the index.
+      longProfiles.push(profile((16 + i).toString(16).repeat(32), `P${i}`, 1500 - i * 10, i, 0));
+    }
+    const longIds = longProfiles.map((p) => p.identity);
+    expect(longIds.length, 'ANTI-VACUITY: a board of at least seven').toBeGreaterThanOrEqual(7);
+    expect(new Set(longIds).size, 'ANTI-VACUITY: distinct identities').toBe(LONG);
+    for (const input of [
+      [...longProfiles],
+      [...longProfiles].reverse(),
+      [...longProfiles.slice(4), ...longProfiles.slice(0, 4)],
+    ]) {
+      const long = buildSocialVm(null, [], [], ME, {
+        players: [],
+        characters: [],
+        profiles: input,
+      });
+      expect(
+        long.rankings.map((r) => r.identityHex),
+        'vm.rankings holds every ranked row, in leaderboard order',
+      ).toEqual(longIds);
+      const keys = itemsOf(socialLayout(long), 'rankings');
+      expect(
+        keys.map((i) => i.key),
+        'the Rankings tab keys every ranked identity, the last included, in leaderboard order',
+      ).toEqual(longIds);
+      expect(
+        keys.every((i) => i.enabled),
+        'every row enabled',
+      ).toBe(true);
+      expect(keys[keys.length - 1]?.key, 'the last ranked identity is reachable').toBe(
+        longIds[LONG - 1],
+      );
+    }
+
     // No profiles: no rows, an empty tab, never a throw.
     const empty = buildSocialVm(null, [], [], ME, NO_PEOPLE);
     expect(empty.rankings).toEqual([]);

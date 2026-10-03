@@ -1,5 +1,6 @@
 // ui/leaderboardView.ts — thin DOM shell for the ranked leaderboard overlay.
-// Pure rendering from LeaderboardViewModel. No logic — all logic is in leaderboardModel.ts.
+// Pure rendering from LeaderboardViewModel: the board's order and rows are leaderboardModel.ts's,
+// the Social tabs' rows and cursor socialModel.ts's and screens/socialScreen.ts's.
 // NOT coverage-excluded (unlike the sibling DOM shells): fully unit-covered via
 // happy-dom tests, so every branch here must stay test-reachable.
 // RL-15: ZERO-arg constructor — no callbacks, no write path (pure subscription view).
@@ -16,17 +17,19 @@
 //
 // ctl-8g: this root also hosts the Social frame's Players and Rankings tabs (CTL8G.1-.2).
 // `paintSocial(p)` is kept and re-applied after every `render(vm)` (main.ts re-renders the board
-// each batch); the hidden-to-visible edge (in `show()`, and in `render()` while hidden) and `hide()`
-// drop it, so with no kept paint the root is exactly the legacy board. Rankings marks the board's
-// `<li>`s by hand with the nav kit's contract (`renderNav` would own the list's children); Players
+// each batch). A hidden root keeps none: a paint while hidden is not kept, and the hidden-to-visible
+// edge (in `show()`, and in `render()` while hidden) and `hide()` drop it, so with no kept paint the
+// root is exactly the legacy board. Rankings marks the board's `<li>`s by hand with the nav kit's
+// contract (`renderNav` would own the list's children; an empty board stays a plain list); Players
 // hides the board and renders `#leaderboard-players` through the kit, with `#leaderboard-walkup`
-// after it. Both are built on the first paint, after the board list. Player names stay out of the
-// resolver here too: the walk-up line is resolved around a sentinel and the name goes in a `<bdi>`.
+// after it, both built by the first Players paint. A list hidden under the focus hands it to the
+// root's anchor first (tradeView's rule). Player names stay out of the resolver here too: the
+// walk-up line is resolved around a sentinel and the name goes in a `<bdi>`.
 
 import { t, tf } from './i18n/resolver';
 import type { LeaderboardViewModel } from './leaderboardModel';
 import { list, tabs } from './nav';
-import { navTabId, renderNav } from './navRender';
+import { navItemId, navTabId, renderNav } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { SocialPlayerRow } from './socialModel';
 
@@ -52,7 +55,7 @@ export class LeaderboardView {
   readonly #overlay: HTMLElement;
   readonly #listEl: HTMLElement;
   #kept: SocialRankingsPaint | null = null;
-  /** `#leaderboard-players` and `#leaderboard-walkup`, built by the first paint. */
+  /** `#leaderboard-players` and `#leaderboard-walkup`, built by the first Players paint. */
   #social: { readonly players: HTMLElement; readonly walkUp: HTMLElement } | null = null;
 
   constructor() {
@@ -109,9 +112,9 @@ export class LeaderboardView {
     this.#apply();
   }
 
-  /** The Social screen's paint: kept, so the next `render` re-applies it. */
+  /** The Social screen's paint: kept while the root shows, so the next `render` re-applies it. */
   paintSocial(p: SocialRankingsPaint): void {
-    this.#kept = p;
+    this.#kept = this.visible ? p : null;
     this.#apply();
   }
 
@@ -125,16 +128,21 @@ export class LeaderboardView {
     const p = this.#kept;
     const rows = [...this.#listEl.children] as HTMLElement[];
     const ranked = rows.filter((li) => li.dataset.identity !== undefined);
-    const onRankings = p?.tab === 'rankings';
+    // A part hidden under the focus would strand it on <body>, outside the dialog's focus trap.
+    const focused = document.activeElement;
+    const hiding = p?.tab === 'players' ? this.#listEl : this.#social?.players;
+    if (hiding?.contains(focused) === true) {
+      this.#overlay.querySelector<HTMLElement>('[tabindex="-1"]')?.focus();
+    }
     this.#listEl.hidden = p?.tab === 'players';
-    if (onRankings) {
+    if (p?.tab === 'rankings' && ranked.length > 0) {
       const cursor = ranked.find((li) => li.dataset.identity === p.cursor) ?? ranked[0];
       this.#listEl.setAttribute('role', 'listbox');
       this.#listEl.setAttribute('tabindex', '0');
       this.#listEl.setAttribute('aria-labelledby', navTabId(SOCIAL_FRAME_ID, 'rankings'));
       for (const li of ranked) {
         const selected = li === cursor;
-        li.id = `${SOCIAL_FRAME_ID}-rankings-${li.dataset.identity}`;
+        li.id = navItemId(SOCIAL_FRAME_ID, 'rankings', li.dataset.identity ?? '');
         li.className = selected ? 'mr-nav-item is-active' : 'mr-nav-item';
         li.setAttribute('role', 'option');
         li.setAttribute('aria-selected', selected ? 'true' : 'false');
@@ -173,6 +181,7 @@ export class LeaderboardView {
     } else {
       // The kit drops the empty line: it keeps only its own items.
       const names = new Map(p.players.map((row) => [row.key, row]));
+      const cursor = names.has(p.cursor ?? '') ? p.cursor : (p.players[0]?.key ?? null);
       renderNav(
         players,
         tabs([
@@ -181,7 +190,7 @@ export class LeaderboardView {
             layout: list(p.players.map((row) => ({ key: row.key, enabled: true }))),
           },
         ]),
-        { tab: 'players', item: p.cursor ?? p.players[0]?.key ?? null, perTab: {} },
+        { tab: 'players', item: cursor, perTab: {} },
         {
           frame: SOCIAL_FRAME_ID,
           fill: (el, item) => {

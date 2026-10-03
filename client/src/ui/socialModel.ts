@@ -59,7 +59,7 @@ export interface SocialPlayerRow {
 }
 
 /** The rows the Players and Rankings tabs read, straight from the store. */
-export interface SocialPeople {
+interface SocialPeople {
   readonly players: readonly StorePlayer[];
   readonly characters: Iterable<StoreCharacter>;
   readonly profiles: readonly StoreProfile[];
