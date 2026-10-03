@@ -315,6 +315,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // in SAMPLE_PARAMS = 213 keys.
   // ctl-8a (named intentional change): +6 plain keys here (the shop tabs and description mark,
   // the shared Yes / No, the heal reason), +5 parameterised ones in SAMPLE_PARAMS = 224 keys.
+  // ctl-8b (named intentional change): -1 plain key (`box.card.rename`, deleted with the per-card
+  // Rename button and window.prompt) and +7 plain keys (`box.tab.{party,storage}`,
+  // `box.sheet.{summary,nickname,move}`, `box.feedback.{movedToParty,movedToBox}`) = 230 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -365,7 +368,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'raising.monsters.empty': 'No monsters.', // raisingView.ts
   'raising.inventory.empty': 'No items.', // raisingView.ts
   'raising.card.care': 'Care', // raisingView.ts
-  // Box.* (11 plain)
+  // Box.* (17 plain: 11, -box.card.rename, +7 ctl-8b keys)
   'box.title': 'Party & Box', // boxView.ts
   'box.heal': 'Heal Party', // boxView.ts
   'box.hint':
@@ -374,11 +377,20 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'box.section.party': 'Party', // boxView.ts
   'box.section.box': 'Box', // boxView.ts
   'box.box.empty': 'No monsters in box.', // boxView.ts
-  'box.card.rename': 'Rename', // boxView.ts
   'box.card.evolveBadge': '★ Ready to evolve — choose a path', // boxView.ts
   'box.card.toBox': 'To Box', // boxView.ts
   'box.card.toParty': 'To Party', // boxView.ts
-  'box.rename.prompt': 'New nickname:', // boxView.ts (hoisted, prompt() argument)
+  'box.rename.prompt': 'New nickname:', // boxView.ts (ctl-8b: the typing row's label; was prompt())
+  // ctl-8b: the Monsters frame's tab labels, action-sheet rows and Move feedback lines. The check
+  // mark of a Move line is the CSS ::before of `.mr-frame-feedback[data-feedback="ok"]`, so the
+  // catalog text carries none.
+  'box.tab.party': 'Party', // boxView.ts
+  'box.tab.storage': 'Storage', // boxView.ts
+  'box.sheet.summary': 'Summary', // boxView.ts
+  'box.sheet.nickname': 'Nickname', // boxView.ts
+  'box.sheet.move': 'Move', // boxView.ts
+  'box.feedback.movedToParty': 'Moved to party', // boxView.ts
+  'box.feedback.movedToBox': 'Moved to storage', // boxView.ts
   // Trade.* (8 plain)
   'trade.status.none': 'No active trade', // tradeView.ts
   'trade.side.offer': 'You offer', // tradeView.ts (hoisted, #renderSide heading arg)
@@ -883,7 +895,9 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 224-key roster (ctl-8a: +`shop.tab.buy` +`shop.tab.sell` +`shop.description.none`
+/** The full 230-key roster (ctl-8b: -`box.card.rename` +`box.tab.{party,storage}`
+ *  +`box.sheet.{summary,nickname,move}` +`box.feedback.{movedToParty,movedToBox}` over the 224-key
+ *  roster below; ctl-8a:+`shop.tab.buy` +`shop.tab.sell` +`shop.description.none`
  *  +`prompt.yes` +`prompt.no` +`heal.prompt.unavailable` +`shop.qty.{buy,sell}`
  *  +`shop.confirm.{buy,sell}` +`heal.prompt.question` over the 213-key roster below; ctl-7d: -`shop.feedback.purchased` -`shop.feedback.sold`
  *  +`shop.feedback.{buy,sell}.{item,count}` over the 211-key roster below; ctl-7a: -`chrome.helpHint`
@@ -945,7 +959,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8a 224-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8b 230-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1034,10 +1048,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 224 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 230 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (224 keys since ctl-8a).
+    // (a) roster is exactly the EXPECTED_KEYS roster (230 keys since ctl-8b).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).

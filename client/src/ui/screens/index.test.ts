@@ -15,12 +15,18 @@
  * keeps what it returns and paints a frame whose state changed.
  * ctl-8a (CTL8A.4): the shipped table's dialogue, shop and heal frames hold their own
  * nav-capable screens (`dialogueScreen`, `shopScreen`, `healScreen`); the other 14 stay legacy.
+ * ctl-8b (CTL8B.4): the box frame (the Monsters frame) holds `monstersScreen`, nav-capable too; the
+ * other 13 stay legacy. Named intentional changes in this file: the CONVERTED roster (so
+ * CTL6B-1-ADAPTERS-TOTAL, CTL7C-1-NAV-CAPABLE and CTL7D-6-OBSERVE-SKIPS read 13 legacy ids), the
+ * CTL7D-6-OBSERVE-SKIPS and CTL8A-4-ADAPTERS-SWAPPED probes that used `boxView` as "a legacy
+ * frame" (now `questLogView`), and the new CTL8B-4-* cases at the end.
  *
  * Adapters are injected as recording stubs, so every routing claim is read off which stub was
  * called, with what, and what came back. The base cases inject adapters that THROW, so "the base
  * never consults an adapter" is a fact the run proves rather than an assumption.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { party_slot_none } from '../../../../client-wasm/pkg/client_wasm.js';
 import { DEFAULT_BINDINGS } from '../../input/bindings';
 import { VBUTTONS, type VButton } from '../../input/buttons';
 import { KeyboardSource } from '../../input/keyboardSource';
@@ -39,6 +45,7 @@ import { DIALOGUE_REVEAL_MS, dialogueScreen } from './dialogueScreen';
 import { healScreen } from './healScreen';
 import { baseButton, SCREEN_ADAPTERS, ScreenHost } from './index';
 import { legacyAdapter } from './legacyAdapter';
+import { monstersScreen } from './monstersScreen';
 import { shopScreen } from './shopScreen';
 import type { ScreenAdapter, ScreenContext, ScreenResult } from './types';
 
@@ -143,17 +150,19 @@ const POP_TO_BASE: ScreenResult = { kind: 'popToBase' };
 const OPEN_MENU: ScreenResult = { kind: 'openMenu' };
 const TOGGLE_HELP: ScreenResult = { kind: 'toggleHelp' };
 
-/** The frames ctl-8a converts, each to its own nav-capable screen adapter (CTL8A.4). */
+/** The frames the ctl-8 slices have converted, each to its own nav-capable screen adapter
+ *  (ctl-8a: dialogue, shop, heal; ctl-8b: the box frame, which is the Monsters frame). */
 const CONVERTED: ReadonlyMap<FrameId, unknown> = new Map<FrameId, unknown>([
   ['dialogueView', dialogueScreen],
   ['shopView', shopScreen],
   ['healView', healScreen],
+  ['boxView', monstersScreen],
 ]);
 /** Every overlay id still on the legacy adapter. */
 const LEGACY_IDS: readonly FrameId[] = OVERLAY_IDS.filter((id) => !CONVERTED.has(id));
 
 describe('SCREEN_ADAPTERS (ctl-6b)', () => {
-  it('CTL6B-1-ADAPTERS-TOTAL: every overlay id has an adapter, the dialogue, shop and heal frames hold their own ctl-8a screens and every other one the legacy adapter, and the default table answers a legacy screen', () => {
+  it('CTL6B-1-ADAPTERS-TOTAL: every overlay id has an adapter, the dialogue, shop and heal frames hold their own ctl-8a screens, the box frame its ctl-8b Monsters screen and every other one the legacy adapter, and the default table answers a legacy screen', () => {
     // WRONG IMPL KILLED: a table that omits an overlay (that frame would have no way to answer
     // B or Start), carries a stray id, holds a bespoke adapter before its ctl-8 slice lands, and a
     // host over SCREEN_ADAPTERS that does not answer a legacy screen as the legacy adapter does.
@@ -161,8 +170,11 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
     // dialogueScreen, shopScreen and healScreen (by identity). Was: every id `toBe(legacyAdapter)`,
     // and the host loop below drove all 17 ids. The other 14 are still the legacy adapter and the
     // loop still drives each of them exactly as before.
+    // INTENTIONAL CHANGE (ctl-8b, CTL8B.4): boxView now holds monstersScreen (by identity), so the
+    // legacy roster is 13 ids. Was: 14.
     expect([...Object.keys(SCREEN_ADAPTERS)].sort()).toEqual([...OVERLAY_IDS].sort());
-    expect(LEGACY_IDS, 'ANTI-VACUITY: 14 legacy ids').toHaveLength(14);
+    expect(LEGACY_IDS, 'ANTI-VACUITY: 13 legacy ids').toHaveLength(13);
+    expect(LEGACY_IDS.includes('boxView'), 'boxView is no longer legacy').toBe(false);
     expect(LEGACY_IDS.length + CONVERTED.size, 'ANTI-VACUITY: every id is one or the other').toBe(
       OVERLAY_IDS.length,
     );
@@ -584,6 +596,8 @@ describe('ScreenHost (ctl-7c)', () => {
     // INTENTIONAL CHANGE (ctl-8a, CTL8A.4): the shipped table's dialogue, shop and heal frames are
     // nav-capable. Was: every id `false` ("the shipped table is all legacy"). Every other frame is
     // still legacy and takes no D-pad until its own ctl-8 screen lands.
+    // INTENTIONAL CHANGE (ctl-8b, CTL8B.4): boxView joins them (CONVERTED holds it), so it takes the
+    // D-pad too; the 13 legacy ids still do not.
     const shipped = hostOf(SCREEN_ADAPTERS);
     for (const id of OVERLAY_IDS) {
       const navCapable = CONVERTED.has(id);
@@ -1922,7 +1936,10 @@ describe('ScreenHost.observe (ctl-7d)', () => {
         expect(spy, 'the legacy adapter ran no code on observe').not.toHaveBeenCalled();
       }
       // ANTI-VACUITY: the spies do watch the path a legacy frame's code runs on.
-      shipped.button(stackOf(WORLD, screen('boxView')), nav('B'), clock.ctx);
+      // INTENTIONAL CHANGE (ctl-8b): the probe frame is questLogView (still legacy); boxView holds
+      // monstersScreen now and its button would build a Monsters view model from this storeless
+      // context instead of reaching the legacy adapter. Was: boxView.
+      shipped.button(stackOf(WORLD, screen('questLogView')), nav('B'), clock.ctx);
       for (const spy of spies) {
         expect(spy, 'a button does reach the legacy adapter').toHaveBeenCalledTimes(1);
       }
@@ -2041,8 +2058,10 @@ describe('the converted frames over the shipped table (ctl-8a, CTL8A.4)', () => 
     for (const id of ['dialogueView', 'shopView', 'healView'] as const) {
       expect(host.takesNav(stackOf(WORLD, screen(id))), `${id} over the world`).toBe(true);
       expect(host.takesNav(stackOf(battle('7'), screen(id))), `${id} over a battle`).toBe(true);
+      // INTENTIONAL CHANGE (ctl-8b): the covering legacy frame is questLogView; boxView is
+      // nav-capable now, so a box frame over a converted one WOULD take the D-pad. Was: boxView.
       expect(
-        host.takesNav(stackOf(WORLD, screen(id), screen('boxView'))),
+        host.takesNav(stackOf(WORLD, screen(id), screen('questLogView'))),
         `${id} under a legacy frame`,
       ).toBe(false);
     }
@@ -2126,5 +2145,185 @@ describe('the converted frames over the shipped table (ctl-8a, CTL8A.4)', () => 
     });
     expect(views.shopView.painted.at(-1)).toMatchObject({ prompt: null });
     expect(counts(), 'five shop steps, five shop paints').toEqual([4, 5, 3]);
+  });
+});
+
+// ==========================================================================================
+// ctl-8b: the Monsters frame over the SHIPPED table (CTL8B.4)
+// ==========================================================================================
+//
+// KeyB and the menu's Monsters leaf both open the box frame through `boxView.show()`; swapping its
+// `SCREEN_ADAPTERS` entry gives it the D-pad, A, B, LB / RB (PageUp / PageDown) and Start / Select.
+// A ScreenHost over the shipped table, a fake store holding one party monster and two stored ones,
+// and a recording view: the frame opens on Storage, the keys reach `monstersScreen`, Move yields its
+// command, and every step paints the lent view once.
+
+const MONSTERS_ME = 'ef'.repeat(32);
+
+function monstersFlowCtx(): ScreenContext {
+  const row = (monsterId: bigint, partySlot: number) => ({
+    monsterId,
+    ownerIdentity: MONSTERS_ME,
+    speciesId: 1,
+    nickname: '',
+    level: 5,
+    xp: 0,
+    currentHp: 30,
+    statHp: 40,
+    statAttack: 10,
+    statDefense: 10,
+    statSpeed: 10,
+    statSpAttack: 10,
+    statSpDefense: 10,
+    partySlot,
+    tier: 0,
+    essence: {},
+    trustTier: 'Neutral',
+    qualityTimeTier: 0,
+    nutritionPct: 0,
+  });
+  const monsters = [row(11n, 0), row(21n, party_slot_none()), row(22n, party_slot_none())];
+  const store = {
+    ownMonsters: (identity: string) => (identity === MONSTERS_ME ? monsters : []),
+    speciesMap: () =>
+      new Map([
+        [
+          1,
+          {
+            id: 1,
+            name: 'Sproutle',
+            baseHp: 45,
+            baseAttack: 49,
+            baseDefense: 49,
+            baseSpeed: 45,
+            baseSpAttack: 65,
+            baseSpDefense: 65,
+            affinity: 'Plant',
+            learnableSkillIds: [],
+          },
+        ],
+      ]),
+    evolutionPaths: () => [].values(),
+  };
+  return {
+    store,
+    identity: MONSTERS_ME,
+    bindings: DEFAULT_BINDINGS,
+    now: () => 0,
+    shopId: null,
+    healLocationId: null,
+    reduceMotion: false,
+  } as unknown as ScreenContext;
+}
+
+describe('the Monsters frame over the shipped table (ctl-8b, CTL8B.4)', () => {
+  it('CTL8B-4-ADAPTER-SWAPPED: the shipped table holds monstersScreen for the box frame, nav-capable, so the box frame takes the D-pad on top of the world or a battle, as a screen or a prompt; a legacy frame above it, or a text entry over it, takes the D-pad back', () => {
+    // WRONG IMPL KILLED: a screen written but never wired into SCREEN_ADAPTERS (KeyB would still
+    // open the legacy box: no tabs, no sheet, and Rename through window.prompt); a swap into the
+    // wrong slot (the Monsters screen on the raising frame); an adapter without its nav mark (the
+    // router would keep the D-pad for walking under the open box); and a box that keeps the D-pad
+    // under a legacy child or while its typing row owns the keys.
+    expect(SCREEN_ADAPTERS.boxView, 'the box frame').toBe(monstersScreen);
+    expect(monstersScreen.nav, 'nav-capable').toBe(true);
+    for (const id of OVERLAY_IDS) {
+      if (id === 'boxView') continue;
+      expect(SCREEN_ADAPTERS[id], `${id} is not the Monsters screen`).not.toBe(monstersScreen);
+    }
+    const host = hostOf(SCREEN_ADAPTERS);
+    expect(host.takesNav(stackOf(WORLD, screen('boxView'))), 'over the world').toBe(true);
+    expect(host.takesNav(stackOf(battle('7'), screen('boxView'))), 'over a battle').toBe(true);
+    expect(host.takesNav(stackOf(WORLD, prompt('boxView'))), 'as a prompt').toBe(true);
+    expect(
+      host.takesNav(stackOf(WORLD, screen('boxView'), screen('questLogView'))),
+      'under a legacy frame',
+    ).toBe(false);
+    expect(
+      host.takesNav(stackOf(WORLD, screen('boxView'), textEntry('boxView'))),
+      'a text entry over it',
+    ).toBe(false);
+  });
+
+  it('CTL8B-4-HOST-FLOW: over the shipped table the box frame opens on Storage; PageDown (RB) and PageUp (LB) switch the tab, Right moves the cursor, A opens the sheet, Down twice and A on Move yields setPartySlot -1 for the stored monster; every step paints the lent view once, a batch that changed nothing paints nothing, and a reopened frame starts over on Storage', () => {
+    // WRONG IMPL KILLED: a host still answering the box through the legacy adapter (A would be
+    // `unhandled`, PageDown would scroll the page and nothing would be sent); an adapter that
+    // cannot build its view model from the real ScreenContext (identity, store reads); a tab key
+    // that never reaches the frame; a Move that sends the wrong monster or the party sentinel for
+    // a stored one; a paint missed, doubled, or sent to another frame's view; an observe that
+    // repaints an unchanged store; and a frame that remembers the last visit's cursor (a reopen
+    // must start on Storage's first monster).
+    const ctx = monstersFlowCtx();
+    const view = recordingView();
+    const lent = (id: FrameId): unknown => (id === 'boxView' ? view : undefined);
+    const host = new ScreenHost(SCREEN_ADAPTERS, lent, unexpectedPaintError);
+    const stack = stackOf(WORLD, screen('boxView'));
+    const last = (): Record<string, unknown> =>
+      view.painted[view.painted.length - 1] as Record<string, unknown>;
+
+    // The routed keyboard: PageDown is RB, PageUp is LB (until ctl-11a); the D-pad is nav()'s.
+    const source = new KeyboardSource(routedBindings(DEFAULT_BINDINGS));
+    const key = (code: string): NavInput => {
+      const edges = source.keydown({ code });
+      source.keyup({ code });
+      expect(edges, `${code} is one routed edge`).toHaveLength(1);
+      return nav((edges[0] as { button: VButton }).button);
+    };
+
+    host.opened(screen('boxView'));
+    expect(host.takesNav(stack)).toBe(true);
+    host.observe(stack, ctx);
+    expect(
+      view.painted,
+      'the open`s observe paints nothing: the view draws its own opening',
+    ).toEqual([]);
+
+    expect(host.button(stack, key('PageDown'), ctx), 'RB is swallowed').toBe('consumed');
+    expect(last(), 'RB: the Party tab, its first monster').toMatchObject({
+      tab: 'party',
+      activeKey: '11',
+    });
+    expect(host.button(stack, key('PageUp'), ctx), 'LB is swallowed').toBe('consumed');
+    expect(last(), 'LB: back on Storage, its first monster').toMatchObject({
+      tab: 'storage',
+      activeKey: '21',
+    });
+    expect(host.button(stack, nav('Right'), ctx)).toBe('consumed');
+    expect(last()).toMatchObject({ tab: 'storage', activeKey: '22' });
+    expect(host.button(stack, nav('A'), ctx)).toBe('consumed');
+    expect(last(), 'the sheet for the cursor monster').toMatchObject({
+      tab: 'storage',
+      activeKey: '22',
+      sheet: { action: 'summary', card: { monsterId: 22n } },
+    });
+    expect(host.button(stack, nav('Down'), ctx)).toBe('consumed');
+    expect(host.button(stack, nav('Down'), ctx)).toBe('consumed');
+    expect(last()).toMatchObject({ sheet: { action: 'move', card: { monsterId: 22n } } });
+    expect(host.button(stack, nav('A'), ctx), 'Move on a stored monster: next free slot').toEqual({
+      kind: 'setPartySlot',
+      monsterId: 22n,
+      slot: -1,
+    });
+    expect(last(), 'back on the list, on the same monster').toMatchObject({
+      tab: 'storage',
+      activeKey: '22',
+      sheet: null,
+    });
+    expect(view.painted.length, 'seven steps, seven paints').toBe(7);
+
+    // A batch that changed nothing paints nothing.
+    host.observe(stack, ctx);
+    expect(view.painted.length).toBe(7);
+
+    // B at the list pops the frame.
+    expect(host.button(stack, nav('B'), ctx)).toEqual({ kind: 'pop' });
+    expect(view.painted.length, 'B pops: the step still paints once').toBe(8);
+
+    // Reopened: the cursor of the last visit is forgotten, the frame starts on Storage's first monster.
+    host.opened(screen('boxView'));
+    expect(host.button(stack, nav('A'), ctx)).toBe('consumed');
+    expect(last(), 'the sheet of the FIRST stored monster').toMatchObject({
+      tab: 'storage',
+      activeKey: '21',
+      sheet: { card: { monsterId: 21n } },
+    });
   });
 });

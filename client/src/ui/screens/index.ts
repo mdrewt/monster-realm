@@ -9,6 +9,7 @@ import type { NavInput } from '../nav';
 import { dialogueScreen } from './dialogueScreen';
 import { healScreen } from './healScreen';
 import { legacyAdapter } from './legacyAdapter';
+import { monstersScreen } from './monstersScreen';
 import { shopScreen } from './shopScreen';
 import type { ScreenAdapter, ScreenContext, ScreenResult } from './types';
 
@@ -16,10 +17,10 @@ export type ScreenAdapters = Readonly<Record<FrameId, ScreenAdapter<unknown, unk
 
 /** Total over every frame id, so a new overlay without an adapter fails client-typecheck. Every
  *  entry is the legacy adapter until its ctl-8 screen slice swaps it (ctl-8a: the dialogue, heal
- *  and shop frames). */
+ *  and shop frames; ctl-8b: the box frame, as Monsters). */
 export const SCREEN_ADAPTERS: ScreenAdapters = {
   battleView: legacyAdapter,
-  boxView: legacyAdapter,
+  boxView: monstersScreen,
   raisingView: legacyAdapter,
   evolutionView: legacyAdapter,
   dialogueView: dialogueScreen,
