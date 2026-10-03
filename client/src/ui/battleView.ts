@@ -76,6 +76,7 @@ const SUBLIST: Readonly<Record<Exclude<BattleCommand, 'run'>, CursorList>> = {
 /** The visible cue on the cursor row: focus alone is lost to the menu and to <body>. */
 const CURSOR_OUTLINE = '2px solid #ffd700';
 let runReasonIds = 0;
+let promptIds = 0;
 
 /**
  * The five PvE callbacks may return a promise: the view's per-battle in-flight
@@ -93,11 +94,11 @@ export interface BattleViewCallbacks {
   /** Called when the player selects a team member to swap to (PvE). */
   readonly onSwap: (battleId: bigint, teamIndex: number) => void | Promise<void>;
   /**
-   * Called when the player clicks Recruit (wild battles only). `baitItemId` is
-   * the selected bait's id, or `undefined` for a bare attempt.
+   * Called on Yes in the Recruit confirm (wild battles only). `baitItemId` is
+   * the picked bait's id, or `undefined` for a bare attempt (No bait).
    */
   readonly onRecruit: (battleId: bigint, baitItemId: number | undefined) => void | Promise<void>;
-  /** Called when the player selects a cure item and clicks Use Item. */
+  /** Called when the player picks a cure item and presses its target row (the active monster). */
   readonly onUseItem: (battleId: bigint, itemId: number) => void | Promise<void>;
   /** Called when the player submits a skill attack in a PvP battle. */
   readonly onPvpAttack: (battleId: bigint, skillId: number) => void;
@@ -136,6 +137,8 @@ export class BattleView implements BattleOpsView {
    *  wherever it now is. */
   #baitRows = new Map<number | undefined, HTMLButtonElement>();
   #cureRows = new Map<number, HTMLButtonElement>();
+  /** The id of this view's Recruit question (the confirm's accessible name). */
+  readonly #promptId = `battle-recruit-prompt-${++promptIds}`;
   #visible = false;
   // The PvE in-flight lock. ONE lock for the whole battle, not per action: attack,
   // flee, swap, recruit and use-item all spend the same turn, so a second click on ANY of
@@ -225,12 +228,10 @@ export class BattleView implements BattleOpsView {
     // hue-free the criterion is met, and the backgrounds are then decoration layered over a
     // channel that already carries the information. Argued dismissal, not an oversight.
     // Dismissed for 1.4.1, and ONLY for 1.4.1: the #844 border on the Flee button and its
-    // siblings on the Recruit / Use Item / Swap / Submit buttons and on the two bait/cure
-    // <select>s. On the buttons the accessible name IS the information, so hue encodes
-    // nothing and they keep their 1px solid rule. The two <select>s have no accessible name
-    // at all today, and NONE of these borders has been measured against 1.4.11 — the floor
-    // this slice just invoked to move #844. Both gaps are real, fixing either is outside this
-    // slice's touches:, and neither is claimed closed here.
+    // siblings on the Swap / Submit buttons and the bait, cure, Yes / No and target rows (ctl-8j).
+    // On every one the accessible name IS the information, so hue encodes nothing and they
+    // keep their 1px solid rule. NONE of these borders has been measured against 1.4.11 — the
+    // floor this slice just invoked to move #844; that gap is real and not claimed closed here.
     // DEFERRED, not done (ledger gate X6): in PvP refresh() passes the rival's BARE player
     // name as the opponent label, so the card's ROLE reaches assistive technology only as a
     // player name. The design's clause that every member of this border family "carr[ies] text
@@ -399,7 +400,8 @@ export class BattleView implements BattleOpsView {
     if (!this.#visible) this.show();
     // Read before the rebuild detaches a focused row: a reset takes focus only from the page or
     // from inside this view (never from the menu over it), a same-turn render only re-focuses the
-    // cursor row when it had focus.
+    // cursor row when it had focus. A row focused by Tab or the mouse is the cursor (as in
+    // applyBattleOp), so the rebuild hands focus to its replacement.
     // The world canvas counts as the page: a battle that starts while the player walks takes it.
     const active = document.activeElement;
     const focusHere =
@@ -407,10 +409,17 @@ export class BattleView implements BattleOpsView {
       active === document.body ||
       active instanceof HTMLCanvasElement ||
       this.#root.contains(active);
-    const onCursor =
-      active instanceof HTMLElement &&
-      this.#root.contains(active) &&
-      active.getAttribute('aria-current') === 'true';
+    const focusedList =
+      active instanceof HTMLElement && this.#root.contains(active)
+        ? (active.getAttribute(LIST_ATTR) as CursorList | null)
+        : null;
+    if (focusedList !== null) {
+      this.#cursor = {
+        list: focusedList,
+        index: this.#rows(focusedList).indexOf(active as HTMLElement),
+      };
+    }
+    const onCursor = focusedList !== null;
     const newBattle = this.#turnKey?.battleId !== vm.battleId;
     if (newBattle) this.#lastSkill.clear();
     const newTurn = newBattle || this.#turnKey?.turnNumber !== vm.turnNumber;
@@ -441,7 +450,7 @@ export class BattleView implements BattleOpsView {
   }
 
   /** One cursor op from the battle screen (CTL8I.1-3). With focus off the cursor rows (the
-   *  heading, the page, Flee, a select) it only seats the kept cursor: an A must never press a row
+   *  heading, the page, Flee, a confirm's prompt) it only seats the kept cursor: an A must never press a row
    *  the player is not on. On a row the cursor first follows focus (Tab and the mouse move it too). */
   applyBattleOp(op: BattleOp): void {
     if (!this.#visible || this.#vm?.outcome !== 'Ongoing') return;
@@ -593,6 +602,9 @@ export class BattleView implements BattleOpsView {
     if (this.#pending?.battleId === battleId) return;
     const lock = { battleId };
     this.#pending = lock;
+    // Any action spends this turn, so an open Yes / target must not outlive it (#setPick re-renders
+    // the actions row under the lock just taken).
+    if (this.#pick !== null) this.#setPick(null);
     this.#setActionButtonsDisabled(true);
     void new Promise<void>((resolve) => resolve(run()))
       .finally(() => {
@@ -619,7 +631,7 @@ export class BattleView implements BattleOpsView {
   }
 
   /** The skills grid and the actions row ARE the live-button registry (no per-button map).
-   *  In a PvP battle this also covers Flee/Use Item's siblings — the PvP Submit buttons are
+   *  In a PvP battle this also covers the swap rows — the PvP Submit buttons are
    *  never rendered while `vm.pvpPendingSubmit` (RT-PVP-DS-01), so the two locks never overlap. */
   #setActionButtonsDisabled(disabled: boolean): void {
     for (const el of [this.#skillsEl, this.#actionsEl]) {
@@ -834,12 +846,15 @@ export class BattleView implements BattleOpsView {
   }
 
   #seatOnPickedRow(pick: BattlePick | null): void {
-    const [list, row]: [CursorList, HTMLButtonElement | undefined] =
-      pick?.kind === 'cureTarget'
-        ? ['bag', this.#cureRows.get(pick.itemId)]
-        : ['recruit', pick === null ? undefined : this.#baitRows.get(pick.baitItemId)];
+    this.#cursor = { list: 'commands', index: 0 };
+    if (pick === null) return;
+    const list: CursorList = pick.kind === 'cureTarget' ? 'bag' : 'recruit';
+    const row =
+      pick.kind === 'cureTarget'
+        ? this.#cureRows.get(pick.itemId)
+        : this.#baitRows.get(pick.baitItemId);
     const index = row === undefined ? -1 : this.#rows(list).indexOf(row);
-    this.#cursor = index < 0 ? { list: 'commands', index: 0 } : { list, index };
+    if (index >= 0) this.#cursor = { list, index };
   }
 
   /** Yes / the target was pressed: spend the pick (read now, never from the pressed node) under the
@@ -848,6 +863,8 @@ export class BattleView implements BattleOpsView {
     const vm = this.#vm;
     const pick = vm === null ? null : resolveBattlePick(vm, this.#pick);
     if (vm === null || pick === null || pick.kind !== kind) return;
+    // A press the lock refuses keeps the pick: spending it on a no-op would lose the choice.
+    if (this.#pending?.battleId === vm.battleId) return;
     this.#setPick(null);
     this.#seatOnPickedRow(pick);
     this.#paintCursor(true);
@@ -915,13 +932,20 @@ export class BattleView implements BattleOpsView {
       this.#baitRows.set(bait.itemId, row);
     }
     const pick = this.#pick;
-    if (pick?.kind !== 'recruitConfirm') return;
-    // The confirm (design §5: Recruit is harmless, so Yes is the default).
+    if (pick?.kind === 'recruitConfirm') this.#renderRecruitConfirm(vm, pick.baitItemId);
+  }
+
+  /** The Recruit question (design §5: Recruit is harmless, so Yes is the default), a group named
+   *  by its question so a screen reader announces it with Yes. */
+  #renderRecruitConfirm(vm: BattleViewModel, baitItemId: number | undefined): void {
     const confirm = document.createElement('div');
     confirm.setAttribute('data-testid', 'recruit-confirm');
+    confirm.setAttribute('role', 'group');
+    confirm.setAttribute('aria-labelledby', this.#promptId);
     confirm.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
     const prompt = document.createElement('div');
-    const bait = vm.baitOptions.find((b) => b.itemId === pick.baitItemId);
+    prompt.id = this.#promptId;
+    const bait = vm.baitOptions.find((b) => b.itemId === baitItemId);
     prompt.textContent =
       bait === undefined
         ? t('battle.recruit.confirmNoBait')
@@ -958,8 +982,11 @@ export class BattleView implements BattleOpsView {
       row.setAttribute('data-cure-status', item.cureStatus);
       this.#cureRows.set(item.itemId, row);
     }
-    if (this.#pick?.kind !== 'cureTarget') return;
-    // The target: use_battle_item cures the ACTIVE monster, so it is the one row.
+    if (this.#pick?.kind === 'cureTarget') this.#renderCureTarget(vm);
+  }
+
+  /** The Bag target: use_battle_item cures the ACTIVE monster, so it is the one row. */
+  #renderCureTarget(vm: BattleViewModel): void {
     const target = document.createElement('div');
     target.setAttribute('data-testid', 'cure-target');
     target.style.cssText = 'display:flex;flex-direction:column;gap:4px;';

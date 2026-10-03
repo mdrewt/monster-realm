@@ -713,10 +713,7 @@ export type BattlePick =
 /** The pick while `vm` still offers exactly it (this battle and turn, an ongoing PvE battle, the
  *  bait or cure item still listed; No bait while the battle can recruit), else null: a pick is
  *  dropped, never moved to another item. */
-export function resolveBattlePick(
-  vm: BattleViewModel,
-  pick: BattlePick | null,
-): BattlePick | null {
+export function resolveBattlePick(vm: BattleViewModel, pick: BattlePick | null): BattlePick | null {
   if (pick === null || pick.battleId !== vm.battleId || pick.turnNumber !== vm.turnNumber) {
     return null;
   }

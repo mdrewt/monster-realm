@@ -4813,16 +4813,43 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
 
       cc.skills[0]!.click(); // takes the lock
       expect(cb.onAttack).toHaveBeenCalledTimes(1);
+      // The skill is the action taken: it closes the open step at once (the held node is detached).
       expect(
-        endpoint!.disabled,
-        `20r-a BV-2: an open ${step.label} must be DISABLED once a skill holds the turn`,
-      ).toBe(true);
+        c8jConfirm(mounted.parent) ?? c8jTarget(mounted.parent),
+        `20r-a BV-2: an open ${step.label} is closed once a skill holds the turn`,
+      ).toBeNull();
       endpoint!.click();
-      endpoint!.disabled = false; // HOSTILE re-enable: only the shared pending key can swallow this
+      endpoint!.disabled = false; // HOSTILE re-enable: nothing may dispatch from the held node
       endpoint!.click();
+      const calls = (): number[] =>
+        [cb.onRecruit, cb.onUseItem].map((spy) => vi.mocked(spy).mock.calls.length);
       expect(
-        [cb.onRecruit, cb.onUseItem].map((spy) => vi.mocked(spy).mock.calls.length),
-        `20r-a BV-2: an open ${step.label} must not dispatch while the skill call is pending`,
+        calls(),
+        `20r-a BV-2: the held ${step.label} must not dispatch while the skill call is pending`,
+      ).toEqual([0, 0]);
+
+      // Re-open the step by a hand-enabled row press (the rows are locked), then press its
+      // endpoint hand-enabled too: only the shared pending key can still refuse the dispatch.
+      const row = mounted.parent.querySelector<HTMLButtonElement>(
+        step.endpoint === 'recruit-action'
+          ? '[data-testid="bait-option-none"]'
+          : '[data-testid="cure-item-selector"] [data-battle-list="bag"]',
+      );
+      expect(row, `20r-a BV-2 precondition: the ${step.label} row exists`).not.toBeNull();
+      row!.disabled = false;
+      row!.click();
+      const reopened = mounted.parent.querySelector<HTMLButtonElement>(
+        `[data-testid="${step.endpoint}"]`,
+      );
+      expect(
+        reopened,
+        `20r-a BV-2 precondition: the row press re-opened the ${step.label}`,
+      ).not.toBeNull();
+      reopened!.disabled = false;
+      reopened!.click();
+      expect(
+        calls(),
+        `20r-a BV-2: a re-opened ${step.label} must not dispatch while the skill call is pending`,
       ).toEqual([0, 0]);
       dd.resolve();
       await raFlushPromises();
@@ -8461,5 +8488,284 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
       m.callbacks.onRecruit,
       'a held Yes after the settle recruits nothing more',
     ).toHaveBeenCalledTimes(1);
+  });
+
+  it('CTL8J-1x-YES-SPENT: after Yes (or the Bag target) is pressed with its call pending and the call then settles, the SAME held node and an A at the cursor make no second call', async () => {
+    // WRONG IMPL KILLED: a commit that does not clear the pick (the pick outlives its own Yes, so a
+    // held node recruits again once the lock is released: DOUBLE-PRESS cannot see it, because its
+    // cure click replaces the pick); the same for the Bag target. The A at the cursor lands on the
+    // picked row, which only reopens the question: it must never spend anything.
+    for (const flow of ['recruit', 'bag'] as const) {
+      const d = raDeferred();
+      const callbacks = makeRaCallbacks(
+        flow === 'recruit'
+          ? { onRecruit: vi.fn().mockReturnValue(d.promise) }
+          : { onUseItem: vi.fn().mockReturnValue(d.promise) },
+      );
+      const m = c8iFresh(c8jVM(), callbacks);
+      if (flow === 'recruit') {
+        c8jEnter(m, 'recruit');
+        c8jDown(m);
+      } else {
+        c8jEnter(m, 'bag');
+      }
+      c8jA(m);
+      const held = (flow === 'recruit' ? c8jYes(m.root) : c8jUse(m.root)) as HTMLButtonElement;
+      expect(held, `${flow}: precondition, the second step is open`).not.toBeNull();
+      const spy = flow === 'recruit' ? callbacks.onRecruit : callbacks.onUseItem;
+      c8jA(m); // spend it
+      expect(spy, `${flow}: the press calls once`).toHaveBeenCalledTimes(1);
+
+      d.resolve();
+      await raFlushPromises();
+      held.disabled = false; // HOSTILE: the lock is released, only the spent pick can refuse this
+      held.click();
+      expect(spy, `${flow}: the held node does not spend it again`).toHaveBeenCalledTimes(1);
+      c8iCurrent(m.root)[0]?.focus();
+      c8jA(m);
+      expect(spy, `${flow}: nor does an A at the cursor`).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('CTL8J-1x-CURSOR-AFTER-YES: right after A on Yes (or the Bag target), with the call still in flight, exactly one element is aria-current and it is the picked bait row (the picked cure row for Bag)', async () => {
+    // WRONG IMPL KILLED: a commit that leaves the cursor on the closed confirm (no aria-current, or
+    // a stale one on a detached node), on the first row, or on two elements at once; the rows are
+    // rebuilt by the commit, so the cursor has to be found again by the picked item.
+    for (const flow of ['recruit', 'bag'] as const) {
+      const d = raDeferred();
+      const callbacks = makeRaCallbacks(
+        flow === 'recruit'
+          ? { onRecruit: vi.fn().mockReturnValue(d.promise) }
+          : { onUseItem: vi.fn().mockReturnValue(d.promise) },
+      );
+      const m = c8iFresh(c8jVM(), callbacks);
+      if (flow === 'recruit') {
+        c8jEnter(m, 'recruit');
+        c8jDown(m, 2); // Sweet Bait, not the first bait row
+      } else {
+        c8jEnter(m, 'bag');
+        c8jDown(m); // Salve, not the first cure row
+      }
+      c8jA(m);
+      c8jA(m); // Yes / the target: the call is now pending
+      const spy = flow === 'recruit' ? callbacks.onRecruit : callbacks.onUseItem;
+      expect(spy, `${flow}: precondition, the call is in flight`).toHaveBeenCalledTimes(1);
+      const picked = flow === 'recruit' ? c8jRows(m.root, 'recruit')[2] : c8jRows(m.root, 'bag')[1];
+      const current = c8iCurrent(m.root);
+      expect(current, `${flow}: exactly one aria-current in the view`).toHaveLength(1);
+      expect(current[0], `${flow}: and it is the picked row`).toBe(picked);
+      d.resolve();
+      await raFlushPromises();
+    }
+  });
+
+  it('CTL8J-1x-LOCK-ACROSS-PICK: with a never-settling attack in flight, opening a bait row or a cure row and closing the confirm with No, each by a hand-enabled click, rebuild the actions row with EVERY button disabled, any open Yes or target included', () => {
+    // WRONG IMPL KILLED: a pick change (B, a row press) that re-renders the actions row without
+    // re-deriving the PvE lock: the rebuilt bait rows, cure rows, Flee, swap rows, Yes and target
+    // come back enabled while the turn is spent, so a second action can start in the same turn.
+    const never = new Promise<void>(() => {});
+    const m = c8iMount(c8jVM(), makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(never) }));
+    const { root, callbacks } = m;
+    const actionButtons = (): HTMLButtonElement[] =>
+      [...root.querySelectorAll<HTMLButtonElement>('button')].filter(
+        (b) => b.getAttribute('data-battle-list') !== 'commands',
+      );
+    const expectAllLocked = (label: string): void => {
+      const open = actionButtons().filter((b) => !b.disabled);
+      expect(
+        open.map((b) => b.textContent),
+        `${label}: every button of the skills and actions rows is disabled`,
+      ).toEqual([]);
+    };
+
+    // The attack comes first: any action closes an open step, so the steps below are opened and
+    // closed UNDER the lock, by hand-enabled presses (a disabled button swallows a click).
+    c8iSkills(root)[0]?.click(); // takes the lock; the call never settles
+    expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
+    expectAllLocked('the attack lock');
+
+    const bait = c8jRows(root, 'recruit')[1] as HTMLButtonElement;
+    bait.disabled = false;
+    bait.click();
+    expect(c8jYes(root), 'precondition: the bait press opened the confirm').not.toBeNull();
+    expectAllLocked('an open Yes');
+
+    // Closing the confirm rebuilds the row again: still locked.
+    const no = c8jNo(root) as HTMLButtonElement;
+    no.disabled = false;
+    no.click();
+    expect(c8jConfirm(root), 'precondition: No closed the confirm').toBeNull();
+    expectAllLocked('after No');
+
+    const cure = c8jRows(root, 'bag')[0] as HTMLButtonElement;
+    cure.disabled = false;
+    cure.click();
+    expect(c8jUse(root), 'precondition: the cure press opened the target').not.toBeNull();
+    expectAllLocked('an open target');
+
+    expect(callbacks.onRecruit).not.toHaveBeenCalled();
+    expect(callbacks.onUseItem).not.toHaveBeenCalled();
+    expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
+  });
+
+  it('CTL8J-1x-ACTION-SPENDS-PICK: taking another action by mouse (a skill, Flee, a swap row) while the Recruit confirm or the Bag target is open closes it at once, and after that action settles on the same turn the held Yes or target and an A at the cursor call nothing', async () => {
+    // WRONG IMPL KILLED: a confirm or target that stays open, live, under another action: the
+    // action settles with no batch (same turn, no refresh), the lock opens, and the old Yes then
+    // spends a second action in the turn the first one already spent (the bait is consumed
+    // although the player attacked, fled or swapped instead).
+    const picks = [
+      {
+        label: 'Recruit confirm',
+        open: (m: C8iMount) => {
+          c8jEnter(m, 'recruit');
+          c8jDown(m);
+          c8jA(m);
+        },
+        held: (root: ParentNode) => c8jYes(root),
+        shown: (root: ParentNode) => c8jConfirm(root),
+        spy: 'onRecruit',
+      },
+      {
+        label: 'Bag target',
+        open: (m: C8iMount) => {
+          c8jEnter(m, 'bag');
+          c8jA(m);
+        },
+        held: (root: ParentNode) => c8jUse(root),
+        shown: (root: ParentNode) => c8jTarget(root),
+        spy: 'onUseItem',
+      },
+    ] as const;
+    const actions = [
+      {
+        label: 'a skill click',
+        cb: 'onAttack',
+        act: (root: Element) => c8iSkills(root)[0]?.click(),
+      },
+      {
+        label: 'a Flee click',
+        cb: 'onFlee',
+        act: (root: Element) =>
+          [...root.querySelectorAll('button')].find((b) => b.textContent === 'Flee')?.click(),
+      },
+      {
+        label: 'a swap row click',
+        cb: 'onSwap',
+        act: (root: Element) => c8jRows(root, 'swap')[0]?.click(),
+      },
+    ] as const;
+
+    for (const pick of picks) {
+      for (const action of actions) {
+        const label = `${pick.label} then ${action.label}`;
+        const d = raDeferred();
+        const callbacks = makeRaCallbacks({
+          [action.cb]: vi.fn().mockReturnValue(d.promise),
+        } as Partial<BattleViewCallbacks>);
+        const m = c8iFresh(c8jVM(), callbacks);
+        pick.open(m);
+        const held = pick.held(m.root) as HTMLButtonElement;
+        expect(held, `${label}: precondition, the second step is open`).not.toBeNull();
+
+        action.act(m.root);
+        expect(callbacks[action.cb], `${label}: the action was taken`).toHaveBeenCalledTimes(1);
+        expect(pick.shown(m.root), `${label}: the step closes at once`).toBeNull();
+
+        d.resolve(); // same turn: no refresh follows
+        await raFlushPromises();
+        held.disabled = false; // HOSTILE: the lock is released, only the spent pick can refuse this
+        held.click();
+        c8iCurrent(m.root)[0]?.focus();
+        c8jA(m);
+        expect(
+          callbacks[pick.spy],
+          `${label}: nothing is recruited or used afterwards`,
+        ).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it('CTL8J-1x-TABBED-ROW-SURVIVES-RENDER: a row focused directly (as Tab does) while the cursor is elsewhere is still focused, on its rebuilt node and as the one aria-current, after a same-turn re-render: No in the open confirm, a bait row and a cure row', () => {
+    // WRONG IMPL KILLED: a re-render that re-focuses only a row that was aria-current (a Tabbed or
+    // clicked-to-focus row is rebuilt and focus falls to <body>, so the next D-pad press only
+    // seats the cursor somewhere else); one that rebuilds the row and keeps aria-current on the
+    // old cursor (two cursors, or one on a row the player is not on).
+    const expectKept = (root: Element, label: string, is: (el: HTMLElement) => boolean): void => {
+      const active = document.activeElement as HTMLElement | null;
+      expect(active, `${label}: something has focus`).not.toBeNull();
+      expect(root.contains(active), `${label}: focus is still in the view`).toBe(true);
+      expect(active?.isConnected, `${label}: on a node that is still attached`).toBe(true);
+      expect(is(active as HTMLElement), `${label}: on the same row, rebuilt`).toBe(true);
+      const current = c8iCurrent(root);
+      expect(current, `${label}: exactly one aria-current`).toHaveLength(1);
+      expect(current[0], `${label}: and it is the focused row`).toBe(active);
+    };
+
+    // No, in the open confirm (the cursor is on Yes).
+    const m = c8iMount(c8jVM());
+    c8jRows(m.root, 'recruit')[1]?.click();
+    const no = c8jNo(m.root) as HTMLButtonElement;
+    no.focus();
+    expect(document.activeElement, 'precondition: focus is on No').toBe(no);
+    m.view.refresh(c8jVM());
+    expectKept(m.root, 'No', (el) => el.getAttribute('data-testid') === 'recruit-cancel');
+
+    // A bait row, with the cursor on No bait.
+    const bait = c8iFresh(c8jVM());
+    c8jEnter(bait, 'recruit');
+    const baitRows = c8jRows(bait.root, 'recruit');
+    expect(
+      baitRows[0]?.getAttribute('aria-current'),
+      'precondition: the cursor is on No bait',
+    ).toBe('true');
+    (baitRows[2] as HTMLButtonElement).focus();
+    bait.view.refresh(c8jVM());
+    expectKept(bait.root, 'bait row', (el) => el.getAttribute('data-recruit-bonus') === '250');
+
+    // A cure row, with the cursor on the first.
+    const cure = c8iFresh(c8jVM());
+    c8jEnter(cure, 'bag');
+    const cureRows = c8jRows(cure.root, 'bag');
+    expect(cureRows[0]?.getAttribute('aria-current'), 'precondition: the cursor is on row 0').toBe(
+      'true',
+    );
+    (cureRows[1] as HTMLButtonElement).focus();
+    cure.view.refresh(c8jVM());
+    expectKept(cure.root, 'cure row', (el) => el.getAttribute('data-cure-status') === 'Burn');
+  });
+
+  it('CTL8J-1x-CONFIRM-NAMED: the open Recruit confirm is a role="group" named by its question through aria-labelledby, which resolves to an element inside the confirm whose text is the prompt, and two views get distinct ids', () => {
+    // WRONG IMPL KILLED: a confirm that is an anonymous div (a screen reader lands on Yes with no
+    // question); an aria-labelledby that points nowhere, outside the confirm or at the wrong text;
+    // and one fixed id shared by every view (two views then name each other's confirm).
+    const a = c8iMount(c8jVM());
+    const b = c8iMount(c8jVM());
+    c8jRows(a.root, 'recruit')[1]?.click(); // Lure Berry
+    c8jRows(b.root, 'recruit')[2]?.click(); // Sweet Bait
+
+    const nameOf = (
+      m: C8iMount,
+      question: string,
+    ): { confirm: HTMLElement; id: string; label: HTMLElement } => {
+      const confirm = c8jConfirm(m.root) as HTMLElement;
+      expect(confirm, `${question}: the confirm is open`).not.toBeNull();
+      expect(confirm.getAttribute('role'), `${question}: a group`).toBe('group');
+      const id = confirm.getAttribute('aria-labelledby') ?? '';
+      expect(id, `${question}: named by something`).not.toBe('');
+      const label = document.getElementById(id) as HTMLElement | null;
+      expect(label, `${question}: the id resolves`).not.toBeNull();
+      expect(confirm.contains(label), `${question}: inside the confirm`).toBe(true);
+      expect(label?.textContent, `${question}: the name is the question`).toBe(question);
+      return { confirm, id, label: label as HTMLElement };
+    };
+    const first = nameOf(a, 'Recruit with Lure Berry?');
+    const second = nameOf(b, 'Recruit with Sweet Bait?');
+    expect(first.id, 'two views, two ids').not.toBe(second.id);
+
+    // Closed and reopened, it is named again (the id is not spent by the first open).
+    (c8jNo(a.root) as HTMLButtonElement).click();
+    expect(c8jConfirm(a.root)).toBeNull();
+    c8jRows(a.root, 'recruit')[0]?.click(); // No bait
+    nameOf(a, 'Recruit with no bait?');
   });
 });
