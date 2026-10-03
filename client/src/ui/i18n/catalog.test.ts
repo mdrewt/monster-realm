@@ -156,15 +156,21 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { current: 3, max: 9, affinity: 'Plant' },
     { current: 20, max: 40, affinity: 'Fire' },
   ],
+  // ctl-8i (named intentional change): both skill labels take power AND accuracy (the grid cell
+  // gives affinity, power and accuracy), so the hover-only `battle.skill.accuracy` key is DELETED
+  // (R-rb-56-FOLLOWUP-ACC) and the parameterised `battle.commands.waiting` takes its place here;
+  // +7 plain keys (the five command labels, the group label, the Run reason) are in EXPECTED_PLAIN
+  // = 279 keys. Every numeric field differs between the two sets, power 0 and accuracy 0 / 100
+  // included.
   'battle.skill.pvpSubmit': [
-    { name: 'Vine Lash', affinity: 'Plant' },
-    { name: 'Ember Jab', affinity: 'Fire' },
+    { name: 'Vine Lash', power: 40, affinity: 'Plant', accuracy: 95 },
+    { name: 'Ember Jab', power: 0, affinity: 'Fire', accuracy: 100 },
   ],
   'battle.skill.pveLabel': [
-    { name: 'Vine Lash', power: 40, affinity: 'Plant' },
-    { name: 'Ember Jab', power: 35, affinity: 'Fire' },
+    { name: 'Vine Lash', power: 40, affinity: 'Plant', accuracy: 95 },
+    { name: 'Ember Jab', power: 35, affinity: 'Fire', accuracy: 0 },
   ],
-  'battle.skill.accuracy': [{ accuracy: 95 }, { accuracy: 90 }],
+  'battle.commands.waiting': [{ name: 'Rival' }, { name: 'Zed' }],
   'battle.cure.option': [
     { name: 'Tonic', cureStatus: 'Poison', count: 1 },
     { name: 'Salve', cureStatus: 'Paralysis', count: 3 },
@@ -326,6 +332,11 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
 const EM_DASH = String.fromCharCode(0x2014);
 /** ctl-8c's "opens a list" mark on the Feed… / Evolve… rows: U+2026 HORIZONTAL ELLIPSIS. */
 const ELLIPSIS = String.fromCharCode(0x2026);
+/** ctl-8i's curly apostrophe in the Run reason, U+2019 by code point (RIGHT_QUOTE below is declared
+ *  after the plain table, which would read it in its temporal dead zone). */
+const CURLY_APOSTROPHE = String.fromCharCode(0x2019);
+/** U+00B7 MIDDLE DOT, the separator of a skill cell (MIDDLE_DOT below is declared after the tables). */
+const CELL_DOT = String.fromCharCode(0x00b7);
 
 /** Every PLAIN (non-parameterised) MessageId's expected value, byte-transcribed
  *  from the pre-migration literal at its cited source line (plan R7 — copy-paste
@@ -356,6 +367,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // (`journal.detail.step`) in SAMPLE_PARAMS = 269 keys.
   // ctl-8g (named intentional change): +2 plain keys here (`social.players.{nearby,none}`), +1
   // parameterised one (`social.players.walkUp`) in SAMPLE_PARAMS = 272 keys.
+  // ctl-8i (named intentional change): +7 plain keys here (`battle.command.{fight,recruit,swap,
+  // bag,run}`, `battle.commands.label`, `battle.command.runPvpReason`); in SAMPLE_PARAMS
+  // `battle.commands.waiting` is added and `battle.skill.accuracy` removed = 279 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -383,6 +397,15 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'battle.outcome.victory': 'Victory!', // battleView.ts:629
   'battle.outcome.defeat': 'Defeat...', // battleView.ts:632
   'battle.outcome.fled': 'Got away safely!', // battleView.ts:635
+  // ctl-8i (named intentional change): +7 plain keys — the five command labels, the command
+  // group's accessible name and the reason Run is disabled in a player battle (battleView.ts).
+  'battle.command.fight': 'Fight',
+  'battle.command.recruit': 'Recruit',
+  'battle.command.swap': 'Swap',
+  'battle.command.bag': 'Bag',
+  'battle.command.run': 'Run',
+  'battle.commands.label': 'Commands',
+  'battle.command.runPvpReason': `You can${CURLY_APOSTROPHE}t run from a player battle.`,
   'pvp.title.idle': 'PvP', // pvpView.ts:135
   'pvp.title.challenge': 'PvP Challenge', // pvpView.ts:142
   'pvp.incoming.accept': 'Accept', // pvpView.ts:198
@@ -683,23 +706,29 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { current: 20, max: 40, affinity: 'Fire' },
     outputB: 'HP 20/40 · Fire',
   },
+  // INTENTIONAL CHANGE (ctl-8i, CTL8I.2): the skill cell gives affinity, power AND accuracy in both
+  // modes, so both labels take all four params and end `· Acc N%`; the accuracy key is deleted.
+  // Was: pvpSubmit `Submit: {name} · {affinity}`, pveLabel `{name} ({power}) · {affinity}`, and a
+  // separate `battle.skill.accuracy` (`Acc N%`) that only the hover title carried. Power 0 and
+  // accuracy 0 / 100 are in the sets so a falsy fallback cannot hide.
   'battle.skill.pvpSubmit': {
-    inputA: { name: 'Vine Lash', affinity: 'Plant' },
-    outputA: 'Submit: Vine Lash · Plant',
-    inputB: { name: 'Ember Jab', affinity: 'Fire' },
-    outputB: 'Submit: Ember Jab · Fire',
+    inputA: { name: 'Vine Lash', power: 40, affinity: 'Plant', accuracy: 95 },
+    outputA: `Submit: Vine Lash (40) ${CELL_DOT} Plant ${CELL_DOT} Acc 95%`,
+    inputB: { name: 'Ember Jab', power: 0, affinity: 'Fire', accuracy: 100 },
+    outputB: `Submit: Ember Jab (0) ${CELL_DOT} Fire ${CELL_DOT} Acc 100%`,
   },
   'battle.skill.pveLabel': {
-    inputA: { name: 'Vine Lash', power: 40, affinity: 'Plant' },
-    outputA: 'Vine Lash (40) · Plant',
-    inputB: { name: 'Ember Jab', power: 35, affinity: 'Fire' },
-    outputB: 'Ember Jab (35) · Fire',
+    inputA: { name: 'Vine Lash', power: 40, affinity: 'Plant', accuracy: 95 },
+    outputA: `Vine Lash (40) ${CELL_DOT} Plant ${CELL_DOT} Acc 95%`,
+    inputB: { name: 'Ember Jab', power: 35, affinity: 'Fire', accuracy: 0 },
+    outputB: `Ember Jab (35) ${CELL_DOT} Fire ${CELL_DOT} Acc 0%`,
   },
-  'battle.skill.accuracy': {
-    inputA: { accuracy: 95 },
-    outputA: 'Acc 95%',
-    inputB: { accuracy: 90 },
-    outputB: 'Acc 90%',
+  // ctl-8i: the caption over a greyed command list while the opponent has not acted.
+  'battle.commands.waiting': {
+    inputA: { name: 'Rival' },
+    outputA: `Waiting for Rival${ELLIPSIS}`,
+    inputB: { name: 'Zed' },
+    outputB: `Waiting for Zed${ELLIPSIS}`,
   },
   'battle.cure.option': {
     inputA: { name: 'Tonic', cureStatus: 'Poison', count: 1 },
@@ -1026,7 +1055,9 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 272-key roster (ctl-8g: +`social.players.{nearby,none,walkUp}` over the 269-key roster
+/** The full 279-key roster (ctl-8i: +`battle.command.{fight,recruit,swap,bag,run}`
+ *  +`battle.commands.label` +`battle.command.runPvpReason` +`battle.commands.waiting`
+ *  -`battle.skill.accuracy` over the 272-key roster below; ctl-8g: +`social.players.{nearby,none,walkUp}` over the 269-key roster
  *  below; ctl-8f: +`bag.pocket.{bait,food,medicine,other}`
  *  +`bag.action.{feed,use,info}` +`bag.picker.title` +`bag.feed.noMonsters` +`journal.detail.step`
  *  over the 259-key roster below; ctl-8e: +`tradePropose.step.{target,offer,coins,ask,review}`
@@ -1100,7 +1131,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8g 272-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8i 279-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1189,10 +1220,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 272 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 279 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (272 keys since ctl-8g).
+    // (a) roster is exactly the EXPECTED_KEYS roster (279 keys since ctl-8i).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).

@@ -149,20 +149,20 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // {affinity} is the monster's elemental type name (e.g. "Fire"). One line, small text.
   // battleView.ts:407
   'battle.card.hpLine': (p) => `HP ${p.current}/${p.max} · ${p.affinity}`,
-  // @desc: PvP skill button: submits the move rather than using it at once, hence the leading
-  // "Submit:"; {name} is the skill name, {affinity} its elemental type. Keep {affinity} LAST and
-  // keep the "Submit:" prefix first (tests match the start of the text). Fits a half-width button.
-  // battleView.ts:443
-  'battle.skill.pvpSubmit': (p) => `Submit: ${p.name} · ${p.affinity}`,
-  // @desc: PvE skill button, used at once; {name} is the skill name, {power} its damage value and
-  // {affinity} its elemental type. Keep {affinity} LAST (tests match the start of the text). Fits a
+  // @desc: PvP skill cell of the two-column skill grid: submits the move rather than using it at
+  // once, hence the leading "Submit:"; {name} is the skill name, {power} its damage value,
+  // {affinity} its elemental type and {accuracy} its hit chance as a percentage ("Acc" abbreviates
+  // "Accuracy"). Keep the "Submit:" prefix first (tests match the start of the text). Fits a
   // half-width button.
-  // battleView.ts:444
-  'battle.skill.pveLabel': (p) => `${p.name} (${p.power}) · ${p.affinity}`,
-  // @desc: Hover tooltip on a skill button giving its hit chance; {accuracy} is a percentage and
-  // "Acc" abbreviates "Accuracy". Very short.
-  // battleView.ts:445
-  'battle.skill.accuracy': (p) => `Acc ${p.accuracy}%`,
+  // battleView.ts (#renderSkills)
+  'battle.skill.pvpSubmit': (p) =>
+    `Submit: ${p.name} (${p.power}) · ${p.affinity} · Acc ${p.accuracy}%`,
+  // @desc: PvE skill cell of the two-column skill grid, used at once; {name} is the skill name,
+  // {power} its damage value, {affinity} its elemental type and {accuracy} its hit chance as a
+  // percentage ("Acc" abbreviates "Accuracy"). Keep {name} first (tests match the start of the
+  // text). Fits a half-width button.
+  // battleView.ts (#renderSkills)
+  'battle.skill.pveLabel': (p) => `${p.name} (${p.power}) · ${p.affinity} · Acc ${p.accuracy}%`,
   // @desc: Button label to run from an ongoing PvE battle. Short verb, fits a narrow button.
   // battleView.ts:470
   'battle.action.flee': 'Flee',
@@ -207,6 +207,38 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // short phrase.
   // battleView.ts:635
   'battle.outcome.fled': 'Got away safely!',
+  // @desc: Battle command list entry that opens the skill grid. One short verb; the five command
+  // entries share one narrow row.
+  // battleView.ts (#renderCommands)
+  'battle.command.fight': 'Fight',
+  // @desc: Battle command list entry that moves to the recruit controls (wild battles only). One
+  // short verb; the five command entries share one narrow row.
+  // battleView.ts (#renderCommands)
+  'battle.command.recruit': 'Recruit',
+  // @desc: Battle command list entry that moves to the bench monsters to swap in. One short verb;
+  // the five command entries share one narrow row.
+  // battleView.ts (#renderCommands)
+  'battle.command.swap': 'Swap',
+  // @desc: Battle command list entry that moves to the battle items (status cures). One short
+  // noun; the five command entries share one narrow row.
+  // battleView.ts (#renderCommands)
+  'battle.command.bag': 'Bag',
+  // @desc: Battle command list entry that runs from a wild battle at once (greyed, with a reason,
+  // in a player battle). One short verb; the five command entries share one narrow row.
+  // battleView.ts (#renderCommands)
+  'battle.command.run': 'Run',
+  // @desc: Accessible name of the battle command list (Fight, Recruit, Swap, Bag, Run), read by a
+  // screen reader as the group's label. One word.
+  // battleView.ts (#renderCommands)
+  'battle.commands.label': 'Commands',
+  // @desc: Caption over the greyed battle command list after the player has submitted a PvP move;
+  // {name} is the rival's display name. Ends with an ellipsis. One line.
+  // battleView.ts (#renderCommands)
+  'battle.commands.waiting': (p) => `Waiting for ${p.name}…`,
+  // @desc: Why Run is disabled in a battle against another player, shown under the command list.
+  // One short sentence with a typographic apostrophe.
+  // battleView.ts (#renderCommands)
+  'battle.command.runPvpReason': 'You can’t run from a player battle.',
   // @desc: Title of the PvP challenge overlay when the player has no incoming or outgoing
   // challenge; "PvP" is the player-versus-player abbreviation. One word.
   // pvpView.ts:135
