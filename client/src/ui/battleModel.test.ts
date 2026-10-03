@@ -20,14 +20,21 @@ import type {
   StoreSpeciesRow,
 } from '../net/store';
 import {
+  BATTLE_COMMANDS,
+  type BattleCommandRow,
   type BattleOutcomeTag,
+  type BattleSkillVM,
   type BattleViewModel,
+  battleCommands,
   battleVMsEqual,
   buildBattleViewModel,
+  type CursorDir,
+  cursorStep,
   decideBattleOverlay,
   isPvpBattle,
   type OverlayState,
   shouldSkipBattleRefresh,
+  skillCursor,
   statusBadge,
   unknownStatusToken,
   weatherBanner,
@@ -3365,5 +3372,318 @@ describe('rb58 unknown-status fallback token entropy', () => {
         'sooner than it needs to. LOWERING THIS FLOOR IS THE FORBIDDEN REPAIR — widen the ' +
         `token space instead. ${RB58_NO_UNIQUENESS_CLAIM} ${RB58_REPAIR}`,
     ).toBeGreaterThanOrEqual(900);
+  });
+});
+
+// =============================================================================
+// ctl-8i: Battle I — the command list (CTL8I.1) and the skill grid (CTL8I.2)
+//
+// `battleCommands(vm)` is the one rule for which of the five commands (Fight, Recruit, Swap, Bag,
+// Run) a player may press; `cursorStep` is the one rule for moving a cursor over a list (one
+// column) or the two-column skill grid; `skillCursor` is where Fight lands in the grid. All pure:
+// the view only paints what they say.
+// =============================================================================
+
+/** A skill the grid shows. */
+function c8iSkill(id: number): BattleSkillVM {
+  return { id, name: `Skill-${id}`, affinity: 'Plant', power: 40, accuracy: 90 };
+}
+
+/** An ongoing wild PvE VM on which every command is available; each case overrides what it varies. */
+function c8iVM(overrides: Partial<BattleViewModel> = {}): BattleViewModel {
+  return {
+    battleId: 9n,
+    turnNumber: 4,
+    outcome: 'Ongoing',
+    playerCard: {
+      speciesName: 'Sproutle',
+      level: 6,
+      currentHp: 16,
+      maxHp: 22,
+      hpPercent: 72,
+      affinity: 'Plant',
+      status: null,
+    },
+    opponentCard: {
+      speciesName: 'Emberfang',
+      level: 5,
+      currentHp: 14,
+      maxHp: 19,
+      hpPercent: 73,
+      affinity: 'Fire',
+      status: null,
+    },
+    skills: [c8iSkill(1), c8iSkill(2)],
+    canFlee: true,
+    canSwap: true,
+    bench: [{ teamIndex: 1, speciesName: 'Mossling', currentHp: 12, maxHp: 18 }],
+    canRecruit: true,
+    baitOptions: [],
+    cureItems: [{ itemId: 3, name: 'Tonic', cureStatus: 'Poison', count: 1 }],
+    weather: null,
+    isPvp: false,
+    pvpPendingSubmit: false,
+    pvpOpponentName: null,
+    activeIndex: 0,
+    ...overrides,
+  };
+}
+
+/** The rows `battleCommands` must answer: always the five, in `BATTLE_COMMANDS` order, `enabled`
+ *  per row, and the Run row carrying `runReason`. */
+function c8iRows(
+  enabled: readonly [boolean, boolean, boolean, boolean, boolean],
+  runReason: 'runPvp' | null = null,
+): BattleCommandRow[] {
+  return BATTLE_COMMANDS.map((id, i) => ({
+    id,
+    enabled: enabled[i] as boolean,
+    reason: id === 'run' ? runReason : null,
+  }));
+}
+
+describe('ctl-8i: battleCommands (CTL8I.1)', () => {
+  it('CTL8I-1-COMMAND-ROWS: always five rows in Fight, Recruit, Swap, Bag, Run order; each row is enabled by its own flag on an ongoing, unpending battle; Run in PvP is disabled with the runPvp reason; a pending PvP submit or a terminal outcome disables every row; and the VM carries the active index that battleVMsEqual compares', () => {
+    // WRONG IMPL KILLED: a row list that reorders or omits a command (the cursor would land on the
+    // wrong verb); a row enabled by another row's flag (Recruit by canFlee, Swap by the bench
+    // length alone, Bag by the item count of the wrong list); a Fight enabled with no skill to
+    // choose; a Run enabled in PvP or without a reason there; a reason set outside PvP or on a
+    // terminal PvP VM; a pending PvP submit that leaves a row live (a double send); a terminal
+    // outcome that leaves a row live because its flags were not recomputed; and a VM that drops
+    // the active monster index, or a battleVMsEqual that ignores it (a swap would skip its render
+    // and the last-skill memory would key on a stale monster).
+    expect(BATTLE_COMMANDS, 'the command roster, in cursor order').toEqual([
+      'fight',
+      'recruit',
+      'swap',
+      'bag',
+      'run',
+    ]);
+
+    // Baseline: every command available.
+    expect(battleCommands(c8iVM()), 'baseline: all five enabled, no reason anywhere').toEqual(
+      c8iRows([true, true, true, true, true]),
+    );
+
+    // Each flag disables exactly its own row.
+    expect(battleCommands(c8iVM({ skills: [] })), 'no skills: only Fight').toEqual(
+      c8iRows([false, true, true, true, true]),
+    );
+    expect(
+      battleCommands(c8iVM({ canRecruit: false })),
+      'a trainer battle (not wild): only Recruit',
+    ).toEqual(c8iRows([true, false, true, true, true]));
+    expect(
+      battleCommands(c8iVM({ canSwap: false, bench: [] })),
+      'nothing to swap to: only Swap',
+    ).toEqual(c8iRows([true, true, false, true, true]));
+    expect(
+      battleCommands(
+        c8iVM({
+          canSwap: false,
+          bench: [{ teamIndex: 1, speciesName: 'Mossling', currentHp: 12, maxHp: 18 }],
+        }),
+      ),
+      'canSwap is the flag, not the bench length: only Swap',
+    ).toEqual(c8iRows([true, true, false, true, true]));
+    expect(battleCommands(c8iVM({ cureItems: [] })), 'no cure item: only Bag').toEqual(
+      c8iRows([true, true, true, false, true]),
+    );
+    expect(
+      battleCommands(c8iVM({ canFlee: false })),
+      'cannot flee (PvE): only Run, and with no reason',
+    ).toEqual(c8iRows([true, true, true, true, false], null));
+
+    // Everything off at once is still five disabled rows, not an empty list.
+    expect(
+      battleCommands(
+        c8iVM({
+          skills: [],
+          canRecruit: false,
+          canSwap: false,
+          bench: [],
+          cureItems: [],
+          canFlee: false,
+        }),
+      ),
+    ).toEqual(c8iRows([false, false, false, false, false]));
+
+    // PvP, ongoing, not pending: Run is disabled and says why; the others follow their flags.
+    const pvp = {
+      isPvp: true,
+      pvpOpponentName: 'Rival',
+      canFlee: false,
+      canRecruit: false,
+      cureItems: [],
+    } as const;
+    expect(
+      battleCommands(c8iVM(pvp)),
+      'PvP: Fight and Swap live, Recruit and Bag off, Run off with the runPvp reason',
+    ).toEqual(c8iRows([true, false, true, false, false], 'runPvp'));
+
+    // PvP awaiting the opponent: every row off; the Run reason stays (it is still a player battle).
+    expect(
+      battleCommands(c8iVM({ ...pvp, pvpPendingSubmit: true })),
+      'a pending PvP submit disables every row',
+    ).toEqual(c8iRows([false, false, false, false, false], 'runPvp'));
+    // A pending flag disables the rows whatever the battle kind (the model clears it for PvE; the
+    // rule is the pending flag's).
+    expect(
+      battleCommands(c8iVM({ pvpPendingSubmit: true })),
+      'pending on a PvE-shaped VM: still all off, and no reason',
+    ).toEqual(c8iRows([false, false, false, false, false], null));
+
+    // Terminal outcomes: all five off even when every flag still says yes; no Run reason, PvP or not.
+    for (const outcome of ['SideAWins', 'SideBWins', 'Fled'] as const) {
+      expect(
+        battleCommands(c8iVM({ outcome })),
+        `${outcome}: all disabled although every flag is true`,
+      ).toEqual(c8iRows([false, false, false, false, false], null));
+      expect(
+        battleCommands(c8iVM({ outcome, isPvp: true, pvpOpponentName: 'Rival' })),
+        `${outcome} (PvP): all disabled and no runPvp reason on a finished battle`,
+      ).toEqual(c8iRows([false, false, false, false, false], null));
+    }
+
+    // Calls are independent: an earlier answer never leaks into a later one.
+    expect(battleCommands(c8iVM({ skills: [] }))[0]?.enabled).toBe(false);
+    expect(battleCommands(c8iVM())[0]?.enabled).toBe(true);
+
+    // activeIndex: buildBattleViewModel reads it from sideA.active, and battleVMsEqual compares it.
+    const team = [battleMonster(), battleMonster({ speciesId: 2 })];
+    const built = (active: number): BattleViewModel | null =>
+      buildBattleViewModel(
+        makeBattle({ sideA: battleSide({ active, team }) }),
+        makeSkillMap(1),
+        makeSpeciesMap(speciesRow(1), speciesRow(2)),
+      );
+    expect(built(0)?.activeIndex, 'the lead monster is index 0').toBe(0);
+    expect(built(1)?.activeIndex, 'a swapped-in monster is its team index').toBe(1);
+    const a = c8iVM({ activeIndex: 0 });
+    expect(battleVMsEqual(a, { ...a }), 'a copy is equal').toBe(true);
+    expect(
+      battleVMsEqual(a, { ...a, activeIndex: 1 }),
+      'a different active monster is a different VM',
+    ).toBe(false);
+    expect(
+      shouldSkipBattleRefresh(true, a, { ...a, activeIndex: 1 }),
+      'so a swap re-renders instead of being skipped as a no-op tick',
+    ).toBe(false);
+  });
+});
+
+describe('ctl-8i: cursorStep and skillCursor (CTL8I.2)', () => {
+  const DIRS: readonly CursorDir[] = ['Up', 'Down', 'Left', 'Right'];
+
+  it('CTL8I-2-GRID-STEP: one column steps Left and Up by -1 and Right and Down by +1 and clamps; two columns step row-major without wrapping or snapping, so a move with no cell there changes nothing; an empty list is 0', () => {
+    // WRONG IMPL KILLED: a list that wraps (Up from the first row jumps to the last); a grid that
+    // wraps columns (Right from the last cell of a row lands on the next row's first); a Down into
+    // a short last row that snaps to its only cell (the cursor jumps columns), or that clamps to
+    // the last index; a Left or Right that moves between rows; an empty list that answers -1 or
+    // NaN; a one-cell grid that moves; and a one-column list that treats Left like a no-op.
+    // One column (every list but the skill grid).
+    expect(cursorStep(0, 3, 'Down', 1)).toBe(1);
+    expect(cursorStep(1, 3, 'Down', 1)).toBe(2);
+    expect(cursorStep(2, 3, 'Down', 1), 'clamped at the end, no wrap').toBe(2);
+    expect(cursorStep(2, 3, 'Right', 1), 'Right is +1 in a list').toBe(2);
+    expect(cursorStep(1, 3, 'Right', 1)).toBe(2);
+    expect(cursorStep(2, 3, 'Up', 1)).toBe(1);
+    expect(cursorStep(0, 3, 'Up', 1), 'clamped at the start, no wrap').toBe(0);
+    expect(cursorStep(1, 3, 'Left', 1), 'Left is -1 in a list').toBe(0);
+    expect(cursorStep(0, 3, 'Left', 1)).toBe(0);
+    expect(cursorStep(0, 1, 'Down', 1), 'a one-row list never moves').toBe(0);
+    expect(cursorStep(0, 5, 'Down', 1)).toBe(1);
+
+    // Two columns, row-major: cells 0 1 / 2 3 / 4.
+    expect(cursorStep(0, 5, 'Right', 2)).toBe(1);
+    expect(cursorStep(1, 5, 'Right', 2), 'no wrap to the next row').toBe(1);
+    expect(cursorStep(1, 5, 'Left', 2)).toBe(0);
+    expect(cursorStep(0, 5, 'Left', 2), 'no wrap to the previous row').toBe(0);
+    expect(cursorStep(2, 5, 'Left', 2), 'column 0 has no left').toBe(2);
+    expect(cursorStep(3, 5, 'Left', 2)).toBe(2);
+    expect(cursorStep(2, 5, 'Right', 2)).toBe(3);
+    expect(cursorStep(4, 5, 'Right', 2), 'the last row has no second cell').toBe(4);
+    expect(cursorStep(0, 5, 'Down', 2)).toBe(2);
+    expect(cursorStep(1, 5, 'Down', 2)).toBe(3);
+    expect(cursorStep(2, 5, 'Down', 2)).toBe(4);
+    expect(cursorStep(3, 5, 'Down', 2), 'no cell below column 1: unchanged, not snapped to 4').toBe(
+      3,
+    );
+    expect(cursorStep(4, 5, 'Down', 2)).toBe(4);
+    expect(cursorStep(2, 5, 'Up', 2)).toBe(0);
+    expect(cursorStep(3, 5, 'Up', 2)).toBe(1);
+    expect(cursorStep(4, 5, 'Up', 2)).toBe(2);
+    expect(cursorStep(0, 5, 'Up', 2), 'clamped at the top row').toBe(0);
+    expect(cursorStep(1, 5, 'Up', 2)).toBe(1);
+
+    // The contract's own examples.
+    expect(cursorStep(1, 3, 'Down', 2)).toBe(1);
+    expect(cursorStep(2, 3, 'Right', 2)).toBe(2);
+    expect(cursorStep(1, 4, 'Right', 2)).toBe(1);
+    expect(cursorStep(2, 4, 'Left', 2)).toBe(2);
+    expect(cursorStep(0, 2, 'Down', 2), 'a one-row grid has no row below').toBe(0);
+    expect(cursorStep(0, 1, 'Right', 2), 'a one-cell grid never moves').toBe(0);
+    expect(cursorStep(0, 1, 'Down', 2)).toBe(0);
+
+    // Empty list: 0, whatever the direction and column count.
+    for (const dir of DIRS) {
+      expect(cursorStep(0, 0, dir, 1), `empty, one column, ${dir}`).toBe(0);
+      expect(cursorStep(0, 0, dir, 2), `empty, two columns, ${dir}`).toBe(0);
+    }
+
+    // Every (count, index, direction) against an oracle built from (row, column) coordinates
+    // rather than index arithmetic.
+    const gridOracle = (index: number, count: number, dir: CursorDir): number => {
+      const row = Math.floor(index / 2);
+      const col = index % 2;
+      const [r, c] = {
+        Left: [row, col - 1],
+        Right: [row, col + 1],
+        Up: [row - 1, col],
+        Down: [row + 1, col],
+      }[dir] as [number, number];
+      if (r < 0 || c < 0 || c > 1) return index;
+      const next = r * 2 + c;
+      return next < count ? next : index;
+    };
+    const listOracle = (index: number, count: number, dir: CursorDir): number => {
+      const delta = dir === 'Left' || dir === 'Up' ? -1 : 1;
+      return Math.min(count - 1, Math.max(0, index + delta));
+    };
+    let checked = 0;
+    for (let count = 1; count <= 7; count += 1) {
+      for (let index = 0; index < count; index += 1) {
+        for (const dir of DIRS) {
+          expect(cursorStep(index, count, dir, 2), `grid ${index}/${count} ${dir}`).toBe(
+            gridOracle(index, count, dir),
+          );
+          expect(cursorStep(index, count, dir, 1), `list ${index}/${count} ${dir}`).toBe(
+            listOracle(index, count, dir),
+          );
+          checked += 2;
+        }
+      }
+    }
+    expect(checked, 'ANTI-VACUITY: counts 1..7 x every index x 4 directions x 2 layouts').toBe(
+      4 * 2 * (1 + 2 + 3 + 4 + 5 + 6 + 7),
+    );
+  });
+
+  it('CTL8I-2-SKILL-CURSOR: the cursor lands on the skill with the remembered id, and on the first skill when nothing is remembered, the id is no longer known, or there are no skills; id 0 is a real id', () => {
+    // WRONG IMPL KILLED: an index lookup that returns -1 for an unknown id (the cursor rests on
+    // nothing); a falsy test on the remembered id (`if (lastSkillId)`) that loses skill id 0; a
+    // match on the array index instead of the skill id; and a cursor that clamps an unknown id to
+    // the last cell.
+    const skills = [c8iSkill(5), c8iSkill(9), c8iSkill(2)];
+    expect(skillCursor(skills, 9), 'the middle skill by id').toBe(1);
+    expect(skillCursor(skills, 2), 'the last skill by id').toBe(2);
+    expect(skillCursor(skills, 5), 'the first skill by id').toBe(0);
+    expect(skillCursor(skills, undefined), 'nothing remembered').toBe(0);
+    expect(skillCursor(skills, 77), 'an id this monster no longer knows').toBe(0);
+    expect(skillCursor(skills, 1), 'an id equal to an ARRAY index is not a match').toBe(0);
+    expect(skillCursor([], 9), 'no skills').toBe(0);
+    expect(skillCursor([], undefined)).toBe(0);
+    expect(skillCursor([c8iSkill(3), c8iSkill(0)], 0), 'skill id 0 is a real id').toBe(1);
+    expect(skillCursor([c8iSkill(0), c8iSkill(3)], 3)).toBe(1);
   });
 });

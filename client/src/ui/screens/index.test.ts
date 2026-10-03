@@ -62,6 +62,7 @@ import {
 import type { NavInput } from '../nav';
 import { OVERLAY_IDS } from '../overlayRegistry';
 import { bagScreen } from './bagScreen';
+import type { BattleOp } from './battleScreen';
 import { DIALOGUE_REVEAL_MS, dialogueScreen } from './dialogueScreen';
 import { healScreen } from './healScreen';
 import { baseButton, SCREEN_ADAPTERS, ScreenHost } from './index';
@@ -176,6 +177,11 @@ const hostOf = (adapters: Adapters): ScreenHost =>
 /** A host whose adapters, views and paint-error sink all fail the run if consulted. */
 const throwingHost = (): ScreenHost =>
   new ScreenHost(throwingAdapters(), throwingViews, unexpectedPaintError);
+/** ctl-8i (named intentional change): a host for a BARE BATTLE base. The host now steps the battle
+ *  adapter there (imported directly, never read from the table), which paints into the lent
+ *  `battleView`: no view is lent here, so nothing paints, and the table's adapters still all throw,
+ *  so a host that consulted the table's `battleView` entry would fail the run. */
+const battleBaseHost = (): ScreenHost => hostOf(throwingAdapters());
 
 const POP: ScreenResult = { kind: 'pop' };
 const POP_TO_BASE: ScreenResult = { kind: 'popToBase' };
@@ -389,6 +395,20 @@ describe('base frames (ctl-6b, CTL6B.2)', () => {
     // B17: Start on an ongoing battle does nothing in this slice (ctl-6c gives it the menu).
     Start: 'consumed',
   };
+  // ctl-8i (named intentional change): `baseButton(battle)` is unchanged (BATTLE_TABLE), but the
+  // HOST at a bare battle base now steps the battle adapter first: the D-pad and A (cursor moves
+  // and presses, painted into the battle view) are consumed instead of left to the page. Start
+  // (still swallowed: main.ts's battleButton opens the menu before the host is asked), Select
+  // (help) and B (swallowed) answer as before; X, Y, LB and RB stay unhandled. Was: the host's
+  // answers were exactly BATTLE_TABLE's.
+  const BATTLE_HOST_TABLE: Record<VButton, ScreenResult> = {
+    ...BATTLE_TABLE,
+    Up: 'consumed',
+    Down: 'consumed',
+    Left: 'consumed',
+    Right: 'consumed',
+    A: 'consumed',
+  };
 
   it('CTL6B-2-WORLD-START-OPENS-MENU: at the world base Start opens the menu, Select toggles help, B is swallowed and everything else is the page`s', () => {
     // WRONG IMPL KILLED: a Start that pops (there is nothing to pop at a base), one that does not
@@ -414,10 +434,13 @@ describe('base frames (ctl-6b, CTL6B.2)', () => {
       expect(baseButton(battle('7'), nav(button)), `baseButton ${button}`).toEqual(
         BATTLE_TABLE[button],
       );
+      // INTENTIONAL CHANGE (ctl-8i, CTL8I.1): the host consults the battle adapter at a bare battle
+      // base (see BATTLE_HOST_TABLE), so it runs over `battleBaseHost()` (the table throws, no view
+      // is lent) and answers BATTLE_HOST_TABLE. Was: `throwingHost()` and BATTLE_TABLE.
       expect(
-        throwingHost().button(stackOf(battle('7')), nav(button), CTX),
+        battleBaseHost().button(stackOf(battle('7')), nav(button), CTX),
         `host.button ${button}`,
-      ).toEqual(BATTLE_TABLE[button]);
+      ).toEqual(BATTLE_HOST_TABLE[button]);
     }
     expect(baseButton(battle('7'), nav('Start'))).not.toEqual(OPEN_MENU);
     expect(baseButton(battle('7'), nav('Start'))).not.toEqual(POP_TO_BASE);
@@ -671,6 +694,9 @@ describe('ScreenHost (ctl-7c)', () => {
         stackOf(WORLD, screen('menuView'), screen('questLogView')),
       ],
       ['a nav screen over a battle base', stackOf(battle('7'), screen('dialogueView'))],
+      // INTENTIONAL CHANGE (ctl-8i, CTL8I.1): a bare battle base takes the D-pad (the battle's own
+      // adapter, read directly: the table here has no battle entry marked nav). Was in `no`.
+      ['a bare battle base', stackOf(battle('7'))],
       [
         'a nav prompt over a legacy frame',
         stackOf(WORLD, screen('boxView'), prompt('dialogueView')),
@@ -678,7 +704,6 @@ describe('ScreenHost (ctl-7c)', () => {
     ];
     const no: ReadonlyArray<readonly [string, Stack]> = [
       ['the bare world', WORLD_STACK],
-      ['a bare battle base', stackOf(battle('7'))],
       ['a legacy screen on top', stackOf(WORLD, screen('boxView'))],
       ['a legacy prompt on top', stackOf(WORLD, prompt('pvpView'))],
       [
@@ -3541,5 +3566,168 @@ describe('the Profile frames over the shipped table (ctl-8h, CTL8H.3)', () => {
         `${id} with a text entry over it`,
       ).toBe(false);
     }
+  });
+});
+
+// ==========================================================================================
+// ctl-8i: the battle base takes the D-pad (CTL8I.1) and keeps its state across the menu (CTL8I.3)
+// ==========================================================================================
+//
+// The battle is a BASE frame, not a screen, so the table has no entry for it. A bare battle base
+// (length 1, kind 'battle') is nav-capable and `host.button` there steps the battle adapter
+// (imported directly, NOT the table's `battleView` entry, which is the outcome screen's legacy
+// adapter), keeping its state under 'battleView' and painting into the lent `battleView` view.
+// The adapter itself is proven in battleScreen.test.ts; this block proves the host's routing.
+
+/** A battle view that records every op painted into it. */
+function opsView(): { readonly applied: BattleOp[]; applyBattleOp(op: BattleOp): void } {
+  const applied: BattleOp[] = [];
+  return {
+    applied,
+    applyBattleOp(op) {
+      applied.push(op);
+    },
+  };
+}
+
+describe('the battle base over the host (ctl-8i)', () => {
+  it('CTL8I-1-HOST-BATTLE-NAV: a bare battle base takes the D-pad and the host steps the battle adapter there (the table is never consulted), painting cursor ops into the lent battle view and answering the base table for Start, Select, B and the buttons the page keeps; the outcome frame (world base + battleView screen) and a frame above the battle keep their own adapters and paint no op', () => {
+    // WRONG IMPL KILLED: a host that reads the battle's nav mark from the table's battleView entry
+    // (the outcome screen's legacy adapter has none, so the bare battle would stay D-pad-less); one
+    // that keeps `baseButton` at the battle (the arrows reach no view); one that steps the battle
+    // adapter for the OUTCOME frame too (A on the result screen would be swallowed instead of
+    // continuing, and B/Start would stop closing it); one that steps it under a frame above the
+    // battle (the menu's D-pad would move the battle cursor); a paint that re-applies an old op
+    // after a later button; a repeat A that presses; and a view lent under another frame id.
+    const view = opsView();
+    const lent = (id: FrameId): unknown => (id === 'battleView' ? view : undefined);
+    const bare = stackOf(battle('7'));
+
+    // --- the bare battle base: every table entry throws, so only the battle adapter can answer ---
+    const host = new ScreenHost(throwingAdapters(), lent, unexpectedPaintError);
+    expect(host.takesNav(bare), 'a bare battle base takes the D-pad').toBe(true);
+    expect(host.takesNav(WORLD_STACK), 'the bare world does not').toBe(false);
+
+    expect(host.button(bare, nav('Down'), CTX), 'Down is consumed').toBe('consumed');
+    expect(view.applied, 'and painted as a move op').toEqual([{ kind: 'move', dir: 'Down' }]);
+    expect(host.button(bare, nav('Right', true), CTX), 'a repeat arrow moves too').toBe('consumed');
+    expect(view.applied).toEqual([
+      { kind: 'move', dir: 'Down' },
+      { kind: 'move', dir: 'Right' },
+    ]);
+    expect(host.button(bare, nav('A'), CTX), 'A is consumed').toBe('consumed');
+    expect(view.applied.at(-1), 'and painted as an activate op').toEqual({ kind: 'activate' });
+    expect(view.applied, 'three ops so far').toHaveLength(3);
+    expect(new Set(view.applied).size, 'three different token objects').toBe(3);
+
+    // Nothing below paints an op: the held A, Start, Select and the buttons the page keeps.
+    expect(host.button(bare, nav('A', true), CTX), 'a repeat A is swallowed').toBe('consumed');
+    expect(host.button(bare, nav('Start'), CTX), 'Start is swallowed (the menu is main.ts)').toBe(
+      'consumed',
+    );
+    expect(host.button(bare, nav('Select'), CTX), 'Select toggles help').toEqual(TOGGLE_HELP);
+    for (const button of ['X', 'Y', 'LB', 'RB'] as const) {
+      expect(host.button(bare, nav(button), CTX), `${button} stays the page's`).toBe('unhandled');
+    }
+    expect(
+      view.applied,
+      'only the three real presses were painted: no old op is re-applied after a later button',
+    ).toHaveLength(3);
+    // B is consumed and is the view's Back (a sub-list to its command); a held B does nothing.
+    expect(host.button(bare, nav('B'), CTX), 'B is consumed, never the page`s').toBe('consumed');
+    expect(view.applied.at(-1), 'and painted as a back op').toEqual({ kind: 'back' });
+    expect(host.button(bare, nav('B', true), CTX), 'a held B is swallowed').toBe('consumed');
+    expect(view.applied, 'four ops: Down, Right, A, B').toHaveLength(4);
+
+    // --- the outcome frame: the world base with the battleView SCREEN frame keeps the table ---
+    const outcomeView = opsView();
+    const shipped = new ScreenHost(
+      SCREEN_ADAPTERS,
+      (id) => (id === 'battleView' ? outcomeView : undefined),
+      unexpectedPaintError,
+    );
+    const outcome = stackOf(WORLD, screen('battleView'));
+    expect(shipped.takesNav(outcome), 'the outcome frame is legacy: no D-pad').toBe(false);
+    expect(shipped.button(outcome, nav('B'), CTX), 'B closes the outcome').toEqual(POP);
+    expect(shipped.button(outcome, nav('Start'), CTX), 'Start closes it').toEqual(POP_TO_BASE);
+    expect(shipped.button(outcome, nav('Select'), CTX)).toEqual(TOGGLE_HELP);
+    expect(shipped.button(outcome, nav('A'), CTX), 'A is the shell`s (continue)').toBe('unhandled');
+    expect(shipped.button(outcome, nav('Down'), CTX), 'the D-pad is the page`s').toBe('unhandled');
+    expect(outcomeView.applied, 'no battle op reaches the outcome screen').toEqual([]);
+
+    // --- a frame above the battle decides: its adapter answers, the battle's never does ---
+    const rec = newRecorder();
+    const above = new ScreenHost(
+      stubAdapters(rec, () => 'consumed'),
+      lent,
+      unexpectedPaintError,
+    );
+    const overBattle = stackOf(battle('7'), screen('boxView'));
+    expect(above.takesNav(overBattle), 'the legacy-shaped stub above takes no D-pad').toBe(false);
+    expect(above.button(overBattle, nav('Down'), CTX)).toBe('consumed');
+    expect((rec.calls[0] as Call).id, 'the frame above answered').toBe('boxView');
+    expect(rec.calls, 'and only it').toHaveLength(1);
+    expect(view.applied, 'the battle cursor did not move under a frame above it').toHaveLength(4);
+    // The shipped table: a nav screen above the battle keeps the D-pad, a legacy one does not, and
+    // a text entry over a battle is the field's.
+    expect(shipped.takesNav(stackOf(battle('7'), screen('questLogView')))).toBe(true);
+    expect(shipped.takesNav(stackOf(battle('7'), screen('boxView')))).toBe(true);
+    expect(shipped.takesNav(stackOf(battle('7'), screen('evolutionView')))).toBe(false);
+    expect(
+      shipped.takesNav(stackOf(battle('7'), screen('renameView'), textEntry('renameView'))),
+    ).toBe(false);
+  });
+
+  it('CTL8I-3-HOST-STATE-SURVIVES-MENU: the main menu opened over the battle (a screen frame above the bare base) is answered by the menu`s own adapter and paints nothing into the battle view; when it is popped the next battle-base button steps the battle adapter again and paints into the same view, and nothing painted before the menu is painted again', () => {
+    // WRONG IMPL KILLED: a host that lets the battle adapter answer under the menu (the menu's
+    // D-pad would move the battle cursor behind it); one that stops stepping the battle adapter
+    // after a frame was pushed and popped over it (the battle would be dead to the D-pad after the
+    // first Start); one whose pop paints the last op again (the battle view would repeat a press
+    // the player made before the menu opened); one that paints into another view after the menu;
+    // and one whose `opened(menuView)` throws or resets the battle.
+    const view = opsView();
+    const lent = (id: FrameId): unknown => (id === 'battleView' ? view : undefined);
+    const log = newLog();
+    const host = new ScreenHost(
+      tableWith({ menuView: counting('menuView', log) }),
+      lent,
+      unexpectedPaintError,
+    );
+    const bare = stackOf(battle('7'));
+    const menu = stackOf(battle('7'), screen('menuView'));
+
+    expect(host.button(bare, nav('Down'), CTX)).toBe('consumed');
+    expect(view.applied).toEqual([{ kind: 'move', dir: 'Down' }]);
+
+    // Start opens the menu over the battle: the shell tells the host a frame opened.
+    host.opened(screen('menuView'));
+    expect(host.button(menu, nav('Down'), CTX), 'the menu`s adapter answers').toEqual(choice(1));
+    expect(
+      log.steps.map((s) => s.id),
+      'only the menu was stepped',
+    ).toEqual(['menuView']);
+    expect(view.applied, 'the menu`s D-pad moved nothing in the battle').toHaveLength(1);
+
+    // The menu closes: the bare base steps the battle adapter again, into the SAME view.
+    expect(host.takesNav(bare), 'the bare battle takes the D-pad again').toBe(true);
+    expect(host.button(bare, nav('LB'), CTX), 'a button the page keeps').toBe('unhandled');
+    expect(
+      view.applied,
+      'the first button after the menu paints no op (the Down made before it is not repeated)',
+    ).toHaveLength(1);
+    expect(host.button(bare, nav('Right'), CTX)).toBe('consumed');
+    expect(view.applied).toEqual([
+      { kind: 'move', dir: 'Down' },
+      { kind: 'move', dir: 'Right' },
+    ]);
+    expect(view.applied[1], 'a new token, not the first').not.toBe(view.applied[0]);
+
+    // A second round trip behaves the same (the menu starts over from its init at each open).
+    host.opened(screen('menuView'));
+    expect(host.button(menu, nav('B'), CTX), 'the menu answers again').toEqual(choice(1));
+    expect(view.applied).toHaveLength(2);
+    expect(host.button(bare, nav('A'), CTX)).toBe('consumed');
+    expect(view.applied.at(-1)).toEqual({ kind: 'activate' });
+    expect(view.applied, 'one new op for one press').toHaveLength(3);
   });
 });

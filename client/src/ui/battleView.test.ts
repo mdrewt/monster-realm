@@ -946,6 +946,8 @@ function makePvpPendingVM(): BattleViewModel {
     isPvp: true,
     pvpPendingSubmit: true,
     pvpOpponentName: 'Opponent',
+    // ctl-8i: the active monster's team index.
+    activeIndex: 0,
   };
 }
 
@@ -1552,6 +1554,8 @@ function makeUx4VM(overrides: Partial<BattleViewModel> = {}): BattleViewModel {
     isPvp: false,
     pvpPendingSubmit: false,
     pvpOpponentName: null,
+    // ctl-8i: the active monster's team index (the last-skill memory keys on it).
+    activeIndex: 0,
     ...overrides,
   };
 }
@@ -2110,65 +2114,66 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     { outcome: 'SideAWins' as const },
     { outcome: 'SideBWins' as const },
     { outcome: 'Fled' as const },
-  ])('BITES: H3 terminal outcome $outcome (canSwap=false, empty bench) → swap hint hidden while the ux1 continue hint stays visible', ({
-    outcome,
-  }) => {
-    // KILLS: the MOST LIKELY wrong implementation — a predicate missing the
-    //   `vm.outcome === 'Ongoing' &&` conjunct, i.e. keyed on `!vm.canSwap` alone.
-    //   `canSwap` is false and `bench` is empty on EVERY terminal outcome
-    //   (battleModel.ts:258 gates the bench loop on `ongoing`), so a bench-or-canSwap-only
-    //   predicate parks "No healthy party monster in this battle to swap in. When this
-    //   battle ends…" right next to "Victory!" and ux1's "Press Esc to continue" — advice
-    //   about a battle that has already ended, on the very overlay ux1 just made honest.
-    // ALSO GATES ux1: the continue-hint clause in the same assertion means a regression
-    //   that hides the ux1 exit affordance while wiring the ux4 one cannot pass here.
-    const parent = document.createElement('div');
-    document.body.appendChild(parent);
+  ])(
+    'BITES: H3 terminal outcome $outcome (canSwap=false, empty bench) → swap hint hidden while the ux1 continue hint stays visible',
+    ({ outcome }) => {
+      // KILLS: the MOST LIKELY wrong implementation — a predicate missing the
+      //   `vm.outcome === 'Ongoing' &&` conjunct, i.e. keyed on `!vm.canSwap` alone.
+      //   `canSwap` is false and `bench` is empty on EVERY terminal outcome
+      //   (battleModel.ts:258 gates the bench loop on `ongoing`), so a bench-or-canSwap-only
+      //   predicate parks "No healthy party monster in this battle to swap in. When this
+      //   battle ends…" right next to "Victory!" and ux1's "Press Esc to continue" — advice
+      //   about a battle that has already ended, on the very overlay ux1 just made honest.
+      // ALSO GATES ux1: the continue-hint clause in the same assertion means a regression
+      //   that hides the ux1 exit affordance while wiring the ux4 one cannot pass here.
+      const parent = document.createElement('div');
+      document.body.appendChild(parent);
 
-    const view = new BattleView(parent, makeUx4Callbacks());
-    // turnNumber 12 and skills:[] — distinct from H1 (5, two skills) and H2 (9, one
-    // skill) so an incidental-field predicate cannot hide behind a shared constant (F2).
-    view.refresh(
-      makeUx4VM({
-        outcome,
-        isPvp: false,
-        canSwap: false,
-        bench: [],
-        canFlee: false,
-        turnNumber: 12,
-        skills: [],
-      }),
-    );
-    view.show();
+      const view = new BattleView(parent, makeUx4Callbacks());
+      // turnNumber 12 and skills:[] — distinct from H1 (5, two skills) and H2 (9, one
+      // skill) so an incidental-field predicate cannot hide behind a shared constant (F2).
+      view.refresh(
+        makeUx4VM({
+          outcome,
+          isPvp: false,
+          canSwap: false,
+          bench: [],
+          canFlee: false,
+          turnNumber: 12,
+          skills: [],
+        }),
+      );
+      view.show();
 
-    const swapHint = parent.querySelector(UX4_SWAP_HINT_SELECTOR) as HTMLElement | null;
-    expect(
-      swapHint,
-      `ux4-2 (H3/${outcome}): the swap hint element must exist on the result overlay too ` +
-        '(created once in the constructor, only toggled thereafter)',
-    ).not.toBeNull();
-    const continueHint = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
-    expect(
-      continueHint,
-      `precondition (H3/${outcome}): ux1's continue hint must exist — it is the second half of ` +
-        "this case's single conjunction",
-    ).not.toBeNull();
+      const swapHint = parent.querySelector(UX4_SWAP_HINT_SELECTOR) as HTMLElement | null;
+      expect(
+        swapHint,
+        `ux4-2 (H3/${outcome}): the swap hint element must exist on the result overlay too ` +
+          '(created once in the constructor, only toggled thereafter)',
+      ).not.toBeNull();
+      const continueHint = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
+      expect(
+        continueHint,
+        `precondition (H3/${outcome}): ux1's continue hint must exist — it is the second half of ` +
+          "this case's single conjunction",
+      ).not.toBeNull();
 
-    const swapHidden = swapHint!.style.display === 'none';
-    const continueVisible = continueHint!.style.display !== 'none';
-    expect(
-      swapHidden && continueVisible,
-      `ux4-2 (H3/${outcome}) ONE CONJUNCTION — swapHintHidden=${String(swapHidden)} ` +
-        `(display=${JSON.stringify(swapHint!.style.display)}), ` +
-        `continueHintVisible=${String(continueVisible)} ` +
-        `(display=${JSON.stringify(continueHint!.style.display)}). The toggle predicate MUST ` +
-        "include the `vm.outcome === 'Ongoing' &&` conjunct: canSwap is false and bench is " +
-        'empty on every terminal outcome, so a `!vm.canSwap`-only predicate shows swap advice ' +
-        'on the result screen. And ux1-2 must keep its exit affordance on that same screen',
-    ).toBe(true);
+      const swapHidden = swapHint!.style.display === 'none';
+      const continueVisible = continueHint!.style.display !== 'none';
+      expect(
+        swapHidden && continueVisible,
+        `ux4-2 (H3/${outcome}) ONE CONJUNCTION — swapHintHidden=${String(swapHidden)} ` +
+          `(display=${JSON.stringify(swapHint!.style.display)}), ` +
+          `continueHintVisible=${String(continueVisible)} ` +
+          `(display=${JSON.stringify(continueHint!.style.display)}). The toggle predicate MUST ` +
+          "include the `vm.outcome === 'Ongoing' &&` conjunct: canSwap is false and bench is " +
+          'empty on every terminal outcome, so a `!vm.canSwap`-only predicate shows swap advice ' +
+          'on the result screen. And ux1-2 must keep its exit affordance on that same screen',
+      ).toBe(true);
 
-    document.body.removeChild(parent);
-  });
+      document.body.removeChild(parent);
+    },
+  );
 
   it('BITES: H4 the hint is a #root sibling of #outcomeEl — NOT inside #actionsEl, NOT on the caller-supplied parent — and 3 refreshes leave exactly one', () => {
     // KILLS (anti-pattern 3): appending the hint to the caller-supplied `parent`
@@ -2605,8 +2610,11 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
 // defect is structurally invisible here.
 // =============================================================================
 
-/** Root child indices, from the BattleView constructor's append order. */
-const RM3_ROOT_CHILDREN = 10;
+/** Root child indices, from the BattleView constructor's append order. INTENTIONAL CHANGE (ctl-8i,
+ *  CTL8I.1): 11 children, not 10: the command group (`battle-commands`, which holds the five
+ *  command buttons, the Run reason and the waiting caption) sits between the player card and the
+ *  skills grid. The cards stay at indices 2 and 3. */
+const RM3_ROOT_CHILDREN = 11;
 const RM3_OPPONENT_INDEX = 2;
 const RM3_PLAYER_INDEX = 3;
 /** `#renderMonsterCard` child order: [0] header, [1] hpBar, [2] hpText, [3] status (conditional). */
@@ -2641,8 +2649,9 @@ function rm3ResolveFill(parent: HTMLElement, childIndex: number, label: string):
   expect(
     root!.children.length,
     `RM3 precondition: #root must hold exactly ${RM3_ROOT_CHILDREN} children in the constructor's ` +
-      'documented order (title, weather, opponent card, player card, skills, actions, swap hint, ' +
-      'pvp status, outcome, continue hint). A different count means the positional walk below is ' +
+      'documented order (title, weather, opponent card, player card, commands, skills, actions, ' +
+      'swap hint, pvp status, outcome, continue hint). A different count means the positional ' +
+      'walk below is ' +
       'reading some other element, and every assertion made on it would be about the wrong node',
   ).toBe(RM3_ROOT_CHILDREN);
 
@@ -3226,7 +3235,12 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
     document.body.replaceChildren();
   });
 
-  it('rb56 PvE: skill buttons show name, power AND affinity in textContent; title carries only accuracy', () => {
+  // INTENTIONAL CHANGE (ctl-8i, CTL8I.2; closes R-rb-56-FOLLOWUP-ACC): the accuracy moved from the
+  // hover-only `btn.title` into the visible label (`· Acc N%`), so the cell has NO title any more;
+  // and the view now also holds the five command buttons (`data-battle-list="commands"`), so the
+  // skill buttons are found by their list, not as "every button in the view". Was: the label ended
+  // at the affinity, `title` was `Acc N%`, and the view held exactly two buttons.
+  it('rb56 PvE: skill buttons show name, power AND affinity in textContent (and the accuracy, ctl-8i); there is no title', () => {
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
@@ -3234,33 +3248,32 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
     view.refresh(makeUx4VM({ skills: RB56_SKILLS, canFlee: false }));
     view.show();
 
-    const buttons = [...parent.querySelectorAll('button')];
+    const buttons = [...parent.querySelectorAll<HTMLButtonElement>('[data-battle-list="skills"]')];
     expect(
       buttons,
-      'rb56 (PvE) precondition: exactly 2 buttons must exist in the WHOLE view — canFlee:false, ' +
-        'canSwap:false, canRecruit:false, cureItems:[] and bench:[] leave #actionsEl empty (see ' +
-        '#renderActions/#renderSwapButtons above), so a different count means this query is ' +
-        'reading the wrong elements (e.g. a leaked Flee or swap button), not the two skill buttons',
+      'rb56 (PvE) precondition: exactly 2 skill buttons (the two cells of the grid) — the command ' +
+        'row holds five other buttons, in the `commands` list, and canFlee:false, canSwap:false, ' +
+        'canRecruit:false, cureItems:[] and bench:[] leave #actionsEl empty',
     ).toHaveLength(2);
 
     expect(
       buttons.map((b) => b.textContent),
-      "rb56 (PvE): each skill button's visible textContent must carry its name, power AND " +
-        'affinity, verbatim (not through a client-side short-token map with a passthrough ' +
+      "rb56 (PvE): each skill button's visible textContent must carry its name, power, affinity " +
+        'AND accuracy, verbatim (not through a client-side short-token map with a passthrough ' +
         'default — see the fixture comment on `RB56_SKILLS` above for why real enum values are ' +
         'load-bearing here). This assertion kills an implementation that carries only name+power, ' +
-        'leaving the affinity in the hover/long-press-only `btn.title`',
-    ).toEqual(['Vine Whip (40) · Plant', 'Thunder Fang (35) · Electric']);
+        'leaving the affinity or the accuracy in the hover/long-press-only `btn.title`',
+    ).toEqual([
+      `Vine Whip (40) ${C8I_DOT} Plant ${C8I_DOT} Acc 100%`,
+      `Thunder Fang (35) ${C8I_DOT} Electric ${C8I_DOT} Acc 95%`,
+    ]);
 
-    expect(
-      buttons[0]!.title,
-      'rb56 (PvE): btn.title must carry ONLY the accuracy — not the affinity, which has moved to ' +
-        'the visible textContent asserted above',
-    ).toBe('Acc 100%');
-    expect(
-      buttons[1]!.title,
-      'rb56 (PvE): btn.title must carry ONLY the accuracy — not the affinity',
-    ).toBe('Acc 95%');
+    for (const b of buttons) {
+      expect(
+        b.hasAttribute('title'),
+        'rb56 (PvE): the cell carries no title at all: the accuracy is in the visible label',
+      ).toBe(false);
+    }
 
     // ANTI-MUTANT (structural, additive): textContent concatenates every descendant and
     // ignores ARIA, so it stays green for a mutant that appends a visually-hidden,
@@ -3298,7 +3311,11 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
     document.body.removeChild(parent);
   });
 
-  it('rb56 PvP: skill buttons show "Submit:", name AND affinity in textContent; title carries only accuracy', () => {
+  // INTENTIONAL CHANGE (ctl-8i, CTL8I.2): see the PvE case above. The PvP cell now also gives the
+  // power and the accuracy (`Submit: Vine Whip (40) · Plant · Acc 100%`); it kept its `Submit: `
+  // prefix (e2e/pvp-side-b.spec.ts matches `/^Submit: /`). Was: `Submit: {name} · {affinity}` with
+  // the accuracy in `title`.
+  it('rb56 PvP: skill buttons show "Submit:", name AND affinity in textContent (and the power and accuracy, ctl-8i); there is no title', () => {
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
@@ -3306,30 +3323,29 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
     view.refresh(makeUx4VM({ skills: RB56_SKILLS, canFlee: false, isPvp: true }));
     view.show();
 
-    const buttons = [...parent.querySelectorAll('button')];
+    const buttons = [...parent.querySelectorAll<HTMLButtonElement>('[data-battle-list="skills"]')];
     expect(
       buttons,
-      'rb56 (PvP) precondition: exactly 2 buttons must exist in the WHOLE view — the same fixture ' +
-        'shape as the PvE case; isPvp:true only changes the label ternary inside #renderSkills, ' +
-        'never the #actionsEl gating checked above',
+      'rb56 (PvP) precondition: exactly 2 skill buttons — the same fixture shape as the PvE ' +
+        'case; isPvp:true only changes the label inside #renderSkills, never the #actionsEl ' +
+        'gating checked above',
     ).toHaveLength(2);
 
     expect(
       buttons.map((b) => b.textContent),
-      'rb56 (PvP): each skill button\'s visible textContent must carry "Submit:", the name AND ' +
-        'the affinity, verbatim. This assertion kills an implementation whose PvP arm carries only ' +
-        '"Submit: <name>", leaving the affinity in the hover-only btn.title, and also kills a ' +
-        'passthrough-default token-map implementation (see `RB56_SKILLS` fixture comment above)',
-    ).toEqual(['Submit: Vine Whip · Plant', 'Submit: Thunder Fang · Electric']);
+      'rb56 (PvP): each skill button\'s visible textContent must carry "Submit:", the name, the ' +
+        'power, the affinity AND the accuracy, verbatim. This assertion kills an implementation ' +
+        'whose PvP arm carries only "Submit: <name>", leaving the rest in the hover-only ' +
+        'btn.title, and also kills a passthrough-default token-map implementation (see ' +
+        '`RB56_SKILLS` fixture comment above)',
+    ).toEqual([
+      `Submit: Vine Whip (40) ${C8I_DOT} Plant ${C8I_DOT} Acc 100%`,
+      `Submit: Thunder Fang (35) ${C8I_DOT} Electric ${C8I_DOT} Acc 95%`,
+    ]);
 
-    expect(
-      buttons[0]!.title,
-      'rb56 (PvP): btn.title must carry ONLY the accuracy — not the affinity',
-    ).toBe('Acc 100%');
-    expect(
-      buttons[1]!.title,
-      'rb56 (PvP): btn.title must carry ONLY the accuracy — not the affinity',
-    ).toBe('Acc 95%');
+    for (const b of buttons) {
+      expect(b.hasAttribute('title'), 'rb56 (PvP): the cell carries no title at all').toBe(false);
+    }
 
     // ANTI-MUTANT (structural, additive) — mirrors the PvE case above. Mutant B specifically
     // targets this PvP arm: `btn.setAttribute('aria-label', vm.isPvp ? \`Submit: ${skill.name}\`
@@ -3677,9 +3693,9 @@ function rb59Cards(parent: HTMLElement): Rb59CardPair {
   expect(
     root!.children.length,
     `rb59 WALK: #root must hold exactly ${RM3_ROOT_CHILDREN} children in the constructor's ` +
-      'documented order (title, weather, opponent card, player card, skills, actions, swap ' +
-      'hint, pvp status, outcome, continue hint). A different count means the positional ' +
-      'walk below is reading some other element, and every border assertion made on it ' +
+      'documented order (title, weather, opponent card, player card, commands, skills, ' +
+      'actions, swap hint, pvp status, outcome, continue hint). A different count means the ' +
+      'positional walk below is reading some other element, and every border assertion made on it ' +
       'would be about the wrong node',
   ).toBe(RM3_ROOT_CHILDREN);
 
@@ -4534,8 +4550,15 @@ interface RaControls {
 
 /** Resolve the LIVE controls (re-query after every refresh — replaceChildren rebuilds them). */
 function raControls(parent: HTMLElement): RaControls {
-  const all = [...parent.querySelectorAll('button')];
-  const skills = all.filter((b) => b.title.startsWith('Acc '));
+  // INTENTIONAL CHANGE (ctl-8i, CTL8I.1-2): the command row's five buttons are `aria-disabled`,
+  // never `disabled`, and are not among the seven PvE action controls this census counts, so the
+  // census leaves the `commands` list out (the command rows' own lock is asserted in ctl-8i's
+  // CTL8I-1-VIEW-COMMAND-LIST); and a skill button is found by its list, since its accuracy no
+  // longer sits in a `title`. Was: every button under the mount, skills filtered by `title`.
+  const all = [...parent.querySelectorAll('button')].filter(
+    (b) => b.getAttribute('data-battle-list') !== 'commands',
+  );
+  const skills = all.filter((b) => b.getAttribute('data-battle-list') === 'skills');
   const flee = all.find((b) => b.textContent === 'Flee');
   const swaps = all.filter((b) => (b.textContent ?? '').startsWith('Swap: '));
   const recruit = parent.querySelector<HTMLButtonElement>('[data-testid="recruit-action"]');
@@ -5215,6 +5238,15 @@ const M24S3_BV_PLAIN_KEYS = new Set([
   'battle.outcome.victory',
   'battle.outcome.defeat',
   'battle.outcome.fled',
+  // ctl-8i (named intentional change): the command row's five labels, its group name and the Run
+  // reason are plain catalog sinks too.
+  'battle.command.fight',
+  'battle.command.recruit',
+  'battle.command.swap',
+  'battle.command.bag',
+  'battle.command.run',
+  'battle.commands.label',
+  'battle.command.runPvpReason',
 ]);
 
 const M24S3_BV_PARAM_KEYS = new Set([
@@ -5223,7 +5255,9 @@ const M24S3_BV_PARAM_KEYS = new Set([
   'battle.card.hpLine',
   'battle.skill.pvpSubmit',
   'battle.skill.pveLabel',
-  'battle.skill.accuracy',
+  // ctl-8i (named intentional change): `battle.skill.accuracy` is deleted (the accuracy is part of
+  // both skill labels now); `battle.commands.waiting` (the PvP caption over the greyed list) is new.
+  'battle.commands.waiting',
   'battle.cure.option',
   'battle.swap.pvpSubmit',
   'battle.swap.pveLabel',
@@ -5382,18 +5416,25 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       max: 12,
       affinity: 'Fire',
     });
+    // INTENTIONAL CHANGE (ctl-8i, CTL8I.2): the label takes the accuracy too, and the separate
+    // `battle.skill.accuracy` sink (the hover title) is gone. Was: no `accuracy` param and two
+    // `battle.skill.accuracy` calls.
     expect(i18nTf).toHaveBeenCalledWith('battle.skill.pveLabel', {
       name: 'Vine Lash',
       power: 40,
       affinity: 'Plant',
+      accuracy: 95,
     });
     expect(i18nTf).toHaveBeenCalledWith('battle.skill.pveLabel', {
       name: 'Ember Jab',
       power: 35,
       affinity: 'Fire',
+      accuracy: 90,
     });
-    expect(i18nTf).toHaveBeenCalledWith('battle.skill.accuracy', { accuracy: 95 });
-    expect(i18nTf).toHaveBeenCalledWith('battle.skill.accuracy', { accuracy: 90 });
+    expect(
+      vi.mocked(i18nTf).mock.calls.some(([key]) => String(key) === 'battle.skill.accuracy'),
+      'the accuracy key is retired: nothing resolves it any more',
+    ).toBe(false);
     expect(i18nTf).toHaveBeenCalledWith('battle.swap.pveLabel', {
       species: 'Mosshorn',
       current: 6,
@@ -5422,9 +5463,18 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
     expect(hpTexts).toContain('HP 3/9 · Plant');
     expect(hpTexts).toContain('HP 5/12 · Fire');
     const buttons = [...parent.querySelectorAll('button')];
-    const accTitles = buttons.map((b) => b.title).filter((title) => title.startsWith('Acc '));
-    expect(accTitles).toContain('Acc 95%');
-    expect(accTitles).toContain('Acc 90%');
+    // INTENTIONAL CHANGE (ctl-8i): the accuracy is read from the visible label, not from a title.
+    const skillLabels = buttons
+      .filter((b) => b.getAttribute('data-battle-list') === 'skills')
+      .map((b) => b.textContent);
+    expect(skillLabels).toContain(`Vine Lash (40) ${C8I_DOT} Plant ${C8I_DOT} Acc 95%`);
+    expect(skillLabels).toContain(`Ember Jab (35) ${C8I_DOT} Fire ${C8I_DOT} Acc 90%`);
+    expect(
+      buttons.some(
+        (b) => b.getAttribute('data-battle-list') === 'skills' && b.hasAttribute('title'),
+      ),
+      'no skill cell carries a title any more',
+    ).toBe(false);
     expect(buttons.some((b) => b.textContent === 'Flee')).toBe(true);
     expect(buttons.some((b) => b.textContent === 'Recruit')).toBe(true);
     expect(buttons.some((b) => b.textContent === 'Use Item')).toBe(true);
@@ -5452,9 +5502,12 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       i18nT,
       'PvP with no opponent name falls back to battle.card.opponent',
     ).toHaveBeenCalledWith('battle.card.opponent');
+    // INTENTIONAL CHANGE (ctl-8i): the PvP label takes the power and the accuracy too.
     expect(i18nTf).toHaveBeenCalledWith('battle.skill.pvpSubmit', {
       name: 'Vine Lash',
+      power: 40,
       affinity: 'Plant',
+      accuracy: 95,
     });
     expect(i18nTf).toHaveBeenCalledWith('battle.swap.pvpSubmit', { species: 'Mosshorn' });
 
@@ -5532,7 +5585,6 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       expect(joined).toContain('«battle.cure.submit»');
       expect(joined).toContain('«battle.weather.banner|{"label":"Rain","turns":2}»');
       expect(joined).toContain('«battle.card.level|{"level":7}»');
-      expect(joined).toContain('«battle.skill.accuracy|{"accuracy":95}»');
       expect(joined).toContain(
         '«battle.swap.pveLabel|{"species":"Mosshorn","current":6,"max":10}»',
       );
@@ -5540,12 +5592,24 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       // `void tf(...)` call survived 3288/3288 — the spy saw the call, the roster scan saw no
       // English word, the scanner saw a glyph-only template. Every parameterized PvE surface
       // therefore gets its own containment pin, not just the PvP twins.
+      // INTENTIONAL CHANGE (ctl-8i): the params carry the accuracy, last (the sentinel prints the
+      // object in its key order: name, power, affinity, accuracy).
       expect(joined).toContain(
-        '«battle.skill.pveLabel|{"name":"Vine Lash","power":40,"affinity":"Plant"}»',
+        '«battle.skill.pveLabel|{"name":"Vine Lash","power":40,"affinity":"Plant","accuracy":95}»',
       );
       expect(joined).toContain(
-        '«battle.skill.pveLabel|{"name":"Ember Jab","power":35,"affinity":"Fire"}»',
+        '«battle.skill.pveLabel|{"name":"Ember Jab","power":35,"affinity":"Fire","accuracy":90}»',
       );
+      // ctl-8i: the command row's labels and group name are resolver output too.
+      for (const key of [
+        'battle.command.fight',
+        'battle.command.recruit',
+        'battle.command.swap',
+        'battle.command.bag',
+        'battle.command.run',
+      ]) {
+        expect(joined).toContain(`«${key}»`);
+      }
       expect(joined).toContain('«battle.card.hpLine|{"current":3,"max":9,"affinity":"Plant"}»');
       expect(joined).toContain('«battle.card.hpLine|{"current":5,"max":12,"affinity":"Fire"}»');
       expect(joined).toContain(
@@ -5560,7 +5624,11 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       m24s3AssertNoRosterWord(texts, 'PvP opponentName unset');
       joined = texts.join('\n');
       expect(joined).toContain('«battle.card.opponent»');
-      expect(joined).toContain('«battle.skill.pvpSubmit|{"name":"Vine Lash","affinity":"Plant"}»');
+      expect(joined).toContain(
+        '«battle.skill.pvpSubmit|{"name":"Vine Lash","power":40,"affinity":"Plant","accuracy":95}»',
+      );
+      // ctl-8i: a PvP battle's Run row says why it is disabled, through the resolver.
+      expect(joined).toContain('«battle.command.runPvpReason»');
       expect(joined).toContain('«battle.swap.pvpSubmit|{"species":"Mosshorn"}»');
 
       view.refresh(m24s3PvpVM({ pvpOpponentName: 'Rival', pvpPendingSubmit: false }));
@@ -5572,10 +5640,15 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       );
       expect(joined).toContain('Rival');
 
-      view.refresh(m24s3PvpVM({ pvpOpponentName: null, pvpPendingSubmit: true }));
+      // INTENTIONAL CHANGE (ctl-8i, CTL8I.1): the pending caption names the opponent
+      // (`Waiting for {name}…`), so this scenario sets a name: under sentinels a NULL name would
+      // nest the `battle.card.opponent` sentinel inside the caption's JSON param (the null
+      // fallback is pinned with the real resolver in CTL8I-1-PVP-WAITING-GREYS). Was: null name.
+      view.refresh(m24s3PvpVM({ pvpOpponentName: 'Rival', pvpPendingSubmit: true }));
       texts = m24s3WalkSubtree(root);
       m24s3AssertNoRosterWord(texts, 'PvP pending');
       expect(texts.join('\n')).toContain('«battle.pvp.waiting»');
+      expect(texts.join('\n')).toContain('«battle.commands.waiting|{"name":"Rival"}»');
 
       for (const [outcome, key] of [
         ['SideAWins', 'battle.outcome.victory'],
@@ -6339,5 +6412,888 @@ describe('BattleView ctl-7b: the battle root is a class-styled frame, layered by
       'every top-level frame or shell selector must be in the shipped roster — a new one is a new ' +
         'way to place, layer or recolour a frame without touching the inline contract',
     ).toEqual([]);
+  });
+});
+
+// =============================================================================
+// ctl-8i: Battle I — the command list (CTL8I.1), the skill grid (CTL8I.2) and the cursor that
+// survives a menu opened over a sub-list (CTL8I.3).
+//
+// THE VIEW'S CONTRACT (battleModel.ts owns the rules; the view paints them):
+//   * `[data-testid="battle-commands"]` (role="group", aria-label "Commands") sits between the
+//     player card and the skills grid and holds five `[data-testid="battle-command-<id>"]`
+//     buttons, each `data-battle-list="commands"`. A disabled row is `aria-disabled="true"`, never
+//     `disabled`, so the cursor can rest on it; its click does nothing.
+//   * Cursor rows carry `data-battle-list`: skill buttons "skills", swap buttons "swap",
+//     `recruit-action` "recruit", `use-item-action` "bag". The bait / cure <select>s and Flee are
+//     in no list. Exactly one element in the root is `aria-current="true"` while the command row
+//     is shown, with an inline outline; when the view moves the cursor it also focuses it.
+//   * `applyBattleOp(op)`: a no-op while hidden. If focus is NOT on a root element that has
+//     `data-battle-list`, ANY op only focuses the kept cursor element (A presses nothing, a move
+//     does not step). Otherwise the cursor first syncs to the focused element, then move steps
+//     (the skills grid in two columns, every other list in one), activate clicks the cursor
+//     element (an aria-disabled one does nothing) and back returns a sub-list to its command.
+//   * A new (battleId, turnNumber) resets to commands / Fight; the same one keeps list + index on
+//     the rebuilt nodes. Focus follows a reset only from <body> or inside the root.
+//
+// The suite drives the view through `applyBattleOp` and real clicks, with real focus, in
+// happy-dom; focus is set explicitly wherever a case depends on it, so each case states the
+// focus rule it relies on.
+// =============================================================================
+
+/** U+00B7 MIDDLE DOT, U+2026 HORIZONTAL ELLIPSIS and U+2019 RIGHT SINGLE QUOTATION MARK, by code point. */
+const C8I_DOT = String.fromCharCode(0x00b7);
+const C8I_ELLIPSIS = String.fromCharCode(0x2026);
+const C8I_APOSTROPHE = String.fromCharCode(0x2019);
+
+const C8I_IDS = ['fight', 'recruit', 'swap', 'bag', 'run'] as const;
+const C8I_LABELS = ['Fight', 'Recruit', 'Swap', 'Bag', 'Run'] as const;
+
+/** Four skills: a two-column grid with a full second row (cells 0 1 / 2 3). */
+const C8I_SKILLS = [
+  { id: 11, name: 'Vine Whip', affinity: 'Plant', power: 40, accuracy: 100 },
+  { id: 12, name: 'Thunder Fang', affinity: 'Electric', power: 35, accuracy: 95 },
+  { id: 13, name: 'Ember Jab', affinity: 'Fire', power: 25, accuracy: 90 },
+  { id: 14, name: 'Tide Slam', affinity: 'Water', power: 55, accuracy: 80 },
+];
+
+/** An ongoing wild PvE battle on which every command is available. */
+function c8iVM(overrides: Partial<BattleViewModel> = {}): BattleViewModel {
+  return makeUx4VM({
+    battleId: 77n,
+    turnNumber: 2,
+    skills: [...C8I_SKILLS],
+    canFlee: true,
+    canSwap: true,
+    bench: [...UX4_BENCH],
+    canRecruit: true,
+    baitOptions: [{ itemId: 7, name: 'Lure Berry', recruitBonus: 150, count: 2 }],
+    cureItems: [{ itemId: 12, name: 'Antidote', cureStatus: 'Poison', count: 1 }],
+    isPvp: false,
+    pvpPendingSubmit: false,
+    pvpOpponentName: null,
+    activeIndex: 0,
+    ...overrides,
+  });
+}
+
+/** An ongoing PvP battle (not waiting): Fight and Swap available, Recruit, Bag and Run not. */
+function c8iPvpVM(overrides: Partial<BattleViewModel> = {}): BattleViewModel {
+  return c8iVM({
+    isPvp: true,
+    pvpOpponentName: 'Rival',
+    canFlee: false,
+    canRecruit: false,
+    baitOptions: [],
+    cureItems: [],
+    ...overrides,
+  });
+}
+
+interface C8iMount {
+  readonly parent: HTMLElement;
+  readonly root: HTMLElement;
+  readonly view: BattleView;
+  readonly callbacks: BattleViewCallbacks;
+}
+
+/** A fresh view in a fresh parent, refreshed with `vm` (which shows it). */
+function c8iMount(
+  vm: BattleViewModel,
+  callbacks: BattleViewCallbacks = makeUx4Callbacks(),
+): C8iMount {
+  const parent = document.createElement('div');
+  document.body.appendChild(parent);
+  const view = new BattleView(parent, callbacks);
+  view.refresh(vm);
+  return { parent, root: parent.firstElementChild as HTMLElement, view, callbacks };
+}
+
+/** Like c8iMount, but first removes everything an earlier mount of the same case left. */
+function c8iFresh(
+  vm: BattleViewModel,
+  callbacks: BattleViewCallbacks = makeUx4Callbacks(),
+): C8iMount {
+  closeOverlayA11y('battleView', null);
+  document.body.replaceChildren();
+  return c8iMount(vm, callbacks);
+}
+
+function c8iGroup(root: Element): HTMLElement {
+  const group = root.querySelector<HTMLElement>('[data-testid="battle-commands"]');
+  if (group === null) throw new Error('ctl-8i: the view has no [data-testid="battle-commands"]');
+  return group;
+}
+
+function c8iCmd(root: Element, id: string): HTMLButtonElement {
+  const row = root.querySelector<HTMLButtonElement>(`[data-testid="battle-command-${id}"]`);
+  if (row === null) throw new Error(`ctl-8i: the view has no [data-testid="battle-command-${id}"]`);
+  return row;
+}
+
+const c8iSkills = (root: Element): HTMLButtonElement[] => [
+  ...root.querySelectorAll<HTMLButtonElement>('[data-battle-list="skills"]'),
+];
+const c8iCurrent = (root: Element): HTMLElement[] => [
+  ...root.querySelectorAll<HTMLElement>('[aria-current="true"]'),
+];
+const c8iDisabled = (el: Element): boolean => el.getAttribute('aria-disabled') === 'true';
+const c8iTestId = <T extends HTMLElement>(root: Element, id: string): T | null =>
+  root.querySelector<T>(`[data-testid="${id}"]`);
+
+/** Shown unless the element or an ancestor up to `root` is display:none or hidden. */
+function c8iShown(el: Element | null, root: Element): boolean {
+  for (let n: Element | null = el; n !== null; n = n.parentElement) {
+    if (n instanceof HTMLElement && (n.style.display === 'none' || n.hidden)) return false;
+    if (n === root) return true;
+  }
+  return false;
+}
+
+/** Exactly one aria-current in the root, on `el`, and focus there too. */
+function c8iExpectCursorOn(root: Element, el: Element, label: string): void {
+  const current = c8iCurrent(root);
+  expect(current, `${label}: exactly one aria-current="true" in the view`).toHaveLength(1);
+  expect(current[0], `${label}: the cursor element`).toBe(el);
+  expect(document.activeElement, `${label}: focus is on the cursor element`).toBe(el);
+}
+
+const c8iColumns = (grid: HTMLElement): number => {
+  const raw = ctl7bInline(grid).get('grid-template-columns') ?? '';
+  if (raw.startsWith('repeat(')) return Number.parseInt(raw.slice('repeat('.length), 10);
+  return raw.split(/\s+/).filter((token) => token !== '').length;
+};
+
+describe('BattleView ctl-8i: the command list, the skill grid and the cursor', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('CTL8I-1-VIEW-COMMAND-LIST: five command buttons above the skill grid with the cursor on Fight; Recruit, Swap and Bag move the cursor into their controls and Back returns to the command; a disabled row is aria-disabled and does nothing; Run is the Flee path under the same lock; a terminal outcome hides the row; the PvE lock disables all five rows and releases them', async () => {
+    // WRONG IMPL KILLED: a missing or misplaced group (below the grid, or around the cards); a
+    // group without role/label; a row order other than Fight, Recruit, Swap, Bag, Run; command
+    // rows without data-battle-list (the cursor could not find them); a cursor with no aria-current
+    // or two of them (a screen reader announces both), or one with no visible outline; a disabled
+    // row that is `disabled` (focus skips it, the cursor cannot rest on it) or that still acts; a
+    // Recruit/Swap/Bag press that FIRES the action instead of moving the cursor to its control;
+    // a Back that leaves the cursor in the sub-list; select/Flee wired into a list; a Run that
+    // flees without the shared lock (a double flee); a terminal outcome that still shows
+    // commands or a cursor; a PvE lock that leaves command rows live (a second action in the same
+    // turn); and a lock that is re-derived on render only (the settle must re-enable the rows).
+    const { root, view, callbacks } = c8iMount(c8iVM());
+
+    // --- the group ---
+    const group = c8iGroup(root);
+    expect(group.getAttribute('role'), 'a labelled group').toBe('group');
+    expect(group.getAttribute('aria-label'), 'its accessible name').toBe('Commands');
+    expect(group.parentElement, 'a direct child of the battle root').toBe(root);
+    const kids = [...root.children];
+    const gridEl = c8iSkills(root)[0]?.parentElement;
+    expect(gridEl, 'precondition: the skill grid exists').toBeTruthy();
+    expect(kids.indexOf(group), 'the group sits above the skills grid').toBeLessThan(
+      kids.indexOf(gridEl as Element),
+    );
+    expect(kids.indexOf(group), 'and below the cards').toBeGreaterThan(
+      kids.findIndex((c) => c.textContent?.includes('You: ') === true),
+    );
+
+    const rows = [...group.querySelectorAll('button')];
+    expect(
+      rows.map((b) => b.getAttribute('data-testid')),
+      'five buttons in Fight, Recruit, Swap, Bag, Run order',
+    ).toEqual(C8I_IDS.map((id) => `battle-command-${id}`));
+    expect(
+      rows.map((b) => b.textContent),
+      'labelled from the catalog',
+    ).toEqual([...C8I_LABELS]);
+    for (const row of rows) {
+      expect(row.getAttribute('data-battle-list'), 'every row is in the commands list').toBe(
+        'commands',
+      );
+      expect(row.hasAttribute('disabled'), 'never the disabled attribute').toBe(false);
+      expect(c8iDisabled(row), 'every command is available on this battle').toBe(false);
+    }
+
+    // --- the cursor starts on Fight ---
+    const fight = c8iCmd(root, 'fight');
+    expect(c8iCurrent(root), 'exactly one aria-current').toHaveLength(1);
+    expect(c8iCurrent(root)[0], 'on Fight').toBe(fight);
+    expect(fight.style.outline.length, 'with an inline outline (a visible cue)').toBeGreaterThan(0);
+
+    // --- the lists of the controls: the bait / cure selects and Flee are in none ---
+    const recruitBtn = c8iTestId<HTMLButtonElement>(root, 'recruit-action');
+    const useBtn = c8iTestId<HTMLButtonElement>(root, 'use-item-action');
+    const swapBtns = [...root.querySelectorAll<HTMLButtonElement>('[data-battle-list="swap"]')];
+    expect(recruitBtn?.getAttribute('data-battle-list'), 'Recruit control').toBe('recruit');
+    expect(useBtn?.getAttribute('data-battle-list'), 'Use Item control').toBe('bag');
+    expect(
+      swapBtns.map((b) => b.textContent),
+      'the swap buttons, in bench order',
+    ).toEqual(['Swap: Mossling (12/18)', 'Swap: Emberfang (7/21)']);
+    for (const id of ['bait-selector', 'cure-item-selector']) {
+      expect(c8iTestId(root, id)?.hasAttribute('data-battle-list'), `${id} is in no list`).toBe(
+        false,
+      );
+    }
+    const flee = [...root.querySelectorAll('button')].find((b) => b.textContent === 'Flee');
+    expect(flee, 'precondition: the legacy Flee button is still rendered').toBeDefined();
+    expect(flee?.hasAttribute('data-battle-list'), 'Flee is in no list').toBe(false);
+
+    // --- choosing Recruit, Swap and Bag moves the cursor, fires nothing; Back returns ---
+    fight.focus();
+    c8iCmd(root, 'recruit').click();
+    c8iExpectCursorOn(root, recruitBtn as Element, 'Recruit chosen');
+    expect(callbacks.onRecruit, 'choosing Recruit does not recruit').not.toHaveBeenCalled();
+    view.applyBattleOp({ kind: 'back' });
+    c8iExpectCursorOn(root, c8iCmd(root, 'recruit'), 'Back from the Recruit control');
+
+    c8iCmd(root, 'swap').click();
+    c8iExpectCursorOn(root, swapBtns[0] as Element, 'Swap chosen: the first swap button');
+    expect(callbacks.onSwap, 'choosing Swap does not swap').not.toHaveBeenCalled();
+    view.applyBattleOp({ kind: 'back' });
+    c8iExpectCursorOn(root, c8iCmd(root, 'swap'), 'Back from the swap buttons');
+
+    c8iCmd(root, 'bag').click();
+    c8iExpectCursorOn(root, useBtn as Element, 'Bag chosen');
+    expect(callbacks.onUseItem, 'choosing Bag does not use an item').not.toHaveBeenCalled();
+    view.applyBattleOp({ kind: 'back' });
+    c8iExpectCursorOn(root, c8iCmd(root, 'bag'), 'Back from the Use Item control');
+    view.applyBattleOp({ kind: 'back' });
+    c8iExpectCursorOn(root, c8iCmd(root, 'bag'), 'Back at the command row does nothing');
+
+    // --- a disabled row: aria-disabled, focusable, a cursor stop, and inert ---
+    const trainer = c8iFresh(
+      c8iVM({ canRecruit: false, baitOptions: [], canSwap: false, bench: [], cureItems: [] }),
+    );
+    for (const id of ['recruit', 'swap', 'bag']) {
+      const row = c8iCmd(trainer.root, id);
+      expect(c8iDisabled(row), `${id} is aria-disabled`).toBe(true);
+      expect(row.hasAttribute('disabled'), `${id} is not disabled (it stays focusable)`).toBe(
+        false,
+      );
+      row.focus();
+      expect(document.activeElement, `${id} takes focus`).toBe(row);
+      row.click();
+      expect(c8iCurrent(trainer.root), `${id}: a click leaves one cursor`).toHaveLength(1);
+      expect(c8iCurrent(trainer.root)[0], `${id}: a click leaves the cursor on Fight`).toBe(
+        c8iCmd(trainer.root, 'fight'),
+      );
+    }
+    for (const id of ['fight', 'run']) {
+      expect(c8iDisabled(c8iCmd(trainer.root, id)), `${id} is still available`).toBe(false);
+    }
+    c8iCmd(trainer.root, 'fight').focus();
+    trainer.view.applyBattleOp({ kind: 'move', dir: 'Down' });
+    c8iExpectCursorOn(
+      trainer.root,
+      c8iCmd(trainer.root, 'recruit'),
+      'Down rests the cursor on a disabled row',
+    );
+    trainer.view.applyBattleOp({ kind: 'activate' });
+    c8iExpectCursorOn(trainer.root, c8iCmd(trainer.root, 'recruit'), 'A on a disabled row');
+    expect(trainer.callbacks.onRecruit).not.toHaveBeenCalled();
+
+    // --- Run is the Flee path, under the shared lock ---
+    const d = raDeferred();
+    const run = c8iFresh(c8iVM(), makeRaCallbacks({ onFlee: vi.fn().mockReturnValue(d.promise) }));
+    c8iCmd(run.root, 'run').click();
+    expect(run.callbacks.onFlee, 'Run flees once, with the battle id').toHaveBeenCalledTimes(1);
+    expect(run.callbacks.onFlee).toHaveBeenCalledWith(77n);
+    for (const id of C8I_IDS) {
+      expect(c8iDisabled(c8iCmd(run.root, id)), `${id} is locked while the flee is pending`).toBe(
+        true,
+      );
+    }
+    c8iCmd(run.root, 'run').click();
+    const fleeBtn = [...run.root.querySelectorAll('button')].find((b) => b.textContent === 'Flee');
+    (fleeBtn as HTMLButtonElement).disabled = false; // hostile: only the shared lock can refuse
+    (fleeBtn as HTMLButtonElement).click();
+    expect(run.callbacks.onFlee, 'Run and Flee share the one lock').toHaveBeenCalledTimes(1);
+    d.resolve();
+    await raFlushPromises();
+    for (const id of C8I_IDS) {
+      expect(
+        c8iDisabled(c8iCmd(run.root, id)),
+        `${id} is released when the call settles (no refresh needed)`,
+      ).toBe(false);
+    }
+
+    // --- the PvE lock taken by a skill disables the five rows, survives a refresh, releases ---
+    const e = raDeferred();
+    const locked = c8iFresh(
+      c8iVM(),
+      makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(e.promise) }),
+    );
+    c8iSkills(locked.root)[0]?.click();
+    expect(locked.callbacks.onAttack).toHaveBeenCalledTimes(1);
+    for (const id of C8I_IDS) {
+      expect(c8iDisabled(c8iCmd(locked.root, id)), `${id} is locked during an attack`).toBe(true);
+    }
+    expect(c8iCurrent(locked.root), 'still exactly one cursor during the lock').toHaveLength(1);
+    locked.view.refresh(c8iVM());
+    for (const id of C8I_IDS) {
+      expect(
+        c8iDisabled(c8iCmd(locked.root, id)),
+        `${id} is still locked after a mid-flight re-render`,
+      ).toBe(true);
+    }
+    c8iCmd(locked.root, 'run').click();
+    expect(locked.callbacks.onFlee, 'a locked Run flees nothing').not.toHaveBeenCalled();
+    e.resolve();
+    await raFlushPromises();
+    for (const id of C8I_IDS) {
+      expect(c8iDisabled(c8iCmd(locked.root, id)), `${id} is released on settle`).toBe(false);
+    }
+
+    // --- a terminal outcome: the row is hidden, nothing is the cursor, every row is disabled ---
+    const over = c8iFresh(c8iVM());
+    over.view.refresh(c8iVM({ outcome: 'SideAWins' }));
+    expect(c8iShown(c8iGroup(over.root), over.root), 'the command row is hidden').toBe(false);
+    expect(c8iCurrent(over.root), 'no aria-current on an outcome').toHaveLength(0);
+    for (const id of C8I_IDS) {
+      expect(c8iDisabled(c8iCmd(over.root, id)), `${id} is disabled on an outcome`).toBe(true);
+    }
+    over.view.refresh(c8iVM({ battleId: 78n, turnNumber: 1 }));
+    expect(c8iShown(c8iGroup(over.root), over.root), 'the next battle shows it again').toBe(true);
+    expect(c8iCurrent(over.root), 'and its cursor').toHaveLength(1);
+  });
+
+  it('CTL8I-1-TURN-RESET: the first render and every new (battle, turn) land on the command list with the cursor on Fight; the same turn keeps the list and index on the rebuilt nodes, clamps a shrunk list and returns to Fight from an emptied one; focus follows a reset only from the page or inside the view', () => {
+    // WRONG IMPL KILLED: a first render with no cursor; a reset keyed on the turn number alone (a
+    // new battle on the same turn number would keep a stale sub-list); a reset that also fires on
+    // every re-render (a batch tick would yank the player out of the grid); a same-turn render
+    // that forgets the sub-list or keeps an index into a list that shrank (a cursor on nothing); a
+    // reset that steals focus from the menu or any other frame above the battle; and a reset
+    // that does not take focus back from the page or from inside the view.
+    const outside = document.createElement('button');
+    outside.id = 'c8i-outside';
+    document.body.appendChild(outside);
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement, 'precondition: focus is on the page').toBe(document.body);
+
+    // --- the first render ---
+    const { root, view } = c8iMount(c8iVM({ turnNumber: 2 }));
+    c8iExpectCursorOn(root, c8iCmd(root, 'fight'), 'the first render');
+    expect(c8iCurrent(root)[0]?.getAttribute('data-battle-list')).toBe('commands');
+
+    // --- the next turn of the same battle resets a sub-list ---
+    c8iCmd(root, 'fight').click();
+    view.applyBattleOp({ kind: 'move', dir: 'Right' });
+    c8iExpectCursorOn(root, c8iSkills(root)[1] as Element, 'in the grid at the second skill');
+    view.refresh(c8iVM({ turnNumber: 3 }));
+    c8iExpectCursorOn(root, c8iCmd(root, 'fight'), 'turn + 1 resets to Fight');
+    expect(c8iCurrent(root)[0]?.getAttribute('data-battle-list'), 'in the command list').toBe(
+      'commands',
+    );
+
+    // --- the same turn keeps the list and index, on the rebuilt nodes ---
+    c8iCmd(root, 'fight').click();
+    view.applyBattleOp({ kind: 'move', dir: 'Right' });
+    const before = c8iSkills(root)[1] as HTMLElement;
+    view.refresh(c8iVM({ turnNumber: 3 }));
+    expect(before.isConnected, 'precondition: the re-render rebuilt the skill buttons').toBe(false);
+    const kept = c8iCurrent(root);
+    expect(kept, 'one cursor after a same-turn re-render').toHaveLength(1);
+    expect(kept[0], 'still on the second skill, the NEW node').toBe(c8iSkills(root)[1]);
+    expect(kept[0]?.getAttribute('data-battle-list')).toBe('skills');
+
+    // --- a new battle on the same turn number resets ---
+    view.refresh(c8iVM({ battleId: 78n, turnNumber: 3 }));
+    c8iExpectCursorOn(root, c8iCmd(root, 'fight'), 'a new battle id resets on the same turn');
+
+    // --- a shrunk list clamps; an emptied list returns to Fight ---
+    c8iCmd(root, 'fight').click();
+    view.applyBattleOp({ kind: 'move', dir: 'Right' });
+    view.refresh(c8iVM({ battleId: 78n, turnNumber: 3, skills: C8I_SKILLS.slice(0, 1) }));
+    expect(c8iCurrent(root), 'one cursor after the list shrank').toHaveLength(1);
+    expect(c8iCurrent(root)[0], 'clamped to the only skill').toBe(c8iSkills(root)[0]);
+    view.refresh(c8iVM({ battleId: 78n, turnNumber: 3, skills: [] }));
+    expect(c8iCurrent(root), 'one cursor with no skills at all').toHaveLength(1);
+    expect(c8iCurrent(root)[0], 'back on Fight').toBe(c8iCmd(root, 'fight'));
+    expect(c8iDisabled(c8iCmd(root, 'fight')), 'a Fight with nothing to fight with').toBe(true);
+
+    // --- focus: a reset leaves a focus that is elsewhere alone ---
+    view.refresh(c8iVM({ battleId: 78n, turnNumber: 3 }));
+    c8iCmd(root, 'fight').click();
+    view.applyBattleOp({ kind: 'move', dir: 'Right' });
+    outside.focus();
+    view.refresh(c8iVM({ battleId: 78n, turnNumber: 4 }));
+    expect(c8iCurrent(root)[0], 'the cursor still resets to Fight').toBe(c8iCmd(root, 'fight'));
+    expect(document.activeElement, 'but focus is not stolen from another frame').toBe(outside);
+
+    // --- focus on the view's own heading follows the reset ---
+    c8iCmd(root, 'fight').click();
+    (c8iTestId(root, 'battle-title') as HTMLElement).focus();
+    view.refresh(c8iVM({ battleId: 78n, turnNumber: 5 }));
+    c8iExpectCursorOn(root, c8iCmd(root, 'fight'), 'a reset from focus inside the view');
+
+    // --- focus on the page follows the reset ---
+    c8iCmd(root, 'fight').click();
+    (document.activeElement as HTMLElement).blur();
+    expect(document.activeElement, 'precondition: focus is on the page').toBe(document.body);
+    view.refresh(c8iVM({ battleId: 78n, turnNumber: 6 }));
+    c8iExpectCursorOn(root, c8iCmd(root, 'fight'), 'a reset from the page');
+  });
+
+  it('CTL8I-1-RUN-DISABLED-PVP: in a player battle Run is aria-disabled and described by a visible reason, its click and its A press do nothing, and the reason is gone in a wild battle where Run flees', () => {
+    // WRONG IMPL KILLED: a Run that is enabled in PvP (the server rejects flee_battle there); a
+    // disabled Run that is `disabled` (the cursor cannot rest on it); a disabled Run with no reason
+    // (the player cannot tell why), a reason that is not wired by aria-describedby or that is
+    // hidden or empty; a reason that stays up (a latch) when the next battle is a wild one; and a
+    // Run that reaches the flee callback through a click or an A press while disabled.
+    const { root, view, callbacks } = c8iMount(c8iPvpVM());
+    const run = c8iCmd(root, 'run');
+    expect(c8iDisabled(run), 'Run is aria-disabled in PvP').toBe(true);
+    expect(run.hasAttribute('disabled'), 'and not disabled').toBe(false);
+
+    const describedBy = run.getAttribute('aria-describedby');
+    expect(describedBy, 'Run is described by something').toBeTruthy();
+    const reason = document.getElementById(describedBy as string);
+    expect(reason, 'the description resolves to an element').not.toBeNull();
+    expect(reason, 'it is the Run reason element').toBe(c8iTestId(root, 'battle-run-reason'));
+    expect(c8iShown(reason, root), 'the reason is visible').toBe(true);
+    expect(reason?.textContent, 'in the catalog`s words').toBe(
+      `You can${C8I_APOSTROPHE}t run from a player battle.`,
+    );
+
+    run.click();
+    expect(callbacks.onFlee, 'a click on a disabled Run flees nothing').not.toHaveBeenCalled();
+
+    // The cursor can walk to Run (a disabled row is a stop) and A does nothing there.
+    c8iCmd(root, 'fight').focus();
+    for (let i = 0; i < 4; i += 1) view.applyBattleOp({ kind: 'move', dir: 'Down' });
+    c8iExpectCursorOn(root, run, 'four Downs from Fight reach Run');
+    view.applyBattleOp({ kind: 'activate' });
+    expect(callbacks.onFlee, 'A on a disabled Run flees nothing').not.toHaveBeenCalled();
+    c8iExpectCursorOn(root, run, 'and the cursor stays on Run');
+
+    // A wild battle next: no reason, and Run flees.
+    view.refresh(c8iVM({ battleId: 78n, turnNumber: 1 }));
+    const wildRun = c8iCmd(root, 'run');
+    expect(c8iDisabled(wildRun), 'Run is available in a wild battle').toBe(false);
+    expect(
+      c8iShown(c8iTestId(root, 'battle-run-reason'), root),
+      'the PvP reason does not stay up',
+    ).toBe(false);
+    wildRun.click();
+    expect(callbacks.onFlee, 'Run flees in a wild battle').toHaveBeenCalledWith(78n);
+  });
+
+  it('CTL8I-1-PVP-WAITING-GREYS: while the opponent has not acted all five rows are aria-disabled under a visible "Waiting for {name}…" caption (the name falling back to Opponent), the pvp-status banner keeps its text, the cursor is on Fight, and everything is restored when the wait ends', () => {
+    // WRONG IMPL KILLED: a pending list that stays live (a second submit); a caption that is
+    // missing, hidden, or says "null" or "undefined" for a nameless rival; a status banner whose
+    // words changed (e2e/pvp-side-b.spec.ts pins "Waiting for opponent’s action…"); a caption that
+    // shows in a wild battle or after the wait (a latch); a cursor left in the grid whose skills
+    // the wait hid; and rows that stay greyed after the wait.
+    const { root, view } = c8iMount(c8iPvpVM({ pvpPendingSubmit: true, pvpOpponentName: 'Rival' }));
+    for (const id of C8I_IDS) {
+      const row = c8iCmd(root, id);
+      expect(c8iDisabled(row), `${id} is greyed while waiting`).toBe(true);
+      expect(row.hasAttribute('disabled'), `${id} stays focusable`).toBe(false);
+    }
+    const caption = c8iTestId(root, 'battle-commands-waiting');
+    expect(c8iShown(caption, root), 'the caption is visible').toBe(true);
+    expect(caption?.textContent, 'it names the rival').toBe(`Waiting for Rival${C8I_ELLIPSIS}`);
+    const status = c8iTestId(root, 'pvp-status');
+    expect(c8iShown(status, root), 'the banner is still shown').toBe(true);
+    expect(status?.textContent, 'with its own, unchanged words').toBe(
+      `Waiting for opponent${C8I_APOSTROPHE}s action${C8I_ELLIPSIS}`,
+    );
+    expect(c8iCurrent(root), 'one cursor').toHaveLength(1);
+    expect(c8iCurrent(root)[0], 'on Fight').toBe(c8iCmd(root, 'fight'));
+
+    // A nameless rival: the catalog's Opponent, never null or undefined.
+    view.refresh(c8iPvpVM({ pvpPendingSubmit: true, pvpOpponentName: null }));
+    const nameless = c8iTestId(root, 'battle-commands-waiting')?.textContent ?? '';
+    expect(nameless, 'the fallback name').toBe(`Waiting for Opponent${C8I_ELLIPSIS}`);
+    expect(nameless.includes('null'), 'never "null"').toBe(false);
+    expect(nameless.includes('undefined'), 'never "undefined"').toBe(false);
+    expect(c8iTestId(root, 'pvp-status')?.textContent, 'the banner is the same with no name').toBe(
+      `Waiting for opponent${C8I_APOSTROPHE}s action${C8I_ELLIPSIS}`,
+    );
+
+    // The wait ends: rows follow their flags again and the caption is gone.
+    view.refresh(c8iPvpVM({ pvpPendingSubmit: false, turnNumber: 3 }));
+    expect(c8iShown(c8iTestId(root, 'battle-commands-waiting'), root), 'caption gone').toBe(false);
+    expect(
+      C8I_IDS.map((id) => c8iDisabled(c8iCmd(root, id))),
+      'PvP not waiting: Fight and Swap live, Recruit, Bag and Run off',
+    ).toEqual([false, true, false, true, true]);
+
+    // A wild battle never shows the caption.
+    view.refresh(c8iVM({ battleId: 78n, turnNumber: 1 }));
+    expect(c8iShown(c8iTestId(root, 'battle-commands-waiting'), root), 'no caption in PvE').toBe(
+      false,
+    );
+    expect(
+      C8I_IDS.map((id) => c8iDisabled(c8iCmd(root, id))),
+      'a wild battle: every command live',
+    ).toEqual([false, false, false, false, false]);
+
+    // Going into the grid, then a pending submit on the same turn, forces the command list.
+    const pvp = c8iFresh(c8iPvpVM({ turnNumber: 2 }));
+    c8iCmd(pvp.root, 'fight').click();
+    pvp.view.applyBattleOp({ kind: 'move', dir: 'Right' });
+    expect(c8iCurrent(pvp.root)[0], 'precondition: in the grid').toBe(c8iSkills(pvp.root)[1]);
+    pvp.view.refresh(c8iPvpVM({ turnNumber: 2, pvpPendingSubmit: true }));
+    expect(c8iCurrent(pvp.root), 'one cursor while waiting').toHaveLength(1);
+    expect(c8iCurrent(pvp.root)[0], 'the wait puts the cursor back on Fight').toBe(
+      c8iCmd(pvp.root, 'fight'),
+    );
+    expect(c8iCurrent(pvp.root)[0]?.getAttribute('data-battle-list')).toBe('commands');
+  });
+
+  it('CTL8I-2-VIEW-GRID-CELLS: every skill cell reads "name (power) · affinity · Acc N%" (PvP: after "Submit: "), one text node with no title, in a two-column grid, with accuracy 0 and 100 and power 0 shown as they are', () => {
+    // WRONG IMPL KILLED: a cell that keeps the accuracy in a hover-only `title`; a falsy fallback
+    // on the numbers (`accuracy || 100`, `power || ''`) that rewrites a 0 or drops it; a PvP cell
+    // without power or accuracy; a PvP label that lost its "Submit: " prefix (the e2e specs match
+    // /^Submit: /); a cell label split into child elements or given an aria-label that overrides
+    // it; and a grid that is not two columns wide.
+    const skills = [
+      { id: 1, name: 'Vine Whip', affinity: 'Plant', power: 40, accuracy: 100 },
+      { id: 2, name: 'Thunder Fang', affinity: 'Electric', power: 35, accuracy: 95 },
+      { id: 3, name: 'Wobble', affinity: 'Normal', power: 0, accuracy: 0 },
+    ];
+    for (const pvp of [false, true]) {
+      const prefix = pvp ? 'Submit: ' : '';
+      const { root } = c8iFresh(
+        pvp ? c8iPvpVM({ skills, canFlee: false }) : c8iVM({ skills, canFlee: false }),
+      );
+      const cells = c8iSkills(root);
+      const mode = pvp ? 'PvP' : 'PvE';
+      expect(
+        cells.map((b) => b.textContent),
+        `${mode}: the cell texts`,
+      ).toEqual([
+        `${prefix}Vine Whip (40) ${C8I_DOT} Plant ${C8I_DOT} Acc 100%`,
+        `${prefix}Thunder Fang (35) ${C8I_DOT} Electric ${C8I_DOT} Acc 95%`,
+        `${prefix}Wobble (0) ${C8I_DOT} Normal ${C8I_DOT} Acc 0%`,
+      ]);
+      for (const cell of cells) {
+        expect(cell.tagName, `${mode}: a button`).toBe('BUTTON');
+        expect(cell.hasAttribute('title'), `${mode}: no title`).toBe(false);
+        expect(cell.children.length, `${mode}: a single text node`).toBe(0);
+        expect(cell.getAttribute('aria-label'), `${mode}: no label override`).toBeNull();
+        expect(cell.getAttribute('aria-hidden'), `${mode}: not hidden from AT`).toBeNull();
+      }
+      const grid = cells[0]?.parentElement as HTMLElement;
+      expect(grid.children.length, `${mode}: the grid holds exactly the cells`).toBe(cells.length);
+      for (const [i, cell] of cells.entries()) {
+        expect(grid.children[i], `${mode}: cell ${i} sits in DOM order`).toBe(cell);
+      }
+      expect(ctl7bInline(grid).get('display'), `${mode}: a grid`).toBe('grid');
+      expect(c8iColumns(grid), `${mode}: two columns`).toBe(2);
+    }
+  });
+
+  it('CTL8I-2-FIGHT-OPENS-GRID: Fight (a click or A) puts the cursor and focus on the first skill; the grid is on screen and clickable while the command list is up; an op while focus is off the view only seats the cursor; a held Enter on a view button is prevented; a hidden view ignores ops; a lock swallows A; Fight with no skill does nothing', async () => {
+    // WRONG IMPL KILLED: a Fight that opens nothing or fires an attack; a grid hidden while the
+    // list is commands (the mouse and six e2e specs click it); an A that presses with focus on
+    // the heading, <body>, Flee or a select (a blind A could attack or flee); a move that steps
+    // from a cursor the player is not on; a native held-Enter repeat that chains Fight to an
+    // attack to the next turn's Fight; a hidden view that still moves focus (reconnect hide); an A
+    // that sends a second action during the lock; and a Fight that opens an empty grid.
+    // --- a click, and A ---
+    const click = c8iMount(c8iVM());
+    c8iCmd(click.root, 'fight').click();
+    c8iExpectCursorOn(click.root, c8iSkills(click.root)[0] as Element, 'Fight clicked');
+    expect(click.callbacks.onAttack, 'Fight clicked attacks nothing').not.toHaveBeenCalled();
+    expect(c8iSkills(click.root), 'the four skills are cells').toHaveLength(4);
+
+    const op = c8iFresh(c8iVM());
+    c8iCmd(op.root, 'fight').focus();
+    op.view.applyBattleOp({ kind: 'activate' });
+    c8iExpectCursorOn(op.root, c8iSkills(op.root)[0] as Element, 'A on Fight');
+    expect(op.callbacks.onAttack, 'A on Fight attacks nothing').not.toHaveBeenCalled();
+
+    // --- the grid is on screen and clickable while the command list is up ---
+    const cmds = c8iFresh(c8iVM());
+    const cells = c8iSkills(cmds.root);
+    expect(cells, 'four cells').toHaveLength(4);
+    for (const cell of cells) {
+      expect(c8iShown(cell, cmds.root), 'the cell is on screen').toBe(true);
+      expect(c8iDisabled(cell), 'and not greyed').toBe(false);
+    }
+    expect(c8iCurrent(cmds.root)[0], 'the cursor is on the command list').toBe(
+      c8iCmd(cmds.root, 'fight'),
+    );
+    cells[2]?.click();
+    expect(cmds.callbacks.onAttack, 'a click on a cell attacks').toHaveBeenCalledWith(77n, 13);
+
+    // --- an op with focus off the view only seats the cursor (A presses nothing) ---
+    const seat = c8iFresh(c8iVM());
+    const heading = c8iTestId(seat.root, 'battle-title') as HTMLElement;
+    heading.focus();
+    seat.view.applyBattleOp({ kind: 'activate' });
+    expect(document.activeElement, 'A from the heading seats Fight').toBe(
+      c8iCmd(seat.root, 'fight'),
+    );
+    expect(c8iCurrent(seat.root)[0]?.getAttribute('data-battle-list'), 'but opens nothing').toBe(
+      'commands',
+    );
+    seat.view.applyBattleOp({ kind: 'activate' });
+    c8iExpectCursorOn(seat.root, c8iSkills(seat.root)[0] as Element, 'the second A opens the grid');
+
+    const walk = c8iFresh(c8iVM());
+    c8iCmd(walk.root, 'fight').focus();
+    for (let i = 0; i < 4; i += 1) walk.view.applyBattleOp({ kind: 'move', dir: 'Down' });
+    c8iExpectCursorOn(walk.root, c8iCmd(walk.root, 'run'), 'the cursor walked to Run');
+    (document.activeElement as HTMLElement).blur();
+    walk.view.applyBattleOp({ kind: 'activate' });
+    expect(document.activeElement, 'A from the page only seats Run').toBe(c8iCmd(walk.root, 'run'));
+    expect(walk.callbacks.onFlee, 'and flees nothing').not.toHaveBeenCalled();
+    walk.view.applyBattleOp({ kind: 'activate' });
+    expect(walk.callbacks.onFlee, 'the next A on Run flees, once').toHaveBeenCalledTimes(1);
+    expect(walk.callbacks.onFlee).toHaveBeenCalledWith(77n);
+
+    const stray = c8iFresh(c8iVM());
+    const fleeBtn = [...stray.root.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Flee',
+    ) as HTMLButtonElement;
+    fleeBtn.focus();
+    stray.view.applyBattleOp({ kind: 'activate' });
+    expect(
+      stray.callbacks.onFlee,
+      'A with focus on the legacy Flee button does not press it',
+    ).not.toHaveBeenCalled();
+    expect(document.activeElement, 'it seats the cursor instead').toBe(c8iCmd(stray.root, 'fight'));
+    (c8iTestId(stray.root, 'bait-selector') as HTMLElement).focus();
+    stray.view.applyBattleOp({ kind: 'move', dir: 'Down' });
+    c8iExpectCursorOn(stray.root, c8iCmd(stray.root, 'fight'), 'a move from a select only seats');
+    stray.view.applyBattleOp({ kind: 'move', dir: 'Down' });
+    c8iExpectCursorOn(stray.root, c8iCmd(stray.root, 'recruit'), 'the next move steps');
+
+    // --- a held Enter or Space on a button inside the view is prevented ---
+    const held = c8iFresh(c8iVM());
+    const outsideBtn = document.createElement('button');
+    document.body.appendChild(outsideBtn);
+    const keydown = (
+      target: Element,
+      key: string,
+      code: string,
+      repeat: boolean,
+    ): KeyboardEvent => {
+      const event = new KeyboardEvent('keydown', {
+        key,
+        code,
+        repeat,
+        bubbles: true,
+        cancelable: true,
+      });
+      target.dispatchEvent(event);
+      return event;
+    };
+    const aFight = c8iCmd(held.root, 'fight');
+    const aSkill = c8iSkills(held.root)[0] as Element;
+    expect(keydown(aFight, 'Enter', 'Enter', true).defaultPrevented, 'held Enter on Fight').toBe(
+      true,
+    );
+    expect(keydown(aSkill, 'Enter', 'Enter', true).defaultPrevented, 'held Enter on a cell').toBe(
+      true,
+    );
+    expect(keydown(aFight, ' ', 'Space', true).defaultPrevented, 'held Space on Fight').toBe(true);
+    expect(
+      keydown(aFight, 'Enter', 'Enter', false).defaultPrevented,
+      'a first Enter is the browser`s (it clicks)',
+    ).toBe(false);
+    expect(
+      keydown(aFight, 'ArrowDown', 'ArrowDown', true).defaultPrevented,
+      'a held arrow is not touched here',
+    ).toBe(false);
+    expect(
+      keydown(c8iTestId(held.root, 'battle-title') as Element, 'Enter', 'Enter', true)
+        .defaultPrevented,
+      'a held Enter off a button is not touched',
+    ).toBe(false);
+    expect(
+      keydown(outsideBtn, 'Enter', 'Enter', true).defaultPrevented,
+      'a held Enter on a button OUTSIDE the view is not touched',
+    ).toBe(false);
+
+    // --- a hidden view ignores ops (and so never moves focus) ---
+    const hid = c8iFresh(c8iVM());
+    c8iCmd(hid.root, 'fight').focus();
+    hid.view.hide();
+    const focusAfterHide = document.activeElement;
+    hid.view.applyBattleOp({ kind: 'activate' });
+    hid.view.applyBattleOp({ kind: 'move', dir: 'Down' });
+    expect(document.activeElement, 'a hidden view takes no focus').toBe(focusAfterHide);
+    expect(c8iCurrent(hid.root)[0], 'and keeps its cursor').toBe(c8iCmd(hid.root, 'fight'));
+    expect(hid.callbacks.onAttack, 'and presses nothing').not.toHaveBeenCalled();
+    hid.view.refresh(c8iVM());
+    c8iCmd(hid.root, 'fight').focus();
+    hid.view.applyBattleOp({ kind: 'move', dir: 'Down' });
+    c8iExpectCursorOn(hid.root, c8iCmd(hid.root, 'recruit'), 'shown again, ops work');
+
+    // --- the lock swallows A: no second action ---
+    const d = raDeferred();
+    const lock = c8iFresh(
+      c8iVM(),
+      makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) }),
+    );
+    c8iCmd(lock.root, 'fight').focus();
+    lock.view.applyBattleOp({ kind: 'activate' });
+    lock.view.applyBattleOp({ kind: 'activate' });
+    expect(lock.callbacks.onAttack, 'A on the first skill attacks once').toHaveBeenCalledTimes(1);
+    expect(lock.callbacks.onAttack).toHaveBeenCalledWith(77n, 11);
+    lock.view.applyBattleOp({ kind: 'activate' });
+    lock.view.applyBattleOp({ kind: 'activate' });
+    expect(
+      lock.callbacks.onAttack,
+      'more As during the lock attack nothing more',
+    ).toHaveBeenCalledTimes(1);
+    c8iCmd(lock.root, 'fight').focus();
+    lock.view.applyBattleOp({ kind: 'activate' });
+    expect(c8iCurrent(lock.root)[0], 'A on a locked Fight opens nothing').toBe(
+      c8iCmd(lock.root, 'fight'),
+    );
+    d.resolve();
+    await raFlushPromises();
+    c8iCmd(lock.root, 'fight').focus();
+    lock.view.applyBattleOp({ kind: 'activate' });
+    expect(c8iCurrent(lock.root)[0], 'after the settle A on Fight opens the grid').toBe(
+      c8iSkills(lock.root)[0],
+    );
+
+    // --- Fight with nothing to fight with does nothing ---
+    const empty = c8iFresh(c8iVM({ skills: [] }));
+    expect(c8iDisabled(c8iCmd(empty.root, 'fight')), 'Fight is greyed').toBe(true);
+    c8iCmd(empty.root, 'fight').click();
+    expect(c8iCurrent(empty.root)[0], 'a click on it opens nothing').toBe(
+      c8iCmd(empty.root, 'fight'),
+    );
+    c8iCmd(empty.root, 'fight').focus();
+    empty.view.applyBattleOp({ kind: 'activate' });
+    expect(c8iCurrent(empty.root)[0], 'and neither does A').toBe(c8iCmd(empty.root, 'fight'));
+  });
+
+  it('CTL8I-2-LAST-SKILL-PER-MONSTER: Fight lands on the skill that monster last used in this battle: per monster, only an accepted press is remembered, an unknown id falls back to the first skill, a new battle forgets, and a PvP submit counts', async () => {
+    // WRONG IMPL KILLED: a memory keyed by battle alone (a swap-in would inherit the previous
+    // monster's skill); one that remembers the monster's FIRST press only or the last press of any
+    // monster; one that records a press the lock swallowed (a double click would move the cursor to
+    // a skill that never fired); one that keeps its memory across battles (a returning battle id
+    // would remember a skill from a battle that ended); a missing id that leaves the cursor at -1
+    // or clamped to the end; a PvE-only memory (the PvP submit goes through another callback); and
+    // a falsy test on the remembered skill id.
+    const onAttack = vi.fn();
+    const { root, view } = c8iMount(
+      c8iVM({ turnNumber: 1, activeIndex: 0 }),
+      makeRaCallbacks({ onAttack }),
+    );
+    /** Click Fight and report the index of the skill the cursor lands on (-1 for anything else). */
+    const fightLands = (): number => {
+      c8iCmd(root, 'fight').click();
+      return c8iSkills(root).indexOf(c8iCurrent(root)[0] as HTMLButtonElement);
+    };
+    const turn = (turnNumber: number, activeIndex: number, extra: Partial<BattleViewModel> = {}) =>
+      view.refresh(c8iVM({ turnNumber, activeIndex, ...extra }));
+
+    expect(fightLands(), 'monster 0, no history: the first skill').toBe(0);
+    c8iSkills(root)[1]?.click();
+    expect(onAttack).toHaveBeenLastCalledWith(77n, 12);
+    await raFlushPromises();
+
+    turn(2, 0);
+    expect(fightLands(), 'monster 0 used skill 12 last').toBe(1);
+
+    turn(3, 1);
+    expect(fightLands(), 'monster 1 (swapped in) has no history of its own').toBe(0);
+    c8iSkills(root)[3]?.click();
+    expect(onAttack).toHaveBeenLastCalledWith(77n, 14);
+    await raFlushPromises();
+
+    turn(4, 0);
+    expect(fightLands(), 'back to monster 0: its own skill 12, not monster 1`s 14').toBe(1);
+    turn(5, 1);
+    expect(fightLands(), 'monster 1 remembers its own skill 14').toBe(3);
+
+    // A press the lock swallowed is not remembered; the accepted one is.
+    turn(6, 0);
+    const d = raDeferred();
+    onAttack.mockReturnValueOnce(d.promise);
+    const callsBefore = onAttack.mock.calls.length;
+    c8iSkills(root)[2]?.click(); // accepted: takes the lock
+    expect(onAttack).toHaveBeenCalledTimes(callsBefore + 1);
+    const swallowed = c8iSkills(root)[0] as HTMLButtonElement;
+    swallowed.disabled = false; // hostile: only the lock can refuse this press
+    swallowed.click();
+    expect(onAttack, 'the second press is swallowed by the lock').toHaveBeenCalledTimes(
+      callsBefore + 1,
+    );
+    d.resolve();
+    await raFlushPromises();
+    turn(7, 0);
+    expect(fightLands(), 'the accepted press (skill 13) is remembered, not the swallowed one').toBe(
+      2,
+    );
+
+    // A remembered skill the monster no longer knows falls back to the first.
+    turn(8, 0, { skills: C8I_SKILLS.slice(0, 2) });
+    expect(fightLands(), 'skill 13 is gone: the first skill').toBe(0);
+
+    // A new battle forgets everything, even for a battle id seen before.
+    view.refresh(c8iVM({ battleId: 78n, turnNumber: 1, activeIndex: 0 }));
+    expect(fightLands(), 'a new battle starts on the first skill').toBe(0);
+    view.refresh(c8iVM({ battleId: 77n, turnNumber: 9, activeIndex: 0 }));
+    expect(fightLands(), 'and the memory of the old battle is gone for good').toBe(0);
+
+    // PvP: the submit counts as a use.
+    const onPvpAttack = vi.fn();
+    const pvp = c8iFresh(
+      c8iPvpVM({ battleId: 90n, turnNumber: 1, activeIndex: 0 }),
+      makeRaCallbacks({ onPvpAttack }),
+    );
+    c8iCmd(pvp.root, 'fight').click();
+    expect(c8iCurrent(pvp.root)[0], 'PvP, no history: the first skill').toBe(
+      c8iSkills(pvp.root)[0],
+    );
+    c8iSkills(pvp.root)[1]?.click();
+    expect(onPvpAttack).toHaveBeenCalledWith(90n, 12);
+    pvp.view.refresh(c8iPvpVM({ battleId: 90n, turnNumber: 2, activeIndex: 0 }));
+    c8iCmd(pvp.root, 'fight').click();
+    expect(c8iCurrent(pvp.root)[0], 'PvP: the submitted skill is remembered').toBe(
+      c8iSkills(pvp.root)[1],
+    );
+  });
+
+  it('CTL8I-3-VIEW-SUBLIST-SURVIVES-MENU: with the cursor in the skill grid, a menu taking focus and a same-turn re-render leave the cursor on its skill and steal no focus; when focus returns to the page the first op only seats the cursor and the next one steps from it', () => {
+    // WRONG IMPL KILLED: a re-render that resets the sub-list to the command row while the menu is
+    // over it (the player returns to Fight, not to the skill they were choosing); one that drags
+    // focus out of the menu back into the battle; an op after the menu closes that STEPS from a
+    // cursor the player is not looking at (or presses it); and one that forgets the cursor when
+    // focus left the view. The seating op uses a direction whose step WOULD move the cursor.
+    const { root, view } = c8iMount(c8iVM({ turnNumber: 4 }));
+    c8iCmd(root, 'fight').focus();
+    view.applyBattleOp({ kind: 'activate' });
+    view.applyBattleOp({ kind: 'move', dir: 'Right' });
+    c8iExpectCursorOn(root, c8iSkills(root)[1] as Element, 'in the grid at the second skill');
+
+    // The main menu opens over the battle and takes focus.
+    const menu = document.createElement('button');
+    menu.id = 'c8i-menu';
+    document.body.appendChild(menu);
+    menu.focus();
+    view.refresh(c8iVM({ turnNumber: 4 }));
+    expect(document.activeElement, 'a same-turn re-render steals no focus from the menu').toBe(
+      menu,
+    );
+    expect(c8iCurrent(root), 'one cursor').toHaveLength(1);
+    expect(c8iCurrent(root)[0], 'still on the second skill').toBe(c8iSkills(root)[1]);
+    expect(c8iCurrent(root)[0]?.getAttribute('data-battle-list'), 'still in the grid').toBe(
+      'skills',
+    );
+
+    // The menu closes: focus is back on the page.
+    menu.remove();
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement, 'precondition: focus is on the page').toBe(document.body);
+    view.applyBattleOp({ kind: 'move', dir: 'Down' });
+    c8iExpectCursorOn(
+      root,
+      c8iSkills(root)[1] as Element,
+      'the first op after the menu only seats',
+    );
+    view.applyBattleOp({ kind: 'move', dir: 'Down' });
+    c8iExpectCursorOn(root, c8iSkills(root)[3] as Element, 'the next Down steps from the seat');
   });
 });
