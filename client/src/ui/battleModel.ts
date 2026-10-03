@@ -690,3 +690,39 @@ export function skillCursor(
   const at = lastSkillId === undefined ? -1 : skills.findIndex((s) => s.id === lastSkillId);
   return at < 0 ? 0 : at;
 }
+
+// --- the second step of Recruit and Bag (ctl-8j, CTL8J.1) ---------------------------------------
+
+/** A pressed Recruit or Bag row, waiting on Yes or the target. It names the battle and turn it was
+ *  made in and the id the model gave the row: never text or an attribute read back (B10).
+ *  `baitItemId` undefined is "No bait". */
+export type BattlePick =
+  | {
+      readonly kind: 'recruitConfirm';
+      readonly battleId: bigint;
+      readonly turnNumber: number;
+      readonly baitItemId: number | undefined;
+    }
+  | {
+      readonly kind: 'cureTarget';
+      readonly battleId: bigint;
+      readonly turnNumber: number;
+      readonly itemId: number;
+    };
+
+/** The pick while `vm` still offers exactly it (this battle and turn, an ongoing PvE battle, the
+ *  bait or cure item still listed; No bait while the battle can recruit), else null: a pick is
+ *  dropped, never moved to another item. */
+export function resolveBattlePick(vm: BattleViewModel, pick: BattlePick | null): BattlePick | null {
+  if (pick === null || pick.battleId !== vm.battleId || pick.turnNumber !== vm.turnNumber) {
+    return null;
+  }
+  if (vm.outcome !== 'Ongoing' || vm.isPvp) return null;
+  if (pick.kind === 'cureTarget') {
+    return vm.cureItems.some((c) => c.itemId === pick.itemId) ? pick : null;
+  }
+  if (!vm.canRecruit) return null;
+  const offered =
+    pick.baitItemId === undefined || vm.baitOptions.some((b) => b.itemId === pick.baitItemId);
+  return offered ? pick : null;
+}

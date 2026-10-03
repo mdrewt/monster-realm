@@ -29,7 +29,7 @@
 // Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `battle.*` key from ui/i18n/catalog.en.ts;
 // the English bytes are unchanged (the catalog pins them). Two rows are deliberately NOT keyed:
-// the card header `${label}: ${species}` and the bait option `${name} (+${n}‰) ×${count}` are
+// the card header `${label}: ${species}` and the bait row `${name} (+${n}‰) ×${count}` are
 // glyph-only compounds (tier (e)). Model
 // data (affinity, weather label, status, species/skill/item names, the rival's display name) flow
 // through as params, never as catalog text. Every `t(`/`tf(` first argument is a string LITERAL —
@@ -42,20 +42,29 @@ import {
   type BattleCommand,
   type BattleCommandRow,
   type BattleMonsterCardVM,
+  type BattlePick,
   type BattleViewModel,
   battleCommands,
   cursorStep,
+  resolveBattlePick,
   skillCursor,
 } from './battleModel';
 import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { BattleOp, BattleOpsView } from './screens/battleScreen';
 
-/** The lists the battle cursor walks (ctl-8i): the command list, and the controls each command
- *  leads to. Every cursor row carries its list's name in `data-battle-list`; the bait and cure
- *  <select>s and the legacy Flee button are in none (a select owns the arrows, so the cursor never
- *  enters one: CTL8J.1 turns them into lists). */
-type CursorList = 'commands' | 'skills' | 'recruit' | 'swap' | 'bag';
+/** The lists the battle cursor walks (ctl-8i, ctl-8j): the command list, the list each command
+ *  leads to, and the second step of Recruit (Yes / No) and Bag (the target). Every cursor row
+ *  carries its list's name in `data-battle-list`; the legacy Flee button is in none. Every row is a
+ *  button whose click handler holds the model's id, so no id is ever read back from the DOM (B10). */
+type CursorList =
+  | 'commands'
+  | 'skills'
+  | 'recruit'
+  | 'swap'
+  | 'bag'
+  | 'recruitConfirm'
+  | 'bagTarget';
 const LIST_ATTR = 'data-battle-list';
 /** The list a command leads to (Run acts at once). */
 const SUBLIST: Readonly<Record<Exclude<BattleCommand, 'run'>, CursorList>> = {
@@ -67,6 +76,7 @@ const SUBLIST: Readonly<Record<Exclude<BattleCommand, 'run'>, CursorList>> = {
 /** The visible cue on the cursor row: focus alone is lost to the menu and to <body>. */
 const CURSOR_OUTLINE = '2px solid #ffd700';
 let runReasonIds = 0;
+let promptIds = 0;
 
 /**
  * The five PvE callbacks may return a promise: the view's per-battle in-flight
@@ -84,11 +94,11 @@ export interface BattleViewCallbacks {
   /** Called when the player selects a team member to swap to (PvE). */
   readonly onSwap: (battleId: bigint, teamIndex: number) => void | Promise<void>;
   /**
-   * Called when the player clicks Recruit (wild battles only). `baitItemId` is
-   * the selected bait's id, or `undefined` for a bare attempt.
+   * Called on Yes in the Recruit confirm (wild battles only). `baitItemId` is
+   * the picked bait's id, or `undefined` for a bare attempt (No bait).
    */
   readonly onRecruit: (battleId: bigint, baitItemId: number | undefined) => void | Promise<void>;
-  /** Called when the player selects a cure item and clicks Use Item. */
+  /** Called when the player picks a cure item and presses its target row (the active monster). */
   readonly onUseItem: (battleId: bigint, itemId: number) => void | Promise<void>;
   /** Called when the player submits a skill attack in a PvP battle. */
   readonly onPvpAttack: (battleId: bigint, skillId: number) => void;
@@ -120,10 +130,15 @@ export class BattleView implements BattleOpsView {
   /** "Press Enter or Esc to continue" hint; shown only on a terminal outcome. */
   readonly #continueHintEl: HTMLDivElement;
   readonly #callbacks: BattleViewCallbacks;
-  /** The bait `<select>` for the current recruit render (null when not wild). */
-  #baitSelectEl: HTMLSelectElement | null = null;
-  /** The cure-item `<select>` for the current battle render (null when no cure items). */
-  #cureSelectEl: HTMLSelectElement | null = null;
+  /** The pressed bait or cure row awaiting Yes / the target (CTL8J.1); re-resolved on every render
+   *  and dropped, never moved to another item, when the model stops offering it. */
+  #pick: BattlePick | null = null;
+  /** The rows of the last render by model id, so B from the second step lands on the picked item
+   *  wherever it now is. */
+  #baitRows = new Map<number | undefined, HTMLButtonElement>();
+  #cureRows = new Map<number, HTMLButtonElement>();
+  /** The id of this view's Recruit question (the confirm's accessible name). */
+  readonly #promptId = `battle-recruit-prompt-${++promptIds}`;
   #visible = false;
   // The PvE in-flight lock. ONE lock for the whole battle, not per action: attack,
   // flee, swap, recruit and use-item all spend the same turn, so a second click on ANY of
@@ -213,12 +228,10 @@ export class BattleView implements BattleOpsView {
     // hue-free the criterion is met, and the backgrounds are then decoration layered over a
     // channel that already carries the information. Argued dismissal, not an oversight.
     // Dismissed for 1.4.1, and ONLY for 1.4.1: the #844 border on the Flee button and its
-    // siblings on the Recruit / Use Item / Swap / Submit buttons and on the two bait/cure
-    // <select>s. On the buttons the accessible name IS the information, so hue encodes
-    // nothing and they keep their 1px solid rule. The two <select>s have no accessible name
-    // at all today, and NONE of these borders has been measured against 1.4.11 — the floor
-    // this slice just invoked to move #844. Both gaps are real, fixing either is outside this
-    // slice's touches:, and neither is claimed closed here.
+    // siblings on the Swap / Submit buttons and the bait, cure, Yes / No and target rows (ctl-8j).
+    // On every one the accessible name IS the information, so hue encodes nothing and they
+    // keep their 1px solid rule. NONE of these borders has been measured against 1.4.11 — the
+    // floor this slice just invoked to move #844; that gap is real and not claimed closed here.
     // DEFERRED, not done (ledger gate X6): in PvP refresh() passes the rival's BARE player
     // name as the opponent label, so the card's ROLE reaches assistive technology only as a
     // player name. The design's clause that every member of this border family "carr[ies] text
@@ -368,6 +381,7 @@ export class BattleView implements BattleOpsView {
     // here: the view is only ever re-shown through refresh(), which rebuilds every control and
     // re-greys the command rows.
     this.#pending = null;
+    this.#pick = null;
     closeOverlayA11y('battleView', null);
   }
 
@@ -386,7 +400,8 @@ export class BattleView implements BattleOpsView {
     if (!this.#visible) this.show();
     // Read before the rebuild detaches a focused row: a reset takes focus only from the page or
     // from inside this view (never from the menu over it), a same-turn render only re-focuses the
-    // cursor row when it had focus.
+    // cursor row when it had focus. A row focused by Tab or the mouse is the cursor (as in
+    // applyBattleOp), so the rebuild hands focus to its replacement.
     // The world canvas counts as the page: a battle that starts while the player walks takes it.
     const active = document.activeElement;
     const focusHere =
@@ -394,15 +409,23 @@ export class BattleView implements BattleOpsView {
       active === document.body ||
       active instanceof HTMLCanvasElement ||
       this.#root.contains(active);
-    const onCursor =
-      active instanceof HTMLElement &&
-      this.#root.contains(active) &&
-      active.getAttribute('aria-current') === 'true';
+    const focusedList =
+      active instanceof HTMLElement && this.#root.contains(active)
+        ? (active.getAttribute(LIST_ATTR) as CursorList | null)
+        : null;
+    if (focusedList !== null) {
+      this.#cursor = {
+        list: focusedList,
+        index: this.#rows(focusedList).indexOf(active as HTMLElement),
+      };
+    }
+    const onCursor = focusedList !== null;
     const newBattle = this.#turnKey?.battleId !== vm.battleId;
     if (newBattle) this.#lastSkill.clear();
     const newTurn = newBattle || this.#turnKey?.turnNumber !== vm.turnNumber;
     this.#turnKey = { battleId: vm.battleId, turnNumber: vm.turnNumber };
     this.#vm = vm;
+    this.#pick = resolveBattlePick(vm, this.#pick);
 
     this.#renderWeather(vm);
     // Show opponent name for PvP battles so the player knows who they are fighting. The name is
@@ -427,8 +450,9 @@ export class BattleView implements BattleOpsView {
   }
 
   /** One cursor op from the battle screen (CTL8I.1-3). With focus off the cursor rows (the
-   *  heading, the page, Flee, a select) it only seats the kept cursor: an A must never press a row
-   *  the player is not on. On a row the cursor first follows focus (Tab and the mouse move it too). */
+   *  heading, the page, Flee, a confirm's prompt) it only seats the kept cursor: an A must never
+   *  press a row the player is not on. On a row the cursor first follows focus (Tab and the mouse
+   *  move it too). */
   applyBattleOp(op: BattleOp): void {
     if (!this.#visible || this.#vm?.outcome !== 'Ongoing') return;
     const active = document.activeElement;
@@ -457,6 +481,10 @@ export class BattleView implements BattleOpsView {
         rows[this.#cursor.index]?.click();
         return;
       case 'back': {
+        if (list === 'recruitConfirm' || list === 'bagTarget') {
+          this.#cancelPick();
+          return;
+        }
         const command = BATTLE_COMMANDS.find((id) => id !== 'run' && SUBLIST[id] === list);
         if (command !== undefined) {
           this.#cursor = { list: 'commands', index: BATTLE_COMMANDS.indexOf(command) };
@@ -502,6 +530,7 @@ export class BattleView implements BattleOpsView {
   #chooseCommand(id: BattleCommand, btn: HTMLButtonElement): void {
     const vm = this.#vm;
     if (vm === null || btn.getAttribute('aria-disabled') === 'true') return;
+    if (this.#pick !== null) this.#setPick(null);
     if (id === 'run') {
       this.#cursor = { list: 'commands', index: BATTLE_COMMANDS.indexOf('run') };
       this.#paintCursor(false);
@@ -574,6 +603,9 @@ export class BattleView implements BattleOpsView {
     if (this.#pending?.battleId === battleId) return;
     const lock = { battleId };
     this.#pending = lock;
+    // Any action spends this turn, so an open Yes / target must not outlive it (#setPick re-renders
+    // the actions row under the lock just taken).
+    if (this.#pick !== null) this.#setPick(null);
     this.#setActionButtonsDisabled(true);
     void new Promise<void>((resolve) => resolve(run()))
       .finally(() => {
@@ -600,7 +632,7 @@ export class BattleView implements BattleOpsView {
   }
 
   /** The skills grid and the actions row ARE the live-button registry (no per-button map).
-   *  In a PvP battle this also covers Flee/Use Item's siblings — the PvP Submit buttons are
+   *  In a PvP battle this also covers the swap rows — the PvP Submit buttons are
    *  never rendered while `vm.pvpPendingSubmit` (RT-PVP-DS-01), so the two locks never overlap. */
   #setActionButtonsDisabled(disabled: boolean): void {
     for (const el of [this.#skillsEl, this.#actionsEl]) {
@@ -759,12 +791,6 @@ export class BattleView implements BattleOpsView {
   }
 
   #renderActions(vm: BattleViewModel): void {
-    // Save user selections BEFORE tearing down the DOM (e-1: replaceChildren
-    // destroys <select> elements, resetting their values on every server tick).
-    // The restore runs only on VMs that differ (shouldSkipBattleRefresh suppresses equal-VM
-    // refreshes) and remains essential for genuine data changes.
-    const savedBait = this.#baitSelectEl?.value ?? '';
-    const savedCure = this.#cureSelectEl?.value ?? '';
     this.#actionsEl.replaceChildren();
     if (vm.canFlee) {
       const fleeBtn = document.createElement('button');
@@ -784,119 +810,194 @@ export class BattleView implements BattleOpsView {
     // in the SAME method. The `Ongoing` conjunct is required — canSwap is false on EVERY terminal
     // outcome, so without it the hint would sit beside "Victory!". No isPvp branch.
     this.#swapHintEl.style.display = vm.outcome === 'Ongoing' && !vm.canSwap ? 'block' : 'none';
-    // Recruit is wild-only (canRecruit). Render the bait selector first so the
-    // Recruit button can read the current selection at click time.
-    this.#baitSelectEl = null;
-    if (vm.canRecruit) {
-      this.#renderRecruit(vm);
-      // Restore prior selection so unrelated batch ticks don't reset the user's choice.
-      // Cast breaks TypeScript's narrowing chain (TS tracks #baitSelectEl=null from above
-      // through the method call; the cast re-opens the full union type for the null guard).
-      if (savedBait !== '') {
-        const baitSel = this.#baitSelectEl as HTMLSelectElement | null;
-        if (baitSel !== null) baitSel.value = savedBait;
-      }
-    }
-    // Cure items: available in any ongoing battle (not gated on wild/recruit).
-    // cureItems is [] when not ongoing, so length is the sole render condition.
-    this.#cureSelectEl = null;
-    if (vm.cureItems.length > 0) {
-      this.#renderCureItems(vm);
-      // Restore prior selection (same save/restore pattern as bait selector above).
-      // Cast breaks TypeScript's narrowing chain: TS tracks #cureSelectEl=null (line above)
-      // through the method call and narrows the type to null; the cast re-opens the union.
-      if (savedCure !== '') {
-        const cureSel = this.#cureSelectEl as HTMLSelectElement | null;
-        if (cureSel !== null) cureSel.value = savedCure;
-      }
-    }
+    // Recruit is wild-only (canRecruit); cure items are offered in any ongoing PvE battle
+    // (cureItems is [] otherwise, so length is the sole render condition).
+    this.#baitRows = new Map();
+    if (vm.canRecruit) this.#renderRecruit(vm);
+    this.#cureRows = new Map();
+    if (vm.cureItems.length > 0) this.#renderCureItems(vm);
+  }
+
+  /** Re-render the actions row for a pick change, keeping the PvE lock on the new nodes. */
+  #setPick(pick: BattlePick | null): void {
+    this.#pick = pick;
+    const vm = this.#vm;
+    if (vm === null) return;
+    this.#renderActions(vm);
+    if (this.#pending?.battleId === vm.battleId) this.#setActionButtonsDisabled(true);
+  }
+
+  /** A bait or cure row was pressed: open its second step with the cursor on Yes / the target. */
+  #choosePick(pick: BattlePick): void {
+    this.#setPick(pick);
+    this.#cursor = {
+      list: pick.kind === 'recruitConfirm' ? 'recruitConfirm' : 'bagTarget',
+      index: 0,
+    };
+    this.#paintCursor(true);
+  }
+
+  /** No, or B in the second step: close it and put the cursor back on the picked row (by its id,
+   *  so a row that moved is still found; one that vanished sends the cursor to Fight). */
+  #cancelPick(): void {
+    const pick = this.#pick;
+    this.#setPick(null);
+    this.#seatOnPickedRow(pick);
+    this.#paintCursor(true);
+  }
+
+  #seatOnPickedRow(pick: BattlePick | null): void {
+    this.#cursor = { list: 'commands', index: 0 };
+    if (pick === null) return;
+    const list: CursorList = pick.kind === 'cureTarget' ? 'bag' : 'recruit';
+    const row =
+      pick.kind === 'cureTarget'
+        ? this.#cureRows.get(pick.itemId)
+        : this.#baitRows.get(pick.baitItemId);
+    const index = row === undefined ? -1 : this.#rows(list).indexOf(row);
+    if (index >= 0) this.#cursor = { list, index };
+  }
+
+  /** Yes / the target was pressed: spend the pick (read now, never from the pressed node) under the
+   *  shared PvE lock. A node left from a closed or replaced step finds no pick and does nothing. */
+  #commitPick(kind: BattlePick['kind']): void {
+    const vm = this.#vm;
+    const pick = this.#pick; // resolved against #vm by every refresh
+    if (vm === null || pick?.kind !== kind) return;
+    this.#setPick(null);
+    this.#seatOnPickedRow(pick);
+    this.#paintCursor(true);
+    this.#dispatch(vm.battleId, () =>
+      pick.kind === 'recruitConfirm'
+        ? this.#callbacks.onRecruit(vm.battleId, pick.baitItemId)
+        : this.#callbacks.onUseItem(vm.battleId, pick.itemId),
+    );
+  }
+
+  /** A list root: a labelled group of rows (never a <select>, which would own the arrow keys). */
+  #listRoot(testId: string, label: string): HTMLDivElement {
+    const list = document.createElement('div');
+    list.setAttribute('data-testid', testId);
+    list.setAttribute('role', 'group');
+    list.setAttribute('aria-label', label);
+    list.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+    this.#actionsEl.appendChild(list);
+    return list;
+  }
+
+  /** One cursor row in `list`, appended to `parent`. */
+  #row(
+    parent: HTMLElement,
+    list: CursorList,
+    text: string,
+    border: string,
+    onPress: () => void,
+  ): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.setAttribute(LIST_ATTR, list);
+    btn.style.cssText =
+      'padding:6px 8px;cursor:pointer;font-family:monospace;font-size:12px;background:#222;' +
+      `color:#e0e0e0;border:1px solid ${border};border-radius:3px;text-align:left;`;
+    btn.textContent = text;
+    btn.addEventListener('click', onPress);
+    parent.appendChild(btn);
+    return btn;
   }
 
   #renderRecruit(vm: BattleViewModel): void {
-    // Bait selector: classify-by-data — each option carries its recruit_bonus on
-    // a data attribute; the first option is "No bait" (a bare attempt).
-    const select = document.createElement('select');
-    select.setAttribute('data-testid', 'bait-selector');
-    select.style.cssText =
-      'padding:6px 8px;font-family:monospace;font-size:12px;background:#222;' +
-      'color:#e0e0e0;border:1px solid #686;border-radius:3px;';
-
-    const noBait = document.createElement('option');
-    noBait.value = '';
-    noBait.textContent = t('battle.recruit.noBait');
-    select.appendChild(noBait);
-
+    // The bait list: No bait first (a bare attempt), then one row per bait, classified by data —
+    // each bait row carries its recruit_bonus on a data attribute (the e2e contract surface).
+    const list = this.#listRoot('bait-selector', t('battle.recruit.listLabel'));
+    const pickBait = (baitItemId: number | undefined) => () =>
+      this.#choosePick({
+        kind: 'recruitConfirm',
+        battleId: vm.battleId,
+        turnNumber: vm.turnNumber,
+        baitItemId,
+      });
+    const none = this.#row(
+      list,
+      'recruit',
+      t('battle.recruit.noBait'),
+      '#686',
+      pickBait(undefined),
+    );
+    none.setAttribute('data-testid', 'bait-option-none');
+    this.#baitRows.set(undefined, none);
     for (const bait of vm.baitOptions) {
-      const opt = document.createElement('option');
-      opt.value = String(bait.itemId);
-      opt.textContent = `${bait.name} (+${bait.recruitBonus}‰) ×${bait.count}`;
-      // data-recruit-bonus is the classify-by-data contract surface.
-      opt.setAttribute('data-recruit-bonus', String(bait.recruitBonus));
-      select.appendChild(opt);
+      const text = `${bait.name} (+${bait.recruitBonus}‰) ×${bait.count}`;
+      const row = this.#row(list, 'recruit', text, '#686', pickBait(bait.itemId));
+      row.setAttribute('data-recruit-bonus', String(bait.recruitBonus));
+      this.#baitRows.set(bait.itemId, row);
     }
-    this.#baitSelectEl = select;
-    this.#actionsEl.appendChild(select);
+    const pick = this.#pick;
+    if (pick?.kind === 'recruitConfirm') this.#renderRecruitConfirm(vm, pick.baitItemId);
+  }
 
-    const recruitBtn = document.createElement('button');
-    recruitBtn.setAttribute('data-testid', 'recruit-action');
-    recruitBtn.setAttribute(LIST_ATTR, 'recruit');
-    recruitBtn.style.cssText =
-      'padding:6px 12px;cursor:pointer;font-family:monospace;background:#2a3a2a;' +
-      'color:#e0e0e0;border:1px solid #6a6;border-radius:3px;';
-    recruitBtn.textContent = t('battle.recruit.submit');
-    recruitBtn.addEventListener('click', () => {
-      const raw = this.#baitSelectEl?.value ?? '';
-      const baitItemId = raw === '' ? undefined : Number(raw);
-      this.#dispatch(vm.battleId, () => this.#callbacks.onRecruit(vm.battleId, baitItemId));
-    });
-    this.#actionsEl.appendChild(recruitBtn);
+  /** The Recruit question (design §5: Recruit is harmless, so Yes is the default), a group named
+   *  by its question so a screen reader announces it with Yes. */
+  #renderRecruitConfirm(vm: BattleViewModel, baitItemId: number | undefined): void {
+    const confirm = document.createElement('div');
+    confirm.setAttribute('data-testid', 'recruit-confirm');
+    confirm.setAttribute('role', 'group');
+    confirm.setAttribute('aria-labelledby', this.#promptId);
+    confirm.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+    const prompt = document.createElement('div');
+    prompt.id = this.#promptId;
+    const bait = vm.baitOptions.find((b) => b.itemId === baitItemId);
+    prompt.textContent =
+      bait === undefined
+        ? t('battle.recruit.confirmNoBait')
+        : tf('battle.recruit.confirm', { bait: bait.name });
+    confirm.appendChild(prompt);
+    const yes = this.#row(confirm, 'recruitConfirm', t('battle.recruit.yes'), '#6a6', () =>
+      this.#commitPick('recruitConfirm'),
+    );
+    yes.setAttribute('data-testid', 'recruit-action');
+    const no = this.#row(confirm, 'recruitConfirm', t('battle.recruit.no'), '#686', () =>
+      this.#cancelPick(),
+    );
+    no.setAttribute('data-testid', 'recruit-cancel');
+    this.#actionsEl.appendChild(confirm);
   }
 
   #renderCureItems(vm: BattleViewModel): void {
-    // Cure-item selector: classify-by-data — each option carries data-cure-status so
-    // the DOM exposes the classification contract. No "bare" option (unlike
-    // bait's "No bait") — clicking Use Item with empty selection is a no-op.
-    const select = document.createElement('select');
-    select.setAttribute('data-testid', 'cure-item-selector');
-    select.style.cssText =
-      'padding:6px 8px;font-family:monospace;font-size:12px;background:#222;' +
-      'color:#e0e0e0;border:1px solid #886;border-radius:3px;';
-
-    const placeholder = document.createElement('option');
-    placeholder.value = '';
-    placeholder.textContent = t('battle.cure.placeholder');
-    select.appendChild(placeholder);
-
+    // The cure list, classified by data — each row carries data-cure-status.
+    const list = this.#listRoot('cure-item-selector', t('battle.cure.listLabel'));
     for (const item of vm.cureItems) {
-      const opt = document.createElement('option');
-      opt.value = String(item.itemId);
-      opt.textContent = tf('battle.cure.option', {
+      const text = tf('battle.cure.option', {
         name: item.name,
         cureStatus: item.cureStatus,
         count: item.count,
       });
-      opt.setAttribute('data-cure-status', item.cureStatus);
-      select.appendChild(opt);
+      const row = this.#row(list, 'bag', text, '#886', () =>
+        this.#choosePick({
+          kind: 'cureTarget',
+          battleId: vm.battleId,
+          turnNumber: vm.turnNumber,
+          itemId: item.itemId,
+        }),
+      );
+      row.setAttribute('data-cure-status', item.cureStatus);
+      this.#cureRows.set(item.itemId, row);
     }
-    this.#cureSelectEl = select;
-    this.#actionsEl.appendChild(select);
+    if (this.#pick?.kind === 'cureTarget') this.#renderCureTarget(vm);
+  }
 
-    const useBtn = document.createElement('button');
-    useBtn.setAttribute('data-testid', 'use-item-action');
-    useBtn.setAttribute(LIST_ATTR, 'bag');
-    useBtn.style.cssText =
-      'padding:6px 12px;cursor:pointer;font-family:monospace;background:#3a3a2a;' +
-      'color:#e0e0e0;border:1px solid #886;border-radius:3px;';
-    useBtn.textContent = t('battle.cure.submit');
-    useBtn.addEventListener('click', () => {
-      const raw = this.#cureSelectEl?.value ?? '';
-      // No bare use — clicking with empty selection is a no-op (no undefined variant).
-      const parsed = parseInt(raw, 10);
-      if (!Number.isNaN(parsed)) {
-        this.#dispatch(vm.battleId, () => this.#callbacks.onUseItem(vm.battleId, parsed));
-      }
-    });
-    this.#actionsEl.appendChild(useBtn);
+  /** The Bag target: use_battle_item cures the ACTIVE monster, so it is the one row. */
+  #renderCureTarget(vm: BattleViewModel): void {
+    const target = document.createElement('div');
+    target.setAttribute('data-testid', 'cure-target');
+    target.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+    const use = this.#row(
+      target,
+      'bagTarget',
+      tf('battle.cure.target', { species: vm.playerCard.speciesName }),
+      '#886',
+      () => this.#commitPick('cureTarget'),
+    );
+    use.setAttribute('data-testid', 'use-item-action');
+    this.#actionsEl.appendChild(target);
   }
 
   #renderSwapButtons(vm: BattleViewModel): void {

@@ -56,11 +56,15 @@ export type MessageId =
   | 'battle.skill.pveLabel'
   | 'battle.commands.waiting'
   | 'battle.action.flee'
+  | 'battle.recruit.listLabel'
   | 'battle.recruit.noBait'
-  | 'battle.recruit.submit'
-  | 'battle.cure.placeholder'
+  | 'battle.recruit.confirm'
+  | 'battle.recruit.confirmNoBait'
+  | 'battle.recruit.yes'
+  | 'battle.recruit.no'
+  | 'battle.cure.listLabel'
   | 'battle.cure.option'
-  | 'battle.cure.submit'
+  | 'battle.cure.target'
   | 'battle.swap.pvpSubmit'
   | 'battle.swap.pveLabel'
   | 'battle.outcome.victory'
@@ -363,11 +367,13 @@ export interface MessageParams {
     readonly accuracy: number;
   };
   readonly 'battle.commands.waiting': { readonly name: string };
+  readonly 'battle.recruit.confirm': { readonly bait: string };
   readonly 'battle.cure.option': {
     readonly name: string;
     readonly cureStatus: string;
     readonly count: number;
   };
+  readonly 'battle.cure.target': { readonly species: string };
   readonly 'battle.swap.pvpSubmit': { readonly species: string };
   readonly 'battle.swap.pveLabel': {
     readonly species: string;

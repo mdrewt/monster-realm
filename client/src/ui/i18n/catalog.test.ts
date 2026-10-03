@@ -175,6 +175,10 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { name: 'Tonic', cureStatus: 'Poison', count: 1 },
     { name: 'Salve', cureStatus: 'Paralysis', count: 3 },
   ],
+  // ctl-8j (named intentional change): +2 parameterised keys — the Recruit confirm names the bait
+  // and the Bag target names the active monster. Both are model data, carried verbatim.
+  'battle.recruit.confirm': [{ bait: 'Herb' }, { bait: 'Lure Berry' }],
+  'battle.cure.target': [{ species: 'Sproutle' }, { species: 'Emberfang' }],
   'battle.swap.pvpSubmit': [{ species: 'Mosshorn' }, { species: 'Cindertail' }],
   'battle.swap.pveLabel': [
     { species: 'Mosshorn', current: 6, max: 10 },
@@ -370,6 +374,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // ctl-8i (named intentional change): +7 plain keys here (`battle.command.{fight,recruit,swap,
   // bag,run}`, `battle.commands.label`, `battle.command.runPvpReason`); in SAMPLE_PARAMS
   // `battle.commands.waiting` is added and `battle.skill.accuracy` removed = 279 keys.
+  // ctl-8j (named intentional change): -3 plain keys (`battle.recruit.submit`,
+  // `battle.cure.placeholder`, `battle.cure.submit`) and +5 plain keys (`battle.recruit.{listLabel,
+  // confirmNoBait,yes,no}`, `battle.cure.listLabel`) here, +2 parameterised ones
+  // (`battle.recruit.confirm`, `battle.cure.target`) in SAMPLE_PARAMS = 283 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -391,9 +399,15 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'battle.card.opponent': 'Opponent', // battleView.ts:289
   'battle.action.flee': 'Flee', // battleView.ts:470
   'battle.recruit.noBait': 'No bait', // battleView.ts:522
-  'battle.recruit.submit': 'Recruit', // battleView.ts:541
-  'battle.cure.placeholder': 'Select item', // battleView.ts:562
-  'battle.cure.submit': 'Use Item', // battleView.ts:580
+  // ctl-8j (named intentional change): `battle.recruit.submit` ('Recruit'), `battle.cure.placeholder`
+  // ('Select item') and `battle.cure.submit` ('Use Item') are RETIRED with the two <select>s and
+  // their submit buttons (catalogParity DEAD-KEY); +5 plain keys — the bait list's name, the
+  // Recruit confirm's no-bait question and its Yes / No, and the cure list's name.
+  'battle.recruit.listLabel': 'Bait',
+  'battle.recruit.confirmNoBait': 'Recruit with no bait?',
+  'battle.recruit.yes': 'Yes',
+  'battle.recruit.no': 'No',
+  'battle.cure.listLabel': 'Cure items',
   'battle.outcome.victory': 'Victory!', // battleView.ts:629
   'battle.outcome.defeat': 'Defeat...', // battleView.ts:632
   'battle.outcome.fled': 'Got away safely!', // battleView.ts:635
@@ -736,6 +750,20 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { name: 'Salve', cureStatus: 'Paralysis', count: 3 },
     outputB: 'Salve (cures Paralysis) ×3',
   },
+  // ctl-8j: the Recruit confirm (the bait's name verbatim) and the Bag target (the active monster's
+  // species verbatim).
+  'battle.recruit.confirm': {
+    inputA: { bait: 'Herb' },
+    outputA: 'Recruit with Herb?',
+    inputB: { bait: 'Lure Berry' },
+    outputB: 'Recruit with Lure Berry?',
+  },
+  'battle.cure.target': {
+    inputA: { species: 'Sproutle' },
+    outputA: 'Use on Sproutle',
+    inputB: { species: 'Emberfang' },
+    outputB: 'Use on Emberfang',
+  },
   'battle.swap.pvpSubmit': {
     inputA: { species: 'Mosshorn' },
     outputA: 'Submit Swap: Mosshorn',
@@ -1055,7 +1083,9 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 279-key roster (ctl-8i: +`battle.command.{fight,recruit,swap,bag,run}`
+/** The full 283-key roster (ctl-8j: -`battle.recruit.submit` -`battle.cure.placeholder`
+ *  -`battle.cure.submit` +`battle.recruit.{listLabel,confirmNoBait,yes,no,confirm}`
+ *  +`battle.cure.{listLabel,target}` over the 279-key roster below; ctl-8i: +`battle.command.{fight,recruit,swap,bag,run}`
  *  +`battle.commands.label` +`battle.command.runPvpReason` +`battle.commands.waiting`
  *  -`battle.skill.accuracy` over the 272-key roster below; ctl-8g: +`social.players.{nearby,none,walkUp}` over the 269-key roster
  *  below; ctl-8f: +`bag.pocket.{bait,food,medicine,other}`
@@ -1131,7 +1161,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8i 279-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8j 283-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1220,10 +1250,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 279 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 283 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (279 keys since ctl-8i).
+    // (a) roster is exactly the EXPECTED_KEYS roster (283 keys since ctl-8j).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
@@ -1602,5 +1632,75 @@ describe('ctl-8g: catalog.fr.ts, the keys ctl-8g adds', () => {
     expect(fn(spec.inputA)).toBe('Approchez-vous de Zed et appuyez sur A');
     expect(fn(spec.inputB)).toBe('Approchez-vous de Amy et appuyez sur A');
     expect(fn(spec.inputA), 'a translation, not the English line').not.toBe(spec.outputA);
+  });
+});
+
+// =============================================================================
+// ctl-8j: the French side of the 7 keys ctl-8j adds (the bait list's name, the Recruit confirm and
+// its Yes / No, the cure list's name and the Bag target), and the 3 keys it retires. Before each `?`
+// stands a U+00A0 NO-BREAK SPACE, the typography catalog.fr.ts documents in its header (ctl-8d).
+// =============================================================================
+
+/** U+00E2 (a circumflex), built by code point so the expected text holds no pasted glyph. */
+const A_CIRCUMFLEX = String.fromCharCode(0x00e2);
+
+const EXPECTED_FR_CTL8J_PLAIN: Record<string, string> = {
+  'battle.recruit.listLabel': `App${A_CIRCUMFLEX}t`,
+  'battle.recruit.confirmNoBait': `Recruter sans app${A_CIRCUMFLEX}t${NO_BREAK_SPACE}?`,
+  'battle.recruit.yes': 'Oui',
+  'battle.recruit.no': 'Non',
+  'battle.cure.listLabel': 'Objets de soin',
+};
+
+/** The French output for sample A, then sample B, of each new parameterised key. */
+const EXPECTED_FR_CTL8J_PARAMS: Record<string, readonly [string, string]> = {
+  'battle.recruit.confirm': [
+    `Recruter avec Herb${NO_BREAK_SPACE}?`,
+    `Recruter avec Lure Berry${NO_BREAK_SPACE}?`,
+  ],
+  'battle.cure.target': ['Utiliser sur Sproutle', 'Utiliser sur Emberfang'],
+};
+
+describe('ctl-8j: catalog.fr.ts, the keys ctl-8j adds and retires', () => {
+  it('ctl-8j FR-PINS: the 5 new plain keys and the 2 new parameterised keys carry their exact French text, each a translation of its English entry and each closure fed both English sample sets; the three retired ids are gone from both catalogs', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot, the whole Recruit
+    // and Bag step blank); a French entry left as the English copy or swapped with a sibling (Oui /
+    // Non); a closure that drops or swaps its param (the bait or the species); a question mark
+    // glued to its word or set off by a plain breaking space instead of the catalog's U+00A0; a
+    // decomposed or missing circumflex in "Appat"; and a retired id left behind as a dead key in
+    // either catalog.
+    for (const [key, expected] of Object.entries(EXPECTED_FR_CTL8J_PLAIN)) {
+      const en = EXPECTED_PLAIN[key];
+      expect(typeof en, `fixture: ${key} has an English pin`).toBe('string');
+      const fr = (CATALOG_FR as Record<string, unknown>)[key];
+      expect(typeof fr, `${key} must be a plain string in the fr catalog`).toBe('string');
+      expect(fr, `${key}: the exact French text`).toBe(expected);
+      expect(fr, `${key}: a translation, not the English copy`).not.toBe(en);
+    }
+    for (const [key, [outputA, outputB]] of Object.entries(EXPECTED_FR_CTL8J_PARAMS)) {
+      const spec = EXPECTED_PARAM_OUTPUTS[key];
+      expect(spec, `fixture: ${key} has English output pins`).toBeDefined();
+      const fr = (CATALOG_FR as Record<string, unknown>)[key];
+      expect(typeof fr, `${key} must be a closure in the fr catalog`).toBe('function');
+      const fn = fr as (p: Record<string, unknown>) => string;
+      expect(fn((spec as ParamOutputSpec).inputA), `${key}(sample A) in French`).toBe(outputA);
+      expect(fn((spec as ParamOutputSpec).inputB), `${key}(sample B) in French`).toBe(outputB);
+      expect(outputA, `${key}: a translation, not the English line`).not.toBe(
+        (spec as ParamOutputSpec).outputA,
+      );
+    }
+    expect(
+      Object.keys(EXPECTED_FR_CTL8J_PLAIN).length + Object.keys(EXPECTED_FR_CTL8J_PARAMS).length,
+      'ANTI-VACUITY: all 7 ctl-8j keys are pinned in French',
+    ).toBe(7);
+
+    for (const retired of [
+      'battle.recruit.submit',
+      'battle.cure.placeholder',
+      'battle.cure.submit',
+    ]) {
+      expect(Object.hasOwn(CATALOG_EN as object, retired), `en ${retired} is retired`).toBe(false);
+      expect(Object.hasOwn(CATALOG_FR as object, retired), `fr ${retired} is retired`).toBe(false);
+    }
   });
 });
