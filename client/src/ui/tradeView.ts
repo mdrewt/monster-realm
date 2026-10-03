@@ -41,6 +41,8 @@ export interface SocialPaint {
   readonly confirm: { readonly question: SocialQuestion; readonly yes: boolean } | null;
 }
 
+/** The nav frame id of the tab strip: its tab ids (`social-tab-<tab>`) name the sheet. */
+const SOCIAL_FRAME_ID = 'social';
 /** The tab strip's layout: the four tabs, no rows (renderTabs reads only the keys). */
 const SOCIAL_TAB_STRIP = tabs(SOCIAL_TABS.map((key) => ({ key, layout: list([]) })));
 const NO_ROWS = list([]);
@@ -90,7 +92,7 @@ function paintSocialChrome(chrome: HTMLElement, p: SocialPaint): void {
     strip,
     SOCIAL_TAB_STRIP,
     { tab: p.tab, item: null, perTab: {} },
-    { frame: 'social', label: (tab) => SOCIAL_TAB_LABELS[tab.key as SocialTab]() },
+    { frame: SOCIAL_FRAME_ID, label: (tab) => SOCIAL_TAB_LABELS[tab.key as SocialTab]() },
   );
 
   const sheet = socialPart(chrome, 'social-sheet', 'div');
@@ -114,7 +116,7 @@ function paintSocialChrome(chrome: HTMLElement, p: SocialPaint): void {
     { tab: null, item: p.sheet?.active ?? null, perTab: {} },
     {
       frame: 'socialSheet',
-      labelledBy: navTabId('social', p.tab),
+      labelledBy: navTabId(SOCIAL_FRAME_ID, p.tab),
       fill: (el, item) => {
         el.textContent = SOCIAL_ACTION_LABELS[item.key as SocialAction]();
       },
@@ -279,7 +281,11 @@ export class TradeView {
     const p = this.#social;
     const players = p?.tab === 'players';
     this.#statusEl.textContent = players ? t('social.players.placeholder') : this.#status;
-    for (const el of [this.#mySideEl, this.#theirSideEl, this.#actionsEl]) el.hidden = players;
+    for (const el of [this.#mySideEl, this.#theirSideEl, this.#actionsEl]) {
+      // A part hidden under the focus (a Tab-focused legacy button) would strand it on <body>.
+      if (players && el.contains(document.activeElement)) this.#statusEl.focus();
+      el.hidden = players;
+    }
     const cursor = p?.tab === 'trades' && p.tradeCursor;
     this.#statusEl.classList.toggle('mr-nav-item', cursor);
     this.#statusEl.classList.toggle('is-active', cursor);

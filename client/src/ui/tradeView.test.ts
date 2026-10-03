@@ -1255,8 +1255,9 @@ function expectChildren(root: HTMLElement, expected: readonly Element[], label: 
   });
 }
 
-/** The tab strip inside `chrome`: one tablist, the four tabs in order with their catalogued labels,
- *  exactly `active` selected; every chrome part at most once, and inside the chrome. */
+/** The tab strip inside `chrome`: one tablist with the frame's tab-strip class, first of the
+ *  chrome's three parts (strip, sheet, prompt), the four tabs in order with their catalogued
+ *  labels, exactly `active` selected; every chrome part at most once, and inside the chrome. */
 function expectStrip(chrome: HTMLElement, active: SocialTab, label: string): void {
   expect(document.querySelectorAll('#social-tabs').length, `${label}: one #social-tabs`).toBe(1);
   const strip = byId('social-tabs');
@@ -1264,6 +1265,14 @@ function expectStrip(chrome: HTMLElement, active: SocialTab, label: string): voi
     true,
   );
   expect(strip.getAttribute('role'), `${label}: a tablist`).toBe('tablist');
+  expect(
+    strip.classList.contains('mr-frame-tabstrip'),
+    `${label}: the strip carries the frame's tab-strip class`,
+  ).toBe(true);
+  expect(
+    [...chrome.children].map((c) => c.id),
+    `${label}: the chrome holds the strip, then the sheet, then the prompt`,
+  ).toEqual(['social-tabs', 'social-sheet', 'social-prompt']);
   const tabs = [...strip.children] as HTMLElement[];
   expect(
     tabs.map((t) => t.id),
@@ -1312,6 +1321,14 @@ function expectSheet(chrome: HTMLElement, c: SheetCase, label: string): void {
   const sheet = byId('social-sheet');
   expect(chrome.contains(sheet), `${label}: #social-sheet is in the chrome`).toBe(true);
   expect(sheet.hidden, `${label}: the sheet shows`).toBe(false);
+  expect(sheet.getAttribute('aria-labelledby'), `${label}: the sheet is named by its tab`).toBe(
+    `social-tab-${c.tab}`,
+  );
+  const namingTab = document.getElementById(`social-tab-${c.tab}`);
+  expect(
+    namingTab !== null && chrome.contains(namingTab),
+    `${label}: the tab naming the sheet is in the chrome`,
+  ).toBe(true);
   expect(navRows(sheet), `${label}: one row per legal action, the cursor on ${c.active}`).toEqual({
     keys: [...c.actions],
     texts: c.actions.map((a) => SOCIAL_ACTION_LABEL[a]()),
@@ -1339,7 +1356,8 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     // strip that keeps the first tab selected, or marks a tab by class only or by aria only; tabs
     // in another order or with hand-typed labels; a strip created again on every paint (two
     // #social-tabs, two of each tab id); a part created in the trade root, or in the document,
-    // instead of in the chrome element it is handed.
+    // instead of in the chrome element it is handed; a strip without the frame's tab-strip class
+    // (the tabs stack); and the prompt created before the sheet (DOM, visual and Tab order).
     const overlay = mountTradeOverlay();
     const view = new TradeView(makeCallbacks());
     const shell = [...overlay.children];
@@ -1389,7 +1407,10 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     // the paint); a placeholder that survives the switch to Trades when no render runs between
     // (the status keeps reading "not available" over a live trade); one that survives hide() or a
     // reopen; a Players tab that also hides the feedback line (a trade result vanishes) or the
-    // status (the dialog's focus anchor); and a paint that changes a view nobody painted.
+    // status (the dialog's focus anchor); a Players tab that hides a focused legacy button and
+    // strands the focus on <body>, or pulls the focus from outside the root; a paint kept on a
+    // hidden root (a stale placeholder or mark at the next open); and a paint that changes a view
+    // nobody painted.
     const overlay = mountTradeOverlay();
     const view = new TradeView(makeCallbacks());
     const status = byId('trade-status');
@@ -1414,6 +1435,28 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
 
     const chrome = document.createElement('div');
     view.hostChrome(chrome);
+
+    // Players hides the actions under a Tab-focused legacy button: the focus goes to #trade-status,
+    // the dialog's anchor, never stranded on <body> in a real browser.
+    const legacy = overlay.querySelector<HTMLButtonElement>('#trade-actions button');
+    if (legacy === null) throw new Error('precondition: the legacy trade buttons are rendered');
+    legacy.focus();
+    expect(document.activeElement, 'precondition: a legacy button holds the focus').toBe(legacy);
+    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
+    expect(document.activeElement, 'Players: the hidden button hands the focus to the anchor').toBe(
+      status,
+    );
+    // Control: the same paint with the focus outside the root moves nothing.
+    view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'precondition: the focus is outside the root').toBe(outside);
+    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
+    expect(document.activeElement, 'Players with the focus outside the root moves nothing').toBe(
+      outside,
+    );
+    view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
 
     // Players: the placeholder; the sides and the actions hidden; the status and feedback shown.
     view.showFeedback('a trade result line');
@@ -1452,6 +1495,13 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     view.hide();
     expect(status.textContent, 'hidden: no placeholder left').toBe(none);
     expect(hiddenTradeParts(), 'hidden: nothing left hidden').toEqual([]);
+    // A paint on the hidden root is not kept: no mark, no placeholder, nothing hidden, and the
+    // reopen below shows none of it (a kept Players paint would greet the next open).
+    view.paintSocial(chrome, socialPaint({ tab: 'trades', tradeCursor: true }));
+    expect(statusMark(), 'hidden root, tradeCursor: no mark').toEqual(UNMARKED);
+    view.paintSocial(chrome, socialPaint({ tab: 'players' }));
+    expect(status.textContent, 'hidden root, Players: the last rendered status').toBe(none);
+    expect(hiddenTradeParts(), 'hidden root, Players: nothing hidden').toEqual([]);
     view.render(makeNoTradeVM());
     view.show();
     expect(status.textContent, 'reopened: the no-trade status').toBe(none);
@@ -1467,9 +1517,10 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     // "Confirm Trade"); a prompt that hides the sheet beneath it or marks Yes when `yes` is false
     // (the default-No prompt would read as a default Yes); a question text swapped between the
     // three questions; a closed prompt or sheet that is only hidden and keeps its stale rows; a
-    // hidden part that strands the focus inside itself (on <body> in a real browser); and a
-    // handoff that pulls the focus to the anchor on every paint (a Tab-focused legacy button
-    // would lose it).
+    // hidden part that strands the focus inside itself (on <body> in a real browser); a handoff
+    // that pulls the focus to the anchor on every paint (a Tab-focused legacy button would lose
+    // it); a handoff hard-coded to #trade-status (hidden on Challenges: the focus is stranded);
+    // and a nameless sheet or Yes / No listbox (no aria-labelledby).
     const overlay = mountTradeOverlay();
     const view = new TradeView(makeCallbacks());
     view.show();
@@ -1543,6 +1594,10 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
       expect(text.textContent, `${label}: the catalogued question`).toBe(
         SOCIAL_QUESTION_TEXT[c.question](),
       );
+      expect(
+        confirm.getAttribute('aria-labelledby'),
+        `${label}: the Yes / No rows are named by the question`,
+      ).toBe('social-prompt-text');
       const cursor = c.yes ? 'yes' : 'no';
       expect(navRows(confirm), `${label}: Yes then No, the cursor on ${cursor}`).toEqual({
         keys: ['yes', 'no'],
@@ -1617,6 +1672,33 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     expect(document.activeElement, 'precondition: a legacy button holds the focus').toBe(legacy);
     view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
     expect(document.activeElement, 'focus outside the hidden sheet stays put').toBe(legacy);
+
+    // On another panel the chrome is that panel's root's first child (the pvp shell's shape), so
+    // the hand-off goes to THAT root's anchor: #trade-status is hidden there, and focus sent to it
+    // would be stranded.
+    view.hide();
+    const standInRoot = document.createElement('div');
+    const standInAnchor = document.createElement('div');
+    standInAnchor.setAttribute('tabindex', '-1');
+    document.body.appendChild(standInRoot);
+    standInRoot.append(chrome, standInAnchor);
+    view.paintSocial(
+      chrome,
+      socialPaint({
+        tab: 'challenges',
+        sheet: { actions: ['accept', 'decline'], active: 'accept' },
+      }),
+    );
+    byId('social-sheet').focus();
+    expect(document.activeElement, 'precondition: the sheet holds the focus on Challenges').toBe(
+      byId('social-sheet'),
+    );
+    view.paintSocial(chrome, socialPaint({ tab: 'challenges' }));
+    expect(
+      document.activeElement,
+      'the closed sheet hands the focus to the hosting root`s anchor',
+    ).toBe(standInAnchor);
+    expect(document.activeElement, 'never to the hidden #trade-status').not.toBe(anchor);
 
     removeOverlay(overlay);
   });

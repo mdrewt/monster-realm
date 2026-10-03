@@ -12,8 +12,9 @@
 //
 // Every step first settles the state against the rows a batch may have moved: a gone cursor is
 // re-seated, and a sheet whose row is gone or whose legal actions changed closes (it is never
-// re-pointed: the cursor must not land on an action that would now send without its prompt). A
-// press whose phase the settle just changed only paints (the shop's rule).
+// re-pointed: the cursor must not land on an action that would now send without its prompt). An
+// A press whose phase the settle just changed only paints (the shop's rule; in the shipped loop
+// `observe` settles each batch first, so this is the belt to that brace).
 //
 // A sent command has no in-flight lock here (the views' locks guard their own buttons): the
 // reducers are the authority and refuse a duplicate.
@@ -157,7 +158,7 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
       default:
         break;
     }
-    // The press was aimed at what was on screen, which the settle just changed: it only paints.
+    // The A was aimed at what was on screen, which the settle just changed: it only paints.
     if (btn.button === 'A' && state.phase !== kept.phase) return done('consumed');
     const { phase } = state;
     const tab = tabOf(state.nav);

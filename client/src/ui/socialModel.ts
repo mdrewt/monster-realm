@@ -96,9 +96,11 @@ export function buildSocialVm(
   if (outgoing !== undefined && outgoing.challengeId !== incoming?.challengeId) {
     rows.push(challengeRow(outgoing, 'outgoing'));
   }
+  const trade = offer === undefined ? undefined : tradeRow(offer, identity);
   return {
     requested,
-    trades: offer === undefined ? [] : [tradeRow(offer, identity)],
+    // An offer in a status this client does not know offers no action: it is not a row.
+    trades: trade === undefined || trade.actions.length === 0 ? [] : [trade],
     challenges: rows,
   };
 }

@@ -889,4 +889,27 @@ describe('ctl-8d: shownTradeOffer and tradeActions', () => {
       expect(one.actions, `${label}: the view model carries the same`).toEqual(actions);
     }
   });
+
+  it('ctl-8d: an offer in a status this client does not know (version skew: the row converter passes it through raw) offers no action, for the viewer as initiator and as counterparty: tradeActions is [] and buildTradeViewModel shows the offer with no actions and the raw status as its label, never throwing', () => {
+    // WRONG IMPL KILLED: the pre-fix table that falls off its switch and returns undefined (a
+    // TypeError on `.actions` that reaches the Social frame's view model, which the host builds
+    // uncaught on every button, so B and Start would break); an unknown status read as Pending or
+    // as ConfirmedByCounterparty (an action offered on a row the server would refuse); and a label
+    // that hides the raw status.
+    const WEIRD = 'Weird' as StoreTradeOffer['status'];
+    for (const [role, offer] of [
+      ['initiator', makeOffer(6n, ALICE, BOB, { status: WEIRD })],
+      ['counterparty', makeOffer(6n, BOB, ALICE, { status: WEIRD })],
+    ] as const) {
+      expect(tradeActions(offer, ALICE), `${role}: no action`).toEqual([]);
+      // Called directly: a throw fails the case.
+      const vm: TradeScreenViewModel = buildTradeViewModel([offer], ALICE, new Map(), new Map());
+      expect(vm, `${role}: the offer is shown, with no action and the raw status`).toMatchObject({
+        kind: 'trade',
+        tradeId: 6n,
+        actions: [],
+        statusLabel: 'Weird',
+      });
+    }
+  });
 });

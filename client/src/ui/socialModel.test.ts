@@ -212,6 +212,38 @@ describe('socialModel — the rows, the layout and the oldest waiting request (c
     for (const tab of TABS) {
       expect(itemKeys(emptyLayout, tab), `an empty store: ${tab} lists nothing`).toEqual([]);
     }
+
+    // An offer in a status this client does not know (version skew: the row converter passes it
+    // through raw) offers no action, so it is no row: the view model never throws (the host
+    // builds it uncaught on every button), nothing waits and Trades lists nothing.
+    // WRONG IMPL KILLED: a trade row with an empty sheet (or a throw) for an unknown status, and
+    // such a row counted as a waiting request.
+    const WEIRD = 'Weird' as StoreTradeOffer['status'];
+    for (const [role, weird] of [
+      ['the viewer as counterparty', offer(11n, BOB, ME, WEIRD)],
+      ['the viewer as initiator', offer(11n, ME, BOB, WEIRD)],
+    ] as const) {
+      // Called directly: a throw fails the case.
+      const skewed = vmOf([weird], [OUTGOING]);
+      expect(skewed.trades, `${role}: an unknown status is no row`).toEqual([]);
+      expect(keysOf(skewed.challenges), `${role}: the other rows stay`).toEqual(['challenge-22']);
+      expect(oldestWaiting(skewed), `${role}: nothing waits`).toBeNull();
+      expect(itemKeys(socialLayout(skewed), 'trades'), `${role}: Trades lists nothing`).toEqual([]);
+    }
+
+    // A Pending challenge from the viewer to the viewer (the server refuses it, but the table is
+    // public data) is both the request and the sent challenge: it is ONE row, the request, and
+    // the layout (whose nav kit throws on a duplicate key) builds.
+    // WRONG IMPL KILLED: the guard in buildSocialVm removed (two rows under one key: the layout
+    // throws, and so does every button through the host).
+    const toSelf = vmOf([], [challenge(40n, ME, ME, 'Pending', 2_000n)]);
+    expect(toSelf.challenges, 'one row, the request').toMatchObject([
+      row('challenge-40', 'incoming', 40n, ['accept', 'decline'], true, 2_000n),
+    ]);
+    expect(() => socialLayout(toSelf), 'the layout builds').not.toThrow();
+    expect(itemKeys(socialLayout(toSelf), 'challenges'), 'Challenges lists it once').toEqual([
+      'challenge-40',
+    ]);
   });
 
   it('CTL8D-1-MODEL-OLDEST-WAITING: oldestWaiting is null when nothing waits (an outgoing challenge, a trade the viewer sent, already accepted or must still confirm), the trade or the challenge when only it waits, the one with the smaller createdAtMs when both wait (in either order, with stamps past 2^53), and the trade on a tie', () => {

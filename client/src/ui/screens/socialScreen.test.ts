@@ -595,6 +595,35 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
       expect(step.state.phase, `A on ${tab}: no sheet`).toMatchObject(LIST);
       expect(step.state.nav.tab, `A on ${tab}: the tab stays`).toBe(tab);
     }
+
+    // With the sheet open, or its prompt: LB, RB, Left and Right are swallowed and move nothing.
+    // WRONG IMPL KILLED: LB / RB switching tabs under an open sheet or prompt (the frame would
+    // paint a stale trade sheet over the Challenges or Rankings panel, and A would act on a row
+    // the player no longer sees), and Left / Right moving the sheet's cursor or flipping Yes/No.
+    const busy = world({
+      tab: 'trades',
+      offers: [trade('waiting')],
+      challenges: [incoming(), outgoing()],
+    });
+    const busySheet = swallowed(busy, open(busy), ['A']);
+    const busyPrompt = swallowed(busy, open(busy), ['A', 'Down', 'A']);
+    expect(busyPrompt.phase, 'fixture: the Decline prompt').toMatchObject(
+      sheet(TRADE, ['accept', 'decline'], 'decline', { yes: false }),
+    );
+    for (const [where, before] of [
+      ['the sheet', busySheet],
+      ['the prompt', busyPrompt],
+    ] as const) {
+      for (const button of ['LB', 'RB', 'Left', 'Right'] as const) {
+        const step = press(busy, before, button);
+        expect(step.result, `${button} in ${where}`).toBe('consumed');
+        expect(cursorOf(step.state), `${button} in ${where}: the tab and row stay`).toEqual({
+          tab: 'trades',
+          item: TRADE,
+        });
+        expect(step.state.phase, `${button} in ${where}: the phase stays`).toEqual(before.phase);
+      }
+    }
   });
 
   it('CTL8D-2-SHEET-CHALLENGE: A on the incoming row opens a sheet of Accept and Decline, on the outgoing row one of Cancel alone (also when it is the only row), the cursor on the first; Up and Down move over them (a fresh press wraps, a held one clamps); B returns to the list on that row; A on an empty Challenges tab is swallowed', () => {
@@ -911,6 +940,20 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
         );
       }
     }
+
+    // A held B closes nothing: the sheet, and the prompt over it, stay exactly as they were.
+    // WRONG IMPL KILLED: a held B that closes the prompt or the sheet (one held Backspace would
+    // close the prompt, then the sheet, on its auto-repeat).
+    for (const [where, s] of [
+      ['sheet', inSheet],
+      ['prompt', onYes],
+    ] as const) {
+      const held = press(w, s, rep('B'));
+      expect(held.state.phase, `a held B in the ${where}: the phase stays`).toEqual(s.phase);
+      expect(cursorOf(held.state), `a held B in the ${where}: the cursor stays`).toEqual(
+        cursorOf(s),
+      );
+    }
   });
 
   it('CTL8D-2-SETTLE: observe answers the SAME state when nothing changed (in the list, a sheet and a prompt, and when only rows of others changed), and A still acts after it; a sheet whose row is gone or replaced closes to the list with the cursor re-seated; a sheet whose legal actions changed closes to the list, prompt or not; an A pressed as such a change lands sends nothing', () => {
@@ -1012,6 +1055,30 @@ describe('socialScreen — the sheet and its prompt (ctl-8d, CTL8D.2)', () => {
       changes += 1;
     }
     expect(changes, 'ANTI-VACUITY: four changes driven').toBe(4);
+
+    // An offer in a status this client does not know (version skew: the row converter passes it
+    // through raw): the view model still builds (the host builds it uncaught on every button), the
+    // frame opens on Trades with no row, A has nothing to act on and B still closes the frame; a
+    // sheet open on the offer when its status turns unknown closes to the list.
+    // WRONG IMPL KILLED: a view model that throws on the unknown status (B and Start could no
+    // longer close the frame), a trade row with an empty sheet, and a sheet left open on it.
+    const skewed = world({
+      tab: 'trades',
+      offers: [{ ...trade('waiting'), status: 'Weird' as StoreTradeOffer['status'] }],
+    });
+    expect(() => vmOf(skewed), 'an unknown status: the view model builds').not.toThrow();
+    const skewedOpen = open(skewed);
+    expect(cursorOf(skewedOpen), 'Trades, with no row').toEqual({ tab: 'trades', item: null });
+    const skewedA = press(skewed, skewedOpen, 'A');
+    expect(skewedA.result, 'A has nothing to act on').toBe('consumed');
+    expect(skewedA.state.phase, 'and opens no sheet').toMatchObject(LIST);
+    expect(press(skewed, skewedOpen, 'B').result, 'B still closes the frame').toEqual(POP);
+    const turnedSkewed = observe(skewed, swallowed(offered, open(offered), ['A']));
+    expect(
+      turnedSkewed.phase,
+      'a sheet on the offer closes when its status turns unknown',
+    ).toMatchObject(LIST);
+    expect(cursorOf(turnedSkewed), 'on no row').toEqual({ tab: 'trades', item: null });
   });
 });
 

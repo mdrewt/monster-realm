@@ -90,19 +90,21 @@ function deriveActionsAndLabel(
   isInitiator: boolean,
   status: TradeStatus,
 ): { actions: readonly TradeAction[]; statusLabel: string } {
-  if (isInitiator) {
-    switch (status) {
-      case 'ConfirmedByCounterparty':
-        return { actions: ['confirm', 'cancel'], statusLabel: 'Accepted — confirm to finalize' };
-      case 'Pending':
-        return { actions: ['cancel'], statusLabel: 'Waiting for response' };
-    }
-  }
   switch (status) {
-    case 'ConfirmedByCounterparty':
-      return { actions: ['cancel'], statusLabel: 'Accepted — awaiting confirmation' };
     case 'Pending':
-      return { actions: ['accept', 'reject'], statusLabel: 'Offer received' };
+      return isInitiator
+        ? { actions: ['cancel'], statusLabel: 'Waiting for response' }
+        : { actions: ['accept', 'reject'], statusLabel: 'Offer received' };
+    case 'ConfirmedByCounterparty':
+      return isInitiator
+        ? { actions: ['confirm', 'cancel'], statusLabel: 'Accepted — confirm to finalize' }
+        : { actions: ['cancel'], statusLabel: 'Accepted — awaiting confirmation' };
+    default:
+      // A status this client does not know (version skew: the row converter passes an unknown
+      // variant through raw). No action is offered and the raw status is shown; a throw here would
+      // reach the Social frame's button path, which nothing catches.
+      status satisfies never;
+      return { actions: [], statusLabel: String(status) };
   }
 }
 
@@ -170,7 +172,8 @@ export function shownTradeOffer(
   return shown;
 }
 
-/** The actions `identity` may take on `offer` (the action-derivation table above). */
+/** The actions `identity` may take on `offer` (the action-derivation table above); none for a
+ *  status this client does not know. */
 export function tradeActions(offer: StoreTradeOffer, identity: string): readonly TradeAction[] {
   return deriveActionsAndLabel(offer.initiator === identity, offer.status).actions;
 }
