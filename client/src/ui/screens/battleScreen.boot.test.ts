@@ -186,7 +186,6 @@ function mountIndexHtmlShell(): void {
 const clock = { t: 0 };
 /** The test's own monotonic time: every key and batch moves it on by 100 ms. */
 let tick = 1000;
-let rafCallback: FrameRequestCallback | null = null;
 let opts: ConnectionOptions;
 
 /** Boot a fresh main.ts over the real shell and wait for it to connect. */
@@ -200,11 +199,7 @@ async function bootReady(): Promise<void> {
   mountIndexHtmlShell();
   recordListeners(window);
   recordListeners(document);
-  rafCallback = null;
-  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => {
-    rafCallback = cb;
-    return 0;
-  });
+  vi.stubGlobal('requestAnimationFrame', (): number => 0);
   vi.resetModules();
   await import('../../main');
   opts = await vi.waitFor(
@@ -223,7 +218,6 @@ function teardownBoot(): void {
   while (restorers.length > 0) restorers.pop()?.();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  rafCallback = null;
   window.history.replaceState(null, '', '/');
   document.body.replaceChildren();
 }
