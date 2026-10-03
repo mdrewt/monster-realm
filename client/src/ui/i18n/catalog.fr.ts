@@ -189,27 +189,40 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Button label to run from an ongoing PvE battle. Short verb, fits a narrow button.
   // battleView.ts:470
   'battle.action.flee': 'Fuir',
-  // @desc: First option of the bait selector shown in a wild battle: attempt recruitment with no
-  // bait item. Short, fits a narrow dropdown.
-  // battleView.ts:522
+  // @desc: Accessible name of the bait list a wild battle's Recruit command opens (a group of
+  // buttons: No bait, then one per bait item). One word.
+  // battleView.ts (#renderRecruit)
+  'battle.recruit.listLabel': 'Appât',
+  // @desc: First row of the bait list shown in a wild battle: attempt recruitment with no bait
+  // item. Short, fits a narrow button.
+  // battleView.ts (#renderRecruit)
   'battle.recruit.noBait': 'Sans appât',
-  // @desc: Button label to attempt recruiting the wild monster with the selected bait. Short verb,
-  // fits a narrow button.
-  // battleView.ts:541
-  'battle.recruit.submit': 'Recruter',
-  // @desc: Placeholder option of the cure-item selector before the player picks an item. Short,
-  // fits a narrow dropdown.
-  // battleView.ts:562
-  'battle.cure.placeholder': 'Choisir un objet',
-  // @desc: One option of the cure-item selector; {name} is the item name, {cureStatus} the ailment
-  // it removes (e.g. "Poison") and {count} how many the player carries. One line in a narrow
-  // dropdown.
-  // battleView.ts:568
+  // @desc: Question shown after the player picks a bait row; {bait} is the bait item's name. Yes
+  // attempts the recruit with it. One short line.
+  // battleView.ts (#renderRecruitConfirm)
+  'battle.recruit.confirm': (p) => `Recruter avec ${p.bait} ?`,
+  // @desc: Question shown after the player picks the No bait row; Yes attempts the recruit with no
+  // bait. One short line.
+  // battleView.ts (#renderRecruitConfirm)
+  'battle.recruit.confirmNoBait': 'Recruter sans appât ?',
+  // @desc: The Recruit question's default answer: attempt the recruit. One word.
+  // battleView.ts (#renderRecruitConfirm)
+  'battle.recruit.yes': 'Oui',
+  // @desc: The Recruit question's other answer: go back to the bait list. One word.
+  // battleView.ts (#renderRecruitConfirm)
+  'battle.recruit.no': 'Non',
+  // @desc: Accessible name of the list of cure items a battle's Bag command opens. Two words.
+  // battleView.ts (#renderCureItems)
+  'battle.cure.listLabel': 'Objets de soin',
+  // @desc: One row of the battle Bag's cure-item list; {name} is the item name, {cureStatus} the
+  // ailment it removes (e.g. "Poison") and {count} how many the player carries. One line in a
+  // narrow button.
+  // battleView.ts (#renderCureItems)
   'battle.cure.option': (p) => `${p.name} (soigne ${p.cureStatus}) ×${p.count}`,
-  // @desc: Button label to use the selected cure item on the player's monster. Short, fits a narrow
-  // button.
-  // battleView.ts:580
-  'battle.cure.submit': 'Utiliser l’objet',
+  // @desc: The one target row after a cure item is picked: the player's active monster, {species},
+  // the only monster an item can be used on in battle. Pressing it uses the item. Short.
+  // battleView.ts (#renderCureTarget)
+  'battle.cure.target': (p) => `Utiliser sur ${p.species}`,
   // @desc: PvP swap button: submits a switch to the bench monster {species} rather than swapping at
   // once. Fits a narrow button.
   // battleView.ts:601
