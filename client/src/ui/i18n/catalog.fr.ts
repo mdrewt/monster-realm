@@ -860,15 +860,15 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // (e.g. "Gratuit" or "25 or"), carried verbatim. One short line, a question.
   // healView.ts (paint, the question)
   'heal.prompt.question': (p) => `Soigner l’équipe pour ${p.cost} ?`,
-  // @desc: Summary line on the wizard's last step: the chosen player's name, how many of your
-  // monsters are ticked, the coins you give and the coins you ask for. Numbers are digits.
-  // tradeProposeView.ts
-  'tradePropose.review.summary': (p) =>
-    `Pour ${p.target} : ${p.monsters} monstres et ${p.offer} pièces, contre ${p.ask} pièces`,
   // @desc: Why the heal frame's Yes is disabled: no healer is bound (the frame was left open
   // across a reconnect). One short sentence.
   // healView.ts (paint, the reason)
   'heal.prompt.unavailable': 'Aucun soigneur à portée. Soin indisponible.',
+  // @desc: Summary line on the wizard's last step: the chosen player's name, how many of your
+  // monsters are ticked, the coins you give and the coins you ask for. Numbers are digits.
+  // tradeProposeView.ts
+  'tradePropose.review.summary': (p) =>
+    `Pour ${p.target} · Monstres : ${p.monsters} · Pièces : ${p.offer} · Demande : ${p.ask}`,
   // @desc: Heading of the privacy & account-data overlay (account deletion, data export). Same
   // French as claim.privacyButton today, but a different key: this is a HEADING. One short line.
   // privacyView.ts:145 (resolved in show())

@@ -1855,3 +1855,230 @@ describe('TradeProposeView ctl-8e: which keys the controls keep (CTL8E.1, CTL6B.
     }
   });
 });
+
+// ===========================================================================================
+// ctl-8e round 2 (review-lens gaps): the review row is displayed BEFORE it takes focus and is
+// hidden again by a close; a commit whose own rebuild changed the draft is spent, not sent; a
+// focused checkbox survives a rebuild; a throwing onSubmit does not wedge the lock.
+// ===========================================================================================
+
+/** No element from `el` up has an inline display:none: what a real browser needs to focus it. */
+function wizDisplayed(el: HTMLElement): boolean {
+  for (let n: Element | null = el; n instanceof HTMLElement; n = n.parentElement) {
+    if (n.style.display === 'none') return false;
+  }
+  return true;
+}
+
+describe('TradeProposeView ctl-8e round 2: focus and the review row', () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it('CTL8E-1-VIEW-FOCUS: when Review focuses the review row it is already DISPLAYED (not hidden at the moment of the focus() call)', () => {
+    // WRONG IMPL KILLED: a paint that focuses the row first and un-hides it afterwards. happy-dom
+    // focuses a display:none node, but a real browser refuses: focus stays where it was, the
+    // router never sees the D-pad or A, and Review is dead to the keyboard (mutant: focusStep
+    // ('review') not un-hiding before focus).
+    const { view } = mountWizard();
+    view.paint(wizPaint({ step: 'ask' }));
+    const row = wizTest('tradepropose-review');
+    expect(row.style.display, 'fixture: hidden before Review').toBe('none');
+
+    const original = HTMLElement.prototype.focus;
+    const displayedAtFocus: boolean[] = [];
+    const spy = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (
+      this: HTMLElement,
+      options?: FocusOptions,
+    ): void {
+      if (this === row) displayedAtFocus.push(wizDisplayed(this));
+      original.call(this, options);
+    });
+    try {
+      view.paint(wizPaint({ step: 'review' }));
+    } finally {
+      spy.mockRestore();
+    }
+    expect(displayedAtFocus.length, 'the row was focused').toBeGreaterThan(0);
+    expect(
+      displayedAtFocus.every((shown) => shown),
+      'and displayed at that moment',
+    ).toBe(true);
+    expect(document.activeElement).toBe(row);
+  });
+
+  it('CTL8E-1-VIEW-FOCUS: a close from Review hides the review row, and a render + show reopen keeps it hidden', () => {
+    // WRONG IMPL KILLED: a hide() that forgets the runtime row (the reopened wizard opens on Target
+    // with the Review question still on screen), and a render() that un-hides it.
+    const { view } = mountWizard();
+    view.paint(wizPaint({ step: 'review' }));
+    const row = wizTest('tradepropose-review');
+    expect(row.style.display, 'fixture: shown on Review').toBe('');
+    view.hide();
+    expect(row.style.display, 'hidden by the close').toBe('none');
+    view.render(WIZ_LISTS);
+    view.show();
+    expect(row.style.display, 'still hidden after the reopen').toBe('none');
+    expect(headerCurrent(), 'the reopen is on Target').toEqual(['target=step']);
+  });
+
+  it('CTL8E-1-VIEW-FOCUS: a focused checkbox survives a paint`s rebuild (the new box with the same monster id has focus and keeps its checked state), and when its monster left the list focus goes to the monsters container, never the body', () => {
+    // WRONG IMPL KILLED: a rebuild that replaces the focused box and drops focus to <body> (the
+    // D-pad then walks the character under the open overlay, and main.ts heals focus to the
+    // canvas); one that loses the checked state; and one that, for a vanished monster, leaves
+    // focus on a detached node.
+    const { view } = mountWizard();
+    view.paint(wizPaint({ step: 'offer' }));
+    userCheck(30, true);
+    wizBox(30).focus();
+    expect(document.activeElement, 'fixture: box 30 has focus').toBe(wizBox(30));
+
+    view.paint(wizPaint({ step: 'offer', offerCursor: '12' }));
+    const kept = document.activeElement as HTMLInputElement;
+    expect(kept.getAttribute('data-monster-id'), 'focus is on monster 30`s box').toBe('30');
+    expect(kept.isConnected, 'a live box, not a detached one').toBe(true);
+    expect(kept, 'the box in the container now').toBe(wizBox(30));
+    expect(kept.checked, 'still checked').toBe(true);
+
+    userCheck(5, false);
+    wizBox(5).focus();
+    view.paint(wizPaint({ step: 'offer', toggle: { monsterId: 12n } }));
+    const unchecked = document.activeElement as HTMLInputElement;
+    expect(unchecked.getAttribute('data-monster-id'), 'an unchecked focused box too').toBe('5');
+    expect(unchecked.checked).toBe(false);
+
+    wizBox(30).focus();
+    view.paint(
+      wizPaint({
+        step: 'offer',
+        lists: makeLists(
+          [WIZ_ALICE, WIZ_BOB],
+          [
+            { monsterId: 5n, label: 'Sparky Lv.3' },
+            { monsterId: 12n, label: 'Flame Lv.1' },
+          ],
+        ),
+      }),
+    );
+    expect(document.activeElement, 'monster 30 left: the container takes focus').toBe(
+      wizMonsters(),
+    );
+    expect(document.activeElement, 'never the body').not.toBe(document.body);
+  });
+});
+
+describe('TradeProposeView ctl-8e round 2: a commit is spent by the draft it was painted with', () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it('CTL8E-1-VIEW-COMMIT: a commit token painted with lists that REMOVE a ticked monster sends nothing (the token is spent), the box is gone and the summary shows the new draft, and a NEW token then sends the new draft', async () => {
+    // WRONG IMPL KILLED: a paint that rebuilds, then sends the draft as it now is: the player
+    // confirmed "monster 12 + 25 coins" on screen and an offer for 25 coins alone goes out (what
+    // is sent must be what was seen). Also a view that sends the pre-rebuild snapshot, and one
+    // that keeps the token pending so a later paint sends it.
+    const { view, onSubmit } = mountWizard();
+    userSelect(WIZ_BOB.identity);
+    userCheck(12, true);
+    userType(wizOffer(), '25');
+    view.paint(wizPaint({ step: 'review' }));
+
+    const gone = makeLists(
+      [WIZ_ALICE, WIZ_BOB],
+      [
+        { monsterId: 5n, label: 'Sparky Lv.3' },
+        { monsterId: 30n, label: 'Third Lv.2' },
+      ],
+    );
+    const spent = newCommit();
+    view.paint(wizPaint({ step: 'review', lists: gone, commit: spent }));
+    await flushPromises();
+    expect(
+      onSubmit,
+      'the confirmed draft changed under the token: nothing is sent',
+    ).not.toHaveBeenCalled();
+    expect(wizAllBoxIds().includes('12'), 'monster 12 is gone').toBe(false);
+    expect(
+      wizTest('tradepropose-review-summary').textContent,
+      'the summary shows the new draft',
+    ).toBe(summaryOf('Bob', 0, '25', '0'));
+
+    view.paint(wizPaint({ step: 'review', lists: gone, commit: spent }));
+    await flushPromises();
+    expect(onSubmit, 'the spent token never fires later').not.toHaveBeenCalled();
+
+    view.paint(wizPaint({ step: 'review', lists: gone, commit: newCommit() }));
+    await flushPromises();
+    expect(onSubmit, 'a new token confirms the new draft').toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith({
+      targetIdentity: WIZ_BOB.identity,
+      initiatorMonsterIds: [],
+      initiatorCurrency: 25n,
+      counterpartyCurrency: 0n,
+    });
+  });
+
+  it('CTL8E-1-VIEW-COMMIT: a commit token painted with lists that REMOVE the chosen target sends nothing, the select falls back to the placeholder, and the spent token does not fire when the target returns', async () => {
+    // WRONG IMPL KILLED: a send keyed to the target as it was before the rebuild (an offer to a
+    // player who has left); a token kept pending until the target is valid again.
+    const { view, onSubmit } = mountWizard();
+    fillValidDraft();
+    const spent = newCommit();
+    view.paint(
+      wizPaint({
+        step: 'review',
+        lists: makeLists([WIZ_ALICE], [...WIZ_LISTS.offerableMonsters]),
+        commit: spent,
+      }),
+    );
+    await flushPromises();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(wizSelect().value, 'back to the placeholder').toBe('');
+    view.paint(wizPaint({ step: 'review', commit: spent }));
+    await flushPromises();
+    expect(onSubmit, 'Bob is listed again, but the token is spent').not.toHaveBeenCalled();
+  });
+
+  it('CTL8E-1-VIEW-COMMIT: an onSubmit that THROWS synchronously does not wedge the lock: paint and click swallow it, submit is not left disabled, and a later new token or click calls onSubmit again', async () => {
+    // WRONG IMPL KILLED: a #submit that sets #pending (and disables the button) before calling
+    // onSubmit and never restores it when the call throws: every later Yes and click is a silent
+    // no-op until the overlay is closed; and a throw that escapes paint() or the click handler (an
+    // unhandled error out of a keydown).
+    const errors: unknown[] = [];
+    const onError = (e: Event): void => {
+      errors.push(e);
+    };
+    window.addEventListener('error', onError);
+    try {
+      const onSubmit = vi
+        .fn()
+        .mockImplementationOnce(() => {
+          throw new Error('boom');
+        })
+        .mockImplementationOnce(() => {
+          throw new Error('boom again');
+        })
+        .mockResolvedValue(undefined);
+      const { view } = mountWizard(onSubmit);
+      fillValidDraft();
+
+      expect(() => view.paint(wizPaint({ step: 'review', commit: newCommit() }))).not.toThrow();
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(wizSubmit().disabled, 'the button is not left disabled').toBe(false);
+
+      expect(() => wizSubmit().click(), 'the click handler swallows it too').not.toThrow();
+      expect(
+        onSubmit,
+        'the lock was released: the click called onSubmit again',
+      ).toHaveBeenCalledTimes(2);
+      expect(wizSubmit().disabled).toBe(false);
+
+      view.paint(wizPaint({ step: 'review', commit: newCommit() }));
+      await flushPromises();
+      expect(onSubmit, 'and a later new token sends').toHaveBeenCalledTimes(3);
+      expect(errors, 'no error escaped to the window').toEqual([]);
+    } finally {
+      window.removeEventListener('error', onError);
+    }
+  });
+});

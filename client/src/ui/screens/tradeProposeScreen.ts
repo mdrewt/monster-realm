@@ -13,14 +13,14 @@
 // mouse and the D-pad edit the same draft. A toggle and a send are one-shot TOKENS (a new object
 // each press, compared by identity) that the view applies to that draft once (the nickname-commit
 // precedent, monstersScreen.ts).
-import { list, type NavLayout, navStep } from '../nav';
+import { list, type NavLayout, navFocus, navInit, navStep } from '../nav';
 import {
   buildProposeLists,
   type ProposeStep,
   proposeSteps,
   type TradeProposeLists,
 } from '../tradeProposeModel';
-import type { TradeProposePaint, TradeProposeView } from '../tradeProposeView';
+import type { TradeProposeView } from '../tradeProposeView';
 import type { ButtonStep, ScreenAdapter, ScreenContext, ScreenResult } from './types';
 
 export interface TradeProposeScreenVm {
@@ -150,7 +150,7 @@ export const tradeProposeScreen: ScreenAdapter<
   },
 
   paint(view, vm, state): void {
-    const p: TradeProposePaint = {
+    view.paint({
       steps: state.steps,
       step: state.step,
       lists: vm.lists,
@@ -158,8 +158,7 @@ export const tradeProposeScreen: ScreenAdapter<
       yes: state.yes,
       toggle: state.toggle,
       commit: state.commit,
-    };
-    view.paint(p);
+    });
   },
 };
 
@@ -179,15 +178,11 @@ function dpad(
     return { state, result: 'consumed' };
   }
   const keys = monsterKeys(vm);
+  const layout = offerLayout(keys);
   const seated = seatOffer(keys, state.offer);
-  const moved = navStep(
-    offerLayout(keys),
-    { tab: null, item: seated, perTab: {} },
-    {
-      button,
-      repeat,
-    },
-  ).state.item;
+  const from =
+    seated === null ? navInit(layout) : navFocus(layout, navInit(layout), { item: seated });
+  const moved = navStep(layout, from, { button, repeat }).state.item;
   return moved === state.offer
     ? { state, result: 'consumed' }
     : { state: { ...state, offer: moved }, result: 'consumed' };

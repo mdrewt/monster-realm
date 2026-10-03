@@ -35,10 +35,11 @@
 // D-pad reaches the router on Offer and Review (a focused select or input owns the arrows,
 // input/router.ts) and a repaint never pulls focus from where the player put it.
 //
-// The two strings this view owns are resolved through the i18n resolver
-// (`t()`, ui/i18n/resolver.ts): the target placeholder (`tradePropose.target.placeholder`, in
-// render()) and the submit label (`chrome.tradePropose.submit`, in show() — `index.html` no
-// longer ships the "Offer" text, so the button is EMPTY until the first show()). Target labels
+// The strings this view owns are resolved through the i18n resolver (`t()`/`tf()`,
+// ui/i18n/resolver.ts): the target placeholder (`tradePropose.target.placeholder`, in
+// render()), the submit label (`chrome.tradePropose.submit`, in show() — `index.html` no
+// longer ships the "Offer" text, so the button is EMPTY until the first show()), and the wizard's
+// step names, review question, summary and Yes / No (ctl-8e, in render()/paint()). Target labels
 // and monster labels are model data, rendered raw. Every `t(` first argument is a string LITERAL.
 import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
@@ -276,9 +277,18 @@ export class TradeProposeView {
     const commit = p.commit !== null && p.commit !== this.#lastCommit ? p.commit : null;
     if (commit !== null) this.#lastCommit = commit;
 
+    // The rebuild keeps the on-screen draft, minus a target or monster that left the lists. When
+    // it lost any, the player has not seen the draft a send would carry: the token is spent unsent.
     const target = this.#target.value;
     const checked = new Set(this.#readDraft().selectedMonsterIds.map((id) => id.toString()));
+    const focusedBox = this.#monsters.contains(document.activeElement)
+      ? document.activeElement?.getAttribute('data-monster-id')
+      : undefined;
     this.#renderLists(p.lists, target, checked);
+    const draftKept =
+      this.#target.value === target && this.#readDraft().selectedMonsterIds.length === checked.size;
+    // A focused box was replaced: focus its successor, or the list when its monster left.
+    if (focusedBox != null) (this.#boxOf(focusedBox) ?? this.#monsters).focus();
 
     if (p.toggle !== null && p.toggle !== this.#lastToggle) {
       this.#lastToggle = p.toggle;
@@ -306,7 +316,7 @@ export class TradeProposeView {
     this.#review.style.display = p.step === 'review' ? '' : 'none';
     this.#refreshSubmitEnabled();
 
-    if (commit !== null) this.#submit();
+    if (commit !== null && draftKept) this.#submit();
   }
 
   /** Rebuild the select and the boxes from `lists`, keeping `target` and the `checked` ids that
@@ -367,6 +377,9 @@ export class TradeProposeView {
   #paintHeader(steps: readonly ProposeStep[], active: ProposeStep): void {
     const items = steps.map((step) => stepItem(step, step === active));
     this.#steps.replaceChildren(...items);
+    // The two focus targets that are not form controls are named by their step.
+    this.#monsters.setAttribute('aria-label', t('tradePropose.step.offer'));
+    this.#review.setAttribute('aria-label', t('tradePropose.step.review'));
   }
 
   /** The review row, read from the on-screen draft: the question (or why it cannot be sent), a
@@ -452,7 +465,8 @@ export class TradeProposeView {
     ).canSubmit;
   }
 
-  // Single shared submit path (Enter + click) ⇒ one #pending lock ⇒ no double-submit.
+  // Single shared submit path (the wizard's commit token + click) ⇒ one #pending lock ⇒ no
+  // double-submit.
   #submit(): void {
     if (this.#pending) return;
     const sub = buildProposeSubmission(
@@ -468,7 +482,17 @@ export class TradeProposeView {
     // .finally() resets on BOTH resolve and reject — no dead-button-forever. .catch() swallows
     // a rejecting onSubmit (main.ts's onSubmit renders feedback itself and never rejects; the
     // view must not emit an unhandled rejection that would fail the vitest run).
-    void Promise.resolve(this.#cbs.onSubmit(sub.args))
+    let sent: Promise<void> | void;
+    try {
+      sent = this.#cbs.onSubmit(sub.args);
+    } catch {
+      // A SYNCHRONOUS throw releases the lock at once (never a dead button); feedback is the
+      // caller's, as for a rejection.
+      this.#pending = false;
+      this.#submitBtn.disabled = false;
+      return;
+    }
+    void Promise.resolve(sent)
       .finally(() => {
         this.#pending = false;
         this.#submitBtn.disabled = false;

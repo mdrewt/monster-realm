@@ -602,6 +602,106 @@ describe('the trade-propose wizard booted through main.ts over the real view and
     expect(proposeCalls().length, 'still exactly one offer was sent in all').toBe(1);
   });
 
+  it('CTL8E-1-BOOT-WIZARD: a monster ticked on Review that leaves the store before Yes makes the confirm send NOTHING (the token is spent on the draft it was seen with), the summary shows the changed draft, and flipping back to Yes and confirming again sends the new draft once', async () => {
+    // WRONG IMPL KILLED: a commit that rebuilds the lists from the live store and then sends the
+    // draft as it now is: the player confirmed "monster 31 + 25 coins" and an offer of 25 coins
+    // alone goes out (or the server rejects a monster that is gone). What is sent must be what
+    // was on screen when Yes was pressed.
+    await bootReady();
+    seedStore();
+    let at = 1010;
+    const key = (code: string): void => {
+      press(code, at);
+      at += 20;
+    };
+    key('KeyO');
+    await flush();
+    pickTarget(OTHER);
+    key('Enter'); // Offer, cursor on the first monster
+    key('Enter'); // ticks it
+    expect(checkedMonsters(), 'precondition: the first monster is ticked').toEqual(['31']);
+    key('PageDown');
+    typeInto(offerEl(), '25');
+    key('Enter'); // Ask
+    key('Enter'); // Review
+    expect(currentStep(), 'precondition: on Review').toEqual(['review=step']);
+    expect(testEl('tradepropose-review-summary').textContent, 'precondition: monster + coins').toBe(
+      i18n.tf('tradePropose.review.summary', {
+        target: OTHER_NAME,
+        monsters: 1,
+        offer: '25',
+        ask: '0',
+      } as never),
+    );
+
+    // The ticked monster leaves the store (a batch), then Yes.
+    opts.store.reconcileMonstersFromView([ownMonster(SECOND_MONSTER, 'Sprig')]);
+    server(at);
+    at += 20;
+    key('Enter');
+    await flush();
+    expect(proposeCalls(), 'the confirmed draft changed: nothing is sent').toEqual([]);
+    expect(
+      Array.from(monstersEl().querySelectorAll('input')).map((b) =>
+        b.getAttribute('data-monster-id'),
+      ),
+      'the gone monster`s box is gone',
+    ).toEqual([SECOND_MONSTER.toString()]);
+    expect(
+      testEl('tradepropose-review-summary').textContent,
+      'the summary shows the new draft',
+    ).toBe(
+      i18n.tf('tradePropose.review.summary', {
+        target: OTHER_NAME,
+        monsters: 0,
+        offer: '25',
+        ask: '0',
+      } as never),
+    );
+
+    key('ArrowUp'); // the cursor was moved to No by the spent Yes: back to Yes
+    key('Enter');
+    await flush();
+    const sent = proposeCalls();
+    expect(sent.length, 'a fresh confirm sends the new draft once').toBe(1);
+    const args = sent[0]?.args as {
+      initiatorMonsterIds: bigint[];
+      initiatorCurrency: bigint;
+    };
+    expect(args.initiatorMonsterIds, 'no monster in the new offer').toEqual([]);
+    expect(args.initiatorCurrency).toBe(25n);
+  });
+
+  it('CTL8E-1-BOOT-WIZARD: closing from Review with Escape and reopening shows no review row: the reopened wizard is on Target with the Review question hidden', async () => {
+    // WRONG IMPL KILLED: a close that leaves the runtime review row displayed (the reopened wizard
+    // shows "Send this offer? Yes / No" under the Target step), and a reopen that resumes Review.
+    await bootReady();
+    seedStore();
+    let at = 1010;
+    const key = (code: string): void => {
+      press(code, at);
+      at += 20;
+    };
+    key('KeyO');
+    await flush();
+    pickTarget(OTHER);
+    key('Enter'); // Offer
+    key('PageDown'); // Coins
+    key('Enter'); // Ask
+    key('Enter'); // Review
+    expect(currentStep(), 'precondition: on Review').toEqual(['review=step']);
+    expect(reviewShown(), 'precondition: the row is shown').toBe(true);
+
+    key('Escape'); // focus is on the review row, not a field: Start
+    expect(proposeShown(), 'Escape closed the overlay').toBe(false);
+    key('KeyO');
+    await flush();
+    expect(proposeShown(), 'reopened').toBe(true);
+    expect(currentStep(), 'on Target').toEqual(['target=step']);
+    expect(reviewShown(), 'with the review row hidden').toBe(false);
+    expect(proposeCalls(), 'nothing was sent').toEqual([]);
+  });
+
   it('CTL8E-1-BOOT-ESCAPE: Escape on the select after the deferred focus closes the overlay (B5: it was dead), and in a second run Escape in the offer field keeps the typed text, keeps the overlay open, does not advance the step and sends nothing, with the next Escape closing it', async () => {
     // WRONG IMPL KILLED: a select or field shield that swallows Escape (the overlay opens and the
     // player is trapped: B5); an Escape in the field that closes the overlay and drops the draft

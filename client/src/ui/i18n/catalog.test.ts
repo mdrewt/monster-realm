@@ -627,6 +627,8 @@ interface ParamOutputSpec {
 const CHECK_MARK = String.fromCharCode(0x2713);
 const MINUS_SIGN = String.fromCharCode(0x2212);
 const TIMES_SIGN = String.fromCharCode(0x00d7);
+/** ctl-8e's summary separator: U+00B7 MIDDLE DOT, by code point. */
+const MIDDLE_DOT = String.fromCharCode(0x00b7);
 
 /** Every parameterised MessageId's expected output for BOTH `SAMPLE_PARAMS` sets
  *  — pins the EXACT output string (plan R6), which as a consequence also pins
@@ -976,9 +978,12 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   // ctl-8e: the trade-propose Review summary (CTL8E.1).
   'tradePropose.review.summary': {
     inputA: { target: 'Zed', monsters: 2, offer: '25', ask: '7' },
-    outputA: 'To Zed: 2 monsters and 25 coins, asking 7 coins',
+    // INTENTIONAL CHANGE (ctl-8e round 2): was "To {target}: {n} monsters and {offer} coins,
+    // asking {ask} coins" ("1 monsters" for a single one); now a labelled list that reads right for
+    // any count.
+    outputA: `To Zed ${MIDDLE_DOT} Monsters: 2 ${MIDDLE_DOT} Coins: 25 ${MIDDLE_DOT} Asking: 7`,
     inputB: { target: 'Amy', monsters: 3, offer: '1000', ask: '4' },
-    outputB: 'To Amy: 3 monsters and 1000 coins, asking 4 coins',
+    outputB: `To Amy ${MIDDLE_DOT} Monsters: 3 ${MIDDLE_DOT} Coins: 1000 ${MIDDLE_DOT} Asking: 4`,
   },
 };
 
@@ -1461,5 +1466,33 @@ describe('ctl-8e: catalog.fr.ts, the keys ctl-8e adds', () => {
         );
       }
     }
+  });
+
+  it('CTL8E-1-VIEW-PAINT: the summary reads right for a single monster (no "1 monsters") and its French is the exact labelled list, every space before a colon a U+00A0 NO-BREAK SPACE, for both sample sets', () => {
+    // WRONG IMPL KILLED: the plural sentence "{n} monsters and ..." (a single ticked monster reads
+    // "1 monsters"); a French colon set off by a plain breaking space (a browser may wrap the colon
+    // onto a line of its own); a French line with an ASCII e grave stand-in, or the English words
+    // left in; and a closure that reorders or drops a field.
+    const en = (CATALOG_EN as Record<string, unknown>)['tradePropose.review.summary'] as (
+      p: Record<string, unknown>,
+    ) => string;
+    expect(en({ target: 'Zed', monsters: 1, offer: '0', ask: '0' })).toBe(
+      `To Zed ${MIDDLE_DOT} Monsters: 1 ${MIDDLE_DOT} Coins: 0 ${MIDDLE_DOT} Asking: 0`,
+    );
+    expect(
+      en({ target: 'Zed', monsters: 1, offer: '0', ask: '0' }).includes(' monsters'),
+      'no plural noun after a count',
+    ).toBe(false);
+
+    const E_GRAVE = String.fromCharCode(0x00e8);
+    const fr = (CATALOG_FR as Record<string, unknown>)['tradePropose.review.summary'] as (
+      p: Record<string, unknown>,
+    ) => string;
+    const spec = EXPECTED_PARAM_OUTPUTS['tradePropose.review.summary'] as ParamOutputSpec;
+    const frame = (p: { target: string; monsters: number; offer: string; ask: string }): string =>
+      `Pour ${p.target} ${MIDDLE_DOT} Monstres${NO_BREAK_SPACE}: ${p.monsters} ${MIDDLE_DOT} ` +
+      `Pi${E_GRAVE}ces${NO_BREAK_SPACE}: ${p.offer} ${MIDDLE_DOT} Demande${NO_BREAK_SPACE}: ${p.ask}`;
+    expect(fr(spec.inputA)).toBe(frame({ target: 'Zed', monsters: 2, offer: '25', ask: '7' }));
+    expect(fr(spec.inputB)).toBe(frame({ target: 'Amy', monsters: 3, offer: '1000', ask: '4' }));
   });
 });

@@ -242,8 +242,9 @@ export type MessageId =
   | 'heal.location'
   // ctl-8a: the heal frame's question and the reason it is disabled with no bound healer.
   | 'heal.prompt.question'
-  | 'tradePropose.review.summary'
   | 'heal.prompt.unavailable'
+  // ctl-8e: the trade-propose wizard's Review summary (tradeProposeView.ts).
+  | 'tradePropose.review.summary'
   // Privacy.* : the privacy surface — its heading and buttons (privacyView.ts) and, since
   // 21r-b2, its copy layer (privacyBanner.ts): the HUD countdown, status/notice lines, export
   // status lines and control labels.
