@@ -6,31 +6,39 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { expectPosted, interactChip, interactWithNpc, pressButton, readWorld } from './controls';
 
 // shop-via-NPC context-sensitive interact e2e.
 //
-// WHAT THIS PROVES (AC-12, the end-to-end half of AC-1/2/5/6):
-//   1. dist 3 from the shopkeeper: #interact-prompt is HIDDEN and KeyT opens NOTHING.
-//   2. dist 2: #interact-prompt is VISIBLE and names the destination ("Shop") + the key (T).
-//   3. KeyT -> #dialogue-overlay with the greeting "Hello, customer!" (GREET-THEN-SHOP:
+// WHAT THIS PROVES (AC-12, the end-to-end half of AC-1/2/5/6; ctl-10a CTL10A.1/.3):
+//   ctl-10a: T retired. A acts on what the character FACES — the entities on the tile in
+//   front, else on its own tile (game-core interact_candidates) — never on range.
+//   1. Manhattan 2, facing away ((6,1) facing North — in the OLD TALK_RANGE, so the old
+//      range rule offered the shop here): #interact-prompt is HIDDEN and A opens NOTHING.
+//   2. Manhattan 1, the shopkeeper directly BEHIND ((7,1) facing West): the prompt is HIDDEN
+//      and A opens NOTHING (r2-024: the old range rule talked to an NPC behind you).
+//   3. Facing the shopkeeper from (7,1): #interact-prompt reads EXACTLY
+//      `[Enter] Shop — tideglass_shopkeeper` — the A keycap, the destination verb and the
+//      name (CTL10A.3).
+//   4. A -> #dialogue-overlay with the greeting "Hello, customer!" (GREET-THEN-SHOP:
 //      the shop arm sends the existing `talk` reducer, it does not open the shop directly).
-//   4. While the dialogue overlay is open the prompt is HIDDEN (AC-6 overlay suppression).
-//   5. Clicking the [data-shop-id] Shop action -> #shop-overlay VISIBLE and
+//   5. While the dialogue overlay is open the prompt is HIDDEN (AC-6 overlay suppression).
+//   6. Clicking the [data-shop-id] Shop action -> #shop-overlay VISIBLE and
 //      #dialogue-overlay HIDDEN — the DEFERRED open (dismissDialogue round-trip, consumed
 //      in the dialogue batch listener's !conv arm), never two overlays at once.
 //
-// the negative-case test at dist 3 is the one case that would pass vacuously today, which is
-// exactly why it asserts a POSITIVE control first (the prompt must become visible one tile
-// later, in the sibling test) rather than standing alone.
+// The two negatives would pass vacuously on a dead A, which is exactly why the same file
+// asserts the POSITIVE control on the same tile (7,1) one re-facing later (tests 3 and 4)
+// rather than letting them stand alone.
 //
 // DESIGN NOTES
 // ============
 // SINGLE CONTEXT: nothing here needs a second player. One browser / one context / one page
 // (rename.spec.ts precedent). Under `workers: 1` this suite owns
 // the whole world, so presenceCount converges to exactly 1 (golden.spec exact-presence
-// discipline). A foreign player could not corrupt the assertions anyway — the resolver only
-// ranks npc rows and heal_location rows — but the convergence wait keeps a leaked session
-// from turning into a mysterious timeout later.
+// discipline). A foreign player could still stand on a faced tile (ctl-10a: players are
+// interact candidates, with no action until ctl-10b), so the convergence wait also keeps the
+// negatives honest, and keeps a leaked session from turning into a mysterious timeout later.
 //
 // NO RETRY LOOPS: the shopkeeper is seeded with wander_radius 0, and `npc_decide` treats
 // radius 0 as a pinned stationary special case. Unlike dialogue.spec.ts —
@@ -38,12 +46,10 @@ import {
 // and every press here is deterministic. If this spec ever needs a retry loop, the
 // shopkeeper's wander_radius has regressed; fix the content, not the spec.
 //
-// dialogue.spec.ts IS NOT IMPORTED FROM and IS NOT MODIFIED (AC-13 regression guard). Its
-// stepOne/ready/snap helpers are re-implemented here verbatim-in-spirit so this file can
-// evolve without touching the frozen regression net.
-//
-// PHYSICAL KEY CODES: `page.keyboard.press('KeyT')` (the physical-code form the main.ts
-// handler switches on — recruit.spec reviewer L3).
+// dialogue.spec.ts IS NOT IMPORTED FROM (AC-13 regression guard). Its stepOne/ready/snap
+// helpers are re-implemented here verbatim-in-spirit so this file can evolve without touching
+// the frozen regression net. The A press goes through the shared controls.ts helpers
+// (pressButton / interactWithNpc), so a binding change lands in one place (ctl-6a, ctl-10a).
 //
 // ---------------------------------------------------------------------------------------
 // WORLD FACTS (derived this session from game-core/content/*, not from memory)
@@ -88,10 +94,20 @@ import {
 //     N -> (6,3)  floor   <- NOTE (4,3)/(5,3) are WALLS; the x=6 column is the only clean
 //                            northward lane. The naive N,N,N,N from (5,5) bumps the (5,3)
 //                            wall — do not "simplify" this route.
-//     N -> (6,2)  floor   <- NEGATIVE CHECKPOINT: Manhattan to (8,1) = |8-6|+|1-2| = 3
-//     N -> (6,1)  floor   <- POSITIVE CHECKPOINT: Manhattan to (8,1) = |8-6|+|1-1| = 2
-//   The two checkpoints are ADJACENT tiles straddling TALK_RANGE = 2 (game-core), which is
-//   what makes the pair a real boundary test rather than two unrelated observations.
+//     N -> (6,2)  floor
+//     N -> (6,1)  floor   <- NEGATIVE 1: Manhattan 2 from (8,1) (the old TALK_RANGE boundary,
+//                            where the old range rule offered the shop), facing North (6,0) —
+//                            a wall; nothing on the faced tile or the own tile.
+//     E -> (7,1)  floor   (facing East, toward the shopkeeper — passes through; not tested
+//                            here, the positive is asserted after the negatives)
+//     E -> (8,1)  floor   <- the SHOPKEEPER'S TILE: characters never block movement
+//                            (game-core world.rs is_walkable is tile-kind only), so this walks
+//                            onto it.
+//     W -> (7,1)  floor   <- NEGATIVE 2: Manhattan 1, facing West (6,1), the shopkeeper
+//                            directly BEHIND.
+//     W -> (6,1), E -> (7,1)  <- POSITIVE: the arriving East step faces (8,1) (a step always
+//                            sets the facing — world.rs apply_move). (7,1) is the shopkeeper's
+//                            only walkable 4-neighbour ((8,2) is grass, (9,1)/(8,0) walls).
 
 interface Tile {
   x: number;
@@ -191,21 +207,71 @@ const ZONE0_PATH: readonly string[] = [
   'West', // (5,5) — WARP -> zone 1 (5,5)
 ];
 
-/** Zone-1 leg: warp landing (5,5) -> the dist-3 checkpoint (6,2). */
-const ZONE1_TO_FAR: readonly string[] = [
+/** Zone-1 leg: warp landing (5,5) -> (6,1), arriving facing North.
+ *  ctl-10a: T retired — the old dist-3 / dist-2 checkpoints tested a RANGE rule that no
+ *  longer exists; (6,1) is now the first negative (Manhattan 2, facing away). */
+const ZONE1_TO_RANGE2: readonly string[] = [
   'North', // (5,4) — off the return-warp tile
   'East', // (6,4)
   'North', // (6,3)
-  'North', // (6,2) — Manhattan 3 from the shopkeeper at (8,1)
+  'North', // (6,2)
+  'North', // (6,1) — Manhattan 2 from the shopkeeper at (8,1), facing North (a wall)
 ];
 
-const FAR_TILE: Tile = { x: 6, y: 2 }; // dist 3 — OUT of TALK_RANGE
-const NEAR_TILE: Tile = { x: 6, y: 1 }; // dist 2 — the inclusive boundary, IN range
+const RANGE2_TILE: Tile = { x: 6, y: 1 }; // dist 2 — in the OLD TALK_RANGE; facing North
+/** The shopkeeper's pinned tile (npcs/000-core.ron home (8,1), wander_radius 0). */
+const SHOPKEEPER_TILE: Tile = { x: 8, y: 1 };
+/** Its only walkable 4-neighbour, and so the only tile A can reach it from. */
+const SHOP_POST: Tile = { x: 7, y: 1 };
 
 /** The seeded greeting text (dialogue_trees/000-core.ron). */
 const GREETING = 'Hello, customer!';
 /** The seeded npc_id, which dialogueModel renders as the display name. */
 const SHOPKEEPER_NPC_ID = 'tideglass_shopkeeper';
+/** ctl-10a (CTL10A.3): the exact chip while the shopkeeper is the one candidate —
+ *  `[Enter] Shop — tideglass_shopkeeper` (A keycap, destination verb, the npc_id as name). */
+const SHOP_CHIP = interactChip('Shop', SHOPKEEPER_NPC_ID);
+
+/** ctl-10a (CTL10A.1 "with none, A does nothing and shows no toast"): with nothing on the faced
+ *  tile or the own tile, the chip is hidden, A opens neither the greeting nor the shop, and no
+ *  frame is pushed. The bounded waits are for the WRONG outcome: `.catch(() => false)` turns
+ *  the expected timeout into a pass. */
+async function expectANoOp(p: Page, where: string): Promise<void> {
+  const prompt = p.locator('#interact-prompt');
+  const dialogue = p.locator('#dialogue-overlay');
+  const shop = p.locator('#shop-overlay');
+  // The chip is recomputed per batch/frame, so give the loop a few frames after the walk.
+  await expect(prompt, `${where}: nothing faced and nothing underfoot ⇒ no chip`).toBeHidden({
+    timeout: 5_000,
+  });
+  expect((await readWorld(p)).stackLength, `${where}: precondition — a bare world base`).toBe(1);
+
+  await pressButton(p, 'A');
+
+  const dialogueOpened = await dialogue
+    .waitFor({ state: 'visible', timeout: 4_000 })
+    .then(() => true)
+    .catch(() => false);
+  expect(
+    dialogueOpened,
+    `${where}: A must NOT open the dialogue overlay — the shopkeeper is not on the faced tile ` +
+      'or the own tile (the server would still ACCEPT this talk: it checks TALK_RANGE 2 only, ' +
+      'so only the client rule can keep it shut)',
+  ).toBe(false);
+  const shopOpened = await shop
+    .waitFor({ state: 'visible', timeout: 2_000 })
+    .then(() => true)
+    .catch(() => false);
+  expect(
+    shopOpened,
+    `${where}: A must NOT open the shop overlay (only the greeting's Shop action may open it)`,
+  ).toBe(false);
+  expect(
+    (await readWorld(p)).stackLength,
+    `${where}: A with no candidate pushes no frame at all`,
+  ).toBe(1);
+  await expect(prompt, `${where}: the chip stays hidden after a no-op A`).toBeHidden();
+}
 
 test.describe
   .serial('uxd2 — shop via NPC: context-sensitive interact (AC-12)', () => {
@@ -234,9 +300,9 @@ test.describe
 
     // ---------------------------------------------------------------------------
     // Setup: walk zone 0 to the warp, cross into zone 1, and approach along the
-    // x=6 column to the dist-3 checkpoint.
+    // x=6 column to (6,1) (ctl-10a: T retired — the first negative, Manhattan 2).
     // ---------------------------------------------------------------------------
-    test('setup: walk (1,1) -> warp -> zone 1 -> (6,2), grass-free and battle-free', async () => {
+    test('setup: walk (1,1) -> warp -> zone 1 -> (6,1), grass-free and battle-free', async () => {
       test.setTimeout(180_000);
       const start = await snap(page);
       expect(start.ownAuthTile, 'the player spawns with an authoritative tile').not.toBeNull();
@@ -258,119 +324,120 @@ test.describe
       expect(warped.ownAuthTile, 'the warp lands on zone 1 (5,5)').toEqual({ x: 5, y: 5 });
       expect(warped.ongoingBattle, 'the zone-0 leg is grass-free').toBeNull();
 
-      await walk(page, ZONE1_TO_FAR);
+      await walk(page, ZONE1_TO_RANGE2);
 
       const done = await snap(page);
-      expect(done.ownAuthTile).toEqual(FAR_TILE);
+      expect(done.ownAuthTile).toEqual(RANGE2_TILE);
       expect(done.map.zone_id, 'the return warp at zone 1 (5,5) must not have re-fired').toBe(1);
       expect(done.ongoingBattle, 'the zone-1 leg is grass-free').toBeNull();
     });
 
     // ---------------------------------------------------------------------------
-    // AC-5 / AC-12 negative half: 3 tiles away, nothing is offered and nothing happens.
+    // ctl-10a negative 1 (CTL10A.1; T retired — this replaces the old dist-3 negative and
+    // the old dist-2 positive): Manhattan 2 from the shopkeeper, facing North (a wall).
+    // Under the OLD range rule this very tile offered "Shop / T"; under the faced-tile rule
+    // nothing is in front or underfoot, so nothing is offered and A does nothing.
     //
-    // KILLS: a resolver with an off-by-one range (`<= 3`, or a Chebyshev metric under
-    // which (8,1) is distance 2 from (6,2)); a prompt that renders whenever ANY NPC row
-    // exists rather than one in range; a KeyT that dispatches without a range check and
-    // leans on the server's rejection (silent Err, no user feedback, and the overlay
-    // would open on any latency-favourable ordering).
+    // KILLS: a resolver that still ranks by range (nearestInteractable within TALK_RANGE —
+    // the chip would show here); an A that dispatches `talk` by range and leans on the
+    // server (which ACCEPTS Manhattan 2 — the greeting would open); an A at the world base
+    // that falls through to some other frame (the stack must stay a bare world).
     // ---------------------------------------------------------------------------
-    test('AC-12 negative: at Manhattan 3 the prompt is hidden and KeyT opens nothing', async () => {
+    test('ctl-10a negative: at Manhattan 2 facing away the chip is hidden and A opens nothing', async () => {
       test.setTimeout(120_000);
-      const g = await snap(page);
-      expect(g.ownAuthTile, 'precondition: standing on the dist-3 checkpoint').toEqual(FAR_TILE);
+      // The post AND the facing, from the authoritative own character row: the last step
+      // of the setup walk was North, toward the (6,0) wall.
+      await expectPosted(page, RANGE2_TILE, 'North', 'shop-npc negative 1');
+      await expectANoOp(page, 'Manhattan 2, facing North');
+    });
+
+    // ---------------------------------------------------------------------------
+    // ctl-10a negative 2 (CTL10A.1's Red, r2-024): the shopkeeper DIRECTLY BEHIND the
+    // character, Manhattan 1. Reaching (7,1) facing West needs a West step FROM (8,1) —
+    // the shopkeeper's own tile, which the character can stand on because characters
+    // never block movement.
+    //
+    // On (8,1) the shopkeeper is underfoot and the faced tile (9,1) is a wall, so the OWN
+    // tile tier offers it (game-core interact_candidates: the faced tile, else the own
+    // tile) — asserted as the in-between positive. Then one step West puts it behind.
+    //
+    // KILLS: a rule that ignores facing (any adjacent NPC — the old behaviour this
+    // criterion's Red names); a rule that looks at the tile BEHIND (step(opposite)); an
+    // own-tile tier that is missing (the chip on (8,1) would stay hidden).
+    // ---------------------------------------------------------------------------
+    test('ctl-10a negative: with the shopkeeper directly behind, the chip is hidden and A opens nothing', async () => {
+      test.setTimeout(120_000);
+      await walk(page, ['East', 'East']); // (6,1) -> (7,1) -> (8,1), the shopkeeper's tile
+      const onKeeper = await snap(page);
+      expect(
+        onKeeper.ownAuthTile,
+        'characters never block movement — the walk stands ON the shopkeeper',
+      ).toEqual(SHOPKEEPER_TILE);
+      await expect(
+        page.locator('#interact-prompt'),
+        'standing on the shopkeeper, facing the (9,1) wall: the own-tile tier offers it',
+      ).toHaveText(SHOP_CHIP, { timeout: 10_000 });
+
+      await walk(page, ['West']); // (8,1) -> (7,1), facing West: the shopkeeper is behind
+      await expectPosted(page, SHOP_POST, 'West', 'shop-npc negative 2');
+      await expectANoOp(page, 'Manhattan 1, shopkeeper directly behind');
+    });
+
+    // ---------------------------------------------------------------------------
+    // ctl-10a positive (CTL10A.3): re-face the shopkeeper from the SAME tile (7,1) — a
+    // West step to (6,1), then the arriving East step — and the chip names the A keycap,
+    // the destination verb and the shopkeeper, exactly.
+    //
+    // KILLS: a chip that still prints the retired "T" glyph, or a hard-coded key instead of
+    // the A binding's keycap; an actionWord hard-coded to "Talk" (the shopkeeper would be
+    // indistinguishable from a villager); a chip that drops the name; and — together with
+    // negative 2 on the same tile — a rule that ignores facing.
+    // ---------------------------------------------------------------------------
+    test('ctl-10a positive: facing the shopkeeper the chip reads exactly "[Enter] Shop — tideglass_shopkeeper"', async () => {
+      test.setTimeout(120_000);
+      await walk(page, ['West', 'East']); // (7,1) -> (6,1) -> (7,1), arriving facing East
+      await expectPosted(page, SHOP_POST, 'East', 'shop-npc positive');
 
       const prompt = page.locator('#interact-prompt');
-      const dialogue = page.locator('#dialogue-overlay');
-      const shop = page.locator('#shop-overlay');
-
-      // The prompt is recomputed every frame, so a single settled observation is enough —
-      // but give the loop a couple of frames after the walk before observing.
-      await expect(prompt, 'no interactable in range ⇒ no prompt (AC-5)').toBeHidden({
-        timeout: 5_000,
+      await expect(prompt, 'the faced shopkeeper is the one candidate ⇒ a chip').toBeVisible({
+        timeout: 10_000,
       });
-
-      await page.keyboard.press('KeyT');
-
-      // Bounded wait for the WRONG outcome: if either overlay opens within this window the
-      // range gate failed. `.catch(() => false)` turns the expected timeout into a pass.
-      const dialogueOpened = await dialogue
-        .waitFor({ state: 'visible', timeout: 4_000 })
-        .then(() => true)
-        .catch(() => false);
-      expect(
-        dialogueOpened,
-        'KeyT at Manhattan 3 must NOT open the dialogue overlay — the client range (talk_range()) is 2 ' +
-          'and the server re-validates at TALK_RANGE 2',
-      ).toBe(false);
-
-      const shopOpened = await shop
-        .waitFor({ state: 'visible', timeout: 2_000 })
-        .then(() => true)
-        .catch(() => false);
-      expect(
-        shopOpened,
-        'KeyT at Manhattan 3 must NOT open the shop overlay (and nothing but the greeting ' +
-          'Shop action may open it at all — there is no global shop hotkey after uxd2)',
-      ).toBe(false);
-
-      await expect(prompt, 'the prompt stays hidden after a no-op KeyT').toBeHidden();
+      await expect(
+        prompt,
+        'the chip names the A keycap, the DESTINATION — a shopkeeper reads "Shop" (AC-12), ' +
+          'which makes greet-then-shop legible though the dispatch sends `talk` — and the npc_id',
+      ).toHaveText(SHOP_CHIP);
     });
 
     // ---------------------------------------------------------------------------
-    // AC-7 / AC-12 positive half: one tile closer (Manhattan 2, the inclusive
-    // boundary) the prompt appears and NAMES THE DESTINATION.
-    //
-    // KILLS: a strict `<` range comparison (the boundary tile would stay silent — and
-    // this is the tile the player naturally stops on); a prompt whose actionWord is
-    // hard-coded to "Talk" (the shopkeeper would be indistinguishable from a villager);
-    // a prompt that omits the key glyph (the affordance would be undiscoverable).
-    // ---------------------------------------------------------------------------
-    test('AC-12 positive: at Manhattan 2 the prompt reads "Shop" and names the T key', async () => {
-      test.setTimeout(120_000);
-      await walk(page, ['North']); // (6,2) -> (6,1)
-      const g = await snap(page);
-      expect(g.ownAuthTile, 'moved to the dist-2 boundary tile').toEqual(NEAR_TILE);
-
-      const prompt = page.locator('#interact-prompt');
-      await expect(
-        prompt,
-        'an interactable at exactly TALK_RANGE must produce a prompt (inclusive <=)',
-      ).toBeVisible({ timeout: 10_000 });
-
-      // the CONTRACT is that the label names the destination ("Shop", not "Talk") and the
-      // key that triggers it.
-      await expect(
-        prompt,
-        'the prompt must name the DESTINATION — a shopkeeper reads "Shop" (AC-12), which is ' +
-          'what makes greet-then-shop legible even though the dispatch sends `talk`',
-      ).toContainText('Shop');
-      const text = (await prompt.textContent()) ?? '';
-      expect(
-        text.includes('T'),
-        `the prompt must name the interact key glyph "T" — got ${JSON.stringify(text)}`,
-      ).toBe(true);
-    });
-
-    // ---------------------------------------------------------------------------
-    // AC-1 / AC-2 / AC-6: KeyT greets (it does NOT open the shop directly), the
+    // AC-1 / AC-2 / AC-6: A greets (it does NOT open the shop directly), the
     // greeting is the seeded inert tree, and the prompt is suppressed while the
-    // overlay is up.
+    // overlay is up. (ctl-10a: T retired — the press is A, facing the shopkeeper.)
     //
-    // KILLS: a KeyT that opens the shop overlay directly for a Shop NPC;
+    // KILLS: an A that opens the shop overlay directly for a Shop NPC;
     // a dispatch that targets the wrong NPC; a prompt with no overlay-visible
-    // suppression (AC-6), which would float "Shop / T" on top of the open dialogue.
+    // suppression (AC-6), which would float the chip on top of the open dialogue.
     // ---------------------------------------------------------------------------
-    test('AC-1/2: KeyT opens the greeting "Hello, customer!" and suppresses the prompt (AC-6)', async () => {
+    test('AC-1/2: A opens the greeting "Hello, customer!" and suppresses the prompt (AC-6)', async () => {
       test.setTimeout(120_000);
       const dialogue = page.locator('#dialogue-overlay');
       const shop = page.locator('#shop-overlay');
       const prompt = page.locator('#interact-prompt');
 
-      await page.keyboard.press('KeyT');
-      await expect(dialogue, 'KeyT on a Shop NPC sends `talk` — the GREETING opens').toBeVisible({
-        timeout: 15_000,
+      // ONE press (the shopkeeper is pinned — no retry loop, see NO RETRY LOOPS): the
+      // helper asserts the post (7,1) and the East facing, sees the shopkeeper on the
+      // faced tile and the exact chip, presses A once, and waits up to 15 s for the greeting.
+      await interactWithNpc(page, {
+        stand: SHOP_POST,
+        facing: 'East',
+        opened: dialogue,
+        chip: SHOP_CHIP,
+        maxAttempts: 1,
+        npcWaitMs: 10_000,
+        openWaitMs: 15_000,
+        label: 'shop-npc AC-1/2',
       });
+      await expect(dialogue, 'A on a Shop NPC sends `talk` — the GREETING opens').toBeVisible();
 
       // Exact seeded content: proves we greeted the SHOPKEEPER (not elder_oak, who is in
       // zone 0 and whose greeting text is different) and that dialogueContent.ts mirrors
@@ -382,14 +449,14 @@ test.describe
       // closed at this point — a direct-open impl would already have two overlays stacked.
       await expect(
         shop,
-        'the shop must NOT be open yet — KeyT greets; the Shop ACTION opens the shop (AC-2)',
+        'the shop must NOT be open yet — A greets; the Shop ACTION opens the shop (AC-2)',
       ).toBeHidden();
 
       // AC-6: overlay suppression of the on-world prompt.
       await expect(
         prompt,
         'the interact prompt must be hidden while an overlay is visible (AC-6) — otherwise the ' +
-          '"Shop / T" label floats over the open dialogue',
+          'Shop chip floats over the open dialogue',
       ).toBeHidden({ timeout: 5_000 });
     });
 

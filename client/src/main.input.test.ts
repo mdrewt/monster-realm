@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
-import type { StoreBattle, StoreBattleMonster } from './net/store';
+import type { StoreBattle, StoreBattleMonster, StoreNpcRow } from './net/store';
 import { HOLD_COMMIT_MS } from './prediction/heldKeys';
 import type { NavInput } from './ui/nav';
 
@@ -57,9 +57,24 @@ const H = vi.hoisted(() => ({
   /** The screen-adapter table main.ts's host reads: a mutable copy of the real one, re-made by the
    *  module mock below on every fresh import, so a ctl-7c case can swap ONE frame's adapter. */
   adapters: {} as Record<string, unknown>,
+  /** ctl-10a: every reducer call other than enqueueMove with the exact argument object it got,
+   *  oldest first (talk's npcEntityId, healParty's locationId). Reset by every boot. */
+  callArgs: [] as Array<{ name: string; args: unknown }>,
+  /** ctl-10a: every call main.ts made to the wasm `interact_candidates_coded` export, with its
+   *  arguments verbatim, oldest first. Reset by every boot. */
+  interactCalls: [] as unknown[][],
+  /** ctl-10a: what the stubbed export answers. The stub IS the interaction rule (CTL10A.1): each
+   *  case installs its own through `useRule`. Reset to "no candidate" by every boot. */
+  interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
+  /** ctl-10a: tiles ("x,y") the stubbed apply_move will not enter: a step into one turns the
+   *  character to face it and moves nothing (a facing-only change). Reset by every boot. */
+  blocked: new Set<string>(),
 }));
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid.
+// ctl-10a: named fixture change. A step into an `H.blocked` tile only turns the character (no
+// existing case blocks a tile), and the new interact export is a recording stub driven by
+// `H.interact`.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const SIDE = 8;
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
@@ -78,11 +93,15 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
       const stamp = Math.floor(now);
       if (input === 'Jump') return { ...state, action: 'Jumping', move_started_at: stamp };
       const [dx, dy] = DELTA[input.Step];
+      const to = { x: state.pos.x + dx, y: state.pos.y + dy };
+      if (H.blocked.has(`${to.x},${to.y}`)) {
+        return { ...state, facing: input.Step, move_started_at: stamp };
+      }
       return {
         ...state,
         facing: input.Step,
         action: 'Walking',
-        pos: { x: state.pos.x + dx, y: state.pos.y + dy },
+        pos: to,
         move_started_at: stamp,
       };
     },
@@ -92,6 +111,11 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
     party_slot_none: () => 255,
     max_trade_monsters_per_side: () => 64,
     talk_range: () => 2,
+    // ctl-10a: named fixture change — the new interact export
+    interact_candidates_coded: (...args: unknown[]) => {
+      H.interactCalls.push(args);
+      return H.interact(...args);
+    },
     predict_move: () => ({}),
     predict_tick: () => ({}),
     set_active_zone: () => undefined,
@@ -121,8 +145,10 @@ vi.mock('./net/connection', () => {
               H.sends.push({ input: args.input, seq: args.seq, resolve, reject });
             });
         }
-        return () => {
+        // ctl-10a: named fixture change — the argument object is recorded too.
+        return (args: unknown) => {
           H.calls.push(String(name));
+          H.callArgs.push({ name: String(name), args });
           return Promise.resolve();
         };
       },
@@ -180,8 +206,11 @@ vi.mock('./render/world', () => {
     setMap(): void {}
     render(): void {}
     resize(): void {}
-    screenFor(): { x: number; y: number } {
-      return { x: 0, y: 0 };
+    // ctl-10a: named fixture change — the identity mapping (was a constant origin), so the chip's
+    // position names the world anchor main.ts handed it (CTL10A-3-BOOT-CHIP-ANCHOR). No other case
+    // reads a position.
+    screenFor(p: { x: number; y: number }): { x: number; y: number } {
+      return { x: p.x, y: p.y };
     }
     clear(): void {}
     destroy(): void {}
@@ -245,6 +274,10 @@ async function boot(): Promise<void> {
   H.sends = [];
   H.sessionState = 'hidden';
   H.calls = [];
+  H.callArgs = [];
+  H.interactCalls = [];
+  H.interact = () => [];
+  H.blocked = new Set<string>();
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   recorded = [];
@@ -796,7 +829,9 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
 // sent are the ones the input path issues. A case that WANTS a server pullback delivers a tile
 // the predictor does not hold, (2, 7). One NPC stands one tile east of the spawn, so the world
 // shows an interact prompt from every tile used here, which makes "the prompt stays hidden"
-// a real observation rather than an empty one.
+// a real observation rather than an empty one. (ctl-10a: what the world offers is now whatever
+// the stubbed wasm interact rule answers, `H.interact`; a case that reads the prompt installs a
+// rule that names the NPC.)
 
 const WILD_IDENTITY = '0'.repeat(64);
 const BATTLE_ID = 101n;
@@ -973,25 +1008,30 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(stack(), 'and the close is mirrored').toEqual([{ kind: 'world' }]);
   });
 
-  it('CTL2-3-BOOT-B17: an Ongoing battle row makes movement dead from the very batch it arrives in, and Escape opens the main menu over the battle and never hides it; with the menu closed again the bare battle base still walks nowhere and KeyT does not interact', async () => {
+  it('CTL2-3-BOOT-B17: an Ongoing battle row makes movement dead from the very batch it arrives in, and Escape opens the main menu over the battle and never hides it; with the menu closed again the bare battle base still walks nowhere and A does not interact', async () => {
     // WRONG IMPL KILLED (B17): a gate that is only "no overlay visible" (Escape hides battleView
     // and the character predicts a step the server rejects, then rubber-bands back); a base
     // derived one batch late, or by a listener that runs after the reconcile re-issue (the
     // pullback batch that carries the battle row still sends a step); a prompt computed from
-    // the overlay probe instead of the gate (it advertises a target KeyT would refuse); and a
+    // the overlay probe instead of the gate (it advertises a target A would refuse); and a
     // base that does not return to the world when the battle row goes.
     // ctl-6c: Escape never HIDES the battle: Start opens the main menu above an Ongoing battle
     // (CTL6C.1) and the second Escape below closes it, after which the bare battle base keeps every
-    // movement and KeyT assertion that follows. A Start that hid the battle, or left the menu open
-    // (the KeyT / W gates would then read a menu frame instead of the bare base), fails here.
+    // movement and interact assertion that follows. A Start that hid the battle, or left the menu
+    // open (the A / W gates would then read a menu frame instead of the bare base), fails here.
+    // ctl-10a: T retired — the interact presses are A (Enter) now (CTL10A.3: T does nothing), and
+    // the stubbed interact rule names the NPC from every tile this case uses (the pullback leaves
+    // the character off the NPC's row), so the controls below still observe a live interaction.
     await bootReady();
+    useRule(everyNpc);
     seedWorld(1000);
     frame(1005);
     expect(promptShown(), 'control: at the world the NPC in range shows the interact prompt').toBe(
       true,
     );
-    fire('keydown', 'KeyT', 1006);
-    expect(talkCalls(), 'control: KeyT at the world talks to the NPC in range').toBe(1);
+    fire('keydown', 'Enter', 1006);
+    fire('keyup', 'Enter', 1007);
+    expect(talkCalls(), 'control: A at the world talks to the NPC the rule names').toBe(1);
 
     fire('keydown', 'KeyW', 1010);
     expect(dirs()).toEqual(['North']);
@@ -1038,10 +1078,12 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
       { kind: 'battle', battleId: '101' },
     ]);
     expect(promptShown(), 'the interact prompt stays hidden over a battle base').toBe(false);
-    // KeyT shares the movement gate with the prompt: it must refuse what the prompt hides, and
-    // refusing must not disturb the stack.
-    fire('keydown', 'KeyT', 1715);
-    expect(talkCalls(), 'KeyT over a battle base does not dispatch the interact').toBe(1);
+    // A at the bare battle base belongs to the battle's own adapter, never to the world interact:
+    // it must refuse what the prompt hides, and refusing must not disturb the stack.
+    // ctl-10a: T retired — this press was KeyT.
+    fire('keydown', 'Enter', 1715);
+    fire('keyup', 'Enter', 1716);
+    expect(talkCalls(), 'A over a battle base does not dispatch the interact').toBe(1);
     expect(stack(), 'and the stack is unchanged').toEqual([{ kind: 'battle', battleId: '101' }]);
     fire('keyup', 'KeyW', 1720);
     fire('keydown', 'KeyW', 1730);
@@ -1060,8 +1102,10 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(stack(), 'the base is the world again').toEqual([{ kind: 'world' }]);
     expect(H.sends.length, 'nothing walks on its own when the battle ends').toBe(sent);
     expect(promptShown(), 'control: the prompt is back at the world').toBe(true);
-    fire('keydown', 'KeyT', 2450);
-    expect(talkCalls(), 'control: KeyT talks again once the battle is over').toBe(2);
+    // ctl-10a: T retired — this press was KeyT.
+    fire('keydown', 'Enter', 2450);
+    fire('keyup', 'Enter', 2451);
+    expect(talkCalls(), 'control: A talks again once the battle is over').toBe(2);
 
     // Anti-vacuity: the world walks again for a fresh press.
     fire('keyup', 'KeyW', 2500);
@@ -1790,8 +1834,10 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     // WRONG IMPL KILLED: a close command that skips some overlays (the six here were measured
     // as skipped by a mutant while every other boot case stayed green: the overlay is left
     // standing under the battle and, for privacy, its dismissal never runs). Each opens by its
-    // own real path: N, O and T (a heal NPC on the player's own tile, which outranks the guide
-    // one tile away), I and E, and the claim overlay's privacy button.
+    // own real path: N, O and A (the stubbed interact rule names the heal NPC on the player's own
+    // tile), I and E, and the claim overlay's privacy button.
+    // ctl-10a: T retired — the heal frame opener was KeyT (the nearest-in-range rule picked the
+    // heal NPC); it is A now, with the wasm rule stub naming that NPC.
     // Not separately observed: privacy's onDismissed effect (it disarms an armed delete
     // confirmation). Arming needs an Active account row plus the frame loop's account pump, and
     // the batch's own export listener repaints the overlay before the reconcile, so no cheap
@@ -1800,6 +1846,7 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     // Raising and evolution build their own roots, whose ids this suite does not know: they are
     // checked for visibility and the stack only, not for the a11y strip.
     await bootReady();
+    useRule(pick(['npc', '12']));
     seedWorld(1000);
     opts.store.upsertNpc({
       entityId: 12n,
@@ -1847,7 +1894,7 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
       {
         name: 'healView',
         rootId: 'heal-overlay',
-        open: (t) => void fire('keydown', 'KeyT', t),
+        open: (t) => void tapKey('Enter', t),
         shown: () => shownById('heal-overlay'),
       },
       {
@@ -2354,5 +2401,998 @@ describe('main.ts held D-pad and context changes (runtime, ctl-7c)', { sequentia
       { button: 'Up', repeat: false },
     ]);
     expect(H.sends, 'nothing walked').toHaveLength(0);
+  });
+});
+
+// ==========================================================================================
+// ctl-10a: world A and Y act on what the wasm rule says you face; T retired (CTL10A.1-3)
+// ==========================================================================================
+//
+// Same harness, one fresh main.ts per case. The interaction RULE is the wasm export
+// `interact_candidates_coded(ownX, ownY, facingCode /* N0 S1 E2 W3 */, zone, entities)`, stubbed
+// here (`H.interact`) and recorded (`H.interactCalls`). `entities` is the marshalled list
+// `{ kind: 'npc' | 'heal' | 'player', x, y, zone, id: decimal string }` (an NPC at its
+// character-row tile, a heal location, another player; the own character excluded) and the answer
+// is a list of indices into it. Each case installs the rule it needs: `pick(...)` names entities
+// by kind and id whatever their tile (the stub is the ONLY rule, so a TS rule left in main.ts shows
+// up as a disagreement), `facedTileRule` transcribes game-core's faced-tile-then-own-tile rule.
+//
+// Observed: the reducers called and their arguments (`H.callArgs`), which frames are shown, the
+// read-only `__game().stack`, the `#status` line, and the chip `#interact-prompt` (its exact text,
+// or the picker / action-sheet rows rendered inside it as nav rows). The chip is repainted by the
+// frame loop, so a case runs a frame before it reads the chip. A case that changes the rule mid-way
+// delivers a store batch after it: the candidates are memoised per batch, position and facing.
+
+const EM_DASH = String.fromCharCode(0x2014);
+const ELLIPSIS = String.fromCharCode(0x2026);
+const RIVAL_IDENTITY = 'ef'.repeat(32);
+const RIVAL_ENTITY = 20n;
+
+/** One marshalled entity, as main.ts hands it to the wasm rule. */
+interface WireEntity {
+  readonly kind: string;
+  readonly x: number;
+  readonly y: number;
+  readonly zone: number;
+  readonly id: string;
+}
+
+/** A stand-in for the wasm rule: the indices of the candidates, from the export's arguments. */
+type InteractRule = (
+  ownX: number,
+  ownY: number,
+  facing: number,
+  zone: number,
+  entities: readonly WireEntity[],
+) => number[];
+
+/** Install `rule` as the stubbed `interact_candidates_coded` for this boot. */
+function useRule(rule: InteractRule): void {
+  H.interact = (...args: unknown[]) => {
+    const [x, y, facing, zone, entities] = args;
+    if (!Array.isArray(entities)) return [];
+    return rule(
+      x as number,
+      y as number,
+      facing as number,
+      zone as number,
+      entities as WireEntity[],
+    );
+  };
+}
+
+/** A rule that names exactly these entities (by kind and id), in this order, wherever they stand. */
+function pick(...keys: ReadonlyArray<readonly [string, string]>): InteractRule {
+  return (_x, _y, _facing, _zone, entities) =>
+    keys.flatMap(([kind, id]) => {
+      const at = entities.findIndex((e) => e.kind === kind && e.id === id);
+      return at === -1 ? [] : [at];
+    });
+}
+
+/** A rule that names every NPC in the list, wherever it stands. */
+function everyNpc(
+  _x: number,
+  _y: number,
+  _facing: number,
+  _zone: number,
+  entities: readonly WireEntity[],
+): number[] {
+  return entities.flatMap((e, i) => (e.kind === 'npc' ? [i] : []));
+}
+
+const FACING_DELTA: Readonly<Record<number, readonly [number, number]>> = {
+  0: [0, -1],
+  1: [0, 1],
+  2: [1, 0],
+  3: [-1, 0],
+};
+const KIND_ORDER: Readonly<Record<string, number>> = { npc: 0, heal: 1, player: 2 };
+
+/** game-core's rule (CTL9.1), transcribed as a stub: the entities on the faced tile, else on the
+ *  own tile; same zone only; by kind (NPC, heal, player), then by numeric id. */
+function facedTileRule(
+  x: number,
+  y: number,
+  facing: number,
+  zone: number,
+  entities: readonly WireEntity[],
+): number[] {
+  const delta = FACING_DELTA[facing];
+  if (delta === undefined) return [];
+  const on = (tx: number, ty: number): number[] =>
+    entities
+      .map((e, i) => ({ e, i }))
+      .filter(({ e }) => e.zone === zone && e.x === tx && e.y === ty)
+      .sort(
+        (a, b) =>
+          (KIND_ORDER[a.e.kind] ?? 9) - (KIND_ORDER[b.e.kind] ?? 9) ||
+          Number(a.e.id) - Number(b.e.id),
+      )
+      .map(({ i }) => i);
+  const front = on(x + delta[0], y + delta[1]);
+  return front.length > 0 ? front : on(x, y);
+}
+
+/** One NPC row and its character at (`x`, `y`), with no flush. */
+function placeNpc(
+  entityId: bigint,
+  npcId: string,
+  x: number,
+  y: number,
+  interaction: StoreNpcRow['interaction'],
+  t: number,
+): void {
+  opts.store.upsertNpc({
+    entityId,
+    npcId,
+    zoneId: 0,
+    homeX: x,
+    homeY: y,
+    wanderRadius: 0,
+    dialogueTreeId: 'no-such-tree',
+    interaction,
+  });
+  opts.store.upsertCharacter(
+    {
+      entityId,
+      zoneId: 0,
+      tileX: x,
+      tileY: y,
+      facing: 'South',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [] as WasmMoveInput[],
+    },
+    t,
+  );
+}
+
+/** A heal location row, free and with no cooldown, with no flush. */
+function healLocation(locationId: number, tileX: number, tileY: number): void {
+  opts.store.upsertHealLocation({
+    locationId,
+    zoneId: 0,
+    tileX,
+    tileY,
+    costQty: 0,
+    cooldownMs: 0,
+    costCurrency: 0n,
+  });
+}
+
+/** Another online player and its character at (`x`, `y`), with no flush. */
+function placeRival(x: number, y: number, t: number): void {
+  opts.store.upsertPlayer({
+    identity: RIVAL_IDENTITY,
+    entityId: RIVAL_ENTITY,
+    name: 'Rival',
+    online: true,
+    lastInputSeq: 0n,
+  });
+  opts.store.upsertCharacter(
+    {
+      entityId: RIVAL_ENTITY,
+      zoneId: 0,
+      tileX: x,
+      tileY: y,
+      facing: 'West',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [] as WasmMoveInput[],
+    },
+    t,
+  );
+}
+
+const chip = (): HTMLElement => rootOf('interact-prompt');
+/** The picker / action-sheet rows rendered inside the chip. */
+const chipOptions = (): HTMLElement[] => [
+  ...chip().querySelectorAll<HTMLElement>('[role="option"]'),
+];
+const chipRowTexts = (): string[] => chipOptions().map((row) => (row.textContent ?? '').trim());
+const chipText = (): string => (chip().textContent ?? '').trim();
+const talkArgs = (): unknown[] => H.callArgs.filter((c) => c.name === 'talk').map((c) => c.args);
+const healArgs = (): unknown[] =>
+  H.callArgs.filter((c) => c.name === 'healParty').map((c) => c.args);
+/** The location ids the heal frame's list is bound to. */
+const healListIds = (): Array<string | undefined> =>
+  [...document.querySelectorAll<HTMLElement>('#heal-list li')].map((li) => li.dataset.locationId);
+const healShown = (): boolean => shownById('heal-overlay');
+const statusLine = (): string => document.getElementById('status')?.textContent ?? '';
+const WORLD_ONLY = [{ kind: 'world' }];
+const HEAL_STACK = [{ kind: 'world' }, { kind: 'screen', id: 'healView' }];
+
+describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ctl-10a)', {
+  sequential: true,
+}, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    delete (document as unknown as { visibilityState?: unknown }).visibilityState;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    H.sessionState = 'hidden';
+    rafCallback = null;
+    document.body.replaceChildren();
+  });
+
+  it('CTL10A-1-BOOT-A-TALK: A at the world with one dialogue NPC candidate sends talk once with that NPC`s entity id; a shop NPC candidate is talked to the same way; nothing else is sent and no frame opens', async () => {
+    // WRONG IMPL KILLED: A at the world doing nothing (today), a talk sent with the wrong id or a
+    // dropped argument, two talks for one press, a shop NPC that opens the shop directly instead of
+    // the greet-then-shop talk, and an A that also pushes a frame.
+    await bootReady();
+    useRule(pick(['npc', '11']));
+    seedWorld(1000);
+    frame(1005);
+    tapKey('Enter', 1010);
+    expect(talkArgs(), 'one talk, to the candidate').toEqual([{ npcEntityId: NPC_ENTITY }]);
+    expect(H.calls, 'and nothing else').toEqual(['talk']);
+    expect(stack(), 'no frame is pushed by the talk itself').toEqual(WORLD_ONLY);
+    expect(H.sends, 'A walks nowhere').toHaveLength(0);
+
+    // A shop NPC: the shop opens through the greet-then-shop conversation, so A talks to it.
+    placeNpc(13n, 'keeper', 2, 5, { kind: 'shop', shopId: 3 }, 1020);
+    useRule(pick(['npc', '13']));
+    settle(1020);
+    frame(1030);
+    tapKey('Enter', 1040);
+    expect(talkArgs(), 'the shop NPC is talked to by its own id').toEqual([
+      { npcEntityId: NPC_ENTITY },
+      { npcEntityId: 13n },
+    ]);
+    expect(shownById('shop-overlay'), 'no shop opens without the conversation').toBe(false);
+    expect(stack()).toEqual(WORLD_ONLY);
+  });
+
+  it('CTL10A-1-BOOT-WASM-RULE: the wasm export is the ONLY rule: it is asked with the own x, y, facing code, zone and the marshalled entities, A talks to an NPC five tiles away when the rule names it, and sends nothing with an NPC directly ahead when the rule names none', async () => {
+    // WRONG IMPL KILLED: a TypeScript range or facing rule kept in main.ts (it would refuse the NPC
+    // five tiles away, or talk to the one directly ahead the rule rejected); arguments in another
+    // order, the facing as a name instead of its code, the NPC at its HOME instead of its character
+    // tile, ids as numbers or bigints instead of decimal strings, the own character in the list, and
+    // a client-side range filter that drops the far NPC from the list.
+    await bootReady();
+    useRule(pick(['npc', '13']));
+    seedWorld(1000);
+    // The far NPC's home is elsewhere: only its character row says where it stands.
+    opts.store.upsertNpc({
+      entityId: 13n,
+      npcId: 'far',
+      zoneId: 0,
+      homeX: 0,
+      homeY: 0,
+      wanderRadius: 3,
+      dialogueTreeId: 'no-such-tree',
+      interaction: { kind: 'dialogue' },
+    });
+    opts.store.upsertCharacter(
+      {
+        entityId: 13n,
+        zoneId: 0,
+        tileX: 7,
+        tileY: 6,
+        facing: 'West',
+        action: 'Idle',
+        moveStartedAtMs: 0n,
+        moveQueue: [] as WasmMoveInput[],
+      },
+      1010,
+    );
+    settle(1010);
+    frame(1020);
+    tapKey('Enter', 1030);
+    expect(talkArgs(), 'the rule named the NPC five tiles away: A talks to it').toEqual([
+      { npcEntityId: 13n },
+    ]);
+
+    const args = H.interactCalls.at(-1);
+    expect(args, 'precondition: the rule was consulted').toBeDefined();
+    expect(
+      args?.slice(0, 4),
+      'own x, own y, the facing code (East is 2), the zone of the own row',
+    ).toEqual([2, 6, 2, 0]);
+    const wire = args?.[4] as WireEntity[];
+    expect(wire, 'two NPCs, no heal location, no other player, not the own character').toHaveLength(
+      2,
+    );
+    expect(wire).toEqual(
+      expect.arrayContaining([
+        { kind: 'npc', x: 3, y: 6, zone: 0, id: '11' },
+        { kind: 'npc', x: 7, y: 6, zone: 0, id: '13' },
+      ]),
+    );
+
+    // The rule names nobody while a dialogue NPC stands directly ahead: A sends nothing.
+    useRule(() => []);
+    settle(1040);
+    frame(1050);
+    tapKey('Enter', 1060);
+    expect(talkArgs(), 'no candidate: no talk, whatever stands ahead').toEqual([
+      { npcEntityId: 13n },
+    ]);
+    expect(H.calls, 'and nothing else').toEqual(['talk']);
+    expect(stack()).toEqual(WORLD_ONLY);
+  });
+
+  it('CTL10A-1-BOOT-BEHIND: with an NPC directly behind the character neither KeyT nor A talks and the chip is hidden; once that NPC`s character stands on the faced tile, A talks to it', async () => {
+    // WRONG IMPL KILLED (r2-024, RED today): the nearest-in-range rule that ignores facing (KeyT
+    // talks to the NPC behind), a KeyT kept as an interact key, and an A that interacts with
+    // something the rule did not name. The control proves the rule stub and A are live here.
+    await bootReady();
+    useRule(facedTileRule);
+    placeNpc(NPC_ENTITY, 'guide', 1, 6, { kind: 'dialogue' }, 1000);
+    server(1000, { x: 2, y: 6, ack: 0 }); // the character faces East; the guide stands West
+    frame(1005);
+    fire('keydown', 'KeyT', 1010);
+    fire('keyup', 'KeyT', 1012);
+    expect(talkCalls(), 'KeyT: no talk to an NPC behind').toBe(0);
+    tapKey('Enter', 1020);
+    expect(talkCalls(), 'A: no talk either').toBe(0);
+    expect(H.interactCalls.length, 'precondition: the rule was consulted').toBeGreaterThan(0);
+    frame(1030);
+    expect(promptShown(), 'the chip advertises nothing').toBe(false);
+
+    // Control: the same NPC's character moves onto the faced tile.
+    opts.store.upsertCharacter(
+      {
+        entityId: NPC_ENTITY,
+        zoneId: 0,
+        tileX: 3,
+        tileY: 6,
+        facing: 'South',
+        action: 'Idle',
+        moveStartedAtMs: 0n,
+        moveQueue: [] as WasmMoveInput[],
+      },
+      1040,
+    );
+    settle(1040);
+    frame(1050);
+    tapKey('Enter', 1060);
+    expect(talkArgs(), 'control: faced, A talks to it').toEqual([{ npcEntityId: NPC_ENTITY }]);
+  });
+
+  it('CTL10A-1-BOOT-HEAL: A on a heal location candidate opens the heal frame alone, bound to THAT location (its Yes sends healParty with that id, not the first location loaded); a heal NPC candidate binds its own location the same way', async () => {
+    // WRONG IMPL KILLED (B13): a heal bound to the first location in the store (7 is loaded first),
+    // a heal that sends healParty at once instead of opening the frame, a frame opened together
+    // with something else, a heal NPC treated as a talk, and an open that binds no location (Yes
+    // would be disabled and send nothing).
+    await bootReady();
+    useRule(pick(['heal', '9']));
+    healLocation(7, 1, 1);
+    healLocation(9, 3, 6);
+    server(1000, { x: 2, y: 6, ack: 0 });
+    frame(1005);
+    tapKey('Enter', 1010);
+    expect(healShown(), 'A opened the heal frame').toBe(true);
+    expect(stack(), 'alone, over the world').toEqual(HEAL_STACK);
+    expect(healListIds(), 'bound to the candidate location').toEqual(['9']);
+    expect(H.calls, 'opening the frame sends no reducer').toEqual([]);
+    tapKey('Enter', 1100); // Yes is the default
+    expect(healArgs(), 'Yes heals at THAT location').toEqual([{ locationId: 9 }]);
+    expect(H.calls).toEqual(['healParty']);
+
+    // A heal NPC (location 7) is the next candidate.
+    tapKey('Escape', 1200);
+    expect(stack(), 'precondition: Start closed the heal frame').toEqual(WORLD_ONLY);
+    placeNpc(12n, 'nurse', 2, 5, { kind: 'heal', locationId: 7 }, 1210);
+    useRule(pick(['npc', '12']));
+    settle(1210);
+    frame(1220);
+    tapKey('Enter', 1230);
+    expect(stack(), 'the heal NPC opens the heal frame').toEqual(HEAL_STACK);
+    expect(healListIds(), 'bound to the NPC`s own location').toEqual(['7']);
+    expect(talkCalls(), 'a heal NPC is not talked to').toBe(0);
+    tapKey('Enter', 1300);
+    expect(healArgs(), 'its Yes heals at the NPC`s location').toEqual([
+      { locationId: 9 },
+      { locationId: 7 },
+    ]);
+  });
+
+  it('CTL10A-1-BOOT-PICKER: with two actionable candidates A opens a picker of entity x action as nav rows inside #interact-prompt; ArrowDown then A runs the SECOND row; while it is open the D-pad walks nowhere; B closes it; a row whose candidate is gone runs nothing; movement is live after', async () => {
+    // WRONG IMPL KILLED: A running the first candidate when there are two (no picker), rows rendered
+    // anywhere but the chip, rows without the nav kit's listbox / is-active / aria-selected marking,
+    // rows in another order or with another text, a picker that ignores the cursor (the first row
+    // runs), a picker under which W still walks, a B that leaves it open, a picker that runs a row
+    // whose candidate a batch removed, and a picker that leaves movement dead after it closes.
+    await bootReady();
+    useRule(pick(['npc', '11'], ['heal', '9']));
+    healLocation(9, 2, 5);
+    seedWorld(1000);
+    frame(1005);
+    expect(chipOptions(), 'precondition: no picker before A').toEqual([]);
+
+    tapKey('Enter', 1010);
+    frame(1015);
+    expect(chip().querySelector('[role="listbox"]'), 'the picker is a nav listbox').not.toBeNull();
+    expect(chipRowTexts(), 'one row per entity x action, in candidate order').toEqual([
+      `Talk ${EM_DASH} guide`,
+      `Heal ${EM_DASH} Healer`,
+    ]);
+    expect(
+      chipOptions().map((row) => row.getAttribute('aria-selected')),
+      'the first row is selected',
+    ).toEqual(['true', 'false']);
+    expect(chipOptions().map((row) => row.classList.contains('is-active'))).toEqual([true, false]);
+    expect(promptShown(), 'the chip holding the picker is shown').toBe(true);
+    expect(H.calls, 'opening the picker sends nothing').toEqual([]);
+
+    tapKey('ArrowDown', 1020);
+    frame(1025);
+    expect(
+      chipOptions().map((row) => row.getAttribute('aria-selected')),
+      'Down moves to the second row',
+    ).toEqual(['false', 'true']);
+    expect(chipOptions().map((row) => row.classList.contains('is-active'))).toEqual([false, true]);
+    expect(H.sends, 'Down under the picker walks nowhere').toHaveLength(0);
+
+    tapKey('Enter', 1030);
+    expect(stack(), 'A ran the SECOND row: the heal frame').toEqual(HEAL_STACK);
+    expect(healListIds()).toEqual(['9']);
+    expect(talkCalls(), 'and not the first').toBe(0);
+
+    tapKey('Escape', 1040);
+    expect(stack(), 'precondition: Start closed the heal frame').toEqual(WORLD_ONLY);
+    frame(1050);
+    expect(chipOptions(), 'the picker is gone').toEqual([]);
+
+    // Reopened: W under it walks nowhere; B closes it.
+    tapKey('Enter', 1060);
+    frame(1065);
+    expect(chipOptions(), 'precondition: A reopened the picker').toHaveLength(2);
+    tapKey('KeyW', 1070);
+    frame(1075);
+    expect(H.sends, 'W under the picker sends no move').toHaveLength(0);
+    expect(chipOptions(), 'and the picker is still open').toHaveLength(2);
+    tapKey('Backspace', 1080);
+    frame(1085);
+    expect(chipOptions(), 'B closed the picker').toEqual([]);
+    expect(H.calls, 'closing runs nothing').toEqual([]);
+
+    // A row whose candidate is gone runs nothing.
+    tapKey('Enter', 1090);
+    tapKey('ArrowDown', 1095);
+    frame(1100);
+    expect(chipOptions(), 'precondition: the picker is open again').toHaveLength(2);
+    useRule(() => []);
+    settle(1110);
+    tapKey('Enter', 1120);
+    expect(healShown(), 'the heal row is no longer a candidate: no heal frame').toBe(false);
+    expect(H.calls, 'and nothing is sent').toEqual([]);
+    expect(stack()).toEqual(WORLD_ONLY);
+    frame(1130);
+    expect(chipOptions(), 'the picker does not stay open').toEqual([]);
+
+    // Movement is live again.
+    tapKey('KeyW', 1140);
+    expect(dirs(), 'a W press with no picker walks').toEqual(['North']);
+  });
+
+  it('CTL10A-1-BOOT-NONE: with no candidate A consults the rule and does nothing: no reducer, no frame, an empty #status, no chip; Y does nothing either', async () => {
+    // WRONG IMPL KILLED: an A that never asks the wasm rule (it decides nothing at all, today), a
+    // "nothing here" toast on the status line, an A that falls back to a TS rule and talks to the
+    // NPC standing ahead (the rule named none), and an empty picker or sheet left in the chip.
+    await bootReady();
+    useRule(() => []);
+    seedWorld(1000); // a dialogue NPC stands on the faced tile; the rule names nobody
+    tapKey('Enter', 1010);
+    expect(H.interactCalls.length, 'A consulted the wasm rule').toBeGreaterThan(0);
+    expect(H.calls, 'no reducer').toEqual([]);
+    expect(stack(), 'no frame').toEqual(WORLD_ONLY);
+    expect(statusLine(), 'no toast').toBe('');
+    frame(1020);
+    expect(promptShown(), 'no chip').toBe(false);
+    expect(chipOptions(), 'no picker').toEqual([]);
+
+    tapKey('KeyF', 1030);
+    frame(1040);
+    expect(H.calls, 'Y: no reducer').toEqual([]);
+    expect(chipOptions(), 'Y: no sheet').toEqual([]);
+    expect(stack()).toEqual(WORLD_ONLY);
+    expect(statusLine()).toBe('');
+  });
+
+  it('CTL10A-1-BOOT-LONE-PLAYER: another player is marshalled as a player entity, but a lone player candidate has no action until ctl-10b: A and Y do nothing and the chip is hidden', async () => {
+    // WRONG IMPL KILLED: other players left out of the list (ctl-10b's trade and challenge could
+    // never find them), a player candidate given a default action or a picker / sheet entry before
+    // ctl-10b, a chip advertising it, and a status-line toast for it.
+    await bootReady();
+    useRule(pick(['player', '20']));
+    placeRival(3, 6, 1000);
+    server(1000, { x: 2, y: 6, ack: 0 });
+    frame(1005);
+    const wire = H.interactCalls.at(-1)?.[4] as WireEntity[] | undefined;
+    expect(wire, 'precondition: the rule was consulted').toBeDefined();
+    expect(wire, 'the other player is marshalled').toEqual([
+      { kind: 'player', x: 3, y: 6, zone: 0, id: '20' },
+    ]);
+    expect(promptShown(), 'a lone player: no chip').toBe(false);
+
+    tapKey('Enter', 1010);
+    frame(1015);
+    expect(H.calls, 'A: nothing').toEqual([]);
+    expect(chipOptions(), 'A: no picker').toEqual([]);
+    tapKey('KeyF', 1020);
+    frame(1025);
+    expect(H.calls, 'Y: nothing').toEqual([]);
+    expect(chipOptions(), 'Y: no sheet').toEqual([]);
+    expect(stack()).toEqual(WORLD_ONLY);
+    expect(statusLine()).toBe('');
+    expect(promptShown()).toBe(false);
+  });
+
+  it('CTL10A-1-BOOT-HELD-A: an Enter held after it opened the heal frame (OS key-repeat and the frame loop`s repeat clock) never answers Yes; a fresh press does', async () => {
+    // WRONG IMPL KILLED: a held Enter that reaches the heal frame it just opened and pays for a heal
+    // the player never confirmed (an A delivered on every repeat, or a router repeat armed for A).
+    await bootReady();
+    useRule(pick(['heal', '9']));
+    healLocation(9, 3, 6);
+    server(1000, { x: 2, y: 6, ack: 0 });
+    frame(1005);
+    fire('keydown', 'Enter', 1010); // held: no keyup
+    expect(stack(), 'precondition: the press opened the heal frame').toEqual(HEAL_STACK);
+    fire('keydown', 'Enter', 1040, { init: { repeat: true } });
+    fire('keydown', 'Enter', 1070, { init: { repeat: true } });
+    for (const t of [1100, 1360, 1460, 1700]) frame(t);
+    expect(healArgs(), 'the held Enter heals nothing').toEqual([]);
+    expect(stack(), 'and the frame stays open').toEqual(HEAL_STACK);
+
+    fire('keyup', 'Enter', 1800);
+    tapKey('Enter', 1900);
+    expect(healArgs(), 'control: a fresh A on Yes heals').toEqual([{ locationId: 9 }]);
+  });
+
+  it('CTL10A-1-BOOT-IN-FRAME: A on an open heal frame, with the healer still faced, confirms that frame once and never re-opens or re-binds it; A at a battle base with an NPC faced sends no talk', async () => {
+    // WRONG IMPL KILLED: a world interact that also runs above the base (A on the heal frame would
+    // re-bind it to the location the rule names now, or re-open it, instead of answering Yes), and
+    // one that runs at a battle base (a talk sent from inside a fight).
+    await bootReady();
+    useRule(pick(['heal', '9']));
+    healLocation(7, 1, 1);
+    healLocation(9, 3, 6);
+    placeNpc(NPC_ENTITY, 'guide', 3, 6, { kind: 'dialogue' }, 1000);
+    server(1000, { x: 2, y: 6, ack: 0 });
+    frame(1005);
+    tapKey('Enter', 1010);
+    expect(stack(), 'precondition: A opened the heal frame').toEqual(HEAL_STACK);
+    expect(healListIds()).toEqual(['9']);
+
+    // The rule now names the OTHER location, under a fresh batch.
+    useRule(pick(['heal', '7']));
+    settle(1020);
+    frame(1030);
+    tapKey('Enter', 1040);
+    expect(healArgs(), 'A confirmed the open frame`s own location, once').toEqual([
+      { locationId: 9 },
+    ]);
+    expect(healListIds(), 'the frame was not re-bound').toEqual(['9']);
+    expect(stack(), 'nor re-opened').toEqual(HEAL_STACK);
+
+    tapKey('Escape', 1100);
+    expect(stack(), 'precondition: Start closed the heal frame').toEqual(WORLD_ONLY);
+
+    // A battle base with the guide named by the rule.
+    useRule(pick(['npc', '11']));
+    startBattle(BATTLE_ID, 1200);
+    frame(1210);
+    expect(stack()[0], 'precondition: the base is the battle').toEqual({
+      kind: 'battle',
+      battleId: '101',
+    });
+    tapKey('Enter', 1220);
+    expect(talkCalls(), 'A at a battle base sends no talk').toBe(0);
+
+    endBattle(BATTLE_ID, 1300);
+    frame(1310);
+    tapKey('Enter', 1320);
+    expect(talkArgs(), 'control: at the world the same A talks').toEqual([
+      { npcEntityId: NPC_ENTITY },
+    ]);
+  });
+
+  it('CTL10A-1-BOOT-MEMO: the wasm rule is called once per change of batch, position or facing: five quiet frames make one call, A and Y reuse it, a facing-only turn makes one more, and every applied batch makes one more', async () => {
+    // WRONG IMPL KILLED: a call per frame (the spec forbids it), a call per press (A and Y must
+    // reuse the frame's answer), a memo keyed on position only (a turn in place would keep a stale
+    // candidate list: the chip would name what the character no longer faces), a memo keyed on the
+    // AUTHORITATIVE facing (the turn below is predicted, not yet acked), and a memo with no batch in
+    // its key (a batch that changes the world around a standing character would not be seen).
+    await bootReady();
+    useRule(facedTileRule);
+    seedWorld(1000);
+    const calls = (): number => H.interactCalls.length;
+    for (const t of [1010, 1020, 1030, 1040, 1050]) frame(t);
+    expect(calls(), 'five frames with nothing changed: one call').toBe(1);
+
+    tapKey('Enter', 1060);
+    expect(talkCalls(), 'precondition: A acted on the memoised candidate').toBe(1);
+    tapKey('KeyF', 1070);
+    frame(1075);
+    expect(chipOptions(), 'precondition: Y opened the guide`s sheet').toHaveLength(1);
+    tapKey('Backspace', 1080);
+    frame(1085);
+    expect(calls(), 'A, Y and the frames after them reuse the memo').toBe(1);
+
+    // A facing-only change: North is blocked, so W turns the character and moves nothing.
+    H.blocked.add('2,5');
+    tapKey('KeyW', 1100);
+    expect(dirs(), 'precondition: the turn was sent as a step').toEqual(['North']);
+    for (const t of [1110, 1120, 1130]) frame(t);
+    expect(calls(), 'the predicted facing changed, the position did not: one more call').toBe(2);
+    expect(H.interactCalls.at(-1)?.slice(0, 3), 'asked about the same tile, facing North').toEqual([
+      2, 6, 0,
+    ]);
+
+    // A batch that acks the turn (the row still faces East): one more call.
+    settle(1200);
+    frame(1210);
+    frame(1220);
+    expect(calls(), 'an applied batch: one more call').toBe(3);
+    // A batch that changes nothing the character can see: still one more call.
+    settle(1300);
+    frame(1310);
+    frame(1320);
+    expect(calls(), 'every applied batch: one more call').toBe(4);
+    expect(H.interactCalls.at(-1)?.slice(0, 4)).toEqual([2, 6, 2, 0]);
+  });
+
+  it('CTL10A-1-BOOT-SHEET-LIFETIME: a picker left open closes when a frame pushes (KeyB opens the Box) and never comes back when the Box closes; movement works after', async () => {
+    // WRONG IMPL KILLED: a picker that survives under the Box (and reappears over the world when the
+    // Box closes, eating the next A), one that keeps the D-pad after the push (the world stays dead),
+    // and an accelerator swallowed by the picker (KeyB would not open the Box).
+    await bootReady();
+    useRule(pick(['npc', '11'], ['heal', '9']));
+    healLocation(9, 2, 5);
+    seedWorld(1000);
+    frame(1005);
+    tapKey('Enter', 1010);
+    frame(1015);
+    expect(chipOptions(), 'precondition: the picker is open').toHaveLength(2);
+
+    tapKey('KeyB', 1020);
+    expect(boxShown(), 'the accelerator under the picker opens the Box').toBe(true);
+    expect(stack()).toEqual([{ kind: 'world' }, { kind: 'screen', id: 'boxView' }]);
+    frame(1030);
+    expect(promptShown(), 'no picker and no chip over the Box').toBe(false);
+
+    tapKey('KeyB', 1040);
+    expect(boxShown(), 'precondition: the Box closed').toBe(false);
+    expect(stack()).toEqual(WORLD_ONLY);
+    frame(1050);
+    expect(chipOptions(), 'the picker never comes back').toEqual([]);
+    expect(chipText(), 'the chip is the plain choose prompt again').toBe(
+      `[Enter] Choose${ELLIPSIS}`,
+    );
+    tapKey('KeyW', 1060);
+    expect(dirs(), 'movement works after').toEqual(['North']);
+  });
+
+  it('CTL10A-1-BOOT-PREDICTED: the rule is asked about the PREDICTED position and facing (what is drawn), not the authoritative row, with the zone from the row', async () => {
+    // WRONG IMPL KILLED: candidates read from the authoritative row (it still faces the guide, so A
+    // would talk to an NPC the player sees behind them until the server acks the step).
+    await bootReady();
+    useRule(facedTileRule);
+    seedWorld(1000); // the authoritative row: (2, 6) facing East, the guide on the faced tile
+    frame(1005);
+    expect(H.interactCalls.at(-1)?.slice(0, 4), 'precondition: asked about the row').toEqual([
+      2, 6, 2, 0,
+    ]);
+    tapKey('KeyS', 1010);
+    expect(dirs(), 'precondition: one step South').toEqual(['South']);
+    frame(1020); // the predictor draws (2, 7) facing South; no batch has acked it
+    expect(
+      H.interactCalls.at(-1)?.slice(0, 4),
+      'asked about the predicted tile and facing (South is 1)',
+    ).toEqual([2, 7, 1, 0]);
+    tapKey('Enter', 1030);
+    expect(talkCalls(), 'facing away from the guide, as drawn: A talks to nobody').toBe(0);
+  });
+
+  it('CTL10A-2-BOOT-Y: Y with one NPC candidate opens its one-row action sheet in the chip and sends nothing; A runs the row (talk) and closes the sheet; with two candidates Y opens only the PRIMARY (first) candidate`s sheet', async () => {
+    // WRONG IMPL KILLED: Y doing nothing (today), Y acting at once instead of opening the sheet, a
+    // sheet that is the picker of every candidate instead of the primary candidate's actions, a
+    // sheet of the last candidate, and a sheet that stays open after its row ran.
+    await bootReady();
+    useRule(pick(['npc', '11']));
+    seedWorld(1000);
+    frame(1005);
+    tapKey('KeyF', 1010);
+    frame(1015);
+    expect(chipRowTexts(), 'the guide`s sheet: Talk').toEqual([`Talk ${EM_DASH} guide`]);
+    expect(chipOptions()[0]?.getAttribute('aria-selected')).toBe('true');
+    expect(H.calls, 'Y sends nothing').toEqual([]);
+    expect(H.sends, 'and walks nowhere').toHaveLength(0);
+
+    tapKey('Enter', 1020);
+    expect(talkArgs(), 'A on the row talks').toEqual([{ npcEntityId: NPC_ENTITY }]);
+    frame(1025);
+    expect(chipOptions(), 'the sheet closed after running its row').toEqual([]);
+
+    // Two candidates: the heal location first.
+    useRule(pick(['heal', '9'], ['npc', '11']));
+    healLocation(9, 2, 5);
+    settle(1030);
+    frame(1035);
+    tapKey('KeyF', 1040);
+    frame(1045);
+    expect(chipRowTexts(), 'only the primary candidate`s actions').toEqual([
+      `Heal ${EM_DASH} Healer`,
+    ]);
+    tapKey('Enter', 1050);
+    expect(stack(), 'its row opens the heal frame').toEqual(HEAL_STACK);
+    expect(healListIds()).toEqual(['9']);
+    expect(talkArgs(), 'no second talk').toEqual([{ npcEntityId: NPC_ENTITY }]);
+  });
+
+  it('CTL10A-3-BOOT-T-NOOP: KeyT does nothing at all, with an NPC or a heal location faced: no reducer, no frame, the stack stays [world], no toast; A in the same state does act', async () => {
+    // WRONG IMPL KILLED (B6, RED today): the legacy KeyT interact (it talks whenever no overlay is
+    // visible), a KeyT left as an alias of A, and a KeyT that opens the heal frame.
+    await bootReady();
+    useRule(pick(['npc', '11']));
+    seedWorld(1000);
+    frame(1005);
+    fire('keydown', 'KeyT', 1010);
+    fire('keyup', 'KeyT', 1015);
+    expect(H.calls, 'T sends nothing').toEqual([]);
+    expect(stack(), 'and pushes nothing').toEqual(WORLD_ONLY);
+    expect(statusLine(), 'and says nothing').toBe('');
+    frame(1020);
+    expect(chipOptions(), 'T opens no sheet').toEqual([]);
+    tapKey('Enter', 1030);
+    expect(talkArgs(), 'control: A talks to the same candidate').toEqual([
+      { npcEntityId: NPC_ENTITY },
+    ]);
+
+    useRule(pick(['heal', '9']));
+    healLocation(9, 2, 5);
+    settle(1040);
+    frame(1050);
+    fire('keydown', 'KeyT', 1060);
+    fire('keyup', 'KeyT', 1065);
+    expect(healShown(), 'T opens no heal frame').toBe(false);
+    expect(stack()).toEqual(WORLD_ONLY);
+    expect(H.calls, 'T sends nothing').toEqual(['talk']);
+    tapKey('Enter', 1070);
+    expect(stack(), 'control: A opens the heal frame').toEqual(HEAL_STACK);
+  });
+
+  it('CTL10A-3-BOOT-CHIP-TEXT: the chip reads exactly "[Enter] {verb} — {name}" (Talk / Shop / Heal; the npcId, or Healer for a heal location) for one actionable candidate, "[Enter] Choose…" for two, counts only actionable candidates, and is hidden over a battle base and while a frame is open', async () => {
+    // WRONG IMPL KILLED: today's "Talk [T]" glyph chip, a keycap that is not the live A binding's
+    // catalog name, the verb and name swapped, a heal location named by its id, a heal NPC called
+    // Healer, a Choose chip for one actionable candidate plus a player (players have no action until
+    // ctl-10b), a chip shown over a battle base, and a chip left over an open frame.
+    await bootReady();
+    useRule(pick(['npc', '11']));
+    seedWorld(1000);
+    frame(1005);
+    expect(promptShown(), 'one dialogue NPC: the chip shows').toBe(true);
+    expect(chipText()).toBe(`[Enter] Talk ${EM_DASH} guide`);
+
+    const phase = (rule: InteractRule, t: number): void => {
+      useRule(rule);
+      settle(t);
+      frame(t + 5);
+    };
+    placeNpc(13n, 'keeper', 2, 5, { kind: 'shop', shopId: 3 }, 1010);
+    phase(pick(['npc', '13']), 1010);
+    expect(chipText(), 'a shop NPC').toBe(`[Enter] Shop ${EM_DASH} keeper`);
+
+    healLocation(9, 1, 6);
+    phase(pick(['heal', '9']), 1020);
+    expect(chipText(), 'a heal location is the Healer').toBe(`[Enter] Heal ${EM_DASH} Healer`);
+
+    placeNpc(12n, 'nurse', 2, 7, { kind: 'heal', locationId: 9 }, 1030);
+    phase(pick(['npc', '12']), 1030);
+    expect(chipText(), 'a heal NPC is named by its npcId').toBe(`[Enter] Heal ${EM_DASH} nurse`);
+
+    phase(pick(['npc', '11'], ['heal', '9']), 1040);
+    expect(chipText(), 'two actionable candidates').toBe(`[Enter] Choose${ELLIPSIS}`);
+
+    placeRival(1, 5, 1050);
+    phase(pick(['npc', '11'], ['player', '20']), 1050);
+    expect(chipText(), 'one actionable candidate and a player: still the one').toBe(
+      `[Enter] Talk ${EM_DASH} guide`,
+    );
+
+    phase(pick(['npc', '11'], ['heal', '9']), 1060);
+    expect(chipText(), 'precondition: the choose chip').toBe(`[Enter] Choose${ELLIPSIS}`);
+    startBattle(BATTLE_ID, 1070);
+    frame(1075);
+    expect(promptShown(), 'hidden over a battle base').toBe(false);
+    endBattle(BATTLE_ID, 1080);
+    frame(1085);
+    expect(promptShown(), 'back at the world').toBe(true);
+
+    tapKey('KeyB', 1090);
+    frame(1095);
+    expect(boxShown(), 'precondition: the Box is open').toBe(true);
+    expect(promptShown(), 'hidden while a frame is open').toBe(false);
+    tapKey('KeyB', 1100);
+    frame(1105);
+    expect(promptShown(), 'shown again when it closes').toBe(true);
+    expect(chipText()).toBe(`[Enter] Choose${ELLIPSIS}`);
+  });
+
+  // ---------------------------------------------------------------------------------------------
+  // ctl-10a round 2: kill tests for CI-clean bypasses the code red-team measured.
+  // ---------------------------------------------------------------------------------------------
+
+  it('CTL10A-1-BOOT-ERROR-SURFACED: a wasm rule that throws is reported once on console.error as "[interact] candidates error" over three frames, never crashes a frame, and leaves A with nothing to do', async () => {
+    // WRONG IMPL KILLED (red-team, CI-clean): main.ts dropping resolveCandidates' onError argument
+    // (a real wasm Err, an unparseable id or an unknown kind, becomes a silently dead A), and a
+    // report repeated on every frame (the memo keeps one answer per key).
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await bootReady();
+      H.interact = () => {
+        throw new Error('malformed entity');
+      };
+      seedWorld(1000);
+      for (const t of [1005, 1020, 1040]) frame(t); // frame() fails if a frame did not re-arm
+      const hits = errors.mock.calls.filter((call) => call[0] === '[interact] candidates error');
+      expect(hits, 'the throw is reported exactly once').toHaveLength(1);
+      expect(H.interactCalls.length, 'precondition: the rule was asked').toBeGreaterThan(0);
+      tapKey('Enter', 1060);
+      expect(H.calls, 'A has nothing to act on').toEqual([]);
+      expect(stack()).toEqual(WORLD_ONLY);
+      frame(1080);
+      expect(promptShown(), 'and no chip').toBe(false);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('CTL10A-1-BOOT-HELD-REPEAT-DEFAULT: after a fresh Enter acted at the world (opened the heal frame, or talked), the OS repeats of that held Enter are default-prevented', async () => {
+    // WRONG IMPL KILLED (red-team, CI-clean): a world A that is consumed without recording its
+    // key as a held nav key, so the browser's default for each repeat runs: the native buttons of
+    // the frame A just opened (the heal Yes / No, a dialogue choice the talk opens) are clicked by
+    // a held Enter the player never meant as a second press.
+    await bootReady();
+    useRule(pick(['heal', '9']));
+    healLocation(9, 3, 6);
+    server(1000, { x: 2, y: 6, ack: 0 });
+    frame(1005);
+    fire('keydown', 'Enter', 1010); // held
+    expect(stack(), 'precondition: A opened the heal frame').toEqual(HEAL_STACK);
+    const healRepeat = fire('keydown', 'Enter', 1040, { init: { repeat: true } });
+    expect(healRepeat.defaultPrevented, 'heal: the held Enter`s repeat is prevented').toBe(true);
+    fire('keyup', 'Enter', 1050);
+    tapKey('Escape', 1060);
+    expect(stack(), 'precondition: Start closed the heal frame').toEqual(WORLD_ONLY);
+
+    placeNpc(NPC_ENTITY, 'guide', 3, 6, { kind: 'dialogue' }, 1100);
+    useRule(pick(['npc', '11']));
+    settle(1100);
+    frame(1110);
+    fire('keydown', 'Enter', 1120); // held
+    expect(talkArgs(), 'precondition: A talked').toEqual([{ npcEntityId: NPC_ENTITY }]);
+    const talkRepeat = fire('keydown', 'Enter', 1150, { init: { repeat: true } });
+    expect(talkRepeat.defaultPrevented, 'talk: the held Enter`s repeat is prevented').toBe(true);
+    expect(talkArgs(), 'and it talks no second time').toEqual([{ npcEntityId: NPC_ENTITY }]);
+    fire('keyup', 'Enter', 1160);
+  });
+
+  it('CTL10A-1-BOOT-SHEET-BATTLE: a picker open when a battle row arrives is gone over the battle base (chip hidden, no rows) and does not come back when the battle ends: A with one candidate then talks at once', async () => {
+    // WRONG IMPL KILLED (red-team, CI-clean): a sheet closed only on a frame push (a battle is a
+    // base change, no push), so the picker paints over the fight or reappears over the world
+    // afterwards and eats the next A.
+    await bootReady();
+    useRule(pick(['npc', '11'], ['heal', '9']));
+    healLocation(9, 2, 5);
+    seedWorld(1000);
+    frame(1005);
+    tapKey('Enter', 1010);
+    frame(1015);
+    expect(chipOptions(), 'precondition: the picker is open').toHaveLength(2);
+
+    startBattle(BATTLE_ID, 1200);
+    frame(1210);
+    expect(stack()[0], 'precondition: the base is the battle').toEqual({
+      kind: 'battle',
+      battleId: '101',
+    });
+    expect(promptShown(), 'no picker or chip over the battle').toBe(false);
+    expect(chipOptions(), 'no rows over the battle').toEqual([]);
+
+    endBattle(BATTLE_ID, 1300);
+    frame(1310);
+    expect(chipOptions(), 'the picker does not come back after the battle').toEqual([]);
+
+    useRule(pick(['npc', '11']));
+    settle(1320);
+    frame(1330);
+    expect(chipOptions(), 'still no sheet').toEqual([]);
+    tapKey('Enter', 1340);
+    expect(talkArgs(), 'A with one candidate talks at once: no stale sheet ate it').toEqual([
+      { npcEntityId: NPC_ENTITY },
+    ]);
+  });
+
+  it('CTL10A-3-BOOT-CHIP-ANCHOR: the chip hangs over its candidate (tile-centre x, tile-top y): the single candidate, the FIRST actionable candidate for Choose (a player before it is skipped), and the open picker`s first entry wherever its cursor is', async () => {
+    // WRONG IMPL KILLED (red-team, CI-clean): a chip positioned on the character, on the first
+    // candidate whatever its actions (a player), on the last one, or on the picker row under the
+    // cursor; and a chip that keeps the previous candidate's position after the candidates change.
+    const TILE = 32; // render/config.ts TILE_PX, transcribed
+    const at = (tileX: number, tileY: number): [string, string] => [
+      `${(tileX + 0.5) * TILE}px`,
+      `${tileY * TILE}px`,
+    ];
+    const chipAt = (): [string, string] => [chip().style.left, chip().style.top];
+    await bootReady();
+    useRule(pick(['npc', '11']));
+    seedWorld(1000); // the guide at (3, 6)
+    frame(1005);
+    expect(promptShown(), 'precondition: the single chip shows').toBe(true);
+    expect(chipAt(), 'single: over the guide').toEqual(at(3, 6));
+
+    placeRival(1, 1, 1010);
+    healLocation(9, 5, 2);
+    useRule(pick(['player', '20'], ['heal', '9'], ['npc', '11']));
+    settle(1010);
+    frame(1015);
+    expect(chipText(), 'precondition: the choose chip').toBe(`[Enter] Choose${ELLIPSIS}`);
+    expect(chipAt(), 'Choose: over the first ACTIONABLE candidate (the heal location)').toEqual(
+      at(5, 2),
+    );
+
+    tapKey('Enter', 1020);
+    frame(1025);
+    expect(chipOptions(), 'precondition: the picker is open').toHaveLength(2);
+    expect(chipAt(), 'the picker: over its first entry').toEqual(at(5, 2));
+    tapKey('ArrowDown', 1030);
+    frame(1035);
+    expect(
+      chipOptions().map((row) => row.getAttribute('aria-selected')),
+      'precondition: the cursor is on the guide`s row',
+    ).toEqual(['false', 'true']);
+    expect(chipAt(), 'still over the first entry, not the cursor row').toEqual(at(5, 2));
+  });
+
+  it('CTL10A-1-BOOT-SHEET-HELD-CLEAR: a direction held when A opens the picker never walks while it is open nor after B closes it, until it is pressed afresh', async () => {
+    // WRONG IMPL KILLED (red-team, CI-clean): a sheet open that does not clear the held keys (the
+    // sheet is not a frame, so no push edge clears them): the D held from before the picker walks
+    // the moment B closes it, although the player never pressed it again.
+    await bootReady();
+    useRule(() => []);
+    server(1000, { x: 2, y: 6, ack: 0 }); // nothing faced
+    fire('keydown', 'KeyD', 1010); // held: no keyup
+    expect(dirs(), 'precondition: the press stepped East').toEqual(['East']);
+    frame(1015); // the predictor draws (3, 6)
+
+    placeNpc(NPC_ENTITY, 'guide', 4, 6, { kind: 'dialogue' }, 1020);
+    healLocation(9, 3, 5);
+    useRule(pick(['npc', '11'], ['heal', '9']));
+    server(1020, { x: 3, y: 6, ack: 1 }); // the step acked where it was drawn: nothing owed
+    tapKey('Enter', 1030);
+    frame(1035);
+    expect(chipOptions(), 'precondition: A opened the picker').toHaveLength(2);
+    for (const t of [1300, 1500, 1700]) frame(t);
+    expect(H.sends.length, 'nothing walks while the picker is open').toBe(1);
+
+    tapKey('Backspace', 1800);
+    frame(1805);
+    expect(chipOptions(), 'precondition: B closed the picker').toEqual([]);
+    for (const t of [1900, 2100, 2300]) frame(t);
+    expect(H.sends.length, 'the D held since before the picker does not resume').toBe(1);
+
+    fire('keyup', 'KeyD', 2400);
+    fire('keydown', 'KeyD', 2410);
+    expect(dirs(), 'control: a fresh D press walks').toEqual(['East', 'East']);
+  });
+
+  it('CTL10A-1-BOOT-SHEET-NAME: the open picker`s listbox is named exactly "[Enter] Choose…"', async () => {
+    // WRONG IMPL KILLED (red-team, CI-clean): an unnamed sheet listbox (a screen reader announces a
+    // bare "list"), or one named by a literal that ignores the live A keycap.
+    await bootReady();
+    useRule(pick(['npc', '11'], ['heal', '9']));
+    healLocation(9, 2, 5);
+    seedWorld(1000);
+    frame(1005);
+    tapKey('Enter', 1010);
+    frame(1015);
+    const listbox = chip().querySelector('[role="listbox"]');
+    expect(listbox, 'precondition: the picker is open').not.toBeNull();
+    expect(listbox?.getAttribute('aria-label')).toBe(`[Enter] Choose${ELLIPSIS}`);
   });
 });

@@ -330,6 +330,18 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   // ctl-8g: the Players tab's walk-up line (leaderboardView.ts). `name` is a player-chosen display
   // name: it reaches this closure only in this test, never from the view (I18N-21).
   'social.players.walkUp': [{ name: 'Zed' }, { name: 'Amy' }],
+  // ctl-10a (named intentional change): the world interaction chip and the picker / sheet rows
+  // (3 ★). `key` is the live A keycap text (the catalog's Enter name, or a raw code), `verb` a
+  // resolved interact.verb.* value, `name` an npc id or the healer name; every field differs.
+  'interact.chip': [
+    { key: 'Enter', verb: 'Talk', name: 'elder_oak' },
+    { key: 'KeyZ', verb: 'Shop', name: 'tideglass_shopkeeper' },
+  ],
+  'interact.choose': [{ key: 'Enter' }, { key: 'Space' }],
+  'interact.entry': [
+    { verb: 'Talk', name: 'elder_oak' },
+    { verb: 'Heal', name: 'Healer' },
+  ],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -379,6 +391,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // confirmNoBait,yes,no}`, `battle.cure.listLabel`) here, +2 parameterised ones
   // (`battle.recruit.confirm`, `battle.cure.target`) in SAMPLE_PARAMS = 283 keys.
   // ctl-8k (named intentional change): +2 plain keys (`session.retry`, `session.hint`) = 285 keys.
+  // ctl-10a (named intentional change): -1 plain key (`box.heal`, deleted with the Box Heal Party
+  // button, CTL10A.4) and +5 plain keys (`interact.verb.{talk,shop,heal}`, `interact.healer`,
+  // `key.enter`) here, +3 parameterised ones (`interact.{chip,choose,entry}`) in SAMPLE_PARAMS =
+  // 292 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -444,9 +460,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'raising.monsters.empty': 'No monsters.', // raisingView.ts
   'raising.inventory.empty': 'No items.', // raisingView.ts
   'raising.card.care': 'Care', // raisingView.ts
-  // Box.* (21 plain: 11, -box.card.rename, +7 ctl-8b keys, +4 ctl-8c keys)
+  // Box.* (20 plain: 11, -box.card.rename, +7 ctl-8b keys, +4 ctl-8c keys, -box.heal ctl-10a)
+  // ctl-10a (named intentional change): `box.heal` ('Heal Party') is DELETED with the Box Heal
+  // Party button: healing happens only at a bound healer (CTL10A.4, B13).
   'box.title': 'Party & Box', // boxView.ts
-  'box.heal': 'Heal Party', // boxView.ts
   'box.hint':
     'Only monsters in your Party can battle or be swapped in. New recruits arrive in your ' +
     'Box — each box monster has a "To Party" button that moves it into an open party slot.', // boxView.ts
@@ -680,6 +697,14 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // frame hint that B and Start are inert (sessionModel.ts, painted by sessionView.ts).
   'session.retry': 'Retry',
   'session.hint': 'B and Start do nothing here. Tab moves, Enter chooses.',
+  // ctl-10a (named intentional change): 5 new plain keys — the three interaction verbs the world
+  // chip and the picker rows name, the healer's display name (a heal location has no npc id), and
+  // the catalog's name for the Enter keycap (main.ts).
+  'interact.verb.talk': 'Talk',
+  'interact.verb.shop': 'Shop',
+  'interact.verb.heal': 'Heal',
+  'interact.healer': 'Healer',
+  'key.enter': 'Enter',
 };
 
 interface ParamOutputSpec {
@@ -1086,9 +1111,32 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { name: 'Amy' },
     outputB: 'Walk up to Amy and press A',
   },
+  // ctl-10a: the world interaction chip (CTL10A.3) `[{A keycap}] {verb} — {name}` / `[{A keycap}]
+  // Choose…`, and the picker / sheet row `{verb} — {name}`. The dash is U+2014 and the ellipsis
+  // U+2026, built by code point.
+  'interact.chip': {
+    inputA: { key: 'Enter', verb: 'Talk', name: 'elder_oak' },
+    outputA: `[Enter] Talk ${EM_DASH} elder_oak`,
+    inputB: { key: 'KeyZ', verb: 'Shop', name: 'tideglass_shopkeeper' },
+    outputB: `[KeyZ] Shop ${EM_DASH} tideglass_shopkeeper`,
+  },
+  'interact.choose': {
+    inputA: { key: 'Enter' },
+    outputA: `[Enter] Choose${ELLIPSIS}`,
+    inputB: { key: 'Space' },
+    outputB: `[Space] Choose${ELLIPSIS}`,
+  },
+  'interact.entry': {
+    inputA: { verb: 'Talk', name: 'elder_oak' },
+    outputA: `Talk ${EM_DASH} elder_oak`,
+    inputB: { verb: 'Heal', name: 'Healer' },
+    outputB: `Heal ${EM_DASH} Healer`,
+  },
 };
 
-/** The full 285-key roster (ctl-8k: +`session.retry` +`session.hint` over the 283-key roster below;
+/** The full 292-key roster (ctl-10a: -`box.heal` +`interact.{chip,choose,entry,healer}`
+ *  +`interact.verb.{talk,shop,heal}` +`key.enter` over the 285-key roster below;
+ *  ctl-8k: +`session.retry` +`session.hint` over the 283-key roster below;
  *  ctl-8j: -`battle.recruit.submit` -`battle.cure.placeholder`
  *  -`battle.cure.submit` +`battle.recruit.{listLabel,confirmNoBait,yes,no,confirm}`
  *  +`battle.cure.{listLabel,target}` over the 279-key roster below; ctl-8i: +`battle.command.{fight,recruit,swap,bag,run}`
@@ -1167,7 +1215,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8k 285-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-10a 292-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1256,11 +1304,12 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 285 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 292 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (285 keys since ctl-8k).
+    // (a) roster is exactly the EXPECTED_KEYS roster (292 keys since ctl-10a; was 285 since ctl-8k).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ctl-10a roster is 292 keys').toHaveLength(292);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -1738,5 +1787,81 @@ describe('ctl-8k: catalog.fr.ts, the keys ctl-8k adds', () => {
       Object.keys(EXPECTED_FR_CTL8K_PLAIN).length,
       'ANTI-VACUITY: both ctl-8k keys are pinned in French',
     ).toBe(2);
+  });
+});
+
+// =============================================================================
+// ctl-10a: the 8 keys ctl-10a adds (the world interaction chip, the picker / sheet row, the three
+// verbs, the healer's name and the Enter keycap name) in BOTH catalogs, and the one it retires
+// (`box.heal`, with the Box Heal Party button). The chip and row closures have the same shape in
+// French (the verb and the keycap they carry are already localised); `Choose…` is translated.
+// =============================================================================
+
+const EXPECTED_FR_CTL10A_PLAIN: Record<string, string> = {
+  'interact.verb.talk': 'Parler',
+  'interact.verb.shop': 'Boutique',
+  'interact.verb.heal': 'Soigner',
+  'interact.healer': `Gu${E_ACUTE}risseur`,
+  'key.enter': `Entr${E_ACUTE}e`,
+};
+
+/** The French output for sample A, then sample B, of each new parameterised key. */
+const EXPECTED_FR_CTL10A_PARAMS: Record<string, readonly [string, string]> = {
+  'interact.chip': [
+    `[Enter] Talk ${EM_DASH} elder_oak`,
+    `[KeyZ] Shop ${EM_DASH} tideglass_shopkeeper`,
+  ],
+  'interact.choose': [`[Enter] Choisir${ELLIPSIS}`, `[Space] Choisir${ELLIPSIS}`],
+  'interact.entry': [`Talk ${EM_DASH} elder_oak`, `Heal ${EM_DASH} Healer`],
+};
+
+describe('ctl-10a: the interaction keys in both catalogs', () => {
+  it('CTL10A-3-CATALOG: the 5 new plain keys and the 3 new closures carry their exact English and French text; each closure echoes every param in its slot for two differing sample sets; the plain French values are translations', () => {
+    // WRONG IMPL KILLED (CTL10A.3: the chip reads `[{A keycap}] {verb} — {name}` or
+    // `[{A keycap}] Choose…` from the live binding and the catalog): a key added to en only
+    // (t() throws in a French boot, the chip and picker blank); a chip closure that hard-codes the
+    // keycap ("[T]", "[Enter]") or the verb instead of reading its params (the sample sets differ
+    // in every field); a hyphen or a spaced ASCII "--" where the catalog has U+2014, or three dots
+    // where it has U+2026; brackets dropped from the keycap; a French "Choose…" left in English; a
+    // French verb or name left as the English copy; and a decomposed or missing e acute in
+    // "Guerisseur" / "Entree".
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    for (const [key, expected] of Object.entries(EXPECTED_FR_CTL10A_PLAIN)) {
+      expect(en[key], `en ${key}: its exact text`).toBe(EXPECTED_PLAIN[key]);
+      expect(typeof EXPECTED_PLAIN[key], `fixture: ${key} has an English pin`).toBe('string');
+      expect(typeof fr[key], `${key} must be a plain string in the fr catalog`).toBe('string');
+      expect(fr[key], `fr ${key}: the exact French text`).toBe(expected);
+      expect(fr[key], `${key}: a translation, not the English copy`).not.toBe(en[key]);
+    }
+    for (const [key, [frA, frB]] of Object.entries(EXPECTED_FR_CTL10A_PARAMS)) {
+      const spec = EXPECTED_PARAM_OUTPUTS[key] as ParamOutputSpec;
+      expect(spec, `fixture: ${key} has English output pins`).toBeDefined();
+      expect(typeof en[key], `en ${key} must be a closure`).toBe('function');
+      expect(typeof fr[key], `fr ${key} must be a closure`).toBe('function');
+      const enFn = en[key] as (p: Record<string, unknown>) => string;
+      const frFn = fr[key] as (p: Record<string, unknown>) => string;
+      expect(enFn(spec.inputA), `en ${key}(sample A)`).toBe(spec.outputA);
+      expect(enFn(spec.inputB), `en ${key}(sample B)`).toBe(spec.outputB);
+      expect(frFn(spec.inputA), `fr ${key}(sample A)`).toBe(frA);
+      expect(frFn(spec.inputB), `fr ${key}(sample B)`).toBe(frB);
+      expect(frA, `${key}: the two sample sets differ`).not.toBe(frB);
+    }
+    expect(
+      Object.keys(EXPECTED_FR_CTL10A_PLAIN).length + Object.keys(EXPECTED_FR_CTL10A_PARAMS).length,
+      'ANTI-VACUITY: all 8 ctl-10a keys are pinned in both catalogs',
+    ).toBe(8);
+  });
+
+  it('CTL10A-4-ROSTER: `box.heal` (the Box Heal Party label) is gone from both catalogs and from the pinned roster', () => {
+    // WRONG IMPL KILLED (CTL10A.4, B13): the Heal Party button removed from boxView while its
+    // label stays behind in either catalog (catalogParity's DEAD-KEY would then fire on a key
+    // nobody requests, or worse, a surviving requester keeps a Box heal path alive).
+    expect(Object.hasOwn(CATALOG_EN as object, 'box.heal'), 'en box.heal is retired').toBe(false);
+    expect(Object.hasOwn(CATALOG_FR as object, 'box.heal'), 'fr box.heal is retired').toBe(false);
+    expect(EXPECTED_KEYS.includes('box.heal'), 'the pinned roster no longer lists it').toBe(false);
+    // The other Box keys are untouched (a wholesale `box.*` deletion would also pass the three
+    // lines above).
+    expect((CATALOG_EN as Record<string, unknown>)['box.title']).toBe('Party & Box');
   });
 });

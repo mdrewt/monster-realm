@@ -1,11 +1,14 @@
 // ui/screens/index.ts — the adapter table and the screen host (design §4, §12; CTL6B.1, CTL7C.2).
 // The router hands a button to `ScreenHost.button`, which asks ONLY the top frame: the world's own
-// rule (`baseButton`), the battle's cursor adapter at a bare battle base (`battleScreen`, ctl-8i),
-// the typing rule over a text-entry frame, or that screen's adapter fed its own view model and the
-// state the host keeps for it. A store batch goes to `ScreenHost.observe`, which
-// asks every open frame whose adapter observes. No DOM, SDK or module state: main.ts holds the
-// one host, binds the stack and the context and runs the returned command.
+// rule (`worldButton`'s picker and action sheet, ctl-10a, then `baseButton`), the battle's cursor
+// adapter at a bare battle base (`battleScreen`, ctl-8i), the typing rule over a text-entry frame,
+// or that screen's adapter fed its own view model and the state the host keeps for it. A store
+// batch goes to `ScreenHost.observe`, which asks every open frame whose adapter observes. No DOM,
+// SDK or module state: main.ts holds the one host, binds the stack and the context and runs the
+// returned command.
+import type { SheetState } from '../actionSheetModel';
 import type { BaseFrame, FrameId, Stack, UpperFrame } from '../contextStack';
+import type { InteractAction, InteractCandidate } from '../interactModel';
 import type { NavInput } from '../nav';
 import { bagScreen } from './bagScreen';
 import { battleScreen } from './battleScreen';
@@ -19,6 +22,7 @@ import { shopScreen } from './shopScreen';
 import { socialScreen } from './socialScreen';
 import { tradeProposeScreen } from './tradeProposeScreen';
 import type { ScreenAdapter, ScreenContext, ScreenResult } from './types';
+import { worldButton } from './worldScreen';
 
 export type ScreenAdapters = Readonly<Record<FrameId, ScreenAdapter<unknown, unknown>>>;
 
@@ -70,6 +74,13 @@ export function baseButton(base: BaseFrame, btn: NavInput): ScreenResult {
   }
 }
 
+/** What the world base acts on (ctl-10a): the candidates in front of the character, and the
+ *  shell's runner for one action (talk, or open the heal frame: neither is a `Command`). */
+export interface WorldPort {
+  candidates(): readonly InteractCandidate[];
+  run(action: InteractAction): void;
+}
+
 /** The shell's side of the adapter seam (CTL7C.2): one adapter state per frame id, kept from the
  *  frame's first step, observe or seat until it opens again, and the view each state is painted
  *  into. For an adapter that opts in (`remember`, CTL8S.1) it also keeps the last state the frame
@@ -80,6 +91,8 @@ export class ScreenHost {
   readonly #adapters: ScreenAdapters;
   readonly #viewOf: (id: FrameId) => unknown;
   readonly #onPaintError: (err: unknown) => void;
+  /** The world base's open picker or action sheet (ctl-10a); null when none. */
+  #sheet: SheetState | null = null;
 
   /** `viewOf` lends a frame's view instance (undefined until it is built); `onPaintError` takes
    *  what a view's paint throws. */
@@ -99,6 +112,7 @@ export class ScreenHost {
    *  state: an adapter whose content can be replaced while it is open keys its state on that
    *  content. An adapter that opted in has the state it is leaving remembered for that `init`. */
   opened(frame: UpperFrame): void {
+    this.#sheet = null;
     if (frame.kind === 'textEntry') return;
     if (this.#adapters[frame.id].remember === true && this.#states.has(frame.id)) {
       this.#remembered.set(frame.id, this.#states.get(frame.id));
@@ -126,27 +140,44 @@ export class ScreenHost {
   /** The session changed (a reconnect, a new identity): nothing remembered outlives it. The kept
    *  state of an adapter that opted in goes too, or its next open would remember it. */
   forget(): void {
+    this.#sheet = null;
     this.#remembered.clear();
     for (const id of [...this.#states.keys()]) {
       if (this.#adapters[id].remember === true) this.#states.delete(id);
     }
   }
 
+  /** The world base's open picker or action sheet, else null. */
+  get sheet(): SheetState | null {
+    return this.#sheet;
+  }
+
+  /** Close the world sheet: the shell calls it when the stack is no longer the bare world. */
+  closeSheet(): void {
+    this.#sheet = null;
+  }
+
   /** Whether the top frame takes the D-pad (CTL7C.1): a bare battle base (CTL8I.1), or a screen or
-   *  prompt whose adapter is nav-capable. */
+   *  prompt whose adapter is nav-capable, or the world base while its sheet is open (ctl-10a). */
   takesNav(stack: Stack): boolean {
     const top = stack[stack.length - 1];
+    if (top.kind === 'world') return this.#sheet !== null;
     if (top.kind === 'battle') return battleScreen.nav === true;
     return (top.kind === 'screen' || top.kind === 'prompt') && this.#adapters[top.id].nav === true;
   }
 
   /** Route one button to the top frame. A text-entry frame owns every key but Start, which stops
    *  typing (pops that frame; the owner stays), and A, which commits through the owner's adapter. */
-  button(stack: Stack, btn: NavInput, ctx: ScreenContext): ScreenResult {
+  button(stack: Stack, btn: NavInput, ctx: ScreenContext, world?: WorldPort): ScreenResult {
     const top = stack[stack.length - 1];
     switch (top.kind) {
-      case 'world':
-        return baseButton(top, btn);
+      case 'world': {
+        if (world === undefined) return baseButton(top, btn);
+        const step = worldButton(this.#sheet, world.candidates(), btn);
+        this.#sheet = step.sheet;
+        if (step.run !== undefined) world.run(step.run);
+        return step.result === 'consumed' ? 'consumed' : baseButton(top, btn);
+      }
       // The battle's cursor ops paint into the battle view, whose frame id keys their state.
       case 'battle':
         return this.#step('battleView', btn, ctx, battleScreen);

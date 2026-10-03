@@ -107,6 +107,19 @@
 //     M24S4_BX_PARAM_KEYS gains `box.feed.item`, `box.evolve.confirm`, `box.feedback.fed` and the
 //     reused `evolution.path.heading`, `evolution.card.ready`; M24S4_BX_ROSTER gains the new
 //     English; the ctl-8b «key» case also expects the three new sheet rows.
+//
+// ctl-10a (CTL10A.4): Monsters offers no Heal Party control; healing happens only at a bound
+// healer. The case is the describe titled 'BoxView ctl-10a ...' at the end of this file
+// (CTL10A-4-NO-HEAL-CONTROL). NAMED INTENTIONAL CHANGES to pre-existing cases:
+//   - makeBoxCallbacks no longer passes `onHealParty` (the callbacks are constructed without it).
+//   - M24S4_BX_PLAIN_KEYS drops `box.heal` (a «box.heal» span is now an unexpected sentinel);
+//     'Heal Party' stays in M24S4_BX_ROSTER, so it may appear nowhere.
+//   - m24s4 BX-01: `box.heal` is no longer resolved by show() or a repeat show(), and no button
+//     in the frame reads 'Heal Party' (was: the first button reads 'Heal Party').
+//   - m24s4 BX-02: the sentinel walk no longer contains «box.heal».
+//   - CTL8B-3-VIEW-ROW: its "Heal Party disabled while the typing row shows, enabled after"
+//     clauses are removed with the button (the c8bHealButton helper goes too); the rest of the
+//     case is unchanged.
 // ---------------------------------------------------------------------------
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readWasmU32Constant } from '../../test-util/wasmPkg';
@@ -395,12 +408,12 @@ const BOX_SLOT = 255;
  */
 const NEXT_FREE_SLOT_SENTINEL = -1;
 
-/** All three BoxViewCallbacks callbacks as spies, plus the injected box sentinel. */
+/** The BoxViewCallbacks callbacks as spies, plus the injected box sentinel. ctl-10a (named
+ *  intentional change): no `onHealParty` — the Box Heal Party control is gone (CTL10A.4). */
 function makeBoxCallbacks(): BoxViewCallbacks {
   return {
     onSetNickname: vi.fn(),
     onSetPartySlot: vi.fn(),
-    onHealParty: vi.fn(),
     partySlotNone: BOX_SLOT,
   };
 }
@@ -1392,7 +1405,7 @@ describe("BoxView EG4-8 X10: the badge does not displace the card's existing con
 
 const M24S4_BX_PLAIN_KEYS = new Set([
   'box.title',
-  'box.heal',
+  // INTENTIONAL CHANGE (ctl-10a): `box.heal` leaves this roster with the Heal Party button.
   'box.hint',
   'box.section.party',
   'box.section.box',
@@ -1592,7 +1605,8 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
     view.show();
 
     expect(i18nT).toHaveBeenCalledWith('box.title');
-    expect(i18nT).toHaveBeenCalledWith('box.heal');
+    // INTENTIONAL CHANGE (ctl-10a): no Heal Party button, so `box.heal` is never resolved.
+    expect(i18nT).not.toHaveBeenCalledWith('box.heal');
     expect(i18nT).toHaveBeenCalledWith('box.hint');
     expect(i18nT).toHaveBeenCalledWith('box.section.party');
     expect(i18nT).toHaveBeenCalledWith('box.section.box');
@@ -1610,7 +1624,10 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
     });
 
     expect(root.querySelector('[data-testid="box-title"]')?.textContent).toBe('Party & Box');
-    expect(root.querySelector('button')?.textContent).toBe('Heal Party');
+    // INTENTIONAL CHANGE (ctl-10a): was "the first button reads 'Heal Party'"; no button does now.
+    const buttonTexts = [...root.querySelectorAll('button')].map((b) => b.textContent);
+    expect(buttonTexts, 'control: the frame renders its buttons').toContain('To Box');
+    expect(buttonTexts, 'ctl-10a: no Heal Party button').not.toContain('Heal Party');
     expect(root.querySelector('[data-testid="box-party-hint"]')?.textContent ?? '').toContain(
       'To Party',
     );
@@ -1665,7 +1682,8 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
       i18nT,
       'm24s4 BX-01 RT2: a repeat show() on an already-open overlay must re-resolve box.title',
     ).toHaveBeenCalledWith('box.title');
-    expect(i18nT).toHaveBeenCalledWith('box.heal');
+    // INTENTIONAL CHANGE (ctl-10a): `box.heal` is not resolved on a repeat show() either.
+    expect(i18nT).not.toHaveBeenCalledWith('box.heal');
     expect(i18nT).toHaveBeenCalledWith('box.hint');
     expect(i18nT).toHaveBeenCalledWith('box.section.party');
     expect(i18nT).toHaveBeenCalledWith('box.section.box');
@@ -1696,7 +1714,8 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
       m24s4BxAssertNoRosterWord(texts, 'one party card, empty box');
       let joined = texts.join('\n');
       expect(joined).toContain('«box.title»');
-      expect(joined).toContain('«box.heal»');
+      // INTENTIONAL CHANGE (ctl-10a): the Heal Party button and its «box.heal» label are gone.
+      expect(joined).not.toContain('«box.heal»');
       expect(joined).toContain('«box.hint»');
       expect(joined).toContain('«box.section.party»');
       expect(joined).toContain('«box.section.box»');
@@ -2217,13 +2236,8 @@ const c8bShownText = (parent: HTMLElement, root: HTMLElement, text: string): HTM
 const c8bAnchor = (root: Element): HTMLElement =>
   root.querySelector('[data-testid="box-title"]') as HTMLElement;
 
-function c8bHealButton(root: Element): HTMLButtonElement {
-  const found = [...root.querySelectorAll('button')].find(
-    (b) => b.textContent === i18nT('box.heal'),
-  );
-  expect(found, 'precondition: the header carries the Heal Party button').toBeDefined();
-  return found as HTMLButtonElement;
-}
+// ctl-10a (named intentional change): the c8bHealButton helper is removed with the Heal Party
+// button it located (CTL8B-3-VIEW-ROW was its only user).
 
 const c8bInput = (root: Element): HTMLInputElement | null =>
   root.querySelector<HTMLInputElement>('input[type="text"]');
@@ -2516,19 +2530,18 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
 });
 
 describe('BoxView ctl-8b: the nickname row (CTL8B.3)', () => {
-  it('CTL8B-3-VIEW-ROW: a nickname paint shows a labelled text field prefilled with the card`s nickname (empty for a card with none) and focuses it; the Heal Party button is disabled while it is shown and enabled again when it closes; closing it moves focus to the title anchor and sends nothing; the field keeps keys out of the page`s hotkeys but lets Enter through', async () => {
+  it('CTL8B-3-VIEW-ROW: a nickname paint shows a labelled text field prefilled with the card`s nickname (empty for a card with none) and focuses it; closing it moves focus to the title anchor and sends nothing; the field keeps keys out of the page`s hotkeys but lets Enter through', async () => {
     // WRONG IMPL KILLED: no row; a field with no label (a screen reader names it nothing); a
     // prefill of the species name for a nickname-less card (the commit would then rename the
     // monster to its species); a field never focused (the player types into the page: main.ts's
     // ladder takes B, I, E, Q and the rest); a key shield that also eats Enter (A would never
-    // commit) or none at all ("b" in the field would close the box); a Heal Party button left
-    // enabled (Escape then Enter focuses the first enabled non-text control and would HEAL); a
-    // row left showing after it closed; focus left on the hidden field (it falls to <body> and
-    // the frame loses the keyboard).
+    // commit) or none at all ("b" in the field would close the box); a row left showing after it
+    // closed; focus left on the hidden field (it falls to <body> and the frame loses the keyboard).
+    // ctl-10a (named intentional change, CTL10A.4): the "Heal Party disabled while the row shows,
+    // enabled again when it closes" clauses are removed with the Heal Party button
+    // (CTL10A-4-NO-HEAL-CONTROL pins that no such button exists, row open or not).
     const { view, root, callbacks } = c8bOpen();
     await s4FlushMacrotask(); // show()'s deferred anchor focus lands before the row opens
-    const heal = c8bHealButton(root);
-    expect(heal.disabled, 'Heal Party starts enabled').toBe(false);
 
     view.paint(c8bRow(C8B_KIP, 1));
     const input = c8bInput(root);
@@ -2547,7 +2560,6 @@ describe('BoxView ctl-8b: the nickname row (CTL8B.3)', () => {
       'the label belongs to the field',
     ).toBe(true);
     expect(c8bHidden(lab, root), 'and shows').toBe(false);
-    expect(heal.disabled, 'Heal Party is disabled while the row is shown').toBe(true);
 
     // The key shield: the page's hotkey ladder listens on window and must not see typed letters.
     const seen: string[] = [];
@@ -2587,12 +2599,11 @@ describe('BoxView ctl-8b: the nickname row (CTL8B.3)', () => {
       window.removeEventListener('keydown', spy);
     }
 
-    // The row closes (B, or A with the commit already painted): enabled again, hidden, focus on
-    // the title anchor, nothing sent.
+    // The row closes (B, or A with the commit already painted): hidden, focus on the title
+    // anchor, nothing sent.
     view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'nickname') }));
     expect(c8bHidden(field, root), 'the row is hidden by inline display').toBe(true);
     expect(c8bHidden(lab, root), 'and so is its label').toBe(true);
-    expect(heal.disabled, 'Heal Party is enabled again').toBe(false);
     expect(document.activeElement, 'focus moves to the title anchor, not <body>').toBe(
       c8bAnchor(root),
     );
@@ -2607,7 +2618,6 @@ describe('BoxView ctl-8b: the nickname row (CTL8B.3)', () => {
     expect(c8bHidden(second, root)).toBe(false);
     expect(second.value, 'no nickname: empty, not "Mossling"').toBe('');
     expect(document.activeElement).toBe(second);
-    expect(heal.disabled).toBe(true);
   });
 
   it('CTL8B-3-VIEW-COMMIT-ONCE: a NEW commit token sends onSetNickname(monsterId, the field`s text) exactly once, even when onSetNickname repaints; the same token again, a repaint or a refresh() never sends again; a text equal to the token`s current nickname sends nothing; each new open re-prefills the field; after the row closes focus is on the title anchor', async () => {
@@ -3849,5 +3859,58 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
       vi.mocked(i18nT).mockRestore();
       vi.mocked(i18nTf).mockRestore();
     }
+  });
+});
+
+// =============================================================================
+// ctl-10a (CTL10A.4): Monsters offers no Heal Party control; healing happens only at a bound healer.
+// =============================================================================
+
+describe('BoxView ctl-10a: no Heal Party control (CTL10A.4)', () => {
+  it('CTL10A-4-NO-HEAL-CONTROL: a BoxView constructed WITHOUT onHealParty and shown (both lists drawn, then a sheet with the typing row open, then reopened) renders no button reading Heal Party, no Heal Party text anywhere in its root, and never resolves box.heal', () => {
+    // WRONG IMPL KILLED (B13): the Box Heal Party button kept (it heals at the store's first
+    // location, never at the healer the player stands at), kept with its label from a literal,
+    // kept only while the typing row is closed, kept as a disabled control, or brought back by a
+    // reopen.
+    vi.mocked(i18nT).mockClear();
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+    const callbacks: BoxViewCallbacks = {
+      onSetNickname: vi.fn(),
+      onSetPartySlot: vi.fn(),
+      partySlotNone: BOX_SLOT,
+    };
+    const view = new BoxView(parent, callbacks);
+    view.refresh(makePartySlots(), [makeBoxRecruitCard()]);
+    view.show();
+    const root = s4BoxRootOf(parent);
+    const buttonTexts = (): string[] =>
+      [...root.querySelectorAll('button')].map((b) => (b.textContent ?? '').trim());
+
+    expect(buttonTexts(), 'control: the frame renders its real buttons').toEqual(
+      expect.arrayContaining(['To Box', 'To Party']),
+    );
+    expect(buttonTexts(), 'no Heal Party button').not.toContain('Heal Party');
+    expect(root.textContent ?? '', 'no Heal Party text anywhere in the frame').not.toContain(
+      'Heal Party',
+    );
+    expect(i18nT, 'box.heal is never resolved').not.toHaveBeenCalledWith('box.heal');
+
+    view.paint(
+      c8bPaint({
+        tab: 'party',
+        activeKey: '100',
+        sheet: c8bSheet(makePartyCard(), 'nickname'),
+        nickname: { card: makePartyCard(), edit: 1 },
+      }),
+    );
+    expect(buttonTexts(), 'nor with the sheet and the typing row open').not.toContain('Heal Party');
+    expect(root.textContent ?? '').not.toContain('Heal Party');
+
+    view.hide();
+    view.show();
+    expect(buttonTexts(), 'nor after a reopen').not.toContain('Heal Party');
+    expect(root.textContent ?? '').not.toContain('Heal Party');
+    expect(i18nT, 'box.heal is never resolved, on any path').not.toHaveBeenCalledWith('box.heal');
   });
 });

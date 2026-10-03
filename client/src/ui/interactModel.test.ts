@@ -1,51 +1,73 @@
-// ui/interactModel.test.ts — uxd2 RED gating tests for the context-sensitive interact core.
+// ui/interactModel.test.ts — ctl-10a RED gating tests: the interaction MARSHALLING adapter, the
+// total wasm resolver and the world chip view model (CTL10A.1, CTL10A.3).
 //
-// SEMANTICS:
-//   * SAME ZONE ONLY. NPC zone comes from the CHARACTER-row join (its live wander
-//     position), never from the npc registry row's `zoneId`. An NPC with no character
-//     row is SKIPPED (half-orphan, never a throw). Heal rows are filtered by an
-//     EXPLICIT `loc.zoneId === own.zoneId` (they have no character row to inherit from).
-//   * RANGE: Manhattan distance <= the injected range (game-core TALK_RANGE = 2, read via
-//     the talk_range() wasm export), INCLUSIVE — the server's own bound.
-//   * ORDERING: (distance asc, kindRank asc, id asc WITHIN kind). kindRank is by SOURCE
-//     TABLE — an npc row is 0, a heal_location row is 1 — NOT by the descriptor's `kind`
-//     string. The class rank fires BEFORE any id comparison, so a `bigint` entityId and a
-//     `number` locationId are never compared against each other.
-//   * ANCHOR (SOURCE px, top-center of the TARGET's tile):
-//       anchorWorldX = (tileX + 0.5) * TILE_PX     TILE_PX = 32
-//       anchorWorldY =  tileY        * TILE_PX
-//     For an NPC target the tile is its CHARACTER tile; for a heal target it is the heal
-//     row's own tile_x/tile_y.
-//   * actionWord: dialogue -> 'Talk', shop -> 'Shop', heal -> 'Heal'. keyGlyph always 'T'.
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-postgate-console-controls.spec.md §ctl-10a;
+//   memory/projects/monster-realm-ctl-10a-plan.md (REV 2 authoritative).
+//
+// NAMED REMOVAL (testing-tdd.md "Deleting a check"; the spec's named-survivor table row
+// "`interactModel.test.ts` rule cases → `game-core/src/interact_tests.rs` + `interactModel.test.ts`
+// marshalling cases", ctl-10a):
+//   * `nearestInteractable`, `interactPrompt`, `InteractPromptViewModel`, `Interactable` and
+//     `InteractTile` are DELETED from interactModel.ts (the TS nearest-within-range rule is retired;
+//     the rule is game-core's `interact_candidates`, reached through the client-wasm export
+//     `interact_candidates_coded`). Their tests are deleted with them:
+//       - Blocks A-E (range / zone / character join / heal tiles / cross-kind ordering / the
+//         lexicographic-minimum and permutation properties): the RULE now lives in game-core, so
+//         the survivors are game-core/src/interact_tests.rs (tier, zone, kind-then-id order, the
+//         behind / two-ahead / diagonal negatives) plus the wasm-parity case below, which drives
+//         the REAL wasm export over this module's marshalled input.
+//       - A1 (`talk_range()` === 2): the client no longer injects a range; `talk_range` stays
+//         pinned by client-wasm's own native test beside it.
+//       - Block F (`interactPrompt`, keyGlyph 'T'): replaced by the chip view-model case below (`interactChip`);
+//         the glyph and verb now come from the live binding and the catalog in main.ts.
+//       - Block G (a source-text scan of dialogueModel.ts): a forbidden check shape; the symbol
+//         deletion it guarded is enforced by client-typecheck. No survivor needed.
+//
+// CONTRACT (the implementer writes exactly this; see the ctl-10a handoff):
+//   marshalInteract(npcs, characters, players, heals, ownEntityId) -> { wire, candidates }
+//     index-aligned; NO zone / distance / facing filter; npc position+zone from its CHARACTER row;
+//     a player is a character whose entityId is a StorePlayer's and is not ownEntityId.
+//   FACING_CODE: North 0, South 1, East 2, West 3 (client-wasm dir_from_code).
+//   resolveCandidates(fn, origin, input, onError?) -> candidates[i] per returned i, TOTAL.
+//   interactChip(cands) -> null | single | choose (counting ACTIONABLE candidates and their actions).
+//
+// Anchors are SOURCE px: X tile-centre (tileX + 0.5) * 32, Y tile-top tileY * 32 (TILE_PX = 32).
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import * as fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
-import { readWasmU32Constant } from '../../test-util/wasmPkg';
-import type { StoreHealLocationRow, StoreNpcRow } from '../net/store';
-import { type InteractTile, interactPrompt, nearestInteractable } from './interactModel';
+import { describe, expect, it, vi } from 'vitest';
+import { loadWasmPkg } from '../../test-util/wasmPkg';
+import type { WasmDirection } from '../convert/convert';
+import type { StoreCharacter, StoreHealLocationRow, StoreNpcRow, StorePlayer } from '../net/store';
+import {
+  type CandidatesFn,
+  FACING_CODE,
+  type InteractAction,
+  type InteractCandidate,
+  type InteractInput,
+  type InteractOrigin,
+  interactChip,
+  marshalInteract,
+  resolveCandidates,
+  type WireInteractEntity,
+} from './interactModel';
 
 // ---------------------------------------------------------------------------
-// Fixtures. `StoreNpcRow['interaction']` is the uxd2 addition to store.ts — using the
-// indexed access (rather than re-declaring the union locally) keeps this file honest:
-// if the implementer names the discriminants differently, these fixtures no longer
-// describe the shipped type.
+// Store-row fixtures.
 // ---------------------------------------------------------------------------
 
 type NpcInteraction = StoreNpcRow['interaction'];
-
 const DIALOGUE: NpcInteraction = { kind: 'dialogue' };
 
-function npcRow(entityId: bigint, interaction: NpcInteraction = DIALOGUE): StoreNpcRow {
+/** An npc registry row. Its registry zone and home tile are DELIBERATELY (0, 0, 0): position and
+ *  zone must come from the npc's CHARACTER row, so a marshaller that reads the registry row is
+ *  wrong for every npc below whose character stands elsewhere. */
+function npcRow(
+  entityId: bigint,
+  interaction: NpcInteraction,
+  npcId = `npc_${entityId}`,
+): StoreNpcRow {
   return {
     entityId,
-    npcId: `npc_${entityId}`,
-    // Registry (home) zone is DELIBERATELY pinned to 0 — the SAME zone as `OWN`. Selection
-    // must read the live zone from the CHARACTER-row join, never from this field, so this
-    // value is set to the one that makes a registry-reading impl WRONGLY ACCEPT the
-    // other-zone NPC in tooth A5.
+    npcId,
     zoneId: 0,
     homeX: 0,
     homeY: 0,
@@ -53,6 +75,23 @@ function npcRow(entityId: bigint, interaction: NpcInteraction = DIALOGUE): Store
     dialogueTreeId: 'tree',
     interaction,
   };
+}
+
+function charRow(entityId: bigint, zoneId: number, tileX: number, tileY: number): StoreCharacter {
+  return {
+    entityId,
+    zoneId,
+    tileX,
+    tileY,
+    facing: 'South',
+    action: 'Idle',
+    moveStartedAtMs: 0n,
+    moveQueue: [],
+  };
+}
+
+function playerRow(entityId: bigint, name: string): StorePlayer {
+  return { identity: `id-${entityId}`, entityId, name, online: true, lastInputSeq: 0n };
 }
 
 function healRow(
@@ -66,684 +105,547 @@ function healRow(
     zoneId,
     tileX,
     tileY,
-    costItemId: undefined,
     costQty: 0,
     cooldownMs: 30_000,
-    // 12r-d [E2]: StoreHealLocationRow gains a REQUIRED `costCurrency: bigint`. This file's
-    // subject (nearestInteractable) is indifferent to the cost channels — it selects by
-    // zone/distance only — so 0n is a pure COMPILE KEEP-ALIVE: it keeps the fixture a
-    // well-formed store row after the type change, and no assertion here reads it.
     costCurrency: 0n,
   };
 }
 
-const tile = (zoneId: number, tileX: number, tileY: number): InteractTile => ({
-  zoneId,
-  tileX,
-  tileY,
-});
+/** 2^53 + 1: not representable as a double, so a Number() round trip turns it into ...992. */
+const BIG = 9_007_199_254_740_993n;
 
-/** The own authoritative tile every Block A-D case measures from: zone 0, (5,4). */
-const OWN = tile(0, 5, 4);
-
-const NO_NPCS: readonly StoreNpcRow[] = [];
-const NO_TILES: ReadonlyMap<bigint, InteractTile> = new Map();
-const NO_HEALS: readonly StoreHealLocationRow[] = [];
-/** The range every row injects — pinned to the built wasm talk_range() by A1. */
-const TEST_RANGE = 2;
-
-// ===========================================================================
-// BLOCK A — range / zone / character-join.
-// ===========================================================================
-
-describe('nearestInteractable — Block A: range, zone and the character-row join (ported)', () => {
-  it('A1 BITES: the injected range IS game-core TALK_RANGE — built wasm talk_range() === 2 === TEST_RANGE', () => {
-    // Value-identity proof for the SSOT move: the model no longer owns the range — main.ts
-    // injects `talk_range()` at boot. This reads that export from the compiled client-wasm
-    // binary and pins it to the literal the deleted CLIENT_INTERACT_RANGE mirror carried (2)
-    // and to the TEST_RANGE every row in this file injects.
-    // WRONG IMPL KILLED: a range of 1 (silently un-interactable diagonal neighbours) or 3
-    // (the client offers an interact the server then rejects — the latency-hygiene contract
-    // requires the client bound to EQUAL the server bound, never exceed it).
-    expect(readWasmU32Constant('talk_range')).toBe(2);
-    expect(TEST_RANGE).toBe(2);
+const byKey = (
+  input: InteractInput,
+): Map<string, { wire: WireInteractEntity; cand: InteractCandidate }> => {
+  const out = new Map<string, { wire: WireInteractEntity; cand: InteractCandidate }>();
+  input.candidates.forEach((cand, i) => {
+    out.set(cand.key, { wire: input.wire[i] as WireInteractEntity, cand });
   });
+  return out;
+};
 
-  it('A1b BITES: the bound tracks the INJECTED range — kills a model that re-inlines a literal 2', () => {
-    const chars = new Map([[7n, tile(0, 5, 6)]]); // Manhattan 2
-    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS, 1)).toBeUndefined();
-    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS, 2)).toBeDefined();
-  });
+// ---------------------------------------------------------------------------
+// CTL10A.1 — marshalling (the only TS logic left between the store and the wasm rule).
+// ---------------------------------------------------------------------------
 
-  it('A2 BITES: nothing anywhere → undefined (KeyT no-ops)', () => {
-    // WRONG IMPL KILLED: an impl that throws on empty inputs (a throw in the frame loop's
-    // per-frame resolver call would kill the render loop) or fabricates a default target.
-    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, NO_HEALS, TEST_RANGE)).toBeUndefined();
-  });
+describe('marshalInteract (ctl-10a, CTL10A.1)', () => {
+  it('CTL10A-1-MARSHAL: npcs take position and zone from their character row, heal rows and other players are included, the own character and anything without a position are skipped, ids are exact decimal strings (2^53 + 1 included), and wire[i] describes candidates[i]', () => {
+    // WRONG IMPL KILLED: an npc placed at its registry home / zone (elder_oak wanders, so the
+    // marshalled tile would be one the server never sees); an npc with no character row placed at
+    // (0, 0) or thrown on; the own character offered as a player (A would target yourself on
+    // your own tile); a player row with no character placed anywhere; a wandering character that
+    // is neither npc nor player offered; heal rows or players left out; an id sent as a JS number
+    // or through Number() (9007199254740993 -> ...992, a different entity); a heal location 0
+    // dropped by a truthiness guard; and wire / candidates built in two different orders (the
+    // wasm index would then name the wrong candidate).
+    const OWN = 1n;
+    const npcs = [
+      npcRow(7n, DIALOGUE, 'elder_oak'),
+      npcRow(8n, { kind: 'shop', shopId: 2 }, 'tideglass_shopkeeper'),
+      npcRow(9n, { kind: 'heal', locationId: 5 }, 'healer_npc'),
+      npcRow(30n, DIALOGUE, 'orphan_npc'), // no character row: skipped
+      npcRow(BIG, DIALOGUE, 'big_npc'),
+    ];
+    const characters = [
+      charRow(OWN, 0, 5, 4), // the own character: never a candidate
+      charRow(7n, 1, 2, 3), // registry zone 0, live zone 1
+      charRow(8n, 0, 6, 4),
+      charRow(9n, 0, 3, 3),
+      charRow(BIG, 0, 0, 0),
+      charRow(13n, 0, 4, 4), // the player Rival
+      charRow(40n, 0, 5, 5), // neither npc nor player: skipped
+    ];
+    const players = [
+      playerRow(OWN, 'Me'),
+      playerRow(13n, 'Rival'),
+      playerRow(50n, 'Ghost'), // no character row: skipped
+    ];
+    const heals = [healRow(3, 0, 5, 5), healRow(0, 2, 9, 9)];
 
-  it('A3 BITES: an NPC at EXACTLY distance 2 is selected (inclusive, like the server <=)', () => {
-    // WRONG IMPL KILLED: a strict `dist < range` comparison — the boundary
-    // tile would be silently un-interactable even though the server accepts it.
-    const chars = new Map([[7n, tile(0, 5, 6)]]); // Manhattan 2
-    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS, TEST_RANGE)).toEqual({
-      kind: 'dialogue',
-      npcEntityId: 7n,
-      anchorWorldX: 176, // (5 + 0.5) * 32
-      anchorWorldY: 192, // 6 * 32
-    });
-  });
+    const input = marshalInteract(npcs, characters, players, heals, OWN);
 
-  it('A4 BITES: an NPC 1 past range → undefined', () => {
-    // WRONG IMPL KILLED: a `<=` that was written as `<= RANGE + 1`, or a Chebyshev
-    // (max-of-axes) distance — under Chebyshev (5,7) is distance 3 Manhattan but 3
-    // Chebyshev too, so use the sharper A4b case below for the metric itself.
-    const chars = new Map([[7n, tile(0, 5, 7)]]); // Manhattan 3
-    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS, TEST_RANGE)).toBeUndefined();
-  });
-
-  it('A4b BITES: the metric is MANHATTAN, not Chebyshev — (2,2) away is out of range', () => {
-    // WRONG IMPL KILLED: `Math.max(|dx|,|dy|)` (Chebyshev). At (7,6) from (5,4):
-    // Chebyshev = 2 (would be accepted); Manhattan = 4 (must be rejected). The server
-    // uses Manhattan, so a Chebyshev client offers interacts the server refuses.
-    const chars = new Map([[7n, tile(0, 7, 6)]]);
-    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS, TEST_RANGE)).toBeUndefined();
-  });
-
-  it('A5 BITES: NPC zone comes from the CHARACTER row — an other-zone NPC on the SAME tile is skipped', () => {
-    // WRONG IMPL KILLED: an impl that reads `npc.zoneId` (the registry/home zone) instead of
-    // the joined character row's zone, or that skips the zone check entirely. The fixture
-    // NPC sits on the player's EXACT tile in zone 1 — distance 0, wrong zone.
-    const chars = new Map([[7n, tile(1, 5, 4)]]);
-    expect(nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS, TEST_RANGE)).toBeUndefined();
-  });
-
-  it('A6 BITES: an NPC with NO character row (half-orphan) is skipped without throwing', () => {
-    // WRONG IMPL KILLED: a non-null-asserted `characterTiles.get(id)!.tileX` — during the
-    // reconnect/zone-swap gap the npc registry can be populated before the character rows
-    // arrive, and a throw here starves the frame loop.
-    const chars = new Map([[9n, tile(0, 5, 5)]]); // only npc 9 has a character row
-    expect(nearestInteractable(OWN, [npcRow(7n), npcRow(9n)], chars, NO_HEALS, TEST_RANGE)).toEqual(
-      {
-        kind: 'dialogue',
-        npcEntityId: 9n,
-        anchorWorldX: 176,
-        anchorWorldY: 160,
+    const expected: Record<string, { wire: WireInteractEntity; cand: InteractCandidate }> = {
+      'npc:7': {
+        wire: { kind: 'npc', x: 2, y: 3, zone: 1, id: '7' },
+        cand: {
+          key: 'npc:7',
+          kind: 'npc',
+          name: 'elder_oak',
+          actions: [{ kind: 'talk', npcEntityId: 7n }],
+          anchorWorldX: 80, // (2 + 0.5) * 32
+          anchorWorldY: 96, // 3 * 32
+        },
       },
+      'npc:8': {
+        wire: { kind: 'npc', x: 6, y: 4, zone: 0, id: '8' },
+        cand: {
+          key: 'npc:8',
+          kind: 'npc',
+          name: 'tideglass_shopkeeper',
+          actions: [{ kind: 'shop', npcEntityId: 8n }],
+          anchorWorldX: 208,
+          anchorWorldY: 128,
+        },
+      },
+      'npc:9': {
+        wire: { kind: 'npc', x: 3, y: 3, zone: 0, id: '9' },
+        cand: {
+          key: 'npc:9',
+          kind: 'npc',
+          name: 'healer_npc',
+          actions: [{ kind: 'heal', locationId: 5 }],
+          anchorWorldX: 112,
+          anchorWorldY: 96,
+        },
+      },
+      'npc:9007199254740993': {
+        wire: { kind: 'npc', x: 0, y: 0, zone: 0, id: '9007199254740993' },
+        cand: {
+          key: 'npc:9007199254740993',
+          kind: 'npc',
+          name: 'big_npc',
+          actions: [{ kind: 'talk', npcEntityId: BIG }],
+          anchorWorldX: 16,
+          anchorWorldY: 0,
+        },
+      },
+      'player:13': {
+        wire: { kind: 'player', x: 4, y: 4, zone: 0, id: '13' },
+        cand: {
+          key: 'player:13',
+          kind: 'player',
+          name: 'Rival',
+          actions: [],
+          anchorWorldX: 144,
+          anchorWorldY: 128,
+        },
+      },
+      'heal:3': {
+        wire: { kind: 'heal', x: 5, y: 5, zone: 0, id: '3' },
+        cand: {
+          key: 'heal:3',
+          kind: 'heal',
+          name: '',
+          actions: [{ kind: 'heal', locationId: 3 }],
+          anchorWorldX: 176,
+          anchorWorldY: 160,
+        },
+      },
+      'heal:0': {
+        wire: { kind: 'heal', x: 9, y: 9, zone: 2, id: '0' },
+        cand: {
+          key: 'heal:0',
+          kind: 'heal',
+          name: '',
+          actions: [{ kind: 'heal', locationId: 0 }],
+          anchorWorldX: 304,
+          anchorWorldY: 288,
+        },
+      },
+    };
+
+    expect(input.wire.length, 'wire and candidates are index-aligned').toBe(
+      input.candidates.length,
     );
-  });
-
-  it('A7 BITES: picks the NEAREST of several in-range NPCs', () => {
-    // WRONG IMPL KILLED: a "first match wins" scan (input order would decide) — with rows
-    // arriving from a Map iteration the target would flicker between neighbours per frame.
-    const chars = new Map([
-      [7n, tile(0, 5, 6)], // Manhattan 2
-      [9n, tile(0, 5, 5)], // Manhattan 1 — nearest
-    ]);
-    const r = nearestInteractable(OWN, [npcRow(7n), npcRow(9n)], chars, NO_HEALS, TEST_RANGE);
-    expect(r?.kind).toBe('dialogue');
-    expect(r).toHaveProperty('npcEntityId', 9n);
-  });
-
-  it('A8 BITES: distance ties break by LOWEST entityId, independent of input order', () => {
-    // WRONG IMPL KILLED: an order-dependent tiebreak (the prompt would swap targets when the
-    // subscription re-orders rows) or a `>` comparison that keeps the HIGHEST id.
-    const chars = new Map([
-      [9n, tile(0, 6, 4)], // Manhattan 1
-      [7n, tile(0, 4, 4)], // Manhattan 1
-    ]);
-    const forward = nearestInteractable(OWN, [npcRow(9n), npcRow(7n)], chars, NO_HEALS, TEST_RANGE);
-    const reversed = nearestInteractable(
-      OWN,
-      [npcRow(7n), npcRow(9n)],
-      chars,
-      NO_HEALS,
-      TEST_RANGE,
-    );
-    expect(forward).toHaveProperty('npcEntityId', 7n);
-    expect(reversed).toHaveProperty('npcEntityId', 7n);
-    expect(forward).toEqual(reversed);
-  });
-});
-
-// ===========================================================================
-// BLOCK B — heal tiles as first-class interactables (AC-3 / AC-5).
-// ===========================================================================
-
-describe('nearestInteractable — Block B: heal tiles', () => {
-  it('B1 BITES: a heal tile at EXACTLY distance 2 is selected as {kind:"heal"}', () => {
-    // WRONG IMPL KILLED: an impl that only ever resolves NPCs (the `healLocations` argument
-    // accepted but never scanned) — heal-via-tile is the ONLY heal affordance after KeyH
-    // is deleted, so ignoring the array makes healing unreachable.
-    const heals = [healRow(1, 0, 5, 6)]; // Manhattan 2
-    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals, TEST_RANGE)).toEqual({
-      kind: 'heal',
-      locationId: 1,
-      anchorWorldX: 176, // (5 + 0.5) * 32
-      anchorWorldY: 192, // 6 * 32
-    });
-  });
-
-  it('B2 BITES: a heal tile 1 past range → undefined', () => {
-    // WRONG IMPL KILLED: a range check applied to NPCs but forgotten for heal rows — the
-    // prompt would claim "Heal" from across the room.
-    const heals = [healRow(1, 0, 5, 7)]; // Manhattan 3
-    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals, TEST_RANGE)).toBeUndefined();
-  });
-
-  it('★ B3 BITES (F7 tooth): a heal row on the SAME tile but a DIFFERENT zone → undefined', () => {
-    // THE ZONE-FILTER TOOTH. Heal rows have no character row to inherit a zone from, so the
-    // filter must be an EXPLICIT `loc.zoneId === own.zoneId`.
-    // WRONG IMPL KILLED: an impl that copies the NPC branch and forgets the explicit zone
-    // compare for heal rows. The fixture is deliberately distance-0-in-the-wrong-zone: with
-    // no zone filter it is the unbeatable winner, so the omission cannot hide.
-    const heals = [healRow(1, 1, 5, 4)]; // identical tile, zone 1 instead of 0
-    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals, TEST_RANGE)).toBeUndefined();
-  });
-
-  it('B4 BITES: two heal tiles at equal distance break by LOWEST locationId, order-independent', () => {
-    // WRONG IMPL KILLED: an order-dependent or highest-id tiebreak among heal rows —
-    // store.healLocations() returns Map-insertion order, which is not stable across a
-    // reconnect, so the prompt would flip between two adjacent pads.
-    const heals = [healRow(9, 0, 6, 4), healRow(4, 0, 4, 4)]; // both Manhattan 1
-    const forward = nearestInteractable(OWN, NO_NPCS, NO_TILES, heals, TEST_RANGE);
-    const reversed = nearestInteractable(OWN, NO_NPCS, NO_TILES, [...heals].reverse(), TEST_RANGE);
-    expect(forward).toHaveProperty('locationId', 4);
-    expect(reversed).toHaveProperty('locationId', 4);
-    expect(forward).toEqual(reversed);
-  });
-
-  it('B5 BITES: locationId 0 is a valid heal target (falsy-id trap)', () => {
-    // WRONG IMPL KILLED: an `if (!loc.locationId) continue;` / `locationId || undefined`
-    // truthiness guard — location id 0 is representable (u32) and must resolve normally.
-    const heals = [healRow(0, 0, 5, 5)];
-    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals, TEST_RANGE)).toEqual({
-      kind: 'heal',
-      locationId: 0,
-      anchorWorldX: 176,
-      anchorWorldY: 160,
-    });
-  });
-});
-
-// ===========================================================================
-// BLOCK C — cross-kind determinism (AC-4). The ADR-0161 D3 class-rank rule.
-// ===========================================================================
-
-describe('nearestInteractable — Block C: cross-kind ordering determinism', () => {
-  it('★ C1 BITES: at EQUAL distance an NPC beats a heal tile (kindRank npc=0 < tile=1)', () => {
-    // WRONG IMPL KILLED: an impl that concatenates the two candidate lists and sorts by
-    // distance alone — the winner would then depend on concatenation order (heal-first or
-    // npc-first), i.e. it would be non-deterministic across a refactor.
-    const chars = new Map([[7n, tile(0, 6, 4)]]); // Manhattan 1
-    const heals = [healRow(1, 0, 4, 4)]; // Manhattan 1
-    const r = nearestInteractable(OWN, [npcRow(7n)], chars, heals, TEST_RANGE);
-    expect(r?.kind).toBe('dialogue');
-    expect(r).toHaveProperty('npcEntityId', 7n);
-  });
-
-  it('★ C2 BITES (bigint-vs-number tooth): heal locationId 1 vs NPC entityId 9007199254740993n at equal distance → NPC wins', () => {
-    // THE TOOTH ADR-0161 D3 exists for. Two independent wrong impls die here:
-    //  (1) a SINGLE-KEY comparator that compares ids across kinds — 1 < 9007199254740993 so
-    //      the heal tile would win, inverting the documented NPC-before-tile rule (and since
-    //      entity_id is a global auto-inc, NPC ids are ALWAYS larger, so the inversion is
-    //      near-total in production while every small-id unit fixture stays green);
-    //  (2) a `Number(npc.entityId)` coercion to make the mixed compare type-check —
-    //      9007199254740993 (2^53 + 1) is NOT representable as a double, so it silently
-    //      collapses to 9007199254740992 and the comparison is already lossy.
-    // `tsc --strict` accepts the buggy comparator silently, so only a
-    // behavioural tooth can catch it.
-    const bigEid = 9007199254740993n; // 2^53 + 1
-    const chars = new Map([[bigEid, tile(0, 6, 4)]]); // Manhattan 1
-    const heals = [healRow(1, 0, 4, 4)]; // Manhattan 1
-    const r = nearestInteractable(OWN, [npcRow(bigEid)], chars, heals, TEST_RANGE);
-    expect(r?.kind).toBe('dialogue');
-    expect(r).toHaveProperty('npcEntityId', bigEid);
-    // The id must survive as a bigint — a Number() round-trip would return 9007199254740992n.
-    expect((r as { npcEntityId: bigint }).npcEntityId).toBe(9007199254740993n);
-  });
-
-  it('C3 BITES: DISTANCE dominates the class rank — a nearer heal tile beats a farther NPC', () => {
-    // WRONG IMPL KILLED: an impl that sorts by (kindRank, distance) instead of
-    // (distance, kindRank) — every heal tile in the zone would become unreachable while any
-    // NPC is anywhere in range.
-    const chars = new Map([[7n, tile(0, 5, 6)]]); // Manhattan 2
-    const heals = [healRow(1, 0, 5, 5)]; // Manhattan 1 — nearer
-    expect(nearestInteractable(OWN, [npcRow(7n)], chars, heals, TEST_RANGE)).toEqual({
-      kind: 'heal',
-      locationId: 1,
-      anchorWorldX: 176,
-      anchorWorldY: 160,
-    });
-  });
-
-  it('★ C4 BITES: the class rank is by SOURCE TABLE — a Heal-variant NPC still outranks a heal TILE at equal distance', () => {
-    // kindRank is npc-row = 0, heal_location-row = 1. It is NOT the descriptor's
-    // `kind` string. A Heal-variant NPC therefore (a) ranks as an NPC and (b) still produces a
-    // {kind:'heal'} descriptor carrying ITS OWN locationId at ITS OWN character tile.
-    // WRONG IMPL KILLED: an impl that ranks by the descriptor's kind string — the heal TILE
-    // (locationId 1) would then tie-break against the NPC's locationId 5 by number and win,
-    // opening the wrong heal location's overlay.
-    const chars = new Map([[7n, tile(0, 6, 4)]]); // Manhattan 1
-    const heals = [healRow(1, 0, 4, 4)]; // Manhattan 1
-    const npcs = [npcRow(7n, { kind: 'heal', locationId: 5 })];
-    expect(nearestInteractable(OWN, npcs, chars, heals, TEST_RANGE)).toEqual({
-      kind: 'heal',
-      locationId: 5, // the NPC's location, not the tile's
-      anchorWorldX: 208, // (6 + 0.5) * 32 — the NPC's character tile
-      anchorWorldY: 128, // 4 * 32
-    });
-  });
-});
-
-// ===========================================================================
-// BLOCK D — descriptor payloads and anchors (AC-1 / AC-2 / AC-7).
-// ===========================================================================
-
-describe('nearestInteractable — Block D: descriptor payloads + anchor geometry', () => {
-  it('D1 BITES: a Shop NPC yields {kind:"shop"} carrying the row shopId AND the entityId', () => {
-    // WRONG IMPL KILLED: an impl that maps every NPC to 'dialogue' (the shop affordance would
-    // never appear) or that drops shopId (main.ts could not bind the overlay to a shop).
-    const chars = new Map([[7n, tile(0, 5, 5)]]);
     expect(
-      nearestInteractable(
-        OWN,
-        [npcRow(7n, { kind: 'shop', shopId: 3 })],
-        chars,
-        NO_HEALS,
-        TEST_RANGE,
-      ),
-    ).toEqual({
-      kind: 'shop',
-      npcEntityId: 7n,
-      shopId: 3,
-      anchorWorldX: 176,
-      anchorWorldY: 160,
-    });
+      input.candidates.map((c) => c.key).sort(),
+      'exactly the seven interactables: no own player, no orphan npc, no positionless player, no stray character',
+    ).toEqual(Object.keys(expected).sort());
+    const got = byKey(input);
+    for (const [key, want] of Object.entries(expected)) {
+      const row = got.get(key);
+      expect(row, `${key} is marshalled`).toBeDefined();
+      expect(row?.cand, `${key}: the candidate`).toEqual(want.cand);
+      expect(row?.wire, `${key}: the wire entity at the SAME index`).toEqual(want.wire);
+    }
+    // The big id survives as a bigint on the action, never a lossy number.
+    const big = got.get('npc:9007199254740993')?.cand.actions[0] as { npcEntityId: bigint };
+    expect(big.npcEntityId).toBe(9_007_199_254_740_993n);
+    // Every wire id is a decimal STRING (a u64 never crosses as a JS number).
+    for (const w of input.wire) expect(typeof w.id, `${JSON.stringify(w)} id`).toBe('string');
+
+    // The characters argument is any Iterable (a Set here): the same seven come back.
+    const viaSet = marshalInteract(npcs, new Set(characters), players, heals, OWN);
+    expect(viaSet.candidates.map((c) => c.key).sort()).toEqual(Object.keys(expected).sort());
   });
 
-  it('D2 BITES: shopId 0 survives (falsy-0 trap — `??`, never `||`)', () => {
-    // WRONG IMPL KILLED: `shopId: npc.interaction.shopId || undefined` / `?? 1` — shop id 0 is
-    // representable (u32) and would silently become a different shop or vanish.
-    const chars = new Map([[7n, tile(0, 5, 5)]]);
-    const r = nearestInteractable(
+  it('CTL10A-1-NO-RANGE-RULE: an entity ten tiles away and entities in other zones are still marshalled; only wasm decides what is reachable', () => {
+    // WRONG IMPL KILLED: a marshaller that keeps a TS distance filter (the retired TALK_RANGE = 2)
+    // or a same-zone filter — the rule would then live in two places again, and a TS filter that
+    // drifts from game-core silently hides or offers targets the wasm rule disagrees on.
+    const OWN = 1n;
+    const input = marshalInteract(
+      [npcRow(7n, DIALOGUE)],
+      [charRow(OWN, 0, 0, 0), charRow(7n, 0, 10, 0), charRow(13n, 3, 0, 10)],
+      [playerRow(OWN, 'Me'), playerRow(13n, 'Rival')],
+      [healRow(4, 5, 40, 40)],
       OWN,
-      [npcRow(7n, { kind: 'shop', shopId: 0 })],
-      chars,
-      NO_HEALS,
-      TEST_RANGE,
     );
-    expect(r?.kind).toBe('shop');
-    expect(r).toHaveProperty('shopId', 0);
+    const got = byKey(input);
+    expect(got.get('npc:7')?.wire, 'ten tiles east, same zone').toEqual({
+      kind: 'npc',
+      x: 10,
+      y: 0,
+      zone: 0,
+      id: '7',
+    });
+    expect(got.get('player:13')?.wire, 'another zone').toEqual({
+      kind: 'player',
+      x: 0,
+      y: 10,
+      zone: 3,
+      id: '13',
+    });
+    expect(got.get('heal:4')?.wire, 'another zone, far away').toEqual({
+      kind: 'heal',
+      x: 40,
+      y: 40,
+      zone: 5,
+      id: '4',
+    });
+    expect(input.candidates).toHaveLength(3);
   });
 
-  it('D3 BITES: a Dialogue NPC descriptor carries NO shopId / locationId (exact shape)', () => {
-    // WRONG IMPL KILLED: a "fat descriptor" that always carries shopId (main.ts would render a
-    // Shop button for a plain villager, because the dialogue VM derives it from this union).
-    const chars = new Map([[7n, tile(0, 5, 5)]]);
-    const r = nearestInteractable(OWN, [npcRow(7n)], chars, NO_HEALS, TEST_RANGE);
-    expect(r).toEqual({
-      kind: 'dialogue',
-      npcEntityId: 7n,
-      anchorWorldX: 176,
-      anchorWorldY: 160,
-    });
-    expect(Object.keys(r as object).sort()).toEqual([
-      'anchorWorldX',
-      'anchorWorldY',
-      'kind',
-      'npcEntityId',
+  it('CTL10A-1-ACTIONS: the action table — a dialogue npc offers Talk, a shop npc Shop only, a heal-variant npc Heal at ITS location, a heal row Heal at its location, and a player nothing (until ctl-10b)', () => {
+    // WRONG IMPL KILLED: a shop npc offered as Talk (A would greet instead of opening the shop
+    // the chip advertises) or as [talk, shop] (two entries: A would open a picker on a lone
+    // shopkeeper); a heal-variant npc that heals at some other location (the first heal row, B13
+    // all over again); a heal row whose action drops or zeroes its locationId; and a player given
+    // a default action before ctl-10b ships Trade / Challenge (A on a lone player must be a no-op).
+    const OWN = 1n;
+    const input = marshalInteract(
+      [
+        npcRow(7n, DIALOGUE),
+        npcRow(8n, { kind: 'shop', shopId: 0 }),
+        npcRow(9n, { kind: 'heal', locationId: 11 }),
+      ],
+      [
+        charRow(OWN, 0, 1, 1),
+        charRow(7n, 0, 2, 1),
+        charRow(8n, 0, 3, 1),
+        charRow(9n, 0, 4, 1),
+        charRow(13n, 0, 5, 1),
+      ],
+      [playerRow(OWN, 'Me'), playerRow(13n, 'Rival')],
+      [healRow(4, 0, 6, 1), healRow(12, 0, 7, 1)],
+      OWN,
+    );
+    const actions = (key: string): readonly InteractAction[] | undefined =>
+      input.candidates.find((c) => c.key === key)?.actions;
+    expect(actions('npc:7')).toEqual([{ kind: 'talk', npcEntityId: 7n }]);
+    expect(actions('npc:8')).toEqual([{ kind: 'shop', npcEntityId: 8n }]);
+    expect(actions('npc:9')).toEqual([{ kind: 'heal', locationId: 11 }]);
+    expect(actions('heal:4')).toEqual([{ kind: 'heal', locationId: 4 }]);
+    expect(actions('heal:12')).toEqual([{ kind: 'heal', locationId: 12 }]);
+    expect(actions('player:13')).toEqual([]);
+    expect(input.candidates.find((c) => c.key === 'player:13')?.name).toBe('Rival');
+    expect(input.candidates.find((c) => c.key === 'heal:4')?.name, 'the shell names a healer').toBe(
+      '',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CTL10A.1 — the facing codes and the REAL wasm rule.
+// ---------------------------------------------------------------------------
+
+describe('FACING_CODE and the wasm rule (ctl-10a, CTL10A.1)', () => {
+  it('CTL10A-1-FACING-CODE: North 0, South 1, East 2, West 3 — client-wasm dir_from_code, all four pinned', () => {
+    // WRONG IMPL KILLED: East and West swapped (A acts on the tile behind-left), North and South
+    // swapped, the VBUTTONS order, or a 1-based table. Each is a different facing for the wasm rule.
+    expect(FACING_CODE).toEqual({ North: 0, South: 1, East: 2, West: 3 });
+  });
+
+  it('CTL10A-1-WASM-PARITY: marshalInteract + resolveCandidates over the REAL interact_candidates_coded export pick the faced tile for each of the four facings, the faced npc beats an own-tile heal, a faced player hides an own-tile heal, an npc directly behind is not a candidate, the own character is never one, and a tile orders npc < heal < player then by numeric id', async () => {
+    // The oracle is the RETURN VALUE of the module's own functions, driven through the built wasm
+    // pkg (r2-024's red: an NPC directly behind the character used to start a talk).
+    // WRONG IMPL KILLED: FACING_CODE with East/West or North/South swapped (East would name the
+    // player on the west tile); a resolver that ignores the wasm answer and applies its own
+    // nearest / own-tile rule; a marshaller that leaves the own character in (it would stand on
+    // the own tile and surface when the faced tile is empty); ids sent as numbers or through
+    // Number() (the wasm parse rejects them and the result is []); and an index mapping that
+    // re-sorts the wasm answer (npc 10 before npc 9 by string order).
+    const pkg = await loadWasmPkg();
+    const raw = pkg.interact_candidates_coded;
+    if (typeof raw !== 'function') {
+      throw new Error(
+        'client-wasm exports no interact_candidates_coded() — the pkg is stale, run `just wasm`',
+      );
+    }
+    const fn = raw as CandidatesFn;
+    const errors: unknown[] = [];
+    const onError = (err: unknown): void => {
+      errors.push(err);
+    };
+    const keysFor = (input: InteractInput, origin: InteractOrigin): string[] =>
+      resolveCandidates(fn, origin, input, onError).map((c) => c.key);
+
+    const OWN = 1n;
+    // Own at (5,4) zone 0. One interactable on each of the four neighbours, a heal on the own
+    // tile, an npc two tiles north (never a candidate) and an npc on the north tile in zone 1.
+    const ring = marshalInteract(
+      [
+        npcRow(BIG, DIALOGUE), // north (5,3)
+        npcRow(12n, { kind: 'shop', shopId: 4 }), // east (6,4)
+        npcRow(14n, DIALOGUE), // (5,2): two ahead when facing north
+        npcRow(15n, DIALOGUE), // (5,3) but zone 1
+      ],
+      [
+        charRow(OWN, 0, 5, 4),
+        charRow(BIG, 0, 5, 3),
+        charRow(12n, 0, 6, 4),
+        charRow(14n, 0, 5, 2),
+        charRow(15n, 1, 5, 3),
+        charRow(13n, 0, 4, 4), // the player Rival, west
+      ],
+      [playerRow(OWN, 'Me'), playerRow(13n, 'Rival')],
+      [healRow(3, 0, 5, 5), healRow(7, 0, 5, 4)], // south; own tile
+      OWN,
+    );
+    const at = (facing: WasmDirection): InteractOrigin => ({ x: 5, y: 4, facing, zone: 0 });
+    expect(keysFor(ring, at('North')), 'North: the faced npc, not the own-tile heal').toEqual([
+      'npc:9007199254740993',
     ]);
-  });
+    expect(keysFor(ring, at('South')), 'South: the faced heal row').toEqual(['heal:3']);
+    expect(keysFor(ring, at('East')), 'East: the faced shopkeeper').toEqual(['npc:12']);
+    expect(keysFor(ring, at('West')), 'West: a faced player hides the own-tile heal').toEqual([
+      'player:13',
+    ]);
 
-  it('★ D4 BITES: anchorWorldX is tile-CENTRE ((tileX + 0.5) * 32) and anchorWorldY is tile-TOP (tileY * 32)', () => {
-    // The asymmetry is the point: X is centred so the prompt sits over the
-    // sprite's middle, Y is the tile TOP so the label floats ABOVE the head.
-    // WRONG IMPL KILLED (1): `anchorWorldY = (tileY + 0.5) * TILE_PX` — a symmetric copy-paste;
-    //   the prompt would render across the sprite's chest. 3*32=96 vs 3.5*32=112 separates them.
-    // WRONG IMPL KILLED (2): `anchorWorldX = tileX * TILE_PX` — the prompt would sit on the
-    //   tile's left edge. 7*32=224 vs 7.5*32=240 separates them.
-    // WRONG IMPL KILLED (3): anchors computed from the OWN tile instead of the TARGET tile —
-    //   own is (6,3) and the target is (7,3), so an own-derived anchor reads (208, 96).
-    const ownNear = tile(0, 6, 3);
-    const chars = new Map([[7n, tile(0, 7, 3)]]); // Manhattan 1 from ownNear
-    const r = nearestInteractable(ownNear, [npcRow(7n)], chars, NO_HEALS, TEST_RANGE);
-    expect(r).toHaveProperty('anchorWorldX', 240); // (7 + 0.5) * 32
-    expect(r).toHaveProperty('anchorWorldY', 96); // 3 * 32 (NOT 112)
-  });
+    // Nothing on the faced tile, an npc directly BEHIND: no candidate (and the own character,
+    // standing on the own tile, is not one either).
+    const behind = marshalInteract(
+      [npcRow(20n, DIALOGUE)],
+      [charRow(OWN, 0, 5, 4), charRow(20n, 0, 5, 5)],
+      [playerRow(OWN, 'Me')],
+      [],
+      OWN,
+    );
+    expect(keysFor(behind, at('North')), 'an npc directly behind is not a candidate').toEqual([]);
 
-  it('D5 BITES: a heal target anchors on the HEAL ROW tile, not the player tile', () => {
-    // WRONG IMPL KILLED: an impl that reuses `own` for the heal anchor (the prompt would stick
-    // to the player and never point at the pad).
-    const heals = [healRow(2, 0, 4, 5)]; // Manhattan 2 from OWN (5,4)
-    expect(nearestInteractable(OWN, NO_NPCS, NO_TILES, heals, TEST_RANGE)).toEqual({
-      kind: 'heal',
-      locationId: 2,
-      anchorWorldX: 144, // (4 + 0.5) * 32
-      anchorWorldY: 160, // 5 * 32
-    });
-  });
+    // Nothing on the faced tile, a heal on the own tile: the own-tile tier, without the own player.
+    const ownTile = marshalInteract(
+      [],
+      [charRow(OWN, 0, 5, 4)],
+      [playerRow(OWN, 'Me')],
+      [healRow(7, 0, 5, 4)],
+      OWN,
+    );
+    expect(keysFor(ownTile, at('North')), 'the own-tile heal, and only it').toEqual(['heal:7']);
 
-  it('D6 BITES: tile (0,0) anchors to (16, 0) — no off-by-one/origin clamp', () => {
-    // WRONG IMPL KILLED: an impl that guards `if (!tileY) tileY = 1` or clamps the anchor to a
-    // positive minimum; y=0 is a legitimate (if wall-adjacent) row and must map to 0.
-    const heals = [healRow(3, 0, 0, 0)];
-    expect(nearestInteractable(tile(0, 1, 1), NO_NPCS, NO_TILES, heals, TEST_RANGE)).toEqual({
-      kind: 'heal',
-      locationId: 3,
-      anchorWorldX: 16, // (0 + 0.5) * 32
-      anchorWorldY: 0, // 0 * 32
-    });
+    // One faced tile holding two npcs, a heal and a player: kind first, then NUMERIC id.
+    const crowd = marshalInteract(
+      [npcRow(10n, DIALOGUE), npcRow(9n, DIALOGUE)],
+      [charRow(OWN, 0, 5, 4), charRow(10n, 0, 6, 4), charRow(9n, 0, 6, 4), charRow(13n, 0, 6, 4)],
+      [playerRow(OWN, 'Me'), playerRow(13n, 'Rival')],
+      [healRow(2, 0, 6, 4)],
+      OWN,
+    );
+    expect(keysFor(crowd, at('East')), 'npc < heal < player, then id 9 before id 10').toEqual([
+      'npc:9',
+      'npc:10',
+      'heal:2',
+      'player:13',
+    ]);
+
+    expect(errors, 'the real export never failed on marshalled input').toEqual([]);
   });
 });
 
-// ===========================================================================
-// BLOCK E — fast-check property: the winner is the lexicographic minimum of
-// (distance, kindRank, idWithinKind) over the in-range same-zone candidate set,
-// and `undefined` iff that set is empty (AC-4 / AC-5).
-//
-// NOTE (vitest + fast-check): every property callback below uses a BLOCK body
-// `(x) => { expect(...); }`. An expression body would hand fast-check the matcher's
-// return value, which it reads as a falsy predicate result and reports as a spurious
-// counterexample. See standards/testing-tdd.md [[vitest-fast-check]].
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// CTL10A.1 — resolveCandidates is TOTAL and trusts only the wasm answer.
+// ---------------------------------------------------------------------------
 
-interface GenNpc {
-  readonly id: number;
-  readonly zoneId: number;
-  readonly tileX: number;
-  readonly tileY: number;
-  readonly isShop: boolean;
-}
-interface GenHeal {
-  readonly locationId: number;
-  readonly zoneId: number;
-  readonly tileX: number;
-  readonly tileY: number;
-}
-
-const manhattan = (
-  a: { tileX: number; tileY: number },
-  b: { tileX: number; tileY: number },
-): number => Math.abs(a.tileX - b.tileX) + Math.abs(a.tileY - b.tileY);
-
-// NPCs are generated as dialogue/shop ONLY so the returned descriptor uniquely identifies
-// its source row (a 'heal' descriptor can then only have come from a heal_location row).
-// The Heal-variant NPC's class rank is pinned by the explicit tooth C4 instead.
-const npcArb = fc.uniqueArray(
-  fc.record({
-    id: fc.integer({ min: 1, max: 60 }),
-    zoneId: fc.integer({ min: 0, max: 1 }),
-    tileX: fc.integer({ min: 0, max: 9 }),
-    tileY: fc.integer({ min: 0, max: 6 }),
-    isShop: fc.boolean(),
-  }),
-  { selector: (n: GenNpc) => n.id, maxLength: 8 },
-);
-
-const healArb = fc.uniqueArray(
-  fc.record({
-    locationId: fc.integer({ min: 0, max: 60 }),
-    zoneId: fc.integer({ min: 0, max: 1 }),
-    tileX: fc.integer({ min: 0, max: 9 }),
-    tileY: fc.integer({ min: 0, max: 6 }),
-  }),
-  { selector: (h: GenHeal) => h.locationId, maxLength: 8 },
-);
-
-const ownArb = fc.record({
-  zoneId: fc.integer({ min: 0, max: 1 }),
-  tileX: fc.integer({ min: 0, max: 9 }),
-  tileY: fc.integer({ min: 0, max: 6 }),
+const talkNpc = (id: bigint, x = 1, y = 1): InteractCandidate => ({
+  key: `npc:${id}`,
+  kind: 'npc',
+  name: `npc_${id}`,
+  actions: [{ kind: 'talk', npcEntityId: id }],
+  anchorWorldX: (x + 0.5) * 32,
+  anchorWorldY: y * 32,
 });
-
-function buildInputs(
-  gNpcs: readonly GenNpc[],
-  gHeals: readonly GenHeal[],
-): {
-  npcs: StoreNpcRow[];
-  chars: Map<bigint, InteractTile>;
-  heals: StoreHealLocationRow[];
-} {
-  return {
-    npcs: gNpcs.map((n) =>
-      npcRow(BigInt(n.id), n.isShop ? { kind: 'shop', shopId: n.id } : DIALOGUE),
-    ),
-    chars: new Map(gNpcs.map((n) => [BigInt(n.id), tile(n.zoneId, n.tileX, n.tileY)])),
-    heals: gHeals.map((h) => healRow(h.locationId, h.zoneId, h.tileX, h.tileY)),
-  };
-}
-
-describe('nearestInteractable — Block E: lexicographic-minimum property (AC-4)', () => {
-  it('★ E1 BITES: the winner minimises (distance, kindRank, idWithinKind) and is always in range + same zone', () => {
-    // WRONG IMPL KILLED: ANY ordering bug the hand-written fixtures did not happen to hit —
-    // a `<` where `<=` belonged, a tiebreak that only fires when `best !== undefined`, a
-    // heal branch evaluated before the distance filter, an id compare that leaks across kinds.
-    // Also kills a resolver that returns an out-of-range or other-zone candidate at all.
-    fc.assert(
-      fc.property(ownArb, npcArb, healArb, (own, gNpcs, gHeals) => {
-        const { npcs, chars, heals } = buildInputs(gNpcs, gHeals);
-        const inNpcs = gNpcs.filter((n) => n.zoneId === own.zoneId && manhattan(n, own) <= 2);
-        const inHeals = gHeals.filter((h) => h.zoneId === own.zoneId && manhattan(h, own) <= 2);
-        const r = nearestInteractable(own, npcs, chars, heals, TEST_RANGE);
-
-        if (inNpcs.length === 0 && inHeals.length === 0) {
-          expect(r).toBeUndefined();
-          return;
-        }
-        expect(r).toBeDefined();
-
-        // Identify the winner's source row (heal descriptor ⇒ heal row, by construction).
-        let wDist: number;
-        let wRank: 0 | 1;
-        let wNpcId: bigint | null = null;
-        let wHealId: number | null = null;
-        if (r?.kind === 'heal') {
-          const src = inHeals.find((h) => h.locationId === r.locationId);
-          expect(
-            src,
-            'the returned heal target must be an in-range same-zone heal row',
-          ).toBeDefined();
-          wDist = manhattan(src as GenHeal, own);
-          wRank = 1;
-          wHealId = r.locationId;
-        } else {
-          const eid = (r as { npcEntityId: bigint }).npcEntityId;
-          const src = inNpcs.find((n) => BigInt(n.id) === eid);
-          expect(src, 'the returned NPC target must be an in-range same-zone NPC').toBeDefined();
-          wDist = manhattan(src as GenNpc, own);
-          wRank = 0;
-          wNpcId = eid;
-        }
-
-        // Minimality: no in-range candidate has a strictly smaller key.
-        for (const n of inNpcs) {
-          const d = manhattan(n, own);
-          const better =
-            d < wDist ||
-            (d === wDist && (0 < wRank || (wRank === 0 && BigInt(n.id) < (wNpcId as bigint))));
-          expect(
-            better,
-            `NPC ${n.id} at distance ${d} has a smaller key than the returned winner`,
-          ).toBe(false);
-        }
-        for (const h of inHeals) {
-          const d = manhattan(h, own);
-          const better =
-            d < wDist ||
-            (d === wDist && (1 < wRank || (wRank === 1 && h.locationId < (wHealId as number))));
-          expect(
-            better,
-            `heal ${h.locationId} at distance ${d} has a smaller key than the returned winner`,
-          ).toBe(false);
-        }
-      }),
-    );
-  });
-
-  it('★ E2 BITES: the result is INVARIANT under input permutation (pure determinism)', () => {
-    // WRONG IMPL KILLED: any "first wins" / "last wins" tiebreak. The store hands these arrays
-    // over in Map-insertion order, which differs between a cold subscription and a reconnect —
-    // an order-sensitive resolver makes the prompt flicker and KeyT target a different NPC
-    // after every reconnect.
-    fc.assert(
-      fc.property(ownArb, npcArb, healArb, (own, gNpcs, gHeals) => {
-        const a = buildInputs(gNpcs, gHeals);
-        const b = buildInputs([...gNpcs].reverse(), [...gHeals].reverse());
-        const ra = nearestInteractable(own, a.npcs, a.chars, a.heals, TEST_RANGE);
-        const rb = nearestInteractable(own, b.npcs, b.chars, b.heals, TEST_RANGE);
-        expect(rb).toEqual(ra);
-      }),
-    );
-  });
-
-  it('E3 BITES: TOTAL — never throws for any generated candidate set (frame-loop safety)', () => {
-    // WRONG IMPL KILLED: a non-null assertion on the character-row join, or an unguarded
-    // `interaction.shopId` read. The resolver runs EVERY FRAME; one throw kills the render
-    // loop for the rest of the session.
-    fc.assert(
-      fc.property(ownArb, npcArb, healArb, (own, gNpcs, gHeals) => {
-        const { npcs, chars, heals } = buildInputs(gNpcs, gHeals);
-        expect(() => {
-          nearestInteractable(own, npcs, chars, heals, TEST_RANGE);
-        }).not.toThrow();
-      }),
-    );
-  });
+const healNpc = (id: bigint, locationId: number, x = 1, y = 1): InteractCandidate => ({
+  key: `npc:${id}`,
+  kind: 'npc',
+  name: `npc_${id}`,
+  actions: [{ kind: 'heal', locationId }],
+  anchorWorldX: (x + 0.5) * 32,
+  anchorWorldY: y * 32,
 });
-
-// ===========================================================================
-// BLOCK F — interactPrompt view model (AC-6 / AC-7 / AC-12).
-// ===========================================================================
-
-const DIALOGUE_TARGET = {
-  kind: 'dialogue',
-  npcEntityId: 7n,
-  anchorWorldX: 176,
-  anchorWorldY: 160,
-} as const;
-const SHOP_TARGET = {
-  kind: 'shop',
-  npcEntityId: 8n,
-  shopId: 1,
-  anchorWorldX: 272,
-  anchorWorldY: 32,
-} as const;
-const HEAL_TARGET = {
+const healTile = (locationId: number, x = 1, y = 1): InteractCandidate => ({
+  key: `heal:${locationId}`,
   kind: 'heal',
-  locationId: 1,
-  anchorWorldX: 16,
-  anchorWorldY: 0,
-} as const;
+  name: '',
+  actions: [{ kind: 'heal', locationId }],
+  anchorWorldX: (x + 0.5) * 32,
+  anchorWorldY: y * 32,
+});
+const player = (id: bigint, x = 1, y = 1): InteractCandidate => ({
+  key: `player:${id}`,
+  kind: 'player',
+  name: `P${id}`,
+  actions: [],
+  anchorWorldX: (x + 0.5) * 32,
+  anchorWorldY: y * 32,
+});
 
-describe('interactPrompt — Block F: prompt view model', () => {
-  it('F1 BITES: no target → null (nothing to render)', () => {
-    // WRONG IMPL KILLED: an impl that returns `{visible:false, ...}` — the VM type makes
-    // `visible` the literal `true`, so "hidden" is represented by null and ONLY by null; a
-    // {visible:false} arm would leave the shell deciding, which is the bug this shape prevents.
-    expect(interactPrompt(undefined, false)).toBeNull();
-  });
+/** Three marshalled entities. Entity 2 is FAR from the origin and in another zone: a resolver that
+ *  re-applies a TS faced-tile / range / zone rule would refuse it when the stub names it. */
+const THREE: InteractInput = {
+  wire: [
+    { kind: 'npc', x: 5, y: 3, zone: 0, id: '7' },
+    { kind: 'heal', x: 5, y: 5, zone: 0, id: '3' },
+    { kind: 'npc', x: 40, y: 40, zone: 9, id: '8' },
+  ],
+  candidates: [talkNpc(7n, 5, 3), healTile(3, 5, 5), talkNpc(8n, 40, 40)],
+};
+const ORIGIN: InteractOrigin = { x: 5, y: 4, facing: 'West', zone: 2 };
 
-  it('★ F2 BITES (AC-6): a visible overlay suppresses the prompt for EVERY kind', () => {
-    // AC-6: while any of the 14 mutual-exclusion overlays is up, the world prompt must not
-    // render over it.
-    // WRONG IMPL KILLED: an impl that ignores the `anyOverlayVisible` argument entirely (the
-    // "press T" label would float over an open shop/battle/dialogue overlay), or that only
-    // suppresses one kind.
-    expect(interactPrompt(DIALOGUE_TARGET, true)).toBeNull();
-    expect(interactPrompt(SHOP_TARGET, true)).toBeNull();
-    expect(interactPrompt(HEAL_TARGET, true)).toBeNull();
-  });
+describe('resolveCandidates (ctl-10a, CTL10A.1)', () => {
+  it('CTL10A-1-RESOLVE-TOTAL: an absent export, a throw, a non-array or any bad index gives [] (a throw is reported once); otherwise the candidates the wasm indices name, in the wasm order, from exactly one call with the exact arguments', () => {
+    // WRONG IMPL KILLED: a resolver that throws into the render loop (the chip is recomputed per
+    // batch / move); one that swallows a real wasm Err silently (no onError); one that keeps the
+    // valid indices of a partly bad answer (a half-trusted answer can name the wrong entity); one
+    // that reads `candidates[i]` for i = -1 / 0.5 / '0' / 9 (undefined, or a coerced index);
+    // one that re-sorts or de-duplicates the wasm order; one that re-applies a TS rule and drops
+    // the far entity the wasm named; one that calls the export twice per resolve; one that passes
+    // the facing NAME, the wrong code or a copied entity list.
+    const calls: unknown[][] = [];
+    const answering =
+      (answer: unknown): CandidatesFn =>
+      (...args) => {
+        calls.push(args);
+        return answer;
+      };
 
-  it('F3 BITES: no target AND an overlay visible → still null (both guards compose)', () => {
-    // WRONG IMPL KILLED: an impl whose suppression branch throws / returns undefined instead
-    // of null when both conditions hold (the shell compares against null).
-    expect(interactPrompt(undefined, true)).toBeNull();
-  });
+    // Absent export (an untouched wasm mock without the export).
+    expect(resolveCandidates(undefined, ORIGIN, THREE)).toEqual([]);
 
-  it('★ F4 BITES: actionWord maps dialogue→Talk, shop→Shop, heal→Heal; keyGlyph is always "T"', () => {
-    // AC-12: the word names the DESTINATION (a shopkeeper prompts "Shop", not "Talk"), which
-    // is what makes greet-then-shop legible to the player.
-    // WRONG IMPL KILLED (1): an impl that always says 'Talk' (the shopkeeper affordance would
-    //   be indistinguishable from a villager).
-    // WRONG IMPL KILLED (2): an impl that says 'Talk' for a shop NPC because the KeyT dispatch
-    //   arm for shop is literally the talk reducer — the WORD is about the destination, the
-    //   DISPATCH is about the reducer; they are deliberately different.
-    // WRONG IMPL KILLED (3): a keyGlyph derived from the kind (e.g. 'G' for shop) — KeyG is
-    //   deleted in this slice; there is exactly one interact key.
-    expect(interactPrompt(DIALOGUE_TARGET, false)).toEqual({
-      visible: true,
-      actionWord: 'Talk',
-      keyGlyph: 'T',
-      anchorWorldX: 176,
-      anchorWorldY: 160,
-    });
-    expect(interactPrompt(SHOP_TARGET, false)).toEqual({
-      visible: true,
-      actionWord: 'Shop',
-      keyGlyph: 'T',
-      anchorWorldX: 272,
-      anchorWorldY: 32,
-    });
-    expect(interactPrompt(HEAL_TARGET, false)).toEqual({
-      visible: true,
-      actionWord: 'Heal',
-      keyGlyph: 'T',
-      anchorWorldX: 16,
-      anchorWorldY: 0,
-    });
-  });
+    // A throw: [] and exactly one report, with the very error.
+    const boom = new Error('wasm Err: invalid interact id');
+    const onError = vi.fn();
+    const thrower: CandidatesFn = () => {
+      throw boom;
+    };
+    expect(resolveCandidates(thrower, ORIGIN, THREE, onError)).toEqual([]);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(boom);
+    // ... and without an onError it still never throws.
+    expect(() => resolveCandidates(thrower, ORIGIN, THREE)).not.toThrow();
+    expect(resolveCandidates(thrower, ORIGIN, THREE)).toEqual([]);
 
-  it('F5 BITES: the anchor is passed through UNTRANSFORMED (no second camera transform here)', () => {
-    // The VM stays in SOURCE px; the ONLY world→screen transform is
-    // WorldRenderer.screenFor(), which reuses the exact offset the stage applied this frame.
-    // WRONG IMPL KILLED: a prompt VM that pre-multiplies by stageScale or adds a camera
-    // offset — the DOM label would swim against the canvas during a slide (double transform).
-    const p = interactPrompt({ ...HEAL_TARGET, anchorWorldX: 1234.5, anchorWorldY: 678 }, false);
-    expect(p?.anchorWorldX).toBe(1234.5);
-    expect(p?.anchorWorldY).toBe(678);
-  });
+    // Non-array answers.
+    for (const bad of [undefined, null, 0, '0', { length: 1, 0: 0 }, new Set([0])]) {
+      expect(resolveCandidates(answering(bad), ORIGIN, THREE), `non-array ${String(bad)}`).toEqual(
+        [],
+      );
+    }
+    // Any bad index voids the whole answer.
+    for (const bad of [[3], [-1], [0.5], ['0'], [0, 9], [1, Number.NaN], [2, -0.5]]) {
+      expect(
+        resolveCandidates(answering(bad), ORIGIN, THREE),
+        `bad indices ${JSON.stringify(bad)}`,
+      ).toEqual([]);
+    }
 
-  it('F6 BITES: the VM exposes ONLY the 5 contract fields (no smuggled entity id / callback)', () => {
-    // WRONG IMPL KILLED: a VM that leaks npcEntityId/shopId into the prompt — the DOM shell
-    // would then be able to dispatch from the label, moving decision logic out of the tested
-    // core and into the coverage-excluded shell.
-    const p = interactPrompt(SHOP_TARGET, false);
-    expect(Object.keys(p as object).sort()).toEqual([
-      'actionWord',
-      'anchorWorldX',
-      'anchorWorldY',
-      'keyGlyph',
-      'visible',
-    ]);
-    for (const v of Object.values(p as object)) {
-      expect(typeof v).not.toBe('function');
+    // A good answer: the named candidates, by identity, in the wasm order — the FAR entity 2 first.
+    const good = vi.fn(answering([2, 0]));
+    const out = resolveCandidates(good, ORIGIN, THREE, onError);
+    expect(out).toHaveLength(2);
+    expect(out[0], 'wasm index 2 first: the far, other-zone entity the stub named').toBe(
+      THREE.candidates[2],
+    );
+    expect(out[1]).toBe(THREE.candidates[0]);
+    expect(good).toHaveBeenCalledTimes(1);
+    const args = good.mock.calls[0] as unknown[];
+    expect(args.slice(0, 4), '(x, y, FACING_CODE[West] = 3, zone)').toEqual([5, 4, 3, 2]);
+    expect(args[4], 'the marshalled wire list itself').toBe(THREE.wire);
+    expect(args).toHaveLength(5);
+    expect(onError, 'a success reports nothing').toHaveBeenCalledTimes(1);
+
+    // An empty answer is a real "nothing here".
+    expect(resolveCandidates(answering([]), ORIGIN, THREE)).toEqual([]);
+    // Each facing reaches the export as its code.
+    for (const [facing, code] of [
+      ['North', 0],
+      ['South', 1],
+      ['East', 2],
+      ['West', 3],
+    ] as const) {
+      calls.length = 0;
+      resolveCandidates(answering([1]), { ...ORIGIN, facing }, THREE);
+      expect(calls[0]?.[2], `${facing} crosses as ${code}`).toBe(code);
     }
   });
 });
 
-// ===========================================================================
-// BLOCK G — the retirement of nearestTalkableNpcId (plan I6).
-//
-// Source scan (NOT an import): importing dialogueModel.ts and asserting a symbol is
-// absent would need a namespace import that survives the deletion; a text scan states
-// the invariant directly and cannot be satisfied by an accidental re-export.
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// CTL10A.3 — the world chip view model.
+// ---------------------------------------------------------------------------
 
-describe('interactModel supersedes dialogueModel.nearestTalkableNpcId (plan I6)', () => {
-  it('★ G1 BITES: dialogueModel.ts no longer declares nearestTalkableNpcId or CLIENT_TALK_RANGE', () => {
-    // WRONG IMPL KILLED: an impl that ADDS interactModel.ts but leaves the old resolver in
-    // place — two resolvers with different rules would drift (uxd3 is documented to consume
-    // `nearestInteractable(...)?.kind === 'dialogue'`, and the ADR records that the symbol it
-    // cites no longer exists). Duplication here is the ADR-0054 silent-skip defect class.
-    const modelPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'dialogueModel.ts');
-    const src = readFileSync(modelPath, 'utf8');
+describe('interactChip (ctl-10a, CTL10A.3)', () => {
+  it('CTL10A-3-CHIP-VM: nothing actionable gives no chip; exactly one actionable entry gives a single chip with that action; two or more entries give a Choose chip anchored at the FIRST actionable candidate', () => {
+    // WRONG IMPL KILLED: a chip that counts every candidate (a lone player would show a chip A
+    // refuses; an npc + player would show "Choose…" while A talks directly); one that counts
+    // candidates instead of action ENTRIES (one candidate with two actions is a choice); one
+    // anchored at candidates[0] (a player standing first would carry the Choose chip); a single
+    // chip that names some other action than the one A runs; and a non-null chip for [].
+    expect(interactChip([]), 'no candidate').toBeNull();
+    expect(interactChip([player(13n)]), 'a lone player (no action until ctl-10b)').toBeNull();
+    expect(interactChip([player(13n), player(14n)]), 'two players').toBeNull();
+
+    const npc = talkNpc(7n, 2, 3);
+    const one = interactChip([npc]);
+    expect(one).toEqual({
+      kind: 'single',
+      candidate: npc,
+      action: { kind: 'talk', npcEntityId: 7n },
+    });
+    expect((one as { candidate: unknown }).candidate).toBe(npc);
+    expect((one as { action: unknown }).action).toBe(npc.actions[0]);
+
+    for (const cands of [
+      [npc, player(13n)],
+      [player(13n), npc],
+    ]) {
+      const chip = interactChip(cands);
+      expect(chip, `${cands.map((c) => c.key).join(',')}: the npc alone`).toEqual({
+        kind: 'single',
+        candidate: npc,
+        action: npc.actions[0],
+      });
+    }
+
+    const healer = healNpc(9n, 5, 4, 4);
+    expect(interactChip([healer]), 'a heal-variant npc: single Heal at its location').toEqual({
+      kind: 'single',
+      candidate: healer,
+      action: { kind: 'heal', locationId: 5 },
+    });
+
+    const pad = healTile(3, 6, 6);
+    expect(interactChip([npc, pad]), 'npc + heal: Choose at the npc').toEqual({
+      kind: 'choose',
+      anchorWorldX: 80, // (2 + 0.5) * 32
+      anchorWorldY: 96, // 3 * 32
+    });
     expect(
-      src.includes('nearestTalkableNpcId'),
-      'dialogueModel.ts must NOT declare nearestTalkableNpcId — nearestInteractable replaces it (plan I6)',
-    ).toBe(false);
-    expect(
-      src.includes('CLIENT_TALK_RANGE'),
-      'dialogueModel.ts must NOT declare CLIENT_TALK_RANGE — the injected talk_range() replaces it (plan I6)',
-    ).toBe(false);
+      interactChip([player(13n, 9, 9), pad, npc]),
+      'Choose at the first ACTIONABLE one',
+    ).toEqual({
+      kind: 'choose',
+      anchorWorldX: 208, // (6 + 0.5) * 32
+      anchorWorldY: 192, // 6 * 32
+    });
+
+    // One candidate with two actions (the ctl-10b shape) is a choice, not a single.
+    const both: InteractCandidate = {
+      ...talkNpc(8n, 1, 2),
+      actions: [
+        { kind: 'talk', npcEntityId: 8n },
+        { kind: 'shop', npcEntityId: 8n },
+      ],
+    };
+    expect(interactChip([both])).toEqual({ kind: 'choose', anchorWorldX: 48, anchorWorldY: 64 });
   });
 });

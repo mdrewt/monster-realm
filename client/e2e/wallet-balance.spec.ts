@@ -8,6 +8,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { type Dir, interactChip, interactWithNpc, waitForNpcInFront } from './controls';
 
 // owner-scoped wallet readout e2e.
 //
@@ -89,21 +90,32 @@ import {
 //   layout; (4,3)/(5,3) are WALLS so x=6 is the only clean northward lane; warp at
 //   zone 0 (5,5) <-> zone 1 (5,5). Verified tile-by-tile, all grass-free (an encounter roll
 //   happens only on STEPPING ONTO a '~' tile, so a grass-free route cannot start a battle):
-//     A: zone 0 spawn (1,1) → elder pocket (5,4) = E,E,E,E,E,S,S,S,W
-//     A: (5,4) → warp = a single S onto (5,5). Characters and NPCs do NOT block each other
-//        (game-core/src/world.rs:129 is tile-kind only), so a wandering elder_oak standing
-//        on the warp cannot stall this step.
+//     A: zone 0 spawn (1,1) → the elder TALK POST (6,3) = E,E,E,E,E,S,S (facing South)
+//     A: (6,3) → warp = S,S,W onto (5,5). Characters and NPCs do NOT block each other
+//        (game-core/src/world.rs is_walkable is tile-kind only), so a wandering elder_oak
+//        standing on (6,4), (6,5) or the warp cannot stall these steps.
 //     B: zone 0 spawn (1,1) → warp = E,E,E,E,E,S,S,S,S,W
-//     both: zone 1 (5,5) → shopkeeper boundary tile (6,1) = N,E,N,N,N (Manhattan 2 from
-//        (8,1) — the inclusive TALK_RANGE boundary).
+//     both: zone 1 (5,5) → the SHOP POST (7,1) = N,E,N,N,N,E (the final E step from (6,1)
+//        leaves the character on (7,1) FACING the shopkeeper's tile (8,1)).
 //
-// CROSS-ZONE NOISE IN THE IN-RANGE POLL: `__game().characters` carries NO zoneId and the
+// ctl-10a: T retired — A acts on what the character FACES (the tile in front, else the own
+//   tile; game-core interact_candidates); range no longer offers a target. So:
+//   - elder_oak: A is pressed from the post (6,3) facing South, only while he stands on (6,4)
+//     (controls.ts interactWithNpc). (6,4) is in his wander disc (npc_decide: walkable AND
+//     Manhattan <= 2 of (5,5) — (5,5),(5,4),(6,4),(4,4),(4,5),(6,5),(3,5),(7,5)); the post
+//     (6,3) is Manhattan 3 from home, so he can never share the own tile. Every tile he can
+//     step to from (6,4) — (5,4), (6,5) — is still within TALK_RANGE 2 of (6,3), so the
+//     server's talk / advance range re-check holds for a press made while he is in front.
+//   - tideglass_shopkeeper: pinned on (8,1); its walkable 4-neighbours are (7,1) only ((8,2)
+//     is grass, (9,1) and (8,0) walls), so the post is (7,1) facing East. One press suffices.
+//
+// CROSS-ZONE NOISE IN THE IN-FRONT POLL: `__game().characters` carries NO zoneId and the
 //   `character` subscription is globally unfiltered, so a player
-//   standing in zone 1 can still hold zone-0 character rows. Checked: from the zone-1
-//   tile (6,1), NO tile in elder_oak's zone-0 wander disc (Manhattan <= 2 of (5,5)) is
-//   within Manhattan 2 — the nearest, (5,3), is 3 away. From the zone-0 pocket (5,4) the
-//   zone-1 shopkeeper at (8,1) is 6 away. So the poll predicate below cannot be fooled at
-//   either stop, and `interactAtNearest` re-filters by zone anyway.
+//   standing in zone 1 can still hold zone-0 character rows. Checked: the zone-1 faced tile
+//   (8,1) is Manhattan 7 from elder_oak's home (5,5), far outside his radius-2 disc; the
+//   zone-0 faced tile (6,4) is never the zone-1 shopkeeper's pinned (8,1). So the poll
+//   predicate cannot be fooled at either post, and the client's candidate rule re-filters
+//   by zone anyway.
 //
 // THE RENDER PATH: client/src/ui/shopView.ts:97-100 is the SOLE writer of the balance node —
 //   `textContent = known ? vm.balance.label : ''`, `hidden = !known`,
@@ -113,7 +125,8 @@ import {
 //   data-balance-state attribute — so `data-balance-state="unknown"` POSITIVELY PROVES
 //   render() ran. The label format is `Gold: ${amount}`.
 //
-// SHOP-OPEN PATH (precedent shop-npc.spec.ts:412-435): walk to (6,1) → KeyT →
+// SHOP-OPEN PATH (precedent shop-npc.spec.ts, the AC-1/2 and AC-2 tests): walk to (7,1)
+//   facing East → A (ctl-10a: T retired) →
 //   #dialogue-node-text = "Hello, customer!" → click [data-shop-id] → #shop-overlay visible,
 //   #dialogue-overlay hidden. This is a DEFERRED open through a dismissDialogue round trip
 //   (main.ts:1367-1389, the UXD2-SHOPOPEN region).
@@ -191,13 +204,15 @@ import {
 //  3. The `Gold:`-absence check uses **textContent**, never innerText: #shop-balance is
 //     `hidden`, and innerText would omit it, making the exclusion vacuous.
 //  4. No fixed sleeps — every wait polls a DOM or `__game()` predicate with a bounded timeout.
-//  5. Physical key codes only: page.keyboard.press('KeyT'), never 't'.
+//  5. Physical key codes only: page.keyboard.press('KeyQ'), never 'q'; virtual buttons (A)
+//     go through controls.ts pressButton (ctl-10a: T retired).
 //  6. Exact-presence discipline: two contexts ⇒ presenceCount === 2 on BOTH pages in
 //     beforeAll, and browser.close() in afterAll, or the NEXT spec file's presence wait
 //     hangs (playwright.config.ts `workers: 1`).
-//  7. dialogue.spec.ts / shop-npc.spec.ts are NOT imported from and NOT modified (frozen
-//     regression nets). Their snap/ready/stepOne/walk/talkUntilOpen helpers are
-//     re-implemented here verbatim-in-spirit — the shop-npc.spec.ts:44-46 precedent.
+//  7. dialogue.spec.ts / shop-npc.spec.ts are NOT imported from (frozen regression nets).
+//     Their snap/ready/stepOne/walk helpers are re-implemented here verbatim-in-spirit —
+//     the shop-npc.spec.ts precedent. The talk itself goes through the shared
+//     controls.ts interactWithNpc (ctl-10a: the one helper every A-talk spec uses).
 //
 // ---------------------------------------------------------------------------------------
 // FLAKE BUDGET
@@ -324,49 +339,43 @@ async function walk(p: Page, dirs: readonly string[]): Promise<void> {
   }
 }
 
-/** Server TALK_RANGE — Manhattan. Mirrored here for the poll predicate. */
-const TALK_RANGE = 2;
-/** KeyT retries. Each attempt first POLLS (bounded, no fixed sleep) until some
- *  non-player character is within TALK_RANGE of the own authoritative tile, then presses
- *  KeyT once. A press can still lose the race against a wandering elder_oak (up to 1 tile
- *  per 200 ms tick between the poll and the server-side range check), so retries are
- *  bounded. Against the zone-1 shopkeeper (wander_radius 0, pinned) attempt 1 always wins.
- *  SIX, not dialogue.spec.ts's 20: from the pocket (5,4), 6 of elder_oak's ~8 reachable
- *  wander tiles are in range, so per-press success is high and the tail is short — while
- *  20 attempts would cost 20 x (20 s poll + 2 s wait) = ~440 s, i.e. MORE than the whole
- *  300 s phase budget, so those attempts could never actually be spent. 6 x 22 s = 132 s
- *  is a bound the enclosing budget can honour. */
+/** A-press retries against the wandering elder_oak (ctl-10a: T retired). Each attempt first
+ *  POLLS (bounded, no fixed sleep) until he stands on the faced tile (6,4), then presses A
+ *  once. A press can still lose the race (he moves on ~4 in 5 of the 200 ms ticks, between
+ *  the poll and the keydown), so retries are bounded. SIX, not dialogue.spec.ts's 20:
+ *  20 attempts would cost 20 x (20 s poll + 3 s wait) = ~460 s, MORE than the whole 300 s
+ *  phase budget, so those attempts could never actually be spent. 6 x 23 s = 138 s is a
+ *  bound the enclosing budget can honour. */
 const MAX_TALK_ATTEMPTS = 6;
 
-async function talkUntilOpen(p: Page, playerEntityIds: readonly string[]): Promise<void> {
-  const overlay = p.locator('#dialogue-overlay');
-  for (let attempt = 0; attempt < MAX_TALK_ATTEMPTS; attempt++) {
-    await p.waitForFunction(
-      (args: { ownIds: readonly string[]; range: number }) => {
-        const g = (window as unknown as GameWindow).__game();
-        const own = g.ownAuthTile;
-        if (own === null) return false;
-        // NPC = any character row that is neither player's own entity (exact-presence
-        // discipline: this suite owns the whole 2-player world under workers: 1).
-        return g.characters
-          .filter((c) => !args.ownIds.includes(c.entityId))
-          .some((c) => Math.abs(c.tileX - own.x) + Math.abs(c.tileY - own.y) <= args.range);
-      },
-      { ownIds: playerEntityIds, range: TALK_RANGE },
-      { timeout: 20_000 },
-    );
-    await p.keyboard.press('KeyT'); // physical-code form
-    const opened = await overlay
-      .waitFor({ state: 'visible', timeout: 2_000 })
-      .then(() => true)
-      .catch(() => false);
-    if (opened) return;
-    // Lost the race (the NPC stepped out of range before the server processed `talk`, or
-    // the reducer rejected silently) — the loop re-polls and re-presses.
-  }
-  throw new Error(
-    `talkUntilOpen: #dialogue-overlay did not open after ${MAX_TALK_ATTEMPTS} KeyT attempts`,
-  );
+/** ctl-10a: T retired — A, facing elder_oak from the post (6,3), until the dialogue opens
+ *  (controls.ts interactWithNpc asserts the post and the facing before every press). */
+async function talkToElder(p: Page, playerEntityIds: readonly string[]): Promise<void> {
+  await interactWithNpc(p, {
+    stand: ELDER_POST,
+    facing: ELDER_FACING,
+    opened: p.locator('#dialogue-overlay'),
+    ignoreEntityIds: playerEntityIds,
+    chip: interactChip('Talk', 'elder_oak'),
+    maxAttempts: MAX_TALK_ATTEMPTS,
+    openWaitMs: 3_000,
+    label: 'wallet-balance talkToElder',
+  });
+}
+
+/** ctl-10a: T retired — A, facing the pinned shopkeeper from (7,1). ONE press: wander_radius
+ *  0 makes it deterministic (shop-npc.spec.ts's no-retry rule). 15 s: one talk round trip. */
+async function talkToShopkeeper(p: Page, playerEntityIds: readonly string[]): Promise<void> {
+  await interactWithNpc(p, {
+    stand: SHOP_TILE,
+    facing: SHOP_FACING,
+    opened: p.locator('#dialogue-overlay'),
+    ignoreEntityIds: playerEntityIds,
+    chip: interactChip('Shop', SHOPKEEPER_NPC_ID),
+    maxAttempts: 1,
+    openWaitMs: 15_000,
+    label: 'wallet-balance talkToShopkeeper',
+  });
 }
 
 // ---------------------------------------------------------------------------------------
@@ -723,27 +732,28 @@ async function questLogShows(
   expect(
     closed,
     'Escape must close #quest-log-overlay (inline style.display === "none", per ' +
-      'questLogView.ts:35) — leaving it open would suppress the next KeyT/KeyQ, which are ' +
-      'guarded on no other overlay being visible',
+      'questLogView.ts:35) — leaving it open would suppress the next A talk / KeyQ, which ' +
+      'act only at a bare world base',
   ).toBe(true);
   return held;
 }
 
-/** Grass-free, warp-free: A's zone 0 spawn (1,1) → elder pocket (5,4). */
+/** Grass-free, warp-free: A's zone 0 spawn (1,1) → the elder talk post (6,3).
+ *  ctl-10a: T retired — the old pocket (5,4) talked by range; the post ends on a South step,
+ *  which faces the elder's wander tile (6,4) (see WORLD FACTS). */
 const A_TO_ELDER: readonly string[] = [
   'East',
   'East',
   'East',
   'East',
   'East', // (6,1)
-  'South',
-  'South',
-  'South', // (6,4)
-  'West', // (5,4) — Manhattan 1 from elder_oak's home (5,5); never steps on the warp
+  'South', // (6,2)
+  'South', // (6,3) — facing South, toward (6,4); never steps on the warp
 ];
-const ELDER_POCKET: Tile = { x: 5, y: 4 };
-/** A: (5,4) → (5,5). That single step IS the warp to zone 1 (5,5). */
-const A_TO_WARP: readonly string[] = ['South'];
+const ELDER_POST: Tile = { x: 6, y: 3 };
+const ELDER_FACING: Dir = 'South';
+/** A: (6,3) → (6,4) → (6,5) → (5,5). The final West step IS the warp to zone 1 (5,5). */
+const A_TO_WARP: readonly string[] = ['South', 'South', 'West'];
 /** B: zone 0 spawn (1,1) → the warp tile (5,5). B presses NO key in zone 0 — it must never
  *  talk to elder_oak (a second quest_001 completion would give B 50 gold and destroy the
  *  whole 11r-e-8 premise). */
@@ -759,10 +769,14 @@ const B_TO_WARP: readonly string[] = [
   'South', // (6,5)
   'West', // (5,5) — WARP → zone 1 (5,5)
 ];
-/** Zone 1: the warp landing (5,5) → the shopkeeper boundary tile (6,1). Do NOT "simplify"
- *  this to N,N,N,N — (4,3)/(5,3) are WALLS. */
-const ZONE1_TO_SHOPKEEPER: readonly string[] = ['North', 'East', 'North', 'North', 'North'];
-const SHOP_TILE: Tile = { x: 6, y: 1 };
+/** Zone 1: the warp landing (5,5) → the shop post (7,1). Do NOT "simplify" this to
+ *  N,N,N,N — (4,3)/(5,3) are WALLS. ctl-10a: T retired — the old stop (6,1) (Manhattan 2) is
+ *  no longer interactive; the final East step lands on (7,1) FACING the shopkeeper at (8,1). */
+const ZONE1_TO_SHOPKEEPER: readonly string[] = ['North', 'East', 'North', 'North', 'North', 'East'];
+const SHOP_TILE: Tile = { x: 7, y: 1 };
+const SHOP_FACING: Dir = 'East';
+/** The seeded npc_id, which the interact chip names (npcs/000-core.ron). */
+const SHOPKEEPER_NPC_ID = 'tideglass_shopkeeper';
 
 const QUEST_ID = 'quest_001';
 const QUEST_CHOICE = 'I seek a quest.';
@@ -777,7 +791,8 @@ const EXPECTED_BALANCE_TEXT = 'Gold: 50';
  *  ARITHMETIC, stated honestly: an attempt normally costs ~8 s (one talk round trip, one
  *  dismiss, one quest-log read), so the expected phase is ~10-20 s inside a 300 s budget.
  *  Its THEORETICAL worst case — every internal bound below also running to its limit —
- *  is ~207 s (132 s talkUntilOpen + 10 npc-name + 5 dispatch + 20 hidden + 40 quest log), so
+ *  is ~233 s (138 s talkToElder + 10 npc-name + 20 elder-in-front + 5 dispatch + 20 hidden +
+ *  40 quest log; ctl-10a added the elder-in-front wait), so
  *  a phase in which several attempts fully degrade trips the 300 s TEST timeout rather
  *  than this loop bound. Both are red and neither can false-pass; this bound exists to
  *  give the FAST failure a named diagnosis, not to cap the phase. */
@@ -846,9 +861,9 @@ test.describe
     });
 
     // -------------------------------------------------------------------------
-    // Setup: A walks the grass-free pocket path to elder_oak.
+    // Setup: A walks the grass-free path to the elder talk post (ctl-10a: T retired).
     // -------------------------------------------------------------------------
-    test('setup: A walks (1,1) → (5,4), grass-free and battle-free', async () => {
+    test('setup: A walks (1,1) → (6,3), grass-free and battle-free', async () => {
       test.setTimeout(120_000);
       const start = await snap(a);
       expect(start.ownAuthTile, 'A spawns with an authoritative tile').not.toBeNull();
@@ -873,8 +888,8 @@ test.describe
 
       await walk(a, A_TO_ELDER);
       const done = await snap(a);
-      expect(done.ownAuthTile).toEqual(ELDER_POCKET);
-      expect(done.ongoingBattle, 'the pocket path is grass-free').toBeNull();
+      expect(done.ownAuthTile).toEqual(ELDER_POST);
+      expect(done.ongoingBattle, 'the post path is grass-free').toBeNull();
     });
 
     // -------------------------------------------------------------------------
@@ -926,10 +941,22 @@ test.describe
         for (let attempt = 0; attempt < MAX_QUEST_ATTEMPTS && !started; attempt++) {
           const statusFrom = statusLines.length;
           if (!(await overlay.isVisible())) {
-            await talkUntilOpen(a, playerEntityIds);
+            await talkToElder(a, playerEntityIds);
           }
           await expect(a.locator('#dialogue-npc-name')).toHaveText('elder_oak', {
             timeout: 10_000,
+          });
+          // ctl-10a: the post (6,3) has only 3 of the elder's 8 wander tiles within
+          // TALK_RANGE (the old pocket had 6), so the advance is sent while he stands on the
+          // faced tile (6,4): every tile he can reach next is within range, and the server's
+          // walked_away re-check holds. A timeout here is not a failure — the dispatch goes
+          // ahead anyway and the attempt is judged by its outcome, as before.
+          await waitForNpcInFront(a, {
+            stand: ELDER_POST,
+            facing: ELDER_FACING,
+            ignoreEntityIds: playerEntityIds,
+            worldBase: false,
+            timeoutMs: 20_000,
           });
           // DISPATCHED, deliberately not a pointer click — do not "restore" one here.
           // DialogueView.render() rebuilds every choice button on each store batch, and a
@@ -1012,7 +1039,7 @@ test.describe
 
       for (let attempt = 0; attempt < MAX_QUEST_ATTEMPTS && !completed; attempt++) {
         if (!(await overlay.isVisible())) {
-          await talkUntilOpen(a, playerEntityIds);
+          await talkToElder(a, playerEntityIds);
         }
         // Do NOT click the choice here: the completion happens in `talk` itself. (Clicking
         // would be harmless anyway — StartQuest is idempotent against done_quests — but
@@ -1072,13 +1099,16 @@ test.describe
       expect(warped.ownAuthTile, 'the warp lands on zone 1 (5,5)').toEqual({ x: 5, y: 5 });
       await walk(a, ZONE1_TO_SHOPKEEPER);
       const atShop = await snap(a);
-      expect(atShop.ownAuthTile, 'A stands on the TALK_RANGE boundary tile').toEqual(SHOP_TILE);
+      expect(atShop.ownAuthTile, 'A stands on the shop post beside the shopkeeper').toEqual(
+        SHOP_TILE,
+      );
       expect(atShop.map.zone_id, 'the return warp at zone 1 (5,5) must not have re-fired').toBe(1);
       expect(atShop.ongoingBattle, 'the zone-1 leg is grass-free').toBeNull();
 
-      // Greet-then-shop: KeyT sends `talk`; the [data-shop-id] action opens the shop
-      // through a dismissDialogue round trip (never two overlays at once).
-      await talkUntilOpen(a, playerEntityIds);
+      // Greet-then-shop: A (facing the shopkeeper; ctl-10a: T retired) sends `talk`; the
+      // [data-shop-id] action opens the shop through a dismissDialogue round trip (never two
+      // overlays at once).
+      await talkToShopkeeper(a, playerEntityIds);
       await expect(a.locator('#dialogue-node-text')).toHaveText(SHOPKEEPER_GREETING);
       const shopButton = a.locator('[data-shop-id]');
       await expect(shopButton).toBeVisible({ timeout: 10_000 });
@@ -1176,7 +1206,7 @@ test.describe
       expect(atShopB.ownAuthTile).toEqual(SHOP_TILE);
       expect(atShopB.ongoingBattle, "B's route is grass-free").toBeNull();
 
-      await talkUntilOpen(b, playerEntityIds);
+      await talkToShopkeeper(b, playerEntityIds); // ctl-10a: T retired — A, facing (8,1)
       await expect(b.locator('#dialogue-node-text')).toHaveText(SHOPKEEPER_GREETING);
       const shopButtonB = b.locator('[data-shop-id]');
       await expect(shopButtonB).toBeVisible({ timeout: 10_000 });

@@ -39,6 +39,31 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // button name "Select" is drawn beside it. Opens the help screen. One short word (at most 12
   // characters). index.html #chip-select (written by main.ts at boot)
   'chrome.chip.help': 'Help',
+  // @desc: The world interaction chip above what the character faces: {key} is the A button's
+  // keycap, {verb} a resolved interact.verb.* word, {name} the npc id or the healer name. main.ts
+  // (#interact-prompt)
+  'interact.chip': (p) => `[${p.key}] ${p.verb} — ${p.name}`,
+  // @desc: The world interaction chip when A would open a picker of several things to act on; {key}
+  // is the A button's keycap. main.ts (#interact-prompt)
+  'interact.choose': (p) => `[${p.key}] Choose…`,
+  // @desc: One row of the world picker / action sheet: {verb} a resolved interact.verb.* word,
+  // {name} the npc id or the healer name. main.ts (#interact-prompt rows)
+  'interact.entry': (p) => `${p.verb} — ${p.name}`,
+  // @desc: Verb in the world interaction chip and picker for talking to a character. One short
+  // word. main.ts
+  'interact.verb.talk': 'Talk',
+  // @desc: Verb in the world interaction chip and picker for opening a shopkeeper's shop. One short
+  // word. main.ts
+  'interact.verb.shop': 'Shop',
+  // @desc: Verb in the world interaction chip and picker for healing the party at a healer. One
+  // short word. main.ts
+  'interact.verb.heal': 'Heal',
+  // @desc: Name shown for a heal location in the world interaction chip and picker. One short word.
+  // main.ts
+  'interact.healer': 'Healer',
+  // @desc: Keycap label of the Enter key, drawn in square brackets in the world interaction chip.
+  // One short word. main.ts
+  'key.enter': 'Enter',
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
   // index.html:94 (literal removed from index.html; resolved in HelpView show())
   'chrome.help.title': 'Controls & Goals',
@@ -401,10 +426,6 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // the active party and which stay in storage. One short line.
   // boxView.ts:69 (resolved in show())
   'box.title': 'Party & Box',
-  // @desc: Button beside the party & box heading that fully heals every party monster. Two
-  // words, fits a narrow button.
-  // boxView.ts:79 (resolved in show())
-  'box.heal': 'Heal Party',
   // @desc: Explainer under the heading telling the player that only Party monsters battle and
   // that new recruits land in the Box; the quoted "To Party" must match the box.card.toParty
   // button label exactly. Two sentences, wraps freely up to 600px wide; carries a spaced em

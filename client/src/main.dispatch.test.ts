@@ -93,6 +93,10 @@ const H = vi.hoisted(() => {
     /** The screen-adapter table main.ts's host reads: a mutable copy of the real one, re-made by
      *  the module mock below on every fresh import, so a ctl-7c case can swap one frame's adapter. */
     adapters: {} as Record<string, unknown>,
+    /** ctl-10a: what the stubbed wasm `interact_candidates_coded` answers (indices into the
+     *  marshalled entity list). Reset to "no candidate" by every boot; a case that opens the heal
+     *  frame through A installs a rule naming its healer. */
+    interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
     /** A recording stand-in for a view class: it keeps its constructor's LAST argument (the handler
      *  object; the box, battle, raising and evolution views take a mount first) and exposes every
      *  method main.ts calls on a view. */
@@ -168,6 +172,8 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
     party_slot_none: () => 255,
     max_trade_monsters_per_side: () => 37,
     talk_range: () => 2,
+    // ctl-10a: named fixture change — the new interact export
+    interact_candidates_coded: (...args: unknown[]) => H.interact(...args),
     predict_move: () => ({}),
     predict_tick: () => ({}),
     set_active_zone: () => undefined,
@@ -332,6 +338,7 @@ async function boot(beforeImport?: () => void): Promise<void> {
   H.frozen = false;
   H.signIns = 0;
   H.gate = null;
+  H.interact = () => [];
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   recorded = [];
@@ -403,6 +410,24 @@ function server(t: number): void {
 /** Let queued microtasks and zero-delay timers run (a settled reducer promise). */
 const flush = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+/** ctl-10a: install a stubbed wasm interact rule that names exactly the NPCs with these entity ids
+ *  (the marshalled list carries `{ kind: 'npc', id: <decimal string> }` for an NPC), wherever they
+ *  stand. Installed right after boot, before any batch, so every candidate list main.ts memoises
+ *  in this case comes from it. */
+function useNpcRule(...entityIds: bigint[]): void {
+  const ids = entityIds.map((id) => id.toString());
+  H.interact = (...args: unknown[]) => {
+    const entities = args[4];
+    if (!Array.isArray(entities)) return [];
+    return ids.flatMap((id) => {
+      const at = entities.findIndex(
+        (e: { kind?: unknown; id?: unknown }) => e.kind === 'npc' && e.id === id,
+      );
+      return at === -1 ? [] : [at];
+    });
+  };
+}
+
 /** An own monster row; only the identity, id, slot and a nickname matter to the dispatch arms. */
 function monster(monsterId: bigint, partySlot: number): StoreMonsterPub {
   return {
@@ -454,8 +479,9 @@ interface Row {
 }
 
 /** The dispatch fixture: party 51 in slot 2 and 50 in slot 0, 52 boxed (255), so the free slot is 1
- *  and the party ids in store order are [51, 50]; two heal pads, of which the first one in the
- *  store (7) is the target. */
+ *  and the party ids in store order are [51, 50]; two heal pads, 7 loaded first (ctl-10a: no
+ *  command falls back to the first pad any more; the pads prove a location-less heal is refused
+ *  even when a pad is loaded). */
 function seedDispatchFixture(): void {
   opts.store.upsertMonster(monster(51n, 2));
   opts.store.upsertMonster(monster(50n, 0));
@@ -507,15 +533,12 @@ function dispatchRows(): readonly Row[] {
       kind: 'setPartySlot',
       atBattle: 'refuse',
     },
-    {
-      label: 'box healParty targets the first loaded pad',
-      view: 'BoxView',
-      handler: 'onHealParty',
-      args: [],
-      expected: [{ name: 'healParty', args: { locationId: 7 } }],
-      kind: 'healParty',
-      atBattle: 'refuse',
-    },
+    // ctl-10a (named intentional change, CTL10A.4): the 'box healParty targets the first loaded
+    // pad' row is removed with the Box Heal Party control and its `onHealParty` callback. Healing
+    // happens only at a bound healer: the heal frame's screen adapter issues `healParty {
+    // locationId }` (CTL7C-3-PRESENT), the absent arm reports healUnavailable (CTL7C-3-ABSENT,
+    // CTL10A-4-NO-BOX-HEAL-HANDLER), and the battle case below names healParty among the kinds
+    // with no view callback.
     {
       label: 'battle attack',
       view: 'BattleView',
@@ -867,11 +890,14 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     ).toBe(37);
   });
 
-  it('dispatch skips: a full party sends nothing for the box slot and says why, an explicit slot still sends, and a heal with no loaded pad sends nothing and says why', async () => {
+  it('dispatch skips: a full party sends nothing for the box slot and says why, and an explicit slot still sends', async () => {
     // WRONG IMPL KILLED: a -1 that sends the box sentinel into a full party (an accepted server
-    // no-op the player never sees), a full-party guard that also blocks an explicit slot, a heal
-    // that sends locationId 0 when no pad is loaded (a guaranteed invisible Err), a skip that is
-    // silent, and a skip that stays on after a pad IS loaded.
+    // no-op the player never sees), a full-party guard that also blocks an explicit slot, and a
+    // skip that is silent.
+    // ctl-10a (named intentional change, CTL10A.4): the heal half of this case (the Box's
+    // `onHealParty` with no pad loaded, then with one) is removed with the Box Heal Party control.
+    // Its survivors: CTL7C-3-ABSENT (a location-less healParty sends nothing and says why, with or
+    // without pads) and CTL10A-4-NO-BOX-HEAL-HANDLER (the Box gets no heal callback at all).
     await bootReady();
     server(1000);
     for (const [id, slot] of [
@@ -895,28 +921,6 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     await flush();
     expect(H.calls, 'an explicit slot is not blocked by the guard').toEqual([
       { name: 'setPartySlot', args: { monsterId: 44n, slot: 1 } },
-    ]);
-
-    H.calls = [];
-    status.textContent = '';
-    handlerOf('BoxView', 'onHealParty')();
-    await flush();
-    expect(H.calls, 'no heal pad loaded: nothing is sent').toEqual([]);
-    expect(statusText(), 'and the player is told').toBe(i18n.t('chrome.status.healUnavailable'));
-
-    opts.store.upsertHealLocation({
-      locationId: 5,
-      zoneId: 0,
-      tileX: 1,
-      tileY: 1,
-      costQty: 0,
-      cooldownMs: 0,
-      costCurrency: 0n,
-    });
-    handlerOf('BoxView', 'onHealParty')();
-    await flush();
-    expect(H.calls, 'with a pad loaded the heal is sent to it').toEqual([
-      { name: 'healParty', args: { locationId: 5 } },
     ]);
   });
 
@@ -1357,7 +1361,12 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     // Anti-vacuity cross-check against the production policy: every kind it refuses was refused
     // above through a captured view callback, or is named here with the reason it has none.
     // ctl-7d (named intentional change, CTL7D.5): the policy gains `pickShop: 'refuse'`.
+    // ctl-10a (named intentional change, CTL10A.4): `healParty` lost its only view callback (the
+    // Box's Heal Party), so it moves here; CTL7C-3-PRESENT refuses it at a battle base.
     const noViewCallback: Readonly<Record<string, string>> = {
+      healParty:
+        'no view constructor callback since ctl-10a: the heal frame`s screen adapter dispatches ' +
+        'it, and CTL7C-3-PRESENT in this file refuses every healParty shape at a battle base',
       advanceDialogue:
         'no view constructor callback: the document-level [data-choice-idx] click delegation ' +
         'dispatches it, and main.controls.test.ts refuses that click at a battle base',
@@ -1482,8 +1491,9 @@ function paintingAdapter(id: string, paints: Array<{ id: string; view: unknown }
 const GUIDE_ENTITY = 11n;
 const HEALER_ENTITY = 12n;
 
-/** A dialogue NPC one tile east of the player and a healer on the player's own tile (the healer
- *  is nearer, so T interacts with it), in one batch at clock `t`. */
+/** A dialogue NPC one tile east of the player and a healer on the player's own tile, in one batch
+ *  at clock `t`. (ctl-10a: which of them A interacts with is the stubbed wasm rule's answer, see
+ *  `useNpcRule`; T no longer interacts.) */
 function seedNpcs(t: number): void {
   for (const [entityId, npcId, tileX, interaction] of [
     [GUIDE_ENTITY, 'guide', 3, { kind: 'dialogue' }],
@@ -1584,13 +1594,16 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
       { name: 'healParty', args: { locationId: 0 } },
     ]);
 
-    // Control: in the same state the absent arm resolves the store's first pad.
+    // Control: in the same state the absent arm sends nothing and says why.
+    // ctl-10a (named intentional change, CTL10A.4): this control expected the absent arm to send
+    // the store's first pad (7), the retired Box behaviour; healing happens only at a bound healer
+    // now, so a location-less heal is refused with the pads loaded.
     issue.command = { kind: 'healParty' };
     H.calls = [];
+    status.textContent = '';
     await pageUp(1600);
-    expect(H.calls, 'control: the absent arm sends the first pad').toEqual([
-      { name: 'healParty', args: { locationId: 7 } },
-    ]);
+    expect(H.calls, 'control: the absent arm sends nothing, pads or not').toEqual([]);
+    expect(statusText(), 'control: and says why').toBe(i18n.t('chrome.status.healUnavailable'));
 
     // At a battle base the present arm is refused exactly like the absent one.
     press('Escape', 1700);
@@ -1623,11 +1636,14 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     }
   });
 
-  it('CTL7C-3-ABSENT: a screen command healParty with no locationId keeps the Box behaviour: with no pad loaded nothing is sent and the player is told, and once pads arrive the store`s first one (7) is sent', async () => {
+  it('CTL7C-3-ABSENT: a screen command healParty with no locationId sends nothing and tells the player, with no pad loaded and with pads loaded (the Box`s first-pad fallback is retired)', async () => {
     // WRONG IMPL KILLED: an absent arm that sends `undefined` or 0 when no pad is loaded (a
-    // guaranteed invisible server Err), one that loses the report, one that sends the last or a
-    // fixed pad instead of the store's first, and a screen command path that never reaches
-    // `dispatch` at all.
+    // guaranteed invisible server Err), one that loses the report, one that still falls back to
+    // the store's first pad (or the last, or a fixed one) once pads are loaded (B13: a heal at a
+    // location the player never chose), and a screen command path that never reaches `dispatch`.
+    // ctl-10a (named intentional change, CTL10A.4): the second half expected the store's first pad
+    // (7) to be sent once pads arrive (the Box Heal Party behaviour CTL7C.3 kept "until ctl-10a");
+    // it now expects nothing sent and the same report.
     await bootReady();
     server(1000);
     const status = document.getElementById('status');
@@ -1644,11 +1660,18 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
 
     seedDispatchFixture();
     server(1200);
+    expect(
+      opts.store
+        .healLocations()
+        .map((l) => l.locationId)
+        .sort(),
+      'precondition: pads 7 and 9 are loaded',
+    ).toEqual([7, 9]);
     H.calls = [];
+    status.textContent = '';
     await pageUp(1300);
-    expect(H.calls, 'with pads loaded the first one is sent').toEqual([
-      { name: 'healParty', args: { locationId: 7 } },
-    ]);
+    expect(H.calls, 'with pads loaded nothing is sent either').toEqual([]);
+    expect(statusText(), 'and the player is told').toBe(i18n.t('chrome.status.healUnavailable'));
   });
 
   it('CTL7C-2-BOOT-VIEWS: every frame id lends ITS OWN view instance to its adapter`s paint: each of the nine recorded stand-in views that back a frame, the real dialogue, quest log, heal, help and menu views, and the Social frame`s composite over the trade and pvp stand-ins and the real leaderboard, each shown alone and sent one routed button', async () => {
@@ -1661,7 +1684,10 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     // lent a composite naming the three view instances. Was: the trade and pvp stand-ins and the
     // real leaderboard were each driven as their own frame. Every other frame id's case is as it
     // was, and the closing anti-vacuity check now lists `social` in place of the three panels.
+    // ctl-10a: T retired — the heal frame opens through A (Enter) with the stubbed wasm interact
+    // rule naming the healer; its opener below was KeyT. Nothing else in this case changes.
     await bootReady();
+    useNpcRule(HEALER_ENTITY);
     server(1000);
     seedNpcs(1010);
     // Imported AFTER the boot: the very classes main.ts constructed its views from.
@@ -1735,7 +1761,7 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
       },
       {
         id: 'healView',
-        open: (at) => void press('KeyT', at),
+        open: (at) => void press('Enter', at),
         close: (at) => void press('Escape', at),
       },
       {
@@ -1942,8 +1968,9 @@ describe('main.ts store batches and a held key (runtime, ctl-7c)', { sequential:
 // swapped for a stand-in, real keys through the real router. A stand-in either reads what an
 // adapter can read (`ScreenContext`) on a routed LB (PageUp) press, or issues the command under
 // test on it. The shop and heal frames are opened by their REAL paths: the greet-then-shop pick
-// over a conversation (the shop opens on the first batch with no conversation) and T beside a
-// healer. The stand-in views' own flags show them where a case needs no open path.
+// over a conversation (the shop opens on the first batch with no conversation) and A at a healer
+// the stubbed wasm interact rule names (ctl-10a: it was T beside a healer). The stand-in views'
+// own flags show them where a case needs no open path.
 
 /** The `ScreenContext` fields the ctl-7d stand-ins read. Loosely typed on purpose: the context
  *  the shell builds today has none of them, so a read shows `undefined` rather than failing to
@@ -2108,10 +2135,11 @@ async function openShopAndRead(t: number, shopId: string): Promise<void> {
   expect(stackNow(), `shop ${shopId}: precondition: Start closed the shop`).toEqual([WORLD_FRAME]);
 }
 
-/** T beside the healer opens the heal frame alone, one LB to its stand-in, then Start closes it. */
+/** A at the healer the stubbed rule names opens the heal frame alone, one LB to its stand-in, then
+ *  Start closes it. (ctl-10a: T retired — this opener was KeyT.) */
 async function healAndRead(t: number, label: string): Promise<void> {
-  press('KeyT', t);
-  expect(stackNow(), `${label}: precondition: T opened the heal frame alone`).toEqual([
+  press('Enter', t);
+  expect(stackNow(), `${label}: precondition: A opened the heal frame alone`).toEqual([
     WORLD_FRAME,
     screenFrame('healView'),
   ]);
@@ -2217,14 +2245,17 @@ describe('main.ts screen context reads (runtime, ctl-7d)', { sequential: true },
     ]);
   });
 
-  it('CTL7D-1-BOOT-HEAL-ID: ScreenContext.healLocationId reads null before T, then the location T bound at a healer (location 0 as 0, then 6 at another healer), keeps it after a close, and the shop id and the heal id stay two independent values', async () => {
+  it('CTL7D-1-BOOT-HEAL-ID: ScreenContext.healLocationId reads null before A at a healer, then the location A bound there (location 0 as 0, then 6 at another healer), keeps it after a close, and the shop id and the heal id stay two independent values', async () => {
     // WRONG IMPL KILLED: no `healLocationId` on the context, a truthiness guard (location 0 reads
     // null), a boot-time snapshot instead of a live getter, a close that clears it, a T at another
     // healer that does not rebind (6 would read 0), and ONE variable behind both getters or a bind
     // that resets the other id: a heal getter answering the shop id ([null, null] where location 0
     // is bound), a shop open that clears the heal id ([4, null]), a heal bind that clears the shop
     // id ([null, 6]).
+    // ctl-10a: T retired — `healAndRead` opens the heal frame with A, the stubbed wasm interact
+    // rule naming the healer (A, then B); the binding contract read here is unchanged.
     await bootReady();
+    useNpcRule(HEALER_A, HEALER_B);
     server(1000);
     placeNpc(GUIDE_ENTITY, 'guide', 3, { kind: 'dialogue' }, 1010);
     placeNpc(HEALER_A, 'healer-a', 2, { kind: 'heal', locationId: 0 }, 1010);
@@ -2274,7 +2305,10 @@ describe('main.ts screen context reads (runtime, ctl-7d)', { sequential: true },
     // WRONG IMPL KILLED: a reconnect that clears neither id, or only one of them (an adapter would
     // keep acting on a shop or a heal location whose rows the store reset invalidated), and a
     // getter that caches its first read.
+    // ctl-10a: T retired — the heal frame opens with A, the stubbed wasm interact rule naming the
+    // healer; the press below was KeyT. The reconnect contract read here is unchanged.
     await bootReady();
+    useNpcRule(HEALER_A);
     server(1000);
     placeNpc(GUIDE_ENTITY, 'guide', 3, { kind: 'dialogue' }, 1010);
     placeNpc(HEALER_A, 'healer', 2, { kind: 'heal', locationId: 6 }, 1010);
@@ -2288,8 +2322,8 @@ describe('main.ts screen context reads (runtime, ctl-7d)', { sequential: true },
 
     await openShopAndRead(1100, '0');
     expect(shopReads, 'precondition: the open bound shop 0').toEqual([[0, null]]);
-    press('KeyT', 1200);
-    expect(stackNow(), 'precondition: T opened the heal frame alone').toEqual([
+    press('Enter', 1200);
+    expect(stackNow(), 'precondition: A opened the heal frame alone').toEqual([
       WORLD_FRAME,
       screenFrame('healView'),
     ]);
@@ -4044,5 +4078,63 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
       keydowns.filter((e) => !e.defaultPrevented).map((e) => e.code),
       'every Social keydown is consumed',
     ).toEqual([]);
+  });
+});
+
+// ==========================================================================================
+// ctl-10a: healing happens only at a bound healer (CTL10A.4)
+// ==========================================================================================
+
+describe('main.ts no Box heal (runtime, ctl-10a)', { sequential: true }, () => {
+  afterEach(teardownBoot);
+
+  it('CTL10A-4-NO-BOX-HEAL-HANDLER: the BoxView main.ts constructs gets no onHealParty callback, and a healParty command with no locationId sends nothing and reports healUnavailable even with heal locations loaded; a present id in the same state is sent', async () => {
+    // WRONG IMPL KILLED (B13): a Box still handed a heal callback (any control wired to it heals at
+    // a location the player never chose), and a location-less healParty that falls back to the
+    // store's first loaded location (7 here) instead of refusing visibly. The control (a present
+    // id is sent) keeps the refusal from passing on a dead dispatch path.
+    await bootReady();
+    server(1000);
+    const box = H.handlers.BoxView;
+    if (box === undefined) throw new Error('BoxView was never constructed by main.ts');
+    expect(
+      Object.hasOwn(box, 'onHealParty') ? box.onHealParty : undefined,
+      'the Box gets no Heal Party callback',
+    ).toBeUndefined();
+    expect(typeof box.onSetNickname, 'control: the Box`s other callbacks are wired').toBe(
+      'function',
+    );
+    expect(typeof box.onSetPartySlot).toBe('function');
+
+    seedDispatchFixture();
+    server(1010);
+    expect(
+      opts.store
+        .healLocations()
+        .map((l) => l.locationId)
+        .sort(),
+      'precondition: heal locations 7 and 9 are loaded',
+    ).toEqual([7, 9]);
+    const status = document.getElementById('status');
+    if (status === null) throw new Error('#status must exist once booted');
+    const issue: { command: unknown } = { command: { kind: 'healParty' } };
+    swapAdapter('menuView', commandAdapter(issue));
+    openMenuAtWorld(1020);
+
+    H.calls = [];
+    status.textContent = '';
+    const down = await pageUp(1100);
+    expect(down.defaultPrevented, 'the routed press is consumed').toBe(true);
+    expect(H.calls, 'no locationId: nothing is sent, pads loaded or not').toEqual([]);
+    expect(statusText(), 'and the player is told').toBe(i18n.t('chrome.status.healUnavailable'));
+
+    issue.command = { kind: 'healParty', locationId: 9 };
+    H.calls = [];
+    status.textContent = '';
+    await pageUp(1200);
+    expect(H.calls, 'control: a present id is sent').toEqual([
+      { name: 'healParty', args: { locationId: 9 } },
+    ]);
+    expect(statusText(), 'control: and nothing is reported').toBe('');
   });
 });

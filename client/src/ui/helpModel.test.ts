@@ -51,9 +51,9 @@ describe('buildHelpViewModel(): content shape — non-empty controls + goals (PT
 
 describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)', () => {
   // The keymap that the help overlay documents: the
-  // `?` help key itself, Escape (close), movement (WASD / arrows), Space (jump), the 10
-  // overlay hotkeys B I E Q U P L N O T (G and H deleted in uxd2 — the shop is reached
-  // through a shopkeeper and the heal through a heal tile, both via the interact key T),
+  // `?` help key itself, Escape (close), movement (WASD / arrows), Space (jump), the 9
+  // overlay hotkeys B I E Q U P L N O (G and H deleted in uxd2; ctl-10a retired the interact key
+  // T — interaction is Enter / A on what you face, pinned by the ctl-10a key-set test below),
   // and F9 (bug bundle). Each must be mentioned by SOME
   // control entry's `key`. We match case-insensitively / by substring so we pin the
   // COVERAGE of the SSOT without over-pinning the exact glyph wording (e.g. "WASD"
@@ -101,11 +101,16 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
     expect(blob.includes('f9'), 'controls SSOT must document F9 (bug bundle)').toBe(true);
   });
 
-  it('BITES: each overlay hotkey B I E Q U P L N O T is documented in the SSOT', () => {
+  it('BITES: each overlay hotkey B I E Q U P L N O is documented in the SSOT', () => {
     // WRONG IMPL KILLED: an SSOT that documents only some of the overlay hotkeys —
     // a tester would not discover, e.g., the Trade-propose (O) or Leaderboard (L) overlay.
     // Substring match against the per-entry key blob (case-insensitive). Each letter must
     // appear SOMEWHERE in some control's key text.
+    //
+    // INTENTIONAL CHANGE (ctl-10a, CTL10A.3): `t` is dropped from this list (10 -> 9). T no longer
+    // does anything (world interaction is A / Enter on what you face), so its row is deleted; the
+    // exact-key absence of T and the presence of Enter and F are pinned by the ctl-10a key-set test.
+    // (Kept as a substring scan, `t` would also pass vacuously on the new "Enter" row.)
     //
     // the list shrank 12 → 10. `g` and `h` were removed because the global KeyG (shop) and
     // KeyH (heal) handlers are DELETED in uxd2 — shop is reached by interacting with a
@@ -115,7 +120,7 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
     // inside another key's text), so the deletion itself is pinned by the exact-key
     // assertion in the sibling test below — that is the tooth, this is coverage.
     const blob = keyBlob();
-    const hotkeys = ['b', 'i', 'e', 'q', 'u', 'p', 'l', 'n', 'o', 't'];
+    const hotkeys = ['b', 'i', 'e', 'q', 'u', 'p', 'l', 'n', 'o'];
     for (const k of hotkeys) {
       expect(
         blob.includes(k),
@@ -174,14 +179,16 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
     ).toBe(1);
   });
 
-  it('★ uxd2 BITES: NO controls row has key "G" or "H"; the "T" row still exists', () => {
+  it('★ uxd2 BITES: NO controls row has key "G" or "H"', () => {
     // uxd2 / AC-10′.
     //
     // WRONG IMPL KILLED (1): an impl that deletes the KeyG/KeyH HANDLERS in main.ts but
     //   leaves the help rows — the overlay would teach a playtester two keys that silently
     //   do nothing, which is the single worst outcome for an onboarding surface.
-    // WRONG IMPL KILLED (2): an impl that deletes the T row while reworking its wording —
-    //   the one key the whole slice is about would vanish from the help overlay.
+    // INTENTIONAL CHANGE (ctl-10a, CTL10A.3): this test also asserted "the interact key T must
+    //   still be documented". ctl-10a retires T (T does nothing; A / Enter acts on what you face),
+    //   so that assertion is REVERSED and moved to the ctl-10a key-set test below, which pins T's
+    //   absence and the Enter / F rows that replace it.
     // EXACT-KEY (trim + uppercase), NOT substring: a substring test cannot distinguish a
     // deleted row from the "h" inside another key's text, which is precisely how the
     // sibling coverage test above could go vacuously green.
@@ -193,7 +200,56 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
     expect(exactKeys, 'the global heal hotkey H is removed in uxd2 (ADR-0161 D5)').not.toContain(
       'H',
     );
-    expect(exactKeys, 'the interact key T must still be documented').toContain('T');
+  });
+
+  it('CTL10A-3-HELP-NO-T: the CONTROLS key set drops T and gains Enter (interact with what you face) and F (every action for what you face), one row each; no row is keyed T', () => {
+    // ctl-10a, CTL10A.3 / spec Tasks: "`CONTROLS` drops the T row and gains A interaction;
+    // `helpModel.test.ts`'s pinned key set drops T (named)". This is that pinned key set; the
+    // NAMED intentional change is T's removal (it was documented since uxd2) plus the two new rows.
+    // WRONG IMPL KILLED: help that still teaches T (a key that now does nothing, the worst outcome
+    // for an onboarding surface); a T row merely reworded ("T / Enter"); an interaction that is
+    // never documented (no Enter row) or whose Y sheet is undiscoverable (no F row); a duplicated
+    // row; and an Enter / F row keyed with padding or another case (the help shows keys verbatim).
+    const vm = buildHelpViewModel();
+    const rawKeys = vm.controls.map((c) => c.key);
+    expect(
+      rawKeys.some((k) => k.trim().toUpperCase() === 'T'),
+      'no controls row may be keyed T (T is retired in ctl-10a)',
+    ).toBe(false);
+    expect(
+      rawKeys.filter((k) => k === 'Enter'),
+      'exactly one row keyed `Enter`',
+    ).toHaveLength(1);
+    expect(
+      rawKeys.filter((k) => k === 'F'),
+      'exactly one row keyed `F`',
+    ).toHaveLength(1);
+    expect([...rawKeys].sort(), 'the full documented key set after ctl-10a').toEqual(
+      [
+        '?',
+        'M',
+        'WASD / Arrows',
+        'Space',
+        'Escape',
+        'Enter',
+        'F',
+        'B',
+        'I',
+        'E',
+        'Q',
+        'U',
+        'P',
+        'L',
+        'N',
+        'O',
+        'C',
+        'F9',
+      ].sort(),
+    );
+    for (const key of ['Enter', 'F']) {
+      const row = vm.controls.find((c) => c.key === key);
+      expect(row?.action.trim().length, `the ${key} row says what it does`).toBeGreaterThan(0);
+    }
   });
 });
 

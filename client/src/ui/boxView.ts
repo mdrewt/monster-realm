@@ -138,8 +138,8 @@ export interface BoxViewCallbacks {
   /** Called when the user moves a monster to a party slot (0–5), to the next free slot
    *  (-1), or to box (`partySlotNone`). */
   readonly onSetPartySlot: (monsterId: bigint, slot: number) => void;
-  /** Called when the user clicks the Heal Party button (M7c). */
-  readonly onHealParty: () => void;
+  /** Unread: the Box's Heal Party button is retired (ctl-10a, B13). */
+  readonly onHealParty?: () => void;
   /** The "boxed" party-slot sentinel "To Box" emits: game-core's PARTY_SLOT_NONE, read once
    *  at boot from the `party_slot_none()` wasm export (main.ts) — never a TS literal. */
   readonly partySlotNone: number;
@@ -149,8 +149,6 @@ export class BoxView {
   readonly #root: HTMLDivElement;
   /** The "Party & Box" heading; its text is resolved in show(), not here (see show()). */
   readonly #titleEl: HTMLHeadingElement;
-  /** The Heal Party button; its label is resolved in show(). */
-  readonly #healBtn: HTMLButtonElement;
   readonly #partyEl: HTMLDivElement;
   readonly #boxEl: HTMLDivElement;
   /** Static box-vs-party explainer; never toggled — it states an invariant.
@@ -215,19 +213,12 @@ export class BoxView {
     title.style.cssText = 'margin:0;color:#fff;';
     this.#titleEl = title;
     header.appendChild(title);
-    // Its label (`box.heal`) is resolved in show(), not here.
-    const healBtn = document.createElement('button');
-    healBtn.style.cssText =
-      'padding:4px 12px;cursor:pointer;font-family:monospace;background:#2a3a2a;color:#8f8;border:1px solid #4a4;border-radius:3px;';
-    healBtn.addEventListener('click', () => this.#callbacks.onHealParty());
-    this.#healBtn = healBtn;
-    header.appendChild(healBtn);
     this.#root.appendChild(header);
 
     // ctl-8b: the tabs, the sheet, its summary and typing row and the Move line, all BEFORE the
     // hint and the panels. Typing mode's Escape focuses the frame's first enabled non-text
-    // control; with Heal Party disabled under the row that is the sheet's nav list (Enter there is
-    // the router's A), never a card's To Party / To Box button.
+    // control: the sheet's nav list (Enter there is the router's A), never a card's To Party /
+    // To Box button.
     this.#tabStrip = document.createElement('div');
     this.#tabStrip.className = 'mr-frame-tabstrip';
     this.#root.appendChild(this.#tabStrip);
@@ -332,7 +323,6 @@ export class BoxView {
     // HERE, on EVERY show() — unconditionally, after the `wasVisible` read, before the display
     // write. See evolutionView.show() for the boot-order / locale-switch reasoning.
     this.#titleEl.textContent = t('box.title');
-    this.#healBtn.textContent = t('box.heal');
     this.#hintEl.textContent = t('box.hint');
     this.#partyLabelEl.textContent = t('box.section.party');
     this.#boxLabelEl.textContent = t('box.section.box');
@@ -537,8 +527,6 @@ export class BoxView {
 
     const row = p.nickname;
     setShown(this.#rowEl, row !== null, '');
-    // Under the row Escape must not land on Heal Party (Enter would heal, not commit).
-    this.#healBtn.disabled = row !== null;
     if (row !== null && row.edit !== this.#lastEdit) {
       // A new open only: a repaint of the same open keeps the typed text and never takes focus
       // back from an Escape.

@@ -43,6 +43,8 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
     party_slot_none: () => 255,
     max_trade_monsters_per_side: () => 64,
     talk_range: () => 2,
+    // ctl-10a: named fixture change — the new interact export
+    interact_candidates_coded: () => [],
     predict_move: () => ({}),
     predict_tick: () => ({}),
     set_active_zone: () => undefined,
