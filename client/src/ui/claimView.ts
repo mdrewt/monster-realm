@@ -191,11 +191,6 @@ export class ClaimView {
     );
   }
 
-  /** The row focus starts from: No while the decline is armed, else the first. */
-  #defaultRow(rows: readonly HTMLButtonElement[]): HTMLButtonElement | undefined {
-    return this.#armed ? this.#actionBtns.declineCancel : rows[0];
-  }
-
   /** A render moved focus only on the arm and disarm edges, or off a control it hid; never focus
    *  that is outside the frame (`reseatRow`). */
   #reseat(wasArmed: boolean): void {
@@ -214,12 +209,14 @@ export class ClaimView {
   }
 
   /** One press on the rows (the Account screen, CTL8H.3). The cursor is DOM focus; with no row
-   *  focused it only seats the default row, so an A never confirms a decline nobody chose. */
+   *  focused it only seats the default row (No while armed, else the first), so an A never
+   *  confirms a decline nobody chose. */
   applyRowOp(op: RowOp): void {
     if (op === this.#lastOp) return;
     this.#lastOp = op;
     const rows = this.#rows();
-    const { focus, press } = rowStep(rows, document.activeElement, this.#defaultRow(rows), op);
+    const fallback = this.#armed ? this.#actionBtns.declineCancel : rows[0];
+    const { focus, press } = rowStep(rows, document.activeElement, fallback, op);
     focus?.focus();
     press?.click();
   }
