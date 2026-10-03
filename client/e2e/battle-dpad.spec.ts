@@ -27,20 +27,26 @@ import { pressButton } from './controls';
 // (`turnNumber` up, or the battle gone) and the continue (a loop that presses only while the stack
 // is above its base, because the first A inside the 400 ms grace of an outcome is ignored).
 //
-// SEEDING (owner SQL, the encounter-battle.spec precedent): only the starter's defense columns are
-// raised, so a zone-0 wild cannot KO it and both battles reach an outcome by the D-pad. Nothing
-// else is seeded; any species may be met (a Water wild resists Fire but MAX_ATTACKS covers it).
+// SEEDING (owner SQL, the encounter-battle.spec precedent). The starter's defense, attack and HP
+// columns are raised. Measured: with only defense raised the starter FAINTED in the first battle
+// (current_hp 0), and an all-fainted party gets no encounter, so the second battle's hunt found
+// nothing. With attack 250 each wild falls in a hit or two, and HP 999 keeps the starter up over
+// both battles, so both reach an outcome by the D-pad (any terminal outcome is still accepted).
+// Levels are NOT seeded: two wins cannot lift a Lv5 starter past zone 0's Lv3-8 encounter bands.
+// Any species may be met (a Water wild resists Fire but MAX_ATTACKS covers it).
 //
-// WHAT CTL8J.3 ASKS AND WHAT THIS CASE DOES. The criterion says Start, then A opens Monsters, then
-// Start again. Over a battle the main menu keeps Monsters DISABLED (its screen is not battleSafe:
-// SCREEN_POLICY.boxView, mainMenuScreen battleReason; residual R-ctl-6c-MONSTERSRO), so A on it
-// opens nothing. The same shape, a second frame above the menu and ONE Start back to the battle
-// alone, is Options > How to play, the one entry that is enabled over a battle (E0 in
-// encounter-battle.spec.ts walks the same route), and that is what is pressed here.
+// THE START ROUND TRIP (CTL8J.3, DEFERRED to ctl-13). The criterion says Start, then A opens
+// Monsters, then Start again. Over a battle the main menu keeps Monsters DISABLED (its screen is
+// not battleSafe: SCREEN_POLICY.boxView, mainMenuScreen battleReason; residual
+// R-ctl-6c-MONSTERSRO), so A on it opens nothing and the criterion cannot be met yet. The first
+// case is therefore titled CTL8J-3x, not CTL8J-3: it is the same battle round trip through Options
+// > How to play, the one entry that is enabled over a battle (E0 in encounter-battle.spec.ts walks
+// the same route): a second frame above the menu and ONE Start back to the battle alone.
 //
 // CLEANUP. One browser, context and identity; afterAll closes the browser.
 
-const SEED_DEFENSE = 250;
+const SEED_STAT = 250;
+const SEED_HP = 999;
 /** Shuttle steps per hunt; only the East step onto (2,2) rolls (recruit.spec MAX_WALK_STEPS). */
 const MAX_WALK_STEPS = 120;
 /** Attacks per battle; at >= 1 net damage per hit this covers a Lv<=8 wild's HP. */
@@ -351,11 +357,15 @@ test.describe
       if (!starter || !/^[0-9]+$/.test(starter.monsterId)) {
         throw new Error('beforeAll: no starter with a decimal monsterId');
       }
-      for (const col of ['stat_defense', 'stat_sp_defense']) {
-        sql(
-          `UPDATE monster SET ${col} = ${SEED_DEFENSE} WHERE monster_id = ${starter.monsterId}`,
-          'seed',
-        );
+      for (const [col, val] of [
+        ['stat_defense', SEED_STAT],
+        ['stat_sp_defense', SEED_STAT],
+        ['stat_attack', SEED_STAT],
+        ['stat_sp_attack', SEED_STAT],
+        ['stat_hp', SEED_HP],
+        ['current_hp', SEED_HP],
+      ] as const) {
+        sql(`UPDATE monster SET ${col} = ${val} WHERE monster_id = ${starter.monsterId}`, 'seed');
       }
     });
 
@@ -363,13 +373,14 @@ test.describe
       await browser.close();
     });
 
-    test('CTL8J-3-START-MONSTERS-START: Start mid-turn opens the main menu over the battle, a second frame opens above it (three deep), and ONE Start returns to the battle alone, the stack exactly [battle], the command list visible with the cursor still on Recruit, focus inside the battle, the same battle and turn', async () => {
+    test('CTL8J-3x-START-HELP-START: the battle round trip through Options > How to play (Monsters is not battle-safe yet, so CTL8J.3 is deferred to ctl-13): Start mid-turn opens the main menu over the battle, a second frame opens above it (three deep), and ONE Start returns to the battle alone, the stack exactly [battle], the command list visible with the cursor still on Recruit, focus inside the battle, the same battle and turn', async () => {
       // WRONG IMPL KILLED: a Start from depth three that pops only the top frame (the menu is left
       // standing over the battle); a Start that leaves the stack longer than [battle] or changes
       // its battle; a menu round trip that submits or skips a turn; a battle view that comes back
       // with the cursor reset to Fight (CTL8I.3: the cursor is where the player left it), without
       // its command list, or with two aria-current elements; and focus left in the closed menu.
-      // See the header: Monsters is disabled over a battle, so the second frame is How to play.
+      // See the header: Monsters is not battle-safe yet (CTL8J.3 deferred to ctl-13), so the
+      // second frame is Options > How to play, the one entry enabled over a battle.
       test.setTimeout(120_000);
       await huntEncounter(page);
       const started = (await snap(page)).ongoingBattle;
