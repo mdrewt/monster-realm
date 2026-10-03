@@ -75,10 +75,30 @@
 // own constructor cssText and its content is ~425px against a 720px viewport, so the ux1 defect
 // is not expected to apply here — but this file is not what establishes that.
 
+// ---------------------------------------------------------------------------
+// ctl-8b (CTL8B.1-.4): the box frame becomes the Monsters frame (tabs, a cursor, an action sheet, an
+// in-frame typing row, a Move feedback line), painted by `BoxView.paint(MonstersPaint)`; the
+// per-card Rename button and its window.prompt are DELETED. The ctl-8b cases are the describes
+// titled 'BoxView ctl-8b ...' at the end of this file (CTL8B-*). NAMED INTENTIONAL CHANGES to
+// pre-existing cases:
+//   - m24s4 BX-01 ("every migrated sink ..."): the `box.card.rename` t() expectation and the whole
+//     "Rename prompt" block (a click on the Rename button reaching a stubbed prompt()) are removed;
+//     in their place the party card's buttons are pinned to exactly ['To Box'] (no Rename button).
+//     The title lost its "prompt() receives the resolved copy" clause.
+//   - m24s4 BX-02 ("under «key» sentinels ..."): the `«box.card.rename»` expectation and the
+//     sentinel-wrapped prompt() block are removed (the typing row's sentinel label is pinned by the
+//     CTL8B i18n case instead); the title lost its prompt() clause.
+//   - M24S4_BX_PLAIN_KEYS (the id roster): -`box.card.rename`, +`box.tab.party`, `box.tab.storage`,
+//     `box.sheet.summary`, `box.sheet.nickname`, `box.sheet.move`, `box.feedback.movedToParty`,
+//     `box.feedback.movedToBox`. M24S4_BX_ROSTER (English words that must not appear outside a
+//     sentinel) gains 'Storage', 'Summary', 'Nickname', 'Moved to party', 'Moved to storage'.
+// Every other pre-existing case is unchanged.
+// ---------------------------------------------------------------------------
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readWasmU32Constant } from '../../test-util/wasmPkg';
 import type { MonsterCardViewModel } from './boxModel';
 import { BoxView, type BoxViewCallbacks } from './boxView';
+import type { MonstersPaint, NicknameCommit } from './screens/monstersScreen';
 
 // ---------------------------------------------------------------------------
 // Overlay a11y wiring for BoxView (constructed-shell, #app-mounted) PLUS
@@ -316,34 +336,35 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
     APP_VIEWS.filter((b) => b !== a).map((b) => [a, b] as const),
   );
 
-  it.each(
-    ORDERED_PAIRS.map(([a, b]) => [a.id, b.id, a, b] as const),
-  )('S4-CROSS-VIEW-DISTINCT-ROOTS BITES: %s stays open while %s opens and closes on the same #app mount', (_aId, _bId, a, b) => {
-    const app = document.createElement('div');
-    document.body.appendChild(app);
-    const viewA = a.make(app);
-    const rootA = app.lastElementChild as HTMLElement;
-    const viewB = b.make(app);
-    expect(app.lastElementChild, 'each view mounts its OWN root').not.toBe(rootA);
+  it.each(ORDERED_PAIRS.map(([a, b]) => [a.id, b.id, a, b] as const))(
+    'S4-CROSS-VIEW-DISTINCT-ROOTS BITES: %s stays open while %s opens and closes on the same #app mount',
+    (_aId, _bId, a, b) => {
+      const app = document.createElement('div');
+      document.body.appendChild(app);
+      const viewA = a.make(app);
+      const rootA = app.lastElementChild as HTMLElement;
+      const viewB = b.make(app);
+      expect(app.lastElementChild, 'each view mounts its OWN root').not.toBe(rootA);
 
-    const expectAOpen = (when: string): void => {
-      expect(rootA.getAttribute('role'), `${a.id} role ${when}`).toBe(OVERLAY_A11Y[a.id].role);
-      expect(rootA.getAttribute('aria-modal'), `${a.id} aria-modal ${when}`).toBe('true');
-      expect(rootA.getAttribute('aria-label'), `${a.id} aria-label ${when}`).toBe(
-        t(OVERLAY_A11Y[a.id].labelKey),
-      );
-    };
+      const expectAOpen = (when: string): void => {
+        expect(rootA.getAttribute('role'), `${a.id} role ${when}`).toBe(OVERLAY_A11Y[a.id].role);
+        expect(rootA.getAttribute('aria-modal'), `${a.id} aria-modal ${when}`).toBe('true');
+        expect(rootA.getAttribute('aria-label'), `${a.id} aria-label ${when}`).toBe(
+          t(OVERLAY_A11Y[a.id].labelKey),
+        );
+      };
 
-    viewA.show();
-    expectAOpen('after it opens');
-    viewB.show();
-    expectAOpen(`after ${b.id} opens`);
-    viewB.hide();
-    expectAOpen(`after ${b.id} closes`);
+      viewA.show();
+      expectAOpen('after it opens');
+      viewB.show();
+      expectAOpen(`after ${b.id} opens`);
+      viewB.hide();
+      expectAOpen(`after ${b.id} closes`);
 
-    viewA.hide();
-    document.body.removeChild(app);
-  });
+      viewA.hide();
+      document.body.removeChild(app);
+    },
+  );
 });
 
 const BOX_PARTY_HINT_SELECTOR = '[data-testid="box-party-hint"]';
@@ -1361,11 +1382,20 @@ const M24S4_BX_PLAIN_KEYS = new Set([
   'box.section.party',
   'box.section.box',
   'box.box.empty',
-  'box.card.rename',
+  // INTENTIONAL CHANGE (ctl-8b): `box.card.rename` leaves this roster (the per-card Rename button
+  // and window.prompt are deleted); seven keys join it (the tabs, the action sheet's rows and the
+  // two Move feedback lines). `box.rename.prompt` stays: it is the typing row's label now.
   'box.card.evolveBadge',
   'box.card.toBox',
   'box.card.toParty',
   'box.rename.prompt',
+  'box.tab.party',
+  'box.tab.storage',
+  'box.sheet.summary',
+  'box.sheet.nickname',
+  'box.sheet.move',
+  'box.feedback.movedToParty',
+  'box.feedback.movedToBox',
 ]);
 
 const M24S4_BX_PARAM_KEYS = new Set(['box.party.emptySlot', 'box.card.stats']);
@@ -1458,6 +1488,12 @@ const M24S4_BX_ROSTER = [
   'New nickname:',
   'Only monsters in your Party can battle',
   'New recruits arrive in your Box',
+  // ctl-8b: the Monsters frame's own English (tab labels, sheet rows, Move feedback lines).
+  'Storage',
+  'Summary',
+  'Nickname',
+  'Moved to party',
+  'Moved to storage',
 ];
 
 function m24s4BxAssertNoRosterWord(texts: readonly string[], label: string): void {
@@ -1478,7 +1514,7 @@ function m24s4BxAssertNoRosterWord(texts: readonly string[], label: string): voi
 }
 
 describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf()', () => {
-  it('m24s4 BX-01: every migrated sink calls t()/tf() with the exact key and params, prompt() receives the resolved copy, show() re-resolves constructor-time keys on a repeat open, and every DOM string stays byte-identical', () => {
+  it('m24s4 BX-01: every migrated sink calls t()/tf() with the exact key and params, show() re-resolves constructor-time keys on a repeat open, and every DOM string stays byte-identical', () => {
     vi.mocked(i18nT).mockClear();
     vi.mocked(i18nTf).mockClear();
     const { parent, view } = mount();
@@ -1513,7 +1549,6 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
     expect(i18nT).toHaveBeenCalledWith('box.section.party');
     expect(i18nT).toHaveBeenCalledWith('box.section.box');
     expect(i18nT).toHaveBeenCalledWith('box.box.empty');
-    expect(i18nT).toHaveBeenCalledWith('box.card.rename');
     expect(i18nT).toHaveBeenCalledWith('box.card.toBox');
     expect(i18nT).not.toHaveBeenCalledWith('box.card.toParty');
     expect(i18nT).not.toHaveBeenCalledWith('box.card.evolveBadge');
@@ -1567,24 +1602,13 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
     // survive the migration verbatim.
     expect(boxCardEl.textContent ?? '').toContain('HP 21/21');
 
-    // --- Rename prompt: t() supplies the label, the native dialog is the mechanism ---
-    vi.stubGlobal(
-      'prompt',
-      vi.fn(() => null),
-    );
-    try {
-      const renameBtn = [...partyGrid.querySelectorAll('button')].find(
-        (b) => b.textContent === 'Rename',
-      );
-      expect(renameBtn, 'precondition: the party card must carry a Rename button').toBeDefined();
-      renameBtn!.click();
-      expect(
-        vi.mocked(prompt).mock.calls[0]?.[0],
-        'm24s4 BX-01: prompt() must receive the RESOLVED box.rename.prompt copy, English bytes here',
-      ).toBe('New nickname:');
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    // INTENTIONAL CHANGE (ctl-8b): the "Rename prompt" block is DELETED with the per-card Rename
+    // button and the window.prompt it opened. `box.rename.prompt` is now the typing row's label
+    // (CTL8B-3-VIEW-ROW and the sentinel case below pin it); no card carries a Rename button.
+    expect(
+      [...partyGrid.querySelectorAll('button')].map((b) => b.textContent),
+      'ctl-8b: the party card carries To Box and nothing that renames',
+    ).toEqual(['To Box']);
 
     // --- RT2: a repeat show() re-resolves the constructor-time keys ---
     vi.mocked(i18nT).mockClear();
@@ -1599,7 +1623,7 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
     expect(i18nT).toHaveBeenCalledWith('box.section.box');
   });
 
-  it('m24s4 BX-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel; prompt() still receives the sentinel-wrapped label', () => {
+  it('m24s4 BX-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel', () => {
     const { parent, view } = mount();
     const root = s4BoxRootOf(parent);
 
@@ -1629,7 +1653,7 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
       expect(joined).toContain('«box.section.party»');
       expect(joined).toContain('«box.section.box»');
       expect(joined).toContain('«box.box.empty»');
-      expect(joined).toContain('«box.card.rename»');
+      // INTENTIONAL CHANGE (ctl-8b): no '«box.card.rename»': the per-card Rename button is gone.
       expect(joined).toContain('«box.card.toBox»');
       expect(joined).toContain(`«box.party.emptySlot|${JSON.stringify({ slot: 1 })}»`);
       expect(joined).toContain(
@@ -1669,26 +1693,9 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
         })}»`,
       );
 
-      vi.stubGlobal(
-        'prompt',
-        vi.fn(() => null),
-      );
-      try {
-        const renameBtn = [...root.querySelectorAll('button')].find(
-          (b) => b.textContent === '«box.card.rename»',
-        );
-        expect(
-          renameBtn,
-          'precondition: a Rename control must be findable by its sentinel',
-        ).toBeDefined();
-        renameBtn!.click();
-        expect(
-          vi.mocked(prompt).mock.calls[0]?.[0],
-          'm24s4 BX-02: prompt() must receive the SENTINEL-wrapped box.rename.prompt copy',
-        ).toBe('«box.rename.prompt»');
-      } finally {
-        vi.unstubAllGlobals();
-      }
+      // INTENTIONAL CHANGE (ctl-8b): the sentinel-wrapped prompt() block is DELETED (no prompt, no
+      // Rename button). The sentinel-wrapped typing-row label is pinned by the ctl-8b i18n case
+      // below instead.
     } finally {
       vi.mocked(i18nT).mockRestore();
       vi.mocked(i18nTf).mockRestore();
@@ -1999,5 +2006,828 @@ describe('BoxView ctl-7b: the box root is a class-styled frame, inline only for 
       'precondition: three empty party slots and the empty storage line are rendered',
     ).toHaveLength(4);
     ctl7bExpectReadableEmpties(empties, root);
+  });
+});
+
+// =============================================================================
+// ctl-8b (CTL8B.1-.4): the Monsters frame painted by `BoxView.paint(MonstersPaint)`.
+//
+// The screen (screens/monstersScreen.ts) decides everything; this view only draws one
+// `MonstersPaint`: the active tab, the cursor card, the action sheet, the summary, the nickname row,
+// the commit token and the Move feedback line. These cases hand it paints directly.
+//
+// WHAT THESE CASES CAN AND CANNOT PROVE: happy-dom does no layout, no cascade and no paint, and
+// `.focus()` on a display:none node is not refused here as a browser refuses it. "Hidden" is
+// therefore read the one way the production code reads it (`focusInsideHiddenSubtree` looks only at
+// INLINE `display`): an element, or an ancestor below the frame root, carrying `display:none`
+// inline. The `hidden` attribute does not count: the panels carry inline `display:grid`, which beats
+// `[hidden]`, so a view that hides with the attribute alone shows both panels. Whether the real
+// Chromium cascade shows the right thing is proved by client/e2e (not here).
+//
+// Cards, tabs, the sheet and the row are located by structure the plan fixes, not by index:
+//   - tabs: `[role="tablist"] [role="tab"]`, label = t('box.tab.party'|'box.tab.storage');
+//   - the two panels: the grids that follow the "Party" / "Box" h3 (partyGridOf / boxGridOf);
+//   - a card wrapper: the element carrying `data-nav-key` (the monster id in decimal) in a grid;
+//   - the sheet: the one `[role="listbox"]` (the nav kit's list), its `[role="option"]` rows;
+//   - the typing row: the `input[type="text"]` and its `label`;
+//   - the feedback line: `.mr-frame-feedback`.
+// =============================================================================
+
+/** Tabs, the sheet's rows and the Move lines carry ids the typed catalog does not have until the
+ *  catalog ships; the resolver is the real one (spy, call-through), reached through a plain-string
+ *  signature. */
+const c8bT = i18nT as unknown as (key: string) => string;
+
+const CHECK_MARK = String.fromCharCode(0x2713);
+
+const C8B_KIP = makeCard({
+  monsterId: 100n,
+  speciesName: 'Sproutle',
+  nickname: 'Kip',
+  partySlot: 0,
+});
+const C8B_MOSS = makeCard({
+  monsterId: 101n,
+  speciesName: 'Mossling',
+  nickname: '',
+  partySlot: 1,
+  currentHp: 12,
+  hpPercent: 60,
+});
+const C8B_EMBER = makeCard({
+  monsterId: 200n,
+  speciesName: 'Emberfang',
+  nickname: '',
+  partySlot: BOX_SLOT,
+});
+const C8B_DUSK = makeCard({
+  monsterId: 300n,
+  speciesName: 'Duskling',
+  nickname: '',
+  partySlot: BOX_SLOT,
+});
+const C8B_TIDE = makeCard({
+  monsterId: 400n,
+  speciesName: 'Tidepup',
+  nickname: '',
+  partySlot: BOX_SLOT,
+});
+
+const c8bParty = (): (MonsterCardViewModel | null)[] => [C8B_KIP, C8B_MOSS, null, null, null, null];
+const c8bBox = (): MonsterCardViewModel[] => [C8B_EMBER, C8B_DUSK, C8B_TIDE];
+
+const C8B_OPENING: MonstersPaint = {
+  tab: 'storage',
+  activeKey: null,
+  sheet: null,
+  summary: null,
+  nickname: null,
+  commit: null,
+  feedback: null,
+};
+const c8bPaint = (over: Partial<MonstersPaint> = {}): MonstersPaint => ({
+  ...C8B_OPENING,
+  ...over,
+});
+
+interface C8bMounted {
+  parent: HTMLElement;
+  view: BoxView;
+  root: HTMLElement;
+  callbacks: BoxViewCallbacks;
+}
+
+/** A mounted, hidden view with nothing drawn. */
+function c8bMount(callbacks: Partial<BoxViewCallbacks> = {}): C8bMounted {
+  const parent = document.createElement('div');
+  document.body.appendChild(parent);
+  const all: BoxViewCallbacks = { ...makeBoxCallbacks(), ...callbacks };
+  const view = new BoxView(parent, all);
+  return { parent, view, root: parent.firstElementChild as HTMLElement, callbacks: all };
+}
+
+/** A mounted view with both lists drawn and the frame shown. */
+function c8bOpen(callbacks: Partial<BoxViewCallbacks> = {}): C8bMounted {
+  const mounted = c8bMount(callbacks);
+  mounted.view.refresh(c8bParty(), c8bBox());
+  mounted.view.show();
+  return mounted;
+}
+
+/** Whether `el` or an ancestor below `root` has inline `display:none` (the root itself is the
+ *  frame's own show / hide and is not part of "this element is hidden"). */
+function c8bHidden(el: Element, root: Element): boolean {
+  expect(root.contains(el), 'the element is inside the frame root').toBe(true);
+  for (let n: Element | null = el; n !== null && n !== root; n = n.parentElement) {
+    if ((n as HTMLElement).style.display === 'none') return true;
+  }
+  return false;
+}
+
+const c8bTabs = (root: Element): HTMLElement[] => [
+  ...root.querySelectorAll<HTMLElement>('[role="tablist"] [role="tab"]'),
+];
+const c8bSelected = (root: Element): (string | null)[] =>
+  c8bTabs(root).map((tab) => tab.getAttribute('aria-selected'));
+const c8bCards = (grid: Element): HTMLElement[] => [
+  ...grid.querySelectorAll<HTMLElement>('[data-nav-key]'),
+];
+const c8bKeys = (grid: Element): (string | undefined)[] =>
+  c8bCards(grid).map((el) => el.dataset.navKey);
+const c8bMarked = (root: Element): HTMLElement[] => [
+  ...root.querySelectorAll<HTMLElement>('[aria-current="true"]'),
+];
+
+/** The elements of the frame that are not inside either panel's grid. */
+function c8bOutsidePanels(parent: HTMLElement, root: HTMLElement): HTMLElement[] {
+  const grids = [partyGridOf(parent), boxGridOf(parent)];
+  return [...root.querySelectorAll<HTMLElement>('*')].filter(
+    (el) => !grids.some((grid) => grid.contains(el)),
+  );
+}
+
+/** The shown elements outside the panels whose own text includes `text`. */
+const c8bShownText = (parent: HTMLElement, root: HTMLElement, text: string): HTMLElement[] =>
+  c8bOutsidePanels(parent, root).filter(
+    (el) => ctl7bOwnText(el).includes(text) && !c8bHidden(el, root),
+  );
+
+const c8bAnchor = (root: Element): HTMLElement =>
+  root.querySelector('[data-testid="box-title"]') as HTMLElement;
+
+function c8bHealButton(root: Element): HTMLButtonElement {
+  const found = [...root.querySelectorAll('button')].find(
+    (b) => b.textContent === i18nT('box.heal'),
+  );
+  expect(found, 'precondition: the header carries the Heal Party button').toBeDefined();
+  return found as HTMLButtonElement;
+}
+
+const c8bInput = (root: Element): HTMLInputElement | null =>
+  root.querySelector<HTMLInputElement>('input[type="text"]');
+
+function c8bRow(card: MonsterCardViewModel, edit: number, tab: 'party' | 'storage' = 'party') {
+  return c8bPaint({
+    tab,
+    activeKey: String(card.monsterId),
+    sheet: { card, action: 'nickname' },
+    nickname: { card, edit },
+  });
+}
+
+describe('BoxView ctl-8b: the tabs and the cursor (CTL8B.1)', () => {
+  it('CTL8B-1-VIEW-TABS: paint draws a tablist with a Party tab and a Storage tab labelled from the catalog, the painted one aria-selected; the inactive panel and its heading are hidden by inline display:none (never only the hidden attribute, never removed) while their text stays in the root', () => {
+    // WRONG IMPL KILLED: no tab strip; tabs labelled with literals or in the other order; both
+    // tabs (or neither) selected; the inactive panel hidden by the `hidden` attribute alone (the
+    // panels carry inline display:grid, which beats it: both panels would show); an inactive
+    // panel REMOVED (the recruit / evolution e2e helpers scan the root's text for every monster's
+    // `HP cur/max`, Party and Box alike); the inactive heading left showing; a switch that hides
+    // both panels; and a repaint that does not follow the tab.
+    const { parent, view, root } = c8bOpen();
+    const party = partyGridOf(parent);
+    const box = boxGridOf(parent);
+    const partyHeading = findByTag(parent, 'h3', 'Party');
+    const boxHeading = findByTag(parent, 'h3', 'Box');
+
+    view.paint(c8bPaint({ tab: 'party' }));
+    const tabs = c8bTabs(root);
+    expect(
+      tabs.map((tab) => tab.textContent),
+      'the two tabs, Party first, labelled by t()',
+    ).toEqual([c8bT('box.tab.party'), c8bT('box.tab.storage')]);
+    expect(
+      tabs.map((tab) => tab.textContent),
+      'English bytes',
+    ).toEqual(['Party', 'Storage']);
+    expect(c8bSelected(root), 'Party painted: the first tab selected').toEqual(['true', 'false']);
+    expect(c8bHidden(party, root), 'the Party grid shows').toBe(false);
+    expect(c8bHidden(partyHeading, root), 'the Party heading shows').toBe(false);
+    expect(c8bHidden(box, root), 'the Box grid is hidden by inline display:none').toBe(true);
+    expect(c8bHidden(boxHeading, root), 'and so is its heading').toBe(true);
+    expect(root.textContent ?? '', 'the hidden panel`s text stays in the root').toContain(
+      'Emberfang',
+    );
+    expect(box.textContent ?? '').toContain('Duskling');
+
+    view.paint(c8bPaint({ tab: 'storage' }));
+    expect(c8bSelected(root), 'Storage painted: the second tab selected').toEqual([
+      'false',
+      'true',
+    ]);
+    expect(c8bHidden(box, root)).toBe(false);
+    expect(c8bHidden(boxHeading, root)).toBe(false);
+    expect(c8bHidden(party, root), 'the Party grid is hidden now').toBe(true);
+    expect(c8bHidden(partyHeading, root)).toBe(true);
+    expect(root.textContent ?? '', 'the hidden Party panel`s text stays').toContain('Sproutle');
+    expect(party.textContent ?? '').toContain('Mossling');
+
+    // Back to Party: the strip and the panels follow; nothing was removed along the way.
+    view.paint(c8bPaint({ tab: 'party' }));
+    expect(c8bSelected(root)).toEqual(['true', 'false']);
+    expect(c8bHidden(party, root)).toBe(false);
+    expect(c8bHidden(box, root)).toBe(true);
+    expect(c8bTabs(root), 'still exactly two tabs').toHaveLength(2);
+    expect(root.querySelectorAll('[role="tablist"]'), 'one tablist').toHaveLength(1);
+  });
+
+  it('CTL8B-1-VIEW-CURSOR: after a paint exactly one card wrapper carries aria-current="true" and class is-active, it is the card whose data-nav-key is the painted key in the painted tab, and it is not styled .mr-nav-item; no key means the first card of the tab; a later paint moves the mark; a later refresh() keeps it', () => {
+    // WRONG IMPL KILLED: no cursor mark; a mark on every card or on none; a mark that is only a
+    // class (a screen reader hears nothing: aria-current is the non-colour half); a card styled
+    // `.mr-nav-item` (its `.is-active` rule paints dark text on a dark card, or light on #ccc); a
+    // mark on a card of the INACTIVE tab; a null key that marks nothing (a Storage opened by KeyB
+    // would show no cursor before the first step); a stale mark after a repaint (two cards marked);
+    // a key matched by index instead of by id; and a mark lost when a batch re-renders the lists
+    // (refresh() rebuilds every card, and the screen paints nothing after a batch that changed
+    // nothing).
+    const { parent, view, root } = c8bOpen();
+    const party = partyGridOf(parent);
+    const box = boxGridOf(parent);
+    expect(c8bKeys(party), 'cards are keyed by monster id, in order').toEqual(['100', '101']);
+    expect(c8bKeys(box)).toEqual(['200', '300', '400']);
+
+    const expectMark = (grid: Element, key: string, when: string): void => {
+      const marked = c8bMarked(root);
+      expect(marked, `${when}: exactly one aria-current`).toHaveLength(1);
+      const [card] = marked as [HTMLElement];
+      expect(card.dataset.navKey, `${when}: the card of key ${key}`).toBe(key);
+      expect(grid.contains(card), `${when}: in the painted tab's grid`).toBe(true);
+      expect(card.classList.contains('is-active'), `${when}: class is-active`).toBe(true);
+      expect(card.classList.contains('mr-nav-item'), `${when}: not styled as a nav row`).toBe(
+        false,
+      );
+      for (const other of [...c8bCards(party), ...c8bCards(box)]) {
+        expect(other.classList.contains('mr-nav-item'), `${when}: no card is a nav row`).toBe(
+          false,
+        );
+        if (other === card) continue;
+        expect(other.classList.contains('is-active'), `${when}: ${other.dataset.navKey}`).toBe(
+          false,
+        );
+      }
+    };
+
+    view.paint(c8bPaint({ tab: 'storage', activeKey: '300' }));
+    expectMark(box, '300', 'storage 300');
+    view.paint(c8bPaint({ tab: 'storage', activeKey: '400' }));
+    expectMark(box, '400', 'storage 400 (the mark moved)');
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101' }));
+    expectMark(party, '101', 'party 101 (no mark left in Storage)');
+
+    // No key: the first card of the active tab.
+    view.paint(c8bPaint({ tab: 'party', activeKey: null }));
+    expectMark(party, '100', 'party, no key');
+    view.paint(c8bPaint({ tab: 'storage', activeKey: null }));
+    expectMark(box, '200', 'storage, no key');
+
+    // A batch re-renders the lists: the kept paint is re-applied to the new cards.
+    view.paint(c8bPaint({ tab: 'storage', activeKey: '400' }));
+    view.refresh(c8bParty(), c8bBox());
+    expectMark(box, '400', 'after refresh()');
+    view.refresh(c8bParty(), c8bBox());
+    expectMark(box, '400', 'after a second refresh()');
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101' }));
+    view.refresh(c8bParty(), c8bBox());
+    expectMark(party, '101', 'party after refresh()');
+  });
+});
+
+describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B.2)', () => {
+  it('CTL8B-2-VIEW-SHEET: a sheet paint shows a list of Summary, Nickname and Move (catalog labels, in that order) with the painted action as the active row, names the card, and sits in the DOM before both panels; a null sheet hides it by inline display:none and a later sheet shows again', () => {
+    // WRONG IMPL KILLED: no sheet; labels from literals or in another order; no active row, or the
+    // active row ignoring the painted action; a sheet that does not name its monster (the player
+    // cannot tell which one A opened), or one that keeps the PREVIOUS monster's name; a sheet
+    // placed after the panels (Escape-then-Enter in the typing row focuses the first non-text
+    // control: the To Party / To Box buttons of the panels would win it and a card's Move would
+    // run); a null sheet that leaves the list showing, or removes the element (the focus rescue
+    // and the e2e text scans rely on hide-not-remove).
+    const { parent, view, root } = c8bOpen();
+    const party = partyGridOf(parent);
+    const box = boxGridOf(parent);
+
+    view.paint(
+      c8bPaint({
+        tab: 'party',
+        activeKey: '100',
+        sheet: { card: C8B_KIP, action: 'nickname' },
+      }),
+    );
+    const sheet = root.querySelector<HTMLElement>('[role="listbox"]');
+    expect(sheet, 'the sheet is the nav list').not.toBeNull();
+    const list = sheet as HTMLElement;
+    const rows = [...list.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(
+      rows.map((row) => row.textContent),
+      'Summary, Nickname, Move: the catalog labels in order',
+    ).toEqual([c8bT('box.sheet.summary'), c8bT('box.sheet.nickname'), c8bT('box.sheet.move')]);
+    expect(
+      rows.map((row) => row.textContent),
+      'English bytes',
+    ).toEqual(['Summary', 'Nickname', 'Move']);
+    const activeRows = (): (string | null)[] =>
+      [...list.querySelectorAll<HTMLElement>('[role="option"].is-active')].map(
+        (row) => row.textContent,
+      );
+    expect(activeRows(), 'the painted action is the active row').toEqual([
+      c8bT('box.sheet.nickname'),
+    ]);
+    expect(
+      rows.map((row) => row.getAttribute('aria-selected')),
+      'and the only selected one',
+    ).toEqual(['false', 'true', 'false']);
+    expect(c8bHidden(list, root), 'the sheet shows').toBe(false);
+    expect(
+      c8bShownText(parent, root, 'Kip'),
+      'the card`s name is shown, outside the panels',
+    ).not.toEqual([]);
+
+    // The painted action moves the active row.
+    view.paint(
+      c8bPaint({ tab: 'party', activeKey: '100', sheet: { card: C8B_KIP, action: 'move' } }),
+    );
+    expect(activeRows()).toEqual([c8bT('box.sheet.move')]);
+    view.paint(
+      c8bPaint({ tab: 'party', activeKey: '100', sheet: { card: C8B_KIP, action: 'summary' } }),
+    );
+    expect(activeRows()).toEqual([c8bT('box.sheet.summary')]);
+
+    // DOM order: the sheet precedes both panels and is inside neither.
+    for (const [name, grid] of [
+      ['Party', party],
+      ['Box', box],
+    ] as const) {
+      expect(
+        grid.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_PRECEDING,
+        `the sheet comes before the ${name} panel`,
+      ).not.toBe(0);
+      expect(grid.contains(list), `the sheet is not inside the ${name} panel`).toBe(false);
+    }
+
+    // Another monster, another tab: its own name replaces the first one (a nickname-less card
+    // shows its species), and the sheet is still the same list.
+    view.paint(
+      c8bPaint({
+        tab: 'storage',
+        activeKey: '200',
+        sheet: { card: C8B_EMBER, action: 'summary' },
+      }),
+    );
+    expect(c8bShownText(parent, root, 'Emberfang'), 'the new name').not.toEqual([]);
+    expect(c8bShownText(parent, root, 'Kip'), 'the old name is not left showing').toEqual([]);
+    expect(c8bHidden(list, root)).toBe(false);
+
+    // A null sheet hides it by inline display, keeping the node.
+    view.paint(c8bPaint({ tab: 'storage', activeKey: '200' }));
+    expect(root.contains(list), 'the sheet node is kept').toBe(true);
+    expect(c8bHidden(list, root), 'and hidden by inline display:none').toBe(true);
+    expect(c8bShownText(parent, root, 'Emberfang'), 'no name left showing').toEqual([]);
+
+    // And a later sheet shows it again.
+    view.paint(
+      c8bPaint({ tab: 'storage', activeKey: '300', sheet: { card: C8B_DUSK, action: 'summary' } }),
+    );
+    expect(c8bHidden(list, root)).toBe(false);
+    expect(c8bShownText(parent, root, 'Duskling')).not.toEqual([]);
+  });
+
+  it('CTL8B-2-VIEW-FEEDBACK: a feedback paint shows one .mr-frame-feedback[data-feedback="ok"] line reading the catalog text of the Move (no check mark in the text: it is a CSS glyph); a null paint leaves no line showing', () => {
+    // WRONG IMPL KILLED: no line; text from a literal or the wrong direction's text; a "✓" typed
+    // into the text (the CSS ::before would draw a second one); a line without the class or the
+    // data-feedback="ok" the stylesheet keys on (it would be unstyled, and the check mark would
+    // never draw); two lines; and a line that survives a null paint (a stale "Moved to party"
+    // under the next action).
+    const { root, view } = c8bOpen();
+    const shownLines = (): HTMLElement[] =>
+      [...root.querySelectorAll<HTMLElement>('.mr-frame-feedback')].filter(
+        (el) => !c8bHidden(el, root) && (el.textContent ?? '') !== '',
+      );
+    expect(shownLines(), 'no line before any feedback').toEqual([]);
+
+    view.paint(c8bPaint({ feedback: 'movedToParty' }));
+    let lines = shownLines();
+    expect(lines, 'exactly one line').toHaveLength(1);
+    expect((lines[0] as HTMLElement).getAttribute('data-feedback')).toBe('ok');
+    expect((lines[0] as HTMLElement).textContent).toBe(c8bT('box.feedback.movedToParty'));
+    expect((lines[0] as HTMLElement).textContent).toBe('Moved to party');
+    expect((lines[0] as HTMLElement).textContent ?? '', 'no glyph in the text').not.toContain(
+      CHECK_MARK,
+    );
+
+    view.paint(c8bPaint({ feedback: 'movedToBox' }));
+    lines = shownLines();
+    expect(lines, 'still one line').toHaveLength(1);
+    expect((lines[0] as HTMLElement).getAttribute('data-feedback')).toBe('ok');
+    expect((lines[0] as HTMLElement).textContent).toBe(c8bT('box.feedback.movedToBox'));
+    expect((lines[0] as HTMLElement).textContent).toBe('Moved to storage');
+
+    view.paint(c8bPaint({ feedback: null }));
+    expect(shownLines(), 'a null paint clears the line').toEqual([]);
+    view.paint(c8bPaint({ feedback: 'movedToParty' }));
+    expect(shownLines(), 'and a later one shows it again').toHaveLength(1);
+  });
+
+  it('the summary pane names the monster outside the panels while painted and leaves nothing showing when the summary is null', () => {
+    // WRONG IMPL KILLED: a summary paint that draws nothing (A on Summary would look dead), one
+    // that draws into a panel's grid (a refresh() would wipe it), and a pane that stays after the
+    // screen returned to the sheet.
+    const { parent, view, root } = c8bOpen();
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101' }));
+    expect(c8bShownText(parent, root, 'Mossling'), 'no summary yet').toEqual([]);
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101', summary: C8B_MOSS }));
+    expect(c8bShownText(parent, root, 'Mossling'), 'the summary names its monster').not.toEqual([]);
+    view.refresh(c8bParty(), c8bBox());
+    expect(c8bShownText(parent, root, 'Mossling'), 'a batch render keeps it').not.toEqual([]);
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101' }));
+    expect(c8bShownText(parent, root, 'Mossling'), 'a null summary hides it').toEqual([]);
+  });
+});
+
+describe('BoxView ctl-8b: the nickname row (CTL8B.3)', () => {
+  it('CTL8B-3-VIEW-ROW: a nickname paint shows a labelled text field prefilled with the card`s nickname (empty for a card with none) and focuses it; the Heal Party button is disabled while it is shown and enabled again when it closes; closing it moves focus to the title anchor and sends nothing; the field keeps keys out of the page`s hotkeys but lets Enter through', async () => {
+    // WRONG IMPL KILLED: no row; a field with no label (a screen reader names it nothing); a
+    // prefill of the species name for a nickname-less card (the commit would then rename the
+    // monster to its species); a field never focused (the player types into the page: main.ts's
+    // ladder takes B, I, E, Q and the rest); a key shield that also eats Enter (A would never
+    // commit) or none at all ("b" in the field would close the box); a Heal Party button left
+    // enabled (Escape then Enter focuses the first enabled non-text control and would HEAL); a
+    // row left showing after it closed; focus left on the hidden field (it falls to <body> and
+    // the frame loses the keyboard).
+    const { view, root, callbacks } = c8bOpen();
+    await s4FlushMacrotask(); // show()'s deferred anchor focus lands before the row opens
+    const heal = c8bHealButton(root);
+    expect(heal.disabled, 'Heal Party starts enabled').toBe(false);
+
+    view.paint(c8bRow(C8B_KIP, 1));
+    const input = c8bInput(root);
+    expect(input, 'the row`s text field').not.toBeNull();
+    const field = input as HTMLInputElement;
+    expect(c8bHidden(field, root), 'the field shows').toBe(false);
+    expect(field.value, 'prefilled with the nickname').toBe('Kip');
+    expect(document.activeElement, 'and focused').toBe(field);
+    const labels = [...root.querySelectorAll('label')].filter(
+      (l) => l.textContent === i18nT('box.rename.prompt'),
+    );
+    expect(labels, 'one label reading the catalog text').toHaveLength(1);
+    const lab = labels[0] as HTMLLabelElement;
+    expect(
+      (lab.htmlFor !== '' && lab.htmlFor === field.id) || lab.contains(field),
+      'the label belongs to the field',
+    ).toBe(true);
+    expect(c8bHidden(lab, root), 'and shows').toBe(false);
+    expect(heal.disabled, 'Heal Party is disabled while the row is shown').toBe(true);
+
+    // The key shield: the page's hotkey ladder listens on window and must not see typed letters.
+    const seen: string[] = [];
+    const spy = (e: Event): void => {
+      seen.push((e as KeyboardEvent).code);
+    };
+    window.addEventListener('keydown', spy);
+    try {
+      const press = (el: Element, code: string): void => {
+        el.dispatchEvent(new KeyboardEvent('keydown', { code, key: code, bubbles: true }));
+      };
+      press(document.body, 'KeyB');
+      expect(seen, 'CONTROL: a keydown on a plain element reaches window').toEqual(['KeyB']);
+      seen.length = 0;
+      for (const code of [
+        'KeyB',
+        'KeyI',
+        'KeyN',
+        'KeyQ',
+        'KeyE',
+        'KeyF',
+        'Space',
+        'Backspace',
+        'ArrowLeft',
+        'ArrowDown',
+      ]) {
+        press(field, code);
+      }
+      expect(seen, 'typed keys never reach the window ladder').toEqual([]);
+      press(field, 'Enter');
+      press(field, 'NumpadEnter');
+      expect(seen, 'Enter and NumpadEnter DO bubble: the router takes them as A').toEqual([
+        'Enter',
+        'NumpadEnter',
+      ]);
+    } finally {
+      window.removeEventListener('keydown', spy);
+    }
+
+    // The row closes (B, or A with the commit already painted): enabled again, hidden, focus on
+    // the title anchor, nothing sent.
+    view.paint(
+      c8bPaint({ tab: 'party', activeKey: '100', sheet: { card: C8B_KIP, action: 'nickname' } }),
+    );
+    expect(c8bHidden(field, root), 'the row is hidden by inline display').toBe(true);
+    expect(c8bHidden(lab, root), 'and so is its label').toBe(true);
+    expect(heal.disabled, 'Heal Party is enabled again').toBe(false);
+    expect(document.activeElement, 'focus moves to the title anchor, not <body>').toBe(
+      c8bAnchor(root),
+    );
+    expect(
+      callbacks.onSetNickname,
+      'closing without a commit sends nothing',
+    ).not.toHaveBeenCalled();
+
+    // A card with no nickname: the field is empty (never the species name), and focused.
+    view.paint(c8bRow(C8B_MOSS, 2));
+    const second = c8bInput(root) as HTMLInputElement;
+    expect(c8bHidden(second, root)).toBe(false);
+    expect(second.value, 'no nickname: empty, not "Mossling"').toBe('');
+    expect(document.activeElement).toBe(second);
+    expect(heal.disabled).toBe(true);
+  });
+
+  it('CTL8B-3-VIEW-COMMIT-ONCE: a NEW commit token sends onSetNickname(monsterId, the field`s text) exactly once, even when onSetNickname repaints; the same token again, a repaint or a refresh() never sends again; a text equal to the token`s current nickname sends nothing; each new open re-prefills the field; after the row closes focus is on the title anchor', async () => {
+    // WRONG IMPL KILLED: a commit that never reaches the callback; one sent with the card's
+    // nickname instead of the typed text, or with another monster's id; one replayed by every
+    // repaint (a batch's refresh() re-applies the kept paint: the monster would be renamed on every
+    // batch); a token compared by VALUE instead of identity (the second rename to the same text
+    // would be dropped); the token recorded AFTER the callback (a repaint inside it sends twice);
+    // a skip that is missing (the legacy prompt skipped an unchanged name), or that compares the
+    // text to the wrong value; a field that keeps the last open's text; and focus left on the
+    // hidden field.
+    const { view, root, callbacks } = c8bOpen();
+    await s4FlushMacrotask();
+    const type = (text: string): void => {
+      const field = c8bInput(root) as HTMLInputElement;
+      field.value = text;
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const closed = (commit: NicknameCommit | null): MonstersPaint =>
+      c8bPaint({
+        tab: 'party',
+        activeKey: '100',
+        sheet: { card: C8B_KIP, action: 'nickname' },
+        commit,
+      });
+    const sent = callbacks.onSetNickname;
+
+    // Round 1: type a new name and commit.
+    view.paint(c8bRow(C8B_KIP, 1));
+    type('Zed');
+    const token1: NicknameCommit = { monsterId: 100n, current: 'Kip' };
+    const commitPaint = closed(token1);
+    view.paint(commitPaint);
+    expect(sent, 'one call').toHaveBeenCalledTimes(1);
+    expect(sent).toHaveBeenCalledWith(100n, 'Zed');
+    expect(document.activeElement, 'focus on the title anchor').toBe(c8bAnchor(root));
+    expect(root.contains(document.activeElement), 'inside the frame').toBe(true);
+
+    // Replays: the same paint, an equal paint carrying the same token, a batch render.
+    view.paint(commitPaint);
+    view.paint(closed(token1));
+    view.refresh(c8bParty(), c8bBox());
+    view.refresh(c8bParty(), c8bBox());
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101' }));
+    view.paint(closed(token1));
+    expect(sent, 'the same token never sends twice').toHaveBeenCalledTimes(1);
+
+    // Round 2: the row opens again with a new edit: re-prefilled; an unchanged text sends nothing.
+    view.paint(c8bRow(C8B_KIP, 2));
+    expect((c8bInput(root) as HTMLInputElement).value, 'prefilled again, not "Zed"').toBe('Kip');
+    expect(document.activeElement, 'and focused again').toBe(c8bInput(root));
+    view.paint(closed({ monsterId: 100n, current: 'Kip' }));
+    expect(sent, 'text equal to the current nickname: nothing sent').toHaveBeenCalledTimes(1);
+
+    // Round 3: another name; the token's `current` is what the text is compared with.
+    view.paint(c8bRow(C8B_KIP, 3));
+    type('Pip');
+    view.paint(closed({ monsterId: 100n, current: 'Pip' }));
+    expect(
+      sent,
+      'the text equals the live nickname (a batch renamed it): nothing sent',
+    ).toHaveBeenCalledTimes(1);
+    view.paint(c8bRow(C8B_KIP, 4));
+    type('Pip');
+    view.paint(closed({ monsterId: 100n, current: 'Kip' }));
+    expect(sent, 'a new token with a different current: sent').toHaveBeenCalledTimes(2);
+    expect(sent).toHaveBeenLastCalledWith(100n, 'Pip');
+
+    // A commit for another monster names THAT monster.
+    view.paint(c8bRow(C8B_MOSS, 5));
+    type('Mo');
+    view.paint(
+      c8bPaint({
+        tab: 'party',
+        activeKey: '101',
+        sheet: { card: C8B_MOSS, action: 'nickname' },
+        commit: { monsterId: 101n, current: '' },
+      }),
+    );
+    expect(sent).toHaveBeenCalledTimes(3);
+    expect(sent).toHaveBeenLastCalledWith(101n, 'Mo');
+
+    // Re-entrancy: a callback that repaints with the very same token must not send again.
+    let repaint: (() => void) | undefined;
+    const reentrant = c8bOpen({
+      onSetNickname: vi.fn(() => {
+        repaint?.();
+      }),
+    });
+    await s4FlushMacrotask();
+    const again: NicknameCommit = { monsterId: 100n, current: 'Kip' };
+    const againPaint = c8bPaint({
+      tab: 'party',
+      activeKey: '100',
+      sheet: { card: C8B_KIP, action: 'nickname' },
+      commit: again,
+    });
+    repaint = () => reentrant.view.paint(againPaint);
+    reentrant.view.paint(c8bRow(C8B_KIP, 1));
+    (c8bInput(reentrant.root) as HTMLInputElement).value = 'Zed';
+    reentrant.view.paint(againPaint);
+    expect(
+      reentrant.callbacks.onSetNickname,
+      'the token is recorded before the callback runs: a repaint inside it sends nothing more',
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it('CTL8B-3-NO-WINDOW-PROMPT: driving the whole nickname flow through paint, then clicking every control the frame has, never calls window.prompt; the typed name reaches onSetNickname through the field alone', async () => {
+    // WRONG IMPL KILLED: a Rename button (or any control) that still opens the native prompt (the
+    // legacy path this slice deletes: a modal the D-pad and the typing-mode rule cannot reach), a
+    // nickname flow that reaches the callback through prompt() instead of the field, and a field
+    // flow that does not work at all (the callback is asserted, so "no prompt" cannot pass by
+    // doing nothing).
+    const promptSpy = vi.fn(() => null);
+    vi.stubGlobal('prompt', promptSpy);
+    try {
+      const { view, root, callbacks } = c8bOpen();
+      await s4FlushMacrotask();
+      view.paint(c8bRow(C8B_KIP, 1));
+      const field = c8bInput(root) as HTMLInputElement;
+      expect(field, 'the typing row exists').not.toBeNull();
+      field.value = 'Zed';
+      view.paint(
+        c8bPaint({
+          tab: 'party',
+          activeKey: '100',
+          sheet: { card: C8B_KIP, action: 'nickname' },
+          commit: { monsterId: 100n, current: 'Kip' },
+        }),
+      );
+      expect(callbacks.onSetNickname, 'the field`s text arrives').toHaveBeenCalledWith(100n, 'Zed');
+
+      for (const button of [...root.querySelectorAll('button')]) button.click();
+      for (const tab of c8bTabs(root)) tab.click();
+      for (const card of [...c8bCards(partyGridOf(root)), ...c8bCards(boxGridOf(root))]) {
+        card.click();
+      }
+      expect(promptSpy, 'no click opened the native prompt').not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('CTL8B-3-ESCAPE-KEEPS-TEXT: with the row open and text typed, a blur (Escape stops typing) followed by a repaint of the SAME edit, or by a batch refresh(), keeps the typed text and does not refocus the field; a NEW edit prefills and focuses it again', async () => {
+    // WRONG IMPL KILLED: a paint that refocuses the field every time (Escape would be undone by
+    // the next batch: the player could never leave the field to press Enter as A), one that
+    // re-prefills on every paint (the half-typed name is wiped by an unrelated batch), one that
+    // rebuilds the field on refresh() (the text and the caret are lost), and the over-correction:
+    // a view that never refocuses, even for a NEW open of the row.
+    const { view, root } = c8bOpen();
+    await s4FlushMacrotask();
+    view.paint(c8bRow(C8B_KIP, 1));
+    const field = c8bInput(root) as HTMLInputElement;
+    expect(document.activeElement, 'precondition: the open focuses the field').toBe(field);
+    field.value = 'Zed';
+    field.blur();
+    expect(document.activeElement, 'precondition: the blur took focus off the field').not.toBe(
+      c8bInput(root),
+    );
+
+    // An observe-driven repaint of the same edit (a new paint object, the same edit number).
+    view.paint(c8bRow(C8B_KIP, 1));
+    expect((c8bInput(root) as HTMLInputElement).value, 'the typed text is kept').toBe('Zed');
+    expect(document.activeElement, 'and focus is not taken back').not.toBe(c8bInput(root));
+    expect(c8bHidden(c8bInput(root) as HTMLInputElement, root), 'the row is still open').toBe(
+      false,
+    );
+
+    // A batch render re-applies the kept paint.
+    view.refresh(c8bParty(), c8bBox());
+    expect((c8bInput(root) as HTMLInputElement).value, 'kept across refresh()').toBe('Zed');
+    expect(document.activeElement, 'not refocused by refresh()').not.toBe(c8bInput(root));
+
+    // A NEW edit prefills and focuses again.
+    view.paint(c8bRow(C8B_KIP, 2));
+    expect((c8bInput(root) as HTMLInputElement).value, 'a new edit re-prefills').toBe('Kip');
+    expect(document.activeElement, 'and refocuses').toBe(c8bInput(root));
+  });
+});
+
+describe('BoxView ctl-8b: opening on Storage and the catalog (CTL8B.4)', () => {
+  it('CTL8B-4-VIEW-OPENS-ON-STORAGE: a view shown with no paint (lists drawn before or after the show) has the Storage tab selected, the Party panel hidden and the first Storage card marked; hide() then show() returns to that even after a Party paint with a sheet open; a repeat show() on a visible frame keeps what was painted', () => {
+    // WRONG IMPL KILLED: a frame that opens on Party (KeyB would show the party first, against
+    // CTL8B.4: the first paint only comes with the first button press); an opening that needs a
+    // paint to happen first; a reopen that keeps the last visit's tab, cursor or open sheet (the
+    // frame would reopen over a sheet the screen state has already forgotten); and the opposite
+    // over-correction, a show() that resets the paint every time it is called (main.ts calls
+    // show() on an already-open frame from several paths, and each call would throw the player's
+    // tab away).
+    const expectStorage = (m: { parent: HTMLElement; root: HTMLElement }, when: string): void => {
+      expect(c8bSelected(m.root), `${when}: the Storage tab is selected`).toEqual([
+        'false',
+        'true',
+      ]);
+      expect(c8bHidden(partyGridOf(m.parent), m.root), `${when}: the Party panel is hidden`).toBe(
+        true,
+      );
+      expect(c8bHidden(boxGridOf(m.parent), m.root), `${when}: the Storage panel shows`).toBe(
+        false,
+      );
+      const marked = c8bMarked(m.root);
+      expect(marked, `${when}: one card marked`).toHaveLength(1);
+      expect((marked[0] as HTMLElement).dataset.navKey, `${when}: the first storage card`).toBe(
+        '200',
+      );
+    };
+
+    // Lists drawn, then shown: no paint at all.
+    const a = c8bMount();
+    a.view.refresh(c8bParty(), c8bBox());
+    a.view.show();
+    expectStorage(a, 'refresh then show');
+
+    // Shown, then the lists arrive.
+    const b = c8bMount();
+    b.view.show();
+    b.view.refresh(c8bParty(), c8bBox());
+    expectStorage(b, 'show then refresh');
+
+    // A Party paint with the sheet open, then hide and show again.
+    const c = c8bOpen();
+    c.view.paint(
+      c8bPaint({
+        tab: 'party',
+        activeKey: '101',
+        sheet: { card: C8B_MOSS, action: 'move' },
+      }),
+    );
+    expect(c8bSelected(c.root), 'fixture: Party was painted').toEqual(['true', 'false']);
+    const list = c.root.querySelector<HTMLElement>('[role="listbox"]') as HTMLElement;
+    expect(c8bHidden(list, c.root), 'fixture: the sheet was showing').toBe(false);
+    c.view.hide();
+    c.view.show();
+    expectStorage(c, 'hide then show');
+    expect(c8bHidden(list, c.root), 'the old sheet is not showing after a reopen').toBe(true);
+    expect(c8bShownText(c.parent, c.root, 'Mossling'), 'nor is its name').toEqual([]);
+
+    // A repeat show() on a visible frame keeps the paint.
+    const d = c8bOpen();
+    d.view.paint(c8bPaint({ tab: 'party', activeKey: '101' }));
+    d.view.show();
+    expect(c8bSelected(d.root), 'a repeat show() keeps the painted tab').toEqual(['true', 'false']);
+    expect((c8bMarked(d.root)[0] as HTMLElement).dataset.navKey, 'and the cursor').toBe('101');
+  });
+
+  it('every string the Monsters paint writes is resolver output: under «key» sentinels the tabs, the sheet rows, the typing row`s label and the Move lines read their catalog keys and no English roster word appears outside a sentinel', () => {
+    // WRONG IMPL KILLED: a tab, sheet row, label or feedback line written from a literal (it would
+    // read English in a French boot; the roster scan names the word), a label under the wrong
+    // key, and a forged «...» span. The roster and the id set are the m24s4 BX ones, extended by
+    // ctl-8b's seven ids. Mounted, hidden and empty: every string below is written under the mocks.
+    const { view, root } = c8bMount();
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      vi.mocked(i18nTf).mockImplementation(
+        (key: string, params: unknown) => `«${key}|${JSON.stringify(params)}»`,
+      );
+      view.refresh(c8bParty(), c8bBox());
+      view.show();
+      view.paint(
+        c8bPaint({
+          tab: 'party',
+          activeKey: '100',
+          sheet: { card: C8B_KIP, action: 'nickname' },
+          nickname: { card: C8B_KIP, edit: 1 },
+          feedback: 'movedToParty',
+        }),
+      );
+      const first = m24s4BxWalkSubtree(root);
+      m24s4BxAssertNoRosterWord(first, 'tabs, sheet, typing row and a Move line');
+      const joined = first.join('\n');
+      for (const key of [
+        'box.tab.party',
+        'box.tab.storage',
+        'box.sheet.summary',
+        'box.sheet.nickname',
+        'box.sheet.move',
+        'box.rename.prompt',
+        'box.feedback.movedToParty',
+      ]) {
+        expect(joined, `«${key}» is rendered`).toContain(`«${key}»`);
+      }
+
+      view.paint(c8bPaint({ tab: 'storage', activeKey: '200', feedback: 'movedToBox' }));
+      const second = m24s4BxWalkSubtree(root);
+      m24s4BxAssertNoRosterWord(second, 'the other Move line');
+      expect(second.join('\n')).toContain('«box.feedback.movedToBox»');
+
+      view.paint(c8bPaint({ tab: 'storage', activeKey: '200', summary: C8B_EMBER }));
+      m24s4BxAssertNoRosterWord(m24s4BxWalkSubtree(root), 'the summary pane');
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+      vi.mocked(i18nTf).mockRestore();
+    }
   });
 });
