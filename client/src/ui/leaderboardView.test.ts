@@ -665,3 +665,83 @@ describe('LeaderboardView — overlay a11y wiring on the show/hide edge (m23-s3)
     expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ctl-8s (CTL8S.3): the Social frame's chrome. main.ts builds ONE chrome element and moves it into
+// whichever Social panel shows, through that panel's `hostChrome(el)`: `el` becomes the root's
+// FIRST child, so a tab strip ctl-8d paints there sits above the board (ctl-8d may not touch this
+// file), nothing else on the root changes, and a second call with `el` already first is a no-op.
+//
+// happy-dom limit (measured on ctl-4): re-inserting a node before itself records no mutation and
+// keeps focus here, so an unconditional `prepend(el)` on an `el` already first is invisible at this
+// tier. A remove-then-insert is not: it records two mutations.
+// ---------------------------------------------------------------------------
+
+describe('LeaderboardView.hostChrome (ctl-8s, CTL8S.3)', () => {
+  it('CTL8S-3-HOST-CHROME-BOARD: hostChrome(el) moves el out of wherever it was to be the FIRST child of #leaderboard-overlay; the title and the list, their order and ids, the hidden shell and its dialog state are unchanged; a render keeps it first; a second call with el already first records no mutation and keeps focus inside el', async () => {
+    // WRONG IMPL KILLED: an append (el lands under the list); a clone (the node main.ts paints is
+    // not the node shown, and the original stays where it was); a host that also shows the board
+    // (its `visible` getter reads the root's display, so main.ts would see Rankings open) or opens
+    // its dialog; one that replaces the root's children (the title and the list are gone, and the
+    // next render throws on a missing list); a host into the list instead of the root (the next
+    // render's replaceChildren() would delete the chrome); and a re-host that removes el and
+    // inserts it again when it is already first.
+    const { overlay, list } = mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    const before = [...overlay.children];
+    expect(
+      before.map((c) => c.id),
+      'precondition: the shell children',
+    ).toEqual(['leaderboard-title', 'leaderboard-list']);
+    const elsewhere = document.createElement('div');
+    document.body.appendChild(elsewhere);
+    const chrome = document.createElement('div');
+    const tab = document.createElement('button');
+    chrome.appendChild(tab);
+    elsewhere.appendChild(chrome);
+
+    view.hostChrome(chrome);
+
+    expect(overlay.firstElementChild, 'el is the first child of the root').toBe(chrome);
+    expect(chrome.parentElement, 'moved, not cloned').toBe(overlay);
+    expect(elsewhere.childElementCount, 'and no longer where it was').toBe(0);
+    expect(overlay.childElementCount, 'one child more, nothing replaced').toBe(before.length + 1);
+    for (const [i, child] of before.entries()) {
+      expect(overlay.children[i + 1], `#${child.id}: kept, in its order`).toBe(child);
+    }
+    expect(
+      before.map((c) => c.id),
+      'their ids are unchanged',
+    ).toEqual(['leaderboard-title', 'leaderboard-list']);
+    expect(overlay.id).toBe('leaderboard-overlay');
+    expect(overlay.style.display, 'the shell stays hidden').toBe('none');
+    expect(view.visible, 'the board stays hidden').toBe(false);
+    expect(overlay.getAttribute('aria-label'), 'no dialog was opened').toBeNull();
+
+    // The board renders as before, below the chrome.
+    view.render(makeVm([makeRow('aaa', 'Alice', 1200)]));
+    expect(list.querySelectorAll('li'), 'the list still renders').toHaveLength(1);
+    expect(overlay.firstElementChild, 'a render keeps the chrome first').toBe(chrome);
+
+    // On the shown board, a second host of the element already first moves nothing.
+    view.show();
+    await flushMacrotask();
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((batch) => {
+      records.push(...batch);
+    });
+    observer.observe(overlay, { childList: true });
+    tab.focus();
+    expect(document.activeElement, 'precondition: focus is on a tab inside the chrome').toBe(tab);
+    view.hostChrome(chrome);
+    await flushMacrotask();
+    observer.disconnect();
+    expect(records.length, 'no node was removed or inserted').toBe(0);
+    expect(document.activeElement, 'focus inside the chrome survives').toBe(tab);
+    expect(overlay.firstElementChild).toBe(chrome);
+    expect(overlay.childElementCount).toBe(before.length + 1);
+    expect(view.visible, 'the shown board stays shown').toBe(true);
+
+    teardown();
+  });
+});

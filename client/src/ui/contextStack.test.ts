@@ -35,6 +35,7 @@ import {
   contextStep,
   continuedBattleId,
   type Edge,
+  type FrameId,
   isBareBattle,
   mirrorEdges,
   movementEnabled,
@@ -44,34 +45,56 @@ import {
   reconcile,
   SCREEN_POLICY,
   type ServerView,
+  SOCIAL_FRAME,
+  SOCIAL_PANELS,
   type Stack,
+  socialPanel,
   stackDiff,
   type UpperFrame,
   WORLD_STACK,
 } from './contextStack';
 import { OVERLAY_IDS, type OverlayId } from './overlayRegistry';
-import type { Command as ScreenCommand } from './screens/types';
+import type { Command as ScreenCommand, SocialPanelId, SocialTab } from './screens/types';
 
 // --- builders -----------------------------------------------------------------------------
+// ctl-8s (named intentional change): the builders and `frameId` take and return a FrameId, the
+// overlay ids plus the Social frame. Were: OverlayId.
 const WORLD: BaseFrame = { kind: 'world' };
 const battle = (battleId: string): BaseFrame => ({ kind: 'battle', battleId });
-const screen = (id: OverlayId): UpperFrame => ({ kind: 'screen', id });
+const screen = (id: FrameId): UpperFrame => ({ kind: 'screen', id });
 /** A screen frame opened over battle `battleId` (ctl-6c): the optional `overBattle` stamp. */
-const stamped = (id: OverlayId, battleId: string): UpperFrame =>
+const stamped = (id: FrameId, battleId: string): UpperFrame =>
   ({ kind: 'screen', id, overBattle: battleId }) as UpperFrame;
-const prompt = (id: OverlayId): UpperFrame => ({ kind: 'prompt', id });
-const textEntry = (owner: OverlayId): UpperFrame => ({ kind: 'textEntry', owner });
+const prompt = (id: FrameId): UpperFrame => ({ kind: 'prompt', id });
+const textEntry = (owner: FrameId): UpperFrame => ({ kind: 'textEntry', owner });
 const stackOf = (base: BaseFrame, ...upper: UpperFrame[]): Stack => [base, ...upper];
 
 const pushEdge = (frame: UpperFrame): Edge => ({ kind: 'push', frame });
-const popEdge = (id: OverlayId): Edge => ({ kind: 'pop', id });
+const popEdge = (id: FrameId): Edge => ({ kind: 'pop', id });
 const baseEdge = (base: BaseFrame): Edge => ({ kind: 'base', base });
 
 const CLEAR: readonly Command[] = [{ kind: 'clearHeld' }];
 const NONE: readonly Command[] = [];
 
-/** The overlay id a frame stands for: a text-entry frame is keyed by its owner. */
-const frameId = (f: UpperFrame): OverlayId => (f.kind === 'textEntry' ? f.owner : f.id);
+/** The frame id a frame stands for: a text-entry frame is keyed by its owner. */
+const frameId = (f: UpperFrame): FrameId => (f.kind === 'textEntry' ? f.owner : f.id);
+
+/** Every frame id (ctl-8s): the overlay ids and the Social frame, spelled here and never read from
+ *  the module under test. */
+const FRAME_IDS: readonly FrameId[] = [...OVERLAY_IDS, 'social'];
+/** The three overlays the Social frame hosts as its panels. HARD-CODED. */
+const PANEL_IDS: readonly OverlayId[] = ['tradeView', 'pvpView', 'leaderboardView'];
+const isPanel = (id: FrameId): boolean => (PANEL_IDS as readonly FrameId[]).includes(id);
+/** The test's own oracle of the ctl-8s fold: the frame ids a visible list mirrors as, in visible
+ *  order, with the three panels folded into ONE `social` at the first visible panel's position. */
+function foldPanels(visible: readonly OverlayId[]): FrameId[] {
+  const out: FrameId[] = [];
+  for (const id of visible) {
+    if (!isPanel(id)) out.push(id);
+    else if (!out.includes('social')) out.push('social');
+  }
+  return out;
+}
 
 /** Fold a list of edges through `contextStep`, collecting every command in order. */
 function fold(
@@ -266,20 +289,27 @@ describe('context stack: pure core (ctl-2)', () => {
     // one that emits a base edge, one that mirrors battleView over a battle base (the base IS
     // its presentation) or drops it over a world base, one that pushes before it pops, and one
     // whose second pass is not empty.
-    const nonBattleIds = OVERLAY_IDS.filter((id) => id !== 'battleView');
+    //
+    // ctl-8s INTENTIONAL CHANGE (CTL8S.3, from the spec): a visible trade, pvp or leaderboard
+    // overlay now mirrors as the ONE Social frame, so the expected ids are the visible list folded
+    // by `foldPanels` (the test's own oracle), and the start stacks draw from the frame ids a stack
+    // can hold now: every overlay id but the three panels, plus `social` (a panel id is never pushed
+    // any more, so a stack holding one is not a reachable shape). Every claim below is unchanged.
+    const stackIds = FRAME_IDS.filter((id) => !isPanel(id));
+    const nonBattleIds = stackIds.filter((id) => id !== 'battleView');
     const baseArb: fc.Arbitrary<BaseFrame> = fc.oneof(
       fc.constant<BaseFrame>(WORLD),
       fc
         .constantFrom('1', '42', '9007199254740993')
         .map((battleId): BaseFrame => ({ kind: 'battle', battleId })),
     );
-    const frameArb = (id: OverlayId): fc.Arbitrary<UpperFrame> =>
+    const frameArb = (id: FrameId): fc.Arbitrary<UpperFrame> =>
       fc.constantFrom<UpperFrame>(screen(id), prompt(id), textEntry(id));
     // A random starting stack (unique ids, any frame kind, any order; no battleView over a
     // battle base, which is not a reachable shape) and a random visible list in random order.
     const scenarioArb = baseArb.chain((base) =>
       fc
-        .shuffledSubarray([...(base.kind === 'battle' ? nonBattleIds : OVERLAY_IDS)])
+        .shuffledSubarray([...(base.kind === 'battle' ? nonBattleIds : stackIds)])
         .chain((startIds) =>
           fc
             .tuple(fc.tuple(...startIds.map(frameArb)), fc.shuffledSubarray([...OVERLAY_IDS]))
@@ -293,11 +323,12 @@ describe('context stack: pure core (ctl-2)', () => {
     // tracks the base; it is not weakened (a missing or wrong stamp still fails).
     fc.assert(
       fc.property(scenarioArb, ({ base, start, visible }) => {
-        const pushFrame = (id: OverlayId): UpperFrame =>
+        const pushFrame = (id: FrameId): UpperFrame =>
           base.kind === 'battle' ? stamped(id, base.battleId) : screen(id);
         const from = stackOf(base, ...start);
-        const effective =
-          base.kind === 'battle' ? visible.filter((id) => id !== 'battleView') : visible;
+        const effective = foldPanels(
+          base.kind === 'battle' ? visible.filter((id) => id !== 'battleView') : visible,
+        );
         const startIds = start.map(frameId);
         const keptFrames = start.filter((f) => effective.includes(frameId(f)));
         const newIds = effective.filter((id) => !startIds.includes(id));
@@ -340,20 +371,26 @@ describe('context stack: pure core (ctl-2)', () => {
     );
 
     // Table rows: the cases the property above treats generically, pinned by name.
+    // ctl-8s INTENTIONAL CHANGE: the rows that used the pvp and trade overlays as two generic ids
+    // use the quest log, help and shop (pvp and trade now fold into the Social frame, pinned in
+    // CTL8S-3-MIRROR-ONE-FRAME). Each row keeps its claim; the visible order still differs from the
+    // registry order in the first one.
     expect(
-      mirrorEdges(WORLD_STACK, [PVP, BOX]),
+      mirrorEdges(WORLD_STACK, ['questLogView', BOX]),
       'two ids visible in one sync are pushed in visible order, not registry order',
-    ).toEqual([pushEdge(screen(PVP)), pushEdge(screen(BOX))]);
+    ).toEqual([pushEdge(screen('questLogView')), pushEdge(screen(BOX))]);
     expect(
-      mirrorEdges(stackOf(WORLD, screen(BOX), screen(PVP), screen(TRADE)), [PVP]),
+      mirrorEdges(stackOf(WORLD, screen(BOX), screen('questLogView'), screen('helpView')), [
+        'questLogView',
+      ]),
       'hidden overlays are popped in stack order',
-    ).toEqual([popEdge(BOX), popEdge(TRADE)]);
+    ).toEqual([popEdge(BOX), popEdge('helpView')]);
     expect(
-      mirrorEdges(stackOf(WORLD, screen(BOX), screen(TRADE)), [PVP, TRADE]),
+      mirrorEdges(stackOf(WORLD, screen(BOX), screen('helpView')), ['questLogView', 'helpView']),
       'pops come before pushes',
-    ).toEqual([popEdge(BOX), pushEdge(screen(PVP))]);
+    ).toEqual([popEdge(BOX), pushEdge(screen('questLogView'))]);
     expect(
-      mirrorEdges(stackOf(WORLD, prompt(PVP), textEntry(RENAME)), [PVP, RENAME]),
+      mirrorEdges(stackOf(WORLD, prompt('shopView'), textEntry(RENAME)), ['shopView', RENAME]),
       'a prompt or text-entry frame already holding a visible id is left alone',
     ).toEqual([]);
     expect(
@@ -402,16 +439,18 @@ describe('context stack: pure core (ctl-2)', () => {
     }
   });
 
-  it('CTL2-1-POLICY: SCREEN_POLICY is total over the overlay ids and dialogue is server-owned and suspended by a battle', () => {
+  it('CTL2-1-POLICY: SCREEN_POLICY is total over the frame ids (the overlay ids and the Social frame) and dialogue is server-owned and suspended by a battle', () => {
     // WRONG IMPL KILLED: a policy table that omits an overlay or carries a stray key, and a
     // dialogue row that lets a battle drop a live server conversation.
-    expect([...Object.keys(SCREEN_POLICY)].sort()).toEqual([...OVERLAY_IDS].sort());
+    // ctl-8s INTENTIONAL CHANGE (CTL8S.3): total over FRAME_IDS, which add `social`. Was:
+    // OVERLAY_IDS.
+    expect([...Object.keys(SCREEN_POLICY)].sort()).toEqual([...FRAME_IDS].sort());
     expect(SCREEN_POLICY.dialogueView).toEqual({
       owner: 'server',
       onBattle: 'suspend',
       battleSafe: false,
     });
-    for (const id of OVERLAY_IDS) {
+    for (const id of FRAME_IDS) {
       const row = SCREEN_POLICY[id];
       expect(['player', 'server'], `${id}.owner`).toContain(row.owner);
       expect(['drop', 'suspend'], `${id}.onBattle`).toContain(row.onBattle);
@@ -582,7 +621,8 @@ describe('context stack: pure core (ctl-2)', () => {
 // The expectations below are HARD-CODED literals, never derived from SCREEN_POLICY: a table that is
 // read from the very policy it guards shrinks with it and stays green.
 
-type CloseId = Exclude<OverlayId, 'dialogueView'>;
+// ctl-8s: a close names a frame id (the Social frame included). Was: Exclude<OverlayId, ...>.
+type CloseId = Exclude<FrameId, 'dialogueView'>;
 const closeCmd = (id: CloseId): Command => ({ kind: 'close', id });
 const serverView = (
   ongoingBattleId: string | undefined,
@@ -597,7 +637,7 @@ const closeIds = (commands: readonly Command[]): readonly string[] =>
   commands.flatMap((c) => (c.kind === 'close' ? [c.id] : []));
 const clearHeldCount = (commands: readonly Command[]): number =>
   commands.filter((c) => c.kind === 'clearHeld').length;
-const upperIdsOf = (s: Stack): readonly OverlayId[] =>
+const upperIdsOf = (s: Stack): readonly FrameId[] =>
   (s.slice(1) as readonly UpperFrame[]).map(frameId);
 const sortedIds = (xs: readonly string[]): string[] => [...xs].sort();
 
@@ -753,8 +793,10 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
     // would be torn off the stack), one that marks a player overlay `suspend`, and a row that goes
     // missing. The third column, battleSafe, is ctl-6c's: its exact literal is pinned in the ctl-6c
     // block of this file ("the SCREEN_POLICY battleSafe column is exactly the literal table").
+    // ctl-8s INTENTIONAL CHANGE (CTL8S.3): the literal gains the Social frame, a player frame that
+    // a battle drops, and is checked against the 18 frame ids. Was: 17 overlay ids.
     const expected: ReadonlyArray<
-      readonly [OverlayId, 'player' | 'server', 'drop' | 'suspend' | undefined]
+      readonly [FrameId, 'player' | 'server', 'drop' | 'suspend' | undefined]
     > = [
       ['battleView', 'server', undefined],
       ['dialogueView', 'server', 'suspend'],
@@ -773,9 +815,10 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
       ['menuView', 'player', 'drop'],
       ['claimView', 'player', 'drop'],
       ['privacyView', 'player', 'drop'],
+      ['social', 'player', 'drop'],
     ];
-    expect(expected, 'ANTI-VACUITY: the literal covers all 17 overlay ids').toHaveLength(17);
-    expect(sortedIds(expected.map(([id]) => id))).toEqual(sortedIds(OVERLAY_IDS));
+    expect(expected, 'ANTI-VACUITY: the literal covers all 18 frame ids').toHaveLength(18);
+    expect(sortedIds(expected.map(([id]) => id))).toEqual(sortedIds(FRAME_IDS));
     for (const [id, owner, onBattle] of expected) {
       expect(SCREEN_POLICY[id].owner, `${id}.owner`).toBe(owner);
       if (onBattle !== undefined) {
@@ -1553,15 +1596,16 @@ describe('context stack: player pops, close diff and the outcome rule (ctl-6b)',
 // The expected sets below are HARD-CODED literals, never derived from SCREEN_POLICY or from the
 // policy table: a table read from the very thing it guards shrinks with it and stays green.
 
-/** The four overlays SCREEN_POLICY marks battleSafe besides battleView itself. HARD-CODED. */
-const SAFE_OVER_BATTLE: readonly OverlayId[] = [
+/** The four overlays SCREEN_POLICY marks battleSafe besides battleView itself. HARD-CODED.
+ *  ctl-8s: typed as frame ids, so a frame's id can be looked up in it (the Social frame is not). */
+const SAFE_OVER_BATTLE: readonly FrameId[] = [
   'questLogView',
   'leaderboardView',
   'helpView',
   'menuView',
 ];
 /** The other eleven player overlays: not battleSafe. HARD-CODED. */
-const UNSAFE_OVER_BATTLE: readonly OverlayId[] = [
+const UNSAFE_OVER_BATTLE: readonly FrameId[] = [
   'boxView',
   'raisingView',
   'evolutionView',
@@ -1846,7 +1890,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     // The oracle is written from the spec, never from SCREEN_POLICY.
     let keptStamped = 0;
     let droppedStamped = 0;
-    const stampArb = (id: OverlayId): fc.Arbitrary<UpperFrame> =>
+    const stampArb = (id: FrameId): fc.Arbitrary<UpperFrame> =>
       fc.constantFrom<UpperFrame>(screen(id), stamped(id, '1'), stamped(id, '2'));
     const scenario = fc
       .tuple(
@@ -1897,7 +1941,10 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     // and a dialogue marked battle-safe would read as a screen the battle allows. A box, a shop or a
     // trade marked battle-safe would stay open over a battle; a menu or help that is not would close
     // on the next batch after Start opened it (CTL6C.1). A row that goes missing fails the totality.
-    const expected: Readonly<Record<OverlayId, boolean>> = {
+    // ctl-8s INTENTIONAL CHANGE (CTL8S.3): the literal and the totality span the 18 frame ids; the
+    // Social frame is NOT battle-safe (its Trades and Challenges panels issue refused commands), so
+    // there are still exactly five battle-safe ids. Was: 17 overlay ids.
+    const expected: Readonly<Record<FrameId, boolean>> = {
       battleView: true,
       boxView: false,
       raisingView: false,
@@ -1915,18 +1962,19 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       menuView: true,
       claimView: false,
       privacyView: false,
+      social: false,
     };
     expect(sortedIds(Object.keys(expected)), 'ANTI-VACUITY: the literal covers every id').toEqual(
-      sortedIds(OVERLAY_IDS),
+      sortedIds(FRAME_IDS),
     );
     expect(sortedIds(Object.keys(SCREEN_POLICY)), 'the policy has no extra row').toEqual(
-      sortedIds(OVERLAY_IDS),
+      sortedIds(FRAME_IDS),
     );
-    for (const id of OVERLAY_IDS) {
+    for (const id of FRAME_IDS) {
       expect(SCREEN_POLICY[id].battleSafe, `${id}.battleSafe`).toBe(expected[id]);
     }
     expect(
-      OVERLAY_IDS.filter((id) => SCREEN_POLICY[id].battleSafe),
+      FRAME_IDS.filter((id) => SCREEN_POLICY[id].battleSafe),
       'exactly five battle-safe frame ids',
     ).toHaveLength(5);
   });
@@ -2290,5 +2338,265 @@ describe('the greet-then-shop pick over a battle (ctl-7d, CTL7D.5)', () => {
       }
     }
     expect(checked, 'ANTI-VACUITY: 2 picks x (4 battle + 4 world stacks)').toBe(16);
+  });
+});
+
+// ==========================================================================================
+// ctl-8s: one Social frame over three panels (CTL8S.3)
+// ==========================================================================================
+//
+// The trade, pvp and leaderboard overlays are the PANELS of one frame, `social`. `mirrorEdges`
+// folds them: the first visible panel's position holds ONE `{ kind: 'screen', id: 'social' }`
+// (stamped over a battle as any frame is), a panel id is never pushed, a stack that already holds
+// `social` raises no edge whichever panel is visible (a panel switch is not a frame change, so the
+// frame's adapter state survives it), and `social` pops when no panel is visible.
+// `socialPanel(tab)` names the panel a requested tab shows. `SCREEN_POLICY.social` is a player
+// frame that a battle drops and that is not battle-safe; the three panel rows stay as they were.
+//
+// Every expected edge and policy row below is a HARD-CODED literal, never read from the module.
+
+describe('context stack: the one Social frame (ctl-8s, CTL8S.3)', () => {
+  it('CTL8S-3-SOCIAL-PANEL: socialPanel names the panel of each requested tab, challenges the pvp panel, rankings the leaderboard and trades, players and no tab the trade panel; SOCIAL_PANELS is the three panels in that order and SOCIAL_FRAME is `social`', () => {
+    // WRONG IMPL KILLED: a crossed map (challenges to the leaderboard: P would open Rankings), a
+    // `null` or `players` tab that names no panel (`undefined`: the open path would show nothing
+    // and push no frame), a players tab sent to the pvp panel, a panel list missing one (a mirror
+    // or close built from it would leave that root painted), and a frame id other than `social`
+    // (every stack read and e2e selector in this slice names it).
+    expect(SOCIAL_FRAME, 'the Social frame id').toBe('social');
+    expect(SOCIAL_PANELS, 'the three panels, in order').toEqual([
+      'tradeView',
+      'pvpView',
+      'leaderboardView',
+    ]);
+    const rows: ReadonlyArray<readonly [SocialTab | null, SocialPanelId]> = [
+      ['trades', 'tradeView'],
+      ['challenges', 'pvpView'],
+      ['rankings', 'leaderboardView'],
+      ['players', 'tradeView'],
+      [null, 'tradeView'],
+    ];
+    let checked = 0;
+    for (const [tab, panel] of rows) {
+      expect(socialPanel(tab), `${String(tab)} shows the ${panel} panel`).toBe(panel);
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: the four tabs and no tab').toBe(5);
+    expect(
+      [...new Set(rows.map(([tab]) => socialPanel(tab)))].sort(),
+      'every panel is reached by some tab',
+    ).toEqual(['leaderboardView', 'pvpView', 'tradeView']);
+  });
+
+  it('CTL8S-3-MIRROR-ONE-FRAME: mirrorEdges folds the trade, pvp and leaderboard overlays into ONE social frame at the first visible panel`s position, stamped over a battle like any frame; it never pushes a panel frame; a stack holding social raises no edge whichever panels are visible; with no panel visible social pops; SCREEN_POLICY.social drops on a battle and is not battle-safe, the panel rows unchanged; and reconcile closes a social frame when a battle, an outcome or a conversation arrives', () => {
+    // WRONG IMPL KILLED: today's mirror (one frame per visible panel: U, P and L push three
+    // different ids); a mirror that pushes `social` AND the panel; one that pushes `social` once
+    // per visible panel; one that appends `social` after the other frames instead of at the first
+    // panel's place; one that pops and re-pushes `social` when the visible panel changes (the
+    // frame's state would be reset by every tab switch); one that never pops it (a closed Social
+    // would leave the world frozen under a phantom frame); a `social` push that skips the stamping
+    // rule every other frame follows (unstamped over its own battle, or stamped in the sync that
+    // brought the battle); a Social policy row that is battle-safe or server-owned (a battle or a
+    // conversation would leave the trade and challenge controls painted under it); a panel row
+    // changed with it (the main menu's battle rule reads those rows); and a reconcile that cannot
+    // close `social`.
+    const SOCIAL = screen('social');
+    const pushed = (edges: readonly Edge[]): readonly UpperFrame[] =>
+      edges.flatMap((e) => (e.kind === 'push' ? [e.frame] : []));
+
+    // Each panel alone: ONE push of the Social frame, stamped exactly as any other frame.
+    let alone = 0;
+    for (const panel of PANEL_IDS) {
+      expect(mirrorEdges(deepFrozen(WORLD_STACK), [panel]), `${panel} alone at the world`).toEqual([
+        pushEdge(SOCIAL),
+      ]);
+      expect(
+        mirrorEdges(deepFrozen(stackOf(battle('7'))), [panel]),
+        `${panel} over the battle it was opened over: stamped`,
+      ).toEqual([pushEdge(stamped('social', '7'))]);
+      const flipped = mirrorEdges(deepFrozen(stackOf(battle('7'))), [panel], WORLD);
+      expect(flipped, `${panel} first mirrored in the sync that brought the battle`).toEqual([
+        pushEdge(SOCIAL),
+      ]);
+      expect(
+        Object.hasOwn(pushed(flipped)[0] as UpperFrame, 'overBattle'),
+        `${panel}: no overBattle property at all`,
+      ).toBe(false);
+      alone += 1;
+    }
+    expect(alone, 'ANTI-VACUITY: three panels').toBe(3);
+
+    // Two or three panels in one sync, in any order: still ONE Social frame.
+    const groups: ReadonlyArray<readonly OverlayId[]> = [
+      ['tradeView', 'pvpView'],
+      ['pvpView', 'tradeView'],
+      ['leaderboardView', 'tradeView'],
+      ['pvpView', 'leaderboardView'],
+      ['tradeView', 'pvpView', 'leaderboardView'],
+      ['leaderboardView', 'pvpView', 'tradeView'],
+    ];
+    for (const group of groups) {
+      expect(mirrorEdges(deepFrozen(WORLD_STACK), group), group.join(' + ')).toEqual([
+        pushEdge(SOCIAL),
+      ]);
+    }
+
+    // At the first visible panel's position, among other frames, in visible order.
+    expect(
+      mirrorEdges(deepFrozen(WORLD_STACK), [BOX, 'pvpView', 'questLogView', 'tradeView']),
+      'social takes the first panel`s place',
+    ).toEqual([pushEdge(screen(BOX)), pushEdge(SOCIAL), pushEdge(screen('questLogView'))]);
+    expect(
+      mirrorEdges(deepFrozen(WORLD_STACK), ['leaderboardView', 'menuView']),
+      'a panel listed first: social first',
+    ).toEqual([pushEdge(SOCIAL), pushEdge(screen('menuView'))]);
+
+    // Social on the stack and ANY panel visible: no edge at all.
+    const shownSets: ReadonlyArray<readonly OverlayId[]> = [
+      ['tradeView'],
+      ['pvpView'],
+      ['leaderboardView'],
+      ['tradeView', 'pvpView'],
+      ['pvpView', 'leaderboardView'],
+      ['tradeView', 'leaderboardView'],
+      ['tradeView', 'pvpView', 'leaderboardView'],
+    ];
+    let still = 0;
+    for (const shown of shownSets) {
+      const label = shown.join(' + ');
+      expect(mirrorEdges(deepFrozen(stackOf(WORLD, SOCIAL)), shown), `social, ${label}`).toEqual(
+        [],
+      );
+      expect(
+        mirrorEdges(deepFrozen(stackOf(WORLD, screen('menuView'), SOCIAL)), ['menuView', ...shown]),
+        `social over the menu, ${label}`,
+      ).toEqual([]);
+      expect(
+        mirrorEdges(deepFrozen(stackOf(battle('7'), stamped('social', '7'))), shown),
+        `a stamped social over its battle, ${label}`,
+      ).toEqual([]);
+      still += 1;
+    }
+    expect(still, 'ANTI-VACUITY: every non-empty set of panels').toBe(7);
+
+    // No panel visible: social pops, by its id.
+    expect(mirrorEdges(deepFrozen(stackOf(WORLD, SOCIAL)), []), 'nothing shown').toEqual([
+      popEdge('social'),
+    ]);
+    expect(
+      mirrorEdges(deepFrozen(stackOf(WORLD, screen('menuView'), SOCIAL)), ['menuView']),
+      'the menu stays, social pops',
+    ).toEqual([popEdge('social')]);
+    expect(
+      mirrorEdges(deepFrozen(stackOf(battle('7'), stamped('social', '7'))), ['battleView']),
+      'a stamped social pops by its id too',
+    ).toEqual([popEdge('social')]);
+    // A frame shown beside a standing Social frame is pushed alone.
+    expect(
+      mirrorEdges(deepFrozen(stackOf(WORLD, SOCIAL)), ['pvpView', 'claimView']),
+      'a new frame above Social',
+    ).toEqual([pushEdge(screen('claimView'))]);
+
+    // Generated: whatever the start stack and the visible list, no panel frame is pushed, social
+    // is pushed once exactly when a panel shows and it is not on the stack, the folded stack holds
+    // social exactly while a panel shows, and a second mirror is a no-op.
+    const startPool = FRAME_IDS.filter((id) => !isPanel(id) && id !== 'battleView');
+    let multiPanel = 0;
+    let socialPushes = 0;
+    fc.assert(
+      fc.property(
+        fc.constantFrom<BaseFrame>(WORLD, battle('1')),
+        fc
+          .shuffledSubarray([...startPool])
+          .chain((ids) =>
+            fc.tuple(
+              ...ids.map((id) =>
+                fc.constantFrom<UpperFrame>(screen(id), prompt(id), textEntry(id)),
+              ),
+            ),
+          ),
+        fc.shuffledSubarray([...OVERLAY_IDS]),
+        (base, start, visible) => {
+          const from = stackOf(base, ...start);
+          const edges = mirrorEdges(deepFrozen(from), visible);
+          const pushedIds = pushed(edges).map(frameId);
+          expect(pushedIds.filter(isPanel), 'no panel frame is ever pushed').toEqual([]);
+          const anyPanel = visible.some(isPanel);
+          const socialBefore = start.some((f) => frameId(f) === 'social');
+          expect(
+            pushedIds.filter((id) => id === 'social').length,
+            'social is pushed once when a panel shows and it is not on the stack',
+          ).toBe(anyPanel && !socialBefore ? 1 : 0);
+          const folded = fold(from, edges).stack;
+          const ids = (folded.slice(1) as readonly UpperFrame[]).map(frameId);
+          expect(ids.filter(isPanel), 'no panel frame on the folded stack').toEqual([]);
+          expect(ids.includes('social'), 'social is on the stack exactly while a panel shows').toBe(
+            anyPanel,
+          );
+          expect(mirrorEdges(folded, visible), 'mirroring again is a no-op').toEqual([]);
+          if (visible.filter(isPanel).length >= 2) multiPanel += 1;
+          if (anyPanel && !socialBefore) socialPushes += 1;
+        },
+      ),
+      { numRuns: 300 },
+    );
+    expect(multiPanel, 'ANTI-VACUITY: many runs showed two or three panels').toBeGreaterThan(50);
+    expect(socialPushes, 'ANTI-VACUITY: many runs pushed the Social frame').toBeGreaterThan(50);
+
+    // The policy: a player frame a battle drops, never battle-safe; the panel rows unchanged.
+    expect(SCREEN_POLICY.social, 'the Social frame').toEqual({
+      owner: 'player',
+      onBattle: 'drop',
+      battleSafe: false,
+    });
+    expect(SCREEN_POLICY.tradeView, 'the trade panel row').toEqual({
+      owner: 'player',
+      onBattle: 'drop',
+      battleSafe: false,
+    });
+    expect(SCREEN_POLICY.pvpView, 'the pvp panel row').toEqual({
+      owner: 'player',
+      onBattle: 'drop',
+      battleSafe: false,
+    });
+    expect(SCREEN_POLICY.leaderboardView, 'the leaderboard panel row stays battle-safe').toEqual({
+      owner: 'player',
+      onBattle: 'drop',
+      battleSafe: true,
+    });
+
+    // reconcile closes a Social frame (through one `close` for `social`) when a battle arrives,
+    // over its own battle too, under a shown outcome, and when a conversation arrives.
+    const battleArrives = reconcile(deepFrozen(stackOf(WORLD, SOCIAL)), serverView('7', false));
+    expect(battleArrives.stack, 'a battle: only its base is left').toEqual(stackOf(battle('7')));
+    expect(battleArrives.commands, 'clearHeld for the base, one close for social').toEqual([
+      { kind: 'clearHeld' },
+      closeCmd('social'),
+    ]);
+    const stampedOver = reconcile(
+      deepFrozen(stackOf(battle('7'), stamped('social', '7'))),
+      serverView('7', false),
+    );
+    expect(stampedOver.stack, 'not battle-safe: dropped even over its own battle').toEqual(
+      stackOf(battle('7')),
+    );
+    expect(stampedOver.commands).toEqual([closeCmd('social')]);
+    const outcome = reconcile(
+      deepFrozen(stackOf(WORLD, SOCIAL)),
+      serverView(undefined, false, true),
+    );
+    expect(outcome.stack, 'a shown outcome drops it').toEqual(WORLD_STACK);
+    expect(outcome.commands).toEqual([closeCmd('social')]);
+    const conversation = reconcile(
+      deepFrozen(stackOf(WORLD, screen('menuView'), SOCIAL)),
+      serverView(undefined, true),
+    );
+    expect(conversation.stack, 'a conversation takes the menu and Social').toEqual(WORLD_STACK);
+    expect(conversation.commands, 'one close each, in stack order').toEqual([
+      closeCmd('menuView'),
+      closeCmd('social'),
+    ]);
+    const quiet = reconcile(deepFrozen(stackOf(WORLD, SOCIAL)), serverView(undefined, false));
+    expect(quiet.stack, 'control: nothing arrives, Social stays').toEqual(stackOf(WORLD, SOCIAL));
+    expect(quiet.commands).toEqual([]);
   });
 });

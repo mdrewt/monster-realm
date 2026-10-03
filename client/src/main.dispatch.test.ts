@@ -25,6 +25,15 @@
  * changed with it (named intentional changes): the shop's success line is now the parameterized
  * count line for what that fixture sends, and the battle case's refuse list names `pickShop`.
  *
+ * ctl-8s (the Social seam, CTL8S.1-3) adds the last describe block: a stand-in that opts in to
+ * cross-open memory, the requested Social tab on `ScreenContext`, the ONE Social frame that U, P, L,
+ * the three menu leaves and the challenge auto-show open over the trade, pvp and leaderboard roots,
+ * the composite view its adapter is lent, and a pvp panel that a batch no longer hides under the
+ * menu. Named intentional changes: CTL7C-2-BOOT-VIEWS (trade, pvp and leaderboard are no longer
+ * frames of their own: the `social` frame lends the composite), and the stub view class (its
+ * `refresh` now shows and hides the PvP stand-in by `forceVisible`, as the real PvpView does, and
+ * every stub records `hostChrome`).
+ *
  * Only the views are replaced. The booted main.ts, the router, the stack, the claim and privacy
  * models and the stubbed SDK connection are the real ones (main.controls.test.ts's harness, with
  * the connection's frozen flag and a reducer gate made controllable). The real client/index.html
@@ -39,6 +48,7 @@ import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
 import type {
   StoreBattle,
+  StoreBattleChallenge,
   StoreBattleMonster,
   StoreItemRow,
   StoreMonsterPub,
@@ -49,12 +59,17 @@ import type {
 import { COMMAND_BATTLE_POLICY } from './ui/contextStack';
 // Read ONLY by the ctl-7c view-lending case's closing check that every frame id was driven.
 import { OVERLAY_IDS } from './ui/overlayRegistry';
+import type { SocialFrameView, SocialPanelId } from './ui/screens/types';
 
 const H = vi.hoisted(() => {
   interface StubView {
     visible: boolean;
     feedback: string[];
     renders: unknown[];
+    /** ctl-8s: the `forceVisible` of every `refresh(vm, forceVisible)` (the PvP stand-in's). */
+    forced: unknown[];
+    /** ctl-8s: every element `hostChrome(el)` was handed. */
+    hosted: unknown[];
   }
   const h = {
     identity: 'ab'.repeat(32),
@@ -84,6 +99,8 @@ const H = vi.hoisted(() => {
         visible = false;
         feedback: string[] = [];
         renders: unknown[] = [];
+        forced: unknown[] = [];
+        hosted: unknown[] = [];
         constructor(...args: unknown[]) {
           h.handlers[name] = args[args.length - 1] as Record<string, unknown>;
           h.views[name] = this as unknown as StubView;
@@ -100,8 +117,20 @@ const H = vi.hoisted(() => {
         render(vm: unknown): void {
           this.renders.push(vm);
         }
-        refresh(vm: unknown): void {
+        refresh(vm: unknown, forceVisible?: unknown): void {
           this.renders.push(vm);
+          // ctl-8s (named intentional change): the PvP stand-in shows and hides on refresh as the
+          // real PvpView does (its caller's `forceVisible` decides), so a pvp panel main.ts opens
+          // or keeps is visible here, and one a batch would hide is hidden. The other views'
+          // refresh carries no such flag (the box passes two view models), so it stays a record.
+          if (name === 'PvpView') {
+            this.forced.push(forceVisible);
+            this.visible = forceVisible === true;
+          }
+        }
+        /** ctl-8s: the Social frame moves its one chrome element into the shown panel. */
+        hostChrome(el: unknown): void {
+          this.hosted.push(el);
         }
         showFeedback(message: string): void {
           this.feedback.push(message);
@@ -1620,11 +1649,16 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     ]);
   });
 
-  it('CTL7C-2-BOOT-VIEWS: every frame id lends ITS OWN view instance to its adapter`s paint: each of the eleven recorded stand-in views, and the real dialogue, quest log, heal, leaderboard, help and menu views, each shown alone and sent one routed button', async () => {
+  it('CTL7C-2-BOOT-VIEWS: every frame id lends ITS OWN view instance to its adapter`s paint: each of the nine recorded stand-in views that back a frame, the real dialogue, quest log, heal, help and menu views, and the Social frame`s composite over the trade and pvp stand-ins and the real leaderboard, each shown alone and sent one routed button', async () => {
     // WRONG IMPL KILLED: a view-lending table with a copy-pasted sibling thunk (`raisingView:
     // () => boxView` type-checks, and the raising screen's state would be painted into the box),
     // one that lends every frame the same view, one that lends a view the shell did not build
     // (a fresh instance, never shown), and one that lends nothing (no paint at all).
+    // INTENTIONAL CHANGE (ctl-8s, CTL8S.3): the trade, pvp and leaderboard overlays are no longer
+    // frames of their own: they are the panels of the ONE Social frame (`social`), whose adapter is
+    // lent a composite naming the three view instances. Was: the trade and pvp stand-ins and the
+    // real leaderboard were each driven as their own frame. Every other frame id's case is as it
+    // was, and the closing anti-vacuity check now lists `social` in place of the three panels.
     await bootReady();
     server(1000);
     seedNpcs(1010);
@@ -1638,7 +1672,9 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
       menuView: (await import('./ui/menuView')).MenuView,
     };
     const paints: Array<{ id: string; view: unknown }> = [];
-    for (const id of OVERLAY_IDS) swapAdapter(id, paintingAdapter(id, paints));
+    /** The Social frame's three panels (ctl-8s): never frames of their own. HARD-CODED. */
+    const PANELS: readonly string[] = ['tradeView', 'pvpView', 'leaderboardView'];
+    for (const id of [...OVERLAY_IDS, 'social']) swapAdapter(id, paintingAdapter(id, paints));
     /** The paints one routed button (PageUp = LB) to the top frame produced. */
     const paintsOfOnePress = (t: number): Array<{ id: string; view: unknown }> => {
       paints.length = 0;
@@ -1648,8 +1684,10 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     const covered: string[] = [];
     let t = 1100;
 
-    // The eleven stand-ins: each shown alone through its own flag, closed by its adapter's Start.
+    // The stand-ins that back a frame: each shown alone through its own flag, closed by its
+    // adapter's Start. ctl-8s: the trade and pvp stand-ins are Social panels, driven below.
     for (const [id, cls] of Object.entries(STAND_IN_CLASS)) {
+      if (PANELS.includes(id)) continue;
       const view = H.views[cls];
       if (view === undefined) throw new Error(`${cls} was never constructed by main.ts`);
       expect(stackNow(), `${id}: precondition: the bare world`).toEqual([{ kind: 'world' }]);
@@ -1671,7 +1709,8 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
       t += 100;
     }
 
-    // The six real views, each opened by its own real path and closed again.
+    // The five real views that back a frame, each opened by its own real path and closed again
+    // (ctl-8s: the leaderboard is the Social frame's Rankings panel, driven below).
     const openers: ReadonlyArray<{
       readonly id: string;
       readonly open: (at: number) => void;
@@ -1680,11 +1719,6 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
       {
         id: 'questLogView',
         open: (at) => void press('KeyQ', at),
-        close: (at) => void press('Escape', at),
-      },
-      {
-        id: 'leaderboardView',
-        open: (at) => void press('KeyL', at),
         close: (at) => void press('Escape', at),
       },
       {
@@ -1741,8 +1775,36 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
       t += 100;
     }
 
+    // ctl-8s: the Social frame, opened by its real path (U), lends its adapter the composite: the
+    // trade and pvp stand-ins main.ts built, the real leaderboard view, and one chrome element.
+    press('KeyU', t);
+    expect(stackNow(), 'social: precondition: opened alone over the world').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'social' },
+    ]);
+    const socialPainted = paintsOfOnePress(t + 10);
+    expect(
+      socialPainted.map((p) => p.id),
+      'social: one paint, by the Social frame`s own adapter',
+    ).toEqual(['social']);
+    const composite = socialPainted[0]?.view as SocialFrameView | undefined;
+    expect(composite?.trades, 'social: its trades panel is the TradeView main.ts built').toBe(
+      H.views.TradeView,
+    );
+    expect(composite?.challenges, 'social: its challenges panel is the PvpView main.ts built').toBe(
+      H.views.PvpView,
+    );
+    expect(
+      composite?.rankings,
+      'social: its rankings panel is a real LeaderboardView',
+    ).toBeInstanceOf(real.leaderboardView as never);
+    expect(composite?.chrome, 'social: one chrome element').toBeInstanceOf(HTMLElement);
+    press('Escape', t + 50);
+    expect(stackNow(), 'social: closed again').toEqual([{ kind: 'world' }]);
+    covered.push('social');
+
     expect([...covered].sort(), 'ANTI-VACUITY: every frame id lent its view').toEqual(
-      [...OVERLAY_IDS].sort(),
+      [...OVERLAY_IDS.filter((id) => !PANELS.includes(id)), 'social'].sort(),
     );
   });
 });
@@ -1888,6 +1950,8 @@ interface CtxRead {
   readonly shopId?: unknown;
   readonly healLocationId?: unknown;
   readonly reduceMotion?: unknown;
+  /** ctl-8s (CTL8S.2): the requested Social tab. */
+  readonly socialTab?: unknown;
 }
 
 /** A stand-in adapter whose view model is `pick(ctx)`, recorded on every routed LB (PageUp) press;
@@ -3152,5 +3216,646 @@ describe('main.ts batches reach observe (runtime, ctl-7d)', { sequential: true }
       { id: 'dialogueView', now: 1600 },
       { id: 'dialogueView', now: 1700 },
     ]);
+  });
+});
+
+// ==========================================================================================
+// ctl-8s: the Social seam (CTL8S.1-3)
+// ==========================================================================================
+//
+// Same harness, one fresh main.ts per case. U, P and L and the menu leaves Social › Trades /
+// Challenges / Rankings all go through ONE `openSocial(tab)`: the stack's frame is
+// `{ kind: 'screen', id: 'social' }` for each of them (today they open `tradeView`, `pvpView` and
+// `leaderboardView` frames: the Red), the tab's own root is the one shown, and `ScreenContext`
+// reads the requested tab. The trade and pvp roots are the recording stand-ins (the PvP one shows
+// and hides on `refresh(vm, forceVisible)` as the real view does); the leaderboard root is the REAL
+// view over the shell's #leaderboard-overlay. A stand-in on the `social` frame records what the
+// shell seats, lends and remembers.
+
+/** The REAL leaderboard root, from the mounted shell. */
+function boardRoot(): HTMLElement {
+  const el = document.getElementById('leaderboard-overlay');
+  if (el === null) throw new Error('#leaderboard-overlay must be in the shell');
+  return el;
+}
+
+/** Which Social roots are shown: the trade and pvp stand-ins by their flags, the REAL leaderboard
+ *  root by its display. */
+function socialShown(): string[] {
+  const shown: string[] = [];
+  if (stubView('TradeView').visible) shown.push('trades');
+  if (stubView('PvpView').visible) shown.push('challenges');
+  if (boardRoot().style.display !== 'none') shown.push('rankings');
+  return shown;
+}
+
+/** A Pending challenge from another player to the booted one. */
+function incomingChallenge(challengeId: bigint): StoreBattleChallenge {
+  return {
+    challengeId,
+    challenger: OTHER_IDENTITY,
+    target: H.identity,
+    challengerPartyIds: [],
+    status: 'Pending',
+    createdAtMs: 0n,
+  };
+}
+
+/** Open the main menu at the world and pick Social › `leaf` with the real menu keys (Down and
+ *  Enter). The menu remembers its cursor, so each level is walked with Down until the entry is
+ *  active. Returns the clock after the last press. */
+function openSocialLeaf(leaf: 'trades' | 'challenges' | 'rankings', t: number): number {
+  openMenuAtWorld(t);
+  let at = t + 10;
+  for (let i = 0; i < 8 && menuCursorNow() !== 'social'; i += 1) {
+    press('ArrowDown', at);
+    at += 10;
+  }
+  expect(menuCursorNow(), `${leaf}: precondition: the menu cursor is on Social`).toBe('social');
+  press('Enter', at);
+  at += 10;
+  for (let i = 0; i < 4 && menuCursorNow() !== leaf; i += 1) {
+    press('ArrowDown', at);
+    at += 10;
+  }
+  expect(menuCursorNow(), `${leaf}: precondition: the sub-list cursor is on ${leaf}`).toBe(leaf);
+  press('Enter', at);
+  return at + 10;
+}
+
+/** What a memory stand-in saw: each init and what it was handed, each LB step, each paint. */
+interface MemoryLog {
+  readonly inits: Array<{ readonly remembered: unknown; readonly state: object }>;
+  readonly steps: Array<{ readonly state: unknown; readonly next: object }>;
+  readonly paints: Array<{ readonly view: unknown; readonly state: unknown }>;
+}
+const newMemoryLog = (): MemoryLog => ({ inits: [], steps: [], paints: [] });
+
+/** A stand-in adapter that records init's second argument (the remembered state), answers each LB
+ *  with a NEW state and paints into the log; B and Start close its frame as the legacy adapter
+ *  does. `remember` opts it in to cross-open memory. */
+function memoryAdapter(log: MemoryLog, remember: boolean): unknown {
+  return {
+    ...(remember ? { remember: true } : {}),
+    viewModel: () => ({}),
+    init: (_vm: unknown, remembered?: unknown) => {
+      const state = { n: 0, from: remembered };
+      log.inits.push({ remembered, state });
+      return state;
+    },
+    onButton: (_vm: unknown, state: unknown, btn: Pressed) => {
+      if (btn.repeat) return { state, result: 'consumed' };
+      if (btn.button === 'LB') {
+        const prev = state as { readonly n?: number } | undefined;
+        const next = { n: (prev?.n ?? -100) + 1 };
+        log.steps.push({ state, next });
+        return { state: next, result: 'consumed' };
+      }
+      if (btn.button === 'B') return { state, result: { kind: 'pop' } };
+      if (btn.button === 'Start') return { state, result: { kind: 'popToBase' } };
+      return { state, result: 'unhandled' };
+    },
+    paint: (view: unknown, _vm: unknown, state: unknown) => {
+      log.paints.push({ view, state });
+    },
+  };
+}
+
+describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () => {
+  afterEach(teardownBoot);
+
+  it('CTL8S-1-BOOT-MEMORY: a Social stand-in that opts in is seated and painted at open with no button or batch, from init(vm, undefined) after the first connect; reopened (through another tab) its init receives the state Social was closed with; a quest-log stand-in that did not opt in starts over on each open; and after the connection`s onReconnect, even with Social open across it, the next open remembers nothing', async () => {
+    // WRONG IMPL KILLED: today's shell (opened() forgets every state: the reopen's init sees only
+    // the view model); a Social open that does not seat the frame (nothing is painted until the
+    // first button, so a remembered tab could not show at open); an open that seats with init(vm)
+    // and drops the memory; a memory kept per panel instead of per frame (a reopen through P would
+    // not see what U's visit left); a host that remembers for every adapter (the quest log would
+    // reopen where it was closed); an onReady that does not forget (a pre-join U leaks into the
+    // joined session); and an onReconnect that keeps the memory, or clears it but keeps the open
+    // frame's state (the next open would remember the previous identity's screen).
+    // --- before join: a pre-join U seeds a state; the first connect forgets it ----------------
+    await boot();
+    server(1000);
+    const social = newMemoryLog();
+    swapAdapter('social', memoryAdapter(social, true));
+    press('KeyU', 1010);
+    expect(stackNow(), 'pre-join: precondition: U opened the Social frame').toEqual([
+      WORLD_FRAME,
+      screenFrame('social'),
+    ]);
+    await pageUp(1020);
+    expect(social.steps.length, 'pre-join: precondition: the LB press stepped it').toBe(1);
+    press('Escape', 1030);
+    expect(stackNow(), 'pre-join: precondition: Start closed it').toEqual([WORLD_FRAME]);
+    opts.onReady(H.identity);
+
+    // --- joined: the open seats the frame and paints it, with no button and no batch ----------
+    const at = {
+      inits: social.inits.length,
+      steps: social.steps.length,
+      paints: social.paints.length,
+    };
+    press('KeyU', 1100);
+    expect(stackNow(), 'precondition: U opened the Social frame').toEqual([
+      WORLD_FRAME,
+      screenFrame('social'),
+    ]);
+    expect(social.inits.length - at.inits, 'the open seats the frame: one init').toBe(1);
+    const first = social.inits.at(-1);
+    expect(first?.remembered, 'the first connect forgot the pre-join state').toBeUndefined();
+    expect(social.steps.length, 'no button reached it').toBe(at.steps);
+    expect(social.paints.length - at.paints, 'painted once at open').toBe(1);
+    expect(social.paints.at(-1)?.state, 'with the state init returned').toBe(first?.state);
+
+    // --- a step, a close, and a reopen through another tab: init receives that state ----------
+    await pageUp(1200);
+    const closedWith = social.steps.at(-1)?.next;
+    expect(social.steps.at(-1)?.state, 'precondition: the LB press stepped the seated state').toBe(
+      first?.state,
+    );
+    press('KeyU', 1300);
+    expect(stackNow(), 'precondition: the same key closed Social').toEqual([WORLD_FRAME]);
+    press('KeyP', 1400);
+    expect(stackNow(), 'precondition: P opened the same Social frame').toEqual([
+      WORLD_FRAME,
+      screenFrame('social'),
+    ]);
+    const reopened = social.inits.at(-1);
+    expect(social.inits.length - at.inits, 'one more init, for the reopen').toBe(2);
+    expect(
+      reopened?.remembered,
+      'the reopen`s init receives the state Social was closed with',
+    ).toBe(closedWith);
+    expect(social.paints.at(-1)?.state, 'and paints what init returned').toBe(reopened?.state);
+    await pageUp(1500);
+    const beforeReconnect = social.steps.at(-1)?.next;
+    press('KeyP', 1600);
+    expect(stackNow(), 'precondition: the same key closed Social').toEqual([WORLD_FRAME]);
+
+    // --- a frame that did not opt in starts over on each open ---------------------------------
+    const quest = newMemoryLog();
+    swapAdapter('questLogView', memoryAdapter(quest, false));
+    let opens = 0;
+    for (const t of [1700, 1900]) {
+      press('KeyQ', t);
+      expect(stackNow(), `quest log ${opens}: precondition: opened`).toEqual([
+        WORLD_FRAME,
+        screenFrame('questLogView'),
+      ]);
+      await pageUp(t + 10);
+      press('KeyQ', t + 20);
+      expect(stackNow(), `quest log ${opens}: precondition: closed`).toEqual([WORLD_FRAME]);
+      opens += 1;
+    }
+    expect(
+      quest.inits.map((i) => i.remembered),
+      'the quest log (not opted in) starts each open from init(vm, undefined)',
+    ).toEqual([undefined, undefined]);
+    expect(quest.steps.length, 'ANTI-VACUITY: one LB per open').toBe(2);
+    for (const [i, step] of quest.steps.entries()) {
+      expect(step.state, `quest log open ${i}: the LB steps from that open's own init`).toBe(
+        quest.inits[i]?.state,
+      );
+    }
+
+    // --- a reconnect clears the memory, even with Social open and holding a state --------------
+    press('KeyU', 2100);
+    expect(stackNow()).toEqual([WORLD_FRAME, screenFrame('social')]);
+    expect(
+      social.inits.at(-1)?.remembered,
+      'precondition: this open remembered the last close',
+    ).toBe(beforeReconnect);
+    await pageUp(2110);
+    expect(social.steps.at(-1)?.state, 'precondition: the open frame holds a state').toBe(
+      social.inits.at(-1)?.state,
+    );
+    opts.onReconnect(H.identity);
+    press('KeyU', 2200);
+    expect(stackNow(), 'precondition: U opened Social after the reconnect').toEqual([
+      WORLD_FRAME,
+      screenFrame('social'),
+    ]);
+    expect(
+      social.inits.at(-1)?.remembered,
+      'after the reconnect the open remembers nothing',
+    ).toBeUndefined();
+  });
+
+  it('CTL8S-2-BOOT-SOCIAL-TAB: ScreenContext.socialTab reads null before any open, then trades, challenges and rankings after U, P and L and after each of the three menu leaves, and challenges after the challenge auto-show, already in the open`s own init; it keeps its value after Social closes and reads null after a reconnect', async () => {
+    // WRONG IMPL KILLED: no socialTab on the context (every read undefined); a value snapshotted
+    // into the context at boot instead of a live getter (null forever); a tab bound AFTER the frame
+    // is seated (the open's own init reads the previous tab); an open path that binds a fixed tab or
+    // none (P, L, a menu leaf or the auto-show reading what the last U bound); a close that clears
+    // the tab (the menu would read null after Social closes); and a reconnect that keeps it. Each
+    // open below binds a tab different from the one bound before it.
+    await bootReady();
+    server(1000);
+    const menuReads: unknown[] = [];
+    swapAdapter(
+      'menuView',
+      readingAdapter(menuReads, (ctx) => ctx.socialTab),
+    );
+    const seatReads: unknown[] = [];
+    const reads: unknown[] = [];
+    swapAdapter('social', {
+      viewModel: (ctx: CtxRead) => ctx.socialTab,
+      init: (vm: unknown) => {
+        seatReads.push(vm);
+        return undefined;
+      },
+      onButton: (vm: unknown, state: unknown, btn: Pressed) => {
+        if (btn.repeat) return { state, result: 'consumed' };
+        if (btn.button === 'LB') {
+          reads.push(vm);
+          return { state, result: 'consumed' };
+        }
+        if (btn.button === 'B') return { state, result: { kind: 'pop' } };
+        if (btn.button === 'Start') return { state, result: { kind: 'popToBase' } };
+        return { state, result: 'unhandled' };
+      },
+    });
+
+    await readAtMenu(1100);
+    expect(menuReads, 'before any Social open: null').toEqual([null]);
+
+    let t = 1200;
+    /** Social is open on `tab`: its open's init and an LB read it; `close` shuts it; the menu reads
+     *  it again afterwards. */
+    const expectTab = async (
+      label: string,
+      tab: string,
+      close: (at: number) => void,
+    ): Promise<void> => {
+      expect(stackNow(), `${label}: precondition: the Social frame is open`).toContainEqual(
+        screenFrame('social'),
+      );
+      expect(seatReads.at(-1), `${label}: the open's own init already reads ${tab}`).toBe(tab);
+      await pageUp(t + 10);
+      expect(reads.at(-1), `${label}: a read on the open frame`).toBe(tab);
+      close(t + 20);
+      expect(stackNow(), `${label}: precondition: Social closed`).toEqual([WORLD_FRAME]);
+      await readAtMenu(t + 30);
+      expect(menuReads.at(-1), `${label}: it keeps its value after Social closes`).toBe(tab);
+      t += 100;
+    };
+
+    const keys = [
+      ['KeyU', 'trades'],
+      ['KeyP', 'challenges'],
+      ['KeyL', 'rankings'],
+    ] as const;
+    for (const [code, tab] of keys) {
+      press(code, t);
+      await expectTab(code, tab, (at) => void press(code, at));
+    }
+    for (const leaf of ['trades', 'challenges', 'rankings'] as const) {
+      t = openSocialLeaf(leaf, t);
+      await expectTab(`menu Social > ${leaf}`, leaf, (at) => void press('Escape', at));
+    }
+
+    // The challenge auto-show binds challenges (rankings was the last tab bound).
+    opts.store.upsertChallenge(incomingChallenge(41n));
+    server(t);
+    expect(stackNow(), 'auto-show: precondition: the challenge opened Social').toEqual([
+      WORLD_FRAME,
+      screenFrame('social'),
+    ]);
+    expect(seatReads.at(-1), 'auto-show: the open`s own init reads challenges').toBe('challenges');
+    await pageUp(t + 10);
+    expect(reads.at(-1), 'auto-show: a read on the open frame').toBe('challenges');
+    opts.store.removeChallenge(41n);
+    server(t + 20);
+    press('KeyP', t + 30);
+    expect(stackNow(), 'auto-show: precondition: P closed Social').toEqual([WORLD_FRAME]);
+    await readAtMenu(t + 40);
+    expect(menuReads.at(-1), 'auto-show: it keeps its value after Social closes').toBe(
+      'challenges',
+    );
+
+    // A reconnect clears it.
+    opts.onReconnect(H.identity);
+    await readAtMenu(t + 100);
+    expect(menuReads.at(-1), 'after a reconnect: null').toBe(null);
+
+    expect(menuReads, 'every menu read, in order').toEqual([
+      null,
+      'trades',
+      'challenges',
+      'rankings',
+      'trades',
+      'challenges',
+      'rankings',
+      'challenges',
+      null,
+    ]);
+    expect(reads, 'every read on the open Social frame, in order').toEqual([
+      'trades',
+      'challenges',
+      'rankings',
+      'trades',
+      'challenges',
+      'rankings',
+      'challenges',
+    ]);
+    expect(seatReads, 'ANTI-VACUITY: one seat per open, seven opens').toHaveLength(7);
+  });
+
+  it('CTL8S-3-BOOT-ONE-FRAME: U, P, L and the three menu leaves each put the ONE frame { kind: screen, id: social } on the stack with only that tab`s root shown; the same key closes it; a different social key while a panel shows changes nothing; and a battle arriving closes whichever panel shows and leaves the battle base', async () => {
+    // WRONG IMPL KILLED: today's three frames (`tradeView`, `pvpView` and `leaderboardView` on
+    // `__game().stack`); an open that shows two roots (the previous panel left painted under the
+    // new one); a social key that switches the panel while another one shows (P over the trade root
+    // must stay refused, as the legacy hotkey rule is); a same key that no longer closes; a menu
+    // leaf that opens a frame of its own or closes the menu under it; and a battle drop that pops
+    // the Social frame but leaves its panel painted under the battle.
+    await bootReady();
+    server(1000);
+    const SOCIAL_STACK = [WORLD_FRAME, screenFrame('social')];
+    const keys = [
+      ['KeyU', 'trades'],
+      ['KeyP', 'challenges'],
+      ['KeyL', 'rankings'],
+    ] as const;
+    let t = 1100;
+
+    // Each key opens the one Social frame on its own root, and closes it again.
+    for (const [code, tab] of keys) {
+      press(code, t);
+      expect(stackNow(), `${code}: the one Social frame`).toEqual(SOCIAL_STACK);
+      expect(socialShown(), `${code}: only the ${tab} root is shown`).toEqual([tab]);
+      press(code, t + 10);
+      expect(stackNow(), `${code} again: Social closed`).toEqual([WORLD_FRAME]);
+      expect(socialShown(), `${code} again: no root is shown`).toEqual([]);
+      t += 100;
+    }
+
+    // A different social key while a panel shows changes nothing.
+    let pairs = 0;
+    for (const [openCode, openTab] of keys) {
+      for (const [otherCode] of keys) {
+        if (otherCode === openCode) continue;
+        const label = `${otherCode} over ${openTab}`;
+        press(openCode, t);
+        expect(socialShown(), `${label}: precondition`).toEqual([openTab]);
+        press(otherCode, t + 10);
+        expect(stackNow(), `${label}: the stack is unchanged`).toEqual(SOCIAL_STACK);
+        expect(socialShown(), `${label}: the shown root is unchanged`).toEqual([openTab]);
+        press(openCode, t + 20);
+        expect(stackNow(), `${label}: precondition: closed again`).toEqual([WORLD_FRAME]);
+        pairs += 1;
+        t += 100;
+      }
+    }
+    expect(pairs, 'ANTI-VACUITY: six ordered pairs').toBe(6);
+
+    // The three menu leaves open the same frame, above the menu.
+    for (const [, tab] of keys) {
+      t = openSocialLeaf(tab, t);
+      expect(stackNow(), `menu Social > ${tab}: the one Social frame above the menu`).toEqual([
+        WORLD_FRAME,
+        screenFrame('menuView'),
+        screenFrame('social'),
+      ]);
+      expect(socialShown(), `menu Social > ${tab}: only the ${tab} root`).toEqual([tab]);
+      press('Escape', t);
+      expect(stackNow(), `menu Social > ${tab}: Start closed both`).toEqual([WORLD_FRAME]);
+      expect(socialShown()).toEqual([]);
+      t += 100;
+    }
+
+    // A battle arriving closes whichever panel shows.
+    let battleId = BATTLE_ID;
+    for (const [code, tab] of keys) {
+      press(code, t);
+      expect(socialShown(), `${tab}: precondition: shown`).toEqual([tab]);
+      putBattle(battleId, t + 10);
+      expect(stackNow(), `${tab}: the battle leaves only its base`).toEqual([
+        { kind: 'battle', battleId: battleId.toString() },
+      ]);
+      expect(socialShown(), `${tab}: and its root is hidden`).toEqual([]);
+      dropBattle(battleId, t + 20);
+      expect(stackNow(), `${tab}: precondition: the world again`).toEqual([WORLD_FRAME]);
+      battleId += 1n;
+      t += 100;
+    }
+  });
+
+  it('CTL8S-3-BOOT-PANELS: the Social frame`s adapter is lent a composite whose trades, challenges and rankings are the three view instances and whose chrome is one element; show(pvpView), show(leaderboardView), show(tradeView) each leave exactly that root shown, the chrome hosted by it, the stack and the adapter`s state untouched; a show of the shown panel re-renders and re-hosts nothing; and a show while another frame covers Social, or with Social closed, does nothing', async () => {
+    // WRONG IMPL KILLED: a composite naming the wrong instance (a copy-pasted thunk lending the pvp
+    // view as trades); a show that leaves the previous root painted (two dialogs at once); one that
+    // pops and re-pushes the Social frame (the next button inits the adapter again: a tab switch
+    // would reset the screen); one that does not move the chrome (a tab strip stays on a hidden
+    // panel); one that re-renders the shown panel (a cursor or focus inside it is lost on every
+    // paint); one that switches panels under a frame that covers Social (a dialog opened beneath
+    // the claim overlay inverts the a11y stack); and one that opens a panel when Social is closed.
+    await bootReady();
+    server(1000);
+    const { LeaderboardView } = await import('./ui/leaderboardView');
+    const trade = stubView('TradeView');
+    const pvp = stubView('PvpView');
+    const lent: unknown[] = [];
+    const inits: object[] = [];
+    const steps: Array<{ readonly state: unknown; readonly next: object }> = [];
+    swapAdapter('social', {
+      viewModel: () => ({}),
+      init: () => {
+        const state = { n: 0 };
+        inits.push(state);
+        return state;
+      },
+      onButton: (_vm: unknown, state: unknown, btn: Pressed) => {
+        if (btn.button === 'LB' && !btn.repeat) {
+          const next = { n: ((state as { n?: number } | undefined)?.n ?? -100) + 1 };
+          steps.push({ state, next });
+          return { state: next, result: 'consumed' };
+        }
+        const closes = btn.button === 'Start' && !btn.repeat;
+        return { state, result: closes ? { kind: 'popToBase' } : 'consumed' };
+      },
+      paint: (view: unknown) => {
+        lent.push(view);
+      },
+    });
+    const SOCIAL_STACK = [WORLD_FRAME, screenFrame('social')];
+
+    press('KeyU', 1100);
+    expect(stackNow(), 'precondition: U opened the Social frame').toEqual(SOCIAL_STACK);
+    await pageUp(1110);
+    const view = lent.at(-1) as SocialFrameView | undefined;
+    if (view === undefined) throw new Error('precondition: the Social frame painted its view');
+    const kept = steps.at(-1)?.next;
+    expect(kept, 'precondition: the LB press stepped the adapter').toBeDefined();
+    expect(inits.length, 'precondition: one init').toBe(1);
+    expect(view.trades, 'trades is the TradeView main.ts built').toBe(trade);
+    expect(view.challenges, 'challenges is the PvpView main.ts built').toBe(pvp);
+    expect(view.rankings, 'rankings is a real LeaderboardView').toBeInstanceOf(LeaderboardView);
+    expect(view.chrome, 'one chrome element').toBeInstanceOf(HTMLElement);
+    expect(trade.hosted.at(-1), 'U hosted the chrome in the trade root').toBe(view.chrome);
+    expect(socialShown(), 'precondition: the trade root shows').toEqual(['trades']);
+
+    // Each switch: that root alone, the chrome hosted by it, no stack edge, the state untouched.
+    const switches: ReadonlyArray<readonly [SocialPanelId, string]> = [
+      ['pvpView', 'challenges'],
+      ['leaderboardView', 'rankings'],
+      ['tradeView', 'trades'],
+    ];
+    let switched = 0;
+    for (const [panel, tab] of switches) {
+      const stub = panel === 'pvpView' ? pvp : trade;
+      const hostedBefore = stub.hosted.length;
+      view.show(panel);
+      expect(socialShown(), `show(${panel}): that root alone`).toEqual([tab]);
+      expect(stackNow(), `show(${panel}): the stack is unchanged`).toEqual(SOCIAL_STACK);
+      if (panel === 'leaderboardView') {
+        expect(boardRoot().firstElementChild, 'the chrome is the board root`s first child').toBe(
+          view.chrome,
+        );
+        expect(view.rankings?.visible, 'the lent board is the one on screen').toBe(true);
+      } else {
+        expect(stub.hosted.length, `show(${panel}): the panel hosted the chrome once`).toBe(
+          hostedBefore + 1,
+        );
+        expect(stub.hosted.at(-1), `show(${panel}): the chrome hosted by it`).toBe(view.chrome);
+      }
+      switched += 1;
+    }
+    expect(switched, 'ANTI-VACUITY: three switches').toBe(3);
+    await pageUp(1200);
+    expect(
+      steps.at(-1)?.state,
+      'the next button steps from the state kept before the switches',
+    ).toBe(kept);
+    expect(inits.length, 'the adapter was never initialised again').toBe(1);
+
+    // A show of the panel already shown re-renders and re-hosts nothing.
+    const tradeRenders = trade.renders.length;
+    const tradeHosted = trade.hosted.length;
+    view.show('tradeView');
+    expect(trade.renders.length, 'the shown trade panel is not rendered again').toBe(tradeRenders);
+    expect(trade.hosted.length, 'nor re-hosted').toBe(tradeHosted);
+    expect(socialShown()).toEqual(['trades']);
+    view.show('pvpView');
+    const pvpRenders = pvp.renders.length;
+    const pvpHosted = pvp.hosted.length;
+    view.show('pvpView');
+    expect(pvp.renders.length, 'the shown pvp panel is not refreshed again').toBe(pvpRenders);
+    expect(pvp.hosted.length, 'nor re-hosted').toBe(pvpHosted);
+    view.show('leaderboardView');
+    const boardRow = document.getElementById('leaderboard-list')?.firstElementChild;
+    expect(boardRow, 'precondition: the board rendered a row').toBeInstanceOf(HTMLElement);
+    view.show('leaderboardView');
+    expect(
+      document.getElementById('leaderboard-list')?.firstElementChild,
+      'the shown board is not rendered again',
+    ).toBe(boardRow);
+    expect(boardRoot().firstElementChild, 'the chrome stays first').toBe(view.chrome);
+    expect(socialShown()).toEqual(['rankings']);
+
+    // Covered by another frame, Social does not switch.
+    view.show('tradeView');
+    expect(socialShown(), 'precondition: the trade root shows').toEqual(['trades']);
+    stubView('ClaimView').visible = true;
+    server(1300);
+    expect(stackNow(), 'precondition: the claim frame covers Social').toEqual([
+      ...SOCIAL_STACK,
+      screenFrame('claimView'),
+    ]);
+    const forcedBefore = pvp.forced.length;
+    view.show('pvpView');
+    expect(socialShown(), 'covered: nothing switched').toEqual(['trades']);
+    expect(pvp.forced.length, 'covered: the pvp panel was not refreshed').toBe(forcedBefore);
+    expect(stackNow()).toEqual([...SOCIAL_STACK, screenFrame('claimView')]);
+    stubView('ClaimView').visible = false;
+    server(1400);
+    expect(stackNow(), 'precondition: the claim frame closed').toEqual(SOCIAL_STACK);
+    view.show('pvpView');
+    expect(socialShown(), 'control: on top again, it switches').toEqual(['challenges']);
+
+    // Social closed: a show opens nothing.
+    press('Escape', 1500);
+    expect(stackNow(), 'precondition: Start closed Social').toEqual([WORLD_FRAME]);
+    expect(socialShown()).toEqual([]);
+    view.show('leaderboardView');
+    expect(socialShown(), 'closed: a show opens nothing').toEqual([]);
+    expect(stackNow()).toEqual([WORLD_FRAME]);
+  });
+
+  it('CTL8S-3-BOOT-AUTO-SHOW: an incoming challenge does not open Social while the quest log is open, nor over an Ongoing battle (also in the batch that brings it), and opens Social on Challenges (the pvp root alone, socialTab challenges) on the first batch with no overlay open and a world base', async () => {
+    // WRONG IMPL KILLED: today's auto-show (it pushes a `pvpView` frame of its own); an auto-show
+    // that fires over another overlay (two dialogs) or over an Ongoing battle (a challenge dialog
+    // over the fight; today the only guard is whether the battle VIEW is visible, never the stack's
+    // base, and this harness's battle stand-in never shows); one that opens Social on the trade or
+    // leaderboard root; and one that does not bind the tab (Social would open on what U last
+    // bound).
+    await bootReady();
+    server(1000);
+    const seatReads: unknown[] = [];
+    swapAdapter('social', {
+      viewModel: (ctx: CtxRead) => ctx.socialTab,
+      init: (vm: unknown) => {
+        seatReads.push(vm);
+        return undefined;
+      },
+      onButton: (_vm: unknown, state: unknown, btn: Pressed) => ({
+        state,
+        result: btn.button === 'Start' && !btn.repeat ? { kind: 'popToBase' } : 'consumed',
+      }),
+    });
+
+    // Not while the quest log is open.
+    press('KeyQ', 1100);
+    expect(stackNow(), 'quest log: precondition').toEqual([
+      WORLD_FRAME,
+      screenFrame('questLogView'),
+    ]);
+    opts.store.upsertChallenge(incomingChallenge(51n));
+    server(1200);
+    expect(stackNow(), 'quest log: no Social over it').toEqual([
+      WORLD_FRAME,
+      screenFrame('questLogView'),
+    ]);
+    expect(socialShown(), 'quest log: no Social root shown').toEqual([]);
+    press('KeyQ', 1300);
+    expect(stackNow(), 'quest log: precondition: closed').toEqual([WORLD_FRAME]);
+
+    // Not over an Ongoing battle: the challenge is still pending in the batch that brings it.
+    putBattle(BATTLE_ID, 1400);
+    expect(stackNow(), 'battle: no Social over it').toEqual([{ kind: 'battle', battleId: '101' }]);
+    expect(socialShown(), 'battle: no Social root shown').toEqual([]);
+    server(1450);
+    expect(stackNow(), 'battle: nor on the next batch').toEqual([
+      { kind: 'battle', battleId: '101' },
+    ]);
+    expect(socialShown()).toEqual([]);
+
+    // The battle ends: the first batch with no overlay and a world base opens Social on Challenges.
+    dropBattle(BATTLE_ID, 1500);
+    expect(stackNow(), 'world: the one Social frame').toEqual([WORLD_FRAME, screenFrame('social')]);
+    expect(socialShown(), 'world: the pvp root alone').toEqual(['challenges']);
+    expect(seatReads.at(-1), 'world: the requested tab is challenges').toBe('challenges');
+  });
+
+  it('CTL8S-3-BOOT-NESTED-RENDERS: Social > Challenges opened from the menu shows the pvp root above the menu, and a store batch keeps it shown, refreshed with forceVisible true', async () => {
+    // WRONG IMPL KILLED: today's pvp listener (`forceVisible` is false whenever another overlay
+    // shows, and the main menu beneath Social counts: the next batch hides the panel the player
+    // just opened); a listener that keeps it shown but stops refreshing it (its rows go stale); and
+    // one that refreshes it twice per batch.
+    await bootReady();
+    server(1000);
+    const pvp = stubView('PvpView');
+    const t = openSocialLeaf('challenges', 1100);
+    expect(pvp.visible, 'precondition: Challenges opened above the menu').toBe(true);
+    const forcedBefore = pvp.forced.length;
+    server(t + 100);
+    expect(pvp.visible, 'the batch keeps the nested Challenges panel shown').toBe(true);
+    expect(
+      pvp.forced.slice(forcedBefore),
+      'refreshed once by the batch, with forceVisible true',
+    ).toEqual([true]);
+    expect(stackNow(), 'Social stays above the menu').toEqual([
+      WORLD_FRAME,
+      screenFrame('menuView'),
+      screenFrame('social'),
+    ]);
+    expect(socialShown()).toEqual(['challenges']);
   });
 });

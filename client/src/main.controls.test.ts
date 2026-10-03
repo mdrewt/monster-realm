@@ -631,7 +631,9 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     expect(navActive(), 'precondition: the cursor is on Rankings').toBe('rankings');
     tap('Enter', 1800);
     expect(rankingsShown(), 'precondition: the leaderboard opened').toBe(true);
-    expect(stackNames()).toEqual(['world', 'menuView', 'leaderboardView']);
+    // ctl-8s (named intentional change, CTL8S.3): the leaderboard root is the Rankings panel of the
+    // ONE Social frame, so the frame above the menu is `social`. Was: 'leaderboardView'.
+    expect(stackNames()).toEqual(['world', 'menuView', 'social']);
 
     tap('Escape', 1900);
     expect(rankingsShown(), 'the leaderboard is closed').toBe(false);

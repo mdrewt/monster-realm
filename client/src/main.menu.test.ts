@@ -586,7 +586,9 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     tap('Enter', 1800);
     expect(rankingsShown(), 'the leaderboard opened').toBe(true);
     expect(menuShown(), 'the sub-list stays open beneath it').toBe(true);
-    expect(stackNames()).toEqual(['world', 'menuView', 'leaderboardView']);
+    // ctl-8s (named intentional change, CTL8S.3): the leaderboard root is the Rankings panel of the
+    // ONE Social frame, so the frame above the menu is `social`. Was: 'leaderboardView'.
+    expect(stackNames()).toEqual(['world', 'menuView', 'social']);
 
     tap('Backspace', 1900);
     expect(rankingsShown(), 'B closes the child').toBe(false);
