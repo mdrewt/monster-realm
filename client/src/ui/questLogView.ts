@@ -48,6 +48,8 @@ export class QuestLogView {
     // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.list = document.getElementById('quest-log-list')!;
     this.list.setAttribute('role', 'listbox');
+    // Named by the overlay's own label (openOverlayA11y writes it while the journal is open).
+    this.list.setAttribute('aria-labelledby', 'quest-log-overlay');
     this.detail = document.createElement('div');
     this.detail.id = 'quest-log-detail';
     this.detail.style.display = 'none';
@@ -74,6 +76,8 @@ export class QuestLogView {
 
     const open = this.rendered.active.find((q) => q.questId === this.kept.detail);
     this.detail.style.display = open === undefined ? 'none' : '';
+    if (open === undefined) this.list.removeAttribute('aria-describedby');
+    else this.list.setAttribute('aria-describedby', this.detail.id);
     this.detail.replaceChildren();
     if (open !== undefined) {
       const name = document.createElement('div');

@@ -4,12 +4,13 @@
 // An item definition carries no pocket field, so the pocket is DERIVED from what the item does:
 // a training stat makes it Food, a cured status Medicine, a recruit bonus Bait, and anything else
 // (the essence shards, an unknown definition) lands in Other. The tabs are the pockets the
-// definitions hold, ordered by the lowest item id in each, so content decides both which tabs
-// exist and their order; no item id and no fixed tab list appear here.
+// definitions hold (plus Other for an owned item with no definition), ordered by the lowest item id
+// in each, so content decides both which tabs exist and their order; no item id and no fixed tab
+// list appear here.
 import type { StoreInventory, StoreItemRow, StoreMonsterPub, StoreSpeciesRow } from '../net/store';
 import { buildBoxViewModel, buildPartyViewModel, type MonsterCardViewModel } from './boxModel';
 import { cardName, monsterKey } from './monstersModel';
-import { type ItemLayout, list, type NavLayout, tabs } from './nav';
+import { type ItemLayout, list, type NavLayout, type NavState, tabs } from './nav';
 import { buildInventoryItems } from './raisingModel';
 
 export type Pocket = 'bait' | 'food' | 'medicine' | 'other';
@@ -143,6 +144,14 @@ export function actionLayout(item: BagItemVm, hasMonsters: boolean): ItemLayout 
   rows.push({ key: 'info', enabled: true });
   return list(rows);
 }
+
+/** The actions the sheet offers for `item` in `vm`: the one rule the screen and the view share. */
+export function itemActions(vm: BagVm, item: BagItemVm): ItemLayout {
+  return actionLayout(item, vm.monsters.length > 0);
+}
+
+/** A list cursor as a nav state (the sheet and the picker are lists stepped with the kit). */
+export const listNav = (item: string | null): NavState => ({ tab: null, item, perTab: {} });
 
 /** The Feed picker: one row per monster. */
 export function pickerLayout(vm: BagVm): ItemLayout {

@@ -7,7 +7,8 @@
 // construction (never called directly by this module). Coverage-excluded shell.
 //
 // Every player-facing string this view renders is resolved through the i18n
-// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `raising.*` key from ui/i18n/catalog.en.ts;
+// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a catalog key (`raising.*`, and `bag.*` plus a
+// few shared ones for the Bag panel) from ui/i18n/catalog.en.ts;
 // the English bytes are unchanged (the catalog pins them). Model data (nickname, item
 // description, the `showFeedback` message, tiers, stats, names, counts) flow through raw or as
 // params, never as catalog text. Every `t(`/`tf(` first argument is a string LITERAL.
@@ -37,16 +38,16 @@
 // never closes a sibling (no close-before-open; boxView.test.ts S4-CROSS-VIEW-DISTINCT-ROOTS).
 
 import {
-  actionLayout,
   type BagAction,
   bagLayout,
   findItem,
+  itemActions,
+  listNav,
   type Pocket,
   pickerLayout,
 } from './bagModel';
 import { currentLocale, t, tf } from './i18n/resolver';
-import type { NavState } from './nav';
-import { renderNav, renderTabs } from './navRender';
+import { navItemId, renderNav, renderTabs } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { InventoryItemViewModel, RaisingViewModel } from './raisingModel';
 import type { BagPaint } from './screens/bagScreen';
@@ -68,8 +69,6 @@ const ACTION_LABELS: Readonly<Record<BagAction, () => string>> = {
   use: () => t('bag.action.use'),
   info: () => t('bag.action.info'),
 };
-
-const listNav = (item: string | null): NavState => ({ tab: null, item, perTab: {} });
 
 /** The Bag status line's text (empty with no status). */
 function statusText(status: BagPaint['status']): string {
@@ -252,6 +251,12 @@ export class RaisingView {
   show(): void {
     const wasVisible = this.#visible;
     this.#visible = true;
+    // A new open shows the legacy grid until its adapter paints, whatever was painted since the
+    // close (an observe may land between a hide and the stack's sync).
+    if (!wasVisible) {
+      this.#bagPaint = null;
+      this.#applyBag();
+    }
     // The strings set ONCE and never rewritten by a render are resolved
     // HERE, on EVERY show() — unconditionally, after the `wasVisible` read, before the display
     // write. See evolutionView.show() for the boot-order / locale-switch reasoning.
@@ -322,22 +327,19 @@ export class RaisingView {
         }
       },
     });
-    const empty = pocket !== undefined && pocket.items.length === 0;
+    // An empty pocket, or no pocket at all (no item definitions yet), says so.
+    const empty = pocket === undefined || pocket.items.length === 0;
     setShown(this.#bagEmpty, empty);
     this.#bagEmpty.textContent = empty ? t('raising.inventory.empty') : '';
 
     if (item !== undefined && p.phase.kind === 'sheet') {
-      renderNav(
-        this.#bagSheet,
-        actionLayout(item, vm.monsters.length > 0),
-        listNav(p.phase.action),
-        {
-          frame: 'bagsheet',
-          fill: (el, row) => {
-            el.textContent = ACTION_LABELS[row.key as BagAction]();
-          },
+      renderNav(this.#bagSheet, itemActions(vm, item), listNav(p.phase.action), {
+        frame: 'bagsheet',
+        labelledBy: navItemId('bag', nav.tab, item.key),
+        fill: (el, row) => {
+          el.textContent = ACTION_LABELS[row.key as BagAction]();
         },
-      );
+      });
     }
     if (item !== undefined && p.phase.kind === 'info') {
       this.#bagInfo.textContent = item.description || t('shop.description.none');
@@ -357,6 +359,22 @@ export class RaisingView {
     if (status?.kind === 'fed') this.#bagStatus.setAttribute('data-feedback', 'ok');
     else this.#bagStatus.removeAttribute('data-feedback');
     this.#bagStatus.textContent = statusText(status);
+
+    // A part hidden under the focus would strand it (the next key would heal focus to the world,
+    // out of the frame): hand it to the frame's anchor (boxView's rule).
+    const focused = document.activeElement;
+    if (this.#visible && focused instanceof HTMLElement && this.#hiddenInFrame(focused)) {
+      this.#titleEl.focus();
+    }
+  }
+
+  /** Whether `el` sits in the frame below an inline-hidden part (the root itself excluded). */
+  #hiddenInFrame(el: HTMLElement): boolean {
+    if (!this.#root.contains(el)) return false;
+    for (let n: HTMLElement | null = el; n !== null && n !== this.#root; n = n.parentElement) {
+      if (n.style.display === 'none') return true;
+    }
+    return false;
   }
 
   /** Display a care outcome. textContent ONLY — the message can carry a

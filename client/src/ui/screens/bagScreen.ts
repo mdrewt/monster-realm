@@ -16,14 +16,14 @@
 // the first batch's `observe` then always answers a new state and the host paints the pockets.
 import { party_size, party_slot_none } from '../../../../client-wasm/pkg/client_wasm.js';
 import {
-  actionLayout,
   type BagAction,
-  type BagItemVm,
   type BagVm,
   bagLayout,
   bagMonsters,
   buildBagVm,
   findItem,
+  itemActions,
+  listNav,
   pickerLayout,
 } from '../bagModel';
 import {
@@ -67,7 +67,8 @@ export interface BagScreenState {
   /** The pocket layout the cursor was last settled against, and its signature. */
   readonly layout: NavLayout;
   readonly layoutKey: string;
-  /** The signature of the view model last painted; null until the first paint (see the header). */
+  /** The signature of the whole view model last painted (a change anywhere repaints: cheap, and
+   *  never stale); null until the first paint (see the header). */
   readonly shown: string | null;
 }
 
@@ -84,13 +85,7 @@ const LIST: BagPhase = { kind: 'list' };
 const signature = (value: unknown): string =>
   JSON.stringify(value, (_, v: unknown) => (typeof v === 'bigint' ? `${v}` : v));
 
-/** A list cursor as a nav state, for stepping the sheet and the picker with the kit. */
-const listNav = (item: string | null): NavState => ({ tab: null, item, perTab: {} });
-
 const firstKey = (layout: ItemLayout): string | null => layout.items[0]?.key ?? null;
-
-const actionsOf = (vm: BagVm, item: BagItemVm): ItemLayout =>
-  actionLayout(item, vm.monsters.length > 0);
 
 /** The state with its `shown` brought up to `vm`: the SAME object when it already is. */
 function withShown(vm: BagVm, state: BagScreenState): BagScreenState {
@@ -114,7 +109,7 @@ function settle(vm: BagVm, state: BagScreenState): BagScreenState {
   if (phase.kind !== 'list' && item === undefined) {
     next = { ...next, phase: LIST };
   } else if (phase.kind === 'sheet' && item !== undefined) {
-    const actions = actionsOf(vm, item);
+    const actions = itemActions(vm, item);
     if (!actions.items.some((a) => a.key === phase.action)) {
       next = { ...next, phase: { ...phase, action: firstKey(actions) as BagAction } };
     }
@@ -193,7 +188,7 @@ export const bagScreen: ScreenAdapter<BagVm, BagScreenState, RaisingView> = {
           case 'activate': {
             const item = findItem(vm, Number(step.outcome.key));
             if (item === undefined) return done('consumed');
-            const action = firstKey(actionsOf(vm, item)) as BagAction;
+            const action = firstKey(itemActions(vm, item)) as BagAction;
             return to({ kind: 'sheet', itemId: item.itemId, action });
           }
           default:
@@ -204,7 +199,7 @@ export const bagScreen: ScreenAdapter<BagVm, BagScreenState, RaisingView> = {
         if (btn.button === 'B') return to(LIST);
         const item = findItem(vm, phase.itemId);
         if (item === undefined) return done('consumed');
-        const step = navStep(actionsOf(vm, item), listNav(phase.action), btn);
+        const step = navStep(itemActions(vm, item), listNav(phase.action), btn);
         const outcome = step.outcome;
         if (outcome.kind === 'disabled') {
           const status: BagStatus =
@@ -213,6 +208,7 @@ export const bagScreen: ScreenAdapter<BagVm, BagScreenState, RaisingView> = {
         }
         if (outcome.kind === 'activate') {
           if (outcome.key === 'info') return to({ kind: 'info', itemId: item.itemId });
+          if (outcome.key !== 'feed') return done('consumed');
           return to({ kind: 'picker', itemId: item.itemId, monster: vm.monsters[0]?.key ?? null });
         }
         const action = (step.state.item ?? phase.action) as BagAction;
