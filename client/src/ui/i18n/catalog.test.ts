@@ -314,7 +314,8 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   'tradePropose.review.summary': [
     { target: 'Zed', monsters: 2, offer: '25', ask: '7' },
     { target: 'Amy', monsters: 3, offer: '1000', ask: '4' },
-  ],  // ctl-8f: the Journal detail's step line (questLogView.ts).
+  ],
+  // ctl-8f: the Journal detail's step line (questLogView.ts).
   'journal.detail.step': [{ step: 0 }, { step: 4 }],
 };
 
@@ -999,7 +1000,8 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     outputA: `To Zed ${MIDDLE_DOT} Monsters: 2 ${MIDDLE_DOT} Coins: 25 ${MIDDLE_DOT} Asking: 7`,
     inputB: { target: 'Amy', monsters: 3, offer: '1000', ask: '4' },
     outputB: `To Amy ${MIDDLE_DOT} Monsters: 3 ${MIDDLE_DOT} Coins: 1000 ${MIDDLE_DOT} Asking: 4`,
-  },  // ctl-8f: the Journal detail's step line (CTL8F.3).
+  },
+  // ctl-8f: the Journal detail's step line (CTL8F.3).
   'journal.detail.step': {
     inputA: { step: 0 },
     outputA: 'Step 0',
