@@ -3569,6 +3569,33 @@ describe('ctl-8i: battleCommands (CTL8I.1)', () => {
       shouldSkipBattleRefresh(true, a, { ...a, activeIndex: 1 }),
       'so a swap re-renders instead of being skipped as a no-op tick',
     ).toBe(false);
+
+    // A REAL battle through buildBattleViewModel: the model drops cure items in PvP (the server
+    // rejects use_battle_item there), so Bag is off; the same battle as PvE keeps the item and Bag
+    // is on.
+    const tonic = [{ itemId: 3, name: 'Tonic', cureStatus: 'Poison', count: 1 }];
+    const realBattle = (opponentIdentity: string): BattleViewModel | null =>
+      buildBattleViewModel(
+        makeBattle({ opponentIdentity }),
+        makeSkillMap(1),
+        makeSpeciesMap(speciesRow(1)),
+        [],
+        tonic,
+      );
+    const realPvp = realBattle('bob');
+    expect(realPvp?.isPvp, 'precondition: a real PvP battle').toBe(true);
+    expect(realPvp?.cureItems, 'PvP drops the cure items').toEqual([]);
+    expect(
+      battleCommands(realPvp as BattleViewModel).find((r) => r.id === 'bag')?.enabled,
+      'so Bag is disabled in a real PvP battle',
+    ).toBe(false);
+    const realPve = realBattle('alice');
+    expect(realPve?.isPvp, 'precondition: a real PvE battle').toBe(false);
+    expect(realPve?.cureItems, 'PvE keeps the cure item').toHaveLength(1);
+    expect(
+      battleCommands(realPve as BattleViewModel).find((r) => r.id === 'bag')?.enabled,
+      'so Bag is enabled in the same battle as PvE',
+    ).toBe(true);
   });
 });
 
@@ -3624,6 +3651,10 @@ describe('ctl-8i: cursorStep and skillCursor (CTL8I.2)', () => {
     expect(cursorStep(0, 2, 'Down', 2), 'a one-row grid has no row below').toBe(0);
     expect(cursorStep(0, 1, 'Right', 2), 'a one-cell grid never moves').toBe(0);
     expect(cursorStep(0, 1, 'Down', 2)).toBe(0);
+
+    // An out-of-range index clamps first, then steps.
+    expect(cursorStep(9, 4, 'Left', 2), 'clamped to cell 3, then left').toBe(2);
+    expect(cursorStep(-3, 4, 'Right', 2), 'clamped to cell 0, then right').toBe(1);
 
     // Empty list: 0, whatever the direction and column count.
     for (const dir of DIRS) {

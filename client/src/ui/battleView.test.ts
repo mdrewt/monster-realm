@@ -6692,6 +6692,16 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     c8iExpectCursorOn(trainer.root, c8iCmd(trainer.root, 'recruit'), 'A on a disabled row');
     expect(trainer.callbacks.onRecruit).not.toHaveBeenCalled();
 
+    // --- a mouse click moves the cursor with it; a moved cursor leaves no outline behind ---
+    const mouse = c8iFresh(c8iVM());
+    c8iCmd(mouse.root, 'run').click();
+    expect(c8iCurrent(mouse.root), 'a click on Run leaves exactly one cursor').toHaveLength(1);
+    expect(c8iCurrent(mouse.root)[0], 'and it is on Run').toBe(c8iCmd(mouse.root, 'run'));
+    const moved = c8iFresh(c8iVM());
+    c8iCmd(moved.root, 'fight').focus();
+    moved.view.applyBattleOp({ kind: 'move', dir: 'Down' });
+    expect(c8iCmd(moved.root, 'fight').style.outline, 'the cursor left Fight: no outline').toBe('');
+
     // --- Run is the Flee path, under the shared lock ---
     const d = raDeferred();
     const run = c8iFresh(c8iVM(), makeRaCallbacks({ onFlee: vi.fn().mockReturnValue(d.promise) }));
@@ -6832,6 +6842,17 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     expect(document.activeElement, 'precondition: focus is on the page').toBe(document.body);
     view.refresh(c8iVM({ battleId: 78n, turnNumber: 6 }));
     c8iExpectCursorOn(root, c8iCmd(root, 'fight'), 'a reset from the page');
+
+    // --- a focused world canvas in <body> (outside the view) counts as the page ---
+    const canvas = document.createElement('canvas');
+    canvas.tabIndex = 0;
+    document.body.appendChild(canvas);
+    canvas.focus();
+    expect(document.activeElement, 'precondition: the canvas holds focus').toBe(canvas);
+    const onCanvas = c8iMount(c8iVM({ battleId: 90n, turnNumber: 1 })); // not c8iFresh: it clears the canvas
+    expect(document.activeElement, 'a first render takes focus from the world canvas').toBe(
+      c8iCmd(onCanvas.root, 'fight'),
+    );
   });
 
   it('CTL8I-1-RUN-DISABLED-PVP: in a player battle Run is aria-disabled and described by a visible reason, its click and its A press do nothing, and the reason is gone in a wild battle where Run flees', () => {
@@ -6874,6 +6895,10 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
       c8iShown(c8iTestId(root, 'battle-run-reason'), root),
       'the PvP reason does not stay up',
     ).toBe(false);
+    expect(
+      wildRun.getAttribute('aria-describedby'),
+      'and the same view instance no longer describes Run by the PvP reason',
+    ).toBeNull();
     wildRun.click();
     expect(callbacks.onFlee, 'Run flees in a wild battle').toHaveBeenCalledWith(78n);
   });
@@ -6940,6 +6965,23 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
       c8iCmd(pvp.root, 'fight'),
     );
     expect(c8iCurrent(pvp.root)[0]?.getAttribute('data-battle-list')).toBe('commands');
+
+    // A click on a PvP skill cell (focus is on it), then the wait: focus follows the cursor to Fight.
+    const click = c8iFresh(c8iPvpVM({ turnNumber: 1 }));
+    const cell = c8iSkills(click.root)[0] as HTMLButtonElement;
+    cell.focus();
+    cell.click();
+    click.view.refresh(c8iPvpVM({ turnNumber: 2, pvpPendingSubmit: true }));
+    expect(document.activeElement, 'the wait leaves focus on Fight, not on <body>').toBe(
+      c8iCmd(click.root, 'fight'),
+    );
+
+    // A finished battle shows no waiting caption even if the pending flag is still set.
+    click.view.refresh(c8iPvpVM({ pvpPendingSubmit: true, outcome: 'SideAWins' }));
+    expect(
+      c8iShown(c8iTestId(click.root, 'battle-commands-waiting'), click.root),
+      'no caption on an outcome',
+    ).toBe(false);
   });
 
   it('CTL8I-2-VIEW-GRID-CELLS: every skill cell reads "name (power) · affinity · Acc N%" (PvP: after "Submit: "), one text node with no title, in a two-column grid, with accuracy 0 and 100 and power 0 shown as they are', () => {
@@ -7092,6 +7134,10 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     );
     expect(keydown(aFight, ' ', 'Space', true).defaultPrevented, 'held Space on Fight').toBe(true);
     expect(
+      keydown(aFight, 'Enter', 'NumpadEnter', true).defaultPrevented,
+      'held NumpadEnter on Fight',
+    ).toBe(true);
+    expect(
       keydown(aFight, 'Enter', 'Enter', false).defaultPrevented,
       'a first Enter is the browser`s (it clicks)',
     ).toBe(false);
@@ -7164,6 +7210,9 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     c8iCmd(empty.root, 'fight').focus();
     empty.view.applyBattleOp({ kind: 'activate' });
     expect(c8iCurrent(empty.root)[0], 'and neither does A').toBe(c8iCmd(empty.root, 'fight'));
+    // A greyed row is told apart by border STYLE, not by colour alone.
+    expect(c8iCmd(empty.root, 'fight').style.borderStyle, 'a greyed row is dashed').toBe('dashed');
+    expect(c8iCmd(empty.root, 'run').style.borderStyle, 'a live row is solid').toBe('solid');
   });
 
   it('CTL8I-2-LAST-SKILL-PER-MONSTER: Fight lands on the skill that monster last used in this battle: per monster, only an accepted press is remembered, an unknown id falls back to the first skill, a new battle forgets, and a PvP submit counts', async () => {
