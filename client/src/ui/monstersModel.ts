@@ -15,6 +15,9 @@ export const SHEET_ACTIONS: readonly SheetAction[] = ['summary', 'nickname', 'mo
 /** The Storage grid's columns: the three boxView draws. */
 export const STORAGE_COLS = 3;
 
+/** The sheet's nav list. */
+export const SHEET_LAYOUT = list(SHEET_ACTIONS.map((key) => ({ key, enabled: true })));
+
 export interface MonstersVm {
   /** The occupied party slots in slot order (at most the party size). */
   readonly party: readonly MonsterCardViewModel[];
@@ -45,14 +48,20 @@ export function monsterKey(monsterId: bigint): string {
   return monsterId.toString();
 }
 
-const items = (cards: readonly MonsterCardViewModel[]) =>
-  cards.map((card) => ({ key: monsterKey(card.monsterId), enabled: true }));
+const keysOf = (cards: readonly MonsterCardViewModel[]): string[] =>
+  cards.map((card) => monsterKey(card.monsterId));
 
 /** Tabs `party` (a list) and `storage` (a grid of STORAGE_COLS), items keyed by `monsterKey`. */
 export function monstersLayout(vm: MonstersVm): NavLayout {
+  return layoutOfKeys(keysOf(vm.party), keysOf(vm.storage));
+}
+
+/** The same layout over bare keys: what the screen re-seats its cursor from. */
+export function layoutOfKeys(party: readonly string[], storage: readonly string[]): NavLayout {
+  const items = (keys: readonly string[]) => keys.map((key) => ({ key, enabled: true }));
   return tabs([
-    { key: 'party', layout: list(items(vm.party)) },
-    { key: 'storage', layout: grid(items(vm.storage), STORAGE_COLS) },
+    { key: 'party', layout: list(items(party)) },
+    { key: 'storage', layout: grid(items(storage), STORAGE_COLS) },
   ]);
 }
 

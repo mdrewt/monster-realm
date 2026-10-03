@@ -19,24 +19,15 @@ import type { BoxView } from '../boxView';
 import {
   buildMonstersVm,
   findMonster,
+  layoutOfKeys,
   type MonstersTab,
   type MonstersVm,
   monsterKey,
   monstersLayout,
-  SHEET_ACTIONS,
+  SHEET_LAYOUT,
   type SheetAction,
-  STORAGE_COLS,
 } from '../monstersModel';
-import {
-  grid,
-  list,
-  type NavLayout,
-  type NavState,
-  navInit,
-  navReconcile,
-  navStep,
-  tabs,
-} from '../nav';
+import { type NavState, navInit, navReconcile, navStep } from '../nav';
 import type { ButtonStep, ScreenAdapter, ScreenResult } from './types';
 
 export type MonstersPhase =
@@ -86,7 +77,6 @@ export interface MonstersPaint {
 }
 
 const LIST: MonstersPhase = { kind: 'list' };
-const SHEET_LAYOUT = list(SHEET_ACTIONS.map((key) => ({ key, enabled: true })));
 
 const keysOf = (vm: MonstersVm): TabKeys => ({
   party: vm.party.map((c) => monsterKey(c.monsterId)),
@@ -95,15 +85,6 @@ const keysOf = (vm: MonstersVm): TabKeys => ({
 
 const sameList = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((k, i) => k === b[i]);
-
-/** The layout the cursor was last settled on, rebuilt from the kept keys. */
-function layoutOfKeys(keys: TabKeys): NavLayout {
-  const items = (ks: readonly string[]) => ks.map((key) => ({ key, enabled: true }));
-  return tabs([
-    { key: 'party', layout: list(items(keys.party)) },
-    { key: 'storage', layout: grid(items(keys.storage), STORAGE_COLS) },
-  ]);
-}
 
 const monsterOf = (phase: MonstersPhase): bigint | null =>
   phase.kind === 'list' ? null : phase.monsterId;
@@ -118,7 +99,11 @@ function settle(vm: MonstersVm, state: MonstersScreenState): MonstersScreenState
     next = {
       ...next,
       keys,
-      nav: navReconcile(layoutOfKeys(state.keys), monstersLayout(vm), state.nav),
+      nav: navReconcile(
+        layoutOfKeys(state.keys.party, state.keys.storage),
+        monstersLayout(vm),
+        state.nav,
+      ),
     };
   }
   const id = monsterOf(next.phase);
@@ -299,15 +284,6 @@ function sheetOf(
   phase: MonstersPhase,
   card: MonsterCardViewModel | undefined,
 ): MonstersPaint['sheet'] {
-  if (card === undefined) return null;
-  switch (phase.kind) {
-    case 'list':
-      return null;
-    case 'sheet':
-      return { card, action: phase.action };
-    case 'summary':
-      return { card, action: 'summary' };
-    case 'nickname':
-      return { card, action: 'nickname' };
-  }
+  if (card === undefined || phase.kind === 'list') return null;
+  return { card, action: phase.kind === 'sheet' ? phase.action : phase.kind };
 }

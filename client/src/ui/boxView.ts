@@ -43,7 +43,7 @@
 // token the screen hands over.
 import type { MonsterCardViewModel } from './boxModel';
 import { t, tf } from './i18n/resolver';
-import { SHEET_ACTIONS, type SheetAction } from './monstersModel';
+import { SHEET_LAYOUT, type SheetAction } from './monstersModel';
 import { list, type NavTab, tabs } from './nav';
 import { renderNav, renderTabs } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
@@ -56,7 +56,6 @@ const TAB_STRIP = tabs([
 const tabLabel = (tab: NavTab): string =>
   tab.key === 'party' ? t('box.tab.party') : t('box.tab.storage');
 
-const SHEET_LAYOUT = list(SHEET_ACTIONS.map((key) => ({ key, enabled: true })));
 const SHEET_LABELS: Readonly<Record<SheetAction, () => string>> = {
   summary: () => t('box.sheet.summary'),
   nickname: () => t('box.sheet.nickname'),
@@ -138,6 +137,9 @@ export class BoxView {
   #lastCommit: NicknameCommit | null = null;
   /** The typing row's open last prefilled and focused; reset on each open of the frame. */
   #lastEdit: number | null = null;
+  /** What that open prefilled: an untouched field is never sent (a batch may have renamed the
+   *  monster since, and sending the stale prefill would revert it). */
+  #prefilled = '';
   #scrolledKey: string | null = null;
 
   constructor(parent: HTMLElement, callbacks: BoxViewCallbacks) {
@@ -225,9 +227,10 @@ export class BoxView {
     this.#partyLabelEl = partyLabel;
     this.#root.appendChild(partyLabel);
 
+    // ctl-8b: one column, because the Party is a list (Up / Down step one monster).
     this.#partyEl = document.createElement('div');
     this.#partyEl.style.cssText =
-      'display:grid;grid-template-columns:repeat(3,1fr);gap:8px;width:100%;max-width:600px;margin-bottom:16px;';
+      'display:grid;grid-template-columns:1fr;gap:8px;width:100%;max-width:600px;margin-bottom:16px;';
     this.#root.appendChild(this.#partyEl);
 
     // Its text (`box.section.box`) is resolved in show(), not here.
@@ -264,14 +267,15 @@ export class BoxView {
     this.#partyLabelEl.textContent = t('box.section.party');
     this.#boxLabelEl.textContent = t('box.section.box');
     this.#rowLabel.textContent = t('box.rename.prompt');
-    // A reopened frame starts over: Storage, its first card, no sheet (the screen's `init`).
-    if (!wasVisible) {
-      this.#paint = OPENING;
-      this.#lastEdit = null;
-      this.#apply();
-    }
     this.#root.style.display = 'flex';
-    if (!wasVisible) openOverlayA11y('boxView', this.#root);
+    if (wasVisible) return;
+    // A reopened frame starts over: Storage, its first card, no sheet (the screen's `init`). After
+    // the display write, so the opening card's scroll lands.
+    this.#paint = OPENING;
+    this.#lastEdit = null;
+    this.#scrolledKey = null;
+    this.#apply();
+    openOverlayA11y('boxView', this.#root);
   }
 
   hide(): void {
@@ -310,7 +314,9 @@ export class BoxView {
     if (p.commit !== null && p.commit !== this.#lastCommit) {
       this.#lastCommit = p.commit;
       const text = this.#input.value;
-      if (text !== p.commit.current) this.#callbacks.onSetNickname(p.commit.monsterId, text);
+      if (text !== p.commit.current && text !== this.#prefilled) {
+        this.#callbacks.onSetNickname(p.commit.monsterId, text);
+      }
       if (this.#paint !== p) return; // the callback painted again, and that paint is applied
     }
     const live = (card: MonsterCardViewModel): MonsterCardViewModel =>
@@ -391,6 +397,7 @@ export class BoxView {
       // A new open only: a repaint of the same open keeps the typed text and never takes focus
       // back from an Escape.
       this.#lastEdit = row.edit;
+      this.#prefilled = row.card.nickname;
       this.#input.value = row.card.nickname;
       this.#input.focus();
     }
