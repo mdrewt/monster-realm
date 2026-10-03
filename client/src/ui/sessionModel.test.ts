@@ -539,6 +539,157 @@ describe('sessionModel × i18n (21r-b): overlay copy and disconnected feedback r
 });
 
 // ---------------------------------------------------------------------------
+// ctl-8k (CTL8K.1): the gate's labels and hint are projected by the model, so the DOM shell owns
+// no copy. `retryLabel` (session.retry), `confirmYesLabel` (prompt.yes), `confirmNoLabel`
+// (prompt.no) and `hint` (session.hint) join the view model; `primaryActionLabel` stays the
+// Continue label. Read at PROJECTION time, never frozen at import.
+// ---------------------------------------------------------------------------
+
+/** U+00E9 (e acute), built by code point so no expectation holds a pasted glyph. */
+const E_ACUTE = String.fromCharCode(0x00e9);
+
+/** The unarmed and the armed projection of both showing states. */
+const LABEL_PROJECTIONS: ReadonlyArray<readonly [string, SessionModelState]> =
+  SHOWING_STATES.flatMap((state) =>
+    [false, true].map(
+      (confirmPending) =>
+        [
+          `${state} ${confirmPending ? 'armed' : 'unarmed'}`,
+          stateOf(state, confirmPending),
+        ] as const,
+    ),
+  );
+
+describe('sessionModel ctl-8k: the gate labels and the hint are projected by the model', () => {
+  afterEach(() => {
+    setLocale('en');
+  });
+
+  it('CTL8K-1-VM-LABELS: every showing projection carries Retry, Yes, No, the hint and the Continue label, exactly the catalog English and all distinct', () => {
+    // WRONG IMPL KILLED: a VM with no `retryLabel` (the shell would have to hard-code Retry, which
+    // hardcodedStrings forbids); Retry sharing the Continue label (the default action reads as the
+    // irreversible one); Yes and No transposed or equal; the hint missing, or the older
+    // "Choose an option above." wording that names no real key; any label that depends on armed.
+    for (const [where, state] of LABEL_PROJECTIONS) {
+      const vm = buildSessionViewModel(state);
+      expect(vm.retryLabel, `${where}: retryLabel`).toBe('Retry');
+      expect(vm.confirmYesLabel, `${where}: confirmYesLabel`).toBe('Yes');
+      expect(vm.confirmNoLabel, `${where}: confirmNoLabel`).toBe('No');
+      expect(vm.hint, `${where}: hint`).toBe(
+        'B and Start do nothing here. Tab moves, Enter chooses.',
+      );
+      expect(vm.primaryActionLabel, `${where}: Continue is still the Continue label`).toBe(
+        'Continue as guest',
+      );
+      expect(
+        new Set([vm.retryLabel, vm.primaryActionLabel, vm.confirmYesLabel, vm.confirmNoLabel]).size,
+        `${where}: the four button labels are pairwise distinct`,
+      ).toBe(4);
+    }
+    // The copy comes from the catalog ids the plan names, not from a literal in the model.
+    expect(EN['session.retry']).toBe('Retry');
+    expect(EN['session.hint']).toBe('B and Start do nothing here. Tab moves, Enter chooses.');
+    expect(EN['prompt.yes']).toBe('Yes');
+    expect(EN['prompt.no']).toBe('No');
+  });
+
+  it('CTL8K-1-VM-FR: under fr every label and the hint are the CATALOG_FR values, resolved at projection time and distinct from English', () => {
+    // WRONG IMPL KILLED: labels frozen at import (`const RETRY = t(...)` runs before setLocale
+    // ('fr')) or hard-coded English; a French catalog entry copied from English; Yes and No
+    // swapped between locales.
+    setLocale('fr');
+    for (const [where, state] of LABEL_PROJECTIONS) {
+      const vm = buildSessionViewModel(state);
+      expect(vm.retryLabel, `${where}: retryLabel`).toBe(FR['session.retry']);
+      expect(vm.confirmYesLabel, `${where}: confirmYesLabel`).toBe(FR['prompt.yes']);
+      expect(vm.confirmNoLabel, `${where}: confirmNoLabel`).toBe(FR['prompt.no']);
+      expect(vm.hint, `${where}: hint`).toBe(FR['session.hint']);
+      expect(vm.primaryActionLabel, `${where}: primaryActionLabel`).toBe(
+        FR['chrome.session.continue'],
+      );
+      expect(vm.retryLabel, `${where}: not the English Retry`).not.toBe('Retry');
+      expect(vm.hint, `${where}: not the English hint`).not.toBe(EN['session.hint']);
+    }
+    const vm = buildSessionViewModel(stateOf('expired'));
+    expect(vm.retryLabel).toBe(`R${E_ACUTE}essayer`);
+    expect(vm.confirmYesLabel).toBe('Oui');
+    expect(vm.confirmNoLabel).toBe('Non');
+    expect(vm.hint).toBe(
+      `B et Start sont sans effet ici. Tab pour changer, Entr${E_ACUTE}e pour choisir.`,
+    );
+  });
+
+  it('CTL8K-1-VM-FIRST-STEP-CLEAN: the first step (nothing armed) carries no confirmation copy anywhere, Continue is not the default, and arming adds only the prompt', () => {
+    // WRONG IMPL KILLED: the irreversible-consequence copy leaking into the hint, the Retry or
+    // Continue label or the body (the two steps would not be distinct, AUTH-56); a prompt present
+    // while unarmed; arming that rewrites the other fields (the shell repaints from one VM, so a
+    // label that changes with armed is a flicker and a stale-label bug); a Retry label equal to
+    // the Continue label.
+    for (const locale of ['en', 'fr']) {
+      setLocale(locale);
+      for (const state of SHOWING_STATES) {
+        const unarmed = buildSessionViewModel(stateOf(state, false));
+        const armed = buildSessionViewModel(stateOf(state, true));
+        const firstStep = {
+          title: unarmed.title,
+          body: unarmed.body,
+          primaryActionLabel: unarmed.primaryActionLabel,
+          retryLabel: unarmed.retryLabel,
+          hint: unarmed.hint,
+          confirmYesLabel: unarmed.confirmYesLabel,
+          confirmNoLabel: unarmed.confirmNoLabel,
+        };
+        const prompt = String(armed.confirmPrompt);
+        expect(
+          prompt.length,
+          `${locale} ${state}: fixture: the armed prompt exists`,
+        ).toBeGreaterThan(20);
+        expect(
+          unarmed.confirmPrompt,
+          `${locale} ${state}: no prompt while unarmed`,
+        ).toBeUndefined();
+        for (const [field, text] of Object.entries(firstStep)) {
+          expect(typeof text, `${locale} ${state}: ${field} is a string`).toBe('string');
+          expect(
+            text.indexOf(prompt),
+            `${locale} ${state}: ${field} must not contain the armed confirmation prompt`,
+          ).toBe(-1);
+          if (locale === 'en') {
+            expect(
+              text.indexOf('cannot be undone'),
+              `${state}: ${field} must not already carry the irreversible-consequence copy`,
+            ).toBe(-1);
+          }
+        }
+        expect(
+          unarmed.retryLabel,
+          `${locale} ${state}: Retry is not the Continue label — Continue is not the default`,
+        ).not.toBe(unarmed.primaryActionLabel);
+        // Arming changes the prompt and nothing else.
+        expect(
+          {
+            title: armed.title,
+            body: armed.body,
+            primaryActionLabel: armed.primaryActionLabel,
+            retryLabel: armed.retryLabel,
+            hint: armed.hint,
+            confirmYesLabel: armed.confirmYesLabel,
+            confirmNoLabel: armed.confirmNoLabel,
+          },
+          `${locale} ${state}: arming must change only the prompt`,
+        ).toEqual(firstStep);
+      }
+    }
+    // The first step through the reducer: requesting arms, emits nothing, and its projection
+    // already carries the full label set.
+    const first = sessionStep(stateOf('expired'), { kind: 'continue-anonymously-requested' });
+    expect(first.effect).toBe('none');
+    setLocale('en');
+    expect(buildSessionViewModel(first.next).retryLabel).toBe('Retry');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Purity + totality.
 // ---------------------------------------------------------------------------
 

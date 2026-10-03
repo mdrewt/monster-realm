@@ -378,6 +378,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // `battle.cure.placeholder`, `battle.cure.submit`) and +5 plain keys (`battle.recruit.{listLabel,
   // confirmNoBait,yes,no}`, `battle.cure.listLabel`) here, +2 parameterised ones
   // (`battle.recruit.confirm`, `battle.cure.target`) in SAMPLE_PARAMS = 283 keys.
+  // ctl-8k (named intentional change): +2 plain keys (`session.retry`, `session.hint`) = 285 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -675,6 +676,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // line shown when nobody else is online (leaderboardView.ts).
   'social.players.nearby': 'Nearby',
   'social.players.none': 'No other players online',
+  // ctl-8k (named intentional change): 2 new plain keys — the session gate's Retry label and its
+  // frame hint that B and Start are inert (sessionModel.ts, painted by sessionView.ts).
+  'session.retry': 'Retry',
+  'session.hint': 'B and Start do nothing here. Tab moves, Enter chooses.',
 };
 
 interface ParamOutputSpec {
@@ -1083,7 +1088,8 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 283-key roster (ctl-8j: -`battle.recruit.submit` -`battle.cure.placeholder`
+/** The full 285-key roster (ctl-8k: +`session.retry` +`session.hint` over the 283-key roster below;
+ *  ctl-8j: -`battle.recruit.submit` -`battle.cure.placeholder`
  *  -`battle.cure.submit` +`battle.recruit.{listLabel,confirmNoBait,yes,no,confirm}`
  *  +`battle.cure.{listLabel,target}` over the 279-key roster below; ctl-8i: +`battle.command.{fight,recruit,swap,bag,run}`
  *  +`battle.commands.label` +`battle.command.runPvpReason` +`battle.commands.waiting`
@@ -1161,7 +1167,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8j 283-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8k 285-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1250,10 +1256,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 283 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 285 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (283 keys since ctl-8j).
+    // (a) roster is exactly the EXPECTED_KEYS roster (285 keys since ctl-8k).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
@@ -1702,5 +1708,35 @@ describe('ctl-8j: catalog.fr.ts, the keys ctl-8j adds and retires', () => {
       expect(Object.hasOwn(CATALOG_EN as object, retired), `en ${retired} is retired`).toBe(false);
       expect(Object.hasOwn(CATALOG_FR as object, retired), `fr ${retired} is retired`).toBe(false);
     }
+  });
+});
+
+// =============================================================================
+// ctl-8k: the French side of the 2 keys ctl-8k adds (the session gate's Retry label and its frame
+// hint), pinned exactly as the English ones are in EXPECTED_PLAIN above.
+// =============================================================================
+
+const EXPECTED_FR_CTL8K_PLAIN: Record<string, string> = {
+  'session.retry': `R${E_ACUTE}essayer`,
+  'session.hint': `B et Start sont sans effet ici. Tab pour changer, Entr${E_ACUTE}e pour choisir.`,
+};
+
+describe('ctl-8k: catalog.fr.ts, the keys ctl-8k adds', () => {
+  it('ctl-8k FR-PINS: session.retry and session.hint carry their exact French text in catalog.fr.ts, each a translation of its English entry', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot, the whole session
+    // gate blank); a French entry left as the English copy or reworded; and a decomposed or missing
+    // accent in "Reessayer" / "Entree" (the e acute is the precomposed U+00E9).
+    for (const [key, expected] of Object.entries(EXPECTED_FR_CTL8K_PLAIN)) {
+      const en = EXPECTED_PLAIN[key];
+      expect(typeof en, `fixture: ${key} has an English pin`).toBe('string');
+      const fr = (CATALOG_FR as Record<string, unknown>)[key];
+      expect(typeof fr, `${key} must be a plain string in the fr catalog`).toBe('string');
+      expect(fr, `${key}: the exact French text`).toBe(expected);
+      expect(fr, `${key}: a translation, not the English copy`).not.toBe(en);
+    }
+    expect(
+      Object.keys(EXPECTED_FR_CTL8K_PLAIN).length,
+      'ANTI-VACUITY: both ctl-8k keys are pinned in French',
+    ).toBe(2);
   });
 });
