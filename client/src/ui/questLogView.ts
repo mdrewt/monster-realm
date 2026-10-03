@@ -21,23 +21,76 @@
 // The one string this view owns, the quest row, is resolved through the i18n
 // resolver (`tf('questLog.entry', { name, step })`, ui/i18n/resolver.ts); `name` is the quest's
 // content id and `step` its index — model data, interpolated verbatim.
+//
+// ctl-8f: this root is the Journal frame. `paint(JournalPaint)` (screens/journalScreen.ts) is kept
+// and re-applied after every `render(vm)`, which rebuilds the rows each batch: the cursor row
+// carries the nav kit's marks (`mr-nav-item`, `is-active`, `aria-selected`) on the existing `<li>`
+// (an e2e pins their text), and `#quest-log-detail`, built here after the list, shows the open
+// quest's name and step. The hidden-to-visible edge resets the paint to the opening (the first row,
+// no detail), so a reopen never shows the last open's place.
 import { tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { QuestLogViewModel } from './questLogModel';
+import type { JournalPaint } from './screens/journalScreen';
+
+const OPENING: JournalPaint = { questId: null, detail: null };
 
 export class QuestLogView {
   private overlay: HTMLElement;
   private list: HTMLElement;
+  private detail: HTMLElement;
+  private rendered: QuestLogViewModel = { active: [] };
+  private kept: JournalPaint = OPENING;
 
   constructor() {
     // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.overlay = document.getElementById('quest-log-overlay')!;
     // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.list = document.getElementById('quest-log-list')!;
+    this.list.setAttribute('role', 'listbox');
+    // Named by the overlay's own label (openOverlayA11y writes it while the journal is open).
+    this.list.setAttribute('aria-labelledby', 'quest-log-overlay');
+    this.detail = document.createElement('div');
+    this.detail.id = 'quest-log-detail';
+    this.detail.style.display = 'none';
+    this.list.after(this.detail);
+  }
+
+  /** The Journal screen's paint: kept, so the next `render` re-applies it. */
+  paint(p: JournalPaint): void {
+    this.kept = p;
+    this.applyPaint();
+  }
+
+  private applyPaint(): void {
+    const rows = [...this.list.children] as HTMLElement[];
+    const at = rows.findIndex((r) => r.dataset.questId === this.kept.questId);
+    const cursor = rows[at < 0 ? 0 : at];
+    for (const row of rows) {
+      const selected = row === cursor;
+      row.classList.toggle('is-active', selected);
+      row.setAttribute('aria-selected', selected ? 'true' : 'false');
+    }
+    if (cursor === undefined) this.list.removeAttribute('aria-activedescendant');
+    else this.list.setAttribute('aria-activedescendant', cursor.id);
+
+    const open = this.rendered.active.find((q) => q.questId === this.kept.detail);
+    this.detail.style.display = open === undefined ? 'none' : '';
+    if (open === undefined) this.list.removeAttribute('aria-describedby');
+    else this.list.setAttribute('aria-describedby', this.detail.id);
+    this.detail.replaceChildren();
+    if (open !== undefined) {
+      const name = document.createElement('div');
+      name.textContent = open.displayName;
+      const step = document.createElement('div');
+      step.textContent = tf('journal.detail.step', { step: open.stepIndex });
+      this.detail.append(name, step);
+    }
   }
 
   render(vm: QuestLogViewModel | null): void {
     const wasVisible = this.visible;
+    if (!wasVisible) this.kept = OPENING;
     if (!vm) {
       this.overlay.style.display = 'none';
       if (wasVisible) closeOverlayA11y('questLogView', null);
@@ -45,11 +98,17 @@ export class QuestLogView {
     }
     this.overlay.style.display = 'block';
     this.list.replaceChildren();
-    vm.active.forEach((entry) => {
+    vm.active.forEach((entry, i) => {
       const li = document.createElement('li');
       li.textContent = tf('questLog.entry', { name: entry.displayName, step: entry.stepIndex });
+      li.id = `quest-log-row-${i}`;
+      li.dataset.questId = entry.questId;
+      li.className = 'mr-nav-item';
+      li.setAttribute('role', 'option');
       this.list.appendChild(li);
     });
+    this.rendered = vm;
+    this.applyPaint();
     // The null->non-null EDGE, and only the edge -- paint first, then claim the
     // overlay (D7: openOverlayA11y is the LAST statement, so its deferred focus resolves
     // `initialFocusSelector` against a fully-painted root).

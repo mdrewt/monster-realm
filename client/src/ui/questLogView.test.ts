@@ -440,3 +440,352 @@ describe('QuestLogView render(): existing paint behaviour (pinned, not changed b
     expect(root.style.display).toBe('none');
   });
 });
+
+// ---------------------------------------------------------------------------
+// ctl-8f (CTL8F.3): the Journal's D-pad paint.
+//
+// `QuestLogView.paint({ questId, detail })` marks the cursor quest's row and shows the detail of the
+// quest `detail` names. The rows stay `<li>`s in `#quest-log-list` with their text EXACTLY
+// `tf('questLog.entry', ...)` (an e2e pins "quest_001 (step 0)"); each row also carries
+// `data-quest-id`, the nav kit's `mr-nav-item` class, `role="option"` and `aria-selected`
+// ("true" + `is-active` on the cursor row only), and the list `role="listbox"` plus
+// `aria-activedescendant` naming the cursor row. `#quest-log-detail` is created by the view as a
+// SIBLING AFTER the list (never an `li`, never inside it) and is shown only when `detail` names a
+// listed quest. `render(vm)` re-applies the kept paint after it rebuilds the rows; on the hidden to
+// visible edge (after `hide()` and after `render(null)`) the kept paint resets: the cursor is on the
+// FIRST row and there is no detail.
+//
+// The fixture is this file's byte-copy of index.html's overlay, which has no detail element, so the
+// view must make its own. The new journalScreen module is imported dynamically inside the WIRED case
+// only, so a missing module reds that case alone.
+// ---------------------------------------------------------------------------
+
+import { tf as ctl8fTf } from './i18n/resolver';
+
+const ctl8fListEl = (): HTMLElement => document.getElementById('quest-log-list') as HTMLElement;
+/** The list's own <li> children (a nested one, were a detail ever put inside, would not count). */
+const ctl8fRows = (): HTMLLIElement[] =>
+  [...ctl8fListEl().children].filter((el): el is HTMLLIElement => el.tagName === 'LI');
+const ctl8fQuestIds = (): Array<string | undefined> => ctl8fRows().map((r) => r.dataset.questId);
+/** The ids of the rows marked as the cursor (is-active). */
+const ctl8fCursor = (): Array<string | undefined> =>
+  ctl8fRows()
+    .filter((r) => r.classList.contains('is-active'))
+    .map((r) => r.dataset.questId);
+const ctl8fDetailEl = (): HTMLElement | null => document.getElementById('quest-log-detail');
+const ctl8fDetailShown = (): boolean => {
+  const el = ctl8fDetailEl();
+  return el !== null && el.style.display !== 'none';
+};
+
+/** Quests whose step index differs from their position, so a detail built from the wrong field or
+ *  the wrong row shows. */
+function ctl8fSteps(): QuestLogViewModel {
+  return {
+    active: [
+      { questId: 'alpha', stepIndex: 4, displayName: 'alpha' },
+      { questId: 'beta', stepIndex: 7, displayName: 'beta' },
+      { questId: 'gamma', stepIndex: 0, displayName: 'gamma' },
+    ],
+  };
+}
+
+describe('QuestLogView ctl-8f: the Journal cursor and detail (CTL8F.3)', () => {
+  it('CTL8F-3-VIEW-PAINT: a paint marks only the cursor row (is-active and aria-selected true, the others false) with the nav kit roles and a listbox naming it through aria-activedescendant, keeps the row text exactly as before, and shows a detail as a sibling AFTER the list only for a listed quest, with that quest`s name and its own step', () => {
+    // WRONG IMPL KILLED: a paint that changes the row text (the e2e pins "quest_001 (step 0)"); a
+    // cursor marked by colour alone or on every row or on the wrong one; rows with no roles (a
+    // screen reader hears a bare list); an aria-activedescendant that names nothing, a row that is
+    // not the cursor, or an id with whitespace (an IDREF is one token: a quest id with a space or
+    // an empty one must not leak into it); a detail built from the FIRST row or from the row index
+    // instead of the quest's step; a detail inside the list (it would be counted as a quest) or an
+    // li; a detail shown for no quest, for a quest that is not listed, or after the paint cleared
+    // it; and markup injected from a quest id.
+    const root = mountQuestLogOverlay();
+    const view = new QuestLogView();
+    view.render(questVm(3));
+    view.paint({ questId: 'quest_1', detail: null });
+
+    expect(ctl8fQuestIds(), 'one row per quest, each carrying its id').toEqual([
+      'quest_0',
+      'quest_1',
+      'quest_2',
+    ]);
+    expect(
+      ctl8fRows().map((r) => r.textContent),
+      'the row text is unchanged',
+    ).toEqual(['quest_0 (step 0)', 'quest_1 (step 1)', 'quest_2 (step 2)']);
+    expect(ctl8fRows().map((r) => r.tagName)).toEqual(['LI', 'LI', 'LI']);
+    expect(ctl8fCursor(), 'the cursor row only').toEqual(['quest_1']);
+    expect(ctl8fRows().map((r) => r.getAttribute('aria-selected'))).toEqual([
+      'false',
+      'true',
+      'false',
+    ]);
+    for (const row of ctl8fRows()) {
+      expect(row.classList.contains('mr-nav-item'), `${row.dataset.questId}: nav item`).toBe(true);
+      expect(row.getAttribute('role'), `${row.dataset.questId}: option`).toBe('option');
+    }
+    expect(ctl8fListEl().getAttribute('role'), 'the list is a listbox').toBe('listbox');
+    const activeId = ctl8fListEl().getAttribute('aria-activedescendant');
+    expect(activeId, 'aria-activedescendant names a row').not.toBeNull();
+    expect(document.getElementById(activeId ?? ''), 'the cursor row').toBe(ctl8fRows()[1]);
+    expect(ctl8fDetailShown(), 'no detail without one in the paint').toBe(false);
+
+    // The cursor moves; the old row is unmarked.
+    view.paint({ questId: 'quest_2', detail: null });
+    expect(ctl8fCursor()).toEqual(['quest_2']);
+    expect(document.getElementById(ctl8fListEl().getAttribute('aria-activedescendant') ?? '')).toBe(
+      ctl8fRows()[2],
+    );
+
+    // The detail: a sibling after the list, named and stepped by ITS quest.
+    view.render(ctl8fSteps());
+    view.paint({ questId: 'beta', detail: 'beta' });
+    const detail = ctl8fDetailEl();
+    expect(detail, 'the detail element exists').not.toBeNull();
+    expect(ctl8fDetailShown(), 'and is shown').toBe(true);
+    const el = detail as HTMLElement;
+    expect(el.tagName, 'never a list row').not.toBe('LI');
+    expect(el.parentElement, 'a sibling of the list').toBe(ctl8fListEl().parentElement);
+    expect(ctl8fListEl().contains(el), 'never inside the list').toBe(false);
+    const siblings = [...(el.parentElement?.children ?? [])];
+    expect(
+      siblings.indexOf(el) > siblings.indexOf(ctl8fListEl()) &&
+        siblings.indexOf(ctl8fListEl()) >= 0,
+      'after the list',
+    ).toBe(true);
+    expect(root.contains(el), 'inside the overlay').toBe(true);
+    expect(ctl8fRows(), 'the detail is not a row').toHaveLength(3);
+    const text = el.textContent ?? '';
+    expect(text, 'the quest`s name').toContain('beta');
+    expect(text, 'its own step, English "Step N"').toContain('Step 7');
+    expect(text, 'the resolver`s journal.detail.step').toContain(
+      ctl8fTf('journal.detail.step', { step: 7 }),
+    );
+    expect(text, 'not another quest`s').not.toContain('alpha');
+    expect(text).not.toContain('Step 4');
+
+    view.paint({ questId: 'alpha', detail: 'alpha' });
+    expect(ctl8fDetailEl()?.textContent ?? '', 'the detail follows the paint').toContain('Step 4');
+    expect(ctl8fDetailEl()?.textContent ?? '').not.toContain('Step 7');
+    view.paint({ questId: 'alpha', detail: 'ghost' });
+    expect(ctl8fDetailShown(), 'a detail naming a quest that is not listed is hidden').toBe(false);
+    view.paint({ questId: 'gamma', detail: 'gamma' });
+    expect(ctl8fDetailEl()?.textContent ?? '', 'a step of 0 is a step').toContain('Step 0');
+    view.paint({ questId: 'gamma', detail: null });
+    expect(ctl8fDetailShown(), 'a paint with no detail hides it').toBe(false);
+
+    // Awkward ids: the row id is a single token and unique, the data attribute keeps the id.
+    const awkward = ['a b', '', 'a_b', 'tab\tstop'];
+    view.render({
+      active: awkward.map((id, i) => ({ questId: id, stepIndex: i, displayName: id })),
+    });
+    for (const id of awkward) {
+      view.paint({ questId: id, detail: null });
+      expect(ctl8fCursor(), `the cursor on ${JSON.stringify(id)}`).toEqual([id]);
+      const pointed = ctl8fListEl().getAttribute('aria-activedescendant') ?? '';
+      expect(pointed, `an IDREF is one token (${JSON.stringify(id)})`).toMatch(/^\S+$/);
+      expect(document.getElementById(pointed)?.dataset.questId, 'it names that very row').toBe(id);
+    }
+    const ids = ctl8fRows().map((r) => r.id);
+    expect(new Set(ids).size, 'every row id is unique').toBe(awkward.length);
+    view.paint({ questId: '', detail: '' });
+    expect(ctl8fDetailShown(), 'the empty id is a quest too: its detail shows').toBe(true);
+
+    // A quest id is text, never markup.
+    const markup = '<img src=x onerror=alert(1)>';
+    view.render({ active: [{ questId: markup, stepIndex: 1, displayName: markup }] });
+    view.paint({ questId: markup, detail: markup });
+    expect(root.querySelector('img'), 'no element was created from an id').toBeNull();
+    expect(ctl8fRows().map((r) => r.dataset.questId)).toEqual([markup]);
+  });
+
+  it('CTL8F-3-VIEW-RENDER-KEEPS: render(vm) re-applies the kept cursor and detail after it rebuilds the rows (so a store batch never loses them); a quest vanishing mid-detail hides the detail; on the hidden to visible edge, after hide() and after render(null), the cursor is back on the FIRST row with no detail, and a later paint works as before', () => {
+    // WRONG IMPL KILLED: a render() that rebuilds the rows and drops the cursor or the detail (the
+    // journal would lose its place on every store batch, several times a second); a detail that
+    // stays up for a quest that is gone; a kept paint that survives a close (the next KeyQ would
+    // open on the old cursor with an old detail on top, for a quest the player has since left); a
+    // reset on only one of the two close paths (hide() is the production close, render(null) the
+    // other); an opening whose first row is not marked (a screen reader announces no selection); a
+    // reset that also resets on every ordinary render; and a paint after the reset that is ignored.
+    const root = mountQuestLogOverlay();
+    const view = new QuestLogView();
+    view.render(questVm(3));
+    expect(ctl8fCursor(), 'the opening: the first row is the cursor before any paint').toEqual([
+      'quest_0',
+    ]);
+    expect(ctl8fRows()[0]?.getAttribute('aria-selected')).toBe('true');
+    expect(ctl8fDetailShown(), 'no detail on open').toBe(false);
+
+    // Survives renders, including one that adds a quest.
+    view.paint({ questId: 'quest_1', detail: 'quest_1' });
+    const before = ctl8fRows();
+    view.render(questVm(3));
+    expect(ctl8fRows()[0], 'precondition: the rows were rebuilt').not.toBe(before[0]);
+    expect(ctl8fCursor(), 'the cursor survives a render').toEqual(['quest_1']);
+    expect(ctl8fDetailShown(), 'the detail survives a render').toBe(true);
+    expect(ctl8fDetailEl()?.textContent ?? '').toContain('quest_1');
+    expect(document.getElementById(ctl8fListEl().getAttribute('aria-activedescendant') ?? '')).toBe(
+      ctl8fRows()[1],
+    );
+    view.render(questVm(3));
+    view.render(questVm(4));
+    expect(ctl8fCursor(), 'and several renders').toEqual(['quest_1']);
+    expect(ctl8fDetailShown()).toBe(true);
+
+    // The detail's quest vanishes mid-detail.
+    view.render({ active: questVm(3).active.filter((e) => e.questId !== 'quest_1') });
+    expect(ctl8fDetailShown(), 'a vanished quest`s detail is hidden').toBe(false);
+    expect(ctl8fQuestIds()).toEqual(['quest_0', 'quest_2']);
+
+    // hide() then render(vm): the opening again.
+    view.render(questVm(3));
+    view.paint({ questId: 'quest_2', detail: 'quest_2' });
+    expect(ctl8fCursor(), 'precondition').toEqual(['quest_2']);
+    expect(ctl8fDetailShown(), 'precondition').toBe(true);
+    view.hide();
+    view.render(questVm(3));
+    expect(ctl8fCursor(), 'after hide(): the cursor is on the first row').toEqual(['quest_0']);
+    expect(ctl8fDetailShown(), 'after hide(): no detail').toBe(false);
+    expect(document.getElementById(ctl8fListEl().getAttribute('aria-activedescendant') ?? '')).toBe(
+      ctl8fRows()[0],
+    );
+    view.render(questVm(3));
+    expect(ctl8fCursor(), 'an ordinary render after the reset keeps it').toEqual(['quest_0']);
+
+    // render(null) then render(vm): the same.
+    view.paint({ questId: 'quest_1', detail: 'quest_1' });
+    expect(ctl8fCursor(), 'precondition').toEqual(['quest_1']);
+    expect(ctl8fDetailShown(), 'precondition').toBe(true);
+    view.render(null);
+    view.render(questVm(3));
+    expect(ctl8fCursor(), 'after render(null): the cursor is on the first row').toEqual([
+      'quest_0',
+    ]);
+    expect(ctl8fDetailShown(), 'after render(null): no detail').toBe(false);
+
+    // A paint after the reset works as before.
+    view.paint({ questId: 'quest_2', detail: null });
+    expect(ctl8fCursor()).toEqual(['quest_2']);
+    expect(root.contains(ctl8fListEl())).toBe(true);
+  });
+
+  it('CTL8F-3-VIEW-WIRED: the real journalScreen driving the real view over the overlay: the opening cursor is the first quest; Down moves it, A opens that quest`s detail, B closes it with the cursor kept, and a batch that renders again changes none of it', async () => {
+    // WRONG IMPL KILLED: a view whose paint shape is not the adapter's (the hand-built cases above
+    // would pass while the pair is unwired); a paint the adapter never makes after a step; a detail
+    // for the wrong quest; and a render that wipes what the adapter painted.
+    const { journalScreen } = await import('./screens/journalScreen');
+    const me = 'ab'.repeat(32);
+    const quests = [
+      { pqId: 1n, ownerIdentity: me, questId: 'quest_001', stepIndex: 0 },
+      { pqId: 2n, ownerIdentity: me, questId: 'quest_002', stepIndex: 3 },
+    ];
+    const ctx = {
+      store: { ownQuests: (identity: string) => (identity === me ? quests : []) },
+      identity: me,
+      now: () => 0,
+    } as unknown as Parameters<typeof journalScreen.viewModel>[0];
+    const root = mountQuestLogOverlay();
+    const view = new QuestLogView();
+    const vm = journalScreen.viewModel(ctx);
+    view.render(vm);
+    expect(
+      ctl8fRows().map((r) => r.textContent),
+      'the exact legacy row text',
+    ).toEqual(['quest_001 (step 0)', 'quest_002 (step 3)']);
+
+    let state = journalScreen.init(vm);
+    const step = (button: 'Down' | 'A' | 'B') => {
+      const out = journalScreen.onButton(vm, state, { button, repeat: false });
+      state = out.state;
+      journalScreen.paint?.(view, vm, state);
+      return out.result;
+    };
+    journalScreen.paint?.(view, vm, state);
+    expect(ctl8fCursor(), 'the opening cursor').toEqual(['quest_001']);
+
+    expect(step('Down')).toBe('consumed');
+    expect(ctl8fCursor()).toEqual(['quest_002']);
+    expect(step('A')).toBe('consumed');
+    expect(ctl8fDetailShown(), 'the detail is open').toBe(true);
+    expect(ctl8fDetailEl()?.textContent ?? '').toContain('quest_002');
+    expect(ctl8fDetailEl()?.textContent ?? '').toContain('Step 3');
+
+    view.render(journalScreen.viewModel(ctx)); // a store batch
+    expect(ctl8fCursor(), 'a batch keeps the cursor').toEqual(['quest_002']);
+    expect(ctl8fDetailShown(), 'and the detail').toBe(true);
+
+    expect(step('B')).toBe('consumed');
+    expect(ctl8fDetailShown(), 'B closes the detail').toBe(false);
+    expect(ctl8fCursor(), 'the cursor stays on that quest').toEqual(['quest_002']);
+    expect(root.contains(ctl8fListEl())).toBe(true);
+    expect(view.visible, 'the overlay stays open').toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ctl-8f red-team teeth for the Journal view: the listbox pointers and names. Untagged cases.
+// ---------------------------------------------------------------------------
+describe('QuestLogView ctl-8f: the listbox pointers and names', () => {
+  it('an emptied journal leaves the list with no aria-activedescendant', () => {
+    // WRONG IMPL KILLED: a render that rebuilds the rows but never removes the pointer (it names
+    // a row that is gone: a dangling IDREF a screen reader announces as nothing).
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+    view.render(questVm(3));
+    view.paint({ questId: 'quest_1', detail: null });
+    expect(
+      ctl8fListEl().getAttribute('aria-activedescendant'),
+      'precondition: a pointer while rows exist',
+    ).not.toBeNull();
+    view.render({ active: [] });
+    expect(ctl8fRows()).toHaveLength(0);
+    expect(ctl8fListEl().hasAttribute('aria-activedescendant')).toBe(false);
+  });
+
+  it('the list is named by the overlay, and described by the detail only while the detail is shown', () => {
+    // WRONG IMPL KILLED: a listbox with no accessible name; a name pointing at another element; a
+    // description that never appears, or that stays after the detail hides (by a paint, by a
+    // vanished quest, or by a close and reopen) and so points at a hidden element.
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+    view.render(questVm(3));
+    view.paint({ questId: 'quest_1', detail: null });
+    expect(ctl8fListEl().getAttribute('aria-labelledby')).toBe('quest-log-overlay');
+    expect(ctl8fListEl().hasAttribute('aria-describedby'), 'no detail, no description').toBe(false);
+
+    view.paint({ questId: 'quest_1', detail: 'quest_1' });
+    expect(ctl8fListEl().getAttribute('aria-describedby')).toBe('quest-log-detail');
+    expect(
+      document.getElementById('quest-log-detail'),
+      'the element it names exists',
+    ).not.toBeNull();
+    expect(ctl8fListEl().getAttribute('aria-labelledby'), 'the name is unchanged').toBe(
+      'quest-log-overlay',
+    );
+
+    view.paint({ questId: 'quest_1', detail: null });
+    expect(ctl8fListEl().hasAttribute('aria-describedby'), 'a paint that hides the detail').toBe(
+      false,
+    );
+
+    view.paint({ questId: 'quest_1', detail: 'quest_1' });
+    expect(ctl8fListEl().getAttribute('aria-describedby')).toBe('quest-log-detail');
+    view.render({ active: questVm(3).active.filter((e) => e.questId !== 'quest_1') });
+    expect(ctl8fDetailShown(), 'precondition: the vanished quest hid the detail').toBe(false);
+    expect(ctl8fListEl().hasAttribute('aria-describedby'), 'a render that hides the detail').toBe(
+      false,
+    );
+
+    view.render(questVm(3));
+    view.paint({ questId: 'quest_2', detail: 'quest_2' });
+    expect(ctl8fListEl().getAttribute('aria-describedby')).toBe('quest-log-detail');
+    view.hide();
+    view.render(questVm(3));
+    expect(ctl8fDetailShown(), 'precondition: the reopen hides the detail').toBe(false);
+    expect(ctl8fListEl().hasAttribute('aria-describedby'), 'a reopen').toBe(false);
+    expect(ctl8fListEl().getAttribute('aria-labelledby'), 'the name survives the reopen').toBe(
+      'quest-log-overlay',
+    );
+  });
+});

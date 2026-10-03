@@ -315,6 +315,8 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { target: 'Zed', monsters: 2, offer: '25', ask: '7' },
     { target: 'Amy', monsters: 3, offer: '1000', ask: '4' },
   ],
+  // ctl-8f: the Journal detail's step line (questLogView.ts).
+  'journal.detail.step': [{ step: 0 }, { step: 4 }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -346,6 +348,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // ctl-8e (named intentional change): +9 plain keys here (`tradePropose.step.{target,offer,coins,
   // ask,review}`, `tradePropose.review.{prompt,incomplete,yes,no}`), +1 parameterised one
   // (`tradePropose.review.summary`) in SAMPLE_PARAMS = 259 keys.
+  // ctl-8f (named intentional change): +9 plain keys here (`bag.pocket.{bait,food,medicine,other}`,
+  // `bag.action.{feed,use,info}`, `bag.picker.title`, `bag.feed.noMonsters`), +1 parameterised one
+  // (`journal.detail.step`) in SAMPLE_PARAMS = 269 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -613,6 +618,17 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'tradePropose.review.incomplete': 'This offer is not complete.',
   'tradePropose.review.yes': 'Yes',
   'tradePropose.review.no': 'No',
+  // ctl-8f (named intentional change): 9 new plain keys — the Bag frame's pocket tabs, item
+  // actions, picker title and the no-monster reason (raisingView.ts).
+  'bag.pocket.bait': 'Bait',
+  'bag.pocket.food': 'Food',
+  'bag.pocket.medicine': 'Medicine',
+  'bag.pocket.other': 'Other',
+  'bag.action.feed': 'Feed',
+  'bag.action.use': 'Use',
+  'bag.action.info': 'Info',
+  'bag.picker.title': 'Feed which monster?',
+  'bag.feed.noMonsters': 'No monsters to feed',
 };
 
 interface ParamOutputSpec {
@@ -985,9 +1001,18 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { target: 'Amy', monsters: 3, offer: '1000', ask: '4' },
     outputB: `To Amy ${MIDDLE_DOT} Monsters: 3 ${MIDDLE_DOT} Coins: 1000 ${MIDDLE_DOT} Asking: 4`,
   },
+  // ctl-8f: the Journal detail's step line (CTL8F.3).
+  'journal.detail.step': {
+    inputA: { step: 0 },
+    outputA: 'Step 0',
+    inputB: { step: 4 },
+    outputB: 'Step 4',
+  },
 };
 
-/** The full 259-key roster (ctl-8e: +`tradePropose.step.{target,offer,coins,ask,review}`
+/** The full 269-key roster (ctl-8f: +`bag.pocket.{bait,food,medicine,other}`
+ *  +`bag.action.{feed,use,info}` +`bag.picker.title` +`bag.feed.noMonsters` +`journal.detail.step`
+ *  over the 259-key roster below; ctl-8e: +`tradePropose.step.{target,offer,coins,ask,review}`
  *  +`tradePropose.review.{prompt,incomplete,yes,no,summary}` over the 249-key roster below;
  *  ctl-8d: +`social.tab.{players,trades,challenges,rankings}`
  *  +`social.players.placeholder` +`social.action.{accept,decline,confirm,cancel}`
@@ -1058,7 +1083,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8e 259-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8f 269-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1147,10 +1172,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 259 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 269 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (259 keys since ctl-8e).
+    // (a) roster is exactly the EXPECTED_KEYS roster (269 keys since ctl-8f).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).

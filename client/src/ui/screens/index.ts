@@ -6,8 +6,10 @@
 // one host, binds the stack and the context and runs the returned command.
 import type { BaseFrame, FrameId, Stack, UpperFrame } from '../contextStack';
 import type { NavInput } from '../nav';
+import { bagScreen } from './bagScreen';
 import { dialogueScreen } from './dialogueScreen';
 import { healScreen } from './healScreen';
+import { journalScreen } from './journalScreen';
 import { legacyAdapter } from './legacyAdapter';
 import { monstersScreen } from './monstersScreen';
 import { shopScreen } from './shopScreen';
@@ -19,16 +21,17 @@ export type ScreenAdapters = Readonly<Record<FrameId, ScreenAdapter<unknown, unk
 
 /** Total over every frame id, so a new overlay without an adapter fails client-typecheck. Every
  *  entry is the legacy adapter until its ctl-8 screen slice swaps it (ctl-8a: the dialogue, heal
- *  and shop frames; ctl-8b: the box frame, as Monsters; ctl-8d: the Social frame; ctl-8e: the trade-propose wizard). The trade, pvp
+ *  and shop frames; ctl-8b: the box frame, as Monsters; ctl-8d: the Social frame; ctl-8e: the
+ *  trade-propose wizard; ctl-8f: the raising frame, as Bag, and the quest log, as Journal). The trade, pvp
  *  and leaderboard overlays show as the one `social` frame (ctl-8s), so their own entries are
  *  never asked. */
 export const SCREEN_ADAPTERS: ScreenAdapters = {
   battleView: legacyAdapter,
   boxView: monstersScreen,
-  raisingView: legacyAdapter,
+  raisingView: bagScreen,
   evolutionView: legacyAdapter,
   dialogueView: dialogueScreen,
-  questLogView: legacyAdapter,
+  questLogView: journalScreen,
   healView: healScreen,
   shopView: shopScreen,
   tradeView: legacyAdapter,
