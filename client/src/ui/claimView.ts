@@ -1,6 +1,11 @@
 // ui/claimView.ts — DOM shell for the guest-claim overlay.
 // DOM shell — coverage-excluded (all logic lives in claimModel.ts). Joins overlayRegistry as
 // GUARD_ONLY, so `anyOverlayVisible()` suppresses movement input for free while it is open.
+// It is Profile › Account (ctl-8h): a class-styled frame in the game screen (B3), its title and
+// body shown in every phase (B2), and its shown buttons the Account screen's rows, the cursor being
+// DOM focus (`applyRowOp`). On an already-open frame a render moves focus only on the decline
+// confirm's arm edge (No: a confirm defaults to No), its disarm edge (Decline) or off a control it
+// hid (`reseatRow`, ui/screens/profileScreen.ts); the open edge's focus stays overlayA11y's.
 //
 // Overlay a11y wiring. THREE DOORS, ONE NULLITY SOURCE.
 // This shell is opened and closed through `show()`, `hide()` AND `render(vm)` (whose `vm.visible`
@@ -50,6 +55,7 @@
 import type { ClaimActions, ClaimViewModel } from './claimModel';
 import { t } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
+import { type RowOp, reseatRow, rowStep } from './screens/profileScreen';
 
 export interface ClaimViewHandlers {
   readonly onSignIn: () => void;
@@ -64,16 +70,26 @@ export interface ClaimViewHandlers {
   readonly onPrivacy: () => void;
 }
 
-/** Find an existing overlay element or create a detached one appended to <body>, so the shell
- *  works whether or not index.html declares it (it is never rendered under test). */
-function ensureElement(id: string, tag = 'div'): HTMLElement {
+/** Find an existing element or create a hidden one appended to `parent` (<body> by default), so
+ *  the shell works whether or not index.html declares it (it never does). */
+function ensureElement(id: string, tag = 'div', parent: HTMLElement = document.body): HTMLElement {
   const found = document.getElementById(id);
   if (found) return found;
   const el = document.createElement(tag);
   el.id = id;
   el.style.display = 'none';
-  document.body.appendChild(el);
+  parent.appendChild(el);
   return el;
+}
+
+/** Where a constructed frame lives (B3, CTL8H.1): the frame layer inside #game-screen, else the
+ *  game screen, else <body> for a shell-less boot. */
+function frameAnchor(): HTMLElement {
+  return (
+    document.getElementById('frame-layer') ??
+    document.getElementById('game-screen') ??
+    document.body
+  );
 }
 
 export class ClaimView {
@@ -85,9 +101,12 @@ export class ClaimView {
   readonly #confirm: HTMLElement;
   readonly #privacyBtn: HTMLButtonElement;
   readonly #actionBtns: Readonly<Record<keyof ClaimActions, HTMLButtonElement>>;
+  // The last row token applied: a token is applied once (ui/screens/profileScreen.ts).
+  #lastOp: RowOp | null = null;
 
   constructor(handlers: ClaimViewHandlers) {
-    this.#overlay = ensureElement('claim-overlay');
+    this.#overlay = ensureElement('claim-overlay', 'div', frameAnchor());
+    this.#overlay.classList.add('mr-frame', 'mr-shell');
     this.#title = ensureElement('claim-title', 'h2');
     this.#body = ensureElement('claim-body', 'p');
     this.#nudge = ensureElement('claim-nudge', 'p');
@@ -135,9 +154,13 @@ export class ClaimView {
   render(vm: ClaimViewModel): void {
     // Read the ONE nullity source FIRST, before the display write below flips it (header).
     const wasVisible = this.visible;
+    const wasArmed = this.#armed;
     this.#overlay.style.display = vm.visible ? 'block' : 'none';
+    // B2: the title and body are shown in every phase (ensureElement creates them hidden).
     this.#title.textContent = vm.title;
+    this.#title.style.display = '';
     this.#body.textContent = vm.body;
+    this.#body.style.display = '';
     this.#nudge.textContent = vm.nudge ?? '';
     this.#nudge.style.display = vm.nudge === undefined ? 'none' : 'block';
     this.#feedback.textContent = vm.feedback ?? '';
@@ -149,9 +172,56 @@ export class ClaimView {
     }
     // Door 1 of 2 for the labels — every render, unconditionally.
     this.#writeLabels();
+    // Only on a frame already open: the open edge's focus is overlayA11y's.
+    if (wasVisible && vm.visible) this.#reseat(wasArmed);
     // LAST, after every write above, so the deferred focus resolves against a painted root.
     if (vm.visible && !wasVisible) openOverlayA11y('claimView', this.#overlay);
     else if (!vm.visible && wasVisible) closeOverlayA11y('claimView', null);
+  }
+
+  /** The decline confirm is armed: its No is shown. */
+  get #armed(): boolean {
+    return this.#actionBtns.declineCancel.style.display !== 'none';
+  }
+
+  /** The rows (CTL8H.3): the shown buttons in DOM order, the privacy door last. */
+  #rows(): HTMLButtonElement[] {
+    return [...this.#overlay.querySelectorAll('button')].filter(
+      (b) => b.style.display !== 'none' && !b.disabled,
+    );
+  }
+
+  /** The row focus starts from: No while the decline is armed, else the first. */
+  #defaultRow(rows: readonly HTMLButtonElement[]): HTMLButtonElement | undefined {
+    return this.#armed ? this.#actionBtns.declineCancel : rows[0];
+  }
+
+  /** A render moved focus only on the arm and disarm edges, or off a control it hid; never focus
+   *  that is outside the frame (`reseatRow`). */
+  #reseat(wasArmed: boolean): void {
+    const active = document.activeElement;
+    const onPage = !(active instanceof HTMLElement) || active === document.body;
+    if (!onPage && !this.#overlay.contains(active)) return;
+    const b = this.#actionBtns;
+    const target = reseatRow(
+      this.#rows(),
+      onPage ? null : active,
+      { was: wasArmed, now: this.#armed },
+      b.declineCancel,
+      b.decline,
+    );
+    target?.focus();
+  }
+
+  /** One press on the rows (the Account screen, CTL8H.3). The cursor is DOM focus; with no row
+   *  focused it only seats the default row, so an A never confirms a decline nobody chose. */
+  applyRowOp(op: RowOp): void {
+    if (op === this.#lastOp) return;
+    this.#lastOp = op;
+    const rows = this.#rows();
+    const { focus, press } = rowStep(rows, document.activeElement, this.#defaultRow(rows), op);
+    focus?.focus();
+    press?.click();
   }
 
   get visible(): boolean {

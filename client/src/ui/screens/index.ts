@@ -12,6 +12,7 @@ import { healScreen } from './healScreen';
 import { journalScreen } from './journalScreen';
 import { legacyAdapter } from './legacyAdapter';
 import { monstersScreen } from './monstersScreen';
+import { accountScreen, nameScreen, privacyScreen } from './profileScreen';
 import { shopScreen } from './shopScreen';
 import { socialScreen } from './socialScreen';
 import { tradeProposeScreen } from './tradeProposeScreen';
@@ -22,7 +23,8 @@ export type ScreenAdapters = Readonly<Record<FrameId, ScreenAdapter<unknown, unk
 /** Total over every frame id, so a new overlay without an adapter fails client-typecheck. Every
  *  entry is the legacy adapter until its ctl-8 screen slice swaps it (ctl-8a: the dialogue, heal
  *  and shop frames; ctl-8b: the box frame, as Monsters; ctl-8d: the Social frame; ctl-8e: the
- *  trade-propose wizard; ctl-8f: the raising frame, as Bag, and the quest log, as Journal). The trade, pvp
+ *  trade-propose wizard; ctl-8f: the raising frame, as Bag, and the quest log, as Journal; ctl-8h:
+ *  the rename, claim and privacy frames, as Profile's Name, Account and Privacy). The trade, pvp
  *  and leaderboard overlays show as the one `social` frame (ctl-8s), so their own entries are
  *  never asked. */
 export const SCREEN_ADAPTERS: ScreenAdapters = {
@@ -37,12 +39,12 @@ export const SCREEN_ADAPTERS: ScreenAdapters = {
   tradeView: legacyAdapter,
   pvpView: legacyAdapter,
   leaderboardView: legacyAdapter,
-  renameView: legacyAdapter,
+  renameView: nameScreen,
   tradeProposeView: tradeProposeScreen,
   helpView: legacyAdapter,
   menuView: legacyAdapter,
-  claimView: legacyAdapter,
-  privacyView: legacyAdapter,
+  claimView: accountScreen,
+  privacyView: privacyScreen,
   social: socialScreen,
 };
 
