@@ -1052,4 +1052,34 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // battle's own Bag command.
   // ui/screens/mainMenuScreen.ts (battleReason)
   'menu.disabled.battleBag': 'Use items from the battle Bag command',
+  // @desc: Bag pocket tab: items that help recruit a wild monster. One word.
+  // raisingView.ts (the Bag frame)
+  'bag.pocket.bait': 'Bait',
+  // @desc: Bag pocket tab: items a monster can be fed to train a stat. One word.
+  // raisingView.ts (the Bag frame)
+  'bag.pocket.food': 'Food',
+  // @desc: Bag pocket tab: items that cure a monster's status in battle. One word.
+  // raisingView.ts (the Bag frame)
+  'bag.pocket.medicine': 'Medicine',
+  // @desc: Bag pocket tab: every item that fits no other pocket. One word.
+  // raisingView.ts (the Bag frame)
+  'bag.pocket.other': 'Other',
+  // @desc: Bag item action: feed this food to a monster (opens a monster list). One word.
+  // raisingView.ts (the Bag frame)
+  'bag.action.feed': 'Feed',
+  // @desc: Bag item action: use this item (only possible from the battle Bag command). One word.
+  // raisingView.ts (the Bag frame)
+  'bag.action.use': 'Use',
+  // @desc: Bag item action: show the item's description. One short word.
+  // raisingView.ts (the Bag frame)
+  'bag.action.info': 'Info',
+  // @desc: Heading of the Bag's monster list after choosing Feed. A short question.
+  // raisingView.ts (the Bag frame)
+  'bag.picker.title': 'Feed which monster?',
+  // @desc: Feedback-line reason Feed is disabled: the player owns no monster. Short phrase.
+  // raisingView.ts (the Bag frame)
+  'bag.feed.noMonsters': 'No monsters to feed',
+  // @desc: Journal quest detail line; {step} is the quest's current step number counted from 0.
+  // questLogView.ts (the Journal detail)
+  'journal.detail.step': (p) => `Step ${p.step}`,
 } satisfies Catalog);

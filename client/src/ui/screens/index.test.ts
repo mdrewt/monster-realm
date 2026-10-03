@@ -50,7 +50,7 @@ import { DEFAULT_BINDINGS } from '../../input/bindings';
 import { VBUTTONS, type VButton } from '../../input/buttons';
 import { KeyboardSource } from '../../input/keyboardSource';
 import { InputRouter, type RouteContext, routedBindings } from '../../input/router';
-import type { StoreBattleChallenge } from '../../net/store';
+import type { StoreBattleChallenge, StoreItemRow } from '../../net/store';
 import {
   type BaseFrame,
   type FrameId,
@@ -3355,7 +3355,7 @@ describe('the Bag and the Journal over the shipped table (ctl-8f, CTL8F.4)', () 
             ]
           : [],
       itemDefs: () =>
-        new Map([
+        new Map<number, StoreItemRow>([
           [5, food],
           [3, lure],
         ]),

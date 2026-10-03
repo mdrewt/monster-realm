@@ -36,9 +36,57 @@
 // Each `#app`-mounted view creates its OWN root under the shared mount, so opening this view
 // never closes a sibling (no close-before-open; boxView.test.ts S4-CROSS-VIEW-DISTINCT-ROOTS).
 
+import {
+  actionLayout,
+  type BagAction,
+  bagLayout,
+  findItem,
+  type Pocket,
+  pickerLayout,
+} from './bagModel';
 import { currentLocale, t, tf } from './i18n/resolver';
+import type { NavState } from './nav';
+import { renderNav, renderTabs } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { InventoryItemViewModel, RaisingViewModel } from './raisingModel';
+import type { BagPaint } from './screens/bagScreen';
+
+// ctl-8f: this root is the Bag frame. `paint(BagPaint)` (screens/bagScreen.ts) draws the pocket
+// tabs, the active pocket's items, the item sheet, the description, the monster picker and the
+// status line over the nav kit. Until the adapter's first paint (the first batch or button after an
+// open) the legacy inventory grid shows instead; `hide()` drops the kept paint. The monster cards
+// above stay as they were.
+const POCKET_LABELS: Readonly<Record<Pocket, () => string>> = {
+  bait: () => t('bag.pocket.bait'),
+  food: () => t('bag.pocket.food'),
+  medicine: () => t('bag.pocket.medicine'),
+  other: () => t('bag.pocket.other'),
+};
+
+const ACTION_LABELS: Readonly<Record<BagAction, () => string>> = {
+  feed: () => t('bag.action.feed'),
+  use: () => t('bag.action.use'),
+  info: () => t('bag.action.info'),
+};
+
+const listNav = (item: string | null): NavState => ({ tab: null, item, perTab: {} });
+
+/** The Bag status line's text (empty with no status). */
+function statusText(status: BagPaint['status']): string {
+  if (status === null) return '';
+  switch (status.kind) {
+    case 'fed':
+      return tf('box.feedback.fed', { name: status.name });
+    case 'noMonsters':
+      return t('bag.feed.noMonsters');
+    case 'battleOnly':
+      return t('menu.disabled.battleBag');
+  }
+}
+
+function setShown(el: HTMLElement, shown: boolean): void {
+  el.style.display = shown ? '' : 'none';
+}
 
 export interface RaisingViewCallbacks {
   /**
@@ -107,6 +155,16 @@ export class RaisingView {
   // a store batch arrives several times a second, and rebuilding unchanged Care/Train buttons on
   // each one detached them under a click and dropped keyboard focus.
   readonly #rendered = new Map<HTMLElement, string>();
+  // ctl-8f: the Bag panel's parts and the kept paint (null until the adapter paints this open).
+  readonly #bagTabs: HTMLDivElement;
+  readonly #bagList: HTMLDivElement;
+  readonly #bagEmpty: HTMLDivElement;
+  readonly #bagSheet: HTMLDivElement;
+  readonly #bagInfo: HTMLDivElement;
+  readonly #bagPickerTitle: HTMLDivElement;
+  readonly #bagPicker: HTMLDivElement;
+  readonly #bagStatus: HTMLDivElement;
+  #bagPaint: BagPaint | null = null;
 
   constructor(parent: HTMLElement, callbacks: RaisingViewCallbacks) {
     this.#callbacks = callbacks;
@@ -156,7 +214,26 @@ export class RaisingView {
     this.#inventoryLabelEl = inventoryLabel;
     this.#root.appendChild(inventoryLabel);
 
+    const part = (id: string): HTMLDivElement => {
+      const el = document.createElement('div');
+      el.id = id;
+      el.style.display = 'none';
+      this.#root.appendChild(el);
+      return el;
+    };
+    this.#bagTabs = part('bag-tabs');
+    this.#bagList = part('bag-list');
+    this.#bagEmpty = part('bag-empty');
+    this.#bagSheet = part('bag-sheet');
+    this.#bagInfo = part('bag-info');
+    this.#bagPickerTitle = part('bag-picker-title');
+    this.#bagPicker = part('bag-picker');
+    this.#bagStatus = part('bag-status');
+    this.#bagStatus.className = 'mr-frame-feedback';
+    this.#bagStatus.style.display = '';
+
     this.#inventoryEl = document.createElement('div');
+    this.#inventoryEl.id = 'raising-inventory';
     this.#inventoryEl.style.cssText =
       'display:grid;grid-template-columns:repeat(3,1fr);gap:8px;width:100%;max-width:700px;';
     this.#root.appendChild(this.#inventoryEl);
@@ -198,7 +275,88 @@ export class RaisingView {
     this.#pendingTrain.clear(); // Same never-settles-after-drop reason as #pending.
     // The cleared locks leave disabled buttons behind, so the reopen's refresh must rebuild.
     this.#rendered.clear();
+    // The next open shows the legacy grid until its adapter paints.
+    this.#bagPaint = null;
+    this.#applyBag();
     closeOverlayA11y('raisingView', null);
+  }
+
+  /** The Bag screen's paint: kept until the next `hide()`. */
+  paint(p: BagPaint): void {
+    this.#bagPaint = p;
+    this.#applyBag();
+  }
+
+  #applyBag(): void {
+    const p = this.#bagPaint;
+    this.#inventoryEl.style.display = p === null ? 'grid' : 'none';
+    setShown(this.#bagTabs, p !== null);
+    setShown(this.#bagList, p !== null);
+    const item = p === null || p.phase.kind === 'list' ? undefined : findItem(p.vm, p.phase.itemId);
+    const phase = item === undefined ? 'list' : (p?.phase.kind ?? 'list');
+    setShown(this.#bagSheet, phase === 'sheet');
+    setShown(this.#bagInfo, phase === 'info');
+    setShown(this.#bagPickerTitle, phase === 'picker');
+    setShown(this.#bagPicker, phase === 'picker');
+    if (p === null) {
+      setShown(this.#bagEmpty, false);
+      this.#bagEmpty.textContent = '';
+      this.#bagStatus.textContent = '';
+      this.#bagStatus.removeAttribute('data-feedback');
+      return;
+    }
+
+    const { vm, nav } = p;
+    const layout = bagLayout(vm);
+    renderTabs(this.#bagTabs, layout, nav, {
+      frame: 'bag',
+      label: (tab) => POCKET_LABELS[tab.key as Pocket](),
+    });
+    const pocket = vm.pockets.find((pk) => pk.pocket === nav.tab);
+    renderNav(this.#bagList, layout, nav, {
+      frame: 'bag',
+      fill: (el, row) => {
+        const it = pocket?.items.find((i) => i.key === row.key);
+        if (it !== undefined) {
+          el.textContent = tf('raising.inventory.item', { name: it.name, count: it.count });
+        }
+      },
+    });
+    const empty = pocket !== undefined && pocket.items.length === 0;
+    setShown(this.#bagEmpty, empty);
+    this.#bagEmpty.textContent = empty ? t('raising.inventory.empty') : '';
+
+    if (item !== undefined && p.phase.kind === 'sheet') {
+      renderNav(
+        this.#bagSheet,
+        actionLayout(item, vm.monsters.length > 0),
+        listNav(p.phase.action),
+        {
+          frame: 'bagsheet',
+          fill: (el, row) => {
+            el.textContent = ACTION_LABELS[row.key as BagAction]();
+          },
+        },
+      );
+    }
+    if (item !== undefined && p.phase.kind === 'info') {
+      this.#bagInfo.textContent = item.description || t('shop.description.none');
+    }
+    if (item !== undefined && p.phase.kind === 'picker') {
+      this.#bagPickerTitle.textContent = t('bag.picker.title');
+      renderNav(this.#bagPicker, pickerLayout(vm), listNav(p.phase.monster), {
+        frame: 'bagpick',
+        labelledBy: 'bag-picker-title',
+        fill: (el, row) => {
+          el.textContent = vm.monsters.find((m) => m.key === row.key)?.name ?? '';
+        },
+      });
+    }
+
+    const status = p.status;
+    if (status?.kind === 'fed') this.#bagStatus.setAttribute('data-feedback', 'ok');
+    else this.#bagStatus.removeAttribute('data-feedback');
+    this.#bagStatus.textContent = statusText(status);
   }
 
   /** Display a care outcome. textContent ONLY — the message can carry a

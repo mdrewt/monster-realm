@@ -3650,6 +3650,15 @@ describe('RaisingView ctl-8f: the Bag panel (CTL8F.1, CTL8F.2)', () => {
           trainStat: null,
           cureStatus: 'Poison',
         },
+        // A shard-like definition with no effect fields: the `other` pocket the data holds.
+        {
+          id: 20,
+          name: 'Moon Shard',
+          description: '',
+          recruitBonus: 0,
+          trainStat: null,
+          cureStatus: null,
+        },
       ].map(
         (d) => [d.id, { ...d, trainAmount: d.trainStat === null ? 0 : 1, sellPrice: 0n }] as const,
       ),
@@ -3660,6 +3669,7 @@ describe('RaisingView ctl-8f: the Bag panel (CTL8F.1, CTL8F.2)', () => {
       { invId: 2n, ownerIdentity: owner, itemId: 3, count: 4 },
       { invId: 3n, ownerIdentity: owner, itemId: 5, count: 3 },
       { invId: 4n, ownerIdentity: owner, itemId: 12, count: 1 },
+      { invId: 5n, ownerIdentity: owner, itemId: 20, count: 6 },
     ];
     const vm = buildBagVm(inventory, defs, [
       { key: '11', monsterId: 11n, name: 'Kip' },

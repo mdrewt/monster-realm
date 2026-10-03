@@ -310,7 +310,18 @@ export type MessageId =
   | 'menu.options.help.title'
   | 'menu.options.help.desc'
   | 'menu.disabled.inBattle'
-  | 'menu.disabled.battleBag';
+  | 'menu.disabled.battleBag'
+  // ctl-8f: the Bag frame (raisingView.ts) and the Journal detail (questLogView.ts).
+  | 'bag.pocket.bait'
+  | 'bag.pocket.food'
+  | 'bag.pocket.medicine'
+  | 'bag.pocket.other'
+  | 'bag.action.feed'
+  | 'bag.action.use'
+  | 'bag.action.info'
+  | 'bag.picker.title'
+  | 'bag.feed.noMonsters'
+  | 'journal.detail.step';
 
 /** The ONE hand-written parameter table: a key appears here iff its message takes
  *  parameters, and `ParamMessageId` is DERIVED from it — one table, not two lists to keep in
@@ -473,6 +484,7 @@ export interface MessageParams {
   readonly 'privacy.countdown.seconds': { readonly n: bigint };
   readonly 'privacy.export.incomplete': { readonly received: number; readonly total: number };
   readonly 'privacy.export.complete': { readonly received: number };
+  readonly 'journal.detail.step': { readonly step: number };
 }
 
 /** Keys resolved by `tf(key, params)`. */
