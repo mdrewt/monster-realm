@@ -2963,9 +2963,14 @@ interface SocialHostWorld {
 }
 
 function socialHostCtx(w: SocialHostWorld): ScreenContext {
+  // INTENTIONAL CHANGE (ctl-8g): the three reads the Players and Rankings rows make (an empty
+  // world: no players, no characters, no profiles).
   const store = {
     allTradeOffers: () => [],
     allChallenges: () => w.challenges.map((c) => ({ ...c })),
+    allPlayers: () => [],
+    characters: () => [].values(),
+    allProfiles: () => [],
   };
   return {
     store,
@@ -3042,7 +3047,8 @@ describe('the Social frame over the shipped table (ctl-8d, CTL8D.1)', () => {
     openSocial();
     expect(social.painted.length, 'the seat paints once').toBe(1);
     expect(lastTab(), 'a first plain open: Players').toBe('players');
-    expect(social.shown.at(-1), 'on the trade root').toBe('tradeView');
+    // INTENTIONAL CHANGE (ctl-8g): Players is painted over the leaderboard root now. Was: tradeView.
+    expect(social.shown.at(-1), 'on the leaderboard root').toBe('leaderboardView');
 
     for (const tab of ['trades', 'challenges', 'rankings'] as const) {
       expect(host.button(stack, nav('RB'), socialHostCtx(w)), `RB to ${tab}`).toBe('consumed');
@@ -3060,7 +3066,8 @@ describe('the Social frame over the shipped table (ctl-8d, CTL8D.1)', () => {
     host.forget();
     openSocial();
     expect(lastTab(), 'after a reconnect nothing is remembered: Players').toBe('players');
-    expect(social.shown.at(-1)).toBe('tradeView');
+    // INTENTIONAL CHANGE (ctl-8g): Players is over the leaderboard root. Was: tradeView.
+    expect(social.shown.at(-1)).toBe('leaderboardView');
 
     // A challenge to the viewer, the frame opened on Challenges (P, or the auto-show): A, A.
     w.tab = 'challenges';

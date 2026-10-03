@@ -36,9 +36,16 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_BINDINGS } from '../../input/bindings';
 import type { VButton } from '../../input/buttons';
-import type { StoreBattleChallenge, StoreTradeOffer } from '../../net/store';
+import type {
+  StoreBattleChallenge,
+  StoreCharacter,
+  StorePlayer,
+  StoreProfile,
+  StoreTradeOffer,
+} from '../../net/store';
+import type { SocialRankingsPaint } from '../leaderboardView';
 import type { NavInput } from '../nav';
-import type { SocialAction, SocialVm } from '../socialModel';
+import { type SocialAction, type SocialVm, socialPeopleKey } from '../socialModel';
 import type { SocialPaint } from '../tradeView';
 import { type SocialScreenState, socialScreen } from './socialScreen';
 import type {
@@ -118,24 +125,38 @@ function outgoing(createdAtMs = 500n): StoreBattleChallenge {
   };
 }
 
-/** What the fake store holds and the tab the open path bound; a case edits it as a batch would. */
+/** What the fake store holds and the tab the open path bound; a case edits it as a batch would.
+ *  ctl-8g (named intentional change): the world also holds the players, their characters and the
+ *  ranked profiles the Players and Rankings tabs list; every ctl-8d world leaves them empty. */
 interface World {
   tab: SocialTab | null;
   offers: readonly StoreTradeOffer[];
   challenges: readonly StoreBattleChallenge[];
+  players: readonly StorePlayer[];
+  characters: readonly StoreCharacter[];
+  profiles: readonly StoreProfile[];
 }
 
 const world = (over: Partial<World> = {}): World => ({
   tab: null,
   offers: [],
   challenges: [],
+  players: [],
+  characters: [],
+  profiles: [],
   ...over,
 });
 
 function ctxOf(w: World): ScreenContext {
+  // ctl-8g (named intentional change): the three reads the Players and Rankings rows make.
+  // `characters()` answers a FRESH one-shot iterator of `{ row }` entries (the store's shape), the
+  // others fresh copies, as every read in this file does.
   const store = {
     allTradeOffers: () => w.offers.map((o) => ({ ...o })),
     allChallenges: () => w.challenges.map((c) => ({ ...c })),
+    allPlayers: () => w.players.map((p) => ({ ...p })),
+    characters: () => w.characters.map((c) => ({ row: { ...c } })).values(),
+    allProfiles: () => w.profiles.map((p) => ({ ...p })),
   };
   return {
     store,
@@ -212,9 +233,12 @@ const respond = (accepted: boolean): ScreenResult => ({
   accepted,
 });
 
-/** The panel each tab shows (contextStack's `socialPanel`), spelled here. */
+/** The panel each tab shows, spelled here. INTENTIONAL CHANGE (ctl-8g): the Players tab is painted
+ *  over the leaderboard root now (the seam map: `view.rankings` paints Players and Rankings);
+ *  contextStack's `socialPanel` still answers the trade root for it, so the screen picks the panel
+ *  itself. Was: players 'tradeView'. */
 const PANEL: Readonly<Record<SocialTab, SocialPanelId>> = {
-  players: 'tradeView',
+  players: 'leaderboardView',
   trades: 'tradeView',
   challenges: 'pvpView',
   rankings: 'leaderboardView',
@@ -259,8 +283,11 @@ function paintCalls(
           },
         }
       : undefined,
-    // ctl-8g paints Rankings; this slice calls nothing on it (any call throws a TypeError here).
-    rankings: {},
+    // INTENTIONAL CHANGE (ctl-8g): the Players and Rankings tabs call `rankings.paintSocial` after
+    // the two calls recorded here. It is a no-op in this helper, so every ctl-8d sequence
+    // assertion keeps reading the same three calls; the new call is pinned, in order and with its
+    // payload, by `paintLog` and the CTL8G cases below. Was: `rankings: {}` (any call threw).
+    rankings: { paintSocial: () => undefined },
     show: (panel: SocialPanelId) => {
       calls.push({ call: 'show', panel });
     },
@@ -1145,7 +1172,7 @@ describe('socialScreen — the requested tab and the panels (ctl-8d, CTL8D.3)', 
     });
   });
 
-  it('CTL8D-3-PAINT-PANEL: paint shows the state`s tab panel first (Players and Trades the trade root, Challenges the pvp root, Rankings the leaderboard root), then paints the strip into the chrome through trades.paintSocial (the trade cursor only on a listed trade on Trades, the sheet and its prompt question while open), then the challenge cursor (incoming / outgoing on Challenges, null elsewhere); it follows the state, not the requested tab; views not built yet are skipped without a throw', () => {
+  it('CTL8D-3-PAINT-PANEL: paint shows the state`s tab panel first (Trades the trade root, Challenges the pvp root, Players and Rankings the leaderboard root; ctl-8g moved Players off the trade root), then paints the strip into the chrome through trades.paintSocial (the trade cursor only on a listed trade on Trades, the sheet and its prompt question while open), then the challenge cursor (incoming / outgoing on Challenges, null elsewhere); it follows the state, not the requested tab; views not built yet are skipped without a throw', () => {
     // WRONG IMPL KILLED: a paint that shows the requested tab's panel (or never calls show, so U,
     // P and L keep the panel the legacy key chose); one that paints the strip before `show` (a
     // later throw would leave the wrong panel up); a strip painted only on Trades (the chrome
@@ -1153,8 +1180,9 @@ describe('socialScreen — the requested tab and the panels (ctl-8d, CTL8D.3)', 
     // painted with the wrong actions or active row, dropped under its prompt, or left on the list;
     // the wrong prompt question (a trade Decline asking about a challenge, Confirm asking about a
     // decline); a challenge cursor on Trades or on the wrong row; a paint into a view that does
-    // not exist yet (a TypeError before main() built the panels); and a call on the Rankings view
-    // (ctl-8g's).
+    // not exist yet (a TypeError before main() built the panels). INTENTIONAL CHANGE (ctl-8g): the
+    // ctl-8d pin "no call on the Rankings view" is replaced by CTL8G-1-PAINT / CTL8G-2-PAINT, which
+    // pin the call on Players and Rankings and its absence on Trades and Challenges.
     const full = (tab: SocialTab | null): World =>
       world({ tab, offers: [trade('waiting')], challenges: [incoming(), outgoing()] });
 
@@ -1280,5 +1308,608 @@ describe('socialScreen — the requested tab and the panels (ctl-8d, CTL8D.3)', 
       }
     }
     expect(missing, 'ANTI-VACUITY: three view sets x four tabs').toBe(12);
+  });
+});
+
+// ==========================================================================================
+// ctl-8g (CTL8G.1, CTL8G.2): the Players and Rankings tabs.
+//
+// The Players tab lists the other online players (name, a Nearby badge within 12 Manhattan tiles
+// in the same zone); A on a row is the walk-up phase (`{ kind: 'walkUp', row }`: "Walk up to {name}
+// and press A", no remote action exists); B leaves it, a move leaves it. The Rankings tab is a
+// read-only nav list: A there never opens a sheet or sends a command. Both tabs paint over the
+// leaderboard root through `view.rankings.paintSocial(p)` (after show, the strip and the challenge
+// cursor), and ONLY these two tabs call it. The ZONE NAME clause of CTL8G.1 is DEFERRED (no client
+// source of zone names): nothing here asserts one.
+//
+// The state is `{ nav, phase, people }`: `people` is `socialPeopleKey(vm)`, so observe answers a NEW
+// state when a player joins, leaves, renames or crosses the 12-tile line (the host repaints on a
+// new state object) and the SAME state when nothing the Players tab shows changed.
+//
+// Fixture: the viewer ME 'aa…' (entity 1) at (50, 50); Bob (2) five tiles away: nearby; Carol (3)
+// forty away; Dan (4) has no character. Players rows in name order: Bob, Carol, Dan. Rankings
+// (RANKED): Bob 1200, Carol 1000, Me 900.
+// ==========================================================================================
+
+const DAN = 'dd'.repeat(32);
+const EVE = 'ee'.repeat(32);
+const ME_EID = 1n;
+
+const person = (identity: string, name: string, entityId: bigint, online = true): StorePlayer => ({
+  identity,
+  name,
+  entityId,
+  online,
+  lastInputSeq: 0n,
+});
+
+const at = (entityId: bigint, tileX: number, tileY: number, zoneId = 0): StoreCharacter => ({
+  entityId,
+  zoneId,
+  tileX,
+  tileY,
+  facing: 'South',
+  action: 'Idle',
+  moveStartedAtMs: 0n,
+  moveQueue: [],
+});
+
+const profile = (identity: string, name: string, rating: number): StoreProfile => ({
+  identity,
+  name,
+  rating,
+  wins: 0,
+  losses: 0,
+});
+
+const ME_P = person(ME, 'Me', ME_EID);
+const BOB_P = person(BOB, 'Bob', 2n);
+const CAROL_P = person(CAROL, 'Carol', 3n);
+const DAN_P = person(DAN, 'Dan', 4n);
+const CHARS: readonly StoreCharacter[] = [at(ME_EID, 50, 50), at(2n, 50, 55), at(3n, 50, 90)];
+const RANKED: readonly StoreProfile[] = [
+  profile(CAROL, 'Carol', 1000),
+  profile(BOB, 'Bob', 1200),
+  profile(ME, 'Me', 900),
+];
+/** The ranked keys in leaderboard order, spelled here. */
+const RANK_ORDER = [BOB, CAROL, ME] as const;
+
+/** A world with the players of the fixture, on `tab`. */
+const crowd = (tab: SocialTab | null, over: Partial<World> = {}): World =>
+  world({ tab, players: [ME_P, BOB_P, CAROL_P, DAN_P], characters: CHARS, ...over });
+/** A world with the ranked profiles of the fixture, on `tab`. */
+const ranked = (tab: SocialTab | null, over: Partial<World> = {}): World =>
+  world({ tab, profiles: RANKED, ...over });
+
+const walkUp = (row: string) => ({ kind: 'walkUp' as const, row });
+
+type RankingsCall = { readonly call: 'rankings'; readonly paint: SocialRankingsPaint };
+type LoggedCall = FrameCall | RankingsCall;
+
+/** One paint into a recording view that logs EVERY call in order, the Rankings view's too
+ *  (`parts.rankings: false` leaves `view.rankings` undefined, as before main() builds it). */
+function paintLog(
+  vm: SocialVm,
+  state: SocialScreenState,
+  parts: { readonly rankings: boolean } = { rankings: true },
+): LoggedCall[] {
+  const calls: LoggedCall[] = [];
+  const view = {
+    chrome: CHROME,
+    trades: {
+      paintSocial: (chrome: unknown, paint: SocialPaint) => {
+        calls.push({ call: 'paintSocial', chrome, paint });
+      },
+    },
+    challenges: {
+      paintCursor: (row: CursorRow) => {
+        calls.push({ call: 'paintCursor', row });
+      },
+    },
+    rankings: parts.rankings
+      ? {
+          paintSocial: (paint: SocialRankingsPaint) => {
+            calls.push({ call: 'rankings', paint });
+          },
+        }
+      : undefined,
+    show: (panel: SocialPanelId) => {
+      calls.push({ call: 'show', panel });
+    },
+  } as unknown as SocialFrameView;
+  if (socialScreen.paint === undefined) throw new Error('socialScreen must define paint');
+  socialScreen.paint(view, vm, state);
+  return calls;
+}
+
+/** The Rankings view's one paint of `state` over `w`, after asserting the whole call order. */
+function rankingsPaintOf(w: World, state: SocialScreenState): SocialRankingsPaint {
+  const log = paintLog(vmOf(w), state);
+  expect(
+    log.map((c) => c.call),
+    'show first, then the strip, the challenge cursor and the Rankings view, once each',
+  ).toEqual(['show', 'paintSocial', 'paintCursor', 'rankings']);
+  expect(log[0], 'the leaderboard root is the panel').toEqual({
+    call: 'show',
+    panel: 'leaderboardView',
+  });
+  return (log[3] as RankingsCall).paint;
+}
+
+const A_INPUTS: readonly Input[] = ['A', rep('A')];
+
+describe('socialScreen — Players: the walk-up phase and the change signal (ctl-8g, CTL8G.1)', () => {
+  it('CTL8G-1-WALKUP: A on a Players row enters the walk-up phase on that row and sends nothing (a held A does not); in it B returns to the list without popping the frame, a held B does nothing, A (fresh or held) stays, Up / Down / LB / RB move exactly as in the list AND return to the list, Left / Right move nothing, Start and Select act as everywhere; with no players listed A opens nothing; a walk-up whose player leaves, goes offline or is replaced closes to the list, and an A pressed as that happens only paints', () => {
+    // WRONG IMPL KILLED: an A that opens a trade sheet or sends a command on a player (no remote
+    // action exists); a held A that enters (a held Enter would walk up on its auto-repeat); a walk-up
+    // keyed on the wrong row (the first row, not the cursor's); a B that pops the frame from the
+    // walk-up (it only closes the line) or one whose held repeat pops; a held B that closes it;
+    // an A in the walk-up that toggles it off or sends; an arrow that moves but leaves the walk-up
+    // up (the line would name a player the cursor left), or one that returns to the list without
+    // moving; LB / RB that switch tabs and keep the walk-up (a stale line on the next visit); a
+    // Start or Select that the walk-up swallows (the e2e closeAll presses Start); an A on an empty
+    // Players tab that enters a walk-up on nothing; a walk-up left over a player who left, went
+    // offline or was replaced; and an A in the same step as that change that walks up to the
+    // re-seated row (the shop's rule: it only paints).
+    const w = crowd('players');
+    const opened = open(w);
+    expect(cursorOf(opened), 'fixture: the first row').toEqual({ tab: 'players', item: BOB });
+    expect(opened.phase, 'fixture: the list').toMatchObject(LIST);
+
+    // A on each row walks up to THAT row; the cursor stays.
+    for (const [reach, row] of [
+      [[], BOB],
+      [['Down'], CAROL],
+      [['Down', 'Down'], DAN],
+    ] as const) {
+      const on = swallowed(w, opened, reach);
+      expect(cursorOf(on), `fixture: the cursor on ${row}`).toEqual({ tab: 'players', item: row });
+      const a = press(w, on, 'A');
+      expect(a.result, `A on ${row} sends nothing`).toBe('consumed');
+      expect(a.state.phase, `A on ${row}: the walk-up on that row`).toMatchObject(walkUp(row));
+      expect(cursorOf(a.state), `A on ${row}: the cursor stays`).toEqual(cursorOf(on));
+      const held = press(w, on, rep('A'));
+      expect(held.result, `a held A on ${row}`).toBe('consumed');
+      expect(held.state.phase, `a held A on ${row}: no walk-up`).toMatchObject(LIST);
+      expect(cursorOf(held.state), `a held A on ${row}: the cursor stays`).toEqual(cursorOf(on));
+    }
+
+    // The walk-up on Carol, the middle row.
+    const onCarol = swallowed(w, opened, ['Down']);
+    const up = press(w, onCarol, 'A').state;
+    expect(up.phase, 'fixture: the walk-up on Carol').toMatchObject(walkUp(CAROL));
+
+    // B: a fresh B closes the line only; a held B does nothing at all.
+    const b = press(w, up, 'B');
+    expect(b.result, 'B in the walk-up is swallowed, the frame stays').toBe('consumed');
+    expect(b.state.phase, 'B returns to the list').toMatchObject(LIST);
+    expect(cursorOf(b.state), 'B keeps the cursor').toEqual({ tab: 'players', item: CAROL });
+    const heldB = press(w, up, rep('B'));
+    expect(heldB.result, 'a held B is swallowed').toBe('consumed');
+    expect(heldB.state.phase, 'a held B leaves the walk-up up').toMatchObject(walkUp(CAROL));
+    expect(cursorOf(heldB.state)).toEqual({ tab: 'players', item: CAROL });
+
+    // A in the walk-up: swallowed, the walk-up stays, nothing sent.
+    for (const input of A_INPUTS) {
+      const step = press(w, up, input);
+      expect(step.result, `${label(input)} in the walk-up`).toBe('consumed');
+      expect(step.state.phase, `${label(input)}: the walk-up stays`).toMatchObject(walkUp(CAROL));
+    }
+    // Left and Right: swallowed, the cursor stays.
+    for (const input of ['Left', 'Right', rep('Left'), rep('Right')] as const) {
+      const step = press(w, up, input);
+      expect(step.result, `${label(input)} in the walk-up`).toBe('consumed');
+      expect(cursorOf(step.state), `${label(input)} moves nothing`).toEqual({
+        tab: 'players',
+        item: CAROL,
+      });
+    }
+
+    // The arrows and the tab buttons: the list's own move, then the list.
+    const MOVES: ReadonlyArray<readonly [Input, string, string]> = [
+      ['Down', 'players', DAN],
+      ['Up', 'players', BOB],
+      [rep('Down'), 'players', DAN],
+      [rep('Up'), 'players', BOB],
+      ['RB', 'trades', ''],
+      ['LB', 'rankings', ''],
+    ];
+    for (const [input, tab, item] of MOVES) {
+      const inList = press(w, onCarol, input);
+      const inWalkUp = press(w, up, input);
+      expect(inWalkUp.result, `${label(input)} in the walk-up`).toBe('consumed');
+      expect(inWalkUp.state.nav, `${label(input)}: the very move the list makes`).toEqual(
+        inList.state.nav,
+      );
+      expect(inWalkUp.state.nav.tab, `${label(input)}: the tab`).toBe(tab);
+      if (item !== '') {
+        expect(inWalkUp.state.nav.item, `${label(input)}: the row`).toBe(item);
+      }
+      expect(inWalkUp.state.phase, `${label(input)}: back to the list`).toMatchObject(LIST);
+    }
+
+    // Start and Select, as in every phase; a held one is swallowed.
+    expect(press(w, up, 'Start').result, 'Start in the walk-up').toEqual(POP_TO_BASE);
+    expect(press(w, up, 'Select').result, 'Select in the walk-up').toEqual(TOGGLE_HELP);
+    for (const button of ['Start', 'Select'] as const) {
+      expect(press(w, up, rep(button)).result, `a held ${button}`).toBe('consumed');
+    }
+    // And B in the list still pops (the frame closes from the list, not from the walk-up).
+    expect(press(w, opened, 'B').result, 'B in the list pops the frame').toEqual(POP);
+
+    // No players listed (only the viewer, and an offline one): A opens nothing.
+    const lonely = crowd('players', { players: [ME_P, person(BOB, 'Bob', 2n, false)] });
+    const lonelyOpen = open(lonely);
+    expect(cursorOf(lonelyOpen), 'fixture: no row').toEqual({ tab: 'players', item: null });
+    for (const input of A_INPUTS) {
+      const step = press(lonely, lonelyOpen, input);
+      expect(step.result, `${label(input)} with nobody listed`).toBe('consumed');
+      expect(step.state.phase, `${label(input)}: no walk-up on nothing`).toMatchObject(LIST);
+    }
+
+    // The walk-up's player leaves, goes offline: the list, the cursor re-seated on a listed row.
+    const without = (players: readonly StorePlayer[]): World => crowd('players', { players });
+    const gone: ReadonlyArray<readonly [string, World]> = [
+      ['Carol leaves', without([ME_P, BOB_P, DAN_P])],
+      ['Carol goes offline', without([ME_P, BOB_P, person(CAROL, 'Carol', 3n, false), DAN_P])],
+    ];
+    for (const [what, after] of gone) {
+      const settled = observe(after, up);
+      expect(settled.phase, `${what}: observe closes the walk-up`).toMatchObject(LIST);
+      expect(
+        [BOB, DAN],
+        `${what}: the cursor is re-seated on a row that is still listed`,
+      ).toContain(settled.nav.item);
+      const pressed = press(after, up, 'A');
+      expect(pressed.result, `${what}: an A as it happens sends nothing`).toBe('consumed');
+      expect(pressed.state.phase, `${what}: and walks up to nothing`).toMatchObject(LIST);
+    }
+    // The walk-up survives what does not concern its row: another player arrives, or its player
+    // is renamed.
+    const arrived = without([ME_P, BOB_P, CAROL_P, DAN_P, person(EVE, 'Eve', 5n)]);
+    const renamed = without([ME_P, BOB_P, person(CAROL, 'Carolyn', 3n), DAN_P]);
+    for (const [what, after] of [
+      ['Eve arrives', arrived],
+      ['Carol is renamed', renamed],
+    ] as const) {
+      expect(observe(after, up).phase, `${what}: the walk-up stays on Carol`).toMatchObject(
+        walkUp(CAROL),
+      );
+    }
+  });
+
+  it('CTL8G-1-OBSERVE: init records the players` signature (`socialPeopleKey`) in state.people; observe answers the SAME state when nothing the Players tab shows changed (a rebuilt equal vm, a third party`s trade or challenge, an offline player who is not listed, a player`s input counter ticking, a listed player moving without crossing the 12-tile line, a re-rated leaderboard) and a NEW state, with the new signature and a listed cursor, when a player joins, leaves, goes offline, is renamed, or crosses the line either way, or gains a character; the new state is then stable', () => {
+    // WRONG IMPL KILLED: an observe that answers a new object at every batch (a repaint per batch,
+    // and the host's same-object pin); one that answers the SAME object when a player joins, leaves,
+    // is renamed or crosses the 12-tile line while the cursor row survives (the Players list the
+    // player sees would be stale: nothing repaints until a button press); a signature that reads
+    // the raw player rows (lastInputSeq ticks every move: a repaint storm) or the raw characters
+    // (every step of a far player repaints); an init that leaves `people` unset (the first observe
+    // would always look changed); a signature taken from the rows but never stored back, so the
+    // new state is "changed" again at the next batch; and a cursor left on a row that went away.
+    const base = crowd('players');
+    const s = open(base);
+    expect(typeof s.people, 'init records the signature').toBe('string');
+    expect(s.people, 'it is the signature of the very rows listed').toBe(
+      socialPeopleKey(vmOf(base)),
+    );
+    expect(observe(base, s), 'a rebuilt equal view model: the same state').toBe(s);
+
+    const swap = (over: Partial<World>): World => ({ ...base, ...over });
+    const tweak = (id: string, edit: Partial<StorePlayer>): readonly StorePlayer[] =>
+      base.players.map((p) => (p.identity === id ? { ...p, ...edit } : p));
+
+    // Nothing the tab shows changed: the same state, each case a fresh view model.
+    const othersMoved = swap({
+      offers: [{ ...trade('waiting', 50n, 5n), initiator: BOB, counterparty: CAROL }],
+      challenges: [{ ...incoming(50n), challengeId: 3n, target: CAROL }],
+    });
+    const SAME: ReadonlyArray<readonly [string, World]> = [
+      ['a third party`s trade and challenge', othersMoved],
+      [
+        'an offline player who is not listed',
+        swap({ players: [...base.players, person(EVE, 'Eve', 5n, false)] }),
+      ],
+      [
+        'a player`s input counter ticking',
+        swap({ players: base.players.map((p) => ({ ...p, lastInputSeq: p.lastInputSeq + 7n })) }),
+      ],
+      [
+        'Carol takes a step, still far',
+        swap({ characters: [at(ME_EID, 50, 50), at(2n, 50, 55), at(3n, 50, 91)] }),
+      ],
+      [
+        'Bob takes a step, still within range',
+        swap({ characters: [at(ME_EID, 50, 50), at(2n, 51, 55), at(3n, 50, 90)] }),
+      ],
+      [
+        'the viewer takes a step, nobody crosses the line',
+        swap({ characters: [at(ME_EID, 51, 50), at(2n, 50, 55), at(3n, 50, 90)] }),
+      ],
+    ];
+    for (const [what, after] of SAME) {
+      expect(observe(after, s), `${what}: the SAME state`).toBe(s);
+    }
+    expect(SAME.length, 'ANTI-VACUITY: six unrelated changes').toBe(6);
+
+    // Something the tab shows changed: a NEW state with the new signature, then stable.
+    const CHANGES: ReadonlyArray<readonly [string, World]> = [
+      ['Eve joins', swap({ players: [...base.players, person(EVE, 'Eve', 5n)] })],
+      ['Dan leaves', swap({ players: base.players.filter((p) => p.identity !== DAN) })],
+      ['Dan goes offline', swap({ players: tweak(DAN, { online: false }) })],
+      ['Dan is renamed', swap({ players: tweak(DAN, { name: 'Danny' }) })],
+      [
+        'Carol walks within 12 tiles',
+        swap({ characters: [at(ME_EID, 50, 50), at(2n, 50, 55), at(3n, 50, 62)] }),
+      ],
+      [
+        'Bob walks off, the cursor`s row stays listed',
+        swap({ characters: [at(ME_EID, 50, 50), at(2n, 50, 63), at(3n, 50, 90)] }),
+      ],
+      ['Dan gains a character within range', swap({ characters: [...CHARS, at(4n, 51, 50)] })],
+      [
+        'the viewer`s character goes: nobody is nearby',
+        swap({ characters: [at(2n, 50, 55), at(3n, 50, 90)] }),
+      ],
+    ];
+    const seen = new Set<string>([s.people]);
+    for (const [what, after] of CHANGES) {
+      const next = observe(after, s);
+      expect(next, `${what}: a NEW state`).not.toBe(s);
+      expect(next.people, `${what}: the new signature`).toBe(socialPeopleKey(vmOf(after)));
+      expect(next.people, `${what}: it differs from the old one`).not.toBe(s.people);
+      expect(next.nav.tab, `${what}: the tab stays`).toBe('players');
+      expect(
+        vmOf(after).players.map((r) => r.key),
+        `${what}: the cursor is on a listed row`,
+      ).toContain(next.nav.item);
+      expect(observe(after, next), `${what}: and then stable`).toBe(next);
+      seen.add(next.people);
+    }
+    // Equal rows, equal signature: Dan going offline lists what Dan leaving does, and the viewer's
+    // character going lists what Bob walking off does (all three players then far or unplaced).
+    expect(seen.size, 'ANTI-VACUITY: the base and six different row lists, eight changes').toBe(7);
+    expect(CHANGES.length, 'ANTI-VACUITY: eight changes driven').toBe(8);
+
+    // On the Rankings tab a re-rated board with the same ranked players and the cursor row still
+    // there is no change; a cursor row that left the board is re-seated (a new state).
+    const board = open(ranked('rankings'));
+    expect(cursorOf(board), 'fixture: the cursor on the first ranked row').toEqual({
+      tab: 'rankings',
+      item: BOB,
+    });
+    const rerated = ranked('rankings', {
+      profiles: [profile(CAROL, 'Carol', 1500), profile(BOB, 'Bob', 1200), profile(ME, 'Me', 900)],
+    });
+    expect(observe(rerated, board), 'a re-ranked board, the cursor row still there').toBe(board);
+    const bobGone = ranked('rankings', { profiles: RANKED.filter((p) => p.identity !== BOB) });
+    const reseated = observe(bobGone, board);
+    expect(reseated, 'the cursor`s ranked row is gone: a new state').not.toBe(board);
+    expect([CAROL, ME], 'the cursor is re-seated on a ranked row').toContain(reseated.nav.item);
+  });
+});
+
+describe('socialScreen — Rankings: a read-only list (ctl-8g, CTL8G.2)', () => {
+  it('CTL8G-2-READONLY: on a ranked row a fresh or a held A is swallowed and changes nothing (no sheet, no walk-up, no command, the very same state), on every ranked row including the viewer`s own and with a waiting trade and challenge in the store; an empty board swallows A too; Up / Down move over the ranked keys in leaderboard order (a fresh press wraps, a held one clamps) and B still pops the frame', () => {
+    // WRONG IMPL KILLED: an A on a ranked row that opens an action sheet (the trade or challenge
+    // sheet of a row that does not exist: Rankings is a view, nothing to act on), enters the
+    // walk-up (that is Players'), or sends a challenge or any command; a state rebuilt on A (a
+    // repaint per press); an A that acts only on the first row, only on a row that is not the
+    // viewer's, or only while no request waits; an empty board that throws or opens a sheet on
+    // nothing; a cursor that skips the viewer's row or walks in input order (Carol first); a held
+    // arrow that wraps; and a B that stops popping.
+    const busy = ranked('rankings', {
+      offers: [trade('waiting')],
+      challenges: [incoming(), outgoing()],
+    });
+    const opened = open(busy);
+    expect(cursorOf(opened), 'fixture: the first ranked row, not the request`s tab').toEqual({
+      tab: 'rankings',
+      item: RANK_ORDER[0],
+    });
+
+    let s = opened;
+    let checked = 0;
+    for (const key of RANK_ORDER) {
+      expect(s.nav.item, `fixture: the cursor on ${key}`).toBe(key);
+      for (const input of A_INPUTS) {
+        const step = press(busy, s, input);
+        expect(step.result, `${label(input)} on ${key} is swallowed, never a command`).toBe(
+          'consumed',
+        );
+        expect(step.state, `${label(input)} on ${key}: nothing changed`).toEqual(s);
+        expect(step.state.phase, `${label(input)} on ${key}: no sheet, no walk-up`).toMatchObject(
+          LIST,
+        );
+        checked += 1;
+      }
+      s = swallowed(busy, s, ['Down']);
+    }
+    expect(s.nav.item, 'a fresh Down from the last ranked row wraps to the first').toBe(
+      RANK_ORDER[0],
+    );
+    expect(checked, 'ANTI-VACUITY: two inputs on three rows').toBe(6);
+
+    // The cursor follows leaderboard order, wraps on a fresh press and clamps on a held one.
+    expect(cursorOf(swallowed(busy, opened, ['Up'])).item, 'a fresh Up wraps to the last').toBe(
+      RANK_ORDER[2],
+    );
+    expect(cursorOf(swallowed(busy, opened, [rep('Up')])).item, 'a held Up stays').toBe(
+      RANK_ORDER[0],
+    );
+    const last = swallowed(busy, opened, ['Up']);
+    expect(cursorOf(swallowed(busy, last, [rep('Down')])).item, 'a held Down stays').toBe(
+      RANK_ORDER[2],
+    );
+    expect(cursorOf(swallowed(busy, opened, [rep('Down')])).item, 'a held Down moves on').toBe(
+      RANK_ORDER[1],
+    );
+    expect(press(busy, opened, 'B').result, 'B pops the frame').toEqual(POP);
+
+    // An empty board: A is swallowed, nothing opens.
+    const empty = ranked('rankings', { profiles: [] });
+    const emptyOpen = open(empty);
+    expect(cursorOf(emptyOpen), 'fixture: no ranked row').toEqual({ tab: 'rankings', item: null });
+    for (const input of A_INPUTS) {
+      const step = press(empty, emptyOpen, input);
+      expect(step.result, `${label(input)} on an empty board`).toBe('consumed');
+      expect(step.state.phase).toMatchObject(LIST);
+    }
+  });
+});
+
+describe('socialScreen — paint over the leaderboard root (ctl-8g)', () => {
+  it('CTL8G-1-PAINT: the Players tab shows the leaderboard root FIRST, then paints the strip and the challenge cursor, then hands view.rankings the players (name, nearby), the cursor row`s key and the walk-up row`s player name (null in the list); the walk-up is cleared by a move; an empty name is walked up to as its #hex8 fallback; a missing Rankings view is skipped without a throw', () => {
+    // WRONG IMPL KILLED: a Players tab still shown over the trade root (the placeholder); a show
+    // that comes after the paints (a throw in them would leave the wrong panel up); no call on the
+    // Rankings view, or one before the strip; a payload with the wrong tab, the players of
+    // another tab, a cursor that is the tab's or a stale one, a walk-up that is the row KEY, the
+    // raw (empty) player name, or never cleared after LB / RB; an `rankings.paintSocial` TypeError
+    // when the view is not built yet; and a change to the strip or the challenge cursor on Players.
+    const w = crowd('players');
+    const s = open(w);
+    const log = paintLog(vmOf(w), s);
+    expect(
+      log.map((c) => c.call),
+      'show, the strip, the challenge cursor, then the Rankings view',
+    ).toEqual(['show', 'paintSocial', 'paintCursor', 'rankings']);
+    expect(log[0], 'the leaderboard root, first').toEqual({
+      call: 'show',
+      panel: 'leaderboardView',
+    });
+    expect((log[1] as SocialCall).chrome, 'the very chrome').toBe(CHROME);
+    expect((log[1] as SocialCall).paint, 'the strip on the Players tab').toEqual(
+      listPaint('players'),
+    );
+    expect((log[2] as CursorCall).row, 'no challenge cursor on Players').toBeNull();
+    const first = (log[3] as RankingsCall).paint;
+    expect(first.tab).toBe('players');
+    expect(first.players, 'the listed players, in name order').toMatchObject([
+      { key: BOB, name: 'Bob', nearby: true },
+      { key: CAROL, name: 'Carol', nearby: false },
+      { key: DAN, name: 'Dan', nearby: false },
+    ]);
+    expect(first.players, 'the very rows of the view model').toEqual(vmOf(w).players);
+    expect(first.cursor, 'the cursor row`s key').toBe(BOB);
+    expect(first.walkUp, 'the list: no walk-up').toBeNull();
+
+    // The cursor follows the state.
+    const onCarol = swallowed(w, s, ['Down']);
+    expect(rankingsPaintOf(w, onCarol).cursor, 'Down').toBe(CAROL);
+    expect(rankingsPaintOf(w, swallowed(w, onCarol, ['Down'])).cursor, 'Down again').toBe(DAN);
+
+    // The walk-up carries the player's name; a move or B clears it.
+    const walking = press(w, onCarol, 'A').state;
+    const walkPaint = rankingsPaintOf(w, walking);
+    expect(walkPaint.walkUp, 'the walk-up row`s player name').toBe('Carol');
+    expect(walkPaint.cursor, 'the cursor stays on the row').toBe(CAROL);
+    expect(walkPaint.tab).toBe('players');
+    expect(
+      rankingsPaintOf(w, swallowed(w, walking, ['B'])).walkUp,
+      'B clears the walk-up line',
+    ).toBeNull();
+    expect(
+      rankingsPaintOf(w, swallowed(w, walking, ['Down'])).walkUp,
+      'a move clears the walk-up line',
+    ).toBeNull();
+    // LB / RB: the walk-up is gone on the next visit of Players, whichever way the tabs went.
+    const wrapped = swallowed(w, walking, ['LB']);
+    expect(wrapped.nav.tab, 'fixture: LB from Players wraps to Rankings').toBe('rankings');
+    const backOnPlayers = swallowed(w, wrapped, ['RB']);
+    expect(backOnPlayers.nav.tab, 'fixture: RB wraps back to Players').toBe('players');
+    expect(rankingsPaintOf(w, backOnPlayers).walkUp, 'the next visit: no walk-up').toBeNull();
+
+    // An empty name walks up as its #hex8 fallback (the row's display name, never '').
+    const anonymous = crowd('players', {
+      players: [ME_P, BOB_P, CAROL_P, person(DAN, '', 4n)],
+    });
+    const anonOpen = open(anonymous);
+    expect(anonOpen.nav.item, 'fixture: the empty name sorts first').toBe(DAN);
+    const anonWalk = rankingsPaintOf(anonymous, press(anonymous, anonOpen, 'A').state);
+    expect(anonWalk.walkUp, 'the fallback name').toBe(`#${DAN.slice(0, 8)}`);
+    expect(anonWalk.players[0], 'the row shows the fallback too').toMatchObject({
+      key: DAN,
+      name: `#${DAN.slice(0, 8)}`,
+    });
+
+    // The Rankings view not built yet: skipped, the panel still first.
+    const missing = paintLog(vmOf(w), s, { rankings: false });
+    expect(
+      missing.map((c) => c.call),
+      'no Rankings view: show, the strip, the challenge cursor',
+    ).toEqual(['show', 'paintSocial', 'paintCursor']);
+    expect(missing[0]).toEqual({ call: 'show', panel: 'leaderboardView' });
+  });
+
+  it('CTL8G-2-PAINT: the Rankings tab shows the leaderboard root first and hands view.rankings the Rankings tab, the cursor row`s ranked key (null on an empty board), no walk-up and the players; the Rankings view is called on Players and Rankings and on no other tab (Trades and Challenges never), with the panel each tab shows', () => {
+    // WRONG IMPL KILLED: a Rankings paint with the Players tab's payload (tab 'players'), a null or
+    // first-row cursor when the cursor moved, or a walk-up string; a call on Trades or Challenges
+    // (the leaderboard view would be painted over the trade or pvp root's content); a Rankings
+    // call that precedes `show`; and the panel chosen from the requested tab instead of the state.
+    const w = ranked('rankings', { players: [ME_P, BOB_P, CAROL_P], characters: CHARS });
+    const s = open(w);
+    const first = rankingsPaintOf(w, s);
+    expect(first.tab).toBe('rankings');
+    expect(first.cursor, 'the first ranked row').toBe(RANK_ORDER[0]);
+    expect(first.walkUp, 'no walk-up on Rankings').toBeNull();
+    expect(first.players, 'the players ride along').toMatchObject([
+      { key: BOB, name: 'Bob', nearby: true },
+      { key: CAROL, name: 'Carol', nearby: false },
+    ]);
+    const second = swallowed(w, s, ['Down']);
+    expect(rankingsPaintOf(w, second).cursor, 'Down').toBe(RANK_ORDER[1]);
+    expect(rankingsPaintOf(w, swallowed(w, second, ['Down'])).cursor, 'Down again').toBe(
+      RANK_ORDER[2],
+    );
+    expect(
+      rankingsPaintOf(w, swallowed(w, s, ['A'])).walkUp,
+      'A on Rankings: still none',
+    ).toBeNull();
+
+    const empty = ranked('rankings', { profiles: [] });
+    expect(rankingsPaintOf(empty, open(empty)).cursor, 'an empty board: no cursor').toBeNull();
+
+    // Which tabs call the Rankings view: Players and Rankings only, each time the state is there.
+    const full = (tab: SocialTab): World =>
+      crowd(tab, {
+        profiles: RANKED,
+        offers: [trade('waiting')],
+        challenges: [incoming(), outgoing()],
+      });
+    const WANT: ReadonlyArray<readonly [SocialTab, SocialPanelId, number]> = [
+      ['players', 'leaderboardView', 1],
+      ['trades', 'tradeView', 0],
+      ['challenges', 'pvpView', 0],
+      ['rankings', 'leaderboardView', 1],
+    ];
+    let checked = 0;
+    for (const [tab, panel, calls] of WANT) {
+      const fw = full(tab);
+      const log = paintLog(vmOf(fw), open(fw));
+      expect(log[0], `${tab}: the panel first`).toEqual({ call: 'show', panel });
+      expect(
+        log.filter((c) => c.call === 'rankings').length,
+        `${tab}: calls on the Rankings view`,
+      ).toBe(calls);
+      if (calls === 1) {
+        expect(log.at(-1)?.call, `${tab}: the Rankings view is painted last`).toBe('rankings');
+      }
+      checked += 1;
+    }
+    // A sheet or prompt open on Trades or Challenges does not call it either.
+    const tradeSheet = full('trades');
+    const inSheet = swallowed(tradeSheet, open(tradeSheet), ['A']);
+    expect(
+      paintLog(vmOf(tradeSheet), inSheet).filter((c) => c.call === 'rankings'),
+      'a trade sheet: no Rankings call',
+    ).toEqual([]);
+    const duel = full('challenges');
+    const inPrompt = swallowed(duel, open(duel), ['A', 'Down', 'A']);
+    expect(
+      paintLog(vmOf(duel), inPrompt).filter((c) => c.call === 'rankings'),
+      'a challenge prompt: no Rankings call',
+    ).toEqual([]);
+    expect(checked, 'ANTI-VACUITY: four tabs').toBe(4);
   });
 });
