@@ -398,3 +398,52 @@ describe('journalScreen — observe (ctl-8f, CTL8F.3)', () => {
     ).toBeNull();
   });
 });
+
+describe('journalScreen — stale and held presses (ctl-8f red-team teeth)', () => {
+  const without = (id: string): StorePlayerQuest[] => QUESTS.filter((q) => q.questId !== id);
+
+  it('an A or Y that arrives after a batch removed the open detail`s quest only paints: no detail opens on whatever the cursor now sits on', () => {
+    // WRONG IMPL KILLED: a press handler that settles the stale state and then acts on the
+    // settled list (the player pressed A on a detail that is gone; the key must not open the
+    // NEXT quest's detail). The un-observed state is handed straight in, as the host does between
+    // a batch and its observe.
+    const vm = vmOf();
+    const detail = press(vm, swallowed(vm, fresh(vm), ['Down']), 'A').state;
+    expect(detail.detail, 'precondition: the detail of quest_002 is open').toBe('quest_002');
+    const gone = vmOf(without('quest_002'));
+    for (const button of ['A', 'Y'] as const) {
+      const step = press(gone, detail, button);
+      expect(step.result, `${button}: swallowed, no command`).toBe('consumed');
+      expect(step.state.detail, `${button}: no detail opened`).toBeNull();
+      expect(
+        paintOf(gone, step.state),
+        `${button}: the cursor was re-seated, nothing more`,
+      ).toEqual({
+        questId: 'quest_003',
+        detail: null,
+      });
+    }
+    // Control: once the state has been observed, the same press does open the new cursor's detail.
+    const settled = observe(gone, detail);
+    expect(press(gone, settled, 'A').state.detail, 'control: a fresh A opens quest_003').toBe(
+      'quest_003',
+    );
+  });
+
+  it('a REPEAT A or B inside the detail leaves it open and sends nothing', () => {
+    // WRONG IMPL KILLED: a detail that closes on a held key (a held Enter that opened it would
+    // close it again at the key-repeat rate, or a held Backspace would pop through the frame).
+    const vm = vmOf();
+    const detail = press(vm, swallowed(vm, fresh(vm), ['Down']), 'A').state;
+    for (const button of ['A', 'B'] as const) {
+      const step = press(vm, detail, rep(button));
+      expect(step.result, `repeat ${button}: swallowed, never a pop`).toBe('consumed');
+      expect(step.state.detail, `repeat ${button}: the detail stays open`).toBe('quest_002');
+      expect(cursorOf(vm, step.state)).toBe('quest_002');
+    }
+    // Control: the fresh presses close it.
+    for (const button of ['A', 'B'] as const) {
+      expect(press(vm, detail, button).state.detail, `fresh ${button} closes`).toBeNull();
+    }
+  });
+});

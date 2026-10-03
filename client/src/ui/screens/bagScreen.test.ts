@@ -973,3 +973,102 @@ describe('bagScreen — observe (ctl-8f, CTL8F.2)', () => {
     }
   });
 });
+
+describe('bagScreen — expiry, stale presses and the picker under a batch (ctl-8f red-team teeth)', () => {
+  const w0 = world();
+  const vm0 = vmOf(w0);
+  const phaseOf = (s: BagScreenState): string => s.phase.kind;
+
+  it('a pending feed expires with the next button: a batch that then shows the count drop claims no Fed', () => {
+    // WRONG IMPL KILLED: an onButton that keeps the pending feed across buttons (a refused or
+    // lost train would later claim "Fed" for a drop the player caused some other way, and a drop
+    // by an unrelated source seconds later would be credited to the feed).
+    const picker = walk(vm0, TO.glowPicker);
+    const sent = press(vm0, swallowed(vm0, picker, ['Down']), 'A');
+    expect(typeof sent.result, 'precondition: the train command').toBe('object');
+    const vm1 = vmOf(withCount(w0, GLOW, 1));
+    expect(observe(vm1, sent.state).status, 'control: with no button between, it is Fed').toEqual({
+      kind: 'fed',
+      name: 'Emberfang',
+    });
+    for (const button of ['Down', 'Up', 'X', 'RB', 'Select'] as const) {
+      const after = press(vm0, sent.state, button);
+      expect(
+        observe(vm1, after.state).status,
+        `after ${button} the pending feed has expired: no Fed`,
+      ).toBeNull();
+    }
+  });
+
+  it('an A pressed on a state whose phase a batch just invalidated only paints: it opens nothing and sends nothing', () => {
+    // WRONG IMPL KILLED: an onButton without the "phase changed under the press" guard: it settles
+    // the sheet / description / picker whose item vanished to the list and then acts on the list,
+    // opening the sheet of whatever item the cursor was re-seated to (the player pressed A on an
+    // item that is gone). The un-observed state is handed straight in.
+    const gone = vmOf(withoutItem(w0, GLOW));
+    const stale: ReadonlyArray<readonly [string, BagScreenState]> = [
+      ['sheet', walk(vm0, TO.glowSheet)],
+      ['description', walk(vm0, TO.glowInfo)],
+      ['picker', walk(vm0, TO.glowPicker)],
+    ];
+    for (const [name, state] of stale) {
+      const step = press(gone, state, 'A');
+      expect(step.result, `${name}: swallowed, no command`).toBe('consumed');
+      expect(phaseOf(step.state), `${name}: the list, no sheet opened`).toBe('list');
+      expect(where(step.state), `${name}: the cursor was re-seated to the next food`).toEqual({
+        tab: 'food',
+        item: '5',
+      });
+    }
+    // Control: after an observe the same press is a fresh A on the list and opens Power Root's sheet.
+    const settled = observe(gone, walk(vm0, TO.glowSheet));
+    expect(press(gone, settled, 'A').state.phase, 'control').toEqual({
+      kind: 'sheet',
+      itemId: ROOT,
+      action: 'feed',
+    });
+  });
+
+  it('a picker whose cursor monster vanished is re-seated to a listed monster, and A trains that one', () => {
+    // WRONG IMPL KILLED: a re-seat that only fixes a null cursor (the picker keeps pointing at a
+    // monster that is gone: nothing is highlighted and A either does nothing or trains a ghost).
+    const onSecond = walk(vm0, [...TO.glowPicker, 'Down']);
+    expect(onSecond.phase, 'precondition: the cursor is on monster 12').toMatchObject({
+      kind: 'picker',
+      monster: '12',
+    });
+    const gone = vmOf(withoutMonster(w0, 12n));
+    const reseated = observe(gone, onSecond);
+    const listed = ['11', '21', '22'];
+    const monster = reseated.phase.kind === 'picker' ? reseated.phase.monster : 'not a picker';
+    expect(reseated.phase.kind, 'the picker stays open').toBe('picker');
+    expect(listed, 'the cursor is a listed monster').toContain(monster);
+    expect(paintOf(gone, reseated).phase, 'and so is the painted one').toEqual({
+      kind: 'picker',
+      itemId: GLOW,
+      monster,
+    });
+    expect(press(gone, reseated, 'A').result, 'A trains the monster the cursor is on').toEqual({
+      kind: 'train',
+      monsterId: BigInt(String(monster)),
+      foodItemId: GLOW,
+    });
+  });
+
+  it('a batch that removes every monster closes the picker to the sheet on Feed, where A is refused with noMonsters', () => {
+    // WRONG IMPL KILLED: a picker left open over an empty roster (a list of nobody; A does
+    // nothing and the refusal reason is never shown).
+    const picker = walk(vm0, TO.glowPicker);
+    const lonely = vmOf(world({ monsters: [] }));
+    const closed = observe(lonely, picker);
+    expect(closed.phase, 'the sheet on Feed').toEqual({
+      kind: 'sheet',
+      itemId: GLOW,
+      action: 'feed',
+    });
+    expect(paintOf(lonely, closed).phase).toEqual({ kind: 'sheet', itemId: GLOW, action: 'feed' });
+    const refused = press(lonely, closed, 'A');
+    expect(refused.result, 'no command').toBe('consumed');
+    expect(refused.state.status).toEqual({ kind: 'noMonsters' });
+  });
+});

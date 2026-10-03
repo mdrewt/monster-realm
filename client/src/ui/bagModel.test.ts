@@ -464,4 +464,60 @@ describe('the Bag layouts, findItem and bagMonsters (ctl-8f)', () => {
     ]);
     expect(bagMonsters([], speciesMap, 3, NONE)).toEqual([]);
   });
+
+  it('a roster of nine monsters is listed whole: bagMonsters, the view model and the picker layout keep every one, in order', () => {
+    // WRONG IMPL KILLED: a picker (or the roster feeding it) capped at a handful of monsters (a
+    // `slice(0, 5)`): the sixth to ninth monster could never be fed.
+    const essence = Object.fromEntries(
+      (
+        ['Fire', 'Water', 'Plant', 'Electric', 'Earth', 'Wind', 'Light', 'Dark'] as AffinityName[]
+      ).map((n) => [n, 0]),
+    ) as unknown as EssenceByAffinity;
+    const NONE = 200;
+    const mon = (id: number, partySlot: number): StoreMonsterPub => ({
+      monsterId: BigInt(id),
+      ownerIdentity: ME,
+      speciesId: 1,
+      nickname: `M${id}`,
+      level: 5,
+      xp: 0,
+      currentHp: 30,
+      statHp: 40,
+      statAttack: 10,
+      statDefense: 10,
+      statSpeed: 10,
+      statSpAttack: 10,
+      statSpDefense: 10,
+      partySlot,
+      tier: 0,
+      essence,
+      trustTier: 'Neutral',
+      qualityTimeTier: 0,
+      nutritionPct: 0,
+    });
+    // Six party slots (0..5, stored in reverse) and three boxed monsters.
+    const monsters = [
+      ...[5, 4, 3, 2, 1, 0].map((slot) => mon(10 + slot, slot)),
+      mon(21, NONE),
+      mon(22, NONE),
+      mon(23, NONE),
+    ];
+    const roster = bagMonsters(monsters, new Map(), 6, NONE);
+    const keys = ['10', '11', '12', '13', '14', '15', '21', '22', '23'];
+    expect(
+      roster.map((m) => m.key),
+      'bagMonsters lists all nine',
+    ).toEqual(keys);
+    const vm = buildBagVm([inv(1, 902, 1)], defsOf(food(902)), roster);
+    expect(
+      vm.monsters.map((m) => m.key),
+      'the view model keeps them',
+    ).toEqual(keys);
+    const picker = pickerLayout(vm);
+    expect(
+      picker.items.map((i) => i.key),
+      'the picker lists them',
+    ).toEqual(keys);
+    expect(picker.items).toHaveLength(9);
+  });
 });

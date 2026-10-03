@@ -722,3 +722,70 @@ describe('QuestLogView ctl-8f: the Journal cursor and detail (CTL8F.3)', () => {
     expect(view.visible, 'the overlay stays open').toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ctl-8f red-team teeth for the Journal view: the listbox pointers and names. Untagged cases.
+// ---------------------------------------------------------------------------
+describe('QuestLogView ctl-8f: the listbox pointers and names', () => {
+  it('an emptied journal leaves the list with no aria-activedescendant', () => {
+    // WRONG IMPL KILLED: a render that rebuilds the rows but never removes the pointer (it names
+    // a row that is gone: a dangling IDREF a screen reader announces as nothing).
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+    view.render(questVm(3));
+    view.paint({ questId: 'quest_1', detail: null });
+    expect(
+      ctl8fListEl().getAttribute('aria-activedescendant'),
+      'precondition: a pointer while rows exist',
+    ).not.toBeNull();
+    view.render({ active: [] });
+    expect(ctl8fRows()).toHaveLength(0);
+    expect(ctl8fListEl().hasAttribute('aria-activedescendant')).toBe(false);
+  });
+
+  it('the list is named by the overlay, and described by the detail only while the detail is shown', () => {
+    // WRONG IMPL KILLED: a listbox with no accessible name; a name pointing at another element; a
+    // description that never appears, or that stays after the detail hides (by a paint, by a
+    // vanished quest, or by a close and reopen) and so points at a hidden element.
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+    view.render(questVm(3));
+    view.paint({ questId: 'quest_1', detail: null });
+    expect(ctl8fListEl().getAttribute('aria-labelledby')).toBe('quest-log-overlay');
+    expect(ctl8fListEl().hasAttribute('aria-describedby'), 'no detail, no description').toBe(false);
+
+    view.paint({ questId: 'quest_1', detail: 'quest_1' });
+    expect(ctl8fListEl().getAttribute('aria-describedby')).toBe('quest-log-detail');
+    expect(
+      document.getElementById('quest-log-detail'),
+      'the element it names exists',
+    ).not.toBeNull();
+    expect(ctl8fListEl().getAttribute('aria-labelledby'), 'the name is unchanged').toBe(
+      'quest-log-overlay',
+    );
+
+    view.paint({ questId: 'quest_1', detail: null });
+    expect(ctl8fListEl().hasAttribute('aria-describedby'), 'a paint that hides the detail').toBe(
+      false,
+    );
+
+    view.paint({ questId: 'quest_1', detail: 'quest_1' });
+    expect(ctl8fListEl().getAttribute('aria-describedby')).toBe('quest-log-detail');
+    view.render({ active: questVm(3).active.filter((e) => e.questId !== 'quest_1') });
+    expect(ctl8fDetailShown(), 'precondition: the vanished quest hid the detail').toBe(false);
+    expect(ctl8fListEl().hasAttribute('aria-describedby'), 'a render that hides the detail').toBe(
+      false,
+    );
+
+    view.render(questVm(3));
+    view.paint({ questId: 'quest_2', detail: 'quest_2' });
+    expect(ctl8fListEl().getAttribute('aria-describedby')).toBe('quest-log-detail');
+    view.hide();
+    view.render(questVm(3));
+    expect(ctl8fDetailShown(), 'precondition: the reopen hides the detail').toBe(false);
+    expect(ctl8fListEl().hasAttribute('aria-describedby'), 'a reopen').toBe(false);
+    expect(ctl8fListEl().getAttribute('aria-labelledby'), 'the name survives the reopen').toBe(
+      'quest-log-overlay',
+    );
+  });
+});

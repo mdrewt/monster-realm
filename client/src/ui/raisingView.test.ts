@@ -3754,3 +3754,167 @@ describe('RaisingView ctl-8f: the Bag panel (CTL8F.1, CTL8F.2)', () => {
     expect(ctl8fPart('bag-status').textContent, 'the next button clears the line').toBe('');
   });
 });
+
+// ---------------------------------------------------------------------------
+// ctl-8f red-team teeth for the Bag panel: what a reopen, a stale phase, the empty line, the
+// always-shown tab strip and list, the ARIA wiring and the focus guard must do. Untagged cases.
+// ---------------------------------------------------------------------------
+describe('RaisingView ctl-8f: the Bag panel teeth', () => {
+  const root5 = (vm: BagVm) => ctl8fNav(vm, ['RB', 'Down']);
+
+  it('a status painted before hide() is gone after show(): the line is empty and carries no data-feedback', () => {
+    // WRONG IMPL KILLED: a hide() that forgets the status line (the next open greets the player
+    // with the last visit's "Fed Kip" and its ok mark until the first paint).
+    const { view } = s4Mount();
+    view.show();
+    const vm = ctl8fVm();
+    view.paint(ctl8fPaint(vm, { status: { kind: 'fed', name: 'Kip' } }));
+    expect(ctl8fPart('bag-status').textContent, 'precondition').not.toBe('');
+    expect(ctl8fPart('bag-status').getAttribute('data-feedback'), 'precondition').toBe('ok');
+    view.hide();
+    view.show();
+    expect(ctl8fPart('bag-status').textContent, 'cleared by the close').toBe('');
+    expect(ctl8fPart('bag-status').hasAttribute('data-feedback')).toBe(false);
+  });
+
+  it('a sheet, description or picker phase for an item the view model does not list shows none of the three', () => {
+    // WRONG IMPL KILLED: a view that shows the sheet / description / picker for the phase kind
+    // alone, so a paint that outlives its item (an adapter one batch late) draws an empty sheet
+    // or a picker for nothing.
+    const { view } = s4Mount();
+    view.show();
+    const vm = ctl8fVm();
+    const food = ctl8fNav(vm, ['RB']);
+    const phases: ReadonlyArray<readonly [string, Ctl8fPaint['phase']]> = [
+      ['sheet', { kind: 'sheet', itemId: 999, action: 'feed' }],
+      ['info', { kind: 'info', itemId: 999 }],
+      ['picker', { kind: 'picker', itemId: 999, monster: '11' }],
+    ];
+    for (const [name, phase] of phases) {
+      view.paint(ctl8fPaint(vm, { nav: food, phase }));
+      for (const id of ['bag-sheet', 'bag-info', 'bag-picker']) {
+        expect(ctl8fShown(id), `${name} phase for an unlisted item: #${id}`).toBe(false);
+      }
+    }
+    // Control: the same phases for a listed item do show their part.
+    view.paint(ctl8fPaint(vm, { nav: food, phase: { kind: 'sheet', itemId: 9, action: 'feed' } }));
+    expect(ctl8fShown('bag-sheet'), 'control: a listed item shows its sheet').toBe(true);
+  });
+
+  it('#bag-empty shows for an empty pocket and with no pockets at all, and is hidden for a pocket that has items', () => {
+    // WRONG IMPL KILLED: an empty line that is created once and never toggled (it shows over a
+    // full pocket, or never shows), one keyed on the active pocket only (a bag with no definitions
+    // at all would show a blank frame), and an empty line with no text.
+    const { view } = s4Mount();
+    view.show();
+    const vm = ctl8fVm();
+    view.paint(ctl8fPaint(vm));
+    expect(ctl8fShown('bag-empty'), 'a pocket with items: hidden').toBe(false);
+    const bare = ctl8fVm({ bareMedicine: true });
+    view.paint(ctl8fPaint(bare, { nav: ctl8fNav(bare, ['RB', 'RB']) }));
+    expect(ctl8fShown('bag-empty'), 'an empty pocket: shown').toBe(true);
+    expect(ctl8fPart('bag-empty').textContent ?? '').toContain(i18nT('raising.inventory.empty'));
+    view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB']) }));
+    expect(ctl8fShown('bag-empty'), 'back on a full pocket: hidden again').toBe(false);
+    const none: BagVm = { pockets: [], monsters: [] };
+    view.paint(ctl8fPaint(none, { nav: ctl8fNav(none) }));
+    expect(ctl8fShown('bag-empty'), 'no pockets at all: shown').toBe(true);
+    expect(ctl8fPart('bag-empty').textContent ?? '').toContain(i18nT('raising.inventory.empty'));
+  });
+
+  it('the tab strip and the item list stay shown in the sheet, description and picker phases', () => {
+    // WRONG IMPL KILLED: a paint that hides the pockets and the list while a sheet, a description
+    // or a picker is up (the player loses the item they are acting on).
+    const { view } = s4Mount();
+    view.show();
+    const vm = ctl8fVm();
+    const food = ctl8fNav(vm, ['RB']);
+    const phases: ReadonlyArray<readonly [string, Ctl8fPaint['phase']]> = [
+      ['list', { kind: 'list' }],
+      ['sheet', { kind: 'sheet', itemId: 9, action: 'feed' }],
+      ['info', { kind: 'info', itemId: 9 }],
+      ['picker', { kind: 'picker', itemId: 9, monster: '11' }],
+    ];
+    for (const [name, phase] of phases) {
+      view.paint(ctl8fPaint(vm, { nav: food, phase }));
+      expect(ctl8fShown('bag-tabs'), `${name}: #bag-tabs`).toBe(true);
+      expect(ctl8fShown('bag-list'), `${name}: #bag-list`).toBe(true);
+      expect(ctl8fKeys('bag-list'), `${name}: the pocket's rows`).toEqual(['9', '5']);
+    }
+  });
+
+  it('the picker is labelled by its title and the sheet by the list row of its item', () => {
+    // WRONG IMPL KILLED: a picker or sheet listbox with no accessible name; a picker named by the
+    // wrong element; a sheet named by a fixed element or by another item's row; a name that points
+    // at an id that does not exist.
+    const { view } = s4Mount();
+    view.show();
+    const vm = ctl8fVm();
+    view.paint(
+      ctl8fPaint(vm, {
+        nav: ctl8fNav(vm, ['RB']),
+        phase: { kind: 'picker', itemId: 9, monster: '11' },
+      }),
+    );
+    expect(ctl8fPart('bag-picker').getAttribute('aria-labelledby')).toBe('bag-picker-title');
+    expect(ctl8fPart('bag-picker-title'), 'the title it names exists').toBeTruthy();
+
+    const cases: ReadonlyArray<readonly [string, NavState, number]> = [
+      ['the first food', ctl8fNav(vm, ['RB']), 9],
+      ['the second food', root5(vm), 5],
+      ['the bait', ctl8fNav(vm), 3],
+    ];
+    for (const [name, nav, itemId] of cases) {
+      view.paint(ctl8fPaint(vm, { nav, phase: { kind: 'sheet', itemId, action: 'info' } }));
+      const id = ctl8fPart('bag-sheet').getAttribute('aria-labelledby');
+      expect(id, `${name}: the sheet names something`).toBeTruthy();
+      const named = document.getElementById(id ?? '');
+      expect(named, `${name}: the named element exists`).not.toBeNull();
+      expect(named?.dataset.navKey, `${name}: it is that item's row`).toBe(String(itemId));
+      expect(ctl8fPart('bag-list').contains(named), `${name}: inside #bag-list`).toBe(true);
+    }
+  });
+
+  it('closing the sheet or the picker while it holds focus moves focus to the raising title, never to the body', () => {
+    // WRONG IMPL KILLED: a paint that hides the focused sheet / picker container and leaves focus
+    // stranded on <body> (the keyboard and the screen reader lose their place in the dialog).
+    const { view } = s4Mount();
+    view.show();
+    const vm = ctl8fVm();
+    const food = ctl8fNav(vm, ['RB']);
+    const title = document.querySelector<HTMLElement>('[data-testid="raising-title"]');
+    expect(title, 'precondition: the raising title').not.toBeNull();
+    const phases: ReadonlyArray<readonly [string, Ctl8fPaint['phase'], string]> = [
+      ['sheet', { kind: 'sheet', itemId: 9, action: 'feed' }, 'bag-sheet'],
+      ['picker', { kind: 'picker', itemId: 9, monster: '11' }, 'bag-picker'],
+    ];
+    for (const [name, phase, id] of phases) {
+      view.paint(ctl8fPaint(vm, { nav: food, phase }));
+      ctl8fPart(id).focus();
+      expect(document.activeElement, `${name}: precondition, the part holds focus`).toBe(
+        ctl8fPart(id),
+      );
+      view.paint(ctl8fPaint(vm, { nav: food }));
+      expect(document.activeElement, `${name} closed: focus is on the title`).toBe(title);
+      expect(document.activeElement).not.toBe(document.body);
+    }
+  });
+
+  it('a paint that arrives while the view is hidden is dropped at the next show(): the legacy grid is visible and the bag parts hidden', () => {
+    // WRONG IMPL KILLED: a hide() that drops the kept paint but a paint() that re-keeps one while
+    // hidden (the reopen shows a stale bag over the legacy grid, or hides the grid with the bag
+    // parts hidden: the player sees no inventory at all).
+    const { view } = s4Mount();
+    view.show();
+    view.refresh(raTrainVm());
+    const vm = ctl8fVm();
+    view.paint(ctl8fPaint(vm));
+    view.hide();
+    view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB']) })); // a batch lands while hidden
+    view.show();
+    expect(ctl8fPart('raising-inventory').style.display, 'the legacy grid shows').not.toBe('none');
+    for (const id of ['bag-tabs', 'bag-list', 'bag-sheet', 'bag-info', 'bag-picker']) {
+      expect(ctl8fShown(id), `#${id} is hidden after the reopen`).toBe(false);
+    }
+  });
+});
