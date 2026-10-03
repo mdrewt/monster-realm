@@ -9,9 +9,134 @@
 // NOT keyed — a glyph-only compound (tier (e)). `vm.statusLabel` and the
 // `showFeedback` message are model data, rendered raw. Every `t(`/`tf(` first argument is a
 // string LITERAL. No constructor-time strings: this view renders into the static index.html shell.
+//
+// THE SOCIAL FRAME'S PAINTER (ctl-8d, CTL8D.1-.2). The Social screen (ui/screens/socialScreen.ts)
+// paints `SocialPaint` through `paintSocial(chrome, p)`. Its chrome half is the tab strip, the
+// action sheet and the Yes / No prompt, written into the frame's shared chrome element (the first
+// child of whichever panel shows) on every paint, whether or not this root shows. Its root half is
+// the Players placeholder and the trade row's cursor on `#trade-status`: kept only while this root
+// is visible, re-applied after every batch render and dropped by `hide()`. This root's own
+// children stay exactly the shell's: every new part lives in the chrome.
 import { t, tf } from './i18n/resolver';
+import { list, tabs } from './nav';
+import { navTabId, renderNav, renderTabs } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
+import type { SocialTab } from './screens/types';
+import { SOCIAL_TABS, type SocialAction } from './socialModel';
 import type { TradeAction, TradeScreenViewModel, TradeSideViewModel } from './tradeModel';
+
+/** The Yes / No question a Social action asks before it is sent. */
+export type SocialQuestion = 'declineTrade' | 'confirmTrade' | 'declineChallenge';
+
+/** What the Social screen paints. */
+export interface SocialPaint {
+  readonly tab: SocialTab;
+  /** The trade row holds the cursor (the Trades tab, with a trade listed). */
+  readonly tradeCursor: boolean;
+  /** The action sheet: the row's legal actions and the cursor. It stays painted under its prompt. */
+  readonly sheet: {
+    readonly actions: readonly SocialAction[];
+    readonly active: SocialAction;
+  } | null;
+  readonly confirm: { readonly question: SocialQuestion; readonly yes: boolean } | null;
+}
+
+/** The tab strip's layout: the four tabs, no rows (renderTabs reads only the keys). */
+const SOCIAL_TAB_STRIP = tabs(SOCIAL_TABS.map((key) => ({ key, layout: list([]) })));
+const NO_ROWS = list([]);
+/** The Yes / No rows' nav keys (constants: the sheet's fill compares one, and a sink holds no
+ *  string literal). */
+const YES = 'yes';
+const NO = 'no';
+const YES_NO = list([
+  { key: YES, enabled: true },
+  { key: NO, enabled: true },
+]);
+/** The catalogued labels by nav key, as thunks (resolved per paint; ids stay literals). */
+const SOCIAL_TAB_LABELS: Readonly<Record<SocialTab, () => string>> = {
+  players: () => t('social.tab.players'),
+  trades: () => t('social.tab.trades'),
+  challenges: () => t('social.tab.challenges'),
+  rankings: () => t('social.tab.rankings'),
+};
+const SOCIAL_ACTION_LABELS: Readonly<Record<SocialAction, () => string>> = {
+  accept: () => t('social.action.accept'),
+  decline: () => t('social.action.decline'),
+  confirm: () => t('social.action.confirm'),
+  cancel: () => t('social.action.cancel'),
+};
+const SOCIAL_QUESTIONS: Readonly<Record<SocialQuestion, () => string>> = {
+  declineTrade: () => t('social.confirm.declineTrade'),
+  confirmTrade: () => t('social.confirm.confirmTrade'),
+  declineChallenge: () => t('social.confirm.declineChallenge'),
+};
+
+/** Locate-or-create `#id` inside `parent` (a repaint creates nothing). */
+function socialPart(parent: HTMLElement, id: string, tag: 'div' | 'p'): HTMLElement {
+  const found = parent.querySelector<HTMLElement>(`#${id}`);
+  if (found !== null) return found;
+  const el = document.createElement(tag);
+  el.id = id;
+  parent.appendChild(el);
+  return el;
+}
+
+/** Paint the Social frame's chrome: the tab strip, the sheet and the prompt. A closed sheet or
+ *  prompt is rendered EMPTY as well as hidden (the e2e helpers read a root's textContent). */
+function paintSocialChrome(chrome: HTMLElement, p: SocialPaint): void {
+  const strip = socialPart(chrome, 'social-tabs', 'div');
+  strip.className = 'mr-frame-tabstrip';
+  renderTabs(
+    strip,
+    SOCIAL_TAB_STRIP,
+    { tab: p.tab, item: null, perTab: {} },
+    { frame: 'social', label: (tab) => SOCIAL_TAB_LABELS[tab.key as SocialTab]() },
+  );
+
+  const sheet = socialPart(chrome, 'social-sheet', 'div');
+  const prompt = socialPart(chrome, 'social-prompt', 'div');
+  const question = socialPart(prompt, 'social-prompt-text', 'p');
+  const answers = socialPart(prompt, 'social-confirm', 'div');
+  // A part hidden under the focus would strand it on <body>, outside the dialog's focus trap: hand
+  // it to the hosting panel's anchor first (boxView's rule).
+  const focused = document.activeElement;
+  if (
+    (p.sheet === null && sheet.contains(focused)) ||
+    (p.confirm === null && prompt.contains(focused))
+  ) {
+    chrome.parentElement?.querySelector<HTMLElement>('[tabindex="-1"]')?.focus();
+  }
+
+  sheet.hidden = p.sheet === null;
+  renderNav(
+    sheet,
+    p.sheet === null ? NO_ROWS : list(p.sheet.actions.map((key) => ({ key, enabled: true }))),
+    { tab: null, item: p.sheet?.active ?? null, perTab: {} },
+    {
+      frame: 'socialSheet',
+      labelledBy: navTabId('social', p.tab),
+      fill: (el, item) => {
+        el.textContent = SOCIAL_ACTION_LABELS[item.key as SocialAction]();
+      },
+    },
+  );
+
+  const confirm = p.confirm;
+  prompt.hidden = confirm === null;
+  question.textContent = confirm === null ? '' : SOCIAL_QUESTIONS[confirm.question]();
+  renderNav(
+    answers,
+    confirm === null ? NO_ROWS : YES_NO,
+    { tab: null, item: confirm === null ? null : confirm.yes ? YES : NO, perTab: {} },
+    {
+      frame: 'socialConfirm',
+      labelledBy: question.id,
+      fill: (el, item) => {
+        el.textContent = item.key === YES ? t('prompt.yes') : t('prompt.no');
+      },
+    },
+  );
+}
 
 export interface TradeCallbacks {
   readonly onAccept: (tradeId: bigint) => Promise<void>;
@@ -33,6 +158,10 @@ export class TradeView {
   // Tracks the last rendered offer key (tradeId + statusLabel) to detect state
   // changes and clear stale feedback.
   #lastRenderKey: string | null = null;
+  // The Social frame's paint for this root, kept only while the root is visible, and the status
+  // text the last render wrote (the Players placeholder is written over it).
+  #social: SocialPaint | null = null;
+  #status = '';
 
   constructor(cbs: TradeCallbacks) {
     const el = document.getElementById('trade-overlay');
@@ -85,6 +214,9 @@ export class TradeView {
     this.#feedbackEl.textContent = '';
     this.#pending = false;
     this.#lastRenderKey = null;
+    // A hidden root holds no placeholder, no hidden part and no cursor mark.
+    this.#social = null;
+    this.#applySocial();
     // DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
     // documented no-op with no open record, and leaving it unguarded is what lets a record
     // that ever desynchronised from the DOM self-heal instead of leaking a live trap forever.
@@ -105,11 +237,12 @@ export class TradeView {
   /** Render or re-render the trade view from the view model. */
   render(vm: TradeScreenViewModel): void {
     if (vm.kind === 'no-trade') {
-      this.#statusEl.textContent = t('trade.status.none');
+      this.#status = t('trade.status.none');
       this.#mySideEl.replaceChildren();
       this.#theirSideEl.replaceChildren();
       this.#actionsEl.replaceChildren();
       this.#lastRenderKey = null;
+      this.#applySocial();
       return;
     }
 
@@ -122,10 +255,36 @@ export class TradeView {
       this.#lastRenderKey = renderKey;
     }
 
-    this.#statusEl.textContent = vm.statusLabel;
+    this.#status = vm.statusLabel;
     this.#renderSide(this.#mySideEl, vm.mySide, t('trade.side.offer'));
     this.#renderSide(this.#theirSideEl, vm.theirSide, t('trade.side.receive'));
     this.#renderActions(vm.tradeId, vm.actions);
+    this.#applySocial();
+  }
+
+  /** The Social screen's paint (ctl-8d). The chrome is painted every time; this root keeps the
+   *  paint only while it is visible, so the next batch render re-applies it. */
+  paintSocial(chrome: HTMLElement, p: SocialPaint): void {
+    paintSocialChrome(chrome, p);
+    this.#social = this.visible ? p : null;
+    this.#applySocial();
+  }
+
+  /** Write the status line and apply the kept Social paint to this root. On the Players tab the
+   *  status reads the placeholder and the sides and actions are hidden; the status stays shown
+   *  (it is the dialog's focus anchor) and so does the feedback line (a trade result must not
+   *  vanish). The trade row's cursor is marked on the status by class AND aria-current, never
+   *  colour alone. With no paint the root is exactly the legacy trade overlay. */
+  #applySocial(): void {
+    const p = this.#social;
+    const players = p?.tab === 'players';
+    this.#statusEl.textContent = players ? t('social.players.placeholder') : this.#status;
+    for (const el of [this.#mySideEl, this.#theirSideEl, this.#actionsEl]) el.hidden = players;
+    const cursor = p?.tab === 'trades' && p.tradeCursor;
+    this.#statusEl.classList.toggle('mr-nav-item', cursor);
+    this.#statusEl.classList.toggle('is-active', cursor);
+    if (cursor) this.#statusEl.setAttribute('aria-current', 'true');
+    else this.#statusEl.removeAttribute('aria-current');
   }
 
   /** Display a feedback message (reducer success/failure). */

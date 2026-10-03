@@ -1325,13 +1325,14 @@ describe('ctl-8a: catalog.fr.ts, the keys ctl-8a adds', () => {
 // =============================================================================
 // ctl-8d: the French values of the 12 keys ctl-8d adds (the Social tabs, the Players placeholder,
 // the action sheet's rows and its three Yes / No questions), pinned exactly as the English ones are
-// in EXPECTED_PLAIN above. The space before each `?` is a plain U+0020 SPACE, the convention of
-// ctl-8a's French questions (`shop.confirm.*`, `heal.prompt.question` above).
+// in EXPECTED_PLAIN above. Before each `?` stands a U+00A0 NO-BREAK SPACE: the French typography
+// convention catalog.fr.ts documents in its header and follows in `box.evolve.confirm`.
 // =============================================================================
 
-/** U+00C9 (capital E acute), built by code point so the expected French text holds no pasted
- *  glyph (E_ACUTE and RIGHT_QUOTE are the ones declared above). */
+/** U+00C9 (capital E acute) and U+00A0 (no-break space), built by code point so the expected
+ *  French text holds no pasted glyph (E_ACUTE and RIGHT_QUOTE are the ones declared above). */
 const CAPITAL_E_ACUTE = String.fromCharCode(0x00c9);
+const NO_BREAK_SPACE = String.fromCharCode(0x00a0);
 
 const EXPECTED_FR_CTL8D_PLAIN: Record<string, string> = {
   'social.tab.players': 'Joueurs',
@@ -1343,9 +1344,9 @@ const EXPECTED_FR_CTL8D_PLAIN: Record<string, string> = {
   'social.action.decline': 'Refuser',
   'social.action.confirm': 'Confirmer',
   'social.action.cancel': 'Annuler',
-  'social.confirm.declineTrade': `Refuser cet ${E_ACUTE}change ?`,
-  'social.confirm.confirmTrade': `Conclure cet ${E_ACUTE}change ? Cette action est irr${E_ACUTE}versible.`,
-  'social.confirm.declineChallenge': `Refuser ce d${E_ACUTE}fi ?`,
+  'social.confirm.declineTrade': `Refuser cet ${E_ACUTE}change${NO_BREAK_SPACE}?`,
+  'social.confirm.confirmTrade': `Conclure cet ${E_ACUTE}change${NO_BREAK_SPACE}? Cette action est irr${E_ACUTE}versible.`,
+  'social.confirm.declineChallenge': `Refuser ce d${E_ACUTE}fi${NO_BREAK_SPACE}?`,
 };
 
 describe('ctl-8d: catalog.fr.ts, the keys ctl-8d adds', () => {
@@ -1354,7 +1355,8 @@ describe('ctl-8d: catalog.fr.ts, the keys ctl-8d adds', () => {
     // as the English copy, reworded, or swapped with a sibling (Accepter / Refuser, the two
     // trade questions); a confirm question that drops the irreversibility; a straight apostrophe
     // (not U+2019) in the placeholder; a decomposed or missing accent; and a question mark glued
-    // to its word or set off by a no-break space where the sibling questions use a plain space.
+    // to its word or set off by a plain breaking space instead of the catalog's U+00A0 (a browser
+    // could wrap the `?` onto a line of its own).
     for (const [key, expected] of Object.entries(EXPECTED_FR_CTL8D_PLAIN)) {
       const en = EXPECTED_PLAIN[key];
       expect(typeof en, `fixture: ${key} has an English pin`).toBe('string');

@@ -170,6 +170,20 @@ export type MessageId =
   // prompt.* : the Yes / No options every confirm shares (shopView.ts, healView.ts; ctl-8a).
   | 'prompt.yes'
   | 'prompt.no'
+  // social.* : the Social frame's tab strip, action sheet and Yes / No questions (tradeView.ts's
+  // `paintSocial`; ctl-8d).
+  | 'social.tab.players'
+  | 'social.tab.trades'
+  | 'social.tab.challenges'
+  | 'social.tab.rankings'
+  | 'social.players.placeholder'
+  | 'social.action.accept'
+  | 'social.action.decline'
+  | 'social.action.confirm'
+  | 'social.action.cancel'
+  | 'social.confirm.declineTrade'
+  | 'social.confirm.confirmTrade'
+  | 'social.confirm.declineChallenge'
   // tradePropose.* : the trade-proposal dialog (tradeProposeView.ts); its
   // submit label is the S1-seeded `chrome.tradePropose.submit`.
   | 'tradePropose.target.placeholder'

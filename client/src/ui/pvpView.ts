@@ -115,6 +115,7 @@ export class PvpView {
     // what was rendered is forgotten.
     this.#pending = null;
     this.#rendered.clear();
+    this.paintCursor(null);
     // DELIBERATELY UNGUARDED, and the asymmetry with the guarded `render(null)` path
     // in the three render-driven views is a decision, not an oversight. `closeOverlayA11y` is a
     // documented no-op when there is no open record (ui/overlayA11y.ts:136-137), so an unguarded
@@ -133,6 +134,23 @@ export class PvpView {
    *  no-op when it already is, so a repeat never detaches it (focus inside it would be lost). */
   hostChrome(el: HTMLElement): void {
     if (this.#root.firstElementChild !== el) this.#root.prepend(el);
+  }
+
+  /** The Social screen's cursor on a challenge row (ctl-8d): marks the container the row shows
+   *  in, by class AND aria-current, never colour alone. The containers outlive every refresh
+   *  (only their children are rebuilt), so the mark does too; `hide()` clears it. */
+  paintCursor(row: 'incoming' | 'outgoing' | null): void {
+    const rows = [
+      ['incoming', this.#incomingEl],
+      ['outgoing', this.#outgoingEl],
+    ] as const;
+    for (const [name, el] of rows) {
+      const on = name === row;
+      el.classList.toggle('mr-nav-item', on);
+      el.classList.toggle('is-active', on);
+      if (on) el.setAttribute('aria-current', 'true');
+      else el.removeAttribute('aria-current');
+    }
   }
 
   /**
