@@ -928,6 +928,67 @@ describe('monstersScreen — the nickname row (ctl-8b, CTL8B.3)', () => {
   });
 });
 
+describe('monstersScreen — round 2 gaps (ctl-8b)', () => {
+  it('ctl-8b gap: the sheet stays painted under the summary and under the typing row, on the same card, with the action that opened them', () => {
+    // WRONG IMPL KILLED: a sheetOf that answers null in the summary or nickname phase (the pane
+    // would draw under no sheet: the view hides the sheet, the name line and the row's frame
+    // vanish, and the focus rescue sends Escape-then-Enter somewhere else), one that paints the
+    // wrong action (the sheet's active row would not be the one A opened), and one that carries a
+    // different card than the pane.
+    const vm = vmOf(world());
+    const opened = monstersScreen.init(vm);
+
+    const summary = swallowed(vm, opened, ['A', 'A']);
+    expect(summary.phase.kind, 'fixture: the summary phase').toBe('summary');
+    const summaryPaint = paintOf(vm, summary);
+    expect(summaryPaint.sheet, 'the sheet is painted under the summary').not.toBeNull();
+    expect(summaryPaint.sheet?.action).toBe('summary');
+    expect(summaryPaint.sheet?.card, 'the same card as the summary').toEqual(cardOf(vm, 21n));
+    expect(summaryPaint.summary).toEqual(cardOf(vm, 21n));
+
+    const row = swallowed(vm, opened, ['A', 'Down', 'A']);
+    expect(row.phase.kind, 'fixture: the nickname phase').toBe('nickname');
+    const rowPaint = paintOf(vm, row);
+    expect(rowPaint.sheet, 'the sheet is painted under the typing row').not.toBeNull();
+    expect(rowPaint.sheet?.action).toBe('nickname');
+    expect(rowPaint.sheet?.card, 'the same card as the row').toEqual(cardOf(vm, 21n));
+    expect(rowPaint.nickname?.card).toEqual(cardOf(vm, 21n));
+
+    // A Party monster too.
+    const partyRow = swallowed(vm, opened, ['RB', 'Down', 'A', 'Down', 'A']);
+    expect(partyRow.phase).toMatchObject({ kind: 'nickname', monsterId: 12n });
+    expect(paintOf(vm, partyRow).sheet).toEqual({ card: cardOf(vm, 12n), action: 'nickname' });
+  });
+
+  it('ctl-8b gap: a repeat A in the nickname row commits nothing and leaves the row open; a fresh A does commit', () => {
+    // WRONG IMPL KILLED: a commit that ignores the repeat flag (a held Enter in the field would
+    // hand the view a token per key repeat, and the first one closes the row mid-word), and the
+    // over-correction, an A that never commits (the control below).
+    const vm = vmOf(world());
+    const opened = monstersScreen.init(vm);
+    const row = swallowed(vm, opened, ['A', 'Down', 'A']);
+    expect(row.phase.kind, 'fixture: the nickname phase').toBe('nickname');
+    const editBefore = row.phase.kind === 'nickname' ? row.phase.edit : Number.NaN;
+
+    const held = press(vm, row, rep('A'));
+    expect(held.result, 'a repeat A is swallowed').toBe('consumed');
+    expect(held.state.commit, 'a repeat A commits nothing').toBeNull();
+    expect(held.state.phase, 'and the row stays open').toMatchObject({
+      kind: 'nickname',
+      monsterId: 21n,
+      edit: editBefore,
+    });
+    expect(paintOf(vm, held.state).commit).toBeNull();
+
+    const fresh = press(vm, row, 'A');
+    expect(fresh.state.commit, 'CONTROL: a fresh A commits').toEqual({
+      monsterId: 21n,
+      current: '',
+    });
+    expect(fresh.state.phase.kind).toBe('sheet');
+  });
+});
+
 describe('monstersScreen — settle (ctl-8b, CTL8B.1-.3)', () => {
   it('observe answers the SAME state when nothing changed, in every phase, and re-seats the cursor on the nearest monster when its own leaves the list', () => {
     // WRONG IMPL KILLED: an observe that answers a new object every batch (the view repaints at

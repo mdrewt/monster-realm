@@ -336,34 +336,35 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
     APP_VIEWS.filter((b) => b !== a).map((b) => [a, b] as const),
   );
 
-  it.each(
-    ORDERED_PAIRS.map(([a, b]) => [a.id, b.id, a, b] as const),
-  )('S4-CROSS-VIEW-DISTINCT-ROOTS BITES: %s stays open while %s opens and closes on the same #app mount', (_aId, _bId, a, b) => {
-    const app = document.createElement('div');
-    document.body.appendChild(app);
-    const viewA = a.make(app);
-    const rootA = app.lastElementChild as HTMLElement;
-    const viewB = b.make(app);
-    expect(app.lastElementChild, 'each view mounts its OWN root').not.toBe(rootA);
+  it.each(ORDERED_PAIRS.map(([a, b]) => [a.id, b.id, a, b] as const))(
+    'S4-CROSS-VIEW-DISTINCT-ROOTS BITES: %s stays open while %s opens and closes on the same #app mount',
+    (_aId, _bId, a, b) => {
+      const app = document.createElement('div');
+      document.body.appendChild(app);
+      const viewA = a.make(app);
+      const rootA = app.lastElementChild as HTMLElement;
+      const viewB = b.make(app);
+      expect(app.lastElementChild, 'each view mounts its OWN root').not.toBe(rootA);
 
-    const expectAOpen = (when: string): void => {
-      expect(rootA.getAttribute('role'), `${a.id} role ${when}`).toBe(OVERLAY_A11Y[a.id].role);
-      expect(rootA.getAttribute('aria-modal'), `${a.id} aria-modal ${when}`).toBe('true');
-      expect(rootA.getAttribute('aria-label'), `${a.id} aria-label ${when}`).toBe(
-        t(OVERLAY_A11Y[a.id].labelKey),
-      );
-    };
+      const expectAOpen = (when: string): void => {
+        expect(rootA.getAttribute('role'), `${a.id} role ${when}`).toBe(OVERLAY_A11Y[a.id].role);
+        expect(rootA.getAttribute('aria-modal'), `${a.id} aria-modal ${when}`).toBe('true');
+        expect(rootA.getAttribute('aria-label'), `${a.id} aria-label ${when}`).toBe(
+          t(OVERLAY_A11Y[a.id].labelKey),
+        );
+      };
 
-    viewA.show();
-    expectAOpen('after it opens');
-    viewB.show();
-    expectAOpen(`after ${b.id} opens`);
-    viewB.hide();
-    expectAOpen(`after ${b.id} closes`);
+      viewA.show();
+      expectAOpen('after it opens');
+      viewB.show();
+      expectAOpen(`after ${b.id} opens`);
+      viewB.hide();
+      expectAOpen(`after ${b.id} closes`);
 
-    viewA.hide();
-    document.body.removeChild(app);
-  });
+      viewA.hide();
+      document.body.removeChild(app);
+    },
+  );
 });
 
 const BOX_PARTY_HINT_SELECTOR = '[data-testid="box-party-hint"]';
@@ -2827,6 +2828,315 @@ describe('BoxView ctl-8b: opening on Storage and the catalog (CTL8B.4)', () => {
     } finally {
       vi.mocked(i18nT).mockRestore();
       vi.mocked(i18nTf).mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ctl-8b round 2: gaps a red-team found in the cases above. These cases carry no CTL8B-n tag
+// (each tag stays in exactly one case); every title starts 'ctl-8b gap:'.
+// ---------------------------------------------------------------------------
+describe('BoxView ctl-8b gap: commit, reopen, live cards and the cursor outline', () => {
+  const c8bClosed = (commit: NicknameCommit | null): MonstersPaint =>
+    c8bPaint({
+      tab: 'party',
+      activeKey: '100',
+      sheet: { card: C8B_KIP, action: 'nickname' },
+      commit,
+    });
+  const c8bType = (root: Element, text: string): void => {
+    const field = c8bInput(root) as HTMLInputElement;
+    field.value = text;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  const c8bStats = (card: MonsterCardViewModel): string =>
+    i18nTf('box.card.stats', {
+      species: card.speciesName,
+      level: card.level,
+      current: card.currentHp,
+      max: card.statHp,
+      percent: card.hpPercent,
+    });
+
+  it('ctl-8b gap: a field left exactly as the open prefilled it sends nothing even when the token`s current differs (a batch renamed the monster while the row was open); a text that differs from both the prefill and the current is sent once', async () => {
+    // WRONG IMPL KILLED: a skip that compares the field only with the token's `current` (the
+    // untouched field 'Kip' differs from the batch's 'Max', so the commit renames the monster
+    // back to the name it had when the row opened, reverting the batch's rename), a skip that
+    // never sends, and a skip that drops everything once the field is untouched OR different
+    // (the typed 'Zed' must still go). The empty prefill (a card with no nickname) is covered
+    // too: an untouched empty field is "unchanged", never a rename to ''.
+    const { view, root, callbacks } = c8bOpen();
+    await s4FlushMacrotask();
+    const sent = callbacks.onSetNickname;
+
+    // Untouched: prefilled 'Kip', the token says a batch made it 'Max'.
+    view.paint(c8bRow(C8B_KIP, 1));
+    expect((c8bInput(root) as HTMLInputElement).value, 'fixture: prefilled').toBe('Kip');
+    view.paint(c8bClosed({ monsterId: 100n, current: 'Max' }));
+    expect(
+      sent,
+      'an untouched field is never sent, whatever the live nickname',
+    ).not.toHaveBeenCalled();
+
+    // The existing rule still holds: typed text equal to the live nickname is not sent.
+    view.paint(c8bRow(C8B_KIP, 2));
+    c8bType(root, 'Pip');
+    view.paint(c8bClosed({ monsterId: 100n, current: 'Pip' }));
+    expect(sent, 'text equal to current: not sent').not.toHaveBeenCalled();
+
+    // A card with no nickname, the field untouched (empty), a batch named it 'Zap'.
+    view.paint(c8bRow(C8B_MOSS, 3));
+    expect((c8bInput(root) as HTMLInputElement).value, 'fixture: empty prefill').toBe('');
+    view.paint(
+      c8bPaint({
+        tab: 'party',
+        activeKey: '101',
+        sheet: { card: C8B_MOSS, action: 'nickname' },
+        commit: { monsterId: 101n, current: 'Zap' },
+      }),
+    );
+    expect(sent, 'an untouched empty field is not sent either').not.toHaveBeenCalled();
+
+    // Typed text that differs from the prefill and from the live nickname is sent, once.
+    view.paint(c8bRow(C8B_KIP, 4));
+    c8bType(root, 'Zed');
+    const token: NicknameCommit = { monsterId: 100n, current: 'Max' };
+    view.paint(c8bClosed(token));
+    expect(sent, 'the typed text goes').toHaveBeenCalledTimes(1);
+    expect(sent).toHaveBeenCalledWith(100n, 'Zed');
+    view.paint(c8bClosed(token));
+    view.refresh(c8bParty(), c8bBox());
+    expect(sent, 'and only once').toHaveBeenCalledTimes(1);
+  });
+
+  it('ctl-8b gap: a reopened frame re-prefills and refocuses the field for an edit number the last visit already used (the host restarts numbering at 1)', async () => {
+    // WRONG IMPL KILLED: a show() that leaves the last-seen edit number alone: the next visit's
+    // first row (edit 1 again) reads as "the same open", keeps the last visit's typed text and
+    // never takes focus. Focus is read synchronously: show()'s deferred anchor focus has not run.
+    const { view, root } = c8bOpen();
+    await s4FlushMacrotask();
+    view.paint(c8bRow(C8B_KIP, 1));
+    const field = c8bInput(root) as HTMLInputElement;
+    expect(document.activeElement, 'fixture: the first open focused the field').toBe(field);
+    field.value = 'Zed';
+    field.blur();
+    expect(document.activeElement, 'fixture: blurred').not.toBe(field);
+
+    view.hide();
+    view.show();
+    view.refresh(c8bParty(), c8bBox());
+    view.paint(c8bRow(C8B_KIP, 1));
+    expect((c8bInput(root) as HTMLInputElement).value, 'prefilled again, not "Zed"').toBe('Kip');
+    expect(document.activeElement, 'and focused').toBe(c8bInput(root));
+  });
+
+  it('ctl-8b gap: a summary and a sheet show the monster as the last refresh() has it, not as the kept paint names it: a batch that heals or renames it changes the card with no new paint', () => {
+    // WRONG IMPL KILLED: a view that draws the paint's own (stale) card: the summary would keep
+    // the old HP and the sheet the old name until the player pressed another button.
+    const healedMoss = makeCard({ ...C8B_MOSS, currentHp: 20, hpPercent: 100 });
+    const oldStats = c8bStats(C8B_MOSS);
+    const newStats = c8bStats(healedMoss);
+    expect(newStats, 'fixture: the heal changes the stats text').not.toBe(oldStats);
+
+    const a = c8bOpen();
+    a.view.paint(c8bPaint({ tab: 'party', activeKey: '101', summary: C8B_MOSS }));
+    expect(c8bShownText(a.parent, a.root, oldStats), 'fixture: the old stats show').not.toEqual([]);
+    a.view.refresh([C8B_KIP, healedMoss, null, null, null, null], c8bBox());
+    expect(c8bShownText(a.parent, a.root, newStats), 'the summary shows the healed HP').not.toEqual(
+      [],
+    );
+    expect(c8bShownText(a.parent, a.root, oldStats), 'and not the old one').toEqual([]);
+    expect(c8bShownText(a.parent, a.root, 'Mossling'), 'still the same monster').not.toEqual([]);
+
+    const zip = makeCard({ ...C8B_KIP, nickname: 'Zip' });
+    const b = c8bOpen();
+    b.view.paint(
+      c8bPaint({ tab: 'party', activeKey: '100', sheet: { card: C8B_KIP, action: 'summary' } }),
+    );
+    expect(c8bShownText(b.parent, b.root, 'Kip'), 'fixture: the sheet names Kip').not.toEqual([]);
+    b.view.refresh([zip, C8B_MOSS, null, null, null, null], c8bBox());
+    expect(c8bShownText(b.parent, b.root, 'Zip'), 'the sheet shows the new name').not.toEqual([]);
+    expect(c8bShownText(b.parent, b.root, 'Kip'), 'and not the old one').toEqual([]);
+  });
+
+  it('ctl-8b gap: the cursor outline moves with the cursor: it is cleared from the card the cursor left and from every card of a tab that is no longer painted', () => {
+    // WRONG IMPL KILLED: an outline that is only ever set (every card the cursor has visited keeps
+    // its white frame: the player sees several "selected" cards, and a card of the other tab keeps
+    // one), and one that is never set (the cursor would be told by colour alone).
+    const { parent, view } = c8bOpen();
+    const party = partyGridOf(parent);
+    const box = boxGridOf(parent);
+    const cardIn = (grid: Element, key: string): HTMLElement => {
+      const found = c8bCards(grid).find((el) => el.dataset.navKey === key);
+      expect(found, `precondition: a card keyed ${key}`).toBeDefined();
+      return found as HTMLElement;
+    };
+
+    view.paint(c8bPaint({ tab: 'storage', activeKey: '300' }));
+    expect(cardIn(box, '300').style.outline, 'the cursor card is outlined').not.toBe('');
+    view.paint(c8bPaint({ tab: 'storage', activeKey: '400' }));
+    expect(cardIn(box, '300').style.outline, 'the card the cursor left is cleared').toBe('');
+    expect(cardIn(box, '400').style.outline, 'the new cursor card is outlined').not.toBe('');
+
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100' }));
+    expect(cardIn(party, '100').style.outline, 'the Party cursor card is outlined').not.toBe('');
+    for (const el of c8bCards(box)) {
+      expect(el.style.outline, `storage card ${el.dataset.navKey} has no outline`).toBe('');
+    }
+    expect(cardIn(party, '101').style.outline, 'a Party card off the cursor has none').toBe('');
+  });
+});
+
+describe('BoxView ctl-8b gap: view guards (repaint inside a callback, focus, scrolling)', () => {
+  it('ctl-8b gap: when onSetNickname repaints with a DIFFERENT paint, the frame shows that nested paint after the outer paint returns', async () => {
+    // WRONG IMPL KILLED: an #apply that carries on with its own paint after the commit callback
+    // (the outer paint is drawn over the nested one: the DOM shows Party and an open sheet while
+    // the kept paint, and the screen's state, say Storage and no sheet).
+    let repaint: (() => void) | undefined;
+    const { view, root, callbacks } = c8bOpen({
+      onSetNickname: vi.fn(() => {
+        repaint?.();
+      }),
+    });
+    await s4FlushMacrotask();
+    view.paint(c8bRow(C8B_KIP, 1));
+    (c8bInput(root) as HTMLInputElement).value = 'Zed';
+    repaint = () => view.paint(c8bPaint({ tab: 'storage', activeKey: '400' }));
+
+    view.paint(
+      c8bPaint({
+        tab: 'party',
+        activeKey: '100',
+        sheet: { card: C8B_KIP, action: 'nickname' },
+        commit: { monsterId: 100n, current: 'Kip' },
+      }),
+    );
+    expect(callbacks.onSetNickname, 'fixture: the callback ran, once').toHaveBeenCalledTimes(1);
+    expect(c8bSelected(root), 'the nested paint`s tab: Storage').toEqual(['false', 'true']);
+    const marked = c8bMarked(root);
+    expect(marked, 'one card marked').toHaveLength(1);
+    expect((marked[0] as HTMLElement).dataset.navKey, 'the nested paint`s cursor').toBe('400');
+    expect(
+      c8bHidden(root.querySelector('[role="listbox"]') as HTMLElement, root),
+      'the nested paint has no sheet',
+    ).toBe(true);
+    expect(c8bShownText(root, root, 'Kip'), 'and no sheet name is left showing').toEqual([]);
+  });
+
+  it('ctl-8b gap: a hidden frame never takes focus from an element outside it, and a shown frame hands focus stranded in a hidden panel to the title anchor', async () => {
+    // WRONG IMPL KILLED: a paint or refresh that focuses the title anchor unconditionally (a
+    // batch arriving while the frame is closed would pull focus out of the world), one that
+    // rescues focus without the frame being visible (a closed frame grabs focus from a button the
+    // player is on), and a shown frame with no rescue (focus stays on a To Box button of a panel
+    // the paint just hid: the next key heals focus to the world, out of the frame).
+    const outside = s4OutsideSentinel();
+
+    // Mounted, never shown.
+    const never = c8bMount();
+    outside.focus();
+    expect(document.activeElement, 'fixture: focus is outside').toBe(outside);
+    never.view.refresh(c8bParty(), c8bBox());
+    never.view.paint(c8bPaint({ tab: 'party', activeKey: '100' }));
+    never.view.paint(
+      c8bPaint({ tab: 'storage', activeKey: '300', sheet: { card: C8B_DUSK, action: 'summary' } }),
+    );
+    never.view.refresh(c8bParty(), c8bBox());
+    expect(document.activeElement, 'a never-shown frame leaves focus alone').toBe(outside);
+
+    // Shown, then hidden.
+    const shown = c8bOpen();
+    await s4FlushMacrotask();
+    shown.view.hide();
+    await s4FlushMacrotask();
+    outside.focus();
+    expect(document.activeElement, 'fixture: focus is outside again').toBe(outside);
+    shown.view.paint(c8bPaint({ tab: 'party', activeKey: '101' }));
+    shown.view.refresh(c8bParty(), c8bBox());
+    shown.view.paint(c8bPaint({ tab: 'storage', activeKey: '200' }));
+    shown.view.refresh(c8bParty(), c8bBox());
+    expect(document.activeElement, 'a hidden frame leaves focus alone').toBe(outside);
+
+    // A hidden frame also leaves focus on a control INSIDE it (on a part the paint then hides).
+    shown.view.paint(c8bPaint({ tab: 'party', activeKey: '100' }));
+    const inside = [...partyGridOf(shown.parent).querySelectorAll('button')].find(
+      (b) => b.textContent === i18nT('box.card.toBox'),
+    ) as HTMLButtonElement;
+    expect(inside, 'precondition: a To Box button in the Party panel').toBeDefined();
+    inside.focus();
+    expect(document.activeElement, 'fixture: focus is on the To Box button').toBe(inside);
+    shown.view.paint(c8bPaint({ tab: 'storage', activeKey: '200' }));
+    expect(document.activeElement, 'a hidden frame does not rescue focus').toBe(inside);
+
+    // Shown: focus on a To Box button of the Party panel, then Storage is painted.
+    const open = c8bOpen();
+    await s4FlushMacrotask();
+    open.view.paint(c8bPaint({ tab: 'party', activeKey: '100' }));
+    const toBox = [...partyGridOf(open.parent).querySelectorAll('button')].find(
+      (b) => b.textContent === i18nT('box.card.toBox'),
+    ) as HTMLButtonElement;
+    expect(toBox, 'precondition: a To Box button in the Party panel').toBeDefined();
+    toBox.focus();
+    expect(document.activeElement, 'fixture: the button is focused').toBe(toBox);
+    open.view.paint(c8bPaint({ tab: 'storage', activeKey: '200' }));
+    expect(c8bHidden(toBox, open.root), 'fixture: the Party panel is hidden now').toBe(true);
+    expect(document.activeElement, 'focus moves to the title anchor').toBe(c8bAnchor(open.root));
+  });
+
+  it('ctl-8b gap: the cursor card is scrolled into view once per cursor move, not on a repeat paint or a refresh(), and again when the frame is reopened on the same card', () => {
+    // WRONG IMPL KILLED: a scroll on every paint or every refresh() (the list would jump back to
+    // the cursor under a player who is scrolling it, at batch rate), no scroll at all, a scroll
+    // keyed on the key alone (a new tab with the same key would not scroll), and a scrolled-key
+    // memory that survives a reopen (the frame reopens on the card it was last scrolled to: the
+    // opening card is already "seen", the box shows its top while the cursor sits off screen).
+    const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    const scrolled: string[] = [];
+    const spy = vi.fn(function (this: HTMLElement) {
+      scrolled.push(this.dataset.navKey ?? '');
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      writable: true,
+      value: spy,
+    });
+    try {
+      const { view } = c8bOpen();
+      spy.mockClear();
+      scrolled.length = 0;
+
+      view.paint(c8bPaint({ tab: 'storage', activeKey: '300' }));
+      expect(scrolled, 'a new key scrolls once').toEqual(['300']);
+      view.paint(c8bPaint({ tab: 'storage', activeKey: '300' }));
+      view.paint(c8bPaint({ tab: 'storage', activeKey: '300', feedback: 'movedToBox' }));
+      view.refresh(c8bParty(), c8bBox());
+      view.refresh(c8bParty(), c8bBox());
+      expect(scrolled, 'the same key, a repaint and a refresh() never scroll again').toEqual([
+        '300',
+      ]);
+
+      view.paint(c8bPaint({ tab: 'storage', activeKey: '400' }));
+      expect(scrolled, 'a new key scrolls once more').toEqual(['300', '400']);
+      view.paint(c8bPaint({ tab: 'party', activeKey: '100' }));
+      expect(scrolled, 'a new tab scrolls to its cursor').toEqual(['300', '400', '100']);
+
+      // The cursor ends on the card the frame opens on (the first Storage card), then a reopen.
+      view.paint(c8bPaint({ tab: 'storage', activeKey: '200' }));
+      expect(
+        scrolled[scrolled.length - 1],
+        'fixture: the opening card was the last one scrolled to',
+      ).toBe('200');
+      spy.mockClear();
+      scrolled.length = 0;
+      view.hide();
+      view.show();
+      expect(scrolled, 'the reopened frame scrolls its opening card again').toEqual(['200']);
+      view.refresh(c8bParty(), c8bBox());
+      expect(scrolled, 'and a refresh() after that does not').toEqual(['200']);
+    } finally {
+      if (own === undefined) {
+        delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollIntoView;
+      } else {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', own);
+      }
     }
   });
 });
