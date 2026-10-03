@@ -2868,28 +2868,29 @@ describe('RaisingView ctl-7b: a refresh re-renders only when the view-model chan
     ).toBeGreaterThan(0);
   });
 
-  it.each(
-    CTL7B_FIELD_CASES,
-  )('CTL7B-RV-KEY-FIELD %s: a one-field change re-renders, and the cards show and forward the new value', (label, change) => {
-    // WRONG IMPLS KILLED: a key that leaves one field out (a stale card / button text / forwarded
-    // id after exactly that change), a key that reads only the monster ids or only their count, a
-    // key over the Care / Train LABELS but not the data behind them, an items key that ignores
-    // order or itemId. Every case checks the DOM against the new view-model, not just identity.
-    const { view, root, onCare, onTrain } = ctl7bSetup();
-    view.refresh(raTrainVm());
-    const before = ctl7bCards(root);
-    expect(before, 'precondition: two cards rendered').toHaveLength(2);
+  it.each(CTL7B_FIELD_CASES)(
+    'CTL7B-RV-KEY-FIELD %s: a one-field change re-renders, and the cards show and forward the new value',
+    (label, change) => {
+      // WRONG IMPLS KILLED: a key that leaves one field out (a stale card / button text / forwarded
+      // id after exactly that change), a key that reads only the monster ids or only their count, a
+      // key over the Care / Train LABELS but not the data behind them, an items key that ignores
+      // order or itemId. Every case checks the DOM against the new view-model, not just identity.
+      const { view, root, onCare, onTrain } = ctl7bSetup();
+      view.refresh(raTrainVm());
+      const before = ctl7bCards(root);
+      expect(before, 'precondition: two cards rendered').toHaveLength(2);
 
-    const changed = change(raTrainVm());
-    view.refresh(changed);
-    const after = ctl7bCards(root);
-    expect(
-      after[0]?.care,
-      `${label}: the monster list was re-rendered, so Care is a new node`,
-    ).not.toBe(before[0]?.care);
-    expect(before[0]?.care.isConnected, `${label}: the old Care node is gone`).toBe(false);
-    ctl7bExpectRendered(root, changed, { onCare, onTrain }, label);
-  });
+      const changed = change(raTrainVm());
+      view.refresh(changed);
+      const after = ctl7bCards(root);
+      expect(
+        after[0]?.care,
+        `${label}: the monster list was re-rendered, so Care is a new node`,
+      ).not.toBe(before[0]?.care);
+      expect(before[0]?.care.isConnected, `${label}: the old Care node is gone`).toBe(false);
+      ctl7bExpectRendered(root, changed, { onCare, onTrain }, label);
+    },
+  );
 
   it('CTL7B-RV-KEY-INVENTORY BITES: a change that only the inventory shows (a description, a non-trainable item) still reaches the screen', () => {
     // WRONG IMPLS KILLED: an inventory key that ignores the description or the non-trainable
@@ -3192,5 +3193,554 @@ describe('RaisingView ctl-7b: the in-flight locks survive a skipped refresh and 
     a2.trains[1]?.click();
     expect(onTrain, 'and they dispatch again').toHaveBeenCalledTimes(2);
     await flushPromises();
+  });
+});
+
+// =============================================================================
+// ctl-8f (CTL8F.1, CTL8F.2): the Bag panel inside the raising root.
+//
+// `RaisingView.paint(p)` takes `{ vm, nav, phase, status }` (the adapter's paint) and renders, inside
+// the raising root, the pocket tab strip (#bag-tabs), the active pocket's items (#bag-list), the item
+// sheet (#bag-sheet), the description (#bag-info), the monster picker (#bag-picker with
+// #bag-picker-title) and the status line (#bag-status). The legacy monster section, Care and Train
+// buttons, #raising-feedback and refresh() are untouched; the legacy inventory grid (id
+// `raising-inventory`) is hidden while a paint is kept and comes back at the next show().
+//
+// "Shown" / "hidden" is the part's own inline `style.display` (hidden = 'none'). The paints here are
+// hand-built (no adapter), and the nav states come from the real nav kit over a layout written out
+// in this file, so these cases pin the view against the CONTRACT's shapes alone; the WIRED case at
+// the end drives the real adapter into the real view.
+//
+// The new modules are imported dynamically inside the WIRED case only, so a missing module reds
+// that case alone and never the pre-existing cases of this file.
+// =============================================================================
+
+import type { VButton } from '../input/buttons';
+import type { BagItemVm, BagVm } from './bagModel';
+import { list as ctl8fList, tabs as ctl8fTabs, type NavState, navInit, navStep } from './nav';
+
+type Ctl8fPaint = Parameters<RaisingView['paint']>[0];
+
+function ctl8fItem(
+  itemId: number,
+  name: string,
+  description: string,
+  count: number,
+  over: Partial<BagItemVm> = {},
+): BagItemVm {
+  return {
+    key: String(itemId),
+    itemId,
+    name,
+    description,
+    count,
+    canFeed: false,
+    battleUse: false,
+    ...over,
+  };
+}
+
+/** bait [3]; food [9, 5] (inventory order); medicine [12] (or [] with `bareMedicine`); other [20]. */
+function ctl8fVm(opts: { bareMedicine?: boolean; monsters?: boolean } = {}): BagVm {
+  return {
+    pockets: [
+      {
+        pocket: 'bait',
+        items: [ctl8fItem(3, 'Lure Berry', 'Lures a wild monster.', 4, { battleUse: true })],
+      },
+      {
+        pocket: 'food',
+        items: [
+          ctl8fItem(9, 'Glow Berry', 'Raises speed.', 2, { canFeed: true }),
+          ctl8fItem(5, 'Power Root', 'Raises attack.', 3, { canFeed: true }),
+        ],
+      },
+      {
+        pocket: 'medicine',
+        items:
+          opts.bareMedicine === true
+            ? []
+            : [ctl8fItem(12, 'Antidote', 'Cures poison.', 1, { battleUse: true })],
+      },
+      { pocket: 'other', items: [ctl8fItem(20, 'Moon Shard', '', 6)] },
+    ],
+    monsters:
+      opts.monsters === false
+        ? []
+        : [
+            { key: '11', monsterId: 11n, name: 'Kip' },
+            { key: '12', monsterId: 12n, name: 'Emberfang' },
+            { key: '21', monsterId: 21n, name: 'Sproutle' },
+          ],
+  };
+}
+
+function ctl8fLayout(vm: BagVm) {
+  return ctl8fTabs(
+    vm.pockets.map((p) => ({
+      key: p.pocket,
+      layout: ctl8fList(p.items.map((i) => ({ key: i.key, enabled: true }))),
+    })),
+  );
+}
+
+/** The nav state after `steps` fresh presses from the opening. */
+function ctl8fNav(vm: BagVm, steps: readonly VButton[] = []): NavState {
+  const layout = ctl8fLayout(vm);
+  let state = navInit(layout);
+  for (const button of steps) state = navStep(layout, state, { button, repeat: false }).state;
+  return state;
+}
+
+function ctl8fPaint(vm: BagVm, over: Partial<Ctl8fPaint> = {}): Ctl8fPaint {
+  return { vm, nav: ctl8fNav(vm), phase: { kind: 'list' }, status: null, ...over };
+}
+
+const CTL8F_PARTS = ['bag-tabs', 'bag-list', 'bag-sheet', 'bag-info', 'bag-picker'] as const;
+
+function ctl8fPart(id: string): HTMLElement {
+  const el = document.getElementById(id);
+  expect(el, `#${id} must exist in the raising root`).not.toBeNull();
+  return el as HTMLElement;
+}
+/** Shown = the part's own inline display is not 'none'. */
+const ctl8fShown = (id: string): boolean => ctl8fPart(id).style.display !== 'none';
+const ctl8fRows = (id: string): HTMLElement[] => [
+  ...ctl8fPart(id).querySelectorAll<HTMLElement>('.mr-nav-item'),
+];
+const ctl8fKeys = (id: string): Array<string | undefined> =>
+  ctl8fRows(id).map((r) => r.dataset.navKey);
+const ctl8fTabEls = (): HTMLElement[] => [
+  ...ctl8fPart('bag-tabs').querySelectorAll<HTMLElement>('.mr-nav-tab'),
+];
+/** The cursor rows of a nav container: those marked is-active (and aria-selected). */
+const ctl8fActive = (id: string): Array<string | undefined> =>
+  ctl8fRows(id)
+    .filter((r) => r.classList.contains('is-active'))
+    .map((r) => r.dataset.navKey);
+/** Own-text lines `text` under the root outside the legacy inventory grid. */
+function ctl8fLinesOutsideGrid(root: HTMLElement, text: string): HTMLElement[] {
+  const grid = document.getElementById('raising-inventory');
+  return [...root.querySelectorAll<HTMLElement>('*')].filter(
+    (el) => ctl7bOwnText(el) === text && (grid === null || !grid.contains(el)),
+  );
+}
+
+describe('RaisingView ctl-8f: the Bag panel (CTL8F.1, CTL8F.2)', () => {
+  it('CTL8F-1-VIEW-PAINT: before any paint the five bag parts exist and are hidden and the legacy grid shows; a paint shows the pocket tabs (the active one selected), the active pocket`s items as "name (xN)" rows with the cursor row marked, hides the legacy grid for as long as the paint is kept (a refresh keeps it hidden), shows the empty line for an empty pocket, and after hide() then show() the grid is back and the bag parts are hidden until the next paint', () => {
+    // WRONG IMPL KILLED: parts created lazily or visible before the first paint (the player would
+    // see an empty bag frame beside the legacy grid); a tab strip with the wrong labels, order or
+    // selected tab; a list that shows every pocket or the wrong one; row text that is not the
+    // resolver's "name (xN)"; a cursor row marked by colour alone (no is-active / aria-selected); a
+    // list of <button>s (the raising screen's button census would change); a legacy grid that stays
+    // visible under the bag, that a refresh() brings back, or that never comes back after a close
+    // (the kept paint must be dropped by hide()); a close that leaves the bag parts showing the
+    // dropped paint; an empty pocket that shows nothing; and markup injected from an item name.
+    const { parent, view } = s4Mount();
+    const root = overlayRootOf(parent);
+    view.show();
+    view.refresh(raTrainVm());
+    const buttonsBefore = root.querySelectorAll('button').length;
+    expect(buttonsBefore, 'precondition: the legacy cards render buttons').toBeGreaterThan(0);
+    const grid = ctl8fPart('raising-inventory');
+    expect(grid.style.display, 'the legacy grid shows before any paint').not.toBe('none');
+    for (const id of CTL8F_PARTS) {
+      expect(ctl8fPart(id).style.display, `#${id} is hidden before any paint`).toBe('none');
+      expect(root.contains(ctl8fPart(id)), `#${id} is inside the raising root`).toBe(true);
+    }
+    expect(ctl8fPart('bag-status').textContent, 'the status line starts empty').toBe('');
+
+    const vm = ctl8fVm();
+    view.paint(ctl8fPaint(vm));
+    expect(ctl8fShown('bag-tabs')).toBe(true);
+    expect(ctl8fShown('bag-list')).toBe(true);
+    expect(
+      ctl8fTabEls().map((t) => [t.dataset.navTab, t.textContent, t.getAttribute('aria-selected')]),
+      'the four pockets in order, Bait selected',
+    ).toEqual([
+      ['bait', 'Bait', 'true'],
+      ['food', 'Food', 'false'],
+      ['medicine', 'Medicine', 'false'],
+      ['other', 'Other', 'false'],
+    ]);
+    expect(ctl8fKeys('bag-list'), 'only the active pocket`s items').toEqual(['3']);
+    expect(ctl8fRows('bag-list').map((r) => r.textContent)).toEqual(['Lure Berry (x4)']);
+    expect(ctl8fActive('bag-list')).toEqual(['3']);
+    expect(ctl8fRows('bag-list')[0]?.getAttribute('aria-selected')).toBe('true');
+    expect(grid.style.display, 'the legacy grid is hidden under a kept paint').toBe('none');
+    expect(
+      ctl8fLinesOutsideGrid(root, 'No items.'),
+      'a pocket with items shows no empty line',
+    ).toEqual([]);
+    expect(root.querySelectorAll('button').length, 'no bag row is a button').toBe(buttonsBefore);
+
+    // The food pocket, the cursor on its second item.
+    view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB', 'Down']) }));
+    expect(
+      ctl8fTabEls().map((t) => t.getAttribute('aria-selected')),
+      'only Food is selected now',
+    ).toEqual(['false', 'true', 'false', 'false']);
+    expect(ctl8fKeys('bag-list'), 'Food in inventory order').toEqual(['9', '5']);
+    expect(ctl8fRows('bag-list').map((r) => r.textContent)).toEqual([
+      'Glow Berry (x2)',
+      'Power Root (x3)',
+    ]);
+    expect(
+      ctl8fRows('bag-list').map((r) => r.textContent),
+      'the rows are the resolver`s raising.inventory.item',
+    ).toEqual([
+      i18nTf('raising.inventory.item', { name: 'Glow Berry', count: 2 }),
+      i18nTf('raising.inventory.item', { name: 'Power Root', count: 3 }),
+    ]);
+    expect(ctl8fActive('bag-list'), 'the cursor row only').toEqual(['5']);
+    expect(ctl8fRows('bag-list').map((r) => r.getAttribute('aria-selected'))).toEqual([
+      'false',
+      'true',
+    ]);
+
+    // A refresh() under a kept paint does not bring the legacy grid back.
+    view.refresh(ctl7bItem(raTrainVm(), 0, { count: 5 }));
+    expect(grid.style.display, 'a refresh keeps the legacy grid hidden').toBe('none');
+    expect(grid.textContent ?? '', 'and still rebuilds its content').toContain('Protein (x5)');
+
+    // An empty pocket: no rows, the empty line somewhere in the bag panel.
+    const bare = ctl8fVm({ bareMedicine: true });
+    view.paint(ctl8fPaint(bare, { nav: ctl8fNav(bare, ['RB', 'RB']) }));
+    expect(ctl8fKeys('bag-list'), 'no rows').toEqual([]);
+    expect(
+      ctl8fLinesOutsideGrid(root, i18nT('raising.inventory.empty')).length,
+      'the empty line is inside the bag panel, not the legacy grid',
+    ).toBeGreaterThan(0);
+    expect(ctl8fTabEls().map((t) => t.dataset.navTab)).toEqual([
+      'bait',
+      'food',
+      'medicine',
+      'other',
+    ]);
+
+    // hide() then show(): the grid is back, the dropped paint is not shown.
+    view.hide();
+    view.show();
+    expect(grid.style.display, 'the legacy grid is visible again after a reopen').not.toBe('none');
+    expect(ctl8fShown('bag-tabs'), 'the bag tabs are hidden again').toBe(false);
+    expect(ctl8fShown('bag-list'), 'the bag list is hidden again').toBe(false);
+    view.paint(ctl8fPaint(vm));
+    expect(grid.style.display, 'the next paint hides the grid again').toBe('none');
+    expect(ctl8fShown('bag-tabs')).toBe(true);
+    expect(ctl8fKeys('bag-list')).toEqual(['3']);
+
+    // Item names are text, never markup.
+    const hostile = ctl8fVm();
+    const first = hostile.pockets[0]?.items[0];
+    if (first === undefined) throw new Error('fixture: no first item');
+    const injected: BagVm = {
+      ...hostile,
+      pockets: [
+        { pocket: 'bait', items: [{ ...first, name: '<b>bold</b>' }] },
+        ...hostile.pockets.slice(1),
+      ],
+    };
+    view.paint(ctl8fPaint(injected));
+    expect(ctl8fRows('bag-list').map((r) => r.textContent)).toEqual(['<b>bold</b> (x4)']);
+    expect(ctl8fPart('bag-list').querySelector('b'), 'no element was created').toBeNull();
+  });
+
+  it('CTL8F-2-VIEW-SHEET: the sheet, description and picker show only in their own phase (the title with the picker), the sheet lists Feed / Use / Info with the cursor on the phase`s action and disabled rows marked aria-disabled, the description shows the item`s description (the none-line when empty), the picker lists the monsters by name with the cursor on the phase`s monster, and the status line carries the three messages (data-feedback only for Fed) and clears', () => {
+    // WRONG IMPL KILLED: a sheet / description / picker / title visible in the wrong phase or in
+    // every phase; a sheet that never marks the phase's action; a disabled Use or Feed that is not
+    // aria-disabled (or an enabled row that is); labels that are not the catalog's; a description
+    // that is stale after the item changes or blank for an item with none; a picker cursor that
+    // ignores the phase, rows that are not the monsters' names in order; a status line that never
+    // clears, keeps data-feedback after Fed, sets it for the refusals, or builds markup from the
+    // monster's name; and a status line that is not the frame's feedback line.
+    const { parent, view } = s4Mount();
+    const root = overlayRootOf(parent);
+    view.show();
+    const vm = ctl8fVm();
+    const food = ctl8fNav(vm, ['RB']);
+    const root5 = ctl8fNav(vm, ['RB', 'Down']);
+    const lure = ctl8fNav(vm);
+    const shard = ctl8fNav(vm, ['RB', 'RB', 'RB']);
+
+    const matrix: ReadonlyArray<
+      readonly [string, Ctl8fPaint, { sheet: boolean; info: boolean; picker: boolean }]
+    > = [
+      ['list', ctl8fPaint(vm), { sheet: false, info: false, picker: false }],
+      [
+        'sheet',
+        ctl8fPaint(vm, { nav: food, phase: { kind: 'sheet', itemId: 9, action: 'feed' } }),
+        { sheet: true, info: false, picker: false },
+      ],
+      [
+        'info',
+        ctl8fPaint(vm, { nav: food, phase: { kind: 'info', itemId: 9 } }),
+        { sheet: false, info: true, picker: false },
+      ],
+      [
+        'picker',
+        ctl8fPaint(vm, { nav: food, phase: { kind: 'picker', itemId: 9, monster: '11' } }),
+        { sheet: false, info: false, picker: true },
+      ],
+      ['list again', ctl8fPaint(vm, { nav: food }), { sheet: false, info: false, picker: false }],
+    ];
+    for (const [name, p, want] of matrix) {
+      view.paint(p);
+      expect(ctl8fShown('bag-sheet'), `${name}: #bag-sheet`).toBe(want.sheet);
+      expect(ctl8fShown('bag-info'), `${name}: #bag-info`).toBe(want.info);
+      expect(ctl8fShown('bag-picker'), `${name}: #bag-picker`).toBe(want.picker);
+      expect(ctl8fShown('bag-picker-title'), `${name}: #bag-picker-title`).toBe(want.picker);
+    }
+
+    // The sheet.
+    const sheetOf = (nav: NavState, itemId: number, action: 'feed' | 'use' | 'info', v = vm) => {
+      view.paint(ctl8fPaint(v, { nav, phase: { kind: 'sheet', itemId, action } }));
+      return ctl8fRows('bag-sheet');
+    };
+    let rows = sheetOf(food, 9, 'feed');
+    expect(rows.map((r) => [r.dataset.navKey, r.textContent])).toEqual([
+      ['feed', 'Feed'],
+      ['info', 'Info'],
+    ]);
+    expect(ctl8fActive('bag-sheet'), 'the cursor on Feed').toEqual(['feed']);
+    expect(
+      rows.map((r) => r.getAttribute('aria-disabled')),
+      'with monsters Feed is enabled',
+    ).toEqual([null, null]);
+    rows = sheetOf(food, 9, 'info');
+    expect(ctl8fActive('bag-sheet'), 'the cursor follows the action').toEqual(['info']);
+    expect(rows.map((r) => r.getAttribute('aria-selected'))).toEqual(['false', 'true']);
+
+    rows = sheetOf(lure, 3, 'use');
+    expect(rows.map((r) => [r.dataset.navKey, r.textContent])).toEqual([
+      ['use', 'Use'],
+      ['info', 'Info'],
+    ]);
+    expect(
+      rows.map((r) => r.getAttribute('aria-disabled')),
+      'Use is aria-disabled, Info is not',
+    ).toEqual(['true', null]);
+    expect(ctl8fActive('bag-sheet')).toEqual(['use']);
+    rows = sheetOf(shard, 20, 'info');
+    expect(
+      rows.map((r) => r.dataset.navKey),
+      'a shard offers Info alone',
+    ).toEqual(['info']);
+
+    const lonely = ctl8fVm({ monsters: false });
+    rows = sheetOf(food, 9, 'feed', lonely);
+    expect(
+      rows.map((r) => [r.dataset.navKey, r.getAttribute('aria-disabled')]),
+      'with no monster Feed is disabled',
+    ).toEqual([
+      ['feed', 'true'],
+      ['info', null],
+    ]);
+
+    // The description: the item's own, the none-line when empty, never stale.
+    view.paint(ctl8fPaint(vm, { nav: food, phase: { kind: 'info', itemId: 9 } }));
+    expect(ctl8fPart('bag-info').textContent ?? '').toContain('Raises speed.');
+    view.paint(ctl8fPaint(vm, { nav: root5, phase: { kind: 'info', itemId: 5 } }));
+    expect(ctl8fPart('bag-info').textContent ?? '').toContain('Raises attack.');
+    expect(ctl8fPart('bag-info').textContent ?? '', 'not the previous item`s').not.toContain(
+      'Raises speed.',
+    );
+    view.paint(ctl8fPaint(vm, { nav: shard, phase: { kind: 'info', itemId: 20 } }));
+    const none = i18nT('shop.description.none');
+    expect(none, 'precondition: the none-line is not blank').not.toBe('');
+    expect(ctl8fPart('bag-info').textContent ?? '', 'an empty description').toContain(none);
+    expect(ctl8fPart('bag-info').textContent ?? '').not.toContain('Raises');
+
+    // The picker.
+    view.paint(ctl8fPaint(vm, { nav: food, phase: { kind: 'picker', itemId: 9, monster: '12' } }));
+    expect(ctl8fPart('bag-picker-title').textContent, 'the picker title').toBe(
+      'Feed which monster?',
+    );
+    expect(ctl8fRows('bag-picker').map((r) => [r.dataset.navKey, r.textContent])).toEqual([
+      ['11', 'Kip'],
+      ['12', 'Emberfang'],
+      ['21', 'Sproutle'],
+    ]);
+    expect(ctl8fActive('bag-picker'), 'the cursor on the phase`s monster').toEqual(['12']);
+    expect(ctl8fRows('bag-picker').map((r) => r.getAttribute('aria-selected'))).toEqual([
+      'false',
+      'true',
+      'false',
+    ]);
+    view.paint(ctl8fPaint(vm, { nav: food, phase: { kind: 'picker', itemId: 9, monster: '21' } }));
+    expect(ctl8fActive('bag-picker')).toEqual(['21']);
+    expect(() =>
+      view.paint(
+        ctl8fPaint(lonely, { nav: food, phase: { kind: 'picker', itemId: 9, monster: null } }),
+      ),
+    ).not.toThrow();
+    expect(ctl8fRows('bag-picker'), 'an empty roster lists nobody').toEqual([]);
+
+    // The status line.
+    view.paint(ctl8fPaint(vm));
+    const status = ctl8fPart('bag-status');
+    expect(status.classList.contains('mr-frame-feedback'), 'the frame`s feedback line').toBe(true);
+    expect(status.textContent, 'empty with no status').toBe('');
+    expect(status.hasAttribute('data-feedback')).toBe(false);
+    const withStatus = (s: Ctl8fPaint['status']) => view.paint(ctl8fPaint(vm, { status: s }));
+    withStatus({ kind: 'battleOnly' });
+    expect(status.textContent).toBe('Use items from the battle Bag command');
+    expect(status.hasAttribute('data-feedback'), 'a refusal is not "ok"').toBe(false);
+    withStatus({ kind: 'noMonsters' });
+    expect(status.textContent).toBe('No monsters to feed');
+    expect(status.hasAttribute('data-feedback')).toBe(false);
+    withStatus({ kind: 'fed', name: 'Kip' });
+    expect(status.textContent, 'Fed, resolved with the name').toBe(
+      i18nTf('box.feedback.fed', { name: 'Kip' }),
+    );
+    expect(status.textContent ?? '').toContain('Kip');
+    expect(status.getAttribute('data-feedback'), 'only Fed is ok').toBe('ok');
+    withStatus({ kind: 'fed', name: '<i>x</i>' });
+    expect(status.textContent).toBe(i18nTf('box.feedback.fed', { name: '<i>x</i>' }));
+    expect(status.querySelector('i'), 'a name is text, never markup').toBeNull();
+    withStatus(null);
+    expect(status.textContent, 'cleared').toBe('');
+    expect(status.hasAttribute('data-feedback'), 'and its mark is cleared with it').toBe(false);
+    withStatus({ kind: 'fed', name: 'Kip' });
+    withStatus({ kind: 'battleOnly' });
+    expect(status.hasAttribute('data-feedback'), 'a refusal after Fed drops the ok mark').toBe(
+      false,
+    );
+    expect(root.contains(status), 'inside the raising root').toBe(true);
+  });
+
+  it('CTL8F-1-VIEW-WIRED: the real adapter driving the real view: opening shows Bait; RB shows Food with its rows and cursor; A, Down, A reach the description and B returns; Feed, Down opens the picker on the second monster and A sends the train command and closes it; Use on a cure shows the battleOnly line', async () => {
+    // WRONG IMPL KILLED: a view whose paint shape is not the adapter's (the hand-built cases above
+    // would pass while the pair is unwired); a paint that the adapter never makes after a step; a
+    // list that does not follow the adapter's pocket; a sheet / description / picker that is not
+    // shown for the adapter's phase; a train command that does not carry the picker's monster; and
+    // a status line the adapter's refusal never reaches.
+    const { buildBagVm } = await import('./bagModel');
+    const { bagScreen } = await import('./screens/bagScreen');
+    const defs = new Map(
+      [
+        {
+          id: 3,
+          name: 'Lure Berry',
+          description: 'Lures a wild monster.',
+          recruitBonus: 10,
+          trainStat: null,
+          cureStatus: null,
+        },
+        {
+          id: 5,
+          name: 'Power Root',
+          description: 'Raises attack.',
+          recruitBonus: 0,
+          trainStat: 'attack',
+          cureStatus: null,
+        },
+        {
+          id: 9,
+          name: 'Glow Berry',
+          description: 'Raises speed.',
+          recruitBonus: 0,
+          trainStat: 'speed',
+          cureStatus: null,
+        },
+        {
+          id: 12,
+          name: 'Antidote',
+          description: 'Cures poison.',
+          recruitBonus: 0,
+          trainStat: null,
+          cureStatus: 'Poison',
+        },
+      ].map(
+        (d) => [d.id, { ...d, trainAmount: d.trainStat === null ? 0 : 1, sellPrice: 0n }] as const,
+      ),
+    );
+    const owner = 'ab'.repeat(32);
+    const inventory = [
+      { invId: 1n, ownerIdentity: owner, itemId: 9, count: 2 },
+      { invId: 2n, ownerIdentity: owner, itemId: 3, count: 4 },
+      { invId: 3n, ownerIdentity: owner, itemId: 5, count: 3 },
+      { invId: 4n, ownerIdentity: owner, itemId: 12, count: 1 },
+    ];
+    const vm = buildBagVm(inventory, defs, [
+      { key: '11', monsterId: 11n, name: 'Kip' },
+      { key: '12', monsterId: 12n, name: 'Emberfang' },
+    ]);
+
+    const { parent, view } = s4Mount();
+    view.show();
+    let state = bagScreen.init(vm);
+    const step = (button: VButton) => {
+      const out = bagScreen.onButton(vm, state, { button, repeat: false });
+      state = out.state;
+      bagScreen.paint?.(view, vm, state);
+      return out.result;
+    };
+    bagScreen.paint?.(view, vm, state);
+
+    expect(ctl8fTabEls().map((t) => t.dataset.navTab)).toEqual([
+      'bait',
+      'food',
+      'medicine',
+      'other',
+    ]);
+    expect(ctl8fTabEls().map((t) => t.getAttribute('aria-selected'))).toEqual([
+      'true',
+      'false',
+      'false',
+      'false',
+    ]);
+    expect(ctl8fRows('bag-list').map((r) => r.textContent)).toEqual(['Lure Berry (x4)']);
+
+    expect(step('RB')).toBe('consumed');
+    expect(ctl8fTabEls().map((t) => t.getAttribute('aria-selected'))).toEqual([
+      'false',
+      'true',
+      'false',
+      'false',
+    ]);
+    expect(ctl8fRows('bag-list').map((r) => r.textContent)).toEqual([
+      'Glow Berry (x2)',
+      'Power Root (x3)',
+    ]);
+    expect(ctl8fActive('bag-list')).toEqual(['9']);
+
+    expect(step('A')).toBe('consumed');
+    expect(ctl8fShown('bag-sheet')).toBe(true);
+    expect(ctl8fRows('bag-sheet').map((r) => r.textContent)).toEqual(['Feed', 'Info']);
+    expect(ctl8fActive('bag-sheet')).toEqual(['feed']);
+
+    expect(step('Down')).toBe('consumed');
+    expect(ctl8fActive('bag-sheet')).toEqual(['info']);
+    expect(step('A')).toBe('consumed');
+    expect(ctl8fShown('bag-info')).toBe(true);
+    expect(ctl8fShown('bag-sheet')).toBe(false);
+    expect(ctl8fPart('bag-info').textContent ?? '').toContain('Raises speed.');
+    expect(step('B')).toBe('consumed');
+    expect(ctl8fShown('bag-info')).toBe(false);
+    expect(ctl8fActive('bag-sheet'), 'back on the sheet, on Info').toEqual(['info']);
+
+    expect(step('Up')).toBe('consumed');
+    expect(step('A')).toBe('consumed');
+    expect(ctl8fShown('bag-picker')).toBe(true);
+    expect(ctl8fPart('bag-picker-title').textContent).toBe('Feed which monster?');
+    expect(ctl8fActive('bag-picker')).toEqual(['11']);
+    expect(step('Down')).toBe('consumed');
+    expect(ctl8fActive('bag-picker')).toEqual(['12']);
+    expect(step('A')).toEqual({ kind: 'train', monsterId: 12n, foodItemId: 9 });
+    expect(ctl8fShown('bag-picker'), 'the picker closes on the send').toBe(false);
+    expect(ctl8fShown('bag-sheet')).toBe(false);
+    expect(ctl8fActive('bag-list'), 'the cursor is on the fed item').toEqual(['9']);
+
+    // Use on a cure: the battleOnly line.
+    expect(step('RB')).toBe('consumed');
+    expect(ctl8fKeys('bag-list')).toEqual(['12']);
+    expect(step('A')).toBe('consumed');
+    expect(ctl8fActive('bag-sheet')).toEqual(['use']);
+    expect(step('A')).toBe('consumed');
+    expect(ctl8fPart('bag-status').textContent).toBe('Use items from the battle Bag command');
+    expect(ctl8fShown('bag-sheet'), 'the sheet stays open').toBe(true);
+    expect(parent.contains(ctl8fPart('bag-status'))).toBe(true);
+    expect(step('B')).toBe('consumed');
+    expect(ctl8fPart('bag-status').textContent, 'the next button clears the line').toBe('');
   });
 });

@@ -61,9 +61,11 @@ import {
 } from '../contextStack';
 import type { NavInput } from '../nav';
 import { OVERLAY_IDS } from '../overlayRegistry';
+import { bagScreen } from './bagScreen';
 import { DIALOGUE_REVEAL_MS, dialogueScreen } from './dialogueScreen';
 import { healScreen } from './healScreen';
 import { baseButton, SCREEN_ADAPTERS, ScreenHost } from './index';
+import { journalScreen } from './journalScreen';
 import { legacyAdapter } from './legacyAdapter';
 import { monstersScreen } from './monstersScreen';
 import { shopScreen } from './shopScreen';
@@ -191,11 +193,17 @@ const CONVERTED: ReadonlyMap<FrameId, unknown> = new Map<FrameId, unknown>([
   ['social', socialScreen],
   // ctl-8e (named intentional change): the trade-propose frame holds the wizard.
   ['tradeProposeView', tradeProposeScreen],
+  // ctl-8f (named intentional change): the raising frame holds the Bag, the quest log frame the
+  // Journal. Both read the store, so a storeless shipped pass no longer reaches them (see
+  // CTL7D-6-OBSERVE-SKIPS) and neither can serve as "a legacy frame" any more.
+  ['raisingView', bagScreen],
+  ['questLogView', journalScreen],
 ]);
 /** Every frame id still on the legacy adapter. ctl-8s (named intentional change): the Social frame
  *  is one of them until ctl-8d (was: every OVERLAY id still on the legacy adapter). ctl-8d (named
  *  intentional change): the Social frame left it, so it holds 13 ids again. ctl-8e (named
- *  intentional change): the trade-propose frame left it too, so it holds 12 ids. */
+ *  intentional change): the trade-propose frame left it too, so it holds 12 ids. ctl-8f (named
+ *  intentional change): the raising and quest log frames left it, so it holds 10 ids. */
 const LEGACY_IDS: readonly FrameId[] = FRAME_IDS.filter((id) => !CONVERTED.has(id));
 
 describe('SCREEN_ADAPTERS (ctl-6b)', () => {
@@ -227,7 +235,15 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
     expect(SCREEN_ADAPTERS.tradeProposeView, 'the trade-propose frame is its ctl-8e wizard').toBe(
       tradeProposeScreen,
     );
-    expect(LEGACY_IDS, 'ANTI-VACUITY: 12 legacy ids').toHaveLength(12);
+    // INTENTIONAL CHANGE (ctl-8f, CTL8F.4): raisingView holds bagScreen and questLogView holds
+    // journalScreen (by identity), so the legacy roster is 10 ids. Was: 12, both among them.
+    expect(SCREEN_ADAPTERS.raisingView, 'the raising frame is the ctl-8f Bag').toBe(bagScreen);
+    expect(SCREEN_ADAPTERS.questLogView, 'the quest log frame is the ctl-8f Journal').toBe(
+      journalScreen,
+    );
+    expect(LEGACY_IDS, 'ANTI-VACUITY: 10 legacy ids').toHaveLength(10);
+    expect(LEGACY_IDS.includes('raisingView'), 'raisingView is no longer legacy').toBe(false);
+    expect(LEGACY_IDS.includes('questLogView'), 'questLogView is no longer legacy').toBe(false);
     expect(LEGACY_IDS.includes('boxView'), 'boxView is no longer legacy').toBe(false);
     expect(LEGACY_IDS.includes('social'), 'the Social frame is no longer legacy').toBe(false);
     expect(
@@ -661,6 +677,9 @@ describe('ScreenHost (ctl-7c)', () => {
     // D-pad until ctl-8d (was OVERLAY_IDS).
     // INTENTIONAL CHANGE (ctl-8d, CTL8D.1): the Social frame holds socialScreen (CONVERTED holds
     // it), so it takes the D-pad too, as a screen and as a prompt. Was: false (legacy).
+    // INTENTIONAL CHANGE (ctl-8f, CTL8F.4): CONVERTED also holds raisingView (the Bag) and
+    // questLogView (the Journal), so both take the D-pad here too, as a screen and as a prompt.
+    // Was: false (legacy) for both.
     const shipped = hostOf(SCREEN_ADAPTERS);
     for (const id of FRAME_IDS) {
       const navCapable = CONVERTED.has(id);
@@ -2008,7 +2027,11 @@ describe('ScreenHost.observe (ctl-7d)', () => {
       // INTENTIONAL CHANGE (ctl-8b): the probe frame is questLogView (still legacy); boxView holds
       // monstersScreen now and its button would build a Monsters view model from this storeless
       // context instead of reaching the legacy adapter. Was: boxView.
-      shipped.button(stackOf(WORLD, screen('questLogView')), nav('B'), clock.ctx);
+      // INTENTIONAL CHANGE (ctl-8f): the probe frame is evolutionView (still legacy); questLogView
+      // holds journalScreen now and its button would read the store's quests from this storeless
+      // context. Was: questLogView. LEGACY_IDS (CONVERTED, above) no longer lists raisingView or
+      // questLogView, so the two passes over it above do not reach the Bag or the Journal either.
+      shipped.button(stackOf(WORLD, screen('evolutionView')), nav('B'), clock.ctx);
       for (const spy of spies) {
         expect(spy, 'a button does reach the legacy adapter').toHaveBeenCalledTimes(1);
       }
@@ -2129,8 +2152,10 @@ describe('the converted frames over the shipped table (ctl-8a, CTL8A.4)', () => 
       expect(host.takesNav(stackOf(battle('7'), screen(id))), `${id} over a battle`).toBe(true);
       // INTENTIONAL CHANGE (ctl-8b): the covering legacy frame is questLogView; boxView is
       // nav-capable now, so a box frame over a converted one WOULD take the D-pad. Was: boxView.
+      // INTENTIONAL CHANGE (ctl-8f): the covering legacy frame is evolutionView; questLogView is
+      // nav-capable now (the Journal). Was: questLogView.
       expect(
-        host.takesNav(stackOf(WORLD, screen(id), screen('questLogView'))),
+        host.takesNav(stackOf(WORLD, screen(id), screen('evolutionView'))),
         `${id} under a legacy frame`,
       ).toBe(false);
     }
@@ -2307,8 +2332,10 @@ describe('the Monsters frame over the shipped table (ctl-8b, CTL8B.4)', () => {
     expect(host.takesNav(stackOf(WORLD, screen('boxView'))), 'over the world').toBe(true);
     expect(host.takesNav(stackOf(battle('7'), screen('boxView'))), 'over a battle').toBe(true);
     expect(host.takesNav(stackOf(WORLD, prompt('boxView'))), 'as a prompt').toBe(true);
+    // INTENTIONAL CHANGE (ctl-8f): the covering legacy frame is evolutionView; questLogView holds
+    // the nav-capable Journal now. Was: questLogView.
     expect(
-      host.takesNav(stackOf(WORLD, screen('boxView'), screen('questLogView'))),
+      host.takesNav(stackOf(WORLD, screen('boxView'), screen('evolutionView'))),
       'under a legacy frame',
     ).toBe(false);
     expect(
@@ -3128,8 +3155,10 @@ describe('the trade-propose wizard over the shipped table (ctl-8e, CTL8E.2)', ()
       true,
     );
     expect(host.takesNav(stackOf(WORLD, prompt('tradeProposeView'))), 'as a prompt').toBe(true);
+    // INTENTIONAL CHANGE (ctl-8f): the covering legacy frame is evolutionView; questLogView holds
+    // the nav-capable Journal now. Was: questLogView.
     expect(
-      host.takesNav(stackOf(WORLD, screen('tradeProposeView'), screen('questLogView'))),
+      host.takesNav(stackOf(WORLD, screen('tradeProposeView'), screen('evolutionView'))),
       'under a legacy frame',
     ).toBe(false);
     expect(
@@ -3213,3 +3242,214 @@ interface TradeProposePaintLike {
   readonly toggle: { readonly monsterId: bigint } | null;
   readonly commit: { readonly kind: 'commit' } | null;
 }
+
+// ==========================================================================================
+// ctl-8f: the Bag and the Journal over the SHIPPED table (CTL8F.4)
+// ==========================================================================================
+//
+// KeyI and the menu open the raising root, KeyQ the quest log, through the legacy `show()` /
+// `render()` paths; swapping their `SCREEN_ADAPTERS` entries gives the open frames the D-pad, A, B,
+// LB / RB (PageUp / PageDown), Y and Start / Select. Neither frame is seated at its open (only the
+// Social frame is), so each paints at its first batch (`host.observe`: the first observe answers a
+// new state) or at its first button.
+
+describe('the Bag and the Journal over the shipped table (ctl-8f, CTL8F.4)', () => {
+  it('CTL8F-4-ADAPTERS: the shipped table holds bagScreen for the raising frame and journalScreen for the quest log frame, both nav-capable and both observing, so each takes the D-pad on top of the world or a battle, as a screen or a prompt; a legacy frame above one, or a text entry over it, takes the D-pad back', () => {
+    // WRONG IMPL KILLED: a screen written but never wired into SCREEN_ADAPTERS (KeyI and KeyQ would
+    // still open frames whose keys do nothing); a swap into the wrong slot (the Bag on the quest log
+    // frame, or either on the box frame); an adapter without its nav mark (the router would keep
+    // the D-pad for walking under the open frame); one without `observe` (a store batch would never
+    // paint the first opening, the way the Bag shows its pockets); and a frame that keeps the D-pad
+    // under a legacy child or while a typing row owns the keys.
+    expect(SCREEN_ADAPTERS.raisingView, 'the raising frame').toBe(bagScreen);
+    expect(SCREEN_ADAPTERS.questLogView, 'the quest log frame').toBe(journalScreen);
+    expect(bagScreen.nav, 'the Bag is nav-capable').toBe(true);
+    expect(journalScreen.nav, 'the Journal is nav-capable').toBe(true);
+    expect(typeof bagScreen.observe, 'the Bag observes a batch').toBe('function');
+    expect(typeof journalScreen.observe, 'the Journal observes a batch').toBe('function');
+    expect(typeof bagScreen.paint, 'the Bag paints').toBe('function');
+    expect(typeof journalScreen.paint, 'the Journal paints').toBe('function');
+    for (const id of FRAME_IDS) {
+      if (id !== 'raisingView') {
+        expect(SCREEN_ADAPTERS[id], `${id} is not the Bag`).not.toBe(bagScreen);
+      }
+      if (id !== 'questLogView') {
+        expect(SCREEN_ADAPTERS[id], `${id} is not the Journal`).not.toBe(journalScreen);
+      }
+    }
+    const host = hostOf(SCREEN_ADAPTERS);
+    for (const id of ['raisingView', 'questLogView'] as const) {
+      expect(host.takesNav(stackOf(WORLD, screen(id))), `${id} over the world`).toBe(true);
+      expect(host.takesNav(stackOf(battle('7'), screen(id))), `${id} over a battle`).toBe(true);
+      expect(host.takesNav(stackOf(WORLD, prompt(id))), `${id} as a prompt`).toBe(true);
+      expect(
+        host.takesNav(stackOf(WORLD, screen(id), screen('evolutionView'))),
+        `${id} under a legacy frame`,
+      ).toBe(false);
+      expect(
+        host.takesNav(stackOf(WORLD, screen(id), textEntry(id))),
+        `${id} with a text entry over it`,
+      ).toBe(false);
+    }
+  });
+
+  it('the Bag and the Journal over the shipped table: the Bag`s first batch paints its opening once and an equal batch paints nothing, RB, A, A, A walks to a train command for the party monster, a batch showing the food go paints the Fed line; the Journal`s first batch paints its opening cursor, A opens the detail, B closes it, and each step paints its own lent view once and no other', () => {
+    // WRONG IMPL KILLED: a host still answering these frames through the legacy adapter (A would be
+    // `unhandled`, nothing would paint); an adapter whose view model cannot be built from the real
+    // ScreenContext (identity, the store reads, the real party size and sentinel); an observe that
+    // does not paint the first batch (the Bag would stay on the legacy grid until a button) or that
+    // repaints an unchanged one; a train that carries the wrong monster or item; a Fed line never
+    // painted; a Journal detail for the wrong quest; and a paint sent to another frame's view.
+    const ME8F = 'ef'.repeat(32);
+    const food = {
+      id: 5,
+      name: 'Power Root',
+      description: 'Raises attack.',
+      recruitBonus: 0,
+      trainStat: 'attack',
+      trainAmount: 1,
+      sellPrice: 0n,
+      cureStatus: null,
+    };
+    const lure = { ...food, id: 3, name: 'Lure Berry', recruitBonus: 10, trainStat: null };
+    const stock = { count: 2 };
+    const monster = {
+      monsterId: 11n,
+      ownerIdentity: ME8F,
+      speciesId: 1,
+      nickname: '',
+      level: 5,
+      xp: 0,
+      currentHp: 30,
+      statHp: 40,
+      statAttack: 10,
+      statDefense: 10,
+      statSpeed: 10,
+      statSpAttack: 10,
+      statSpDefense: 10,
+      partySlot: 0,
+      tier: 0,
+      essence: {},
+      trustTier: 'Neutral',
+      qualityTimeTier: 0,
+      nutritionPct: 0,
+    };
+    const sproutle = {
+      id: 1,
+      name: 'Sproutle',
+      baseHp: 45,
+      baseAttack: 49,
+      baseDefense: 49,
+      baseSpeed: 45,
+      baseSpAttack: 65,
+      baseSpDefense: 65,
+      affinity: 'Plant',
+      learnableSkillIds: [],
+    };
+    const store = {
+      ownInventory: (identity: string) =>
+        identity === ME8F
+          ? [
+              { invId: 1n, ownerIdentity: ME8F, itemId: 5, count: stock.count },
+              { invId: 2n, ownerIdentity: ME8F, itemId: 3, count: 4 },
+            ]
+          : [],
+      itemDefs: () =>
+        new Map([
+          [5, food],
+          [3, lure],
+        ]),
+      ownMonsters: (identity: string) => (identity === ME8F ? [monster] : []),
+      speciesMap: () => new Map([[1, sproutle]]),
+      ownQuests: (identity: string) =>
+        identity === ME8F
+          ? [
+              { pqId: 1n, ownerIdentity: ME8F, questId: 'quest_001', stepIndex: 0 },
+              { pqId: 2n, ownerIdentity: ME8F, questId: 'quest_002', stepIndex: 3 },
+            ]
+          : [],
+    };
+    const ctx = {
+      store,
+      identity: ME8F,
+      bindings: DEFAULT_BINDINGS,
+      now: () => 0,
+      shopId: null,
+      healLocationId: null,
+      socialTab: null,
+      reduceMotion: false,
+    } as unknown as ScreenContext;
+    const views = { raisingView: recordingView(), questLogView: recordingView() };
+    const lent = (id: FrameId): unknown =>
+      id === 'raisingView' || id === 'questLogView' ? views[id] : undefined;
+    const host = new ScreenHost(SCREEN_ADAPTERS, lent, unexpectedPaintError);
+    const counts = (): readonly number[] => [
+      views.raisingView.painted.length,
+      views.questLogView.painted.length,
+    ];
+    type BagPaintLike = {
+      readonly nav: { readonly tab: string | null; readonly item: string | null };
+      readonly phase: { readonly kind: string };
+      readonly status: { readonly kind: string; readonly name?: string } | null;
+    };
+    const lastBag = (): BagPaintLike => views.raisingView.painted.at(-1) as BagPaintLike;
+    const lastJournal = (): { questId: unknown; detail: unknown } =>
+      views.questLogView.painted.at(-1) as { questId: unknown; detail: unknown };
+
+    // The Bag: the first batch after the open paints once; the next equal one paints nothing.
+    const bag = stackOf(WORLD, screen('raisingView'));
+    host.opened(screen('raisingView'));
+    host.observe(bag, ctx);
+    expect(counts(), 'the open`s first batch paints the Bag once').toEqual([1, 0]);
+    expect(lastBag().nav.tab, 'the opening: the first pocket').toBe('bait');
+    expect(lastBag().nav.item, 'and its first item').toBe('3');
+    expect(lastBag().phase.kind).toBe('list');
+    expect(lastBag().status).toBeNull();
+    host.observe(bag, ctx);
+    expect(counts(), 'a batch that changed nothing paints nothing').toEqual([1, 0]);
+
+    expect(host.button(bag, nav('RB'), ctx), 'RB is swallowed').toBe('consumed');
+    expect(lastBag().nav.tab, 'RB: Food').toBe('food');
+    expect(lastBag().nav.item).toBe('5');
+    expect(host.button(bag, nav('A'), ctx)).toBe('consumed');
+    expect(lastBag().phase.kind, 'the sheet').toBe('sheet');
+    expect(host.button(bag, nav('A'), ctx)).toBe('consumed');
+    expect(lastBag().phase.kind, 'the picker').toBe('picker');
+    expect(host.button(bag, nav('A'), ctx), 'A on the party monster: train').toEqual({
+      kind: 'train',
+      monsterId: 11n,
+      foodItemId: 5,
+    });
+    expect(lastBag().phase.kind, 'the picker is closed').toBe('list');
+    expect(counts(), 'one observe and four steps, one paint each, no other view painted').toEqual([
+      5, 0,
+    ]);
+
+    // A batch showing the food go paints the Fed line.
+    stock.count = 1;
+    host.observe(bag, ctx);
+    expect(lastBag().status, 'Fed, with the monster`s name').toEqual({
+      kind: 'fed',
+      name: 'Sproutle',
+    });
+    expect(counts()[1], 'the Journal was never painted').toBe(0);
+
+    // The Journal: the first batch paints the opening cursor; A opens the detail, B closes it.
+    const journal = stackOf(WORLD, screen('questLogView'));
+    host.opened(screen('questLogView'));
+    const bagPaints = counts()[0] as number;
+    host.observe(journal, ctx);
+    expect(counts(), 'the first batch paints the Journal once').toEqual([bagPaints, 1]);
+    expect(lastJournal()).toEqual({ questId: 'quest_001', detail: null });
+    expect(host.button(journal, nav('Down'), ctx)).toBe('consumed');
+    expect(lastJournal()).toEqual({ questId: 'quest_002', detail: null });
+    expect(host.button(journal, nav('A'), ctx), 'A opens the detail').toBe('consumed');
+    expect(lastJournal()).toEqual({ questId: 'quest_002', detail: 'quest_002' });
+    expect(host.button(journal, nav('B'), ctx), 'B closes the detail, not the frame').toBe(
+      'consumed',
+    );
+    expect(lastJournal()).toEqual({ questId: 'quest_002', detail: null });
+    expect(host.button(journal, nav('B'), ctx), 'B in the list pops').toEqual({ kind: 'pop' });
+    expect(counts()[0], 'the Bag was not painted by the Journal`s steps').toBe(bagPaints);
+  });
+});
