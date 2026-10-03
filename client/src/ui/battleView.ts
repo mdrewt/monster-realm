@@ -450,8 +450,9 @@ export class BattleView implements BattleOpsView {
   }
 
   /** One cursor op from the battle screen (CTL8I.1-3). With focus off the cursor rows (the
-   *  heading, the page, Flee, a confirm's prompt) it only seats the kept cursor: an A must never press a row
-   *  the player is not on. On a row the cursor first follows focus (Tab and the mouse move it too). */
+   *  heading, the page, Flee, a confirm's prompt) it only seats the kept cursor: an A must never
+   *  press a row the player is not on. On a row the cursor first follows focus (Tab and the mouse
+   *  move it too). */
   applyBattleOp(op: BattleOp): void {
     if (!this.#visible || this.#vm?.outcome !== 'Ongoing') return;
     const active = document.activeElement;
@@ -861,10 +862,8 @@ export class BattleView implements BattleOpsView {
    *  shared PvE lock. A node left from a closed or replaced step finds no pick and does nothing. */
   #commitPick(kind: BattlePick['kind']): void {
     const vm = this.#vm;
-    const pick = vm === null ? null : resolveBattlePick(vm, this.#pick);
-    if (vm === null || pick === null || pick.kind !== kind) return;
-    // A press the lock refuses keeps the pick: spending it on a no-op would lose the choice.
-    if (this.#pending?.battleId === vm.battleId) return;
+    const pick = this.#pick; // resolved against #vm by every refresh
+    if (vm === null || pick?.kind !== kind) return;
     this.#setPick(null);
     this.#seatOnPickedRow(pick);
     this.#paintCursor(true);
