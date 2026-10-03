@@ -215,6 +215,16 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { species: 'Sproutle', level: 5, current: 18, max: 20, percent: 90 },
     { species: 'Emberfang', level: 9, current: 21, max: 21, percent: 100 },
   ],
+  // ctl-8c: the food row, the Evolve confirm and the fed line (3 ★).
+  'box.feed.item': [
+    { name: 'Bait', count: 3 },
+    { name: 'Glowberry', count: 12 },
+  ],
+  'box.evolve.confirm': [
+    { name: 'Kip', species: 'Emberfang' },
+    { name: 'Sproutle', species: 'Pyroleo' },
+  ],
+  'box.feedback.fed': [{ name: 'Kip' }, { name: 'Mossling' }],
   // Trade.* (2 ★, side.currency.amount is bigint)
   'trade.side.card': [
     { nickname: 'Sproutle', species: 'Mossback', level: 7, current: 3, max: 9 },
@@ -302,6 +312,8 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
 const EM_DASH = String.fromCharCode(0x2014);
+/** ctl-8c's "opens a list" mark on the Feed… / Evolve… rows: U+2026 HORIZONTAL ELLIPSIS. */
+const ELLIPSIS = String.fromCharCode(0x2026);
 
 /** Every PLAIN (non-parameterised) MessageId's expected value, byte-transcribed
  *  from the pre-migration literal at its cited source line (plan R7 — copy-paste
@@ -318,6 +330,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // ctl-8b (named intentional change): -1 plain key (`box.card.rename`, deleted with the per-card
   // Rename button and window.prompt) and +7 plain keys (`box.tab.{party,storage}`,
   // `box.sheet.{summary,nickname,move}`, `box.feedback.{movedToParty,movedToBox}`) = 230 keys.
+  // ctl-8c (named intentional change): +4 plain keys (`box.sheet.{care,feed,evolve,feedNone}`)
+  // here, +3 parameterised ones (`box.feed.item`, `box.evolve.confirm`, `box.feedback.fed`) in
+  // SAMPLE_PARAMS = 237 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -368,7 +383,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'raising.monsters.empty': 'No monsters.', // raisingView.ts
   'raising.inventory.empty': 'No items.', // raisingView.ts
   'raising.card.care': 'Care', // raisingView.ts
-  // Box.* (17 plain: 11, -box.card.rename, +7 ctl-8b keys)
+  // Box.* (21 plain: 11, -box.card.rename, +7 ctl-8b keys, +4 ctl-8c keys)
   'box.title': 'Party & Box', // boxView.ts
   'box.heal': 'Heal Party', // boxView.ts
   'box.hint':
@@ -391,6 +406,12 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'box.sheet.move': 'Move', // boxView.ts
   'box.feedback.movedToParty': 'Moved to party', // boxView.ts
   'box.feedback.movedToBox': 'Moved to storage', // boxView.ts
+  // ctl-8c: the action sheet's Care / Feed… / Evolve… rows (the ellipsis marks a row that opens a
+  // list) and the reason a Feed… row is disabled when the player holds no food.
+  'box.sheet.care': 'Care', // boxView.ts
+  'box.sheet.feed': `Feed${ELLIPSIS}`, // boxView.ts
+  'box.sheet.evolve': `Evolve${ELLIPSIS}`, // boxView.ts
+  'box.sheet.feedNone': 'No food', // boxView.ts
   // Trade.* (8 plain)
   'trade.status.none': 'No active trade', // tradeView.ts
   'trade.side.offer': 'You offer', // tradeView.ts (hoisted, #renderSide heading arg)
@@ -719,6 +740,26 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { species: 'Emberfang', level: 9, current: 21, max: 21, percent: 100 },
     outputB: 'Emberfang · Lv9 · HP 21/21 (100%)',
   },
+  // ctl-8c: the food row (the raising inventory row's shape), the Evolve confirm, the fed line
+  // (the check mark is the CSS ::before of the ok feedback line, so the text carries none).
+  'box.feed.item': {
+    inputA: { name: 'Bait', count: 3 },
+    outputA: 'Bait (x3)',
+    inputB: { name: 'Glowberry', count: 12 },
+    outputB: 'Glowberry (x12)',
+  },
+  'box.evolve.confirm': {
+    inputA: { name: 'Kip', species: 'Emberfang' },
+    outputA: 'Evolve Kip into Emberfang?',
+    inputB: { name: 'Sproutle', species: 'Pyroleo' },
+    outputB: 'Evolve Sproutle into Pyroleo?',
+  },
+  'box.feedback.fed': {
+    inputA: { name: 'Kip' },
+    outputA: 'Fed Kip',
+    inputB: { name: 'Mossling' },
+    outputB: 'Fed Mossling',
+  },
   // Trade.* (2 ★)
   'trade.side.card': {
     inputA: { nickname: 'Sproutle', species: 'Mossback', level: 7, current: 3, max: 9 },
@@ -895,7 +936,9 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 230-key roster (ctl-8b: -`box.card.rename` +`box.tab.{party,storage}`
+/** The full 237-key roster (ctl-8c: +`box.sheet.{care,feed,evolve,feedNone}` +`box.feed.item`
+ *  +`box.evolve.confirm` +`box.feedback.fed` over the 230-key roster below; ctl-8b:
+ *  -`box.card.rename` +`box.tab.{party,storage}`
  *  +`box.sheet.{summary,nickname,move}` +`box.feedback.{movedToParty,movedToBox}` over the 224-key
  *  roster below; ctl-8a:+`shop.tab.buy` +`shop.tab.sell` +`shop.description.none`
  *  +`prompt.yes` +`prompt.no` +`heal.prompt.unavailable` +`shop.qty.{buy,sell}`
@@ -959,7 +1002,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8b 230-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8c 237-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1048,10 +1091,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 230 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 237 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (230 keys since ctl-8b).
+    // (a) roster is exactly the EXPECTED_KEYS roster (237 keys since ctl-8c).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).

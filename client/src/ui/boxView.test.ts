@@ -93,11 +93,27 @@
 //     `box.feedback.movedToBox`. M24S4_BX_ROSTER (English words that must not appear outside a
 //     sentinel) gains 'Storage', 'Summary', 'Nickname', 'Moved to party', 'Moved to storage'.
 // Every other pre-existing case is unchanged.
+//
+// ctl-8c (CTL8C.1): the sheet gains Care, Feed… and Evolve… (design §5 order), the frame gains a
+// food list, an Evolve list and its Yes / No confirm, and the "Fed {name}" line. The cases are the
+// describes titled 'BoxView ctl-8c ...' at the end of this file (CTL8C-1-VIEW-*). NAMED INTENTIONAL
+// CHANGES to pre-existing cases:
+//   - C8B_OPENING gains `feed: null, evolve: null, confirm: null`; every sheet paint is built by
+//     `c8bSheet` (Feed… and Evolve… enabled unless a case says otherwise); the Move feedback
+//     fixtures are `{ kind }`.
+//   - CTL8B-2-VIEW-SHEET pins the six-row roster and order.
+//   - M24S4_BX_PLAIN_KEYS gains `box.sheet.{care,feed,evolve,feedNone}` and the reused
+//     `evolution.card.noPaths`, `evolution.path.allMet`, `prompt.yes`, `prompt.no`;
+//     M24S4_BX_PARAM_KEYS gains `box.feed.item`, `box.evolve.confirm`, `box.feedback.fed` and the
+//     reused `evolution.path.heading`, `evolution.card.ready`; M24S4_BX_ROSTER gains the new
+//     English; the ctl-8b «key» case also expects the three new sheet rows.
 // ---------------------------------------------------------------------------
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readWasmU32Constant } from '../../test-util/wasmPkg';
 import type { MonsterCardViewModel } from './boxModel';
 import { BoxView, type BoxViewCallbacks } from './boxView';
+import type { EvolutionMonsterViewModel, EvolutionPathViewModel } from './evolutionModel';
+import type { FoodVm, SheetAction } from './monstersModel';
 import type { MonstersPaint, NicknameCommit } from './screens/monstersScreen';
 
 // ---------------------------------------------------------------------------
@@ -336,34 +352,35 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
     APP_VIEWS.filter((b) => b !== a).map((b) => [a, b] as const),
   );
 
-  it.each(
-    ORDERED_PAIRS.map(([a, b]) => [a.id, b.id, a, b] as const),
-  )('S4-CROSS-VIEW-DISTINCT-ROOTS BITES: %s stays open while %s opens and closes on the same #app mount', (_aId, _bId, a, b) => {
-    const app = document.createElement('div');
-    document.body.appendChild(app);
-    const viewA = a.make(app);
-    const rootA = app.lastElementChild as HTMLElement;
-    const viewB = b.make(app);
-    expect(app.lastElementChild, 'each view mounts its OWN root').not.toBe(rootA);
+  it.each(ORDERED_PAIRS.map(([a, b]) => [a.id, b.id, a, b] as const))(
+    'S4-CROSS-VIEW-DISTINCT-ROOTS BITES: %s stays open while %s opens and closes on the same #app mount',
+    (_aId, _bId, a, b) => {
+      const app = document.createElement('div');
+      document.body.appendChild(app);
+      const viewA = a.make(app);
+      const rootA = app.lastElementChild as HTMLElement;
+      const viewB = b.make(app);
+      expect(app.lastElementChild, 'each view mounts its OWN root').not.toBe(rootA);
 
-    const expectAOpen = (when: string): void => {
-      expect(rootA.getAttribute('role'), `${a.id} role ${when}`).toBe(OVERLAY_A11Y[a.id].role);
-      expect(rootA.getAttribute('aria-modal'), `${a.id} aria-modal ${when}`).toBe('true');
-      expect(rootA.getAttribute('aria-label'), `${a.id} aria-label ${when}`).toBe(
-        t(OVERLAY_A11Y[a.id].labelKey),
-      );
-    };
+      const expectAOpen = (when: string): void => {
+        expect(rootA.getAttribute('role'), `${a.id} role ${when}`).toBe(OVERLAY_A11Y[a.id].role);
+        expect(rootA.getAttribute('aria-modal'), `${a.id} aria-modal ${when}`).toBe('true');
+        expect(rootA.getAttribute('aria-label'), `${a.id} aria-label ${when}`).toBe(
+          t(OVERLAY_A11Y[a.id].labelKey),
+        );
+      };
 
-    viewA.show();
-    expectAOpen('after it opens');
-    viewB.show();
-    expectAOpen(`after ${b.id} opens`);
-    viewB.hide();
-    expectAOpen(`after ${b.id} closes`);
+      viewA.show();
+      expectAOpen('after it opens');
+      viewB.show();
+      expectAOpen(`after ${b.id} opens`);
+      viewB.hide();
+      expectAOpen(`after ${b.id} closes`);
 
-    viewA.hide();
-    document.body.removeChild(app);
-  });
+      viewA.hide();
+      document.body.removeChild(app);
+    },
+  );
 });
 
 const BOX_PARTY_HINT_SELECTOR = '[data-testid="box-party-hint"]';
@@ -1395,9 +1412,29 @@ const M24S4_BX_PLAIN_KEYS = new Set([
   'box.sheet.move',
   'box.feedback.movedToParty',
   'box.feedback.movedToBox',
+  // INTENTIONAL CHANGE (ctl-8c): the Care / Feed… / Evolve… rows and the no-food reason, plus the
+  // evolution and prompt ids the Evolve list and its confirm reuse.
+  'box.sheet.care',
+  'box.sheet.feed',
+  'box.sheet.evolve',
+  'box.sheet.feedNone',
+  'evolution.card.noPaths',
+  'evolution.path.allMet',
+  'prompt.yes',
+  'prompt.no',
 ]);
 
-const M24S4_BX_PARAM_KEYS = new Set(['box.party.emptySlot', 'box.card.stats']);
+// INTENTIONAL CHANGE (ctl-8c): the food row, the Evolve confirm, the fed line, and the reused path
+// heading and ready line.
+const M24S4_BX_PARAM_KEYS = new Set([
+  'box.party.emptySlot',
+  'box.card.stats',
+  'box.feed.item',
+  'box.evolve.confirm',
+  'box.feedback.fed',
+  'evolution.path.heading',
+  'evolution.card.ready',
+]);
 
 /** True iff `content` (the text strictly between one `«`/`»` pair) is EXACTLY an
  *  expected sentinel: a bare roster key, or `key|<json>` where `key` is a roster
@@ -1493,6 +1530,19 @@ const M24S4_BX_ROSTER = [
   'Nickname',
   'Moved to party',
   'Moved to storage',
+  // ctl-8c: the new sheet rows and reason, the food row shape, the Evolve list's lines, the
+  // confirm's question and options, and the fed line.
+  'Care',
+  'Feed',
+  'Evolve',
+  'No food',
+  '(x',
+  'No evolution paths',
+  'All requirements met',
+  'Ready ',
+  String.fromCharCode(0x2192), // the path heading's arrow
+  'Yes',
+  'Fed ',
 ];
 
 function m24s4BxAssertNoRosterWord(texts: readonly string[], label: string): void {
@@ -2038,6 +2088,8 @@ describe('BoxView ctl-7b: the box root is a class-styled frame, inline only for 
 const c8bT = i18nT as unknown as (key: string) => string;
 
 const CHECK_MARK = String.fromCharCode(0x2713);
+/** ctl-8c: U+2026 HORIZONTAL ELLIPSIS ('Feed…', 'Evolve…'), built by code point. */
+const C8C_ELLIPSIS = String.fromCharCode(0x2026);
 
 const C8B_KIP = makeCard({
   monsterId: 100n,
@@ -2075,10 +2127,14 @@ const C8B_TIDE = makeCard({
 const c8bParty = (): (MonsterCardViewModel | null)[] => [C8B_KIP, C8B_MOSS, null, null, null, null];
 const c8bBox = (): MonsterCardViewModel[] => [C8B_EMBER, C8B_DUSK, C8B_TIDE];
 
+// INTENTIONAL CHANGE (ctl-8c): the opening also paints no food list, no Evolve list, no confirm.
 const C8B_OPENING: MonstersPaint = {
   tab: 'storage',
   activeKey: null,
   sheet: null,
+  feed: null,
+  evolve: null,
+  confirm: null,
   summary: null,
   nickname: null,
   commit: null,
@@ -2088,6 +2144,14 @@ const c8bPaint = (over: Partial<MonstersPaint> = {}): MonstersPaint => ({
   ...C8B_OPENING,
   ...over,
 });
+
+/** A sheet paint (ctl-8c): Feed… and Evolve… enabled unless a case says otherwise. */
+const c8bSheet = (
+  card: MonsterCardViewModel,
+  action: SheetAction,
+  canFeed = true,
+  canEvolve = true,
+): NonNullable<MonstersPaint['sheet']> => ({ card, action, canFeed, canEvolve });
 
 interface C8bMounted {
   parent: HTMLElement;
@@ -2169,7 +2233,7 @@ function c8bRow(card: MonsterCardViewModel, edit: number, tab: 'party' | 'storag
   return c8bPaint({
     tab,
     activeKey: String(card.monsterId),
-    sheet: { card, action: 'nickname' },
+    sheet: c8bSheet(card, 'nickname'),
     nickname: { card, edit },
   });
 }
@@ -2291,7 +2355,7 @@ describe('BoxView ctl-8b: the tabs and the cursor (CTL8B.1)', () => {
 });
 
 describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B.2)', () => {
-  it('CTL8B-2-VIEW-SHEET: a sheet paint shows a list of Summary, Nickname and Move (catalog labels, in that order) with the painted action as the active row, names the card, and sits in the DOM before both panels; a null sheet hides it by inline display:none and a later sheet shows again', () => {
+  it('CTL8B-2-VIEW-SHEET: a sheet paint shows a list of Summary, Care, Feed, Evolve, Nickname and Move (catalog labels, in that order) with the painted action as the active row, names the card, and sits in the DOM before both panels; a null sheet hides it by inline display:none and a later sheet shows again', () => {
     // WRONG IMPL KILLED: no sheet; labels from literals or in another order; no active row, or the
     // active row ignoring the painted action; a sheet that does not name its monster (the player
     // cannot tell which one A opened), or one that keeps the PREVIOUS monster's name; a sheet
@@ -2307,21 +2371,36 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
       c8bPaint({
         tab: 'party',
         activeKey: '100',
-        sheet: { card: C8B_KIP, action: 'nickname' },
+        sheet: c8bSheet(C8B_KIP, 'nickname'),
       }),
     );
     const sheet = root.querySelector<HTMLElement>('[role="listbox"]');
     expect(sheet, 'the sheet is the nav list').not.toBeNull();
     const list = sheet as HTMLElement;
     const rows = [...list.querySelectorAll<HTMLElement>('[role="option"]')];
+    // INTENTIONAL CHANGE (ctl-8c): the design §5 six-row order.
     expect(
       rows.map((row) => row.textContent),
-      'Summary, Nickname, Move: the catalog labels in order',
-    ).toEqual([c8bT('box.sheet.summary'), c8bT('box.sheet.nickname'), c8bT('box.sheet.move')]);
+      'Summary, Care, Feed, Evolve, Nickname, Move: the catalog labels in order',
+    ).toEqual([
+      c8bT('box.sheet.summary'),
+      c8bT('box.sheet.care'),
+      c8bT('box.sheet.feed'),
+      c8bT('box.sheet.evolve'),
+      c8bT('box.sheet.nickname'),
+      c8bT('box.sheet.move'),
+    ]);
     expect(
       rows.map((row) => row.textContent),
       'English bytes',
-    ).toEqual(['Summary', 'Nickname', 'Move']);
+    ).toEqual([
+      'Summary',
+      'Care',
+      `Feed${C8C_ELLIPSIS}`,
+      `Evolve${C8C_ELLIPSIS}`,
+      'Nickname',
+      'Move',
+    ]);
     const activeRows = (): (string | null)[] =>
       [...list.querySelectorAll<HTMLElement>('[role="option"].is-active')].map(
         (row) => row.textContent,
@@ -2332,7 +2411,7 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
     expect(
       rows.map((row) => row.getAttribute('aria-selected')),
       'and the only selected one',
-    ).toEqual(['false', 'true', 'false']);
+    ).toEqual(['false', 'false', 'false', 'false', 'true', 'false']);
     expect(c8bHidden(list, root), 'the sheet shows').toBe(false);
     expect(
       c8bShownText(parent, root, 'Kip'),
@@ -2340,13 +2419,9 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
     ).not.toEqual([]);
 
     // The painted action moves the active row.
-    view.paint(
-      c8bPaint({ tab: 'party', activeKey: '100', sheet: { card: C8B_KIP, action: 'move' } }),
-    );
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'move') }));
     expect(activeRows()).toEqual([c8bT('box.sheet.move')]);
-    view.paint(
-      c8bPaint({ tab: 'party', activeKey: '100', sheet: { card: C8B_KIP, action: 'summary' } }),
-    );
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'summary') }));
     expect(activeRows()).toEqual([c8bT('box.sheet.summary')]);
 
     // DOM order: the sheet precedes both panels and is inside neither.
@@ -2367,7 +2442,7 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
       c8bPaint({
         tab: 'storage',
         activeKey: '200',
-        sheet: { card: C8B_EMBER, action: 'summary' },
+        sheet: c8bSheet(C8B_EMBER, 'summary'),
       }),
     );
     expect(c8bShownText(parent, root, 'Emberfang'), 'the new name').not.toEqual([]);
@@ -2382,7 +2457,7 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
 
     // And a later sheet shows it again.
     view.paint(
-      c8bPaint({ tab: 'storage', activeKey: '300', sheet: { card: C8B_DUSK, action: 'summary' } }),
+      c8bPaint({ tab: 'storage', activeKey: '300', sheet: c8bSheet(C8B_DUSK, 'summary') }),
     );
     expect(c8bHidden(list, root)).toBe(false);
     expect(c8bShownText(parent, root, 'Duskling')).not.toEqual([]);
@@ -2401,7 +2476,8 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
       );
     expect(shownLines(), 'no line before any feedback').toEqual([]);
 
-    view.paint(c8bPaint({ feedback: 'movedToParty' }));
+    // INTENTIONAL CHANGE (ctl-8c): the feedback is a tagged `{ kind }`.
+    view.paint(c8bPaint({ feedback: { kind: 'movedToParty' } }));
     let lines = shownLines();
     expect(lines, 'exactly one line').toHaveLength(1);
     expect((lines[0] as HTMLElement).getAttribute('data-feedback')).toBe('ok');
@@ -2411,7 +2487,7 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
       CHECK_MARK,
     );
 
-    view.paint(c8bPaint({ feedback: 'movedToBox' }));
+    view.paint(c8bPaint({ feedback: { kind: 'movedToBox' } }));
     lines = shownLines();
     expect(lines, 'still one line').toHaveLength(1);
     expect((lines[0] as HTMLElement).getAttribute('data-feedback')).toBe('ok');
@@ -2420,7 +2496,7 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
 
     view.paint(c8bPaint({ feedback: null }));
     expect(shownLines(), 'a null paint clears the line').toEqual([]);
-    view.paint(c8bPaint({ feedback: 'movedToParty' }));
+    view.paint(c8bPaint({ feedback: { kind: 'movedToParty' } }));
     expect(shownLines(), 'and a later one shows it again').toHaveLength(1);
   });
 
@@ -2514,9 +2590,7 @@ describe('BoxView ctl-8b: the nickname row (CTL8B.3)', () => {
 
     // The row closes (B, or A with the commit already painted): enabled again, hidden, focus on
     // the title anchor, nothing sent.
-    view.paint(
-      c8bPaint({ tab: 'party', activeKey: '100', sheet: { card: C8B_KIP, action: 'nickname' } }),
-    );
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'nickname') }));
     expect(c8bHidden(field, root), 'the row is hidden by inline display').toBe(true);
     expect(c8bHidden(lab, root), 'and so is its label').toBe(true);
     expect(heal.disabled, 'Heal Party is enabled again').toBe(false);
@@ -2557,7 +2631,7 @@ describe('BoxView ctl-8b: the nickname row (CTL8B.3)', () => {
       c8bPaint({
         tab: 'party',
         activeKey: '100',
-        sheet: { card: C8B_KIP, action: 'nickname' },
+        sheet: c8bSheet(C8B_KIP, 'nickname'),
         commit,
       });
     const sent = callbacks.onSetNickname;
@@ -2610,7 +2684,7 @@ describe('BoxView ctl-8b: the nickname row (CTL8B.3)', () => {
       c8bPaint({
         tab: 'party',
         activeKey: '101',
-        sheet: { card: C8B_MOSS, action: 'nickname' },
+        sheet: c8bSheet(C8B_MOSS, 'nickname'),
         commit: { monsterId: 101n, current: '' },
       }),
     );
@@ -2629,7 +2703,7 @@ describe('BoxView ctl-8b: the nickname row (CTL8B.3)', () => {
     const againPaint = c8bPaint({
       tab: 'party',
       activeKey: '100',
-      sheet: { card: C8B_KIP, action: 'nickname' },
+      sheet: c8bSheet(C8B_KIP, 'nickname'),
       commit: again,
     });
     repaint = () => reentrant.view.paint(againPaint);
@@ -2661,7 +2735,7 @@ describe('BoxView ctl-8b: the nickname row (CTL8B.3)', () => {
         c8bPaint({
           tab: 'party',
           activeKey: '100',
-          sheet: { card: C8B_KIP, action: 'nickname' },
+          sheet: c8bSheet(C8B_KIP, 'nickname'),
           commit: { monsterId: 100n, current: 'Kip' },
         }),
       );
@@ -2760,7 +2834,7 @@ describe('BoxView ctl-8b: opening on Storage and the catalog (CTL8B.4)', () => {
       c8bPaint({
         tab: 'party',
         activeKey: '101',
-        sheet: { card: C8B_MOSS, action: 'move' },
+        sheet: c8bSheet(C8B_MOSS, 'move'),
       }),
     );
     expect(c8bSelected(c.root), 'fixture: Party was painted').toEqual(['true', 'false']);
@@ -2797,9 +2871,9 @@ describe('BoxView ctl-8b: opening on Storage and the catalog (CTL8B.4)', () => {
         c8bPaint({
           tab: 'party',
           activeKey: '100',
-          sheet: { card: C8B_KIP, action: 'nickname' },
+          sheet: c8bSheet(C8B_KIP, 'nickname'),
           nickname: { card: C8B_KIP, edit: 1 },
-          feedback: 'movedToParty',
+          feedback: { kind: 'movedToParty' },
         }),
       );
       const first = m24s4BxWalkSubtree(root);
@@ -2809,6 +2883,10 @@ describe('BoxView ctl-8b: opening on Storage and the catalog (CTL8B.4)', () => {
         'box.tab.party',
         'box.tab.storage',
         'box.sheet.summary',
+        // INTENTIONAL CHANGE (ctl-8c): the sheet's three new rows.
+        'box.sheet.care',
+        'box.sheet.feed',
+        'box.sheet.evolve',
         'box.sheet.nickname',
         'box.sheet.move',
         'box.rename.prompt',
@@ -2817,7 +2895,7 @@ describe('BoxView ctl-8b: opening on Storage and the catalog (CTL8B.4)', () => {
         expect(joined, `«${key}» is rendered`).toContain(`«${key}»`);
       }
 
-      view.paint(c8bPaint({ tab: 'storage', activeKey: '200', feedback: 'movedToBox' }));
+      view.paint(c8bPaint({ tab: 'storage', activeKey: '200', feedback: { kind: 'movedToBox' } }));
       const second = m24s4BxWalkSubtree(root);
       m24s4BxAssertNoRosterWord(second, 'the other Move line');
       expect(second.join('\n')).toContain('«box.feedback.movedToBox»');
@@ -2840,7 +2918,7 @@ describe('BoxView ctl-8b gap: commit, reopen, live cards and the cursor outline'
     c8bPaint({
       tab: 'party',
       activeKey: '100',
-      sheet: { card: C8B_KIP, action: 'nickname' },
+      sheet: c8bSheet(C8B_KIP, 'nickname'),
       commit,
     });
   const c8bType = (root: Element, text: string): void => {
@@ -2890,7 +2968,7 @@ describe('BoxView ctl-8b gap: commit, reopen, live cards and the cursor outline'
       c8bPaint({
         tab: 'party',
         activeKey: '101',
-        sheet: { card: C8B_MOSS, action: 'nickname' },
+        sheet: c8bSheet(C8B_MOSS, 'nickname'),
         commit: { monsterId: 101n, current: 'Zap' },
       }),
     );
@@ -2949,9 +3027,7 @@ describe('BoxView ctl-8b gap: commit, reopen, live cards and the cursor outline'
 
     const zip = makeCard({ ...C8B_KIP, nickname: 'Zip' });
     const b = c8bOpen();
-    b.view.paint(
-      c8bPaint({ tab: 'party', activeKey: '100', sheet: { card: C8B_KIP, action: 'summary' } }),
-    );
+    b.view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'summary') }));
     expect(c8bShownText(b.parent, b.root, 'Kip'), 'fixture: the sheet names Kip').not.toEqual([]);
     b.view.refresh([zip, C8B_MOSS, null, null, null, null], c8bBox());
     expect(c8bShownText(b.parent, b.root, 'Zip'), 'the sheet shows the new name').not.toEqual([]);
@@ -3006,7 +3082,7 @@ describe('BoxView ctl-8b gap: view guards (repaint inside a callback, focus, scr
       c8bPaint({
         tab: 'party',
         activeKey: '100',
-        sheet: { card: C8B_KIP, action: 'nickname' },
+        sheet: c8bSheet(C8B_KIP, 'nickname'),
         commit: { monsterId: 100n, current: 'Kip' },
       }),
     );
@@ -3037,7 +3113,7 @@ describe('BoxView ctl-8b gap: view guards (repaint inside a callback, focus, scr
     never.view.refresh(c8bParty(), c8bBox());
     never.view.paint(c8bPaint({ tab: 'party', activeKey: '100' }));
     never.view.paint(
-      c8bPaint({ tab: 'storage', activeKey: '300', sheet: { card: C8B_DUSK, action: 'summary' } }),
+      c8bPaint({ tab: 'storage', activeKey: '300', sheet: c8bSheet(C8B_DUSK, 'summary') }),
     );
     never.view.refresh(c8bParty(), c8bBox());
     expect(document.activeElement, 'a never-shown frame leaves focus alone').toBe(outside);
@@ -3105,7 +3181,7 @@ describe('BoxView ctl-8b gap: view guards (repaint inside a callback, focus, scr
       view.paint(c8bPaint({ tab: 'storage', activeKey: '300' }));
       expect(scrolled, 'a new key scrolls once').toEqual(['300']);
       view.paint(c8bPaint({ tab: 'storage', activeKey: '300' }));
-      view.paint(c8bPaint({ tab: 'storage', activeKey: '300', feedback: 'movedToBox' }));
+      view.paint(c8bPaint({ tab: 'storage', activeKey: '300', feedback: { kind: 'movedToBox' } }));
       view.refresh(c8bParty(), c8bBox());
       view.refresh(c8bParty(), c8bBox());
       expect(scrolled, 'the same key, a repaint and a refresh() never scroll again').toEqual([
@@ -3136,6 +3212,591 @@ describe('BoxView ctl-8b gap: view guards (repaint inside a callback, focus, scr
       } else {
         Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', own);
       }
+    }
+  });
+});
+
+// =============================================================================
+// ctl-8c (CTL8C.1): Care, Feed… and Evolve… on the sheet, the food list, the Evolve list and its
+// Yes / No confirm, and the "Fed {name}" line, painted by `BoxView.paint(MonstersPaint)`.
+//
+// Located by the ids the nav kit writes (`{frame}-root-{key}`: frames monstersSheet, monstersFeed,
+// monstersEvolve, monstersConfirm) and by `#monsters-evolve-question`, never by index. "Hidden" is
+// read as above (inline display:none on the element or an ancestor below the root); a hidden part
+// must also be EMPTY of text, because the e2e helpers read the root's textContent, hidden
+// descendants included.
+// =============================================================================
+
+/** U+2014 EM DASH (the ready line) and U+2192 RIGHTWARDS ARROW (the path heading), by code point. */
+const C8C_EM_DASH = String.fromCharCode(0x2014);
+const C8C_ARROW = String.fromCharCode(0x2192);
+
+/** One path row of the Evolve list's view model (the list paints no gate rows). */
+function c8cPath(
+  edgeId: number,
+  toSpecies: number,
+  toSpeciesName: string,
+  unmetReason: string | null,
+): EvolutionPathViewModel {
+  return { edgeId, toSpecies, toSpeciesName, met: unmetReason === null, unmetReason, gates: [] };
+}
+
+const C8C_P10 = c8cPath(10, 4, 'Tidepup', 'requires level 50');
+const C8C_P20 = c8cPath(20, 3, 'Duskling', null);
+const C8C_P30 = c8cPath(30, 2, 'Emberfang', null);
+
+/** Kip with two met paths (20 and 30: the choices) and an unmet one (10). */
+const C8C_TWO_CHOICES: EvolutionMonsterViewModel = {
+  monsterId: 100n,
+  speciesName: 'Sproutle',
+  nickname: 'Kip',
+  level: 5,
+  tier: 0,
+  trustTier: 'Neutral',
+  qualityTimeTier: 0,
+  nutritionPct: 0,
+  paths: [C8C_P10, C8C_P20, C8C_P30],
+  eligibleCount: 2,
+  choices: [C8C_P20, C8C_P30],
+  readyPathName: null,
+};
+
+/** Kip with exactly one met path (20: the server applies it, so it is no choice) and an unmet one. */
+const C8C_ONE_READY: EvolutionMonsterViewModel = {
+  ...C8C_TWO_CHOICES,
+  paths: [C8C_P10, C8C_P20],
+  eligibleCount: 1,
+  choices: [],
+  readyPathName: 'Duskling',
+};
+
+/** The element of id `id` under `root`; it must exist. */
+function c8cById(root: Element, id: string): HTMLElement {
+  const el = root.querySelector<HTMLElement>(`[id="${id}"]`);
+  expect(el, `precondition: #${id} is rendered`).not.toBeNull();
+  return el as HTMLElement;
+}
+
+/** The listbox holding the row of id `rowId`. */
+function c8cListOf(root: Element, rowId: string): HTMLElement {
+  const list = c8cById(root, rowId).closest<HTMLElement>('[role="listbox"]');
+  expect(list, `#${rowId} sits in a listbox`).not.toBeNull();
+  return list as HTMLElement;
+}
+
+const c8cOptions = (list: Element): HTMLElement[] => [
+  ...list.querySelectorAll<HTMLElement>('[role="option"]'),
+];
+const c8cActiveIds = (list: Element): string[] =>
+  c8cOptions(list)
+    .filter((row) => row.classList.contains('is-active'))
+    .map((row) => row.id);
+
+/** `el` comes before the hint and both panels in the DOM and is inside none of them (typing
+ *  mode's Escape focuses the frame's first enabled non-text control: never a card's button). */
+function c8cBeforeHintAndPanels(
+  parent: HTMLElement,
+  root: HTMLElement,
+  el: Element,
+  name: string,
+): void {
+  const hint = root.querySelector<HTMLElement>(BOX_PARTY_HINT_SELECTOR) as HTMLElement;
+  const anchors: ReadonlyArray<readonly [string, HTMLElement]> = [
+    ['the hint', hint],
+    ['the Party panel', partyGridOf(parent)],
+    ['the Box panel', boxGridOf(parent)],
+  ];
+  for (const [label, anchor] of anchors) {
+    expect(
+      anchor.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING,
+      `${name} comes before ${label}`,
+    ).not.toBe(0);
+    expect(anchor.contains(el), `${name} is not inside ${label}`).toBe(false);
+  }
+}
+
+/** Every `«key|<json>»` span's parsed params, in text order. */
+function c8cSpanParams(joined: string, key: string): unknown[] {
+  const head = `«${key}|`;
+  const out: unknown[] = [];
+  let from = 0;
+  for (;;) {
+    const open = joined.indexOf(head, from);
+    if (open === -1) return out;
+    const close = joined.indexOf('»', open);
+    out.push(JSON.parse(joined.slice(open + head.length, close)));
+    from = close + 1;
+  }
+}
+
+describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
+  it('CTL8C-1-VIEW-SHEET-ROWS: a sheet paint lists Summary, Care, Feed, Evolve, Nickname, Move (catalog labels, rows monstersSheet-root-<action>); canFeed false marks the Feed row aria-disabled and .is-disabled and follows its label with the catalog no-food reason, canEvolve false does the same for Evolve with the no-paths reason; a disabled row can be the active row; enabling clears the marks and the reasons; a refresh keeps them', () => {
+    // WRONG IMPL KILLED: the new rows missing, labelled from literals, or in the ctl-8b order plus
+    // three; a disabled row dropped (the player cannot see why) or marked by colour alone (no
+    // aria-disabled: a screen reader hears an action that does nothing); a reason from a literal,
+    // the wrong reason on the wrong row, or a reason that stays after the row is enabled again (a
+    // repaint that only ever adds); a disabled row that cannot carry the cursor; flags read from
+    // the wrong field (canFeed disabling Evolve).
+    const { view, root } = c8bOpen();
+    const ACTIONS = ['summary', 'care', 'feed', 'evolve', 'nickname', 'move'];
+    const row = (action: string): HTMLElement => c8cById(root, `monstersSheet-root-${action}`);
+    const paintSheet = (action: SheetAction, canFeed: boolean, canEvolve: boolean): void => {
+      view.paint(
+        c8bPaint({
+          tab: 'party',
+          activeKey: '100',
+          sheet: c8bSheet(C8B_KIP, action, canFeed, canEvolve),
+        }),
+      );
+    };
+    const expectEnabled = (action: string, label: string, when: string): void => {
+      expect(row(action).getAttribute('aria-disabled'), `${when}: ${action} enabled`).toBeNull();
+      expect(row(action).classList.contains('is-disabled'), `${when}: ${action} enabled`).toBe(
+        false,
+      );
+      expect(row(action).textContent, `${when}: ${action} reads its bare label`).toBe(label);
+    };
+    const expectDisabled = (action: string, label: string, reason: string, when: string): void => {
+      expect(row(action).getAttribute('aria-disabled'), `${when}: ${action} aria-disabled`).toBe(
+        'true',
+      );
+      expect(row(action).classList.contains('is-disabled'), `${when}: ${action} is-disabled`).toBe(
+        true,
+      );
+      const text = row(action).textContent ?? '';
+      expect(text.startsWith(label), `${when}: ${action} reads its label first: ${text}`).toBe(
+        true,
+      );
+      expect(text.endsWith(reason), `${when}: ${action} then its reason: ${text}`).toBe(true);
+      expect(
+        text.length - label.length - reason.length,
+        `${when}: ${action} carries nothing else`,
+      ).toBeLessThanOrEqual(3);
+    };
+
+    paintSheet('care', true, true);
+    const list = c8cListOf(root, 'monstersSheet-root-care');
+    expect(
+      c8cOptions(list).map((r) => r.id),
+      'six rows, keyed by action',
+    ).toEqual(ACTIONS.map((a) => `monstersSheet-root-${a}`));
+    expect(
+      c8cOptions(list).map((r) => r.textContent),
+      'the catalog labels',
+    ).toEqual([
+      i18nT('box.sheet.summary'),
+      i18nT('box.sheet.care'),
+      i18nT('box.sheet.feed'),
+      i18nT('box.sheet.evolve'),
+      i18nT('box.sheet.nickname'),
+      i18nT('box.sheet.move'),
+    ]);
+    expect(
+      c8cOptions(list).map((r) => r.textContent),
+      'English bytes',
+    ).toEqual([
+      'Summary',
+      'Care',
+      `Feed${C8C_ELLIPSIS}`,
+      `Evolve${C8C_ELLIPSIS}`,
+      'Nickname',
+      'Move',
+    ]);
+    expect(
+      c8cOptions(list).map((r) => r.getAttribute('aria-disabled')),
+      'all enabled',
+    ).toEqual([null, null, null, null, null, null]);
+    expect(c8cActiveIds(list), 'Care is the active row').toEqual(['monstersSheet-root-care']);
+
+    // No food.
+    paintSheet('feed', false, true);
+    expectDisabled('feed', i18nT('box.sheet.feed'), i18nT('box.sheet.feedNone'), 'no food');
+    expect(row('feed').textContent ?? '', 'English bytes').toMatch(/^Feed.*No food$/);
+    expectEnabled('evolve', i18nT('box.sheet.evolve'), 'no food');
+    for (const action of ['summary', 'care', 'nickname', 'move']) {
+      expect(row(action).getAttribute('aria-disabled'), `no food: ${action}`).toBeNull();
+    }
+    expect(c8cActiveIds(list), 'a disabled row can be the active row').toEqual([
+      'monstersSheet-root-feed',
+    ]);
+
+    // No evolution path.
+    paintSheet('evolve', true, false);
+    expectDisabled('evolve', i18nT('box.sheet.evolve'), i18nT('evolution.card.noPaths'), 'no path');
+    expect(row('evolve').textContent ?? '', 'English bytes').toMatch(
+      /^Evolve.*No evolution paths\.$/,
+    );
+    expectEnabled('feed', i18nT('box.sheet.feed'), 'no path: the no-food reason is gone');
+
+    // Both, then both enabled again.
+    paintSheet('summary', false, false);
+    expectDisabled('feed', i18nT('box.sheet.feed'), i18nT('box.sheet.feedNone'), 'both');
+    expectDisabled('evolve', i18nT('box.sheet.evolve'), i18nT('evolution.card.noPaths'), 'both');
+    paintSheet('summary', true, true);
+    expectEnabled('feed', i18nT('box.sheet.feed'), 'enabled again');
+    expectEnabled('evolve', i18nT('box.sheet.evolve'), 'enabled again');
+
+    // A batch render re-applies the kept paint.
+    paintSheet('feed', false, true);
+    view.refresh(c8bParty(), c8bBox());
+    expectDisabled('feed', i18nT('box.sheet.feed'), i18nT('box.sheet.feedNone'), 'after refresh');
+  });
+
+  it('CTL8C-1-VIEW-FEED: a feed paint shows a food list (rows monstersFeed-root-<itemId>) reading the catalog food row for each food in order, the painted key active, the sheet still shown, before the hint and both panels; names are text; a null feed hides the list by inline display:none and empties it', () => {
+    // WRONG IMPL KILLED: no list; rows keyed by index (the screen's cursor key would name no row);
+    // a row text from a literal, without the count, or with the wrong food's count; the sheet
+    // hidden under the list (its active row, Feed…, is the context); a list placed after the panels
+    // (typing mode's Escape would land on a card's button); a name parsed as HTML; a stale row kept
+    // after its food is gone; a null feed that leaves the list showing, or hidden but still holding
+    // "Bait (x3)" (the e2e text scans read hidden text).
+    const { parent, view, root } = c8bOpen();
+    const BAIT_ROW: FoodVm = { itemId: 7, name: 'Bait', count: 3 };
+    const GLOW_ROW: FoodVm = { itemId: 40, name: 'Glowberry', count: 12 };
+    const feedPaint = (foods: readonly FoodVm[], activeKey: string | null): MonstersPaint =>
+      c8bPaint({
+        tab: 'party',
+        activeKey: '100',
+        sheet: c8bSheet(C8B_KIP, 'feed'),
+        feed: { foods, activeKey },
+      });
+
+    view.paint(feedPaint([BAIT_ROW, GLOW_ROW], '40'));
+    const list = c8cListOf(root, 'monstersFeed-root-7');
+    const sheetList = c8cListOf(root, 'monstersSheet-root-feed');
+    expect(list, 'the food list is its own list, not the sheet').not.toBe(sheetList);
+    expect(c8cOptions(list).map((r) => r.id)).toEqual([
+      'monstersFeed-root-7',
+      'monstersFeed-root-40',
+    ]);
+    expect(c8cOptions(list).map((r) => r.textContent)).toEqual([
+      i18nTf('box.feed.item', { name: 'Bait', count: 3 }),
+      i18nTf('box.feed.item', { name: 'Glowberry', count: 12 }),
+    ]);
+    expect(
+      c8cOptions(list).map((r) => r.textContent),
+      'English bytes',
+    ).toEqual(['Bait (x3)', 'Glowberry (x12)']);
+    expect(c8cActiveIds(list), 'the painted key').toEqual(['monstersFeed-root-40']);
+    expect(c8cOptions(list).map((r) => r.getAttribute('aria-selected'))).toEqual(['false', 'true']);
+    expect(c8cOptions(list).map((r) => r.getAttribute('aria-disabled'))).toEqual([null, null]);
+    expect(c8bHidden(list, root), 'the list shows').toBe(false);
+    expect(c8bHidden(sheetList, root), 'the sheet stays shown under it').toBe(false);
+    c8cBeforeHintAndPanels(parent, root, list, 'the food list');
+
+    // The cursor moves; a batch render keeps the list; a new count is repainted.
+    view.paint(feedPaint([BAIT_ROW, GLOW_ROW], '7'));
+    expect(c8cActiveIds(list)).toEqual(['monstersFeed-root-7']);
+    view.refresh(c8bParty(), c8bBox());
+    expect(c8cOptions(list).map((r) => r.textContent)).toEqual(['Bait (x3)', 'Glowberry (x12)']);
+    expect(c8cActiveIds(list)).toEqual(['monstersFeed-root-7']);
+    view.paint(feedPaint([{ itemId: 7, name: 'Bait', count: 2 }, GLOW_ROW], '7'));
+    expect(c8cById(root, 'monstersFeed-root-7').textContent).toBe('Bait (x2)');
+
+    // A name is text, never markup; a food that is gone leaves no row.
+    view.paint(feedPaint([{ itemId: 9, name: '<b>Bait</b>', count: 1 }], '9'));
+    expect(list.querySelector('b'), 'no element made from a name').toBeNull();
+    expect(c8cById(root, 'monstersFeed-root-9').textContent).toBe('<b>Bait</b> (x1)');
+    expect(root.querySelectorAll('[id="monstersFeed-root-7"]'), 'the gone food`s row').toHaveLength(
+      0,
+    );
+
+    // A null feed: hidden by inline display and emptied, the node kept.
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'feed') }));
+    expect(root.contains(list), 'the list node is kept').toBe(true);
+    expect(c8bHidden(list, root), 'hidden by inline display:none').toBe(true);
+    expect(list.textContent, 'and empty of text').toBe('');
+    expect(root.querySelectorAll('[id^="monstersFeed-root-"]'), 'no food row left').toHaveLength(0);
+  });
+
+  it('CTL8C-1-VIEW-EVOLVE: an evolve paint lists every path (rows monstersEvolve-root-<edgeId>) with its catalog heading and a status line (the raw unmet reason, the catalog ready line for a met path that is no choice, the catalog all-met line for a choice), only choices enabled, no evo-ready-note or evo-choice testid; a confirm paint asks the catalog question in #monsters-evolve-question over a Yes / No listbox labelled by it, the painted answer active; both sit before the hint and panels; null hides and empties them, focus left in them goes to the title anchor, and a reopen shows neither', async () => {
+    // WRONG IMPL KILLED: a list of the met paths only; rows keyed by index or by species; a status
+    // line from a literal, the same line for every path, an unmet reason re-worded (it must match
+    // the server's reject message), a met-but-not-choice path offered as a choice (enabled) or
+    // described as "all met" (the server applies it itself); the evolution view's evo-ready-note /
+    // evo-choice testids reused here (the e2e locators would hit two elements); a confirm question
+    // from a literal, naming the wrong monster or species, or parsed as HTML; an unlabelled Yes /
+    // No list; Yes and No both or neither active; parts placed after the panels; a hidden confirm
+    // still holding its question text, or holding the focus (the next key would leave the frame);
+    // a reopen that shows the last visit's confirm.
+    const { parent, view, root } = c8bOpen();
+    await s4FlushMacrotask();
+    const evolvePaint = (mon: EvolutionMonsterViewModel, activeKey: string | null): MonstersPaint =>
+      c8bPaint({
+        tab: 'party',
+        activeKey: '100',
+        sheet: c8bSheet(C8B_KIP, 'evolve'),
+        evolve: { mon, activeKey },
+      });
+    const text = (edgeId: number): string =>
+      c8cById(root, `monstersEvolve-root-${edgeId}`).textContent ?? '';
+
+    view.paint(evolvePaint(C8C_TWO_CHOICES, '30'));
+    const list = c8cListOf(root, 'monstersEvolve-root-10');
+    expect(list, 'its own list, not the sheet').not.toBe(
+      c8cListOf(root, 'monstersSheet-root-evolve'),
+    );
+    expect(
+      c8cOptions(list).map((r) => r.id),
+      'every path, by edge id',
+    ).toEqual(['monstersEvolve-root-10', 'monstersEvolve-root-20', 'monstersEvolve-root-30']);
+    expect(text(10)).toContain(i18nTf('evolution.path.heading', { species: 'Tidepup' }));
+    expect(text(10), 'an unmet path: its first unmet requirement, raw').toContain(
+      'requires level 50',
+    );
+    expect(text(10), 'an unmet path is not all met').not.toContain(i18nT('evolution.path.allMet'));
+    expect(text(20)).toContain(i18nTf('evolution.path.heading', { species: 'Duskling' }));
+    expect(text(20), 'a choice: all met').toContain(i18nT('evolution.path.allMet'));
+    expect(text(30)).toContain(i18nTf('evolution.path.heading', { species: 'Emberfang' }));
+    expect(text(30)).toContain(i18nT('evolution.path.allMet'));
+    expect(text(20), 'English bytes').toContain(`${C8C_ARROW} Duskling`);
+    expect(text(20), 'English bytes').toContain('All requirements met.');
+    expect(
+      c8cOptions(list).map((r) => r.getAttribute('aria-disabled')),
+      'only the choices are enabled',
+    ).toEqual(['true', null, null]);
+    expect(c8cOptions(list).map((r) => r.classList.contains('is-disabled'))).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    expect(c8cActiveIds(list), 'the painted key').toEqual(['monstersEvolve-root-30']);
+    expect(c8bHidden(list, root)).toBe(false);
+    expect(c8bHidden(c8cListOf(root, 'monstersSheet-root-evolve'), root), 'the sheet shows').toBe(
+      false,
+    );
+    c8cBeforeHintAndPanels(parent, root, list, 'the Evolve list');
+    expect(list.textContent ?? '', 'no HP-shaped token for the e2e HP scans').not.toContain('HP ');
+
+    // Exactly one met: the ready line, and it is not offered.
+    view.paint(evolvePaint(C8C_ONE_READY, '10'));
+    expect(c8cOptions(list).map((r) => r.id)).toEqual([
+      'monstersEvolve-root-10',
+      'monstersEvolve-root-20',
+    ]);
+    expect(text(20)).toContain(i18nTf('evolution.card.ready', { species: 'Duskling' }));
+    expect(text(20), 'English bytes').toContain(
+      `Ready ${C8C_EM_DASH} evolves into Duskling on your next action.`,
+    );
+    expect(text(20), 'the auto-applied path is not "all met"').not.toContain(
+      i18nT('evolution.path.allMet'),
+    );
+    expect(c8cOptions(list).map((r) => r.getAttribute('aria-disabled'))).toEqual(['true', 'true']);
+
+    for (const [mon, key] of [
+      [C8C_TWO_CHOICES, '20'],
+      [C8C_ONE_READY, '20'],
+    ] as const) {
+      view.paint(evolvePaint(mon, key));
+      expect(
+        root.querySelectorAll('[data-testid="evo-ready-note"], [data-testid="evo-choice"]'),
+        'the evolution view`s testids are not reused in the box root',
+      ).toHaveLength(0);
+    }
+
+    // The confirm.
+    const confirmPaint = (yes: boolean, name = 'Kip'): MonstersPaint =>
+      c8bPaint({
+        tab: 'party',
+        activeKey: '100',
+        sheet: c8bSheet(C8B_KIP, 'evolve'),
+        confirm: { name, species: 'Emberfang', yes },
+      });
+    view.paint(confirmPaint(false));
+    const question = c8cById(root, 'monsters-evolve-question');
+    expect(question.textContent).toBe(
+      i18nTf('box.evolve.confirm', { name: 'Kip', species: 'Emberfang' }),
+    );
+    expect(question.textContent, 'English bytes').toBe('Evolve Kip into Emberfang?');
+    expect(c8bHidden(question, root), 'the question shows').toBe(false);
+    const answers = c8cListOf(root, 'monstersConfirm-root-yes');
+    expect(c8cListOf(root, 'monstersConfirm-root-no'), 'Yes and No are one list').toBe(answers);
+    expect(answers.getAttribute('aria-labelledby'), 'labelled by the question').toBe(
+      'monsters-evolve-question',
+    );
+    expect(
+      c8cOptions(answers)
+        .map((r) => r.id)
+        .sort(),
+    ).toEqual(['monstersConfirm-root-no', 'monstersConfirm-root-yes']);
+    expect(c8cById(root, 'monstersConfirm-root-yes').textContent).toBe(i18nT('prompt.yes'));
+    expect(c8cById(root, 'monstersConfirm-root-no').textContent).toBe(i18nT('prompt.no'));
+    expect(c8cById(root, 'monstersConfirm-root-yes').textContent, 'English bytes').toBe('Yes');
+    expect(c8cById(root, 'monstersConfirm-root-no').textContent, 'English bytes').toBe('No');
+    expect(c8cActiveIds(answers), 'No is painted').toEqual(['monstersConfirm-root-no']);
+    expect(c8bHidden(answers, root)).toBe(false);
+    c8cBeforeHintAndPanels(parent, root, question, 'the confirm question');
+    c8cBeforeHintAndPanels(parent, root, answers, 'the Yes / No list');
+    expect(c8bHidden(list, root), 'no evolve paint: the Evolve list is hidden').toBe(true);
+    expect(list.textContent, 'and empty').toBe('');
+    view.paint(confirmPaint(true));
+    expect(c8cActiveIds(answers), 'Yes is painted').toEqual(['monstersConfirm-root-yes']);
+
+    // A nickname is text, never markup.
+    view.paint(confirmPaint(false, '<i>Kip</i>'));
+    expect(question.querySelector('i'), 'no element made from a nickname').toBeNull();
+    expect(question.textContent).toBe('Evolve <i>Kip</i> into Emberfang?');
+
+    // The confirm closes with focus on its list: hidden, emptied, focus on the title anchor.
+    answers.focus();
+    expect(document.activeElement, 'fixture: focus is on the Yes / No list').toBe(answers);
+    view.paint(evolvePaint(C8C_TWO_CHOICES, '30'));
+    expect(c8bHidden(question, root), 'the question is hidden').toBe(true);
+    expect(question.textContent, 'and empty').toBe('');
+    expect(c8bHidden(answers, root), 'the Yes / No list is hidden').toBe(true);
+    expect(answers.textContent, 'and empty').toBe('');
+    expect(document.activeElement, 'focus goes to the title anchor').toBe(c8bAnchor(root));
+    expect(c8bHidden(list, root), 'the Evolve list shows again').toBe(false);
+
+    // A reopened frame shows neither the confirm nor the list.
+    view.paint(confirmPaint(false));
+    view.hide();
+    view.show();
+    expect(c8bHidden(question, root), 'reopened: no confirm').toBe(true);
+    expect(question.textContent).toBe('');
+    expect(c8bHidden(list, root), 'reopened: no Evolve list').toBe(true);
+  });
+
+  it('CTL8C-1-VIEW-FED-LINE: a fed paint shows one .mr-frame-feedback[data-feedback="ok"] line reading the catalog fed line for the name the paint carries (not the sheet`s card), with no check mark in the text; the Move lines still read theirs; a null paint clears it', () => {
+    // WRONG IMPL KILLED: a fed line from a literal or showing a Move text; one naming the sheet's
+    // card or the cursor's monster instead of the fed one; a "✓" typed into the text (the CSS
+    // ::before draws it); a line without data-feedback="ok" (unstyled, no check mark); two lines;
+    // a name parsed as HTML; a feedback switch that lost the Move lines; a line that survives a
+    // null paint.
+    const { root, view } = c8bOpen();
+    const shownLines = (): HTMLElement[] =>
+      [...root.querySelectorAll<HTMLElement>('.mr-frame-feedback')].filter(
+        (el) => !c8bHidden(el, root) && (el.textContent ?? '') !== '',
+      );
+    const onlyLine = (when: string): HTMLElement => {
+      const lines = shownLines();
+      expect(lines, `${when}: exactly one line`).toHaveLength(1);
+      const line = lines[0] as HTMLElement;
+      expect(line.getAttribute('data-feedback'), `${when}: an ok line`).toBe('ok');
+      return line;
+    };
+
+    view.paint(
+      c8bPaint({
+        tab: 'party',
+        activeKey: '101',
+        sheet: c8bSheet(C8B_MOSS, 'feed'),
+        feedback: { kind: 'fed', name: 'Kip' },
+      }),
+    );
+    let line = onlyLine('fed Kip under Mossling`s sheet');
+    expect(line.textContent).toBe(i18nTf('box.feedback.fed', { name: 'Kip' }));
+    expect(line.textContent, 'English bytes').toBe('Fed Kip');
+    expect(line.textContent ?? '', 'no glyph in the text').not.toContain(CHECK_MARK);
+
+    view.paint(c8bPaint({ feedback: { kind: 'fed', name: 'Mossling' } }));
+    expect(onlyLine('fed Mossling').textContent).toBe('Fed Mossling');
+
+    view.paint(c8bPaint({ feedback: { kind: 'movedToParty' } }));
+    expect(onlyLine('a Move line').textContent).toBe('Moved to party');
+
+    view.paint(c8bPaint({ feedback: { kind: 'fed', name: '<b>Kip</b>' } }));
+    line = onlyLine('a name with markup');
+    expect(line.querySelector('b'), 'no element made from a name').toBeNull();
+    expect(line.textContent).toBe('Fed <b>Kip</b>');
+
+    view.paint(c8bPaint({ feedback: null }));
+    expect(shownLines(), 'a null paint clears the line').toEqual([]);
+  });
+
+  it('ctl-8c: under «key» sentinels the new sheet rows and reasons, the food rows, the Evolve list`s heading and status lines, the confirm`s question and options and the fed line read their catalog keys and params, and no English roster word appears outside a sentinel', () => {
+    // WRONG IMPL KILLED: any of the new strings written from a literal (it would read English in a
+    // French boot: the roster scan names the word), a reason or line under the wrong key, a param
+    // dropped or swapped (the food's count, the confirm's monster or species, the fed name), and
+    // a forged «...» span. Mounted, hidden and empty: every string below is written under the mocks.
+    const { view, root } = c8bMount();
+    const walk = (label: string): string => {
+      const texts = m24s4BxWalkSubtree(root);
+      m24s4BxAssertNoRosterWord(texts, label);
+      return texts.join('\n');
+    };
+    const byJson = (values: unknown[]): string[] => values.map((v) => JSON.stringify(v)).sort();
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      vi.mocked(i18nTf).mockImplementation(
+        (key: string, params: unknown) => `«${key}|${JSON.stringify(params)}»`,
+      );
+      view.refresh(c8bParty(), c8bBox());
+      view.show();
+
+      view.paint(
+        c8bPaint({
+          tab: 'party',
+          activeKey: '100',
+          sheet: c8bSheet(C8B_KIP, 'feed', false, false),
+          feedback: { kind: 'fed', name: 'Kip' },
+        }),
+      );
+      let joined = walk('the sheet with both reasons, and the fed line');
+      for (const key of [
+        'box.sheet.care',
+        'box.sheet.feed',
+        'box.sheet.evolve',
+        'box.sheet.feedNone',
+        'evolution.card.noPaths',
+      ]) {
+        expect(joined, `«${key}» is rendered`).toContain(`«${key}»`);
+      }
+      expect(c8cSpanParams(joined, 'box.feedback.fed')).toEqual([{ name: 'Kip' }]);
+
+      view.paint(
+        c8bPaint({
+          tab: 'party',
+          activeKey: '100',
+          sheet: c8bSheet(C8B_KIP, 'feed'),
+          feed: { foods: [{ itemId: 7, name: 'Bait', count: 3 }], activeKey: '7' },
+        }),
+      );
+      joined = walk('the food list');
+      expect(c8cSpanParams(joined, 'box.feed.item')).toEqual([{ name: 'Bait', count: 3 }]);
+
+      view.paint(
+        c8bPaint({
+          tab: 'party',
+          activeKey: '100',
+          sheet: c8bSheet(C8B_KIP, 'evolve'),
+          evolve: { mon: C8C_TWO_CHOICES, activeKey: '20' },
+        }),
+      );
+      joined = walk('the Evolve list with two choices');
+      expect(byJson(c8cSpanParams(joined, 'evolution.path.heading'))).toEqual(
+        byJson([{ species: 'Tidepup' }, { species: 'Duskling' }, { species: 'Emberfang' }]),
+      );
+      expect(joined).toContain('«evolution.path.allMet»');
+      expect(joined, 'the unmet reason is data, shown raw').toContain('requires level 50');
+
+      view.paint(
+        c8bPaint({
+          tab: 'party',
+          activeKey: '100',
+          sheet: c8bSheet(C8B_KIP, 'evolve'),
+          evolve: { mon: C8C_ONE_READY, activeKey: '10' },
+        }),
+      );
+      joined = walk('the Evolve list with one ready path');
+      expect(c8cSpanParams(joined, 'evolution.card.ready')).toEqual([{ species: 'Duskling' }]);
+
+      view.paint(
+        c8bPaint({
+          tab: 'party',
+          activeKey: '100',
+          sheet: c8bSheet(C8B_KIP, 'evolve'),
+          confirm: { name: 'Kip', species: 'Emberfang', yes: false },
+        }),
+      );
+      joined = walk('the confirm');
+      expect(c8cSpanParams(joined, 'box.evolve.confirm')).toEqual([
+        { name: 'Kip', species: 'Emberfang' },
+      ]);
+      expect(joined).toContain('«prompt.yes»');
+      expect(joined).toContain('«prompt.no»');
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+      vi.mocked(i18nTf).mockRestore();
     }
   });
 });

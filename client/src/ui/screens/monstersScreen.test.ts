@@ -32,6 +32,27 @@
 //   observe   re-seats the cursor against the new layout, drops a phase whose monster vanished,
 //             resolves a pending Move to a feedback line when the monster shows in the target tab,
 //             and answers the SAME state when nothing changed.
+//
+// ctl-8c (CTL8C.1): the sheet is Summary, Care, Feed…, Evolve…, Nickname, Move (design §5).
+//   Care      A sends `care` for the sheet's monster; the sheet stays on Care.
+//   Feed…     A opens the food list (the view model's `foods`) on its first food; A on a food sends
+//             `train` at once (no confirm) and returns to the sheet; the "Fed {name}" line shows
+//             only once a batch shows that food's count below what it was at the press, for a
+//             monster still listed; the next button ends it. No food: Feed… is disabled.
+//   Evolve…   A opens the list of every outgoing path (the evolution port's view model), the cursor
+//             on the first choice (else the first path); only choices act. A on a choice opens a
+//             Yes/No confirm defaulting to No; Yes sends `evolve` with that path's toSpecies. No
+//             path at all: Evolve… is disabled (paths that are not met yet keep it enabled).
+//   A repeat never acts; a confirm a batch just changed only paints.
+//
+// NAMED INTENTIONAL CHANGES (ctl-8c) to the ctl-8b cases below: the fake store also answers
+// `ownInventory` / `itemDefs` (the default world holds a trainable Bait x3 and a non-food Potion);
+// SPECIES gains Duskling (3) and Tidepup (4); SHEET_STEPS covers the six actions in the new order,
+// and every ctl-8b route that reached Nickname with one Down now walks SHEET_STEPS.nickname (one
+// Down now lands on Care, which sends a command); CTL8B-2-A-OPENS-SHEET pins the six-row order; the
+// exact opening paint and the exact sheet paint gain `canFeed` / `canEvolve` / `feed` / `evolve` /
+// `confirm`; the Move feedback is `{ kind }`; init is checked for `pendingFeed` / `shown`; the
+// viewModel case passes the inventory items to the expected view model.
 import { describe, expect, it } from 'vitest';
 import { party_size, party_slot_none } from '../../../../client-wasm/pkg/client_wasm.js';
 import { DEFAULT_BINDINGS } from '../../input/bindings';
@@ -40,19 +61,24 @@ import type {
   AffinityName,
   EssenceByAffinity,
   StoreEvolutionPath,
+  StoreInventory,
+  StoreItemRow,
   StoreMonsterPub,
   StoreSpeciesRow,
 } from '../../net/store';
 import type { BoxView } from '../boxView';
 import {
   buildMonstersVm,
+  findEvolution,
   findMonster,
   type MonstersVm,
   monsterKey,
   SHEET_ACTIONS,
+  type SheetAction,
   STORAGE_COLS,
 } from '../monstersModel';
 import type { NavInput } from '../nav';
+import { buildInventoryItems } from '../raisingModel';
 import { type MonstersPaint, type MonstersScreenState, monstersScreen } from './monstersScreen';
 import type { ButtonStep, ScreenContext, ScreenResult } from './types';
 
@@ -118,12 +144,86 @@ function species(id: number, name: string): StoreSpeciesRow {
   };
 }
 
-const SPECIES: readonly StoreSpeciesRow[] = [species(1, 'Sproutle'), species(2, 'Emberfang')];
+const SPECIES: readonly StoreSpeciesRow[] = [
+  species(1, 'Sproutle'),
+  species(2, 'Emberfang'),
+  // ctl-8c: evolution targets.
+  species(3, 'Duskling'),
+  species(4, 'Tidepup'),
+];
+
+/** One inventory row of the player's (or another identity's). */
+function inv(invId: bigint, itemId: number, count: number, ownerIdentity = ME): StoreInventory {
+  return { invId, ownerIdentity, itemId, count };
+}
+
+/** One item definition: a non-null `trainStat` is what makes it food. */
+function itemDef(id: number, name: string, trainStat: string | null): StoreItemRow {
+  return {
+    id,
+    name,
+    description: '',
+    recruitBonus: 0,
+    trainStat,
+    trainAmount: trainStat === null ? 0 : 1,
+    sellPrice: 0n,
+    cureStatus: null,
+  };
+}
+
+/** Item ids are never list indexes: Bait is 7, Carrot 15, Glowberry 40; Potion (3) is no food. */
+const BAIT = 7;
+const CARROT = 15;
+const GLOWBERRY = 40;
+const POTION = 3;
+const ITEM_DEFS: readonly StoreItemRow[] = [
+  itemDef(BAIT, 'Bait', 'attack'),
+  itemDef(POTION, 'Potion', null),
+  itemDef(CARROT, 'Carrot', 'hp'),
+  itemDef(GLOWBERRY, 'Glowberry', 'speed'),
+];
+
+/** Three foods in store order Glowberry, Bait, Carrot (by id: Bait 7, Carrot 15, Glowberry 40),
+ *  plus the Potion. */
+const FOODS3: readonly StoreInventory[] = [
+  inv(4n, GLOWBERRY, 2),
+  inv(1n, BAIT, 3),
+  inv(5n, CARROT, 1),
+  inv(2n, POTION, 2),
+];
+
+/** One authored edge with a single level gate: the level-5 fixture monsters meet minLevel 1. */
+function edge(
+  edgeId: number,
+  fromSpecies: number,
+  toSpecies: number,
+  minLevel: number,
+): StoreEvolutionPath {
+  return {
+    pathId: BigInt(edgeId * 1000),
+    edgeId,
+    fromSpecies,
+    toSpecies,
+    minLevel,
+    essence: [],
+    minTrustTier: null,
+    minQualityTimeTier: null,
+    minNutritionPct: null,
+  };
+}
+
+/** Species 1 (Kip, 21, 23, 25) paths. Edge ids are never toSpecies ids. */
+const NONE_MET = [edge(10, 1, 2, 50), edge(20, 1, 3, 60)];
+const ONE_MET = [edge(10, 1, 2, 50), edge(20, 1, 3, 1)];
+/** Edge 10 -> Tidepup unmet, 20 -> Duskling met, 30 -> Emberfang met: two choices, 20 and 30. */
+const TWO_MET = [edge(10, 1, 4, 50), edge(20, 1, 3, 1), edge(30, 1, 2, 1)];
 
 /** What the fake store holds; a case edits it between view models as a batch would. */
 interface World {
   monsters: readonly StoreMonsterPub[];
   paths: readonly StoreEvolutionPath[];
+  inventory: readonly StoreInventory[];
+  itemDefs: readonly StoreItemRow[];
 }
 
 function world(over: Partial<World> = {}): World {
@@ -138,9 +238,23 @@ function world(over: Partial<World> = {}): World {
       mon(25n, NONE, 1),
     ],
     paths: [],
+    // ctl-8c: one food (Bait x3) and one non-food (Potion), so Feed… is enabled by default.
+    inventory: [inv(1n, BAIT, 3), inv(2n, POTION, 2)],
+    itemDefs: ITEM_DEFS,
     ...over,
   };
 }
+
+/** The same world with item `itemId`'s stack at `count`. */
+const withCount = (w: World, itemId: number, count: number): World => ({
+  ...w,
+  inventory: w.inventory.map((r) => (r.itemId === itemId ? { ...r, count } : r)),
+});
+/** The same world without item `itemId`'s row (the last one was eaten). */
+const withoutItem = (w: World, itemId: number): World => ({
+  ...w,
+  inventory: w.inventory.filter((r) => r.itemId !== itemId),
+});
 
 /** The same world with one monster in `slot`. */
 const placed = (w: World, id: bigint, slot: number): World => ({
@@ -167,6 +281,12 @@ function ctxOf(w: World): ScreenContext {
         : [],
     speciesMap: () => new Map(SPECIES.map((s) => [s.id, s])),
     evolutionPaths: () => w.paths.values(),
+    // ctl-8c: the player's own inventory rows and the item definitions, as the real store answers.
+    ownInventory: (identity: string) =>
+      identity === ME
+        ? w.inventory.filter((r) => r.ownerIdentity === ME).map((r) => ({ ...r }))
+        : [],
+    itemDefs: () => new Map(w.itemDefs.map((d) => [d.id, d])),
   };
   return {
     store,
@@ -251,12 +371,28 @@ const POP: ScreenResult = { kind: 'pop' };
 const POP_TO_BASE: ScreenResult = { kind: 'popToBase' };
 const TOGGLE_HELP: ScreenResult = { kind: 'toggleHelp' };
 
-/** The buttons that open the sheet on the cursor's monster and walk it to the action. */
-const SHEET_STEPS: Readonly<Record<'summary' | 'nickname' | 'move', readonly Input[]>> = {
+/** The buttons that open the sheet on the cursor's monster and walk it to the action.
+ *  ctl-8c (named intentional change): the six rows of the design §5 order, disabled rows included
+ *  (the walk reaches them; only A on them is refused). */
+const SHEET_STEPS: Readonly<Record<SheetAction, readonly Input[]>> = {
   summary: ['A'],
-  nickname: ['A', 'Down'],
-  move: ['A', 'Down', 'Down'],
+  care: ['A', 'Down'],
+  feed: ['A', 'Down', 'Down'],
+  evolve: ['A', 'Down', 'Down', 'Down'],
+  nickname: ['A', 'Down', 'Down', 'Down', 'Down'],
+  move: ['A', 'Down', 'Down', 'Down', 'Down', 'Down'],
 };
+
+/** Kip (party monster 11, the first Party card) on the sheet row `action`, from a fresh frame. */
+const kipOn = (vm: MonstersVm, action: SheetAction): MonstersScreenState =>
+  swallowed(vm, monstersScreen.init(vm), ['RB', ...SHEET_STEPS[action]]);
+
+/** A sheet phase for `monsterId` on `action`. */
+const sheetPhase = (monsterId: bigint, action: SheetAction) => ({
+  kind: 'sheet' as const,
+  monsterId,
+  action,
+});
 
 describe('monstersScreen — opens on Storage (ctl-8b, CTL8B.4)', () => {
   it('CTL8B-4-INIT-STORAGE: init opens the frame on the Storage tab with the cursor on the first storage monster, the list phase, no commit and no feedback; with an empty Storage the tab is still Storage and no monster is under the cursor; the first paint is that opening', () => {
@@ -276,10 +412,18 @@ describe('monstersScreen — opens on Storage (ctl-8b, CTL8B.4)', () => {
     expect(opened.phase.kind).toBe('list');
     expect(opened.commit, 'no commit token on open').toBeNull();
     expect(opened.feedback, 'no feedback on open').toBeNull();
+    // ctl-8c (named intentional change): no pending feed on open, and the list phase's painted
+    // signature is the empty one.
+    expect(opened.pendingFeed, 'no pending feed on open').toBeNull();
+    expect(typeof opened.shown, 'the painted signature is a string').toBe('string');
+    expect(opened.shown, 'the list phase paints no sheet-derived data').toBe('');
     expect(paintOf(vm, opened), 'the opening paint').toEqual({
       tab: 'storage',
       activeKey: '21',
       sheet: null,
+      feed: null,
+      evolve: null,
+      confirm: null,
       summary: null,
       nickname: null,
       commit: null,
@@ -316,15 +460,26 @@ describe('monstersScreen — opens on Storage (ctl-8b, CTL8B.4)', () => {
     }));
     const w = world({ paths: edges });
     w.monsters = [...w.monsters, mon(99n, NONE, 1, '', OTHER)];
+    // ctl-8c: another identity's food row is not the player's.
+    w.inventory = [...w.inventory, inv(9n, CARROT, 5, OTHER)];
     const vm = vmOf(w);
+    // ctl-8c (named intentional change): the expected view model also takes the player's own
+    // inventory items (the raising mapping over `ownInventory` + `itemDefs`).
     const expected = buildMonstersVm(
       w.monsters.filter((m) => m.ownerIdentity === ME),
       new Map(SPECIES.map((s) => [s.id, s])),
       PARTY_SIZE,
       NONE,
       edges,
+      buildInventoryItems(
+        w.inventory.filter((r) => r.ownerIdentity === ME),
+        new Map(w.itemDefs.map((d) => [d.id, d])),
+      ),
     );
     expect(vm).toEqual(expected);
+    expect(vm.foods, 'the player`s Bait only: no Potion, no foreign Carrot').toEqual([
+      { itemId: BAIT, name: 'Bait', count: 3 },
+    ]);
     expect(vm.partySlotNone, 'the sentinel is game-core`s').toBe(NONE);
     expect(vm.party.map((c) => c.monsterId)).toEqual([11n, 12n]);
     expect(vm.storage.map((c) => c.monsterId)).toEqual([21n, 22n, 23n, 24n, 25n]);
@@ -482,14 +637,18 @@ describe('monstersScreen — tabs and cursor (ctl-8b, CTL8B.1)', () => {
 });
 
 describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
-  it('CTL8B-2-A-OPENS-SHEET: A on a monster opens its action sheet on Summary, for that monster (Storage or Party) and no command; Up and Down walk Summary, Nickname, Move and wrap both ways; a repeat A and A on an empty Storage open nothing', () => {
+  it('CTL8B-2-A-OPENS-SHEET: A on a monster opens its action sheet on Summary, for that monster (Storage or Party) and no command; Up and Down walk Summary, Care, Feed, Evolve, Nickname, Move and wrap both ways; a repeat A and A on an empty Storage open nothing', () => {
     // WRONG IMPL KILLED: an A that opens nothing, opens the sheet for another monster (the first
     // one, or the Party's), opens it on Move (a second A would then move the monster), issues a
     // command at once, a sheet whose action list is another order or length, a walk that does not
     // wrap, a repeat A (a held key) that opens the sheet, and an A on an empty Storage that opens
     // a sheet for nothing.
+    // ctl-8c (named intentional change): the roster is the design §5 six-row order.
     expect(SHEET_ACTIONS, 'the sheet`s actions, in display order').toEqual([
       'summary',
+      'care',
+      'feed',
+      'evolve',
       'nickname',
       'move',
     ]);
@@ -528,8 +687,12 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
       s = swallowed(vm, s, ['Down']);
       seen.push(actionOf(s));
     }
+    // The default world has no evolution path (Evolve… disabled): the walk still reaches it.
     expect(seen, 'Down walks the list and wraps back to Summary').toEqual([
       'summary',
+      'care',
+      'feed',
+      'evolve',
       'nickname',
       'move',
       'summary',
@@ -537,8 +700,12 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
     expect(actionOf(swallowed(vm, a.state, ['Up'])), 'a fresh Up on Summary wraps to Move').toBe(
       'move',
     );
+    expect(actionOf(swallowed(vm, a.state, ['Up', 'Up']))).toBe('nickname');
     expect(actionOf(swallowed(vm, a.state, ['Down', 'Up']))).toBe('summary');
-    expect(paintOf(vm, swallowed(vm, a.state, ['Down'])).sheet?.action).toBe('nickname');
+    expect(actionOf(swallowed(vm, a.state, [rep('Up')])), 'a repeat Up on Summary stays').toBe(
+      'summary',
+    );
+    expect(paintOf(vm, swallowed(vm, a.state, ['Down'])).sheet?.action).toBe('care');
     // The sheet stays on its monster however it is walked.
     expect(swallowed(vm, a.state, ['Down', 'Down', 'Down']).phase).toMatchObject({
       kind: 'sheet',
@@ -567,7 +734,7 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
     const opened = monstersScreen.init(vm);
 
     // Storage: walk to 24 (Down), open its sheet, move to Nickname, B.
-    const onSheet = swallowed(vm, opened, ['Down', 'A', 'Down']);
+    const onSheet = swallowed(vm, opened, ['Down', ...SHEET_STEPS.nickname]);
     expect(onSheet.phase.kind).toBe('sheet');
     const back = press(vm, onSheet, 'B');
     expect(back.result, 'B in the sheet is swallowed').toBe('consumed');
@@ -601,7 +768,7 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
 
     // Start and Select, from each phase.
     const summary = swallowed(vm, opened, ['A', 'A']);
-    const nickname = swallowed(vm, opened, ['A', 'Down', 'A']);
+    const nickname = swallowed(vm, opened, [...SHEET_STEPS.nickname, 'A']);
     expect(summary.phase.kind).toBe('summary');
     expect(nickname.phase.kind).toBe('nickname');
     const phases: ReadonlyArray<readonly [string, MonstersScreenState]> = [
@@ -752,8 +919,10 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
     ).toEqual([11n, 12n, 21n]);
     const arrived = observe(joined, issued.state);
     expect(arrived, 'the move took effect: a new state').not.toBe(issued.state);
-    expect(arrived.feedback).toBe('movedToParty');
-    expect(paintOf(joined, arrived).feedback, 'painted').toBe('movedToParty');
+    // ctl-8c (named intentional change): the feedback is a tagged `{ kind }` (the fed line names
+    // its monster).
+    expect(arrived.feedback).toEqual({ kind: 'movedToParty' });
+    expect(paintOf(joined, arrived).feedback, 'painted').toEqual({ kind: 'movedToParty' });
     expect(cursorOf(arrived), 'the cursor left the monster that left: the next one').toEqual({
       tab: 'storage',
       item: '22',
@@ -774,8 +943,8 @@ describe('monstersScreen — the action sheet (ctl-8b, CTL8B.2)', () => {
     expect(boxIssued.result).toEqual({ kind: 'setPartySlot', monsterId: 11n, slot: NONE });
     const boxed = vmOf(placed(w, 11n, NONE));
     const arrivedInBox = observe(boxed, boxIssued.state);
-    expect(arrivedInBox.feedback).toBe('movedToBox');
-    expect(paintOf(boxed, arrivedInBox).feedback).toBe('movedToBox');
+    expect(arrivedInBox.feedback).toEqual({ kind: 'movedToBox' });
+    expect(paintOf(boxed, arrivedInBox).feedback).toEqual({ kind: 'movedToBox' });
     expect(cursorOf(arrivedInBox), 'Party re-seated on the monster that is left').toEqual({
       tab: 'party',
       item: '12',
@@ -806,7 +975,7 @@ describe('monstersScreen — the nickname row (ctl-8b, CTL8B.3)', () => {
     // draws no row.
     const vm = vmOf(world());
     const opened = monstersScreen.init(vm);
-    const sheet = swallowed(vm, opened, ['A', 'Down']);
+    const sheet = swallowed(vm, opened, SHEET_STEPS.nickname);
 
     const first = press(vm, sheet, 'A');
     expect(first.result, 'no command: the row is the view`s').toBe('consumed');
@@ -833,7 +1002,14 @@ describe('monstersScreen — the nickname row (ctl-8b, CTL8B.3)', () => {
 
     // Another monster, another open, in the same visit: again a number nobody had. Back out of
     // the row and the sheet to the list (B, B), over to Party's second monster, and open its row.
-    const partyRow = swallowed(vm, second.state, ['B', 'B', 'RB', 'Down', 'A', 'Down', 'A']);
+    const partyRow = swallowed(vm, second.state, [
+      'B',
+      'B',
+      'RB',
+      'Down',
+      ...SHEET_STEPS.nickname,
+      'A',
+    ]);
     expect(partyRow.phase).toMatchObject({ kind: 'nickname', monsterId: 12n });
     const edit3 = partyRow.phase.kind === 'nickname' ? partyRow.phase.edit : Number.NaN;
     expect([edit1, edit2]).not.toContain(edit3);
@@ -854,7 +1030,7 @@ describe('monstersScreen — the nickname row (ctl-8b, CTL8B.3)', () => {
     const opened = monstersScreen.init(vm);
 
     // Monster 11 has the nickname 'Kip'.
-    const row = swallowed(vm, opened, ['RB', 'A', 'Down', 'A']);
+    const row = swallowed(vm, opened, ['RB', ...SHEET_STEPS.nickname, 'A']);
     expect(row.phase).toMatchObject({ kind: 'nickname', monsterId: 11n });
     const committed = press(vm, row, 'A');
     expect(committed.result, 'the commit goes through the view').toBe('consumed');
@@ -874,7 +1050,7 @@ describe('monstersScreen — the nickname row (ctl-8b, CTL8B.3)', () => {
     expect(paintOf(vm, after.state).commit).toBeNull();
 
     // A monster with no nickname: current is '' (not the species name).
-    const plain = swallowed(vm, opened, ['A', 'Down', 'A']);
+    const plain = swallowed(vm, opened, [...SHEET_STEPS.nickname, 'A']);
     const plainCommit = press(vm, plain, 'A');
     expect(plainCommit.state.commit).toEqual({ monsterId: 21n, current: '' });
 
@@ -903,7 +1079,7 @@ describe('monstersScreen — the nickname row (ctl-8b, CTL8B.3)', () => {
     // Start that is swallowed.
     const vm = vmOf(world());
     const opened = monstersScreen.init(vm);
-    const row = swallowed(vm, opened, ['A', 'Down', 'A']);
+    const row = swallowed(vm, opened, [...SHEET_STEPS.nickname, 'A']);
     expect(row.phase.kind).toBe('nickname');
     const editBefore = row.phase.kind === 'nickname' ? row.phase.edit : Number.NaN;
 
@@ -946,7 +1122,7 @@ describe('monstersScreen — round 2 gaps (ctl-8b)', () => {
     expect(summaryPaint.sheet?.card, 'the same card as the summary').toEqual(cardOf(vm, 21n));
     expect(summaryPaint.summary).toEqual(cardOf(vm, 21n));
 
-    const row = swallowed(vm, opened, ['A', 'Down', 'A']);
+    const row = swallowed(vm, opened, [...SHEET_STEPS.nickname, 'A']);
     expect(row.phase.kind, 'fixture: the nickname phase').toBe('nickname');
     const rowPaint = paintOf(vm, row);
     expect(rowPaint.sheet, 'the sheet is painted under the typing row').not.toBeNull();
@@ -955,9 +1131,16 @@ describe('monstersScreen — round 2 gaps (ctl-8b)', () => {
     expect(rowPaint.nickname?.card).toEqual(cardOf(vm, 21n));
 
     // A Party monster too.
-    const partyRow = swallowed(vm, opened, ['RB', 'Down', 'A', 'Down', 'A']);
+    const partyRow = swallowed(vm, opened, ['RB', 'Down', ...SHEET_STEPS.nickname, 'A']);
     expect(partyRow.phase).toMatchObject({ kind: 'nickname', monsterId: 12n });
-    expect(paintOf(vm, partyRow).sheet).toEqual({ card: cardOf(vm, 12n), action: 'nickname' });
+    // ctl-8c (named intentional change): the sheet paint also carries whether Feed… and Evolve…
+    // are enabled (the default world holds Bait and no evolution path), exactly.
+    expect(paintOf(vm, partyRow).sheet).toEqual({
+      card: cardOf(vm, 12n),
+      action: 'nickname',
+      canFeed: true,
+      canEvolve: false,
+    });
   });
 
   it('ctl-8b gap: a repeat A in the nickname row commits nothing and leaves the row open; a fresh A does commit', () => {
@@ -966,7 +1149,7 @@ describe('monstersScreen — round 2 gaps (ctl-8b)', () => {
     // over-correction, an A that never commits (the control below).
     const vm = vmOf(world());
     const opened = monstersScreen.init(vm);
-    const row = swallowed(vm, opened, ['A', 'Down', 'A']);
+    const row = swallowed(vm, opened, [...SHEET_STEPS.nickname, 'A']);
     expect(row.phase.kind, 'fixture: the nickname phase').toBe('nickname');
     const editBefore = row.phase.kind === 'nickname' ? row.phase.edit : Number.NaN;
 
@@ -1002,7 +1185,7 @@ describe('monstersScreen — settle (ctl-8b, CTL8B.1-.3)', () => {
     expect(observe(vmOf(w), sheet), 'a sheet').toBe(sheet);
     const summary = swallowed(vm, opened, ['A', 'A']);
     expect(observe(vmOf(w), summary), 'a summary').toBe(summary);
-    const row = swallowed(vm, opened, ['A', 'Down', 'A']);
+    const row = swallowed(vm, opened, [...SHEET_STEPS.nickname, 'A']);
     expect(observe(vmOf(w), row), 'a nickname row').toBe(row);
     const party = swallowed(vm, opened, ['RB', 'Down']);
     expect(observe(vmOf(w), party), 'the party, a moved cursor').toBe(party);
@@ -1046,7 +1229,7 @@ describe('monstersScreen — settle (ctl-8b, CTL8B.1-.3)', () => {
     const phases: ReadonlyArray<readonly [string, readonly Input[]]> = [
       ['sheet', ['A', 'Down']],
       ['summary', ['A', 'A']],
-      ['nickname', ['A', 'Down', 'A']],
+      ['nickname', [...SHEET_STEPS.nickname, 'A']],
     ];
     for (const [name, inputs] of phases) {
       const state = swallowed(vm, opened, inputs);
@@ -1070,5 +1253,765 @@ describe('monstersScreen — settle (ctl-8b, CTL8B.1-.3)', () => {
       const kept = observe(moved, state);
       expect(kept.phase.kind, `${name}: the monster is still the player's`).toBe(name);
     }
+  });
+});
+
+// =============================================================================
+// ctl-8c (CTL8C.1): Care, Feed… and Evolve… on the sheet.
+// =============================================================================
+
+const feedPhase = (monsterId: bigint, item: string | null) => ({
+  kind: 'feed' as const,
+  monsterId,
+  item,
+});
+const evolvePhase = (monsterId: bigint, path: string | null) => ({
+  kind: 'evolve' as const,
+  monsterId,
+  path,
+});
+const confirmPhase = (monsterId: bigint, path: string, yes: boolean) => ({
+  kind: 'evolveConfirm' as const,
+  monsterId,
+  path,
+  yes,
+});
+
+describe('monstersScreen — Care and Feed (ctl-8c, CTL8C.1)', () => {
+  it('CTL8C-1-CARE-COMMAND: A on Care sends care for the sheet`s monster (Storage and Party alike) and the sheet stays open on Care with nothing pending and no pane; a second fresh A sends again; B returns to the list on that monster', () => {
+    // WRONG IMPL KILLED: a Care that does nothing or opens a pane or a confirm; one sent for
+    // another monster (the cursor's index, the first monster, the Party's first); one that closes
+    // the sheet or drops to the list (a second care needs the sheet reopened, and the cooldown
+    // refusal shows nothing); one that leaves a pending feed or a feedback line behind.
+    const vm = vmOf(world());
+    const opened = monstersScreen.init(vm);
+
+    const onCare = swallowed(vm, opened, SHEET_STEPS.care);
+    expect(onCare.phase, 'one Down from Summary is Care').toEqual(sheetPhase(21n, 'care'));
+    expect(paintOf(vm, onCare).sheet?.action).toBe('care');
+    const cared = press(vm, onCare, 'A');
+    expect(cared.result).toEqual({ kind: 'care', monsterId: 21n });
+    expect(cared.state.phase, 'the sheet stays on Care').toEqual(sheetPhase(21n, 'care'));
+    expect(cared.state.pendingFeed).toBeNull();
+    expect(cared.state.feedback).toBeNull();
+    expect(paintOf(vm, cared.state)).toMatchObject({
+      sheet: { card: cardOf(vm, 21n), action: 'care' },
+      feed: null,
+      evolve: null,
+      confirm: null,
+      summary: null,
+      nickname: null,
+    });
+    expect(press(vm, cared.state, 'A').result, 'a second fresh A cares again').toEqual({
+      kind: 'care',
+      monsterId: 21n,
+    });
+
+    // Another Storage monster, and both Party monsters.
+    const third = swallowed(vm, opened, ['Right', 'Right', ...SHEET_STEPS.care]);
+    expect(press(vm, third, 'A').result).toEqual({ kind: 'care', monsterId: 23n });
+    expect(press(vm, kipOn(vm, 'care'), 'A').result).toEqual({ kind: 'care', monsterId: 11n });
+    const second = swallowed(vm, opened, ['RB', 'Down', ...SHEET_STEPS.care]);
+    expect(press(vm, second, 'A').result).toEqual({ kind: 'care', monsterId: 12n });
+
+    const back = press(vm, cared.state, 'B');
+    expect(back.result).toBe('consumed');
+    expect(back.state.phase.kind).toBe('list');
+    expect(cursorOf(back.state)).toEqual({ tab: 'storage', item: '21' });
+  });
+
+  it('CTL8C-1-FEED-LIST: A on Feed opens the food list on the first food by item id with no command, the sheet still painted on Feed under it; the paint carries the view model`s foods and the cursor`s key; Up and Down walk the foods and wrap (a repeat clamps); B returns to the sheet on Feed', () => {
+    // WRONG IMPL KILLED: a Feed… that feeds at once (the first food, unasked), that opens nothing,
+    // or that opens on the store's first row (Glowberry) instead of the first food by id; a list
+    // painted without the foods or for another monster; a cursor keyed by index (a batch would
+    // move it); a walk that does not wrap, or wraps on a held key; Left / Right that move it; a B
+    // that drops to the list or pops the frame; the sheet hidden under the list.
+    const w = world({ inventory: FOODS3 });
+    const vm = vmOf(w);
+    expect(
+      vm.foods.map((f) => f.itemId),
+      'fixture: three foods, by id',
+    ).toEqual([BAIT, CARROT, GLOWBERRY]);
+
+    const onFeed = kipOn(vm, 'feed');
+    expect(onFeed.phase).toEqual(sheetPhase(11n, 'feed'));
+    const opened = press(vm, onFeed, 'A');
+    expect(opened.result, 'no command: the list is the screen`s').toBe('consumed');
+    expect(opened.state.phase).toEqual(feedPhase(11n, '7'));
+    expect(opened.state.pendingFeed).toBeNull();
+    const painted = paintOf(vm, opened.state);
+    expect(painted.feed).toEqual({ foods: vm.foods, activeKey: '7' });
+    expect(painted.sheet, 'the sheet stays painted under the list').toEqual({
+      card: cardOf(vm, 11n),
+      action: 'feed',
+      canFeed: true,
+      canEvolve: false,
+    });
+    expect(painted).toMatchObject({
+      tab: 'party',
+      activeKey: '11',
+      evolve: null,
+      confirm: null,
+      summary: null,
+      nickname: null,
+      feedback: null,
+    });
+
+    const itemAfter = (inputs: readonly Input[]): string | null => {
+      const s = swallowed(vm, opened.state, inputs);
+      return s.phase.kind === 'feed' ? s.phase.item : null;
+    };
+    expect(itemAfter(['Down'])).toBe('15');
+    expect(itemAfter(['Down', 'Down'])).toBe('40');
+    expect(itemAfter(['Down', 'Down', 'Down']), 'a fresh Down wraps').toBe('7');
+    expect(itemAfter(['Up']), 'a fresh Up wraps').toBe('40');
+    expect(itemAfter([rep('Up')]), 'a repeat Up at the top stays').toBe('7');
+    expect(itemAfter(['Down', 'Down', rep('Down')]), 'a repeat Down at the end stays').toBe('40');
+    expect(itemAfter(['Left', 'Right']), 'Left and Right move nothing').toBe('7');
+    const onCarrot = swallowed(vm, opened.state, ['Down']);
+    expect(onCarrot.phase).toEqual(feedPhase(11n, '15'));
+    expect(paintOf(vm, onCarrot).feed).toEqual({ foods: vm.foods, activeKey: '15' });
+
+    const back = press(vm, onCarrot, 'B');
+    expect(back.result).toBe('consumed');
+    expect(back.state.phase, 'B: the sheet, on Feed').toEqual(sheetPhase(11n, 'feed'));
+    expect(paintOf(vm, back.state).feed).toBeNull();
+
+    // A Storage monster's food list.
+    const stored = swallowed(vm, monstersScreen.init(vm), [...SHEET_STEPS.feed, 'A']);
+    expect(stored.phase).toEqual(feedPhase(21n, '7'));
+  });
+
+  it('CTL8C-1-FEED-NO-CONFIRM: A on a food sends train for the sheet`s monster with THAT food`s item id at once (no confirm step), returns to the sheet on Feed, and records the pending feed (monster, item, its count and the monster`s name at the press)', () => {
+    // WRONG IMPL KILLED: a confirm before feeding (CTL8C.1: no confirm); a train sent with the
+    // food's LIST INDEX (0, 1, 2) or its inventory row id instead of its item id; the first food
+    // whatever the cursor; another monster; a list left open after feeding (a second A would feed
+    // again); a pending feed with the wrong item or count or no name (the fed line could not name
+    // the monster, or would resolve on the wrong stack).
+    const vm = vmOf(world({ inventory: FOODS3 }));
+    const onCarrot = swallowed(vm, kipOn(vm, 'feed'), ['A', 'Down']);
+    expect(onCarrot.phase, 'fixture: the second food').toEqual(feedPhase(11n, '15'));
+    const fed = press(vm, onCarrot, 'A');
+    expect(fed.result, 'the second food (index 1) is item 15').toEqual({
+      kind: 'train',
+      monsterId: 11n,
+      foodItemId: CARROT,
+    });
+    expect(fed.state.phase, 'back on the sheet, on Feed').toEqual(sheetPhase(11n, 'feed'));
+    expect(fed.state.pendingFeed).toEqual({
+      monsterId: 11n,
+      itemId: CARROT,
+      count: 1,
+      name: 'Kip',
+    });
+    expect(fed.state.feedback, 'no line before a batch shows it').toBeNull();
+    expect(paintOf(vm, fed.state)).toMatchObject({ feed: null, confirm: null, feedback: null });
+
+    // The third food, reached by wrapping Up: item 40.
+    const onGlowberry = swallowed(vm, kipOn(vm, 'feed'), ['A', 'Up']);
+    expect(press(vm, onGlowberry, 'A').result).toEqual({
+      kind: 'train',
+      monsterId: 11n,
+      foodItemId: GLOWBERRY,
+    });
+
+    // A Storage monster with no nickname: its species names the pending feed.
+    const stored = swallowed(vm, monstersScreen.init(vm), [...SHEET_STEPS.feed, 'A']);
+    const storedFed = press(vm, stored, 'A');
+    expect(storedFed.result).toEqual({ kind: 'train', monsterId: 21n, foodItemId: BAIT });
+    expect(storedFed.state.pendingFeed).toEqual({
+      monsterId: 21n,
+      itemId: BAIT,
+      count: 3,
+      name: 'Sproutle',
+    });
+  });
+
+  it('CTL8C-1-FEED-FEEDBACK: once a batch shows the fed item`s count below its count at the press (or its row gone) for a monster still listed, observe answers a new state painting the fed line with the name taken at the press, keeps it (the same object) while nothing changes, and the next button clears it', () => {
+    // WRONG IMPL KILLED: a fed line set when train is ISSUED (a refused feed would claim it); one
+    // that never appears; one that misses the last food eaten (the row is deleted, not set to 0);
+    // one that names the monster as a batch renamed it, or by the sheet's card, instead of as it
+    // was when fed; a line re-created as a new object on every batch (the frame repaints at batch
+    // rate); a pending feed left after it resolved (a second drop would re-announce it); a line
+    // that survives the next button; an observe that changes the state it was given.
+    const w = world();
+    const vm = vmOf(w);
+    const issued = press(vm, swallowed(vm, kipOn(vm, 'feed'), ['A']), 'A');
+    expect(issued.result, 'fixture: Bait (x3) fed to Kip').toEqual({
+      kind: 'train',
+      monsterId: 11n,
+      foodItemId: BAIT,
+    });
+    expect(issued.state.feedback).toBeNull();
+    expect(observe(vmOf(w), issued.state), 'nothing changed yet: the same object').toBe(
+      issued.state,
+    );
+
+    const ate = vmOf(withCount(w, BAIT, 2));
+    const fed = observe(ate, issued.state);
+    expect(fed, 'the feed landed: a new state').not.toBe(issued.state);
+    expect(fed.feedback).toEqual({ kind: 'fed', name: 'Kip' });
+    expect(fed.pendingFeed, 'resolved: nothing pending').toBeNull();
+    expect(paintOf(ate, fed).feedback, 'painted').toEqual({ kind: 'fed', name: 'Kip' });
+    expect(observe(vmOf(withCount(w, BAIT, 2)), fed), 'kept: the same object').toBe(fed);
+    expect(issued.state.feedback, 'the old state was not changed in place').toBeNull();
+    expect(issued.state.pendingFeed).not.toBeNull();
+
+    const cleared = press(ate, fed, 'Down');
+    expect(cleared.state.feedback, 'the next button clears the line').toBeNull();
+    expect(paintOf(ate, cleared.state).feedback).toBeNull();
+
+    const fedLine = { kind: 'fed', name: 'Kip' };
+    expect(
+      observe(vmOf(withoutItem(w, BAIT)), issued.state).feedback,
+      'the last one eaten',
+    ).toEqual(fedLine);
+    expect(
+      observe(vmOf(withCount(w, BAIT, 1)), issued.state).feedback,
+      'two gone in one batch',
+    ).toEqual(fedLine);
+    expect(
+      observe(vmOf(renamed(withCount(w, BAIT, 2), 11n, 'Zip')), issued.state).feedback,
+      'renamed in the same batch: the name at the press',
+    ).toEqual(fedLine);
+
+    // A Storage monster with no nickname: its species names the line.
+    const stored = press(
+      vm,
+      swallowed(vm, monstersScreen.init(vm), [...SHEET_STEPS.feed, 'A']),
+      'A',
+    );
+    expect(observe(ate, stored.state).feedback).toEqual({ kind: 'fed', name: 'Sproutle' });
+  });
+
+  it('CTL8C-1-FEED-NEGATIVE: no fed line for a batch that leaves the count as it was (a refused feed), one where only ANOTHER food drops or runs out, one where the count rises, one where the monster is gone, or a drop that arrives after the next button; an unchanged batch keeps the feed pending', () => {
+    // WRONG IMPL KILLED: a line resolved on any batch (the same count), on any inventory drop
+    // (another food), on a count that merely changed (a rise: the player bought more), for a
+    // monster that left (released or traded: "Fed Kip" for a monster that is not there); a pending
+    // feed that outlives the next button (a later, unrelated drop would claim a feed the player
+    // never saw land); and the over-correction, an unchanged batch that drops the pending feed (a
+    // slow server would never show the line).
+    const w = world({ inventory: FOODS3 });
+    const vm = vmOf(w);
+    const issued = press(vm, swallowed(vm, kipOn(vm, 'feed'), ['A']), 'A');
+    expect(issued.result, 'fixture: Bait (x3) fed to Kip').toEqual({
+      kind: 'train',
+      monsterId: 11n,
+      foodItemId: BAIT,
+    });
+
+    const lineAfter = (batch: World, state: MonstersScreenState = issued.state) =>
+      observe(vmOf(batch), state).feedback;
+    expect(lineAfter(w), 'the same count (refused)').toBeNull();
+    expect(lineAfter(withCount(w, GLOWBERRY, 1)), 'another food`s drop').toBeNull();
+    expect(lineAfter(withoutItem(w, CARROT)), 'another food eaten up').toBeNull();
+    expect(lineAfter(withCount(w, BAIT, 4)), 'a rise').toBeNull();
+    expect(lineAfter(without(withCount(w, BAIT, 2), 11n)), 'the monster is gone').toBeNull();
+
+    // The next button ends the pending feed: a drop after it is not this feed's.
+    const later = press(vm, issued.state, 'Down');
+    expect(later.state.pendingFeed, 'the next button ends the pending feed').toBeNull();
+    expect(lineAfter(withCount(w, BAIT, 2), later.state)).toBeNull();
+
+    // CONTROL: an unchanged batch keeps the feed pending; the drop that follows shows the line.
+    const waited = observe(vmOf(w), issued.state);
+    expect(waited, 'an unchanged batch: the same object').toBe(issued.state);
+    expect(observe(vmOf(withCount(w, BAIT, 2)), waited).feedback).toEqual({
+      kind: 'fed',
+      name: 'Kip',
+    });
+  });
+
+  it('CTL8C-1-FEED-DISABLED: with no food (a non-food and a zero-count food, or no items at all) the sheet paints Feed disabled, the walk still reaches it, and A on it is swallowed: no list, no command, no pending feed; one food in stock enables it', () => {
+    // WRONG IMPL KILLED: a Feed… that opens an empty list (nothing for the cursor to sit on); one
+    // that sends train for a non-food or an empty stack; canFeed read from the inventory's size
+    // instead of the foods (the Potion would enable it); a disabled row dropped from the walk
+    // (Down would land on Nickname, not Evolve…); and the over-correction, Feed… disabled while a
+    // food is in stock.
+    const cases: ReadonlyArray<readonly [string, readonly StoreInventory[]]> = [
+      ['a non-food and a zero-count food', [inv(2n, POTION, 2), inv(6n, CARROT, 0)]],
+      ['no items at all', []],
+    ];
+    for (const [name, inventory] of cases) {
+      const vm = vmOf(world({ inventory }));
+      expect(vm.foods, `${name}: fixture`).toEqual([]);
+      const onFeed = kipOn(vm, 'feed');
+      expect(onFeed.phase, `${name}: the walk reaches Feed`).toEqual(sheetPhase(11n, 'feed'));
+      expect(paintOf(vm, onFeed).sheet, `${name}: Feed painted disabled`).toMatchObject({
+        action: 'feed',
+        canFeed: false,
+      });
+      const a = press(vm, onFeed, 'A');
+      expect(a.result, `${name}: A is swallowed`).toBe('consumed');
+      expect(a.state.phase, `${name}: still the sheet on Feed`).toEqual(sheetPhase(11n, 'feed'));
+      expect(a.state.pendingFeed, `${name}: nothing pending`).toBeNull();
+      expect(paintOf(vm, a.state).feed, `${name}: no list`).toBeNull();
+      expect(swallowed(vm, onFeed, ['Down']).phase, `${name}: Down from Feed is Evolve`).toEqual(
+        sheetPhase(11n, 'evolve'),
+      );
+    }
+
+    // CONTROL: Bait in stock.
+    const stocked = vmOf(world());
+    const onFeed = kipOn(stocked, 'feed');
+    expect(paintOf(stocked, onFeed).sheet).toMatchObject({ action: 'feed', canFeed: true });
+    expect(press(stocked, onFeed, 'A').state.phase).toEqual(feedPhase(11n, '7'));
+  });
+});
+
+describe('monstersScreen — Evolve (ctl-8c, CTL8C.1)', () => {
+  it('CTL8C-1-EVOLVE-LIST: A on Evolve opens the list of EVERY outgoing path (the evolution view model of that monster) with no command; the cursor sits on the first choice, else the first path; A on a path that is not a choice (unmet, or the single met path the server applies itself) is swallowed; with two met paths A on a choice opens its confirm; B returns to the sheet on Evolve', () => {
+    // WRONG IMPL KILLED: a list of the met paths only (the player cannot see what the others need)
+    // or of the choices only (empty at 0 or 1 met); a cursor on the first path when a choice
+    // exists (the first A would be refused); a cursor keyed by index; an A on an unmet path, or on
+    // the single auto-applied path, that opens a confirm (offering an evolution the server does
+    // not offer); a painted `mon` that is not the view model's own; a B that drops to the list.
+    const listFor = (paths: readonly StoreEvolutionPath[]) => {
+      const vm = vmOf(world({ paths }));
+      const onEvolve = kipOn(vm, 'evolve');
+      expect(onEvolve.phase).toEqual(sheetPhase(11n, 'evolve'));
+      const step = press(vm, onEvolve, 'A');
+      expect(step.result, 'opening the list sends nothing').toBe('consumed');
+      return { vm, list: step.state };
+    };
+
+    // No path met: both listed, the cursor on the first, A refused on each.
+    {
+      const { vm, list } = listFor(NONE_MET);
+      const mon = findEvolution(vm, 11n);
+      expect(
+        mon?.paths.map((p) => p.edgeId),
+        'fixture: two unmet paths',
+      ).toEqual([10, 20]);
+      expect(list.phase).toEqual(evolvePhase(11n, '10'));
+      const painted = paintOf(vm, list);
+      expect(painted.evolve).toEqual({ mon, activeKey: '10' });
+      expect(painted.sheet).toMatchObject({ action: 'evolve', canEvolve: true });
+      expect(painted.confirm).toBeNull();
+      const refused = press(vm, list, 'A');
+      expect(refused.result).toBe('consumed');
+      expect(refused.state.phase, 'A on an unmet path: still the list').toEqual(list.phase);
+      expect(paintOf(vm, refused.state).confirm).toBeNull();
+      const onSecond = swallowed(vm, list, ['Down']);
+      expect(onSecond.phase).toEqual(evolvePhase(11n, '20'));
+      expect(paintOf(vm, onSecond).evolve?.activeKey).toBe('20');
+      expect(press(vm, onSecond, 'A').state.phase).toEqual(onSecond.phase);
+      expect(swallowed(vm, list, ['Down', 'Down']).phase, 'a fresh Down wraps').toEqual(list.phase);
+    }
+
+    // Exactly one met: no choice (the server applies it on the next action).
+    {
+      const { vm, list } = listFor(ONE_MET);
+      const mon = findEvolution(vm, 11n);
+      expect(mon?.eligibleCount, 'fixture: one met path').toBe(1);
+      expect(mon?.choices, 'fixture: no choice').toEqual([]);
+      expect(list.phase, 'no choice: the first path').toEqual(evolvePhase(11n, '10'));
+      expect(paintOf(vm, list).evolve).toEqual({ mon, activeKey: '10' });
+      const onMet = swallowed(vm, list, ['Down']);
+      expect(onMet.phase).toEqual(evolvePhase(11n, '20'));
+      const refused = press(vm, onMet, 'A');
+      expect(refused.result).toBe('consumed');
+      expect(refused.state.phase, 'the single met path is not offered').toEqual(onMet.phase);
+    }
+
+    // Two met: the cursor on the first CHOICE (edge 20), not on the unmet edge 10.
+    {
+      const { vm, list } = listFor(TWO_MET);
+      const mon = findEvolution(vm, 11n);
+      expect(mon?.paths.map((p) => p.edgeId)).toEqual([10, 20, 30]);
+      expect(mon?.choices.map((p) => p.edgeId)).toEqual([20, 30]);
+      expect(list.phase).toEqual(evolvePhase(11n, '20'));
+      expect(paintOf(vm, list).evolve).toEqual({ mon, activeKey: '20' });
+      expect(swallowed(vm, list, ['Up']).phase, 'the unmet path is reachable').toEqual(
+        evolvePhase(11n, '10'),
+      );
+      const opened = press(vm, list, 'A');
+      expect(opened.result).toBe('consumed');
+      expect(opened.state.phase.kind, 'A on a choice opens its confirm').toBe('evolveConfirm');
+      const back = press(vm, list, 'B');
+      expect(back.result).toBe('consumed');
+      expect(back.state.phase, 'B: the sheet, on Evolve').toEqual(sheetPhase(11n, 'evolve'));
+      expect(paintOf(vm, back.state).evolve).toBeNull();
+      const stored = swallowed(vm, monstersScreen.init(vm), [...SHEET_STEPS.evolve, 'A']);
+      expect(stored.phase, 'a Storage monster`s list').toEqual(evolvePhase(21n, '20'));
+    }
+  });
+
+  it('CTL8C-1-EVOLVE-DISABLED: a monster with no outgoing path paints Evolve disabled and A on it is swallowed (no list, no command); a monster whose paths are all unmet paints it ENABLED and A opens the list; the flag is per monster', () => {
+    // WRONG IMPL KILLED: canEvolve read from the choices or the met paths (paths not met yet would
+    // sit behind a disabled row: the player could never read what a path needs); an Evolve… that
+    // opens an empty list for a monster with no path; a flag read from another monster (one
+    // pathless monster disabling it for all, or the reverse); a disabled row that still acts.
+    const bare = vmOf(world({ paths: [] }));
+    const onBare = kipOn(bare, 'evolve');
+    expect(onBare.phase).toEqual(sheetPhase(11n, 'evolve'));
+    expect(paintOf(bare, onBare).sheet).toMatchObject({ action: 'evolve', canEvolve: false });
+    const refused = press(bare, onBare, 'A');
+    expect(refused.result, 'no path: A is swallowed').toBe('consumed');
+    expect(refused.state.phase, 'still the sheet on Evolve').toEqual(sheetPhase(11n, 'evolve'));
+    expect(paintOf(bare, refused.state).evolve).toBeNull();
+
+    const unmet = vmOf(world({ paths: NONE_MET }));
+    const onUnmet = kipOn(unmet, 'evolve');
+    expect(paintOf(unmet, onUnmet).sheet, 'paths, none met: enabled').toMatchObject({
+      action: 'evolve',
+      canEvolve: true,
+    });
+    expect(press(unmet, onUnmet, 'A').state.phase).toEqual(evolvePhase(11n, '10'));
+
+    // Per monster: in the same world Emberfang (12, species 2) has no path out.
+    const ember = swallowed(unmet, monstersScreen.init(unmet), [
+      'RB',
+      'Down',
+      ...SHEET_STEPS.evolve,
+    ]);
+    expect(ember.phase).toEqual(sheetPhase(12n, 'evolve'));
+    expect(paintOf(unmet, ember).sheet).toMatchObject({ canEvolve: false });
+    const emberA = press(unmet, ember, 'A');
+    expect(emberA.result).toBe('consumed');
+    expect(emberA.state.phase).toEqual(sheetPhase(12n, 'evolve'));
+  });
+
+  it('CTL8C-1-EVOLVE-CONFIRM-NO: A on a choice opens a confirm that defaults to No, painted with the monster`s name and that path`s target species under the sheet on Evolve, with no command; A on No and B both return to the list on that path with nothing sent; a fresh Up or Down toggles Yes and No', () => {
+    // WRONG IMPL KILLED: a confirm that defaults to Yes (CTL8C.1: No; a double tap would evolve);
+    // an evolution sent from the list at once; a confirm naming another path's species (the first
+    // choice's, or the edge id read as a species) or the species instead of the nickname; A on No
+    // that sends anyway; a No or B that drops to the sheet or the list (the player loses the path
+    // they were reading); the sheet hidden under the confirm; Up / Down that do not toggle.
+    const vm = vmOf(world({ paths: TWO_MET }));
+    const list = swallowed(vm, kipOn(vm, 'evolve'), ['A']);
+    expect(list.phase).toEqual(evolvePhase(11n, '20'));
+    const opened = press(vm, list, 'A');
+    expect(opened.result, 'the confirm sends nothing').toBe('consumed');
+    expect(opened.state.phase).toEqual(confirmPhase(11n, '20', false));
+    const painted = paintOf(vm, opened.state);
+    expect(painted.confirm, 'No is the default').toEqual({
+      name: 'Kip',
+      species: 'Duskling',
+      yes: false,
+    });
+    expect(painted.sheet, 'the sheet stays painted, on Evolve').toEqual({
+      card: cardOf(vm, 11n),
+      action: 'evolve',
+      canFeed: true,
+      canEvolve: true,
+    });
+    expect(painted.feed).toBeNull();
+
+    const no = press(vm, opened.state, 'A');
+    expect(no.result, 'A on No sends nothing').toBe('consumed');
+    expect(no.state.phase, 'back on the list, on that path').toEqual(evolvePhase(11n, '20'));
+    expect(paintOf(vm, no.state).confirm).toBeNull();
+
+    const b = press(vm, swallowed(vm, opened.state, ['Down']), 'B');
+    expect(b.result, 'B with Yes highlighted sends nothing').toBe('consumed');
+    expect(b.state.phase).toEqual(evolvePhase(11n, '20'));
+
+    const yesAfter = (inputs: readonly Input[]): boolean | null => {
+      const s = swallowed(vm, opened.state, inputs);
+      return s.phase.kind === 'evolveConfirm' ? s.phase.yes : null;
+    };
+    expect(yesAfter(['Down'])).toBe(true);
+    expect(yesAfter(['Up'])).toBe(true);
+    expect(yesAfter(['Down', 'Down'])).toBe(false);
+    expect(yesAfter(['Down', 'Up'])).toBe(false);
+    expect(paintOf(vm, swallowed(vm, opened.state, ['Down'])).confirm).toEqual({
+      name: 'Kip',
+      species: 'Duskling',
+      yes: true,
+    });
+
+    // The second choice's confirm names its own target.
+    const other = press(vm, swallowed(vm, list, ['Down']), 'A');
+    expect(paintOf(vm, other.state).confirm).toEqual({
+      name: 'Kip',
+      species: 'Emberfang',
+      yes: false,
+    });
+    // A Storage monster with no nickname is named by its species.
+    const stored = swallowed(vm, monstersScreen.init(vm), [...SHEET_STEPS.evolve, 'A', 'A']);
+    expect(paintOf(vm, stored).confirm).toEqual({
+      name: 'Sproutle',
+      species: 'Duskling',
+      yes: false,
+    });
+  });
+
+  it('CTL8C-1-EVOLVE-COMMAND: with two choices and the cursor moved to the SECOND, A, Down (Yes) and A send evolve for the sheet`s monster with that path`s toSpecies (not its edge id, not the first choice`s) and return to the sheet on Evolve', () => {
+    // WRONG IMPL KILLED: an evolve sent with the edge id (30) instead of the target species (2),
+    // with the first choice's species whatever the cursor, with the cursor's index, or for
+    // another monster; a Yes that leaves the confirm open (a second A would send twice) or drops
+    // to the list.
+    const vm = vmOf(world({ paths: TWO_MET }));
+    const onSecond = swallowed(vm, kipOn(vm, 'evolve'), ['A', 'Down']);
+    expect(onSecond.phase, 'fixture: the second choice, edge 30 -> species 2').toEqual(
+      evolvePhase(11n, '30'),
+    );
+    const yes = swallowed(vm, onSecond, ['A', 'Down']);
+    expect(yes.phase).toEqual(confirmPhase(11n, '30', true));
+    const sent = press(vm, yes, 'A');
+    expect(sent.result).toEqual({ kind: 'evolve', monsterId: 11n, toSpecies: 2 });
+    expect(sent.state.phase, 'back on the sheet, on Evolve').toEqual(sheetPhase(11n, 'evolve'));
+    expect(paintOf(vm, sent.state)).toMatchObject({ confirm: null, evolve: null });
+
+    // A Storage monster's first choice: edge 20 -> species 3.
+    const stored = swallowed(vm, monstersScreen.init(vm), [...SHEET_STEPS.evolve, 'A', 'A', 'Up']);
+    expect(stored.phase).toEqual(confirmPhase(21n, '20', true));
+    expect(press(vm, stored, 'A').result).toEqual({ kind: 'evolve', monsterId: 21n, toSpecies: 3 });
+  });
+
+  it('CTL8C-1-CONFIRM-FALLBACK: when a batch makes the confirm`s path no longer a choice, or takes it away, the next A only paints the fallback (the Evolve list on that path, on the first choice if the path is gone, or the sheet on Evolve if no path is left) and sends nothing; observe falls back the same way; with nothing changed the same Yes sends', () => {
+    // WRONG IMPL KILLED: a Yes that sends an evolve the server no longer offers (a raised gate, a
+    // republished graph); a fallback acted on by the same press (the player's A would open a
+    // confirm they never saw, for another path); a confirm left open over a path that is gone.
+    const w = world({ paths: TWO_MET });
+    const vm = vmOf(w);
+    const yesOn30 = swallowed(vm, kipOn(vm, 'evolve'), ['A', 'Down', 'A', 'Down']);
+    expect(yesOn30.phase).toEqual(confirmPhase(11n, '30', true));
+    expect(press(vm, yesOn30, 'A').result, 'CONTROL: nothing changed, Yes sends').toEqual({
+      kind: 'evolve',
+      monsterId: 11n,
+      toSpecies: 2,
+    });
+
+    // Edge 30 is still listed but no longer met.
+    const raised = vmOf({
+      ...w,
+      paths: [edge(10, 1, 4, 50), edge(20, 1, 3, 1), edge(30, 1, 2, 50)],
+    });
+    const a1 = press(raised, yesOn30, 'A');
+    expect(a1.result, 'no longer a choice: nothing sent').toBe('consumed');
+    expect(a1.state.phase, 'the list, on that path').toEqual(evolvePhase(11n, '30'));
+    expect(paintOf(raised, a1.state).confirm).toBeNull();
+    expect(observe(raised, yesOn30).phase, 'observe falls back the same way').toEqual(
+      evolvePhase(11n, '30'),
+    );
+
+    // Edge 30 is gone; edges 20 and 40 are choices.
+    const swapped = vmOf({
+      ...w,
+      paths: [edge(10, 1, 4, 50), edge(20, 1, 3, 1), edge(40, 1, 2, 1)],
+    });
+    const a2 = press(swapped, yesOn30, 'A');
+    expect(a2.result, 'the path is gone: nothing sent').toBe('consumed');
+    expect(a2.state.phase, 'the list on the first choice, no confirm opened by this press').toEqual(
+      evolvePhase(11n, '20'),
+    );
+    expect(
+      press(swapped, a2.state, 'A').state.phase,
+      'the NEXT A acts on what was painted: a fresh confirm, on No',
+    ).toEqual(confirmPhase(11n, '20', false));
+
+    // No path left at all.
+    const bare = vmOf({ ...w, paths: [] });
+    const a3 = press(bare, yesOn30, 'A');
+    expect(a3.result).toBe('consumed');
+    expect(a3.state.phase, 'no path: the sheet, on Evolve').toEqual(sheetPhase(11n, 'evolve'));
+  });
+});
+
+describe('monstersScreen — settle and repeats (ctl-8c, CTL8C.1)', () => {
+  it('CTL8C-1-OBSERVE-REPAINT: observe answers the SAME state while nothing it paints changed (list, sheet, food list, Evolve list, confirm), and a NEW one when a food count changes under the food list, when a path`s met flag or unmet reason changes under the Evolve list, or when Feed or Evolve becomes disabled under the sheet, then settles; the list phase ignores counts and paths', () => {
+    // WRONG IMPL KILLED: ctl-8b's key-only settle (a count or a met flag changes no monster key:
+    // the view refreshes cards only, so "Bait (x3)" would stay after one is eaten and a path that
+    // became unmet would still read as ready); a signature without the unmet reason (a raised gate
+    // keeps the old requirement on screen); an observe that answers a new object on every batch or
+    // after it settled (the frame repaints at batch rate); one that repaints the list phase for
+    // data the list does not paint.
+    const w = world({ inventory: FOODS3, paths: TWO_MET });
+    const vm = vmOf(w);
+    const init = monstersScreen.init(vm);
+    const sheet = kipOn(vm, 'feed');
+    const feedList = swallowed(vm, sheet, ['A']);
+    const evoList = swallowed(vm, kipOn(vm, 'evolve'), ['A']);
+    const confirm = swallowed(vm, evoList, ['A']);
+    const states = [
+      ['list', init],
+      ['sheet', sheet],
+      ['food list', feedList],
+      ['Evolve list', evoList],
+      ['confirm', confirm],
+    ] as const;
+    for (const [name, s] of states) {
+      expect(observe(vmOf(w), s), `${name}: nothing changed, the same object`).toBe(s);
+    }
+
+    // A count under the food list.
+    const ate = withCount(w, BAIT, 2);
+    const recount = observe(vmOf(ate), feedList);
+    expect(recount, 'a count changed: a new state').not.toBe(feedList);
+    expect(recount.phase, 'on the same food').toEqual(feedList.phase);
+    expect(paintOf(vmOf(ate), recount).feed?.foods).toContainEqual({
+      itemId: BAIT,
+      name: 'Bait',
+      count: 2,
+    });
+    expect(observe(vmOf(ate), recount), 'then settled').toBe(recount);
+
+    // A met flag under the Evolve list: edge 30's gate rises.
+    const raised: World = {
+      ...w,
+      paths: [edge(10, 1, 4, 50), edge(20, 1, 3, 1), edge(30, 1, 2, 50)],
+    };
+    const remet = observe(vmOf(raised), evoList);
+    expect(remet, 'a met flag changed: a new state').not.toBe(evoList);
+    expect(remet.phase, 'the cursor path is still there').toEqual(evoList.phase);
+    expect(paintOf(vmOf(raised), remet).evolve?.mon).toEqual(findEvolution(vmOf(raised), 11n));
+    expect(observe(vmOf(raised), remet), 'then settled').toBe(remet);
+
+    // The unmet reason alone: edge 10 needs level 60, not 50 (unmet either way).
+    const harder: World = {
+      ...w,
+      paths: [edge(10, 1, 4, 60), edge(20, 1, 3, 1), edge(30, 1, 2, 1)],
+    };
+    expect(
+      findEvolution(vmOf(harder), 11n)?.paths[0]?.unmetReason,
+      'fixture: the reason differs',
+    ).not.toBe(findEvolution(vm, 11n)?.paths[0]?.unmetReason);
+    const reason = observe(vmOf(harder), evoList);
+    expect(reason, 'an unmet reason changed: a new state').not.toBe(evoList);
+    expect(observe(vmOf(harder), reason), 'then settled').toBe(reason);
+
+    // Feed / Evolve disabled under the sheet.
+    const starved: World = { ...w, inventory: [] };
+    const noFood = observe(vmOf(starved), sheet);
+    expect(noFood, 'Feed became disabled: a new state').not.toBe(sheet);
+    expect(paintOf(vmOf(starved), noFood).sheet).toMatchObject({ canFeed: false, canEvolve: true });
+    expect(observe(vmOf(starved), noFood), 'then settled').toBe(noFood);
+    const pathless: World = { ...w, paths: [] };
+    const noPath = observe(vmOf(pathless), sheet);
+    expect(noPath, 'Evolve became disabled: a new state').not.toBe(sheet);
+    expect(paintOf(vmOf(pathless), noPath).sheet).toMatchObject({
+      canFeed: true,
+      canEvolve: false,
+    });
+    expect(observe(vmOf(pathless), noPath), 'then settled').toBe(noPath);
+
+    // The list phase paints none of it.
+    for (const batch of [ate, raised, harder, starved, pathless]) {
+      expect(observe(vmOf(batch), init), 'the list: the same object').toBe(init);
+    }
+  });
+
+  it('CTL8C-1-REPEAT-NEVER-ACTS: a repeat A never acts (Care sends nothing, Feed and Evolve open nothing, a food is not fed, a choice opens no confirm, Yes sends nothing) and a repeat Up or Down never moves the Yes / No cursor; the same presses made fresh do act', () => {
+    // WRONG IMPL KILLED: any action that ignores the repeat flag (a held Enter would care once per
+    // auto-repeat, feed a stack away, or run through the confirm and evolve: the very thing the No
+    // default exists to stop), and a Yes / No cursor that a held arrow flips (it would land on
+    // whichever answer the repeat rate leaves it on).
+    const vm = vmOf(world({ paths: TWO_MET }));
+    const careSheet = kipOn(vm, 'care');
+    const feedSheet = kipOn(vm, 'feed');
+    const evolveSheet = kipOn(vm, 'evolve');
+    const foodList = swallowed(vm, feedSheet, ['A']);
+    const pathList = swallowed(vm, evolveSheet, ['A']);
+    const onNo = swallowed(vm, pathList, ['A']);
+    const onYes = swallowed(vm, onNo, ['Down']);
+    expect(onYes.phase, 'fixture: Yes on edge 20').toEqual(confirmPhase(11n, '20', true));
+
+    const held: ReadonlyArray<readonly [string, MonstersScreenState, NavInput]> = [
+      ['A on Care', careSheet, rep('A')],
+      ['A on Feed', feedSheet, rep('A')],
+      ['A on a food', foodList, rep('A')],
+      ['A on Evolve', evolveSheet, rep('A')],
+      ['A on a choice', pathList, rep('A')],
+      ['A on Yes', onYes, rep('A')],
+      ['Down on No', onNo, rep('Down')],
+      ['Up on No', onNo, rep('Up')],
+      ['Down on Yes', onYes, rep('Down')],
+      ['Up on Yes', onYes, rep('Up')],
+    ];
+    for (const [name, state, input] of held) {
+      const step = press(vm, state, input);
+      expect(step.result, `a repeat ${name} is swallowed`).toBe('consumed');
+      expect(step.state.phase, `a repeat ${name} changes no phase`).toEqual(state.phase);
+      expect(step.state.pendingFeed, `a repeat ${name} feeds nothing`).toBeNull();
+    }
+
+    // CONTROL: fresh, each one acts.
+    expect(press(vm, careSheet, 'A').result).toEqual({ kind: 'care', monsterId: 11n });
+    expect(press(vm, feedSheet, 'A').state.phase).toEqual(feedPhase(11n, '7'));
+    expect(press(vm, foodList, 'A').result).toEqual({
+      kind: 'train',
+      monsterId: 11n,
+      foodItemId: BAIT,
+    });
+    expect(press(vm, evolveSheet, 'A').state.phase).toEqual(evolvePhase(11n, '20'));
+    expect(press(vm, pathList, 'A').state.phase).toEqual(confirmPhase(11n, '20', false));
+    expect(press(vm, onYes, 'A').result).toEqual({ kind: 'evolve', monsterId: 11n, toSpecies: 3 });
+    expect(press(vm, onNo, 'Down').state.phase).toEqual(confirmPhase(11n, '20', true));
+  });
+
+  it('ctl-8c settle: a food list whose cursor food is gone moves to the first food, and one left with no food closes to the sheet on Feed; an Evolve list whose cursor path is gone moves to the first choice (else the first path), and one left with no path closes to the sheet on Evolve; a food list, an Evolve list or a confirm whose monster is gone closes to the list', () => {
+    // WRONG IMPL KILLED: a cursor left on a food or a path that is gone (A would feed an item the
+    // player no longer holds, or open a confirm for a path that does not exist); a re-seat onto
+    // an unmet path while a choice exists; a list left open with nothing in it; a list or confirm
+    // left open over a monster that left.
+    const w = world({ inventory: FOODS3, paths: TWO_MET });
+    const vm = vmOf(w);
+
+    const onCarrot = swallowed(vm, kipOn(vm, 'feed'), ['A', 'Down']);
+    expect(onCarrot.phase).toEqual(feedPhase(11n, '15'));
+    expect(observe(vmOf(withoutItem(w, CARROT)), onCarrot).phase, 'the first food').toEqual(
+      feedPhase(11n, '7'),
+    );
+    const starved: World = { ...w, inventory: [] };
+    const closed = observe(vmOf(starved), onCarrot);
+    expect(closed.phase, 'no food left: the sheet, on Feed').toEqual(sheetPhase(11n, 'feed'));
+    expect(paintOf(vmOf(starved), closed).feed).toBeNull();
+
+    const on30 = swallowed(vm, kipOn(vm, 'evolve'), ['A', 'Down']);
+    expect(on30.phase).toEqual(evolvePhase(11n, '30'));
+    const swapped: World = {
+      ...w,
+      paths: [edge(10, 1, 4, 50), edge(20, 1, 3, 1), edge(40, 1, 2, 1)],
+    };
+    expect(observe(vmOf(swapped), on30).phase, 'the first choice').toEqual(evolvePhase(11n, '20'));
+    const single: World = { ...w, paths: [edge(10, 1, 4, 50), edge(20, 1, 3, 1)] };
+    expect(observe(vmOf(single), on30).phase, 'no choice left: the first path').toEqual(
+      evolvePhase(11n, '10'),
+    );
+    const pathless: World = { ...w, paths: [] };
+    expect(observe(vmOf(pathless), on30).phase, 'no path left').toEqual(sheetPhase(11n, 'evolve'));
+
+    const confirm = swallowed(vm, on30, ['A']);
+    const gone = vmOf(without(w, 11n));
+    for (const [name, s] of [
+      ['food list', onCarrot],
+      ['Evolve list', on30],
+      ['confirm', confirm],
+    ] as const) {
+      const next = observe(gone, s);
+      expect(next.phase.kind, `${name}: the monster is gone`).toBe('list');
+      expect(paintOf(gone, next), `${name}: nothing of it painted`).toMatchObject({
+        sheet: null,
+        feed: null,
+        evolve: null,
+        confirm: null,
+      });
+    }
+  });
+
+  it('ctl-8c gap: Start pops to the base from the food list, the Evolve list and the confirm; LB and RB are swallowed there and switch no tab; Select toggles help from the food list', () => {
+    // WRONG IMPL KILLED: a sub-phase that swallows Start (the frame could not be left from a list);
+    // LB / RB that switch the tab under an open list (the list would belong to a monster the tabs
+    // no longer show) or that leak to the page as unhandled (PageUp / PageDown would scroll).
+    const vm = vmOf(world({ paths: TWO_MET }));
+    const foodList = swallowed(vm, kipOn(vm, 'feed'), ['A']);
+    const pathList = swallowed(vm, kipOn(vm, 'evolve'), ['A']);
+    const confirm = swallowed(vm, pathList, ['A']);
+    for (const [name, s] of [
+      ['food list', foodList],
+      ['Evolve list', pathList],
+      ['confirm', confirm],
+    ] as const) {
+      expect(press(vm, s, 'Start').result, `Start in the ${name}`).toEqual(POP_TO_BASE);
+      for (const button of ['LB', 'RB'] as const) {
+        const step = press(vm, s, button);
+        expect(step.result, `${button} in the ${name}`).toBe('consumed');
+        expect(step.state.phase, `${button} leaves the ${name} open`).toEqual(s.phase);
+        expect(cursorOf(step.state), `${button} switches no tab`).toEqual(cursorOf(s));
+      }
+    }
+    expect(press(vm, foodList, 'Select').result).toEqual(TOGGLE_HELP);
   });
 });
