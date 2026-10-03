@@ -526,22 +526,29 @@ test.describe
       }
       expect(s.ongoingBattle.outcome).toBe('Ongoing');
 
-      // Recruit button must be visible (battleView.ts:205 data-testid="recruit-action").
-      const recruitBtn = page.locator('[data-testid="recruit-action"]');
-      await expect(recruitBtn).toBeVisible({ timeout: 5_000 });
-
-      // Bait selector must be present (battleView.ts:183 data-testid="bait-selector").
+      // ctl-8j: the bait <select> became a list (B10); Recruit now asks Yes/No.
+      // Bait list must be present (data-testid="bait-selector", now a role=group of rows) with its
+      // No bait row (data-testid="bait-option-none") first.
       const baitSel = page.locator('[data-testid="bait-selector"]');
       await expect(baitSel).toBeVisible({ timeout: 5_000 });
+      const noBaitRow = page.locator('[data-testid="bait-option-none"]');
+      await expect(noBaitRow).toBeVisible({ timeout: 5_000 });
 
       // NEGATIVE classify-by-data assertion: a fresh inventory has no
-      // items with recruit_bonus > 0, so bait-selector must have ZERO options with
-      // data-recruit-bonus.  An impl that hard-codes bait options instead of
+      // items with recruit_bonus > 0, so the bait list must have ZERO rows with
+      // data-recruit-bonus.  An impl that hard-codes bait rows instead of
       // filtering by data attribute would fail here.
-      // Source: battleView.ts:198 `opt.setAttribute('data-recruit-bonus', ...)`.
+      // Source: battleView.ts `row.setAttribute('data-recruit-bonus', ...)` (ADR-0047).
       const baitOptions = page.locator('[data-testid="bait-selector"] [data-recruit-bonus]');
       const baitCount = await baitOptions.count();
-      expect(baitCount, 'Fresh inventory must have zero bait options (data-recruit-bonus)').toBe(0);
+      expect(baitCount, 'Fresh inventory must have zero bait rows (data-recruit-bonus)').toBe(0);
+
+      // ctl-8j: the bait <select> became a list (B10); Recruit now asks Yes/No.
+      // The recruit action is the confirm's Yes (data-testid="recruit-action"), asked after the
+      // No bait row is pressed (it was a button that read the select's implicit default).
+      await noBaitRow.click({ timeout: 5_000 });
+      const recruitBtn = page.locator('[data-testid="recruit-action"]');
+      await expect(recruitBtn).toBeVisible({ timeout: 5_000 });
 
       // The selector assertion above is the authoritative DOM-level check.
       // (itemDef.recruitBonus is not exposed in the GameSnap; classify-by-data is
@@ -835,8 +842,12 @@ test.describe
             break;
           }
 
-          // Click recruit (battleView.ts:205 data-testid="recruit-action").
+          // Click recruit: No bait, then Yes (data-testid="recruit-action").
+          // ctl-8j: the bait <select> became a list (B10); Recruit now asks Yes/No. The No bait
+          // click is INSIDE the per-attempt loop on purpose: a failed attempt advances the turn,
+          // which closes the confirm, so every attempt asks again.
           recruitClicksUsed++;
+          await page.locator('[data-testid="bait-option-none"]').click({ timeout: 5_000 });
           const recruitBtn = page.locator('[data-testid="recruit-action"]');
           await recruitBtn.click({ timeout: 5_000 });
 
@@ -1012,25 +1023,27 @@ test.describe
     //   __game().grantBait(itemId, qty) or equivalent test-hook on __game().
     // -------------------------------------------------------------------------
     test.fixme('R4: bait selector lists only items with recruit_bonus > 0 (blocked: __game() test-hook not exposed; owned by a client/src slice)', async () => {
+      // ctl-8j: the bait <select> became a list (B10); Recruit now asks Yes/No.
       // STEP 1: grant a bait item.
       //   Requires __game().grantBait(itemId, qty) on the snapshot — not yet exposed.
       //   See re-anchor reason above.
       // STEP 2: trigger a wild battle (grass walk as in R1).
-      // STEP 3: bait-selector must be visible.
+      // STEP 3: the bait list (data-testid="bait-selector", a group of rows) must be visible.
       //   const selector = page.locator('[data-testid="bait-selector"]');
       //   await expect(selector).toBeVisible({ timeout: 5_000 });
-      // STEP 4: assert ≥1 option with data-recruit-bonus.
-      //   Source: battleView.ts:198 opt.setAttribute('data-recruit-bonus', String(bait.recruitBonus))
-      //   const baitOptions = page.locator('[data-testid="bait-selector"] [data-recruit-bonus]');
-      //   const count = await baitOptions.count();
+      // STEP 4: assert ≥1 row with data-recruit-bonus.
+      //   Source: battleView.ts row.setAttribute('data-recruit-bonus', String(bait.recruitBonus))
+      //   const baitRows = page.locator('[data-testid="bait-selector"] [data-recruit-bonus]');
+      //   const count = await baitRows.count();
       //   expect(count).toBeGreaterThanOrEqual(1);
       // STEP 5: assert all data-recruit-bonus values are > 0 (classify-by-data ADR-0047).
       //   for (let i = 0; i < count; i++) {
-      //     const bonus = await baitOptions.nth(i).getAttribute('data-recruit-bonus');
+      //     const bonus = await baitRows.nth(i).getAttribute('data-recruit-bonus');
       //     expect(Number(bonus)).toBeGreaterThan(0);
       //   }
-      // STEP 6: assert no non-bait items appear in the selector.
-      //   (All options except "No bait" sentinel must have data-recruit-bonus > 0.)
+      // STEP 6: assert no non-bait items appear in the list.
+      //   (Every row except the "No bait" row, data-testid="bait-option-none", must have
+      //   data-recruit-bonus > 0.)
       // Clean up: Flee.
     });
   });

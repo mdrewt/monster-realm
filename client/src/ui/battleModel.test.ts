@@ -23,6 +23,7 @@ import {
   BATTLE_COMMANDS,
   type BattleCommandRow,
   type BattleOutcomeTag,
+  type BattlePick,
   type BattleSkillVM,
   type BattleViewModel,
   battleCommands,
@@ -33,6 +34,7 @@ import {
   decideBattleOverlay,
   isPvpBattle,
   type OverlayState,
+  resolveBattlePick,
   shouldSkipBattleRefresh,
   skillCursor,
   statusBadge,
@@ -3716,5 +3718,195 @@ describe('ctl-8i: cursorStep and skillCursor (CTL8I.2)', () => {
     expect(skillCursor([], undefined)).toBe(0);
     expect(skillCursor([c8iSkill(3), c8iSkill(0)], 0), 'skill id 0 is a real id').toBe(1);
     expect(skillCursor([c8iSkill(0), c8iSkill(3)], 3)).toBe(1);
+  });
+});
+
+// =============================================================================
+// ctl-8j: Battle II — the pick (CTL8J.1)
+//
+// Recruit and Bag are two steps: a row is pressed (the bait, or the cure item), then Yes / the
+// target is. `BattlePick` is the model's name for the first step, carrying the battle and turn it
+// was made in and the id it is about (a NUMBER from the model, never text read back from the DOM:
+// B10). `resolveBattlePick(vm, pick)` keeps it only while this VM still offers exactly that:
+// anything else is dropped (null), never clamped to another item.
+// =============================================================================
+
+/** Three baits whose ids include 0 (a real id: no falsy test may lose it) and one past 2^31. */
+const C8J_BAITS = [
+  { itemId: 7, name: 'Lure Berry', recruitBonus: 150, count: 2 },
+  { itemId: 0, name: 'Zero Bait', recruitBonus: 100, count: 1 },
+  { itemId: 3_000_000_000, name: 'Big Bait', recruitBonus: 250, count: 4 },
+];
+/** Two cure items, one of them id 0. */
+const C8J_CURES = [
+  { itemId: 3, name: 'Tonic', cureStatus: 'Poison', count: 1 },
+  { itemId: 0, name: 'Salve', cureStatus: 'Burn', count: 2 },
+];
+
+/** A wild, ongoing, unlocked PvE VM (battle 9, turn 4) that offers the baits and cures above. */
+function c8jPickVM(overrides: Partial<BattleViewModel> = {}): BattleViewModel {
+  return c8iVM({
+    battleId: 9n,
+    turnNumber: 4,
+    baitOptions: [...C8J_BAITS],
+    cureItems: [...C8J_CURES],
+    ...overrides,
+  });
+}
+
+/** A Recruit pick made on battle 9, turn 4; `baitItemId` undefined is "No bait". */
+function c8jRecruitPick(
+  baitItemId: number | undefined,
+  at: { battleId?: bigint; turnNumber?: number } = {},
+): BattlePick {
+  return {
+    kind: 'recruitConfirm',
+    battleId: at.battleId ?? 9n,
+    turnNumber: at.turnNumber ?? 4,
+    baitItemId,
+  };
+}
+
+/** A Bag pick made on battle 9, turn 4. */
+function c8jCurePick(
+  itemId: number,
+  at: { battleId?: bigint; turnNumber?: number } = {},
+): BattlePick {
+  return {
+    kind: 'cureTarget',
+    battleId: at.battleId ?? 9n,
+    turnNumber: at.turnNumber ?? 4,
+    itemId,
+  };
+}
+
+describe('ctl-8j: resolveBattlePick (CTL8J.1)', () => {
+  it('CTL8J-1-PICK-RESOLVE: a pick made on this battle and turn is kept while the VM still offers its bait (No bait while the battle can recruit) or its cure item, ids 0 and past 2^31 included; a pick from another battle or turn, a consumed bait, a gone cure, a finished battle, a player battle or a battle that cannot recruit is dropped, never clamped to another item', () => {
+    // WRONG IMPL KILLED: a resolver that always returns the pick (a stale confirm survives a new
+    // turn and spends the wrong turn); one that matches the battle by `Number()` or by `==` on a
+    // lossy value (two battle ids past 2^53 collide); one that ignores the turn (a confirm made
+    // last turn is pressed this turn); a falsy test on the item id (id 0 is dropped, or No bait
+    // is read as id 0); one that treats `undefined` as "any bait" or as "no pick"; one that
+    // clamps a consumed bait to the first row or a gone cure to the nearest id (the player
+    // recruits with an item they never chose); one that offers No bait on a battle that cannot
+    // recruit (a trainer battle); one that keeps a pick on a finished battle or in PvP (the server
+    // rejects both); and one that ties a cure pick to `canRecruit` (a trainer battle still has a
+    // Bag).
+    const vm = c8jPickVM();
+
+    // --- kept ---
+    for (const id of [undefined, 7, 0, 3_000_000_000]) {
+      const pick = c8jRecruitPick(id);
+      expect(resolveBattlePick(vm, pick), `a Recruit pick on ${String(id)} is kept`).toEqual(pick);
+    }
+    for (const id of [3, 0]) {
+      const pick = c8jCurePick(id);
+      expect(resolveBattlePick(vm, pick), `a Bag pick on ${id} is kept`).toEqual(pick);
+    }
+    // The kept pick still says WHICH bait: No bait stays undefined, id 0 stays 0.
+    const kept = resolveBattlePick(vm, c8jRecruitPick(undefined));
+    expect(kept?.kind).toBe('recruitConfirm');
+    expect(kept !== null && kept.kind === 'recruitConfirm' ? kept.baitItemId : 'wrong').toBe(
+      undefined,
+    );
+    const keptZero = resolveBattlePick(vm, c8jRecruitPick(0));
+    expect(
+      keptZero !== null && keptZero.kind === 'recruitConfirm' ? keptZero.baitItemId : 'wrong',
+    ).toBe(0);
+
+    // The VM may re-order or recount its items: the pick is about an id, not a position or a count.
+    const reordered = c8jPickVM({
+      baitOptions: [...C8J_BAITS].reverse().map((b) => ({ ...b, count: b.count + 5 })),
+      cureItems: [...C8J_CURES].reverse(),
+    });
+    expect(resolveBattlePick(reordered, c8jRecruitPick(7))).toEqual(c8jRecruitPick(7));
+    expect(resolveBattlePick(reordered, c8jCurePick(0))).toEqual(c8jCurePick(0));
+
+    // No bait is always offered while the battle can recruit, even with no bait in the bag.
+    const noBaitInBag = c8jPickVM({ baitOptions: [] });
+    expect(resolveBattlePick(noBaitInBag, c8jRecruitPick(undefined))).toEqual(
+      c8jRecruitPick(undefined),
+    );
+    // A cure pick does not depend on the battle being recruitable.
+    const trainer = c8jPickVM({ canRecruit: false, baitOptions: [] });
+    expect(resolveBattlePick(trainer, c8jCurePick(3))).toEqual(c8jCurePick(3));
+
+    // --- a pick from another battle or turn ---
+    for (const [label, at] of [
+      ['another battle', { battleId: 10n }],
+      ['an earlier turn', { turnNumber: 3 }],
+      ['a later turn', { turnNumber: 5 }],
+      ['turn 0', { turnNumber: 0 }],
+    ] as const) {
+      expect(resolveBattlePick(vm, c8jRecruitPick(7, at)), `Recruit from ${label}`).toBeNull();
+      expect(
+        resolveBattlePick(vm, c8jRecruitPick(undefined, at)),
+        `No bait from ${label}`,
+      ).toBeNull();
+      expect(resolveBattlePick(vm, c8jCurePick(3, at)), `Bag from ${label}`).toBeNull();
+    }
+    // Two battle ids that differ only past 2^53 are two battles.
+    const big = c8jPickVM({ battleId: 9_007_199_254_740_993n });
+    expect(
+      resolveBattlePick(big, c8jRecruitPick(7, { battleId: 9_007_199_254_740_992n })),
+      'a battle id is compared as a bigint, not as a Number',
+    ).toBeNull();
+    expect(resolveBattlePick(big, c8jRecruitPick(7, { battleId: 9_007_199_254_740_993n }))).toEqual(
+      c8jRecruitPick(7, { battleId: 9_007_199_254_740_993n }),
+    );
+
+    // --- an item the VM no longer offers: dropped, not re-pointed ---
+    const oneBait = c8jPickVM({ baitOptions: [C8J_BAITS[0] as (typeof C8J_BAITS)[number]] });
+    expect(resolveBattlePick(oneBait, c8jRecruitPick(0)), 'bait 0 was consumed').toBeNull();
+    expect(resolveBattlePick(oneBait, c8jRecruitPick(3_000_000_000))).toBeNull();
+    expect(resolveBattlePick(oneBait, c8jRecruitPick(99)), 'an id never offered').toBeNull();
+    expect(resolveBattlePick(oneBait, c8jRecruitPick(7)), 'the one that is left').toEqual(
+      c8jRecruitPick(7),
+    );
+    const oneCure = c8jPickVM({ cureItems: [C8J_CURES[0] as (typeof C8J_CURES)[number]] });
+    expect(resolveBattlePick(oneCure, c8jCurePick(0)), 'cure 0 is gone').toBeNull();
+    expect(resolveBattlePick(oneCure, c8jCurePick(99))).toBeNull();
+    expect(resolveBattlePick(oneCure, c8jCurePick(3))).toEqual(c8jCurePick(3));
+    expect(
+      resolveBattlePick(c8jPickVM({ cureItems: [] }), c8jCurePick(3)),
+      'no cure items at all',
+    ).toBeNull();
+    // A bait id is not a cure id and the other way round: 7 is a bait here, 3 a cure.
+    expect(resolveBattlePick(vm, c8jCurePick(7)), 'a cure pick on a bait id').toBeNull();
+    expect(resolveBattlePick(vm, c8jRecruitPick(3)), 'a bait pick on a cure id').toBeNull();
+
+    // --- a battle that cannot recruit: no Recruit pick, not even No bait ---
+    expect(resolveBattlePick(trainer, c8jRecruitPick(undefined))).toBeNull();
+    const trainerListing = c8jPickVM({ canRecruit: false }); // baits still listed by a hand-built VM
+    expect(resolveBattlePick(trainerListing, c8jRecruitPick(7))).toBeNull();
+    expect(resolveBattlePick(trainerListing, c8jRecruitPick(undefined))).toBeNull();
+
+    // --- a finished battle keeps nothing, whatever the lists still say ---
+    for (const outcome of ['SideAWins', 'SideBWins', 'Fled'] as const) {
+      const over = c8jPickVM({ outcome });
+      expect(resolveBattlePick(over, c8jRecruitPick(7)), `${outcome}: Recruit`).toBeNull();
+      expect(resolveBattlePick(over, c8jRecruitPick(undefined)), `${outcome}: No bait`).toBeNull();
+      expect(resolveBattlePick(over, c8jCurePick(3)), `${outcome}: Bag`).toBeNull();
+    }
+
+    // --- a player battle keeps nothing (recruit and cure items are PvE-only) ---
+    for (const pvp of [
+      { isPvp: true, pvpOpponentName: 'Rival' },
+      { isPvp: true, pvpOpponentName: 'Rival', pvpPendingSubmit: true },
+    ] as const) {
+      const pvpVm = c8jPickVM(pvp); // canRecruit and both lists still set: only isPvp can drop it
+      expect(resolveBattlePick(pvpVm, c8jRecruitPick(7)), `PvP ${JSON.stringify(pvp)}`).toBeNull();
+      expect(resolveBattlePick(pvpVm, c8jRecruitPick(undefined))).toBeNull();
+      expect(resolveBattlePick(pvpVm, c8jCurePick(3))).toBeNull();
+    }
+
+    // --- no pick in, no pick out ---
+    expect(resolveBattlePick(vm, null)).toBeNull();
+
+    // --- pure: a frozen pick is read, never written; the same answer twice ---
+    const frozen = Object.freeze(c8jRecruitPick(7)) as BattlePick;
+    expect(resolveBattlePick(vm, frozen)).toEqual(c8jRecruitPick(7));
+    expect(resolveBattlePick(vm, frozen)).toEqual(c8jRecruitPick(7));
+    expect(frozen).toEqual(c8jRecruitPick(7));
   });
 });

@@ -359,65 +359,82 @@ function makeCallbacks(): BattleViewCallbacks {
 // BITES: an impl that unconditionally replaceChildren() the actionsEl will
 // destroy the user's selected option and reset the select to its first option.
 // ---------------------------------------------------------------------------
+// ctl-8j: migrated from the <select> shape (B10). The bait <select> is a bait LIST now; its
+// "selection" is an open pick (a Recruit confirm for the pressed bait), and the defect class is the
+// same: a re-render that rebuilds the list must not lose what the player chose.
 describe('BattleView e-1: bait selection preserved across re-renders (same VM)', () => {
   it('BITES: user-selected bait value is still set after calling refresh() again with the same vm', () => {
+    // ctl-8j: migrated from the <select> shape (B10): the choice is the open Recruit confirm.
+    // WRONG IMPL KILLED: a refresh that rebuilds the actions and forgets the pick (the confirm
+    // vanishes, or reverts to No bait) on every server tick.
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
     const view = new BattleView(parent, makeCallbacks());
     const vm = makeRecruitVM();
 
-    // First render: creates the bait selector
+    // First render: creates the bait list
     view.refresh(vm);
     view.show();
 
-    const selectAfterFirst = parent.querySelector<HTMLSelectElement>(
-      '[data-testid="bait-selector"]',
+    const baitList = parent.querySelector('[data-testid="bait-selector"]');
+    expect(baitList).not.toBeNull();
+    // The user presses bait item 7 ("Lure Berry")
+    const lure = parent.querySelector<HTMLElement>(
+      '[data-testid="bait-selector"] [data-recruit-bonus="150"]',
     );
-    expect(selectAfterFirst).not.toBeNull();
-    // Simulate the user selecting bait item 7 ("Lure Berry")
-    selectAfterFirst!.value = '7';
-    expect(selectAfterFirst!.value).toBe('7'); // precondition: selection was applied
+    expect(lure, 'precondition: the Lure Berry row exists').not.toBeNull();
+    lure!.click();
+    expect(
+      c8jConfirm(parent)?.textContent,
+      'precondition: the press opened the Recruit confirm for Lure Berry',
+    ).toContain('Recruit with Lure Berry?');
 
     // Second refresh with the SAME vm (same baitOptions — no server change)
     view.refresh(vm);
 
-    const selectAfterSecond = parent.querySelector<HTMLSelectElement>(
-      '[data-testid="bait-selector"]',
-    );
-    expect(selectAfterSecond).not.toBeNull();
-
-    // value must still be '7' (the user's prior selection is preserved).
-    expect(selectAfterSecond!.value).toBe('7');
+    // The pick is still open and still about Lure Berry (item 7).
+    expect(c8jConfirm(parent), 'the confirm survives a same-turn re-render').not.toBeNull();
+    expect(c8jConfirm(parent)?.textContent).toContain('Recruit with Lure Berry?');
 
     // Cleanup
     document.body.removeChild(parent);
   });
 
   it('BITES: bait value survives three consecutive re-renders with an identical vm', () => {
-    // Proves the fix is not a one-off: even repeated re-renders must not destroy the selection.
-    // WRONG IMPL KILLED: replaceChildren() on every refresh always resets to first option.
+    // ctl-8j: migrated from the <select> shape (B10).
+    // Proves the fix is not a one-off: even repeated re-renders must not destroy the pick.
+    // WRONG IMPL KILLED: a pick kept for one render only (the second bait reverts to the first
+    // row or to No bait), and a pick that is re-pointed by position instead of by item.
+    const callbacks = makeCallbacks();
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
-    const view = new BattleView(parent, makeCallbacks());
+    const view = new BattleView(parent, callbacks);
     const vm = makeRecruitVM();
 
     view.refresh(vm);
     view.show();
 
-    // User selects the second bait option (itemId=9)
-    const sel = parent.querySelector<HTMLSelectElement>('[data-testid="bait-selector"]')!;
-    sel.value = '9';
+    // User presses the second bait row (itemId=9, "Sweet Bait")
+    const sweet = parent.querySelector<HTMLElement>(
+      '[data-testid="bait-selector"] [data-recruit-bonus="250"]',
+    );
+    expect(sweet, 'precondition: the Sweet Bait row exists').not.toBeNull();
+    sweet!.click();
 
     // Three more refreshes — same vm
     view.refresh(vm);
     view.refresh(vm);
     view.refresh(vm);
 
-    const selFinal = parent.querySelector<HTMLSelectElement>('[data-testid="bait-selector"]')!;
-    // After fix: still '9'. Current impl: reset to '' on each refresh.
-    expect(selFinal.value).toBe('9');
+    expect(c8jConfirm(parent)?.textContent).toContain('Recruit with Sweet Bait?');
+    c8jYes(parent)!.click();
+    expect(
+      callbacks.onRecruit,
+      'Yes recruits with the bait that was pressed, id 9',
+    ).toHaveBeenCalledTimes(1);
+    expect(callbacks.onRecruit).toHaveBeenCalledWith(1n, 9);
 
     document.body.removeChild(parent);
   });
@@ -440,7 +457,8 @@ describe('BattleView e-1: bait-selector data-testid set exactly ONCE via one mec
     view.refresh(makeRecruitVM());
     view.show();
 
-    const sel = parent.querySelector<HTMLSelectElement>('[data-testid="bait-selector"]');
+    // ctl-8j: migrated from the <select> shape (B10): the bait-selector is the bait list root now.
+    const sel = parent.querySelector<HTMLElement>('[data-testid="bait-selector"]');
     expect(sel).not.toBeNull();
 
     // After fix: spurious 'testid' attribute must NOT be present.
@@ -450,7 +468,9 @@ describe('BattleView e-1: bait-selector data-testid set exactly ONCE via one mec
     document.body.removeChild(parent);
   });
 
-  it('BITES: data-testid=bait-selector appears exactly ONCE on the select element', () => {
+  it('BITES: data-testid=bait-selector appears exactly ONCE on the bait list root', () => {
+    // ctl-8j: migrated from the <select> shape (B10): the root is a labelled group of rows now,
+    // and the premise "that element is a SELECT" is the one thing that must be false.
     // Verify the query finds exactly one element — the two-mechanism write creates
     // only one element but that one element has both "testid" and "data-testid",
     // which is the issue this test encodes. After fix: the element exists and
@@ -463,17 +483,23 @@ describe('BattleView e-1: bait-selector data-testid set exactly ONCE via one mec
     view.show();
 
     const selectors = parent.querySelectorAll('[data-testid="bait-selector"]');
-    // Must be exactly ONE select element with data-testid=bait-selector.
+    // Must be exactly ONE element with data-testid=bait-selector.
     expect(selectors).toHaveLength(1);
-    // That element must be a SELECT (not some other element)
-    expect(selectors[0]!.tagName).toBe('SELECT');
+    // That element must NOT be a SELECT (a select owns the arrow keys: the B10 trap).
+    expect(selectors[0]!.tagName).not.toBe('SELECT');
+    expect(selectors[0]!.getAttribute('role')).toBe('group');
+    expect(parent.querySelectorAll('select')).toHaveLength(0);
 
     document.body.removeChild(parent);
   });
 
   it('BITES: recruit action button still present after bait selector fix', () => {
-    // Regression guard: the fix for the bait selector must not remove the Recruit button.
-    // WRONG IMPL KILLED: an over-zealous fix that removes the recruit render entirely.
+    // ctl-8j: migrated from the <select> shape (B10): the Recruit action is the confirm's Yes now,
+    // asked AFTER a bait row (here No bait) is pressed, so it is absent until then.
+    // Regression guard: the fix for the bait selector must not remove the Recruit action.
+    // WRONG IMPL KILLED: an over-zealous fix that removes the recruit render entirely, and one
+    // that keeps a recruit-action button on screen before any bait was chosen (a bare attempt on a
+    // single press, with no question asked).
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
@@ -481,9 +507,14 @@ describe('BattleView e-1: bait-selector data-testid set exactly ONCE via one mec
     view.refresh(makeRecruitVM());
     view.show();
 
+    expect(c8jConfirm(parent), 'no question is asked before a bait row is pressed').toBeNull();
+    const none = parent.querySelector<HTMLElement>('[data-testid="bait-option-none"]');
+    expect(none, 'the No bait row').not.toBeNull();
+    none!.click();
+
     const btn = parent.querySelector('[data-testid="recruit-action"]');
     expect(btn).not.toBeNull();
-    expect(btn!.textContent).toBe('Recruit');
+    expect(btn!.textContent).toBe('Yes');
 
     document.body.removeChild(parent);
   });
@@ -713,6 +744,9 @@ function makeCureItemVM(cureItems: CureItemVM[]): BattleViewModel {
 }
 
 describe('BattleView m14.5d-1b: cure-item selector rendered when cureItems non-empty (ongoing)', () => {
+  // ctl-8j: migrated from the <select> shape (B10). The cure "selector" is a labelled group of
+  // rows (`[data-battle-list="bag"]`), one per cure item; an item's id is what pressing its row
+  // passes on, never an `<option value>`.
   it('BITES: [data-testid="cure-item-selector"] present when vm.cureItems has entries', () => {
     // Kills: an impl that adds cureItems to the model but forgets to render the selector.
     const parent = document.createElement('div');
@@ -725,14 +759,20 @@ describe('BattleView m14.5d-1b: cure-item selector rendered when cureItems non-e
 
     const selector = parent.querySelector('[data-testid="cure-item-selector"]');
     expect(selector).not.toBeNull();
+    expect(selector!.tagName, 'a list root, not a <select>').not.toBe('SELECT');
     // Kills: an impl that doesn't render the selector at all
 
     document.body.removeChild(parent);
   });
 
-  it('BITES: cure-item selector has an option with value "5" and text including "Antidote"', () => {
-    // Kills: an impl that renders the selector but populates it with wrong values
-    // (e.g., uses index instead of itemId as option value).
+  it('BITES: cure-item list has a row whose press passes itemId 5 and whose text includes "Antidote"', () => {
+    // ctl-8j: migrated from the <select> shape (B10): was "cure-item selector has an option with
+    // value "5" and text including "Antidote"". The row carries no value at all; the id lives in
+    // the press (CTL8J-1-ID-NOT-PARSED strips every attribute to prove it), so the id half of the
+    // old assertion is the onUseItem(1n, 5) press in the test below, and here the row is found by
+    // its text and counted.
+    // Kills: an impl that renders the list but populates it with the wrong rows (e.g. one per
+    // inventory stack instead of one per cure item), or forgets the item name.
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
@@ -743,18 +783,20 @@ describe('BattleView m14.5d-1b: cure-item selector rendered when cureItems non-e
 
     const selector = parent.querySelector('[data-testid="cure-item-selector"]');
     expect(selector).not.toBeNull();
-    const option = selector!.querySelector('option[value="5"]');
-    expect(option).not.toBeNull();
-    expect(option!.textContent).toContain('Antidote');
-    // Kills: an impl that uses index as option value, or forgets the item name
+    expect(selector!.querySelectorAll('option'), 'no <option> any more').toHaveLength(0);
+    const rows = c8jRows(selector!, 'bag');
+    expect(rows, 'one row per cure item').toHaveLength(1);
+    expect(rows[0]!.textContent).toContain('Antidote');
+    // Kills: an impl that forgets the item name or renders a row per count
 
     document.body.removeChild(parent);
   });
 
-  it('BITES: cure-item option carries data-cure-status attribute (ADR-0047 classify-by-data contract surface)', () => {
+  it('BITES: cure-item row carries data-cure-status attribute (ADR-0047 classify-by-data contract surface)', () => {
+    // ctl-8j: migrated from the <select> shape (B10): was the `<option>`.
     // classify-by-data requires the contract surface to be present on the DOM
-    // so that future tools/evals can verify the classification without parsing option text.
-    // Kills: an impl that omits setAttribute('data-cure-status', ...) from the option.
+    // so that future tools/evals can verify the classification without parsing row text.
+    // Kills: an impl that omits setAttribute('data-cure-status', ...) from the row.
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
@@ -765,9 +807,9 @@ describe('BattleView m14.5d-1b: cure-item selector rendered when cureItems non-e
 
     const selector = parent.querySelector('[data-testid="cure-item-selector"]');
     expect(selector).not.toBeNull();
-    const option = selector!.querySelector('option[value="5"]') as HTMLOptionElement | null;
-    expect(option).not.toBeNull();
-    expect(option!.getAttribute('data-cure-status')).toBe('Poison');
+    const row = c8jRows(selector!, 'bag')[0];
+    expect(row).toBeDefined();
+    expect(row!.getAttribute('data-cure-status')).toBe('Poison');
 
     document.body.removeChild(parent);
   });
@@ -775,7 +817,10 @@ describe('BattleView m14.5d-1b: cure-item selector rendered when cureItems non-e
 
 describe('BattleView m14.5d-1b: use-item-action button present when cureItems non-empty', () => {
   it('BITES: [data-testid="use-item-action"] present when vm.cureItems has entries', () => {
-    // Kills: an impl that renders the selector but omits the action button.
+    // ctl-8j: migrated from the <select> shape (B10): the Use Item action is the Bag TARGET row
+    // now, asked after a cure row is pressed, so it is absent until then.
+    // Kills: an impl that renders the list but omits the action, and one that keeps a use-item
+    // button on screen before any item was chosen (a use with no question).
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
@@ -784,9 +829,12 @@ describe('BattleView m14.5d-1b: use-item-action button present when cureItems no
     view.refresh(vm);
     view.show();
 
+    expect(c8jTarget(parent), 'no target before a cure row is pressed').toBeNull();
+    c8jRows(parent, 'bag')[0]!.click();
+
     const btn = parent.querySelector('[data-testid="use-item-action"]');
     expect(btn).not.toBeNull();
-    // Kills: an impl that renders the selector but forgets the button
+    // Kills: an impl that renders the list but forgets the target
 
     document.body.removeChild(parent);
   });
@@ -794,6 +842,8 @@ describe('BattleView m14.5d-1b: use-item-action button present when cureItems no
 
 describe('BattleView m14.5d-1b: onUseItem called with correct (battleId, itemId) on button click', () => {
   it('BITES: clicking "Use Item" calls onUseItem(1n, 5) — battleId=1n, itemId=5 (not index)', () => {
+    // ctl-8j: migrated from the <select> shape (B10): the click is the cure row then the target
+    // row, and "option value = itemId" is "the press passes itemId" (the row has no value).
     // Kills: an impl that wires the wrong field (passes the array index instead of itemId)
     // or that doesn't call the onUseItem callback at all.
     const parent = document.createElement('div');
@@ -805,12 +855,13 @@ describe('BattleView m14.5d-1b: onUseItem called with correct (battleId, itemId)
     view.refresh(vm);
     view.show();
 
-    // Select item 5 in the cure-item selector
-    const selector = parent.querySelector<HTMLSelectElement>('[data-testid="cure-item-selector"]');
-    expect(selector).not.toBeNull();
-    selector!.value = '5';
+    // Press item 5 in the cure list
+    const row = c8jRows(parent, 'bag')[0];
+    expect(row).toBeDefined();
+    row!.click();
+    expect(callbacks.onUseItem, 'choosing the item uses nothing yet').not.toHaveBeenCalled();
 
-    // Click the Use Item button
+    // Press the target
     const btn = parent.querySelector('[data-testid="use-item-action"]') as HTMLElement | null;
     expect(btn).not.toBeNull();
     btn!.click();
@@ -845,16 +896,18 @@ describe('BattleView m14.5d-1b: cure-item selector hidden when cureItems is empt
 
 describe('BattleView m14.5d-1b: cure-item selection preserved across re-renders (same VM)', () => {
   it('BITES: user-selected cure item value is still set after calling refresh() again with same vm', () => {
+    // ctl-8j: migrated from the <select> shape (B10): the "selection" is the open Bag target for
+    // the pressed cure row, and the check is who the target's press then uses.
     // Same class of bug as bait-selector fix (e-1): replaceChildren() on every refresh
-    // destroys the <select> element and resets the user's selection.
-    // After fix: the existing <select> is reused (or selection restored) when cureItems
-    // haven't changed between refreshes.
+    // destroys the rows and resets the user's choice.
+    // After fix: the pick is kept (by item id) when cureItems haven't changed between refreshes.
     // Kills: an impl that unconditionally replaceChildren() the actions area,
-    // destroying the cure-item selector value on each server tick.
+    // destroying the open pick on each server tick, and one that re-points it to the first row.
+    const callbacks = makeCallbacks();
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
-    const view = new BattleView(parent, makeCallbacks());
+    const view = new BattleView(parent, callbacks);
     const vm = makeCureItemVM([
       { itemId: 5, name: 'Antidote', cureStatus: 'Poison', count: 2 },
       { itemId: 6, name: 'Paralyze Heal', cureStatus: 'Paralysis', count: 1 },
@@ -864,27 +917,22 @@ describe('BattleView m14.5d-1b: cure-item selection preserved across re-renders 
     view.refresh(vm);
     view.show();
 
-    const selAfterFirst = parent.querySelector<HTMLSelectElement>(
-      '[data-testid="cure-item-selector"]',
-    );
-    expect(selAfterFirst).not.toBeNull();
+    const rows = c8jRows(parent, 'bag');
+    expect(rows).toHaveLength(2);
 
-    // User selects item 6 (the second option)
-    selAfterFirst!.value = '6';
-    expect(selAfterFirst!.value).toBe('6'); // precondition: selection was applied
+    // User presses item 6 (the second row)
+    rows[1]!.click();
+    expect(c8jTarget(parent), 'precondition: the press opened the target').not.toBeNull();
 
     // Second refresh with the SAME vm (same cureItems — no server change)
     view.refresh(vm);
 
-    const selAfterSecond = parent.querySelector<HTMLSelectElement>(
-      '[data-testid="cure-item-selector"]',
-    );
-    expect(selAfterSecond).not.toBeNull();
-
-    // BITES: a replaceChildren() impl would reset the value to '5' (first option).
-    // value must still be '6' (the user's prior selection is preserved).
-    expect(selAfterSecond!.value).toBe('6');
-    // Kills: an impl that replaceChildren() without restoring the selection
+    // BITES: a replaceChildren() impl would lose the target (or reset it to item 5).
+    expect(c8jTarget(parent), 'the target survives a same-turn re-render').not.toBeNull();
+    (parent.querySelector('[data-testid="use-item-action"]') as HTMLElement).click();
+    expect(callbacks.onUseItem).toHaveBeenCalledTimes(1);
+    expect(callbacks.onUseItem, 'item 6, not the first row').toHaveBeenCalledWith(1n, 6);
+    // Kills: an impl that replaceChildren() without keeping the pick
     // (same class of bug as the bait-selector fix in e-1)
 
     document.body.removeChild(parent);
@@ -2114,65 +2162,66 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     { outcome: 'SideAWins' as const },
     { outcome: 'SideBWins' as const },
     { outcome: 'Fled' as const },
-  ])('BITES: H3 terminal outcome $outcome (canSwap=false, empty bench) → swap hint hidden while the ux1 continue hint stays visible', ({
-    outcome,
-  }) => {
-    // KILLS: the MOST LIKELY wrong implementation — a predicate missing the
-    //   `vm.outcome === 'Ongoing' &&` conjunct, i.e. keyed on `!vm.canSwap` alone.
-    //   `canSwap` is false and `bench` is empty on EVERY terminal outcome
-    //   (battleModel.ts:258 gates the bench loop on `ongoing`), so a bench-or-canSwap-only
-    //   predicate parks "No healthy party monster in this battle to swap in. When this
-    //   battle ends…" right next to "Victory!" and ux1's "Press Esc to continue" — advice
-    //   about a battle that has already ended, on the very overlay ux1 just made honest.
-    // ALSO GATES ux1: the continue-hint clause in the same assertion means a regression
-    //   that hides the ux1 exit affordance while wiring the ux4 one cannot pass here.
-    const parent = document.createElement('div');
-    document.body.appendChild(parent);
+  ])(
+    'BITES: H3 terminal outcome $outcome (canSwap=false, empty bench) → swap hint hidden while the ux1 continue hint stays visible',
+    ({ outcome }) => {
+      // KILLS: the MOST LIKELY wrong implementation — a predicate missing the
+      //   `vm.outcome === 'Ongoing' &&` conjunct, i.e. keyed on `!vm.canSwap` alone.
+      //   `canSwap` is false and `bench` is empty on EVERY terminal outcome
+      //   (battleModel.ts:258 gates the bench loop on `ongoing`), so a bench-or-canSwap-only
+      //   predicate parks "No healthy party monster in this battle to swap in. When this
+      //   battle ends…" right next to "Victory!" and ux1's "Press Esc to continue" — advice
+      //   about a battle that has already ended, on the very overlay ux1 just made honest.
+      // ALSO GATES ux1: the continue-hint clause in the same assertion means a regression
+      //   that hides the ux1 exit affordance while wiring the ux4 one cannot pass here.
+      const parent = document.createElement('div');
+      document.body.appendChild(parent);
 
-    const view = new BattleView(parent, makeUx4Callbacks());
-    // turnNumber 12 and skills:[] — distinct from H1 (5, two skills) and H2 (9, one
-    // skill) so an incidental-field predicate cannot hide behind a shared constant (F2).
-    view.refresh(
-      makeUx4VM({
-        outcome,
-        isPvp: false,
-        canSwap: false,
-        bench: [],
-        canFlee: false,
-        turnNumber: 12,
-        skills: [],
-      }),
-    );
-    view.show();
+      const view = new BattleView(parent, makeUx4Callbacks());
+      // turnNumber 12 and skills:[] — distinct from H1 (5, two skills) and H2 (9, one
+      // skill) so an incidental-field predicate cannot hide behind a shared constant (F2).
+      view.refresh(
+        makeUx4VM({
+          outcome,
+          isPvp: false,
+          canSwap: false,
+          bench: [],
+          canFlee: false,
+          turnNumber: 12,
+          skills: [],
+        }),
+      );
+      view.show();
 
-    const swapHint = parent.querySelector(UX4_SWAP_HINT_SELECTOR) as HTMLElement | null;
-    expect(
-      swapHint,
-      `ux4-2 (H3/${outcome}): the swap hint element must exist on the result overlay too ` +
-        '(created once in the constructor, only toggled thereafter)',
-    ).not.toBeNull();
-    const continueHint = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
-    expect(
-      continueHint,
-      `precondition (H3/${outcome}): ux1's continue hint must exist — it is the second half of ` +
-        "this case's single conjunction",
-    ).not.toBeNull();
+      const swapHint = parent.querySelector(UX4_SWAP_HINT_SELECTOR) as HTMLElement | null;
+      expect(
+        swapHint,
+        `ux4-2 (H3/${outcome}): the swap hint element must exist on the result overlay too ` +
+          '(created once in the constructor, only toggled thereafter)',
+      ).not.toBeNull();
+      const continueHint = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
+      expect(
+        continueHint,
+        `precondition (H3/${outcome}): ux1's continue hint must exist — it is the second half of ` +
+          "this case's single conjunction",
+      ).not.toBeNull();
 
-    const swapHidden = swapHint!.style.display === 'none';
-    const continueVisible = continueHint!.style.display !== 'none';
-    expect(
-      swapHidden && continueVisible,
-      `ux4-2 (H3/${outcome}) ONE CONJUNCTION — swapHintHidden=${String(swapHidden)} ` +
-        `(display=${JSON.stringify(swapHint!.style.display)}), ` +
-        `continueHintVisible=${String(continueVisible)} ` +
-        `(display=${JSON.stringify(continueHint!.style.display)}). The toggle predicate MUST ` +
-        "include the `vm.outcome === 'Ongoing' &&` conjunct: canSwap is false and bench is " +
-        'empty on every terminal outcome, so a `!vm.canSwap`-only predicate shows swap advice ' +
-        'on the result screen. And ux1-2 must keep its exit affordance on that same screen',
-    ).toBe(true);
+      const swapHidden = swapHint!.style.display === 'none';
+      const continueVisible = continueHint!.style.display !== 'none';
+      expect(
+        swapHidden && continueVisible,
+        `ux4-2 (H3/${outcome}) ONE CONJUNCTION — swapHintHidden=${String(swapHidden)} ` +
+          `(display=${JSON.stringify(swapHint!.style.display)}), ` +
+          `continueHintVisible=${String(continueVisible)} ` +
+          `(display=${JSON.stringify(continueHint!.style.display)}). The toggle predicate MUST ` +
+          "include the `vm.outcome === 'Ongoing' &&` conjunct: canSwap is false and bench is " +
+          'empty on every terminal outcome, so a `!vm.canSwap`-only predicate shows swap advice ' +
+          'on the result screen. And ux1-2 must keep its exit affordance on that same screen',
+      ).toBe(true);
 
-    document.body.removeChild(parent);
-  });
+      document.body.removeChild(parent);
+    },
+  );
 
   it('BITES: H4 the hint is a #root sibling of #outcomeEl — NOT inside #actionsEl, NOT on the caller-supplied parent — and 3 refreshes leave exactly one', () => {
     // KILLS (anti-pattern 3): appending the hint to the caller-supplied `parent`
@@ -4482,7 +4531,9 @@ const RA_SKILLS = [
 ];
 
 /** An ongoing PvE VM on which ALL FIVE PvE controls render: two skills, Flee, two Swap buttons
- *  (UX4_BENCH), Recruit (+ bait select) and Use Item (+ cure select). Seven buttons, two selects. */
+ *  (UX4_BENCH), the Recruit list (No bait + one bait row) and the Bag list (one cure row). Eight
+ *  buttons, no select (ctl-8j: migrated from the <select> shape (B10); was seven buttons and two
+ *  selects, with a Recruit button and a Use Item button). */
 function makeRaVM(overrides: Partial<BattleViewModel> = {}): BattleViewModel {
   return makeUx4VM({
     battleId: RA_BATTLE_ID,
@@ -4537,14 +4588,18 @@ async function raFlushPromises(): Promise<void> {
 }
 
 interface RaControls {
-  /** Every <button> under the mount — with makeRaVM that is exactly the seven PvE controls. */
+  /** Every <button> under the mount but the command rows — with makeRaVM that is exactly the eight
+   *  PvE controls (ctl-8j: was seven). */
   readonly all: readonly HTMLButtonElement[];
   readonly skills: readonly HTMLButtonElement[];
   readonly flee: HTMLButtonElement;
   readonly swaps: readonly HTMLButtonElement[];
+  /** The No bait row — the first step of Recruit (ctl-8j: was the Recruit button). */
   readonly recruit: HTMLButtonElement;
+  /** The Lure Berry bait row (ctl-8j). */
+  readonly bait: HTMLButtonElement;
+  /** The cure row — the first step of Bag (ctl-8j: was the Use Item button). */
   readonly useItem: HTMLButtonElement;
-  readonly selects: readonly HTMLSelectElement[];
 }
 
 /** Resolve the LIVE controls (re-query after every refresh — replaceChildren rebuilds them). */
@@ -4560,21 +4615,34 @@ function raControls(parent: HTMLElement): RaControls {
   const skills = all.filter((b) => b.getAttribute('data-battle-list') === 'skills');
   const flee = all.find((b) => b.textContent === 'Flee');
   const swaps = all.filter((b) => (b.textContent ?? '').startsWith('Swap: '));
-  const recruit = parent.querySelector<HTMLButtonElement>('[data-testid="recruit-action"]');
-  const useItem = parent.querySelector<HTMLButtonElement>('[data-testid="use-item-action"]');
-  const selects = [...parent.querySelectorAll('select')];
+  // ctl-8j: migrated from the <select> shape (B10): Recruit and Use Item are the first rows of the
+  // recruit and bag lists (their dispatching Yes / target rows exist only after a press), and there
+  // is no <select> under the mount at all. Was: the two action buttons by testid and a count of
+  // exactly two selects.
+  const recruit = parent.querySelector<HTMLButtonElement>('[data-testid="bait-option-none"]');
+  const bait = parent.querySelector<HTMLButtonElement>(
+    '[data-testid="bait-selector"] [data-recruit-bonus="150"]',
+  );
+  const useItem = parent.querySelector<HTMLButtonElement>(
+    '[data-testid="cure-item-selector"] [data-battle-list="bag"]',
+  );
   expect(skills, '20r-a precondition: two skill buttons must render').toHaveLength(2);
   expect(flee, '20r-a precondition: the Flee button must render').toBeDefined();
   expect(swaps, '20r-a precondition: two Swap buttons must render').toHaveLength(2);
-  expect(recruit, '20r-a precondition: the Recruit button must render').not.toBeNull();
-  expect(useItem, '20r-a precondition: the Use Item button must render').not.toBeNull();
+  expect(recruit, '20r-a precondition: the No bait row must render').not.toBeNull();
+  expect(bait, '20r-a precondition: the Lure Berry row must render').not.toBeNull();
+  expect(useItem, '20r-a precondition: the cure row must render').not.toBeNull();
   expect(
     all,
-    '20r-a precondition: EXACTLY seven buttons under the mount — 2 skills + Flee + 2 Swap + ' +
-      'Recruit + Use Item. A different count means the census below is about the wrong nodes',
-  ).toHaveLength(7);
-  expect(selects, '20r-a precondition: the bait and cure <select>s must render').toHaveLength(2);
-  return { all, skills, flee: flee!, swaps, recruit: recruit!, useItem: useItem!, selects };
+    '20r-a precondition: EXACTLY eight buttons under the mount — 2 skills + Flee + 2 Swap + ' +
+      'No bait + Lure Berry + the cure row. A different count means the census below is about ' +
+      'the wrong nodes (or a confirm / target is open when no press was made)',
+  ).toHaveLength(8);
+  expect(
+    parent.querySelectorAll('select'),
+    '20r-a precondition: no <select> is left under the mount',
+  ).toHaveLength(0);
+  return { all, skills, flee: flee!, swaps, recruit: recruit!, bait: bait!, useItem: useItem! };
 }
 
 /** One census assertion over all seven controls, labelled per button so a failure names the
@@ -4606,7 +4674,7 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     vi.restoreAllMocks();
   });
 
-  it('20r-a BV-1 BITES: two clicks on one skill while onAttack is unsettled → ONE call; all seven PvE controls disabled, both <select>s untouched; enabled again on settle', async () => {
+  it('20r-a BV-1 BITES: two clicks on one skill while onAttack is unsettled → ONE call; all eight PvE controls (the bait and cure rows included) disabled, no <select> anywhere; enabled again on settle', async () => {
     // WRONG IMPL KILLED (1): the shipped code — no lock, two clicks send two submitAttack.
     // WRONG IMPL KILLED (2): a CLICKED-BUTTON-ONLY lock (`btn.disabled = true` on the one node,
     //   evolutionView.ts's shipped debounce shape) — the other skill, Flee, Swap, Recruit and
@@ -4614,9 +4682,11 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     // WRONG IMPL KILLED (3): a VOID-returning dispatch (`.then(() => cb())`, or main.ts not
     //   `return`ing sendGuarded) — the lock releases after one microtask; the post-flush
     //   "still disabled" census reds.
-    // WRONG IMPL KILLED (4): `querySelectorAll('button, select')` — the two <select>s must stay
-    //   live: their VALUE is what the NEXT Recruit / Use Item click reads (e-1 preserves it
-    //   across refreshes for that reason), and disabling a focused select drops focus.
+    // WRONG IMPL KILLED (4) (ctl-8j: migrated from the <select> shape (B10)): a lock that covers
+    //   the skills and the actions row but not the NEW bait and cure rows (they are buttons in the
+    //   actions row now, so the census below counts them) — a locked turn would still open a
+    //   Recruit or Bag step. Was: `querySelectorAll('button, select')`, which disabled the two
+    //   <select>s whose value the next click read; no select is left to keep live.
     const d = raDeferred();
     const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
     const { parent } = raMount(callbacks);
@@ -4635,16 +4705,18 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     raExpectAll(
       c,
       true,
-      '20r-a BV-1: ALL SEVEN PvE controls must be disabled while any PvE call is pending — the ' +
-        'lock is per BATTLE (D4), not per button, because every one of them acts on the same turn',
+      '20r-a BV-1: ALL EIGHT PvE controls must be disabled while any PvE call is pending — the ' +
+        'lock is per BATTLE (D4), not per button, because every one of them acts on the same turn ' +
+        '(ctl-8j: the No bait, bait and cure rows are among them)',
     );
-    for (const sel of c.selects) {
-      expect(
-        sel.disabled,
-        '20r-a BV-1: the bait / cure <select>s must NOT be disabled by the lock (plan §4 #8) — the ' +
-          'lock covers the <button>s under #skillsEl / #actionsEl only',
-      ).toBe(false);
-    }
+    expect(
+      [c.recruit, c.bait, c.useItem].map((b) => b.disabled),
+      '20r-a BV-1: the bait and cure rows are disabled by the lock (ctl-8j, plan A4)',
+    ).toEqual([true, true, true]);
+    expect(
+      parent.querySelectorAll('select'),
+      'ctl-8j: no <select> exists to leave live',
+    ).toHaveLength(0);
 
     await raFlushPromises();
     raExpectAll(
@@ -4665,25 +4737,21 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     ).toHaveBeenCalledTimes(2);
   });
 
-  it('20r-a BV-2 BITES: a pending SKILL blocks Flee / Swap / Recruit / Use Item — each is disabled AND its click is swallowed even after a hostile re-enable', async () => {
+  it('20r-a BV-2 BITES: a pending SKILL blocks Flee / Swap / an open Recruit Yes / an open Use Item target — each is disabled AND its click is swallowed even after a hostile re-enable', async () => {
     // WRONG IMPL KILLED: a PER-ACTION lock (`#pendingAttack`, `#pendingFlee`, …) — a skill in
     //   flight leaves Flee live, so the player flees mid-attack and the server resolves two
     //   intents for one turn. The hostile `disabled = false` on each sibling is what separates
     //   "disabled because the lock disabled it" from "swallowed because the lock is shared":
     //   a per-action lock with a shared disable pass survives the census and dies on the clicks.
+    // ctl-8j: migrated from the <select> shape (B10). Recruit and Use Item were one button each;
+    //   they are two steps now (a row, then Yes / the target), so the dispatching controls are the
+    //   Yes and target rows, which exist only after a press. The second half of this case opens
+    //   each step FIRST, then takes the lock with a skill, then tries the open step's endpoint.
+    //   Was: a cure item selected in the <select> so that an unblocked Use Item would dispatch.
     const d = raDeferred();
     const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
     const { parent } = raMount(callbacks);
     const c = raControls(parent);
-    const cureSelect = parent.querySelector<HTMLSelectElement>(
-      '[data-testid="cure-item-selector"]',
-    )!;
-    cureSelect.value = String(RA_CURE_ITEM_ID);
-    expect(
-      cureSelect.value,
-      '20r-a BV-2 precondition: a cure item is selected, so an UNBLOCKED Use Item click would ' +
-        'dispatch onUseItem (with the placeholder selected the listener is a no-op by design)',
-    ).toBe(String(RA_CURE_ITEM_ID));
 
     c.skills[0]!.click();
     expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
@@ -4691,9 +4759,10 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     const siblings: readonly (readonly [HTMLButtonElement, unknown, string])[] = [
       [c.flee, callbacks.onFlee, 'Flee'],
       [c.swaps[0]!, callbacks.onSwap, 'Swap'],
-      [c.recruit, callbacks.onRecruit, 'Recruit'],
-      [c.useItem, callbacks.onUseItem, 'Use Item'],
     ];
+    // (The bait and cure rows are locked too — BV-1's census — but a row press only opens a step,
+    // it dispatches nothing, so it is not a sibling to hostile-click here: it would leave a confirm
+    // open and change the census below. The steps' endpoints are tried at the end of this case.)
     for (const [btn, spy, label] of siblings) {
       expect(
         btn.disabled,
@@ -4721,6 +4790,43 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
       '20r-a BV-2: once the skill call settles, Flee must dispatch normally',
     ).toHaveBeenCalledTimes(1);
     expect(callbacks.onFlee).toHaveBeenCalledWith(RA_BATTLE_ID);
+
+    // --- ctl-8j: the open step's endpoint is locked too (one fresh mount per step) ---
+    const steps = [
+      { label: 'Recruit Yes', open: (x: RaControls) => x.recruit, endpoint: 'recruit-action' },
+      { label: 'Use Item target', open: (x: RaControls) => x.useItem, endpoint: 'use-item-action' },
+    ] as const;
+    for (const step of steps) {
+      closeOverlayA11y('battleView', null);
+      document.body.replaceChildren();
+      const dd = raDeferred();
+      const cb = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(dd.promise) });
+      const mounted = raMount(cb);
+      const cc = raControls(mounted.parent);
+      step.open(cc).click();
+      const endpoint = mounted.parent.querySelector<HTMLButtonElement>(
+        `[data-testid="${step.endpoint}"]`,
+      );
+      expect(endpoint, `20r-a BV-2 precondition: the ${step.label} row is open`).not.toBeNull();
+      expect(cb.onRecruit).not.toHaveBeenCalled();
+      expect(cb.onUseItem).not.toHaveBeenCalled();
+
+      cc.skills[0]!.click(); // takes the lock
+      expect(cb.onAttack).toHaveBeenCalledTimes(1);
+      expect(
+        endpoint!.disabled,
+        `20r-a BV-2: an open ${step.label} must be DISABLED once a skill holds the turn`,
+      ).toBe(true);
+      endpoint!.click();
+      endpoint!.disabled = false; // HOSTILE re-enable: only the shared pending key can swallow this
+      endpoint!.click();
+      expect(
+        [cb.onRecruit, cb.onUseItem].map((spy) => vi.mocked(spy).mock.calls.length),
+        `20r-a BV-2: an open ${step.label} must not dispatch while the skill call is pending`,
+      ).toEqual([0, 0]);
+      dd.resolve();
+      await raFlushPromises();
+    }
   });
 
   it('20r-a BV-3 BITES: hostile re-enable — click, set the LIVE button `disabled = false` by hand, click again → still ONE call', async () => {
@@ -5231,9 +5337,14 @@ const M24S3_BV_PLAIN_KEYS = new Set([
   'battle.card.opponent',
   'battle.action.flee',
   'battle.recruit.noBait',
-  'battle.recruit.submit',
-  'battle.cure.placeholder',
-  'battle.cure.submit',
+  // ctl-8j (named intentional change): `battle.recruit.submit`, `battle.cure.placeholder` and
+  // `battle.cure.submit` are retired with the two <select>s; the bait and cure lists' names and the
+  // Recruit confirm's no-bait question, Yes and No are plain catalog sinks.
+  'battle.recruit.listLabel',
+  'battle.recruit.confirmNoBait',
+  'battle.recruit.yes',
+  'battle.recruit.no',
+  'battle.cure.listLabel',
   'battle.outcome.victory',
   'battle.outcome.defeat',
   'battle.outcome.fled',
@@ -5258,6 +5369,9 @@ const M24S3_BV_PARAM_KEYS = new Set([
   // both skill labels now); `battle.commands.waiting` (the PvP caption over the greyed list) is new.
   'battle.commands.waiting',
   'battle.cure.option',
+  // ctl-8j: the Recruit confirm's question (the bait's name) and the Bag target (the active species).
+  'battle.recruit.confirm',
+  'battle.cure.target',
   'battle.swap.pvpSubmit',
   'battle.swap.pveLabel',
 ]);
@@ -5354,6 +5468,9 @@ const M24S3_BV_ROSTER = [
   'Select item',
   'cures',
   'Use Item',
+  // ctl-8j: the new lists' names and the Bag target's words must come through the resolver too.
+  'Cure items',
+  'Use on',
   'Victory',
   'Defeat',
   'Got away',
@@ -5398,9 +5515,21 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
     );
     expect(i18nT).toHaveBeenCalledWith('battle.action.flee');
     expect(i18nT).toHaveBeenCalledWith('battle.recruit.noBait');
-    expect(i18nT).toHaveBeenCalledWith('battle.recruit.submit');
-    expect(i18nT).toHaveBeenCalledWith('battle.cure.placeholder');
-    expect(i18nT).toHaveBeenCalledWith('battle.cure.submit');
+    // INTENTIONAL CHANGE (ctl-8j): the bait and cure <select>s and their submit buttons are gone,
+    // so `battle.recruit.submit`, `battle.cure.placeholder` and `battle.cure.submit` are never
+    // requested; the two lists are named instead. Was: those three ids requested.
+    expect(i18nT).toHaveBeenCalledWith('battle.recruit.listLabel');
+    expect(i18nT).toHaveBeenCalledWith('battle.cure.listLabel');
+    for (const retired of [
+      'battle.recruit.submit',
+      'battle.cure.placeholder',
+      'battle.cure.submit',
+    ]) {
+      expect(
+        vi.mocked(i18nT).mock.calls.some(([key]) => String(key) === retired),
+        `${retired} is retired: nothing resolves it any more`,
+      ).toBe(false);
+    }
 
     expect(i18nTf).toHaveBeenCalledWith('battle.weather.banner', { label: 'Rain', turns: 2 });
     expect(i18nTf).toHaveBeenCalledWith('battle.card.level', { level: 7 });
@@ -5475,24 +5604,59 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       'no skill cell carries a title any more',
     ).toBe(false);
     expect(buttons.some((b) => b.textContent === 'Flee')).toBe(true);
-    expect(buttons.some((b) => b.textContent === 'Recruit')).toBe(true);
-    expect(buttons.some((b) => b.textContent === 'Use Item')).toBe(true);
+    expect(buttons.some((b) => b.textContent === 'Recruit')).toBe(true); // the command row
     expect(buttons.some((b) => b.textContent === 'Swap: Mosshorn (6/10)')).toBe(true);
+    // INTENTIONAL CHANGE (ctl-8j): the bait and cure rows are list rows, not <option>s, and there
+    // is no 'Use Item' button or 'Select item' placeholder any more. Was: `option[value=...]`
+    // lookups and a 'Use Item' button.
     expect(
-      parent.querySelector('[data-testid="cure-item-selector"] option[value="21"]')?.textContent,
+      buttons.some((b) => b.textContent === 'Use Item'),
+      'the Use Item button is retired',
+    ).toBe(false);
+    expect(
+      parent.querySelector('[data-testid="cure-item-selector"] [data-cure-status="Poison"]')
+        ?.textContent,
     ).toBe('Tonic (cures Poison) ×1');
     // Untouched glyph-only bait row (plan: "Untouched (passing, glyph-only, tier-(e))") — a
     // sanity precondition only, never an i18n key.
     expect(
-      parent.querySelector('[data-testid="bait-selector"] option[value="11"]')?.textContent,
+      parent.querySelector('[data-testid="bait-selector"] [data-recruit-bonus="100"]')?.textContent,
     ).toBe('Herb (+100‰) ×2');
+    expect(parent.querySelector('[data-testid="bait-option-none"]')?.textContent).toBe('No bait');
     expect(
-      parent.querySelector('[data-testid="bait-selector"] option[value=""]')?.textContent,
-    ).toBe('No bait');
+      parent.querySelector('[data-testid="bait-selector"]')?.getAttribute('aria-label'),
+      'the bait list is named',
+    ).toBe('Bait');
     expect(
-      parent.querySelector('[data-testid="cure-item-selector"] option[value=""]')?.textContent,
-    ).toBe('Select item');
+      parent.querySelector('[data-testid="cure-item-selector"]')?.getAttribute('aria-label'),
+      'the cure list is named',
+    ).toBe('Cure items');
     expect(parent.querySelector('[data-testid="battle-continue-hint"]')).not.toBeNull();
+
+    // --- ctl-8j: the Recruit confirm and the Bag target resolve through the resolver ---
+    (
+      parent.querySelector(
+        '[data-testid="bait-selector"] [data-recruit-bonus="100"]',
+      ) as HTMLElement
+    ).click();
+    expect(i18nTf).toHaveBeenCalledWith('battle.recruit.confirm', { bait: 'Herb' });
+    expect(i18nT).toHaveBeenCalledWith('battle.recruit.yes');
+    expect(i18nT).toHaveBeenCalledWith('battle.recruit.no');
+    expect(c8jConfirm(parent)?.textContent).toContain('Recruit with Herb?');
+    expect(parent.querySelector('[data-testid="recruit-action"]')?.textContent).toBe('Yes');
+    expect(parent.querySelector('[data-testid="recruit-cancel"]')?.textContent).toBe('No');
+    (parent.querySelector('[data-testid="bait-option-none"]') as HTMLElement).click();
+    expect(i18nT).toHaveBeenCalledWith('battle.recruit.confirmNoBait');
+    expect(c8jConfirm(parent)?.textContent).toContain('Recruit with no bait?');
+    (
+      parent.querySelector(
+        '[data-testid="cure-item-selector"] [data-cure-status="Poison"]',
+      ) as HTMLElement
+    ).click();
+    expect(i18nTf).toHaveBeenCalledWith('battle.cure.target', { species: 'Sproutle' });
+    expect(parent.querySelector('[data-testid="use-item-action"]')?.textContent).toBe(
+      'Use on Sproutle',
+    );
 
     // --- PvP: opponentName UNSET -> battle.card.opponent still requested ----
     vi.mocked(i18nT).mockClear();
@@ -5579,9 +5743,16 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       expect(joined).toContain('«battle.card.opponent»');
       expect(joined).toContain('«battle.action.flee»');
       expect(joined).toContain('«battle.recruit.noBait»');
-      expect(joined).toContain('«battle.recruit.submit»');
-      expect(joined).toContain('«battle.cure.placeholder»');
-      expect(joined).toContain('«battle.cure.submit»');
+      // INTENTIONAL CHANGE (ctl-8j): the lists are named instead of submitted. Was: the three
+      // retired ids `battle.recruit.submit`, `battle.cure.placeholder` and `battle.cure.submit`.
+      // The list names are aria-label attributes, which the text walk cannot see: read directly.
+      expect(
+        parent.querySelector('[data-testid="bait-selector"]')?.getAttribute('aria-label'),
+        'the bait list is named through the resolver',
+      ).toBe('«battle.recruit.listLabel»');
+      expect(
+        parent.querySelector('[data-testid="cure-item-selector"]')?.getAttribute('aria-label'),
+      ).toBe('«battle.cure.listLabel»');
       expect(joined).toContain('«battle.weather.banner|{"label":"Rain","turns":2}»');
       expect(joined).toContain('«battle.card.level|{"level":7}»');
       expect(joined).toContain(
@@ -5617,6 +5788,32 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       expect(joined).toContain(
         '«battle.cure.option|{"name":"Tonic","cureStatus":"Poison","count":1}»',
       );
+
+      // ctl-8j: the Recruit confirm (bait and no-bait), its Yes / No, and the Bag target are
+      // resolver output too (pressed while the sentinels are installed).
+      (
+        parent.querySelector(
+          '[data-testid="bait-selector"] [data-recruit-bonus="100"]',
+        ) as HTMLElement
+      ).click();
+      texts = m24s3WalkSubtree(root);
+      m24s3AssertNoRosterWord(texts, 'PvE recruit confirm (bait)');
+      joined = texts.join('\n');
+      expect(joined).toContain('«battle.recruit.confirm|{"bait":"Herb"}»');
+      expect(joined).toContain('«battle.recruit.yes»');
+      expect(joined).toContain('«battle.recruit.no»');
+      (parent.querySelector('[data-testid="bait-option-none"]') as HTMLElement).click();
+      texts = m24s3WalkSubtree(root);
+      m24s3AssertNoRosterWord(texts, 'PvE recruit confirm (no bait)');
+      expect(texts.join('\n')).toContain('«battle.recruit.confirmNoBait»');
+      (
+        parent.querySelector(
+          '[data-testid="cure-item-selector"] [data-cure-status="Poison"]',
+        ) as HTMLElement
+      ).click();
+      texts = m24s3WalkSubtree(root);
+      m24s3AssertNoRosterWord(texts, 'PvE bag target');
+      expect(texts.join('\n')).toContain('«battle.cure.target|{"species":"Sproutle"}»');
 
       view.refresh(m24s3PvpVM({ pvpOpponentName: null, pvpPendingSubmit: false }));
       texts = m24s3WalkSubtree(root);
@@ -6423,9 +6620,10 @@ describe('BattleView ctl-7b: the battle root is a class-styled frame, layered by
 //     player card and the skills grid and holds five `[data-testid="battle-command-<id>"]`
 //     buttons, each `data-battle-list="commands"`. A disabled row is `aria-disabled="true"`, never
 //     `disabled`, so the cursor can rest on it; its click does nothing.
-//   * Cursor rows carry `data-battle-list`: skill buttons "skills", swap buttons "swap",
-//     `recruit-action` "recruit", `use-item-action` "bag". The bait / cure <select>s and Flee are
-//     in no list. Exactly one element in the root is `aria-current="true"` while the command row
+//   * Cursor rows carry `data-battle-list`: skill buttons "skills", swap buttons "swap", the bait
+//     rows "recruit", the cure rows "bag" (ctl-8j: migrated from the <select> shape (B10); was
+//     `recruit-action` "recruit" and `use-item-action` "bag", with the bait / cure <select>s in no
+//     list). The two list roots and Flee are in no list. Exactly one element in the root is `aria-current="true"` while the command row
 //     is shown, with an inline outline; when the view moves the cursor it also focuses it.
 //   * `applyBattleOp(op)`: a no-op while hidden. If focus is NOT on a root element that has
 //     `data-battle-list`, ANY op only focuses the kept cursor element (A presses nothing, a move
@@ -6619,9 +6817,12 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     expect(c8iCurrent(root)[0], 'on Fight').toBe(fight);
     expect(fight.style.outline.length, 'with an inline outline (a visible cue)').toBeGreaterThan(0);
 
-    // --- the lists of the controls: the bait / cure selects and Flee are in none ---
-    const recruitBtn = c8iTestId<HTMLButtonElement>(root, 'recruit-action');
-    const useBtn = c8iTestId<HTMLButtonElement>(root, 'use-item-action');
+    // --- the lists of the controls: the two list roots and Flee are in none ---
+    // ctl-8j: migrated from the <select> shape (B10): the cursor enters a list at its first row,
+    // the No bait row and the first cure row. Was: the Recruit and Use Item buttons (`recruit-action`
+    // / `use-item-action`), which are the Yes / target rows of the second step now.
+    const recruitBtn = c8iTestId<HTMLButtonElement>(root, 'bait-option-none');
+    const useBtn = root.querySelector<HTMLButtonElement>('[data-battle-list="bag"]');
     const swapBtns = [...root.querySelectorAll<HTMLButtonElement>('[data-battle-list="swap"]')];
     expect(recruitBtn?.getAttribute('data-battle-list'), 'Recruit control').toBe('recruit');
     expect(useBtn?.getAttribute('data-battle-list'), 'Use Item control').toBe('bag');
@@ -7098,9 +7299,19 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
       'A with focus on the legacy Flee button does not press it',
     ).not.toHaveBeenCalled();
     expect(document.activeElement, 'it seats the cursor instead').toBe(c8iCmd(stray.root, 'fight'));
-    (c8iTestId(stray.root, 'bait-selector') as HTMLElement).focus();
+    // ctl-8j: migrated from the <select> shape (B10). A select used to be the focus that owned the
+    // arrows; the closest list-shape invariant is that focus on the bait LIST ROOT (a group, in no
+    // list, made focusable here by hand) is not a cursor row either: a move from it only seats.
+    const baitRoot = c8iTestId(stray.root, 'bait-selector') as HTMLElement;
+    baitRoot.tabIndex = -1;
+    baitRoot.focus();
+    expect(document.activeElement, 'precondition: focus is on the bait list root').toBe(baitRoot);
     stray.view.applyBattleOp({ kind: 'move', dir: 'Down' });
-    c8iExpectCursorOn(stray.root, c8iCmd(stray.root, 'fight'), 'a move from a select only seats');
+    c8iExpectCursorOn(
+      stray.root,
+      c8iCmd(stray.root, 'fight'),
+      'a move from the list root only seats',
+    );
     stray.view.applyBattleOp({ kind: 'move', dir: 'Down' });
     c8iExpectCursorOn(stray.root, c8iCmd(stray.root, 'recruit'), 'the next move steps');
 
@@ -7343,5 +7554,912 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     );
     view.applyBattleOp({ kind: 'move', dir: 'Down' });
     c8iExpectCursorOn(root, c8iSkills(root)[3] as Element, 'the next Down steps from the seat');
+  });
+});
+
+// =============================================================================
+// ctl-8j: Battle II — Recruit, Swap and Bag as nav lists (CTL8J.1), no string parsed (B10).
+//
+// THE VIEW'S CONTRACT (battleModel.ts `resolveBattlePick` owns what a pick may survive):
+//   * Recruit: `[data-testid="bait-selector"]` is a role="group" named "Bait" (not a <select>)
+//     holding `<button data-battle-list="recruit">` rows: `bait-option-none` ("No bait") first,
+//     then one per bait (`data-recruit-bonus`, text `Name (+N‰) ×count`). Pressing a row opens
+//     `[data-testid="recruit-confirm"]`: the question ("Recruit with {bait}?" / "Recruit with no
+//     bait?"), then Yes (`recruit-action`) and No (`recruit-cancel`), both
+//     `data-battle-list="recruitConfirm"`. The cursor lands on Yes. Yes recruits; No and B close
+//     the confirm and put the cursor back on the pressed row.
+//   * Bag: `[data-testid="cure-item-selector"]` is a group named "Cure items" of
+//     `data-battle-list="bag"` rows (`data-cure-status`, text `Name (cures X) ×count`). Pressing one
+//     opens `[data-testid="cure-target"]` with ONE row, `use-item-action`
+//     (`data-battle-list="bagTarget"`, "Use on {active species}"), cursor on it. A uses the item;
+//     B goes back to the cure row. (`use_battle_item` has no target: the server cures the active
+//     monster, so the target step is honest, not a choice.)
+//   * Swap: the bench rows (`data-battle-list="swap"`) are unchanged.
+//   * An id is the NUMBER the model gave the closure that made the press, never text or an
+//     attribute read back from the DOM. The open pick survives same-turn re-renders by identity and
+//     closes on a new (battle, turn), a vanished item, a finished or player battle, and hide().
+//   * The rows are buttons in the actions row, so the PvE lock disables them (20r-a pins that).
+// The suite drives the view through `applyBattleOp` (the D-pad) and real clicks (the mouse).
+// =============================================================================
+
+const C8J_PERMILLE = String.fromCharCode(0x2030);
+const C8J_TIMES = String.fromCharCode(0x00d7);
+
+const C8J_BAITS = [
+  { itemId: 7, name: 'Lure Berry', recruitBonus: 150, count: 2 },
+  { itemId: 9, name: 'Sweet Bait', recruitBonus: 250, count: 1 },
+];
+const C8J_CURES = [
+  { itemId: 12, name: 'Antidote', cureStatus: 'Poison', count: 1 },
+  { itemId: 14, name: 'Salve', cureStatus: 'Burn', count: 3 },
+];
+
+/** A wild PvE battle (77, turn 2) offering two baits and two cure items. */
+function c8jVM(overrides: Partial<BattleViewModel> = {}): BattleViewModel {
+  return c8iVM({ baitOptions: [...C8J_BAITS], cureItems: [...C8J_CURES], ...overrides });
+}
+
+/** The `data-battle-list="<list>"` buttons under `root`, in DOM order. */
+function c8jRows(root: ParentNode, list: string): HTMLButtonElement[] {
+  return [...root.querySelectorAll<HTMLButtonElement>(`[data-battle-list="${list}"]`)];
+}
+
+/** False when the element or any ancestor is display:none or hidden. */
+function c8jShown(el: Element): boolean {
+  for (let n: Element | null = el; n !== null; n = n.parentElement) {
+    if (n instanceof HTMLElement && (n.style.display === 'none' || n.hidden)) return false;
+  }
+  return true;
+}
+
+/** `[data-testid=id]` under `root` when it is on screen (absent or hidden: null). */
+function c8jOnScreen(root: ParentNode, id: string): HTMLElement | null {
+  const el = root.querySelector<HTMLElement>(`[data-testid="${id}"]`);
+  return el !== null && c8jShown(el) ? el : null;
+}
+
+/** The open Recruit confirm, or null. */
+function c8jConfirm(root: ParentNode): HTMLElement | null {
+  return c8jOnScreen(root, 'recruit-confirm');
+}
+/** The open Bag target, or null. */
+function c8jTarget(root: ParentNode): HTMLElement | null {
+  return c8jOnScreen(root, 'cure-target');
+}
+/** Yes of the open Recruit confirm, or null. */
+function c8jYes(root: ParentNode): HTMLButtonElement | null {
+  return (
+    c8jConfirm(root)?.querySelector<HTMLButtonElement>('[data-testid="recruit-action"]') ?? null
+  );
+}
+/** No of the open Recruit confirm, or null. */
+function c8jNo(root: ParentNode): HTMLButtonElement | null {
+  return (
+    c8jConfirm(root)?.querySelector<HTMLButtonElement>('[data-testid="recruit-cancel"]') ?? null
+  );
+}
+/** The row of the open Bag target, or null. */
+function c8jUse(root: ParentNode): HTMLButtonElement | null {
+  return (
+    c8jTarget(root)?.querySelector<HTMLButtonElement>('[data-testid="use-item-action"]') ?? null
+  );
+}
+
+/** Focus a command and press A on it, as the D-pad does: the cursor lands on the list's first row. */
+function c8jEnter(m: C8iMount, id: 'recruit' | 'swap' | 'bag'): void {
+  c8iCmd(m.root, id).focus();
+  m.view.applyBattleOp({ kind: 'activate' });
+}
+const c8jA = (m: C8iMount): void => m.view.applyBattleOp({ kind: 'activate' });
+const c8jB = (m: C8iMount): void => m.view.applyBattleOp({ kind: 'back' });
+const c8jDown = (m: C8iMount, times = 1): void => {
+  for (let i = 0; i < times; i += 1) m.view.applyBattleOp({ kind: 'move', dir: 'Down' });
+};
+
+describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('CTL8J-1-NO-SELECT: a wild battle with bait and cure items has no <select> and no <option>; the bait list is a named group whose first row is No bait and which has one row per bait (data-recruit-bonus); the cure list is a named group of data-cure-status rows; every row is a button in its list; no confirm or target is open until a row is pressed; and a wild battle with no bait still offers No bait', () => {
+    // WRONG IMPL KILLED: a leftover <select> (a select owns the arrow keys: the D-pad would be
+    // trapped in it); a bait list that lost its first No bait row (a bare attempt becomes
+    // impossible, the e2e's whole recruit path); a list root that lost its testid, role or name; a
+    // bait row without data-recruit-bonus or a cure row without data-cure-status (the
+    // classify-by-data contract surface e2e/recruit.spec reads); a row outside its list (the
+    // cursor skips it) or a non-button row; a bait row per count instead of per bait; a confirm or
+    // target open before any press (a recruit or a use with no question); bait rows ahead of the
+    // skill grid (recruit.spec picks the first button with "(" in its text and expects a skill);
+    // and a bait list shown in a trainer battle or a player battle.
+    const m = c8iMount(c8jVM());
+    const { root } = m;
+
+    expect(root.querySelectorAll('select'), 'no <select> under the battle root').toHaveLength(0);
+    expect(root.querySelectorAll('option'), 'and no <option>').toHaveLength(0);
+
+    // --- the bait list ---
+    expect(
+      root.querySelectorAll('[data-testid="bait-selector"]'),
+      'one bait list root',
+    ).toHaveLength(1);
+    const bait = c8iTestId(root, 'bait-selector') as HTMLElement;
+    expect(bait.tagName, 'a list root, not a <select>').not.toBe('SELECT');
+    expect(bait.getAttribute('role'), 'a labelled group').toBe('group');
+    expect(bait.getAttribute('aria-label'), 'named by the catalog').toBe('Bait');
+    expect(bait.hasAttribute('data-battle-list'), 'the root is in no list').toBe(false);
+    expect(bait.hasAttribute('testid'), 'and carries no stray testid attribute').toBe(false);
+    const baitRows = c8jRows(root, 'recruit');
+    expect(baitRows, 'No bait plus one row per bait').toHaveLength(3);
+    for (const row of baitRows) {
+      expect(row.tagName, 'every bait row is a button').toBe('BUTTON');
+      expect(bait.contains(row), 'inside the bait list root').toBe(true);
+    }
+    expect(baitRows[0]?.getAttribute('data-testid'), 'No bait comes first').toBe(
+      'bait-option-none',
+    );
+    expect(baitRows[0]?.textContent).toBe('No bait');
+    expect(baitRows[0]?.hasAttribute('data-recruit-bonus'), 'it is not a bait').toBe(false);
+    expect(
+      baitRows.slice(1).map((r) => r.getAttribute('data-recruit-bonus')),
+      'one data-recruit-bonus row per bait, in the model order',
+    ).toEqual(['150', '250']);
+    expect(baitRows.slice(1).map((r) => r.textContent)).toEqual([
+      `Lure Berry (+150${C8J_PERMILLE}) ${C8J_TIMES}2`,
+      `Sweet Bait (+250${C8J_PERMILLE}) ${C8J_TIMES}1`,
+    ]);
+    expect(
+      root.querySelectorAll('[data-recruit-bonus]'),
+      'e2e/recruit.spec counts these: exactly the baits, nothing else',
+    ).toHaveLength(2);
+    for (const button of bait.querySelectorAll('button')) {
+      expect(
+        button.hasAttribute('data-battle-list'),
+        'every control in the list is a cursor row',
+      ).toBe(true);
+    }
+
+    // --- the cure list ---
+    expect(root.querySelectorAll('[data-testid="cure-item-selector"]')).toHaveLength(1);
+    const cure = c8iTestId(root, 'cure-item-selector') as HTMLElement;
+    expect(cure.tagName).not.toBe('SELECT');
+    expect(cure.getAttribute('role')).toBe('group');
+    expect(cure.getAttribute('aria-label')).toBe('Cure items');
+    expect(cure.hasAttribute('data-battle-list')).toBe(false);
+    const cureRows = c8jRows(root, 'bag');
+    expect(cureRows.map((r) => r.getAttribute('data-cure-status'))).toEqual(['Poison', 'Burn']);
+    expect(cureRows.map((r) => r.textContent)).toEqual([
+      `Antidote (cures Poison) ${C8J_TIMES}1`,
+      `Salve (cures Burn) ${C8J_TIMES}3`,
+    ]);
+    for (const row of cureRows) {
+      expect(row.tagName).toBe('BUTTON');
+      expect(cure.contains(row)).toBe(true);
+    }
+    for (const button of cure.querySelectorAll('button')) {
+      expect(button.hasAttribute('data-battle-list')).toBe(true);
+    }
+
+    // --- nothing is asked before a press ---
+    expect(c8jConfirm(root), 'no Recruit confirm yet').toBeNull();
+    expect(c8jTarget(root), 'no Bag target yet').toBeNull();
+    expect(c8jYes(root)).toBeNull();
+    expect(c8jUse(root)).toBeNull();
+
+    // --- DOM order: the skill grid comes first (recruit.spec clicks the first "(" button) ---
+    const firstSkill = c8iSkills(root)[0] as HTMLElement;
+    for (const row of [...baitRows, ...cureRows]) {
+      expect(
+        firstSkill.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING,
+        'the skill grid precedes every bait and cure row',
+      ).toBeGreaterThan(0);
+    }
+
+    // --- a wild battle with no bait still offers a bare attempt ---
+    const bare = c8iFresh(c8jVM({ baitOptions: [] }));
+    expect(c8jRows(bare.root, 'recruit').map((r) => r.getAttribute('data-testid'))).toEqual([
+      'bait-option-none',
+    ]);
+    expect(
+      bare.root.querySelectorAll('[data-recruit-bonus]'),
+      'a fresh bag has no bait rows',
+    ).toHaveLength(0);
+    expect(c8iTestId(bare.root, 'bait-selector'), 'the list root is still there').not.toBeNull();
+
+    // --- not wild / no cure items / a player battle ---
+    const trainer = c8iFresh(c8jVM({ canRecruit: false, baitOptions: [], cureItems: [] }));
+    expect(
+      c8iTestId(trainer.root, 'bait-selector'),
+      'a trainer battle has no bait list',
+    ).toBeNull();
+    expect(c8iTestId(trainer.root, 'cure-item-selector'), 'no cure items, no cure list').toBeNull();
+    const pvp = c8iFresh(c8iPvpVM());
+    expect(c8jRows(pvp.root, 'recruit'), 'no Recruit rows in a player battle').toHaveLength(0);
+    expect(c8jRows(pvp.root, 'bag'), 'no Bag rows in a player battle').toHaveLength(0);
+    expect(pvp.root.querySelectorAll('select')).toHaveLength(0);
+  });
+
+  it('CTL8J-1-RECRUIT-YES-DEFAULT: on the D-pad Recruit opens on No bait; A on a bait row opens the confirm with the cursor and focus on Yes and calls nothing; the next A recruits with the bait the model gave the row (a number), once; and the No bait path sends undefined', () => {
+    // WRONG IMPL KILLED: a bait press that recruits at once (no question); a confirm whose cursor
+    // lands on No or on nothing (a second A would back out, the default is Yes); a confirm that
+    // leaves two aria-current elements or no focus; a Yes that sends the bait's index, its bonus,
+    // a string or the first bait; a No bait Yes that sends 0 or "" instead of undefined (the
+    // server reads an item id 0 as a real item); a Yes that fires more than once; and a prompt
+    // that does not name the bait (or names the wrong one).
+    const m = c8iMount(c8jVM());
+    const { root, callbacks } = m;
+
+    c8jEnter(m, 'recruit');
+    c8iExpectCursorOn(
+      root,
+      c8jRows(root, 'recruit')[0] as Element,
+      'Recruit opens on the No bait row',
+    );
+    expect(c8jConfirm(root), 'choosing Recruit asks nothing yet').toBeNull();
+    c8jDown(m);
+    c8iExpectCursorOn(root, c8jRows(root, 'recruit')[1] as Element, 'Down: the Lure Berry row');
+
+    c8jA(m);
+    const confirm = c8jConfirm(root);
+    expect(confirm, 'A on a bait row opens the confirm').not.toBeNull();
+    expect(confirm?.textContent).toContain('Recruit with Lure Berry?');
+    const yes = c8jYes(root) as HTMLButtonElement;
+    const no = c8jNo(root) as HTMLButtonElement;
+    expect(yes.textContent).toBe('Yes');
+    expect(no.textContent).toBe('No');
+    expect(yes.getAttribute('data-battle-list')).toBe('recruitConfirm');
+    expect(no.getAttribute('data-battle-list')).toBe('recruitConfirm');
+    const confirmRows = c8jRows(root, 'recruitConfirm');
+    expect(confirmRows, 'Yes then No, in cursor order').toHaveLength(2);
+    expect(confirmRows[0]).toBe(yes);
+    expect(confirmRows[1]).toBe(no);
+    c8iExpectCursorOn(root, yes, 'the confirm defaults to Yes (one aria-current, focused)');
+    expect(callbacks.onRecruit, 'the bait press itself recruits nothing').not.toHaveBeenCalled();
+
+    c8jA(m);
+    expect(callbacks.onRecruit, 'A on Yes recruits, once').toHaveBeenCalledTimes(1);
+    expect(callbacks.onRecruit).toHaveBeenCalledWith(77n, 7);
+    const sent = vi.mocked(callbacks.onRecruit).mock.calls[0]?.[1];
+    expect(typeof sent, 'the id is a number, not the text of a row').toBe('number');
+
+    // --- the No bait path: a bare attempt is `undefined` ---
+    const bare = c8iFresh(c8jVM());
+    c8jEnter(bare, 'recruit');
+    c8jA(bare); // A on the No bait row
+    expect(c8jConfirm(bare.root)?.textContent).toContain('Recruit with no bait?');
+    c8iExpectCursorOn(
+      bare.root,
+      c8jYes(bare.root) as Element,
+      'the No bait confirm defaults to Yes',
+    );
+    expect(bare.callbacks.onRecruit).not.toHaveBeenCalled();
+    c8jA(bare);
+    expect(bare.callbacks.onRecruit).toHaveBeenCalledTimes(1);
+    expect(bare.callbacks.onRecruit).toHaveBeenCalledWith(77n, undefined);
+    const bareCall = vi.mocked(bare.callbacks.onRecruit).mock.calls[0] as unknown[];
+    expect(bareCall, 'the call carries the bait slot').toHaveLength(2);
+    expect(bareCall[1], 'No bait is exactly undefined').toBeUndefined();
+  });
+
+  it('CTL8J-1-RECRUIT-NO-BACK: No and B both close the confirm with no call and put the cursor back on the pressed row (a bait row, and the No bait row), B from the list returns to the Recruit command, and the row is found by the item, not by its old position, when an earlier bait has been consumed', () => {
+    // WRONG IMPL KILLED: a No that recruits; a B that falls out of the confirm to the command row
+    // (the player loses the list); a cursor sent back to the first row or left on the closed
+    // confirm; a confirm that stays up after No or B; a return that remembers the row INDEX (a
+    // consumed earlier bait shifts the rows and the cursor lands on a different item); and a B in
+    // the list that stays in the list.
+    const m = c8iMount(c8jVM());
+    const { root, callbacks } = m;
+    c8jEnter(m, 'recruit');
+    c8jDown(m);
+    c8jA(m);
+    expect(c8jConfirm(root), 'precondition: the confirm is open').not.toBeNull();
+    const lureRow = (): HTMLElement => c8jRows(root, 'recruit')[1] as HTMLElement;
+
+    // No
+    c8jDown(m);
+    c8iExpectCursorOn(root, c8jNo(root) as Element, 'Down: the cursor is on No');
+    c8jA(m);
+    expect(callbacks.onRecruit, 'No recruits nothing').not.toHaveBeenCalled();
+    expect(c8jConfirm(root), 'No closes the confirm').toBeNull();
+    c8iExpectCursorOn(root, lureRow(), 'No returns to the pressed bait row');
+
+    // B
+    c8jA(m);
+    expect(c8jConfirm(root), 'the row opens the confirm again').not.toBeNull();
+    c8jB(m);
+    expect(callbacks.onRecruit, 'B recruits nothing').not.toHaveBeenCalled();
+    expect(c8jConfirm(root), 'B closes the confirm').toBeNull();
+    c8iExpectCursorOn(root, lureRow(), 'B returns to the pressed bait row');
+
+    // B again: out of the list, onto the Recruit command
+    c8jB(m);
+    c8iExpectCursorOn(
+      root,
+      c8iCmd(root, 'recruit'),
+      'B from the list returns to the Recruit command',
+    );
+    expect(callbacks.onRecruit).not.toHaveBeenCalled();
+
+    // The No bait row is remembered as itself (index 0), not as "the first bait".
+    c8jA(m);
+    c8jA(m); // A on the Recruit command, then A on the No bait row
+    expect(c8jConfirm(root)?.textContent).toContain('Recruit with no bait?');
+    c8jB(m);
+    c8iExpectCursorOn(root, c8jRows(root, 'recruit')[0] as Element, 'B returns to the No bait row');
+    expect(callbacks.onRecruit).not.toHaveBeenCalled();
+
+    // An earlier bait is consumed while the confirm for a later one is open: B lands on the item.
+    const baits = [
+      { itemId: 5, name: 'Alder', recruitBonus: 100, count: 1 },
+      { itemId: 7, name: 'Birch', recruitBonus: 150, count: 1 },
+      { itemId: 9, name: 'Cedar', recruitBonus: 250, count: 1 },
+    ];
+    const shift = c8iFresh(c8jVM({ baitOptions: baits }));
+    c8jEnter(shift, 'recruit');
+    c8jDown(shift, 2); // No bait -> Alder -> Birch
+    c8jA(shift);
+    expect(c8jConfirm(shift.root)?.textContent).toContain('Recruit with Birch?');
+    shift.view.refresh(c8jVM({ baitOptions: [baits[1], baits[2]] as typeof baits })); // Alder consumed
+    expect(
+      c8jConfirm(shift.root)?.textContent,
+      'the confirm survives, still about Birch',
+    ).toContain('Recruit with Birch?');
+    c8jB(shift);
+    const rows = c8jRows(shift.root, 'recruit');
+    expect(rows.map((r) => r.textContent?.split(' ')[0])).toEqual(['No', 'Birch', 'Cedar']);
+    c8iExpectCursorOn(shift.root, rows[1] as Element, 'B lands on Birch, wherever Birch is now');
+    expect(shift.callbacks.onRecruit).not.toHaveBeenCalled();
+  });
+
+  it('CTL8J-1-BAG-TARGET: Bag opens on the first cure row; A shows ONE target row naming the active monster with the cursor on it and uses nothing; the next A uses the item the model gave the row, once; B goes back to the pressed cure row and B again to the Bag command', () => {
+    // WRONG IMPL KILLED: a cure press that uses the item at once (no target step); a target step
+    // with no row or the wrong monster; a target that is not the cursor (A would press the cure
+    // row again); an A that sends the row index, the item's cure status or a string; a second
+    // item that sends the first item's id; a B that closes the Bag; a return to the first cure
+    // row instead of the pressed one; and a target that stays up after B.
+    const kelpie = { ...makeUx4VM().playerCard, speciesName: 'Kelpie' };
+    const m = c8iMount(c8jVM({ playerCard: kelpie }));
+    const { root, callbacks } = m;
+
+    c8jEnter(m, 'bag');
+    c8iExpectCursorOn(root, c8jRows(root, 'bag')[0] as Element, 'Bag opens on the first cure row');
+    expect(c8jTarget(root), 'choosing Bag asks nothing yet').toBeNull();
+    c8jA(m);
+    const target = c8jTarget(root);
+    expect(target, 'A on a cure row opens the target').not.toBeNull();
+    const targets = c8jRows(root, 'bagTarget');
+    expect(targets, 'one target row').toHaveLength(1);
+    expect(targets[0]?.getAttribute('data-testid')).toBe('use-item-action');
+    expect(targets[0]?.textContent, 'it names the active monster').toBe('Use on Kelpie');
+    c8iExpectCursorOn(root, targets[0] as Element, 'the cursor is on the target row');
+    expect(callbacks.onUseItem, 'the item press itself uses nothing').not.toHaveBeenCalled();
+
+    c8jA(m);
+    expect(callbacks.onUseItem, 'A on the target uses the item, once').toHaveBeenCalledTimes(1);
+    expect(callbacks.onUseItem).toHaveBeenCalledWith(77n, 12);
+    expect(typeof vi.mocked(callbacks.onUseItem).mock.calls[0]?.[1]).toBe('number');
+
+    // The second cure row sends its own id, and B walks back one step at a time.
+    const second = c8iFresh(c8jVM({ playerCard: kelpie }));
+    c8jEnter(second, 'bag');
+    c8jDown(second);
+    c8jA(second);
+    c8iExpectCursorOn(
+      second.root,
+      c8jUse(second.root) as Element,
+      'the second item opens the target',
+    );
+    c8jB(second);
+    expect(second.callbacks.onUseItem, 'B uses nothing').not.toHaveBeenCalled();
+    expect(c8jTarget(second.root), 'B closes the target').toBeNull();
+    c8iExpectCursorOn(
+      second.root,
+      c8jRows(second.root, 'bag')[1] as Element,
+      'B returns to the pressed cure row, not the first',
+    );
+    c8jB(second);
+    c8iExpectCursorOn(
+      second.root,
+      c8iCmd(second.root, 'bag'),
+      'B again returns to the Bag command',
+    );
+    c8jA(second);
+    c8jDown(second);
+    c8jA(second);
+    c8jA(second);
+    expect(second.callbacks.onUseItem).toHaveBeenCalledTimes(1);
+    expect(second.callbacks.onUseItem, 'the second row sends the second item').toHaveBeenCalledWith(
+      77n,
+      14,
+    );
+  });
+
+  it('CTL8J-1-SWAP-LIST: Swap opens on the first bench row; A swaps to that member by its team index (not its position) with no confirm, once, through onSwap in a wild battle and onPvpSwap in a player battle, where there are no Recruit or Bag rows', () => {
+    // WRONG IMPL KILLED: a swap that needs a confirm the plan never asked for; a swap that sends
+    // the array position (1) for a bench member whose team index is 2; a PvP swap routed through
+    // the PvE callback (submit_pvp_action is not swap_active) or the reverse; a swap list that
+    // lost its data-battle-list rows (the cursor cannot walk it); and Recruit or Bag rows offered
+    // in a player battle (the server rejects both).
+    const m = c8iMount(c8jVM());
+    c8jEnter(m, 'swap');
+    const rows = c8jRows(m.root, 'swap');
+    expect(rows.map((r) => r.textContent)).toEqual([
+      'Swap: Mossling (12/18)',
+      'Swap: Emberfang (7/21)',
+    ]);
+    c8iExpectCursorOn(m.root, rows[0] as Element, 'Swap opens on the first bench row');
+    c8jDown(m);
+    c8iExpectCursorOn(m.root, c8jRows(m.root, 'swap')[1] as Element, 'Down: the second member');
+    expect(m.callbacks.onSwap).not.toHaveBeenCalled();
+    c8jA(m);
+    expect(m.callbacks.onSwap, 'A swaps at once, once').toHaveBeenCalledTimes(1);
+    expect(m.callbacks.onSwap, 'by team index 2, not array position 1').toHaveBeenCalledWith(
+      77n,
+      2,
+    );
+    expect(m.callbacks.onPvpSwap).not.toHaveBeenCalled();
+
+    const first = c8iFresh(c8jVM());
+    c8jEnter(first, 'swap');
+    c8jA(first);
+    expect(first.callbacks.onSwap).toHaveBeenCalledWith(77n, 1);
+
+    // --- a player battle ---
+    const pvp = c8iFresh(c8iPvpVM());
+    expect(c8jRows(pvp.root, 'recruit'), 'no Recruit rows').toHaveLength(0);
+    expect(c8jRows(pvp.root, 'bag'), 'no Bag rows').toHaveLength(0);
+    expect(c8iTestId(pvp.root, 'bait-selector')).toBeNull();
+    expect(c8iTestId(pvp.root, 'cure-item-selector')).toBeNull();
+    c8jEnter(pvp, 'swap');
+    expect(c8jRows(pvp.root, 'swap').map((r) => r.textContent)).toEqual([
+      'Submit Swap: Mossling',
+      'Submit Swap: Emberfang',
+    ]);
+    c8jDown(pvp);
+    c8jA(pvp);
+    expect(
+      pvp.callbacks.onPvpSwap,
+      'a player battle swaps through onPvpSwap',
+    ).toHaveBeenCalledTimes(1);
+    expect(pvp.callbacks.onPvpSwap).toHaveBeenCalledWith(77n, 2);
+    expect(pvp.callbacks.onSwap).not.toHaveBeenCalled();
+  });
+
+  it('CTL8J-1-ID-NOT-PARSED: with every row text emptied or replaced by a misleading number and every attribute but data-battle-list stripped or replaced by misleading values, pressing a bait, cure or bench row still passes the id the model gave it (undefined for No bait, 0, and an id past 2^31 included)', () => {
+    // WRONG IMPL KILLED (B10, the whole point of the criterion): any Yes, target or swap that
+    // parses its id from row text (`parseInt("12")`, `Number("1e3")`), from a `value`, `data-id`,
+    // `data-item-id`, `data-team-index` or `data-recruit-bonus` attribute, or from the row's
+    // position in a re-queried list; an id read through a falsy test (0 becomes undefined) or
+    // through a 32-bit coercion (3_000_000_000 wraps); and a No bait that is read back as "" or 0.
+    const baits = [
+      { itemId: 7, name: 'Lure Berry', recruitBonus: 150, count: 2 },
+      { itemId: 0, name: 'Zero Bait', recruitBonus: 100, count: 1 },
+      { itemId: 3_000_000_000, name: 'Big Bait', recruitBonus: 250, count: 4 },
+    ];
+    const cures = [
+      { itemId: 12, name: 'Antidote', cureStatus: 'Poison', count: 1 },
+      { itemId: 0, name: 'Salve', cureStatus: 'Burn', count: 2 },
+      { itemId: 4_000_000_000, name: 'Elixir', cureStatus: 'Sleep', count: 1 },
+    ];
+    // None of these parses to an id any case below expects (7, 0, 1, 2, 12, 3e9, 4e9): the empty
+    // string would read as 0 through Number(), so it is never the text of a row whose id is 0.
+    const decoys = ['99', '1e3', ' 8 ', '0x10', '', '-1'];
+    /** Strip every attribute but data-battle-list from the rows of `lists`. `misleading` also plants
+     *  a decoy in every id-like attribute and a decoy as the text; otherwise the text is emptied. */
+    const scramble = (root: Element, lists: readonly string[], misleading: boolean): void => {
+      let i = 0;
+      const selector = lists.map((l) => `[data-battle-list="${l}"]`).join(',');
+      for (const el of root.querySelectorAll<HTMLElement>(selector)) {
+        const decoy = decoys[i % decoys.length] as string;
+        i += 1;
+        for (const name of el.getAttributeNames()) {
+          if (name !== 'data-battle-list') el.removeAttribute(name);
+        }
+        if (misleading) {
+          for (const name of [
+            'value',
+            'data-id',
+            'data-item-id',
+            'data-itemid',
+            'data-team-index',
+            'data-index',
+            'data-value',
+            'data-recruit-bonus',
+            'data-cure-status',
+          ]) {
+            el.setAttribute(name, decoy);
+          }
+        }
+        el.textContent = misleading ? decoy : '';
+      }
+    };
+
+    for (const misleading of [true, false]) {
+      const mode = misleading ? 'misleading' : 'stripped';
+      // --- Recruit: No bait, then each bait ---
+      const recruitCases: ReadonlyArray<readonly [number, number | undefined]> = [
+        [0, undefined],
+        [1, 7],
+        [2, 0],
+        [3, 3_000_000_000],
+      ];
+      for (const [downs, expected] of recruitCases) {
+        const m = c8iFresh(c8jVM({ baitOptions: baits }));
+        c8jEnter(m, 'recruit');
+        scramble(m.root, ['recruit'], misleading);
+        c8jDown(m, downs);
+        c8jA(m);
+        expect(c8jConfirm(m.root), `${mode}: the confirm opens for row ${downs}`).not.toBeNull();
+        scramble(m.root, ['recruitConfirm'], misleading);
+        c8jA(m);
+        expect(
+          m.callbacks.onRecruit,
+          `${mode}: Yes for row ${downs} recruits once`,
+        ).toHaveBeenCalledTimes(1);
+        const call = vi.mocked(m.callbacks.onRecruit).mock.calls[0] as unknown[];
+        expect(call[0]).toBe(77n);
+        expect(call[1], `${mode}: the bait id of row ${downs}, as given by the model`).toBe(
+          expected,
+        );
+      }
+      // --- Bag ---
+      const cureCases: ReadonlyArray<readonly [number, number]> = [
+        [0, 12],
+        [1, 0],
+        [2, 4_000_000_000],
+      ];
+      for (const [downs, expected] of cureCases) {
+        const m = c8iFresh(c8jVM({ cureItems: cures }));
+        c8jEnter(m, 'bag');
+        scramble(m.root, ['bag'], misleading);
+        c8jDown(m, downs);
+        c8jA(m);
+        expect(c8jTarget(m.root), `${mode}: the target opens for cure row ${downs}`).not.toBeNull();
+        scramble(m.root, ['bagTarget'], misleading);
+        c8jA(m);
+        expect(
+          m.callbacks.onUseItem,
+          `${mode}: the target for row ${downs} uses once`,
+        ).toHaveBeenCalledTimes(1);
+        const call = vi.mocked(m.callbacks.onUseItem).mock.calls[0] as unknown[];
+        expect(call[0]).toBe(77n);
+        expect(call[1], `${mode}: the cure id of row ${downs}, as given by the model`).toBe(
+          expected,
+        );
+      }
+      // --- Swap ---
+      for (const [downs, expected] of [
+        [0, 1],
+        [1, 2],
+      ] as const) {
+        const m = c8iFresh(c8jVM());
+        c8jEnter(m, 'swap');
+        scramble(m.root, ['swap'], misleading);
+        c8jDown(m, downs);
+        c8jA(m);
+        expect(m.callbacks.onSwap, `${mode}: swap row ${downs} swaps once`).toHaveBeenCalledTimes(
+          1,
+        );
+        expect(
+          m.callbacks.onSwap,
+          `${mode}: the team index of bench row ${downs}`,
+        ).toHaveBeenCalledWith(77n, expected);
+      }
+    }
+  });
+
+  it('CTL8J-1-PICK-ACROSS-RENDERS: a same-turn re-render keeps the open confirm or target, its item and the cursor on Yes (by identity, through a bait recount or a reorder) and calls nothing; a new turn, a new battle, a consumed bait or gone cure, a finished battle and hide() close it, send the cursor to Fight, are not resurrected by a later render, and leave a held Yes node unable to recruit', () => {
+    // WRONG IMPL KILLED: a re-render that drops the pick or sends the cursor back to Fight on every
+    // server tick (the player never gets to press Yes); one that re-points the pick to the first
+    // row or to the same position after a reorder (Yes recruits with another bait); a pick that
+    // survives into the next turn (a stale Yes spends a different turn), into another battle, past
+    // the consumption of its bait, past a finished battle or past hide(); a pick that returns when
+    // a later render offers its item again; a Yes whose id was captured at RENDER time (a held node
+    // from before the new turn still recruits); a refresh that itself calls a callback; and a
+    // re-render that steals focus from a menu opened over the battle.
+    const press = (m: C8iMount, downs: number): void => {
+      c8jEnter(m, 'recruit');
+      c8jDown(m, downs);
+      c8jA(m);
+    };
+
+    // --- a same-turn re-render keeps it (and the cursor on Yes) ---
+    const m = c8iMount(c8jVM());
+    press(m, 1);
+    const oldYes = c8jYes(m.root) as HTMLButtonElement;
+    c8iExpectCursorOn(m.root, oldYes, 'precondition: the cursor is on Yes');
+    m.view.refresh(c8jVM());
+    expect(c8jConfirm(m.root)?.textContent, 'the confirm survives').toContain(
+      'Recruit with Lure Berry?',
+    );
+    c8iExpectCursorOn(m.root, c8jYes(m.root) as Element, 'and the cursor is still on Yes');
+    m.view.refresh(
+      c8jVM({
+        baitOptions: [
+          { ...C8J_BAITS[0], count: 1 } as (typeof C8J_BAITS)[number],
+          C8J_BAITS[1] as (typeof C8J_BAITS)[number],
+        ],
+      }),
+    );
+    expect(c8jConfirm(m.root)?.textContent, 'a bait recount keeps the pick').toContain(
+      'Recruit with Lure Berry?',
+    );
+    expect(m.callbacks.onRecruit, 'a refresh calls nothing').not.toHaveBeenCalled();
+    c8jA(m);
+    expect(m.callbacks.onRecruit).toHaveBeenCalledTimes(1);
+    expect(m.callbacks.onRecruit).toHaveBeenCalledWith(77n, 7);
+
+    // --- a menu over the battle: a same-turn re-render steals no focus and keeps the pick ---
+    const menuHost = c8iFresh(c8jVM());
+    press(menuHost, 1);
+    const menu = document.createElement('button');
+    document.body.appendChild(menu);
+    menu.focus();
+    menuHost.view.refresh(c8jVM());
+    expect(document.activeElement, 'focus stays in the menu').toBe(menu);
+    expect(c8jConfirm(menuHost.root), 'and the confirm is still open under it').not.toBeNull();
+    menu.remove();
+
+    // --- a reorder keeps the pick on the ITEM ---
+    const re = c8iFresh(c8jVM());
+    press(re, 2); // Sweet Bait (item 9)
+    expect(c8jConfirm(re.root)?.textContent).toContain('Recruit with Sweet Bait?');
+    re.view.refresh(c8jVM({ baitOptions: [...C8J_BAITS].reverse() }));
+    expect(c8jConfirm(re.root)?.textContent, 'still Sweet Bait after the reorder').toContain(
+      'Recruit with Sweet Bait?',
+    );
+    c8jA(re);
+    expect(
+      re.callbacks.onRecruit,
+      'Yes recruits with item 9, not the item now at row 2',
+    ).toHaveBeenCalledWith(77n, 9);
+
+    // --- things that close it ---
+    const closers: ReadonlyArray<readonly [string, (m: C8iMount) => void]> = [
+      ['a new turn', (x) => x.view.refresh(c8jVM({ turnNumber: 3 }))],
+      ['an earlier turn number', (x) => x.view.refresh(c8jVM({ turnNumber: 1 }))],
+      ['a new battle on the same turn', (x) => x.view.refresh(c8jVM({ battleId: 78n }))],
+      [
+        'the bait being consumed',
+        (x) => x.view.refresh(c8jVM({ baitOptions: [C8J_BAITS[1] as (typeof C8J_BAITS)[number]] })),
+      ],
+      ['the battle ending', (x) => x.view.refresh(c8jVM({ outcome: 'SideAWins' }))],
+      [
+        'hide() then a re-show',
+        (x) => {
+          x.view.hide();
+          x.view.refresh(c8jVM());
+        },
+      ],
+    ];
+    for (const [label, close] of closers) {
+      const c = c8iFresh(c8jVM());
+      press(c, 1);
+      const held = c8jYes(c.root) as HTMLButtonElement;
+      expect(held, `${label}: precondition, the confirm is open`).not.toBeNull();
+      close(c);
+      expect(c8jConfirm(c.root), `${label} closes the confirm`).toBeNull();
+      expect(
+        c.callbacks.onRecruit,
+        `${label}: the refresh itself recruits nothing`,
+      ).not.toHaveBeenCalled();
+      held.click();
+      expect(
+        c.callbacks.onRecruit,
+        `${label}: a held Yes node recruits nothing`,
+      ).not.toHaveBeenCalled();
+      // The original state is offered again (the bait is back, the battle is ongoing again, the
+      // turn is the pick's): a closed pick stays closed.
+      c.view.refresh(c8jVM());
+      expect(
+        c8jConfirm(c.root),
+        `${label}: a later render of the original state does not reopen it`,
+      ).toBeNull();
+      held.click();
+      expect(
+        c.callbacks.onRecruit,
+        `${label}: nor does the held Yes node work again`,
+      ).not.toHaveBeenCalled();
+    }
+
+    // --- the cursor goes to Fight when the pick is dropped (a new turn, a gone bait) ---
+    for (const close of [
+      (x: C8iMount) => x.view.refresh(c8jVM({ turnNumber: 3 })),
+      (x: C8iMount) =>
+        x.view.refresh(c8jVM({ baitOptions: [C8J_BAITS[1] as (typeof C8J_BAITS)[number]] })),
+    ]) {
+      const c = c8iFresh(c8jVM());
+      press(c, 1);
+      close(c);
+      c8iExpectCursorOn(
+        c.root,
+        c8iCmd(c.root, 'fight'),
+        'a dropped pick sends the cursor to Fight',
+      );
+    }
+
+    // --- not resurrected: the bait comes back, the item is offered again, the pick does not ---
+    const gone = c8iFresh(c8jVM());
+    press(gone, 1);
+    gone.view.refresh(c8jVM({ baitOptions: [C8J_BAITS[1] as (typeof C8J_BAITS)[number]] })); // item 7 consumed
+    expect(c8jConfirm(gone.root)).toBeNull();
+    gone.view.refresh(c8jVM()); // item 7 is offered again, same turn
+    expect(
+      c8jConfirm(gone.root),
+      'a dropped pick is not brought back by a later render',
+    ).toBeNull();
+    expect(gone.callbacks.onRecruit).not.toHaveBeenCalled();
+    const over = c8iFresh(c8jVM());
+    press(over, 1);
+    over.view.refresh(c8jVM({ outcome: 'SideAWins' }));
+    over.view.refresh(c8jVM()); // the same battle and turn, ongoing again
+    expect(c8jConfirm(over.root), 'nor after a finished battle').toBeNull();
+
+    // --- Bag: kept by item, closed by a new turn or a gone item ---
+    const bag = c8iMount(c8jVM());
+    c8jEnter(bag, 'bag');
+    c8jDown(bag);
+    c8jA(bag); // Salve (item 14)
+    expect(c8jUse(bag.root)?.textContent).toBe('Use on Sproutle');
+    bag.view.refresh(c8jVM({ cureItems: [...C8J_CURES].reverse() }));
+    expect(c8jTarget(bag.root), 'the target survives a same-turn reorder').not.toBeNull();
+    expect(bag.callbacks.onUseItem).not.toHaveBeenCalled();
+    c8jA(bag);
+    expect(bag.callbacks.onUseItem, 'and still uses item 14').toHaveBeenCalledWith(77n, 14);
+
+    for (const [label, close] of [
+      ['a new turn', (x: C8iMount) => x.view.refresh(c8jVM({ turnNumber: 3 }))],
+      [
+        'the cure item being used up',
+        (x: C8iMount) =>
+          x.view.refresh(c8jVM({ cureItems: [C8J_CURES[0] as (typeof C8J_CURES)[number]] })),
+      ],
+    ] as const) {
+      const c = c8iFresh(c8jVM());
+      c8jEnter(c, 'bag');
+      c8jDown(c);
+      c8jA(c);
+      const held = c8jUse(c.root) as HTMLButtonElement;
+      expect(held, `${label}: precondition, the target is open`).not.toBeNull();
+      close(c);
+      expect(c8jTarget(c.root), `${label} closes the target`).toBeNull();
+      held.click();
+      expect(
+        c.callbacks.onUseItem,
+        `${label}: a held target node uses nothing`,
+      ).not.toHaveBeenCalled();
+    }
+  });
+
+  it('CTL8J-1x-MOUSE-SEATS-YES: a mouse click on a bait row or on No bait also opens the confirm with the cursor and focus on Yes (one aria-current), and a click on Yes recruits with the bait of that row', () => {
+    // WRONG IMPL KILLED: a confirm that is only seated by the D-pad (a click leaves the cursor on
+    // the bait row, or two aria-current elements, or focus on <body>, so the next Enter presses
+    // the wrong control).
+    const m = c8iMount(c8jVM());
+    c8jRows(m.root, 'recruit')[2]?.click();
+    c8iExpectCursorOn(m.root, c8jYes(m.root) as Element, 'a click on a bait row seats Yes');
+    expect(c8jConfirm(m.root)?.textContent).toContain('Recruit with Sweet Bait?');
+    (c8jYes(m.root) as HTMLElement).click();
+    expect(m.callbacks.onRecruit).toHaveBeenCalledTimes(1);
+    expect(m.callbacks.onRecruit).toHaveBeenCalledWith(77n, 9);
+
+    const bare = c8iFresh(c8jVM());
+    (c8iTestId(bare.root, 'bait-option-none') as HTMLElement).click();
+    c8iExpectCursorOn(bare.root, c8jYes(bare.root) as Element, 'a click on No bait seats Yes');
+    (c8jYes(bare.root) as HTMLElement).click();
+    expect(bare.callbacks.onRecruit).toHaveBeenCalledWith(77n, undefined);
+  });
+
+  it('CTL8J-1x-SAME-NAME-BAITS: two baits with the same name each send their own id, so a lookup by name or text cannot be what picks the id', () => {
+    // WRONG IMPL KILLED: a Yes that finds the bait again by its name (the second Twin recruits
+    // with the first), and the same for two cure items with one name.
+    const twins = [
+      { itemId: 41, name: 'Twin', recruitBonus: 100, count: 1 },
+      { itemId: 42, name: 'Twin', recruitBonus: 100, count: 1 },
+    ];
+    const cureTwins = [
+      { itemId: 51, name: 'Twin', cureStatus: 'Poison', count: 1 },
+      { itemId: 52, name: 'Twin', cureStatus: 'Poison', count: 1 },
+    ];
+    for (const [downs, expected] of [
+      [1, 41],
+      [2, 42],
+    ] as const) {
+      const m = c8iFresh(c8jVM({ baitOptions: twins, cureItems: cureTwins }));
+      c8jEnter(m, 'recruit');
+      c8jDown(m, downs);
+      c8jA(m);
+      c8jA(m);
+      expect(m.callbacks.onRecruit).toHaveBeenCalledTimes(1);
+      expect(m.callbacks.onRecruit, `bait row ${downs}`).toHaveBeenCalledWith(77n, expected);
+    }
+    for (const [downs, expected] of [
+      [0, 51],
+      [1, 52],
+    ] as const) {
+      const m = c8iFresh(c8jVM({ baitOptions: twins, cureItems: cureTwins }));
+      c8jEnter(m, 'bag');
+      c8jDown(m, downs);
+      c8jA(m);
+      c8jA(m);
+      expect(m.callbacks.onUseItem).toHaveBeenCalledTimes(1);
+      expect(m.callbacks.onUseItem, `cure row ${downs}`).toHaveBeenCalledWith(77n, expected);
+    }
+  });
+
+  it('CTL8J-1x-REPLACE-PICK: a second bait pressed while the first confirm is open replaces it (the prompt names the second and Yes sends it); a cure row pressed over a Recruit confirm replaces that with the Bag target; and pressing a command row clears the pick', () => {
+    // WRONG IMPL KILLED: a second press that is ignored (Yes sends the first bait while the player
+    // saw the second); two picks open at once (a Recruit Yes and a Bag target on screen together,
+    // each live); and a confirm that outlives a trip back to the command list.
+    const m = c8iMount(c8jVM());
+    c8jRows(m.root, 'recruit')[1]?.click();
+    expect(c8jConfirm(m.root)?.textContent).toContain('Recruit with Lure Berry?');
+    c8jRows(m.root, 'recruit')[2]?.click();
+    expect(c8jConfirm(m.root)?.textContent, 'the prompt names the second bait').toContain(
+      'Recruit with Sweet Bait?',
+    );
+    expect(c8jConfirm(m.root)?.textContent).not.toContain('Lure Berry');
+    c8iExpectCursorOn(m.root, c8jYes(m.root) as Element, 'the cursor is on Yes');
+    c8jA(m);
+    expect(m.callbacks.onRecruit).toHaveBeenCalledTimes(1);
+    expect(m.callbacks.onRecruit, 'Yes sends the bait that is on screen').toHaveBeenCalledWith(
+      77n,
+      9,
+    );
+
+    const both = c8iFresh(c8jVM());
+    c8jRows(both.root, 'recruit')[1]?.click();
+    expect(c8jConfirm(both.root)).not.toBeNull();
+    const staleYes = c8jYes(both.root) as HTMLButtonElement;
+    c8jRows(both.root, 'bag')[0]?.click();
+    expect(c8jTarget(both.root), 'the cure row opens the Bag target').not.toBeNull();
+    expect(c8jConfirm(both.root), 'and the Recruit confirm is gone: one pick at a time').toBeNull();
+    staleYes.click();
+    expect(
+      both.callbacks.onRecruit,
+      'the replaced confirm recruits nothing',
+    ).not.toHaveBeenCalled();
+
+    const cmd = c8iFresh(c8jVM());
+    c8jRows(cmd.root, 'recruit')[1]?.click();
+    const heldYes = c8jYes(cmd.root) as HTMLButtonElement;
+    c8iCmd(cmd.root, 'fight').click();
+    expect(c8jConfirm(cmd.root), 'a command row press clears the pick').toBeNull();
+    heldYes.click();
+    expect(cmd.callbacks.onRecruit, 'the cleared pick recruits nothing').not.toHaveBeenCalled();
+  });
+
+  it('CTL8J-1x-DOUBLE-PRESS: A on Yes and a click on Yes while onRecruit is unsettled call it once; with the recruit in flight a (hand re-enabled) cure row and target use nothing; and after the settle a held Yes recruits nothing more because the pick was spent', async () => {
+    // WRONG IMPL KILLED: a Yes that bypasses the shared lock (a held Enter plus a click fires
+    // attempt_recruit twice and consumes the bait twice); a recruit in flight that leaves Use
+    // Item live (two actions in one turn); and a pick that survives its own Yes (a held node
+    // recruits again next turn with the old id).
+    const d = raDeferred();
+    const m = c8iMount(c8jVM(), makeRaCallbacks({ onRecruit: vi.fn().mockReturnValue(d.promise) }));
+    c8jEnter(m, 'recruit');
+    c8jDown(m);
+    c8jA(m);
+    const yes = c8jYes(m.root) as HTMLButtonElement;
+    c8jA(m); // A on Yes
+    yes.disabled = false; // HOSTILE: only the shared lock can refuse this
+    yes.click();
+    expect(m.callbacks.onRecruit, 'A then a click: one call').toHaveBeenCalledTimes(1);
+
+    const cure = c8jRows(m.root, 'bag')[0] as HTMLButtonElement;
+    cure.disabled = false;
+    cure.click();
+    const use = c8jUse(m.root);
+    if (use !== null) {
+      use.disabled = false;
+      use.click();
+    }
+    expect(m.callbacks.onUseItem, 'a recruit in flight blocks Use Item').not.toHaveBeenCalled();
+
+    d.resolve();
+    await raFlushPromises();
+    yes.click();
+    expect(
+      m.callbacks.onRecruit,
+      'a held Yes after the settle recruits nothing more',
+    ).toHaveBeenCalledTimes(1);
   });
 });
