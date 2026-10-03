@@ -2204,6 +2204,10 @@ function monstersFlowCtx(): ScreenContext {
         ],
       ]),
     evolutionPaths: () => [].values(),
+    // ctl-8c (named intentional change): the Monsters view model also reads the player's inventory
+    // and the item definitions (the Feed… list); this player holds nothing.
+    ownInventory: () => [],
+    itemDefs: () => new Map(),
   };
   return {
     store,
@@ -2243,7 +2247,7 @@ describe('the Monsters frame over the shipped table (ctl-8b, CTL8B.4)', () => {
     ).toBe(false);
   });
 
-  it('CTL8B-4-HOST-FLOW: over the shipped table the box frame opens on Storage; PageDown (RB) and PageUp (LB) switch the tab, Right moves the cursor, A opens the sheet, Down twice and A on Move yields setPartySlot -1 for the stored monster; every step paints the lent view once, a batch that changed nothing paints nothing, and a reopened frame starts over on Storage', () => {
+  it('CTL8B-4-HOST-FLOW: over the shipped table the box frame opens on Storage; PageDown (RB) and PageUp (LB) switch the tab, Right moves the cursor, A opens the sheet, Up (the sheet wraps from Summary to Move) and A on Move yields setPartySlot -1 for the stored monster; every step paints the lent view once, a batch that changed nothing paints nothing, and a reopened frame starts over on Storage', () => {
     // WRONG IMPL KILLED: a host still answering the box through the legacy adapter (A would be
     // `unhandled`, PageDown would scroll the page and nothing would be sent); an adapter that
     // cannot build its view model from the real ScreenContext (identity, store reads); a tab key
@@ -2294,8 +2298,9 @@ describe('the Monsters frame over the shipped table (ctl-8b, CTL8B.4)', () => {
       activeKey: '22',
       sheet: { action: 'summary', card: { monsterId: 22n } },
     });
-    expect(host.button(stack, nav('Down'), ctx)).toBe('consumed');
-    expect(host.button(stack, nav('Down'), ctx)).toBe('consumed');
+    // ctl-8c (named intentional change): the sheet is Summary, Care, Feed…, Evolve…, Nickname,
+    // Move, so one Up (wrapping from Summary) reaches Move where two Downs did.
+    expect(host.button(stack, nav('Up'), ctx)).toBe('consumed');
     expect(last()).toMatchObject({ sheet: { action: 'move', card: { monsterId: 22n } } });
     expect(host.button(stack, nav('A'), ctx), 'Move on a stored monster: next free slot').toEqual({
       kind: 'setPartySlot',
@@ -2307,15 +2312,15 @@ describe('the Monsters frame over the shipped table (ctl-8b, CTL8B.4)', () => {
       activeKey: '22',
       sheet: null,
     });
-    expect(view.painted.length, 'seven steps, seven paints').toBe(7);
+    expect(view.painted.length, 'six steps, six paints').toBe(6);
 
     // A batch that changed nothing paints nothing.
     host.observe(stack, ctx);
-    expect(view.painted.length).toBe(7);
+    expect(view.painted.length).toBe(6);
 
     // B at the list pops the frame.
     expect(host.button(stack, nav('B'), ctx)).toEqual({ kind: 'pop' });
-    expect(view.painted.length, 'B pops: the step still paints once').toBe(8);
+    expect(view.painted.length, 'B pops: the step still paints once').toBe(7);
 
     // Reopened: the cursor of the last visit is forgotten, the frame starts on Storage's first monster.
     host.opened(screen('boxView'));

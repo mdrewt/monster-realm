@@ -6,8 +6,9 @@
 // via callbacks passed at construction (never called directly by this module).
 //
 // Every player-facing string this view renders is resolved through the i18n
-// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `box.*` key from ui/i18n/catalog.en.ts;
-// the English bytes are unchanged (the catalog pins them).
+// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `box.*` key from ui/i18n/catalog.en.ts (the
+// Evolve list and its confirm reuse the `evolution.path.*` / `evolution.card.*` lines and the shared
+// `prompt.yes` / `prompt.no`); the English bytes are unchanged (the catalog pins them).
 // The name row `card.nickname || card.speciesName` is model data, rendered raw. Every `t(`/`tf(`
 // first argument is a string LITERAL.
 //
@@ -41,11 +42,24 @@
 // DOM (e2e reads the root's textContent); the inactive one and its heading are hidden by inline
 // display. The nickname is typed in an in-frame field (no `window.prompt`), sent once per commit
 // token the screen hands over.
+//
+// ctl-8c: the sheet gains Care, Feed… and Evolve…; the food list, the Evolve list (every outgoing
+// path, only the choices enabled, the status line raw from the model's reason) and the Yes / No
+// confirm are parts of this frame under the sheet, and the "Fed {name}" line joins the feedback
+// line. A hidden part is emptied as well as hidden (the e2e text scans read hidden descendants).
 import type { MonsterCardViewModel } from './boxModel';
 import { t, tf } from './i18n/resolver';
-import { SHEET_LAYOUT, type SheetAction } from './monstersModel';
+import {
+  cardName,
+  findPath,
+  foodKey,
+  foodLayoutOf,
+  pathLayout,
+  type SheetAction,
+  sheetLayout,
+} from './monstersModel';
 import { list, type NavTab, tabs } from './nav';
-import { renderNav, renderTabs } from './navRender';
+import { navItemId, renderNav, renderTabs } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { MonstersFeedback, MonstersPaint, NicknameCommit } from './screens/monstersScreen';
 
@@ -58,14 +72,39 @@ const tabLabel = (tab: NavTab): string =>
 
 const SHEET_LABELS: Readonly<Record<SheetAction, () => string>> = {
   summary: () => t('box.sheet.summary'),
+  care: () => t('box.sheet.care'),
+  feed: () => t('box.sheet.feed'),
+  evolve: () => t('box.sheet.evolve'),
   nickname: () => t('box.sheet.nickname'),
   move: () => t('box.sheet.move'),
 };
+
+/** Why a disabled sheet row is disabled, shown after its label (ctl-8c). */
+const SHEET_REASONS: Readonly<Partial<Record<SheetAction, () => string>>> = {
+  feed: () => t('box.sheet.feedNone'),
+  evolve: () => t('evolution.card.noPaths'),
+};
+
+/** The Evolve confirm's answers; No is the screen's default. */
+const CONFIRM_YES = 'yes';
+const CONFIRM_LAYOUT = list([
+  { key: CONFIRM_YES, enabled: true },
+  { key: 'no', enabled: true },
+]);
+/** What a hidden list renders: nothing, so its text is empty too (the e2e text scans read hidden
+ *  descendants). */
+const EMPTY_LIST = list([]);
+
+/** The sheet-level parts' box: the sheet, the lists and the confirm share it. */
+const PART_STYLE = 'width:100%;max-width:600px;margin-bottom:8px;';
 
 const OPENING: MonstersPaint = {
   tab: 'storage',
   activeKey: null,
   sheet: null,
+  feed: null,
+  evolve: null,
+  confirm: null,
   summary: null,
   nickname: null,
   commit: null,
@@ -81,12 +120,17 @@ const CURSOR_OUTLINE = '3px solid #fff';
 // of the page's hotkey ladder.
 const FIELD_RELEASED = new Set(['Escape', 'Enter', 'NumpadEnter']);
 
-const FEEDBACK_TEXT: Readonly<Record<MonstersFeedback, () => string>> = {
-  movedToParty: () => t('box.feedback.movedToParty'),
-  movedToBox: () => t('box.feedback.movedToBox'),
-};
-
-const nameOf = (card: MonsterCardViewModel): string => card.nickname || card.speciesName;
+/** The feedback line's text; the check mark is CSS, never in the text. */
+function feedbackText(feedback: MonstersFeedback): string {
+  switch (feedback.kind) {
+    case 'movedToParty':
+      return t('box.feedback.movedToParty');
+    case 'movedToBox':
+      return t('box.feedback.movedToBox');
+    case 'fed':
+      return tf('box.feedback.fed', { name: feedback.name });
+  }
+}
 
 export interface BoxViewCallbacks {
   /** Called with the nickname field's text when the Monsters screen commits it (CTL8B.3). */
@@ -122,6 +166,12 @@ export class BoxView {
   readonly #sheetEl: HTMLDivElement;
   readonly #sheetName: HTMLDivElement;
   readonly #sheetList: HTMLDivElement;
+  // ctl-8c: the food list, the Evolve list and the Yes / No confirm under the sheet.
+  readonly #feedList: HTMLDivElement;
+  readonly #evolveList: HTMLDivElement;
+  readonly #confirmEl: HTMLDivElement;
+  readonly #confirmQuestion: HTMLDivElement;
+  readonly #confirmList: HTMLDivElement;
   readonly #summaryEl: HTMLDivElement;
   readonly #summaryName: HTMLDivElement;
   readonly #summaryStats: HTMLDivElement;
@@ -183,7 +233,7 @@ export class BoxView {
     this.#root.appendChild(this.#tabStrip);
 
     this.#sheetEl = document.createElement('div');
-    this.#sheetEl.style.cssText = 'width:100%;max-width:600px;margin-bottom:8px;';
+    this.#sheetEl.style.cssText = PART_STYLE;
     this.#sheetName = document.createElement('div');
     this.#sheetName.id = 'monsters-sheet-name';
     this.#sheetName.style.fontWeight = 'bold';
@@ -203,7 +253,27 @@ export class BoxView {
     });
     this.#rowEl.append(this.#rowLabel, this.#input);
     this.#sheetEl.append(this.#sheetName, this.#sheetList);
-    this.#root.append(this.#sheetEl, this.#summaryEl, this.#rowEl);
+    // ctl-8c: the lists and the confirm sit right under the sheet, before the summary and the
+    // typing row (and so before the hint and the panels, for the typing-mode Escape rule above).
+    this.#feedList = document.createElement('div');
+    this.#feedList.style.cssText = PART_STYLE;
+    this.#evolveList = document.createElement('div');
+    this.#evolveList.style.cssText = PART_STYLE;
+    this.#confirmEl = document.createElement('div');
+    this.#confirmEl.style.cssText = PART_STYLE;
+    this.#confirmQuestion = document.createElement('div');
+    this.#confirmQuestion.id = 'monsters-evolve-question';
+    this.#confirmQuestion.style.fontWeight = 'bold';
+    this.#confirmList = document.createElement('div');
+    this.#confirmEl.append(this.#confirmQuestion, this.#confirmList);
+    this.#root.append(
+      this.#sheetEl,
+      this.#feedList,
+      this.#evolveList,
+      this.#confirmEl,
+      this.#summaryEl,
+      this.#rowEl,
+    );
 
     this.#feedbackEl = document.createElement('div');
     this.#feedbackEl.className = 'mr-frame-feedback';
@@ -359,25 +429,101 @@ export class BoxView {
 
     const sheet = p.sheet;
     setShown(this.#sheetEl, sheet !== null, '');
-    this.#sheetName.textContent = sheet === null ? '' : nameOf(live(sheet.card));
-    if (sheet !== null) {
-      renderNav(
-        this.#sheetList,
-        SHEET_LAYOUT,
-        { tab: null, item: sheet.action, perTab: {} },
-        {
-          frame: 'monstersSheet',
-          labelledBy: this.#sheetName.id,
-          fill: (el, item) => {
-            el.textContent = SHEET_LABELS[item.key as SheetAction]();
-          },
+    this.#sheetName.textContent = sheet === null ? '' : cardName(live(sheet.card));
+    // Rendered empty when there is no sheet, so the hidden list holds no text either.
+    renderNav(
+      this.#sheetList,
+      sheet === null ? EMPTY_LIST : sheetLayout(sheet.canFeed, sheet.canEvolve),
+      { tab: null, item: sheet === null ? null : sheet.action, perTab: {} },
+      {
+        frame: 'monstersSheet',
+        labelledBy: this.#sheetName.id,
+        fill: (el, item) => {
+          const key = item.key as SheetAction;
+          el.textContent = SHEET_LABELS[key]();
+          // A disabled row says why, after its label (the row itself carries aria-disabled). No
+          // inline colour: the cursor row's background is light, and `.is-disabled` dims it.
+          const reason = item.enabled ? undefined : SHEET_REASONS[key];
+          if (reason !== undefined) {
+            const why = document.createElement('span');
+            why.textContent = ` ${reason()}`;
+            el.appendChild(why);
+          }
         },
-      );
-    }
+      },
+    );
+
+    // ctl-8c: the food list, the Evolve list and the confirm. A hidden part is rendered EMPTY as
+    // well as hidden: the e2e helpers read the root's textContent, hidden descendants included.
+    const feed = p.feed;
+    setShown(this.#feedList, feed !== null, '');
+    renderNav(
+      this.#feedList,
+      feed === null ? EMPTY_LIST : foodLayoutOf(feed.foods),
+      { tab: null, item: feed === null ? null : feed.activeKey, perTab: {} },
+      {
+        frame: 'monstersFeed',
+        // Named by the sheet row that opened it (the sheet is painted under the list).
+        labelledBy: navItemId('monstersSheet', null, 'feed'),
+        fill: (el, item) => {
+          const food = feed?.foods.find((f) => foodKey(f.itemId) === item.key);
+          if (food !== undefined) {
+            el.textContent = tf('box.feed.item', { name: food.name, count: food.count });
+          }
+        },
+      },
+    );
+
+    const evolve = p.evolve;
+    setShown(this.#evolveList, evolve !== null, '');
+    renderNav(
+      this.#evolveList,
+      evolve === null ? EMPTY_LIST : pathLayout(evolve.mon),
+      { tab: null, item: evolve === null ? null : evolve.activeKey, perTab: {} },
+      {
+        frame: 'monstersEvolve',
+        labelledBy: navItemId('monstersSheet', null, 'evolve'),
+        fill: (el, item) => {
+          const path = evolve === null ? undefined : findPath(evolve.mon, item.key);
+          if (path === undefined) return;
+          const heading = document.createElement('div');
+          heading.textContent = tf('evolution.path.heading', { species: path.toSpeciesName });
+          // The model's reason stays raw (it is the server's reject wording). A met path that is
+          // no choice is the one the server applies itself: it reads as ready, never as offered.
+          const status = document.createElement('div');
+          status.style.fontSize = '12px'; // colour inherits: the cursor row's background is light
+          status.textContent =
+            path.unmetReason ??
+            (item.enabled
+              ? t('evolution.path.allMet')
+              : tf('evolution.card.ready', { species: path.toSpeciesName }));
+          el.append(heading, status);
+        },
+      },
+    );
+
+    const confirm = p.confirm;
+    setShown(this.#confirmEl, confirm !== null, '');
+    this.#confirmQuestion.textContent =
+      confirm === null
+        ? ''
+        : tf('box.evolve.confirm', { name: confirm.name, species: confirm.species });
+    renderNav(
+      this.#confirmList,
+      confirm === null ? EMPTY_LIST : CONFIRM_LAYOUT,
+      { tab: null, item: confirm === null ? null : confirm.yes ? 'yes' : 'no', perTab: {} },
+      {
+        frame: 'monstersConfirm',
+        labelledBy: this.#confirmQuestion.id,
+        fill: (el, item) => {
+          el.textContent = item.key === CONFIRM_YES ? t('prompt.yes') : t('prompt.no');
+        },
+      },
+    );
 
     const summary = p.summary === null ? null : live(p.summary);
     setShown(this.#summaryEl, summary !== null, '');
-    this.#summaryName.textContent = summary === null ? '' : nameOf(summary);
+    this.#summaryName.textContent = summary === null ? '' : cardName(summary);
     this.#summaryStats.textContent =
       summary === null
         ? ''
@@ -404,7 +550,7 @@ export class BoxView {
 
     const feedback = p.feedback;
     setShown(this.#feedbackEl, feedback !== null, '');
-    this.#feedbackEl.textContent = feedback === null ? '' : FEEDBACK_TEXT[feedback]();
+    this.#feedbackEl.textContent = feedback === null ? '' : feedbackText(feedback);
     if (feedback === null) this.#feedbackEl.removeAttribute('data-feedback');
     else this.#feedbackEl.dataset.feedback = 'ok';
 

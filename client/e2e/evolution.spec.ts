@@ -7,7 +7,10 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { DEFAULT_BINDINGS } from '../src/input/bindings';
+import { routedBindings } from '../src/input/router';
 import { t, tf } from '../src/ui/i18n/resolver';
+import { pressButton } from './controls';
 
 // evolution.spec.ts — a real browser drives the starter through a SINGLE-PATH auto-evolution
 // (de-bloat Phase 3 gameplay smoke).
@@ -25,9 +28,12 @@ import { t, tf } from '../src/ui/i18n/resolver';
 // This spec deliberately exercises ONLY that single-path rule, so it stays valid across the
 // planned multi-path player-prompt fix.
 //
-// TRIGGER. `care` (the raising overlay's Care button) tails into check_and_evolve
-// (raising.rs care). A fresh identity's care cooldown anchor is 0, so the first care is allowed —
-// deterministic, no battle RNG.
+// TRIGGER. `care` tails into check_and_evolve (raising.rs care). Since ctl-8c it is pressed on the
+// Monsters frame's sheet: KeyB opens the frame on Storage (empty for a fresh identity), RB shows
+// the Party (the router's RB is PageDown until ctl-11a: KeyE, the binding table's first RB key,
+// still opens the evolution overlay through the legacy ladder), A opens the slot-0 starter's sheet
+// on Summary, Down moves to Care and A sends it. A fresh identity's care cooldown anchor is 0, so
+// the first care is allowed — deterministic, no battle RNG.
 //
 // CLEANUP. One browser, one context, one identity; afterAll closes the browser so the server's
 // on_disconnect deletes the player row before golden.spec (presenceCount === 2) runs.
@@ -188,11 +194,17 @@ test.describe
       await expect.poll(() => overlayText(page, t('box.title')), { timeout: 5_000 }).toBe('');
     });
 
-    test('V2: Care (a real raising action) fires the single eligible path — the species change lands in the snapshot and the box', async () => {
+    test('V2: Care on the Monsters sheet (KeyB, RB to the Party, A on the starter, Down to Care, A) fires the single eligible path — the species change lands in the snapshot and in the still-open frame`s live card', async () => {
       await focusWorld(page);
-      await page.keyboard.press('KeyI');
-      const care = page.getByRole('button', { name: t('raising.card.care'), exact: true });
-      await care.click({ timeout: 10_000 });
+      await page.keyboard.press('KeyB');
+      await expect
+        .poll(() => overlayText(page, t('box.title')), { timeout: 10_000 })
+        .toContain(boxCardPrefix(FROM_NAME, SEED_LEVEL));
+      // RB as the router reads it (PageDown), not the binding table's first RB key (KeyE).
+      await page.keyboard.press(routedBindings(DEFAULT_BINDINGS).buttons.RB[0]);
+      await pressButton(page, 'A'); // the slot-0 starter's sheet, on Summary
+      await pressButton(page, 'Down'); // Care
+      await pressButton(page, 'A'); // care -> check_and_evolve
 
       await page.waitForFunction(
         (sp) =>
@@ -206,13 +218,11 @@ test.describe
       expect(after.ownMonsters[0]?.monsterId).toBe(monsterId); // same monster, transformed
       expect(after.ownMonsters[0]?.level).toBe(SEED_LEVEL);
 
-      await page.keyboard.press('Escape'); // close raising
-      await focusWorld(page);
-      await page.keyboard.press('KeyB');
+      // The Monsters frame is still open and its cards are live: the new form shows in it.
       await expect
         .poll(() => overlayText(page, t('box.title')), { timeout: 10_000 })
         .toContain(boxCardPrefix(TO_NAME, SEED_LEVEL));
-      await page.keyboard.press('Escape');
+      await page.keyboard.press('Escape'); // Start: back to the world
       await expect.poll(() => overlayText(page, t('box.title')), { timeout: 5_000 }).toBe('');
     });
 

@@ -73,6 +73,16 @@ function toItem(
   };
 }
 
+/** The player's inventory rows as item view models, one per row and unfiltered: the ONE place
+ *  that says what an item is (`canTrain` = food). Shared with the Monsters sheet's Feed… list
+ *  (ctl-8c), so the sheet and the raising screen never disagree on what is food. */
+export function buildInventoryItems(
+  inventory: readonly StoreInventory[],
+  itemDefs: ReadonlyMap<number, StoreItemRow>,
+): InventoryItemViewModel[] {
+  return inventory.map((item) => toItem(item, itemDefs));
+}
+
 export function buildRaisingViewModel(
   monsters: readonly StoreMonsterPub[],
   inventory: readonly StoreInventory[],
@@ -80,6 +90,6 @@ export function buildRaisingViewModel(
 ): RaisingViewModel {
   return {
     monsters: monsters.map(toMonster),
-    items: inventory.map((item) => toItem(item, itemDefs)),
+    items: buildInventoryItems(inventory, itemDefs),
   };
 }
