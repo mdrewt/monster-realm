@@ -1,6 +1,6 @@
 // ui/screens/socialScreen.ts — the Social frame as a pure screen over the nav kit (design §5 row 4,
-// CTL8D.1-.3). No DOM, SDK, module state or clock; `tradeView.ts` and `pvpView.ts` paint what
-// `paint` hands them.
+// CTL8D.1-.3, CTL8G.1-.2). No DOM, SDK, module state or clock; `tradeView.ts`, `pvpView.ts` and
+// `leaderboardView.ts` paint what `paint` hands them.
 //
 // Tabs Players | Trades | Challenges | Rankings, switched by LB/RB, each keeping its own cursor.
 // The frame opens on the tab its open path asked for (`ctx.socialTab`: U, P, L, the menu leaves,
@@ -10,11 +10,17 @@
 // first (Accept, for a request): Accept and Cancel send at once, Decline and a trade's final
 // Confirm ask Yes / No on No. B backs out one level and pops the frame from the list.
 //
+// Players and Rankings (CTL8G.1-.2) are painted over the leaderboard root (`leaderboardView.ts`).
+// A on a player shows "Walk up to {name} and press A" (the `walkUp` phase; no remote action
+// exists) until B or a move; Rankings is read-only, so A there does nothing.
+//
 // Every step first settles the state against the rows a batch may have moved: a gone cursor is
 // re-seated, and a sheet whose row is gone or whose legal actions changed closes (it is never
-// re-pointed: the cursor must not land on an action that would now send without its prompt). An
-// A press whose phase the settle just changed only paints (the shop's rule; in the shipped loop
-// `observe` settles each batch first, so this is the belt to that brace).
+// re-pointed: the cursor must not land on an action that would now send without its prompt); a
+// walk-up whose player left closes, and a change in what the Players tab shows yields a new state
+// so the host repaints it (`people`). An A press whose phase the settle just changed only paints
+// (the shop's rule; in the shipped loop `observe` settles each batch first, so this is the belt to
+// that brace).
 //
 // A sent command has no in-flight lock here (the views' locks guard their own buttons): the
 // reducers are the authority and refuse a duplicate.
@@ -28,6 +34,7 @@ import {
   type SocialRow,
   type SocialVm,
   socialLayout,
+  socialPeopleKey,
   socialRows,
 } from '../socialModel';
 import type { SocialPaint, SocialQuestion } from '../tradeView';
@@ -51,12 +58,17 @@ export type SocialPhase =
       readonly action: SocialAction;
       /** The Yes / No prompt over `action`, its cursor on Yes or No; null: no prompt. */
       readonly confirm: { readonly yes: boolean } | null;
-    };
+    }
+  /** "Walk up to {name} and press A" over the Players row `row` (its key). */
+  | { readonly kind: 'walkUp'; readonly row: string };
 
 export interface SocialScreenState {
   /** The tab and the cursor row of each tab. */
   readonly nav: NavState;
   readonly phase: SocialPhase;
+  /** What the Players tab showed when this state was made (`socialPeopleKey`): a batch that
+   *  changes it yields a new state, so the host repaints the rows. */
+  readonly people: string;
 }
 
 const LIST: SocialPhase = { kind: 'list' };
@@ -105,6 +117,9 @@ function promptOf(vm: SocialVm, tab: SocialTab, phase: SocialPhase): SocialPaint
   return question === null ? null : { question, yes: phase.confirm.yes };
 }
 
+const playerAt = (vm: SocialVm, key: string | null) =>
+  vm.players.find((player) => player.key === key);
+
 /** `state` settled against the view model's rows: the SAME object when nothing changed. */
 function settle(vm: SocialVm, state: SocialScreenState): SocialScreenState {
   const layout = socialLayout(vm);
@@ -113,8 +128,13 @@ function settle(vm: SocialVm, state: SocialScreenState): SocialScreenState {
   if (phase.kind === 'sheet') {
     const row = rowAt(vm, tabOf(nav), phase.row);
     if (row === undefined || !sameActions(row.actions, phase.actions)) phase = LIST;
+  } else if (phase.kind === 'walkUp' && playerAt(vm, phase.row) === undefined) {
+    phase = LIST;
   }
-  return nav === state.nav && phase === state.phase ? state : { nav, phase };
+  const people = socialPeopleKey(vm);
+  return nav === state.nav && phase === state.phase && people === state.people
+    ? state
+    : { nav, phase, people };
 }
 
 export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFrameView> = {
@@ -127,6 +147,11 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
       ctx.store.allTradeOffers(),
       ctx.store.allChallenges(),
       ctx.identity,
+      {
+        players: ctx.store.allPlayers(),
+        characters: Array.from(ctx.store.characters(), (character) => character.row),
+        profiles: ctx.store.allProfiles(),
+      },
     ),
 
   /** The requested tab, else the oldest waiting request's, else the remembered one, else Players;
@@ -139,7 +164,7 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
     if (tab !== undefined) nav = navFocus(layout, nav, { tab });
     const request = socialRows(vm, tabOf(nav)).find((row) => row.waiting);
     if (request !== undefined) nav = navFocus(layout, nav, { item: request.key });
-    return { nav, phase: LIST };
+    return { nav, phase: LIST, people: socialPeopleKey(vm) };
   },
 
   onButton(vm, kept, btn): ButtonStep<SocialScreenState> {
@@ -149,7 +174,7 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
       next: SocialScreenState = state,
     ): ButtonStep<SocialScreenState> => ({ state: next, result });
     const to = (phase: SocialPhase): ButtonStep<SocialScreenState> =>
-      done('consumed', { nav: state.nav, phase });
+      done('consumed', { ...state, phase });
     switch (btn.button) {
       case 'Start':
         return done(btn.repeat ? 'consumed' : { kind: 'popToBase' });
@@ -163,6 +188,23 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
     const { phase } = state;
     const tab = tabOf(state.nav);
 
+    if (phase.kind === 'walkUp') {
+      switch (btn.button) {
+        case 'Up':
+        case 'Down':
+        case 'LB':
+        case 'RB': {
+          // A move ends the walk-up, wherever the cursor lands.
+          const nav = navStep(socialLayout(vm), state.nav, btn).state;
+          return done('consumed', { ...state, nav, phase: LIST });
+        }
+        case 'B':
+          return btn.repeat ? done('consumed') : to(LIST);
+        default:
+          return done('consumed');
+      }
+    }
+
     if (phase.kind === 'list') {
       switch (btn.button) {
         case 'Up':
@@ -170,12 +212,18 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
         case 'LB':
         case 'RB': {
           const nav = navStep(socialLayout(vm), state.nav, btn).state;
-          return done('consumed', nav === state.nav ? state : { nav, phase });
+          return done('consumed', nav === state.nav ? state : { ...state, nav });
         }
         case 'Left':
         case 'Right':
           return done('consumed');
         case 'A': {
+          if (tab === 'players') {
+            const player = playerAt(vm, state.nav.item);
+            if (btn.repeat || player === undefined) return done('consumed');
+            return to({ kind: 'walkUp', row: player.key });
+          }
+          // Rankings (read-only) and an empty tab have no row to act on: rowAt finds none.
           const row = rowAt(vm, tab, state.nav.item);
           const first = row?.actions[0];
           if (btn.repeat || row === undefined || first === undefined) return done('consumed');
@@ -199,7 +247,7 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
     const row = rowAt(vm, tab, phase.row);
     if (row === undefined) return to(LIST);
     const send = (): ButtonStep<SocialScreenState> =>
-      done(commandOf(row, phase.action) ?? 'consumed', { nav: state.nav, phase: LIST });
+      done(commandOf(row, phase.action) ?? 'consumed', { ...state, phase: LIST });
 
     if (phase.confirm !== null) {
       switch (btn.button) {
@@ -243,8 +291,9 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
 
   paint(view, vm, state): void {
     const tab = tabOf(state.nav);
-    // The panel first: a paint that throws below still leaves the right one up.
-    view.show(socialPanel(tab));
+    // The panel first: a paint that throws below still leaves the right one up. Players moves off
+    // the trade root's placeholder onto the leaderboard root, beside Rankings.
+    view.show(tab === 'players' ? 'leaderboardView' : socialPanel(tab));
     const cursor = rowAt(vm, tab, state.nav.item);
     const { phase } = state;
     view.trades?.paintSocial(view.chrome, {
@@ -257,5 +306,13 @@ export const socialScreen: ScreenAdapter<SocialVm, SocialScreenState, SocialFram
     view.challenges?.paintCursor(
       cursor === undefined || cursor.kind === 'trade' ? null : cursor.kind,
     );
+    if (tab === 'players' || tab === 'rankings') {
+      view.rankings?.paintSocial({
+        tab,
+        players: vm.players,
+        cursor: state.nav.item,
+        walkUp: phase.kind === 'walkUp' ? (playerAt(vm, phase.row)?.name ?? null) : null,
+      });
+    }
   },
 };

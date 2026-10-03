@@ -72,14 +72,21 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from './a11yCopy';
+import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import type { LeaderboardViewModel } from './leaderboardModel';
-import { LeaderboardView } from './leaderboardView';
+import { LeaderboardView, type SocialRankingsPaint } from './leaderboardView';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
+import type { SocialPlayerRow } from './socialModel';
 
 // The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
 // implementation, so the VALUE oracle (real attribute writes, real focus moves) still works.
 vi.mock('./overlayA11y', { spy: true });
+// ctl-8g (named intentional change to this file's setup): the same spy on the i18n resolver, so the
+// CTL8G view cases can read every key and argument the view resolves (I18N-21: a player-chosen
+// name is never a resolver argument). It calls through, so every existing case reads real catalog
+// text, and the file-level `vi.clearAllMocks()` below resets its counts per case.
+vi.mock('./i18n/resolver', { spy: true });
 
 /** One REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
  *  and fake timers are banned for this defer (plan anti-pattern #10). */
@@ -743,5 +750,647 @@ describe('LeaderboardView.hostChrome (ctl-8s, CTL8S.3)', () => {
     expect(view.visible, 'the shown board stays shown').toBe(true);
 
     teardown();
+  });
+});
+
+// ==========================================================================================
+// ctl-8g (CTL8G.1, CTL8G.2): the Social frame's Players and Rankings tabs, painted over this root.
+//
+// The Social screen hands `view.rankings.paintSocial(p)` a `SocialRankingsPaint` (tab, the players,
+// the cursor row's key, the walk-up player's name or null) on every paint of Players and Rankings.
+// The view KEEPS the paint (like the trade root's), re-applies it after every `render(vm)` (main's
+// batch listener re-renders the board each batch), and drops it on the hidden -> visible edge, in
+// `render()` while hidden and in `hide()`; with no kept paint the root is exactly the legacy board.
+//
+//   Rankings  `#leaderboard-list` shown, its `<li>`s marked by hand with the nav kit's contract
+//             (listbox / option, `mr-nav-item`, `is-active` + `aria-selected` on the cursor row, the
+//             first row when the cursor is null or unknown, `aria-activedescendant`), ids
+//             `social-rankings-<identityHex>`.
+//   Players   `#leaderboard-list` hidden; `#leaderboard-players` holds the rows through the nav kit
+//             (ids `social-players-<key>`): a `<bdi>` with the name and, when nearby, a badge with the
+//             catalogued "Nearby"; nobody listed: one non-option line.
+//   Walk-up   `#leaderboard-walkup`, shown only on Players with a walk-up name: the catalogued line
+//             with the name once, in a `<bdi>`, as text (never a resolver argument: I18N-21).
+//
+// `#leaderboard-players` and `#leaderboard-walkup` are read through getElementById and an absent one
+// counts as hidden and empty, so a case does not care whether the view builds them in its
+// constructor or on the first paint; where they exist they follow `#leaderboard-list` and never
+// become the root's first child.
+// ==========================================================================================
+
+const EM = String.fromCharCode(0x2014);
+
+const byId = (id: string): HTMLElement | null => document.getElementById(id);
+/** Neither `hidden` nor `display: none`. */
+const isShown = (el: HTMLElement | null): boolean =>
+  el !== null && !el.hidden && el.style.display !== 'none';
+/** Absent, or hidden. */
+const isHiddenOrAbsent = (el: HTMLElement | null): boolean => el === null || !isShown(el);
+/** Absent, hidden, or empty (the legacy shell shows nothing of it either way). */
+const isGone = (el: HTMLElement | null): boolean =>
+  el === null || !isShown(el) || (el.textContent ?? '') === '';
+
+const rankingsPaint = (cursor: string | null = null, walkUp: string | null = null) =>
+  ({ tab: 'rankings', players: [], cursor, walkUp }) satisfies SocialRankingsPaint;
+const playersPaint = (
+  players: readonly SocialPlayerRow[],
+  cursor: string | null = null,
+  walkUp: string | null = null,
+) => ({ tab: 'players', players, cursor, walkUp }) satisfies SocialRankingsPaint;
+
+const BOARD = [
+  makeRow('aa', 'Alice', 1200, 10, 2, true),
+  makeRow('bb', 'Bob', 1000, 5, 5),
+  makeRow('cc', 'Carol', 800, 3, 8),
+];
+
+/** The legacy board's `<ul>`, built by hand from the pre-ctl-8g contract: `<li data-identity>` per
+ *  row (`data-own` on the own row) holding `<bdi>name</bdi>` and the text ` — R (WW/LL)`; the empty
+ *  board one `<li>` of text. `style=""` is dropped (a shown element may keep an empty attribute). */
+function legacyHtml(rows: ReadonlyArray<ReturnType<typeof makeRow>>): string {
+  const ul = document.createElement('ul');
+  ul.id = 'leaderboard-list';
+  if (rows.length === 0) {
+    const li = document.createElement('li');
+    li.textContent = 'No ranked players yet';
+    ul.append(li);
+  }
+  for (const row of rows) {
+    const li = document.createElement('li');
+    li.dataset.identity = row.identityHex;
+    if (row.isOwn) li.dataset.own = 'true';
+    const name = document.createElement('bdi');
+    name.textContent = row.displayName;
+    li.append(name, ` ${EM} ${row.rating} (W${row.wins}/L${row.losses})`);
+    ul.append(li);
+  }
+  return ul.outerHTML.split(' style=""').join('');
+}
+
+/** The root exactly as the legacy shell leaves it for `rows`: the list shown with the legacy
+ *  markup, no players list and no walk-up line showing or holding text. */
+function expectLegacyShell(label: string, rows: ReadonlyArray<ReturnType<typeof makeRow>>): void {
+  const list = byId('leaderboard-list');
+  expect(list, `${label}: the list exists`).not.toBeNull();
+  expect(isShown(list), `${label}: the list is shown`).toBe(true);
+  expect(
+    (list as HTMLElement).outerHTML.split(' style=""').join(''),
+    `${label}: the list is byte-identical to the legacy board`,
+  ).toBe(legacyHtml(rows));
+  expect(isGone(byId('leaderboard-players')), `${label}: no players list`).toBe(true);
+  expect(isGone(byId('leaderboard-walkup')), `${label}: no walk-up line`).toBe(true);
+}
+
+const rowsOf = (): HTMLElement[] => [
+  ...document.querySelectorAll<HTMLElement>('#leaderboard-list > li'),
+];
+
+describe('LeaderboardView — the Players list and the walk-up line (ctl-8g, CTL8G.1)', () => {
+  it('CTL8G-1-VIEW-PLAYERS: paintSocial with the Players tab hides the board list and shows `#leaderboard-players`, a listbox named by the Players tab, one `social-players-<key>` option per player in order, each a `<bdi>` with the name (as text only, an XSS name stays text) and, only when nearby, a badge reading the catalogued Nearby (absent, not hidden, on the others); the cursor row alone is selected and active and named by aria-activedescendant; nobody listed is one non-option line; the new elements follow the list and are never the root`s first child; no player name reaches the resolver', () => {
+    // WRONG IMPL KILLED: the board still showing under the Players list; a players list drawn into
+    // `#leaderboard-list` (the board's `<li>`s are the Rankings rows); no listbox / option roles or a
+    // second selected row (an AT user cannot tell the cursor); a name set through innerHTML (the
+    // XSS name would become an element) or put in the resolver (I18N-21); a name outside a
+    // `<bdi>`; a Nearby badge on every row, or on none, or an English literal instead of the
+    // catalog's; a badge that is present but hidden on a far player (the AT would still read it); a
+    // cursor mark on the wrong row or two rows; an empty list that is blank (nobody knows it is
+    // empty) or whose line is an option; and the new elements put before the title (main's
+    // dispatch tests pin the first-child chrome) or before the list.
+    const { overlay } = mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    view.show();
+    view.render(makeVm(BOARD));
+    const XSS = '<img src=x onerror=alert(1)>';
+    const rows: readonly SocialPlayerRow[] = [
+      { key: 'bb', name: 'Bob', nearby: true },
+      { key: 'cc', name: 'Carol', nearby: false },
+      { key: 'dd', name: XSS, nearby: true },
+    ];
+    vi.clearAllMocks();
+    view.paintSocial(playersPaint(rows, 'cc'));
+
+    expect(isShown(byId('leaderboard-list')), 'the board list is hidden on Players').toBe(false);
+    const players = byId('leaderboard-players');
+    expect(players, 'the players list exists').not.toBeNull();
+    const list = players as HTMLElement;
+    expect(isShown(list), 'and is shown').toBe(true);
+    expect(list.tagName, 'a div').toBe('DIV');
+    expect(list.getAttribute('role'), 'a listbox').toBe('listbox');
+    expect(list.getAttribute('tabindex'), 'the one tab stop').toBe('0');
+    expect(list.getAttribute('aria-labelledby'), 'named by the Players tab').toBe(
+      'social-tab-players',
+    );
+    expect(list.getAttribute('aria-activedescendant'), 'the cursor row').toBe('social-players-cc');
+
+    const options = [...list.children] as HTMLElement[];
+    expect(
+      options.map((o) => o.id),
+      'one option per player, in the order given',
+    ).toEqual(['social-players-bb', 'social-players-cc', 'social-players-dd']);
+    expect(options.map((o) => o.getAttribute('role'))).toEqual(['option', 'option', 'option']);
+    expect(
+      options.filter((o) => o.getAttribute('aria-selected') === 'true').map((o) => o.id),
+      'the cursor row alone is selected',
+    ).toEqual(['social-players-cc']);
+    expect(
+      options.filter((o) => o.classList.contains('is-active')).map((o) => o.id),
+      'and alone is-active',
+    ).toEqual(['social-players-cc']);
+    for (const option of options) {
+      expect(option.classList.contains('mr-nav-item'), `${option.id}: a nav item`).toBe(true);
+    }
+
+    const NEARBY = 'Nearby';
+    options.forEach((option, i) => {
+      const row = rows[i] as SocialPlayerRow;
+      const names = option.querySelectorAll('bdi');
+      expect(names.length, `${row.key}: exactly one <bdi>`).toBe(1);
+      const bdi = names[0] as HTMLElement;
+      expect(bdi.textContent, `${row.key}: the name`).toBe(row.name);
+      expect(bdi.children.length, `${row.key}: the name is text only`).toBe(0);
+      const badges = [...option.children].filter((c) => c.tagName !== 'BDI');
+      if (row.nearby) {
+        expect(badges.length, `${row.key}: one badge`).toBe(1);
+        expect(badges[0]?.textContent, `${row.key}: the catalogued Nearby`).toBe(NEARBY);
+        expect((badges[0] as HTMLElement).hidden, `${row.key}: a shown badge`).toBe(false);
+      } else {
+        expect(badges.length, `${row.key}: no badge element at all`).toBe(0);
+        expect(option.textContent, `${row.key}: no Nearby text`).not.toContain(NEARBY);
+      }
+    });
+    expect(overlay.querySelector('img'), 'an XSS name stays text').toBeNull();
+    expect(i18nT, 'the badge comes from the catalog').toHaveBeenCalledWith('social.players.nearby');
+    for (const call of [...vi.mocked(i18nT).mock.calls, ...vi.mocked(i18nTf).mock.calls]) {
+      expect(JSON.stringify(call).includes('Bob'), 'no name reaches the resolver').toBe(false);
+      expect(JSON.stringify(call).includes('Carol'), 'no name reaches the resolver').toBe(false);
+      expect(JSON.stringify(call).includes('onerror'), 'no name reaches the resolver').toBe(false);
+    }
+
+    // The root's children: the title still first, the board list second, the new elements after.
+    expect(overlay.firstElementChild?.id, 'the title is still the first child').toBe(
+      'leaderboard-title',
+    );
+    const ids = [...overlay.children].map((c) => c.id);
+    expect(ids.slice(0, 2), 'the title, then the board list').toEqual([
+      'leaderboard-title',
+      'leaderboard-list',
+    ]);
+    expect(ids.indexOf('leaderboard-players'), 'the players list follows the list').toBeGreaterThan(
+      1,
+    );
+
+    // A repaint moves the cursor in place.
+    view.paintSocial(playersPaint(rows, 'dd'));
+    expect(list.getAttribute('aria-activedescendant')).toBe('social-players-dd');
+    expect(
+      [...list.children].filter((o) => o.getAttribute('aria-selected') === 'true').map((o) => o.id),
+    ).toEqual(['social-players-dd']);
+
+    // Nobody listed: one line, not an option, nothing named; the board list stays hidden.
+    view.paintSocial(playersPaint([], null));
+    const NONE = 'No other players online';
+    expect(list.textContent, 'the empty line').toBe(NONE);
+    expect(list.querySelectorAll('[role="option"]').length, 'not an option').toBe(0);
+    expect(list.getAttribute('aria-activedescendant')).toBeNull();
+    expect(isShown(list), 'the empty list is still shown').toBe(true);
+    expect(isShown(byId('leaderboard-list')), 'and the board list still hidden').toBe(false);
+
+    // An UNKNOWN cursor key (not null) names the first row, exactly as Rankings does: one
+    // aria-selected true, aria-activedescendant on that row's option id, one is-active row.
+    // WRONG IMPL KILLED: a Players list whose unknown cursor selects nothing (the kit marks no row:
+    // aria-activedescendant dangles or is absent while the list has options, so the AT user hears
+    // no cursor) or two rows; a fallback written only for the null cursor.
+    for (const cursor of ['nobody', 'zz'.repeat(32), null] as const) {
+      view.paintSocial(playersPaint(rows, cursor));
+      const shown = [...list.children] as HTMLElement[];
+      expect(
+        shown.map((o) => o.id),
+        `cursor ${String(cursor)}: the rows`,
+      ).toEqual(['social-players-bb', 'social-players-cc', 'social-players-dd']);
+      expect(
+        list.getAttribute('aria-activedescendant'),
+        `cursor ${String(cursor)}: the first option names the list`,
+      ).toBe(shown[0]?.id);
+      expect(
+        shown.filter((o) => o.getAttribute('aria-selected') === 'true').map((o) => o.id),
+        `cursor ${String(cursor)}: exactly one selected row, the first`,
+      ).toEqual(['social-players-bb']);
+      expect(
+        shown.filter((o) => o.classList.contains('is-active')).map((o) => o.id),
+        `cursor ${String(cursor)}: and one is-active row`,
+      ).toEqual(['social-players-bb']);
+    }
+  });
+
+  it('CTL8G-1-VIEW-WALKUP: `#leaderboard-walkup` is shown only on Players with a walk-up name and reads the catalogued line with the name exactly once, in a `<bdi>`, as text (an XSS name, `$&`, `{name}`, a guillemet-quoted name and the words of the line itself included); null on Players, any walk-up on Rankings, and a hidden root show nothing; the name is never a resolver argument', () => {
+    // WRONG IMPL KILLED: a walk-up line always visible, or left up after the walk-up ended (null
+    // must hide it: a stale "Walk up to Bob" under the next row); one shown on Rankings;
+    // the name concatenated into the English text by the view (a literal, not the catalog's); the
+    // name passed to `tf()` (I18N-21: a name like `$&` or `{name}` would be reinterpreted, and the
+    // name would reach the resolver); a name in the line twice, or twice because the split anchors
+    // on the name's first occurrence in the template (a name like `a` or `up`); a name that is
+    // not inside a `<bdi>` (its bidi run would leak into the sentence); an innerHTML write (the XSS
+    // name becomes an element); and a line placed before the list or the title.
+    const { overlay } = mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    view.show();
+    view.render(makeVm(BOARD));
+    const rows: readonly SocialPlayerRow[] = [{ key: 'bb', name: 'Bob', nearby: false }];
+
+    // Nothing to walk up to: hidden (or absent) on Players with null, on Rankings with a (never
+    // produced) name.
+    view.paintSocial(playersPaint(rows, 'bb', null));
+    expect(isHiddenOrAbsent(byId('leaderboard-walkup')), 'Players, no walk-up').toBe(true);
+    view.paintSocial(rankingsPaint('aa', 'Bob'));
+    expect(isHiddenOrAbsent(byId('leaderboard-walkup')), 'Rankings never shows it').toBe(true);
+
+    // The line itself, for names that would break a naive template or replace.
+    const ZED_XSS = 'Zed<img src=x onerror=alert(1)>';
+    const NASTY: readonly string[] = [
+      'Bob',
+      ZED_XSS,
+      'a',
+      'up',
+      'A',
+      'and',
+      'Walk up to',
+      '{name}',
+      '$&',
+      "$'",
+      '$`',
+      '$1',
+      '«walkUp»',
+      'x'.repeat(40),
+      `${String.fromCharCode(0xfffc)}${String.fromCharCode(0)}|`,
+    ];
+    let checked = 0;
+    for (const name of NASTY) {
+      view.paintSocial(playersPaint(rows, 'bb', name));
+      const line = byId('leaderboard-walkup');
+      expect(isShown(line), `${JSON.stringify(name)}: shown`).toBe(true);
+      const el = line as HTMLElement;
+      expect(el.textContent, `${JSON.stringify(name)}: the catalogued line`).toBe(
+        `Walk up to ${name} and press A`,
+      );
+      const names = el.querySelectorAll('bdi');
+      expect(names.length, `${JSON.stringify(name)}: exactly one <bdi>`).toBe(1);
+      expect(names[0]?.textContent, `${JSON.stringify(name)}: it holds the name`).toBe(name);
+      expect(names[0]?.children.length, `${JSON.stringify(name)}: as text only`).toBe(0);
+      expect(el.children.length, `${JSON.stringify(name)}: nothing else inside`).toBe(1);
+      const outside = [...el.childNodes]
+        .filter((n) => n.nodeType === 3)
+        .map((n) => n.textContent ?? '')
+        .join('');
+      expect(outside, `${JSON.stringify(name)}: the rest of the line, once`).toBe(
+        'Walk up to  and press A',
+      );
+      checked += 1;
+    }
+    expect(overlay.querySelector('img'), 'an XSS name stays text').toBeNull();
+    expect(checked, 'ANTI-VACUITY: every name checked').toBe(NASTY.length);
+
+    // I18N-21: the catalogued line is resolved with `tf`, and the name is not among its arguments.
+    vi.clearAllMocks();
+    view.paintSocial(playersPaint(rows, 'bb', ZED_XSS));
+    const tfCalls = vi.mocked(i18nTf).mock.calls;
+    expect(
+      tfCalls.some((c) => c[0] === 'social.players.walkUp'),
+      'the line comes from social.players.walkUp',
+    ).toBe(true);
+    for (const call of [...vi.mocked(i18nT).mock.calls, ...tfCalls]) {
+      expect(JSON.stringify(call).includes('Zed'), 'the name never reaches t() / tf()').toBe(false);
+      expect(JSON.stringify(call).includes('onerror'), 'nor any part of it').toBe(false);
+    }
+
+    // The walk-up ended: hidden again.
+    view.paintSocial(playersPaint(rows, 'bb', null));
+    expect(isHiddenOrAbsent(byId('leaderboard-walkup')), 'the line goes with the walk-up').toBe(
+      true,
+    );
+
+    // The line follows the players list, never the root's first child.
+    view.paintSocial(playersPaint(rows, 'bb', 'Bob'));
+    expect(overlay.firstElementChild?.id, 'the title stays first').toBe('leaderboard-title');
+    expect([...overlay.children].map((c) => c.id)).toEqual([
+      'leaderboard-title',
+      'leaderboard-list',
+      'leaderboard-players',
+      'leaderboard-walkup',
+    ]);
+
+    // A hidden root shows no line: hide() drops the paint.
+    view.hide();
+    expect(isGone(byId('leaderboard-walkup')), 'a hidden root holds no walk-up line').toBe(true);
+  });
+});
+
+describe('LeaderboardView — the Rankings list and the kept paint (ctl-8g, CTL8G.2)', () => {
+  it('CTL8G-2-VIEW-RANKINGS: paintSocial with the Rankings tab keeps the board list shown and hides the players list and the walk-up line; the list is a listbox named by the Rankings tab with aria-activedescendant on the cursor row; each ranked `<li>` is `social-rankings-<identityHex>`, a mr-nav-item option whose text, `<bdi>`, data-identity and data-own are the legacy row`s, with exactly one aria-selected true and one is-active (the cursor row, the first row when the cursor is null or unknown); the empty board`s line is no option; and Players to Rankings to Players flips the two lists each time; a paint that hides the list holding focus hands focus to `#leaderboard-title` (never body), one that hides nothing leaves it', async () => {
+    // WRONG IMPL KILLED: the board hidden on Rankings, or the players list left showing over it; a
+    // list without its listbox role, tab stop or label (the cursor is invisible to AT); li ids that
+    // are not `social-rankings-<hex>` (aria-activedescendant dangles); roles on the wrong
+    // nodes; two selected rows, or none (a null cursor must still name the first row); a
+    // cursor mark on the wrong row; an `aria-selected` written only on the cursor row (the kit
+    // writes 'false' on the rest, but 'true' on two is the bug); the legacy row content lost to
+    // the marks (name, numbers, `<bdi>`, data-identity, data-own); an empty board whose line is an
+    // option or whose list names a row that is not there; and a Players -> Rankings -> Players walk
+    // that leaves the wrong list shown, or the Rankings marks gone after the walk back.
+    mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    view.show();
+    view.render(makeVm(BOARD));
+    view.paintSocial(rankingsPaint('bb'));
+
+    const list = byId('leaderboard-list') as HTMLElement;
+    expect(isShown(list), 'the board is shown').toBe(true);
+    expect(isShown(byId('leaderboard-players')), 'the players list is hidden').toBe(false);
+    expect(isShown(byId('leaderboard-walkup')), 'and the walk-up line').toBe(false);
+    expect(list.getAttribute('role'), 'a listbox').toBe('listbox');
+    expect(list.getAttribute('tabindex'), 'the one tab stop').toBe('0');
+    expect(list.getAttribute('aria-labelledby'), 'named by the Rankings tab').toBe(
+      'social-tab-rankings',
+    );
+    expect(list.getAttribute('aria-activedescendant'), 'the cursor row').toBe('social-rankings-bb');
+
+    const items = rowsOf();
+    expect(
+      items.map((li) => li.id),
+      'ids by identity, in board order',
+    ).toEqual(['social-rankings-aa', 'social-rankings-bb', 'social-rankings-cc']);
+    expect(items.map((li) => li.getAttribute('role'))).toEqual(['option', 'option', 'option']);
+    for (const li of items) {
+      expect(li.classList.contains('mr-nav-item'), `${li.id}: a nav item`).toBe(true);
+    }
+    expect(
+      items.filter((li) => li.getAttribute('aria-selected') === 'true').map((li) => li.id),
+      'exactly one selected row: the cursor',
+    ).toEqual(['social-rankings-bb']);
+    expect(
+      items.filter((li) => li.classList.contains('is-active')).map((li) => li.id),
+      'exactly one is-active row',
+    ).toEqual(['social-rankings-bb']);
+    // The legacy row content survives the marks.
+    expect(
+      items.map((li) => li.textContent),
+      'the legacy text of every row',
+    ).toEqual([`Alice ${EM} 1200 (W10/L2)`, `Bob ${EM} 1000 (W5/L5)`, `Carol ${EM} 800 (W3/L8)`]);
+    expect(items.map((li) => li.querySelector('bdi')?.textContent)).toEqual([
+      'Alice',
+      'Bob',
+      'Carol',
+    ]);
+    expect(items.map((li) => li.dataset.identity)).toEqual(['aa', 'bb', 'cc']);
+    expect(items.map((li) => li.dataset.own)).toEqual(['true', undefined, undefined]);
+
+    // The cursor moves in place; null and an unknown key both fall back to the first row.
+    const selectedAfter = (cursor: string | null): string[] => {
+      view.paintSocial(rankingsPaint(cursor));
+      return rowsOf()
+        .filter((li) => li.getAttribute('aria-selected') === 'true')
+        .map((li) => li.id);
+    };
+    expect(selectedAfter('cc'), 'cursor cc').toEqual(['social-rankings-cc']);
+    expect(list.getAttribute('aria-activedescendant')).toBe('social-rankings-cc');
+    expect(selectedAfter(null), 'a null cursor: the first row').toEqual(['social-rankings-aa']);
+    expect(list.getAttribute('aria-activedescendant')).toBe('social-rankings-aa');
+    expect(selectedAfter('nobody'), 'an unknown cursor: the first row').toEqual([
+      'social-rankings-aa',
+    ]);
+    expect(
+      rowsOf()
+        .filter((li) => li.classList.contains('is-active'))
+        .map((li) => li.id),
+      'and is-active follows it',
+    ).toEqual(['social-rankings-aa']);
+
+    // The empty board: its line is not an option and nothing is named.
+    view.render(makeVm([]));
+    const lines = rowsOf();
+    expect(lines.length, 'one line').toBe(1);
+    expect(lines[0]?.textContent).toBe('No ranked players yet');
+    expect(lines[0]?.getAttribute('role'), 'the empty line is not an option').not.toBe('option');
+    expect(lines[0]?.getAttribute('aria-selected'), 'and not selected').not.toBe('true');
+    expect(list.getAttribute('aria-activedescendant'), 'nothing is named').toBeNull();
+    expect(isShown(list), 'the empty board is shown').toBe(true);
+    // An empty listbox with no options fails axe's aria-required-children, so over the EMPTY board
+    // the `<ul>` carries no listbox role, no tab stop and no label (the Players empty branch strips
+    // them too): whether the empty board is rendered under a kept paint or painted after the render.
+    // WRONG IMPL KILLED: the Rankings marks written to the list whatever the board holds (a listbox
+    // whose only child is not an option).
+    const expectBareList = (label: string): void => {
+      expect(list.getAttribute('role'), `${label}: no listbox role`).toBeNull();
+      expect(list.getAttribute('tabindex'), `${label}: no tab stop`).toBeNull();
+      expect(list.getAttribute('aria-labelledby'), `${label}: no label`).toBeNull();
+      expect(list.getAttribute('aria-activedescendant'), `${label}: nothing named`).toBeNull();
+      expect(list.querySelectorAll('[role="option"]').length, `${label}: no option`).toBe(0);
+    };
+    expectBareList('a paint kept over the empty render');
+    view.paintSocial(rankingsPaint('bb'));
+    expectBareList('a Rankings paint over the empty board');
+    view.paintSocial(rankingsPaint(null));
+    expectBareList('a null cursor over the empty board');
+    // Rows arriving put the marks back (the bare list is not stuck bare), and the board emptying
+    // again strips them again.
+    view.render(makeVm(BOARD));
+    expect(list.getAttribute('role'), 'rows back: a listbox again').toBe('listbox');
+    expect(list.getAttribute('tabindex'), 'rows back: the tab stop').toBe('0');
+    expect(list.getAttribute('aria-labelledby'), 'rows back: the label').toBe(
+      'social-tab-rankings',
+    );
+    view.render(makeVm([]));
+    expectBareList('emptied again');
+
+    // Players, then Rankings, then Players again: each flips the two lists.
+    view.render(makeVm(BOARD));
+    const rows: readonly SocialPlayerRow[] = [{ key: 'bb', name: 'Bob', nearby: true }];
+    view.paintSocial(playersPaint(rows, 'bb'));
+    expect(isShown(list), 'Players: the board list hidden').toBe(false);
+    expect(isShown(byId('leaderboard-players')), 'Players: the players list shown').toBe(true);
+    view.paintSocial(rankingsPaint('bb'));
+    expect(isShown(list), 'Rankings: the board list shown').toBe(true);
+    expect(isShown(byId('leaderboard-players')), 'Rankings: the players list hidden').toBe(false);
+    expect(
+      rowsOf()
+        .filter((li) => li.getAttribute('aria-selected') === 'true')
+        .map((li) => li.id),
+      'Rankings again: the marks are back on the cursor row',
+    ).toEqual(['social-rankings-bb']);
+    expect(list.getAttribute('aria-activedescendant')).toBe('social-rankings-bb');
+    view.paintSocial(playersPaint(rows, 'bb'));
+    expect(isShown(list), 'Players again: the board list hidden').toBe(false);
+    expect(isShown(byId('leaderboard-players')), 'Players again: the players list shown').toBe(
+      true,
+    );
+
+    // FOCUS HANDOFF (tradeView's rule: a part hidden under the focus would strand it on <body>, so
+    // hand it to the hosting panel's anchor first). The title is the overlay's tabindex=-1 anchor.
+    // WRONG IMPL KILLED: a tab flip that hides the focused list and leaves focus on the hidden node
+    // or on <body> (the keyboard user's next key goes nowhere); a handoff to the wrong anchor (the
+    // overlay root, the other list); a handoff on EVERY paint (the focused list loses focus to the
+    // title on each cursor move: Rankings -> Rankings, Players -> Players).
+    await flushMacrotask(); // the open's deferred focus lands first: it is not under test
+    const title = byId('leaderboard-title') as HTMLElement;
+    expect(title.getAttribute('tabindex'), 'fixture: the title is the tabindex=-1 anchor').toBe(
+      '-1',
+    );
+    const playersList = byId('leaderboard-players') as HTMLElement;
+
+    // Rankings -> Players: the board list holds focus and is hidden.
+    view.paintSocial(rankingsPaint('bb'));
+    list.focus();
+    expect(document.activeElement, 'precondition: focus is on the board list').toBe(list);
+    view.paintSocial(playersPaint(rows, 'bb'));
+    expect(isShown(list), 'the board list is hidden now').toBe(false);
+    expect(document.activeElement, 'Rankings -> Players: focus goes to the title').toBe(title);
+    expect(document.activeElement, 'never body').not.toBe(document.body);
+
+    // Players -> Rankings: the players list holds focus and is hidden.
+    playersList.focus();
+    expect(document.activeElement, 'precondition: focus is on the players list').toBe(playersList);
+    view.paintSocial(rankingsPaint('bb'));
+    expect(isShown(playersList), 'the players list is hidden now').toBe(false);
+    expect(document.activeElement, 'Players -> Rankings: focus goes to the title').toBe(title);
+    expect(document.activeElement, 'never body').not.toBe(document.body);
+
+    // A paint that hides nothing under the focus leaves it where it is.
+    list.focus();
+    view.paintSocial(rankingsPaint('cc'));
+    expect(document.activeElement, 'Rankings -> Rankings: focus stays on the list').toBe(list);
+    view.paintSocial(playersPaint(rows, 'bb'));
+    playersList.focus();
+    view.paintSocial(playersPaint(rows, null));
+    expect(document.activeElement, 'Players -> Players: focus stays on the list').toBe(playersList);
+    // Focus on the title (not in the hidden part) stays there across a flip.
+    title.focus();
+    view.paintSocial(rankingsPaint('bb'));
+    expect(document.activeElement, 'focus outside the hidden part is not moved').toBe(title);
+  });
+
+  it('CTL8G-2-VIEW-LIFECYCLE: with no paint the board is byte-identical to the legacy markup (rows and the empty board); a kept paint is re-applied after every render(vm), the empty-board render included, on both tabs; show() on an already shown root keeps it; hide() leaves exactly the legacy shell; a paint made while hidden, or left over a hidden render, never decorates the next open; and a new paint works after the walk', () => {
+    // WRONG IMPL KILLED: marks that are written by the constructor or by render() itself with no
+    // paint (the legacy board changes under every other root's tests); a paint lost at the next
+    // batch (main re-renders the board every batch: the Rankings cursor mark would vanish after
+    // one store batch, and a Players list would reappear as the board); an empty-board render that
+    // forgets the paint (the board comes back over the Players list); a re-render that applies a
+    // stale cursor; a show() that drops the paint on every call (main calls show on an open root at
+    // every paint); a hide() that leaves the roles, ids, is-active marks or the hidden list behind
+    // (the board's next legacy open would be a decorated listbox, or hidden); a paint that
+    // survives a hidden render or a re-open (stale marks over a fresh Social visit); and a view
+    // that can no longer be painted after hide().
+    mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+
+    // No paint: the legacy board, byte for byte, shown or hidden.
+    view.render(makeVm(BOARD));
+    expectLegacyShell('hidden, rows', BOARD);
+    view.show();
+    view.render(makeVm(BOARD));
+    expectLegacyShell('shown, rows', BOARD);
+    view.render(makeVm([]));
+    expectLegacyShell('shown, empty board', []);
+
+    // A Rankings paint survives a re-render with other rows and the empty board.
+    view.render(makeVm(BOARD));
+    view.paintSocial(rankingsPaint('cc'));
+    const markedIds = (): string[] =>
+      rowsOf()
+        .filter((li) => li.getAttribute('aria-selected') === 'true')
+        .map((li) => li.id);
+    expect(markedIds(), 'fixture: painted').toEqual(['social-rankings-cc']);
+    view.render(makeVm(BOARD));
+    expect(markedIds(), 'a re-render with the same rows keeps the paint').toEqual([
+      'social-rankings-cc',
+    ]);
+    view.render(makeVm([BOARD[2] as (typeof BOARD)[number], BOARD[0] as (typeof BOARD)[number]]));
+    expect(
+      rowsOf().map((li) => li.id),
+      'the new rows are marked too',
+    ).toEqual(['social-rankings-cc', 'social-rankings-aa']);
+    expect(markedIds(), 'the cursor row, in its new place').toEqual(['social-rankings-cc']);
+    view.render(makeVm([BOARD[0] as (typeof BOARD)[number]]));
+    expect(markedIds(), 'the cursor row gone: the first row').toEqual(['social-rankings-aa']);
+    view.render(makeVm([]));
+    const emptyLine = rowsOf()[0] as HTMLElement;
+    expect(emptyLine.getAttribute('role'), 'the empty line is not an option').not.toBe('option');
+    expect(
+      (byId('leaderboard-list') as HTMLElement).getAttribute('aria-activedescendant'),
+      'and names no row',
+    ).toBeNull();
+    expect(isShown(byId('leaderboard-players')), 'the players list stays hidden').toBe(false);
+
+    // A Players paint survives a render too, the empty board included: the board stays hidden.
+    const rows: readonly SocialPlayerRow[] = [
+      { key: 'bb', name: 'Bob', nearby: true },
+      { key: 'cc', name: 'Carol', nearby: false },
+    ];
+    view.paintSocial(playersPaint(rows, 'cc', 'Carol'));
+    for (const vm of [makeVm(BOARD), makeVm([])]) {
+      view.render(vm);
+      expect(isShown(byId('leaderboard-list')), 'a render: the board stays hidden').toBe(false);
+      expect(isShown(byId('leaderboard-players')), 'a render: the players list stays').toBe(true);
+      expect(
+        [...(byId('leaderboard-players') as HTMLElement).children].map((o) => o.id),
+        'the rows stay',
+      ).toEqual(['social-players-bb', 'social-players-cc']);
+      expect(byId('leaderboard-walkup')?.textContent, 'the walk-up line stays').toBe(
+        'Walk up to Carol and press A',
+      );
+    }
+
+    // show() on a root that is already shown is not the hidden -> visible edge.
+    view.show();
+    expect(isShown(byId('leaderboard-players')), 'a repeat show keeps the Players paint').toBe(
+      true,
+    );
+    expect(byId('leaderboard-walkup')?.textContent, 'and the walk-up line').toBe(
+      'Walk up to Carol and press A',
+    );
+    view.paintSocial(rankingsPaint('bb'));
+    view.render(makeVm(BOARD));
+    view.show();
+    expect(markedIds(), 'a repeat show keeps the Rankings paint').toEqual(['social-rankings-bb']);
+
+    // hide(): exactly the legacy shell.
+    view.hide();
+    expectLegacyShell('after hide, rankings paint', BOARD);
+    view.show();
+    view.render(makeVm(BOARD));
+    expectLegacyShell('reopened, no new paint', BOARD);
+    view.paintSocial(playersPaint(rows, 'bb', 'Bob'));
+    view.hide();
+    expectLegacyShell('after hide, players paint and walk-up', BOARD);
+    view.show();
+    view.render(makeVm([]));
+    expectLegacyShell('reopened over the empty board', []);
+
+    // A paint made while hidden, or left over a hidden render: dropped at the next open.
+    view.hide();
+    // A hidden root never carries marks: a paint made while it is HIDDEN is not kept, so with no
+    // show() in between the root is still exactly the legacy shell (rows, so a mark would show).
+    // WRONG IMPL KILLED: a paintSocial that keeps and applies its paint whatever the root's
+    // visibility (a hidden board carrying listbox roles, ids and is-active marks, or a hidden
+    // list on Players, until the next open drops them).
+    view.render(makeVm(BOARD));
+    view.paintSocial(rankingsPaint('bb'));
+    expectLegacyShell('a Rankings paint while hidden, not yet shown', BOARD);
+    view.paintSocial(playersPaint(rows, 'cc', 'Carol'));
+    expectLegacyShell('a Players paint and walk-up while hidden, not yet shown', BOARD);
+    view.paintSocial(rankingsPaint('bb'));
+    view.show();
+    view.render(makeVm(BOARD));
+    expectLegacyShell('painted while hidden, then opened', BOARD);
+    view.hide();
+    view.paintSocial(playersPaint(rows, 'cc', 'Carol'));
+    view.render(makeVm(BOARD));
+    view.show();
+    view.render(makeVm(BOARD));
+    expectLegacyShell('painted and rendered while hidden, then opened', BOARD);
+
+    // After the walk a new paint works (the view is not stuck legacy).
+    view.paintSocial(rankingsPaint('cc'));
+    expect(markedIds(), 'a paint after the walk').toEqual(['social-rankings-cc']);
+    view.paintSocial(playersPaint(rows, 'cc', 'Carol'));
+    expect(isShown(byId('leaderboard-players')), 'and the Players list').toBe(true);
+    expect(byId('leaderboard-walkup')?.textContent).toBe('Walk up to Carol and press A');
   });
 });

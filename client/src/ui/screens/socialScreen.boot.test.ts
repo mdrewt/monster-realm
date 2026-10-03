@@ -6,14 +6,20 @@
  *
  * - CTL8D-1-BOOT-TABS: U opens Social with the four tabs Players | Trades | Challenges | Rankings
  *   on Trades; RB / LB (PageDown / PageUp) walk the tabs with a wrap, each tab shown over its own
- *   root (Players over the trade root with the placeholder), the strip in the shown root's chrome;
- *   and an incoming challenge arriving with Social closed opens it on Challenges with the cursor on
- *   the request.
+ *   root (ctl-8g: Players and Rankings over the leaderboard root, no trade placeholder anywhere),
+ *   the strip in the shown root's chrome; and an incoming challenge arriving with Social closed
+ *   opens it on Challenges with the cursor on the request.
  * - CTL8D-2-BOOT-RESPOND: A on the incoming challenge opens a sheet Accept / Decline on Accept;
  *   Decline asks Yes / No on No and sends nothing until Yes; A on Yes sends one declineChallenge;
  *   the legacy Accept button stays clickable; then U, A, A accepts a waiting trade.
  * - CTL8D-3-BOOT-HOTKEYS: with a waiting trade in the store (the waiting-request rule's pick), U,
  *   P and L still open Social on Trades, Challenges and Rankings, each over its own root.
+ * - CTL8G-1-BOOT-PLAYERS, on Players the leaderboard root lists the other online players (the
+ *   catalogued empty line while nobody is), a batch adding, re-sorting and removing players
+ *   repaints the list while it shows (the Nearby badge by distance), A on a row shows the
+ *   walk-up line and sends nothing, a move clears it.
+ * - CTL8G-2-BOOT, L opens Rankings over the leaderboard root, its ranked rows keep their
+ *   cursor mark across store batches, Down moves it and A does nothing at all.
  *
  * Every case asserts what only the real Social adapter paints (the selected `#social-tab-<tab>`,
  * the cursor mark, the sheet and the prompt), never just the panel shown: ctl-8s already opens the
@@ -269,6 +275,34 @@ function server(at: number): void {
   opts.store.flushBatch();
 }
 
+/** A second other player (ctl-8g). */
+const OTHER2 = 'ef'.repeat(32);
+
+/** Put another player and its character in the store (zone 0, column 2, row `tileY`; the booted
+ *  player stands at (2, 6)): the batch that delivers it is the caller's `server(at)`. */
+function otherPlayer(
+  identity: string,
+  entityId: bigint,
+  name: string,
+  tileY: number,
+  online = true,
+): void {
+  opts.store.upsertPlayer({ identity, entityId, name, online, lastInputSeq: 0n });
+  opts.store.upsertCharacter(
+    {
+      entityId,
+      zoneId: 0,
+      tileX: 2,
+      tileY,
+      facing: 'East',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [] as WasmMoveInput[],
+    },
+    clock.t,
+  );
+}
+
 /** A Pending challenge from OTHER to the booted player (an incoming, waiting request). */
 function incomingChallenge(challengeId: bigint): StoreBattleChallenge {
   return {
@@ -346,10 +380,11 @@ function el(id: string): HTMLElement {
   return found;
 }
 
-/** The Social tabs in strip order (design §5), and the root each tab's panel is. */
+/** The Social tabs in strip order (design §5), and the root each tab's panel is. INTENTIONAL
+ *  CHANGE (ctl-8g): Players is over the leaderboard root now. Was: players 'trade-overlay'. */
 const TAB_ORDER: readonly SocialTab[] = ['players', 'trades', 'challenges', 'rankings'];
 const ROOT_OF: Readonly<Record<SocialTab, string>> = {
-  players: 'trade-overlay',
+  players: 'leaderboard-overlay',
   trades: 'trade-overlay',
   challenges: 'pvp-challenge-overlay',
   rankings: 'leaderboard-overlay',
@@ -416,17 +451,22 @@ const TRADE_PARTS = [
 ];
 const hiddenTradeParts = (): string[] => TRADE_PARTS.filter((id) => el(id).hidden);
 
-/** The Players placeholder in the shown trade root: the status reads it, both sides and the
- *  actions are hidden, the status and the feedback are not. */
-function expectPlayersPlaceholder(label: string): void {
-  expect(el('trade-status').textContent, `${label}: the placeholder`).toBe(
-    i18n.t('social.players.placeholder'),
+/** Neither `hidden` nor `display: none`. */
+const visible = (id: string): boolean => {
+  const node = el(id);
+  return !node.hidden && node.style.display !== 'none';
+};
+
+/** INTENTIONAL CHANGE (ctl-8g): the Players tab is over the leaderboard root, so there is no trade
+ *  placeholder to expect (this replaces ctl-8d's `expectPlayersPlaceholder`): the board's list is
+ *  hidden under the players list, which holds the catalogued empty line while nobody else is
+ *  online. */
+function expectPlayersOnLeaderboard(label: string): void {
+  expect(visible('leaderboard-players'), `${label}: the players list shows`).toBe(true);
+  expect(visible('leaderboard-list'), `${label}: the board list is hidden under it`).toBe(false);
+  expect(el('leaderboard-players').textContent, `${label}: nobody else is online`).toBe(
+    i18n.t('social.players.none'),
   );
-  expect(hiddenTradeParts(), `${label}: the sides and the actions hidden`).toEqual([
-    'trade-my-side',
-    'trade-their-side',
-    'trade-actions',
-  ]);
 }
 
 /** The trade root as the no-trade render leaves it: no placeholder, nothing hidden. */
@@ -507,14 +547,14 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
 }, () => {
   afterEach(teardownBoot);
 
-  it('CTL8D-1-BOOT-TABS: U opens Social on Trades with the four tabs Players, Trades, Challenges, Rankings in the trade root`s chrome; RB walks Challenges (the pvp root), Rankings (the leaderboard root) and wraps to Players (the trade root with the placeholder, the sides and the actions hidden), then Trades with no render between (the placeholder gone); LB walks back with the wrap, each tab over its own root with the strip following it; and with Social closed an incoming challenge arriving in a batch opens it on Challenges with the cursor mark on #pvp-challenge-incoming', async () => {
+  it('CTL8D-1-BOOT-TABS: U opens Social on Trades with the four tabs Players, Trades, Challenges, Rankings in the trade root`s chrome; RB walks Challenges (the pvp root), Rankings (the leaderboard root) and wraps to Players (also the leaderboard root, its players list under no board list, the trade root with no placeholder; ctl-8g moved Players off the trade root), then Trades with no render between; LB walks back with the wrap, each tab over its own root with the strip following it; and with Social closed an incoming challenge arriving in a batch opens it on Challenges with the cursor mark on #pvp-challenge-incoming', async () => {
     // WRONG IMPL KILLED: the legacy adapter on the Social frame (nothing paints a strip; RB and LB
     // do nothing); an adapter whose LB / RB do not wrap, or step the wrong way; a paint that
     // selects a tab but leaves the previous panel shown (or shows the trade root for Challenges);
     // a strip left in the hidden root's chrome (two strips, or the chrome never moves); a Players
-    // tab with no placeholder or with the trade sides left showing; a placeholder that survives
-    // the switch to Trades with no render between, or is left in the hidden trade root; and an
-    // auto-show that opens on the remembered tab (Trades) or puts no cursor on the request.
+    // tab still over the trade root (ctl-8g: it is over the leaderboard root, its players list up
+    // and the board list hidden), or one that leaves the old placeholder in the hidden trade root;
+    // and an auto-show that opens on the remembered tab (Trades) or puts no cursor on the request.
     await bootReady();
     server(1000);
     let at = 1100;
@@ -534,7 +574,8 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     expectSocialOn('RB from Challenges', 'rankings');
     key('PageDown');
     expectSocialOn('RB from Rankings wraps', 'players');
-    expectPlayersPlaceholder('Players');
+    expectPlayersOnLeaderboard('Players');
+    expectNoTradeRoot('Players: no placeholder in the hidden trade root');
     key('PageDown');
     expectSocialOn('RB from Players', 'trades');
     expectNoTradeRoot('Players to Trades, no render between');
@@ -542,7 +583,8 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     // LB: Players, then the wrap to Rankings, Challenges, Trades.
     key('PageUp');
     expectSocialOn('LB from Trades', 'players');
-    expectPlayersPlaceholder('Players again');
+    expectPlayersOnLeaderboard('Players again');
+    expectNoTradeRoot('Players again: no placeholder in the hidden trade root');
     key('PageUp');
     expectSocialOn('LB from Players wraps', 'rankings');
     expectNoTradeRoot('the hidden trade root holds no placeholder');
@@ -696,5 +738,205 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
       expect(stackNow(), `${code}: precondition: Start closed Social`).toEqual([WORLD_FRAME]);
       at += 100;
     }
+  });
+
+  it('CTL8G-1-BOOT-PLAYERS: U then LB opens Players over the leaderboard root with the catalogued empty line while nobody else is online; a batch adding Zed (four tiles away) lists him with a Nearby badge and the cursor on him, a batch adding Amy (far) re-sorts the list with no badge on her and the cursor staying on Zed, A on Zed shows the walk-up line as the catalogued sentence and sends nothing, Up moves to Amy and clears it, A on Amy then Zed going offline keeps her line, and Amy leaving closes it and brings the empty line back; L then shows the board list and hides the players list', async () => {
+    // WRONG IMPL KILLED: a Players tab still over the trade root (the placeholder, no list); a list
+    // painted once at the open and never again (the batch that adds a player changes nothing on
+    // screen: the stale-Players bug, since a batch repaints only when the screen answers a new
+    // state); a re-sort that moves the cursor or drops the mark; a Nearby badge on a far player
+    // or none on a near one; a walk-up that sends a command (a challenge, a trade) or reads an
+    // English literal instead of the catalog; a walk-up left up after the cursor moves or after
+    // its player left; and a Rankings visit that still shows the players list.
+    await bootReady();
+    server(1000);
+    let at = 1100;
+    const key = (code: string): void => {
+      press(code, at);
+      at += 10;
+    };
+    const batch = (): void => {
+      server(at);
+      at += 10;
+    };
+    const options = (): HTMLElement[] => [...el('leaderboard-players').children] as HTMLElement[];
+    const optionIds = (): string[] => options().map((o) => o.id);
+    const selectedIds = (): string[] =>
+      options()
+        .filter((o) => o.getAttribute('aria-selected') === 'true')
+        .map((o) => o.id);
+    const badges = (o: HTMLElement): (string | null)[] =>
+      [...o.children].filter((c) => c.tagName !== 'BDI').map((c) => c.textContent);
+    const ZED = `social-players-${OTHER}`;
+    const AMY = `social-players-${OTHER2}`;
+
+    key('KeyU');
+    expectSocialOn('U', 'trades');
+    key('PageUp');
+    expectSocialOn('LB from Trades', 'players');
+    expectPlayersOnLeaderboard('nobody else online');
+    expect(options().length, 'the empty line is no option').toBe(1);
+    expect(el('leaderboard-players').querySelectorAll('[role="option"]').length).toBe(0);
+
+    // Zed joins, four tiles away.
+    otherPlayer(OTHER, 8n, 'Zed', 10);
+    batch();
+    expectSocialOn('Zed joined', 'players');
+    expect(optionIds(), 'the batch lists Zed').toEqual([ZED]);
+    expect(options()[0]?.querySelector('bdi')?.textContent, 'by name').toBe('Zed');
+    expect(badges(options()[0] as HTMLElement), 'Nearby, from the catalog').toEqual([
+      i18n.t('social.players.nearby'),
+    ]);
+    expect(selectedIds(), 'the cursor is on him').toEqual([ZED]);
+    expect(el('leaderboard-players').getAttribute('aria-activedescendant')).toBe(ZED);
+    expect(visible('leaderboard-list'), 'the board list stays hidden').toBe(false);
+
+    // Amy joins, fifty-four tiles away: name order puts her first; the cursor stays on Zed.
+    otherPlayer(OTHER2, 9n, 'Amy', 60);
+    batch();
+    expectSocialOn('Amy joined', 'players');
+    expect(optionIds(), 'Amy, then Zed').toEqual([AMY, ZED]);
+    expect(badges(options()[0] as HTMLElement), 'no badge on a far player').toEqual([]);
+    expect(badges(options()[1] as HTMLElement), 'Zed keeps his').toEqual([
+      i18n.t('social.players.nearby'),
+    ]);
+    expect(selectedIds(), 'the cursor stays on Zed').toEqual([ZED]);
+
+    // A on Zed: the walk-up line, no command.
+    H.calls = [];
+    key('Enter');
+    expect(visible('leaderboard-walkup'), 'the walk-up line shows').toBe(true);
+    expect(el('leaderboard-walkup').textContent, 'the catalogued sentence').toBe(
+      i18n.tf('social.players.walkUp', { name: 'Zed' }),
+    );
+    expect(el('leaderboard-walkup').querySelector('bdi')?.textContent, 'with his name').toBe('Zed');
+    expect(stackNow(), 'A walks nowhere: Social stays').toEqual(SOCIAL_STACK);
+    await flush();
+    expect(H.calls, 'no remote action exists: nothing is sent').toEqual([]);
+
+    // Up moves to Amy and clears the line.
+    key('ArrowUp');
+    expect(selectedIds(), 'Up: the cursor on Amy').toEqual([AMY]);
+    expect(el('leaderboard-players').getAttribute('aria-activedescendant')).toBe(AMY);
+    expect(visible('leaderboard-walkup'), 'a move clears the walk-up line').toBe(false);
+
+    // A on Amy; Zed going offline does not concern her line; Amy leaving closes it.
+    key('Enter');
+    expect(el('leaderboard-walkup').textContent).toBe(
+      i18n.tf('social.players.walkUp', { name: 'Amy' }),
+    );
+    otherPlayer(OTHER, 8n, 'Zed', 10, false);
+    batch();
+    expect(optionIds(), 'Zed went offline: only Amy is listed').toEqual([AMY]);
+    expect(visible('leaderboard-walkup'), 'Amy`s line stays').toBe(true);
+    expect(el('leaderboard-walkup').textContent).toBe(
+      i18n.tf('social.players.walkUp', { name: 'Amy' }),
+    );
+    opts.store.removePlayer(OTHER2);
+    batch();
+    expect(visible('leaderboard-walkup'), 'Amy left: her line closes').toBe(false);
+    expectPlayersOnLeaderboard('nobody else online again');
+    expect(H.calls, 'the whole walk sent nothing').toEqual([]);
+
+    // Start closes Social; then L: the board list, never the players list.
+    key('Escape');
+    expect(stackNow(), 'precondition: Start closed Social').toEqual([WORLD_FRAME]);
+    expect(shownRoots(), 'precondition: no Social root is shown').toEqual([]);
+    key('KeyL');
+    expectSocialOn('L', 'rankings');
+    expect(visible('leaderboard-list'), 'Rankings: the board list shows').toBe(true);
+    const playersList = document.getElementById('leaderboard-players');
+    expect(
+      playersList === null || playersList.hidden || playersList.style.display === 'none',
+      'Rankings: the players list is hidden',
+    ).toBe(true);
+  });
+
+  it('CTL8G-2-BOOT: L opens Rankings over the leaderboard root with the ranked rows as options, the first row selected and named by aria-activedescendant, the marks surviving a store batch (the board is re-rendered each batch); Down moves the mark to the next ranked row and a fresh Down wraps; A, fresh or again, changes nothing (no sheet, no prompt, no command, the mark and the frame stay)', async () => {
+    // WRONG IMPL KILLED: a Rankings tab left as the legacy board (no listbox, no cursor: Down
+    // does nothing visible); marks lost at the next batch's re-render (the cursor would vanish
+    // after one store batch); a Down that moves the screen's cursor but not the DOM mark (or the
+    // reverse: aria-activedescendant naming a row that is not marked); two rows marked; an A that
+    // opens a sheet or prompt on a ranked row, sends a challenge or any reducer, or pops the frame;
+    // and rows out of leaderboard order.
+    await bootReady();
+    server(1000);
+    const PROFILES = [
+      { identity: OTHER2, name: 'Amy', rating: 800, wins: 1, losses: 3 },
+      { identity: H.identity, name: 'P', rating: 1000, wins: 2, losses: 2 },
+      { identity: OTHER, name: 'Zed', rating: 1200, wins: 3, losses: 1 },
+    ];
+    for (const p of PROFILES) opts.store.upsertProfile(p);
+    server(1010);
+    let at = 1100;
+    const key = (code: string): void => {
+      press(code, at);
+      at += 10;
+    };
+    const board = (): HTMLElement[] => [...el('leaderboard-list').children] as HTMLElement[];
+    const rankedIds = (): string[] => board().map((li) => li.id);
+    const selectedIds = (): string[] =>
+      board()
+        .filter((li) => li.getAttribute('aria-selected') === 'true')
+        .map((li) => li.id);
+    const activeIds = (): string[] =>
+      board()
+        .filter((li) => li.classList.contains('is-active'))
+        .map((li) => li.id);
+    const ZED = `social-rankings-${OTHER}`;
+    const ME_ROW = `social-rankings-${H.identity}`;
+    const AMY = `social-rankings-${OTHER2}`;
+    const expectCursor = (label: string, id: string): void => {
+      expect(selectedIds(), `${label}: exactly the cursor row is selected`).toEqual([id]);
+      expect(activeIds(), `${label}: and is-active`).toEqual([id]);
+      expect(
+        el('leaderboard-list').getAttribute('aria-activedescendant'),
+        `${label}: and named`,
+      ).toBe(id);
+    };
+
+    key('KeyL');
+    expectSocialOn('L', 'rankings');
+    // A batch with Rankings showing: the board re-renders, the marks come back.
+    server(at);
+    at += 10;
+    expect(visible('leaderboard-list'), 'the board list shows').toBe(true);
+    expect(rankedIds(), 'rating order: Zed, the booted player, Amy').toEqual([ZED, ME_ROW, AMY]);
+    expect(
+      board().map((li) => li.getAttribute('role')),
+      'options',
+    ).toEqual(['option', 'option', 'option']);
+    expect(board().map((li) => li.textContent)).toEqual(
+      PROFILES.slice()
+        .reverse()
+        .map(
+          (p) =>
+            `${p.name}${i18n.tf('leaderboard.row', { rating: p.rating, wins: p.wins, losses: p.losses })}`,
+        ),
+    );
+    expectCursor('L', ZED);
+
+    key('ArrowDown');
+    expectCursor('Down', ME_ROW);
+    server(at);
+    at += 10;
+    expectCursor('Down, then a batch', ME_ROW);
+
+    // A: nothing, fresh or again.
+    H.calls = [];
+    key('Enter');
+    key('Enter');
+    expectCursor('A', ME_ROW);
+    expect(sheetShown(), 'A opens no sheet').toBe(false);
+    expect(promptShown(), 'A opens no prompt').toBe(false);
+    expect(stackNow(), 'A does not close or push a frame').toEqual(SOCIAL_STACK);
+    await flush();
+    expect(H.calls, 'A sends nothing').toEqual([]);
+
+    key('ArrowDown');
+    expectCursor('Down to the last', AMY);
+    key('ArrowDown');
+    expectCursor('a fresh Down wraps', ZED);
+    expect(shownRoots(), 'still the leaderboard root alone').toEqual(['leaderboard-overlay']);
   });
 });

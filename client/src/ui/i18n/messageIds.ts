@@ -171,12 +171,15 @@ export type MessageId =
   | 'prompt.yes'
   | 'prompt.no'
   // social.* : the Social frame's tab strip, action sheet and Yes / No questions (tradeView.ts's
-  // `paintSocial`; ctl-8d).
+  // `paintSocial`; ctl-8d), and the Players tab (leaderboardView.ts's `paintSocial`; ctl-8g).
   | 'social.tab.players'
   | 'social.tab.trades'
   | 'social.tab.challenges'
   | 'social.tab.rankings'
   | 'social.players.placeholder'
+  | 'social.players.nearby'
+  | 'social.players.none'
+  | 'social.players.walkUp'
   | 'social.action.accept'
   | 'social.action.decline'
   | 'social.action.confirm'
@@ -485,6 +488,7 @@ export interface MessageParams {
   readonly 'privacy.export.incomplete': { readonly received: number; readonly total: number };
   readonly 'privacy.export.complete': { readonly received: number };
   readonly 'journal.detail.step': { readonly step: number };
+  readonly 'social.players.walkUp': { readonly name: string };
 }
 
 /** Keys resolved by `tf(key, params)`. */

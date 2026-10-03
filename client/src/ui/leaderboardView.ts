@@ -1,5 +1,6 @@
 // ui/leaderboardView.ts — thin DOM shell for the ranked leaderboard overlay.
-// Pure rendering from LeaderboardViewModel. No logic — all logic is in leaderboardModel.ts.
+// Pure rendering from LeaderboardViewModel: the board's order and rows are leaderboardModel.ts's,
+// the Social tabs' rows and cursor socialModel.ts's and screens/socialScreen.ts's.
 // NOT coverage-excluded (unlike the sibling DOM shells): fully unit-covered via
 // happy-dom tests, so every branch here must stay test-reachable.
 // RL-15: ZERO-arg constructor — no callbacks, no write path (pure subscription view).
@@ -13,14 +14,49 @@
 // `<bdi>` (zero attributes, zero children, `textContent` only) isolates the player-chosen name's
 // bidi run from the surrounding catalog text (M24 §2.7, I18N-20), and the catalog value carries
 // the leading space, so `li.textContent` is byte-identical to the pre-migration string.
+//
+// ctl-8g: this root also hosts the Social frame's Players and Rankings tabs (CTL8G.1-.2).
+// `paintSocial(p)` is kept and re-applied after every `render(vm)` (main.ts re-renders the board
+// each batch). A hidden root keeps none: a paint while hidden is not kept, and the hidden-to-visible
+// edge (in `show()`, and in `render()` while hidden) and `hide()` drop it, so with no kept paint the
+// root is exactly the legacy board. Rankings marks the board's `<li>`s by hand with the nav kit's
+// contract (`renderNav` would own the list's children; an empty board stays a plain list); Players
+// hides the board and renders `#leaderboard-players` through the kit, with `#leaderboard-walkup`
+// after it, both built by the first Players paint. A list hidden under the focus hands it to the
+// root's anchor first (tradeView's rule). Player names stay out of the resolver here too: the
+// walk-up line is resolved around a sentinel and the name goes in a `<bdi>`.
 
 import { t, tf } from './i18n/resolver';
 import type { LeaderboardViewModel } from './leaderboardModel';
+import { list, tabs } from './nav';
+import { navItemId, navTabId, renderNav } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
+import type { SocialPlayerRow } from './socialModel';
+
+/** What the Social screen paints over this root on its Players and Rankings tabs. */
+export interface SocialRankingsPaint {
+  readonly tab: 'players' | 'rankings';
+  readonly players: readonly SocialPlayerRow[];
+  /** The cursor row's nav key (an identity hex), else null. */
+  readonly cursor: string | null;
+  /** The walk-up player's name (Players), else null. */
+  readonly walkUp: string | null;
+}
+
+/** The Social frame's nav id prefix (tradeView's tab strip names the tabs `social-tab-<tab>`). */
+const SOCIAL_FRAME_ID = 'social';
+/** Stands in for the name while the walk-up line is resolved; no catalog text holds a NUL. */
+const NAME_SLOT = String.fromCharCode(0);
+/** The list attributes a Rankings paint writes, removed when the paint is dropped. */
+const LIST_MARKS = ['role', 'tabindex', 'aria-labelledby', 'aria-activedescendant'] as const;
+const ROW_MARKS = ['id', 'class', 'role', 'aria-selected'] as const;
 
 export class LeaderboardView {
   readonly #overlay: HTMLElement;
   readonly #listEl: HTMLElement;
+  #kept: SocialRankingsPaint | null = null;
+  /** `#leaderboard-players` and `#leaderboard-walkup`, built by the first Players paint. */
+  #social: { readonly players: HTMLElement; readonly walkUp: HTMLElement } | null = null;
 
   constructor() {
     const el = document.getElementById('leaderboard-overlay');
@@ -41,12 +77,14 @@ export class LeaderboardView {
     // re-schedules overlayA11y's deferred focus -- which would yank focus back to the initial
     // anchor on every store batch. Only the hidden->visible EDGE opens.
     const wasVisible = this.visible;
+    if (!wasVisible) this.#drop();
     this.#overlay.style.display = '';
     if (!wasVisible) openOverlayA11y('leaderboardView', this.#overlay);
   }
 
   hide(): void {
     this.#overlay.style.display = 'none';
+    this.#drop();
     // DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
     // documented no-op with no open record, and leaving it unguarded is what lets a record
     // that ever desynchronised from the DOM self-heal instead of leaking a live trap forever.
@@ -68,6 +106,122 @@ export class LeaderboardView {
    *  (the comparator is the model's contract). replaceChildren keeps
    *  re-renders replace-not-append. */
   render(vm: LeaderboardViewModel): void {
+    // A hidden root keeps no paint: the next open starts from the legacy board.
+    if (!this.visible) this.#drop();
+    this.#renderBoard(vm);
+    this.#apply();
+  }
+
+  /** The Social screen's paint: kept while the root shows, so the next `render` re-applies it. */
+  paintSocial(p: SocialRankingsPaint): void {
+    this.#kept = this.visible ? p : null;
+    this.#apply();
+  }
+
+  #drop(): void {
+    this.#kept = null;
+    this.#apply();
+  }
+
+  /** Write the kept paint, or with none undo every mark it left. */
+  #apply(): void {
+    const p = this.#kept;
+    const rows = [...this.#listEl.children] as HTMLElement[];
+    const ranked = rows.filter((li) => li.dataset.identity !== undefined);
+    // A part hidden under the focus would strand it on <body>, outside the dialog's focus trap.
+    const focused = document.activeElement;
+    const hiding = p?.tab === 'players' ? this.#listEl : this.#social?.players;
+    if (hiding?.contains(focused) === true) {
+      this.#overlay.querySelector<HTMLElement>('[tabindex="-1"]')?.focus();
+    }
+    this.#listEl.hidden = p?.tab === 'players';
+    if (p?.tab === 'rankings' && ranked.length > 0) {
+      const cursor = ranked.find((li) => li.dataset.identity === p.cursor) ?? ranked[0];
+      this.#listEl.setAttribute('role', 'listbox');
+      this.#listEl.setAttribute('tabindex', '0');
+      this.#listEl.setAttribute('aria-labelledby', navTabId(SOCIAL_FRAME_ID, 'rankings'));
+      for (const li of ranked) {
+        const selected = li === cursor;
+        li.id = navItemId(SOCIAL_FRAME_ID, 'rankings', li.dataset.identity ?? '');
+        li.className = selected ? 'mr-nav-item is-active' : 'mr-nav-item';
+        li.setAttribute('role', 'option');
+        li.setAttribute('aria-selected', selected ? 'true' : 'false');
+      }
+      if (cursor === undefined) this.#listEl.removeAttribute('aria-activedescendant');
+      else this.#listEl.setAttribute('aria-activedescendant', cursor.id);
+    } else {
+      for (const name of LIST_MARKS) this.#listEl.removeAttribute(name);
+      for (const li of rows) for (const name of ROW_MARKS) li.removeAttribute(name);
+    }
+    if (p?.tab === 'players') this.#paintPlayers(p);
+    else if (this.#social !== null) {
+      this.#social.players.hidden = true;
+      this.#social.players.replaceChildren();
+      this.#social.walkUp.hidden = true;
+      this.#social.walkUp.replaceChildren();
+    }
+  }
+
+  #paintPlayers(p: SocialRankingsPaint): void {
+    if (this.#social === null) {
+      const players = document.createElement('div');
+      players.id = 'leaderboard-players';
+      const walkUp = document.createElement('p');
+      walkUp.id = 'leaderboard-walkup';
+      this.#listEl.after(players, walkUp);
+      this.#social = { players, walkUp };
+    }
+    const { players, walkUp } = this.#social;
+    players.hidden = false;
+    if (p.players.length === 0) {
+      for (const name of LIST_MARKS) players.removeAttribute(name);
+      const none = document.createElement('div');
+      none.textContent = t('social.players.none');
+      players.replaceChildren(none);
+    } else {
+      // The kit drops the empty line: it keeps only its own items.
+      const names = new Map(p.players.map((row) => [row.key, row]));
+      const cursor = names.has(p.cursor ?? '') ? p.cursor : (p.players[0]?.key ?? null);
+      renderNav(
+        players,
+        tabs([
+          {
+            key: 'players',
+            layout: list(p.players.map((row) => ({ key: row.key, enabled: true }))),
+          },
+        ]),
+        { tab: 'players', item: cursor, perTab: {} },
+        {
+          frame: SOCIAL_FRAME_ID,
+          fill: (el, item) => {
+            const row = names.get(item.key);
+            const name = document.createElement('bdi');
+            name.textContent = row?.name ?? '';
+            el.append(name);
+            if (row?.nearby === true) {
+              const badge = document.createElement('span');
+              badge.textContent = t('social.players.nearby');
+              el.append(' ', badge);
+            }
+          },
+        },
+      );
+    }
+    walkUp.hidden = p.walkUp === null;
+    walkUp.replaceChildren();
+    if (p.walkUp !== null) {
+      // The name never reaches the resolver (I18N-21): resolve around a slot, then put the name
+      // there in a `<bdi>`. A line with no slot still shows the name once, at its end.
+      const [before = '', ...rest] = tf('social.players.walkUp', { name: NAME_SLOT }).split(
+        NAME_SLOT,
+      );
+      const name = document.createElement('bdi');
+      name.textContent = p.walkUp;
+      walkUp.append(before, name, rest.join(''));
+    }
+  }
+
+  #renderBoard(vm: LeaderboardViewModel): void {
     if (vm.isEmpty) {
       // Empty board is a real state: profiles exist only after a decisive ranked battle.
       const li = document.createElement('li');

@@ -317,6 +317,9 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   ],
   // ctl-8f: the Journal detail's step line (questLogView.ts).
   'journal.detail.step': [{ step: 0 }, { step: 4 }],
+  // ctl-8g: the Players tab's walk-up line (leaderboardView.ts). `name` is a player-chosen display
+  // name: it reaches this closure only in this test, never from the view (I18N-21).
+  'social.players.walkUp': [{ name: 'Zed' }, { name: 'Amy' }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -351,6 +354,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // ctl-8f (named intentional change): +9 plain keys here (`bag.pocket.{bait,food,medicine,other}`,
   // `bag.action.{feed,use,info}`, `bag.picker.title`, `bag.feed.noMonsters`), +1 parameterised one
   // (`journal.detail.step`) in SAMPLE_PARAMS = 269 keys.
+  // ctl-8g (named intentional change): +2 plain keys here (`social.players.{nearby,none}`), +1
+  // parameterised one (`social.players.walkUp`) in SAMPLE_PARAMS = 272 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -629,6 +634,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'bag.action.info': 'Info',
   'bag.picker.title': 'Feed which monster?',
   'bag.feed.noMonsters': 'No monsters to feed',
+  // ctl-8g (named intentional change): 2 new plain keys — the Players tab's "Nearby" badge and the
+  // line shown when nobody else is online (leaderboardView.ts).
+  'social.players.nearby': 'Nearby',
+  'social.players.none': 'No other players online',
 };
 
 interface ParamOutputSpec {
@@ -1008,9 +1017,17 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { step: 4 },
     outputB: 'Step 4',
   },
+  // ctl-8g: the Players tab's walk-up line (CTL8G.1). The name sits once, verbatim, in the text.
+  'social.players.walkUp': {
+    inputA: { name: 'Zed' },
+    outputA: 'Walk up to Zed and press A',
+    inputB: { name: 'Amy' },
+    outputB: 'Walk up to Amy and press A',
+  },
 };
 
-/** The full 269-key roster (ctl-8f: +`bag.pocket.{bait,food,medicine,other}`
+/** The full 272-key roster (ctl-8g: +`social.players.{nearby,none,walkUp}` over the 269-key roster
+ *  below; ctl-8f: +`bag.pocket.{bait,food,medicine,other}`
  *  +`bag.action.{feed,use,info}` +`bag.picker.title` +`bag.feed.noMonsters` +`journal.detail.step`
  *  over the 259-key roster below; ctl-8e: +`tradePropose.step.{target,offer,coins,ask,review}`
  *  +`tradePropose.review.{prompt,incomplete,yes,no,summary}` over the 249-key roster below;
@@ -1083,7 +1100,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8f 269-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-8g 272-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1172,10 +1189,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 269 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 272 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (269 keys since ctl-8f).
+    // (a) roster is exactly the EXPECTED_KEYS roster (272 keys since ctl-8g).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
@@ -1519,5 +1536,40 @@ describe('ctl-8e: catalog.fr.ts, the keys ctl-8e adds', () => {
       `Pi${E_GRAVE}ces${NO_BREAK_SPACE}: ${p.offer} ${MIDDLE_DOT} Demande${NO_BREAK_SPACE}: ${p.ask}`;
     expect(fr(spec.inputA)).toBe(frame({ target: 'Zed', monsters: 2, offer: '25', ask: '7' }));
     expect(fr(spec.inputB)).toBe(frame({ target: 'Amy', monsters: 3, offer: '1000', ask: '4' }));
+  });
+});
+
+// =============================================================================
+// ctl-8g: the French side of the 3 keys ctl-8g adds (the Players tab's Nearby badge, its empty
+// line and the walk-up line), pinned exactly as the English ones are above.
+// =============================================================================
+
+/** U+00C0 (capital A grave), built by code point (A_GRAVE above is the lowercase one). */
+const CAPITAL_A_GRAVE = String.fromCharCode(0x00c0);
+
+describe('ctl-8g: catalog.fr.ts, the keys ctl-8g adds', () => {
+  it('ctl-8g FR-PINS: social.players.nearby and social.players.none carry their exact French text, social.players.walkUp is a closure carrying the name once and verbatim for both sample sets, and none is the English copy', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot, the whole Players
+    // tab blank); a French entry left as the English copy; a decomposed or missing accent on
+    // "A proximite"; a walk-up closure that drops the name, repeats it or swaps it for a fixed
+    // string (both sample sets would print one line).
+    const fr = CATALOG_FR as Record<string, unknown>;
+    expect(fr['social.players.nearby'], 'the exact French badge').toBe(
+      `${CAPITAL_A_GRAVE} proximit${E_ACUTE}`,
+    );
+    expect(fr['social.players.none'], 'the exact French empty line').toBe(
+      'Aucun autre joueur en ligne',
+    );
+    for (const key of ['social.players.nearby', 'social.players.none']) {
+      expect(fr[key], `${key}: a translation, not the English copy`).not.toBe(EXPECTED_PLAIN[key]);
+    }
+    const key = 'social.players.walkUp';
+    const spec = EXPECTED_PARAM_OUTPUTS[key] as ParamOutputSpec;
+    expect(spec, 'fixture: the English output pins exist').toBeDefined();
+    expect(typeof fr[key], `${key} must be a closure in the fr catalog`).toBe('function');
+    const fn = fr[key] as (p: Record<string, unknown>) => string;
+    expect(fn(spec.inputA)).toBe('Approchez-vous de Zed et appuyez sur A');
+    expect(fn(spec.inputB)).toBe('Approchez-vous de Amy et appuyez sur A');
+    expect(fn(spec.inputA), 'a translation, not the English line').not.toBe(spec.outputA);
   });
 });
