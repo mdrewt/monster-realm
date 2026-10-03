@@ -7,7 +7,16 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll, StuckStackError } from './controls';
+import {
+  closeAll,
+  expectPosted,
+  faceTile,
+  interactChip,
+  pressAccel,
+  pressButton,
+  StuckStackError,
+  walkTo,
+} from './controls';
 
 // recruit.spec.ts — gameplay-driven recruit flow (EARS 13.5h-1).
 //
@@ -268,119 +277,194 @@ async function waitForBattleCleared(p: Page): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// healViaBox: open the box overlay with KeyB and click "Heal Party".
-// The heal_party reducer is zone-scoped and currently free (cost_currency
-// schema gap deferred to 13.5c).  30s cooldown — the caller tracks usage.
-// Source: boxView.ts:43–47 "Heal Party" button → onHealParty callback →
-//         main.ts:665–669 conn.reducers.healParty({locationId}).
+// ctl-10a: Box heal retired — healing happens ONLY at the bound healer (B13,
+// CTL10A.4). The Box's "Heal Party" button is gone; the party heals by walking
+// to the heal location, facing it, A (the heal frame opens on Yes, the default)
+// and A again (Yes sends heal_party for THAT location; the cursor moves to No).
+//
+// WORLD FACTS (re-derived from game-core/content this session):
+//   - heal_locations/000-core.ron: exactly ONE row — location_id 1, ZONE 0, tile
+//     (8,3), cost_item_id None (free), cooldown_ms 30000. heal_party is
+//     zone-scoped and REJECTED silently inside the 30 s cooldown, hence the
+//     bounded retry below.
+//   - zone_maps/000-core.ron zone 0: (8,3) is itself TALL GRASS ('~', row y=3).
+//     Its 4-neighbours: (7,3) floor, (8,2) grass, (8,4) grass, (9,3) wall. So
+//     the ONLY grass-free tile beside it is (7,3), and facing it means ARRIVING
+//     on (7,3) by an East step from (6,3) — a step always sets the facing
+//     (game-core world.rs apply_move), and an East step FROM (7,3) would walk
+//     onto the grass heal tile (heal tiles and characters never block).
+//   - The walk: from the (1,2)/(2,2) shuttle north to row y=1, east to (6,1),
+//     south to (6,3), east onto (7,3) — computed by controls.ts safePath (BFS
+//     over walkable, non-grass, non-warp tiles of __game().map), so it can
+//     never roll an encounter or warp, and a drifted start still finds it.
+//   - elder_oak (home (5,5), wander_radius 2) never reaches (6,1), (6,2),
+//     (6,3), (7,3) or (8,3) — all Manhattan >= 3 from home — so the heal tile
+//     is the ONLY candidate in front: A runs Heal at once (no picker), and the
+//     chip reads `[Enter] Heal — Healer`.
+//   - There is no __game() teleport hook (snapshot() exposes step/jump and a
+//     test-only zone-map setter only), so the walk is scripted steps.
 // ---------------------------------------------------------------------------
-async function healViaBox(p: Page): Promise<void> {
-  // Open the box (KeyB, main.ts:248). OVERLAY TRAP (observed in run-1 AND run-d1):
-  // after a KO, __game().ongoingBattle goes null IMMEDIATELY (Ongoing-filter in the
-  // store), but the battle overlay KEEPS showing the terminal outcome frame — the
-  // terminal row is NOT promptly GC'd (write-back sweeps lazily on later battles,
-  // M12.5e), and KeyB is guarded by battleView.visible.
-  // The DESIGNED dismissal is the Start terminal-dismiss latch (main.ts Escape ladder,
-  // ADR-0071 priority battle > box; terminal outcome ⇒ permanent dismiss via
-  // dismissedBattleId). So: closeAll first (the terminal frame sits above the world
-  // base, so it presses Start; it presses nothing at a base, and fails naming a frame
-  // Start cannot close), then KeyB. KeyB TOGGLES the box, so check visibility
-  // BEFORE each press — closeAll/KeyB only fire while the box is closed, never
-  // closing an open box. Keydown handlers run synchronously; the retry bound
-  // covers transient races, not a wait for server state.
-  const healBtn = p.getByText('Heal Party', { exact: true });
-  const MAX_BOX_OPEN_TRIES = 20; // 20 × 500 ms = 10 s of retries for transient races
-  let boxOpen = false;
-  for (let i = 0; i < MAX_BOX_OPEN_TRIES && !boxOpen; i++) {
-    if (!(await healBtn.isVisible().catch(() => false))) {
-      // Physical-key forms: main.ts matches e.code; press('b') maps to code KeyB
-      // only on US layouts, press('KeyB') always does (reviewer L3).
+const HEAL_POST: Tile = { x: 7, y: 3 };
+/** The shuttle's floor tile, where every heal walk returns (shuttleDir resumes there). */
+const SHUTTLE_HOME: Tile = { x: 1, y: 2 };
+/** The chip while the heal location is the one faced candidate (CTL10A.3). */
+const HEALER_CHIP = interactChip('Heal', 'Healer');
+/** Heal tries per heal: a heal inside the 30 s server cooldown is rejected silently, so one
+ *  try is not enough. Each try ≈ 9 s (open, Yes, close, box check with a 6 s poll), so 8 tries
+ *  ≈ 72 s covers a full cooldown window. */
+const MAX_HEAL_TRIES = 8;
+/** Box opens per check: KeyB toggles, so it is pressed only while the box is closed; the bound
+ *  covers transient races (20 × 500 ms = 10 s), not a wait for server state. */
+const MAX_BOX_OPEN_TRIES = 20;
+
+/** What the box must show for a heal to count: 'revived' = no monster at HP 0 (the KO path),
+ *  'restored' = every monster at ≥ 80% HP (the flee-damage path). */
+type HealWant = 'revived' | 'restored';
+
+const boxTitle = (p: Page) => p.locator('[data-testid="box-title"]');
+
+/** Opens the box (Monsters frame) with the B accelerator. closeAll first: after a KO,
+ *  __game().ongoingBattle goes null IMMEDIATELY (Ongoing-filter in the store) while the battle
+ *  frame KEEPS showing the terminal outcome (the terminal row is GC'd lazily, M12.5e); Start
+ *  continues it (the terminal-dismiss latch, dismissedBattleId), and closeAll presses Start only
+ *  above the base and fails naming a frame Start cannot close (StuckStackError). The sentinel
+ *  is the box title (`data-testid="box-title"`) — ctl-10a: the 'Heal Party' text it used to
+ *  wait for no longer exists. */
+async function openBox(p: Page): Promise<boolean> {
+  for (let i = 0; i < MAX_BOX_OPEN_TRIES; i++) {
+    if (
+      !(await boxTitle(p)
+        .isVisible()
+        .catch(() => false))
+    ) {
       await closeAll(p);
-      await p.keyboard.press('KeyB');
+      await pressAccel(p, 'B');
     }
-    boxOpen = await healBtn
+    const open = await boxTitle(p)
       .waitFor({ state: 'visible', timeout: 500 })
       .then(() => true)
       .catch(() => false);
+    if (open) return true;
   }
-  if (!boxOpen) {
+  return false;
+}
+
+/** Closes the box and confirms it is gone before anything steps (Start pops to the base). */
+async function closeBox(p: Page): Promise<void> {
+  await closeAll(p);
+  await expect(boxTitle(p)).toBeHidden({ timeout: 5_000 });
+}
+
+/** Reads the box's HP state, polling up to `timeoutMs` for `want`'s condition. The box lists
+ *  each monster as "HP cur/max (pct%)" and is subscription-driven. Scoped to the box frame
+ *  (the `.mr-frame` holding the box title), so the HIDDEN battle frame's stale card text (also
+ *  "HP x/y") can never satisfy it. An HP-less box never counts as healed. */
+async function boxHpMeets(p: Page, want: HealWant, timeoutMs: number): Promise<boolean> {
+  return p
+    .waitForFunction(
+      (w: HealWant) => {
+        const title = document.querySelector('[data-testid="box-title"]');
+        const root = title?.closest('.mr-frame');
+        if (!(root instanceof HTMLElement) || root.style.display === 'none') return false;
+        const text = root.textContent ?? '';
+        const ms = [...text.matchAll(/HP (\d+)\/(\d+)/g)];
+        if (ms.length === 0) return false;
+        if (w === 'revived') return !text.includes('HP 0/');
+        return ms.every((match) => {
+          const cur = parseInt(match[1] ?? '0', 10);
+          const max = parseInt(match[2] ?? '0', 10);
+          return max > 0 && cur / max >= 0.8;
+        });
+      },
+      want,
+      { timeout: timeoutMs },
+    )
+    .then(() => true)
+    .catch(() => false);
+}
+
+/** ctl-10a: Box heal retired — walks to the bound healer, heals there, and walks back to the
+ *  shuttle. Each try: at a bare world base, assert the post (7,3) and the East facing and the
+ *  exact chip, A (the heal frame opens with the cursor on Yes), A (Yes: heal_party for
+ *  location 1; the cursor moves to No), close the frame BEFORE KeyB, then read the box HP for
+ *  `want`. Returns whether the box showed `want` within MAX_HEAL_TRIES tries. */
+async function healAtHealer(p: Page, want: HealWant, who: string): Promise<boolean> {
+  await closeAll(p);
+  if ((await faceTile(p, HEAL_POST, 'East', `${who}: walk to the healer`)) === 'battle') {
     throw new Error(
-      `healViaBox: box did not open after ${MAX_BOX_OPEN_TRIES} closeAll+KeyB attempts ` +
-        '(is another overlay latched open, or did a new battle start?)',
+      `${who}: a wild battle started on the walk to the healer — the walk is grass-free by ` +
+        'construction (controls.ts safePath); re-derive the WORLD FACTS above',
     );
   }
-
-  // Healed-signal: the box lists each monster as "HP cur/max (pct%)"
-  // and is subscription-driven — healed = no row in the BOX overlay shows "HP 0/".
-  // Scoped to the box root (located via its unique 'Party & Box' title) so the
-  // HIDDEN battle overlay's stale card text (also "HP x/y") can never satisfy it.
-  // Click-retry loop: a heal within the 30 s server cooldown is REJECTED silently,
-  // so one click is not enough — retry up to MAX_HEAL_CLICKS with a bounded
-  // per-attempt wait (worst case ≈ MAX_HEAL_CLICKS × 6 s ≈ 48 s, covering a full
-  // cooldown window). No bare sleeps: every wait polls a DOM condition.
-  const MAX_HEAL_CLICKS = 8;
+  const healFrame = p.locator('#heal-overlay');
+  const yes = p.locator('#heal-root-yes');
+  const no = p.locator('#heal-root-no');
   let healed = false;
-  for (let i = 0; i < MAX_HEAL_CLICKS && !healed; i++) {
-    await healBtn.click({ timeout: 5_000 });
-    healed = await p
-      .waitForFunction(
-        () => {
-          const boxTitle = Array.from(document.querySelectorAll('h2')).find(
-            (h) => h.textContent === 'Party & Box',
-          );
-          const root = boxTitle?.parentElement?.parentElement;
-          if (!root || root.style.display === 'none') return false;
-          return !(root.textContent ?? '').includes('HP 0/');
-        },
-        null,
-        { timeout: 6_000 },
-      )
-      .then(() => true)
-      .catch(() => false);
+  for (let i = 0; i < MAX_HEAL_TRIES && !healed; i++) {
+    await closeAll(p);
+    await expectPosted(p, HEAL_POST, 'East', `${who}: at the healer`);
+    await expect(
+      p.locator('#interact-prompt'),
+      `${who}: facing the heal tile (8,3), the chip names the healer`,
+    ).toHaveText(HEALER_CHIP, { timeout: 10_000 });
+    await pressButton(p, 'A');
+    await expect(healFrame, `${who}: A facing the heal tile opens the heal frame`).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(yes, `${who}: the heal frame opens on Yes (the default)`).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    await pressButton(p, 'A');
+    await expect(no, `${who}: A on Yes heals, then the cursor moves to No`).toHaveAttribute(
+      'aria-selected',
+      'true',
+      { timeout: 5_000 },
+    );
+    await closeAll(p); // close the heal frame before KeyB
+    await expect(healFrame).toBeHidden({ timeout: 5_000 });
+    if (!(await openBox(p))) {
+      throw new Error(`${who}: box did not open after ${MAX_BOX_OPEN_TRIES} closeAll+B attempts`);
+    }
+    healed = await boxHpMeets(p, want, 6_000);
+    await closeBox(p);
   }
-  if (!healed) {
-    throw new Error(`healViaBox: party still fainted after ${MAX_HEAL_CLICKS} heal attempts`);
+  const back = await walkTo(p, SHUTTLE_HOME, `${who}: walk back to the shuttle`);
+  if (back === 'battle') {
+    throw new Error(`${who}: a wild battle started on the grass-free walk back to the shuttle`);
   }
-  // Close the box (Escape, main.ts:360) and confirm it is gone before stepping.
-  await p.keyboard.press('Escape');
-  await expect(healBtn).toBeHidden({ timeout: 5_000 });
+  return healed;
+}
+
+/** The KO path: the party fainted, so heal at the healer until no monster is at HP 0. */
+async function reviveAtHealer(p: Page): Promise<void> {
+  if (!(await healAtHealer(p, 'revived', 'reviveAtHealer'))) {
+    throw new Error(`reviveAtHealer: party still fainted after ${MAX_HEAL_TRIES} heal attempts`);
+  }
 }
 
 // ---------------------------------------------------------------------------
-// restoreHpBeforeEncounter: open the box, check HP, and heal if below 80%.
-// Called at the start of each enc iteration to undo HP depletion that
-// write_back_party_hp persists on flee.  The server-side heal_party has a 30 s
-// cooldown; we retry for up to 48 s (8 clicks × up to 6 s each) so a queued
-// cooldown window is covered without a bare sleep.
+// restoreHpBeforeEncounter: open the box, check HP, and heal at the healer if
+// below 80%. Called at the start of each enc iteration to undo HP depletion that
+// write_back_party_hp persists on flee. The HP check stays in the box at the
+// shuttle (fast path: no walk when the party is healthy); only a low party walks
+// to the healer (ctl-10a: Box heal retired).
 //
-// Detection: box HP format is "HP cur/max (pct%)".  We scan
+// Detection: box HP format is "HP cur/max (pct%)". We scan
 // ALL HP pairs in the box text (matchAll) — every visible monster row must
-// satisfy the threshold — unlike healViaBox (which only checks "HP 0/").
+// satisfy the threshold — unlike the KO path (which only checks "HP 0/").
 // ---------------------------------------------------------------------------
-// Returns true if a heal was performed (HP was low and heal clicked), false if
-// HP was already adequate or the box could not be opened.
+// Returns true if a heal was performed (HP was low and the healer was used), false
+// if HP was already adequate or the box could not be opened.
 async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
-  const healBtn = p.getByText('Heal Party', { exact: true });
-
-  // Open the box (same closeAll+KeyB trick as healViaBox to dismiss overlays). A frame
-  // closeAll cannot close is the latched case: skip the heal rather than fail.
-  const MAX_BOX_OPEN_TRIES = 20;
-  let boxOpen = false;
-  for (let i = 0; i < MAX_BOX_OPEN_TRIES && !boxOpen; i++) {
-    if (!(await healBtn.isVisible().catch(() => false))) {
-      try {
-        await closeAll(p);
-      } catch (e) {
-        if (!(e instanceof StuckStackError)) throw e;
-        console.log(`restoreHpBeforeEncounter: ${e.message}, skipping heal`);
-        return false; // another overlay is latched; skip and proceed
-      }
-      await p.keyboard.press('KeyB');
-    }
-    boxOpen = await healBtn
-      .waitFor({ state: 'visible', timeout: 500 })
-      .then(() => true)
-      .catch(() => false);
+  // A frame closeAll cannot close is the latched case: skip the heal rather than fail.
+  let boxOpen: boolean;
+  try {
+    boxOpen = await openBox(p);
+  } catch (e) {
+    if (!(e instanceof StuckStackError)) throw e;
+    console.log(`restoreHpBeforeEncounter: ${e.message}, skipping heal`);
+    return false; // another overlay is latched; skip and proceed
   }
   if (!boxOpen) {
     console.log('restoreHpBeforeEncounter: box did not open after 20 tries, skipping heal');
@@ -388,15 +472,13 @@ async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
   }
 
   // Determine if HP is below the restoration threshold (80% of max).
-  // If already healthy, close immediately without clicking heal.
+  // If already healthy, close immediately without walking to the healer.
   const needsHeal = await p
     .waitForFunction(
       () => {
-        const boxTitle = Array.from(document.querySelectorAll('h2')).find(
-          (h) => h.textContent === 'Party & Box',
-        );
-        const root = boxTitle?.parentElement?.parentElement;
-        if (!root || root.style.display === 'none') return 'no-box';
+        const title = document.querySelector('[data-testid="box-title"]');
+        const root = title?.closest('.mr-frame');
+        if (!(root instanceof HTMLElement) || root.style.display === 'none') return 'no-box';
         const text = root.textContent ?? '';
         // Box HP format: "HP cur/max (pct%)" — scan ALL pairs so every monster
         // row must be healthy before we skip the heal.
@@ -415,44 +497,14 @@ async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
     .then((h) => h.jsonValue())
     .catch(() => 'ok');
 
-  if (needsHeal !== 'low') {
-    await p.keyboard.press('Escape');
-    await expect(healBtn).toBeHidden({ timeout: 5_000 });
-    return false;
-  }
+  await closeBox(p);
+  if (needsHeal !== 'low') return false;
 
-  // HP is low — click Heal Party and wait for HP to reach ≥ 80%.
-  // Retry covers the 30 s server cooldown (8 clicks × ≤6 s each = ≤48 s).
-  const MAX_HEAL_CLICKS = 8;
-  let restored = false;
-  for (let i = 0; i < MAX_HEAL_CLICKS && !restored; i++) {
-    await healBtn.click({ timeout: 5_000 });
-    restored = await p
-      .waitForFunction(
-        () => {
-          const boxTitle = Array.from(document.querySelectorAll('h2')).find(
-            (h) => h.textContent === 'Party & Box',
-          );
-          const root = boxTitle?.parentElement?.parentElement;
-          if (!root || root.style.display === 'none') return false;
-          const text = root.textContent ?? '';
-          const ms = [...text.matchAll(/HP (\d+)\/(\d+)/g)];
-          if (!ms.length) return false;
-          return ms.every((match) => {
-            const cur = parseInt(match[1] ?? '0', 10);
-            const max = parseInt(match[2] ?? '0', 10);
-            return max > 0 && cur / max >= 0.8;
-          });
-        },
-        null,
-        { timeout: 6_000 },
-      )
-      .then(() => true)
-      .catch(() => false);
-  }
-
-  await p.keyboard.press('Escape');
-  await expect(healBtn).toBeHidden({ timeout: 5_000 });
+  // HP is low — heal at the healer and wait for HP to reach ≥ 80% (MAX_HEAL_TRIES covers the
+  // 30 s cooldown). As before, a party that still reads low after the tries is not a failure
+  // here: the encounter loop's own flee/KO handling takes over.
+  const restored = await healAtHealer(p, 'restored', 'restoreHpBeforeEncounter');
+  if (!restored) console.log('restoreHpBeforeEncounter: HP still below 80% after the healer');
   return true;
 }
 
@@ -577,15 +629,19 @@ test.describe
     // -------------------------------------------------------------------------
     test('R2: successful recruit increments ownMonsters by 1 with partySlot 255', async () => {
       // Timeout budget: 30 enc × ~30s/enc base + pre-encounter heal waits.
-      // restoreHpBeforeEncounter: fast-path (~2s) when HP ≥ 80%; slow-path up to
-      // 8×6s = 48s to wait out the server 30s cooldown when HP is low.
-      // Worst-case (all enc hit cooldown): 30 × (48s heal + 5s enc) ≈ 1590s.
+      // restoreHpBeforeEncounter: fast-path (~2s box check) when HP ≥ 80%; slow-path
+      // (ctl-10a: Box heal retired) walks ~8 grass-free steps to the healer, spends up
+      // to 8 tries × ~9 s ≈ 72s waiting out the server 30s cooldown, and walks ~9 steps
+      // back — ≈ 90s worst case per heal (~20s of it walking).
       // Realistic (server cooldown limits heals to 1 per 30s of real time, and
-      // encounters succeed well before all 30 slots are used): ~650s.
-      // Headroom: 1500s (25 min) — covers the worst-case 1590s with ~6% margin.
+      // encounters succeed well before all 30 slots are used): ~650s of encounters
+      // plus ~20s of walking per heal taken.
+      // Headroom: 1800s (30 min), raised from 1500s by ctl-10a for the heal walks
+      // (≈ 10 heals × 20s = 200s on a bad run); a run that degrades every slot still
+      // trips this timeout (red either way, never a false pass).
       // STEP_WAIT_MS=8_000 is the per-step timeout bound, not actual step duration
       // (SpacetimeDB drains at ~200ms/step; loaded GHA runners may take 2–3s/step).
-      test.setTimeout(1_500_000);
+      test.setTimeout(1_800_000);
 
       const beforeSnap = await snap(page);
       const countBefore = beforeSnap.ownMonsters.length;
@@ -606,7 +662,8 @@ test.describe
         // whatever HP we had when we fled.  Restore HP before walking if possible.
         //
         // NO outer cooldown guard: restoreHpBeforeEncounter handles the 30 s server
-        // cooldown internally (up to 8 clicks × 6 s each = 48 s retry window) and
+        // cooldown internally (up to MAX_HEAL_TRIES healer tries ≈ 72 s retry window;
+        // ctl-10a: Box heal retired, so it walks to the healer) and
         // returns immediately when HP is already adequate (box-check fast-path).
         // The prior HEAL_COOLDOWN_MS outer guard caused a new flake mode: fast
         // flee-only encounters (e.g. Water-type or low-HP-flee) consumed enc slots
@@ -794,13 +851,14 @@ test.describe
               .catch(() => false);
           }
           if (!partyAlive) {
-            // The terminal outcome frame stays visible (lazy GC — see healViaBox);
-            // a fainted party blocks encounters, so recover via closeAll →
-            // KeyB → "Heal Party" (zone-scoped, currently free, 30s cooldown).
+            // The terminal outcome frame stays visible (lazy GC — see openBox);
+            // a fainted party blocks encounters, so recover via closeAll → the walk
+            // to the healer → A, A (ctl-10a: Box heal retired; zone-scoped, free, 30s
+            // cooldown) → the walk back to the shuttle.
             if (healCount < MAX_HEALS) {
               healCount++;
-              // healViaBox waits for the healed-signal in the box DOM (no bare sleeps).
-              await healViaBox(page);
+              // reviveAtHealer waits for the healed-signal in the box DOM (no bare sleeps).
+              await reviveAtHealer(page);
             } else {
               // Fail loud at the point of detection (reviewer M3): a soft-assert +
               // break would surface as a misleading "did not recruit" hard-fail later.
@@ -878,8 +936,9 @@ test.describe
             // KO'd during a failed recruit counterattack.
             if (healCount < MAX_HEALS) {
               healCount++;
-              // healViaBox waits for the healed-signal in the box DOM (no bare sleeps).
-              await healViaBox(page);
+              // ctl-10a: Box heal retired — revive at the bound healer, then walk back.
+              // reviveAtHealer waits for the healed-signal in the box DOM (no bare sleeps).
+              await reviveAtHealer(page);
             } else {
               // Fail loud at the point of detection (reviewer M3) — see the
               // post-weaken KO path above for the rationale.

@@ -805,6 +805,12 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // (`shop.feedback.purchased` / `.sold`) are deleted; dispatch's buy / sell cases resolve one of
     // the four `shop.feedback.{buy,sell}.{item,count}` lines from the formatter's result instead,
     // each through its own literal `tf` call.
+    // ctl-10a (named intentional change, CTL10A.3): main.ts renders the world interaction chip and
+    // the picker / sheet rows, so it gains 8 literal keys: `tf('interact.chip', …)`,
+    // `tf('interact.choose', …)`, `tf('interact.entry', …)`, the three verbs through a literal
+    // switch (`i18nT('interact.verb.talk')` etc.), `i18nT('interact.healer')` for a heal location's
+    // name, and `i18nT('key.enter')` for an Enter / NumpadEnter A keycap. (`box.heal` leaves
+    // boxView.ts, not main.ts, so nothing leaves this list.)
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
       'chrome.chip.help', // ctl-7a: the Select chip label, written into #chip-select at boot
       'chrome.chip.menu', // ctl-7a: the Start chip label, written into #chip-start at boot
@@ -816,6 +822,14 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'chrome.status.healUnavailable',
       'chrome.status.partyFull',
       'chrome.status.privacyOverlayBusy',
+      'interact.chip', // ctl-10a: the world chip, one actionable entry
+      'interact.choose', // ctl-10a: the world chip, a choice
+      'interact.entry', // ctl-10a: a picker / sheet row
+      'interact.healer', // ctl-10a: a heal location's display name
+      'interact.verb.heal', // ctl-10a: the verbs, through a literal switch
+      'interact.verb.shop',
+      'interact.verb.talk',
+      'key.enter', // ctl-10a: the A keycap when it is Enter / NumpadEnter
       'menu.disabled.inBattle', // ctl-6c: the dispatch refusal line (CTL6C.3)
       'raising.feedback.cared',
       'shop.feedback.buy.count', // ctl-7d: a buy whose item or shop row is not loaded

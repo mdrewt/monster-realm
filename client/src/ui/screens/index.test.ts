@@ -39,6 +39,12 @@
  * holding the wizard, CTL7C-1-NAV-CAPABLE's shipped loop expects it nav-capable, and
  * CTL7D-6-OBSERVE-SKIPS' storeless shipped observe no longer reaches it), and the new
  * CTL8E-2-ADAPTER cases at the end.
+ * ctl-10a (CTL10A.1-.2): the world base gains an interaction arm. `host.button(stack, btn, ctx,
+ * world?)` takes an optional `WorldPort` ({ candidates(), run(action) }); at the bare world it asks
+ * `worldButton` first and keeps the picker / action sheet it opens (`host.sheet`), which takes the
+ * D-pad (`takesNav`) and is cleared by `opened`, `forget` and `closeSheet`. Additive: no existing
+ * case in this file changed (every existing call passes no port); the new ctl-10a host-sheet case
+ * is at the end.
  *
  * Adapters are injected as recording stubs, so every routing claim is read off which stub was
  * called, with what, and what came back. The base cases inject adapters that THROW, so "the base
@@ -59,13 +65,14 @@ import {
   type UpperFrame,
   WORLD_STACK,
 } from '../contextStack';
+import type { InteractAction, InteractCandidate } from '../interactModel';
 import type { NavInput } from '../nav';
 import { OVERLAY_IDS } from '../overlayRegistry';
 import { bagScreen } from './bagScreen';
 import type { BattleOp } from './battleScreen';
 import { DIALOGUE_REVEAL_MS, dialogueScreen } from './dialogueScreen';
 import { healScreen } from './healScreen';
-import { baseButton, SCREEN_ADAPTERS, ScreenHost } from './index';
+import { baseButton, SCREEN_ADAPTERS, ScreenHost, type WorldPort } from './index';
 import { journalScreen } from './journalScreen';
 import { legacyAdapter } from './legacyAdapter';
 import { monstersScreen } from './monstersScreen';
@@ -3729,5 +3736,184 @@ describe('the battle base over the host (ctl-8i)', () => {
     expect(host.button(bare, nav('A'), CTX)).toBe('consumed');
     expect(view.applied.at(-1)).toEqual({ kind: 'activate' });
     expect(view.applied, 'one new op for one press').toHaveLength(3);
+  });
+});
+
+// ==========================================================================================
+// ctl-10a: the world interaction arm and its picker / action sheet (CTL10A.1, CTL10A.2)
+// ==========================================================================================
+//
+// The shell lends the host a `WorldPort`: `candidates()` (the memoised wasm answer) and
+// `run(action)` (talk / shop / heal). At the BARE world base the host asks `worldButton` with the
+// sheet it keeps; a run goes to `port.run` and answers 'consumed'; an unhandled press falls back to
+// `baseButton` (Start still opens the menu, Select still toggles help). The sheet takes the D-pad
+// while the stack is the bare world, and any frame opening or a session change closes it.
+
+describe('ScreenHost: the world sheet (ctl-10a)', () => {
+  const talk7: InteractAction = { kind: 'talk', npcEntityId: 7n };
+  const heal3: InteractAction = { kind: 'heal', locationId: 3 };
+  const NPC: InteractCandidate = {
+    key: 'npc:7',
+    kind: 'npc',
+    name: 'elder_oak',
+    actions: [talk7],
+    anchorWorldX: 208,
+    anchorWorldY: 96,
+  };
+  const PAD: InteractCandidate = {
+    key: 'heal:3',
+    kind: 'heal',
+    name: '',
+    actions: [heal3],
+    anchorWorldX: 176,
+    anchorWorldY: 160,
+  };
+  const RIVAL: InteractCandidate = {
+    key: 'player:13',
+    kind: 'player',
+    name: 'Rival',
+    actions: [],
+    anchorWorldX: 144,
+    anchorWorldY: 128,
+  };
+
+  it('CTL10A-1-HOST-SHEET: with a port, A at the bare world runs a lone target through the port or opens the picker, which the host keeps (it takes the D-pad there, Down + A runs the second row) and which any frame open, forget() or closeSheet() closes; without a port, or with nothing faced, the world answers as before (A unhandled, Start opens the menu); a frame above the world or a battle base never reaches the port', () => {
+    // WRONG IMPL KILLED: a host that ignores the port (A at the world stays 'unhandled', no talk);
+    // one that runs through the port AND answers 'unhandled' (the router would also hand Enter to
+    // the page); one that forgets the sheet between presses (Down + A would open a new picker and
+    // run row 0); a sheet that never takes the D-pad (the router swallows the arrows, router.ts
+    // CTL7C.1) or keeps taking it under a pushed frame (the arrows would move a hidden sheet); a
+    // sheet that survives a frame opening over it, a reconnect, or the shell's per-batch close; a
+    // world arm that also answers over a pushed frame or a battle (A on a heal frame / battle
+    // would send a talk); a world arm that swallows Start / Select when nothing is faced (the menu
+    // would stop opening); a Start over an open sheet that opens the menu instead of closing it;
+    // and a port-less host that changes its world answers.
+    let cands: readonly InteractCandidate[] = [NPC];
+    const runs: InteractAction[] = [];
+    const port: WorldPort = {
+      candidates: () => cands,
+      run: (action) => {
+        runs.push(action);
+      },
+    };
+    const host = throwingHost();
+
+    // One target: run through the port, consumed, no sheet.
+    expect(host.button(WORLD_STACK, nav('A'), CTX, port), 'a lone npc').toBe('consumed');
+    expect(runs, 'one talk').toEqual([talk7]);
+    expect(host.sheet).toBeNull();
+    expect(host.takesNav(WORLD_STACK), 'no sheet, no D-pad').toBe(false);
+    cands = [RIVAL, NPC];
+    expect(host.button(WORLD_STACK, nav('A'), CTX, port), 'npc + player: the npc').toBe('consumed');
+    expect(runs).toEqual([talk7, talk7]);
+    expect(host.sheet).toBeNull();
+
+    // Two targets: the picker opens and stays with the host.
+    cands = [NPC, RIVAL, PAD];
+    expect(host.button(WORLD_STACK, nav('A'), CTX, port), 'two targets').toBe('consumed');
+    expect(runs, 'nothing runs yet').toHaveLength(2);
+    expect(host.sheet?.entries.map((e) => e.key)).toEqual(['npc:7|talk', 'heal:3|heal']);
+    expect(host.sheet?.nav.item).toBe('npc:7|talk');
+    expect(host.takesNav(WORLD_STACK), 'the open sheet takes the D-pad').toBe(true);
+    expect(
+      host.takesNav(stackOf(WORLD, screen('menuView'))),
+      'not under a pushed (legacy) frame',
+    ).toBe(false);
+    expect(host.button(WORLD_STACK, nav('Down'), CTX, port), 'Down moves the sheet').toBe(
+      'consumed',
+    );
+    expect(host.sheet?.nav.item, 'the host kept the moved cursor').toBe('heal:3|heal');
+    expect(host.button(WORLD_STACK, nav('A'), CTX, port), 'A on row 2').toBe('consumed');
+    expect(runs, 'the second row ran').toEqual([talk7, talk7, heal3]);
+    expect(host.sheet, 'and the sheet closed').toBeNull();
+    expect(host.takesNav(WORLD_STACK)).toBe(false);
+
+    // Over an open sheet Start closes it (no menu) and Select is the sheet's (no help).
+    host.button(WORLD_STACK, nav('A'), CTX, port);
+    expect(host.button(WORLD_STACK, nav('Select'), CTX, port), 'Select over the sheet').toBe(
+      'consumed',
+    );
+    expect(host.sheet, 'Select leaves the sheet open').not.toBeNull();
+    expect(host.button(WORLD_STACK, nav('Start'), CTX, port), 'Start over the sheet').toBe(
+      'consumed',
+    );
+    expect(host.sheet, 'Start closed the sheet').toBeNull();
+
+    // Y opens the primary's sheet through the host.
+    expect(host.button(WORLD_STACK, nav('Y'), CTX, port)).toBe('consumed');
+    expect(
+      host.sheet?.entries.map((e) => e.key),
+      'only the primary npc',
+    ).toEqual(['npc:7|talk']);
+    host.closeSheet();
+    expect(host.sheet, 'closeSheet()').toBeNull();
+
+    // Every clearing path closes an open sheet.
+    const reopen = (): void => {
+      host.button(WORLD_STACK, nav('A'), CTX, port);
+      expect(host.sheet, 'fixture: the picker is open').not.toBeNull();
+    };
+    reopen();
+    host.opened(screen('menuView'));
+    expect(host.sheet, 'a screen frame opened').toBeNull();
+    reopen();
+    host.opened(prompt('pvpView'));
+    expect(host.sheet, 'a prompt frame opened').toBeNull();
+    reopen();
+    host.forget();
+    expect(host.sheet, 'forget()').toBeNull();
+    reopen();
+    host.closeSheet();
+    expect(host.sheet, 'closeSheet()').toBeNull();
+    expect(host.takesNav(WORLD_STACK)).toBe(false);
+    expect(runs, 'no clearing path ran anything').toHaveLength(3);
+
+    // A frame above the world: its own adapter answers, the port is never run.
+    const rec = newRecorder();
+    const above = hostOf(stubAdapters(rec, () => 'consumed'));
+    cands = [NPC];
+    expect(above.button(stackOf(WORLD, screen('questLogView')), nav('A'), CTX, port)).toBe(
+      'consumed',
+    );
+    expect(
+      rec.calls.map((c) => c.id),
+      'the top frame answered',
+    ).toEqual(['questLogView']);
+    expect(runs, 'no talk under a frame').toHaveLength(3);
+    // A bare battle base: the battle adapter answers, the port is never run.
+    expect(battleBaseHost().button(stackOf(battle('7')), nav('A'), CTX, port)).toBe('consumed');
+    expect(runs, 'no talk on a battle').toHaveLength(3);
+
+    // No port: the world arm is unchanged.
+    const bare = throwingHost();
+    expect(bare.button(WORLD_STACK, nav('A'), CTX), 'no port: A is the page`s').toBe('unhandled');
+    expect(bare.button(WORLD_STACK, nav('Start'), CTX)).toEqual(OPEN_MENU);
+    expect(bare.sheet).toBeNull();
+    expect(runs).toHaveLength(3);
+
+    // A port with nothing faced: A and Y are the page's, Start / Select / B answer as before.
+    cands = [];
+    const empty = throwingHost();
+    expect(empty.button(WORLD_STACK, nav('A'), CTX, port), 'nothing faced: A unhandled').toBe(
+      'unhandled',
+    );
+    expect(empty.button(WORLD_STACK, nav('Y'), CTX, port)).toBe('unhandled');
+    expect(
+      empty.button(WORLD_STACK, nav('Start'), CTX, port),
+      'Start still opens the menu',
+    ).toEqual(OPEN_MENU);
+    expect(empty.button(WORLD_STACK, nav('Select'), CTX, port)).toEqual(TOGGLE_HELP);
+    expect(empty.button(WORLD_STACK, nav('B'), CTX, port)).toBe('consumed');
+    expect(empty.button(WORLD_STACK, nav('Up'), CTX, port), 'the D-pad still walks').toBe(
+      'unhandled',
+    );
+    // A lone player faced: the same.
+    cands = [RIVAL];
+    expect(empty.button(WORLD_STACK, nav('A'), CTX, port), 'a lone player: unhandled').toBe(
+      'unhandled',
+    );
+    expect(empty.button(WORLD_STACK, nav('Start'), CTX, port)).toEqual(OPEN_MENU);
+    expect(empty.sheet).toBeNull();
+    expect(runs, 'nothing ran with nothing actionable').toHaveLength(3);
   });
 });
