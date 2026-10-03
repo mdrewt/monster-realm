@@ -132,18 +132,20 @@ export interface ButtonStep<S> {
 }
 
 /** One screen's input seam: a view model `VM` built from the context, a state `S` the shell keeps
- *  for the frame while it is open, and the view `V` it paints. Method syntax on purpose, so a
+ *  for the frame while it is open (and hands back at the next open, for an adapter that opts in
+ *  through `remember`), and the view `V` it paints. Method syntax on purpose, so a
  *  `ScreenAdapter<SomeVm, SomeState, SomeView>` fits the `ScreenAdapter<unknown, unknown>` table. */
 export interface ScreenAdapter<VM, S, V = unknown> {
   /** Nav-capable: while this frame is the top one the router hands it the D-pad, with auto-repeat. */
   readonly nav?: true;
-  /** Keep this frame's state across its closes (CTL8S.1): `init` is handed the state the frame
-   *  had when it last closed, until a reconnect. Without it every open starts over. */
+  /** Keep this frame's state across its closes (CTL8S.1): `init` is handed the last state the
+   *  shell kept for the frame, until a reconnect. Without it every open starts over. */
   readonly remember?: true;
   viewModel(ctx: ScreenContext): VM;
-  /** The state a frame starts from, asked at its first step or observe after each time it opens
-   *  (the Social frame's at the open itself). `remembered` is the state the frame last closed
-   *  with, for an adapter that opted in through `remember`; else undefined. */
+  /** The state a frame starts from, asked at its first step or observe after each time it opens,
+   *  or at the open itself when the open path seats it (the Social frame's does). `remembered` is
+   *  the last state the shell kept for the frame before this open, for an adapter that opted in
+   *  through `remember`; else undefined. */
   init(vm: VM, remembered?: S): S;
   /** One button. The next state is kept and painted before the result's command runs, and that
    *  command may be refused, so a state must not assume it took effect. `btn.repeat` marks a

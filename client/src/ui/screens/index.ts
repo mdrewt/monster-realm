@@ -57,9 +57,9 @@ export function baseButton(base: BaseFrame, btn: NavInput): ScreenResult {
 }
 
 /** The shell's side of the adapter seam (CTL7C.2): one adapter state per frame id, kept from the
- *  frame's first step or observe until it opens again, and the view each state is painted into.
- *  For an adapter that opts in (`remember`, CTL8S.1) it also keeps the state the frame last closed
- *  with, and hands it to the next `init`. */
+ *  frame's first step, observe or seat until it opens again, and the view each state is painted
+ *  into. For an adapter that opts in (`remember`, CTL8S.1) it also keeps the last state the frame
+ *  had before it opened again, and hands it to the next `init`. */
 export class ScreenHost {
   readonly #states = new Map<FrameId, unknown>();
   readonly #remembered = new Map<FrameId, unknown>();

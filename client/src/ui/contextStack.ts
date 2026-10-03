@@ -24,8 +24,8 @@ export type FrameId = OverlayId | typeof SOCIAL_FRAME;
 /** The Social frame's panels, in overlay order. */
 export const SOCIAL_PANELS: readonly SocialPanelId[] = ['tradeView', 'pvpView', 'leaderboardView'];
 
-/** The panel a requested tab opens on. Players has no root of its own until ctl-8g, and a plain
- *  open (null) asks for no tab: both open on the trade root, and the frame's adapter picks. */
+/** The panel a requested tab opens on. Players has no root of its own, and a plain open (null)
+ *  asks for no tab: both open on the trade root, and the frame's adapter picks. */
 export function socialPanel(tab: SocialTab | null): SocialPanelId {
   switch (tab) {
     case 'challenges':

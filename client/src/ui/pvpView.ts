@@ -91,8 +91,8 @@ export class PvpView {
   show(): void {
     // THE EDGE GUARD, AND WHY IT IS LOAD-BEARING (this is the canonical statement;
     // the other nine views point here). `refresh()` below calls `show()` UNCONDITIONALLY whenever
-    // `forceVisible` is true, and main.ts's PvP batch listener recomputes it on EVERY store batch
-    // -- once this overlay is open, `pvpView.visible` keeps it true. Delegating to
+    // `forceVisible` is true, and main.ts's PvP batch listener refreshes with it true on EVERY
+    // store batch while this overlay is open. Delegating to
     // `openOverlayA11y` without the guard would therefore re-open on every batch, and a re-open
     // CLEARS AND RE-SCHEDULES the deferred initial focus (ui/overlayA11y.ts:88-89, :100-113) --
     // yanking focus back to `initialFocusSelector` several times a second and making the overlay
@@ -139,7 +139,8 @@ export class PvpView {
    * Re-render from the latest VM. The caller (main.ts's batch listener or its Social open path)
    * is fully responsible for the show/hide decision via `forceVisible` — this method
    * never auto-shows independently. This prevents pvpView from popping over an active
-   * battle or other overlay when hasActive=true (mutual exclusivity).
+   * battle or other overlay when hasActive=true (mutual exclusivity). main.ts only ever passes
+   * true today: what closes the panel is its `hide()`, run by the context stack.
    *
    * Each container is rebuilt only when what it shows changed (`#renderIfChanged`).
    */
