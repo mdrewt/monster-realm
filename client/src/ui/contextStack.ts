@@ -7,10 +7,41 @@
 // A do there (`battleButton`), and which screen commands it refuses (`battleRefused`).
 import type { NavInput } from './nav';
 import type { OverlayId } from './overlayRegistry';
-import type { Command as ScreenCommand, ScreenResult } from './screens/types';
+import type {
+  Command as ScreenCommand,
+  ScreenResult,
+  SocialPanelId,
+  SocialTab,
+} from './screens/types';
 
-/** The legacy overlays are the frame ids until the screens replace them. */
-export type FrameId = OverlayId;
+/** The Social frame (design §5 row 4; CTL8S.3): ONE frame whose panels are the trade, pvp and
+ *  leaderboard overlays, one shown at a time. The first frame id that is not an overlay id. */
+export const SOCIAL_FRAME = 'social';
+
+/** The legacy overlays are the frame ids until the screens replace them; Social is its own. */
+export type FrameId = OverlayId | typeof SOCIAL_FRAME;
+
+/** The Social frame's panels, in overlay order. */
+export const SOCIAL_PANELS: readonly SocialPanelId[] = ['tradeView', 'pvpView', 'leaderboardView'];
+
+/** The panel a requested tab opens on. Players has no root of its own, and a plain open (null)
+ *  asks for no tab: both open on the trade root, and the frame's adapter picks. */
+export function socialPanel(tab: SocialTab | null): SocialPanelId {
+  switch (tab) {
+    case 'challenges':
+      return 'pvpView';
+    case 'rankings':
+      return 'leaderboardView';
+    case 'trades':
+    case 'players':
+    case null:
+      return 'tradeView';
+  }
+}
+
+/** The frame an overlay shows as: the Social frame for its three panels, else its own. */
+const frameOf = (id: OverlayId): FrameId =>
+  (SOCIAL_PANELS as readonly OverlayId[]).includes(id) ? SOCIAL_FRAME : id;
 
 export type BaseFrame =
   | { readonly kind: 'world' }
@@ -68,6 +99,11 @@ export const SCREEN_POLICY: Readonly<Record<FrameId, ScreenPolicy>> = {
   menuView: PLAYER_DROP_SAFE,
   claimView: PLAYER_DROP,
   privacyView: PLAYER_DROP,
+  // `reconcile` reads this row for all three panels (they are never frames of their own), while
+  // the main menu's battle rule still reads the panel rows. They agree only because Rankings stays
+  // disabled over a battle (`HIDDEN_UNDER_BATTLE`, screens/mainMenuScreen.ts): whoever enables it
+  // there must make this row agree.
+  social: PLAYER_DROP,
 };
 
 const NO_COMMANDS: readonly Command[] = [];
@@ -111,10 +147,11 @@ export function baseFor(
  *  the base's own presentation, never a frame; over the world it is the terminal outcome. A push
  *  over a battle base is stamped with that battle only when `prevBase` (the base before this sync)
  *  was already it: an overlay first mirrored in the sync that brings the battle was opened at the
- *  world, and must drop like any other (CTL3.2). */
+ *  world, and must drop like any other (CTL3.2). The Social panels mirror as the ONE Social frame
+ *  (CTL8S.3), so a change of the shown panel raises no edge. */
 export function mirrorEdges(
   stack: Stack,
-  visible: readonly FrameId[],
+  visible: readonly OverlayId[],
   prevBase: BaseFrame = stack[0],
 ): readonly Edge[] {
   const [base, ...upper] = stack;
@@ -122,7 +159,8 @@ export function mirrorEdges(
     base.kind === 'battle' && prevBase.kind === 'battle' && prevBase.battleId === base.battleId
       ? base.battleId
       : undefined;
-  const shown = base.kind === 'battle' ? visible.filter((id) => id !== 'battleView') : visible;
+  const frames = [...new Set(visible.map(frameOf))];
+  const shown = base.kind === 'battle' ? frames.filter((id) => id !== 'battleView') : frames;
   const onStack = upper.map(idOf);
   const pops: Edge[] = onStack
     .filter((id) => !shown.includes(id))

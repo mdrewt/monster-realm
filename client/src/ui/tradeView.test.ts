@@ -1051,3 +1051,91 @@ describe('m24s4 (ADR-0260): tradeView.ts scan — zero failing sinks', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// ctl-8s (CTL8S.3): the Social frame's chrome. main.ts builds ONE chrome element and moves it into
+// whichever Social panel shows, through that panel's `hostChrome(el)`: `el` becomes the root's
+// FIRST child (a tab strip ctl-8d paints there sits above the panel), nothing else on the root
+// changes, and a second call with `el` already first is a no-op (a re-insert would drop focus from
+// a tab inside it on every panel switch).
+//
+// happy-dom limit (measured on ctl-4): re-inserting a node before itself (`insertBefore(el, el)`,
+// which an unconditional `prepend(el)` amounts to when `el` is already first) records no mutation
+// and keeps focus here, so that one churn mutant is invisible at this tier. A remove-then-insert is
+// not: it records two mutations.
+// ---------------------------------------------------------------------------
+
+describe('TradeView.hostChrome (ctl-8s, CTL8S.3)', () => {
+  it('CTL8S-3-HOST-CHROME-TRADE: hostChrome(el) moves el out of wherever it was to be the FIRST child of #trade-overlay; the other children, their order and ids, the hidden shell and its dialog state are unchanged; a second call with el already first records no mutation and keeps focus inside el', async () => {
+    // WRONG IMPL KILLED: an append (el lands LAST, under the trade actions); a clone
+    // (`prepend(el.cloneNode(true))`: the node main.ts paints is not the node shown, and the
+    // original stays where it was); a host that also shows the view or opens its dialog (a modal
+    // root with no frame on the stack); one that replaces the root's children (the status, both
+    // sides and the actions are gone); and a re-host that removes el and inserts it again when it is
+    // already first (a focused tab drops focus on every panel switch).
+    const overlay = mountTradeOverlay();
+    const view = new TradeView(makeCallbacks());
+    const before = [...overlay.children];
+    expect(
+      before.map((c) => c.id),
+      'precondition: the shell children',
+    ).toEqual([
+      'trade-status',
+      'trade-my-side',
+      'trade-their-side',
+      'trade-actions',
+      'trade-feedback',
+    ]);
+    const elsewhere = document.createElement('div');
+    document.body.appendChild(elsewhere);
+    const chrome = document.createElement('div');
+    const tab = document.createElement('button');
+    chrome.appendChild(tab);
+    elsewhere.appendChild(chrome);
+
+    view.hostChrome(chrome);
+
+    expect(overlay.firstElementChild, 'el is the first child of the root').toBe(chrome);
+    expect(chrome.parentElement, 'moved, not cloned').toBe(overlay);
+    expect(elsewhere.childElementCount, 'and no longer where it was').toBe(0);
+    expect(overlay.childElementCount, 'one child more, nothing replaced').toBe(before.length + 1);
+    for (const [i, child] of before.entries()) {
+      expect(overlay.children[i + 1], `#${child.id}: kept, in its order`).toBe(child);
+    }
+    expect(
+      before.map((c) => c.id),
+      'their ids are unchanged',
+    ).toEqual([
+      'trade-status',
+      'trade-my-side',
+      'trade-their-side',
+      'trade-actions',
+      'trade-feedback',
+    ]);
+    expect(overlay.id).toBe('trade-overlay');
+    expect(overlay.style.display, 'the shell stays hidden').toBe('none');
+    expect(view.visible, 'the view stays hidden').toBe(false);
+    expect(overlay.getAttribute('aria-label'), 'no dialog was opened').toBeNull();
+
+    // On the shown panel, a second host of the element already first moves nothing.
+    view.show();
+    await flushMacrotask();
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((batch) => {
+      records.push(...batch);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    tab.focus();
+    expect(document.activeElement, 'precondition: focus is on a tab inside the chrome').toBe(tab);
+    view.hostChrome(chrome);
+    await flushMacrotask();
+    observer.disconnect();
+    expect(records.length, 'no node was removed or inserted').toBe(0);
+    expect(document.activeElement, 'focus inside the chrome survives').toBe(tab);
+    expect(overlay.firstElementChild).toBe(chrome);
+    expect(overlay.childElementCount).toBe(before.length + 1);
+    expect(view.visible, 'the shown panel stays shown').toBe(true);
+
+    removeOverlay(overlay);
+  });
+});

@@ -2267,3 +2267,82 @@ describe('cifix0901 PvpView refresh(vm, true): a container re-renders only when 
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// ctl-8s (CTL8S.3): the Social frame's chrome. main.ts builds ONE chrome element and moves it into
+// whichever Social panel shows, through that panel's `hostChrome(el)`: `el` becomes the root's
+// FIRST element child (a tab strip ctl-8d paints there sits above the panel), nothing else on the
+// root changes, and a second call with `el` already first is a no-op.
+//
+// happy-dom limit (measured on ctl-4): re-inserting a node before itself records no mutation and
+// keeps focus here, so an unconditional `prepend(el)` on an `el` already first is invisible at this
+// tier. A remove-then-insert is not: it records two mutations.
+// ---------------------------------------------------------------------------
+
+describe('PvpView.hostChrome (ctl-8s, CTL8S.3)', () => {
+  it('CTL8S-3-HOST-CHROME-PVP: hostChrome(el) moves el out of wherever it was to be the FIRST element child of #pvp-challenge-overlay; the other children, their order and ids, the hidden shell and its dialog state are unchanged; a second call with el already first records no mutation and keeps focus inside el', async () => {
+    // WRONG IMPL KILLED: an append (el lands LAST, under the feedback line); a clone (the node
+    // main.ts paints is not the node shown, and the original stays where it was); a host that also
+    // shows the view (pvpView's own `#visible` flag would flip, and main.ts reads it as "pvp is
+    // open"); one that opens its dialog; one that replaces the root's children (the status, the
+    // challenge rows and the player list are gone); and a re-host that removes el and inserts it
+    // again when it is already first.
+    const root = mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    const IDS = [
+      'pvp-challenge-status',
+      'pvp-challenge-incoming',
+      'pvp-challenge-outgoing',
+      'pvp-player-list',
+      'pvp-challenge-feedback',
+    ];
+    const before = [...root.children];
+    expect(
+      before.map((c) => c.id),
+      'precondition: the shell children',
+    ).toEqual(IDS);
+    const elsewhere = document.createElement('div');
+    document.body.appendChild(elsewhere);
+    const chrome = document.createElement('div');
+    const tab = document.createElement('button');
+    chrome.appendChild(tab);
+    elsewhere.appendChild(chrome);
+
+    view.hostChrome(chrome);
+
+    expect(root.firstElementChild, 'el is the first element child of the root').toBe(chrome);
+    expect(chrome.parentElement, 'moved, not cloned').toBe(root);
+    expect(elsewhere.childElementCount, 'and no longer where it was').toBe(0);
+    expect(root.childElementCount, 'one child more, nothing replaced').toBe(before.length + 1);
+    for (const [i, child] of before.entries()) {
+      expect(root.children[i + 1], `#${child.id}: kept, in its order`).toBe(child);
+    }
+    expect(
+      before.map((c) => c.id),
+      'their ids are unchanged',
+    ).toEqual(IDS);
+    expect(root.id).toBe('pvp-challenge-overlay');
+    expect(root.style.display, 'the shell stays hidden').toBe('none');
+    expect(view.visible, 'the view stays hidden').toBe(false);
+    expect(root.getAttribute('aria-label'), 'no dialog was opened').toBeNull();
+
+    // On the shown panel, a second host of the element already first moves nothing.
+    view.refresh(pvpVm(), true);
+    await flushMacrotask();
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((batch) => {
+      records.push(...batch);
+    });
+    observer.observe(root, { childList: true });
+    tab.focus();
+    expect(document.activeElement, 'precondition: focus is on a tab inside the chrome').toBe(tab);
+    view.hostChrome(chrome);
+    await flushMacrotask();
+    observer.disconnect();
+    expect(records.length, 'no node was removed or inserted').toBe(0);
+    expect(document.activeElement, 'focus inside the chrome survives').toBe(tab);
+    expect(root.firstElementChild).toBe(chrome);
+    expect(root.childElementCount).toBe(before.length + 1);
+    expect(view.visible, 'the shown panel stays shown').toBe(true);
+  });
+});

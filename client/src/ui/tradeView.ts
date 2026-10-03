@@ -96,6 +96,12 @@ export class TradeView {
     else this.show();
   }
 
+  /** Host the Social frame's shared chrome (CTL8S.3): `el` becomes this root's first child. A
+   *  no-op when it already is, so a repeat never detaches it (focus inside it would be lost). */
+  hostChrome(el: HTMLElement): void {
+    if (this.#overlay.firstElementChild !== el) this.#overlay.prepend(el);
+  }
+
   /** Render or re-render the trade view from the view model. */
   render(vm: TradeScreenViewModel): void {
     if (vm.kind === 'no-trade') {

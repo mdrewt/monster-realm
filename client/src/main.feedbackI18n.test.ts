@@ -377,7 +377,8 @@ function focusCanvasAndPressKey(code: string): void {
 }
 
 /** Seeds ONE trade offer involving `H.identity` (initiator or counterparty per `opts`), then
- *  opens the REAL trade overlay via the REAL `KeyU` shortcut (`main.ts`'s `openTrade()` —
+ *  opens the REAL trade overlay via the REAL `KeyU` shortcut (`main.ts`'s `openSocial('trades')`,
+ *  which shows the trade panel of the Social frame, gated by
  *  `overlayVerdict('tradeView').kind === 'allow' && worldHasFocus()`), the same "real input,
  *  no NPC/dialogue" path `main.partyFull.test.ts`'s `openBoxAndFindToParty` uses for Box/KeyB. */
 function openTradeWithOffer(opts: {

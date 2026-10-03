@@ -20,6 +20,13 @@
  * CTL6B-1-ADAPTERS-TOTAL, CTL7C-1-NAV-CAPABLE and CTL7D-6-OBSERVE-SKIPS read 13 legacy ids), the
  * CTL7D-6-OBSERVE-SKIPS and CTL8A-4-ADAPTERS-SWAPPED probes that used `boxView` as "a legacy
  * frame" (now `questLogView`), and the new CTL8B-4-* cases at the end.
+ * ctl-8s (CTL8S.1, CTL8S.3): `social`, the Social frame, is the first frame id that is not an
+ * overlay id, and it holds the legacy adapter until ctl-8d. Named intentional changes in this file:
+ * every table and loop that claims "every frame id" (`FRAME_IDS`: the stub tables, LEGACY_IDS, so
+ * CTL6B-1-ADAPTERS-TOTAL reads 14 legacy ids, CTL6B-1-TOP-FRAME-ROUTES, CTL6B-5-TEXTENTRY-ESCAPE-STOPS,
+ * CTL7C-1-NAV-CAPABLE's shipped loop, CTL7C-2-RESET-ON-OPEN's throwing loop, CTL7D-6-OBSERVE-SKIPS'
+ * shipped observe and CTL8B-4-ADAPTER-SWAPPED) now covers it. The host gains cross-open memory
+ * (`remember`, `forget`) and `seat`: the CTL8S-1-* cases at the end.
  *
  * Adapters are injected as recording stubs, so every routing claim is read off which stub was
  * called, with what, and what came back. The base cases inject adapters that THROW, so "the base
@@ -69,6 +76,11 @@ const ROUTED: readonly VButton[] = ['A', 'B', 'Y', 'LB', 'RB', 'Start', 'Select'
 
 type Adapters = Readonly<Record<FrameId, ScreenAdapter<unknown, unknown>>>;
 
+/** Every frame id: the overlay ids and the one frame id that is not an overlay, the Social frame
+ *  (ctl-8s). Spelled here, never read from the module under test, so a table built from it cannot
+ *  shrink with a production list. */
+const FRAME_IDS: readonly FrameId[] = [...OVERLAY_IDS, 'social'];
+
 interface Call {
   readonly id: FrameId;
   readonly vm: unknown;
@@ -87,7 +99,8 @@ function stubAdapters(
   answer: (id: FrameId, btn: NavInput) => ScreenResult,
 ): Adapters {
   const out = {} as Record<FrameId, ScreenAdapter<unknown, unknown>>;
-  for (const id of OVERLAY_IDS) {
+  // ctl-8s (named intentional change): every FRAME id, so the table is total (was OVERLAY_IDS).
+  for (const id of FRAME_IDS) {
     out[id] = {
       viewModel(ctx) {
         rec.vmCalls.push(id);
@@ -109,7 +122,8 @@ const newRecorder = (): Recorder => ({ calls: [], vmCalls: [] });
 /** Adapters that fail the run if anything consults them: a base frame must never reach one. */
 function throwingAdapters(): Adapters {
   const out = {} as Record<FrameId, ScreenAdapter<unknown, unknown>>;
-  for (const id of OVERLAY_IDS) {
+  // ctl-8s (named intentional change): every FRAME id, so the table is total (was OVERLAY_IDS).
+  for (const id of FRAME_IDS) {
     out[id] = {
       viewModel() {
         throw new Error(`the viewModel of ${id} must not be consulted here`);
@@ -158,11 +172,12 @@ const CONVERTED: ReadonlyMap<FrameId, unknown> = new Map<FrameId, unknown>([
   ['healView', healScreen],
   ['boxView', monstersScreen],
 ]);
-/** Every overlay id still on the legacy adapter. */
-const LEGACY_IDS: readonly FrameId[] = OVERLAY_IDS.filter((id) => !CONVERTED.has(id));
+/** Every frame id still on the legacy adapter. ctl-8s (named intentional change): the Social frame
+ *  is one of them until ctl-8d (was: every OVERLAY id still on the legacy adapter). */
+const LEGACY_IDS: readonly FrameId[] = FRAME_IDS.filter((id) => !CONVERTED.has(id));
 
 describe('SCREEN_ADAPTERS (ctl-6b)', () => {
-  it('CTL6B-1-ADAPTERS-TOTAL: every overlay id has an adapter, the dialogue, shop and heal frames hold their own ctl-8a screens, the box frame its ctl-8b Monsters screen and every other one the legacy adapter, and the default table answers a legacy screen', () => {
+  it('CTL6B-1-ADAPTERS-TOTAL: every frame id (the overlay ids and the Social frame) has an adapter, the dialogue, shop and heal frames hold their own ctl-8a screens, the box frame its ctl-8b Monsters screen and every other one, the Social frame included, the legacy adapter, and the default table answers a legacy screen', () => {
     // WRONG IMPL KILLED: a table that omits an overlay (that frame would have no way to answer
     // B or Start), carries a stray id, holds a bespoke adapter before its ctl-8 slice lands, and a
     // host over SCREEN_ADAPTERS that does not answer a legacy screen as the legacy adapter does.
@@ -172,13 +187,20 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
     // loop still drives each of them exactly as before.
     // INTENTIONAL CHANGE (ctl-8b, CTL8B.4): boxView now holds monstersScreen (by identity), so the
     // legacy roster is 13 ids. Was: 14.
-    expect([...Object.keys(SCREEN_ADAPTERS)].sort()).toEqual([...OVERLAY_IDS].sort());
-    expect(LEGACY_IDS, 'ANTI-VACUITY: 13 legacy ids').toHaveLength(13);
+    // INTENTIONAL CHANGE (ctl-8s, CTL8S.3): the table is total over the FRAME ids, which add
+    // `social` (the Social frame) to the overlay ids, and `social` holds the legacy adapter until
+    // ctl-8d: the legacy roster is 14 ids and the loops below drive it too. Was: the key set was
+    // OVERLAY_IDS and the legacy roster 13 ids.
+    expect([...Object.keys(SCREEN_ADAPTERS)].sort()).toEqual([...FRAME_IDS].sort());
+    expect(FRAME_IDS, 'ANTI-VACUITY: 17 overlay ids and the Social frame').toHaveLength(18);
+    expect(SCREEN_ADAPTERS.social, 'the Social frame is the legacy adapter').toBe(legacyAdapter);
+    expect(LEGACY_IDS, 'ANTI-VACUITY: 14 legacy ids').toHaveLength(14);
     expect(LEGACY_IDS.includes('boxView'), 'boxView is no longer legacy').toBe(false);
+    expect(LEGACY_IDS.includes('social'), 'the Social frame is legacy').toBe(true);
     expect(LEGACY_IDS.length + CONVERTED.size, 'ANTI-VACUITY: every id is one or the other').toBe(
-      OVERLAY_IDS.length,
+      FRAME_IDS.length,
     );
-    for (const id of OVERLAY_IDS) {
+    for (const id of FRAME_IDS) {
       const own = CONVERTED.get(id);
       if (own === undefined) {
         expect(SCREEN_ADAPTERS[id], `${id} is the legacy adapter`).toBe(legacyAdapter);
@@ -217,8 +239,9 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
       Select: { kind: 'toggleHelp' },
     };
     let checked = 0;
-    for (const id of OVERLAY_IDS) {
-      const lower = OVERLAY_IDS.filter((o) => o !== id).slice(0, 2);
+    // INTENTIONAL CHANGE (ctl-8s): every FRAME id, the Social frame included (was OVERLAY_IDS).
+    for (const id of FRAME_IDS) {
+      const lower = FRAME_IDS.filter((o) => o !== id).slice(0, 2);
       for (const base of [WORLD, battle('7')]) {
         for (const kind of ['screen', 'prompt'] as const) {
           const top = kind === 'screen' ? screen(id) : prompt(id);
@@ -252,7 +275,7 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
       }
     }
     expect(checked, 'ANTI-VACUITY: every id x base x kind x button was driven').toBe(
-      OVERLAY_IDS.length * 2 * 2 * ROUTED.length,
+      FRAME_IDS.length * 2 * 2 * ROUTED.length,
     );
 
     // A repeat-flagged button reaches the adapter flagged (the adapter decides what a repeat means).
@@ -338,7 +361,8 @@ describe('typing mode (ctl-6b, CTL6B.5)', () => {
     // Select / X that is handled (a Backspace typed in the field would pop the screen it is typed
     // in), and one that consults any adapter while the field owns the key.
     let owners = 0;
-    for (const owner of OVERLAY_IDS) {
+    // INTENTIONAL CHANGE (ctl-8s): every FRAME id, the Social frame included (was OVERLAY_IDS).
+    for (const owner of FRAME_IDS) {
       const rec = newRecorder();
       const host = hostOf(stubAdapters(rec, () => 'consumed'));
       const stack = stackOf(WORLD, screen(owner), textEntry(owner));
@@ -356,9 +380,7 @@ describe('typing mode (ctl-6b, CTL6B.5)', () => {
       expect(rec.calls, `${owner}: no adapter was consulted for typing`).toEqual([]);
       owners += 1;
     }
-    expect(owners, 'ANTI-VACUITY: every overlay id was a text-entry owner').toBe(
-      OVERLAY_IDS.length,
-    );
+    expect(owners, 'ANTI-VACUITY: every frame id was a text-entry owner').toBe(FRAME_IDS.length);
   });
 
   it('CTL6B-5-TEXTENTRY-ENTER-COMMITS: over a text-entry frame A commits through the OWNER`s adapter and returns the owner`s command', () => {
@@ -598,8 +620,10 @@ describe('ScreenHost (ctl-7c)', () => {
     // still legacy and takes no D-pad until its own ctl-8 screen lands.
     // INTENTIONAL CHANGE (ctl-8b, CTL8B.4): boxView joins them (CONVERTED holds it), so it takes the
     // D-pad too; the 13 legacy ids still do not.
+    // INTENTIONAL CHANGE (ctl-8s): every FRAME id; the Social frame is legacy, so it takes no
+    // D-pad until ctl-8d (was OVERLAY_IDS).
     const shipped = hostOf(SCREEN_ADAPTERS);
-    for (const id of OVERLAY_IDS) {
+    for (const id of FRAME_IDS) {
       const navCapable = CONVERTED.has(id);
       expect(shipped.takesNav(stackOf(WORLD, screen(id))), `${id} screen (shipped)`).toBe(
         navCapable,
@@ -776,8 +800,9 @@ describe('ScreenHost (ctl-7c)', () => {
     expect(log.inits.filter((i) => i.id === 'helpView').length).toBe(1);
 
     // Opening runs no adapter code at all: a host over adapters that throw survives every open.
+    // ctl-8s: every FRAME id, the Social frame included (was OVERLAY_IDS).
     const throwing = throwingHost();
-    for (const id of OVERLAY_IDS) {
+    for (const id of FRAME_IDS) {
       expect(() => {
         throwing.opened(screen(id));
         throwing.opened(prompt(id));
@@ -1929,6 +1954,7 @@ describe('ScreenHost.observe (ctl-7d)', () => {
       });
       // INTENTIONAL CHANGE (ctl-8a): was every overlay id; ctl-8a: the 14 legacy ids — the three
       // converted adapters observe and read a real store (CTL8A-4-HOST-FLOW covers them).
+      // ctl-8s: LEGACY_IDS spans the frame ids, so the legacy Social frame is observed here too.
       shipped.observe(stackOf(WORLD, ...LEGACY_IDS.map((id) => screen(id))), clock.ctx);
       shipped.observe(stackOf(battle('7'), ...LEGACY_IDS.map((id) => prompt(id))), clock.ctx);
       expect(shippedErrors, 'the shipped table reports nothing').toEqual([]);
@@ -2229,7 +2255,8 @@ describe('the Monsters frame over the shipped table (ctl-8b, CTL8B.4)', () => {
     // under a legacy child or while its typing row owns the keys.
     expect(SCREEN_ADAPTERS.boxView, 'the box frame').toBe(monstersScreen);
     expect(monstersScreen.nav, 'nav-capable').toBe(true);
-    for (const id of OVERLAY_IDS) {
+    // ctl-8s: every FRAME id, the Social frame included (was OVERLAY_IDS).
+    for (const id of FRAME_IDS) {
       if (id === 'boxView') continue;
       expect(SCREEN_ADAPTERS[id], `${id} is not the Monsters screen`).not.toBe(monstersScreen);
     }
@@ -2330,5 +2357,518 @@ describe('the Monsters frame over the shipped table (ctl-8b, CTL8B.4)', () => {
       activeKey: '21',
       sheet: { card: { monsterId: 21n } },
     });
+  });
+});
+
+// ==========================================================================================
+// ctl-8s: cross-open screen memory and the seat (CTL8S.1)
+// ==========================================================================================
+//
+// An adapter opts in with `remember: true`. `host.opened(frame)` still drops the frame's kept
+// state, but for an opted-in adapter that state is REMEMBERED: the frame's next
+// `init(vm, remembered)` (from a step, an observe or a seat) receives it as its second argument, and
+// it is only replaced by a newer kept state. Every other adapter keeps reset-on-open
+// (`init(vm, undefined)`). `host.forget()` (a reconnect, the first connect) clears every remembered
+// state and the kept state of every opted-in adapter. `host.seat(frame, ctx)` starts a screen or
+// prompt frame that has no kept state from `init(vm, remembered)` NOW, keeps that state and paints
+// it once into the lent view; a frame that already has a state runs no adapter code, a text entry
+// runs nothing, and a throw goes to the paint-error sink (a paint that throws still keeps the
+// state).
+//
+// The stubs record every call. `init` answers a NEW object carrying what it was handed (`from`); a
+// step answers a NEW object at n + 1 and an observe one at n + 100. Object identity therefore says
+// which call produced the state a later call received.
+
+interface MemState {
+  readonly of: FrameId;
+  readonly n: number;
+  readonly from: unknown;
+}
+interface MemInit {
+  readonly id: FrameId;
+  readonly vm: unknown;
+  readonly remembered: unknown;
+  readonly state: MemState;
+}
+interface MemStep {
+  readonly id: FrameId;
+  readonly state: unknown;
+  readonly next: MemState;
+}
+interface MemLog {
+  readonly vms: Array<{ readonly id: FrameId; readonly ctx: unknown; readonly vm: object }>;
+  readonly inits: MemInit[];
+  readonly steps: MemStep[];
+  readonly observes: MemStep[];
+  readonly paints: Painted[];
+}
+const newMemLog = (): MemLog => ({ vms: [], inits: [], steps: [], observes: [], paints: [] });
+
+type SeatFault = 'viewModel' | 'init' | 'paint';
+/** What each method throws while it is the fault: a non-Error, a plain object and an Error. */
+const SEAT_THROWN: Readonly<Record<SeatFault, unknown>> = {
+  viewModel: 'the view model could not be built',
+  init: { reason: 'init failed' },
+  paint: PAINT_FAILURE,
+};
+
+interface MemOpts {
+  /** Opt in to cross-open memory (`remember: true`). */
+  readonly remember?: boolean;
+  /** Define `observe` (it answers a NEW state at n + 100). */
+  readonly observe?: boolean;
+  /** Define `paint` (it records into the log). */
+  readonly paint?: boolean;
+  /** While `at` names a method, that method throws `SEAT_THROWN[at]`. Read at every call. */
+  readonly fault?: { at: SeatFault | undefined };
+}
+
+/** A recording stub for `id` whose init records the remembered state it is handed. */
+function remembering(
+  id: FrameId,
+  log: MemLog,
+  opts: MemOpts = {},
+): ScreenAdapter<unknown, unknown> {
+  const fail = (at: SeatFault): void => {
+    if (opts.fault?.at === at) throw SEAT_THROWN[at];
+  };
+  const asMem = (state: unknown): Partial<MemState> | null | undefined =>
+    state as Partial<MemState> | null | undefined;
+  /** The count a state carries, or -1000 for a state that is not this frame's own. */
+  const countOf = (state: unknown): number => {
+    const prev = asMem(state);
+    return prev?.of === id && typeof prev.n === 'number' ? prev.n : -1000;
+  };
+  const base: ScreenAdapter<unknown, unknown> = {
+    ...(opts.remember === true ? { remember: true as const } : {}),
+    viewModel(ctx) {
+      fail('viewModel');
+      const vm = { vmOf: id, seq: log.vms.length };
+      log.vms.push({ id, ctx, vm });
+      return vm;
+    },
+    init(vm, remembered) {
+      fail('init');
+      const state: MemState = { of: id, n: 0, from: remembered };
+      log.inits.push({ id, vm, remembered, state });
+      return state;
+    },
+    onButton(_vm, state) {
+      const next: MemState = { of: id, n: countOf(state) + 1, from: asMem(state)?.from };
+      log.steps.push({ id, state, next });
+      return { state: next, result: choice(next.n) };
+    },
+  };
+  const observed: ScreenAdapter<unknown, unknown> =
+    opts.observe === true
+      ? {
+          ...base,
+          observe(_vm, state) {
+            const next: MemState = { of: id, n: countOf(state) + 100, from: asMem(state)?.from };
+            log.observes.push({ id, state, next });
+            return next;
+          },
+        }
+      : base;
+  if (opts.paint !== true) return observed;
+  return {
+    ...observed,
+    paint(view, vm, state) {
+      log.paints.push({ id, view, vm, state });
+      fail('paint');
+    },
+  };
+}
+
+const memInitsOf = (log: MemLog, id: FrameId): MemInit[] => log.inits.filter((i) => i.id === id);
+const lastMemStep = (log: MemLog): MemStep => log.steps[log.steps.length - 1] as MemStep;
+
+describe('ScreenHost cross-open memory and seat (ctl-8s, CTL8S.1)', () => {
+  it('CTL8S-1-REMEMBER: an adapter that opts in gets the state its frame was closed with as init`s second argument at the next open, through a step and through an observe; one that does not opt in starts over from init(vm, undefined); two opens with no step between keep the memory and a newer kept state replaces it; memory is per frame id; and a text-entry open neither remembers nor forgets its owner', () => {
+    // WRONG IMPL KILLED: today's host (opened() drops the state and init sees only the view model:
+    // every reopen starts from scratch); a host that remembers for EVERY adapter (the quest log,
+    // which never opted in, would reopen where it was closed); a remembered state handed straight
+    // to onButton or observe in place of init (the adapter never seats itself from it); an
+    // opened() that overwrites the memory with "nothing kept" when the frame holds no state (two
+    // opens with no step between would lose it); a memory never replaced by a newer state; one
+    // memory shared by every frame id (Social's last state would seat the rename frame); and a
+    // text-entry open that moves its owner's live state into memory (the field's commit would start
+    // the owner over) or clears the owner's memory.
+    const log = newMemLog();
+    const host = hostOf(
+      tableWith({
+        social: remembering('social', log, { remember: true }),
+        boxView: remembering('boxView', log, { remember: true, observe: true }),
+        questLogView: remembering('questLogView', log),
+        renameView: remembering('renameView', log, { remember: true }),
+      }),
+    );
+    const social = stackOf(WORLD, screen('social'));
+    const socialInits = (): MemInit[] => memInitsOf(log, 'social');
+
+    // --- through a step: the state the frame was closed with seats the next open --------------
+    host.opened(screen('social'));
+    host.button(social, nav('A'), CTX);
+    expect(host.button(social, nav('A'), CTX), 'precondition: two steps, n = 2').toEqual(choice(2));
+    const closedWith = lastMemStep(log).next;
+    host.opened(screen('social'));
+    expect(
+      host.button(social, nav('A'), CTX),
+      'the reopened frame steps from its NEW init (n = 0)',
+    ).toEqual(choice(1));
+    expect(socialInits().length, 'one init per open').toBe(2);
+    expect(socialInits()[0]?.remembered, 'the first open remembers nothing').toBeUndefined();
+    expect(
+      socialInits()[1]?.remembered,
+      'the reopen`s init receives the very state the frame was closed with',
+    ).toBe(closedWith);
+    expect(lastMemStep(log).state, 'the step runs on what init returned').toBe(
+      socialInits()[1]?.state,
+    );
+    expect(lastMemStep(log).state, 'never on the remembered state itself').not.toBe(closedWith);
+
+    // --- two opens with nothing kept between them keep the memory -----------------------------
+    const second = lastMemStep(log).next;
+    host.opened(screen('social'));
+    host.opened(screen('social'));
+    host.button(social, nav('A'), CTX);
+    expect(
+      socialInits()[2]?.remembered,
+      'a second open with no state kept leaves the memory as it was',
+    ).toBe(second);
+
+    // --- a newer kept state replaces the memory -----------------------------------------------
+    host.button(social, nav('A'), CTX);
+    const newer = lastMemStep(log).next;
+    host.opened(screen('social'));
+    host.button(social, nav('A'), CTX);
+    expect(socialInits()[3]?.remembered, 'the newest kept state is remembered').toBe(newer);
+    expect(socialInits()[3]?.remembered, 'not the older memory').not.toBe(second);
+    expect(socialInits().length, 'ANTI-VACUITY: four opens of Social, four inits').toBe(4);
+
+    // --- through an observe, and a step's state seating an observe's init ---------------------
+    const box = stackOf(WORLD, screen('boxView'));
+    const boxInits = (): MemInit[] => memInitsOf(log, 'boxView');
+    host.opened(screen('boxView'));
+    host.observe(box, CTX);
+    const observedWith = log.observes.at(-1)?.next;
+    expect(observedWith?.of, 'precondition: the box observed the batch').toBe('boxView');
+    host.opened(screen('boxView'));
+    host.observe(box, CTX);
+    expect(boxInits().length, 'one init per open').toBe(2);
+    expect(boxInits()[0]?.remembered).toBeUndefined();
+    expect(
+      boxInits()[1]?.remembered,
+      'an observe`s init receives the state the observe before the close kept',
+    ).toBe(observedWith);
+    expect(log.observes.at(-1)?.state, 'observe runs on what init returned').toBe(
+      boxInits()[1]?.state,
+    );
+    host.button(box, nav('A'), CTX);
+    const steppedWith = lastMemStep(log).next;
+    host.opened(screen('boxView'));
+    host.observe(box, CTX);
+    expect(boxInits()[2]?.remembered, 'a step`s state seats the next observe`s init').toBe(
+      steppedWith,
+    );
+
+    // --- a frame that did not opt in keeps reset-on-open --------------------------------------
+    const quest = stackOf(WORLD, screen('questLogView'));
+    host.opened(screen('questLogView'));
+    host.button(quest, nav('A'), CTX);
+    expect(host.button(quest, nav('A'), CTX), 'precondition: n = 2').toEqual(choice(2));
+    host.opened(screen('questLogView'));
+    expect(host.button(quest, nav('A'), CTX), 'the quest log starts over at n = 0').toEqual(
+      choice(1),
+    );
+    host.opened(screen('questLogView'));
+    host.opened(screen('questLogView'));
+    expect(host.button(quest, nav('A'), CTX), 'and again after two opens').toEqual(choice(1));
+    const questInits = memInitsOf(log, 'questLogView');
+    expect(questInits.length, 'ANTI-VACUITY: three stepped opens, three inits').toBe(3);
+    for (const [i, init] of questInits.entries()) {
+      expect(init.remembered, `quest log init ${i}: no memory without opting in`).toBeUndefined();
+    }
+
+    // --- memory is per frame id ---------------------------------------------------------------
+    // Social and the box both hold a memory now; the rename frame, opened for the first time,
+    // remembers nothing of theirs.
+    const rename = stackOf(WORLD, screen('renameView'));
+    host.opened(screen('renameView'));
+    host.button(rename, nav('A'), CTX);
+    expect(
+      memInitsOf(log, 'renameView')[0]?.remembered,
+      'another frame`s memory never seats this one',
+    ).toBeUndefined();
+    let remembered = 0;
+    for (const init of log.inits) {
+      if (init.remembered === undefined) continue;
+      expect((init.remembered as MemState).of, `${init.id}: it remembered only its own state`).toBe(
+        init.id,
+      );
+      remembered += 1;
+    }
+    expect(remembered, 'ANTI-VACUITY: Social and the box were each seated from memory').toBe(5);
+
+    // --- a text entry types over its owner: its open neither remembers nor forgets the owner ---
+    const typing = stackOf(WORLD, screen('renameView'), textEntry('renameView'));
+    const live = lastMemStep(log).next;
+    const renameInits = memInitsOf(log, 'renameView').length;
+    host.opened(textEntry('renameView'));
+    host.button(typing, nav('A'), CTX);
+    expect(lastMemStep(log).id).toBe('renameView');
+    expect(lastMemStep(log).state, 'the owner keeps its live state through the field`s open').toBe(
+      live,
+    );
+    expect(memInitsOf(log, 'renameView').length, 'and is not started over').toBe(renameInits);
+    const closedRename = lastMemStep(log).next;
+    host.opened(screen('renameView'));
+    host.opened(textEntry('renameView'));
+    host.button(typing, nav('A'), CTX);
+    expect(
+      memInitsOf(log, 'renameView').at(-1)?.remembered,
+      'a field opened over the reopened owner did not forget the owner`s memory',
+    ).toBe(closedRename);
+  });
+
+  it('CTL8S-1-FORGET: forget() clears every remembered state and the kept state of every adapter that opted in, so the next init of each receives undefined; the kept state of a frame that did not opt in is left alone; it runs no adapter code; and memory works again after it', () => {
+    // WRONG IMPL KILLED: a forget() that clears only the memory (an opted-in frame open across a
+    // reconnect keeps the old identity's state, and its next open remembers it); one that clears
+    // nothing; one that drops EVERY frame's kept state (a legacy frame open across a reconnect
+    // restarts mid-use); one that MOVES the opted-in kept states into memory instead of dropping
+    // them; one that runs init or paints; and one that switches memory off for good.
+    const log = newMemLog();
+    const host = hostOf(
+      tableWith({
+        social: remembering('social', log, { remember: true }),
+        boxView: remembering('boxView', log, { remember: true }),
+        questLogView: remembering('questLogView', log),
+      }),
+    );
+    const social = stackOf(WORLD, screen('social'));
+    const box = stackOf(WORLD, screen('boxView'));
+    const quest = stackOf(WORLD, screen('questLogView'));
+
+    // Social closed with a state (remembered); the box and the quest log open with a kept state.
+    host.button(social, nav('A'), CTX);
+    host.button(social, nav('A'), CTX);
+    host.opened(screen('social'));
+    host.button(box, nav('A'), CTX);
+    const boxKept = lastMemStep(log).next;
+    host.button(quest, nav('A'), CTX);
+    const questKept = lastMemStep(log).next;
+    const counts = (): readonly number[] => [
+      log.vms.length,
+      log.inits.length,
+      log.steps.length,
+      log.paints.length,
+    ];
+    const quiet = counts();
+
+    host.forget();
+    expect(counts(), 'forget() runs no adapter code').toEqual(quiet);
+
+    expect(
+      host.button(quest, nav('A'), CTX),
+      'the quest log (not opted in) resumes at n = 1',
+    ).toEqual(choice(2));
+    expect(lastMemStep(log).state, 'from the state it kept').toBe(questKept);
+
+    expect(host.button(box, nav('A'), CTX), 'the box (opted in, open) starts over').toEqual(
+      choice(1),
+    );
+    expect(memInitsOf(log, 'boxView').length, 'the box was initialised again').toBe(2);
+    expect(
+      memInitsOf(log, 'boxView')[1]?.remembered,
+      'its dropped state was not moved into memory',
+    ).toBeUndefined();
+    expect(lastMemStep(log).state).not.toBe(boxKept);
+
+    expect(host.button(social, nav('A'), CTX), 'Social starts over').toEqual(choice(1));
+    expect(memInitsOf(log, 'social').length).toBe(2);
+    expect(memInitsOf(log, 'social')[1]?.remembered, 'its memory is gone').toBeUndefined();
+
+    // A kept state dropped by forget() cannot come back through the next open either.
+    host.button(box, nav('A'), CTX);
+    host.forget();
+    host.opened(screen('boxView'));
+    host.button(box, nav('A'), CTX);
+    expect(
+      memInitsOf(log, 'boxView').at(-1)?.remembered,
+      'an open after forget() remembers nothing',
+    ).toBeUndefined();
+
+    // Memory works again after a forget().
+    const again = lastMemStep(log).next;
+    host.opened(screen('boxView'));
+    host.button(box, nav('A'), CTX);
+    expect(
+      memInitsOf(log, 'boxView').at(-1)?.remembered,
+      'a later close is remembered as before',
+    ).toBe(again);
+    expect(memInitsOf(log, 'boxView').length, 'ANTI-VACUITY: four box inits').toBe(4);
+
+    // forget() on a host whose every adapter throws, twice, is harmless.
+    const throwing = throwingHost();
+    expect(() => {
+      throwing.forget();
+      throwing.forget();
+    }, 'forget() touches no adapter').not.toThrow();
+  });
+
+  it('CTL8S-1-SEAT: seat(frame, ctx) starts a screen or prompt frame with no kept state from init(vm, remembered) on a view model built from ctx, keeps that state and paints it once into the lent view; a frame that already has a state runs no adapter code; a text entry runs nothing; with no paint or no view lent the state is still kept; a throw from viewModel, init or paint is reported once and never thrown, and only a paint that threw keeps the state', () => {
+    // WRONG IMPL KILLED: no seat (a screen that opens on a remembered tab shows nothing until its
+    // first button or batch); a seat that paints but does not keep the state (the first button
+    // inits again and starts over); one that ignores the memory (init(vm) only); one that inits or
+    // paints a frame that already has a state (a second open path would reset a live screen); one
+    // that seats the owner of a text entry; one that paints with no view lent or calls a missing
+    // paint; one that throws out (the open path in main.ts would stop half-way); one that keeps a
+    // state after viewModel or init threw; and one that drops the state when only the paint threw
+    // (the next button would init again).
+    const log = newMemLog();
+    const errors: unknown[] = [];
+    const fault: { at: SeatFault | undefined } = { at: undefined };
+    // pvpView has no view lent; helpView's adapter has no paint.
+    const VIEWS: Partial<Record<FrameId, object>> = {
+      social: { view: 'social' },
+      boxView: { view: 'box' },
+      questLogView: { view: 'quest' },
+      helpView: { view: 'help' },
+      tradeProposeView: { view: 'propose' },
+    };
+    const host = new ScreenHost(
+      tableWith({
+        social: remembering('social', log, { remember: true, paint: true }),
+        boxView: remembering('boxView', log, { paint: true }),
+        questLogView: remembering('questLogView', log, { paint: true }),
+        helpView: remembering('helpView', log),
+        pvpView: remembering('pvpView', log, { paint: true }),
+        tradeProposeView: remembering('tradeProposeView', log, { paint: true, fault }),
+      }),
+      (id) => VIEWS[id],
+      (err) => {
+        errors.push(err);
+      },
+    );
+    const counts = (): readonly number[] => [
+      log.vms.length,
+      log.inits.length,
+      log.steps.length,
+      log.paints.length,
+    ];
+
+    // (a) A screen frame with no kept state: one view model from ctx, one init, one paint.
+    host.seat(screen('social'), CTX);
+    expect(
+      log.vms.map((v) => v.id),
+      'a: one view model, the seated frame`s',
+    ).toEqual(['social']);
+    expect(log.vms[0]?.ctx, 'a: built from the context seat was handed').toBe(CTX);
+    expect(log.inits.length, 'a: one init').toBe(1);
+    const seated = log.inits[0] as MemInit;
+    expect(seated.vm, 'a: init is fed that view model').toBe(log.vms[0]?.vm);
+    expect(seated.remembered, 'a: nothing remembered yet').toBeUndefined();
+    expect(log.paints.length, 'a: painted once').toBe(1);
+    expect(log.paints[0]?.id).toBe('social');
+    expect(log.paints[0]?.view, 'a: into the frame`s lent view').toBe(VIEWS.social);
+    expect(log.paints[0]?.vm, 'a: with that view model').toBe(seated.vm);
+    expect(log.paints[0]?.state, 'a: the state init returned').toBe(seated.state);
+    expect(log.steps, 'a: no step').toEqual([]);
+    // The seated state is KEPT: the first button steps from it, with no second init.
+    const socialStack = stackOf(WORLD, screen('social'));
+    expect(host.button(socialStack, nav('A'), CTX), 'a: the first button steps n = 0').toEqual(
+      choice(1),
+    );
+    expect(lastMemStep(log).state, 'a: from the seated state').toBe(seated.state);
+    expect(log.inits.length, 'a: no second init').toBe(1);
+
+    // (b) A frame that already has a state: seat runs no adapter code at all.
+    let quiet = counts();
+    host.seat(screen('social'), CTX);
+    expect(counts(), 'b: a frame with a kept state is left alone').toEqual(quiet);
+
+    // (c) The memory seats it: closed, reopened and seated, init receives the closing state.
+    const closing = lastMemStep(log).next;
+    host.opened(screen('social'));
+    host.seat(screen('social'), CTX);
+    const reseated = log.inits.at(-1) as MemInit;
+    expect(reseated.id).toBe('social');
+    expect(reseated.remembered, 'c: init receives the remembered state').toBe(closing);
+    expect(log.paints.at(-1)?.state, 'c: and paints what init returned').toBe(reseated.state);
+    expect(host.button(socialStack, nav('A'), CTX), 'c: the next button steps n = 0').toEqual(
+      choice(1),
+    );
+    expect(lastMemStep(log).state, 'c: from the seated state').toBe(reseated.state);
+
+    // (d) A prompt frame seats the same way; an adapter that did not opt in gets undefined.
+    host.seat(prompt('boxView'), CTX);
+    const boxSeat = log.inits.at(-1) as MemInit;
+    expect(boxSeat.id, 'd: the prompt frame was seated').toBe('boxView');
+    expect(boxSeat.remembered).toBeUndefined();
+    expect(log.paints.at(-1)?.id, 'd: and painted').toBe('boxView');
+    expect(log.paints.at(-1)?.view).toBe(VIEWS.boxView);
+    expect(log.paints.at(-1)?.state).toBe(boxSeat.state);
+
+    // (e) A text entry: nothing at all, not even for its owner.
+    quiet = counts();
+    host.seat(textEntry('questLogView'), CTX);
+    expect(counts(), 'e: a text entry seats nothing').toEqual(quiet);
+    host.button(stackOf(WORLD, screen('questLogView')), nav('A'), CTX);
+    expect(
+      memInitsOf(log, 'questLogView').length,
+      'e: its owner was not seated: its first button inits it',
+    ).toBe(1);
+
+    // (f) No paint defined, (g) no view lent: nothing painted, nothing reported, the state kept.
+    let quietSeats = 0;
+    for (const id of ['helpView', 'pvpView'] as const) {
+      const paintsBefore = log.paints.length;
+      host.seat(screen(id), CTX);
+      expect(log.paints.length, `${id}: nothing painted`).toBe(paintsBefore);
+      const own = memInitsOf(log, id);
+      expect(own.length, `${id}: seated once`).toBe(1);
+      host.button(stackOf(WORLD, screen(id)), nav('A'), CTX);
+      expect(lastMemStep(log).state, `${id}: the seated state was kept`).toBe(own[0]?.state);
+      expect(memInitsOf(log, id).length, `${id}: no second init`).toBe(1);
+      quietSeats += 1;
+    }
+    expect(quietSeats, 'ANTI-VACUITY: both quiet seats were driven').toBe(2);
+    expect(errors, 'nothing was reported so far').toEqual([]);
+
+    // (h) A throw from viewModel, init or paint: reported once with the very value, never thrown.
+    const propose = stackOf(WORLD, screen('tradeProposeView'));
+    let faults = 0;
+    for (const at of ['viewModel', 'init', 'paint'] as const) {
+      host.opened(screen('tradeProposeView'));
+      const initsBefore = memInitsOf(log, 'tradeProposeView').length;
+      errors.length = 0;
+      fault.at = at;
+      expect(
+        () => host.seat(screen('tradeProposeView'), CTX),
+        `${at}: seat does not throw`,
+      ).not.toThrow();
+      fault.at = undefined;
+      expect(errors.length, `${at}: reported exactly once`).toBe(1);
+      expect(errors[0], `${at}: the very value thrown`).toBe(SEAT_THROWN[at]);
+      // Only the paint came after init: only then is there a state, and it is kept.
+      expect(
+        memInitsOf(log, 'tradeProposeView').length,
+        `${at}: init completed during the seat only when the paint was the fault`,
+      ).toBe(initsBefore + (at === 'paint' ? 1 : 0));
+      host.button(propose, nav('A'), CTX);
+      const own = memInitsOf(log, 'tradeProposeView');
+      expect(
+        own.length,
+        at === 'paint'
+          ? 'paint: the state was kept, so the button does not init again'
+          : `${at}: nothing was kept, so the button inits`,
+      ).toBe(initsBefore + 1);
+      expect(lastMemStep(log).state, `${at}: the button steps from that one init`).toBe(
+        own.at(-1)?.state,
+      );
+      faults += 1;
+    }
+    expect(faults, 'ANTI-VACUITY: three faults').toBe(3);
+    expect(errors.length, 'nothing more is reported once the fault clears').toBe(1);
   });
 });

@@ -114,14 +114,18 @@ import {
   contextStep,
   continuedBattleId,
   type Edge,
+  type FrameId,
   isBareBattle,
   mirrorEdges,
   movementEnabled,
   popToBase,
   popTop,
   reconcile,
+  SOCIAL_FRAME,
+  SOCIAL_PANELS,
   type Stack,
   type Command as StackCommand,
+  socialPanel,
   stackDiff,
   type UpperFrame,
   WORLD_STACK,
@@ -208,7 +212,13 @@ import {
   menuViewModel,
   openMainMenu,
 } from './ui/screens/mainMenuScreen';
-import type { Command, ScreenContext } from './ui/screens/types';
+import type {
+  Command,
+  ScreenContext,
+  SocialFrameView,
+  SocialPanelId,
+  SocialTab,
+} from './ui/screens/types';
 import {
   buildSessionViewModel,
   SESSION_INITIAL,
@@ -401,6 +411,9 @@ let shopOpen = SHOP_OPEN_INITIAL;
 // invalidates the ids); every open rebinds them.
 let boundShopId: number | null = null;
 let boundHealLocationId: number | null = null;
+// The Social tab the last `openSocial` asked for (null: a plain open). Like the two ids above it
+// keeps its value after the frame closes and clears on reconnect.
+let boundSocialTab: SocialTab | null = null;
 
 // the ONE probe table. Every fan-out surface below reads visibility
 // through it, so a 16th overlay is a COMPILE error here instead of 5 silent omissions.
@@ -436,7 +449,8 @@ const overlayProbes: OverlayProbes = {
 // (`raisingView: () => boxView?.hide()`) type-checks perfectly while hiding the wrong overlay.
 // `dialogueView` is the SOLE `undefined` entry and must stay that way: hiding a live
 // conversation client-side strands the server `player_conversation` row. Consumers read
-// `overlayHandles[id]?.()`; only verdicts and the stack's `close` commands decide WHICH ids.
+// `overlayHandles[id]?.()`; only verdicts, the stack's `close` commands and the Social frame's
+// panel switch decide WHICH ids.
 // A close leaves boundShopId / boundHealLocationId set: every open rebinds them, and their
 // refresh listeners run only while the overlay is visible.
 const overlayHandles: OverlayHandles = {
@@ -459,11 +473,12 @@ const overlayHandles: OverlayHandles = {
   privacyView: () => privacyView?.hide(),
 };
 
-// the ONE view-lending table: each frame's view instance, which the screen host hands to that
-// frame's adapter to paint after a step (CTL7C.2). Every entry is intentionally byte-identical
-// `<id>: () => <id>`, one uniform thunk per id as in the probe table and for its reason: a
-// copy-pasted sibling thunk type-checks perfectly while lending the wrong view. Undefined until
-// main() builds the views.
+// the ONE view-lending table: each overlay's view instance, which the screen host hands to that
+// overlay's frame's adapter to paint after a step (CTL7C.2). Every entry is intentionally
+// byte-identical `<id>: () => <id>`, one uniform thunk per id as in the probe table and for its
+// reason: a copy-pasted sibling thunk type-checks perfectly while lending the wrong view.
+// Undefined until main() builds the views. The Social frame is not an overlay: it is lent
+// `socialFrameView`, and its three panels' entries are never asked.
 const screenViews: Readonly<Record<OverlayId, () => unknown>> = {
   battleView: () => battleView,
   boxView: () => boxView,
@@ -503,8 +518,12 @@ function reportPaintError(err: unknown): void {
 
 // The screen host (ui/screens/index.ts) keeps each open frame's adapter state and paints every
 // step, and every state a batch changed, into the frame's view. A paint that throws is reported
-// and never costs the key its result.
-const screenHost = new ScreenHost(SCREEN_ADAPTERS, (id) => screenViews[id](), reportPaintError);
+// and never costs the key its result. The Social frame is lent its three panels as one view.
+const screenHost = new ScreenHost(
+  SCREEN_ADAPTERS,
+  (id) => (id === SOCIAL_FRAME ? socialFrameView : screenViews[id]()),
+  reportPaintError,
+);
 
 // the ONE gate binder. Returns the VERDICT, not a boolean, because the
 // three hide-switch handlers consume `forceHide`; each call site spells `.kind === 'allow'`
@@ -540,8 +559,7 @@ function runStackCommands(commands: readonly StackCommand[]): void {
         inputRouter.resetRepeat();
         break;
       case 'close':
-        // The view's own hide path, so its close callbacks run (CTL3.3); never a hidden one.
-        if (overlayProbes[command.id]()) overlayHandles[command.id]?.();
+        hideFrame(command.id);
         break;
       default:
         command satisfies never;
@@ -570,7 +588,8 @@ function syncStack(): void {
   apply({ kind: 'base', base });
   for (const edge of mirrorEdges(contextStack, visibleIds(overlayProbes), prevBase)) {
     apply(edge);
-    if (edge.kind === 'push') screenHost.opened(edge.frame); // a reopened frame's adapter starts over
+    // A reopened frame's adapter starts over (from what it remembers, when it opted in).
+    if (edge.kind === 'push') screenHost.opened(edge.frame);
     inputRouter.resetRepeat(); // a held key never repeats into a pushed or popped frame
   }
   const top = contextStack[contextStack.length - 1];
@@ -586,10 +605,26 @@ function syncStack(): void {
   menuView?.setCovered(menuPlace() === 'covered');
 }
 
-/** The overlay ids of the stack's upper frames, bottom first (the base excluded). */
-function upperIds(): OverlayId[] {
+/** The frame ids of the stack's upper frames, bottom first (the base excluded). */
+function upperIds(): FrameId[] {
   const [, ...upper] = contextStack;
   return upper.map((f) => (f.kind === 'textEntry' ? f.owner : f.id));
+}
+
+/** Hide what a frame shows through the view's own hide path, so its close callbacks run (CTL3.3);
+ *  never a hidden one. The Social frame hides whichever of its panels shows. */
+function hideFrame(id: FrameId): void {
+  for (const overlay of id === SOCIAL_FRAME ? SOCIAL_PANELS : [id]) {
+    if (overlayProbes[overlay]()) overlayHandles[overlay]?.();
+  }
+}
+
+/** The overlay the announcer names as on top: the top frame's (the Social frame's is its shown
+ *  panel), else the first visible overlay, else null. */
+function topOverlay(): OverlayId | null {
+  const top = upperIds().at(-1);
+  if (top === undefined) return visibleIds(overlayProbes)[0] ?? null;
+  return top === SOCIAL_FRAME ? (SOCIAL_PANELS.find((id) => overlayProbes[id]()) ?? null) : top;
 }
 
 /** Where the main menu sits on the context stack: the top frame, under another, or absent. */
@@ -862,9 +897,11 @@ function openClaim(): void {
 // --- the main menu ------------------------------------------------
 //
 // ONE OPEN PATH PER OVERLAY: each openX() below is the single build-VM-and-show body for
-// its overlay, called by BOTH its hotkey handler and the menu. The view contract is
-// non-uniform (dialogue/questLog/heal expose render() with no show(); pvp takes
-// refresh(vm, forceVisible)), so these are per-id thunks, never a generic view.show().
+// its overlay, called by BOTH its hotkey handler and the menu. Trade, pvp and leaderboard share
+// `openSocial` (the challenge auto-show calls it too), whose build-and-show bodies are
+// `showSocialPanel`'s. The view contract is non-uniform (dialogue/questLog/heal expose render()
+// with no show(); pvp takes refresh(vm, forceVisible)), so these are per-id thunks, never a
+// generic view.show().
 
 /** The main menu's screen state. Its nav memory outlives every close, so a reopened menu lands
  *  on the last entry used this session (CTL5.3). */
@@ -874,24 +911,100 @@ function openQuestLog(): void {
   questLogView?.render(buildQuestLogViewModel(store.ownQuests(identity)));
 }
 
-function openTrade(): void {
-  tradeView?.render(
-    buildTradeViewModel(store.allTradeOffers(), identity, store.speciesMap(), store.itemDefs()),
-  );
-  tradeView?.show();
+// The Social frame (CTL8S.3): ONE frame over the trade, pvp and leaderboard overlays, which are
+// its panels, one shown at a time. `openSocial` is its single open path; the frame's adapter
+// switches the shown panel through the view it is lent (`socialFrameView.show`).
+
+/** The Social frame's shared chrome: empty until ctl-8d paints its tab strip. */
+const socialChrome = document.createElement('div');
+
+/** A Social panel's view (undefined until main() builds it). */
+function socialPanelView(panel: SocialPanelId): TradeView | PvpView | LeaderboardView | undefined {
+  switch (panel) {
+    case 'tradeView':
+      return tradeView;
+    case 'pvpView':
+      return pvpView;
+    case 'leaderboardView':
+      return leaderboardView;
+  }
 }
 
-function openPvp(): void {
-  // forceVisible=true: the player explicitly opened it — stay up even with no live challenge.
-  pvpView?.refresh(
-    buildPvpChallengeViewModel(store.allChallenges(), identity, store.allPlayers()),
-    true,
-  );
+/** Show one Social panel alone, with the chrome in it; nothing for a panel already shown (its
+ *  batch listener keeps it live). The panel is rendered and shown BEFORE the others hide, so the
+ *  a11y layer closes the old one as a covered dialog and focus never bounces through the frame
+ *  beneath. A render that throws before its panel shows leaves the old panel up; one that throws
+ *  after (pvp shows first) still leaves that panel alone on screen. */
+function showSocialPanel(panel: SocialPanelId): void {
+  if (overlayProbes[panel]()) return;
+  try {
+    switch (panel) {
+      case 'tradeView':
+        tradeView?.render(
+          buildTradeViewModel(
+            store.allTradeOffers(),
+            identity,
+            store.speciesMap(),
+            store.itemDefs(),
+          ),
+        );
+        tradeView?.show();
+        break;
+      case 'pvpView':
+        // forceVisible=true: the player asked for it — stay up even with no live challenge.
+        pvpView?.refresh(
+          buildPvpChallengeViewModel(store.allChallenges(), identity, store.allPlayers()),
+          true,
+        );
+        break;
+      case 'leaderboardView':
+        leaderboardView?.render(buildLeaderboardViewModel(store.allProfiles(), identity));
+        leaderboardView?.show();
+        break;
+      default:
+        panel satisfies never;
+    }
+  } finally {
+    if (overlayProbes[panel]()) {
+      socialPanelView(panel)?.hostChrome(socialChrome);
+      for (const other of SOCIAL_PANELS) if (other !== panel) hideFrame(other);
+    }
+  }
 }
 
-function openLeaderboard(): void {
-  leaderboardView?.render(buildLeaderboardViewModel(store.allProfiles(), identity));
-  leaderboardView?.show();
+/** What the Social frame's adapter paints: its three panel views and the panel switch. */
+const socialFrameView: SocialFrameView = {
+  get trades() {
+    return tradeView;
+  },
+  get challenges() {
+    return pvpView;
+  },
+  get rankings() {
+    return leaderboardView;
+  },
+  chrome: socialChrome,
+  show(panel) {
+    // Only the top frame switches its panel: under a covering frame the switch would open a
+    // dialog beneath it. The stack is fresh here: every paint follows a sync.
+    if (topSocialFrame() !== undefined) showSocialPanel(panel);
+  },
+};
+
+/** The Social frame when it is the stack's top frame, else undefined. */
+function topSocialFrame(): UpperFrame | undefined {
+  const top = contextStack[contextStack.length - 1];
+  return top.kind === 'screen' && top.id === SOCIAL_FRAME ? top : undefined;
+}
+
+/** The ONE open path of the Social frame: bind the requested tab, show its panel, mirror the
+ *  frame and seat its adapter, so a screen that picks its own tab paints it at the open. */
+function openSocial(tab: SocialTab | null): void {
+  boundSocialTab = tab;
+  showSocialPanel(socialPanel(tab));
+  syncStack();
+  const frame = topSocialFrame();
+  if (frame !== undefined) screenHost.seat(frame, screenCtx);
 }
 
 function openRename(): void {
@@ -978,13 +1091,13 @@ function openMenuTarget(target: MenuTarget): void {
       openQuestLog();
       break;
     case 'tradeView':
-      openTrade();
+      openSocial('trades');
       break;
     case 'pvpView':
-      openPvp();
+      openSocial('challenges');
       break;
     case 'leaderboardView':
-      openLeaderboard();
+      openSocial('rankings');
       break;
     case 'renameView':
       openRename();
@@ -1050,6 +1163,9 @@ const screenCtx: ScreenContext = {
   },
   get healLocationId() {
     return boundHealLocationId;
+  },
+  get socialTab() {
+    return boundSocialTab;
   },
   get reduceMotion() {
     return motionPreference.reduceMotion;
@@ -1424,8 +1540,7 @@ function closeFrame(frame: UpperFrame): void {
       lastBattleVM = null;
       break;
     default:
-      // The view's own hide path, so its close callbacks run (CTL3.3); never a hidden one.
-      if (overlayProbes[frame.id]()) overlayHandles[frame.id]?.();
+      hideFrame(frame.id);
   }
 }
 
@@ -1906,6 +2021,13 @@ const suppressNativeMovementDefault = (e: KeyboardEvent): void => {
     e.preventDefault();
 };
 
+// The legacy letter keys of the three Social tabs (until ctl-11a moves accelerators to the router).
+const SOCIAL_HOTKEYS: ReadonlyMap<string, SocialTab> = new Map([
+  ['KeyU', 'trades'],
+  ['KeyP', 'challenges'],
+  ['KeyL', 'rankings'],
+]);
+
 // the scoped world-focus gate for the twelve overlay-open
 // hotkeys. The `=== document.body` disjunct is LOAD-BEARING and must never be "cleaned up":
 // a store-driven render(null) blurs a focused control back to <body>, and without
@@ -2081,46 +2203,23 @@ const onKeyDown = (e: KeyboardEvent): void => {
     e.preventDefault();
     return;
   }
-  if (e.code === 'KeyU') {
-    // Trade overlay — mutual exclusivity with all other overlays.
-    // Shows the active offer involving this player; "No active trade" when none.
-    if (overlayVerdict('tradeView').kind === 'allow' && (tradeView?.visible || worldHasFocus())) {
-      if (tradeView?.visible) {
-        tradeView.hide();
-      } else {
-        openTrade();
-      }
-    }
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'KeyP') {
-    // PvP challenge overlay — mutual exclusivity with all other overlays.
-    // Not available during an active battle (exit ordering) — the registry's
-    // EXCLUSIVE_TOP tier is what carries that half now.
-    if (overlayVerdict('pvpView').kind === 'allow' && (pvpView?.visible || worldHasFocus())) {
-      if (pvpView?.visible) {
-        pvpView.hide();
-      } else {
-        openPvp();
-      }
-    }
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'KeyL') {
-    // Leaderboard overlay — mutual exclusivity with all other overlays.
-    // Renders once on open from store.allProfiles(); the batch listener below keeps
-    // it live while visible. Pure subscription view — no write path (RL-15).
-    if (
-      overlayVerdict('leaderboardView').kind === 'allow' &&
-      (leaderboardView?.visible || worldHasFocus())
+  const socialKey = SOCIAL_HOTKEYS.get(e.code);
+  if (socialKey !== undefined) {
+    // U, P and L open the Social frame on Trades, Challenges and Rankings (until ctl-11a), each
+    // under its panel's own verdict: mutual exclusivity with every other overlay and never over a
+    // battle (the registry's EXCLUSIVE_TOP tier). With Social open, the key of the panel now
+    // shown and the key that opened the frame close it (its adapter may have switched panels
+    // since), under the shown panel's verdict (nothing covers it); any other Social key does
+    // nothing.
+    const panel = socialPanel(socialKey);
+    const shownPanel = SOCIAL_PANELS.find((id) => overlayProbes[id]());
+    if (shownPanel === undefined) {
+      if (overlayVerdict(panel).kind === 'allow' && worldHasFocus()) openSocial(socialKey);
+    } else if (
+      (shownPanel === panel || boundSocialTab === socialKey) &&
+      overlayVerdict(shownPanel).kind === 'allow'
     ) {
-      if (leaderboardView?.visible) {
-        leaderboardView.hide();
-      } else {
-        openLeaderboard();
-      }
+      hideFrame(SOCIAL_FRAME);
     }
     e.preventDefault();
     return;
@@ -2507,20 +2606,25 @@ store.onBatchApplied(() => {
   }
 });
 
-// --- PvP challenge overlay batch listener -----------------------
-// Auto-shows the overlay when an incoming challenge arrives; refreshes when already
-// open (status/list changes). MUST be total (never throw): defense-in-depth.
+// --- PvP challenge panel batch listener -----------------------
+// Refreshes the Challenges panel while it shows (status/list changes); an incoming challenge
+// opens Social on Challenges. MUST be total (never throw): defense-in-depth.
 store.onBatchApplied(() => {
   if (identity === '') return;
   try {
     const vm = buildPvpChallengeViewModel(store.allChallenges(), identity, store.allPlayers());
-    // Auto-show on incoming challenge ONLY when no other overlay is visible — never
-    // pop the PvP overlay over an active battle or another overlay (mutual-exclusivity).
-    // Always preserve a manually-opened overlay (pvpView.visible) regardless.
-    const anyOverlayVisible = anyVisible(overlayProbes, 'pvpView');
-    const forceVisible =
-      !anyOverlayVisible && (vm.incoming !== null || (pvpView?.visible ?? false));
-    pvpView?.refresh(vm, forceVisible);
+    if (pvpView?.visible) {
+      // A shown panel only re-renders. What closes it is the stack's (a battle, a conversation),
+      // never "another overlay is showing": the menu it was opened from is one.
+      pvpView.refresh(vm, true);
+    } else if (
+      vm.incoming !== null &&
+      !anyVisible(overlayProbes) &&
+      contextStack[0].kind === 'world'
+    ) {
+      // Auto-show ONLY with no overlay up and never over a battle (mutual-exclusivity).
+      openSocial('challenges');
+    }
   } catch (err) {
     console.error('[pvpView] batch listener error', err);
   }
@@ -2638,7 +2742,8 @@ store.onBatchApplied(() => {
 // The LAST batch listener: mirror every overlay this batch's listeners showed or hid (a
 // server-opened dialogue, a battle auto-show) so its push clears held before the next frame.
 // Then every open frame's adapter observes the batch. It must stay last: a frame this batch
-// pushed starts from its `init`, and every view render of the batch has already run.
+// pushed starts from its `init` (the Social frame's ran at its open), and every view render of
+// the batch has already run.
 store.onBatchApplied(() => {
   syncStack();
   screenHost.observe(contextStack, screenCtx);
@@ -3259,6 +3364,8 @@ async function main(): Promise<void> {
     onSend: sendLogger,
     onReady: (id) => {
       identity = id;
+      // A screen opened before the join must not be remembered into this identity's session.
+      screenHost.forget();
       // record the connect edge (identity-hex is the allowed field, U-3).
       eventRing.push(makeConnect(identity));
       resolveReady();
@@ -3306,9 +3413,7 @@ async function main(): Promise<void> {
       // find it still stamped, keep it, and show the battle above it. Hidden, never dismissed: a
       // conversation is the server's to end.
       for (const f of contextStack) {
-        if (f.kind === 'screen' && f.overBattle !== undefined && overlayProbes[f.id]()) {
-          overlayHandles[f.id]?.();
-        }
+        if (f.kind === 'screen' && f.overBattle !== undefined) hideFrame(f.id);
       }
       // re-baseline a surviving Ongoing battle on the next batch
       // instead of re-emitting a spurious battleStart for it. Armed until onHydrated —
@@ -3331,6 +3436,9 @@ async function main(): Promise<void> {
       // The store was reset, so a bound shop / heal id refers to rows that may no longer exist.
       boundShopId = null;
       boundHealLocationId = null;
+      // The requested Social tab and what the screens remember go with the session too.
+      boundSocialTab = null;
+      screenHost.forget();
       // trade's double-spend lock must also be reset on reconnect (same reason as shop).
       tradeView?.hide();
       // Hide the PvP overlay on reconnect — any pending challenge state is stale.
@@ -3421,7 +3529,7 @@ async function main(): Promise<void> {
       // branch and announcementsFor are disjoint by construction (the reducer emits only when
       // next.topOverlay is non-null), so neither transition is ever uttered twice. The top is the
       // stack's top frame when there is one (a screen opened over the menu is announced).
-      const top = upperIds().at(-1) ?? visibleIds(overlayProbes)[0] ?? null;
+      const top = topOverlay();
       const nextSnapshot: A11ySnapshot = { topOverlay: top, message: '' };
       for (const m of announcementsFor(lastA11ySnapshot, nextSnapshot)) liveRegion.announce(m, now);
       if (lastA11ySnapshot.topOverlay !== null && top === null) {
