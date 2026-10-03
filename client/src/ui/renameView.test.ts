@@ -96,6 +96,7 @@ import { t } from './a11yCopy';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 import { RenameView } from './renameView';
+import type { RowOp } from './screens/profileScreen';
 
 // The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
 // implementation, so the VALUE oracle (real attribute writes, real focus moves) still works.
@@ -991,18 +992,239 @@ describe('RenameView review-hardening: live submit-enable, hide() lock reset, bu
 
   it('★ BITES: a hotkey keydown on the submit BUTTON does not reach the window listener — button stopPropagation (red-team Finding 1)', () => {
     // WRONG IMPL KILLED: stopPropagation attached only to the input, not the button.
-    // Tab-focus or a mouse click leaves the button focused; a KeyW keydown then bubbles
+    // Tab-focus or a mouse click leaves the button focused; a KeyN keydown then bubbles
     // to the window keydown handler. The button's own keydown listener must stopPropagation.
+    //
+    // INTENTIONAL CHANGE (ctl-8h, CTL8H.2 / B5): this case probed KeyW. KeyW is a D-pad key
+    // (DEFAULT_BINDINGS Up), and the submit button now lets the D-pad and B codes bubble to the
+    // router (CTL8H-2-B5-SUBMIT-PROPAGATES below), so the hotkey probed here is KeyN, an
+    // accelerator that stays shielded. Was: KeyW. The bite is unchanged: every non-D-pad key is
+    // still stopped at the button.
     const view = new RenameView({ onSubmit: async () => {} });
     view.show();
     const btn = document.getElementById('rename-submit') as HTMLButtonElement;
     const spy = vi.fn();
     window.addEventListener('keydown', spy);
-    btn.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', bubbles: true }));
+    btn.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyN', bubbles: true }));
     expect(
       spy,
       'a keydown on the focused submit button must not bubble to window',
     ).not.toHaveBeenCalled();
     window.removeEventListener('keydown', spy);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ctl-8h (CTL8H.2): the rename frame's rows and the submit button's key shield.
+//
+// The rows are the view's REAL controls: [#rename-input, #rename-submit], the shown and enabled
+// ones in DOM order. The cursor IS document.activeElement. nameScreen (ui/screens/profileScreen.ts)
+// hands the view one-shot row tokens through `view.applyRowOp(op)`:
+//   move     focus the next/previous row from the focused one, clamped (no wrap); with no row
+//            focused, focus the default row (#rename-input);
+//   activate on a focused button click it once; on the focused input keep focus there (typing);
+//            with NO row focused focus the default row and fire NOTHING.
+// The same op object applied twice is applied once (identity memo, tradeProposeView #lastToggle).
+// ---------------------------------------------------------------------------
+
+describe('RenameView ctl-8h: applyRowOp rows and the submit key shield', () => {
+  const ENABLED: RenameViewModel = {
+    displayCurrentName: 'X',
+    trimmedDraft: 'Bob',
+    canSubmit: true,
+  };
+  const DISABLED: RenameViewModel = { displayCurrentName: 'X', trimmedDraft: '', canSubmit: false };
+  const move = (delta: -1 | 1): RowOp => ({ kind: 'move', delta });
+  const activate = (): RowOp => ({ kind: 'activate' });
+  const focusedId = (): string => (document.activeElement as HTMLElement | null)?.id ?? '';
+  const blurAll = (): void => (document.activeElement as HTMLElement | null)?.blur();
+
+  beforeEach(() => {
+    mountRenameOverlay();
+  });
+  afterEach(() => {
+    teardown();
+  });
+
+  it('CTL8H-2-VIEW-ROWS: move walks [#rename-input, #rename-submit] with the focus as the cursor, clamped, a disabled submit is skipped, with no row focused move seats the default row (the input), activate clicks the focused submit once with the trimmed draft, keeps focus on the input, and with no row focused seats the input and submits nothing; the same op object applies once', async () => {
+    // WRONG IMPL KILLED: a move that wraps (the clamp pins the ends); a move from "nothing
+    // focused" that goes to the SECOND row (+1 from index -1 is the first row, but the default row
+    // is named, and -1 must also land on the input); a disabled submit among the rows (focus() on
+    // it is a no-op, the cursor would be stuck); an activate on the input that submits (typing
+    // would send the draft on A); an activate on the submit that sends the raw draft or twice; an
+    // activate with no focused row that fires the default (an armed reopen must never confirm);
+    // a move/activate that ignores which control holds focus (an internal cursor); and an op
+    // applied again because it is compared by shape and not by identity.
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = new RenameView({ onSubmit });
+    view.show();
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    const submit = document.getElementById('rename-submit') as HTMLButtonElement;
+    input.value = '  Bob  ';
+    view.render(ENABLED);
+
+    // --- no row focused: the default row, for either direction -----------------------------
+    blurAll();
+    expect(focusedId(), 'precondition: no row has focus').toBe('');
+    view.applyRowOp(move(1));
+    expect(focusedId(), 'move +1 with nothing focused: the default row').toBe('rename-input');
+    blurAll();
+    view.applyRowOp(move(-1));
+    expect(focusedId(), 'move -1 with nothing focused: the default row').toBe('rename-input');
+
+    // --- from the focused row, clamped -------------------------------------------------------
+    view.applyRowOp(move(1));
+    expect(focusedId(), 'down from the input: the save button').toBe('rename-submit');
+    view.applyRowOp(move(1));
+    expect(focusedId(), 'no wrap past the last row').toBe('rename-submit');
+    view.applyRowOp(move(-1));
+    expect(focusedId(), 'up from the save button: the input').toBe('rename-input');
+    view.applyRowOp(move(-1));
+    expect(focusedId(), 'no wrap past the first row').toBe('rename-input');
+
+    // --- a disabled submit is not a row ---------------------------------------------------------
+    view.render(DISABLED);
+    expect(submit.disabled, 'precondition: an empty draft disables submit').toBe(true);
+    input.focus();
+    view.applyRowOp(move(1));
+    expect(focusedId(), 'move skips the disabled save button: the input is the only row').toBe(
+      'rename-input',
+    );
+    expect(document.activeElement, 'and focus is not on the disabled button').not.toBe(submit);
+    view.render(ENABLED);
+
+    // --- activate on the save button: one submit with the trimmed draft ------------------------
+    submit.focus();
+    view.applyRowOp(activate());
+    expect(onSubmit, 'A on the save button submits once').toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith('Bob');
+    await flushPromises();
+
+    // --- activate on the input: typing, not submitting ---------------------------------------
+    onSubmit.mockClear();
+    input.focus();
+    view.applyRowOp(activate());
+    expect(focusedId(), 'A on the field keeps focus in it').toBe('rename-input');
+    expect(onSubmit, 'and never submits the draft').not.toHaveBeenCalled();
+
+    // --- activate with no row focused: seat the default, fire nothing ----------------------------
+    blurAll();
+    view.applyRowOp(activate());
+    expect(focusedId(), 'A with no row focused seats the default row').toBe('rename-input');
+    expect(onSubmit, 'and submits nothing, though the draft is valid').not.toHaveBeenCalled();
+
+    // --- the identity memo: the same object once, an equal fresh one applies -----------------
+    const hop = move(1);
+    input.focus();
+    view.applyRowOp(hop);
+    expect(focusedId(), 'the first application moves').toBe('rename-submit');
+    input.focus();
+    view.applyRowOp(hop);
+    expect(focusedId(), 'the same op object is not applied twice').toBe('rename-input');
+    view.applyRowOp(move(1));
+    expect(focusedId(), 'an equal but fresh op is a new press').toBe('rename-submit');
+
+    const press = activate();
+    submit.focus();
+    view.applyRowOp(press);
+    await flushPromises();
+    view.applyRowOp(press);
+    await flushPromises();
+    expect(onSubmit, 'the same activate token clicks once').toHaveBeenCalledTimes(1);
+    view.applyRowOp(activate());
+    await flushPromises();
+    expect(onSubmit, 'a fresh activate token clicks again').toHaveBeenCalledTimes(2);
+  });
+
+  it('CTL8H-2-B5-SUBMIT-PROPAGATES: a keydown on #rename-submit with a D-pad or Backspace code reaches the window listener, any other key (hotkeys, Enter, Space) is still stopped, and the disabled state of the button is unchanged', () => {
+    // WRONG IMPL KILLED: the old unconditional stopPropagation (the router never sees the D-pad
+    // or B on the save button: the player is stuck on it, B5); a shield removed altogether (a
+    // hotkey letter pressed on the button would open an overlay or walk the character); an allow
+    // list that is one code short (WASD or Backspace missing); one that also lets Enter or Space
+    // through (the button's own click would double); and a submit made non-disabled to dodge the
+    // shield (CTL6B.5's pinned focus-on-page for an empty draft).
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.show();
+    const btn = document.getElementById('rename-submit') as HTMLButtonElement;
+    const spy = vi.fn();
+    window.addEventListener('keydown', spy);
+    try {
+      const PROPAGATING = [
+        'ArrowUp',
+        'ArrowDown',
+        'ArrowLeft',
+        'ArrowRight',
+        'KeyW',
+        'KeyA',
+        'KeyS',
+        'KeyD',
+        'Backspace',
+      ];
+      for (const code of PROPAGATING) {
+        spy.mockClear();
+        btn.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true }));
+        expect(spy, `${code} must bubble to the window router`).toHaveBeenCalledTimes(1);
+      }
+      const STOPPED = [
+        'KeyN',
+        'KeyM',
+        'KeyB',
+        'KeyI',
+        'KeyR',
+        'KeyQ',
+        'KeyP',
+        'Slash',
+        'Enter',
+        'Space',
+      ];
+      for (const code of STOPPED) {
+        spy.mockClear();
+        btn.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true }));
+        expect(spy, `${code} must stay stopped at the button`).not.toHaveBeenCalled();
+      }
+    } finally {
+      window.removeEventListener('keydown', spy);
+    }
+    view.render(DISABLED);
+    expect(btn.disabled, 'an empty draft still DISABLES the save button').toBe(true);
+    view.render(ENABLED);
+    expect(btn.disabled, 'a draft still enables it').toBe(false);
+  });
+
+  it('CTL8H-RT-RENAME-DISABLED-SAVE-NOT-A-ROW: with an empty draft (Save disabled) and focus on the field, a move and an A neither focus the disabled Save nor leave the field; once the draft enables Save, a move does focus it', () => {
+    // WRONG IMPL KILLED: rows that always include the Save button. happy-dom may refuse
+    // focus() on a disabled button, which hides the bug from an activeElement check, so the
+    // button's own focus() is spied: a disabled Save must never be asked to take focus.
+    const view = new RenameView({ onSubmit: vi.fn() });
+    view.show();
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    const submit = document.getElementById('rename-submit') as HTMLButtonElement;
+    view.render(DISABLED);
+    expect(submit.disabled, 'precondition: an empty draft disables Save').toBe(true);
+    input.focus();
+    expect(focusedId(), 'precondition: focus is on the field').toBe('rename-input');
+
+    const submitFocus = vi.spyOn(submit, 'focus');
+    try {
+      view.applyRowOp(move(1));
+      expect(
+        submitFocus,
+        'a move never asks the disabled Save to take focus',
+      ).not.toHaveBeenCalled();
+      expect(focusedId(), 'and focus stays on the field').toBe('rename-input');
+      view.applyRowOp(activate());
+      expect(submitFocus, 'nor does an A').not.toHaveBeenCalled();
+      expect(focusedId(), 'and focus stays on the field').toBe('rename-input');
+
+      // ANTI-VACUITY: the same spy sees the focus once Save is a row.
+      view.render(ENABLED);
+      expect(submit.disabled, 'precondition: a draft enables Save').toBe(false);
+      input.focus();
+      view.applyRowOp(move(1));
+      expect(submitFocus, 'an enabled Save is focused by a move').toHaveBeenCalledTimes(1);
+      expect(focusedId()).toBe('rename-submit');
+    } finally {
+      submitFocus.mockRestore();
+    }
   });
 });

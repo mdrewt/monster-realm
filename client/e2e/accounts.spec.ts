@@ -126,6 +126,11 @@ test.describe
       await page.keyboard.press('KeyC');
       await expect(page.locator('#claim-overlay')).toBeVisible({ timeout: 10_000 });
       await expect(page.locator('#claim-title')).toHaveText(PROMPT_TITLE);
+      // B2 (ctl-8h): the title and the body are ON SCREEN, not just present in the DOM. They used to
+      // be created display:none and never un-hidden, so toHaveText alone passed against an overlay
+      // whose copy no player could read.
+      await expect(page.locator('#claim-title')).toBeVisible();
+      await expect(page.locator('#claim-body')).toBeVisible();
       await expect(page.locator('#claim-nudge')).toHaveText(NUDGE);
       await expect(page.locator('#claim-signin-btn')).toBeVisible();
       await expect(page.locator('#claim-signin-btn')).toHaveText(t('claim.signInButton'));
@@ -140,6 +145,9 @@ test.describe
       await page.locator('#claim-signin-btn').click();
       await expect(page.locator('#claim-title')).toHaveText(FAILED_TITLE, { timeout: 10_000 });
       await expect(page.locator('#claim-body')).toHaveText(FAILED_BODY);
+      // B2 (ctl-8h): the failure copy is visible to the player in this phase too.
+      await expect(page.locator('#claim-title')).toBeVisible();
+      await expect(page.locator('#claim-body')).toBeVisible();
 
       // The code is minted BEFORE the provider is contacted (connection.ts startSignIn) and
       // survives the failure (claimModel 'sign-in-failed' never deletes it).

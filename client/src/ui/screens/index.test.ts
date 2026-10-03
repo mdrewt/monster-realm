@@ -68,6 +68,7 @@ import { baseButton, SCREEN_ADAPTERS, ScreenHost } from './index';
 import { journalScreen } from './journalScreen';
 import { legacyAdapter } from './legacyAdapter';
 import { monstersScreen } from './monstersScreen';
+import { accountScreen, nameScreen, privacyScreen } from './profileScreen';
 import { shopScreen } from './shopScreen';
 import { socialScreen } from './socialScreen';
 import { tradeProposeScreen } from './tradeProposeScreen';
@@ -198,12 +199,19 @@ const CONVERTED: ReadonlyMap<FrameId, unknown> = new Map<FrameId, unknown>([
   // CTL7D-6-OBSERVE-SKIPS) and neither can serve as "a legacy frame" any more.
   ['raisingView', bagScreen],
   ['questLogView', journalScreen],
+  // ctl-8h (named intentional change): the rename, claim and privacy frames hold the Profile row
+  // adapters (nav-capable, no observe, no memory). Like the Bag and the Journal they can no longer
+  // stand for "a legacy frame" in this file.
+  ['renameView', nameScreen],
+  ['claimView', accountScreen],
+  ['privacyView', privacyScreen],
 ]);
 /** Every frame id still on the legacy adapter. ctl-8s (named intentional change): the Social frame
  *  is one of them until ctl-8d (was: every OVERLAY id still on the legacy adapter). ctl-8d (named
  *  intentional change): the Social frame left it, so it holds 13 ids again. ctl-8e (named
  *  intentional change): the trade-propose frame left it too, so it holds 12 ids. ctl-8f (named
- *  intentional change): the raising and quest log frames left it, so it holds 10 ids. */
+ *  intentional change): the raising and quest log frames left it, so it holds 10 ids. ctl-8h (named
+ *  intentional change): the rename, claim and privacy frames left it, so it holds 7 ids. */
 const LEGACY_IDS: readonly FrameId[] = FRAME_IDS.filter((id) => !CONVERTED.has(id));
 
 describe('SCREEN_ADAPTERS (ctl-6b)', () => {
@@ -241,7 +249,29 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
     expect(SCREEN_ADAPTERS.questLogView, 'the quest log frame is the ctl-8f Journal').toBe(
       journalScreen,
     );
-    expect(LEGACY_IDS, 'ANTI-VACUITY: 10 legacy ids').toHaveLength(10);
+    // INTENTIONAL CHANGE (ctl-8h, CTL8H.3): renameView, claimView and privacyView hold nameScreen,
+    // accountScreen and privacyScreen (by identity), so the legacy roster is 7 ids. Was: 10.
+    expect(SCREEN_ADAPTERS.renameView, 'the rename frame is the ctl-8h Name screen').toBe(
+      nameScreen,
+    );
+    expect(SCREEN_ADAPTERS.claimView, 'the claim frame is the ctl-8h Account screen').toBe(
+      accountScreen,
+    );
+    expect(SCREEN_ADAPTERS.privacyView, 'the privacy frame is the ctl-8h Privacy screen').toBe(
+      privacyScreen,
+    );
+    expect(LEGACY_IDS, 'ANTI-VACUITY: 7 legacy ids').toHaveLength(7);
+    expect([...LEGACY_IDS].sort(), 'the seven that are still legacy').toEqual(
+      [
+        'battleView',
+        'evolutionView',
+        'helpView',
+        'leaderboardView',
+        'menuView',
+        'pvpView',
+        'tradeView',
+      ].sort(),
+    );
     expect(LEGACY_IDS.includes('raisingView'), 'raisingView is no longer legacy').toBe(false);
     expect(LEGACY_IDS.includes('questLogView'), 'questLogView is no longer legacy').toBe(false);
     expect(LEGACY_IDS.includes('boxView'), 'boxView is no longer legacy').toBe(false);
@@ -3458,5 +3488,58 @@ describe('the Bag and the Journal over the shipped table (ctl-8f, CTL8F.4)', () 
     expect(lastJournal()).toEqual({ questId: 'quest_002', detail: null });
     expect(host.button(journal, nav('B'), ctx), 'B in the list pops').toEqual({ kind: 'pop' });
     expect(counts()[0], 'the Bag was not painted by the Journal`s steps').toBe(bagPaints);
+  });
+});
+
+// ==========================================================================================
+// ctl-8h: the Profile frames (Name, Account, Privacy) over the SHIPPED table (CTL8H.3)
+// ==========================================================================================
+//
+// KeyN / KeyC and the main menu's Profile list open the rename, claim and privacy overlays through
+// their legacy paths; swapping their `SCREEN_ADAPTERS` entries gives the open frames the D-pad, A,
+// B and Start / Select. The row adapters themselves are proven in profileScreen.test.ts; this case
+// proves the table.
+
+describe('the Profile frames over the shipped table (ctl-8h, CTL8H.3)', () => {
+  it('CTL8H-3-ADAPTERS-REGISTERED: the shipped table holds nameScreen for the rename frame, accountScreen for the claim frame and privacyScreen for the privacy frame, each nav-capable, so each takes the D-pad on top of the world or a battle, as a screen or a prompt; a legacy frame above one, or a text entry over it, takes the D-pad back; and no other frame holds them', () => {
+    // WRONG IMPL KILLED: screens written but never wired into SCREEN_ADAPTERS (KeyN, KeyC and the
+    // Profile list would still open frames whose arrows are swallowed and whose focus the player
+    // cannot move); a swap into the wrong slot (the Account screen on the privacy frame); an
+    // adapter without its nav mark (the router would keep the D-pad for the page under the open
+    // frame); a frame that keeps the D-pad under a legacy child; and one that keeps it while its
+    // typing row (the rename field) owns the keys.
+    const profile = [
+      ['renameView', nameScreen],
+      ['claimView', accountScreen],
+      ['privacyView', privacyScreen],
+    ] as const;
+    expect(SCREEN_ADAPTERS.renameView, 'the rename frame').toBe(nameScreen);
+    expect(SCREEN_ADAPTERS.claimView, 'the claim frame').toBe(accountScreen);
+    expect(SCREEN_ADAPTERS.privacyView, 'the privacy frame').toBe(privacyScreen);
+    const host = hostOf(SCREEN_ADAPTERS);
+    for (const [id, adapter] of profile) {
+      expect(adapter.nav, `${id}: nav-capable`).toBe(true);
+      for (const other of FRAME_IDS) {
+        if (profile.some(([own]) => own === other)) continue;
+        for (const [, ours] of profile) {
+          expect(SCREEN_ADAPTERS[other], `${other} does not hold a Profile adapter`).not.toBe(ours);
+        }
+      }
+      expect(host.takesNav(stackOf(WORLD, screen(id))), `${id} over the world`).toBe(true);
+      expect(host.takesNav(stackOf(battle('7'), screen(id))), `${id} over a battle`).toBe(true);
+      expect(host.takesNav(stackOf(WORLD, prompt(id))), `${id} as a prompt`).toBe(true);
+      expect(
+        host.takesNav(stackOf(WORLD, screen('menuView'), screen(id))),
+        `${id} over the covered main menu`,
+      ).toBe(true);
+      expect(
+        host.takesNav(stackOf(WORLD, screen(id), screen('evolutionView'))),
+        `${id} under a legacy frame`,
+      ).toBe(false);
+      expect(
+        host.takesNav(stackOf(WORLD, screen(id), textEntry(id))),
+        `${id} with a text entry over it`,
+      ).toBe(false);
+    }
   });
 });

@@ -1,4 +1,6 @@
-// ui/renameView.ts — thin DOM shell for the profile-rename overlay.
+// ui/renameView.ts — thin DOM shell for the profile-rename overlay: Profile › Name (ctl-8h). Its
+// rows are [the field, Save], the cursor being DOM focus (`applyRowOp`, the Name screen's tokens);
+// it opens typing (overlayA11y focuses the field) and commits through `onSubmit`.
 //
 // First overlay with a text <input>. Three input-hygiene mechanisms the read-only
 // overlays never needed:
@@ -24,15 +26,29 @@
 // the i18n resolver (`t('chrome.rename.submit')`, ui/i18n/resolver.ts) in show(), on every
 // show(); `index.html` no longer ships the "Rename" text, so the button is EMPTY until the first
 // show(). The current display name is model data, rendered raw.
+import { DEFAULT_BINDINGS } from '../input/bindings';
 import { t } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { buildRenameViewModel, type RenameViewModel } from './renameModel';
+import { type RowOp, rowStep } from './screens/profileScreen';
+
+/** The D-pad and B codes of the default keymap (input/bindings.ts): the only keys that leave the
+ *  focused submit button for the router. */
+const ROUTED_ON_SUBMIT: ReadonlySet<string> = new Set([
+  ...DEFAULT_BINDINGS.buttons.Up,
+  ...DEFAULT_BINDINGS.buttons.Down,
+  ...DEFAULT_BINDINGS.buttons.Left,
+  ...DEFAULT_BINDINGS.buttons.Right,
+  ...DEFAULT_BINDINGS.buttons.B,
+]);
 
 export interface RenameCallbacks {
   readonly onSubmit: (name: string) => Promise<void> | void;
 }
 
 export class RenameView {
+  // The last row token applied: a token is applied once (ui/screens/profileScreen.ts).
+  #lastOp: RowOp | null = null;
   readonly #overlay: HTMLElement;
   readonly #current: HTMLElement;
   readonly #input: HTMLInputElement;
@@ -81,13 +97,14 @@ export class RenameView {
       this.#refreshSubmitEnabled();
     });
 
-    // The submit button is a second focus target (Tab from the input, or a mouse
-    // click leaves it focused). Its keydown must also stopPropagation so a hotkey/
-    // movement key pressed while the button holds focus never reaches the window
-    // listener (completes the D3 stopPropagation contract — red-team Finding 1).
-    // stopPropagation does not preventDefault, so Enter/Space still fire the click.
+    // The submit button is a second focus target (Tab from the input, a mouse click, or
+    // the D-pad leaves it focused). Its keydown stops every hotkey so a letter pressed
+    // while the button holds focus never reaches the window listener (red-team Finding 1),
+    // EXCEPT the D-pad and B codes (B5, CTL8H.2): the router hands those to the Name
+    // screen, which walks the rows and pops the frame. stopPropagation does not
+    // preventDefault, so Enter/Space still fire the click.
     this.#submitBtn.addEventListener('keydown', (e) => {
-      e.stopPropagation();
+      if (!ROUTED_ON_SUBMIT.has(e.code)) e.stopPropagation();
     });
 
     this.#submitBtn.addEventListener('click', () => {
@@ -141,6 +158,18 @@ export class RenameView {
   render(vm: RenameViewModel): void {
     this.#current.textContent = vm.displayCurrentName;
     this.#submitBtn.disabled = !vm.canSubmit;
+  }
+
+  /** One press on the rows [the field, Save] (the Name screen, CTL8H.2). The cursor is DOM focus;
+   *  with no row focused it only seats the field. A on the field keeps typing; on Save it clicks,
+   *  so #submit's own empty/pending gates hold. A disabled Save is not a row. */
+  applyRowOp(op: RowOp): void {
+    if (op === this.#lastOp) return;
+    this.#lastOp = op;
+    const rows = this.#submitBtn.disabled ? [this.#input] : [this.#input, this.#submitBtn];
+    const { focus, press } = rowStep(rows, document.activeElement, this.#input, op);
+    focus?.focus();
+    if (press === this.#submitBtn) press.click();
   }
 
   /** Display a feedback message (reducer success / failure). textContent only (XSS). */

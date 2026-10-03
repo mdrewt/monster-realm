@@ -9,15 +9,16 @@
 // carry `role="dialog" aria-modal="true"`.
 // `claimView.ts` / `sessionView.ts` established the constructed route and it costs nothing here.
 //
-// ★ ensureElement CREATES EVERY NODE display:none, AND THAT IS A TRAP. `claimView.ts` never
-// un-hides its buttons, so today's claim overlay ships five blank, invisible buttons that a
-// programmatic `.click()` still fires — green in happy-dom and in Chromium, invisible to a human.
-// This shell therefore writes `textContent` AND clears `display` on every control it owns, and
-// `privacyView.test.ts` asserts reachability by walking the ancestor chain rather than by clicking.
+// ★ ensureElement CREATES EVERY NODE display:none, AND THAT IS A TRAP (it hid claimView's title
+// and body until ctl-8h, B2). This shell therefore writes `textContent` AND clears `display` on
+// every control it owns, and `privacyView.test.ts` asserts reachability by walking the ancestor
+// chain rather than by clicking.
 //
-// ★ NO `.focus()` ANYWHERE IN THIS FILE, in any spelling.
-// focus placement belongs to `overlayA11y.ts`, which is the single owner. The initial anchor is
-// `#privacy-close-btn` (overlayRegistry.ts's `initialFocusSelector`), a NATIVE <button>.
+// ★ FOCUS: the OPEN edge is `overlayA11y.ts`'s alone. The initial anchor is `#privacy-close-btn`
+// (overlayRegistry.ts's `initialFocusSelector`), a NATIVE <button>. On an already-open frame this
+// shell moves focus in exactly two places (ctl-8h, CTL8H.4): the Privacy screen's row tokens
+// (`applyRowOp`, the cursor IS focus) and a render's arm/disarm edge (Keep — a confirm defaults to
+// No — then Delete) or a focused control it hid or disabled (`reseatRow`, ui/screens/profileScreen.ts).
 //
 // ★ hide() CALLS onDismissed (A2-D4). `privacyView` is in BATTLE_FORCE_HIDE, and a force-hide runs
 // `main.ts`'s handle thunk — a byte-identical `privacyView?.hide()` that
@@ -42,6 +43,7 @@
 import { t } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { PRIVACY_PSEUDONYMIZATION_DISCLOSURE, type PrivacyViewModel } from './privacyBanner';
+import { type RowOp, reseatRow, rowStep } from './screens/profileScreen';
 
 export interface PrivacyViewHandlers {
   /** Step one of the two-step confirmation: arm it. Writes nothing, sends nothing. */
@@ -57,16 +59,26 @@ export interface PrivacyViewHandlers {
   readonly onDismissed: () => void;
 }
 
-/** Find an existing overlay element or create a detached one appended to <body>, so the shell
- *  works whether or not index.html declares it (it never does — see the header). */
-function ensureElement(id: string, tag = 'div'): HTMLElement {
+/** Find an existing element or create a hidden one appended to `parent` (<body> by default), so
+ *  the shell works whether or not index.html declares it (it never does — see the header). */
+function ensureElement(id: string, tag = 'div', parent: HTMLElement = document.body): HTMLElement {
   const found = document.getElementById(id);
   if (found) return found;
   const el = document.createElement(tag);
   el.id = id;
   el.style.display = 'none';
-  document.body.appendChild(el);
+  parent.appendChild(el);
   return el;
+}
+
+/** Where a constructed frame lives (B3, CTL8H.1): the frame layer inside #game-screen, else the
+ *  game screen, else <body> for a shell-less boot. */
+function frameAnchor(): HTMLElement {
+  return (
+    document.getElementById('frame-layer') ??
+    document.getElementById('game-screen') ??
+    document.body
+  );
 }
 
 export class PrivacyView {
@@ -76,7 +88,7 @@ export class PrivacyView {
   readonly #notice: HTMLElement;
   readonly #disclosure: HTMLElement;
   readonly #confirm: HTMLElement;
-  // Typed HTMLButtonElement, not HTMLElement — see the header's keyboard-operable-rows note.
+  // Typed HTMLButtonElement, not HTMLElement: a native <button> is keyboard-operable.
   // FIRST in DOM order and enabled in every phase — it is the a11y anchor (A2-D10).
   readonly #closeBtn: HTMLButtonElement;
   readonly #deleteBtn: HTMLButtonElement;
@@ -92,19 +104,13 @@ export class PrivacyView {
   readonly #downloadBtn: HTMLButtonElement;
   readonly #exportStatus: HTMLElement;
   readonly #onDismissed: () => void;
+  // The last row token applied: a token is applied once (ui/screens/profileScreen.ts).
+  #lastOp: RowOp | null = null;
 
   constructor(handlers: PrivacyViewHandlers) {
-    this.#overlay = ensureElement('privacy-overlay');
-    // position:fixed WITH inset:0. The one-corner-affordance rule limits the set of fixed-but-not-inset-0
-    // elements to exactly {build-stamp, help-hint}, so a centred fixed panel is not available.
-    this.#overlay.style.position = 'fixed';
-    this.#overlay.style.inset = '0';
-    this.#overlay.style.zIndex = '100';
-    this.#overlay.style.overflow = 'auto';
-    this.#overlay.style.background = 'rgba(0, 0, 0, 0.88)';
-    this.#overlay.style.padding = '24px';
-    this.#overlay.style.font = '14px/1.6 monospace';
-    this.#overlay.style.color = '#e0e0e0';
+    // B3: a class-styled frame in the game screen (.mr-frame, .mr-shell), like the static shells.
+    this.#overlay = ensureElement('privacy-overlay', 'div', frameAnchor());
+    this.#overlay.classList.add('mr-frame', 'mr-shell');
     this.#title = ensureElement('privacy-title', 'h2');
     this.#status = ensureElement('privacy-status', 'p');
     this.#notice = ensureElement('privacy-notice', 'p');
@@ -172,6 +178,7 @@ export class PrivacyView {
 
   /** Render from the pure VM. Every branch below is a write — nothing is decided here. */
   render(vm: PrivacyViewModel): void {
+    const wasArmed = this.#armed;
     this.#status.textContent = vm.statusLabel;
     this.#status.style.display = '';
     this.#paintButton(this.#deleteBtn, vm.deleteLabel, vm.deleteEnabled);
@@ -196,6 +203,49 @@ export class PrivacyView {
 
     this.#notice.textContent = vm.noticeLabel ?? '';
     this.#notice.style.display = vm.noticeLabel === undefined ? 'none' : '';
+    // Only on a frame already open: the open edge's focus is overlayA11y's.
+    if (this.visible) this.#reseat(wasArmed);
+  }
+
+  /** The deletion confirm is armed: Keep is shown. */
+  get #armed(): boolean {
+    return this.#confirmCancelBtn.style.display !== 'none';
+  }
+
+  /** The rows (CTL8H.4): the shown, enabled buttons in DOM order. */
+  #rows(): HTMLButtonElement[] {
+    return [...this.#overlay.querySelectorAll('button')].filter(
+      (b) => b.style.display !== 'none' && !b.disabled,
+    );
+  }
+
+  /** A render moves focus only on the arm and disarm edges (Keep, then Delete), or off a control
+   *  it hid or disabled; never focus that is outside the frame (`reseatRow`). */
+  #reseat(wasArmed: boolean): void {
+    const active = document.activeElement;
+    const onPage = !(active instanceof HTMLElement) || active === document.body;
+    if (!onPage && !this.#overlay.contains(active)) return;
+    const target = reseatRow(
+      this.#rows(),
+      onPage ? null : active,
+      { was: wasArmed, now: this.#armed },
+      this.#confirmCancelBtn,
+      this.#deleteBtn,
+    );
+    target?.focus();
+  }
+
+  /** One press on the rows (the Privacy screen, CTL8H.4). The cursor is DOM focus; with no row
+   *  focused it only seats the default row (Keep while armed, else the first), so an A never
+   *  confirms a deletion nobody chose. */
+  applyRowOp(op: RowOp): void {
+    if (op === this.#lastOp) return;
+    this.#lastOp = op;
+    const rows = this.#rows();
+    const fallback = this.#armed ? this.#confirmCancelBtn : rows[0];
+    const { focus, press } = rowStep(rows, document.activeElement, fallback, op);
+    focus?.focus();
+    press?.click();
   }
 
   get visible(): boolean {

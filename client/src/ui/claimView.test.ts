@@ -37,10 +37,18 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from './a11yCopy';
-import type { ClaimViewModel } from './claimModel';
+import {
+  buildClaimViewModel,
+  CLAIM_INITIAL,
+  type ClaimEvent,
+  type ClaimModelState,
+  type ClaimViewModel,
+  claimStep,
+} from './claimModel';
 import { ClaimView, type ClaimViewHandlers } from './claimView';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
+import type { RowOp } from './screens/profileScreen';
 
 // The m23-s4 MECHANISM oracle. `{ spy: true }` records every call AND calls through
 // to the real implementation, so the VALUE oracle (real attribute writes, real focus
@@ -414,5 +422,645 @@ describe('ClaimView — action buttons are shown per vm.actions and labelled', (
     const anchor = btn(IDS.signIn);
     expect(anchor.style.display).not.toBe('none');
     expect(document.activeElement).toBe(anchor);
+  });
+});
+
+// ===========================================================================================
+// ctl-8h (CTL8H.3): the claim frame's rows, its default-No, B2 and B3.
+//
+// The rows are the overlay's real shown action buttons plus #claim-privacy-btn, in DOM order; the
+// cursor IS document.activeElement. accountScreen hands the view one-shot row tokens through
+// `view.applyRowOp(op)` (see renameView.test.ts for the contract's wording). Re-seating on a
+// render happens ONLY when the overlay was already visible before it: the arm edge (confirmPrompt
+// undefined -> defined) focuses No (#claim-decline-cancel-btn), the disarm edge focuses the arming
+// button (#claim-decline-btn), and a focused control that the render hid goes to the default row.
+// A plain re-render with the same vm never moves focus.
+// ===========================================================================================
+
+/** The nearest ancestor (the node itself included) that is `display:none`, described for a
+ *  failure message, or null when the node is on screen all the way to <body>. */
+function hiddenAncestorOf(start: Element | null): string | null {
+  for (let node: Element | null = start; node instanceof HTMLElement; node = node.parentElement) {
+    if (node.style.display === 'none') return node.id === '' ? node.tagName : `#${node.id}`;
+  }
+  return null;
+}
+
+const OPENED: ClaimEvent = { kind: 'claim-ui-opened', nudgeAlreadySeen: true };
+
+/** The model state after `events`, run through the REAL reducer from the initial state. */
+function stateAfter(...events: ClaimEvent[]): ClaimModelState {
+  let state: ClaimModelState = CLAIM_INITIAL;
+  for (const event of events) state = claimStep(state, event).next;
+  return state;
+}
+
+/** Every visible ClaimPhase, reached by running events, with the buttons it shows (ids, DOM
+ *  order, the privacy door last). */
+const CLAIM_PHASES: ReadonlyArray<{
+  readonly label: string;
+  readonly state: ClaimModelState;
+  readonly rows: readonly string[];
+}> = [
+  {
+    label: 'prompt',
+    state: stateAfter(OPENED),
+    rows: ['claim-signin-btn', 'claim-decline-btn', 'claim-privacy-btn'],
+  },
+  {
+    label: 'prompt with the first-run nudge',
+    state: stateAfter({ kind: 'claim-ui-opened', nudgeAlreadySeen: false }),
+    rows: ['claim-signin-btn', 'claim-decline-btn', 'claim-privacy-btn'],
+  },
+  {
+    label: 'code-pending',
+    state: stateAfter(OPENED, { kind: 'claim-pending', code: 'c0de' }),
+    rows: ['claim-decline-btn', 'claim-privacy-btn'],
+  },
+  {
+    label: 'awaiting-account',
+    state: stateAfter(OPENED, { kind: 'claim-awaiting-account' }),
+    rows: ['claim-decline-btn', 'claim-privacy-btn'],
+  },
+  {
+    label: 'rejected: a dead code lifts the veto',
+    state: stateAfter(OPENED, {
+      kind: 'claim-rejected',
+      message: 'code expired',
+      claimedFrom: undefined,
+    }),
+    rows: ['claim-join-btn', 'claim-privacy-btn'],
+  },
+  {
+    label: 'rejected: the destination is terminal',
+    state: stateAfter(OPENED, {
+      kind: 'claim-rejected',
+      message: 'account already claimed',
+      claimedFrom: undefined,
+    }),
+    rows: ['claim-decline-btn', 'claim-privacy-btn'],
+  },
+  {
+    label: 'rejected: transient',
+    state: stateAfter(OPENED, {
+      kind: 'claim-rejected',
+      message: 'close your other tab, then retry',
+      claimedFrom: undefined,
+    }),
+    rows: ['claim-decline-btn', 'claim-privacy-btn'],
+  },
+  {
+    label: 'rejected: not claim specific',
+    state: stateAfter(OPENED, {
+      kind: 'claim-rejected',
+      message: 'sign in required',
+      claimedFrom: undefined,
+    }),
+    rows: ['claim-decline-btn', 'claim-privacy-btn'],
+  },
+  {
+    label: 'sign-in-failed',
+    state: stateAfter(OPENED, { kind: 'sign-in-failed', reason: 'sign-in-rejected' }),
+    rows: ['claim-signin-btn', 'claim-decline-btn', 'claim-privacy-btn'],
+  },
+  {
+    label: 'sign-in-failed, an unrecognised reason',
+    state: stateAfter(OPENED, { kind: 'sign-in-failed', reason: 'something-new' }),
+    rows: ['claim-signin-btn', 'claim-decline-btn', 'claim-privacy-btn'],
+  },
+  {
+    label: 'claimed',
+    state: stateAfter(OPENED, { kind: 'claim-succeeded' }),
+    rows: ['claim-join-btn', 'claim-privacy-btn'],
+  },
+  {
+    label: 'decline armed',
+    state: stateAfter(OPENED, { kind: 'decline-requested' }),
+    rows: ['claim-decline-confirm-btn', 'claim-decline-cancel-btn', 'claim-privacy-btn'],
+  },
+];
+
+const moveOp = (delta: -1 | 1): RowOp => ({ kind: 'move', delta });
+const activateOp = (): RowOp => ({ kind: 'activate' });
+const focusedId = (): string => (document.activeElement as HTMLElement | null)?.id ?? '';
+const blurAll = (): void => (document.activeElement as HTMLElement | null)?.blur();
+
+/** The handlers that fired, by name. */
+const firedNames = (h: ClaimViewHandlers): string[] =>
+  (Object.keys(h) as (keyof ClaimViewHandlers)[]).filter(
+    (name) => vi.mocked(h[name]).mock.calls.length > 0,
+  );
+
+const PROMPT_VM: ClaimViewModel = makeVm();
+const ARMED_VM: ClaimViewModel = makeVm({
+  confirmPrompt: 'Really decline?',
+  actions: {
+    signIn: false,
+    join: false,
+    decline: false,
+    declineConfirm: true,
+    declineCancel: true,
+  },
+});
+const CLAIMED_VM: ClaimViewModel = makeVm({
+  actions: {
+    signIn: false,
+    join: true,
+    decline: false,
+    declineConfirm: false,
+    declineCancel: false,
+  },
+});
+
+/** A brand new DOM and view, rendered once with `vm` (the overlay is visible afterwards). */
+function freshVisible(vm: ClaimViewModel): { view: ClaimView; handlers: ClaimViewHandlers } {
+  closeOverlayA11y('claimView', null);
+  document.body.replaceChildren();
+  const handlers = makeHandlers();
+  const view = new ClaimView(handlers);
+  view.render(vm);
+  return { view, handlers };
+}
+
+/** The ids of the focusable rows, found by pressing the view's own D-pad: seat the default row,
+ *  walk to the first row (clamped), then walk down until the cursor stops. */
+function walkRows(view: ClaimView): string[] {
+  blurAll();
+  view.applyRowOp(moveOp(-1));
+  for (let i = 0; i < 12; i += 1) view.applyRowOp(moveOp(-1));
+  const out = [focusedId()];
+  for (let i = 0; i < 12; i += 1) {
+    view.applyRowOp(moveOp(1));
+    const id = focusedId();
+    if (id === out[out.length - 1]) break;
+    out.push(id);
+  }
+  return out;
+}
+
+const div = (id: string): HTMLElement => {
+  const el = document.createElement('div');
+  el.id = id;
+  return el;
+};
+
+describe('ClaimView ctl-8h: rows, default-No, B2 and B3', () => {
+  it('CTL8H-3-B2-TITLE-BODY-VISIBLE: in every visible claim phase (prompt, code-pending, awaiting-account, each rejection, sign-in-failed, claimed, armed decline) a render alone shows #claim-title and #claim-body, with the vm text, all the way up to <body>', () => {
+    // WRONG IMPL KILLED: today's shell (ensureElement creates both display:none and render()
+    // only writes their text: a player reads an empty box, B2); an un-hide done in show() only
+    // (the production sequence is render -> show -> render, but a reconnect-driven render alone
+    // re-opens it); an un-hide in ONE phase only (the prompt, the e2e's A1); an un-hide of the
+    // title but not the body; and text written to the wrong node. The phases are reached by
+    // running the real reducer, never by a hand-built vm.
+    expect(
+      new Set(CLAIM_PHASES.map((c) => c.state.phase)),
+      'ANTI-VACUITY: every visible phase is driven',
+    ).toEqual(
+      new Set([
+        'prompt',
+        'code-pending',
+        'awaiting-account',
+        'rejected',
+        'sign-in-failed',
+        'claimed',
+      ]),
+    );
+    for (const { label, state } of CLAIM_PHASES) {
+      closeOverlayA11y('claimView', null);
+      document.body.replaceChildren();
+      const view = new ClaimView(makeHandlers());
+      const title = document.getElementById('claim-title');
+      const body = document.getElementById('claim-body');
+      expect(hiddenAncestorOf(title), `${label}: ANTI-VACUITY: hidden before the render`).not.toBe(
+        null,
+      );
+      expect(hiddenAncestorOf(body), `${label}: ANTI-VACUITY: hidden before the render`).not.toBe(
+        null,
+      );
+
+      const vm = buildClaimViewModel(state);
+      view.render(vm);
+      expect(view.visible, `${label}: the overlay is visible`).toBe(true);
+      expect(hiddenAncestorOf(title), `${label}: #claim-title on screen`).toBeNull();
+      expect(hiddenAncestorOf(body), `${label}: #claim-body on screen`).toBeNull();
+      expect(title?.textContent, `${label}: the title text`).toBe(vm.title);
+      expect(body?.textContent, `${label}: the body text`).toBe(vm.body);
+      expect((title?.textContent ?? '').length, `${label}: a title to read`).toBeGreaterThan(0);
+      expect((body?.textContent ?? '').length, `${label}: a body to read`).toBeGreaterThan(0);
+    }
+  });
+
+  it('CTL8H-3-B3-ANCHOR: the overlay is attached under #frame-layer when present, else under #game-screen, else directly under <body>, and carries the classes mr-frame and mr-shell with all its controls inside it', () => {
+    // WRONG IMPL KILLED: an overlay appended to <body> whatever the page has (it renders in flow
+    // below the canvas, black on near-black: B3); one anchored by a parent id alone (always
+    // #game-screen, or the first child of <body>); a frame-layer lookup that only works inside
+    // #game-screen; a lookup that ignores #frame-layer when #game-screen exists; a missing class
+    // (the shell styles hang on mr-frame / mr-shell); and children left outside the overlay.
+    const build = (...nodes: HTMLElement[]): HTMLElement => {
+      document.body.replaceChildren(...nodes);
+      const view = new ClaimView(makeHandlers());
+      expect(view.visible, 'constructed hidden').toBe(false);
+      const overlay = document.getElementById('claim-overlay');
+      if (overlay === null) throw new Error('#claim-overlay must exist after construction');
+      expect(overlay.classList.contains('mr-frame'), 'class mr-frame').toBe(true);
+      expect(overlay.classList.contains('mr-shell'), 'class mr-shell').toBe(true);
+      for (const id of ['claim-title', 'claim-body', 'claim-signin-btn', 'claim-privacy-btn']) {
+        expect(overlay.contains(document.getElementById(id)), `#${id} is inside the overlay`).toBe(
+          true,
+        );
+      }
+      return overlay;
+    };
+
+    // #game-screen > #frame-layer
+    const gameScreen = div('game-screen');
+    const frameLayer = div('frame-layer');
+    gameScreen.appendChild(frameLayer);
+    let overlay = build(gameScreen, div('app'));
+    expect(frameLayer.contains(overlay), 'under #frame-layer').toBe(true);
+    expect(gameScreen.contains(overlay), 'and so inside #game-screen').toBe(true);
+    expect(overlay.parentElement, 'not parked on <body>').not.toBe(document.body);
+
+    // #game-screen alone
+    const lonely = div('game-screen');
+    overlay = build(lonely, div('app'));
+    expect(lonely.contains(overlay), 'else under #game-screen').toBe(true);
+
+    // #frame-layer outside #game-screen
+    const looseLayer = div('frame-layer');
+    overlay = build(div('app'), looseLayer);
+    expect(looseLayer.contains(overlay), 'a lone #frame-layer is still the anchor').toBe(true);
+
+    // neither: directly under <body>, not inside some unrelated first child
+    const app = div('app');
+    overlay = build(app);
+    expect(overlay.parentElement, 'else directly under <body>').toBe(document.body);
+    expect(app.contains(overlay), 'and not inside an unrelated node').toBe(false);
+  });
+
+  it('CTL8H-3-VIEW-ROW-OPS: applyRowOp walks the shown buttons in DOM order with focus as the cursor (hidden buttons skipped, clamped, no wrap), no row focused seats the default row (the first, or No when armed), activate clicks the focused button once and fires nothing when no row is focused, and the same op object applies once', () => {
+    // WRONG IMPL KILLED: rows that include a display:none button (focus() on it is a no-op: the
+    // cursor sticks); a wrap; a move from nothing that lands on the second row; an activate that
+    // fires the default row when nothing is focused (an armed reopen would CONFIRM the decline
+    // on a stray A); an activate that clicks twice or clicks the wrong button; a default that is
+    // the first row while armed (Confirm); and an op re-applied by shape instead of identity.
+    const { view, handlers } = freshVisible(PROMPT_VM);
+
+    // --- no row focused: the default row, for either direction ---------------------------------
+    blurAll();
+    view.applyRowOp(moveOp(1));
+    expect(focusedId(), 'move +1 with nothing focused: the first row').toBe('claim-signin-btn');
+    blurAll();
+    view.applyRowOp(moveOp(-1));
+    expect(focusedId(), 'move -1 with nothing focused: the first row').toBe('claim-signin-btn');
+
+    // --- the walk: hidden join / confirm / cancel buttons are skipped, the ends clamp ---------
+    const down: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      view.applyRowOp(moveOp(1));
+      down.push(focusedId());
+    }
+    expect(down, 'down, then clamped on the privacy door').toEqual([
+      'claim-decline-btn',
+      'claim-privacy-btn',
+      'claim-privacy-btn',
+      'claim-privacy-btn',
+    ]);
+    const up: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      view.applyRowOp(moveOp(-1));
+      up.push(focusedId());
+    }
+    expect(up, 'up, then clamped on the first row').toEqual([
+      'claim-decline-btn',
+      'claim-signin-btn',
+      'claim-signin-btn',
+      'claim-signin-btn',
+    ]);
+
+    // --- activate clicks the focused button, once ----------------------------------------------
+    view.applyRowOp(moveOp(1));
+    expect(focusedId()).toBe('claim-decline-btn');
+    view.applyRowOp(activateOp());
+    expect(firedNames(handlers), 'A on Decline').toEqual(['onDeclineRequested']);
+    expect(handlers.onDeclineRequested).toHaveBeenCalledTimes(1);
+    view.applyRowOp(moveOp(1));
+    expect(focusedId()).toBe('claim-privacy-btn');
+    view.applyRowOp(activateOp());
+    expect(handlers.onPrivacy, 'A on the privacy door').toHaveBeenCalledTimes(1);
+    expect(handlers.onDeclineRequested, 'and nothing else fired again').toHaveBeenCalledTimes(1);
+
+    // --- activate with no row focused: seat the default row, fire nothing ------------------------
+    for (const name of Object.keys(handlers) as (keyof ClaimViewHandlers)[]) {
+      vi.mocked(handlers[name]).mockClear();
+    }
+    blurAll();
+    view.applyRowOp(activateOp());
+    expect(focusedId(), 'A with no row focused seats the first row').toBe('claim-signin-btn');
+    expect(firedNames(handlers), 'and fires nothing').toEqual([]);
+
+    // --- armed: the default row is No, never Confirm ------------------------------------------
+    view.render(ARMED_VM);
+    blurAll();
+    view.applyRowOp(moveOp(1));
+    expect(focusedId(), 'armed, nothing focused: move seats No, not the first row').toBe(
+      'claim-decline-cancel-btn',
+    );
+    blurAll();
+    view.applyRowOp(activateOp());
+    expect(focusedId(), 'armed, nothing focused: A seats No').toBe('claim-decline-cancel-btn');
+    expect(firedNames(handlers), 'and neither confirms nor cancels').toEqual([]);
+    view.applyRowOp(moveOp(-1));
+    expect(focusedId(), 'up from No: Confirm').toBe('claim-decline-confirm-btn');
+    view.applyRowOp(moveOp(1));
+    view.applyRowOp(moveOp(1));
+    expect(focusedId(), 'down past No: the privacy door').toBe('claim-privacy-btn');
+
+    // --- the identity memo ----------------------------------------------------------------
+    view.render(PROMPT_VM);
+    const hop = moveOp(1);
+    (document.getElementById('claim-signin-btn') as HTMLElement).focus();
+    view.applyRowOp(hop);
+    expect(focusedId(), 'the first application moves').toBe('claim-decline-btn');
+    (document.getElementById('claim-signin-btn') as HTMLElement).focus();
+    view.applyRowOp(hop);
+    expect(focusedId(), 'the same op object is not applied twice').toBe('claim-signin-btn');
+    view.applyRowOp(moveOp(1));
+    expect(focusedId(), 'an equal but fresh op is a new press').toBe('claim-decline-btn');
+
+    vi.mocked(handlers.onDeclineRequested).mockClear();
+    const press = activateOp();
+    view.applyRowOp(press);
+    view.applyRowOp(press);
+    expect(
+      handlers.onDeclineRequested,
+      'the same activate token clicks once',
+    ).toHaveBeenCalledTimes(1);
+    view.applyRowOp(activateOp());
+    expect(handlers.onDeclineRequested, 'a fresh token clicks again').toHaveBeenCalledTimes(2);
+  });
+
+  it('CTL8H-3-ROWS: in every claim phase the rows the D-pad walks are exactly the shown buttons in DOM order, the privacy door last', () => {
+    // WRONG IMPL KILLED: a fixed row list (the armed phase swaps Decline for Confirm / Cancel; a
+    // claimed account shows Join; a dead code shows Join, not Decline); rows that include a hidden
+    // button or omit the always-shown privacy door; privacy not last; and rows derived from a
+    // stale vm instead of the DOM the last render painted.
+    let checked = 0;
+    for (const { label, state, rows } of CLAIM_PHASES) {
+      const { view } = freshVisible(buildClaimViewModel(state));
+      const overlay = document.getElementById('claim-overlay') as HTMLElement;
+      const shownInDom = [...overlay.querySelectorAll('button')]
+        .filter((b) => hiddenAncestorOf(b) === null && !b.disabled)
+        .map((b) => b.id);
+      expect(shownInDom, `${label}: the table agrees with the DOM the render painted`).toEqual(
+        rows,
+      );
+      expect(walkRows(view), `${label}: the D-pad rows`).toEqual(rows);
+      expect(rows[rows.length - 1], `${label}: the privacy door is last`).toBe('claim-privacy-btn');
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: every phase case was walked').toBe(CLAIM_PHASES.length);
+  });
+
+  it('CTL8H-3-DEFAULT-NO: when the overlay is already visible, arming focuses No (from a focused Decline, the privacy door or the page), disarming focuses the Decline button, a focused control the render hid goes to the default row, and a re-render with the same vm moves nothing; the open edge moves nothing; a re-shown armed overlay with focus on the page seats No on A and never confirms', () => {
+    // WRONG IMPL KILLED: a default-No that only runs on the click edge (the arm edge is a render:
+    // the Decline button is hidden under focus and focus falls to the page, where the next A /
+    // Enter is a stray key); a Confirm that takes the focus (one Enter confirms a deletion of the
+    // claim code); a re-seat on every render (the player's own move to Confirm is undone by the
+    // next batch); a re-seat on the open edge (overlayA11y owns it, and a second focus owner
+    // steals from the page); a disarm that leaves focus on a hidden button; and, for an overlay
+    // hidden and shown again while still armed, an activate that fires Confirm for focus on <body>.
+    const id = (x: string): HTMLButtonElement => document.getElementById(x) as HTMLButtonElement;
+
+    // --- the open edge moves nothing (overlayA11y owns the initial focus) -----------------------
+    closeOverlayA11y('claimView', null);
+    document.body.replaceChildren();
+    const outside = outsideSentinel();
+    outside.focus();
+    const opening = new ClaimView(makeHandlers());
+    opening.render(ARMED_VM);
+    expect(document.activeElement, 'the open edge re-seats nothing').toBe(outside);
+
+    // --- the arm edge: from a focused Decline (hidden by the render) ------------------------------
+    {
+      const { view } = freshVisible(PROMPT_VM);
+      id('claim-decline-btn').focus();
+      view.render(ARMED_VM);
+      expect(focusedId(), 'armed from Decline: focus on No').toBe('claim-decline-cancel-btn');
+      expect(focusedId(), 'never Confirm').not.toBe('claim-decline-confirm-btn');
+    }
+    // --- the arm edge: from a control the render keeps (the privacy door) --------------------
+    {
+      const { view } = freshVisible(PROMPT_VM);
+      id('claim-privacy-btn').focus();
+      view.render(ARMED_VM);
+      expect(focusedId(), 'armed with focus elsewhere in the overlay: focus on No').toBe(
+        'claim-decline-cancel-btn',
+      );
+    }
+    // --- the arm edge: from the page -----------------------------------------------------------
+    {
+      const { view } = freshVisible(PROMPT_VM);
+      blurAll();
+      view.render(ARMED_VM);
+      expect(focusedId(), 'armed with focus on the page: focus on No').toBe(
+        'claim-decline-cancel-btn',
+      );
+    }
+    // --- a plain re-render with the same vm moves nothing ----------------------------------
+    {
+      const { view } = freshVisible(ARMED_VM);
+      id('claim-decline-confirm-btn').focus();
+      view.render(ARMED_VM);
+      expect(focusedId(), 'the player moved to Confirm: a same-vm render leaves it').toBe(
+        'claim-decline-confirm-btn',
+      );
+      view.render(ARMED_VM);
+      expect(focusedId(), 'and again').toBe('claim-decline-confirm-btn');
+    }
+    {
+      const { view } = freshVisible(PROMPT_VM);
+      id('claim-privacy-btn').focus();
+      view.render(PROMPT_VM);
+      view.render(makeVm({ feedback: 'Something happened' }));
+      expect(focusedId(), 'unarmed re-renders leave the focus where it is').toBe(
+        'claim-privacy-btn',
+      );
+    }
+    // --- the disarm edge: back to the Decline button ---------------------------------------------
+    {
+      const { view } = freshVisible(PROMPT_VM);
+      id('claim-decline-btn').focus();
+      view.render(ARMED_VM);
+      id('claim-decline-confirm-btn').focus();
+      view.render(PROMPT_VM);
+      expect(focusedId(), 'disarmed: focus on the button that armed it').toBe('claim-decline-btn');
+    }
+    // --- a focused control the render hid goes to the default row ------------------------------
+    {
+      const { view } = freshVisible(CLAIMED_VM);
+      id('claim-join-btn').focus();
+      view.render(PROMPT_VM);
+      expect(focusedId(), 'Join was hidden under focus: the first row of the new prompt').toBe(
+        'claim-signin-btn',
+      );
+    }
+    // --- hidden, then shown again while armed, focus on the page: A seats No, confirms nothing --
+    {
+      const { view, handlers } = freshVisible(ARMED_VM);
+      view.render(makeVm({ visible: false }));
+      expect(view.visible, 'precondition: the overlay is hidden').toBe(false);
+      blurAll();
+      view.render(ARMED_VM);
+      expect(view.visible, 'shown again, still armed').toBe(true);
+      expect(document.activeElement, 'precondition: focus is on the page').toBe(document.body);
+      view.applyRowOp(activateOp());
+      expect(focusedId(), 'A seats No').toBe('claim-decline-cancel-btn');
+      expect(
+        handlers.onDeclineConfirmed,
+        'and does not confirm the decline',
+      ).not.toHaveBeenCalled();
+      expect(firedNames(handlers), 'it fired nothing at all').toEqual([]);
+      view.applyRowOp(activateOp());
+      expect(
+        handlers.onDeclineCancelled,
+        'the next A is the real press on No',
+      ).toHaveBeenCalledTimes(1);
+      expect(handlers.onDeclineConfirmed).not.toHaveBeenCalled();
+    }
+  });
+
+  it('CTL8H-RT-CLAIM-NO-STEAL: a render of an open frame never moves focus that is on the page behind it (a sentinel outside the frame across the arm edge, the disarm edge, a render that hides a control and a plain re-render) nor focus on <body> (an unarmed or an armed same-vm re-render, a feedback-only re-render, a render that hides a control)', () => {
+    // WRONG IMPL KILLED: a #reseat without its "focus outside the overlay -> return" guard (any
+    // focused element that is not a row reads as "a control the render hid" and is yanked to the
+    // default row, or to No / Decline on an edge: the page behind the modal loses the player's
+    // focus on every claim event); <body> treated as a focused row (`active` passed to reseatRow
+    // instead of null) or a reseatRow that no longer tells "the page" (null) from "a hidden
+    // control" (the first row is seated on every plain re-render with focus on the page).
+    const parked = (): HTMLButtonElement => {
+      const sentinel = outsideSentinel();
+      sentinel.focus();
+      expect(document.activeElement, 'precondition: focus is on the page behind the frame').toBe(
+        sentinel,
+      );
+      return sentinel;
+    };
+    const fresh = (vm: ClaimViewModel): ClaimView => {
+      blurAll();
+      return freshVisible(vm).view;
+    };
+
+    // --- a focused element OUTSIDE the frame ---------------------------------------------------
+    let view = fresh(PROMPT_VM);
+    let sentinel = parked();
+    view.render(ARMED_VM);
+    expect(document.activeElement, 'the arm edge leaves focus outside the frame alone').toBe(
+      sentinel,
+    );
+
+    view = fresh(ARMED_VM);
+    sentinel = parked();
+    view.render(PROMPT_VM);
+    expect(document.activeElement, 'the disarm edge leaves focus outside the frame alone').toBe(
+      sentinel,
+    );
+
+    view = fresh(PROMPT_VM);
+    sentinel = parked();
+    view.render(CLAIMED_VM);
+    expect(document.activeElement, 'a render that hides controls leaves outside focus alone').toBe(
+      sentinel,
+    );
+
+    view = fresh(PROMPT_VM);
+    sentinel = parked();
+    view.render(PROMPT_VM);
+    view.render(makeVm({ feedback: 'Something happened' }));
+    expect(document.activeElement, 'a plain re-render leaves outside focus alone').toBe(sentinel);
+
+    // --- focus on <body> ----------------------------------------------------------------------
+    view = fresh(PROMPT_VM);
+    expect(document.activeElement, 'precondition: focus is on the page').toBe(document.body);
+    view.render(PROMPT_VM);
+    expect(document.activeElement, 'an unarmed same-vm re-render seats no row').toBe(document.body);
+    view.render(makeVm({ feedback: 'Something happened' }));
+    expect(document.activeElement, 'a feedback-only re-render seats no row').toBe(document.body);
+
+    view = fresh(ARMED_VM);
+    expect(document.activeElement, 'precondition: focus is on the page').toBe(document.body);
+    view.render(ARMED_VM);
+    expect(document.activeElement, 'an armed same-vm re-render seats no row').toBe(document.body);
+    view.render({ ...ARMED_VM, feedback: 'Something happened' });
+    expect(document.activeElement, 'an armed feedback-only re-render seats no row').toBe(
+      document.body,
+    );
+
+    view = fresh(CLAIMED_VM);
+    expect(document.activeElement, 'precondition: focus is on the page').toBe(document.body);
+    view.render(PROMPT_VM);
+    expect(document.activeElement, 'a render that hides Join seats nothing for the page').toBe(
+      document.body,
+    );
+  });
+
+  it('CTL8H-RT-CLAIM-CONFIRM-SEATS-NOTHING: once the decline is CONFIRMED (the confirm row gone, Decline hidden, Join shown) the disarm-edge render seats no row, whether focus was on the hidden Confirm or on the page, and an A with no row focused then seats Join without pressing it', () => {
+    // WRONG IMPL KILLED: a disarm that falls back to the last row (the privacy door) or the first
+    // row (Join: a second Enter would press it and re-enter the game the player just declined)
+    // when the arming Decline is no longer a row; a disarm that seats the hidden Decline without
+    // asking whether it is still a row; and an A that presses the row it seated.
+    const armedState = stateAfter(OPENED, { kind: 'decline-requested' });
+    const confirmedState = claimStep(armedState, {
+      kind: 'decline-confirmed',
+      hasLiveConnection: true,
+    }).next;
+    const promptVm = buildClaimViewModel(stateAfter(OPENED));
+    const armedVm = buildClaimViewModel(armedState);
+    const confirmedVm = buildClaimViewModel(confirmedState);
+    expect(armedVm.actions.declineCancel, 'ANTI-VACUITY: the model armed the confirm').toBe(true);
+    expect(confirmedVm.visible, 'ANTI-VACUITY: the frame stays open after a confirm').toBe(true);
+    expect(
+      confirmedVm.actions,
+      'ANTI-VACUITY: confirm row gone, Decline hidden, Join shown',
+    ).toEqual({
+      signIn: false,
+      join: true,
+      decline: false,
+      declineConfirm: false,
+      declineCancel: false,
+    });
+
+    for (const where of ['on the hidden Confirm', 'on the page'] as const) {
+      blurAll();
+      const { view, handlers } = freshVisible(promptVm);
+      view.render(armedVm);
+      expect(focusedId(), `${where}: precondition: arming seated No`).toBe(
+        'claim-decline-cancel-btn',
+      );
+      if (where === 'on the hidden Confirm') {
+        (document.getElementById('claim-decline-confirm-btn') as HTMLElement).focus();
+        expect(focusedId(), `${where}: precondition`).toBe('claim-decline-confirm-btn');
+      } else {
+        blurAll();
+        expect(document.activeElement, `${where}: precondition`).toBe(document.body);
+      }
+
+      view.render(confirmedVm);
+      expect(focusedId(), `${where}: the disarm edge does not seat Join`).not.toBe(
+        'claim-join-btn',
+      );
+      expect(focusedId(), `${where}: nor the privacy door`).not.toBe('claim-privacy-btn');
+      expect(focusedId(), `${where}: nor the hidden Decline`).not.toBe('claim-decline-btn');
+      if (where === 'on the page') {
+        expect(document.activeElement, `${where}: focus is still on the page`).toBe(document.body);
+      }
+
+      blurAll();
+      view.applyRowOp(activateOp());
+      expect(focusedId(), `${where}: A with no row focused seats the first row, Join`).toBe(
+        'claim-join-btn',
+      );
+      expect(handlers.onJoin, `${where}: and does not press it`).not.toHaveBeenCalled();
+      expect(firedNames(handlers), `${where}: it fired nothing at all`).toEqual([]);
+    }
   });
 });
