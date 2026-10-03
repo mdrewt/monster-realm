@@ -3,8 +3,8 @@
 // the "boxed" sentinel are game-core's (the `party_size()` / `party_slot_none()` wasm exports),
 // handed in by the screen: never TS literals.
 import type { StoreEvolutionPath, StoreMonsterPub, StoreSpeciesRow } from '../net/store';
-import type { MonsterCardViewModel } from './boxModel';
-import type { NavLayout } from './nav';
+import { buildBoxViewModel, buildPartyViewModel, type MonsterCardViewModel } from './boxModel';
+import { grid, list, type NavLayout, tabs } from './nav';
 
 export type MonstersTab = 'party' | 'storage';
 export type SheetAction = 'summary' | 'nickname' | 'move';
@@ -25,29 +25,44 @@ export interface MonstersVm {
 }
 
 export function buildMonstersVm(
-  _monsters: readonly StoreMonsterPub[],
-  _speciesMap: ReadonlyMap<number, StoreSpeciesRow>,
-  _partySize: number,
-  _partySlotNone: number,
-  _paths: readonly StoreEvolutionPath[] = [],
+  monsters: readonly StoreMonsterPub[],
+  speciesMap: ReadonlyMap<number, StoreSpeciesRow>,
+  partySize: number,
+  partySlotNone: number,
+  paths: readonly StoreEvolutionPath[] = [],
 ): MonstersVm {
-  throw new Error('ctl-8b: unimplemented');
+  return {
+    party: buildPartyViewModel(monsters, speciesMap, partySize, paths).filter(
+      (card): card is MonsterCardViewModel => card !== null,
+    ),
+    storage: buildBoxViewModel(monsters, speciesMap, partySlotNone, paths),
+    partySlotNone,
+  };
 }
 
 /** A monster's nav key: its id in decimal. */
-export function monsterKey(_monsterId: bigint): string {
-  throw new Error('ctl-8b: unimplemented');
+export function monsterKey(monsterId: bigint): string {
+  return monsterId.toString();
 }
 
+const items = (cards: readonly MonsterCardViewModel[]) =>
+  cards.map((card) => ({ key: monsterKey(card.monsterId), enabled: true }));
+
 /** Tabs `party` (a list) and `storage` (a grid of STORAGE_COLS), items keyed by `monsterKey`. */
-export function monstersLayout(_vm: MonstersVm): NavLayout {
-  throw new Error('ctl-8b: unimplemented');
+export function monstersLayout(vm: MonstersVm): NavLayout {
+  return tabs([
+    { key: 'party', layout: list(items(vm.party)) },
+    { key: 'storage', layout: grid(items(vm.storage), STORAGE_COLS) },
+  ]);
 }
 
 /** Where a monster is listed, or undefined when it is in neither list. */
 export function findMonster(
-  _vm: MonstersVm,
-  _monsterId: bigint,
+  vm: MonstersVm,
+  monsterId: bigint,
 ): { readonly tab: MonstersTab; readonly card: MonsterCardViewModel } | undefined {
-  throw new Error('ctl-8b: unimplemented');
+  const party = vm.party.find((c) => c.monsterId === monsterId);
+  if (party !== undefined) return { tab: 'party', card: party };
+  const stored = vm.storage.find((c) => c.monsterId === monsterId);
+  return stored === undefined ? undefined : { tab: 'storage', card: stored };
 }

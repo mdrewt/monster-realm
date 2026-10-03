@@ -6,8 +6,8 @@
 // via callbacks passed at construction (never called directly by this module).
 //
 // Every player-facing string this view renders is resolved through the i18n
-// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `box.*` key from ui/i18n/catalog.en.ts —
-// the native `prompt()` label included; the English bytes are unchanged (the catalog pins them).
+// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `box.*` key from ui/i18n/catalog.en.ts;
+// the English bytes are unchanged (the catalog pins them).
 // The name row `card.nickname || card.speciesName` is model data, rendered raw. Every `t(`/`tf(`
 // first argument is a string LITERAL.
 //
@@ -34,13 +34,63 @@
 //
 // Each `#app`-mounted view creates its OWN root under the shared mount, so opening this view
 // never closes a sibling (no close-before-open; boxView.test.ts S4-CROSS-VIEW-DISTINCT-ROOTS).
+//
+// ctl-8b: this root is the Monsters frame. `paint(MonstersPaint)` (screens/monstersScreen.ts) is
+// kept and re-applied after every `refresh`, and reset to the opening (Storage, first card) on
+// the hidden→visible edge, so a KeyB open shows Storage before any button. Both panels stay in the
+// DOM (e2e reads the root's textContent); the inactive one and its heading are hidden by inline
+// display. The nickname is typed in an in-frame field (no `window.prompt`), sent once per commit
+// token the screen hands over.
 import type { MonsterCardViewModel } from './boxModel';
-import type { MonstersPaint } from './screens/monstersScreen';
 import { t, tf } from './i18n/resolver';
+import { SHEET_ACTIONS, type SheetAction } from './monstersModel';
+import { list, type NavTab, tabs } from './nav';
+import { renderNav, renderTabs } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
+import type { MonstersFeedback, MonstersPaint, NicknameCommit } from './screens/monstersScreen';
+
+const TAB_STRIP = tabs([
+  { key: 'party', layout: list([]) },
+  { key: 'storage', layout: list([]) },
+]);
+const tabLabel = (tab: NavTab): string =>
+  tab.key === 'party' ? t('box.tab.party') : t('box.tab.storage');
+
+const SHEET_LAYOUT = list(SHEET_ACTIONS.map((key) => ({ key, enabled: true })));
+const SHEET_LABELS: Readonly<Record<SheetAction, () => string>> = {
+  summary: () => t('box.sheet.summary'),
+  nickname: () => t('box.sheet.nickname'),
+  move: () => t('box.sheet.move'),
+};
+
+const OPENING: MonstersPaint = {
+  tab: 'storage',
+  activeKey: null,
+  sheet: null,
+  summary: null,
+  nickname: null,
+  commit: null,
+  feedback: null,
+};
+
+// The cursor card's non-colour mark. Not `.mr-nav-item`: its active rule repaints the card's
+// colours, and the cards keep their own inline ones.
+const CURSOR_OUTLINE = '3px solid #fff';
+
+// Typing in the nickname field: these keys stop or commit it and must reach the page (Escape is
+// routed in the capture phase anyway; Enter becomes A). Every other key stays in the field, out
+// of the page's hotkey ladder.
+const FIELD_RELEASED = new Set(['Escape', 'Enter', 'NumpadEnter']);
+
+const FEEDBACK_TEXT: Readonly<Record<MonstersFeedback, () => string>> = {
+  movedToParty: () => t('box.feedback.movedToParty'),
+  movedToBox: () => t('box.feedback.movedToBox'),
+};
+
+const nameOf = (card: MonsterCardViewModel): string => card.nickname || card.speciesName;
 
 export interface BoxViewCallbacks {
-  /** Called when the user confirms a nickname edit. */
+  /** Called with the nickname field's text when the Monsters screen commits it (CTL8B.3). */
   readonly onSetNickname: (monsterId: bigint, nickname: string) => void;
   /** Called when the user moves a monster to a party slot (0–5), to the next free slot
    *  (-1), or to box (`partySlotNone`). */
@@ -68,6 +118,27 @@ export class BoxView {
   readonly #boxLabelEl: HTMLHeadingElement;
   readonly #callbacks: BoxViewCallbacks;
   #visible = false;
+  // ctl-8b: the Monsters frame's parts and the kept paint.
+  readonly #tabStrip: HTMLDivElement;
+  readonly #sheetEl: HTMLDivElement;
+  readonly #sheetName: HTMLDivElement;
+  readonly #sheetList: HTMLDivElement;
+  readonly #summaryEl: HTMLDivElement;
+  readonly #summaryName: HTMLDivElement;
+  readonly #summaryStats: HTMLDivElement;
+  readonly #rowEl: HTMLDivElement;
+  readonly #rowLabel: HTMLLabelElement;
+  readonly #input: HTMLInputElement;
+  readonly #feedbackEl: HTMLDivElement;
+  #paint: MonstersPaint = OPENING;
+  /** The live cards of the last `refresh`, by nav key: a kept paint names the monster, the batch
+   *  that renamed or healed it since is what shows. */
+  #cards = new Map<string, MonsterCardViewModel>();
+  /** The last commit token sent (never reset: a token is sent at most once). */
+  #lastCommit: NicknameCommit | null = null;
+  /** The typing row's open last prefilled and focused; reset on each open of the frame. */
+  #lastEdit: number | null = null;
+  #scrolledKey: string | null = null;
 
   constructor(parent: HTMLElement, callbacks: BoxViewCallbacks) {
     this.#callbacks = callbacks;
@@ -100,6 +171,41 @@ export class BoxView {
     this.#healBtn = healBtn;
     header.appendChild(healBtn);
     this.#root.appendChild(header);
+
+    // ctl-8b: the tabs, the sheet, its summary and typing row and the Move line, all BEFORE the
+    // hint and the panels. Typing mode's Escape focuses the frame's first enabled non-text
+    // control; with Heal Party disabled under the row that is the sheet's nav list (Enter there is
+    // the router's A), never a card's To Party / To Box button.
+    this.#tabStrip = document.createElement('div');
+    this.#tabStrip.className = 'mr-frame-tabstrip';
+    this.#root.appendChild(this.#tabStrip);
+
+    this.#sheetEl = document.createElement('div');
+    this.#sheetEl.style.cssText = 'width:100%;max-width:600px;margin-bottom:8px;';
+    this.#sheetName = document.createElement('div');
+    this.#sheetName.id = 'monsters-sheet-name';
+    this.#sheetName.style.fontWeight = 'bold';
+    this.#sheetList = document.createElement('div');
+    this.#summaryEl = document.createElement('div');
+    this.#summaryName = document.createElement('div');
+    this.#summaryStats = document.createElement('div');
+    this.#summaryEl.append(this.#summaryName, this.#summaryStats);
+    this.#rowEl = document.createElement('div');
+    this.#rowLabel = document.createElement('label');
+    this.#rowLabel.htmlFor = 'monsters-nickname-input';
+    this.#input = document.createElement('input');
+    this.#input.type = 'text';
+    this.#input.id = 'monsters-nickname-input';
+    this.#input.addEventListener('keydown', (e) => {
+      if (!FIELD_RELEASED.has(e.code)) e.stopPropagation();
+    });
+    this.#rowEl.append(this.#rowLabel, this.#input);
+    this.#sheetEl.append(this.#sheetName, this.#sheetList);
+    this.#root.append(this.#sheetEl, this.#summaryEl, this.#rowEl);
+
+    this.#feedbackEl = document.createElement('div');
+    this.#feedbackEl.className = 'mr-frame-feedback';
+    this.#root.appendChild(this.#feedbackEl);
 
     // A direct #root child, so it cannot be wiped by #renderParty / #renderBox,
     // which only touch #partyEl / #boxEl. A SIBLING of `header`, never wrapping it:
@@ -157,6 +263,13 @@ export class BoxView {
     this.#hintEl.textContent = t('box.hint');
     this.#partyLabelEl.textContent = t('box.section.party');
     this.#boxLabelEl.textContent = t('box.section.box');
+    this.#rowLabel.textContent = t('box.rename.prompt');
+    // A reopened frame starts over: Storage, its first card, no sheet (the screen's `init`).
+    if (!wasVisible) {
+      this.#paint = OPENING;
+      this.#lastEdit = null;
+      this.#apply();
+    }
     this.#root.style.display = 'flex';
     if (!wasVisible) openOverlayA11y('boxView', this.#root);
   }
@@ -167,15 +280,142 @@ export class BoxView {
     closeOverlayA11y('boxView', null);
   }
 
-  /** ctl-8b SKELETON: the Monsters screen's paint (tabs, cursor, sheet, typing row). */
-  paint(_p: MonstersPaint): void {}
-
   refresh(
     partySlots: readonly (MonsterCardViewModel | null)[],
     boxMonsters: readonly MonsterCardViewModel[],
   ): void {
     this.#renderParty(partySlots);
     this.#renderBox(boxMonsters);
+    this.#cards = new Map(
+      [...partySlots, ...boxMonsters]
+        .filter((card): card is MonsterCardViewModel => card !== null)
+        .map((card) => [String(card.monsterId), card]),
+    );
+    this.#apply();
+  }
+
+  /** The Monsters screen's paint: kept, so the next `refresh` re-applies it. */
+  paint(p: MonstersPaint): void {
+    this.#paint = p;
+    this.#apply();
+  }
+
+  /** Apply the kept paint: send a new commit token's text, then the tabs and the panel shown, the
+   *  cursor card (class, aria-current and an outline: never colour alone), the sheet, its summary
+   *  and typing row, and the Move line. Focus never stays in a part this hides. */
+  #apply(): void {
+    const p = this.#paint;
+    // First, while the field still holds the text. Recorded BEFORE the callback, which may
+    // repaint: a token is sent once.
+    if (p.commit !== null && p.commit !== this.#lastCommit) {
+      this.#lastCommit = p.commit;
+      const text = this.#input.value;
+      if (text !== p.commit.current) this.#callbacks.onSetNickname(p.commit.monsterId, text);
+      if (this.#paint !== p) return; // the callback painted again, and that paint is applied
+    }
+    const live = (card: MonsterCardViewModel): MonsterCardViewModel =>
+      this.#cards.get(String(card.monsterId)) ?? card;
+
+    renderTabs(
+      this.#tabStrip,
+      TAB_STRIP,
+      { tab: p.tab, item: null, perTab: {} },
+      {
+        frame: 'monsters',
+        label: tabLabel,
+      },
+    );
+    const onParty = p.tab === 'party';
+    setShown(this.#partyLabelEl, onParty, '');
+    setShown(this.#partyEl, onParty, 'grid');
+    setShown(this.#boxLabelEl, !onParty, '');
+    setShown(this.#boxEl, !onParty, 'grid');
+
+    const active = onParty ? this.#partyEl : this.#boxEl;
+    const key =
+      p.activeKey ?? active.querySelector<HTMLElement>('[data-nav-key]')?.dataset.navKey ?? null;
+    for (const grid of [this.#partyEl, this.#boxEl]) {
+      for (const el of Array.from(grid.querySelectorAll<HTMLElement>('[data-nav-key]'))) {
+        const on = grid === active && el.dataset.navKey === key;
+        el.classList.toggle('is-active', on);
+        el.style.outline = on ? CURSOR_OUTLINE : '';
+        if (!on) {
+          el.removeAttribute('aria-current');
+          continue;
+        }
+        el.setAttribute('aria-current', 'true');
+        if (this.#scrolledKey !== `${p.tab}:${key}`) {
+          if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
+          this.#scrolledKey = `${p.tab}:${key}`;
+        }
+      }
+    }
+
+    const sheet = p.sheet;
+    setShown(this.#sheetEl, sheet !== null, '');
+    this.#sheetName.textContent = sheet === null ? '' : nameOf(live(sheet.card));
+    if (sheet !== null) {
+      renderNav(
+        this.#sheetList,
+        SHEET_LAYOUT,
+        { tab: null, item: sheet.action, perTab: {} },
+        {
+          frame: 'monstersSheet',
+          labelledBy: this.#sheetName.id,
+          fill: (el, item) => {
+            el.textContent = SHEET_LABELS[item.key as SheetAction]();
+          },
+        },
+      );
+    }
+
+    const summary = p.summary === null ? null : live(p.summary);
+    setShown(this.#summaryEl, summary !== null, '');
+    this.#summaryName.textContent = summary === null ? '' : nameOf(summary);
+    this.#summaryStats.textContent =
+      summary === null
+        ? ''
+        : tf('box.card.stats', {
+            species: summary.speciesName,
+            level: summary.level,
+            current: summary.currentHp,
+            max: summary.statHp,
+            percent: summary.hpPercent,
+          });
+
+    const row = p.nickname;
+    setShown(this.#rowEl, row !== null, '');
+    // Under the row Escape must not land on Heal Party (Enter would heal, not commit).
+    this.#healBtn.disabled = row !== null;
+    if (row !== null && row.edit !== this.#lastEdit) {
+      // A new open only: a repaint of the same open keeps the typed text and never takes focus
+      // back from an Escape.
+      this.#lastEdit = row.edit;
+      this.#input.value = row.card.nickname;
+      this.#input.focus();
+    }
+
+    const feedback = p.feedback;
+    setShown(this.#feedbackEl, feedback !== null, '');
+    this.#feedbackEl.textContent = feedback === null ? '' : FEEDBACK_TEXT[feedback]();
+    if (feedback === null) this.#feedbackEl.removeAttribute('data-feedback');
+    else this.#feedbackEl.dataset.feedback = 'ok';
+
+    // A part hidden under the focus would strand it (the next key would heal focus to the world,
+    // out of the frame): hand it to the frame's anchor.
+    const focused = document.activeElement;
+    if (this.#visible && focused instanceof HTMLElement && this.#hiddenInFrame(focused)) {
+      this.#titleEl.focus();
+    }
+  }
+
+  /** Whether `el` sits in the frame below an inline-hidden part (the root itself excluded). */
+  #hiddenInFrame(el: HTMLElement): boolean {
+    if (!this.#root.contains(el)) return false;
+    for (let n: HTMLElement | null = el; n !== null && n !== this.#root; n = n.parentElement) {
+      if (n.style.display === 'none') return true;
+    }
+    return false;
   }
 
   #renderParty(slots: readonly (MonsterCardViewModel | null)[]): void {
@@ -190,6 +430,7 @@ export class BoxView {
         // Dimmed by colour, never opacity: #aaa keeps 7:1 on the card (opacity 0.4 fell below AA).
         el.style.color = '#aaa';
       } else {
+        el.dataset.navKey = String(card.monsterId);
         el.appendChild(this.#renderCard(card, true));
       }
       this.#partyEl.appendChild(el);
@@ -208,6 +449,7 @@ export class BoxView {
     for (const card of monsters) {
       const el = document.createElement('div');
       el.style.cssText = 'border:1px solid #444;border-radius:4px;padding:8px;background:#1a1a2e;';
+      el.dataset.navKey = String(card.monsterId);
       el.appendChild(this.#renderCard(card, false));
       this.#boxEl.appendChild(el);
     }
@@ -222,12 +464,6 @@ export class BoxView {
     nameSpan.textContent = card.nickname || card.speciesName;
     nameSpan.style.fontWeight = 'bold';
     nameRow.appendChild(nameSpan);
-
-    const editBtn = document.createElement('button');
-    editBtn.textContent = t('box.card.rename');
-    editBtn.style.cssText = 'font-size:11px;cursor:pointer;';
-    editBtn.addEventListener('click', () => this.#promptNickname(card.monsterId, card.nickname));
-    nameRow.appendChild(editBtn);
     wrap.appendChild(nameRow);
 
     const info = document.createElement('div');
@@ -279,11 +515,10 @@ export class BoxView {
 
     return wrap;
   }
+}
 
-  #promptNickname(monsterId: bigint, currentName: string): void {
-    const name = prompt(t('box.rename.prompt'), currentName);
-    if (name !== null && name !== currentName) {
-      this.#callbacks.onSetNickname(monsterId, name);
-    }
-  }
+/** Show or hide a frame part by inline display (the house idiom, which `[hidden]` cannot beat
+ *  on a part that sets its own display). */
+function setShown(el: HTMLElement, shown: boolean, display: string): void {
+  el.style.display = shown ? display : 'none';
 }

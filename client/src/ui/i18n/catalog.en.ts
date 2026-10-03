@@ -373,10 +373,6 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // dimmed.
   // boxView.ts:173
   'box.box.empty': 'No monsters in box.',
-  // @desc: Small button on a monster card that opens the nickname prompt. Short verb, fits a
-  // very narrow button.
-  // boxView.ts:197
-  'box.card.rename': 'Rename',
   // @desc: Info line on a monster card in the party or box; {species} is the species name,
   // {level} the level ("Lv" abbreviates "Level"), {current}/{max} its hit points and {percent}
   // the same as a percentage. Keep the "HP {current}/{max}" shape — tests read it. One line of
@@ -395,10 +391,34 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // inside box.hint, so the two must stay identical. Two words, fits a very narrow button.
   // boxView.ts:235
   'box.card.toParty': 'To Party',
-  // @desc: Label of the browser's text-input prompt dialog asking for a monster's new nickname;
-  // the current name is pre-filled. Short, ends with a colon.
-  // boxView.ts:248 (prompt() argument)
+  // @desc: Label of the in-frame text field asking for a monster's new nickname; the current name
+  // is pre-filled. Short, ends with a colon.
+  // boxView.ts (the Monsters nickname row)
   'box.rename.prompt': 'New nickname:',
+  // @desc: Tab of the Monsters screen listing the party (up to six monsters). One word.
+  // boxView.ts (the Monsters frame)
+  'box.tab.party': 'Party',
+  // @desc: Tab of the Monsters screen listing the monsters kept in storage (the box). One word.
+  // boxView.ts (the Monsters frame)
+  'box.tab.storage': 'Storage',
+  // @desc: Action on a monster's action sheet that shows its details. One word.
+  // boxView.ts (the Monsters frame)
+  'box.sheet.summary': 'Summary',
+  // @desc: Action on a monster's action sheet that opens a text field to rename it. One word.
+  // boxView.ts (the Monsters frame)
+  'box.sheet.nickname': 'Nickname',
+  // @desc: Action on a monster's action sheet that moves it between the party and storage.
+  // One word.
+  // boxView.ts (the Monsters frame)
+  'box.sheet.move': 'Move',
+  // @desc: Confirmation line after a monster moved from storage into the party; the screen draws a
+  // check mark before it. Short phrase.
+  // boxView.ts (the Monsters frame)
+  'box.feedback.movedToParty': 'Moved to party',
+  // @desc: Confirmation line after a monster moved from the party into storage; the screen draws a
+  // check mark before it. Short phrase.
+  // boxView.ts (the Monsters frame)
+  'box.feedback.movedToBox': 'Moved to storage',
   // @desc: Status line of the trade overlay when the player is in no trade. One short line.
   // tradeView.ts:93
   'trade.status.none': 'No active trade',
