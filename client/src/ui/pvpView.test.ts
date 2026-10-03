@@ -2346,3 +2346,99 @@ describe('PvpView.hostChrome (ctl-8s, CTL8S.3)', () => {
     expect(view.visible, 'the shown panel stays shown').toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ctl-8d (CTL8D.2): the Social adapter's cursor on a challenge row. On the Challenges tab the
+// cursor sits on the incoming or the outgoing request, and `paintCursor` marks the container the
+// pvp root shows that request in (`#pvp-challenge-incoming` / `#pvp-challenge-outgoing`) with the
+// nav-item class, the active class and aria-current: never by colour alone. The containers survive
+// every refresh (only their children are rebuilt), so the mark does too; `hide()` clears it. The
+// legacy buttons inside a marked container stay directly clickable (ctl-13 retires them).
+// ---------------------------------------------------------------------------
+
+describe('PvpView.paintCursor (ctl-8d, CTL8D.2)', () => {
+  it('CTL8D-2-VIEW-CHALLENGE-CURSOR: paintCursor(incoming) marks #pvp-challenge-incoming alone and paintCursor(outgoing) #pvp-challenge-outgoing alone (mr-nav-item, is-active, aria-current="true"), null clears both; the mark survives a refresh of the same view model and one that rebuilds the row, hide() clears it; Accept, Decline and Cancel inside a marked container still dispatch their callbacks; paintCursor adds no child to the root', async () => {
+    // WRONG IMPL KILLED: a mark on both containers, or left on the old one when the cursor moves
+    // (two rows read as current); a mark by class alone (no aria-current); a mark written into the
+    // row's children, which the next refresh that changes the row rebuilds away; a mark that
+    // survives hide(), so a reopened panel shows a stale cursor; a paintCursor that re-renders the
+    // rows or disables their buttons (the legacy Accept stays clickable until ctl-13); and one that
+    // inserts a cursor element into the dialog root.
+    const root = mountPvpOverlay();
+    const cbs = makeCallbacks();
+    const view = new PvpView(cbs);
+    const vm = raPvpVm();
+    view.refresh(vm, true);
+    const children = [...root.children];
+    const incoming = document.getElementById('pvp-challenge-incoming') as HTMLElement;
+    const outgoing = document.getElementById('pvp-challenge-outgoing') as HTMLElement;
+    const MARKED = [true, true, 'true'] as const;
+    const UNMARKED = [false, false, null] as const;
+    const marks = (): Array<[boolean, boolean, string | null]> =>
+      [incoming, outgoing].map((el): [boolean, boolean, string | null] => [
+        el.classList.contains('mr-nav-item'),
+        el.classList.contains('is-active'),
+        el.getAttribute('aria-current'),
+      ]);
+    const click = (testId: string): void => {
+      const btn = document.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`);
+      if (btn === null) throw new Error(`precondition: [data-testid="${testId}"] is rendered`);
+      btn.click();
+    };
+    expect(marks(), 'precondition: no mark before any paint').toEqual([UNMARKED, UNMARKED]);
+
+    // The incoming request.
+    view.paintCursor('incoming');
+    expect(marks(), 'incoming: that container alone').toEqual([MARKED, UNMARKED]);
+    view.refresh(vm, true);
+    expect(marks(), 'a refresh of the same view model keeps it').toEqual([MARKED, UNMARKED]);
+    view.refresh(
+      pvpVm({
+        ...vm,
+        incoming: { challengeId: RA_INCOMING_ID, challengerId: '0xbbb', challengerName: 'Bobby' },
+      }),
+      true,
+    );
+    expect(
+      document.querySelector('[data-testid="pvp-incoming-label"]')?.textContent,
+      'precondition: the refresh rebuilt the incoming row',
+    ).toBe(i18nTf('pvp.incoming.label', { challenger: 'Bobby' }));
+    expect(marks(), 'a refresh that rebuilds the row keeps it').toEqual([MARKED, UNMARKED]);
+    click('pvp-accept-btn');
+    expect(cbs.onAccept, 'Accept in the marked container dispatches').toHaveBeenCalledWith(
+      RA_INCOMING_ID,
+    );
+    await raFlushPromises();
+    click('pvp-decline-btn');
+    expect(cbs.onDecline, 'Decline in the marked container dispatches').toHaveBeenCalledWith(
+      RA_INCOMING_ID,
+    );
+    await raFlushPromises();
+
+    // The outgoing request.
+    view.paintCursor('outgoing');
+    expect(marks(), 'outgoing: that container alone').toEqual([UNMARKED, MARKED]);
+    click('pvp-cancel-btn');
+    expect(cbs.onCancel, 'Cancel in the marked container dispatches').toHaveBeenCalledWith(
+      RA_OUTGOING_ID,
+    );
+    await raFlushPromises();
+
+    // No row.
+    view.paintCursor(null);
+    expect(marks(), 'null: neither container').toEqual([UNMARKED, UNMARKED]);
+
+    // hide() clears it, and a reopened panel carries none.
+    view.paintCursor('incoming');
+    expect(marks(), 'precondition: incoming marked again').toEqual([MARKED, UNMARKED]);
+    view.hide();
+    expect(marks(), 'hide(): neither container').toEqual([UNMARKED, UNMARKED]);
+    view.refresh(vm, true);
+    expect(marks(), 'reopened: no mark from the last visit').toEqual([UNMARKED, UNMARKED]);
+
+    expect(root.children.length, 'paintCursor added no child to the root').toBe(children.length);
+    children.forEach((child, i) => {
+      expect(root.children[i], `root child ${i} is unchanged`).toBe(child);
+    });
+  });
+});

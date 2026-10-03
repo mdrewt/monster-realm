@@ -1,7 +1,7 @@
 // pvpModel.test.ts — unit tests for buildPvpChallengeViewModel.
 import { describe, expect, it } from 'vitest';
 import type { StoreBattleChallenge, StorePlayer } from '../net/store';
-import { buildPvpChallengeViewModel } from './pvpModel';
+import { buildPvpChallengeViewModel, incomingChallenge, outgoingChallenge } from './pvpModel';
 
 const ME = 'aabbcc';
 const OTHER_A = '111111';
@@ -118,5 +118,62 @@ describe('buildPvpChallengeViewModel', () => {
     const vm = buildPvpChallengeViewModel([c], ME, PLAYERS);
     expect(vm.outgoing).not.toBeNull();
     expect(vm.outgoing?.status).toBe('Pending');
+  });
+});
+
+// ctl-8d: the Social frame's Challenges rows and the pvp root select through the same two
+// selectors, so a Social row is always the block the root shows.
+describe('ctl-8d: the challenge selectors', () => {
+  it('ctl-8d: with two Pending challenges targeting the viewer, incoming is the one with the LOWEST challengeId (the oldest), whatever the store order', () => {
+    // WRONG IMPL KILLED: the pre-ctl-8d rule (the first Pending row in store order: the newer one
+    // when it is stored first), and the newest request. The Social Challenges row is the oldest
+    // request, and A there must act on the block the pvp root shows.
+    const older = makeChallenge(4n, OTHER_A, ME, 'Pending');
+    const newer = makeChallenge(9n, OTHER_B, ME, 'Pending');
+    for (const rows of [
+      [newer, older],
+      [older, newer],
+    ]) {
+      const vm = buildPvpChallengeViewModel(rows, ME, PLAYERS);
+      expect(vm.incoming?.challengeId, 'the lowest challengeId').toBe(4n);
+      expect(vm.incoming?.challengerName, 'its challenger').toBe('Alice');
+    }
+  });
+
+  it('ctl-8d: incomingChallenge is the raw oldest Pending challenge targeting the viewer and outgoingChallenge the raw newest Pending one the viewer sent, never a third party`s or a non-Pending row, each undefined when there is none, and the view model shows exactly those two', () => {
+    // WRONG IMPL KILLED: a selector without the target / challenger check (the third party's
+    // challenge has the lowest id), without the Pending check (the Declined request and the
+    // Cancelled outgoing one each have the id the rule would otherwise pick), with the id order
+    // reversed, or a view model that selects by another rule than its selectors.
+    const rows = [
+      makeChallenge(1n, OTHER_A, OTHER_B, 'Pending'),
+      makeChallenge(2n, OTHER_A, ME, 'Declined'),
+      makeChallenge(9n, OTHER_B, ME, 'Pending'),
+      makeChallenge(4n, OTHER_A, ME, 'Pending'),
+      makeChallenge(7n, ME, OTHER_A, 'Pending'),
+      makeChallenge(5n, ME, OTHER_B, 'Pending'),
+      makeChallenge(8n, ME, OTHER_B, 'Cancelled'),
+    ];
+    expect(incomingChallenge(rows, ME), 'the oldest request').toEqual(
+      makeChallenge(4n, OTHER_A, ME, 'Pending'),
+    );
+    expect(outgoingChallenge(rows, ME), 'the newest Pending outgoing').toEqual(
+      makeChallenge(7n, ME, OTHER_A, 'Pending'),
+    );
+    const vm = buildPvpChallengeViewModel(rows, ME, PLAYERS);
+    expect(vm.incoming?.challengeId, 'the view model shows the same request').toBe(4n);
+    expect(vm.outgoing?.challengeId, 'and the same outgoing challenge').toBe(7n);
+
+    expect(incomingChallenge([], ME), 'no rows').toBeUndefined();
+    expect(outgoingChallenge([], ME), 'no rows').toBeUndefined();
+    const notMine = [makeChallenge(1n, OTHER_A, OTHER_B, 'Pending')];
+    expect(incomingChallenge(notMine, ME), 'only a third party`s').toBeUndefined();
+    expect(outgoingChallenge(notMine, ME), 'only a third party`s').toBeUndefined();
+    const settled = [
+      makeChallenge(2n, OTHER_A, ME, 'Declined'),
+      makeChallenge(8n, ME, OTHER_B, 'Cancelled'),
+    ];
+    expect(incomingChallenge(settled, ME), 'only a non-Pending request').toBeUndefined();
+    expect(outgoingChallenge(settled, ME), 'only a non-Pending outgoing').toBeUndefined();
   });
 });

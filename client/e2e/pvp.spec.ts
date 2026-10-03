@@ -6,6 +6,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { closeAll } from './controls';
 
 // PvP challenge overlay e2e — client-side UI wiring.
 //
@@ -186,5 +187,122 @@ test.describe
       // Cleanup.
       await page.keyboard.press('Escape');
       await expect(page.locator('#pvp-challenge-overlay')).toBeHidden({ timeout: 5_000 });
+    });
+  });
+
+// ctl-8d (CTL8D.1, CTL8D.2): answering a challenge from the Social frame with the keyboard.
+//
+// Two players, each in its own chromium.launch() (two browsers, two SpacetimeDB identities: the
+// pvp-side-b.spec.ts design). A presses P and clicks B's challenge button, selected by B's
+// identity (every client joins as "Player"). B never opens anything: the incoming challenge opens
+// Social on its Challenges tab with the cursor on the request. B answers it from the action sheet:
+// A (Enter) opens Accept / Decline on Accept, Down then A on Decline asks Yes / No with No
+// selected, Up then A on Yes declines. The request is then gone for both players. Decline, not
+// Accept: it leaves no battle behind for the specs that run after this one, and answering is what
+// closes the request (the auto-show would re-open Social while it is pending).
+//
+// `__game()` is read only for readiness, the identities and closeAll's stack; every step is a key
+// press or a click on the production DOM.
+//
+// WHAT THIS KILLS: a Social frame that opens on another tab for an incoming challenge or puts no
+// cursor on it; a sheet that does not open on Enter, opens on Decline, or lists other actions; a
+// Decline that sends at once or whose prompt defaults to Yes; and a Yes that sends nothing (the
+// request would stay on both screens).
+test.describe
+  .serial('ctl-8d — answering a challenge from the Social sheet (two players)', () => {
+    let browserA: Browser;
+    let pageA: Page;
+    let browserB: Browser;
+    let pageB: Page;
+
+    test.beforeAll(async () => {
+      browserA = await chromium.launch();
+      const ctxA: BrowserContext = await browserA.newContext();
+      pageA = await ctxA.newPage();
+      browserB = await chromium.launch();
+      const ctxB: BrowserContext = await browserB.newContext();
+      pageB = await ctxB.newPage();
+      await pageA.goto('/');
+      await pageB.goto('/');
+      await Promise.all([ready(pageA), ready(pageB)]);
+    });
+
+    test.afterAll(async () => {
+      // Tolerant teardown (pvp-side-b.spec.ts precedent): a failing assertion above must not leave
+      // either browser process orphaned.
+      try {
+        await browserA?.close();
+      } catch {
+        // ignore — may already be closed by an error path
+      }
+      try {
+        await browserB?.close();
+      } catch {
+        // ignore
+      }
+    });
+
+    test('ctl-8d: B is challenged, Social opens on Challenges with the cursor on the request, and B declines it from the sheet with the keyboard (No is the default)', async () => {
+      test.setTimeout(120_000);
+      const identityOf = (p: Page): Promise<string> =>
+        p.evaluate(() => (window as unknown as { __game: () => GameSnap }).__game().identity);
+      const identityA = await identityOf(pageA);
+      const identityB = await identityOf(pageB);
+      expect(identityA, 'identityA must be non-empty').not.toBe('');
+      expect(identityB, 'identityB must be non-empty').not.toBe('');
+      expect(identityA, 'two players, two identities').not.toBe(identityB);
+      // Nothing open on either side: the auto-show needs no overlay up, and A's P must open.
+      await closeAll(pageA);
+      await closeAll(pageB);
+
+      // A opens Social on Challenges and challenges B.
+      await pageA.keyboard.press('p');
+      await expect(pageA.locator('#pvp-challenge-overlay')).toBeVisible({ timeout: 5_000 });
+      const challengeB = pageA.locator(
+        `[data-testid="pvp-challenge-player-btn"][data-player-identity="${identityB}"]`,
+      );
+      await expect(challengeB).toBeVisible({ timeout: 15_000 });
+      await challengeB.click();
+      await expect(pageA.locator('[data-testid="pvp-outgoing-label"]')).toBeVisible({
+        timeout: 15_000,
+      });
+
+      // B: Social opens by itself, on Challenges, with the cursor on the request.
+      await expect(pageB.locator('#pvp-challenge-overlay')).toBeVisible({ timeout: 15_000 });
+      await expect(pageB.locator('[data-testid="pvp-incoming-label"]')).toBeVisible();
+      await expect(pageB.locator('#pvp-challenge-overlay #social-tabs')).toHaveCount(1);
+      await expect(pageB.locator('#social-tab-challenges')).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      await expect(pageB.locator('#pvp-challenge-incoming')).toHaveAttribute(
+        'aria-current',
+        'true',
+      );
+
+      // A: the sheet, Accept then Decline, the cursor on Accept.
+      await pageB.keyboard.press('Enter');
+      await expect(pageB.locator('#social-sheet [data-nav-key]')).toHaveText(['Accept', 'Decline']);
+      await expect(pageB.locator('#social-sheet [aria-selected="true"]')).toHaveText('Accept');
+
+      // Down, A on Decline: the question, No selected; nothing is answered yet.
+      await pageB.keyboard.press('ArrowDown');
+      await expect(pageB.locator('#social-sheet [aria-selected="true"]')).toHaveText('Decline');
+      await pageB.keyboard.press('Enter');
+      await expect(pageB.locator('#social-prompt-text')).toBeVisible();
+      await expect(pageB.locator('#social-prompt-text')).toHaveText('Decline this challenge?');
+      await expect(pageB.locator('#social-confirm [aria-selected="true"]')).toHaveText('No');
+      await expect(pageB.locator('[data-testid="pvp-incoming-label"]')).toBeVisible();
+
+      // Up to Yes, A: declined. The request is gone for B and for A; no battle starts.
+      await pageB.keyboard.press('ArrowUp');
+      await expect(pageB.locator('#social-confirm [aria-selected="true"]')).toHaveText('Yes');
+      await pageB.keyboard.press('Enter');
+      await expect(pageB.locator('[data-testid="pvp-incoming-label"]')).toHaveCount(0, {
+        timeout: 15_000,
+      });
+      await expect(pageA.locator('[data-testid="pvp-outgoing-label"]')).toHaveCount(0, {
+        timeout: 15_000,
+      });
     });
   });
