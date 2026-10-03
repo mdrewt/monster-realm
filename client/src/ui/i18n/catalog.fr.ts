@@ -448,6 +448,33 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // check mark before it. Short phrase.
   // boxView.ts (the Monsters frame)
   'box.feedback.movedToBox': 'Déplacé dans le stockage',
+  // @desc: Action on a monster's action sheet that sends it a care visit (the daily care action,
+  // the same action as the raising screen's Care button). One word.
+  // boxView.ts (the Monsters frame)
+  'box.sheet.care': 'Choyer',
+  // @desc: Action on a monster's action sheet that opens the list of foods to feed it; the
+  // trailing ellipsis (one character) marks a row that opens a list. One word plus the ellipsis.
+  // boxView.ts (the Monsters frame)
+  'box.sheet.feed': 'Nourrir…',
+  // @desc: Action on a monster's action sheet that opens the list of its evolution paths; the
+  // trailing ellipsis (one character) marks a row that opens a list. One word plus the ellipsis.
+  // boxView.ts (the Monsters frame)
+  'box.sheet.evolve': 'Évoluer…',
+  // @desc: Reason shown after the disabled Feed… row when the player holds no food. Two words.
+  // boxView.ts (the Monsters frame)
+  'box.sheet.feedNone': 'Aucune nourriture',
+  // @desc: One row of the food list under a monster's action sheet; {name} is the item's name and
+  // {count} how many the player holds. Keep the "(x{count})" shape. One short line.
+  // boxView.ts (the Monsters frame)
+  'box.feed.item': (p) => `${p.name} (x${p.count})`,
+  // @desc: Question of the Yes / No confirm before evolving a monster; {name} is the monster's
+  // nickname or species and {species} the species it would become. One question, ends with "?".
+  // boxView.ts (the Monsters frame)
+  'box.evolve.confirm': (p) => `Faire évoluer ${p.name} en ${p.species} ?`,
+  // @desc: Confirmation line after a monster was fed; {name} is the monster's nickname or species;
+  // the screen draws a check mark before it. Short phrase.
+  // boxView.ts (the Monsters frame)
+  'box.feedback.fed': (p) => `${p.name} nourri`,
   // @desc: Status line of the trade overlay when the player is in no trade. One short line.
   // tradeView.ts:93
   'trade.status.none': 'Aucun échange en cours',

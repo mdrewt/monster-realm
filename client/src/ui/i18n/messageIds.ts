@@ -120,6 +120,15 @@ export type MessageId =
   | 'box.sheet.move'
   | 'box.feedback.movedToParty'
   | 'box.feedback.movedToBox'
+  // ctl-8c: the sheet's Care / Feed… / Evolve… rows, the no-food reason, the food row, the Evolve
+  // confirm and the fed line (boxView.ts).
+  | 'box.sheet.care'
+  | 'box.sheet.feed'
+  | 'box.sheet.evolve'
+  | 'box.sheet.feedNone'
+  | 'box.feed.item'
+  | 'box.evolve.confirm'
+  | 'box.feedback.fed'
   // Trade.* : the live-trade overlay (tradeView.ts); `tradePropose.*` is the dialog.
   | 'trade.status.none'
   | 'trade.side.offer'
@@ -360,6 +369,9 @@ export interface MessageParams {
     readonly max: number;
     readonly percent: number;
   };
+  readonly 'box.feed.item': { readonly name: string; readonly count: number };
+  readonly 'box.evolve.confirm': { readonly name: string; readonly species: string };
+  readonly 'box.feedback.fed': { readonly name: string };
   readonly 'trade.side.card': {
     readonly nickname: string;
     readonly species: string;
