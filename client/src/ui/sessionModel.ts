@@ -115,7 +115,15 @@ export interface SessionViewModel {
   readonly visible: boolean;
   readonly title: string;
   readonly body: string;
+  /** The Continue-as-guest label. Not the default action: Retry is (CTL8K.1). */
   readonly primaryActionLabel: string;
+  /** The default action, focused when the gate opens (CTL8K.1). */
+  readonly retryLabel: string;
+  /** The second step's options; No is the default (CTL8K.1). */
+  readonly confirmYesLabel: string;
+  readonly confirmNoLabel: string;
+  /** Says B and Start are inert under the gate (CTL8K.1). */
+  readonly hint: string;
   /** Present ONLY while confirmPending (AUTH-56's distinct second step). */
   readonly confirmPrompt: string | undefined;
   readonly feedback: string | undefined;
@@ -130,6 +138,10 @@ export function buildSessionViewModel(state: SessionModelState): SessionViewMode
     title: expired ? t('chrome.session.expired.title') : t('chrome.session.unreachable.title'),
     body: expired ? t('chrome.session.expired.body') : t('chrome.session.unreachable.body'),
     primaryActionLabel: t('chrome.session.continue'),
+    retryLabel: t('session.retry'),
+    confirmYesLabel: t('prompt.yes'),
+    confirmNoLabel: t('prompt.no'),
+    hint: t('session.hint'),
     // AUTH-56: names the irreversible consequence. Longer than 20 chars, and the first step must
     // not already carry it.
     confirmPrompt: state.confirmPending ? t('chrome.session.confirmPrompt') : undefined,

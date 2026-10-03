@@ -108,6 +108,14 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // sessionModel.ts:133
   'chrome.session.confirmPrompt':
     'Continuing as a guest gives up this account session on this tab and cannot be undone. Continue as a guest?',
+  // @desc: Button on the session overlay that tries signing in again; the default action, so it is
+  // focused when the overlay opens. One short word, fits a button.
+  // sessionModel.ts (buildSessionViewModel)
+  'session.retry': 'Retry',
+  // @desc: Line at the foot of the session overlay; says the B and Start buttons do nothing while it
+  // is up, and names the keys that move between its buttons and choose one.
+  // sessionModel.ts (buildSessionViewModel)
+  'session.hint': 'B and Start do nothing here. Tab moves, Enter chooses.',
   // @desc: Heading of the battle overlay; the first thing announced when a PvE or PvP battle opens.
   // One word, fits a 320px-wide column.
   // battleView.ts:110 (resolved in show())
@@ -631,10 +639,10 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'shop.confirm.sell': (p) => `Sell ${p.qty} ${p.name} for ${p.gold} gold?`,
   // @desc: The affirmative option of a Yes / No confirm (the shop's buy and sell, the heal
   // question, the Monsters sheet's Evolve confirm). One short word.
-  // shopView.ts, healView.ts, boxView.ts (the confirm options)
+  // shopView.ts, healView.ts, boxView.ts, sessionModel.ts (the confirm options)
   'prompt.yes': 'Yes',
   // @desc: The negative option of a Yes / No confirm, beside Yes. One short word.
-  // shopView.ts, healView.ts, boxView.ts (the confirm options)
+  // shopView.ts, healView.ts, boxView.ts, sessionModel.ts (the confirm options)
   'prompt.no': 'No',
   // @desc: Tab of the Social screen that will list the players online. One word, fits a narrow tab.
   // tradeView.ts (the Social tab strip)

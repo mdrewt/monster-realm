@@ -43,6 +43,8 @@ export type MessageId =
   | 'chrome.session.unreachable.body'
   | 'chrome.session.continue'
   | 'chrome.session.confirmPrompt'
+  | 'session.retry'
+  | 'session.hint'
   | 'battle.title'
   | 'battle.continueHint'
   | 'battle.swap.hint'
