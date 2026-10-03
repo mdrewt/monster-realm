@@ -365,35 +365,34 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
     APP_VIEWS.filter((b) => b !== a).map((b) => [a, b] as const),
   );
 
-  it.each(ORDERED_PAIRS.map(([a, b]) => [a.id, b.id, a, b] as const))(
-    'S4-CROSS-VIEW-DISTINCT-ROOTS BITES: %s stays open while %s opens and closes on the same #app mount',
-    (_aId, _bId, a, b) => {
-      const app = document.createElement('div');
-      document.body.appendChild(app);
-      const viewA = a.make(app);
-      const rootA = app.lastElementChild as HTMLElement;
-      const viewB = b.make(app);
-      expect(app.lastElementChild, 'each view mounts its OWN root').not.toBe(rootA);
+  it.each(
+    ORDERED_PAIRS.map(([a, b]) => [a.id, b.id, a, b] as const),
+  )('S4-CROSS-VIEW-DISTINCT-ROOTS BITES: %s stays open while %s opens and closes on the same #app mount', (_aId, _bId, a, b) => {
+    const app = document.createElement('div');
+    document.body.appendChild(app);
+    const viewA = a.make(app);
+    const rootA = app.lastElementChild as HTMLElement;
+    const viewB = b.make(app);
+    expect(app.lastElementChild, 'each view mounts its OWN root').not.toBe(rootA);
 
-      const expectAOpen = (when: string): void => {
-        expect(rootA.getAttribute('role'), `${a.id} role ${when}`).toBe(OVERLAY_A11Y[a.id].role);
-        expect(rootA.getAttribute('aria-modal'), `${a.id} aria-modal ${when}`).toBe('true');
-        expect(rootA.getAttribute('aria-label'), `${a.id} aria-label ${when}`).toBe(
-          t(OVERLAY_A11Y[a.id].labelKey),
-        );
-      };
+    const expectAOpen = (when: string): void => {
+      expect(rootA.getAttribute('role'), `${a.id} role ${when}`).toBe(OVERLAY_A11Y[a.id].role);
+      expect(rootA.getAttribute('aria-modal'), `${a.id} aria-modal ${when}`).toBe('true');
+      expect(rootA.getAttribute('aria-label'), `${a.id} aria-label ${when}`).toBe(
+        t(OVERLAY_A11Y[a.id].labelKey),
+      );
+    };
 
-      viewA.show();
-      expectAOpen('after it opens');
-      viewB.show();
-      expectAOpen(`after ${b.id} opens`);
-      viewB.hide();
-      expectAOpen(`after ${b.id} closes`);
+    viewA.show();
+    expectAOpen('after it opens');
+    viewB.show();
+    expectAOpen(`after ${b.id} opens`);
+    viewB.hide();
+    expectAOpen(`after ${b.id} closes`);
 
-      viewA.hide();
-      document.body.removeChild(app);
-    },
-  );
+    viewA.hide();
+    document.body.removeChild(app);
+  });
 });
 
 const BOX_PARTY_HINT_SELECTOR = '[data-testid="box-party-hint"]';
