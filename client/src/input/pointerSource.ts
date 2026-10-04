@@ -27,6 +27,9 @@ import {
 
 export type PointerTop = 'world' | 'frame' | 'other';
 
+/** How a seek's walk ended. */
+type Walk = 'arrived' | 'undone' | 'stopped';
+
 export interface PointerDeps {
   /** The bare world base (no sheet open), a screen or prompt frame on top, or anything else. */
   top(): PointerTop;
@@ -144,6 +147,8 @@ export class PointerSource {
   #lastTouch = -Infinity;
   #lastMove: { x: number; y: number } | null = null;
   #lastHover: Element | null = null;
+  /** A container a hover probe found undriven: no further hover probes it until a key or click. */
+  #staleHover: HTMLElement | null = null;
 
   constructor(
     gameScreen: HTMLElement,
@@ -155,6 +160,9 @@ export class PointerSource {
     this.#canvas = canvas;
     this.#deps = deps;
     this.#clock = clock;
+    // The swallow runs in the CAPTURE phase: a native button or a view's own row listener inside
+    // the game screen would otherwise take a fired long-press's trailing click before the bubble.
+    gameScreen.addEventListener('click', (e) => this.#swallowClick(e), true);
     gameScreen.addEventListener('click', (e) => this.#onClick(e));
     gameScreen.addEventListener('contextmenu', (e) => this.#onContextMenu(e));
     gameScreen.addEventListener('pointerdown', (e) => this.#onPointerDown(e));
@@ -167,13 +175,18 @@ export class PointerSource {
   keyPressed(): void {
     this.#screen.classList.remove(HOVER_CLASS);
     this.#lastHover = null;
+    this.#staleHover = null;
+  }
+
+  #swallowClick(e: MouseEvent): void {
+    if (this.#clock.now() >= this.#swallowUntil) return;
+    this.#swallowUntil = -Infinity;
+    e.stopPropagation();
+    e.preventDefault();
   }
 
   #onClick(e: MouseEvent): void {
-    if (this.#clock.now() < this.#swallowUntil) {
-      this.#swallowUntil = -Infinity;
-      return;
-    }
+    this.#staleHover = null;
     if (this.#deps.capturing() || !(e.target instanceof Element)) return;
     const target = e.target;
     const shopBtn = target.closest<HTMLElement>('[data-shop-id]');
@@ -217,16 +230,26 @@ export class PointerSource {
 
   #onContextMenu(e: MouseEvent): void {
     if (e.target instanceof Element && e.target.closest(EDITABLE) !== null) return;
-    e.preventDefault();
     // The browser's own menu gesture for a touch long-press: the timer already pressed (or will
     // press) the one B.
-    if (this.#track !== null || this.#clock.now() - this.#lastTouch < TOUCH_GRACE_MS) return;
+    if (this.#track !== null || this.#clock.now() - this.#lastTouch < TOUCH_GRACE_MS) {
+      e.preventDefault();
+      return;
+    }
+    // Only the mouse's right button is B: the keyboard's menu key keeps the browser menu (the
+    // remappable binding table decides what keys press).
+    if (e.button !== 2) return;
+    e.preventDefault();
     this.#back();
   }
 
   #onPointerDown(e: PointerEvent): void {
     this.#swallowUntil = -Infinity;
-    if (e.pointerType !== 'touch' || !e.isPrimary) return;
+    if (e.pointerType !== 'touch') {
+      this.#endTrack(); // a touch whose release was never seen
+      return;
+    }
+    if (!e.isPrimary) return;
     if (e.target instanceof Element && e.target.closest(EDITABLE) !== null) return;
     e.preventDefault();
     this.#endTrack();
@@ -234,11 +257,6 @@ export class PointerSource {
     this.#lastTouch = now;
     this.#track = startPress(e.pointerId, e.clientX, e.clientY, now);
     this.#showRing(e.clientX, e.clientY);
-    try {
-      (e.target as Element).setPointerCapture?.(e.pointerId);
-    } catch {
-      // A pointer the browser no longer knows: the release still arrives on the game screen.
-    }
     this.#timer = this.#clock.setTimeout(() => this.#onLongPressDue(), LONG_PRESS_MS);
   }
 
@@ -247,7 +265,15 @@ export class PointerSource {
     const now = this.#clock.now();
     const step = firePress(this.#track, now);
     this.#track = step.track;
-    if (!step.fire) return;
+    if (!step.fire) {
+      // A coarse clock can read the timer's moment as a little early: wait out the rest.
+      const track = step.track;
+      if (track !== null && !track.fired) {
+        const rest = Math.max(1, LONG_PRESS_MS - (now - track.t0));
+        this.#timer = this.#clock.setTimeout(() => this.#onLongPressDue(), rest);
+      }
+      return;
+    }
     this.#removeRing();
     this.#lastTouch = now;
     this.#back();
@@ -269,7 +295,10 @@ export class PointerSource {
       e.target instanceof Element ? e.target.closest<HTMLElement>('[data-nav-key]') : null;
     if (item === this.#lastHover) return;
     this.#lastHover = item;
-    if (item !== null && !isActive(item)) this.#seekItem(item, false);
+    if (item === null || isActive(item) || containerOf(item) === this.#staleHover) return;
+    // A press a hover sends is a real press (a screen may clear its feedback on any button), so a
+    // container the probe found undriven is not probed again by this hover.
+    if (this.#seekItem(item, false) === 'undone') this.#staleHover = containerOf(item);
   }
 
   #onPointerEnd(e: PointerEvent): void {
@@ -327,22 +356,23 @@ export class PointerSource {
   }
 
   /** Walk `path` from `from`, the first press a probe (undone on a miss), each later press
-   *  verified; true when the cursor arrived. */
+   *  verified: the cursor arrived, the first press missed and was undone, or a later one stopped. */
   #walk(
     path: readonly VButton[],
     from: number,
     cols: number,
     els: () => readonly HTMLElement[],
-  ): boolean {
+  ): Walk {
     let at = from;
     for (const [i, button] of path.entries()) {
       at += STEP[button]?.(cols) ?? 0;
       if (this.#pressTo(button, els, at)) continue;
       const inverse = INVERSE[button];
-      if (i === 0 && inverse !== undefined) this.#deps.press(inverse);
-      return false;
+      if (i > 0 || inverse === undefined) return 'stopped';
+      this.#deps.press(inverse);
+      return 'undone';
     }
-    return true;
+    return 'arrived';
   }
 
   #seekTab(tab: HTMLElement): void {
@@ -356,22 +386,22 @@ export class PointerSource {
     this.#walk(tabPath(from, to), from, 1, tabs);
   }
 
-  #seekItem(item: HTMLElement, activate: boolean): void {
+  #seekItem(item: HTMLElement, activate: boolean): Walk | null {
     const container = containerOf(item);
-    if (container === null || !this.#inTopFrame(item)) return;
+    if (container === null || !this.#inTopFrame(item)) return null;
     const els = (): HTMLElement[] => rowsOf(container);
     const rows = els();
     const from = rows.findIndex(isActive);
     const to = rows.indexOf(item);
-    if (from < 0 || to < 0) return;
+    if (from < 0 || to < 0) return null;
     const cols = colsOf(container, rows);
     if (from !== to) {
-      if (this.#walk(navPath(rows.length, cols, from, to), from, cols ?? 1, els) && activate) {
-        this.#deps.press('A');
-      }
-      return;
+      const walk = this.#walk(navPath(rows.length, cols, from, to), from, cols ?? 1, els);
+      if (walk === 'arrived' && activate) this.#deps.press('A');
+      return walk;
     }
     if (activate && this.#provenDriven(container, rows.length, cols, from)) this.#deps.press('A');
+    return null;
   }
 
   /** Whether the container whose active row is at `at` is the one the frame drives: a probe move

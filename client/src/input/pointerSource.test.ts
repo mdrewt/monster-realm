@@ -40,9 +40,11 @@ import {
 /** A deterministic clock: timers fire only from `advance`, with `now()` set to their due time. */
 class FakeClock implements PointerClock {
   t = 50_000;
+  /** How far `now()` reads behind the timer clock (timer jitter: a timer that fires early). */
+  lag = 0;
   #seq = 0;
   readonly timers = new Map<number, { readonly at: number; readonly fn: () => void }>();
-  now = (): number => this.t;
+  now = (): number => this.t - this.lag;
   setTimeout = (fn: () => void, ms: number): number => {
     this.#seq += 1;
     this.timers.set(this.#seq, { at: this.t + ms, fn });
@@ -1192,5 +1194,175 @@ describe('PointerSource — CTL15.5 chips', () => {
       click(stray);
       expect(pressCalls(fx), `${top}: not a VButton, or not in the hint bar`).toHaveLength(5);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// lens round (red-team RD1/RD2 and kill tests, plan review): untagged gating cases
+// ---------------------------------------------------------------------------------------------
+
+/** A touch long-press on `el` that fires (600 ms), then the browser's trailing click. */
+function longPressThenClick(fx: Fx, el: Element): MouseEvent {
+  pointer('pointerdown', el);
+  fx.clock.advance(600);
+  pointer('pointerup', el);
+  return click(el);
+}
+
+describe('PointerSource — lens round', () => {
+  it('RD1: the click trailing a fired long-press is swallowed in the capture phase, so a native button`s own click listener inside #game-screen never runs', () => {
+    // WRONG IMPL KILLED: a swallow done in the bubble-phase dispatcher only (the button's own
+    // listener has already run: Move / To Box / Buy fire AND B is pressed).
+    const fx = mount('frame');
+    const btn = document.createElement('button');
+    const own = vi.fn();
+    btn.addEventListener('click', own);
+    addFrame(fx).appendChild(btn);
+    const trailing = longPressThenClick(fx, btn);
+    expect(fx.presses).toEqual(['B']);
+    expect(own, 'the button does not also activate').not.toHaveBeenCalled();
+    expect(trailing.defaultPrevented, 'the swallowed click is prevented').toBe(true);
+  });
+
+  it('RD2: the click trailing a fired long-press on a [data-pointer-own] row never reaches the owner`s listener', () => {
+    // WRONG IMPL KILLED: the menu picks the row the long-press went back from.
+    const fx = mount('frame');
+    const owner = document.createElement('div');
+    owner.setAttribute('data-pointer-own', '');
+    const pick = vi.fn();
+    owner.addEventListener('click', pick);
+    addFrame(fx).appendChild(owner);
+    const rows = addList(owner, ['bag', 'monsters'], 0);
+    longPressThenClick(fx, item(rows, 0));
+    expect(fx.presses).toEqual(['B']);
+    expect(pick, 'the owner never hears the swallowed click').not.toHaveBeenCalled();
+  });
+
+  it('K-P15: a long-press whose trailing click never arrives does not eat the next tap', () => {
+    const fx = mount('world');
+    pointer('pointerdown', fx.canvas);
+    fx.clock.advance(600);
+    pointer('pointerup', fx.canvas);
+    fx.clock.advance(200);
+    pointer('pointerdown', fx.canvas, { pointerId: 2 });
+    fx.clock.advance(50);
+    pointer('pointerup', fx.canvas, { pointerId: 2 });
+    click(fx.canvas);
+    expect(fx.presses).toEqual(['B', 'A']);
+  });
+
+  it('K-P28/P18/P19: with top "other", or while capturing, a row click or a hover presses nothing', () => {
+    const fx = mount('other');
+    const l = addList(addFrame(fx), ['a', 'b', 'c'], 0);
+    fx.drive = items(l);
+    click(item(l, 2));
+    hover(item(l, 1), 7, 7);
+    expect(fx.presses, 'top "other"').toEqual([]);
+    fx.top = 'frame';
+    fx.capturing = true;
+    hover(item(l, 2), 9, 9);
+    expect(fx.presses, 'capturing').toEqual([]);
+  });
+
+  it('K-P11: a nav row outside any aria-modal frame is not seeked', () => {
+    const fx = mount('frame');
+    const loose = addList(fx.layer, ['a', 'b'], 0);
+    fx.drive = items(loose);
+    click(item(loose, 1));
+    expect(fx.presses).toEqual([]);
+  });
+
+  it('K-P39/P40: a tab in an inert frame is ignored; a tab in an undriven strip is probed once and undone', () => {
+    const fx = mount('frame');
+    click(tabAt(addTabs(addFrame(fx, { inert: true }), ['x', 'y', 'z'], 0), 2));
+    expect(fx.presses, 'inert frame').toEqual([]);
+    const strip = addTabs(addFrame(fx), ['x', 'y', 'z'], 0);
+    click(tabAt(strip, 2));
+    expect(fx.presses, 'undriven strip: RB probe, LB undo, no second RB').toEqual(['RB', 'LB']);
+  });
+
+  it('K-P42/P30: a second finger`s lift does not cancel the long-press, and a re-down leaves one ring', () => {
+    const fx = mount('world');
+    pointer('pointerdown', fx.canvas);
+    pointer('pointerdown', fx.canvas, { pointerId: 9, isPrimary: false });
+    pointer('pointerup', fx.canvas, { pointerId: 9, isPrimary: false });
+    fx.clock.advance(600);
+    expect(fx.presses).toEqual(['B']);
+    pointer('pointerup', fx.canvas);
+    pointer('pointerdown', fx.canvas, { pointerId: 3 });
+    pointer('pointerdown', fx.canvas, { pointerId: 4 });
+    expect(rings(fx)).toBe(1);
+  });
+
+  it('a long-press timer that fires while now() reads 1 ms early is rescheduled, never lost: exactly one B, and the trailing click is still swallowed', () => {
+    // WRONG IMPL KILLED: a timer callback that calls firePress once and gives up when it says
+    // "not yet" (real timers fire a little early or the clock reads a little late: the long-press
+    // would silently do nothing).
+    const fx = mount('world');
+    pointer('pointerdown', fx.canvas);
+    fx.clock.lag = 1;
+    fx.clock.advance(500);
+    fx.clock.advance(20);
+    expect(fx.presses, 'B once the remaining time has passed').toEqual(['B']);
+    expect(rings(fx)).toBe(0);
+    pointer('pointerup', fx.canvas);
+    click(fx.canvas);
+    fx.clock.advance(3_000);
+    expect(fx.presses, 'exactly one B; the trailing click swallowed').toEqual(['B']);
+  });
+
+  it('a keyboard contextmenu (button 0: the ContextMenu key, Shift+F10) is not prevented and presses nothing', () => {
+    // WRONG IMPL KILLED: the keyboard menu key hijacked as a mouse back (B) inside #game-screen.
+    const fx = mount('world');
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 0 });
+    fx.canvas.dispatchEvent(e);
+    expect(e.defaultPrevented).toBe(false);
+    expect(fx.presses).toEqual([]);
+    contextMenu(fx.canvas);
+    expect(fx.presses, 'control: button 2 presses B').toEqual(['B']);
+  });
+
+  it('a CSS grid with no rows (inline display:grid, 3 columns, items as direct children) seeks row-major', () => {
+    // WRONG IMPL KILLED: a container without [role=row] treated as a list (Down x4 lands elsewhere)
+    // or as an unknown grid (the click refused), as boxView's Storage grid is built.
+    const fx = mount('frame');
+    const g = document.createElement('div');
+    g.style.display = 'grid';
+    g.style.gridTemplateColumns = 'repeat(3, 1fr)';
+    for (const k of ['c0', 'c1', 'c2', 'c3', 'c4', 'c5']) {
+      const cell = navItemEl(k, 'x');
+      cell.removeAttribute('role');
+      g.appendChild(cell);
+    }
+    addFrame(fx).appendChild(g);
+    setActive(navItems(g), 0);
+    fx.drive = items(g, 3);
+    click(item(g, 4));
+    expect(fx.presses).toEqual(['Right', 'Down', 'A']);
+    expect(activeIndex(navItems(g))).toBe(4);
+  });
+
+  it('a hover miss on a stale container is probed once, not again on every row, until a key is pressed', () => {
+    // WRONG IMPL KILLED: a hover that probes and undoes on every row the mouse crosses over a stale
+    // base list (the driven cursor flickers Down / Up on each move).
+    const fx = mount('frame');
+    const body = addFrame(fx);
+    const stale = addList(body, ['s0', 's1', 's2', 's3'], 0);
+    const driven = addList(body, ['d0', 'd1', 'd2'], 0);
+    fx.drive = items(driven);
+    hover(item(stale, 2), 10, 10);
+    expect(fx.presses, 'one probe and its undo').toEqual(['Down', 'Up']);
+    hover(item(stale, 1), 11, 11);
+    hover(item(stale, 3), 12, 12);
+    expect(fx.presses, 'not repeated across the stale list').toEqual(['Down', 'Up']);
+    expect(activeIndex(navItems(driven))).toBe(0);
+    fx.source.keyPressed();
+    hover(item(stale, 2), 13, 13);
+    expect(fx.presses, 'after a key, a new hover may probe again').toEqual([
+      'Down',
+      'Up',
+      'Down',
+      'Up',
+    ]);
   });
 });

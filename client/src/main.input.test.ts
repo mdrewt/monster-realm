@@ -1017,6 +1017,7 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     // on the next frame, and two hook reads in between proved a read never syncs. No non-press
     // opener is left in this harness, so that half has no subject any more; the reads below still
     // agree with each other and with the frame that follows.
+    // A menu-row pick syncs the stack too, measured (ctl-15 lens round).
     const startChip = document.querySelector('#hint-bar [data-button="Start"]');
     if (startChip === null) throw new Error('the Start chip is not in the shell');
     clock.t = 1100;

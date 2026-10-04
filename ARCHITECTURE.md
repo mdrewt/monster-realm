@@ -368,12 +368,13 @@ X, Y, LB, RB, Start, Select). Two sources feed it: `input/keyboardSource.ts` map
 the remappable binding table (`input/bindings.ts`, saved by `input/bindingStore.ts`, drawn by
 `input/glyphs.ts`), and `input/pointerSource.ts` is ONE dispatcher on `#game-screen`. A click on
 the canvas at the world base is A (no coordinates). A click on a row of the top frame is a seek:
-the D-pad presses that walk that list's cursor there, the first one probed and undone if another
-list moved, then A. A click on a tab is LB/RB. A right-click, or a touch long-press
-(`input/longPress.ts`, 500 ms within 10 px, with a fill ring), is B. A hint-bar chip presses its
-button. The mouse hovering a row moves the cursor there. Both sources hand button edges to
-`input/router.ts`, which decides walking, menu navigation or a screen button from the context on
-top.
+the D-pad presses that walk that list's cursor there, then A. The first press is a probe: if the
+clicked list's cursor did not move as planned, it is undone and nothing is activated. A click on a tab is LB/RB. A right-click, or a touch long-press
+(`input/longPress.ts`, 500 ms within 10 px, with a fill ring), is B, or cancels a remap capture.
+A hint-bar chip presses its button. The mouse hovering a row moves the cursor there. Both sources
+hand button edges to `input/router.ts`, which decides walking, menu navigation or a screen button
+from the context on top. Two clicks skip the router: a main-menu row (the menu's own pick) and the
+dialogue's choice and shop buttons.
 
 The context stack (`ui/contextStack.ts`) is the base (world or battle) plus the frames above it.
 `SCREEN_POLICY` says what a battle or a server conversation closes, and `reconcile` mirrors server
