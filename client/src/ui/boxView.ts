@@ -47,7 +47,7 @@
 // path, only the choices enabled, the status line raw from the model's reason) and the Yes / No
 // confirm are parts of this frame under the sheet, and the "Fed {name}" line joins the feedback
 // line. A hidden part is emptied as well as hidden (the e2e text scans read hidden descendants).
-import type { MonsterCardViewModel } from './boxModel';
+import { type MonsterCardViewModel, NEXT_FREE_PARTY_SLOT } from './boxModel';
 import { t, tf } from './i18n/resolver';
 import {
   cardName,
@@ -136,7 +136,7 @@ export interface BoxViewCallbacks {
   /** Called with the nickname field's text when the Monsters screen commits it (CTL8B.3). */
   readonly onSetNickname: (monsterId: bigint, nickname: string) => void;
   /** Called when the user moves a monster to a party slot (0–5), to the next free slot
-   *  (-1), or to box (`partySlotNone`). */
+   *  (`NEXT_FREE_PARTY_SLOT`), or to box (`partySlotNone`). */
   readonly onSetPartySlot: (monsterId: bigint, slot: number) => void;
   /** Unread: the Box's Heal Party button is retired (ctl-10a, B13). */
   readonly onHealParty?: () => void;
@@ -648,7 +648,7 @@ export class BoxView {
       toPartyBtn.textContent = t('box.card.toParty');
       toPartyBtn.style.cssText = 'font-size:11px;cursor:pointer;';
       toPartyBtn.addEventListener('click', () =>
-        this.#callbacks.onSetPartySlot(card.monsterId, -1),
+        this.#callbacks.onSetPartySlot(card.monsterId, NEXT_FREE_PARTY_SLOT),
       );
       actions.appendChild(toPartyBtn);
     }

@@ -94,15 +94,17 @@ import {
   resetBattleEmit,
 } from './ui/battleEmitModel';
 import {
-  type BaitItem,
   type BattleViewModel,
+  buildBaitItems,
   buildBattleViewModel,
-  type CureItem,
+  buildCureItems,
   decideBattleOverlay,
+  pvpPendingAfterBatch,
+  pvpSubmitPending,
   shouldSkipBattleRefresh,
 } from './ui/battleModel';
 import type { BattleView } from './ui/battleView';
-import { buildBoxViewModel, buildPartyViewModel, nextFreePartySlot } from './ui/boxModel';
+import { buildBoxViewModel, buildPartyViewModel, resolvePartySlot } from './ui/boxModel';
 import type { BoxView } from './ui/boxView';
 // F9 bug-bundle observability — session event ring + error ring +
 // pure bundle assembler + error overlay.
@@ -1517,17 +1519,12 @@ function dispatch(command: Command): Promise<void> {
     }
     case 'setPartySlot': {
       const { monsterId } = command;
-      let slot = command.slot;
-      if (slot === -1) {
-        const free = nextFreePartySlot(store.ownMonsters(identity), PARTY_SIZE);
-        // A full party has no slot to move into. Sending the box sentinel would be an accepted
-        // server no-op the player never sees, so say why instead.
-        if (free === null) {
-          reportError(i18nT('chrome.status.partyFull'));
-          return DONE;
-        }
-        slot = free;
+      const move = resolvePartySlot(command.slot, store.ownMonsters(identity), PARTY_SIZE);
+      if (move.kind === 'partyFull') {
+        reportError(i18nT('chrome.status.partyFull'));
+        return DONE;
       }
+      const { slot } = move;
       return sendGuarded('party', () => conn?.live()?.reducers.setPartySlot({ monsterId, slot }));
     }
     case 'healParty': {
@@ -1768,17 +1765,19 @@ function refusedInBattle(command: Command): boolean {
 
 /** A PvP action. pvpPendingTurnNumber is set INSIDE the lambda so sendGuarded's frozen check runs
  *  first — a frozen-link click must not lock the pending submit permanently (the turn never
- *  advances on a dropped send) — and cleared on rejection. The explicit refresh paints the
- *  client-local pending flag: an unchanged battle row no longer re-notifies the batch. */
+ *  advances on a dropped send) — and put back on rejection (`pvpSubmitPending`). The explicit
+ *  refresh paints the client-local pending flag: an unchanged battle row no longer re-notifies
+ *  the batch. */
 function sendPvpAction(where: string, battleId: bigint, action: PvpAction): Promise<void> {
   return sendGuarded(where, () => {
-    pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
+    const submit = pvpSubmitPending(pvpPendingTurnNumber, store.latestPlayerBattle(identity));
+    pvpPendingTurnNumber = submit.pending;
     refreshBattle();
     return conn
       ?.live()
       ?.reducers.submitPvpAction({ battleId, action })
       ?.catch((err: unknown) => {
-        pvpPendingTurnNumber = null;
+        pvpPendingTurnNumber = submit.onReject;
         refreshBattle();
         throw err;
       });
@@ -2656,33 +2655,9 @@ function refreshBattle(): void {
   battleSynced = r.synced;
   if (r.action.kind === 'show') {
     // What the battle drops was already closed by this batch's `reconcileStack` (SCREEN_POLICY).
-    // Build baitItems from own inventory × item defs (12.5f-5: wire the 4th arg
-    // that was already present in buildBattleViewModel with default []). The
-    // function classifies by recruitBonus > 0 internally (classify-by-data).
-    const baitItems: BaitItem[] = store.ownInventory(identity).flatMap((inv) => {
-      const def = store.itemDef(inv.itemId);
-      if (!def) return [];
-      return [
-        { itemId: inv.itemId, name: def.name, recruitBonus: def.recruitBonus, count: inv.count },
-      ];
-    });
-    // Build cureItems from own inventory × item defs: classify by cureStatus !== null.
-    // Available in any ongoing battle (not wild-only).
-    const cureItems: CureItem[] = store.ownInventory(identity).flatMap((inv) => {
-      const def = store.itemDef(inv.itemId);
-      if (!def || def.cureStatus === null) return [];
-      return [{ itemId: inv.itemId, name: def.name, cureStatus: def.cureStatus, count: inv.count }];
-    });
-    // Clear pvpPendingTurnNumber when the server has resolved the turn (turnNumber
-    // advanced past the pending value) OR when the battle is no longer Ongoing (terminal
-    // outcomes include forfeit — apply_pvp_forfeit skips advance_turn so turnNumber stays
-    // at N; the strict > condition would never fire; check outcome as the fallback).
-    if (
-      pvpPendingTurnNumber !== null &&
-      (r.action.battle.turnNumber > pvpPendingTurnNumber || r.action.battle.outcome !== 'Ongoing')
-    ) {
-      pvpPendingTurnNumber = null;
-    }
+    const inventory = store.ownInventory(identity);
+    const itemDefs = store.itemDefs();
+    pvpPendingTurnNumber = pvpPendingAfterBatch(pvpPendingTurnNumber, r.action.battle);
     const pvpPendingSubmit = pvpPendingTurnNumber !== null;
     // Resolve opponent name for PvP label: find the player row whose identity is not ours.
     const pvpOpponentIdentity = r.action.battle.opponentIdentity;
@@ -2694,8 +2669,8 @@ function refreshBattle(): void {
       r.action.battle,
       store.skillMap(),
       store.speciesMap(),
-      baitItems,
-      cureItems,
+      buildBaitItems(inventory, itemDefs),
+      buildCureItems(inventory, itemDefs),
       pvpPendingSubmit,
       pvpOpponentName,
     );

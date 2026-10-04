@@ -70,6 +70,27 @@ export function hpPercent(currentHp: number, statHp: number): number {
   return Math.min(100, Math.max(0, Math.round((currentHp / statHp) * 100)));
 }
 
+/** The "next free party slot" request the Monsters view's To Party emits. `resolvePartySlot`
+ *  turns it into a real slot; the server never sees it. */
+export const NEXT_FREE_PARTY_SLOT = -1;
+
+export type PartySlotResolution =
+  | { readonly kind: 'send'; readonly slot: number }
+  | { readonly kind: 'partyFull' };
+
+/** The slot a move sends: an explicit slot (or the box sentinel) as-is, the next-free request as
+ *  the first free slot — or `partyFull`, since sending the box sentinel then would be an accepted
+ *  server no-op the player never sees. */
+export function resolvePartySlot(
+  requested: number,
+  ownMonsters: readonly StoreMonsterPub[],
+  partySize: number,
+): PartySlotResolution {
+  if (requested !== NEXT_FREE_PARTY_SLOT) return { kind: 'send', slot: requested };
+  const free = nextFreePartySlot(ownMonsters, partySize);
+  return free === null ? { kind: 'partyFull' } : { kind: 'send', slot: free };
+}
+
 export function nextFreePartySlot(
   monsters: readonly StoreMonsterPub[],
   partySize: number,
