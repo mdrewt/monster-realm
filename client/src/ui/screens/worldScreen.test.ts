@@ -23,7 +23,8 @@ import { VBUTTONS, type VButton } from '../../input/buttons';
 import { openSheet, pickerEntries, type SheetState, sheetEntries } from '../actionSheetModel';
 import type { InteractCandidate } from '../interactModel';
 import type { NavInput } from '../nav';
-import { worldButton } from './worldScreen';
+import { type Notice, openRequestSheet, type RequestNotice, requestCommand } from '../noticeModel';
+import { type WorldNotices, worldButton } from './worldScreen';
 
 const nav = (button: VButton, repeat = false): NavInput => ({ button, repeat });
 
@@ -289,6 +290,274 @@ describe('worldButton: everything else (ctl-10a, CTL10A.3)', () => {
           expect(r.run).toBeUndefined();
         }
       }
+    }
+  });
+});
+
+// ==========================================================================================
+// ctl-13 (CTL13.3): Y and B on notices. `worldButton` gains a back-compatible fourth argument,
+// `WorldNotices = { notices, pending, request }`. Without it every case above is as it was.
+// ==========================================================================================
+
+const TRADE_REQ: RequestNotice = {
+  kind: 'request',
+  key: 'trade-11',
+  request: 'trade',
+  id: 11n,
+  fromName: 'Bob',
+  createdAtMs: 1_000n,
+};
+const CHALLENGE_REQ: RequestNotice = {
+  kind: 'request',
+  key: 'challenge-21',
+  request: 'challenge',
+  id: 21n,
+  fromName: 'Carol',
+  createdAtMs: 2_000n,
+};
+const ERROR_NOTICE: Notice = { kind: 'error', key: 'error' };
+
+const worldNotices = (over: Partial<WorldNotices> = {}): WorldNotices => ({
+  notices: [TRADE_REQ],
+  pending: [TRADE_REQ],
+  request: null,
+  ...over,
+});
+
+describe('worldButton: Y with a request waiting (ctl-13, CTL13.3)', () => {
+  it('CTL13-3-WORLD-Y: Y with no target and a request pending opens that request`s sheet (from `pending`, even when its banner was dismissed) on Accept; Y with a target still opens the target`s sheet; with nothing pending it is the page`s; an open request sheet owns every button and answers with the exact command / view / nothing', () => {
+    // WRONG IMPL KILLED: a Y that opens the request sheet while a target is faced (the target's
+    // action sheet would never open again); a Y that reads the dismiss-filtered `notices` (a
+    // dismissed banner would leave the request unreachable); a Y that opens the sheet on the wrong
+    // request (the second pending one) or on a notice that is not a request (the toast); a Y that
+    // opens nothing without a request but still consumes the press; a held Y that opens; a request
+    // sheet that lets a button fall through to the world (Start opening the menu or Select the
+    // help over it, a D-pad press walking away); an A that answers with the wrong command or runs
+    // while the request is gone or replaced (a stale id); a Down that does not move the cursor;
+    // and a View that sends a command instead of asking the shell to look.
+    const npc = talkNpc(7n);
+
+    // --- no target, a request pending: the request sheet ----------------------------------
+    const y = worldButton(null, [], nav('Y'), worldNotices());
+    expect(y.result).toBe('consumed');
+    expect(y.sheet, 'no interact sheet').toBeNull();
+    expect(y.request, 'the request sheet for the pending request').toEqual(
+      openRequestSheet(TRADE_REQ),
+    );
+    expect(y.request?.nav.item, 'opens on Accept').toBe('accept');
+    expect(y.run, 'Y never runs').toBeUndefined();
+    expect(y.command, 'Y sends nothing').toBeUndefined();
+    expect(y.dismiss).toBeUndefined();
+    expect(y.view).toBeUndefined();
+
+    // A player with no action is not a target either: the request sheet still opens.
+    const onlyPlayer = worldButton(null, [player(13n)], nav('Y'), worldNotices());
+    expect(onlyPlayer.request, 'a player with no row is no target').toEqual(
+      openRequestSheet(TRADE_REQ),
+    );
+
+    // From `pending`, not the dismiss-filtered `notices`: the banner was dismissed.
+    const dismissed = worldButton(null, [], nav('Y'), worldNotices({ notices: [] }));
+    expect(dismissed.result).toBe('consumed');
+    expect(dismissed.request, 'a dismissed banner`s request is still reachable by Y').toEqual(
+      openRequestSheet(TRADE_REQ),
+    );
+    // The toast is not a request: the sheet is for the pending request, never for the error.
+    const withToast = worldButton(
+      null,
+      [],
+      nav('Y'),
+      worldNotices({ notices: [ERROR_NOTICE, TRADE_REQ] }),
+    );
+    expect(withToast.request).toEqual(openRequestSheet(TRADE_REQ));
+    // Several pending: the first.
+    const several = worldButton(
+      null,
+      [],
+      nav('Y'),
+      worldNotices({ notices: [CHALLENGE_REQ, TRADE_REQ], pending: [CHALLENGE_REQ, TRADE_REQ] }),
+    );
+    expect(several.request, 'the first pending request').toEqual(openRequestSheet(CHALLENGE_REQ));
+
+    // --- a target: the target's sheet, as before --------------------------------------------
+    const withTarget = worldButton(null, [npc], nav('Y'), worldNotices());
+    expect(withTarget.result).toBe('consumed');
+    expect(withTarget.request, 'no request sheet beside a target').toBeNull();
+    expect(withTarget.sheet).toEqual(openSheet(sheetEntries(npc)));
+
+    // --- nothing pending: the page's (back-compatible) ---------------------------------------
+    for (const n of [undefined, worldNotices({ notices: [], pending: [] })]) {
+      const r = worldButton(null, [], nav('Y'), n);
+      expect(r.result, 'no request, no target: Y is the page`s').toBe('unhandled');
+      expect(r.request).toBeNull();
+      expect(r.sheet).toBeNull();
+      expect(r.dismiss).toBeUndefined();
+    }
+    const held = worldButton(null, [], nav('Y', true), worldNotices());
+    expect(held.result, 'a held Y opens nothing').toBe('unhandled');
+    expect(held.request).toBeNull();
+
+    // --- an open request sheet owns every button ---------------------------------------------
+    const open = openRequestSheet(TRADE_REQ);
+    const owned = worldNotices({ request: open });
+    for (const button of VBUTTONS) {
+      for (const repeat of [false, true]) {
+        const r = worldButton(null, [npc], nav(button, repeat), owned);
+        expect(r.result, `${button}${repeat ? ' (held)' : ''} over the request sheet`).toBe(
+          'consumed',
+        );
+        expect(r.sheet, 'the interact sheet is never opened beneath it').toBeNull();
+        expect(r.run, 'no interact action runs').toBeUndefined();
+      }
+    }
+    const down = worldButton(null, [], nav('Down'), owned);
+    expect(down.request?.nav.item, 'Down moves the cursor to Decline').toBe('decline');
+    expect(down.command).toBeUndefined();
+    const select = worldButton(null, [], nav('Select'), owned);
+    expect(select.request, 'Select leaves the sheet as it was').toEqual(open);
+    const yAgain = worldButton(null, [], nav('Y'), owned);
+    expect(yAgain.request, 'Y over the sheet does not reopen or close it').toEqual(open);
+    for (const button of ['B', 'Start'] as const) {
+      const r = worldButton(null, [], nav(button), owned);
+      expect(r.request, `${button} closes it`).toBeNull();
+      expect(r.command).toBeUndefined();
+      expect(r.dismiss, `${button} over the sheet dismisses no notice`).toBeUndefined();
+    }
+
+    // A on each row.
+    const accept = worldButton(null, [], nav('A'), owned);
+    expect(accept.result).toBe('consumed');
+    expect(accept.request, 'the sheet closes').toBeNull();
+    expect(accept.command, 'Accept: the exact command').toEqual(
+      requestCommand(TRADE_REQ, 'accept'),
+    );
+    expect(accept.command).toEqual({ kind: 'respondTrade', tradeId: 11n, accepted: true });
+    expect(accept.view).toBeUndefined();
+    const onDecline = down.request as NonNullable<typeof down.request>;
+    const decline = worldButton(null, [], nav('A'), worldNotices({ request: onDecline }));
+    expect(decline.command, 'Decline: the opposite answer').toEqual({
+      kind: 'respondTrade',
+      tradeId: 11n,
+      accepted: false,
+    });
+    expect(decline.request).toBeNull();
+    const onView = worldButton(null, [], nav('Down'), worldNotices({ request: onDecline }))
+      .request as NonNullable<typeof down.request>;
+    expect(onView.nav.item).toBe('view');
+    const view = worldButton(null, [], nav('A'), worldNotices({ request: onView }));
+    expect(view.view, 'View asks the shell to look at the request').toEqual(TRADE_REQ);
+    expect(view.command, 'View sends nothing').toBeUndefined();
+    expect(view.request).toBeNull();
+    const challengeAccept = worldButton(
+      null,
+      [],
+      nav('A'),
+      worldNotices({
+        notices: [CHALLENGE_REQ],
+        pending: [CHALLENGE_REQ],
+        request: openRequestSheet(CHALLENGE_REQ),
+      }),
+    );
+    expect(challengeAccept.command).toEqual({ kind: 'acceptChallenge', challengeId: 21n });
+
+    // The request was withdrawn, or replaced by another: closes, nothing is sent.
+    for (const [label, pending] of [
+      ['withdrawn', []],
+      ['replaced by a different request', [CHALLENGE_REQ]],
+    ] as const) {
+      const stale = worldButton(null, [], nav('A'), worldNotices({ request: open, pending }));
+      expect(stale.result, `${label}: consumed`).toBe('consumed');
+      expect(stale.request, `${label}: closed`).toBeNull();
+      expect(stale.command, `${label}: nothing sent`).toBeUndefined();
+      expect(stale.view, `${label}: nothing viewed`).toBeUndefined();
+    }
+  });
+});
+
+describe('worldButton: B with a notice showing (ctl-13, CTL13.3)', () => {
+  it('CTL13-3-WORLD-B: B at the world base with a notice dismisses the TOP notice by its key (the toast before the banner), whatever is faced; with no notice, a held B or no notice argument it is the page`s; an open interact sheet still takes B first; no other button dismisses', () => {
+    // WRONG IMPL KILLED: a B that dismisses the LAST notice (the banner while the toast stays on
+    // top) or every notice at once; a B that does nothing beside a faced target (the spec says
+    // "at the world base, regardless of target"); a B that consumes the press with nothing to
+    // dismiss (B is the page's then); a held B that dismisses (a held key would eat every notice);
+    // a B that dismisses instead of closing an open interact sheet; Start or Select that dismiss;
+    // and a dismissal that returns the key of a different notice or an empty one.
+    const npc = talkNpc(7n);
+
+    const toast = worldButton(
+      null,
+      [],
+      nav('B'),
+      worldNotices({ notices: [ERROR_NOTICE, TRADE_REQ] }),
+    );
+    expect(toast.result).toBe('consumed');
+    expect(toast.dismiss, 'the toast is on top').toBe('error');
+    expect(toast.sheet).toBeNull();
+    expect(toast.request).toBeNull();
+    expect(toast.command, 'dismissing sends nothing').toBeUndefined();
+    expect(toast.run).toBeUndefined();
+
+    const banner = worldButton(null, [], nav('B'), worldNotices());
+    expect(banner.result).toBe('consumed');
+    expect(banner.dismiss, 'the request banner').toBe('trade-11');
+
+    const challenge = worldButton(
+      null,
+      [],
+      nav('B'),
+      worldNotices({ notices: [CHALLENGE_REQ], pending: [CHALLENGE_REQ] }),
+    );
+    expect(challenge.dismiss).toBe('challenge-21');
+
+    const toastOnly = worldButton(
+      null,
+      [],
+      nav('B'),
+      worldNotices({ notices: [ERROR_NOTICE], pending: [] }),
+    );
+    expect(toastOnly.dismiss).toBe('error');
+    expect(toastOnly.result).toBe('consumed');
+
+    // Regardless of what is faced.
+    const faced = worldButton(null, [npc, healTile(3)], nav('B'), worldNotices());
+    expect(faced.result, 'a target does not stop B dismissing').toBe('consumed');
+    expect(faced.dismiss).toBe('trade-11');
+
+    // Nothing to dismiss: the page's.
+    for (const n of [
+      undefined,
+      worldNotices({ notices: [], pending: [] }),
+      worldNotices({ notices: [] }),
+    ]) {
+      const r = worldButton(null, [npc], nav('B'), n);
+      expect(r.result, 'no notice: B is the page`s').toBe('unhandled');
+      expect(r.dismiss).toBeUndefined();
+      expect(r.sheet).toBeNull();
+      expect(r.request).toBeNull();
+    }
+
+    // A held B dismisses nothing.
+    const held = worldButton(null, [], nav('B', true), worldNotices());
+    expect(held.result).toBe('unhandled');
+    expect(held.dismiss).toBeUndefined();
+
+    // An open interact sheet takes B first: it closes, no notice is dismissed.
+    const sheet = openSheet(sheetEntries(npc));
+    const closes = worldButton(sheet, [npc], nav('B'), worldNotices());
+    expect(closes.result).toBe('consumed');
+    expect(closes.sheet, 'B closed the interact sheet').toBeNull();
+    expect(closes.dismiss, 'and dismissed no notice').toBeUndefined();
+
+    // No other button dismisses.
+    for (const button of VBUTTONS.filter((b) => b !== 'B' && b !== 'A' && b !== 'Y')) {
+      const r = worldButton(
+        null,
+        [],
+        nav(button),
+        worldNotices({ notices: [ERROR_NOTICE, TRADE_REQ] }),
+      );
+      expect(r.dismiss, `${button} dismisses nothing`).toBeUndefined();
+      expect(r.result, `${button} is the page's`).toBe('unhandled');
     }
   });
 });

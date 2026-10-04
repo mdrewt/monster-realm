@@ -374,6 +374,10 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   ],
   'controls.clear': [{ label: 'Bag' }, { label: 'Save bug report' }],
   'controls.cleared': [{ label: 'Journal' }, { label: 'Dismiss error' }],
+  // ctl-13 (named intentional change): the request banner's two key-free lines (2 ★). `name` is a
+  // player-chosen display name, carried verbatim.
+  'notice.request.trade': [{ name: 'Bob' }, { name: 'Dana' }],
+  'notice.request.challenge': [{ name: 'Bob' }, { name: 'Dana' }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -552,7 +556,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'claim.declineConfirmButton': 'Yes, decline', // claimView.ts (resolved in render()/show())
   'claim.declineCancelButton': 'Keep my code', // claimView.ts (resolved in render()/show())
   'leaderboard.empty': 'No ranked players yet', // leaderboardView.ts:60
-  'errorOverlay.footer': 'F8 dismiss · F9 bug report', // errorOverlayView.ts (resolved in show())
+  // ctl-13 (named intentional change): the overlay is a toast that B dismisses at the world, so the
+  // footer names B as well as F8. Was: 'F8 dismiss · F9 bug report'.
+  'errorOverlay.footer': `B or F8 dismiss ${CELL_DOT} F9 bug report`, // errorOverlayView.ts (resolved in show())
   'privacy.title': 'Privacy & Account Data', // privacyView.ts (resolved in show())
   'privacy.close': 'Close', // privacyView.ts (resolved in show())
   'privacy.confirm.delete': 'Confirm deletion', // privacyView.ts
@@ -803,6 +809,22 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'controls.saveFailed': 'Could not save: this lasts until you reload.',
   'menu.options.controls.title': 'Controls',
   'menu.options.controls.desc': 'Choose which key presses each button.',
+  // ctl-13 (named intentional change): +10 plain keys — the hint bar's six verbs
+  // (`chrome.chip.{ok,back,close,view,dismiss,done}`), the "New" badge (`chrome.badge.request`,
+  // shown on the Start chip and in the Social menu row as real text) and the request sheet's three
+  // rows (`notice.sheet.{accept,decline,view}`); +2 parameterised ones (`notice.request.{trade,
+  // challenge}`) in SAMPLE_PARAMS = 363 keys. `errorOverlay.footer` changes text (above): the toast
+  // names B as well as F8.
+  'chrome.chip.ok': 'OK',
+  'chrome.chip.back': 'Back',
+  'chrome.chip.close': 'Close',
+  'chrome.chip.view': 'View',
+  'chrome.chip.dismiss': 'Dismiss',
+  'chrome.chip.done': 'Done',
+  'chrome.badge.request': 'New',
+  'notice.sheet.accept': 'Accept',
+  'notice.sheet.decline': 'Decline',
+  'notice.sheet.view': 'View',
 };
 
 interface ParamOutputSpec {
@@ -1294,9 +1316,24 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { label: 'Dismiss error' },
     outputB: 'Dismiss error has no key now.',
   },
+  // ctl-13: the request banner's lines are KEY-FREE (they survive a remap) and name the sender once.
+  'notice.request.trade': {
+    inputA: { name: 'Bob' },
+    outputA: 'Bob wants to trade',
+    inputB: { name: 'Dana' },
+    outputB: 'Dana wants to trade',
+  },
+  'notice.request.challenge': {
+    inputA: { name: 'Bob' },
+    outputA: 'Bob challenges you to a battle',
+    inputB: { name: 'Dana' },
+    outputB: 'Dana challenges you to a battle',
+  },
 };
 
-/** The full 351-key roster (ctl-12b: +15 `controls.*` / `menu.options.controls.*` keys over the
+/** The full 363-key roster (ctl-13: +`chrome.chip.{ok,back,close,view,dismiss,done}`
+ *  +`chrome.badge.request` +`notice.sheet.{accept,decline,view}` +`notice.request.{trade,challenge}`
+ *  over the 351-key roster below; ctl-12b: +15 `controls.*` / `menu.options.controls.*` keys over the
  *  336-key roster below; ctl-12: +43 `key.*` / `controls.*` keys over the 293-key roster below;
  *  ctl-10b: -`pvp.players.{none,heading}` +`interact.verb.{trade,challenge}`
  *  +`interact.confirm.challenge` over the 292-key roster below;
@@ -1381,7 +1418,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-12b 351-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-13 363-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1470,12 +1507,13 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 351 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 363 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (351 keys since ctl-12b; was 336 since ctl-12).
+    // (a) roster is exactly the EXPECTED_KEYS roster (363 keys since ctl-13: +10 plain, +2
+    // parameterised; was 351 since ctl-12b).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ctl-12b roster is 351 keys').toHaveLength(351);
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ctl-13 roster is 363 keys').toHaveLength(363);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -2164,5 +2202,69 @@ describe('ctl-12b: the Controls keys in both catalogs', () => {
       FR_PLAIN.length + FR_PARAMS.length,
       'ANTI-VACUITY: all 15 ctl-12b keys are pinned in both catalogs',
     ).toBe(15);
+  });
+});
+
+// =============================================================================
+// ctl-13: the 12 keys the live hint bar, the request banner and the request sheet add, in BOTH
+// catalogs (the English text is pinned in EXPECTED_PLAIN / EXPECTED_PARAM_OUTPUTS above; catalogParity
+// FR-01 checks every French closure reads the English closure's params). The exact French wording is
+// the translator's, except the badge the plan names ("Nouveau").
+// =============================================================================
+
+describe('ctl-13: the notice keys in both catalogs', () => {
+  it('ctl-13 FR-PINS: the 10 new plain keys exist as non-empty strings in fr (all but the OK chip differ from English), the badge reads "Nouveau", and each request line is a closure carrying the name once and verbatim for two differing names, in a French sentence, with the toast footer still naming F8 and B', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot and the whole hint
+    // bar blanks); a French entry left as the English copy; a badge that is not the plan's
+    // "Nouveau"; a request closure that drops, repeats or swaps the name, or hard-codes a key
+    // ("press Y": the lines are key-free), and one identical for the trade and the challenge.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const PLAIN = [
+      'chrome.chip.ok',
+      'chrome.chip.back',
+      'chrome.chip.close',
+      'chrome.chip.view',
+      'chrome.chip.dismiss',
+      'chrome.chip.done',
+      'chrome.badge.request',
+      'notice.sheet.accept',
+      'notice.sheet.decline',
+      'notice.sheet.view',
+    ] as const;
+    expect(PLAIN, 'ANTI-VACUITY: ten plain keys').toHaveLength(10);
+    for (const key of PLAIN) {
+      expect(typeof EXPECTED_PLAIN[key], `fixture: ${key} has an English pin`).toBe('string');
+      expect(typeof fr[key], `${key} must be a plain string in the fr catalog`).toBe('string');
+      expect((fr[key] as string).length > 0, `${key} must be non-empty in fr`).toBe(true);
+      if (key !== 'chrome.chip.ok') {
+        expect(fr[key], `${key}: a translation, not the English copy`).not.toBe(en[key]);
+      }
+    }
+    expect(fr['chrome.badge.request'], 'the French badge').toBe('Nouveau');
+
+    for (const key of ['notice.request.trade', 'notice.request.challenge'] as const) {
+      const spec = EXPECTED_PARAM_OUTPUTS[key] as ParamOutputSpec;
+      expect(spec, `fixture: ${key} has English output pins`).toBeDefined();
+      expect(typeof en[key], `en ${key} must be a closure`).toBe('function');
+      expect(typeof fr[key], `fr ${key} must be a closure`).toBe('function');
+      const frFn = fr[key] as (p: Record<string, unknown>) => string;
+      const outA = frFn(spec.inputA);
+      const outB = frFn(spec.inputB);
+      expect(outA, `${key}: a translation, not the English line`).not.toBe(spec.outputA);
+      expect(outA, `${key}: the two names differ`).not.toBe(outB);
+      expect(outA.split('Bob').length - 1, `${key}: the name sits once`).toBe(1);
+      expect(outB.split('Dana').length - 1).toBe(1);
+    }
+    expect(
+      (fr['notice.request.trade'] as (p: Record<string, unknown>) => string)({ name: 'Bob' }),
+      'the trade and the challenge read differently',
+    ).not.toBe(
+      (fr['notice.request.challenge'] as (p: Record<string, unknown>) => string)({ name: 'Bob' }),
+    );
+    expect(String(fr['errorOverlay.footer']), 'the French toast footer still names F8').toContain(
+      'F8',
+    );
+    expect(` ${String(fr['errorOverlay.footer'])} `, 'and now names B too').toContain(' B ');
   });
 });

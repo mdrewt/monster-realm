@@ -27,8 +27,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { CATALOG_EN } from './i18n/catalog.en';
 import { CATALOG_FR } from './i18n/catalog.fr';
-import { setLocale } from './i18n/resolver';
-import { MENU_ENTRIES } from './menuModel';
+import { setLocale, t } from './i18n/resolver';
+import { MENU_ENTRIES, withRequestBadge } from './menuModel';
 
 interface Row {
   readonly key: string;
@@ -272,5 +272,53 @@ describe('MENU_ENTRIES', () => {
         `${group.key} holds no Controls leaf`,
       ).not.toContain('controls');
     }
+  });
+});
+
+// ctl-13 (CTL13.2): the Social row of the main menu carries a real-text badge while a request
+// waits (REV 2 item 2: `${label} (${t('chrome.badge.request')})`, never an icon alone).
+describe('withRequestBadge (ctl-13, CTL13.2)', () => {
+  it('CTL13-2-MENU-BADGE: while a request waits the Social label gains " (<badge>)" in the active locale and nothing else changes; with nothing waiting, or with no Social label, the very same object comes back; the input is never mutated', () => {
+    // WRONG IMPL KILLED: a badge on the wrong row (Monsters, the group's children) or on every
+    // row; a badge with no text (an icon or a bare dot a screen reader cannot read); one that
+    // mutates the labels it was given (the menu's own table would keep the badge after the request
+    // is gone); a badge painted when nothing waits; a fresh object when nothing changes (the
+    // menu's re-render memo would see a change every frame); a throw when the labels have no
+    // Social entry (a sub-list level); and a locale frozen at import.
+    const labels = {
+      monsters: 'Monsters',
+      social: 'Social',
+      profile: 'Profile',
+      close: 'Close',
+    } as const;
+    const badge = t('chrome.badge.request' as never);
+    expect(badge, 'fixture: the badge text is real').not.toBe('');
+
+    setLocale('en');
+    const badged = withRequestBadge(labels, true);
+    expect(badged, 'only Social changes').toEqual({
+      monsters: 'Monsters',
+      social: `Social (${badge})`,
+      profile: 'Profile',
+      close: 'Close',
+    });
+    expect(badged.social).toBe('Social (New)');
+    expect(labels.social, 'the input labels are not mutated').toBe('Social');
+    expect(badged, 'a new object when it changes').not.toBe(labels);
+
+    expect(withRequestBadge(labels, false), 'nothing waits: the same object').toBe(labels);
+    const subList = { trades: 'Trades', challenges: 'Challenges' };
+    expect(withRequestBadge(subList, true), 'no Social label: the same object').toBe(subList);
+    expect(withRequestBadge(subList, false)).toBe(subList);
+    const empty = {};
+    expect(withRequestBadge(empty, true)).toBe(empty);
+
+    // The badge is the active locale's, read per call.
+    setLocale('fr');
+    const frBadge = t('chrome.badge.request' as never);
+    expect(frBadge, 'fixture: the French badge differs').not.toBe(badge);
+    expect(withRequestBadge({ social: 'Social' }, true).social).toBe(`Social (${frBadge})`);
+    setLocale('en');
+    expect(withRequestBadge({ social: 'Social' }, true).social).toBe(`Social (${badge})`);
   });
 });

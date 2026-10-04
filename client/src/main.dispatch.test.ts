@@ -3548,7 +3548,7 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
     ).toBeUndefined();
   });
 
-  it('CTL8S-2-BOOT-SOCIAL-TAB: ScreenContext.socialTab reads null before any open, then trades, challenges and rankings after U, P and L and after each of the three menu leaves, and challenges after the challenge auto-show, already in the open`s own init; it keeps its value after Social closes and reads null after a reconnect', async () => {
+  it('CTL8S-2-BOOT-SOCIAL-TAB: ScreenContext.socialTab reads null before any open, then trades, challenges and rankings after U, P and L and after each of the three menu leaves, already in the open`s own init; an incoming challenge binds no tab (ctl-13: it no longer auto-opens Social); it keeps its value after Social closes and reads null after a reconnect', async () => {
     // WRONG IMPL KILLED: no socialTab on the context (every read undefined); a value snapshotted
     // into the context at boot instead of a live getter (null forever); a tab bound AFTER the frame
     // is seated (the open's own init reads the previous tab); an open path that binds a fixed tab or
@@ -3620,24 +3620,17 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
       await expectTab(`menu Social > ${leaf}`, leaf, (at) => void press('Escape', at));
     }
 
-    // The challenge auto-show binds challenges (rankings was the last tab bound).
+    // ctl-13 (named intentional change, CTL13.2): the challenge auto-show is deleted. An incoming
+    // challenge opens no frame, so it binds no tab: the tab is still the last one a path bound
+    // (rankings). Was: the auto-show opened Social on challenges and bound it.
     opts.store.upsertChallenge(incomingChallenge(41n));
     server(t);
-    expect(stackNow(), 'auto-show: precondition: the challenge opened Social').toEqual([
-      WORLD_FRAME,
-      screenFrame('social'),
-    ]);
-    expect(seatReads.at(-1), 'auto-show: the open`s own init reads challenges').toBe('challenges');
-    await pageUp(t + 10);
-    expect(reads.at(-1), 'auto-show: a read on the open frame').toBe('challenges');
+    expect(stackNow(), 'no auto-show: the challenge opened nothing').toEqual([WORLD_FRAME]);
+    expect(seatReads, 'no auto-show: nothing was seated for it').toHaveLength(6);
     opts.store.removeChallenge(41n);
     server(t + 20);
-    press('KeyP', t + 30);
-    expect(stackNow(), 'auto-show: precondition: P closed Social').toEqual([WORLD_FRAME]);
     await readAtMenu(t + 40);
-    expect(menuReads.at(-1), 'auto-show: it keeps its value after Social closes').toBe(
-      'challenges',
-    );
+    expect(menuReads.at(-1), 'no auto-show: the challenge bound no tab').toBe('rankings');
 
     // A reconnect clears it.
     opts.onReconnect(H.identity);
@@ -3652,7 +3645,7 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
       'trades',
       'challenges',
       'rankings',
-      'challenges',
+      'rankings',
       null,
     ]);
     expect(reads, 'every read on the open Social frame, in order').toEqual([
@@ -3662,9 +3655,11 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
       'trades',
       'challenges',
       'rankings',
-      'challenges',
     ]);
-    expect(seatReads, 'ANTI-VACUITY: one seat per open, seven opens').toHaveLength(7);
+    expect(
+      seatReads,
+      'ANTI-VACUITY: one seat per open, six opens (ctl-13: no auto-show)',
+    ).toHaveLength(6);
   });
 
   it('CTL8S-3-BOOT-ONE-FRAME: U, P, L and the three menu leaves each put the ONE frame { kind: screen, id: social } on the stack (over the menu) with only that tab`s root shown; the same key closes it; a different social key while a panel shows closes it too (the Social frame is its own screen: the key acts as Start); and a battle arriving closes whichever panel shows and leaves the battle base', async () => {
@@ -3894,7 +3889,9 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
     expect(stackNow()).toEqual([WORLD_FRAME]);
   });
 
-  it('CTL8S-3-BOOT-AUTO-SHOW: a pending challenge the player SENT (outgoing only, nothing incoming) never opens Social; an incoming challenge does not open Social while the quest log is open, nor over an Ongoing battle (also in the batch that brings it), and opens Social on Challenges (the pvp root alone, socialTab challenges) on the first batch with no overlay open and a world base', async () => {
+  it('CTL8S-3-BOOT-AUTO-SHOW: no challenge opens Social by itself (ctl-13 inverted the auto-show): a pending challenge the player SENT never does, an incoming one does not while the quest log or another overlay is open, nor over an Ongoing battle, nor on the first batch with no overlay open and a world base', async () => {
+    // ctl-13 (named intentional change, CTL13.2): the auto-show half is INVERTED. An incoming
+    // challenge opens nothing at any point; it is a banner + badge (src/main.notices.test.ts).
     // WRONG IMPL KILLED: today's auto-show (it pushes a `pvpView` frame of its own); an auto-show
     // that fires over another overlay (two dialogs) or over an Ongoing battle (a challenge dialog
     // over the fight; today the only guard is whether the battle VIEW is visible, never the stack's
@@ -3985,11 +3982,19 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
     ]);
     expect(socialShown()).toEqual([]);
 
-    // The battle ends: the first batch with no overlay and a world base opens Social on Challenges.
+    // ctl-13 (named intentional change, CTL13.2): the battle ends and the first batch with no overlay
+    // and a world base opens NOTHING. Was: it opened Social on Challenges (the pvp root alone, tab
+    // challenges). The challenge is announced by the banner and answered with Y then Enter instead.
     dropBattle(BATTLE_ID, 1500);
-    expect(stackNow(), 'world: the one Social frame').toEqual([WORLD_FRAME, screenFrame('social')]);
-    expect(socialShown(), 'world: the pvp root alone').toEqual(['challenges']);
-    expect(seatReads.at(-1), 'world: the requested tab is challenges').toBe('challenges');
+    expect(
+      opts.store.allChallenges().map((c) => [c.challengeId, c.status]),
+      'world: precondition: the incoming challenge is still pending in the store',
+    ).toEqual([[51n, 'Pending']]);
+    expect(stackNow(), 'world: no frame opened for it').toEqual([WORLD_FRAME]);
+    expect(socialShown(), 'world: no root shown').toEqual([]);
+    server(1600);
+    expect(stackNow(), 'world: nor on the next batch').toEqual([WORLD_FRAME]);
+    expect(seatReads, 'nothing was ever seated for the challenge').toEqual([]);
   });
 
   it('CTL8S-3-BOOT-NESTED-RENDERS: Social > Challenges opened from the menu shows the pvp root above the menu, and a store batch keeps it shown, refreshed with forceVisible true', async () => {

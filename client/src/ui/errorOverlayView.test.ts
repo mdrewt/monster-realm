@@ -21,8 +21,9 @@
 // Do NOT edit tests to match a buggy impl — correct from the spec only.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ErrorOverlayViewModel } from './errorOverlayModel';
+import { buildErrorOverlayModel, type ErrorOverlayViewModel } from './errorOverlayModel';
 import { ErrorOverlayView } from './errorOverlayView';
+import type { ErrorRecord } from './errorRing';
 
 const ROOT_ID = 'mr-error-overlay';
 
@@ -194,5 +195,69 @@ describe('errorOverlayView T-VIEW-TOTAL (M-2): render never throws to caller', (
     expect(() => view.render(hostile)).not.toThrow();
     // The swallow routes to console.error (observability), not a silent no-op only.
     expect(errorSpy).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ctl-13 (CTL13.3): the overlay is a TOAST. `main` renders it with
+// `buildErrorOverlayModel(records, 1)` (the newest error only); B at the world (a notice) or F8
+// dismisses it; a later, distinct error shows it again.
+// ---------------------------------------------------------------------------
+
+function rec(tSeq: number, message: string): ErrorRecord {
+  return { tSeq, tMs: tSeq * 10, source: 'reducer', message };
+}
+
+describe('errorOverlayView CTL13-3-TOAST: the error toast', () => {
+  it('CTL13-3-TOAST: the root is a `.mr-toast` that stays non-blocking; fed the newest-error-only model it shows exactly that error; its footer names B and F8; dismiss hides it and a later distinct error shows it again; show() after dismiss reads the newest', () => {
+    // WRONG IMPL KILLED: a root without the `mr-toast` class (the one shell CSS can restyle as a
+    // corner toast); a toast that lists the whole ring (the 8-row overlay is what ctl-13
+    // retires); a footer that still says only "F8 dismiss" (a pad player is never told B
+    // works); a dismiss that does not hide, or one that latches so the next error stays hidden;
+    // a re-show that paints the dismissed error again instead of the newer one; a toast that takes
+    // pointer events or focus (it must never block the game it overlays); and a root that carries
+    // a role or aria-live (the live region is the sole announcer).
+    const view = new ErrorOverlayView();
+    const root = document.getElementById(ROOT_ID) as HTMLElement;
+    expect(root.classList.contains('mr-toast'), 'the root is the toast').toBe(true);
+    expect(root.style.pointerEvents, 'non-blocking').toBe('none');
+    expect(root.hasAttribute('tabindex'), 'never a tab stop').toBe(false);
+    expect(root.hasAttribute('aria-live'), 'never a live region').toBe(false);
+    expect(root.hasAttribute('role'), 'no role').toBe(false);
+
+    const ring: ErrorRecord[] = [rec(1, 'old one'), rec(2, 'old two'), rec(3, 'first toast')];
+    view.render(buildErrorOverlayModel(ring, 1));
+    view.show();
+    expect(view.visible).toBe(true);
+    const rows = [...root.querySelectorAll('.mr-error-row')];
+    expect(rows, 'exactly one error is listed').toHaveLength(1);
+    expect(rows[0]?.textContent).toContain('first toast');
+    expect(root.textContent, 'the older errors are not shown').not.toContain('old two');
+    expect(root.textContent).not.toContain('old one');
+
+    const footer = root.querySelector('.mr-error-overlay-footer')?.textContent ?? '';
+    expect(footer, 'the footer names B').toMatch(/\bB\b/);
+    expect(footer, 'and F8').toMatch(/\bF8\b/);
+
+    // Dismissed: hidden.
+    view.dismiss();
+    expect(view.visible, 'dismiss hides the toast').toBe(false);
+    expect((root as HTMLElement).style.display).toBe('none');
+
+    // A later, distinct error: the toast shows again, with the NEW error only.
+    ring.push(rec(4, 'second toast'));
+    view.render(buildErrorOverlayModel(ring, 1));
+    view.show();
+    expect(view.visible, 'a later error shows it again').toBe(true);
+    const again = [...root.querySelectorAll('.mr-error-row')];
+    expect(again, 'still one error').toHaveLength(1);
+    expect(again[0]?.textContent).toContain('second toast');
+    expect(root.textContent, 'the dismissed error is not painted again').not.toContain(
+      'first toast',
+    );
+    expect(
+      root.querySelector('.mr-error-overlay-footer')?.textContent,
+      'the footer is there on the re-show too',
+    ).toBe(footer);
   });
 });
