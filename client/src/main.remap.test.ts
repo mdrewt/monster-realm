@@ -1479,23 +1479,44 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     // never ends), and a failure that is silent (the player believes it was saved).
     await bootReady();
     server(1000);
-    const realSet = Storage.prototype.setItem;
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
-      this: Storage,
-      key: string,
-      value: string,
-    ): void {
-      if (key === STORAGE_KEY) throw new Error('QuotaExceededError: storage is full');
-      realSet.call(this, key, value);
+    // The failure is injected by making `window.localStorage` itself answer a wrapper (the shell
+    // reads it afresh per save), not by patching Storage.prototype: once a key was set directly
+    // earlier in the worker, happy-dom's storage no longer routes setItem through the prototype.
+    const real = window.localStorage;
+    let refused = 0;
+    const wrapper: Storage = {
+      get length(): number {
+        return real.length;
+      },
+      key: (i: number): string | null => real.key(i),
+      getItem: (key: string): string | null => real.getItem(key),
+      setItem: (key: string, value: string): void => {
+        if (key === STORAGE_KEY) {
+          refused += 1;
+          throw new Error('QuotaExceededError: storage is full');
+        }
+        real.setItem(key, value);
+      },
+      removeItem: (key: string): void => real.removeItem(key),
+      clear: (): void => real.clear(),
+    };
+    const ownStorage = Object.getOwnPropertyDescriptor(window, 'localStorage');
+    Object.defineProperty(window, 'localStorage', { configurable: true, get: () => wrapper });
+    restorers.push(() => {
+      if (ownStorage !== undefined) Object.defineProperty(window, 'localStorage', ownStorage);
+      else delete (window as unknown as { localStorage?: unknown }).localStorage;
     });
+    expect(window.localStorage, 'precondition: the page reads the wrapper').toBe(wrapper);
     openControls();
     startCapture('A_0');
     const k = press('KeyK', { key: 'k' });
+    expect(refused, 'the injected save failure really fired').toBeGreaterThanOrEqual(1);
     expect(k.defaultPrevented).toBe(true);
     expect(capturing(), 'the capture ended').toBe(false);
     expect(controlsFeedback(), 'the outcome line').toContain(i18nT('controls.bound'));
     expect(controlsFeedback(), 'carries the save failure').toContain(i18nT('controls.saveFailed'));
     expect(savedRaw(), 'nothing reached storage').toBeNull();
+    expect(real.getItem(STORAGE_KEY), 'nothing reached the real storage').toBeNull();
     expect(cellText('A_0'), 'the slot shows K').toBe(primaryText(ROW_A, 'K'));
 
     press('Escape');
