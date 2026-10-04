@@ -522,8 +522,8 @@ describe('EvolutionView V1 (EG4-1): the progress panel renders a row per path an
   });
 
   it('BITES: a monster with NO outgoing paths renders a card and zero path rows, no throw', () => {
-    // Reached on every fresh connect (refreshEvolution runs before the evolution_path
-    // subscription applies) and permanently for every top-tier species.
+    // Reached before the evolution_path subscription applies, and permanently for every
+    // top-tier species.
     // KILLS: `paths[0]` indexing, and a card suppressed entirely when it has no edges —
     // the player would think the monster had vanished from the screen.
     const { parent, view } = mount();

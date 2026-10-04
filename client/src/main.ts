@@ -2211,12 +2211,14 @@ const suppressNativeMovementDefault = (e: KeyboardEvent): void => {
     button !== undefined &&
     routerConsumes(button) &&
     !isChord(e) &&
-    ownership(e.target, e) === 'router'
+    ownership(e.target, e, gameScreenEl()) === 'router'
   )
     e.preventDefault();
 };
 
 let worldCanvasEl: HTMLElement | null = null;
+// The game screen, read per key so a page that gains or lacks the shell is read as it is now.
+const gameScreenEl = (): HTMLElement | null => document.getElementById('game-screen');
 // The ONE announcer (S1 ships the machine; S5 owns the singleton and pumps it — a live region
 // nothing flushes is permanently silent and nothing else reds).
 const liveRegion = new LiveRegion();
@@ -2246,7 +2248,7 @@ const focusInsideHiddenSubtree = (): boolean => {
 
 const onKeyDown = (e: KeyboardEvent): void => {
   // Focus outside the game screen (and not on <body>) leaves every key to the browser (CTL11B.1).
-  if (outsideGameScreen(e.target, document.getElementById('game-screen'))) return;
+  if (outsideGameScreen(e.target, gameScreenEl())) return;
   // The session terminal outranks every input path — checked FIRST,
   // before the typing branch, the menu intercept and the router.
   // Suppress the native default (not a bare return) so a held arrow does not scroll on key-repeat.
@@ -2262,7 +2264,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
     return;
   }
   // a press can arrive INSIDE the stale-focus window, before the frame edge has run — heal
-  // first, so every ownership read below sees the healed state.
+  // first, so the typing branch and every screen opened below see the healed focus.
   if (focusInsideHiddenSubtree()) worldCanvasEl?.focus();
   // F9 downloads the local bug bundle; F8 dismisses the error overlay.
   // Handled EARLY (before letter-key branches) so they work under any overlay.
@@ -2321,7 +2323,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
   // is typed, never taken.
   const accel = accelForCode(DEFAULT_BINDINGS, e.code);
   if (accel !== undefined && accel !== 'F8' && accel !== 'F9') {
-    if (ownership(e.target, e) === 'target') return;
+    if (ownership(e.target, e, gameScreenEl()) === 'target') return;
     e.preventDefault();
     runAccel(accel);
     return;
@@ -2399,7 +2401,6 @@ function refreshRaising(): void {
   raisingView.refresh(buildRaisingViewModel(monsters, inventory, itemDefs));
 }
 store.onBatchApplied(() => refreshRaising());
-
 
 // --- battle view: refresh on batch, auto-show/hide --------
 function refreshBattle(): void {
@@ -3339,6 +3340,11 @@ async function main(): Promise<void> {
   // the second constructor argument is the injected sink pair — `announce`
   // reaches the one live region through its existing singleton, `returnFocus` reaches the house
   // landing place. The banner itself decides WHEN each fires; this is only WHERE.
+  // Its mount is made inside #game-screen first (the banner adopts it by id), so a focused OK button
+  // is focus inside the game screen and keeps the keys (CTL11B.1).
+  const noticeMount = document.createElement('div');
+  noticeMount.id = 'evolution-notice';
+  gameScreen.appendChild(noticeMount);
   evolutionNoticeBanner = new EvolutionNoticeBanner(
     () =>
       sendGuarded('ackEvolutionNotices', () =>
