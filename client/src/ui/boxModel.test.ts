@@ -29,7 +29,14 @@ import type {
   StoreMonsterPub,
   StoreSpeciesRow,
 } from '../net/store';
-import { buildBoxViewModel, buildPartyViewModel, hpPercent, nextFreePartySlot } from './boxModel';
+import {
+  buildBoxViewModel,
+  buildPartyViewModel,
+  hpPercent,
+  NEXT_FREE_PARTY_SLOT,
+  nextFreePartySlot,
+  resolvePartySlot,
+} from './boxModel';
 
 // ---------------------------------------------------------------------------
 // Factories
@@ -589,5 +596,77 @@ describe('EG4-8 evolutionChoicePending: hinges on the SHARED affinity-keyed pred
       evoPath({ edgeId: 3, fromSpecies: 1, toSpecies: 4, minLevel: 50 }), // the one real edge
     ];
     expect(partyCard(m, paths).evolutionChoicePending).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pgcc-d D4 — resolvePartySlot: the "-1 means next free slot" decision as a pure core.
+// The shell sends the returned slot (or reports partyFull); the server still validates.
+// ---------------------------------------------------------------------------
+
+/** The box sentinel the server uses for "not in the party" (u8 255). */
+const BOXED_SLOT = 255;
+
+/** Monsters occupying exactly the given party slots, ids 1.. in order. */
+function monstersAt(...slots: number[]): StoreMonsterPub[] {
+  return slots.map((slot, i) => monster(BigInt(i + 1), 1, slot));
+}
+
+describe('PGCCD-D4 resolvePartySlot', () => {
+  it('PGCCD-D4 NEXT_FREE_PARTY_SLOT is the -1 sentinel the box To Party button emits', () => {
+    // Kills: a renumbered sentinel — boxView.test pins the emitted -1 on the wire.
+    expect(NEXT_FREE_PARTY_SLOT).toBe(-1);
+  });
+
+  it.each([0, 3, 5, BOXED_SLOT, -2])(
+    'PGCCD-D4 an explicit slot %i is sent unchanged, even into a full party',
+    (requested) => {
+      // Kills: `!requested` / `requested <= 0` resolving slot 0 to the next free slot;
+      // resolving any non-sentinel; clamping the box sentinel; rejecting an occupied slot
+      // (the server validates, the core does not second-guess).
+      const full = monstersAt(0, 1, 2, 3, 4, 5);
+      expect(resolvePartySlot(requested, full, 6)).toStrictEqual({ kind: 'send', slot: requested });
+      expect(resolvePartySlot(requested, [], 6)).toStrictEqual({ kind: 'send', slot: requested });
+    },
+  );
+
+  it.each([
+    { name: 'an empty party', slots: [] as number[], size: 6, want: 0 },
+    { name: 'slots 0 and 1 taken', slots: [0, 1], size: 6, want: 2 },
+    { name: 'a hole at slot 0', slots: [1, 2], size: 6, want: 0 },
+    { name: 'a hole in the middle', slots: [0, 1, 3], size: 6, want: 2 },
+    { name: 'a hole, unordered input', slots: [3, 0, 1], size: 6, want: 2 },
+    { name: 'only the last slot free', slots: [0, 1, 2, 3, 4], size: 6, want: 5 },
+    {
+      name: 'boxed monsters (255) do not occupy',
+      slots: [BOXED_SLOT, BOXED_SLOT, 0],
+      size: 6,
+      want: 1,
+    },
+    { name: 'a slot at partySize is boxed, not occupying', slots: [6], size: 6, want: 0 },
+    { name: 'partySize 3: a monster at slot 3 is boxed', slots: [0, 1, 3], size: 3, want: 2 },
+    { name: 'duplicate partySlots with a free slot left', slots: [0, 0, 1, 1], size: 3, want: 2 },
+    { name: 'a partySize larger than 6 is honoured', slots: [0, 1, 2, 3, 4, 5], size: 8, want: 6 },
+  ])('PGCCD-D4 the sentinel resolves to the first free slot: $name', ({ slots, size, want }) => {
+    // Kills: hardcoded 6; counting boxed monsters as occupying; "length of party" instead
+    // of "first free index" (breaks on holes and duplicates); a last-free or random pick.
+    expect(resolvePartySlot(NEXT_FREE_PARTY_SLOT, monstersAt(...slots), size)).toStrictEqual({
+      kind: 'send',
+      slot: want,
+    });
+  });
+
+  it.each([
+    { name: 'six of six occupied', slots: [0, 1, 2, 3, 4, 5], size: 6 },
+    { name: 'partySize 3, three occupied', slots: [0, 1, 2], size: 3 },
+    { name: 'partySize 3, extras past the size are boxed', slots: [0, 1, 2, 3, 4, 5], size: 3 },
+    { name: 'duplicate partySlots filling every slot', slots: [0, 0, 1, 1, 2, 2], size: 3 },
+    { name: 'a partySize of zero has no slot at all', slots: [], size: 0 },
+  ])('PGCCD-D4 the sentinel reports partyFull: $name', ({ slots, size }) => {
+    // Kills: hardcoded 6 (partySize 3 would send slot 3); returning slot -1 or 0 when
+    // nothing is free; counting distinct monsters instead of distinct slots.
+    expect(resolvePartySlot(NEXT_FREE_PARTY_SLOT, monstersAt(...slots), size)).toStrictEqual({
+      kind: 'partyFull',
+    });
   });
 });
