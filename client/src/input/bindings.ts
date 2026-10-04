@@ -60,6 +60,32 @@ export const RESERVED_CODES: readonly KeyCode[] = codes(
   'MetaRight',
 );
 
+/** The buttons that always keep a key (design §9): without them the player could not walk, confirm,
+ *  back out or open the menu that fixes the table. */
+export const PROTECTED_BUTTONS: readonly VButton[] = Object.freeze([
+  'Up',
+  'Down',
+  'Left',
+  'Right',
+  'A',
+  'B',
+  'Start',
+]);
+
+// A `KeyboardEvent.code` is a short ASCII name (`KeyW`, `Numpad1`, `F9`).
+const CODE_SHAPE = /^[A-Za-z0-9]{1,32}$/;
+
+/** Whether `code` may be bound: a code-shaped name the browser does not own. `Unidentified` (an
+ *  IME or virtual key) is never a binding, so no unknown key can press a button. */
+export function isBindableCode(code: unknown): code is KeyCode {
+  return (
+    typeof code === 'string' &&
+    CODE_SHAPE.test(code) &&
+    code !== 'Unidentified' &&
+    !RESERVED_CODES.includes(code)
+  );
+}
+
 /** The virtual button `code` is bound to, or undefined when it is unbound (or an accelerator). */
 export function buttonForCode(b: Bindings, code: KeyCode): VButton | undefined {
   return VBUTTONS.find((button) => b.buttons[button].includes(code));

@@ -73,6 +73,139 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Keycap label of the Enter key, drawn in square brackets in the world interaction chip.
   // One short word. main.ts
   'key.enter': 'Enter',
+  // @desc: Keycap label of the numeric keypad's Enter key, drawn in square brackets on hint chips.
+  // One short word or two. input/glyphs.ts
+  'key.numpadEnter': 'Num Enter',
+  // @desc: Keycap label of the Backspace key (the B button by default), drawn in square brackets on
+  // hint chips. A symbol or one short word. input/glyphs.ts
+  'key.backspace': '⌫',
+  // @desc: Keycap label of the space bar, drawn in square brackets on hint chips. One short word.
+  // input/glyphs.ts
+  'key.space': 'Space',
+  // @desc: Keycap label of the Escape key (the Start button by default), drawn in square brackets on
+  // hint chips. One short word, abbreviated as printed on keyboards. input/glyphs.ts
+  'key.escape': 'Esc',
+  // @desc: Keycap label of the up arrow key, drawn in square brackets on hint chips. Keep the arrow
+  // symbol. input/glyphs.ts
+  'key.arrowUp': '↑',
+  // @desc: Keycap label of the down arrow key, drawn in square brackets on hint chips. Keep the
+  // arrow symbol. input/glyphs.ts
+  'key.arrowDown': '↓',
+  // @desc: Keycap label of the left arrow key, drawn in square brackets on hint chips. Keep the
+  // arrow symbol. input/glyphs.ts
+  'key.arrowLeft': '←',
+  // @desc: Keycap label of the right arrow key, drawn in square brackets on hint chips. Keep the
+  // arrow symbol. input/glyphs.ts
+  'key.arrowRight': '→',
+  // @desc: Keycap label of the Page Up key, abbreviated as printed on keyboards, drawn in square
+  // brackets on hint chips. input/glyphs.ts
+  'key.pageUp': 'PgUp',
+  // @desc: Keycap label of the Page Down key, abbreviated as printed on keyboards, drawn in square
+  // brackets on hint chips. input/glyphs.ts
+  'key.pageDown': 'PgDn',
+  // @desc: Keycap label of the slash key (US layout position), shown until the player's own layout
+  // has been learned from a press. input/glyphs.ts
+  'key.slash': '/',
+  // @desc: Keycap label of a numeric keypad digit key; {key} is the digit. Must differ from the bare
+  // digit key. input/glyphs.ts
+  'key.numpad': (p) => `Num ${p.key}`,
+  // @desc: Name of the D-pad Up button in Options › Controls (a row label). One short word.
+  // ui/controlsModel.ts
+  'controls.button.up': 'Up',
+  // @desc: Name of the D-pad Down button in Options › Controls (a row label). One short word.
+  // ui/controlsModel.ts
+  'controls.button.down': 'Down',
+  // @desc: Name of the D-pad Left button in Options › Controls (a row label). One short word.
+  // ui/controlsModel.ts
+  'controls.button.left': 'Left',
+  // @desc: Name of the D-pad Right button in Options › Controls (a row label). One short word.
+  // ui/controlsModel.ts
+  'controls.button.right': 'Right',
+  // @desc: Name of the A button (confirm / interact) in Options › Controls; keep the button letter
+  // in parentheses. ui/controlsModel.ts
+  'controls.button.a': 'Confirm (A)',
+  // @desc: Name of the B button (back / cancel) in Options › Controls; keep the button letter in
+  // parentheses. ui/controlsModel.ts
+  'controls.button.b': 'Back (B)',
+  // @desc: Name of the X button (jump) in Options › Controls; keep the button letter in parentheses.
+  // ui/controlsModel.ts
+  'controls.button.x': 'Jump (X)',
+  // @desc: Name of the Y button (more / info) in Options › Controls; keep the button letter in
+  // parentheses. ui/controlsModel.ts
+  'controls.button.y': 'Info (Y)',
+  // @desc: Name of the LB button (previous tab) in Options › Controls; keep the button name in
+  // parentheses. ui/controlsModel.ts
+  'controls.button.lb': 'Previous tab (LB)',
+  // @desc: Name of the RB button (next tab) in Options › Controls; keep the button name in
+  // parentheses. ui/controlsModel.ts
+  'controls.button.rb': 'Next tab (RB)',
+  // @desc: Name of the Start button (opens the main menu) in Options › Controls; keep the button
+  // name in parentheses. ui/controlsModel.ts
+  'controls.button.start': 'Menu (Start)',
+  // @desc: Name of the Select button (opens help) in Options › Controls; keep the button name in
+  // parentheses. ui/controlsModel.ts
+  'controls.button.select': 'Help (Select)',
+  // @desc: Name of the shortcut that opens Monsters › Storage, a row of the Shortcuts tab in Options
+  // › Controls. One short word. ui/controlsModel.ts
+  'controls.accel.storage': 'Storage',
+  // @desc: Name of the shortcut that opens the Bag, a row of the Shortcuts tab in Options ›
+  // Controls. One short word. ui/controlsModel.ts
+  'controls.accel.bag': 'Bag',
+  // @desc: Name of the shortcut that opens Monsters › Party, a row of the Shortcuts tab in Options ›
+  // Controls. One short word. ui/controlsModel.ts
+  'controls.accel.party': 'Party',
+  // @desc: Name of the shortcut that opens the Journal, a row of the Shortcuts tab in Options ›
+  // Controls. One short word. ui/controlsModel.ts
+  'controls.accel.journal': 'Journal',
+  // @desc: Name of the shortcut that opens Social › Trades, a row of the Shortcuts tab in Options ›
+  // Controls. One short word. ui/controlsModel.ts
+  'controls.accel.trades': 'Trades',
+  // @desc: Name of the shortcut that opens Social › Challenges, a row of the Shortcuts tab in
+  // Options › Controls. One short word. ui/controlsModel.ts
+  'controls.accel.challenges': 'Challenges',
+  // @desc: Name of the shortcut that opens Social › Rankings, a row of the Shortcuts tab in Options
+  // › Controls. One short word. ui/controlsModel.ts
+  'controls.accel.rankings': 'Rankings',
+  // @desc: Name of the shortcut that opens Profile › Name, a row of the Shortcuts tab in Options ›
+  // Controls. One short word. ui/controlsModel.ts
+  'controls.accel.name': 'Name',
+  // @desc: Name of the shortcut that opens Profile › Account, a row of the Shortcuts tab in Options
+  // › Controls. One short word. ui/controlsModel.ts
+  'controls.accel.account': 'Account',
+  // @desc: Name of the shortcut that saves the local bug-report bundle, a row of the Shortcuts tab
+  // in Options › Controls. ui/controlsModel.ts
+  'controls.accel.bugReport': 'Save bug report',
+  // @desc: Name of the shortcut that dismisses the error notice, a row of the Shortcuts tab in
+  // Options › Controls. ui/controlsModel.ts
+  'controls.accel.dismissError': 'Dismiss error',
+  // @desc: Line shown in Options › Controls while a slot waits for a key press; {label} is the row
+  // name (e.g. Confirm (A)). ui/controlsModel.ts
+  'controls.capture.prompt': (p) => `Press a key for ${p.label}…`,
+  // @desc: Feedback line in Options › Controls when the pressed key is reserved (Tab, F5, F11, F12,
+  // a modifier or a Ctrl/Alt/Meta chord). One sentence. ui/controlsModel.ts
+  'controls.refused.reserved': 'That key belongs to the browser and cannot be bound.',
+  // @desc: Feedback line in Options › Controls when a change would leave a protected button (D-pad,
+  // A, B, Start) with no key. One sentence. ui/controlsModel.ts
+  'controls.refused.protected': 'Movement, Confirm, Back and Menu must always keep a key.',
+  // @desc: Feedback line in Options › Controls when key capture ends without a change. One or two
+  // words. ui/controlsModel.ts
+  'controls.cancelled': 'Unchanged.',
+  // @desc: Feedback line in Options › Controls when a free key has been bound. One or two words.
+  // ui/controlsModel.ts
+  'controls.bound': 'Saved.',
+  // @desc: Feedback line in Options › Controls when the pressed key was bound elsewhere and the two
+  // bindings swapped; {key}/{otherKey} are keycaps, {label}/{otherLabel} row names.
+  // ui/controlsModel.ts
+  'controls.swapped': (p) =>
+    `Swapped: ${p.key} is now ${p.label}, ${p.otherKey} is now ${p.otherLabel}`,
+  // @desc: Feedback line in Options › Controls when the pressed key moved from another row into an
+  // empty slot, leaving that row without a key; {key} is a keycap, {label}/{otherLabel} row names.
+  // ui/controlsModel.ts
+  'controls.swappedUnbound': (p) =>
+    `Swapped: ${p.key} is now ${p.label}, ${p.otherLabel} has no key`,
+  // @desc: Feedback line in Options › Controls when a row's Primary and Alt keys traded places;
+  // {key}/{otherKey} are keycaps, {label} the row name. ui/controlsModel.ts
+  'controls.swappedSlots': (p) => `Swapped: ${p.key} and ${p.otherKey} on ${p.label}`,
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
   // index.html:94 (literal removed from index.html; resolved in HelpView show())
   'chrome.help.title': 'Controls & Goals',

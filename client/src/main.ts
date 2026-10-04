@@ -34,8 +34,10 @@ import {
   type WasmDirection,
   type WasmMoveInput,
 } from './convert/convert';
-import { accelForCode, DEFAULT_BINDINGS } from './input/bindings';
+import { browserStorage, loadBindings } from './input/bindingStore';
+import { accelForCode } from './input/bindings';
 import type { ButtonEdge } from './input/buttons';
+import { glyph, learnKey } from './input/glyphs';
 import { isChord, KeyboardSource } from './input/keyboardSource';
 import {
   type AccelPath,
@@ -327,6 +329,9 @@ let telemetry: ClientTelemetry = NOOP_TELEMETRY;
 // Frame accumulator — created ONCE, carried across rAF frames by the frame hunk.
 let frameWindow = createFrameWindow(performance.now());
 
+// The ONE binding table every input path and keycap reads: the player's saved table, else the
+// defaults (CTL12.4). Read once at boot; a remap takes effect on the next load.
+const bindings = loadBindings(browserStorage());
 // stepMs injected so the store can do burst detection + jitter EWMA.
 const store = new AuthoritativeStore(STEP_MS);
 // The injected rule IS the client-wasm export (same compiled code as the server).
@@ -1173,16 +1178,9 @@ function interactName(c: InteractCandidate): string {
   return c.kind === 'heal' ? i18nT('interact.healer') : c.name;
 }
 
-/** The A button's keycap, from the live binding. */
+/** The A button's keycap, from the live binding (A is protected, so it always has a key). */
 function interactKeycap(): string {
-  const code = DEFAULT_BINDINGS.buttons.A[0] ?? '';
-  switch (code) {
-    case 'Enter':
-    case 'NumpadEnter':
-      return i18nT('key.enter');
-    default:
-      return code;
-  }
+  return glyph(bindings.buttons.A[0] ?? '');
 }
 
 function interactChipText(chip: InteractChip): string {
@@ -1297,7 +1295,7 @@ const screenCtx: ScreenContext = {
   get identity() {
     return identity;
   },
-  bindings: DEFAULT_BINDINGS,
+  bindings,
   now: () => performance.now(),
   get shopId() {
     return boundShopId;
@@ -2076,7 +2074,7 @@ const jump = (): void => sendIntent('Jump');
 // owns the D-pad and X (Jump), plus A, B and Y while the main menu is up, and hands every other
 // button (and a nav-capable screen's D-pad) to the top frame's adapter. It also decides each
 // accelerator (`accelDecision`).
-const keyboard = new KeyboardSource(DEFAULT_BINDINGS);
+const keyboard = new KeyboardSource(bindings);
 const inputRouter = new InputRouter();
 
 // What the router needs to know: whether the world takes input, the nav frame (a nav-capable
@@ -2247,6 +2245,8 @@ const focusInsideHiddenSubtree = (): boolean => {
 };
 
 const onKeyDown = (e: KeyboardEvent): void => {
+  // Every press teaches the keycap what this layout types on that key (CTL12.5).
+  learnKey(e.code, e.key, e);
   // Focus outside the game screen (and not on <body>) leaves every key to the browser (CTL11B.1).
   if (outsideGameScreen(e.target, gameScreenEl())) return;
   // The session terminal outranks every input path — checked FIRST,
@@ -2266,14 +2266,18 @@ const onKeyDown = (e: KeyboardEvent): void => {
   // a press can arrive INSIDE the stale-focus window, before the frame edge has run — heal
   // first, so the typing branch and every screen opened below see the healed focus.
   if (focusInsideHiddenSubtree()) worldCanvasEl?.focus();
-  // F9 downloads the local bug bundle; F8 dismisses the error overlay.
-  // Handled EARLY (before letter-key branches) so they work under any overlay.
-  if (e.code === 'F9') {
+  // The F9 accelerator downloads the local bug bundle; F8 dismisses the error overlay. Decided
+  // through the live table (a cleared one does nothing) and EARLY (before letter-key branches) so
+  // they work under any overlay; but an Escape that stops typing (CTL6B.5) stays the field's, even
+  // when a remap gave Escape to F8.
+  const accel =
+    typingKey(e.target, e) === 'stopTyping' ? undefined : accelForCode(bindings, e.code);
+  if (accel === 'F9') {
     downloadBugBundle();
     e.preventDefault();
     return;
   }
-  if (e.code === 'F8') {
+  if (accel === 'F8') {
     // Only preventDefault when the overlay is actually visible (non-blocking otherwise).
     if (errorOverlayView?.visible) {
       errorOverlayView.dismiss();
@@ -2321,8 +2325,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
   }
   // An accelerator (ctl-11a): the router decides it over the stack. A key the focused field owns
   // is typed, never taken.
-  const accel = accelForCode(DEFAULT_BINDINGS, e.code);
-  if (accel !== undefined && accel !== 'F8' && accel !== 'F9') {
+  if (accel !== undefined) {
     if (ownership(e.target, e, gameScreenEl()) === 'target') return;
     e.preventDefault();
     runAccel(accel);
