@@ -41,6 +41,8 @@ const H = vi.hoisted(() => ({
   renew: null as null | (() => Promise<RenewalOutcome>),
   /** Per-table registered row callbacks, one entry per build (wireTables runs once per build). */
   rowCbs: {} as Record<string, Cb[]>,
+  /** Per-table registered onUpdate callbacks, one entry per build; called as (ctx, old, new). */
+  updCbs: {} as Record<string, Cb[]>,
 }));
 
 vi.mock('../module_bindings', () => {
@@ -53,6 +55,9 @@ vi.mock('../module_bindings', () => {
           return (cb: Cb) => {
             if (k === 'onInsert' || k === 'onDelete') {
               H.rowCbs[name] = [...(H.rowCbs[name] ?? []), cb];
+            }
+            if (k === 'onUpdate') {
+              H.updCbs[name] = [...(H.updCbs[name] ?? []), cb];
             }
           };
         },
@@ -171,9 +176,9 @@ function conn0(rec: BuildRec) {
 }
 
 /** A `my_account` view row as the SDK delivers it (rowConvert.SdkAccountRow). */
-function accountRow(tag: string) {
+function accountRow(tag: string, identity: { toHexString(): string } = ID) {
   return {
-    identity: ID,
+    identity,
     authIssuer: 'https://issuer.invalid',
     createdAtMs: 1n,
     lastLoginAtMs: 2n,
@@ -185,11 +190,30 @@ function accountRow(tag: string) {
   };
 }
 
-/** Deliver one my_account row through build `buildIdx`'s captured onInsert callback. */
-async function insertAccount(tag: string, buildIdx = 0): Promise<void> {
+/** Deliver one my_account row through build `buildIdx`'s captured onInsert callback, with NO
+ *  await: whatever the handler does synchronously has happened when this returns. */
+function fireAccount(tag: string, buildIdx = 0, identity: { toHexString(): string } = ID): void {
   const cb = H.rowCbs.my_account?.[buildIdx];
   if (cb === undefined) throw new Error('no my_account onInsert handler was registered');
-  cb({}, accountRow(tag));
+  cb({}, accountRow(tag, identity));
+}
+
+/** fireAccount, then let the microtasks (batch flush, rejection routing) settle. */
+async function insertAccount(
+  tag: string,
+  buildIdx = 0,
+  identity: { toHexString(): string } = ID,
+): Promise<void> {
+  fireAccount(tag, buildIdx, identity);
+  await settle();
+}
+
+/** Deliver one my_account row through build `buildIdx`'s captured onUpdate callback
+ *  (called as (ctx, oldRow, newRow)), then settle. */
+async function updateAccount(tag: string, oldTag: string, buildIdx = 0): Promise<void> {
+  const cb = H.updCbs.my_account?.[buildIdx];
+  if (cb === undefined) throw new Error('no my_account onUpdate handler was registered');
+  cb({}, accountRow(oldTag), accountRow(tag));
   await settle();
 }
 
@@ -272,6 +296,7 @@ describe('E1-REJOIN connect() re-issues joinGame when my_account returns to Acti
     H.builds = [];
     H.renew = null;
     H.rowCbs = {};
+    H.updCbs = {};
     sessionStorage.clear();
     localStorage.clear();
   });
@@ -387,6 +412,122 @@ describe('E1-REJOIN connect() re-issues joinGame when my_account returns to Acti
     expect(b1.joinGame).toHaveBeenLastCalledWith({ name: 'Tester' });
     expect(b0.joinGame, 'the dropped connection must never be reused').toHaveBeenCalledTimes(1);
   });
+
+  it('E1-REJOIN-11 the Active half arriving through onUpdate re-joins exactly once', async () => {
+    const { b } = await bootAnon(makeOpts());
+    await insertAccount('PendingDeletion');
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+
+    await updateAccount('Active', 'PendingDeletion');
+    expect(b.joinGame).toHaveBeenCalledTimes(2);
+    expect(b.joinGame).toHaveBeenLastCalledWith({ name: 'Tester' });
+  });
+
+  it("E1-REJOIN-12 a row for a FOREIGN identity never re-joins, even when it is the Active edge over this player's PendingDeletion", async () => {
+    const foreign = { toHexString: () => 'ab'.repeat(32) };
+    const { b } = await bootAnon(makeOpts());
+    await insertAccount('PendingDeletion');
+    await insertAccount('Active', 0, foreign);
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+  });
+
+  it('E1-REJOIN-13 any previous status other than PendingDeletion (unknown or terminal tags) never re-joins on Active', async () => {
+    const { b } = await bootAnon(makeOpts());
+    for (const tag of ['Deleted', 'SomethingNew', 'active', '']) {
+      await insertAccount(tag);
+      await insertAccount('Active');
+      expect(b.joinGame, `${JSON.stringify(tag)} -> Active`).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('E1-REJOIN-14 a superseded build delivering the Active row never joins, on itself or on the current build', async () => {
+    const { b: b0 } = await bootAnon(makeOpts());
+    b0.onDisconnect?.();
+    await nextAttempt();
+    const b1 = H.builds[1];
+    b1.onConnect?.(conn0(b1), ID, 'anon-tok');
+    b1.onApplied?.();
+    expect(b1.joinGame).toHaveBeenCalledTimes(1);
+
+    await insertAccount('PendingDeletion', 1);
+    await insertAccount('Active', 0);
+    expect(b0.joinGame, 'a dead socket must not join').toHaveBeenCalledTimes(1);
+    expect(b1.joinGame, 'a stale delivery must not join the current build').toHaveBeenCalledTimes(
+      1,
+    );
+
+    // The stale delivery did not consume the edge: the current build's own Active still joins.
+    await insertAccount('Active', 1);
+    expect(b1.joinGame).toHaveBeenCalledTimes(2);
+    expect(b0.joinGame).toHaveBeenCalledTimes(1);
+  });
+
+  it('E1-REJOIN-15 the re-join is logged to onSend exactly once (not raw, not double-wrapped)', async () => {
+    const onSend = vi.fn();
+    const { b } = await bootAnon({ ...makeOpts(), onSend } as ConnectionOptions);
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+    onSend.mockClear();
+
+    await insertAccount('PendingDeletion');
+    await insertAccount('Active');
+    expect(b.joinGame).toHaveBeenCalledTimes(2);
+    expect(onSend.mock.calls).toEqual([['joinGame', [{ name: 'Tester' }]]]);
+  });
+
+  it('E1-REJOIN-16 a claim code minted mid-session vetoes the re-join, and clearing it lifts the veto', async () => {
+    const { b } = await bootAnon(makeOpts());
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+
+    claimCode.mint(globalThis, URI, DB);
+    await insertAccount('PendingDeletion');
+    await insertAccount('Active');
+    expect(b.joinGame, 'the veto is read fresh per edge').toHaveBeenCalledTimes(1);
+
+    claimCode.clear(globalThis, URI, DB);
+    await insertAccount('PendingDeletion');
+    await insertAccount('Active');
+    expect(b.joinGame).toHaveBeenCalledTimes(2);
+  });
+
+  it('E1-REJOIN-17 the mid-grace reconnect: a rejected first join, a drop, a PendingDeletion snapshot, then Active re-joins once', async () => {
+    const opts = makeOpts();
+    const handle = connect(opts);
+    await settle();
+    const b0 = H.builds[0];
+    b0.joinGame.mockImplementation(() => Promise.reject(new Error('account pending deletion')));
+    b0.onConnect?.(conn0(b0), ID, 'anon-tok');
+    b0.onApplied?.();
+    await settle();
+    expect(joinErrors(opts)).toEqual([['join', 'account pending deletion']]);
+
+    b0.onDisconnect?.();
+    await nextAttempt();
+    expect(H.builds).toHaveLength(2);
+    const b1 = H.builds[1];
+    b1.onConnect?.(conn0(b1), ID, 'anon-tok');
+    b1.onApplied?.();
+    expect(b1.joinGame, 'the rebuilt connection joins on its own applied').toHaveBeenCalledTimes(1);
+
+    await insertAccount('PendingDeletion', 1);
+    expect(b1.joinGame, 'the snapshot row has no previous status').toHaveBeenCalledTimes(1);
+
+    await insertAccount('Active', 1);
+    expect(b1.joinGame).toHaveBeenCalledTimes(2);
+    expect(b1.joinGame).toHaveBeenLastCalledWith({ name: 'Tester' });
+    expect(b0.joinGame).toHaveBeenCalledTimes(1);
+    expect(handle.linkFrozen()).toBe(false);
+  });
+
+  it('E1-REJOIN-18 the re-join is issued synchronously with the Active delivery, before any await', async () => {
+    const { b } = await bootAnon(makeOpts());
+    await insertAccount('PendingDeletion');
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+
+    fireAccount('Active');
+    expect(b.joinGame, 'no microtask deferral').toHaveBeenCalledTimes(2);
+    await settle();
+    expect(b.joinGame).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('E1-JOIN Connection.join() surfaces failures', () => {
@@ -395,6 +536,7 @@ describe('E1-JOIN Connection.join() surfaces failures', () => {
     H.builds = [];
     H.renew = null;
     H.rowCbs = {};
+    H.updCbs = {};
     sessionStorage.clear();
     localStorage.clear();
   });
@@ -515,6 +657,26 @@ describe('E1-JOIN Connection.join() surfaces failures', () => {
     expect(b.joinGame).toHaveBeenCalledTimes(1);
     expect(joinErrors(opts)).toEqual([]);
   });
+
+  it('E1-JOIN-10 join() issues joinGame synchronously, before any await', async () => {
+    const { handle, b } = await bootAnon(makeOpts());
+    handle.join();
+    expect(b.joinGame, 'no microtask deferral').toHaveBeenCalledTimes(2);
+    await settle();
+    expect(b.joinGame).toHaveBeenCalledTimes(2);
+  });
+
+  it('E1-JOIN-11 join() is logged to onSend exactly once (not raw, not double-wrapped)', async () => {
+    const onSend = vi.fn();
+    const { handle, b } = await bootAnon({ ...makeOpts(), onSend } as ConnectionOptions);
+    expect(b.joinGame).toHaveBeenCalledTimes(1);
+    onSend.mockClear();
+
+    handle.join();
+    await settle();
+    expect(b.joinGame).toHaveBeenCalledTimes(2);
+    expect(onSend.mock.calls).toEqual([['joinGame', [{ name: 'Tester' }]]]);
+  });
 });
 
 /** Drop comments from TypeScript source, line-based so a stray quote or backtick inside a
@@ -573,5 +735,17 @@ describe('E1-MAIN main.ts routes the claim-flow join through conn.join()', () =>
 
     expect(body.split('conn?.join()').length - 1).toBe(1);
     expect(body).toMatch(/step\.effect === 'join'\)\s*(?:\{\s*)?(?:void\s+)?conn\?\.join\(\)/);
+  });
+
+  // RAW source, no comment stripping: the token is gone from main.ts entirely, so a bracket
+  // (`reducers['join' + 'Game']`), destructured or string-hidden call has nowhere to live.
+  it('E1-MAIN-03 the raw main.ts source never contains the token joinGame', () => {
+    const raw = readFileSync(mainPath, 'utf8');
+    expect(raw.split('joinGame').length - 1).toBe(0);
+  });
+
+  it('E1-MAIN-04 the raw main.ts source never indexes reducers by bracket', () => {
+    const raw = readFileSync(mainPath, 'utf8');
+    expect(raw.split('reducers[').length - 1).toBe(0);
   });
 });

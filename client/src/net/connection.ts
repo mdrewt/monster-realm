@@ -671,17 +671,16 @@ export function connect(opts: ConnectionOptions): Connection {
     // R-rb-128-E1: a mid-grace drop deleted the player row and join_game refused while
     // PendingDeletion, so the PendingDeletion -> Active edge (cancel_account_deletion) re-joins.
     // `prev` is read BEFORE the upsert; a still-connected player gets the benign "already joined".
-    // Only the CURRENT build re-joins (a superseded socket must not consume the edge), through its
-    // already-wrapped handle.
+    // A superseded socket neither writes the account slot nor joins: its write would consume the
+    // edge the current build still has to see. Joins go out on the current, already-wrapped handle.
     const ingestAccount = (row: SdkAccountRow): void => {
+      const live = current;
+      if (live === undefined || rawConnectionOf.get(live) !== conn) return;
       const prev = store.ownAccount(identity)?.status;
       const next = accountRowToStore(row);
       store.upsertAccount(next);
       batcher.schedule();
-      const live = current;
-      if (live === undefined || rawConnectionOf.get(live) !== conn || next.identity !== identity) {
-        return;
-      }
+      if (next.identity !== identity) return;
       const codeUnconsumed = claimCode.hasUnconsumed(globalThis, opts.uri, opts.db);
       if (shouldRejoinAfterAccountChange(prev, next.status, codeUnconsumed)) {
         attemptJoin(live, name, opts.onError);

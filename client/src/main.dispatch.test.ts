@@ -193,7 +193,7 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
 // The connection: capture the options; enqueueMove never settles, every other reducer records its
 // name and arguments and resolves at once (or when the test's gate opens).
 vi.mock('./net/connection', () => {
-  const reducers = new Proxy(
+  const reducers: Record<string, (args: unknown) => Promise<void>> = new Proxy(
     {},
     {
       get: (_t, name) => {
@@ -217,6 +217,11 @@ vi.mock('./net/connection', () => {
     identity: () => H.identity,
     linkFrozen: () => H.frozen,
     continueAnonymously: () => undefined,
+    // R-rb-128-E1: the claim-flow join is `conn.join()`, which the real connection gates on the
+    // frozen link and sends as joinGame({ name }) through the same recording reducers proxy.
+    join: () => {
+      if (!H.frozen) void live.reducers.joinGame({ name: 'Player' });
+    },
     sessionState: () => 'hidden',
     startSignIn: () => {
       H.signIns += 1;
