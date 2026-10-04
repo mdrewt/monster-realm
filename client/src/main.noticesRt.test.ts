@@ -502,7 +502,7 @@ describe('RT extra (ctl-13)', { sequential: true }, () => {
     expect(chips).toEqual(['A', 'B', 'Start', 'Select']);
   }, 60_000);
 
-  it('RT-DOUBLE: Y Enter, then Y Enter again before the server row changes, answers twice', async () => {
+  it('RT-DOUBLE: Y Enter, then Y Enter again before the server row changes, answers once', async () => {
     await bootReady();
     seedPlayer(BOB, 'Bob', 8n);
     batch();
