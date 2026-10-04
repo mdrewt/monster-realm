@@ -1,7 +1,8 @@
 // ui/actionSheetModel.ts — the world picker and action sheet (ctl-10a), and the Yes-default confirm
-// a Challenge row asks first (ctl-10b). Pure: no DOM, module state or clock. Both are one list of entity × action rows over the candidates `interact_candidates_coded`
-// returned: A with several opens the picker (every actionable candidate's actions), Y opens the
-// primary candidate's sheet (its actions only). The cursor is nav.ts's list rule.
+// a Challenge row asks first (ctl-10b). Pure: no DOM, module state or clock. Both are one list of
+// entity × action rows over the candidates `interact_candidates_coded` returned: A with several
+// opens the picker (every actionable candidate's actions), Y opens the primary candidate's sheet
+// (its actions only). The cursor is nav.ts's list rule.
 import type { InteractAction, InteractCandidate } from './interactModel';
 import { list, type NavInput, type NavLayout, type NavState, navInit, navStep } from './nav';
 
