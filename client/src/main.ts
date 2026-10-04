@@ -810,7 +810,7 @@ function applyClaim(event: ClaimEvent): void {
   // The AUTHORITATIVE claim-code veto lives in connection.ts's onApplied (G18); here we only mirror
   // the local storage effect so a declined / dead code stops vetoing the next connection's join.
   if (step.effect === 'delete-code-and-permit-join') claimCode.clear(globalThis, URI, DB);
-  if (step.effect === 'join') conn?.live()?.reducers.joinGame({ name: 'Player' });
+  if (step.effect === 'join') conn?.join();
   renderClaim();
 }
 
