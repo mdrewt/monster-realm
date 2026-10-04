@@ -28,6 +28,7 @@ import {
   accelDecision,
   InputRouter,
   type MenuAccel,
+  outsideGameScreen,
   ownership,
   type RouteContext,
   type RouterEffect,
@@ -1754,5 +1755,236 @@ describe('accelerator paths and decisions (ctl-11a)', () => {
         `${code}: a command passes through`,
       ).toEqual({ consumed: true, effects: [commandEffect(CMD)] });
     }
+  });
+});
+
+// ==========================================================================================
+// ctl-11b: focus outside #game-screen belongs to the browser (CTL11B.1)
+// ==========================================================================================
+//
+// `outsideGameScreen(target, screen)` is true exactly when the target is an element (a string
+// `tagName`) that is not BODY or HTML, a game screen exists, and the screen does not contain it.
+// `ownership(target, event, screen = null)` asks it FIRST: an element outside the screen owns EVERY
+// key (so the router touches no key and the page keeps Escape, Enter, F9, the D-pad and the
+// accelerators). `worldHasFocus` (the legacy focus ladder this replaces; main.ts) is deleted with
+// this slice, and the named survivors of its S5T-GATE cases are these four cases plus the booted
+// CTL11B-1-BOOT-* cases in main.a11yFocus.test.ts.
+//
+// Targets are structural fakes and the screen a structural `contains` over a fixed set of nodes,
+// so no DOM is involved. Every expected verdict is a hard-coded literal.
+
+/** A structural element: only what `outsideGameScreen` and `ownership` read. */
+const fakeEl = (tagName: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+  tagName,
+  ...extra,
+});
+
+/** A game screen that contains exactly `inside`, as `Node.contains` answers (by identity). */
+const screenHolding = (...inside: unknown[]): { contains(node: unknown): boolean } => ({
+  contains: (node: unknown): boolean => inside.includes(node),
+});
+
+/** Keys of every kind: Start, A, the D-pad (letter and arrow), B, the F-keys, an accelerator, the
+ *  jump, a stray letter and Tab. None may be routed from outside the screen. */
+const EVERY_KIND_OF_KEY = [
+  'Escape',
+  'Enter',
+  'NumpadEnter',
+  'KeyB',
+  'KeyW',
+  'ArrowUp',
+  'ArrowDown',
+  'Backspace',
+  'F9',
+  'F8',
+  'Space',
+  'KeyM',
+  'KeyZ',
+  'Tab',
+];
+
+describe('ownership outside #game-screen (ctl-11b, CTL11B.1)', () => {
+  it('CTL11B-1-OWN-OUTSIDE: an element outside the game screen (a button, div, canvas, link, text field, select or contentEditable) owns every key, Escape, Enter, B, F9 and the D-pad included, and outsideGameScreen reads true for it; the same keys on it are the router`s once the screen holds it', () => {
+    // WRONG IMPL KILLED: an outside rule that is missing (the old ownership answers `router` for a
+    // div or canvas and for Escape or Enter on a field, so the game takes keys from a page control
+    // that is not part of it), one that covers only the form controls (a div or canvas outside the
+    // screen would still be routed), one that covers only some keys (Escape, F9 or the D-pad
+    // forgotten: the page's own Escape would open the menu), one decided AFTER the field and button
+    // rules (Escape on an outside text input stays `router`), one that ignores the screen argument
+    // (the control rows: the very same element INSIDE the screen is not outside), and an
+    // `outsideGameScreen` that is true for everything (the inside control).
+    const outsiders: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+      ['button', fakeEl('BUTTON')],
+      ['div', fakeEl('DIV')],
+      ['canvas', fakeEl('CANVAS')],
+      ['anchor', fakeEl('A')],
+      ['text input', fakeEl('INPUT', { type: 'text' })],
+      ['textarea', fakeEl('TEXTAREA')],
+      ['select', fakeEl('SELECT')],
+      ['contentEditable div', fakeEl('DIV', { isContentEditable: true })],
+    ];
+    let rows = 0;
+    for (const [label, target] of outsiders) {
+      const screen = screenHolding(); // holds nothing: every target is outside it
+      expect(outsideGameScreen(target, screen), `${label}: outside the screen`).toBe(true);
+      for (const code of EVERY_KIND_OF_KEY) {
+        expect(ownership(target, { code }, screen), `${label} / ${code}`).toBe('target');
+        rows += 1;
+      }
+      // A composition is the target's too (it was before; it must stay so).
+      expect(ownership(target, { code: 'KeyW', isComposing: true }, screen), `${label} IME`).toBe(
+        'target',
+      );
+    }
+    expect(rows, 'ANTI-VACUITY: every element kind x every key was driven').toBe(
+      outsiders.length * EVERY_KIND_OF_KEY.length,
+    );
+
+    // Control: with the screen holding the element, the outside rule no longer applies, and a
+    // canvas or div is the router's again (so the `target` rows above are the rule's doing).
+    for (const [label, target] of outsiders.filter(
+      ([name]) => name === 'canvas' || name === 'div',
+    )) {
+      const screen = screenHolding(target);
+      expect(outsideGameScreen(target, screen), `${label}: inside the screen`).toBe(false);
+      for (const code of ['Escape', 'Enter', 'KeyB', 'KeyW', 'ArrowUp', 'Backspace', 'F9']) {
+        expect(ownership(target, { code }, screen), `${label} inside / ${code}`).toBe('router');
+      }
+    }
+    // The screen argument is what decides: the same canvas with NO screen argument is the router's.
+    expect(ownership(fakeEl('CANVAS'), { code: 'Escape' }), 'a canvas, no screen given').toBe(
+      'router',
+    );
+  });
+
+  it('CTL11B-1-OWN-BODY: <body> and <html> are not outside the game screen even though the screen does not contain them, and neither is a target that is no element (the window, null, undefined, a bare object, a number): outsideGameScreen reads false and the keys are the router`s', () => {
+    // WRONG IMPL KILLED: an outside rule written as `!screen.contains(target)` alone (focus on the
+    // page, the state after a close and the one every key starts from, would be the browser's:
+    // every key dead at the world), one that exempts <body> but not <html>, one that treats the
+    // window or a null target as an element outside the screen (a keydown dispatched at `window`
+    // would then never be routed), and one that exempts the body only when the key is a letter.
+    const notOutside: ReadonlyArray<readonly [string, unknown]> = [
+      ['body', fakeEl('BODY')],
+      ['html', fakeEl('HTML')],
+      ['window-like', { addEventListener: () => undefined, document: {} }],
+      ['bare object', {}],
+      ['null', null],
+      ['undefined', undefined],
+      ['number', 7],
+      ['string', 'BUTTON'],
+    ];
+    const screen = screenHolding(); // holds none of them
+    for (const [label, target] of notOutside) {
+      expect(outsideGameScreen(target, screen), `${label}: not outside`).toBe(false);
+      for (const code of [
+        'KeyW',
+        'Escape',
+        'Enter',
+        'KeyB',
+        'ArrowUp',
+        'Backspace',
+        'F9',
+        'KeyZ',
+      ]) {
+        expect(ownership(target, { code }, screen), `${label} / ${code}`).toBe('router');
+      }
+    }
+    // Control: an element IS outside the very same screen, so the verdicts above are not a screen
+    // that never says outside.
+    expect(outsideGameScreen(fakeEl('BUTTON'), screen), 'control: a button is outside').toBe(true);
+  });
+
+  it('CTL11B-1-OWN-INSIDE: an element inside the game screen keeps the existing rules: a canvas or div is the router`s for W and Escape, a focused button owns Space and Enter but not Escape or W, a text field owns every key but Escape and Enter, a composition owns everything, and outsideGameScreen reads false for each', () => {
+    // WRONG IMPL KILLED: an outside rule that also steals keys INSIDE the screen (the canvas could
+    // not walk), one that swallows the existing button rule (a focused chip would lose its Space and
+    // Enter activation, or would own Escape and block Start), one that swallows the field rule (a
+    // typed letter would walk or open an accelerator, Escape in the field could never stop typing),
+    // and one that lets the screen argument override the IME rule.
+    const canvas = fakeEl('CANVAS');
+    const div = fakeEl('DIV');
+    const button = fakeEl('BUTTON');
+    const anchor = fakeEl('A');
+    const field = fakeEl('INPUT', { type: 'text' });
+    const editable = fakeEl('DIV', { isContentEditable: true });
+    const screen = screenHolding(canvas, div, button, anchor, field, editable);
+    for (const [label, target] of [
+      ['canvas', canvas],
+      ['div', div],
+      ['button', button],
+      ['anchor', anchor],
+      ['text input', field],
+      ['contentEditable', editable],
+    ] as const) {
+      expect(outsideGameScreen(target, screen), `${label}: inside the screen`).toBe(false);
+    }
+
+    for (const code of ['KeyW', 'Escape', 'Enter', 'KeyB', 'ArrowUp', 'Backspace', 'Space', 'F9']) {
+      expect(ownership(canvas, { code }, screen), `canvas / ${code}`).toBe('router');
+      expect(ownership(div, { code }, screen), `div / ${code}`).toBe('router');
+    }
+    for (const [label, target] of [
+      ['button', button],
+      ['anchor', anchor],
+    ] as const) {
+      for (const code of ['Space', 'Enter', 'NumpadEnter']) {
+        expect(ownership(target, { code }, screen), `${label} / ${code}`).toBe('target');
+      }
+      for (const code of ['Escape', 'KeyW', 'KeyB', 'ArrowUp', 'Backspace', 'F9']) {
+        expect(ownership(target, { code }, screen), `${label} / ${code}`).toBe('router');
+      }
+    }
+    for (const [label, target] of [
+      ['text input', field],
+      ['contentEditable', editable],
+    ] as const) {
+      for (const code of ['KeyB', 'KeyW', 'Space', 'ArrowUp', 'Backspace', 'KeyM', 'F9']) {
+        expect(ownership(target, { code }, screen), `${label} / ${code}`).toBe('target');
+      }
+      for (const code of ['Escape', 'Enter', 'NumpadEnter']) {
+        expect(ownership(target, { code }, screen), `${label} / ${code}`).toBe('router');
+      }
+    }
+    expect(ownership(canvas, { code: 'KeyW', isComposing: true }, screen), 'IME').toBe('target');
+    expect(ownership(canvas, { code: 'Escape', keyCode: 229 }, screen), 'IME 229').toBe('target');
+
+    // The screen element itself: Node.contains(self) is true, so it is never outside.
+    const root = fakeEl('DIV');
+    expect(outsideGameScreen(root, screenHolding(root)), 'the screen itself').toBe(false);
+  });
+
+  it('CTL11B-1-OWN-NO-SCREEN: with no game screen (a shell-less boot) nothing is outside: outsideGameScreen reads false for every element kind, and ownership is exactly the two-argument verdict, a div, canvas or button keeping its router verdict for W, Escape and F9', () => {
+    // WRONG IMPL KILLED: a null screen read as "everything is outside" (a shell-less boot, the
+    // unit harnesses and any page without #game-screen would route no key at all), one that throws
+    // on null (`screen.contains` with no guard), a default parameter that is not `null` (the
+    // two-argument call would then differ from the explicit null), and an outside rule that
+    // consults the target but not the screen.
+    const kinds: ReadonlyArray<readonly [string, unknown]> = [
+      ...ROUTER_TARGETS,
+      ...FIELD_TARGETS,
+      ...NATIVE_ACTIVATORS,
+      ['anchor', fakeEl('A')],
+    ];
+    let rows = 0;
+    for (const [label, target] of kinds) {
+      expect(outsideGameScreen(target, null), `${label}: no screen, not outside`).toBe(false);
+      for (const code of ALL_CODES) {
+        const two = ownership(target, { code });
+        expect(ownership(target, { code }, null), `${label} / ${code}`).toBe(two);
+        expect(ownership(target, { code }, undefined), `${label} / ${code} (undefined)`).toBe(two);
+        rows += 1;
+      }
+    }
+    expect(rows, 'ANTI-VACUITY: every target kind x every code was compared').toBe(
+      kinds.length * ALL_CODES.length,
+    );
+    // The two-argument verdicts themselves, pinned as literals (equality alone would hold for a
+    // rule that returned `target` for both spellings).
+    for (const tag of ['DIV', 'CANVAS', 'BUTTON']) {
+      for (const code of ['KeyW', 'Escape', 'F9', 'Backspace']) {
+        expect(ownership(fakeEl(tag), { code }, null), `${tag} / ${code}`).toBe('router');
+      }
+    }
+    expect(ownership(fakeEl('BUTTON'), { code: 'Space' }, null), 'button / Space').toBe('target');
+    expect(ownership(fakeEl('INPUT'), { code: 'KeyB' }, null), 'input / KeyB').toBe('target');
   });
 });

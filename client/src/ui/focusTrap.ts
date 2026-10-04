@@ -1,4 +1,4 @@
-// ui/focusTrap.ts — the Tab-only focus trap for the 16 mutual-exclusion overlays.
+// ui/focusTrap.ts — the Tab-only focus trap for the 17 registry overlays (`OverlayId`).
 //
 // Two halves on purpose: `nextFocusTarget` is the PURE list arithmetic (no DOM reads, no events,
 // node-testable) and `installTrap` is the thin DOM shell around it. `FOCUSABLE_SELECTOR` and the

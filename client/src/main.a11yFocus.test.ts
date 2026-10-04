@@ -45,27 +45,17 @@
  * the same synchronous burst (S5T-ANNOUNCE-TOP). Both are real properties of the
  * production code, not test artefacts.
  *
- * RED REASON: none of `worldHasFocus`, `worldCanvasEl`, the twelve `&& worldHasFocus()`
- * conjuncts, the frame-loop announcement/focus-return pump, or the `targetOwnsKey` guard
- * on the terminal Space branch exist in main.ts yet.
+ * HISTORY (m23-s5, then ctl-11a and ctl-11b): the original slice added a `worldHasFocus()` gate
+ * on the hotkeys, a frame-loop announcement/focus-return pump and a Space guard. ctl-11b DELETED
+ * `worldHasFocus`: one rule replaces it, in main.ts's keydown handler (a key whose target is an
+ * element outside `#game-screen`, and not <body>, is the browser's) and in the pure
+ * `ownership(target, event, screen)`. The cases below that still say "gate" name what they now
+ * pin; the CTL11B-1-* cases at the end pin the outside rule itself. The frame-loop focus return
+ * (<body>, or focus stranded in a hidden subtree, goes back to the canvas) is unchanged.
  *
- * RED at the fork (want them red now, green after impl): 3× `S5T-GATE-BLOCKED`,
- * `S5T-ANNOUNCE-WORLD`, `S5T-ANNOUNCE-TOP`, `S5T-SPACE-BUTTON`, `S5T-FOCUS-RETURN`.
- *
- * GREEN at the fork BY DESIGN (regression pins — labelled individually at each site, not
- * just here): 3× `S5T-GATE-ALLOWED-BODY`, `S5T-GATE-ALLOWED-CANVAS`, `S5T-SPACE-WORLD`,
- * `S5T-BODY-BLUR`, `S5T-FOCUS-NO-STEAL`, `S5T-DISJOINT`. Every one of these asserts
- * behaviour that is ALREADY true today for the trivial reason that no gate/pump/guard
- * exists yet to defeat — e.g. `S5T-BODY-BLUR`'s closing hotkey opens today because NOTHING
- * blocks any hotkey today, not because the `document.body` disjunct is already correct.
- * `S5T-GATE-ALLOWED-CANVAS` is the one worth stating explicitly, since it is also this
- * suite's ONLY behavioural killer of the red-team's #1 attack (`worldCanvasEl` never
- * assigned, or shadowed): it is green at the fork (opening from canvas focus is
- * unconditional today), and only becomes a REAL kill once the twelve conjuncts exist for it
- * to have something to blow through — which is exactly why it asserts
- * `document.activeElement` genuinely IS the canvas element BEFORE dispatching (so it can
- * never pass by the canvas silently being unfocusable instead of by the gate genuinely
- * recognising it).
+ * Several S5T cases are regression pins that were green from the day their code landed (marked at
+ * each site). `S5T-GATE-ALLOWED-CANVAS` asserts `document.activeElement` genuinely IS the canvas
+ * BEFORE dispatching, so it can never pass by the canvas silently being unfocusable.
  *
  * FIX CYCLE 1. RED at this fix's fork: 6× `S5T-GATE-SAMEKEY-CLOSE`
  * and `S5T-GATE-REOPEN-AFTER-SAMEKEY-CLOSE` — the pre-amendment conjunct also gated the
@@ -98,6 +88,14 @@ const H = vi.hoisted(() => ({
   /** Every element main.ts passed to the world renderer's `init(mount)`, oldest first (ctl-7a:
    *  CTL7A-1-MAIN-MOUNT-IN-GAME-SCREEN reads which node main.ts really mounts the canvas on). */
   mounts: [] as HTMLElement[],
+  /** How many times main.ts asked the connection for its live handle (`conn.live()`): every
+   *  reducer call, movement intent included, goes through it first, so a key that must reach no
+   *  reducer leaves this unchanged (ctl-11b, CTL11B-1-BOOT-*). */
+  liveReads: 0,
+  /** What the stubbed connection's `sessionState()` answers: `hidden` is the ordinary case, any other
+   *  value is the session terminal, which blocks every input path. Reset to `hidden` by every
+   *  boot, raised only by CTL11B-1-PIN-SESSION-GATE. */
+  session: 'hidden' as string,
 }));
 
 // The wasm pkg — identical shape to main.battle-reseed.test.ts's mock (every name main.ts
@@ -133,16 +131,19 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
 });
 
 // The connection: capture the options object, hand back a Connection-shaped stub.
-// sessionState() MUST be 'hidden' or every hotkey in this file is swallowed by
-// sessionGateBlocks() before it ever reaches the world-focus conjunct under test.
+// sessionState() reads `H.session`, which MUST stay 'hidden' (the default) or every key in this file
+// is swallowed by sessionGateBlocks(); only CTL11B-1-PIN-SESSION-GATE raises it, for one test.
 vi.mock('./net/connection', () => {
   const stub: Connection = {
     conn: undefined,
-    live: () => undefined,
+    live: () => {
+      H.liveReads += 1;
+      return undefined;
+    },
     identity: () => H.identity,
     linkFrozen: () => false,
     continueAnonymously: () => undefined,
-    sessionState: () => 'hidden',
+    sessionState: () => H.session as 'hidden',
     startSignIn: () => undefined,
     reconnectNow: () => undefined,
   };
@@ -177,7 +178,7 @@ vi.mock('./observability/telemetry', async (importOriginal) => {
 // The renderer: constructed unconditionally at main.ts's `renderer = new WorldRenderer()`,
 // before the `#app` guard. DELTA 2 (see file header): `init(mount)` appends a real,
 // focusable canvas so `mount.querySelector('canvas')` (M23S5-CANVASREF) resolves and
-// `worldHasFocus()`'s `a === worldCanvasEl` arm is reachable from this test.
+// `.focus()` on it actually moves `document.activeElement` from this test.
 vi.mock('./render/world', () => {
   class WorldRenderer {
     init(mount: HTMLElement): Promise<void> {
@@ -374,6 +375,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   beforeEach(async () => {
     recorded = [];
     H.connectOpts = null;
+    H.session = 'hidden';
     H.mounts.length = 0;
     H.buildBugBundle.mockClear();
     buildAppShellFromRealIndexHtml();
@@ -537,9 +539,15 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
       [],
     );
 
+    // ctl-11b (named intentional change): the field now lives INSIDE #game-screen. Appended to
+    // <body> (outside the screen) every key would be the browser's by the new outside rule, and
+    // this arm would no longer exercise the field-ownership rule it is about (CTL11B-1-BOOT-OUTSIDE
+    // pins the outside rule). Inside the screen only `ownership` keeps the letters in the field.
+    const gameScreen = document.getElementById('game-screen');
+    expect(gameScreen, '#game-screen must exist (client/index.html)').not.toBeNull();
     const field = document.createElement('input');
     field.type = 'text';
-    document.body.appendChild(field);
+    gameScreen!.appendChild(field);
     field.focus();
     expect(document.activeElement, 'precondition: the text field has focus').toBe(field);
     for (const code of ['KeyB', 'KeyI', 'KeyJ', 'KeyU', 'KeyN']) {
@@ -556,11 +564,11 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     id,
     openKey,
   }) => {
-    // ctl-11a: rows are now B, I and J (E has no key); accelerators no longer read the focus gate,
-    // so this is a regression pin that they open from a fresh page, and the body disjunct of
-    // `worldHasFocus` is pinned by Start and Select (S5T-BODY-BLUR, S5T-FOCUS-RETURN).
-    // WRONG IMPL KILLED: an accelerator that stays dead from a fresh page load (a focus test
-    // written as `a === worldCanvasEl` only), and an inverted focus test that opens only while
+    // ctl-11a: rows are now B, I and J (E has no key). A regression pin that the accelerators
+    // open from a fresh page (focus on <body>; <body> is never "outside the game screen",
+    // CTL11B-1-OWN-BODY / CTL11B-1-BOOT-INSIDE-ROUTES).
+    // WRONG IMPL KILLED: an accelerator that stays dead from a fresh page load (a focus or
+    // target test that treats <body> as foreign), and an inverted test that opens only while
     // focus is inside some other overlay, exactly backwards.
     expect(document.activeElement, 'precondition: body is focused at boot').toBe(document.body);
     pressKey(openKey);
@@ -568,18 +576,14 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('S5T-GATE-ALLOWED-CANVAS: a hotkey still opens its overlay when the world CANVAS has focus', () => {
-    // ctl-11a: the accelerator half below no longer reads the world focus; the Start half is the one
-    // that still does (`worldHasFocus` gates the menu open), so it keeps the red-team #1 kill.
-    // It becomes this suite's ONLY REAL BEHAVIOURAL KILLER of the red-team's #1 attack
-    // (`worldCanvasEl` never assigned, or shadowed by a second `let worldCanvasEl` inside
-    // main()) ONLY once the twelve conjuncts exist for that attack to have something to
-    // defeat: with worldCanvasEl permanently null, worldHasFocus() degrades to
-    // "body-or-nothing" and every hotkey would silently die the FIRST time a keyboard/AT
-    // user Tabs to the canvas — the exact user A11Y-20/M23 exists to serve, on the path
-    // this same slice adds. That is why the canvas-has-focus precondition is asserted
-    // BEFORE dispatching, never inferred from the outcome — so this test can never pass by
-    // the canvas silently being unfocusable instead of by the gate genuinely recognising
-    // it.
+    // ctl-11b: with `worldHasFocus` deleted, nothing reads the world focus any more: the canvas is
+    // inside #game-screen, so a key at it is the router's (CTL11B-1-BOOT-INSIDE-ROUTES pins the
+    // same for B). What this keeps is the keyboard/AT user who Tabs onto the canvas: an accelerator
+    // and Start must both still work there. The canvas-has-focus precondition is asserted BEFORE
+    // dispatching, never inferred from the outcome, so the test can never pass by the canvas
+    // silently being unfocusable.
+    // WRONG IMPL KILLED: an outside rule or focus test that treats the canvas as foreign (every key
+    // dies the first time a player Tabs to it).
     const mount = document.getElementById('app');
     expect(mount, '#app must exist').not.toBeNull();
     const canvas = mount!.querySelector('canvas') as HTMLElement | null;
@@ -594,8 +598,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     pressKey({ code: 'KeyJ' }); // questLogView — deliberately outside the DRIVABLE_OVERLAYS trio
     expect(overlayIsOpen('questLogView')).toBe(true);
 
-    // The Start half: the menu open is the one that still reads the world focus, so with focus on
-    // the canvas it must open (a `worldCanvasEl` that is never assigned reads the canvas as foreign).
+    // The Start half: with focus on the canvas Start must open the menu too.
     pressKey({ code: 'KeyJ' }); // its own key: Start, back to the bare world
     expect(openOverlayIds(), 'precondition: J again closed the Journal and the menu').toEqual([]);
     canvas!.focus();
@@ -605,14 +608,13 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   // ---------------------------------------------------------------------------------------
-  // A11Y-19, as amended by ADR-0206 Amendment A1: the SELF-OPEN DISJUNCT. The gate applies to
-  // the twelve overlay-OPEN transitions only; a same-key press on an already-open overlay is a
-  // toggle-CLOSE and must never be gated. This is the unit-tier encoding of the three e2e
-  // regressions — e2e/movement-input.spec.ts:493 (14r-e C GREEN GUARD, KeyB
-  // closes the box under a held key), e2e/trade.spec.ts:97 (M15c, KeyU toggle-close) and the
-  // e2e/pvp.spec.ts:145 cascade (the previous serial test's KeyB cleanup close was blocked, so
-  // the box was still open and the next `p` was denied by the REGISTRY verdict, not by this
-  // gate). Those three run only in the remote e2e job; these run in `just test`.
+  // A11Y-19 / ADR-0206 Amendment A1 (historical: the world-focus gate it amended is deleted, ctl-11b).
+  // What survives is the behaviour: a same-key press on an already-open overlay closes it with
+  // focus already inside it, and nothing is left stranded. This is the unit-tier encoding of the
+  // three e2e regressions — e2e/movement-input.spec.ts:493 (KeyB closes the box under a held key),
+  // e2e/trade.spec.ts:97 (KeyU toggle-close) and the e2e/pvp.spec.ts:145 cascade (a cleanup close
+  // that fails leaves the box open for the next test). Those three run only in the remote e2e job;
+  // these run in `just test`.
   // ---------------------------------------------------------------------------------------
 
   /** Every registry overlay currently on screen, in OVERLAY_A11Y declaration order.
@@ -743,25 +745,23 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
       openKey: { code: 'KeyB' },
       id: 'boxView' as OverlayId,
     },
-  ])('S5T-GATE-REOPEN-AFTER-SAMEKEY-CLOSE ($name): after an own-key close, focus leaves the overlay and a DIFFERENT, still world-focus-gated key (Start) opens again (the pvp.spec.ts:145 cascade)', async ({
+  ])('S5T-GATE-REOPEN-AFTER-SAMEKEY-CLOSE ($name): after an own-key close, focus leaves the overlay and a DIFFERENT key (Start) opens again (the pvp.spec.ts:145 cascade)', async ({
     openKey,
     id,
   }) => {
-    // ctl-11a: the "different hotkey" is Start (M), not the Journal: accelerators no longer read
-    // the world focus, so only Start still proves that focus left the closed overlay. The box arm
-    // closes through Start (B over its own screen), which takes the menu beneath it too; the
-    // help arm has no menu. Both keep the exact <body> assertion of the original case.
-    // The e2e/pvp.spec.ts:145 shape, at the unit tier: a serial spec's cleanup close is silently
-    // blocked, so the screen is STILL OPEN when the next test presses its own hotkey.
+    // ctl-11a: the "different hotkey" is Start (M), not the Journal. The box arm closes through
+    // Start (B over its own screen), which takes the menu beneath it too; the help arm has no menu.
+    // Both keep the exact <body> assertion of the original case.
+    // The e2e/pvp.spec.ts:145 shape, at the unit tier: a serial spec's cleanup close fails, so
+    // the screen is STILL OPEN when the next test presses its own hotkey.
     //
     // WRONG IMPL KILLED (1): a close that is blocked (the screen stays open across serial specs).
-    // WRONG IMPL KILLED (2) ★ the one no other test in this file sees: an amendment that closes
-    //   the overlay but leaves focus TRAPPED inside a former overlay root (e.g. a menu hidden
-    //   beneath it that is then re-focused), or never closes through closeOverlayA11y.
-    //   worldHasFocus() would then be permanently false, and the very next Start press would be
-    //   dead: same user-visible bug, one press later. The focus assertion below is the
-    //   precondition that makes the final Start assertion mean "the gate allowed it", never "it
-    //   happened to work".
+    // WRONG IMPL KILLED (2) ★ the one no other test in this file sees: a close that leaves focus
+    //   TRAPPED inside a former overlay root (e.g. a menu hidden beneath it that is then
+    //   re-focused), or never closes through closeOverlayA11y. Focus stranded in a hidden subtree
+    //   is what the keydown heal and the frame-loop focus return exist for, and the focus
+    //   assertion below pins the close itself: focus is back on <body>, so the final Start
+    //   assertion proves the key works from the page, not that something healed it.
     expect(document.activeElement, 'precondition: body is focused at boot').toBe(document.body);
 
     pressKey(openKey);
@@ -786,55 +786,42 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
       document.activeElement,
       'after the close, focus must be back on <body> — closeOverlayA11y restores the captured ' +
         'returnFocus. If focus is still inside the closed overlay (or the hidden menu that was ' +
-        'beneath it), worldHasFocus() is false until the next keydown heals it',
+        'beneath it), it is stranded in a hidden subtree until the next keydown heals it',
     ).toBe(document.body);
 
-    pressKey({ code: 'KeyM' }); // Start at the world: gated on worldHasFocus() — the cascade's victim
+    pressKey({ code: 'KeyM' }); // Start at the world: the cascade's victim
     expect(
       overlayIsOpen('menuView'),
       'Start must open the menu after the screen was closed — this is the pvp.spec.ts:145 ' +
-        'cascade: a close that strands focus leaves the gated key dead, reported against the ' +
-        'NEXT feature, not against the close',
+        'cascade: a close that leaves the screen open or strands focus is reported against ' +
+        'the NEXT feature, not against the close',
     ).toBe(true);
     expect(openOverlayIds(), 'the menu must be the only overlay open').toEqual(['menuView']);
   });
 
-  it('S5T-GATE-PRECEDENCE-DENY-WINS: a DENIED verdict still refuses the open even when the world has focus', () => {
-    // it is the ONLY behavioural killer in this suite of the dropped-parens reshape
-    //     <verdict>.kind === 'allow' && <selfView>?.visible || worldHasFocus()
-    // which `&&`-binds tighter than `||` and therefore parses as
-    //     ((<verdict> === 'allow') && <selfView>?.visible) || worldHasFocus()
-    // — i.e. the WHOLE VERDICT is bypassed whenever the world has focus. Every other test in
-    // this file passes that mutant: S5T-GATE-BLOCKED presses its key with focus INSIDE an
-    // overlay (worldHasFocus() false, and the pressed sibling is closed, so both operands are
-    // false either way), S5T-GATE-ALLOWED-* press with an `allow` verdict, and
-    // S5T-GATE-SAMEKEY-CLOSE presses with `allow && visible` already true. Only a press whose
-    // verdict is DENY *while the world has focus* separates the two spellings — and that is
-    // A11Y-19's whole substance for the eleven GUARD_ONLY overlays.
-    //
-    // WRONG IMPL KILLED (1) ★ NAMED: the dropped-parens precedence bug above. Its blast radius
-    //   is the entire mutual-exclusion contract, not just this pair: with the world focused,
-    //   ANY hotkey opens its overlay over a live battle (EXCLUSIVE_TOP) or a live NPC dialogue
-    //   (GUARD_ONLY, where a client-side stack strands the server player_conversation row —
-    //   ptc5c/ADR-0139).
-    // WRONG IMPL KILLED (2): a disjunct written with the wrong view identifier at some site
-    //   (`(boxView?.visible || worldHasFocus())` pasted into the `?` handler): with the box
-    //   closed the reshape is a no-op, but this test's mutant coverage and the twelve
-    //   `expectedRaw` pins together pin identifier-per-site.
+  it('S5T-GATE-PRECEDENCE-DENY-WINS: a DENIED verdict still refuses the open even when focus is on the page', () => {
+    // ctl-11b: `worldHasFocus` (and the `|| worldHasFocus()` precedence mutant this case was written
+    // for) no longer exists. What it still pins is the verdict itself: `canOpen('helpView')` is DENY
+    // over a visible GUARD_ONLY overlay, and no focus state may bypass a DENY. It is still this
+    // file's only test that presses a denied open with focus on <body>, which is the state in which
+    // any reintroduced focus-based bypass (`allow || <focus on the page>`) would fire.
+    // WRONG IMPL KILLED: a verdict bypass keyed to focus on <body>, whose blast radius is the whole
+    // mutual-exclusion contract: with the page focused, ANY hotkey would open its overlay over a live
+    // battle (EXCLUSIVE_TOP) or a live NPC dialogue (GUARD_ONLY, where a client-side stack strands
+    // the server player_conversation row, ptc5c/ADR-0139).
     // NO deferred-focus await here, and it is load-bearing: the second press must happen while
-    // `document.activeElement` is STILL <body>, so `worldHasFocus()` is TRUE at that moment —
-    // that is the precondition that lets the mutant fire, and it is ASSERTED, never assumed.
-    // (The same "no intervening await" property S5T-ANNOUNCE-TOP relies on; see this file's
-    // header, DETERMINISM NOTE ON FOCUS TIMING.)
+    // `document.activeElement` is STILL <body>, so the state is the one a bypass would fire in; that
+    // is ASSERTED, never assumed. (The same "no intervening await" property S5T-ANNOUNCE-TOP relies
+    // on; see this file's header, DETERMINISM NOTE ON FOCUS TIMING.)
     // ctl-11a: the Journal is opened by J (Q is LB now), over the main menu it is opened through, so
     // the whole-set checks below name `menuView` too (the menu never denies another open).
     pressKey({ code: 'KeyJ' }); // questLogView — GUARD_ONLY, opened from <body>
     expect(overlayIsOpen('questLogView'), 'questLogView must be open after KeyJ').toBe(true);
     expect(
       document.activeElement,
-      'precondition: the deferred focus has NOT fired yet, so the world still has focus and ' +
-        'worldHasFocus() is TRUE for the press below — without this the mutant cannot fire and ' +
-        'this test would prove nothing',
+      'precondition: the deferred focus has NOT fired yet, so focus is still on the page for the ' +
+        'press below — without this a focus-keyed bypass cannot fire and this test would prove ' +
+        'nothing',
     ).toBe(document.body);
 
     pressKey(HELP_KEY); // helpView — its verdict is DENY over a visible GUARD_ONLY overlay
@@ -842,8 +829,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
       overlayIsOpen('helpView'),
       'helpView must NOT open over the quest log: `canOpen` denies over a GUARD_ONLY overlay, ' +
         'and the self-open disjunct must be a PARENTHESISED operand of the verdict conjunct — ' +
-        '`allow && visible || worldHasFocus()` bypasses the verdict entirely whenever the ' +
-        'world has focus',
+        'no focus state may bypass the verdict',
     ).toBe(false);
     expect(
       openOverlayIdsSorted(),
@@ -852,12 +838,12 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   // ---------------------------------------------------------------------------------------
-  // The document.body disjunct — a force-hidden focused control blurs to <body>,
-  // and hotkeys must not die forever afterward.
+  // <body> focus — a force-hidden focused control blurs to <body>, and hotkeys must not die
+  // forever afterward (ctl-11b: <body> is never "outside the game screen").
   // ---------------------------------------------------------------------------------------
 
   it('S5T-BODY-BLUR: an overlay hidden out from under a focused control blurs to <body>, and a DIFFERENT hotkey still opens afterward', async () => {
-    // WRONG IMPL KILLED: dropping the `=== document.body` disjunct from worldHasFocus() —
+    // WRONG IMPL KILLED: a key rule that treats focus on <body> as foreign —
     // every hotkey stays dead from this point forward for the rest of the session, exactly
     // the "dead hotkeys forever after a dialogue ends" bug spec §2.3 names. The real trigger
     // is the M12d `store.onBatchApplied` dialogue listener,
@@ -890,8 +876,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // happy-dom does not reliably implement the browser's automatic blur-to-<body> when a
     // focused element's ancestor becomes display:none (real DOM behaviour: a focused element
     // that stops being focusable is blurred, and focus falls back to <body>). Force it
-    // explicitly so this test proves worldHasFocus()'s document.body disjunct, never
-    // happy-dom's layout fidelity.
+    // explicitly so this test proves the <body> case, never happy-dom's layout fidelity.
     document.body.focus();
     expect(document.activeElement, 'precondition: focus fell back to <body>').toBe(document.body);
     pressKey(HELP_KEY); // a DIFFERENT overlay's hotkey — proves the fix is general
@@ -997,7 +982,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     runFrame(0);
     pressKey({ code: 'Escape' }); // closeOverlayA11y restores focus to <body> (returnFocus)
     expect(document.activeElement, 'closeOverlayA11y restores to <body> here').toBe(document.body);
-    runFrame(600); // the topOverlay->null edge: worldHasFocus() is true (body) -> canvas.focus()
+    runFrame(600); // the topOverlay->null edge: focus is on <body> -> canvas.focus()
     const canvas = document.getElementById('app')?.querySelector('canvas');
     expect(canvas).not.toBeNull();
     expect(document.activeElement).toBe(canvas);
@@ -1019,8 +1004,8 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // the stale state can be re-created exactly, deterministically, with no timers — see the
     // explicit `anchor.focus()` below and the two assertions that pin the state it produces.
     //
-    // WRONG IMPL KILLED (1) ★ THE DEFECT: the close edge left as a bare `if (worldHasFocus())`.
-    //   Focus never returns to the world region on ANY close where focus was inside the
+    // WRONG IMPL KILLED (1) ★ THE DEFECT: the close edge testing only `a === null || a === <body>`
+    //   (no hidden-subtree walk). Focus never returns to the world region on ANY close where focus was inside the
     //   overlay (same-key toggle, Escape, or a store-driven `render(null)`), so the very next
     //   hotkey is dead until the engine's own fixup lands. Nothing else in this suite sees it —
     //   S5T-FOCUS-RETURN closes from a state where focus was ALREADY back on <body> (happy-dom
@@ -1103,8 +1088,8 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     ).not.toBeNull();
     expect(
       document.activeElement,
-      'the close edge must return focus to the world canvas even though worldHasFocus() reads ' +
-        'a STALE anchor inside the hidden overlay — otherwise every gated hotkey is dead for ' +
+      'the close edge must return focus to the world canvas even though activeElement reads ' +
+        'a STALE anchor inside the hidden overlay — otherwise focus stays stranded for ' +
         "the whole of Chromium's async-blur window (~200 ms), which is what killed " +
         'e2e/trade.spec.ts:115 and e2e/pvp.spec.ts:106. The frame heals it in ONE rAF tick, ' +
         'deterministically, instead of waiting on an engine fixup that may never come',
@@ -1113,34 +1098,30 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
 
   it('S5T-GATE-HEALS-STALE-FOCUS: a hotkey pressed INSIDE the stale-focus window heals first and opens — and a press while a VISIBLE control has focus heals nothing', async () => {
     // TWO PHASES, in this order on purpose. Phase 1 is the NEGATIVE (the heal must not fire
-    // when a visible control holds focus) and runs first, while `canOpen('boxView')` is still
-    // `allow` — so the gate is the ONLY thing that can refuse the press, which is what makes
-    // the mutant in WRONG IMPL KILLED (c) die here rather than for a second reason. Phase 2 is
-    // the POSITIVE (the heal fires when focus is stranded inside a hidden subtree).
+    // when a visible control holds focus). Phase 2 is the POSITIVE (the heal fires when focus is
+    // stranded inside a hidden subtree).
     //
-    // WRONG IMPL KILLED (a) ★ THE DEFECT (Phase 2): no heal at the consumer. The
-    //   frame-edge repair (S5T-FOCUS-RETURN-STALE) restores focus at the NEXT rAF; a press that
-    //   arrives inside that <=1-frame window is still evaluated against the stale anchor, so
-    //   `worldHasFocus()` is false, the twelve gates' conjunct short-circuits, and the keypress
-    //   is silently swallowed. That is e2e/pvp.spec.ts:117's flake, and no frame-side fix can
-    //   close it: the press beat the frame.
-    // WRONG IMPL KILLED (b): the heal placed BELOW the twelve open-handler branches (or below
-    //   any branch that returns). Every one of those branches ends in `return;`, so the heal
-    //   would be dead code for the very press it exists to repair — Phase 2 reds exactly as it
-    //   does for (a), which is why the heal must sit above every returning branch.
+    // ctl-11b: with `worldHasFocus` deleted, a press inside the stale-focus window opens its screen
+    // whether or not the heal ran, so the OPEN assertion in Phase 2 no longer discriminates. The
+    // assertion that bites is the SYNCHRONOUS `document.activeElement === canvas` one: it is the
+    // only thing that fails without the heal. The mutants below are killed by it, not by the open.
+    //
+    // WRONG IMPL KILLED (a) ★ THE DEFECT (Phase 2): no heal at the consumer. The frame-edge repair
+    //   (S5T-FOCUS-RETURN-STALE) restores focus at the NEXT rAF; a press that arrives inside that
+    //   <=1-frame window would leave focus stranded in the hidden overlay (e2e/pvp.spec.ts:117's
+    //   flake), and no frame-side fix can close it: the press beat the frame.
+    // WRONG IMPL KILLED (b): the heal placed BELOW a branch that returns. Every keydown branch ends
+    //   in `return;`, so the heal would be dead code for the very press it exists to repair, and the
+    //   canvas assertion reds exactly as it does for (a): the heal must sit above every returning
+    //   branch.
     // WRONG IMPL KILLED (c): an UNCONDITIONAL `worldCanvasEl?.focus();` with no
     //   `focusInsideHiddenSubtree()` guard. It would yank focus to the canvas on EVERY keypress,
-    //   including one pressed while the player is on the always-on corner affordance — which is
-    //   both a focus theft and a quick-nav collision (the badge is a real, visible, focusable
-    //   control). Phase 1 kills it directly: with the mutant, the heal fires, `worldHasFocus()`
-    //   becomes true, boxView OPENS and focus is on the canvas — both Phase 1 assertions fail.
-    //   (S5T-FOCUS-NO-STEAL, as strengthened in fix cycle 2, also kills it — its Escape press
-    //   would move focus off the badge before the close edge runs — but that kill is indirect
-    //   and three steps removed from the heal line; this one is direct and named.)
+    //   including one pressed while the player is on the always-on Start chip — a focus theft.
+    //   Phase 1 kills it directly: with the mutant the heal fires and focus is on the canvas, so the
+    //   "focus stays on the chip" assertion fails. (S5T-FOCUS-NO-STEAL also kills it, indirectly.)
     // WRONG IMPL KILLED (d): a heal that focuses <body> instead of the world region. Phase 2's
-    //   canvas assertion is what distinguishes them; behaviourally both would let the open
-    //   through, but only the canvas satisfies ADR-0206 D4's "focus returns to the world
-    //   region", which is the thing an AT actually announces.
+    //   canvas assertion is what distinguishes them; only the canvas satisfies ADR-0206 D4's "focus
+    //   returns to the world region", which is the thing an AT actually announces.
 
     // ---- PHASE 1 — NEGATIVE: a VISIBLE control holds focus, so nothing is healed ----------
     expect(document.activeElement, 'precondition: body is focused at boot').toBe(document.body);
@@ -1151,22 +1132,27 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     helpHint!.focus();
     expect(document.activeElement, 'anti-vacuity: the chip really is focusable').toBe(helpHint);
 
-    // ctl-11a: the gated key here is Select (help), not B: an accelerator no longer reads the world
-    // focus (S5T-GATE-ACCEL-IGNORES-FOCUS pins that), while Select and Start still do, so the same
-    // state (a visible control holding focus, the verdict `allow`) is driven with Select.
-    pressKey(HELP_KEY); // helpView's verdict is `allow` here — the GATE is the only refusal
+    // ctl-11b (named intentional change): this arm used to assert that Select does NOT open help
+    // while a visible control holds focus (the `worldHasFocus()` conjunct). That conjunct is deleted:
+    // the chip is INSIDE #game-screen, where the router owns the key, so Select now opens help with
+    // the chip focused. The retired refusal's survivors are `router.test.ts` CTL11B-1-OWN-OUTSIDE
+    // (an element outside the game screen owns every key) and `main.a11yFocus.test.ts`
+    // CTL11B-1-BOOT-OUTSIDE (focus outside the screen: nothing opens). What stays here is the half
+    // that was never about the gate: the press must not HEAL focus (no steal) while a visible
+    // control holds it.
+    pressKey(HELP_KEY);
     expect(
       overlayIsOpen('helpView'),
-      'helpView must NOT open while a VISIBLE control has focus (A11Y-19: this is the quick-nav ' +
-        'collision the gate exists to close, in the one state no other test in this file ' +
-        'covers — focus on a focusable element that is OUTSIDE every overlay)',
-    ).toBe(false);
+      'Select opens help with a control INSIDE the game screen focused (no world-focus gate)',
+    ).toBe(true);
     expect(
       document.activeElement,
       'the heal must NOT fire while a visible control has focus — the badge is displayed, so ' +
         'the ancestor walk finds no display:none and the guard is false. An UNCONDITIONAL ' +
         'focus() here steals the player`s place on every single keypress',
     ).toBe(helpHint);
+    pressKey({ code: 'Escape' }); // Start pops help, so Phase 2 starts from a bare world
+    expect(overlayIsOpen('helpView'), 'precondition: Start closed help again').toBe(false);
 
     // ---- PHASE 2 — POSITIVE: focus stranded inside a hidden subtree, and NO frame runs -----
     document.body.focus();
@@ -1218,35 +1204,28 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // ⚠ NO runFrame() ANYWHERE IN THIS TEST. The residual defect is a press that lands BEFORE
     // the first rAF after the close, so running a frame here would repair the state through the
     // OTHER mechanism (S5T-FOCUS-RETURN-STALE's) and this test would pass without the heal.
-    // ctl-11a: Start (M), not Q: Q is LB now, and the Journal's accelerator (J) no longer reads the
-    // world focus, so it would open even without the heal. Start still does, so it is the key that
-    // proves the heal ran before the gate was evaluated.
-    pressKey({ code: 'KeyM' }); // a DIFFERENT gated key — proves the repair is general
+    pressKey({ code: 'KeyM' }); // Start: any key would do, it only has to reach the handler
 
-    // THE CRITERION: the press must not be swallowed. Asserted FIRST, because it is the
-    // behaviour the e2e flake reports and because it fails for exactly one reason — the gate
-    // read a stale anchor. (`canOpen('menuView')` is `allow` here: nothing is visible.)
+    // The press is not swallowed (the e2e flake this case encodes). ctl-11b: this holds with or
+    // without the heal, so it is a regression pin, not the criterion's discriminator.
     expect(
       overlayIsOpen('menuView'),
       'KeyM must OPEN the main menu even though it was pressed inside the stale-focus window, ' +
-        'before any frame ran. Without the heal, worldHasFocus() reads the stranded anchor, the ' +
-        'verdict conjunct short-circuits, and the press is silently swallowed — measured as a ' +
-        '1-in-3 flake at e2e/pvp.spec.ts:117',
+        'before any frame ran (measured as a 1-in-3 flake at e2e/pvp.spec.ts:117)',
     ).toBe(true);
 
-    // AND the heal moved focus to the WORLD REGION specifically, not merely somewhere neutral.
-    // THIS ASSERTION IS ONLY VALID BECAUSE NO `await` SEPARATES IT FROM THE PRESS: openMenu
+    // THE ASSERTION THAT BITES: the heal moved focus to the WORLD REGION specifically, not merely
+    // somewhere neutral. IT IS ONLY VALID BECAUSE NO `await` SEPARATES IT FROM THE PRESS: openMenu
     // -> openOverlayA11y schedules its initial focus on a setTimeout(0) macrotask, so
     // synchronously after the dispatch the canvas is still the active element. An intervening
     // await would let that timer fire and move focus to `#menu-rows`, and this assertion
-    // would then be measuring the overlay's own deferred focus rather than the heal. (Chosen
-    // over dropping this half: the open alone proves the heal RAN, but only this proves it ran
-    // to the world region — ADR-0206 D4 — which is what kills the focus-<body> variant.)
+    // would then be measuring the overlay's own deferred focus rather than the heal.
     expect(
       document.activeElement,
       'the heal must move focus to the world canvas (ADR-0206 D4), synchronously, before the ' +
-        'gate is evaluated. If this reads `#menu-rows`, an await crept in above and the ' +
-        "overlay's own deferred focus fired; if it reads <body>, the heal targeted the wrong node",
+        'key is handled. If this reads `#menu-rows`, an await crept in above and the ' +
+        "overlay's own deferred focus fired; if it reads the stale anchor, the heal never ran; " +
+        'if it reads <body>, the heal targeted the wrong node',
     ).toBe(canvas);
   });
 
@@ -1254,7 +1233,9 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // WRONG IMPL KILLED: an UNGUARDED `worldCanvasEl?.focus()` on the frame's close edge —
     // it would yank focus away from #help-hint the instant the menu closes, even though the
     // player never left the world via a hotkey at all (they clicked the badge). ADR-0206 D4's
-    // whole point is that this branch must be guarded by worldHasFocus(), which is false here.
+    // whole point is that this branch must only act when focus is on <body> or stranded in a hidden
+    // subtree (ctl-11b: the guard is now `a === null || a === <body> || focusInsideHiddenSubtree()`),
+    // which is false here.
     // ctl-7a (named intentional change): the badge #help-hint is deleted; the Start chip,
     // #chip-start, is the click-opened front door ([data-menu-launcher]) that replaces it.
     const helpHint = document.getElementById('chip-start') as HTMLElement | null;
@@ -1545,6 +1526,262 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
       '#help-overlay is shown',
     ).not.toBe('none');
     expect(overlayIsOpen('menuView'), 'and does not open the menu').toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // ctl-11b (CTL11B.1): the legacy `worldHasFocus` ladder is replaced by one rule. A key that is
+  // not bound does nothing at the world and is left unprevented; a key event whose target is an
+  // element OUTSIDE #game-screen (and not <body>) is the browser's, every key. main.ts looks
+  // `#game-screen` up on each keydown (`document.getElementById`), so these cases add or move
+  // elements at will. The world base is the stack `[{ kind: 'world' }]`.
+  // ---------------------------------------------------------------------------------------
+
+  const WORLD_BASE_ONLY: readonly unknown[] = [{ kind: 'world' }];
+  interface GameHook {
+    readonly stack: readonly unknown[];
+    readonly moveSendCount: number;
+  }
+  const gameHook = (): GameHook => (window as unknown as { __game: () => GameHook }).__game();
+
+  it('CTL11B-1-BOOT-UNBOUND: at the world base a key with no binding (K, 5, Z, and the retired O and T) is left unprevented and does nothing: the stack stays the bare world, no screen opens, no intent or reducer is reached; the control is a bound key (B), which does act', () => {
+    // WRONG IMPL KILLED: a handler that consumes every key it sees (a preventDefault on an unbound
+    // key would swallow the browser's own shortcuts: find-as-you-type, Ctrl-less letters), one that
+    // opens a screen or walks for a stray letter (a revived legacy letter arm: O and T are the
+    // retired trade offer and interact keys), one that reaches a reducer (`conn.live()` is the one
+    // door every intent and reducer call goes through), and a test that could not tell: the control
+    // proves the same dispatch path DOES act on a bound key.
+    expect(gameHook().stack, 'precondition: the world base').toEqual(WORLD_BASE_ONLY);
+    const liveBefore = H.liveReads;
+    const sentBefore = gameHook().moveSendCount;
+    for (const code of ['KeyK', 'Digit5', 'KeyZ', 'KeyO', 'KeyT', 'KeyG']) {
+      const e = pressKey({ code }, document.body);
+      expect(e.defaultPrevented, `${code} is not bound: left to the browser`).toBe(false);
+      expect(gameHook().stack, `${code}: the stack is unchanged`).toEqual(WORLD_BASE_ONLY);
+      expect(openOverlayIds(), `${code}: no screen opened`).toEqual([]);
+    }
+    expect(H.liveReads, 'no unbound key reached a reducer (the live handle was never read)').toBe(
+      liveBefore,
+    );
+    expect(gameHook().moveSendCount, 'no unbound key sent a movement intent').toBe(sentBefore);
+
+    // Control: a bound key on the very same path acts.
+    const bound = pressKey({ code: 'KeyB' }, document.body);
+    expect(bound.defaultPrevented, 'control: B is bound and consumed').toBe(true);
+    expect(overlayIsOpen('boxView'), 'control: B opens Monsters').toBe(true);
+  });
+
+  it('CTL11B-1-BOOT-OUTSIDE: with focus on a <button> outside #game-screen every key is the browser`s (an accelerator, Start, A, the D-pad, B, F9 and Space): none is prevented, the stack stays the bare world, nothing opens, no bug bundle is built, no step or reducer is reached, and focus stays where it was', () => {
+    // WRONG IMPL KILLED: the legacy world-focus ladder, which let the game take Enter and the
+    // accelerators from a control that is not part of it (the page's own button, the browser's
+    // overlay), or took Escape for Start and F9 for a download over it; an outside rule on only some
+    // keys (the D-pad or F9 forgotten, F9 being handled before the router); one that runs AFTER the
+    // stale-focus heal and so can move focus away from the outside control (focus is asserted
+    // unmoved). NOT killed here, by design: an early return placed after the
+    // `e.repeat` block or after the session gate (the pins CTL11B-1-PIN-REPEAT and
+    // CTL11B-1-PIN-SESSION-GATE do that), and a rule that reads `document.activeElement` instead of
+    // the event target (this press is dispatched AT the focused button, so the two agree; in a
+    // browser a key event's target IS the focused element, so that variant is near-equivalent).
+    const outside = document.createElement('button');
+    outside.id = 'outside-control';
+    document.body.appendChild(outside);
+    const screen = document.getElementById('game-screen');
+    expect(screen, '#game-screen must exist (client/index.html)').not.toBeNull();
+    expect(screen!.contains(outside), 'precondition: the control is outside #game-screen').toBe(
+      false,
+    );
+    outside.focus();
+    expect(document.activeElement, 'precondition: the outside control has focus').toBe(outside);
+    expect(gameHook().stack, 'precondition: the world base').toEqual(WORLD_BASE_ONLY);
+    const liveBefore = H.liveReads;
+    const sentBefore = gameHook().moveSendCount;
+
+    const keys: ReadonlyArray<readonly [string, string]> = [
+      ['accelerator B (Monsters)', 'KeyB'],
+      ['accelerator I (Bag)', 'KeyI'],
+      ['Start (Escape)', 'Escape'],
+      ['Start (M)', 'KeyM'],
+      ['Select (R)', 'KeyR'],
+      ['A (Enter)', 'Enter'],
+      ['D-pad W', 'KeyW'],
+      ['D-pad ArrowDown', 'ArrowDown'],
+      ['B (Backspace)', 'Backspace'],
+      ['X (Space)', 'Space'],
+      ['F9 (bug bundle)', 'F9'],
+    ];
+    for (const [label, code] of keys) {
+      const down = pressKey({ code }, outside);
+      expect(down.defaultPrevented, `${label}: left to the browser`).toBe(false);
+      window.dispatchEvent(new KeyboardEvent('keyup', { code, bubbles: true, cancelable: true }));
+      expect(gameHook().stack, `${label}: the stack stays the bare world`).toEqual(WORLD_BASE_ONLY);
+      expect(openOverlayIds(), `${label}: nothing opens`).toEqual([]);
+      expect(document.activeElement, `${label}: focus stays on the outside control`).toBe(outside);
+    }
+    expect(H.buildBugBundle, 'F9 outside the screen builds no bug bundle').not.toHaveBeenCalled();
+    expect(H.liveReads, 'no key reached a reducer (the live handle was never read)').toBe(
+      liveBefore,
+    );
+    expect(gameHook().moveSendCount, 'no D-pad key sent or held a step').toBe(sentBefore);
+
+    // Control: the same keys, the same path, once focus is back on the page act as before.
+    outside.blur();
+    document.body.focus();
+    const back = pressKey({ code: 'KeyB' }, document.body);
+    expect(back.defaultPrevented, 'control: B is consumed with focus on the page').toBe(true);
+    expect(overlayIsOpen('boxView'), 'control: and opens Monsters').toBe(true);
+  });
+
+  it('CTL11B-1-BOOT-INSIDE-ROUTES: with focus on <body>, on the canvas, or on a control inside #game-screen, B still opens Monsters over the menu (the stack top is boxView) and is prevented', () => {
+    // WRONG IMPL KILLED (the survivor of the outside rule): one that is true for <body> (the state
+    // after every close and at every boot: every key would be dead at the world), one that mistakes
+    // the canvas or a chip inside the screen for "outside" (the keyboard player Tabbed onto the
+    // canvas could no longer open anything), one that stops routing because the target is not
+    // `window`, and an opened screen that never reaches the stack.
+    const screen = document.getElementById('game-screen');
+    expect(screen, '#game-screen must exist (client/index.html)').not.toBeNull();
+    const canvas = document.getElementById('app')?.querySelector('canvas') as HTMLElement | null;
+    expect(canvas, 'the mocked renderer mounted a canvas in #app').not.toBeNull();
+    const chip = document.getElementById('chip-start') as HTMLElement | null;
+    expect(chip, '#chip-start must exist (client/index.html)').not.toBeNull();
+    expect(screen!.contains(canvas), 'precondition: the canvas is inside #game-screen').toBe(true);
+    expect(screen!.contains(chip), 'precondition: the Start chip is inside #game-screen').toBe(
+      true,
+    );
+
+    const targets: ReadonlyArray<readonly [string, HTMLElement]> = [
+      ['<body>', document.body],
+      ['the canvas', canvas as HTMLElement],
+      ['a control inside the screen', chip as HTMLElement],
+    ];
+    for (const [label, target] of targets) {
+      target.focus();
+      expect(gameHook().stack, `${label}: precondition: the world base`).toEqual(WORLD_BASE_ONLY);
+      const e = pressKey({ code: 'KeyB' }, target);
+      expect(e.defaultPrevented, `${label}: B is consumed`).toBe(true);
+      const stack = gameHook().stack;
+      expect(stack.at(-1), `${label}: the top frame is Monsters`).toEqual({
+        kind: 'screen',
+        id: 'boxView',
+      });
+      expect(stack, `${label}: over the menu, over the world`).toEqual([
+        { kind: 'world' },
+        { kind: 'screen', id: 'menuView' },
+        { kind: 'screen', id: 'boxView' },
+      ]);
+      expect(overlayIsOpen('boxView'), `${label}: Monsters is shown`).toBe(true);
+      pressKey({ code: 'Escape' }, target); // Start pops everything: the next target starts bare
+      expect(gameHook().stack, `${label}: Start returned to the bare world`).toEqual(
+        WORLD_BASE_ONLY,
+      );
+    }
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // Review-round pins for the outside rule (ctl-11b): the evolution notice's OK button, an OS
+  // key-repeat, and the session gate.
+  // ---------------------------------------------------------------------------------------
+
+  it('CTL11B-1-PIN-EVO-NOTICE: the real evolution reveal`s OK button is inside #game-screen, and with focus on it W is prevented and B still opens Monsters (the stack top is boxView)', () => {
+    // WRONG IMPL KILLED: a reveal banner that is built at <body> level (outside the game screen).
+    // The outside rule would then hand every key to the browser the moment the player focuses OK,
+    // which a keyboard player does to acknowledge the reveal: W, B and Start would all die until
+    // focus left the button. (The banner adopts a `#evolution-notice` element main.ts creates inside
+    // #game-screen before constructing it.)
+    seedEvolutionNotices([{ monsterId: 2n, fromSpecies: 1, toSpecies: 5, evolvedAtMs: 0n }]);
+    opts.store.flushBatch();
+    const ok = evolutionOkBtn();
+    expect(ok, '#evolution-notice-ok must exist once the reveal has rendered').not.toBeNull();
+    const screen = document.getElementById('game-screen');
+    expect(screen, '#game-screen must exist (client/index.html)').not.toBeNull();
+    expect(screen!.contains(ok), 'the OK button is inside #game-screen').toBe(true);
+
+    ok!.focus();
+    expect(document.activeElement, 'precondition: the OK button has focus').toBe(ok);
+    expect(gameHook().stack, 'precondition: the world base').toEqual(WORLD_BASE_ONLY);
+
+    const w = pressKey({ code: 'KeyW' }, ok!);
+    expect(w.defaultPrevented, 'W at the focused OK button is the router`s: consumed').toBe(true);
+    window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyW', bubbles: true }));
+
+    const b = pressKey({ code: 'KeyB' }, ok!);
+    expect(b.defaultPrevented, 'B at the focused OK button is consumed').toBe(true);
+    const stack = gameHook().stack;
+    expect(stack.at(-1), 'B opened Monsters: the top frame is boxView').toEqual({
+      kind: 'screen',
+      id: 'boxView',
+    });
+    expect(overlayIsOpen('boxView'), 'and it is shown').toBe(true);
+  });
+
+  it('CTL11B-1-PIN-REPEAT: an OS key-repeat (repeat: true) of ArrowDown, W or Space at a control outside #game-screen is not prevented, while the same repeats with focus on <body> are', () => {
+    // WRONG IMPL KILLED: the outside rule placed AFTER the `e.repeat` block of the keydown handler.
+    // A held arrow key on a page control outside the game would then still be cancelled on every
+    // repeat tick (`suppressNativeMovementDefault`), so the page's own scrolling or list would stop
+    // responding while the key is held. The control rows prove the repeat path is live: at <body>
+    // the same repeats ARE prevented.
+    const button = document.createElement('button');
+    const div = document.createElement('div');
+    div.tabIndex = 0;
+    document.body.append(button, div);
+    const repeat = (code: string, target: HTMLElement): KeyboardEvent => {
+      const e = new KeyboardEvent('keydown', {
+        code,
+        repeat: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      target.dispatchEvent(e);
+      return e;
+    };
+
+    button.focus();
+    expect(document.activeElement, 'precondition: the outside button has focus').toBe(button);
+    for (const code of ['ArrowDown', 'KeyW', 'Space']) {
+      expect(repeat(code, button).defaultPrevented, `repeat ${code} at an outside button`).toBe(
+        false,
+      );
+    }
+    div.focus();
+    expect(document.activeElement, 'precondition: the outside div has focus').toBe(div);
+    for (const code of ['ArrowDown', 'KeyW', 'Space']) {
+      expect(repeat(code, div).defaultPrevented, `repeat ${code} at an outside div`).toBe(false);
+    }
+
+    // Control: the same repeats with focus on <body> are cancelled (a held arrow never scrolls).
+    document.body.focus();
+    for (const code of ['ArrowDown', 'KeyW', 'Space']) {
+      expect(
+        repeat(code, document.body).defaultPrevented,
+        `control: repeat ${code} at <body>`,
+      ).toBe(true);
+    }
+  });
+
+  it('CTL11B-1-PIN-SESSION-GATE: with the session gate blocking, ArrowDown and Space at a control outside #game-screen are not prevented, while the same keys with focus on <body> are', () => {
+    // WRONG IMPL KILLED: the outside rule placed AFTER the session gate. The gate swallows every key
+    // (it prevents the movement defaults so a held arrow does not scroll the dead page), and that
+    // cancel would then also hit a control outside the game: a session-expired page would stop
+    // letting the player use its own buttons and fields with the arrow keys or Space. The control
+    // rows prove the gate is up and swallowing: at <body> the same keys ARE prevented.
+    const outside = document.createElement('div');
+    outside.tabIndex = 0;
+    document.body.appendChild(outside);
+    H.session = 'expired';
+    try {
+      outside.focus();
+      expect(document.activeElement, 'precondition: the outside control has focus').toBe(outside);
+      for (const code of ['ArrowDown', 'Space']) {
+        const e = pressKey({ code }, outside);
+        expect(e.defaultPrevented, `${code} at an outside control, gate up`).toBe(false);
+      }
+
+      document.body.focus();
+      for (const code of ['ArrowDown', 'Space']) {
+        const e = pressKey({ code }, document.body);
+        expect(e.defaultPrevented, `control: ${code} at <body>, gate up`).toBe(true);
+      }
+    } finally {
+      H.session = 'hidden';
+    }
   });
 });
 

@@ -42,6 +42,7 @@ import {
   accelDecision,
   InputRouter,
   type MenuAccel,
+  outsideGameScreen,
   ownership,
   type RouteContext,
   type RouterEffect,
@@ -149,7 +150,6 @@ import {
   makeRankedMatch,
   makeZoneChange,
 } from './ui/eventRing';
-import { buildEvolutionViewModel } from './ui/evolutionModel';
 import {
   EvolutionNoticeBanner,
   evolutionNoticeKey,
@@ -1351,8 +1351,7 @@ function dispatch(command: Command): Promise<void> {
       // and outranks every other open request.
       if (
         identity !== '' &&
-        (isBareBattle(contextStack) ||
-          (overlayVerdict('menuView').kind === 'allow' && worldHasFocus()))
+        (isBareBattle(contextStack) || overlayVerdict('menuView').kind === 'allow')
       ) {
         openMenu();
       }
@@ -1364,7 +1363,7 @@ function dispatch(command: Command): Promise<void> {
       } else if (
         // At the bare battle base Select opens it over the battle, as Start opens the menu there.
         isBareBattle(contextStack) ||
-        (overlayVerdict('helpView').kind === 'allow' && worldHasFocus())
+        overlayVerdict('helpView').kind === 'allow'
       ) {
         openHelp();
       }
@@ -2212,20 +2211,14 @@ const suppressNativeMovementDefault = (e: KeyboardEvent): void => {
     button !== undefined &&
     routerConsumes(button) &&
     !isChord(e) &&
-    ownership(e.target, e) === 'router'
+    ownership(e.target, e, gameScreenEl()) === 'router'
   )
     e.preventDefault();
 };
 
-// The scoped world-focus gate of the menu and Help opens. The `=== document.body` disjunct is
-// LOAD-BEARING and must never be "cleaned up": a store-driven render(null) blurs a focused
-// control back to <body>, and without it both opens would be dead forever afterwards. Before
-// main() runs, worldCanvasEl is null and activeElement is <body>, so this is true.
 let worldCanvasEl: HTMLElement | null = null;
-const worldHasFocus = (): boolean => {
-  const a = document.activeElement;
-  return a === null || a === document.body || a === worldCanvasEl;
-};
+// The game screen, read per key so a page that gains or lacks the shell is read as it is now.
+const gameScreenEl = (): HTMLElement | null => document.getElementById('game-screen');
 // The ONE announcer (S1 ships the machine; S5 owns the singleton and pumps it — a live region
 // nothing flushes is permanently silent and nothing else reds).
 const liveRegion = new LiveRegion();
@@ -2235,7 +2228,7 @@ let lastA11ySnapshot: A11ySnapshot = { topOverlay: null, message: '' };
 // After a close, real Chromium leaves document.activeElement on a node INSIDE the hidden
 // overlay for up to ~200 ms (its blur fixup is async, and closeOverlayA11y's explicit
 // restore to <body> is a no-op there because <body> carries no tabindex) — so the close
-// edge's worldHasFocus() reads a stale anchor and focus never returns to the world.
+// edge reads a stale anchor and focus never returns to the world.
 // Inline `style.display = 'none'` is this repo's ONE hiding idiom — every overlay in both
 // shell families hides that way — so the ancestor walk is the exact discriminator, and it
 // is engine-independent. `checkVisibility()` was rejected: this happy-dom version does not
@@ -2254,6 +2247,8 @@ const focusInsideHiddenSubtree = (): boolean => {
 };
 
 const onKeyDown = (e: KeyboardEvent): void => {
+  // Focus outside the game screen (and not on <body>) leaves every key to the browser (CTL11B.1).
+  if (outsideGameScreen(e.target, gameScreenEl())) return;
   // The session terminal outranks every input path — checked FIRST,
   // before the typing branch, the menu intercept and the router.
   // Suppress the native default (not a bare return) so a held arrow does not scroll on key-repeat.
@@ -2269,7 +2264,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
     return;
   }
   // a press can arrive INSIDE the stale-focus window, before the frame edge has run — heal
-  // first, so the world-focus gates read the healed state.
+  // first, so the typing branch and every screen opened below see the healed focus.
   if (focusInsideHiddenSubtree()) worldCanvasEl?.focus();
   // F9 downloads the local bug bundle; F8 dismisses the error overlay.
   // Handled EARLY (before letter-key branches) so they work under any overlay.
@@ -2328,7 +2323,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
   // is typed, never taken.
   const accel = accelForCode(DEFAULT_BINDINGS, e.code);
   if (accel !== undefined && accel !== 'F8' && accel !== 'F9') {
-    if (ownership(e.target, e) === 'target') return;
+    if (ownership(e.target, e, gameScreenEl()) === 'target') return;
     e.preventDefault();
     runAccel(accel);
     return;
@@ -2406,17 +2401,6 @@ function refreshRaising(): void {
   raisingView.refresh(buildRaisingViewModel(monsters, inventory, itemDefs));
 }
 store.onBatchApplied(() => refreshRaising());
-
-// --- evolution view: refresh on batch when visible ---------
-// MUST be total (never throw): defense-in-depth — store.flushBatch has per-listener
-// try/catch since M10.5d, but a throwing function here signals a logic bug.
-function refreshEvolution(): void {
-  if (!evolutionView?.visible || identity === '') return;
-  const monsters = store.ownMonsters(identity);
-  const speciesMap = store.speciesMap();
-  evolutionView.refresh(buildEvolutionViewModel(monsters, speciesMap, [...store.evolutionPaths()]));
-}
-store.onBatchApplied(() => refreshEvolution());
 
 // --- battle view: refresh on batch, auto-show/hide --------
 function refreshBattle(): void {
@@ -3356,6 +3340,11 @@ async function main(): Promise<void> {
   // the second constructor argument is the injected sink pair — `announce`
   // reaches the one live region through its existing singleton, `returnFocus` reaches the house
   // landing place. The banner itself decides WHEN each fires; this is only WHERE.
+  // Its mount is made inside #game-screen first (the banner adopts it by id), so a focused OK button
+  // is focus inside the game screen and keeps the keys (CTL11B.1).
+  const noticeMount = document.createElement('div');
+  noticeMount.id = 'evolution-notice';
+  gameScreen.appendChild(noticeMount);
   evolutionNoticeBanner = new EvolutionNoticeBanner(
     () =>
       sendGuarded('ackEvolutionNotices', () =>
@@ -3578,7 +3567,9 @@ async function main(): Promise<void> {
       for (const m of announcementsFor(lastA11ySnapshot, nextSnapshot)) liveRegion.announce(m, now);
       if (lastA11ySnapshot.topOverlay !== null && top === null) {
         liveRegion.announce(t('a11y.world.region'), now);
-        if (worldHasFocus() || focusInsideHiddenSubtree()) worldCanvasEl?.focus();
+        // Never stolen from a visible control (a chip): only <body> or a hidden subtree's node.
+        const a = document.activeElement;
+        if (a === null || a === document.body || focusInsideHiddenSubtree()) worldCanvasEl?.focus();
       }
       lastA11ySnapshot = nextSnapshot;
       liveRegion.flush(now);
