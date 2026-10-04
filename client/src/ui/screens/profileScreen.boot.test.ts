@@ -18,6 +18,11 @@
  * - CTL8H-5-N-OPENS-NAME-TYPING / CTL8H-5-C-OPENS-ACCOUNT: the legacy KeyN / KeyC reach the new
  *   screens, and the D-pad drives them.
  *
+ * ctl-11a (named intentional change, every KeyN / KeyC case): an accelerator pops to the base and
+ * opens its menu path, so the Name and Account frames sit OVER the menu (the world, the menu, then
+ * the frame; was: the world, then the frame) and B pops ONE frame, leaving the menu on top (was: the
+ * world). The frames' own behaviour (focus, the D-pad, the commit, the two-step) is unchanged.
+ *
  * EVERY key is dispatched ON `document.activeElement` (or on `window` for the main menu's own
  * keys), bubbling, like a real browser, and a focused <button> is CLICKED on Enter's keydown when
  * the page did not prevent it: happy-dom does not synthesize that native activation, a browser
@@ -395,11 +400,15 @@ describe('the Profile frames booted through main.ts over the real views and adap
     // player on the page with no way back (the residual of CTL6B.5): the D-pad must seat focus
     // inside the frame; a stop-typing that wipes the draft; and a commit sent twice or with the
     // untrimmed text.
+    // ctl-11a (named intentional change): RETIRED the stacks `['world', 'renameView']` (here and
+    // after the empty-draft Escape); REPLACED by `['world', 'menuView', 'renameView']`, the menu
+    // beneath the Name frame (CTL11A.1). Escape stops typing and closes nothing, so the stack must
+    // be exactly that after it too.
     await bootReady();
     server();
     press('KeyN');
     expect(shown('rename-overlay'), 'KeyN shows the Name frame').toBe(true);
-    expect(stackNames()).toEqual(['world', 'renameView']);
+    expect(stackNames(), 'over the menu').toEqual(['world', 'menuView', 'renameView']);
     await flush();
     const field = el('rename-input') as HTMLInputElement;
     const save = el('rename-submit') as HTMLButtonElement;
@@ -412,7 +421,11 @@ describe('the Profile frames booted through main.ts over the real views and adap
     expect(empty.defaultPrevented, 'the stop-typing press is prevented').toBe(true);
     expect(focusOnPage(), 'no enabled control: focus ends on the page').toBe(true);
     expect(shown('rename-overlay'), 'the frame stays open').toBe(true);
-    expect(stackNames(), 'and on the stack').toEqual(['world', 'renameView']);
+    expect(stackNames(), 'and on the stack, over the menu').toEqual([
+      'world',
+      'menuView',
+      'renameView',
+    ]);
     press('ArrowDown');
     expect(
       frameRoot.contains(document.activeElement),
@@ -482,12 +495,18 @@ describe('the Profile frames booted through main.ts over the real views and adap
     // that does not pop the frame, or one that also runs the decline (the claim code would be
     // deleted by a back-out); and, as the control, a claim-code spy that is wired to nothing (the
     // control click on Confirm must reach it).
+    // ctl-11a (named intentional changes): (1) RETIRED: the stack `['world', 'claimView']` at the
+    // open; REPLACED by `['world', 'menuView', 'claimView']`. (2) RETIRED: "Backspace pops the frame"
+    // read as the stack `['world']`; REPLACED by the stack `['world', 'menuView']` with the menu on
+    // screen: B pops ONE frame and the menu is the top frame (Start is what pops to the base). The
+    // control (KeyC from the menu reopens Account, still armed) is unchanged: an accelerator over a
+    // different open screen replaces it.
     await bootReady();
     server();
     const clearsBefore = H.claimClear.mock.calls.length;
     press('KeyC');
     expect(shown('claim-overlay'), 'KeyC shows Account').toBe(true);
-    expect(stackNames()).toEqual(['world', 'claimView']);
+    expect(stackNames(), 'over the menu').toEqual(['world', 'menuView', 'claimView']);
     await flush();
     expect(focusedId(), 'the initial focus is Sign in').toBe('claim-signin-btn');
 
@@ -515,14 +534,25 @@ describe('the Profile frames booted through main.ts over the real views and adap
 
     press('Backspace');
     expect(shown('claim-overlay'), 'B closes the Account frame').toBe(false);
-    expect(stackNames(), 'the frame was popped').toEqual(['world']);
+    expect(stackNames(), 'one frame was popped: the menu is the top frame').toEqual([
+      'world',
+      'menuView',
+    ]);
+    expect(shown('menu-overlay'), 'and the menu is on screen').toBe(true);
     expect(H.claimClear.mock.calls.length, 'the decline path never ran').toBe(clearsBefore);
 
     // Control: the spy is wired. The model is still armed (a pop is not a cancel), so reopening
-    // shows Confirm, and a click on it runs the decline and clears the stored code.
+    // shows Confirm, and a click on it runs the decline and clears the stored code. The menu is the
+    // top frame here, so KeyC is an accelerator over a different screen: it replaces the menu with
+    // its own path and opens Account over a fresh menu.
     await flush();
     press('KeyC');
     expect(shown('claim-overlay'), 'control: KeyC reopens Account').toBe(true);
+    expect(stackNames(), 'control: over the menu again').toEqual([
+      'world',
+      'menuView',
+      'claimView',
+    ]);
     expect(shown('claim-decline-confirm-btn'), 'control: Confirm is shown, still armed').toBe(true);
     (el('claim-decline-confirm-btn') as HTMLButtonElement).click();
     expect(H.claimClear.mock.calls.length, 'control: Confirm runs the decline').toBe(
@@ -579,7 +609,9 @@ describe('the Profile frames booted through main.ts over the real views and adap
     expect(callsOf('deleteAccount'), 'and only once').toHaveLength(1);
   });
 
-  it('CTL8H-5-N-OPENS-NAME-TYPING: KeyN at the world shows the Name frame on top of the stack, the field has focus after the deferred focus, and the D-pad drives the frame (Escape then ArrowDown seats focus back in the field)', async () => {
+  it('CTL8H-5-N-OPENS-NAME-TYPING: KeyN at the world shows the Name frame on top of the stack, over the menu, the field has focus after the deferred focus, and the D-pad drives the frame (Escape then ArrowDown seats focus back in the field)', async () => {
+    // ctl-11a (named intentional change): RETIRED the stack `['world', 'renameView']`; REPLACED by
+    // `['world', 'menuView', 'renameView']` (the Name frame is the top frame, the menu beneath it).
     // WRONG IMPL KILLED: a KeyN that no longer opens the frame; a frame opened without its
     // deferred focus (the opening `n` would be typed, or the page keeps focus); and the legacy
     // adapter still on the frame (the D-pad is swallowed: the last step moves nothing).
@@ -588,7 +620,11 @@ describe('the Profile frames booted through main.ts over the real views and adap
     expect(shown('rename-overlay'), 'precondition: the frame starts closed').toBe(false);
     press('KeyN');
     expect(shown('rename-overlay'), 'KeyN shows the Name frame').toBe(true);
-    expect(stackNames(), 'it is the top frame').toEqual(['world', 'renameView']);
+    expect(stackNames(), 'it is the top frame, over the menu').toEqual([
+      'world',
+      'menuView',
+      'renameView',
+    ]);
     await flush();
     const field = el('rename-input') as HTMLInputElement;
     expect(document.activeElement, 'the field has focus after the deferred focus').toBe(field);
@@ -603,7 +639,9 @@ describe('the Profile frames booted through main.ts over the real views and adap
     ).toBe(field);
   });
 
-  it('CTL8H-5-C-OPENS-ACCOUNT: KeyC at the world shows the Account frame on top of the stack, and the D-pad reaches it: ArrowDown moves focus off Sign in onto another button of the frame', async () => {
+  it('CTL8H-5-C-OPENS-ACCOUNT: KeyC at the world shows the Account frame on top of the stack, over the menu, and the D-pad reaches it: ArrowDown moves focus off Sign in onto another button of the frame', async () => {
+    // ctl-11a (named intentional change): RETIRED the stack `['world', 'claimView']`; REPLACED by
+    // `['world', 'menuView', 'claimView']` (the Account frame is the top frame, the menu beneath it).
     // WRONG IMPL KILLED: a KeyC that no longer opens the frame; the legacy adapter still on the
     // claim frame (the D-pad is swallowed and focus never leaves Sign in); and a cursor that moves
     // focus out of the frame or onto a hidden button.
@@ -612,7 +650,11 @@ describe('the Profile frames booted through main.ts over the real views and adap
     expect(shown('claim-overlay'), 'precondition: the frame starts closed').toBe(false);
     press('KeyC');
     expect(shown('claim-overlay'), 'KeyC shows the Account frame').toBe(true);
-    expect(stackNames(), 'it is the top frame').toEqual(['world', 'claimView']);
+    expect(stackNames(), 'it is the top frame, over the menu').toEqual([
+      'world',
+      'menuView',
+      'claimView',
+    ]);
     await flush();
     const first = document.activeElement;
     expect(first, 'the initial focus is Sign in').toBe(el('claim-signin-btn'));

@@ -773,4 +773,62 @@ describe('MenuView — overlay a11y wiring on the show/hide edge', () => {
     view.setCovered(true);
     expect(document.activeElement, 'covering moves nothing').toBe(outside);
   });
+
+  it('CTL11A-MENU-UNCOVER-HIDDEN: setCovered(false) on a menu that was covered and then hidden moves no focus into it (its list is never focused) and still clears the covered state, so the next show() paints an ordinary uncovered menu; uncovering a SHOWN menu still puts focus on the list', async () => {
+    // WRONG IMPL KILLED: today's `setCovered`, which has no visibility guard: it focuses `#menu-rows`
+    // when a covered menu is uncovered while hidden (focus would land inside a `display: none`
+    // subtree: a browser refuses it, and focus sits on <body> or in the frame just closed, so every
+    // key is dead until the player clicks the page); a guard that returns BEFORE the visibility
+    // write (the menu stays `visibility: hidden`, so the next show() opens an invisible menu); a
+    // guard that is "never focus on uncover" (the shown case below: focus stranded on <body> after
+    // a child screen pops, MV-A11Y-UNCOVER-FOCUS-01); and a guard keyed to the covered flag rather
+    // than the display (the shown, covered menu would not be focused either). The `focus` spy is the
+    // mechanism oracle, so the cases hold in an engine that does focus a hidden node and in one that
+    // refuses.
+    const overlay = document.getElementById(OVERLAY_ID) as HTMLElement;
+    const outside = outsideSentinel();
+    const { view } = newView();
+    view.show();
+    await flushMacrotask();
+    const focusSpy = vi.spyOn(rowsEl(), 'focus');
+
+    // Control: a SHOWN menu uncovered puts focus on the list (and the spy sees the call).
+    outside.focus();
+    view.setCovered(true);
+    expect(overlay.style.visibility, 'control: covered').toBe('hidden');
+    view.setCovered(false);
+    expect(focusSpy, 'control: the shown menu focuses its list once').toHaveBeenCalledTimes(1);
+    expect(document.activeElement, 'control: focus is on the list').toBe(rowsEl());
+
+    // The case: covered, then hidden, then uncovered while hidden.
+    focusSpy.mockClear();
+    outside.focus();
+    view.setCovered(true);
+    view.hide();
+    expect(view.visible, 'precondition: the menu is hidden').toBe(false);
+    expect(overlay.style.visibility, 'precondition: it is still marked covered').toBe('hidden');
+    const parked = document.activeElement;
+    expect(overlay.contains(parked), 'precondition: focus is outside the hidden menu').toBe(false);
+
+    view.setCovered(false);
+    expect(focusSpy, 'a hidden menu`s list is never focused').not.toHaveBeenCalled();
+    expect(document.activeElement, 'focus stays where it was').toBe(parked);
+    expect(overlay.contains(document.activeElement), 'and is not inside the menu').toBe(false);
+    expect(overlay.style.visibility, 'the covered state is cleared').toBe('');
+    expect(view.visible, 'uncovering does not show it').toBe(false);
+
+    // The next show() is an ordinary open: visible, uncovered, focus on its list a macrotask later.
+    view.show();
+    expect(view.visible).toBe(true);
+    expect(overlay.style.visibility, 'the reopened menu is not left covered').toBe('');
+    await flushMacrotask();
+    expect(document.activeElement, 'the ordinary open focus lands on the list').toBe(rowsEl());
+
+    // And it is no longer covered: uncovering it again is the "never covered" no-op.
+    focusSpy.mockClear();
+    outside.focus();
+    view.setCovered(false);
+    expect(focusSpy, 'an uncovered menu is not refocused').not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(outside);
+  });
 });

@@ -31,7 +31,6 @@ import {
   ownership,
   type RouteContext,
   type RouterEffect,
-  routedBindings,
   routerConsumes,
   typingKey,
 } from './router';
@@ -758,8 +757,8 @@ describe('InputRouter under a nav frame (ctl-5)', () => {
 });
 
 // ==========================================================================================
-// ctl-6b: the screen seam (CTL6B.1), Start / B / Select reach the top frame's adapter, LB/RB only
-// from PageUp/PageDown (CTL6B.6) and typing mode (CTL6B.5)
+// ctl-6b: the screen seam (CTL6B.1), Start / B / Select reach the top frame's adapter, LB/RB from
+// the bumper keys (CTL6B.6; Q and E join PageUp and PageDown in ctl-11a) and typing mode (CTL6B.5)
 // ==========================================================================================
 //
 // `ctx.screen(btn)` is the top frame's adapter, bound by the shell. After the D-pad, X and the
@@ -902,57 +901,33 @@ describe('InputRouter screen seam (ctl-6b)', () => {
   });
 });
 
-describe('routedBindings (ctl-6b, CTL6B.6)', () => {
-  it('CTL6B-6-ROUTED-BINDINGS: through the routed bindings only PageUp / PageDown are LB / RB, Q and E produce no edge, and every other binding is unchanged', () => {
-    // WRONG IMPL KILLED: a table that keeps Q / E on LB / RB (one key, two owners: the ladder's
-    // Journal / Evolution hotkeys and a tabbed screen), one that drops PageUp / PageDown too (a
-    // tabbed screen could never be reached), one that damages another button's keys, one that
-    // mutates the shared default table in place (the remap and help screens read it), and one that
-    // returns the default table itself.
-    const routed = routedBindings(DEFAULT_BINDINGS);
-    expect(routed, 'a copy, not the default table').not.toBe(DEFAULT_BINDINGS);
-    expect([...routed.buttons.LB]).toEqual(['PageUp']);
-    expect([...routed.buttons.RB]).toEqual(['PageDown']);
-    for (const button of VBUTTONS) {
-      if (button === 'LB' || button === 'RB') continue;
-      expect([...routed.buttons[button]], `${button} is unchanged`).toEqual([
-        ...DEFAULT_BINDINGS.buttons[button],
+// ctl-11a (named intentional deletion): the `routedBindings (ctl-6b, CTL6B.6)` describe is deleted
+// with `routedBindings` itself (Q and E are LB and RB through DEFAULT_BINDINGS now, so no copy
+// drops them; the frozen, unedited default table is bindings.test.ts's). What still held, the
+// source's press and release edges for the bumper keys, is kept below against DEFAULT_BINDINGS.
+describe('LB and RB through the default bindings (ctl-6b, CTL6B.6; ctl-11a, CTL11A.3)', () => {
+  it('CTL6B-6-DEFAULT-BUMPERS: a keyboard source on the default bindings maps Q and PageUp to LB and E and PageDown to RB, each press a down edge and each release an up edge of the same button, and Start and the D-pad still resolve beside them', () => {
+    // WRONG IMPL KILLED: a table that drops Q / E from the bumpers (the tabbed screens would never
+    // be reached from them) or PageUp / PageDown too, a release that is lost for a bumper key (the
+    // router's held count would leak: a stuck LB / RB), a release mapped to the other bumper, one
+    // key mapped to two buttons (an alias that also resolves as Start or a D-pad direction), and
+    // a bumper binding that damages another button's keys.
+    const source = new KeyboardSource(DEFAULT_BINDINGS);
+    const bumpers: ReadonlyArray<readonly [string, VButton]> = [
+      ['KeyQ', 'LB'],
+      ['PageUp', 'LB'],
+      ['KeyE', 'RB'],
+      ['PageDown', 'RB'],
+    ];
+    for (const [code, button] of bumpers) {
+      expect(source.keydown({ code }), `${code} down is ${button}`).toEqual([
+        { button, down: true },
       ]);
+      expect(source.keyup({ code }), `${code} up is ${button}`).toEqual([{ button, down: false }]);
     }
-    expect(routed.accels, 'the accelerators are unchanged').toEqual(DEFAULT_BINDINGS.accels);
-
-    // The default table was not edited in place.
-    expect([...DEFAULT_BINDINGS.buttons.LB]).toEqual(['KeyQ', 'PageUp']);
-    expect([...DEFAULT_BINDINGS.buttons.RB]).toEqual(['KeyE', 'PageDown']);
-
-    // Through a real keyboard source: the edges a player would cause.
-    const source = new KeyboardSource(routed);
-    expect(source.keydown({ code: 'PageUp' })).toEqual([{ button: 'LB', down: true }]);
-    expect(source.keyup({ code: 'PageUp' })).toEqual([{ button: 'LB', down: false }]);
-    expect(source.keydown({ code: 'PageDown' })).toEqual([{ button: 'RB', down: true }]);
-    expect(source.keyup({ code: 'PageDown' })).toEqual([{ button: 'RB', down: false }]);
-    for (const code of ['KeyQ', 'KeyE']) {
-      expect(source.keydown({ code }), `${code} produces no edge`).toEqual([]);
-      expect(source.keyup({ code }), `${code} produces no release`).toEqual([]);
-    }
-    // Control: the unrouted default source still maps Q / E (the harness is not simply deaf).
-    const plain = new KeyboardSource(DEFAULT_BINDINGS);
-    expect(plain.keydown({ code: 'KeyQ' })).toEqual([{ button: 'LB', down: true }]);
-    expect(plain.keydown({ code: 'KeyE' })).toEqual([{ button: 'RB', down: true }]);
-    // And the other buttons still resolve through the routed source.
+    // And the other buttons still resolve through the same source.
     expect(source.keydown({ code: 'Escape' })).toEqual([{ button: 'Start', down: true }]);
     expect(source.keydown({ code: 'KeyW' })).toEqual([{ button: 'Up', down: true }]);
-
-    // A customised table: only the Page keys survive on LB / RB, and nothing else is touched.
-    const custom = {
-      buttons: { ...DEFAULT_BINDINGS.buttons, LB: ['KeyZ', 'PageUp'], RB: ['PageDown', 'KeyX'] },
-      accels: DEFAULT_BINDINGS.accels,
-    };
-    const fromCustom = routedBindings(custom);
-    expect([...fromCustom.buttons.LB]).toEqual(['PageUp']);
-    expect([...fromCustom.buttons.RB]).toEqual(['PageDown']);
-    expect([...fromCustom.buttons.Start]).toEqual([...DEFAULT_BINDINGS.buttons.Start]);
-    expect([...custom.buttons.LB], 'the input table is untouched').toEqual(['KeyZ', 'PageUp']);
   });
 });
 

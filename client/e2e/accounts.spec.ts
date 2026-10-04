@@ -8,6 +8,7 @@ import {
 } from '@playwright/test';
 import { CLAIM_CODE_KEY_PREFIX } from '../src/net/claimCode';
 import { t } from '../src/ui/i18n/resolver';
+import { pressAccel } from './controls';
 
 // accounts.spec.ts — the BROWSER surface of the guest-claim flow (de-bloat Phase 3 smoke).
 //
@@ -17,7 +18,9 @@ import { t } from '../src/ui/i18n/resolver';
 // file pins what a real player sees and what a real browser stores; server-side claim
 // registration (startSignIn -> start_guest_claim before the redirect) is gated by
 // client/src/net/connection.runtime.test.ts (CLAIM-START*):
-//   A1  KeyC opens the claim overlay (prompt copy, sign-in button, privacy door, first-run nudge)
+//   A1  C opens the claim overlay (prompt copy, sign-in button, privacy door, first-run nudge);
+//       ctl-11a: through the main menu (Profile > Account), and C again, with its own screen on
+//       top, acts as Start (A2 closes it that way)
 //   A2  Sign-in with an unreachable auth service fails SAFE: failure copy, a well-formed claim
 //       code minted into per-tab sessionStorage (claimCode.ts), identity/party/presence
 //       unchanged, the world still plays
@@ -95,6 +98,12 @@ async function focusWorld(p: Page): Promise<void> {
   await p.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 }
 
+/** The context stack's length (1 = the bare world: the menu and the leaf beneath it are closed). */
+const stackLength = (p: Page): Promise<number> =>
+  p.evaluate(
+    () => (window as unknown as { __game: () => { stack: unknown[] } }).__game().stack.length,
+  );
+
 test.describe
   .serial('Phase 3 smoke — guest-claim browser surface', () => {
     let browser: Browser;
@@ -123,7 +132,7 @@ test.describe
     test('A1: KeyC opens the claim overlay with the guest prompt, a sign-in button, the privacy door and the first-run nudge', async () => {
       expect(await storedCodes(page), 'a fresh guest holds no claim code').toEqual([]);
       await focusWorld(page);
-      await page.keyboard.press('KeyC');
+      await pressAccel(page, 'C');
       await expect(page.locator('#claim-overlay')).toBeVisible({ timeout: 10_000 });
       await expect(page.locator('#claim-title')).toHaveText(PROMPT_TITLE);
       // B2 (ctl-8h): the title and the body are ON SCREEN, not just present in the DOM. They used to
@@ -164,9 +173,11 @@ test.describe
       expect(after.ownEntityId).not.toBe(null);
       expect(after.characters.map((c) => c.entityId)).toContain(after.ownEntityId);
 
-      // Closing the overlay hands the world back: one step still moves the character.
-      await page.keyboard.press('KeyC');
+      // Closing the overlay hands the world back: one step still moves the character. ctl-11a: C
+      // with its own screen on top acts as Start, which closes the overlay and the menu beneath it.
+      await pressAccel(page, 'C');
       await expect(page.locator('#claim-overlay')).toBeHidden({ timeout: 5_000 });
+      await expect.poll(() => stackLength(page), { timeout: 5_000 }).toBe(1);
       const from = after.ownAuthTile;
       if (from === null) throw new Error('A2: own tile missing');
       // Spawn row y=1 is floor for x=1..8 (recruit.spec) — East along it never rolls grass.
@@ -188,7 +199,7 @@ test.describe
       const [code] = await storedCodes(page);
       expect(code).toMatch(/^[0-9a-f]{64}$/);
       await focusWorld(page);
-      await page.keyboard.press('KeyC');
+      await pressAccel(page, 'C');
       await expect(page.locator('#claim-overlay')).toBeVisible({ timeout: 10_000 });
 
       const confirm = page.locator('#claim-confirm');

@@ -7,7 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll, openFaceToFace } from './controls';
+import { closeAll, openFaceToFace, pressAccel } from './controls';
 
 // monster_pub need-to-know privacy, end to end
 //
@@ -221,16 +221,17 @@ function expectNoForeignIds(mine: MonsterView, theirs: MonsterView, label: strin
 }
 
 /**
- * Renames `page`'s own player through the REAL production UI (closeAll -> KeyN ->
+ * Renames `page`'s own player through the REAL production UI (closeAll -> N ->
  * rename-input -> rename-submit). Copied from pvp-side-b.spec.ts:205.
  * The distinct label is what lets the battle test assert WHOSE card the opponent
  * card is, and it leaves NO overlay open on exit (the rename overlay does not
- * auto-close, and both the incoming-challenge auto-show and KeyP need
- * `!anyOverlayVisible`).
+ * auto-close, and the incoming-challenge auto-show and the face-to-face A press
+ * need a bare world). ctl-11a: N opens the Name screen through the main menu
+ * (Profile > Name), so the closing `closeAll` also takes the menu beneath it.
  */
 async function renamePlayer(page: Page, name: string): Promise<void> {
   await closeAll(page);
-  await page.keyboard.press('KeyN');
+  await pressAccel(page, 'N');
   await page.waitForSelector('[data-testid="rename-input"]', { state: 'visible', timeout: 10_000 });
   await page.fill('[data-testid="rename-input"]', name);
   await page.click('[data-testid="rename-submit"]');
@@ -691,7 +692,7 @@ test.describe
       ] as const) {
         await closeAll(page);
         if (!(await page.locator('#trade-overlay').isVisible())) {
-          await page.keyboard.press('KeyU');
+          await pressAccel(page, 'U');
         }
         await expect(page.locator('#trade-overlay')).toBeVisible({ timeout: 10_000 });
 

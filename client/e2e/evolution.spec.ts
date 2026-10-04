@@ -7,10 +7,9 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { DEFAULT_BINDINGS } from '../src/input/bindings';
-import { routedBindings } from '../src/input/router';
 import { t, tf } from '../src/ui/i18n/resolver';
-import { pressButton } from './controls';
+import { navItemId } from '../src/ui/navRender';
+import { closeAll, pressAccel, pressButton } from './controls';
 
 // evolution.spec.ts — a real browser drives the starter through a SINGLE-PATH auto-evolution
 // (de-bloat Phase 3 gameplay smoke).
@@ -29,11 +28,17 @@ import { pressButton } from './controls';
 // planned multi-path player-prompt fix.
 //
 // TRIGGER. `care` tails into check_and_evolve (raising.rs care). Since ctl-8c it is pressed on the
-// Monsters frame's sheet: KeyB opens the frame on Storage (empty for a fresh identity), RB shows
-// the Party (the router's RB is PageDown until ctl-11a: KeyE, the binding table's first RB key,
-// still opens the evolution overlay through the legacy ladder), A opens the slot-0 starter's sheet
-// on Summary, Down moves to Care and A sends it. A fresh identity's care cooldown anchor is 0, so
-// the first care is allowed — deterministic, no battle RNG.
+// Monsters frame's sheet: V (ctl-11a) opens the frame on the Party tab through the main menu (the
+// stack is [world, menuView, boxView]), A opens the slot-0 starter's sheet on Summary, Down moves
+// to Care and A sends it. A fresh identity's care cooldown anchor is 0, so the first care is
+// allowed — deterministic, no battle RNG.
+//
+// EVOLUTION READOUT (ctl-11a, named intentional change). KeyE used to open the legacy evolution
+// overlay (`evo-ready-note`, `evo-choice`); Q and E are LB and RB now and that overlay has no key.
+// The same facts are read on the Monsters sheet's Evolve list (screens/monstersScreen.ts, ui/boxView.ts):
+// V, A on the starter, Down x3 (Care, Feed…, Evolve…), A. It lists every outgoing path of the species
+// as a `role="option"` row; only a CHOICE (2+ eligible paths) is enabled, and a met path that is no
+// choice is the one the server applies itself, so it reads "ready" on a disabled row.
 //
 // CLEANUP. One browser, one context, one identity; afterAll closes the browser so the server's
 // on_disconnect deletes the player row before golden.spec (presenceCount === 2) runs.
@@ -113,11 +118,6 @@ function sqlRows(stdout: string, label: string): Record<string, string>[] {
 
 const normId = (id: string): string => id.toLowerCase().replace(/^0x/, '');
 
-/** Blur whatever holds focus so the world owns it (main.ts worldHasFocus gates hotkeys). */
-async function focusWorld(p: Page): Promise<void> {
-  await p.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-}
-
 /** Text of the overlay whose h2 reads `title` ('' while hidden). recruit.spec box-root shape. */
 async function overlayText(p: Page, title: string): Promise<string> {
   return p.evaluate((want) => {
@@ -151,7 +151,7 @@ test.describe
       await browser.close();
     });
 
-    test('V1: seeded to Lv20, the evolution screen reports exactly one ready path (Pyroleo) and the box still shows Flameling', async () => {
+    test('V1: seeded to Lv20, the Monsters sheet`s Evolve list reports exactly one ready path (Pyroleo) with no picker and the box still shows Flameling', async () => {
       const s = await snap(page);
       expect(s.ownMonsters).toHaveLength(1);
       const starter = s.ownMonsters[0] as OwnMonster;
@@ -172,36 +172,58 @@ test.describe
       );
 
       // The client evaluates the SAME shared eligibility predicate: one ready path, no picker.
-      await focusWorld(page);
-      await page.keyboard.press('KeyE');
-      const readyNote = page.locator('[data-testid="evo-ready-note"]');
-      await expect(readyNote).toHaveText(tf('evolution.card.ready', { species: TO_NAME }), {
-        timeout: 10_000,
-      });
-      await expect(page.locator('[data-testid="evo-choice"]')).toHaveCount(0);
-
-      // Nothing has fired yet: the box still lists the tier-0 form at the seeded level.
-      // Close the evolution overlay first: opening it moved focus inside it, and the KeyB hotkey
-      // only fires while the WORLD owns focus (main.ts worldHasFocus) or the box is already open.
-      await page.keyboard.press('Escape');
-      await expect(readyNote).toBeHidden({ timeout: 5_000 });
-      await focusWorld(page);
-      await page.keyboard.press('KeyB');
+      // ctl-11a (named intentional change): KeyE no longer opens the legacy evolution overlay, so
+      // its `evo-ready-note` / `evo-choice` hooks have no key. The same two facts are read on the
+      // Monsters sheet's Evolve list: V (the Party tab), A on the starter (its sheet, on Summary),
+      // Down x3 (Care, Feed…, Evolve…) and A.
+      await pressAccel(page, 'V');
       await expect
         .poll(() => overlayText(page, t('box.title')), { timeout: 10_000 })
         .toContain(boxCardPrefix(FROM_NAME, SEED_LEVEL));
-      await page.keyboard.press('Escape');
+      await expect(page.locator('#monsters-tab-party')).toHaveAttribute('aria-selected', 'true');
+      await pressButton(page, 'A'); // the slot-0 starter's sheet, on Summary
+      await pressButton(page, 'Down'); // Care
+      await pressButton(page, 'Down'); // Feed… (disabled — no food — but a disabled row is reachable)
+      await pressButton(page, 'Down'); // Evolve…
+      await pressButton(page, 'A'); // the Evolve list
+
+      const evolveList = page.locator(
+        `[role="listbox"][aria-labelledby="${navItemId('monstersSheet', null, 'evolve')}"]`,
+      );
+      await expect(evolveList).toBeVisible({ timeout: 10_000 });
+      const rows = evolveList.locator('[role="option"]');
+      const readyText = tf('evolution.card.ready', { species: TO_NAME });
+      // Every outgoing path of species 1 is listed (edges 1-3, header), and exactly ONE reads
+      // "ready" for Pyroleo — the retired `evo-ready-note`'s text, on that path's row.
+      await expect(rows).toHaveCount(3);
+      await expect(rows.filter({ hasText: readyText })).toHaveCount(1);
+      // No picker: with one eligible path the server applies it itself, so no row is an enabled
+      // choice (the retired `evo-choice` count was 0), the ready row included.
+      await expect(rows.filter({ hasText: readyText })).toHaveAttribute('aria-disabled', 'true');
+      await expect(evolveList.locator('[role="option"]:not([aria-disabled="true"])')).toHaveCount(
+        0,
+      );
+      // A on the cursor row (the first path, Pyroleo's edge 1) opens no Yes / No confirm either.
+      await pressButton(page, 'A');
+      await expect(page.locator('#monsters-evolve-question')).toHaveText('');
+
+      // Nothing has fired yet: the box still lists the tier-0 form at the seeded level.
+      // Start returns to the world; B reopens the frame on Storage.
+      await closeAll(page);
+      await expect(evolveList).toBeHidden({ timeout: 5_000 });
+      await pressAccel(page, 'B');
+      await expect
+        .poll(() => overlayText(page, t('box.title')), { timeout: 10_000 })
+        .toContain(boxCardPrefix(FROM_NAME, SEED_LEVEL));
+      await closeAll(page);
       await expect.poll(() => overlayText(page, t('box.title')), { timeout: 5_000 }).toBe('');
     });
 
-    test('V2: Care on the Monsters sheet (KeyB, RB to the Party, A on the starter, Down to Care, A) fires the single eligible path — the species change lands in the snapshot and in the still-open frame`s live card', async () => {
-      await focusWorld(page);
-      await page.keyboard.press('KeyB');
+    test('V2: Care on the Monsters sheet (V opens the Party, A on the starter, Down to Care, A) fires the single eligible path — the species change lands in the snapshot and in the still-open frame`s live card', async () => {
+      await pressAccel(page, 'V'); // the Party tab (ctl-11a: no KeyB then RB; E is RB now)
       await expect
         .poll(() => overlayText(page, t('box.title')), { timeout: 10_000 })
         .toContain(boxCardPrefix(FROM_NAME, SEED_LEVEL));
-      // RB as the router reads it (PageDown), not the binding table's first RB key (KeyE).
-      await page.keyboard.press(routedBindings(DEFAULT_BINDINGS).buttons.RB[0]);
       await pressButton(page, 'A'); // the slot-0 starter's sheet, on Summary
       await pressButton(page, 'Down'); // Care
       await pressButton(page, 'A'); // care -> check_and_evolve

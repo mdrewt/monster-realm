@@ -9,7 +9,7 @@ import {
 } from '@playwright/test';
 import type { Stack } from '../src/ui/contextStack';
 import { t, tf } from '../src/ui/i18n/resolver';
-import { pressButton } from './controls';
+import { pressAccel, pressButton } from './controls';
 
 // encounter-battle.spec.ts — walk into grass, meet a wild monster, fight it to a WIN (de-bloat
 // Phase 3 gameplay smoke).
@@ -549,10 +549,13 @@ test.describe
       );
       expect(Number(wallet?.balance), 'the win must credit currency').toBeGreaterThan(0);
 
-      // Visible XP: the box card now reads Lv8. Start first dismisses the terminal frame.
+      // Visible XP: the box card now reads Lv8. Start first dismisses the terminal frame (B is
+      // denied over a server-owned frame, so the bare world must be back before it: ctl-11a),
+      // then B opens Monsters through the main menu.
       await pressButton(page, 'Start');
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-      await page.keyboard.press('KeyB');
+      await expect.poll(async () => (await readStack(page)).length, { timeout: 5_000 }).toBe(1);
+      await pressAccel(page, 'B');
       await expect
         .poll(() => overlayText(page, t('box.title')), { timeout: 10_000 })
         .toContain(boxCardPrefix('Flameling', SEED_LEVEL + 1));

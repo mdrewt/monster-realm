@@ -6,7 +6,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { type Dir, interactChip, interactWithNpc, waitForNpcInFront } from './controls';
+import { type Dir, interactChip, interactWithNpc, pressAccel, waitForNpcInFront } from './controls';
 
 // M13.5c dialogue lifecycle e2e.
 //
@@ -406,9 +406,22 @@ test.describe
           .then(() => true)
           .catch(() => false);
         if (!hidden) continue;
-        // Distinguish success via the quest-log UI signal (KeyQ is guarded on
-        // "no other overlay visible" — the dialogue overlay is hidden here).
-        await a.keyboard.press('KeyQ');
+        // Distinguish success via the quest-log UI signal. ctl-11a: Q is LB now; J opens
+        // the Journal through the main menu (stack [world, menuView, questLogView]) and
+        // is denied while a dialogue frame is still the top of the stack, so wait (bounded,
+        // no sleep) for the stack to be the bare world first; a slow one is a FAILED attempt.
+        const worldBack = await a
+          .waitForFunction(
+            () =>
+              (window as unknown as { __game: () => { stack: unknown[] } }).__game().stack
+                .length === 1,
+            null,
+            { timeout: 5_000 },
+          )
+          .then(() => true)
+          .catch(() => false);
+        if (!worldBack) continue;
+        await pressAccel(a, 'J');
         advanced = await a
           .waitForFunction(
             () => {

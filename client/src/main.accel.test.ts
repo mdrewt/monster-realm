@@ -14,6 +14,10 @@
  * and reducer calls the stubbed connection recorded, and the read-only `__game()` hook (`stack`,
  * `navActive`).
  *
+ * Two cases at the end close residuals the slice carries with it: Select opens and closes Help over
+ * a bare battle (R-ctl-8j-SELECTINERT), and Monsters picked in the menu opens on Party
+ * (R-ctl-8b-CTL8B.4).
+ *
  * The menu's level and cursor are read off what the menu view paints: a root cursor is the id
  * `menu-root-<key>`, a Social cursor `menuSocial-root-<key>` and a Profile cursor
  * `menuProfile-root-<key>`, under the matching frame title (and the translated `Menu` crumb).
@@ -1067,5 +1071,179 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     fire('keydown', 'KeyW', pressAt + 100);
     fire('keyup', 'KeyW', pressAt + 105);
     expect(H.sends.length, 'control: W sends one step').toBe(sent + 1);
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // Residuals closed with ctl-11a: Select over a battle, and Monsters opened from the menu
+  // ------------------------------------------------------------------------------------------
+
+  it('CTL11A-SELECT-HELP-OVER-BATTLE: at a bare battle base Select (KeyR) opens Help over the battle, stamped with it and kept through a batch, and a second Select closes it, the battle base, the battle view and the intents untouched throughout; and at the world Select still toggles Help the same way', async () => {
+    // WRONG IMPL KILLED (residual R-ctl-8j-SELECTINERT): today's toggleHelp arm, which opens only
+    // when the world has focus (`overlayVerdict('helpView')` allow AND `worldHasFocus()`): the
+    // battle overlay holds focus here (asserted below), so Select over a battle does nothing and
+    // the first stack check reads the bare battle; a fix that opens Help but not through the stack
+    // mirror (the shown root with no frame: Start and B could not close it); one that opens it
+    // unstamped, or over a policy that drops it (the next batch pops it: the batch below); a second
+    // Select that cannot close it (Help stuck over the battle); a Help that hides the battle view
+    // or changes the base; one that sends an intent or a reducer call; and a battle fix that breaks
+    // the world arm (the control: Select at the world opens and closes Help).
+    await bootReady();
+    seedWorld(1000);
+
+    // Control: Select at the world toggles Help.
+    expectBareWorld('precondition');
+    press('KeyR');
+    expect(stackNames(), 'Select at the world opens Help').toEqual(['world', 'helpView']);
+    expect(openRoots(), 'and shows its root alone').toEqual(['help']);
+    press('KeyR');
+    expectBareWorld('a second Select at the world closes Help');
+
+    // The battle: a bare base, the battle overlay holding focus.
+    putBattle(BATTLE_ID, pressAt + 50);
+    await flush();
+    const BATTLE_BASE = { kind: 'battle', battleId: '101' };
+    const HELP_OVER_BATTLE = { kind: 'screen', id: 'helpView', overBattle: '101' };
+    expect(stack(), 'precondition: the bare battle').toEqual([BATTLE_BASE]);
+    expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
+    expect(
+      ['BODY', 'CANVAS'],
+      'precondition: focus is inside the battle overlay, not on the world',
+    ).not.toContain(document.activeElement?.tagName);
+    const sent = H.sends.length;
+
+    for (const round of ['first', 'second']) {
+      press('KeyR');
+      expect(stack(), `${round}: Select opens Help over the battle, stamped with it`).toEqual([
+        BATTLE_BASE,
+        HELP_OVER_BATTLE,
+      ]);
+      expect(openRoots(), `${round}: Help's root alone is the screen shown`).toEqual(['help']);
+      expect(battleShown(), `${round}: the battle view stays shown beneath it`).toBe(true);
+
+      // A batch while Help is up keeps it (it is battle-safe and belongs to this battle).
+      server(pressAt);
+      pressAt += 100;
+      expect(stack(), `${round}: a batch leaves Help over the battle`).toEqual([
+        BATTLE_BASE,
+        HELP_OVER_BATTLE,
+      ]);
+      expect(openRoots(), `${round}: and still shown`).toEqual(['help']);
+
+      press('KeyR');
+      expect(stack(), `${round}: a second Select closes Help`).toEqual([BATTLE_BASE]);
+      expect(openRoots(), `${round}: no screen is left open`).toEqual([]);
+      expect(battleShown(), `${round}: the battle view is still shown`).toBe(true);
+    }
+    expect(H.sends.length, 'nothing walked over the battle').toBe(sent);
+    expect(H.calls, 'no reducer call was made').toEqual([]);
+  });
+
+  it('CTL11A-MENU-MONSTERS-PARTY: picking Monsters in the main menu (Start, A on Monsters; and a click on its row) opens it with the Party tab alone selected and the Party panel the one shown, each time, whatever tab an RB, a B or a V left behind and through a batch and a frame; B still opens Storage', async () => {
+    // WRONG IMPL KILLED (residual R-ctl-8b-CTL8B.4): today's menu path, which opens the box through
+    // its legacy open and paints Storage (only the V accelerator reaches Party, by an extra LB after
+    // its menu path); a tab remembered from the last open (an RB to Storage, Start, then the pick
+    // would reopen on Storage; so would a pick after B); a Party tab opened by the accelerator's
+    // extra LB but not by the pick itself (the click path and the key path are the two picks of one
+    // entry: both run it); a strip that says Party while the Storage panel is the one shown (or the
+    // reverse), two tabs selected at once; a tab painted once and reset by the next batch or frame;
+    // and a fix that moves B onto Party as well (B opens Storage, as the V and B case above pins).
+    // The click path is read after a frame: a pointer pick raises no keydown, so the stack is
+    // mirrored at the next frame's sync, as it is for every screen the pointer opens.
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertMonster(monster(31n, 0));
+    opts.store.upsertMonster(monster(32n, 255));
+    server(1010);
+
+    const monstersTabs = (): { selected: string[]; active: string[] } => {
+      const all = ['party', 'storage'];
+      return {
+        selected: all.filter(
+          (t) => byId(`monsters-tab-${t}`).getAttribute('aria-selected') === 'true',
+        ),
+        active: all.filter((t) => byId(`monsters-tab-${t}`).classList.contains('is-active')),
+      };
+    };
+    /** Which of the Monsters frame's two panels show: each is a section heading and the grid after
+     *  it (the frame root is the title's grandparent, the chain the e2e helpers resolve). */
+    const panels = (): { party: boolean[]; storage: boolean[] } => {
+      const title = document.querySelector('[data-testid="box-title"]');
+      const root = title?.parentElement?.parentElement;
+      if (!(root instanceof HTMLElement))
+        throw new Error('the Monsters frame is not in the document');
+      const section = (heading: string): boolean[] => {
+        const h = Array.from(root.querySelectorAll('h3')).find((el) => el.textContent === heading);
+        const grid = h?.nextElementSibling;
+        if (h === undefined || grid === null || grid === undefined) {
+          throw new Error(`no "${heading}" section in the Monsters frame`);
+        }
+        return [isShown(h), isShown(grid)];
+      };
+      return {
+        party: section(i18nT('box.section.party')),
+        storage: section(i18nT('box.section.box')),
+      };
+    };
+    const expectTab = (label: string, tab: 'party' | 'storage'): void => {
+      expect(monstersTabs(), `${label}: the ${tab} tab alone is selected`).toEqual({
+        selected: [tab],
+        active: [tab],
+      });
+      expect(panels(), `${label}: the ${tab} panel is the one shown`).toEqual({
+        party: tab === 'party' ? [true, true] : [false, false],
+        storage: tab === 'storage' ? [true, true] : [false, false],
+      });
+    };
+    /** Monsters picked in the menu by keys: Start, the cursor to Monsters, A. */
+    const pickByKeys = (): void => {
+      press('KeyM');
+      expect(stackNames(), 'precondition: Start opened the menu').toEqual(['world', 'menuView']);
+      for (let i = 0; i < 8 && navActive() !== 'monsters'; i += 1) press('ArrowDown');
+      expect(navActive(), 'precondition: the cursor is on Monsters').toBe('monsters');
+      press('Enter');
+    };
+    /** Monsters picked by a click on its menu row (the pointer pick path). */
+    const pickByClick = (): void => {
+      press('KeyM');
+      expect(stackNames(), 'precondition: Start opened the menu').toEqual(['world', 'menuView']);
+      byId('menu-root-monsters').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      frame(pressAt + 10);
+      pressAt += 100;
+    };
+
+    // Picked by keys.
+    pickByKeys();
+    expectLeafOpen(ROW('V'), 'A on Monsters');
+    expectTab('A on Monsters', 'party');
+    server(pressAt);
+    frame(pressAt + 10);
+    pressAt += 100;
+    expectTab('A on Monsters, a batch and a frame later', 'party');
+
+    // A tab left behind by an RB is not remembered.
+    press('KeyE');
+    expectTab('RB to Storage', 'storage');
+    press('Escape');
+    expectBareWorld('after Start');
+    pickByKeys();
+    expectTab('A on Monsters after an RB left Storage', 'party');
+
+    // B opens Storage (unchanged); a pick after it still opens Party, here by the click path.
+    press('Escape');
+    press('KeyB');
+    expectLeafOpen(ROW('B'), 'B');
+    expectTab('B', 'storage');
+    press('Escape');
+    expectBareWorld('after Start, again');
+    pickByClick();
+    expectLeafOpen(ROW('V'), 'a click on Monsters after B');
+    expectTab('a click on Monsters after B', 'party');
+
+    // And once more by click, after an RB left Storage (the tab is no leftover of either path).
+    press('KeyE');
+    expectTab('RB to Storage, again', 'storage');
+    press('Escape');
+    pickByClick();
+    expectTab('a click on Monsters after an RB left Storage', 'party');
   });
 });
