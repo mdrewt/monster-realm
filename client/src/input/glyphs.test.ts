@@ -185,4 +185,18 @@ describe('glyphs (ctl-12)', () => {
       expect(glyph(code), code).toBe(code);
     }
   });
+
+  it('learnKey with a missing code or key (a synthetic event with no code or key) does not throw and learns nothing', () => {
+    // WRONG IMPL KILLED: a learn that calls .length / .toUpperCase on undefined (a plain
+    // `new Event('keydown'), or an event from an extension, throws out of the page's key listener),
+    // and one that records the string 'undefined' under a real code.
+    expect(() => learnKey(undefined as never, undefined as never)).not.toThrow();
+    expect(() => learnKey('KeyA', undefined as never)).not.toThrow();
+    expect(() => learnKey(undefined as never, 'a')).not.toThrow();
+    expect(() => learnKey(null as never, null as never)).not.toThrow();
+    expect(glyph('KeyA'), 'KeyA learned nothing').toBe('A');
+    expect(glyph('undefined'), 'no entry was made under the string "undefined"').toBe('undefined');
+    learnKey('KeyW', 'z');
+    expect(glyph('KeyW'), 'control: a well-formed call still learns').toBe('Z');
+  });
 });

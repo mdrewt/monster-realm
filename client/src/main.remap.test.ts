@@ -319,19 +319,32 @@ function fire(
   code: string,
   t: number,
   init: KeyboardEventInit = {},
+  target: EventTarget = window,
 ): KeyboardEvent {
   clock.t = t;
   const event = new KeyboardEvent(type, { code, bubbles: true, cancelable: true, ...init });
-  window.dispatchEvent(event);
+  target.dispatchEvent(event);
   return event;
 }
 
-/** A tap on the running press clock: keydown, and its keyup 5 ms later. Returns the keydown. */
-function press(code: string, init: KeyboardEventInit = {}): KeyboardEvent {
-  const down = fire('keydown', code, pressAt, init);
-  fire('keyup', code, pressAt + 5, init);
+/** A tap on the running press clock: keydown, and its keyup 5 ms later. Returns the keydown. The
+ *  event is dispatched at `target` (default: the window), so a focused field can be the target. */
+function press(
+  code: string,
+  init: KeyboardEventInit = {},
+  target: EventTarget = window,
+): KeyboardEvent {
+  const down = fire('keydown', code, pressAt, init, target);
+  fire('keyup', code, pressAt + 5, init, target);
   pressAt += 100;
   return down;
+}
+
+const errorOverlay = (): HTMLElement => byId('mr-error-overlay');
+const errorOverlayShown = (): boolean => isShown(errorOverlay());
+/** Raise the error overlay the way a page error does: an uncaught `error` event on the window. */
+function raiseErrorOverlay(): void {
+  window.dispatchEvent(new ErrorEvent('error', { message: 'boom', error: new Error('boom') }));
 }
 
 const isShown = (el: Element): boolean => {
@@ -568,5 +581,120 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
     fire('keyup', 'Digit1', pressAt + 5, { key: '!', shiftKey: true });
     pressAt += 100;
     expect(glyphs.glyph('Digit1'), 'a Shift-held character is ignored').toBe('1');
+  });
+
+  it('a synthetic keydown with no code or key does not throw out of the listener and raises no error', async () => {
+    // WRONG IMPL KILLED: a learnKey (or table lookup) that dereferences `e.code` / `e.key` as a
+    // string: a plain `new Event('keydown')` (an extension, a test driver) throws out of the
+    // page's key listener, which reaches the window `error` event and the error overlay.
+    await bootReady();
+    server(1000);
+    let pageErrors = 0;
+    window.addEventListener('error', () => {
+      pageErrors += 1;
+    });
+    expect(errorOverlayShown(), 'precondition: no error is showing').toBe(false);
+    expect(() => window.dispatchEvent(new Event('keydown'))).not.toThrow();
+    expect(() => window.dispatchEvent(new Event('keydown', { cancelable: true }))).not.toThrow();
+    expect(pageErrors, 'the listener raised no page error').toBe(0);
+    expect(errorOverlayShown(), 'and the error overlay stays hidden').toBe(false);
+    expect(stackNames(), 'and nothing happened').toEqual(['world']);
+    // Control: the harness does see a page error.
+    raiseErrorOverlay();
+    expect(pageErrors, 'control: a raised error is counted').toBe(1);
+    expect(errorOverlayShown(), 'control: and shows the overlay').toBe(true);
+  });
+
+  it('F8 cleared does not dismiss the error overlay and is not consumed; with the default table F8 dismisses it', async () => {
+    // WRONG IMPL KILLED: an F8 matched by its literal code ahead of the live table (a cleared F8
+    // still dismisses and is prevented), and a table-routed F8 that never fires (the control).
+    // Raising the overlay is practical here (an `error` event on the window shows it), so the real
+    // dismissal is observed rather than only `defaultPrevented`.
+    const cases: ReadonlyArray<readonly [string, BootOptions, boolean]> = [
+      ['default table', {}, true],
+      ['F8 cleared', { stored: storedTable((raw) => (raw.accels.F8 = [])) }, false],
+    ];
+    for (const [label, o, dismisses] of cases) {
+      teardown();
+      await bootReady(o);
+      server(1000);
+      raiseErrorOverlay();
+      expect(errorOverlayShown(), `${label}: precondition: the overlay is visible`).toBe(true);
+      const f8 = press('F8');
+      expect(f8.defaultPrevented, `${label}: F8 consumed iff it dismissed`).toBe(dismisses);
+      expect(errorOverlayShown(), `${label}: overlay visible after F8`).toBe(!dismisses);
+    }
+  });
+
+  it('a remapped F8 dismisses the error overlay on its new key only while it is visible, and the old F8 key does nothing', async () => {
+    // WRONG IMPL KILLED: F8 matched by literal code (the old key still dismisses, the new one is
+    // dead), a remapped F8 that is prevented while the overlay is hidden (the key swallowed for
+    // nothing), and one that never dismisses.
+    await bootReady({ stored: storedTable((raw) => (raw.accels.F8 = ['KeyZ'])) });
+    server(1000);
+    const hidden = press('KeyZ');
+    expect(hidden.defaultPrevented, 'KeyZ with no overlay is not consumed').toBe(false);
+    raiseErrorOverlay();
+    expect(errorOverlayShown()).toBe(true);
+    const old = press('F8');
+    expect(old.defaultPrevented, 'the old F8 key is free').toBe(false);
+    expect(errorOverlayShown(), 'the old F8 key dismisses nothing').toBe(true);
+    const z = press('KeyZ');
+    expect(z.defaultPrevented, 'KeyZ dismisses and is consumed').toBe(true);
+    expect(errorOverlayShown()).toBe(false);
+  });
+
+  it('a printable key bound to F9 is typed, not taken, in a text field inside the game screen; the default F9 key in that field still downloads', async () => {
+    // WRONG IMPL KILLED: an F9 branch placed ahead of the field-ownership test (a player typing the
+    // letter they bound to F9 into the Name field downloads a bug bundle and loses the letter), and
+    // one that over-corrects and stops the function key F9 from working inside a field (the old
+    // behaviour: a bug report can be taken from any screen).
+    await bootReady({ stored: storedTable((raw) => (raw.accels.F9 = ['KeyX'])) });
+    const typed = recordDownloads();
+    server(1000);
+    press('KeyN');
+    expect(stackNames(), 'precondition: the Name screen is open').toEqual([
+      'world',
+      'menuView',
+      'renameView',
+    ]);
+    const input = byId('rename-input') as HTMLInputElement;
+    input.focus();
+    expect(document.activeElement, 'precondition: the Name field has focus').toBe(input);
+    const x = press('KeyX', { key: 'x' }, input);
+    expect(x.defaultPrevented, 'the typed letter is left to the field').toBe(false);
+    expect(typed.urls, 'no bug bundle is downloaded for a typed letter').toHaveLength(0);
+    expect(typed.clicks).toHaveLength(0);
+
+    // The default table: F9 itself, in the same field, still downloads.
+    teardown();
+    await bootReady();
+    const live = recordDownloads();
+    server(1000);
+    press('KeyN');
+    const field = byId('rename-input') as HTMLInputElement;
+    field.focus();
+    expect(document.activeElement, 'precondition: the Name field has focus').toBe(field);
+    const f9 = press('F9', { key: 'F9' }, field);
+    expect(f9.defaultPrevented, 'F9 is consumed inside a field').toBe(true);
+    expect(live.urls, 'and still downloads the bundle').toHaveLength(1);
+  });
+
+  it('a keydown with focus outside the game screen still teaches the glyph (learning runs before every early return)', async () => {
+    // WRONG IMPL KILLED: a learnKey placed after the focus-outside-the-game-screen early return (a
+    // player who clicked the page chrome and then pressed keys never teaches the keycaps), or after
+    // the session gate or the chord return.
+    await bootReady();
+    server(1000);
+    const glyphs = await import('./input/glyphs');
+    expect(glyphs.glyph('KeyQ'), 'precondition: derived from the code').toBe('Q');
+    const outside = document.createElement('input');
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'precondition: focus is outside the game screen').toBe(outside);
+    expect(byId('game-screen').contains(outside), 'precondition: the field is outside').toBe(false);
+    const e = press('KeyQ', { key: 'a' }, outside);
+    expect(e.defaultPrevented, 'the page left the key to the browser').toBe(false);
+    expect(glyphs.glyph('KeyQ'), 'the key was still learned').toBe('A');
   });
 });

@@ -11,7 +11,7 @@
  * defaults, so the round-trip properties are driven by sequences of those two operations.
  */
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   type ControlsRow,
   captureKey,
@@ -20,6 +20,7 @@ import {
   type Slot,
 } from '../ui/controlsModel';
 import {
+  browserStorage,
   CONTROLS_STORAGE_KEY,
   loadBindings,
   parseBindings,
@@ -442,6 +443,54 @@ describe('bindingStore (ctl-12)', () => {
     expect(c.buttons.X).toEqual(['KeyI']);
     expect(c.accels.I).toEqual(['KeyO']);
     expectSane(c);
+  });
+
+  it('stored entries are claimed before defaults fill invalid or missing ones: a default never steals a code a stored entry holds', () => {
+    // WRONG IMPL KILLED: a single in-order walk where Up's invalid entry is defaulted to
+    // [KeyW, ArrowUp] first and Select's stored KeyW is then dropped (the player's stored choice
+    // loses to a default), a result that resets the whole table instead, and a default that keeps
+    // the code the stored entry took (KeyW twice).
+    const b = parseBindings({ v: 1, buttons: { Up: 5, Select: ['KeyW'] }, accels: {} });
+    expect(b.buttons.Select).toEqual(['KeyW']);
+    expect(b.buttons.Up, 'Up is its default minus the stored claim').toEqual(['ArrowUp']);
+    expect(b).toEqual({
+      buttons: { ...DEFAULT_BINDINGS.buttons, Up: ['ArrowUp'], Select: ['KeyW'] },
+      accels: DEFAULT_BINDINGS.accels,
+    });
+    expectSane(b);
+
+    // The unchanged rule: A stores KeyF, Y (missing) loses its default KeyF and is empty.
+    const c = parseBindings({ v: 1, buttons: { A: ['KeyF'] } });
+    expect(c.buttons.A).toEqual(['KeyF']);
+    expect(c.buttons.Y).toEqual([]);
+    expect(c.accels).toEqual(DEFAULT_BINDINGS.accels);
+    expectSane(c);
+  });
+
+  it('browserStorage returns window.localStorage, or null when reading it throws', () => {
+    // WRONG IMPL KILLED: a bare `window.localStorage` return (the SecurityError of a
+    // storage-denied browser escapes at boot and the page never starts), and a null that is
+    // returned even when storage is readable.
+    const live = memoryStorage();
+    vi.stubGlobal('window', { localStorage: live });
+    try {
+      expect(browserStorage()).toBe(live);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const denied = {};
+    Object.defineProperty(denied, 'localStorage', {
+      get: () => {
+        throw new Error('SecurityError');
+      },
+    });
+    vi.stubGlobal('window', denied);
+    try {
+      expect(() => browserStorage()).not.toThrow();
+      expect(browserStorage()).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('a protected button left with no code by duplicate dropping resets the whole table to the defaults', () => {

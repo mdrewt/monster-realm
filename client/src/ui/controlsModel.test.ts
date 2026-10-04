@@ -441,6 +441,41 @@ describe('controlsModel (ctl-12)', () => {
     expect(text).not.toContain('KeyF');
   });
 
+  it('a same-row swap names its row once, both keycaps, and still starts "Swapped:"', () => {
+    // WRONG IMPL KILLED: a line built as "{a} is now {x}, {b} is now {y}" that repeats the row
+    // label when both slots belong to one row ("Select is now /, Select is now R"), one that names
+    // only one keycap, and one that loses the fixed prefix on this path.
+    learnKey('KeyR', PHI); // the layout types a distinctive letter on KeyR
+    const o = captureKey(DEFAULT_BINDINGS, { row: btn('Select'), slot: 0 }, press('Slash'));
+    const s = swapped(o);
+    expect(s.other, 'the swap partner is the same row').toEqual({ row: btn('Select'), slot: 1 });
+    const text = outcomeText(o);
+    expect(text.startsWith('Swapped:'), text).toBe(true);
+    const label = rowLabel(btn('Select'));
+    expect(text.split(label).length - 1, `"${label}" appears exactly once in: ${text}`).toBe(1);
+    expect(text).toContain(glyph('Slash'));
+    expect(text).toContain(PHI.toUpperCase());
+    expect(text).not.toContain('KeyR');
+  });
+
+  it('isBindableCode is total: undefined, null and non-strings are not bindable, and a capture with no code is refused as reserved', () => {
+    // WRONG IMPL KILLED: a regex test on `undefined` (it stringifies to "undefined", which matches
+    // the pattern and binds the string "undefined"), a typeof-free length check that throws, and a
+    // capture of a synthetic event (no code) that binds or throws.
+    expect(isBindableCode(undefined as never)).toBe(false);
+    expect(isBindableCode(null as never)).toBe(false);
+    expect(isBindableCode(5 as never)).toBe(false);
+    expect(isBindableCode({} as never)).toBe(false);
+    expect(isBindableCode('KeyK'), 'control: a real code is bindable').toBe(true);
+    expect(
+      captureKey(
+        DEFAULT_BINDINGS,
+        { row: btn('B'), slot: 0 },
+        { code: undefined as never, key: 'x' },
+      ),
+    ).toEqual({ kind: 'refused', reason: 'reserved' });
+  });
+
   it('refusal and bound lines are non-empty, and the reserved and protected reasons differ', () => {
     // WRONG IMPL KILLED: a silent refusal (the player presses a key and nothing says why), and one
     // reason text reused for both refusals.
