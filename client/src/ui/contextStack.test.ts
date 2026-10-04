@@ -24,6 +24,7 @@ import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { VButton } from '../input/buttons';
 import {
+  acceleratorsDenied,
   type BaseFrame,
   baseFor,
   battleButton,
@@ -2598,5 +2599,160 @@ describe('context stack: the one Social frame (ctl-8s, CTL8S.3)', () => {
     const quiet = reconcile(deepFrozen(stackOf(WORLD, SOCIAL)), serverView(undefined, false));
     expect(quiet.stack, 'control: nothing arrives, Social stays').toEqual(stackOf(WORLD, SOCIAL));
     expect(quiet.commands).toEqual([]);
+  });
+});
+
+// ==========================================================================================
+// ctl-11a: accelerators are denied over server-owned frames, text entries and prompts (CTL11A.2)
+// ==========================================================================================
+//
+// `acceleratorsDenied(stack)` is true exactly when the TOP frame is a text entry, a prompt, or a
+// screen whose owner is the server (the dialogue and the battle screen). The world base, a battle
+// base, a frame beneath the top and every player-owned screen (the menu included) never deny.
+//
+// The server-owned set is a HARD-CODED literal, never read from SCREEN_POLICY.
+
+/** The two frame ids the server owns. HARD-CODED. */
+const SERVER_OWNED: readonly FrameId[] = ['dialogueView', 'battleView'];
+
+describe('context stack: the accelerator denial (ctl-11a, CTL11A.2)', () => {
+  it('CTL11A-2-DENY-PREDICATE: only a top frame that is a text entry, a prompt or a server-owned screen (the dialogue, the battle screen) denies accelerators; both bases, a bare stack, every player screen (stamped or not) and any frame beneath the top do not; the stack is not mutated', () => {
+    // WRONG IMPL KILLED: a predicate that denies the dialogue only (a typed J in the Name field would
+    // open the Journal), one that reads every `drop` frame as server-owned (the menu, the box and
+    // Social would deny their own accelerators and the one-key replace would die), one that forgets
+    // the battle outcome screen (the player is told to press A, not J), a textEntry or prompt that
+    // is let through, a denial keyed to ANY frame in the stack (a dialogue suspended under a menu
+    // over a battle would lock every accelerator for good), one keyed to the base (a battle base
+    // would deny at the bare battle), one that reads the frame's `kind` screen but ignores its id
+    // (every screen denies), a stamped screen (overBattle) that reads differently from an
+    // unstamped one, a Social frame treated as server-owned, and a predicate that mutates its input
+    // or answers a truthy non-boolean.
+    expect(SERVER_OWNED, 'ANTI-VACUITY: two server-owned frame ids').toHaveLength(2);
+
+    // Both bases, bare: never denied.
+    for (const base of [WORLD, battle('7'), battle('42')]) {
+      expect(acceleratorsDenied(deepFrozen(stackOf(base))), `bare ${base.kind}`).toBe(false);
+    }
+
+    // Every frame id as the top screen, over both bases, plain and stamped: denied iff server-owned.
+    let screens = 0;
+    for (const id of FRAME_IDS) {
+      const want = SERVER_OWNED.includes(id);
+      expect(acceleratorsDenied(deepFrozen(stackOf(WORLD, screen(id)))), `world / ${id}`).toBe(
+        want,
+      );
+      expect(
+        acceleratorsDenied(deepFrozen(stackOf(battle('7'), screen(id)))),
+        `battle / ${id}`,
+      ).toBe(want);
+      expect(
+        acceleratorsDenied(deepFrozen(stackOf(battle('7'), stamped(id, '7')))),
+        `stamped over a battle / ${id}`,
+      ).toBe(want);
+      expect(
+        acceleratorsDenied(deepFrozen(stackOf(WORLD, screen('menuView'), screen(id)))),
+        `over the menu / ${id}`,
+      ).toBe(want);
+      screens += 4;
+    }
+    expect(screens, 'ANTI-VACUITY: every frame id over four shapes').toBe(FRAME_IDS.length * 4);
+    expect(
+      FRAME_IDS.filter((id) => acceleratorsDenied(deepFrozen(stackOf(WORLD, screen(id))))),
+      'exactly the dialogue and the battle screen deny',
+    ).toEqual(FRAME_IDS.filter((id) => SERVER_OWNED.includes(id)));
+
+    // A text entry or a prompt on top denies, whichever frame it belongs to and whatever the base.
+    for (const id of FRAME_IDS) {
+      for (const base of [WORLD, battle('7')]) {
+        expect(
+          acceleratorsDenied(deepFrozen(stackOf(base, textEntry(id)))),
+          `${base.kind} / textEntry(${id})`,
+        ).toBe(true);
+        expect(
+          acceleratorsDenied(deepFrozen(stackOf(base, prompt(id)))),
+          `${base.kind} / prompt(${id})`,
+        ).toBe(true);
+        expect(
+          acceleratorsDenied(deepFrozen(stackOf(base, screen(id), textEntry(id)))),
+          `${base.kind} / screen(${id}) under its own textEntry`,
+        ).toBe(true);
+        expect(
+          acceleratorsDenied(deepFrozen(stackOf(base, screen('menuView'), prompt(id)))),
+          `${base.kind} / menu under prompt(${id})`,
+        ).toBe(true);
+      }
+    }
+
+    // Only the TOP frame decides.
+    const beneath: ReadonlyArray<{
+      readonly name: string;
+      readonly stack: Stack;
+      readonly deny: boolean;
+    }> = [
+      {
+        name: 'a dialogue suspended under a stamped menu over a battle',
+        stack: stackOf(battle('7'), screen('dialogueView'), stamped('menuView', '7')),
+        deny: false,
+      },
+      {
+        name: 'the battle outcome under the menu',
+        stack: stackOf(WORLD, screen('battleView'), screen('menuView')),
+        deny: false,
+      },
+      {
+        name: 'a text entry under a player screen',
+        stack: stackOf(WORLD, textEntry(RENAME), screen('helpView')),
+        deny: false,
+      },
+      {
+        name: 'a prompt under a player screen',
+        stack: stackOf(WORLD, screen(PVP), prompt(PVP), screen('menuView')),
+        deny: false,
+      },
+      {
+        name: 'a player screen under a dialogue',
+        stack: stackOf(battle('7'), screen('menuView'), screen('dialogueView')),
+        deny: true,
+      },
+      {
+        name: 'a player screen under a prompt under nothing else',
+        stack: stackOf(WORLD, screen(BOX), prompt(PVP)),
+        deny: true,
+      },
+      {
+        name: 'two player screens under a text entry',
+        stack: stackOf(WORLD, screen('menuView'), screen(BOX), textEntry(BOX)),
+        deny: true,
+      },
+    ];
+    for (const row of beneath) {
+      expect(acceleratorsDenied(deepFrozen(row.stack)), row.name).toBe(row.deny);
+    }
+
+    // Property: the answer is the top frame's kind-and-owner rule, whatever sits beneath it.
+    const frameArb: fc.Arbitrary<UpperFrame> = fc.oneof(
+      fc.constantFrom(...FRAME_IDS).map(screen),
+      fc.constantFrom(...FRAME_IDS).map(prompt),
+      fc.constantFrom(...FRAME_IDS).map(textEntry),
+      fc.constantFrom(...FRAME_IDS).map((id) => stamped(id, '7')),
+    );
+    const baseArb: fc.Arbitrary<BaseFrame> = fc.constantFrom(WORLD, battle('1'), battle('7'));
+    let denials = 0;
+    let passes = 0;
+    fc.assert(
+      fc.property(baseArb, fc.array(frameArb, { maxLength: 6 }), (base, frames) => {
+        const top = frames.at(-1);
+        const expected =
+          top !== undefined &&
+          (top.kind !== 'screen' || SERVER_OWNED.includes((top as { id: FrameId }).id));
+        const got = acceleratorsDenied(deepFrozen(stackOf(base, ...frames)));
+        expect(got).toBe(expected);
+        if (expected) denials += 1;
+        else passes += 1;
+      }),
+      { numRuns: 400 },
+    );
+    expect(denials, 'ANTI-VACUITY: many generated stacks denied').toBeGreaterThan(50);
+    expect(passes, 'ANTI-VACUITY: many generated stacks passed').toBeGreaterThan(50);
   });
 });
