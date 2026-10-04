@@ -78,7 +78,12 @@ const CODE_SHAPE = /^[A-Za-z0-9]{1,32}$/;
 /** Whether `code` may be bound: a code-shaped name the browser does not own. `Unidentified` (an
  *  IME or virtual key) is never a binding, so no unknown key can press a button. */
 export function isBindableCode(code: string): boolean {
-  return CODE_SHAPE.test(code) && code !== 'Unidentified' && !RESERVED_CODES.includes(code);
+  return (
+    typeof code === 'string' &&
+    CODE_SHAPE.test(code) &&
+    code !== 'Unidentified' &&
+    !RESERVED_CODES.includes(code)
+  );
 }
 
 /** The virtual button `code` is bound to, or undefined when it is unbound (or an accelerator). */

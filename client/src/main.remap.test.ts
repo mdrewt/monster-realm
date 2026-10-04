@@ -644,11 +644,9 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
     expect(errorOverlayShown()).toBe(false);
   });
 
-  it('a printable key bound to F9 is typed, not taken, in a text field inside the game screen; the default F9 key in that field still downloads', async () => {
+  it('a printable key bound to F9 is typed, not taken, in a text field inside the game screen; the default F9 key in that field is unchanged (left to the field)', async () => {
     // WRONG IMPL KILLED: an F9 branch placed ahead of the field-ownership test (a player typing the
-    // letter they bound to F9 into the Name field downloads a bug bundle and loses the letter), and
-    // one that over-corrects and stops the function key F9 from working inside a field (the old
-    // behaviour: a bug report can be taken from any screen).
+    // letter they bound to F9 into the Name field downloads a bug bundle and loses the letter).
     await bootReady({ stored: storedTable((raw) => (raw.accels.F9 = ['KeyX'])) });
     const typed = recordDownloads();
     server(1000);
@@ -666,7 +664,10 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
     expect(typed.urls, 'no bug bundle is downloaded for a typed letter').toHaveLength(0);
     expect(typed.clicks).toHaveLength(0);
 
-    // The default table: F9 itself, in the same field, still downloads.
+    // The unchanged baseline: with the default table, F9 in the focused Name field is not
+    // prevented and downloads nothing. That is the rename view's own shield (it stops the key in
+    // the bubble phase, so it never reaches the window listener), unchanged by ctl-12. The default
+    // F9 at the world is covered by the "F9 with the default table still downloads" test.
     teardown();
     await bootReady();
     const live = recordDownloads();
@@ -676,8 +677,9 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
     field.focus();
     expect(document.activeElement, 'precondition: the Name field has focus').toBe(field);
     const f9 = press('F9', { key: 'F9' }, field);
-    expect(f9.defaultPrevented, 'F9 is consumed inside a field').toBe(true);
-    expect(live.urls, 'and still downloads the bundle').toHaveLength(1);
+    expect(f9.defaultPrevented, 'F9 in the Name field is left to the field').toBe(false);
+    expect(live.urls, 'and downloads nothing').toHaveLength(0);
+    expect(live.clicks).toHaveLength(0);
   });
 
   it('a keydown with focus outside the game screen still teaches the glyph (learning runs before every early return)', async () => {
@@ -696,5 +698,34 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
     const e = press('KeyQ', { key: 'a' }, outside);
     expect(e.defaultPrevented, 'the page left the key to the browser').toBe(false);
     expect(glyphs.glyph('KeyQ'), 'the key was still learned').toBe('A');
+  });
+
+  it('with Start and F8 traded, Escape in the focused Name field stops typing and does not dismiss the error overlay', async () => {
+    // WRONG IMPL KILLED: an F8 decision made through the live table AHEAD of the typing-mode rule
+    // (CTL6B.5), so that Escape, now the F8 key, dismisses the error overlay (and returns before
+    // the field is released) instead of stopping typing: focus would stay in the field. Escape is
+    // routed in the capture phase, so it reaches main.ts despite the rename field's shield.
+    const stored = storedTable((raw) => {
+      raw.buttons.Start = ['F8', 'KeyM'];
+      raw.accels.F8 = ['Escape'];
+    });
+    await bootReady({ stored });
+    server(1000);
+    press('KeyN');
+    expect(stackNames(), 'precondition: the Name screen is open').toEqual([
+      'world',
+      'menuView',
+      'renameView',
+    ]);
+    const input = byId('rename-input') as HTMLInputElement;
+    input.focus();
+    expect(document.activeElement, 'precondition: the Name field has focus').toBe(input);
+    raiseErrorOverlay();
+    expect(errorOverlayShown(), 'precondition: F8 has an overlay to dismiss').toBe(true);
+
+    press('Escape', { key: 'Escape' }, input);
+    expect(document.activeElement, 'typing stopped: focus left the field').not.toBe(input);
+    expect(stackNames().at(-1), 'the Name screen is still open').toBe('renameView');
+    expect(errorOverlayShown(), 'the error overlay was not dismissed by that Escape').toBe(true);
   });
 });

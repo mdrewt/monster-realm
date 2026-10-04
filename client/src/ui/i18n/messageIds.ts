@@ -80,6 +80,7 @@ export type MessageId =
   | 'controls.bound'
   | 'controls.swapped'
   | 'controls.swappedUnbound'
+  | 'controls.swappedSlots'
   | 'chrome.help.title'
   | 'chrome.rename.submit'
   | 'chrome.tradePropose.submit'
@@ -409,6 +410,11 @@ export interface MessageParams {
     readonly label: string;
     readonly otherKey: string;
     readonly otherLabel: string;
+  };
+  readonly 'controls.swappedSlots': {
+    readonly key: string;
+    readonly otherKey: string;
+    readonly label: string;
   };
   readonly 'controls.swappedUnbound': {
     readonly key: string;

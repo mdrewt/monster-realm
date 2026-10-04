@@ -353,6 +353,10 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { key: 'F', label: 'Confirm (A)', otherKey: 'K', otherLabel: 'Info (Y)' },
     { key: 'Q', label: 'Bag', otherKey: 'I', otherLabel: 'Jump (X)' },
   ],
+  'controls.swappedSlots': [
+    { key: 'Z', otherKey: 'W', label: 'Up' },
+    { key: 'N', otherKey: 'M', label: 'Bag' },
+  ],
   'controls.swappedUnbound': [
     { key: 'F', label: 'Confirm (A)', otherLabel: 'Info (Y)' },
     { key: 'Q', label: 'Bag', otherLabel: 'Jump (X)' },
@@ -731,8 +735,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'interact.verb.trade': 'Trade',
   'interact.verb.challenge': 'Challenge',
   // ctl-12 (named intentional change): +38 plain keys — the named keycaps (input/glyphs.ts) and the
-  // Options › Controls row labels and feedback lines (ui/controlsModel.ts); +4 parameterised ones in
-  // SAMPLE_PARAMS = 335 keys.
+  // Options › Controls row labels and feedback lines (ui/controlsModel.ts); +5 parameterised ones in
+  // SAMPLE_PARAMS = 336 keys.
   'key.numpadEnter': 'Num Enter',
   'key.backspace': '\u232b',
   'key.space': 'Space',
@@ -1224,6 +1228,12 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { key: 'Q', label: 'Bag', otherKey: 'I', otherLabel: 'Jump (X)' },
     outputB: 'Swapped: Q is now Bag, I is now Jump (X)',
   },
+  'controls.swappedSlots': {
+    inputA: { key: 'Z', otherKey: 'W', label: 'Up' },
+    outputA: 'Swapped: Z and W on Up',
+    inputB: { key: 'N', otherKey: 'M', label: 'Bag' },
+    outputB: 'Swapped: N and M on Bag',
+  },
   'controls.swappedUnbound': {
     inputA: { key: 'F', label: 'Confirm (A)', otherLabel: 'Info (Y)' },
     outputA: 'Swapped: F is now Confirm (A), Info (Y) has no key',
@@ -1232,7 +1242,7 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 335-key roster (ctl-12: +42 `key.*` / `controls.*` keys over the 293-key roster below;
+/** The full 336-key roster (ctl-12: +43 `key.*` / `controls.*` keys over the 293-key roster below;
  *  ctl-10b: -`pvp.players.{none,heading}` +`interact.verb.{trade,challenge}`
  *  +`interact.confirm.challenge` over the 292-key roster below;
  *  ctl-10a: -`box.heal` +`interact.{chip,choose,entry,healer}`
@@ -1316,7 +1326,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-12 335-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-12 336-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1405,12 +1415,12 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 335 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 336 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (335 keys since ctl-12; was 293 since ctl-10b).
+    // (a) roster is exactly the EXPECTED_KEYS roster (336 keys since ctl-12; was 293 since ctl-10b).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ctl-12 roster is 335 keys').toHaveLength(335);
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ctl-12 roster is 336 keys').toHaveLength(336);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(

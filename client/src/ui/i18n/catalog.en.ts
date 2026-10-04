@@ -203,6 +203,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // ui/controlsModel.ts
   'controls.swappedUnbound': (p) =>
     `Swapped: ${p.key} is now ${p.label}, ${p.otherLabel} has no key`,
+  // @desc: Feedback line in Options › Controls when a row's Primary and Alt keys traded places;
+  // {key}/{otherKey} are keycaps, {label} the row name. ui/controlsModel.ts
+  'controls.swappedSlots': (p) => `Swapped: ${p.key} and ${p.otherKey} on ${p.label}`,
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
   // index.html:94 (literal removed from index.html; resolved in HelpView show())
   'chrome.help.title': 'Controls & Goals',

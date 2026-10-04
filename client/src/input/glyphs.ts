@@ -1,8 +1,9 @@
 // glyphs.ts — the keycap a player sees for a physical key (design §9, CTL12.5). Bindings are
 // positional `e.code`s, but a keycap must name what the player's layout types: AZERTY's `KeyW`
 // is a "Z". `glyph(code)` is synchronous: the character learned for that code from a real press
-// (or recorded when the key was captured), else the catalog name of a named key, else a name
-// derived from the code. `navigator.keyboard.getLayoutMap()` is deferred (design §17).
+// (main.ts teaches every keydown; a capture view hands its press to `learnKey` too), else the
+// catalog name of a named key, else a name derived from the code. `toUpperCase` is locale-blind,
+// so a Turkish dotless i reads "I": cosmetic only. `navigator.keyboard.getLayoutMap()` is deferred (design §17).
 import { t, tf } from '../ui/i18n/resolver';
 import type { KeyCode } from './bindings';
 
@@ -24,6 +25,8 @@ const learned = new Map<KeyCode, string>();
  *  `Enter`, `Dead` and `ß`, which uppercases to "SS", are not); numpad keys keep their own name,
  *  or `Numpad1` would read like `Digit1`. */
 export function learnKey(code: KeyCode, key: string, mods: KeyMods = {}): void {
+  // A synthetic `new Event('keydown')` (autofill, password managers) carries neither field.
+  if (typeof code !== 'string' || typeof key !== 'string') return;
   if (mods.shiftKey === true || mods.ctrlKey === true || mods.altKey === true) return;
   if (mods.metaKey === true || code.startsWith('Numpad')) return;
   const upper = key.toUpperCase();

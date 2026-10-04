@@ -195,13 +195,19 @@ export function outcomeText(outcome: CaptureOutcome): string {
     case 'bound':
       return t('controls.bound');
     case 'swapped': {
+      // The captured key now sits on the target row; `holderOf` always finds it there.
       const target = holderOf(outcome.bindings, outcome.code);
       const key = glyph(outcome.code);
       const label = target === undefined ? '' : rowLabel(target.row);
       const otherLabel = rowLabel(outcome.other.row);
-      return outcome.displaced === undefined
-        ? tf('controls.swappedUnbound', { key, label, otherLabel })
-        : tf('controls.swapped', { key, label, otherKey: glyph(outcome.displaced), otherLabel });
+      if (outcome.displaced === undefined) {
+        return tf('controls.swappedUnbound', { key, label, otherLabel });
+      }
+      const otherKey = glyph(outcome.displaced);
+      // A row whose Primary and Alt traded places: name the row once.
+      return target !== undefined && sameRow(target.row, outcome.other.row)
+        ? tf('controls.swappedSlots', { key, otherKey, label })
+        : tf('controls.swapped', { key, label, otherKey, otherLabel });
     }
   }
 }

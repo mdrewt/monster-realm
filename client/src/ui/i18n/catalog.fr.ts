@@ -202,7 +202,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'controls.accel.dismissError': 'Fermer l’erreur',
   // @desc: Line shown in Options › Controls while a slot waits for a key press; {label} is the row
   // name (e.g. Confirm (A)). ui/controlsModel.ts
-  'controls.capture.prompt': (p) => `Appuyez sur une touche pour ${p.label}…`,
+  'controls.capture.prompt': (p) => `Appuyez sur une touche pour : ${p.label}…`,
   // @desc: Feedback line in Options › Controls when the pressed key is reserved (Tab, F5, F11, F12,
   // a modifier or a Ctrl/Alt/Meta chord). One sentence. ui/controlsModel.ts
   'controls.refused.reserved':
@@ -227,6 +227,9 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // ui/controlsModel.ts
   'controls.swappedUnbound': (p) =>
     `Échangé : ${p.key} est maintenant ${p.label}, ${p.otherLabel} n’a plus de touche`,
+  // @desc: Feedback line in Options › Controls when a row's Primary and Alt keys traded places;
+  // {key}/{otherKey} are keycaps, {label} the row name. ui/controlsModel.ts
+  'controls.swappedSlots': (p) => `Échangé : ${p.key} et ${p.otherKey} pour ${p.label}`,
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
   // index.html:94 (resolved in HelpView show())
   'chrome.help.title': 'Commandes et objectifs',

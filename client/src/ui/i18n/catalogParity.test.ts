@@ -756,7 +756,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // would either miss every file (bindings always empty) or over-match unrelated `t(` calls
     // (e.g. `total(`) — the exact 27-file roster below (21r-b added ui/careAction.ts and
     // ui/sessionModel.ts; 21r-b2 adds ui/claimModel.ts and ui/privacyBanner.ts; ctl-5 adds
-    // ui/menuModel.ts; ctl-6c adds ui/screens/mainMenuScreen.ts; ctl-12 adds input/glyphs.ts and ui/controlsModel.ts) is only reachable via real binding resolution.
+    // ui/menuModel.ts; ctl-6c adds ui/screens/mainMenuScreen.ts; ctl-12 adds input/glyphs.ts and
+    // ui/controlsModel.ts) is only reachable via real binding resolution.
     expect(i18nRoster, `resolver-importing roster: ${JSON.stringify(i18nRoster)}`).toEqual([
       'input/glyphs.ts',
       'main.ts',

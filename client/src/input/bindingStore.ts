@@ -43,8 +43,10 @@ export function parseBindings(raw: unknown): Bindings {
   if (own(raw, 'v') !== 1) return DEFAULT_BINDINGS;
   const storedButtons = own(raw, 'buttons');
   const storedAccels = own(raw, 'accels');
-  // One namespace (design §9): walking buttons then accelerators, a code an earlier entry claimed
-  // is dropped from a later one.
+  // One namespace (design §9): the stored entries claim their codes first, buttons then
+  // accelerators, so a code an earlier entry claimed is dropped from a later one; only then do
+  // the defaults fill the invalid or missing entries, minus every code already claimed. A bad
+  // entry therefore never costs a good one its key.
   const claimed = new Set<KeyCode>();
   const claim = (codes: readonly KeyCode[]): readonly KeyCode[] =>
     Object.freeze(
@@ -55,14 +57,17 @@ export function parseBindings(raw: unknown): Bindings {
       }),
     );
   const buttons = {} as Record<VButton, readonly KeyCode[]>;
+  const accels = {} as Record<Accel, readonly KeyCode[]>;
   for (const b of VBUTTONS) {
     const list = codeList(own(storedButtons, b), !PROTECTED_BUTTONS.includes(b));
-    buttons[b] = claim(list ?? DEFAULT_BINDINGS.buttons[b]);
+    if (list !== undefined) buttons[b] = claim(list);
   }
-  const accels = {} as Record<Accel, readonly KeyCode[]>;
   for (const a of ACCELS) {
-    accels[a] = claim(codeList(own(storedAccels, a), true) ?? DEFAULT_BINDINGS.accels[a]);
+    const list = codeList(own(storedAccels, a), true);
+    if (list !== undefined) accels[a] = claim(list);
   }
+  for (const b of VBUTTONS) buttons[b] ??= claim(DEFAULT_BINDINGS.buttons[b]);
+  for (const a of ACCELS) accels[a] ??= claim(DEFAULT_BINDINGS.accels[a]);
   if (PROTECTED_BUTTONS.some((b) => buttons[b].length === 0)) return DEFAULT_BINDINGS;
   return Object.freeze({ buttons: Object.freeze(buttons), accels: Object.freeze(accels) });
 }
