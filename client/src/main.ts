@@ -810,7 +810,7 @@ function applyClaim(event: ClaimEvent): void {
   // The AUTHORITATIVE claim-code veto lives in connection.ts's onApplied (G18); here we only mirror
   // the local storage effect so a declined / dead code stops vetoing the next connection's join.
   if (step.effect === 'delete-code-and-permit-join') claimCode.clear(globalThis, URI, DB);
-  if (step.effect === 'join') conn?.live()?.reducers.joinGame({ name: 'Player' });
+  if (step.effect === 'join') conn?.join();
   renderClaim();
 }
 
@@ -1917,8 +1917,8 @@ window.addEventListener('unhandledrejection', (e) => pushError('unhandledrejecti
  * settles (no-settle-on-drop) — the dead-button black hole. Otherwise it attaches
  * the rejection route: reduceErrorMessage passes SenderError reasons through and
  * never leaks InternalError detail. Documented exceptions (A10): enqueueMove
- * (movement — silent prediction repair in sendIntent, M2 §3), joinGame (handled in
- * connection.ts, A4), and the overlay-feedback actions (care, shop buy/sell, trade,
+ * (movement — silent prediction repair in sendIntent, M2 §3), the join (conn.join() — its
+ * failures surface from connection.ts, A4), and the overlay-feedback actions (care, shop buy/sell, trade,
  * rename, trade-propose — routed through performCare in main(), A6).
  * ALWAYS resolves (frozen, dead handle, reported rejection) — views holding an
  * in-flight lock `return` it so the lock lives exactly until the call settles.

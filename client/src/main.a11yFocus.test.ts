@@ -146,6 +146,7 @@ vi.mock('./net/connection', () => {
     sessionState: () => H.session as 'hidden',
     startSignIn: () => undefined,
     reconnectNow: () => undefined,
+    join: () => undefined,
   };
   return {
     connect: (opts: ConnectionOptions): Connection => {

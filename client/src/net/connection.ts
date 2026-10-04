@@ -144,6 +144,21 @@ export interface Connection {
   startSignIn(): void;
   /** Fire a fresh connect attempt for the session 'retry' affordance. */
   reconnectNow(): void;
+  /** joinGame on the live link, failures surfaced through onError('join', …). A no-op while
+   *  frozen or unbuilt: a call on a dead conn never settles, and the next onApplied joins (the
+   *  claim flow only asks once it has cleared the code that vetoes that join). */
+  join(): void;
+}
+
+/** R-rb-128-E1: re-join only on the PendingDeletion -> Active edge. An undefined `prev` (initial
+ *  snapshot, post-reset) is onApplied's join. The claim-code veto is onApplied's; it scopes it to
+ *  account builds, and only account builds ever carry an account row. */
+export function shouldRejoinAfterAccountChange(
+  prevStatus: string | undefined,
+  nextStatus: string,
+  claimCodeUnconsumed: boolean,
+): boolean {
+  return prevStatus === 'PendingDeletion' && nextStatus === 'Active' && !claimCodeUnconsumed;
 }
 
 export function connect(opts: ConnectionOptions): Connection {
@@ -653,14 +668,28 @@ export function connect(opts: ConnectionOptions): Connection {
     // half of an update pair and would wipe the live account slot — and no server path ever truly
     // deletes an account row. store.reset() on disconnect is the SOLE clearing path (mirrors the
     // my_wallet TRIPWIRE above), which is why store.ts ships upsertAccount with no removeAccount.
-    conn.db.my_account.onInsert((_ctx, row) => {
-      store.upsertAccount(accountRowToStore(row as unknown as SdkAccountRow));
+    // R-rb-128-E1: a mid-grace drop deleted the player row and join_game refused while
+    // PendingDeletion, so the PendingDeletion -> Active edge (cancel_account_deletion) re-joins.
+    // `prev` is read BEFORE the upsert; a still-connected player gets the benign "already joined".
+    // A superseded socket neither writes the account slot nor joins: its write would consume the
+    // edge the current build still has to see. Joins go out on the current, already-wrapped handle.
+    const ingestAccount = (row: SdkAccountRow): void => {
+      const live = current;
+      if (live === undefined || rawConnectionOf.get(live) !== conn) return;
+      const prev = store.ownAccount(identity)?.status;
+      const next = accountRowToStore(row);
+      store.upsertAccount(next);
       batcher.schedule();
-    });
-    conn.db.my_account.onUpdate((_ctx, _old, row) => {
-      store.upsertAccount(accountRowToStore(row as unknown as SdkAccountRow));
-      batcher.schedule();
-    });
+      if (next.identity !== identity) return;
+      const codeUnconsumed = claimCode.hasUnconsumed(globalThis, opts.uri, opts.db);
+      if (shouldRejoinAfterAccountChange(prev, next.status, codeUnconsumed)) {
+        attemptJoin(live, name, opts.onError);
+      }
+    };
+    conn.db.my_account.onInsert((_ctx, row) => ingestAccount(row as unknown as SdkAccountRow));
+    conn.db.my_account.onUpdate((_ctx, _old, row) =>
+      ingestAccount(row as unknown as SdkAccountRow),
+    );
 
     // `my_export_bundle` is a PK-less Vec-VIEW — the my_monster_pub /
     // my_battle shape, NOT the my_account/my_wallet one. The SDK never fires onUpdate for it, so
@@ -687,8 +716,8 @@ export function connect(opts: ConnectionOptions): Connection {
     conn.db.myPendingEvolutionNotices.onDelete(() => batcher.schedule());
   }
 
-  /** Issue the connection-internal joinGame through the WRAPPED connection — the
-   *  ONE outbound call that bypasses the get conn() accessor. Extracted ONCE:
+  /** Issue joinGame through a WRAPPED connection — the ONE join path (onApplied, the
+   *  cancel-deletion re-join, and join() for the claim flow). Extracted ONCE:
    *  devLog builds a fresh Proxy per call, so an inline re-wrap double-logs every reducer call. */
   function attemptJoin(
     conn: DbConnection,
@@ -1054,5 +1083,8 @@ export function connect(opts: ConnectionOptions): Connection {
     sessionState: () => sessionMode,
     startSignIn,
     reconnectNow,
+    join: () => {
+      if (current !== undefined && !linkFrozen(state)) attemptJoin(current, name, opts.onError);
+    },
   };
 }
