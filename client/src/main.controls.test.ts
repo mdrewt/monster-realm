@@ -2273,7 +2273,8 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     // refusal is the dispatch-wide policy, not a guard on one path", on another command kind
     // through another real view's callback: the Trade view's Accept (`respondTrade`, refused by the
     // same policy). The refusal of `care` itself is the policy row `COMMAND_BATTLE_POLICY.care`
-    // (contextStack.ts); R-ctl-8f-CTL8F.2's end state has no card, so no live path reaches it.
+    // (contextStack.ts), driven through the raising card's onCare in main.dispatch.test.ts while the
+    // card still exists (R-ctl-11b-RAISINGCARDS).
     // WRONG IMPL KILLED: a refusal narrowed to the one command the dialogue issues (`command.kind
     // === 'advanceDialogue'`: respondTrade would still reach its reducer at the battle base); a
     // refusal wired into the dialogue-choice click delegation instead of `dispatch` (a view callback
