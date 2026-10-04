@@ -5,25 +5,35 @@
  * (`SCREEN_ADAPTERS.tradeProposeView` is whatever ui/screens/index.ts ships: no stand-in is swapped
  * in).
  *
- * - CTL8E-2-BOOT-O-OPENS: the legacy O opens the overlay on the Target step with the five-step header
- *   painted and focus on the select after the overlay helper's deferred focus; A on the select is
- *   heard by the converted adapter (the legacy adapter ignores it); Start closes it and a reopen
- *   starts over on Target.
+ * ctl-10b (named intentional changes): O is retired and the wizard opens only FACE TO FACE, so every
+ * open below is `openFaceToFace` (another online player with a character row on the faced tile, the
+ * stubbed wasm rule naming him; A opens the picker, A on its first row, Trade, opens the wizard).
+ * The wizard then starts on Offer with the target pre-selected and its select DISABLED, and the
+ * header has four steps (no Target). The boot Target-step cases are retired (Target is proved by
+ * the pure screen suite alone): CTL8E-2-BOOT-O-OPENS is replaced by CTL8E-2-BOOT-FACE-OPENS, the
+ * wizard cases lose their `pickTarget` / Target -> Offer steps, "LB on Offer goes back to Target"
+ * becomes "LB on Offer stays on Offer", and "Escape on the select" becomes "Escape on the Offer list".
+ *
+ * - CTL8E-2-BOOT-FACE-OPENS: the face-to-face open shows the overlay on Offer with the four-step
+ *   header painted, the faced player pre-selected and the select locked, and focus on the Offer list
+ *   at once (before the overlay helper's deferred focus, which then leaves it); A on the Offer list
+ *   is heard by the converted adapter (it ticks the first monster); Start closes it and a reopen
+ *   starts over on Offer with a clean draft.
  * - CTL8E-1-BOOT-WIZARD: with another player and two own monsters in the store, the whole wizard by
- *   keys: pick the target (set natively on the select), A to Offer, Down + A ticks the SECOND monster,
+ *   keys: A (the Offer cursor opens on the first monster), Down + A ticks the SECOND monster,
  *   RB to Coins (focus in the offer field), type 25, A to Ask, type 7, A to Review (Yes marked,
  *   prompt, summary of the parsed draft), A on Yes sends exactly ONE proposeTrade with that
  *   counterparty, [that monster], 25n and 7n; the next A (the cursor is on No) steps back and sends
- *   nothing; B steps back from Review; LB on Offer goes back to Target.
- * - CTL8E-1-BOOT-ESCAPE (B5): Escape on the select after the defer closes the overlay (it used to be
- *   dead), and Escape in the offer field keeps the typed text, keeps the overlay open and does not
- *   advance the step; the next Escape closes it.
+ *   nothing; B steps back from Review; LB on Offer stays on Offer.
+ * - CTL8E-1-BOOT-ESCAPE (B5): Escape on the Offer list closes the overlay, and Escape in the offer
+ *   field keeps the typed text, keeps the overlay open and does not advance the step; the next
+ *   Escape closes it.
  *
  * EVERY key is dispatched ON `document.activeElement`, bubbling, like a real browser: the router
  * ignores keys a focused SELECT / INPUT owns (input/router.ts `ownership`), and the views' own
  * keydown shields run before the window listeners. A key dispatched straight at the window would
- * skip both and pass vacuously. The deferred initial focus (one macrotask after KeyO, from
- * ui/overlayA11y.ts) is flushed before the first key.
+ * skip both and pass vacuously. The overlay helper's deferred initial focus (one macrotask after
+ * the open, from ui/overlayA11y.ts) is flushed before the first key.
  *
  * Harness: socialScreen.boot.test.ts's (the real shell mounted, main.ts imported fresh per boot, only
  * the wasm pkg, the connection, telemetry and the world renderer stubbed) with a recording connection:
@@ -44,9 +54,13 @@ const H = vi.hoisted(() => ({
   connectOpts: null as ConnectionOptions | null,
   /** Every reducer call but enqueueMove, oldest first, with the exact argument object. */
   calls: [] as Array<{ name: string; args: unknown }>,
+  /** ctl-10b: what the stubbed wasm `interact_candidates_coded` answers: `seedStore` installs a
+   *  rule naming the faced player. Reset by every boot. */
+  interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
 }));
 
 // wasm pkg: every name main.ts imports.
+// ctl-10b: named fixture change: the interact export is a stub driven by `H.interact`.
 vi.mock('../../../../client-wasm/pkg/client_wasm.js', () => {
   const SIDE = 8;
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
@@ -58,6 +72,7 @@ vi.mock('../../../../client-wasm/pkg/client_wasm.js', () => {
     party_slot_none: () => 255,
     max_trade_monsters_per_side: () => 37,
     talk_range: () => 2,
+    interact_candidates_coded: (...args: unknown[]) => H.interact(...args),
     predict_move: () => ({}),
     predict_tick: () => ({}),
     set_active_zone: () => undefined,
@@ -201,6 +216,7 @@ let i18n: typeof import('../i18n/resolver');
 async function bootReady(): Promise<void> {
   H.connectOpts = null;
   H.calls = [];
+  H.interact = () => [];
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   recorded = [];
@@ -295,15 +311,36 @@ function ownMonster(monsterId: bigint, nickname: string): StoreMonsterPub {
 const FIRST_MONSTER = 31n;
 const SECOND_MONSTER = 32n;
 
-/** Another player and two own monsters, delivered in one batch. */
+const OTHER_ENTITY = 99n;
+
+/** Another online player standing on the faced tile (3, 6) of the own character at (2, 6) facing
+ *  East, the stubbed wasm rule naming him, and two own monsters, delivered in one batch. */
 function seedStore(): void {
+  H.interact = (...args: unknown[]) => {
+    const entities = args[4] as ReadonlyArray<{ kind: string; id: string }>;
+    const at = entities.findIndex((e) => e.kind === 'player' && e.id === OTHER_ENTITY.toString());
+    return at === -1 ? [] : [at];
+  };
   opts.store.upsertPlayer({
     identity: OTHER,
-    entityId: 99n,
+    entityId: OTHER_ENTITY,
     name: OTHER_NAME,
     online: true,
     lastInputSeq: 0n,
   });
+  opts.store.upsertCharacter(
+    {
+      entityId: OTHER_ENTITY,
+      zoneId: 0,
+      tileX: 3,
+      tileY: 6,
+      facing: 'West',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [] as WasmMoveInput[],
+    },
+    1000,
+  );
   opts.store.upsertMonster(ownMonster(FIRST_MONSTER, 'Kip'));
   opts.store.upsertMonster(ownMonster(SECOND_MONSTER, 'Sprig'));
   server(1000);
@@ -411,11 +448,12 @@ function hexOf(identity: unknown): string {
   return typeof withHex.toHexString === 'function' ? withHex.toHexString() : String(identity);
 }
 
-/** Pick the counterparty the way a user does: set the select natively, then fire its change. */
-function pickTarget(identity: string): void {
-  const select = selectEl();
-  select.value = identity;
-  select.dispatchEvent(new Event('change', { bubbles: true }));
+/** The one way in (ctl-10b): A at the world on the faced player opens the picker (Trade, Challenge),
+ *  A on its first row (Trade) opens the wizard on Offer, pre-selected on that player. Two presses
+ *  at `at` and `at + 20`. */
+function openFaceToFace(at: number): void {
+  press('Enter', at);
+  press('Enter', at + 20);
 }
 
 describe('the trade-propose wizard booted through main.ts over the real view and adapter table (ctl-8e)', {
@@ -423,49 +461,68 @@ describe('the trade-propose wizard booted through main.ts over the real view and
 }, () => {
   afterEach(teardownBoot);
 
-  it('CTL8E-2-BOOT-O-OPENS: the legacy O opens the overlay on Target with the five-step header painted (Target current) and focus on the select after the deferred focus; A on the select is heard by the converted adapter and moves to Offer with focus on the monsters; Escape (Start) closes it and a reopen starts over on Target', async () => {
-    // WRONG IMPL KILLED: the legacy adapter on the frame (A on the select does nothing: the wizard
-    // is a plain form again); an opening header that is missing, on the wrong step, or with a step
-    // name that is not the catalog's; a wizard that moves focus off the select on open (the
-    // S10-WIRE-FOCUS-IDENTITY pin, and the legacy Escape/Enter keys would start in the wrong
-    // place); a review row visible on Target; a reopen that resumes the last visit's step
-    // instead of starting over on Target; and an Escape that the select's shield swallows.
+  it('CTL8E-2-BOOT-FACE-OPENS: the face-to-face open (A, then A on Trade) shows the overlay on Offer with the four-step header painted (no Target, Offer current), the faced player pre-selected and the select disabled, and focus on the Offer list at once and after the deferred focus; A on the Offer list is heard by the converted adapter (it ticks the first monster); Escape (Start) closes it and a reopen starts over on Offer with a clean draft; O opens nothing', async () => {
+    // WRONG IMPL KILLED: the legacy adapter on the frame (A on the Offer list does nothing: the wizard
+    // is a plain form again); an opening header that still carries the Target step (the supplied
+    // target is ignored) or is on the wrong step, or with a step name that is not the catalog's; a
+    // select left enabled or not pre-selected on the faced player (a retarget by mouse or Tab, or a
+    // draft with no counterparty); an open that leaves focus on the world until the deferred timer
+    // (the Offer list must be seated first) or that moves it to the select; a review row visible
+    // on Offer; a reopen that resumes the last visit's step or draft; and an O that still opens it.
     await bootReady();
     seedStore();
     expect(proposeShown(), 'precondition: the overlay starts closed').toBe(false);
 
-    press('KeyO', 1010);
-    expect(proposeShown(), 'O opened the overlay').toBe(true);
+    press('KeyO', 1005);
+    expect(proposeShown(), 'O opens nothing any more').toBe(false);
+    expect(stackNames()).toEqual(['world']);
+
+    openFaceToFace(1010);
+    expect(proposeShown(), 'the face-to-face open showed the overlay').toBe(true);
     expect(stackNames()).toEqual(['world', 'tradeProposeView']);
+    expect(document.activeElement, 'focus is on the Offer list at once').toBe(monstersEl());
     await flush();
-    expect(document.activeElement, 'the deferred focus lands on the select').toBe(selectEl());
+    expect(document.activeElement, 'and the deferred focus leaves it there').toBe(monstersEl());
 
     const opened = header();
-    expect(opened.steps, 'all five steps, in order').toEqual([...STEPS]);
-    expect(opened.texts, 'their catalogued names').toEqual(STEPS.map(stepText));
-    expect(opened.current, 'opens on Target').toEqual(['target=step']);
-    expect(reviewShown(), 'no review question on Target').toBe(false);
+    expect(opened.steps, 'four steps, in order, no Target').toEqual([
+      'offer',
+      'coins',
+      'ask',
+      'review',
+    ]);
+    expect(opened.texts, 'their catalogued names').toEqual(
+      ['offer', 'coins', 'ask', 'review'].map((s) => stepText(s as Step)),
+    );
+    expect(opened.current, 'opens on Offer').toEqual(['offer=step']);
+    expect(reviewShown(), 'no review question on Offer').toBe(false);
+    expect(selectEl().value, 'the faced player is pre-selected').toBe(OTHER);
+    expect(selectEl().disabled, 'and the select is locked').toBe(true);
+    expect(cursorMonsters(), 'the cursor opens on the first monster').toEqual(['31']);
 
     press('Enter', 1100);
-    expect(currentStep(), 'the adapter heard A on the select').toEqual(['offer=step']);
-    expect(document.activeElement, 'the Offer step is the monsters').toBe(monstersEl());
+    expect(checkedMonsters(), 'the adapter heard A on the Offer list: it ticked the first').toEqual(
+      ['31'],
+    );
+    expect(currentStep(), 'A stays on Offer').toEqual(['offer=step']);
     expect(proposeShown(), 'A does not close the overlay').toBe(true);
 
     press('Escape', 1200);
     expect(proposeShown(), 'Escape (Start) closes it').toBe(false);
     expect(stackNames()).toEqual(['world']);
 
-    press('KeyO', 1300);
+    openFaceToFace(1300);
     await flush();
     expect(proposeShown(), 'reopened').toBe(true);
-    expect(currentStep(), 'starts over on Target').toEqual(['target=step']);
-    expect(document.activeElement, 'focus on the select again').toBe(selectEl());
-    press('Enter', 1400);
-    expect(currentStep(), 'a fresh A on Target, not a resumed Review').toEqual(['offer=step']);
+    expect(currentStep(), 'starts over on Offer').toEqual(['offer=step']);
+    expect(checkedMonsters(), 'with a clean draft').toEqual([]);
+    expect(selectEl().value, 'the faced player is pre-selected again').toBe(OTHER);
+    expect(selectEl().disabled, 'and the select is locked again').toBe(true);
+    expect(document.activeElement, 'focus on the Offer list again').toBe(monstersEl());
     expect(proposeCalls(), 'nothing was sent').toEqual([]);
   });
 
-  it('CTL8E-1-BOOT-WIZARD: by keys alone: pick the target, A to Offer (focus on the monsters, cursor on the first), Down + A ticks the SECOND monster only, RB to Coins (focus in the offer field), type 25, A to Ask (focus in the request field), type 7, A to Review (row shown, Yes marked, the prompt, a summary of the parsed draft), A on Yes sends exactly ONE proposeTrade for that counterparty, that monster, 25n and 7n; the next A (cursor on No) steps back to Ask and sends nothing; A to Review and B steps back to Ask; and after a reopen LB on Offer goes back to Target', async () => {
+  it('CTL8E-1-BOOT-WIZARD: by keys alone, opened face to face: Offer (focus on the monsters, cursor on the first), Down + A ticks the SECOND monster only, RB to Coins (focus in the offer field), type 25, A to Ask (focus in the request field), type 7, A to Review (row shown, Yes marked, the prompt, a summary of the parsed draft), A on Yes sends exactly ONE proposeTrade for the faced counterparty, that monster, 25n and 7n; the next A (cursor on No) steps back to Ask and sends nothing; A to Review and B steps back to Ask; and after a reopen LB on Offer stays on Offer (there is no Target step)', async () => {
     // WRONG IMPL KILLED: the legacy adapter (every key but Escape is inert: B5's red); a step
     // header that does not follow the adapter; focus that stays on the select (the D-pad and B
     // never reach the router from a form control: only a focus move onto a non-form element
@@ -477,7 +534,8 @@ describe('the trade-propose wizard booted through main.ts over the real view and
     // sends nothing, sends twice (a double-tap of Enter), sends before Review, or sends the
     // draft the screen remembers instead of the one on screen (wrong target, extra monster, coins
     // as numbers); a second Enter that re-sends; a B that does not step back from the focused
-    // review row; and an LB that does not page back to Target.
+    // review row; an LB that pages to a Target step that is not there; and a face-to-face open whose
+    // draft target is not the faced player (the review summary and the sent counterparty carry it).
     await bootReady();
     seedStore();
     let at = 1010;
@@ -486,9 +544,10 @@ describe('the trade-propose wizard booted through main.ts over the real view and
       at += 20;
     };
 
-    key('KeyO');
+    openFaceToFace(at);
+    at += 40;
     await flush();
-    expect(document.activeElement, 'precondition: the select has focus').toBe(selectEl());
+    expect(document.activeElement, 'precondition: the Offer list has focus').toBe(monstersEl());
     expect(
       Array.from(monstersEl().querySelectorAll('input')).map((b) =>
         b.getAttribute('data-monster-id'),
@@ -496,11 +555,9 @@ describe('the trade-propose wizard booted through main.ts over the real view and
       'precondition: both own monsters are offerable',
     ).toEqual([FIRST_MONSTER.toString(), SECOND_MONSTER.toString()]);
 
-    // --- Target -> Offer ---------------------------------------------------------------------
-    pickTarget(OTHER);
-    expect(selectEl().value, 'precondition: the player chose Zed').toBe(OTHER);
-    key('Enter');
-    expect(currentStep(), 'A on Target').toEqual(['offer=step']);
+    // --- the open lands on Offer with the faced player chosen -----------------------------------
+    expect(selectEl().value, 'precondition: the faced player (Zed) is pre-selected').toBe(OTHER);
+    expect(currentStep(), 'the open lands on Offer').toEqual(['offer=step']);
     expect(document.activeElement, 'Offer: focus on the monsters container').toBe(monstersEl());
     expect(cursorMonsters(), 'the cursor opens on the first monster').toEqual(['31']);
     expect(checkedMonsters(), 'nothing is ticked yet').toEqual([]);
@@ -582,23 +639,25 @@ describe('the trade-propose wizard booted through main.ts over the real view and
     expect(document.activeElement, 'to the request field').toBe(requestEl());
     expect(proposeCalls().length, 'stepping back sends nothing').toBe(1);
 
-    // --- a reopen starts clean, and LB on Offer pages back to Target ---------------------------
+    // --- a reopen starts clean, and LB on Offer has no Target step to page back to ---------------
     key('Escape'); // stops typing: the overlay and the text stay
     expect(proposeShown(), 'the first Escape only stops typing').toBe(true);
     key('Escape'); // Start
     expect(proposeShown(), 'the second Escape closes it').toBe(false);
-    key('KeyO');
+    openFaceToFace(at);
+    at += 40;
     await flush();
-    expect(currentStep(), 'reopened on Target').toEqual(['target=step']);
+    expect(currentStep(), 'reopened on Offer').toEqual(['offer=step']);
     expect(checkedMonsters(), 'the closed draft is gone').toEqual([]);
     expect(offerEl().value).toBe('');
-    pickTarget(OTHER);
-    key('Enter');
-    expect(currentStep()).toEqual(['offer=step']);
+    expect(selectEl().value, 'the faced player is pre-selected again').toBe(OTHER);
     expect(document.activeElement).toBe(monstersEl());
     key('PageUp');
-    expect(currentStep(), 'LB on Offer goes back to Target').toEqual(['target=step']);
-    expect(document.activeElement, 'with focus on the select').toBe(selectEl());
+    expect(currentStep(), 'LB on Offer stays on Offer: there is no Target step').toEqual([
+      'offer=step',
+    ]);
+    expect(document.activeElement, 'with focus still on the Offer list').toBe(monstersEl());
+    expect(proposeShown(), 'and the overlay stays open').toBe(true);
     expect(proposeCalls().length, 'still exactly one offer was sent in all').toBe(1);
   });
 
@@ -614,10 +673,9 @@ describe('the trade-propose wizard booted through main.ts over the real view and
       press(code, at);
       at += 20;
     };
-    key('KeyO');
+    openFaceToFace(at); // lands on Offer, cursor on the first monster, the faced player chosen
+    at += 40;
     await flush();
-    pickTarget(OTHER);
-    key('Enter'); // Offer, cursor on the first monster
     key('Enter'); // ticks it
     expect(checkedMonsters(), 'precondition: the first monster is ticked').toEqual(['31']);
     key('PageDown');
@@ -672,9 +730,9 @@ describe('the trade-propose wizard booted through main.ts over the real view and
     expect(args.initiatorCurrency).toBe(25n);
   });
 
-  it('CTL8E-1-BOOT-WIZARD: closing from Review with Escape and reopening shows no review row: the reopened wizard is on Target with the Review question hidden', async () => {
+  it('CTL8E-1-BOOT-WIZARD: closing from Review with Escape and reopening face to face shows no review row: the reopened wizard is on Offer with the Review question hidden', async () => {
     // WRONG IMPL KILLED: a close that leaves the runtime review row displayed (the reopened wizard
-    // shows "Send this offer? Yes / No" under the Target step), and a reopen that resumes Review.
+    // shows "Send this offer? Yes / No" under the Offer step), and a reopen that resumes Review.
     await bootReady();
     seedStore();
     let at = 1010;
@@ -682,10 +740,9 @@ describe('the trade-propose wizard booted through main.ts over the real view and
       press(code, at);
       at += 20;
     };
-    key('KeyO');
+    openFaceToFace(at); // Offer
+    at += 40;
     await flush();
-    pickTarget(OTHER);
-    key('Enter'); // Offer
     key('PageDown'); // Coins
     key('Enter'); // Ask
     key('Enter'); // Review
@@ -694,16 +751,19 @@ describe('the trade-propose wizard booted through main.ts over the real view and
 
     key('Escape'); // focus is on the review row, not a field: Start
     expect(proposeShown(), 'Escape closed the overlay').toBe(false);
-    key('KeyO');
+    openFaceToFace(at);
+    at += 40;
     await flush();
     expect(proposeShown(), 'reopened').toBe(true);
-    expect(currentStep(), 'on Target').toEqual(['target=step']);
+    expect(currentStep(), 'on Offer').toEqual(['offer=step']);
     expect(reviewShown(), 'with the review row hidden').toBe(false);
     expect(proposeCalls(), 'nothing was sent').toEqual([]);
   });
 
-  it('CTL8E-1-BOOT-ESCAPE: Escape on the select after the deferred focus closes the overlay (B5: it was dead), and in a second run Escape in the offer field keeps the typed text, keeps the overlay open, does not advance the step and sends nothing, with the next Escape closing it', async () => {
-    // WRONG IMPL KILLED: a select or field shield that swallows Escape (the overlay opens and the
+  it('CTL8E-1-BOOT-ESCAPE: Escape on the Offer list after the deferred focus closes the overlay (B5: it was dead), and in a second run Escape in the offer field keeps the typed text, keeps the overlay open, does not advance the step and sends nothing, with the next Escape closing it', async () => {
+    // INTENTIONAL CHANGE (ctl-10b): run 1 was "Escape on the select"; the face-to-face open locks the
+    // select and focuses the Offer list, so the case is retargeted to the Offer list.
+    // WRONG IMPL KILLED: a list or field shield that swallows Escape (the overlay opens and the
     // player is trapped: B5); an Escape in the field that closes the overlay and drops the draft
     // (CTL6B.5 says it stops typing and keeps the text); one that wipes the field; one that
     // advances or steps back the wizard (an Escape reaching the adapter as A or B); one that
@@ -717,20 +777,21 @@ describe('the trade-propose wizard booted through main.ts over the real view and
     };
 
     // --- run 1: Escape on the freshly opened wizard ----------------------------------------------
-    key('KeyO');
+    openFaceToFace(at);
+    at += 40;
     await flush();
-    expect(proposeShown(), 'precondition: O opened the wizard').toBe(true);
-    expect(document.activeElement, 'precondition: the select has focus').toBe(selectEl());
+    expect(proposeShown(), 'precondition: the face-to-face open showed the wizard').toBe(true);
+    expect(document.activeElement, 'precondition: the Offer list has focus').toBe(monstersEl());
     key('Escape');
-    expect(proposeShown(), 'Escape on the select closes the overlay').toBe(false);
+    expect(proposeShown(), 'Escape on the Offer list closes the overlay').toBe(false);
     expect(stackNames()).toEqual(['world']);
 
     // --- run 2: Escape in the offer field -----------------------------------------------------
-    key('KeyO');
+    openFaceToFace(at);
+    at += 40;
     await flush();
     expect(proposeShown(), 'precondition: reopened').toBe(true);
-    pickTarget(OTHER);
-    key('Enter');
+    expect(currentStep(), 'precondition: on Offer').toEqual(['offer=step']);
     key('PageDown');
     expect(currentStep(), 'precondition: on Coins').toEqual(['coins=step']);
     expect(document.activeElement, 'precondition: typing in the offer field').toBe(offerEl());

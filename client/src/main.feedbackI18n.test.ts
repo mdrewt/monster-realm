@@ -70,8 +70,10 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { WasmMoveInput } from './convert/convert';
 import type { ConnectionOptions } from './net/connection';
 import type {
+  StoreCharacter,
   StoreInventory,
   StoreItemRow,
   StorePlayer,
@@ -110,6 +112,8 @@ const H = vi.hoisted(() => {
     connectOpts: null as unknown,
     /** Mutated per test AFTER boot, read live by the mocked Connection's `linkFrozen()`. */
     linkFrozen: false,
+    /** ctl-10b: what the stubbed wasm `interact_candidates_coded` answers. Reset per test. */
+    interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
     buy,
     sell,
     respondTrade,
@@ -146,7 +150,9 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
     max_trade_monsters_per_side: () => 64,
     talk_range: () => 2,
     // ctl-10a: named fixture change — the new interact export
-    interact_candidates_coded: () => [],
+    // ctl-10b: named fixture change — driven by `H.interact` (the trade-propose test installs a rule
+    // naming the faced player; every other case answers no candidate, as before)
+    interact_candidates_coded: (...args: unknown[]) => H.interact(...args),
     predict_move: () => ({}),
     predict_tick: () => ({}),
     set_active_zone: () => undefined,
@@ -271,6 +277,7 @@ interface StoreHandle {
   upsertWallet(row: StoreWallet): void;
   upsertTradeOffer(row: StoreTradeOffer): void;
   upsertPlayer(row: StorePlayer): void;
+  upsertCharacter(row: StoreCharacter, nowMs: number): void;
   reconcileInventoryFromView(rows: readonly StoreInventory[]): void;
   flushBatch(): void;
 }
@@ -378,6 +385,13 @@ function focusCanvasAndPressKey(code: string): void {
   window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true }));
 }
 
+/** ctl-10b: a keydown and its keyup at the world (the canvas focused), as a player's tap. */
+function tapWorldKey(code: string): void {
+  document.querySelector('canvas')?.focus();
+  window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true }));
+  window.dispatchEvent(new KeyboardEvent('keyup', { code, bubbles: true, cancelable: true }));
+}
+
 /** Seeds ONE trade offer involving `H.identity` (initiator or counterparty per `opts`), then
  *  opens the REAL trade overlay via the REAL `KeyU` shortcut (`main.ts`'s `openSocial('trades')`,
  *  which shows the trade panel of the Social frame, gated by
@@ -452,6 +466,7 @@ beforeEach(() => {
   recorded = [];
   H.connectOpts = null;
   H.linkFrozen = false;
+  H.interact = () => [];
   H.buy.mockClear();
   H.sell.mockClear();
   H.respondTrade.mockClear();
@@ -612,52 +627,47 @@ const TRADE_CASES: readonly TradeCase[] = [
 const TRADE_FR_KEYS = TRADE_CASES.map((c) => c.frKey);
 
 describe('main.ts trade feedback routes through the i18n catalog, per-action (slice 21r-b red-team S1)', () => {
-  it.each(
-    TRADE_CASES,
-  )('★★ BITES: under fr, trade $action shows CATALOG_FR[$frKey] — never a sibling trade key — and fires the right reducer with the right args', async ({
-    action,
-    viewerIsInitiator,
-    status,
-    frKey,
-    enLiteral,
-  }) => {
-    await bootMain('/?locale=fr');
-    openTradeWithOffer({ viewerIsInitiator, status });
-    H.linkFrozen = false;
+  it.each(TRADE_CASES)(
+    '★★ BITES: under fr, trade $action shows CATALOG_FR[$frKey] — never a sibling trade key — and fires the right reducer with the right args',
+    async ({ action, viewerIsInitiator, status, frKey, enLiteral }) => {
+      await bootMain('/?locale=fr');
+      openTradeWithOffer({ viewerIsInitiator, status });
+      H.linkFrozen = false;
 
-    findTradeActionButton(action).click();
-    await waitForNonEmpty(tradeFeedbackText);
+      findTradeActionButton(action).click();
+      await waitForNonEmpty(tradeFeedbackText);
 
-    expect(tradeFeedbackText(), `${action} must show its OWN fr key`).toBe(FR[frKey]);
-    expect(tradeFeedbackText()).not.toBe(enLiteral);
-    for (const otherKey of TRADE_FR_KEYS) {
-      if (otherKey === frKey) continue;
-      expect(
-        tradeFeedbackText(),
-        `${action} must not show a SIBLING trade key's fr value (${otherKey}) — kills an ` +
-          'accepted<->rejected / completed<->cancelled key swap',
-      ).not.toBe(FR[otherKey]);
-    }
+      expect(tradeFeedbackText(), `${action} must show its OWN fr key`).toBe(FR[frKey]);
+      expect(tradeFeedbackText()).not.toBe(enLiteral);
+      for (const otherKey of TRADE_FR_KEYS) {
+        if (otherKey === frKey) continue;
+        expect(
+          tradeFeedbackText(),
+          `${action} must not show a SIBLING trade key's fr value (${otherKey}) — kills an ` +
+            'accepted<->rejected / completed<->cancelled key swap',
+        ).not.toBe(FR[otherKey]);
+      }
 
-    switch (action) {
-      case 'accept':
-        expect(H.respondTrade).toHaveBeenCalledOnce();
-        expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: true });
-        break;
-      case 'reject':
-        expect(H.respondTrade).toHaveBeenCalledOnce();
-        expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: false });
-        break;
-      case 'confirm':
-        expect(H.confirmTrade).toHaveBeenCalledOnce();
-        expect(H.confirmTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID });
-        break;
-      case 'cancel':
-        expect(H.cancelTrade).toHaveBeenCalledOnce();
-        expect(H.cancelTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID });
-        break;
-    }
-  });
+      switch (action) {
+        case 'accept':
+          expect(H.respondTrade).toHaveBeenCalledOnce();
+          expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: true });
+          break;
+        case 'reject':
+          expect(H.respondTrade).toHaveBeenCalledOnce();
+          expect(H.respondTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID, accepted: false });
+          break;
+        case 'confirm':
+          expect(H.confirmTrade).toHaveBeenCalledOnce();
+          expect(H.confirmTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID });
+          break;
+        case 'cancel':
+          expect(H.cancelTrade).toHaveBeenCalledOnce();
+          expect(H.cancelTrade).toHaveBeenCalledWith({ tradeId: TRADE_ID });
+          break;
+      }
+    },
+  );
 
   it('★ BITES: under fr, a frozen link on trade Accept shows CATALOG_FR["chrome.feedback.disconnected"], not the hardcoded English literal (kills a non-shop raw-literal revert)', async () => {
     await bootMain('/?locale=fr');
@@ -705,6 +715,33 @@ describe('main.ts rename + trade-propose feedback routes through the i18n catalo
   it('★★ BITES: under fr, a successful trade-propose submit shows CATALOG_FR["tradePropose.feedback.sent"], not the hardcoded "Offer sent!"', async () => {
     await bootMain('/?locale=fr');
     const store = storeHandle();
+    // ctl-10b (named intentional change): O is retired. The wizard opens face to face: the own
+    // player at (1, 1) facing East, Bob online on the faced tile (2, 1), the stubbed wasm rule
+    // naming him; A opens the picker (Trade, Challenge), A on Trade opens the wizard on Offer with
+    // Bob pre-selected (the select is locked), so the old `target.value = OTHER` step is gone.
+    H.interact = (...args: unknown[]) => {
+      const entities = args[4] as ReadonlyArray<{ kind: string; id: string }>;
+      const at = entities.findIndex((e) => e.kind === 'player' && e.id === '1');
+      return at === -1 ? [] : [at];
+    };
+    const place = (entityId: bigint, tileX: number, tileY: number): StoreCharacter => ({
+      entityId,
+      zoneId: 0,
+      tileX,
+      tileY,
+      facing: 'East',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [] as WasmMoveInput[],
+    });
+    store.upsertPlayer({
+      identity: H.identity,
+      entityId: 7n,
+      name: 'P',
+      online: true,
+      lastInputSeq: 0n,
+    });
+    store.upsertCharacter(place(7n, 1, 1), 1000);
     store.upsertPlayer({
       identity: OTHER,
       entityId: 1n,
@@ -712,13 +749,14 @@ describe('main.ts rename + trade-propose feedback routes through the i18n catalo
       online: true,
       lastInputSeq: 0n,
     });
+    store.upsertCharacter(place(1n, 2, 1), 1000);
     store.flushBatch();
 
-    focusCanvasAndPressKey('KeyO');
+    tapWorldKey('Enter');
+    tapWorldKey('Enter');
 
     const target = document.getElementById('tradepropose-target') as HTMLSelectElement;
-    target.value = OTHER;
-    target.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(target.value, 'the faced player is pre-selected').toBe(OTHER);
     const offerCurrency = document.getElementById(
       'tradepropose-offer-currency',
     ) as HTMLInputElement;

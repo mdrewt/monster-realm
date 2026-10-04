@@ -7,7 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll } from './controls';
+import { closeAll, openFaceToFace } from './controls';
 
 // Ranked PvP forfeit e2e (RL-18)
 //
@@ -328,35 +328,14 @@ test.describe
       // would suppress the auto-show and leave B unable to accept).
       await closeAll(pageB);
 
-      // Step 3: A presses KeyP (opens pvp overlay), THEN polls for the challenge
-      // button with a player-identity that is NOT identityA (AM-6 — B's player-row
-      // subscription may lag; the list renders "No players online" until B arrives).
-      await pageA.keyboard.press('KeyP');
-
-      await pageA.waitForFunction(
-        (myIdentity: string) => {
-          const btn = document.querySelector(
-            '[data-testid="pvp-challenge-player-btn"]',
-          ) as HTMLElement | null;
-          if (!btn) return false;
-          return btn.getAttribute('data-player-identity') !== myIdentity;
-        },
-        identityA,
-        { timeout: 15_000 },
-      );
-
-      // Step 4: A clicks the challenge button → challenge_pvp reducer fires.
-      // Click the FIRST challenge button whose data-player-identity ≠ identityA.
-      // WHAT THIS KILLS: a UI that renders a challenge button with A's own identity
-      // (self-challenge), or that does not render any button at all.
-      await pageA.evaluate((myIdentity: string) => {
-        const buttons = Array.from(
-          document.querySelectorAll('[data-testid="pvp-challenge-player-btn"]'),
-        ) as HTMLElement[];
-        const btn = buttons.find((b) => b.getAttribute('data-player-identity') !== myIdentity);
-        if (!btn) throw new Error('RL-18: no challenge button found for a non-self player');
-        btn.click();
-      }, identityA);
+      // Steps 3 and 4 (INTENTIONAL CHANGE, ctl-10b CTL10B.1-2): the PvP overlay no longer lists
+      // players or offers a Challenge button, and O / P start nothing. A challenges B FACE TO
+      // FACE: it stands on B's tile (both joined at the spawn; the helper walks there when they
+      // stand apart), waits for the chip (AM-6 — B's player-row subscription may lag until B
+      // arrives), presses A, chooses `Challenge — Player` (every client joins as 'Player') and
+      // answers Yes at the confirm → challenge_pvp fires.
+      // WHAT THIS KILLS: a UI that offers a challenge to A itself (self-challenge), or none at all.
+      await openFaceToFace(pageA, 'Challenge', 'Player', pageB);
 
       // Step 5: B waits for pvp-accept-btn to appear (auto-show on incoming challenge;
       // requires !anyOverlayVisible — that is why B ran closeAll in step 2).

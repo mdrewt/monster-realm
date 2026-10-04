@@ -1126,6 +1126,76 @@ describe('★ tradeProposeView.ts source scan: no .innerHTML assignment with dat
 });
 
 // ===========================================================================================
+// ctl-10b (CTL10B.1): the wizard opened face to face carries its target.
+// ===========================================================================================
+
+describe('TradeProposeView ctl-10b: a pre-filled target (CTL10B.1)', () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it('CTL10B-1-VIEW-PREFILL: render(lists, target) pre-selects the target, DISABLES the select and paints a header with no Target step (and a paint keeps all three); render(lists) after it is enabled, on the placeholder, with the full five-step header; the pre-filled target is what a submit sends', async () => {
+    // WRONG IMPL KILLED: a render that ignores its second argument (the wizard would ask for a
+    // counterparty already chosen); one that pre-selects but leaves the select ENABLED (a mouse or
+    // Tab press retargets the trade to someone not faced: red-team #1); one that disables it but
+    // leaves the Target step in the header; a paint that rebuilds the select and drops the value or
+    // the lock; a lock that survives into the next unsupplied render (a dead, empty select); a
+    // render(lists) that keeps the previous target; and a pre-selected target that is not what
+    // submit sends.
+    mountTradeProposeOverlay();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = new TradeProposeView({ onSubmit, maxMonstersPerSide: 64 });
+
+    view.render(WIZ_LISTS, WIZ_BOB.identity);
+    expect(wizSelect().value, 'the target is pre-selected').toBe(WIZ_BOB.identity);
+    expect(wizSelect().disabled, 'the select is locked').toBe(true);
+    expect(headerSteps(), 'no Target step in the header').toEqual(proposeSteps(true));
+    expect(headerSteps()).not.toContain('target');
+
+    view.show();
+    view.paint(wizPaint({ steps: proposeSteps(true), step: 'offer' }));
+    expect(wizSelect().value, 'a paint keeps the target').toBe(WIZ_BOB.identity);
+    expect(wizSelect().disabled, 'a paint keeps the lock').toBe(true);
+    expect(headerSteps()).toEqual(proposeSteps(true));
+
+    // What is sent is the pre-filled target.
+    userCheck(12, true);
+    wizSubmit().click();
+    await flushPromises();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit.mock.calls[0]?.[0]).toEqual({
+      targetIdentity: WIZ_BOB.identity,
+      initiatorMonsterIds: [12n],
+      initiatorCurrency: 0n,
+      counterpartyCurrency: 0n,
+    });
+
+    // The next unsupplied render: enabled, placeholder, five steps.
+    view.render(WIZ_LISTS);
+    expect(wizSelect().disabled, 'an unsupplied render unlocks the select').toBe(false);
+    expect(wizSelect().value, 'and is back on the placeholder').toBe('');
+    expect(headerSteps()).toEqual(proposeSteps(false));
+
+    // hide() then an unsupplied render is unlocked too.
+    view.render(WIZ_LISTS, WIZ_ALICE.identity);
+    expect(wizSelect().value).toBe(WIZ_ALICE.identity);
+    view.hide();
+    view.render(WIZ_LISTS);
+    expect(wizSelect().disabled).toBe(false);
+    expect(wizSelect().value).toBe('');
+    expect(headerSteps()).toEqual(proposeSteps(false));
+
+    // A plain render(lists) on a fresh view is the legacy shape: enabled, placeholder.
+    mountTradeProposeOverlay();
+    const plain = new TradeProposeView(noop());
+    plain.render(WIZ_LISTS);
+    expect(wizSelect().disabled).toBe(false);
+    expect(wizSelect().value).toBe('');
+    expect(headerSteps()).toEqual(proposeSteps(false));
+  });
+});
+
+// ===========================================================================================
 // ctl-8e (CTL8E.1, defect B5): the trade-propose wizard's view.
 //
 // `paint(p)` is how the converted screen drives this view (screens/tradeProposeScreen.ts). The

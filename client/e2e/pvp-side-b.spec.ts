@@ -6,7 +6,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll } from './controls';
+import { closeAll, openFaceToFace } from './controls';
 
 // PvP side-B battle overlay, production path
 //
@@ -41,8 +41,9 @@ import { closeAll } from './controls';
 // audit needs re-deriving.
 //
 // ZERO USE OF THE DEV TEST HOOK: this spec drives BOTH players through the REAL
-// production DOM only — KeyP -> the challenge button -> the accept button -> the real
-// "Submit: <skill>" buttons. `__game()` is used ONLY for readiness and as a READ-ONLY
+// production DOM only — A on the other player -> the Challenge row -> Yes (ctl-10b: face to
+// face, no PvP-overlay Challenge button) -> the accept button -> the real "Submit: <skill>"
+// buttons. `__game()` is used ONLY for readiness and as a READ-ONLY
 // witness (identity, ongoingBattle.turnNumber/outcome) — never to drive gameplay. The
 // DEV multiplayer test hook the OTHER pvp e2e specs use to read/drive both sides at once
 // must NEVER appear here, in ANY form — not even split across a comment — because using
@@ -298,31 +299,12 @@ test.describe
       // the challenge, matching the ranked-forfeit.spec.ts placement exactly.
       await closeAll(pageB);
 
-      // A opens the PvP overlay and challenges B. Identity-attribute selection is
-      // MANDATORY, not stylistic: every client joins as name:'Player' and
-      // this scan runs on whatever the challenge list shows at click time — selecting by
-      // the `data-player-identity` attribute is robust regardless of the current display
-      // name, so it stays the selection method even though both players now have distinct
-      // rename labels by this point.
-      await pageA.keyboard.press('KeyP');
-      await pageA.waitForFunction(
-        (myIdentity: string) => {
-          const btn = document.querySelector(
-            '[data-testid="pvp-challenge-player-btn"]',
-          ) as HTMLElement | null;
-          return btn !== null && btn.getAttribute('data-player-identity') !== myIdentity;
-        },
-        identityA,
-        { timeout: 15_000 },
-      );
-      await pageA.evaluate((myIdentity: string) => {
-        const buttons = Array.from(
-          document.querySelectorAll('[data-testid="pvp-challenge-player-btn"]'),
-        ) as HTMLElement[];
-        const btn = buttons.find((b) => b.getAttribute('data-player-identity') !== myIdentity);
-        if (!btn) throw new Error('11r-b: no challenge button found for a non-self player');
-        btn.click();
-      }, identityA);
+      // INTENTIONAL CHANGE (ctl-10b, CTL10B.1-2): the PvP overlay no longer lists players or
+      // offers a per-player Challenge button, and O / P start nothing. A challenges B FACE TO
+      // FACE: A stands on B's tile (both joined at the spawn; the helper walks there when they
+      // stand apart), presses A, chooses `Challenge — <B's name>` (B's unique rename label, so
+      // the row is unambiguous) and answers Yes at the confirm (the default).
+      await openFaceToFace(pageA, 'Challenge', nameB, pageB);
 
       // B accepts through the real DOM button. `acceptedAt` is captured HERE (never
       // earlier) — the server's PVP_TURN_DEADLINE_MS clock starts at accept_challenge, so

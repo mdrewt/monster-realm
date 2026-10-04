@@ -13,8 +13,8 @@
  * listeners recorded and detached per test). Reducer spies return promises the test controls.
  * Table-driven tests boot a fresh app per site (`resetApp()` between rows) inside ONE `it`.
  *
- * OPENING: trade (KeyU), rename (KeyN), trade-propose (KeyO) and raising (KeyI) open through their
- * real shortcuts. Shop is the one documented short-circuit (a real open needs an NPC + dialogue
+ * OPENING: trade (KeyU), rename (KeyN) and raising (KeyI) open through their real shortcuts;
+ * trade-propose opens face to face (A at the world on a faced player, then A on Trade; ctl-10b). Shop is the one documented short-circuit (a real open needs an NPC + dialogue
  * round-trip): flip `#shop-overlay`'s display — the flag `ShopView.visible` reads — and flush a
  * store batch so the real listener renders the real Buy/Sell buttons.
  *
@@ -36,8 +36,10 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { WasmMoveInput } from './convert/convert';
 import type { ConnectionOptions } from './net/connection';
 import type {
+  StoreCharacter,
   StoreInventory,
   StoreItemRow,
   StoreMonsterPub,
@@ -73,6 +75,9 @@ const H = vi.hoisted(() => {
     connectOpts: null as unknown,
     /** Read LIVE by the mocked Connection's `linkFrozen()`; a test flips it AFTER opening a view. */
     linkFrozen: false,
+    /** ctl-10b: what the stubbed wasm `interact_candidates_coded` answers (the interaction RULE is
+     *  the stub; `openPropose` installs one naming the faced player). Reset by `setupApp`. */
+    interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
     buy,
     sell,
     respondTrade,
@@ -120,6 +125,9 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
     party_slot_none: () => 255,
     max_trade_monsters_per_side: () => 64,
     talk_range: () => 2,
+    // ctl-10b: named fixture change: the interact export is a stub driven by `H.interact` (the
+    // trade-propose wizard is now opened face to face, through A).
+    interact_candidates_coded: (...args: unknown[]) => H.interact(...args),
     predict_move: () => ({}),
     predict_tick: () => ({}),
     set_active_zone: () => undefined,
@@ -241,6 +249,7 @@ interface StoreHandle {
   upsertWallet(row: StoreWallet): void;
   upsertTradeOffer(row: StoreTradeOffer): void;
   upsertPlayer(row: StorePlayer): void;
+  upsertCharacter(row: StoreCharacter, nowMs: number): void;
   reconcileInventoryFromView(rows: readonly StoreInventory[]): void;
   reconcileMonstersFromView(rows: readonly StoreMonsterPub[]): void;
   flushBatch(): void;
@@ -273,6 +282,7 @@ function setupApp(): void {
   recorded = [];
   H.connectOpts = null;
   H.linkFrozen = false;
+  H.interact = () => [];
   // mockReset + a fresh default: a queued `...Once` impl from a failed row can never leak forward.
   for (const s of ALL_SPIES) {
     s.mockReset();
@@ -463,8 +473,45 @@ function openRename(): Activate {
   return () => clickFirst('#rename-submit', 'rename submit');
 }
 
+/** A keydown and its keyup at the world (the canvas focused), as a player's tap. */
+function tapWorldKey(code: string): void {
+  document.querySelector('canvas')?.focus();
+  window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true }));
+  window.dispatchEvent(new KeyboardEvent('keyup', { code, bubbles: true, cancelable: true }));
+}
+
+function placeCharacter(entityId: bigint, tileX: number, tileY: number): StoreCharacter {
+  return {
+    entityId,
+    zoneId: 0,
+    tileX,
+    tileY,
+    facing: 'East',
+    action: 'Idle',
+    moveStartedAtMs: 0n,
+    moveQueue: [] as WasmMoveInput[],
+  };
+}
+
 function openPropose(): Activate {
+  // ctl-10b (named intentional change): O is retired. The wizard opens face to face: the own player
+  // at (1, 1) facing East, Bob online on the faced tile (2, 1), the stubbed wasm rule naming him; A
+  // opens the picker (Trade, Challenge) and A on Trade opens the wizard on Offer with Bob
+  // pre-selected (the select is locked), so the old `target.value = OTHER` + change step is gone.
   const store = storeHandle();
+  H.interact = (...args: unknown[]) => {
+    const entities = args[4] as ReadonlyArray<{ kind: string; id: string }>;
+    const at = entities.findIndex((e) => e.kind === 'player' && e.id === '1');
+    return at === -1 ? [] : [at];
+  };
+  store.upsertPlayer({
+    identity: H.identity,
+    entityId: 7n,
+    name: 'P',
+    online: true,
+    lastInputSeq: 0n,
+  });
+  store.upsertCharacter(placeCharacter(7n, 1, 1), 1000);
   store.upsertPlayer({
     identity: OTHER,
     entityId: 1n,
@@ -472,12 +519,13 @@ function openPropose(): Activate {
     online: true,
     lastInputSeq: 0n,
   });
+  store.upsertCharacter(placeCharacter(1n, 2, 1), 1000);
   store.reconcileMonstersFromView([monster(5n, 255)]);
   store.flushBatch();
-  focusCanvasAndPressKey('KeyO');
+  tapWorldKey('Enter');
+  tapWorldKey('Enter');
   const target = document.getElementById('tradepropose-target') as HTMLSelectElement;
-  target.value = OTHER;
-  target.dispatchEvent(new Event('change', { bubbles: true }));
+  expect(target.value, 'the faced player is pre-selected').toBe(OTHER);
   const monsterBox = document.querySelector('#tradepropose-monsters input[type="checkbox"]');
   expect(monsterBox, 'the seeded monster must render as an offerable checkbox').not.toBeNull();
   (monsterBox as HTMLInputElement).checked = true;

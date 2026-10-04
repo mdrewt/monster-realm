@@ -185,6 +185,91 @@ describe('worldButton: Y (ctl-10a, CTL10A.2)', () => {
   });
 });
 
+const RIVAL_ID = 'aa'.repeat(32);
+
+/** An online player: Trade then Challenge, both carrying the identity. */
+const onlinePlayer = (
+  id: bigint,
+  actions: readonly ('trade' | 'challenge')[] = ['trade', 'challenge'],
+): InteractCandidate => ({
+  key: `player:${id}`,
+  kind: 'player',
+  name: `P${id}`,
+  actions: actions.map((kind) => ({ kind, playerIdentity: RIVAL_ID })),
+  anchorWorldX: 112,
+  anchorWorldY: 32,
+});
+
+describe('worldButton: a faced player (ctl-10b, CTL10B.1)', () => {
+  it('CTL10B-1-WORLD-PLAYER-PICKER: A over a lone online player (Trade + Challenge) runs nothing and opens the picker on Trade; with an npc beside it the picker lists the npc then both player rows', () => {
+    // WRONG IMPL KILLED: a world A that runs the first player action directly (a lone player would
+    // trade or challenge without asking which); one that counts candidates instead of entries
+    // (the two-entry player taken for a single); one that leaves A unhandled over a player (the
+    // slice); and a picker that drops either player row.
+    const lone = worldButton(null, [onlinePlayer(13n)], nav('A'));
+    expect(lone.result).toBe('consumed');
+    expect(lone.run, 'a choice runs nothing').toBeUndefined();
+    expect(sheetKeys(lone.sheet)).toEqual(['player:13|trade', 'player:13|challenge']);
+    expect(lone.sheet?.nav.item, 'the cursor starts on Trade').toBe('player:13|trade');
+    expect(lone.sheet?.confirm, 'no confirm until Challenge is chosen').toBeNull();
+
+    const withNpc = worldButton(null, [talkNpc(7n), onlinePlayer(13n)], nav('A'));
+    expect(withNpc.run).toBeUndefined();
+    expect(sheetKeys(withNpc.sheet)).toEqual([
+      'npc:7|talk',
+      'player:13|trade',
+      'player:13|challenge',
+    ]);
+
+    // A lone Trade (the player is busy: Challenge not offered) is a single entry: it runs.
+    const busy = worldButton(null, [onlinePlayer(13n, ['trade'] as const)], nav('A'));
+    expect(busy.result).toBe('consumed');
+    expect(busy.run, 'the only entry runs directly').toEqual({
+      kind: 'trade',
+      playerIdentity: RIVAL_ID,
+    });
+    expect(busy.sheet).toBeNull();
+
+    // Over the picker: Down to Challenge, A asks, A runs once.
+    const down = worldButton(lone.sheet, [onlinePlayer(13n)], nav('Down'));
+    const ask = worldButton(down.sheet, [onlinePlayer(13n)], nav('A'));
+    expect(ask.run, 'A on Challenge only asks').toBeUndefined();
+    expect(ask.result).toBe('consumed');
+    expect(ask.sheet?.confirm?.nav.item, 'on Yes').toBe('yes');
+    const yes = worldButton(ask.sheet, [onlinePlayer(13n)], nav('A'));
+    expect(yes.run).toEqual({ kind: 'challenge', playerIdentity: RIVAL_ID });
+    expect(yes.sheet).toBeNull();
+  });
+
+  it('CTL10B-1-WORLD-LONE-CHALLENGE: when the ONLY actionable row is a Challenge, A does not run it: the sheet opens directly in the Yes-default confirm; A on Yes then runs it once', () => {
+    // WRONG IMPL KILLED: the one-row fast path that runs whatever its single row is (a lone
+    // Challenge would be sent with no Yes/No); one that opens the sheet but on the rows (the
+    // player would see a one-row list, not the question); a confirm opened on No; and a confirm
+    // whose Yes does not run.
+    const only = onlinePlayer(13n, ['challenge'] as const);
+    const r = worldButton(null, [only], nav('A'));
+    expect(r.result).toBe('consumed');
+    expect(r.run, 'A never runs a Challenge').toBeUndefined();
+    expect(r.sheet, 'the sheet opens').not.toBeNull();
+    expect(r.sheet?.confirm, 'directly in the confirm').not.toBeNull();
+    expect(r.sheet?.confirm?.key).toBe('player:13|challenge');
+    expect(r.sheet?.confirm?.nav.item, 'Yes is the default').toBe('yes');
+
+    const yes = worldButton(r.sheet, [only], nav('A'));
+    expect(yes.run).toEqual({ kind: 'challenge', playerIdentity: RIVAL_ID });
+    expect(yes.sheet).toBeNull();
+    expect(yes.result).toBe('consumed');
+
+    // B in that confirm returns to the one-row list (the sheet stays open), a held A is ignored.
+    const back = worldButton(r.sheet, [only], nav('B'));
+    expect(back.run).toBeUndefined();
+    expect(back.sheet?.confirm).toBeNull();
+    const held = worldButton(r.sheet, [only], nav('A', true));
+    expect(held.run).toBeUndefined();
+    expect(held.sheet).toEqual(r.sheet);
+  });
+});
+
 describe('worldButton: everything else (ctl-10a, CTL10A.3)', () => {
   it('CTL10A-3-WORLD-PASS: with no sheet, Start, Select, B, LB, RB, X and the D-pad are never the world interaction`s: unhandled, no sheet, no run, whatever is faced', () => {
     // WRONG IMPL KILLED: an interaction layer that swallows Start (the menu would stop opening at

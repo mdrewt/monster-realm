@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
-import type { StoreBattle, StoreBattleMonster, StoreNpcRow } from './net/store';
+import type { StoreBattle, StoreBattleMonster, StoreMonsterPub, StoreNpcRow } from './net/store';
 import { HOLD_COMMIT_MS } from './prediction/heldKeys';
 import type { NavInput } from './ui/nav';
 
@@ -1834,8 +1834,9 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     // WRONG IMPL KILLED: a close command that skips some overlays (the six here were measured
     // as skipped by a mutant while every other boot case stayed green: the overlay is left
     // standing under the battle and, for privacy, its dismissal never runs). Each opens by its
-    // own real path: N, O and A (the stubbed interact rule names the heal NPC on the player's own
-    // tile), I and E, and the claim overlay's privacy button.
+    // own real path: N, A then A on Trade (face to face with the rival: ctl-10b retired O), A (the
+    // stubbed interact rule names the heal NPC on the player's own tile), I and E, and the claim
+    // overlay's privacy button.
     // ctl-10a: T retired — the heal frame opener was KeyT (the nearest-in-range rule picked the
     // heal NPC); it is A now, with the wasm rule stub naming that NPC.
     // Not separately observed: privacy's onDismissed effect (it disarms an armed delete
@@ -1871,6 +1872,8 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
       },
       1005,
     );
+    // ctl-10b: the rival the tradeProposeView opener faces (online, with a character row).
+    placeRival(3, 6, 1005);
     settle(1010);
 
     const overlays: ReadonlyArray<{
@@ -1886,15 +1889,28 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
         shown: () => shownById('rename-overlay'),
       },
       {
+        // ctl-10b (named intentional change): O is retired; the wizard opens face to face. The rule is
+        // switched to the rival (a new batch invalidates the memoised candidates), A opens the
+        // picker and A on its first row (Trade) opens the wizard.
         name: 'tradeProposeView',
         rootId: 'tradepropose-overlay',
-        open: (t) => void fire('keydown', 'KeyO', t),
+        open: (t) => {
+          useRule(pick(['player', '20']));
+          settle(t);
+          tapKey('Enter', t + 10);
+          tapKey('Enter', t + 20);
+        },
         shown: () => shownById('tradepropose-overlay'),
       },
       {
         name: 'healView',
         rootId: 'heal-overlay',
-        open: (t) => void tapKey('Enter', t),
+        open: (t) => {
+          // ctl-10b: the rule is switched back to the healer (a new batch for the memo).
+          useRule(pick(['npc', '12']));
+          settle(t);
+          tapKey('Enter', t + 10);
+        },
         shown: () => shownById('heal-overlay'),
       },
       {
@@ -2561,18 +2577,26 @@ function healLocation(locationId: number, tileX: number, tileY: number): void {
   });
 }
 
-/** Another online player and its character at (`x`, `y`), with no flush. */
-function placeRival(x: number, y: number, t: number): void {
-  opts.store.upsertPlayer({
-    identity: RIVAL_IDENTITY,
-    entityId: RIVAL_ENTITY,
-    name: 'Rival',
-    online: true,
-    lastInputSeq: 0n,
-  });
+/** Another player (online unless `online` is false) and its character at (`x`, `y`), with no flush. */
+function placeRival(x: number, y: number, t: number, online = true): void {
+  placePlayer(RIVAL_IDENTITY, RIVAL_ENTITY, 'Rival', x, y, t, online);
+}
+
+/** One other player and its character at (`x`, `y`), with no flush (ctl-10b: any number may stand
+ *  about, each with its own identity and entity id). */
+function placePlayer(
+  identity: string,
+  entityId: bigint,
+  name: string,
+  x: number,
+  y: number,
+  t: number,
+  online = true,
+): void {
+  opts.store.upsertPlayer({ identity, entityId, name, online, lastInputSeq: 0n });
   opts.store.upsertCharacter(
     {
-      entityId: RIVAL_ENTITY,
+      entityId,
       zoneId: 0,
       tileX: x,
       tileY: y,
@@ -2894,10 +2918,15 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     expect(statusLine()).toBe('');
   });
 
-  it('CTL10A-1-BOOT-LONE-PLAYER: another player is marshalled as a player entity, but a lone player candidate has no action until ctl-10b: A and Y do nothing and the chip is hidden', async () => {
+  it('CTL10A-1-BOOT-LONE-PLAYER: another player is marshalled as a player entity; a lone ONLINE player candidate offers Trade and Challenge (the chip reads Choose, A and Y open a two-row picker / sheet and send nothing), while an OFFLINE player offers nothing: A and Y do nothing and the chip is hidden', async () => {
+    // INTENTIONAL CHANGE (ctl-10b, CTL10B.1): a lone player used to have no action until ctl-10b
+    // (the case asserted "A and Y do nothing"); an online player now offers Trade then Challenge, so
+    // that half is retargeted to the picker rows, and the "nothing" half is kept for an OFFLINE
+    // player (eligibility: only an online player offers actions).
     // WRONG IMPL KILLED: other players left out of the list (ctl-10b's trade and challenge could
-    // never find them), a player candidate given a default action or a picker / sheet entry before
-    // ctl-10b, a chip advertising it, and a status-line toast for it.
+    // never find them), a player candidate given no action, an action sent by merely opening the
+    // picker, a player offered Challenge before Trade, an offline player offered anything, a chip
+    // hidden for an actionable player, and a status-line toast for it.
     await bootReady();
     useRule(pick(['player', '20']));
     placeRival(3, 6, 1000);
@@ -2908,14 +2937,41 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     expect(wire, 'the other player is marshalled').toEqual([
       { kind: 'player', x: 3, y: 6, zone: 0, id: '20' },
     ]);
-    expect(promptShown(), 'a lone player: no chip').toBe(false);
+    expect(promptShown(), 'a lone online player: the chip shows').toBe(true);
+    expect(chipText(), 'two actions: Choose').toBe(`[Enter] Choose${ELLIPSIS}`);
 
     tapKey('Enter', 1010);
     frame(1015);
+    expect(chipRowTexts(), 'A: Trade first, then Challenge').toEqual([
+      `Trade ${EM_DASH} Rival`,
+      `Challenge ${EM_DASH} Rival`,
+    ]);
+    expect(H.calls, 'opening the picker sends nothing').toEqual([]);
+    tapKey('Backspace', 1020);
+    frame(1025);
+    expect(chipOptions(), 'B closes the picker').toEqual([]);
+    tapKey('KeyF', 1030);
+    frame(1035);
+    expect(chipRowTexts(), 'Y: the same two rows').toEqual([
+      `Trade ${EM_DASH} Rival`,
+      `Challenge ${EM_DASH} Rival`,
+    ]);
+    expect(H.calls, 'Y sends nothing').toEqual([]);
+    tapKey('Backspace', 1040);
+    frame(1045);
+    expect(chipOptions()).toEqual([]);
+
+    // An offline player offers nothing.
+    placeRival(3, 6, 1100, false);
+    settle(1100);
+    frame(1105);
+    expect(promptShown(), 'an offline player: no chip').toBe(false);
+    tapKey('Enter', 1110);
+    frame(1115);
     expect(H.calls, 'A: nothing').toEqual([]);
     expect(chipOptions(), 'A: no picker').toEqual([]);
-    tapKey('KeyF', 1020);
-    frame(1025);
+    tapKey('KeyF', 1120);
+    frame(1125);
     expect(H.calls, 'Y: nothing').toEqual([]);
     expect(chipOptions(), 'Y: no sheet').toEqual([]);
     expect(stack()).toEqual(WORLD_ONLY);
@@ -3189,9 +3245,17 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     phase(pick(['npc', '11'], ['heal', '9']), 1040);
     expect(chipText(), 'two actionable candidates').toBe(`[Enter] Choose${ELLIPSIS}`);
 
+    // INTENTIONAL CHANGE (ctl-10b, CTL10B.1): an ONLINE player now offers Trade and Challenge, so a
+    // guide plus an online player is Choose (this step expected the single Talk chip); the "a
+    // candidate with no action does not count" half is kept with an OFFLINE player.
     placeRival(1, 5, 1050);
     phase(pick(['npc', '11'], ['player', '20']), 1050);
-    expect(chipText(), 'one actionable candidate and a player: still the one').toBe(
+    expect(chipText(), 'a guide and an online player: three actions, Choose').toBe(
+      `[Enter] Choose${ELLIPSIS}`,
+    );
+    placeRival(1, 5, 1055, false);
+    phase(pick(['npc', '11'], ['player', '20']), 1055);
+    expect(chipText(), 'one actionable candidate and an offline player: still the one').toBe(
       `[Enter] Talk ${EM_DASH} guide`,
     );
 
@@ -3326,7 +3390,9 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     expect(promptShown(), 'precondition: the single chip shows').toBe(true);
     expect(chipAt(), 'single: over the guide').toEqual(at(3, 6));
 
-    placeRival(1, 1, 1010);
+    // ctl-10b (named intentional change): the skipped first candidate is an OFFLINE player (an online
+    // one now offers Trade and Challenge and would be the first actionable candidate).
+    placeRival(1, 1, 1010, false);
     healLocation(9, 5, 2);
     useRule(pick(['player', '20'], ['heal', '9'], ['npc', '11']));
     settle(1010);
@@ -3394,5 +3460,278 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     const listbox = chip().querySelector('[role="listbox"]');
     expect(listbox, 'precondition: the picker is open').not.toBeNull();
     expect(listbox?.getAttribute('aria-label')).toBe(`[Enter] Choose${ELLIPSIS}`);
+  });
+});
+
+// ==========================================================================================
+// ctl-10b: face-to-face trade and challenge; O retired (CTL10B.1-2)
+// ==========================================================================================
+//
+// Same harness, one fresh main.ts per case. TWO other online players stand about, each with a
+// character row, and the stubbed wasm rule names the SECOND one (the faced player): a build that
+// takes "the first other player" (store order, or the first in the picker's entity list) acts on
+// the wrong identity and is caught by the reducer argument and the pre-selected target. The faced
+// player offers Trade then Challenge (the picker rows `Trade — <name>`, `Challenge — <name>`).
+// A on Trade opens the trade wizard on Offer with that player pre-selected and its select
+// disabled; A on Challenge opens a Yes / No confirm (Yes selected), and only A on Yes sends
+// `challengePvp` once.
+
+const FACED_IDENTITY = 'fe'.repeat(32);
+const FACED_ENTITY = 21n;
+const FACED_NAME = 'Zed';
+
+/** The hex of an SDK Identity (or the string itself). */
+function identityHex(identity: unknown): string {
+  const withHex = identity as { toHexString?: () => string };
+  return typeof withHex.toHexString === 'function' ? withHex.toHexString() : String(identity);
+}
+
+/** One own monster in the party slot `slot`: a challenge sends the party ids. */
+function partyMonster(monsterId: bigint, slot: number): StoreMonsterPub {
+  return {
+    monsterId,
+    ownerIdentity: H.identity,
+    speciesId: 1,
+    nickname: `m${monsterId}`,
+    level: 5,
+    xp: 0,
+    currentHp: 20,
+    statHp: 20,
+    statAttack: 5,
+    statDefense: 5,
+    statSpeed: 5,
+    statSpAttack: 5,
+    statSpDefense: 5,
+    partySlot: slot,
+    tier: 0,
+    essence: {} as StoreMonsterPub['essence'],
+    trustTier: 'Unknown' as StoreMonsterPub['trustTier'],
+    qualityTimeTier: 0,
+    nutritionPct: 0,
+  };
+}
+
+/** Boot with the own character at (2, 6) facing East, a FIRST rival (entity 20) at (1, 5), the FACED
+ *  player (entity 21, the second) on the faced tile (3, 6), one party monster, and a rule that names
+ *  only the faced player. One frame has run. */
+async function bootFacingTheSecondPlayer(): Promise<void> {
+  await bootReady();
+  useRule(pick(['player', FACED_ENTITY.toString()]));
+  server(1000, { x: 2, y: 6, ack: 0 });
+  placeRival(1, 5, 1005);
+  placePlayer(FACED_IDENTITY, FACED_ENTITY, FACED_NAME, 3, 6, 1005);
+  opts.store.upsertMonster(partyMonster(61n, 0));
+  settle(1010);
+  frame(1015);
+}
+
+const challengeCalls = (): Array<{ name: string; args: unknown }> =>
+  H.callArgs.filter((c) => c.name === 'challengePvp');
+const selectedFlags = (): Array<string | null> =>
+  chipOptions().map((row) => row.getAttribute('aria-selected'));
+const CHALLENGE_PROMPT = `Challenge ${FACED_NAME}?`;
+
+describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)', {
+  sequential: true,
+}, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    delete (document as unknown as { visibilityState?: unknown }).visibilityState;
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    H.sessionState = 'hidden';
+    rafCallback = null;
+    document.body.replaceChildren();
+  });
+
+  it('CTL10B-1-BOOT-TRADE: with two other online players and the SECOND one faced, A opens the picker (Trade, Challenge for that player), A on Trade opens the trade wizard on Offer with the faced player (not the first) pre-selected and the select disabled, focus inside the Offer list, and nothing is sent', async () => {
+    // WRONG IMPL KILLED: openPropose(first other player) (the pre-selected target and the wizard's
+    // counterparty would be the first rival, not the faced one), a Trade row that opens the wizard
+    // with no target (the select is the placeholder, a Target step), a pre-selected but ENABLED
+    // select (the mouse or Tab could retarget it), a Trade that sends proposeTrade at once, a
+    // wizard opened on the Target step or with a five-step header, focus left on the world or on
+    // the select (the D-pad would never reach the Offer list), a player that offers Challenge
+    // before Trade, and a picker that does not list the faced player's two actions.
+    await bootFacingTheSecondPlayer();
+    expect(chipText(), 'precondition: the faced player offers two actions: Choose').toBe(
+      `[Enter] Choose${ELLIPSIS}`,
+    );
+    const wire = H.interactCalls.at(-1)?.[4] as WireEntity[] | undefined;
+    expect(
+      wire?.filter((e) => e.kind === 'player').map((e) => e.id),
+      'precondition: both other players are marshalled',
+    ).toEqual(expect.arrayContaining(['20', '21']));
+
+    tapKey('Enter', 1020);
+    frame(1025);
+    expect(chipRowTexts(), 'A: the picker lists Trade then Challenge for the faced player').toEqual(
+      [`Trade ${EM_DASH} ${FACED_NAME}`, `Challenge ${EM_DASH} ${FACED_NAME}`],
+    );
+    expect(selectedFlags(), 'the cursor is on Trade').toEqual(['true', 'false']);
+    expect(H.calls, 'opening the picker sends nothing').toEqual([]);
+    expect(shownById('tradepropose-overlay'), 'and opens no wizard yet').toBe(false);
+
+    tapKey('Enter', 1030); // A on Trade
+    expect(shownById('tradepropose-overlay'), 'A on Trade opens the wizard').toBe(true);
+    expect(stack(), 'as one frame over the world').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'tradeProposeView' },
+    ]);
+    const select = rootOf('tradepropose-target') as HTMLSelectElement;
+    expect(select.value, 'the FACED player is pre-selected, not the first rival').toBe(
+      FACED_IDENTITY,
+    );
+    expect(select.value, 'precondition: and that is not the first rival').not.toBe(RIVAL_IDENTITY);
+    expect(select.disabled, 'the select is locked: no retarget').toBe(true);
+    const steps = [
+      ...rootOf('tradepropose-overlay').querySelectorAll<HTMLElement>(
+        '[data-testid="tradepropose-steps"] li',
+      ),
+    ];
+    expect(
+      steps.map((li) => li.getAttribute('data-step')),
+      'no Target step',
+    ).toEqual(['offer', 'coins', 'ask', 'review']);
+    expect(
+      steps.filter((li) => li.getAttribute('aria-current') === 'step').map((li) => li.dataset.step),
+      'the wizard is on Offer',
+    ).toEqual(['offer']);
+
+    await flush(); // the overlay's deferred initial focus runs
+    const list = rootOf('tradepropose-monsters');
+    expect(list.contains(document.activeElement), 'focus is inside the Offer list').toBe(true);
+    expect(document.activeElement, 'and not on the select').not.toBe(select);
+    expect(H.calls, 'nothing was sent').toEqual([]);
+  });
+
+  it('CTL10B-1-BOOT-CHALLENGE-YES: A on the Challenge row opens a confirm (prompt "Challenge Zed?", rows Yes and No, Yes selected) and sends nothing; A on Yes sends challengePvp exactly once with the FACED (second) player and the party ids; a held Enter repeat sends no second challenge', async () => {
+    // WRONG IMPL KILLED: a Challenge row that sends challengePvp at once (no confirm), a confirm whose
+    // cursor starts on No (Yes is the default), a challenge sent to the first rival or with no
+    // target / no party, a Yes that sends twice (two A edges for one press, or an OS key-repeat of
+    // the held Enter), a sheet that stays open after the send, and a confirm that names no player
+    // (the prompt must carry the faced player's name).
+    await bootFacingTheSecondPlayer();
+    tapKey('Enter', 1020);
+    frame(1025);
+    expect(chipRowTexts(), 'precondition: the picker is open').toHaveLength(2);
+    tapKey('ArrowDown', 1030);
+    frame(1035);
+    expect(selectedFlags(), 'precondition: the cursor is on Challenge').toEqual(['false', 'true']);
+
+    tapKey('Enter', 1040); // A on Challenge: the confirm, no send
+    frame(1045);
+    expect(H.calls, 'A on Challenge sends nothing: the confirm comes first').toEqual([]);
+    expect(chipText(), 'the confirm names the faced player').toContain(CHALLENGE_PROMPT);
+    expect(chipRowTexts(), 'the confirm rows are Yes and No').toEqual(['Yes', 'No']);
+    expect(selectedFlags(), 'Yes is selected').toEqual(['true', 'false']);
+    expect(
+      chip().querySelector('[role="listbox"]')?.getAttribute('aria-label'),
+      'the listbox is named by the prompt',
+    ).toBe(CHALLENGE_PROMPT);
+    expect(stack(), 'the confirm is the chip, not a frame').toEqual(WORLD_ONLY);
+
+    fire('keydown', 'Enter', 1050); // A on Yes, held
+    expect(challengeCalls(), 'A on Yes sends exactly one challenge').toHaveLength(1);
+    const args = challengeCalls()[0]?.args as { target: unknown; partyIds: bigint[] };
+    expect(identityHex(args.target), 'to the FACED player, not the first rival').toBe(
+      FACED_IDENTITY,
+    );
+    expect(args.partyIds, 'with the party').toEqual([61n]);
+    expect(H.calls, 'and nothing else was sent').toEqual(['challengePvp']);
+    fire('keydown', 'Enter', 1080, { init: { repeat: true } }); // the OS repeats the held key
+    fire('keydown', 'Enter', 1110, { init: { repeat: true } });
+    fire('keyup', 'Enter', 1120);
+    expect(challengeCalls(), 'a held Enter sends no second challenge').toHaveLength(1);
+    frame(1130);
+    expect(chipOptions(), 'the confirm is closed after the send').toEqual([]);
+    expect(stack()).toEqual(WORLD_ONLY);
+    expect(shownById('tradepropose-overlay'), 'no wizard opened').toBe(false);
+  });
+
+  it('CTL10B-1-BOOT-CHALLENGE-NO: in the confirm Down moves to No and A on No returns to the picker rows with nothing sent; B in the confirm also returns to the rows (Yes selected again on re-entry); B on the rows closes the picker; no challenge is ever sent', async () => {
+    // WRONG IMPL KILLED: a No that sends (or that closes the whole picker instead of returning to
+    // the rows), a B in the confirm that closes everything or sends, a confirm that does not reset
+    // to Yes on re-entry (a stale No cursor makes the next A a silent cancel), a Down that does
+    // not move the confirm cursor, and a B on the rows that leaves the picker open.
+    await bootFacingTheSecondPlayer();
+    tapKey('Enter', 1020);
+    tapKey('ArrowDown', 1030);
+    tapKey('Enter', 1040); // the confirm
+    frame(1045);
+    expect(chipRowTexts(), 'precondition: the confirm is shown').toEqual(['Yes', 'No']);
+    expect(selectedFlags(), 'precondition: Yes selected').toEqual(['true', 'false']);
+
+    tapKey('ArrowDown', 1050);
+    frame(1055);
+    expect(selectedFlags(), 'Down moves to No').toEqual(['false', 'true']);
+    expect(H.calls, 'moving sends nothing').toEqual([]);
+    tapKey('Enter', 1060); // A on No
+    frame(1065);
+    expect(H.calls, 'A on No sends nothing').toEqual([]);
+    expect(chipRowTexts(), 'A on No returns to the picker rows').toEqual([
+      `Trade ${EM_DASH} ${FACED_NAME}`,
+      `Challenge ${EM_DASH} ${FACED_NAME}`,
+    ]);
+
+    tapKey('Enter', 1070); // the row cursor was kept on Challenge: the confirm again
+    frame(1075);
+    expect(chipRowTexts(), 'the confirm is shown again').toEqual(['Yes', 'No']);
+    expect(selectedFlags(), 'with Yes selected again').toEqual(['true', 'false']);
+    tapKey('Backspace', 1080); // B in the confirm
+    frame(1085);
+    expect(H.calls, 'B in the confirm sends nothing').toEqual([]);
+    expect(chipRowTexts(), 'B returns to the picker rows').toEqual([
+      `Trade ${EM_DASH} ${FACED_NAME}`,
+      `Challenge ${EM_DASH} ${FACED_NAME}`,
+    ]);
+
+    tapKey('Backspace', 1090); // B on the rows
+    frame(1095);
+    expect(chipOptions(), 'B on the rows closes the picker').toEqual([]);
+    expect(H.calls, 'no reducer was ever called').toEqual([]);
+    expect(stack()).toEqual(WORLD_ONLY);
+    expect(shownById('tradepropose-overlay'), 'and no wizard opened').toBe(false);
+  });
+
+  it('CTL10B-2-BOOT-O-NOOP: KeyO does nothing at a bare world and with a faced online player: no overlay, no frame, no reducer, no picker, and the event is NOT default-prevented', async () => {
+    // WRONG IMPL KILLED: the old O handler kept (it opens the wizard for the first other player:
+    // openPropose(first other player)), an O block kept but gated on "a player is near", an O that
+    // opens nothing but still swallows the key (preventDefault left on), an O that sends a
+    // reducer, and an O that opens the picker. The faced player below makes every one of those
+    // reachable, so a gate that merely needs a target to be present still fails.
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0 });
+    frame(1005);
+    const bare = fire('keydown', 'KeyO', 1010);
+    fire('keyup', 'KeyO', 1015);
+    expect(bare.defaultPrevented, 'bare world: O is not prevented').toBe(false);
+    expect(shownById('tradepropose-overlay'), 'bare world: no wizard').toBe(false);
+    expect(stack(), 'bare world: no frame').toEqual(WORLD_ONLY);
+    expect(H.calls, 'bare world: no reducer').toEqual([]);
+    expect(H.sends, 'bare world: nothing walks').toHaveLength(0);
+
+    // With a faced online player and a rule naming him, O still does nothing.
+    useRule(pick(['player', FACED_ENTITY.toString()]));
+    placePlayer(FACED_IDENTITY, FACED_ENTITY, FACED_NAME, 3, 6, 1100);
+    settle(1100);
+    frame(1105);
+    expect(chipText(), 'precondition: the faced player is a candidate').toBe(
+      `[Enter] Choose${ELLIPSIS}`,
+    );
+    const faced = fire('keydown', 'KeyO', 1110);
+    fire('keyup', 'KeyO', 1115);
+    frame(1120);
+    expect(faced.defaultPrevented, 'facing a player: O is not prevented').toBe(false);
+    expect(shownById('tradepropose-overlay'), 'facing a player: no wizard').toBe(false);
+    expect(stack(), 'facing a player: no frame').toEqual(WORLD_ONLY);
+    expect(chipOptions(), 'and no picker').toEqual([]);
+    expect(H.calls, 'facing a player: no reducer').toEqual([]);
+
+    // Control: A in the same state does open the picker, so the harness could have opened it.
+    tapKey('Enter', 1130);
+    frame(1135);
+    expect(chipOptions(), 'control: A opens the picker').toHaveLength(2);
   });
 });
