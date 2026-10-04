@@ -143,6 +143,8 @@ import { buildDialogueViewModel } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
 import { buildErrorOverlayModel } from './ui/errorOverlayModel';
 import { ErrorOverlayView } from './ui/errorOverlayView';
+import { HintBarView } from './ui/hintBar';
+import { hintBar } from './ui/hintBarModel';
 import { ErrorRing, type ErrorSource, normalizeError } from './ui/errorRing';
 import {
   EventRing,
@@ -182,13 +184,19 @@ import {
 import { buildLeaderboardViewModel } from './ui/leaderboardModel';
 import type { LeaderboardView } from './ui/leaderboardView';
 import { LiveRegion } from './ui/liveRegion';
-import type { MenuTarget } from './ui/menuModel';
+import { type MenuTarget, withRequestBadge } from './ui/menuModel';
+import {
+  buildNotices,
+  type NoticeInput,
+  pendingRequests,
+  type RequestNotice,
+  requestSheetLayout,
+} from './ui/noticeModel';
 import type { MenuPointerInput, MenuView } from './ui/menuView';
 import type { MonstersTab } from './ui/monstersModel';
 import { EMPTY_NAV_MEMORY } from './ui/nav';
 import { renderNav } from './ui/navRender';
 import {
-  anyVisible,
   type CanOpenVerdict,
   canOpen,
   type OverlayHandles,
@@ -684,9 +692,9 @@ function reconcileStack(): void {
 
 /** The ONE movement gate (CTL2.3): false under any frame, on a battle base (even with the
  *  battle overlay hidden — B17), while the session terminal owns the screen and while the world
- *  picker or action sheet is open (ctl-10a). */
+ *  picker or action sheet (ctl-10a) or a request sheet (ctl-13) is open. */
 function movementGate(): boolean {
-  return worldBaseLive() && screenHost.sheet === null;
+  return worldBaseLive() && !screenHost.sheetOpen;
 }
 
 /** The world base takes input: the movement gate before the world sheet (ctl-10a) is counted.
@@ -1166,7 +1174,46 @@ function runInteract(action: InteractAction): void {
   }
 }
 
-const worldPort: WorldPort = { candidates: worldCandidates, run: runInteract };
+/** The request keys the player dismissed with B (ctl-13), and those already announced. A new
+ *  session forgets both: a request still waiting after a reconnect shows and is announced again. */
+const dismissedRequests = new Set<string>();
+const announcedRequests = new Set<string>();
+
+function noticeInput(): NoticeInput {
+  return {
+    offers: store.allTradeOffers(),
+    challenges: store.allChallenges(),
+    players: store.allPlayers(),
+    identity,
+    errorPending: errorOverlayView?.visible ?? false,
+    dismissed: dismissedRequests,
+  };
+}
+
+/** The banner's and the announcement's line for a request; it names no key (a remap keeps it true). */
+const requestLine = (n: RequestNotice): string =>
+  n.request === 'trade'
+    ? tf('notice.request.trade', { name: n.fromName })
+    : tf('notice.request.challenge', { name: n.fromName });
+
+const worldPort: WorldPort = {
+  candidates: worldCandidates,
+  run: runInteract,
+  notices: {
+    notices: () => buildNotices(noticeInput()),
+    pending: () => pendingRequests(noticeInput()),
+    dismiss: (key) => {
+      if (key === 'error') errorOverlayView?.dismiss();
+      else dismissedRequests.add(key);
+    },
+    // View opens Social on the request's tab, through the same verdict as its own hotkey.
+    view: (n) => {
+      if (overlayVerdict(n.request === 'trade' ? 'tradeView' : 'pvpView').kind !== 'allow') return;
+      held.clear();
+      openSocial(n.request === 'trade' ? 'trades' : 'challenges');
+    },
+  },
+};
 
 /** The chip's and the sheet's words, each a literal catalog key (the catalog parity scan). */
 function interactVerb(action: InteractAction): string {
@@ -1187,6 +1234,12 @@ function interactVerb(action: InteractAction): string {
 /** A Challenge confirm row's word (`confirmLayout`'s keys), each a literal catalog key. */
 function confirmRowLabel(key: string): string {
   return key === 'yes' ? i18nT('prompt.yes') : i18nT('prompt.no');
+}
+
+/** A request sheet row's word (ctl-13), each a literal catalog key (the catalog parity scan). */
+function requestRowLabel(key: string): string {
+  if (key === 'accept') return i18nT('notice.sheet.accept');
+  return key === 'decline' ? i18nT('notice.sheet.decline') : i18nT('notice.sheet.view');
 }
 
 function interactName(c: InteractCandidate): string {
@@ -1210,8 +1263,12 @@ function interactChipText(chip: InteractChip): string {
 }
 
 function renderMenu(): void {
-  menuView?.render(menuViewModel(menuState));
+  const vm = menuViewModel(menuState);
+  menuView?.render({ ...vm, labels: withRequestBadge(vm.labels, menuBadged) });
 }
+
+/** Whether the menu was last painted with the Social badge: a batch that flips it repaints. */
+let menuBadged = false;
 
 /** The SINGLE entry point: the root list, on the last entry used. */
 function openMenu(): void {
@@ -1758,6 +1815,7 @@ function clearStatus(): void {
 const eventRing = new EventRing(() => Date.now());
 const errorRing = new ErrorRing(() => Date.now());
 let errorOverlayView: ErrorOverlayView | undefined;
+let hintBarView: HintBarView | undefined;
 // Re-entrancy guard: if rendering the overlay itself throws and re-enters pushError,
 // short-circuit so a render fault cannot recurse into a stack overflow.
 let handlingError = false;
@@ -1775,9 +1833,11 @@ function pushError(source: ErrorSource, raw: unknown): void {
       // The movement breadcrumb is BUNDLE-bound, never OVERLAY-bound. This ring
       // IS the overlay's source (newest 8), so unfiltered the 16 capped breadcrumbs would
       // surface silent rejections (M2 §3) and evict real errors from the visible window.
+      // The toast shows the newest error only (ctl-13); the bundle keeps the whole ring.
       errorOverlayView.render(
         buildErrorOverlayModel(
           errorRing.snapshot().filter((r) => !r.message.startsWith(MOVE_REJECT_PREFIX)),
+          1,
         ),
       );
       if (!errorOverlayView.visible) errorOverlayView.show();
@@ -2115,7 +2175,7 @@ const routeCtx = (): RouteContext => {
     nav,
     // The battle's own rules first (Start opens the menu over it, A continues its outcome).
     screen: (btn) => {
-      const sheetWas = screenHost.sheet !== null;
+      const sheetWas = screenHost.sheetOpen;
       const result =
         battleButton(
           contextStack,
@@ -2125,7 +2185,7 @@ const routeCtx = (): RouteContext => {
         screenHost.button(contextStack, btn, screenCtx, identity === '' ? undefined : worldPort);
       // The world sheet opening or closing is a frame edge for held input (B14): no walk or
       // D-pad repeat straddles it.
-      if ((screenHost.sheet !== null) !== sheetWas) {
+      if (screenHost.sheetOpen !== sheetWas) {
         held.clear();
         inputRouter.resetRepeat();
       }
@@ -2727,8 +2787,8 @@ store.onBatchApplied(() => {
 });
 
 // --- PvP challenge panel batch listener -----------------------
-// Refreshes the Challenges panel while it shows (status/list changes); an incoming challenge
-// opens Social on Challenges. MUST be total (never throw): defense-in-depth.
+// Refreshes the Challenges panel while it shows (status/list changes). An incoming challenge opens
+// nothing (ctl-13): it is a notice — the banner, the badges and Y. MUST be total (never throw).
 store.onBatchApplied(() => {
   if (identity === '') return;
   try {
@@ -2737,16 +2797,31 @@ store.onBatchApplied(() => {
       // A shown panel only re-renders. What closes it is the stack's (a battle, a conversation),
       // never "another overlay is showing": the menu it was opened from is one.
       pvpView.refresh(vm, true);
-    } else if (
-      vm.incoming !== null &&
-      !anyVisible(overlayProbes) &&
-      contextStack[0].kind === 'world'
-    ) {
-      // Auto-show ONLY with no overlay up and never over a battle (mutual-exclusivity).
-      openSocial('challenges');
     }
   } catch (err) {
     console.error('[pvpView] batch listener error', err);
+  }
+});
+
+// --- incoming requests (ctl-13) --------------------------------------
+// A request that newly waits is announced once, with its banner line, and the open menu's Social
+// badge follows the requests on the batch. Nothing opens and no focus moves. MUST be total.
+store.onBatchApplied(() => {
+  if (identity === '') return;
+  try {
+    const pending = pendingRequests(noticeInput());
+    for (const n of pending) {
+      if (announcedRequests.has(n.key)) continue;
+      announcedRequests.add(n.key);
+      liveRegion.announce(requestLine(n), performance.now());
+    }
+    const badged = pending.length > 0;
+    if (badged !== menuBadged) {
+      menuBadged = badged;
+      if (menuView?.visible) renderMenu();
+    }
+  } catch (err) {
+    console.error('[notices] batch listener error', err);
   }
 });
 
@@ -3389,15 +3464,10 @@ async function main(): Promise<void> {
   gameScreen.appendChild(status);
   statusEl = status;
 
-  // ctl-7a: the hint bar's Start and Select chips name their verbs from the catalog (CTL7A.4).
-  // Their clicks are delegated on [data-menu-launcher] / [data-help-launcher] below. The verbs
-  // go through locals because the hardcoded-string scanner only exempts a bare `t(`, not the
-  // `i18nT` alias main.ts must use.
-  const chipVerbs = { start: i18nT('chrome.chip.menu'), select: i18nT('chrome.chip.help') };
-  const startChip = document.getElementById('chip-start');
-  if (startChip !== null) startChip.textContent = chipVerbs.start;
-  const selectChip = document.getElementById('chip-select');
-  if (selectChip !== null) selectChip.textContent = chipVerbs.select;
+  // The hint bar (ctl-13): painted every frame from `hintBar(...)`, keyed on the shipped Start and
+  // Select chips, whose clicks stay delegated on [data-menu-launcher] / [data-help-launcher] below.
+  const hintBarEl = document.getElementById('hint-bar');
+  if (hintBarEl !== null) hintBarView = new HintBarView(hintBarEl);
 
   // The on-world interact prompt — a small frame in the frame layer (.mr-frame--prompt:
   // pointer-events:none so it can NEVER shadow the document-level dialogue/shop click delegation;
@@ -3506,6 +3576,8 @@ async function main(): Promise<void> {
       identity = id;
       // A screen opened before the join must not be remembered into this identity's session.
       screenHost.forget();
+      dismissedRequests.clear();
+      announcedRequests.clear();
       // record the connect edge (identity-hex is the allowed field, U-3).
       eventRing.push(makeConnect(identity));
       resolveReady();
@@ -3580,6 +3652,8 @@ async function main(): Promise<void> {
       boundSocialTab = null;
       boundProposeTarget = null;
       screenHost.forget();
+      dismissedRequests.clear();
+      announcedRequests.clear();
       // trade's double-spend lock must also be reset on reconnect (same reason as shop).
       tradeView?.hide();
       // Hide the PvP overlay on reconnect — any pending challenge state is stale.
@@ -3795,25 +3869,34 @@ async function main(): Promise<void> {
       // session terminal. Positioned via renderer.screenFor — the exact camera offset +
       // stageScale the stage applied THIS frame.
       const live = worldBaseLive(); // first: it closes a sheet the world no longer owns
+      const pending = pendingRequests(noticeInput());
+      screenHost.settleRequest(pending); // a withdrawn or answered request's sheet closes
       const sheet = screenHost.sheet;
-      const chip = live && sheet === null ? interactChip(worldCandidates()) : null;
+      const request = screenHost.request;
+      const chip =
+        live && sheet === null && request === null ? interactChip(worldCandidates()) : null;
       const anchor =
         sheet !== null
           ? sheet.entries[0]?.candidate
           : chip?.kind === 'single'
             ? chip.candidate
             : (chip ?? undefined);
+      // The request sheet (ctl-13) has no faced thing to hang from: it sits low and centred.
       const promptPos =
-        anchor !== undefined
-          ? renderer?.screenFor({ x: anchor.anchorWorldX, y: anchor.anchorWorldY })
-          : undefined;
+        request !== null
+          ? { x: Math.round(window.innerWidth / 2), y: Math.round(window.innerHeight * 0.7) }
+          : anchor !== undefined
+            ? renderer?.screenFor({ x: anchor.anchorWorldX, y: anchor.anchorWorldY })
+            : undefined;
       // The confirm's row and cursor are in the signature: a Yes / No move must repaint.
       const promptSig =
-        sheet !== null
-          ? `sheet|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}|${sheet.confirm?.key ?? ''}|${sheet.confirm?.nav.item ?? ''}`
-          : chip !== null
-            ? interactChipText(chip)
-            : null;
+        request !== null
+          ? `request|${request.notice.key}|${request.nav.item}|${requestLine(request.notice)}`
+          : sheet !== null
+            ? `sheet|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}|${sheet.confirm?.key ?? ''}|${sheet.confirm?.nav.item ?? ''}`
+            : chip !== null
+              ? interactChipText(chip)
+              : null;
       const promptKey =
         promptSig !== null && promptPos !== undefined
           ? `${promptSig}|${promptPos.x}|${promptPos.y}`
@@ -3825,7 +3908,19 @@ async function main(): Promise<void> {
             sheet?.confirm == null
               ? undefined
               : sheet.entries.find((e) => e.key === sheet.confirm?.key);
-          if (sheet !== null && sheet.confirm !== null && asked !== undefined) {
+          if (request !== null) {
+            // The request sheet (ctl-13): who asks what, then Accept / Decline / View.
+            const heading = requestLine(request.notice);
+            interactChipTextEl.textContent = heading;
+            renderNav(interactSheetEl, requestSheetLayout, request.nav, {
+              frame: 'interact',
+              fill: (el, item) => {
+                el.textContent = requestRowLabel(item.key);
+              },
+            });
+            interactSheetEl.setAttribute('aria-label', heading);
+            interactSheetEl.style.display = '';
+          } else if (sheet !== null && sheet.confirm !== null && asked !== undefined) {
             // The Challenge confirm (ctl-10b): the question, then Yes / No as the listbox.
             const question = tf('interact.confirm.challenge', {
               name: interactName(asked.candidate),
@@ -3871,11 +3966,29 @@ async function main(): Promise<void> {
           interactPromptEl.style.display = 'none';
         }
         // Rows never outlive their sheet, shown or not.
-        if (sheet === null) {
+        if (sheet === null && request === null) {
           interactSheetEl.replaceChildren();
           interactSheetEl.style.display = 'none';
         }
       }
+      // The live hint bar (ctl-13): the top context's buttons with their live keycaps, and the
+      // request banner while the bare world shows. The view writes only what changed.
+      const notices = buildNotices(noticeInput());
+      const atWorld = contextStack.length === 1 && contextStack[0].kind === 'world';
+      const bannerRequest = atWorld ? notices.find((n) => n.kind === 'request') : undefined;
+      hintBarView?.render(
+        hintBar(contextStack, bindings, notices, {
+          target:
+            chip === null
+              ? null
+              : chip.kind === 'single'
+                ? interactVerb(chip.action)
+                : i18nT('chrome.chip.ok'),
+          sheetOpen: screenHost.sheetOpen,
+          requestWaiting: pending.length > 0,
+        }),
+        bannerRequest?.kind === 'request' ? requestLine(bannerRequest) : null,
+      );
       lastFrameErrorMessage = null;
     } catch (err) {
       console.error('[frame] uncaught error', err);

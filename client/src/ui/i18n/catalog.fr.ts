@@ -61,6 +61,42 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // button name "Select" is drawn beside it. Opens the help screen. One short word (at most 12
   // characters). index.html #chip-select (written by main.ts at boot)
   'chrome.chip.help': 'Aide',
+  // @desc: Hint-bar chip verb for A inside a sheet or a frame: confirm the highlighted item. One
+  // short word (at most 12 characters). hintBarModel.ts (#hint-bar)
+  'chrome.chip.ok': 'OK',
+  // @desc: Hint-bar chip verb for B inside a sheet or a frame: go back one level. One short word
+  // (at most 12 characters). hintBarModel.ts (#hint-bar)
+  'chrome.chip.back': 'Retour',
+  // @desc: Hint-bar chip verb for Start while a frame is open: close every frame. One short word
+  // (at most 12 characters). hintBarModel.ts (#hint-bar)
+  'chrome.chip.close': 'Fermer',
+  // @desc: Hint-bar chip verb for Y in the world while a trade or challenge request waits: open
+  // that request's Accept / Decline / View sheet. One short word. hintBarModel.ts (#hint-bar)
+  'chrome.chip.view': 'Voir',
+  // @desc: Hint-bar chip verb for B in the world while a notice shows: hide the newest notice (the
+  // error toast or the request banner). One short word. hintBarModel.ts (#hint-bar)
+  'chrome.chip.dismiss': 'Masquer',
+  // @desc: Hint-bar chip verb for Start while typing in a text field: stop typing. One short
+  // word. hintBarModel.ts (#hint-bar)
+  'chrome.chip.done': 'Terminé',
+  // @desc: Badge beside the Start chip and the Social menu row while a trade or challenge request
+  // waits for an answer. One short word. hintBar.ts, menuModel.ts
+  'chrome.badge.request': 'Nouveau',
+  // @desc: Row of the world request sheet: accept the waiting trade or challenge. main.ts
+  // (#interact-prompt rows)
+  'notice.sheet.accept': 'Accepter',
+  // @desc: Row of the world request sheet: decline the waiting trade or challenge. main.ts
+  // (#interact-prompt rows)
+  'notice.sheet.decline': 'Refuser',
+  // @desc: Row of the world request sheet: open Social on the request's tab. main.ts
+  // (#interact-prompt rows)
+  'notice.sheet.view': 'Voir',
+  // @desc: The request banner and sheet heading for an incoming trade; {name} is the other
+  // player's display name (player text). Names no key. main.ts (#notice-banner)
+  'notice.request.trade': (p) => `${p.name} veut échanger`,
+  // @desc: The request banner and sheet heading for an incoming PvP challenge; {name} is the
+  // challenger's display name (player text). Names no key. main.ts (#notice-banner)
+  'notice.request.challenge': (p) => `${p.name} vous défie en combat`,
   // @desc: The world interaction chip above what the character faces: {key} is the A button's
   // keycap, {verb} a resolved interact.verb.* word, {name} the npc id or the healer name. main.ts
   // (#interact-prompt)
@@ -1100,7 +1136,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Footer of the diagnostic error overlay naming its two keyboard shortcuts: F8 closes
   // it, F9 downloads a bug report; "F8"/"F9" are key names. One short line, small text.
   // errorOverlayView.ts:81 (resolved in show())
-  'errorOverlay.footer': 'F8 fermer · F9 rapport de bogue',
+  'errorOverlay.footer': 'B ou F8 fermer · F9 rapport de bogue',
   // @desc: One row of the quest log; {name} is the quest's content identifier (e.g.
   // "quest_001", not player text) and {step} the current step number counted from 0. One line.
   // questLogView.ts:45

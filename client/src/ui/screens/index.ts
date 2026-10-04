@@ -10,6 +10,7 @@ import type { SheetState } from '../actionSheetModel';
 import type { BaseFrame, FrameId, Stack, UpperFrame } from '../contextStack';
 import type { InteractAction, InteractCandidate } from '../interactModel';
 import type { NavInput } from '../nav';
+import type { Notice, RequestNotice, RequestSheet } from '../noticeModel';
 import { bagScreen } from './bagScreen';
 import { battleScreen } from './battleScreen';
 import { dialogueScreen } from './dialogueScreen';
@@ -61,8 +62,8 @@ export const SCREEN_ADAPTERS: ScreenAdapters = {
 
 /** A button with nothing above the base. Start opens the menu at the world and is swallowed on a
  *  battle (B17: an ongoing battle is never hidden; main.ts's `battleButton` opens the menu over a
- *  bare battle before any screen is asked, ctl-6c). B is swallowed: its world meaning (dismiss the
- *  top notice) has no notice to act on yet. The host asks it only at the world: a bare battle base
+ *  bare battle before any screen is asked, ctl-6c). B is swallowed: with a notice showing, the world
+ *  rule (`worldButton`, ctl-13) has already dismissed it. The host asks it only at the world: a bare battle base
  *  is `battleScreen`'s (ctl-8i), which gives B, Start and Select these same answers. */
 export function baseButton(base: BaseFrame, btn: NavInput): ScreenResult {
   switch (btn.button) {
@@ -82,6 +83,16 @@ export function baseButton(base: BaseFrame, btn: NavInput): ScreenResult {
 export interface WorldPort {
   candidates(): readonly InteractCandidate[];
   run(action: InteractAction): void;
+  /** The world's notices (ctl-13): optional, so a port without them is the ctl-10a world. */
+  notices?: WorldNoticePort;
+}
+
+/** The shell's side of the notices: what shows, what waits, and B's and View's effects. */
+export interface WorldNoticePort {
+  notices(): readonly Notice[];
+  pending(): readonly RequestNotice[];
+  dismiss(key: string): void;
+  view(n: RequestNotice): void;
 }
 
 /** The shell's side of the adapter seam (CTL7C.2): one adapter state per frame id, kept from the
@@ -96,6 +107,8 @@ export class ScreenHost {
   readonly #onPaintError: (err: unknown) => void;
   /** The world base's open picker or action sheet (ctl-10a); null when none. */
   #sheet: SheetState | null = null;
+  /** The world base's open request sheet (ctl-13); null when none. */
+  #request: RequestSheet | null = null;
 
   /** `viewOf` lends a frame's view instance (undefined until it is built); `onPaintError` takes
    *  what a view's paint throws. */
@@ -116,6 +129,7 @@ export class ScreenHost {
    *  content. An adapter that opted in has the state it is leaving remembered for that `init`. */
   opened(frame: UpperFrame): void {
     this.#sheet = null;
+    this.#request = null;
     if (frame.kind === 'textEntry') return;
     if (this.#adapters[frame.id].remember === true && this.#states.has(frame.id)) {
       this.#remembered.set(frame.id, this.#states.get(frame.id));
@@ -144,6 +158,7 @@ export class ScreenHost {
    *  state of an adapter that opted in goes too, or its next open would remember it. */
   forget(): void {
     this.#sheet = null;
+    this.#request = null;
     this.#remembered.clear();
     for (const id of [...this.#states.keys()]) {
       if (this.#adapters[id].remember === true) this.#states.delete(id);
@@ -155,16 +170,34 @@ export class ScreenHost {
     return this.#sheet;
   }
 
-  /** Close the world sheet: the shell calls it when the stack is no longer the bare world. */
+  /** The world base's open request sheet, else null. */
+  get request(): RequestSheet | null {
+    return this.#request;
+  }
+
+  /** Whether either world sheet is open: movement and held input key on this, never `sheet`. */
+  get sheetOpen(): boolean {
+    return this.#sheet !== null || this.#request !== null;
+  }
+
+  /** Close the world sheets: the shell calls it when the stack is no longer the bare world. */
   closeSheet(): void {
     this.#sheet = null;
+    this.#request = null;
+  }
+
+  /** Close the request sheet once its request is no longer pending (withdrawn, answered elsewhere
+   *  or replaced), so a stale Accept never stays on screen. */
+  settleRequest(pending: readonly RequestNotice[]): void {
+    const open = this.#request;
+    if (open !== null && !pending.some((n) => n.key === open.notice.key)) this.#request = null;
   }
 
   /** Whether the top frame takes the D-pad (CTL7C.1): a bare battle base (CTL8I.1), or a screen or
    *  prompt whose adapter is nav-capable, or the world base while its sheet is open (ctl-10a). */
   takesNav(stack: Stack): boolean {
     const top = stack[stack.length - 1];
-    if (top.kind === 'world') return this.#sheet !== null;
+    if (top.kind === 'world') return this.sheetOpen;
     if (top.kind === 'battle') return battleScreen.nav === true;
     return (top.kind === 'screen' || top.kind === 'prompt') && this.#adapters[top.id].nav === true;
   }
@@ -176,9 +209,21 @@ export class ScreenHost {
     switch (top.kind) {
       case 'world': {
         if (world === undefined) return baseButton(top, btn);
-        const step = worldButton(this.#sheet, world.candidates(), btn);
+        const port = world.notices;
+        const step = worldButton(
+          this.#sheet,
+          world.candidates(),
+          btn,
+          port === undefined
+            ? undefined
+            : { notices: port.notices(), pending: port.pending(), request: this.#request },
+        );
         this.#sheet = step.sheet;
+        this.#request = step.request;
         if (step.run !== undefined) world.run(step.run);
+        if (step.dismiss !== undefined) port?.dismiss(step.dismiss);
+        if (step.view !== undefined) port?.view(step.view);
+        if (step.command !== undefined) return step.command;
         return step.result === 'consumed' ? 'consumed' : baseButton(top, btn);
       }
       // The battle's cursor ops paint into the battle view, whose frame id keys their state.
