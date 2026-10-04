@@ -180,6 +180,7 @@ import type { LeaderboardView } from './ui/leaderboardView';
 import { LiveRegion } from './ui/liveRegion';
 import type { MenuTarget } from './ui/menuModel';
 import type { MenuPointerInput, MenuView } from './ui/menuView';
+import type { MonstersTab } from './ui/monstersModel';
 import { EMPTY_NAV_MEMORY } from './ui/nav';
 import { renderNav } from './ui/navRender';
 import {
@@ -1060,6 +1061,14 @@ const socialFrameView: SocialFrameView = {
   },
 };
 
+/** Mirror the screen `id` just shown into the stack: its frame when it is now on top, else
+ *  undefined. */
+function mirrorOpened(id: FrameId): UpperFrame | undefined {
+  syncStack();
+  const top = contextStack[contextStack.length - 1];
+  return top.kind === 'screen' && top.id === id ? top : undefined;
+}
+
 /** The Social frame when it is the stack's top frame, else undefined. */
 function topSocialFrame(): UpperFrame | undefined {
   const top = contextStack[contextStack.length - 1];
@@ -1200,7 +1209,7 @@ function openMenu(): void {
 /** Open a menu entry's overlay ABOVE the menu, through that overlay's single open path. The
  *  menu stays open beneath it, so whichever way the child closes, the menu is back with its
  *  cursor on the entry. */
-function openMenuTarget(target: MenuTarget): void {
+function openMenuTarget(target: MenuTarget, monstersTab: MonstersTab = 'party'): void {
   // A second route to store reads keyed by identity, which is '' until the first onReady.
   if (identity === '') return;
   // Exhaustive switch, no default arm: a new target compiler-flags this site.
@@ -1208,11 +1217,19 @@ function openMenuTarget(target: MenuTarget): void {
     case 'boxView':
       boxView?.show();
       refreshBox();
+      // The Monsters adapter starts on Storage; the Party tab is one LB away.
+      if (monstersTab === 'party' && mirrorOpened('boxView') !== undefined) {
+        screenHost.button(contextStack, { button: 'LB', repeat: false }, screenCtx);
+      }
       break;
-    case 'raisingView':
+    case 'raisingView': {
       raisingView?.show();
       refreshRaising();
+      // Seated at the open, so the Bag paints then and not at the next batch or button.
+      const frame = mirrorOpened('raisingView');
+      if (frame !== undefined) screenHost.seat(frame, screenCtx);
       break;
+    }
     case 'questLogView':
       openQuestLog();
       break;
@@ -1240,15 +1257,17 @@ function openMenuTarget(target: MenuTarget): void {
   }
 }
 
-/** Apply one menu step: a level change resets auto-repeat, then the effect, then a repaint. */
-function applyMenuStep(step: MainMenuStep): void {
+/** Apply one menu step: a level change resets auto-repeat, then the effect, then a repaint.
+ *  `monstersTab` is the tab a Monsters open lands on: Party from the menu (design §5), and what
+ *  an accelerator names. */
+function applyMenuStep(step: MainMenuStep, monstersTab?: MonstersTab): void {
   if (step.state.level !== menuState.level) inputRouter.resetRepeat();
   menuState = step.state;
   switch (step.effect.kind) {
     case 'none':
       break;
     case 'open':
-      openMenuTarget(step.effect.target);
+      openMenuTarget(step.effect.target, monstersTab);
       break;
     case 'close':
       menuView?.hide();
@@ -1342,7 +1361,11 @@ function dispatch(command: Command): Promise<void> {
     case 'toggleHelp':
       if (helpView?.visible) {
         applyStack(contextStack, contextStep(contextStack, { kind: 'pop', id: 'helpView' }).stack);
-      } else if (overlayVerdict('helpView').kind === 'allow' && worldHasFocus()) {
+      } else if (
+        // At the bare battle base Select opens it over the battle, as Start opens the menu there.
+        isBareBattle(contextStack) ||
+        (overlayVerdict('helpView').kind === 'allow' && worldHasFocus())
+      ) {
         openHelp();
       }
       return DONE;
@@ -1662,12 +1685,6 @@ function closeFrame(frame: UpperFrame): void {
       dismissedBattleId = continuedBattleId(store.latestPlayerBattle(identity), dismissedBattleId);
       battleView?.hide();
       lastBattleVM = null;
-      break;
-    case 'menuView':
-      // Uncover the menu while it is still shown: uncovering it once hidden (the next sync) would
-      // focus its rows inside a hidden subtree, as `setCovered` has no visibility guard.
-      menuView?.setCovered(false);
-      hideFrame(frame.id);
       break;
     default:
       hideFrame(frame.id);
@@ -2058,8 +2075,8 @@ const jump = (): void => sendIntent('Jump');
 // The input pipeline (design §12): the keyboard source maps keys through the ONE binding
 // table into `{button, down}` edges; the pure router decides what each edge does. The router
 // owns the D-pad and X (Jump), plus A, B and Y while the main menu is up, and hands every other
-// button (and a nav-capable screen's D-pad) to the top frame's adapter; what that leaves unhandled
-// is the legacy ladder's below.
+// button (and a nav-capable screen's D-pad) to the top frame's adapter. It also decides each
+// accelerator (`accelDecision`).
 const keyboard = new KeyboardSource(DEFAULT_BINDINGS);
 const inputRouter = new InputRouter();
 
@@ -2153,19 +2170,15 @@ const runAccel = (accel: MenuAccel): void => {
 
 // Pop to the base, open the menu and pick each entry of `path`, so the menu stays beneath the leaf
 // with its cursor on it. Over a battle the menu opens read-only and a disabled entry only shows its
-// reason (CTL6C.3). Monsters opens on Storage; the Party tab is one LB away.
+// reason (CTL6C.3).
 const openAccelPath = (path: AccelPath): void => {
   // The menu's screens read store state keyed by identity, which is '' before join.
   if (identity === '') return;
   applyStack(contextStack, popToBase(contextStack));
   openMenu();
   syncStack(); // the menu is pushed before the leaf it opens
-  for (const key of path.menu) applyMenuStep(mainMenuPick(menuState, key));
+  for (const key of path.menu) applyMenuStep(mainMenuPick(menuState, key), path.tab);
   syncStack();
-  const top = contextStack[contextStack.length - 1];
-  if (path.tab === 'party' && top.kind === 'screen' && top.id === path.frame) {
-    screenHost.button(contextStack, { button: 'LB', repeat: false }, screenCtx);
-  }
 };
 
 // Codes whose press the menu or a nav-capable screen consumed: their OS key-repeats are cancelled
@@ -2557,7 +2570,7 @@ store.onBatchApplied(() => {
 });
 
 store.onBatchApplied(() => {
-  // Quest log is user-toggled (KeyQ); only refresh when already open.
+  // The quest log opens only when the player opens it; only refresh when already open.
   if (!questLogView?.visible) return;
   try {
     const quests = store.ownQuests(identity);

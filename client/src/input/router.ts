@@ -9,9 +9,9 @@
 // No DOM, SDK, module state or clock: the caller passes `now` and applies the returned effects.
 import type { WasmDirection } from '../convert/convert';
 import { acceleratorsDenied, type FrameId, type Stack } from '../ui/contextStack';
+import type { MonstersTab } from '../ui/monstersModel';
 import type { NavInput } from '../ui/nav';
 import type { Command, ScreenResult } from '../ui/screens/types';
-import type { Bindings } from './bindings';
 import { type Accel, type ButtonEdge, dpadDir, type VButton } from './buttons';
 
 /** Who owns a key event: the focused element's native behaviour, or the router. */
@@ -81,19 +81,6 @@ export function typingKey(target: unknown, e: OwnershipEvent): 'stopTyping' | un
   return text ? 'stopTyping' : undefined;
 }
 
-/** The CTL6B.6 bindings, from before Q and E became LB and RB (ctl-11a): LB and RB from PageUp /
- *  PageDown only. The shell reads `DEFAULT_BINDINGS`; only older tests still read this. */
-export function routedBindings(b: Bindings): Bindings {
-  return {
-    buttons: {
-      ...b.buttons,
-      LB: b.buttons.LB.filter((c) => c === 'PageUp'),
-      RB: b.buttons.RB.filter((c) => c === 'PageDown'),
-    },
-    accels: b.accels,
-  };
-}
-
 /** The accelerators that open a menu path; F8 and F9 keep their own handlers. */
 export type MenuAccel = Exclude<Accel, 'F8' | 'F9'>;
 
@@ -102,7 +89,7 @@ export type MenuAccel = Exclude<Accel, 'F8' | 'F9'>;
 export interface AccelPath {
   readonly menu: readonly string[];
   readonly frame: FrameId;
-  readonly tab?: 'party' | 'storage';
+  readonly tab?: MonstersTab;
 }
 
 export const ACCEL_PATHS: Readonly<Record<MenuAccel, AccelPath>> = {
