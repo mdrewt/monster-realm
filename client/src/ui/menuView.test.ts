@@ -550,6 +550,42 @@ describe('MenuView — input', () => {
     expect(onInput).toHaveBeenCalledTimes(1);
   });
 
+  it('CTL15-2-MENU-OWNS-CLICK: #menu-rows carries data-pointer-own, so with the #game-screen pointer dispatcher attached one click on a row emits exactly one pick and no button press', async () => {
+    // WRONG IMPL KILLED (ctl-15, plan REVISION 1 click rule 6): a menu without the
+    // data-pointer-own mark (the dispatcher would ALSO seek + A on the row: the menu's own pick
+    // plus a press, so the entry opens twice or the cursor's entry opens instead); a view that
+    // dropped its row click (the row would then do nothing at all, since the dispatcher leaves
+    // owned rows alone). The pointer module is imported lazily so the rest of this file stays
+    // independent of it.
+    const overlay = document.getElementById(OVERLAY_ID) as HTMLElement;
+    const gameScreen = document.createElement('div');
+    gameScreen.id = 'game-screen';
+    document.body.appendChild(gameScreen);
+    gameScreen.appendChild(overlay);
+    const { view, onInput } = newView();
+    view.render(rootVm());
+    expect(rowsEl().hasAttribute('data-pointer-own'), '#menu-rows is owned by the view').toBe(true);
+
+    const { PointerSource } = await import('../input/pointerSource');
+    const press = vi.fn();
+    const source = new PointerSource(gameScreen, () => null, {
+      top: () => 'frame',
+      press,
+      capturing: () => false,
+      cancelCapture: vi.fn(),
+      choice: vi.fn(),
+      shop: vi.fn(),
+    });
+    expect(source).toBeInstanceOf(PointerSource);
+
+    (document.getElementById('menu-root-journal') as HTMLElement).dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true }),
+    );
+    expect(onInput, 'one pick').toHaveBeenCalledTimes(1);
+    expect(onInput).toHaveBeenCalledWith({ kind: 'pick', key: 'journal' });
+    expect(press, 'and no press from the dispatcher').not.toHaveBeenCalled();
+  });
+
   it('MV-NO-KEYDOWN: the view owns no keys — a keydown on the list emits nothing, is not prevented, and still reaches window', () => {
     // WRONG IMPL KILLED: a second key path in the view (the router is the only driver; a view
     // listener would double-step every press), and one that swallows Escape, Enter or Backspace

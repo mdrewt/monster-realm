@@ -10,7 +10,9 @@
 //   new HintBarView(root /* #hint-bar */); render(chips, banner: string | null)
 //   - A keyed reconcile on `data-button`: the shipped `#chip-start` / `#chip-select` buttons are
 //     REUSED (same nodes, ids and launcher attributes kept); every other chip is a
-//     `<span class="mr-chip" data-button=X style="pointer-events:none">` (no click until ctl-15).
+//     `<span class="mr-chip" data-button=X>`. ctl-15 (named intentional change, CTL15.5): the span
+//     chips no longer carry an inline `pointer-events: none`; the #game-screen pointer dispatcher
+//     turns a click on one into a press of its button (CTL15-5-CHIP-CLICKABLE below).
 //   - Each chip holds `.mr-chip-key` (the keycap), `.mr-chip-verb` (the verb) and, only while
 //     `badge`, `.mr-chip-badge` (the catalog's `chrome.badge.request`), all through textContent.
 //   - The chips sit in the DOM in the model's order; a chip the model no longer lists is removed.
@@ -23,7 +25,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { VButton } from '../input/buttons';
 import { HintBarView } from './hintBar';
 import type { HintChip } from './hintBarModel';
@@ -154,7 +156,9 @@ describe('HintBarView (ctl-13, CTL13.1)', () => {
     ] as const) {
       expect(node.tagName, `${name} is a span, not a button`).toBe('SPAN');
       expect(node.classList.contains('mr-chip'), `${name} has the chip class`).toBe(true);
-      expect(node.style.pointerEvents, `${name} takes no pointer events`).toBe('none');
+      // ctl-15 (named intentional change, CTL15.5): was `toBe('none')`; the chip now takes the
+      // click the pointer dispatcher turns into a press.
+      expect(node.style.pointerEvents, `${name} has no inline pointer-events`).toBe('');
       expect(node.hasAttribute('tabindex'), `${name} is not a tab stop`).toBe(false);
       expect(node.hasAttribute('role'), `${name} has no role`).toBe(false);
     }
@@ -250,5 +254,47 @@ describe('HintBarView (ctl-13, CTL13.1)', () => {
     expect(part(chipOf(bar, 'A'), 'mr-chip-verb')).toBe(hostile);
     expect(part(chipOf(bar, 'A'), 'mr-chip-key')).toBe('<b>k</b>');
     expect((bar.querySelector('#notice-banner') as HTMLElement).textContent).toBe(hostile);
+  });
+
+  it('CTL15-5-CHIP-CLICKABLE: the painted A, B and Y chips take clicks (no inline pointer-events), keep their data-button, stay non-focusable spans, and a click on one bubbles out of the bar to the dispatcher', () => {
+    // WRONG IMPL KILLED: span chips still painted with `pointer-events: none` (a click falls
+    // through to the canvas, and B12's "leave every frame without a hold" fails for mouse and
+    // touch); a chip that loses `data-button` (the dispatcher reads the button from it); a chip
+    // turned into a <button> or given a tabindex (a new tab stop in the bar); a chip whose click
+    // is stopped inside the bar. Re-rendered chips keep the property.
+    const bar = mountHintBar();
+    const view = new HintBarView(bar);
+    view.render([chip('A', 'Enter', 'Talk'), chip('B', BACKSPACE_GLYPH, 'Back'), START], null);
+    view.render(
+      [chip('A', 'Enter', 'OK'), chip('Y', 'F', 'Info'), chip('B', BACKSPACE_GLYPH, 'Back'), START],
+      null,
+    );
+    const heard: string[] = [];
+    const listener = (e: Event): void => {
+      const target = e.target instanceof Element ? e.target.closest('[data-button]') : null;
+      heard.push(target?.getAttribute('data-button') ?? '');
+    };
+    document.body.addEventListener('click', listener);
+    onTestFinished(() => document.body.removeEventListener('click', listener));
+    for (const button of ['A', 'B', 'Y'] as const) {
+      const node = chipOf(bar, button);
+      expect(node.tagName, `${button} is still a span`).toBe('SPAN');
+      expect(node.style.pointerEvents, `${button} has no inline pointer-events`).toBe('');
+      expect(
+        node.getAttribute('style') ?? '',
+        `${button}: no pointer-events in its style`,
+      ).not.toMatch(/pointer-events/i);
+      expect(node.getAttribute('data-button'), `${button} keeps data-button`).toBe(button);
+      expect(node.hasAttribute('tabindex'), `${button} is not a tab stop`).toBe(false);
+      (node.querySelector('.mr-chip-verb') as HTMLElement).dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true }),
+      );
+    }
+    expect(heard, 'each chip click bubbles out of the bar, naming its button').toEqual([
+      'A',
+      'B',
+      'Y',
+    ]);
+    expect(chipOf(bar, 'Start').tagName, 'Start stays the shipped button').toBe('BUTTON');
   });
 });

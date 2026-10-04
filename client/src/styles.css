@@ -178,6 +178,9 @@
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
+  /* Placed straight in a shell's flex column (the Monsters frame), `overflow-x: auto` would let
+   * the strip shrink to zero height once the frame overflows: its tabs could not be clicked. */
+  min-height: min-content;
   overflow-x: auto;
   gap: 0.25rem;
 }
@@ -384,6 +387,71 @@
 .mr-chip::before {
   content: attr(data-button) " ";
   font-weight: bold;
+}
+/* The chip's parts (ctl-13 hintBar.ts): the live keycap, the verb and the request badge, spaced so
+ * "Start Esc Menu" never runs together. The request banner sits on the frame background. */
+.mr-chip-key,
+.mr-chip-verb,
+.mr-chip-badge {
+  margin-left: 0.4em;
+}
+.mr-chip-key {
+  opacity: 0.85;
+}
+.mr-chip-badge {
+  font-weight: bold;
+}
+.mr-notice-banner {
+  max-width: 50%;
+  padding: 2px 8px;
+  font: 12px / 1.4 monospace;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--mr-frame-border);
+  background: var(--mr-frame-bg);
+  color: var(--mr-frame-fg);
+}
+
+/*
+ * Pointer and touch (ctl-15, input/pointerSource.ts). The world canvas takes every touch gesture
+ * (no browser pan or zoom under a long-press); a frame body still scrolls vertically by touch. The
+ * long-press ring fills over the 500 ms of input/longPress.ts LONG_PRESS_MS (change both together),
+ * and the reduced-motion guard follows it at the same specificity, so source order decides
+ * (A11Y-27): a static ring. The hover mark shows only while the mouse drove last: a key press
+ * removes `mr-pointer-hover` from the game screen.
+ */
+.mr-world-canvas {
+  touch-action: none;
+}
+.mr-frame-body {
+  touch-action: pan-y;
+}
+.mr-longpress-ring {
+  position: fixed;
+  z-index: 130;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  border-radius: 50%;
+  border: 3px solid var(--mr-frame-border);
+  pointer-events: none;
+  animation: mr-ring-fill 500ms linear forwards;
+}
+@keyframes mr-ring-fill {
+  from {
+    transform: scale(0.3);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mr-longpress-ring {
+    animation: none;
+  }
+}
+.mr-pointer-hover .mr-nav-item:hover {
+  text-decoration: underline;
 }
 
 /*

@@ -412,7 +412,7 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
 }, () => {
   afterEach(teardown);
 
-  it('CTL13-1-BOOT-LIVE: the bar shows the live keycaps and verbs of the world (Start and Select as the shipped buttons, A with the faced target, Y and B while a request waits with no target, a sheet, a menu frame), the Start badge follows the waiting request, a remap made in Options > Controls or stored in mr.controls shows on the next frame, and the new chips are non-clickable spans', async () => {
+  it('CTL13-1-BOOT-LIVE: the bar shows the live keycaps and verbs of the world (Start and Select as the shipped buttons, A with the faced target, Y and B while a request waits with no target, a sheet, a menu frame), the Start badge follows the waiting request, a remap made in Options > Controls or stored in mr.controls shows on the next frame, and the new chips are clickable, non-focusable spans', async () => {
     // LEGACY REPLACED (the Red): the two chips were written ONCE at boot (their text and nothing
     // else), so a remap changed no keycap, no verb followed the faced target or the open frame,
     // and no chip existed for A, B or Y.
@@ -422,7 +422,8 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
     // target's verb; Y / B missing while a request waits, shown beside a target, or B kept after
     // its banner was dismissed; Y dropped after the banner was dismissed; the badge missing, kept
     // after the request goes, or put on another chip; the frame chips (ok / back / close) not
-    // following the top of the stack; a new chip that is a <button> or takes a click; and a stored
+    // following the top of the stack; a new chip that is a <button> (a tab stop) or keeps an inline
+    // pointer-events:none (ctl-15: chips are clicked, CTL15.5); and a stored
     // table that the bar does not read.
     const ESC = i18nT('key.escape');
     const menuVerb = i18nT('chrome.chip.menu');
@@ -457,7 +458,9 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
       tag: 'SPAN',
     });
     const aSpan = document.querySelector('#hint-bar [data-button="A"]') as HTMLElement;
-    expect(aSpan.style.pointerEvents, 'a new chip takes no click (ctl-15)').toBe('none');
+    // ctl-15 (named intentional change, CTL15.5): was `toBe('none')`; the chip now takes the click
+    // the #game-screen pointer dispatcher turns into a press of A.
+    expect(aSpan.style.pointerEvents, 'a new chip has no inline pointer-events').toBe('');
     expect(aSpan.hasAttribute('tabindex')).toBe(false);
     removeFacedNpc();
     frame();
@@ -601,5 +604,137 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
       i18nT('key.slash'),
     );
     expect(chipOf('Start').verb, 'verbs are unaffected by a remap').toBe(menuVerb);
+  }, 120_000);
+});
+
+// ==========================================================================================
+// ctl-15: the pointer dispatcher wired into the booted main.ts (CTL15.1, CTL15.3, CTL15.4)
+// ==========================================================================================
+
+const gameScreenEl = (): HTMLElement => document.getElementById('game-screen') as HTMLElement;
+/** The canvas the (stubbed) renderer mounts inside #game-screen. */
+const worldCanvas = (): Promise<HTMLElement> =>
+  vi.waitFor(
+    () => {
+      const c = document.querySelector<HTMLElement>('#game-screen canvas');
+      if (c === null) throw new Error('the world canvas is not mounted yet');
+      return c;
+    },
+    { timeout: 5_000, interval: 5 },
+  );
+const leftClick = (el: Element): void => {
+  clock.t = next(50);
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+};
+const mouseMove = (el: Element, x: number, y: number): void => {
+  clock.t = next(20);
+  el.dispatchEvent(
+    new PointerEvent('pointermove', {
+      bubbles: true,
+      pointerType: 'mouse',
+      clientX: x,
+      clientY: y,
+    }),
+  );
+};
+const talks = (): number => H.calls.filter((c) => c.name === 'talk').length;
+
+/** From the bare world: Start, the menu to Options > Controls, A. */
+function openControls(): void {
+  press('Escape');
+  for (let i = 0; i < 8 && game().navActive !== 'options'; i += 1) press('ArrowDown');
+  press('Enter');
+  for (let i = 0; i < 2 && game().navActive !== 'controls'; i += 1) press('ArrowDown');
+  press('Enter');
+  expect(stackNames(), 'precondition: Controls opened above the menu').toEqual([
+    'world',
+    'menuView',
+    'controlsView',
+  ]);
+}
+
+describe('main.ts pointer wiring over the real shell (runtime, ctl-15)', {
+  sequential: true,
+}, () => {
+  afterEach(teardown);
+
+  it('ctl-15 boot: the world canvas carries mr-world-canvas; a left click on it at the bare world presses A (talks to the faced NPC); with a frame on top the same click does nothing', async () => {
+    // WRONG IMPL KILLED: a dispatcher never attached at boot (or attached before the canvas and
+    // holding a stale null), the canvas class missing (styles.css's touch-action rule would then
+    // style nothing), and a canvas click that acts under the menu.
+    await bootReady();
+    batch();
+    seedFacedNpc();
+    frame();
+    const canvas = await worldCanvas();
+    expect(canvas.classList.contains('mr-world-canvas'), 'the canvas class').toBe(true);
+    leftClick(canvas);
+    expect(talks(), 'the click pressed A: one talk to the faced NPC').toBe(1);
+    press('Escape');
+    frame();
+    expect(stackNames(), 'precondition: the menu is on top').toEqual(['world', 'menuView']);
+    leftClick(canvas);
+    expect(talks(), 'a canvas click under a frame presses nothing').toBe(1);
+    expect(stackNames()).toEqual(['world', 'menuView']);
+  }, 120_000);
+
+  it('ctl-15 boot: a keydown hides the hover state a mouse move over #game-screen set', async () => {
+    // WRONG IMPL KILLED: handleKeyDown never calling the source's keyPressed (the hover mark stays
+    // on while the player drives with the keyboard).
+    await bootReady();
+    batch();
+    frame();
+    const canvas = await worldCanvas();
+    mouseMove(canvas, 40, 50);
+    expect(gameScreenEl().classList.contains('mr-pointer-hover'), 'the mouse shows it').toBe(true);
+    press('ArrowUp');
+    expect(gameScreenEl().classList.contains('mr-pointer-hover'), 'a key hides it').toBe(false);
+  }, 120_000);
+
+  it('ctl-15 boot: in Options > Controls a hover seek leaves no repeat armed; a click on the active cell starts the capture, and a right-click on #game-screen ends it without pressing B', async () => {
+    // WRONG IMPL KILLED: a pointer press that sends the down edge only (the router's auto-repeat
+    // stays armed and walks the cursor on at +350 ms with no key held); a right-click during the
+    // capture that presses B (Controls would close) or does not cancel (the next key is bound).
+    await bootReady();
+    batch();
+    frame();
+    openControls();
+    const here = BUTTON_CELLS.indexOf(controlsActive() ?? '');
+    expect(here, 'precondition: the cursor is on a Buttons cell').toBeGreaterThanOrEqual(0);
+    const target = BUTTON_CELLS[here + 4] as string;
+    const cell = (): HTMLElement => {
+      const el = document.querySelector<HTMLElement>(`#controls-rows [data-nav-key="${target}"]`);
+      if (el === null) throw new Error(`no Controls cell ${target}`);
+      return el;
+    };
+
+    mouseMove(cell(), 31, 77);
+    expect(controlsActive(), 'the hover walked the cursor two rows down').toBe(target);
+    frame(400);
+    frame(200);
+    frame(300);
+    expect(controlsActive(), 'no repeat left armed: the cursor stays').toBe(target);
+    expect(stackNames()).toEqual(['world', 'menuView', 'controlsView']);
+
+    expect(localStorage.getItem(STORAGE_KEY), 'precondition: nothing saved').toBeNull();
+    leftClick(cell());
+    clock.t = next(50);
+    const back = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 });
+    cell().dispatchEvent(back);
+    expect(back.defaultPrevented, 'the right-click is taken').toBe(true);
+    expect(stackNames(), 'cancelling the capture is not a B: Controls stays').toEqual([
+      'world',
+      'menuView',
+      'controlsView',
+    ]);
+    press('KeyZ', { key: 'z' });
+    expect(localStorage.getItem(STORAGE_KEY), 'the capture had ended: Z bound nothing').toBeNull();
+
+    // Control: a click starts a live capture that does bind the next key.
+    leftClick(cell());
+    press('KeyZ', { key: 'z' });
+    expect(localStorage.getItem(STORAGE_KEY) ?? '', 'control: a live capture binds Z').toContain(
+      'KeyZ',
+    );
   }, 120_000);
 });

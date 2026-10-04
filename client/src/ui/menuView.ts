@@ -2,7 +2,7 @@
 // `menuViewModel(state)` from `screens/mainMenuScreen.ts` into one `side` frame of the ctl-4 kit
 // (`frame.ts` chrome, `navRender.ts` list) inside the legacy `#menu-overlay` root, and decides
 // nothing: keys reach the menu only through the input router, and a click on an entry is
-// forwarded as `{kind: 'pick', key}`.
+// forwarded as `{kind: 'pick', key}` (the pointer source skips `[data-pointer-own]`, ctl-15).
 //
 // `#menu-overlay` stays the overlay root (its id, inline style and `display:none` contract are
 // frozen), and `#menu-rows` stays its `initialFocusSelector` and the single tab stop: it moves
@@ -70,7 +70,10 @@ export class MenuView {
     this.#frame = menuFrame(this.#overlay, this.#rows);
 
     // ONE delegated listener on the persistent container: rows are diffed by key, so per-row
-    // listeners would leak or double up across renders.
+    // listeners would leak or double up across renders. A pick already moves the cursor and
+    // activates, so the #game-screen pointer source (ctl-15) leaves these clicks to the view:
+    // `data-pointer-own` keeps a row click from being dispatched twice. Hover still seeks.
+    this.#rows.setAttribute('data-pointer-own', '');
     this.#rows.addEventListener('click', (e) => {
       const item =
         e.target instanceof Element ? e.target.closest<HTMLElement>('[data-nav-key]') : null;
