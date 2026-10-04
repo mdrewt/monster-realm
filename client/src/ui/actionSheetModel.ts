@@ -90,7 +90,9 @@ export function sheetStep(
   if (outcome.kind !== 'activate') return { state: nav === s.nav ? s : { ...s, nav } };
   const action = liveAction(outcome.key, current);
   if (action === undefined) return { state: null };
-  return action.kind === 'challenge' ? { state: askConfirm(s, outcome.key) } : { state: null, run: action };
+  return action.kind === 'challenge'
+    ? { state: askConfirm(s, outcome.key) }
+    : { state: null, run: action };
 }
 
 function confirmStep(

@@ -75,7 +75,6 @@ export class PvpView {
       throw new Error('pvpView: #pvp-challenge-outgoing element missing from index.html');
     this.#outgoingEl = outgoingEl;
 
-
     const feedbackEl = document.getElementById('pvp-challenge-feedback');
     if (!feedbackEl)
       throw new Error('pvpView: #pvp-challenge-feedback element missing from index.html');

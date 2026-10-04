@@ -3794,7 +3794,9 @@ async function main(): Promise<void> {
               : sheet.entries.find((e) => e.key === sheet.confirm?.key);
           if (sheet !== null && sheet.confirm !== null && asked !== undefined) {
             // The Challenge confirm (ctl-10b): the question, then Yes / No as the listbox.
-            const question = tf('interact.confirm.challenge', { name: interactName(asked.candidate) });
+            const question = tf('interact.confirm.challenge', {
+              name: interactName(asked.candidate),
+            });
             interactChipTextEl.textContent = question;
             renderNav(interactSheetEl, confirmLayout, sheet.confirm.nav, {
               frame: 'interact',
