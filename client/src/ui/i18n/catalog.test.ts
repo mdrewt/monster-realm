@@ -635,7 +635,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'menu.social.trades.title': 'Trades',
   'menu.social.trades.desc': 'See and answer the trade offered to you.',
   'menu.social.challenges.title': 'Challenges',
-  'menu.social.challenges.desc': 'Challenge a player or answer a challenge.',
+  // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): was 'Challenge a player or answer a challenge.';
+  // no menu row starts a challenge any more, so the leaf only answers them.
+  'menu.social.challenges.desc': 'See and answer challenges.',
   'menu.social.rankings.title': 'Rankings',
   'menu.social.rankings.desc': 'See the ranked leaderboard.',
   'menu.profile.name.title': 'Name',

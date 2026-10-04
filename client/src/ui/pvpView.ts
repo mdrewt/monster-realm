@@ -5,10 +5,11 @@
 //
 // Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `pvp.*` key from ui/i18n/catalog.en.ts;
-// the English bytes are unchanged. Two sinks stay raw on purpose: the per-player challenge
-// button shows `p.name` (model data) and `showFeedback(msg)` renders text that
-// main.ts owns (S6 migrates it there). Every `t(`/`tf(` first argument is a string LITERAL — the
-// player-list heading is a ternary between two CALLS, never between two keys.
+// the English bytes are unchanged. One sink stays raw on purpose: `showFeedback(msg)` renders text
+// that main.ts owns (S6 migrates it there). Every `t(`/`tf(` first argument is a string LITERAL.
+//
+// The panel only RESPONDS (ctl-10b, CTL10B.2): a challenge is started face to face from the world
+// (A on the player you face), never from a list here, so `#pvp-player-list` stays empty.
 import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { PvpChallengeViewModel, PvpIncomingChallenge, PvpOutgoingChallenge } from './pvpModel';
@@ -27,15 +28,15 @@ export interface PvpViewCallbacks {
   readonly onDecline: (challengeId: bigint) => void | Promise<void>;
   /** Cancel an outgoing challenge. */
   readonly onCancel: (challengeId: bigint) => void | Promise<void>;
-  /** Send a challenge to target player. */
-  readonly onChallenge: (targetIdentity: string) => void | Promise<void>;
+  /** UNREAD since ctl-10b (a challenge starts face to face). Optional only because a test
+   *  outside the slice's touches still passes it (residual R-ctl-10b-PVPCB). */
+  readonly onChallenge?: (targetIdentity: string) => void | Promise<void>;
 }
 
 export class PvpView {
   readonly #statusEl: HTMLElement;
   readonly #incomingEl: HTMLElement;
   readonly #outgoingEl: HTMLElement;
-  readonly #playerListEl: HTMLElement;
   readonly #feedbackEl: HTMLElement;
   readonly #callbacks: PvpViewCallbacks;
   readonly #root: HTMLElement;
@@ -74,9 +75,6 @@ export class PvpView {
       throw new Error('pvpView: #pvp-challenge-outgoing element missing from index.html');
     this.#outgoingEl = outgoingEl;
 
-    const playerListEl = document.getElementById('pvp-player-list');
-    if (!playerListEl) throw new Error('pvpView: #pvp-player-list element missing from index.html');
-    this.#playerListEl = playerListEl;
 
     const feedbackEl = document.getElementById('pvp-challenge-feedback');
     if (!feedbackEl)
@@ -157,14 +155,12 @@ export class PvpView {
    * Re-render from the latest VM. The caller (main.ts's batch listener or its Social open path)
    * is fully responsible for the show/hide decision via `forceVisible` — this method
    * never auto-shows independently. This prevents pvpView from popping over an active
-   * battle or other overlay when hasActive=true (mutual exclusivity). main.ts only ever passes
+   * battle or other overlay (mutual exclusivity). main.ts only ever passes
    * true today: what closes the panel is its `hide()`, run by the context stack.
    *
    * Each container is rebuilt only when what it shows changed (`#renderIfChanged`).
    */
   refresh(vm: PvpChallengeViewModel | null, forceVisible: boolean): void {
-    const hasActive = vm !== null && (vm.incoming !== null || vm.outgoing !== null);
-
     if (!forceVisible) {
       if (this.#visible) this.hide();
       return;
@@ -176,13 +172,12 @@ export class PvpView {
       this.#statusEl.textContent = t('pvp.title.idle');
       this.#incomingEl.replaceChildren();
       this.#outgoingEl.replaceChildren();
-      this.#playerListEl.replaceChildren();
       this.#rendered.clear();
       return;
     }
 
     this.#statusEl.textContent = t('pvp.title.challenge');
-    const { incoming, outgoing, challengeablePlayers: players } = vm;
+    const { incoming, outgoing } = vm;
     this.#renderIfChanged(
       this.#incomingEl,
       incoming && [incoming.challengeId, incoming.challengerName],
@@ -192,11 +187,6 @@ export class PvpView {
       this.#outgoingEl,
       outgoing && [outgoing.challengeId, outgoing.targetName, outgoing.status],
       () => this.#renderOutgoing(outgoing),
-    );
-    this.#renderIfChanged(
-      this.#playerListEl,
-      [!hasActive, players.map((p) => [p.identity, p.name])],
-      () => this.#renderPlayerList(players, !hasActive),
     );
     // re-derive the lock on the live controls — a batch can re-render while a
     // lifecycle call is still in flight.
@@ -249,10 +239,10 @@ export class PvpView {
     }
   }
 
-  /** The three dynamic containers ARE the live-button registry — never `#root`, which
+  /** The two dynamic containers ARE the live-button registry — never `#root`, which
    *  also holds the static index.html controls (the close button) this lock must not touch. */
   #setLifecycleDisabled(disabled: boolean): void {
-    for (const el of [this.#incomingEl, this.#outgoingEl, this.#playerListEl]) {
+    for (const el of [this.#incomingEl, this.#outgoingEl]) {
       for (const btn of el.querySelectorAll('button')) btn.disabled = disabled;
     }
   }
@@ -304,33 +294,5 @@ export class PvpView {
       this.#dispatch(() => this.#callbacks.onCancel(outgoing.challengeId)),
     );
     this.#outgoingEl.appendChild(cancelBtn);
-  }
-
-  #renderPlayerList(
-    players: readonly { identity: string; name: string }[],
-    showTitle: boolean,
-  ): void {
-    this.#playerListEl.replaceChildren();
-
-    if (showTitle) {
-      const title = document.createElement('div');
-      title.textContent = players.length === 0 ? t('pvp.players.none') : t('pvp.players.heading');
-      this.#playerListEl.appendChild(title);
-    }
-
-    for (const p of players) {
-      const li = document.createElement('li');
-      li.style.cssText = 'list-style:none;margin:4px 0;';
-
-      const btn = document.createElement('button');
-      btn.setAttribute('data-testid', 'pvp-challenge-player-btn');
-      btn.setAttribute('data-player-identity', p.identity);
-      btn.textContent = p.name;
-      btn.addEventListener('click', () =>
-        this.#dispatch(() => this.#callbacks.onChallenge(p.identity)),
-      );
-      li.appendChild(btn);
-      this.#playerListEl.appendChild(li);
-    }
   }
 }

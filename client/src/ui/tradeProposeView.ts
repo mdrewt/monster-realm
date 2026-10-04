@@ -9,8 +9,9 @@
 //      every key: Enter/Space are its own click.
 //   2. The deferred initial focus is NO LONGER OWNED HERE. `ui/overlayA11y.ts` is the
 //      single owner of the setTimeout(…, 0) defer for all seventeen overlays, and it targets this
-//      overlay's `initialFocusSelector` (#tradepropose-target) from OVERLAY_A11Y. The defer is
-//      still load-bearing: it lets the opening key event fully complete before focus lands.
+//      overlay's `initialFocusSelector` (#tradepropose-target) from OVERLAY_A11Y. The face-to-face
+//      open (ctl-10b) locks that select and seats the wizard at once, so the Offer paint takes
+//      focus first and the defer, finding focus already inside, leaves it there.
 //   3. hide() resets the select→placeholder + unchecks all monsters + blanks both currency
 //      inputs + feedback + releases the in-flight lock (#pending=false, submit re-enabled —
 //      dead-button guard) so a stale draft/lock never survives a re-open.
@@ -261,9 +262,15 @@ export class TradeProposeView {
    * textContent / value ONLY, NEVER innerHTML (XSS firewall). Authoritative rebuild: a
    * monster traded away since the last open must not linger (D6, red-team M-2).
    */
-  render(lists: TradeProposeLists): void {
-    this.#renderLists(lists);
-    this.#paintHeader(proposeSteps(false), 'target');
+  render(lists: TradeProposeLists, target?: string): void {
+    // A supplied target (the face-to-face open, ctl-10b) is pre-selected and LOCKED: the trade goes
+    // to the player you face, so neither the mouse nor Tab can retarget it, and there is no Target
+    // step. A target that is not listed is no target.
+    const supplied = target !== undefined && lists.targets.some((x) => x.identity === target);
+    this.#renderLists(lists, supplied ? target : PLACEHOLDER_VALUE);
+    this.#target.disabled = supplied;
+    const steps = proposeSteps(supplied);
+    this.#paintHeader(steps, steps[0] as ProposeStep);
     this.#refreshSubmitEnabled();
   }
 

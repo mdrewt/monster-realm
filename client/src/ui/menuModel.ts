@@ -8,8 +8,8 @@
 // each id at its call site.
 //
 // Until the ctl-8 screens land, each leaf opens a legacy overlay and the groups are one-level
-// sub-lists inside the menu frame. Interact, Evolve and Offer a Trade are reachable by their
-// hotkeys only until ctl-8/ctl-10 give them a home.
+// sub-lists inside the menu frame. No leaf starts a trade or a challenge: both start face to face
+// (A on the player you face, ctl-10b); Social only answers them.
 import { t } from './i18n/resolver';
 import type { OverlayId } from './overlayRegistry';
 

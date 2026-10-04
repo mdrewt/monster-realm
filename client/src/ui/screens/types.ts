@@ -121,6 +121,9 @@ export interface ScreenContext {
   /** The Social tab the last open path asked for, else null (a plain open). It is bound before
    *  the frame shows, keeps its value after the frame closes and reads null after a reconnect. */
   readonly socialTab: SocialTab | null;
+  /** The player the trade wizard was opened for (the face-to-face Trade, ctl-10b), as a hex
+   *  identity; absent or null when no target was supplied. Bound before the wizard shows. */
+  readonly proposeTarget?: string | null;
   /** The OS reduced-motion preference. */
   readonly reduceMotion: boolean;
 }
