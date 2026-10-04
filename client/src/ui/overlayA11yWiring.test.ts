@@ -75,10 +75,12 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_BINDINGS } from '../input/bindings';
 import { t } from './a11yCopy';
 import { BattleView } from './battleView';
 import { BoxView } from './boxView';
 import { ClaimView } from './claimView';
+import { ControlsView } from './controlsView';
 import { DialogueView } from './dialogueView';
 import { EvolutionView } from './evolutionView';
 import { HealView } from './healView';
@@ -420,6 +422,24 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
       reopen: () => view.show(),
     };
   },
+  // ctl-12b (named intentional change): Options › Controls, a JS-created shell like privacyView's,
+  // opened by `show()` (the door main.ts's openControls calls). Its anchor `#controls-rows` carries
+  // tabindex="0" from construction, so the open needs no paint first.
+  controlsView: () => {
+    const view = new ControlsView({
+      bindings: () => DEFAULT_BINDINGS,
+      onClear: () => true,
+      onReset: () => true,
+      onCancelCapture: noop,
+      announce: noop,
+    } as ConstructorParameters<typeof ControlsView>[0]);
+    view.show();
+    return {
+      root: capturedRoot('controlsView'),
+      close: () => view.hide(),
+      reopen: () => view.show(),
+    };
+  },
   menuView: () => {
     const view = new MenuView({ onInput: noop });
     view.show();
@@ -458,8 +478,8 @@ function capturedRoot(id: OverlayId): HTMLElement {
   return calls[calls.length - 1][1];
 }
 
-/** The eleven static shells plus the two JS-created ones (`claimView`, `privacyView`): the
- *  roots that ARE addressable by id. */
+/** The eleven static shells plus the three JS-created ones (`claimView`, `privacyView` and, since
+ *  ctl-12b, `controlsView`): the roots that ARE addressable by id. */
 const ROOT_IDS: Partial<Record<OverlayId, string>> = {
   dialogueView: 'dialogue-overlay',
   questLogView: 'quest-log-overlay',
@@ -474,6 +494,7 @@ const ROOT_IDS: Partial<Record<OverlayId, string>> = {
   menuView: 'menu-overlay',
   claimView: 'claim-overlay',
   privacyView: 'privacy-overlay',
+  controlsView: 'controls-overlay',
 };
 
 function installSentinel(): HTMLElement {
@@ -535,11 +556,12 @@ afterEach(async () => {
 // A `vite.config.ts` SETTING CANNOT SUBSTITUTE: the criterion is the CLI flag, and the CLI flag
 // overrides config. Moving this into the runner config would satisfy nobody and gate nothing.
 describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', () => {
-  it('S10-WIRE-TOTALITY BITES: the opener table covers EVERY OverlayId and nothing else, and the manifest is the real seventeen', () => {
+  it('S10-WIRE-TOTALITY BITES: the opener table covers EVERY OverlayId and nothing else, and the manifest is the real eighteen', () => {
     // Compile-time totality is the primary device (Record<OverlayId, _>); these are the runtime
     // belts, so an `as` cast or a `@ts-expect-error` cannot quietly shrink the parameterisation.
-    expect(OVERLAY_IDS.length, 'the manifest must hold seventeen mutual-exclusion overlays').toBe(
-      17,
+    // ctl-12b (named intentional change): seventeen -> eighteen, `controlsView` joined.
+    expect(OVERLAY_IDS.length, 'the manifest must hold eighteen mutual-exclusion overlays').toBe(
+      18,
     );
     expect(Object.keys(OPENERS).sort()).toEqual([...OVERLAY_IDS].sort());
     expect(Object.keys(OVERLAY_A11Y).sort()).toEqual([...OVERLAY_IDS].sort());
@@ -549,9 +571,7 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
     // `A11YCOPY-OVERLAY-NAMESPACE-EXACT` pins KEY set-equality, not VALUE distinctness, so nothing
     // asserted this before.
     const names = OVERLAY_IDS.map((id) => t(OVERLAY_A11Y[id].labelKey));
-    expect(new Set(names).size, 'the seventeen accessible names must be pairwise distinct').toBe(
-      17,
-    );
+    expect(new Set(names).size, 'the eighteen accessible names must be pairwise distinct').toBe(18);
 
     // SHAPE totality, not just KEY totality. `Opened.reopen` is what makes the repeat and
     // reopen-after-close teeth possible, and since vitest runs without typechecking (see the
@@ -586,9 +606,16 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
     let checkedAnchors = 0;
     for (const id of OVERLAY_IDS) {
       const rootId = ROOT_IDS[id];
-      // claim's and privacy's shells are JS-created, so their anchors cannot resolve in the
-      // shipped markup — the eleven STATIC shells are what this clause is about.
-      if (rootId === undefined || id === 'claimView' || id === 'privacyView') continue;
+      // claim's, privacy's and (ctl-12b) controls' shells are JS-created, so their anchors cannot
+      // resolve in the shipped markup — the eleven STATIC shells are what this clause is about.
+      if (
+        rootId === undefined ||
+        id === 'claimView' ||
+        id === 'privacyView' ||
+        id === 'controlsView'
+      ) {
+        continue;
+      }
       const root = requireElement(rootId);
       const anchor = root.querySelector(OVERLAY_A11Y[id].initialFocusSelector);
       expect(
@@ -938,17 +965,17 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
       checked,
       'S10-WIRE-FOCUS-IDENTITY must have executed once per OverlayId — a loop that never ran ' +
         'reports success in exactly the same way as one that passed',
-    ).toBe(17);
+    ).toBe(18);
     // Siblings, in the SAME hook rather than a second one, so the rationale above stays
     // co-located and a future reader cannot delete one half. Not redundant with the compile-time
     // `Record<OverlayId, …>` (which forces the openers to EXIST) nor with `checked` (which only
     // proves the FOCUS-IDENTITY loop ran): neither notices an `it.skip` on one id's repeat tooth,
     // and nothing else in the run would catch it.
     expect(repeatChecked, 'S10-WIRE-REPEAT-NO-REOPEN must have executed once per OverlayId').toBe(
-      17,
+      18,
     );
     expect(reopenChecked, 'S10-WIRE-REOPEN-AFTER-CLOSE must have executed once per OverlayId').toBe(
-      17,
+      18,
     );
   });
 });

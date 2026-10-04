@@ -642,8 +642,9 @@ const upperIdsOf = (s: Stack): readonly FrameId[] =>
   (s.slice(1) as readonly UpperFrame[]).map(frameId);
 const sortedIds = (xs: readonly string[]): string[] => [...xs].sort();
 
-/** The 15 ids a battle (or an outcome frame) drops and a conversation takes: every overlay but the
- *  two server-owned ones. HARD-CODED. */
+/** The 16 ids a battle (or an outcome frame) drops and a conversation takes: every overlay but the
+ *  two server-owned ones. HARD-CODED. ctl-12b (named intentional change): `controlsView` (Options ›
+ *  Controls, a player frame, not battle-safe) joins. Was: 15. */
 const PLAYER_IDS: readonly CloseId[] = [
   'boxView',
   'raisingView',
@@ -660,6 +661,7 @@ const PLAYER_IDS: readonly CloseId[] = [
   'menuView',
   'claimView',
   'privacyView',
+  'controlsView',
 ];
 /** One frame per player id, in PLAYER_IDS order, in all three frame kinds (pvp is a prompt, rename a
  *  text entry) so a pop-by-id is exercised for each kind. */
@@ -679,6 +681,7 @@ const PLAYER_FRAMES: readonly UpperFrame[] = [
   screen('menuView'),
   screen('claimView'),
   screen('privacyView'),
+  screen('controlsView'),
 ];
 
 const startBases: readonly BaseFrame[] = [WORLD, battle('1'), battle('2')];
@@ -715,33 +718,34 @@ function scenarioArb(
 }
 
 describe('context stack: reconcile server truth (ctl-3)', () => {
-  it('CTL3-2-DROP-EXACT: a battle drops EXACTLY the 15 player ids, in stack order, and nothing else; a world with no battle and no outcome frame drops nothing', () => {
+  it('CTL3-2-DROP-EXACT: a battle drops EXACTLY the 16 player ids, in stack order, and nothing else; a world with no battle and no outcome frame drops nothing', () => {
     // WRONG IMPL KILLED: the old 9-id list (shop, trade, pvp, quest log, heal and claim left
     // painted under the battle); a drop list derived from the policy table; a drop that also takes
     // dialogueView or battleView; a drop keyed to the id table's order instead of the stack's; one
     // that skips prompt or text-entry frames; one that drops over a bare world; and a close
     // emitted for an id that was never on the stack.
     // ANTI-VACUITY: the literal is the whole manifest minus the two server-owned ids.
-    expect(PLAYER_IDS).toHaveLength(15);
+    // ctl-12b (named intentional change): 15 -> 16 with `controlsView`.
+    expect(PLAYER_IDS).toHaveLength(16);
     expect(PLAYER_FRAMES.map(frameId)).toEqual([...PLAYER_IDS]);
     expect(sortedIds([...PLAYER_IDS, 'battleView', 'dialogueView'])).toEqual(
       sortedIds(OVERLAY_IDS),
     );
 
-    // A new battle over every player frame: all 15 popped, 15 closes in stack order, one clearHeld.
+    // A new battle over every player frame: all 16 popped, 16 closes in stack order, one clearHeld.
     const a = reconcile(deepFrozen(stackOf(WORLD, ...PLAYER_FRAMES)), serverView('7', false));
     expect(a.stack, 'A: only the battle base is left').toEqual(stackOf(battle('7')));
     expect(closeIds(a.commands), 'A: one close per player id, in stack order').toEqual([
       ...PLAYER_IDS,
     ]);
     expect(clearHeldCount(a.commands), 'A: the base kind change clears held once').toBe(1);
-    expect(a.commands, 'A: nothing but those 16 commands').toHaveLength(16);
+    expect(a.commands, 'A: nothing but those 17 commands').toHaveLength(17);
 
     // The same frames over an ALREADY-ongoing battle: same drops, no base change, no clearHeld.
     const b = reconcile(deepFrozen(stackOf(battle('7'), ...PLAYER_FRAMES)), serverView('7', false));
     expect(b.stack, 'B: only the battle base is left').toEqual(stackOf(battle('7')));
     expect(closeIds(b.commands)).toEqual([...PLAYER_IDS]);
-    expect(b.commands, 'B: no clearHeld without a base kind change').toHaveLength(15);
+    expect(b.commands, 'B: no clearHeld without a base kind change').toHaveLength(16);
 
     // Stack order, not table order: the reversed stack closes in the reversed order.
     const reversedFrames = [...PLAYER_FRAMES].reverse();
@@ -796,6 +800,8 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
     // block of this file ("the SCREEN_POLICY battleSafe column is exactly the literal table").
     // ctl-8s INTENTIONAL CHANGE (CTL8S.3): the literal gains the Social frame, a player frame that
     // a battle drops, and is checked against the 18 frame ids. Was: 17 overlay ids.
+    // ctl-12b INTENTIONAL CHANGE: the literal gains `controlsView` (Options › Controls), a player
+    // frame a battle drops; 19 frame ids. Was: 18.
     const expected: ReadonlyArray<
       readonly [FrameId, 'player' | 'server', 'drop' | 'suspend' | undefined]
     > = [
@@ -816,9 +822,10 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
       ['menuView', 'player', 'drop'],
       ['claimView', 'player', 'drop'],
       ['privacyView', 'player', 'drop'],
+      ['controlsView', 'player', 'drop'],
       ['social', 'player', 'drop'],
     ];
-    expect(expected, 'ANTI-VACUITY: the literal covers all 18 frame ids').toHaveLength(18);
+    expect(expected, 'ANTI-VACUITY: the literal covers all 19 frame ids').toHaveLength(19);
     expect(sortedIds(expected.map(([id]) => id))).toEqual(sortedIds(FRAME_IDS));
     for (const [id, owner, onBattle] of expected) {
       expect(SCREEN_POLICY[id].owner, `${id}.owner`).toBe(owner);
@@ -1117,13 +1124,13 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
     );
     expect(unflagged.commands).toEqual([]);
 
-    // Every player id, in every frame kind: the flag drops all 15 exactly as a battle does.
+    // Every player id, in every frame kind: the flag drops all 16 exactly as a battle does.
     const all = reconcile(
       deepFrozen(stackOf(WORLD, ...PLAYER_FRAMES)),
       serverView(undefined, false, true),
     );
     expect(all.stack).toEqual(WORLD_STACK);
-    expect(all.commands, 'exactly the 15 closes in stack order').toEqual(PLAYER_IDS.map(closeCmd));
+    expect(all.commands, 'exactly the 16 closes in stack order').toEqual(PLAYER_IDS.map(closeCmd));
 
     // It never pushes: a bare world stays bare.
     const bare = reconcile(deepFrozen(WORLD_STACK), serverView(undefined, false, true));
@@ -1154,7 +1161,7 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
     expect(again.commands).toEqual([]);
   });
 
-  it('CTL3-4-CONV-APPEARS: a server conversation pops and closes all 15 player frames, keeps the dialogue frame, and reconcile never pushes one', () => {
+  it('CTL3-4-CONV-APPEARS: a server conversation pops and closes all 16 player frames, keeps the dialogue frame, and reconcile never pushes one', () => {
     // WRONG IMPL KILLED: a conversation that leaves some player overlay painted behind the
     // dialogue (a second modal root; only the menu was preempted before), one that pops the
     // dialogue frame it is there to serve, one that pushes a dialogue frame itself (the mirror
@@ -1164,7 +1171,7 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
       serverView(undefined, true),
     );
     expect(withDialogue.stack).toEqual(stackOf(WORLD, screen('dialogueView')));
-    expect(withDialogue.commands, 'exactly the 15 closes in stack order, nothing else').toEqual(
+    expect(withDialogue.commands, 'exactly the 16 closes in stack order, nothing else').toEqual(
       PLAYER_IDS.map(closeCmd),
     );
 
@@ -1289,7 +1296,7 @@ describe('context stack: reconcile server truth (ctl-3)', () => {
     for (const id of PLAYER_IDS) {
       rows.push({ name: `world + ${id}`, stack: stackOf(WORLD, screen(id)), blocks: true });
     }
-    expect(rows, 'ANTI-VACUITY: 9 named rows + 15 player ids').toHaveLength(24);
+    expect(rows, 'ANTI-VACUITY: 9 named rows + 16 player ids').toHaveLength(25);
     for (const row of rows) {
       expect(blocksPlayerOpen(deepFrozen(row.stack)), row.name).toBe(row.blocks);
     }
@@ -1605,7 +1612,8 @@ const SAFE_OVER_BATTLE: readonly FrameId[] = [
   'helpView',
   'menuView',
 ];
-/** The other eleven player overlays: not battleSafe. HARD-CODED. */
+/** The other twelve player overlays: not battleSafe. HARD-CODED. ctl-12b (named intentional
+ *  change): `controlsView` joins (the menu disables Controls over a battle). Was: eleven. */
 const UNSAFE_OVER_BATTLE: readonly FrameId[] = [
   'boxView',
   'raisingView',
@@ -1618,6 +1626,7 @@ const UNSAFE_OVER_BATTLE: readonly FrameId[] = [
   'tradeProposeView',
   'claimView',
   'privacyView',
+  'controlsView',
 ];
 
 const press = (button: VButton, repeat = false) => ({ button, repeat });
@@ -1790,10 +1799,10 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     expect(b.commands, 'b: nothing closed').toEqual([]);
 
     // (c) every non-safe id is dropped even when stamped; one close each, in stack order.
-    expect(UNSAFE_OVER_BATTLE, 'ANTI-VACUITY: eleven non-safe ids').toHaveLength(11);
+    expect(UNSAFE_OVER_BATTLE, 'ANTI-VACUITY: twelve non-safe ids').toHaveLength(12);
     expect(
       sortedIds([...SAFE_OVER_BATTLE, ...UNSAFE_OVER_BATTLE]),
-      'ANTI-VACUITY: safe plus non-safe is the 15 player ids',
+      'ANTI-VACUITY: safe plus non-safe is the 16 player ids',
     ).toEqual(sortedIds(PLAYER_IDS));
     const unsafe = UNSAFE_OVER_BATTLE.map((id) => stamped(id, '7'));
     const c = reconcile(deepFrozen(stackOf(battle('7'), ...unsafe)), serverView('7', false));
@@ -1801,7 +1810,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
     expect(closeIds(c.commands), 'c: one close each, in stack order').toEqual([
       ...UNSAFE_OVER_BATTLE,
     ]);
-    expect(c.commands, 'c: nothing but the closes').toHaveLength(11);
+    expect(c.commands, 'c: nothing but the closes').toHaveLength(12);
     const mixed = reconcile(
       deepFrozen(stackOf(battle('7'), M7, stamped('boxView', '7'), stamped('questLogView', '7'))),
       serverView('7', false),
@@ -1938,13 +1947,16 @@ describe('context stack: battle semantics (ctl-6c)', () => {
 
   it('the SCREEN_POLICY battleSafe column is exactly the literal table: battleView, questLogView, leaderboardView, helpView and menuView are battle-safe and no other frame id is', () => {
     // WRONG IMPL KILLED: any single flag flipped. The reconcile cases above see the column only
-    // through the 15 player ids; battleView's and dialogueView's flags are observable nowhere else,
+    // through the 16 player ids; battleView's and dialogueView's flags are observable nowhere else,
     // and a dialogue marked battle-safe would read as a screen the battle allows. A box, a shop or a
     // trade marked battle-safe would stay open over a battle; a menu or help that is not would close
     // on the next batch after Start opened it (CTL6C.1). A row that goes missing fails the totality.
     // ctl-8s INTENTIONAL CHANGE (CTL8S.3): the literal and the totality span the 18 frame ids; the
     // Social frame is NOT battle-safe (its Trades and Challenges panels issue refused commands), so
     // there are still exactly five battle-safe ids. Was: 17 overlay ids.
+    // ctl-12b INTENTIONAL CHANGE: the literal and the totality span the 19 frame ids; Options ›
+    // Controls is NOT battle-safe (the menu disables it over a battle), so the battle-safe count
+    // stays five. Was: 18.
     const expected: Readonly<Record<FrameId, boolean>> = {
       battleView: true,
       boxView: false,
@@ -1963,6 +1975,7 @@ describe('context stack: battle semantics (ctl-6c)', () => {
       menuView: true,
       claimView: false,
       privacyView: false,
+      controlsView: false,
       social: false,
     };
     expect(sortedIds(Object.keys(expected)), 'ANTI-VACUITY: the literal covers every id').toEqual(

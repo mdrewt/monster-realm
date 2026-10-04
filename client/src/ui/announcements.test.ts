@@ -83,14 +83,15 @@ describe('announcementsFor — message and overlay transition rules (S1-ANN, spe
     expect(announcementsFor(prev, next)).toEqual([]);
   });
 
-  it('S1-ANN-OVERLAY-OPENED-DERIVED BITES: topOverlay transitioning to each of the 17 ids emits the id-DERIVED catalog title, never a literal', () => {
+  it('S1-ANN-OVERLAY-OPENED-DERIVED BITES: topOverlay transitioning to each of the 18 ids emits the id-DERIVED catalog title, never a literal', () => {
     // WRONG IMPL KILLED: a hardcoded copy string (e.g. always 'Battle', or a switch statement
     // with a typo'd branch) would only coincidentally match ONE of the seventeen ids. Compared
     // against the DERIVED value (`a11yCopy['a11y.overlay.' + id + '.title']`)
     // rather than a literal, and NOT via `t(OVERLAY_A11Y[id].labelKey)` — computing it the same
     // way the implementation itself would could hide a labelKey/catalog mismatch that a
     // differently-derived expectation would still catch.
-    expect(OVERLAY_IDS.length, 'ANTI-VACUITY: the manifest must hold 17 overlays').toBe(17);
+    // ctl-12b (named intentional change): 17 -> 18, `controlsView` joined the manifest.
+    expect(OVERLAY_IDS.length, 'ANTI-VACUITY: the manifest must hold 18 overlays').toBe(18);
 
     let checked = 0;
     for (const id of OVERLAY_IDS) {
@@ -101,7 +102,7 @@ describe('announcementsFor — message and overlay transition rules (S1-ANN, spe
       expect(announcementsFor(prev, next), `topOverlay -> ${id}`).toEqual([expected]);
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: every one of the 17 ids must have been exercised').toBe(17);
+    expect(checked, 'ANTI-VACUITY: every one of the 18 ids must have been exercised').toBe(18);
   });
 
   it('S1-ANN-OVERLAY-TO-NULL-SILENT BITES: topOverlay transitioning to null emits nothing — the declared a11y.world.region copy gap', () => {

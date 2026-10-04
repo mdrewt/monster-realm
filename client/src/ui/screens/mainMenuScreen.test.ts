@@ -28,10 +28,12 @@ import {
 } from './mainMenuScreen';
 
 const ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'options', 'close'];
+// ctl-12b (named intentional change): Options holds How to play THEN Controls (the order two e2e
+// specs outside this slice rely on: A on Options lands on How to play). Was: options: ['help'].
 const GROUPS: Readonly<Record<string, readonly string[]>> = {
   social: ['trades', 'challenges', 'rankings'],
   profile: ['name', 'account', 'privacy'],
-  options: ['help'],
+  options: ['help', 'controls'],
 };
 
 const NONE: MenuEffect = { kind: 'none' };
@@ -117,10 +119,16 @@ describe('mainMenu — open and wrap', () => {
     const social = intoGroup('social');
     expect(press(social, 'Up').state.nav.item, 'a sub-list wraps upward').toBe('rankings');
     expect(press(press(social, 'Up').state, 'Down').state.nav.item).toBe('trades');
+    // ctl-12b (named intentional change): Options is a two-entry list now (How to play, Controls),
+    // so it wraps like the others instead of staying put. Was: "a one-entry list stays put" (Down
+    // and Up both 'help').
     const options = intoGroup('options');
-    expect(options.nav.item).toBe('help');
-    expect(press(options, 'Down').state.nav.item, 'a one-entry list stays put').toBe('help');
-    expect(press(options, 'Up').state.nav.item).toBe('help');
+    expect(options.nav.item, 'A on Options lands on How to play').toBe('help');
+    expect(press(options, 'Down').state.nav.item, 'Down reaches Controls').toBe('controls');
+    expect(press(options, 'Up').state.nav.item, 'a fresh Up wraps to Controls').toBe('controls');
+    expect(press(press(options, 'Down').state, 'Down').state.nav.item, 'and Down wraps back').toBe(
+      'help',
+    );
   });
 
   it('CTL5-5-REPEAT-CLAMPS: a repeat-flagged D-pad edge clamps at the ends of the root and of a sub-list while a fresh edge wraps; a repeat A does nothing', () => {
@@ -191,6 +199,8 @@ describe('mainMenu — A, B and the sub-lists', () => {
       ['profile', 'account', 'claimView'],
       ['profile', 'privacy', 'privacyView'],
       ['options', 'help', 'helpView'],
+      // ctl-12b (named intentional change): the Controls leaf opens the Controls frame.
+      ['options', 'controls', 'controlsView'],
     ];
     for (const [group, key, target] of groupLeaves) {
       const inside = toKey(intoGroup(group), key);
@@ -200,7 +210,7 @@ describe('mainMenu — A, B and the sub-lists', () => {
       expect(step.state.nav.item).toBe(key);
       targets.push(target);
     }
-    expect(new Set(targets).size, 'ten distinct overlays, one per leaf').toBe(10);
+    expect(new Set(targets).size, 'eleven distinct overlays, one per leaf').toBe(11);
 
     const close = press(toKey(fresh(), 'close'), 'A');
     expect(close.effect, 'A on Close closes the menu').toEqual(CLOSE);
@@ -443,7 +453,7 @@ describe('mainMenu — pick, view model and inert buttons', () => {
         title: 'Profile',
         labels: { name: 'Name', account: 'Account', privacy: 'Privacy' },
       },
-      options: { title: 'Options', labels: { help: 'How to play' } },
+      options: { title: 'Options', labels: { help: 'How to play', controls: 'Controls' } },
     };
     for (const [group, want] of Object.entries(expected)) {
       const vm = menuViewModel(intoGroup(group));
@@ -516,7 +526,10 @@ const DISABLED_OVER_BATTLE: Readonly<Record<Level, ReadonlyArray<readonly [strin
       ['account', IN_BATTLE],
       ['privacy', IN_BATTLE],
     ],
-    options: [],
+    // ctl-12b (named intentional change): Controls is not battle-safe, so it is disabled over a
+    // battle with the in-battle reason; How to play stays enabled, and so does the Options group
+    // (one enabled child is enough). Was: [].
+    options: [['controls', IN_BATTLE]],
   };
 const LEVEL_KEYS: Readonly<Record<Level, readonly string[]>> = {
   root: ROOT_KEYS,
@@ -607,8 +620,11 @@ describe('mainMenu over a battle (ctl-6c)', () => {
     ]);
     expect(
       itemsOf(menuViewModel(battleLevel('options')).layout).map((i) => [i.key, i.enabled]),
-      'the Options sub-list: How to play stays enabled',
-    ).toEqual([['help', true]]);
+      'the Options sub-list: How to play stays enabled, Controls is disabled (ctl-12b)',
+    ).toEqual([
+      ['help', true],
+      ['controls', false],
+    ]);
     // The flag survives entering a sub-list and a reopen with the same memory.
     expect(battleMenu().battle, 'the state carries the flag').toBe(true);
     // INTENTIONAL CHANGE (ctl-6c, supervisor decision option-a: Journal/Rankings stay disabled over a

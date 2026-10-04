@@ -34,8 +34,8 @@ import {
   type WasmDirection,
   type WasmMoveInput,
 } from './convert/convert';
-import { browserStorage, loadBindings } from './input/bindingStore';
-import { accelForCode } from './input/bindings';
+import { browserStorage, loadBindings, saveBindings } from './input/bindingStore';
+import { accelForCode, type Bindings, DEFAULT_BINDINGS } from './input/bindings';
 import type { ButtonEdge } from './input/buttons';
 import { glyph, learnKey } from './input/glyphs';
 import { isChord, KeyboardSource } from './input/keyboardSource';
@@ -136,6 +136,8 @@ import {
   type UpperFrame,
   WORLD_STACK,
 } from './ui/contextStack';
+import { clearAccel, outcomeText, type SlotTarget } from './ui/controlsModel';
+import type { ControlsView, ControlsViewHandlers } from './ui/controlsView';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
 import { buildDialogueViewModel } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
@@ -224,6 +226,7 @@ import {
   menuViewModel,
   openMainMenu,
 } from './ui/screens/mainMenuScreen';
+import { captureStep } from './ui/screens/optionsScreen';
 import type {
   Command,
   ScreenContext,
@@ -330,8 +333,8 @@ let telemetry: ClientTelemetry = NOOP_TELEMETRY;
 let frameWindow = createFrameWindow(performance.now());
 
 // The ONE binding table every input path and keycap reads: the player's saved table, else the
-// defaults (CTL12.4). Read once at boot; a remap takes effect on the next load.
-const bindings = loadBindings(browserStorage());
+// defaults (CTL12.4). Read at boot; Options › Controls replaces it live (`applyBindings`).
+let bindings = loadBindings(browserStorage());
 // stepMs injected so the store can do burst detection + jitter EWMA.
 const store = new AuthoritativeStore(STEP_MS);
 // The injected rule IS the client-wasm export (same compiled code as the server).
@@ -403,6 +406,9 @@ let menuView: MenuView | undefined;
 // its pure model state carried at module scope.
 let claimView: ClaimView | undefined;
 let privacyView: PrivacyView | undefined;
+// Options › Controls (ctl-12b): the remapping screen. Its `capturing` is what the keydown handler
+// reads to hand a key to the capture instead of the router.
+let controlsView: ControlsView | undefined;
 let sessionView: SessionView | undefined;
 // The post-evolve reveal banner — runtime-constructed in main(), NOT a
 // registry overlay; read by the batch listener below and reset at the onReconnect tail.
@@ -456,6 +462,7 @@ const overlayProbes: OverlayProbes = {
   menuView: () => menuView?.visible ?? false,
   claimView: () => claimView?.visible ?? false,
   privacyView: () => privacyView?.visible ?? false,
+  controlsView: () => controlsView?.visible ?? false,
 };
 
 // the ONE force-hide handle table — the WRITE mirror of `overlayProbes`.
@@ -488,6 +495,7 @@ const overlayHandles: OverlayHandles = {
   menuView: () => menuView?.hide(),
   claimView: () => claimView?.hide(),
   privacyView: () => privacyView?.hide(),
+  controlsView: () => controlsView?.hide(),
 };
 
 // the ONE view-lending table: each overlay's view instance, which the screen host hands to that
@@ -514,6 +522,7 @@ const screenViews: Readonly<Record<OverlayId, () => unknown>> = {
   menuView: () => menuView,
   claimView: () => claimView,
   privacyView: () => privacyView,
+  controlsView: () => controlsView,
 };
 
 // A view's paint threw, or an adapter threw while observing a batch. Logged every time, and
@@ -1122,6 +1131,12 @@ function openHelp(): void {
   helpView?.show();
 }
 
+/** Options › Controls: seated at the open, so its rows paint then and not at the first button. */
+function openControls(): void {
+  controlsView?.show();
+  seatOpened('controlsView');
+}
+
 /** Run what A or a sheet row chose at the world (ctl-10a). Exhaustive, no default arm. Only the
  *  world base asks (`ScreenHost.button`), which keeps it out of a battle and from under a frame
  *  (CTL6C.3). Talk and shop share the talk reducer (greet-then-shop); heal binds the heal frame to
@@ -1252,6 +1267,9 @@ function openMenuTarget(target: MenuTarget, monstersTab: MonstersTab = 'party'):
     case 'helpView':
       openHelp();
       break;
+    case 'controlsView':
+      openControls();
+      break;
   }
 }
 
@@ -1295,7 +1313,9 @@ const screenCtx: ScreenContext = {
   get identity() {
     return identity;
   },
-  bindings,
+  get bindings() {
+    return bindings;
+  },
   now: () => performance.now(),
   get shopId() {
     return boundShopId;
@@ -2074,7 +2094,7 @@ const jump = (): void => sendIntent('Jump');
 // owns the D-pad and X (Jump), plus A, B and Y while the main menu is up, and hands every other
 // button (and a nav-capable screen's D-pad) to the top frame's adapter. It also decides each
 // accelerator (`accelDecision`).
-const keyboard = new KeyboardSource(bindings);
+let keyboard = new KeyboardSource(bindings);
 const inputRouter = new InputRouter();
 
 // What the router needs to know: whether the world takes input, the nav frame (a nav-capable
@@ -2197,6 +2217,52 @@ const releaseAllInput = (): void => {
   held.clear();
 };
 
+// A remap applies at once (CTL12B.2): saved, then every input path reads the new table. The
+// keyboard source takes its table at construction, so it is replaced; whatever was held is
+// released first, or its keyup (unknown to the new source) would leave a button stuck. False when
+// the table could not be saved: it still applies, until the page reloads.
+const applyBindings = (next: Bindings): boolean => {
+  const saved = saveBindings(browserStorage(), next);
+  releaseAllInput();
+  bindings = next;
+  keyboard = new KeyboardSource(next);
+  return saved;
+};
+
+// The slot of Options › Controls waiting for a key, while that frame is the top one; else null.
+const controlsCapture = (): SlotTarget | null => {
+  const top = contextStack[contextStack.length - 1];
+  if (top.kind !== 'screen' || top.id !== 'controlsView') return null;
+  return controlsView?.capturing ?? null;
+};
+
+// End the capture in the screen: its B while a slot waits (real keys never reach it then). The
+// host repaints, so the rows show the table as it is now.
+const endControlsCapture = (): void => {
+  screenHost.button(contextStack, { button: 'B', repeat: false }, screenCtx);
+};
+
+// A key pressed while `target` waits for one (CTL12.2): any key is taken, Escape, Enter and
+// Backspace included, before any other path can read it. A refused key keeps the slot waiting.
+const captureControlsKey = (target: SlotTarget, e: KeyboardEvent): void => {
+  const step = captureStep(bindings, target, e);
+  if (step.prevent) e.preventDefault();
+  const saved = step.bindings === undefined || applyBindings(step.bindings);
+  controlsView?.showFeedback(step.text, saved);
+  if (!step.done) return;
+  // The captured key's OS repeats are not presses of its new button.
+  navHeldCodes.add(e.code);
+  endControlsCapture();
+};
+
+// The Cancel chip: a capture ends unchanged. Nothing happens unless a slot is waiting.
+const cancelControlsCapture = (): void => {
+  syncStack();
+  if (controlsCapture() === null) return;
+  controlsView?.showFeedback(outcomeText({ kind: 'cancelled' }));
+  endControlsCapture();
+};
+
 // Router-consumed keys (the D-pad, Space) carry native browser defaults (page scroll) that
 // MUST be cancelled on the handler's EARLY-RETURN paths too — an open overlay makes the
 // document taller than the viewport-sized canvas, so those defaults scroll the game out from
@@ -2263,15 +2329,41 @@ const onKeyDown = (e: KeyboardEvent): void => {
     if (navHeldCodes.has(e.code)) e.preventDefault();
     return;
   }
+  // Options › Controls is waiting for a key (CTL12B.1): this press is the capture's, ahead of
+  // every path below, so Escape, Enter and Backspace can be bound like any key. The one exception
+  // is the Cancel chip's own activation key (Enter or Space with the chip focused): it presses
+  // the chip, so a capture can always be left from the keyboard.
+  const capture = controlsCapture();
+  if (capture !== null) {
+    const pressesChip =
+      controlsView?.isCancelChip(e.target) === true &&
+      ownership(e.target, e, gameScreenEl()) === 'target';
+    if (!pressesChip) captureControlsKey(capture, e);
+    return;
+  }
   // a press can arrive INSIDE the stale-focus window, before the frame edge has run — heal
   // first, so the typing branch and every screen opened below see the healed focus.
   if (focusInsideHiddenSubtree()) worldCanvasEl?.focus();
-  // The F9 accelerator downloads the local bug bundle; F8 dismisses the error overlay. Decided
-  // through the live table (a cleared one does nothing) and EARLY (before letter-key branches) so
-  // they work under any overlay; but an Escape that stops typing (CTL6B.5) stays the field's, even
-  // when a remap gave Escape to F8.
+  // An Escape that cancels an IME composition is the IME's: not prevented and not routed, and kept
+  // from the field's own Escape listener, which would close the frame and drop the draft. Before
+  // the accelerators: a remap can bind Escape to one.
+  if (e.code === 'Escape' && (e.isComposing || e.keyCode === 229)) {
+    e.stopPropagation();
+    return;
+  }
+  // The two keys a focused field releases keep their typing meaning whatever the table binds
+  // them to (design §3): Escape stops typing, Enter commits.
+  const typing = typingKey(e.target, e);
+  // An accelerator is decided through the live table (a cleared one does nothing). A key the
+  // focused element owns is never one: a remap can put an accelerator on a letter, Space or Enter,
+  // and that key must still type into a field and press a focused button. Nor is a typing key
+  // (CTL6B.5).
   const accel =
-    typingKey(e.target, e) === 'stopTyping' ? undefined : accelForCode(bindings, e.code);
+    typing === undefined && ownership(e.target, e, gameScreenEl()) === 'router'
+      ? accelForCode(bindings, e.code)
+      : undefined;
+  // The F9 accelerator downloads the local bug bundle; F8 dismisses the error overlay: EARLY
+  // (before the menu and the router) so they work under any overlay.
   if (accel === 'F9') {
     downloadBugBundle();
     e.preventDefault();
@@ -2285,23 +2377,26 @@ const onKeyDown = (e: KeyboardEvent): void => {
     }
     return;
   }
-  // An Escape that cancels an IME composition is the IME's: not prevented and not routed, and kept
-  // from the field's own Escape listener, which would close the frame and drop the draft.
-  if (e.code === 'Escape' && (e.isComposing || e.keyCode === 229)) {
-    e.stopPropagation();
-    return;
-  }
   // Typing mode (CTL6B.5): Escape in the focused text field stops typing. Focus leaves the field,
   // its text stays, and the view's own Escape (a close) never runs; the next Escape is Start. A
   // stale target (focus already healed away from a closed frame's field) is not typing.
   if (
-    typingKey(e.target, e) === 'stopTyping' &&
+    typing === 'stopTyping' &&
     e.target instanceof HTMLElement &&
     e.target === document.activeElement
   ) {
     stopTyping(e.target);
     e.preventDefault();
     e.stopPropagation();
+    return;
+  }
+  // Enter in a field commits: it presses A there, never the button or accelerator a remap put on
+  // Enter (after A := K the field types K, so Enter is the only key left to commit with).
+  if (typing === 'commit') {
+    if (routeEdge({ button: 'A', down: true })) {
+      navHeldCodes.add(e.code);
+      e.preventDefault();
+    }
     return;
   }
   // This key's button edges, computed once: KeyboardSource reads a second keydown of a code it
@@ -2323,10 +2418,8 @@ const onKeyDown = (e: KeyboardEvent): void => {
       return;
     }
   }
-  // An accelerator (ctl-11a): the router decides it over the stack. A key the focused field owns
-  // is typed, never taken.
+  // An accelerator (ctl-11a): the router decides it over the stack.
   if (accel !== undefined) {
-    if (ownership(e.target, e, gameScreenEl()) === 'target') return;
     e.preventDefault();
     runAccel(accel);
     return;
@@ -3134,6 +3227,7 @@ async function main(): Promise<void> {
     { ClaimView: ClaimViewClass },
     { SessionView: SessionViewClass },
     { PrivacyView: PrivacyViewClass },
+    { ControlsView: ControlsViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
@@ -3153,6 +3247,7 @@ async function main(): Promise<void> {
     import('./ui/claimView'),
     import('./ui/sessionView'),
     import('./ui/privacyView'),
+    import('./ui/controlsView'),
   ]);
   renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -3264,7 +3359,17 @@ async function main(): Promise<void> {
     // `dispatch`; the view's #pending lock is reset by its own .finally().
     renameView = new RenameViewClass({
       onSubmit: (name) => dispatch({ kind: 'setProfileName', name }),
+      bindings: () => bindings,
     });
+    // Options › Controls: the view reads the live table, and its requests replace it at once.
+    const controlsHandlers: ControlsViewHandlers = {
+      bindings: () => bindings,
+      onClear: (accel) => applyBindings(clearAccel(bindings, accel)),
+      onReset: () => applyBindings(DEFAULT_BINDINGS),
+      onCancelCapture: cancelControlsCapture,
+      announce: (text) => liveRegion.announce(text, performance.now()),
+    };
+    controlsView = new ControlsViewClass(controlsHandlers);
     tradeProposeView = new TradeProposeViewClass({
       maxMonstersPerSide: MAX_TRADE_MONSTERS_PER_SIDE,
       onSubmit: (args: TradeProposeArgs) => dispatch({ kind: 'proposeTrade', args }),

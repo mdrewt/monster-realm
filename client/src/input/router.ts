@@ -87,10 +87,13 @@ const TEXT_INPUT_TYPES: ReadonlySet<string> = new Set([
   'number',
 ]);
 
-/** Typing mode (CTL6B.5): Escape in a text field stops typing (the shell moves focus out of the
- *  field and keeps its text) instead of acting as Start. A composing Escape is the IME's. */
-export function typingKey(target: unknown, e: OwnershipEvent): 'stopTyping' | undefined {
-  if (e.code !== 'Escape' || e.isComposing === true || e.keyCode === 229) return undefined;
+/** Typing mode (CTL6B.5, design §3): the two keys a focused field releases keep their meaning
+ *  whatever the binding table says, so a remap can never take them from the field. Escape in a
+ *  text field stops typing (the shell moves focus out of the field and keeps its text) instead of
+ *  acting as Start. Enter in any field commits: it is the A button there, even when the table
+ *  binds Enter to something else or to nothing. A composing key is the IME's. */
+export function typingKey(target: unknown, e: OwnershipEvent): 'stopTyping' | 'commit' | undefined {
+  if (e.isComposing === true || e.keyCode === 229) return undefined;
   if (typeof target !== 'object' || target === null) return undefined;
   const { tagName, type, isContentEditable } = target as {
     tagName?: unknown;
@@ -98,6 +101,10 @@ export function typingKey(target: unknown, e: OwnershipEvent): 'stopTyping' | un
     isContentEditable?: unknown;
   };
   const tag = typeof tagName === 'string' ? tagName.toUpperCase() : '';
+  if (e.code === 'Enter' || e.code === 'NumpadEnter') {
+    return isContentEditable === true || TEXT_FIELD_TAGS.has(tag) ? 'commit' : undefined;
+  }
+  if (e.code !== 'Escape') return undefined;
   const text =
     isContentEditable === true ||
     tag === 'TEXTAREA' ||

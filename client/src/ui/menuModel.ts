@@ -26,6 +26,7 @@ export type MenuTarget = Extract<
   | 'claimView'
   | 'privacyView'
   | 'helpView'
+  | 'controlsView'
 >;
 
 export type MenuGroupKey = 'social' | 'profile' | 'options';
@@ -145,6 +146,13 @@ export const MENU_ENTRIES: readonly MenuEntry[] = [
         title: () => t('menu.options.help.title'),
         description: () => t('menu.options.help.desc'),
         target: 'helpView',
+      },
+      {
+        kind: 'open',
+        key: 'controls',
+        title: () => t('menu.options.controls.title'),
+        description: () => t('menu.options.controls.desc'),
+        target: 'controlsView',
       },
     ],
   },

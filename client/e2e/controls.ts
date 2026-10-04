@@ -1,8 +1,14 @@
 // controls.ts — the e2e press helpers (ctl-6a). Specs press virtual buttons and accelerators
 // through here, never raw key names, so a binding change lands in one place. Imports only
 // pure modules, so it loads under Playwright without Vite.
+//
+// ctl-12b: the helpers press what the PAGE's live table says, not the defaults: a player can remap
+// any key in Options > Controls, which saves the table to `localStorage['mr.controls']` and applies
+// it at once. `liveBindings` reads that string in the page and parses it here with the game's own
+// total `parseBindings`; anything unreadable gives `DEFAULT_BINDINGS`.
 import { expect, type Locator, type Page } from '@playwright/test';
-import { DEFAULT_BINDINGS } from '../src/input/bindings';
+import { CONTROLS_STORAGE_KEY, parseBindings } from '../src/input/bindingStore';
+import { type Bindings, DEFAULT_BINDINGS } from '../src/input/bindings';
 import type { Accel, VButton } from '../src/input/buttons';
 import type { RawTileMap } from '../src/render/map';
 import type { Frame, Stack } from '../src/ui/contextStack';
@@ -13,14 +19,44 @@ export const CLOSE_ALL_MAX_PRESSES = 5;
  *  trip) before `closeAll` presses again. */
 const CLOSE_ALL_SETTLE_MS = 4_000;
 
-/** Presses the first key bound to `button` in `DEFAULT_BINDINGS`. */
-export async function pressButton(page: Page, button: VButton): Promise<void> {
-  await page.keyboard.press(DEFAULT_BINDINGS.buttons[button][0]);
+/**
+ * The page's live binding table (ctl-12b, CTL12B.2): the raw `localStorage['mr.controls']` string,
+ * read in the page, parsed here through `parseBindings(JSON.parse(text))`. ANY failure gives
+ * `DEFAULT_BINDINGS`: a page whose storage throws (about:blank after `page.setContent`, as
+ * controls.spec.ts runs), nothing saved (null), or a value that is not JSON.
+ */
+export async function liveBindings(page: Page): Promise<Bindings> {
+  try {
+    const text = await page.evaluate(
+      (key: string) => window.localStorage.getItem(key),
+      CONTROLS_STORAGE_KEY,
+    );
+    return text === null ? DEFAULT_BINDINGS : parseBindings(JSON.parse(text));
+  } catch {
+    return DEFAULT_BINDINGS;
+  }
 }
 
-/** Presses the first key bound to the accelerator `accel` in `DEFAULT_BINDINGS`. */
+/** A press helper found no key for a button or accelerator in the live table (a cleared row):
+ *  it fails naming it rather than pressing `undefined`. */
+export class UnboundKeyError extends Error {}
+
+/** Presses the first key bound to `button` in the page's live table (`liveBindings`). */
+export async function pressButton(page: Page, button: VButton): Promise<void> {
+  const code = (await liveBindings(page)).buttons[button][0];
+  if (code === undefined) {
+    throw new UnboundKeyError(`pressButton: the button ${button} has no key in the live table`);
+  }
+  await page.keyboard.press(code);
+}
+
+/** Presses the first key bound to the accelerator `accel` in the page's live table. */
 export async function pressAccel(page: Page, accel: Accel): Promise<void> {
-  await page.keyboard.press(DEFAULT_BINDINGS.accels[accel][0]);
+  const code = (await liveBindings(page)).accels[accel][0];
+  if (code === undefined) {
+    throw new UnboundKeyError(`pressAccel: the accelerator ${accel} has no key in the live table`);
+  }
+  await page.keyboard.press(code);
 }
 
 /** `closeAll` gave up: Start did not bring the stack back to its base (CTL6A.1). */
@@ -49,18 +85,22 @@ const frameName = (f: Frame): string => {
 
 /** Presses Start only while `__game().stack` is above its base; returns once it is at the base.
  *  Fails naming the stuck top frame after `CLOSE_ALL_MAX_PRESSES` presses (CTL6A.1). Never
- *  presses at a base, so it is safe both before and after Escape becomes Start (ctl-6b). */
+ *  presses at a base, so it is safe both before and after Escape becomes Start (ctl-6b). Start's
+ *  key is re-read from the live table before every press (ctl-12b: a remap moves it). */
 export async function closeAll(page: Page): Promise<void> {
-  const start = DEFAULT_BINDINGS.buttons.Start[0];
   for (let presses = 0; ; presses++) {
     const before = await readStack(page);
     if (before.length <= 1) return;
+    const start = (await liveBindings(page)).buttons.Start[0];
     if (presses === CLOSE_ALL_MAX_PRESSES) {
       const top = before[before.length - 1];
       throw new StuckStackError(
-        `closeAll: stuck top frame ${frameName(top)} after ${presses} Start (${start}) presses ` +
-          `(stack length ${before.length})`,
+        `closeAll: stuck top frame ${frameName(top)} after ${presses} ` +
+          `Start (${start ?? 'unbound'}) presses (stack length ${before.length})`,
       );
+    }
+    if (start === undefined) {
+      throw new UnboundKeyError('closeAll: Start has no key in the live table');
     }
     await page.keyboard.press(start);
     const was = JSON.stringify(before);
@@ -319,9 +359,13 @@ const A_KEYCAP = 'Enter';
 /** U+2014, built from its code point (never a pasted character). */
 export const EM_DASH = String.fromCharCode(0x2014);
 
-/** The exact `#interact-prompt` text for one candidate: `[Enter] {verb} — {name}` (CTL10A.3). */
-export const interactChip = (verb: 'Talk' | 'Shop' | 'Heal', name: string): string =>
-  `[${A_KEYCAP}] ${verb} ${EM_DASH} ${name}`;
+/** The exact `#interact-prompt` text for one candidate: `[{keycap}] {verb} — {name}` (CTL10A.3).
+ *  `keycap` is the A button's keycap: `Enter` by default, the new key's after a remap (ctl-12b). */
+export const interactChip = (
+  verb: 'Talk' | 'Shop' | 'Heal',
+  name: string,
+  keycap = A_KEYCAP,
+): string => `[${keycap}] ${verb} ${EM_DASH} ${name}`;
 
 /** Reads `#interact-prompt`: null while it is not rendered (no layout box), else its text with
  *  whitespace collapsed (as Playwright's `toHaveText` compares). */

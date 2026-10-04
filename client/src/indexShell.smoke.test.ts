@@ -32,7 +32,10 @@ const doc = new win.DOMParser().parseFromString(
   'text/html',
 ) as unknown as Document;
 
-/** Overlays whose shells main.ts constructs at runtime: no static anchor in index.html. */
+/** Overlays whose shells main.ts constructs at runtime: no static anchor in index.html.
+ *  ctl-12b (named intentional change, CTL12B.1): `controlsView` joins. Options > Controls is a
+ *  new OverlayId whose shell ui/controlsView.ts builds at runtime (the privacyView precedent), so
+ *  its `#controls-rows` anchor must NOT be static markup; index.html is unchanged by the slice. */
 const CONSTRUCTED: ReadonlySet<OverlayId> = new Set<OverlayId>([
   'battleView',
   'boxView',
@@ -40,6 +43,7 @@ const CONSTRUCTED: ReadonlySet<OverlayId> = new Set<OverlayId>([
   'evolutionView',
   'claimView',
   'privacyView',
+  'controlsView',
 ]);
 
 const NATIVE_FOCUSABLE = new Set(['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON', 'A']);

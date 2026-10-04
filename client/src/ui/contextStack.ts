@@ -99,6 +99,9 @@ export const SCREEN_POLICY: Readonly<Record<FrameId, ScreenPolicy>> = {
   menuView: PLAYER_DROP_SAFE,
   claimView: PLAYER_DROP,
   privacyView: PLAYER_DROP,
+  // Not battle-safe: the menu disables Controls over a battle, and a battle that starts closes it
+  // (which also ends a capture: the view's hide path).
+  controlsView: PLAYER_DROP,
   // `reconcile` reads this row for all three panels (they are never frames of their own), while
   // the main menu's battle rule still reads the panel rows. They agree only because Rankings stays
   // disabled over a battle (`HIDDEN_UNDER_BATTLE`, screens/mainMenuScreen.ts): whoever enables it

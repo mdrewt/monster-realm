@@ -40,10 +40,13 @@ interface Row {
 const ROOT: readonly Row[] = MENU_ENTRIES;
 
 const ROOT_KEYS = ['monsters', 'bag', 'journal', 'social', 'profile', 'options', 'close'];
+// ctl-12b (named intentional change): Options gains its Controls leaf, SECOND, after How to play.
+// The order is load-bearing: e2e/battle-dpad.spec.ts and encounter-battle.spec.ts press A on
+// Options and expect the cursor on How to play. Was: options: ['help'].
 const GROUP_CHILD_KEYS: Readonly<Record<string, readonly string[]>> = {
   social: ['trades', 'challenges', 'rankings'],
   profile: ['name', 'account', 'privacy'],
-  options: ['help'],
+  options: ['help', 'controls'],
 };
 
 /** Every row (root, then each group's children) with the catalog ids it must resolve through. */
@@ -124,6 +127,7 @@ describe('MENU_ENTRIES', () => {
       'profile/account': 'Account',
       'profile/privacy': 'Privacy',
       'options/help': 'How to play',
+      'options/controls': 'Controls',
     };
     const DESCRIPTIONS: Readonly<Record<string, string>> = {
       monsters: 'See your party and stored monsters.',
@@ -142,9 +146,11 @@ describe('MENU_ENTRIES', () => {
       'profile/account': 'Sign in or keep this guest progress.',
       'profile/privacy': 'Export or delete your data.',
       'options/help': 'Controls and goals of the game.',
+      'options/controls': 'Choose which key presses each button.',
     };
     const rows = flatRows();
-    expect(rows.length, 'ANTI-VACUITY: 7 root rows + 7 sub-list rows').toBe(14);
+    // ctl-12b (named intentional change): + the Controls leaf. Was: 7 + 7 = 14.
+    expect(rows.length, 'ANTI-VACUITY: 7 root rows + 8 sub-list rows').toBe(15);
     for (const { path, row } of rows) {
       expect(row.title(), `${path} title`).toBe(TITLES[path]);
       expect(row.description(), `${path} description`).toBe(DESCRIPTIONS[path]);
@@ -180,13 +186,14 @@ describe('MENU_ENTRIES', () => {
     expect(frTitle('monsters')).toBe('Monstres');
     expect(frTitle('bag')).toBe('Sac');
     expect(frTitle('close')).toBe('Fermer');
+    expect(frTitle('options/controls'), 'ctl-12b: the Controls leaf in French').toBe('Commandes');
     expect(fr, 'fr differs from en').not.toEqual(en);
 
     setLocale('en');
     expect(read(), 'back to en: nothing was memoized in fr').toEqual(en);
   });
 
-  it('CTL10B-2-MENU-NO-INITIATE: no leaf of the menu table opens the trade wizard, every leaf opens exactly one of the ten legacy viewers, and the Challenges leaf describes answering only (it no longer says "Challenge a player")', () => {
+  it('CTL10B-2-MENU-NO-INITIATE: no leaf of the menu table opens the trade wizard, every leaf opens exactly one of the eleven viewers, and the Challenges leaf describes answering only (it no longer says "Challenge a player")', () => {
     // WRONG IMPL KILLED: a menu leaf (Social, Trades, Challenges or any other) whose target is
     // tradeProposeView (a menu way to start a trade, r2-025); a leaf that opens some other
     // initiating surface (the target set is closed, so a new one reds); a Challenges description
@@ -206,7 +213,9 @@ describe('MENU_ENTRIES', () => {
         leaves.push({ path: root.key, target: (root as unknown as { target?: unknown }).target });
       }
     }
-    expect(leaves.length, 'ANTI-VACUITY: 7 sub-list leaves + 3 root leaves').toBe(10);
+    // ctl-12b (named intentional change): + the Controls leaf, which opens controlsView. Was: 7 + 3
+    // = 10 leaves over ten viewers.
+    expect(leaves.length, 'ANTI-VACUITY: 8 sub-list leaves + 3 root leaves').toBe(11);
     for (const { path, target } of leaves) {
       expect(target, `${path} opens something`).toBeTypeOf('string');
       expect(target, `${path} must not open the trade wizard`).not.toBe('tradeProposeView');
@@ -218,6 +227,7 @@ describe('MENU_ENTRIES', () => {
       [
         'boxView',
         'claimView',
+        'controlsView',
         'helpView',
         'leaderboardView',
         'privacyView',
@@ -235,5 +245,32 @@ describe('MENU_ENTRIES', () => {
     const desc = (challenges as { row: Row }).row.description();
     expect(desc).toBe('See and answer challenges.');
     expect(desc.includes('Challenge a player'), 'no longer advertises starting one').toBe(false);
+  });
+
+  it('ctl-12b: the Options group holds How to play then Controls, and the Controls leaf opens the controlsView frame', () => {
+    // LEGACY BEHAVIOUR REPLACED: Options held How to play alone; no menu path reached a Controls
+    // screen.
+    // WRONG IMPL KILLED: a Controls leaf missing (no way to the remap screen by the menu), placed
+    // FIRST (two e2e specs press A on Options and expect How to play under the cursor), placed in
+    // another group, or opening another overlay (help); and a leaf that is itself a group.
+    const options = ROOT.find((r) => r.key === 'options');
+    expect(options, 'the Options group').toBeDefined();
+    const kids = (options?.children ?? []) as ReadonlyArray<
+      Row & { kind?: string; target?: string }
+    >;
+    expect(
+      kids.map((k) => k.key),
+      'How to play first, Controls second',
+    ).toEqual(['help', 'controls']);
+    const controls = kids[1];
+    expect(controls?.kind, 'an open leaf').toBe('open');
+    expect(controls?.target, 'it opens the Controls frame').toBe('controlsView');
+    expect(kids[0]?.target, 'How to play still opens help').toBe('helpView');
+    for (const group of ROOT.filter((r) => r.key !== 'options')) {
+      expect(
+        (group.children ?? []).map((k) => k.key),
+        `${group.key} holds no Controls leaf`,
+      ).not.toContain('controls');
+    }
   });
 });

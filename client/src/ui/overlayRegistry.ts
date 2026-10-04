@@ -1,4 +1,4 @@
-// ui/overlayRegistry.ts — the pure modality core for the 17 mutual-exclusion overlays.
+// ui/overlayRegistry.ts — the pure modality core for the 18 mutual-exclusion overlays.
 //
 // FUNCTIONAL CORE. No DOM, no SDK, no import from `main.ts`, no view handles,
 // no thunks — every export here is a data table, a total pure function, or
@@ -24,7 +24,7 @@
 // `SCREEN_POLICY` in ui/contextStack.ts. What deliberately did NOT ship — zero consumers,
 // the A7/A15 precedent — is per-id `open` thunks, `isVisible(id)` and `anyVisibleExcept()`.
 
-/** The 17 mutual-exclusion overlays. `errorOverlayView` is NOT a member: it is
+/** The 18 mutual-exclusion overlays. `errorOverlayView` is NOT a member: it is
  *  non-blocking, F8-dismissed, and re-shows itself, so it never participates in
  *  mutual exclusion. Pinned by OR-MANIFEST-COMPLETE against `ui/*View.ts`. */
 export type OverlayId =
@@ -50,7 +50,10 @@ export type OverlayId =
   // the privacy surface. GUARD_ONLY, like every other modal a player
   // OPENS — it owns a two-step confirmation for an irreversible action, so it must never be
   // dismissed out from under that confirmation by a stray keypress.
-  | 'privacyView';
+  | 'privacyView'
+  // Options › Controls (ctl-12b). GUARD_ONLY: while a slot waits for a key the screen takes every
+  // keydown, so nothing may open over it or dismiss it from under the capture.
+  | 'controlsView';
 
 /**
  * How an overlay behaves when something else wants to open over it.
@@ -90,6 +93,7 @@ export const OVERLAY_TIERS: Readonly<Record<OverlayId, OverlayTier>> = {
   menuView: 'GUARD_ONLY',
   claimView: 'GUARD_ONLY',
   privacyView: 'GUARD_ONLY',
+  controlsView: 'GUARD_ONLY',
 };
 
 /**
@@ -123,10 +127,10 @@ export interface A11yMeta {
 
 /**
  * The a11y metadata SSOT. Typed `Record<OverlayId, _>` for exactly the
- * reason OVERLAY_TIERS is (`:76`): omitting an id is a COMPILE error, not a test failure, so an
- * eighteenth overlay cannot ship half-registered. Declaration order mirrors OVERLAY_TIERS, so
+ * reason OVERLAY_TIERS is (`:76`): omitting an id is a COMPILE error, not a test failure, so a
+ * new overlay cannot ship half-registered. Declaration order mirrors OVERLAY_TIERS, so
  * OVERLAY_IDS (`:100`) indexes this table too — one derived id list, never a second hand-kept
- * one. Seventeen per-view ARIA retrofits have no completeness oracle; one total table does.
+ * one. Per-view ARIA retrofits have no completeness oracle; one total table does.
  *
  * WHY THIS BELONGS IN THIS MODULE (recorded as a verification — spec §2.0 made the
  * placement call). The purity rule at `:4`-`:8` bans DOM, SDK, `main.ts` imports, view handles
@@ -142,7 +146,7 @@ export interface A11yMeta {
  * `initialFocusSelector: () => '…'` would drag a live handle back into the functional core and
  * re-open the coupling `anyVisible`'s probes-as-argument shape exists to prevent.
  *
- * `role` IS `'dialog'` FOR ALL SEVENTEEN — the reason is on `A11yMeta` above.
+ * `role` IS `'dialog'` FOR EVERY OVERLAY — the reason is on `A11yMeta` above.
  *
  * `dismissible` IS THE CONSTRAINT, NOT THE VARIATION: spec §2.1 phrases it over the TIER
  * (`EXCLUSIVE_TOP`/`GUARD_ONLY` ⇒ `true`, `HIDE_SWITCH` unconstrained), and the gate reads
@@ -272,6 +276,13 @@ export const OVERLAY_A11Y: Readonly<Record<OverlayId, A11yMeta>> = {
     initialFocusSelector: '#privacy-close-btn',
     dismissible: true,
   },
+  controlsView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.controlsView.title',
+    // The nav container: the frame's single tab stop, focusable from construction.
+    initialFocusSelector: '#controls-rows',
+    dismissible: true,
+  },
 };
 
 /**
@@ -328,7 +339,7 @@ export function anyVisible(probes: OverlayProbes, exempt?: OverlayId): boolean {
 
 /** Which overlays are visible right now, in OVERLAY_IDS declaration order — the argument
  *  `canOpen` takes. Re-probes on EVERY call, same contract as
- *  `anyVisible`: `main.ts` builds its probe table at module scope while all seventeen view
+ *  `anyVisible`: `main.ts` builds its probe table at module scope while all the view
  *  bindings are still `undefined`, so a cached list would be permanently empty and mutual
  *  exclusion would never engage. NO try/catch, for `anyVisible`'s reason. The deterministic
  *  order is load-bearing — it is what makes `canOpen`'s `blockedBy` reproducible. */

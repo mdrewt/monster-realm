@@ -17,6 +17,7 @@ import { healScreen } from './healScreen';
 import { journalScreen } from './journalScreen';
 import { legacyAdapter } from './legacyAdapter';
 import { monstersScreen } from './monstersScreen';
+import { controlsScreen } from './optionsScreen';
 import { accountScreen, nameScreen, privacyScreen } from './profileScreen';
 import { shopScreen } from './shopScreen';
 import { socialScreen } from './socialScreen';
@@ -32,7 +33,8 @@ export type ScreenAdapters = Readonly<Record<FrameId, ScreenAdapter<unknown, unk
  *  entry is the legacy adapter until its ctl-8 screen slice swaps it (ctl-8a: the dialogue, heal
  *  and shop frames; ctl-8b: the box frame, as Monsters; ctl-8d: the Social frame; ctl-8e: the
  *  trade-propose wizard; ctl-8f: the raising frame, as Bag, and the quest log, as Journal; ctl-8h:
- *  the rename, claim and privacy frames, as Profile's Name, Account and Privacy). The trade, pvp
+ *  the rename, claim and privacy frames, as Profile's Name, Account and Privacy; ctl-12b: the
+ *  controls frame, as Options › Controls). The trade, pvp
  *  and leaderboard overlays show as the one `social` frame (ctl-8s), so their own entries are
  *  never asked. */
 export const SCREEN_ADAPTERS: ScreenAdapters = {
@@ -53,6 +55,7 @@ export const SCREEN_ADAPTERS: ScreenAdapters = {
   menuView: legacyAdapter,
   claimView: accountScreen,
   privacyView: privacyScreen,
+  controlsView: controlsScreen,
   social: socialScreen,
 };
 
