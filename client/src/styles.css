@@ -181,6 +181,11 @@
   overflow-x: auto;
   gap: 0.25rem;
 }
+/* A strip placed straight in a shell's flex column (the Monsters frame): `overflow-x: auto` lets
+ * it shrink to zero height once the frame overflows, leaving the tabs unclickable (ctl-15). */
+.mr-shell > .mr-frame-tabstrip {
+  flex: 0 0 auto;
+}
 .mr-nav-tab {
   padding: 0 0.5rem;
 }
