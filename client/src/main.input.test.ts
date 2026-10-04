@@ -69,6 +69,10 @@ const H = vi.hoisted(() => ({
   /** ctl-10a: tiles ("x,y") the stubbed apply_move will not enter: a step into one turns the
    *  character to face it and moves nothing (a facing-only change). Reset by every boot. */
   blocked: new Set<string>(),
+  /** ctl-11a: the EvolutionView instance main.ts built (recorded by the transparent subclass in the
+   *  module mock below). The Evolution screen has no key, so CTL3-3-BOOT-HIDE-ALL opens it through
+   *  the view's own `show()`. Reset to null by every boot. */
+  evolution: null as { show(): void } | null,
 }));
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid.
@@ -192,6 +196,21 @@ vi.mock('./ui/screens/index', async (importOriginal) => {
   return { ...actual, SCREEN_ADAPTERS: H.adapters };
 });
 
+// ctl-11a (named fixture change): the Evolution screen lost its only key (E is RB now) and no menu
+// entry opens it, so CTL3-3-BOOT-HIDE-ALL needs another way to show the real view. This is the REAL
+// EvolutionView, subclassed transparently to record the instance main.ts constructs; no behaviour
+// of the view changes, so every other case in this file is unaffected.
+vi.mock('./ui/evolutionView', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./ui/evolutionView')>();
+  class RecordingEvolutionView extends actual.EvolutionView {
+    constructor(...args: ConstructorParameters<typeof actual.EvolutionView>) {
+      super(...args);
+      H.evolution = this;
+    }
+  }
+  return { ...actual, EvolutionView: RecordingEvolutionView };
+});
+
 // The renderer: init(mount) appends a focusable canvas so main.ts can resolve its world
 // focus target (main.a11yFocus.test.ts's delta 2).
 vi.mock('./render/world', () => {
@@ -278,6 +297,7 @@ async function boot(): Promise<void> {
   H.interactCalls = [];
   H.interact = () => [];
   H.blocked = new Set<string>();
+  H.evolution = null;
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   recorded = [];
@@ -976,15 +996,19 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     seedWorld(1000);
     expect(stack(), 'a fresh world is the bare base').toEqual([{ kind: 'world' }]);
 
+    // ctl-11a: B opens the box through the main menu (Monsters), so the box is a screen frame above
+    // the menu frame (was: directly above the base), and B over its own screen acts as Start, which
+    // pops both. Was: [world, boxView].
     fire('keydown', 'KeyB', 1010);
     expect(boxShown(), 'precondition: the box opened').toBe(true);
-    expect(stack(), 'the box is a screen frame above the base').toEqual([
+    expect(stack(), 'the box is a screen frame above the menu it was opened through').toEqual([
       { kind: 'world' },
+      { kind: 'screen', id: 'menuView' },
       { kind: 'screen', id: 'boxView' },
     ]);
     fire('keydown', 'KeyB', 1020);
     expect(boxShown(), 'precondition: the box closed').toBe(false);
-    expect(stack(), 'closing pops the frame').toEqual([{ kind: 'world' }]);
+    expect(stack(), 'closing pops the frames').toEqual([{ kind: 'world' }]);
 
     // A click opens the menu with no keydown. Nothing between the click and the next frame
     // syncs the stack, and reading the hook (twice) must not either.
@@ -1212,14 +1236,20 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     // paths only N, O, ?, M and C cleared them; B, I, E, Q, U, P and L left the hold latched,
     // so it resumed on close. Each opener below is one the defect covers. The hold is committed
     // and acked before the open, so a surviving hold WOULD walk the moment the gate reopens.
+    // ctl-11a: E (Evolution) has no key and Q is LB, so the old E and Q rows become V (Monsters on
+    // Party, which the spec maps from E) and J (the Journal); N and C, the two openers the defect
+    // named that already cleared held, join them. Every row now opens through the main menu, and
+    // the second press of its own key acts as Start, which closes the screen and the menu with it.
     const openers: ReadonlyArray<{ readonly code: string; readonly shown: () => boolean }> = [
       { code: 'KeyB', shown: () => shownByTestId('box-title') },
       { code: 'KeyI', shown: () => shownByTestId('raising-title') },
-      { code: 'KeyE', shown: () => shownByTestId('evolution-title') },
-      { code: 'KeyQ', shown: () => shownById('quest-log-list') },
+      { code: 'KeyV', shown: () => shownByTestId('box-title') },
+      { code: 'KeyJ', shown: () => shownById('quest-log-list') },
       { code: 'KeyL', shown: () => shownById('leaderboard-title') },
       { code: 'KeyU', shown: () => shownById('trade-status') },
       { code: 'KeyP', shown: () => shownById('pvp-challenge-status') },
+      { code: 'KeyN', shown: () => shownById('rename-overlay') },
+      { code: 'KeyC', shown: () => shownById('claim-overlay') },
     ];
     await bootReady();
     seedWorld(1000);
@@ -1489,10 +1519,13 @@ describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }
     // world when the battle row goes.
     await bootReady();
     seedWorld(1000);
-    fire('keydown', 'KeyQ', 1010);
+    // ctl-11a: the quest log is opened by J (Q is LB now), through the main menu, so it is a frame
+    // over the menu frame; the battle batch drops both. Was: Q, and [world, questLogView].
+    fire('keydown', 'KeyJ', 1010);
     expect(shownById('quest-log-overlay'), 'precondition: the quest log opened').toBe(true);
-    expect(stack(), 'precondition: the quest log is a frame over the world').toEqual([
+    expect(stack(), 'precondition: the quest log is a frame over the menu over the world').toEqual([
       { kind: 'world' },
+      { kind: 'screen', id: 'menuView' },
       { kind: 'screen', id: 'questLogView' },
     ]);
 
@@ -1551,7 +1584,8 @@ describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }
 
     // The inverse first: only the quest log is shown; the shop, trade and pvp overlays are hidden
     // with a sentinel in the feedback node their hide() clears. A battle must leave them alone.
-    fire('keydown', 'KeyQ', 1010);
+    // ctl-11a: the quest log is opened by J (Q is LB now); the menu it opens through is shown with it.
+    fire('keydown', 'KeyJ', 1010);
     expect(shownById('quest-log-overlay'), 'precondition: the quest log opened').toBe(true);
     const sentinels = ['shop-feedback', 'trade-feedback', 'pvp-challenge-feedback'];
     for (const id of sentinels) {
@@ -1577,7 +1611,7 @@ describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }
       {
         name: 'questLogView',
         rootId: 'quest-log-overlay',
-        open: (t) => void fire('keydown', 'KeyQ', t),
+        open: (t) => void fire('keydown', 'KeyJ', t),
       },
       { name: 'tradeView', rootId: 'trade-overlay', open: (t) => void fire('keydown', 'KeyU', t) },
       {
@@ -1647,8 +1681,9 @@ describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }
         shown: () => shownById('leaderboard-overlay'),
       },
       {
+        // ctl-11a: J, not Q (Q is LB now).
         name: 'questLogView',
-        open: (t) => void fire('keydown', 'KeyQ', t),
+        open: (t) => void fire('keydown', 'KeyJ', t),
         shown: () => shownById('quest-log-overlay'),
       },
       {
@@ -1794,7 +1829,8 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
       readonly rootId: string;
       readonly code: string;
     }> = [
-      { name: 'questLogView', rootId: 'quest-log-overlay', code: 'KeyQ' },
+      // ctl-11a: the quest log is opened by J (Q is LB now); both open through the main menu.
+      { name: 'questLogView', rootId: 'quest-log-overlay', code: 'KeyJ' },
       { name: 'tradeView', rootId: 'trade-overlay', code: 'KeyU' },
     ];
     let t = 1010;
@@ -1835,8 +1871,9 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     // as skipped by a mutant while every other boot case stayed green: the overlay is left
     // standing under the battle and, for privacy, its dismissal never runs). Each opens by its
     // own real path: N, A then A on Trade (face to face with the rival: ctl-10b retired O), A (the
-    // stubbed interact rule names the heal NPC on the player's own tile), I and E, and the claim
-    // overlay's privacy button.
+    // stubbed interact rule names the heal NPC on the player's own tile), I, the real view's own
+    // show() for Evolution (ctl-11a: E is RB now and nothing opens that screen by key), and the
+    // claim overlay's privacy button.
     // ctl-10a: T retired — the heal frame opener was KeyT (the nearest-in-range rule picked the
     // heal NPC); it is A now, with the wasm rule stub naming that NPC.
     // Not separately observed: privacy's onDismissed effect (it disarms an armed delete
@@ -1919,8 +1956,14 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
         shown: () => shownByTestId('raising-title'),
       },
       {
+        // ctl-11a: E is RB now and the Evolution screen has no key, so it is opened through the
+        // real view's own show() (the recording subclass above hands the instance over). The hide
+        // path under test is unchanged: a battle's close must reach THIS view's hide().
         name: 'evolutionView',
-        open: (t) => void fire('keydown', 'KeyE', t),
+        open: () => {
+          if (H.evolution === null) throw new Error('main.ts never built the EvolutionView');
+          H.evolution.show();
+        },
         shown: () => shownByTestId('evolution-title'),
       },
       {
@@ -2024,7 +2067,9 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     canvas.focus();
     expect(document.activeElement, 'precondition: the world canvas has focus').toBe(canvas);
 
-    fire('keydown', 'KeyQ', 1010);
+    // ctl-11a: the quest log is opened by J (Q is LB now), through the main menu: the leaf is the
+    // frame on top, so its deferred focus (the one asserted below) is the one that lands.
+    fire('keydown', 'KeyJ', 1010);
     expect(shownById('quest-log-overlay'), 'precondition: the quest log opened').toBe(true);
     await flush();
     expect(
@@ -2050,8 +2095,8 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
 //
 // Same harness, one fresh main.ts per case. The adapter table main.ts hands its screen host is the
 // module mock's mutable copy (`H.adapters`), so a case swaps ONE frame's adapter for a recording
-// stand-in while every other frame stays legacy. The subject is the quest log: Q opens it at the
-// world, and the main menu's Journal entry opens it above the menu. Observed: the buttons the
+// stand-in while every other frame stays legacy. The subject is the quest log: J opens it above the
+// main menu (ctl-11a), as does the menu's own Journal entry. Observed: the buttons the
 // stand-in is asked, the menu cursor (`__game().navActive`, read-only), the intents sent to the
 // stubbed enqueueMove reducer, and `defaultPrevented`. Every case is synchronous after boot, so no
 // overlay's deferred focus runs and `worldHasFocus()` stays true for the next open.
@@ -2139,13 +2184,20 @@ describe('main.ts D-pad on a nav-capable screen (runtime, ctl-7c)', { sequential
     const seen: NavInput[] = [];
     swapAdapter('questLogView', recordingAdapter(seen, true));
 
-    // --- (a) the quest log opened at the world ----------------------------------------------
-    tapKey('KeyQ', 1010);
-    expect(questShown(), 'a, precondition: Q opened the quest log').toBe(true);
-    expect(stack(), 'a, precondition: one frame over the world').toEqual([
+    // --- (a) the quest log opened by its accelerator ----------------------------------------
+    // ctl-11a: J (Q is LB now) opens the quest log through the main menu, so (a) now also has the
+    // menu beneath it, covered, its cursor on Journal: the nav screen on top still takes the D-pad
+    // and the covered menu's cursor must not move. Was: Q, one frame over the world, no menu open.
+    tapKey('KeyJ', 1010);
+    expect(questShown(), 'a, precondition: J opened the quest log').toBe(true);
+    expect(stack(), 'a, precondition: the quest log is above the menu it opened through').toEqual([
       { kind: 'world' },
+      { kind: 'screen', id: 'menuView' },
       { kind: 'screen', id: 'questLogView' },
     ]);
+    expect(menuCursor(), 'a, precondition: the covered menu`s cursor is on Journal').toBe(
+      'journal',
+    );
     expect(seen, 'a, precondition: opening asked the adapter nothing').toEqual([]);
 
     const arrow = fire('keydown', 'ArrowDown', 1100);
@@ -2154,9 +2206,10 @@ describe('main.ts D-pad on a nav-capable screen (runtime, ctl-7c)', { sequential
     ]);
     expect(arrow.defaultPrevented, 'a: the press is prevented').toBe(true);
     expect(H.sends, 'a: nothing walks').toHaveLength(0);
-    expect(menuCursor(), 'a: no menu is open to move').toBeNull();
+    expect(menuCursor(), 'a: the covered menu does not move').toBe('journal');
     expect(stack(), 'a: the frame is unchanged').toEqual([
       { kind: 'world' },
+      { kind: 'screen', id: 'menuView' },
       { kind: 'screen', id: 'questLogView' },
     ]);
 
@@ -2192,20 +2245,28 @@ describe('main.ts D-pad on a nav-capable screen (runtime, ctl-7c)', { sequential
     expect(seen).toHaveLength(5);
     expect(H.sends, 'a: no D-pad press under the screen walked').toHaveLength(0);
 
-    // B closes it through the adapter's own pop.
+    // B closes it through the adapter's own pop (ctl-11a: back into the menu it was opened through,
+    // one frame; a second B, routed to the menu and not to the stand-in, closes the menu).
     tapKey('Backspace', 2300);
     expect(seen.at(-1)).toEqual({ button: 'B', repeat: false });
     expect(questShown(), 'a: B closed the quest log').toBe(false);
-    expect(stack()).toEqual([{ kind: 'world' }]);
+    expect(stack(), 'a: one frame: back into the menu').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'menuView' },
+    ]);
+    tapKey('Backspace', 2350);
+    expect(stack(), 'a: the menu`s own B closes it').toEqual([{ kind: 'world' }]);
 
     // --- (b) the quest log opened over the open main menu, through the menu --------------------
     tapKey('KeyM', 2400);
     expect(overlayShown('menu-overlay'), 'b, precondition: M opened the menu').toBe(true);
-    expect(menuCursor(), 'b, precondition: on the first entry').toBe('monsters');
+    // ctl-11a: the menu remembers the last entry used (CTL5.3), and (a) left it on Journal, so it
+    // reopens there. Was: on the first entry, Monsters, with two ArrowDowns to Journal.
+    expect(menuCursor(), 'b, precondition: the menu reopens on the entry (a) used').toBe('journal');
     // The menu on top still takes the D-pad while a nav adapter is registered for another frame.
     tapKey('ArrowDown', 2500);
-    expect(menuCursor(), 'b: the menu on top moves').toBe('bag');
-    tapKey('ArrowDown', 2600);
+    expect(menuCursor(), 'b: the menu on top moves').toBe('social');
+    tapKey('ArrowUp', 2600);
     expect(menuCursor(), 'b, precondition: the cursor is on Journal').toBe('journal');
     const asked = seen.length;
     expect(asked, 'b: the quest log adapter was not asked for the menu`s presses').toBe(6);
@@ -2267,24 +2328,30 @@ describe('main.ts D-pad on a nav-capable screen (runtime, ctl-7c)', { sequential
     tapKey('Escape', 4800);
     expect(overlayShown('menu-overlay'), 'c, precondition: Escape closed the menu').toBe(false);
     swapAdapter('questLogView', legacyQuestLog);
-    tapKey('KeyQ', 4900);
-    expect(questShown(), 'c, precondition: Q opened the quest log').toBe(true);
+    // ctl-11a: J (Q is LB now) opens it, over the menu it opens through, and J over its own screen
+    // acts as Start. Was: Q, one frame over the world, and a second Q to close it.
+    tapKey('KeyJ', 4900);
+    expect(questShown(), 'c, precondition: J opened the quest log').toBe(true);
     const legacyArrow = fire('keydown', 'ArrowDown', 5000);
     expect(legacyArrow.defaultPrevented, 'c: still prevented (no page scroll)').toBe(true);
     frame(5350);
     frame(5450);
     fire('keyup', 'ArrowDown', 5460);
     expect(questShown(), 'c: the quest log is still open').toBe(true);
-    expect(stack()).toEqual([{ kind: 'world' }, { kind: 'screen', id: 'questLogView' }]);
+    expect(stack()).toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'menuView' },
+      { kind: 'screen', id: 'questLogView' },
+    ]);
     expect(seen.length, 'c: the swapped-out stand-in is not asked').toBe(afterPop);
-    tapKey('KeyQ', 5500);
-    expect(questShown(), 'c: Q closed it').toBe(false);
+    tapKey('KeyJ', 5500);
+    expect(questShown(), 'c: J (its own Start) closed it').toBe(false);
 
     // --- (c') a recording stand-in WITHOUT nav: the D-pad never reaches it ----------------------
     const plain: NavInput[] = [];
     swapAdapter('questLogView', recordingAdapter(plain, false));
-    tapKey('KeyQ', 5600);
-    expect(questShown(), "c', precondition: Q opened the quest log").toBe(true);
+    tapKey('KeyJ', 5600);
+    expect(questShown(), "c', precondition: J opened the quest log").toBe(true);
     const plainArrow = fire('keydown', 'ArrowDown', 5700);
     expect(plainArrow.defaultPrevented, "c': the arrow is still prevented").toBe(true);
     frame(6050);
@@ -3106,9 +3173,15 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     frame(1015);
     expect(chipOptions(), 'precondition: the picker is open').toHaveLength(2);
 
+    // ctl-11a: B opens the Box through the main menu, so the Box is a frame above the menu (was
+    // [world, boxView]); B again, its own key, acts as Start and closes both.
     tapKey('KeyB', 1020);
     expect(boxShown(), 'the accelerator under the picker opens the Box').toBe(true);
-    expect(stack()).toEqual([{ kind: 'world' }, { kind: 'screen', id: 'boxView' }]);
+    expect(stack()).toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'menuView' },
+      { kind: 'screen', id: 'boxView' },
+    ]);
     frame(1030);
     expect(promptShown(), 'no picker and no chip over the Box').toBe(false);
 

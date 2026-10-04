@@ -8,9 +8,9 @@
 //
 // No DOM, SDK, module state or clock: the caller passes `now` and applies the returned effects.
 import type { WasmDirection } from '../convert/convert';
+import { acceleratorsDenied, type FrameId, type Stack } from '../ui/contextStack';
 import type { NavInput } from '../ui/nav';
 import type { Command, ScreenResult } from '../ui/screens/types';
-import { acceleratorsDenied, type FrameId, type Stack } from '../ui/contextStack';
 import type { Bindings } from './bindings';
 import { type Accel, type ButtonEdge, dpadDir, type VButton } from './buttons';
 

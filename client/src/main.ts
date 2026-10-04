@@ -1663,6 +1663,12 @@ function closeFrame(frame: UpperFrame): void {
       battleView?.hide();
       lastBattleVM = null;
       break;
+    case 'menuView':
+      // Uncover the menu while it is still shown: uncovering it once hidden (the next sync) would
+      // focus its rows inside a hidden subtree, as `setCovered` has no visibility guard.
+      menuView?.setCovered(false);
+      hideFrame(frame.id);
+      break;
     default:
       hideFrame(frame.id);
   }
