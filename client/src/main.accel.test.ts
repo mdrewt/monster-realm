@@ -1309,4 +1309,65 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     expect(stackNames(), 'Select over the menu over a battle').toEqual(['battle', 'menuView']);
     expect(shownById('help-overlay')).toBe(false);
   });
+
+  // ------------------------------------------------------------------------------------------
+  // ctl-11b: residual R-ctl-11a-POPGUARD
+  // ------------------------------------------------------------------------------------------
+
+  it('POPGUARD-CLOSE-SURFACES-FRAME: with the privacy screen open over Profile and a claim paint deferred behind it, an accelerator pops to the base, the privacy dismissal flushes the claim paint so the claim screen surfaces, and the menu does NOT open over it: no menu, no Journal, the stack is the world with the claim frame; Start then closes the claim and the same accelerator opens its path as usual', async () => {
+    // WRONG IMPL KILLED (R-ctl-11a-POPGUARD, the line `if (contextStack.length > 1) return;` in
+    // openAccelPath): an accelerator that opens the menu and picks its path right after the pop,
+    // whatever the pop left. Privacy's dismissal (`onDismissed`) flushes the claim paint it deferred
+    // while it owned the screen (`claimRenderPending`), and `popToBase` closes frames top first, so
+    // the claim screen is shown by the time the pop is done and `applyStack`'s re-mirror puts it on
+    // the stack. Without the guard the menu opens over that claim frame and the Journal over the
+    // menu (this test's stack would read world, claimView, menuView, questLogView and the menu and
+    // the Journal would be shown). The surfaced frame must instead be left to the player, who
+    // closes it with Start: the control after it proves the same key opens its path from the bare
+    // world, so the refusal above is the guard's and not a dead accelerator.
+    await bootReady();
+    server(1000);
+
+    // Profile > Privacy by keys: Start, down to Profile, A, down to Privacy, A.
+    press('KeyM');
+    expect(stackNames(), 'precondition: Start opened the menu').toEqual(['world', 'menuView']);
+    for (let i = 0; i < 8 && navActive() !== 'profile'; i += 1) press('ArrowDown');
+    expect(navActive(), 'precondition: the cursor is on Profile').toBe('profile');
+    press('Enter');
+    expect(menuTitle(), 'precondition: A entered the Profile level').toBe(levelTitle('profile'));
+    for (let i = 0; i < 4 && navActive() !== 'privacy'; i += 1) press('ArrowDown');
+    expect(navActive(), 'precondition: the cursor is on Privacy & data').toBe('privacy');
+    press('Enter');
+    expect(stackNames(), 'precondition: the privacy screen is open over the menu').toEqual([
+      'world',
+      'menuView',
+      'privacyView',
+    ]);
+
+    // A claim paint arrives while privacy owns the screen: it is deferred, nothing shows yet.
+    opts.onClaimPending?.('claim-code-1');
+    expect(shownById('claim-overlay'), 'precondition: the claim paint is deferred').toBe(false);
+    expect(stackNames(), 'precondition: the stack is unchanged').toEqual([
+      'world',
+      'menuView',
+      'privacyView',
+    ]);
+
+    // The accelerator: pops to the base; the pop surfaces the claim screen.
+    const e = press('KeyJ');
+    expect(e.defaultPrevented, 'the accelerator press is consumed').toBe(true);
+    expect(shownById('claim-overlay'), 'the privacy dismissal flushed the claim paint').toBe(true);
+    expect(menuShown(), 'the menu is not opened over the surfaced claim screen').toBe(false);
+    expect(questLogShown(), 'and the accelerator`s own screen is not opened over it').toBe(false);
+    expect(
+      stackNames(),
+      'the stack is the world and the surfaced claim frame, nothing more',
+    ).toEqual(['world', 'claimView']);
+
+    // Control: Start closes the claim; the same key then opens its path from the bare world.
+    press('Escape');
+    expectBareWorld('after Start');
+    press('KeyJ');
+    expectLeafOpen(ROW('J'), 'J from the bare world');
+  });
 });
