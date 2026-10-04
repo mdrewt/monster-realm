@@ -8,7 +8,7 @@
 //      never reach the bubble-phase window keydown (movement + letter hotkeys). It also
 //      handles Enter=submit / Escape=cancel locally.
 //   2. The deferred initial focus is NO LONGER OWNED HERE. `ui/overlayA11y.ts` is the
-//      single owner of the setTimeout(…, 0) defer for all seventeen overlays, and it targets this
+//      single owner of the setTimeout(…, 0) defer for every overlay, and it targets this
 //      overlay's `initialFocusSelector` (#rename-input) from OVERLAY_A11Y. The defer itself is
 //      still load-bearing for the same reason it always was: it lets the opening key event (KeyN)
 //      fully complete so the `n` does not land in the field it just opened.
@@ -26,24 +26,23 @@
 // the i18n resolver (`t('chrome.rename.submit')`, ui/i18n/resolver.ts) in show(), on every
 // show(); `index.html` no longer ships the "Rename" text, so the button is EMPTY until the first
 // show(). The current display name is model data, rendered raw.
-import { DEFAULT_BINDINGS } from '../input/bindings';
+import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { t } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { buildRenameViewModel, type RenameViewModel } from './renameModel';
 import { type RowOp, rowStep } from './screens/profileScreen';
 
-/** The D-pad and B codes of the default keymap (input/bindings.ts): the only keys that leave the
- *  focused submit button for the router. */
-const ROUTED_ON_SUBMIT: ReadonlySet<string> = new Set([
-  ...DEFAULT_BINDINGS.buttons.Up,
-  ...DEFAULT_BINDINGS.buttons.Down,
-  ...DEFAULT_BINDINGS.buttons.Left,
-  ...DEFAULT_BINDINGS.buttons.Right,
-  ...DEFAULT_BINDINGS.buttons.B,
-]);
+/** Whether `code` leaves the focused submit button for the router: only the keys `b` binds to the
+ *  D-pad and B do. */
+const routedOnSubmit = (b: Bindings, code: string): boolean =>
+  (['Up', 'Down', 'Left', 'Right', 'B'] as const).some((button) =>
+    b.buttons[button].includes(code),
+  );
 
 export interface RenameCallbacks {
   readonly onSubmit: (name: string) => Promise<void> | void;
+  /** The live binding table (a remap applies at once); absent, the defaults. */
+  readonly bindings?: () => Bindings;
 }
 
 export class RenameView {
@@ -100,11 +99,12 @@ export class RenameView {
     // The submit button is a second focus target (Tab from the input, a mouse click, or
     // the D-pad leaves it focused). Its keydown stops every hotkey so a letter pressed
     // while the button holds focus never reaches the window listener (red-team Finding 1),
-    // EXCEPT the D-pad and B codes (B5, CTL8H.2): the router hands those to the Name
+    // EXCEPT the live table's D-pad and B codes (B5, CTL8H.2): the router hands those to the Name
     // screen, which walks the rows and pops the frame. stopPropagation does not
     // preventDefault, so Enter/Space still fire the click.
     this.#submitBtn.addEventListener('keydown', (e) => {
-      if (!ROUTED_ON_SUBMIT.has(e.code)) e.stopPropagation();
+      const table = this.#cbs.bindings?.() ?? DEFAULT_BINDINGS;
+      if (!routedOnSubmit(table, e.code)) e.stopPropagation();
     });
 
     this.#submitBtn.addEventListener('click', () => {

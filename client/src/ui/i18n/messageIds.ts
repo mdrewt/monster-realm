@@ -81,6 +81,20 @@ export type MessageId =
   | 'controls.swapped'
   | 'controls.swappedUnbound'
   | 'controls.swappedSlots'
+  // ctl-12b: the Options › Controls view (ui/controlsView.ts).
+  | 'controls.title'
+  | 'controls.tab.buttons'
+  | 'controls.tab.shortcuts'
+  | 'controls.slot.primary'
+  | 'controls.slot.alt'
+  | 'controls.slot.none'
+  | 'controls.clear'
+  | 'controls.cleared'
+  | 'controls.resetAll'
+  | 'controls.reset.question'
+  | 'controls.reset.done'
+  | 'controls.cancel'
+  | 'controls.saveFailed'
   | 'chrome.help.title'
   | 'chrome.rename.submit'
   | 'chrome.tradePropose.submit'
@@ -379,6 +393,8 @@ export type MessageId =
   | 'menu.profile.privacy.desc'
   | 'menu.options.help.title'
   | 'menu.options.help.desc'
+  | 'menu.options.controls.title'
+  | 'menu.options.controls.desc'
   | 'menu.disabled.inBattle'
   | 'menu.disabled.battleBag'
   // ctl-8f: the Bag frame (raisingView.ts) and the Journal detail (questLogView.ts).
@@ -421,6 +437,10 @@ export interface MessageParams {
     readonly label: string;
     readonly otherLabel: string;
   };
+  readonly 'controls.slot.primary': { readonly label: string; readonly key: string };
+  readonly 'controls.slot.alt': { readonly label: string; readonly key: string };
+  readonly 'controls.clear': { readonly label: string };
+  readonly 'controls.cleared': { readonly label: string };
   // Every param below is MODEL DATA — affinity names, weather labels,
   // status names, species/skill/item names, player display names and counts — interpolated
   // verbatim, never catalogued (M24 §2.5: content stays English this milestone).

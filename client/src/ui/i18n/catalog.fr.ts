@@ -230,6 +230,40 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Feedback line in Options › Controls when a row's Primary and Alt keys traded places;
   // {key}/{otherKey} are keycaps, {label} the row name. ui/controlsModel.ts
   'controls.swappedSlots': (p) => `Échangé : ${p.key} et ${p.otherKey} pour ${p.label}`,
+  // @desc: Heading of the Options › Controls screen (key remapping). ui/controlsView.ts
+  'controls.title': 'Commandes',
+  // @desc: Tab of Options › Controls listing the twelve virtual buttons. ui/controlsView.ts
+  'controls.tab.buttons': 'Boutons',
+  // @desc: Tab of Options › Controls listing the optional shortcut keys. ui/controlsView.ts
+  'controls.tab.shortcuts': 'Raccourcis',
+  // @desc: A row's Primary key cell in Options › Controls; {label} is the row name
+  // (e.g. Confirm (A)), {key} its keycap or the no-key mark. ui/controlsView.ts
+  'controls.slot.primary': (p) => `${p.label} : ${p.key}`,
+  // @desc: A row's Alt (second) key cell in Options › Controls; {label} is the row name, {key}
+  // its keycap or the no-key mark. ui/controlsView.ts
+  'controls.slot.alt': (p) => `${p.label} (alt.) : ${p.key}`,
+  // @desc: Mark shown in an Options › Controls key cell that holds no key. ui/controlsView.ts
+  'controls.slot.none': '—',
+  // @desc: Cell on a shortcut row of Options › Controls that removes the shortcut's keys; {label}
+  // is the row name. ui/controlsView.ts
+  'controls.clear': (p) => `Effacer ${p.label}`,
+  // @desc: Feedback line in Options › Controls after a shortcut's keys were removed; {label} is
+  // the row name. One sentence. ui/controlsView.ts
+  'controls.cleared': (p) => `${p.label} n’a plus de touche.`,
+  // @desc: Last row of each Options › Controls tab: restore every default key. ui/controlsView.ts
+  'controls.resetAll': 'Tout réinitialiser',
+  // @desc: Yes / No question asked before Options › Controls restores every default key.
+  // ui/controlsView.ts
+  'controls.reset.question': 'Réinitialiser toutes les commandes ?',
+  // @desc: Feedback line in Options › Controls after every default key was restored. One
+  // sentence. ui/controlsView.ts
+  'controls.reset.done': 'Toutes les commandes ont repris leur valeur par défaut.',
+  // @desc: Button shown in Options › Controls while a slot waits for a key press; it ends the
+  // wait with nothing changed. One word. ui/controlsView.ts
+  'controls.cancel': 'Annuler',
+  // @desc: Appended to an Options › Controls feedback line when the browser refused to store
+  // the new keys: they work now and are lost on reload. One sentence. ui/controlsView.ts
+  'controls.saveFailed': 'Enregistrement impossible : ce réglage dure jusqu’au rechargement.',
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
   // index.html:94 (resolved in HelpView show())
   'chrome.help.title': 'Commandes et objectifs',
@@ -1304,6 +1338,12 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Feedback-line description of the How to play entry in the Options sub-list, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.options.help.desc': 'Commandes et objectifs du jeu.',
+  // @desc: Options sub-list entry opening the Controls screen (key remapping).
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.options.controls.title': 'Commandes',
+  // @desc: Feedback-line description of the Controls entry in the Options sub-list, shown on Y.
+  // ui/menuModel.ts (MENU_ENTRIES)
+  'menu.options.controls.desc': 'Choisir la touche de chaque bouton.',
   // @desc: Reason a main-menu entry is disabled while the menu is open over a battle (feedback
   // line); also the status-line and announced reason when an action is refused during a battle.
   // ui/screens/mainMenuScreen.ts (battleReason); main.ts (refusedInBattle)
