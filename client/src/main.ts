@@ -86,6 +86,14 @@ import { t } from './ui/a11yCopy';
 import { confirmLayout, sheetLayout } from './ui/actionSheetModel';
 import { type A11ySnapshot, announcementsFor } from './ui/announcements';
 import {
+  armReseed,
+  BATTLE_EMIT_INITIAL,
+  type BattleEmitState,
+  battleEmitStep,
+  rankedStep,
+  resetBattleEmit,
+} from './ui/battleEmitModel';
+import {
   type BaitItem,
   type BattleViewModel,
   buildBattleViewModel,
@@ -145,16 +153,7 @@ import type { DialogueView } from './ui/dialogueView';
 import { buildErrorOverlayModel } from './ui/errorOverlayModel';
 import { ErrorOverlayView } from './ui/errorOverlayView';
 import { ErrorRing, type ErrorSource, normalizeError } from './ui/errorRing';
-import {
-  EventRing,
-  isPvpBattle,
-  makeBattleEnd,
-  makeBattleStart,
-  makeConnect,
-  makeDisconnect,
-  makeRankedMatch,
-  makeZoneChange,
-} from './ui/eventRing';
+import { EventRing, makeConnect, makeDisconnect, makeZoneChange } from './ui/eventRing';
 import {
   EvolutionNoticeBanner,
   evolutionNoticeKey,
@@ -373,19 +372,13 @@ let lastCamY = 0;
 let sawFractionalOwnMotion = false;
 
 let identity = '';
-// event-emit latches. `activeBattleId` tracks the battle we saw START so
-// battleEnd only fires for a battle we witnessed (guards a stale-terminal-at-first-sight).
-// `lastOwnRating` baselines the ranked-delta detector. BOTH reset to null on
-// reconnect/zone-switch (resetPredictionState) so they re-baseline — the RINGS do NOT reset.
-let activeBattleId: bigint | null = null;
+// event-emit latches (rules: ui/battleEmitModel.ts). `battleEmit` is the battleStart/battleEnd
+// latch, `lastOwnRating` baselines the ranked-delta detector. Both re-baseline on
+// reconnect/zone-switch (resetPredictionState) — the RINGS do NOT reset.
+let battleEmit: BattleEmitState = BATTLE_EMIT_INITIAL;
 let lastOwnRating: number | null = null;
-// set on RECONNECT only. A still-Ongoing battle that survived the drop must NOT re-emit
-// battleStart. Armed until the connection signals hydration-complete (onHydrated) — never
-// resolved by what a flush happens to read, so a partial hydration cannot burn it;
-// reseedPrevBattleId is the drop-time battle so only ITS re-sighting is silent.
-// hydratedSinceReconnect is reset on EVERY reconnect and set by onHydrated.
-let battleReseedPending = false;
-let reseedPrevBattleId: bigint | null = null;
+// reset on EVERY reconnect and set by onHydrated: a pending battle reseed resolves only on a
+// flush after it, so a partial hydration cannot burn it.
 let hydratedSinceReconnect = false;
 let conn: ReturnType<typeof connect> | undefined;
 let boxView: BoxView | undefined;
@@ -1982,7 +1975,7 @@ function resetPredictionState(): void {
   // re-baseline the event-emit latches (NOT the rings — those are the
   // session buffer). After a reconnect/zone-switch the old battle is GC'd and the rating
   // baseline must be re-seeded from the first fresh batch, not carried across.
-  activeBattleId = null;
+  battleEmit = resetBattleEmit(battleEmit);
   lastOwnRating = null;
 }
 
@@ -2930,71 +2923,37 @@ store.onBatchApplied(() => {
   }
 });
 
-// --- battleStart / battleEnd emit listener -----------------------
-// Dedicated batch listener (UNCONDITIONAL — not visibility-gated). battleEnd only fires
-// for a battle we saw START (activeBattleId latch): a battle first-seen already terminal
-// has activeBattleId !== its id, so neither branch fires — guarding a stale-terminal login.
+// --- battleStart / battleEnd emit listener (ui/battleEmitModel.ts) -----------------------
+// Dedicated batch listener (UNCONDITIONAL — not visibility-gated).
 store.onBatchApplied(() => {
   if (identity === '') return;
   try {
-    const latest = store.latestPlayerBattle(identity);
-    // re-baseline ONLY the battle that survived the drop, without
-    // emitting. The latch resolves on the first flush AFTER hydration-complete (the
-    // hydration latch): a pre-hydration flush — empty OR carrying an older surviving row — must not
-    // burn it. Post-hydration an undefined read is definitive (no battle rows) and resolves it.
-    if (battleReseedPending) {
-      if (!hydratedSinceReconnect) return;
-      battleReseedPending = false;
-      const survivedId = reseedPrevBattleId;
-      reseedPrevBattleId = null;
-      if (latest?.outcome === 'Ongoing' && latest.battleId === survivedId) {
-        activeBattleId = latest.battleId;
-        return;
-      }
-    }
-    if (!latest) return;
-    // wild battles carry the all-zero WILD_IDENTITY (!== player) but no owned
-    // opponent party — identity-inequality alone mislabels them PvP. Use the party-guarded rule.
-    const isPvp = isPvpBattle(latest);
-    if (latest.outcome === 'Ongoing' && latest.battleId !== activeBattleId) {
-      activeBattleId = latest.battleId;
-      eventRing.push(makeBattleStart(latest.battleId.toString(), isPvp));
-    } else if (latest.outcome !== 'Ongoing' && activeBattleId === latest.battleId) {
-      activeBattleId = null;
-      // `outcome` here is the SERVER-side tag — SideA is always the
-      // challenger — and is deliberately NOT perspective-mapped, so a PvP accepter's ring
-      // records SideAWins for their own loss. That is intentional: two players' event rings
-      // and bug bundles must agree on who won. Do not "fix" this to the local perspective.
-      eventRing.push(makeBattleEnd(latest.battleId.toString(), latest.outcome, latest.turnNumber));
-    }
+    const next = battleEmitStep(battleEmit, {
+      hydrated: hydratedSinceReconnect,
+      latest: store.latestPlayerBattle(identity),
+    });
+    battleEmit = next.state;
+    if (next.emit) eventRing.push(next.emit);
   } catch (err) {
     console.error('[obs] battle', err);
   }
 });
 
-// --- rankedMatch emit listener -----------------------------------
+// --- rankedMatch emit listener (ui/battleEmitModel.ts) -----------------------------------
 // Dedicated batch listener (its OWN, not folded into the visibility-gated leaderboard
-// listener above). Baselines lastOwnRating on first sight, then emits a delta event on
-// each rating change with the current battle id (or '' if none).
+// listener above).
 store.onBatchApplied(() => {
   if (identity === '') return;
   try {
     const prof = store.profile(identity);
     if (!prof) return;
-    if (lastOwnRating === null) {
-      lastOwnRating = prof.rating;
-      return;
-    }
-    if (prof.rating !== lastOwnRating) {
-      const delta = prof.rating - lastOwnRating;
-      lastOwnRating = prof.rating;
-      // latestPlayerBattle() returns the highest-id battle of ANY kind, which
-      // may be a wild encounter — attach the id ONLY if it is genuinely a PvP battle, else ''
-      // (a wrong battleId corrupts the H3 correlation; the delta is the load-bearing signal).
-      const b = store.latestPlayerBattle(identity);
-      const battleId = b && isPvpBattle(b) ? b.battleId.toString() : '';
-      eventRing.push(makeRankedMatch(battleId, delta));
-    }
+    const next = rankedStep({
+      lastRating: lastOwnRating,
+      rating: prof.rating,
+      latest: store.latestPlayerBattle(identity),
+    });
+    lastOwnRating = next.lastRating;
+    if (next.emit) eventRing.push(next.emit);
   } catch (err) {
     console.error('[obs] ranked', err);
   }
@@ -3667,9 +3626,12 @@ async function main(): Promise<void> {
       // cannot reach it — and a rebuild can mint a NEW identity. Dropped here so the previous
       // identity's personal-data export is never downloadable by the next one.
       exportAssembly = undefined;
-      // Capture BEFORE resetPredictionState nulls activeBattleId; a 2nd drop while a
-      // reseed is still pending must keep the FIRST capture (not overwrite it with null).
-      if (!battleReseedPending) reseedPrevBattleId = activeBattleId;
+      // Arm the battle reseed BEFORE resetPredictionState clears the active battle: a surviving
+      // Ongoing battle is re-baselined on the first post-hydration batch instead of re-emitting
+      // battleStart. A 2nd drop while a reseed is pending keeps the FIRST capture, and the
+      // hydration flag is cleared UNCONDITIONALLY so the reseed waits for THIS connection's.
+      battleEmit = armReseed(battleEmit);
+      hydratedSinceReconnect = false;
       // Clean re-init: the store already dropped stale rows; rebuild prediction and
       // drop the own slide clock so the post-reconnect re-seed starts fresh.
       // Zone state is corrected by the reconcile listener's state-based check on
@@ -3697,12 +3659,6 @@ async function main(): Promise<void> {
       for (const f of contextStack) {
         if (f.kind === 'screen' && f.overBattle !== undefined) hideFrame(f.id);
       }
-      // re-baseline a surviving Ongoing battle on the next batch
-      // instead of re-emitting a spurious battleStart for it. Armed until onHydrated —
-      // reset UNCONDITIONALLY (unlike the guarded capture above) so a second drop re-arms
-      // against ITS OWN hydration, never a stale one.
-      battleReseedPending = true;
-      hydratedSinceReconnect = false;
       // a buy/sell in flight at drop time never settles (SDK — no settle
       // on drop), so the shop's double-spend lock would stay held forever. hide()
       // resets it (shopView.ts is outside this slice's touch-set; the reset rides
