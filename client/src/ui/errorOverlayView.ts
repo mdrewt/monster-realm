@@ -30,7 +30,7 @@ export class ErrorOverlayView {
   constructor(mount: HTMLElement = document.body) {
     const root = document.createElement('div');
     root.id = this.rootId;
-    // ctl-13: the overlay is the error toast (main.ts feeds it the newest error only); B at the
+    // ctl-13: the overlay is the error toast (main.ts feeds it the errors since its last dismissal); B at the
     // world or F8 dismisses it.
     root.className = 'mr-toast';
     root.style.display = 'none';

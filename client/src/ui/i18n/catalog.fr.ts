@@ -55,11 +55,11 @@ const WEATHER_TURN_FORMS = cldr({
 export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Verb on the Start button chip in the hint bar at the bottom of the game screen; the
   // button name "Start" is drawn beside it. One short word (at most 12 characters).
-  // index.html #chip-start (written by main.ts at boot)
+  // index.html #chip-start (painted by hintBar.ts from hintBarModel.ts)
   'chrome.chip.menu': 'Menu',
   // @desc: Verb on the Select button chip in the hint bar at the bottom of the game screen; the
   // button name "Select" is drawn beside it. Opens the help screen. One short word (at most 12
-  // characters). index.html #chip-select (written by main.ts at boot)
+  // characters). index.html #chip-select (painted by hintBar.ts)
   'chrome.chip.help': 'Aide',
   // @desc: Hint-bar chip verb for A inside a sheet or a frame: confirm the highlighted item. One
   // short word (at most 12 characters). hintBarModel.ts (#hint-bar)
@@ -1133,8 +1133,8 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // its own element and is not a placeholder. One line.
   // leaderboardView.ts:69
   'leaderboard.row': (p) => ` — ${p.rating} (V${p.wins}/D${p.losses})`,
-  // @desc: Footer of the diagnostic error overlay naming its two keyboard shortcuts: F8 closes
-  // it, F9 downloads a bug report; "F8"/"F9" are key names. One short line, small text.
+  // @desc: Footer of the error toast naming its keys: B or F8 closes it, F9 downloads a bug
+  // report; "B" is a button name, "F8"/"F9" are key names. One short line, small text.
   // errorOverlayView.ts:81 (resolved in show())
   'errorOverlay.footer': 'B ou F8 fermer · F9 rapport de bogue',
   // @desc: One row of the quest log; {name} is the quest's content identifier (e.g.

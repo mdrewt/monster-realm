@@ -57,7 +57,8 @@ export function worldButton(
     const step = requestSheetStep(n.request, btn, n.pending);
     const base = { sheet: null, request: step.state, result: 'consumed' } as const;
     if (step.run === 'view') return { ...base, view: n.request.notice };
-    // Answered: its banner goes too, so a second Y cannot answer again before the row changes.
+    // Answered: its banner goes too (main.ts also keeps the answered key out of `pending`, so a
+    // second Y cannot answer again before the row changes).
     if (step.run !== undefined)
       return {
         ...base,

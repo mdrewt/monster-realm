@@ -990,7 +990,7 @@ function openClaim(): void {
 //
 // ONE OPEN PATH PER OVERLAY: each openX() below is the single build-VM-and-show body for
 // its overlay, called by the menu (an accelerator opens through the menu). Trade, pvp and leaderboard share
-// `openSocial` (the challenge auto-show calls it too), whose build-and-show bodies are
+// `openSocial` (and the world request sheet's View row, ctl-13), whose build-and-show bodies are
 // `showSocialPanel`'s. The view contract is non-uniform (dialogue/questLog/heal expose render()
 // with no show(); pvp takes refresh(vm, forceVisible)), so these are per-id thunks, never a
 // generic view.show().
@@ -1178,6 +1178,9 @@ function runInteract(action: InteractAction): void {
  *  session forgets both: a request still waiting after a reconnect shows and is announced again. */
 const dismissedRequests = new Set<string>();
 const announcedRequests = new Set<string>();
+/** The requests this client has answered (from the world sheet or Social): out of `pending` and
+ *  the banner until the server row changes, so a second Y then Enter never answers twice. */
+const answeredRequests = new Set<string>();
 
 function noticeInput(): NoticeInput {
   return {
@@ -1186,8 +1189,16 @@ function noticeInput(): NoticeInput {
     players: store.allPlayers(),
     identity,
     errorPending: errorOverlayView?.visible ?? false,
-    dismissed: dismissedRequests,
+    dismissed:
+      answeredRequests.size === 0
+        ? dismissedRequests
+        : new Set([...dismissedRequests, ...answeredRequests]),
   };
+}
+
+/** The requests still waiting on an answer from this client. */
+function livePending(): readonly RequestNotice[] {
+  return pendingRequests(noticeInput()).filter((n) => !answeredRequests.has(n.key));
 }
 
 /** The banner's and the announcement's line for a request; it names no key (a remap keeps it true). */
@@ -1201,7 +1212,7 @@ const worldPort: WorldPort = {
   run: runInteract,
   notices: {
     notices: () => buildNotices(noticeInput()),
-    pending: () => pendingRequests(noticeInput()),
+    pending: livePending,
     dismiss: (key) => {
       if (key === 'error') dismissErrorToast();
       else dismissedRequests.add(key);
@@ -1264,10 +1275,10 @@ function interactChipText(chip: InteractChip): string {
 
 function renderMenu(): void {
   const vm = menuViewModel(menuState);
-  menuView?.render({ ...vm, labels: withRequestBadge(vm.labels, menuBadged) });
+  menuView?.render({ ...vm, labels: withRequestBadge(vm.labels, livePending().length > 0) });
 }
 
-/** Whether the menu was last painted with the Social badge: a batch that flips it repaints. */
+/** Whether a request waited at the last batch: a batch that flips it repaints an open menu. */
 let menuBadged = false;
 
 /** The SINGLE entry point: the root list, on the last entry used. */
@@ -1413,6 +1424,10 @@ const ownPartyIds = (): bigint[] =>
  *  `Command` fails client-typecheck here. */
 function dispatch(command: Command): Promise<void> {
   if (refusedInBattle(command)) return DONE;
+  // An answer leaves the request out of the world's notices until the server row changes (ctl-13).
+  if (command.kind === 'respondTrade') answeredRequests.add(`trade-${command.tradeId}`);
+  if (command.kind === 'acceptChallenge' || command.kind === 'declineChallenge')
+    answeredRequests.add(`challenge-${command.challengeId}`);
   switch (command.kind) {
     case 'pop':
       applyStack(contextStack, popTop(contextStack));
@@ -2826,7 +2841,7 @@ store.onBatchApplied(() => {
       announcedRequests.add(n.key);
       liveRegion.announce(requestLine(n), performance.now());
     }
-    const badged = pending.length > 0;
+    const badged = pending.some((n) => !answeredRequests.has(n.key));
     if (badged !== menuBadged) {
       menuBadged = badged;
       if (menuView?.visible) renderMenu();
@@ -3591,6 +3606,7 @@ async function main(): Promise<void> {
       screenHost.forget();
       dismissedRequests.clear();
       announcedRequests.clear();
+      answeredRequests.clear();
       // record the connect edge (identity-hex is the allowed field, U-3).
       eventRing.push(makeConnect(identity));
       resolveReady();
@@ -3667,6 +3683,7 @@ async function main(): Promise<void> {
       screenHost.forget();
       dismissedRequests.clear();
       announcedRequests.clear();
+      answeredRequests.clear();
       // trade's double-spend lock must also be reset on reconnect (same reason as shop).
       tradeView?.hide();
       // Hide the PvP overlay on reconnect — any pending challenge state is stale.
@@ -3882,7 +3899,7 @@ async function main(): Promise<void> {
       // session terminal. Positioned via renderer.screenFor — the exact camera offset +
       // stageScale the stage applied THIS frame.
       const live = worldBaseLive(); // first: it closes a sheet the world no longer owns
-      const pending = pendingRequests(noticeInput());
+      const pending = livePending();
       screenHost.settleRequest(pending); // a withdrawn or answered request's sheet closes
       const sheet = screenHost.sheet;
       const request = screenHost.request;
