@@ -364,21 +364,27 @@ const readSheetRows = (page: Page): Promise<SheetRow[]> =>
     }));
   });
 
-/** The one other player's name, as `__mrTrade.allPlayers()` lists it. Throws unless exactly one. */
-const otherPlayerName = (page: Page): Promise<string> =>
-  page.evaluate(() => {
+/** The one other player's name, as `__mrTrade.allPlayers()` lists it. Without `named`, throws
+ *  unless exactly one other player exists. With `named`, throws unless exactly one other player
+ *  bears that name (the picker row `<verb> — <name>` must then name one player, not several). */
+const otherPlayerName = (page: Page, named?: string): Promise<string> =>
+  page.evaluate((want: string | null) => {
     const w = window as unknown as {
       __game: () => { identity: string };
       __mrTrade: { allPlayers(): Array<{ identity: string; name: string }> };
     };
     const me = w.__game().identity;
     const others = w.__mrTrade.allPlayers().filter((p) => p.identity !== me);
-    const only = others[0];
-    if (others.length !== 1 || only === undefined) {
-      throw new Error(`openFaceToFace: expected exactly 1 other player, found ${others.length}`);
+    const pool = want === null ? others : others.filter((p) => p.name === want);
+    const only = pool[0];
+    if (pool.length !== 1 || only === undefined) {
+      throw new Error(
+        `openFaceToFace: expected exactly 1 other player${want === null ? '' : ` named ${want}`}, ` +
+          `found ${pool.length}`,
+      );
     }
     return only.name;
-  });
+  }, named ?? null);
 
 /**
  * Starts a trade or a challenge the way a player does now (CTL10B.1): closes every open frame,
@@ -396,7 +402,20 @@ export async function openFaceToFace(
 ): Promise<void> {
   const label = `openFaceToFace(${verb})`;
   await closeAll(page);
-  const name = targetName ?? (await otherPlayerName(page));
+  // B's player row may lag behind its join: poll until exactly one matching player is visible.
+  let name = '';
+  await expect
+    .poll(
+      async () => {
+        name = await otherPlayerName(page, targetName).catch(() => '');
+        return name !== '';
+      },
+      {
+        message: `${label}: exactly one other player${targetName === undefined ? '' : ` named ${targetName}`} must be visible`,
+        timeout: 15_000,
+      },
+    )
+    .toBe(true);
 
   if (otherPage !== undefined) {
     const there = (await readWorld(otherPage)).ownAuthTile;

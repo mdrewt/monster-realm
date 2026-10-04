@@ -36,7 +36,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { loadWasmPkg } from '../../test-util/wasmPkg';
 import type { WasmDirection } from '../convert/convert';
-import type { StoreCharacter, StoreHealLocationRow, StoreNpcRow, StorePlayer } from '../net/store';
+import type {
+  StoreBattleChallenge,
+  StoreCharacter,
+  StoreHealLocationRow,
+  StoreNpcRow,
+  StorePlayer,
+} from '../net/store';
 import {
   type CandidatesFn,
   FACING_CODE,
@@ -46,6 +52,7 @@ import {
   type InteractOrigin,
   interactChip,
   marshalInteract,
+  pendingChallengeIdentities,
   resolveCandidates,
   type WireInteractEntity,
 } from './interactModel';
@@ -746,6 +753,55 @@ describe('marshalInteract player actions (ctl-10b, CTL10B.1)', () => {
     const ownBusy = marshal(roster(), new Set([OWN_ID]));
     expect(ownBusy('player:13')).toEqual([tradeOf(RIVAL_ID)]);
     expect(ownBusy('player:14')).toEqual([tradeOf(AMY_ID)]);
+  });
+
+  it('CTL10B-1-BUSY-SET: pendingChallengeIdentities returns BOTH the challenger and the target of every Pending challenge and nothing from Declined or Accepted rows; empty input gives an empty set', () => {
+    // WRONG IMPL KILLED: a challenger-only set (the challenged player could be challenged again); a
+    // target-only set (the challenger, e.g. you, could start a second challenge); a status filter
+    // that is missing, inverted, or lets Declined / Accepted rows leak (a player stays busy forever
+    // after the challenge ended); a set that stops at the first row; and a non-empty set for [].
+    const ids = {
+      c1: 'a1'.repeat(32),
+      t1: 'b2'.repeat(32),
+      c2: 'c3'.repeat(32),
+      t2: 'd4'.repeat(32),
+      cd: 'e5'.repeat(32),
+      td: 'f6'.repeat(32),
+      ca: '17'.repeat(32),
+      ta: '28'.repeat(32),
+    };
+    const row = (
+      challengeId: bigint,
+      challenger: string,
+      target: string,
+      status: string,
+    ): StoreBattleChallenge =>
+      ({
+        challengeId,
+        challenger,
+        target,
+        challengerPartyIds: [1n],
+        status,
+        createdAtMs: 1_000n,
+      }) as StoreBattleChallenge;
+    const sorted = (s: ReadonlySet<string>): string[] => [...s].sort();
+
+    expect(sorted(pendingChallengeIdentities([])), 'no challenges, nobody busy').toEqual([]);
+    expect(
+      sorted(
+        pendingChallengeIdentities([
+          row(1n, ids.c1, ids.t1, 'Pending'),
+          row(2n, ids.cd, ids.td, 'Declined'),
+          row(3n, ids.c2, ids.t2, 'Pending'),
+          row(4n, ids.ca, ids.ta, 'Accepted'),
+        ]),
+      ),
+      'both sides of each Pending row, nothing from the ended ones',
+    ).toEqual([ids.c1, ids.t1, ids.c2, ids.t2].sort());
+    expect(
+      sorted(pendingChallengeIdentities([row(5n, ids.cd, ids.td, 'Declined')])),
+      'only an ended challenge: nobody busy',
+    ).toEqual([]);
   });
 
   it('CTL10B-1-CHIP-PLAYER: the chip over a lone online player is Choose (two actions) anchored at the player, and over a lone busy player it is the single Trade action', () => {

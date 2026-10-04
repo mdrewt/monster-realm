@@ -41,8 +41,8 @@ export class PvpView {
   readonly #callbacks: PvpViewCallbacks;
   readonly #root: HTMLElement;
   #visible = false;
-  // ONE view-wide lock for the four lifecycle actions, deliberately not keyed by
-  // challengeId — accept/decline/cancel/challenge all mutate the same single challenge
+  // ONE view-wide lock for the three lifecycle actions, deliberately not keyed by
+  // challengeId — accept/decline/cancel all mutate the same single challenge
   // state, and a per-button lock would still admit accept-then-decline on one challenge
   // (the contradictory-outcome pair). The object is the generation token: `.finally()`
   // releases only if the stored lock is still its own, so a stale promise (click →

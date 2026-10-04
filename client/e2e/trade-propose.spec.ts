@@ -37,10 +37,11 @@ import { closeAll, openFaceToFace, pressButton } from './controls';
 //
 // WHY NOT __mrTrade FOR THE PROPOSE LEG (D8 / red-team L-3)
 // =========================================================
-// "the INITIATOR opens KeyO, selects the counterparty in the <select>,
-// checks its starter monster, and CLICKS submit — pure DOM, NOT __mrTrade (red-team L-3)."
-// Using __mrTrade.proposeTrade() for the initiator would leave the overlay untested —
-// the e2e would pass even if KeyO / tradeProposeView were never implemented.
+// "the INITIATOR opens the wizard face to face (A on the other player, A on Trade; the target
+// arrives pre-selected), checks its starter monster, and confirms — pure DOM, NOT __mrTrade
+// (red-team L-3)." Using __mrTrade.proposeTrade() for the initiator would leave the overlay
+// untested — the e2e would pass even if the face-to-face open / tradeProposeView were never
+// implemented.
 //
 // IDENTITY ASSERTION (red-team H-5)
 // ==================================
@@ -57,7 +58,7 @@ import { closeAll, openFaceToFace, pressButton } from './controls';
 //
 // EARS CRITERIA COVERED
 // =====================
-//   PTC2-16  UI-driven propose: KeyO→select→check monster→submit → __mrTrade respond+confirm
+//   PTC2-16  UI-driven propose: face to face→Trade→check monster→confirm → __mrTrade respond+confirm
 //            → specific monsterId leaves initiator + arrives at counterparty (identity, not
 //            just conservation) + allTradeOffers().length===0.
 
@@ -225,10 +226,11 @@ test.describe
     // UI-driven propose → respond+confirm → specific monsterId transfers
     //
     // WHAT THIS TEST KILLS:
-    //   - A KeyO handler that does nothing → target-select never visible → timeout
-    //   - A tradeProposeView.render() that does not paint target options → select is empty
+    //   - A face-to-face Trade row that opens nothing → target-select never visible → timeout
+    //   - A tradeProposeView.render() that does not paint target options or pre-select the faced
+    //     player → the select is empty or the counterparty assertion fails
     //   - An onSubmit that uses __mrTrade internally instead of reducers.proposeTrade
-    //     → the propose leg passes even without the KeyO UI (ADR-0134 D8 / red-team L-3)
+    //     → the propose leg passes even without the face-to-face UI (ADR-0134 D8 / red-team L-3)
     //   - A confirm_trade impl that transfers the wrong monster → identity assertion fails
     //     even if conservation count holds (red-team H-5)
     //   - A propose UI that sends the wrong counterparty identity → server rejects

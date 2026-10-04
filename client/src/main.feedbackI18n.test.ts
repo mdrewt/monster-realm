@@ -53,8 +53,9 @@
  * accepted<->rejected or completed<->cancelled key swap across the four trade actions, or a
  * single non-shop site (trade frozen-link, rename success, trade-propose success) reverted to
  * its raw English literal, both survived mutation with every gated test green. The trade/rename/
- * trade-propose suites below open each overlay via its REAL keyboard shortcut (KeyU/KeyN/KeyO —
- * no NPC/dialogue needed, unlike shop) and drive its REAL submit path, asserting each action's
+ * trade-propose suites below open each overlay through its REAL input path (KeyU, KeyN, and for
+ * trade-propose A then A on Trade facing another player, ctl-10b retired KeyO — no NPC/dialogue
+ * needed, unlike shop) and drive its REAL submit path, asserting each action's
  * feedback against its OWN catalog key (never just "some key differs from en") plus the right
  * reducer spy + args.
  *
@@ -690,8 +691,9 @@ describe('main.ts trade feedback routes through the i18n catalog, per-action (sl
 });
 
 // ---------------------------------------------------------------------------
-// RENAME + TRADE-PROPOSE — both reachable at modest cost via their real KeyN/KeyO shortcuts
-// (no NPC/dialogue, same as trade). Red-team S2: a single non-shop success-line site reverted
+// RENAME + TRADE-PROPOSE — both reachable at modest cost: rename via its real KeyN shortcut,
+// trade-propose face to face (A on another online player, then A on Trade; no NPC/dialogue, same
+// as trade). Red-team S2: a single non-shop success-line site reverted
 // to its raw English literal survived with every gated test green.
 // ---------------------------------------------------------------------------
 

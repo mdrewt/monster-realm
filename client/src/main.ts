@@ -170,6 +170,7 @@ import {
   type InteractChip,
   interactChip,
   marshalInteract,
+  pendingChallengeIdentities,
   resolveCandidates,
 } from './ui/interactModel';
 import { buildLeaderboardViewModel } from './ui/leaderboardModel';
@@ -727,20 +728,13 @@ function worldCandidates(): readonly InteractCandidate[] {
   };
   const key = `${interactBatch}|${identity}|${origin.zone}|${origin.x}|${origin.y}|${origin.facing}`;
   if (interactMemo?.key !== key) {
-    // Both sides of every Pending challenge: no second challenge is offered to them (ctl-10b).
-    const busy = new Set(
-      store
-        .allChallenges()
-        .filter((c) => c.status === 'Pending')
-        .flatMap((c) => [c.challenger, c.target]),
-    );
     const input = marshalInteract(
       store.allNpcs(),
       Array.from(store.characters(), (c) => c.row),
       store.allPlayers(),
       store.healLocations(),
       store.ownEntityId(identity),
-      busy,
+      pendingChallengeIdentities(store.allChallenges()),
     );
     interactMemo = {
       key,
@@ -3548,6 +3542,7 @@ async function main(): Promise<void> {
       boundHealLocationId = null;
       // The requested Social tab and what the screens remember go with the session too.
       boundSocialTab = null;
+      boundProposeTarget = null;
       screenHost.forget();
       // trade's double-spend lock must also be reset on reconnect (same reason as shop).
       tradeView?.hide();

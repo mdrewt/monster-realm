@@ -6,8 +6,9 @@
 // fake store has the three reads the view model makes (`allPlayers`, `ownMonsters`, `speciesMap`).
 //
 // The contract (the slice plan's REVISED shape):
-//   view model  { lists: buildProposeLists(live store reads), targetSupplied: false } (ctl-10b is
-//               what will supply a target; until then the wizard asks for one first).
+//   view model  { lists: buildProposeLists(live store reads), targetSupplied } (targetSupplied is
+//               false unless the context carries a proposeTarget, which ctl-10b's face-to-face open
+//               binds; with none the wizard asks for one first; see CTL10B-1-PREFILL).
 //   state       { steps, step, offer (the cursor monster id as a decimal string, or null), yes,
 //               toggle, commit }. `toggle` and `commit` are ONE-SHOT TOKENS: a NEW object each
 //               time, compared by identity by the view, which applies them to the on-screen draft.
@@ -125,15 +126,17 @@ function paintOf(vm: TradeProposeScreenVm, state: TradeProposeScreenState): Trad
 
 describe('tradeProposeScreen: the steps and the opening state (ctl-8e, CTL8E.1)', () => {
   it('CTL8E-1-MODEL-STEPS: the view model is the live buildProposeLists of the store reads with no target supplied, and init opens on Target with all five steps, the cursor on the first offerable monster, Yes selected and no token', () => {
-    // WRONG IMPL KILLED: a view model that reports a supplied target before ctl-10b exists (the
-    // player could never pick a counterparty); lists cached at module scope (a second open would
+    // WRONG IMPL KILLED: a view model that reports a supplied target when the context carries no
+    // proposeTarget (the player could never pick a counterparty); lists cached at module scope (a second open would
     // show the first open's players and monsters); a cursor that is null, an index, a number or
     // not the FIRST monster by id (buildProposeLists sorts ascending: 11, not the store's 33); a
     // review that opens on No; and a wizard that opens holding a stale toggle or commit token
     // (the view would flip a box or send on the very first paint).
     const w = world();
     const vm = vmOf(w);
-    expect(vm.targetSupplied, 'no target is supplied until ctl-10b').toBe(false);
+    expect(vm.targetSupplied, 'no target is supplied when the context has no proposeTarget').toBe(
+      false,
+    );
     expect(vm.lists, 'the live lists, built the same way main.ts builds them').toEqual(
       buildProposeLists(w.players, w.monsters, new Map(), ME),
     );

@@ -1067,7 +1067,7 @@ function m24s3PvAssertNoRosterWord(texts: readonly string[], label: string): voi
 }
 
 describe('m24s3 (ADR-0259): pvpView.ts routes its migrated sinks through t()/tf()', () => {
-  it('m24s3 PV-01: every migrated sink calls t()/tf() with the exact key and params, the player-button text stays the raw name (never a resolver call), and every DOM string stays byte-identical', () => {
+  it('m24s3 PV-01: every migrated sink calls t()/tf() with the exact key and params, showFeedback never touches the resolver, and every DOM string stays byte-identical', () => {
     mountPvpOverlay();
     const view = new PvpView(makeCallbacks());
 

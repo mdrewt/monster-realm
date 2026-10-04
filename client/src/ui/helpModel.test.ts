@@ -51,9 +51,10 @@ describe('buildHelpViewModel(): content shape — non-empty controls + goals (PT
 
 describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)', () => {
   // The keymap that the help overlay documents: the
-  // `?` help key itself, Escape (close), movement (WASD / arrows), Space (jump), the 9
-  // overlay hotkeys B I E Q U P L N O (G and H deleted in uxd2; ctl-10a retired the interact key
-  // T — interaction is Enter / A on what you face, pinned by the ctl-10a key-set test below),
+  // `?` help key itself, Escape (close), movement (WASD / arrows), Space (jump), the 8
+  // overlay hotkeys B I E Q U P L N (G and H deleted in uxd2; ctl-10a retired the interact key
+  // T — interaction is Enter / A on what you face, pinned by the ctl-10a key-set test below;
+  // ctl-10b retired O — trades and challenges start face to face, CTL10B-2-HELP-NO-O),
   // and F9 (bug bundle). Each must be mentioned by SOME
   // control entry's `key`. We match case-insensitively / by substring so we pin the
   // COVERAGE of the SSOT without over-pinning the exact glyph wording (e.g. "WASD"
@@ -101,9 +102,9 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
     expect(blob.includes('f9'), 'controls SSOT must document F9 (bug bundle)').toBe(true);
   });
 
-  it('BITES: each overlay hotkey B I E Q U P L N O is documented in the SSOT', () => {
+  it('BITES: each overlay hotkey B I E Q U P L N is documented in the SSOT', () => {
     // WRONG IMPL KILLED: an SSOT that documents only some of the overlay hotkeys —
-    // a tester would not discover, e.g., the Trade-propose (O) or Leaderboard (L) overlay.
+    // a tester would not discover, e.g., the Leaderboard (L) or Quest log (Q) overlay.
     // Substring match against the per-entry key blob (case-insensitive). Each letter must
     // appear SOMEWHERE in some control's key text.
     //

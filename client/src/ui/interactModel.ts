@@ -87,6 +87,19 @@ function npcActions(npc: StoreNpcRow): readonly InteractAction[] {
   }
 }
 
+/** Both sides of every Pending challenge: the `busy` set `marshalInteract` takes. */
+export function pendingChallengeIdentities(
+  challenges: readonly {
+    readonly status: string;
+    readonly challenger: string;
+    readonly target: string;
+  }[],
+): ReadonlySet<string> {
+  return new Set(
+    challenges.filter((c) => c.status === 'Pending').flatMap((c) => [c.challenger, c.target]),
+  );
+}
+
 /** What a player offers: nothing when offline (the server refuses both); Trade, then Challenge
  *  unless that player or you are in a Pending challenge (`busy`, the identities on both sides of
  *  every Pending challenge, yours included when you are on one). */

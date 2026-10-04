@@ -3734,4 +3734,73 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
     frame(1135);
     expect(chipOptions(), 'control: A opens the picker').toHaveLength(2);
   });
+
+  it('CTL10B-1-BOOT-BUSY: a player in a Pending challenge (as challenger OR target, and the own player as challenger) offers only Trade: the chip reads "Trade — <name>" with no Challenge row, A runs it at once; once the challenge is Declined both players offer Trade and Challenge again (Choose)', async () => {
+    // WRONG IMPL KILLED: a busy set that is always empty (the target of a Pending challenge is still
+    // offered Challenge), challenger only (the target is offered it), target only (the challenger is),
+    // one with no Pending filter (a Declined challenge keeps both players busy for good), an inverted
+    // filter (only the NON-Pending challenges make players busy, so the Pending pair offers
+    // Challenge and the Declined pair does not), and one that leaves the own player out (the own
+    // outgoing challenge would not hide Challenge for a third player).
+    await bootReady();
+    server(1000, { x: 2, y: 6, ack: 0 });
+    const P2 = { identity: RIVAL_IDENTITY, entity: RIVAL_ENTITY, name: 'Rival' };
+    const P3 = { identity: FACED_IDENTITY, entity: FACED_ENTITY, name: FACED_NAME };
+    placePlayer(P2.identity, P2.entity, P2.name, 1, 5, 1000);
+    placePlayer(P3.identity, P3.entity, P3.name, 3, 6, 1000);
+    const challenge = (id: bigint, challenger: string, target: string, status: string): void =>
+      opts.store.upsertChallenge({
+        challengeId: id,
+        challenger,
+        target,
+        challengerPartyIds: [],
+        status,
+        createdAtMs: 0n,
+      });
+    challenge(1n, P2.identity, P3.identity, 'Pending');
+    let t = 1010;
+    /** Face `who` under a fresh batch and read the chip after a frame. */
+    const faceAndRead = (who: typeof P2): string => {
+      useRule(pick(['player', who.entity.toString()]));
+      settle(t);
+      frame(t + 5);
+      t += 20;
+      return chipText();
+    };
+    const tradeOnly = (who: typeof P2): string => `[Enter] Trade ${EM_DASH} ${who.name}`;
+    const choose = `[Enter] Choose${ELLIPSIS}`;
+
+    // P3 is the TARGET of the Pending P2 -> P3 challenge: only Trade, so A runs it at once.
+    expect(faceAndRead(P3), 'the target of a Pending challenge offers only Trade').toBe(
+      tradeOnly(P3),
+    );
+    tapKey('Enter', t);
+    t += 20;
+    expect(shownById('tradepropose-overlay'), 'A runs the lone Trade row at once').toBe(true);
+    expect(chipOptions(), 'no picker, so no Challenge row').toEqual([]);
+    expect(H.calls, 'nothing was sent').toEqual([]);
+    tapKey('Escape', t); // Start closes the wizard
+    t += 20;
+    expect(stack(), 'precondition: the wizard closed').toEqual(WORLD_ONLY);
+
+    // P2 is the CHALLENGER of that challenge: only Trade.
+    expect(faceAndRead(P2), 'the challenger of a Pending challenge offers only Trade').toBe(
+      tradeOnly(P2),
+    );
+
+    // The challenge is Declined: nobody is busy, both offer Trade and Challenge.
+    challenge(1n, P2.identity, P3.identity, 'Declined');
+    expect(faceAndRead(P3), 'a Declined challenge no longer hides Challenge (target)').toBe(choose);
+    expect(faceAndRead(P2), 'nor for the challenger').toBe(choose);
+
+    // The own player is the challenger of a Pending challenge to P2: a third player (P3) offers only
+    // Trade, because the own player is busy.
+    challenge(2n, H.identity, P2.identity, 'Pending');
+    expect(faceAndRead(P3), 'the own player is busy: a third player offers only Trade').toBe(
+      tradeOnly(P3),
+    );
+    expect(faceAndRead(P2), 'the own target of that challenge offers only Trade too').toBe(
+      tradeOnly(P2),
+    );
+  });
 });
