@@ -37,6 +37,49 @@ export type MessageId =
   | 'interact.confirm.challenge'
   | 'interact.healer'
   | 'key.enter'
+  // key.* / controls.* : keycap names (input/glyphs.ts) and Options › Controls (ui/controlsModel.ts, ctl-12).
+  | 'key.numpadEnter'
+  | 'key.backspace'
+  | 'key.space'
+  | 'key.escape'
+  | 'key.arrowUp'
+  | 'key.arrowDown'
+  | 'key.arrowLeft'
+  | 'key.arrowRight'
+  | 'key.pageUp'
+  | 'key.pageDown'
+  | 'key.slash'
+  | 'key.numpad'
+  | 'controls.button.up'
+  | 'controls.button.down'
+  | 'controls.button.left'
+  | 'controls.button.right'
+  | 'controls.button.a'
+  | 'controls.button.b'
+  | 'controls.button.x'
+  | 'controls.button.y'
+  | 'controls.button.lb'
+  | 'controls.button.rb'
+  | 'controls.button.start'
+  | 'controls.button.select'
+  | 'controls.accel.storage'
+  | 'controls.accel.bag'
+  | 'controls.accel.party'
+  | 'controls.accel.journal'
+  | 'controls.accel.trades'
+  | 'controls.accel.challenges'
+  | 'controls.accel.rankings'
+  | 'controls.accel.name'
+  | 'controls.accel.account'
+  | 'controls.accel.bugReport'
+  | 'controls.accel.dismissError'
+  | 'controls.capture.prompt'
+  | 'controls.refused.reserved'
+  | 'controls.refused.protected'
+  | 'controls.cancelled'
+  | 'controls.bound'
+  | 'controls.swapped'
+  | 'controls.swappedUnbound'
   | 'chrome.help.title'
   | 'chrome.rename.submit'
   | 'chrome.tradePropose.submit'
@@ -359,6 +402,19 @@ export interface MessageParams {
   readonly 'interact.choose': { readonly key: string };
   readonly 'interact.entry': { readonly verb: string; readonly name: string };
   readonly 'interact.confirm.challenge': { readonly name: string };
+  readonly 'key.numpad': { readonly key: string };
+  readonly 'controls.capture.prompt': { readonly label: string };
+  readonly 'controls.swapped': {
+    readonly key: string;
+    readonly label: string;
+    readonly otherKey: string;
+    readonly otherLabel: string;
+  };
+  readonly 'controls.swappedUnbound': {
+    readonly key: string;
+    readonly label: string;
+    readonly otherLabel: string;
+  };
   // Every param below is MODEL DATA — affinity names, weather labels,
   // status names, species/skill/item names, player display names and counts — interpolated
   // verbatim, never catalogued (M24 §2.5: content stays English this milestone).

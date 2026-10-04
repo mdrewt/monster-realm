@@ -746,7 +746,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     ).toEqual(['alive.one', 'alive.two']);
   });
 
-  it('m24s7/21r-b PARITY-02: I18N-27 — import-binding resolution + the 25-file resolver roster + main.ts dual bindings', () => {
+  it('m24s7/21r-b PARITY-02: I18N-27 — import-binding resolution + the 27-file resolver roster + main.ts dual bindings', () => {
     const census = computeCensus();
     const i18nRoster = census
       .filter((f) => f.bindings.some((b) => b.module === 'i18n'))
@@ -754,16 +754,18 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       .sort();
     // WRONG IMPL KILLED: a bare global `t(`/`tf(` text scan (never resolving import specifiers)
     // would either miss every file (bindings always empty) or over-match unrelated `t(` calls
-    // (e.g. `total(`) — the exact 25-file roster below (21r-b added ui/careAction.ts and
+    // (e.g. `total(`) — the exact 27-file roster below (21r-b added ui/careAction.ts and
     // ui/sessionModel.ts; 21r-b2 adds ui/claimModel.ts and ui/privacyBanner.ts; ctl-5 adds
-    // ui/menuModel.ts; ctl-6c adds ui/screens/mainMenuScreen.ts) is only reachable via real binding resolution.
+    // ui/menuModel.ts; ctl-6c adds ui/screens/mainMenuScreen.ts; ctl-12 adds input/glyphs.ts and ui/controlsModel.ts) is only reachable via real binding resolution.
     expect(i18nRoster, `resolver-importing roster: ${JSON.stringify(i18nRoster)}`).toEqual([
+      'input/glyphs.ts',
       'main.ts',
       'ui/battleView.ts',
       'ui/boxView.ts',
       'ui/careAction.ts',
       'ui/claimModel.ts',
       'ui/claimView.ts',
+      'ui/controlsModel.ts',
       'ui/dialogueView.ts',
       'ui/errorOverlayView.ts',
       'ui/evolutionNotice.ts',
@@ -815,6 +817,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // and the Challenge confirm, so it gains 5 literal keys: `interact.verb.trade` and
     // `interact.verb.challenge` (the verb switch), `interact.confirm.challenge` (the question) and
     // the Yes / No rows of that confirm (`prompt.yes`, `prompt.no`, via `confirmRowLabel`).
+    // ctl-12 (named intentional change, CTL12.5): `key.enter` leaves main.ts — the A keycap now reads
+    // `glyph()` (input/glyphs.ts), whose named-key table resolves it.
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
       'chrome.chip.help', // ctl-7a: the Select chip label, written into #chip-select at boot
       'chrome.chip.menu', // ctl-7a: the Start chip label, written into #chip-start at boot
@@ -836,7 +840,6 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'interact.verb.shop',
       'interact.verb.talk',
       'interact.verb.trade', // ctl-10b: the faced player's Trade row
-      'key.enter', // ctl-10a: the A keycap when it is Enter / NumpadEnter
       'menu.disabled.inBattle', // ctl-6c: the dispatch refusal line (CTL6C.3)
       'prompt.no', // ctl-10b: the Challenge confirm's No row
       'prompt.yes', // ctl-10b: the Challenge confirm's Yes row

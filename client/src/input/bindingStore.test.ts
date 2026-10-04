@@ -412,11 +412,14 @@ describe('bindingStore (ctl-12)', () => {
     const inheritedSide = Object.create({ A: ['KeyQ'] });
     expect(parseBindings({ v: 1, buttons: inheritedSide, accels: {} })).toEqual(DEFAULT_BINDINGS);
 
-    // Every reachable table survives parse(JSON.parse(JSON.stringify(b))).
+    // Every reachable table survives parse(JSON.parse(JSON.stringify({ v: 1, buttons, accels }))),
+    // the stored shape.
     fc.assert(
       fc.property(opsArb, (ops) => {
         for (const b of reachable(ops)) {
-          const viaJson = parseBindings(JSON.parse(JSON.stringify(b)));
+          const viaJson = parseBindings(
+            JSON.parse(JSON.stringify({ v: 1, buttons: b.buttons, accels: b.accels })),
+          );
           expect(viaJson).toEqual(b);
           expectSane(viaJson);
         }
