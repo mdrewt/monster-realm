@@ -461,8 +461,8 @@ const overlayProbes: OverlayProbes = {
 // (`raisingView: () => boxView?.hide()`) type-checks perfectly while hiding the wrong overlay.
 // `dialogueView` is the SOLE `undefined` entry and must stay that way: hiding a live
 // conversation client-side strands the server `player_conversation` row. Consumers read
-// `overlayHandles[id]?.()`; only verdicts, the stack's `close` commands and the Social frame's
-// panel switch decide WHICH ids.
+// `overlayHandles[id]?.()`; only the stack's `close` commands and the Social frame's panel
+// switch decide WHICH ids.
 // A close leaves boundShopId / boundHealLocationId set: every open rebinds them, and their
 // refresh listeners run only while the overlay is visible.
 const overlayHandles: OverlayHandles = {
@@ -538,8 +538,8 @@ const screenHost = new ScreenHost(
 );
 
 // the ONE gate binder. Returns the VERDICT, not a boolean, because the
-// three hide-switch handlers consume `forceHide`; each call site spells `.kind === 'allow'`
-// itself, deliberately, so no single `!` can invert eleven gates at once. Re-probes through
+// privacy open reads `blockedBy`; each call site spells `.kind === 'allow'`
+// itself, deliberately, so no single `!` can invert every gate at once. Re-probes through
 // `visibleIds(overlayProbes)` on EVERY call — this table is built while every view binding is
 // still undefined, so anything cached would be permanently empty.
 //
@@ -967,7 +967,7 @@ function openClaim(): void {
 // --- the main menu ------------------------------------------------
 //
 // ONE OPEN PATH PER OVERLAY: each openX() below is the single build-VM-and-show body for
-// its overlay, called by BOTH its hotkey handler and the menu. Trade, pvp and leaderboard share
+// its overlay, called by the menu (an accelerator opens through the menu). Trade, pvp and leaderboard share
 // `openSocial` (the challenge auto-show calls it too), whose build-and-show bodies are
 // `showSocialPanel`'s. The view contract is non-uniform (dialogue/questLog/heal expose render()
 // with no show(); pvp takes refresh(vm, forceVisible)), so these are per-id thunks, never a
@@ -1069,6 +1069,12 @@ function mirrorOpened(id: FrameId): UpperFrame | undefined {
   return top.kind === 'screen' && top.id === id ? top : undefined;
 }
 
+/** Mirror the screen `id` just shown and seat its adapter, so its first paint is at the open. */
+function seatOpened(id: FrameId): void {
+  const frame = mirrorOpened(id);
+  if (frame !== undefined) screenHost.seat(frame, screenCtx);
+}
+
 /** The Social frame when it is the stack's top frame, else undefined. */
 function topSocialFrame(): UpperFrame | undefined {
   const top = contextStack[contextStack.length - 1];
@@ -1080,9 +1086,7 @@ function topSocialFrame(): UpperFrame | undefined {
 function openSocial(tab: SocialTab | null): void {
   boundSocialTab = tab;
   showSocialPanel(socialPanel(tab));
-  syncStack();
-  const frame = topSocialFrame();
-  if (frame !== undefined) screenHost.seat(frame, screenCtx);
+  seatOpened(SOCIAL_FRAME);
 }
 
 function openRename(): void {
@@ -1105,9 +1109,7 @@ function openPropose(target: string): void {
   boundProposeTarget = target;
   tradeProposeView?.render(lists, target);
   tradeProposeView?.show();
-  syncStack();
-  const top = contextStack[contextStack.length - 1];
-  if (top.kind === 'screen' && top.id === 'tradeProposeView') screenHost.seat(top, screenCtx);
+  seatOpened('tradeProposeView');
 }
 
 function openHelp(): void {
@@ -1217,19 +1219,17 @@ function openMenuTarget(target: MenuTarget, monstersTab: MonstersTab = 'party'):
     case 'boxView':
       boxView?.show();
       refreshBox();
-      // The Monsters adapter starts on Storage; the Party tab is one LB away.
+      // The view paints its own opening state, on Storage; the Party tab is one LB away.
       if (monstersTab === 'party' && mirrorOpened('boxView') !== undefined) {
         screenHost.button(contextStack, { button: 'LB', repeat: false }, screenCtx);
       }
       break;
-    case 'raisingView': {
+    case 'raisingView':
       raisingView?.show();
       refreshRaising();
       // Seated at the open, so the Bag paints then and not at the next batch or button.
-      const frame = mirrorOpened('raisingView');
-      if (frame !== undefined) screenHost.seat(frame, screenCtx);
+      seatOpened('raisingView');
       break;
-    }
     case 'questLogView':
       openQuestLog();
       break;
@@ -2172,13 +2172,20 @@ const runAccel = (accel: MenuAccel): void => {
 // with its cursor on it. Over a battle the menu opens read-only and a disabled entry only shows its
 // reason (CTL6C.3).
 const openAccelPath = (path: AccelPath): void => {
-  // The menu's screens read store state keyed by identity, which is '' before join.
-  if (identity === '') return;
+  // The menu's screens read store state keyed by identity, which is '' before join. The claim
+  // view reads none (`ownAccount('')` is undefined) and a failed first sign-in shows it before
+  // join, so C alone opens it there, with no menu beneath.
+  if (identity === '') {
+    if (path.frame === 'claimView') openClaim();
+    return;
+  }
   applyStack(contextStack, popToBase(contextStack));
+  // A close can show another frame (privacy's dismissal flushes a deferred claim paint): the menu
+  // never opens over it.
+  if (contextStack.length > 1) return;
   openMenu();
   syncStack(); // the menu is pushed before the leaf it opens
   for (const key of path.menu) applyMenuStep(mainMenuPick(menuState, key), path.tab);
-  syncStack();
 };
 
 // Codes whose press the menu or a nav-capable screen consumed: their OS key-repeats are cancelled
@@ -2350,8 +2357,7 @@ const handleKeyDown = (e: KeyboardEvent): void => {
 };
 // Escape is routed in the CAPTURE phase, so a view's own stopPropagation can no longer trap it
 // (B5: Escape was dead inside rename and trade-propose). Every other key keeps the bubble phase,
-// where those views' stopPropagation still shields their fields from the letter ladder until
-// their ctl-8 screens replace them.
+// where those views' stopPropagation still shields their fields from the accelerator keys.
 window.addEventListener(
   'keydown',
   (e) => {

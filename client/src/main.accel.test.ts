@@ -1246,4 +1246,67 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     pickByClick();
     expectTab('a click on Monsters after an RB left Storage', 'party');
   });
+
+  // The four tests below are the red-team lens's probes of this slice, ported as it wrote them.
+
+  it('CTL11A-PREJOIN-CLAIM: after a failed first sign-in (no identity yet) C closes the claim overlay and C opens it again, with no menu', async () => {
+    // WRONG IMPL KILLED: an accelerator path that returns before join for every key, which leaves
+    // the claim overlay with no way back once it is closed (the retired KeyC branch opened it
+    // before join on purpose).
+    await boot();
+    opts.onSignInFailed?.('boom' as never);
+    await flush();
+    frame(pressAt);
+    expect(shownById('claim-overlay'), 'precondition: the claim overlay is up').toBe(true);
+    press('KeyC');
+    await flush();
+    expect(shownById('claim-overlay'), 'C closes it').toBe(false);
+    press('KeyC');
+    await flush();
+    expect(shownById('claim-overlay'), 'C opens it again').toBe(true);
+    expect(menuShown(), 'no menu before join').toBe(false);
+  });
+
+  it('CTL11A-PREJOIN-INERT: before join no accelerator but C opens the menu or a leaf', async () => {
+    // WRONG IMPL KILLED: an accelerator path with no identity guard, which opens the menu before
+    // join (the Start path refuses that).
+    await boot(); // no onReady: identity is ''
+    for (const row of ROWS.filter((r) => r.accel !== 'C')) {
+      press(row.code);
+      expect(stackNames(), `${row.accel} before join`).toEqual(['world']);
+      expect(menuShown(), `${row.accel} before join: no menu`).toBe(false);
+    }
+  });
+
+  it('CTL11A-ACCEL-REPEAT-IGNORED: an OS key-repeat of an accelerator is ignored, so a held key leaves its leaf open, for all nine', async () => {
+    // WRONG IMPL KILLED: a repeat guard that lets accelerator codes through, where a held J opens,
+    // closes (its own screen: Start) and reopens the Journal on every OS repeat.
+    await bootReady();
+    server(1000);
+    for (const row of ROWS) {
+      fire('keydown', row.code, pressAt);
+      expectLeafOpen(row, `${row.accel} first press`);
+      for (let i = 1; i <= 3; i += 1) {
+        fire('keydown', row.code, pressAt + 40 * i, { init: { repeat: true } });
+        expectLeafOpen(row, `${row.accel} repeat ${i}`);
+      }
+      fire('keyup', row.code, pressAt + 200);
+      pressAt += 300;
+      press('Escape');
+    }
+  });
+
+  it('CTL11A-SELECT-HELP-NOT-OVER-FRAMES: Select with the read-only menu above a battle opens no Help', async () => {
+    // WRONG IMPL KILLED: a Help arm keyed on the battle base alone, which opens Help over whatever
+    // sits above the battle.
+    await bootReady();
+    seedWorld(1000);
+    putBattle(BATTLE_ID, 1100);
+    await flush();
+    press('KeyM');
+    expect(stackNames()).toEqual(['battle', 'menuView']);
+    press('KeyR');
+    expect(stackNames(), 'Select over the menu over a battle').toEqual(['battle', 'menuView']);
+    expect(shownById('help-overlay')).toBe(false);
+  });
 });
