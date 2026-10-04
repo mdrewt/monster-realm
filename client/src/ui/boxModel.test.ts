@@ -618,17 +618,20 @@ describe('PGCCD-D4 resolvePartySlot', () => {
     expect(NEXT_FREE_PARTY_SLOT).toBe(-1);
   });
 
-  it.each([0, 3, 5, BOXED_SLOT, -2])(
-    'PGCCD-D4 an explicit slot %i is sent unchanged, even into a full party',
-    (requested) => {
-      // Kills: `!requested` / `requested <= 0` resolving slot 0 to the next free slot;
-      // resolving any non-sentinel; clamping the box sentinel; rejecting an occupied slot
-      // (the server validates, the core does not second-guess).
-      const full = monstersAt(0, 1, 2, 3, 4, 5);
-      expect(resolvePartySlot(requested, full, 6)).toStrictEqual({ kind: 'send', slot: requested });
-      expect(resolvePartySlot(requested, [], 6)).toStrictEqual({ kind: 'send', slot: requested });
-    },
-  );
+  it.each([
+    0,
+    3,
+    5,
+    BOXED_SLOT,
+    -2,
+  ])('PGCCD-D4 an explicit slot %i is sent unchanged, even into a full party', (requested) => {
+    // Kills: `!requested` / `requested <= 0` resolving slot 0 to the next free slot;
+    // resolving any non-sentinel; clamping the box sentinel; rejecting an occupied slot
+    // (the server validates, the core does not second-guess).
+    const full = monstersAt(0, 1, 2, 3, 4, 5);
+    expect(resolvePartySlot(requested, full, 6)).toStrictEqual({ kind: 'send', slot: requested });
+    expect(resolvePartySlot(requested, [], 6)).toStrictEqual({ kind: 'send', slot: requested });
+  });
 
   it.each([
     { name: 'an empty party', slots: [] as number[], size: 6, want: 0 },

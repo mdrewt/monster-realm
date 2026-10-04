@@ -4065,15 +4065,12 @@ describe('PGCCD-D2 pvpPendingAfterBatch', () => {
     [0, 0, 'SideBWins', null],
     [0, 0, 'SideAWins', null],
     [0, 0, 'Fled', null],
-  ] as const)(
-    'PGCCD-D2 pending %s, latest turn %i %s -> %s',
-    (pending, turnNumber, outcome, expected) => {
-      // Kills: `>=` for `>`; `if (pending)` truthiness (pending 0 rows); `&&` for `||`;
-      // outcome checked only against 'Fled' (SideAWins/SideBWins rows); forfeit (same turn,
-      // non-Ongoing) not clearing; null pending being resurrected to a number.
-      expect(pvpPendingAfterBatch(pending, { turnNumber, outcome })).toBe(expected);
-    },
-  );
+  ] as const)('PGCCD-D2 pending %s, latest turn %i %s -> %s', (pending, turnNumber, outcome, expected) => {
+    // Kills: `>=` for `>`; `if (pending)` truthiness (pending 0 rows); `&&` for `||`;
+    // outcome checked only against 'Fled' (SideAWins/SideBWins rows); forfeit (same turn,
+    // non-Ongoing) not clearing; null pending being resurrected to a number.
+    expect(pvpPendingAfterBatch(pending, { turnNumber, outcome })).toBe(expected);
+  });
 });
 
 describe('PGCCD-D2 pvpSubmitPending', () => {
