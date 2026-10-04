@@ -127,8 +127,8 @@ export interface A11yMeta {
 
 /**
  * The a11y metadata SSOT. Typed `Record<OverlayId, _>` for exactly the
- * reason OVERLAY_TIERS is (`:76`): omitting an id is a COMPILE error, not a test failure, so an
- * eighteenth overlay cannot ship half-registered. Declaration order mirrors OVERLAY_TIERS, so
+ * reason OVERLAY_TIERS is (`:76`): omitting an id is a COMPILE error, not a test failure, so a
+ * new overlay cannot ship half-registered. Declaration order mirrors OVERLAY_TIERS, so
  * OVERLAY_IDS (`:100`) indexes this table too — one derived id list, never a second hand-kept
  * one. Per-view ARIA retrofits have no completeness oracle; one total table does.
  *

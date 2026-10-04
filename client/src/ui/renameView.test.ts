@@ -605,6 +605,27 @@ describe('RenameView keyboard: Enter submits; Escape hides without submitting (P
     expect(onSubmit).toHaveBeenCalledWith('Hero');
   });
 
+  it('BITES: NumpadEnter on input submits exactly like Enter (one onSubmit with the trimmed value) and still stops propagation', async () => {
+    // WRONG IMPL KILLED: an input listener that matches `Enter` only (the keypad Enter, which the
+    // shell's typing mode commits with like Enter, would do nothing in the Name field), and one
+    // that submits on it but lets it bubble to the window keydown listener.
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = new RenameView({ onSubmit });
+    view.show();
+
+    const spy = vi.fn();
+    window.addEventListener('keydown', spy);
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    input.value = '  Hero  ';
+    input.dispatchEvent(new KeyboardEvent('keydown', { code: 'NumpadEnter', bubbles: true }));
+    await flushPromises();
+    window.removeEventListener('keydown', spy);
+
+    expect(onSubmit).toHaveBeenCalledOnce();
+    expect(onSubmit).toHaveBeenCalledWith('Hero');
+    expect(spy, 'the keypad Enter is stopped at the input').not.toHaveBeenCalled();
+  });
+
   it('BITES: Enter on input with empty value does NOT call onSubmit — PTC1B-7 gate on Enter path', async () => {
     // WRONG IMPL KILLED: an impl that calls onSubmit on Enter regardless of value.
     const onSubmit = vi.fn().mockResolvedValue(undefined);

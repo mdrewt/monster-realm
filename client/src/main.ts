@@ -2330,11 +2330,15 @@ const onKeyDown = (e: KeyboardEvent): void => {
     return;
   }
   // Options › Controls is waiting for a key (CTL12B.1): this press is the capture's, ahead of
-  // every path below, so Escape, Enter and Backspace can be bound like any key. A key the focused
-  // control owns stays that control's: Enter or Space on the Cancel chip presses the chip.
+  // every path below, so Escape, Enter and Backspace can be bound like any key. The one exception
+  // is the Cancel chip's own activation key (Enter or Space with the chip focused): it presses
+  // the chip, so a capture can always be left from the keyboard.
   const capture = controlsCapture();
   if (capture !== null) {
-    if (ownership(e.target, e, gameScreenEl()) === 'router') captureControlsKey(capture, e);
+    const pressesChip =
+      controlsView?.isCancelChip(e.target) === true &&
+      ownership(e.target, e, gameScreenEl()) === 'target';
+    if (!pressesChip) captureControlsKey(capture, e);
     return;
   }
   // a press can arrive INSIDE the stale-focus window, before the frame edge has run — heal
@@ -2350,11 +2354,16 @@ const onKeyDown = (e: KeyboardEvent): void => {
   // The two keys a focused field releases keep their typing meaning whatever the table binds
   // them to (design §3): Escape stops typing, Enter commits.
   const typing = typingKey(e.target, e);
-  // The F9 accelerator downloads the local bug bundle; F8 dismisses the error overlay. Decided
-  // through the live table (a cleared one does nothing) and EARLY (before letter-key branches) so
-  // they work under any overlay; but a typing key (CTL6B.5) stays the field's, even when a remap
-  // gave it to an accelerator.
-  const accel = typing === undefined ? accelForCode(bindings, e.code) : undefined;
+  // An accelerator is decided through the live table (a cleared one does nothing). A key the
+  // focused element owns is never one: a remap can put an accelerator on a letter, Space or Enter,
+  // and that key must still type into a field and press a focused button. Nor is a typing key
+  // (CTL6B.5).
+  const accel =
+    typing === undefined && ownership(e.target, e, gameScreenEl()) === 'router'
+      ? accelForCode(bindings, e.code)
+      : undefined;
+  // The F9 accelerator downloads the local bug bundle; F8 dismisses the error overlay: EARLY
+  // (before the menu and the router) so they work under any overlay.
   if (accel === 'F9') {
     downloadBugBundle();
     e.preventDefault();
@@ -2409,10 +2418,8 @@ const onKeyDown = (e: KeyboardEvent): void => {
       return;
     }
   }
-  // An accelerator (ctl-11a): the router decides it over the stack. A key the focused field owns
-  // is typed, never taken.
+  // An accelerator (ctl-11a): the router decides it over the stack.
   if (accel !== undefined) {
-    if (ownership(e.target, e, gameScreenEl()) === 'target') return;
     e.preventDefault();
     runAccel(accel);
     return;

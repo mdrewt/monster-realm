@@ -145,6 +145,11 @@ export class ControlsView implements ControlsScreenView {
     return this.#capturing;
   }
 
+  /** Whether `target` is the Cancel chip (its own Enter or Space presses it, even mid-capture). */
+  isCancelChip(target: unknown): boolean {
+    return target === this.#cancelBtn;
+  }
+
   show(): void {
     // Only the hidden-to-shown edge opens: a repeat show() must not re-schedule the deferred focus.
     const wasVisible = this.visible;

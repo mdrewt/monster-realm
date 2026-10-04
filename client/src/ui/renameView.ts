@@ -84,7 +84,7 @@ export class RenameView {
     // to the window keydown listener (movement + letter hotkeys). Enter/Escape handled here.
     this.#input.addEventListener('keydown', (e) => {
       e.stopPropagation();
-      if (e.code === 'Enter') this.#submit();
+      if (e.code === 'Enter' || e.code === 'NumpadEnter') this.#submit();
       else if (e.code === 'Escape') this.hide();
     });
 

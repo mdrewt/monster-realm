@@ -598,6 +598,24 @@ describe('ControlsView — capture state, focus and announcements (ctl-12b)', ()
     expect(onReset).not.toHaveBeenCalled();
   });
 
+  it('isCancelChip is true for the #controls-cancel-btn element and false for #controls-rows, another button, null and the window', () => {
+    // WRONG IMPL KILLED: an isCancelChip true for any native button (the shell would exempt a hint
+    // chip's Enter from a capture and swallow it), true for any node of the frame (the rows' own
+    // keys would never be captured), and one that dereferences its target (a keydown dispatched
+    // at the window, or with no target, would throw out of the shell's key listener mid-capture).
+    const { view } = rig();
+    view.show();
+    view.paint(paintOf({ capturing: slotOf(btnRow('A'), 0) }));
+    const otherButton = document.createElement('button');
+    otherButton.type = 'button';
+    document.body.appendChild(otherButton);
+    expect(view.isCancelChip(el(CANCEL_ID)), 'the chip itself').toBe(true);
+    expect(view.isCancelChip(el(ROWS_ID)), 'the rows').toBe(false);
+    expect(view.isCancelChip(otherButton), 'another button').toBe(false);
+    expect(view.isCancelChip(null), 'no target').toBe(false);
+    expect(view.isCancelChip(window), 'the window').toBe(false);
+  });
+
   it('a capture start clears the old feedback line and announces the prompt, once per capture; showFeedback writes and announces its line, with the save-failed text when saved is false', () => {
     // WRONG IMPL KILLED: a stale outcome line left under a new prompt (the player reads "Saved."
     // while the slot still waits), a prompt never announced (a screen-reader user hears nothing

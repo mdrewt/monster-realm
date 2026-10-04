@@ -1586,4 +1586,263 @@ describe('main.ts Options > Controls: capture and live rebinding over the real s
     expect(f9.defaultPrevented, 'control: the F9 key is consumed').toBe(true);
     expect(downloads.urls, 'control: and downloads one bundle').toHaveLength(1);
   });
+
+  it('a direction key held down across a remap is not left held: after its release and a fresh tap at the world the character takes exactly one step, and the frame loop issues no more', async () => {
+    // WRONG IMPL KILLED: an applyBindings that swaps in the new KeyboardSource without releasing
+    // what was held (`releaseAllInput()` deleted, or only the keyboard source released). KeyD is
+    // held from the world through the remap, so it is recorded down in the OLD source, which the
+    // swap discards: the new source never reports its keyup, and the ROUTER's holder count for
+    // Right stays at 1 for good. Opening the menu clears `held` but not that count, which is why
+    // the key is held ACROSS the swap. The next tap then counts 2 on its press and 1 on its
+    // release: the release is swallowed, no dirUp reaches `held`, and East stays held, re-issued
+    // by the frame loop on every acked frame once the hold-commit delay has passed (one step per
+    // frame below, versus the single step of the tap).
+    await bootReady();
+    server(1000);
+    fire('keydown', 'KeyD', pressAt); // held: its keyup comes only after the remap
+    pressAt += 100;
+    expect(H.sends, 'precondition: the held key took its first step').toHaveLength(1);
+
+    openControls();
+    startCapture('A_0');
+    press('KeyK', { key: 'k' });
+    expect(savedTable(), 'precondition: the remap applied (A := K)').toEqual(
+      tableWith({ A: ['KeyK', 'NumpadEnter'] }),
+    );
+    fire('keyup', 'KeyD', pressAt); // the held key is let go after the swap
+    pressAt += 100;
+    press('Escape');
+    expect(stackNames(), 'Start closed everything').toEqual(['world']);
+
+    let t = pressAt;
+    for (let i = 0; i < 4; i += 1) {
+      server(t);
+      frame(t + 10);
+      t += 250;
+    }
+    expect(H.sends, 'the released key walks no further').toHaveLength(1);
+
+    pressAt = t;
+    press('KeyD');
+    expect(H.sends, 'a fresh tap takes one step').toHaveLength(2);
+    t = pressAt;
+    for (let i = 0; i < 8; i += 1) {
+      server(t);
+      frame(t + 10);
+      t += 250;
+    }
+    expect(H.sends, 'and only one: no direction is left held').toHaveLength(2);
+  });
+
+  it('a capture takes F9 and F8 like any key: on an accelerator slot each swaps (the swap line, the key consumed), F9 downloads no bug bundle and F8 leaves the error overlay up', async () => {
+    // WRONG IMPL KILLED: a capture intercept placed below the F8 / F9 branch (F9 downloads a bug
+    // bundle and the slot keeps waiting; F8 dismisses the error overlay and the slot keeps
+    // waiting), and one that runs the F8 / F9 handler AND then captures (a download, or a
+    // dismissed overlay, on top of the swap).
+    await bootReady();
+    const downloads = recordDownloads();
+    server(1000);
+    openControls();
+    press('KeyE'); // RB: Shortcuts
+    expect(byId('controls-tab-shortcuts').getAttribute('aria-selected'), 'RB: Shortcuts').toBe(
+      'true',
+    );
+
+    const rowI: ControlsRow = { kind: 'accel', id: 'I' };
+    const f9Swap = captureKey(DEFAULT_BINDINGS, { row: rowI, slot: 0 }, { code: 'F9', key: 'F9' });
+    expect(f9Swap.kind, 'fixture: F9 on the Bag slot swaps with the bug-report row').toBe(
+      'swapped',
+    );
+    startCapture('I_0');
+    const f9 = press('F9', { key: 'F9' });
+    expect(f9.defaultPrevented, 'the captured F9 is consumed').toBe(true);
+    expect(downloads.urls, 'a captured F9 builds no bug bundle').toHaveLength(0);
+    expect(downloads.clicks, 'and downloads nothing').toHaveLength(0);
+    expect(capturing(), 'the swap ended the capture').toBe(false);
+    expect(controlsFeedback(), 'the swap line').toBe(outcomeText(f9Swap));
+    expect(savedTable(), 'Bag on F9, the bug report on I').toEqual(
+      tableWith({}, { I: ['F9'], F9: ['KeyI'] }),
+    );
+    expect(stackNames(), 'the frame stays open').toEqual([...CONTROLS_STACK]);
+
+    const rowJ: ControlsRow = { kind: 'accel', id: 'J' };
+    const f8Swap = captureKey(savedTable(), { row: rowJ, slot: 0 }, { code: 'F8', key: 'F8' });
+    expect(f8Swap.kind, 'fixture: F8 on the Journal slot swaps with the dismiss-error row').toBe(
+      'swapped',
+    );
+    startCapture('J_0');
+    raiseErrorOverlay();
+    expect(errorOverlayShown(), 'precondition: F8 has an overlay it could dismiss').toBe(true);
+    const f8 = press('F8', { key: 'F8' });
+    expect(f8.defaultPrevented, 'the captured F8 is consumed').toBe(true);
+    expect(errorOverlayShown(), 'a captured F8 dismisses nothing').toBe(true);
+    expect(capturing(), 'the swap ended the capture').toBe(false);
+    expect(controlsFeedback(), 'the swap line').toBe(outcomeText(f8Swap));
+    expect(savedTable(), 'Journal on F8, dismiss-error on J').toEqual(
+      tableWith({}, { I: ['F9'], F9: ['KeyI'], J: ['F8'], F8: ['KeyJ'] }),
+    );
+  });
+
+  it('the Cancel chip in the booted shell: with no capture waiting its click changes nothing; during a capture it ends the capture with the cancelled line, the table and storage untouched, and the frame stays open and browsing (B then pops it)', async () => {
+    // WRONG IMPL KILLED: a chip whose onCancelCapture is wired to nothing (the pointer cancel is
+    // dead: the slot keeps waiting), a cancel that pops the frame (or closes everything) instead
+    // of ending the capture, a cancel that ends the capture silently or with another line, one
+    // that saves, one that leaves the screen capturing behind a hidden prompt (the B below would
+    // be captured, not pop), and a cancel with no capture guard (a click on the hidden chip
+    // writes the line and sends B, popping the frame).
+    await bootReady();
+    server(1000);
+    openControls();
+    const chip = byId('controls-cancel-btn');
+
+    chip.click();
+    expect(stackNames(), 'no capture: the click closes nothing').toEqual([...CONTROLS_STACK]);
+    expect(controlsFeedback(), 'and writes no line').toBe('');
+    expect(capturing(), 'and starts nothing').toBe(false);
+    expect(savedRaw(), 'and saves nothing').toBeNull();
+
+    startCapture('A_0');
+    expect(visibleNow('controls-cancel-btn'), 'precondition: the chip shows while capturing').toBe(
+      true,
+    );
+    chip.click();
+    expect(capturing(), 'the click ended the capture').toBe(false);
+    expect(controlsFeedback(), 'with the cancelled line').toBe(i18nT('controls.cancelled'));
+    expect(visibleNow('controls-cancel-btn'), 'the chip goes with the capture').toBe(false);
+    expect(savedRaw(), 'nothing is saved').toBeNull();
+    expect(cellText('A_0'), 'A still shows Enter').toBe(primaryText(ROW_A, glyph('Enter')));
+    expect(stackNames(), 'the frame stays open').toEqual([...CONTROLS_STACK]);
+    expect(visibleNow('controls-overlay'), 'and shown').toBe(true);
+
+    const back = press('Backspace');
+    expect(back.defaultPrevented, 'B is routed, not captured').toBe(true);
+    expect(stackNames(), 'browsing: B pops Controls back to the menu').toEqual([
+      'world',
+      'menuView',
+    ]);
+  });
+
+  it('only the Cancel chip`s own activation keys are exempt from a capture: Enter and Space at the focused chip are not taken (not prevented, the slot keeps waiting, nothing saved), while the same Enter at the hint bar`s Start chip, a native button outside the dialog, is captured and swaps onto the Y slot', async () => {
+    // WRONG IMPL KILLED: an exemption for EVERY focused native button (Enter on a hint chip, or on
+    // any other button the player tabbed to, is silently swallowed: neither bound nor prevented;
+    // the red-team's confirmed break), and no exemption at all (the chip's own Enter and Space are
+    // captured: Space swaps onto the slot, and a keyboard player cannot press Cancel).
+    await bootReady();
+    server(1000);
+    openControls();
+    const rowY = buttonRow('Y');
+    startCapture('Y_0');
+    const chip = byId('controls-cancel-btn');
+    expect(byId('game-screen').contains(chip), 'precondition: the chip is in the game screen').toBe(
+      true,
+    );
+    chip.focus();
+    expect(document.activeElement, 'precondition: the chip has focus').toBe(chip);
+
+    const enter = press('Enter', { key: 'Enter' }, chip);
+    expect(enter.defaultPrevented, 'the chip`s Enter is left to the chip').toBe(false);
+    const space = press('Space', { key: ' ' }, chip);
+    expect(space.defaultPrevented, 'and so is its Space').toBe(false);
+    expect(capturing(), 'neither was captured: the slot keeps waiting').toBe(true);
+    expect(captureText(), 'for the same row').toBe(capturePrompt(rowY));
+    expect(controlsFeedback(), 'with no outcome line').toBe('');
+    expect(savedRaw(), 'nothing is saved').toBeNull();
+
+    const startChip = byId('chip-start');
+    expect(startChip.tagName, 'precondition: the Start chip is a native button').toBe('BUTTON');
+    expect(byId('game-screen').contains(startChip), 'precondition: in the game screen').toBe(true);
+    expect(byId('controls-overlay').contains(startChip), 'precondition: outside the dialog').toBe(
+      false,
+    );
+    const swap = captureKey(
+      DEFAULT_BINDINGS,
+      { row: rowY, slot: 0 },
+      { code: 'Enter', key: 'Enter' },
+    );
+    expect(swap.kind, 'fixture: Enter on the Y slot swaps with A').toBe('swapped');
+    const atStartChip = press('Enter', { key: 'Enter' }, startChip);
+    expect(atStartChip.defaultPrevented, 'Enter at the Start chip is captured').toBe(true);
+    expect(capturing(), 'and ends the capture').toBe(false);
+    expect(controlsFeedback(), 'with the swap line').toBe(outcomeText(swap));
+    expect(savedTable(), 'Y on Enter, A on F').toEqual(
+      tableWith({ Y: ['Enter'], A: ['KeyF', 'NumpadEnter'] }),
+    );
+    expect(stackNames(), 'nothing opened or closed').toEqual([...CONTROLS_STACK]);
+  });
+
+  it('an accelerator remapped onto a typeable key never fires from a control that owns the key: a G bound to F9 types into a focused field, a Space bound to F9 presses a focused button, a composing Enter bound to F9 stays the IME`s; each key at the window still downloads once', async () => {
+    // WRONG IMPL KILLED: F8 / F9 decided before the ownership check (the letter the player bound
+    // to F9 downloads a bug bundle instead of typing, a focused button's Space downloads instead
+    // of pressing it, and an IME's Enter is taken mid-composition), including the variant that
+    // only skips typing keys (a composing Enter is not a typing key). The controls are planted
+    // directly in #game-screen, outside any view, so no view's own stopPropagation shields them:
+    // only the shell's ownership rule decides.
+    const plantFocused = (node: HTMLElement): void => {
+      byId('game-screen').appendChild(node);
+      node.focus();
+      expect(document.activeElement, `precondition: the planted ${node.tagName} has focus`).toBe(
+        node,
+      );
+    };
+
+    // A letter bound to F9, in a focused text field.
+    await bootReady({ stored: storedTable((raw) => (raw.accels.F9 = ['KeyG'])) });
+    let downloads = recordDownloads();
+    server(1000);
+    const field = document.createElement('input');
+    field.type = 'text';
+    plantFocused(field);
+    const typed = press('KeyG', { key: 'g' }, field);
+    expect(typed.defaultPrevented, 'the letter is left to the field').toBe(false);
+    expect(downloads.urls, 'the typed letter builds no bug bundle').toHaveLength(0);
+    expect(downloads.clicks).toHaveLength(0);
+    field.blur();
+    const g = press('KeyG', { key: 'g' });
+    expect(g.defaultPrevented, 'control: at the window G is the F9 key').toBe(true);
+    expect(downloads.urls, 'control: and downloads once').toHaveLength(1);
+
+    // Space bound to F9 (X keeps no key), at a focused button.
+    teardown();
+    await bootReady({
+      stored: storedTable((raw) => {
+        raw.buttons.X = [];
+        raw.accels.F9 = ['Space'];
+      }),
+    });
+    downloads = recordDownloads();
+    server(1000);
+    const button = document.createElement('button');
+    button.type = 'button';
+    plantFocused(button);
+    const activated = press('Space', { key: ' ' }, button);
+    expect(activated.defaultPrevented, 'the button`s Space is left to the button').toBe(false);
+    expect(downloads.urls, 'pressing the button builds no bug bundle').toHaveLength(0);
+    expect(downloads.clicks).toHaveLength(0);
+    button.blur();
+    const space = press('Space', { key: ' ' });
+    expect(space.defaultPrevented, 'control: at the window Space is the F9 key').toBe(true);
+    expect(downloads.urls, 'control: and downloads once').toHaveLength(1);
+
+    // Enter bound to F9 (A on K and Numpad Enter), composing in a focused text field.
+    teardown();
+    await bootReady({
+      stored: storedTable((raw) => {
+        raw.buttons.A = ['KeyK', 'NumpadEnter'];
+        raw.accels.F9 = ['Enter'];
+      }),
+    });
+    downloads = recordDownloads();
+    server(1000);
+    const imeField = document.createElement('input');
+    imeField.type = 'text';
+    plantFocused(imeField);
+    const composing = press('Enter', { key: 'Enter', isComposing: true }, imeField);
+    expect(composing.defaultPrevented, 'the composing Enter is left to the IME').toBe(false);
+    expect(downloads.urls, 'and builds no bug bundle').toHaveLength(0);
+    expect(downloads.clicks).toHaveLength(0);
+    imeField.blur();
+    const enter = press('Enter', { key: 'Enter' });
+    expect(enter.defaultPrevented, 'control: at the window Enter is the F9 key').toBe(true);
+    expect(downloads.urls, 'control: and downloads once').toHaveLength(1);
+  });
 });
