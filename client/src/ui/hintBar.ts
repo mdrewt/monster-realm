@@ -18,6 +18,8 @@ function partOf(chip: HTMLElement, cls: string): HTMLElement {
   if (found instanceof HTMLElement) return found;
   const el = chip.ownerDocument.createElement('span');
   el.className = cls;
+  // The keycap is a sighted hint: a chip's accessible name stays its button label plus verb.
+  if (cls === 'mr-chip-key') el.setAttribute('aria-hidden', 'true');
   chip.appendChild(el);
   return el;
 }
@@ -69,6 +71,9 @@ export class HintBarView {
       el.className = 'mr-chip';
       el.dataset.button = chip.button;
       el.style.pointerEvents = 'none';
+      // Inert until ctl-15 gives it a click, and said so: axe then leaves it out of the contrast
+      // rule, which cannot decide a symbol-only keycap such as Backspace's.
+      el.setAttribute('aria-disabled', 'true');
       this.#chips.set(chip.button, el);
     }
     setText(partOf(el, 'mr-chip-key'), chip.keycap);
