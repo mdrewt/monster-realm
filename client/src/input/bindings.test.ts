@@ -10,7 +10,7 @@
  */
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { buttonForCode, DEFAULT_BINDINGS, RESERVED_CODES } from './bindings';
+import { accelForCode, buttonForCode, DEFAULT_BINDINGS, RESERVED_CODES } from './bindings';
 import { ACCELS, VBUTTONS, type VButton } from './buttons';
 
 /** Design section 3, transcribed. Order inside a list is primary-first. */
@@ -172,5 +172,104 @@ describe('buttonForCode', () => {
     };
     expect(buttonForCode(custom, 'KeyZ')).toBe('Y');
     expect(buttonForCode(custom, 'KeyF')).toBeUndefined();
+  });
+});
+
+// ==========================================================================================
+// ctl-11a: accelerators move to the router; Q and E are the bumpers (CTL11A.1 / CTL11A.3)
+// ==========================================================================================
+//
+// `accelForCode(bindings, code)` is the accelerator twin of `buttonForCode`: the accelerator a
+// physical code is bound to in `bindings.accels`, else undefined (a button code, a reserved code
+// and an unbound code all give undefined). Q and E leave the legacy ladder for good: they are LB and
+// RB (with PageUp and PageDown), and no accelerator claims them.
+
+describe('accelForCode (ctl-11a)', () => {
+  it('CTL11A-1-ACCEL-FOR-CODE: resolves every default accelerator code (F8 and F9 included) to its accelerator, gives undefined for every button code, reserved code and unbound code, resolves through the table it is given, and agrees with a table oracle for arbitrary codes', () => {
+    // WRONG IMPL KILLED: a lookup that reads `buttons` (every accelerator code would be
+    // unbound, or Q would read as an accelerator), one that reads a hard-coded letter list instead
+    // of the table it is given (a remapped accelerator would never resolve, and its old key would
+    // still fire), one that returns the first accelerator whose list merely CONTAINS a prefix of
+    // the code, a case-insensitive match (`keyj` would open the Journal), a missing F8 or F9 row,
+    // and one that answers a button code (A, Start, the D-pad would open menus).
+    for (const accel of ACCELS) {
+      for (const code of EXPECTED_ACCELS[accel]) {
+        expect(accelForCode(DEFAULT_BINDINGS, code), `${code} is accelerator ${accel}`).toBe(accel);
+      }
+    }
+    for (const codes of Object.values(EXPECTED_BUTTONS)) {
+      for (const code of codes) {
+        expect(accelForCode(DEFAULT_BINDINGS, code), `${code} is a button, not an accel`).toBe(
+          undefined,
+        );
+      }
+    }
+    for (const code of RESERVED_CODES) {
+      expect(accelForCode(DEFAULT_BINDINGS, code), `${code} is reserved`).toBe(undefined);
+    }
+    for (const code of [
+      'KeyZ',
+      'KeyX',
+      'Digit1',
+      'F1',
+      'F7',
+      '',
+      'keyj',
+      'KEYJ',
+      'KeyJJ',
+      ' KeyJ',
+    ]) {
+      expect(accelForCode(DEFAULT_BINDINGS, code), JSON.stringify(code)).toBe(undefined);
+    }
+
+    // It resolves through the table it is given: a remapped Journal answers its new keys only.
+    const custom = {
+      buttons: DEFAULT_BINDINGS.buttons,
+      accels: { ...DEFAULT_BINDINGS.accels, J: ['KeyZ', 'KeyY'] },
+    };
+    expect(accelForCode(custom, 'KeyZ')).toBe('J');
+    expect(accelForCode(custom, 'KeyY')).toBe('J');
+    expect(accelForCode(custom, 'KeyJ'), 'the old key no longer fires').toBe(undefined);
+    expect(accelForCode(custom, 'KeyB'), 'the others are untouched').toBe('B');
+
+    // Property: for arbitrary strings the answer is exactly the table oracle's.
+    const owner = new Map<string, string>();
+    for (const accel of ACCELS) for (const code of EXPECTED_ACCELS[accel]) owner.set(code, accel);
+    const boundCodes = [...owner.keys()];
+    fc.assert(
+      fc.property(
+        fc.oneof(fc.constantFrom(...boundCodes), fc.string({ maxLength: 12 })),
+        (code) => {
+          expect(accelForCode(DEFAULT_BINDINGS, code)).toBe(owner.get(code));
+        },
+      ),
+      { numRuns: 300 },
+    );
+  });
+
+  it('CTL11A-3-BINDINGS: LB is Q then PageUp and RB is E then PageDown, no accelerator claims Q, E, PageUp or PageDown, and the legacy J, V, U, P, L letters stay accelerators', () => {
+    // WRONG IMPL KILLED: a table that leaves KeyQ or KeyE as an accelerator or as an alias of two
+    // owners (Q would both open a screen and page its tabs: migration rule 2 lands Q/E -> LB/RB in
+    // one slice), LB and RB with the primary and alias swapped (the label glyph comes from index
+    // 0), a bumper dropped from its list (the router would stop reading it), and an accelerator
+    // table that lost the keys the new menu paths hang on.
+    expect(DEFAULT_BINDINGS.buttons.LB).toEqual(['KeyQ', 'PageUp']);
+    expect(DEFAULT_BINDINGS.buttons.RB).toEqual(['KeyE', 'PageDown']);
+    expect(buttonForCode(DEFAULT_BINDINGS, 'KeyQ')).toBe('LB');
+    expect(buttonForCode(DEFAULT_BINDINGS, 'KeyE')).toBe('RB');
+    expect(buttonForCode(DEFAULT_BINDINGS, 'PageUp')).toBe('LB');
+    expect(buttonForCode(DEFAULT_BINDINGS, 'PageDown')).toBe('RB');
+    for (const code of ['KeyQ', 'KeyE', 'PageUp', 'PageDown']) {
+      expect(accelForCode(DEFAULT_BINDINGS, code), `${code} is no accelerator`).toBe(undefined);
+      for (const accel of ACCELS) {
+        expect(DEFAULT_BINDINGS.accels[accel], `${code} not in accel ${accel}`).not.toContain(code);
+      }
+    }
+    // The accelerators the canonical paths hang on stay bound to their letters.
+    expect(
+      ['KeyB', 'KeyI', 'KeyV', 'KeyJ', 'KeyU', 'KeyP', 'KeyL', 'KeyN', 'KeyC'].map((code) =>
+        accelForCode(DEFAULT_BINDINGS, code),
+      ),
+    ).toEqual(['B', 'I', 'V', 'J', 'U', 'P', 'L', 'N', 'C']);
   });
 });

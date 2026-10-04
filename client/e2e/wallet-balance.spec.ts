@@ -8,7 +8,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { type Dir, interactChip, interactWithNpc, waitForNpcInFront } from './controls';
+import { type Dir, interactChip, interactWithNpc, pressAccel, waitForNpcInFront } from './controls';
 
 // owner-scoped wallet readout e2e.
 //
@@ -204,8 +204,9 @@ import { type Dir, interactChip, interactWithNpc, waitForNpcInFront } from './co
 //  3. The `Gold:`-absence check uses **textContent**, never innerText: #shop-balance is
 //     `hidden`, and innerText would omit it, making the exclusion vacuous.
 //  4. No fixed sleeps — every wait polls a DOM or `__game()` predicate with a bounded timeout.
-//  5. Physical key codes only: page.keyboard.press('KeyQ'), never 'q'; virtual buttons (A)
-//     go through controls.ts pressButton (ctl-10a: T retired).
+//  5. Physical key codes only: page.keyboard.press('KeyJ'), never 'j'; virtual buttons (A)
+//     go through controls.ts pressButton (ctl-10a: T retired) and accelerators (J, ctl-11a:
+//     Q is LB now) through controls.ts pressAccel.
 //  6. Exact-presence discipline: two contexts ⇒ presenceCount === 2 on BOTH pages in
 //     beforeAll, and browser.close() in afterAll, or the NEXT spec file's presence wait
 //     hangs (playwright.config.ts `workers: 1`).
@@ -662,16 +663,16 @@ function walletBalanceFor(identityHex: string, label: string): string | undefine
 
 /** Open the quest log, poll for `wanted`-ness of `questId`, close it again.
  *  ANTI-VACUITY: a quest log that never OPENED must not read as "the quest is gone", so
- *  the visibility of #quest-log-overlay is asserted before the list is read. KeyQ is
- *  guarded on "no other overlay visible", so callers must dismiss the
- *  dialogue overlay first. */
+ *  the visibility of #quest-log-overlay is asserted before the list is read. ctl-11a: J (Q is
+ *  LB now) opens the Journal through the main menu and is denied while a dialogue frame is the
+ *  top of the stack, so callers must dismiss the dialogue overlay first. */
 async function questLogShows(
   p: Page,
   questId: string,
   wanted: boolean,
   timeout: number,
 ): Promise<boolean> {
-  await p.keyboard.press('KeyQ');
+  await pressAccel(p, 'J');
   // ANTI-VACUITY GUARD — assert the overlay's OPEN STATE, never `toBeVisible()`.
   //
   // `toBeVisible()` here is a trap that makes this helper unconditionally red in exactly
@@ -699,10 +700,10 @@ async function questLogShows(
     .catch(() => false);
   expect(
     opened,
-    'KeyQ must open #quest-log-overlay (inline style.display === "block", per ' +
+    'J must open #quest-log-overlay (inline style.display === "block", per ' +
       'questLogView.ts:21) — a log that never opened would make the "quest_001 has left ' +
-      'the log" reading VACUOUS, and KeyQ is guarded on no other overlay being visible, ' +
-      'so an undismissed dialogue overlay lands here',
+      'the log" reading VACUOUS, and J is denied while a dialogue frame is the top of the ' +
+      'stack, so an undismissed dialogue overlay lands here',
   ).toBe(true);
   const held = await p
     .waitForFunction(
@@ -731,8 +732,8 @@ async function questLogShows(
     .catch(() => false);
   expect(
     closed,
-    'Escape must close #quest-log-overlay (inline style.display === "none", per ' +
-      'questLogView.ts:35) — leaving it open would suppress the next A talk / KeyQ, which ' +
+    'Escape (Start) must close #quest-log-overlay (inline style.display === "none", per ' +
+      'questLogView.ts:35) — leaving it open would suppress the next A talk / J, which ' +
       'act only at a bare world base',
   ).toBe(true);
   return held;
@@ -1013,7 +1014,7 @@ test.describe
       ).toBe(true);
       if (started) {
         // Exact li text — kills a stepIndex mismapping and a displayName drift.
-        await a.keyboard.press('KeyQ');
+        await pressAccel(a, 'J');
         await expect(a.locator('#quest-log-overlay')).toBeVisible({ timeout: 15_000 });
         await expect(a.locator('#quest-log-list li').filter({ hasText: QUEST_ID })).toHaveText(
           `${QUEST_ID} (step 0)`,

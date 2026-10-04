@@ -8,6 +8,7 @@ import {
   test,
 } from '@playwright/test';
 import { t } from '../src/ui/a11yCopy';
+import { pressAccel } from './controls';
 
 // the axe-core + real-browser a11y tier that M23-accessibility.spec.md §5.7 DECIDED
 // should exist and that no M23 slice owned.
@@ -850,8 +851,9 @@ test.describe
       await page.evaluate(() => {
         (document.activeElement as HTMLElement | null)?.blur();
       });
-      // N opens the rename shell from the world (a GUARD_ONLY overlay with no identity gate).
-      await page.keyboard.press('KeyN');
+      // N opens the rename shell through the main menu (ctl-11a: Profile > Name; the menu stays
+      // open beneath it, covered).
+      await pressAccel(page, 'N');
       await expect(page.locator('#rename-overlay')).toBeVisible();
       // A draft enables the submit button, so its label is measured as live (not inactive) text.
       await page.locator('#rename-input').fill('abc');
@@ -861,13 +863,15 @@ test.describe
       expectFrameOk(m, 'rename shell');
 
       // Close it for the next test. The first Escape in the text field only leaves typing mode
-      // (focus moves to #rename-submit, ctl-6b), so blur to <body> and press N instead:
-      // main.ts's KeyN branch hides the visible rename overlay.
+      // (focus moves to #rename-submit, ctl-6b), and an N typed in the field is typed, not taken
+      // as the accelerator (ctl-11a), so blur to <body> and press N instead: N pressed while its
+      // own screen is on top acts as Start, which closes the rename shell and the menu beneath it.
       await page.evaluate(() => {
         (document.activeElement as HTMLElement | null)?.blur();
       });
-      await page.keyboard.press('KeyN');
+      await pressAccel(page, 'N');
       await expect(page.locator('#rename-overlay')).toBeHidden();
+      await expect(page.locator('#menu-overlay')).toBeHidden();
     });
 
     // -----------------------------------------------------------------------------------------
@@ -952,7 +956,7 @@ test.describe
 
     test('CTL7B-E2E-BOX: with the box open (KeyB), the page does not scroll, the frame lies in the viewport and its text reads at >= 4.5:1; the same key closes it', async () => {
       await blurToBody();
-      await page.keyboard.press('KeyB');
+      await pressAccel(page, 'B'); // ctl-11a: Monsters > Storage through the main menu
       await expect(page.getByTestId('box-title')).toBeVisible();
       try {
         expect(await tagAppRoot('box-title', 'box'), 'the box title sits under a #app child').toBe(
@@ -960,7 +964,7 @@ test.describe
         );
         const m = await page.evaluate(measureFrameInPage, '[data-ctl7b-root="box"]');
         expectFrameOk(m, 'box');
-        await page.keyboard.press('KeyB');
+        await pressAccel(page, 'B'); // its own screen on top: Start (closes the menu beneath too)
         await expect.poll(() => computedDisplayOfTagged('box')).toBe('none');
       } finally {
         await untagAppRoot();
@@ -969,7 +973,7 @@ test.describe
 
     test('CTL7B-E2E-RAISING: with the raising screen open (KeyI), the page does not scroll, the frame lies in the viewport and its text reads at >= 4.5:1; the same key closes it', async () => {
       await blurToBody();
-      await page.keyboard.press('KeyI');
+      await pressAccel(page, 'I'); // ctl-11a: Bag through the main menu
       await expect(page.getByTestId('raising-title')).toBeVisible();
       try {
         expect(
@@ -978,32 +982,21 @@ test.describe
         ).toBe(true);
         const m = await page.evaluate(measureFrameInPage, '[data-ctl7b-root="raising"]');
         expectFrameOk(m, 'raising');
-        await page.keyboard.press('KeyI');
+        await pressAccel(page, 'I'); // its own screen on top: Start (closes the menu beneath too)
         await expect.poll(() => computedDisplayOfTagged('raising')).toBe('none');
       } finally {
         await untagAppRoot();
       }
     });
 
-    test('CTL7B-E2E-EVOLUTION: with the evolution screen open (KeyE), the page does not scroll, the frame lies in the viewport and its text reads at >= 4.5:1; the same key closes it', async () => {
-      await blurToBody();
-      await page.keyboard.press('KeyE');
-      await expect(page.getByTestId('evolution-title')).toBeVisible();
-      try {
-        expect(
-          await tagAppRoot('evolution-title', 'evolution'),
-          'the evolution title sits under a #app child',
-        ).toBe(true);
-        // The backdrop is translucent over the game canvas, so the root-level text is measured
-        // over both a white and a black page (measureFrameInPage stops its layer walk at #app).
-        const m = await page.evaluate(measureFrameInPage, '[data-ctl7b-root="evolution"]');
-        expectFrameOk(m, 'evolution');
-        await page.keyboard.press('KeyE');
-        await expect.poll(() => computedDisplayOfTagged('evolution')).toBe('none');
-      } finally {
-        await untagAppRoot();
-      }
-    });
+    // ctl-11a (named deletion): 'CTL7B-E2E-EVOLUTION: with the evolution screen open (KeyE), the
+    // page does not scroll, the frame lies in the viewport and its text reads at >= 4.5:1; the same
+    // key closes it' is deleted. KeyE is RB now (it switches a tab; nothing at the world) and the
+    // legacy evolution overlay it opened has no other opener: main.ts's open paths (the accelerators
+    // and the menu targets) never show `evolutionView`, so its frame cannot be reached by key or
+    // pointer. Evolution is read on the Monsters sheet's Evolve list instead, which is a part of the
+    // Monsters frame whose root CTL7B-E2E-BOX measures, and whose flow evolution.spec.ts V1 asserts.
+    // CTL7B-E2E-ROOTS above still pins the evolution root's construction.
 
     // The battle is not reachable without an encounter (a real walk is out of this suite's budget:
     // e2e/encounter-battle.spec.ts E0 already proves the real layering). So the test imports the

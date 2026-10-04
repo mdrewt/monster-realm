@@ -2,15 +2,17 @@
 // decides what they do (design §12). It owns the D-pad and X (Jump) at the world; under a nav
 // frame it synthesizes D-pad auto-repeat, and under the main menu (ctl-5) it also owns A, B and Y.
 // Every other button goes to the top frame's screen adapter (ctl-6b), and so does the D-pad of a
-// nav-capable screen (ctl-7c); what that adapter leaves `unhandled` is unconsumed, and the legacy
-// ladder in main.ts or the page keeps the key.
+// nav-capable screen (ctl-7c); what that adapter leaves `unhandled` is unconsumed, and the page
+// keeps the key. It also decides each accelerator (ctl-11a): `accelDecision` names the menu path
+// it opens, or refuses it, or makes it act as Start.
 //
 // No DOM, SDK, module state or clock: the caller passes `now` and applies the returned effects.
 import type { WasmDirection } from '../convert/convert';
+import { acceleratorsDenied, type FrameId, type Stack } from '../ui/contextStack';
+import type { MonstersTab } from '../ui/monstersModel';
 import type { NavInput } from '../ui/nav';
 import type { Command, ScreenResult } from '../ui/screens/types';
-import type { Bindings } from './bindings';
-import { type ButtonEdge, dpadDir, type VButton } from './buttons';
+import { type Accel, type ButtonEdge, dpadDir, type VButton } from './buttons';
 
 /** Who owns a key event: the focused element's native behaviour, or the router. */
 export type Owner = 'target' | 'router';
@@ -79,17 +81,44 @@ export function typingKey(target: unknown, e: OwnershipEvent): 'stopTyping' | un
   return text ? 'stopTyping' : undefined;
 }
 
-/** The bindings the router reads while the legacy ladder still owns Q and E (until ctl-11a): LB
- *  and RB come only from PageUp / PageDown (CTL6B.6). */
-export function routedBindings(b: Bindings): Bindings {
-  return {
-    buttons: {
-      ...b.buttons,
-      LB: b.buttons.LB.filter((c) => c === 'PageUp'),
-      RB: b.buttons.RB.filter((c) => c === 'PageDown'),
-    },
-    accels: b.accels,
-  };
+/** The accelerators that open a menu path; F8 and F9 keep their own handlers. */
+export type MenuAccel = Exclude<Accel, 'F8' | 'F9'>;
+
+/** An accelerator's canonical menu path (design §3): the main-menu entry keys, root first, the
+ *  frame its leaf opens, and the Monsters tab it opens on. */
+export interface AccelPath {
+  readonly menu: readonly string[];
+  readonly frame: FrameId;
+  readonly tab?: MonstersTab;
+}
+
+export const ACCEL_PATHS: Readonly<Record<MenuAccel, AccelPath>> = {
+  B: { menu: ['monsters'], frame: 'boxView', tab: 'storage' },
+  I: { menu: ['bag'], frame: 'raisingView' },
+  V: { menu: ['monsters'], frame: 'boxView', tab: 'party' },
+  J: { menu: ['journal'], frame: 'questLogView' },
+  U: { menu: ['social', 'trades'], frame: 'social' },
+  P: { menu: ['social', 'challenges'], frame: 'social' },
+  L: { menu: ['social', 'rankings'], frame: 'social' },
+  N: { menu: ['profile', 'name'], frame: 'renameView' },
+  C: { menu: ['profile', 'account'], frame: 'claimView' },
+};
+
+export type AccelDecision =
+  | { readonly kind: 'denied' }
+  /** Its own screen is on top: the accelerator acts as Start. */
+  | { readonly kind: 'start' }
+  /** Pop to the base, then open `path` through the main menu. */
+  | { readonly kind: 'open'; readonly path: AccelPath };
+
+/** What an accelerator press does over `stack` (CTL11A.1, CTL11A.2). */
+export function accelDecision(accel: MenuAccel, stack: Stack): AccelDecision {
+  if (acceleratorsDenied(stack)) return { kind: 'denied' };
+  const path = ACCEL_PATHS[accel];
+  const top = stack[stack.length - 1];
+  return top.kind === 'screen' && top.id === path.frame
+    ? { kind: 'start' }
+    : { kind: 'open', path };
 }
 
 /** The buttons the router consumes (and so `preventDefault`s): the D-pad and X. */

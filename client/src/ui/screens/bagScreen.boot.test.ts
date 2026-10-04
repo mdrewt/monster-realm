@@ -4,14 +4,18 @@
  * shell, the REAL RaisingView and the REAL screen-adapter table (`SCREEN_ADAPTERS.raisingView` is
  * whatever ui/screens/index.ts ships: no stand-in is swapped in).
  *
- * - CTL8F-4-BOOT-KEYI: the legacy KeyI shows the raising root. The frame is not seated at its open
- *   (only the Social frame is), so the Bag paints at its first batch or its first button:
- *   (a) with a store holding items of three pockets, a store batch ALONE (no key after KeyI) paints
- *       the pocket tabs Bait | Food | Medicine, Bait selected, its item listed, the legacy inventory
- *       grid hidden; before that batch the bag parts are hidden and the legacy grid shows;
- *   (b) in a separate boot and open, an RB press ALONE (PageDown, the routed key; no batch after
- *       KeyI) paints them and moves to the second pocket, Food, with its item; the next RB reaches
- *       Medicine and LB comes back.
+ * - CTL8F-4-BOOT-KEYI: KeyI opens the Bag. ctl-11a (named intentional changes): an accelerator pops
+ *   to the base and opens its menu path, so the stack is the world, the menu, then the raising frame
+ *   (was: the world, then the raising frame), and the Bag is painted AT THE OPEN (residual
+ *   R-ctl-8f-CTL8F.1; was: the frame was not seated, so the Bag painted only at its first batch or
+ *   its first button, and until then the bag parts were hidden and the legacy grid showed):
+ *   (a) with a store holding items of three pockets, KeyI ALONE (no batch, no further key) paints
+ *       the pocket tabs Bait | Food | Medicine, Bait selected, its item listed with the cursor, the
+ *       legacy inventory grid hidden; a batch that adds a bait item repaints the pocket;
+ *   (b) in a separate boot and open, an RB press (PageDown; no batch after KeyI) moves to the second
+ *       pocket, Food, with its item; the next RB reaches Medicine and LB comes back.
+ * - A second case (ctl-11a, same residual): the same at-the-open paint when the Bag is opened by
+ *   picking it in the main menu (Start, move to Bag, A), which is the path KeyI takes.
  *
  * EVERY key is dispatched ON `document.activeElement`, bubbling, like a real browser (the router
  * ignores keys a focused form control owns); the deferred initial focus (one macrotask after KeyI,
@@ -310,6 +314,10 @@ const stackNames = (): string[] =>
     .__game()
     .stack.map((f) => (f.kind === 'screen' || f.kind === 'prompt' ? (f.id as string) : f.kind));
 
+/** The main menu's cursor entry key through the same hook (null while the menu is closed). */
+const navActive = (): string | null =>
+  (window as unknown as { __game: () => { navActive: string | null } }).__game().navActive;
+
 const tabEls = (): HTMLElement[] => [
   ...el('bag-tabs').querySelectorAll<HTMLElement>('.mr-nav-tab'),
 ];
@@ -319,64 +327,92 @@ const rows = (): HTMLElement[] => [...el('bag-list').querySelectorAll<HTMLElemen
 const rowTexts = (): Array<[string | undefined, string | null]> =>
   rows().map((r) => [r.dataset.navKey, r.textContent]);
 
+/** The Bag as the seeded store paints it at an open: the pocket tabs Bait | Food | Medicine shown
+ *  with Bait selected, Bait's one item listed with the cursor on it, the legacy inventory grid
+ *  hidden and no sheet. Read from the DOM, whenever the caller chooses (the open itself: nothing
+ *  has run since the keys that opened the frame). */
+function expectBaitPainted(label: string): void {
+  expect(tabs(), `${label}: the pocket tabs, Bait selected`).toEqual([
+    ['bait', 'Bait', 'true'],
+    ['food', 'Food', 'false'],
+    ['medicine', 'Medicine', 'false'],
+  ]);
+  expect(el('bag-tabs').style.display, `${label}: the tabs are shown`).not.toBe('none');
+  expect(el('bag-list').style.display, `${label}: the list is shown`).not.toBe('none');
+  expect(rowTexts(), `${label}: Bait's one item`).toEqual([['1', 'Lure Berry (x4)']]);
+  expect(
+    rows().map((r) => r.classList.contains('is-active')),
+    `${label}: with the cursor on it`,
+  ).toEqual([true]);
+  expect(el('raising-inventory').style.display, `${label}: the legacy grid is hidden`).toBe('none');
+  expect(el('bag-sheet').style.display, `${label}: no sheet on open`).toBe('none');
+}
+
 describe('the Bag booted through main.ts over the real view and adapter table (ctl-8f)', {
   sequential: true,
 }, () => {
   afterEach(teardownBoot);
 
-  it('CTL8F-4-BOOT-KEYI: KeyI shows the raising root with the bag parts hidden and the legacy grid showing; (a) one store batch alone paints the pocket tabs Bait | Food | Medicine (Bait selected), its item with the cursor, and hides the legacy grid; (b) in a separate boot, a PageDown (RB) alone, with no batch after the open, paints them and moves to Food, its item listed, the next RB to Medicine and LB back', async () => {
+  it('CTL8F-4-BOOT-KEYI: KeyI shows the raising root over the menu (the world, the menu, then the raising frame) with the Bag painted AT THE OPEN, before any batch or button: (a) the pocket tabs Bait | Food | Medicine (Bait selected), its item with the cursor, the legacy grid hidden, and a batch that adds a bait item repaints the pocket; (b) in a separate boot, a PageDown (RB) after the open moves to Food, its item listed, the next RB to Medicine and LB back', async () => {
+    // ctl-11a (named intentional changes), tag kept (KeyI still opens the Bag): (1) RETIRED: the
+    // stack `['world', 'raisingView']`; REPLACED by `['world', 'menuView', 'raisingView']`, because an
+    // accelerator now opens its menu path and the menu stays beneath the leaf (CTL11A.1). (2)
+    // RETIRED: "the bag parts are hidden and the legacy grid shows until the first batch or button"
+    // and "nothing painted yet: no batch since the open" (the defect of residual R-ctl-8f-CTL8F.1,
+    // which the previous version of this test pinned); REPLACED by the Bag painted at the open, read
+    // synchronously after the KeyI press with no batch and no further button. The batch repaint and
+    // the RB / LB walk are kept.
     // WRONG IMPL KILLED: the legacy adapter on the raising frame (RB is unhandled and nothing is
-    // painted: the Bag is the legacy grid forever); an adapter that paints only at a button, so a
-    // batch alone leaves the grid (the first observe after an open must answer a new state); one
-    // that paints only on a batch, so a first RB press does nothing visible; a view that shows the
-    // bag parts before any paint; a tab strip that is not built from the store's item definitions
-    // and rows (the fixture holds three pockets and no `other`); an RB that does not reach the
-    // adapter through the routed PageDown; and a paint that does not hide the legacy grid.
-    // (a) a batch alone.
+    // painted: the Bag is the legacy grid forever); a frame that is not seated at its open (KeyI
+    // leaves the bag parts hidden and the legacy grid showing until a batch or a button: the
+    // residual); one that paints at the open and never again (a batch that adds an item leaves the
+    // old pocket); a paint that waits for the deferred focus (the synchronous read right after the
+    // press finds the parts hidden); a view that shows the bag parts but no paint; a tab strip that
+    // is not built from the store's item definitions and rows (the fixture holds three pockets and
+    // no `other`); an RB that does not reach the adapter through PageDown; a paint that does not
+    // hide the legacy grid; and a stack that lacks the menu beneath the leaf.
+    // (a) the open alone.
     await bootReady();
     seedBag();
     expect(raisingShown(), 'precondition: the raising root starts closed').toBe(false);
 
     press('KeyI', 1010);
     expect(raisingShown(), 'KeyI shows the raising root').toBe(true);
-    expect(stackNames()).toEqual(['world', 'raisingView']);
+    expect(stackNames(), 'over the menu').toEqual(['world', 'menuView', 'raisingView']);
+    expectBaitPainted('at the open, no batch and no button yet');
     await flush();
-    for (const id of ['bag-tabs', 'bag-list', 'bag-sheet', 'bag-info', 'bag-picker']) {
-      expect(el(id).style.display, `#${id} is hidden before the first paint`).toBe('none');
-    }
-    expect(el('raising-inventory').style.display, 'the legacy grid shows until then').not.toBe(
-      'none',
-    );
+    expectBaitPainted('after the deferred focus');
 
-    server(1100);
-    expect(tabs(), 'a batch alone painted the tabs, Bait selected').toEqual([
-      ['bait', 'Bait', 'true'],
-      ['food', 'Food', 'false'],
-      ['medicine', 'Medicine', 'false'],
+    // A batch that adds a second bait item to the store repaints the open Bag.
+    opts.store.upsertItemDef(itemDef(4, 'Sweet Bait', { recruitBonus: 20 }));
+    opts.store.reconcileInventoryFromView([
+      { invId: 101n, ownerIdentity: H.identity, itemId: 1, count: 4 },
+      { invId: 102n, ownerIdentity: H.identity, itemId: 2, count: 3 },
+      { invId: 103n, ownerIdentity: H.identity, itemId: 3, count: 1 },
+      { invId: 104n, ownerIdentity: H.identity, itemId: 4, count: 2 },
     ]);
-    expect(el('bag-tabs').style.display, 'and shows them').not.toBe('none');
-    expect(el('bag-list').style.display).not.toBe('none');
-    expect(rowTexts(), 'Bait`s one item').toEqual([['1', 'Lure Berry (x4)']]);
+    server(1100);
+    expect(rowTexts(), 'a batch that added a bait item repainted the pocket').toHaveLength(2);
+    expect(rowTexts(), 'with the new item listed').toContainEqual(['4', 'Sweet Bait (x2)']);
     expect(
-      rows().map((r) => r.classList.contains('is-active')),
-      'with the cursor on it',
-    ).toEqual([true]);
-    expect(el('raising-inventory').style.display, 'the legacy grid is hidden').toBe('none');
-    expect(el('bag-sheet').style.display, 'no sheet on open').toBe('none');
+      rows()
+        .filter((r) => r.classList.contains('is-active'))
+        .map((r) => r.dataset.navKey),
+      'and the cursor still on the item it was on',
+    ).toEqual(['1']);
+    expect(el('raising-inventory').style.display, 'the legacy grid stays hidden').toBe('none');
 
-    // (b) an RB press alone, in a separate boot and a separate open.
+    // (b) an RB press after the open, in a separate boot and a separate open.
     teardownBoot();
     await bootReady();
     seedBag();
     press('KeyI', 1010);
     expect(raisingShown(), 'KeyI shows the raising root again').toBe(true);
+    expectBaitPainted('at the open of the second boot');
     await flush();
-    expect(el('bag-tabs').style.display, 'nothing painted yet: no batch since the open').toBe(
-      'none',
-    );
 
     press('PageDown', 1100);
-    expect(tabs(), 'RB alone painted the tabs and moved to Food').toEqual([
+    expect(tabs(), 'RB moved to Food with no batch since the open').toEqual([
       ['bait', 'Bait', 'false'],
       ['food', 'Food', 'true'],
       ['medicine', 'Medicine', 'false'],
@@ -394,5 +430,31 @@ describe('the Bag booted through main.ts over the real view and adapter table (c
       'LB comes back to Food',
     ).toEqual(['false', 'true', 'false']);
     expect(rowTexts()).toEqual([['2', 'Power Root (x3)']]);
+  });
+
+  it('CTL11A-BAG-PAINT-AT-OPEN: the Bag opened by picking it in the main menu (Start, move to Bag, A) is painted at that open, with no batch and no further button: the pocket tabs Bait | Food | Medicine with Bait selected, its item with the cursor, the legacy grid hidden, the menu cursor on Bag beneath it', async () => {
+    // WRONG IMPL KILLED (residual R-ctl-8f-CTL8F.1, the menu half): a frame seated only on the
+    // accelerator path (KeyI paints, the menu's own Bag entry does not: the open is the shared
+    // `openMenuTarget`, and a seat parked in `runAccel` never runs for a pick); a first paint that
+    // waits for the next batch or the first button (the tabs are hidden and the legacy grid shows
+    // until then); a paint at a timer after the open (read synchronously here, right after A); a
+    // Bag that is painted but not on its first pocket; and a pick that opens the frame with the menu
+    // gone from beneath it.
+    await bootReady();
+    seedBag();
+    expect(raisingShown(), 'precondition: the raising root starts closed').toBe(false);
+
+    press('KeyM', 1010); // Start opens the main menu
+    expect(stackNames(), 'precondition: the menu is open').toEqual(['world', 'menuView']);
+    for (let i = 0; i < 8 && navActive() !== 'bag'; i += 1) press('ArrowDown', 1100 + i * 100);
+    expect(navActive(), 'precondition: the cursor is on Bag').toBe('bag');
+
+    press('Enter', 2000);
+    expect(raisingShown(), 'A on Bag shows the raising root').toBe(true);
+    expect(stackNames(), 'over the menu').toEqual(['world', 'menuView', 'raisingView']);
+    expect(navActive(), 'the menu cursor stays on Bag beneath it').toBe('bag');
+    expectBaitPainted('at the pick, no batch and no button yet');
+    await flush();
+    expectBaitPainted('after the deferred focus');
   });
 });

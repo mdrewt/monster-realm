@@ -4,15 +4,18 @@
  * client/index.html shell, the REAL QuestLogView and the REAL screen-adapter table
  * (`SCREEN_ADAPTERS.questLogView` is whatever ui/screens/index.ts ships: no stand-in is swapped in).
  *
- * - CTL8F-4-BOOT-KEYQ: the legacy KeyQ shows #quest-log-overlay with the quest rows (the legacy row
- *   text, "quest_001 (step 0)", unchanged) and the first row marked as the cursor with no detail
- *   open; Enter (A) opens #quest-log-detail with that quest's name and step; Backspace (B) closes the
+ * - CTL8F-4-BOOT-KEYQ: KeyJ shows #quest-log-overlay with the quest rows (the legacy row text,
+ *   "quest_001 (step 0)", unchanged) and the first row marked as the cursor with no detail open;
+ *   Enter (A) opens #quest-log-detail with that quest's name and step; Backspace (B) closes the
  *   detail and the overlay stays open (the frame stays on the stack); ArrowDown moves the cursor and
  *   Enter opens the second quest's detail; Backspace closes it and a second Backspace pops the
- *   frame.
+ *   frame. ctl-11a (named intentional changes): the key is KeyJ (KeyQ is the LB bumper now and opens
+ *   nothing at the world); the accelerator opens its menu path, so the frame sits over the menu
+ *   (the world, the menu, then the Journal) and the final Backspace pops ONE frame, leaving the menu
+ *   on top (was: the world). The tag keeps its old spelling: it names the test, not the key.
  *
  * EVERY key is dispatched ON `document.activeElement`, bubbling, like a real browser (the router
- * ignores keys a focused form control owns); the deferred initial focus (one macrotask after KeyQ,
+ * ignores keys a focused form control owns); the deferred initial focus (one macrotask after KeyJ,
  * from ui/overlayA11y.ts) is flushed before the first key.
  *
  * Harness: tradeProposeScreen.boot.test.ts's (the real shell mounted, main.ts imported fresh per
@@ -277,6 +280,8 @@ function el(id: string): HTMLElement {
 
 /** The journal overlay is on screen (its inline display is not none). */
 const journalShown = (): boolean => el('quest-log-overlay').style.display !== 'none';
+/** The main menu is on screen (its inline display is not none; covered is not closed). */
+const menuShown = (): boolean => el('menu-overlay').style.display !== 'none';
 const rows = (): HTMLElement[] => [...el('quest-log-list').querySelectorAll<HTMLElement>('li')];
 const cursor = (): Array<string | undefined> =>
   rows()
@@ -304,7 +309,15 @@ describe('the Journal booted through main.ts over the real view and adapter tabl
 }, () => {
   afterEach(teardownBoot);
 
-  it('CTL8F-4-BOOT-KEYQ: KeyQ shows the journal with the legacy row text and the first quest as the cursor; Enter (A) opens that quest`s detail with its name and step; Backspace (B) closes the detail and the journal stays open; ArrowDown then Enter opens the second quest`s detail; Backspace closes it and the next Backspace pops the frame', async () => {
+  it('CTL8F-4-BOOT-KEYQ: KeyJ shows the journal over the menu with the legacy row text and the first quest as the cursor; Enter (A) opens that quest`s detail with its name and step; Backspace (B) closes the detail and the journal stays open; ArrowDown then Enter opens the second quest`s detail; Backspace closes it and the next Backspace pops ONE frame, leaving the menu on top', async () => {
+    // ctl-11a (named intentional changes), tag kept: (1) RETIRED: KeyQ opens the Journal (Q is LB
+    // now; KeyJ is the Journal's accelerator); REPLACED by KeyJ. (2) RETIRED: the stacks
+    // `['world', 'questLogView']` and the final `['world']`; REPLACED by
+    // `['world', 'menuView', 'questLogView']` and, after the last Backspace, `['world', 'menuView']`
+    // with the menu shown (B pops one frame; Start is what pops to the base). Everything else (the
+    // rows, the cursor at the open with no batch, the detail, B closing it first) is unchanged: the
+    // Journal's own paint at its open already needs no batch (the view paints the opening cursor in
+    // `render`), so there is no first-paint lag here to pin.
     // WRONG IMPL KILLED: the legacy adapter on the quest log frame (Enter is unhandled and nothing
     // opens: the Journal is a bare list forever); rows whose text changed (the e2e dialogue.spec
     // pins "quest_001 (step 0)"); an opening with no marked row (a screen reader announces no
@@ -316,9 +329,9 @@ describe('the Journal booted through main.ts over the real view and adapter tabl
     seedQuests();
     expect(journalShown(), 'precondition: the journal starts closed').toBe(false);
 
-    press('KeyQ', 1010);
-    expect(journalShown(), 'KeyQ shows the journal').toBe(true);
-    expect(stackNames()).toEqual(['world', 'questLogView']);
+    press('KeyJ', 1010);
+    expect(journalShown(), 'KeyJ shows the journal').toBe(true);
+    expect(stackNames(), 'over the menu').toEqual(['world', 'menuView', 'questLogView']);
     await flush();
     expect(
       rows().map((r) => r.textContent),
@@ -338,7 +351,11 @@ describe('the Journal booted through main.ts over the real view and adapter tabl
     press('Backspace', 1200);
     expect(detailShown(), 'B closes the detail').toBe(false);
     expect(journalShown(), 'and the journal stays open').toBe(true);
-    expect(stackNames(), 'the frame is still on the stack').toEqual(['world', 'questLogView']);
+    expect(stackNames(), 'the frame is still on the stack, over the menu').toEqual([
+      'world',
+      'menuView',
+      'questLogView',
+    ]);
     expect(cursor(), 'the cursor stays on that quest').toEqual(['quest_001']);
 
     press('ArrowDown', 1300);
@@ -354,6 +371,10 @@ describe('the Journal booted through main.ts over the real view and adapter tabl
     expect(journalShown()).toBe(true);
     press('Backspace', 1600);
     expect(journalShown(), 'B in the list pops the frame').toBe(false);
-    expect(stackNames()).toEqual(['world']);
+    expect(stackNames(), 'one frame: the menu is the top frame, not the world').toEqual([
+      'world',
+      'menuView',
+    ]);
+    expect(menuShown(), 'and the menu is on screen').toBe(true);
   });
 });

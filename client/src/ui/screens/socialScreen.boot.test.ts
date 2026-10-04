@@ -21,6 +21,16 @@
  * - CTL8G-2-BOOT, L opens Rankings over the leaderboard root, its ranked rows keep their
  *   cursor mark across store batches, Down moves it and A does nothing at all.
  *
+ * - An added case (ctl-11a, residual R-ctl-8g-CTL8G.1-UCLOSE): U, P and L each act as Start on the
+ *   Social frame from ANY of its four tabs, Players included (the accelerator is keyed to the
+ *   frame, not to the tab it opens on).
+ *
+ * ctl-11a (named intentional change, every case that opens Social with U, P or L): an accelerator
+ * pops to the base and opens its menu path, so Social sits OVER the menu (the world, the menu, then
+ * the Social frame) and `expectSocialOn` reads that stack (`SOCIAL_STACK`; was: the world, then the
+ * Social frame). Social opened by the incoming-challenge auto-show opens no menu, so its stack stays
+ * the world, then Social (`SOCIAL_AUTO_STACK`). Start still pops everything to the bare world.
+ *
  * Every case asserts what only the real Social adapter paints (the selected `#social-tab-<tab>`,
  * the cursor mark, the sheet and the prompt), never just the panel shown: ctl-8s already opens the
  * right panel with the legacy adapter, so a case that only checked the root would pass on master.
@@ -372,7 +382,13 @@ const stackNow = (): unknown[] =>
   (window as unknown as { __game: () => { stack: unknown[] } }).__game().stack;
 
 const WORLD_FRAME = { kind: 'world' } as const;
-const SOCIAL_STACK = [WORLD_FRAME, { kind: 'screen', id: 'social' }];
+const MENU_FRAME = { kind: 'screen', id: 'menuView' } as const;
+const SOCIAL_ENTRY = { kind: 'screen', id: 'social' } as const;
+/** INTENTIONAL CHANGE (ctl-11a): Social opened by U, P or L (the accelerator's menu path) sits over
+ *  the menu. Was: `[WORLD_FRAME, SOCIAL_ENTRY]`. */
+const SOCIAL_STACK = [WORLD_FRAME, MENU_FRAME, SOCIAL_ENTRY];
+/** Social opened by the incoming-challenge auto-show: no menu is opened, so nothing is beneath it. */
+const SOCIAL_AUTO_STACK = [WORLD_FRAME, SOCIAL_ENTRY];
 
 function el(id: string): HTMLElement {
   const found = document.getElementById(id);
@@ -407,11 +423,17 @@ function tabLabel(tab: SocialTab): string {
   }
 }
 
-/** Social is the one frame over the world, on `tab`: that tab's root is the one shown, its first
- *  child is the chrome holding the one tab strip, the strip lists the four tabs in order with
- *  their catalogued labels, and exactly `tab` is selected (is-active and aria-selected). */
-function expectSocialOn(label: string, tab: SocialTab): void {
-  expect(stackNow(), `${label}: the one Social frame`).toEqual(SOCIAL_STACK);
+/** Social is the one Social frame, on `tab`: that tab's root is the one shown, its first child is
+ *  the chrome holding the one tab strip, the strip lists the four tabs in order with their
+ *  catalogued labels, and exactly `tab` is selected (is-active and aria-selected). `stack` is the
+ *  whole stack it sits in: over the menu by default (opened by U, P or L, ctl-11a), or alone over
+ *  the world (`SOCIAL_AUTO_STACK`, the auto-show). */
+function expectSocialOn(
+  label: string,
+  tab: SocialTab,
+  stack: readonly unknown[] = SOCIAL_STACK,
+): void {
+  expect(stackNow(), `${label}: the one Social frame`).toEqual(stack);
   const rootId = ROOT_OF[tab];
   expect(shownRoots(), `${label}: the ${tab} panel's root alone`).toEqual([rootId]);
   const strips = document.querySelectorAll<HTMLElement>('#social-tabs');
@@ -555,6 +577,9 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     // tab still over the trade root (ctl-8g: it is over the leaderboard root, its players list up
     // and the board list hidden), or one that leaves the old placeholder in the hidden trade root;
     // and an auto-show that opens on the remembered tab (Trades) or puts no cursor on the request.
+    // ctl-11a (named intentional change): RETIRED the stack `[world, social]` for every Social open
+    // by U; REPLACED by `[world, menuView, social]` (`expectSocialOn`'s default). The auto-show at
+    // the end keeps `[world, social]`: it opens no menu (`SOCIAL_AUTO_STACK`), and is asserted so.
     await bootReady();
     server(1000);
     let at = 1100;
@@ -601,7 +626,7 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     // The auto-show: an incoming challenge, Social closed, no overlay up, a world base.
     opts.store.upsertChallenge(incomingChallenge(AUTO_SHOW_CHALLENGE_ID));
     server(at);
-    expectSocialOn('auto-show', 'challenges');
+    expectSocialOn('auto-show', 'challenges', SOCIAL_AUTO_STACK);
     expect(
       document.querySelector('[data-testid="pvp-incoming-label"]'),
       'precondition: the request is listed in the pvp root',
@@ -622,6 +647,9 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     // a decline sent twice, as acceptChallenge or cancelChallenge, or for another id; a Social
     // frame that disables or swallows the legacy Accept button; and a trade answer sent as
     // accepted:false, as confirmTrade, for the wrong id, or only after a prompt.
+    // ctl-11a (named intentional change): RETIRED the stack `[world, social]` after P and after U
+    // (`expectSocialOn` reads it); REPLACED by `[world, menuView, social]`. The incoming challenge's
+    // auto-show opens no menu: its precondition is `[world, social]` (`SOCIAL_AUTO_STACK`).
     await bootReady();
     server(1000);
     opts.store.upsertMonster(partyMonster(PARTY_MONSTER_ID));
@@ -630,7 +658,9 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     // --- a challenge: Decline asks Yes / No, No first -----------------------------------------
     opts.store.upsertChallenge(incomingChallenge(CHALLENGE_ID));
     server(1100);
-    expect(stackNow(), 'precondition: the incoming challenge opened Social').toEqual(SOCIAL_STACK);
+    expect(stackNow(), 'precondition: the incoming challenge opened Social').toEqual(
+      SOCIAL_AUTO_STACK,
+    );
     press('Escape', 1110);
     expect(stackNow(), 'precondition: Start closed it').toEqual([WORLD_FRAME]);
     press('KeyP', 1200);
@@ -717,6 +747,9 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     // requested tab and opens on the oldest waiting request's (P and L would open on Trades over
     // the trade root) or on the remembered tab (P would reopen on Trades, L on Challenges); and a
     // paint that selects the requested tab but shows another panel, or the reverse.
+    // ctl-11a (named intentional change): RETIRED the stack `[world, social]` after each of U, P
+    // and L (`expectSocialOn`); REPLACED by `[world, menuView, social]`; Start still ends each at the
+    // bare world.
     await bootReady();
     server(1000);
     opts.store.upsertTradeOffer(waitingTrade(TRADE_ID));
@@ -748,6 +781,9 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     // or none on a near one; a walk-up that sends a command (a challenge, a trade) or reads an
     // English literal instead of the catalog; a walk-up left up after the cursor moves or after
     // its player left; and a Rankings visit that still shows the players list.
+    // ctl-11a (named intentional change): RETIRED the stack `[world, social]` (`expectSocialOn` and
+    // the walk-up check "A walks nowhere"); REPLACED by `[world, menuView, social]`. Start (Escape)
+    // still pops to the bare world before L.
     await bootReady();
     server(1000);
     let at = 1100;
@@ -859,6 +895,9 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     // reverse: aria-activedescendant naming a row that is not marked); two rows marked; an A that
     // opens a sheet or prompt on a ranked row, sends a challenge or any reducer, or pops the frame;
     // and rows out of leaderboard order.
+    // ctl-11a (named intentional change): RETIRED the stack `[world, social]` (`expectSocialOn` and
+    // "A does not close or push a frame"); REPLACED by `[world, menuView, social]`: A on a ranked
+    // row still leaves exactly that stack.
     await bootReady();
     server(1000);
     const PROFILES = [
@@ -938,5 +977,55 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     key('ArrowDown');
     expectCursor('a fresh Down wraps', ZED);
     expect(shownRoots(), 'still the leaderboard root alone').toEqual(['leaderboard-overlay']);
+  });
+
+  it('CTL11A-SOCIAL-U-CLOSES-ON-PLAYERS: U, then LB to Players, then U again returns the stack to the bare world with no Social root and no menu shown; and U, P and L each do the same from every one of the four tabs (Players, Trades, Challenges, Rankings), whichever key opened Social', async () => {
+    // WRONG IMPL KILLED (residual R-ctl-8g-CTL8G.1-UCLOSE): an accelerator that is Start only when
+    // the tab it opens on is the tab shown (U closes on Trades but re-opens Trades from Players, the
+    // panel the Players tab shares with Rankings); one keyed to the shown PANEL instead of the frame
+    // (Players and Rankings share the leaderboard root, so L would close from Players and U would
+    // not); one keyed to the key (U closes only what U opened: P over a U-opened Social re-opens
+    // Challenges); a close that pops only the Social frame and leaves the menu beneath it (the stack
+    // ends `[world, menuView]`); a Social root left shown after the stack is the world; and a
+    // press that re-opens the same path (the strip repaints, nothing closes).
+    await bootReady();
+    server(1000);
+    let at = 1100;
+    const key = (code: string): void => {
+      press(code, at);
+      at += 10;
+    };
+    const expectBareWorld = (label: string): void => {
+      expect(stackNow(), `${label}: the bare world`).toEqual([WORLD_FRAME]);
+      expect(shownRoots(), `${label}: no Social root is shown`).toEqual([]);
+      expect(el('menu-overlay').style.display, `${label}: no menu is shown`).toBe('none');
+    };
+
+    // The residual's own case: U, LB to Players, U.
+    key('KeyU');
+    expectSocialOn('U', 'trades');
+    key('PageUp');
+    expectSocialOn('LB to Players', 'players');
+    key('KeyU');
+    expectBareWorld('U on Players');
+
+    // Every accelerator of the frame, from every tab. U opens on Trades; the walk to `tab` is by LB
+    // and RB (PageUp / PageDown), asserted step by step so the precondition is the tab itself.
+    let driven = 0;
+    for (const code of ['KeyU', 'KeyP', 'KeyL']) {
+      for (const tab of TAB_ORDER) {
+        const label = `${code} from ${tab}`;
+        key('KeyU');
+        expectSocialOn(`${label}: opened by U`, 'trades');
+        const steps = TAB_ORDER.indexOf(tab) - TAB_ORDER.indexOf('trades');
+        for (let i = 0; i < Math.abs(steps); i += 1) key(steps < 0 ? 'PageUp' : 'PageDown');
+        expectSocialOn(`${label}: precondition`, tab);
+        key(code);
+        expectBareWorld(label);
+        driven += 1;
+      }
+    }
+    expect(driven, 'ANTI-VACUITY: three accelerators over four tabs were driven').toBe(12);
+    expect(H.calls, 'closing Social sent nothing').toEqual([]);
   });
 });

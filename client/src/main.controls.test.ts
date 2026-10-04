@@ -868,10 +868,13 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
   // CTL6B.3: B pops exactly one frame
   // ------------------------------------------------------------------------------------------
 
-  it('CTL6B-3-MAIN-BACKSPACE-ONE: Backspace closes only the top frame (the child over the menu, then the menu), closes a lone overlay opened by a hotkey, and is swallowed at the world base', async () => {
+  it('CTL6B-3-MAIN-BACKSPACE-ONE: Backspace closes only the top frame (the child over the menu, then the menu), backs a hotkey-opened leaf out into the menu one frame at a time, and is swallowed at the world base', async () => {
+    // ctl-11a: a hotkey (J) now opens its leaf OVER the main menu, so Backspace from it returns to the
+    // menu (one frame), not to the world; a second Backspace then closes the menu. Was: Q opened the
+    // quest log with no menu under it and one Backspace closed it to the world.
     // WRONG IMPL KILLED: a B that pops to the base (the menu would close with its child), one that
-    // pops nothing for a hotkey-opened overlay with no menu under it (red today: B is unrouted
-    // without the menu), one that pops the base or opens the menu at the world, and a B at the world
+    // pops nothing for a hotkey-opened leaf (red today: B is unrouted without the menu), one that
+    // pops the base or opens the menu at the world, and a B at the world
     // base that falls through to the browser (Backspace navigates back).
     await bootAtMenu(2);
     tap('Enter', 1400);
@@ -891,17 +894,24 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     expect(menuShown()).toBe(false);
     expect(stackNames()).toEqual(['world']);
 
-    // A hotkey-opened overlay with no menu under it closes on B.
-    tap('KeyQ', 1800);
-    expect(questLogShown(), 'precondition: Q opened the quest log').toBe(true);
-    expect(stackNames()).toEqual(['world', 'questLogView']);
+    // A hotkey-opened leaf has the menu under it: B backs out into the menu, one frame at a time.
+    tap('KeyJ', 1800);
+    expect(questLogShown(), 'precondition: J opened the quest log').toBe(true);
+    expect(stackNames()).toEqual(['world', 'menuView', 'questLogView']);
     const close = tap('Backspace', 1900);
     expect(close.defaultPrevented).toBe(true);
-    expect(questLogShown(), 'Backspace closed the lone overlay').toBe(false);
+    expect(questLogShown(), 'Backspace closed the hotkey-opened leaf').toBe(false);
+    expect(menuShown(), 'and left the menu it was opened over').toBe(true);
+    expect(stackNames(), 'one frame: the menu, not the world').toEqual(['world', 'menuView']);
+    tap('Backspace', 2000);
+    expect(menuShown(), 'a second B closes the menu').toBe(false);
     expect(stackNames()).toEqual(['world']);
   });
 
-  it('CTL6B-3-MAIN-CLAIM: after C the claim overlay closes on Escape and on Backspace, and Escape does not also open the menu', async () => {
+  it('CTL6B-3-MAIN-CLAIM: after C the claim overlay closes on Escape (with the menu it was opened over) and Backspace closes it back into that menu, and Escape does not also open the menu', async () => {
+    // ctl-11a: C opens the claim overlay OVER the main menu (Profile > Account), so the stack gains
+    // the menu, Escape (Start) closes both, and Backspace closes only the claim overlay and leaves
+    // the menu. Was: [world, claimView] and Backspace returned straight to the world.
     // WRONG IMPL KILLED (B4): the claim overlay with no close path but its own toggle (the retired
     // Escape stack had no claim branch), a Start that closes it and then opens the menu in the same
     // press, and a B that is not routed for it.
@@ -909,18 +919,19 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     server(1000);
     tap('KeyC', 1010);
     expect(claimShown(), 'precondition: C opened the claim overlay').toBe(true);
-    expect(stackNames()).toEqual(['world', 'claimView']);
+    expect(stackNames()).toEqual(['world', 'menuView', 'claimView']);
     const esc = tap('Escape', 1100);
     expect(esc.defaultPrevented).toBe(true);
     expect(claimShown(), 'Escape closes the claim overlay').toBe(false);
-    expect(menuShown(), 'and does not open the menu in the same press').toBe(false);
+    expect(menuShown(), 'and the menu beneath it, not re-opened in the same press').toBe(false);
     expect(stackNames()).toEqual(['world']);
 
     tap('KeyC', 1200);
     expect(claimShown(), 'precondition: C reopened it').toBe(true);
     tap('Backspace', 1300);
     expect(claimShown(), 'Backspace closes it too').toBe(false);
-    expect(stackNames()).toEqual(['world']);
+    expect(menuShown(), 'back into the menu it was opened over').toBe(true);
+    expect(stackNames()).toEqual(['world', 'menuView']);
   });
 
   // ------------------------------------------------------------------------------------------
@@ -991,6 +1002,9 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     // one that leaves focus in the field (the second Escape would be typed into it), a typed letter
     // that fires a hotkey (typing "b" would open the box), and a stop that never lets the next
     // Escape act as Start.
+    // ctl-11a: N opens the Name screen OVER the main menu (Profile > Name), so every stack here
+    // carries `menuView` beneath it, and "no menu" becomes "no frame change": the menu that is
+    // already there stays and no typed letter pops, replaces or adds a frame.
     await bootReady();
     server(1000);
     tap('KeyN', 1010);
@@ -1009,7 +1023,10 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
       fire('keyup', code, 1025 + i * 10, { target: input });
     }
     expect(boxShown(), 'typing b opens no box').toBe(false);
-    expect(menuShown(), 'typing m opens no menu').toBe(false);
+    expect(
+      stackNames(),
+      'typing m (Start) opens or closes no menu: the one beneath the Name screen stays',
+    ).toEqual(['world', 'menuView', 'renameView']);
     expect(helpShown(), 'typing r or / opens no help').toBe(false);
     expect(questLogShown(), 'typing q opens no quest log').toBe(false);
     expect(renameShown(), 'the overlay is still up').toBe(true);
@@ -1026,8 +1043,10 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
       overlay.contains(document.activeElement),
       'and moved inside the overlay, not to the page',
     ).toBe(true);
-    expect(stackNames()).toEqual(['world', 'renameView']);
-    expect(menuShown(), 'stopping typing is not Start: no menu').toBe(false);
+    expect(
+      stackNames(),
+      'stopping typing is not Start: the menu beneath the Name screen is not popped with it',
+    ).toEqual(['world', 'menuView', 'renameView']);
 
     // Escape #2 acts as Start on whatever now has focus.
     const active = document.activeElement as HTMLElement;
@@ -1035,7 +1054,7 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     fire('keyup', 'Escape', 1205, { target: active });
     expect(renameShown(), 'the second Escape closes the overlay').toBe(false);
     expect(stackNames()).toEqual(['world']);
-    expect(menuShown()).toBe(false);
+    expect(menuShown(), 'and the menu beneath it, which is not re-opened').toBe(false);
 
     // B5: Escape on the focused submit button closes (the view's own listener hides it from the
     // window's bubble phase).
@@ -1221,39 +1240,47 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     }
     expect(renameShown(), 'the rename overlay survives').toBe(true);
     expect(input.value, 'the draft survives').toBe('Alice');
-    expect(stackNames(), 'nothing else opened').toEqual(['world', 'renameView']);
-    expect(menuShown() || helpShown() || boxShown() || questLogShown()).toBe(false);
+    // ctl-11a: N opened the Name screen over the main menu, so the stack carries `menuView` beneath
+    // it; "nothing else opened" is that same stack, unchanged (no pop, no replace, no extra frame).
+    expect(stackNames(), 'nothing else opened').toEqual(['world', 'menuView', 'renameView']);
+    expect(helpShown() || boxShown() || questLogShown()).toBe(false);
   });
 
   // ------------------------------------------------------------------------------------------
   // CTL6B.6: Q and E stay the ladder's
   // ------------------------------------------------------------------------------------------
 
-  it('CTL6B-6-MAIN-Q-JOURNAL: Q at the world still opens the quest log, while PageDown and PageUp open nothing and are left to the browser', async () => {
-    // WRONG IMPL KILLED: a binding table that moves Q onto a button no frame answers (the ladder's
-    // Journal hotkey would die), a PageDown / PageUp that is read as Q, and a LB/RB that is consumed
-    // at the world (the browser's page scroll would be eaten for nothing).
+  it('CTL6B-6-MAIN-Q-JOURNAL: Q at the world opens nothing (it is LB now) and J opens the quest log, while PageDown and PageUp open nothing and are left to the browser', async () => {
+    // ctl-11a: Q is no longer the Journal hotkey (Q and E are LB and RB); the Journal accelerator is
+    // J, which opens it over the main menu, and J pressed again acts as Start. Was: Q opened the
+    // quest log at the world and a second Q closed it.
+    // WRONG IMPL KILLED: a binding table that leaves Q on the old Journal hotkey, a Q that opens the
+    // menu or any screen at the world, a PageDown / PageUp that is read as J, a J that does not
+    // open the Journal, and a LB/RB that is consumed at the world (the browser's page scroll would be
+    // eaten for nothing).
     await bootReady();
     server(1000);
-    for (const [i, code] of ['PageDown', 'PageUp'].entries()) {
+    for (const [i, code] of ['PageDown', 'PageUp', 'KeyQ'].entries()) {
       const e = tap(code, 1010 + i * 100);
       expect(e.defaultPrevented, `${code} is left to the browser`).toBe(false);
-      expect(questLogShown(), `${code} is not a Q`).toBe(false);
+      expect(questLogShown(), `${code} is not a J`).toBe(false);
       expect(menuShown() || helpShown() || boxShown(), `${code} opens nothing`).toBe(false);
       expect(stackNames()).toEqual(['world']);
     }
 
-    const q = tap('KeyQ', 1300);
-    expect(q.defaultPrevented, 'Q is the ladder`s and is prevented').toBe(true);
-    expect(questLogShown(), 'Q opens the quest log').toBe(true);
-    expect(stackNames()).toEqual(['world', 'questLogView']);
+    const j = tap('KeyJ', 1300);
+    expect(j.defaultPrevented, 'J is the Journal accelerator and is prevented').toBe(true);
+    expect(questLogShown(), 'J opens the quest log').toBe(true);
+    expect(stackNames(), 'over the main menu').toEqual(['world', 'menuView', 'questLogView']);
 
     // With the quest log up, PageDown still opens and closes nothing.
     tap('PageDown', 1400);
     expect(questLogShown(), 'PageDown does not close it').toBe(true);
-    expect(stackNames()).toEqual(['world', 'questLogView']);
-    tap('KeyQ', 1500);
-    expect(questLogShown(), 'Q closes it (the toggle)').toBe(false);
+    expect(stackNames()).toEqual(['world', 'menuView', 'questLogView']);
+    tap('KeyJ', 1500);
+    expect(questLogShown(), 'J over its own screen acts as Start and closes it').toBe(false);
+    expect(menuShown(), 'with the menu').toBe(false);
+    expect(stackNames()).toEqual(['world']);
   });
 
   // ------------------------------------------------------------------------------------------
@@ -1265,6 +1292,9 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     document.activeElement === document.body || document.activeElement === null;
 
   it('a composing Escape (isComposing, keyCode 229, or both) in #rename-input and in a trade-propose currency input is the IME`s: overlay, draft and focus survive, nothing is prevented, and a plain Escape in the same field then stops typing', async () => {
+    // ctl-11a: the Name screen (opened by N) now sits over the main menu, so "still the one frame"
+    // and "no menu" are read per case (`stack`, `menu`): the menu beneath it must neither close nor
+    // re-open; the wizard still has none.
     // WRONG IMPL KILLED: a typing rule or composing check that reads only isComposing, or only the
     // legacy keyCode 229 (browsers differ on which they set), a composing Escape that still reaches
     // the field's own Escape listener (it hides the overlay and wipes the draft), one that is
@@ -1284,7 +1314,10 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
         field: 'rename-input',
         draft: 'Alice',
         shown: renameShown,
-        frame: 'renameView',
+        // ctl-11a: N opens the Name screen over the main menu, so its stack carries `menuView`
+        // beneath it and that menu is shown; the face-to-face wizard has no menu under it.
+        stack: ['world', 'menuView', 'renameView'],
+        menu: true,
       },
       {
         name: 'trade-propose',
@@ -1293,7 +1326,8 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
         field: 'tradepropose-offer-currency',
         draft: '25',
         shown: proposeShown,
-        frame: 'tradeProposeView',
+        stack: ['world', 'tradeProposeView'],
+        menu: false,
       },
     ] as const;
     let t = 1010;
@@ -1318,11 +1352,8 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
         expect(c.shown(), `${c.name}/${v.label}: the overlay stays`).toBe(true);
         expect(input.value, `${c.name}/${v.label}: the draft survives`).toBe(c.draft);
         expect(document.activeElement, `${c.name}/${v.label}: focus stays`).toBe(input);
-        expect(stackNames(), `${c.name}/${v.label}: still the one frame`).toEqual([
-          'world',
-          c.frame,
-        ]);
-        expect(menuShown(), `${c.name}/${v.label}: no menu`).toBe(false);
+        expect(stackNames(), `${c.name}/${v.label}: still the same frames`).toEqual(c.stack);
+        expect(menuShown(), `${c.name}/${v.label}: no menu opened or closed`).toBe(c.menu);
       }
 
       // Control: a plain Escape in the very same field stops typing (so the tests above were live).
@@ -1566,8 +1597,10 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     expect(focusOnPage(), 'no enabled control: focus ends on the page').toBe(true);
     expect(renameShown(), 'the overlay stays open').toBe(true);
     expect(input.value, 'the (empty) draft is untouched').toBe('');
-    expect(stackNames()).toEqual(['world', 'renameView']);
-    expect(menuShown(), 'stopping typing is not Start').toBe(false);
+    // ctl-11a: N opened the Name screen over the main menu, so the stack carries `menuView` beneath
+    // it; stopping typing is not Start, which would have popped both to the world.
+    expect(stackNames()).toEqual(['world', 'menuView', 'renameView']);
+    expect(menuShown(), 'stopping typing is not Start: the menu beneath stays').toBe(true);
 
     input.focus();
     typeInto(input, 'Bob');
@@ -2033,16 +2066,32 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     expect(battleShown(), 'precondition: the first outcome was continued').toBe(false);
     expect(stack(), 'precondition: the bare world').toEqual([{ kind: 'world' }]);
 
+    // ctl-11a: B opens the box over the main menu (Monsters), so the box arm's frames are
+    // [menuView, boxView]; the menu arm (M) is still the one frame. The outcome drops them all.
     const arms = [
-      { name: 'box', key: 'KeyB', shown: boxShown, id: 'boxView', battleId: 102n, at: 1400 },
-      { name: 'menu', key: 'KeyM', shown: menuShown, id: 'menuView', battleId: 103n, at: 3000 },
+      {
+        name: 'box',
+        key: 'KeyB',
+        shown: boxShown,
+        frames: ['menuView', 'boxView'],
+        battleId: 102n,
+        at: 1400,
+      },
+      {
+        name: 'menu',
+        key: 'KeyM',
+        shown: menuShown,
+        frames: ['menuView'],
+        battleId: 103n,
+        at: 3000,
+      },
     ] as const;
     for (const arm of arms) {
       tap(arm.key, arm.at);
       expect(arm.shown(), `${arm.name}: precondition: it opened at the world`).toBe(true);
-      expect(stackNames(), `${arm.name}: precondition: one frame over the world`).toEqual([
+      expect(stackNames(), `${arm.name}: precondition: its frames over the world`).toEqual([
         'world',
-        arm.id,
+        ...arm.frames,
       ]);
       // It stays up for a second, through batches and a frame.
       server(arm.at + 300);
@@ -2485,9 +2534,10 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
 //
 // The adapter table main.ts hands its screen host is the module mock's mutable copy (`H.adapters`),
 // so a case swaps ONE frame's adapter for a recording stand-in and every other frame stays legacy.
-// The subject is the quest log (Q opens and closes it at the world). The stand-in counts its own
+// The subject is the quest log (J opens it at the world). The stand-in counts its own
 // presses in its state and records every init, step and paint, so "the state threads" and "the
-// shell paints the real view" are read off the stand-in, never off main.ts's internals. The real
+// shell paints the real view" are read off the stand-in, never off main.ts's internals (ctl-11a: J
+// opens the quest log over the main menu and, over its own screen, closes it as Start). The real
 // view class is imported AFTER the boot, so it is the very class main.ts constructed.
 
 /** Swap one frame's adapter for this boot; afterEach (the `restorers` drain) puts it back. */
@@ -2553,16 +2603,21 @@ describe('main.ts screen-host state and paint (runtime, ctl-7c)', { sequential: 
         const n = (state as Partial<Counter> | undefined)?.n;
         const next: Counter = { n: typeof n === 'number' ? n + 1 : -100 };
         steps.push({ vm, state, next, btn });
-        return { state: next, result: 'consumed' };
+        // ctl-11a: J over its own screen is routed as Start to the top frame's adapter (it no longer
+        // toggles the overlay behind the adapter's back), so the stand-in answers Start with the
+        // stack move the real adapters give it (pop to the base); every other button is consumed.
+        return { state: next, result: btn.button === 'Start' ? { kind: 'popToBase' } : 'consumed' };
       },
       paint: (view: unknown, vm: unknown, state: unknown) => {
         paints.push({ view, vm, state });
       },
     });
 
-    tap('KeyQ', 1010);
-    expect(questLogShown(), 'precondition: Q opened the quest log').toBe(true);
-    expect(stackNames()).toEqual(['world', 'questLogView']);
+    // ctl-11a: the quest log is opened by J (Q is LB now) and sits over the main menu, and J over
+    // its own screen acts as Start (closes both) instead of toggling it.
+    tap('KeyJ', 1010);
+    expect(questLogShown(), 'precondition: J opened the quest log').toBe(true);
+    expect(stackNames()).toEqual(['world', 'menuView', 'questLogView']);
     expect(inits, 'opening runs no adapter code').toEqual([]);
     expect(paints, 'and paints nothing').toEqual([]);
 
@@ -2616,22 +2671,35 @@ describe('main.ts screen-host state and paint (runtime, ctl-7c)', { sequential: 
       expect(p.state, `paint ${i}: the state press ${i} produced`).toBe(steps[i]?.next);
     }
 
-    // Close it and reopen it: the reopened frame starts again from a fresh init.
-    tap('KeyQ', 1800);
-    expect(questLogShown(), 'precondition: Q closed the quest log').toBe(false);
+    // Close it and reopen it: the reopened frame starts again from a fresh init. J over its own
+    // screen is Start: the press reaches the stand-in (a fourth step, painted like any other) and
+    // its popToBase closes the quest log and the menu beneath it.
+    tap('KeyJ', 1800);
+    expect(
+      steps.map((s) => s.btn.button),
+      'J reached the stand-in as Start',
+    ).toEqual(['A', 'Down', 'LB', 'Start']);
+    expect(steps[3]?.state, 'the Start resumes press 3`s state').toBe(steps[2]?.next);
+    expect(paints, 'the Start paints once like any press').toHaveLength(4);
+    expect(questLogShown(), 'precondition: J (its own Start) closed the quest log').toBe(false);
     expect(stackNames()).toEqual(['world']);
-    tap('KeyQ', 1900);
-    expect(questLogShown(), 'precondition: Q reopened it').toBe(true);
+    tap('KeyJ', 1900);
+    expect(questLogShown(), 'precondition: J reopened it').toBe(true);
+    expect(stackNames(), 'precondition: over the main menu again').toEqual([
+      'world',
+      'menuView',
+      'questLogView',
+    ]);
     expect(inits, 'reopening runs no adapter code either').toHaveLength(1);
-    expect(paints, 'and paints nothing').toHaveLength(3);
+    expect(paints, 'and paints nothing').toHaveLength(4);
     tap('Enter', 2000);
-    expect(steps, 'the reopened frame was pressed').toHaveLength(4);
+    expect(steps, 'the reopened frame was pressed').toHaveLength(5);
     expect(inits, 'it was initialised afresh').toHaveLength(2);
-    expect(steps[3]?.state, 'from the NEW init state').toBe(inits[1]?.state);
-    expect(steps[3]?.next.n, 'the count starts over').toBe(1);
-    expect(paints, 'one more paint').toHaveLength(4);
-    expect(paints[3]?.view, 'into the same real view').toBe(view);
-    expect(paints[3]?.state).toBe(steps[3]?.next);
+    expect(steps[4]?.state, 'from the NEW init state').toBe(inits[1]?.state);
+    expect(steps[4]?.next.n, 'the count starts over').toBe(1);
+    expect(paints, 'one more paint').toHaveLength(5);
+    expect(paints[4]?.view, 'into the same real view').toBe(view);
+    expect(paints[4]?.state).toBe(steps[4]?.next);
   });
 });
 
@@ -2685,8 +2753,14 @@ describe('main.ts repeats and paint failures (runtime, ctl-7c)', { sequential: t
         paints.push({ view, state });
       },
     });
-    tap('KeyQ', 1010);
-    expect(questLogShown(), 'precondition: Q opened the quest log').toBe(true);
+    // ctl-11a: the quest log is opened by J (Q is LB now), over the main menu.
+    tap('KeyJ', 1010);
+    expect(questLogShown(), 'precondition: J opened the quest log').toBe(true);
+    expect(stackNames(), 'precondition: over the main menu').toEqual([
+      'world',
+      'menuView',
+      'questLogView',
+    ]);
 
     fire('keydown', 'ArrowDown', 1100);
     frame(1450);
@@ -2747,8 +2821,10 @@ describe('main.ts repeats and paint failures (runtime, ctl-7c)', { sequential: t
     const screenPaintRows = (): Array<{ source: string | undefined; text: string }> =>
       errorOverlayRows().filter((r) => r.text.includes('screen paint:'));
 
-    tap('KeyQ', 1010);
-    expect(questLogShown(), 'precondition: Q opened the quest log').toBe(true);
+    // ctl-11a: the quest log is opened by J (Q is LB now) over the main menu, so B pops it back to
+    // the menu, not to the world.
+    tap('KeyJ', 1010);
+    expect(questLogShown(), 'precondition: J opened the quest log').toBe(true);
     const overlay = byId('mr-error-overlay');
     expect(overlay.style.display, 'precondition: the error overlay starts hidden').toBe('none');
     expect(errorOverlayRows(), 'precondition: no error row yet').toEqual([]);
@@ -2773,7 +2849,10 @@ describe('main.ts repeats and paint failures (runtime, ctl-7c)', { sequential: t
     ).toEqual(['Down', 'LB', 'LB', 'B']);
     expect(back.defaultPrevented, 'the B press was consumed').toBe(true);
     expect(questLogShown(), 'B still closes a frame whose paint throws').toBe(false);
-    expect(stackNames()).toEqual(['world']);
+    expect(stackNames(), 'one frame: back into the menu it was opened over').toEqual([
+      'world',
+      'menuView',
+    ]);
     expect(
       paintReports().map((c) => (c[1] as Error | undefined)?.message),
       'each throwing paint is logged with the error it threw',

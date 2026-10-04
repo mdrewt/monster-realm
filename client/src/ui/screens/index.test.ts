@@ -45,6 +45,10 @@
  * D-pad (`takesNav`) and is cleared by `opened`, `forget` and `closeSheet`. Additive: no existing
  * case in this file changed (every existing call passes no port); the new ctl-10a host-sheet case
  * is at the end.
+ * ctl-11a (CTL11A.3): Q and E are LB and RB through DEFAULT_BINDINGS, and `routedBindings` (the copy
+ * that dropped them) is deleted. Named intentional changes in this file: CTL6B-6-RB-REACHES-ADAPTER
+ * reads KeyE as an RB edge and KeyQ as an LB edge that reach the adapter (was: no edge, no adapter
+ * call), and both sources (that case and CTL8B-4-HOST-FLOW) are built on DEFAULT_BINDINGS.
  *
  * Adapters are injected as recording stubs, so every routing claim is read off which stub was
  * called, with what, and what came back. The base cases inject adapters that THROW, so "the base
@@ -55,7 +59,7 @@ import { party_slot_none } from '../../../../client-wasm/pkg/client_wasm.js';
 import { DEFAULT_BINDINGS } from '../../input/bindings';
 import { VBUTTONS, type VButton } from '../../input/buttons';
 import { KeyboardSource } from '../../input/keyboardSource';
-import { InputRouter, type RouteContext, routedBindings } from '../../input/router';
+import { InputRouter, type RouteContext } from '../../input/router';
 import type { StoreBattleChallenge, StoreItemRow } from '../../net/store';
 import {
   type BaseFrame,
@@ -527,12 +531,19 @@ describe('typing mode (ctl-6b, CTL6B.5)', () => {
   });
 });
 
-describe('LB/RB only from PageUp/PageDown (ctl-6b, CTL6B.6)', () => {
-  it('CTL6B-6-RB-REACHES-ADAPTER: PageDown on a tabbed screen reaches its adapter as RB through the routed bindings, PageUp as LB, and Q / E reach it as nothing', () => {
-    // WRONG IMPL KILLED: a keyboard source built on the full binding table (Q / E would reach the
-    // adapter as LB / RB while the ladder still owns them: one key, two owners), a router that
-    // never consults the top frame's adapter for RB, an adapter that receives the wrong button, a
-    // Command that is not turned into a router effect, and an up edge that calls the adapter again.
+describe('LB/RB from Q, E, PageUp and PageDown (ctl-6b, CTL6B.6; ctl-11a, CTL11A.3)', () => {
+  it('CTL6B-6-RB-REACHES-ADAPTER: PageDown and E on a tabbed screen reach its adapter as RB through the default bindings, PageUp and Q as LB, and their releases ask nobody', () => {
+    // ctl-11a (named intentional change), tag kept: RETIRED: a source built on `routedBindings`
+    // (the copy that dropped Q and E), with Q and E asserted to "produce no edge" and to reach no
+    // adapter; REPLACED by a source built on DEFAULT_BINDINGS, where KeyE is an RB edge and KeyQ an
+    // LB edge that reach the adapter exactly as PageDown and PageUp do (the same screen, the same
+    // commands, the same release behaviour). PageDown, PageUp, the command pass-through and the
+    // releases are kept.
+    // WRONG IMPL KILLED: a keyboard source whose table leaves Q / E off the bumpers (a tabbed screen
+    // could not be paged from them: the adapter is never asked for them), a table that gives them the
+    // wrong button (E as LB), a router that never consults the top frame's adapter for RB, an adapter
+    // that receives the wrong button, a Command that is not turned into a router effect, and an up
+    // edge that calls the adapter again.
     const rec = newRecorder();
     const adapters = stubAdapters(rec, (_id, btn) =>
       btn.button === 'RB' ? TOGGLE_HELP : btn.button === 'LB' ? POP : 'unhandled',
@@ -543,39 +554,41 @@ describe('LB/RB only from PageUp/PageDown (ctl-6b, CTL6B.6)', () => {
       worldActive: false,
       screen: (btn) => host.button(stack, btn, CTX),
     };
-    const source = new KeyboardSource(routedBindings(DEFAULT_BINDINGS));
+    const source = new KeyboardSource(DEFAULT_BINDINGS);
     const router = new InputRouter();
 
-    const pageDown = source.keydown({ code: 'PageDown' });
-    expect(pageDown, 'PageDown is RB').toEqual([{ button: 'RB', down: true }]);
-    expect(router.route(pageDown[0] as { button: VButton; down: boolean }, ctx)).toEqual({
-      consumed: true,
-      effects: [{ kind: 'command', command: { kind: 'toggleHelp' } }],
-    });
-    expect(rec.calls.length, 'the adapter was asked once').toBe(1);
-    expect((rec.calls[0] as Call).id).toBe('boxView');
-    expect((rec.calls[0] as Call).btn).toEqual({ button: 'RB', repeat: false });
-
-    const pageUp = source.keydown({ code: 'PageUp' });
-    expect(pageUp, 'PageUp is LB').toEqual([{ button: 'LB', down: true }]);
-    expect(router.route(pageUp[0] as { button: VButton; down: boolean }, ctx)).toEqual({
-      consumed: true,
-      effects: [{ kind: 'command', command: { kind: 'pop' } }],
-    });
-    expect((rec.calls[1] as Call).btn).toEqual({ button: 'LB', repeat: false });
+    const cases: ReadonlyArray<readonly [string, VButton, ScreenResult]> = [
+      ['PageDown', 'RB', { kind: 'toggleHelp' }],
+      ['PageUp', 'LB', { kind: 'pop' }],
+      ['KeyE', 'RB', { kind: 'toggleHelp' }],
+      ['KeyQ', 'LB', { kind: 'pop' }],
+    ];
+    let asked = 0;
+    for (const [code, button, command] of cases) {
+      const down = source.keydown({ code });
+      expect(down, `${code} is ${button}`).toEqual([{ button, down: true }]);
+      expect(router.route(down[0] as { button: VButton; down: boolean }, ctx), code).toEqual({
+        consumed: true,
+        effects: [{ kind: 'command', command }],
+      });
+      asked += 1;
+      expect(rec.calls.length, `${code}: the adapter was asked once more`).toBe(asked);
+      expect((rec.calls[asked - 1] as Call).id, `${code}: the box frame's adapter`).toBe('boxView');
+      expect((rec.calls[asked - 1] as Call).btn, `${code}: a fresh ${button}`).toEqual({
+        button,
+        repeat: false,
+      });
+    }
 
     // The releases reach no adapter and consume nothing.
-    for (const up of [...source.keyup({ code: 'PageDown' }), ...source.keyup({ code: 'PageUp' })]) {
-      expect(router.route(up, ctx), `${up.button} up`).toEqual({ consumed: false, effects: [] });
+    for (const code of ['PageDown', 'PageUp', 'KeyE', 'KeyQ']) {
+      const ups = source.keyup({ code });
+      expect(ups, `${code}: a release edge`).toHaveLength(1);
+      for (const up of ups) {
+        expect(router.route(up, ctx), `${code} up`).toEqual({ consumed: false, effects: [] });
+      }
     }
-    expect(rec.calls.length, 'the up edges asked nobody').toBe(2);
-
-    // Q and E are the ladder's until ctl-11a: no edge, so the adapter is never asked.
-    for (const code of ['KeyQ', 'KeyE']) {
-      expect(source.keydown({ code }), `${code} produces no edge`).toEqual([]);
-      expect(source.keyup({ code }), `${code} release produces no edge`).toEqual([]);
-    }
-    expect(rec.calls.length, 'Q and E reached no adapter').toBe(2);
+    expect(rec.calls.length, 'the up edges asked nobody').toBe(4);
   });
 });
 
@@ -2422,8 +2435,9 @@ describe('the Monsters frame over the shipped table (ctl-8b, CTL8B.4)', () => {
     const last = (): Record<string, unknown> =>
       view.painted[view.painted.length - 1] as Record<string, unknown>;
 
-    // The routed keyboard: PageDown is RB, PageUp is LB (until ctl-11a); the D-pad is nav()'s.
-    const source = new KeyboardSource(routedBindings(DEFAULT_BINDINGS));
+    // The keyboard on the default bindings: PageDown is RB, PageUp is LB (as are E and Q since
+    // ctl-11a, which retired `routedBindings`); the D-pad is nav()'s.
+    const source = new KeyboardSource(DEFAULT_BINDINGS);
     const key = (code: string): NavInput => {
       const edges = source.keydown({ code });
       source.keyup({ code });

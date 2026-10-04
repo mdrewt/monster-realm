@@ -2,7 +2,7 @@
 // `battle` base. Pure — no DOM, SDK, module state or clock. It sits BEHIND the legacy
 // show/hide paths: main.ts mirrors the visible overlays into it (`mirrorEdges`), reconciles
 // server truth into it on every batch (`reconcile`, whose `close` commands run the views' own
-// hide paths), and gates movement and the KeyT interact guard on it (`movementEnabled`). Over a
+// hide paths), and gates movement and accelerators on it (`movementEnabled`, `acceleratorsDenied`). Over a
 // battle it also holds the battle rules (ctl-6c): which frames may stay open over it, what Start and
 // A do there (`battleButton`), and which screen commands it refuses (`battleRefused`).
 import type { NavInput } from './nav';
@@ -236,6 +236,23 @@ export function blocksPlayerOpen(stack: Stack): boolean {
 /** The one movement gate: only a bare world stack with the session gate clear walks. */
 export function movementEnabled(stack: Stack, sessionGate: boolean): boolean {
   return !sessionGate && stack.length === 1 && stack[0].kind === 'world';
+}
+
+/** Whether accelerators are refused (CTL11A.2): the top frame is a text entry, a prompt, or a
+ *  server-owned screen (a dialogue, a battle). A bare base takes them; the session gate is the
+ *  shell's to check. */
+export function acceleratorsDenied(stack: Stack): boolean {
+  const top = stack[stack.length - 1];
+  switch (top.kind) {
+    case 'world':
+    case 'battle':
+      return false;
+    case 'textEntry':
+    case 'prompt':
+      return true;
+    case 'screen':
+      return SCREEN_POLICY[top.id].owner === 'server';
+  }
 }
 
 /** The stack with its top upper frame dropped, by position (B: back one frame). A bare base is

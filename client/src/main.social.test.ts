@@ -287,7 +287,9 @@ const menuCursorNow = (): string | null =>
 
 const WORLD_FRAME = { kind: 'world' } as const;
 const screenFrame = (id: string): { kind: 'screen'; id: string } => ({ kind: 'screen', id });
-const SOCIAL_STACK = [WORLD_FRAME, screenFrame('social')];
+// ctl-11a: U, P and L open Social through the main menu (an accelerator pops to the base and picks
+// its menu path), so the one Social frame sits above `menuView`. Was: [world, social].
+const SOCIAL_STACK = [WORLD_FRAME, screenFrame('menuView'), screenFrame('social')];
 
 interface Pressed {
   readonly button: string;
@@ -321,17 +323,20 @@ function openSocialLeaf(leaf: 'trades' | 'challenges' | 'rankings', start: numbe
 }
 
 /** Put a stand-in on the `social` frame that records the composite view each paint is lent (the
- *  open seats and paints it, so it is there right after the open), and closes on Start as the
- *  legacy adapter does. */
+ *  open seats and paints it, so it is there right after the open), and closes on Start and on B as
+ *  the legacy adapter does (ctl-11a: B, one frame back into the menu, is what a case below needs;
+ *  it was not answered before, so nothing else relies on B being consumed). */
 function lendingSocial(): SocialFrameView[] {
   const lent: SocialFrameView[] = [];
   swapAdapter('social', {
     viewModel: () => undefined,
     init: () => ({}),
-    onButton: (_vm: unknown, state: unknown, btn: Pressed) => ({
-      state,
-      result: btn.button === 'Start' && !btn.repeat ? { kind: 'popToBase' } : 'consumed',
-    }),
+    onButton: (_vm: unknown, state: unknown, btn: Pressed) => {
+      if (btn.repeat) return { state, result: 'consumed' };
+      if (btn.button === 'Start') return { state, result: { kind: 'popToBase' } };
+      if (btn.button === 'B') return { state, result: { kind: 'pop' } };
+      return { state, result: 'consumed' };
+    },
     paint: (view: unknown) => {
       lent.push(view as SocialFrameView);
     },
@@ -530,9 +535,12 @@ describe('main.ts the Social frame over the real panel views and a11y layer (ctl
       'a: the chrome is in the pvp root',
     ).toBe(viaMenu.chrome);
 
-    // Social closes (P, the shown panel's key): the menu resumes and its list takes focus back.
-    press('KeyP', end + 100);
-    expect(stackNow(), 'a: precondition: P closed Social, the menu stays').toEqual([
+    // Social closes: the menu resumes and its list takes focus back. ctl-11a: this was P, the shown
+    // panel's key, which left the menu open; P over Social now acts as Start and closes the menu
+    // with it, so the close that keeps the menu is B (one frame back), which the stand-in answers
+    // with a pop as the legacy adapter does.
+    press('Backspace', end + 100);
+    expect(stackNow(), 'a: precondition: B closed Social, the menu stays').toEqual([
       WORLD_FRAME,
       screenFrame('menuView'),
     ]);

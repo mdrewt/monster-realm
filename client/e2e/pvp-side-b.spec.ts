@@ -6,7 +6,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll, openFaceToFace } from './controls';
+import { closeAll, openFaceToFace, pressAccel } from './controls';
 
 // PvP side-B battle overlay, production path
 //
@@ -193,16 +193,17 @@ async function readHookCallCount(page: Page): Promise<number> {
 }
 
 /**
- * Renames `page`'s own player through the REAL production UI (closeAll -> KeyN ->
+ * Renames `page`'s own player through the REAL production UI (closeAll -> N ->
  * rename-input -> rename-submit), copied from rename.spec.ts:228-245. This is
  * the half-fix discriminator setup — see the file header. Leaves NO overlay open on exit
  * (the rename overlay does NOT auto-close on success, main.ts:2182-2186, so this runs
  * closeAll again after the feedback confirms) — required because the incoming-challenge
- * auto-show and A's own KeyP open both need `!anyOverlayVisible`.
+ * auto-show and A's own face-to-face A press both need a bare world. ctl-11a: N opens the
+ * Name screen through the main menu (Profile > Name), so that closeAll takes the menu too.
  */
 async function renamePlayer(page: Page, name: string): Promise<void> {
   await closeAll(page); // dismiss any stale overlay first
-  await page.keyboard.press('KeyN');
+  await pressAccel(page, 'N');
   await page.waitForSelector('[data-testid="rename-input"]', {
     state: 'visible',
     timeout: 10_000,

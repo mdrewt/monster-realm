@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import { chromium, expect, type Page, test } from '@playwright/test';
-import { closeAll } from './controls';
+import { closeAll, pressAccel } from './controls';
 
 // Client profile-rename UI e2e
 //
@@ -216,10 +216,11 @@ test.describe
           'unique name must be <= 24 chars (server MAX_NAME_LEN)',
         ).toBeLessThanOrEqual(24);
 
-        // Step 4: open the rename overlay via KeyN.
-        // The overlay must be hidden initially; KeyN opens it when no other overlay is visible.
+        // Step 4: open the rename overlay via N.
+        // ctl-11a: N opens it through the main menu (Profile > Name), from the bare world or over
+        // any other open screen (which it replaces); closeAll still leaves a known base first.
         await closeAll(page); // dismiss any stale overlay first
-        await page.keyboard.press('KeyN');
+        await pressAccel(page, 'N');
 
         // Step 5: wait for the rename input to be visible (overlay opened).
         // data-testid="rename-input" matches the index.html shell (ADR-0133 §index.html shell).
@@ -228,8 +229,8 @@ test.describe
           timeout: 10_000,
         });
 
-        // Step 5b (ctl-8h, CTL8H.5): KeyN opens the Name screen in typing mode, so the deferred
-        // initial focus puts the caret in the field.
+        // Step 5b (ctl-8h, CTL8H.5): N opens the Name screen in typing mode, so the deferred
+        // initial focus puts the caret in the field (ctl-11a: with the menu opened beneath it).
         await expect(page.locator('[data-testid="rename-input"]')).toBeFocused();
 
         // Step 6: fill the rename input with the unique name.

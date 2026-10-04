@@ -1,7 +1,7 @@
 // bindings.ts — the ONE binding table from physical keys to virtual buttons and accelerators
 // (design §3). Keys match on `KeyboardEvent.code`, which is positional: case and Shift never
 // change it, so the table needs no per-case or per-layout rows.
-import { type Accel, VBUTTONS, type VButton } from './buttons';
+import { ACCELS, type Accel, VBUTTONS, type VButton } from './buttons';
 
 /** A `KeyboardEvent.code` value (the physical key, not the character it types). */
 export type KeyCode = string;
@@ -63,4 +63,9 @@ export const RESERVED_CODES: readonly KeyCode[] = codes(
 /** The virtual button `code` is bound to, or undefined when it is unbound (or an accelerator). */
 export function buttonForCode(b: Bindings, code: KeyCode): VButton | undefined {
   return VBUTTONS.find((button) => b.buttons[button].includes(code));
+}
+
+/** The accelerator `code` is bound to, or undefined when it is unbound (or a button). */
+export function accelForCode(b: Bindings, code: KeyCode): Accel | undefined {
+  return ACCELS.find((accel) => b.accels[accel].includes(code));
 }

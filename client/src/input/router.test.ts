@@ -14,17 +14,23 @@
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { WasmDirection } from '../convert/convert';
+import type { BaseFrame, FrameId, Stack, UpperFrame } from '../ui/contextStack';
+import { MENU_ENTRIES, type MenuEntry } from '../ui/menuModel';
 import type { NavInput } from '../ui/nav';
+import { OVERLAY_IDS } from '../ui/overlayRegistry';
 import type { ScreenResult } from '../ui/screens/types';
-import { DEFAULT_BINDINGS } from './bindings';
-import { type ButtonEdge, VBUTTONS, type VButton } from './buttons';
+import { accelForCode, DEFAULT_BINDINGS } from './bindings';
+import { ACCELS, type ButtonEdge, VBUTTONS, type VButton } from './buttons';
 import { KeyboardSource } from './keyboardSource';
 import {
+  ACCEL_PATHS,
+  type AccelDecision,
+  accelDecision,
   InputRouter,
+  type MenuAccel,
   ownership,
   type RouteContext,
   type RouterEffect,
-  routedBindings,
   routerConsumes,
   typingKey,
 } from './router';
@@ -751,8 +757,8 @@ describe('InputRouter under a nav frame (ctl-5)', () => {
 });
 
 // ==========================================================================================
-// ctl-6b: the screen seam (CTL6B.1), Start / B / Select reach the top frame's adapter, LB/RB only
-// from PageUp/PageDown (CTL6B.6) and typing mode (CTL6B.5)
+// ctl-6b: the screen seam (CTL6B.1), Start / B / Select reach the top frame's adapter, LB/RB from
+// the bumper keys (CTL6B.6; Q and E join PageUp and PageDown in ctl-11a) and typing mode (CTL6B.5)
 // ==========================================================================================
 //
 // `ctx.screen(btn)` is the top frame's adapter, bound by the shell. After the D-pad, X and the
@@ -895,57 +901,33 @@ describe('InputRouter screen seam (ctl-6b)', () => {
   });
 });
 
-describe('routedBindings (ctl-6b, CTL6B.6)', () => {
-  it('CTL6B-6-ROUTED-BINDINGS: through the routed bindings only PageUp / PageDown are LB / RB, Q and E produce no edge, and every other binding is unchanged', () => {
-    // WRONG IMPL KILLED: a table that keeps Q / E on LB / RB (one key, two owners: the ladder's
-    // Journal / Evolution hotkeys and a tabbed screen), one that drops PageUp / PageDown too (a
-    // tabbed screen could never be reached), one that damages another button's keys, one that
-    // mutates the shared default table in place (the remap and help screens read it), and one that
-    // returns the default table itself.
-    const routed = routedBindings(DEFAULT_BINDINGS);
-    expect(routed, 'a copy, not the default table').not.toBe(DEFAULT_BINDINGS);
-    expect([...routed.buttons.LB]).toEqual(['PageUp']);
-    expect([...routed.buttons.RB]).toEqual(['PageDown']);
-    for (const button of VBUTTONS) {
-      if (button === 'LB' || button === 'RB') continue;
-      expect([...routed.buttons[button]], `${button} is unchanged`).toEqual([
-        ...DEFAULT_BINDINGS.buttons[button],
+// ctl-11a (named intentional deletion): the `routedBindings (ctl-6b, CTL6B.6)` describe is deleted
+// with `routedBindings` itself (Q and E are LB and RB through DEFAULT_BINDINGS now, so no copy
+// drops them; the frozen, unedited default table is bindings.test.ts's). What still held, the
+// source's press and release edges for the bumper keys, is kept below against DEFAULT_BINDINGS.
+describe('LB and RB through the default bindings (ctl-6b, CTL6B.6; ctl-11a, CTL11A.3)', () => {
+  it('CTL6B-6-DEFAULT-BUMPERS: a keyboard source on the default bindings maps Q and PageUp to LB and E and PageDown to RB, each press a down edge and each release an up edge of the same button, and Start and the D-pad still resolve beside them', () => {
+    // WRONG IMPL KILLED: a table that drops Q / E from the bumpers (the tabbed screens would never
+    // be reached from them) or PageUp / PageDown too, a release that is lost for a bumper key (the
+    // router's held count would leak: a stuck LB / RB), a release mapped to the other bumper, one
+    // key mapped to two buttons (an alias that also resolves as Start or a D-pad direction), and
+    // a bumper binding that damages another button's keys.
+    const source = new KeyboardSource(DEFAULT_BINDINGS);
+    const bumpers: ReadonlyArray<readonly [string, VButton]> = [
+      ['KeyQ', 'LB'],
+      ['PageUp', 'LB'],
+      ['KeyE', 'RB'],
+      ['PageDown', 'RB'],
+    ];
+    for (const [code, button] of bumpers) {
+      expect(source.keydown({ code }), `${code} down is ${button}`).toEqual([
+        { button, down: true },
       ]);
+      expect(source.keyup({ code }), `${code} up is ${button}`).toEqual([{ button, down: false }]);
     }
-    expect(routed.accels, 'the accelerators are unchanged').toEqual(DEFAULT_BINDINGS.accels);
-
-    // The default table was not edited in place.
-    expect([...DEFAULT_BINDINGS.buttons.LB]).toEqual(['KeyQ', 'PageUp']);
-    expect([...DEFAULT_BINDINGS.buttons.RB]).toEqual(['KeyE', 'PageDown']);
-
-    // Through a real keyboard source: the edges a player would cause.
-    const source = new KeyboardSource(routed);
-    expect(source.keydown({ code: 'PageUp' })).toEqual([{ button: 'LB', down: true }]);
-    expect(source.keyup({ code: 'PageUp' })).toEqual([{ button: 'LB', down: false }]);
-    expect(source.keydown({ code: 'PageDown' })).toEqual([{ button: 'RB', down: true }]);
-    expect(source.keyup({ code: 'PageDown' })).toEqual([{ button: 'RB', down: false }]);
-    for (const code of ['KeyQ', 'KeyE']) {
-      expect(source.keydown({ code }), `${code} produces no edge`).toEqual([]);
-      expect(source.keyup({ code }), `${code} produces no release`).toEqual([]);
-    }
-    // Control: the unrouted default source still maps Q / E (the harness is not simply deaf).
-    const plain = new KeyboardSource(DEFAULT_BINDINGS);
-    expect(plain.keydown({ code: 'KeyQ' })).toEqual([{ button: 'LB', down: true }]);
-    expect(plain.keydown({ code: 'KeyE' })).toEqual([{ button: 'RB', down: true }]);
-    // And the other buttons still resolve through the routed source.
+    // And the other buttons still resolve through the same source.
     expect(source.keydown({ code: 'Escape' })).toEqual([{ button: 'Start', down: true }]);
     expect(source.keydown({ code: 'KeyW' })).toEqual([{ button: 'Up', down: true }]);
-
-    // A customised table: only the Page keys survive on LB / RB, and nothing else is touched.
-    const custom = {
-      buttons: { ...DEFAULT_BINDINGS.buttons, LB: ['KeyZ', 'PageUp'], RB: ['PageDown', 'KeyX'] },
-      accels: DEFAULT_BINDINGS.accels,
-    };
-    const fromCustom = routedBindings(custom);
-    expect([...fromCustom.buttons.LB]).toEqual(['PageUp']);
-    expect([...fromCustom.buttons.RB]).toEqual(['PageDown']);
-    expect([...fromCustom.buttons.Start]).toEqual([...DEFAULT_BINDINGS.buttons.Start]);
-    expect([...custom.buttons.LB], 'the input table is untouched').toEqual(['KeyZ', 'PageUp']);
   });
 });
 
@@ -1428,5 +1410,349 @@ describe('InputRouter under a nav-capable screen (ctl-7c)', () => {
     expect(flagged.seen, 'control: screen: true hands the press to the screen').toEqual([
       { button: 'Down', repeat: false },
     ]);
+  });
+});
+
+// ==========================================================================================
+// ctl-11a: accelerators move to the router (CTL11A.1, CTL11A.2, CTL11A.3)
+// ==========================================================================================
+//
+// `ACCEL_PATHS` is the canonical menu path of each of the nine menu accelerators (F8 and F9 stay
+// the shell's own): the main-menu entry keys, root first, the frame the leaf opens, and (Monsters
+// only) the tab. `accelDecision(accel, stack)` is the pure verdict on one accelerator press:
+// `denied` while the top frame is server-owned, a textEntry or a prompt (`acceleratorsDenied`),
+// `start` while the accelerator's own screen is the top frame, else `open` with that path.
+//
+// Every expected path, frame id and verdict below is a HARD-CODED literal, never read back from
+// the module under test.
+
+type PathRow = {
+  readonly menu: readonly string[];
+  readonly frame: FrameId;
+  readonly tab?: 'party' | 'storage';
+};
+const EXPECTED_PATHS: Readonly<Record<MenuAccel, PathRow>> = {
+  B: { menu: ['monsters'], frame: 'boxView', tab: 'storage' },
+  I: { menu: ['bag'], frame: 'raisingView' },
+  V: { menu: ['monsters'], frame: 'boxView', tab: 'party' },
+  J: { menu: ['journal'], frame: 'questLogView' },
+  U: { menu: ['social', 'trades'], frame: 'social' },
+  P: { menu: ['social', 'challenges'], frame: 'social' },
+  L: { menu: ['social', 'rankings'], frame: 'social' },
+  N: { menu: ['profile', 'name'], frame: 'renameView' },
+  C: { menu: ['profile', 'account'], frame: 'claimView' },
+};
+const MENU_ACCELS: readonly MenuAccel[] = ACCELS.filter(
+  (a): a is MenuAccel => a !== 'F8' && a !== 'F9',
+);
+
+const WORLD_BASE: BaseFrame = { kind: 'world' };
+const battleBase = (battleId: string): BaseFrame => ({ kind: 'battle', battleId });
+const screenFrame = (id: FrameId): UpperFrame => ({ kind: 'screen', id });
+/** A screen frame opened over battle `battleId` (CTL6C.1's stamp). */
+const stampedFrame = (id: FrameId, battleId: string): UpperFrame =>
+  ({ kind: 'screen', id, overBattle: battleId }) as UpperFrame;
+const promptFrame = (id: FrameId): UpperFrame => ({ kind: 'prompt', id });
+const textEntryFrame = (owner: FrameId): UpperFrame => ({ kind: 'textEntry', owner });
+/** A frozen stack, so an implementation that writes into its input throws. */
+const frozenStack = (base: BaseFrame, ...upper: UpperFrame[]): Stack => {
+  for (const f of [base, ...upper]) Object.freeze(f);
+  return Object.freeze([base, ...upper]) as unknown as Stack;
+};
+
+/** The sixteen player-owned frame ids (spelled out, never read from SCREEN_POLICY): every frame id
+ *  but the two server-owned ones. */
+const PLAYER_FRAMES: readonly FrameId[] = [
+  'boxView',
+  'raisingView',
+  'evolutionView',
+  'questLogView',
+  'healView',
+  'shopView',
+  'tradeView',
+  'pvpView',
+  'leaderboardView',
+  'renameView',
+  'tradeProposeView',
+  'helpView',
+  'menuView',
+  'claimView',
+  'privacyView',
+  'social',
+];
+
+const openOf = (accel: MenuAccel): AccelDecision => ({
+  kind: 'open',
+  path: EXPECTED_PATHS[accel],
+});
+
+/** The menu entry a path's keys name, root first; undefined when a key is not on its level. */
+function leafOf(menu: readonly string[]): MenuEntry | undefined {
+  let rows: readonly MenuEntry[] = MENU_ENTRIES;
+  let entry: MenuEntry | undefined;
+  for (const [i, key] of menu.entries()) {
+    entry = rows.find((r) => r.key === key);
+    if (entry === undefined) return undefined;
+    if (i < menu.length - 1) {
+      if (entry.kind !== 'group') return undefined;
+      rows = entry.children;
+    }
+  }
+  return entry;
+}
+
+describe('accelerator paths and decisions (ctl-11a)', () => {
+  it('CTL11A-1-PATHS: ACCEL_PATHS is exactly the nine canonical paths (B and V share the Monsters frame and differ in the tab), its keys are every accelerator but F8 and F9, and each path walks the real menu table to a leaf that opens that frame', () => {
+    // WRONG IMPL KILLED: a swapped tab (B on Party, V on Storage), a swapped pair of keys
+    // (J -> Bag), a path through a group that does not exist (the picks would be no-ops: the menu
+    // opens and nothing shows), a leaf key that is not a leaf of that group (`name` under Social),
+    // a frame that is not the one the leaf opens (the own-screen Start test would never fire), a
+    // missing row (N or C), a stray F8 or F9 row (the shell's own keys would open menus), and a
+    // `tab` on a screen that has none.
+    expect(ACCEL_PATHS).toEqual(EXPECTED_PATHS);
+    expect(Object.keys(ACCEL_PATHS).sort(), 'every accelerator but F8 and F9').toEqual(
+      ACCELS.filter((a) => a !== 'F8' && a !== 'F9').sort(),
+    );
+    expect(Object.keys(ACCEL_PATHS), 'ANTI-VACUITY: nine paths').toHaveLength(9);
+    expect(Object.keys(ACCEL_PATHS), 'F8 and F9 are the shell`s own').not.toContain('F8');
+    expect(Object.keys(ACCEL_PATHS)).not.toContain('F9');
+    for (const accel of MENU_ACCELS) {
+      expect(ACCEL_PATHS[accel].tab, `${accel}: only B and V carry a tab`).toBe(
+        EXPECTED_PATHS[accel].tab,
+      );
+    }
+
+    // Each path resolves through the menu model to an `open` leaf whose frame it names.
+    const PANEL_TARGETS = ['tradeView', 'pvpView', 'leaderboardView'];
+    for (const accel of MENU_ACCELS) {
+      const path = ACCEL_PATHS[accel];
+      const leaf = leafOf(path.menu);
+      expect(leaf?.kind, `${accel}: ${path.menu.join(' > ')} ends on an open leaf`).toBe('open');
+      if (leaf?.kind !== 'open') continue;
+      const frame = PANEL_TARGETS.includes(leaf.target) ? 'social' : leaf.target;
+      expect(path.frame, `${accel}: the leaf's overlay is the path's frame`).toBe(frame);
+    }
+  });
+
+  it('CTL11A-1-DECIDE: an accelerator opens its path at the world, over a battle base, over any other player screen and over the menu, and acts as Start (never a re-open) when its own screen is the top frame, including V with the Monsters frame up and P with Social up', () => {
+    // WRONG IMPL KILLED: an `open` that is always the answer (pressing J in the Journal would
+    // rebuild it instead of closing it: the operator's "accelerator acts as Start"), a `start`
+    // that fires when the own frame is merely somewhere in the stack (J over [Journal, Help] would
+    // pop to the world instead of replacing Help), a `start` keyed to the key instead of the frame
+    // (V with the box up would re-open Party instead of closing it), a start keyed to the whole
+    // path (B and V share a frame; U, P and L share one), an `open` that refuses over another
+    // player screen (the one-key replace), a decision that depends on the base (battle or world),
+    // a path object that is not the table's row, and one that mutates its input stack.
+    let rows = 0;
+    for (const accel of MENU_ACCELS) {
+      const own = EXPECTED_PATHS[accel].frame;
+      const open = openOf(accel);
+      const label = (s: string): string => `${accel}: ${s}`;
+
+      expect(accelDecision(accel, frozenStack(WORLD_BASE)), label('at the world')).toEqual(open);
+      expect(accelDecision(accel, frozenStack(battleBase('7'))), label('at a battle base')).toEqual(
+        open,
+      );
+      expect(
+        accelDecision(accel, frozenStack(WORLD_BASE, screenFrame('menuView'))),
+        label('over the menu'),
+      ).toEqual(open);
+      expect(
+        accelDecision(accel, frozenStack(battleBase('7'), stampedFrame('menuView', '7'))),
+        label('over the menu over a battle'),
+      ).toEqual(open);
+      // (The menu itself is driven above; it cannot sit beneath itself.)
+      for (const other of PLAYER_FRAMES.filter((f) => f !== own && f !== 'menuView')) {
+        expect(
+          accelDecision(accel, frozenStack(WORLD_BASE, screenFrame(other))),
+          label(`over ${other}`),
+        ).toEqual(open);
+        expect(
+          accelDecision(
+            accel,
+            frozenStack(WORLD_BASE, screenFrame('menuView'), screenFrame(other)),
+          ),
+          label(`over the menu then ${other}`),
+        ).toEqual(open);
+        expect(
+          accelDecision(
+            accel,
+            frozenStack(battleBase('7'), stampedFrame('menuView', '7'), stampedFrame(other, '7')),
+          ),
+          label(`over a battle, the menu and ${other}`),
+        ).toEqual(open);
+        rows += 3;
+      }
+      // The own screen buried under another frame is not the top: still an open.
+      expect(
+        accelDecision(accel, frozenStack(WORLD_BASE, screenFrame(own), screenFrame('helpView'))),
+        label('own frame under Help'),
+      ).toEqual(open);
+      expect(
+        accelDecision(
+          accel,
+          frozenStack(
+            WORLD_BASE,
+            screenFrame('menuView'),
+            screenFrame(own),
+            screenFrame('helpView'),
+          ),
+        ),
+        label('own frame under Help, over the menu'),
+      ).toEqual(open);
+
+      // Its own screen on top: Start, whatever lies beneath.
+      const start: AccelDecision = { kind: 'start' };
+      expect(accelDecision(accel, frozenStack(WORLD_BASE, screenFrame(own))), label('own')).toEqual(
+        start,
+      );
+      expect(
+        accelDecision(accel, frozenStack(WORLD_BASE, screenFrame('menuView'), screenFrame(own))),
+        label('own over the menu'),
+      ).toEqual(start);
+      expect(
+        accelDecision(
+          accel,
+          frozenStack(battleBase('7'), stampedFrame('menuView', '7'), stampedFrame(own, '7')),
+        ),
+        label('own over the menu over a battle'),
+      ).toEqual(start);
+      expect(
+        accelDecision(accel, frozenStack(WORLD_BASE, screenFrame('helpView'), screenFrame(own))),
+        label('own over Help'),
+      ).toEqual(start);
+      rows += 8;
+
+      // Every other accelerator that shares the frame is Start too (V with the box, P with Social).
+      for (const mate of MENU_ACCELS.filter(
+        (m) => m !== accel && EXPECTED_PATHS[m].frame === own,
+      )) {
+        expect(
+          accelDecision(mate, frozenStack(WORLD_BASE, screenFrame(own))),
+          `${mate} with ${accel}'s frame on top`,
+        ).toEqual({ kind: 'start' });
+        rows += 1;
+      }
+    }
+    expect(rows, 'ANTI-VACUITY: the whole matrix was driven').toBeGreaterThan(300);
+  });
+
+  it('CTL11A-2-DECIDE-DENIED: every accelerator is denied while the top frame is a dialogue screen, a battle outcome screen, a text entry or a prompt (at the world and over a battle, with a menu beneath, and even when the frame is the accelerator`s own), and only the TOP frame decides', () => {
+    // WRONG IMPL KILLED: a denial that checks the dialogue only (a text entry would take the J that
+    // was typed into the Name field), one that forgets the prompt (Y/N confirms would be replaced
+    // by a letter), a text entry owned by the accelerator's own frame reading as `start` (N typed
+    // in the rename field would close the screen the player is typing in), a prompt of the own
+    // frame reading as `start`, a denial that scans the whole stack (a suspended dialogue under a
+    // menu over a battle would lock every accelerator for good: the top there is the menu), one
+    // that looks at the base instead of the top, and `denied` returned for the plain world (the
+    // control rows).
+    const tops: ReadonlyArray<readonly [string, UpperFrame]> = [
+      ['a dialogue screen', screenFrame('dialogueView')],
+      ['a battle outcome screen', screenFrame('battleView')],
+      ['a rename text entry', textEntryFrame('renameView')],
+      ['a text entry owned by the Monsters frame', textEntryFrame('boxView')],
+      ['a pvp prompt', promptFrame('pvpView')],
+      ['a Social prompt', promptFrame('social')],
+    ];
+    const denied: AccelDecision = { kind: 'denied' };
+    let rows = 0;
+    for (const accel of MENU_ACCELS) {
+      const own = EXPECTED_PATHS[accel].frame;
+      const withOwn: ReadonlyArray<readonly [string, UpperFrame]> = [
+        ...tops,
+        [`a text entry owned by ${own}`, textEntryFrame(own)],
+        [`a prompt of ${own}`, promptFrame(own)],
+      ];
+      for (const [name, top] of withOwn) {
+        const stacks: ReadonlyArray<readonly [string, Stack]> = [
+          ['at the world', frozenStack(WORLD_BASE, top)],
+          ['over the menu', frozenStack(WORLD_BASE, screenFrame('menuView'), top)],
+          ['over its own screen', frozenStack(WORLD_BASE, screenFrame(own), top)],
+          ['over a battle base', frozenStack(battleBase('7'), top)],
+          [
+            'over a battle and a stamped menu',
+            frozenStack(battleBase('7'), stampedFrame('menuView', '7'), top),
+          ],
+        ];
+        for (const [where, stack] of stacks) {
+          expect(accelDecision(accel, stack), `${accel} / ${name} ${where}`).toEqual(denied);
+          rows += 1;
+        }
+      }
+
+      // Only the top frame decides: a player frame above a server frame, a text entry or a prompt
+      // lets the accelerator through.
+      for (const [name, below] of tops) {
+        expect(
+          accelDecision(accel, frozenStack(battleBase('7'), below, stampedFrame('menuView', '7'))),
+          `${accel}: the menu above ${name} is the top`,
+        ).toEqual(openOf(accel));
+        rows += 1;
+      }
+      // Control: the plain world and a bare battle are never denied.
+      expect(accelDecision(accel, frozenStack(WORLD_BASE))).toEqual(openOf(accel));
+      expect(accelDecision(accel, frozenStack(battleBase('7')))).toEqual(openOf(accel));
+    }
+    expect(rows, 'ANTI-VACUITY: the whole matrix was driven').toBeGreaterThan(300);
+    expect(
+      PLAYER_FRAMES.length + 2,
+      'ANTI-VACUITY: the player roster plus the two server frames is every frame id',
+    ).toBe(OVERLAY_IDS.length + 1);
+  });
+
+  it('CTL11A-3-ROUTER-WORLD: Q, E, PageUp and PageDown are LB and RB through the default bindings and no accelerator, and an LB or RB press at the world leaves an `unhandled` adapter unconsumed with no effect, passes an adapter`s command through, and does nothing on release or with no adapter', () => {
+    // WRONG IMPL KILLED: a router that consumes LB/RB at the world (the browser's PageUp/PageDown
+    // scroll would be eaten for nothing, and Q/E would swallow typing), one that turns a world LB
+    // or RB into a walk, a jump or a menu effect, an LB/RB that is dropped when an adapter DOES
+    // answer (a tabbed screen's switch would never arrive), a release that asks the adapter again
+    // (two tab switches per press), a press that asks it with a repeat flag, and a Q/E still bound
+    // as an accelerator (one key, two owners: the migration rule's collision).
+    const pairs: ReadonlyArray<readonly [string, VButton]> = [
+      ['KeyQ', 'LB'],
+      ['PageUp', 'LB'],
+      ['KeyE', 'RB'],
+      ['PageDown', 'RB'],
+    ];
+    const CMD: ScreenResult = { kind: 'popToBase' };
+    for (const [code, button] of pairs) {
+      expect(accelForCode(DEFAULT_BINDINGS, code), `${code} is no accelerator`).toBe(undefined);
+      const edges = new KeyboardSource(DEFAULT_BINDINGS).keydown({ code });
+      expect(edges, `${code} is ${button} through the default bindings`).toEqual([
+        { button, down: true },
+      ]);
+
+      // An adapter that does not take it: not consumed, no effect, asked once, fresh.
+      const seen: NavInput[] = [];
+      const ctx: RouteContext = {
+        worldActive: true,
+        screen: (btn) => {
+          seen.push(btn);
+          return 'unhandled';
+        },
+      };
+      const router = new InputRouter();
+      expect(router.route(edge(button, true), ctx), `${code}: world, unhandled`).toEqual({
+        consumed: false,
+        effects: [],
+      });
+      expect(seen, `${code}: asked once, fresh`).toEqual([{ button, repeat: false }]);
+      expect(router.route(edge(button, false), ctx), `${code}: the release`).toEqual({
+        consumed: false,
+        effects: [],
+      });
+      expect(seen.length, `${code}: the release asks nobody`).toBe(1);
+
+      // No adapter at all: nothing.
+      expect(new InputRouter().route(edge(button, true), WORLD), `${code}: no adapter`).toEqual({
+        consumed: false,
+        effects: [],
+      });
+
+      // An adapter that answers with a command: it comes through, consumed.
+      expect(
+        new InputRouter().route(edge(button, true), { worldActive: true, screen: () => CMD }),
+        `${code}: a command passes through`,
+      ).toEqual({ consumed: true, effects: [commandEffect(CMD)] });
+    }
   });
 });

@@ -6,27 +6,37 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll } from './controls';
+import { closeAll, pressAccel } from './controls';
 
 // PvP challenge overlay e2e — client-side UI wiring.
 //
-// SCOPE: validates that the PvP challenge overlay DOM is wired, KeyP opens/closes it,
-// the empty-list state renders correctly, Escape closes it, and mutual exclusivity with
-// other overlays is enforced.
+// SCOPE: validates that the PvP challenge overlay DOM is wired, P opens/closes it (ctl-11a:
+// Social on Challenges, through the main menu), the empty-list state renders correctly, Escape
+// closes it, and an accelerator pressed over another open screen REPLACES it (ctl-11a: the old
+// mutual exclusivity is retired; the same-frame accelerators P, U and L act as Start).
 //
 // WHAT THESE TESTS KILL:
 //   "DOM missing"       — regression in index.html that removes a child div;
 //                         pvpView.ts constructor throws, overlay never opens
-//   "KeyP dead"         — regression in main.ts KeyP handler or pvpView wiring
-//   "Escape dead"       — regression in main.ts Escape→pvpView.hide() path
-//   "mutual exclusivity"— regression in main.ts KeyP 9-view guard; PvP overlay
-//                         opens over another overlay (e.g. box, trade)
+//   "P dead"            — regression in the router's accelerator path or pvpView wiring
+//   "Escape dead"       — regression in the Escape (Start) → close path
+//   "replace"           — an accelerator that does nothing over another open screen (the
+//                         retired mutual exclusivity), or one that opens over it
 
 interface GameSnap {
   identity: string;
   ownAuthTile: { x: number; y: number } | null;
   ownMonsters: Array<{ monsterId: string; partySlot: number }>;
 }
+
+/** The context stack as base-first names: the base kind, then each upper frame's id. */
+const stackNames = (p: Page): Promise<string[]> =>
+  p.evaluate(() => {
+    const g = (
+      window as unknown as { __game: () => { stack: { kind: string; id?: string }[] } }
+    ).__game();
+    return g.stack.map((f) => f.id ?? f.kind);
+  });
 
 async function ready(p: Page): Promise<void> {
   await p.waitForFunction(
@@ -80,107 +90,105 @@ test.describe
     });
 
     // -------------------------------------------------------------------------
-    // KeyP opens the PvP overlay; pressing KeyP again closes it.
+    // P opens Social on Challenges (ctl-11a: through the main menu, the cursor on the leaf);
+    // pressing P again, with its own screen on top, acts as Start and closes it.
     // -------------------------------------------------------------------------
     test('KeyP toggles the PvP overlay', async () => {
       await expect(page.locator('#pvp-challenge-overlay')).toBeHidden();
 
-      await page.keyboard.press('p');
+      await pressAccel(page, 'P');
       await expect(page.locator('#pvp-challenge-overlay')).toBeVisible({ timeout: 5_000 });
+      await expect(page.locator('#social-tab-challenges')).toHaveAttribute('aria-selected', 'true');
+      await expect.poll(() => stackNames(page)).toEqual(['world', 'menuView', 'social']);
 
-      // Toggle off.
-      await page.keyboard.press('p');
+      // Toggle off (Start: the stack returns to the bare world).
+      await pressAccel(page, 'P');
       await expect(page.locator('#pvp-challenge-overlay')).toBeHidden({ timeout: 5_000 });
+      await expect.poll(() => stackNames(page)).toEqual(['world']);
     });
 
     // -------------------------------------------------------------------------
-    // Escape closes the PvP overlay (main.ts Escape → pvpView.hide()).
+    // Escape (Start) closes the PvP overlay and the menu beneath it.
     // -------------------------------------------------------------------------
     test('Escape closes the PvP overlay', async () => {
-      await page.keyboard.press('p');
+      await pressAccel(page, 'P');
       await expect(page.locator('#pvp-challenge-overlay')).toBeVisible({ timeout: 5_000 });
 
       await page.keyboard.press('Escape');
       await expect(page.locator('#pvp-challenge-overlay')).toBeHidden({ timeout: 5_000 });
+      await expect.poll(() => stackNames(page)).toEqual(['world']);
     });
 
     // -------------------------------------------------------------------------
-    // Mutual exclusivity: KeyP must NOT open the PvP overlay when the box is open.
+    // ctl-11a (named intentional change): was 'KeyP does not open PvP overlay when box overlay is
+    // visible' (mutual exclusivity: the second key did nothing). An accelerator pressed over a
+    // DIFFERENT open player screen REPLACES it: B opens Monsters, then P closes it and opens Social
+    // on Challenges. The waitForTimeout(200) flushes are gone: every wait polls.
     // -------------------------------------------------------------------------
-    test('KeyP does not open PvP overlay when box overlay is visible', async () => {
+    test('ctl-11a: P replaces the open Monsters screen with Social on Challenges', async () => {
       await expect(page.locator('#pvp-challenge-overlay')).toBeHidden();
 
-      // Open box overlay (KeyB when no battle).
-      await page.keyboard.press('b');
-      await page.waitForFunction(
-        () =>
-          Array.from(document.querySelectorAll('#app > div')).some(
-            (el) => el instanceof HTMLElement && el.style.display === 'flex',
-          ),
-        null,
-        { timeout: 3_000 },
-      );
+      // Open the Monsters screen (B): its root is a child div of #app, display:flex.
+      await pressAccel(page, 'B');
+      await expect(page.locator('[data-testid="box-title"]')).toBeVisible({ timeout: 5_000 });
+      await expect.poll(() => stackNames(page)).toEqual(['world', 'menuView', 'boxView']);
 
-      // KeyP with box open — PvP overlay must stay hidden.
-      await page.keyboard.press('p');
-      await page.waitForTimeout(200);
-
-      await expect(page.locator('#pvp-challenge-overlay')).toBeHidden();
-
-      // Cleanup: close the box overlay.
-      await page.keyboard.press('b');
-      await page.waitForTimeout(200);
-    });
-
-    // -------------------------------------------------------------------------
-    // Mutual exclusivity: KeyB must NOT open box overlay when PvP overlay is open.
-    // -------------------------------------------------------------------------
-    test('KeyB does not open box overlay when PvP overlay is visible', async () => {
-      // Open PvP overlay first.
-      await page.keyboard.press('p');
+      // P with Monsters open — Monsters is replaced, not refused.
+      await pressAccel(page, 'P');
       await expect(page.locator('#pvp-challenge-overlay')).toBeVisible({ timeout: 5_000 });
+      await expect(page.locator('#social-tab-challenges')).toHaveAttribute('aria-selected', 'true');
+      await expect(page.locator('[data-testid="box-title"]')).toBeHidden({ timeout: 5_000 });
+      await expect.poll(() => stackNames(page)).toEqual(['world', 'menuView', 'social']);
 
-      // KeyB with PvP open — box must stay hidden.
-      await page.keyboard.press('b');
-      await page.waitForTimeout(200);
-
-      // Box overlay root is a child div of #app with display:flex when open.
-      const boxOpen = await page.evaluate(() =>
-        Array.from(document.querySelectorAll('#app > div')).some(
-          (el) => el instanceof HTMLElement && el.style.display === 'flex',
-        ),
-      );
-      expect(boxOpen).toBe(false);
-
-      // Cleanup: close the PvP overlay.
-      await page.keyboard.press('Escape');
+      // Cleanup: Start closes everything.
+      await closeAll(page);
       await expect(page.locator('#pvp-challenge-overlay')).toBeHidden({ timeout: 5_000 });
     });
 
     // -------------------------------------------------------------------------
-    // Mutual exclusivity: KeyP must NOT open PvP overlay when trade overlay is open.
+    // ctl-11a (named intentional change): was 'KeyB does not open box overlay when PvP overlay is
+    // visible'. B now replaces the open Social screen with Monsters (Storage).
     // -------------------------------------------------------------------------
-    test('KeyP does not open PvP overlay when trade overlay is visible', async () => {
-      // Open trade overlay (KeyU).
-      await page.keyboard.press('u');
+    test('ctl-11a: B replaces the open PvP overlay with the Monsters screen', async () => {
+      // Open PvP overlay first (Social on Challenges).
+      await pressAccel(page, 'P');
+      await expect(page.locator('#pvp-challenge-overlay')).toBeVisible({ timeout: 5_000 });
+
+      // B with Social open — Social is replaced, not refused. The Monsters root is a child div
+      // of #app (display:flex when open).
+      await pressAccel(page, 'B');
+      await expect(page.locator('[data-testid="box-title"]')).toBeVisible({ timeout: 5_000 });
+      await expect(page.locator('#pvp-challenge-overlay')).toBeHidden({ timeout: 5_000 });
+      await expect.poll(() => stackNames(page)).toEqual(['world', 'menuView', 'boxView']);
+
+      // Cleanup: Start closes everything.
+      await closeAll(page);
+      await expect(page.locator('[data-testid="box-title"]')).toBeHidden({ timeout: 5_000 });
+    });
+
+    // -------------------------------------------------------------------------
+    // ctl-11a (named intentional change): was 'KeyP does not open PvP overlay when trade overlay is
+    // visible'. P, U and L share the Social frame (their canonical paths all end in it), so with
+    // Social open on Trades, P is its own screen's accelerator and acts as Start: it closes Social
+    // rather than moving it to Challenges (it neither does nothing nor opens a second panel).
+    // -------------------------------------------------------------------------
+    test('ctl-11a: with the trade overlay open, P acts as Start and closes Social', async () => {
+      // Open trade overlay (U).
+      await pressAccel(page, 'U');
       await expect(page.locator('#trade-overlay')).toBeVisible({ timeout: 5_000 });
 
-      // KeyP with trade open — PvP overlay must stay hidden.
-      await page.keyboard.press('p');
-      await page.waitForTimeout(200);
-
-      await expect(page.locator('#pvp-challenge-overlay')).toBeHidden();
-
-      // Cleanup.
-      await page.keyboard.press('Escape');
+      // P with Social open on Trades — Start.
+      await pressAccel(page, 'P');
       await expect(page.locator('#trade-overlay')).toBeHidden({ timeout: 5_000 });
+      await expect(page.locator('#pvp-challenge-overlay')).toBeHidden();
+      await expect.poll(() => stackNames(page)).toEqual(['world']);
     });
 
     // -------------------------------------------------------------------------
     // PvP overlay heading text: pvpView.ts sets "PvP Challenge" text on open.
     // -------------------------------------------------------------------------
     test('PvP overlay shows "PvP Challenge" heading when opened', async () => {
-      await page.keyboard.press('p');
+      await pressAccel(page, 'P');
       await expect(page.locator('#pvp-challenge-overlay')).toBeVisible({ timeout: 5_000 });
 
       await expect(page.locator('#pvp-challenge-status')).toHaveText('PvP Challenge');
@@ -275,7 +283,7 @@ test.describe
         if (sent === undefined) throw new Error('challengePvp: conn not ready');
         await sent;
       }, identityB);
-      await pageA.keyboard.press('p');
+      await pressAccel(pageA, 'P');
       await expect(pageA.locator('#pvp-challenge-overlay')).toBeVisible({ timeout: 5_000 });
       await expect(pageA.locator('[data-testid="pvp-outgoing-label"]')).toBeVisible({
         timeout: 15_000,
