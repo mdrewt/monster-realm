@@ -1,344 +1,311 @@
-// ui/helpModel.test.ts — RED gating tests for the pt-c2b help overlay VM.
+// ui/helpModel.test.ts — ctl-14 (CTL14.1): the GENERATED Help view model.
 //
-// WRONG-IMPL-KILLED list (one per assertion cluster):
-//   - "returns empty controls/goals"                → non-empty assertions catch it
-//   - "an entry has an empty key or action"         → per-entry non-empty-string checks catch it
-//   - "SSOT omits a load-bearing key (e.g. F9/?/Escape)" → the key-coverage loop catches it
-//   - "the VM is impure / mutable / call-dependent" → deep-equal-across-calls catches it
-//   - "the VM smuggles a callback/submit field"     → the display-only structural scan catches it
+// Node env, no DOM. `buildHelpViewModel(screen, bindings)` is pure over a hint-bar chip list (the
+// context table's answer for the screen BENEATH Help: `hintBar(...)`) and the live binding table.
+//
+// THE CONTRACT (plan monster-realm-ctl-14-plan.md; the specialist builds exactly this):
+//   export const HELP_TABS = ['screen', 'controls', 'goals'] as const;
+//   export type HelpTab = (typeof HELP_TABS)[number];
+//   export interface HelpRow { readonly keys: readonly string[]; readonly action: string }
+//   export interface HelpViewModel {
+//     readonly tabs: readonly { readonly tab: HelpTab; readonly title: string;
+//                               readonly rows: readonly HelpRow[] }[];
+//     readonly note: string;
+//   }
+//   export function buildHelpViewModel(screen: readonly HintChip[], bindings: Bindings): HelpViewModel
+//   - tabs: exactly three, in HELP_TABS order; title = catalog `help.tab.screen|controls|goals`.
+//   - screen rows: one per chip, in chip order; keys = [chip.keycap] ([] when keycap is ''),
+//     action = chip.verb.
+//   - controls rows: controlsRows('buttons') then controlsRows('shortcuts'); keys = the row's
+//     bound codes (primary then alt, an unbound slot omitted) through glyph(); action = rowLabel(row).
+//   - goals rows: the catalog goals `help.goal.recruit|battle|trade`, keys [].
+//   - note = catalog `help.note.keysVsButtons` (the "key names vs button names" note).
+//   - `CONTROLS`, `GOALS` and every English literal are DELETED from the module.
+// Catalog ids are compared through `t(...)` under the active locale: no wording is asserted here.
+//
+// LEGACY BEHAVIOUR REPLACED (anti-vacuity): `buildHelpViewModel()` took no arguments and returned a
+// hard-coded English `{ controls: [{key, action}], goals: string[] }`; under `fr` Help still showed
+// English CONTROLS rows. Every case below is red on the missing `HELP_TABS` / the two-argument form.
+//
+// NAMED SURVIVORS (the spec's mapping of the retired pins). The old CONTROLS pins are RETIRED
+// because the const they pinned is deleted; each is replaced by a generated-help assertion:
+//   - 'BITES: controls is a non-empty array' / 'BITES: goals is a non-empty array' / 'every control
+//     entry has a non-empty key AND action' / 'every goal is a non-empty string'
+//       -> CTL14-1-MODEL-TABS (non-empty titles, three goals) and the controls-row assertions of
+//          CTL14-1-MODEL-LIVE-BINDINGS (every row has an action; keys come from the live table).
+//   - 'the SSOT covers the load-bearing keys' (? Escape WASD Space F9, B I E Q U P L N) and
+//     '★ M21b-2 ... the C key with its EXACT action string'
+//       -> CTL14-1-MODEL-LIVE-BINDINGS (every VButton and every Accel is a row, keyed by its live
+//          glyph) and CTL14-1-MODEL-F8-F9-NOTE (F9 and F8, which the old SSOT lacked F8 for).
+//   - '★ uxd2 NO controls row has key G or H', 'CTL10A-3-HELP-NO-T', 'CTL10B-2-HELP-NO-O'
+//       -> structural now: rows are the closed VBUTTONS / ACCELS lists, which hold no G, H, T or O
+//          accelerator, so a retired key cannot be documented (CTL14-1-MODEL-LIVE-BINDINGS pins the
+//          exact row count and order).
+//   - 'two calls return deeply-equal content' / 'cannot be reordered by a prior mutation'
+//       -> 'PURE: a fresh object per call' below.
+//   - 'the VM exposes ONLY { controls, goals }' (display-only structural guard)
+//       -> 'DISPLAY-ONLY: no function-valued field' below, over the new shape.
+// The documents that quoted the old const (docs/PLAYTEST.md's controls table and the menu's
+// shortcut glyph source) are other files' gates, outside this test.
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
+import { ACCELS, VBUTTONS, type VButton } from '../input/buttons';
+import { glyph, resetLearnedKeys } from '../input/glyphs';
+import { type ControlsRow, controlsRows, rowLabel } from './controlsModel';
+import * as helpModule from './helpModel';
+import {
+  buildHelpViewModel,
+  HELP_TABS,
+  type HelpRow,
+  type HelpTab,
+  type HelpViewModel,
+} from './helpModel';
+import type { HintChip } from './hintBarModel';
+import { t } from './i18n/resolver';
 
-import { describe, expect, it } from 'vitest';
-import { buildHelpViewModel } from './helpModel';
+// --- fixtures --------------------------------------------------------------------------------
 
-describe('buildHelpViewModel(): content shape — non-empty controls + goals (PTC2B-10)', () => {
-  it('BITES: controls is a non-empty array — kills an empty-SSOT impl', () => {
-    // WRONG IMPL KILLED: a stub that returns { controls: [], goals: [...] } — the overlay
-    // would show no controls, defeating its only purpose.
-    const vm = buildHelpViewModel();
-    expect(Array.isArray(vm.controls)).toBe(true);
-    expect(vm.controls.length).toBeGreaterThan(0);
-  });
-
-  it('BITES: goals is a non-empty array — kills an empty-goals impl', () => {
-    // WRONG IMPL KILLED: a stub that returns { controls: [...], goals: [] } — the session
-    // goals list is a required half of the help content.
-    const vm = buildHelpViewModel();
-    expect(Array.isArray(vm.goals)).toBe(true);
-    expect(vm.goals.length).toBeGreaterThan(0);
-  });
-
-  it('BITES: every control entry has a non-empty key AND non-empty action string — kills blank-cell impl', () => {
-    // WRONG IMPL KILLED: an entry like { key: 'W', action: '' } or { key: '', action: 'Move' }
-    // — a blank cell renders an empty <li>, which is useless onboarding content.
-    const vm = buildHelpViewModel();
-    for (const entry of vm.controls) {
-      expect(typeof entry.key).toBe('string');
-      expect(typeof entry.action).toBe('string');
-      expect(entry.key.trim().length).toBeGreaterThan(0);
-      expect(entry.action.trim().length).toBeGreaterThan(0);
-    }
-  });
-
-  it('BITES: every goal is a non-empty string — kills blank-goal impl', () => {
-    // WRONG IMPL KILLED: a goals array containing '' or whitespace — a blank <li>.
-    const vm = buildHelpViewModel();
-    for (const goal of vm.goals) {
-      expect(typeof goal).toBe('string');
-      expect(goal.trim().length).toBeGreaterThan(0);
-    }
-  });
+const chip = (button: VButton, keycap: string, verb: string, badge = false): HintChip => ({
+  button,
+  keycap,
+  verb,
+  badge,
 });
 
-describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)', () => {
-  // The keymap that the help overlay documents: the
-  // `?` help key itself, Escape (close), movement (WASD / arrows), Space (jump), the 8
-  // overlay hotkeys B I E Q U P L N (G and H deleted in uxd2; ctl-10a retired the interact key
-  // T — interaction is Enter / A on what you face, pinned by the ctl-10a key-set test below;
-  // ctl-10b retired O — trades and challenges start face to face, CTL10B-2-HELP-NO-O),
-  // and F9 (bug bundle). Each must be mentioned by SOME
-  // control entry's `key`. We match case-insensitively / by substring so we pin the
-  // COVERAGE of the SSOT without over-pinning the exact glyph wording (e.g. "WASD"
-  // vs "W A S D" vs "Arrows/WASD" all satisfy the movement requirement).
-  //
-  // WRONG IMPL KILLED: an SSOT that forgets to document F9 (the bug-bundle ritual the
-  // PLAYTEST.md runbook references) or Escape (how to close overlays) — a tester reading
-  // the help overlay would be blind to those affordances.
+/** A context's chips: three keyed chips and one whose button is unbound (keycap ''). */
+const WORLD_CHIPS: readonly HintChip[] = [
+  chip('A', 'Enter', 'Talk'),
+  chip('Start', 'Esc', 'Menu', true),
+  chip('Select', 'R', 'Help'),
+  chip('Y', '', 'View'),
+];
+/** A different context: a screen frame's four chips, none of them in WORLD_CHIPS' order. */
+const SCREEN_CHIPS: readonly HintChip[] = [
+  chip('A', 'Enter', 'OK'),
+  chip('B', 'Backspace', 'Back'),
+  chip('Start', 'Esc', 'Close'),
+  chip('Select', 'R', 'Help'),
+];
 
-  function keyBlob(): string {
-    const vm = buildHelpViewModel();
-    // Join every control's key text into one lowercase blob for substring coverage checks.
-    return vm.controls.map((c) => c.key.toLowerCase()).join(' | ');
-  }
+const ROWS: readonly ControlsRow[] = [...controlsRows('buttons'), ...controlsRows('shortcuts')];
 
-  it('BITES: the `?` help key is documented in the controls SSOT', () => {
-    // '?' is the help affordance itself (self-documenting per ADR-0135).
-    const blob = keyBlob();
-    expect(blob.includes('?'), 'controls SSOT must document the `?` help key').toBe(true);
-  });
+const tabOf = (vm: HelpViewModel, tab: HelpTab): HelpViewModel['tabs'][number] => {
+  const found = vm.tabs.find((x) => x.tab === tab);
+  if (found === undefined) throw new Error(`the view model has no ${tab} tab`);
+  return found;
+};
 
-  it('BITES: Escape is documented (how to close overlays)', () => {
-    const blob = keyBlob();
-    expect(blob.includes('esc'), 'controls SSOT must document Escape (esc)').toBe(true);
-  });
+/** The default table with `change` applied (never mutates DEFAULT_BINDINGS). */
+const remapped = (change: {
+  readonly buttons?: Partial<Record<VButton, readonly string[]>>;
+  readonly accels?: Partial<Record<(typeof ACCELS)[number], readonly string[]>>;
+}): Bindings => ({
+  buttons: { ...DEFAULT_BINDINGS.buttons, ...change.buttons },
+  accels: { ...DEFAULT_BINDINGS.accels, ...change.accels },
+});
 
-  it('BITES: movement (WASD or arrow keys) is documented', () => {
-    const blob = keyBlob();
-    // Accept any of the common movement documentations: "WASD", the arrow word, or the
-    // four physical letters. This pins movement-coverage without over-pinning wording.
-    const hasMovement =
-      blob.includes('wasd') ||
-      blob.includes('arrow') ||
-      (blob.includes('w') && blob.includes('a') && blob.includes('s') && blob.includes('d'));
-    expect(hasMovement, 'controls SSOT must document movement (WASD / arrows)').toBe(true);
-  });
+/** What a row of the All controls tab must read for `bindings`, built from the bindings table and
+ *  the existing glyph / label helpers (never from the module under test). */
+const expectedRow = (row: ControlsRow, bindings: Bindings): HelpRow => {
+  const codes = row.kind === 'button' ? bindings.buttons[row.id] : bindings.accels[row.id];
+  return { keys: codes.map((c) => glyph(c)), action: rowLabel(row) };
+};
 
-  it('BITES: Space (jump) is documented', () => {
-    const blob = keyBlob();
-    expect(blob.includes('space'), 'controls SSOT must document the Space key (jump)').toBe(true);
-  });
+beforeEach(() => {
+  resetLearnedKeys();
+});
+afterEach(() => {
+  resetLearnedKeys();
+});
 
-  it('BITES: F9 (bug bundle) is documented — the runbook ritual references it', () => {
-    const blob = keyBlob();
-    expect(blob.includes('f9'), 'controls SSOT must document F9 (bug bundle)').toBe(true);
-  });
+describe('buildHelpViewModel (ctl-14, CTL14.1)', () => {
+  it('CTL14-1-MODEL-TABS: the view model has exactly the tabs This screen | All controls | Goals in that order with their catalog titles; This screen mirrors the given chips one row each in chip order (an unbound chip has no key); Goals carries the three catalog goals', () => {
+    // WRONG IMPL KILLED: a model with the tabs in another order or a fourth tab; a title that is a
+    // hard-coded English literal (it would not follow the catalog: compared through t()); two tabs
+    // sharing one title; a This-screen tab that is a fixed list instead of the chips handed in (the
+    // second chip list below would read like the first); rows re-sorted or filtered (the unbound Y
+    // chip dropped); an unbound chip keyed [''] (an empty keycap box on screen) instead of []; the
+    // chip's button name used for the action instead of its verb; a Goals tab with other than the
+    // three catalog goals, or with keys.
+    expect([...HELP_TABS], 'the tab roster').toEqual(['screen', 'controls', 'goals']);
+    const vm = buildHelpViewModel(WORLD_CHIPS, DEFAULT_BINDINGS);
 
-  it('BITES: each overlay hotkey B I E Q U P L N is documented in the SSOT', () => {
-    // WRONG IMPL KILLED: an SSOT that documents only some of the overlay hotkeys —
-    // a tester would not discover, e.g., the Leaderboard (L) or Quest log (Q) overlay.
-    // Substring match against the per-entry key blob (case-insensitive). Each letter must
-    // appear SOMEWHERE in some control's key text.
-    //
-    // INTENTIONAL CHANGE (ctl-10a, CTL10A.3): `t` is dropped from this list (10 -> 9). T no longer
-    // does anything (world interaction is A / Enter on what you face), so its row is deleted; the
-    // exact-key absence of T and the presence of Enter and F are pinned by the ctl-10a key-set test.
-    // (Kept as a substring scan, `t` would also pass vacuously on the new "Enter" row.)
-    //
-    // the list shrank 12 → 10. `g` and `h` were removed because the global KeyG (shop) and
-    // KeyH (heal) handlers are DELETED in uxd2 — shop is reached by interacting with a
-    // shopkeeper and heal by standing on a heal tile, both via the single interact key T.
-    // Documenting a key that no longer does anything is worse than not documenting it.
-    // This assertion alone is WEAK (a substring scan would still credit a stray "g"/"h"
-    // inside another key's text), so the deletion itself is pinned by the exact-key
-    // assertion in the sibling test below — that is the tooth, this is coverage.
-    const blob = keyBlob();
-    // INTENTIONAL CHANGE (ctl-10b, CTL10B.2): `o` is dropped from this list (9 -> 8). O no longer
-    // starts a trade, so its row is deleted; its absence is pinned by CTL10B-2-HELP-NO-O below.
-    const hotkeys = ['b', 'i', 'e', 'q', 'u', 'p', 'l', 'n'];
-    for (const k of hotkeys) {
-      expect(
-        blob.includes(k),
-        `controls SSOT must document the overlay hotkey "${k.toUpperCase()}"`,
-      ).toBe(true);
+    expect(
+      vm.tabs.map((x) => x.tab),
+      'the tabs, in order',
+    ).toEqual(['screen', 'controls', 'goals']);
+    expect(
+      vm.tabs.map((x) => x.title),
+      'titles come from the catalog',
+    ).toEqual([t('help.tab.screen'), t('help.tab.controls'), t('help.tab.goals')]);
+    for (const tab of vm.tabs) {
+      expect(tab.title.trim().length, `${tab.tab}: a real title`).toBeGreaterThan(0);
     }
-  });
+    expect(new Set(vm.tabs.map((x) => x.title)).size, 'three different titles').toBe(3);
 
-  it('★ M21b-2 BITES: the CONTROLS SSOT documents the account/claim key `C` with its EXACT action string', () => {
-    // ADR-0182 (D16/D17, spec AUTH-48/52/54-56/59-60). The account/claim overlay ships with a
-    // direct KeyC hotkey AND a System > "Account & Sign-in" menu leaf, and AC-18 makes this
-    // SSOT the source of the glyph that leaf displays.
-    //
-    // ★ THE EXACT ACTION STRING IS A CONTRACT, not a suggestion. Three gates read it and two
-    // of them compare it with EXACT equality:
-    //   • menuModel's MM-KEYGLYPH-FROM-HELP-SSOT reads the KEY token ('C');
-    //   • playtestControlsDoc.test.ts A2 requires docs/PLAYTEST.md §3's `C` row action to
-    //     EXACTLY EQUAL this string (not `.includes` — the red-team PoC'd that a containment
-    //     oracle passes a doc row that re-teaches a dead key), and A1/A3 require the row to
-    //     EXIST and the row COUNT to match. So this string is what must be pasted, verbatim,
-    //     into the doc table's `| \`C\` | … |` row.
-    //   • A4's whole-document single-char-code-span scan then accepts `` `C` `` in prose,
-    //     which it currently would NOT (it whitelists live CONTROLS keys only).
-    //
-    // WRONG IMPL KILLED (1): shipping the KeyC handler and the menu leaf with no CONTROLS row
-    //   — the one load-bearing key the help overlay never mentions (the exact defect the 'M'
-    //   row was added for in uxd3), and MM-KEYGLYPH-FROM-HELP-SSOT reds.
-    // WRONG IMPL KILLED (2): a row keyed 'c' (lower case) or ' C ' — the menu displays the
-    //   glyph verbatim and the doc gate compares verbatim. Trim + exact case, as the uxd2
-    //   sibling test below already established for G/H/T.
-    // WRONG IMPL KILLED (3): a DIFFERENT action string in helpModel vs docs/PLAYTEST.md —
-    //   caught by A2, but reported there as a doc failure. Pinning the exact string HERE is
-    //   what makes the SSOT side the one that has to be right first.
-    const vm = buildHelpViewModel();
-    const exactKeys = vm.controls.map((c) => c.key.trim().toUpperCase());
-    expect(exactKeys, 'the account/claim hotkey C must be documented (ADR-0182)').toContain('C');
+    expect(tabOf(vm, 'screen').rows, 'This screen = the chips, in order').toEqual([
+      { keys: ['Enter'], action: 'Talk' },
+      { keys: ['Esc'], action: 'Menu' },
+      { keys: ['R'], action: 'Help' },
+      { keys: [], action: 'View' },
+    ]);
+    // A different context gives different rows, so the tab is generated, not fixed.
+    expect(tabOf(buildHelpViewModel(SCREEN_CHIPS, DEFAULT_BINDINGS), 'screen').rows).toEqual([
+      { keys: ['Enter'], action: 'OK' },
+      { keys: ['Backspace'], action: 'Back' },
+      { keys: ['Esc'], action: 'Close' },
+      { keys: ['R'], action: 'Help' },
+    ]);
+    // No chips (nothing to list) is an empty tab, not a throw or a leftover.
+    expect(tabOf(buildHelpViewModel([], DEFAULT_BINDINGS), 'screen').rows).toEqual([]);
 
-    const row = vm.controls.find((c) => c.key === 'C');
+    // The screen rows come from the chips, never from the binding table.
+    const other = remapped({ buttons: { Select: ['KeyH'], A: ['KeyZ'] } });
     expect(
-      row,
-      'the C row must be keyed with the exact glyph `C` (no padding, upper case)',
-    ).toBeDefined();
-    expect(
-      row?.action,
-      'the `C` row action must be EXACTLY `Open account & sign-in` — docs/PLAYTEST.md §3 must ' +
-        'carry the identical string (playtestControlsDoc.test.ts A2 compares with exact ' +
-        'equality). If this reds, change the CODE or the DOC to agree; do not relax this ' +
-        'assertion, because the doc gate has no other anchor for the row it is checking',
-    ).toBe('Open account & sign-in');
+      tabOf(buildHelpViewModel(WORLD_CHIPS, other), 'screen').rows,
+      'a remap changes the controls tab only; the chips already carry their keycaps',
+    ).toEqual(tabOf(vm, 'screen').rows);
 
-    // Exactly one C row: a duplicate would pass A1's set-equality (sets dedupe) while making
-    // the doc's row-count gate A3 unsatisfiable.
-    expect(
-      vm.controls.filter((c) => c.key.trim().toUpperCase() === 'C').length,
-      'the CONTROLS SSOT must contain EXACTLY ONE `C` row',
-    ).toBe(1);
-  });
-
-  it('★ uxd2 BITES: NO controls row has key "G" or "H"', () => {
-    // uxd2 / AC-10′.
-    //
-    // WRONG IMPL KILLED (1): an impl that deletes the KeyG/KeyH HANDLERS in main.ts but
-    //   leaves the help rows — the overlay would teach a playtester two keys that silently
-    //   do nothing, which is the single worst outcome for an onboarding surface.
-    // INTENTIONAL CHANGE (ctl-10a, CTL10A.3): this test also asserted "the interact key T must
-    //   still be documented". ctl-10a retires T (T does nothing; A / Enter acts on what you face),
-    //   so that assertion is REVERSED and moved to the ctl-10a key-set test below, which pins T's
-    //   absence and the Enter / F rows that replace it.
-    // EXACT-KEY (trim + uppercase), NOT substring: a substring test cannot distinguish a
-    // deleted row from the "h" inside another key's text, which is precisely how the
-    // sibling coverage test above could go vacuously green.
-    const vm = buildHelpViewModel();
-    const exactKeys = vm.controls.map((c) => c.key.trim().toUpperCase());
-    expect(exactKeys, 'the global shop hotkey G is removed in uxd2 (ADR-0161 D5)').not.toContain(
-      'G',
-    );
-    expect(exactKeys, 'the global heal hotkey H is removed in uxd2 (ADR-0161 D5)').not.toContain(
-      'H',
+    expect(tabOf(vm, 'goals').rows, 'the three catalog goals, no keys').toEqual([
+      { keys: [], action: t('help.goal.recruit') },
+      { keys: [], action: t('help.goal.battle') },
+      { keys: [], action: t('help.goal.trade') },
+    ]);
+    expect(new Set(tabOf(vm, 'goals').rows.map((r) => r.action)).size, 'three distinct goals').toBe(
+      3,
     );
   });
 
-  it('CTL10A-3-HELP-NO-T: the CONTROLS key set drops T and gains Enter (interact with what you face) and F (every action for what you face), one row each; no row is keyed T', () => {
-    // ctl-10a, CTL10A.3 / spec Tasks: "`CONTROLS` drops the T row and gains A interaction;
-    // `helpModel.test.ts`'s pinned key set drops T (named)". This is that pinned key set; the
-    // NAMED intentional change is T's removal (it was documented since uxd2) plus the two new rows.
-    // WRONG IMPL KILLED: help that still teaches T (a key that now does nothing, the worst outcome
-    // for an onboarding surface); a T row merely reworded ("T / Enter"); an interaction that is
-    // never documented (no Enter row) or whose Y sheet is undiscoverable (no F row); a duplicated
-    // row; and an Enter / F row keyed with padding or another case (the help shows keys verbatim).
-    const vm = buildHelpViewModel();
-    const rawKeys = vm.controls.map((c) => c.key);
-    expect(
-      rawKeys.some((k) => k.trim().toUpperCase() === 'T'),
-      'no controls row may be keyed T (T is retired in ctl-10a)',
-    ).toBe(false);
-    expect(
-      rawKeys.filter((k) => k === 'Enter'),
-      'exactly one row keyed `Enter`',
-    ).toHaveLength(1);
-    expect(
-      rawKeys.filter((k) => k === 'F'),
-      'exactly one row keyed `F`',
-    ).toHaveLength(1);
-    // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): the pinned key set drops 'O' (the trade
-    // propose key is retired; trades and challenges start face to face through Enter).
-    expect([...rawKeys].sort(), 'the full documented key set after ctl-10b').toEqual(
-      [
-        '?',
-        'M',
-        'WASD / Arrows',
-        'Space',
-        'Escape',
-        'Enter',
-        'F',
-        'B',
-        'I',
-        'E',
-        'Q',
-        'U',
-        'P',
-        'L',
-        'N',
-        'C',
-        'F9',
-      ].sort(),
+  it('CTL14-1-MODEL-LIVE-BINDINGS: All controls lists every button then every shortcut exactly once, each keyed by the LIVE binding table (primary then alt, an unbound slot omitted), so a remap shows and a cleared shortcut keeps its row with no key', () => {
+    // WRONG IMPL KILLED: a hard-coded key list (a remap would not show: Select would still read
+    // R and Slash); keys read from DEFAULT_BINDINGS instead of the table handed in; the Alt slot
+    // dropped (a two-key row reads one key) or an unbound Alt rendered as '' / 'undefined' (the
+    // Select row below has one key); a cleared shortcut whose row vanishes (F9 would be
+    // undiscoverable) or keeps its old key; rows in another order, buttons after shortcuts, a
+    // button or an accelerator missing or listed twice (23 rows exactly); an action that is a
+    // literal instead of rowLabel() (it would not follow the locale); and keys that are raw
+    // codes ('KeyR') instead of glyphs ('R').
+    const vm = buildHelpViewModel(WORLD_CHIPS, DEFAULT_BINDINGS);
+    const controls = tabOf(vm, 'controls').rows;
+
+    expect(ROWS.length, 'fixture: 12 buttons then 11 shortcuts').toBe(
+      VBUTTONS.length + ACCELS.length,
     );
-    for (const key of ['Enter', 'F']) {
-      const row = vm.controls.find((c) => c.key === key);
-      expect(row?.action.trim().length, `the ${key} row says what it does`).toBeGreaterThan(0);
+    expect(controls, 'the default table, every row once, buttons then shortcuts').toEqual(
+      ROWS.map((row) => expectedRow(row, DEFAULT_BINDINGS)),
+    );
+    // Concrete anchors, so the oracle above cannot agree with a wrong impl by sharing its bug:
+    // Select is two keys (R, then the named Slash key), Start Esc then M, a lone-key button one key.
+    const label = (row: ControlsRow): string => rowLabel(row);
+    const select = controls.find((r) => r.action === label({ kind: 'button', id: 'Select' }));
+    expect(select?.keys, 'Select: primary R, alt the slash key by its catalog name').toEqual([
+      'R',
+      t('key.slash'),
+    ]);
+    const start = controls.find((r) => r.action === label({ kind: 'button', id: 'Start' }));
+    expect(start?.keys, 'Start: Esc then M').toEqual([t('key.escape'), 'M']);
+    const back = controls.find((r) => r.action === label({ kind: 'button', id: 'B' }));
+    expect(back?.keys, 'B: one key, no empty alt slot').toEqual([t('key.backspace')]);
+    expect(controls.length, 'exactly 23 rows').toBe(23);
+
+    // A remap shows: Select to H alone, Start to G + M, F9 cleared, accelerator B moved to Z.
+    const live = remapped({
+      buttons: { Select: ['KeyH'], Start: ['KeyG', 'KeyM'] },
+      accels: { F9: [], B: ['KeyZ', 'KeyX'] },
+    });
+    const after = tabOf(buildHelpViewModel(WORLD_CHIPS, live), 'controls').rows;
+    expect(after, 'every row follows the table handed in').toEqual(
+      ROWS.map((row) => expectedRow(row, live)),
+    );
+    const selectAfter = after.find((r) => r.action === label({ kind: 'button', id: 'Select' }));
+    expect(selectAfter?.keys, 'Select now reads H alone: no stale R, no empty alt').toEqual(['H']);
+    const startAfter = after.find((r) => r.action === label({ kind: 'button', id: 'Start' }));
+    expect(startAfter?.keys, 'Start reads its remapped primary then its alt').toEqual(['G', 'M']);
+    const f9After = after.find((r) => r.action === label({ kind: 'accel', id: 'F9' }));
+    expect(f9After, 'a cleared shortcut keeps its row').toBeDefined();
+    expect(f9After?.keys, 'with no key').toEqual([]);
+    const storageAfter = after.find((r) => r.action === label({ kind: 'accel', id: 'B' }));
+    expect(storageAfter?.keys, 'a two-key shortcut reads both').toEqual(['Z', 'X']);
+    expect(after.length, 'a remap adds and removes no row').toBe(23);
+    expect(after, 'and the remap really changed the tab').not.toEqual(controls);
+  });
+
+  it('CTL14-1-MODEL-F8-F9-NOTE: the shortcut rows include F9 (the bug-report bundle) and F8 (dismiss the error toast) with their keys, the model carries the catalog "key names vs button names" note, and the module no longer exports CONTROLS or GOALS', () => {
+    // WRONG IMPL KILLED: a generated tab built from the buttons only, or from the old hand list
+    // (no F8 row: it was never in the old CONTROLS); an F9 / F8 row whose key is blank or whose
+    // action is another row's label; a note that is a literal (not the catalog's), empty or
+    // missing; and a model that kept the old CONTROLS / GOALS exports beside the generated ones
+    // (a second controls list: two sources of truth that drift).
+    const vm = buildHelpViewModel(WORLD_CHIPS, DEFAULT_BINDINGS);
+    const controls = tabOf(vm, 'controls').rows;
+    const f9 = controls.find((r) => r.action === rowLabel({ kind: 'accel', id: 'F9' }));
+    const f8 = controls.find((r) => r.action === rowLabel({ kind: 'accel', id: 'F8' }));
+    expect(f9, 'the F9 row').toEqual({ keys: ['F9'], action: t('controls.accel.bugReport') });
+    expect(f8, 'the F8 row').toEqual({ keys: ['F8'], action: t('controls.accel.dismissError') });
+    expect(controls.indexOf(f9 as HelpRow), 'F9 sits in the shortcuts').toBeGreaterThanOrEqual(
+      VBUTTONS.length,
+    );
+    expect(controls.indexOf(f8 as HelpRow), 'F8 sits in the shortcuts').toBeGreaterThanOrEqual(
+      VBUTTONS.length,
+    );
+
+    expect(vm.note, 'the keys-vs-buttons note is the catalog message').toBe(
+      t('help.note.keysVsButtons'),
+    );
+    expect(vm.note.trim().length, 'and is not blank').toBeGreaterThan(0);
+    expect(Object.keys(vm).sort(), 'the model is the tabs and the note, no second list').toEqual([
+      'note',
+      'tabs',
+    ]);
+
+    expect(Object.keys(helpModule), 'the hard-coded lists are gone').not.toContain('CONTROLS');
+    expect(Object.keys(helpModule)).not.toContain('GOALS');
+    expect(Object.keys(helpModule), 'the generated API is exported').toEqual(
+      expect.arrayContaining(['buildHelpViewModel', 'HELP_TABS']),
+    );
+  });
+
+  it('PURE: a fresh object per call — two calls are deeply equal but share nothing, a caller mutating one result cannot change the next, and the binding table is never mutated', () => {
+    // WRONG IMPL KILLED: a model that returns a shared module-level object (a caller's push would
+    // poison the next open); content that depends on call order or a clock; and a builder that
+    // mutates the table it was handed.
+    const before = JSON.stringify(DEFAULT_BINDINGS);
+    const a = buildHelpViewModel(WORLD_CHIPS, DEFAULT_BINDINGS);
+    const b = buildHelpViewModel(WORLD_CHIPS, DEFAULT_BINDINGS);
+    expect(a, 'same inputs, same content').toEqual(b);
+    expect(a, 'never the same object').not.toBe(b);
+    expect(a.tabs, 'nor the same tab list').not.toBe(b.tabs);
+    for (const [i, tab] of a.tabs.entries()) {
+      expect(tab.rows, `${tab.tab}: its own row list`).not.toBe(b.tabs[i]?.rows);
     }
-  });
-});
-
-describe('buildHelpViewModel(): face-to-face trading, no O (ctl-10b, CTL10B.2)', () => {
-  it('CTL10B-2-HELP-NO-O: no controls row is keyed O, no action text says "nearby" (B15), the Enter row names trade and challenge, and the P row is about answering a challenge', () => {
-    // WRONG IMPL KILLED: help that still teaches O (a key that now does nothing: the worst outcome
-    // for an onboarding surface); a row keyed "O / Enter" (a reworded O); any action that still
-    // says "nearby" (B15: the interaction is with what you FACE, not a radius); an Enter row that
-    // does not mention trade and challenge (the only way to start either is undiscoverable); and a
-    // P row that still says it challenges a player (P answers a challenge now).
-    const vm = buildHelpViewModel();
-    expect(vm.controls.length, 'ANTI-VACUITY: the SSOT is not empty').toBeGreaterThan(10);
-    for (const c of vm.controls) {
-      expect(
-        c.key
-          .trim()
-          .toUpperCase()
-          .split(/[\s/]+/),
-        `row "${c.key}" is not an O row`,
-      ).not.toContain('O');
-      expect(/nearby/i.test(c.action), `"${c.action}" must not say "nearby"`).toBe(false);
-      expect(/nearby/i.test(c.key)).toBe(false);
-    }
-    expect(vm.controls.some((c) => c.key.trim().toUpperCase() === 'O')).toBe(false);
-
-    const enter = vm.controls.find((c) => c.key === 'Enter');
-    expect(enter, 'the Enter row exists').toBeDefined();
-    expect(/trade/i.test(enter?.action ?? ''), 'Enter mentions trade').toBe(true);
-    expect(/challenge/i.test(enter?.action ?? ''), 'Enter mentions challenge').toBe(true);
-
-    const p = vm.controls.find((c) => c.key === 'P');
-    expect(p, 'the P row exists').toBeDefined();
-    expect(/answer/i.test(p?.action ?? ''), 'P is about answering a challenge').toBe(true);
-    expect(/nearby/i.test(p?.action ?? '')).toBe(false);
-  });
-});
-
-describe('buildHelpViewModel(): purity / totality — same content across calls (PTC2B-11)', () => {
-  it('BITES: two calls return deeply-equal content — kills a mutable / call-dependent impl', () => {
-    // display-only means the VM is a pure projection of a static const. Two calls
-    // must produce structurally identical content (no clock/RNG/store dependence).
-    // WRONG IMPL KILLED: an impl that mutates a shared array (so a second call differs) or
-    // derives content from a non-deterministic source.
-    const a = buildHelpViewModel();
-    const b = buildHelpViewModel();
-    expect(a).toEqual(b);
-  });
-
-  it('BITES: the returned VM cannot be reordered by a prior mutation — content is stable', () => {
-    // Belt-and-suspenders on purity: capture the first call, ATTEMPT to mutate its arrays
-    // (a frozen const throws / a non-frozen copy is harmless), then re-call and compare to a
-    // fresh snapshot. The second call must not observe the first caller's tampering.
-    const first = buildHelpViewModel();
     try {
-      // If the impl returns the SSOT const directly and froze it, this throws (caught).
-      // If it returns a fresh copy, this mutates the copy only — the next call is unaffected.
-      (first.controls as { key: string; action: string }[]).push({ key: 'HACK', action: 'HACK' });
+      // A frozen result throws here (fine: nothing to poison); a plain one is mutated.
+      (tabOf(a, 'controls').rows as HelpRow[]).push({ keys: ['HACK'], action: 'HACK' });
+      (a.tabs as unknown[]).length = 0;
     } catch {
-      /* frozen SSOT — expected; nothing to clean up */
+      /* frozen result: the tampering is impossible */
     }
-    const fresh = buildHelpViewModel();
-    expect(fresh.controls.some((c) => c.key === 'HACK')).toBe(false);
+    const c = buildHelpViewModel(WORLD_CHIPS, DEFAULT_BINDINGS);
+    expect(c, 'a later call does not see the tampering').toEqual(b);
+    expect(c.tabs.length).toBe(3);
+    expect(JSON.stringify(DEFAULT_BINDINGS), 'the table is untouched').toBe(before);
   });
-});
 
-describe('buildHelpViewModel(): display-only structural guard — no callbacks/submit (PTC2B-11)', () => {
-  it('BITES: the VM exposes ONLY { controls, goals } — kills an impl that smuggles a callback/submit field', () => {
-    // The help overlay is display-only (no text input, no submit, no reducer). The
-    // VM must carry no function-valued or action-shaped field. This asserts the VM's own keys
-    // are exactly the two data arrays — a smuggled `onSubmit` / `submit` / `reducer` field is
-    // an immediate structural failure (proves the VM is not a covert action surface).
-    // WRONG IMPL KILLED: an impl that adds `onSubmit`/`onClick`/`send` to the VM (turning a
-    // display-only overlay into an action one) — the ADR-0135 display-only invariant is violated.
-    const vm = buildHelpViewModel();
-    const keys = Object.keys(vm).sort();
-    expect(keys).toEqual(['controls', 'goals']);
-
-    // No value in the VM (top level, entries, or goals) may be a function.
-    const values: unknown[] = [vm.controls, vm.goals, ...vm.controls, ...vm.goals];
-    for (const v of values) {
-      expect(typeof v).not.toBe('function');
+  it('DISPLAY-ONLY: no function-valued field anywhere in the model, and a row is exactly { keys, action }', () => {
+    // WRONG IMPL KILLED: a model that smuggles a callback or a submit field into a display-only
+    // overlay (the retired ADR-0135 guard, over the new shape), and a row carrying extra fields
+    // (a pointer target, a button id) the view would have to trust.
+    const vm = buildHelpViewModel(WORLD_CHIPS, DEFAULT_BINDINGS);
+    const seen: unknown[] = [vm, vm.tabs, vm.note];
+    for (const tab of vm.tabs) {
+      expect(Object.keys(tab).sort(), `${tab.tab}: tab keys`).toEqual(['rows', 'tab', 'title']);
+      seen.push(tab, tab.rows);
+      for (const row of tab.rows) {
+        expect(Object.keys(row).sort(), `${tab.tab}: row keys`).toEqual(['action', 'keys']);
+        seen.push(row, row.keys, row.action, ...row.keys);
+      }
     }
-    // Each control entry, too, must carry ONLY { key, action } — no smuggled callback.
-    for (const entry of vm.controls) {
-      expect(Object.keys(entry).sort()).toEqual(['action', 'key']);
-    }
+    for (const value of seen) expect(typeof value).not.toBe('function');
+    expect(seen.length, 'ANTI-VACUITY: the walk reached the rows').toBeGreaterThan(60);
   });
 });
