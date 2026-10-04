@@ -15,6 +15,7 @@ import { bagScreen } from './bagScreen';
 import { battleScreen } from './battleScreen';
 import { dialogueScreen } from './dialogueScreen';
 import { healScreen } from './healScreen';
+import { helpScreen } from './helpScreen';
 import { journalScreen } from './journalScreen';
 import { legacyAdapter } from './legacyAdapter';
 import { monstersScreen } from './monstersScreen';
@@ -35,7 +36,7 @@ export type ScreenAdapters = Readonly<Record<FrameId, ScreenAdapter<unknown, unk
  *  and shop frames; ctl-8b: the box frame, as Monsters; ctl-8d: the Social frame; ctl-8e: the
  *  trade-propose wizard; ctl-8f: the raising frame, as Bag, and the quest log, as Journal; ctl-8h:
  *  the rename, claim and privacy frames, as Profile's Name, Account and Privacy; ctl-12b: the
- *  controls frame, as Options › Controls). The trade, pvp
+ *  controls frame, as Options › Controls; ctl-14: Help). The trade, pvp
  *  and leaderboard overlays show as the one `social` frame (ctl-8s), so their own entries are
  *  never asked. */
 export const SCREEN_ADAPTERS: ScreenAdapters = {
@@ -52,7 +53,7 @@ export const SCREEN_ADAPTERS: ScreenAdapters = {
   leaderboardView: legacyAdapter,
   renameView: nameScreen,
   tradeProposeView: tradeProposeScreen,
-  helpView: legacyAdapter,
+  helpView: helpScreen,
   menuView: legacyAdapter,
   claimView: accountScreen,
   privacyView: privacyScreen,

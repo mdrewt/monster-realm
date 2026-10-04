@@ -279,6 +279,27 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
   // index.html:94 (literal removed from index.html; resolved in HelpView show())
   'chrome.help.title': 'Controls & Goals',
+  // @desc: Help tab listing the buttons of the screen Help was opened over. Short (at most 14 characters).
+  // ui/helpModel.ts
+  'help.tab.screen': 'This screen',
+  // @desc: Help tab listing every button and shortcut with its current keys. Short (at most 14 characters).
+  // ui/helpModel.ts
+  'help.tab.controls': 'All controls',
+  // @desc: Help tab listing what to try in a first session. Short (at most 14 characters).
+  // ui/helpModel.ts
+  'help.tab.goals': 'Goals',
+  // @desc: A Help goal: catch a wild monster.
+  // ui/helpModel.ts
+  'help.goal.recruit': 'Recruit a wild monster',
+  // @desc: A Help goal: win a battle.
+  // ui/helpModel.ts
+  'help.goal.battle': 'Win your first battle',
+  // @desc: A Help goal: trade with another player.
+  // ui/helpModel.ts
+  'help.goal.trade': 'Try trading with another tester',
+  // @desc: Help note on All controls: key names (keyboard keys, as drawn in this list) are not button names (the console buttons A, B, X, Y, LB, RB, Start, Select). Keep the button names as written.
+  // ui/helpModel.ts
+  'help.note.keysVsButtons': 'Keys are what you press on the keyboard; buttons (A, B, X, Y, LB, RB, Start, Select) are what they stand for. With the default keys, the key B opens Storage, while the button B goes back.',
   // @desc: Submit button of the profile-rename dialog; short verb, fits a narrow button.
   // index.html:60 (literal removed from index.html; resolved in RenameView show())
   'chrome.rename.submit': 'Rename',

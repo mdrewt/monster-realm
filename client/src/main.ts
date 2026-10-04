@@ -168,7 +168,7 @@ import type { HealView } from './ui/healView';
 import { buildHelpViewModel } from './ui/helpModel';
 import type { HelpView } from './ui/helpView';
 import { HintBarView } from './ui/hintBar';
-import { hintBar } from './ui/hintBarModel';
+import { type HintChip, hintBar } from './ui/hintBarModel';
 import { isRtl, negotiateLocale } from './ui/i18n/locale';
 import { CATALOGS, t as i18nT, setLocale, tf } from './ui/i18n/resolver';
 import {
@@ -191,6 +191,7 @@ import { EMPTY_NAV_MEMORY } from './ui/nav';
 import { renderNav } from './ui/navRender';
 import {
   buildNotices,
+  type Notice,
   type NoticeInput,
   pendingRequests,
   type RequestNotice,
@@ -1134,9 +1135,36 @@ function openPropose(target: string): void {
   seatOpened('tradeProposeView');
 }
 
+/** Help (ctl-14): This screen lists the hint bar of the context it opens over, so the chips are
+ *  read before Help joins the stack; seated at the open, so its tab strip paints then. */
 function openHelp(): void {
-  helpView?.render(buildHelpViewModel());
+  const pending = livePending();
+  const chip =
+    worldBaseLive() && !screenHost.sheetOpen ? interactChip(worldCandidates()) : null;
+  const screen = hintChips(contextStack, chip, buildNotices(noticeInput()), pending);
+  helpView?.render(buildHelpViewModel(screen, bindings));
   helpView?.show();
+  seatOpened('helpView');
+}
+
+/** The hint bar's chips for `stack` with the world's live state: the frame loop paints them
+ *  (ctl-13) and Help lists them (ctl-14). `chip` is what the character faces, else null. */
+function hintChips(
+  stack: Stack,
+  chip: InteractChip | null,
+  notices: readonly Notice[],
+  pending: readonly RequestNotice[],
+): readonly HintChip[] {
+  return hintBar(stack, bindings, notices, {
+    target:
+      chip === null
+        ? null
+        : chip.kind === 'single'
+          ? interactVerb(chip.action)
+          : i18nT('chrome.chip.ok'),
+    sheetOpen: screenHost.sheetOpen,
+    requestWaiting: pending.length > 0,
+  });
 }
 
 /** Options › Controls: seated at the open, so its rows paint then and not at the first button. */
@@ -4007,16 +4035,7 @@ async function main(): Promise<void> {
       const atWorld = contextStack.length === 1 && contextStack[0].kind === 'world';
       const bannerRequest = atWorld ? notices.find((n) => n.kind === 'request') : undefined;
       hintBarView?.render(
-        hintBar(contextStack, bindings, notices, {
-          target:
-            chip === null
-              ? null
-              : chip.kind === 'single'
-                ? interactVerb(chip.action)
-                : i18nT('chrome.chip.ok'),
-          sheetOpen: screenHost.sheetOpen,
-          requestWaiting: pending.length > 0,
-        }),
+        hintChips(contextStack, chip, notices, pending),
         bannerRequest?.kind === 'request' ? requestLine(bannerRequest) : null,
       );
       lastFrameErrorMessage = null;

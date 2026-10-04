@@ -759,7 +759,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // ui/menuModel.ts; ctl-6c adds ui/screens/mainMenuScreen.ts; ctl-12 adds input/glyphs.ts and
     // ui/controlsModel.ts; ctl-12b adds ui/controlsView.ts, while the pure
     // ui/screens/optionsScreen.ts imports no resolver; ctl-13 adds ui/hintBar.ts and
-    // ui/hintBarModel.ts) is only reachable via real binding resolution.
+    // ui/hintBarModel.ts; ctl-14 adds ui/helpModel.ts, while the pure ui/screens/helpScreen.ts
+    // imports no resolver) is only reachable via real binding resolution.
     expect(i18nRoster, `resolver-importing roster: ${JSON.stringify(i18nRoster)}`).toEqual([
       'input/glyphs.ts',
       'main.ts',
@@ -775,6 +776,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'ui/evolutionNotice.ts',
       'ui/evolutionView.ts',
       'ui/healView.ts',
+      'ui/helpModel.ts',
       'ui/helpView.ts',
       'ui/hintBar.ts',
       'ui/hintBarModel.ts',

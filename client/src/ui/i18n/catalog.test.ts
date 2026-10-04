@@ -437,6 +437,14 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
+  // ctl-14 (CTL14.1): the generated Help's tab titles, goals and note.
+  'help.tab.screen': 'This screen',
+  'help.tab.controls': 'All controls',
+  'help.tab.goals': 'Goals',
+  'help.goal.recruit': 'Recruit a wild monster',
+  'help.goal.battle': 'Win your first battle',
+  'help.goal.trade': 'Try trading with another tester',
+  'help.note.keysVsButtons': 'Keys are what you press on the keyboard; buttons (A, B, X, Y, LB, RB, Start, Select) are what they stand for. With the default keys, the key B opens Storage, while the button B goes back.',
   'chrome.rename.submit': 'Rename',
   'chrome.tradePropose.submit': 'Offer',
   'chrome.status.exportBlocked': 'data export: download blocked by the browser',
@@ -1331,7 +1339,9 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 363-key roster (ctl-13: +`chrome.chip.{ok,back,close,view,dismiss,done}`
+/** The full 370-key roster (ctl-14: +`help.tab.{screen,controls,goals}`
+ *  +`help.goal.{recruit,battle,trade}` +`help.note.keysVsButtons` over the 363-key roster below;
+ *  ctl-13: +`chrome.chip.{ok,back,close,view,dismiss,done}`
  *  +`chrome.badge.request` +`notice.sheet.{accept,decline,view}` +`notice.request.{trade,challenge}`
  *  over the 351-key roster below; ctl-12b: +15 `controls.*` / `menu.options.controls.*` keys over the
  *  336-key roster below; ctl-12: +43 `key.*` / `controls.*` keys over the 293-key roster below;
@@ -1418,7 +1428,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-13 363-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-14 370-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1507,13 +1517,13 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 363 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 370 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (363 keys since ctl-13: +10 plain, +2
+    // (a) roster is exactly the EXPECTED_KEYS roster (370 keys since ctl-14: +7 plain; 363 since ctl-13: +10 plain, +2
     // parameterised; was 351 since ctl-12b).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ctl-13 roster is 363 keys').toHaveLength(363);
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ctl-14 roster is 370 keys').toHaveLength(370);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(

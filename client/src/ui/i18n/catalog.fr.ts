@@ -303,6 +303,27 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
   // index.html:94 (resolved in HelpView show())
   'chrome.help.title': 'Commandes et objectifs',
+  // @desc: Help tab listing the buttons of the screen Help was opened over. Short (at most 14 characters).
+  // ui/helpModel.ts
+  'help.tab.screen': 'Cet écran',
+  // @desc: Help tab listing every button and shortcut with its current keys. Short (at most 14 characters).
+  // ui/helpModel.ts
+  'help.tab.controls': 'Commandes',
+  // @desc: Help tab listing what to try in a first session. Short (at most 14 characters).
+  // ui/helpModel.ts
+  'help.tab.goals': 'Objectifs',
+  // @desc: A Help goal: catch a wild monster.
+  // ui/helpModel.ts
+  'help.goal.recruit': 'Recruter un monstre sauvage',
+  // @desc: A Help goal: win a battle.
+  // ui/helpModel.ts
+  'help.goal.battle': 'Gagner votre premier combat',
+  // @desc: A Help goal: trade with another player.
+  // ui/helpModel.ts
+  'help.goal.trade': 'Essayer un échange avec un autre testeur',
+  // @desc: Help note on All controls: key names (keyboard keys, as drawn in this list) are not button names (the console buttons A, B, X, Y, LB, RB, Start, Select). Keep the button names as written.
+  // ui/helpModel.ts
+  'help.note.keysVsButtons': 'Les touches sont celles du clavier ; les boutons (A, B, X, Y, LB, RB, Start, Select) sont ce qu’elles représentent. Avec les touches par défaut, la touche B ouvre le Stockage, tandis que le bouton B revient en arrière.',
   // @desc: Submit button of the profile-rename dialog; short verb, fits a narrow button.
   // index.html:60 (resolved in RenameView show())
   'chrome.rename.submit': 'Renommer',
