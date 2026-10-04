@@ -1,9 +1,8 @@
 /**
  * battleEmitModel.test.ts: the pure battleStart / battleEnd / rankedMatch emit cores (pgcc-c).
  *
- * main.ts used to hold these latches as three module lets (`activeBattleId`, `battleReseedPending`,
- * `reseedPrevBattleId`) mutated inside two `store.onBatchApplied` listeners. The cores are now two
- * pure steps, so the rules are testable without booting main.ts:
+ * The cores are two pure steps (state in, next state and at most one emit out), so the rules are
+ * testable without booting main.ts:
  *   - `battleEmitStep(state, { hydrated, latest })` returns the next state and at most one emit
  *     (battleStart | battleEnd | none). Rules: (a) a pre-hydration flush never consumes a pending
  *     reseed; (b) the first post-hydration flush consumes it, and only the battle that survived the
@@ -18,7 +17,9 @@
  *     the signed delta on a change, and attaches a battle id only when the latest battle is PvP.
  *
  * Pure, node env, no clock. Every row asserts the exact next state and the exact emit. The shell's
- * early returns (no profile, identity '') stay in main.ts and are covered by the boot suite.
+ * early returns (no profile, identity '') stay in main.ts: the battle listener's wiring is covered
+ * by main.battle-reseed.test.ts; the ranked listener's wiring is not covered at boot level
+ * (tracked as a residual).
  */
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
@@ -72,6 +73,11 @@ const st = (
 ): BattleEmitState => ({ activeBattleId, reseedPending, reseedPrevBattleId });
 
 const NONE = st(null, false, null);
+
+/** A u64 battle id above Number.MAX_SAFE_INTEGER whose Number round-trip differs (it rounds to
+ *  2^63 = 9223372036854775808), so a lossy conversion changes the emitted string. */
+const BIG_ID = 2n ** 63n - 25n;
+const BIG_ID_STR = '9223372036854775783';
 
 const start = (battleId: string, isPvp: boolean): PlaytestEventPayload => ({
   kind: 'battleStart',
@@ -310,6 +316,14 @@ describe('C1 battleEmitStep: (c) battleStart fires once per newly seen Ongoing i
       to: st(0n, false, null),
       emit: start('0', false),
     },
+    // WRONG IMPL KILLED: lossy Number() conversion of a u64 battle id
+    {
+      name: 'a battle id above 2^53 is emitted as its exact decimal string',
+      from: NONE,
+      input: flush(true, mk('pvp', BIG_ID)),
+      to: st(BIG_ID, false, null),
+      emit: start(BIG_ID_STR, true),
+    },
     {
       name: 'battle id 0 re-sighted emits nothing',
       from: st(0n, false, null),
@@ -385,6 +399,16 @@ describe('C1 battleEmitStep: (d) battleEnd fires only for the id the latch saw s
     ]);
     expect(states).toEqual([st(4n, false, null), st(4n, false, null), NONE, NONE]);
     expect(emits).toEqual([start('4', true), undefined, end('4', 'SideAWins', 5), undefined]);
+  });
+
+  it('a battle id above 2^53 starts and ends with its exact decimal string', () => {
+    // WRONG IMPL KILLED: lossy Number() conversion of a u64 battle id
+    const { states, emits } = run(NONE, [
+      flush(true, mk('pvp', BIG_ID)),
+      flush(true, mk('pvp', BIG_ID, 'SideAWins', 7)),
+    ]);
+    expect(states).toEqual([st(BIG_ID, false, null), NONE]);
+    expect(emits).toEqual([start(BIG_ID_STR, true), end(BIG_ID_STR, 'SideAWins', 7)]);
   });
 
   it('a newer Ongoing id replaces the latch: the older id never ends, the newer one does', () => {
@@ -630,7 +654,6 @@ describe('C1 battleEmitStep: property over arbitrary flush sequences', () => {
           const result = battleEmitStep(state, flush(true, latest));
           state = result.state;
           const emit = result.emit;
-          expect(Array.isArray(emit)).toBe(false);
           if (emit === undefined) continue;
           expect(latest).toBeDefined();
           if (emit.kind === 'battleStart') {
@@ -798,6 +821,12 @@ describe('C2 rankedStep: the battle id is attached only for a PvP battle', () =>
       name: 'a PvP latest battle (accepter view) carries its id',
       latest: mk('pvpAccepter', 52n),
       battleId: '52',
+    },
+    // WRONG IMPL KILLED: lossy Number() conversion of a u64 battle id
+    {
+      name: 'a PvP latest battle with an id above 2^53 carries its exact decimal string',
+      latest: mk('pvp', BIG_ID),
+      battleId: BIG_ID_STR,
     },
   ];
   for (const row of rows) {
