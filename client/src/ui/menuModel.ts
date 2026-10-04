@@ -171,3 +171,14 @@ export const menuTitle = (): string => t('menu.title');
 export function menuGroup(key: MenuGroupKey): MenuGroup | undefined {
   return MENU_ENTRIES.find((e): e is MenuGroup => e.kind === 'group' && e.key === key);
 }
+
+/** `labels` with the Social row badged while a trade or challenge request waits (ctl-13, CTL13.2):
+ *  the badge is text, so a screen reader reads it. The SAME object when nothing changes. */
+export function withRequestBadge(
+  labels: Readonly<Record<string, string>>,
+  waiting: boolean,
+): Readonly<Record<string, string>> {
+  const social = labels.social;
+  if (!waiting || social === undefined) return labels;
+  return { ...labels, social: `${social} (${t('chrome.badge.request')})` };
+}

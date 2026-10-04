@@ -1481,11 +1481,13 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     expect(start, '#chip-start must exist (client/index.html)').not.toBeNull();
     expect(select, '#chip-select must exist (client/index.html)').not.toBeNull();
     // The EN literals are asserted too, so an empty-string catalog entry cannot satisfy the
-    // catalog-equality below.
-    expect(start?.textContent).toBe('Menu');
-    expect(select?.textContent).toBe('Help');
-    expect(start?.textContent).toBe(i18nT('chrome.chip.menu' as never));
-    expect(select?.textContent).toBe(i18nT('chrome.chip.help' as never));
+    // catalog-equality below. ctl-13: a chip is keycap + verb parts; the verb is `.mr-chip-verb`.
+    const startVerb = start?.querySelector('.mr-chip-verb')?.textContent;
+    const selectVerb = select?.querySelector('.mr-chip-verb')?.textContent;
+    expect(startVerb).toBe('Menu');
+    expect(selectVerb).toBe('Help');
+    expect(startVerb).toBe(i18nT('chrome.chip.menu' as never));
+    expect(selectVerb).toBe(i18nT('chrome.chip.help' as never));
     expect(document.getElementById('help-hint'), '#help-hint is retired').toBeNull();
   });
 

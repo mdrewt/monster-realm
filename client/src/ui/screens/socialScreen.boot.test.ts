@@ -28,8 +28,8 @@
  * ctl-11a (named intentional change, every case that opens Social with U, P or L): an accelerator
  * pops to the base and opens its menu path, so Social sits OVER the menu (the world, the menu, then
  * the Social frame) and `expectSocialOn` reads that stack (`SOCIAL_STACK`; was: the world, then the
- * Social frame). Social opened by the incoming-challenge auto-show opens no menu, so its stack stays
- * the world, then Social (`SOCIAL_AUTO_STACK`). Start still pops everything to the bare world.
+ * Social frame). ctl-13 retired the incoming-challenge auto-show: a challenge opens nothing.
+ * Start still pops everything to the bare world.
  *
  * Every case asserts what only the real Social adapter paints (the selected `#social-tab-<tab>`,
  * the cursor mark, the sheet and the prompt), never just the panel shown: ctl-8s already opens the
@@ -387,8 +387,6 @@ const SOCIAL_ENTRY = { kind: 'screen', id: 'social' } as const;
 /** INTENTIONAL CHANGE (ctl-11a): Social opened by U, P or L (the accelerator's menu path) sits over
  *  the menu. Was: `[WORLD_FRAME, SOCIAL_ENTRY]`. */
 const SOCIAL_STACK = [WORLD_FRAME, MENU_FRAME, SOCIAL_ENTRY];
-/** Social opened by the incoming-challenge auto-show: no menu is opened, so nothing is beneath it. */
-const SOCIAL_AUTO_STACK = [WORLD_FRAME, SOCIAL_ENTRY];
 
 function el(id: string): HTMLElement {
   const found = document.getElementById(id);
@@ -426,8 +424,7 @@ function tabLabel(tab: SocialTab): string {
 /** Social is the one Social frame, on `tab`: that tab's root is the one shown, its first child is
  *  the chrome holding the one tab strip, the strip lists the four tabs in order with their
  *  catalogued labels, and exactly `tab` is selected (is-active and aria-selected). `stack` is the
- *  whole stack it sits in: over the menu by default (opened by U, P or L, ctl-11a), or alone over
- *  the world (`SOCIAL_AUTO_STACK`, the auto-show). */
+ *  whole stack it sits in: over the menu by default (opened by U, P or L, ctl-11a). */
 function expectSocialOn(
   label: string,
   tab: SocialTab,
@@ -578,8 +575,8 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     // and the board list hidden), or one that leaves the old placeholder in the hidden trade root;
     // and an auto-show that opens on the remembered tab (Trades) or puts no cursor on the request.
     // ctl-11a (named intentional change): RETIRED the stack `[world, social]` for every Social open
-    // by U; REPLACED by `[world, menuView, social]` (`expectSocialOn`'s default). The auto-show at
-    // the end keeps `[world, social]`: it opens no menu (`SOCIAL_AUTO_STACK`), and is asserted so.
+    // by U; REPLACED by `[world, menuView, social]` (`expectSocialOn`'s default). ctl-13 retired the
+    // auto-show at the end: the incoming challenge opens nothing, and P opens it.
     await bootReady();
     server(1000);
     let at = 1100;
@@ -623,10 +620,13 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     expect(stackNow(), 'precondition: Start closed Social').toEqual([WORLD_FRAME]);
     expect(shownRoots(), 'precondition: no Social root is shown').toEqual([]);
 
-    // The auto-show: an incoming challenge, Social closed, no overlay up, a world base.
+    // ctl-13 (named intentional change, CTL13.2): RETIRED the auto-show. An incoming challenge
+    // opens nothing; P opens Social on Challenges, the cursor on the request.
     opts.store.upsertChallenge(incomingChallenge(AUTO_SHOW_CHALLENGE_ID));
     server(at);
-    expectSocialOn('auto-show', 'challenges', SOCIAL_AUTO_STACK);
+    expect(stackNow(), 'ctl-13: an incoming challenge opens nothing').toEqual([WORLD_FRAME]);
+    key('KeyP');
+    expectSocialOn('P over an incoming challenge', 'challenges');
     expect(
       document.querySelector('[data-testid="pvp-incoming-label"]'),
       'precondition: the request is listed in the pvp root',
@@ -649,7 +649,7 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     // accepted:false, as confirmTrade, for the wrong id, or only after a prompt.
     // ctl-11a (named intentional change): RETIRED the stack `[world, social]` after P and after U
     // (`expectSocialOn` reads it); REPLACED by `[world, menuView, social]`. The incoming challenge's
-    // auto-show opens no menu: its precondition is `[world, social]` (`SOCIAL_AUTO_STACK`).
+    // auto-show (retired by ctl-13: the incoming challenge opens nothing).
     await bootReady();
     server(1000);
     opts.store.upsertMonster(partyMonster(PARTY_MONSTER_ID));
@@ -658,11 +658,10 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     // --- a challenge: Decline asks Yes / No, No first -----------------------------------------
     opts.store.upsertChallenge(incomingChallenge(CHALLENGE_ID));
     server(1100);
-    expect(stackNow(), 'precondition: the incoming challenge opened Social').toEqual(
-      SOCIAL_AUTO_STACK,
-    );
-    press('Escape', 1110);
-    expect(stackNow(), 'precondition: Start closed it').toEqual([WORLD_FRAME]);
+    // ctl-13 (named intentional change, CTL13.2): the incoming challenge opens nothing.
+    expect(stackNow(), 'precondition: the incoming challenge opened nothing').toEqual([
+      WORLD_FRAME,
+    ]);
     press('KeyP', 1200);
     expectSocialOn('P', 'challenges');
     expect(cursorMark(el('pvp-challenge-incoming')), 'P: the cursor is on the request').toEqual(

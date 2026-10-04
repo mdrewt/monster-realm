@@ -128,14 +128,14 @@ describe('m24s5 (ADR-0261): errorOverlayView.ts routes its footer through t()', 
 
     view.show();
     expect(i18nT).toHaveBeenCalledWith('errorOverlay.footer');
-    expect(footer.textContent).toBe('F8 dismiss · F9 bug report');
+    expect(footer.textContent).toBe('B or F8 dismiss · F9 bug report'); // ctl-13: B dismisses too
 
     vi.mocked(i18nT).mockClear();
     view.render(vm([{ message: 'reducer trouble', tMs: 10, source: 'reducer' }]));
     expect(
       footer.textContent,
       'render() must not blank or re-paint the footer — it resolves only in show()',
-    ).toBe('F8 dismiss · F9 bug report');
+    ).toBe('B or F8 dismiss · F9 bug report');
     expect(
       i18nT,
       'render() must never call the resolver with the footer key',
@@ -155,7 +155,7 @@ describe('m24s5 (ADR-0261): errorOverlayView.ts routes its footer through t()', 
     });
     expect(() => view.render(hostile)).not.toThrow();
     expect(footer.textContent, 'a hostile render() must not clobber the footer').toBe(
-      'F8 dismiss · F9 bug report',
+      'B or F8 dismiss · F9 bug report',
     );
 
     vi.mocked(i18nT).mockClear();

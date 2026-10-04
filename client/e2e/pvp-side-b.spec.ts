@@ -294,8 +294,8 @@ test.describe
       const nameB = `PvpB${uniqueSuffix}`;
       await Promise.all([renamePlayer(pageA, nameA), renamePlayer(pageB, nameB)]);
 
-      // B must have no overlay open — the incoming-challenge auto-show requires
-      // !anyOverlayVisible (ranked-forfeit.spec.ts:282-287 precedent). renamePlayer already
+      // B must have no overlay open — P must OPEN Social (with Social already up it would act as
+      // Start and close it; the retired auto-show needed a bare world too). renamePlayer already
       // closes its own overlay on exit; this is a defensive re-assert immediately before
       // the challenge, matching the ranked-forfeit.spec.ts placement exactly.
       await closeAll(pageB);
@@ -307,11 +307,19 @@ test.describe
       // the row is unambiguous) and answers Yes at the confirm (the default).
       await openFaceToFace(pageA, 'Challenge', nameB, pageB);
 
-      // B accepts through the real DOM button. `acceptedAt` is captured HERE (never
+      // B accepts through the real DOM button. INTENTIONAL CHANGE (ctl-13, CTL13.4): the incoming
+      // challenge no longer opens the Challenges overlay by itself, so B first sees the banner and
+      // opens Social on Challenges itself (P: the same panel the auto-show used to open, with the
+      // same accept button). Y is not used here on purpose: A stands on B's tile (the face-to-face
+      // start), so for B that player is a TARGET and Y would open the player's sheet, not the
+      // request's (respond-request.spec.ts answers with Y then Enter from a target-free tile).
+      // `acceptedAt` is captured HERE (never
       // earlier) — the server's PVP_TURN_DEADLINE_MS clock starts at accept_challenge, so
       // capturing before A's challenge-button poll (or before the rename steps above)
       // would fold unrelated setup time into the 45s budget asserted below (see the file
       // header's DEADLINE HEADROOM ARITHMETIC).
+      await expect(pageB.locator('#notice-banner')).toBeVisible({ timeout: 15_000 });
+      await pressAccel(pageB, 'P');
       await pageB.waitForSelector('[data-testid="pvp-accept-btn"]', { timeout: 15_000 });
       await pageB.click('[data-testid="pvp-accept-btn"]');
       const acceptedAt = Date.now();

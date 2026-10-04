@@ -7,7 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll, openFaceToFace } from './controls';
+import { closeAll, openFaceToFace, pressAccel } from './controls';
 
 // Ranked PvP forfeit e2e (RL-18)
 //
@@ -324,8 +324,8 @@ test.describe
       const normB = normalizeIdentity(identityB);
 
       // Step 2: closeAll on B first (AM-5) to ensure no overlay is visible
-      // (auto-show on pvp-accept-btn requires !anyOverlayVisible; a stale overlay
-      // would suppress the auto-show and leave B unable to accept).
+      // (P in step 5 must OPEN Social on a bare world; a stale overlay would make it act as
+      // Start or replace the wrong screen and leave B unable to accept).
       await closeAll(pageB);
 
       // Steps 3 and 4 (INTENTIONAL CHANGE, ctl-10b CTL10B.1-2): the PvP overlay no longer lists
@@ -337,10 +337,15 @@ test.describe
       // WHAT THIS KILLS: a UI that offers a challenge to A itself (self-challenge), or none at all.
       await openFaceToFace(pageA, 'Challenge', 'Player', pageB);
 
-      // Step 5: B waits for pvp-accept-btn to appear (auto-show on incoming challenge;
-      // requires !anyOverlayVisible — that is why B ran closeAll in step 2).
-      // WHAT THIS KILLS: a pvp overlay that does not auto-show on incoming challenge,
-      // or an accept button that is absent from the rendered incoming section.
+      // Step 5: B waits for pvp-accept-btn to appear. INTENTIONAL CHANGE (ctl-13, CTL13.2): the
+      // incoming challenge no longer opens the overlay by itself (that auto-show is deleted), so
+      // B sees the banner and opens Social on Challenges with P (a bare world base, which is why
+      // B ran closeAll in step 2: with Social already up P would close it). Y is not used here:
+      // A stands on B's tile, so for B that player is a target (the Y sheet is the player's).
+      // WHAT THIS KILLS: a request that is never announced (no banner), or an accept button that
+      // is absent from the rendered incoming section.
+      await expect(pageB.locator('#notice-banner')).toBeVisible({ timeout: 15_000 });
+      await pressAccel(pageB, 'P');
       const acceptSelector = '[data-testid="pvp-accept-btn"]';
       await pageB.waitForSelector(acceptSelector, { timeout: 15_000 });
 

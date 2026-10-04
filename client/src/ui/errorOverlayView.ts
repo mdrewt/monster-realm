@@ -1,4 +1,4 @@
-// ui/errorOverlayView.ts — self-mounting DOM shell for the F9 error overlay.
+// ui/errorOverlayView.ts — self-mounting DOM shell for the F9 error overlay: the error toast.
 //
 // Source-of-truth: M-playtest-b error overlay DOM shell (EARS U-4 XSS, S-3, M-2 total render).
 //
@@ -30,6 +30,9 @@ export class ErrorOverlayView {
   constructor(mount: HTMLElement = document.body) {
     const root = document.createElement('div');
     root.id = this.rootId;
+    // ctl-13: the overlay is the error toast (main.ts feeds it the errors since its last dismissal); B at the
+    // world or F8 dismisses it.
+    root.className = 'mr-toast';
     root.style.display = 'none';
     // Non-blocking: the diagnostic overlay must never capture pointer events over the canvas.
     root.style.pointerEvents = 'none';

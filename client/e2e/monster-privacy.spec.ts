@@ -449,8 +449,8 @@ test.describe
       const nameB = `MpB${uniqueSuffix}`;
       await Promise.all([renamePlayer(pageA, nameA), renamePlayer(pageB, nameB)]);
 
-      // B must have no overlay open — the incoming-challenge auto-show requires
-      // !anyOverlayVisible (ranked-forfeit.spec.ts:282 precedent).
+      // B must have no overlay open — P below must OPEN Social, not act as Start over an open
+      // screen (ranked-forfeit.spec.ts precedent).
       await closeAll(pageB);
 
       // A challenges B through the production DOM (INTENTIONAL CHANGE, ctl-10b CTL10B.1-2: the
@@ -460,7 +460,12 @@ test.describe
       // answers Yes at the confirm.
       await openFaceToFace(pageA, 'Challenge', nameB, pageB);
 
-      // B accepts through the real DOM button.
+      // B accepts through the real DOM button. INTENTIONAL CHANGE (ctl-13, CTL13.2): the incoming
+      // challenge no longer opens the overlay by itself, so B opens Social on Challenges (P) first;
+      // the banner is what announces the request. (Y is not used: A stands on B's tile, so for B
+      // that player is a target.)
+      await expect(pageB.locator('#notice-banner')).toBeVisible({ timeout: 15_000 });
+      await pressAccel(pageB, 'P');
       await pageB.waitForSelector('[data-testid="pvp-accept-btn"]', { timeout: 15_000 });
       await pageB.click('[data-testid="pvp-accept-btn"]');
 

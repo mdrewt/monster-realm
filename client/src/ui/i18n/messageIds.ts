@@ -25,6 +25,18 @@
 export type MessageId =
   | 'chrome.chip.menu'
   | 'chrome.chip.help'
+  | 'chrome.chip.ok'
+  | 'chrome.chip.back'
+  | 'chrome.chip.close'
+  | 'chrome.chip.view'
+  | 'chrome.chip.dismiss'
+  | 'chrome.chip.done'
+  | 'chrome.badge.request'
+  | 'notice.sheet.accept'
+  | 'notice.sheet.decline'
+  | 'notice.sheet.view'
+  | 'notice.request.trade'
+  | 'notice.request.challenge'
   // interact.* / key.* : the world interaction chip and picker (main.ts, ctl-10a).
   | 'interact.chip'
   | 'interact.choose'
@@ -416,6 +428,8 @@ export type MessageId =
 export interface MessageParams {
   readonly 'chrome.status.disconnected': { readonly where: string };
   readonly 'interact.chip': { readonly key: string; readonly verb: string; readonly name: string };
+  readonly 'notice.request.trade': { readonly name: string };
+  readonly 'notice.request.challenge': { readonly name: string };
   readonly 'interact.choose': { readonly key: string };
   readonly 'interact.entry': { readonly verb: string; readonly name: string };
   readonly 'interact.confirm.challenge': { readonly name: string };

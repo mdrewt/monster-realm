@@ -204,12 +204,12 @@ test.describe
 // Two players, each in its own chromium.launch() (two browsers, two SpacetimeDB identities: the
 // pvp-side-b.spec.ts design). A challenges B through the DEV reducer hook (ctl-10b: the PvP overlay
 // has no per-player Challenge button any more) and presses P to see its outgoing request. B never
-// opens anything: the incoming challenge opens
-// Social on its Challenges tab with the cursor on the request. B answers it from the action sheet:
+// opens anything: the incoming challenge shows a banner (ctl-13: it no longer opens Social by itself),
+// and B opens Social on its Challenges tab (P) with the cursor on the request. B answers it from the action sheet:
 // A (Enter) opens Accept / Decline on Accept, Down then A on Decline asks Yes / No with No
 // selected, Up then A on Yes declines. The request is then gone for both players. Decline, not
 // Accept: it leaves no battle behind for the specs that run after this one, and answering is what
-// closes the request (the auto-show would re-open Social while it is pending).
+// closes the request (a pending request keeps its banner and badge).
 //
 // `__game()` is read only for readiness, the identities and closeAll's stack; every step is a key
 // press or a click on the production DOM.
@@ -261,7 +261,7 @@ test.describe
       expect(identityA, 'identityA must be non-empty').not.toBe('');
       expect(identityB, 'identityB must be non-empty').not.toBe('');
       expect(identityA, 'two players, two identities').not.toBe(identityB);
-      // Nothing open on either side: the auto-show needs no overlay up, and A's P must open.
+      // Nothing open on either side: A's P and B's P must open Social, not toggle it closed.
       await closeAll(pageA);
       await closeAll(pageB);
 
@@ -289,8 +289,16 @@ test.describe
         timeout: 15_000,
       });
 
-      // B: Social opens by itself, on Challenges, with the cursor on the request.
-      await expect(pageB.locator('#pvp-challenge-overlay')).toBeVisible({ timeout: 15_000 });
+      // B: INTENTIONAL CHANGE (ctl-13, CTL13.2): the incoming challenge no longer opens Social by
+      // itself. It shows the banner, and Social on Challenges opens when B asks for it (P), with
+      // the cursor on the request.
+      await expect(pageB.locator('#notice-banner')).toBeVisible({ timeout: 15_000 });
+      await expect(
+        pageB.locator('#pvp-challenge-overlay'),
+        'nothing opened by itself',
+      ).toBeHidden();
+      await pressAccel(pageB, 'P');
+      await expect(pageB.locator('#pvp-challenge-overlay')).toBeVisible({ timeout: 5_000 });
       await expect(pageB.locator('[data-testid="pvp-incoming-label"]')).toBeVisible();
       await expect(pageB.locator('#pvp-challenge-overlay #social-tabs')).toHaveCount(1);
       await expect(pageB.locator('#social-tab-challenges')).toHaveAttribute(

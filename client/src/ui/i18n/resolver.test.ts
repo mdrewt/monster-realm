@@ -65,6 +65,14 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
     expect(snapshot).toEqual({
       'chrome.chip.menu': 'Menu',
       'chrome.chip.help': 'Help',
+      // ctl-13: the live hint bar's verbs and the request badge.
+      'chrome.chip.ok': 'OK',
+      'chrome.chip.back': 'Back',
+      'chrome.chip.close': 'Close',
+      'chrome.chip.view': 'View',
+      'chrome.chip.dismiss': 'Dismiss',
+      'chrome.chip.done': 'Done',
+      'chrome.badge.request': 'New',
       'chrome.help.title': 'Controls & Goals',
       'chrome.rename.submit': 'Rename',
       'chrome.tradePropose.submit': 'Offer',

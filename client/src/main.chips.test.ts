@@ -393,9 +393,16 @@ describe('main.ts Start / Select hint-bar chips (runtime, ctl-7a)', { sequential
     const start = document.getElementById('chip-start');
     expect(select, '#chip-select must exist (client/index.html)').not.toBeNull();
     expect(start, '#chip-start must exist (client/index.html)').not.toBeNull();
-    expect(select?.textContent).toBe('Aide');
-    expect(select?.textContent, 'not the English verb').not.toBe('Help');
-    expect(start?.textContent).toBe('Menu');
+    // ctl-13 (named intentional change, CTL13.1): the hint bar is live. Each chip is a keycap part
+    // and a verb part, painted on the frame, so the verb is read from `.mr-chip-verb` (was the
+    // chip's whole textContent, written once at boot) after one frame.
+    server(1000, { x: 2, y: Y0, ack: 0 });
+    frame(1100);
+    const verbOf = (chip: HTMLElement | null): string | null =>
+      chip?.querySelector('.mr-chip-verb')?.textContent ?? null;
+    expect(verbOf(select)).toBe('Aide');
+    expect(verbOf(select), 'not the English verb').not.toBe('Help');
+    expect(verbOf(start)).toBe('Menu');
   });
 
   it('CTL7A-4-CHIPS-SESSION-GATED: while the session terminal shows, neither chip opens its overlay; once it is hidden again the same clicks do', async () => {
