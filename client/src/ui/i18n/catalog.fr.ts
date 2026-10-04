@@ -323,7 +323,8 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'help.goal.trade': 'Essayer un échange avec un autre testeur',
   // @desc: Help note on All controls: key names (keyboard keys, as drawn in this list) are not button names (the console buttons A, B, X, Y, LB, RB, Start, Select). Keep the button names as written.
   // ui/helpModel.ts
-  'help.note.keysVsButtons': 'Les touches sont celles du clavier ; les boutons (A, B, X, Y, LB, RB, Start, Select) sont ce qu’elles représentent. Avec les touches par défaut, la touche B ouvre le Stockage, tandis que le bouton B revient en arrière.',
+  'help.note.keysVsButtons':
+    'Les touches sont celles du clavier ; les boutons (A, B, X, Y, LB, RB, Start, Select) sont ce qu’elles représentent. Avec les touches par défaut, la touche B ouvre le Stockage, tandis que le bouton B revient en arrière.',
   // @desc: Submit button of the profile-rename dialog; short verb, fits a narrow button.
   // index.html:60 (resolved in RenameView show())
   'chrome.rename.submit': 'Renommer',

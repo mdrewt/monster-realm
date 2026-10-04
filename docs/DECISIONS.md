@@ -456,38 +456,50 @@ authentication and labels its series by database, so everything stays on loopbac
 **Rules out.** An exporter or polling reducer; ad-hoc `log::` formats in new code;
 exposing the stack without changing the Caddy bind address on purpose.
 
-## Client UI: one overlay registry, keyboard first
+## Client UI: virtual buttons, one context stack, one overlay frame
 
-**Decision.** Overlays are exclusive, except the main menu, which stays open beneath
-the screen it opens and never blocks one (`overlayVerdict` in `client/src/main.ts`).
-One pure function decides which may open:
-`canOpen` (`client/src/ui/overlayRegistry.ts`) reads a tier per overlay (a battle on
-top, guard-only modals that another hotkey never dismisses, and the Box, Raising &
-Inventory and Evolution overlays, which swap with each other). A battle that starts
-force-hides most open overlays, but never the dialogue overlay. The main menu (`M`) is a D-pad list whose entries open
-their screen above it
-(`client/src/ui/screens/mainMenuScreen.ts`); B closes that screen and returns to the menu. Each view keeps
-its state in a pure model (`*Model.ts`) with a thin DOM view (`*View.ts`). Text-input
-overlays clear held movement keys on open and own their keystrokes. The controls list
-has one source, `CONTROLS` in `client/src/ui/helpModel.ts`. `T` interacts with the
-nearest NPC, shop or heal tile (`nearestInteractable`), based on the NPC's
-`NpcInteraction` role column. Accessibility metadata for every overlay is one total
-record (`OVERLAY_A11Y`); status badges pair colour with a short text token defined
-once in `game-core` (`A11Y_TOKENS`, checked in `validate_content`); `Element.animate`
-is banned by a Biome plugin (`client/lint/no-waapi.grit`) because it ignores
+**Decision.** Every input resolves, through one binding table
+(`client/src/input/bindings.ts`), to a closed set of virtual buttons: D-pad, A, B, X, Y,
+LB, RB, Start, Select. Letter keys are optional accelerators that open a canonical menu
+path. Every screen is a frame on one pure context stack (`client/src/ui/contextStack.ts`)
+over a world or battle base. B pops one frame; Start pops to the base, or opens the main
+menu at a base. `SCREEN_POLICY` is a total record per frame (owner, battle behaviour,
+battle-safety). Server-owned state (battles, dialogue, requests) is reconciled into the
+stack on every batch, never pushed by a keypress, and the client never closes a
+server-owned frame itself; it sends the reducer (`dismissDialogue`). Which overlay may open
+over another is still the tier table `canOpen` reads (`client/src/ui/overlayRegistry.ts`).
+Every frame renders as a class-styled `.mr-frame` inside `#game-screen` with one chrome
+(`client/src/ui/frame.ts`). Menus are D-pad lists, grids and tabs
+(`client/src/ui/nav.ts`) whose active item is a key, never an index or a pointer cursor.
+The hint bar and Help are generated from the context table, the live bindings and the
+catalog (`client/src/ui/hintBarModel.ts`, `client/src/ui/helpModel.ts`). Bindings persist
+per browser in `localStorage['mr.controls']` (versioned; D-pad, A, B and Start always keep
+a key). Escape alone is routed in the capture phase, so a view's `stopPropagation` cannot
+trap it; every other key keeps the bubble phase, where text-entry views shield their
+fields from the accelerators. Each view keeps its state in a pure model (`*Model.ts`) with
+a thin DOM view. Accessibility metadata for every overlay is one total record
+(`OVERLAY_A11Y`); status badges pair colour with a short text token defined once in
+`game-core` (`A11Y_TOKENS`, checked in `validate_content`); `Element.animate` is banned by
+a Biome plugin (`client/lint/no-waapi.grit`) because it ignores
 `prefers-reduced-motion`. All UI strings come from a total typed catalog
-(`client/src/ui/i18n/`: `en` and `fr`); `t()` throws on a missing key, and
-`setLocale` throws on an unregistered locale.
+(`client/src/ui/i18n/`: `en` and `fr`); `t()` throws on a missing key, and `setLocale`
+throws on an unregistered locale.
 
-**Why.** Silently dismissing a modal on a stray keypress loses input, and for dialogue
-it desyncs server conversation state. Pure models make the UI logic testable without
-a DOM. A total catalog makes a missing translation a compile error rather than a
-blank label, and throwing (rather than showing the key) keeps an unwired string from
-looking wired.
+**Why.** A handheld-console grammar, where a few contextual buttons are primary and
+hotkeys are shortcuts, is the intended interface. One stack makes "back one level" and
+"exit everything" uniform. Silently dismissing a modal on a stray keypress loses input,
+and for dialogue it desyncs server conversation state, so server-owned frames follow the
+store and an ongoing battle cannot be hidden. Pure models make the UI logic testable
+without a DOM. Generated hints and help cannot drift from the bindings. A total catalog
+makes a missing translation a compile error rather than a blank label, and throwing
+(rather than showing the key) keeps an unwired string from looking wired.
 
-**Rules out.** Per-overlay mutual-exclusion checks; conveying meaning by colour
-alone; WAAPI animation; hard-coded UI strings; falling back to the key or `en` when a
-string is missing.
+**Rules out.** A feature reachable only by a hotkey; a hotkey-only discovery menu; a
+hand-written controls list; a dedicated interact key; new per-overlay tiers,
+mutual-exclusion checks or force-hide lists; overlays anchored to the window or in page
+flow; menus that hide themselves on a pick; conveying meaning by colour alone; WAAPI
+animation; hard-coded UI strings; falling back to the key or `en` when a string is
+missing.
 
 ## Interaction target: the tile in front, then your own tile
 

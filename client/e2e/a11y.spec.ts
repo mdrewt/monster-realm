@@ -93,8 +93,10 @@ const AXE_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
 // ctl-7a re-measured on its build in Chromium, twice, identical both runs: world 16
 // passes (floor 14), help 21 (floor 19; help is now an opaque .mr-frame), menu 25
 // (floor 23; unchanged since ctl-5, which made the menu a nav frame with chrome).
+// ctl-14 re-measured help on its build in Chromium, twice, identical both runs: 25 passes (floor
+// 23; Help gained a tab strip of three role="tab" items and generated rows). Was 21 (floor 19).
 const PASSES_FLOOR_WORLD = 14;
-const PASSES_FLOOR_HELP = 19;
+const PASSES_FLOOR_HELP = 23;
 const PASSES_FLOOR_MENU = 23;
 
 // axe reports `incomplete` for checks it could not DECIDE — neither a pass nor a
@@ -116,6 +118,7 @@ const PASSES_FLOOR_MENU = 23;
 // ctl-7a re-measured on its build in Chromium, twice, identical both runs: world 1
 // (#build-stamp), help 1 (#build-stamp; help is now an opaque .mr-frame, previously 23
 // nodes of text over the canvas), menu 1 (#build-stamp). Each ceiling is that count.
+// ctl-14 re-measured help, twice, identical: 1 (#build-stamp), so INCOMPLETE_CEILING_HELP stays 1.
 const INCOMPLETE_ALLOWED_IDS = ['color-contrast'];
 const INCOMPLETE_CEILING_WORLD = 1;
 const INCOMPLETE_CEILING_HELP = 1;
@@ -630,7 +633,21 @@ test.describe
       // Shift+Slash as a physical key.
       await page.keyboard.press('Shift+Slash');
       await expect(page.locator('#help-overlay')).toBeVisible();
+      // ctl-14: Help is generated. It opens on This screen (the world's hint bar: Start and Select
+      // with their keys), and RB shows All controls, which lists the F9 and F8 shortcuts.
+      const tabs = page.locator('#help-overlay [role="tab"]');
+      await expect(tabs).toHaveCount(3);
+      await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
+      await expect(page.locator('#help-screen')).toBeVisible();
+      await expect(page.locator('#help-screen li')).not.toHaveCount(0);
+      await expect(page.locator('#help-controls')).toBeHidden();
       await scanState(page, 'help overlay', PASSES_FLOOR_HELP, INCOMPLETE_CEILING_HELP);
+      await page.keyboard.press('KeyE');
+      await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
+      await expect(page.locator('#help-controls')).toBeVisible();
+      await expect(page.locator('#help-controls li', { hasText: 'F9' })).toHaveCount(1);
+      await expect(page.locator('#help-controls li', { hasText: 'F8' })).toHaveCount(1);
+      await expect(page.locator('#help-note')).toBeVisible();
       await page.keyboard.press('Escape');
       await expect(page.locator('#help-overlay')).toBeHidden();
     });

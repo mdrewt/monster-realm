@@ -444,7 +444,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'help.goal.recruit': 'Recruit a wild monster',
   'help.goal.battle': 'Win your first battle',
   'help.goal.trade': 'Try trading with another tester',
-  'help.note.keysVsButtons': 'Keys are what you press on the keyboard; buttons (A, B, X, Y, LB, RB, Start, Select) are what they stand for. With the default keys, the key B opens Storage, while the button B goes back.',
+  'help.note.keysVsButtons':
+    'Keys are what you press on the keyboard; buttons (A, B, X, Y, LB, RB, Start, Select) are what they stand for. With the default keys, the key B opens Storage, while the button B goes back.',
   'chrome.rename.submit': 'Rename',
   'chrome.tradePropose.submit': 'Offer',
   'chrome.status.exportBlocked': 'data export: download blocked by the browser',

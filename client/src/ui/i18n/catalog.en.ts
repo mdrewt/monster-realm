@@ -299,7 +299,8 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'help.goal.trade': 'Try trading with another tester',
   // @desc: Help note on All controls: key names (keyboard keys, as drawn in this list) are not button names (the console buttons A, B, X, Y, LB, RB, Start, Select). Keep the button names as written.
   // ui/helpModel.ts
-  'help.note.keysVsButtons': 'Keys are what you press on the keyboard; buttons (A, B, X, Y, LB, RB, Start, Select) are what they stand for. With the default keys, the key B opens Storage, while the button B goes back.',
+  'help.note.keysVsButtons':
+    'Keys are what you press on the keyboard; buttons (A, B, X, Y, LB, RB, Start, Select) are what they stand for. With the default keys, the key B opens Storage, while the button B goes back.',
   // @desc: Submit button of the profile-rename dialog; short verb, fits a narrow button.
   // index.html:60 (literal removed from index.html; resolved in RenameView show())
   'chrome.rename.submit': 'Rename',

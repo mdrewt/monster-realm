@@ -1139,8 +1139,7 @@ function openPropose(target: string): void {
  *  read before Help joins the stack; seated at the open, so its tab strip paints then. */
 function openHelp(): void {
   const pending = livePending();
-  const chip =
-    worldBaseLive() && !screenHost.sheetOpen ? interactChip(worldCandidates()) : null;
+  const chip = worldBaseLive() && !screenHost.sheetOpen ? interactChip(worldCandidates()) : null;
   const screen = hintChips(contextStack, chip, buildNotices(noticeInput()), pending);
   helpView?.render(buildHelpViewModel(screen, bindings));
   helpView?.show();
