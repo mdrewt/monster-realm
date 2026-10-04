@@ -2210,14 +2210,10 @@ const suppressNativeMovementDefault = (e: KeyboardEvent): void => {
     e.preventDefault();
 };
 
-// the scoped world-focus gate for the twelve overlay-open
-// hotkeys. The `=== document.body` disjunct is LOAD-BEARING and must never be "cleaned up":
-// a store-driven render(null) blurs a focused control back to <body>, and without
-// it every hotkey would be dead forever afterwards. Before main() runs, worldCanvasEl is null
-// and activeElement is <body>, so this is true and behaviour is identical to pre-M23.
-// A1 (fix cycle 1): each guard is `allow && (<self>?.visible || worldHasFocus())` — a same-key
-// press on an ALREADY-OPEN overlay is a toggle-CLOSE and is never gated; the gate covers only
-// the OPEN transitions (three merged e2e feature tests encode same-key-to-close).
+// The scoped world-focus gate of the menu and Help opens. The `=== document.body` disjunct is
+// LOAD-BEARING and must never be "cleaned up": a store-driven render(null) blurs a focused
+// control back to <body>, and without it both opens would be dead forever afterwards. Before
+// main() runs, worldCanvasEl is null and activeElement is <body>, so this is true.
 let worldCanvasEl: HTMLElement | null = null;
 const worldHasFocus = (): boolean => {
   const a = document.activeElement;
@@ -2266,7 +2262,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
     return;
   }
   // a press can arrive INSIDE the stale-focus window, before the frame edge has run — heal
-  // first, so the twelve gates read the healed state.
+  // first, so the world-focus gates read the healed state.
   if (focusInsideHiddenSubtree()) worldCanvasEl?.focus();
   // F9 downloads the local bug bundle; F8 dismisses the error overlay.
   // Handled EARLY (before letter-key branches) so they work under any overlay.
@@ -2311,8 +2307,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
   };
   // While the main menu or a nav-capable screen is the top frame the router drives it (the D-pad,
   // A, B, Y; held D-pad repeats come from the frame loop), so this precedes every movement and
-  // hotkey path below. Unconsumed keys (accelerators) fall through to the ladder, unrouted a
-  // second time.
+  // accelerator path below. Unconsumed keys (accelerators) fall through, unrouted a second time.
   if (menuPlace() === 'top' || screenHost.takesNav(contextStack)) {
     let consumed = false;
     for (const edge of keyEdges()) consumed = routeEdge(edge) || consumed;
