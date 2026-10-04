@@ -143,8 +143,6 @@ import { buildDialogueViewModel } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
 import { buildErrorOverlayModel } from './ui/errorOverlayModel';
 import { ErrorOverlayView } from './ui/errorOverlayView';
-import { HintBarView } from './ui/hintBar';
-import { hintBar } from './ui/hintBarModel';
 import { ErrorRing, type ErrorSource, normalizeError } from './ui/errorRing';
 import {
   EventRing,
@@ -169,6 +167,8 @@ import { buildHealViewModel, buildHealViewModelForLocation } from './ui/healMode
 import type { HealView } from './ui/healView';
 import { buildHelpViewModel } from './ui/helpModel';
 import type { HelpView } from './ui/helpView';
+import { HintBarView } from './ui/hintBar';
+import { hintBar } from './ui/hintBarModel';
 import { isRtl, negotiateLocale } from './ui/i18n/locale';
 import { CATALOGS, t as i18nT, setLocale, tf } from './ui/i18n/resolver';
 import {
@@ -185,6 +185,10 @@ import { buildLeaderboardViewModel } from './ui/leaderboardModel';
 import type { LeaderboardView } from './ui/leaderboardView';
 import { LiveRegion } from './ui/liveRegion';
 import { type MenuTarget, withRequestBadge } from './ui/menuModel';
+import type { MenuPointerInput, MenuView } from './ui/menuView';
+import type { MonstersTab } from './ui/monstersModel';
+import { EMPTY_NAV_MEMORY } from './ui/nav';
+import { renderNav } from './ui/navRender';
 import {
   buildNotices,
   type NoticeInput,
@@ -192,10 +196,6 @@ import {
   type RequestNotice,
   requestSheetLayout,
 } from './ui/noticeModel';
-import type { MenuPointerInput, MenuView } from './ui/menuView';
-import type { MonstersTab } from './ui/monstersModel';
-import { EMPTY_NAV_MEMORY } from './ui/nav';
-import { renderNav } from './ui/navRender';
 import {
   type CanOpenVerdict,
   canOpen,
@@ -1203,7 +1203,7 @@ const worldPort: WorldPort = {
     notices: () => buildNotices(noticeInput()),
     pending: () => pendingRequests(noticeInput()),
     dismiss: (key) => {
-      if (key === 'error') errorOverlayView?.dismiss();
+      if (key === 'error') dismissErrorToast();
       else dismissedRequests.add(key);
     },
     // View opens Social on the request's tab, through the same verdict as its own hotkey.
@@ -1816,6 +1816,16 @@ const eventRing = new EventRing(() => Date.now());
 const errorRing = new ErrorRing(() => Date.now());
 let errorOverlayView: ErrorOverlayView | undefined;
 let hintBarView: HintBarView | undefined;
+/** The newest ring sequence the error toast showed when it was last dismissed (ctl-13). */
+let toastDismissedSeq = -1;
+
+/** Dismiss the error toast (world B or F8): what it showed is not listed again. */
+function dismissErrorToast(): void {
+  toastDismissedSeq = errorRing
+    .snapshot()
+    .reduce((max, r) => Math.max(max, r.tSeq), toastDismissedSeq);
+  errorOverlayView?.dismiss();
+}
 // Re-entrancy guard: if rendering the overlay itself throws and re-enters pushError,
 // short-circuit so a render fault cannot recurse into a stack overflow.
 let handlingError = false;
@@ -1833,9 +1843,12 @@ function pushError(source: ErrorSource, raw: unknown): void {
       // The movement breadcrumb is BUNDLE-bound, never OVERLAY-bound. This ring
       // IS the overlay's source (newest 8), so unfiltered the 16 capped breadcrumbs would
       // surface silent rejections (M2 §3) and evict real errors from the visible window.
+      // The toast lists the errors since its last dismissal (ctl-13): a dismissed one stays gone.
       errorOverlayView.render(
         buildErrorOverlayModel(
-          errorRing.snapshot().filter((r) => !r.message.startsWith(MOVE_REJECT_PREFIX)),
+          errorRing
+            .snapshot()
+            .filter((r) => r.tSeq > toastDismissedSeq && !r.message.startsWith(MOVE_REJECT_PREFIX)),
         ),
       );
       if (!errorOverlayView.visible) errorOverlayView.show();
@@ -2430,7 +2443,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
   if (accel === 'F8') {
     // Only preventDefault when the overlay is actually visible (non-blocking otherwise).
     if (errorOverlayView?.visible) {
-      errorOverlayView.dismiss();
+      dismissErrorToast();
       e.preventDefault();
     }
     return;
