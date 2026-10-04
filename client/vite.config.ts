@@ -90,10 +90,9 @@ export default defineConfig({
         // e2e quality (DOM/Pixi/live-SDK, not unit-runnable), so measuring them here is
         // misleading — they are entry/shell files, not unit-coverable logic modules.
         // KNOWN FOLLOW-UP: a little inline glue logic still lives in the integration
-        // shells (e.g. main.ts's Escape terminal-dismiss latch + party-slot sentinel
-        // routing; battleView's bait-id parse; boxView's nickname-changed guard) —
-        // e2e-validated today; extracting it into pure cores for unit coverage is a
-        // separate client slice (this slice does not touch client/src logic).
+        // shells (e.g. main.ts's pvp opponent-name lookup and MOVE_REJECT_PREFIX toast
+        // filter; boxView's nickname-changed guard) — boot- or e2e-validated today; the
+        // rest moved to pure cores (battleModel, boxModel, battleEmitModel, …).
         'src/main.ts', // integration loop / app bootstrap (window.__game() snapshot)
         'src/net/connection.ts', // live SpacetimeDB adapter (wires store/batch/rowConvert)
         'src/render/world.ts', // WorldRenderer (Pixi); logic = the pure render cores

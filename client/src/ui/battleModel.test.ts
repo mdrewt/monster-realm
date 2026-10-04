@@ -16,6 +16,8 @@ import type {
   StoreBattle,
   StoreBattleMonster,
   StoreBattleSide,
+  StoreInventory,
+  StoreItemRow,
   StoreSkillRow,
   StoreSpeciesRow,
 } from '../net/store';
@@ -28,12 +30,16 @@ import {
   type BattleViewModel,
   battleCommands,
   battleVMsEqual,
+  buildBaitItems,
   buildBattleViewModel,
+  buildCureItems,
   type CursorDir,
   cursorStep,
   decideBattleOverlay,
   isPvpBattle,
   type OverlayState,
+  pvpPendingAfterBatch,
+  pvpSubmitPending,
   resolveBattlePick,
   shouldSkipBattleRefresh,
   skillCursor,
@@ -3908,5 +3914,186 @@ describe('ctl-8j: resolveBattlePick (CTL8J.1)', () => {
     expect(resolveBattlePick(vm, frozen)).toEqual(c8jRecruitPick(7));
     expect(resolveBattlePick(vm, frozen)).toEqual(c8jRecruitPick(7));
     expect(frozen).toEqual(c8jRecruitPick(7));
+  });
+});
+
+// =============================================================================
+// pgcc-d — battle item lists and PvP pending-turn decisions as pure cores
+// (D1 item builders, D2 pvp pending latch). Table cases, no DOM.
+// =============================================================================
+
+function pgccdStack(itemId: number, count: number): StoreInventory {
+  return { invId: BigInt(1000 + itemId * 10 + count), ownerIdentity: 'alice', itemId, count };
+}
+
+function pgccdDef(id: number, overrides: Partial<StoreItemRow> = {}): StoreItemRow {
+  return {
+    id,
+    name: `Item-${id}`,
+    description: '',
+    recruitBonus: 0,
+    trainStat: null,
+    trainAmount: 0,
+    sellPrice: 0n,
+    cureStatus: null,
+    ...overrides,
+  };
+}
+
+function pgccdDefs(...defs: StoreItemRow[]): ReadonlyMap<number, StoreItemRow> {
+  return new Map(defs.map((d) => [d.id, d]));
+}
+
+describe('PGCCD-D1 buildBaitItems / buildCureItems', () => {
+  it('PGCCD-D1 bait: one row per stack with the exact fields, in inventory order', () => {
+    // Kills: reordering by id/bonus/name; a missing or extra field; reading count from the def.
+    const defs = pgccdDefs(
+      pgccdDef(1, { name: 'Berry', recruitBonus: 10 }),
+      pgccdDef(2, { name: 'Pebble', recruitBonus: 0 }),
+      pgccdDef(3, { name: 'Feast', recruitBonus: 25 }),
+    );
+    const inventory = [pgccdStack(3, 2), pgccdStack(1, 5), pgccdStack(2, 1)];
+    expect(buildBaitItems(inventory, defs)).toStrictEqual([
+      { itemId: 3, name: 'Feast', recruitBonus: 25, count: 2 },
+      { itemId: 1, name: 'Berry', recruitBonus: 10, count: 5 },
+      { itemId: 2, name: 'Pebble', recruitBonus: 0, count: 1 },
+    ]);
+  });
+
+  it('PGCCD-D1 bait: no recruitBonus filter — a zero-bonus item and a cure item are both kept', () => {
+    // Kills: a `recruitBonus > 0` filter (buildBattleViewModel classifies later); a
+    // `cureStatus === null` filter.
+    const defs = pgccdDefs(
+      pgccdDef(1, { name: 'Pebble', recruitBonus: 0 }),
+      pgccdDef(2, { name: 'Antidote', recruitBonus: 0, cureStatus: 'Poison' }),
+    );
+    expect(buildBaitItems([pgccdStack(1, 3), pgccdStack(2, 4)], defs)).toStrictEqual([
+      { itemId: 1, name: 'Pebble', recruitBonus: 0, count: 3 },
+      { itemId: 2, name: 'Antidote', recruitBonus: 0, count: 4 },
+    ]);
+  });
+
+  it('PGCCD-D1 bait: a stack with no def is dropped without throwing, neighbours kept', () => {
+    // Kills: a placeholder row for the missing def; a non-null assertion that throws;
+    // dropping the stacks after the missing one.
+    const defs = pgccdDefs(pgccdDef(1, { name: 'Berry', recruitBonus: 5 }), pgccdDef(2));
+    let rows: unknown;
+    expect(() => {
+      rows = buildBaitItems([pgccdStack(1, 1), pgccdStack(99, 7), pgccdStack(2, 2)], defs);
+    }).not.toThrow();
+    expect(rows).toStrictEqual([
+      { itemId: 1, name: 'Berry', recruitBonus: 5, count: 1 },
+      { itemId: 2, name: 'Item-2', recruitBonus: 0, count: 2 },
+    ]);
+  });
+
+  it('PGCCD-D1 bait: two stacks of the same item stay two rows (no dedupe or merge)', () => {
+    // Kills: collapsing by itemId; summing counts.
+    const defs = pgccdDefs(pgccdDef(1, { name: 'Berry', recruitBonus: 5 }));
+    expect(buildBaitItems([pgccdStack(1, 2), pgccdStack(1, 3)], defs)).toStrictEqual([
+      { itemId: 1, name: 'Berry', recruitBonus: 5, count: 2 },
+      { itemId: 1, name: 'Berry', recruitBonus: 5, count: 3 },
+    ]);
+  });
+
+  it('PGCCD-D1 bait and cure: empty inventory or empty defs gives an empty list', () => {
+    // Kills: a throw / non-array on the empty edge.
+    const defs = pgccdDefs(pgccdDef(1, { recruitBonus: 5, cureStatus: 'Poison' }));
+    expect(buildBaitItems([], defs)).toStrictEqual([]);
+    expect(buildBaitItems([pgccdStack(1, 1)], pgccdDefs())).toStrictEqual([]);
+    expect(buildCureItems([], defs)).toStrictEqual([]);
+    expect(buildCureItems([pgccdStack(1, 1)], pgccdDefs())).toStrictEqual([]);
+  });
+
+  it('PGCCD-D1 cure: only stacks whose def has a cureStatus, exact fields, inventory order', () => {
+    // Kills: no cureStatus filter; reordering; a recruitBonus filter; wrong field set.
+    const defs = pgccdDefs(
+      pgccdDef(1, { name: 'Antidote', cureStatus: 'Poison', recruitBonus: 0 }),
+      pgccdDef(2, { name: 'Berry', recruitBonus: 10, cureStatus: null }),
+      pgccdDef(3, { name: 'Burn Heal', cureStatus: 'Burn', recruitBonus: 20 }),
+    );
+    const inventory = [pgccdStack(3, 2), pgccdStack(2, 9), pgccdStack(1, 4)];
+    expect(buildCureItems(inventory, defs)).toStrictEqual([
+      { itemId: 3, name: 'Burn Heal', cureStatus: 'Burn', count: 2 },
+      { itemId: 1, name: 'Antidote', cureStatus: 'Poison', count: 4 },
+    ]);
+  });
+
+  it("PGCCD-D1 cure: an empty-string cureStatus is kept (only null is 'not a cure')", () => {
+    // Kills: a falsy check (`!def.cureStatus`) that drops '' (today's rule is `=== null`).
+    const defs = pgccdDefs(pgccdDef(1, { name: 'Odd', cureStatus: '' }));
+    expect(buildCureItems([pgccdStack(1, 1)], defs)).toStrictEqual([
+      { itemId: 1, name: 'Odd', cureStatus: '', count: 1 },
+    ]);
+  });
+
+  it('PGCCD-D1 cure: a stack with no def is dropped without throwing, duplicates stay separate', () => {
+    // Kills: a placeholder row for the missing def; a throw; dedupe by itemId.
+    const defs = pgccdDefs(pgccdDef(1, { name: 'Antidote', cureStatus: 'Poison' }));
+    let rows: unknown;
+    expect(() => {
+      rows = buildCureItems([pgccdStack(1, 1), pgccdStack(99, 7), pgccdStack(1, 2)], defs);
+    }).not.toThrow();
+    expect(rows).toStrictEqual([
+      { itemId: 1, name: 'Antidote', cureStatus: 'Poison', count: 1 },
+      { itemId: 1, name: 'Antidote', cureStatus: 'Poison', count: 2 },
+    ]);
+  });
+});
+
+describe('PGCCD-D2 pvpPendingAfterBatch', () => {
+  it.each([
+    // [pending, turnNumber, outcome, expected]
+    [null, 5, 'Ongoing', null],
+    [null, 0, 'Ongoing', null],
+    [null, 5, 'SideAWins', null],
+    [null, 5, 'Fled', null],
+    [3, 4, 'Ongoing', null],
+    [3, 9, 'Ongoing', null],
+    [3, 3, 'Ongoing', 3],
+    [3, 2, 'Ongoing', 3],
+    [3, 0, 'Ongoing', 3],
+    [3, 3, 'SideAWins', null],
+    [3, 3, 'SideBWins', null],
+    [3, 3, 'Fled', null],
+    [3, 2, 'SideAWins', null],
+    [3, 2, 'SideBWins', null],
+    [3, 2, 'Fled', null],
+    [3, 4, 'SideBWins', null],
+    [0, 1, 'Ongoing', null],
+    [0, 0, 'Ongoing', 0],
+    [0, 0, 'SideBWins', null],
+    [0, 0, 'SideAWins', null],
+    [0, 0, 'Fled', null],
+  ] as const)('PGCCD-D2 pending %s, latest turn %i %s -> %s', (pending, turnNumber, outcome, expected) => {
+    // Kills: `>=` for `>`; `if (pending)` truthiness (pending 0 rows); `&&` for `||`;
+    // outcome checked only against 'Fled' (SideAWins/SideBWins rows); forfeit (same turn,
+    // non-Ongoing) not clearing; null pending being resurrected to a number.
+    expect(pvpPendingAfterBatch(pending, { turnNumber, outcome })).toBe(expected);
+  });
+});
+
+describe('PGCCD-D2 pvpSubmitPending', () => {
+  it.each([
+    // [prior, latest, expected]
+    [null, { turnNumber: 3 }, { pending: 3, onReject: null }],
+    [4, { turnNumber: 7 }, { pending: 7, onReject: 4 }],
+    [null, undefined, { pending: null, onReject: null }],
+    [4, undefined, { pending: null, onReject: 4 }],
+    [null, { turnNumber: 0 }, { pending: 0, onReject: null }],
+    [4, { turnNumber: 0 }, { pending: 0, onReject: 4 }],
+    [0, { turnNumber: 2 }, { pending: 2, onReject: 0 }],
+    [0, { turnNumber: 0 }, { pending: 0, onReject: 0 }],
+  ] as const)('PGCCD-D2 prior %s, latest %j -> %j', (prior, latest, expected) => {
+    // Kills: `latest?.turnNumber || null` (turn 0 -> null); onReject hardcoded null or
+    // equal to the new pending; `prior || null` (prior 0 -> null); a missing latest
+    // throwing or yielding undefined; extra keys on the result.
+    expect(pvpSubmitPending(prior, latest)).toStrictEqual(expected);
+  });
+
+  it('PGCCD-D2 a full battle row as latest: only its turnNumber is read', () => {
+    // Kills: reading a different field (battleId, createdAtMs) or spreading the row.
+    const latest = makeBattle({ turnNumber: 6, battleId: 99n });
+    expect(pvpSubmitPending(2, latest)).toStrictEqual({ pending: 6, onReject: 2 });
   });
 });

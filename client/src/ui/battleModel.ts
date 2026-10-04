@@ -8,7 +8,13 @@
 // delegated to a module-scope helper was a measured way to ship one derivation under test
 // and a different one in a production bundle).
 // The thin DOM shell (battleView.ts) renders these; the loop refreshes on batch.
-import type { StoreBattle, StoreSkillRow, StoreSpeciesRow } from '../net/store';
+import type {
+  StoreBattle,
+  StoreInventory,
+  StoreItemRow,
+  StoreSkillRow,
+  StoreSpeciesRow,
+} from '../net/store';
 import { hpPercent } from './boxModel';
 
 /**
@@ -188,8 +194,8 @@ export interface BenchMemberVM {
 
 /**
  * A bait item the player may apply to a recruit attempt. `recruitBonus > 0`
- * (the data-classify rule) is the ONLY criterion for inclusion — never
- * a hardcoded item id. Also serves directly as the selectable bait option in the
+ * (the data-classify rule) is the ONLY criterion for inclusion in `baitOptions`
+ * (`buildBattleViewModel`; `buildBaitItems` does not filter) — never a hardcoded item id. Also serves directly as the selectable bait option in the
  * recruit UI (consumed unchanged — no transformation, so no separate VM type).
  */
 export interface BaitItem {
@@ -210,6 +216,34 @@ export interface CureItem {
   /** The StatusKind variant name this item cures (e.g. "Poison"). Non-null by classify rule. */
   readonly cureStatus: string;
   readonly count: number;
+}
+
+/** The bait list from the player's own inventory × the item defs: one row per stack whose def
+ *  exists (a missing def drops that stack), unfiltered — `buildBattleViewModel` classifies by
+ *  `recruitBonus > 0`. */
+export function buildBaitItems(
+  inventory: readonly StoreInventory[],
+  itemDefs: ReadonlyMap<number, StoreItemRow>,
+): BaitItem[] {
+  return inventory.flatMap((inv) => {
+    const def = itemDefs.get(inv.itemId);
+    if (!def) return [];
+    return [
+      { itemId: inv.itemId, name: def.name, recruitBonus: def.recruitBonus, count: inv.count },
+    ];
+  });
+}
+
+/** The cure list: one row per stack whose def exists and cures a status (`cureStatus !== null`). */
+export function buildCureItems(
+  inventory: readonly StoreInventory[],
+  itemDefs: ReadonlyMap<number, StoreItemRow>,
+): CureItem[] {
+  return inventory.flatMap((inv) => {
+    const def = itemDefs.get(inv.itemId);
+    if (!def || def.cureStatus === null) return [];
+    return [{ itemId: inv.itemId, name: def.name, cureStatus: def.cureStatus, count: inv.count }];
+  });
 }
 
 /**
@@ -623,6 +657,28 @@ export function shouldSkipBattleRefresh(
   vm: BattleViewModel | null,
 ): boolean {
   return visible && vm !== null && lastVm !== null && battleVMsEqual(lastVm, vm);
+}
+
+// --- the PvP pending submit (battle_action is private: this is the client's only signal) --------
+
+/** The pending PvP submit after a batch: the turn it waits on, or null once the server resolved
+ *  it — the turn advanced past it, or the battle ended. Forfeit skips `advance_turn`, so the turn
+ *  stays put and only the outcome shows it. Nothing pending stays nothing pending. */
+export function pvpPendingAfterBatch(
+  pending: number | null,
+  latest: { readonly turnNumber: number; readonly outcome: string },
+): number | null {
+  if (pending === null) return null;
+  return latest.turnNumber > pending || latest.outcome !== 'Ongoing' ? null : pending;
+}
+
+/** A PvP submit, attack or swap alike: it waits on the latest battle's turn, and a rejection puts
+ *  back the pending value it replaced. */
+export function pvpSubmitPending(
+  prior: number | null,
+  latest: { readonly turnNumber: number } | undefined,
+): { readonly pending: number | null; readonly onReject: number | null } {
+  return { pending: latest?.turnNumber ?? null, onReject: prior };
 }
 
 // --- the battle command list and its cursor (ctl-8i, design §5 Battle) ---------------------------
