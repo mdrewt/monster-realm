@@ -34,15 +34,17 @@ import {
   type WasmDirection,
   type WasmMoveInput,
 } from './convert/convert';
-import { DEFAULT_BINDINGS } from './input/bindings';
+import { accelForCode, DEFAULT_BINDINGS } from './input/bindings';
 import type { ButtonEdge } from './input/buttons';
 import { isChord, KeyboardSource } from './input/keyboardSource';
 import {
+  type AccelPath,
+  accelDecision,
   InputRouter,
+  type MenuAccel,
   ownership,
   type RouteContext,
   type RouterEffect,
-  routedBindings,
   routerConsumes,
   typingKey,
 } from './input/router';
@@ -1162,7 +1164,7 @@ function interactName(c: InteractCandidate): string {
 
 /** The A button's keycap, from the live binding. */
 function interactKeycap(): string {
-  const code = ROUTED_BINDINGS.buttons.A[0] ?? '';
+  const code = DEFAULT_BINDINGS.buttons.A[0] ?? '';
   switch (code) {
     case 'Enter':
     case 'NumpadEnter':
@@ -1269,10 +1271,6 @@ function handleMenuPointer(input: MenuPointerInput): void {
 // the next stack and `applyStack` closes what it drops through each view's own hide path; the
 // stack itself stays the mirror of what is shown (`syncStack`).
 
-// The bindings the router reads: LB/RB only from PageUp/PageDown while the legacy ladder owns Q
-// and E (CTL6B.6, until ctl-11a).
-const ROUTED_BINDINGS = routedBindings(DEFAULT_BINDINGS);
-
 /** The read-only context adapters build their view models from. The getters read live state: the
  *  bound ids and the one `motionPreference` (never a second `matchMedia` read, A11Y-28). */
 const screenCtx: ScreenContext = {
@@ -1280,7 +1278,7 @@ const screenCtx: ScreenContext = {
   get identity() {
     return identity;
   },
-  bindings: ROUTED_BINDINGS,
+  bindings: DEFAULT_BINDINGS,
   now: () => performance.now(),
   get shopId() {
     return boundShopId;
@@ -2056,7 +2054,7 @@ const jump = (): void => sendIntent('Jump');
 // owns the D-pad and X (Jump), plus A, B and Y while the main menu is up, and hands every other
 // button (and a nav-capable screen's D-pad) to the top frame's adapter; what that leaves unhandled
 // is the legacy ladder's below.
-const keyboard = new KeyboardSource(ROUTED_BINDINGS);
+const keyboard = new KeyboardSource(DEFAULT_BINDINGS);
 const inputRouter = new InputRouter();
 
 // What the router needs to know: whether the world takes input, the nav frame (a nav-capable
@@ -2129,6 +2127,41 @@ const routeEdge = (edge: ButtonEdge): boolean => {
   return consumed;
 };
 
+// An accelerator press (CTL11A.1, CTL11A.2): refused, Start on its own screen, or its canonical
+// menu path opened from the base.
+const runAccel = (accel: MenuAccel): void => {
+  const decision = accelDecision(accel, contextStack);
+  switch (decision.kind) {
+    case 'denied':
+      break;
+    case 'start':
+      routeEdge({ button: 'Start', down: true });
+      break;
+    case 'open':
+      openAccelPath(decision.path);
+      break;
+    default:
+      decision satisfies never;
+  }
+};
+
+// Pop to the base, open the menu and pick each entry of `path`, so the menu stays beneath the leaf
+// with its cursor on it. Over a battle the menu opens read-only and a disabled entry only shows its
+// reason (CTL6C.3). Monsters opens on Storage; the Party tab is one LB away.
+const openAccelPath = (path: AccelPath): void => {
+  // The menu's screens read store state keyed by identity, which is '' before join.
+  if (identity === '') return;
+  applyStack(contextStack, popToBase(contextStack));
+  openMenu();
+  syncStack(); // the menu is pushed before the leaf it opens
+  for (const key of path.menu) applyMenuStep(mainMenuPick(menuState, key));
+  syncStack();
+  const top = contextStack[contextStack.length - 1];
+  if (path.tab === 'party' && top.kind === 'screen' && top.id === path.frame) {
+    screenHost.button(contextStack, { button: 'LB', repeat: false }, screenCtx);
+  }
+};
+
 // Codes whose press the menu or a nav-capable screen consumed: their OS key-repeats are cancelled
 // until the keyup, so a held Enter that opened a child cannot activate the child's focused button.
 const navHeldCodes = new Set<string>();
@@ -2157,13 +2190,6 @@ const suppressNativeMovementDefault = (e: KeyboardEvent): void => {
   )
     e.preventDefault();
 };
-
-// The legacy letter keys of the three Social tabs (until ctl-11a moves accelerators to the router).
-const SOCIAL_HOTKEYS: ReadonlyMap<string, SocialTab> = new Map([
-  ['KeyU', 'trades'],
-  ['KeyP', 'challenges'],
-  ['KeyL', 'rankings'],
-]);
 
 // the scoped world-focus gate for the twelve overlay-open
 // hotkeys. The `=== document.body` disjunct is LOAD-BEARING and must never be "cleaned up":
@@ -2277,120 +2303,13 @@ const onKeyDown = (e: KeyboardEvent): void => {
       return;
     }
   }
-  if (e.code === 'KeyB') {
-    // the 12-term guard list is GONE — one verdict from the registry
-    // reproduces it exactly. WHAT THE LIST USED TO SAY IN PLACE, recorded here because the
-    // old guard list was its last statement in main.ts (KeyI/KeyE below share
-    // this note): modals are GUARDED, NEVER DISMISSED. `canOpen` DENIES over every GUARD_ONLY
-    // overlay — dialogue, questLog, heal, shop, trade, pvp, leaderboard, rename, tradePropose,
-    // help — and over a live battle (EXCLUSIVE_TOP; the main menu is filtered out by
-    // `overlayVerdict`, ctl-5); the only ids it ever returns in
-    // `forceHide` are the box/raising/evolution HIDE_SWITCH siblings this trio legitimately
-    // switches between. Silently dismissing a modal on a stray keypress is wrong UX, and for
-    // dialogue it is a server desync. The tier table (ui/overlayRegistry.ts)
-    // is now the SSOT for that distinction, exhaustively proved by the OR-CANOPEN-* teeth.
-    const boxVerdict = overlayVerdict('boxView');
-    if (boxVerdict.kind === 'allow' && (boxView?.visible || worldHasFocus())) {
-      for (const id of boxVerdict.forceHide) overlayHandles[id]?.();
-      boxView?.toggle();
-      if (boxView?.visible) refreshBox();
-    }
+  // An accelerator (ctl-11a): the router decides it over the stack. A key the focused field owns
+  // is typed, never taken.
+  const accel = accelForCode(DEFAULT_BINDINGS, e.code);
+  if (accel !== undefined && accel !== 'F8' && accel !== 'F9') {
+    if (ownership(e.target, e) === 'target') return;
     e.preventDefault();
-    return;
-  }
-  if (e.code === 'KeyI') {
-    // Inventory/raising overlay — the same verdict-driven gate as the box above, whose
-    // comment records why modals are guarded rather than dismissed and why
-    // `forceHide` can only ever name the two hide-switch siblings.
-    const raisingVerdict = overlayVerdict('raisingView');
-    if (raisingVerdict.kind === 'allow' && (raisingView?.visible || worldHasFocus())) {
-      for (const id of raisingVerdict.forceHide) overlayHandles[id]?.();
-      raisingView?.toggle();
-      if (raisingView?.visible) refreshRaising();
-    }
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'KeyE') {
-    // Evolution overlay — third member of the hide-switch trio, same verdict-driven
-    // gate as box/raising above (see the KeyB comment for the guard-never-dismiss rule).
-    const evolutionVerdict = overlayVerdict('evolutionView');
-    if (evolutionVerdict.kind === 'allow' && (evolutionView?.visible || worldHasFocus())) {
-      for (const id of evolutionVerdict.forceHide) overlayHandles[id]?.();
-      evolutionView?.toggle();
-      if (evolutionView?.visible) refreshEvolution();
-    }
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'KeyQ') {
-    // Quest log overlay — mutual exclusivity with all other overlays,
-    // through the ONE registry verdict. Self is exempt, so the toggle-close
-    // below still works while the quest log itself is open.
-    if (
-      overlayVerdict('questLogView').kind === 'allow' &&
-      (questLogView?.visible || worldHasFocus())
-    ) {
-      if (questLogView?.visible) {
-        questLogView.hide();
-      } else {
-        openQuestLog();
-      }
-    }
-    e.preventDefault();
-    return;
-  }
-  const socialKey = SOCIAL_HOTKEYS.get(e.code);
-  if (socialKey !== undefined) {
-    // U, P and L open the Social frame on Trades, Challenges and Rankings (until ctl-11a), each
-    // under its panel's own verdict: mutual exclusivity with every other overlay and never over a
-    // battle (the registry's EXCLUSIVE_TOP tier). With Social open, the key of the panel now
-    // shown and the key that opened the frame close it (its adapter may have switched panels
-    // since), under the shown panel's verdict (nothing covers it); any other Social key does
-    // nothing.
-    const panel = socialPanel(socialKey);
-    const shownPanel = SOCIAL_PANELS.find((id) => overlayProbes[id]());
-    if (shownPanel === undefined) {
-      if (overlayVerdict(panel).kind === 'allow' && worldHasFocus()) openSocial(socialKey);
-    } else if (
-      (shownPanel === panel || boundSocialTab === socialKey) &&
-      overlayVerdict(shownPanel).kind === 'allow'
-    ) {
-      hideFrame(SOCIAL_FRAME);
-    }
-    e.preventDefault();
-    return;
-  }
-  // KeyN opens the profile-rename overlay — the first text-input
-  // overlay. Mutual exclusion is the ONE registry verdict (self exempt). On open:
-  // held.clear() (RT-RN-01 D3-3) so no held movement key straddles the open/close boundary,
-  // render the current name from store.player(identity)?.name (D6), then show (deferred focus).
-  // e.preventDefault() (RT-RN-05) stops the opening 'n' from reaching the field.
-  if (e.code === 'KeyN') {
-    e.preventDefault(); // suppress the opening 'n' char reaching the field.
-    if (overlayVerdict('renameView').kind === 'allow' && (renameView?.visible || worldHasFocus())) {
-      if (renameView?.visible) {
-        renameView.hide();
-      } else {
-        held.clear(); // the opening keypress must not leave a held movement key latched
-        openRename();
-      }
-    }
-    return;
-  }
-  // the account/claim front door. carriesIdentity is FALSE on
-  // purpose — a failed FIRST sign-in has never joined (identity === ''), and the claim overlay
-  // reads store.ownAccount(identity) whose own-identity filter returns undefined for '' (no throw).
-  if (e.code === 'KeyC') {
-    e.preventDefault();
-    if (overlayVerdict('claimView').kind === 'allow' && (claimView?.visible || worldHasFocus())) {
-      if (claimView?.visible) {
-        claimView.hide();
-      } else {
-        held.clear();
-        openClaim();
-      }
-    }
+    runAccel(accel);
     return;
   }
   // The router owns the D-pad and Space from here: it swallows them while an overlay is open
