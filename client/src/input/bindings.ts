@@ -77,7 +77,7 @@ const CODE_SHAPE = /^[A-Za-z0-9]{1,32}$/;
 
 /** Whether `code` may be bound: a code-shaped name the browser does not own. `Unidentified` (an
  *  IME or virtual key) is never a binding, so no unknown key can press a button. */
-export function isBindableCode(code: string): boolean {
+export function isBindableCode(code: unknown): code is KeyCode {
   return (
     typeof code === 'string' &&
     CODE_SHAPE.test(code) &&

@@ -2268,8 +2268,8 @@ const onKeyDown = (e: KeyboardEvent): void => {
   if (focusInsideHiddenSubtree()) worldCanvasEl?.focus();
   // The F9 accelerator downloads the local bug bundle; F8 dismisses the error overlay. Decided
   // through the live table (a cleared one does nothing) and EARLY (before letter-key branches) so
-  // they work under any overlay.
-  // An Escape that stops typing (CTL6B.5) is the field's, even when a remap gave Escape to F8.
+  // they work under any overlay; but an Escape that stops typing (CTL6B.5) stays the field's, even
+  // when a remap gave Escape to F8.
   const accel =
     typingKey(e.target, e) === 'stopTyping' ? undefined : accelForCode(bindings, e.code);
   if (accel === 'F9') {

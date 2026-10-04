@@ -34,7 +34,7 @@ function codeList(raw: unknown, emptyOk: boolean): KeyCode[] | undefined {
   if (!Array.isArray(raw) || raw.length > MAX_CODES || (raw.length === 0 && !emptyOk)) {
     return undefined;
   }
-  if (!raw.every((c): c is string => typeof c === 'string' && isBindableCode(c))) return undefined;
+  if (!raw.every(isBindableCode)) return undefined;
   return new Set(raw).size === raw.length ? raw : undefined;
 }
 
