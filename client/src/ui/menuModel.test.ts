@@ -134,7 +134,9 @@ describe('MENU_ENTRIES', () => {
       options: 'Help on how to play the game.',
       close: 'Close the menu and return to the world.',
       'social/trades': 'See and answer the trade offered to you.',
-      'social/challenges': 'Challenge a player or answer a challenge.',
+      // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): was 'Challenge a player or answer a
+      // challenge.' — no menu row starts a challenge any more; it only answers them.
+      'social/challenges': 'See and answer challenges.',
       'social/rankings': 'See the ranked leaderboard.',
       'profile/name': 'Change the name other players see.',
       'profile/account': 'Sign in or keep this guest progress.',
@@ -182,5 +184,56 @@ describe('MENU_ENTRIES', () => {
 
     setLocale('en');
     expect(read(), 'back to en: nothing was memoized in fr').toEqual(en);
+  });
+
+  it('CTL10B-2-MENU-NO-INITIATE: no leaf of the menu table opens the trade wizard, every leaf opens exactly one of the ten legacy viewers, and the Challenges leaf describes answering only (it no longer says "Challenge a player")', () => {
+    // WRONG IMPL KILLED: a menu leaf (Social, Trades, Challenges or any other) whose target is
+    // tradeProposeView (a menu way to start a trade, r2-025); a leaf that opens some other
+    // initiating surface (the target set is closed, so a new one reds); a Challenges description
+    // that still advertises starting a challenge; and a walk that only reads the root (the
+    // leaves live inside the groups: ANTI-VACUITY below counts them).
+    const leaves: Array<{ readonly path: string; readonly target: unknown }> = [];
+    for (const group of ROOT) {
+      for (const leaf of group.children ?? []) {
+        leaves.push({
+          path: `${group.key}/${leaf.key}`,
+          target: (leaf as unknown as { target?: unknown }).target,
+        });
+      }
+    }
+    for (const root of ROOT) {
+      if ((root as unknown as { kind?: string }).kind === 'open') {
+        leaves.push({ path: root.key, target: (root as unknown as { target?: unknown }).target });
+      }
+    }
+    expect(leaves.length, 'ANTI-VACUITY: 7 sub-list leaves + 3 root leaves').toBe(10);
+    for (const { path, target } of leaves) {
+      expect(target, `${path} opens something`).toBeTypeOf('string');
+      expect(target, `${path} must not open the trade wizard`).not.toBe('tradeProposeView');
+    }
+    expect(
+      leaves.map((l) => l.target).sort(),
+      'the closed set of viewers a menu leaf opens',
+    ).toEqual(
+      [
+        'boxView',
+        'claimView',
+        'helpView',
+        'leaderboardView',
+        'privacyView',
+        'pvpView',
+        'questLogView',
+        'raisingView',
+        'renameView',
+        'tradeView',
+      ].sort(),
+    );
+
+    setLocale('en');
+    const challenges = flatRows().find((r) => r.path === 'social/challenges');
+    expect(challenges, 'the Challenges leaf exists').toBeDefined();
+    const desc = (challenges as { row: Row }).row.description();
+    expect(desc).toBe('See and answer challenges.');
+    expect(desc.includes('Challenge a player'), 'no longer advertises starting one').toBe(false);
   });
 });

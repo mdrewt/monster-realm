@@ -452,10 +452,15 @@ describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchange
     mountPvpOverlay();
     const view = new PvpView(makeCallbacks());
 
-    view.refresh(pvpVm({ challengeablePlayers: [{ identity: '0xaaa1', name: 'Alice' }] }), true);
+    // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): the precondition used the per-player Challenge
+    // button; it now uses the incoming row's Accept / Decline buttons.
+    view.refresh(
+      pvpVm({ incoming: { challengeId: 77n, challengerId: '0xbbb', challengerName: 'Bob' } }),
+      true,
+    );
     expect(
-      (document.getElementById('pvp-player-list') as HTMLElement).querySelectorAll('button'),
-    ).toHaveLength(1);
+      (document.getElementById('pvp-challenge-incoming') as HTMLElement).querySelectorAll('button'),
+    ).toHaveLength(2);
 
     view.refresh(null, true);
 
@@ -469,34 +474,9 @@ describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchange
     expect((document.getElementById('pvp-player-list') as HTMLElement).children).toHaveLength(0);
   });
 
-  it('BITES: the challengeable-player list rebuilds authoritatively and each button dispatches onChallenge with the identity', () => {
-    mountPvpOverlay();
-    const cbs = makeCallbacks();
-    const view = new PvpView(cbs);
-
-    view.refresh(
-      pvpVm({
-        challengeablePlayers: [
-          { identity: '0xaaa1', name: 'Alice' },
-          { identity: '0xbbb2', name: 'Bob' },
-        ],
-      }),
-      true,
-    );
-    const list = document.getElementById('pvp-player-list') as HTMLElement;
-    let buttons = list.querySelectorAll('[data-testid="pvp-challenge-player-btn"]');
-    expect(buttons).toHaveLength(2);
-
-    (buttons[0] as HTMLButtonElement).click();
-    expect(cbs.onChallenge).toHaveBeenCalledWith('0xaaa1');
-
-    // A refresh with a changed roster REPLACES the rows — a player who went offline must not
-    // linger.
-    view.refresh(pvpVm({ challengeablePlayers: [{ identity: '0xccc3', name: 'Carol' }] }), true);
-    buttons = list.querySelectorAll('[data-testid="pvp-challenge-player-btn"]');
-    expect(buttons).toHaveLength(1);
-    expect((buttons[0] as HTMLElement).getAttribute('data-player-identity')).toBe('0xccc3');
-  });
+  // NAMED REMOVAL (ctl-10b, CTL10B.2): "the challengeable-player list rebuilds authoritatively and
+  // each button dispatches onChallenge with the identity" tested only the per-player Challenge
+  // list, which is deleted; its survivor is CTL10B-2-PVP-NO-INITIATE below.
 
   it('BITES: hide() clears the feedback line, and showFeedback() writes it via textContent', () => {
     mountPvpOverlay();
@@ -566,8 +546,10 @@ async function raFlushPromises(): Promise<void> {
 const RA_INCOMING_ID = 77n;
 const RA_OUTGOING_ID = 88n;
 
-/** Incoming from Bob, a Pending outgoing to Carol, and two challengeable players — so ALL FIVE
- *  lifecycle controls render at once: Accept, Decline, Cancel Challenge, Alice, Dave. */
+/** Incoming from Bob, a Pending outgoing to Carol, and two challengeable players — so ALL THREE
+ *  lifecycle controls render at once: Accept, Decline, Cancel Challenge. (ctl-10b, CTL10B.2: the
+ *  per-player Challenge buttons are gone, so Alice and Dave stay in the view model as UNREAD data
+ *  and prove that a roster never renders a control.) */
 function raPvpVm(): PvpChallengeViewModel {
   return pvpVm({
     incoming: { challengeId: RA_INCOMING_ID, challengerId: '0xbbb', challengerName: 'Bob' },
@@ -588,8 +570,7 @@ interface RaPvpControls {
   readonly accept: HTMLButtonElement;
   readonly decline: HTMLButtonElement;
   readonly cancel: HTMLButtonElement;
-  readonly players: readonly HTMLButtonElement[];
-  /** The five lifecycle controls, in DOM order. */
+  /** The three lifecycle controls, in DOM order. */
   readonly all: readonly HTMLButtonElement[];
 }
 
@@ -599,19 +580,14 @@ function raPvpControls(): RaPvpControls {
   const accept = document.querySelector<HTMLButtonElement>('[data-testid="pvp-accept-btn"]');
   const decline = document.querySelector<HTMLButtonElement>('[data-testid="pvp-decline-btn"]');
   const cancel = document.querySelector<HTMLButtonElement>('[data-testid="pvp-cancel-btn"]');
-  const players = [
-    ...document.querySelectorAll<HTMLButtonElement>('[data-testid="pvp-challenge-player-btn"]'),
-  ];
   expect(accept, '20r-a precondition: Accept renders').not.toBeNull();
   expect(decline, '20r-a precondition: Decline renders').not.toBeNull();
   expect(cancel, '20r-a precondition: Cancel Challenge renders').not.toBeNull();
-  expect(players, '20r-a precondition: two challenge-player buttons render').toHaveLength(2);
   return {
     accept: accept!,
     decline: decline!,
     cancel: cancel!,
-    players,
-    all: [accept!, decline!, cancel!, ...players],
+    all: [accept!, decline!, cancel!],
   };
 }
 
@@ -627,7 +603,9 @@ describe('★ PvpView 20r-a: ONE view-wide in-flight lock over the challenge-lif
     vi.restoreAllMocks();
   });
 
-  it('20r-a PV-1 BITES: Accept unsettled → Decline / Cancel / every challenge-player button DISABLED and swallowed (hostile re-enable included); a root-level sentinel stays enabled; all released on settle', async () => {
+  it('20r-a PV-1 BITES: Accept unsettled → Decline / Cancel DISABLED and swallowed (hostile re-enable included); a root-level sentinel stays enabled; all released on settle', async () => {
+    // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): retargeted from five controls to the three
+    // that remain (Accept, Decline, Cancel); the two challenge-player buttons it also locked are gone.
     // WRONG IMPL KILLED (1): the shipped code — nothing disables, Decline fires beside Accept.
     // WRONG IMPL KILLED (2): a PER-BUTTON lock — Decline stays live while Accept is in flight
     //   (the contradictory-outcome pair, plan D2). The hostile re-enable of each sibling is what
@@ -657,7 +635,7 @@ describe('★ PvpView 20r-a: ONE view-wide in-flight lock over the challenge-lif
     raExpectAll(
       c,
       true,
-      '20r-a PV-1: ALL FIVE lifecycle controls must be disabled while Accept is in flight — one ' +
+      '20r-a PV-1: ALL THREE lifecycle controls must be disabled while Accept is in flight — one ' +
         'challenge state, one lock (plan D2)',
     );
     expect(
@@ -669,8 +647,6 @@ describe('★ PvpView 20r-a: ONE view-wide in-flight lock over the challenge-lif
     const siblings: readonly (readonly [HTMLButtonElement, unknown, string])[] = [
       [c.decline, cbs.onDecline, 'Decline'],
       [c.cancel, cbs.onCancel, 'Cancel Challenge'],
-      [c.players[0]!, cbs.onChallenge, 'challenge Alice'],
-      [c.players[1]!, cbs.onChallenge, 'challenge Dave'],
     ];
     for (const [btn, spy, label] of siblings) {
       btn.click(); // swallowed by disabled (happy-dom, D1)
@@ -986,8 +962,6 @@ const M24S3_PV_PLAIN_KEYS = new Set([
   'pvp.incoming.accept',
   'pvp.incoming.decline',
   'pvp.outgoing.cancel',
-  'pvp.players.none',
-  'pvp.players.heading',
 ]);
 
 const M24S3_PV_PARAM_KEYS = new Set(['pvp.incoming.label', 'pvp.outgoing.label']);
@@ -1093,7 +1067,7 @@ function m24s3PvAssertNoRosterWord(texts: readonly string[], label: string): voi
 }
 
 describe('m24s3 (ADR-0259): pvpView.ts routes its migrated sinks through t()/tf()', () => {
-  it('m24s3 PV-01: every migrated sink calls t()/tf() with the exact key and params, the player-button text stays the raw name (never a resolver call), and every DOM string stays byte-identical', () => {
+  it('m24s3 PV-01: every migrated sink calls t()/tf() with the exact key and params, showFeedback never touches the resolver, and every DOM string stays byte-identical', () => {
     mountPvpOverlay();
     const view = new PvpView(makeCallbacks());
 
@@ -1135,24 +1109,8 @@ describe('m24s3 (ADR-0259): pvpView.ts routes its migrated sinks through t()/tf(
       'Cancel Challenge',
     );
 
-    // players empty + showTitle (no active challenge)
-    vi.mocked(i18nT).mockClear();
-    view.refresh(pvpVm({ challengeablePlayers: [] }), true);
-    expect(i18nT).toHaveBeenCalledWith('pvp.players.none');
-    expect(document.getElementById('pvp-player-list')?.firstElementChild?.textContent).toBe(
-      'No players online to challenge',
-    );
-
-    // players present — the button text is the RAW player name, never a resolver call.
-    vi.mocked(i18nT).mockClear();
-    view.refresh(pvpVm({ challengeablePlayers: [{ identity: '0xaaa1', name: 'Carol' }] }), true);
-    expect(i18nT).toHaveBeenCalledWith('pvp.players.heading');
-    expect(document.getElementById('pvp-player-list')?.firstElementChild?.textContent).toBe(
-      'Challenge:',
-    );
-    expect(document.querySelector('[data-testid="pvp-challenge-player-btn"]')?.textContent).toBe(
-      'Carol',
-    );
+    // NAMED REMOVAL (ctl-10b, CTL10B.2): the "players empty" (pvp.players.none) and "players
+    // present" (pvp.players.heading + raw-name button) blocks tested the deleted player list.
 
     // showFeedback never touches the resolver.
     vi.mocked(i18nT).mockClear();
@@ -1210,17 +1168,8 @@ describe('m24s3 (ADR-0259): pvpView.ts routes its migrated sinks through t()/tf(
       expect(joined).toContain('«pvp.outgoing.label|{"target":"Alice"}»');
       expect(joined).toContain('«pvp.outgoing.cancel»');
 
-      view.refresh(pvpVm({ challengeablePlayers: [] }), true);
-      texts = m24s3PvWalkSubtree(root);
-      m24s3PvAssertNoRosterWord(texts, 'players empty');
-      expect(texts.join('\n')).toContain('«pvp.players.none»');
-
-      view.refresh(pvpVm({ challengeablePlayers: [{ identity: '0xaaa1', name: 'Carol' }] }), true);
-      texts = m24s3PvWalkSubtree(root);
-      m24s3PvAssertNoRosterWord(texts, 'players present');
-      joined = texts.join('\n');
-      expect(joined).toContain('«pvp.players.heading»');
-      expect(joined).toContain('Carol');
+      // NAMED REMOVAL (ctl-10b, CTL10B.2): the "players empty" / "players present" steps tested
+      // the deleted player list (pvp.players.none / .heading).
     } finally {
       vi.mocked(i18nT).mockRestore();
       vi.mocked(i18nTf).mockRestore();
@@ -1233,7 +1182,11 @@ describe('m24s3 (ADR-0259): pvpView.ts routes its migrated sinks through t()/tf(
 });
 
 describe('m24s3 (ADR-0259): pvpView.ts scan — zero failing sinks', () => {
-  it('m24s3 PV-03: scanSource(stripComments(pvpView.ts)) has zero failing sinks, a >=17 sink floor, and no truncation/masking tripwires', () => {
+  it('m24s3 PV-03: scanSource(stripComments(pvpView.ts)) has zero failing sinks, a >=13 sink floor, and no truncation/masking tripwires', () => {
+    // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): the floor falls 17 -> 13. Deleting the player
+    // list removes #renderPlayerList's three sinks (replaceChildren, the heading textContent, the
+    // button textContent) and the null-shell replaceChildren of the list; 13 is the count of what
+    // remains if all four go. Still a floor, never an exact count.
     const src = readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), 'pvpView.ts'),
       'utf8',
@@ -1247,7 +1200,7 @@ describe('m24s3 (ADR-0259): pvpView.ts scan — zero failing sinks', () => {
     expect(
       result.sinks.length,
       'SINK_FLOOR idiom (plan R2): a floor, never an exact count',
-    ).toBeGreaterThanOrEqual(17);
+    ).toBeGreaterThanOrEqual(13);
     expect(
       result.unterminated,
       'the literal mask must not end inside an unterminated literal',
@@ -1684,30 +1637,8 @@ function cifixText(testId: string): string | null {
   return document.querySelector(`[data-testid="${testId}"]`)?.textContent ?? null;
 }
 
-function cifixPlayerButtons(): HTMLButtonElement[] {
-  return [
-    ...document.querySelectorAll<HTMLButtonElement>('[data-testid="pvp-challenge-player-btn"]'),
-  ];
-}
-
-/** The challenge-player buttons' identities, in DOM order. */
-function cifixPlayerIdentities(): (string | null)[] {
-  return cifixPlayerButtons().map((b) => b.getAttribute('data-player-identity'));
-}
-
-/** Idle (no challenge) with Alice and Dave first, then `rest`, so a test can vary the third row
- *  and leave the first two untouched. */
-function cifixRosterVm(
-  ...rest: PvpChallengeViewModel['challengeablePlayers'][number][]
-): PvpChallengeViewModel {
-  return pvpVm({
-    challengeablePlayers: [
-      { identity: '0xaaa1', name: 'Alice' },
-      { identity: '0xddd4', name: 'Dave' },
-      ...rest,
-    ],
-  });
-}
+// NAMED REMOVAL (ctl-10b, CTL10B.2): cifixPlayerButtons / cifixPlayerIdentities / cifixRosterVm
+// served only the deleted player-list teeth below.
 
 /** An incoming challenge (77n) from `challengerName` and nothing else. */
 function cifixIncomingVm(challengerName: string): PvpChallengeViewModel {
@@ -1717,7 +1648,9 @@ function cifixIncomingVm(challengerName: string): PvpChallengeViewModel {
 const CIFIX_TF_THROW = 'cifix0901: the incoming label render throws once';
 
 describe('cifix0901 PvpView refresh(vm, true): a container re-renders only when what it shows changed', () => {
-  it('cifix0901-PVP-SAME-VALUE-KEEPS-NODES BITES: two buildPvpChallengeViewModel() calls over the same store rows (main.ts per-batch path) keep Accept, Decline, Cancel and both player buttons as the same connected nodes, and focus on Accept stays there', async () => {
+  it('cifix0901-PVP-SAME-VALUE-KEEPS-NODES BITES: two buildPvpChallengeViewModel() calls over the same store rows (main.ts per-batch path) keep Accept, Decline and Cancel as the same connected nodes, and focus on Accept stays there', async () => {
+    // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): retargeted from five controls to three (the
+    // per-player Challenge buttons are deleted).
     // WRONG IMPL KILLED: the always-rebuild refresh (focus drops to <body> about 9 times a
     // second); a key on object identity — the builder returns a new object every call.
     mountPvpOverlay();
@@ -1744,7 +1677,7 @@ describe('cifix0901 PvpView refresh(vm, true): a container re-renders only when 
     expect(
       before.all.map((b) => b.isConnected),
       'cifix0901: the rendered nodes are still connected',
-    ).toEqual([true, true, true, true, true]);
+    ).toEqual([true, true, true]);
     expect(
       document.activeElement,
       'cifix0901: focus on Accept must survive a batch whose view-model did not change',
@@ -1764,7 +1697,7 @@ describe('cifix0901 PvpView refresh(vm, true): a container re-renders only when 
     c.accept.click();
     raExpectAll(c, true, 'cifix0901 precondition: the click took the lock');
     c.decline.disabled = false; // re-enabled by hand
-    c.players[1]!.disabled = false;
+    c.cancel.disabled = false;
 
     view.refresh(raPvpVm(), true); // an equal view-model, built again
 
@@ -1776,7 +1709,7 @@ describe('cifix0901 PvpView refresh(vm, true): a container re-renders only when 
       c,
       true,
       'cifix0901: the lock is re-derived on EVERY refresh, so the hand re-enabled Decline and ' +
-        'Dave must be disabled again',
+        'Cancel must be disabled again',
     );
 
     d.resolve();
@@ -1788,7 +1721,7 @@ describe('cifix0901 PvpView refresh(vm, true): a container re-renders only when 
     await raFlushPromises();
   });
 
-  it('cifix0901-PVP-ROSTER-CHANGE-KEEPS-INCOMING BITES: a roster-only change re-renders the player list but keeps Accept, Decline and Cancel as the same nodes, and focus on Accept stays there', async () => {
+  it('cifix0901-PVP-ROSTER-CHANGE-KEEPS-INCOMING BITES: a roster-only change keeps Accept, Decline and Cancel as the same nodes, and focus on Accept stays there', async () => {
     // WRONG IMPL KILLED: ONE shared key for all three containers — any roster change (a player
     // coming online) would replace Accept under the player's focus.
     mountPvpOverlay();
@@ -1811,11 +1744,10 @@ describe('cifix0901 PvpView refresh(vm, true): a container re-renders only when 
     );
     await flushMacrotask();
 
+    // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): the "roster change rendered" precondition read
+    // the deleted player buttons; a roster-only change now renders nothing, so the teeth are the
+    // three kept nodes and the kept focus.
     const after = raPvpControls();
-    expect(
-      after.players.map((b) => b.textContent),
-      'precondition: the roster change rendered',
-    ).toEqual(['Alice', 'Davina']);
     expect(after.accept, 'cifix0901: a roster-only change must not replace Accept').toBe(
       before.accept,
     );
@@ -1831,15 +1763,17 @@ describe('cifix0901 PvpView refresh(vm, true): a container re-renders only when 
     ).toBe(before.accept);
   });
 
-  it('cifix0901-PVP-INCOMING-CHANGE-KEEPS-ROSTER BITES: an incoming-only change re-renders the incoming section but keeps Cancel and both player buttons as the same nodes, and focus on a player button stays there', async () => {
-    // WRONG IMPL KILLED: ONE shared key for all three containers.
+  it('cifix0901-PVP-INCOMING-CHANGE-KEEPS-ROSTER BITES: an incoming-only change re-renders the incoming section but keeps Cancel as the same node, and focus on Cancel stays there', async () => {
+    // WRONG IMPL KILLED: ONE shared key for the incoming and outgoing containers.
+    // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): retargeted from the player buttons (deleted) to
+    // the outgoing row's Cancel button.
     mountPvpOverlay();
     const view = new PvpView(makeCallbacks());
     view.refresh(raPvpVm(), true);
     await flushMacrotask();
     const before = raPvpControls();
-    before.players[0]!.focus();
-    expect(document.activeElement, 'precondition: focus is on Alice').toBe(before.players[0]);
+    before.cancel.focus();
+    expect(document.activeElement, 'precondition: focus is on Cancel').toBe(before.cancel);
 
     view.refresh(
       pvpVm({
@@ -1858,13 +1792,9 @@ describe('cifix0901 PvpView refresh(vm, true): a container re-renders only when 
       before.cancel,
     );
     expect(
-      after.players.map((b, i) => b === before.players[i]),
-      'cifix0901: an incoming-only change must not replace the challenge-player buttons',
-    ).toEqual([true, true]);
-    expect(
       document.activeElement,
-      'cifix0901: focus on a player button must survive an incoming-only change',
-    ).toBe(before.players[0]);
+      'cifix0901: focus on Cancel must survive an incoming-only change',
+    ).toBe(before.cancel);
   });
 
   it('cifix0901-PVP-INCOMING-NEW-ID BITES: the same challenger with a NEW challengeId re-renders the incoming section, and Accept and Decline dispatch the NEW id', async () => {
@@ -1970,132 +1900,9 @@ describe('cifix0901 PvpView refresh(vm, true): a container re-renders only when 
     ).toEqual([]);
   });
 
-  it('cifix0901-PVP-PLAYER-RENAMED BITES: a player renamed under the same identity re-renders the button text', () => {
-    // WRONG IMPL KILLED: a player-list key on identities only; never re-rendering.
-    mountPvpOverlay();
-    const view = new PvpView(makeCallbacks());
-    view.refresh(
-      pvpVm({
-        challengeablePlayers: [
-          { identity: '0xaaa1', name: 'Alice' },
-          { identity: '0xddd4', name: 'Dave' },
-        ],
-      }),
-      true,
-    );
-    expect(
-      cifixPlayerButtons().map((b) => b.textContent),
-      'precondition',
-    ).toEqual(['Alice', 'Dave']);
-
-    view.refresh(
-      pvpVm({
-        challengeablePlayers: [
-          { identity: '0xaaa1', name: 'Alicia' },
-          { identity: '0xddd4', name: 'Dave' },
-        ],
-      }),
-      true,
-    );
-    expect(
-      cifixPlayerButtons().map((b) => b.textContent),
-      'cifix0901: a renamed player must show under the same identity',
-    ).toEqual(['Alicia', 'Dave']);
-  });
-
-  it('cifix0901-PVP-PLAYER-SAME-NAME-NEW-IDENTITY BITES: a player replaced by another identity with the SAME name re-renders the button, and its click dispatches the NEW identity', async () => {
-    // WRONG IMPL KILLED: a player-list key on names only — the old closure challenges the
-    // player who left.
-    mountPvpOverlay();
-    const cbs = makeCallbacks();
-    const view = new PvpView(cbs);
-    view.refresh(
-      pvpVm({
-        challengeablePlayers: [
-          { identity: '0xaaa1', name: 'Alice' },
-          { identity: '0xddd4', name: 'Dave' },
-        ],
-      }),
-      true,
-    );
-    view.refresh(
-      pvpVm({
-        challengeablePlayers: [
-          { identity: '0xfff9', name: 'Alice' },
-          { identity: '0xddd4', name: 'Dave' },
-        ],
-      }),
-      true,
-    );
-
-    const buttons = cifixPlayerButtons();
-    expect(buttons, 'precondition: two challenge-player buttons').toHaveLength(2);
-    buttons[0]!.click();
-    expect(
-      vi.mocked(cbs.onChallenge).mock.calls,
-      'cifix0901: the same-named replacement must be challenged by its NEW identity',
-    ).toEqual([['0xfff9']]);
-    expect(buttons.map((b) => b.getAttribute('data-player-identity'))).toEqual([
-      '0xfff9',
-      '0xddd4',
-    ]);
-    await raFlushPromises();
-  });
-
-  it('cifix0901-PVP-HEADING-FOLLOWS-ACTIVE BITES: with the SAME roster, the player-list heading hides while a challenge is active and returns when it clears', () => {
-    // WRONG IMPL KILLED: a player-list key without the heading flag (`showTitle`).
-    mountPvpOverlay();
-    const view = new PvpView(makeCallbacks());
-    const list = document.getElementById('pvp-player-list') as HTMLElement;
-    const heading = i18nT('pvp.players.heading');
-    const shape = (): string[] =>
-      [...list.children].map((el) =>
-        el.tagName === 'LI' ? `row:${el.textContent ?? ''}` : `heading:${el.textContent ?? ''}`,
-      );
-    const roster = (): PvpChallengeViewModel['challengeablePlayers'] => [
-      { identity: '0xaaa1', name: 'Alice' },
-    ];
-
-    view.refresh(pvpVm({ challengeablePlayers: roster() }), true);
-    expect(shape(), 'precondition: idle shows the heading above Alice').toEqual([
-      `heading:${heading}`,
-      'row:Alice',
-    ]);
-
-    view.refresh(
-      pvpVm({
-        incoming: { challengeId: 77n, challengerId: '0xbbb', challengerName: 'Bob' },
-        challengeablePlayers: roster(),
-      }),
-      true,
-    );
-    expect(shape(), 'cifix0901: an active challenge must hide the heading').toEqual(['row:Alice']);
-
-    view.refresh(pvpVm({ challengeablePlayers: roster() }), true);
-    expect(shape(), 'cifix0901: the heading must return when the challenge clears').toEqual([
-      `heading:${heading}`,
-      'row:Alice',
-    ]);
-  });
-
-  it('cifix0901-PVP-EMPTY-ROSTER-NONE-LINE BITES: the first render of an empty roster shows the "none" line, and so does an equal view-model after the null shell', () => {
-    // WRONG IMPL KILLED: an initial or null-path key equal to the empty roster's key.
-    mountPvpOverlay();
-    const view = new PvpView(makeCallbacks());
-    const list = document.getElementById('pvp-player-list') as HTMLElement;
-    const lines = (): string[] => [...list.children].map((el) => el.textContent ?? '');
-    const none = i18nT('pvp.players.none');
-
-    view.refresh(pvpVm(), true);
-    expect(lines(), 'cifix0901: the first render of an empty roster shows the none line').toEqual([
-      none,
-    ]);
-
-    view.refresh(null, true);
-    expect(lines(), 'precondition: the null shell empties the list').toEqual([]);
-    view.refresh(pvpVm(), true);
-    expect(lines(), 'cifix0901: the none line returns after the null shell').toEqual([none]);
-  });
+  // NAMED REMOVALS (ctl-10b, CTL10B.2): cifix0901-PVP-PLAYER-RENAMED, -PLAYER-SAME-NAME-NEW-IDENTITY,
+  // -HEADING-FOLLOWS-ACTIVE and -EMPTY-ROSTER-NONE-LINE tested only the deleted player list (its
+  // buttons, onChallenge identity, heading and "none" line). Survivor: CTL10B-2-PVP-NO-INITIATE.
 
   it('cifix0901-PVP-HIDE-RESETS BITES: a lock taken, hide() called DIRECTLY (reconnect / KeyP / force-hide), then an equal view-model re-shown: every lifecycle control is ENABLED and Accept dispatches', () => {
     // WRONG IMPL KILLED: a key reset only in the refresh(vm, false) branch, not in hide()
@@ -2136,78 +1943,14 @@ describe('cifix0901 PvpView refresh(vm, true): a container re-renders only when 
     expect(cifixShown('pvp-accept-btn'), 'precondition: the null shell emptied Accept').toBe(false);
 
     view.refresh(raPvpVm(), true);
-    const c = raPvpControls(); // fails unless Accept, Decline, Cancel and both players render
+    const c = raPvpControls(); // fails unless Accept, Decline and Cancel render
     c.accept.click();
     expect(vi.mocked(cbs.onAccept).mock.calls).toEqual([[RA_INCOMING_ID]]);
     await raFlushPromises();
   });
 
-  it('cifix0901-PVP-ROSTER-THIRD-ADDED BITES: a third player joining a two-player roster adds a third button', () => {
-    // WRONG IMPL KILLED: a player-list key over the first two rows only.
-    mountPvpOverlay();
-    const view = new PvpView(makeCallbacks());
-    view.refresh(cifixRosterVm(), true);
-    expect(cifixPlayerIdentities(), 'precondition: two players').toEqual(['0xaaa1', '0xddd4']);
-
-    view.refresh(cifixRosterVm({ identity: '0xeee5', name: 'Erin' }), true);
-    expect(
-      cifixPlayerIdentities(),
-      'cifix0901: a third player joining must add a third button',
-    ).toEqual(['0xaaa1', '0xddd4', '0xeee5']);
-  });
-
-  it('cifix0901-PVP-ROSTER-THIRD-RENAMED BITES: in a three-player roster, renaming only the THIRD player updates its button text', () => {
-    // WRONG IMPL KILLED: a player-list key over the first two rows only.
-    mountPvpOverlay();
-    const view = new PvpView(makeCallbacks());
-    view.refresh(cifixRosterVm({ identity: '0xeee5', name: 'Erin' }), true);
-    expect(
-      cifixPlayerButtons().map((b) => b.textContent),
-      'precondition',
-    ).toEqual(['Alice', 'Dave', 'Erin']);
-
-    view.refresh(cifixRosterVm({ identity: '0xeee5', name: 'Erika' }), true);
-    expect(
-      cifixPlayerButtons().map((b) => b.textContent),
-      'cifix0901: renaming the third player must update its button',
-    ).toEqual(['Alice', 'Dave', 'Erika']);
-  });
-
-  it('cifix0901-PVP-ROSTER-THIRD-SAME-NAME-NEW-IDENTITY BITES: in a three-player roster, the THIRD player replaced by another identity with the same name re-renders, and its click dispatches the NEW identity', async () => {
-    // WRONG IMPL KILLED: a player-list key over the first two rows only — the third button's
-    // old closure challenges the player who left.
-    mountPvpOverlay();
-    const cbs = makeCallbacks();
-    const view = new PvpView(cbs);
-    view.refresh(cifixRosterVm({ identity: '0xeee5', name: 'Erin' }), true);
-    view.refresh(cifixRosterVm({ identity: '0xfff9', name: 'Erin' }), true);
-
-    const buttons = cifixPlayerButtons();
-    expect(buttons, 'precondition: three challenge-player buttons').toHaveLength(3);
-    buttons[2]!.click();
-    expect(
-      vi.mocked(cbs.onChallenge).mock.calls,
-      'cifix0901: the same-named third player must be challenged by its NEW identity',
-    ).toEqual([['0xfff9']]);
-    await raFlushPromises();
-  });
-
-  it('cifix0901-PVP-ROSTER-REORDERED BITES: the same three players in a different order re-render in the new order', () => {
-    // WRONG IMPL KILLED: an order-insensitive (sorted) player-list key.
-    mountPvpOverlay();
-    const view = new PvpView(makeCallbacks());
-    const alice = { identity: '0xaaa1', name: 'Alice' };
-    const dave = { identity: '0xddd4', name: 'Dave' };
-    const erin = { identity: '0xeee5', name: 'Erin' };
-    view.refresh(pvpVm({ challengeablePlayers: [{ ...alice }, { ...dave }, { ...erin }] }), true);
-    expect(cifixPlayerIdentities(), 'precondition').toEqual(['0xaaa1', '0xddd4', '0xeee5']);
-
-    view.refresh(pvpVm({ challengeablePlayers: [{ ...erin }, { ...alice }, { ...dave }] }), true);
-    expect(
-      cifixPlayerIdentities(),
-      'cifix0901: the buttons must follow the new roster order',
-    ).toEqual(['0xeee5', '0xaaa1', '0xddd4']);
-  });
+  // NAMED REMOVALS (ctl-10b, CTL10B.2): cifix0901-PVP-ROSTER-THIRD-ADDED, -ROSTER-THIRD-RENAMED,
+  // -ROSTER-THIRD-SAME-NAME-NEW-IDENTITY and -ROSTER-REORDERED tested only the deleted player list.
 
   it('cifix0901-PVP-THROW-RECOVERS-PREVIOUS BITES: Bob, then a refresh for Robert whose incoming render throws (main.ts catches and logs it), then Bob again: the incoming section shows Bob and Accept again', () => {
     // WRONG IMPL KILLED: a container key left at its LAST SUCCESSFUL render while the render that
@@ -2440,5 +2183,65 @@ describe('PvpView.paintCursor (ctl-8d, CTL8D.2)', () => {
     children.forEach((child, i) => {
       expect(root.children[i], `root child ${i} is unchanged`).toBe(child);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ctl-10b (CTL10B.2): pvpView is respond-only. It lists no challengeable players and starts no
+// challenge: the per-player Challenge buttons (and the "Challenge:" / "No players online to
+// challenge" lines) are gone. A challenge starts face to face (A -> picker -> Challenge -> Yes).
+// ---------------------------------------------------------------------------
+
+describe('PvpView is respond-only (ctl-10b, CTL10B.2)', () => {
+  it('CTL10B-2-PVP-NO-INITIATE: fed three challengeable players, the idle root holds no button, no challenge-player control, no player name and no heading line, and clicking every element calls no callback; with live challenges the only buttons are Accept, Decline and Cancel', () => {
+    // WRONG IMPL KILLED: a view that still renders the per-player Challenge buttons (the slice);
+    // one that keeps the list as plain rows with a click handler (a clickable non-button); one that
+    // hides the buttons but keeps the "Challenge:" heading or the "No players online to challenge"
+    // line; one that lists the players' names as text (a roster with nothing to press); one whose
+    // click on anything calls onChallenge (or any callback); and one that drops Accept / Decline /
+    // Cancel along with the list (the view must still respond to a challenge).
+    // The literal English bytes are used on purpose: the pvp.players.* catalog ids are removed.
+    const root = mountPvpOverlay();
+    const cbs = makeCallbacks();
+    const view = new PvpView(cbs);
+    const players = [
+      { identity: '0xaaa1', name: 'Alice' },
+      { identity: '0xddd4', name: 'Dave' },
+      { identity: '0xeee5', name: 'Erin' },
+    ];
+
+    view.refresh(pvpVm({ challengeablePlayers: players }), true);
+    expect(view.visible, 'ANTI-VACUITY: the overlay really rendered').toBe(true);
+    expect(root.querySelectorAll('button'), 'no button at all while idle').toHaveLength(0);
+    expect(root.querySelectorAll('[data-testid="pvp-challenge-player-btn"]')).toHaveLength(0);
+    expect(root.querySelectorAll('[data-player-identity]')).toHaveLength(0);
+    expect(root.querySelectorAll('li'), 'no list rows').toHaveLength(0);
+    const text = root.textContent ?? '';
+    for (const name of ['Alice', 'Dave', 'Erin']) {
+      expect(text.includes(name), `${name} is not listed`).toBe(false);
+    }
+    expect(text.includes('Challenge:'), 'the old heading is gone').toBe(false);
+    expect(text.includes('No players online to challenge'), 'the old "none" line is gone').toBe(
+      false,
+    );
+    expect(
+      document.getElementById('pvp-challenge-status')?.textContent,
+      'ANTI-VACUITY: the title still renders',
+    ).toBe('PvP Challenge');
+
+    for (const el of root.querySelectorAll<HTMLElement>('*')) el.click();
+    for (const [name, spy] of Object.entries(cbs)) {
+      expect(spy, `clicking everything calls no ${name}`).not.toHaveBeenCalled();
+    }
+
+    // With live challenges the roster is still not rendered, and the buttons are the three that respond.
+    view.refresh(raPvpVm(), true);
+    expect(
+      [...root.querySelectorAll('button')].map((b) => b.getAttribute('data-testid')),
+      'Accept, Decline and Cancel only',
+    ).toEqual(['pvp-accept-btn', 'pvp-decline-btn', 'pvp-cancel-btn']);
+    expect(root.querySelectorAll('[data-testid="pvp-challenge-player-btn"]')).toHaveLength(0);
+    expect((root.textContent ?? '').includes('Alice')).toBe(false);
+    expect((root.textContent ?? '').includes('Dave')).toBe(false);
   });
 });

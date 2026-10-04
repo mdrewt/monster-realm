@@ -811,6 +811,10 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // switch (`i18nT('interact.verb.talk')` etc.), `i18nT('interact.healer')` for a heal location's
     // name, and `i18nT('key.enter')` for an Enter / NumpadEnter A keycap. (`box.heal` leaves
     // boxView.ts, not main.ts, so nothing leaves this list.)
+    // ctl-10b (named intentional change, CTL10B.1): main.ts also names a faced player's picker rows
+    // and the Challenge confirm, so it gains 5 literal keys: `interact.verb.trade` and
+    // `interact.verb.challenge` (the verb switch), `interact.confirm.challenge` (the question) and
+    // the Yes / No rows of that confirm (`prompt.yes`, `prompt.no`, via `confirmRowLabel`).
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
       'chrome.chip.help', // ctl-7a: the Select chip label, written into #chip-select at boot
       'chrome.chip.menu', // ctl-7a: the Start chip label, written into #chip-start at boot
@@ -824,13 +828,18 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'chrome.status.privacyOverlayBusy',
       'interact.chip', // ctl-10a: the world chip, one actionable entry
       'interact.choose', // ctl-10a: the world chip, a choice
+      'interact.confirm.challenge', // ctl-10b: the Challenge confirm question
       'interact.entry', // ctl-10a: a picker / sheet row
       'interact.healer', // ctl-10a: a heal location's display name
+      'interact.verb.challenge', // ctl-10b: the faced player's Challenge row
       'interact.verb.heal', // ctl-10a: the verbs, through a literal switch
       'interact.verb.shop',
       'interact.verb.talk',
+      'interact.verb.trade', // ctl-10b: the faced player's Trade row
       'key.enter', // ctl-10a: the A keycap when it is Enter / NumpadEnter
       'menu.disabled.inBattle', // ctl-6c: the dispatch refusal line (CTL6C.3)
+      'prompt.no', // ctl-10b: the Challenge confirm's No row
+      'prompt.yes', // ctl-10b: the Challenge confirm's Yes row
       'raising.feedback.cared',
       'shop.feedback.buy.count', // ctl-7d: a buy whose item or shop row is not loaded
       'shop.feedback.buy.item', // ctl-7d: a buy, naming the quantity, the item and the gold

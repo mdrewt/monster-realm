@@ -77,7 +77,7 @@ import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
 import { t } from './ui/a11yCopy';
-import { sheetLayout } from './ui/actionSheetModel';
+import { confirmLayout, sheetLayout } from './ui/actionSheetModel';
 import { type A11ySnapshot, announcementsFor } from './ui/announcements';
 import {
   type BaitItem,
@@ -170,6 +170,7 @@ import {
   type InteractChip,
   interactChip,
   marshalInteract,
+  pendingChallengeIdentities,
   resolveCandidates,
 } from './ui/interactModel';
 import { buildLeaderboardViewModel } from './ui/leaderboardModel';
@@ -381,8 +382,8 @@ let leaderboardView: LeaderboardView | undefined;
 // profile-rename overlay — the first text-input overlay; wires the
 // merged set_profile_name reducer to a KeyN rename form.
 let renameView: RenameView | undefined;
-// trade-PROPOSE overlay — KeyO "Offer" form; wires reducers.proposeTrade
-// to let a human initiate a "sell my monster(s) + gold for your gold" trade.
+// trade-PROPOSE overlay — the wizard Trade on a faced player opens (ctl-10b); wires
+// reducers.proposeTrade to let a human initiate a "sell my monster(s) + gold for your gold" trade.
 let tradeProposeView: TradeProposeView | undefined;
 // in-client help overlay — display-only `?` overlay listing
 // controls + goals. No callbacks / reducer (zero-arg construction).
@@ -419,6 +420,9 @@ let boundHealLocationId: number | null = null;
 // The Social tab the last `openSocial` asked for (null: a plain open). Like the two ids above it
 // keeps its value after the frame closes and clears on reconnect.
 let boundSocialTab: SocialTab | null = null;
+// The player the trade wizard was last opened for (the face-to-face Trade, ctl-10b). Every open
+// rebinds it, and the face-to-face Trade is the wizard's only open path.
+let boundProposeTarget: string | null = null;
 
 // the ONE probe table. Every fan-out surface below reads visibility
 // through it, so a 16th overlay is a COMPILE error here instead of 5 silent omissions.
@@ -730,6 +734,7 @@ function worldCandidates(): readonly InteractCandidate[] {
       store.allPlayers(),
       store.healLocations(),
       store.ownEntityId(identity),
+      pendingChallengeIdentities(store.allChallenges()),
     );
     interactMemo = {
       key,
@@ -1074,16 +1079,24 @@ function openRename(): void {
   renameView?.show();
 }
 
-function openPropose(): void {
-  tradeProposeView?.render(
-    buildProposeLists(
-      store.allPlayers(),
-      store.ownMonsters(identity),
-      store.speciesMap(),
-      identity,
-    ),
+/** Open the trade wizard for the faced player `target` (ctl-10b): the target is pre-selected and
+ *  locked, so it opens on Offer. A target that is not a listed trade partner opens nothing. The
+ *  frame is seated at the open, so its first paint puts focus on the Offer list before the
+ *  overlay's deferred initial focus would land on the (locked) target select. */
+function openPropose(target: string): void {
+  const lists = buildProposeLists(
+    store.allPlayers(),
+    store.ownMonsters(identity),
+    store.speciesMap(),
+    identity,
   );
+  if (!lists.targets.some((t) => t.identity === target)) return;
+  boundProposeTarget = target;
+  tradeProposeView?.render(lists, target);
   tradeProposeView?.show();
+  syncStack();
+  const top = contextStack[contextStack.length - 1];
+  if (top.kind === 'screen' && top.id === 'tradeProposeView') screenHost.seat(top, screenCtx);
 }
 
 function openHelp(): void {
@@ -1094,7 +1107,8 @@ function openHelp(): void {
 /** Run what A or a sheet row chose at the world (ctl-10a). Exhaustive, no default arm. Only the
  *  world base asks (`ScreenHost.button`), which keeps it out of a battle and from under a frame
  *  (CTL6C.3). Talk and shop share the talk reducer (greet-then-shop); heal binds the heal frame to
- *  that location and transacts nothing. The server re-validates zone and range on every send. */
+ *  that location and transacts nothing. Trade opens the wizard for the faced player; a challenge
+ *  arrives here only after its Yes-default confirm (ctl-10b). The server re-validates on every send. */
 function runInteract(action: InteractAction): void {
   switch (action.kind) {
     case 'talk':
@@ -1106,6 +1120,15 @@ function runInteract(action: InteractAction): void {
       healView?.render(
         buildHealViewModelForLocation(action.locationId, store.healLocations(), store.itemDefs()),
       );
+      break;
+    case 'trade':
+      if (overlayVerdict('tradeProposeView').kind === 'allow') {
+        held.clear(); // the opening keypress must not leave a held movement key latched
+        openPropose(action.playerIdentity);
+      }
+      break;
+    case 'challenge':
+      void dispatch({ kind: 'challenge', targetIdentity: action.playerIdentity });
       break;
   }
 }
@@ -1121,7 +1144,16 @@ function interactVerb(action: InteractAction): string {
       return i18nT('interact.verb.shop');
     case 'heal':
       return i18nT('interact.verb.heal');
+    case 'trade':
+      return i18nT('interact.verb.trade');
+    case 'challenge':
+      return i18nT('interact.verb.challenge');
   }
+}
+
+/** A Challenge confirm row's word (`confirmLayout`'s keys), each a literal catalog key. */
+function confirmRowLabel(key: string): string {
+  return key === 'yes' ? i18nT('prompt.yes') : i18nT('prompt.no');
 }
 
 function interactName(c: InteractCandidate): string {
@@ -1258,6 +1290,9 @@ const screenCtx: ScreenContext = {
   },
   get socialTab() {
     return boundSocialTab;
+  },
+  get proposeTarget() {
+    return boundProposeTarget;
   },
   get reduceMotion() {
     return motionPreference.reduceMotion;
@@ -2343,27 +2378,6 @@ const onKeyDown = (e: KeyboardEvent): void => {
     }
     return;
   }
-  // KeyO opens the trade-PROPOSE overlay ("Offer"). Mutual-exclusion
-  // is the ONE registry verdict. identity !== '' (red-team L-1) so we
-  // never open before the player is joined. On open: held.clear() so no held movement key
-  // straddles the open/close boundary, build+render the lists, then show (deferred focus).
-  // e.preventDefault() suppresses any default action for the 'o' key.
-  if (e.code === 'KeyO') {
-    e.preventDefault();
-    if (
-      overlayVerdict('tradeProposeView').kind === 'allow' &&
-      identity !== '' &&
-      (tradeProposeView?.visible || worldHasFocus())
-    ) {
-      if (tradeProposeView?.visible) {
-        tradeProposeView.hide();
-      } else {
-        held.clear(); // the opening keypress must not leave a held movement key latched
-        openPropose();
-      }
-    }
-    return;
-  }
   // the account/claim front door. carriesIdentity is FALSE on
   // purpose — a failed FIRST sign-in has never joined (identity === ''), and the claim overlay
   // reads store.ownAccount(identity) whose own-identity filter returns undefined for '' (no throw).
@@ -3266,7 +3280,6 @@ async function main(): Promise<void> {
     });
     // PvP challenge overlay: the lifecycle callbacks RETURN the promise.
     pvpView = new PvpViewClass({
-      onChallenge: (targetIdentity) => dispatch({ kind: 'challenge', targetIdentity }),
       onAccept: (challengeId) => dispatch({ kind: 'acceptChallenge', challengeId }),
       onDecline: (challengeId) => dispatch({ kind: 'declineChallenge', challengeId }),
       onCancel: (challengeId) => dispatch({ kind: 'cancelChallenge', challengeId }),
@@ -3529,6 +3542,7 @@ async function main(): Promise<void> {
       boundHealLocationId = null;
       // The requested Social tab and what the screens remember go with the session too.
       boundSocialTab = null;
+      boundProposeTarget = null;
       screenHost.forget();
       // trade's double-spend lock must also be reset on reconnect (same reason as shop).
       tradeView?.hide();
@@ -3755,9 +3769,10 @@ async function main(): Promise<void> {
         anchor !== undefined
           ? renderer?.screenFor({ x: anchor.anchorWorldX, y: anchor.anchorWorldY })
           : undefined;
+      // The confirm's row and cursor are in the signature: a Yes / No move must repaint.
       const promptSig =
         sheet !== null
-          ? `sheet|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}`
+          ? `sheet|${sheet.nav.item}|${sheet.entries.map((e) => e.key).join(',')}|${sheet.confirm?.key ?? ''}|${sheet.confirm?.nav.item ?? ''}`
           : chip !== null
             ? interactChipText(chip)
             : null;
@@ -3768,7 +3783,25 @@ async function main(): Promise<void> {
       if (promptKey !== lastPromptKey) {
         lastPromptKey = promptKey;
         if (promptSig !== null && promptPos !== undefined) {
-          if (sheet !== null) {
+          const asked =
+            sheet?.confirm == null
+              ? undefined
+              : sheet.entries.find((e) => e.key === sheet.confirm?.key);
+          if (sheet !== null && sheet.confirm !== null && asked !== undefined) {
+            // The Challenge confirm (ctl-10b): the question, then Yes / No as the listbox.
+            const question = tf('interact.confirm.challenge', {
+              name: interactName(asked.candidate),
+            });
+            interactChipTextEl.textContent = question;
+            renderNav(interactSheetEl, confirmLayout, sheet.confirm.nav, {
+              frame: 'interact',
+              fill: (el, item) => {
+                el.textContent = confirmRowLabel(item.key);
+              },
+            });
+            interactSheetEl.setAttribute('aria-label', question);
+            interactSheetEl.style.display = '';
+          } else if (sheet !== null) {
             interactChipTextEl.textContent = '';
             const rows = new Map(sheet.entries.map((e) => [e.key, e]));
             renderNav(interactSheetEl, sheetLayout(sheet.entries), sheet.nav, {

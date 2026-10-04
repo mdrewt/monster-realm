@@ -6,17 +6,24 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll, pressButton } from './controls';
+import { closeAll, openFaceToFace, pressButton } from './controls';
 
 // trade-PROPOSE overlay e2e (EARS criterion PTC2-16; ctl-8e CTL8E.1, defect B5)
 //
 // TWO-CONTEXT DESIGN
 // ==================
 // Mirrors trade-full.spec.ts: two separate browser instances, each generating a
-// distinct SpacetimeDB identity. The initiator (pageA) drives the REAL UI by KEYS (KeyO →
-// pick the target on the focused select → A → A toggles the cursor monster → RB → A → A →
-// A on Yes). The counterparty (pageB) responds+confirms via __mrTrade. This is the one test
-// that proves the KeyO overlay (not the hook) initiates a trade — trade-full.spec.ts cannot.
+// distinct SpacetimeDB identity. The initiator (pageA) drives the REAL UI by KEYS (A on the other
+// player, A on Trade → the wizard on Offer with the target pre-selected → A toggles the cursor
+// monster → RB → A → A → A on Yes). The counterparty (pageB) responds+confirms via __mrTrade.
+// This is the one test that proves the face-to-face overlay (not the hook) initiates a trade —
+// trade-full.spec.ts cannot.
+//
+// INTENTIONAL CHANGE (ctl-10b, CTL10B.1): O is retired. The wizard opens FACE TO FACE
+// (`openFaceToFace(pageA, 'Trade', undefined, pageB)`: both players join at the zone spawn, so
+// A stands on B's tile and B is an own-tile candidate; A then chooses `Trade — <name>`). It lands
+// on Offer with B pre-selected and the select DISABLED, so the Target-pick steps are gone and the
+// "Escape on the focused select" case is now "Escape on the Offer list".
 //
 // INTENTIONAL CHANGE (ctl-8e): the propose leg was "set the checkbox in page.evaluate and click
 // #tradepropose-submit". It is now the wizard by keys: the converted overlay's step header is the
@@ -30,10 +37,11 @@ import { closeAll, pressButton } from './controls';
 //
 // WHY NOT __mrTrade FOR THE PROPOSE LEG (D8 / red-team L-3)
 // =========================================================
-// "the INITIATOR opens KeyO, selects the counterparty in the <select>,
-// checks its starter monster, and CLICKS submit — pure DOM, NOT __mrTrade (red-team L-3)."
-// Using __mrTrade.proposeTrade() for the initiator would leave the overlay untested —
-// the e2e would pass even if KeyO / tradeProposeView were never implemented.
+// "the INITIATOR opens the wizard face to face (A on the other player, A on Trade; the target
+// arrives pre-selected), checks its starter monster, and confirms — pure DOM, NOT __mrTrade
+// (red-team L-3)." Using __mrTrade.proposeTrade() for the initiator would leave the overlay
+// untested — the e2e would pass even if the face-to-face open / tradeProposeView were never
+// implemented.
 //
 // IDENTITY ASSERTION (red-team H-5)
 // ==================================
@@ -50,7 +58,7 @@ import { closeAll, pressButton } from './controls';
 //
 // EARS CRITERIA COVERED
 // =====================
-//   PTC2-16  UI-driven propose: KeyO→select→check monster→submit → __mrTrade respond+confirm
+//   PTC2-16  UI-driven propose: face to face→Trade→check monster→confirm → __mrTrade respond+confirm
 //            → specific monsterId leaves initiator + arrives at counterparty (identity, not
 //            just conservation) + allTradeOffers().length===0.
 
@@ -176,14 +184,16 @@ test.describe
     //   - An Escape in a field that closes the overlay and drops the text (CTL6B.5 says the first
     //     Escape only stops typing and keeps the text; the next one is Start)
     // -------------------------------------------------------------------------
-    test('CTL8E-1-BOOT-ESCAPE: KeyO then Escape on the focused select closes the overlay (B5)', async () => {
-      test.setTimeout(30_000);
+    test('CTL8E-1-BOOT-ESCAPE: opened face to face, Escape on the Offer list closes the overlay (B5)', async () => {
+      test.setTimeout(60_000);
       await closeAll(pageA);
-      await pageA.keyboard.press('KeyO');
+      await openFaceToFace(pageA, 'Trade', undefined, pageB);
       await expect(pageA.locator(TARGET)).toBeVisible({ timeout: 10_000 });
-      // The deferred initial focus (one macrotask after the opening key) lands on the select.
-      await expect(pageA.locator(TARGET)).toBeFocused();
-      await expectStep(pageA, 'target');
+      // INTENTIONAL CHANGE (ctl-10b): was "Escape on the focused select". The wizard opens on Offer
+      // with the faced player pre-selected, the select locked, and focus on the Offer list.
+      await expectStep(pageA, 'offer');
+      await expect(pageA.locator(TARGET)).toBeDisabled();
+      await expect(pageA.locator(MONSTERS)).toBeFocused();
 
       await pressButton(pageA, 'Start');
       await expect(pageA.locator('#tradepropose-overlay')).toBeHidden();
@@ -191,11 +201,9 @@ test.describe
     });
 
     test('CTL8E-1-BOOT-ESCAPE: Escape in the offer field keeps the typed text and the overlay, the next Escape closes it', async () => {
-      test.setTimeout(30_000);
+      test.setTimeout(60_000);
       await closeAll(pageA);
-      await pageA.keyboard.press('KeyO');
-      await expect(pageA.locator(TARGET)).toBeFocused();
-      await pressButton(pageA, 'A'); // Target -> Offer
+      await openFaceToFace(pageA, 'Trade', undefined, pageB);
       await expectStep(pageA, 'offer');
       await expect(pageA.locator(MONSTERS)).toBeFocused();
       await pageA.keyboard.press('PageDown'); // RB: Offer -> Coins
@@ -218,17 +226,18 @@ test.describe
     // UI-driven propose → respond+confirm → specific monsterId transfers
     //
     // WHAT THIS TEST KILLS:
-    //   - A KeyO handler that does nothing → target-select never visible → timeout
-    //   - A tradeProposeView.render() that does not paint target options → select is empty
+    //   - A face-to-face Trade row that opens nothing → target-select never visible → timeout
+    //   - A tradeProposeView.render() that does not paint target options or pre-select the faced
+    //     player → the select is empty or the counterparty assertion fails
     //   - An onSubmit that uses __mrTrade internally instead of reducers.proposeTrade
-    //     → the propose leg passes even without the KeyO UI (ADR-0134 D8 / red-team L-3)
+    //     → the propose leg passes even without the face-to-face UI (ADR-0134 D8 / red-team L-3)
     //   - A confirm_trade impl that transfers the wrong monster → identity assertion fails
     //     even if conservation count holds (red-team H-5)
     //   - A propose UI that sends the wrong counterparty identity → server rejects
     //
     // -------------------------------------------------------------------------
-    test('PTC2-16: KeyO→pick target→A→A toggles the cursor monster→RB→A→A→A on Yes → respond+confirm → specific monsterId transfers (identity) + offer row deleted', async () => {
-      test.setTimeout(90_000);
+    test('PTC2-16: face to face → Trade → wizard on Offer with the target pre-selected→A toggles the cursor monster→RB→A→A→A on Yes → respond+confirm → specific monsterId transfers (identity) + offer row deleted', async () => {
+      test.setTimeout(120_000);
 
       // Snapshots before trade.
       const snapABefore = await getSnap(pageA);
@@ -275,29 +284,25 @@ test.describe
       expect(counterpartyId).toBe(identityB);
 
       // -----------------------------------------------------------------------
-      // Step 2: Initiator runs closeAll to dismiss any stale overlay, then
-      //   presses KeyO to open the trade-PROPOSE overlay on its Target step.
+      // Step 2 (INTENTIONAL CHANGE, ctl-10b): O is retired. The initiator closes every stale
+      //   frame, stands on B's tile (the helper walks there when the two stand apart; both join at
+      //   the spawn), waits for the chip, presses A, chooses `Trade — <B's name>` and presses A.
       // -----------------------------------------------------------------------
-      await closeAll(pageA);
-      await pageA.keyboard.press('KeyO');
+      await openFaceToFace(pageA, 'Trade', undefined, pageB);
 
-      // Wait for the target select to become visible (overlay is open) and take the deferred
-      // initial focus. This is the first structural gate: the overlay MUST open on KeyO.
+      // The wizard is open (first structural gate) on Offer, with the FACED player pre-selected
+      // and the select locked: there is no Target step and no way to retarget.
       await pageA.waitForSelector(TARGET, { state: 'visible', timeout: 10_000 });
-      await expect(pageA.locator(TARGET)).toBeFocused();
-      await expectStep(pageA, 'target');
+      await expectStep(pageA, 'offer');
+      await expect(pageA.locator(TARGET), 'the counterparty is pre-selected').toHaveValue(
+        counterpartyId as string,
+      );
+      await expect(pageA.locator(TARGET), 'and the select is locked').toBeDisabled();
 
       // -----------------------------------------------------------------------
-      // Step 3: Pick the counterparty on the focused <select> (selectOption sets the value and
-      //   fires change, as a user's arrow keys would), then A (Enter) moves to the Offer step.
-      //   The target <select> must have an option with value=counterpartyId.
+      // Step 3: DOM focus is on the monsters container, a non-form element, so the D-pad and A
+      //   reach the router from here on.
       // -----------------------------------------------------------------------
-      await pageA.selectOption(TARGET, { value: counterpartyId });
-      await pageA.locator(TARGET).focus(); // keys must go to the select, whatever selectOption did
-      await pressButton(pageA, 'A');
-      await expectStep(pageA, 'offer');
-      // DOM focus follows the step: the monsters container, a non-form element, so the D-pad
-      // and A reach the router from here on.
       await expect(pageA.locator(MONSTERS)).toBeFocused();
 
       // -----------------------------------------------------------------------

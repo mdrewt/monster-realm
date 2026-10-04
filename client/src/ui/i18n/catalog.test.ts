@@ -342,6 +342,9 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { verb: 'Talk', name: 'elder_oak' },
     { verb: 'Heal', name: 'Healer' },
   ],
+  // ctl-10b (named intentional change): the Challenge confirm names the faced player (1 ★). `name`
+  // is a player-chosen display name, carried verbatim.
+  'interact.confirm.challenge': [{ name: 'Rival' }, { name: 'Zed' }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -395,6 +398,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // button, CTL10A.4) and +5 plain keys (`interact.verb.{talk,shop,heal}`, `interact.healer`,
   // `key.enter`) here, +3 parameterised ones (`interact.{chip,choose,entry}`) in SAMPLE_PARAMS =
   // 292 keys.
+  // ctl-10b (named intentional change): -2 plain keys (`pvp.players.{none,heading}`, deleted with
+  // the pvpView player list, CTL10B.2) and +2 plain keys (`interact.verb.{trade,challenge}`) here,
+  // +1 parameterised one (`interact.confirm.challenge`) in SAMPLE_PARAMS = 293 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -442,8 +448,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'pvp.incoming.accept': 'Accept', // pvpView.ts:198
   'pvp.incoming.decline': 'Decline', // pvpView.ts:206
   'pvp.outgoing.cancel': 'Cancel Challenge', // pvpView.ts:226
-  'pvp.players.none': 'No players online to challenge', // pvpView.ts:241
-  'pvp.players.heading': 'Challenge:', // pvpView.ts:241
+  // ctl-10b (named intentional change): `pvp.players.none` ('No players online to challenge') and
+  // `pvp.players.heading` ('Challenge:') are RETIRED with the pvpView player list (catalogParity
+  // DEAD-KEY); their absence is pinned by CTL10B-2-CATALOG.
   // Evolution.* (6 plain)
   'evolution.title': 'Evolution', // evolutionView.ts
   'evolution.hint':
@@ -628,7 +635,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'menu.social.trades.title': 'Trades',
   'menu.social.trades.desc': 'See and answer the trade offered to you.',
   'menu.social.challenges.title': 'Challenges',
-  'menu.social.challenges.desc': 'Challenge a player or answer a challenge.',
+  // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): was 'Challenge a player or answer a challenge.';
+  // no menu row starts a challenge any more, so the leaf only answers them.
+  'menu.social.challenges.desc': 'See and answer challenges.',
   'menu.social.rankings.title': 'Rankings',
   'menu.social.rankings.desc': 'See the ranked leaderboard.',
   'menu.profile.name.title': 'Name',
@@ -705,6 +714,10 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'interact.verb.heal': 'Heal',
   'interact.healer': 'Healer',
   'key.enter': 'Enter',
+  // ctl-10b (named intentional change): 2 new plain keys — the verbs a faced player's picker rows
+  // name (the Challenge confirm prompt is the parameterised `interact.confirm.challenge`).
+  'interact.verb.trade': 'Trade',
+  'interact.verb.challenge': 'Challenge',
 };
 
 interface ParamOutputSpec {
@@ -1132,9 +1145,18 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { verb: 'Heal', name: 'Healer' },
     outputB: `Heal ${EM_DASH} Healer`,
   },
+  // ctl-10b: the Challenge confirm question (CTL10B.1); the name sits once, verbatim.
+  'interact.confirm.challenge': {
+    inputA: { name: 'Rival' },
+    outputA: 'Challenge Rival?',
+    inputB: { name: 'Zed' },
+    outputB: 'Challenge Zed?',
+  },
 };
 
-/** The full 292-key roster (ctl-10a: -`box.heal` +`interact.{chip,choose,entry,healer}`
+/** The full 293-key roster (ctl-10b: -`pvp.players.{none,heading}` +`interact.verb.{trade,challenge}`
+ *  +`interact.confirm.challenge` over the 292-key roster below;
+ *  ctl-10a: -`box.heal` +`interact.{chip,choose,entry,healer}`
  *  +`interact.verb.{talk,shop,heal}` +`key.enter` over the 285-key roster below;
  *  ctl-8k: +`session.retry` +`session.hint` over the 283-key roster below;
  *  ctl-8j: -`battle.recruit.submit` -`battle.cure.placeholder`
@@ -1215,7 +1237,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-10a 292-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-10b 293-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1304,12 +1326,12 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 292 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 293 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (292 keys since ctl-10a; was 285 since ctl-8k).
+    // (a) roster is exactly the EXPECTED_KEYS roster (293 keys since ctl-10b; was 292 since ctl-10a).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ctl-10a roster is 292 keys').toHaveLength(292);
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ctl-10b roster is 293 keys').toHaveLength(293);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -1863,5 +1885,56 @@ describe('ctl-10a: the interaction keys in both catalogs', () => {
     // The other Box keys are untouched (a wholesale `box.*` deletion would also pass the three
     // lines above).
     expect((CATALOG_EN as Record<string, unknown>)['box.title']).toBe('Party & Box');
+  });
+});
+
+// =============================================================================
+// ctl-10b: the face-to-face trade / challenge keys in BOTH catalogs, and the two pvp.players.* ids
+// retired with the pvpView player list.
+// =============================================================================
+
+describe('ctl-10b: the Trade / Challenge keys in both catalogs', () => {
+  it('CTL10B-2-CATALOG: interact.verb.trade / interact.verb.challenge are Trade / Challenge in en and Echanger / Defier (accented) in fr, interact.confirm.challenge is a closure carrying the name once and verbatim in both (en `Challenge {name}?`, fr `Defier {name} ?`), and pvp.players.none / pvp.players.heading are gone from both catalogs', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot, the picker rows and
+    // the confirm blank); a French entry left as the English copy; a decomposed or missing accent
+    // ("Echanger" with a plain E, "Defier" with a plain e); a confirm closure that drops or repeats
+    // the name, or hard-codes the question; a retired pvp.players.* id left behind as a dead key
+    // (catalogParity DEAD-KEY) in either catalog; and a roster edit that adds the three ids but
+    // forgets to remove the two (293 keys: see CAT-01).
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    expect(en['interact.verb.trade'], 'en trade verb').toBe('Trade');
+    expect(en['interact.verb.challenge'], 'en challenge verb').toBe('Challenge');
+    expect(fr['interact.verb.trade'], 'fr trade verb').toBe(`${CAPITAL_E_ACUTE}changer`);
+    expect(fr['interact.verb.challenge'], 'fr challenge verb').toBe(`D${E_ACUTE}fier`);
+
+    const enFn = en['interact.confirm.challenge'] as (p: Record<string, unknown>) => string;
+    const frFn = fr['interact.confirm.challenge'] as (p: Record<string, unknown>) => string;
+    expect(typeof enFn, 'en interact.confirm.challenge is a closure').toBe('function');
+    expect(typeof frFn, 'fr interact.confirm.challenge is a closure').toBe('function');
+    const spec = EXPECTED_PARAM_OUTPUTS['interact.confirm.challenge'] as ParamOutputSpec;
+    expect(enFn(spec.inputA)).toBe('Challenge Rival?');
+    expect(enFn(spec.inputB)).toBe('Challenge Zed?');
+    // The French question mark follows the catalog's typography (a U+00A0 before it, as the
+    // ctl-8d / ctl-8j keys have); a plain breaking space is accepted too, since ctl-8a's keys use one.
+    for (const [input, name] of [
+      [spec.inputA, 'Rival'],
+      [spec.inputB, 'Zed'],
+    ] as const) {
+      const out = frFn(input);
+      const accepted = [`D${E_ACUTE}fier ${name}${NO_BREAK_SPACE}?`, `D${E_ACUTE}fier ${name} ?`];
+      expect(accepted, `fr interact.confirm.challenge(${name}): "${out}"`).toContain(out);
+    }
+    expect(frFn(spec.inputA), 'the two sample sets differ').not.toBe(frFn(spec.inputB));
+
+    for (const retired of ['pvp.players.none', 'pvp.players.heading']) {
+      expect(Object.hasOwn(en, retired), `en ${retired} is retired`).toBe(false);
+      expect(Object.hasOwn(fr, retired), `fr ${retired} is retired`).toBe(false);
+      expect(EXPECTED_KEYS.includes(retired), `the pinned roster no longer lists ${retired}`).toBe(
+        false,
+      );
+    }
+    // The other pvp keys are untouched (a wholesale `pvp.*` deletion would pass the loop above).
+    expect(en['pvp.incoming.accept']).toBe('Accept');
   });
 });

@@ -9,11 +9,15 @@ import { TILE_PX } from '../render/config';
 import { pickerEntries } from './actionSheetModel';
 
 /** What A or a sheet row does. A shopkeeper's `shop` is sent as the talk reducer (greet-then-shop);
- *  `heal` opens the heal frame bound to that location, it never transacts. */
+ *  `heal` opens the heal frame bound to that location, it never transacts. `trade` opens the trade
+ *  wizard with that player as the target; `challenge` sends a challenge after a Yes-default confirm
+ *  (ctl-10b). A player's identity is the store's hex key. */
 export type InteractAction =
   | { readonly kind: 'talk'; readonly npcEntityId: bigint }
   | { readonly kind: 'shop'; readonly npcEntityId: bigint }
-  | { readonly kind: 'heal'; readonly locationId: number };
+  | { readonly kind: 'heal'; readonly locationId: number }
+  | { readonly kind: 'trade'; readonly playerIdentity: string }
+  | { readonly kind: 'challenge'; readonly playerIdentity: string };
 
 export interface InteractCandidate {
   /** `npc:<entityId>`, `heal:<locationId>` or `player:<entityId>`. */
@@ -21,7 +25,7 @@ export interface InteractCandidate {
   readonly kind: 'npc' | 'heal' | 'player';
   /** An npc's npcId, a player's name; '' for a heal location (the shell names it). */
   readonly name: string;
-  /** In default-first order. A player has none until ctl-10b adds Trade and Challenge. */
+  /** In default-first order. An online player offers Trade, then Challenge unless busy. */
   readonly actions: readonly InteractAction[];
   /** SOURCE px at the entity's tile: X tile-centre, Y tile-top (the label floats above it). */
   readonly anchorWorldX: number;
@@ -83,6 +87,35 @@ function npcActions(npc: StoreNpcRow): readonly InteractAction[] {
   }
 }
 
+/** Both sides of every Pending challenge: the `busy` set `marshalInteract` takes. */
+export function pendingChallengeIdentities(
+  challenges: readonly {
+    readonly status: string;
+    readonly challenger: string;
+    readonly target: string;
+  }[],
+): ReadonlySet<string> {
+  return new Set(
+    challenges.filter((c) => c.status === 'Pending').flatMap((c) => [c.challenger, c.target]),
+  );
+}
+
+/** What a player offers: nothing when offline (the server refuses both); Trade, then Challenge
+ *  unless that player or you are in a Pending challenge (`busy`, the identities on both sides of
+ *  every Pending challenge, yours included when you are on one). */
+function playerActions(
+  player: StorePlayer,
+  busy: ReadonlySet<string>,
+  ownIdentity: string | undefined,
+): readonly InteractAction[] {
+  if (!player.online) return [];
+  const trade: InteractAction = { kind: 'trade', playerIdentity: player.identity };
+  const ownBusy = ownIdentity !== undefined && busy.has(ownIdentity);
+  return busy.has(player.identity) || ownBusy
+    ? [trade]
+    : [trade, { kind: 'challenge', playerIdentity: player.identity }];
+}
+
 /** Every npc (at its character row; one with no row has no position and is left out), every heal
  *  location and every other player, as the export's input. Nothing is filtered by zone, distance
  *  or facing: that is the rule's. */
@@ -92,6 +125,7 @@ export function marshalInteract(
   players: readonly StorePlayer[],
   heals: readonly StoreHealLocationRow[],
   ownEntityId: bigint | undefined,
+  busy: ReadonlySet<string> = new Set(),
 ): InteractInput {
   const wire: WireInteractEntity[] = [];
   const candidates: InteractCandidate[] = [];
@@ -108,6 +142,7 @@ export function marshalInteract(
   };
   const npcById = new Map(npcs.map((n) => [n.entityId, n]));
   const playerById = new Map(players.map((p) => [p.entityId, p]));
+  const ownIdentity = players.find((p) => p.entityId === ownEntityId)?.identity;
   for (const c of characters) {
     if (c.entityId === ownEntityId) continue;
     const at = { x: c.tileX, y: c.tileY, zone: c.zoneId, id: c.entityId.toString() };
@@ -117,7 +152,8 @@ export function marshalInteract(
       continue;
     }
     const player = playerById.get(c.entityId);
-    if (player !== undefined) add({ kind: 'player', ...at }, player.name, []);
+    if (player !== undefined)
+      add({ kind: 'player', ...at }, player.name, playerActions(player, busy, ownIdentity));
   }
   for (const h of heals) {
     add({ kind: 'heal', x: h.tileX, y: h.tileY, zone: h.zoneId, id: h.locationId.toString() }, '', [
@@ -153,8 +189,8 @@ export function resolveCandidates(
   return picked;
 }
 
-/** The world chip: what A does with these candidates. Counts their actions, so a player (no
- *  action yet) beside an npc leaves the npc's single action. */
+/** The world chip: what A does with these candidates. Counts their actions, so an offline player
+ *  (no action) beside an npc leaves the npc's single action. */
 export type InteractChip =
   | {
       readonly kind: 'single';

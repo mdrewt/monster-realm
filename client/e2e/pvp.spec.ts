@@ -25,6 +25,7 @@ import { closeAll } from './controls';
 interface GameSnap {
   identity: string;
   ownAuthTile: { x: number; y: number } | null;
+  ownMonsters: Array<{ monsterId: string; partySlot: number }>;
 }
 
 async function ready(p: Page): Promise<void> {
@@ -193,8 +194,9 @@ test.describe
 // ctl-8d (CTL8D.1, CTL8D.2): answering a challenge from the Social frame with the keyboard.
 //
 // Two players, each in its own chromium.launch() (two browsers, two SpacetimeDB identities: the
-// pvp-side-b.spec.ts design). A presses P and clicks B's challenge button, selected by B's
-// identity (every client joins as "Player"). B never opens anything: the incoming challenge opens
+// pvp-side-b.spec.ts design). A challenges B through the DEV reducer hook (ctl-10b: the PvP overlay
+// has no per-player Challenge button any more) and presses P to see its outgoing request. B never
+// opens anything: the incoming challenge opens
 // Social on its Challenges tab with the cursor on the request. B answers it from the action sheet:
 // A (Enter) opens Accept / Decline on Accept, Down then A on Decline asks Yes / No with No
 // selected, Up then A on Yes declines. The request is then gone for both players. Decline, not
@@ -255,14 +257,26 @@ test.describe
       await closeAll(pageA);
       await closeAll(pageB);
 
-      // A opens Social on Challenges and challenges B.
+      // A challenges B. INTENTIONAL CHANGE (ctl-10b, CTL10B.2): the PvP overlay no longer lists
+      // players or offers a per-player Challenge button. This case is about ANSWERING a challenge,
+      // not starting one (the face-to-face start is proved by pvp-side-b.spec.ts and the unit
+      // suites), so the challenge is sent through the DEV reducer hook, as pvp-full.spec.ts does,
+      // with A's party ids. A then opens Social on Challenges (P) to see its outgoing request.
+      await pageA.evaluate(async (target: string) => {
+        const w = window as unknown as {
+          __game: () => GameSnap;
+          __mrPvp: { challengePvp(t: string, party: string[]): Promise<void> | undefined };
+        };
+        const party = w
+          .__game()
+          .ownMonsters.filter((m) => m.partySlot !== 255)
+          .map((m) => m.monsterId);
+        const sent = w.__mrPvp.challengePvp(target, party);
+        if (sent === undefined) throw new Error('challengePvp: conn not ready');
+        await sent;
+      }, identityB);
       await pageA.keyboard.press('p');
       await expect(pageA.locator('#pvp-challenge-overlay')).toBeVisible({ timeout: 5_000 });
-      const challengeB = pageA.locator(
-        `[data-testid="pvp-challenge-player-btn"][data-player-identity="${identityB}"]`,
-      );
-      await expect(challengeB).toBeVisible({ timeout: 15_000 });
-      await challengeB.click();
       await expect(pageA.locator('[data-testid="pvp-outgoing-label"]')).toBeVisible({
         timeout: 15_000,
       });

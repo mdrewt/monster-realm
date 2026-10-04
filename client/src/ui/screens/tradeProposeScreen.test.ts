@@ -6,8 +6,9 @@
 // fake store has the three reads the view model makes (`allPlayers`, `ownMonsters`, `speciesMap`).
 //
 // The contract (the slice plan's REVISED shape):
-//   view model  { lists: buildProposeLists(live store reads), targetSupplied: false } (ctl-10b is
-//               what will supply a target; until then the wizard asks for one first).
+//   view model  { lists: buildProposeLists(live store reads), targetSupplied } (targetSupplied is
+//               false unless the context carries a proposeTarget, which ctl-10b's face-to-face open
+//               binds; with none the wizard asks for one first; see CTL10B-1-PREFILL).
 //   state       { steps, step, offer (the cursor monster id as a decimal string, or null), yes,
 //               toggle, commit }. `toggle` and `commit` are ONE-SHOT TOKENS: a NEW object each
 //               time, compared by identity by the view, which applies them to the on-screen draft.
@@ -125,15 +126,17 @@ function paintOf(vm: TradeProposeScreenVm, state: TradeProposeScreenState): Trad
 
 describe('tradeProposeScreen: the steps and the opening state (ctl-8e, CTL8E.1)', () => {
   it('CTL8E-1-MODEL-STEPS: the view model is the live buildProposeLists of the store reads with no target supplied, and init opens on Target with all five steps, the cursor on the first offerable monster, Yes selected and no token', () => {
-    // WRONG IMPL KILLED: a view model that reports a supplied target before ctl-10b exists (the
-    // player could never pick a counterparty); lists cached at module scope (a second open would
+    // WRONG IMPL KILLED: a view model that reports a supplied target when the context carries no
+    // proposeTarget (the player could never pick a counterparty); lists cached at module scope (a second open would
     // show the first open's players and monsters); a cursor that is null, an index, a number or
     // not the FIRST monster by id (buildProposeLists sorts ascending: 11, not the store's 33); a
     // review that opens on No; and a wizard that opens holding a stale toggle or commit token
     // (the view would flip a box or send on the very first paint).
     const w = world();
     const vm = vmOf(w);
-    expect(vm.targetSupplied, 'no target is supplied until ctl-10b').toBe(false);
+    expect(vm.targetSupplied, 'no target is supplied when the context has no proposeTarget').toBe(
+      false,
+    );
     expect(vm.lists, 'the live lists, built the same way main.ts builds them').toEqual(
       buildProposeLists(w.players, w.monsters, new Map(), ME),
     );
@@ -158,6 +161,37 @@ describe('tradeProposeScreen: the steps and the opening state (ctl-8e, CTL8E.1)'
     expect(openOf(later).offer).toBe('7');
     w.monsters = [];
     expect(openOf(vmOf(w)).offer, 'nothing to offer: no cursor').toBeNull();
+  });
+
+  it('CTL10B-1-PREFILL: a context carrying proposeTarget gives targetSupplied true and an init on Offer with four steps; an absent, null or undefined proposeTarget keeps the Target step', () => {
+    // WRONG IMPL KILLED: a view model that still hard-codes targetSupplied false (the wizard asks
+    // for a counterparty the player already chose face to face); one that reads a module-level
+    // value or caches the first open (a second open for another player would keep the first);
+    // one that is true for an empty-string / missing target (the Target step would vanish with
+    // nothing selected); init that still opens on Target; and the opposite, a supplied wizard
+    // that keeps five steps.
+    const w = world();
+    const supplied = tradeProposeScreen.viewModel({ ...ctxOf(w), proposeTarget: OTHER });
+    expect(supplied.targetSupplied, 'a bound target is supplied').toBe(true);
+    expect(supplied.lists, 'the lists are unchanged').toEqual(vmOf(w).lists);
+    const opened = openOf(supplied);
+    expect(opened.steps).toEqual(['offer', 'coins', 'ask', 'review']);
+    expect(opened.step, 'starts on Offer').toBe('offer');
+    expect(proposeSteps(true)).toEqual(opened.steps);
+
+    // Rebinding to another player on the next open is read live.
+    const other = tradeProposeScreen.viewModel({ ...ctxOf(w), proposeTarget: THIRD });
+    expect(other.targetSupplied).toBe(true);
+
+    for (const absent of [undefined, null]) {
+      const vm = tradeProposeScreen.viewModel({ ...ctxOf(w), proposeTarget: absent });
+      expect(vm.targetSupplied, `proposeTarget ${String(absent)} keeps the Target step`).toBe(
+        false,
+      );
+      expect(openOf(vm).steps).toEqual(FULL);
+      expect(openOf(vm).step).toBe('target');
+    }
+    expect(vmOf(w).targetSupplied, 'a context without the field').toBe(false);
   });
 
   it('CTL8E-1-TARGET-PICK: with a target supplied the wizard opens on Offer with only four steps and B there closes it; with none supplied A on Target moves to Offer, and the D-pad on Target (the select owns it natively) is swallowed without moving anything', () => {

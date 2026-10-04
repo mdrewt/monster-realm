@@ -332,6 +332,138 @@ export const readChip = (page: Page): Promise<string | null> =>
     return (el.textContent ?? '').replace(/\s+/g, ' ').trim();
   });
 
+// ---------------------------------------------------------------------------------------------
+// ctl-10b: face to face. O is retired: a trade or a challenge starts only from the world's A on
+// the OTHER PLAYER, offered as a picker row `Trade — <name>` / `Challenge — <name>` (a challenge
+// then asks Yes / No). Two players join at the zone spawn, so unless one has moved they share a
+// tile; with the front tile empty the other player is then an OWN-TILE candidate. When the other
+// page is given and the players stand apart, the helper walks onto the other player's tile first.
+// ---------------------------------------------------------------------------------------------
+
+/** U+2026, built from its code point (never a pasted character). */
+const ELLIPSIS = String.fromCharCode(0x2026);
+/** The chip while A would open a picker (two or more actions): `[Enter] Choose…`. */
+export const CHOOSE_CHIP = `[${A_KEYCAP}] Choose${ELLIPSIS}`;
+
+export type FaceVerb = 'Trade' | 'Challenge';
+
+interface SheetRow {
+  readonly text: string;
+  readonly selected: boolean;
+}
+
+/** The picker / action-sheet / confirm rows inside `#interact-prompt`, in order, with whitespace
+ *  collapsed and which one carries `aria-selected="true"`. */
+const readSheetRows = (page: Page): Promise<SheetRow[]> =>
+  page.evaluate(() => {
+    const el = document.getElementById('interact-prompt');
+    if (el === null) return [];
+    return [...el.querySelectorAll('[role="option"]')].map((row) => ({
+      text: (row.textContent ?? '').replace(/\s+/g, ' ').trim(),
+      selected: row.getAttribute('aria-selected') === 'true',
+    }));
+  });
+
+/** The one other player's name, as `__mrTrade.allPlayers()` lists it. Without `named`, throws
+ *  unless exactly one other player exists. With `named`, throws unless exactly one other player
+ *  bears that name (the picker row `<verb> — <name>` must then name one player, not several). */
+const otherPlayerName = (page: Page, named?: string): Promise<string> =>
+  page.evaluate((want: string | null) => {
+    const w = window as unknown as {
+      __game: () => { identity: string };
+      __mrTrade: { allPlayers(): Array<{ identity: string; name: string }> };
+    };
+    const me = w.__game().identity;
+    const others = w.__mrTrade.allPlayers().filter((p) => p.identity !== me);
+    const pool = want === null ? others : others.filter((p) => p.name === want);
+    const only = pool[0];
+    if (pool.length !== 1 || only === undefined) {
+      throw new Error(
+        `openFaceToFace: expected exactly 1 other player${want === null ? '' : ` named ${want}`}, ` +
+          `found ${pool.length}`,
+      );
+    }
+    return only.name;
+  }, named ?? null);
+
+/**
+ * Starts a trade or a challenge the way a player does now (CTL10B.1): closes every open frame,
+ * stands on the other player's tile (walking there only when `otherPage` is given and the two
+ * stand apart), waits for the chip to read `[Enter] Choose…`, presses A, moves the picker cursor
+ * to the row `<verb> — <name>` and presses A. A Trade opens the trade wizard on Offer with the
+ * player pre-selected. A Challenge shows the Yes / No confirm; Yes is asserted selected, then A
+ * on Yes sends it. `targetName` defaults to the one other player's name.
+ */
+export async function openFaceToFace(
+  page: Page,
+  verb: FaceVerb,
+  targetName?: string,
+  otherPage?: Page,
+): Promise<void> {
+  const label = `openFaceToFace(${verb})`;
+  await closeAll(page);
+  // B's player row may lag behind its join: poll until exactly one matching player is visible.
+  let name = '';
+  await expect
+    .poll(
+      async () => {
+        name = await otherPlayerName(page, targetName).catch(() => '');
+        return name !== '';
+      },
+      {
+        message: `${label}: exactly one other player${targetName === undefined ? '' : ` named ${targetName}`} must be visible`,
+        timeout: 15_000,
+      },
+    )
+    .toBe(true);
+
+  if (otherPage !== undefined) {
+    const there = (await readWorld(otherPage)).ownAuthTile;
+    if (there === null) throw new Error(`${label}: the other player has no authoritative tile`);
+    const here = (await readWorld(page)).ownAuthTile;
+    if (!sameTile(here, there) && (await walkTo(page, there, label)) === 'battle') {
+      throw new Error(`${label}: a battle started while walking onto the other player's tile`);
+    }
+  }
+
+  await expect
+    .poll(() => readChip(page), {
+      message: `${label}: the chip must offer a choice (the other player on the faced or own tile)`,
+      timeout: 15_000,
+    })
+    .toBe(CHOOSE_CHIP);
+  await pressButton(page, 'A');
+
+  const want = `${verb} ${EM_DASH} ${name}`;
+  await expect
+    .poll(async () => (await readSheetRows(page)).map((r) => r.text), {
+      message: `${label}: the picker must list "${want}"`,
+      timeout: 5_000,
+    })
+    .toContain(want);
+  const rows = await readSheetRows(page);
+  const target = rows.findIndex((r) => r.text === want);
+  const from = rows.findIndex((r) => r.selected);
+  for (let at = from; at < target; at++) await pressButton(page, 'Down');
+  await expect
+    .poll(async () => (await readSheetRows(page)).findIndex((r) => r.selected), {
+      message: `${label}: the picker cursor must reach "${want}"`,
+      timeout: 5_000,
+    })
+    .toBe(target);
+  await pressButton(page, 'A');
+
+  if (verb === 'Challenge') {
+    await expect
+      .poll(async () => (await readSheetRows(page)).map((r) => `${r.text}:${r.selected}`), {
+        message: `${label}: the confirm must show Yes (selected) and No`,
+        timeout: 5_000,
+      })
+      .toEqual(['Yes:true', 'No:false']);
+    await pressButton(page, 'A');
+  }
+}
+
 export interface InFrontOpts {
   /** The tile the character holds. */
   readonly stand: Tile;

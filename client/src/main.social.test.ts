@@ -586,8 +586,11 @@ describe('main.ts the Social frame over the real panel views and a11y layer (ctl
     // --- (c) a target that throws AFTER it is shown: the pvp panel shows, then renders ----------
     view.show('tradeView');
     expect(shownRoots(), 'c: precondition: the trade root').toEqual(['trades']);
-    const playerList = root('pvp-player-list');
-    const listRender = vi.spyOn(playerList, 'replaceChildren').mockImplementationOnce(() => {
+    // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): the throwing step was `replaceChildren` on
+    // #pvp-player-list, which pvpView no longer renders. It is now the incoming row's container,
+    // which every first render after a hide() rebuilds (a null or live view model alike).
+    const incomingRow = root('pvp-challenge-incoming');
+    const listRender = vi.spyOn(incomingRow, 'replaceChildren').mockImplementationOnce(() => {
       throw new Error('pvp render boom');
     });
     try {

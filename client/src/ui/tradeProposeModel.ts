@@ -1,7 +1,7 @@
 // ui/tradeProposeModel.ts — pure view model for the trade-PROPOSE overlay.
 //
 // No DOM, no SDK, no side-effects. TOTAL — never throws on any input. It is called
-// from the KeyO handler AND from live DOM input/change listeners; a throw here would
+// from the face-to-face Trade open AND from live DOM input/change listeners; a throw here would
 // starve sibling store batch-listeners (store.ts one-way flow).
 //
 // D3: this is a PROJECTION + non-degeneracy gate, NOT a validation SSOT. It
@@ -68,7 +68,7 @@ type SpeciesNameRow = { readonly name: string };
  * - `targets` = allPlayers MINUS self (`identity !== ownIdentity`) MINUS empty-identity rows;
  *   label = `name` or `'(unnamed)'`; sorted lexicographically by identity (deterministic).
  *   When `ownIdentity === ''` the target list is EMPTY (D3 / D7 L-1 analog) — the model is
- *   safe even if called before the KeyO identity guard runs.
+ *   safe even if called before the player has joined.
  * - `offerableMonsters` = ownMonsters; label = nickname (else species name via speciesMap,
  *   else `Unknown (#id)`) + level; monsterId kept as bigint; sorted ascending by monsterId.
  * TOTAL — never throws.

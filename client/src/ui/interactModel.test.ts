@@ -36,7 +36,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { loadWasmPkg } from '../../test-util/wasmPkg';
 import type { WasmDirection } from '../convert/convert';
-import type { StoreCharacter, StoreHealLocationRow, StoreNpcRow, StorePlayer } from '../net/store';
+import type {
+  StoreBattleChallenge,
+  StoreCharacter,
+  StoreHealLocationRow,
+  StoreNpcRow,
+  StorePlayer,
+} from '../net/store';
 import {
   type CandidatesFn,
   FACING_CODE,
@@ -46,6 +52,7 @@ import {
   type InteractOrigin,
   interactChip,
   marshalInteract,
+  pendingChallengeIdentities,
   resolveCandidates,
   type WireInteractEntity,
 } from './interactModel';
@@ -215,7 +222,13 @@ describe('marshalInteract (ctl-10a, CTL10A.1)', () => {
           key: 'player:13',
           kind: 'player',
           name: 'Rival',
-          actions: [],
+          // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.1): this pinned `[]` until ctl-10b; an online
+          // player now offers Trade then Challenge, carrying the StorePlayer's identity (the
+          // reducer argument), never the entity id.
+          actions: [
+            { kind: 'trade', playerIdentity: 'id-13' },
+            { kind: 'challenge', playerIdentity: 'id-13' },
+          ],
           anchorWorldX: 144,
           anchorWorldY: 128,
         },
@@ -306,12 +319,12 @@ describe('marshalInteract (ctl-10a, CTL10A.1)', () => {
     expect(input.candidates).toHaveLength(3);
   });
 
-  it('CTL10A-1-ACTIONS: the action table — a dialogue npc offers Talk, a shop npc Shop only, a heal-variant npc Heal at ITS location, a heal row Heal at its location, and a player nothing (until ctl-10b)', () => {
+  it('CTL10A-1-ACTIONS: the action table — a dialogue npc offers Talk, a shop npc Shop only, a heal-variant npc Heal at ITS location, a heal row Heal at its location, and an online player Trade then Challenge (ctl-10b)', () => {
     // WRONG IMPL KILLED: a shop npc offered as Talk (A would greet instead of opening the shop
     // the chip advertises) or as [talk, shop] (two entries: A would open a picker on a lone
     // shopkeeper); a heal-variant npc that heals at some other location (the first heal row, B13
-    // all over again); a heal row whose action drops or zeroes its locationId; and a player given
-    // a default action before ctl-10b ships Trade / Challenge (A on a lone player must be a no-op).
+    // all over again); a heal row whose action drops or zeroes its locationId; and a player that
+    // offers a Talk or any single default action (ctl-10b: exactly Trade then Challenge).
     const OWN = 1n;
     const input = marshalInteract(
       [
@@ -337,7 +350,11 @@ describe('marshalInteract (ctl-10a, CTL10A.1)', () => {
     expect(actions('npc:9')).toEqual([{ kind: 'heal', locationId: 11 }]);
     expect(actions('heal:4')).toEqual([{ kind: 'heal', locationId: 4 }]);
     expect(actions('heal:12')).toEqual([{ kind: 'heal', locationId: 12 }]);
-    expect(actions('player:13')).toEqual([]);
+    // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.1): was `[]` until ctl-10b.
+    expect(actions('player:13')).toEqual([
+      { kind: 'trade', playerIdentity: 'id-13' },
+      { kind: 'challenge', playerIdentity: 'id-13' },
+    ]);
     expect(input.candidates.find((c) => c.key === 'player:13')?.name).toBe('Rival');
     expect(input.candidates.find((c) => c.key === 'heal:4')?.name, 'the shell names a healer').toBe(
       '',
@@ -591,7 +608,8 @@ describe('interactChip (ctl-10a, CTL10A.3)', () => {
     // anchored at candidates[0] (a player standing first would carry the Choose chip); a single
     // chip that names some other action than the one A runs; and a non-null chip for [].
     expect(interactChip([]), 'no candidate').toBeNull();
-    expect(interactChip([player(13n)]), 'a lone player (no action until ctl-10b)').toBeNull();
+    // A hand-built player WITH NO actions (an offline one, as marshalInteract builds it): no chip.
+    expect(interactChip([player(13n)]), 'a lone player with no action').toBeNull();
     expect(interactChip([player(13n), player(14n)]), 'two players').toBeNull();
 
     const npc = talkNpc(7n, 2, 3);
@@ -647,5 +665,164 @@ describe('interactChip (ctl-10a, CTL10A.3)', () => {
       ],
     };
     expect(interactChip([both])).toEqual({ kind: 'choose', anchorWorldX: 48, anchorWorldY: 64 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CTL10B.1 — a faced player offers Trade and Challenge (eligibility: online, not busy).
+// ---------------------------------------------------------------------------
+
+const OWN_ID = 'ff'.repeat(32);
+const RIVAL_ID = 'aa'.repeat(32);
+const AMY_ID = 'bb'.repeat(32);
+
+/** A player row with an explicit hex identity (the reducer argument) and online flag. */
+function hexPlayer(entityId: bigint, name: string, identity: string, online = true): StorePlayer {
+  return { identity, entityId, name, online, lastInputSeq: 0n };
+}
+
+const tradeOf = (playerIdentity: string): InteractAction => ({ kind: 'trade', playerIdentity });
+const challengeOf = (playerIdentity: string): InteractAction => ({
+  kind: 'challenge',
+  playerIdentity,
+});
+
+describe('marshalInteract player actions (ctl-10b, CTL10B.1)', () => {
+  const OWN = 1n;
+  const characters = [charRow(OWN, 0, 5, 4), charRow(13n, 0, 5, 3), charRow(14n, 0, 6, 4)];
+  const marshal = (
+    players: readonly StorePlayer[],
+    busy?: ReadonlySet<string>,
+  ): ((key: string) => readonly InteractAction[] | undefined) => {
+    const input =
+      busy === undefined
+        ? marshalInteract([], characters, players, [], OWN)
+        : marshalInteract([], characters, players, [], OWN, busy);
+    return (key) => input.candidates.find((c) => c.key === key)?.actions;
+  };
+  const roster = (online13 = true, online14 = true): StorePlayer[] => [
+    hexPlayer(OWN, 'Me', OWN_ID),
+    hexPlayer(13n, 'Rival', RIVAL_ID, online13),
+    hexPlayer(14n, 'Amy', AMY_ID, online14),
+  ];
+
+  it('CTL10B-1-PLAYER-ACTIONS: an online player offers exactly [Trade, Challenge] carrying ITS OWN hex identity (two players, no swap); an offline player offers nothing; a player in the busy set offers Trade only; the own identity in the busy set removes Challenge for everyone', () => {
+    // WRONG IMPL KILLED: a player action list that is still [] (the whole slice); a Challenge-first
+    // order (the picker's default row would then challenge); the entity id (13n / '13') or the
+    // player NAME in place of the identity (the reducer would be sent a non-identity); the same
+    // identity (the first or the last player's) stamped on every player (Trade would open for the
+    // wrong person); an offline player still offered (a stale row the server refuses); a busy
+    // player still offered Challenge (a second pending challenge the reducer refuses); a busy
+    // filter that also drops Trade; a busy set that is read by entity id instead of identity; and
+    // an own-busy rule that is forgotten (you could challenge while you hold a pending challenge).
+    const live = marshal(roster());
+    expect(live('player:13'), 'Rival').toEqual([tradeOf(RIVAL_ID), challengeOf(RIVAL_ID)]);
+    expect(live('player:14'), 'Amy, a different identity').toEqual([
+      tradeOf(AMY_ID),
+      challengeOf(AMY_ID),
+    ]);
+    // An empty busy set is the same as none.
+    expect(marshal(roster(), new Set())('player:13')).toEqual([
+      tradeOf(RIVAL_ID),
+      challengeOf(RIVAL_ID),
+    ]);
+
+    // Offline: the candidate offers nothing (it may stay a candidate for the wasm rule).
+    const offline = marshal(roster(false, true));
+    expect(offline('player:13') ?? [], 'offline Rival offers nothing').toEqual([]);
+    expect(offline('player:14'), 'online Amy is unaffected').toEqual([
+      tradeOf(AMY_ID),
+      challengeOf(AMY_ID),
+    ]);
+
+    // Busy: only the busy player loses Challenge.
+    const busyRival = marshal(roster(), new Set([RIVAL_ID]));
+    expect(busyRival('player:13'), 'busy Rival: Trade only').toEqual([tradeOf(RIVAL_ID)]);
+    expect(busyRival('player:14'), 'Amy not busy: both').toEqual([
+      tradeOf(AMY_ID),
+      challengeOf(AMY_ID),
+    ]);
+    // Busy is read by identity, not by entity id or name.
+    const decoy = marshal(roster(), new Set(['13', 'Rival', AMY_ID.toUpperCase()]));
+    expect(decoy('player:13'), 'a non-identity entry names nobody').toEqual([
+      tradeOf(RIVAL_ID),
+      challengeOf(RIVAL_ID),
+    ]);
+
+    // Own identity busy (you hold a pending challenge): nobody can be challenged, all can be traded.
+    const ownBusy = marshal(roster(), new Set([OWN_ID]));
+    expect(ownBusy('player:13')).toEqual([tradeOf(RIVAL_ID)]);
+    expect(ownBusy('player:14')).toEqual([tradeOf(AMY_ID)]);
+  });
+
+  it('CTL10B-1-BUSY-SET: pendingChallengeIdentities returns BOTH the challenger and the target of every Pending challenge and nothing from Declined or Accepted rows; empty input gives an empty set', () => {
+    // WRONG IMPL KILLED: a challenger-only set (the challenged player could be challenged again); a
+    // target-only set (the challenger, e.g. you, could start a second challenge); a status filter
+    // that is missing, inverted, or lets Declined / Accepted rows leak (a player stays busy forever
+    // after the challenge ended); a set that stops at the first row; and a non-empty set for [].
+    const ids = {
+      c1: 'a1'.repeat(32),
+      t1: 'b2'.repeat(32),
+      c2: 'c3'.repeat(32),
+      t2: 'd4'.repeat(32),
+      cd: 'e5'.repeat(32),
+      td: 'f6'.repeat(32),
+      ca: '17'.repeat(32),
+      ta: '28'.repeat(32),
+    };
+    const row = (
+      challengeId: bigint,
+      challenger: string,
+      target: string,
+      status: string,
+    ): StoreBattleChallenge =>
+      ({
+        challengeId,
+        challenger,
+        target,
+        challengerPartyIds: [1n],
+        status,
+        createdAtMs: 1_000n,
+      }) as StoreBattleChallenge;
+    const sorted = (s: ReadonlySet<string>): string[] => [...s].sort();
+
+    expect(sorted(pendingChallengeIdentities([])), 'no challenges, nobody busy').toEqual([]);
+    expect(
+      sorted(
+        pendingChallengeIdentities([
+          row(1n, ids.c1, ids.t1, 'Pending'),
+          row(2n, ids.cd, ids.td, 'Declined'),
+          row(3n, ids.c2, ids.t2, 'Pending'),
+          row(4n, ids.ca, ids.ta, 'Accepted'),
+        ]),
+      ),
+      'both sides of each Pending row, nothing from the ended ones',
+    ).toEqual([ids.c1, ids.t1, ids.c2, ids.t2].sort());
+    expect(
+      sorted(pendingChallengeIdentities([row(5n, ids.cd, ids.td, 'Declined')])),
+      'only an ended challenge: nobody busy',
+    ).toEqual([]);
+  });
+
+  it('CTL10B-1-CHIP-PLAYER: the chip over a lone online player is Choose (two actions) anchored at the player, and over a lone busy player it is the single Trade action', () => {
+    // WRONG IMPL KILLED: a chip that stays null over a player (the player could not tell A does
+    // something); a lone online player shown as a single Trade (A would trade without asking, the
+    // challenge never offered); a chip anchored at the wrong tile; and a busy player whose chip
+    // still says Choose (A would open a one-row picker for a Challenge that is not offered).
+    const live = marshalInteract([], characters, roster(), [], OWN).candidates.filter(
+      (c) => c.key === 'player:13',
+    );
+    expect(live).toHaveLength(1);
+    expect(interactChip(live)).toEqual({
+      kind: 'choose',
+      anchorWorldX: 176, // (5 + 0.5) * 32
+      anchorWorldY: 96, // 3 * 32
+    });
+
+    const busy = marshalInteract([], characters, roster(), [], OWN, new Set([RIVAL_ID]));
+    const busyRival = busy.candidates.filter((c) => c.key === 'player:13');
+    const chip = interactChip(busyRival);
+    expect(chip?.kind).toBe('single');
+    expect((chip as { action: InteractAction }).action).toEqual(tradeOf(RIVAL_ID));
   });
 });

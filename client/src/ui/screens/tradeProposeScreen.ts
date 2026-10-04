@@ -2,8 +2,8 @@
 // CTL8E.1-.2; defect B5). No DOM, SDK, module state or clock; `tradeProposeView.ts` paints what
 // `paint` hands it.
 //
-// The steps are Target (only when no target was supplied; ctl-10b supplies one), Offer, Coins, Ask
-// and Review. LB/RB page between them (clamped), B steps back and closes at the first step, Start
+// The steps are Target (only when no target was supplied; the face-to-face open supplies one, so
+// in the product it never shows), Offer, Coins, Ask and Review. LB/RB page between them (clamped), B steps back and closes at the first step, Start
 // abandons the draft. Target is the native select (it owns the D-pad while focused): A moves on.
 // Offer moves a cursor over the own monsters, by id, and A toggles ✓ on it. Coins and Ask are
 // typing rows (CTL6B.5): the field owns the keys, Enter reaches here as A and moves on. Review
@@ -25,7 +25,7 @@ import type { ButtonStep, ScreenAdapter, ScreenContext, ScreenResult } from './t
 
 export interface TradeProposeScreenVm {
   readonly lists: TradeProposeLists;
-  /** Whether the open path supplied the counterparty (no Target step). False until ctl-10b. */
+  /** Whether the open path supplied the counterparty (no Target step): `ctx.proposeTarget`. */
   readonly targetSupplied: boolean;
 }
 
@@ -83,7 +83,7 @@ export const tradeProposeScreen: ScreenAdapter<
         ctx.store.speciesMap(),
         ctx.identity,
       ),
-      targetSupplied: false,
+      targetSupplied: ctx.proposeTarget != null,
     };
   },
 

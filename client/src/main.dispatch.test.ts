@@ -690,15 +690,11 @@ function dispatchRows(): readonly Row[] {
       kind: 'cancelTrade',
       atBattle: 'refuse',
     },
-    {
-      label: 'pvp challenge',
-      view: 'PvpView',
-      handler: 'onChallenge',
-      args: [OTHER_IDENTITY],
-      expected: [{ name: 'challengePvp', args: { target: other, partyIds: party } }],
-      kind: 'challenge',
-      atBattle: 'refuse',
-    },
+    // ctl-10b (named intentional change, CTL10B.2): the 'pvp challenge' row is removed with the
+    // PvpView `onChallenge` callback and its per-player Challenge buttons. A challenge is started
+    // only face to face: the world action sheet's Yes dispatches the `challenge` Command (proved,
+    // with its exact reducer arguments, by main.input.test.ts CTL10B-1-BOOT-CHALLENGE-YES), and
+    // CTL10B-2-BOOT-PVP-NO-CALLBACK below proves PvpView is handed no such callback.
     {
       label: 'pvp accept (challenge Accept)',
       view: 'PvpView',
@@ -890,6 +886,22 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     ).toBe(37);
   });
 
+  it('CTL10B-2-BOOT-PVP-NO-CALLBACK: the PvpView constructor is handed no onChallenge callback (a challenge starts only face to face), while its respond callbacks (Accept, Decline, Cancel) are all still wired', async () => {
+    // WRONG IMPL KILLED: a main.ts that keeps wiring `onChallenge` into the PvpView handler object
+    // (the retired per-player Challenge buttons, or any future caller, could start a challenge from
+    // the PvP overlay), and a "removal" that also drops the respond callbacks (the control reads all
+    // three, so the overlay would be unable to answer a challenge).
+    await bootReady();
+    server(1000);
+    const handlers = H.handlers.PvpView;
+    if (handlers === undefined) throw new Error('PvpView was never constructed by main.ts');
+    expect(Object.hasOwn(handlers, 'onChallenge'), 'no onChallenge callback is wired').toBe(false);
+    expect(handlers.onChallenge, 'and nothing answers to that name').toBeUndefined();
+    for (const name of ['onAccept', 'onDecline', 'onCancel']) {
+      expect(typeof handlers[name], `control: ${name} is still wired`).toBe('function');
+    }
+  });
+
   it('dispatch skips: a full party sends nothing for the box slot and says why, and an explicit slot still sends', async () => {
     // WRONG IMPL KILLED: a -1 that sends the box sentinel into a full party (an accepted server
     // no-op the player never sees), a full-party guard that also blocks an explicit slot, and a
@@ -935,7 +947,9 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       ['BattleView', 'onPvpAttack', [906n, 37]],
       ['RaisingView', 'onCare', [72n]],
       ['TradeView', 'onAccept', [81n]],
-      ['PvpView', 'onChallenge', [OTHER_IDENTITY]],
+      // ctl-10b (named intentional change): was ['PvpView', 'onChallenge', [OTHER_IDENTITY]]; the
+      // PvpView callback is retired, so the pvp-action path is driven through its Accept instead.
+      ['PvpView', 'onAccept', [91n]],
       ['RenameView', 'onSubmit', ['Zed']],
       ['BoxView', 'onSetPartySlot', [62n, 2]],
     ];
@@ -1363,7 +1377,12 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     // ctl-7d (named intentional change, CTL7D.5): the policy gains `pickShop: 'refuse'`.
     // ctl-10a (named intentional change, CTL10A.4): `healParty` lost its only view callback (the
     // Box's Heal Party), so it moves here; CTL7C-3-PRESENT refuses it at a battle base.
+    // ctl-10b (named intentional change, CTL10B.2): `challenge` lost its only view callback (PvpView's
+    // per-player Challenge buttons), so it moves here.
     const noViewCallback: Readonly<Record<string, string>> = {
+      challenge:
+        'no view constructor callback since ctl-10b: the world action sheet`s confirm Yes ' +
+        'dispatches it, and main.input.test.ts CTL10B-1-BOOT-CHALLENGE-YES proves that path',
       healParty:
         'no view constructor callback since ctl-10a: the heal frame`s screen adapter dispatches ' +
         'it, and CTL7C-3-PRESENT in this file refuses every healParty shape at a battle base',

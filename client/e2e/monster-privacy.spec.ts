@@ -7,7 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll } from './controls';
+import { closeAll, openFaceToFace } from './controls';
 
 // monster_pub need-to-know privacy, end to end
 //
@@ -440,10 +440,6 @@ test.describe
     test('EARS 13r-e-2: the PvP battle overlay renders FULLY while each client holds zero other-player monster rows', async () => {
       test.setTimeout(120_000);
 
-      const identityA = await pageA.evaluate(
-        () => (window as unknown as { __game: () => GameSnap }).__game().identity,
-      );
-
       // Distinct labels so the opponent card can be identified by WHOSE it is.
       // Unique per run (the e2e world is shared across runs); alphanumeric and
       // well under the server's MAX_NAME_LEN=24.
@@ -456,27 +452,12 @@ test.describe
       // !anyOverlayVisible (ranked-forfeit.spec.ts:282 precedent).
       await closeAll(pageB);
 
-      // A challenges B through the production DOM. Selection is by the
-      // `data-player-identity` attribute, never the display name.
-      await pageA.keyboard.press('KeyP');
-      await pageA.waitForFunction(
-        (myIdentity: string) => {
-          const btn = document.querySelector(
-            '[data-testid="pvp-challenge-player-btn"]',
-          ) as HTMLElement | null;
-          return btn !== null && btn.getAttribute('data-player-identity') !== myIdentity;
-        },
-        identityA,
-        { timeout: 15_000 },
-      );
-      await pageA.evaluate((myIdentity: string) => {
-        const buttons = Array.from(
-          document.querySelectorAll('[data-testid="pvp-challenge-player-btn"]'),
-        ) as HTMLElement[];
-        const btn = buttons.find((b) => b.getAttribute('data-player-identity') !== myIdentity);
-        if (!btn) throw new Error('13r-e: no challenge button found for a non-self player');
-        btn.click();
-      }, identityA);
+      // A challenges B through the production DOM (INTENTIONAL CHANGE, ctl-10b CTL10B.1-2: the
+      // PvP overlay's per-player Challenge button and P / O initiation are gone). A challenges B
+      // FACE TO FACE: it stands on B's tile (both joined at the spawn; the helper walks there
+      // when they stand apart), presses A, chooses `Challenge — <B's unique rename label>` and
+      // answers Yes at the confirm.
+      await openFaceToFace(pageA, 'Challenge', nameB, pageB);
 
       // B accepts through the real DOM button.
       await pageB.waitForSelector('[data-testid="pvp-accept-btn"]', { timeout: 15_000 });

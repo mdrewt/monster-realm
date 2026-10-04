@@ -488,3 +488,21 @@ looking wired.
 **Rules out.** Per-overlay mutual-exclusion checks; conveying meaning by colour
 alone; WAAPI animation; hard-coded UI strings; falling back to the key or `en` when a
 string is missing.
+
+## Interaction target: the tile in front, then your own tile
+
+**Decision.** A (and a click on the world) acts on the candidates from
+`game_core::interact_candidates`, exported to the client as
+`interact_candidates_coded`. The candidates are the entities on the tile the character
+faces (`pos.step(facing)`), or, if there are none, the entities on the character's own
+tile. Same zone only; ordered NPC, then heal, then player, then by id. An entity
+within range but not in front is never a candidate, even though `talk` accepts up to
+`TALK_RANGE` (2). The UI starts trades and challenges only from a player you face. The
+server stays permissive.
+
+**Why.** Interaction follows what the character faces, as in console RPGs. The
+server's range is a latency margin for an NPC that steps one tile before the reducer
+runs. It is not the player's reach.
+
+**Rules out.** A nearest-within-range target; widening the client rule to match
+`TALK_RANGE`; starting a trade or challenge remotely from a menu.

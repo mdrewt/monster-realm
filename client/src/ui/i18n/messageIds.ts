@@ -32,6 +32,9 @@ export type MessageId =
   | 'interact.verb.talk'
   | 'interact.verb.shop'
   | 'interact.verb.heal'
+  | 'interact.verb.trade'
+  | 'interact.verb.challenge'
+  | 'interact.confirm.challenge'
   | 'interact.healer'
   | 'key.enter'
   | 'chrome.help.title'
@@ -96,8 +99,6 @@ export type MessageId =
   | 'pvp.incoming.decline'
   | 'pvp.outgoing.label'
   | 'pvp.outgoing.cancel'
-  | 'pvp.players.none'
-  | 'pvp.players.heading'
   // Evolution.* : the evolution screen (evolutionView.ts).
   | 'evolution.title'
   | 'evolution.hint'
@@ -357,6 +358,7 @@ export interface MessageParams {
   readonly 'interact.chip': { readonly key: string; readonly verb: string; readonly name: string };
   readonly 'interact.choose': { readonly key: string };
   readonly 'interact.entry': { readonly verb: string; readonly name: string };
+  readonly 'interact.confirm.challenge': { readonly name: string };
   // Every param below is MODEL DATA — affinity names, weather labels,
   // status names, species/skill/item names, player display names and counts — interpolated
   // verbatim, never catalogued (M24 §2.5: content stays English this milestone).

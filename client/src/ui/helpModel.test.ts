@@ -51,9 +51,10 @@ describe('buildHelpViewModel(): content shape — non-empty controls + goals (PT
 
 describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)', () => {
   // The keymap that the help overlay documents: the
-  // `?` help key itself, Escape (close), movement (WASD / arrows), Space (jump), the 9
-  // overlay hotkeys B I E Q U P L N O (G and H deleted in uxd2; ctl-10a retired the interact key
-  // T — interaction is Enter / A on what you face, pinned by the ctl-10a key-set test below),
+  // `?` help key itself, Escape (close), movement (WASD / arrows), Space (jump), the 8
+  // overlay hotkeys B I E Q U P L N (G and H deleted in uxd2; ctl-10a retired the interact key
+  // T — interaction is Enter / A on what you face, pinned by the ctl-10a key-set test below;
+  // ctl-10b retired O — trades and challenges start face to face, CTL10B-2-HELP-NO-O),
   // and F9 (bug bundle). Each must be mentioned by SOME
   // control entry's `key`. We match case-insensitively / by substring so we pin the
   // COVERAGE of the SSOT without over-pinning the exact glyph wording (e.g. "WASD"
@@ -101,9 +102,9 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
     expect(blob.includes('f9'), 'controls SSOT must document F9 (bug bundle)').toBe(true);
   });
 
-  it('BITES: each overlay hotkey B I E Q U P L N O is documented in the SSOT', () => {
+  it('BITES: each overlay hotkey B I E Q U P L N is documented in the SSOT', () => {
     // WRONG IMPL KILLED: an SSOT that documents only some of the overlay hotkeys —
-    // a tester would not discover, e.g., the Trade-propose (O) or Leaderboard (L) overlay.
+    // a tester would not discover, e.g., the Leaderboard (L) or Quest log (Q) overlay.
     // Substring match against the per-entry key blob (case-insensitive). Each letter must
     // appear SOMEWHERE in some control's key text.
     //
@@ -120,7 +121,9 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
     // inside another key's text), so the deletion itself is pinned by the exact-key
     // assertion in the sibling test below — that is the tooth, this is coverage.
     const blob = keyBlob();
-    const hotkeys = ['b', 'i', 'e', 'q', 'u', 'p', 'l', 'n', 'o'];
+    // INTENTIONAL CHANGE (ctl-10b, CTL10B.2): `o` is dropped from this list (9 -> 8). O no longer
+    // starts a trade, so its row is deleted; its absence is pinned by CTL10B-2-HELP-NO-O below.
+    const hotkeys = ['b', 'i', 'e', 'q', 'u', 'p', 'l', 'n'];
     for (const k of hotkeys) {
       expect(
         blob.includes(k),
@@ -224,7 +227,9 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
       rawKeys.filter((k) => k === 'F'),
       'exactly one row keyed `F`',
     ).toHaveLength(1);
-    expect([...rawKeys].sort(), 'the full documented key set after ctl-10a').toEqual(
+    // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): the pinned key set drops 'O' (the trade
+    // propose key is retired; trades and challenges start face to face through Enter).
+    expect([...rawKeys].sort(), 'the full documented key set after ctl-10b').toEqual(
       [
         '?',
         'M',
@@ -241,7 +246,6 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
         'P',
         'L',
         'N',
-        'O',
         'C',
         'F9',
       ].sort(),
@@ -250,6 +254,40 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
       const row = vm.controls.find((c) => c.key === key);
       expect(row?.action.trim().length, `the ${key} row says what it does`).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('buildHelpViewModel(): face-to-face trading, no O (ctl-10b, CTL10B.2)', () => {
+  it('CTL10B-2-HELP-NO-O: no controls row is keyed O, no action text says "nearby" (B15), the Enter row names trade and challenge, and the P row is about answering a challenge', () => {
+    // WRONG IMPL KILLED: help that still teaches O (a key that now does nothing: the worst outcome
+    // for an onboarding surface); a row keyed "O / Enter" (a reworded O); any action that still
+    // says "nearby" (B15: the interaction is with what you FACE, not a radius); an Enter row that
+    // does not mention trade and challenge (the only way to start either is undiscoverable); and a
+    // P row that still says it challenges a player (P answers a challenge now).
+    const vm = buildHelpViewModel();
+    expect(vm.controls.length, 'ANTI-VACUITY: the SSOT is not empty').toBeGreaterThan(10);
+    for (const c of vm.controls) {
+      expect(
+        c.key
+          .trim()
+          .toUpperCase()
+          .split(/[\s/]+/),
+        `row "${c.key}" is not an O row`,
+      ).not.toContain('O');
+      expect(/nearby/i.test(c.action), `"${c.action}" must not say "nearby"`).toBe(false);
+      expect(/nearby/i.test(c.key)).toBe(false);
+    }
+    expect(vm.controls.some((c) => c.key.trim().toUpperCase() === 'O')).toBe(false);
+
+    const enter = vm.controls.find((c) => c.key === 'Enter');
+    expect(enter, 'the Enter row exists').toBeDefined();
+    expect(/trade/i.test(enter?.action ?? ''), 'Enter mentions trade').toBe(true);
+    expect(/challenge/i.test(enter?.action ?? ''), 'Enter mentions challenge').toBe(true);
+
+    const p = vm.controls.find((c) => c.key === 'P');
+    expect(p, 'the P row exists').toBeDefined();
+    expect(/answer/i.test(p?.action ?? ''), 'P is about answering a challenge').toBe(true);
+    expect(/nearby/i.test(p?.action ?? '')).toBe(false);
   });
 });
 

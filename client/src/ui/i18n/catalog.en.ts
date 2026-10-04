@@ -58,6 +58,15 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Verb in the world interaction chip and picker for healing the party at a healer. One
   // short word. main.ts
   'interact.verb.heal': 'Heal',
+  // @desc: Verb in the world picker for proposing a trade to the player the character faces. One
+  // short word. main.ts
+  'interact.verb.trade': 'Trade',
+  // @desc: Verb in the world picker for challenging the player the character faces to a PvP
+  // battle. One short word. main.ts
+  'interact.verb.challenge': 'Challenge',
+  // @desc: The Yes / No question asked before a challenge is sent to the faced player; {name} is
+  // that player's display name. main.ts (#interact-prompt)
+  'interact.confirm.challenge': (p) => `Challenge ${p.name}?`,
   // @desc: Name shown for a heal location in the world interaction chip and picker. One short word.
   // main.ts
   'interact.healer': 'Healer',
@@ -311,14 +320,6 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Button label to withdraw the challenge the player has sent. Two words, fits a button.
   // pvpView.ts:226
   'pvp.outgoing.cancel': 'Cancel Challenge',
-  // @desc: Empty-state line over the challengeable-player list when nobody else is online. One
-  // line.
-  // pvpView.ts:241
-  'pvp.players.none': 'No players online to challenge',
-  // @desc: Heading over the list of online players the player may challenge; each list entry below
-  // it is a player's name. One word plus colon.
-  // pvpView.ts:241
-  'pvp.players.heading': 'Challenge:',
   // @desc: Heading of the evolution overlay, listing every party monster's evolution paths.
   // One word, fits a 320px-wide column.
   // evolutionView.ts:102 (resolved in show())
@@ -1099,7 +1100,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'menu.social.challenges.title': 'Challenges',
   // @desc: Feedback-line description of the Challenges entry in the Social sub-list, shown on Y.
   // ui/menuModel.ts (MENU_ENTRIES)
-  'menu.social.challenges.desc': 'Challenge a player or answer a challenge.',
+  'menu.social.challenges.desc': 'See and answer challenges.',
   // @desc: Social sub-list entry opening the ranked leaderboard.
   // ui/menuModel.ts (MENU_ENTRIES)
   'menu.social.rankings.title': 'Rankings',

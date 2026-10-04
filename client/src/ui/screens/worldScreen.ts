@@ -1,8 +1,10 @@
 // ui/screens/worldScreen.ts — what A and Y do at the world base (ctl-10a). Pure. The candidates
 // are the wasm rule's answer (ui/interactModel.ts); this decides only what a press does with them.
 // Counting is over ACTIONABLE rows, so ctl-10b's player actions add rows without changing the rule:
-// none → the press is not ours (no toast); one → it runs; several → the picker opens.
+// none → the press is not ours (no toast); one → it runs; several → the picker opens. A Challenge
+// never runs on A alone: a lone Challenge row opens straight into its Yes-default confirm (ctl-10b).
 import {
+  askConfirm,
   openSheet,
   pickerEntries,
   type SheetState,
@@ -32,8 +34,10 @@ export function worldButton(
   if (btn.button === 'A') {
     const entries = pickerEntries(cands);
     const only = entries.length === 1 ? entries[0] : undefined;
-    if (only !== undefined) return { sheet, result: 'consumed', run: only.action };
     const opened = openSheet(entries);
+    if (only !== undefined && opened !== null && only.action.kind === 'challenge')
+      return { sheet: askConfirm(opened, only.key), result: 'consumed' };
+    if (only !== undefined) return { sheet, result: 'consumed', run: only.action };
     return opened === null ? { sheet, result: 'unhandled' } : { sheet: opened, result: 'consumed' };
   }
   if (btn.button === 'Y') {
