@@ -363,13 +363,29 @@ positions, and draws.
 
 ### UI
 
-Every overlay is a pure model (`ui/*Model.ts`) and a DOM view (`ui/*View.ts`).
-`ui/overlayRegistry.ts` is the single authority on which overlay may open over which
-(`canOpen`), what each overlay's accessibility metadata is (`OVERLAY_A11Y`), and which
-overlays are visible (`visibleIds`, `anyVisible`). `M` opens a two-level menu
-(`menuModel.ts`) listing every action with its hotkey. The controls list shown by `?`
-is `CONTROLS` in `ui/helpModel.ts`. `T` resolves the nearest NPC, shop or heal tile
-within `talk_range()` (`interactModel.ts`); the server re-checks range.
+Input is a console-style pipeline of virtual buttons (`input/buttons.ts`: the D-pad, A, B,
+X, Y, LB, RB, Start, Select). Two sources feed it: `input/keyboardSource.ts` maps keys through
+the remappable binding table (`input/bindings.ts`, saved by `input/bindingStore.ts`, drawn by
+`input/glyphs.ts`), and `input/pointerSource.ts` is ONE dispatcher on `#game-screen`. A click on
+the canvas at the world base is A (no coordinates). A click on a row of the top frame is a seek:
+the D-pad presses that walk that list's cursor there, the first one probed and undone if another
+list moved, then A. A click on a tab is LB/RB. A right-click, or a touch long-press
+(`input/longPress.ts`, 500 ms within 10 px, with a fill ring), is B. A hint-bar chip presses its
+button. The mouse hovering a row moves the cursor there. Both sources hand button edges to
+`input/router.ts`, which decides walking, menu navigation or a screen button from the context on
+top.
+
+The context stack (`ui/contextStack.ts`) is the base (world or battle) plus the frames above it.
+`SCREEN_POLICY` says what a battle or a server conversation closes, and `reconcile` mirrors server
+truth into the stack. Each frame's screen adapter (`ui/screens/`, keyed by frame in
+`SCREEN_ADAPTERS`) turns a button into a nav step or a command. `main.ts` runs commands through
+`dispatch` and applies stack changes through `applyStack`. `ui/overlayRegistry.ts` still decides
+which overlay may open over which (`canOpen`), its accessibility metadata (`OVERLAY_A11Y`) and
+which are visible. Frames are built from `ui/frame.ts` and `ui/navRender.ts` inside
+`#game-screen`'s frame layer. The hint bar (`ui/hintBarModel.ts`, `ui/hintBar.ts`) and Help
+(`ui/helpModel.ts`) are generated from the context table, the live bindings and the catalog. At
+the world base, A acts on the target that the wasm `interact_candidates_coded` export picks (an NPC, a
+shop or a heal tile within talk range). The server re-checks the range.
 
 Strings come from `ui/i18n/`: a `MessageId` union, total catalogs for `en` and `fr`, a
 resolver whose `t()`/`tf()` throw on a missing key, CLDR plural rules, and boot-time
@@ -385,7 +401,7 @@ is trapped in modals (`focusTrap.ts`), announcements go through live regions
   event ring (`eventRing.ts`), captured errors (`errorRing.ts`), a projected store
   snapshot without names, and the build stamp (git short SHA and build time injected
   by `vite.config.ts`, `net/buildInfo.ts`). Nothing is sent over the network.
-- Uncaught errors show a non-blocking overlay that `F8` dismisses.
+- Uncaught errors show a non-blocking toast that `B` at the world base or `F8` dismisses.
 - DEV builds expose debug hooks (`__game`, `__mrTrade`, `__mrPvp`) inside an
   `import.meta.env.DEV` branch; `scripts/verify-build-hooks.mjs` checks that a
   production bundle contains none.

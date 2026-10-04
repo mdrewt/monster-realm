@@ -615,10 +615,13 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     // --- dialogue: choice clicks (a pair) and the pop command's dismiss ------------------------
     startConversation(1400);
     expect(dialogueShown(), 'precondition: the server opened the dialogue').toBe(true);
+    // ctl-15 (named intentional change): the choice buttons sit inside the dialogue overlay (in
+    // #game-screen, where the pointer dispatcher listens); they were appended to document.body.
+    const dialogueHost = byId('dialogue-overlay');
     for (const idx of ['2', '0']) {
       const choice = document.createElement('button');
       choice.dataset.choiceIdx = idx;
-      document.body.appendChild(choice);
+      dialogueHost.appendChild(choice);
       choice.click();
       choice.remove();
     }
@@ -1644,11 +1647,13 @@ const battleRoot = (): HTMLElement => {
 const menuFeedback = (): string | null =>
   byId('menu-overlay').querySelector('.mr-frame-feedback')?.textContent ?? null;
 
-/** Click a dialogue choice button, as the dialogue renders one. */
+/** Click a dialogue choice button, as the dialogue renders one. ctl-15 (named intentional change):
+ *  inside the dialogue overlay (in #game-screen, where the pointer dispatcher listens); it was
+ *  appended to document.body. */
 function clickChoice(idx: string, t: number): void {
   const button = document.createElement('button');
   button.dataset.choiceIdx = idx;
-  document.body.appendChild(button);
+  byId('dialogue-overlay').appendChild(button);
   clock.t = t;
   button.click();
   button.remove();

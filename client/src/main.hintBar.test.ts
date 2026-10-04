@@ -412,7 +412,7 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
 }, () => {
   afterEach(teardown);
 
-  it('CTL13-1-BOOT-LIVE: the bar shows the live keycaps and verbs of the world (Start and Select as the shipped buttons, A with the faced target, Y and B while a request waits with no target, a sheet, a menu frame), the Start badge follows the waiting request, a remap made in Options > Controls or stored in mr.controls shows on the next frame, and the new chips are non-clickable spans', async () => {
+  it('CTL13-1-BOOT-LIVE: the bar shows the live keycaps and verbs of the world (Start and Select as the shipped buttons, A with the faced target, Y and B while a request waits with no target, a sheet, a menu frame), the Start badge follows the waiting request, a remap made in Options > Controls or stored in mr.controls shows on the next frame, and the new chips are clickable, non-focusable spans', async () => {
     // LEGACY REPLACED (the Red): the two chips were written ONCE at boot (their text and nothing
     // else), so a remap changed no keycap, no verb followed the faced target or the open frame,
     // and no chip existed for A, B or Y.
@@ -422,7 +422,8 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
     // target's verb; Y / B missing while a request waits, shown beside a target, or B kept after
     // its banner was dismissed; Y dropped after the banner was dismissed; the badge missing, kept
     // after the request goes, or put on another chip; the frame chips (ok / back / close) not
-    // following the top of the stack; a new chip that is a <button> or takes a click; and a stored
+    // following the top of the stack; a new chip that is a <button> (a tab stop) or keeps an inline
+    // pointer-events:none (ctl-15: chips are clicked, CTL15.5); and a stored
     // table that the bar does not read.
     const ESC = i18nT('key.escape');
     const menuVerb = i18nT('chrome.chip.menu');
@@ -457,7 +458,9 @@ describe('main.ts live hint bar over the real shell (runtime, ctl-13)', {
       tag: 'SPAN',
     });
     const aSpan = document.querySelector('#hint-bar [data-button="A"]') as HTMLElement;
-    expect(aSpan.style.pointerEvents, 'a new chip takes no click (ctl-15)').toBe('none');
+    // ctl-15 (named intentional change, CTL15.5): was `toBe('none')`; the chip now takes the click
+    // the #game-screen pointer dispatcher turns into a press of A.
+    expect(aSpan.style.pointerEvents, 'a new chip has no inline pointer-events').toBe('');
     expect(aSpan.hasAttribute('tabindex')).toBe(false);
     removeFacedNpc();
     frame();

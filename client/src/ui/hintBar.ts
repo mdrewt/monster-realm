@@ -1,7 +1,7 @@
 // ui/hintBar.ts — paints the live hint bar (ctl-13, CTL13.1) and the request banner (CTL13.2) into
 // client/index.html's #hint-bar. A keyed reconcile on `data-button`: the shipped Start and Select
-// buttons (their ids and click launchers) are reused, and every other chip is a span that takes no
-// pointer events until ctl-15 gives it a click. Text only (textContent, never markup: a banner
+// buttons (their ids) are reused, and every other chip is a span; a click on any chip is pressed by
+// the pointer source on #game-screen (ctl-15). Text only (textContent, never markup: a banner
 // carries a player name), no focus moves, no live region (ui/liveRegion.ts announces). A render
 // identical to the last one touches nothing, so the frame loop can call it every frame.
 import type { HintChip } from './hintBarModel';
@@ -39,6 +39,7 @@ export class HintBarView {
     }
     const banner = root.ownerDocument.createElement('div');
     banner.id = 'notice-banner';
+    banner.className = 'mr-notice-banner';
     banner.hidden = true;
     root.prepend(banner);
     this.#banner = banner;
@@ -70,9 +71,9 @@ export class HintBarView {
       el = this.#root.ownerDocument.createElement('span');
       el.className = 'mr-chip';
       el.dataset.button = chip.button;
-      el.style.pointerEvents = 'none';
-      // Inert until ctl-15 gives it a click, and said so: axe then leaves it out of the contrast
-      // rule, which cannot decide a symbol-only keycap such as Backspace's.
+      // Clicked through the pointer source on #game-screen (ctl-15), never focused: the keyboard
+      // presses the button itself. aria-disabled keeps axe's contrast rule off a symbol-only keycap
+      // such as Backspace's (R-ctl-13-AXEDISABLED).
       el.setAttribute('aria-disabled', 'true');
       this.#chips.set(chip.button, el);
     }

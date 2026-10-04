@@ -36,9 +36,10 @@ import {
 } from './convert/convert';
 import { browserStorage, loadBindings, saveBindings } from './input/bindingStore';
 import { accelForCode, type Bindings, DEFAULT_BINDINGS } from './input/bindings';
-import type { ButtonEdge } from './input/buttons';
+import type { ButtonEdge, VButton } from './input/buttons';
 import { glyph, learnKey } from './input/glyphs';
 import { isChord, KeyboardSource } from './input/keyboardSource';
+import { PointerSource, type PointerTop } from './input/pointerSource';
 import {
   type AccelPath,
   accelDecision,
@@ -2387,6 +2388,32 @@ const cancelControlsCapture = (): void => {
   endControlsCapture();
 };
 
+// The pointer source (ctl-15): built at boot on #game-screen, it only presses virtual buttons.
+let pointerSource: PointerSource | null = null;
+
+// One pointer press: the button's down and up edges through the router, the stack synced on both
+// sides as a keydown does. Like every input path it is dead while the session terminal shows.
+const pointerPress = (button: VButton): void => {
+  if (sessionGateBlocks()) return;
+  syncStack();
+  try {
+    routeEdge({ button, down: true });
+    routeEdge({ button, down: false });
+  } finally {
+    syncStack();
+  }
+};
+
+// What a click can reach: the canvas only at the bare world base (an open world sheet would take A
+// as Accept or a pick), a row only in a screen or prompt frame.
+const pointerTop = (): PointerTop => {
+  const top = contextStack[contextStack.length - 1];
+  if (contextStack.length === 1 && top.kind === 'world') {
+    return screenHost.sheetOpen ? 'other' : 'world';
+  }
+  return top.kind === 'screen' || top.kind === 'prompt' ? 'frame' : 'other';
+};
+
 // Router-consumed keys (the D-pad, Space) carry native browser defaults (page scroll) that
 // MUST be cancelled on the handler's EARLY-RETURN paths too — an open overlay makes the
 // document taller than the viewport-sized canvas, so those defaults scroll the game out from
@@ -2563,6 +2590,7 @@ const onKeyDown = (e: KeyboardEvent): void => {
 // the last frame outside a keydown or batch (a click, a connection callback) is pushed (clearing held) before this key can close it; after,
 // so whatever this key opened or closed is mirrored at once.
 const handleKeyDown = (e: KeyboardEvent): void => {
+  pointerSource?.keyPressed(); // the keyboard drives now: the mouse's hover mark goes (CTL15.4)
   try {
     syncStack();
     onKeyDown(e);
@@ -3008,54 +3036,6 @@ store.onBatchApplied(() => {
   screenHost.observe(contextStack, screenCtx);
 });
 
-// --- M12d: dialogue choice click handler -----------------------------------------
-// Reads data-choice-idx from the clicked button and calls advance_dialogue.
-document.addEventListener('click', (e) => {
-  // The greet-then-shop button. It carries
-  // data-shop-id and NO choice index, so it gets its own branch ABOVE the
-  // choice delegation. The click dispatches `pickShop`, so a battle base refuses it like any
-  // other command.
-  const shopBtn = (e.target as HTMLElement).closest('[data-shop-id]') as HTMLElement | null;
-  if (shopBtn !== null) {
-    const clickedShopId = Number(shopBtn.dataset.shopId);
-    if (!Number.isNaN(clickedShopId)) void dispatch({ kind: 'pickShop', shopId: clickedShopId });
-    return;
-  }
-  // The hint bar's Start chip (ctl-7a; it replaced the #help-hint badge): the click front door
-  // to the menu. Delegated on the data-attribute, the house idiom in this listener. It carries
-  // the SAME verdict the menu hotkey does, so a single verdict decides both. canOpen exempts
-  // self, so with ONLY the menu visible this branch would re-open it; harmless, and a child
-  // covering the menu denies by its own verdict. The identity guard is preserved: the menu's
-  // screens read identity-keyed state. Opening clears held keys (CTL2.4). Like every input path,
-  // a chip is dead while the session terminal owns the screen.
-  if ((e.target as HTMLElement).closest('[data-menu-launcher]') !== null) {
-    if (!sessionGateBlocks() && overlayVerdict('menuView').kind === 'allow' && identity !== '') {
-      held.clear();
-      openMenu();
-    }
-    return;
-  }
-  // The Select chip toggles Help as the Select button does (CTL7A.4, ctl-14): it closes an open
-  // Help, and opens one through the same verdict. Help reads no identity-keyed state, so it needs
-  // no identity.
-  if ((e.target as HTMLElement).closest('[data-help-launcher]') !== null) {
-    if (
-      !sessionGateBlocks() &&
-      (helpView?.visible === true || overlayVerdict('helpView').kind === 'allow')
-    ) {
-      held.clear();
-      void dispatch({ kind: 'toggleHelp' });
-    }
-    return;
-  }
-  const btn = (e.target as HTMLElement).closest('[data-choice-idx]') as HTMLElement | null;
-  if (!btn) return;
-  const raw = btn.dataset.choiceIdx;
-  if (raw === undefined) return;
-  const choiceIdx = parseInt(raw, 10);
-  if (!Number.isNaN(choiceIdx)) void dispatch({ kind: 'advanceDialogue', choiceIdx });
-});
-
 // --- DEV introspection hook (e2e asserts on this STATE, never pixels) ------------
 function snapshot() {
   const own = store.ownCharacter(identity);
@@ -3400,6 +3380,8 @@ async function main(): Promise<void> {
     // role="application"/tabindex="0" on it. It is out of this slice's touches:, so a
     // querySelector on the mount main.ts already holds is the only in-touches route.
     worldCanvasEl = mount.querySelector('canvas');
+    // Touch on the canvas is the game's (styles.css: touch-action none), never a browser pan.
+    worldCanvasEl?.classList.add('mr-world-canvas');
     installResizeHandler(renderer, window); // fit the stage to the window + on resize
     boxView = new BoxViewClass(mount, {
       onSetNickname: (monsterId, nickname) =>
@@ -3532,15 +3514,32 @@ async function main(): Promise<void> {
   gameScreen.appendChild(status);
   statusEl = status;
 
-  // The hint bar (ctl-13): painted every frame from `hintBar(...)`, keyed on the shipped Start and
-  // Select chips, whose clicks stay delegated on [data-menu-launcher] / [data-help-launcher] below.
+  // ONE pointer dispatcher on the game screen (ctl-15): clicks, right-clicks, long-presses and
+  // hover become button presses; the dialogue's choice and shop buttons keep their commands. Not
+  // attached to the shell-less boot's body fallback, which would make it a page-wide listener.
+  const pointerScreen = document.getElementById('game-screen');
+  if (pointerScreen !== null) {
+    pointerSource = new PointerSource(pointerScreen, () => worldCanvasEl, {
+      top: pointerTop,
+      press: pointerPress,
+      capturing: () => controlsCapture() !== null,
+      cancelCapture: cancelControlsCapture,
+      // The greet-then-shop button dispatches `pickShop`, so a battle base refuses it like any
+      // other command.
+      choice: (choiceIdx) => void dispatch({ kind: 'advanceDialogue', choiceIdx }),
+      shop: (shopId) => void dispatch({ kind: 'pickShop', shopId }),
+    });
+  }
+
+  // The hint bar (ctl-13): painted every frame from `hintBar(...)`; a click on any chip is a press
+  // of its button through the pointer source.
   const hintBarEl = document.getElementById('hint-bar');
   if (hintBarEl !== null) hintBarView = new HintBarView(hintBarEl);
   // Painted once now, so the bar is never blank before the first frame.
   hintBarView?.render(hintBar(contextStack, bindings, []), null);
 
   // The on-world interact prompt — a small frame in the frame layer (.mr-frame--prompt:
-  // pointer-events:none so it can NEVER shadow the document-level dialogue/shop click delegation;
+  // pointer-events:none so it can NEVER shadow a click meant for the canvas or a frame beneath;
   // z-index below the overlays; translate(-50%,-100%) hangs the label above the anchor, the
   // tile-top centre). The frame layer fills the viewport, so screenFor()'s viewport coordinates
   // are its coordinates. Positioned each frame via renderer.screenFor(...).

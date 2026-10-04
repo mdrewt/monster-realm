@@ -325,11 +325,16 @@ function endConversation(t: number): void {
   opts.store.removeConversation(H.identity);
   server(t);
 }
-/** Click a greet-then-shop button, as the dialogue renders one (the document-level delegate). */
+/** Click a greet-then-shop button, as the dialogue renders one. ctl-15 (named intentional change):
+ *  the document-level delegate is absorbed by the #game-screen pointer dispatcher, so the button
+ *  sits inside the dialogue overlay (in #game-screen); it was appended to document.body. */
 function clickShop(t: number, shopId = '1'): void {
   const button = document.createElement('button');
   button.dataset.shopId = shopId;
-  document.body.appendChild(button);
+  const host =
+    document.getElementById('dialogue-overlay') ?? document.getElementById('game-screen');
+  if (host === null) throw new Error('the shell must ship #dialogue-overlay inside #game-screen');
+  host.appendChild(button);
   clock.t = t;
   button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   button.remove();

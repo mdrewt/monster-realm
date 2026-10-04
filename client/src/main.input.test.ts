@@ -987,7 +987,7 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     document.body.replaceChildren();
   });
 
-  it('CTL2-2-BOOT-STACK: __game().stack lists the live frames base-first as overlays open and close; a click-opened overlay appears with the next frame, not on a read', async () => {
+  it('CTL2-2-BOOT-STACK: __game().stack lists the live frames base-first as overlays open and close; a chip-click-opened menu is mirrored at once, like a key (ctl-15)', async () => {
     // WRONG IMPL KILLED: no stack on the hook, a stack without the base (length > 1 must mean
     // "something is above the base"), a mirror that never pops, an open path that is never
     // mirrored, and a hook that performs the sync itself (it must be a pure observer: the push
@@ -1010,22 +1010,23 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     expect(boxShown(), 'precondition: the box closed').toBe(false);
     expect(stack(), 'closing pops the frames').toEqual([{ kind: 'world' }]);
 
-    // A click opens the menu with no keydown. Nothing between the click and the next frame
-    // syncs the stack, and reading the hook (twice) must not either.
-    const launcher = document.querySelector('[data-menu-launcher]');
-    if (launcher === null) throw new Error('[data-menu-launcher] is not in the shell');
+    // ctl-15 (named intentional change, CTL15.5): the Start chip click is now a Start PRESS through
+    // the router (the #game-screen pointer dispatcher), which syncs the stack on both sides like a
+    // keydown, so the click-opened menu is mirrored AT ONCE (keyboard parity). Was: the old
+    // [data-menu-launcher] delegate opened the menu outside the input path, the stack saw it only
+    // on the next frame, and two hook reads in between proved a read never syncs. No non-press
+    // opener is left in this harness, so that half has no subject any more; the reads below still
+    // agree with each other and with the frame that follows.
+    const startChip = document.querySelector('#hint-bar [data-button="Start"]');
+    if (startChip === null) throw new Error('the Start chip is not in the shell');
     clock.t = 1100;
-    launcher.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    startChip.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     expect(overlayShown('menu-overlay'), 'precondition: the click opened the menu').toBe(true);
-    expect(stack(), 'no frame has run yet: the stack has not seen the menu').toEqual([
-      { kind: 'world' },
-    ]);
-    expect(stack(), 'a second read still does not sync').toEqual([{ kind: 'world' }]);
+    const MENU_STACK = [{ kind: 'world' }, { kind: 'screen', id: 'menuView' }];
+    expect(stack(), 'the click is a Start press: the menu is mirrored at once').toEqual(MENU_STACK);
+    expect(stack(), 'a second read agrees').toEqual(MENU_STACK);
     frame(1110);
-    expect(stack(), 'the frame loop mirrors the click-opened menu').toEqual([
-      { kind: 'world' },
-      { kind: 'screen', id: 'menuView' },
-    ]);
+    expect(stack(), 'and the next frame changes nothing').toEqual(MENU_STACK);
 
     fire('keydown', 'Escape', 1200);
     expect(overlayShown('menu-overlay'), 'precondition: Escape closed the menu').toBe(false);
@@ -1489,7 +1490,12 @@ function openShopViaDialogue(t: number): void {
   const before = dismissCalls();
   const button = document.createElement('button');
   button.dataset.shopId = '1';
-  document.body.appendChild(button);
+  // ctl-15 (named intentional change): inside the dialogue overlay (in #game-screen, where the
+  // pointer dispatcher absorbed the document delegate); it was appended to document.body.
+  const host =
+    document.getElementById('dialogue-overlay') ?? document.getElementById('game-screen');
+  if (host === null) throw new Error('the shell must ship #dialogue-overlay inside #game-screen');
+  host.appendChild(button);
   clock.t = t + 5;
   button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   button.remove();
@@ -1739,7 +1745,12 @@ function clickShop(t: number, shopId = '1'): void {
   const before = dismissCalls();
   const button = document.createElement('button');
   button.dataset.shopId = shopId;
-  document.body.appendChild(button);
+  // ctl-15 (named intentional change): inside the dialogue overlay (in #game-screen, where the
+  // pointer dispatcher absorbed the document delegate); it was appended to document.body.
+  const host =
+    document.getElementById('dialogue-overlay') ?? document.getElementById('game-screen');
+  if (host === null) throw new Error('the shell must ship #dialogue-overlay inside #game-screen');
+  host.appendChild(button);
   clock.t = t;
   button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
   button.remove();
