@@ -194,8 +194,8 @@ export interface BenchMemberVM {
 
 /**
  * A bait item the player may apply to a recruit attempt. `recruitBonus > 0`
- * (the data-classify rule) is the ONLY criterion for inclusion — never
- * a hardcoded item id. Also serves directly as the selectable bait option in the
+ * (the data-classify rule) is the ONLY criterion for inclusion in `baitOptions`
+ * (`buildBattleViewModel`; `buildBaitItems` does not filter) — never a hardcoded item id. Also serves directly as the selectable bait option in the
  * recruit UI (consumed unchanged — no transformation, so no separate VM type).
  */
 export interface BaitItem {
