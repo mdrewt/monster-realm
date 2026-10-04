@@ -4,8 +4,8 @@ Thanks for testing Monster Realm. This is a local, early build with placeholder 
 This page covers how to launch it, the controls, what to try, how to report a bug,
 and the manual accessibility protocol.
 
-In the game, the corner hint reads **"Press ? for help · click or M for menu"**. `?`
-shows the controls list below, and `M` opens a menu of every action.
+In the game, the hint bar at the bottom names what each button does right now. Select
+(`R` or `/`) opens Help, and Start (`Escape` or `M`) opens the main menu.
 
 ## 1. Launch it
 
@@ -26,53 +26,46 @@ the playtest database. Resets, environment overrides and troubleshooting are in
 
 ## 2. Controls
 
-From `CONTROLS` in `client/src/ui/helpModel.ts` (the list `?` shows), checked
-against the key handlers in `client/src/main.ts`:
+The game is played with a small set of console-style buttons. Each button is pressed by
+one or two keys, and you can change the keys in Options › Controls. **In-game Help is
+the reference** (Select, or Options › How to play): it is generated from the live keys,
+and its tabs show this screen's buttons, every button and shortcut, and some goals.
 
-| Key | Action |
-|---|---|
-| `?` | Toggle the help overlay |
-| `M` | Open the main menu (arrows/WASD to move, Enter to choose, Escape to go back a level or close) |
-| `WASD` / arrow keys | Move (hold to keep walking) |
-| `Space` | Jump |
-| `Escape` | Close the open overlay |
-| `T` | Interact with what is next to you: talk to an NPC, shop at a shopkeeper, heal on a heal tile |
-| `B` | Monster Box (party and storage) |
-| `I` | Inventory and raising |
-| `E` | Evolution |
-| `Q` | Quest log |
-| `U` | View an incoming trade |
-| `O` | Offer a trade to another player |
-| `P` | Challenge another player to PvP |
-| `L` | Ranked leaderboard |
-| `N` | Rename your profile |
-| `C` | Account and sign-in (also opens privacy: export or delete your data) |
-| `F9` | Download a bug-report bundle |
-| `F8` | Dismiss the error overlay |
+The default keys:
 
-Only one overlay is open at a time. A menu or overlay you opened stays open until you
-close it; pressing another hotkey over it does nothing, except that Box, Inventory and
-Evolution swap with each other. A battle that starts closes most open overlays, but
-never an NPC conversation. There is
-no separate shop or heal key: stand next to a shopkeeper, or on a heal tile, and press
-`T`.
+| Button | Default keys | What it does |
+|---|---|---|
+| D-pad | `WASD` / arrow keys | Move; move the cursor in menus |
+| A | `Enter` | Act on what you face (talk, shop, heal, trade, challenge); choose |
+| B | `Backspace` | Back one level; dismiss a notice |
+| X | `Space` | Jump |
+| Y | `F` | Info; at the world, every action for what you face, or with nothing in front of you, the waiting request |
+| LB / RB | `Q` / `E` (or `Page Up` / `Page Down`) | Previous / next tab |
+| Start | `Escape` or `M` | Open the main menu; close everything |
+| Select | `R` or `/` | Help |
+
+Shortcut keys open a menu path directly: `B` Storage, `I` Bag, `V` Party, `J` Journal,
+`U` Trades, `P` Challenges, `L` Rankings, `N` Name, `C` Account. `F9` saves a bug
+report and `F8` dismisses the error toast (section 5). Key names are not button names:
+the key `B` opens Storage, while the button B (`Backspace`) goes back.
 
 ## 3. Your first fifteen minutes
 
 1. Walk around with `WASD` or the arrow keys, and jump with `Space`.
-2. Stand next to an NPC and press `T` to talk; follow the dialogue.
+2. Face an NPC and press `Enter` to talk; follow the dialogue.
 3. Walk into tall grass until a wild monster appears, and battle it.
 4. Weaken it, then choose **Recruit** instead of defeating it. Bait from your inventory
    raises the odds. Recruits land in your Box.
-5. Open the Box (`B`) and move a monster into your party with **To Party**. Raise it in
-   Inventory (`I`).
-6. Open Evolution (`E`) to see what each monster needs in order to evolve. When
+5. Open Storage (`B`) and move a monster into your party with **To Party**. Raise it
+   from the Bag (`I`).
+6. In Monsters, choose a monster's **Evolve…** to see what it needs to evolve. When
    exactly one evolution is ready, it happens on its own; when several are, you choose.
-7. In town, press `T` next to a shopkeeper to shop or on a heal tile to heal.
+7. In town, face a shopkeeper or a healer and press `Enter` to shop or heal.
 8. Rename your profile (`N`) so the leaderboard shows your name.
-9. With a second tester online, offer a trade (`O`): your monsters and currency for
-   their currency. The other player opens it with `U`.
-10. Challenge someone to PvP (`P`), then check the leaderboard (`L`).
+9. With a second tester online, face them, press `Enter` and choose **Trade** to offer
+   your monsters and currency for their currency. They see a banner and answer it with `F`
+   then `Enter`, or from Trades (`U`).
+10. Face someone and choose **Challenge** the same way, then check Rankings (`L`).
 
 ## 4. Your identity and progress
 
@@ -94,14 +87,13 @@ grace, and you can cancel).
 1. Press **`F9`**. It downloads a JSON bug bundle with recent events, captured errors,
    a small store summary without names, and the build stamp (git SHA and build time).
    It is created locally and never sent anywhere, so it works offline.
-2. If an error overlay is showing, grab the bundle first, then press **`F8`** to
+2. If an error toast is showing, grab the bundle first, then press **`F8`** to
    dismiss it.
 3. Send the file with one sentence on what you did and what you expected, on the
    feedback channel (ask Drew for the current destination).
 
-Known rough edges: placeholder art, and the help overlay does not open by itself on
-first join (press `?`). The help list and menu labels are English-only even under the
-French locale.
+Known rough edges: placeholder art, and Help does not open by itself on first join
+(press Select: `R` or `/`).
 
 ## 6. Accessibility: the manual screen-reader protocol
 

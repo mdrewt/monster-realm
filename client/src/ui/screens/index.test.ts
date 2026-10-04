@@ -50,6 +50,13 @@
  * reads KeyE as an RB edge and KeyQ as an LB edge that reach the adapter (was: no edge, no adapter
  * call), and both sources (that case and CTL8B-4-HOST-FLOW) are built on DEFAULT_BINDINGS.
  *
+ * ctl-14 (CTL14.1): the help frame holds `helpScreen` (nav-capable, tabbed; helpScreen.test.ts proves
+ * the screen). Named intentional changes in this file: the CONVERTED roster gains `helpView` (so
+ * CTL6B-1-ADAPTERS-TOTAL reads 6 legacy ids and the help frame holding helpScreen, and
+ * CTL7C-1-NAV-CAPABLE's shipped loop expects it nav-capable). Several cases below use `helpView` as a
+ * generic counting adapter inside a table they inject themselves; they never read the shipped
+ * table's entry and are unchanged.
+ *
  * Adapters are injected as recording stubs, so every routing claim is read off which stub was
  * called, with what, and what came back. The base cases inject adapters that THROW, so "the base
  * never consults an adapter" is a fact the run proves rather than an assumption.
@@ -76,6 +83,7 @@ import { bagScreen } from './bagScreen';
 import type { BattleOp } from './battleScreen';
 import { DIALOGUE_REVEAL_MS, dialogueScreen } from './dialogueScreen';
 import { healScreen } from './healScreen';
+import { helpScreen } from './helpScreen';
 import { baseButton, SCREEN_ADAPTERS, ScreenHost, type WorldPort } from './index';
 import { journalScreen } from './journalScreen';
 import { legacyAdapter } from './legacyAdapter';
@@ -226,13 +234,17 @@ const CONVERTED: ReadonlyMap<FrameId, unknown> = new Map<FrameId, unknown>([
   // ctl-12b (named intentional change): the new Options › Controls frame holds its own nav-capable
   // screen from the start (it never had a legacy adapter); its view model reads nothing.
   ['controlsView', controlsScreen],
+  // ctl-14 (named intentional change): the help frame holds the generated, tabbed Help screen. It
+  // can no longer stand for "a legacy frame" in this file's shipped-table cases.
+  ['helpView', helpScreen],
 ]);
 /** Every frame id still on the legacy adapter. ctl-8s (named intentional change): the Social frame
  *  is one of them until ctl-8d (was: every OVERLAY id still on the legacy adapter). ctl-8d (named
  *  intentional change): the Social frame left it, so it holds 13 ids again. ctl-8e (named
  *  intentional change): the trade-propose frame left it too, so it holds 12 ids. ctl-8f (named
  *  intentional change): the raising and quest log frames left it, so it holds 10 ids. ctl-8h (named
- *  intentional change): the rename, claim and privacy frames left it, so it holds 7 ids. */
+ *  intentional change): the rename, claim and privacy frames left it, so it holds 7 ids. ctl-14
+ *  (named intentional change): the help frame left it, so it holds 6 ids. */
 const LEGACY_IDS: readonly FrameId[] = FRAME_IDS.filter((id) => !CONVERTED.has(id));
 
 describe('SCREEN_ADAPTERS (ctl-6b)', () => {
@@ -287,18 +299,16 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
     expect(SCREEN_ADAPTERS.privacyView, 'the privacy frame is the ctl-8h Privacy screen').toBe(
       privacyScreen,
     );
-    expect(LEGACY_IDS, 'ANTI-VACUITY: 7 legacy ids').toHaveLength(7);
-    expect([...LEGACY_IDS].sort(), 'the seven that are still legacy').toEqual(
-      [
-        'battleView',
-        'evolutionView',
-        'helpView',
-        'leaderboardView',
-        'menuView',
-        'pvpView',
-        'tradeView',
-      ].sort(),
+    // INTENTIONAL CHANGE (ctl-14, CTL14.1): helpView now holds helpScreen (by identity), so the
+    // legacy roster is 6 ids and the host loop below no longer drives the help frame (its screen is
+    // proven by helpScreen.test.ts and CTL14-1-SCREEN-TABS). Was: 7 legacy ids, helpView among them.
+    expect(SCREEN_ADAPTERS.helpView, 'the help frame is the ctl-14 Help screen').toBe(helpScreen);
+    expect(helpScreen.nav, 'and it is nav-capable').toBe(true);
+    expect(LEGACY_IDS, 'ANTI-VACUITY: 6 legacy ids').toHaveLength(6);
+    expect([...LEGACY_IDS].sort(), 'the six that are still legacy').toEqual(
+      ['battleView', 'evolutionView', 'leaderboardView', 'menuView', 'pvpView', 'tradeView'].sort(),
     );
+    expect(LEGACY_IDS.includes('helpView'), 'helpView is no longer legacy').toBe(false);
     expect(LEGACY_IDS.includes('raisingView'), 'raisingView is no longer legacy').toBe(false);
     expect(LEGACY_IDS.includes('questLogView'), 'questLogView is no longer legacy').toBe(false);
     expect(LEGACY_IDS.includes('boxView'), 'boxView is no longer legacy').toBe(false);
