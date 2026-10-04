@@ -80,6 +80,7 @@ import { baseButton, SCREEN_ADAPTERS, ScreenHost, type WorldPort } from './index
 import { journalScreen } from './journalScreen';
 import { legacyAdapter } from './legacyAdapter';
 import { monstersScreen } from './monstersScreen';
+import { controlsScreen } from './optionsScreen';
 import { accountScreen, nameScreen, privacyScreen } from './profileScreen';
 import { shopScreen } from './shopScreen';
 import { socialScreen } from './socialScreen';
@@ -222,6 +223,9 @@ const CONVERTED: ReadonlyMap<FrameId, unknown> = new Map<FrameId, unknown>([
   ['renameView', nameScreen],
   ['claimView', accountScreen],
   ['privacyView', privacyScreen],
+  // ctl-12b (named intentional change): the new Options › Controls frame holds its own nav-capable
+  // screen from the start (it never had a legacy adapter); its view model reads nothing.
+  ['controlsView', controlsScreen],
 ]);
 /** Every frame id still on the legacy adapter. ctl-8s (named intentional change): the Social frame
  *  is one of them until ctl-8d (was: every OVERLAY id still on the legacy adapter). ctl-8d (named
@@ -255,7 +259,13 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
     // trade-propose frame (its screen reads the store's players and monsters; CTL8E-2-ADAPTER
     // drives it over a store that has them). Was: 13 legacy ids, tradeProposeView among them.
     expect([...Object.keys(SCREEN_ADAPTERS)].sort()).toEqual([...FRAME_IDS].sort());
-    expect(FRAME_IDS, 'ANTI-VACUITY: 17 overlay ids and the Social frame').toHaveLength(18);
+    // INTENTIONAL CHANGE (ctl-12b): 18 overlay ids (controlsView joined) and the Social frame. Was:
+    // 17 + 1 = 18.
+    expect(FRAME_IDS, 'ANTI-VACUITY: 18 overlay ids and the Social frame').toHaveLength(19);
+    expect(SCREEN_ADAPTERS.controlsView, 'the Controls frame is the ctl-12b Controls screen').toBe(
+      controlsScreen,
+    );
+    expect(controlsScreen.nav, 'and it is nav-capable').toBe(true);
     expect(SCREEN_ADAPTERS.social, 'the Social frame is its ctl-8d screen').toBe(socialScreen);
     expect(SCREEN_ADAPTERS.tradeProposeView, 'the trade-propose frame is its ctl-8e wizard').toBe(
       tradeProposeScreen,

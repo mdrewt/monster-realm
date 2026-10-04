@@ -979,15 +979,11 @@ describe('typingKey (ctl-6b, CTL6B.5)', () => {
         typingKey(target, { code: 'Escape', isComposing: false, keyCode: 27 }),
         `${label} / Escape, not composing`,
       ).toBe('stopTyping');
-      for (const code of [
-        'Enter',
-        'NumpadEnter',
-        'KeyA',
-        'Backspace',
-        'Space',
-        'Tab',
-        'ArrowLeft',
-      ]) {
+      // ctl-12b (named intentional change, plan §4 "typing mode is literal"): Enter and NumpadEnter
+      // on a field now answer 'commit' (the ctl-12b commit case below pins them), so they leave this
+      // "every other key" list. Was: both expected undefined here. Every key still listed keeps its
+      // expectation, and Escape still stops typing.
+      for (const code of ['KeyA', 'Backspace', 'Space', 'Tab', 'ArrowLeft']) {
         expect(typingKey(target, { code }), `${label} / ${code}`).toBeUndefined();
       }
       expect(
@@ -1004,6 +1000,80 @@ describe('typingKey (ctl-6b, CTL6B.5)', () => {
       expect(typingKey(target, { code: 'KeyA' }), `${label} / KeyA`).toBeUndefined();
     }
     expect(textLike.length + notText.length, 'ANTI-VACUITY: both polarities are driven').toBe(28);
+  });
+});
+
+describe('typingKey commit (ctl-12b, plan §4: typing mode is literal)', () => {
+  it('Enter and NumpadEnter on a focused field (an INPUT of any type, a TEXTAREA, a SELECT, a contentEditable) answer commit; a composing Enter, a non-field target and every other key do not; Escape still stops typing on text fields only', () => {
+    // WRONG IMPL KILLED: an Enter in a field read through the binding table (after A := K the
+    // player could no longer commit a nickname with Enter, and the field's own K would be pressed
+    // as A); a commit on text fields only (a checkbox or a SELECT, which own Enter natively, would
+    // let it fall to the table: Enter bound to Start would close the frame); a composing Enter that
+    // commits (it confirms the IME candidate instead); a commit on a button, a link, the canvas or
+    // the page (Enter there is the router's A); a commit on any key but the two Enters; and an
+    // Escape that now commits, or that stops typing on a SELECT.
+    const fields: ReadonlyArray<readonly [string, unknown]> = [
+      ['input text', { tagName: 'INPUT', type: 'text' }],
+      ['input without a type', { tagName: 'INPUT' }],
+      ['input number', { tagName: 'INPUT', type: 'number' }],
+      ['input password', { tagName: 'INPUT', type: 'password' }],
+      ['input checkbox', { tagName: 'INPUT', type: 'checkbox' }],
+      ['input radio', { tagName: 'INPUT', type: 'radio' }],
+      ['input range', { tagName: 'INPUT', type: 'range' }],
+      ['textarea', { tagName: 'TEXTAREA' }],
+      ['select', { tagName: 'SELECT' }],
+      ['contentEditable', { tagName: 'DIV', isContentEditable: true }],
+      ['lower-case tag name', { tagName: 'input', type: 'text' }],
+    ];
+    const notFields: ReadonlyArray<readonly [string, unknown]> = [
+      ['button', { tagName: 'BUTTON' }],
+      ['anchor', { tagName: 'A' }],
+      ['div', { tagName: 'DIV', isContentEditable: false }],
+      ['body', { tagName: 'BODY' }],
+      ['canvas', { tagName: 'CANVAS' }],
+      ['window-like', { addEventListener: () => undefined, document: {} }],
+      ['empty object', {}],
+      ['null', null],
+      ['undefined', undefined],
+      ['number', 7],
+    ];
+    const ENTERS = ['Enter', 'NumpadEnter'] as const;
+    let commits = 0;
+    for (const [label, target] of fields) {
+      for (const code of ENTERS) {
+        expect(typingKey(target, { code }), `${label} / ${code}`).toBe('commit');
+        expect(
+          typingKey(target, { code, isComposing: false, keyCode: 13 }),
+          `${label} / ${code}, not composing`,
+        ).toBe('commit');
+        expect(
+          typingKey(target, { code, isComposing: true }),
+          `${label} / a composing ${code} is the IME's`,
+        ).toBeUndefined();
+        expect(
+          typingKey(target, { code, keyCode: 229 }),
+          `${label} / keyCode 229 ${code} is the IME's`,
+        ).toBeUndefined();
+        commits += 1;
+      }
+      for (const code of ['KeyA', 'KeyK', 'Space', 'Backspace', 'Tab', 'ArrowUp']) {
+        expect(typingKey(target, { code }), `${label} / ${code} is the field's`).toBeUndefined();
+      }
+      expect(typingKey(target, { code: 'Escape' }), `${label} / Escape never commits`).not.toBe(
+        'commit',
+      );
+    }
+    expect(commits, 'ANTI-VACUITY: every field x both Enters').toBe(fields.length * 2);
+    for (const [label, target] of notFields) {
+      for (const code of ENTERS) {
+        expect(typingKey(target, { code }), `${label} / ${code} is the router's A`).toBeUndefined();
+      }
+    }
+    // Escape keeps its own rule: it stops typing on a text field, and is Start on a control.
+    expect(typingKey({ tagName: 'INPUT', type: 'text' }, { code: 'Escape' })).toBe('stopTyping');
+    expect(typingKey({ tagName: 'TEXTAREA' }, { code: 'Escape' })).toBe('stopTyping');
+    expect(typingKey({ tagName: 'SELECT' }, { code: 'Escape' })).toBeUndefined();
+    expect(typingKey({ tagName: 'INPUT', type: 'checkbox' }, { code: 'Escape' })).toBeUndefined();
   });
 });
 
@@ -1461,8 +1531,9 @@ const frozenStack = (base: BaseFrame, ...upper: UpperFrame[]): Stack => {
   return Object.freeze([base, ...upper]) as unknown as Stack;
 };
 
-/** The sixteen player-owned frame ids (spelled out, never read from SCREEN_POLICY): every frame id
- *  but the two server-owned ones. */
+/** The seventeen player-owned frame ids (spelled out, never read from SCREEN_POLICY): every frame id
+ *  but the two server-owned ones. ctl-12b (named intentional change): `controlsView` (Options ›
+ *  Controls) joins, a player screen an accelerator replaces like any other. Was: sixteen. */
 const PLAYER_FRAMES: readonly FrameId[] = [
   'boxView',
   'raisingView',
@@ -1479,6 +1550,7 @@ const PLAYER_FRAMES: readonly FrameId[] = [
   'menuView',
   'claimView',
   'privacyView',
+  'controlsView',
   'social',
 ];
 

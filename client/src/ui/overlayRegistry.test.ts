@@ -41,6 +41,12 @@
 //                                                  battle target row is a plain deny
 // The reference oracle (`refDecide`) and the A1 carve-outs in OR-CANOPEN-GUARDONLY-ALL describe the
 // new verdict, not the old one.
+//
+// AMENDED by ctl-12b (named intentional change): `controlsView` (Options › Controls, a constructed
+// shell) JOINS the manifest as the 18th member, tiered GUARD_ONLY: it holds a key capture in
+// progress, so a stray hotkey must never force-hide it. Every count below moves with it (17 -> 18
+// overlays, 13 -> 14 GUARD_ONLY, 16 -> 17 non-battle ids, 13x16 -> 14x17 deny cells, 14 -> 15
+// tier-constrained ids, 68 -> 72 A11yMeta fields); no assertion is loosened into a range.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -74,8 +80,8 @@ const EXPECTED_EXCLUSIVE_TOP = ['battleView'] as const;
 
 const EXPECTED_HIDE_SWITCH = ['boxView', 'raisingView', 'evolutionView'] as const;
 
-/** The 13 GUARD_ONLY members, incl. `menuView` (spec `:128`) and — since M21b-2 (ADR-0182
- *  D17 / G19) — `claimView`. Hard-coded on purpose (A4).
+/** The 14 GUARD_ONLY members, incl. `menuView` (spec `:128`), — since M21b-2 (ADR-0182
+ *  D17 / G19) — `claimView`, and — since ctl-12b — `controlsView`. Hard-coded on purpose (A4).
  *
  *  WHY claimView IS GUARD_ONLY AND NOT HIDE_SWITCH: the claim overlay owns a text input
  *  carrying a 64-hex single-use secret the player is mid-way through typing or pasting. A
@@ -102,6 +108,9 @@ const EXPECTED_GUARD_ONLY = [
   // that force-hid it would either strand the arming or invite a re-click on a surface the
   // player believes they dismissed.
   'privacyView',
+  // ctl-12b: Options › Controls. GUARD_ONLY because it can hold a key capture in progress: a
+  // force-hide would end the capture behind the player's back.
+  'controlsView',
 ] as const;
 
 const HIDE_SWITCH_TRIO: readonly OverlayId[] = ['boxView', 'raisingView', 'evolutionView'];
@@ -116,7 +125,7 @@ const sorted = (xs: readonly string[]): string[] => [...xs].sort();
 //
 //   blocker tier v / target ->   EXCLUSIVE_TOP        HIDE_SWITCH   GUARD_ONLY
 //   EXCLUSIVE_TOP (battle)       deny (ctl-3)         deny          deny
-//   GUARD_ONLY (13)              deny (ctl-3)         deny          deny
+//   GUARD_ONLY (14)              deny (ctl-3)         deny          deny
 //   HIDE_SWITCH (3)              deny (ctl-3)         hide          deny
 //
 // ctl-3 replaces the whole EXCLUSIVE_TOP-TARGET column (A1 had it force-hide a named subset and
@@ -224,17 +233,17 @@ describe('overlayRegistry — manifest completeness (AC-6)', () => {
 // ===========================================================================
 
 describe('overlayRegistry — tier partition', () => {
-  it('OR-TIERS-PARTITION BITES: the three tiers are exactly {battle} / {box,raising,evolution} / the other 13, and they partition OVERLAY_IDS', () => {
+  it('OR-TIERS-PARTITION BITES: the three tiers are exactly {battle} / {box,raising,evolution} / the other 14, and they partition OVERLAY_IDS', () => {
     // WRONG IMPL KILLED: ANY silent retiering. Promoting `shopView` to HIDE_SWITCH would make
     // KeyB force-hide a shop mid-buy() (shopView.hide() resets the #pending double-spend lock);
     // demoting `menuView` out of GUARD_ONLY would let the trio force-hide the menu. Both fail
     // here on their own readable line because the expectations are hard-coded literals (A4),
     // not a re-derivation of OVERLAY_TIERS.
     //
-    // ANTI-VACUITY: the manifest must be the full 16 with no duplicate id, or the three
+    // ANTI-VACUITY: the manifest must be the full 18 with no duplicate id, or the three
     // sub-set comparisons below could all pass over a truncated table.
-    expect(OVERLAY_IDS.length, 'the manifest must hold 17 mutual-exclusion overlays').toBe(17);
-    expect(new Set(OVERLAY_IDS).size, 'OVERLAY_IDS must not contain a duplicate id').toBe(17);
+    expect(OVERLAY_IDS.length, 'the manifest must hold 18 mutual-exclusion overlays').toBe(18);
+    expect(new Set(OVERLAY_IDS).size, 'OVERLAY_IDS must not contain a duplicate id').toBe(18);
 
     const inTier = (t: string): string[] =>
       sorted(OVERLAY_IDS.filter((id) => OVERLAY_TIERS[id] === t));
@@ -253,6 +262,12 @@ describe('overlayRegistry — tier partition', () => {
       'claimView must be tiered GUARD_ONLY (ADR-0182 D17 / G19) — it guards input while it is ' +
         'open and is never force-hidden by another overlay opening',
     ).toBe('GUARD_ONLY');
+    // ctl-12b, on its own line for the same reason. WRONG IMPL KILLED: a Controls screen tiered
+    // HIDE_SWITCH (B / I / E would force-hide it mid-capture) or EXCLUSIVE_TOP.
+    expect(
+      OVERLAY_TIERS.controlsView,
+      'controlsView must be tiered GUARD_ONLY — a capture in progress is never force-hidden',
+    ).toBe('GUARD_ONLY');
 
     // Union == OVERLAY_IDS: no id may carry a fourth/unknown tier string.
     const union = [
@@ -260,7 +275,7 @@ describe('overlayRegistry — tier partition', () => {
       ...EXPECTED_HIDE_SWITCH,
       ...EXPECTED_GUARD_ONLY,
     ] as readonly string[];
-    expect(union.length, 'the three hard-coded tier literals must cover all 17 ids').toBe(17);
+    expect(union.length, 'the three hard-coded tier literals must cover all 18 ids').toBe(18);
     expect(sorted(union)).toEqual(sorted(OVERLAY_IDS));
 
     // Pairwise intersections empty: an id may not hold two tiers.
@@ -283,7 +298,7 @@ describe('overlayRegistry — tier partition', () => {
 // ===========================================================================
 
 describe('overlayRegistry — canOpen decision table', () => {
-  it('OR-CANOPEN-EMPTY-ALLOWS-ALL BITES: nothing visible => allow with an EMPTY forceHide, for all 17 (AC-1)', () => {
+  it('OR-CANOPEN-EMPTY-ALLOWS-ALL BITES: nothing visible => allow with an EMPTY forceHide, for all 18 (AC-1)', () => {
     // WRONG IMPL KILLED: a canOpen that force-hides gratuitously on an unobstructed open (the
     // blind-hideAll instinct, anti-pattern 1), or that denies a target absent from its own tier
     // lookup (an `OVERLAY_TIERS[t] ?? deny` fallback would hide a missing entry behind a deny).
@@ -295,7 +310,7 @@ describe('overlayRegistry — canOpen decision table', () => {
       });
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: all 17 targets must have been exercised').toBe(17);
+    expect(checked, 'ANTI-VACUITY: all 18 targets must have been exercised').toBe(18);
   });
 
   it('OR-CANOPEN-GUARDONLY-9 BITES: {box,raising,evolution} x {dialogue,questLog,heal} — 9 denies; reproduces the ptc5c RED (AC-2)', () => {
@@ -324,7 +339,7 @@ describe('overlayRegistry — canOpen decision table', () => {
   });
 
   it('OR-CANOPEN-GUARDONLY-ALL BITES: every GUARD_ONLY member blocks every other target — demoting ANY id out of GUARD_ONLY re-fails (AC-2/AC-20)', () => {
-    // WRONG IMPL KILLED: demoting any one of the 13 GUARD_ONLY ids. The loop domain is the
+    // WRONG IMPL KILLED: demoting any one of the 14 GUARD_ONLY ids. The loop domain is the
     // HARD-CODED EXPECTED_GUARD_ONLY literal (A4) — a derived `OVERLAY_IDS.filter(isGuardOnly)`
     // domain would simply shrink when an id is demoted and stay green.
     //
@@ -344,9 +359,9 @@ describe('overlayRegistry — canOpen decision table', () => {
         denies += 1;
       }
     }
-    // ANTI-VACUITY + exactness: 13 GUARD_ONLY blockers x 16 other targets = 208 cells, every one a
-    // deny (the battle-target cells included).
-    expect(denies, 'ANTI-VACUITY: all 13x16 GUARD_ONLY cells must be exercised and deny').toBe(208);
+    // ANTI-VACUITY + exactness: 14 GUARD_ONLY blockers x 17 other targets = 238 cells, every one a
+    // deny (the battle-target cells included). ctl-12b: was 13 x 16 = 208 before controlsView.
+    expect(denies, 'ANTI-VACUITY: all 14x17 GUARD_ONLY cells must be exercised and deny').toBe(238);
   });
 
   it('OR-CANOPEN-HIDESWITCH-TRIO BITES: the 3x3 trio matrix allows, force-hiding the sibling; self is exempt (AC-3)', () => {
@@ -388,7 +403,7 @@ describe('overlayRegistry — canOpen decision table', () => {
       expect('forceHide' in verdict, 'a deny verdict must not carry forceHide').toBe(false);
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: all 16 non-battle targets must be exercised').toBe(16);
+    expect(checked, 'ANTI-VACUITY: all 17 non-battle targets must be exercised').toBe(17);
     // Self is exempt even for the exclusive top (a visible battle re-shows itself).
     expect(canOpen('battleView', ['battleView'])).toEqual({ kind: 'allow', forceHide: [] });
   });
@@ -410,7 +425,7 @@ describe('overlayRegistry — canOpen decision table', () => {
       expect('forceHide' in verdict, 'a deny verdict must not carry forceHide').toBe(false);
       denies += 1;
     }
-    expect(denies, 'ANTI-VACUITY: all 16 non-battle blockers must be exercised').toBe(16);
+    expect(denies, 'ANTI-VACUITY: all 17 non-battle blockers must be exercised').toBe(17);
 
     // Several blockers at once: the OVERLAY_IDS-first denier is named (boxView precedes helpView).
     expect(canOpen('battleView', ['helpView', 'leaderboardView', 'boxView'])).toEqual({
@@ -468,7 +483,7 @@ describe('overlayRegistry — canOpen over arbitrary visible sets (A3)', () => {
       'BOTH siblings must be force-hidden, not just the first',
     ).toEqual(['evolutionView', 'raisingView']);
 
-    const visibleArb = fc.uniqueArray(fc.constantFrom(...OVERLAY_IDS), { maxLength: 17 });
+    const visibleArb = fc.uniqueArray(fc.constantFrom(...OVERLAY_IDS), { maxLength: 18 });
     const targetArb = fc.constantFrom(...OVERLAY_IDS);
 
     fc.assert(
@@ -522,7 +537,7 @@ describe('overlayRegistry — canOpen over arbitrary visible sets (A3)', () => {
     fc.assert(
       fc.property(
         fc.constantFrom(...OVERLAY_IDS),
-        fc.uniqueArray(fc.constantFrom(...OVERLAY_IDS), { maxLength: 17 }),
+        fc.uniqueArray(fc.constantFrom(...OVERLAY_IDS), { maxLength: 18 }),
         (target, visible) => {
           expect(() => {
             canOpen(target, visible);
@@ -559,7 +574,7 @@ function makeProbes(): { flags: Record<string, boolean>; probes: OverlayProbes }
 }
 
 describe('overlayRegistry — anyVisible over a probe table (uxd3-b, AC-7)', () => {
-  it('OR-ANYVISIBLE-PROBES-EVERY-ID BITES: each of the 17 ids is consulted on EVERY call', () => {
+  it('OR-ANYVISIBLE-PROBES-EVERY-ID BITES: each of the 18 ids is consulted on EVERY call', () => {
     // WRONG IMPL KILLED (1) — the headline: a TRUNCATED iteration domain, e.g.
     //   `OVERLAY_IDS.slice(0, 14).some(...)` or a hand-written 14-term `||` chain that
     //   forgot the newest overlay. That overlay then sits outside mutual exclusion in ALL
@@ -579,7 +594,7 @@ describe('overlayRegistry — anyVisible over a probe table (uxd3-b, AC-7)', () 
 
     // ANTI-VACUITY, ASSERTED FIRST: the manifest is the real 16, and an all-false table
     // answers FALSE. Without this an `anyVisible = () => true` impl passes the whole loop.
-    expect(OVERLAY_IDS.length, 'the manifest must hold 17 mutual-exclusion overlays').toBe(17);
+    expect(OVERLAY_IDS.length, 'the manifest must hold 18 mutual-exclusion overlays').toBe(18);
     expect(
       anyVisible(probes),
       'ANTI-VACUITY: with every probe returning false, anyVisible(probes) must be false — ' +
@@ -604,7 +619,7 @@ describe('overlayRegistry — anyVisible over a probe table (uxd3-b, AC-7)', () 
       ).toBe(false);
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: all 17 ids must have been flipped individually').toBe(17);
+    expect(checked, 'ANTI-VACUITY: all 18 ids must have been flipped individually').toBe(18);
   });
 
   it('OR-ANYVISIBLE-EXEMPT BITES: `exempt` skips EXACTLY that one id and nothing else', () => {
@@ -627,7 +642,7 @@ describe('overlayRegistry — anyVisible over a probe table (uxd3-b, AC-7)', () 
 
     // ANTI-VACUITY, ASSERTED FIRST: with nothing visible the answer is false whatever the
     // exempt argument is, so a constant-true impl cannot satisfy cells (b)/(c) for free.
-    expect(OVERLAY_IDS.length, 'the manifest must hold 17 mutual-exclusion overlays').toBe(17);
+    expect(OVERLAY_IDS.length, 'the manifest must hold 18 mutual-exclusion overlays').toBe(18);
     for (const id of OVERLAY_IDS) {
       expect(
         anyVisible(probes, id),
@@ -670,7 +685,7 @@ describe('overlayRegistry — anyVisible over a probe table (uxd3-b, AC-7)', () 
       flags[other] = false;
       cells += 3;
     }
-    expect(cells, 'ANTI-VACUITY: all 17 ids x 3 cells must have been exercised').toBe(51);
+    expect(cells, 'ANTI-VACUITY: all 18 ids x 3 cells must have been exercised').toBe(54);
   });
 });
 
@@ -714,7 +729,7 @@ describe("overlayRegistry — visibleIds(probes), the write substrate's read hal
     // assertion below (every single-true cell would ALSO look like "the full list", which is
     // wrong, but only visible once compared against the exact `[id]` expectation) — asserting the
     // EMPTY case first and independently is what makes that failure legible on its own line.
-    expect(OVERLAY_IDS.length, 'the manifest must hold 17 mutual-exclusion overlays').toBe(17);
+    expect(OVERLAY_IDS.length, 'the manifest must hold 18 mutual-exclusion overlays').toBe(18);
     expect(
       visibleIds(probes),
       'ANTI-VACUITY: with every probe returning false, visibleIds(probes) must be [] — a ' +
@@ -734,7 +749,7 @@ describe("overlayRegistry — visibleIds(probes), the write substrate's read hal
       flags[id] = false;
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: all 17 ids must have been flipped individually').toBe(17);
+    expect(checked, 'ANTI-VACUITY: all 18 ids must have been flipped individually').toBe(18);
 
     for (const id of OVERLAY_IDS) flags[id] = true;
     expect(
@@ -864,7 +879,7 @@ describe('overlayRegistry — OverlayHandles, the force-hide write table (uxd3-c
       expect(typeof handles[id], `typeof handles.${id} must be 'function'`).toBe('function');
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: all 16 non-dialogue ids must have been checked').toBe(16);
+    expect(checked, 'ANTI-VACUITY: all 17 non-dialogue ids must have been checked').toBe(17);
   });
 });
 
@@ -1030,10 +1045,10 @@ describe('overlayRegistry — OVERLAY_A11Y, the a11y metadata SSOT (m23-s0, ADR-
 
     // ANTI-VACUITY: the manifest is the real 16, or both set-equality directions below pass
     // vacuously over an empty/truncated comparison.
-    expect(OVERLAY_IDS.length, 'the manifest must hold 17 mutual-exclusion overlays').toBe(17);
+    expect(OVERLAY_IDS.length, 'the manifest must hold 18 mutual-exclusion overlays').toBe(18);
 
     const keys = Object.keys(overlayA11y ?? {});
-    expect(keys.length, 'OVERLAY_A11Y must have exactly 17 own keys').toBe(17);
+    expect(keys.length, 'OVERLAY_A11Y must have exactly 18 own keys').toBe(18);
 
     const missingFromA11y = OVERLAY_IDS.filter((id) => !keys.includes(id));
     const stowawayInA11y = keys.filter((k) => !(OVERLAY_IDS as readonly string[]).includes(k));
@@ -1145,7 +1160,7 @@ describe('overlayRegistry — OVERLAY_A11Y, the a11y metadata SSOT (m23-s0, ADR-
     ).toBe(true);
 
     // ANTI-VACUITY: the manifest is the real 16.
-    expect(OVERLAY_IDS.length, 'the manifest must hold 17 mutual-exclusion overlays').toBe(17);
+    expect(OVERLAY_IDS.length, 'the manifest must hold 18 mutual-exclusion overlays').toBe(18);
 
     const seenTrimmed = new Map<string, OverlayId>();
     let checked = 0;
@@ -1186,11 +1201,11 @@ describe('overlayRegistry — OVERLAY_A11Y, the a11y metadata SSOT (m23-s0, ADR-
       seenTrimmed.set(trimmed, id);
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: all 17 ids must have been examined').toBe(17);
+    expect(checked, 'ANTI-VACUITY: all 18 ids must have been examined').toBe(18);
     expect(
       seenTrimmed.size,
-      'ANTI-VACUITY: all 17 (trimmed) labelKeys must be pairwise distinct',
-    ).toBe(17);
+      'ANTI-VACUITY: all 18 (trimmed) labelKeys must be pairwise distinct',
+    ).toBe(18);
   });
 
   it('OR-A11Y-DISMISSIBLE-VS-TIER BITES: the constraint is READ FROM OVERLAY_TIERS, not from a second hand-kept id list', async () => {
@@ -1206,7 +1221,7 @@ describe('overlayRegistry — OVERLAY_A11Y, the a11y metadata SSOT (m23-s0, ADR-
     expect(overlayA11y, 'OVERLAY_A11Y must be exported from overlayRegistry.ts').toBeDefined();
 
     // ANTI-VACUITY: the manifest is the real 16.
-    expect(OVERLAY_IDS.length, 'the manifest must hold 17 mutual-exclusion overlays').toBe(17);
+    expect(OVERLAY_IDS.length, 'the manifest must hold 18 mutual-exclusion overlays').toBe(18);
 
     let constrained = 0;
     let unconstrained = 0;
@@ -1235,16 +1250,17 @@ describe('overlayRegistry — OVERLAY_A11Y, the a11y metadata SSOT (m23-s0, ADR-
         unconstrained += 1;
       }
     }
-    expect(constrained + unconstrained, 'ANTI-VACUITY: all 17 ids must have been examined').toBe(
-      17,
+    expect(constrained + unconstrained, 'ANTI-VACUITY: all 18 ids must have been examined').toBe(
+      18,
     );
-    // Documents the partition this slice's design relies on: 14 EXCLUSIVE_TOP/GUARD_ONLY ids
+    // Documents the partition this slice's design relies on: 15 EXCLUSIVE_TOP/GUARD_ONLY ids
     // (constrained to true) and 3 HIDE_SWITCH ids (box/raising/evolution, unconstrained).
+    // ctl-12b: was 14 constrained before the GUARD_ONLY controlsView joined.
     expect(
       constrained,
-      'today exactly 14 ids are tier-constrained (EXCLUSIVE_TOP + GUARD_ONLY) — a change here ' +
+      'today exactly 15 ids are tier-constrained (EXCLUSIVE_TOP + GUARD_ONLY) — a change here ' +
         'without a corresponding OVERLAY_TIERS edit signals drift',
-    ).toBe(14);
+    ).toBe(15);
     expect(
       unconstrained,
       'today exactly 3 ids are HIDE_SWITCH and unconstrained (box/raising/evolution)',
@@ -1290,7 +1306,7 @@ describe('overlayRegistry — OVERLAY_A11Y stays inside the module purity rule (
     const overlayA11y = (mod as { OVERLAY_A11Y?: Record<string, Record<string, unknown>> })
       .OVERLAY_A11Y;
     expect(overlayA11y, 'OVERLAY_A11Y must be exported from overlayRegistry.ts').toBeDefined();
-    expect(OVERLAY_IDS.length, 'the manifest must hold 17 mutual-exclusion overlays').toBe(17);
+    expect(OVERLAY_IDS.length, 'the manifest must hold 18 mutual-exclusion overlays').toBe(18);
 
     // WRONG IMPL KILLED (3): an EMPTY or structurally meaningless `initialFocusSelector`.
     // Red-team MEASURED that blanking all sixteen to '' left `tsc --noEmit` green and this whole
@@ -1348,24 +1364,57 @@ describe('overlayRegistry — OVERLAY_A11Y stays inside the module purity rule (
         fieldsChecked += 1;
       }
     }
-    // ANTI-VACUITY: 17 ids x 4 A11yMeta fields (role, labelKey, initialFocusSelector,
-    // dismissible) = 68. A truncated OVERLAY_A11Y (missing entries, or entries missing fields)
+    // ANTI-VACUITY: 18 ids x 4 A11yMeta fields (role, labelKey, initialFocusSelector,
+    // dismissible) = 72. A truncated OVERLAY_A11Y (missing entries, or entries missing fields)
     // would under-count here even if the earlier per-id `.toBeDefined()` calls did not catch it.
     expect(
       fieldsChecked,
-      'ANTI-VACUITY: 17 ids x 4 A11yMeta fields must all have been type-checked',
-    ).toBe(68);
+      'ANTI-VACUITY: 18 ids x 4 A11yMeta fields must all have been type-checked',
+    ).toBe(72);
     expect(
       selectorsChecked,
-      'ANTI-VACUITY: all 17 initialFocusSelector values must have been shape-checked',
-    ).toBe(17);
-    // Each overlay focuses its OWN anchor. Seventeen identical selectors would pass every check
-    // above (they are all well-shaped) while meaning fifteen overlays focus the wrong element —
+      'ANTI-VACUITY: all 18 initialFocusSelector values must have been shape-checked',
+    ).toBe(18);
+    // Each overlay focuses its OWN anchor. Eighteen identical selectors would pass every check
+    // above (they are all well-shaped) while meaning seventeen overlays focus the wrong element —
     // and §5.1's GOOD fixture only sanctions reusing `role`, never the selector.
     expect(
       seenSelectors.size,
-      'ANTI-VACUITY: the 17 initialFocusSelector values must be DISTINCT — a single anchor ' +
-        'copy-pasted across all seventeen is well-shaped and would otherwise pass',
-    ).toBe(17);
+      'ANTI-VACUITY: the 18 initialFocusSelector values must be DISTINCT — a single anchor ' +
+        'copy-pasted across all eighteen is well-shaped and would otherwise pass',
+    ).toBe(18);
+  });
+});
+
+// ===========================================================================
+// ctl-12b: the Controls overlay's own registry rows (named intentional addition).
+// ===========================================================================
+
+describe('overlayRegistry — controlsView (ctl-12b, CTL12B.1)', () => {
+  it('controlsView is a GUARD_ONLY member whose a11y row is a dismissible dialog named by its own catalog key and focused on the #controls-rows nav container', async () => {
+    // WRONG IMPL KILLED: a Controls screen outside the manifest (it would open over a battle and
+    // sit outside mutual exclusion), an a11y row copied from another overlay (the wrong name, or
+    // focus on another overlay's anchor), an anchor that is a render-time cell (rebuilt on every
+    // paint: focus would fall to <body>), and a non-dismissible row (Escape could not close it).
+    expect(OVERLAY_IDS, 'a manifest member').toContain('controlsView');
+    expect(OVERLAY_TIERS.controlsView).toBe('GUARD_ONLY');
+    const mod: unknown = await import('./overlayRegistry');
+    const overlayA11y = (mod as { OVERLAY_A11Y?: Record<string, unknown> }).OVERLAY_A11Y;
+    expect(overlayA11y?.controlsView).toEqual({
+      role: 'dialog',
+      labelKey: 'a11y.overlay.controlsView.title',
+      initialFocusSelector: '#controls-rows',
+      dismissible: true,
+    });
+    // Over a battle the Controls screen is denied like every other player open.
+    expect(canOpen('controlsView', ['battleView'])).toEqual({
+      kind: 'deny',
+      blockedBy: 'battleView',
+    });
+    // And it denies the HIDE_SWITCH trio over it instead of being force-hidden by them.
+    expect(canOpen('boxView', ['controlsView'])).toEqual({
+      kind: 'deny',
+      blockedBy: 'controlsView',
+    });
   });
 });

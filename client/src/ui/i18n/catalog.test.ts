@@ -361,6 +361,19 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { key: 'F', label: 'Confirm (A)', otherLabel: 'Info (Y)' },
     { key: 'Q', label: 'Bag', otherLabel: 'Jump (X)' },
   ],
+  // ctl-12b (named intentional change): the Options › Controls view's slot cells, Clear cells and
+  // cleared line (4 ★). `label` is a controlsModel row label, `key` a glyph() keycap; every field
+  // differs between the two sets.
+  'controls.slot.primary': [
+    { label: 'Confirm (A)', key: 'Enter' },
+    { label: 'Bag', key: 'K' },
+  ],
+  'controls.slot.alt': [
+    { label: 'Up', key: 'W' },
+    { label: 'Save bug report', key: 'F9' },
+  ],
+  'controls.clear': [{ label: 'Bag' }, { label: 'Save bug report' }],
+  'controls.cleared': [{ label: 'Journal' }, { label: 'Dismiss error' }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -775,6 +788,21 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'controls.refused.protected': 'Movement, Confirm, Back and Menu must always keep a key.',
   'controls.cancelled': 'Unchanged.',
   'controls.bound': 'Saved.',
+  // ctl-12b (named intentional change): +11 plain keys — the Controls view's title, tab labels,
+  // empty-slot mark, Reset all row, its question and outcome, the Cancel chip and the save-failed
+  // line (ui/controlsView.ts), and the Options › Controls menu leaf (ui/menuModel.ts); +4
+  // parameterised ones in SAMPLE_PARAMS = 351 keys.
+  'controls.title': 'Controls',
+  'controls.tab.buttons': 'Buttons',
+  'controls.tab.shortcuts': 'Shortcuts',
+  'controls.slot.none': EM_DASH,
+  'controls.resetAll': 'Reset all',
+  'controls.reset.question': 'Reset every control to its default?',
+  'controls.reset.done': 'All controls are back to their defaults.',
+  'controls.cancel': 'Cancel',
+  'controls.saveFailed': 'Could not save: this lasts until you reload.',
+  'menu.options.controls.title': 'Controls',
+  'menu.options.controls.desc': 'Choose which key presses each button.',
 };
 
 interface ParamOutputSpec {
@@ -1240,9 +1268,36 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { key: 'Q', label: 'Bag', otherLabel: 'Jump (X)' },
     outputB: 'Swapped: Q is now Bag, Jump (X) has no key',
   },
+  // ctl-12b: the Controls view's cells (each names its row: the grid is read one cell at a time)
+  // and the line a Clear writes.
+  'controls.slot.primary': {
+    inputA: { label: 'Confirm (A)', key: 'Enter' },
+    outputA: 'Confirm (A): Enter',
+    inputB: { label: 'Bag', key: 'K' },
+    outputB: 'Bag: K',
+  },
+  'controls.slot.alt': {
+    inputA: { label: 'Up', key: 'W' },
+    outputA: 'Up (alt): W',
+    inputB: { label: 'Save bug report', key: 'F9' },
+    outputB: 'Save bug report (alt): F9',
+  },
+  'controls.clear': {
+    inputA: { label: 'Bag' },
+    outputA: 'Clear Bag',
+    inputB: { label: 'Save bug report' },
+    outputB: 'Clear Save bug report',
+  },
+  'controls.cleared': {
+    inputA: { label: 'Journal' },
+    outputA: 'Journal has no key now.',
+    inputB: { label: 'Dismiss error' },
+    outputB: 'Dismiss error has no key now.',
+  },
 };
 
-/** The full 336-key roster (ctl-12: +43 `key.*` / `controls.*` keys over the 293-key roster below;
+/** The full 351-key roster (ctl-12b: +15 `controls.*` / `menu.options.controls.*` keys over the
+ *  336-key roster below; ctl-12: +43 `key.*` / `controls.*` keys over the 293-key roster below;
  *  ctl-10b: -`pvp.players.{none,heading}` +`interact.verb.{trade,challenge}`
  *  +`interact.confirm.challenge` over the 292-key roster below;
  *  ctl-10a: -`box.heal` +`interact.{chip,choose,entry,healer}`
@@ -1326,7 +1381,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-12 336-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-12b 351-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1415,12 +1470,12 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 336 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 351 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (336 keys since ctl-12; was 293 since ctl-10b).
+    // (a) roster is exactly the EXPECTED_KEYS roster (351 keys since ctl-12b; was 336 since ctl-12).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ctl-12 roster is 336 keys').toHaveLength(336);
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ctl-12b roster is 351 keys').toHaveLength(351);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -2025,5 +2080,89 @@ describe('ctl-10b: the Trade / Challenge keys in both catalogs', () => {
     }
     // The other pvp keys are untouched (a wholesale `pvp.*` deletion would pass the loop above).
     expect(en['pvp.incoming.accept']).toBe('Accept');
+  });
+});
+
+// =============================================================================
+// ctl-12b: the 15 keys the Options › Controls view and its menu leaf add, in BOTH catalogs. Before a
+// `:` or a `?` the French text may carry the catalog's U+00A0 or a plain space (the ctl-10b
+// precedent accepts both); every other byte is exact.
+// =============================================================================
+
+describe('ctl-12b: the Controls keys in both catalogs', () => {
+  it('ctl-12b FR-PINS: the 11 new plain keys and the 4 new closures carry their exact English and French text; each closure echoes its params for two differing sample sets; the French values are translations', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot: the whole Controls
+    // screen and the Options menu blank); a French entry left as the English copy; a slot closure
+    // that drops the row label or the keycap, or swaps them (a cell that no longer names its row);
+    // the Alt cell reading like the Primary one; a Clear or cleared line that hard-codes its row; a
+    // decomposed or missing e acute in "réinitialiser" / "défaut" / "réglage"; and an ASCII
+    // apostrophe where the catalog writes U+2019.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    /** `before` + (U+00A0 or a plain space) + `after`. */
+    const spaced = (before: string, after: string): string[] => [
+      `${before}${NO_BREAK_SPACE}${after}`,
+      `${before} ${after}`,
+    ];
+    const FR_PLAIN: ReadonlyArray<readonly [string, readonly string[]]> = [
+      ['controls.title', ['Commandes']],
+      ['controls.tab.buttons', ['Boutons']],
+      ['controls.tab.shortcuts', ['Raccourcis']],
+      ['controls.slot.none', [EM_DASH]],
+      ['controls.resetAll', [`Tout r${E_ACUTE}initialiser`]],
+      ['controls.reset.question', spaced(`R${E_ACUTE}initialiser toutes les commandes`, '?')],
+      ['controls.reset.done', [`Toutes les commandes ont repris leur valeur par d${E_ACUTE}faut.`]],
+      ['controls.cancel', ['Annuler']],
+      [
+        'controls.saveFailed',
+        spaced(
+          'Enregistrement impossible',
+          `: ce r${E_ACUTE}glage dure jusqu${RIGHT_QUOTE}au rechargement.`,
+        ),
+      ],
+      ['menu.options.controls.title', ['Commandes']],
+      ['menu.options.controls.desc', ['Choisir la touche de chaque bouton.']],
+    ];
+    /** The French output for sample A, then sample B (the English SAMPLE_PARAMS sets). */
+    const FR_PARAMS: ReadonlyArray<readonly [string, readonly string[], readonly string[]]> = [
+      ['controls.slot.primary', spaced('Confirm (A)', ': Enter'), spaced('Bag', ': K')],
+      ['controls.slot.alt', spaced('Up (alt.)', ': W'), spaced('Save bug report (alt.)', ': F9')],
+      ['controls.clear', ['Effacer Bag'], ['Effacer Save bug report']],
+      [
+        'controls.cleared',
+        [`Journal n${RIGHT_QUOTE}a plus de touche.`],
+        [`Dismiss error n${RIGHT_QUOTE}a plus de touche.`],
+      ],
+    ];
+
+    for (const [key, accepted] of FR_PLAIN) {
+      expect(typeof EXPECTED_PLAIN[key], `fixture: ${key} has an English pin`).toBe('string');
+      expect(en[key], `en ${key}: its exact text`).toBe(EXPECTED_PLAIN[key]);
+      expect(typeof fr[key], `${key} must be a plain string in the fr catalog`).toBe('string');
+      expect(accepted, `fr ${key}: ${JSON.stringify(fr[key])}`).toContain(fr[key]);
+      if (key !== 'controls.slot.none') {
+        expect(fr[key], `${key}: a translation, not the English copy`).not.toBe(en[key]);
+      }
+    }
+    for (const [key, frA, frB] of FR_PARAMS) {
+      const spec = EXPECTED_PARAM_OUTPUTS[key] as ParamOutputSpec;
+      expect(spec, `fixture: ${key} has English output pins`).toBeDefined();
+      expect(typeof en[key], `en ${key} must be a closure`).toBe('function');
+      expect(typeof fr[key], `fr ${key} must be a closure`).toBe('function');
+      const enFn = en[key] as (p: Record<string, unknown>) => string;
+      const frFn = fr[key] as (p: Record<string, unknown>) => string;
+      expect(enFn(spec.inputA), `en ${key}(sample A)`).toBe(spec.outputA);
+      expect(enFn(spec.inputB), `en ${key}(sample B)`).toBe(spec.outputB);
+      const outA = frFn(spec.inputA);
+      const outB = frFn(spec.inputB);
+      expect(frA, `fr ${key}(sample A): ${JSON.stringify(outA)}`).toContain(outA);
+      expect(frB, `fr ${key}(sample B): ${JSON.stringify(outB)}`).toContain(outB);
+      expect(outA, `${key}: the two sample sets differ`).not.toBe(outB);
+      expect(outA, `${key}: a translation, not the English line`).not.toBe(spec.outputA);
+    }
+    expect(
+      FR_PLAIN.length + FR_PARAMS.length,
+      'ANTI-VACUITY: all 15 ctl-12b keys are pinned in both catalogs',
+    ).toBe(15);
   });
 });

@@ -92,6 +92,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { t } from './a11yCopy';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
@@ -1225,6 +1226,92 @@ describe('RenameView ctl-8h: applyRowOp rows and the submit key shield', () => {
       expect(focusedId()).toBe('rename-submit');
     } finally {
       submitFocus.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ctl-12b (plan §5): the submit button's routed set comes from the LIVE binding table.
+//
+// `RenameCallbacks.bindings?: () => Bindings` (absent = DEFAULT_BINDINGS). Per keydown, the focused
+// submit button lets through exactly the codes the live table binds to Up, Down, Left, Right and B;
+// every other key is stopped as before.
+//
+// LEGACY BEHAVIOUR REPLACED: the routed set was built once from DEFAULT_BINDINGS, so after a remap
+// the player's new Back key was stopped on the Save button (stuck there) while the old Backspace
+// still left it.
+// ---------------------------------------------------------------------------
+
+describe('RenameView ctl-12b: the submit key shield follows the live table', () => {
+  beforeEach(() => {
+    mountRenameOverlay();
+  });
+  afterEach(() => {
+    teardown();
+  });
+
+  /** The defaults with B := KeyX and Up := KeyT (both free keys), Start := KeyZ. */
+  const REMAPPED = {
+    buttons: {
+      ...DEFAULT_BINDINGS.buttons,
+      B: ['KeyX'],
+      Up: ['KeyT', 'ArrowUp'],
+      Start: ['KeyZ'],
+    },
+    accels: DEFAULT_BINDINGS.accels,
+  } as unknown as Bindings;
+
+  /** Dispatch a keydown of `code` on the submit button; true when it reached the window. */
+  function reachesWindow(btn: HTMLButtonElement, code: string): boolean {
+    const spy = vi.fn();
+    window.addEventListener('keydown', spy);
+    try {
+      btn.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true }));
+    } finally {
+      window.removeEventListener('keydown', spy);
+    }
+    return spy.mock.calls.length === 1;
+  }
+
+  it('with a remapped table the NEW D-pad and B codes leave the submit button and the OLD ones are stopped, read per keydown from bindings(); with no bindings callback the default codes still leave it', () => {
+    // WRONG IMPL KILLED: a routed set still built once from DEFAULT_BINDINGS (after B := KeyX the
+    // player's Back key is stopped on Save and they are stuck there, while the retired Backspace
+    // still pops); a set read once at construction (a remap made while the rename frame exists
+    // would never reach it); a set that also lets Start, A or a shortcut through (KeyZ as Start,
+    // Enter and KeyN must stay stopped: a letter on the button would open an overlay); and a view
+    // that breaks the default path when no callback is given.
+    let table: Bindings = REMAPPED;
+    const view = new RenameView({ onSubmit: async () => {}, bindings: () => table });
+    view.show();
+    const btn = document.getElementById('rename-submit') as HTMLButtonElement;
+
+    for (const code of ['KeyX', 'KeyT', 'ArrowUp', 'KeyS', 'ArrowDown', 'KeyA', 'KeyD']) {
+      expect(reachesWindow(btn, code), `${code} (bound to the D-pad or B) leaves the button`).toBe(
+        true,
+      );
+    }
+    for (const code of ['Backspace', 'KeyW', 'KeyZ', 'Enter', 'Space', 'KeyN', 'KeyQ', 'Escape']) {
+      expect(reachesWindow(btn, code), `${code} is stopped at the button`).toBe(false);
+    }
+
+    // The table is read per keydown: switch it back to the defaults on the same view.
+    table = DEFAULT_BINDINGS;
+    expect(reachesWindow(btn, 'Backspace'), 'B is Backspace again').toBe(true);
+    expect(reachesWindow(btn, 'KeyW'), 'Up is KeyW again').toBe(true);
+    expect(reachesWindow(btn, 'KeyX'), 'KeyX is no longer B').toBe(false);
+    expect(reachesWindow(btn, 'KeyT'), 'KeyT is no longer Up').toBe(false);
+
+    // Regression guard: with no bindings callback the defaults route as they always did.
+    teardown();
+    mountRenameOverlay();
+    const plain = new RenameView({ onSubmit: async () => {} });
+    plain.show();
+    const plainBtn = document.getElementById('rename-submit') as HTMLButtonElement;
+    for (const code of ['Backspace', 'KeyW', 'ArrowLeft', 'KeyD']) {
+      expect(reachesWindow(plainBtn, code), `default ${code} leaves the button`).toBe(true);
+    }
+    for (const code of ['KeyX', 'KeyT', 'KeyN']) {
+      expect(reachesWindow(plainBtn, code), `default: ${code} is stopped`).toBe(false);
     }
   });
 });

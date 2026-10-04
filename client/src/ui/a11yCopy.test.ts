@@ -35,8 +35,10 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
     // sides of the comparison. `a11y.world.*` orphan-checking belongs to S1 (`world.ts`), by the
     // "a namespace is orphan-checked by the slice that owns its consumer" convention (D5).
 
-    // ANTI-VACUITY, ASSERTED FIRST.
-    expect(OVERLAY_IDS.length, 'the manifest must hold 17 mutual-exclusion overlays').toBe(17);
+    // ANTI-VACUITY, ASSERTED FIRST. ctl-12b (named intentional change): 17 -> 18, `controlsView`
+    // (Options › Controls) joined the manifest, so `a11y.overlay.controlsView.title` joins the
+    // derived key set.
+    expect(OVERLAY_IDS.length, 'the manifest must hold 18 mutual-exclusion overlays').toBe(18);
     expect(
       Object.keys(a11yCopy as Record<string, unknown>).length > 0,
       'ANTI-VACUITY: a11yCopy must not be empty, or every set-equality check below is vacuous',
@@ -45,8 +47,11 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
     const derivedKeys = OVERLAY_IDS.map((id) => `a11y.overlay.${id}.title`);
     expect(
       new Set(derivedKeys).size,
-      'ANTI-VACUITY: the 17 derived keys must be pairwise distinct',
-    ).toBe(17);
+      'ANTI-VACUITY: the 18 derived keys must be pairwise distinct',
+    ).toBe(18);
+    expect(derivedKeys, 'the Controls overlay`s derived key').toContain(
+      'a11y.overlay.controlsView.title',
+    );
 
     const catalogKeys = Object.keys(a11yCopy as Record<string, unknown>);
     const overlayNamespaceKeys = catalogKeys.filter((k) => k.startsWith('a11y.overlay.'));
@@ -86,7 +91,7 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
       ).toBe(true);
       resolved += 1;
     }
-    expect(resolved, 'ANTI-VACUITY: all 17 ids must have been resolved').toBe(17);
+    expect(resolved, 'ANTI-VACUITY: all 18 ids must have been resolved').toBe(18);
   });
 
   it('A11YCOPY-VALUES-ICU-FREE BITES: every catalog value, regardless of namespace, is non-empty after trim and brace-free', () => {

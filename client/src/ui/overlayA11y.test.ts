@@ -167,7 +167,7 @@ describe('openOverlayA11y — deferred initial focus, ONE macrotask, no synchron
 // ---------------------------------------------------------------------------
 
 describe('openOverlayA11y/closeOverlayA11y — ARIA attribute writes and focus-trap wiring (S1-ARIA)', () => {
-  it('S1-ARIA-ALL-17 BITES: opening each of the 17 overlays sets role/aria-modal/aria-label from OVERLAY_A11Y, id-DERIVED, never a literal', () => {
+  it('S1-ARIA-ALL-17 BITES: opening each of the 18 overlays sets role/aria-modal/aria-label from OVERLAY_A11Y, id-DERIVED, never a literal', () => {
     // WRONG IMPL KILLED: a literal (e.g. always role="dialog" aria-label="Overlay") would pass
     // for one id and fail the other fifteen once parameterised over the full manifest.
     //
@@ -178,7 +178,9 @@ describe('openOverlayA11y/closeOverlayA11y — ARIA attribute writes and focus-t
     // 'dialog')` — both produce byte-identical output for all seventeen ids. See the
     // "TRIPWIRE" describe block below in this file for the deliberate trap that reds the day
     // that stops being true, and forces a real per-id role assertion to be added then.
-    expect(OVERLAY_IDS.length, 'ANTI-VACUITY').toBe(17);
+    // ctl-12b (named intentional change): 17 -> 18 with `controlsView`; the tag keeps its
+    // historical name.
+    expect(OVERLAY_IDS.length, 'ANTI-VACUITY').toBe(18);
     let checked = 0;
     for (const id of OVERLAY_IDS) {
       const { root } = mountRootFor(id);
@@ -194,7 +196,7 @@ describe('openOverlayA11y/closeOverlayA11y — ARIA attribute writes and focus-t
       closeOverlayA11y(id, null);
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: all 17 ids must have been exercised').toBe(17);
+    expect(checked, 'ANTI-VACUITY: all 18 ids must have been exercised').toBe(18);
   });
 
   it('S1-ARIA-STRIPPED-ON-CLOSE BITES: role, aria-modal and aria-label are all removed on close — a display:none node must not keep claiming to be a dialog', () => {
@@ -382,8 +384,9 @@ describe('OVERLAY_A11Y — role tripwire (deliberate trap door, not a regression
 // ---------------------------------------------------------------------------
 
 describe('openOverlayA11y — live-region custody: adoption into the open root (LRC-ADOPT, X1)', () => {
-  it('LRC-ADOPT BITES: opening each of the 17 overlays makes the SAME live-region node a direct LAST child of root, before the call returns — never a clone, never a second region', () => {
-    expect(OVERLAY_IDS.length, 'ANTI-VACUITY').toBe(17);
+  it('LRC-ADOPT BITES: opening each of the 18 overlays makes the SAME live-region node a direct LAST child of root, before the call returns — never a clone, never a second region', () => {
+    // ctl-12b (named intentional change): 17 -> 18 with `controlsView`.
+    expect(OVERLAY_IDS.length, 'ANTI-VACUITY').toBe(18);
     let checked = 0;
     for (const id of OVERLAY_IDS) {
       const node = mountLiveNode();
@@ -419,7 +422,7 @@ describe('openOverlayA11y — live-region custody: adoption into the open root (
       closeOverlayA11y(id, null);
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: all 17 ids must have been exercised').toBe(17);
+    expect(checked, 'ANTI-VACUITY: all 18 ids must have been exercised').toBe(18);
   });
 
   it('LRC-ADOPT-REOPEN-REHOMES BITES: re-opening the SAME id on a DIFFERENT root re-homes the live region into the new root — a re-open is not exempt from custody', () => {

@@ -25,15 +25,35 @@
  * controllable rAF, a stubbed wasm pkg and SDK connection, the real client/index.html shell
  * mounted first). The one delta: `boot` seeds `localStorage` (or makes its read throw) BEFORE the
  * import. Every press is a keydown and its keyup 5 ms later.
+ *
+ * ctl-12b (CTL12B.1, CTL12B.2) adds the Options > Controls screen over the same harness: the screen
+ * opened by real key presses through the menu, a capture the shell takes from the next keydown,
+ * the table saved to `mr.controls` and applied at once (no reload: the keyboard source, the
+ * accelerators and the A keycap read the new table on the next key or frame), a re-boot with the
+ * storage kept, and typing mode (Enter in a focused field commits as A whatever the table says; an
+ * IME's Escape is never an accelerator). Two harness deltas, each keeping every older case's
+ * default: `boot` and `teardown` can keep the storage a previous boot wrote (`keepStorage`), and
+ * the stubbed wasm interaction rule is driven by `H.interact` (default: no candidate), so
+ * CTL12B-2-KEYCAP faces an NPC and reads the chip itself.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WasmMoveInput } from './convert/convert';
-import { DEFAULT_BINDINGS } from './input/bindings';
+import { parseBindings } from './input/bindingStore';
+import { type Bindings, DEFAULT_BINDINGS } from './input/bindings';
+import { ACCELS, type Accel, VBUTTONS, type VButton } from './input/buttons';
+import { glyph } from './input/glyphs';
 import type { Connection, ConnectionOptions } from './net/connection';
-import { t as i18nT } from './ui/i18n/resolver';
+import {
+  type ControlsRow,
+  captureKey,
+  capturePrompt,
+  outcomeText,
+  rowLabel,
+} from './ui/controlsModel';
+import { t as i18nT, tf } from './ui/i18n/resolver';
 
 const H = vi.hoisted(() => ({
   identity: 'ab'.repeat(32),
@@ -42,8 +62,13 @@ const H = vi.hoisted(() => ({
   sends: [] as unknown[],
   /** Every other reducer call, oldest first. */
   calls: [] as Array<{ name: string; args: unknown }>,
+  /** ctl-12b: what the stubbed wasm `interact_candidates_coded` answers (indices into the
+   *  marshalled entity list). Reset to "no candidate" by every boot. */
+  interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
 }));
 
+// ctl-12b: named fixture change: the interact export is driven by `H.interact` (default `[]`, reset
+// by every boot), so CTL12B-2-KEYCAP can stand the player in front of an NPC.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const SIDE = 8;
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
@@ -76,7 +101,7 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
     party_slot_none: () => 255,
     max_trade_monsters_per_side: () => 64,
     talk_range: () => 2,
-    interact_candidates_coded: () => [],
+    interact_candidates_coded: (...args: unknown[]) => H.interact(...args),
     predict_move: () => ({}),
     predict_tick: () => ({}),
     set_active_zone: () => undefined,
@@ -216,17 +241,21 @@ interface BootOptions {
   readonly stored?: string;
   /** Make a read of `mr.controls` throw, as a browser that denies storage does. */
   readonly readThrows?: boolean;
+  /** ctl-12b: keep `localStorage` exactly as the previous boot left it (a page reload): nothing is
+   *  cleared and `stored` is not written. Absent: the storage is cleared first, as before. */
+  readonly keepStorage?: boolean;
 }
 
-/** Detach everything a boot installed, so the next boot starts from a clean page. */
-function teardown(): void {
+/** Detach everything a boot installed, so the next boot starts from a clean page. `keepStorage`
+ *  (ctl-12b) leaves `localStorage` as the booted page wrote it, for a re-boot that reads it. */
+function teardown(o: { readonly keepStorage?: boolean } = {}): void {
   for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
   recorded = [];
   while (restorers.length > 0) restorers.pop()?.();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   rafCallback = null;
-  localStorage.clear();
+  if (o.keepStorage !== true) localStorage.clear();
   window.history.replaceState(null, '', '/');
   document.body.replaceChildren();
 }
@@ -235,10 +264,13 @@ async function boot(o: BootOptions = {}): Promise<void> {
   H.connectOpts = null;
   H.sends = [];
   H.calls = [];
+  H.interact = () => [];
   pressAt = 2000;
   clock.t = 1000;
-  localStorage.clear();
-  if (o.stored !== undefined) localStorage.setItem(STORAGE_KEY, o.stored);
+  if (o.keepStorage !== true) {
+    localStorage.clear();
+    if (o.stored !== undefined) localStorage.setItem(STORAGE_KEY, o.stored);
+  }
   if (o.readThrows === true) {
     const realGet = Storage.prototype.getItem;
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (
@@ -727,5 +759,810 @@ describe('main.ts booted binding table over the real shell (runtime, ctl-12)', {
     expect(document.activeElement, 'typing stopped: focus left the field').not.toBe(input);
     expect(stackNames().at(-1), 'the Name screen is still open').toBe('renameView');
     expect(errorOverlayShown(), 'the error overlay was not dismissed by that Escape').toBe(true);
+  });
+});
+
+// ==========================================================================================
+// ctl-12b: Options > Controls (CTL12B.1, CTL12B.2) over the booted shell
+// ==========================================================================================
+//
+// DOM contract (plan ctl-12b, section 2): `#controls-overlay` is the frame root; `#controls-rows`
+// the nav grid, its cells `[data-nav-key]` (`${VButton}_0` / `_1` per button row, then `reset`;
+// on Shortcuts `${Accel}_0` / `_1` / `_clear`, then `reset`), the cursor cell `aria-selected` and
+// named by `aria-activedescendant`; `#controls-capture` (the prompt) and `#controls-cancel-btn`
+// only while capturing; `#controls-feedback` the last outcome line; `#controls-question` and a
+// Yes / No listbox in `#controls-rows` while Reset all asks. Every expected string is built from
+// the catalog (`i18nT` / `tf`) or the shipped controlsModel helpers, in this test's own module
+// graph (both default to English, so the text equals what the booted shell paints).
+
+/** U+2026, built from its code point (never a pasted character). */
+const ELLIPSIS = String.fromCharCode(0x2026);
+
+const buttonRow = (id: VButton): ControlsRow => ({ kind: 'button', id });
+const ROW_A = buttonRow('A');
+
+/** The Buttons tab's cell keys in display order: each button's Primary then Alt, then Reset all. */
+const BUTTON_CELLS: readonly string[] = [...VBUTTONS.flatMap((b) => [`${b}_0`, `${b}_1`]), 'reset'];
+/** The Shortcuts tab's cell keys: each accelerator's Primary, Alt and Clear, then Reset all. */
+const SHORTCUT_CELLS: readonly string[] = [
+  ...ACCELS.flatMap((a) => [`${a}_0`, `${a}_1`, `${a}_clear`]),
+  'reset',
+];
+const CONTROLS_STACK: readonly string[] = ['world', 'menuView', 'controlsView'];
+
+/** Shown: present, and neither it nor an ancestor is `display:none` or `hidden`. */
+const visibleNow = (id: string): boolean => {
+  const el = document.getElementById(id);
+  if (el === null) return false;
+  for (let n: Element | null = el; n instanceof HTMLElement; n = n.parentElement) {
+    if (n.style.display === 'none' || n.hidden) return false;
+  }
+  return true;
+};
+/** The Controls cursor: the `data-nav-key` of the one `aria-selected` cell in `#controls-rows`. */
+const controlsActive = (): string | null => {
+  const cell = document.querySelector('#controls-rows [aria-selected="true"]');
+  return cell?.getAttribute('data-nav-key') ?? null;
+};
+const controlsCell = (key: string): HTMLElement => {
+  const el = document.querySelector(`#controls-rows [data-nav-key="${key}"]`);
+  if (!(el instanceof HTMLElement)) throw new Error(`#controls-rows has no cell ${key}`);
+  return el;
+};
+const cellText = (key: string): string => controlsCell(key).textContent ?? '';
+const cellKeys = (): string[] =>
+  Array.from(document.querySelectorAll('#controls-rows [data-nav-key]')).map(
+    (el) => el.getAttribute('data-nav-key') ?? '',
+  );
+const controlsFeedback = (): string => byId('controls-feedback').textContent ?? '';
+/** Whether a capture is waiting: the prompt line is shown. */
+const capturing = (): boolean => visibleNow('controls-capture');
+const captureText = (): string => byId('controls-capture').textContent ?? '';
+/** A slot's keycap as the screen names it: its code's glyph, or the empty-slot word. */
+const keycapOf = (code: string | undefined): string =>
+  code === undefined ? i18nT('controls.slot.none') : glyph(code);
+const primaryText = (row: ControlsRow, key: string): string =>
+  tf('controls.slot.primary', { label: rowLabel(row), key });
+const altText = (row: ControlsRow, key: string): string =>
+  tf('controls.slot.alt', { label: rowLabel(row), key });
+/** The raw `mr.controls` string, or null when nothing was saved. */
+const savedRaw = (): string | null => localStorage.getItem(STORAGE_KEY);
+/** The saved table as a boot reads it: `parseBindings` over the raw JSON. */
+const savedTable = (): Bindings => {
+  const raw = savedRaw();
+  if (raw === null) throw new Error('nothing is saved in mr.controls');
+  return parseBindings(JSON.parse(raw));
+};
+/** The default table with some rows replaced, as plain data for a `toEqual`. */
+const tableWith = (
+  buttons: Partial<Record<VButton, readonly string[]>>,
+  accels: Partial<Record<Accel, readonly string[]>> = {},
+): unknown => ({
+  buttons: { ...DEFAULT_BINDINGS.buttons, ...buttons },
+  accels: { ...DEFAULT_BINDINGS.accels, ...accels },
+});
+/** The main menu's rows as painted (each entry's title), in order. */
+const menuOptionTexts = (): string[] =>
+  Array.from(document.querySelectorAll('#menu-rows [role="option"]')).map(
+    (o) => o.textContent ?? '',
+  );
+
+/** Start, the cursor to Options, A, the cursor to Controls, A (`a` is the key A is bound to): the
+ *  Controls frame opens above the menu. Works on a reopen too: the menu reopens on the last entry
+ *  used and Options on its last child. */
+function openControls(a = 'Enter'): void {
+  press('Escape');
+  expect(stackNames(), 'precondition: Start opened the menu').toEqual(['world', 'menuView']);
+  for (let i = 0; i < 8 && navActive() !== 'options'; i += 1) press('ArrowDown');
+  expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
+  press(a);
+  for (let i = 0; i < 2 && navActive() !== 'controls'; i += 1) press('ArrowDown');
+  expect(navActive(), 'precondition: the cursor is on Options > Controls').toBe('controls');
+  press(a);
+  expect(stackNames(), 'precondition: Controls opened above the menu').toEqual([...CONTROLS_STACK]);
+}
+
+/** Walk the Controls cursor to `key` with the D-pad over the active tab's known grid (Buttons: two
+ *  columns; Shortcuts: three), never across an edge (so wrapping never matters). Reset all sits
+ *  alone in column 0 of the last row, so the column changes only outside that row. */
+function controlsMoveTo(key: string): void {
+  const onButtons = byId('controls-tab-buttons').getAttribute('aria-selected') === 'true';
+  const cells = onButtons ? BUTTON_CELLS : SHORTCUT_CELLS;
+  const cols = onButtons ? 2 : 3;
+  const place = (k: string | null): { row: number; col: number } => {
+    const i = k === null ? -1 : cells.indexOf(k);
+    if (i < 0) throw new Error(`Controls cursor: ${String(k)} is not a cell of this tab`);
+    return { row: Math.floor(i / cols), col: i % cols };
+  };
+  const from = place(controlsActive());
+  const to = place(key);
+  const across = (): void => {
+    for (let c = from.col; c < to.col; c += 1) press('ArrowRight');
+    for (let c = from.col; c > to.col; c -= 1) press('ArrowLeft');
+  };
+  const down = (): void => {
+    for (let r = from.row; r < to.row; r += 1) press('ArrowDown');
+    for (let r = from.row; r > to.row; r -= 1) press('ArrowUp');
+  };
+  if (controlsActive() === 'reset') {
+    down();
+    across();
+  } else {
+    across();
+    down();
+  }
+  expect(controlsActive(), `precondition: the Controls cursor is on ${key}`).toBe(key);
+}
+
+/** Move to the slot `cell` and press A there (`a`): its capture starts. */
+function startCapture(cell: string, a = 'Enter'): void {
+  controlsMoveTo(cell);
+  press(a);
+  expect(capturing(), `precondition: A on ${cell} started a capture`).toBe(true);
+}
+
+const NPC_ENTITY = 11n;
+const NPC_NAME = 'guide';
+
+/** A dialogue NPC on (3, 6), the tile the player (on (2, 6), facing East) faces, in one batch. */
+function seedNpc(t: number): void {
+  opts.store.upsertNpc({
+    entityId: NPC_ENTITY,
+    npcId: NPC_NAME,
+    zoneId: 0,
+    homeX: 3,
+    homeY: 6,
+    wanderRadius: 0,
+    dialogueTreeId: 'no-such-tree',
+    interaction: { kind: 'dialogue' },
+  });
+  opts.store.upsertCharacter(
+    {
+      entityId: NPC_ENTITY,
+      zoneId: 0,
+      tileX: 3,
+      tileY: 6,
+      facing: 'West',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [] as WasmMoveInput[],
+    },
+    t,
+  );
+  server(t);
+}
+
+/** The stubbed wasm interaction rule names the seeded NPC: it is the faced candidate. */
+function faceNpcRule(): void {
+  H.interact = (...args: unknown[]) => {
+    const entities = args[4];
+    if (!Array.isArray(entities)) return [];
+    const at = entities.findIndex(
+      (e: { kind?: unknown; id?: unknown }) => e.kind === 'npc' && e.id === NPC_ENTITY.toString(),
+    );
+    return at === -1 ? [] : [at];
+  };
+}
+
+/** A server conversation with the NPC arrives (or ends), in one batch at clock `t`. */
+function startConversation(t: number): void {
+  opts.store.upsertConversation({
+    ownerIdentity: H.identity,
+    npcEntityId: NPC_ENTITY,
+    currentNodeId: 'start',
+  });
+  server(t);
+}
+function endConversation(t: number): void {
+  opts.store.removeConversation(H.identity);
+  server(t);
+}
+
+const promptText = (): string => byId('interact-prompt').textContent ?? '';
+
+describe('main.ts Options > Controls: capture and live rebinding over the real shell (runtime, ctl-12b)', {
+  sequential: true,
+}, () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it('CTL12B-1-BOOT-OPENS: Start, Options (its children How to play then Controls), A on Controls opens the Controls frame above the menu, with tabs Buttons (active) and Shortcuts, twelve button rows each with a Primary and an Alt slot showing the live keys and no Clear, and A on the Confirm (A) row`s Primary slot shows "Press a key for Confirm (A)..."', async () => {
+    // LEGACY REPLACED (the Red): no Controls screen exists; Options holds How to play alone, so the
+    // cursor cannot reach a Controls entry.
+    // WRONG IMPL KILLED: a Controls leaf missing from Options or put before How to play (shipped
+    // e2e specs expect How to play first), a leaf that opens nothing or opens the frame in place
+    // of the menu (the menu must stay beneath it), a frame painted from the DEFAULT table instead
+    // of the live one (a row showing the wrong key), a tab strip with the wrong tabs or the wrong
+    // one active, a button row with a Clear cell (protected buttons can never be emptied), a
+    // cursor that `aria-activedescendant` does not name, an A on a slot that starts no capture or
+    // shows another row's prompt, a prompt shown before any A, and a capture start that saves.
+    await bootReady();
+    server(1000);
+
+    press('Escape');
+    expect(stackNames(), 'precondition: Start opened the menu').toEqual(['world', 'menuView']);
+    for (let i = 0; i < 8 && navActive() !== 'options'; i += 1) press('ArrowDown');
+    expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
+    press('Enter');
+    expect(navActive(), 'A entered Options on its first child, How to play').toBe('help');
+    press('ArrowDown');
+    expect(navActive(), 'Down moves onto Options > Controls').toBe('controls');
+    expect(menuOptionTexts(), 'Options lists How to play, then Controls').toEqual([
+      i18nT('menu.options.help.title'),
+      i18nT('menu.options.controls.title'),
+    ]);
+    const open = press('Enter');
+    expect(open.defaultPrevented, 'the A that opened Controls is consumed').toBe(true);
+    expect(stackNames(), 'Controls opened ABOVE the menu').toEqual([...CONTROLS_STACK]);
+    expect(visibleNow('controls-overlay'), 'the Controls frame is shown').toBe(true);
+    expect(menuShown(), 'the menu stays open beneath it').toBe(true);
+    expect(navActive(), 'with its cursor still on Controls').toBe('controls');
+    expect(byId('controls-title').textContent).toBe(i18nT('controls.title'));
+
+    const tabs = Array.from(document.querySelectorAll('#controls-tabs [role="tab"]'));
+    expect(
+      tabs.map((tab) => tab.id),
+      'two tabs, Buttons then Shortcuts',
+    ).toEqual(['controls-tab-buttons', 'controls-tab-shortcuts']);
+    expect(tabs.map((tab) => tab.textContent)).toEqual([
+      i18nT('controls.tab.buttons'),
+      i18nT('controls.tab.shortcuts'),
+    ]);
+    expect(
+      tabs.map((tab) => tab.getAttribute('aria-selected')),
+      'Buttons is the active tab',
+    ).toEqual(['true', 'false']);
+
+    const grid = byId('controls-rows');
+    expect(grid.getAttribute('role'), 'the slots are a grid').toBe('grid');
+    expect(cellKeys(), 'twelve button rows (Primary, Alt), then Reset all; no Clear').toEqual([
+      ...BUTTON_CELLS,
+    ]);
+    expect(
+      grid.querySelectorAll('[role="row"]'),
+      'twelve slot rows and the Reset all row',
+    ).toHaveLength(13);
+    for (const b of VBUTTONS) {
+      const row = buttonRow(b);
+      const [primary, alt] = DEFAULT_BINDINGS.buttons[b];
+      expect(controlsCell(`${b}_0`).dataset.slot, `${b}: the Primary slot`).toBe('primary');
+      expect(controlsCell(`${b}_1`).dataset.slot, `${b}: the Alt slot`).toBe('alt');
+      expect(cellText(`${b}_0`), `${b}: Primary names the row and its key`).toBe(
+        primaryText(row, keycapOf(primary)),
+      );
+      expect(cellText(`${b}_1`), `${b}: Alt names the row and its key (or none)`).toBe(
+        altText(row, keycapOf(alt)),
+      );
+    }
+    const selected = grid.querySelectorAll('[aria-selected="true"]');
+    expect(selected, 'exactly one cell holds the cursor').toHaveLength(1);
+    expect(grid.getAttribute('aria-activedescendant'), 'the grid names the cursor cell').toBe(
+      (selected[0] as HTMLElement | undefined)?.id,
+    );
+    expect(capturing(), 'no prompt while browsing').toBe(false);
+    expect(visibleNow('controls-cancel-btn'), 'no Cancel chip while browsing').toBe(false);
+
+    controlsMoveTo('A_0');
+    expect(grid.getAttribute('aria-activedescendant'), 'the moved cursor is named').toBe(
+      controlsCell('A_0').id,
+    );
+    const a = press('Enter');
+    expect(a.defaultPrevented, 'A on the slot is consumed').toBe(true);
+    expect(capturing(), 'A on a slot starts capture: the prompt shows').toBe(true);
+    expect(captureText(), 'the prompt names the row').toBe(capturePrompt(ROW_A));
+    expect(captureText(), 'the criterion`s English prompt').toBe(
+      `Press a key for Confirm (A)${ELLIPSIS}`,
+    );
+    expect(visibleNow('controls-cancel-btn'), 'the Cancel chip shows while capturing').toBe(true);
+    expect(stackNames(), 'a capture pushes no frame').toEqual([...CONTROLS_STACK]);
+    expect(savedRaw(), 'starting a capture saves nothing').toBeNull();
+  });
+
+  it('CTL12B-2-LIVE-REMAP: from the Confirm (A) Primary capture, K binds: the cell shows K, the feedback is the bound line, mr.controls holds the new table, and with NO reload K acts as A (it starts a capture on the slot; in the menu it picks the entry under the cursor) while Enter is not consumed and picks nothing', async () => {
+    // LEGACY REPLACED (the Red): no Controls screen; a saved table applied only after a reload
+    // (`KeyboardSource` took its table at construction).
+    // WRONG IMPL KILLED: a capture that saves but never swaps the live table (Enter still picks, K
+    // is dead until a reload), one that swaps the router's table but leaves a stale keyboard source
+    // or a stale accelerator / screen-context table, a merge that keeps Enter AND adds K, a save
+    // that writes the wrong shape (`parseBindings` would fall back to the defaults), a binding at
+    // the wrong slot (the Alt Numpad Enter is lost), a captured key that is not prevented, a
+    // capture that never ends, and a captured K that is ALSO routed as A (it would start the next
+    // capture at once).
+    await bootReady();
+    server(1000);
+    openControls();
+    startCapture('A_0');
+
+    const k = press('KeyK', { key: 'k' });
+    expect(k.defaultPrevented, 'the captured key is consumed').toBe(true);
+    expect(capturing(), 'binding ends the capture').toBe(false);
+    expect(stackNames(), 'the frame stays open').toEqual([...CONTROLS_STACK]);
+    expect(cellText('A_0'), 'the Primary slot shows K').toBe(primaryText(ROW_A, 'K'));
+    expect(cellText('A_1'), 'the Alt slot keeps Numpad Enter').toBe(
+      altText(ROW_A, glyph('NumpadEnter')),
+    );
+    expect(controlsFeedback(), 'the feedback is the bound line').toBe(i18nT('controls.bound'));
+    const raw = savedRaw();
+    expect(raw, 'the table was saved at once').not.toBeNull();
+    expect((JSON.parse(raw ?? 'null') as { v?: unknown }).v, 'as version 1').toBe(1);
+    expect(savedTable().buttons.A[0], 'A`s first key is K in storage').toBe('KeyK');
+    expect(savedTable(), 'and nothing else changed').toEqual(
+      tableWith({ A: ['KeyK', 'NumpadEnter'] }),
+    );
+
+    // No reload: in the Controls frame Enter is dead and K is A.
+    const enter = press('Enter');
+    expect(enter.defaultPrevented, 'Enter is no longer A: it is not consumed').toBe(false);
+    expect(capturing(), 'and starts no capture').toBe(false);
+    const kA = press('KeyK');
+    expect(kA.defaultPrevented, 'K is A now').toBe(true);
+    expect(capturing(), 'K on the slot starts a capture').toBe(true);
+    press('KeyK'); // the slot's own key: cancel
+    expect(capturing(), 'the slot`s own key cancels').toBe(false);
+    expect(controlsFeedback()).toBe(i18nT('controls.cancelled'));
+
+    // No reload: in the main menu K picks the entry under the cursor and Enter does not.
+    press('Escape');
+    expect(stackNames(), 'Start closed everything').toEqual(['world']);
+    openMenuOnSocial();
+    const menuEnter = press('Enter');
+    expect(menuEnter.defaultPrevented, 'Enter is not consumed in the menu').toBe(false);
+    expect(menuTitle(), 'Enter picks nothing: the menu stays on its root').toBe(
+      i18nT('menu.title'),
+    );
+    const menuK = press('KeyK');
+    expect(menuK.defaultPrevented, 'K is consumed as A').toBe(true);
+    expect(menuTitle(), 'K picked Social').toBe(i18nT('menu.social.title'));
+    expect(H.sends, 'nothing walked').toHaveLength(0);
+  });
+
+  it('CTL12B-2-RELOAD: after remapping A to K through the screen, a fresh boot over the storage that page wrote confirms with K and not with Enter', async () => {
+    // LEGACY REPLACED (the Red): no Controls screen to remap from.
+    // WRONG IMPL KILLED: a screen that writes a shape boot cannot read (a missing `v: 1`, the
+    // buttons under another key: the reload falls back to the defaults and Enter picks again), a
+    // save to another storage key, a save that only happens on close (never reached here: the page
+    // is torn down with the frame open), and a boot that ignores the saved table.
+    await bootReady();
+    server(1000);
+    openControls();
+    startCapture('A_0');
+    press('KeyK', { key: 'k' });
+    expect(savedTable().buttons.A, 'precondition: the screen saved A := K').toEqual([
+      'KeyK',
+      'NumpadEnter',
+    ]);
+
+    teardown({ keepStorage: true }); // the page goes away; its storage stays
+    await bootReady({ keepStorage: true });
+    expect(savedRaw(), 'precondition: the reload kept the saved table').not.toBeNull();
+    server(1000);
+    openMenuOnSocial();
+    const enter = press('Enter');
+    expect(enter.defaultPrevented, 'after the reload Enter is not A').toBe(false);
+    expect(menuTitle(), 'Enter picks nothing').toBe(i18nT('menu.title'));
+    const k = press('KeyK');
+    expect(k.defaultPrevented, 'K is A').toBe(true);
+    expect(menuTitle(), 'K picks Social').toBe(i18nT('menu.social.title'));
+  });
+
+  it('CTL12B-2-KEYCAP: after the live remap the A keycap shown is K: the Controls Primary cell reads K, and on the next frame the world chip in front of an NPC reads the interact.chip text with keycap K (it read Enter before), and K is the key that talks', async () => {
+    // LEGACY REPLACED (the Red): no Controls screen; the keycap followed the table read at boot.
+    // WRONG IMPL KILLED: a chip whose keycap is read from a table captured at boot (it keeps
+    // showing Enter after the remap until a reload), a chip memoised past the table change (the
+    // text key never changes), a keycap read from the DEFAULT table, a chip that shows K while A
+    // is still Enter (the talk below would come from Enter), and a remap that repaints the cell but
+    // not the hint.
+    await bootReady();
+    faceNpcRule();
+    server(1000);
+    seedNpc(1010);
+    frame(1020);
+    const talk = i18nT('interact.verb.talk');
+    expect(visibleNow('interact-prompt'), 'precondition: the chip shows in front of the NPC').toBe(
+      true,
+    );
+    expect(promptText(), 'precondition: the chip names the default A keycap').toBe(
+      tf('interact.chip', { key: glyph('Enter'), verb: talk, name: NPC_NAME }),
+    );
+
+    openControls();
+    startCapture('A_0');
+    press('KeyK', { key: 'k' });
+    expect(cellText('A_0'), 'the Controls row`s Primary cell reads K').toBe(
+      primaryText(ROW_A, 'K'),
+    );
+    press('Escape');
+    expect(stackNames(), 'Start closed everything').toEqual(['world']);
+    frame(pressAt);
+    expect(visibleNow('interact-prompt'), 'the chip is back at the world').toBe(true);
+    expect(promptText(), 'the next frame`s chip shows the new keycap').toBe(
+      tf('interact.chip', { key: 'K', verb: talk, name: NPC_NAME }),
+    );
+
+    // The keycap is the key that acts: Enter talks to nobody, K talks to the NPC.
+    const enter = press('Enter');
+    expect(enter.defaultPrevented, 'Enter is not A at the world').toBe(false);
+    expect(
+      H.calls.filter((c) => c.name === 'talk'),
+      'Enter sent no talk',
+    ).toEqual([]);
+    press('KeyK');
+    expect(
+      H.calls.filter((c) => c.name === 'talk'),
+      'K talks to the faced NPC',
+    ).toEqual([{ name: 'talk', args: { npcEntityId: NPC_ENTITY } }]);
+  });
+
+  it('CTL12B-2-CAPTURE-ESCAPE: while the A row`s Alt slot captures, Escape is CAPTURED, not Start: prevented, nothing closes, A`s Alt becomes Escape and Start`s Primary the displaced Numpad Enter, live; Start`s remaining key M then closes everything', async () => {
+    // LEGACY REPLACED (the Red): no Controls screen; Escape was always Start (routed in the capture
+    // phase before every view), so it could never be bound.
+    // WRONG IMPL KILLED: a capture intercept placed after the Escape-as-Start / typing branches
+    // (Escape closes the frame and the menu mid-capture), a capture-phase Escape listener that
+    // bypasses the intercept, a swap that drops the displaced key (Start keeps only M) or puts it
+    // on the wrong slot, a swap that is saved but not applied (Numpad Enter does not open the
+    // menu), a swap line that names the wrong rows, and an Escape that is captured but not
+    // prevented.
+    await bootReady();
+    server(1000);
+    openControls();
+    startCapture('A_1');
+    expect(captureText(), 'precondition: the A row is capturing').toBe(capturePrompt(ROW_A));
+
+    const esc = press('Escape', { key: 'Escape' });
+    expect(esc.defaultPrevented, 'the captured Escape is consumed').toBe(true);
+    expect(stackNames(), 'Escape was captured, not Start: nothing closed').toEqual([
+      ...CONTROLS_STACK,
+    ]);
+    expect(visibleNow('controls-overlay'), 'the Controls frame is still shown').toBe(true);
+    expect(menuShown(), 'and the menu beneath it').toBe(true);
+    expect(capturing(), 'the swap ended the capture').toBe(false);
+    expect(
+      savedTable(),
+      'A`s Alt is Escape, Start`s Primary is the displaced Numpad Enter',
+    ).toEqual(tableWith({ A: ['Enter', 'Escape'], Start: ['NumpadEnter', 'KeyM'] }));
+    expect(cellText('A_1')).toBe(altText(ROW_A, glyph('Escape')));
+    expect(cellText('Start_0')).toBe(primaryText(buttonRow('Start'), glyph('NumpadEnter')));
+    expect(controlsFeedback(), 'the swap line names both rows').toBe(
+      outcomeText(
+        captureKey(DEFAULT_BINDINGS, { row: ROW_A, slot: 1 }, { code: 'Escape', key: 'Escape' }),
+      ),
+    );
+
+    const m = press('KeyM');
+    expect(m.defaultPrevented, 'M is still Start').toBe(true);
+    expect(stackNames(), 'Start`s remaining key closes everything').toEqual(['world']);
+    press('NumpadEnter');
+    expect(stackNames(), 'live: Start`s new Primary, Numpad Enter, opens the menu').toEqual([
+      'world',
+      'menuView',
+    ]);
+    press('KeyM');
+    expect(stackNames()).toEqual(['world']);
+  });
+
+  it('pressing the capturing slot`s own key cancels: the cancelled line, the table and the storage untouched, and A still on Enter', async () => {
+    // WRONG IMPL KILLED: a capture that binds the slot's own key again (a save of an unchanged
+    // table), one that ignores it and keeps waiting, a cancel that is also routed as A (it would
+    // start the next capture at once), a cancel line that is the bound line, and a cancel that is
+    // not prevented.
+    await bootReady();
+    server(1000);
+    openControls();
+    startCapture('A_0');
+    const again = press('Enter');
+    expect(again.defaultPrevented, 'the captured key is consumed').toBe(true);
+    expect(capturing(), 'the slot`s own key ends the capture').toBe(false);
+    expect(controlsFeedback(), 'with the cancelled line').toBe(i18nT('controls.cancelled'));
+    expect(savedRaw(), 'nothing is saved').toBeNull();
+    expect(cellText('A_0'), 'the slot still shows Enter').toBe(primaryText(ROW_A, glyph('Enter')));
+    expect(stackNames()).toEqual([...CONTROLS_STACK]);
+    press('Enter');
+    expect(capturing(), 'Enter is still A: it starts the capture again').toBe(true);
+  });
+
+  it('Tab while capturing is refused with the reserved reason, is NOT prevented, and the capture keeps waiting: the next K binds', async () => {
+    // WRONG IMPL KILLED: a reserved key that ends the capture, one that is bound (Tab would be a
+    // game key and keyboard users lose focus movement), one that is prevented (the browser's focus
+    // move is swallowed), a refusal without its reason, and a capture that stops listening after
+    // a refusal.
+    await bootReady();
+    server(1000);
+    openControls();
+    startCapture('A_0');
+    const tab = press('Tab', { key: 'Tab' });
+    expect(tab.defaultPrevented, 'a reserved key stays the browser`s').toBe(false);
+    expect(controlsFeedback(), 'the reserved reason').toBe(i18nT('controls.refused.reserved'));
+    expect(capturing(), 'the capture keeps waiting').toBe(true);
+    expect(captureText(), 'for the same row').toBe(capturePrompt(ROW_A));
+    expect(savedRaw(), 'nothing is saved').toBeNull();
+
+    const k = press('KeyK', { key: 'k' });
+    expect(k.defaultPrevented).toBe(true);
+    expect(capturing(), 'the next key binds').toBe(false);
+    expect(controlsFeedback()).toBe(i18nT('controls.bound'));
+    expect(savedTable().buttons.A[0]).toBe('KeyK');
+  });
+
+  it('a capture that would empty a protected button is refused with its reason, changes nothing, keeps capturing (Backspace is not B there), and the row`s own key then cancels', async () => {
+    // WRONG IMPL KILLED: a protected refusal that still saves or applies the half-swap (B would be
+    // left with no key), one that ends the capture, one whose Backspace is routed as B (the frame
+    // pops mid-capture), and a refusal shown with the reserved reason.
+    await bootReady();
+    server(1000);
+    const rowX = buttonRow('X');
+    // Fixture: X's Alt slot is empty and Backspace is B's only key, so the swap would empty B.
+    expect(
+      captureKey(DEFAULT_BINDINGS, { row: rowX, slot: 1 }, { code: 'Backspace', key: '' }),
+      'fixture: this press is a protected refusal',
+    ).toEqual({ kind: 'refused', reason: 'protected' });
+    openControls();
+    startCapture('X_1');
+    expect(captureText(), 'precondition: the X row is capturing').toBe(capturePrompt(rowX));
+
+    const back = press('Backspace');
+    expect(back.defaultPrevented, 'a refused (not reserved) key is still consumed').toBe(true);
+    expect(controlsFeedback(), 'the protected reason').toBe(i18nT('controls.refused.protected'));
+    expect(capturing(), 'the capture keeps waiting').toBe(true);
+    expect(stackNames(), 'Backspace was captured, not B: nothing closed').toEqual([
+      ...CONTROLS_STACK,
+    ]);
+    expect(savedRaw(), 'nothing is saved').toBeNull();
+    expect(cellText('B_0'), 'B keeps Backspace').toBe(
+      primaryText(buttonRow('B'), glyph('Backspace')),
+    );
+
+    press('Space'); // X's own key: cancel
+    expect(capturing(), 'the row`s own key cancels').toBe(false);
+    expect(controlsFeedback()).toBe(i18nT('controls.cancelled'));
+    press('Backspace');
+    expect(stackNames(), 'B still pops Controls back to the menu').toEqual(['world', 'menuView']);
+  });
+
+  it('an OS key-repeat of the Enter that started the capture neither cancels nor binds; the capture keeps waiting for a fresh press', async () => {
+    // WRONG IMPL KILLED: a capture intercept placed ahead of the OS-repeat branch (the held Enter's
+    // first repeat, 30 ms after the press, is "the slot's own key" and cancels the capture before
+    // the player can let go), and one that binds a repeat.
+    await bootReady();
+    server(1000);
+    openControls();
+    controlsMoveTo('A_0');
+    fire('keydown', 'Enter', pressAt); // held: no keyup yet
+    expect(capturing(), 'precondition: the press started the capture').toBe(true);
+    fire('keydown', 'Enter', pressAt + 30, { repeat: true });
+    fire('keydown', 'Enter', pressAt + 60, { repeat: true });
+    expect(capturing(), 'the OS repeats did not end the capture').toBe(true);
+    expect(controlsFeedback(), 'and wrote no outcome line').toBe('');
+    expect(savedRaw(), 'and saved nothing').toBeNull();
+    fire('keyup', 'Enter', pressAt + 90);
+    pressAt += 200;
+
+    press('KeyK', { key: 'k' });
+    expect(capturing()).toBe(false);
+    expect(savedTable().buttons.A[0], 'the fresh press binds').toBe('KeyK');
+  });
+
+  it('Clear on an accelerator row (Shortcuts, reached by RB) unbinds it at once: the cleared line, an empty slot, [] in storage, and back at the world its key opens nothing while J still does', async () => {
+    // WRONG IMPL KILLED: a Clear that is saved but not applied (I still opens the Bag), one that is
+    // applied but not saved, one that clears the wrong row or every row (J is the control), a Clear
+    // that starts a capture instead, a cleared line naming the wrong row, and an RB that does not
+    // switch to Shortcuts.
+    await bootReady();
+    server(1000);
+    openControls();
+    const rb = press('KeyE');
+    expect(rb.defaultPrevented, 'RB is consumed by the frame').toBe(true);
+    expect(byId('controls-tab-shortcuts').getAttribute('aria-selected'), 'RB: Shortcuts').toBe(
+      'true',
+    );
+    expect(cellKeys(), 'every accelerator row has Primary, Alt and Clear').toEqual([
+      ...SHORTCUT_CELLS,
+    ]);
+    controlsMoveTo('I_clear');
+    const clear = press('Enter');
+    expect(clear.defaultPrevented, 'A on Clear is consumed').toBe(true);
+    expect(capturing(), 'Clear starts no capture').toBe(false);
+    const rowI: ControlsRow = { kind: 'accel', id: 'I' };
+    expect(controlsFeedback(), 'the cleared line names the row').toBe(
+      tf('controls.cleared', { label: rowLabel(rowI) }),
+    );
+    expect(cellText('I_0'), 'the Primary slot is empty now').toBe(
+      primaryText(rowI, keycapOf(undefined)),
+    );
+    expect(
+      (JSON.parse(savedRaw() ?? 'null') as { accels?: { I?: unknown } }).accels?.I,
+      'storage holds [] for the row',
+    ).toEqual([]);
+    expect(savedTable(), 'and nothing else changed').toEqual(tableWith({}, { I: [] }));
+
+    press('Escape');
+    expect(stackNames(), 'Start closed everything').toEqual(['world']);
+    const i = press('KeyI');
+    expect(i.defaultPrevented, 'the cleared key is not consumed').toBe(false);
+    expect(stackNames(), 'and opens no Bag').toEqual(['world']);
+    const j = press('KeyJ');
+    expect(j.defaultPrevented, 'control: J is still an accelerator').toBe(true);
+    expect(stackNames(), 'control: J opens the Journal').toEqual([
+      'world',
+      'menuView',
+      'questLogView',
+    ]);
+  });
+
+  it('Reset all asks Yes / No with the cursor on No: No changes nothing; Yes restores the defaults live and in storage', async () => {
+    // WRONG IMPL KILLED: a confirm that defaults to Yes (one stray A wipes a custom table), a No
+    // that resets anyway, a Yes that saves the defaults but leaves the live table (K still A,
+    // Enter dead), one that applies but does not save, a reset that leaves the question up, and a
+    // Reset all that resets with no question at all.
+    await bootReady();
+    server(1000);
+    openControls();
+    startCapture('A_0');
+    press('KeyK', { key: 'k' });
+    expect(savedTable().buttons.A[0], 'precondition: A := K').toBe('KeyK');
+
+    controlsMoveTo('reset');
+    expect(cellText('reset')).toBe(i18nT('controls.resetAll'));
+    press('KeyK'); // A
+    expect(visibleNow('controls-question'), 'Reset all asks').toBe(true);
+    expect(byId('controls-question').textContent).toBe(i18nT('controls.reset.question'));
+    expect(cellKeys(), 'the answers are Yes and No').toEqual(['yes', 'no']);
+    expect(controlsActive(), 'the cursor starts on No').toBe('no');
+    expect(savedTable().buttons.A[0], 'asking changes nothing').toBe('KeyK');
+
+    press('KeyK'); // A on No
+    expect(visibleNow('controls-question'), 'No closes the question').toBe(false);
+    expect(savedTable(), 'No changes nothing').toEqual(tableWith({ A: ['KeyK', 'NumpadEnter'] }));
+    expect(cellText('A_0'), 'the slots are back, A still on K').toBe(primaryText(ROW_A, 'K'));
+    expect(controlsActive(), 'the cursor is back on Reset all').toBe('reset');
+
+    press('KeyK'); // ask again
+    expect(controlsActive(), 'again on No').toBe('no');
+    press('ArrowUp');
+    expect(controlsActive(), 'Up moves to Yes').toBe('yes');
+    press('KeyK'); // A on Yes
+    expect(visibleNow('controls-question'), 'Yes closes the question').toBe(false);
+    expect(controlsFeedback(), 'the reset line').toBe(i18nT('controls.reset.done'));
+    expect(savedTable(), 'storage holds the defaults').toEqual(tableWith({}));
+    expect(cellText('A_0'), 'A shows Enter again').toBe(primaryText(ROW_A, glyph('Enter')));
+
+    const k = press('KeyK');
+    expect(k.defaultPrevented, 'live: K is no longer A').toBe(false);
+    expect(visibleNow('controls-question'), 'K asks nothing').toBe(false);
+    const enter = press('Enter');
+    expect(enter.defaultPrevented, 'live: Enter is A again').toBe(true);
+    expect(visibleNow('controls-question'), 'Enter on Reset all asks again').toBe(true);
+  });
+
+  it('a Controls frame closed mid-capture by a server conversation leaves no capture behind: no key is bound meanwhile, and reopened it is browsing and keys route normally', async () => {
+    // WRONG IMPL KILLED: a capture flag kept by the view or the adapter across a close (the next
+    // key, at the dialogue or in the reopened frame, is silently bound and saved), a capture
+    // intercept that does not check the Controls frame is on top, a reopened frame that shows the
+    // stale prompt or feedback, and a close that leaves the frame on the stack.
+    await bootReady();
+    server(1000);
+    seedNpc(1010);
+    openControls();
+    startCapture('A_0');
+
+    startConversation(pressAt);
+    expect(stackNames(), 'the conversation closed Controls and the menu').toEqual([
+      'world',
+      'dialogueView',
+    ]);
+    expect(visibleNow('controls-overlay'), 'the Controls frame is hidden').toBe(false);
+    const kAtDialogue = press('KeyK', { key: 'k' });
+    expect(kAtDialogue.defaultPrevented, 'K at the dialogue is not taken').toBe(false);
+    expect(savedRaw(), 'and binds nothing').toBeNull();
+    endConversation(pressAt);
+    expect(stackNames(), 'precondition: the conversation is over').toEqual(['world']);
+
+    openControls();
+    expect(capturing(), 'reopened, Controls is browsing').toBe(false);
+    expect(visibleNow('controls-cancel-btn'), 'with no Cancel chip').toBe(false);
+    expect(controlsFeedback(), 'and no stale line').toBe('');
+    const before = controlsActive();
+    const downKey = press('ArrowDown');
+    expect(downKey.defaultPrevented, 'the D-pad is routed').toBe(true);
+    expect(controlsActive(), 'and moves the cursor').not.toBe(before);
+    expect(capturing()).toBe(false);
+    const k = press('KeyK', { key: 'k' });
+    expect(k.defaultPrevented, 'an unbound K is not taken').toBe(false);
+    expect(savedRaw(), 'nothing was bound').toBeNull();
+    press('Enter');
+    expect(capturing(), 'A on a slot starts a fresh capture').toBe(true);
+  });
+
+  it('a save that throws still applies the table live, and the feedback line carries the save failure', async () => {
+    // WRONG IMPL KILLED: a remap applied only when the save succeeds (a full or denied storage
+    // makes remapping impossible), a save exception that escapes the key listener (the capture
+    // never ends), and a failure that is silent (the player believes it was saved).
+    await bootReady();
+    server(1000);
+    const realSet = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+      this: Storage,
+      key: string,
+      value: string,
+    ): void {
+      if (key === STORAGE_KEY) throw new Error('QuotaExceededError: storage is full');
+      realSet.call(this, key, value);
+    });
+    openControls();
+    startCapture('A_0');
+    const k = press('KeyK', { key: 'k' });
+    expect(k.defaultPrevented).toBe(true);
+    expect(capturing(), 'the capture ended').toBe(false);
+    expect(controlsFeedback(), 'the outcome line').toContain(i18nT('controls.bound'));
+    expect(controlsFeedback(), 'carries the save failure').toContain(i18nT('controls.saveFailed'));
+    expect(savedRaw(), 'nothing reached storage').toBeNull();
+    expect(cellText('A_0'), 'the slot shows K').toBe(primaryText(ROW_A, 'K'));
+
+    press('Escape');
+    openMenuOnSocial();
+    const enter = press('Enter');
+    expect(enter.defaultPrevented, 'applied live: Enter is not A').toBe(false);
+    expect(menuTitle()).toBe(i18nT('menu.title'));
+    press('KeyK');
+    expect(menuTitle(), 'applied live: K picks Social').toBe(i18nT('menu.social.title'));
+  });
+
+  it('typing mode is literal: with A bound to K, Enter in a focused text field inside the menu is prevented and commits as A (it picks Social), while K in that field is typed: neither prevented nor routed', async () => {
+    // WRONG IMPL KILLED: a typing mode that routes Enter through the table (with A := K a nickname
+    // or name could never be committed by Enter), one that lets the field's own letter K reach the
+    // router as A (typing "k" picks a menu entry), and a commit that is not prevented.
+    await bootReady({ stored: storedTable((raw) => (raw.buttons.A = ['KeyK'])) });
+    server(1000);
+    openMenuOnSocial();
+    const field = document.createElement('input');
+    field.type = 'text';
+    byId('menu-overlay').appendChild(field);
+    field.focus();
+    expect(document.activeElement, 'precondition: the field has focus').toBe(field);
+
+    const k = press('KeyK', { key: 'k' }, field);
+    expect(k.defaultPrevented, 'K is typed: the field owns it').toBe(false);
+    expect(menuTitle(), 'and picks nothing').toBe(i18nT('menu.title'));
+    expect(navActive(), 'nor moves the cursor').toBe('social');
+
+    const enter = press('Enter', { key: 'Enter' }, field);
+    expect(enter.defaultPrevented, 'Enter in a field commits').toBe(true);
+    expect(menuTitle(), 'commit = A: it picked Social').toBe(i18nT('menu.social.title'));
+  });
+
+  it('the IME guard runs before F8 / F9: with Start on M and F9 on Escape, an Escape that cancels a composition in the focused Name field downloads nothing and is not prevented; the same Escape outside a field still downloads', async () => {
+    // WRONG IMPL KILLED: an F8 / F9 accelerator branch placed ahead of the IME guard (cancelling a
+    // composition downloads a bug bundle and drops the draft), an IME Escape that is prevented, and
+    // one that stops typing or closes the frame.
+    const stored = storedTable((raw) => {
+      raw.buttons.Start = ['KeyM'];
+      raw.accels.F9 = ['Escape'];
+    });
+    await bootReady({ stored });
+    const downloads = recordDownloads();
+    server(1000);
+    press('KeyN');
+    expect(stackNames(), 'precondition: the Name screen is open').toEqual([
+      'world',
+      'menuView',
+      'renameView',
+    ]);
+    const input = byId('rename-input') as HTMLInputElement;
+    input.focus();
+    expect(document.activeElement, 'precondition: the Name field has focus').toBe(input);
+
+    const ime = press('Escape', { key: 'Escape', isComposing: true, keyCode: 229 }, input);
+    expect(ime.defaultPrevented, 'the IME`s Escape is left to the IME').toBe(false);
+    expect(downloads.urls, 'no bug bundle is built').toHaveLength(0);
+    expect(downloads.clicks, 'and none downloaded').toHaveLength(0);
+    expect(stackNames(), 'nothing closed').toEqual(['world', 'menuView', 'renameView']);
+    expect(document.activeElement, 'typing goes on').toBe(input);
+
+    // Control: Escape IS the F9 key here once it is neither an IME's nor a field's.
+    press('Escape', { key: 'Escape' }, input); // stops typing: focus leaves the field
+    expect(document.activeElement, 'precondition: typing stopped').not.toBe(input);
+    const f9 = press('Escape', { key: 'Escape' });
+    expect(f9.defaultPrevented, 'control: the F9 key is consumed').toBe(true);
+    expect(downloads.urls, 'control: and downloads one bundle').toHaveLength(1);
   });
 });

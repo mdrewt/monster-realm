@@ -1705,6 +1705,12 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     // was, and the closing anti-vacuity check now lists `social` in place of the three panels.
     // ctl-10a: T retired — the heal frame opens through A (Enter) with the stubbed wasm interact
     // rule naming the healer; its opener below was KeyT. Nothing else in this case changes.
+    // INTENTIONAL CHANGE (ctl-12b, CTL12B.1): the new `controlsView` frame id joins OVERLAY_IDS, so
+    // it must lend ITS OWN view too (the closing anti-vacuity check lists every frame id). It is a
+    // constructed REAL view (ui/controlsView.ts builds its shell, as privacyView does; no stand-in
+    // replaces it here), opened by its one real path: Start (M), the cursor to Options, A, Down
+    // onto Controls, A, so it opens over the main menu. It joins the real-view openers below and
+    // the `real` class table; every other frame id's case is as it was.
     await bootReady();
     useNpcRule(HEALER_ENTITY);
     server(1000);
@@ -1717,6 +1723,7 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
       leaderboardView: (await import('./ui/leaderboardView')).LeaderboardView,
       helpView: (await import('./ui/helpView')).HelpView,
       menuView: (await import('./ui/menuView')).MenuView,
+      controlsView: (await import('./ui/controlsView')).ControlsView,
     };
     const paints: Array<{ id: string; view: unknown }> = [];
     /** The Social frame's three panels (ctl-8s): never frames of their own. HARD-CODED. */
@@ -1801,6 +1808,22 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
           opts.store.removeConversation(H.identity);
           server(at);
         },
+      },
+      // ctl-12b: Options > Controls, through the real menu (the menu's own nav drives the cursor:
+      // its adapter here is a painting stand-in without `nav`, so the router's menu path does).
+      {
+        id: 'controlsView',
+        beneath: ['menuView'],
+        open: (at) => {
+          press('KeyM', at);
+          for (let i = 1; i <= 6 && menuCursorNow() !== 'options'; i += 1) {
+            press('ArrowDown', at + i);
+          }
+          press('Enter', at + 7);
+          if (menuCursorNow() !== 'controls') press('ArrowDown', at + 8);
+          press('Enter', at + 9);
+        },
+        close: (at) => void press('Escape', at),
       },
     ];
     for (const o of openers) {
