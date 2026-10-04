@@ -31,12 +31,36 @@ const FIELD_RELEASED_CODES: ReadonlySet<string> = new Set(['Escape', 'Enter', 'N
 // A native button or link activates on these.
 const ACTIVATION_CODES: ReadonlySet<string> = new Set(['Space', 'Enter', 'NumpadEnter']);
 
+/** The game screen as ownership reads it: only whether it holds the focused element. */
+export interface GameScreen {
+  contains(node: unknown): boolean;
+}
+
+/**
+ * Whether `target` is focus outside the game screen (design §3, CTL11B.1): an element that is not
+ * `<body>` or `<html>` and that `screen` does not hold. With no screen (a shell-less page) nothing
+ * is outside.
+ */
+export function outsideGameScreen(target: unknown, screen: GameScreen | null): boolean {
+  if (screen === null || typeof target !== 'object' || target === null) return false;
+  const { tagName } = target as { tagName?: unknown };
+  if (typeof tagName !== 'string') return false;
+  const tag = tagName.toUpperCase();
+  return tag !== 'BODY' && tag !== 'HTML' && !screen.contains(target);
+}
+
 /**
  * Whether `target`'s native behaviour owns this key (design §3 "Native-key ownership").
  * Reads `tagName` / `isContentEditable` structurally, so it needs no DOM: the window, the
- * body and the canvas (or a non-element) all leave the key to the router.
+ * body and the canvas (or a non-element) all leave the key to the router. Focus outside the
+ * game screen owns every key.
  */
-export function ownership(target: unknown, e: OwnershipEvent): Owner {
+export function ownership(
+  target: unknown,
+  e: OwnershipEvent,
+  screen: GameScreen | null = null,
+): Owner {
+  if (outsideGameScreen(target, screen)) return 'target';
   if (e.isComposing === true || e.keyCode === 229) return 'target';
   if (typeof target !== 'object' || target === null) return 'router';
   const { tagName, isContentEditable } = target as {

@@ -10,7 +10,7 @@ import {
 } from '@playwright/test';
 import { t, tf } from '../src/ui/i18n/resolver';
 import { navItemId } from '../src/ui/navRender';
-import { closeAll, pressButton } from './controls';
+import { closeAll, pressButton, readWorld, safeTile, stepTile, walkTo } from './controls';
 
 // menu-flow.spec.ts — the operator's required menu flow, played with the KEYBOARD ONLY
 // (ctl-11b, CTL11B.3; design §5 "The required flow, press by press").
@@ -25,7 +25,7 @@ import { closeAll, pressButton } from './controls';
 //   A, Down x5, A          the monster's sheet, down to Move, Move: "Moved to storage"
 //   RB, A, Down x5, A      the Storage tab, the sheet, Move: "Moved to party"
 //   Start                  everything closes, back to the world
-//   Right                  the next press WALKS (the snapshot position changes)
+//   Up (W)                 the next press WALKS (the snapshot position moves one tile North)
 //
 // Every press goes through controls.ts `pressButton` (the virtual button, never a key name). Every
 // step asserts what a player sees (the menu cursor, the shown frames, the frame's own text and
@@ -47,20 +47,24 @@ import { closeAll, pressButton } from './controls';
 //    breadcrumb only inside its groups (Social, Profile, Options). The step asserts that title and
 //    that the menu is still open underneath instead.
 //  - THE BAG OPENS ON ITS FIRST POCKET (Bait, the lowest item id), so RB reaches Food as designed.
-//  - THE LAST PRESS IS RIGHT, NOT UP. The design says "the next W walks". At the zone-0 spawn
-//    (1,1) the tile to the north is a wall (a bump changes no position), and the east lane
-//    (1,1) to (6,1) is the suite's measured grass-free corridor (wallet-balance.spec.ts WORLD
-//    FACTS), so the walk is asserted on a step East. It is still the first D-pad press after the
-//    menu closed, which is the criterion ("the final W SHALL walk").
+//  - A SETUP WALK BEFORE THE FLOW. The final press is Up (W, North), as the criterion says. At the
+//    zone-0 spawn (1,1) the tile to the north is a wall (a bump changes no position), so before
+//    the first Start the character walks (controls.ts `walkTo`, a grass-free, warp-free
+//    `safePath` over the zone map the page reports) to (6,2): the lane x=6 is the suite's
+//    measured clean northward lane (wallet-balance.spec.ts WORLD FACTS), (6,2) and its north
+//    neighbour (6,1) are both asserted `safeTile` (walkable, not grass, not a warp) from the live
+//    map, and no NPC wanders there (elder_oak's disc is Manhattan <= 2 of (5,5): its nearest tile
+//    to the lane is (6,4)). The walk happens before any menu press, so the flow itself is untouched.
 //
+
 // SEEDING (owner SQL, the evolution.spec.ts / battle-dpad.spec.ts precedent): the starter has no
 // items, so one stack of Power Root (item id 2, a trainable food: game-core content/items) is
-// INSERTed into the private `inventory` table for the page's identity. INSERT is positional
-// `(inv_id, owner_identity, item_id, count)`, `0` for the auto_inc key, an `0x<64 hex>` identity
-// literal (measured: spacetime 2.8.1). The query is charset-validated and run WITHOUT a shell.
+// INSERTed into the private `inventory` table for the page's identity. The INSERT names its columns
+// `(inv_id, owner_identity, item_id, count)` (the column list is required by the CLI; precedent
+// monster-privacy.spec.ts), `0` for the auto_inc key, an `0x<64 hex>` identity literal. The query is charset-validated and run WITHOUT a shell.
 //
-// DETERMINISM. No battle, no encounter, no walk before the final step; the only server work is the
-// seed, one train, and two party-slot moves. One browser, one context, one identity; afterAll
+// DETERMINISM. No battle and no encounter (the setup walk and the final step only enter safe tiles);
+// the only server work is the seed, one train, and two party-slot moves. One browser, one context, one identity; afterAll
 // closes the browser so the server's on_disconnect deletes the player row before golden.spec.
 
 const FOOD_ITEM_ID = 2; // Power Root: `train_stat: Some(Attack)`, content/items/000-core.ron
@@ -221,7 +225,7 @@ test.describe
       const hex = normId(start.identity);
       expect(/^[0-9a-f]{64}$/.test(hex), 'the identity is 64 hex digits').toBe(true);
       ownerSql(
-        `INSERT INTO inventory VALUES (0, 0x${hex}, ${FOOD_ITEM_ID}, ${FOOD_SEED})`,
+        `INSERT INTO inventory (inv_id, owner_identity, item_id, count) VALUES (0, 0x${hex}, ${FOOD_ITEM_ID}, ${FOOD_SEED})`,
         'seed the food stack',
       );
       await page.waitForFunction(
@@ -236,6 +240,23 @@ test.describe
       await closeAll(page); // never presses at a base: a no-op unless a stale frame is up
       expect(await stackNames(page), 'precondition: the bare world').toEqual(['world']);
       expect(await shown(page, '#menu-overlay'), 'precondition: no menu').toBe(false);
+
+      // ---- setup walk (before any menu press): a post whose NORTH neighbour is walkable ----------
+      // The spawn's north is a wall, and the flow's last press is Up. (6,2) sits on the clean x=6
+      // lane; both it and (6,1) are asserted safe (walkable, no grass, no warp) from the live map.
+      const POST: Tile = { x: 6, y: 2 };
+      const world = await readWorld(page);
+      expect(safeTile(world.map, POST), 'the setup post is a safe tile').toBe(true);
+      expect(
+        safeTile(world.map, stepTile(POST, 'North')),
+        'and so is the tile north of it, which the final Up must walk onto',
+      ).toBe(true);
+      expect(
+        await walkTo(page, POST, 'menu-flow setup walk'),
+        'the setup walk meets no battle',
+      ).toBe('arrived');
+      expect((await snap(page)).ownAuthTile, 'the character stands on the post').toEqual(POST);
+      expect(await stackNames(page), 'the setup walk opened nothing').toEqual(['world']);
 
       // ---- 1. Start: the main menu opens on Monsters -----------------------------------------
       await pressButton(page, 'Start');
@@ -442,7 +463,7 @@ test.describe
 
       // ---- 10. Start: everything closes, back to the world -----------------------------------
       const before = (await snap(page)).ownAuthTile;
-      expect(before, 'the character has an authoritative tile').not.toBeNull();
+      expect(before, 'the character still stands on the setup post').toEqual(POST);
       await pressButton(page, 'Start');
       await expect
         .poll(() => stackNames(page), { message: 'Start closes every frame' })
@@ -452,13 +473,13 @@ test.describe
       expect((await snap(page)).navActive, 'a closed menu has no active entry').toBeNull();
 
       // ---- 11. the next D-pad press walks -----------------------------------------------------
-      await pressButton(page, 'Right');
+      await pressButton(page, 'Up'); // W: the final press of the flow
       await expect
         .poll(async () => (await snap(page)).ownAuthTile, {
-          message: 'the first D-pad press after the menu closed walks the character',
+          message: 'the first D-pad press after the menu closed walks the character one tile North',
           timeout: 8_000,
         })
-        .toEqual({ x: (before as Tile).x + 1, y: (before as Tile).y });
+        .toEqual(stepTile(POST, 'North'));
       expect(await stackNames(page), 'still the bare world').toEqual(['world']);
     });
   });

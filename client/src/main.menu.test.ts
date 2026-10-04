@@ -614,7 +614,9 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     // repeats of keys nav never consumed.
     await bootAtMenu(2);
     const button = document.createElement('button');
-    document.body.appendChild(button);
+    // ctl-11b: inside #game-screen, where a child's buttons live; focus on a body-level control
+    // outside it leaves every key to the browser (CTL11B.1).
+    (document.getElementById('game-screen') ?? document.body).appendChild(button);
     button.focus();
 
     fire('keydown', 'Enter', 1400);
