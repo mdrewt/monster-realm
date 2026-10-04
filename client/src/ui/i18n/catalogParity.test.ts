@@ -758,8 +758,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // ui/sessionModel.ts; 21r-b2 adds ui/claimModel.ts and ui/privacyBanner.ts; ctl-5 adds
     // ui/menuModel.ts; ctl-6c adds ui/screens/mainMenuScreen.ts; ctl-12 adds input/glyphs.ts and
     // ui/controlsModel.ts; ctl-12b adds ui/controlsView.ts, while the pure
-    // ui/screens/optionsScreen.ts imports no resolver) is only reachable via real binding
-    // resolution.
+    // ui/screens/optionsScreen.ts imports no resolver; ctl-13 adds ui/hintBar.ts and
+    // ui/hintBarModel.ts) is only reachable via real binding resolution.
     expect(i18nRoster, `resolver-importing roster: ${JSON.stringify(i18nRoster)}`).toEqual([
       'input/glyphs.ts',
       'main.ts',
@@ -776,6 +776,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'ui/evolutionView.ts',
       'ui/healView.ts',
       'ui/helpView.ts',
+      'ui/hintBar.ts',
+      'ui/hintBarModel.ts',
       'ui/leaderboardView.ts',
       'ui/menuModel.ts',
       'ui/privacyBanner.ts',
@@ -823,9 +825,11 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // the Yes / No rows of that confirm (`prompt.yes`, `prompt.no`, via `confirmRowLabel`).
     // ctl-12 (named intentional change, CTL12.5): `key.enter` leaves main.ts — the A keycap now reads
     // `glyph()` (input/glyphs.ts), whose named-key table resolves it.
+    // ctl-13 (named intentional change, CTL13.1/CTL13.3): the Start / Select chip labels leave
+    // main.ts (ui/hintBarModel.ts resolves every chip verb); main.ts gains `chrome.chip.ok` (A's
+    // verb beside a picker), the request sheet's three rows and the two request lines.
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
-      'chrome.chip.help', // ctl-7a: the Select chip label, written into #chip-select at boot
-      'chrome.chip.menu', // ctl-7a: the Start chip label, written into #chip-start at boot
+      'chrome.chip.ok', // ctl-13: the A chip's verb when A would open a picker
       'chrome.rename.updated',
       'chrome.status.bugBundleBlocked',
       'chrome.status.contentStale',
@@ -845,6 +849,11 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'interact.verb.talk',
       'interact.verb.trade', // ctl-10b: the faced player's Trade row
       'menu.disabled.inBattle', // ctl-6c: the dispatch refusal line (CTL6C.3)
+      'notice.request.challenge', // ctl-13: the banner / sheet heading for a challenge
+      'notice.request.trade', // ctl-13: the banner / sheet heading for a trade
+      'notice.sheet.accept', // ctl-13: the request sheet's rows
+      'notice.sheet.decline',
+      'notice.sheet.view',
       'prompt.no', // ctl-10b: the Challenge confirm's No row
       'prompt.yes', // ctl-10b: the Challenge confirm's Yes row
       'raising.feedback.cared',

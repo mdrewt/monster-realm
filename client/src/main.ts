@@ -1833,11 +1833,9 @@ function pushError(source: ErrorSource, raw: unknown): void {
       // The movement breadcrumb is BUNDLE-bound, never OVERLAY-bound. This ring
       // IS the overlay's source (newest 8), so unfiltered the 16 capped breadcrumbs would
       // surface silent rejections (M2 §3) and evict real errors from the visible window.
-      // The toast shows the newest error only (ctl-13); the bundle keeps the whole ring.
       errorOverlayView.render(
         buildErrorOverlayModel(
           errorRing.snapshot().filter((r) => !r.message.startsWith(MOVE_REJECT_PREFIX)),
-          1,
         ),
       );
       if (!errorOverlayView.visible) errorOverlayView.show();
@@ -3468,6 +3466,8 @@ async function main(): Promise<void> {
   // Select chips, whose clicks stay delegated on [data-menu-launcher] / [data-help-launcher] below.
   const hintBarEl = document.getElementById('hint-bar');
   if (hintBarEl !== null) hintBarView = new HintBarView(hintBarEl);
+  // Painted once now, so the bar is never blank before the first frame.
+  hintBarView?.render(hintBar(contextStack, bindings, []), null);
 
   // The on-world interact prompt — a small frame in the frame layer (.mr-frame--prompt:
   // pointer-events:none so it can NEVER shadow the document-level dialogue/shop click delegation;
