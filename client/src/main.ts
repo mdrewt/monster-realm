@@ -34,8 +34,8 @@ import {
   type WasmDirection,
   type WasmMoveInput,
 } from './convert/convert';
-import { accelForCode } from './input/bindings';
 import { browserStorage, loadBindings } from './input/bindingStore';
+import { accelForCode } from './input/bindings';
 import type { ButtonEdge } from './input/buttons';
 import { glyph, learnKey } from './input/glyphs';
 import { isChord, KeyboardSource } from './input/keyboardSource';
