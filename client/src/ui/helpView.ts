@@ -19,7 +19,7 @@
 
 import type { HelpTab, HelpViewModel } from './helpModel';
 import { t } from './i18n/resolver';
-import { renderTabs } from './navRender';
+import { navTabId, renderTabs } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { HelpPaint } from './screens/helpScreen';
 
@@ -48,14 +48,12 @@ export class HelpView {
     const goals = document.getElementById('help-goals');
     if (!goals) throw new Error('help-goals missing');
 
-    this.#strip = document.createElement('div');
+    // Built once: a second construction over the same shell reuses them by id.
+    this.#strip = ensureChild('help-tabs', 'div', () => title);
     this.#strip.className = 'mr-frame-tabstrip';
-    const screen = document.createElement('ul');
-    screen.id = 'help-screen';
-    this.#note = document.createElement('p');
-    this.#note.id = 'help-note';
-    title.after(this.#strip, screen);
-    controls.after(this.#note);
+    this.#strip.setAttribute('aria-labelledby', 'help-title');
+    const screen = ensureChild('help-screen', 'ul', () => this.#strip);
+    this.#note = ensureChild('help-note', 'p', () => controls);
     this.#panels = { screen, controls, goals };
   }
 
@@ -64,8 +62,8 @@ export class HelpView {
   }
 
   show(): void {
-    // Read visibility BEFORE the display write. `show()` is called REPEATEDLY on an
-    // already-open overlay (pvpView.ts is the extreme case, main.ts:1699-1701), and a re-open
+    // Read visibility BEFORE the display write. `show()` may be called on an
+    // already-open overlay (pvpView.ts is the extreme case), and a re-open
     // re-schedules overlayA11y's deferred focus -- which would yank focus back to the initial
     // anchor on every store batch. Only the hidden->visible EDGE opens.
     const wasVisible = this.visible;
@@ -112,8 +110,8 @@ export class HelpView {
     }
   }
 
-  /** Show the active tab: the strip marks it, and only its panel (and, on All controls, the
-   *  note) is not `hidden`. */
+  /** Show the active tab: the strip marks it, and only its panel (named by its tab) and, on All
+   *  controls, the note are not `hidden`. */
   paint(p: HelpPaint): void {
     renderTabs(this.#strip, p.layout, p.nav, {
       frame: FRAME,
@@ -121,7 +119,22 @@ export class HelpView {
     });
     for (const [tab, panel] of Object.entries(this.#panels)) {
       panel.hidden = tab !== p.nav.tab;
+      panel.setAttribute('aria-labelledby', navTabId(FRAME, tab));
     }
     this.#note.hidden = p.nav.tab !== 'controls';
   }
+}
+
+/** The element `id` (a `tag`), created and placed right after `prev()` when the shell lacks it. */
+function ensureChild<K extends keyof HTMLElementTagNameMap>(
+  id: string,
+  tag: K,
+  prev: () => HTMLElement,
+): HTMLElement {
+  const found = document.getElementById(id);
+  if (found !== null) return found;
+  const el = document.createElement(tag);
+  el.id = id;
+  prev().after(el);
+  return el;
 }

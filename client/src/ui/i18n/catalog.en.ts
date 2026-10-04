@@ -277,7 +277,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // the new keys: they work now and are lost on reload. One sentence. ui/controlsView.ts
   'controls.saveFailed': 'Could not save: this lasts until you reload.',
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
-  // index.html:94 (literal removed from index.html; resolved in HelpView show())
+  // index.html #help-title (literal removed from index.html; resolved in HelpView show())
   'chrome.help.title': 'Controls & Goals',
   // @desc: Help tab listing the buttons of the screen Help was opened over. Short (at most 14 characters).
   // ui/helpModel.ts

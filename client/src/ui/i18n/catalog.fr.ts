@@ -301,7 +301,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // the new keys: they work now and are lost on reload. One sentence. ui/controlsView.ts
   'controls.saveFailed': 'Enregistrement impossible : ce réglage dure jusqu’au rechargement.',
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
-  // index.html:94 (resolved in HelpView show())
+  // index.html #help-title (resolved in HelpView show())
   'chrome.help.title': 'Commandes et objectifs',
   // @desc: Help tab listing the buttons of the screen Help was opened over. Short (at most 14 characters).
   // ui/helpModel.ts

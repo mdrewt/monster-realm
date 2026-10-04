@@ -191,6 +191,24 @@ describe('helpScreen (ctl-14, CTL14.1)', () => {
     expect((p.nav as { tab: string }).tab).toBe('goals');
   });
 
+  it('init: every open starts on This screen — an init after an RB step (even handed that stepped state as memory) is not the stepped state, all within this one test', () => {
+    // WRONG IMPL KILLED: a screen that keeps its tab in module state (the second init would open
+    // on All controls); one that opts in to memory and honours `remembered` (a reopened Help would
+    // resume the last tab: the boot test`s "a reopen starts on This screen" at the unit level).
+    const first = fresh();
+    const stepped = press(first, 'RB').state;
+    expect(tabOf(stepped), 'fixture: the RB step moved to All controls').toBe('controls');
+    const second = helpScreen.init(VM);
+    expect(tabOf(second), 'a second init opens on This screen').toBe('screen');
+    expect(second.nav, 'with the opening nav state').toEqual(navInit(HELP_LAYOUT));
+    expect(
+      tabOf(helpScreen.init(VM, stepped)),
+      'handed the stepped state as memory it still opens on This screen',
+    ).toBe('screen');
+    expect(tabOf(fresh()), 'and a third').toBe('screen');
+    expect(helpScreen.remember, 'Help does not opt in to cross-open memory').toBeUndefined();
+  });
+
   it('host: over the shipped table the help frame takes the D-pad, RB paints the lent view onto All controls, B pops and Start pops to the base', () => {
     // WRONG IMPL KILLED: a table entry that is not the screen (nothing paints, RB is `unhandled`);
     // a screen the host cannot drive from the real context fields; a step that paints another

@@ -26,7 +26,9 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WasmMoveInput } from './convert/convert';
 import { DEFAULT_BINDINGS } from './input/bindings';
+import { VBUTTONS } from './input/buttons';
 import type { Connection, ConnectionOptions } from './net/connection';
+import type { StoreBattle, StoreBattleMonster, StoreTradeOffer } from './net/store';
 import { t as i18nT } from './ui/i18n/resolver';
 
 const H = vi.hoisted(() => ({
@@ -619,5 +621,263 @@ describe('main.ts generated Help over the real shell (runtime, ctl-14)', {
     frame();
     expect(helpOpen(), 'B closes Help').toBe(false);
     expect(stackNames(), 'and only Help: the menu stays').toEqual(['world', 'menuView']);
+  }, 120_000);
+});
+
+// --- round 2: the wrong implementations the red-team and the reviewer found ------------------------
+
+const BOB = 'bb'.repeat(32);
+const offerFrom = (from: string, tradeId: bigint, createdAtMs: bigint): StoreTradeOffer => ({
+  tradeId,
+  initiator: from,
+  counterparty: H.identity,
+  initiatorMonsterIds: [],
+  initiatorItems: [],
+  initiatorCurrency: 0n,
+  counterpartyMonsterIds: [],
+  counterpartyItems: [],
+  counterpartyCurrency: 0n,
+  initiatorCards: [],
+  counterpartyCards: [],
+  status: 'Pending',
+  createdAtMs,
+});
+
+const WILD_IDENTITY = '0'.repeat(64);
+const BATTLE_MONSTER: StoreBattleMonster = {
+  speciesId: 1,
+  affinity: 'Neutral',
+  level: 5,
+  currentHp: 20,
+  maxHp: 20,
+  statHp: 20,
+  statAttack: 5,
+  statDefense: 5,
+  statSpeed: 5,
+  statSpDefense: 5,
+  statSpAttack: 5,
+  knownSkillIds: [1],
+  status: null,
+};
+/** A wild battle row for the booted player (main.accel.test.ts's fixture). */
+function battleRow(battleId: bigint): StoreBattle {
+  return {
+    battleId,
+    playerIdentity: H.identity,
+    opponentIdentity: WILD_IDENTITY,
+    outcome: 'Ongoing',
+    turnNumber: 1,
+    sideA: { active: 0, team: [BATTLE_MONSTER] },
+    sideB: { active: 0, team: [BATTLE_MONSTER] },
+    partyMonsterIds: [1n],
+    opponentMonsterIds: [],
+    createdAtMs: 0n,
+    weather: null,
+  };
+}
+
+const controlsActive = (): string | null =>
+  document.querySelector('#controls-rows [aria-selected="true"]')?.getAttribute('data-nav-key') ??
+  null;
+
+/** An in-session remap through the REAL Options > Controls screen: Select's primary slot -> KeyZ,
+ *  then Start pops back to the bare world. */
+function remapSelectToZ(): void {
+  press('Escape');
+  menuTo('options');
+  press('Enter');
+  for (let i = 0; i < 2 && game().navActive !== 'controls'; i += 1) press('ArrowDown');
+  expect(game().navActive, 'precondition: the cursor is on Options > Controls').toBe('controls');
+  press('Enter');
+  expect(stackNames(), 'precondition: Controls opened above the menu').toEqual([
+    'world',
+    'menuView',
+    'controlsView',
+  ]);
+  // The Buttons grid is two columns wide: one ArrowDown per row, down to Select's Primary slot.
+  for (let i = 0; i < VBUTTONS.length + 2 && controlsActive() !== 'Select_0'; i += 1) {
+    press('ArrowDown');
+  }
+  expect(controlsActive(), 'precondition: the cursor is on the Select Primary slot').toBe(
+    'Select_0',
+  );
+  press('Enter'); // A starts the capture
+  press('KeyZ'); // the next key is bound
+  press('Escape'); // Start pops Controls and the menu
+  expect(stackNames(), 'precondition: back on the bare world').toEqual(['world']);
+}
+
+describe('main.ts Help: what a stale or short-cut implementation gets wrong (round 2, ctl-14)', {
+  sequential: true,
+}, () => {
+  afterEach(teardown);
+
+  it('CTL14-1-BOOT-LIVE-REMAP: a Select remap made IN-SESSION through Options > Controls shows on the next open, after Help was already opened and closed once: All controls` Select row reads Z and not R, and This screen`s Select chip reads Z', async () => {
+    // WRONG IMPL KILLED: All controls built from a binding snapshot taken at boot (the saved-table
+    // boot test above cannot see it: only a remap AFTER boot can); a Help rendered only on its
+    // first open (the first open here is the one that would freeze it); and a This-screen chip
+    // keycap read from the boot table.
+    await bootReady();
+    batch();
+    frame();
+    press('KeyR');
+    frame();
+    expect(helpOpen(), 'precondition: the first open (before the remap)').toBe(true);
+    press('KeyR');
+    frame();
+    expect(helpOpen(), 'precondition: closed again').toBe(false);
+
+    remapSelectToZ();
+    press('KeyZ');
+    frame();
+    expect(helpOpen(), 'the NEW Select key opens Help').toBe(true);
+    const selectLabel = i18nT('controls.button.select');
+    const row = rowTexts(CONTROLS_PANEL).find((text) => text.includes(selectLabel)) ?? '';
+    expect(row, 'the Select row exists').not.toBe('');
+    const keys = row.replace(selectLabel, '');
+    expect(keys, 'All controls shows the live key').toContain('Z');
+    expect(keys, 'not the boot-time primary').not.toContain('R');
+    const chip = rowTexts(SCREEN_PANEL).find((text) => text.includes(i18nT('chrome.chip.help')));
+    expect(chip, 'This screen lists the Select chip').toBeDefined();
+    expect(chip, 'with the live keycap').toContain('Z');
+    expect(chip, 'never the boot-time one').not.toContain('R');
+  }, 120_000);
+
+  it('a reopen re-reads the world: Help opened with nothing faced, closed, an NPC then in front, reopened: This screen gains the A chip', async () => {
+    // WRONG IMPL KILLED: a Help rendered once (the second open shows the first open's two chips);
+    // a This screen read from a cache of the last open instead of the world at this open.
+    await bootReady();
+    batch();
+    frame();
+    press('KeyR');
+    frame();
+    expect(rowTexts(SCREEN_PANEL), 'nothing faced: Start and Select').toHaveLength(2);
+    press('KeyR');
+    frame();
+    expect(helpOpen(), 'precondition: closed').toBe(false);
+    seedFacedNpc();
+    frame();
+    press('KeyR');
+    frame();
+    const rows = rowTexts(SCREEN_PANEL);
+    expect(rows, 'A, Start, Select on the second open').toHaveLength(3);
+    expect(rows[0], 'A with the faced target`s verb').toContain(i18nT('interact.verb.talk'));
+  }, 120_000);
+
+  it('over a bare battle, Select opens Help whose This screen is the BATTLE`s chips (OK, Menu, Help) and not the world`s; Select closes it again', async () => {
+    // WRONG IMPL KILLED: an openHelp that hard-codes the world base when it reads the context
+    // beneath (over a battle This screen would read Menu / Help only, or carry a faced target's
+    // A chip the battle does not have).
+    await bootReady();
+    batch();
+    opts.store.upsertBattle(battleRow(101n));
+    batch();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    frame();
+    expect(stackNames(), 'precondition: a bare battle base').toEqual(['battle']);
+    press('KeyR');
+    frame();
+    expect(stackNames(), 'Select opened Help over the battle').toEqual(['battle', 'helpView']);
+    expect(helpOpen()).toBe(true);
+    const rows = rowTexts(SCREEN_PANEL);
+    expect(rows, 'the battle`s chips: OK, Menu, Help').toHaveLength(3);
+    expect(rows[0], 'A is OK in a battle').toContain(i18nT('chrome.chip.ok'));
+    expect(rows[1]).toContain(i18nT('chrome.chip.menu'));
+    expect(rows[2]).toContain(i18nT('chrome.chip.help'));
+    press('KeyR');
+    frame();
+    expect(stackNames(), 'Select closes it, the battle stays').toEqual(['battle']);
+  }, 120_000);
+
+  it('clicking the Select chip at the world opens the same Help as the key: This screen is the world`s two chips (no Close, Back or OK), All controls has 23 rows and Goals 3', async () => {
+    // WRONG IMPL KILLED: a launcher path that shows Help before reading the chips (or reads the
+    // stack WITH the help frame: Close / Back / OK); a launcher that never renders (empty panels).
+    await bootReady();
+    batch();
+    frame();
+    (document.getElementById('chip-select') as HTMLElement).click();
+    frame();
+    expect(helpOpen(), 'the click opened Help').toBe(true);
+    const rows = rowTexts(SCREEN_PANEL);
+    expect(rows, 'Start and Select').toHaveLength(2);
+    for (const own of ['chrome.chip.close', 'chrome.chip.back', 'chrome.chip.ok'] as const) {
+      expect(rows.join('|'), `Help's own chip ${own} is not on This screen`).not.toContain(
+        i18nT(own),
+      );
+    }
+    expect(rowTexts(CONTROLS_PANEL), 'All controls is populated').toHaveLength(23);
+    expect(rowTexts(GOALS_PANEL), 'Goals is populated').toHaveLength(3);
+  }, 120_000);
+
+  it('clicking the Select chip while Help is open behaves like the Select key: Help closes and the stack returns to the base, and This screen is never re-rendered with Help`s own chips', async () => {
+    // WRONG IMPL KILLED (reviewer M1): a launcher that calls openHelp() unconditionally, so a click
+    // on an open Help re-renders This screen from the stack WITH the help frame (OK / Back / Close /
+    // Help) and leaves Help open. Select and the chip are the SAME control.
+    await bootReady();
+    batch();
+    frame();
+    press('KeyR');
+    frame();
+    expect(stackNames(), 'precondition: Help is open').toEqual(['world', 'helpView']);
+    const before = rowTexts(SCREEN_PANEL);
+    expect(before, 'precondition: the world`s chips').toHaveLength(2);
+
+    (document.getElementById('chip-select') as HTMLElement).click();
+    frame();
+    expect(helpOpen(), 'the click closed Help').toBe(false);
+    expect(stackNames(), 'back to the base').toEqual(['world']);
+    const after = rowTexts(SCREEN_PANEL).join('|');
+    for (const own of ['chrome.chip.close', 'chrome.chip.back', 'chrome.chip.ok'] as const) {
+      expect(after, `Help's own chip ${own} never reached This screen`).not.toContain(i18nT(own));
+    }
+    expect(rowTexts(SCREEN_PANEL), 'This screen is untouched').toEqual(before);
+  }, 120_000);
+
+  it('Select closes a Help opened over the menu (Options > How to play): only Help closes and the menu stays', async () => {
+    // WRONG IMPL KILLED: a Select that is not a toggle over a menu (it would be swallowed, or close
+    // the menu with Help, or open a second Help).
+    await bootReady();
+    batch();
+    frame();
+    press('Escape');
+    menuTo('options');
+    press('Enter');
+    press('Enter');
+    frame();
+    expect(stackNames(), 'precondition: Help over the menu').toEqual([
+      'world',
+      'menuView',
+      'helpView',
+    ]);
+    press('KeyR');
+    frame();
+    expect(helpOpen(), 'Select closed Help').toBe(false);
+    expect(stackNames(), 'and only Help').toEqual(['world', 'menuView']);
+  }, 120_000);
+
+  it('with an incoming trade request waiting and nothing faced, This screen lists the View (Y) and Dismiss (B) chips before Start and Select', async () => {
+    // WRONG IMPL KILLED: an openHelp that passes no notices or no waiting-request flag to hintBar
+    // (the Y / B chips the bar shows would be missing from the help).
+    await bootReady();
+    batch();
+    frame();
+    opts.store.upsertPlayer({
+      identity: BOB,
+      entityId: 8n,
+      name: 'Bob',
+      online: true,
+      lastInputSeq: 0n,
+    });
+    opts.store.upsertTradeOffer(offerFrom(BOB, 11n, 1_000n));
+    batch();
+    frame();
+    press('KeyR');
+    frame();
+    const rows = rowTexts(SCREEN_PANEL);
+    expect(rows, 'Y, B, Start, Select').toHaveLength(4);
+    expect(rows[0], 'Y views the request').toContain(i18nT('chrome.chip.view'));
+    expect(rows[1], 'B dismisses its banner').toContain(i18nT('chrome.chip.dismiss'));
+    expect(rows[2]).toContain(i18nT('chrome.chip.menu'));
+    expect(rows[3]).toContain(i18nT('chrome.chip.help'));
   }, 120_000);
 });

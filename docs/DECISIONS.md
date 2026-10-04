@@ -462,14 +462,15 @@ exposing the stack without changing the Caddy bind address on purpose.
 (`client/src/input/bindings.ts`), to a closed set of virtual buttons: D-pad, A, B, X, Y,
 LB, RB, Start, Select. Letter keys are optional accelerators that open a canonical menu
 path. Every screen is a frame on one pure context stack (`client/src/ui/contextStack.ts`)
-over a world or battle base. B pops one frame; Start pops to the base, or opens the main
-menu at a base. `SCREEN_POLICY` is a total record per frame (owner, battle behaviour,
-battle-safety). Server-owned state (battles, dialogue, requests) is reconciled into the
-stack on every batch, never pushed by a keypress, and the client never closes a
-server-owned frame itself; it sends the reducer (`dismissDialogue`). Which overlay may open
+over a world or battle base. B pops one frame; Start pops every frame to the base, or
+opens the main menu at a base. `SCREEN_POLICY` is a total record per frame (owner, battle
+behaviour, battle-safety). Server-owned state (battles and dialogue) is reconciled into
+the stack on every batch, never pushed by a keypress, and the client never closes a
+server-owned frame itself; it sends the reducer (`dismissDialogue`). A trade or challenge
+request is a non-modal banner and world sheet, never a frame. Which overlay may open
 over another is still the tier table `canOpen` reads (`client/src/ui/overlayRegistry.ts`).
-Every frame renders as a class-styled `.mr-frame` inside `#game-screen` with one chrome
-(`client/src/ui/frame.ts`). Menus are D-pad lists, grids and tabs
+Every frame is a class-styled `.mr-frame` inside `#game-screen`; `client/src/ui/frame.ts`
+is the shared chrome (the main menu uses it today). Menus are D-pad lists, grids and tabs
 (`client/src/ui/nav.ts`) whose active item is a key, never an index or a pointer cursor.
 The hint bar and Help are generated from the context table, the live bindings and the
 catalog (`client/src/ui/hintBarModel.ts`, `client/src/ui/helpModel.ts`). Bindings persist
@@ -494,7 +495,8 @@ without a DOM. Generated hints and help cannot drift from the bindings. A total 
 makes a missing translation a compile error rather than a blank label, and throwing
 (rather than showing the key) keeps an unwired string from looking wired.
 
-**Rules out.** A feature reachable only by a hotkey; a hotkey-only discovery menu; a
+**Rules out.** A feature reachable only by a hotkey (F9's menu twin, Options › Report a
+problem, is still owed); a hotkey-only discovery menu; a
 hand-written controls list; a dedicated interact key; new per-overlay tiers,
 mutual-exclusion checks or force-hide lists; overlays anchored to the window or in page
 flow; menus that hide themselves on a pick; conveying meaning by colour alone; WAAPI

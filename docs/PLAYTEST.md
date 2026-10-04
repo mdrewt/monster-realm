@@ -5,7 +5,7 @@ This page covers how to launch it, the controls, what to try, how to report a bu
 and the manual accessibility protocol.
 
 In the game, the hint bar at the bottom names what each button does right now. Select
-(`R` or `/`) opens Help, and Start (`Escape` or `M`) opens a menu of every action.
+(`R` or `/`) opens Help, and Start (`Escape` or `M`) opens the main menu.
 
 ## 1. Launch it
 
@@ -39,7 +39,7 @@ The default keys:
 | A | `Enter` | Act on what you face (talk, shop, heal, trade, challenge); choose |
 | B | `Backspace` | Back one level; dismiss a notice |
 | X | `Space` | Jump |
-| Y | `F` | Info; with nothing in front of you, open the top notice |
+| Y | `F` | Info; at the world, every action for what you face, or with nothing in front of you, the waiting request |
 | LB / RB | `Q` / `E` (or `Page Up` / `Page Down`) | Previous / next tab |
 | Start | `Escape` or `M` | Open the main menu; close everything |
 | Select | `R` or `/` | Help |
@@ -62,9 +62,10 @@ the key `B` opens Storage, while the button B (`Backspace`) goes back.
    exactly one evolution is ready, it happens on its own; when several are, you choose.
 7. In town, face a shopkeeper or a healer and press `Enter` to shop or heal.
 8. Rename your profile (`N`) so the leaderboard shows your name.
-9. With a second tester online, face them and press `Enter` to offer a trade: your
-   monsters and currency for their currency. They answer it from Trades (`U`).
-10. Face someone and challenge them to PvP the same way, then check Rankings (`L`).
+9. With a second tester online, face them, press `Enter` and choose **Trade** to offer
+   your monsters and currency for their currency. They see a banner and answer it with `F`
+   then `Enter`, or from Trades (`U`).
+10. Face someone and choose **Challenge** the same way, then check Rankings (`L`).
 
 ## 4. Your identity and progress
 
@@ -86,7 +87,7 @@ grace, and you can cancel).
 1. Press **`F9`**. It downloads a JSON bug bundle with recent events, captured errors,
    a small store summary without names, and the build stamp (git SHA and build time).
    It is created locally and never sent anywhere, so it works offline.
-2. If an error overlay is showing, grab the bundle first, then press **`F8`** to
+2. If an error toast is showing, grab the bundle first, then press **`F8`** to
    dismiss it.
 3. Send the file with one sentence on what you did and what you expected, on the
    feedback channel (ask Drew for the current destination).

@@ -629,8 +629,8 @@ test.describe
     });
 
     test('the help overlay is free of WCAG 2.x A/AA violations while open', async () => {
-      // `?` is the documented opener (Select is bound to Slash / Shift+Slash, ctl-6b), which is
-      // Shift+Slash as a physical key.
+      // Select opens Help (`R` or `/`); Shift+Slash is the `/` key with Shift held, which the
+      // router ignores (ctl-6b), so the `?` a US keyboard types still opens it.
       await page.keyboard.press('Shift+Slash');
       await expect(page.locator('#help-overlay')).toBeVisible();
       // ctl-14: Help is generated. It opens on This screen (the world's hint bar: Start and Select
