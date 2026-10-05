@@ -1381,8 +1381,8 @@ function openMenuTarget(target: MenuTarget, monstersTab: MonstersTab = 'party'):
  *  an accelerator names. */
 function applyMenuStep(step: MainMenuStep, monstersTab?: MonstersTab): void {
   if (step.state.level !== menuState.level) inputRouter.resetRepeat();
-  // The feedback line is not a live region: a Y description or an action's outcome is said here,
-  // once per change of the line.
+  // The feedback line is not a live region: a Y description or a disabled entry's reason is said
+  // here, once per change of the line.
   const said = feedbackAnnouncement(menuState.feedback, step.state.feedback);
   if (said !== null) liveRegion.announce(said, performance.now());
   menuState = step.state;

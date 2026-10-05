@@ -29,29 +29,44 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { claimCode } from './net/claimCode';
 import type { Connection, ConnectionOptions } from './net/connection';
 import { resolveConnectionConfig } from './net/connectionConfig';
+import { buildClaimViewModel, CLAIM_INITIAL } from './ui/claimModel';
 
-const H = vi.hoisted(() => ({
-  identity: 'ab'.repeat(32),
-  connectOpts: null as ConnectionOptions | null,
-  /** A recording stand-in for a view class: it exposes every method main.ts calls on a view. */
-  makeStub: () =>
-    class {
-      visible = false;
-      show(): void {
-        this.visible = true;
-      }
-      hide(): void {
-        this.visible = false;
-      }
-      toggle(): void {
-        this.visible = !this.visible;
-      }
-      render(): void {}
-      refresh(): void {}
-      hostChrome(): void {}
-      showFeedback(): void {}
-    },
-}));
+const H = vi.hoisted(() => {
+  const h = {
+    identity: 'ab'.repeat(32),
+    connectOpts: null as ConnectionOptions | null,
+    /** The handler object main.ts handed the ClaimView constructor (its last argument). */
+    claimHandlers: null as Record<string, unknown> | null,
+    /** Every view model main.ts rendered into the ClaimView stand-in, oldest first. */
+    claimRenders: [] as unknown[],
+    /** A recording stand-in for a view class: it exposes every method main.ts calls on a view.
+     *  Only the one named 'ClaimView' records its handlers and renders. */
+    makeStub: (name = '') =>
+      class {
+        visible = false;
+        constructor(...args: unknown[]) {
+          if (name === 'ClaimView')
+            h.claimHandlers = args[args.length - 1] as Record<string, unknown>;
+        }
+        show(): void {
+          this.visible = true;
+        }
+        hide(): void {
+          this.visible = false;
+        }
+        toggle(): void {
+          this.visible = !this.visible;
+        }
+        render(vm?: unknown): void {
+          if (name === 'ClaimView') h.claimRenders.push(vm);
+        }
+        refresh(): void {}
+        hostChrome(): void {}
+        showFeedback(): void {}
+      },
+  };
+  return h;
+});
 
 vi.mock('./ui/boxView', () => ({ BoxView: H.makeStub() }));
 vi.mock('./ui/battleView', () => ({ BattleView: H.makeStub() }));
@@ -60,7 +75,7 @@ vi.mock('./ui/evolutionView', () => ({ EvolutionView: H.makeStub() }));
 vi.mock('./ui/shopView', () => ({ ShopView: H.makeStub() }));
 vi.mock('./ui/tradeView', () => ({ TradeView: H.makeStub() }));
 vi.mock('./ui/pvpView', () => ({ PvpView: H.makeStub() }));
-vi.mock('./ui/claimView', () => ({ ClaimView: H.makeStub() }));
+vi.mock('./ui/claimView', () => ({ ClaimView: H.makeStub('ClaimView') }));
 vi.mock('./ui/privacyView', () => ({ PrivacyView: H.makeStub() }));
 vi.mock('./ui/renameView', () => ({ RenameView: H.makeStub() }));
 vi.mock('./ui/tradeProposeView', () => ({ TradeProposeView: H.makeStub() }));
@@ -194,6 +209,8 @@ let opts: ConnectionOptions;
 
 async function bootReady(): Promise<void> {
   H.connectOpts = null;
+  H.claimHandlers = null;
+  H.claimRenders = [];
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   recorded = [];
   mountIndexHtmlShell();
@@ -333,5 +350,85 @@ describe('main.ts clears the stored claim code on a succeeded claim (polish-1 P4
       must(opts.onClaimResult, 'onClaimResult')({ ok: false, message } as never);
       expect(stored(), `${message}: the dead code is cleared`).toBeUndefined();
     }
+  });
+
+  const claimHandler = (name: string): (() => void) => {
+    const handlers = H.claimHandlers;
+    if (handlers === null) throw new Error('ClaimView was never constructed by main.ts');
+    const fn = handlers[name];
+    if (typeof fn !== 'function') throw new Error(`ClaimView received no ${name} handler`);
+    return (fn as () => void).bind(handlers);
+  };
+  const lastClaimVm = (): ReturnType<typeof buildClaimViewModel> => {
+    const vm = H.claimRenders.at(-1);
+    if (vm === undefined) throw new Error('main.ts rendered nothing into the claim view');
+    return vm as ReturnType<typeof buildClaimViewModel>;
+  };
+
+  it('POLISH1-P4-MAIN-NON-SUCCESS-KEEPS-CODE: a failed sign-in, an armed-but-unconfirmed decline (and its cancel), and a join refused by the veto all leave the stored code in place', async () => {
+    // CONTROL for the clearing case, through the main.ts paths that are NOT a success: an impl that
+    // clears the code on any claim UI event passes POLISH1-P4-MAIN-CLEARS and fails here.
+    await bootReady();
+    seed();
+
+    must(opts.onSignInFailed, 'onSignInFailed')('sign-in-rejected');
+    expect(stored(), 'sign-in-failed keeps the code').toBe(SEEDED_CODE);
+
+    must(opts.onClaimPending, 'onClaimPending')(SEEDED_CODE);
+    expect(stored(), 'claim-pending keeps the code').toBe(SEEDED_CODE);
+
+    claimHandler('onDeclineRequested')();
+    expect(lastClaimVm().actions.declineConfirm, 'precondition: the decline is armed').toBe(true);
+    expect(stored(), 'an armed decline deletes nothing').toBe(SEEDED_CODE);
+    claimHandler('onDeclineCancelled')();
+    expect(lastClaimVm().actions.declineConfirm, 'precondition: the decline is disarmed').toBe(
+      false,
+    );
+    expect(stored(), 'a cancelled decline deletes nothing').toBe(SEEDED_CODE);
+
+    claimHandler('onJoin')();
+    expect(lastClaimVm().actions.join, 'precondition: join is vetoed while the claim is out').toBe(
+      false,
+    );
+    expect(stored(), 'a vetoed join deletes nothing').toBe(SEEDED_CODE);
+    expect(claimCode.hasUnconsumed(globalThis, URI, DB)).toBe(true);
+  });
+
+  it('POLISH1-P4-MAIN-DECLINE-CONFIRMED-CONTROL: an armed, confirmed decline on a live link clears the stored code (the harness sees a clear through the claim view path too)', async () => {
+    await bootReady();
+    seed();
+    must(opts.onClaimPending, 'onClaimPending')(SEEDED_CODE);
+    claimHandler('onDeclineRequested')();
+    claimHandler('onDeclineConfirmed')();
+    expect(stored(), 'the confirmed decline cleared it').toBeUndefined();
+    expect(lastClaimVm().actions.join, 'and join is offered').toBe(true);
+  });
+
+  it('POLISH1-P4-MAIN-CLAIMED-UI: after onClaimResult({ ok: true }) the claim view is rendered the claimed model (visible, claimed title and body, only Join offered), the code is cleared, and nothing else is cleared early', async () => {
+    // WRONG IMPL KILLED: a bare claimCode.clear() in the onClaimResult callback in place of the
+    // model step (the storage is cleared, but the claim UI keeps showing the pending claim and the
+    // veto: the player is told nothing and join stays unoffered); a step that updates the model
+    // but renders nothing.
+    await bootReady();
+    seed();
+    must(opts.onClaimPending, 'onClaimPending')(SEEDED_CODE);
+    expect(lastClaimVm().actions.join, 'precondition: pending, join is not offered').toBe(false);
+
+    must(opts.onClaimResult, 'onClaimResult')({ ok: true } as never);
+
+    expect(stored(), 'the code is cleared').toBeUndefined();
+    const claimed = buildClaimViewModel({
+      ...CLAIM_INITIAL,
+      phase: 'claimed',
+      joinPermitted: true,
+    });
+    expect(claimed.actions, 'fixture: the claimed model offers Join only').toEqual({
+      signIn: false,
+      join: true,
+      decline: false,
+      declineConfirm: false,
+      declineCancel: false,
+    });
+    expect(lastClaimVm(), 'the claim view shows the claimed state').toEqual(claimed);
   });
 });

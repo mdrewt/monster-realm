@@ -48,7 +48,7 @@
 // confirm are parts of this frame under the sheet, and the "Fed {name}" line joins the feedback
 // line. A hidden part is emptied as well as hidden (the e2e text scans read hidden descendants).
 import { type MonsterCardViewModel, NEXT_FREE_PARTY_SLOT } from './boxModel';
-import { t, tf } from './i18n/resolver';
+import { currentLocale, t, tf } from './i18n/resolver';
 import {
   cardName,
   findPath,
@@ -563,10 +563,13 @@ export class BoxView {
 
   /** Runs `render` for a grid unless `shown` — every card it draws — is what the grid already
    *  shows (the pvpView shape): `refresh` runs on every store batch, and a rebuild drops focus and
-   *  the press in flight. JSON, never a delimiter join: nicknames are user-chosen. A render that
-   *  throws leaves the grid with no key, so the next refresh renders it again. */
+   *  the press in flight. The locale is in the key: the cards' copy is resolved at render. JSON,
+   *  never a delimiter join: nicknames are user-chosen. A render that throws leaves the grid with
+   *  no key, so the next refresh renders it again. */
   #renderIfChanged(el: HTMLElement, shown: readonly unknown[], render: () => void): void {
-    const key = JSON.stringify(shown, (_, v: unknown) => (typeof v === 'bigint' ? `${v}` : v));
+    const key = JSON.stringify([currentLocale(), shown], (_, v: unknown) =>
+      typeof v === 'bigint' ? `${v}` : v,
+    );
     if (this.#rendered.get(el) === key) return;
     this.#rendered.delete(el);
     render();

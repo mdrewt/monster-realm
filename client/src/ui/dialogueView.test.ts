@@ -69,7 +69,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from './a11yCopy';
 import type { DialogueViewModel } from './dialogueModel';
 import { DialogueView } from './dialogueView';
-import { t as i18nT } from './i18n/resolver';
+import { t as i18nT, setLocale } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
@@ -937,5 +937,226 @@ describe('DialogueView — an unchanged view model keeps its button nodes (polis
 
     view.paint({ active: 2, revealStart: 900 });
     ctl8aExpectCursor('c2');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// polish-1 P1, round 2: the "unchanged" key must be exact (no delimiter collisions), a build that
+// throws must not poison the key, the Shop label follows the locale, and only the BUTTONS' content
+// is what the keep is keyed on (a changed npc name / node text keeps the nodes and the focus).
+// ---------------------------------------------------------------------------
+
+/** The buttons a vm must produce, in order: its choices, then Shop when it has one. */
+const p1Expected = (
+  vm: DialogueViewModel,
+  shopLabel = P1_SHOP_LABEL,
+): Array<{ text: string | null; idx: string | undefined; shop: string | undefined }> => [
+  ...vm.choices.map((c) => ({ text: c.text, idx: String(c.idx), shop: undefined })),
+  ...(vm.shopAction
+    ? [{ text: shopLabel, idx: undefined, shop: String(vm.shopAction.shopId) }]
+    : []),
+];
+
+describe('DialogueView — exact keep key, throw recovery, locale, over-keying (polish-1 P1 round 2)', () => {
+  it.each([
+    [
+      'two choices vs one choice whose text spells the join (idx:text|idx:text)',
+      p1Vm({
+        choices: [
+          { text: 'a', idx: 0 },
+          { text: 'b', idx: 1 },
+        ],
+        shopAction: null,
+      }),
+      p1Vm({ choices: [{ text: 'a|1:b', idx: 0 }], shopAction: null }),
+    ],
+    [
+      'the same collision with a comma join',
+      p1Vm({
+        choices: [
+          { text: 'a', idx: 0 },
+          { text: 'b', idx: 1 },
+        ],
+        shopAction: null,
+      }),
+      p1Vm({ choices: [{ text: 'a,1:b', idx: 0 }], shopAction: null }),
+    ],
+    [
+      'the same collision with a newline join',
+      p1Vm({
+        choices: [
+          { text: 'a', idx: 0 },
+          { text: 'b', idx: 1 },
+        ],
+        shopAction: null,
+      }),
+      p1Vm({ choices: [{ text: 'a\n1:b', idx: 0 }], shopAction: null }),
+    ],
+    [
+      'quote and bracket text that spells a JSON-ish split',
+      p1Vm({
+        choices: [
+          { text: 'a', idx: 0 },
+          { text: 'b', idx: 1 },
+        ],
+        shopAction: null,
+      }),
+      p1Vm({ choices: [{ text: 'a"],[1,"b', idx: 0 }], shopAction: null }),
+    ],
+    [
+      'idx digits spilling into the text (idx 1 + text "2x" vs idx 12 + text "x")',
+      p1Vm({ choices: [{ text: '2x', idx: 1 }], shopAction: null }),
+      p1Vm({ choices: [{ text: 'x', idx: 12 }], shopAction: null }),
+    ],
+    [
+      'a choice text that spells the Shop suffix vs a real Shop action',
+      p1Vm({ choices: [{ text: 'x', idx: 0 }], shopAction: { shopId: 7 } }),
+      p1Vm({ choices: [{ text: 'x|shop:7', idx: 0 }], shopAction: null }),
+    ],
+    [
+      'a choice text that ends in the shop id vs a real Shop action',
+      p1Vm({ choices: [{ text: 'x|7', idx: 0 }], shopAction: null }),
+      p1Vm({ choices: [{ text: 'x', idx: 0 }], shopAction: { shopId: 7 } }),
+    ],
+  ])('POLISH1-P1-KEY-COLLISION: %s -> the new content shows', (_name, first, second) => {
+    // WRONG IMPL KILLED: a key built by join('|') / join(',') / template concatenation: the two vms
+    // produce the same key string, the second render is wrongly skipped and the stale buttons stay.
+    mountDialogueOverlay();
+    const view = new DialogueView();
+    view.render(first);
+    expect(p1Shape(), 'precondition: the first vm shows its buttons').toEqual(p1Expected(first));
+    view.render(second);
+    expect(p1Shape(), 'the second vm shows ITS buttons, not the first`s').toEqual(
+      p1Expected(second),
+    );
+  });
+
+  /** `document.createElement` made to throw on its `nth` call for a <button> (1-based), once. */
+  function throwOnButton(nth: number): { restore: () => void; thrown: () => boolean } {
+    const real = document.createElement.bind(document);
+    let seen = 0;
+    let thrown = false;
+    const spy = vi.spyOn(document, 'createElement').mockImplementation(((
+      tag: string,
+      options?: ElementCreationOptions,
+    ) => {
+      if (tag === 'button') {
+        seen += 1;
+        if (seen === nth) {
+          thrown = true;
+          throw new Error('p1: build failed');
+        }
+      }
+      return real(tag, options);
+    }) as typeof document.createElement);
+    return { restore: () => spy.mockRestore(), thrown: () => thrown };
+  }
+
+  it.each([
+    ['the changed vm again', 'changed'],
+    ['the PREVIOUS vm again (the key must not still say it is on screen)', 'previous'],
+  ] as const)('POLISH1-P1-THROW-RECOVERY: a build that throws part-way surfaces, and rendering %s rebuilds the right content', (_name, which) => {
+    // WRONG IMPL KILLED: a key recorded BEFORE the build (the retry with the same vm is skipped and
+    // the half-built buttons stay); a key NOT cleared before the build (the old vm's key still
+    // matches, so re-rendering the old vm is skipped while the container holds half of the new
+    // one); a swallowed throw (the failure would be invisible).
+    mountDialogueOverlay();
+    const view = new DialogueView();
+    const previous = (): DialogueViewModel => p1Vm();
+    const changed = (): DialogueViewModel =>
+      p1Vm({
+        choices: [
+          { text: 'One', idx: 0 },
+          { text: 'Two', idx: 1 },
+          { text: 'Three', idx: 2 },
+        ],
+        shopAction: { shopId: 9 },
+      });
+    view.render(previous());
+
+    const fault = throwOnButton(2);
+    try {
+      expect(() => view.render(changed()), 'the throw surfaces').toThrow('p1: build failed');
+    } finally {
+      fault.restore();
+    }
+    expect(fault.thrown(), 'fixture: the fault fired').toBe(true);
+
+    const retry = which === 'changed' ? changed() : previous();
+    view.render(retry);
+    expect(p1Shape()).toEqual(p1Expected(retry));
+    // And it is stable again: an equal vm keeps what the recovery built.
+    const built = ctl8aButtons();
+    view.render(which === 'changed' ? changed() : previous());
+    ctl8aButtons().forEach((btn, i) => {
+      expect(btn, `button ${i} is kept after the recovery`).toBe(built[i]);
+    });
+  });
+
+  it('POLISH1-P1-THROW-RECOVERY-FIRST-RENDER: a throw on the very first build leaves nothing remembered: the same vm renders fully next time', () => {
+    mountDialogueOverlay();
+    const view = new DialogueView();
+    const fault = throwOnButton(1);
+    try {
+      expect(() => view.render(p1Vm())).toThrow('p1: build failed');
+    } finally {
+      fault.restore();
+    }
+    view.render(p1Vm());
+    expect(p1Shape()).toEqual(p1Expected(p1Vm()));
+  });
+
+  it('POLISH1-P1-LOCALE: after the locale switches, an EQUAL vm re-renders the Shop label in the new language (and back)', () => {
+    // WRONG IMPL KILLED: a hardcoded Shop label; a key that omits the label / locale (the equal vm
+    // is skipped and the label stays in the old language).
+    mountDialogueOverlay();
+    const view = new DialogueView();
+    try {
+      setLocale('en');
+      view.render(p1Vm());
+      expect(p1Shape().at(-1)?.text).toBe(P1_SHOP_LABEL);
+      setLocale('fr');
+      const frLabel = i18nT('dialogue.action.shop');
+      expect(frLabel, 'fixture: the French label differs from the English one').not.toBe(
+        P1_SHOP_LABEL,
+      );
+      view.render(p1Vm());
+      expect(p1Shape(), 'the Shop button now reads French').toEqual(p1Expected(p1Vm(), frLabel));
+      expect(ctl8aButtons().at(-1)?.dataset.shopId).toBe('7');
+      setLocale('en');
+      view.render(p1Vm());
+      expect(p1Shape()).toEqual(p1Expected(p1Vm()));
+    } finally {
+      setLocale('en');
+    }
+  });
+
+  it.each([
+    ['only nodeText', { nodeText: 'Mind the road.' }],
+    ['only npcName', { npcName: 'Captain Ash' }],
+    ['both npcName and nodeText', { npcName: 'Captain Ash', nodeText: 'Mind the road.' }],
+  ] as Array<
+    [string, Partial<DialogueViewModel>]
+  >)('POLISH1-P1-OVERKEY: a vm differing in %s keeps the button nodes and the focus, and the text still updates', async (_name, over) => {
+    // WRONG IMPL KILLED: a key over the whole vm (every conversation node rebuilds the buttons and
+    // drops the focus); a keep that also skips the npcName / nodeText writes.
+    mountDialogueOverlay();
+    const view = new DialogueView();
+    view.render(p1Vm());
+    await flushMacrotask();
+    const before = ctl8aButtons();
+    const focused = before[1] as HTMLButtonElement;
+    focused.focus();
+    expect(document.activeElement).toBe(focused);
+
+    const next = p1Vm(over);
+    view.render(next);
+    await flushMacrotask();
+    ctl8aButtons().forEach((btn, i) => {
+      expect(btn, `button ${i} is the identical node`).toBe(before[i]);
+    });
+    expect(document.activeElement, 'focus is kept').toBe(focused);
+    expect(ctl8aEl('dialogue-npc-name').textContent).toBe(next.npcName);
+    expect(ctl8aEl('dialogue-node-text').textContent).toBe(next.nodeText);
   });
 });

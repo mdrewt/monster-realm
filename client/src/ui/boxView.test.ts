@@ -4475,3 +4475,209 @@ describe('BoxView polish-1 P2: an unchanged view model keeps its card and button
     expectCursor('100', 'no key: the first party card, after an equal refresh');
   });
 });
+
+// =============================================================================
+// polish-1 P2, round 2: the "unchanged" key must be exact (no delimiter collisions across fields or
+// cards), a build that throws must not poison the key, and the cards' copy follows the locale.
+// =============================================================================
+
+import { CATALOG_EN as P2_CATALOG_EN } from './i18n/catalog.en';
+import { CATALOG_FR as P2_CATALOG_FR } from './i18n/catalog.fr';
+import { setLocale as p2SetLocale } from './i18n/resolver';
+
+describe('BoxView polish-1 P2 round 2: exact keep key, throw recovery, locale', () => {
+  const rosters = (
+    party0: MonsterCardViewModel,
+    box: MonsterCardViewModel[] = [p2Ember(), p2Dusk()],
+  ): P2Rosters => ({ party: [party0, p2Moss(), null, null, null, null], box });
+
+  it.each([
+    [
+      'species "A|B" + nickname "C" vs species "A" + nickname "B|C"',
+      () => rosters(p2Kip({ speciesName: 'A|B', nickname: 'C' })),
+      () => rosters(p2Kip({ speciesName: 'A', nickname: 'B|C' })),
+    ],
+    [
+      'nickname "1" + species "2,3" vs nickname "1,2" + species "3"',
+      () => rosters(p2Kip({ nickname: '1', speciesName: '2,3' })),
+      () => rosters(p2Kip({ nickname: '1,2', speciesName: '3' })),
+    ],
+    [
+      'species "Sp5" + level 1 vs species "Sp" + level 51 (digits spill across fields)',
+      () => rosters(p2Kip({ speciesName: 'Sp5', level: 1 })),
+      () => rosters(p2Kip({ speciesName: 'Sp', level: 51 })),
+    ],
+    [
+      'hp 1 of 120 vs hp 11 of 20 (digits spill across fields)',
+      () => rosters(p2Kip({ currentHp: 1, statHp: 120 })),
+      () => rosters(p2Kip({ currentHp: 11, statHp: 20 })),
+    ],
+    [
+      'two box cards with nicknames "A|" + "B" vs "A" + "|B" (collide across cards)',
+      () => rosters(p2Kip(), [p2Ember({ nickname: 'A|' }), p2Dusk({ nickname: 'B' })]),
+      () => rosters(p2Kip(), [p2Ember({ nickname: 'A' }), p2Dusk({ nickname: '|B' })]),
+    ],
+    [
+      'two box cards with ids 1 + 23 vs 12 + 3 (only the nav keys differ)',
+      () => rosters(p2Kip(), [p2Ember({ monsterId: 1n }), p2Dusk({ monsterId: 23n })]),
+      () => rosters(p2Kip(), [p2Ember({ monsterId: 12n }), p2Dusk({ monsterId: 3n })]),
+    ],
+    [
+      'quote / backslash nicknames that spell a JSON split across two cards',
+      () => rosters(p2Kip(), [p2Ember({ nickname: 'a","b' }), p2Dusk({ nickname: 'c' })]),
+      () => rosters(p2Kip(), [p2Ember({ nickname: 'a' }), p2Dusk({ nickname: 'b","c' })]),
+    ],
+  ])('POLISH1-P2-KEY-COLLISION: %s -> the new text shows', (_name, from, to) => {
+    // WRONG IMPL KILLED: a key built by join('|') / join(',') / concatenation of the card fields:
+    // the two rosters give the same key string, the second refresh is wrongly skipped and the stale
+    // card text stays. The oracle is a brand-new view painted from the second roster.
+    const first = from();
+    const second = to();
+    const expected = p2FreshSnapshot(to());
+    const { parent, view } = c8bMount();
+    view.refresh(first.party, first.box);
+    view.show();
+    view.paint(c8bPaint({ tab: 'party' }));
+    expect(p2Snapshot(parent), 'precondition: the two rosters render differently').not.toEqual(
+      expected,
+    );
+    view.refresh(second.party, second.box);
+    expect(p2Snapshot(parent), 'the kept view shows what a fresh view shows').toEqual(expected);
+  });
+
+  /** `document.createElement` made to throw on its `nth` call for a <button> (1-based), once. */
+  function p2ThrowOnButton(nth: number): { restore: () => void; thrown: () => boolean } {
+    const real = document.createElement.bind(document);
+    let seen = 0;
+    let thrown = false;
+    const spy = vi.spyOn(document, 'createElement').mockImplementation(((
+      tag: string,
+      options?: ElementCreationOptions,
+    ) => {
+      if (tag === 'button') {
+        seen += 1;
+        if (seen === nth) {
+          thrown = true;
+          throw new Error('p2: build failed');
+        }
+      }
+      return real(tag, options);
+    }) as typeof document.createElement);
+    return { restore: () => spy.mockRestore(), thrown: () => thrown };
+  }
+
+  it.each([
+    ['party', 'changed', 2],
+    ['party', 'previous', 2],
+    ['box', 'changed', 1],
+    ['box', 'previous', 1],
+  ] as const)(
+    'POLISH1-P2-THROW-RECOVERY: a %s build that throws surfaces, and refreshing the %s roster again rebuilds the right content',
+    (grid, which, nth) => {
+      // WRONG IMPL KILLED: a key recorded BEFORE the build (the retry with the same roster is skipped
+      // and the half-built grid stays); a key NOT cleared before the build (the previous roster's key
+      // still matches, so refreshing the previous roster is skipped while the grid holds half of the
+      // new one); a swallowed throw.
+      const previousRosters = (): P2Rosters => p2Base();
+      const changedRosters = (): P2Rosters =>
+        grid === 'party'
+          ? {
+              party: [p2Kip({ currentHp: 7 }), p2Moss({ nickname: 'Mo' }), null, null, null, null],
+              box: p2Base().box,
+            }
+          : { party: p2Base().party, box: [p2Ember({ currentHp: 5 }), p2Dusk({ level: 9 })] };
+      const { parent, view } = c8bMount();
+      const base = previousRosters();
+      view.refresh(base.party, base.box);
+      view.show();
+      view.paint(c8bPaint({ tab: 'party' }));
+
+      const fault = p2ThrowOnButton(nth);
+      const next = changedRosters();
+      try {
+        expect(() => view.refresh(next.party, next.box), 'the throw surfaces').toThrow(
+          'p2: build failed',
+        );
+      } finally {
+        fault.restore();
+      }
+      expect(fault.thrown(), 'fixture: the fault fired').toBe(true);
+
+      const retry = which === 'changed' ? changedRosters() : previousRosters();
+      const expected = p2FreshSnapshot(which === 'changed' ? changedRosters() : previousRosters());
+      view.refresh(retry.party, retry.box);
+      expect(p2Snapshot(parent), 'the retry shows the right content').toEqual(expected);
+
+      // Stable again: an equal roster keeps what the recovery built.
+      const built = [...p2Elements(partyGridOf(parent)), ...p2Elements(boxGridOf(parent))];
+      const again = which === 'changed' ? changedRosters() : previousRosters();
+      view.refresh(again.party, again.box);
+      const kept = [...p2Elements(partyGridOf(parent)), ...p2Elements(boxGridOf(parent))];
+      expect(kept).toHaveLength(built.length);
+      kept.forEach((el, i) => {
+        expect(el, `element ${i} is kept after the recovery`).toBe(built[i]);
+      });
+    },
+  );
+
+  it('POLISH1-P2-LOCALE: after the locale switches, an EQUAL refresh re-renders the card copy (To Box, To Party, empty slot, empty box, stats) in the new language', () => {
+    // WRONG IMPL KILLED: a key that omits the locale (the equal roster is skipped and every card
+    // keeps its old-language button, empty-slot, empty-box and stats text).
+    const EN = P2_CATALOG_EN as unknown as Record<string, string>;
+    const FR = P2_CATALOG_FR as unknown as Record<string, string>;
+    const cards = (): P2Rosters => ({
+      party: [p2Kip(), null, null, null, null, null],
+      box: [p2Ember()],
+    });
+    const { parent, view } = c8bMount();
+    const first = cards();
+    view.refresh(first.party, first.box);
+    view.show();
+    view.paint(c8bPaint({ tab: 'party' }));
+    const party = partyGridOf(parent);
+    const box = boxGridOf(parent);
+    try {
+      p2SetLocale('en');
+      expect(
+        Array.from(party.querySelectorAll('button')).map((b) => b.textContent),
+        'precondition: English',
+      ).toEqual([EN['box.card.toBox']]);
+
+      p2SetLocale('fr');
+      for (const key of ['box.card.toBox', 'box.card.toParty', 'box.box.empty']) {
+        expect(FR[key], `fixture: ${key} differs between fr and en`).not.toBe(EN[key]);
+      }
+      const second = cards();
+      view.refresh(second.party, second.box);
+      expect(Array.from(party.querySelectorAll('button')).map((b) => b.textContent)).toEqual([
+        FR['box.card.toBox'],
+      ]);
+      expect(Array.from(box.querySelectorAll('button')).map((b) => b.textContent)).toEqual([
+        FR['box.card.toParty'],
+      ]);
+      expect(party.textContent ?? '', 'the empty slot copy is French').toContain(
+        i18nTf('box.party.emptySlot', { slot: 1 }),
+      );
+      expect(party.textContent ?? '', 'the stats copy is French').toContain(p2Stats(p2Kip()));
+      expect(box.textContent ?? '').toContain(p2Stats(p2Ember()));
+
+      // The empty box line: rendered in English first, then an equal refresh under fr.
+      p2SetLocale('en');
+      view.refresh(cards().party, []);
+      expect(box.textContent).toBe(EN['box.box.empty']);
+      p2SetLocale('fr');
+      view.refresh(cards().party, []);
+      expect(box.textContent, 'the empty-box line is French').toBe(FR['box.box.empty']);
+
+      // And back: the switch is not one-way.
+      p2SetLocale('en');
+      view.refresh(cards().party, []);
+      expect(box.textContent).toBe(EN['box.box.empty']);
+      expect(Array.from(party.querySelectorAll('button')).map((b) => b.textContent)).toEqual([
+        EN['box.card.toBox'],
+      ]);
+    } finally {
+      p2SetLocale('en');
+    }
+  });
+});
