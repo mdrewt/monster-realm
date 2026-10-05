@@ -133,6 +133,15 @@ export function feedbackStep(s: FeedbackState, e: FeedbackEvent): FeedbackState 
   }
 }
 
+/** What the live region should say when the line goes from `prev` to `next`: the new text when the
+ *  visible line changed (its kind or its words), else null — the line itself is not a live region,
+ *  so a caller announces this once per change. A token alone is not a visible change. */
+export function feedbackAnnouncement(prev: FeedbackState, next: FeedbackState): string | null {
+  if (next.kind === 'none' || next.text === '') return null;
+  if (prev.kind === next.kind && prev.text === next.text) return null;
+  return next.text;
+}
+
 export function renderFeedback(f: FrameChrome, s: FeedbackState): void {
   if (s.kind === 'none') {
     delete f.feedback.dataset.feedback;

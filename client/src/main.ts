@@ -165,6 +165,7 @@ import {
 } from './ui/evolutionNotice';
 import type { EvolutionView } from './ui/evolutionView';
 import { assembleExportBundle, type ExportAssembly } from './ui/exportAssembly';
+import { feedbackAnnouncement } from './ui/frame';
 import { buildHealViewModel, buildHealViewModelForLocation } from './ui/healModel';
 import type { HealView } from './ui/healView';
 import { buildHelpViewModel } from './ui/helpModel';
@@ -1380,6 +1381,10 @@ function openMenuTarget(target: MenuTarget, monstersTab: MonstersTab = 'party'):
  *  an accelerator names. */
 function applyMenuStep(step: MainMenuStep, monstersTab?: MonstersTab): void {
   if (step.state.level !== menuState.level) inputRouter.resetRepeat();
+  // The feedback line is not a live region: a Y description or an action's outcome is said here,
+  // once per change of the line.
+  const said = feedbackAnnouncement(menuState.feedback, step.state.feedback);
+  if (said !== null) liveRegion.announce(said, performance.now());
   menuState = step.state;
   switch (step.effect.kind) {
     case 'none':

@@ -233,7 +233,8 @@ export function claimStep(state: ClaimModelState, event: ClaimEvent): ClaimStep 
           joinPermitted: true,
           confirmPending: false,
         },
-        effect: 'none',
+        // A consumed code: kept, it would re-issue complete_guest_claim on the next connect.
+        effect: 'delete-code-and-permit-join',
       };
     case 'sign-in-failed':
       // AUTH-48: routes HERE, not to sessionView. A recoverable provider hiccup must not delete

@@ -1382,22 +1382,19 @@ describe('claimModel polish-1 P4: claim-succeeded deletes the stored code', () =
   it.each([
     ['code-pending', pending()],
     ['awaiting-account', stateOf({ phase: 'awaiting-account', codeRetained: true })],
-  ] as const)(
-    'POLISH1-P4-SUCCEEDED-DELETES: claim-succeeded from %s has effect delete-code-and-permit-join, lands on claimed with the code gone and joining permitted',
-    (_label, from) => {
-      // WRONG IMPL KILLED: the current effect 'none' (the consumed code stays stored and the next
-      // account-build connect re-issues a claim that can only answer "invalid or already-used code");
-      // an effect 'join' (joins without clearing the code); a delete effect with the state left
-      // code-retained or join-vetoed (the model and the storage disagree).
-      const step = claimStep(from, { kind: 'claim-succeeded' });
-      expect(step.effect).toBe('delete-code-and-permit-join');
-      expect(step.next.phase).toBe('claimed');
-      expect(step.next.codeRetained, 'the model says the code is gone').toBe(false);
-      expect(step.next.joinPermitted, 'and joining is permitted').toBe(true);
-      expect(step.next.confirmPending).toBe(false);
-      expect(step.next.outcome).toBeUndefined();
-    },
-  );
+  ] as const)('POLISH1-P4-SUCCEEDED-DELETES: claim-succeeded from %s has effect delete-code-and-permit-join, lands on claimed with the code gone and joining permitted', (_label, from) => {
+    // WRONG IMPL KILLED: the current effect 'none' (the consumed code stays stored and the next
+    // account-build connect re-issues a claim that can only answer "invalid or already-used code");
+    // an effect 'join' (joins without clearing the code); a delete effect with the state left
+    // code-retained or join-vetoed (the model and the storage disagree).
+    const step = claimStep(from, { kind: 'claim-succeeded' });
+    expect(step.effect).toBe('delete-code-and-permit-join');
+    expect(step.next.phase).toBe('claimed');
+    expect(step.next.codeRetained, 'the model says the code is gone').toBe(false);
+    expect(step.next.joinPermitted, 'and joining is permitted').toBe(true);
+    expect(step.next.confirmPending).toBe(false);
+    expect(step.next.outcome).toBeUndefined();
+  });
 
   it('POLISH1-P4-SUCCEEDED-DELETES-EVERYWHERE: claim-succeeded deletes the code from every state the model can be in, and never mutates its input', () => {
     // WRONG IMPL KILLED: a delete effect only from code-pending (an awaiting-account, rejected or

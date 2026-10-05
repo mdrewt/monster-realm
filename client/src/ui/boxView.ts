@@ -189,6 +189,8 @@ export class BoxView {
    *  monster since, and sending the stale prefill would revert it). */
   #prefilled = '';
   #scrolledKey: string | null = null;
+  /** What each grid shows, by grid (`#renderIfChanged`). */
+  readonly #rendered = new Map<HTMLElement, string>();
 
   constructor(parent: HTMLElement, callbacks: BoxViewCallbacks) {
     this.#callbacks = callbacks;
@@ -559,7 +561,23 @@ export class BoxView {
     return false;
   }
 
+  /** Runs `render` for a grid unless `shown` — every card it draws — is what the grid already
+   *  shows (the pvpView shape): `refresh` runs on every store batch, and a rebuild drops focus and
+   *  the press in flight. JSON, never a delimiter join: nicknames are user-chosen. A render that
+   *  throws leaves the grid with no key, so the next refresh renders it again. */
+  #renderIfChanged(el: HTMLElement, shown: readonly unknown[], render: () => void): void {
+    const key = JSON.stringify(shown, (_, v: unknown) => (typeof v === 'bigint' ? `${v}` : v));
+    if (this.#rendered.get(el) === key) return;
+    this.#rendered.delete(el);
+    render();
+    this.#rendered.set(el, key);
+  }
+
   #renderParty(slots: readonly (MonsterCardViewModel | null)[]): void {
+    this.#renderIfChanged(this.#partyEl, slots, () => this.#buildParty(slots));
+  }
+
+  #buildParty(slots: readonly (MonsterCardViewModel | null)[]): void {
     this.#partyEl.replaceChildren();
     for (let i = 0; i < slots.length; i++) {
       const card = slots[i];
@@ -579,6 +597,10 @@ export class BoxView {
   }
 
   #renderBox(monsters: readonly MonsterCardViewModel[]): void {
+    this.#renderIfChanged(this.#boxEl, monsters, () => this.#buildBox(monsters));
+  }
+
+  #buildBox(monsters: readonly MonsterCardViewModel[]): void {
     this.#boxEl.replaceChildren();
     if (monsters.length === 0) {
       const empty = document.createElement('div');
@@ -619,7 +641,7 @@ export class BoxView {
     wrap.appendChild(info);
 
     // The evolution-choice badge. Built INSIDE the card (so it is per-monster and
-    // is cleared by #renderParty/#renderBox's replaceChildren), never wrapping `header`
+    // is cleared by #buildParty/#buildBox's replaceChildren), never wrapping `header`
     // and never a #root child: five client/e2e/recruit.spec.ts sites resolve the box root
     // as h2['Party & Box'].parentElement.parentElement, and those helpers scan the root's
     // text for an `HP cur/max` shape — so this copy carries NO "HP " token.

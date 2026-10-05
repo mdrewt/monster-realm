@@ -833,29 +833,26 @@ describe('DialogueView — an unchanged view model keeps its button nodes (polis
       p1Vm({ choices: [] }),
       [SHAPE(P1_SHOP_LABEL, undefined, '7')],
     ],
-  ])(
-    'POLISH1-P1-CHANGED-REBUILDS: %s -> the new content shows, with no stale button',
-    (_name, changedVm, expected) => {
-      // WRONG IMPL KILLED: a key over the choice COUNT or idx list alone (a text-only change keeps
-      // the stale button text); a key that omits the shopAction (a removed / re-pointed Shop button
-      // stays); a key that omits idx or text; a keep that skips the rebuild when the lengths match.
-      mountDialogueOverlay();
-      const view = new DialogueView();
-      view.render(p1Vm());
-      expect(p1Shape(), 'precondition: the base vm shows four buttons').toHaveLength(4);
+  ])('POLISH1-P1-CHANGED-REBUILDS: %s -> the new content shows, with no stale button', (_name, changedVm, expected) => {
+    // WRONG IMPL KILLED: a key over the choice COUNT or idx list alone (a text-only change keeps
+    // the stale button text); a key that omits the shopAction (a removed / re-pointed Shop button
+    // stays); a key that omits idx or text; a keep that skips the rebuild when the lengths match.
+    mountDialogueOverlay();
+    const view = new DialogueView();
+    view.render(p1Vm());
+    expect(p1Shape(), 'precondition: the base vm shows four buttons').toHaveLength(4);
 
-      view.render(changedVm);
-      expect(p1Shape()).toEqual(expected);
-      // The Shop button never carries a choice idx and a choice never carries a shop id.
-      for (const b of ctl8aButtons()) {
-        expect(
-          (b.dataset.shopId === undefined) !== (b.dataset.choiceIdx === undefined),
-          'exactly one of data-shop-id / data-choice-idx',
-        ).toBe(true);
-      }
-      expect(vi.mocked(openOverlayA11y), 'a changed vm is not a re-open').toHaveBeenCalledTimes(1);
-    },
-  );
+    view.render(changedVm);
+    expect(p1Shape()).toEqual(expected);
+    // The Shop button never carries a choice idx and a choice never carries a shop id.
+    for (const b of ctl8aButtons()) {
+      expect(
+        (b.dataset.shopId === undefined) !== (b.dataset.choiceIdx === undefined),
+        'exactly one of data-shop-id / data-choice-idx',
+      ).toBe(true);
+    }
+    expect(vi.mocked(openOverlayA11y), 'a changed vm is not a re-open').toHaveBeenCalledTimes(1);
+  });
 
   it('POLISH1-P1-CHANGED-REBUILDS-TEXT: when only npcName or only nodeText differs, those texts update (and the choices still read as before)', () => {
     // WRONG IMPL KILLED: a render skipped wholesale whenever the CHOICES are unchanged (the NPC
