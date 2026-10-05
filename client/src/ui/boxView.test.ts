@@ -365,35 +365,34 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
     APP_VIEWS.filter((b) => b !== a).map((b) => [a, b] as const),
   );
 
-  it.each(ORDERED_PAIRS.map(([a, b]) => [a.id, b.id, a, b] as const))(
-    'S4-CROSS-VIEW-DISTINCT-ROOTS BITES: %s stays open while %s opens and closes on the same #app mount',
-    (_aId, _bId, a, b) => {
-      const app = document.createElement('div');
-      document.body.appendChild(app);
-      const viewA = a.make(app);
-      const rootA = app.lastElementChild as HTMLElement;
-      const viewB = b.make(app);
-      expect(app.lastElementChild, 'each view mounts its OWN root').not.toBe(rootA);
+  it.each(
+    ORDERED_PAIRS.map(([a, b]) => [a.id, b.id, a, b] as const),
+  )('S4-CROSS-VIEW-DISTINCT-ROOTS BITES: %s stays open while %s opens and closes on the same #app mount', (_aId, _bId, a, b) => {
+    const app = document.createElement('div');
+    document.body.appendChild(app);
+    const viewA = a.make(app);
+    const rootA = app.lastElementChild as HTMLElement;
+    const viewB = b.make(app);
+    expect(app.lastElementChild, 'each view mounts its OWN root').not.toBe(rootA);
 
-      const expectAOpen = (when: string): void => {
-        expect(rootA.getAttribute('role'), `${a.id} role ${when}`).toBe(OVERLAY_A11Y[a.id].role);
-        expect(rootA.getAttribute('aria-modal'), `${a.id} aria-modal ${when}`).toBe('true');
-        expect(rootA.getAttribute('aria-label'), `${a.id} aria-label ${when}`).toBe(
-          t(OVERLAY_A11Y[a.id].labelKey),
-        );
-      };
+    const expectAOpen = (when: string): void => {
+      expect(rootA.getAttribute('role'), `${a.id} role ${when}`).toBe(OVERLAY_A11Y[a.id].role);
+      expect(rootA.getAttribute('aria-modal'), `${a.id} aria-modal ${when}`).toBe('true');
+      expect(rootA.getAttribute('aria-label'), `${a.id} aria-label ${when}`).toBe(
+        t(OVERLAY_A11Y[a.id].labelKey),
+      );
+    };
 
-      viewA.show();
-      expectAOpen('after it opens');
-      viewB.show();
-      expectAOpen(`after ${b.id} opens`);
-      viewB.hide();
-      expectAOpen(`after ${b.id} closes`);
+    viewA.show();
+    expectAOpen('after it opens');
+    viewB.show();
+    expectAOpen(`after ${b.id} opens`);
+    viewB.hide();
+    expectAOpen(`after ${b.id} closes`);
 
-      viewA.hide();
-      document.body.removeChild(app);
-    },
-  );
+    viewA.hide();
+    document.body.removeChild(app);
+  });
 });
 
 const BOX_PARTY_HINT_SELECTOR = '[data-testid="box-party-hint"]';
@@ -4373,38 +4372,37 @@ describe('BoxView polish-1 P2: an unchanged view model keeps its card and button
     },
   ];
 
-  it.each([...fieldCases, ...badgeCases, ...structuralCases].map((c) => [c.name, c] as const))(
-    'POLISH1-P2-CHANGED-REBUILDS: %s -> the new content shows in the right grid, no stale node',
-    (_name, c) => {
-      // WRONG IMPL KILLED: a keep keyed on a subset of the card fields (omitting currentHp, statHp,
-      // hpPercent, level, nickname, speciesName, evolutionChoicePending or monsterId leaves the
-      // stale node showing: every one of those is edited ALONE here, in a party and a box card); a
-      // keep keyed on the card COUNT or the monster ids; a keep that skips the empty-slot / empty-box
-      // branches; a changed refresh that updates one grid only. The oracle compares the kept view's
-      // two grids, canonically serialised, with a brand-new view painted from the same changed
-      // rosters, so a stale attribute or a stray node anywhere reads as a difference.
-      const from = c.from();
-      const to = c.to();
-      const expected = p2FreshSnapshot(c.to());
+  it.each(
+    [...fieldCases, ...badgeCases, ...structuralCases].map((c) => [c.name, c] as const),
+  )('POLISH1-P2-CHANGED-REBUILDS: %s -> the new content shows in the right grid, no stale node', (_name, c) => {
+    // WRONG IMPL KILLED: a keep keyed on a subset of the card fields (omitting currentHp, statHp,
+    // hpPercent, level, nickname, speciesName, evolutionChoicePending or monsterId leaves the
+    // stale node showing: every one of those is edited ALONE here, in a party and a box card); a
+    // keep keyed on the card COUNT or the monster ids; a keep that skips the empty-slot / empty-box
+    // branches; a changed refresh that updates one grid only. The oracle compares the kept view's
+    // two grids, canonically serialised, with a brand-new view painted from the same changed
+    // rosters, so a stale attribute or a stray node anywhere reads as a difference.
+    const from = c.from();
+    const to = c.to();
+    const expected = p2FreshSnapshot(c.to());
 
-      const { parent, view } = c8bMount();
-      view.refresh(from.party, from.box);
-      view.show();
-      view.paint(c8bPaint({ tab: 'party' }));
-      const before = p2Snapshot(parent);
-      if (c.mayBeInvisible !== true) {
-        expect(before, 'precondition: the first roster differs from the changed one').not.toEqual(
-          expected,
-        );
-      }
-
-      view.refresh(to.party, to.box);
-      expect(p2Snapshot(parent), 'the kept view shows exactly what a fresh view shows').toEqual(
+    const { parent, view } = c8bMount();
+    view.refresh(from.party, from.box);
+    view.show();
+    view.paint(c8bPaint({ tab: 'party' }));
+    const before = p2Snapshot(parent);
+    if (c.mayBeInvisible !== true) {
+      expect(before, 'precondition: the first roster differs from the changed one').not.toEqual(
         expected,
       );
-      c.check({ party: partyGridOf(parent), box: boxGridOf(parent), from: c.from(), to: c.to() });
-    },
-  );
+    }
+
+    view.refresh(to.party, to.box);
+    expect(p2Snapshot(parent), 'the kept view shows exactly what a fresh view shows').toEqual(
+      expected,
+    );
+    c.check({ party: partyGridOf(parent), box: boxGridOf(parent), from: c.from(), to: c.to() });
+  });
 
   it('POLISH1-P2-CHANGED-REBUILDS-HANDLERS: after a card`s monster id changes, its buttons act on the NEW id (the kept view does not keep the old closure)', () => {
     // WRONG IMPL KILLED: an in-place update of a kept card that rewrites the text but leaves the
@@ -4571,54 +4569,51 @@ describe('BoxView polish-1 P2 round 2: exact keep key, throw recovery, locale', 
     ['party', 'previous', 2],
     ['box', 'changed', 1],
     ['box', 'previous', 1],
-  ] as const)(
-    'POLISH1-P2-THROW-RECOVERY: a %s build that throws surfaces, and refreshing the %s roster again rebuilds the right content',
-    (grid, which, nth) => {
-      // WRONG IMPL KILLED: a key recorded BEFORE the build (the retry with the same roster is skipped
-      // and the half-built grid stays); a key NOT cleared before the build (the previous roster's key
-      // still matches, so refreshing the previous roster is skipped while the grid holds half of the
-      // new one); a swallowed throw.
-      const previousRosters = (): P2Rosters => p2Base();
-      const changedRosters = (): P2Rosters =>
-        grid === 'party'
-          ? {
-              party: [p2Kip({ currentHp: 7 }), p2Moss({ nickname: 'Mo' }), null, null, null, null],
-              box: p2Base().box,
-            }
-          : { party: p2Base().party, box: [p2Ember({ currentHp: 5 }), p2Dusk({ level: 9 })] };
-      const { parent, view } = c8bMount();
-      const base = previousRosters();
-      view.refresh(base.party, base.box);
-      view.show();
-      view.paint(c8bPaint({ tab: 'party' }));
+  ] as const)('POLISH1-P2-THROW-RECOVERY: a %s build that throws surfaces, and refreshing the %s roster again rebuilds the right content', (grid, which, nth) => {
+    // WRONG IMPL KILLED: a key recorded BEFORE the build (the retry with the same roster is skipped
+    // and the half-built grid stays); a key NOT cleared before the build (the previous roster's key
+    // still matches, so refreshing the previous roster is skipped while the grid holds half of the
+    // new one); a swallowed throw.
+    const previousRosters = (): P2Rosters => p2Base();
+    const changedRosters = (): P2Rosters =>
+      grid === 'party'
+        ? {
+            party: [p2Kip({ currentHp: 7 }), p2Moss({ nickname: 'Mo' }), null, null, null, null],
+            box: p2Base().box,
+          }
+        : { party: p2Base().party, box: [p2Ember({ currentHp: 5 }), p2Dusk({ level: 9 })] };
+    const { parent, view } = c8bMount();
+    const base = previousRosters();
+    view.refresh(base.party, base.box);
+    view.show();
+    view.paint(c8bPaint({ tab: 'party' }));
 
-      const fault = p2ThrowOnButton(nth);
-      const next = changedRosters();
-      try {
-        expect(() => view.refresh(next.party, next.box), 'the throw surfaces').toThrow(
-          'p2: build failed',
-        );
-      } finally {
-        fault.restore();
-      }
-      expect(fault.thrown(), 'fixture: the fault fired').toBe(true);
+    const fault = p2ThrowOnButton(nth);
+    const next = changedRosters();
+    try {
+      expect(() => view.refresh(next.party, next.box), 'the throw surfaces').toThrow(
+        'p2: build failed',
+      );
+    } finally {
+      fault.restore();
+    }
+    expect(fault.thrown(), 'fixture: the fault fired').toBe(true);
 
-      const retry = which === 'changed' ? changedRosters() : previousRosters();
-      const expected = p2FreshSnapshot(which === 'changed' ? changedRosters() : previousRosters());
-      view.refresh(retry.party, retry.box);
-      expect(p2Snapshot(parent), 'the retry shows the right content').toEqual(expected);
+    const retry = which === 'changed' ? changedRosters() : previousRosters();
+    const expected = p2FreshSnapshot(which === 'changed' ? changedRosters() : previousRosters());
+    view.refresh(retry.party, retry.box);
+    expect(p2Snapshot(parent), 'the retry shows the right content').toEqual(expected);
 
-      // Stable again: an equal roster keeps what the recovery built.
-      const built = [...p2Elements(partyGridOf(parent)), ...p2Elements(boxGridOf(parent))];
-      const again = which === 'changed' ? changedRosters() : previousRosters();
-      view.refresh(again.party, again.box);
-      const kept = [...p2Elements(partyGridOf(parent)), ...p2Elements(boxGridOf(parent))];
-      expect(kept).toHaveLength(built.length);
-      kept.forEach((el, i) => {
-        expect(el, `element ${i} is kept after the recovery`).toBe(built[i]);
-      });
-    },
-  );
+    // Stable again: an equal roster keeps what the recovery built.
+    const built = [...p2Elements(partyGridOf(parent)), ...p2Elements(boxGridOf(parent))];
+    const again = which === 'changed' ? changedRosters() : previousRosters();
+    view.refresh(again.party, again.box);
+    const kept = [...p2Elements(partyGridOf(parent)), ...p2Elements(boxGridOf(parent))];
+    expect(kept).toHaveLength(built.length);
+    kept.forEach((el, i) => {
+      expect(el, `element ${i} is kept after the recovery`).toBe(built[i]);
+    });
+  });
 
   it('POLISH1-P2-LOCALE: after the locale switches, an EQUAL refresh re-renders the card copy (To Box, To Party, empty slot, empty box, stats) in the new language', () => {
     // WRONG IMPL KILLED: a key that omits the locale (the equal roster is skipped and every card
