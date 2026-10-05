@@ -3914,3 +3914,765 @@ describe('BoxView ctl-10a: no Heal Party control (CTL10A.4)', () => {
     expect(i18nT, 'box.heal is never resolved, on any path').not.toHaveBeenCalledWith('box.heal');
   });
 });
+
+// =============================================================================
+// polish-1 P2: a store batch that leaves the box view model unchanged keeps its card and button
+// nodes.
+//
+// EARS: WHEN the box view model is unchanged across a store batch, THE CLIENT SHALL keep its card
+// and button nodes.
+//
+// main.ts builds FRESH arrays of FRESH card objects on every batch and calls `refresh(party, box)`,
+// so "unchanged" is deep equality, never reference identity: every roster below comes from the
+// `p2*` factories, which return new objects on every call. RED REASON today: `refresh()` runs
+// `#renderParty` / `#renderBox`, which `replaceChildren()` their grid and rebuild every card and
+// button, so no node survives a second refresh and a focused button loses focus. The changed-vm
+// cases and the cursor case pass today (they pin what the keep must not break).
+// =============================================================================
+
+const p2Kip = (over: Partial<MonsterCardViewModel> = {}): MonsterCardViewModel =>
+  makeCard({
+    monsterId: 100n,
+    speciesName: 'Sproutle',
+    nickname: 'Kip',
+    level: 5,
+    currentHp: 18,
+    statHp: 20,
+    hpPercent: 90,
+    partySlot: 0,
+    evolutionChoicePending: false,
+    ...over,
+  });
+const p2Moss = (over: Partial<MonsterCardViewModel> = {}): MonsterCardViewModel =>
+  makeCard({
+    monsterId: 101n,
+    speciesName: 'Mossling',
+    nickname: '',
+    level: 4,
+    currentHp: 12,
+    statHp: 20,
+    hpPercent: 60,
+    partySlot: 1,
+    evolutionChoicePending: false,
+    ...over,
+  });
+const p2Ember = (over: Partial<MonsterCardViewModel> = {}): MonsterCardViewModel =>
+  makeCard({
+    monsterId: 200n,
+    speciesName: 'Emberfang',
+    nickname: '',
+    level: 7,
+    currentHp: 21,
+    statHp: 21,
+    hpPercent: 100,
+    partySlot: BOX_SLOT,
+    evolutionChoicePending: false,
+    ...over,
+  });
+const p2Dusk = (over: Partial<MonsterCardViewModel> = {}): MonsterCardViewModel =>
+  makeCard({
+    monsterId: 300n,
+    speciesName: 'Duskling',
+    nickname: '',
+    level: 3,
+    currentHp: 9,
+    statHp: 15,
+    hpPercent: 60,
+    partySlot: BOX_SLOT,
+    evolutionChoicePending: false,
+    ...over,
+  });
+
+interface P2Rosters {
+  party: (MonsterCardViewModel | null)[];
+  box: MonsterCardViewModel[];
+}
+/** A FRESH deep-equal roster every call: two filled party slots, four null ones, two box monsters. */
+const p2Base = (): P2Rosters => ({
+  party: [p2Kip(), p2Moss(), null, null, null, null],
+  box: [p2Ember(), p2Dusk()],
+});
+
+/** The stats line a card shows, resolved the way the view resolves it. */
+const p2Stats = (c: MonsterCardViewModel): string =>
+  i18nTf('box.card.stats', {
+    species: c.speciesName,
+    level: c.level,
+    current: c.currentHp,
+    max: c.statHp,
+    percent: c.hpPercent,
+  });
+const p2Name = (c: MonsterCardViewModel): string => c.nickname || c.speciesName;
+
+/** Every element under `grid`, in document order: the strongest "same nodes" probe. */
+const p2Elements = (grid: Element): Element[] => Array.from(grid.querySelectorAll('*'));
+
+/** Spies (call-through) on every DOM-mutating method of `el`; the calls are read, then restored. */
+function p2SpyDomWrites(el: HTMLElement): { calls: () => unknown[][]; restore: () => void } {
+  const spies = (
+    ['replaceChildren', 'appendChild', 'removeChild', 'insertBefore', 'append', 'prepend'] as const
+  ).map((name) => vi.spyOn(el, name as 'appendChild'));
+  return {
+    calls: () => spies.flatMap((s) => s.mock.calls as unknown[][]),
+    restore: () => {
+      for (const s of spies) s.mockRestore();
+    },
+  };
+}
+
+/** A canonical, attribute-order-independent serialisation of a subtree (tag, sorted attributes with
+ *  class tokens and style declarations sorted, children): two DOMs that look the same compare equal
+ *  whichever way they were built or updated. */
+function p2Serialize(node: Node): string {
+  if (node.nodeType === 3) return JSON.stringify(node.textContent ?? '');
+  if (node.nodeType !== 1) return '';
+  const el = node as Element;
+  const tag = el.tagName.toLowerCase();
+  const attrs = Array.from(el.attributes)
+    .map((a) => {
+      if (a.name === 'style') {
+        const decls = a.value
+          .split(';')
+          .map((s) => s.trim())
+          .filter((s) => s !== '')
+          .sort();
+        return `style=[${decls.join(';')}]`;
+      }
+      if (a.name === 'class') {
+        const tokens = a.value.split(' ').filter((s) => s !== '');
+        return `class=[${tokens.sort().join(' ')}]`;
+      }
+      return `${a.name}=${JSON.stringify(a.value)}`;
+    })
+    .sort();
+  return `<${tag} ${attrs.join(' ')}>${Array.from(el.childNodes).map(p2Serialize).join('')}</${tag}>`;
+}
+
+/** Both grids of a mounted, shown view, serialised. */
+function p2Snapshot(parent: HTMLElement): { party: string; box: string } {
+  return {
+    party: p2Serialize(partyGridOf(parent)),
+    box: p2Serialize(boxGridOf(parent)),
+  };
+}
+
+/** The oracle: what a brand-new view shows for `rosters`, painted on the Party tab. */
+function p2FreshSnapshot(rosters: P2Rosters): { party: string; box: string } {
+  const { parent, view } = c8bMount();
+  view.refresh(rosters.party, rosters.box);
+  view.show();
+  view.paint(c8bPaint({ tab: 'party' }));
+  const snapshot = p2Snapshot(parent);
+  view.hide();
+  return snapshot;
+}
+
+describe('BoxView polish-1 P2: an unchanged view model keeps its card and button nodes', () => {
+  it('POLISH1-P2-KEEP-NODES: refresh() again with FRESH deep-equal rosters keeps every card, slot and button node (the null party slots included), keeps the focused To Box button focused and working, and writes nothing into either grid', async () => {
+    // WRONG IMPL KILLED: the current replaceChildren() + rebuild (no node survives, focus falls to
+    // the title anchor); a "keep" that re-appends the same nodes (identity holds but a browser drops
+    // focus on remove + insert: caught by the zero DOM-write clause); a keep keyed on the array
+    // REFERENCES (main.ts hands new arrays per batch, so it never keeps); a keep for the cards
+    // only that still rebuilds the null slots or the buttons; a kept button whose handler was
+    // dropped or points at the wrong monster.
+    const { parent, view, callbacks } = c8bMount();
+    view.refresh(p2Base().party, p2Base().box);
+    view.show();
+    view.paint(c8bPaint({ tab: 'party' }));
+    await s4FlushMacrotask(); // show()'s deferred anchor focus lands before the player focuses a button
+
+    const party = partyGridOf(parent);
+    const box = boxGridOf(parent);
+    const slotsBefore = [...Array.from(party.children), ...Array.from(box.children)];
+    const cardsBefore = [...c8bCards(party), ...c8bCards(box)];
+    const elementsBefore = [...p2Elements(party), ...p2Elements(box)];
+    const buttonsBefore = [
+      ...Array.from(party.querySelectorAll('button')),
+      ...Array.from(box.querySelectorAll('button')),
+    ];
+    expect(slotsBefore, 'six party slots (two cards, four null) and two box cards').toHaveLength(8);
+    expect(cardsBefore, 'four monster cards carry a nav key').toHaveLength(4);
+    expect(buttonsBefore.map((b) => b.textContent)).toEqual([
+      'To Box',
+      'To Box',
+      'To Party',
+      'To Party',
+    ]);
+
+    const toBox = buttonsBefore[0] as HTMLButtonElement;
+    toBox.focus();
+    expect(document.activeElement, 'precondition: the first To Box button holds focus').toBe(toBox);
+
+    const writes = [p2SpyDomWrites(party), p2SpyDomWrites(box)];
+    try {
+      for (let batch = 0; batch < 3; batch += 1) {
+        const fresh = p2Base();
+        view.refresh(fresh.party, fresh.box);
+        await s4FlushMacrotask();
+        const slots = [...Array.from(party.children), ...Array.from(box.children)];
+        expect(slots, `batch ${batch}: the slot count`).toHaveLength(slotsBefore.length);
+        slots.forEach((el, i) => {
+          expect(el, `batch ${batch}: slot ${i} is the identical node`).toBe(slotsBefore[i]);
+        });
+        const cards = [...c8bCards(party), ...c8bCards(box)];
+        cards.forEach((el, i) => {
+          expect(el, `batch ${batch}: card ${i} is the identical node`).toBe(cardsBefore[i]);
+        });
+        const elements = [...p2Elements(party), ...p2Elements(box)];
+        expect(elements, `batch ${batch}: the element count`).toHaveLength(elementsBefore.length);
+        elements.forEach((el, i) => {
+          expect(el, `batch ${batch}: element ${i} is the identical node`).toBe(elementsBefore[i]);
+        });
+        const buttons = [
+          ...Array.from(party.querySelectorAll('button')),
+          ...Array.from(box.querySelectorAll('button')),
+        ];
+        buttons.forEach((el, i) => {
+          expect(el, `batch ${batch}: button ${i} is the identical node`).toBe(buttonsBefore[i]);
+        });
+        expect(document.activeElement, `batch ${batch}: the focused button keeps focus`).toBe(
+          toBox,
+        );
+      }
+      expect(
+        writes.flatMap((w) => w.calls()),
+        'an unchanged roster performs no DOM insertion or removal in either grid',
+      ).toEqual([]);
+    } finally {
+      for (const w of writes) w.restore();
+    }
+
+    // The kept buttons still work, for THEIR card's monster.
+    toBox.click();
+    expect(callbacks.onSetPartySlot).toHaveBeenCalledTimes(1);
+    expect(callbacks.onSetPartySlot).toHaveBeenLastCalledWith(100n, BOX_SLOT);
+    (buttonsBefore[2] as HTMLButtonElement).click();
+    expect(callbacks.onSetPartySlot).toHaveBeenCalledTimes(2);
+    expect(callbacks.onSetPartySlot).toHaveBeenLastCalledWith(200n, NEXT_FREE_SLOT_SENTINEL);
+    (buttonsBefore[3] as HTMLButtonElement).click();
+    expect(callbacks.onSetPartySlot).toHaveBeenLastCalledWith(300n, NEXT_FREE_SLOT_SENTINEL);
+  });
+
+  it('POLISH1-P2-KEEP-NODES-STORAGE-EMPTY: on the Storage tab a focused To Party button survives an equal refresh, and an EMPTY box keeps its "no monsters" node across equal refreshes', async () => {
+    // WRONG IMPL KILLED: a keep that only covers the party grid; a keep that skips the box grid's
+    // focused button; an empty-box branch (the early return in #renderBox) that rebuilds its line
+    // on every batch because it sits outside the keep.
+    const { parent, view } = c8bMount();
+    view.refresh(p2Base().party, p2Base().box);
+    view.show();
+    view.paint(c8bPaint({ tab: 'storage' }));
+    await s4FlushMacrotask();
+
+    const box = boxGridOf(parent);
+    const buttonsBefore = Array.from(box.querySelectorAll('button'));
+    expect(buttonsBefore.map((b) => b.textContent)).toEqual(['To Party', 'To Party']);
+    const second = buttonsBefore[1] as HTMLButtonElement;
+    second.focus();
+    expect(document.activeElement).toBe(second);
+
+    const fresh = p2Base();
+    view.refresh(fresh.party, fresh.box);
+    const buttonsAfter = Array.from(box.querySelectorAll('button'));
+    buttonsAfter.forEach((el, i) => {
+      expect(el, `box button ${i} is the identical node`).toBe(buttonsBefore[i]);
+    });
+    expect(document.activeElement, 'the focused To Party button keeps focus').toBe(second);
+
+    // The empty box: one line, kept across equal refreshes.
+    view.refresh(p2Base().party, []);
+    expect(box.textContent, 'precondition: the box is empty now').toBe(i18nT('box.box.empty'));
+    const lineBefore = Array.from(box.querySelectorAll('*'));
+    expect(lineBefore, 'precondition: the empty line is one element').toHaveLength(1);
+    view.refresh(p2Base().party, []);
+    view.refresh(p2Base().party, []);
+    const lineAfter = Array.from(box.querySelectorAll('*'));
+    expect(lineAfter).toHaveLength(1);
+    expect(lineAfter[0], 'the empty-box line is the identical node').toBe(lineBefore[0]);
+  });
+
+  interface P2Case {
+    readonly name: string;
+    /** True for an edit whose field may not be drawn at all (hpPercent feeds only the stats
+     *  line's optional percent): the "the DOM changed" precondition is skipped for it. */
+    readonly mayBeInvisible?: boolean;
+    readonly from: () => P2Rosters;
+    readonly to: () => P2Rosters;
+    readonly check: (ctx: {
+      party: HTMLElement;
+      box: HTMLElement;
+      from: P2Rosters;
+      to: P2Rosters;
+    }) => void;
+  }
+
+  /** `base` with the first party card (`where` 'party') or the first box card edited by `over`. */
+  const p2Edit = (
+    where: 'party' | 'box',
+    over: Partial<MonsterCardViewModel>,
+    base: P2Rosters,
+  ): P2Rosters => {
+    const next: P2Rosters = { party: [...base.party], box: [...base.box] };
+    if (where === 'party') {
+      next.party[0] = { ...(base.party[0] as MonsterCardViewModel), ...over };
+    } else {
+      next.box[0] = { ...(base.box[0] as MonsterCardViewModel), ...over };
+    }
+    return next;
+  };
+  const firstOf = (where: 'party' | 'box', r: P2Rosters): MonsterCardViewModel =>
+    (where === 'party' ? r.party[0] : r.box[0]) as MonsterCardViewModel;
+
+  const FIELD_EDITS: ReadonlyArray<readonly [string, Partial<MonsterCardViewModel>]> = [
+    ['currentHp only', { currentHp: 7 }],
+    ['statHp only', { statHp: 25 }],
+    ['hpPercent only', { hpPercent: 35 }],
+    ['level only', { level: 6 }],
+    ['nickname only', { nickname: 'Rex' }],
+    ['speciesName only', { speciesName: 'Thornling' }],
+  ];
+
+  const fieldCases: P2Case[] = (['party', 'box'] as const).flatMap((where) =>
+    FIELD_EDITS.map(
+      ([label, over]): P2Case => ({
+        name: `${where} card, ${label}`,
+        mayBeInvisible: label === 'hpPercent only',
+        from: p2Base,
+        to: () => p2Edit(where, over, p2Base()),
+        check: ({ party, box, from, to }) => {
+          const grid = where === 'party' ? party : box;
+          const was = firstOf(where, from);
+          const now = firstOf(where, to);
+          expect(grid.textContent ?? '', 'the new stats line shows').toContain(p2Stats(now));
+          expect(grid.textContent ?? '', 'the new name shows').toContain(p2Name(now));
+          if (p2Stats(was) !== p2Stats(now)) {
+            expect(grid.textContent ?? '', 'the old stats line is gone').not.toContain(
+              p2Stats(was),
+            );
+          }
+          if (was.nickname !== '' && was.nickname !== now.nickname) {
+            expect(grid.textContent ?? '', 'the old nickname is gone').not.toContain(was.nickname);
+          }
+        },
+      }),
+    ),
+  );
+
+  const badgeCases: P2Case[] = (['party', 'box'] as const).flatMap((where) =>
+    [true, false].map(
+      (pending): P2Case => ({
+        name: `${where} card, evolutionChoicePending ${String(!pending)} -> ${String(pending)} only`,
+        from: () => p2Edit(where, { evolutionChoicePending: !pending }, p2Base()),
+        to: () => p2Edit(where, { evolutionChoicePending: pending }, p2Base()),
+        check: ({ party, box }) => {
+          const grid = where === 'party' ? party : box;
+          const other = where === 'party' ? box : party;
+          expect(
+            grid.querySelectorAll(EVO_BADGE_SELECTOR),
+            pending ? 'the badge appears on the card' : 'the badge is gone from the card',
+          ).toHaveLength(pending ? 1 : 0);
+          expect(
+            other.querySelectorAll(EVO_BADGE_SELECTOR),
+            'the other grid has none',
+          ).toHaveLength(0);
+        },
+      }),
+    ),
+  );
+
+  const structuralCases: P2Case[] = [
+    {
+      name: 'a monster id changes at the same position',
+      from: p2Base,
+      to: () => p2Edit('party', { monsterId: 150n }, p2Base()),
+      check: ({ party }) => {
+        expect(c8bKeys(party), 'the card is keyed by its new id').toEqual(['150', '101']);
+      },
+    },
+    {
+      name: 'a monster moves from the box to a party slot',
+      from: p2Base,
+      to: () => ({
+        party: [p2Kip(), p2Moss(), p2Ember({ partySlot: 2 }), null, null, null],
+        box: [p2Dusk()],
+      }),
+      check: ({ party, box }) => {
+        expect(c8bKeys(party)).toEqual(['100', '101', '200']);
+        expect(c8bKeys(box)).toEqual(['300']);
+        expect(party.textContent ?? '').toContain(p2Stats(p2Ember({ partySlot: 2 })));
+        expect(box.textContent ?? '', 'no stale Emberfang in the box').not.toContain('Emberfang');
+        expect(party.textContent ?? '', 'slot 2 is no longer an empty slot').not.toContain(
+          i18nTf('box.party.emptySlot', { slot: 2 }),
+        );
+        expect(party.textContent ?? '', 'slot 3 still is').toContain(
+          i18nTf('box.party.emptySlot', { slot: 3 }),
+        );
+      },
+    },
+    {
+      name: 'a monster moves from the party to the box',
+      from: p2Base,
+      to: () => ({
+        party: [p2Kip(), null, null, null, null, null],
+        box: [p2Ember(), p2Dusk(), p2Moss({ partySlot: BOX_SLOT })],
+      }),
+      check: ({ party, box }) => {
+        expect(c8bKeys(party)).toEqual(['100']);
+        expect(c8bKeys(box)).toEqual(['200', '300', '101']);
+        expect(party.textContent ?? '', 'no stale Mossling in the party').not.toContain('Mossling');
+        expect(party.textContent ?? '', 'slot 1 is an empty slot now').toContain(
+          i18nTf('box.party.emptySlot', { slot: 1 }),
+        );
+      },
+    },
+    {
+      name: 'the box becomes empty',
+      from: p2Base,
+      to: () => ({ party: p2Base().party, box: [] }),
+      check: ({ box }) => {
+        expect(c8bKeys(box), 'no cards').toEqual([]);
+        expect(box.textContent, 'only the empty line').toBe(i18nT('box.box.empty'));
+      },
+    },
+    {
+      name: 'the box fills from empty',
+      from: () => ({ party: p2Base().party, box: [] }),
+      to: () => ({ party: p2Base().party, box: [p2Ember()] }),
+      check: ({ box }) => {
+        expect(c8bKeys(box)).toEqual(['200']);
+        expect(box.textContent ?? '', 'the empty line is gone').not.toContain(
+          i18nT('box.box.empty'),
+        );
+      },
+    },
+    {
+      name: 'two party monsters swap slots',
+      from: p2Base,
+      to: () => ({
+        party: [p2Moss({ partySlot: 0 }), p2Kip({ partySlot: 1 }), null, null, null, null],
+        box: [p2Ember(), p2Dusk()],
+      }),
+      check: ({ party }) => {
+        expect(c8bKeys(party), 'the cards follow the new order').toEqual(['101', '100']);
+      },
+    },
+    {
+      name: 'a null party slot fills',
+      from: p2Base,
+      to: () => ({
+        party: [p2Kip(), p2Moss(), null, p2Dusk({ partySlot: 3 }), null, null],
+        box: [p2Ember()],
+      }),
+      check: ({ party, box }) => {
+        expect(c8bKeys(party)).toEqual(['100', '101', '300']);
+        expect(c8bKeys(box)).toEqual(['200']);
+        expect(party.textContent ?? '', 'slot 3 is no longer empty').not.toContain(
+          i18nTf('box.party.emptySlot', { slot: 3 }),
+        );
+      },
+    },
+  ];
+
+  it.each(
+    [...fieldCases, ...badgeCases, ...structuralCases].map((c) => [c.name, c] as const),
+  )('POLISH1-P2-CHANGED-REBUILDS: %s -> the new content shows in the right grid, no stale node', (_name, c) => {
+    // WRONG IMPL KILLED: a keep keyed on a subset of the card fields (omitting currentHp, statHp,
+    // hpPercent, level, nickname, speciesName, evolutionChoicePending or monsterId leaves the
+    // stale node showing: every one of those is edited ALONE here, in a party and a box card); a
+    // keep keyed on the card COUNT or the monster ids; a keep that skips the empty-slot / empty-box
+    // branches; a changed refresh that updates one grid only. The oracle compares the kept view's
+    // two grids, canonically serialised, with a brand-new view painted from the same changed
+    // rosters, so a stale attribute or a stray node anywhere reads as a difference.
+    const from = c.from();
+    const to = c.to();
+    const expected = p2FreshSnapshot(c.to());
+
+    const { parent, view } = c8bMount();
+    view.refresh(from.party, from.box);
+    view.show();
+    view.paint(c8bPaint({ tab: 'party' }));
+    const before = p2Snapshot(parent);
+    if (c.mayBeInvisible !== true) {
+      expect(before, 'precondition: the first roster differs from the changed one').not.toEqual(
+        expected,
+      );
+    }
+
+    view.refresh(to.party, to.box);
+    expect(p2Snapshot(parent), 'the kept view shows exactly what a fresh view shows').toEqual(
+      expected,
+    );
+    c.check({ party: partyGridOf(parent), box: boxGridOf(parent), from: c.from(), to: c.to() });
+  });
+
+  it('POLISH1-P2-CHANGED-REBUILDS-HANDLERS: after a card`s monster id changes, its buttons act on the NEW id (the kept view does not keep the old closure)', () => {
+    // WRONG IMPL KILLED: an in-place update of a kept card that rewrites the text but leaves the
+    // button's click handler bound to the previous monster.
+    const { parent, view, callbacks } = c8bMount();
+    view.refresh(p2Base().party, p2Base().box);
+    view.show();
+    view.paint(c8bPaint({ tab: 'party' }));
+    view.refresh(p2Edit('party', { monsterId: 150n }, p2Base()).party, p2Base().box);
+    const toBox = Array.from(partyGridOf(parent).querySelectorAll('button')).find(
+      (b) => b.textContent === 'To Box',
+    );
+    expect(toBox, 'precondition: a To Box button exists').toBeDefined();
+    toBox?.click();
+    expect(callbacks.onSetPartySlot).toHaveBeenCalledTimes(1);
+    expect(callbacks.onSetPartySlot).toHaveBeenCalledWith(150n, BOX_SLOT);
+  });
+
+  it('POLISH1-P2-CURSOR-SURVIVES: the kept paint (the cursor card`s is-active, aria-current and outline) is still applied after an equal refresh, after a changed one, and for the first-card default', () => {
+    // WRONG IMPL KILLED: a keep that skips #apply() after an unchanged refresh and so loses a mark
+    // a rebuild would have re-applied; a keep that leaves the OLD cursor card marked as well; a
+    // changed refresh whose rebuilt card is not re-marked; a null key that no longer defaults to
+    // the first card of the tab.
+    const { parent, view, root } = c8bMount();
+    view.refresh(p2Base().party, p2Base().box);
+    view.show();
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101' }));
+
+    const expectCursor = (key: string, when: string): HTMLElement => {
+      const marked = c8bMarked(root);
+      expect(marked, `${when}: exactly one aria-current`).toHaveLength(1);
+      const card = marked[0] as HTMLElement;
+      expect(card.dataset.navKey, `${when}: the card of key ${key}`).toBe(key);
+      expect(card.classList.contains('is-active'), `${when}: is-active`).toBe(true);
+      expect(card.style.outline, `${when}: the outline (never colour alone)`).not.toBe('');
+      for (const other of [...c8bCards(partyGridOf(parent)), ...c8bCards(boxGridOf(parent))]) {
+        if (other !== card) {
+          expect(other.classList.contains('is-active'), `${when}: ${other.dataset.navKey}`).toBe(
+            false,
+          );
+        }
+      }
+      return card;
+    };
+
+    const cursorBefore = expectCursor('101', 'painted');
+    view.refresh(p2Base().party, p2Base().box);
+    view.refresh(p2Base().party, p2Base().box);
+    const cursorAfter = expectCursor('101', 'after equal refreshes');
+    expect(cursorAfter, 'and it is the very card node that was marked').toBe(cursorBefore);
+
+    // A changed card keeps the cursor on its key.
+    view.refresh(
+      [p2Kip(), p2Moss({ currentHp: 3, hpPercent: 15 }), null, null, null, null],
+      [p2Ember(), p2Dusk()],
+    );
+    const changed = expectCursor('101', 'after the cursor card changed');
+    expect(changed.textContent ?? '', 'and it shows the new stats').toContain(
+      p2Stats(p2Moss({ currentHp: 3, hpPercent: 15 })),
+    );
+
+    // Storage tab, a box card; then no key at all: the first card of the tab.
+    view.paint(c8bPaint({ tab: 'storage', activeKey: '300' }));
+    view.refresh(p2Base().party, p2Base().box);
+    expectCursor('300', 'storage 300 after an equal refresh');
+    view.paint(c8bPaint({ tab: 'party', activeKey: null }));
+    view.refresh(p2Base().party, p2Base().box);
+    expectCursor('100', 'no key: the first party card, after an equal refresh');
+  });
+});
+
+// =============================================================================
+// polish-1 P2, round 2: the "unchanged" key must be exact (no delimiter collisions across fields or
+// cards), a build that throws must not poison the key, and the cards' copy follows the locale.
+// =============================================================================
+
+import { CATALOG_EN as P2_CATALOG_EN } from './i18n/catalog.en';
+import { CATALOG_FR as P2_CATALOG_FR } from './i18n/catalog.fr';
+import { setLocale as p2SetLocale } from './i18n/resolver';
+
+describe('BoxView polish-1 P2 round 2: exact keep key, throw recovery, locale', () => {
+  const rosters = (
+    party0: MonsterCardViewModel,
+    box: MonsterCardViewModel[] = [p2Ember(), p2Dusk()],
+  ): P2Rosters => ({ party: [party0, p2Moss(), null, null, null, null], box });
+
+  it.each([
+    [
+      'species "A|B" + nickname "C" vs species "A" + nickname "B|C"',
+      () => rosters(p2Kip({ speciesName: 'A|B', nickname: 'C' })),
+      () => rosters(p2Kip({ speciesName: 'A', nickname: 'B|C' })),
+    ],
+    [
+      'nickname "1" + species "2,3" vs nickname "1,2" + species "3"',
+      () => rosters(p2Kip({ nickname: '1', speciesName: '2,3' })),
+      () => rosters(p2Kip({ nickname: '1,2', speciesName: '3' })),
+    ],
+    [
+      'species "Sp5" + level 1 vs species "Sp" + level 51 (digits spill across fields)',
+      () => rosters(p2Kip({ speciesName: 'Sp5', level: 1 })),
+      () => rosters(p2Kip({ speciesName: 'Sp', level: 51 })),
+    ],
+    [
+      'hp 1 of 120 vs hp 11 of 20 (digits spill across fields)',
+      () => rosters(p2Kip({ currentHp: 1, statHp: 120 })),
+      () => rosters(p2Kip({ currentHp: 11, statHp: 20 })),
+    ],
+    [
+      'two box cards with nicknames "A|" + "B" vs "A" + "|B" (collide across cards)',
+      () => rosters(p2Kip(), [p2Ember({ nickname: 'A|' }), p2Dusk({ nickname: 'B' })]),
+      () => rosters(p2Kip(), [p2Ember({ nickname: 'A' }), p2Dusk({ nickname: '|B' })]),
+    ],
+    [
+      'two box cards with ids 1 + 23 vs 12 + 3 (only the nav keys differ)',
+      () => rosters(p2Kip(), [p2Ember({ monsterId: 1n }), p2Dusk({ monsterId: 23n })]),
+      () => rosters(p2Kip(), [p2Ember({ monsterId: 12n }), p2Dusk({ monsterId: 3n })]),
+    ],
+    [
+      'quote / backslash nicknames that spell a JSON split across two cards',
+      () => rosters(p2Kip(), [p2Ember({ nickname: 'a","b' }), p2Dusk({ nickname: 'c' })]),
+      () => rosters(p2Kip(), [p2Ember({ nickname: 'a' }), p2Dusk({ nickname: 'b","c' })]),
+    ],
+  ])('POLISH1-P2-KEY-COLLISION: %s -> the new text shows', (_name, from, to) => {
+    // WRONG IMPL KILLED: a key built by join('|') / join(',') / concatenation of the card fields:
+    // the two rosters give the same key string, the second refresh is wrongly skipped and the stale
+    // card text stays. The oracle is a brand-new view painted from the second roster.
+    const first = from();
+    const second = to();
+    const expected = p2FreshSnapshot(to());
+    const { parent, view } = c8bMount();
+    view.refresh(first.party, first.box);
+    view.show();
+    view.paint(c8bPaint({ tab: 'party' }));
+    expect(p2Snapshot(parent), 'precondition: the two rosters render differently').not.toEqual(
+      expected,
+    );
+    view.refresh(second.party, second.box);
+    expect(p2Snapshot(parent), 'the kept view shows what a fresh view shows').toEqual(expected);
+  });
+
+  /** `document.createElement` made to throw on its `nth` call for a <button> (1-based), once. */
+  function p2ThrowOnButton(nth: number): { restore: () => void; thrown: () => boolean } {
+    const real = document.createElement.bind(document);
+    let seen = 0;
+    let thrown = false;
+    const spy = vi.spyOn(document, 'createElement').mockImplementation(((
+      tag: string,
+      options?: ElementCreationOptions,
+    ) => {
+      if (tag === 'button') {
+        seen += 1;
+        if (seen === nth) {
+          thrown = true;
+          throw new Error('p2: build failed');
+        }
+      }
+      return real(tag, options);
+    }) as typeof document.createElement);
+    return { restore: () => spy.mockRestore(), thrown: () => thrown };
+  }
+
+  it.each([
+    ['party', 'changed', 2],
+    ['party', 'previous', 2],
+    ['box', 'changed', 1],
+    ['box', 'previous', 1],
+  ] as const)('POLISH1-P2-THROW-RECOVERY: a %s build that throws surfaces, and refreshing the %s roster again rebuilds the right content', (grid, which, nth) => {
+    // WRONG IMPL KILLED: a key recorded BEFORE the build (the retry with the same roster is skipped
+    // and the half-built grid stays); a key NOT cleared before the build (the previous roster's key
+    // still matches, so refreshing the previous roster is skipped while the grid holds half of the
+    // new one); a swallowed throw.
+    const previousRosters = (): P2Rosters => p2Base();
+    const changedRosters = (): P2Rosters =>
+      grid === 'party'
+        ? {
+            party: [p2Kip({ currentHp: 7 }), p2Moss({ nickname: 'Mo' }), null, null, null, null],
+            box: p2Base().box,
+          }
+        : { party: p2Base().party, box: [p2Ember({ currentHp: 5 }), p2Dusk({ level: 9 })] };
+    const { parent, view } = c8bMount();
+    const base = previousRosters();
+    view.refresh(base.party, base.box);
+    view.show();
+    view.paint(c8bPaint({ tab: 'party' }));
+
+    const fault = p2ThrowOnButton(nth);
+    const next = changedRosters();
+    try {
+      expect(() => view.refresh(next.party, next.box), 'the throw surfaces').toThrow(
+        'p2: build failed',
+      );
+    } finally {
+      fault.restore();
+    }
+    expect(fault.thrown(), 'fixture: the fault fired').toBe(true);
+
+    const retry = which === 'changed' ? changedRosters() : previousRosters();
+    const expected = p2FreshSnapshot(which === 'changed' ? changedRosters() : previousRosters());
+    view.refresh(retry.party, retry.box);
+    expect(p2Snapshot(parent), 'the retry shows the right content').toEqual(expected);
+
+    // Stable again: an equal roster keeps what the recovery built.
+    const built = [...p2Elements(partyGridOf(parent)), ...p2Elements(boxGridOf(parent))];
+    const again = which === 'changed' ? changedRosters() : previousRosters();
+    view.refresh(again.party, again.box);
+    const kept = [...p2Elements(partyGridOf(parent)), ...p2Elements(boxGridOf(parent))];
+    expect(kept).toHaveLength(built.length);
+    kept.forEach((el, i) => {
+      expect(el, `element ${i} is kept after the recovery`).toBe(built[i]);
+    });
+  });
+
+  it('POLISH1-P2-LOCALE: after the locale switches, an EQUAL refresh re-renders the card copy (To Box, To Party, empty slot, empty box, stats) in the new language', () => {
+    // WRONG IMPL KILLED: a key that omits the locale (the equal roster is skipped and every card
+    // keeps its old-language button, empty-slot, empty-box and stats text).
+    const EN = P2_CATALOG_EN as unknown as Record<string, string>;
+    const FR = P2_CATALOG_FR as unknown as Record<string, string>;
+    const cards = (): P2Rosters => ({
+      party: [p2Kip(), null, null, null, null, null],
+      box: [p2Ember()],
+    });
+    const { parent, view } = c8bMount();
+    const first = cards();
+    view.refresh(first.party, first.box);
+    view.show();
+    view.paint(c8bPaint({ tab: 'party' }));
+    const party = partyGridOf(parent);
+    const box = boxGridOf(parent);
+    try {
+      p2SetLocale('en');
+      expect(
+        Array.from(party.querySelectorAll('button')).map((b) => b.textContent),
+        'precondition: English',
+      ).toEqual([EN['box.card.toBox']]);
+
+      p2SetLocale('fr');
+      for (const key of ['box.card.toBox', 'box.card.toParty', 'box.box.empty']) {
+        expect(FR[key], `fixture: ${key} differs between fr and en`).not.toBe(EN[key]);
+      }
+      const second = cards();
+      view.refresh(second.party, second.box);
+      expect(Array.from(party.querySelectorAll('button')).map((b) => b.textContent)).toEqual([
+        FR['box.card.toBox'],
+      ]);
+      expect(Array.from(box.querySelectorAll('button')).map((b) => b.textContent)).toEqual([
+        FR['box.card.toParty'],
+      ]);
+      expect(party.textContent ?? '', 'the empty slot copy is French').toContain(
+        i18nTf('box.party.emptySlot', { slot: 1 }),
+      );
+      expect(party.textContent ?? '', 'the stats copy is French').toContain(p2Stats(p2Kip()));
+      expect(box.textContent ?? '').toContain(p2Stats(p2Ember()));
+
+      // The empty box line: rendered in English first, then an equal refresh under fr.
+      p2SetLocale('en');
+      view.refresh(cards().party, []);
+      expect(box.textContent).toBe(EN['box.box.empty']);
+      p2SetLocale('fr');
+      view.refresh(cards().party, []);
+      expect(box.textContent, 'the empty-box line is French').toBe(FR['box.box.empty']);
+
+      // And back: the switch is not one-way.
+      p2SetLocale('en');
+      view.refresh(cards().party, []);
+      expect(box.textContent).toBe(EN['box.box.empty']);
+      expect(Array.from(party.querySelectorAll('button')).map((b) => b.textContent)).toEqual([
+        EN['box.card.toBox'],
+      ]);
+    } finally {
+      p2SetLocale('en');
+    }
+  });
+});

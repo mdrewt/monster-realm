@@ -28,6 +28,7 @@ import {
   FRAME_SIZES,
   type FrameChrome,
   type FrameSize,
+  feedbackAnnouncement,
   feedbackStep,
   NO_FEEDBACK,
   renderFeedback,
@@ -420,5 +421,127 @@ describe('frame chrome', () => {
     const g = createFrame(document, { id: 'bag', size: 'small' });
     expect(g.feedback.getAttribute('data-feedback') ?? '').toBe('');
     expect(g.feedback.textContent).toBe('');
+  });
+});
+
+// --- polish-1 P5: the feedback line is announced through the live region, once per change ------
+//
+// EARS: WHEN a menu entry's Y description or ok/error/pending frame feedback is rendered, THE
+// CLIENT SHALL announce it through the live region, once per change.
+//
+// `feedbackAnnouncement(prev, next)` is the pure decision main.ts's `applyMenuStep` asks for every
+// menu step: the text to announce, or null. It returns `next.text` exactly when `next` shows
+// something (kind is not 'none'), that something has text, and it is a CHANGE from `prev` (a
+// different kind or different text). The same visible line again is null (a repeat Y, a repeat
+// render, a pending line re-begun under a new token with the same words). The feedback line node
+// itself stays a non-live node (CTL4-6-FEEDBACK-RENDER above pins no aria-live); `#a11y-live` is
+// the page's one live region. RED REASON today: `feedbackAnnouncement` is not exported from
+// ./frame, so every case below calls undefined.
+describe('feedbackAnnouncement (polish-1 P5)', () => {
+  const NONE: FeedbackState = { kind: 'none' };
+  const pend = (token: number, text: string): FeedbackState => ({ kind: 'pending', token, text });
+  const okS = (text: string): FeedbackState => ({ kind: 'ok', text });
+  const errS = (text: string): FeedbackState => ({ kind: 'error', text });
+  const infoS = (text: string): FeedbackState => ({ kind: 'info', text });
+
+  const rows: Array<[string, FeedbackState, FeedbackState, string | null]> = [
+    [
+      'none -> info announces the description',
+      NONE,
+      infoS('Review your quests'),
+      'Review your quests',
+    ],
+    ['none -> pending announces the pending text', NONE, pend(1, 'Saving'), 'Saving'],
+    ['pending -> ok announces the resolved text', pend(1, 'Saving'), okS('Saved'), 'Saved'],
+    [
+      'pending -> error announces the failure text',
+      pend(1, 'Saving'),
+      errS('It failed'),
+      'It failed',
+    ],
+    ['info -> the same info again is silent', infoS('fyi'), infoS('fyi'), null],
+    ['info -> a different info announces the new text', infoS('fyi'), infoS('other'), 'other'],
+    ['info -> none is silent', infoS('fyi'), NONE, null],
+    ['ok -> none is silent', okS('Saved'), NONE, null],
+    ['error -> none is silent', errS('It failed'), NONE, null],
+    ['pending -> none is silent', pend(1, 'Saving'), NONE, null],
+    ['none -> none is silent', NONE, NONE, null],
+    ['none -> info with empty text is silent', NONE, infoS(''), null],
+    ['info -> info with empty text is silent', infoS('fyi'), infoS(''), null],
+    ['none -> pending with empty text is silent', NONE, pend(1, ''), null],
+    [
+      'pending -> pending, same words under a NEW token, is silent (the visible line is the same)',
+      pend(1, 'Saving'),
+      pend(2, 'Saving'),
+      null,
+    ],
+    ['pending -> the identical pending is silent', pend(1, 'Saving'), pend(1, 'Saving'), null],
+    [
+      'pending -> pending with new words announces them',
+      pend(1, 'Saving'),
+      pend(2, 'Still saving'),
+      'Still saving',
+    ],
+    [
+      'pending -> ok with the SAME words is a change of kind: announced',
+      pend(1, 'Done'),
+      okS('Done'),
+      'Done',
+    ],
+    ['info -> ok with the same words is a change of kind: announced', infoS('x'), okS('x'), 'x'],
+    ['ok -> error with the same words is a change of kind: announced', okS('x'), errS('x'), 'x'],
+    ['ok -> the same ok again is silent', okS('Saved'), okS('Saved'), null],
+    [
+      'ok -> a pending begin announces its text',
+      okS('Saved'),
+      pend(2, 'Saving again'),
+      'Saving again',
+    ],
+  ];
+
+  it.each(rows)('POLISH1-P5-ANNOUNCEMENT: %s', (_name, prev, next, expected) => {
+    // WRONG IMPL KILLED: a missing export; an announcement on every step with feedback (a repeat
+    // Y or a repeat render would re-announce); one that compares text only (ok after pending with
+    // the same words would stay silent) or kind only (a new info text would stay silent); one that
+    // announces a none state or empty text; one that announces the previous text; one that
+    // compares the pending TOKEN (a re-begun identical line would be announced twice).
+    expect(feedbackAnnouncement(prev, next)).toBe(expected);
+  });
+
+  it('POLISH1-P5-ANNOUNCEMENT-PROPERTY: the same state twice is always silent, and any other result is exactly the new text', () => {
+    const text = fc.constantFrom('', 'a', 'b', 'Saving');
+    const state: fc.Arbitrary<FeedbackState> = fc.oneof(
+      fc.constant<FeedbackState>({ kind: 'none' }),
+      fc.record({
+        kind: fc.constant('pending' as const),
+        token: fc.integer({ min: 0, max: 3 }),
+        text,
+      }),
+      fc.record({ kind: fc.constantFrom('ok' as const, 'error' as const, 'info' as const), text }),
+    );
+    fc.assert(
+      fc.property(state, state, (prev, next) => {
+        expect(feedbackAnnouncement(prev, prev)).toBeNull();
+        const got = feedbackAnnouncement(prev, next);
+        if (got !== null) {
+          expect(next.kind).not.toBe('none');
+          expect(got).toBe((next as { text: string }).text);
+          expect(got).not.toBe('');
+        }
+        if (next.kind === 'none') expect(got).toBeNull();
+      }),
+      { numRuns: 300 },
+    );
+  });
+
+  it('POLISH1-P5-ANNOUNCEMENT-NOT-LIVE: rendering the announced states still leaves the feedback line a non-live node', () => {
+    // The announcement goes through #a11y-live, never through the line itself: no aria-live and no
+    // live role on the line, whichever state is rendered (CTL4-6-FEEDBACK-RENDER pins the same).
+    const f: FrameChrome = createFrame(document, { id: 'menu', size: 'side' });
+    for (const s of [infoS('fyi'), pend(1, 'Saving'), okS('Saved'), errS('It failed')]) {
+      renderFeedback(f, s);
+      expect(f.feedback.hasAttribute('aria-live'), s.kind).toBe(false);
+      expect(f.feedback.hasAttribute('role'), s.kind).toBe(false);
+    }
   });
 });

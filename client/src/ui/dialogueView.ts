@@ -59,6 +59,8 @@ export class DialogueView {
   private nodeText: HTMLElement;
   private choicesContainer: HTMLElement;
   #paint: DialoguePaint = OPENING;
+  /** What the choice and Shop buttons show (`#renderButtons`); null: rebuild on the next render. */
+  #buttonsKey: string | null = null;
 
   constructor() {
     // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
@@ -96,6 +98,27 @@ export class DialogueView {
     if (!wasVisible) this.#paint = OPENING; // a reopened talk starts without the last one's cursor
     this.npcName.textContent = vm.npcName;
     this.nodeText.textContent = vm.nodeText;
+    this.#renderButtons(vm);
+    this.#apply(this.#paint);
+    // The null->non-null EDGE, and only the edge -- paint first, then claim the
+    // overlay (D7: openOverlayA11y is the LAST statement, so its deferred focus resolves
+    // `initialFocusSelector` against a fully-painted root).
+    if (!wasVisible) openOverlayA11y('dialogueView', this.overlay);
+  }
+
+  /** Rebuild the choice and Shop buttons only when what they show changed: main.ts renders on every
+   *  store batch, and a rebuild drops focus and the press in flight. The key is JSON, never a
+   *  delimiter join (choice text is content). A rebuild that throws leaves no key, so the next
+   *  render rebuilds again. */
+  #renderButtons(vm: DialogueViewModel): void {
+    const shopLabel = vm.shopAction ? t('dialogue.action.shop') : null;
+    const key = JSON.stringify([
+      vm.choices.map((c) => [c.idx, c.text]),
+      vm.shopAction ? vm.shopAction.shopId : null,
+      shopLabel,
+    ]);
+    if (key === this.#buttonsKey) return;
+    this.#buttonsKey = null;
     this.choicesContainer.replaceChildren();
     vm.choices.forEach((choice) => {
       const btn = document.createElement('button');
@@ -111,15 +134,11 @@ export class DialogueView {
     if (vm.shopAction) {
       const shopBtn = document.createElement('button');
       shopBtn.className = 'mr-nav-item';
-      shopBtn.textContent = t('dialogue.action.shop');
+      shopBtn.textContent = shopLabel;
       shopBtn.dataset.shopId = String(vm.shopAction.shopId);
       this.choicesContainer.appendChild(shopBtn);
     }
-    this.#apply(this.#paint);
-    // The null->non-null EDGE, and only the edge -- paint first, then claim the
-    // overlay (D7: openOverlayA11y is the LAST statement, so its deferred focus resolves
-    // `initialFocusSelector` against a fully-painted root).
-    if (!wasVisible) openOverlayA11y('dialogueView', this.overlay);
+    this.#buttonsKey = key;
   }
 
   get visible(): boolean {
