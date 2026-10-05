@@ -778,4 +778,84 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     }
     fire('keyup', 'ArrowDown', t0 + 1400);
   });
+
+  it('POLISH1-P5-MENU-ANNOUNCES: Y on a menu entry announces its description through #a11y-live once, a repeat Y on the same entry is not announced again, another entry`s Y is, and the same entry`s Y after the line was cleared is', async () => {
+    // EARS: WHEN a menu entry's Y description ... is rendered, THE CLIENT SHALL announce it through
+    // the live region, once per change. The feedback line stays a non-live node (CTL5-4-MAIN-Y reads
+    // it as text); `#a11y-live` is the page's one live region, fed by liveRegion.announce(text, now).
+    //
+    // WRONG IMPL KILLED: the current silence (the description shows on the line only: a screen-reader
+    // user hears nothing after Y); an announcement made on EVERY menu step that carries feedback (a
+    // repeat Y, or any key that repaints, would re-announce the same line: counted below by the
+    // announce calls, because the region's own dedup hides a repeat from the DOM); one that
+    // announces the entry TITLE or another entry's text; a cursor move that announces its cleared
+    // (empty) line; a "once ever" latch (Y after a move away and back must announce again); and an
+    // announcement timed off anything but performance.now().
+    await bootAtMenu(2);
+    expect(navActive(), 'precondition: the cursor is on Journal').toBe('journal');
+    const liveRegionModule = await import('./ui/liveRegion');
+    const announce = vi.spyOn(liveRegionModule.LiveRegion.prototype, 'announce');
+    const region = (): string => document.getElementById('a11y-live')?.textContent ?? '';
+    const callsWith = (text: string): unknown[][] =>
+      announce.mock.calls.filter(([message]) => message === text);
+    const journalDesc = EN['menu.journal.desc'];
+    const socialDesc = EN['menu.social.desc'];
+    expect(journalDesc, 'fixture: the Journal description is real text').toBeTruthy();
+    expect(socialDesc, 'fixture: the Social description is real text').toBeTruthy();
+    expect(journalDesc).not.toBe(socialDesc);
+
+    // Let the menu's own open announcement land first (frames past the 500 ms window), so the Y
+    // description is not coalesced into it.
+    frame(1300);
+    frame(1900);
+    expect(document.getElementById('a11y-live'), '#a11y-live must exist').not.toBeNull();
+    expect(
+      region(),
+      'precondition: the open announcement landed and is not the description',
+    ).not.toBe(journalDesc);
+
+    // Y on Journal.
+    tap('KeyF', 2000);
+    expect(feedbackText(), 'precondition: Y shows the description on the line').toBe(journalDesc);
+    expect(
+      callsWith(journalDesc),
+      'Y announces the description once, stamped with performance.now()',
+    ).toEqual([[journalDesc, 2000]]);
+    frame(2600);
+    expect(region(), 'after the 500 ms window #a11y-live reads the description').toBe(journalDesc);
+
+    // A repeat Y with no move: the same visible line, so no second announcement.
+    tap('KeyF', 2700);
+    expect(feedbackText()).toBe(journalDesc);
+    frame(3300);
+    expect(callsWith(journalDesc), 'a repeat Y is not announced again').toHaveLength(1);
+    expect(region()).toBe(journalDesc);
+
+    // A move clears the line (nothing to announce), and Y on another entry announces its own text.
+    tap('ArrowDown', 3400);
+    expect(navActive()).toBe('social');
+    expect(feedbackText(), 'a move clears the line').toBe('');
+    tap('KeyF', 3500);
+    expect(feedbackText()).toBe(socialDesc);
+    expect(callsWith(socialDesc), 'the new entry`s description is announced once').toEqual([
+      [socialDesc, 3500],
+    ]);
+    frame(4100);
+    expect(region()).toBe(socialDesc);
+
+    // Back to Journal and Y again: the line was cleared in between, so this is a new change.
+    tap('ArrowUp', 4200);
+    expect(navActive()).toBe('journal');
+    expect(feedbackText()).toBe('');
+    tap('KeyF', 4300);
+    expect(callsWith(journalDesc), 'Y after a clear is announced again').toEqual([
+      [journalDesc, 2000],
+      [journalDesc, 4300],
+    ]);
+    frame(4900);
+    expect(region()).toBe(journalDesc);
+
+    // Clearing the line (a cursor move) is never announced as an empty message.
+    expect(callsWith(''), 'no empty announcement').toEqual([]);
+  });
 });

@@ -1361,3 +1361,89 @@ describe('claimModel 21r-b2: every claim-overlay string resolves through the typ
     );
   });
 });
+
+// ===========================================================================
+// polish-1 P4 — a succeeded guest claim clears the stored claim code.
+//
+// EARS: WHEN a guest claim succeeds, THE CLIENT SHALL clear the stored claim code, so the next
+// account-build connect does not re-issue `complete_guest_claim`.
+//
+// `claimStep` is the pure decision; main.ts's `applyClaim` performs the storage delete exactly when
+// `step.effect === 'delete-code-and-permit-join'` (main.claimCode.test.ts proves that end). Today a
+// `claim-succeeded` event returns effect 'none', so the consumed code stays in session storage and
+// the next connect re-issues the claim. RED REASON: `step.effect` is 'none'.
+//
+// Pre-existing cases in this file that pinned claim-succeeded's effect to 'none': none (the AUTH-55
+// sweep asserts the effect alphabet, which already contains the delete effect, and the veto-lift
+// sweep already lists claim-succeeded as legitimate), so no existing case changed.
+// ===========================================================================
+
+describe('claimModel polish-1 P4: claim-succeeded deletes the stored code', () => {
+  it.each([
+    ['code-pending', pending()],
+    ['awaiting-account', stateOf({ phase: 'awaiting-account', codeRetained: true })],
+  ] as const)(
+    'POLISH1-P4-SUCCEEDED-DELETES: claim-succeeded from %s has effect delete-code-and-permit-join, lands on claimed with the code gone and joining permitted',
+    (_label, from) => {
+      // WRONG IMPL KILLED: the current effect 'none' (the consumed code stays stored and the next
+      // account-build connect re-issues a claim that can only answer "invalid or already-used code");
+      // an effect 'join' (joins without clearing the code); a delete effect with the state left
+      // code-retained or join-vetoed (the model and the storage disagree).
+      const step = claimStep(from, { kind: 'claim-succeeded' });
+      expect(step.effect).toBe('delete-code-and-permit-join');
+      expect(step.next.phase).toBe('claimed');
+      expect(step.next.codeRetained, 'the model says the code is gone').toBe(false);
+      expect(step.next.joinPermitted, 'and joining is permitted').toBe(true);
+      expect(step.next.confirmPending).toBe(false);
+      expect(step.next.outcome).toBeUndefined();
+    },
+  );
+
+  it('POLISH1-P4-SUCCEEDED-DELETES-EVERYWHERE: claim-succeeded deletes the code from every state the model can be in, and never mutates its input', () => {
+    // WRONG IMPL KILLED: a delete effect only from code-pending (an awaiting-account, rejected or
+    // armed-decline model that sees the success would leave the code stored).
+    for (const state of SWEEP_STATES) {
+      const before = JSON.stringify(state);
+      const step = claimStep(state, { kind: 'claim-succeeded' });
+      expect(step.effect, `from ${state.phase}`).toBe('delete-code-and-permit-join');
+      expect(step.next.phase, `from ${state.phase}`).toBe('claimed');
+      expect(step.next.codeRetained, `from ${state.phase}`).toBe(false);
+      expect(JSON.stringify(state), `from ${state.phase}: input unchanged`).toBe(before);
+    }
+  });
+
+  it('POLISH1-P4-SUCCEEDED-DELETES-CONTROL: the events that must NOT delete still do not (a retain-bucket reject, a sign-in failure, an unarmed decline confirm)', () => {
+    // Control for the cases above: an impl that made EVERY step delete the code passes them.
+    const retain = [
+      'already has game data',
+      'account already claimed',
+      'cannot claim your own session',
+      'close your other tab, then retry',
+      'already in an ongoing battle',
+      'sign in required',
+      'no account',
+      'account pending deletion',
+    ];
+    for (const message of retain) {
+      const step = claimStep(pending(), {
+        kind: 'claim-rejected',
+        message,
+        claimedFrom: undefined,
+      });
+      expect(step.effect, message).toBe('none');
+      expect(step.next.codeRetained, message).toBe(true);
+    }
+    expect(
+      claimStep(pending(), { kind: 'sign-in-failed', reason: 'sign-in-rejected' }).effect,
+    ).toBe('none');
+    expect(
+      claimStep(pending({ confirmPending: false }), {
+        kind: 'decline-confirmed',
+        hasLiveConnection: true,
+      }).effect,
+    ).toBe('none');
+    expect(claimStep(pending(), { kind: 'claim-pending', code: 'a'.repeat(64) }).effect).toBe(
+      'none',
+    );
+  });
+});
