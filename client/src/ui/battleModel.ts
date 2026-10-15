@@ -514,133 +514,54 @@ export function decideBattleOverlay(
 // VM-compare guard (battleVMsEqual + shouldSkipBattleRefresh)
 // ---------------------------------------------------------------------------
 
-function cardEqual(a: BattleMonsterCardVM, b: BattleMonsterCardVM): boolean {
-  return (
-    a.speciesName === b.speciesName &&
-    a.level === b.level &&
-    a.currentHp === b.currentHp &&
-    a.maxHp === b.maxHp &&
-    a.hpPercent === b.hpPercent &&
-    a.affinity === b.affinity &&
-    a.status === b.status
-  );
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
 /**
- * Explicit field-by-field equality for BattleViewModels. Arrays are length-checked
- * first, then compared per-element. bigint battleId uses === directly — NEVER
- * JSON.stringify (bigint throws) or Number() (lossy above 2^53). Covers outcome,
- * turnNumber, activeIndex, both cards (all fields incl. status), skills, bench, baitOptions
- * (itemId + name + recruitBonus + count), canFlee/canSwap/canRecruit, and weather
- * (null-ness, label, turnsRemaining). Used by shouldSkipBattleRefresh.
+ * Leaf-exact structural equality for the VM-compare guard. Arrays are length-checked
+ * first, then compared per-element; plain objects compare over the UNION of both
+ * sides' own keys, so a field added to the VM (or present on only one side) always
+ * participates — no hand-maintained field roster to forget. Every leaf compares with
+ * `===`: bigint battleId included — NEVER JSON.stringify (bigint throws) or Number()
+ * (lossy above 2^53).
+ */
+function structurallyEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((el, i) => structurallyEqual(el, b[i]));
+  }
+  if (isRecord(a) && isRecord(b)) {
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    for (const k of keys) {
+      if (!structurallyEqual(a[k], b[k])) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Equality for BattleViewModels: a typed structural compare (per-leaf ===, bigint-safe),
+ * total over the VM's runtime fields so an added field flips equality without a compare
+ * edit (battleModel.test.ts C6 pins that). Used by shouldSkipBattleRefresh.
+ *
+ * KEPT deliberate looseness: `weather` compares with `== null`, so an undefined weather
+ * (test factories that predate the field, or future VM construction that omits it) is
+ * treated as "no weather" rather than flipping equality or throwing on `.label`. The
+ * production path through buildBattleViewModel always produces null (never undefined),
+ * so this has zero behaviour change in production — it is purely a defensive guard.
+ * biome's noDoubleEquals exempts `== null`, so no suppression comment is needed.
  */
 export function battleVMsEqual(a: BattleViewModel, b: BattleViewModel): boolean {
-  if (a.battleId !== b.battleId) return false;
-  if (a.turnNumber !== b.turnNumber) return false;
-  if (a.activeIndex !== b.activeIndex) return false;
-  if (a.outcome !== b.outcome) return false;
-  if (a.canFlee !== b.canFlee) return false;
-  if (a.canSwap !== b.canSwap) return false;
-  if (a.canRecruit !== b.canRecruit) return false;
-
-  if (!cardEqual(a.playerCard, b.playerCard)) return false;
-  if (!cardEqual(a.opponentCard, b.opponentCard)) return false;
-
-  // Skills: length-first, then per-element
-  if (a.skills.length !== b.skills.length) return false;
-  for (let i = 0; i < a.skills.length; i++) {
-    // biome-ignore lint/style/noNonNullAssertion: i is bounded by a.skills.length (length-checked above)
-    const sa = a.skills[i]!;
-    // biome-ignore lint/style/noNonNullAssertion: i is bounded by b.skills.length (length === a.skills.length)
-    const sb = b.skills[i]!;
-    if (
-      sa.id !== sb.id ||
-      sa.name !== sb.name ||
-      sa.affinity !== sb.affinity ||
-      sa.power !== sb.power ||
-      sa.accuracy !== sb.accuracy
-    ) {
-      return false;
-    }
+  const { weather: aw, ...restA } = a;
+  const { weather: bw, ...restB } = b;
+  if (aw == null || bw == null) {
+    if (!(aw == null && bw == null)) return false;
+  } else if (!structurallyEqual(aw, bw)) {
+    return false;
   }
-
-  // Bench: length-first, then per-element
-  if (a.bench.length !== b.bench.length) return false;
-  for (let i = 0; i < a.bench.length; i++) {
-    // biome-ignore lint/style/noNonNullAssertion: i is bounded by a.bench.length (length-checked above)
-    const ba = a.bench[i]!;
-    // biome-ignore lint/style/noNonNullAssertion: i is bounded by b.bench.length (length === a.bench.length)
-    const bb = b.bench[i]!;
-    if (
-      ba.teamIndex !== bb.teamIndex ||
-      ba.speciesName !== bb.speciesName ||
-      ba.currentHp !== bb.currentHp ||
-      ba.maxHp !== bb.maxHp
-    ) {
-      return false;
-    }
-  }
-
-  // BaitOptions: length-first, then per-element (incl. count — intentional per plan)
-  if (a.baitOptions.length !== b.baitOptions.length) return false;
-  for (let i = 0; i < a.baitOptions.length; i++) {
-    // biome-ignore lint/style/noNonNullAssertion: i is bounded by a.baitOptions.length (length-checked above)
-    const boa = a.baitOptions[i]!;
-    // biome-ignore lint/style/noNonNullAssertion: i is bounded by b.baitOptions.length (length === a.baitOptions.length)
-    const bob = b.baitOptions[i]!;
-    if (
-      boa.itemId !== bob.itemId ||
-      boa.name !== bob.name ||
-      boa.recruitBonus !== bob.recruitBonus ||
-      boa.count !== bob.count
-    ) {
-      return false;
-    }
-  }
-
-  // CureItems: length-first, then per-element (incl. count — inventory change must re-render)
-  if (a.cureItems.length !== b.cureItems.length) return false;
-  for (let i = 0; i < a.cureItems.length; i++) {
-    // biome-ignore lint/style/noNonNullAssertion: i is bounded by a.cureItems.length (length-checked above)
-    const ca = a.cureItems[i]!;
-    // biome-ignore lint/style/noNonNullAssertion: i is bounded by b.cureItems.length (length === a.cureItems.length)
-    const cb = b.cureItems[i]!;
-    if (
-      ca.itemId !== cb.itemId ||
-      ca.name !== cb.name ||
-      ca.cureStatus !== cb.cureStatus ||
-      ca.count !== cb.count
-    ) {
-      return false;
-    }
-  }
-
-  // Weather: null-ness, then label + turnsRemaining.
-  // Use loose equality (== null) so that undefined weather (from test factories that
-  // predate the weather field or future VM construction that omits the field) is treated as
-  // "no weather" rather than throwing TypeError: Cannot read property 'label' of undefined.
-  // biome's noDoubleEquals exempts `== null` (idiomatic null-or-undefined check), so
-  // no suppression comment is needed.
-  // The production path through buildBattleViewModel always produces null (never undefined),
-  // so this has zero behaviour change in production — it is purely a defensive guard.
-  const aw = a.weather;
-  const bw = b.weather;
-  if (aw == null && bw == null) {
-    // fall through to PvP fields below
-  } else {
-    if (aw == null || bw == null) return false;
-    if (aw.label !== bw.label || aw.turnsRemaining !== bw.turnsRemaining) return false;
-  }
-
-  // PvP fields: isPvp / pvpPendingSubmit / pvpOpponentName.
-  // pvpPendingSubmit drives the "Waiting for opponent" banner — omitting it here
-  // would cause shouldSkipBattleRefresh to suppress the re-render when the pending
-  // state transitions, leaving the banner stuck on screen (silent dropped render).
-  if (a.isPvp !== b.isPvp) return false;
-  if (a.pvpPendingSubmit !== b.pvpPendingSubmit) return false;
-  if (a.pvpOpponentName !== b.pvpOpponentName) return false;
-
-  return true;
+  return structurallyEqual(restA, restB);
 }
 
 /**
