@@ -41,11 +41,18 @@
  * the connection's frozen flag and a reducer gate made controllable). The real client/index.html
  * shell is mounted first so the views that stay real (dialogue, quest log, menu...) construct.
  */
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Identity } from 'spacetimedb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  clock,
+  frame,
+  mountIndexHtmlShell,
+  raf,
+  stubRaf,
+  telemetryMock,
+  wasmPkgIdentityMoveMock,
+  worldRendererMock,
+} from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
 import type {
@@ -161,34 +168,9 @@ vi.mock('./ui/tradeProposeView', () => ({ TradeProposeView: H.makeStub('TradePro
 // wasm pkg: every name main.ts imports. The party size (3), the box sentinel (255) and the
 // per-side trade cap (37) are distinct so a handler argument or a constant read from the wrong
 // export shows.
-vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
-  const SIDE = 8;
-  const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
-  return {
-    apply_move: (state: unknown) => state,
-    deletion_grace_ms_default: () => 1n,
-    move_queue_cap: () => 4,
-    party_size: () => 3,
-    party_slot_none: () => 255,
-    max_trade_monsters_per_side: () => 37,
-    talk_range: () => 2,
-    // ctl-10a: named fixture change — the new interact export
-    interact_candidates_coded: (...args: unknown[]) => H.interact(...args),
-    predict_move: () => ({}),
-    predict_tick: () => ({}),
-    set_active_zone: () => undefined,
-    start: () => undefined,
-    step_ms: () => 200,
-    zone_map: (zoneId: number) => ({
-      zone_id: zoneId,
-      width: SIDE,
-      height: SIDE,
-      walkable: grid(true),
-      grass: grid(false),
-      warps: [],
-    }),
-  };
-});
+vi.mock('../../client-wasm/pkg/client_wasm.js', () =>
+  wasmPkgIdentityMoveMock({ interact: (...args: unknown[]) => H.interact(...args) }),
+);
 
 // The connection: capture the options; enqueueMove never settles, every other reducer records its
 // name and arguments and resolves at once (or when the test's gate opens).
@@ -236,16 +218,9 @@ vi.mock('./net/connection', () => {
   };
 });
 
-vi.mock('./observability/telemetry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./observability/telemetry')>();
-  return {
-    ...actual,
-    loadOtelSdk: () => {
-      throw new Error('loadOtelSdk must not be reached in this test');
-    },
-    startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
-  };
-});
+vi.mock('./observability/telemetry', async (importOriginal) =>
+  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
+);
 
 // The screen-adapter table: the real module with SCREEN_ADAPTERS replaced by a mutable copy of
 // itself (every entry the same legacy adapter, so nothing changes until a case swaps one).
@@ -255,29 +230,7 @@ vi.mock('./ui/screens/index', async (importOriginal) => {
   return { ...actual, SCREEN_ADAPTERS: H.adapters };
 });
 
-vi.mock('./render/world', () => {
-  class WorldRenderer {
-    init(mount: HTMLElement): Promise<void> {
-      const canvas = document.createElement('canvas');
-      canvas.setAttribute('tabindex', '0');
-      canvas.setAttribute('role', 'application');
-      mount.appendChild(canvas);
-      return Promise.resolve();
-    }
-    setMap(): void {}
-    render(): void {}
-    resize(): void {}
-    screenFor(): { x: number; y: number } {
-      return { x: 0, y: 0 };
-    }
-    clear(): void {}
-    destroy(): void {}
-    get viewCount(): number {
-      return 0;
-    }
-  }
-  return { WorldRenderer };
-});
+vi.mock('./render/world', () => worldRendererMock());
 
 // --- harness ------------------------------------------------------------------------------
 interface Recorded {
@@ -306,22 +259,6 @@ function recordListeners(target: EventTarget): void {
   });
 }
 
-/** Mount the REAL client/index.html shell (minus its module script) into the live document. */
-function mountIndexHtmlShell(): void {
-  const htmlPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.html');
-  const parsed = new DOMParser().parseFromString(readFileSync(htmlPath, 'utf8'), 'text/html');
-  const children = Array.from(parsed.body.children).filter((el) => el.tagName !== 'SCRIPT');
-  // ctl-7a (named intentional change): the shipped <body> is now three children (#game-screen,
-  // #build-stamp, #a11y-live), so the old `body children > 5` floor is retired. The vacuity
-  // guard counts the id-bearing elements the parse yielded instead (the real shell has ~60).
-  const idCount = parsed.querySelectorAll('[id]').length;
-  expect(idCount, 'index.html must yield a body to mount').toBeGreaterThan(5);
-  document.body.replaceChildren(...children.map((el) => document.adoptNode(el)));
-  expect(document.getElementById('app'), 'index.html must ship <div id="app">').not.toBeNull();
-}
-
-const clock = { t: 0 };
-let rafCallback: FrameRequestCallback | null = null;
 let opts: ConnectionOptions;
 /** The i18n resolver instance main.ts runs on (imported AFTER the module reset, so it is shared). */
 let i18n: typeof import('./ui/i18n/resolver');
@@ -350,11 +287,7 @@ async function boot(beforeImport?: () => void): Promise<void> {
   mountIndexHtmlShell();
   recordListeners(window);
   recordListeners(document);
-  rafCallback = null;
-  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => {
-    rafCallback = cb;
-    return 0;
-  });
+  stubRaf();
   vi.resetModules();
   beforeImport?.();
   await import('./main');
@@ -371,16 +304,6 @@ async function boot(beforeImport?: () => void): Promise<void> {
 async function bootReady(beforeImport?: () => void): Promise<void> {
   await boot(beforeImport);
   opts.onReady(H.identity);
-}
-
-/** Run one frame at clock `t`. Throws if the frame did not re-arm (it re-arms in `finally`). */
-function frame(t: number): void {
-  const cb = rafCallback;
-  if (cb === null) throw new Error('no rAF callback armed');
-  rafCallback = null;
-  clock.t = t;
-  cb(t);
-  expect(rafCallback, 'frame did not re-arm requestAnimationFrame').not.toBeNull();
 }
 
 const EID = 7n;
@@ -849,7 +772,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     while (restorers.length > 0) restorers.pop()?.();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    rafCallback = null;
+    raf.cb = null;
     H.gate = null;
     H.frozen = false;
     window.history.replaceState(null, '', '/');
@@ -1654,7 +1577,7 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     while (restorers.length > 0) restorers.pop()?.();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    rafCallback = null;
+    raf.cb = null;
     H.gate = null;
     H.frozen = false;
     window.history.replaceState(null, '', '/');
@@ -2022,7 +1945,7 @@ describe('main.ts store batches and a held key (runtime, ctl-7c)', { sequential:
     while (restorers.length > 0) restorers.pop()?.();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    rafCallback = null;
+    raf.cb = null;
     H.gate = null;
     H.frozen = false;
     window.history.replaceState(null, '', '/');
@@ -2358,7 +2281,7 @@ function teardownBoot(): void {
   while (restorers.length > 0) restorers.pop()?.();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  rafCallback = null;
+  raf.cb = null;
   H.gate = null;
   H.frozen = false;
   window.history.replaceState(null, '', '/');
