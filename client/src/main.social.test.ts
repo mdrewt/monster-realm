@@ -21,10 +21,17 @@
  * stubs `performance.now()` through `clock`). The one real-timer wait is `flush()`, a single
  * zero-delay macrotask: overlayA11y defers each dialog's initial focus by exactly that.
  */
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  clock,
+  frame,
+  mountIndexHtmlShell,
+  raf,
+  stubRaf,
+  telemetryMock,
+  wasmPkgIdentityMoveMock,
+  worldRendererMock,
+} from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
 import { t } from './ui/a11yCopy';
@@ -40,32 +47,7 @@ const H = vi.hoisted(() => ({
 }));
 
 // wasm pkg: every name main.ts imports.
-vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
-  const SIDE = 8;
-  const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
-  return {
-    apply_move: (state: unknown) => state,
-    deletion_grace_ms_default: () => 1n,
-    move_queue_cap: () => 4,
-    party_size: () => 3,
-    party_slot_none: () => 255,
-    max_trade_monsters_per_side: () => 37,
-    talk_range: () => 2,
-    predict_move: () => ({}),
-    predict_tick: () => ({}),
-    set_active_zone: () => undefined,
-    start: () => undefined,
-    step_ms: () => 200,
-    zone_map: (zoneId: number) => ({
-      zone_id: zoneId,
-      width: SIDE,
-      height: SIDE,
-      walkable: grid(true),
-      grass: grid(false),
-      warps: [],
-    }),
-  };
-});
+vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgIdentityMoveMock());
 
 // The connection: capture the options. No reducer is called in this file. sessionState() must be
 // 'hidden' or the session gate swallows every key.
@@ -88,16 +70,9 @@ vi.mock('./net/connection', () => {
   };
 });
 
-vi.mock('./observability/telemetry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./observability/telemetry')>();
-  return {
-    ...actual,
-    loadOtelSdk: () => {
-      throw new Error('loadOtelSdk must not be reached in this test');
-    },
-    startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
-  };
-});
+vi.mock('./observability/telemetry', async (importOriginal) =>
+  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
+);
 
 // The screen-adapter table: the real module with SCREEN_ADAPTERS replaced by a mutable copy of
 // itself (nothing changes until a case swaps an entry).
@@ -108,29 +83,7 @@ vi.mock('./ui/screens/index', async (importOriginal) => {
 });
 
 // The renderer: init appends a focusable canvas to the mount, so main.ts finds its world region.
-vi.mock('./render/world', () => {
-  class WorldRenderer {
-    init(mount: HTMLElement): Promise<void> {
-      const canvas = document.createElement('canvas');
-      canvas.setAttribute('tabindex', '0');
-      canvas.setAttribute('role', 'application');
-      mount.appendChild(canvas);
-      return Promise.resolve();
-    }
-    setMap(): void {}
-    render(): void {}
-    resize(): void {}
-    screenFor(): { x: number; y: number } {
-      return { x: 0, y: 0 };
-    }
-    clear(): void {}
-    destroy(): void {}
-    get viewCount(): number {
-      return 0;
-    }
-  }
-  return { WorldRenderer };
-});
+vi.mock('./render/world', () => worldRendererMock());
 
 // --- harness ------------------------------------------------------------------------------
 interface Recorded {
@@ -161,19 +114,6 @@ function recordListeners(target: EventTarget): void {
   });
 }
 
-/** Mount the REAL client/index.html shell (minus its module script) into the live document. */
-function mountIndexHtmlShell(): void {
-  const htmlPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.html');
-  const parsed = new DOMParser().parseFromString(readFileSync(htmlPath, 'utf8'), 'text/html');
-  const children = Array.from(parsed.body.children).filter((el) => el.tagName !== 'SCRIPT');
-  const idCount = parsed.querySelectorAll('[id]').length;
-  expect(idCount, 'index.html must yield a body to mount').toBeGreaterThan(5);
-  document.body.replaceChildren(...children.map((el) => document.adoptNode(el)));
-  expect(document.getElementById('app'), 'index.html must ship <div id="app">').not.toBeNull();
-}
-
-const clock = { t: 0 };
-let rafCallback: FrameRequestCallback | null = null;
 let opts: ConnectionOptions;
 
 /** Boot a fresh main.ts over the real shell and wait for it to connect. */
@@ -185,11 +125,7 @@ async function boot(): Promise<void> {
   mountIndexHtmlShell();
   recordListeners(window);
   recordListeners(document);
-  rafCallback = null;
-  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => {
-    rafCallback = cb;
-    return 0;
-  });
+  stubRaf();
   vi.resetModules();
   await import('./main');
   opts = await vi.waitFor(
@@ -212,19 +148,9 @@ function teardownBoot(): void {
   while (restorers.length > 0) restorers.pop()?.();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  rafCallback = null;
+  raf.cb = null;
   window.history.replaceState(null, '', '/');
   document.body.replaceChildren();
-}
-
-/** Run one frame at clock `at`. Throws if the frame did not re-arm (it re-arms in `finally`). */
-function frame(at: number): void {
-  const cb = rafCallback;
-  if (cb === null) throw new Error('no rAF callback armed');
-  rafCallback = null;
-  clock.t = at;
-  cb(at);
-  expect(rafCallback, 'frame did not re-arm requestAnimationFrame').not.toBeNull();
 }
 
 /** One zero-delay macrotask: overlayA11y's deferred initial focus fires inside it. */
