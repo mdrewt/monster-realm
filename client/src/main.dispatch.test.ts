@@ -977,6 +977,103 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     }
   });
 
+  it('C5: an answer the server REJECTS releases its optimistic answeredRequests key, so the still-pending request banner returns — the performCare path (trade reject) and the sendGuarded path (challenge decline)', async () => {
+    // WRONG IMPL KILLED: a rejection swallowed inside performCare's feedback arm or sendGuarded's
+    // catch (the key stays latched although the server row is unchanged and still Pending, so the
+    // banner never returns and the request can never be answered again); a release fired on the
+    // SEND instead of the settle (the banner would flash back while the answer is in flight); and
+    // a "fix" that drops the optimistic add (the banner would stay up until the settle on every
+    // answer, rejected or not).
+    await bootReady();
+    opts.store.upsertPlayer({
+      identity: OTHER_IDENTITY,
+      entityId: 8n,
+      name: 'Bob',
+      online: true,
+      lastInputSeq: 0n,
+    });
+    opts.store.upsertTradeOffer({
+      tradeId: 11n,
+      initiator: OTHER_IDENTITY,
+      counterparty: H.identity,
+      initiatorMonsterIds: [],
+      initiatorItems: [],
+      initiatorCurrency: 0n,
+      counterpartyMonsterIds: [],
+      counterpartyItems: [],
+      counterpartyCurrency: 0n,
+      initiatorCards: [],
+      counterpartyCards: [],
+      status: 'Pending',
+      createdAtMs: 1_000n,
+    });
+    server(1000);
+    frame(1100);
+    const banner = document.getElementById('notice-banner');
+    if (banner === null) throw new Error('#notice-banner is not in the document');
+    expect(banner.hidden, 'precondition: the incoming trade is announced by the banner').toBe(
+      false,
+    );
+
+    // --- the performCare path: the trade reject settles REJECTED ------------------------------
+    H.calls = [];
+    let rejectTrade: (err: unknown) => void = () => {};
+    H.gate = new Promise<void>((_resolve, reject) => {
+      rejectTrade = reject;
+    });
+    const tradeAnswer = handlerOf('TradeView', 'onReject')(11n) as Promise<void>;
+    frame(1200);
+    expect(
+      banner.hidden,
+      'while the answer is in flight the banner stays away (the optimistic add)',
+    ).toBe(true);
+    rejectTrade(new Error('trade answer rejected by the server'));
+    await tradeAnswer; // dispatch's promise resolves once the rejection is reported
+    H.gate = null;
+    expect(H.calls, 'control: the reject really was sent').toEqual([
+      { name: 'respondTrade', args: { tradeId: 11n, accepted: false } },
+    ]);
+    frame(1300);
+    expect(
+      banner.hidden,
+      'a rejected trade answer releases the key: the still-pending request shows again',
+    ).toBe(false);
+
+    // --- the sendGuarded path: the challenge decline settles REJECTED -------------------------
+    opts.store.removeTradeOffer(11n);
+    opts.store.upsertChallenge({
+      challengeId: 21n,
+      challenger: OTHER_IDENTITY,
+      target: H.identity,
+      challengerPartyIds: [],
+      status: 'Pending',
+      createdAtMs: 2_000n,
+    });
+    server(2000);
+    frame(2100);
+    expect(banner.hidden, 'precondition: the incoming challenge is announced').toBe(false);
+
+    H.calls = [];
+    let rejectChallenge: (err: unknown) => void = () => {};
+    H.gate = new Promise<void>((_resolve, reject) => {
+      rejectChallenge = reject;
+    });
+    const challengeAnswer = handlerOf('PvpView', 'onDecline')(21n) as Promise<void>;
+    frame(2200);
+    expect(banner.hidden, 'in flight: the answered challenge is suppressed too').toBe(true);
+    rejectChallenge(new Error('challenge answer rejected by the server'));
+    await challengeAnswer;
+    H.gate = null;
+    expect(H.calls, 'control: the decline really was sent').toEqual([
+      { name: 'declineChallenge', args: { challengeId: 21n } },
+    ]);
+    frame(2300);
+    expect(
+      banner.hidden,
+      'a rejected challenge answer releases the key: the request shows again',
+    ).toBe(false);
+  });
+
   it('each feedback action paints its own success line on its own overlay only while that overlay is shown', async () => {
     // WRONG IMPL KILLED: a success line routed to the wrong overlay's sink (shop to trade), a swapped
     // accepted/rejected line (the player is told the opposite of what they chose), the wrong message
