@@ -73,6 +73,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { telemetryMock, wasmPkgStubMock } from '../test-util/mainBootHarness';
 import type { Connection, ConnectionOptions } from './net/connection';
 import { t } from './ui/a11yCopy';
 import { type A11ySnapshot, announcementsFor } from './ui/announcements';
@@ -100,35 +101,7 @@ const H = vi.hoisted(() => ({
 
 // The wasm pkg — identical shape to main.battle-reseed.test.ts's mock (every name main.ts
 // imports, plus the four other exports of the real module).
-vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
-  const SIDE = 3;
-  const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
-  return {
-    apply_move: () => ({}),
-    // `-> i64` crosses as a BigInt, so the stub is `1n`, not `1`.
-    deletion_grace_ms_default: () => 1n,
-    move_queue_cap: () => 4,
-    party_size: () => 3,
-    party_slot_none: () => 255,
-    max_trade_monsters_per_side: () => 64,
-    talk_range: () => 2,
-    // ctl-10a: named fixture change — the new interact export
-    interact_candidates_coded: () => [],
-    predict_move: () => ({}),
-    predict_tick: () => ({}),
-    set_active_zone: () => undefined,
-    start: () => undefined,
-    step_ms: () => 200,
-    zone_map: (zoneId: number) => ({
-      zone_id: zoneId,
-      width: SIDE,
-      height: SIDE,
-      walkable: grid(true),
-      grass: grid(false),
-      warps: [],
-    }),
-  };
-});
+vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgStubMock());
 
 // The connection: capture the options object, hand back a Connection-shaped stub.
 // sessionState() reads `H.session`, which MUST stay 'hidden' (the default) or every key in this file
@@ -165,16 +138,9 @@ vi.mock('./ui/bugBundle', async (importOriginal) => {
 });
 
 // Telemetry: keep NOOP_TELEMETRY and the types, never bootstrap the OTel SDK (no network).
-vi.mock('./observability/telemetry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./observability/telemetry')>();
-  return {
-    ...actual,
-    loadOtelSdk: () => {
-      throw new Error('loadOtelSdk must not be reached in this test');
-    },
-    startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
-  };
-});
+vi.mock('./observability/telemetry', async (importOriginal) =>
+  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
+);
 
 // The renderer: constructed unconditionally at main.ts's `renderer = new WorldRenderer()`,
 // before the `#app` guard. DELTA 2 (see file header): `init(mount)` appends a real,
