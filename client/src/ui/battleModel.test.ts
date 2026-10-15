@@ -1428,6 +1428,23 @@ describe('battleModel m14.5d: battleVMsEqual — each field class flips equality
   });
 });
 
+describe('battleModel C6: battleVMsEqual — a field ADDED to the VM flips equality', () => {
+  it('BITES: two VMs differing only in a field the compare was never taught about → not equal', () => {
+    // Kills: a hand-rolled per-field roster. The old compare enumerated every KNOWN field, so a
+    // field added to BattleViewModel without a matching compare edit was silently ignored and
+    // shouldSkipBattleRefresh dropped the re-render that new field asked for (stale view).
+    // Measured RED against the hand-rolled compare before the structural compare replaced it.
+    const base = makeFullVM();
+    const a = { ...base, addedByAFutureSlice: 1 } as BattleViewModel;
+    const b = { ...base, addedByAFutureSlice: 2 } as BattleViewModel;
+    expect(battleVMsEqual(a, b), 'an unknown-field difference must flip equality').toBe(false);
+    // Control (anti-vacuity): the same added value on both sides stays equal, so the red above
+    // is the unknown FIELD being compared, not the spread or the cast breaking equality.
+    const c = { ...base, addedByAFutureSlice: 1 } as BattleViewModel;
+    expect(battleVMsEqual(a, c), 'an identical added field must not flip equality').toBe(true);
+  });
+});
+
 // =============================================================================
 // shouldSkipBattleRefresh pure guard
 //
