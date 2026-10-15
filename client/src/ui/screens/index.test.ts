@@ -2,8 +2,9 @@
  * screens/index.test.ts: the adapter table and the screen host (ctl-6b, CTL6B.1 / CTL6B.2 /
  * CTL6B.5 / CTL6B.6; ctl-7c, CTL7C.1 / CTL7C.2).
  *
- * Pure, node env. `SCREEN_ADAPTERS` is a total `Record<FrameId, ScreenAdapter>` (every entry the
- * legacy adapter until its ctl-8 slice swaps it); `baseButton(base, btn)` is what Start / Select / B
+ * Pure, node env. `SCREEN_ADAPTERS` is a total `Record<FrameId, ScreenAdapter>` (the converted
+ * frames hold their own screens; six frames keep the legacy adapter — permanently, the ctl-8
+ * program being complete); `baseButton(base, btn)` is what Start / Select / B
  * do with no frame above the base; `new ScreenHost(adapters, viewOf, onPaintError)` routes a button
  * to the TOP frame only (`host.button(stack, btn, ctx)`): the base to `baseButton`, a text-entry
  * frame to the typing rules, a screen / prompt frame to its own adapter fed its OWN view model.
@@ -238,41 +239,20 @@ const CONVERTED: ReadonlyMap<FrameId, unknown> = new Map<FrameId, unknown>([
   // can no longer stand for "a legacy frame" in this file's shipped-table cases.
   ['helpView', helpScreen],
 ]);
-/** Every frame id still on the legacy adapter. ctl-8s (named intentional change): the Social frame
- *  is one of them until ctl-8d (was: every OVERLAY id still on the legacy adapter). ctl-8d (named
- *  intentional change): the Social frame left it, so it holds 13 ids again. ctl-8e (named
- *  intentional change): the trade-propose frame left it too, so it holds 12 ids. ctl-8f (named
- *  intentional change): the raising and quest log frames left it, so it holds 10 ids. ctl-8h (named
- *  intentional change): the rename, claim and privacy frames left it, so it holds 7 ids. ctl-14
- *  (named intentional change): the help frame left it, so it holds 6 ids. */
+/** The six frame ids that keep the legacy adapter for good (the ctl-8 screen program is
+ *  complete): the battle outcome, evolution and menu frames drive themselves in legacy
+ *  DOM-button mode, and the tradeView, pvpView and leaderboardView rows are Record-totality
+ *  placeholders — those overlays show as the one `social` frame (ctl-8s), so their entries are
+ *  never asked. */
 const LEGACY_IDS: readonly FrameId[] = FRAME_IDS.filter((id) => !CONVERTED.has(id));
 
 describe('SCREEN_ADAPTERS (ctl-6b)', () => {
-  it('CTL6B-1-ADAPTERS-TOTAL: every frame id (the overlay ids and the Social frame) has an adapter, the dialogue, shop and heal frames hold their own ctl-8a screens, the box frame its ctl-8b Monsters screen, the Social frame its ctl-8d Social screen and every other one the legacy adapter, and the default table answers a legacy screen', () => {
+  it('CTL6B-1-ADAPTERS-TOTAL: every frame id (the overlay ids and the Social frame) has an adapter, each converted frame holds its own screen (by identity), the six legacy frames hold the legacy adapter, and the default table answers a legacy screen', () => {
     // WRONG IMPL KILLED: a table that omits an overlay (that frame would have no way to answer
-    // B or Start), carries a stray id, holds a bespoke adapter before its ctl-8 slice lands, and a
-    // host over SCREEN_ADAPTERS that does not answer a legacy screen as the legacy adapter does.
-    // INTENTIONAL CHANGE (ctl-8a, CTL8A.4): dialogueView, shopView and healView now hold
-    // dialogueScreen, shopScreen and healScreen (by identity). Was: every id `toBe(legacyAdapter)`,
-    // and the host loop below drove all 17 ids. The other 14 are still the legacy adapter and the
-    // loop still drives each of them exactly as before.
-    // INTENTIONAL CHANGE (ctl-8b, CTL8B.4): boxView now holds monstersScreen (by identity), so the
-    // legacy roster is 13 ids. Was: 14.
-    // INTENTIONAL CHANGE (ctl-8s, CTL8S.3): the table is total over the FRAME ids, which add
-    // `social` (the Social frame) to the overlay ids, and `social` holds the legacy adapter until
-    // ctl-8d: the legacy roster is 14 ids and the loops below drive it too. Was: the key set was
-    // OVERLAY_IDS and the legacy roster 13 ids.
-    // INTENTIONAL CHANGE (ctl-8d, CTL8D.1-.3): `social` now holds socialScreen (by identity), so the
-    // legacy roster is 13 ids again and the host loop below no longer drives the Social frame
-    // (its screen reads the store's trade and challenge rows; CTL8D-1-HOST-REMEMBERS drives it over
-    // a store that has them). Was: `social` was the legacy adapter and the roster 14 ids.
-    // INTENTIONAL CHANGE (ctl-8e, CTL8E.2): tradeProposeView now holds tradeProposeScreen (by
-    // identity), so the legacy roster is 12 ids and the host loop below no longer drives the
-    // trade-propose frame (its screen reads the store's players and monsters; CTL8E-2-ADAPTER
-    // drives it over a store that has them). Was: 13 legacy ids, tradeProposeView among them.
+    // B or Start), carries a stray id, holds a bespoke adapter on a frame that keeps the legacy
+    // adapter, and a host over SCREEN_ADAPTERS that does not answer a legacy screen as the
+    // legacy adapter does.
     expect([...Object.keys(SCREEN_ADAPTERS)].sort()).toEqual([...FRAME_IDS].sort());
-    // INTENTIONAL CHANGE (ctl-12b): 18 overlay ids (controlsView joined) and the Social frame. Was:
-    // 17 + 1 = 18.
     expect(FRAME_IDS, 'ANTI-VACUITY: 18 overlay ids and the Social frame').toHaveLength(19);
     expect(SCREEN_ADAPTERS.controlsView, 'the Controls frame is the ctl-12b Controls screen').toBe(
       controlsScreen,
@@ -282,14 +262,10 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
     expect(SCREEN_ADAPTERS.tradeProposeView, 'the trade-propose frame is its ctl-8e wizard').toBe(
       tradeProposeScreen,
     );
-    // INTENTIONAL CHANGE (ctl-8f, CTL8F.4): raisingView holds bagScreen and questLogView holds
-    // journalScreen (by identity), so the legacy roster is 10 ids. Was: 12, both among them.
     expect(SCREEN_ADAPTERS.raisingView, 'the raising frame is the ctl-8f Bag').toBe(bagScreen);
     expect(SCREEN_ADAPTERS.questLogView, 'the quest log frame is the ctl-8f Journal').toBe(
       journalScreen,
     );
-    // INTENTIONAL CHANGE (ctl-8h, CTL8H.3): renameView, claimView and privacyView hold nameScreen,
-    // accountScreen and privacyScreen (by identity), so the legacy roster is 7 ids. Was: 10.
     expect(SCREEN_ADAPTERS.renameView, 'the rename frame is the ctl-8h Name screen').toBe(
       nameScreen,
     );
@@ -299,9 +275,6 @@ describe('SCREEN_ADAPTERS (ctl-6b)', () => {
     expect(SCREEN_ADAPTERS.privacyView, 'the privacy frame is the ctl-8h Privacy screen').toBe(
       privacyScreen,
     );
-    // INTENTIONAL CHANGE (ctl-14, CTL14.1): helpView now holds helpScreen (by identity), so the
-    // legacy roster is 6 ids and the host loop below no longer drives the help frame (its screen is
-    // proven by helpScreen.test.ts and CTL14-1-SCREEN-TABS). Was: 7 legacy ids, helpView among them.
     expect(SCREEN_ADAPTERS.helpView, 'the help frame is the ctl-14 Help screen').toBe(helpScreen);
     expect(helpScreen.nav, 'and it is nav-capable').toBe(true);
     expect(LEGACY_IDS, 'ANTI-VACUITY: 6 legacy ids').toHaveLength(6);
