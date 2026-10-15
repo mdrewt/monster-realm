@@ -108,6 +108,7 @@
  * `document.body.innerHTML = ''` is the teardown form the sanctioned precedents use.
  */
 import { afterEach, describe, expect, it, type MockInstance, vi } from 'vitest';
+import { telemetryMock } from '../test-util/mainBootHarness';
 import type { Connection, ConnectionOptions } from './net/connection';
 import type { AuthoritativeStore } from './net/store';
 import type { BugBundle, BugBundleInput } from './ui/bugBundle';
@@ -204,16 +205,9 @@ vi.mock('./ui/bugBundle', async (importOriginal) => {
 });
 
 // Telemetry: keep NOOP_TELEMETRY and the types, never bootstrap the OTel SDK (no network).
-vi.mock('./observability/telemetry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./observability/telemetry')>();
-  return {
-    ...actual,
-    loadOtelSdk: () => {
-      throw new Error('loadOtelSdk must not be reached in this test');
-    },
-    startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
-  };
-});
+vi.mock('./observability/telemetry', async (importOriginal) =>
+  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
+);
 
 // THE THROW SEAM. `WorldRenderer` is constructed UNCONDITIONALLY, before the `#app` guard, and
 // `renderer?.render(...)` is called from inside the frame's `try` — so this stub is a controllable
