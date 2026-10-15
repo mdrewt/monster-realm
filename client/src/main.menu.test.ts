@@ -16,10 +16,17 @@
  * The entries are the design §5 list: Monsters, Bag, Journal, Social, Profile, Options, Close,
  * so from a fresh menu two Downs stand on Journal and three on Social.
  */
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  clock,
+  frame,
+  mountIndexHtmlShell,
+  raf,
+  stubRaf,
+  telemetryMock,
+  wasmPkgWalkingMock,
+  worldRendererMock,
+} from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
 import { t } from './ui/a11yCopy';
@@ -35,53 +42,7 @@ const H = vi.hoisted(() => ({
 }));
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid.
-vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
-  const SIDE = 8;
-  const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
-  const DELTA: Record<string, [number, number]> = {
-    North: [0, -1],
-    South: [0, 1],
-    East: [1, 0],
-    West: [-1, 0],
-  };
-  return {
-    apply_move: (
-      state: { pos: { x: number; y: number } },
-      input: 'Jump' | { Step: string },
-      now: number,
-    ) => {
-      const stamp = Math.floor(now);
-      if (input === 'Jump') return { ...state, action: 'Jumping', move_started_at: stamp };
-      const [dx, dy] = DELTA[input.Step];
-      return {
-        ...state,
-        facing: input.Step,
-        action: 'Walking',
-        pos: { x: state.pos.x + dx, y: state.pos.y + dy },
-        move_started_at: stamp,
-      };
-    },
-    deletion_grace_ms_default: () => 1n,
-    move_queue_cap: () => 4,
-    party_size: () => 3,
-    party_slot_none: () => 255,
-    max_trade_monsters_per_side: () => 64,
-    talk_range: () => 2,
-    predict_move: () => ({}),
-    predict_tick: () => ({}),
-    set_active_zone: () => undefined,
-    start: () => undefined,
-    step_ms: () => 200,
-    zone_map: (zoneId: number) => ({
-      zone_id: zoneId,
-      width: SIDE,
-      height: SIDE,
-      walkable: grid(true),
-      grass: grid(false),
-      warps: [],
-    }),
-  };
-});
+vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgWalkingMock());
 
 // The connection: capture the options, expose reducers whose enqueueMove never settles.
 vi.mock('./net/connection', () => {
@@ -118,41 +79,12 @@ vi.mock('./net/connection', () => {
   };
 });
 
-vi.mock('./observability/telemetry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./observability/telemetry')>();
-  return {
-    ...actual,
-    loadOtelSdk: () => {
-      throw new Error('loadOtelSdk must not be reached in this test');
-    },
-    startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
-  };
-});
+vi.mock('./observability/telemetry', async (importOriginal) =>
+  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
+);
 
 // The renderer: init(mount) appends a focusable canvas so main.ts can resolve its world focus.
-vi.mock('./render/world', () => {
-  class WorldRenderer {
-    init(mount: HTMLElement): Promise<void> {
-      const canvas = document.createElement('canvas');
-      canvas.setAttribute('tabindex', '0');
-      canvas.setAttribute('role', 'application');
-      mount.appendChild(canvas);
-      return Promise.resolve();
-    }
-    setMap(): void {}
-    render(): void {}
-    resize(): void {}
-    screenFor(): { x: number; y: number } {
-      return { x: 0, y: 0 };
-    }
-    clear(): void {}
-    destroy(): void {}
-    get viewCount(): number {
-      return 0;
-    }
-  }
-  return { WorldRenderer };
-});
+vi.mock('./render/world', () => worldRendererMock());
 
 // --- harness ------------------------------------------------------------------------------
 interface Recorded {
@@ -181,22 +113,6 @@ function recordListeners(target: EventTarget): void {
   });
 }
 
-/** Mount the REAL client/index.html shell (minus its module script) into the live document. */
-function mountIndexHtmlShell(): void {
-  const htmlPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.html');
-  const parsed = new DOMParser().parseFromString(readFileSync(htmlPath, 'utf8'), 'text/html');
-  const children = Array.from(parsed.body.children).filter((el) => el.tagName !== 'SCRIPT');
-  // ctl-7a (named intentional change): the shipped <body> is now three children (#game-screen,
-  // #build-stamp, #a11y-live), so the old `body children > 5` floor is retired. The vacuity
-  // guard counts the id-bearing elements the parse yielded instead (the real shell has ~60).
-  const idCount = parsed.querySelectorAll('[id]').length;
-  expect(idCount, 'index.html must yield a body to mount').toBeGreaterThan(5);
-  document.body.replaceChildren(...children.map((el) => document.adoptNode(el)));
-  expect(document.getElementById('app'), 'index.html must ship <div id="app">').not.toBeNull();
-}
-
-const clock = { t: 0 };
-let rafCallback: FrameRequestCallback | null = null;
 let opts: ConnectionOptions;
 
 async function boot(url = '/'): Promise<void> {
@@ -209,11 +125,7 @@ async function boot(url = '/'): Promise<void> {
   mountIndexHtmlShell();
   recordListeners(window);
   recordListeners(document);
-  rafCallback = null;
-  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => {
-    rafCallback = cb;
-    return 0;
-  });
+  stubRaf();
   vi.resetModules();
   await import('./main');
   opts = await vi.waitFor(
@@ -228,16 +140,6 @@ async function boot(url = '/'): Promise<void> {
 async function bootReady(url = '/'): Promise<void> {
   await boot(url);
   opts.onReady(H.identity);
-}
-
-/** Run one frame at clock `t`. Throws if the frame did not re-arm (it re-arms in `finally`). */
-function frame(t: number): void {
-  const cb = rafCallback;
-  if (cb === null) throw new Error('no rAF callback armed');
-  rafCallback = null;
-  clock.t = t;
-  cb(t);
-  expect(rafCallback, 'frame did not re-arm requestAnimationFrame').not.toBeNull();
 }
 
 const EID = 7n;
@@ -345,7 +247,7 @@ describe('main.ts main menu on the nav core (runtime, ctl-5)', { sequential: tru
     while (restorers.length > 0) restorers.pop()?.();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    rafCallback = null;
+    raf.cb = null;
     window.history.replaceState(null, '', '/');
     document.body.replaceChildren();
   });
