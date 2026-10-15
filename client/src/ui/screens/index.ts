@@ -31,14 +31,15 @@ export type ScreenAdapters = Readonly<Record<FrameId, ScreenAdapter<unknown, unk
 
 /** Total over every frame id, so a new overlay without an adapter fails client-typecheck. (The
  *  battle BASE is not a frame: the host steps `battleScreen` there itself, ctl-8i; `battleView`'s
- *  entry answers only the outcome frame over the world.) Every
- *  entry is the legacy adapter until its ctl-8 screen slice swaps it (ctl-8a: the dialogue, heal
- *  and shop frames; ctl-8b: the box frame, as Monsters; ctl-8d: the Social frame; ctl-8e: the
- *  trade-propose wizard; ctl-8f: the raising frame, as Bag, and the quest log, as Journal; ctl-8h:
- *  the rename, claim and privacy frames, as Profile's Name, Account and Privacy; ctl-12b: the
- *  controls frame, as Options › Controls; ctl-14: Help). The trade, pvp
- *  and leaderboard overlays show as the one `social` frame (ctl-8s), so their own entries are
- *  never asked. */
+ *  entry answers only the outcome frame over the world.) The converted frames hold their own
+ *  screens (ctl-8a: the dialogue, heal and shop frames; ctl-8b: the box frame, as Monsters;
+ *  ctl-8d: the Social frame; ctl-8e: the trade-propose wizard; ctl-8f: the raising frame, as
+ *  Bag, and the quest log, as Journal; ctl-8h: the rename, claim and privacy frames, as
+ *  Profile's Name, Account and Privacy; ctl-12b: the controls frame, as Options › Controls;
+ *  ctl-14: Help). The six other rows keep the legacy adapter for good (the ctl-8 program is
+ *  complete): the battle outcome, evolution and menu frames drive themselves, and the trade,
+ *  pvp and leaderboard overlays show as the one `social` frame (ctl-8s), so their own entries
+ *  are never asked — Record-totality placeholders. */
 export const SCREEN_ADAPTERS: ScreenAdapters = {
   battleView: legacyAdapter,
   boxView: monstersScreen,
