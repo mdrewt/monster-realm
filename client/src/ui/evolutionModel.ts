@@ -80,6 +80,13 @@ function essenceHeld(m: StoreMonsterPub, affinity: AffinityName): number {
  * THE single gate walk (contract A5) — `pathRequirements`, `pathSatisfied` and
  * `unmetRequirement` all read this one function, so they cannot drift.
  *
+ * CONSTRAINT (the fence for the TS/Rust mirror): this walk is a read-only port of
+ * `game-core/src/evolution/eligibility.rs`, and evolutionModel.parity.test.ts is the fence
+ * that keeps the two in agreement — it runs generated cases through this port AND through
+ * game-core's real predicate (the client-wasm `evolution_eligibility` export) and requires
+ * identical answers. A semantic change starts in eligibility.rs; an edit here ships only
+ * with that parity suite green.
+ *
  * Canonical order: level -> essence (LIST order) -> trust -> quality time -> nutrition.
  * Permissive gates emit NO row at all: a `null` threshold and an empty essence list are
  * ABSENT requirements, not satisfied ones.
