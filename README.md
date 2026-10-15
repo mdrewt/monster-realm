@@ -48,7 +48,7 @@ are implemented but inactive until an identity provider is deployed (see
 
 | Tool | Version | Where it is pinned |
 |---|---|---|
-| Rust | 1.96.0, with `wasm32-unknown-unknown`, clippy and rustfmt | `rust-toolchain.toml` (rustup installs it automatically) |
+| Rust | 1.99.0, with `wasm32-unknown-unknown`, clippy and rustfmt | `rust-toolchain.toml` (rustup installs it automatically) |
 | SpacetimeDB CLI | 2.8.1 | root `Cargo.toml` (`spacetimedb = "2.8.1"`) and both workflows. Install the CLI the way CI does (`curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com && sh /tmp/spacetime-install.sh --yes`), then `spacetime version install 2.8.1` and `spacetime version use 2.8.1` |
 | Node.js | 24.13.1 (`engines` allows `>=24.13.1 <25`) | `client/package.json` `engines`; both workflows use 24.13.1 |
 | wasm-pack | 0.15.0 | CI (`.github/workflows/ci.yml`, `jetli/wasm-pack-action` with `version: 'v0.15.0'`); locally, for example `cargo install wasm-pack --version 0.15.0` |
