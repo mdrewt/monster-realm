@@ -18,6 +18,14 @@
  * because the keydown stamp, the reconcile baseline and the frame all read it.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  clock,
+  frame,
+  raf,
+  stubRaf,
+  telemetryMock,
+  wasmPkgWalkingMock,
+} from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
 import type { ResolveInput } from './render/renderResolver';
@@ -40,55 +48,7 @@ const H = vi.hoisted(() => ({
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open
 // grid so the predictor produces observable positions.
-vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
-  const SIDE = 8;
-  const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
-  const DELTA: Record<string, [number, number]> = {
-    North: [0, -1],
-    South: [0, 1],
-    East: [1, 0],
-    West: [-1, 0],
-  };
-  return {
-    apply_move: (
-      state: { pos: { x: number; y: number } },
-      input: 'Jump' | { Step: string },
-      now: number,
-    ) => {
-      const stamp = Math.floor(now);
-      if (input === 'Jump') return { ...state, action: 'Jumping', move_started_at: stamp };
-      const [dx, dy] = DELTA[input.Step];
-      return {
-        ...state,
-        facing: input.Step,
-        action: 'Walking',
-        pos: { x: state.pos.x + dx, y: state.pos.y + dy },
-        move_started_at: stamp,
-      };
-    },
-    deletion_grace_ms_default: () => 1n,
-    move_queue_cap: () => 4,
-    party_size: () => 3,
-    party_slot_none: () => 255,
-    max_trade_monsters_per_side: () => 64,
-    talk_range: () => 2,
-    // ctl-10a: named fixture change — the new interact export
-    interact_candidates_coded: () => [],
-    predict_move: () => ({}),
-    predict_tick: () => ({}),
-    set_active_zone: () => undefined,
-    start: () => undefined,
-    step_ms: () => 200,
-    zone_map: (zoneId: number) => ({
-      zone_id: zoneId,
-      width: SIDE,
-      height: SIDE,
-      walkable: grid(true),
-      grass: grid(false),
-      warps: [],
-    }),
-  };
-});
+vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgWalkingMock({ interact: () => [] }));
 
 // The connection: capture the options, expose reducers whose enqueueMove promise the test
 // settles by hand. Every other reducer resolves immediately.
@@ -126,16 +86,9 @@ vi.mock('./net/connection', () => {
   };
 });
 
-vi.mock('./observability/telemetry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./observability/telemetry')>();
-  return {
-    ...actual,
-    loadOtelSdk: () => {
-      throw new Error('loadOtelSdk must not be reached in this test');
-    },
-    startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
-  };
-});
+vi.mock('./observability/telemetry', async (importOriginal) =>
+  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
+);
 
 vi.mock('./render/world', () => {
   class WorldRenderer {
@@ -200,8 +153,6 @@ function recordListeners(target: EventTarget): void {
   });
 }
 
-const clock = { t: 0 };
-let rafCallback: FrameRequestCallback | null = null;
 let opts: ConnectionOptions;
 
 async function boot(): Promise<void> {
@@ -213,11 +164,7 @@ async function boot(): Promise<void> {
   recorded = [];
   recordListeners(window);
   recordListeners(document);
-  rafCallback = null;
-  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => {
-    rafCallback = cb;
-    return 0;
-  });
+  stubRaf();
   vi.resetModules();
   await import('./main');
   opts = await vi.waitFor(
@@ -232,16 +179,6 @@ async function boot(): Promise<void> {
 async function bootReady(): Promise<void> {
   await boot();
   opts.onReady(H.identity);
-}
-
-/** Run one frame at clock `t`. Throws if the frame did not re-arm (it re-arms in `finally`). */
-function frame(t: number): void {
-  const cb = rafCallback;
-  if (cb === null) throw new Error('no rAF callback armed');
-  rafCallback = null;
-  clock.t = t;
-  cb(t);
-  expect(rafCallback, 'frame did not re-arm requestAnimationFrame').not.toBeNull();
 }
 
 const EID = 7n;
@@ -293,7 +230,7 @@ describe('main.ts boot + movement wiring (runtime)', { sequential: true }, () =>
     while (restorers.length > 0) restorers.pop()?.();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    rafCallback = null;
+    raf.cb = null;
     document.body.innerHTML = '';
   });
 
