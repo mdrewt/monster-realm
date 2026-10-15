@@ -35,10 +35,8 @@
  * decline path's one local effect), and the account row is injected into the store (the privacy
  * lattice is derived from it, and the controllable rAF pumps it).
  */
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mountIndexHtmlShell } from '../../../test-util/mainBootHarness';
 import type { WasmMoveInput } from '../../convert/convert';
 import type { Connection, ConnectionOptions } from '../../net/connection';
 
@@ -190,23 +188,6 @@ function recordListeners(target: EventTarget): void {
     if (own !== undefined) Object.defineProperty(target, 'addEventListener', own);
     else delete (target as unknown as { addEventListener?: unknown }).addEventListener;
   });
-}
-
-/** Mount the REAL client/index.html shell (minus its module script) into the live document. */
-function mountIndexHtmlShell(): void {
-  const htmlPath = path.join(
-    path.dirname(fileURLToPath(import.meta.url)),
-    '..',
-    '..',
-    '..',
-    'index.html',
-  );
-  const parsed = new DOMParser().parseFromString(readFileSync(htmlPath, 'utf8'), 'text/html');
-  const children = Array.from(parsed.body.children).filter((el) => el.tagName !== 'SCRIPT');
-  const idCount = parsed.querySelectorAll('[id]').length;
-  expect(idCount, 'index.html must yield a body to mount').toBeGreaterThan(5);
-  document.body.replaceChildren(...children.map((el) => document.adoptNode(el)));
-  expect(document.getElementById('app'), 'index.html must ship <div id="app">').not.toBeNull();
 }
 
 const clock = { t: 0 };
