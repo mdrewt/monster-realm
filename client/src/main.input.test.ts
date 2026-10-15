@@ -26,10 +26,15 @@
  * (also on the key-repeat path); blur and a hidden visibilitychange release every held key;
  * a consumed D-pad or Space press is prevented, an unbound key is not.
  */
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  clock,
+  frame,
+  mountIndexHtmlShell,
+  raf,
+  stubRaf,
+  telemetryMock,
+} from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
 import type { Connection, ConnectionOptions } from './net/connection';
 import type { StoreBattle, StoreBattleMonster, StoreMonsterPub, StoreNpcRow } from './net/store';
@@ -177,16 +182,9 @@ vi.mock('./net/connection', () => {
   };
 });
 
-vi.mock('./observability/telemetry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./observability/telemetry')>();
-  return {
-    ...actual,
-    loadOtelSdk: () => {
-      throw new Error('loadOtelSdk must not be reached in this test');
-    },
-    startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
-  };
-});
+vi.mock('./observability/telemetry', async (importOriginal) =>
+  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
+);
 
 // The screen-adapter table: the real module with SCREEN_ADAPTERS replaced by a mutable copy of
 // itself (every entry the same legacy adapter, so nothing changes until a case swaps one).
@@ -269,23 +267,6 @@ function recordListeners(target: EventTarget): void {
   });
 }
 
-/** Mount the REAL client/index.html shell (minus its module script) into the live document,
- *  so main.ts builds the real overlay views against the real static shells. */
-function mountIndexHtmlShell(): void {
-  const htmlPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.html');
-  const parsed = new DOMParser().parseFromString(readFileSync(htmlPath, 'utf8'), 'text/html');
-  const children = Array.from(parsed.body.children).filter((el) => el.tagName !== 'SCRIPT');
-  // ctl-7a (named intentional change): the shipped <body> is now three children (#game-screen,
-  // #build-stamp, #a11y-live), so the old `body children > 5` floor is retired. The vacuity
-  // guard counts the id-bearing elements the parse yielded instead (the real shell has ~60).
-  const idCount = parsed.querySelectorAll('[id]').length;
-  expect(idCount, 'index.html must yield a body to mount').toBeGreaterThan(5);
-  document.body.replaceChildren(...children.map((el) => document.adoptNode(el)));
-  expect(document.getElementById('app'), 'index.html must ship <div id="app">').not.toBeNull();
-}
-
-const clock = { t: 0 };
-let rafCallback: FrameRequestCallback | null = null;
 let opts: ConnectionOptions;
 
 async function boot(): Promise<void> {
@@ -304,11 +285,7 @@ async function boot(): Promise<void> {
   mountIndexHtmlShell();
   recordListeners(window);
   recordListeners(document);
-  rafCallback = null;
-  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => {
-    rafCallback = cb;
-    return 0;
-  });
+  stubRaf();
   vi.resetModules();
   await import('./main');
   opts = await vi.waitFor(
@@ -323,16 +300,6 @@ async function boot(): Promise<void> {
 async function bootReady(): Promise<void> {
   await boot();
   opts.onReady(H.identity);
-}
-
-/** Run one frame at clock `t`. Throws if the frame did not re-arm (it re-arms in `finally`). */
-function frame(t: number): void {
-  const cb = rafCallback;
-  if (cb === null) throw new Error('no rAF callback armed');
-  rafCallback = null;
-  clock.t = t;
-  cb(t);
-  expect(rafCallback, 'frame did not re-arm requestAnimationFrame').not.toBeNull();
 }
 
 const EID = 7n;
@@ -406,7 +373,7 @@ describe('main.ts keyboard routing (runtime)', { sequential: true }, () => {
     delete (document as unknown as { visibilityState?: unknown }).visibilityState;
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    rafCallback = null;
+    raf.cb = null;
     document.body.replaceChildren();
   });
 
@@ -983,7 +950,7 @@ describe('main.ts context stack (runtime, ctl-2)', { sequential: true }, () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     H.sessionState = 'hidden';
-    rafCallback = null;
+    raf.cb = null;
     document.body.replaceChildren();
   });
 
@@ -1514,7 +1481,7 @@ describe('main.ts reconcile server truth (runtime, ctl-3)', { sequential: true }
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     H.sessionState = 'hidden';
-    rafCallback = null;
+    raf.cb = null;
     document.body.replaceChildren();
   });
 
@@ -1769,7 +1736,7 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     H.sessionState = 'hidden';
-    rafCallback = null;
+    raf.cb = null;
     document.body.replaceChildren();
   });
 
@@ -2169,7 +2136,7 @@ describe('main.ts D-pad on a nav-capable screen (runtime, ctl-7c)', { sequential
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     H.sessionState = 'hidden';
-    rafCallback = null;
+    raf.cb = null;
     document.body.replaceChildren();
   });
 
@@ -2398,7 +2365,7 @@ describe('main.ts held D-pad and context changes (runtime, ctl-7c)', { sequentia
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     H.sessionState = 'hidden';
-    rafCallback = null;
+    raf.cb = null;
     document.body.replaceChildren();
   });
 
@@ -2717,7 +2684,7 @@ describe('main.ts world A / Y act on the wasm candidates; T retired (runtime, ct
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     H.sessionState = 'hidden';
-    rafCallback = null;
+    raf.cb = null;
     document.body.replaceChildren();
   });
 
@@ -3627,7 +3594,7 @@ describe('main.ts face-to-face trade and challenge; O retired (runtime, ctl-10b)
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     H.sessionState = 'hidden';
-    rafCallback = null;
+    raf.cb = null;
     document.body.replaceChildren();
   });
 
