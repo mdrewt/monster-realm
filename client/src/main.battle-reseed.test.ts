@@ -112,6 +112,11 @@
  * NO `new RegExp(...)`, no eval / no new Function (Semgrep bans them).
  */
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
+import {
+  telemetryMock,
+  wasmPkgStubMock,
+  worldRendererNoCanvasMock,
+} from '../test-util/mainBootHarness';
 import type { Connection, ConnectionOptions } from './net/connection';
 import type { AuthoritativeStore, StoreBattle, StoreBattleMonster, StorePlayer } from './net/store';
 import type { BugBundle, BugBundleInput } from './ui/bugBundle';
@@ -129,37 +134,7 @@ const H = vi.hoisted(() => ({
 
 // The wasm pkg: every name main.ts imports, plus the four other exports of the real module
 // (a sibling importer of the same specifier must not get `undefined`).
-vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
-  const SIDE = 3;
-  const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
-  return {
-    apply_move: () => ({}),
-    // `-> i64` crosses as a BigInt, so the stub is `1n`, not `1`.
-    deletion_grace_ms_default: () => 1n,
-    move_queue_cap: () => 4,
-    party_size: () => 3,
-    party_slot_none: () => 255,
-    max_trade_monsters_per_side: () => 64,
-    talk_range: () => 2,
-    // ctl-10a: named fixture change — the new interact export
-    interact_candidates_coded: () => [],
-    predict_move: () => ({}),
-    predict_tick: () => ({}),
-    set_active_zone: () => undefined,
-    start: () => undefined,
-    step_ms: () => 200,
-    // A minimal but VALID RawTileMap (TileMap.fromRaw rejects a ragged grid). main.ts only
-    // reads `.zone_id` on this path — no zone switch is triggered by these tests.
-    zone_map: (zoneId: number) => ({
-      zone_id: zoneId,
-      width: SIDE,
-      height: SIDE,
-      walkable: grid(true),
-      grass: grid(false),
-      warps: [],
-    }),
-  };
-});
+vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgStubMock());
 
 // The connection: capture the options object, hand back a Connection-shaped stub.
 // sessionState() MUST be 'hidden' or main.ts's sessionGateBlocks() swallows the F9 keydown.
@@ -191,50 +166,13 @@ vi.mock('./ui/bugBundle', async (importOriginal) => {
 });
 
 // Telemetry: keep NOOP_TELEMETRY and the types, but never bootstrap the OTel SDK (no network).
-vi.mock('./observability/telemetry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./observability/telemetry')>();
-  return {
-    ...actual,
-    // Never reached: the stubbed startClientTelemetry below ignores its loader. Throws
-    // SYNCHRONOUSLY if a future edit does reach it, so there is no floating rejection.
-    loadOtelSdk: () => {
-      throw new Error('loadOtelSdk must not be reached in this test');
-    },
-    startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
-  };
-});
+vi.mock('./observability/telemetry', async (importOriginal) =>
+  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
+);
 
 // The renderer: constructed UNCONDITIONALLY at main.ts:2174, before the #app guard. Pixi
 // under happy-dom is out of scope for this gate, so it is stubbed rather than trusted.
-vi.mock('./render/world', () => {
-  class WorldRenderer {
-    init(): Promise<void> {
-      return Promise.resolve();
-    }
-    setMap(): void {
-      // no-op stub
-    }
-    render(): void {
-      // no-op stub
-    }
-    resize(): void {
-      // no-op stub
-    }
-    screenFor(): { x: number; y: number } {
-      return { x: 0, y: 0 };
-    }
-    clear(): void {
-      // no-op stub
-    }
-    destroy(): void {
-      // no-op stub
-    }
-    get viewCount(): number {
-      return 0;
-    }
-  }
-  return { WorldRenderer };
-});
+vi.mock('./render/world', () => worldRendererNoCanvasMock());
 
 // --- listener-cleanup harness ------------------------------------------------------------
 type AddListener = (
