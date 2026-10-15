@@ -67,10 +67,13 @@
  * literal en and fr bytes, built from code points, never read off the catalog under test. The
  * frozen-link tests are unchanged.
  */
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  buildAppShellFromRealIndexHtml,
+  telemetryMock,
+  wasmPkgStubMock,
+  worldRendererMock,
+} from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
 import type { ConnectionOptions } from './net/connection';
 import type {
@@ -139,36 +142,9 @@ const H = vi.hoisted(() => {
 });
 
 // Same wasm mock shape as main.partyFull.test.ts / main.i18nBoot.test.ts.
-vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
-  const SIDE = 3;
-  const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
-  return {
-    apply_move: () => ({}),
-    deletion_grace_ms_default: () => 1n,
-    move_queue_cap: () => 4,
-    party_size: () => 3,
-    party_slot_none: () => 255,
-    max_trade_monsters_per_side: () => 64,
-    talk_range: () => 2,
-    // ctl-10a: named fixture change — the new interact export
-    // ctl-10b: named fixture change — driven by `H.interact` (the trade-propose test installs a rule
-    // naming the faced player; every other case answers no candidate, as before)
-    interact_candidates_coded: (...args: unknown[]) => H.interact(...args),
-    predict_move: () => ({}),
-    predict_tick: () => ({}),
-    set_active_zone: () => undefined,
-    start: () => undefined,
-    step_ms: () => 200,
-    zone_map: (zoneId: number) => ({
-      zone_id: zoneId,
-      width: SIDE,
-      height: SIDE,
-      walkable: grid(true),
-      grass: grid(false),
-      warps: [],
-    }),
-  };
-});
+vi.mock('../../client-wasm/pkg/client_wasm.js', () =>
+  wasmPkgStubMock({ interact: (...args: unknown[]) => H.interact(...args) }),
+);
 
 // `linkFrozen` reads H.linkFrozen LIVE (never a snapshot) so a test can flip it AFTER boot,
 // once the shop overlay is already open — the site under test is main.ts's onBuy handler
@@ -192,40 +168,11 @@ vi.mock('./net/connection', () => {
   };
 });
 
-vi.mock('./observability/telemetry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./observability/telemetry')>();
-  return {
-    ...actual,
-    loadOtelSdk: () => {
-      throw new Error('loadOtelSdk must not be reached in this test');
-    },
-    startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
-  };
-});
+vi.mock('./observability/telemetry', async (importOriginal) =>
+  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
+);
 
-vi.mock('./render/world', () => {
-  class WorldRenderer {
-    init(mount: HTMLElement): Promise<void> {
-      const canvas = document.createElement('canvas');
-      canvas.setAttribute('tabindex', '0');
-      canvas.setAttribute('role', 'application');
-      mount.appendChild(canvas);
-      return Promise.resolve();
-    }
-    setMap(): void {}
-    render(): void {}
-    resize(): void {}
-    screenFor(): { x: number; y: number } {
-      return { x: 0, y: 0 };
-    }
-    clear(): void {}
-    destroy(): void {}
-    get viewCount(): number {
-      return 0;
-    }
-  }
-  return { WorldRenderer };
-});
+vi.mock('./render/world', () => worldRendererMock());
 
 type AddListener = (
   type: string,
@@ -256,19 +203,6 @@ function recordListeners(target: EventTarget, sink: Recorded[]): () => void {
       delete (target as unknown as { addEventListener?: AddListener }).addEventListener;
     }
   };
-}
-
-function buildAppShellFromRealIndexHtml(): void {
-  const htmlPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.html');
-  const html = readFileSync(htmlPath, 'utf8');
-  const parsed = new DOMParser().parseFromString(html, 'text/html');
-  const bodyChildren = Array.from(parsed.body.children).filter((e) => e.tagName !== 'SCRIPT');
-  // ctl-7a (named intentional change): the shipped <body> is now three children (#game-screen,
-  // #build-stamp, #a11y-live), so the old `body children > 5` floor is retired. The vacuity
-  // guard counts the id-bearing elements the parse yielded instead (the real shell has ~60).
-  const idCount = parsed.querySelectorAll('[id]').length;
-  expect(idCount, 'parsed index.html yielded almost no id-bearing elements').toBeGreaterThan(5);
-  document.body.replaceChildren(...bodyChildren.map((e) => document.adoptNode(e)));
 }
 
 interface StoreHandle {
