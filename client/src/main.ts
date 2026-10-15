@@ -1458,12 +1458,22 @@ const ownPartyIds = (): bigint[] =>
     .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
     .map((m) => m.monsterId);
 
+/** C5: a REJECTED answer changed no server row — the request is still Pending, so the optimistic
+ *  `answeredRequests` key is released and the banner, badges and Y answer it again. Handed to the
+ *  answer arms' helpers (`performCare`'s `onRejected`, `sendGuarded`'s third argument), which is
+ *  the only place the rejection is observable: both report it and resolve. */
+const releaseAnswered = (key: string) => (): void => {
+  answeredRequests.delete(key);
+};
+
 /** Run one command. Not async: each arm hands back its own reducer promise (a view's lock holds
  *  until it settles), and a synchronous throw stays synchronous. No default arm, so a new
  *  `Command` fails client-typecheck here. */
 function dispatch(command: Command): Promise<void> {
   if (refusedInBattle(command)) return DONE;
   // An answer leaves the request out of the world's notices until the server row changes (ctl-13).
+  // The add stays optimistic — on answer, not settle, so the banner never flashes while the answer
+  // is in flight; the arm's reject path releases it again (`releaseAnswered`, C5).
   if (command.kind === 'respondTrade') answeredRequests.add(`trade-${command.tradeId}`);
   if (command.kind === 'acceptChallenge' || command.kind === 'declineChallenge')
     answeredRequests.add(`challenge-${command.challengeId}`);
@@ -1582,6 +1592,7 @@ function dispatch(command: Command): Promise<void> {
           : i18nT('trade.feedback.rejected'),
         where: 'respond-trade',
         showFeedback: tradeFeedback,
+        onRejected: releaseAnswered(`trade-${tradeId}`),
       });
     }
     case 'confirmTrade': {
@@ -1637,14 +1648,18 @@ function dispatch(command: Command): Promise<void> {
     }
     case 'acceptChallenge': {
       const { challengeId } = command;
-      return sendGuarded('pvp-accept', () =>
-        conn?.live()?.reducers.acceptChallenge({ challengeId, partyIds: ownPartyIds() }),
+      return sendGuarded(
+        'pvp-accept',
+        () => conn?.live()?.reducers.acceptChallenge({ challengeId, partyIds: ownPartyIds() }),
+        releaseAnswered(`challenge-${challengeId}`),
       );
     }
     case 'declineChallenge': {
       const { challengeId } = command;
-      return sendGuarded('pvp-decline', () =>
-        conn?.live()?.reducers.declineChallenge({ challengeId }),
+      return sendGuarded(
+        'pvp-decline',
+        () => conn?.live()?.reducers.declineChallenge({ challengeId }),
+        releaseAnswered(`challenge-${challengeId}`),
       );
     }
     case 'cancelChallenge': {
@@ -1927,15 +1942,25 @@ window.addEventListener('unhandledrejection', (e) => pushError('unhandledrejecti
  * rename, trade-propose — routed through performCare in main(), A6).
  * ALWAYS resolves (frozen, dead handle, reported rejection) — views holding an
  * in-flight lock `return` it so the lock lives exactly until the call settles.
+ * `onRejected` threads a settled rejection out to the caller (C5: a rejected challenge
+ * answer releases its answeredRequests key); the frozen and dead-handle arms never
+ * call it — no reducer ran, nothing settled.
  */
-function sendGuarded(where: string, call: () => Promise<void> | undefined): Promise<void> {
+function sendGuarded(
+  where: string,
+  call: () => Promise<void> | undefined,
+  onRejected?: () => void,
+): Promise<void> {
   if (conn === undefined || conn.linkFrozen()) {
     reportError(tf('chrome.status.disconnected', { where }));
     return Promise.resolve();
   }
   const p = call();
   if (p === undefined) return Promise.resolve();
-  return p.catch((err: unknown) => reportError(reduceErrorMessage(err, where)));
+  return p.catch((err: unknown) => {
+    reportError(reduceErrorMessage(err, where));
+    onRejected?.();
+  });
 }
 
 /**
