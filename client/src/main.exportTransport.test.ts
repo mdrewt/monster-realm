@@ -62,6 +62,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { telemetryMock, wasmPkgStubMock, worldRendererMock } from '../test-util/mainBootHarness';
 import type { Connection, ConnectionOptions } from './net/connection';
 
 // --- hoisted state shared with the mock factories --------------------------------------
@@ -87,34 +88,7 @@ const H = vi.hoisted(() => {
 // The wasm pkg — identical shape to main.privacyWiring.test.ts's mock. `deletion_grace_ms_default`
 // crosses as a BigInt (`-> i64`), so the stub is `1n`, not `1`; it is deliberately a
 // SYNTHETIC window and never the shipped value.
-vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
-  const SIDE = 3;
-  const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
-  return {
-    apply_move: () => ({}),
-    deletion_grace_ms_default: () => 1n,
-    move_queue_cap: () => 4,
-    party_size: () => 3,
-    party_slot_none: () => 255,
-    max_trade_monsters_per_side: () => 64,
-    talk_range: () => 2,
-    // ctl-10a: named fixture change — the new interact export
-    interact_candidates_coded: () => [],
-    predict_move: () => ({}),
-    predict_tick: () => ({}),
-    set_active_zone: () => undefined,
-    start: () => undefined,
-    step_ms: () => 200,
-    zone_map: (zoneId: number) => ({
-      zone_id: zoneId,
-      width: SIDE,
-      height: SIDE,
-      walkable: grid(true),
-      grass: grid(false),
-      warps: [],
-    }),
-  };
-});
+vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgStubMock());
 
 // The connection. DELTA 1 lives here: `connect` captures the options object, which carries the
 // REAL store instance main.ts constructed — the seam every test below drives the transport
@@ -144,52 +118,13 @@ vi.mock('./net/connection', () => {
 });
 
 // Telemetry: keep the real types/NOOP, never bootstrap the OTel SDK (no network).
-vi.mock('./observability/telemetry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./observability/telemetry')>();
-  return {
-    ...actual,
-    loadOtelSdk: () => {
-      throw new Error('loadOtelSdk must not be reached in this test');
-    },
-    startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
-  };
-});
+vi.mock('./observability/telemetry', async (importOriginal) =>
+  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
+);
 
 // The renderer: constructed unconditionally before the `#app` guard. `init(mount)` appends a
 // real focusable canvas so `mount.querySelector('canvas')` resolves.
-vi.mock('./render/world', () => {
-  class WorldRenderer {
-    init(mount: HTMLElement): Promise<void> {
-      const canvas = document.createElement('canvas');
-      canvas.setAttribute('tabindex', '0');
-      canvas.setAttribute('role', 'application');
-      mount.appendChild(canvas);
-      return Promise.resolve();
-    }
-    setMap(): void {
-      // no-op stub
-    }
-    render(): void {
-      // no-op stub
-    }
-    resize(): void {
-      // no-op stub
-    }
-    screenFor(): { x: number; y: number } {
-      return { x: 0, y: 0 };
-    }
-    clear(): void {
-      // no-op stub
-    }
-    destroy(): void {
-      // no-op stub
-    }
-    get viewCount(): number {
-      return 0;
-    }
-  }
-  return { WorldRenderer };
-});
+vi.mock('./render/world', () => worldRendererMock());
 
 // --- listener-cleanup harness (verbatim from main.privacyWiring.test.ts) ----------------
 type AddListener = (
