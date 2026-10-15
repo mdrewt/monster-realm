@@ -103,6 +103,7 @@ import {
   pvpSubmitPending,
   shouldSkipBattleRefresh,
 } from './ui/battleModel';
+import { battleButton, battleRefused, continuedBattleId, isBareBattle } from './ui/battlePolicy';
 import type { BattleView } from './ui/battleView';
 import { buildBoxViewModel, buildPartyViewModel, resolvePartySlot } from './ui/boxModel';
 import type { BoxView } from './ui/boxView';
@@ -125,14 +126,10 @@ import {
 import type { ClaimView, ClaimViewHandlers } from './ui/claimView';
 import {
   baseFor,
-  battleButton,
-  battleRefused,
   blocksPlayerOpen,
   contextStep,
-  continuedBattleId,
   type Edge,
   type FrameId,
-  isBareBattle,
   mirrorEdges,
   movementEnabled,
   popToBase,
