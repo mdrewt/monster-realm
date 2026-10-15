@@ -27,12 +27,16 @@
  * its keyup 5 ms later on ONE running clock; the stubbed apply_move is a real one-tile step so a
  * movement press is visible as an `enqueueMove`.
  */
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  connectionRecordingMock,
+  mountIndexHtmlShell,
+  telemetryMock,
+  wasmPkgWalkingMock,
+  worldRendererMock,
+} from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
-import type { Connection, ConnectionOptions } from './net/connection';
+import type { ConnectionOptions } from './net/connection';
 import type { StoreBattleChallenge, StoreTradeOffer } from './net/store';
 import { tf } from './ui/i18n/resolver';
 
@@ -47,126 +51,17 @@ const H = vi.hoisted(() => ({
   interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
 }));
 
-vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
-  const SIDE = 8;
-  const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
-  const DELTA: Record<string, [number, number]> = {
-    North: [0, -1],
-    South: [0, 1],
-    East: [1, 0],
-    West: [-1, 0],
-  };
-  return {
-    apply_move: (
-      state: { pos: { x: number; y: number } },
-      input: 'Jump' | { Step: string },
-      now: number,
-    ) => {
-      const stamp = Math.floor(now);
-      if (input === 'Jump') return { ...state, action: 'Jumping', move_started_at: stamp };
-      const [dx, dy] = DELTA[input.Step];
-      return {
-        ...state,
-        facing: input.Step,
-        action: 'Walking',
-        pos: { x: state.pos.x + dx, y: state.pos.y + dy },
-        move_started_at: stamp,
-      };
-    },
-    deletion_grace_ms_default: () => 1n,
-    move_queue_cap: () => 4,
-    party_size: () => 3,
-    party_slot_none: () => 255,
-    max_trade_monsters_per_side: () => 64,
-    talk_range: () => 2,
-    interact_candidates_coded: (...args: unknown[]) => H.interact(...args),
-    predict_move: () => ({}),
-    predict_tick: () => ({}),
-    set_active_zone: () => undefined,
-    start: () => undefined,
-    step_ms: () => 200,
-    zone_map: (zoneId: number) => ({
-      zone_id: zoneId,
-      width: SIDE,
-      height: SIDE,
-      walkable: grid(true),
-      grass: grid(false),
-      warps: [],
-    }),
-  };
-});
+vi.mock('../../client-wasm/pkg/client_wasm.js', () =>
+  wasmPkgWalkingMock({ interact: (...args: unknown[]) => H.interact(...args) }),
+);
 
-vi.mock('./net/connection', () => {
-  const reducers = new Proxy(
-    {},
-    {
-      get: (_t, name) => {
-        if (name === 'enqueueMove') {
-          return (args: unknown) =>
-            new Promise<void>(() => {
-              H.sends.push(args);
-            });
-        }
-        return (args: unknown) => {
-          H.calls.push({ name: String(name), args });
-          return Promise.resolve();
-        };
-      },
-    },
-  );
-  const live = { reducers };
-  const stub = {
-    conn: undefined,
-    live: () => live,
-    identity: () => H.identity,
-    linkFrozen: () => false,
-    continueAnonymously: () => undefined,
-    sessionState: () => 'hidden',
-    startSignIn: () => undefined,
-    reconnectNow: () => undefined,
-  } as unknown as Connection;
-  return {
-    connect: (opts: ConnectionOptions): Connection => {
-      H.connectOpts = opts;
-      return stub;
-    },
-  };
-});
+vi.mock('./net/connection', () => connectionRecordingMock(H));
 
-vi.mock('./observability/telemetry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./observability/telemetry')>();
-  return {
-    ...actual,
-    loadOtelSdk: () => {
-      throw new Error('loadOtelSdk must not be reached in this test');
-    },
-    startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
-  };
-});
+vi.mock('./observability/telemetry', async (importOriginal) =>
+  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
+);
 
-vi.mock('./render/world', () => {
-  class WorldRenderer {
-    init(mount: HTMLElement): Promise<void> {
-      const canvas = document.createElement('canvas');
-      canvas.setAttribute('tabindex', '0');
-      canvas.setAttribute('role', 'application');
-      mount.appendChild(canvas);
-      return Promise.resolve();
-    }
-    setMap(): void {}
-    render(): void {}
-    resize(): void {}
-    screenFor(): { x: number; y: number } {
-      return { x: 0, y: 0 };
-    }
-    clear(): void {}
-    destroy(): void {}
-    get viewCount(): number {
-      return 0;
-    }
-  }
-  return { WorldRenderer };
-});
+vi.mock('./render/world', () => worldRendererMock());
 
 // --- harness ------------------------------------------------------------------------------
 interface Recorded {
@@ -193,17 +88,6 @@ function recordListeners(target: EventTarget): void {
     if (own !== undefined) Object.defineProperty(target, 'addEventListener', own);
     else delete (target as unknown as { addEventListener?: unknown }).addEventListener;
   });
-}
-
-/** Mount the REAL client/index.html shell (minus its module script) into the live document. */
-function mountIndexHtmlShell(): void {
-  const htmlPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.html');
-  const parsed = new DOMParser().parseFromString(readFileSync(htmlPath, 'utf8'), 'text/html');
-  const children = Array.from(parsed.body.children).filter((el) => el.tagName !== 'SCRIPT');
-  const idCount = parsed.querySelectorAll('[id]').length;
-  expect(idCount, 'index.html must yield a body to mount').toBeGreaterThan(5);
-  document.body.replaceChildren(...children.map((el) => document.adoptNode(el)));
-  expect(document.getElementById('app'), 'index.html must ship <div id="app">').not.toBeNull();
 }
 
 const clock = { t: 0 };
