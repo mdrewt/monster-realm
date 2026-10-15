@@ -70,6 +70,11 @@
  * NO `new RegExp(...)`, no `eval`, no `new Function` (Semgrep bans them — none used here).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  telemetryMock,
+  wasmPkgStubMock,
+  worldRendererNoCanvasMock,
+} from '../test-util/mainBootHarness';
 import type { Connection, ConnectionOptions } from './net/connection';
 import { type MotionQuery, REDUCED_MOTION_QUERY } from './render/motionPreference';
 import type { ResolveInput } from './render/renderResolver';
@@ -89,35 +94,7 @@ const H = vi.hoisted(() => ({
 // plus the four other exports of the real module). zone_map() is called at MODULE scope
 // (main.ts:214, `let rawMap = zone_map(ZONE_ID)`) — it must return a valid RawTileMap even
 // though this file never mounts #app.
-vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
-  const SIDE = 3;
-  const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
-  return {
-    apply_move: () => ({}),
-    // `-> i64` crosses as a BigInt, so the stub is `1n`, not `1`.
-    deletion_grace_ms_default: () => 1n,
-    move_queue_cap: () => 4,
-    party_size: () => 3,
-    party_slot_none: () => 255,
-    max_trade_monsters_per_side: () => 64,
-    talk_range: () => 2,
-    // ctl-10a: named fixture change — the new interact export
-    interact_candidates_coded: () => [],
-    predict_move: () => ({}),
-    predict_tick: () => ({}),
-    set_active_zone: () => undefined,
-    start: () => undefined,
-    step_ms: () => 200,
-    zone_map: (zoneId: number) => ({
-      zone_id: zoneId,
-      width: SIDE,
-      height: SIDE,
-      walkable: grid(true),
-      grass: grid(false),
-      warps: [],
-    }),
-  };
-});
+vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgStubMock());
 
 // The connection: capture the options object, hand back a Connection-shaped stub.
 // sessionState() MUST be 'hidden' or the frame loop's `sessionGateBlocks()` early-returns
@@ -143,50 +120,15 @@ vi.mock('./net/connection', () => {
 });
 
 // Telemetry: keep NOOP_TELEMETRY and the types, never bootstrap the OTel SDK (no network).
-vi.mock('./observability/telemetry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./observability/telemetry')>();
-  return {
-    ...actual,
-    loadOtelSdk: () => {
-      throw new Error('loadOtelSdk must not be reached in this test');
-    },
-    startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
-  };
-});
+vi.mock('./observability/telemetry', async (importOriginal) =>
+  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
+);
 
 // The renderer: constructed UNCONDITIONALLY at main.ts:2246, before the #app guard. Pixi
 // under happy-dom is out of scope for this gate, so it is stubbed rather than trusted. No
 // canvas is appended (unlike main.a11yFocus.test.ts's WorldRenderer mock) — this file never
 // drives focus, and #app itself never exists here.
-vi.mock('./render/world', () => {
-  class WorldRenderer {
-    init(): Promise<void> {
-      return Promise.resolve();
-    }
-    setMap(): void {
-      // no-op stub
-    }
-    render(): void {
-      // no-op stub
-    }
-    resize(): void {
-      // no-op stub
-    }
-    screenFor(): { x: number; y: number } {
-      return { x: 0, y: 0 };
-    }
-    clear(): void {
-      // no-op stub
-    }
-    destroy(): void {
-      // no-op stub
-    }
-    get viewCount(): number {
-      return 0;
-    }
-  }
-  return { WorldRenderer };
-});
+vi.mock('./render/world', () => worldRendererNoCanvasMock());
 
 // THE OBSERVATION CHANNEL FOR THIS FILE (mandatory design decision #2). A subclass of the
 // REAL RenderResolver, built from importOriginal() so RecordingRenderResolver is assembled
