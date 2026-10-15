@@ -36,6 +36,14 @@ export interface CareActionDeps {
   readonly where: string;
   /** Renders a message on the calling overlay's feedback line. */
   readonly showFeedback: (message: string) => void;
+  /**
+   * Called when the action REJECTS — a synchronous throw from `call` or the settled
+   * rejection — right after its failure line is painted. The disconnected arm is NOT
+   * a rejection: no call was made. This threads the rejection out to the caller so it
+   * can undo optimistic state the send latched (C5: a rejected trade answer releases
+   * its answeredRequests key, so the still-pending request shows again).
+   */
+  readonly onRejected?: () => void;
 }
 
 /**
@@ -62,6 +70,7 @@ export async function performCare(deps: CareActionDeps): Promise<void> {
     inFlight = deps.call();
   } catch (err) {
     deps.showFeedback(reduceErrorMessage(err, deps.where));
+    deps.onRejected?.();
     return;
   }
   // Branch BEFORE awaiting: `await undefined` resolves without throwing, so a
@@ -83,5 +92,6 @@ export async function performCare(deps: CareActionDeps): Promise<void> {
     // reduceErrorMessage passes SenderError reasons through and collapses
     // InternalError to a generic line — raw err.message is never shown.
     deps.showFeedback(reduceErrorMessage(err, deps.where));
+    deps.onRejected?.();
   }
 }
