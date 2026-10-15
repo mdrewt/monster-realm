@@ -65,7 +65,7 @@ import type {
 } from './net/store';
 // Read ONLY by the battle case's closing anti-vacuity cross-check (that its literal refuse list
 // covers every kind the policy refuses); the expected split itself is the test's own transcription.
-import { COMMAND_BATTLE_POLICY } from './ui/contextStack';
+import { COMMAND_BATTLE_POLICY } from './ui/battlePolicy';
 // Read ONLY by the ctl-7c view-lending case's closing check that every frame id was driven.
 import { OVERLAY_IDS } from './ui/overlayRegistry';
 import type { SocialFrameView, SocialPanelId } from './ui/screens/types';

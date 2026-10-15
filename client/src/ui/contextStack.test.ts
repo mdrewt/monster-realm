@@ -24,23 +24,25 @@ import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { VButton } from '../input/buttons';
 import {
-  acceleratorsDenied,
-  type BaseFrame,
-  baseFor,
   battleButton,
   battleRefused,
   battleSafeCommand,
-  blocksPlayerOpen,
   COMMAND_BATTLE_POLICY,
+  continuedBattleId,
+  isBareBattle,
+  OUTCOME_CONTINUE_GRACE_MS,
+} from './battlePolicy';
+import {
+  acceleratorsDenied,
+  type BaseFrame,
+  baseFor,
+  blocksPlayerOpen,
   type Command,
   contextStep,
-  continuedBattleId,
   type Edge,
   type FrameId,
-  isBareBattle,
   mirrorEdges,
   movementEnabled,
-  OUTCOME_CONTINUE_GRACE_MS,
   popToBase,
   popTop,
   reconcile,
