@@ -26,6 +26,11 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  telemetryMock,
+  wasmPkgIdentityMoveMock,
+  worldRendererMock,
+} from '../test-util/mainBootHarness';
 import { claimCode } from './net/claimCode';
 import type { Connection, ConnectionOptions } from './net/connection';
 import { resolveConnectionConfig } from './net/connectionConfig';
@@ -80,33 +85,9 @@ vi.mock('./ui/privacyView', () => ({ PrivacyView: H.makeStub() }));
 vi.mock('./ui/renameView', () => ({ RenameView: H.makeStub() }));
 vi.mock('./ui/tradeProposeView', () => ({ TradeProposeView: H.makeStub() }));
 
-vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
-  const SIDE = 8;
-  const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
-  return {
-    apply_move: (state: unknown) => state,
-    deletion_grace_ms_default: () => 1n,
-    move_queue_cap: () => 4,
-    party_size: () => 3,
-    party_slot_none: () => 255,
-    max_trade_monsters_per_side: () => 37,
-    talk_range: () => 2,
-    interact_candidates_coded: () => [],
-    predict_move: () => ({}),
-    predict_tick: () => ({}),
-    set_active_zone: () => undefined,
-    start: () => undefined,
-    step_ms: () => 200,
-    zone_map: (zoneId: number) => ({
-      zone_id: zoneId,
-      width: SIDE,
-      height: SIDE,
-      walkable: grid(true),
-      grass: grid(false),
-      warps: [],
-    }),
-  };
-});
+vi.mock('../../client-wasm/pkg/client_wasm.js', () =>
+  wasmPkgIdentityMoveMock({ interact: () => [] }),
+);
 
 // The connection: capture the options. main.ts's claim callbacks run against the REAL claim model
 // and the REAL session storage; nothing here touches either.
@@ -132,40 +113,11 @@ vi.mock('./net/connection', () => {
   };
 });
 
-vi.mock('./observability/telemetry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./observability/telemetry')>();
-  return {
-    ...actual,
-    loadOtelSdk: () => {
-      throw new Error('loadOtelSdk must not be reached in this test');
-    },
-    startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
-  };
-});
+vi.mock('./observability/telemetry', async (importOriginal) =>
+  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
+);
 
-vi.mock('./render/world', () => {
-  class WorldRenderer {
-    init(mount: HTMLElement): Promise<void> {
-      const canvas = document.createElement('canvas');
-      canvas.setAttribute('tabindex', '0');
-      canvas.setAttribute('role', 'application');
-      mount.appendChild(canvas);
-      return Promise.resolve();
-    }
-    setMap(): void {}
-    render(): void {}
-    resize(): void {}
-    screenFor(): { x: number; y: number } {
-      return { x: 0, y: 0 };
-    }
-    clear(): void {}
-    destroy(): void {}
-    get viewCount(): number {
-      return 0;
-    }
-  }
-  return { WorldRenderer };
-});
+vi.mock('./render/world', () => worldRendererMock());
 
 // --- harness ------------------------------------------------------------------------------
 interface Recorded {
