@@ -64,6 +64,11 @@
  * — every source-scan needle below is matched with `String.indexOf` loops only.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  telemetryMock,
+  wasmPkgStubMock,
+  worldRendererNoCanvasMock,
+} from '../test-util/mainBootHarness';
 import type { Connection, ConnectionOptions } from './net/connection';
 import { CATALOG_EN } from './ui/i18n/catalog.en';
 import type { Catalog } from './ui/i18n/messageIds';
@@ -99,34 +104,7 @@ const H = vi.hoisted(() => ({
 }));
 
 // The wasm pkg — identical shape to the sanctioned precedent (main.reducedMotionWiring.test.ts).
-vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
-  const SIDE = 3;
-  const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
-  return {
-    apply_move: () => ({}),
-    deletion_grace_ms_default: () => 1n,
-    move_queue_cap: () => 4,
-    party_size: () => 3,
-    party_slot_none: () => 255,
-    max_trade_monsters_per_side: () => 64,
-    talk_range: () => 2,
-    // ctl-10a: named fixture change — the new interact export
-    interact_candidates_coded: () => [],
-    predict_move: () => ({}),
-    predict_tick: () => ({}),
-    set_active_zone: () => undefined,
-    start: () => undefined,
-    step_ms: () => 200,
-    zone_map: (zoneId: number) => ({
-      zone_id: zoneId,
-      width: SIDE,
-      height: SIDE,
-      walkable: grid(true),
-      grass: grid(false),
-      warps: [],
-    }),
-  };
-});
+vi.mock('../../client-wasm/pkg/client_wasm.js', () => wasmPkgStubMock());
 
 // The connection: capture the options object, hand back a Connection-shaped stub whose
 // sessionState is 'hidden' so the frame loop's gate never drives real frame work — this file
@@ -152,47 +130,12 @@ vi.mock('./net/connection', () => {
 });
 
 // Telemetry: keep NOOP_TELEMETRY and the types, never bootstrap the OTel SDK (no network).
-vi.mock('./observability/telemetry', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./observability/telemetry')>();
-  return {
-    ...actual,
-    loadOtelSdk: () => {
-      throw new Error('loadOtelSdk must not be reached in this test');
-    },
-    startClientTelemetry: () => Promise.resolve(actual.NOOP_TELEMETRY),
-  };
-});
+vi.mock('./observability/telemetry', async (importOriginal) =>
+  telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
+);
 
 // The renderer: constructed unconditionally at module scope, before the #app guard.
-vi.mock('./render/world', () => {
-  class WorldRenderer {
-    init(): Promise<void> {
-      return Promise.resolve();
-    }
-    setMap(): void {
-      // no-op stub
-    }
-    render(): void {
-      // no-op stub
-    }
-    resize(): void {
-      // no-op stub
-    }
-    screenFor(): { x: number; y: number } {
-      return { x: 0, y: 0 };
-    }
-    clear(): void {
-      // no-op stub
-    }
-    destroy(): void {
-      // no-op stub
-    }
-    get viewCount(): number {
-      return 0;
-    }
-  }
-  return { WorldRenderer };
-});
+vi.mock('./render/world', () => worldRendererNoCanvasMock());
 
 // THE OBSERVATION CHANNEL FOR setLocale/CATALOGS/currentLocale — see the H doc-comment above
 // for the MEASURED "factory runs once per file" fact this shape is built around. `CATALOGS`
