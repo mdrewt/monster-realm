@@ -2691,8 +2691,11 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
 // DISCLOSED SCOPE LIMIT (residual R-rb-10-CASCADE): happy-dom does no cascade and no layout, so
 // these cases prove "no inline animation declaration is present on the element", never "the
 // element does not animate when the player has asked for reduced motion". The airtight oracle is
-// a real Chromium. happy-dom also does not implement `Element.animate`, so the WAAPI class of
-// defect is structurally invisible here.
+// a real Chromium. On the WAAPI class: happy-dom 20.10.6 did not implement `Element.animate`
+// (that class of defect was structurally invisible here); 20.14.6 DOES implement it (measured,
+// deps-s5), so a WAAPI misuse is now at least OBSERVABLE in this environment — a unit tooth for
+// it is possible and would shrink this residual, but has not been written in the upgrade slice
+// (test-suite growth is out of scope there; see the deps round's proposals).
 // =============================================================================
 
 /** Root child indices, from the BattleView constructor's append order. INTENTIONAL CHANGE (ctl-8i,

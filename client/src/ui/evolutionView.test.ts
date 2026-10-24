@@ -1053,7 +1053,10 @@ describe('EvolutionView V7 (totality): show/hide/refresh in any order, no throw'
 // surface outward onto BOTH a white and a black page, and ratioed here.
 //
 // HAPPY-DOM 20.10.6 FACTS THIS SECTION LEANS ON (read from client/node_modules/happy-dom/lib/css/
-// declaration/CSSStyleDeclaration.js and property-manager/*.js — NOT assumed):
+// declaration/CSSStyleDeclaration.js and property-manager/*.js — NOT assumed; deps-s5 re-proved
+// every bullet behaviorally on 20.14.6: the whole section passes unchanged, though 20.14 made
+// `el.style` a Proxy, which changes how a test may INSTRUMENT a declaration — see the
+// style-getter shadow in main.controls.test.ts — without changing these serialisation facts):
 //   * `style.cssText = …` REWRITES the `style` attribute from the property manager's own
 //     serialisation, so `getAttribute('style')` is happy-dom's canonical spelling, not the
 //     author's. A declaration happy-dom cannot parse is DROPPED from both the object model and the
