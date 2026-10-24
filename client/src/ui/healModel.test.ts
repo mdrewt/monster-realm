@@ -321,7 +321,7 @@ describe('buildHealViewModel criterion 7: total function — never throws', () =
             // adversarial arm — the model must project, never validate).
             costCurrency: fc.oneof(
               fc.constant(0n),
-              fc.bigUintN(64),
+              fc.bigInt({ min: 0n, max: 2n ** 64n - 1n }),
               fc.bigInt({ min: -1000n, max: -1n }),
             ),
           }),
@@ -1056,7 +1056,7 @@ describe('buildHealViewModel [12r-d W-5]: properties over the bigint domain', ()
             cooldownMs: fc.integer({ min: 0, max: 86400000 }),
             costCurrency: fc.oneof(
               fc.constant(0n),
-              fc.bigUintN(64),
+              fc.bigInt({ min: 0n, max: 2n ** 64n - 1n }),
               fc.bigInt({ min: -1000n, max: -1n }),
             ),
           }),
@@ -1094,7 +1094,7 @@ describe('buildHealViewModel [12r-d W-5]: properties over the bigint domain', ()
         fc.record({
           costItemId: fc.option(fc.integer({ min: 1, max: 999 }), { nil: undefined }),
           costQty: fc.integer({ min: 0, max: 99 }),
-          costCurrency: fc.oneof(fc.constant(0n), fc.bigUintN(64)),
+          costCurrency: fc.oneof(fc.constant(0n), fc.bigInt({ min: 0n, max: 2n ** 64n - 1n })),
         }),
         ({ costItemId, costQty, costCurrency }) => {
           const entry = buildHealViewModel(
