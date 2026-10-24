@@ -407,8 +407,13 @@ what was published.
 ## SpacetimeDB versions move in lockstep
 
 **Decision.** The spacetime CLI/host and the Rust `spacetimedb` crate are pinned to
-the same version (2.8.1: root `Cargo.toml`, both workflows' `Pin spacetime` steps).
-The npm `spacetimedb` SDK is separate (2.6.0, locked in `client/package-lock.json`).
+the same version (2.11.0: root `Cargo.toml`, both workflows' `Pin spacetime` steps).
+AMENDED 2026-10-15 (deps-s3): the npm `spacetimedb` SDK now joins the lockstep
+(`^2.11.0`, locked in `client/package-lock.json`). It was previously held separate
+(at 2.6.0) because newer SDKs change reconnect behaviour; since 2.7.0 the vendor
+ships CLI/crate/SDK from one monorepo on the same day with no documented skew
+matrix, so same-version-everywhere is the only documented-safe configuration. An
+SDK bump still requires the live two-client e2e the old rule demanded.
 Module code uses 2.x syntax (`#[table(accessor = x)]`, `ctx.sender()`). Upgrades
 follow `docs/runbooks/spacetimedb-upgrade.md`. The nightly `smoke-republish` job
 republishes over live data without `--delete-data` and checks that the data survives.

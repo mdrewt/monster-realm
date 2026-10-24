@@ -7,7 +7,7 @@ plus the production client bundle (no DEV debug hooks). Every recipe here is in 
 
 ## Prerequisites
 
-- The `spacetime` CLI 2.8.1 on PATH and a running server. Start one in its own
+- The `spacetime` CLI 2.11.0 on PATH and a running server. Start one in its own
   terminal, bound to loopback (the metrics endpoint is unauthenticated):
   `spacetime start --listen-addr 127.0.0.1:3000`.
 - `just setup` (client dependencies) and `just wasm` (the prediction wasm package the

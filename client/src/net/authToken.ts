@@ -13,7 +13,7 @@
 // to `return true`" a caught bug rather than an invisible one.
 //
 // SUPPRESS, NEVER CLEAR. The SDK throws the SAME message
-// (`Failed to verify token: <statusText>`, dist/index.mjs:5057-5063) for a transient
+// (`Failed to verify token: <statusText>`, dist/index.mjs:5133-5141) for a transient
 // 500/502/503 from the token-verify endpoint as for a genuine 401 — and HTTP/2 mandates an
 // empty `statusText`, collapsing every case to one string. So we never delete a stored
 // token: once AUTH_REJECT_SUPPRESS_THRESHOLD rejections have accrued SINCE THE LAST SUCCESS
@@ -35,7 +35,7 @@ export const AUTH_REJECT_SUPPRESS_THRESHOLD = 2;
 
 /**
  * The exact prefix the SDK throws when the host refuses a supplied token
- * (`openWebSocket`, spacetimedb/dist/index.mjs:5062). The trailing `': '` is load-bearing:
+ * (`openWebSocket`, spacetimedb/dist/index.mjs:5119, throw at :5140). The trailing `': '` is load-bearing:
  * without it, an unrelated message such as `'Failed to verify tokens for the batch'` would
  * classify as a credential rejection. Pinned against SDK drift by the SDK-DRIFT tooth in
  * connection.test.ts — same exact-string-contract discipline connection.ts already applies
@@ -69,10 +69,14 @@ export interface AuthTokenGate {
 /**
  * True iff `err` is the SDK's token-verification rejection.
  *
- * TOTAL over `unknown` by construction — the SDK's `ws.onerror` path emits a DOM `Event`,
- * not an `Error` (dist/index.mjs:5829-5831), so `connection.ts`'s `err: Error` annotation is
- * a lie on that path. An unguarded `err.message.startsWith(...)` would throw a TypeError
- * inside `onConnectError` and take the whole reconnect ladder down with it.
+ * TOTAL over `unknown` by construction. SDK 2.10.0+ normalizes the `ws.onerror` payload
+ * with `toError(e)` before emitting (dist/index.mjs:5980-5988), so the raw-DOM-`Event`
+ * hazard that originally forced this (2.6.0 dist:5829-5831) is gone — but the guard stays:
+ * a throwing accessor or Proxy `get` trap on a foreign error object would still throw a
+ * TypeError inside `onConnectError` and take the whole reconnect ladder down with it.
+ * (Also new in 2.10.0: a MID-SESSION socket error closes the socket and surfaces via
+ * `onDisconnect` with the error, not `onConnectError` — only pre-connect failures reach
+ * the connectError path this classifier serves.)
  */
 export function isStoredCredentialRejected(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false;
@@ -194,8 +198,8 @@ export function createAuthTokenGate(
 // still calls `.withToken(auth.tokenForNextAttempt())` byte-identically.
 //
 // WHY A MARKER EXISTS AT ALL. The SDK echoes the credential we supplied back to
-// `onConnect`'s third argument: `spacetimedb/dist/index.mjs:5765` sets
-// `this.token` from `.withToken(...)` at construction, and `:6226-6231` adopts
+// `onConnect`'s third argument: `spacetimedb/dist/index.mjs:5916` sets
+// `this.token` from `.withToken(...)` at construction, and `:6385-6387` adopts
 // the host's own token ONLY `if (!this.token && …)`. So once an account (OIDC)
 // JWT is ever supplied, the UNCONDITIONAL `auth.onConnected(token)` in
 // connection.ts would persist it into the ANONYMOUS token slot — the slot

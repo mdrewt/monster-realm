@@ -151,7 +151,7 @@ groups:
       #       0.05 below to 0.03.
       #
       #   (2) The bucket lattice, MEASURED from a live SpacetimeDB 2.8.1 `/v1/metrics` scrape
-      #       (2026-08-22), is exactly:
+      #       (2026-08-22; re-measured IDENTICAL on a live 2.11.0 host, 2026-10-15), is exactly:
       #           0.001 0.005 0.01 0.05 0.1 0.5 1 5 10 30 60 300 +Inf
       #       There is no 0.03 edge. PromQL matches nothing — silently, forever — on an `le=`
       #       value the exposition does not contain, so an `le="0.03"` selector would record

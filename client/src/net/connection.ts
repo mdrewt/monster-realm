@@ -90,7 +90,7 @@ export interface ConnectionOptions {
   readonly onReconnect: (identity: string) => void;
   /** hydration-complete edge. Fired from the batcher flush closure
    *  on the first flush after each applied snapshot — AFTER the view reconciles ran against the
-   *  cache the SDK had fully populated before it emitted `applied` (2.6.0: apply → 'applied' →
+   *  cache the SDK had fully populated before it emitted `applied` (2.6.0, unchanged at 2.11.0: apply → 'applied' →
    *  row callbacks, all synchronous) and BEFORE store.flushBatch(), so every listener that flush
    *  notifies observes it as already delivered. Once per applied snapshot (guaranteed today by
    *  the always-non-empty content subscriptions, which schedule that flush). MUST be total (never
@@ -192,7 +192,7 @@ export function connect(opts: ConnectionOptions): Connection {
           ),
         );
         // same countermeasure for the `my_battle` view —
-        // no PK in the view binding even on 2.8.1 codegen, so onUpdate never
+        // no PK in the view binding even on 2.11.0 codegen, so onUpdate never
         // fires and every turn arrives as an unordered insert+delete pair;
         // rebuild the battle map from the post-burst cache instead.
         store.reconcileBattlesFromView(

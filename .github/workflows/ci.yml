@@ -48,10 +48,10 @@ jobs:
           curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
           sh /tmp/spacetime-install.sh --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Pin spacetime 2.8.1
+      - name: Pin spacetime 2.11.0
         run: |
-          spacetime version install 2.8.1
-          spacetime version use 2.8.1
+          spacetime version install 2.11.0
+          spacetime version use 2.11.0
           spacetime --version
       - run: just lint
       - run: just typecheck
@@ -91,10 +91,10 @@ jobs:
           curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
           sh /tmp/spacetime-install.sh --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Pin spacetime 2.8.1
+      - name: Pin spacetime 2.11.0
         run: |
-          spacetime version install 2.8.1
-          spacetime version use 2.8.1
+          spacetime version install 2.11.0
+          spacetime version use 2.11.0
           spacetime --version
       # The e2e suite needs the dev_reducers build; `publish` has no feature passthrough, so
       # global-setup publishes this prebuilt artifact via --bin-path. The committed

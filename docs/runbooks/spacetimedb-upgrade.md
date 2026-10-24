@@ -1,7 +1,7 @@
 # Runbook: upgrading SpacetimeDB
 
 How to move the SpacetimeDB CLI, host and module crate to a new version. The current
-pin is 2.8.1. The rule behind this runbook is in `docs/DECISIONS.md` ("SpacetimeDB
+pin is 2.11.0. The rule behind this runbook is in `docs/DECISIONS.md` ("SpacetimeDB
 versions move in lockstep").
 
 ## What moves together
@@ -15,9 +15,13 @@ versions move in lockstep").
 | Generated TypeScript bindings | `client/src/module_bindings/` (regenerated, never hand-edited) |
 
 The npm `spacetimedb` SDK (`client/package.json`, locked in
-`client/package-lock.json`) is versioned separately and is not part of this lockstep.
-Upgrade it on its own, with live netcode testing, because newer SDKs change reconnect
-behaviour that the client handles itself.
+`client/package-lock.json`) joined the lockstep on 2026-10-15 (see the amended
+decision in `docs/DECISIONS.md`): since 2.7.0 the vendor ships CLI/crate/SDK from one
+monorepo on the same day with no documented skew matrix. An SDK bump still requires
+live two-client netcode testing, because newer SDKs change reconnect behaviour that
+the client handles itself. Note the npm SDK is the only leg under the 7-day
+`min-release-age` cooldown (`client/.npmrc`), so a fresh release gates the whole
+lockstep hop until the SDK ages.
 
 ## Procedure
 
@@ -36,16 +40,31 @@ behaviour that the client handles itself.
 5. **Run `just ci`.** The schema and type snapshot evals
    (`battle-schema-snapshot`, `spacetime-type-snapshot`) compare Rust source, not the
    encoded schema, so they will not see encoding changes; step 6 covers that.
-6. **Check the migration against real data.** Publish the *old* module to a scratch
-   database with the *old* CLI, then publish the new one over it without
-   `--delete-data`:
+6. **Check the migration against real data — on an ISOLATED data dir.** Two measured
+   facts (2026-10-15, 2.8.1→2.11.0) make the old `-s local` form of this step unsafe:
+   (a) a newer host STAMPS the data dir's `metadata.toml` on FIRST START — even with
+   `--in-memory`, even on a start that then fails — and the old host then refuses to
+   start at all ("the database on disk is from Version { ... }"); the stamp is
+   one-way. (b) `spacetime publish -s local` talks to whatever host is already
+   running, so without an explicit host stop/start between the two publishes the
+   "new over old" publish can silently exercise the OLD host. Back up
+   `~/.local/share/spacetime/data` before the slice (the first `just ci` after the
+   CLI flip stamps the SHARED dir too: `account-e2e` starts a host with no
+   `--data-dir`). Then:
 
    ```sh
    git worktree add ../mr-old <commit-before-the-upgrade>   # the old module source
-   spacetime version use <old-version>
-   (cd ../mr-old && spacetime publish -s local --module-path server-module -y mr-upgrade-check)
+   ISO=~/.local/share/spacetime-upgrade-proof                # isolated data dir
+   # keys: a fresh data dir has none; point at the dev keys explicitly
+   <old-bin>/spacetimedb-standalone start --data-dir "$ISO" --listen-addr 127.0.0.1:3111 \
+     --jwt-pub-key-path ~/.config/spacetime/id_ecdsa.pub --jwt-priv-key-path ~/.config/spacetime/id_ecdsa &
+   (cd ../mr-old && spacetime publish -s http://127.0.0.1:3111 --module-path server-module -y mr-upgrade-check)
+   spacetime call -s http://127.0.0.1:3111 mr-upgrade-check sync_content   # seed data
+   kill <old host pid>                                       # STOP before the new host
+   <new-bin>/spacetimedb-standalone start --data-dir "$ISO" ... &          # same dir: proves the data-dir upgrade
    spacetime version use <new-version>
-   spacetime publish -s local --module-path server-module -y mr-upgrade-check
+   spacetime publish -s http://127.0.0.1:3111 --module-path server-module -y mr-upgrade-check
+   # assert seeded rows survived, then tear down
    git worktree remove ../mr-old
    ```
 
@@ -92,7 +111,16 @@ database created by the new version may refuse the old module the same way, so p
 `--delete-data` for anything created since the upgrade. Verify with `just ci` and a
 republish.
 
-## Standing facts (as of 2.8.1)
+The DATA DIR does not roll back (measured 2026-10-15): once any newer host has
+started against `~/.local/share/spacetime/data` — including `account-e2e`'s
+`--data-dir`-less `spacetime start --in-memory` inside `just ci` — its
+`metadata.toml` is stamped with the newer version and the OLD host refuses to start.
+Rolling back past that point means restoring the pre-upgrade backup of the data dir
+(take one before every upgrade). Bisecting across the upgrade commit also needs
+`spacetime version use <old>` first, or every pre-upgrade commit's `bindings-drift`
+eval fails against the new CLI on PATH.
+
+## Standing facts (as of 2.11.0; each re-verified on the 2.8.1→2.11.0 hop)
 
 - Row-level security filters (`#[client_visibility_filter]`) are not enforced.
   Privacy uses private tables with owner-scoped views (see `docs/DECISIONS.md`).

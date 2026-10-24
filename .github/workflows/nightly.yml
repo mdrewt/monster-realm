@@ -114,10 +114,10 @@ jobs:
           curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
           sh /tmp/spacetime-install.sh --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Pin spacetime 2.8.1
+      - name: Pin spacetime 2.11.0
         run: |
-          spacetime version install 2.8.1
-          spacetime version use 2.8.1
+          spacetime version install 2.11.0
+          spacetime version use 2.11.0
           spacetime --version
       - name: Start SpacetimeDB
         run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb-smoke.log 2>&1 &
