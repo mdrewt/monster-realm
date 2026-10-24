@@ -145,8 +145,9 @@ const FIXTURES: readonly Fixture[] = [
     ],
   },
   {
-    // I18N-7 half 1: a missing required param property on tf() — TS2345 (a fresh object-literal
-    // argument reports on the argument).
+    // I18N-7 half 1: a missing required param property on tf() — TS2741 under tsc 7
+    // (property-naming "missing in type ... but required" on the argument; old tsc
+    // reported the generic argument-mismatch TS2345 — re-measured on the deps-s8 bump).
     name: 'bad-params-missing',
     lines: [
       importFrom('{ tf }', RESOLVER_SPEC),
@@ -203,8 +204,9 @@ const FIXTURES: readonly Fixture[] = [
     ],
   },
   {
-    // I18N-9: a plural-forms object omitting a CLDR category reaching selectPlural() — TS2345
-    // (PluralForms is total, never Partial).
+    // I18N-9: a plural-forms object omitting a CLDR category reaching selectPlural() — TS2739
+    // under tsc 7, naming every omitted category (old tsc: generic TS2345; re-measured on the
+    // deps-s8 bump). PluralForms is total, never Partial.
     name: 'bad-plural',
     lines: [
       importFrom('{ selectPlural }', PLURAL_SPEC),
@@ -313,6 +315,10 @@ function runCompileAll(): { result: CompileResult; dir: string | undefined } {
       '--moduleResolution',
       'bundler',
       '--skipLibCheck',
+      // tsc 7 (TS5112): explicit file args now REFUSE a discoverable tsconfig.json instead
+      // of silently ignoring it. This flag states what this spawn always meant: compile
+      // exactly these fixtures with exactly these flags, no config lookup.
+      '--ignoreConfig',
       ...fixtureFiles,
     ],
     // A hung child is NOT bounded by the `it()` timeout (spawnSync blocks the event loop where
@@ -404,13 +410,13 @@ describe('i18nTypes.compile — the i18n module compile-total guarantees (m24-s1
     expect(goodCodes, `good.ts must compile with zero diagnostics:\n${result.output}`).toEqual([]);
   });
 
-  it('m24s1 I18N-7: a tf() params object missing a required key (TS2345) or carrying a mistyped one (TS2322, measured — not TS2345) is a tsc RED', () => {
+  it('m24s1 I18N-7: a tf() params object missing a required key (TS2741 under tsc 7, measured) or carrying a mistyped one (TS2322, measured — not TS2345) is a tsc RED', () => {
     const result = getResult();
     expect(result.tscExists, tscExistsMessage()).toBe(true);
     assertNoStrayDiagnostics(result);
 
     const missingCodes = result.codesByFile.get('bad-params-missing.ts') ?? [];
-    expect(missingCodes, `full tsc output:\n${result.output}`).toEqual(['TS2345']);
+    expect(missingCodes, `full tsc output:\n${result.output}`).toEqual(['TS2741']);
 
     const typeCodes = result.codesByFile.get('bad-params-type.ts') ?? [];
     expect(typeCodes, `full tsc output:\n${result.output}`).toEqual(['TS2322']);
@@ -440,13 +446,13 @@ describe('i18nTypes.compile — the i18n module compile-total guarantees (m24-s1
     ).toEqual(['TS2322']);
   });
 
-  it('m24s1 I18N-9: a plural-forms literal omitting a CLDR category reaching selectPlural() is a tsc RED (TS2345); good.ts (oneOther/cldr) compiles clean', () => {
+  it('m24s1 I18N-9: a plural-forms literal omitting a CLDR category reaching selectPlural() is a tsc RED (TS2739 under tsc 7, measured); good.ts (oneOther/cldr) compiles clean', () => {
     const result = getResult();
     expect(result.tscExists, tscExistsMessage()).toBe(true);
     assertNoStrayDiagnostics(result);
 
     const pluralCodes = result.codesByFile.get('bad-plural.ts') ?? [];
-    expect(pluralCodes, `full tsc output:\n${result.output}`).toEqual(['TS2345']);
+    expect(pluralCodes, `full tsc output:\n${result.output}`).toEqual(['TS2739']);
 
     const goodCodes = result.codesByFile.get('good.ts') ?? [];
     expect(
