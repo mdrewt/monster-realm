@@ -449,7 +449,9 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     clickRow('profile', 1200);
     clickRow('name', 1300);
     expect(renameShown(), 'precondition: the Name row opened the rename form').toBe(true);
-    expect(stackNames(), 'precondition: no sync has mirrored the form yet').not.toContain(
+    // so-2 (named intentional change): push-then-show lists the click-opened form at once
+    // (SO2.1/SO2.4); was: not yet mirrored
+    expect(stackNames(), 'precondition: push-then-show listed the form at once').toContain(
       'renameView',
     );
 
@@ -621,7 +623,12 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     if (onClaimPending === undefined) throw new Error('onClaimPending was not wired by main.ts');
     onClaimPending('claim-code');
     expect(claimShown(), 'precondition: the claim prompt is shown').toBe(true);
-    expect(stackNames(), 'precondition: no sync has mirrored it yet').toEqual(['world']);
+    // so-2 (named intentional change): push-then-show lists the claim prompt at once (SO2.1/SO2.4);
+    // was: not yet mirrored
+    expect(stackNames(), 'precondition: push-then-show listed it at once').toEqual([
+      'world',
+      'claimView',
+    ]);
 
     reconnect();
 

@@ -509,6 +509,33 @@ per-view copy only adds a "this file is still visible to the scanner" tripwire. 
 an accepted risk: a single view going dark to the scanner by less than the floor's margin goes
 unnoticed by the scan, and only the sinks its runtime tests render are still checked.
 
+## Context stack ownership
+
+**Decision.** The context stack owns the player's frames. Every player open (a menu entry,
+an accelerator, a world interaction, the deferred shop open, a claim lifecycle prompt) goes
+through one `openFrame` in `client/src/main.ts`, which pushes the frame first and only then
+shows its view. A frame already on the stack is not pushed again; `contextStep`'s same-id
+push no-op is the one dedup. The trade, challenge and leaderboard panels are one `social`
+frame, and switching panels pushes and pops nothing. The visibility mirror sees only the
+server-owned overlays (`MIRRORED_IDS` in `client/src/ui/contextStack.ts`: `battleView`,
+which presents the battle base and the terminal outcome, and `dialogueView`), because those
+show themselves on server edges. A player view that closes itself has its frame popped at
+the next sync (`hiddenPops`), never pushed. The three main.ts tables (probes, hide handles,
+lent views) keep rows only for the mirrored ids, and a player frame's probe, hide and view
+travel with its open. A movement-gate read derives from the stack as it stands and never
+syncs it.
+
+**Why.** When the stack mirrored the views' self-managed visibility, every reader had to
+re-sync first: gate reads mutated the stack, a shown overlay could sit off the stack until
+the next key, frame or batch, and a second input source would have had to re-derive the
+open path. One push-first entry point gives a gamepad (M-gamepad) the same open path as the
+keyboard, and makes "shown but not on the stack" impossible for the player set.
+
+**Rules out.** Showing a player view outside `openFrame`; pushing a player frame from
+visibility; a per-panel Social frame; merging the three main.ts tables into one registry
+(three small total records with byte-identical thunks are the defense against copy-paste
+sibling bugs); a gate read that pushes, pops, shows or hides a frame.
+
 ## Interaction target: the tile in front, then your own tile
 
 **Decision.** A (and a click on the world) acts on the candidates from

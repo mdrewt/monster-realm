@@ -1,9 +1,11 @@
 // The UI context stack (design §4): a pure, base-first stack of frames over a `world` or
-// `battle` base. Pure — no DOM, SDK, module state or clock. It sits BEHIND the legacy
-// show/hide paths: main.ts mirrors the visible overlays into it (`mirrorEdges`), reconciles
-// server truth into it on every batch (`reconcile`, whose `close` commands run the views' own
-// hide paths), closes what a reconnect drops (`reconnectSweep`), and gates movement and
-// accelerators on it (`movementEnabled`, `acceleratorsDenied`).
+// `battle` base. Pure — no DOM, SDK, module state or clock. It owns the player's frames (so-2):
+// main.ts pushes each player open onto it FIRST and only then shows the view (`openEdge`), takes a
+// frame whose view closed itself off it (`hiddenPops`), and mirrors only the server-owned
+// overlays into it (`mirrorServerEdges`: the battle and the dialogue). It reconciles server truth into
+// it on every batch (`reconcile`, whose `close` commands run the views' own hide paths), closes
+// what a reconnect drops (`reconnectSweep`), and gates movement and accelerators on it
+// (`movementEnabled`, `acceleratorsDenied`).
 // Which frames may stay open over a battle is SCREEN_POLICY here (ctl-6c); the battle base's own
 // button and command rules (`battleButton`, `battleRefused`) live in ui/battlePolicy.ts.
 import type { OverlayId } from './overlayRegistry';
@@ -35,8 +37,18 @@ export function socialPanel(tab: SocialTab | null): SocialPanelId {
 }
 
 /** The frame an overlay shows as: the Social frame for its three panels, else its own. */
-const frameOf = (id: OverlayId): FrameId =>
+export const frameOf = (id: OverlayId): FrameId =>
   (SOCIAL_PANELS as readonly OverlayId[]).includes(id) ? SOCIAL_FRAME : id;
+
+/** The overlays the visibility mirror still sees (so-2): the server-owned ones, which show
+ *  themselves on server edges. `battleView` presents both the battle base and the terminal outcome
+ *  frame over the world; `dialogueView` the conversation. Every other frame reaches the stack only
+ *  through a player open (`openEdge`). */
+export type MirroredId = 'battleView' | 'dialogueView';
+export const MIRRORED_IDS: readonly MirroredId[] = ['battleView', 'dialogueView'];
+
+export const isMirrored = (id: FrameId): id is MirroredId =>
+  (MIRRORED_IDS as readonly FrameId[]).includes(id);
 
 export type BaseFrame =
   | { readonly kind: 'world' }
@@ -140,13 +152,14 @@ export function baseFor(
     : { kind: 'world' };
 }
 
-/** The edges that bring the stack's upper frames in line with the visible legacy overlays:
- *  pops first (stack order), then pushes (visible order). Over a battle base `battleView` is
- *  the base's own presentation, never a frame; over the world it is the terminal outcome. A push
- *  over a battle base is stamped with that battle only when `prevBase` (the base before this sync)
- *  was already it: an overlay first mirrored in the sync that brings the battle was opened at the
- *  world, and must drop like any other (CTL3.2). The Social panels mirror as the ONE Social frame
- *  (CTL8S.3), so a change of the shown panel raises no edge. */
+/** The edges that bring the stack's upper frames in line with the visible overlays: pops first
+ *  (stack order), then pushes (visible order). Over a battle base `battleView` is the base's own
+ *  presentation, never a frame; over the world it is the terminal outcome. A push over a battle
+ *  base is stamped with that battle only when `prevBase` (the base before this sync) was already
+ *  it: an overlay first mirrored in the sync that brings the battle was opened at the world, and
+ *  must drop like any other (CTL3.2). The Social panels mirror as the ONE Social frame (CTL8S.3),
+ *  so a change of the shown panel raises no edge. The shell mirrors only the server-owned
+ *  overlays through it (`mirrorServerEdges`). */
 export function mirrorEdges(
   stack: Stack,
   visible: readonly OverlayId[],
@@ -172,6 +185,44 @@ export function mirrorEdges(
   return [...pops, ...pushes];
 }
 
+/** The visibility mirror the shell runs (so-2): `mirrorEdges` over the mirrored ids alone. A player
+ *  id raises no edge, visible or on the stack: a player frame is pushed by its open (`openEdge`) and
+ *  popped by its close or `hiddenPops`. */
+export function mirrorServerEdges(
+  stack: Stack,
+  visible: readonly OverlayId[],
+  prevBase: BaseFrame = stack[0],
+): readonly Edge[] {
+  return mirrorEdges(stack, visible.filter(isMirrored), prevBase).filter(
+    (edge) => (edge.kind === 'pop' && isMirrored(edge.id)) || edge.kind === 'push',
+  );
+}
+
+/** The push of a player open of frame `id` (so-2): its screen frame, stamped with the battle when
+ *  it opens over one. Applied BEFORE the view shows; a frame already on the stack is a no-op of
+ *  `contextStep`'s, which is the one dedup. */
+export function openEdge(stack: Stack, id: FrameId): Edge {
+  const base = stack[0];
+  return {
+    kind: 'push',
+    frame:
+      base.kind === 'battle'
+        ? { kind: 'screen', id, overBattle: base.battleId }
+        : { kind: 'screen', id },
+  };
+}
+
+/** The pops that take off the stack every player frame whose view is no longer shown (so-2): a view
+ *  that closed itself (its own close button, its own Escape, a lifecycle hide). `shown` names the
+ *  frames whose view shows. Stack order; never a push, never a mirrored frame (the mirror's). */
+export function hiddenPops(stack: Stack, shown: readonly FrameId[]): readonly Edge[] {
+  const [, ...upper] = stack;
+  return upper
+    .map(idOf)
+    .filter((id) => !isMirrored(id) && !shown.includes(id))
+    .map((id) => ({ kind: 'pop', id }));
+}
+
 /** The server truth the stack reconciles to on every batch. */
 export interface ServerView {
   /** The player's Ongoing battle, if any (either role). */
@@ -187,8 +238,8 @@ export interface ServerView {
  *  very battle (CTL6C.1); a frame opened over a battle that is no longer the base pops even with no
  *  outcome shown; a conversation pops every player frame; a
  *  conversation that ends pops its frame silently, even suspended under a battle. It only pops:
- *  frames are pushed by the paths that show them (`mirrorEdges`), so it never strands a frame
- *  whose view is not shown. Each popped frame but dialogue gets a `close`, which runs that
+ *  frames are pushed by the paths that show them (a player open, `mirrorServerEdges`), so it never
+ *  strands a frame whose view is not shown. Each popped frame but dialogue gets a `close`, which runs that
  *  overlay's own hide path (CTL3.3); the client never closes a dialogue. Idempotent. */
 export function reconcile(
   stack: Stack,
