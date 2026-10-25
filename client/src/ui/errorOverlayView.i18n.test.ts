@@ -11,19 +11,14 @@
 // PREDICTED RED REASON AT HEAD: errorOverlayView.ts imports nothing from './i18n/resolver' and
 // writes the literal 'F8 dismiss · F9 bug report' twice (constructor :35, render :81). EO-01 fails
 // on its first `i18nT` call assertion (never called); EO-02 fails because the roster words survive
-// unbracketed; EO-03 fails because scanSource reports FAILING raw-English sinks.
+// unbracketed.
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the plan/revisions
 // only.
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { stripComments } from '../../test-util/stripComments';
 import type { ErrorOverlayViewModel } from './errorOverlayModel';
 import { ErrorOverlayView } from './errorOverlayView';
-import { scanSource } from './i18n/hardcodedStrings';
 import { t as i18nT } from './i18n/resolver';
 
 // MECHANISM oracle (m24s3/m24s4 precedent): records every t() call AND calls through to the real
@@ -189,33 +184,5 @@ describe('m24s5 (ADR-0261): errorOverlayView.ts routes its footer through t()', 
 
     // Post-restore call-through control (an existing S1 key).
     expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
-  });
-});
-
-describe('m24s5 (ADR-0261): errorOverlayView.ts scan — zero failing sinks', () => {
-  it('m24s5 EO-03: scanSource(stripComments(errorOverlayView.ts)) has zero failing sinks, a >=3 sink floor, and no truncation/masking tripwires', () => {
-    const src = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), 'errorOverlayView.ts'),
-      'utf8',
-    );
-    const result = scanSource(stripComments(src));
-
-    expect(
-      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
-      'every sink must route through t() -- any surviving English segment is listed above',
-    ).toEqual([]);
-    expect(
-      result.sinks.length,
-      'SINK_FLOOR idiom: a floor, never an exact count -- the constructor twin is deleted so the ' +
-        'floor drops from 4 to 3',
-    ).toBeGreaterThanOrEqual(3);
-    expect(
-      result.unterminated,
-      'the literal mask must not end inside an unterminated literal',
-    ).toBe(false);
-    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
-    for (const sink of result.sinks) {
-      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
-    }
   });
 });

@@ -13,25 +13,17 @@
 // still showed English CONTROLS rows. The view model is now generated from the catalog (the model's
 // own cases are helpModel.test.ts); this file proves the RENDERED overlay under `fr`.
 //
-// INTENTIONAL CHANGE (ctl-14), the three m24s5 cases kept and re-pointed at the tab-shaped model:
+// INTENTIONAL CHANGE (ctl-14), the two m24s5 cases kept and re-pointed at the tab-shaped model:
 //   - HV-01 / HV-02: the fixture is `{ tabs, note }` (was `{ controls, goals }`); the row text is
 //     keys + action rather than "key — action"; the sentinel allow-list also admits a `help.` id
 //     (the model's catalog ids are resolved BEFORE the view, but a view that labels its strip through
 //     the catalog must not be failed for it). Everything else (the title resolved on EVERY show,
 //     fixture copy never handed to a resolver, no raw English title outside a sentinel) is as it was.
-//   - HV-03: the sink-count FLOOR is 1 (was 4): the retired view had four hand-written sinks (the
-//     title, a control line, a goal line, ...) and the new one funnels every row through one
-//     generic builder, so a floor of four pins an implementation shape, not the scanner's liveness.
-//     The `failing: []`, unterminated and masking teeth are unchanged.
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the
 // plan/plan-revisions/ADR-0261 only.
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { stripComments } from '../../test-util/stripComments';
 import { DEFAULT_BINDINGS } from '../input/bindings';
 import { resetLearnedKeys } from '../input/glyphs';
 import { WORLD_STACK } from './contextStack';
@@ -41,7 +33,6 @@ import { HelpView } from './helpView';
 import { hintBar } from './hintBarModel';
 import { CATALOG_EN } from './i18n/catalog.en';
 import { CATALOG_FR } from './i18n/catalog.fr';
-import { scanSource } from './i18n/hardcodedStrings';
 import { t as i18nT, setLocale } from './i18n/resolver';
 import { navFocus, navInit } from './nav';
 import { closeOverlayA11y } from './overlayA11y';
@@ -243,33 +234,6 @@ describe('m24s5 (ADR-0261): helpView.ts routes chrome.help.title through t() in 
 
     // Post-restore call-through control (an existing S1 key).
     expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
-  });
-});
-
-describe('m24s5 (ADR-0261): helpView.ts scan — zero failing sinks', () => {
-  it('m24s5 HV-03: scanSource(stripComments(helpView.ts)) has zero failing sinks, a >=1 sink floor, and no truncation/masking tripwires', () => {
-    const src = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), 'helpView.ts'),
-      'utf8',
-    );
-    const result = scanSource(stripComments(src));
-
-    expect(
-      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
-      'every sink must route through t()/tf() — any surviving English segment is listed above',
-    ).toEqual([]);
-    expect(
-      result.sinks.length,
-      'SINK_FLOOR idiom: a floor, never an exact count',
-    ).toBeGreaterThanOrEqual(1);
-    expect(
-      result.unterminated,
-      'the literal mask must not end inside an unterminated literal',
-    ).toBe(false);
-    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
-    for (const sink of result.sinks) {
-      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
-    }
   });
 });
 

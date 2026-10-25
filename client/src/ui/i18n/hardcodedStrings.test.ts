@@ -781,7 +781,8 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     const tree = scan();
     const message = [
       `${tree.failing.length} failing sink(s) in the non-test client/src tree.`,
-      'Route each listed player-facing string through t()/tf(). Failing sinks (file:line kind segments):',
+      'Route each listed player-facing string through t()/tf(). Failing sinks ' +
+        '(file:line-in-comment-stripped-source kind segments; search the file for the segment text):',
       ...tree.failing.map(describeSink),
     ].join('\n');
     expect(tree.failing.map(describeSink), message).toEqual([]);

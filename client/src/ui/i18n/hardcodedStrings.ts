@@ -2,7 +2,7 @@
 //
 // A PURE, fs-free, typed scanner over ALREADY-COMMENT-STRIPPED TypeScript source. The co-located
 // `hardcodedStrings.test.ts` owns the filesystem walk, the comment stripping
-// and the ceiling; this module owns the rule.
+// and the zero-failing-sinks assertion; this module owns the rule.
 //
 // LITERAL MASK ORIGIN. The string/template-literal cursor (which indices are literal TEXT, which
 // are code, with template interpolations `${…}` left UNMASKED and an `unterminated` flag when the
@@ -53,9 +53,11 @@
 // (comment-stripped) source in the real scan: the token table below holds bare tokens only, never
 // a token adjacent to an assignment operator.
 
-/** Spec §2.2 E5: fewer sinks than this across the whole non-test client tree means
- *  the scanner stopped seeing the tree — a scanner failure, never a clean tree (`>=`). */
-export const SINK_FLOOR = 169;
+/** Fewer sinks than this across the whole non-test client tree means the scanner stopped
+ *  seeing the tree — a scanner failure, never a clean tree (`>=`). An anti-vacuity guard, not a
+ *  ratchet: set to the measured total minus a margin of 10 (261 sinks on 2026-10-24); lower it
+ *  consciously when UI text legitimately shrinks, never auto-tighten it. */
+export const SINK_FLOOR = 251;
 
 /** The 19 spec-named target files (E6, plan R9), relative to `client/src`, sorted. Each must be
  *  present in the walk and non-empty after comment stripping (I18N-HC-05); a missing one is a

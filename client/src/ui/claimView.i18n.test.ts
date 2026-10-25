@@ -8,20 +8,14 @@
 // 'Privacy & Account Data' into #claim-privacy-btn (claimView.ts:96) and neither show() nor
 // render() calls t()/tf() at all. CV-01 fails on its very first assertion (the constructor DOES
 // write the English text today, so `privacyBtn.textContent === ''` pre-construction-write is
-// false); CV-02 fails because the label is never wrapped in a «sentinel»; CV-03 fails because
-// scanSource(stripComments(...)) reports a FAILING raw-English sink, not `failing: []`.
+// false); CV-02 fails because the label is never wrapped in a «sentinel».
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the
 // plan/plan-revisions/ADR-0261 only.
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { stripComments } from '../../test-util/stripComments';
 import type { ClaimViewModel } from './claimModel';
 import { ClaimView, type ClaimViewHandlers } from './claimView';
-import { scanSource } from './i18n/hardcodedStrings';
 import { t as i18nT } from './i18n/resolver';
 import { closeOverlayA11y } from './overlayA11y';
 import { OVERLAY_IDS } from './overlayRegistry';
@@ -233,32 +227,5 @@ describe('m24s5 (ADR-0261): claimView.ts routes claim.privacyButton through t() 
 
     // Post-restore call-through control (an existing S1 key).
     expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
-  });
-});
-
-describe('m24s5 (ADR-0261): claimView.ts scan — zero failing sinks', () => {
-  it('m24s5 CV-03: scanSource(stripComments(claimView.ts)) has zero failing sinks, a >=6 sink floor, and no truncation/masking tripwires', () => {
-    const src = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), 'claimView.ts'),
-      'utf8',
-    );
-    const result = scanSource(stripComments(src));
-
-    expect(
-      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
-      'every sink must route through t()/tf() — any surviving English segment is listed above',
-    ).toEqual([]);
-    expect(
-      result.sinks.length,
-      'SINK_FLOOR idiom: a floor, never an exact count',
-    ).toBeGreaterThanOrEqual(6);
-    expect(
-      result.unterminated,
-      'the literal mask must not end inside an unterminated literal',
-    ).toBe(false);
-    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
-    for (const sink of result.sinks) {
-      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
-    }
   });
 });

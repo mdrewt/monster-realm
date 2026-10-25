@@ -16,7 +16,7 @@
 // literals (:93, :95), and the banner writes `okBtn.textContent = 'OK'` in the CONSTRUCTOR (:209),
 // never in render(). EN-01 fails on its first `i18nTf`/`i18nT` call assertion (never called, and
 // the OK label is already 'OK' pre-render); EN-02 fails because the nested sentinel is never
-// produced; EN-03 fails because scanSource reports FAILING raw-English sinks.
+// produced.
 //
 // NO regex literal and no `new RegExp(...)` anywhere in this file (the sibling's rule — Semgrep
 // bans the latter repo-wide and the former blinds this repo's own comment strippers).
@@ -24,14 +24,9 @@
 // Do NOT edit these tests to match a buggy implementation — correct them from the plan/revisions
 // only.
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { stripComments } from '../../test-util/stripComments';
 import type { StoreEvolutionReveal } from '../net/store';
 import { EvolutionNoticeBanner, evolutionNoticeLabel } from './evolutionNotice';
-import { scanSource } from './i18n/hardcodedStrings';
 import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 
 // MECHANISM oracle: records every t()/tf() call AND calls through to the real resolver.
@@ -213,25 +208,5 @@ describe('m24s5 (ADR-0261): evolutionNotice.ts routes its reveal copy and OK lab
 
     // Post-restore call-through control (an existing S1 key).
     expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
-  });
-});
-
-describe('m24s5 (ADR-0261): evolutionNotice.ts scan — zero failing sinks', () => {
-  it('m24s5 EN-03: scanSource(stripComments(evolutionNotice.ts)) has zero failing sinks, a >=2 sink floor, and no truncation/masking tripwires', () => {
-    const src = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), 'evolutionNotice.ts'),
-      'utf8',
-    );
-    const result = scanSource(stripComments(src));
-
-    expect(
-      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
-    ).toEqual([]);
-    expect(result.sinks.length).toBeGreaterThanOrEqual(2);
-    expect(result.unterminated).toBe(false);
-    expect(result.maskedSinkTokens).toBe(0);
-    for (const sink of result.sinks) {
-      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
-    }
   });
 });

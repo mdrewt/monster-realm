@@ -484,7 +484,11 @@ a thin DOM view. Accessibility metadata for every overlay is one total record
 a Biome plugin (`client/lint/no-waapi.grit`) because it ignores
 `prefers-reduced-motion`. All UI strings come from a total typed catalog
 (`client/src/ui/i18n/`: `en` and `fr`); `t()` throws on a missing key, and `setLocale`
-throws on an unregistered locale.
+throws on an unregistered locale. One whole-tree scan (`client/src/ui/i18n/hardcodedStrings.test.ts`)
+asserts that no non-test client file writes a raw string to a text sink; its sink floor only proves
+the scan still sees the tree. Per-view behaviour is owned by each view's «key»-sentinel runtime
+tests. This superseded the per-view source scans and the migration-ceiling fixture once the
+migration reached zero.
 
 **Why.** A handheld-console grammar, where a few contextual buttons are primary and
 hotkeys are shortcuts, is the intended interface. One stack makes "back one level" and
@@ -501,7 +505,10 @@ hand-written controls list; a dedicated interact key; new per-overlay tiers,
 mutual-exclusion checks or force-hide lists; overlays anchored to the window or in page
 flow; menus that hide themselves on a pick; conveying meaning by colour alone; WAAPI
 animation; hard-coded UI strings; falling back to the key or `en` when a string is
-missing.
+missing; per-view copies of the string scan, or a ratchet fixture for the failing-sink count. A
+second scan of the same text only adds a per-file "still visible" tripwire. Losing it is an
+accepted risk: a view going dark below the floor's margin is caught by its runtime tests, not by a
+scan.
 
 ## Interaction target: the tile in front, then your own tile
 

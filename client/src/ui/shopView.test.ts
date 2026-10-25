@@ -67,13 +67,8 @@
 //   - GUARDED close in hide() (kills S1's A13 self-heal)  -> S3-shopView-CLOSE-UNGUARDED
 //   - `fallbackFocus` passed as undefined/an element       -> S3-shopView-HELPER-CALLED (literal null)
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { stripComments } from '../../test-util/stripComments';
 import { t } from './a11yCopy';
-import { scanSource } from './i18n/hardcodedStrings';
 import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
@@ -995,33 +990,6 @@ describe('m24s4 (ADR-0260): shopView.ts routes its migrated sinks through t()/tf
     expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
 
     removeOverlay(overlay);
-  });
-});
-
-describe('m24s4 (ADR-0260): shopView.ts scan — zero failing sinks', () => {
-  it('m24s4 SV-03: scanSource(stripComments(shopView.ts)) has zero failing sinks, a >=17 sink floor, and no truncation/masking tripwires', () => {
-    const src = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), 'shopView.ts'),
-      'utf8',
-    );
-    const result = scanSource(stripComments(src));
-
-    expect(
-      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
-      'every sink must route through t()/tf() -- any surviving English segment is listed above',
-    ).toEqual([]);
-    expect(
-      result.sinks.length,
-      'SINK_FLOOR idiom (plan R2): a floor, never an exact count',
-    ).toBeGreaterThanOrEqual(17);
-    expect(
-      result.unterminated,
-      'the literal mask must not end inside an unterminated literal',
-    ).toBe(false);
-    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
-    for (const sink of result.sinks) {
-      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
-    }
   });
 });
 

@@ -7,8 +7,7 @@
 // PREDICTED RED REASON AT HEAD: questLogView.ts imports nothing from './i18n/resolver' and
 // writes `${entry.displayName} (step ${entry.stepIndex})` as a raw template literal (:45).
 // QL-01 fails on its first `i18nTf` call assertion (never called); QL-02 fails because the
-// rendered row text is not wrapped in a «sentinel»; QL-03 fails because scanSource reports a
-// FAILING raw-English sink.
+// rendered row text is not wrapped in a «sentinel».
 //
 // This view calls openOverlayA11y/closeOverlayA11y (m23-s3) — the file-level before/afterEach
 // call the PRODUCTION closeOverlayA11y('questLogView', null) + flush one real macrotask, the
@@ -17,12 +16,7 @@
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the plan only.
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { stripComments } from '../../test-util/stripComments';
-import { scanSource } from './i18n/hardcodedStrings';
 import { tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y } from './overlayA11y';
 import type { QuestLogViewModel } from './questLogModel';
@@ -172,25 +166,5 @@ describe('m24s5 (ADR-0261): questLogView.ts routes its row through tf()', () => 
     expect(i18nTf('chrome.status.disconnected', { where: 'shop' })).toBe(
       'shop: disconnected — try again',
     );
-  });
-});
-
-describe('m24s5 (ADR-0261): questLogView.ts scan — zero failing sinks', () => {
-  it('m24s5 QL-03: scanSource(stripComments(questLogView.ts)) has zero failing sinks, a >=2 sink floor, and no truncation/masking tripwires', () => {
-    const src = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), 'questLogView.ts'),
-      'utf8',
-    );
-    const result = scanSource(stripComments(src));
-
-    expect(
-      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
-    ).toEqual([]);
-    expect(result.sinks.length).toBeGreaterThanOrEqual(2);
-    expect(result.unterminated).toBe(false);
-    expect(result.maskedSinkTokens).toBe(0);
-    for (const sink of result.sinks) {
-      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
-    }
   });
 });

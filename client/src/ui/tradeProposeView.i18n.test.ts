@@ -10,18 +10,12 @@
 // literal 'Offer' there). TP-01 fails on its very first assertion (the spied i18nT is never
 // called at all, and the mounted #tradepropose-submit is never '' pre-show because the fixture
 // mirrors the NEW, emptied index.html while the real button paints nothing); TP-02 fails because
-// the roster words 'Select a player'/'Offer' are never wrapped in a «sentinel»; TP-03 fails
-// because scanSource(stripComments(...)) reports FAILING raw-English sinks, not `failing: []`.
+// the roster words 'Select a player'/'Offer' are never wrapped in a «sentinel».
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the plan/ADR-0261
 // only.
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { stripComments } from '../../test-util/stripComments';
-import { scanSource } from './i18n/hardcodedStrings';
 import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y } from './overlayA11y';
 import { OVERLAY_IDS } from './overlayRegistry';
@@ -245,32 +239,5 @@ describe('m24s5 (ADR-0261): tradeProposeView.ts routes its migrated sinks throug
 
     // Post-restore call-through control (an existing S1 key).
     expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
-  });
-});
-
-describe('m24s5 (ADR-0261): tradeProposeView.ts scan — zero failing sinks', () => {
-  it('m24s5 TP-03: scanSource(stripComments(tradeProposeView.ts)) has zero failing sinks, a >=7 sink floor, and no truncation/masking tripwires', () => {
-    const src = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), 'tradeProposeView.ts'),
-      'utf8',
-    );
-    const result = scanSource(stripComments(src));
-
-    expect(
-      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
-      'every sink must route through t()/tf() — any surviving English segment is listed above',
-    ).toEqual([]);
-    expect(
-      result.sinks.length,
-      'SINK_FLOOR idiom: a floor, never an exact count',
-    ).toBeGreaterThanOrEqual(7);
-    expect(
-      result.unterminated,
-      'the literal mask must not end inside an unterminated literal',
-    ).toBe(false);
-    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
-    for (const sink of result.sinks) {
-      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
-    }
   });
 });
