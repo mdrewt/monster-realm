@@ -135,6 +135,7 @@ import {
   popToBase,
   popTop,
   reconcile,
+  reconnectSweep,
   SOCIAL_FRAME,
   SOCIAL_PANELS,
   type Stack,
@@ -500,6 +501,23 @@ const overlayHandles: OverlayHandles = {
   privacyView: () => privacyView?.hide(),
   controlsView: () => controlsView?.hide(),
 };
+
+// The views whose hide() is also their only reset of what a dropped link leaves behind (a lock an
+// in-flight reducer promise never releases, a stale draft, challenge or board): `onReconnect` runs
+// each one UNCONDITIONALLY, shown or not, on the stack or not (so-1). It overlaps the frames
+// `reconnectSweep` closes by design (a shown one is hidden twice; every hide() here is idempotent):
+// the sweep owns the close, this owns the reset. The menu holds no such state.
+const RECONNECT_RESETS: readonly OverlayId[] = [
+  'renameView',
+  'tradeProposeView',
+  'shopView',
+  'tradeView',
+  'pvpView',
+  'battleView',
+  'raisingView',
+  'evolutionView',
+  'leaderboardView',
+];
 
 // the ONE view-lending table: each overlay's view instance, which the screen host hands to that
 // overlay's frame's adapter to paint after a step (CTL7C.2). Every entry is intentionally
@@ -3639,14 +3657,23 @@ async function main(): Promise<void> {
       // Zone state is corrected by the reconcile listener's state-based check on
       // the first post-reconnect batch (12.5c-1 — no special zone logic needed here).
       resetPredictionState();
-      // hide the rename overlay on reconnect — the store was reset (stale current-name),
-      // and an in-flight submit will never settle on the dropped link. hide() also resets
-      // the input value + feedback (stale-draft guard).
-      renameView?.hide();
-      // hide the trade-PROPOSE overlay on reconnect too. WITHOUT this, the view's #pending
-      // lock survives the link drop (the SDK never settles the in-flight proposeTrade
-      // promise) → dead submit button forever.
-      tradeProposeView?.hide();
+      // The stack closes what the reset drops (so-1): synced first, so an overlay shown since the
+      // last sync is a frame too, then every frame `reconnectSweep` names is popped and closed
+      // through its view's own hide path (`hideFrame`) — the menu and what it opened (a child may
+      // read store state the reset invalidated), and a frame opened over a battle, which a
+      // re-delivered row of that battle would find still stamped, keep, and show the battle above.
+      // Never the dialogue: a conversation is the server's to end.
+      syncStack();
+      const swept = reconnectSweep(contextStack);
+      // A drop here raises no mirror edge: a held key must not repeat into the frame it uncovers.
+      if (swept.stack.length !== contextStack.length) inputRouter.resetRepeat();
+      contextStack = swept.stack;
+      runStackCommands(swept.commands);
+      // ...and every view whose hide() also clears what a dropped link leaves behind is reset
+      // UNCONDITIONALLY, shown or not, on the stack or not: the SDK never settles an in-flight
+      // reducer promise after a link drop, so .finally() may never run and its lock (a dead submit
+      // button forever) is released only here; the rest drop a stale draft, challenge or board.
+      for (const id of RECONNECT_RESETS) overlayHandles[id]?.();
       // the same never-settling-promise class for the
       // dialogue dismiss lock. It used to self-heal through the server deleting the
       // player_conversation row on disconnect; that delete now runs only when the identity's
@@ -3654,20 +3681,7 @@ async function main(): Promise<void> {
       // lock would stay held forever (dead Escape-dismiss + dead greet-then-shop button).
       // The reset also drops a pending shop open, whose id the store reset invalidated.
       stepShopOpen({ kind: 'reconnect' });
-      menuView?.hide(); // a menu child may read store state that the reset invalidated
-      // A frame opened over a battle goes with the reset: a re-delivered row of that battle would
-      // find it still stamped, keep it, and show the battle above it. Hidden, never dismissed: a
-      // conversation is the server's to end.
-      for (const f of contextStack) {
-        if (f.kind === 'screen' && f.overBattle !== undefined) hideFrame(f.id);
-      }
-      // a buy/sell in flight at drop time never settles (SDK — no settle
-      // on drop), so the shop's double-spend lock would stay held forever. hide()
-      // resets it (shopView.ts is outside this slice's touch-set; the reset rides
-      // the existing public hide()). Escape-only recovery during the gap (the
-      // global shop hotkey is gone).
-      shopView?.hide();
-      // The same never-settling-promise class as the four hides above, for the privacy
+      // The same never-settling-promise class as the view resets above, for the privacy
       // surface's `inFlight` lock. Clearing the memo makes the next frame re-pump
       // `account-changed`, which clears `inFlight` — without it, a drop during an export requested
       // while the phase was already `unknown` (the ordinary guest state) leaves all three controls
@@ -3683,18 +3697,6 @@ async function main(): Promise<void> {
       dismissedRequests.clear();
       announcedRequests.clear();
       answeredRequests.clear();
-      // trade's double-spend lock must also be reset on reconnect (same reason as shop).
-      tradeView?.hide();
-      // Hide the PvP overlay on reconnect — any pending challenge state is stale.
-      pvpView?.hide();
-      // Same never-settles class for the three settle-released locks (+ Care's);
-      // a surviving battle re-shows (and refocuses) on the next batch.
-      battleView?.hide();
-      raisingView?.hide();
-      evolutionView?.hide();
-      // Hide the leaderboard on reconnect — the store was reset, so a stale/empty
-      // board must not linger (no lock to reset; re-renders on the next open/batch).
-      leaderboardView?.hide();
       // The "connection lost — reconnecting…" status line is now stale.
       clearStatus();
       // record the reconnect edge as a fresh connect (the refreshed identity).
