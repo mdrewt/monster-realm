@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/leaderboardView.i18n.test.ts — m24-s5 RED gating tests: LB-01/02/03 (I18N-20).
+// ui/leaderboardView.i18n.test.ts — m24-s5 RED gating tests: LB-01/02 (I18N-20).
 //
 // SOURCE OF TRUTH: memory/projects/monster-realm-m24-s5-plan.md (Tests, Key roster
 // leaderboard.*, D3 — the <bdi> shape), plan-revisions.md S1 (the XSS-name pin is CUT — the
@@ -10,18 +10,12 @@
 // every row is a SINGLE text node `${row.displayName} — ${row.rating} (W${row.wins}/L${row.losses})`
 // (leaderboardView.ts:69), never a <bdi> + a second node. LB-01 fails on its very first assertion
 // (the spied i18nT/i18nTf are never called at all, and `li.childNodes.length` is 1, not 2); LB-02
-// fails because the roster words are never wrapped in a «sentinel»; LB-03 fails because
-// scanSource(stripComments(...)) reports FAILING raw-English sinks, not `failing: []`.
+// fails because the roster words are never wrapped in a «sentinel».
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the plan/ADR-0261
 // only.
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import { stripComments } from '../../test-util/stripComments';
-import { scanSource } from './i18n/hardcodedStrings';
 import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import type { LeaderboardRowViewModel, LeaderboardViewModel } from './leaderboardModel';
 import { LeaderboardView } from './leaderboardView';
@@ -238,32 +232,5 @@ describe('m24s5 (ADR-0261, I18N-20): leaderboardView.ts routes its migrated sink
 
     // Post-restore call-through control (an existing S1 key).
     expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
-  });
-});
-
-describe('m24s5 (ADR-0261): leaderboardView.ts scan — zero failing sinks', () => {
-  it('m24s5 LB-03: scanSource(stripComments(leaderboardView.ts)) has zero failing sinks, a >=4 sink floor, and no truncation/masking tripwires', () => {
-    const src = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), 'leaderboardView.ts'),
-      'utf8',
-    );
-    const result = scanSource(stripComments(src));
-
-    expect(
-      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
-      'every sink must route through t()/tf() — any surviving English segment is listed above',
-    ).toEqual([]);
-    expect(
-      result.sinks.length,
-      'SINK_FLOOR idiom: a floor, never an exact count',
-    ).toBeGreaterThanOrEqual(4);
-    expect(
-      result.unterminated,
-      'the literal mask must not end inside an unterminated literal',
-    ).toBe(false);
-    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
-    for (const sink of result.sinks) {
-      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
-    }
   });
 });

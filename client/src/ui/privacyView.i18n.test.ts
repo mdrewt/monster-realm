@@ -14,8 +14,7 @@
 // CONSTRUCTOR (:145, :151) and 'Confirm deletion' / 'Keep my account' as raw literals in render()
 // (:187, :188); it imports nothing from './i18n/resolver'. PV-01 fails on its first `i18nT` call
 // assertion (never called, and the pre-show text is NOT '' at HEAD); PV-02 fails because the
-// roster words survive unbracketed; PV-03 fails because scanSource reports FAILING raw-English
-// sinks.
+// roster words survive unbracketed.
 //
 // This view calls openOverlayA11y in show() (m22-s8/rb-52) — the file-level before/afterEach call
 // the PRODUCTION closeOverlayA11y('privacyView', null) + flush one real macrotask, the sanctioned
@@ -24,12 +23,7 @@
 // Do NOT edit these tests to match a buggy implementation — correct them from the plan/revisions
 // only.
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { stripComments } from '../../test-util/stripComments';
-import { scanSource } from './i18n/hardcodedStrings';
 import { t as i18nT } from './i18n/resolver';
 import { closeOverlayA11y } from './overlayA11y';
 import { PRIVACY_PSEUDONYMIZATION_DISCLOSURE, type PrivacyViewModel } from './privacyBanner';
@@ -294,25 +288,5 @@ describe('m24s5 (ADR-0261): privacyView.ts routes title/close through show() and
 
     // Post-restore call-through control (an existing S1 key).
     expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
-  });
-});
-
-describe('m24s5 (ADR-0261): privacyView.ts scan — zero failing sinks', () => {
-  it('m24s5 PV-03: scanSource(stripComments(privacyView.ts)) has zero failing sinks, a >=7 sink floor, and no truncation/masking tripwires', () => {
-    const src = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), 'privacyView.ts'),
-      'utf8',
-    );
-    const result = scanSource(stripComments(src));
-
-    expect(
-      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
-    ).toEqual([]);
-    expect(result.sinks.length).toBeGreaterThanOrEqual(7);
-    expect(result.unterminated).toBe(false);
-    expect(result.maskedSinkTokens).toBe(0);
-    for (const sink of result.sinks) {
-      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
-    }
   });
 });

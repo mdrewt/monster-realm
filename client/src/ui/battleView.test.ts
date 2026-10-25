@@ -32,10 +32,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { stripComments } from '../../test-util/stripComments';
 import type { BattleViewModel } from './battleModel';
 import { BattleView, type BattleViewCallbacks } from './battleView';
-import { scanSource } from './i18n/hardcodedStrings';
 
 // ---------------------------------------------------------------------------
 // Overlay a11y wiring for BattleView (constructed-shell, #app-mounted).
@@ -5892,33 +5890,6 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
     expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
 
     document.body.removeChild(parent);
-  });
-});
-
-describe('m24s3 (ADR-0259): battleView.ts scan — zero failing sinks', () => {
-  it('m24s3 BV-03: scanSource(stripComments(battleView.ts)) has zero failing sinks, a >=25 sink floor, and no truncation/masking tripwires', () => {
-    const src = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), 'battleView.ts'),
-      'utf8',
-    );
-    const result = scanSource(stripComments(src));
-
-    expect(
-      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
-      'every sink must route through t()/tf() — any surviving English segment is listed above',
-    ).toEqual([]);
-    expect(
-      result.sinks.length,
-      'SINK_FLOOR idiom (plan R2): a floor, never an exact count',
-    ).toBeGreaterThanOrEqual(25);
-    expect(
-      result.unterminated,
-      'the literal mask must not end inside an unterminated literal',
-    ).toBe(false);
-    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
-    for (const sink of result.sinks) {
-      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
-    }
   });
 });
 

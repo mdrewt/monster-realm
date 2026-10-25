@@ -85,12 +85,7 @@ import { RaisingView } from './raisingView';
 // battleView.test.ts's file header for the full rationale.
 // ---------------------------------------------------------------------------
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { stripComments } from '../../test-util/stripComments';
 import { t } from './a11yCopy';
-import { scanSource } from './i18n/hardcodedStrings';
 import { currentLocale, t as i18nT, tf as i18nTf, setLocale } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
@@ -1878,33 +1873,6 @@ describe('m24s4 (ADR-0260): raisingView.ts routes its migrated sinks through t()
     // Post-restore call-through control (an existing S1 key — the new raising.* keys do not
     // exist in the catalog until the specialist ships them).
     expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
-  });
-});
-
-describe('m24s4 (ADR-0260): raisingView.ts scan — zero failing sinks', () => {
-  it('m24s4 RV-03: scanSource(stripComments(raisingView.ts)) has zero failing sinks, a >=16 sink floor, and no truncation/masking tripwires', () => {
-    const src = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), 'raisingView.ts'),
-      'utf8',
-    );
-    const result = scanSource(stripComments(src));
-
-    expect(
-      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
-      'every sink must route through t()/tf() — any surviving English segment is listed above',
-    ).toEqual([]);
-    expect(
-      result.sinks.length,
-      'SINK_FLOOR idiom (plan measured census): a floor, never an exact count',
-    ).toBeGreaterThanOrEqual(16);
-    expect(
-      result.unterminated,
-      'the literal mask must not end inside an unterminated literal',
-    ).toBe(false);
-    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
-    for (const sink of result.sinks) {
-      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
-    }
   });
 });
 

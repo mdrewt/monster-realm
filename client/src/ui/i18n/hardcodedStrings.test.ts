@@ -1,12 +1,17 @@
 // ui/i18n/hardcodedStrings.test.ts — m24-s2 RED gating tests for the hardcoded-string extraction
 // lint: §2.2's default-fail character inversion, fixture-proven through the SAME `scanSource` the
-// real whole-tree scan uses, plus the exactly-pinned migration ceiling.
+// real whole-tree scan uses, plus ONE plain assertion that the whole non-test tree has zero
+// failing sinks (every player-facing string routes through t()/tf()).
 //
 // SCOPE (plan R1): every `client/src/**/*.ts` whose name does NOT end in `.test.ts`
 // (`endsWith`, never substring) — the S0 precedent's walk. The 19 spec-named files
-// (`SCAN_TARGETS`) are asserted present-and-non-empty; `SINK_FLOOR = 169` is `>=` over the
-// whole-tree total. Two post-spec files (`ui/privacyView.ts`, `ui/evolutionNotice.ts`) are inside
-// the scope because of this, not silently outside it.
+// (`SCAN_TARGETS`) are asserted present-and-non-empty; `SINK_FLOOR` is `>=` over the
+// whole-tree total. The roster and the floor are ANTI-VACUITY guards (proof the scan still sees
+// the tree), not ratchets: the floor is edited consciously when UI text legitimately shrinks and
+// is never auto-tightened. The constant and I18N-17's `toBe` pin on it are changed together, as
+// one conscious edit (the pin is a tripwire against a silent floor change).
+// Two post-spec files (`ui/privacyView.ts`, `ui/evolutionNotice.ts`) are inside the scope because
+// of this, not silently outside it.
 //
 // PHASE 0 (tests I18N-12..16, HC-01) NEVER TOUCHES THE FILESYSTEM: every fixture is a named
 // `const` (biome's lineWidth 100 would otherwise wrap an inline template and change its bytes)
@@ -38,11 +43,6 @@ import {
 const I18N_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_SRC = path.resolve(I18N_DIR, '..', '..');
 const HELPER_PATH = path.join(I18N_DIR, 'hardcodedStrings.ts');
-const CEILING_PATH = path.join(I18N_DIR, '__fixtures__', 'i18n-hardcoded.json');
-
-// m24-s2 measured 2026-09-20 at the S2 build: 81 failing of 182 sinks (whole non-test tree).
-// Shrink-only: raising above this needs a test edit.
-const CEILING_AT_S2 = 81;
 
 // ---------------------------------------------------------------------------
 // Small helpers (no RegExp anywhere)
@@ -76,30 +76,8 @@ function countOccurrences(hay: string, needle: string): number {
   }
 }
 
-/** The baseline JSON is EXACTLY `{HARDCODED_CEILING: non-negative integer}` — one
- *  key, no extras, no string, no float, no negative. Throws a named reason otherwise. */
-function readCeiling(text: string): number {
-  const parsed: unknown = JSON.parse(text);
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('i18n-hardcoded.json: top level must be a plain object');
-  }
-  const keys = Object.keys(parsed);
-  if (keys.length !== 1 || keys[0] !== 'HARDCODED_CEILING') {
-    throw new Error(
-      `i18n-hardcoded.json: exactly one key HARDCODED_CEILING expected, got [${keys.join(', ')}]`,
-    );
-  }
-  const value = (parsed as { HARDCODED_CEILING: unknown }).HARDCODED_CEILING;
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    throw new Error(
-      `i18n-hardcoded.json: HARDCODED_CEILING must be a non-negative integer, got ${JSON.stringify(value)}`,
-    );
-  }
-  return value;
-}
-
 // ---------------------------------------------------------------------------
-// Real-tree scan (memoised; only I18N-17/18/18x reach it)
+// Real-tree scan (memoised; only I18N-17/18 reach it)
 // ---------------------------------------------------------------------------
 
 interface FileScan {
@@ -733,7 +711,13 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     expect(SCAN_TARGETS.filter((f) => f.startsWith('ui/') && f.endsWith('View.ts')).length).toBe(
       18,
     );
-    expect(SINK_FLOOR).toBe(169);
+    // SINK_FLOOR and the 19-file roster above are anti-vacuity guards, not ratchets: they prove
+    // the scan still sees the tree. The floor is edited consciously when UI text legitimately
+    // shrinks and is never auto-tightened.
+    expect(
+      SINK_FLOOR,
+      'SINK_FLOOR is an anti-vacuity guard, not a ratchet: edit it consciously when UI text legitimately shrinks, never auto-tighten',
+    ).toBe(251);
 
     const tree = scan();
     const byFile = new Map(tree.perFile.map((p) => [p.file, p]));
@@ -753,7 +737,7 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     // HC-03: the whole-tree total is at or above the floor.
     expect(
       tree.sinks.length,
-      `scanner saw ${tree.sinks.length} sinks < SINK_FLOOR ${SINK_FLOOR} — it has stopped seeing the tree`,
+      `scanner saw ${tree.sinks.length} sinks < SINK_FLOOR ${SINK_FLOOR} — it has stopped seeing the tree (anti-vacuity guard, not a ratchet)`,
     ).toBeGreaterThanOrEqual(SINK_FLOOR);
 
     // D6 tripwires: every file's mask terminated, no masked sink token, no truncated RHS.
@@ -786,57 +770,22 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     }
   });
 
-  it('m24s2 I18N-18: the failing-sink count does not exceed HARDCODED_CEILING from __fixtures__/i18n-hardcoded.json', () => {
-    const ceiling = readCeiling(readFileSync(CEILING_PATH, 'utf8'));
-    const tree = scan();
-    const beyond = tree.failing.slice(ceiling).map(describeSink);
-    const message = [
-      `${tree.failing.length} failing sinks > HARDCODED_CEILING ${ceiling}.`,
-      'Migrate them to t()/tf() (never raise the ceiling). Failing sinks beyond the ceiling:',
-      ...beyond,
-    ].join('\n');
-    expect(tree.failing.length, message).toBeLessThanOrEqual(ceiling);
-  });
-
-  it('m24s2 I18N-18x: HARDCODED_CEILING equals the measured failing count exactly (shrink-only made mechanical), the JSON is exactly {HARDCODED_CEILING: non-negative integer <= sinks}, and never exceeds CEILING_AT_S2', () => {
-    // Shape teeth for readCeiling itself: string / float / negative / extra key / array all throw.
-    expect(() => readCeiling('{"HARDCODED_CEILING":"3"}')).toThrow('non-negative integer');
-    expect(() => readCeiling('{"HARDCODED_CEILING":1.5}')).toThrow('non-negative integer');
-    expect(() => readCeiling('{"HARDCODED_CEILING":-1}')).toThrow('non-negative integer');
-    expect(() => readCeiling('{"HARDCODED_CEILING":true}')).toThrow('non-negative integer');
-    expect(() => readCeiling('{"HARDCODED_CEILING":3,"x":1}')).toThrow('exactly one key');
-    expect(() => readCeiling('{"ceiling":3}')).toThrow('exactly one key');
-    expect(() => readCeiling('[3]')).toThrow('plain object');
-    expect(readCeiling('{"HARDCODED_CEILING": 0}\n')).toBe(0);
-    expect(readCeiling('{"HARDCODED_CEILING":42}')).toBe(42);
-
-    const rawJson = readFileSync(CEILING_PATH, 'utf8');
-    const ceiling = readCeiling(rawJson);
-    expect(Object.keys(JSON.parse(rawJson))).toEqual(['HARDCODED_CEILING']);
-    expect(Number.isInteger(ceiling)).toBe(true);
-    expect(ceiling).toBeGreaterThanOrEqual(0);
-    expect(
-      ceiling,
-      `HARDCODED_CEILING ${ceiling} > CEILING_AT_S2 ${CEILING_AT_S2}: the ceiling never rises above the S2 mark`,
-    ).toBeLessThanOrEqual(CEILING_AT_S2);
-
-    const tree = scan();
-    expect(ceiling, 'HARDCODED_CEILING must not exceed the sink total').toBeLessThanOrEqual(
-      tree.sinks.length,
+  it('m24s2 I18N-18: zero failing sinks across the whole non-test client/src tree, and the failure message lists each sink by file, kind and line', () => {
+    // Tooth: the message renderer names FILE, LINE, KIND and the failing segments of a sink — a
+    // reader of a red run can find each offender. Pinned on a real scanSource result.
+    const bad3 = scanSource(BAD_3_RENAME);
+    expect(bad3.failing.length).toBe(1);
+    expect(describeSink({ file: 'x.ts', sink: bad3.failing[0] })).toBe(
+      'x.ts:1 textContent ["Rename"]',
     );
-    const measured = tree.failing.length;
-    let message: string | undefined;
-    if (measured < ceiling) {
-      message = [
-        `ceiling stale: lower HARDCODED_CEILING to ${measured} in __fixtures__/i18n-hardcoded.json`,
-        '— shrink-only, reviewed edit; if a sibling slice merged first, re-measure and edit the one line',
-      ].join(' ');
-    } else if (measured > ceiling) {
-      message = [
-        `${measured} failing sinks exceed HARDCODED_CEILING ${ceiling} — migrate, never raise`,
-        '(see the preceding <= test for the list)',
-      ].join(' ');
-    }
-    expect(measured, message).toBe(ceiling);
+
+    const tree = scan();
+    const message = [
+      `${tree.failing.length} failing sink(s) in the non-test client/src tree.`,
+      'Route each listed player-facing string through t()/tf(). Failing sinks ' +
+        '(file:line-in-comment-stripped-source kind segments; search the file for the segment text):',
+      ...tree.failing.map(describeSink),
+    ].join('\n');
+    expect(tree.failing.map(describeSink), message).toEqual([]);
   });
 });

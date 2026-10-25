@@ -1,25 +1,19 @@
 // @vitest-environment happy-dom
-// ui/dialogueView.i18n.test.ts — m24-s5 RED gating tests: DV-01/02/03.
+// ui/dialogueView.i18n.test.ts — m24-s5 RED gating tests: DV-01/02.
 //
 // SOURCE OF TRUTH: memory/projects/monster-realm-m24-s5-plan.md (Tests, Key roster dialogue.*),
 //
 // RED REASON AT HEAD: dialogueView.ts imports nothing from './i18n/resolver' today — the Shop
 // affordance button is painted with the bare literal 'Shop' (dialogueView.ts:72). DV-01 fails on
 // its very first assertion (the spied i18nT is never called with 'dialogue.action.shop' at all);
-// DV-02 fails because 'Shop' is never wrapped in a «sentinel»; DV-03 fails because
-// scanSource(stripComments(...)) reports a FAILING raw-English sink, not `failing: []`.
+// DV-02 fails because 'Shop' is never wrapped in a «sentinel».
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the plan/ADR-0261
 // only.
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { stripComments } from '../../test-util/stripComments';
 import type { DialogueViewModel } from './dialogueModel';
 import { DialogueView } from './dialogueView';
-import { scanSource } from './i18n/hardcodedStrings';
 import { t as i18nT } from './i18n/resolver';
 import { closeOverlayA11y } from './overlayA11y';
 import { OVERLAY_IDS } from './overlayRegistry';
@@ -198,32 +192,5 @@ describe('m24s5 (ADR-0261): dialogueView.ts routes its migrated sink through t()
 
     // Post-restore call-through control (an existing S1 key).
     expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
-  });
-});
-
-describe('m24s5 (ADR-0261): dialogueView.ts scan — zero failing sinks', () => {
-  it('m24s5 DV-03: scanSource(stripComments(dialogueView.ts)) has zero failing sinks, a >=5 sink floor, and no truncation/masking tripwires', () => {
-    const src = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), 'dialogueView.ts'),
-      'utf8',
-    );
-    const result = scanSource(stripComments(src));
-
-    expect(
-      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
-      'every sink must route through t()/tf() — any surviving English segment is listed above',
-    ).toEqual([]);
-    expect(
-      result.sinks.length,
-      'SINK_FLOOR idiom: a floor, never an exact count',
-    ).toBeGreaterThanOrEqual(5);
-    expect(
-      result.unterminated,
-      'the literal mask must not end inside an unterminated literal',
-    ).toBe(false);
-    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
-    for (const sink of result.sinks) {
-      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
-    }
   });
 });
