@@ -557,3 +557,147 @@ describe('main.ts the Social frame over the real panel views and a11y layer (ctl
     expect(stackNow(), 'c: still exactly one Social frame').toEqual(SOCIAL_STACK);
   });
 });
+
+// ==========================================================================================
+// so-2: opening Social pushes its ONE frame first; switching panels raises no edge (SO2.1, SO2.2)
+// ==========================================================================================
+//
+// The three panel views are the REAL ones. A pass-through spy on each panel's own show (the trade
+// and leaderboard `show`, the pvp `refresh`, which shows its root) records the stack AT THE MOMENT
+// the call runs, counting only a call that took its root from hidden to shown. Then the lent
+// composite view switches through all three panels, and after EVERY step the stack must be
+// byte-identical to the one right after the open: no push, no pop, one `social` frame. A naive
+// per-call-site push of the panel id (or of `social` once per panel) holds two frames; an open that
+// shows first holds none when the first panel is shown.
+
+/** The stack's frame names, base first. */
+const so2Names = (): string[] =>
+  (stackNow() as Array<{ kind: string; id?: string }>).map((f) =>
+    f.kind === 'screen' ? (f.id as string) : f.kind,
+  );
+
+/** One call of a spied panel method: the stack names when it began, and whether it showed the root. */
+interface So2PanelCall {
+  readonly names: string[];
+  readonly opened: boolean;
+}
+
+/** Spy `method` on the class's prototype (pass-through); the teardown's restoreAllMocks restores it. */
+async function so2WatchPanel(
+  load: () => Promise<{ readonly prototype: object }>,
+  method: string,
+  shown: () => boolean,
+): Promise<So2PanelCall[]> {
+  const proto = (await load()).prototype as Record<string, (...args: unknown[]) => unknown>;
+  const original = proto[method];
+  if (typeof original !== 'function') throw new Error(`${method} is not a prototype method`);
+  const calls: So2PanelCall[] = [];
+  vi.spyOn(proto, method).mockImplementation(function (this: unknown, ...args: unknown[]) {
+    const names = so2Names();
+    const before = shown();
+    const result = original.apply(this, args);
+    calls.push({ names, opened: !before && shown() });
+    return result;
+  });
+  return calls;
+}
+
+const SO2_PANELS = [
+  {
+    tab: 'trades',
+    load: () => import('./ui/tradeView').then((m) => m.TradeView),
+    method: 'show',
+  },
+  {
+    tab: 'challenges',
+    load: () => import('./ui/pvpView').then((m) => m.PvpView),
+    method: 'refresh',
+  },
+  {
+    tab: 'rankings',
+    load: () => import('./ui/leaderboardView').then((m) => m.LeaderboardView),
+    method: 'show',
+  },
+] as const;
+
+const SO2_SOCIAL_OPENS = [
+  { tag: 'TRADES-ACCEL', tab: 'trades', open: () => void press('KeyU', 1100) },
+  { tag: 'CHALLENGES-ACCEL', tab: 'challenges', open: () => void press('KeyP', 1100) },
+  { tag: 'RANKINGS-ACCEL', tab: 'rankings', open: () => void press('KeyL', 1100) },
+  { tag: 'TRADES-ROW', tab: 'trades', open: () => void openSocialLeaf('trades', 1100) },
+  { tag: 'CHALLENGES-ROW', tab: 'challenges', open: () => void openSocialLeaf('challenges', 1100) },
+  { tag: 'RANKINGS-ROW', tab: 'rankings', open: () => void openSocialLeaf('rankings', 1100) },
+] as const;
+
+describe('main.ts the one Social frame is pushed first (runtime, so-2)', {
+  sequential: true,
+}, () => {
+  afterEach(teardownBoot);
+
+  it.each(
+    SO2_SOCIAL_OPENS,
+  )('SO2-2-BOOT-$tag: the one social frame is on the stack as the first panel is shown, and switching through all three panels pushes and pops nothing', async ({
+    tab,
+    open,
+  }) => {
+    // WRONG IMPL KILLED: today's order (the panel is shown and a later sync mirrors the frame: the
+    // spied call reads a stack with no social frame); a naive per-call-site push that gives each
+    // panel its own frame or pushes `social` again on a switch (two frames, or a push and a pop on
+    // every tab change that would reset the frame's adapter state); a switch that pops and
+    // re-pushes the frame; and a spy that never saw a panel open (the ANTI-VACUITY read).
+    await bootReady();
+    server(1000);
+    const lent = lendingSocial();
+    const watched = (
+      await Promise.all(
+        SO2_PANELS.map((p) =>
+          so2WatchPanel(p.load, p.method, () => root(ROOT_ID[p.tab]).style.display !== 'none'),
+        ),
+      )
+    ).flat();
+
+    open();
+
+    expect(shownRoots(), `precondition: the ${tab} panel alone`).toEqual([tab]);
+    expect(
+      so2Names().filter((id) => id === 'social'),
+      'the open leaves exactly one social frame',
+    ).toHaveLength(1);
+    const afterOpen = JSON.stringify(stackNow());
+    const view = lentView(lent);
+    const switches: readonly SocialPanelId[] = [
+      'tradeView',
+      'pvpView',
+      'leaderboardView',
+      'tradeView',
+      'leaderboardView',
+      'pvpView',
+    ];
+    let steps = 0;
+    for (const panel of switches) {
+      view.show(panel);
+      expect(shownRoots(), `after switching to ${panel}: its root alone`).toEqual([TAB_OF[panel]]);
+      expect(JSON.stringify(stackNow()), `${panel}: no push, no pop, the same frames`).toBe(
+        afterOpen,
+      );
+      expect(
+        so2Names().filter((id) => id === 'social'),
+        `${panel}: exactly one social frame`,
+      ).toHaveLength(1);
+      steps += 1;
+    }
+    expect(steps, 'ANTI-VACUITY: six switches through all three panels').toBe(6);
+
+    const openings = watched.filter((call) => call.opened);
+    expect(
+      openings.length,
+      'ANTI-VACUITY: the open and the switches showed all three panels',
+    ).toBeGreaterThanOrEqual(3);
+    for (const [i, call] of openings.entries()) {
+      expect(
+        call.names.filter((id) => id === 'social'),
+        `panel shown ${i}: the one social frame is already on the stack`,
+      ).toHaveLength(1);
+    }
+  });
+});

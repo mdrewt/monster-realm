@@ -41,6 +41,9 @@
  * the connection's frozen flag and a reducer gate made controllable). The real client/index.html
  * shell is mounted first so the views that stay real (dialogue, quest log, menu...) construct.
  */
+import { readFileSync } from 'node:fs';
+import { dirname as pathDirname, join as pathJoin } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Identity } from 'spacetimedb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -4269,5 +4272,186 @@ describe('main.ts no Box heal (runtime, ctl-10a)', { sequential: true }, () => {
       { name: 'healParty', args: { locationId: 9 } },
     ]);
     expect(statusText(), 'control: and nothing is reported').toBe('');
+  });
+});
+
+// ==========================================================================================
+// so-2: the movement gate and the three tables, by source shape (SO2.5, SO2.6)
+// ==========================================================================================
+//
+// HONEST SCOPE. Both claims are about main.ts's own shape, which nothing observable reaches: every
+// production read of the movement gate is preceded by a sync (a keydown syncs on both sides, a frame
+// syncs first, a batch syncs in its last listener), so a gate read that ALSO syncs, closes or opens a
+// frame is indistinguishable from one that does not by any booted behaviour. The pins below are the
+// structural guard, run over main.ts with every comment blanked (a scanner that skips string,
+// template and regex literals, so a quote inside a comment cannot swallow code and a decoy
+// `function movementGate(` in a comment is not counted). A body runs from its column-0 header to the
+// closing brace at column 0.
+
+/** `src` with every comment blanked (line breaks kept, so column-0 anchors hold). */
+function so2StripComments(src: string): string {
+  const n = src.length;
+  const SUBST = '$' + '{';
+  /** Scan code from `at`; inside a template substitution, stop after the `}` that closes it. */
+  function scan(at: number, inSubst: boolean): [string, number] {
+    let out = '';
+    let i = at;
+    let depth = 0;
+    let prev = '';
+    while (i < n) {
+      const c = src.charAt(i);
+      const d = src.charAt(i + 1);
+      if (c === '/' && d === '/') {
+        while (i < n && src.charAt(i) !== '\n') i += 1;
+      } else if (c === '/' && d === '*') {
+        const end = src.indexOf('*/', i + 2);
+        const stop = end < 0 ? n : end + 2;
+        out += src.slice(i, stop).replace(/[^\n]/g, ' ');
+        i = stop;
+      } else if (c === '"' || c === "'") {
+        let j = i + 1;
+        while (j < n && src.charAt(j) !== c) j += src.charAt(j) === '\\' ? 2 : 1;
+        out += src.slice(i, j + 1);
+        i = j + 1;
+        prev = c;
+      } else if (c === '`') {
+        out += c;
+        i += 1;
+        while (i < n && src.charAt(i) !== '`') {
+          if (src.charAt(i) === '\\') {
+            out += src.slice(i, i + 2);
+            i += 2;
+          } else if (src.startsWith(SUBST, i)) {
+            const [inner, next] = scan(i + 2, true);
+            out += `${SUBST}${inner}}`;
+            i = next;
+          } else {
+            out += src.charAt(i);
+            i += 1;
+          }
+        }
+        out += '`';
+        i += 1;
+        prev = '`';
+      } else if (c === '/' && (prev === '' || '(,=:[!&|?{};'.includes(prev))) {
+        let j = i + 1;
+        let inClass = false;
+        while (j < n && (src.charAt(j) !== '/' || inClass)) {
+          const ch = src.charAt(j);
+          if (ch === '\\') j += 1;
+          else if (ch === '[') inClass = true;
+          else if (ch === ']') inClass = false;
+          j += 1;
+        }
+        j += 1;
+        while (/[a-z]/.test(src.charAt(j))) j += 1;
+        out += src.slice(i, j);
+        i = j;
+        prev = '/';
+      } else {
+        if (inSubst && c === '}' && depth === 0) return [out, i + 1];
+        if (c === '{') depth += 1;
+        if (c === '}') depth -= 1;
+        out += c;
+        if (!/\s/.test(c)) prev = c;
+        i += 1;
+      }
+    }
+    return [out, n];
+  }
+  return scan(0, false)[0];
+}
+
+/** main.ts, comments blanked, as lines. */
+const so2MainLines = (): string[] =>
+  so2StripComments(
+    readFileSync(pathJoin(pathDirname(fileURLToPath(import.meta.url)), 'main.ts'), 'utf8'),
+  ).split('\n');
+
+/** The lines strictly between the one column-0 line that starts with `header` and the next line that
+ *  is exactly `closer`. */
+function so2BodyOf(lines: readonly string[], header: string, closer: string): string[] {
+  const at = lines.flatMap((l, i) => (l.startsWith(header) ? [i] : []));
+  expect(at, `exactly one column-0 \`${header}\` in main.ts`).toHaveLength(1);
+  const start = at[0] as number;
+  const end = lines.findIndex((l, i) => i > start && l === closer);
+  expect(end, `\`${header}\` closes at column 0`).toBeGreaterThan(start);
+  return lines.slice(start + 1, end);
+}
+
+describe('main.ts source shape (so-2)', () => {
+  it('SO2-5-GATE-PURE: the bodies of movementGate() and worldBaseLive() contain no syncStack, no contextStack assignment, no contextStep, runStackCommands, hideFrame or openFrame, and no view show() or hide()', () => {
+    // WRONG IMPL KILLED: a gate read that still re-mirrors the stack (`syncStack()` in worldBaseLive:
+    // today's shape, so a gate read can push, pop and close frames), one that assigns the stack or
+    // steps it, one that runs a stack command (a clearHeld or a close), one that hides or opens a
+    // frame or shows or hides a view directly. The world sheet close (`screenHost.closeSheet()`)
+    // stays allowed: the sheet is not a frame.
+    const lines = so2MainLines();
+    const gate = so2BodyOf(lines, 'function movementGate(', '}').join('\n');
+    const live = so2BodyOf(lines, 'function worldBaseLive(', '}').join('\n');
+    expect(gate, 'ANTI-VACUITY: movementGate reads worldBaseLive').toMatch(/\bworldBaseLive\s*\(/);
+    expect(live, 'ANTI-VACUITY: worldBaseLive reads the stack through movementEnabled').toMatch(
+      /\bmovementEnabled\s*\(/,
+    );
+    const forbidden: ReadonlyArray<readonly [string, RegExp]> = [
+      ['syncStack', /\bsyncStack\b/],
+      ['a contextStack assignment', /\bcontextStack\s*=(?![=>])/],
+      ['contextStep', /\bcontextStep\b/],
+      ['runStackCommands', /\brunStackCommands\b/],
+      ['hideFrame', /\bhideFrame\b/],
+      ['openFrame', /\bopenFrame\b/],
+      ['a .show( call', /\.\s*show\s*\(/],
+      ['a .hide( call', /\.\s*hide\s*\(/],
+    ];
+    let checked = 0;
+    for (const [name, body] of [
+      ['movementGate', gate],
+      ['worldBaseLive', live],
+    ] as const) {
+      for (const [what, re] of forbidden) {
+        expect(re.test(body), `${name} must not contain ${what}`).toBe(false);
+        checked += 1;
+      }
+    }
+    expect(checked, 'ANTI-VACUITY: two bodies x eight needles').toBe(16);
+  });
+
+  it('SO2-6-SHAPE: overlayProbes, overlayHandles and screenViews are three separate const declarations whose literals have exactly the keys battleView and dialogueView, each row the byte-identical thunk of its own key, with the dialogue handle the one undefined', () => {
+    // WRONG IMPL KILLED: an 18-row table left in place (today's shape), a table that kept a player
+    // row (a view the mirror would again see), one that lost the dialogue or battle row, a sibling
+    // thunk copy-pasted onto the wrong key (`battleView: () => dialogueView?.visible ?? false`), a
+    // dialogue handle that hides a live conversation (it strands the server row), and three tables
+    // merged into one registry (or two declared from a third).
+    const lines = so2MainLines();
+    const tables = [
+      {
+        header: 'const overlayProbes',
+        value: (key: string) => `() => ${key}?.visible ?? false`,
+      },
+      {
+        header: 'const overlayHandles',
+        value: (key: string) => (key === 'dialogueView' ? 'undefined' : `() => ${key}?.hide()`),
+      },
+      { header: 'const screenViews', value: (key: string) => `() => ${key}` },
+    ];
+    for (const table of tables) {
+      const rows = so2BodyOf(lines, table.header, '};')
+        .map((l) => l.trim())
+        .filter((l) => l !== '')
+        .map((l) => {
+          const m = /^(\w+):\s*(.*),$/.exec(l);
+          if (m === null) throw new Error(`${table.header}: not a table row: ${l}`);
+          return [m[1] as string, m[2] as string] as const;
+        });
+      expect(
+        rows.map(([key]) => key).sort(),
+        `${table.header}: exactly the two mirrored keys`,
+      ).toEqual(['battleView', 'dialogueView']);
+      for (const [key, value] of rows) {
+        expect(value, `${table.header}: the ${key} row`).toBe(table.value(key));
+      }
+    }
+    const starts = tables.map((t) => lines.findIndex((l) => l.startsWith(t.header)));
+    expect(new Set(starts).size, 'three declarations in three different places').toBe(3);
   });
 });

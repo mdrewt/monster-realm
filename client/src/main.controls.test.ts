@@ -2800,3 +2800,567 @@ describe('main.ts repeats and paint failures (runtime, ctl-7c)', { sequential: t
     expect(rowsAfterBack, 'B`s repeat of that message adds none').toEqual(rowsAfterDistinct);
   });
 });
+
+// ==========================================================================================
+// so-2: openFrame pushes first, then shows; the mirror sees only the server trio (SO2.1, SO2.3, SO2.4)
+// ==========================================================================================
+//
+// Every player open path (a launcher or menu-row click, a menu key walk, an accelerator, a world
+// interaction, the deferred shop open, the claim lifecycle) is driven through the real views, and
+// two things are read off the booted shell. SO2-1: a pass-through spy on the view class's own
+// `show` (or `render`, for the views the batch renders open: the journal, heal, the claim paint)
+// records `__game().stack` AT THE MOMENT the call runs, so a frame that only appears after the view
+// is shown (the mirror's order today) is caught; the call counts only when it took the view from
+// hidden to shown. SO2-4: right after the open, before any frame, key or batch can re-mirror,
+// every overlay on screen is a frame on the stack and every player frame on the stack is on screen.
+// The spied class is imported AFTER the boot, so it is the very class main.ts constructed.
+// Dedup note: a second press of an accelerator or of Start over its own frame is Start (it closes),
+// so the re-entrant open paths that CAN reach an open frame twice are the claim lifecycle and the
+// Social panels (main.social.test.ts); they are pinned below and there.
+
+/** A view class as the spy needs it. */
+interface So2ViewClass {
+  readonly prototype: object;
+}
+/** One call of a spied view method: the stack as it stood when the call began, and whether the call
+ *  took the view from hidden to shown. */
+interface So2Call {
+  readonly stack: string[];
+  readonly opened: boolean;
+}
+
+/** Spy `method` on the class's prototype, pass-through, recording each call (`shown` reads the
+ *  view's overlay). The teardown's `vi.restoreAllMocks()` restores it. */
+async function so2Watch(
+  load: () => Promise<So2ViewClass>,
+  method: string,
+  shown: () => boolean,
+): Promise<So2Call[]> {
+  const proto = (await load()).prototype as Record<string, (...args: unknown[]) => unknown>;
+  const original = proto[method];
+  if (typeof original !== 'function') throw new Error(`${method} is not a prototype method`);
+  const calls: So2Call[] = [];
+  vi.spyOn(proto, method).mockImplementation(function (this: unknown, ...args: unknown[]) {
+    const at = stackNames();
+    const before = shown();
+    const result = original.apply(this, args);
+    calls.push({ stack: at, opened: !before && shown() });
+    return result;
+  });
+  return calls;
+}
+
+/** Click the launcher, then each menu row in turn (the pointer path, `handleMenuPointer`). */
+function so2OpenByClicks(rows: readonly string[], t0: number): void {
+  const launcher = document.querySelector('[data-menu-launcher]');
+  if (launcher === null) throw new Error('[data-menu-launcher] is not in the shell');
+  clock.t = t0;
+  launcher.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  rows.forEach((key, i) => {
+    const row = document.querySelector(`#menu-rows [data-nav-key="${key}"]`);
+    if (row === null) throw new Error(`no menu row [data-nav-key="${key}"]`);
+    clock.t = t0 + 100 * (i + 1);
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  });
+}
+
+/** Open the menu with Start and walk each entry of `path` with the real keys (Down until the cursor
+ *  is on it, then Enter). */
+function so2OpenByKeys(path: readonly string[], t0: number): void {
+  tap('KeyM', t0);
+  let at = t0 + 20;
+  for (const key of path) {
+    for (let i = 0; i < 8 && navActive() !== key; i += 1) {
+      tap('ArrowDown', at);
+      at += 20;
+    }
+    expect(navActive(), `precondition: the menu cursor is on ${key}`).toBe(key);
+    tap('Enter', at);
+    at += 20;
+  }
+}
+
+/** Click a greet-then-shop button, as the dialogue renders one (main.dialogueDismiss.test.ts's). */
+function so2ClickShop(t: number): void {
+  const button = document.createElement('button');
+  button.dataset.shopId = '1';
+  byId('dialogue-overlay').appendChild(button);
+  clock.t = t;
+  button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  button.remove();
+}
+
+/** A heal pad faced at (3, 6), then A at it: the heal frame opens (main.reconnectStack.test.ts's). */
+function so2OpenHeal(): void {
+  H.interact = (...args: unknown[]) => {
+    const entities = args[4] as ReadonlyArray<{ kind: string; id: string }>;
+    const at = entities.findIndex((e) => e.kind === 'heal' && e.id === '7');
+    return at === -1 ? [] : [at];
+  };
+  opts.store.upsertHealLocation({
+    locationId: 7,
+    zoneId: 0,
+    tileX: 3,
+    tileY: 6,
+    costQty: 0,
+    cooldownMs: 0,
+    costCurrency: 0n,
+  });
+  server(1010);
+  tap('Enter', 1020);
+}
+
+/** Every player frame with a shown predicate (the Social frame stands for its three panels). The
+ *  server trio is read separately: a dialogue and a battle are not player frames. */
+const SO2_SHOWN: ReadonlyArray<readonly [string, () => boolean]> = [
+  ['menuView', menuShown],
+  ['helpView', helpShown],
+  ['renameView', renameShown],
+  ['tradeProposeView', proposeShown],
+  ['shopView', () => shownById('shop-overlay')],
+  ['healView', () => shownById('heal-overlay')],
+  ['questLogView', questLogShown],
+  ['claimView', claimShown],
+  ['privacyView', () => shownById('privacy-overlay')],
+  ['controlsView', () => shownById('controls-overlay')],
+  ['boxView', boxShown],
+  ['raisingView', () => shownByTestId('raising-title')],
+  [
+    'social',
+    () => tradeShown() || shownById('pvp-challenge-overlay') || shownById('leaderboard-overlay'),
+  ],
+];
+
+/** SO2.4, read at once: every player overlay on screen is a frame on the stack, every player frame
+ *  on the stack is on screen (a stranded frame would freeze movement), and no frame is listed
+ *  twice. `atLeast` guards against a vacuous read. */
+function so2ExpectShownOnStack(where: string, atLeast = 1): void {
+  const names = stackNames();
+  let up = 0;
+  for (const [id, isUp] of SO2_SHOWN) {
+    if (isUp()) {
+      up += 1;
+      expect(names, `${where}: ${id} is on screen, so its frame is on the stack`).toContain(id);
+    } else {
+      expect(names, `${where}: ${id} is not on screen, so no frame is left for it`).not.toContain(
+        id,
+      );
+    }
+  }
+  expect(up, `${where}: ANTI-VACUITY: a player overlay is on screen`).toBeGreaterThanOrEqual(
+    atLeast,
+  );
+  expect(new Set(names).size, `${where}: no frame is listed twice`).toBe(names.length);
+}
+
+/** One player open path: the frame it puts on the stack, the view call(s) that show it, how to see
+ *  it on screen, and how to drive it (after a boot and a seeded world). */
+interface So2Open {
+  readonly tag: string;
+  readonly id: string;
+  readonly views: ReadonlyArray<{
+    readonly load: () => Promise<So2ViewClass>;
+    readonly method: string;
+  }>;
+  readonly shown: () => boolean;
+  readonly drive: () => void;
+}
+const so2Menu = (): Promise<So2ViewClass> => import('./ui/menuView').then((m) => m.MenuView);
+const so2Rename = (): Promise<So2ViewClass> => import('./ui/renameView').then((m) => m.RenameView);
+const so2Box = (): Promise<So2ViewClass> => import('./ui/boxView').then((m) => m.BoxView);
+const so2Raising = (): Promise<So2ViewClass> =>
+  import('./ui/raisingView').then((m) => m.RaisingView);
+const so2QuestLog = (): Promise<So2ViewClass> =>
+  import('./ui/questLogView').then((m) => m.QuestLogView);
+const so2Help = (): Promise<So2ViewClass> => import('./ui/helpView').then((m) => m.HelpView);
+const so2Controls = (): Promise<So2ViewClass> =>
+  import('./ui/controlsView').then((m) => m.ControlsView);
+const so2Privacy = (): Promise<So2ViewClass> =>
+  import('./ui/privacyView').then((m) => m.PrivacyView);
+const so2Claim = (): Promise<So2ViewClass> => import('./ui/claimView').then((m) => m.ClaimView);
+const so2Shop = (): Promise<So2ViewClass> => import('./ui/shopView').then((m) => m.ShopView);
+const so2Heal = (): Promise<So2ViewClass> => import('./ui/healView').then((m) => m.HealView);
+const so2Propose = (): Promise<So2ViewClass> =>
+  import('./ui/tradeProposeView').then((m) => m.TradeProposeView);
+
+const SO2_OPENS: readonly So2Open[] = [
+  {
+    tag: 'MENU-LAUNCHER',
+    id: 'menuView',
+    views: [{ load: so2Menu, method: 'show' }],
+    shown: menuShown,
+    drive: () => so2OpenByClicks([], 1100),
+  },
+  {
+    tag: 'MENU-KEY',
+    id: 'menuView',
+    views: [{ load: so2Menu, method: 'show' }],
+    shown: menuShown,
+    drive: () => void tap('KeyM', 1100),
+  },
+  {
+    // The click path no sync follows: the Name row's open shows the form and returns.
+    tag: 'NAME-ROW-CLICK',
+    id: 'renameView',
+    views: [{ load: so2Rename, method: 'show' }],
+    shown: renameShown,
+    drive: () => so2OpenByClicks(['profile', 'name'], 1100),
+  },
+  {
+    tag: 'NAME-ROW-KEY',
+    id: 'renameView',
+    views: [{ load: so2Rename, method: 'show' }],
+    shown: renameShown,
+    drive: () => so2OpenByKeys(['profile', 'name'], 1100),
+  },
+  {
+    tag: 'BOX-ACCEL',
+    id: 'boxView',
+    views: [{ load: so2Box, method: 'show' }],
+    shown: boxShown,
+    drive: () => void tap('KeyB', 1100),
+  },
+  {
+    tag: 'BOX-ROW-CLICK',
+    id: 'boxView',
+    views: [{ load: so2Box, method: 'show' }],
+    shown: boxShown,
+    drive: () => so2OpenByClicks(['monsters'], 1100),
+  },
+  {
+    tag: 'BAG-ACCEL',
+    id: 'raisingView',
+    views: [{ load: so2Raising, method: 'show' }],
+    shown: () => shownByTestId('raising-title'),
+    drive: () => void tap('KeyI', 1100),
+  },
+  {
+    tag: 'BAG-ROW-KEY',
+    id: 'raisingView',
+    views: [{ load: so2Raising, method: 'show' }],
+    shown: () => shownByTestId('raising-title'),
+    drive: () => so2OpenByKeys(['bag'], 1100),
+  },
+  {
+    tag: 'JOURNAL-ACCEL',
+    id: 'questLogView',
+    views: [{ load: so2QuestLog, method: 'render' }],
+    shown: questLogShown,
+    drive: () => void tap('KeyJ', 1100),
+  },
+  {
+    tag: 'JOURNAL-ROW-CLICK',
+    id: 'questLogView',
+    views: [{ load: so2QuestLog, method: 'render' }],
+    shown: questLogShown,
+    drive: () => so2OpenByClicks(['journal'], 1100),
+  },
+  {
+    tag: 'HELP',
+    id: 'helpView',
+    views: [{ load: so2Help, method: 'show' }],
+    shown: helpShown,
+    drive: () => void tap('KeyR', 1100),
+  },
+  {
+    tag: 'CONTROLS-ROW-CLICK',
+    id: 'controlsView',
+    views: [{ load: so2Controls, method: 'show' }],
+    shown: () => shownById('controls-overlay'),
+    drive: () => so2OpenByClicks(['options', 'controls'], 1100),
+  },
+  {
+    tag: 'PRIVACY-ROW-CLICK',
+    id: 'privacyView',
+    views: [{ load: so2Privacy, method: 'show' }],
+    shown: () => shownById('privacy-overlay'),
+    drive: () => so2OpenByClicks(['profile', 'privacy'], 1100),
+  },
+  {
+    tag: 'CLAIM-ACCEL',
+    id: 'claimView',
+    views: [
+      { load: so2Claim, method: 'show' },
+      { load: so2Claim, method: 'render' },
+    ],
+    shown: claimShown,
+    drive: () => void tap('KeyC', 1100),
+  },
+  {
+    tag: 'CLAIM-ROW-KEY',
+    id: 'claimView',
+    views: [
+      { load: so2Claim, method: 'show' },
+      { load: so2Claim, method: 'render' },
+    ],
+    shown: claimShown,
+    drive: () => so2OpenByKeys(['profile', 'account'], 1100),
+  },
+  {
+    // The claim lifecycle shows the view with no key or click: a pending claim's paint.
+    tag: 'CLAIM-PENDING',
+    id: 'claimView',
+    views: [
+      { load: so2Claim, method: 'show' },
+      { load: so2Claim, method: 'render' },
+    ],
+    shown: claimShown,
+    drive: () => void opts.onClaimPending?.('claim-code'),
+  },
+  {
+    // ...and a failed first sign-in (`show()` first, then the paint).
+    tag: 'SIGNIN-FAILED',
+    id: 'claimView',
+    views: [
+      { load: so2Claim, method: 'show' },
+      { load: so2Claim, method: 'render' },
+    ],
+    shown: claimShown,
+    drive: () => void opts.onSignInFailed?.('sign-in failed'),
+  },
+  {
+    // The deferred greet-then-shop open: it runs inside the batch that ends the conversation.
+    tag: 'SHOP-DEFERRED',
+    id: 'shopView',
+    views: [{ load: so2Shop, method: 'show' }],
+    shown: () => shownById('shop-overlay'),
+    drive: () => {
+      startConversation(1010);
+      so2ClickShop(1100);
+      endConversation(1200);
+      frame(1210);
+    },
+  },
+  {
+    tag: 'HEAL',
+    id: 'healView',
+    views: [{ load: so2Heal, method: 'render' }],
+    shown: () => shownById('heal-overlay'),
+    drive: so2OpenHeal,
+  },
+  {
+    // The face-to-face Trade: A at a faced player, A on the first row.
+    tag: 'TRADE-WIZARD',
+    id: 'tradeProposeView',
+    views: [{ load: so2Propose, method: 'show' }],
+    shown: proposeShown,
+    drive: () => openFaceToFace(1010),
+  },
+];
+
+describe('main.ts openFrame: push first, then show (runtime, so-2)', { sequential: true }, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    raf.cb = null;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  it.each(
+    SO2_OPENS,
+  )('SO2-1-BOOT-$tag: the $id frame is already on the stack when its view is shown', async (open) => {
+    // WRONG IMPL KILLED: today's order (show, then a later sync mirrors the frame: the spied call
+    // reads a stack without the frame; the click-opened Name form, Controls, Privacy, the deferred
+    // shop and the claim lifecycle are mirrored only by the NEXT key, frame or batch); an
+    // `openFrame` that shows first and pushes after; an open path left outside `openFrame` (each
+    // row here is its own path, so one unconverted call site fails exactly its row); and a spy
+    // that never saw the view open (the ANTI-VACUITY read).
+    await bootReady();
+    seedWorld(1000);
+    const calls = (
+      await Promise.all(open.views.map((v) => so2Watch(v.load, v.method, open.shown)))
+    ).flat();
+
+    open.drive();
+
+    const openings = calls.filter((call) => call.opened);
+    expect(
+      openings.length,
+      `ANTI-VACUITY: a spied call took the ${open.id} view from hidden to shown`,
+    ).toBeGreaterThanOrEqual(1);
+    for (const [i, call] of openings.entries()) {
+      expect(call.stack, `opening ${i}: ${open.id} is on the stack as the view is shown`).toContain(
+        open.id,
+      );
+    }
+  });
+
+  it.each(
+    SO2_OPENS,
+  )('SO2-4-BOOT-$tag: right after the open, before any frame, key or batch, every overlay on screen is a frame on the stack and no frame is stranded', async (open) => {
+    // WRONG IMPL KILLED: a shown-but-stranded overlay (the click and lifecycle opens leave the
+    // frame to the next sync today: the stack read at once lacks it, and the movement gate, the
+    // accelerator denial and Start act on a stack that does not know the overlay), a frame left
+    // behind by a view that did not take the open, and a frame listed twice. The read is the
+    // `__game()` hook's, which never syncs.
+    await bootReady();
+    seedWorld(1000);
+
+    open.drive();
+
+    expect(open.shown(), `precondition: the ${open.id} overlay is on screen`).toBe(true);
+    so2ExpectShownOnStack(open.tag);
+    expect(stackNames(), `the ${open.id} frame is listed`).toContain(open.id);
+  });
+
+  it('SO2-1-BOOT-DEDUP-CLAIM: with the claim view open, a pending claim, an account wait and a failed sign-in repaint it without a second claim frame or any other change to the stack', async () => {
+    // WRONG IMPL KILLED: a claim lifecycle call site that opens through `openFrame` without the
+    // frame-level dedup (a second `claimView` frame: Backspace would close one and leave a ghost),
+    // one that re-pushes after a pop, and a lifecycle paint that reorders or rebuilds the stack.
+    await bootReady();
+    seedWorld(1000);
+    tap('KeyC', 1100);
+    expect(claimShown(), 'precondition: C opened the claim view').toBe(true);
+    expect(stackNames(), 'precondition: over the menu').toEqual(['world', 'menuView', 'claimView']);
+    const open = JSON.stringify(stack());
+
+    const steps: ReadonlyArray<readonly [string, () => void]> = [
+      ['a pending claim', () => opts.onClaimPending?.('claim-code')],
+      ['an account wait', () => opts.onClaimAwaitingAccount?.()],
+      ['a failed sign-in', () => opts.onSignInFailed?.('sign-in failed')],
+    ];
+    for (const [label, run] of steps) {
+      run();
+      expect(claimShown(), `${label}: the view is still shown`).toBe(true);
+      expect(
+        stackNames().filter((id) => id === 'claimView'),
+        `${label}: exactly one claim frame`,
+      ).toHaveLength(1);
+      expect(JSON.stringify(stack()), `${label}: the stack is unchanged`).toBe(open);
+    }
+    expect(steps, 'ANTI-VACUITY: three lifecycle calls').toHaveLength(3);
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // SO2.3: the mirror sees only the server trio
+  // ------------------------------------------------------------------------------------------
+
+  const FORCED = [
+    { tag: 'HELP', root: 'help-overlay' },
+    { tag: 'RENAME', root: 'rename-overlay' },
+    { tag: 'TRADE-PROPOSE', root: 'tradepropose-overlay' },
+    { tag: 'SHOP', root: 'shop-overlay' },
+    { tag: 'HEAL', root: 'heal-overlay' },
+    { tag: 'JOURNAL', root: 'quest-log-overlay' },
+    { tag: 'TRADE-PANEL', root: 'trade-overlay' },
+    { tag: 'PVP-PANEL', root: 'pvp-challenge-overlay' },
+    { tag: 'RANKINGS-PANEL', root: 'leaderboard-overlay' },
+    { tag: 'CLAIM', root: 'claim-overlay' },
+    { tag: 'PRIVACY', root: 'privacy-overlay' },
+    { tag: 'CONTROLS', root: 'controls-overlay' },
+    { tag: 'MENU', root: 'menu-overlay' },
+  ] as const;
+
+  it.each(
+    FORCED,
+  )('SO2-3-BOOT-NOT-MIRRORED-$tag: the $root overlay made visible off every open path is not pushed by the next frame or batch', async ({
+    root,
+  }) => {
+    // WRONG IMPL KILLED: a mirror that still sees the player views (today: the next frame pushes a
+    // frame for any overlay whose probe reads visible, so a view shown by anything but `openFrame`
+    // is adopted), and one that adopts it in the batch's last listener instead.
+    await bootReady();
+    seedWorld(1000);
+    expect(stack(), 'precondition: the bare world').toEqual([{ kind: 'world' }]);
+
+    byId(root).style.display = 'block';
+    expect(isShown(byId(root)), 'precondition: the overlay is visible').toBe(true);
+    frame(1100);
+    expect(stack(), 'a frame does not adopt it').toEqual([{ kind: 'world' }]);
+    server(1200);
+    expect(stack(), 'nor does a batch').toEqual([{ kind: 'world' }]);
+  });
+
+  it('SO2-3-BOOT-TRIO-STILL-MIRRORED: a server dialogue row, a battle and its terminal outcome still self-show and still reach the stack with no open path, and a player overlay forced visible beside them is still not adopted', async () => {
+    // WRONG IMPL KILLED: a mirror shrunk past the trio (a dialogue that freezes no movement, a
+    // battle base that never forms, an outcome frame that never tops the stack: `battleView` is
+    // both the battle base's presentation and the terminal-outcome frame, `dialogueView` the
+    // conversation), a trio view that no longer self-shows, and a shrink that leaves the player
+    // views mirrored beside the trio.
+    await bootReady();
+    seedWorld(1000);
+
+    startConversation(1010);
+    expect(dialogueShown(), 'the server row shows the dialogue by itself').toBe(true);
+    expect(stackNames(), 'and the mirror lists its frame').toEqual(['world', 'dialogueView']);
+    endConversation(1100);
+    expect(dialogueShown(), 'the conversation ends').toBe(false);
+    expect(stackNames(), 'and its frame goes').toEqual(['world']);
+
+    putBattle(BATTLE_ID, 1200);
+    expect(battleShown(), 'a battle row shows the battle by itself').toBe(true);
+    expect(stack(), 'the base is the battle, with no frame above it').toEqual([
+      { kind: 'battle', battleId: '101' },
+    ]);
+    putBattle(BATTLE_ID, 1300, 'SideAWins');
+    expect(battleShown(), 'its terminal outcome is on screen').toBe(true);
+    expect(stackNames(), 'as a frame over the world').toEqual(['world', 'battleView']);
+
+    byId('help-overlay').style.display = 'block';
+    frame(1400);
+    server(1500);
+    expect(stackNames(), 'a player overlay forced visible beside it is not adopted').toEqual([
+      'world',
+      'battleView',
+    ]);
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // SO2.4: server edges and a reconnect keep visible = on the stack
+  // ------------------------------------------------------------------------------------------
+
+  it('SO2-4-BOOT-SERVER-EDGES: after a battle starts over help, its outcome, a conversation over the box and a reconnect over the box, read at once after each, every overlay on screen is a frame and none is stranded', async () => {
+    // WRONG IMPL KILLED: a battle or conversation batch that closes a player view but leaves its
+    // frame (the stack lists an overlay that is gone: movement dead), one that leaves a view up
+    // with its frame dropped, an outcome whose frame is missing, and a reconnect that closes the
+    // menu but strands its frame or the surviving box's. Every read is the hook's, with no sync.
+    await bootReady();
+    seedWorld(1000);
+
+    tap('KeyR', 1010);
+    expect(helpShown(), 'precondition: help is open').toBe(true);
+    so2ExpectShownOnStack('help open');
+
+    putBattle(BATTLE_ID, 1100);
+    expect(battleShown(), 'the battle starts').toBe(true);
+    expect(helpShown(), 'and takes help with it').toBe(false);
+    expect(stack(), 'only the battle base is left').toEqual([{ kind: 'battle', battleId: '101' }]);
+    so2ExpectShownOnStack('battle start', 0);
+
+    putBattle(BATTLE_ID, 1200, 'SideAWins');
+    expect(stackNames(), 'the terminal outcome is a frame over the world').toEqual([
+      'world',
+      'battleView',
+    ]);
+    so2ExpectShownOnStack('outcome', 0);
+    tap('Escape', 1300);
+    expect(stackNames(), 'precondition: the outcome is continued').toEqual(['world']);
+
+    tap('KeyB', 1400);
+    expect(boxShown(), 'precondition: the box is open over the menu').toBe(true);
+    so2ExpectShownOnStack('box open');
+    startConversation(1500);
+    expect(dialogueShown(), 'the conversation shows the dialogue').toBe(true);
+    expect(stackNames(), 'it takes the box and the menu, and is the one frame').toEqual([
+      'world',
+      'dialogueView',
+    ]);
+    so2ExpectShownOnStack('conversation', 0);
+    endConversation(1600);
+    expect(stackNames(), 'precondition: the conversation is over').toEqual(['world']);
+
+    tap('KeyB', 1700);
+    expect(boxShown(), 'precondition: the box is open again').toBe(true);
+    so2ExpectShownOnStack('box reopened');
+    opts.store.reset(); // the drop edge
+    opts.onReconnect(H.identity);
+    expect(menuShown(), 'the reconnect closes the menu beneath the box').toBe(false);
+    expect(boxShown(), 'and the box survives it').toBe(true);
+    expect(stackNames(), 'its frame is the one left, read at once').toEqual(['world', 'boxView']);
+    so2ExpectShownOnStack('after reconnect');
+  });
+});
