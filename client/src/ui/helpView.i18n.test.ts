@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/helpView.i18n.test.ts — Help and the catalog: m24-s5 HV-01/02/03 (the title) plus ctl-14
+// ui/helpView.i18n.test.ts — Help and the catalog: m24-s5 HV-01/02 (the title) plus ctl-14
 // (CTL14.1) CTL14-1-FR (every other string).
 //
 // SOURCE OF TRUTH: memory/projects/monster-realm-m24-s5-plan.md (helpView.ts constructor resolves

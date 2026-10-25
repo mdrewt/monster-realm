@@ -8,7 +8,8 @@
 // (`SCAN_TARGETS`) are asserted present-and-non-empty; `SINK_FLOOR` is `>=` over the
 // whole-tree total. The roster and the floor are ANTI-VACUITY guards (proof the scan still sees
 // the tree), not ratchets: the floor is edited consciously when UI text legitimately shrinks and
-// is never auto-tightened; its value lives in the constant, which is the single source of truth.
+// is never auto-tightened. The constant and I18N-17's `toBe` pin on it are changed together, as
+// one conscious edit (the pin is a tripwire against a silent floor change).
 // Two post-spec files (`ui/privacyView.ts`, `ui/evolutionNotice.ts`) are inside the scope because
 // of this, not silently outside it.
 //

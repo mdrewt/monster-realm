@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/dialogueView.i18n.test.ts — m24-s5 RED gating tests: DV-01/02/03.
+// ui/dialogueView.i18n.test.ts — m24-s5 RED gating tests: DV-01/02.
 //
 // SOURCE OF TRUTH: memory/projects/monster-realm-m24-s5-plan.md (Tests, Key roster dialogue.*),
 //
