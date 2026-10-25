@@ -45,7 +45,9 @@ import {
   movementEnabled,
   popToBase,
   popTop,
+  RECONNECT_CLOSES,
   reconcile,
+  reconnectSweep,
   SCREEN_POLICY,
   type ServerView,
   SOCIAL_FRAME,
@@ -2769,5 +2771,610 @@ describe('context stack: the accelerator denial (ctl-11a, CTL11A.2)', () => {
     );
     expect(denials, 'ANTI-VACUITY: many generated stacks denied').toBeGreaterThan(50);
     expect(passes, 'ANTI-VACUITY: many generated stacks passed').toBeGreaterThan(50);
+  });
+});
+
+// ==========================================================================================
+// so-1: a reconnect closes through the stack (SO1.1, SO1.3)
+// ==========================================================================================
+//
+// `reconnectSweep(stack)` is the pure core of the reconnect block's frame closes: it drops every
+// upper frame whose id (a text entry stands for its owner) a reconnect closes, or that is a screen
+// stamped `overBattle`, and returns one `close` command per dropped frame, TOP FIRST, plus the
+// stack that is left. The base is untouched, no `clearHeld` is asked for (the prediction reset
+// clears the hold), and a second sweep of its own result changes nothing. `dialogueView` is the one
+// frame that is never dropped and never closed: the client does not end a server conversation.
+// `RECONNECT_CLOSES` is the total per-frame table the sweep reads.
+//
+// The roster below is a HAND-WRITTEN literal for every frame id, true rows and false rows: a
+// table read back from the module under test shrinks or grows with it and stays green.
+
+/** What a reconnect closes, per frame id. HARD-CODED, never read from the module under test.
+ *  True: the ten views the legacy block hid (the Social frame standing for its three panels) plus
+ *  the outcome frame of `battleView`. False: the frames opened at the world that read no store
+ *  state and hold no lock (they survive a drop, as they always have), and the dialogue. */
+const SO1_ROSTER: Readonly<Record<FrameId, boolean>> = {
+  menuView: true,
+  renameView: true,
+  tradeProposeView: true,
+  shopView: true,
+  social: true,
+  tradeView: true,
+  pvpView: true,
+  leaderboardView: true,
+  battleView: true,
+  raisingView: true,
+  evolutionView: true,
+  boxView: false,
+  questLogView: false,
+  healView: false,
+  helpView: false,
+  claimView: false,
+  privacyView: false,
+  controlsView: false,
+  dialogueView: false,
+};
+
+type SO1CloseId = Exclude<FrameId, 'dialogueView'>;
+const so1Close = (id: SO1CloseId): Command => ({ kind: 'close', id });
+/** The sweep of a frozen copy: an in-place write in the sweep throws. */
+const so1Sweep = (s: Stack): { stack: Stack; commands: readonly Command[] } =>
+  reconnectSweep(deepFrozen(s));
+
+describe('context stack: the reconnect sweep (so-1, SO1.1)', () => {
+  it('SO1-1-SWEEP-ORDER: every closing frame is dropped with exactly one close command each, TOP FIRST, for closing stacks of three and four distinct frames, a prompt and the outcome frame included', () => {
+    // WRONG IMPL KILLED: a sweep that lists the closes bottom first (privacy's dismiss flush and the
+    // retired Escape ladder close the top frame first, so the order is behaviour), one that lists
+    // them in a Set or table order, one that emits a close per KIND instead of per frame, one that
+    // drops the frames but emits no command (the views would stay up), one that emits a command for
+    // only the top frame, and one that leaves a frame of a distinct closing id on the stack.
+    const rows: ReadonlyArray<{
+      readonly name: string;
+      readonly from: Stack;
+      readonly to: Stack;
+      readonly commands: readonly Command[];
+    }> = [
+      {
+        name: 'menu, Social, shop over the world',
+        from: stackOf(WORLD, screen('menuView'), screen('social'), screen('shopView')),
+        to: stackOf(WORLD),
+        commands: [so1Close('shopView'), so1Close('social'), so1Close('menuView')],
+      },
+      {
+        name: 'four closing ids, one of them a prompt',
+        from: stackOf(
+          WORLD,
+          screen('renameView'),
+          prompt('tradeProposeView'),
+          screen('evolutionView'),
+          screen('raisingView'),
+        ),
+        to: stackOf(WORLD),
+        commands: [
+          so1Close('raisingView'),
+          so1Close('evolutionView'),
+          so1Close('tradeProposeView'),
+          so1Close('renameView'),
+        ],
+      },
+      {
+        name: 'the three Social panel ids, as a stack that names them',
+        from: stackOf(WORLD, screen('tradeView'), screen('pvpView'), screen('leaderboardView')),
+        to: stackOf(WORLD),
+        commands: [so1Close('leaderboardView'), so1Close('pvpView'), so1Close('tradeView')],
+      },
+      {
+        name: 'the terminal outcome frame over the world, under the menu',
+        from: stackOf(WORLD, screen('battleView'), screen('menuView')),
+        to: stackOf(WORLD),
+        commands: [so1Close('menuView'), so1Close('battleView')],
+      },
+      {
+        name: 'a closing screen and a stamped non-closing one over a battle',
+        from: stackOf(battle('9'), stamped('menuView', '9'), stamped('helpView', '9')),
+        to: stackOf(battle('9')),
+        commands: [so1Close('helpView'), so1Close('menuView')],
+      },
+    ];
+    for (const row of rows) {
+      const got = so1Sweep(row.from);
+      expect(got.stack, `${row.name}: the stack that is left`).toEqual(row.to);
+      expect(got.commands, `${row.name}: one close per dropped frame, top first`).toEqual(
+        row.commands,
+      );
+    }
+    expect(rows.length, 'ANTI-VACUITY: five stacks, each with at least two closes').toBe(5);
+  });
+
+  it('SO1-1-SWEEP-NONCONTIGUOUS: a frame that stays keeps its place between the ones that close, and only the ones that close get a command', () => {
+    // WRONG IMPL KILLED: a sweep that truncates the stack at the first closing frame (help, box and
+    // quest log opened at the world sit above a menu and would vanish with it), one that clears
+    // every upper frame, one that reorders the survivors, one that closes a survivor, and one that
+    // pops by position (the top frame) instead of by id.
+    const rows: ReadonlyArray<{
+      readonly name: string;
+      readonly from: Stack;
+      readonly to: Stack;
+      readonly commands: readonly Command[];
+    }> = [
+      {
+        name: 'world, menu, help',
+        from: stackOf(WORLD, screen('menuView'), screen('helpView')),
+        to: stackOf(WORLD, screen('helpView')),
+        commands: [so1Close('menuView')],
+      },
+      {
+        name: 'world, help, menu (the closing frame on top)',
+        from: stackOf(WORLD, screen('helpView'), screen('menuView')),
+        to: stackOf(WORLD, screen('helpView')),
+        commands: [so1Close('menuView')],
+      },
+      {
+        name: 'box, menu, quest log, shop: two survivors in order',
+        from: stackOf(
+          WORLD,
+          screen('boxView'),
+          screen('menuView'),
+          screen('questLogView'),
+          screen('shopView'),
+        ),
+        to: stackOf(WORLD, screen('boxView'), screen('questLogView')),
+        commands: [so1Close('shopView'), so1Close('menuView')],
+      },
+      {
+        name: 'the menu under the box (the accelerator shape)',
+        from: stackOf(WORLD, screen('menuView'), screen('boxView')),
+        to: stackOf(WORLD, screen('boxView')),
+        commands: [so1Close('menuView')],
+      },
+      {
+        name: 'heal and privacy and controls and claim, one closing frame between',
+        from: stackOf(
+          WORLD,
+          screen('healView'),
+          screen('privacyView'),
+          screen('pvpView'),
+          screen('controlsView'),
+          screen('claimView'),
+        ),
+        to: stackOf(
+          WORLD,
+          screen('healView'),
+          screen('privacyView'),
+          screen('controlsView'),
+          screen('claimView'),
+        ),
+        commands: [so1Close('pvpView')],
+      },
+      {
+        name: 'nothing closes',
+        from: stackOf(WORLD, screen('boxView'), screen('helpView'), screen('healView')),
+        to: stackOf(WORLD, screen('boxView'), screen('helpView'), screen('healView')),
+        commands: [],
+      },
+    ];
+    for (const row of rows) {
+      const got = so1Sweep(row.from);
+      expect(got.stack, `${row.name}: the stack that is left`).toEqual(row.to);
+      expect(got.commands, `${row.name}: the closes`).toEqual(row.commands);
+    }
+  });
+
+  it('SO1-1-SWEEP-STAMPED: a screen stamped overBattle is dropped whatever its id, the stamp need not match the base, and the same screen unstamped over a battle stays unless its id closes', () => {
+    // WRONG IMPL KILLED: a sweep with no overBattle clause (help and the quest log opened over a
+    // battle are NOT in the closing roster: the re-delivered row would find them still stamped,
+    // keep them and show the battle above an inert frame: the CTL6C-1 hazard), one that drops a
+    // stamped frame only while the base is still that battle (in production the empty store has
+    // usually re-derived the world by the time onReconnect runs), one that compares the stamp with
+    // the base's battleId, one that treats every frame over a battle as stamped (the unstamped
+    // rows below stay), and one that reads the stamp on a prompt or text-entry frame.
+    let stampedChecked = 0;
+    let keptChecked = 0;
+    for (const id of FRAME_IDS.filter((x) => x !== 'dialogueView')) {
+      const closeId = id as SO1CloseId;
+      const stampedOver = so1Sweep(stackOf(battle('7'), stamped(id, '7')));
+      expect(stampedOver.stack, `${id} stamped over its battle: dropped`).toEqual(
+        stackOf(battle('7')),
+      );
+      expect(stampedOver.commands, `${id} stamped over its battle: one close`).toEqual([
+        so1Close(closeId),
+      ]);
+      const stale = so1Sweep(stackOf(battle('7'), stamped(id, '3')));
+      expect(stale.stack, `${id} stamped with another battle: dropped`).toEqual(
+        stackOf(battle('7')),
+      );
+      expect(stale.commands, `${id} stamped with another battle: one close`).toEqual([
+        so1Close(closeId),
+      ]);
+      const atWorld = so1Sweep(stackOf(WORLD, stamped(id, '7')));
+      expect(atWorld.stack, `${id} stamped, base already the world: dropped`).toEqual(WORLD_STACK);
+      expect(atWorld.commands, `${id} stamped, base already the world: one close`).toEqual([
+        so1Close(closeId),
+      ]);
+      stampedChecked += 3;
+
+      const plain = so1Sweep(stackOf(battle('7'), screen(id)));
+      if (SO1_ROSTER[id]) {
+        expect(plain.stack, `${id} unstamped over a battle: its id closes`).toEqual(
+          stackOf(battle('7')),
+        );
+        expect(plain.commands).toEqual([so1Close(closeId)]);
+      } else {
+        expect(plain.stack, `${id} unstamped over a battle: stays`).toEqual(
+          stackOf(battle('7'), screen(id)),
+        );
+        expect(plain.commands, `${id} unstamped over a battle: no close`).toEqual([]);
+        keptChecked += 1;
+      }
+    }
+    expect(stampedChecked, 'ANTI-VACUITY: eighteen ids, three stamped shapes each').toBe(54);
+    expect(keptChecked, 'ANTI-VACUITY: the seven non-closing, non-dialogue ids stay').toBe(7);
+
+    // The named case: help over battle '7' goes, with the menu it was opened from.
+    const named = so1Sweep(
+      stackOf(battle('7'), stamped('menuView', '7'), stamped('helpView', '7')),
+    );
+    expect(named.stack).toEqual(stackOf(battle('7')));
+    expect(named.commands).toEqual([so1Close('helpView'), so1Close('menuView')]);
+  });
+
+  it('SO1-1-SWEEP-BASE-PURE: the base is kept as it is (world or battle), a bare base sweeps to itself with no command, no clearHeld is ever asked for, and the input stack is never written to', () => {
+    // WRONG IMPL KILLED: a sweep that resets the base to the world (a battle that survives the drop
+    // would lose its base), one that asks for clearHeld (resetPredictionState already clears the
+    // hold; a second clear on a base change of kind is a different contract), one that returns a
+    // bare base as a different stack, and one that mutates its input (the frozen copy throws).
+    const bases: readonly BaseFrame[] = [WORLD, battle('7'), battle('42')];
+    for (const base of bases) {
+      const bare = so1Sweep(stackOf(base));
+      expect(bare.stack, `a bare ${base.kind} base`).toEqual(stackOf(base));
+      expect(bare.commands, `a bare ${base.kind} base asks for nothing`).toEqual([]);
+      const loaded = so1Sweep(
+        stackOf(base, screen('menuView'), screen('shopView'), stamped('helpView', '1')),
+      );
+      expect(loaded.stack[0], `${base.kind}: the base frame is unchanged`).toEqual(base);
+      expect(loaded.stack, `${base.kind}: only the base is left`).toEqual(stackOf(base));
+      expect(
+        loaded.commands.filter((c) => c.kind === 'clearHeld'),
+        `${base.kind}: no clearHeld`,
+      ).toEqual([]);
+      expect(loaded.commands, `${base.kind}: three closes`).toHaveLength(3);
+    }
+
+    const before = JSON.stringify(stackOf(WORLD, screen('menuView'), screen('boxView')));
+    const input = stackOf(WORLD, screen('menuView'), screen('boxView'));
+    const out = reconnectSweep(deepFrozen(input));
+    expect(JSON.stringify(input), 'the input is untouched').toBe(before);
+    expect(out.stack, 'and the result is the stack without the menu').toEqual(
+      stackOf(WORLD, screen('boxView')),
+    );
+  });
+
+  it('SO1-1-SWEEP-IDEMPOTENT: sweeping the result of a sweep returns the same stack and no commands, for a spread of stacks', () => {
+    // WRONG IMPL KILLED: a sweep that leaves a closing frame behind that a second pass would then
+    // drop (a stamped one tested after the id test, a text entry whose owner is read from the wrong
+    // field), one whose second pass re-emits the closes of the first (a double hide of views the
+    // reset pass hides again), and one that grows or shrinks the stack on every call.
+    const stacks: readonly Stack[] = [
+      stackOf(WORLD),
+      stackOf(battle('7')),
+      stackOf(WORLD, screen('menuView'), screen('social'), screen('shopView')),
+      stackOf(WORLD, screen('menuView'), screen('helpView')),
+      stackOf(battle('7'), stamped('menuView', '7'), stamped('helpView', '7')),
+      stackOf(WORLD, screen('boxView'), screen('menuView'), screen('questLogView')),
+      stackOf(WORLD, textEntry('renameView'), screen('helpView')),
+      stackOf(WORLD, screen('dialogueView'), screen('menuView'), prompt('shopView')),
+      stackOf(battle('7'), stamped('dialogueView', '7'), stamped('boxView', '7')),
+    ];
+    let withCloses = 0;
+    for (const s of stacks) {
+      const first = so1Sweep(s);
+      const second = so1Sweep(first.stack);
+      expect(second.stack, `${JSON.stringify(s)}: the second sweep changes nothing`).toEqual(
+        first.stack,
+      );
+      expect(second.commands, `${JSON.stringify(s)}: and asks for nothing`).toEqual([]);
+      if (first.commands.length > 0) withCloses += 1;
+    }
+    expect(withCloses, 'ANTI-VACUITY: seven of the nine stacks had something to close').toBe(7);
+  });
+
+  it('SO1-1-SWEEP-OWNER: a text entry stands for its owner (a closing owner drops it with a close for the OWNER, a non-closing or dialogue owner keeps it), and a prompt is read by its id', () => {
+    // WRONG IMPL KILLED: a sweep that reads only `id` (a text entry has none: it would be kept, or
+    // throw), one that never drops a text entry (rename's typing frame would outlive the rename
+    // overlay it types into), one that closes the text entry under the wrong id, one that drops
+    // every text entry, and one that ignores a prompt's id.
+    const rows: ReadonlyArray<{
+      readonly name: string;
+      readonly from: Stack;
+      readonly to: Stack;
+      readonly commands: readonly Command[];
+    }> = [
+      {
+        name: 'a text entry owned by rename',
+        from: stackOf(WORLD, textEntry('renameView')),
+        to: stackOf(WORLD),
+        commands: [so1Close('renameView')],
+      },
+      {
+        name: 'a text entry owned by the trade wizard, over the menu',
+        from: stackOf(WORLD, screen('menuView'), textEntry('tradeProposeView')),
+        to: stackOf(WORLD),
+        commands: [so1Close('tradeProposeView'), so1Close('menuView')],
+      },
+      {
+        name: 'a text entry owned by help stays',
+        from: stackOf(WORLD, textEntry('helpView')),
+        to: stackOf(WORLD, textEntry('helpView')),
+        commands: [],
+      },
+      {
+        name: 'a text entry owned by the controls screen stays, the shop above it goes',
+        from: stackOf(WORLD, textEntry('controlsView'), screen('shopView')),
+        to: stackOf(WORLD, textEntry('controlsView')),
+        commands: [so1Close('shopView')],
+      },
+      {
+        name: 'a text entry owned by the dialogue stays',
+        from: stackOf(WORLD, textEntry('dialogueView')),
+        to: stackOf(WORLD, textEntry('dialogueView')),
+        commands: [],
+      },
+      {
+        name: 'a prompt for the shop goes',
+        from: stackOf(WORLD, prompt('shopView')),
+        to: stackOf(WORLD),
+        commands: [so1Close('shopView')],
+      },
+      {
+        name: 'a prompt for the box stays',
+        from: stackOf(WORLD, prompt('boxView')),
+        to: stackOf(WORLD, prompt('boxView')),
+        commands: [],
+      },
+    ];
+    for (const row of rows) {
+      const got = so1Sweep(row.from);
+      expect(got.stack, `${row.name}: the stack that is left`).toEqual(row.to);
+      expect(got.commands, `${row.name}: the closes`).toEqual(row.commands);
+    }
+  });
+
+  it('SO1-1-SWEEP-PROPERTY: for any stack the survivors are exactly the frames the hand-written roster keeps (a frame whose id closes, or a stamped screen, goes; the dialogue stays), the closes name the dropped frames top first, and a second sweep is a no-op', () => {
+    // WRONG IMPL KILLED: any sweep that disagrees with the hand-written roster on some id, shape
+    // (screen, prompt, text entry, stamped screen) or position; one that duplicates or loses a
+    // close when the dropped frames are not contiguous; one that is not idempotent; one that
+    // reorders the survivors. The oracle is the test's own literal, not the table under test.
+    const frameArb: fc.Arbitrary<UpperFrame> = fc.oneof(
+      fc.constantFrom(...FRAME_IDS).map(screen),
+      fc.constantFrom(...FRAME_IDS).map(prompt),
+      fc.constantFrom(...FRAME_IDS).map(textEntry),
+      fc.constantFrom(...FRAME_IDS).map((id) => stamped(id, '7')),
+    );
+    const framesArb = fc.uniqueArray(frameArb, { selector: frameId, maxLength: 8 });
+    const baseArb: fc.Arbitrary<BaseFrame> = fc.constantFrom(WORLD, battle('1'), battle('7'));
+    const kept = (f: UpperFrame): boolean =>
+      frameId(f) === 'dialogueView' ||
+      (!SO1_ROSTER[frameId(f)] && !(f.kind === 'screen' && f.overBattle !== undefined));
+    let droppedSome = 0;
+    let keptSome = 0;
+    fc.assert(
+      fc.property(baseArb, framesArb, (base, frames) => {
+        const from = stackOf(base, ...frames);
+        const got = so1Sweep(from);
+        expect(got.stack, 'the survivors, in order, over the same base').toEqual(
+          stackOf(base, ...frames.filter(kept)),
+        );
+        expect(got.commands, 'a close per dropped frame, top first').toEqual(
+          frames
+            .filter((f) => !kept(f))
+            .reverse()
+            .map((f) => so1Close(frameId(f) as SO1CloseId)),
+        );
+        const again = so1Sweep(got.stack);
+        expect(again.stack, 'idempotent: the stack').toEqual(got.stack);
+        expect(again.commands, 'idempotent: no commands').toEqual([]);
+        if (got.commands.length > 0) droppedSome += 1;
+        if (frames.some(kept)) keptSome += 1;
+      }),
+      { numRuns: 400 },
+    );
+    expect(droppedSome, 'ANTI-VACUITY: many generated stacks had a frame to close').toBeGreaterThan(
+      100,
+    );
+    expect(keptSome, 'ANTI-VACUITY: many generated stacks kept a frame').toBeGreaterThan(100);
+  });
+});
+
+describe('context stack: what a reconnect closes (so-1, SO1.1 roster)', () => {
+  it('SO1-1-ROSTER-LITERAL: RECONNECT_CLOSES is true for exactly the eleven frame ids a reconnect closes and false for the other eight, on every one of the nineteen ids, with no extra key', () => {
+    // WRONG IMPL KILLED: a table missing a row (a frame the reconnect no longer closes), a row
+    // flipped to true for a frame opened at the world (help, box, quest log, heal, claim, privacy,
+    // controls would be ripped out from under the player on every drop: CTL6C-1 pins help
+    // surviving), a row flipped to false for one of the ten views the legacy block hid, the
+    // dialogue row true (the client never closes a conversation), the Social frame left out while
+    // its three panel rows say true (the mirror only ever holds `social`), a stray extra key, and
+    // a table derived from SCREEN_POLICY (whose rows are exact-pinned elsewhere and say nothing
+    // about a reconnect). Every row is spelled out above and compared one by one.
+    expect(Object.keys(SO1_ROSTER), 'ANTI-VACUITY: the literal names every frame id').toHaveLength(
+      19,
+    );
+    expect(
+      Object.values(SO1_ROSTER).filter((v) => v),
+      'ANTI-VACUITY: the literal has eleven closing rows',
+    ).toHaveLength(11);
+    expect([...Object.keys(RECONNECT_CLOSES)].sort(), 'the same nineteen keys').toEqual(
+      [...FRAME_IDS].sort(),
+    );
+    for (const id of FRAME_IDS) {
+      expect(RECONNECT_CLOSES[id], `${id}: ${SO1_ROSTER[id] ? 'closes' : 'survives'}`).toBe(
+        SO1_ROSTER[id],
+      );
+    }
+    expect(RECONNECT_CLOSES, 'and nothing else').toEqual(SO1_ROSTER);
+  });
+
+  it('SO1-1-ROSTER-SWEEP: the sweep agrees with the hand-written roster for every frame id as a screen, a prompt and a text entry: it goes (with one close for its id) exactly when the literal says so, and the dialogue never does', () => {
+    // WRONG IMPL KILLED: a sweep that reads another table than the roster (SCREEN_POLICY's owner or
+    // onBattle would close the box and the heal frame and keep the shop), a sweep that handles
+    // screens by id but prompts or text entries by another rule, a roster row that exists but is
+    // not read, and a dialogue exception applied to the wrong ids.
+    let checked = 0;
+    for (const id of FRAME_IDS) {
+      const goes = SO1_ROSTER[id];
+      const frames: ReadonlyArray<readonly [string, UpperFrame]> = [
+        ['screen', screen(id)],
+        ['prompt', prompt(id)],
+        ['text entry', textEntry(id)],
+      ];
+      for (const [shape, frame] of frames) {
+        const got = so1Sweep(stackOf(WORLD, frame));
+        expect(got.stack, `${shape} ${id}: ${goes ? 'dropped' : 'kept'}`).toEqual(
+          goes ? WORLD_STACK : stackOf(WORLD, frame),
+        );
+        expect(got.commands, `${shape} ${id}: the closes`).toEqual(
+          goes ? [so1Close(id as SO1CloseId)] : [],
+        );
+        checked += 1;
+      }
+    }
+    expect(checked, 'ANTI-VACUITY: nineteen ids, three shapes each').toBe(57);
+  });
+});
+
+describe('context stack: the reconnect never closes a conversation (so-1, SO1.3)', () => {
+  it('SO1-3-SWEEP-DIALOGUE-KEPT: the dialogue frame stays on the stack and gets no close, whether it sits at the world, is suspended under a battle, is stamped over one, or is a text entry owned by it', () => {
+    // WRONG IMPL KILLED: a roster with the dialogue row true (the frame would be popped while the
+    // conversation row, and the shown dialogue, stay: the stack and the screen disagree until the
+    // next mirror), a stamped-screen clause evaluated BEFORE the dialogue exception (a dialogue
+    // first mirrored while a battle was already the base is stamped, and would be dropped), a
+    // sweep that pops the dialogue frame silently (no command, but the stack loses it), and one
+    // that treats a text entry owned by the dialogue as droppable.
+    const rows: ReadonlyArray<{ readonly name: string; readonly stack: Stack }> = [
+      { name: 'a dialogue at the world', stack: stackOf(WORLD, screen('dialogueView')) },
+      {
+        name: 'a dialogue suspended under a battle, unstamped',
+        stack: stackOf(battle('9'), screen('dialogueView')),
+      },
+      {
+        name: 'a dialogue stamped over its battle',
+        stack: stackOf(battle('9'), stamped('dialogueView', '9')),
+      },
+      {
+        name: 'a dialogue stamped with another battle',
+        stack: stackOf(battle('9'), stamped('dialogueView', '3')),
+      },
+      {
+        name: 'a dialogue stamped at the world base',
+        stack: stackOf(WORLD, stamped('dialogueView', '9')),
+      },
+      {
+        name: 'a text entry owned by the dialogue',
+        stack: stackOf(WORLD, textEntry('dialogueView')),
+      },
+      {
+        name: 'a prompt for the dialogue',
+        stack: stackOf(WORLD, prompt('dialogueView')),
+      },
+    ];
+    for (const row of rows) {
+      const got = so1Sweep(row.stack);
+      expect(got.stack, `${row.name}: still on the stack`).toEqual(row.stack);
+      expect(got.commands, `${row.name}: no close`).toEqual([]);
+    }
+  });
+
+  it('SO1-3-SWEEP-DIALOGUE-BURIED: a dialogue between, under or over frames that close keeps its place and the closes around it are exact (top first, none for the dialogue)', () => {
+    // WRONG IMPL KILLED: a sweep that truncates at the first closing frame (a menu opened over a
+    // suspended conversation would take the dialogue with it), one that stops at the dialogue (the
+    // frames beneath it would never close), one that closes the dialogue as a frame between two
+    // closes (a `close` command names a view: the dialogue's handle is the one undefined entry),
+    // and one that moves the dialogue.
+    const rows: ReadonlyArray<{
+      readonly name: string;
+      readonly from: Stack;
+      readonly to: Stack;
+      readonly commands: readonly Command[];
+    }> = [
+      {
+        name: 'menu, dialogue, shop',
+        from: stackOf(WORLD, screen('menuView'), screen('dialogueView'), screen('shopView')),
+        to: stackOf(WORLD, screen('dialogueView')),
+        commands: [so1Close('shopView'), so1Close('menuView')],
+      },
+      {
+        name: 'shop under the dialogue',
+        from: stackOf(WORLD, screen('shopView'), screen('dialogueView')),
+        to: stackOf(WORLD, screen('dialogueView')),
+        commands: [so1Close('shopView')],
+      },
+      {
+        name: 'shop over the dialogue',
+        from: stackOf(WORLD, screen('dialogueView'), screen('shopView')),
+        to: stackOf(WORLD, screen('dialogueView')),
+        commands: [so1Close('shopView')],
+      },
+      {
+        name: 'a stamped dialogue between a stamped menu and a stamped help over a battle',
+        from: stackOf(
+          battle('9'),
+          stamped('menuView', '9'),
+          stamped('dialogueView', '9'),
+          stamped('helpView', '9'),
+        ),
+        to: stackOf(battle('9'), stamped('dialogueView', '9')),
+        commands: [so1Close('helpView'), so1Close('menuView')],
+      },
+      {
+        name: 'help and box beside the dialogue stay with it, the outcome above them goes',
+        from: stackOf(
+          WORLD,
+          screen('helpView'),
+          screen('dialogueView'),
+          screen('boxView'),
+          screen('battleView'),
+        ),
+        to: stackOf(WORLD, screen('helpView'), screen('dialogueView'), screen('boxView')),
+        commands: [so1Close('battleView')],
+      },
+    ];
+    for (const row of rows) {
+      const got = so1Sweep(row.from);
+      expect(got.stack, `${row.name}: the stack that is left`).toEqual(row.to);
+      expect(got.commands, `${row.name}: the closes`).toEqual(row.commands);
+    }
+  });
+
+  it('SO1-3-SWEEP-DIALOGUE-NO-COMMAND: for any stack the dialogue frames come out exactly as they went in and no command names the dialogue', () => {
+    // WRONG IMPL KILLED: any sweep, on any shape or position, that drops a dialogue frame or
+    // emits a close for it (the TypeScript type forbids the command, a cast or a loose id does
+    // not), including the stamped-screen and text-entry shapes the example rows cover one by one.
+    const frameArb: fc.Arbitrary<UpperFrame> = fc.oneof(
+      fc.constantFrom(...FRAME_IDS).map(screen),
+      fc.constantFrom(...FRAME_IDS).map(prompt),
+      fc.constantFrom(...FRAME_IDS).map(textEntry),
+      fc.constantFrom(...FRAME_IDS).map((id) => stamped(id, '7')),
+      fc.constantFrom<UpperFrame>(
+        screen('dialogueView'),
+        stamped('dialogueView', '7'),
+        textEntry('dialogueView'),
+      ),
+    );
+    const framesArb = fc.uniqueArray(frameArb, { selector: frameId, maxLength: 8 });
+    let withDialogue = 0;
+    fc.assert(
+      fc.property(fc.constantFrom<BaseFrame>(WORLD, battle('7')), framesArb, (base, frames) => {
+        const got = so1Sweep(stackOf(base, ...frames));
+        const dialogues = (list: readonly UpperFrame[]): readonly UpperFrame[] =>
+          list.filter((f) => frameId(f) === 'dialogueView');
+        const [, ...left] = got.stack;
+        expect(dialogues(left), 'the dialogue frames survive unchanged').toEqual(dialogues(frames));
+        for (const command of got.commands) {
+          expect(command.kind === 'close' ? command.id : 'clearHeld').not.toBe('dialogueView');
+        }
+        if (dialogues(frames).length > 0) withDialogue += 1;
+      }),
+      { numRuns: 300 },
+    );
+    expect(withDialogue, 'ANTI-VACUITY: many generated stacks held a dialogue').toBeGreaterThan(60);
   });
 });
