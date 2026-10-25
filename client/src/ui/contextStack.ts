@@ -2,7 +2,7 @@
 // `battle` base. Pure — no DOM, SDK, module state or clock. It owns the player's frames (so-2):
 // main.ts pushes each player open onto it FIRST and only then shows the view (`openEdge`), takes a
 // frame whose view closed itself off it (`hiddenPops`), and mirrors only the server-owned
-// overlays into it (`mirrorEdges`: the battle and the dialogue). It reconciles server truth into
+// overlays into it (`mirrorServerEdges`: the battle and the dialogue). It reconciles server truth into
 // it on every batch (`reconcile`, whose `close` commands run the views' own hide paths), closes
 // what a reconnect drops (`reconnectSweep`), and gates movement and accelerators on it
 // (`movementEnabled`, `acceleratorsDenied`).
@@ -238,7 +238,7 @@ export interface ServerView {
  *  very battle (CTL6C.1); a frame opened over a battle that is no longer the base pops even with no
  *  outcome shown; a conversation pops every player frame; a
  *  conversation that ends pops its frame silently, even suspended under a battle. It only pops:
- *  frames are pushed by the paths that show them (a player open, `mirrorEdges`), so it never
+ *  frames are pushed by the paths that show them (a player open, `mirrorServerEdges`), so it never
  *  strands a frame whose view is not shown. Each popped frame but dialogue gets a `close`, which runs that
  *  overlay's own hide path (CTL3.3); the client never closes a dialogue. Idempotent. */
 export function reconcile(

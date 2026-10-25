@@ -564,9 +564,10 @@ function shownOverlays(): OverlayId[] {
 // themselves on server edges) into it, and pops a player frame whose view closed itself, so every
 // reader that syncs first sees the battle row and those overlays as they are right now. A push of
 // a new frame (and a change of base kind) clears the held directions (B14). Synced at the top and
-// tail of every keydown, at the top of every frame, around every player open and at the tail of
-// every batch; a movementGate() read never syncs, and `__game().stack` only reads it. Server truth is reconciled into it on every batch
-// (`reconcileStack`), which closes what a battle or a conversation drops. The sync also keeps two
+// tail of every keydown, before every keyup, at the top of every frame, after every player open
+// and at the tail of every batch; a movementGate() read never syncs, and `__game().stack` only
+// reads it. Server truth is reconciled into it on every batch (`reconcileStack`), which closes
+// what a battle or a conversation drops. The sync also keeps two
 // things that follow the stack: when a terminal outcome first topped it (A's grace), and the
 // battle refusal line, cleared once the base is the world again.
 let contextStack: Stack = WORLD_STACK;
@@ -1126,7 +1127,9 @@ const socialFrameView: SocialFrameView = {
 /** The ONE player open (so-2): the frame is pushed FIRST (over a battle, stamped with it; a frame
  *  already on the stack is not pushed again, `contextStep`'s dedup), and only then does `show` show
  *  its view, so no player view is shown off the stack. `open` registers the frame's probe, hide and
- *  view. The closing sync takes off a frame whose show did not take (and what the show hid).
+ *  view. The base it stamps from is the one the caller's last sync left (every keydown, pointer
+ *  press and batch syncs first). The closing sync, which runs even when `show` throws, takes off a
+ *  frame whose show did not take (and what the show hid).
  *  Returns the frame when it is the top frame, else undefined. */
 function openFrame(id: FrameId, open: FrameOpen, show: () => void): UpperFrame | undefined {
   frameOpens.set(id, open);
@@ -1138,8 +1141,11 @@ function openFrame(id: FrameId, open: FrameOpen, show: () => void): UpperFrame |
     screenHost.opened(contextStack[contextStack.length - 1] as UpperFrame);
     inputRouter.resetRepeat(); // a held key never repeats into a pushed frame
   }
-  show();
-  syncStack();
+  try {
+    show();
+  } finally {
+    syncStack();
+  }
   const top = contextStack[contextStack.length - 1];
   return top.kind === 'screen' && top.id === id ? top : undefined;
 }
@@ -2732,9 +2738,11 @@ window.addEventListener('keydown', (e) => {
   if (e.code !== 'Escape') handleKeyDown(e);
 });
 
-// A release ends a hold only when the last key or source holding that direction lets go.
+// A release ends a hold only when the last key or source holding that direction lets go. Synced
+// first, as a keydown is: a gate read does not sync (so-2).
 window.addEventListener('keyup', (e) => {
   navHeldCodes.delete(e.code);
+  syncStack();
   for (const edge of keyboard.keyup(e)) routeEdge(edge);
 });
 
