@@ -313,6 +313,10 @@ const pvpShown = (): boolean => shownById('pvp-challenge-overlay');
 const rankingsShown = (): boolean => shownById('leaderboard-overlay');
 const shopShown = (): boolean => shownById('shop-overlay');
 const healShown = (): boolean => shownById('heal-overlay');
+const questLogShown = (): boolean => shownById('quest-log-overlay');
+const claimShown = (): boolean => shownById('claim-overlay');
+const privacyShown = (): boolean => shownById('privacy-overlay');
+const controlsShown = (): boolean => shownById('controls-overlay');
 const dialogueShown = (): boolean => shownById('dialogue-overlay');
 const boxShown = (): boolean => shownByTestId('box-title');
 const raisingShown = (): boolean => shownByTestId('raising-title');
@@ -370,8 +374,8 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     shown,
   }) => {
     // WRONG IMPL KILLED: a reconnect that runs the closes but never assigns the swept stack back
-    // (the views are hidden and `stack` still lists [menu, frame] until the next sync: RED today,
-    // the old block hid the views directly and never touched the stack); one that sweeps only the
+    // (the views are hidden and `stack` still lists [menu, frame] until the next sync: the old
+    // block hid the views directly but left their frames on the stack); one that sweeps only the
     // menu, or only the top frame; one that closes the menu but not the Social frame or the
     // panel under it (the Social frame closes through its three panels); one that keeps a frame
     // whose view it hid; and, for the Social cases, one that hides the panels but leaves the
@@ -393,7 +397,7 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
 
   it('SO1-1-BOOT-SHOP: a shop opened by the greet-then-shop click is hidden by onReconnect, and the stack read at once is the bare world', async () => {
     // WRONG IMPL KILLED: a sweep whose roster lacks the shop row (the stack would keep a frame the
-    // old block hid: RED today on the stack read), a reconnect that hides the shop but leaves the
+    // old block hid but left listed), a reconnect that hides the shop but leaves the
     // frame, one that skips the close because the view was opened by a deferred open rather than a
     // key, and one that hides only what the menu opened.
     await bootReady();
@@ -537,6 +541,147 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     expect(healShown(), 'the heal frame is still shown').toBe(true);
     expect(stack(), 'and still on the stack, read at once').toEqual(healOverWorld);
   });
+
+  // The frames below are opened at the world by their real paths and hold no lock and read no
+  // store state a drop invalidates: they stay in the roster's false rows, and they must stay OUT of
+  // the unconditional reset pass too (a reset-pass `hide()` is as fatal to them as a sweep close).
+
+  /** Click the launcher, then each menu row in turn (the pointer path, `handleMenuPointer`). */
+  const openByMenuClicks = (rows: readonly string[], t0: number): void => {
+    const launcher = document.querySelector('[data-menu-launcher]');
+    if (launcher === null) throw new Error('[data-menu-launcher] is not in the shell');
+    clock.t = t0;
+    launcher.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    rows.forEach((key, i) => {
+      const row = document.querySelector(`#menu-rows [data-nav-key="${key}"]`);
+      if (row === null) throw new Error(`no menu row [data-nav-key="${key}"]`);
+      clock.t = t0 + 100 * (i + 1);
+      row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+  };
+
+  it('SO1-1-BOOT-SURVIVE-QUESTLOG: the quest log opened by its accelerator is still shown and on the stack right after onReconnect while the menu beneath it is closed', async () => {
+    // WRONG IMPL KILLED: a roster with the quest log row true, a sweep that clears every upper
+    // frame, and a quest log added to the unconditional reset pass (RECONNECT_RESETS): the journal
+    // reads no store state a drop invalidates beyond what the next batch re-renders, and has always
+    // survived a drop, so a reset-pass hide would close it.
+    await bootReady();
+    server(1000);
+    tap('KeyJ', 1010);
+    expect(questLogShown(), 'precondition: the accelerator opened the journal').toBe(true);
+    expect(stackNames(), 'precondition: the journal is over the menu').toEqual([
+      'world',
+      'menuView',
+      'questLogView',
+    ]);
+
+    reconnect();
+
+    expect(menuShown(), 'the menu beneath it is closed').toBe(false);
+    expect(questLogShown(), 'the journal is still shown').toBe(true);
+    expect(stack(), 'and is the one frame left on the stack, read at once').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'questLogView' },
+    ]);
+  });
+
+  it('SO1-1-BOOT-SURVIVE-CLAIM: the claim view opened by its accelerator is still shown and on the stack right after onReconnect while the menu beneath it is closed', async () => {
+    // WRONG IMPL KILLED: a roster with the claim row true, a sweep that clears every upper frame,
+    // and the claim view added to the reset pass (the view is only ever hidden by the player or by
+    // its own lifecycle).
+    await bootReady();
+    server(1000);
+    tap('KeyC', 1010);
+    expect(claimShown(), 'precondition: the accelerator opened the claim view').toBe(true);
+    expect(stackNames(), 'precondition: the claim view is over the menu').toEqual([
+      'world',
+      'menuView',
+      'claimView',
+    ]);
+
+    reconnect();
+
+    expect(menuShown(), 'the menu beneath it is closed').toBe(false);
+    expect(claimShown(), 'the claim view is still shown').toBe(true);
+    expect(stack(), 'and is the one frame left on the stack, read at once').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'claimView' },
+    ]);
+  });
+
+  it('SO1-1-BOOT-SURVIVE-CLAIM-PENDING: a claim prompt the connection layer just opened (onClaimPending, which fires right before onReconnect and shows the view with no stack sync) is still shown and listed on the stack right after onReconnect', async () => {
+    // WRONG IMPL KILLED: the claim view added to the reset pass (it would close a claim prompt that
+    // was opened a moment before, in the same reconnect: the player loses the prompt and the code
+    // stays retained behind a veto); a roster with the claim row true; and a reconnect that sweeps
+    // the stack as it stands without a sync first (the prompt is shown but the stack cannot yet
+    // list it, so the read at once would be the bare world over a shown overlay).
+    await bootReady();
+    server(1000);
+    const onClaimPending = opts.onClaimPending;
+    if (onClaimPending === undefined) throw new Error('onClaimPending was not wired by main.ts');
+    onClaimPending('claim-code');
+    expect(claimShown(), 'precondition: the claim prompt is shown').toBe(true);
+    expect(stackNames(), 'precondition: no sync has mirrored it yet').toEqual(['world']);
+
+    reconnect();
+
+    expect(claimShown(), 'the claim prompt is still shown').toBe(true);
+    expect(stack(), 'and listed on the stack, read at once').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'claimView' },
+    ]);
+  });
+
+  it('SO1-1-BOOT-SURVIVE-PRIVACY: the privacy surface opened from the menu (its row click, which no stack sync follows) is still shown and on the stack right after onReconnect while the menu beneath it is closed', async () => {
+    // WRONG IMPL KILLED: a roster with the privacy row true, a sweep that clears every upper frame,
+    // the privacy view added to the reset pass (its hide() runs onDismissed and disarms an armed
+    // delete confirmation: a reconnect must not close a surface the player is reading), and a
+    // reconnect that does not sync first (the surface is shown but not yet listed).
+    await bootReady();
+    server(1000);
+    openByMenuClicks(['profile', 'privacy'], 1100);
+    expect(privacyShown(), 'precondition: the Privacy row opened the surface').toBe(true);
+    expect(menuShown(), 'precondition: the menu stays open beneath it').toBe(true);
+
+    reconnect();
+
+    expect(menuShown(), 'the menu beneath it is closed').toBe(false);
+    expect(privacyShown(), 'the privacy surface is still shown').toBe(true);
+    expect(stack(), 'and is the one frame left on the stack, read at once').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'privacyView' },
+    ]);
+  });
+
+  it('SO1-1-BOOT-SURVIVE-CONTROLS: Options > Controls opened from the menu is still shown and on the stack right after onReconnect while the menu beneath it is closed', async () => {
+    // WRONG IMPL KILLED: a roster with the controls row true, a sweep that clears every upper
+    // frame, and the controls view added to the reset pass (its hide() ends a key capture in
+    // progress; a reconnect must not eat the screen the player is remapping on).
+    await bootReady();
+    server(1000);
+    openByMenuClicks(['options', 'controls'], 1100);
+    expect(controlsShown(), 'precondition: the Controls row opened the screen').toBe(true);
+    expect(stackNames(), 'precondition: the screen is over the menu').toEqual([
+      'world',
+      'menuView',
+      'controlsView',
+    ]);
+
+    reconnect();
+
+    expect(menuShown(), 'the menu beneath it is closed').toBe(false);
+    expect(controlsShown(), 'the controls screen is still shown').toBe(true);
+    expect(stack(), 'and is the one frame left on the stack, read at once').toEqual([
+      { kind: 'world' },
+      { kind: 'screen', id: 'controlsView' },
+    ]);
+  });
+
+  // The held-key reset (`inputRouter.resetRepeat()` when the sweep drops a frame) has no cheap
+  // observation here: the router's auto-repeat state is private, and after the menu closes no nav
+  // frame is left for a stale repeat to move unless another nav screen sits beneath it, a shape
+  // the production open paths do not produce (the menu opens over the base or over a frame it
+  // opened itself). It is left to the router's own unit suite.
 
   // ------------------------------------------------------------------------------------------
   // SO1.2: every protected view's reset runs, whatever the stack and the visibility
@@ -773,8 +918,8 @@ describe('main.ts reconnect closes through the stack (runtime, so-1)', { sequent
     // WRONG IMPL KILLED: a sweep with no overBattle clause (help is not in the roster, so it would
     // survive the drop: the re-delivered row keeps a stamped battleSafe frame and the battle shows
     // beneath an inert, still-listed help: the CTL6C-1 hazard), a stamped loop that was dropped
-    // with the old `for` it replaces, and a stack left stale (RED today on the stack read: the old
-    // loop hid help but never removed its frame).
+    // with the old `for` it replaces, and a stack left stale (the old loop hid help but never
+    // removed its frame).
     await bootReady();
     server(1000);
     putBattle(BATTLE_ID, 1100);
