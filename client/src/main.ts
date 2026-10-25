@@ -130,8 +130,13 @@ import {
   contextStep,
   type Edge,
   type FrameId,
-  mirrorEdges,
+  hiddenPops,
+  isMirrored,
+  MIRRORED_IDS,
+  type MirroredId,
+  mirrorServerEdges,
   movementEnabled,
+  openEdge,
   popToBase,
   popTop,
   reconcile,
@@ -198,14 +203,7 @@ import {
   type RequestNotice,
   requestSheetLayout,
 } from './ui/noticeModel';
-import {
-  type CanOpenVerdict,
-  canOpen,
-  type OverlayHandles,
-  type OverlayId,
-  type OverlayProbes,
-  visibleIds,
-} from './ui/overlayRegistry';
+import { type CanOpenVerdict, canOpen, type OverlayId } from './ui/overlayRegistry';
 import {
   buildPrivacyViewModel,
   exportBundleFilename,
@@ -442,109 +440,73 @@ let boundSocialTab: SocialTab | null = null;
 // rebinds it, and the face-to-face Trade is the wizard's only open path.
 let boundProposeTarget: string | null = null;
 
-// the ONE probe table. Every fan-out surface below reads visibility
-// through it, so a 16th overlay is a COMPILE error here instead of 5 silent omissions.
-// Each entry is intentionally byte-identical `<id>: () => <id>?.visible ?? false` —
-// that literal shape matters because
-// main.ts is coverage-excluded and a single negated or `?? true` probe would corrupt all
-// five surfaces at once while every other tooth stayed green.
-const overlayProbes: OverlayProbes = {
+// The three tables of the overlays the visibility mirror still sees (so-2): the server-owned
+// battle and dialogue (`MIRRORED_IDS`), which show themselves on server edges. A player frame's
+// probe, hide and view travel with its open instead (`openFrame`'s `FrameOpen`). Three small
+// tables, never merged into one registry: each row is intentionally the byte-identical thunk of its
+// own key, because main.ts is coverage-excluded and a copy-pasted sibling thunk
+// (`battleView: () => dialogueView?.visible ?? false`) type-checks perfectly while reading,
+// hiding or lending the wrong overlay. Typed total over `MirroredId`, so a dropped row is a
+// COMPILE error.
+
+// the probe table: whether each mirrored overlay is shown.
+const overlayProbes: Readonly<Record<MirroredId, () => boolean>> = {
   battleView: () => battleView?.visible ?? false,
-  boxView: () => boxView?.visible ?? false,
-  raisingView: () => raisingView?.visible ?? false,
-  evolutionView: () => evolutionView?.visible ?? false,
   dialogueView: () => dialogueView?.visible ?? false,
-  questLogView: () => questLogView?.visible ?? false,
-  healView: () => healView?.visible ?? false,
-  shopView: () => shopView?.visible ?? false,
-  tradeView: () => tradeView?.visible ?? false,
-  pvpView: () => pvpView?.visible ?? false,
-  leaderboardView: () => leaderboardView?.visible ?? false,
-  renameView: () => renameView?.visible ?? false,
-  tradeProposeView: () => tradeProposeView?.visible ?? false,
-  helpView: () => helpView?.visible ?? false,
-  menuView: () => menuView?.visible ?? false,
-  claimView: () => claimView?.visible ?? false,
-  privacyView: () => privacyView?.visible ?? false,
-  controlsView: () => controlsView?.visible ?? false,
 };
 
-// the ONE force-hide handle table — the WRITE mirror of `overlayProbes`.
-// Typed `OverlayHandles` (a total `Record<OverlayId, _>`), so a 16th overlay is a COMPILE
-// error here rather than an overlay a verdict can name and nothing can hide. Every entry is
-// intentionally byte-identical `<id>: () => <id>?.hide()` — that
-// shape matters per id, because main.ts is coverage-excluded and a copy-pasted sibling thunk
-// (`raisingView: () => boxView?.hide()`) type-checks perfectly while hiding the wrong overlay.
-// `dialogueView` is the SOLE `undefined` entry and must stay that way: hiding a live
-// conversation client-side strands the server `player_conversation` row. Consumers read
-// `overlayHandles[id]?.()`; only the stack's `close` commands and the Social frame's panel
-// switch decide WHICH ids.
-// A close leaves boundShopId / boundHealLocationId set: every open rebinds them, and their
-// refresh listeners run only while the overlay is visible.
-const overlayHandles: OverlayHandles = {
+// the force-hide handle table, the WRITE mirror of `overlayProbes`. `dialogueView` is the SOLE
+// `undefined` entry and must stay that way: hiding a live conversation client-side strands the
+// server `player_conversation` row. Only the stack's `close` commands reach it, through `hideFrame`.
+const overlayHandles: Readonly<Record<MirroredId, (() => void) | undefined>> = {
   battleView: () => battleView?.hide(),
-  boxView: () => boxView?.hide(),
-  raisingView: () => raisingView?.hide(),
-  evolutionView: () => evolutionView?.hide(),
   dialogueView: undefined,
-  questLogView: () => questLogView?.hide(),
-  healView: () => healView?.hide(),
-  shopView: () => shopView?.hide(),
-  tradeView: () => tradeView?.hide(),
-  pvpView: () => pvpView?.hide(),
-  leaderboardView: () => leaderboardView?.hide(),
-  renameView: () => renameView?.hide(),
-  tradeProposeView: () => tradeProposeView?.hide(),
-  helpView: () => helpView?.hide(),
-  menuView: () => menuView?.hide(),
-  claimView: () => claimView?.hide(),
-  privacyView: () => privacyView?.hide(),
-  controlsView: () => controlsView?.hide(),
 };
 
-// The views whose hide() is also their only reset of what a dropped link leaves behind (a lock an
-// in-flight reducer promise never releases, a stale draft, challenge or board): `onReconnect` runs
-// each one UNCONDITIONALLY, shown or not, on the stack or not (so-1). It overlaps the frames
-// `reconnectSweep` closes by design (a shown one is hidden twice; every hide() here is idempotent):
-// the sweep owns the close, this owns the reset. The menu holds no such state.
-const RECONNECT_RESETS: readonly OverlayId[] = [
-  'renameView',
-  'tradeProposeView',
-  'shopView',
-  'tradeView',
-  'pvpView',
-  'battleView',
-  'raisingView',
-  'evolutionView',
-  'leaderboardView',
+// The resets of the views whose hide() is also their only reset of what a dropped link leaves
+// behind (a lock an in-flight reducer promise never releases, a stale draft, challenge or board):
+// `onReconnect` runs each one UNCONDITIONALLY, shown or not, on the stack or not (so-1). It overlaps
+// the frames `reconnectSweep` closes by design (a shown one is hidden twice; every hide() here is
+// idempotent): the sweep owns the close, this owns the reset. The menu holds no such state. Each
+// row is the byte-identical `() => <view>?.hide()` of its view.
+const RECONNECT_RESETS: readonly (() => void)[] = [
+  () => renameView?.hide(),
+  () => tradeProposeView?.hide(),
+  () => shopView?.hide(),
+  () => tradeView?.hide(),
+  () => pvpView?.hide(),
+  () => battleView?.hide(),
+  () => raisingView?.hide(),
+  () => evolutionView?.hide(),
+  () => leaderboardView?.hide(),
 ];
 
-// the ONE view-lending table: each overlay's view instance, which the screen host hands to that
-// overlay's frame's adapter to paint after a step (CTL7C.2). Every entry is intentionally
-// byte-identical `<id>: () => <id>`, one uniform thunk per id as in the probe table and for its
-// reason: a copy-pasted sibling thunk type-checks perfectly while lending the wrong view.
-// Undefined until main() builds the views. The Social frame is not an overlay: it is lent
-// `socialFrameView`, and its three panels' entries are never asked.
-const screenViews: Readonly<Record<OverlayId, () => unknown>> = {
+// the view-lending table: each mirrored overlay's view instance, which the screen host hands to
+// that frame's adapter to paint after a step (CTL7C.2). Undefined until main() builds the views.
+const screenViews: Readonly<Record<MirroredId, () => unknown>> = {
   battleView: () => battleView,
-  boxView: () => boxView,
-  raisingView: () => raisingView,
-  evolutionView: () => evolutionView,
   dialogueView: () => dialogueView,
-  questLogView: () => questLogView,
-  healView: () => healView,
-  shopView: () => shopView,
-  tradeView: () => tradeView,
-  pvpView: () => pvpView,
-  leaderboardView: () => leaderboardView,
-  renameView: () => renameView,
-  tradeProposeView: () => tradeProposeView,
-  helpView: () => helpView,
-  menuView: () => menuView,
-  claimView: () => claimView,
-  privacyView: () => privacyView,
-  controlsView: () => controlsView,
 };
+
+/** What a player frame's open registers (so-2): whether its view shows, the view's own hide path,
+ *  and the view the screen host lends the frame's adapter. It travels with the open, never as a
+ *  table row. */
+interface FrameOpen {
+  readonly probe: () => boolean;
+  readonly hide: () => void;
+  readonly view: () => unknown;
+}
+
+/** The registration of every player frame opened this session, by frame id (`openFrame`). */
+const frameOpens = new Map<FrameId, FrameOpen>();
+
+/** A view's registration: its own `visible` and `hide()`, read through the ONE binding `view`, so a
+ *  call site names its view once. */
+function frameOpenOf(
+  view: () => { readonly visible: boolean; hide(): void } | undefined,
+): FrameOpen {
+  return { probe: () => view()?.visible ?? false, hide: () => view()?.hide(), view };
+}
 
 // A view's paint threw, or an adapter threw while observing a batch. Logged every time, and
 // surfaced like an uncaught frame error (tagged, deduped on the message: a held D-pad repeats the
@@ -565,33 +527,45 @@ function reportPaintError(err: unknown): void {
 
 // The screen host (ui/screens/index.ts) keeps each open frame's adapter state and paints every
 // step, and every state a batch changed, into the frame's view. A paint that throws is reported
-// and never costs the key its result. The Social frame is lent its three panels as one view.
+// and never costs the key its result. A player frame is lent the view its open registered (the
+// Social frame its three panels as one view).
 const screenHost = new ScreenHost(
   SCREEN_ADAPTERS,
-  (id) => (id === SOCIAL_FRAME ? socialFrameView : screenViews[id]()),
+  (id) => (isMirrored(id) ? screenViews[id]() : frameOpens.get(id)?.view()),
   reportPaintError,
 );
 
 // the ONE gate binder. Returns the VERDICT, not a boolean, because the
 // privacy open reads `blockedBy`; each call site spells `.kind === 'allow'`
-// itself, deliberately, so no single `!` can invert every gate at once. Re-probes through
-// `visibleIds(overlayProbes)` on EVERY call — this table is built while every view binding is
-// still undefined, so anything cached would be permanently empty.
+// itself, deliberately, so no single `!` can invert every gate at once. Reads the stack on EVERY
+// call (`shownOverlays`), never a cache.
 //
 // The main menu stays open beneath the screen it opens (ctl-5), so it never blocks another
 // overlay: it is left out of the visible set for every target but itself.
 function overlayVerdict(id: OverlayId): CanOpenVerdict {
-  const visible = visibleIds(overlayProbes);
+  const visible = shownOverlays();
   return canOpen(id, id === 'menuView' ? visible : visible.filter((v) => v !== 'menuView'));
 }
 
-// The context stack (ui/contextStack.ts) sits BEHIND the legacy show/hide paths: nothing
-// pushes onto it directly. `syncStack()` mirrors the visible overlays into it and derives
-// the base from the store, so every reader that syncs first sees the overlays and the battle
-// row as they are right now, whichever listener showed them. A push of a new frame (and a
-// change of base kind) clears the held directions (B14). Synced on every movementGate() read,
-// at the top and tail of every keydown, at the top of every frame and at the tail of every
-// batch; `__game().stack` only reads it. Server truth is reconciled into it on every batch
+/** The overlays shown right now (so-2: read off the stack): each mirrored one by its probe, and
+ *  each player frame on the stack whose view shows, the Social frame as its shown panels. */
+function shownOverlays(): OverlayId[] {
+  const shown: OverlayId[] = MIRRORED_IDS.filter((id) => overlayProbes[id]());
+  for (const id of upperIds()) {
+    if (id === SOCIAL_FRAME) shown.push(...SOCIAL_PANELS.filter(panelShown));
+    else if (!isMirrored(id) && frameOpens.get(id)?.probe() === true) shown.push(id);
+  }
+  return shown;
+}
+
+// The context stack (ui/contextStack.ts) owns the player's frames (so-2): every player open
+// pushes its frame FIRST and only then shows the view (`openFrame`). `syncStack()` derives the
+// base from the store, mirrors the server-owned overlays (the battle and the dialogue, which show
+// themselves on server edges) into it, and pops a player frame whose view closed itself, so every
+// reader that syncs first sees the battle row and those overlays as they are right now. A push of
+// a new frame (and a change of base kind) clears the held directions (B14). Synced at the top and
+// tail of every keydown, at the top of every frame, around every player open and at the tail of
+// every batch; a movementGate() read never syncs, and `__game().stack` only reads it. Server truth is reconciled into it on every batch
 // (`reconcileStack`), which closes what a battle or a conversation drops. The sync also keeps two
 // things that follow the stack: when a terminal outcome first topped it (A's grace), and the
 // battle refusal line, cleared once the base is the world again.
@@ -633,11 +607,18 @@ function syncStack(): void {
     runStackCommands(next.commands);
   };
   apply({ kind: 'base', base });
-  for (const edge of mirrorEdges(contextStack, visibleIds(overlayProbes), prevBase)) {
+  const mirrored = MIRRORED_IDS.filter((id) => overlayProbes[id]());
+  for (const edge of mirrorServerEdges(contextStack, mirrored, prevBase)) {
     apply(edge);
     // A reopened frame's adapter starts over (from what it remembers, when it opted in).
     if (edge.kind === 'push') screenHost.opened(edge.frame);
     inputRouter.resetRepeat(); // a held key never repeats into a pushed or popped frame
+  }
+  // A player view that closed itself (its own close button or Escape, a lifecycle hide) takes its
+  // frame with it. Only pops: a player frame is pushed by its open alone.
+  for (const edge of hiddenPops(contextStack, shownPlayerFrames())) {
+    apply(edge);
+    inputRouter.resetRepeat();
   }
   const top = contextStack[contextStack.length - 1];
   const outcomeUp =
@@ -658,20 +639,34 @@ function upperIds(): FrameId[] {
   return upper.map((f) => (f.kind === 'textEntry' ? f.owner : f.id));
 }
 
+/** The player frames on the stack whose view shows, by the probe their open registered. */
+function shownPlayerFrames(): FrameId[] {
+  return upperIds().filter((id) => !isMirrored(id) && frameOpens.get(id)?.probe() === true);
+}
+
+/** Whether a Social panel shows. */
+function panelShown(panel: SocialPanelId): boolean {
+  return socialPanelView(panel)?.visible ?? false;
+}
+
 /** Hide what a frame shows through the view's own hide path, so its close callbacks run (CTL3.3);
- *  never a hidden one. The Social frame hides whichever of its panels shows. */
+ *  never a hidden one. A mirrored frame's handle is its table row; a player frame's is the one its
+ *  open registered (the Social frame's hides whichever of its panels shows). */
 function hideFrame(id: FrameId): void {
-  for (const overlay of id === SOCIAL_FRAME ? SOCIAL_PANELS : [id]) {
-    if (overlayProbes[overlay]()) overlayHandles[overlay]?.();
+  if (isMirrored(id)) {
+    if (overlayProbes[id]()) overlayHandles[id]?.();
+    return;
   }
+  const open = frameOpens.get(id);
+  if (open?.probe() === true) open.hide();
 }
 
 /** The overlay the announcer names as on top: the top frame's (the Social frame's is its shown
- *  panel), else the first visible overlay, else null. */
+ *  panel), else the first shown mirrored overlay, else null. */
 function topOverlay(): OverlayId | null {
   const top = upperIds().at(-1);
-  if (top === undefined) return visibleIds(overlayProbes)[0] ?? null;
-  return top === SOCIAL_FRAME ? (SOCIAL_PANELS.find((id) => overlayProbes[id]()) ?? null) : top;
+  if (top === undefined) return MIRRORED_IDS.find((id) => overlayProbes[id]()) ?? null;
+  return top === SOCIAL_FRAME ? (SOCIAL_PANELS.find(panelShown) ?? null) : top;
 }
 
 /** Where the main menu sits on the context stack: the top frame, under another, or absent. */
@@ -711,9 +706,9 @@ function movementGate(): boolean {
 }
 
 /** The world base takes input: the movement gate before the world sheet (ctl-10a) is counted.
- *  Anything else (a frame, a battle base, the session terminal) closes that sheet. */
+ *  Anything else (a frame, a battle base, the session terminal) closes that sheet. It reads the
+ *  stack as it stands (so-2): a gate read pushes, pops, shows and hides no frame. */
 function worldBaseLive(): boolean {
-  syncStack();
   const live = movementEnabled(contextStack, sessionGateBlocks());
   if (!live) screenHost.closeSheet();
   return live;
@@ -815,8 +810,13 @@ function renderClaim(): void {
     return;
   }
   claimRenderPending = false;
-  claimView?.render(buildClaimViewModel(claimModelState));
+  const vm = buildClaimViewModel(claimModelState);
+  // A paint that shows the claim view is an open (so-2): its frame is pushed first.
+  if (vm.visible) openFrame('claimView', claimOpen, () => claimView?.render(vm));
+  else claimView?.render(vm);
 }
+/** The claim view's open registration: its paints, the lifecycle show and its own open share it. */
+const claimOpen = frameOpenOf(() => claimView);
 /** Set when a claim paint was deferred because the privacy overlay owned the screen. */
 let claimRenderPending = false;
 
@@ -981,11 +981,18 @@ function openPrivacy(): void {
     reportError(i18nT('chrome.status.privacyOverlayBusy'));
     return;
   }
-  // Only now. A2-D5: hiding claim BEFORE show() is what keeps openOverlayA11y from capturing a
-  // soon-to-be-hidden node as its focus-return target.
-  claimView?.hide();
-  renderPrivacy();
-  privacyView?.show();
+  // Only now, with the privacy frame pushed. A2-D5: hiding claim BEFORE show() is what keeps
+  // openOverlayA11y from capturing a soon-to-be-hidden node as its focus-return target; the claim
+  // frame goes with the closing sync.
+  openFrame(
+    'privacyView',
+    frameOpenOf(() => privacyView),
+    () => {
+      claimView?.hide();
+      renderPrivacy();
+      privacyView?.show();
+    },
+  );
 }
 
 // AUTH-51: "signed in" is store.ownAccount(identity) !== undefined — the row the SERVER wrote —
@@ -996,13 +1003,14 @@ function openClaim(): void {
     nudgeAlreadySeen: claimCode.hasSeenFirstRunNudge(globalThis, URI, DB),
   });
   claimCode.markFirstRunNudgeSeen(globalThis, URI, DB);
-  claimView?.show();
+  openFrame('claimView', claimOpen, () => claimView?.show());
   renderClaim();
 }
 // --- the main menu ------------------------------------------------
 //
 // ONE OPEN PATH PER OVERLAY: each openX() below is the single build-VM-and-show body for
-// its overlay, called by the menu (an accelerator opens through the menu). Trade, pvp and leaderboard share
+// its overlay, called by the menu (an accelerator opens through the menu), and each shows through
+// `openFrame`, which pushes the frame first (so-2). Trade, pvp and leaderboard share
 // `openSocial` (and the world request sheet's View row, ctl-13), whose build-and-show bodies are
 // `showSocialPanel`'s. The view contract is non-uniform (dialogue/questLog/heal expose render()
 // with no show(); pvp takes refresh(vm, forceVisible)), so these are per-id thunks, never a
@@ -1013,7 +1021,11 @@ function openClaim(): void {
 let menuState = openMainMenu(EMPTY_NAV_MEMORY);
 
 function openQuestLog(): void {
-  questLogView?.render(buildQuestLogViewModel(store.ownQuests(identity)));
+  openFrame(
+    'questLogView',
+    frameOpenOf(() => questLogView),
+    () => questLogView?.render(buildQuestLogViewModel(store.ownQuests(identity))),
+  );
 }
 
 // The Social frame (CTL8S.3): ONE frame over the trade, pvp and leaderboard overlays, which are
@@ -1041,7 +1053,7 @@ function socialPanelView(panel: SocialPanelId): TradeView | PvpView | Leaderboar
  *  beneath. A render that throws before its panel shows leaves the old panel up; one that throws
  *  after (pvp shows first) still leaves that panel alone on screen. */
 function showSocialPanel(panel: SocialPanelId): void {
-  if (overlayProbes[panel]()) return;
+  if (panelShown(panel)) return;
   try {
     switch (panel) {
       case 'tradeView':
@@ -1070,12 +1082,27 @@ function showSocialPanel(panel: SocialPanelId): void {
         panel satisfies never;
     }
   } finally {
-    if (overlayProbes[panel]()) {
+    if (panelShown(panel)) {
       socialPanelView(panel)?.hostChrome(socialChrome);
-      for (const other of SOCIAL_PANELS) if (other !== panel) hideFrame(other);
+      for (const other of SOCIAL_PANELS) if (other !== panel) hidePanel(other);
     }
   }
 }
+
+/** Hide a shown Social panel through its own hide path. */
+function hidePanel(panel: SocialPanelId): void {
+  if (panelShown(panel)) socialPanelView(panel)?.hide();
+}
+
+/** The Social frame's open registration: shown while any panel shows, closed by hiding the shown
+ *  panels, lent the composite view. */
+const socialOpen: FrameOpen = {
+  probe: () => SOCIAL_PANELS.some(panelShown),
+  hide: () => {
+    for (const panel of SOCIAL_PANELS) hidePanel(panel);
+  },
+  view: () => socialFrameView,
+};
 
 /** What the Social frame's adapter paints: its three panel views and the panel switch. */
 const socialFrameView: SocialFrameView = {
@@ -1096,17 +1123,30 @@ const socialFrameView: SocialFrameView = {
   },
 };
 
-/** Mirror the screen `id` just shown into the stack: its frame when it is now on top, else
- *  undefined. */
-function mirrorOpened(id: FrameId): UpperFrame | undefined {
+/** The ONE player open (so-2): the frame is pushed FIRST (over a battle, stamped with it; a frame
+ *  already on the stack is not pushed again, `contextStep`'s dedup), and only then does `show` show
+ *  its view, so no player view is shown off the stack. `open` registers the frame's probe, hide and
+ *  view. The closing sync takes off a frame whose show did not take (and what the show hid).
+ *  Returns the frame when it is the top frame, else undefined. */
+function openFrame(id: FrameId, open: FrameOpen, show: () => void): UpperFrame | undefined {
+  frameOpens.set(id, open);
+  const next = contextStep(contextStack, openEdge(contextStack, id));
+  if (next.stack !== contextStack) {
+    contextStack = next.stack;
+    runStackCommands(next.commands);
+    // A reopened frame's adapter starts over (from what it remembers, when it opted in).
+    screenHost.opened(contextStack[contextStack.length - 1] as UpperFrame);
+    inputRouter.resetRepeat(); // a held key never repeats into a pushed frame
+  }
+  show();
   syncStack();
   const top = contextStack[contextStack.length - 1];
   return top.kind === 'screen' && top.id === id ? top : undefined;
 }
 
-/** Mirror the screen `id` just shown and seat its adapter, so its first paint is at the open. */
-function seatOpened(id: FrameId): void {
-  const frame = mirrorOpened(id);
+/** Open the screen `id` and seat its adapter, so its first paint is at the open. */
+function openSeated(id: FrameId, open: FrameOpen, show: () => void): void {
+  const frame = openFrame(id, open, show);
   if (frame !== undefined) screenHost.seat(frame, screenCtx);
 }
 
@@ -1116,17 +1156,22 @@ function topSocialFrame(): UpperFrame | undefined {
   return top.kind === 'screen' && top.id === SOCIAL_FRAME ? top : undefined;
 }
 
-/** The ONE open path of the Social frame: bind the requested tab, show its panel, mirror the
- *  frame and seat its adapter, so a screen that picks its own tab paints it at the open. */
+/** The ONE open path of the Social frame: bind the requested tab, push the frame, show its panel
+ *  and seat its adapter, so a screen that picks its own tab paints it at the open. */
 function openSocial(tab: SocialTab | null): void {
   boundSocialTab = tab;
-  showSocialPanel(socialPanel(tab));
-  seatOpened(SOCIAL_FRAME);
+  openSeated(SOCIAL_FRAME, socialOpen, () => showSocialPanel(socialPanel(tab)));
 }
 
 function openRename(): void {
-  renameView?.render(buildRenameViewModel(store.player(identity)?.name ?? '', ''));
-  renameView?.show();
+  openFrame(
+    'renameView',
+    frameOpenOf(() => renameView),
+    () => {
+      renameView?.render(buildRenameViewModel(store.player(identity)?.name ?? '', ''));
+      renameView?.show();
+    },
+  );
 }
 
 /** Open the trade wizard for the faced player `target` (ctl-10b): the target is pre-selected and
@@ -1142,9 +1187,14 @@ function openPropose(target: string): void {
   );
   if (!lists.targets.some((t) => t.identity === target)) return;
   boundProposeTarget = target;
-  tradeProposeView?.render(lists, target);
-  tradeProposeView?.show();
-  seatOpened('tradeProposeView');
+  openSeated(
+    'tradeProposeView',
+    frameOpenOf(() => tradeProposeView),
+    () => {
+      tradeProposeView?.render(lists, target);
+      tradeProposeView?.show();
+    },
+  );
 }
 
 /** Help (ctl-14): This screen lists the hint bar of the context it opens over, so the chips are
@@ -1159,9 +1209,14 @@ function openHelp(): void {
     buildNotices(noticeInput()),
     livePending(),
   );
-  helpView?.render(buildHelpViewModel(screen, bindings));
-  helpView?.show();
-  seatOpened('helpView');
+  openSeated(
+    'helpView',
+    frameOpenOf(() => helpView),
+    () => {
+      helpView?.render(buildHelpViewModel(screen, bindings));
+      helpView?.show();
+    },
+  );
 }
 
 /** What the character faces at the live world base with no world sheet open, else null. */
@@ -1191,8 +1246,11 @@ function hintChips(
 
 /** Options › Controls: seated at the open, so its rows paint then and not at the first button. */
 function openControls(): void {
-  controlsView?.show();
-  seatOpened('controlsView');
+  openSeated(
+    'controlsView',
+    frameOpenOf(() => controlsView),
+    () => controlsView?.show(),
+  );
 }
 
 /** Run what A or a sheet row chose at the world (ctl-10a). Exhaustive, no default arm. Only the
@@ -1208,8 +1266,17 @@ function runInteract(action: InteractAction): void {
       break;
     case 'heal':
       boundHealLocationId = action.locationId;
-      healView?.render(
-        buildHealViewModelForLocation(action.locationId, store.healLocations(), store.itemDefs()),
+      openFrame(
+        'healView',
+        frameOpenOf(() => healView),
+        () =>
+          healView?.render(
+            buildHealViewModelForLocation(
+              action.locationId,
+              store.healLocations(),
+              store.itemDefs(),
+            ),
+          ),
       );
       break;
     case 'trade':
@@ -1335,8 +1402,14 @@ let menuBadged = false;
 function openMenu(): void {
   // Over a battle the menu is read-only: what is not battle-safe is disabled (CTL6C.3).
   menuState = openMainMenu(menuState.memory, contextStack[0].kind === 'battle');
-  renderMenu();
-  menuView?.show();
+  openFrame(
+    'menuView',
+    frameOpenOf(() => menuView),
+    () => {
+      renderMenu();
+      menuView?.show();
+    },
+  );
 }
 
 /** Open a menu entry's overlay ABOVE the menu, through that overlay's single open path. The
@@ -1347,19 +1420,31 @@ function openMenuTarget(target: MenuTarget, monstersTab: MonstersTab = 'party'):
   if (identity === '') return;
   // Exhaustive switch, no default arm: a new target compiler-flags this site.
   switch (target) {
-    case 'boxView':
-      boxView?.show();
-      refreshBox();
+    case 'boxView': {
+      const frame = openFrame(
+        'boxView',
+        frameOpenOf(() => boxView),
+        () => {
+          boxView?.show();
+          refreshBox();
+        },
+      );
       // The view paints its own opening state, on Storage; the Party tab is one LB away.
-      if (monstersTab === 'party' && mirrorOpened('boxView') !== undefined) {
+      if (monstersTab === 'party' && frame !== undefined) {
         screenHost.button(contextStack, { button: 'LB', repeat: false }, screenCtx);
       }
       break;
+    }
     case 'raisingView':
-      raisingView?.show();
-      refreshRaising();
       // Seated at the open, so the Bag paints then and not at the next batch or button.
-      seatOpened('raisingView');
+      openSeated(
+        'raisingView',
+        frameOpenOf(() => raisingView),
+        () => {
+          raisingView?.show();
+          refreshRaising();
+        },
+      );
       break;
     case 'questLogView':
       openQuestLog();
@@ -1425,8 +1510,7 @@ function handleMenuPointer(input: MenuPointerInput): void {
 // The router hands the top frame's adapter (`screenHost.button`) every button but X, the main
 // menu's own nav buttons and the D-pad, and the D-pad too when that adapter is nav-capable; its
 // command, and every view callback, runs through ONE exhaustive `dispatch`. Stack commands compute
-// the next stack and `applyStack` closes what it drops through each view's own hide path; the
-// stack itself stays the mirror of what is shown (`syncStack`).
+// the next stack and `applyStack` closes what it drops through each view's own hide path.
 
 /** The read-only context adapters build their view models from. The getters read live state: the
  *  bound ids and the one `motionPreference` (never a second `matchMedia` read, A11Y-28). */
@@ -1821,7 +1905,7 @@ function sendPvpAction(where: string, battleId: bigint, action: PvpAction): Prom
 
 /** Apply a stack move: close every frame `next` drops, top first (the order the retired Escape
  *  ladder closed them in, so privacy's dismiss flush still finds the claim shown), each through
- *  its own path; then re-mirror, so the stack again lists exactly what is shown. */
+ *  its own path; then sync, so the stack again lists exactly what is shown. */
 function applyStack(prev: Stack, next: Stack): void {
   for (const frame of stackDiff(prev, next).closed) closeFrame(frame);
   syncStack();
@@ -2263,7 +2347,7 @@ const inputRouter = new InputRouter();
 // screen on top, else the main menu, on top or covered by a legacy frame) plus the clock its
 // auto-repeat runs on, and the top frame's adapter.
 const routeCtx = (): RouteContext => {
-  const worldActive = movementGate(); // first: it syncs the stack the rest reads
+  const worldActive = movementGate(); // the stack as the keydown's opening sync left it
   const place = menuPlace();
   const now = performance.now();
   let nav: RouteContext['nav'];
@@ -2362,8 +2446,7 @@ const openAccelPath = (path: AccelPath): void => {
   // A close can show another frame (privacy's dismissal flushes a deferred claim paint): the menu
   // never opens over it.
   if (contextStack.length > 1) return;
-  openMenu();
-  syncStack(); // the menu is pushed before the leaf it opens
+  openMenu(); // pushes the menu before the leaf it opens
   for (const key of path.menu) applyMenuStep(mainMenuPick(menuState, key), path.tab);
 };
 
@@ -2623,9 +2706,9 @@ const onKeyDown = (e: KeyboardEvent): void => {
     e.preventDefault();
   }
 };
-// Sync the context stack on both sides of every keydown: before, so an overlay opened since
-// the last frame outside a keydown or batch (a click, a connection callback) is pushed (clearing held) before this key can close it; after,
-// so whatever this key opened or closed is mirrored at once.
+// Sync the context stack on both sides of every keydown: before, so a server overlay shown since
+// the last frame (a battle, a dialogue) is pushed (clearing held) and a player view that closed
+// itself is popped before this key routes; after, so whatever this key closed is off it at once.
 const handleKeyDown = (e: KeyboardEvent): void => {
   pointerSource?.keyPressed(); // the keyboard drives now: the mouse's hover mark goes (CTL15.4)
   try {
@@ -2778,17 +2861,23 @@ function openPendingShop(shopId: number): void {
   syncStack();
   if (blocksPlayerOpen(contextStack)) return;
   boundShopId = shopId;
-  shopView?.render(
-    buildShopViewModelForShop(
-      shopId,
-      store.allShops(),
-      store.allShopItems(),
-      store.itemDefs(),
-      store.ownInventory(identity),
-      store.ownWallet(identity),
-    ),
+  openFrame(
+    'shopView',
+    frameOpenOf(() => shopView),
+    () => {
+      shopView?.render(
+        buildShopViewModelForShop(
+          shopId,
+          store.allShops(),
+          store.allShopItems(),
+          store.itemDefs(),
+          store.ownInventory(identity),
+          store.ownWallet(identity),
+        ),
+      );
+      shopView?.show();
+    },
   );
-  shopView?.show();
 }
 
 // --- M12d: dialogue / quest log / heal views --------------------------
@@ -3005,7 +3094,7 @@ store.onBatchApplied(() => {
   );
 });
 
-// The LAST batch listener: mirror every overlay this batch's listeners showed or hid (a
+// The LAST batch listener: mirror every server overlay this batch's listeners showed or hid (a
 // server-opened dialogue, a battle auto-show) so its push clears held before the next frame.
 // Then every open frame's adapter observes the batch. It must stay last: a frame this batch
 // pushed starts from its `init` (the Social frame's ran at its open), and every view render of
@@ -3673,7 +3762,7 @@ async function main(): Promise<void> {
       // UNCONDITIONALLY, shown or not, on the stack or not: the SDK never settles an in-flight
       // reducer promise after a link drop, so .finally() may never run and its lock (a dead submit
       // button forever) is released only here; the rest drop a stale draft, challenge or board.
-      for (const id of RECONNECT_RESETS) overlayHandles[id]?.();
+      for (const reset of RECONNECT_RESETS) reset();
       // the same never-settling-promise class for the
       // dialogue dismiss lock. It used to self-heal through the server deleting the
       // player_conversation row on disconnect; that delete now runs only when the identity's
@@ -3730,7 +3819,7 @@ async function main(): Promise<void> {
     // AUTH-48: a failed FIRST sign-in routes to the claim UI (never the session overlay).
     onSignInFailed: (reason) => {
       applyClaim({ kind: 'sign-in-failed', reason });
-      claimView?.show();
+      openFrame('claimView', claimOpen, () => claimView?.show());
       renderClaim();
     },
     // The reconnect-triggered guest-claim lifecycle.
@@ -3756,7 +3845,7 @@ async function main(): Promise<void> {
   // on error. The reconcile call is inside the batch-listener's try-catch (above).
   const frame = (): void => {
     try {
-      syncStack(); // mirror any overlay opened outside a keydown or batch (a click, a timer)
+      syncStack(); // a server overlay shown, or a player view closed, outside a keydown or batch
       // the session terminal also outranks the render/dispatch loop —
       // skip this frame's held-key re-issue so the predictor never ghost-walks into a dead link.
       // The rAF re-arm lives in this loop's finally, so an early return skips work, not the loop.
