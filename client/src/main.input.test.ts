@@ -77,7 +77,7 @@ const H = vi.hoisted(() => ({
   /** ctl-11a: the EvolutionView instance main.ts built (recorded by the transparent subclass in the
    *  module mock below). The Evolution screen has no key, so CTL3-3-BOOT-HIDE-ALL opens it through
    *  the view's own `show()`. Reset to null by every boot. */
-  evolution: null as { show(): void } | null,
+  evolution: null as { show(): void; hide(): void } | null,
 }));
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid.
@@ -1845,7 +1845,7 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
     expect(checked, 'ANTI-VACUITY: both overlays were driven').toBe(2);
   });
 
-  it('CTL3-3-BOOT-HIDE-ALL: rename, tradePropose, heal, raising, evolution and privacy each close through their own hide() when a battle arrives', async () => {
+  it('CTL3-3-BOOT-HIDE-ALL: rename, tradePropose, heal, raising and privacy each close through their own hide() when a battle arrives (evolution has no open path: it is never a frame)', async () => {
     // WRONG IMPL KILLED: a close command that skips some overlays (the six here were measured
     // as skipped by a mutant while every other boot case stayed green: the overlay is left
     // standing under the battle and, for privacy, its dismissal never runs). Each opens by its
@@ -1934,17 +1934,11 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
         open: (t) => void fire('keydown', 'KeyI', t),
         shown: () => shownByTestId('raising-title'),
       },
-      {
-        // ctl-11a: E is RB now and the Evolution screen has no key, so it is opened through the
-        // real view's own show() (the recording subclass above hands the instance over). The hide
-        // path under test is unchanged: a battle's close must reach THIS view's hide().
-        name: 'evolutionView',
-        open: () => {
-          if (H.evolution === null) throw new Error('main.ts never built the EvolutionView');
-          H.evolution.show();
-        },
-        shown: () => shownByTestId('evolution-title'),
-      },
+      // so-2 (named intentional change, SO2.3): the evolution row is dropped from this closes-on-
+      // battle set. It was opened through the real view's own show() (ctl-11a: E is RB now and the
+      // Evolution screen has no key), a view shown off every open path, and `EvolutionView` has NO
+      // open path in main.ts: it is never a frame, so a battle no longer closes it. It is pinned as
+      // not a frame after the loop below. Was: six overlays, evolution among them.
       {
         name: 'privacyView',
         rootId: 'privacy-overlay',
@@ -1986,7 +1980,24 @@ describe('main.ts reconcile gaps (runtime, ctl-3 round 2)', { sequential: true }
       t += 200;
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: all six overlays were driven').toBe(6);
+    expect(checked, 'ANTI-VACUITY: all five overlays were driven').toBe(5);
+
+    // so-2: the evolution view, shown through its own show(), is never a frame (SO2.3): not before a
+    // battle, not under one, so no battle has a frame of it to close.
+    if (H.evolution === null) throw new Error('main.ts never built the EvolutionView');
+    H.evolution.show();
+    expect(shownByTestId('evolution-title'), 'evolution: precondition: shown').toBe(true);
+    frame(t);
+    expect(stack(), 'evolution: shown off every open path, it is not a frame').toEqual([
+      { kind: 'world' },
+    ]);
+    startBattle(399n, t + 50);
+    expect(battleShown(), 'evolution: precondition: the battle is on screen').toBe(true);
+    expect(stack(), 'evolution: and the battle base has no frame of it').toEqual([
+      { kind: 'battle', battleId: '399' },
+    ]);
+    endBattle(399n, t + 100);
+    H.evolution.hide();
   });
 
   it('CTL3-2-BOOT-OUTCOME-SAME-BATCH: an overlay left up over an Ongoing battle is closed by the very batch that turns the row terminal, before any frame runs', async () => {

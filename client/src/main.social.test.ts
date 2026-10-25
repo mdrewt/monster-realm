@@ -648,13 +648,13 @@ describe('main.ts the one Social frame is pushed first (runtime, so-2)', {
     await bootReady();
     server(1000);
     const lent = lendingSocial();
-    const watched = (
-      await Promise.all(
-        SO2_PANELS.map((p) =>
-          so2WatchPanel(p.load, p.method, () => root(ROOT_ID[p.tab]).style.display !== 'none'),
-        ),
-      )
-    ).flat();
+    // Live per-panel arrays, flattened only after the open and the switches (`.flat()` copies what
+    // is there at the time, so flattening here would freeze an empty list).
+    const watched = await Promise.all(
+      SO2_PANELS.map((p) =>
+        so2WatchPanel(p.load, p.method, () => root(ROOT_ID[p.tab]).style.display !== 'none'),
+      ),
+    );
 
     open();
 
@@ -688,7 +688,7 @@ describe('main.ts the one Social frame is pushed first (runtime, so-2)', {
     }
     expect(steps, 'ANTI-VACUITY: six switches through all three panels').toBe(6);
 
-    const openings = watched.filter((call) => call.opened);
+    const openings = watched.flat().filter((call) => call.opened);
     expect(
       openings.length,
       'ANTI-VACUITY: the open and the switches showed all three panels',

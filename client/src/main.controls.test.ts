@@ -3171,13 +3171,15 @@ describe('main.ts openFrame: push first, then show (runtime, so-2)', { sequentia
     // that never saw the view open (the ANTI-VACUITY read).
     await bootReady();
     seedWorld(1000);
-    const calls = (
-      await Promise.all(open.views.map((v) => so2Watch(v.load, v.method, open.shown)))
-    ).flat();
+    // The per-method arrays stay live (each spied call pushes into its own array); they are
+    // flattened only after the drive, never before: `.flat()` copies what is there at the time.
+    const watched = await Promise.all(
+      open.views.map((v) => so2Watch(v.load, v.method, open.shown)),
+    );
 
     open.drive();
 
-    const openings = calls.filter((call) => call.opened);
+    const openings = watched.flat().filter((call) => call.opened);
     expect(
       openings.length,
       `ANTI-VACUITY: a spied call took the ${open.id} view from hidden to shown`,

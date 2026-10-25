@@ -1766,30 +1766,89 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     const covered: string[] = [];
     let t = 1100;
 
-    // The stand-ins that back a frame: each shown alone through its own flag, closed by its
-    // adapter's Start. ctl-8s: the trade and pvp stand-ins are Social panels, driven below.
-    for (const [id, cls] of Object.entries(STAND_IN_CLASS)) {
-      if (PANELS.includes(id)) continue;
+    // The stand-ins that back a frame: each opened by its REAL path (the stand-in's own show() sets
+    // its flag), closed by its adapter's Start. ctl-8s: the trade and pvp stand-ins are Social
+    // panels, driven below.
+    // so-2 (named intentional change, SO2.3): each stand-in was shown alone by flipping its own flag
+    // (`view.visible = true`) and adopted by the next sync's mirror. Under so-2 a player view shown
+    // off every open path is never a frame, so each opens through its real path: an accelerator, a
+    // menu walk, the greet-then-shop click, the claim accelerator or the face-to-face Trade, and
+    // the frames the menu opens carry `menuView` beneath them. The battle view stays a server-owned
+    // overlay the mirror still adopts, so it keeps its flag. The evolution view has NO open path in
+    // main.ts: it is pinned below as never a frame, and drops out of the lent-view roster.
+    const standIns: ReadonlyArray<{
+      readonly id: string;
+      readonly beneath?: readonly string[];
+      readonly open: (at: number) => void;
+    }> = [
+      { id: 'boxView', beneath: ['menuView'], open: (at) => void press('KeyB', at) },
+      {
+        id: 'battleView',
+        open: (at) => {
+          stubView('BattleView').visible = true;
+          frame(at);
+        },
+      },
+      { id: 'raisingView', beneath: ['menuView'], open: (at) => void press('KeyI', at) },
+      {
+        id: 'shopView',
+        open: (at) => {
+          startConversation(at);
+          clickShop(at + 10, '1');
+          endConversation(at + 20);
+        },
+      },
+      { id: 'claimView', beneath: ['menuView'], open: (at) => void press('KeyC', at) },
+      {
+        id: 'privacyView',
+        beneath: ['menuView'],
+        open: (at) => so2WalkMenu(['profile', 'privacy'], at),
+      },
+      { id: 'renameView', beneath: ['menuView'], open: (at) => void press('KeyN', at) },
+      { id: 'tradeProposeView', open: (at) => so2OpenFacedTrade(at) },
+    ];
+    const evolution = stubView('EvolutionView');
+    evolution.visible = true;
+    expect(
+      paintsOfOnePress(t),
+      'evolutionView: shown off every open path, it is not a frame: nothing is lent or painted',
+    ).toEqual([]);
+    frame(t + 10);
+    expect(stackNow(), 'evolutionView: and the stack stays the bare world').toEqual([
+      { kind: 'world' },
+    ]);
+    evolution.visible = false;
+    t += 100;
+    for (const o of standIns) {
+      const cls = STAND_IN_CLASS[o.id] as string;
       const view = H.views[cls];
       if (view === undefined) throw new Error(`${cls} was never constructed by main.ts`);
-      expect(stackNow(), `${id}: precondition: the bare world`).toEqual([{ kind: 'world' }]);
-      view.visible = true;
-      const painted = paintsOfOnePress(t);
-      expect(stackNow(), `${id}: precondition: the one frame over the world`).toEqual([
+      expect(stackNow(), `${o.id}: precondition: the bare world`).toEqual([{ kind: 'world' }]);
+      o.open(t);
+      expect(stackNow(), `${o.id}: precondition: opened over the world`).toEqual([
         { kind: 'world' },
-        { kind: 'screen', id },
+        ...(o.beneath ?? []).map((id) => ({ kind: 'screen', id })),
+        { kind: 'screen', id: o.id },
       ]);
+      const painted = paintsOfOnePress(t + 200);
       expect(
         painted.map((p) => p.id),
-        `${id}: one paint, by ${id}'s own adapter`,
-      ).toEqual([id]);
-      expect(painted[0]?.view, `${id}: into ${cls}, the view main.ts built for ${id}`).toBe(view);
-      press('Escape', t + 50);
-      expect(view.visible, `${id}: Start closed it`).toBe(false);
-      expect(stackNow(), `${id}: the bare world again`).toEqual([{ kind: 'world' }]);
-      covered.push(id);
-      t += 100;
+        `${o.id}: one paint, by ${o.id}'s own adapter`,
+      ).toEqual([o.id]);
+      expect(painted[0]?.view, `${o.id}: into ${cls}, the view main.ts built for ${o.id}`).toBe(
+        view,
+      );
+      press('Escape', t + 250);
+      expect(view.visible, `${o.id}: Start closed it`).toBe(false);
+      expect(stackNow(), `${o.id}: the bare world again`).toEqual([{ kind: 'world' }]);
+      covered.push(o.id);
+      t += 400;
     }
+    // The face-to-face Trade installed its own interaction rule: put the healer's back (the heal
+    // opener below), and bump the batch so the interaction memo is read afresh.
+    useNpcRule(HEALER_ENTITY);
+    server(t);
+    t += 100;
 
     // The five real views that back a frame, each opened by its own real path and closed again
     // (ctl-8s: the leaderboard is the Social frame's Rankings panel, driven below).
@@ -1908,8 +1967,12 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     expect(stackNow(), 'social: closed again').toEqual([{ kind: 'world' }]);
     covered.push('social');
 
+    // so-2: the evolution view has no open path, so it is the one id never lent a view (hand-spelled).
     expect([...covered].sort(), 'ANTI-VACUITY: every frame id lent its view').toEqual(
-      [...OVERLAY_IDS.filter((id) => !PANELS.includes(id)), 'social'].sort(),
+      [
+        ...OVERLAY_IDS.filter((id) => !PANELS.includes(id) && id !== 'evolutionView'),
+        'social',
+      ].sort(),
     );
   });
 });
@@ -1963,8 +2026,13 @@ describe('main.ts store batches and a held key (runtime, ctl-7c)', { sequential:
     // in play).
     await bootReady();
     server(1000);
+    // so-2 (named intentional change, SO2.3): the dropped nav frame was the box stand-in shown by its
+    // own flag above the menu over a battle. No player path opens the box over a battle (the menu
+    // disables Monsters there) and a view shown off every open path is never a frame, so the
+    // not-battle-safe frame is the CLAIM view, which the auth lifecycle (`onSignInFailed`) opens at
+    // any time, over a battle too, stamped and above the stamped menu. Same shape and same drop.
     const seen: Pressed[] = [];
-    swapAdapter('boxView', {
+    swapAdapter('claimView', {
       nav: true,
       viewModel: () => undefined,
       init: () => undefined,
@@ -1999,24 +2067,25 @@ describe('main.ts store batches and a held key (runtime, ctl-7c)', { sequential:
       { kind: 'battle', battleId: '101' },
       { kind: 'screen', id: 'menuView', overBattle: '101' },
     ]);
-    const box = H.views.BoxView;
-    if (box === undefined) throw new Error('BoxView was never constructed by main.ts');
-    box.visible = true; // a nav screen that is not battle-safe, above the battle-safe menu
+    const box = H.views.ClaimView;
+    if (box === undefined) throw new Error('ClaimView was never constructed by main.ts');
+    // a nav screen that is not battle-safe, above the battle-safe menu
+    must(opts.onSignInFailed, 'onSignInFailed')('sign-in failed');
     const held = keyDown('ArrowDown', 1800);
-    expect(stackNow(), 'b, precondition: the box is a frame above the menu').toEqual([
+    expect(stackNow(), 'b, precondition: the claim view is a frame above the menu').toEqual([
       { kind: 'battle', battleId: '101' },
       { kind: 'screen', id: 'menuView', overBattle: '101' },
-      { kind: 'screen', id: 'boxView', overBattle: '101' },
+      { kind: 'screen', id: 'claimView', overBattle: '101' },
     ]);
-    expect(seen, 'b, precondition: the press reached the box').toEqual([
+    expect(seen, 'b, precondition: the press reached the claim view').toEqual([
       { button: 'Down', repeat: false },
     ]);
     expect(held.defaultPrevented).toBe(true);
     const cursor = menuCursorNow();
     expect(cursor, 'b, precondition: the covered menu is open').not.toBeNull();
 
-    server(1900); // the batch's reconcile drops the box
-    expect(stackNow(), 'b, precondition: the batch dropped the box').toEqual([
+    server(1900); // the batch's reconcile drops the claim view
+    expect(stackNow(), 'b, precondition: the batch dropped the claim view').toEqual([
       { kind: 'battle', battleId: '101' },
       { kind: 'screen', id: 'menuView', overBattle: '101' },
     ]);
@@ -2233,6 +2302,62 @@ async function healAndRead(t: number, label: string): Promise<void> {
   await pageUp(t + 10);
   press('Escape', t + 20);
   expect(stackNow(), `${label}: precondition: Start closed the heal frame`).toEqual([WORLD_FRAME]);
+}
+
+/** so-2: Start, then each menu entry of `path` with the real keys (Down until the cursor is on it,
+ *  then Enter), so the entry's frame opens over the menu through its real open path. */
+function so2WalkMenu(path: readonly string[], t0: number): void {
+  press('KeyM', t0);
+  let at = t0 + 10;
+  for (const key of path) {
+    for (let i = 0; i < 8 && menuCursorNow() !== key; i += 1) {
+      press('ArrowDown', at);
+      at += 10;
+    }
+    expect(menuCursorNow(), `precondition: the menu cursor is on ${key}`).toBe(key);
+    press('Enter', at);
+    at += 10;
+  }
+}
+
+/** so-2: the player the face-to-face Trade faces. */
+const SO2_FACED_ENTITY = 99n;
+
+/** so-2: a REAL face-to-face Trade (main.controls.test.ts's `openFaceToFace`): another online player
+ *  stands on the faced tile, the stubbed wasm rule names it, A opens the picker and A on its first
+ *  row (Trade) opens the wizard. One batch at `t` (which also refreshes the interaction memo), then
+ *  the two presses. */
+function so2OpenFacedTrade(t: number): void {
+  H.interact = (...args: unknown[]) => {
+    const entities = args[4] as ReadonlyArray<{ kind: string; id: string }>;
+    const at = entities.findIndex(
+      (e) => e.kind === 'player' && e.id === SO2_FACED_ENTITY.toString(),
+    );
+    return at === -1 ? [] : [at];
+  };
+  opts.store.upsertPlayer({
+    identity: OTHER_IDENTITY,
+    entityId: SO2_FACED_ENTITY,
+    name: 'Zed',
+    online: true,
+    lastInputSeq: 0n,
+  });
+  opts.store.upsertCharacter(
+    {
+      entityId: SO2_FACED_ENTITY,
+      zoneId: 0,
+      tileX: 3,
+      tileY: 6,
+      facing: 'West',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [] as WasmMoveInput[],
+    },
+    t,
+  );
+  server(t);
+  press('Enter', t + 10);
+  press('Enter', t + 30);
 }
 
 /** A stand-in adapter that records `{ id, now }` on every observe and keeps its state unchanged
@@ -2624,11 +2749,18 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
     // valid control after the rows must still send).
     await bootReady();
     server(1000);
+    seedNpcs(1010);
     const issue: { command: unknown } = { command: { kind: 'pop' } };
     swapAdapter('shopView', commandAdapter(issue));
     const shop = stubView('ShopView');
     // Shown, so the visibility-gated success sink WOULD paint a line for any send.
-    shop.visible = true;
+    // so-2 (named intentional change, SO2.3): the shop was shown by flipping the stand-in's own flag
+    // (`shop.visible = true`) and adopted by the mirror. A view shown off every open path is never a
+    // frame now, so it opens through its real path: the greet-then-shop click.
+    startConversation(1030);
+    clickShop(1040, '1');
+    endConversation(1050);
+    expect(shop.visible, 'precondition: the greet-then-shop open showed the shop').toBe(true);
     const status = document.getElementById('status');
     if (status === null) throw new Error('#status must exist once booted');
     const live = document.getElementById('a11y-live');
@@ -2900,10 +3032,17 @@ describe('main.ts shop quantity and line (runtime, ctl-7d)', { sequential: true 
       { invId: 5n, ownerIdentity: H.identity, itemId: 23, count: 3 },
     ]);
     server(1010);
+    seedNpcs(1020);
     const issue: { command: unknown } = { command: { kind: 'pop' } };
     swapAdapter('shopView', commandAdapter(issue));
     const shop = stubView('ShopView');
-    shop.visible = true;
+    // so-2 (named intentional change, SO2.3): the shop was shown by flipping the stand-in's own flag
+    // (`shop.visible = true`) and adopted by the mirror. A view shown off every open path is never a
+    // frame now, so it opens through its real path: the greet-then-shop click (shop 11).
+    startConversation(1030);
+    clickShop(1040, '11');
+    endConversation(1050);
+    expect(shop.visible, 'precondition: the greet-then-shop open showed the shop').toBe(true);
     /** Hold every reducer call open until the returned release runs. */
     const hold = (): (() => void) => {
       let release: () => void = () => {};
@@ -3282,28 +3421,33 @@ describe('main.ts batches reach observe (runtime, ctl-7d)', { sequential: true }
     // (identity '': a frame shown that early would miss every batch until the join).
     const log: Array<{ id: string; now: unknown }> = [];
 
-    // --- before join: no onReady, a stand-in frame shown by its own flag -----------------------
+    // --- before join: no onReady, a frame opened by its real pre-join path ----------------------
+    // so-2 (named intentional change, SO2.3): the pre-join frame was the box stand-in shown by its
+    // own flag and adopted by the mirror. A view shown off every open path is never a frame now,
+    // and the menu (so the box) needs a joined identity, so the pre-join frame is help, which
+    // Select opens before the join.
     await boot();
-    swapAdapter('boxView', observingAdapter('boxView', log));
-    stubView('BoxView').visible = true;
+    swapAdapter('helpView', observingAdapter('helpView', log));
+    press('KeyR', 1000);
     server(1010);
-    expect(stackNow(), 'before join: precondition: the box frame is the one frame').toEqual([
+    expect(stackNow(), 'before join: precondition: the help frame is the one frame').toEqual([
       WORLD_FRAME,
-      screenFrame('boxView'),
+      screenFrame('helpView'),
     ]);
     expect(log, 'before join: the batch observes the frame').toEqual([
-      { id: 'boxView', now: 1010 },
+      { id: 'helpView', now: 1010 },
     ]);
 
-    // --- two frames at once: the box shown above the open menu ---------------------------------
+    // --- two frames at once: the box opened above the open menu --------------------------------
+    // so-2 (named intentional change): was `openMenuAtWorld` then the box stand-in's flag; the box
+    // now opens through its accelerator, which opens the menu beneath it.
     teardownBoot();
     await bootReady();
     server(1000);
     for (const id of ['menuView', 'boxView', 'dialogueView']) {
       swapAdapter(id, observingAdapter(id, log));
     }
-    openMenuAtWorld(1100);
-    stubView('BoxView').visible = true;
+    press('KeyB', 1100);
     log.length = 0;
     server(1200);
     expect(stackNow(), 'two frames: precondition: the box above the menu').toEqual([
@@ -3468,26 +3612,45 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
     // reopen where it was closed); an onReady that does not forget (a pre-join U leaks into the
     // joined session); and an onReconnect that keeps the memory, or clears it but keeps the open
     // frame's state (the next open would remember the previous identity's screen).
-    // --- before join: a pre-join U seeds a state; the first connect forgets it ----------------
+    // --- before join: a pre-join open seeds a state; the first connect forgets it -------------
     await boot();
     server(1000);
     const social = newMemoryLog();
     swapAdapter('social', memoryAdapter(social, true));
     // ctl-11a: an accelerator opens its path through the main menu, whose screens read store state
-    // keyed by identity, so U does nothing before the join. The pre-join Social frame is therefore
-    // shown through its own stand-in flag (the trade panel), as CTL7D-6-BOOT-EVERY-FRAME shows a
-    // pre-join frame; a batch mirrors it as the one Social frame.
-    stubView('TradeView').visible = true;
-    server(1005);
-    expect(stackNow(), 'pre-join: precondition: the Social frame is on the stack').toEqual([
+    // keyed by identity, so U does nothing before the join.
+    // so-2 (named intentional change, SO2.3): the pre-join Social frame was shown through the trade
+    // stand-in's own flag and adopted by a batch's mirror. A view shown off every open path is never
+    // a frame now, and Social has no pre-join open path, so the pre-join state is seeded by a frame
+    // that does: help, which Select opens before the join. It opts in to cross-open memory like the
+    // Social stand-in, with its own log (`preJoin`); the contract read below is unchanged: the first
+    // connect forgets what a pre-join frame left behind.
+    const preJoin = newMemoryLog();
+    swapAdapter('helpView', memoryAdapter(preJoin, true));
+    press('KeyR', 1005);
+    expect(stackNow(), 'pre-join: precondition: the help frame is on the stack').toEqual([
       WORLD_FRAME,
-      screenFrame('social'),
+      screenFrame('helpView'),
     ]);
     await pageUp(1020);
-    expect(social.steps.length, 'pre-join: precondition: the LB press stepped it').toBe(1);
+    expect(preJoin.steps.length, 'pre-join: precondition: the LB press stepped it').toBe(1);
     press('Escape', 1030);
     expect(stackNow(), 'pre-join: precondition: Start closed it').toEqual([WORLD_FRAME]);
     opts.onReady(H.identity);
+    press('KeyR', 1040);
+    expect(stackNow(), 'joined: precondition: help opens again').toEqual([
+      WORLD_FRAME,
+      screenFrame('helpView'),
+    ]);
+    expect(
+      preJoin.inits.at(-1)?.remembered,
+      'the first connect forgot the pre-join state: the reopen starts from nothing',
+    ).toBeUndefined();
+    expect(preJoin.inits.length, 'ANTI-VACUITY: the pre-join and the joined open both inited').toBe(
+      2,
+    );
+    press('Escape', 1045);
+    expect(stackNow(), 'joined: precondition: Start closed help').toEqual([WORLD_FRAME]);
 
     // --- joined: the open seats the frame and paints it, with no button and no batch ----------
     const at = {
@@ -3897,8 +4060,11 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
     // Covered by another frame, Social does not switch.
     view.show('tradeView');
     expect(socialShown(), 'precondition: the trade root shows').toEqual(['trades']);
-    stubView('ClaimView').visible = true;
-    server(1300);
+    // so-2 (named intentional change, SO2.3): the claim frame covered Social through its stand-in's
+    // own flag, adopted by a batch's mirror. A view shown off every open path is never a frame now,
+    // so the claim view opens through the auth lifecycle (`onSignInFailed`), which pushes its frame
+    // over Social; the view closing itself (its flag off) takes the frame with it on the next sync.
+    must(opts.onSignInFailed, 'onSignInFailed')('sign-in failed');
     expect(stackNow(), 'precondition: the claim frame covers Social').toEqual([
       ...SOCIAL_STACK,
       screenFrame('claimView'),
@@ -3992,16 +4158,19 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
     // The overlay guard on its own, with no menu open (ctl-11a: the quest log above now always has
     // the menu beneath it, which would hold the auto-show back by itself): a stand-in frame shown by
     // its flag, then closed with the challenge withdrawn so no batch opens Social under it.
-    const boxStandIn = stubView('BoxView');
-    boxStandIn.visible = true;
+    // so-2 (named intentional change, SO2.3): the overlay was the box stand-in shown by its own flag
+    // (`visible = true; server(1320)`), adopted by the mirror. A view shown off every open path is
+    // never a frame now, and every menu-opened screen has the menu beneath it, so the one real
+    // overlay with no menu beneath is help (Select); it is opened and closed by its own key.
+    press('KeyR', 1310);
     server(1320);
-    expect(stackNow(), 'overlay: precondition: the box frame is the only one').toEqual([
+    expect(stackNow(), 'overlay: precondition: the help frame is the only one').toEqual([
       WORLD_FRAME,
-      screenFrame('boxView'),
+      screenFrame('helpView'),
     ]);
     expect(socialShown(), 'overlay: no Social root shown over it').toEqual([]);
     opts.store.removeChallenge(51n);
-    boxStandIn.visible = false;
+    press('KeyR', 1330);
     server(1340);
     expect(stackNow(), 'overlay: precondition: closed, nothing pending').toEqual([WORLD_FRAME]);
     opts.store.upsertChallenge(incomingChallenge(51n)); // pending again, in the battle's own batch
@@ -4188,8 +4357,10 @@ describe('main.ts the Social seam (runtime, ctl-8s)', { sequential: true }, () =
     let replaced = 0;
     for (const [code, tab] of tabOfKey) {
       openThenSwitch('KeyU', 'trades', 'pvpView', t);
-      stubView('ClaimView').visible = true;
-      server(t + 10);
+      // so-2 (named intentional change, SO2.3): the claim frame was pushed by flipping its stand-in's
+      // flag and letting a batch's mirror adopt it (`visible = true; server(t + 10)`). A view shown
+      // off every open path is never a frame now: the auth lifecycle opens it over Social.
+      must(opts.onSignInFailed, 'onSignInFailed')('sign-in failed');
       const COVERED = [...SOCIAL_STACK, screenFrame('claimView')];
       expect(stackNow(), `covered ${code}: precondition: the claim frame covers Social`).toEqual(
         COVERED,
