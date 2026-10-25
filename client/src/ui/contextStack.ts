@@ -2,7 +2,8 @@
 // `battle` base. Pure — no DOM, SDK, module state or clock. It sits BEHIND the legacy
 // show/hide paths: main.ts mirrors the visible overlays into it (`mirrorEdges`), reconciles
 // server truth into it on every batch (`reconcile`, whose `close` commands run the views' own
-// hide paths), closes what a reconnect drops (`reconnectSweep`), and gates movement and accelerators on it (`movementEnabled`, `acceleratorsDenied`).
+// hide paths), closes what a reconnect drops (`reconnectSweep`), and gates movement and
+// accelerators on it (`movementEnabled`, `acceleratorsDenied`).
 // Which frames may stay open over a battle is SCREEN_POLICY here (ctl-6c); the battle base's own
 // button and command rules (`battleButton`, `battleRefused`) live in ui/battlePolicy.ts.
 import type { OverlayId } from './overlayRegistry';

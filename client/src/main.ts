@@ -504,7 +504,9 @@ const overlayHandles: OverlayHandles = {
 
 // The views whose hide() is also their only reset of what a dropped link leaves behind (a lock an
 // in-flight reducer promise never releases, a stale draft, challenge or board): `onReconnect` runs
-// each one UNCONDITIONALLY, shown or not, on the stack or not (so-1). The menu holds no such state.
+// each one UNCONDITIONALLY, shown or not, on the stack or not (so-1). It overlaps the frames
+// `reconnectSweep` closes by design (a shown one is hidden twice; every hide() here is idempotent):
+// the sweep owns the close, this owns the reset. The menu holds no such state.
 const RECONNECT_RESETS: readonly OverlayId[] = [
   'renameView',
   'tradeProposeView',
@@ -3663,6 +3665,8 @@ async function main(): Promise<void> {
       // Never the dialogue: a conversation is the server's to end.
       syncStack();
       const swept = reconnectSweep(contextStack);
+      // A drop here raises no mirror edge: a held key must not repeat into the frame it uncovers.
+      if (swept.stack.length !== contextStack.length) inputRouter.resetRepeat();
       contextStack = swept.stack;
       runStackCommands(swept.commands);
       // ...and every view whose hide() also clears what a dropped link leaves behind is reset
