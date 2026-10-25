@@ -2,7 +2,7 @@
 // `battle` base. Pure — no DOM, SDK, module state or clock. It sits BEHIND the legacy
 // show/hide paths: main.ts mirrors the visible overlays into it (`mirrorEdges`), reconciles
 // server truth into it on every batch (`reconcile`, whose `close` commands run the views' own
-// hide paths), and gates movement and accelerators on it (`movementEnabled`, `acceleratorsDenied`).
+// hide paths), closes what a reconnect drops (`reconnectSweep`), and gates movement and accelerators on it (`movementEnabled`, `acceleratorsDenied`).
 // Which frames may stay open over a battle is SCREEN_POLICY here (ctl-6c); the battle base's own
 // button and command rules (`battleButton`, `battleRefused`) live in ui/battlePolicy.ts.
 import type { OverlayId } from './overlayRegistry';
@@ -220,6 +220,50 @@ export function reconcile(
     if (dropped) commands.push({ kind: 'close', id });
     return !dropped;
   });
+  return { stack: [base, ...kept], commands };
+}
+
+/** Whether a reconnect closes the frame (so-1): the frames whose views read store state the reset
+ *  invalidated or hold a lock a dropped link never settles. Total over every frame id, so an omitted
+ *  id fails client-typecheck. The three Social panels are never frames of their own; their rows
+ *  agree with `social`. Help, the box, the quest log, heal, claim, privacy and controls opened at
+ *  the world survive a drop, as they always have; the dialogue is the server's to end. */
+export const RECONNECT_CLOSES: Readonly<Record<FrameId, boolean>> = {
+  battleView: true,
+  boxView: false,
+  raisingView: true,
+  evolutionView: true,
+  dialogueView: false,
+  questLogView: false,
+  healView: false,
+  shopView: true,
+  tradeView: true,
+  pvpView: true,
+  leaderboardView: true,
+  renameView: true,
+  tradeProposeView: true,
+  helpView: false,
+  menuView: true,
+  claimView: false,
+  privacyView: false,
+  controlsView: false,
+  social: true,
+};
+
+/** The reconnect's close (so-1): drops every upper frame that `RECONNECT_CLOSES` closes or that was
+ *  opened over a battle (a re-delivered row of that battle would keep it stamped and show the battle
+ *  above it), with one `close` per dropped frame, top first. Never the dialogue. The base is left
+ *  as it is (the next sync derives it). Idempotent. */
+export function reconnectSweep(stack: Stack): { stack: Stack; commands: readonly Command[] } {
+  const [base, ...upper] = stack;
+  const commands: Command[] = [];
+  const kept: UpperFrame[] = [];
+  for (const f of [...upper].reverse()) {
+    const id = idOf(f);
+    const stamped = f.kind === 'screen' && f.overBattle !== undefined;
+    if (id === 'dialogueView' || !(RECONNECT_CLOSES[id] || stamped)) kept.unshift(f);
+    else commands.push({ kind: 'close', id });
+  }
   return { stack: [base, ...kept], commands };
 }
 
