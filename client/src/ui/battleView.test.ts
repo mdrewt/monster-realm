@@ -9630,4 +9630,57 @@ describe('BattleView QF7.2: the swap rows render only while Swap is the open com
     expect(bag.callbacks.onUseItem, 'nothing is used').not.toHaveBeenCalled();
     expect(bag.callbacks.onSwap, 'nothing is swapped').not.toHaveBeenCalled();
   });
+
+  it('QF7.2-SWAP-OVER-OPEN-PICK: pressing the Swap command (by mouse or by the D-pad) over an open Recruit confirm or Bag target closes that step and opens the list: exactly the bench rows, the cursor and focus on row 0, one second step on screen, no callback fired', () => {
+    // WRONG IMPL KILLED: `#chooseCommand`'s `if (this.#pick !== null) this.#setPick(null)` weakened
+    // to `if (this.#pick !== null && id !== 'swap') this.#setPick(null)`: Swap no longer clears an
+    // open pick, so the Yes / No (or the target) sits beside the swap rows (two second steps, two
+    // possible actions in one turn). CTL8J-1x-REPLACE-PICK presses Fight only, and the migrated
+    // ACTION-SPENDS-PICK swap case is satisfied by the row's own dispatch.
+    const picks = [
+      {
+        label: 'Recruit confirm',
+        open: (root: Element) => (c8iTestId(root, 'bait-option-none') as HTMLElement).click(),
+        shown: (root: ParentNode) => c8jConfirm(root),
+      },
+      {
+        label: 'Bag target',
+        open: (root: Element) => (c8jRows(root, 'bag')[0] as HTMLElement).click(),
+        shown: (root: ParentNode) => c8jTarget(root),
+      },
+    ] as const;
+    for (const pick of picks) {
+      for (const how of ['a mouse press', 'the D-pad'] as const) {
+        const label = `${pick.label} then Swap by ${how}`;
+        const m = c8iFresh(c8iVM());
+        pick.open(m.root);
+        expect(pick.shown(m.root), `${label}: precondition: the step is open`).not.toBeNull();
+        qf72ExpectClosed(m.root, `${label}: precondition: no swap row yet`);
+
+        if (how === 'a mouse press') {
+          c8iCmd(m.root, 'swap').click();
+        } else {
+          c8iCmd(m.root, 'swap').focus();
+          m.view.applyBattleOp({ kind: 'activate' });
+        }
+        expect(pick.shown(m.root), `${label}: the Swap press closes the open step`).toBeNull();
+        expect(
+          c8jConfirm(m.root) ?? c8jTarget(m.root),
+          `${label}: exactly one second step`,
+        ).toBeNull();
+        expect(qf72Texts(m.root), `${label}: exactly the bench rows are on screen`).toEqual([
+          QF72_PVE_MOSS,
+          QF72_PVE_EMBER,
+        ]);
+        c8iExpectCursorOn(
+          m.root,
+          c8jRows(m.root, 'swap')[0] as Element,
+          `${label}: the cursor and focus are on swap row 0`,
+        );
+        expect(m.callbacks.onRecruit, `${label}: nothing is recruited`).not.toHaveBeenCalled();
+        expect(m.callbacks.onUseItem, `${label}: nothing is used`).not.toHaveBeenCalled();
+        expect(m.callbacks.onSwap, `${label}: nothing is swapped`).not.toHaveBeenCalled();
+      }
+    }
+  });
 });

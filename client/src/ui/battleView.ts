@@ -816,7 +816,7 @@ export class BattleView implements BattleOpsView {
       this.#renderSwapButtons(vm);
     }
     // Toggled inline so the hint and the swap buttons read the SAME `vm.canSwap`
-    // in the SAME method (the buttons also need Swap open, so at rest both are absent). The `Ongoing` conjunct is required — canSwap is false on EVERY terminal
+    // in the SAME method: never both on screen (the buttons also need Swap open). The `Ongoing` conjunct is required — canSwap is false on EVERY terminal
     // outcome, so without it the hint would sit beside "Victory!". No isPvp branch.
     this.#swapHintEl.style.display = vm.outcome === 'Ongoing' && !vm.canSwap ? 'block' : 'none';
     // Recruit is wild-only (canRecruit); cure items are offered in any ongoing PvE battle
