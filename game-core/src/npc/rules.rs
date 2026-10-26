@@ -1,7 +1,6 @@
 //! NPC wander decision rules — pure & deterministic.
 //!
-//! `npc_decide` is the wander decision; the server gates how often it asks with
-//! `npc_step_due` and pins conversing NPCs via `in_talk_range`. `npc_decide` mixes explicit `npc_id` and
+//! `npc_decide` (asked only on `npc_step_due` ticks) mixes explicit `npc_id` and
 //! `tick` with a non-commutative hash (RT-NPC-01 fix) so that two NPCs with the
 //! same `npc_id + tick` sum produce different outputs. In addition,
 //! the WANDER branch now chooses only LEGAL steps (walkable + inside the radius)
@@ -74,7 +73,7 @@ fn toward_home(current: TilePos, home: TilePos) -> Direction {
 /// # Logic
 /// 1. `dist = manhattan_distance(current, home)`.
 /// 2. **Homing** — if `dist > wander_radius` → `Some(toward_home(current, home))`.
-///    Unfiltered on purpose: every tick, no hash, no legality check, no stay
+///    Unfiltered on purpose: every call, no hash, no legality check, no stay
 ///    roll, so an NPC outside its radius can never stall. `apply_move` is still
 ///    the authority that no-ops the step if that direction is a wall.
 /// 3. Else if `wander_radius == 0` → `None` (pinned to home).

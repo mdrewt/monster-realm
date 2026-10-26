@@ -1290,6 +1290,10 @@ mod nh {
         PlayerWithoutCharacter,
     }
 
+    /// One arm of the owner-left test: (label, the owners seeded as `(owner byte,
+    /// standing)`, whether the NPC is expected to stay pinned).
+    type Qf5Arm = (&'static str, Vec<(u8, Qf5Owner)>, bool);
+
     /// The character entity id of the player whose identity is `[owner_byte; 32]`.
     fn qf5_owner_entity(owner_byte: u8) -> u64 {
         5_000 + u64::from(owner_byte)
@@ -1542,7 +1546,7 @@ mod nh {
                     && qf5_decision(home, start.facing, NPC, home, n).is_some()),
             "the sample must contain a DUE tick where npc_decide moves the NPC"
         );
-        let arms: [(&str, Vec<(u8, Qf5Owner)>, bool); 5] = [
+        let arms: [Qf5Arm; 5] = [
             (
                 "owner 3 tiles away in the same zone",
                 vec![(OWNER, Qf5Owner::Joined(QF5_ZONE, qf5_tile_near(home, 3)))],
