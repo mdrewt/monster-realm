@@ -6983,7 +6983,11 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     c8iExpectCursorOn(root, c8iCmd(root, 'swap'), 'Back from the swap buttons');
 
     c8iCmd(root, 'bag').click();
-    c8iExpectCursorOn(root, useBtn as Element, 'Bag chosen');
+    // QF7.2: Swap's open/close rebuilds the actions row, so the cure row captured at rest above is a
+    // detached node by now; the cursor is on its rebuilt twin (first bag row), re-queried here.
+    const useBtnNow = root.querySelector<HTMLButtonElement>('[data-battle-list="bag"]');
+    expect(useBtnNow?.getAttribute('data-battle-list'), 'Use Item control, rebuilt').toBe('bag');
+    c8iExpectCursorOn(root, useBtnNow as Element, 'Bag chosen');
     expect(callbacks.onUseItem, 'choosing Bag does not use an item').not.toHaveBeenCalled();
     view.applyBattleOp({ kind: 'back' });
     c8iExpectCursorOn(root, c8iCmd(root, 'bag'), 'Back from the Use Item control');
