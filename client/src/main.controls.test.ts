@@ -4155,4 +4155,115 @@ describe('main.ts care readiness reads the wall clock (runtime, qf-3)', {
       wall.mockRestore();
     }
   });
+
+  it('in an idle session the open Monsters sheet re-reads care readiness from the frame loop once a second: a cooling Care row turns enabled with no press and no batch once Date.now() passes the cooldown, care_remaining_ms is asked at most once per second (never per frame) and not at all once the Monsters frame is closed [QF3-4-WALL-CLOCK-TICK]', async () => {
+    // WRONG IMPL KILLED: no tick at all (readiness read only on a button or a batch: in an idle
+    // session the row stays disabled, "Ready in 0h 1m", forever after the cooldown has ended); a
+    // tick that re-reads the view model on every frame (the export is asked on each frame inside
+    // one second below: dozens of times a second in a browser); a tick that keeps running with the
+    // Monsters frame closed (the sheet's view model built for nothing); a tick that hands the
+    // export `performance.now()` instead of `Date.now()` (`now` would be a figure near 1000 here,
+    // against which the stub, like a real epoch anchor, reads cooling forever); a tick that
+    // re-reads readiness but repaints only on a batch (the row stays disabled); a "re-observe"
+    // spelled as a synthetic button press (the cursor would move off Care, or a care be sent).
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertMonster({ ...RAISED_MONSTER, lastCareAtMs: QF3_ANCHOR });
+    server(1010);
+    /** The wall-clock reading from which the stub answers ready: 5 s after QF3_WALL. */
+    const readyAt = QF3_WALL + 5_000;
+    const seen: Array<readonly [unknown, unknown]> = [];
+    // The stub depends on its `now` argument: one minute left before `readyAt`, ready from it, so
+    // only a re-read at the moved wall clock can bring Care back.
+    H.careRemaining = (last, now) => {
+      seen.push([last, now]);
+      return now < BigInt(readyAt) ? 60_000n : 0n;
+    };
+    const wall = vi.spyOn(Date, 'now').mockReturnValue(QF3_WALL);
+    try {
+      tap('KeyV', 1020);
+      expect(stackNames(), 'precondition: V opened Monsters over the menu').toEqual([
+        'world',
+        'menuView',
+        'boxView',
+      ]);
+      tap('Enter', 1030); // A on the monster: its sheet, the cursor on Summary
+      tap('ArrowDown', 1040); // Care: a disabled row stays reachable
+      const care = (): HTMLElement => byId('monstersSheet-root-care');
+      expect(care().getAttribute('aria-selected'), 'precondition: the cursor is on Care').toBe(
+        'true',
+      );
+      expect(care().getAttribute('aria-disabled'), 'precondition: Care is cooling').toBe('true');
+      expect(care().textContent, 'precondition: its label, then the hint').toBe(
+        'Care Ready in 0h 1m',
+      );
+      expect(seen.length, 'ANTI-VACUITY: the presses asked the export').toBeGreaterThan(0);
+
+      // The loop runs while the cooldown still runs (as it always does in a browser): Care stays
+      // disabled, whatever the loop reads at this wall clock.
+      frame(1100);
+      expect(care().getAttribute('aria-disabled'), 'still cooling: Care stays disabled').toBe(
+        'true',
+      );
+
+      // The cooldown ends while nobody presses anything and no batch arrives: only frames run,
+      // for a little over a second of frame-clock time past the last frame (at 1100).
+      const idleMark = seen.length;
+      wall.mockReturnValue(readyAt);
+      for (const at of [1400, 1800, 2200, 2600]) frame(at);
+      const idle = seen.slice(idleMark);
+      expect(
+        idle.length,
+        'the frame loop asked care_remaining_ms again, with no press and no batch',
+      ).toBeGreaterThan(0);
+      for (const [last, now] of idle) {
+        expect(last, 'the monster`s own anchor').toBe(QF3_ANCHOR);
+        expect(typeof now, 'the clock crosses as a BigInt').toBe('bigint');
+        expect(now, 'the wall clock, read live, not the performance clock').toBe(BigInt(readyAt));
+      }
+      expect(care().getAttribute('aria-disabled'), 'ready: Care is enabled').toBeNull();
+      expect(care().classList.contains('is-disabled'), 'and no longer dimmed').toBe(false);
+      expect(care().textContent, 'the bare label, the hint gone').toBe(i18nT('box.sheet.care'));
+      expect(care().getAttribute('aria-selected'), 'the cursor is still on Care').toBe('true');
+      expect(stackNames(), 'the stack is unchanged').toEqual(['world', 'menuView', 'boxView']);
+      expect(callsOf('care'), 'the tick only repaints: no care is sent').toEqual([]);
+
+      // From here the wall clock moves with the frame clock, as in a browser (continuous with the
+      // reading above at 2600), so a tick keyed on either clock's second reads the same.
+      const wallAt = (at: number): number => readyAt - 2_600 + at;
+      /** Run one frame per entry at that wall clock; answer the frames that asked the export. */
+      const runFrames = (ats: readonly number[]): number[] => {
+        const askedAt: number[] = [];
+        for (const at of ats) {
+          const before = seen.length;
+          wall.mockReturnValue(wallAt(at));
+          frame(at);
+          const asked = seen.slice(before);
+          if (asked.length > 0) askedAt.push(at);
+          for (const [, now] of asked) {
+            expect(now, `frame ${at}: the wall clock of that frame`).toBe(BigInt(wallAt(at)));
+          }
+        }
+        return askedAt;
+      };
+
+      // Anti-flood: more frames inside the same second ask nothing...
+      expect(runFrames([2700, 2800, 2900]), 'no re-read within the same second').toEqual([]);
+      // ...and over the next second the export is asked again, on exactly one frame.
+      expect(
+        runFrames([3000, 3200, 3400, 3600, 3700]),
+        'one re-read in the next second, not one per frame',
+      ).toHaveLength(1);
+      expect(care().getAttribute('aria-disabled'), 'still ready after that tick').toBeNull();
+
+      // Closed: with the Monsters frame gone, two more seconds of frames ask nothing.
+      wall.mockReturnValue(wallAt(3750));
+      tap('Escape', 3750); // Start: back to the bare world
+      expect(stackNames(), 'precondition: the Monsters frame is closed').toEqual(['world']);
+      const closedFrames = Array.from({ length: 11 }, (_, i) => 3800 + i * 200);
+      expect(runFrames(closedFrames), 'no tick while the Monsters frame is closed').toEqual([]);
+    } finally {
+      wall.mockRestore();
+    }
+  });
 });

@@ -1,6 +1,6 @@
 // ui/screens/monstersScreen.ts — the Monsters frame as a pure screen over the nav kit (design §5,
-// CTL8B.1-.4, CTL8C.1). No DOM, SDK, module state or clock; `boxView.ts` paints what `paint` hands
-// it.
+// CTL8B.1-.4, CTL8C.1). No DOM, SDK, module state or ambient clock (the wall clock is the context's,
+// qf-3); `boxView.ts` paints what `paint` hands it.
 //
 // The frame is the box root: tabs Party (a list) and Storage (a grid), opening on Storage (the
 // legacy KeyB is "the box"), each tab keeping its own cursor. A on a monster opens its sheet
@@ -186,8 +186,8 @@ const sheet = (monsterId: bigint, action: SheetAction): MonstersPhase => ({
 
 /** The signature of what the view paints from the sheet-derived data for the phase's monster: the
  *  foods (so the disabled Feed… row and the counts), the paths (the disabled Evolve… row, each
- *  row's status and species), the name the confirm quotes and the Care hint's parts (0h 0m when
- *  ready: the disabled Care row and its minute, qf-3). */
+ *  row's status and species), the name the confirm quotes, and the Care row's readiness and hint
+ *  minute (qf-3). */
 function shownOf(vm: MonstersVm, phase: MonstersPhase): string {
   if (phase.kind === 'list') return '';
   const mon = findEvolution(vm, phase.monsterId);
@@ -202,11 +202,13 @@ function shownOf(vm: MonstersVm, phase: MonstersPhase): string {
           p.toSpeciesName,
         ]);
   const card = findMonster(vm, phase.monsterId)?.card;
+  const care = careRemaining(vm, phase.monsterId);
   return JSON.stringify([
     vm.foods,
     paths,
     card === undefined ? null : cardName(card),
-    careCooldownParts(careRemaining(vm, phase.monsterId)),
+    care === 0n,
+    careCooldownParts(care),
   ]);
 }
 

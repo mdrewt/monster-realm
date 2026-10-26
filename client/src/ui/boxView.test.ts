@@ -4877,10 +4877,6 @@ describe('BoxView qf-2: the outcome line (QF2.1, QF2.2)', () => {
  *  glyph. */
 const QF3_E_CIRCUMFLEX = String.fromCharCode(0x00ea);
 
-/** The catalog resolver through a plain-string signature (the new key is not in the typed
- *  catalog until the specialist ships it); the real resolver, call-through. */
-const qf3Tf = i18nTf as unknown as (key: string, params: Record<string, unknown>) => string;
-
 describe('BoxView qf-3: the Care cooldown on the sheet (QF3.3, QF3.4)', () => {
   const careRow = (root: Element): HTMLElement => c8cById(root, 'monstersSheet-root-care');
   const paintCare = (
@@ -4933,7 +4929,7 @@ describe('BoxView qf-3: the Care cooldown on the sheet (QF3.3, QF3.4)', () => {
     // The bytes are the catalog's: the label, one space, the hint.
     paintCare(view, 21_540_001n);
     expect(careRow(root).textContent, 'the resolver`s own text').toBe(
-      `${i18nT('box.sheet.care')} ${qf3Tf('box.sheet.careCooldown', { hours: 6, minutes: 0 })}`,
+      `${i18nT('box.sheet.care')} ${i18nTf('box.sheet.careCooldown', { hours: 6, minutes: 0 })}`,
     );
     for (const action of ['summary', 'feed', 'evolve', 'nickname', 'move']) {
       const row = c8cById(root, `monstersSheet-root-${action}`);

@@ -229,6 +229,7 @@ export type MessageId =
   | 'box.feed.item'
   | 'box.evolve.confirm'
   | 'box.feedback.fed'
+  // qf-3: the disabled Care row's remaining-cooldown hint.
   | 'box.sheet.careCooldown'
   // Trade.* : the live-trade overlay (tradeView.ts); `tradePropose.*` is the dialog.
   | 'trade.status.none'
