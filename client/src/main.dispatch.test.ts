@@ -156,9 +156,11 @@ const H = vi.hoisted(() => {
         // (`feedbackLine`); the stand-in's sink records on `feedback`, as `showFeedback` does, so
         // the existing feedback assertions keep their meaning.
         clearOutcome(): void {}
-        feedbackLine(): (message: string, kind: string) => void {
-          return (message: string): void => {
+        feedbackLine(): (message: string, kind: string) => boolean {
+          // The sink reports whether it painted (true iff it did): the stand-in always paints.
+          return (message: string): boolean => {
             this.feedback.push(message);
+            return true;
           };
         }
       },

@@ -51,7 +51,8 @@ import type {
 } from './net/store';
 // The test's own resolver instance (main.ts gets a fresh one per boot): both default to English, so
 // `i18nT(id)` here is the text the shell paints for that id.
-import { t as i18nT } from './ui/i18n/resolver';
+import { CATALOG_FR } from './ui/i18n/catalog.fr';
+import { t as i18nT, tf as i18nTf } from './ui/i18n/resolver';
 import type { NavInput } from './ui/nav';
 
 const H = vi.hoisted(() => ({
@@ -72,6 +73,9 @@ const H = vi.hoisted(() => ({
    *  promise; the call itself is still recorded in `calls`. Empty by default and reset by every
    *  boot, so every case outside the qf-2 block sees the unchanged recording mock. */
   answer: {} as Record<string, ((args: unknown) => Promise<void>) | undefined>,
+  /** qf-2: what the connection stub's `linkFrozen()` answers (read live on each call). Reset by
+   *  every boot; a case sets it AFTER its setup, right before the press under test. */
+  frozen: false,
 }));
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid.
@@ -99,6 +103,8 @@ vi.mock('./net/connection', () => {
       };
       if (!wrapped.has(live)) {
         wrapped.add(live);
+        // The stub is one shared plain object: its frozen flag is made controllable, once.
+        (conn as unknown as { linkFrozen: () => boolean }).linkFrozen = () => H.frozen;
         const recording = live.reducers;
         live.reducers = new Proxy(
           {},
@@ -160,12 +166,16 @@ function recordListeners(target: EventTarget): void {
 
 let opts: ConnectionOptions;
 
-async function boot(): Promise<void> {
+async function boot(url?: string): Promise<void> {
   H.connectOpts = null;
   H.sends = [];
   H.calls = [];
   H.interact = () => [];
   H.answer = {};
+  H.frozen = false;
+  // qf-2: a case that boots under a locale names its URL; every other boot keeps the bare '/'
+  // (afterEach resets it to '/').
+  if (url !== undefined) window.history.replaceState(null, '', url);
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   recorded = [];
@@ -184,8 +194,8 @@ async function boot(): Promise<void> {
   );
 }
 
-async function bootReady(): Promise<void> {
-  await boot();
+async function bootReady(url?: string): Promise<void> {
+  await boot(url);
   opts.onReady(H.identity);
 }
 
@@ -3449,8 +3459,8 @@ const boxLineText = (): string => boxLine().textContent ?? '';
 const raisingLineText = (): string => byId('raising-feedback').textContent ?? '';
 
 /** Boot, seed one own monster, open Monsters (V), its sheet (A) and move the cursor to Care. */
-async function bootAtSheetCare(): Promise<void> {
-  await bootReady();
+async function bootAtSheetCare(url?: string): Promise<void> {
+  await bootReady(url);
   seedWorld(1000);
   opts.store.upsertMonster(RAISED_MONSTER);
   server(1010);
@@ -3599,6 +3609,15 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
       errorSpy.mock.calls.some((c) => c[0] === '[status]' && c[1] === 'train: not enough food'),
       'it is still logged through the error path',
     ).toBe(true);
+    // ...and it reached the error ring: the F9 bundle reads the same ring the error toast lists.
+    const rows = [...document.querySelectorAll<HTMLElement>('.mr-error-row')].map((el) => ({
+      source: el.dataset.source,
+      text: el.textContent ?? '',
+    }));
+    expect(
+      rows.some((r) => r.source === 'reducer' && r.text.includes('train: not enough food')),
+      'and it is in the error ring (the error toast lists a reducer row naming it)',
+    ).toBe(true);
   });
 
   it('QF2-1-BOOT-NEXT-BUTTON-ENDS-LINE-BATCH-KEEPS: the Monsters line shown after a care survives a store batch that changes the monster (and repaints the frame), and the NEXT button press ends it', async () => {
@@ -3739,5 +3758,281 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
     expect(raisingLineText(), 'the hidden view`s line stays empty').toBe('');
     expect(boxLineText(), 'the Monsters frame`s line stays empty').toBe('');
     expect(statusText(), 'the status line stays empty').toBe('');
+  });
+
+  // ----------------------------------------------------------------------------------------
+  // Round 2 (review + red-team): surviving mutants of round 1.
+  // ----------------------------------------------------------------------------------------
+
+  /** One own monster plus one Bait food (item 4, three in stock) in the store, in one batch. */
+  function seedFood(): void {
+    opts.store.upsertMonster(RAISED_MONSTER);
+    opts.store.upsertItemDef({
+      id: 4,
+      name: 'Bait',
+      description: '',
+      recruitBonus: 0,
+      trainStat: 'Attack',
+      trainAmount: 1,
+      sellPrice: 0n,
+      cureStatus: null,
+    });
+    opts.store.reconcileInventoryFromView([
+      { invId: 1n, ownerIdentity: H.identity, itemId: 4, count: 3 },
+    ]);
+    server(1010);
+  }
+
+  /** Boot with a food in stock; open Monsters, the monster's sheet and the Feed… food list. */
+  async function bootAtFeedList(): Promise<void> {
+    await bootReady();
+    seedWorld(1000);
+    seedFood();
+    tap('KeyV', 1020);
+    tap('Enter', 1030); // A on the monster: its sheet
+    tap('ArrowDown', 1040); // Care
+    tap('ArrowDown', 1050); // Feed…
+    tap('Enter', 1060); // A on Feed…: the food list
+    expect(
+      byId('monstersFeed-root-4').getAttribute('aria-selected'),
+      'precondition: the food list is open on the Bait row',
+    ).toBe('true');
+    expect(statusText(), 'precondition: the status line is empty').toBe('');
+    expect(boxLineText(), 'precondition: the Monsters line is empty').toBe('');
+  }
+
+  it('QF2-3-BOOT-BAG-TRAIN-STATUS-LINE: a train rejected for a food fed from the BAG shows `train: <reason>` on the status line and leaves the Monsters frame`s line empty', async () => {
+    // WRONG IMPL KILLED: a router that hands `boxView.feedbackLine()` to every screen command
+    // whenever a box view exists, instead of only when the Monsters frame is the TOP frame (the
+    // Bag-fed rejection would go to the hidden box sink and be swallowed: nothing on `#status`,
+    // the surface this slice leaves unchanged for every non-sheet invoker).
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await bootReady();
+    seedWorld(1000);
+    seedFood();
+    H.answer.train = () => Promise.reject(senderError('not enough food'));
+
+    tap('KeyI', 1020);
+    expect(stackNames().at(-1), 'precondition: I opened the Bag frame on top').toBe('raisingView');
+    expect(shownByTestId('raising-title'), 'precondition: the Bag is on screen').toBe(true);
+    server(1030); // the first batch paints the Bag`s pockets
+    tap('Enter', 1040); // A on Bait: its sheet, the cursor on Feed
+    tap('Enter', 1050); // A on Feed: the monster picker
+    expect(callsOf('train'), 'precondition: nothing sent yet').toEqual([]);
+    tap('Enter', 1060); // A on the monster: train is sent at once
+    await flush();
+
+    expect(callsOf('train'), 'the Bag`s feed reached the train reducer once').toEqual([
+      { name: 'train', args: { monsterId: 31n, foodItemId: 4 } },
+    ]);
+    expect(statusText(), 'the rejection is on the status line').toBe('train: not enough food');
+    expect(boxLineText(), 'and the hidden Monsters frame`s line is untouched').toBe('');
+    expect(
+      errorSpy.mock.calls.some((c) => c[0] === '[status]' && c[1] === 'train: not enough food'),
+      'and it is still logged',
+    ).toBe(true);
+  });
+
+  it('QF2-2-BOOT-SHEET-CARE-FROZEN: Care pressed on the Monsters sheet with the link frozen shows the disconnected line on the Monsters frame`s line (data-feedback error) and calls no care reducer', async () => {
+    // WRONG IMPL KILLED: a success heuristic on the message text (`startsWith('care:')` or
+    // `endsWith('!')` would paint the disconnected line as an error only by accident of its
+    // wording; the line must be an ERROR because the care was not sent, not because of its
+    // spelling); a frozen gate lost on the sheet path (a dead connection is called and hangs); the
+    // disconnected line routed to the hidden raising view or swallowed.
+    await bootAtSheetCare();
+    H.frozen = true;
+
+    tap('Enter', 1050); // A on Care
+    await flush();
+
+    expect(callsOf('care'), 'a frozen link never reaches the care reducer').toEqual([]);
+    const disconnected = i18nT('chrome.feedback.disconnected');
+    expect(disconnected, 'fixture: the disconnected line is real text').not.toBe('');
+    expect(boxLineText(), 'the Monsters frame`s line reads the disconnected line').toBe(
+      disconnected,
+    );
+    expect(isShown(boxLine()), 'and it is showing').toBe(true);
+    expect(boxLine().getAttribute('data-feedback')).toBe('error');
+    expect(raisingLineText(), 'raising`s hidden line is not painted').toBe('');
+    expect(statusText(), 'nor is the status line').toBe('');
+  });
+
+  it('QF2-1-BOOT-SHEET-TRAIN-FROZEN: a feed pressed on the Monsters sheet with the link frozen shows `train: <disconnected>` on the Monsters frame`s line (data-feedback error), calls no train reducer and leaves the status line empty', async () => {
+    // WRONG IMPL KILLED: a `sendGuarded` whose disconnected arm drops the frame`s line (the
+    // frozen-link line lands on `#status` under the frame while the rejection arm paints the
+    // frame: two surfaces for one action); a frozen gate lost on the train path; a disconnected
+    // line that no longer names the action (`where`).
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await bootAtFeedList();
+    H.frozen = true;
+
+    tap('Enter', 1070); // A on the food
+    await flush();
+
+    expect(callsOf('train'), 'a frozen link never reaches the train reducer').toEqual([]);
+    const expected = i18nTf('chrome.status.disconnected', { where: 'train' });
+    expect(expected, 'fixture: the line names the action').toContain('train');
+    expect(boxLineText(), 'the Monsters frame`s line reads the disconnected line').toBe(expected);
+    expect(isShown(boxLine()), 'and it is showing').toBe(true);
+    expect(boxLine().getAttribute('data-feedback')).toBe('error');
+    expect(statusText(), 'and the status line stays empty').toBe('');
+    expect(
+      errorSpy.mock.calls.some((c) => c[0] === '[status]' && c[1] === expected),
+      'it is still logged',
+    ).toBe(true);
+  });
+
+  it('QF2-1-BOOT-FR-CARED: under ?locale=fr a Monsters-sheet care paints the French success line (the catalog value, not the English one) on the Monsters frame`s line, data-feedback ok', async () => {
+    // WRONG IMPL KILLED: a success test hardcoded to the English text (`message === 'Cared!'`):
+    // under fr the success message differs, so it would be painted as an error (or not at all);
+    // a success line resolved from the English catalog; a kind taken from the text`s spelling.
+    const fr = (CATALOG_FR as unknown as Record<string, string>)['raising.feedback.cared'];
+    expect(fr, 'fixture: the fr success line exists').toBeTypeOf('string');
+    expect(fr, 'fixture: it differs from the English one').not.toBe(
+      i18nT('raising.feedback.cared'),
+    );
+    await bootAtSheetCare('/?locale=fr');
+
+    tap('Enter', 1050); // A on Care
+    await flush();
+
+    expect(callsOf('care'), 'Care reached the care reducer once').toHaveLength(1);
+    expect(boxLineText(), 'the line carries the French success line').toBe(fr);
+    expect(isShown(boxLine()), 'and it is showing').toBe(true);
+    expect(boxLine().getAttribute('data-feedback')).toBe('ok');
+    expect(raisingLineText(), 'raising`s hidden line is not painted').toBe('');
+    expect(statusText(), 'nor is the status line').toBe('');
+  });
+
+  it('QF2-1-BOOT-EVERY-BUTTON-ENDS-LINE: from a freshly painted Monsters line, each of Up, Left, Right, A and B ends it at once', async () => {
+    // WRONG IMPL KILLED: a router that ends the line on Down only (or on the nav buttons only);
+    // one that clears AFTER routing the button (a care re-sent by A would leave the old answer
+    // up while the new one is in flight: the A row reads the line before anything settles); one
+    // that clears only the text and leaves the line showing. Each row starts from a fresh,
+    // shown success line (the control), then reads the line right after the press.
+    await bootAtSheetCare();
+    let t = 1050;
+    const cared = i18nT('raising.feedback.cared');
+    const freshLine = async (): Promise<void> => {
+      // Cursor on Care, then A: a new success line.
+      expect(
+        byId('monstersSheet-root-care').getAttribute('aria-selected'),
+        'the cursor is on Care before a fresh line',
+      ).toBe('true');
+      tap('Enter', t);
+      t += 20;
+      await flush();
+      expect(boxLineText(), 'control: a fresh success line shows').toBe(cared);
+      expect(isShown(boxLine()), 'control: and it is showing').toBe(true);
+    };
+    const expectEnded = (label: string): void => {
+      expect(boxLineText(), `${label}: the line is ended`).toBe('');
+      expect(boxLine().hasAttribute('data-feedback'), `${label}: no data-feedback`).toBe(false);
+      expect(isShown(boxLine()), `${label}: and hidden`).toBe(false);
+    };
+
+    await freshLine();
+    tap('ArrowUp', t); // Care -> Summary
+    t += 20;
+    expect(
+      byId('monstersSheet-root-summary').getAttribute('aria-selected'),
+      'control: Up reached the screen (the cursor moved to Summary)',
+    ).toBe('true');
+    expectEnded('Up');
+    tap('ArrowDown', t); // back to Care
+    t += 20;
+
+    await freshLine();
+    tap('ArrowLeft', t);
+    t += 20;
+    expectEnded('Left');
+
+    await freshLine();
+    tap('ArrowRight', t);
+    t += 20;
+    expectEnded('Right');
+
+    // A on Care re-sends: the old answer must be gone BEFORE the new one settles.
+    await freshLine();
+    const held = deferred();
+    H.answer.care = () => held.promise;
+    tap('Enter', t);
+    t += 20;
+    expect(callsOf('care'), 'control: A on Care sent another care').toHaveLength(5);
+    expectEnded('A');
+    held.resolve();
+    await flush();
+    H.answer.care = undefined;
+
+    // The held care settled just now: its success line is the fresh line for the B row.
+    expect(boxLineText(), 'control: the settled care painted a fresh success line').toBe(cared);
+    expect(isShown(boxLine()), 'control: and it is showing').toBe(true);
+    tap('Backspace', t); // B: out of the sheet
+    t += 20;
+    expectEnded('B');
+  });
+
+  it('QF2-1-BOOT-FOCUS-NOT-STOLEN: a care answer that lands while the player is typing a nickname paints its line and leaves focus on the field with the typed text untouched', async () => {
+    // WRONG IMPL KILLED: an outcome paint that re-applies the whole screen paint (re-prefilling the
+    // field with the monster`s nickname, wiping what was typed) or re-focuses an anchor (the
+    // player`s keystrokes would go to the page and its hotkeys); an outcome that blocks until
+    // typing ends; an answer dropped because the sheet moved on.
+    await bootAtSheetCare();
+    await flush(); // the frame`s deferred anchor focus lands before the player focuses the field
+    const pending = deferred();
+    H.answer.care = () => pending.promise;
+    tap('Enter', 1050); // A on Care: in flight
+    expect(callsOf('care'), 'precondition: the care was sent').toHaveLength(1);
+    tap('ArrowDown', 1060); // Feed…
+    tap('ArrowDown', 1070); // Evolve…
+    tap('ArrowDown', 1080); // Nickname
+    tap('Enter', 1090); // A on Nickname: the typing row
+    const field = document.getElementById('monsters-nickname-input');
+    expect(field, 'precondition: the nickname field exists').not.toBeNull();
+    const input = field as HTMLInputElement;
+    expect(document.activeElement, 'precondition: the field holds focus').toBe(input);
+    typeInto(input, 'ab');
+    expect(input.value, 'precondition: the typed text is in the field').toBe('ab');
+
+    pending.resolve();
+    await flush();
+
+    expect(boxLineText(), 'the answer landed on the Monsters line').toBe(
+      i18nT('raising.feedback.cared'),
+    );
+    expect(document.activeElement, 'focus is still on the field').toBe(input);
+    expect(input.value, 'and so is the typed text').toBe('ab');
+  });
+
+  it('QF2-1-BOOT-TRAIN-LATE-FALLS-BACK-TO-STATUS: a feed rejection that settles after the Monsters frame was left shows `train: <reason>` on the status line (it does not vanish); a care settled after leaving still paints nowhere', async () => {
+    // WRONG IMPL KILLED: a train whose sink swallows a rejection that arrives after the invoking
+    // frame is gone (the failure would be reported nowhere: the pre-qf-2 surface was the status
+    // line, and a lost server reason is worse than a misplaced one); a fallback that paints the
+    // status line for a SUCCESS or for care (care keeps the raising stale-message parity: the
+    // late care answer stays out of every surface, pinned by QF2-1-BOOT-SINK-FIXED-AT-SEND).
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await bootAtFeedList();
+    let rejectTrain: () => void = () => undefined;
+    H.answer.train = () =>
+      new Promise<void>((_resolve, reject) => {
+        rejectTrain = () => reject(senderError('not enough food'));
+      });
+
+    tap('Enter', 1070); // A on the food: train is in flight
+    expect(callsOf('train'), 'precondition: the feed was sent').toHaveLength(1);
+    tap('Escape', 1080); // Start: back to the bare world
+    expect(stackNames(), 'precondition: Monsters was left').toEqual(['world']);
+    expect(statusText(), 'precondition: nothing reported yet').toBe('');
+    rejectTrain();
+    await flush();
+
+    expect(statusText(), 'the late rejection falls back to the status line').toBe(
+      'train: not enough food',
+    );
+    expect(boxLineText(), 'the left frame`s line stays empty').toBe('');
+    expect(
+      errorSpy.mock.calls.some((c) => c[0] === '[status]' && c[1] === 'train: not enough food'),
+      'and it is logged',
+    ).toBe(true);
   });
 });

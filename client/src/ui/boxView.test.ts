@@ -4800,4 +4800,54 @@ describe('BoxView qf-2: the outcome line (QF2.1, QF2.2)', () => {
     expect(qf2Shown(cleared.root), 'nor does a paint').toEqual([]);
     expect(() => cleared.view.clearOutcome(), 'clearing again is harmless').not.toThrow();
   });
+
+  it('QF2-1-VIEW-REDUNDANT-SHOW: a sink taken from an open view still paints after a redundant show() on the already-visible view (the same open)', () => {
+    // WRONG IMPL KILLED: an open counter bumped at the top of show(), above the `wasVisible` early
+    // return: main.ts re-shows a visible frame on routine paths (a toggle, a menu step), and every
+    // such re-show would make the in-flight sink stale, so the answer of a care sent just before
+    // would be swallowed again. The control is a sink taken from a real earlier open (hide + show),
+    // which must still be stale.
+    const { view, root } = c8bOpen();
+    const sink = view.feedbackLine();
+    view.show();
+    view.show();
+    sink(QF2_OK_TEXT, 'ok');
+    const lines = qf2Shown(root);
+    expect(lines, 'the sink of the same open still paints').toHaveLength(1);
+    expect((lines[0] as HTMLElement).textContent).toBe(QF2_OK_TEXT);
+    expect((lines[0] as HTMLElement).getAttribute('data-feedback')).toBe('ok');
+
+    const old = view.feedbackLine();
+    view.hide();
+    view.show();
+    old(QF2_ERR_TEXT, 'error');
+    expect(qf2Shown(root), 'control: a sink of a real earlier open is stale').toEqual([]);
+  });
+
+  it('QF2-1-VIEW-SINK-RESULT: the sink returns true iff it painted: true for a live sink, false while the view is hidden and false for a sink of an earlier open', () => {
+    // WRONG IMPL KILLED: a sink that returns nothing (the caller cannot tell a painted answer from
+    // a dropped one, so a dropped train rejection cannot fall back to the status line); one that
+    // always returns true (the fallback would never fire); one that returns true for a hidden or
+    // stale call; one that returns false for a live paint.
+    const { view, root } = c8bOpen();
+    const sink = view.feedbackLine();
+    expect(sink(QF2_OK_TEXT, 'ok'), 'a live sink painted').toBe(true);
+    expect(qf2Shown(root), 'precondition: it really painted').toHaveLength(1);
+    expect(sink(QF2_ERR_TEXT, 'error'), 'a live sink painted again').toBe(true);
+
+    view.hide();
+    expect(sink(QF2_OK_TEXT, 'ok'), 'a hidden view painted nothing').toBe(false);
+
+    view.show();
+    expect(sink(QF2_OK_TEXT, 'ok'), 'a sink of an earlier open painted nothing').toBe(false);
+    expect(qf2Shown(root), 'and nothing shows').toEqual([]);
+
+    const fresh = view.feedbackLine();
+    expect(fresh(QF2_OK_TEXT, 'ok'), 'the current open`s sink paints').toBe(true);
+
+    const cold = c8bMount();
+    expect(cold.view.feedbackLine()(QF2_OK_TEXT, 'ok'), 'a never-shown view paints nothing').toBe(
+      false,
+    );
+  });
 });
