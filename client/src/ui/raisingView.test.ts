@@ -413,6 +413,13 @@ describe('RaisingView qf-9: the raising root is inventory-only (QF9.2)', () => {
     for (const word of QF9_RETIRED_ENGLISH) {
       expect(text.includes(word), `the raising root must not contain "${word}"`).toBe(false);
     }
+    // WRONG IMPL KILLED (red-team): a plain <div> listing only the monsters` names (no button, no
+    // stats, no retired label): every seeded nickname, read off the very view-model, is absent.
+    const seeded = raTrainVm().monsters.map((m) => m.nickname);
+    expect(seeded.length, 'precondition: monsters are seeded').toBeGreaterThan(0);
+    for (const nickname of seeded) {
+      expect(text.includes(nickname), `no monster nickname "${nickname}" in the root`).toBe(false);
+    }
     expect(
       [...root.querySelectorAll('h3')].map((h) => h.textContent),
       'the only section heading is the Inventory one',

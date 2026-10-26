@@ -96,7 +96,7 @@ export class RaisingView {
   readonly #inventoryLabelEl: HTMLHeadingElement;
   readonly #inventoryEl: HTMLDivElement;
   #visible = false;
-  // What each list container shows, as a render key (R-ci-fix-20261002T0901Z-RAISINGVIEWREBUILD):
+  // What the inventory grid shows, as a render key (R-ci-fix-20261002T0901Z-RAISINGVIEWREBUILD):
   // a store batch arrives several times a second, and the grid must not be rebuilt for an unchanged
   // view-model on each one.
   readonly #rendered = new Map<HTMLElement, string>();

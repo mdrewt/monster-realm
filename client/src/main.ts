@@ -1635,15 +1635,15 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
       return DONE;
     case 'care': {
       // The whole decision (frozen gate / await / exactly-one message) lives in the tested
-      // performCare core. The answer goes to the sender's line (the Monsters sheet's, qf-2), else
-      // to the status line — never nowhere.
-      // qf-9: one care in flight per monster (the raising card held this lock before the sheet
-      // was the only invoker): a second A before the answer would flash "Cared!" then the cooldown.
+      // performCare core. The answer goes to the line of the frame that sent it (the Monsters
+      // sheet's, qf-2; a frame left since paints nothing), or with no such line to the status line.
+      // qf-9: one care in flight per monster: a second A before the answer would flash "Cared!"
+      // then the cooldown.
       const { monsterId } = command;
       if (careInFlight.has(monsterId)) return DONE;
+      const cared = i18nT('raising.feedback.cared');
       const token = {};
       careInFlight.set(monsterId, token);
-      const cared = i18nT('raising.feedback.cared');
       return performCare({
         call: () => liveReducers()?.care({ monsterId }),
         successMessage: cared,

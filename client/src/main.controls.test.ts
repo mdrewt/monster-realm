@@ -4532,6 +4532,24 @@ describe('main.ts Monsters Summary stats and the care in-flight guard (runtime, 
     expect(isShown(q9Line()), 'still showing').toBe(true);
   });
 
+  it('QF9-1-BOOT-SUMMARY-STATS-STORAGE: a boxed (Storage) monster`s Summary shows its stats too: the stats map covers every own monster, not only the party', async () => {
+    // WRONG IMPL KILLED: a stats map built from the party list alone (main.ts passing
+    // `buildMonsterStats` only the party slots, or filtering `partySlot < partySize`): a monster
+    // in Storage would open a Summary whose stats line is empty and hidden, while its name and HP
+    // line show. The monster here is boxed (slot 255) and reached through the Storage tab (RB).
+    const boxed: StoreMonsterPub = { ...Q9_STATS_MONSTER, partySlot: 255 };
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertMonster(boxed);
+    server(1010);
+    tap('KeyV', 1020);
+    tap('PageDown', 1025); // RB: the Storage tab
+    tap('Enter', 1030); // A on the boxed monster: its sheet, the cursor on Summary
+    tap('Enter', 1040); // A on Summary: the pane
+    expect(q9Line().textContent, 'the boxed monster`s own row').toBe(q9En(boxed));
+    expect(isShown(q9Line()), 'and it is showing').toBe(true);
+  });
+
   it('QF9-1-BOOT-SUMMARY-STATS-PER-MONSTER: with two own monsters the Summary of the SECOND shows the second`s own row, not the first`s', async () => {
     // WRONG IMPL KILLED: a stats map keyed by the party slot or the list index instead of the
     // monster id (the second pane would show the first monster's numbers); a map holding only the
@@ -4673,6 +4691,126 @@ describe('main.ts Monsters Summary stats and the care in-flight guard (runtime, 
     ).toEqual([{ monsterId: 31n }, { monsterId: 32n }, { monsterId: 31n }]);
     await flush();
     second.resolve();
+    await flush();
+  });
+
+  it('QF9-3-BOOT-CARE-GUARD-SURVIVES-BATCH: a store batch while a care is pending keeps the monster blocked: a second A after the batch still sends nothing', async () => {
+    // WRONG IMPL KILLED: a guard cleared on every store batch (or by the frame repaint a batch
+    // causes): the care rewrites monster_pub, so its own batch would free the monster while the
+    // reducer call is still in flight and a second A would double-send.
+    await bootAtSheetCare();
+    const held = deferred();
+    H.answer.care = () => held.promise;
+    tap('Enter', 1050); // A on Care: pending
+    expect(callsOf('care'), 'precondition: the care was sent').toHaveLength(1);
+    opts.store.upsertMonster({ ...RAISED_MONSTER, nickname: 'renamed' });
+    server(1060); // a batch changes the monster the sheet names
+    tap('Enter', 1070); // A again, after the batch
+    expect(callsOf('care'), 'the guard survives a batch').toHaveLength(1);
+    held.resolve();
+    await flush();
+  });
+
+  it('QF9-3-BOOT-CARE-GUARD-SETTLE-FREES-ONLY-ITS-MONSTER: with cares pending for 31 and 32, settling 31`s does not free 32: a second A on 32 still sends nothing', async () => {
+    // WRONG IMPL KILLED: a release that clears the whole guard map (or a single shared slot) when
+    // any care settles: 31`s settle would free 32 while 32`s reducer call is still in flight and
+    // a second A on 32 would double-send.
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertMonster(RAISED_MONSTER); // 31n, party slot 0
+    opts.store.upsertMonster({ ...RAISED_MONSTER, monsterId: 32n, nickname: 'm32', partySlot: 1 });
+    server(1010);
+    const first = deferred();
+    const second = deferred();
+    H.answer.care = (args) =>
+      (args as { monsterId: bigint }).monsterId === 31n ? first.promise : second.promise;
+    tap('KeyV', 1020);
+    tap('Enter', 1030); // monster 31's sheet
+    tap('ArrowDown', 1040); // Care
+    tap('Enter', 1050); // care 31 pending
+    tap('Backspace', 1060); // out of the sheet
+    tap('ArrowDown', 1070); // the second monster
+    tap('Enter', 1080); // its sheet
+    tap('ArrowDown', 1090); // Care
+    tap('Enter', 1100); // care 32 pending
+    expect(callsOf('care'), 'precondition: both cares were sent').toHaveLength(2);
+    first.resolve();
+    await flush();
+    tap('Enter', 1110); // a second A on 32 while 32 is still pending
+    expect(callsOf('care'), '32 must still be blocked').toHaveLength(2);
+    second.resolve();
+    await flush();
+  });
+
+  it('QF9-3-BOOT-CARE-GUARD-BIGINT-IDS: monster ids that differ only past 2^53 guard independently: a care pending for one does not block the other', async () => {
+    // WRONG IMPL KILLED: a guard keyed through Number(monsterId) (or a decimal-lossy key): ids
+    // 2^53 and 2^53 + 1 are the SAME Number, so the second monster`s care would be swallowed as a
+    // duplicate of the first`s.
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertMonster({ ...RAISED_MONSTER, monsterId: 9007199254740992n });
+    opts.store.upsertMonster({
+      ...RAISED_MONSTER,
+      monsterId: 9007199254740993n,
+      nickname: 'm32',
+      partySlot: 1,
+    });
+    server(1010);
+    const first = deferred();
+    const second = deferred();
+    H.answer.care = (args) =>
+      (args as { monsterId: bigint }).monsterId === 9007199254740992n
+        ? first.promise
+        : second.promise;
+    tap('KeyV', 1020);
+    tap('Enter', 1030); // the first monster's sheet
+    tap('ArrowDown', 1040); // Care
+    tap('Enter', 1050); // care for 2^53 pending
+    tap('Backspace', 1060); // out of the sheet
+    tap('ArrowDown', 1070); // the second monster
+    tap('Enter', 1080); // its sheet
+    tap('ArrowDown', 1090); // Care
+    tap('Enter', 1100); // care for 2^53 + 1 while the first is pending
+    expect(
+      callsOf('care').map((c) => c.args),
+      'both ids reached the reducer',
+    ).toEqual([{ monsterId: 9007199254740992n }, { monsterId: 9007199254740993n }]);
+    first.resolve();
+    second.resolve();
+    await flush();
+  });
+
+  it('QF9-3-BOOT-CARE-GUARD-STALE-SETTLE: a care from before a reconnect that settles late does not free the newer care`s slot: a second A while the newer care is pending still sends nothing', async () => {
+    // WRONG IMPL KILLED: a release keyed on the monster id alone (`delete(id)` in `.finally`
+    // without comparing the token it stored): the OLD care`s late settle would delete the NEWER
+    // care`s entry and free the monster while the newer reducer call is in flight.
+    await bootAtSheetCare();
+    const old = deferred();
+    H.answer.care = () => old.promise;
+    tap('Enter', 1050); // A on Care: pending (the old care)
+    expect(callsOf('care'), 'precondition: the old care was sent').toHaveLength(1);
+    opts.store.reset(); // the drop edge
+    opts.onReconnect(H.identity);
+    opts.onHydrated();
+    opts.store.upsertMonster(RAISED_MONSTER);
+    server(1100);
+    const newer = deferred();
+    H.answer.care = () => newer.promise;
+    let t = 1110;
+    for (let i = 0; i < 4 && stackNames().length > 1; i += 1) {
+      tap('Escape', t);
+      t += 10;
+    }
+    tap('KeyV', t);
+    tap('Enter', t + 10);
+    tap('ArrowDown', t + 20);
+    tap('Enter', t + 30); // the newer care: pending
+    expect(callsOf('care'), 'precondition: the newer care was sent').toHaveLength(2);
+    old.resolve(); // the OLD care settles late
+    await flush();
+    tap('Enter', t + 40); // a second A while the newer care is pending
+    expect(callsOf('care'), 'the newer care slot survives the old settle').toHaveLength(2);
+    newer.resolve();
     await flush();
   });
 

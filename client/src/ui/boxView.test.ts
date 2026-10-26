@@ -5226,6 +5226,24 @@ describe('BoxView qf-9: the Summary shows the full stats (QF9.1)', () => {
     expect(c8bHidden(line, root)).toBe(false);
   });
 
+  it('QF9-1-VIEW-SUMMARY-STATS-ZERO: a monster whose stats are 0 still shows its line: zeros print as 0 and the line is neither blank nor hidden', () => {
+    // WRONG IMPL KILLED: a truthiness test on the stats row or its fields (`if (row.statSpeed)`,
+    // `value || ''`, a `!stats.statAttack` hide): a stat of 0 would blank or hide the whole line
+    // or print "undefined"/empty in its slot, as a missing row does.
+    const zero = q9Stats({ statSpeed: 0, statAttack: 0, statSpDefense: 0 });
+    const { view, root } = q9Open(
+      new Map([
+        ['101', zero],
+        ['100', q9KipStats()],
+      ]),
+    );
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101', summary: C8B_MOSS }));
+    const line = q9Line(root);
+    expect(line.textContent, 'zeros are printed, not dropped').toBe(q9En(zero));
+    expect(line.textContent ?? '', 'literal: a 0 in each slot').toContain('ATK 0 ');
+    expect(c8bHidden(line, root), 'and the line is showing').toBe(false);
+  });
+
   it('QF9-1-VIEW-SUMMARY-STATS-ABSENT: with no stats row for the summary monster (no map, an empty map, or a map of other monsters) the line is empty and hidden by inline display:none while the name and HP line still show', () => {
     // WRONG IMPL KILLED: a line that prints "undefined"/NaN/zeros for a missing row; one that
     // shows an empty bordered strip (visible but empty); one that borrows another monster`s row;

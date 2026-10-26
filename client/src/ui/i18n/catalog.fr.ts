@@ -647,9 +647,9 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // line.
   // raisingView.ts:318
   'raising.inventory.item': (p) => `${p.name} (x${p.count})`,
-  // @desc: Feedback line in the raising overlay after the server accepted a Care action on a
+  // @desc: Feedback line on the Monsters sheet after the server accepted a Care action on a
   // monster. One short line.
-  // main.ts:2615 (onCare adapter; pre-migration careAction.ts CARED_MESSAGE)
+  // main.ts (dispatch, the `care` arm; pre-migration careAction.ts CARED_MESSAGE)
   'raising.feedback.cared': 'Choyé !',
   // @desc: Heading of the party & box overlay, where the player arranges which monsters are in
   // the active party and which stay in storage; quoted inside battle.swap.hint. One short line.
@@ -683,10 +683,10 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // boxView.ts:205
   'box.card.stats': (p) =>
     `${p.species} · Niv.${p.level} · PV ${p.current}/${p.max} (${p.percent} %)`,
-  // @desc: The full-stats line of the Monsters Summary pane; {trust} is the trust tier name (e.g.
-  // "Amical") and the five numbers are {attack}, {defense}, {speed}, {spAttack} (special
-  // attack) and {spDefense} (special defense), each prefixed by its French abbreviation. One line
-  // of small text, about 70 characters wide.
+  // @desc: The full-stats line of the Monsters Summary pane; {trust} is the server's trust tier
+  // tag, not translated (e.g. "Friendly"), and the five numbers are {attack}, {defense},
+  // {speed}, {spAttack} (special attack) and {spDefense} (special defense), each prefixed by its
+  // French abbreviation. One line of small text, about 70 characters wide.
   // boxView.ts (the Summary part)
   'box.summary.stats': (p) =>
     `Confiance ${p.trust} · ATQ ${p.attack} · DÉF ${p.defense} · VIT ${p.speed} · ATQ SPÉ ${p.spAttack} · DÉF SPÉ ${p.spDefense}`,
