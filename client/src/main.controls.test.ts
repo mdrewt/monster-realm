@@ -87,23 +87,30 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () =>
 // behind a second proxy that consults `H.answer` per reducer name AFTER the call was recorded.
 vi.mock('./net/connection', () => {
   const base = connectionRecordingMock(H);
+  // The recording mock hands back the SAME stub (the same `live` object) on every connect(), so the
+  // reducers are wrapped exactly ONCE: a second wrap would nest the proxies, and the inner one would
+  // create (and the outer discard) a second, rejected `answer()` promise per call.
+  const wrapped = new WeakSet<object>();
   return {
     connect: (connectOpts: ConnectionOptions) => {
       const conn = base.connect(connectOpts);
       const live = conn.live() as unknown as {
         reducers: Record<string, (args: unknown) => Promise<void>>;
       };
-      const recording = live.reducers;
-      live.reducers = new Proxy(
-        {},
-        {
-          get: (_t, name) => (args: unknown) => {
-            const recordedPromise = recording[String(name)]?.(args);
-            const answer = H.answer[String(name)];
-            return answer === undefined ? recordedPromise : answer(args);
+      if (!wrapped.has(live)) {
+        wrapped.add(live);
+        const recording = live.reducers;
+        live.reducers = new Proxy(
+          {},
+          {
+            get: (_t, name) => (args: unknown) => {
+              const recordedPromise = recording[String(name)]?.(args);
+              const answer = H.answer[String(name)];
+              return answer === undefined ? recordedPromise : answer(args);
+            },
           },
-        },
-      ) as Record<string, (args: unknown) => Promise<void>>;
+        ) as Record<string, (args: unknown) => Promise<void>>;
+      }
       return conn;
     },
   };
