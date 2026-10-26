@@ -217,7 +217,8 @@
 /*
  * Every static overlay list in client/index.html (qf-4, QF4.3). Without this the UA paints a disc
  * marker on each row, and on the active row the marker takes the inverted colour and vanishes:
- * the "bullets on every row but the selected one" artifact. The active row's ▶ is drawn above.
+ * the "bullets on every row but the selected one" artifact. The active row's ▶ is
+ * `.mr-nav-item.is-active::before`, below.
  */
 .mr-nav-list {
   list-style: none;

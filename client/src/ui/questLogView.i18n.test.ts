@@ -179,25 +179,40 @@ describe('m24s5 (ADR-0261): questLogView.ts routes its row through tf()', () => 
 //
 // RED REASON AT HEAD: the keys `journal.title` / `journal.empty` are in neither catalog and the
 // view builds neither element, so every getElementById below is null and every catalog read is
-// undefined. The keys are not in the MessageId union yet, so the literals are cast with `as never`.
+// undefined.
 //
 // The view is constructed BEFORE the resolver is swapped (setLocale runs before construction in
 // main.ts, so production would pass either way): the title and the empty line must be read from the
-// resolver at RENDER time, which a constructor-time write would miss.
+// resolver at RENDER time, which a constructor-time write would miss. The sentinel tests also render
+// once with the real resolver and swap it while the Journal stays OPEN, so a write made only on the
+// hidden-to-visible edge is caught.
 // ---------------------------------------------------------------------------
 
 describe('QuestLogView qf-4: the title and empty state go through the i18n resolver', () => {
   it('QF4-1-TITLE-I18N-SENTINEL: under a «key» sentinel the title text is exactly the resolver output for journal.title, as plain text, written at render time', () => {
     // WRONG IMPL KILLED: a literal `Journal` in the view (the sentinel never appears); a title
     // resolved once in the constructor (this view is built BEFORE the swap, so a stale write shows
-    // the real text); a title assembled by concatenation or markup around the resolver output.
+    // the real text); a title written only on the hidden-to-visible edge (the first render below
+    // opens the Journal with the real resolver, the swap happens while it stays open, and the
+    // second render is NOT an edge); a title assembled by concatenation or markup around the
+    // resolver output.
     mountQuestLogOverlay();
     const view = new QuestLogView();
+    const vm = questVm([{ questId: 'quest_lark', stepIndex: 1, displayName: 'quest_lark' }]);
+
+    view.render(vm);
+    expect(view.visible, 'precondition: the Journal is open').toBe(true);
+    expect(
+      document.getElementById('quest-log-title')?.textContent,
+      'precondition: the real resolver wrote the real title',
+    ).toBe('Journal');
 
     try {
+      vi.mocked(i18nT).mockClear();
       vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
 
-      view.render(questVm([{ questId: 'quest_lark', stepIndex: 1, displayName: 'quest_lark' }]));
+      view.render(vm);
+      expect(view.visible, 'still open: the second render is not an edge').toBe(true);
       const title = document.getElementById('quest-log-title');
       expect(title, 'the title exists').not.toBeNull();
       expect(title?.textContent, 'exactly the resolver output').toBe('«journal.title»');
@@ -208,7 +223,7 @@ describe('QuestLogView qf-4: the title and empty state go through the i18n resol
     }
 
     // Post-restore call-through control.
-    expect(i18nT('journal.title' as never)).toBe('Journal');
+    expect(i18nT('journal.title')).toBe('Journal');
   });
 
   it('QF4-1-TITLE-I18N-LOCALE: after the locale switches to fr the next render writes the fr catalog`s journal.title', () => {
@@ -245,14 +260,25 @@ describe('QuestLogView qf-4: the title and empty state go through the i18n resol
   it('QF4-2-EMPTY-I18N-SENTINEL: under a «key» sentinel the empty line is exactly the resolver output for journal.empty while the list is empty, and is cleared once quests exist', () => {
     // WRONG IMPL KILLED: a literal English sentence in the view (the sentinel never appears); an
     // empty line resolved in the constructor (this view is built BEFORE the swap); the resolved text
-    // left in the hidden element once a quest exists.
+    // left in the hidden element once a quest exists; an empty line written only on the
+    // hidden-to-visible edge (the first render opens the Journal with the real resolver, the swap
+    // happens while it stays open, and the second render is NOT an edge).
     mountQuestLogOverlay();
     const view = new QuestLogView();
 
+    view.render(questVm([]));
+    expect(view.visible, 'precondition: the Journal is open').toBe(true);
+    expect(
+      document.getElementById('quest-log-empty')?.textContent,
+      'precondition: the real resolver wrote the real line',
+    ).toBe('No active quests yet. Talk to villagers to find out who needs help.');
+
     try {
+      vi.mocked(i18nT).mockClear();
       vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
 
       view.render(questVm([]));
+      expect(view.visible, 'still open: the second render is not an edge').toBe(true);
       const empty = document.getElementById('quest-log-empty');
       expect(empty, 'the empty element exists').not.toBeNull();
       expect(empty?.textContent, 'exactly the resolver output').toBe('«journal.empty»');
@@ -266,7 +292,7 @@ describe('QuestLogView qf-4: the title and empty state go through the i18n resol
     }
 
     // Post-restore call-through control.
-    expect(i18nT('journal.empty' as never)).toBe(
+    expect(i18nT('journal.empty')).toBe(
       'No active quests yet. Talk to villagers to find out who needs help.',
     );
   });

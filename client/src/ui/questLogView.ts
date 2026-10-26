@@ -25,9 +25,9 @@
 // ctl-8f: this root is the Journal frame. `paint(JournalPaint)` (screens/journalScreen.ts) is kept
 // and re-applied after every `render(vm)`, which rebuilds the rows each batch: the cursor row
 // carries the nav kit's marks (`mr-nav-item`, `is-active`, `aria-selected`) on the existing `<li>`
-// (an e2e pins their text), and `#quest-log-detail`, built here after the list, shows the open
-// quest's name and step. The hidden-to-visible edge resets the paint to the opening (the first row,
-// no detail), so a reopen never shows the last open's place.
+// (an e2e pins their text), and `#quest-log-detail`, built here after the list and the empty
+// state, shows the open quest's name and step. The hidden-to-visible edge resets the paint to the
+// opening (the first row, no detail), so a reopen never shows the last open's place.
 //
 // qf-4: the title (`#quest-log-title`, first child) and the empty state (`#quest-log-empty`, after
 // the list) are built here too, never in index.html, whose inner id roster indexShell.smoke.test.ts
@@ -91,7 +91,8 @@ export class QuestLogView {
 
     const open = this.rendered.active.find((q) => q.questId === this.kept.detail);
     this.detail.style.display = open === undefined ? 'none' : '';
-    const describedBy = open !== undefined ? this.detail : rows.length === 0 ? this.empty : null;
+    const emptyShown = this.empty.style.display !== 'none';
+    const describedBy = open !== undefined ? this.detail : emptyShown ? this.empty : null;
     if (describedBy === null) this.list.removeAttribute('aria-describedby');
     else this.list.setAttribute('aria-describedby', describedBy.id);
     this.detail.replaceChildren();

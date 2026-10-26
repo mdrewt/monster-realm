@@ -807,16 +807,59 @@ describe('QuestLogView ctl-8f: the listbox pointers and names', () => {
 // RED REASON AT HEAD: the view builds no title and no empty element, so every `getElementById` below
 // is null and every assertion on it fails.
 //
-// The catalog keys are added by this slice and are not in the MessageId union at the red phase, so
-// the two literals are cast with `as never`; the runtime resolver is the oracle either way.
 // ---------------------------------------------------------------------------
 
-const qf4TitleText = (): string => qf4T('journal.title' as never);
-const qf4EmptyText = (): string => qf4T('journal.empty' as never);
+const qf4TitleText = (): string => qf4T('journal.title');
+const qf4EmptyText = (): string => qf4T('journal.empty');
 const qf4Title = (): HTMLElement | null => document.getElementById('quest-log-title');
 const qf4Empty = (): HTMLElement | null => document.getElementById('quest-log-empty');
 /** How many elements carry this id (getElementById returns only the first, so a duplicate hides). */
 const qf4IdCount = (id: string): number => document.querySelectorAll(`[id="${id}"]`).length;
+
+/** The title is plain, visible, focus-inert text: nothing hides it, nothing styles it inline. */
+function qf4ExpectTitleInert(when: string): void {
+  const title = qf4Title() as HTMLElement;
+  expect(title, `${when}: the title exists`).not.toBeNull();
+  expect(title.hasAttribute('hidden'), `${when}: no hidden attribute`).toBe(false);
+  expect(title.hasAttribute('aria-hidden'), `${when}: no aria-hidden`).toBe(false);
+  expect(title.hasAttribute('tabindex'), `${when}: no tabindex`).toBe(false);
+  expect(title.hasAttribute('style'), `${when}: no inline style`).toBe(false);
+  expect(title.style.display, `${when}: display is not set`).toBe('');
+  expect(title.hidden, `${when}: not hidden`).toBe(false);
+  expect(title.className, `${when}: the class, exactly`).toBe('mr-frame-title');
+  expect(title.textContent, `${when}: the resolver's text`).toBe(qf4TitleText());
+  // The attribute NAME set is exactly id + class: no role (presentation strips the heading), no
+  // aria-live / aria-atomic (a title that announces itself on every render), nothing else.
+  expect(
+    Array.from(title.attributes)
+      .map((a) => a.name)
+      .sort(),
+    `${when}: attribute names are exactly class and id`,
+  ).toEqual(['class', 'id']);
+}
+
+/** The shown empty line is plain, visible, focus-inert text with no class and no inline style. */
+function qf4ExpectEmptyInert(when: string): void {
+  const empty = qf4Empty() as HTMLElement;
+  expect(empty, `${when}: the empty element exists`).not.toBeNull();
+  expect(empty.hasAttribute('hidden'), `${when}: no hidden attribute`).toBe(false);
+  expect(empty.hasAttribute('aria-hidden'), `${when}: no aria-hidden`).toBe(false);
+  expect(empty.hasAttribute('tabindex'), `${when}: no tabindex`).toBe(false);
+  expect(empty.hasAttribute('class'), `${when}: no class attribute at all`).toBe(false);
+  expect(empty.style.cssText, `${when}: shown, so no inline declaration remains`).toBe('');
+  expect(empty.style.length, `${when}: no inline property`).toBe(0);
+  expect(empty.hidden, `${when}: not hidden`).toBe(false);
+  // The attribute NAME set is exactly id, plus at most an EMPTY style attribute (happy-dom may keep
+  // `style=""` after display goes from none back to ''): no role, no aria-live, nothing else.
+  expect(
+    Array.from(empty.attributes)
+      .map((a) => a.name)
+      .filter((n) => n !== 'style')
+      .sort(),
+    `${when}: attribute names are exactly id (style aside)`,
+  ).toEqual(['id']);
+  expect(empty.getAttribute('style') ?? '', `${when}: any style attribute is empty`).toBe('');
+}
 
 describe('QuestLogView qf-4: the Journal title (QF4.1)', () => {
   it('QF4-1-TITLE-FIRST-CHILD: after a render of any size the overlay holds exactly one #quest-log-title, its first element child, outside the listbox, class exactly mr-frame-title, text exactly the resolver`s journal.title', () => {
@@ -867,6 +910,38 @@ describe('QuestLogView qf-4: the Journal title (QF4.1)', () => {
     expect(title.hasAttribute('style')).toBe(false);
     expect(title.style.display).toBe('');
     expect(title.hidden).toBe(false);
+    qf4ExpectTitleInert('plain render');
+  });
+
+  it('QF4-1-TITLE-INERT-AFTER-PAINT: the title stays visible, un-hidden and inline-style-free after a paint that opens a detail, a paint with no detail, an unlisted detail, and a paint on an empty list', () => {
+    // WRONG IMPL KILLED: a later write in applyPaint that hides the title while a detail is open
+    // (heading.style.display = open ? "none" : "", heading.hidden = open !== undefined) or that
+    // marks it aria-hidden / tab-stop on some paint; the journal screen paints right after every
+    // render, so a title that passes only after a bare render is hidden in production.
+    const root = mountQuestLogOverlay();
+    const view = new QuestLogView();
+
+    view.render(questVm(3));
+    view.paint({ questId: 'quest_1', detail: 'quest_1' });
+    expect(ctl8fDetailShown(), 'precondition: a detail is open').toBe(true);
+    qf4ExpectTitleInert('detail open');
+
+    view.paint({ questId: 'quest_1', detail: null });
+    qf4ExpectTitleInert('no detail');
+
+    view.paint({ questId: 'quest_1', detail: 'ghost' });
+    qf4ExpectTitleInert('unlisted detail');
+
+    view.render(questVm(3));
+    qf4ExpectTitleInert('re-render keeps the paint');
+
+    view.render({ active: [] });
+    view.paint({ questId: null, detail: null });
+    qf4ExpectTitleInert('empty list, bare paint');
+    view.paint({ questId: null, detail: 'ghost' });
+    qf4ExpectTitleInert('empty list, unlisted detail');
+
+    expect(root.firstElementChild, 'and it is still the first child').toBe(qf4Title());
   });
 
   it('QF4-1-TITLE-ONE-AFTER-REOPEN: render, hide and render again (and a null render) never leave two titles, and the title stays the first child', () => {
@@ -1047,6 +1122,34 @@ describe('QuestLogView qf-4: the Journal empty state (QF4.2)', () => {
       'quests listed, no detail: no description',
     ).toBe(false);
   });
+
+  it('QF4-2-EMPTY-INERT: whenever the empty line is shown it is plain visible text — no hidden, aria-hidden, tabindex, class or inline style — on first show, after paints, and after a quests-then-empty cycle', () => {
+    // WRONG IMPL KILLED: an empty line that exists with the right text but cannot be seen or
+    // reached as text: className "sr-only", a hidden attribute, aria-hidden="true", a tabindex (a
+    // stray tab stop and a focus target), style.opacity "0" or any other inline declaration left
+    // behind next to display. Shown means no declaration at all: cssText is empty.
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+
+    view.render({ active: [] });
+    expect(qf4Empty()?.textContent, 'precondition: shown').toBe(qf4EmptyText());
+    qf4ExpectEmptyInert('first show');
+
+    view.paint({ questId: null, detail: null });
+    qf4ExpectEmptyInert('after a bare paint');
+    view.paint({ questId: null, detail: 'ghost' });
+    qf4ExpectEmptyInert('after an unlisted detail');
+
+    view.render(questVm(2));
+    expect(qf4Empty()?.style.display, 'precondition: hidden beside quests').toBe('none');
+    view.render({ active: [] });
+    expect(qf4Empty()?.textContent, 'precondition: shown again').toBe(qf4EmptyText());
+    qf4ExpectEmptyInert('after quests then empty');
+
+    view.hide();
+    view.render({ active: [] });
+    qf4ExpectEmptyInert('after hide then empty');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1163,6 +1266,18 @@ function qf4TopLevelRules(css: string): Qf4CssRule[] {
   return rules;
 }
 
+/** The computed `list-style` of a fresh shallow clone of `el` (same attributes, same parent), then
+ *  gone again. happy-dom caches computed style per element, so reading the live element at several
+ *  moments would return the first answer each time; a clone is read exactly once. */
+function qf4FreshListStyle(el: HTMLElement): string {
+  const probe = el.cloneNode(false) as HTMLElement;
+  probe.removeAttribute('id');
+  (el.parentElement ?? document.body).appendChild(probe);
+  const style = getComputedStyle(probe).listStyle;
+  probe.remove();
+  return style;
+}
+
 describe('QuestLogView qf-4: the list-style sweep (QF4.3)', () => {
   const stylesCss = readFileSync(QF4_STYLES_CSS_PATH, 'utf8');
   let sheet: HTMLStyleElement | null = null;
@@ -1268,5 +1383,159 @@ describe('QuestLogView qf-4: the list-style sweep (QF4.3)', () => {
     expect(list, 'the real #quest-log-list is still the view`s list').not.toBeNull();
     expect(list.classList.contains(QF4_NAV_LIST), 'the class survives the view').toBe(true);
     expect(getComputedStyle(list).listStyle, 'and still computes none').toBe('none');
+  });
+
+  it('QF4-3-RUNTIME-KEEPS-CLASS-REOPEN: over the real markup, #quest-log-list keeps mr-nav-list and computes list-style none after hide(), after render(null), after a second open, and after an empty render', () => {
+    // WRONG IMPL KILLED: a class wiped on the close paths (list.className = "" in hide() or in the
+    // render(null) branch), only on the second open edge, or by an empty render
+    // (removeAttribute("class")): each passes a single render-paint-render cycle. Each step checks
+    // the class on the list itself AND the computed style of a fresh shallow clone of it (happy-dom
+    // caches computed style per element, so the list is never read twice).
+    const view = new QuestLogView();
+    const list = document.getElementById('quest-log-list') as HTMLElement;
+    expect(list, 'precondition: the real list').not.toBeNull();
+
+    const expectSwept = (when: string): void => {
+      expect(document.getElementById('quest-log-list'), `${when}: still the same list`).toBe(list);
+      expect(list.classList.contains(QF4_NAV_LIST), `${when}: carries ${QF4_NAV_LIST}`).toBe(true);
+      expect(list.hasAttribute('style'), `${when}: no inline style`).toBe(false);
+      expect(qf4FreshListStyle(list), `${when}: computes list-style none`).toBe('none');
+    };
+
+    view.render(questVm(2));
+    expectSwept('first open');
+    view.hide();
+    expectSwept('after hide()');
+    view.render(questVm(2));
+    expectSwept('second open');
+    view.render(null);
+    expectSwept('after render(null)');
+    view.render(questVm(2));
+    expectSwept('third open');
+    view.render({ active: [] });
+    expectSwept('after an empty render');
+    view.paint({ questId: null, detail: 'ghost' });
+    expectSwept('after a paint on the empty list');
+    view.hide();
+    view.render({ active: [] });
+    expectSwept('reopened empty');
+  });
+
+  it('QF4-3-ROWS-NO-MARKER: a rendered quest row (cursor and not), and a fresh li.mr-nav-item probe (active and not) inside a classed <ul>, compute list-style none', () => {
+    // WRONG IMPL KILLED: a marker painted on the <li> instead of the <ul>
+    // (.mr-nav-list > li { list-style: disc }, li.mr-nav-item { display: list-item; list-style:
+    // disc }, an is-active variant): the <ul> reads none while every row still shows a bullet.
+    // Every element is read once (happy-dom caches computed style per element).
+    const view = new QuestLogView();
+    view.render(questVm(3));
+    view.paint({ questId: 'quest_1', detail: null });
+    const list = document.getElementById('quest-log-list') as HTMLElement;
+    const rows = [...list.children] as HTMLElement[];
+    expect(rows, 'ANTI-VACUITY: three real rows').toHaveLength(3);
+    expect(
+      rows.map((r) => r.classList.contains('is-active')),
+      'one is the cursor, the others are not',
+    ).toEqual([false, true, false]);
+    for (const [i, row] of rows.entries()) {
+      expect(getComputedStyle(row).listStyle, `real row ${i}: list-style none`).toBe('none');
+    }
+
+    const probeList = document.createElement('ul');
+    probeList.className = QF4_NAV_LIST;
+    const plain = document.createElement('li');
+    plain.className = 'mr-nav-item';
+    const active = document.createElement('li');
+    active.className = 'mr-nav-item is-active';
+    probeList.append(plain, active);
+    document.body.appendChild(probeList);
+    expect(getComputedStyle(plain).listStyle, 'probe li.mr-nav-item').toBe('none');
+    expect(getComputedStyle(active).listStyle, 'probe li.mr-nav-item.is-active').toBe('none');
+  });
+
+  it('QF4-3-SHEET-NO-OTHER-MARKER: no rule anywhere in styles.css (media blocks included) sets list-style, list-style-type or list-style-image to anything but none, and no ::marker rule exists', () => {
+    // WRONG IMPL KILLED: a marker re-enabled by a second rule the class rule does not see (a li
+    // child rule, a row rule, a rule inside a @media block, list-style: disc / square / inside /
+    // a url() image) or restyled through ::marker. ANTI-VACUITY: the scan finds the
+    // .mr-nav-list rule's own declaration, so an empty or unparsed sheet cannot pass.
+    const stripped = stylesCss.replace(/\/\*[\s\S]*?\*\//g, '');
+    const declared: string[] = [];
+    for (const match of stripped.matchAll(/(list-style(?:-type|-image)?)\s*:\s*([^;}]*)/gi)) {
+      declared.push(
+        `${(match[1] ?? '').toLowerCase()}: ${(match[2] ?? '')
+          .replace(/!important/i, '')
+          .trim()
+          .toLowerCase()}`,
+      );
+    }
+    expect(declared.length > 0, 'ANTI-VACUITY: the scan finds list-style declarations').toBe(true);
+    expect(declared, 'the .mr-nav-list rule is among them').toContain('list-style: none');
+    const notNone = declared.filter((d) => !d.endsWith(': none'));
+    expect(notNone, 'every list-style declaration is none').toEqual([]);
+
+    expect(/:{1,2}marker/i.test(stripped), 'no ::marker rule').toBe(false);
+  });
+
+  /** A FRESH copy of the real markup with a new view rendered over it (so every element's computed
+   *  style is read exactly once; happy-dom caches it per element). The previous view is closed
+   *  first so its a11y record never points at the replaced root. */
+  const openFreshJournal = (
+    previous: QuestLogView | null,
+    vm: QuestLogViewModel,
+  ): { view: QuestLogView; root: HTMLElement } => {
+    previous?.hide();
+    qf4AdoptRealIndexHtml();
+    const view = new QuestLogView();
+    view.render(vm);
+    return { view, root: document.getElementById('quest-log-overlay') as HTMLElement };
+  };
+
+  it('QF4-1-TITLE-CSS-VISIBLE: over the real markup and the real styles.css, the shown title computes display other than none and visibility other than hidden, with the overlay itself display block, for an empty and a non-empty Journal', () => {
+    // WRONG IMPL KILLED: a title hidden by the STYLESHEET rather than by the view (an appended
+    // `#quest-log-overlay .mr-frame-title { display: none }` or a `[id=quest-log-title]
+    // { visibility: hidden }` rule): every attribute and inline-style check passes it. ANTI-VACUITY:
+    // the same title computes bold from `.mr-frame-title`, which proves the sheet reaches it.
+    let previous: QuestLogView | null = null;
+    const cases: Array<[string, QuestLogViewModel]> = [
+      ['empty', { active: [] }],
+      ['with quests', questVm(2)],
+    ];
+    for (const [when, vm] of cases) {
+      const opened = openFreshJournal(previous, vm);
+      previous = opened.view;
+      const title = document.getElementById('quest-log-title') as HTMLElement;
+      expect(title, `${when}: the title exists`).not.toBeNull();
+      expect(getComputedStyle(opened.root).display, `${when}: the overlay is shown`).toBe('block');
+      const style = getComputedStyle(title);
+      expect(['bold', '700'], `${when}: ANTI-VACUITY: .mr-frame-title reaches it`).toContain(
+        style.fontWeight,
+      );
+      expect(style.display, `${when}: the title is displayed`).not.toBe('none');
+      expect(style.visibility, `${when}: the title is visible`).not.toBe('hidden');
+    }
+  });
+
+  it('QF4-2-EMPTY-CSS-VISIBLE: over the real markup and the real styles.css, the shown empty line computes display other than none and visibility other than hidden, and the hidden one (with quests) computes display none', () => {
+    // WRONG IMPL KILLED: an empty line hidden by the STYLESHEET (an appended `#quest-log-empty
+    // { display: none }` or `[id=quest-log-empty] { visibility: hidden }` rule): the inline-style
+    // and attribute checks pass it. ANTI-VACUITY: the hidden half proves a computed display of
+    // none is readable here, and the title in the same document computes bold from the sheet.
+    let previous: QuestLogView | null = null;
+
+    const shown = openFreshJournal(previous, { active: [] });
+    previous = shown.view;
+    const empty = document.getElementById('quest-log-empty') as HTMLElement;
+    expect(empty, 'the empty element exists').not.toBeNull();
+    expect(empty.textContent, 'precondition: it carries the line').toBe(qf4EmptyText());
+    expect(getComputedStyle(shown.root).display, 'the overlay is shown').toBe('block');
+    expect(['bold', '700'], 'ANTI-VACUITY: the sheet reaches elements of this document').toContain(
+      getComputedStyle(document.getElementById('quest-log-title') as HTMLElement).fontWeight,
+    );
+    const emptyStyle = getComputedStyle(empty);
+    expect(emptyStyle.display, 'shown: displayed').not.toBe('none');
+    expect(emptyStyle.visibility, 'shown: visible').not.toBe('hidden');
+
+    openFreshJournal(previous, questVm(2));
+    const hidden = document.getElementById('quest-log-empty') as HTMLElement;
+    expect(getComputedStyle(hidden).display, 'with quests: hidden').toBe('none');
   });
 });

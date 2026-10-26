@@ -108,6 +108,7 @@ export type MessageId =
   | 'controls.cancel'
   | 'controls.saveFailed'
   | 'chrome.help.title'
+  // qf-4: not `chrome.journal.title` — resolver.test.ts pins the exact plain `chrome.*` roster.
   | 'journal.title'
   | 'help.tab.screen'
   | 'help.tab.controls'
