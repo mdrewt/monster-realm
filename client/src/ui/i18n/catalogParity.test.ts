@@ -830,6 +830,10 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // ctl-13 (named intentional change, CTL13.1/CTL13.3): the Start / Select chip labels leave
     // main.ts (ui/hintBarModel.ts resolves every chip verb); main.ts gains `chrome.chip.ok` (A's
     // verb beside a picker), the request sheet's three rows and the two request lines.
+    // qf-6 (named intentional change, QF6.2/QF6.4): main.ts gains 5 literal keys — the three
+    // conversation-ended lines a refused advance shows (`dialogue.ended.{walkedAway,leftZone,
+    // npcGone}`, through a literal switch) and the two quest-completion lines
+    // (`quest.complete.{reward,done}`, each through its own literal `tf` call).
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
       'chrome.chip.ok', // ctl-13: the A chip's verb when A would open a picker
       'chrome.rename.updated',
@@ -840,6 +844,9 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'chrome.status.healUnavailable',
       'chrome.status.partyFull',
       'chrome.status.privacyOverlayBusy',
+      'dialogue.ended.leftZone', // qf-6: a refused advance ends the conversation, and says why
+      'dialogue.ended.npcGone',
+      'dialogue.ended.walkedAway',
       'interact.chip', // ctl-10a: the world chip, one actionable entry
       'interact.choose', // ctl-10a: the world chip, a choice
       'interact.confirm.challenge', // ctl-10b: the Challenge confirm question
@@ -858,6 +865,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'notice.sheet.view',
       'prompt.no', // ctl-10b: the Challenge confirm's No row
       'prompt.yes', // ctl-10b: the Challenge confirm's Yes row
+      'quest.complete.done', // qf-6: a completed quest with no gold moved
+      'quest.complete.reward', // qf-6: a completed quest and the gold it paid
       'raising.feedback.cared',
       'shop.feedback.buy.count', // ctl-7d: a buy whose item or shop row is not loaded
       'shop.feedback.buy.item', // ctl-7d: a buy, naming the quantity, the item and the gold

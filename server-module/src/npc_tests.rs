@@ -1103,12 +1103,44 @@ mod nh_range {
         }
     }
 
-    /// `advance_dialogue` re-checks zone and range against the NPC's CURRENT
-    /// tile: in range it proceeds (and keeps the conversation);
-    /// out of range or zone it refuses with its own error AND dismisses the
-    /// caller's conversation row.
+    /// `owner`'s conversation with the NPC `npc_entity_id`, at the node `start`.
+    fn conv_of(owner: Identity, npc_entity_id: u64) -> PlayerConversation {
+        PlayerConversation {
+            owner_identity: owner,
+            npc_entity_id,
+            current_node_id: "start".to_string(),
+        }
+    }
+
+    /// Conversation rows field by field (`PlayerConversation` derives no `PartialEq`).
+    fn conv_fields(rows: &[PlayerConversation]) -> Vec<(Identity, u64, String)> {
+        rows.iter()
+            .map(|r| (r.owner_identity, r.npc_entity_id, r.current_node_id.clone()))
+            .collect()
+    }
+
+    /// QF6.1: a refused `advance_dialogue` writes NOTHING. It re-checks zone and
+    /// range against the NPC's CURRENT tile: in range it proceeds (here to
+    /// `dialogue tree not found`, before any write); out of range or zone it
+    /// refuses with its own error and the caller's conversation row is left
+    /// exactly as it was. The conversation then ends through the explicit
+    /// dismissal path: the client answers the refusal with `dismiss_dialogue`,
+    /// whose delete is the one that persists.
+    ///
+    /// REPLACES `nh_advance_dialogue_rechecks_zone_and_range_and_dismisses_on_refusal`,
+    /// which asserted the row DELETED on refusal. QF6.1 says the dismissal must
+    /// PERSIST, and a delete followed by `Err` never does: in production the `Err`
+    /// aborts the transaction, the delete rolls back and the overlay wedges open
+    /// (the promoted WALKEDAWAYROLLBACK residual). The old test encoded that lie and
+    /// only passed because this native host models no rollback (a reducer that
+    /// errors after a write leaves the write in the store). So a refusal may never
+    /// half-write, and this host can see it.
+    ///
+    /// kills: the delete-then-`Err` kept in the walked-away or wrong-zone branch;
+    /// any other write on refusal (the row's NPC or node rewritten); commit-then-`Ok`
+    /// (the exact `Err` strings are pinned, so a refusal that reports success fails).
     #[test]
-    fn nh_advance_dialogue_rechecks_zone_and_range_and_dismisses_on_refusal() {
+    fn nh_advance_dialogue_refusal_keeps_the_conversation_row_qf6_1() {
         let fx = fixture();
         let chars = world(&fx);
         let convs = fx
@@ -1121,11 +1153,7 @@ mod nh_range {
             chars.remove(NPC);
             chars.seed(&character(NPC, zone, x, y));
             convs.remove(me());
-            convs.seed(&PlayerConversation {
-                owner_identity: me(),
-                npc_entity_id: NPC,
-                current_node_id: "start".to_string(),
-            });
+            convs.seed(&conv_of(me(), NPC));
             let want = match in_range {
                 Some(true) => ADMITTED,
                 Some(false) => "walked too far away",
@@ -1137,11 +1165,97 @@ mod nh_range {
                 "advance_dialogue, {label}"
             );
             assert_eq!(
-                convs.rows().len(),
-                usize::from(in_range == Some(true)),
-                "advance_dialogue, {label}: the conversation is kept only while in range"
+                conv_fields(&convs.rows()),
+                conv_fields(&[conv_of(me(), NPC)]),
+                "advance_dialogue, {label}: the conversation row is kept exactly as it was \
+                 (a refusal writes nothing; dismiss_dialogue ends the conversation)"
             );
         }
+    }
+
+    /// QF6.1: the npc-existence refusals write nothing either, and
+    /// `dismiss_dialogue` is the path that ends the conversation. A conversation
+    /// whose NPC row is gone is refused `npc not found`; one whose NPC row exists
+    /// but whose character row is gone is refused `npc character not found`; each
+    /// time the caller's row is kept exactly as it was, and a stranger's
+    /// conversation is never touched. Then `dismiss_dialogue` as the caller succeeds
+    /// and deletes the caller's row, and only that row.
+    ///
+    /// kills: the delete-then-`Err` kept in either npc-existence branch (the
+    /// caller's row would vanish on this host); a refusal that rewrites or deletes
+    /// another player's row; a dismiss that fails, keeps the caller's row, or
+    /// deletes every conversation.
+    #[test]
+    fn nh_advance_dialogue_npc_gone_refusal_then_dismiss_ends_the_conversation_qf6_1() {
+        // An entity id with no `npc` row at all.
+        const NO_SUCH_NPC: u64 = 999;
+        // An `npc` row whose character row is never seeded.
+        const GHOST: u64 = 51;
+        let fx = fixture();
+        let _chars = world(&fx);
+        fx.table_keyed::<Npc, u64>("npc", "entity_id", |r| r.entity_id)
+            .seed(&Npc {
+                entity_id: GHOST,
+                npc_id: "nh-range-ghost".to_string(),
+                zone_id: 0,
+                home_x: 5,
+                home_y: 5,
+                wander_radius: 0,
+                dialogue_tree_id: "nh-range-no-such-tree".to_string(),
+                interaction: NpcInteraction::Dialogue,
+            });
+        let convs = fx
+            .table::<PlayerConversation>("player_conversation", "owner_identity", |r| {
+                r.owner_identity
+            })
+            .writable()
+            .unique();
+        let stranger = Identity::from_byte_array([0x5B; 32]);
+        convs.seed(&conv_of(stranger, NPC));
+        let of = |who: Identity| {
+            let mine: Vec<PlayerConversation> = convs
+                .rows()
+                .into_iter()
+                .filter(|r| r.owner_identity == who)
+                .collect();
+            conv_fields(&mine)
+        };
+
+        for (npc_entity_id, want) in [
+            (NO_SUCH_NPC, "npc not found"),
+            (GHOST, "npc character not found"),
+        ] {
+            convs.remove(me());
+            convs.seed(&conv_of(me(), npc_entity_id));
+            assert_eq!(
+                fx.run_as(me(), |ctx| super::advance_dialogue(ctx, 0)),
+                Err(want.to_string()),
+                "advance_dialogue at npc {npc_entity_id}"
+            );
+            assert_eq!(
+                of(me()),
+                conv_fields(&[conv_of(me(), npc_entity_id)]),
+                "{want}: the caller's conversation row is kept exactly as it was"
+            );
+            assert_eq!(
+                of(stranger),
+                conv_fields(&[conv_of(stranger, NPC)]),
+                "{want}: a stranger's conversation is untouched"
+            );
+            assert_eq!(convs.rows().len(), 2, "{want}: no row added or lost");
+        }
+
+        assert_eq!(
+            fx.run_as(me(), super::dismiss_dialogue),
+            Ok(()),
+            "dismiss_dialogue ends the refused conversation"
+        );
+        assert!(of(me()).is_empty(), "the caller's conversation row is gone");
+        assert_eq!(
+            conv_fields(&convs.rows()),
+            conv_fields(&[conv_of(stranger, NPC)]),
+            "only the caller's conversation is removed; the stranger's is byte-for-byte kept"
+        );
     }
 }
 
@@ -1846,9 +1960,8 @@ mod ctl16_battle_guard {
     /// CTL16.2: a caller in an Ongoing battle, in any role, is refused
     /// `advance_dialogue` with the exact message before choice 0's StartQuest applies:
     /// no quest row, no dialogue state, the conversation kept. The same when the
-    /// conversation's NPC row is gone: that branch refuses with another error (and, on
-    /// this host, which has no rollback, also deletes the conversation); the guard
-    /// precedes it.
+    /// conversation's NPC row is gone: that branch refuses with another error (and,
+    /// since qf-6, writes nothing either); the guard precedes it.
     /// kills: no guard in advance_dialogue; a check of one role, or of one row per
     /// role, only; the guard after the NPC / zone / range re-checks or the effects.
     #[test]

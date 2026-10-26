@@ -384,6 +384,14 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   // player-chosen display name, carried verbatim.
   'notice.request.trade': [{ name: 'Bob' }, { name: 'Dana' }],
   'notice.request.challenge': [{ name: 'Bob' }, { name: 'Dana' }],
+  // qf-6 (named intentional change): the quest-completion acknowledgement on the status line
+  // (2 ★, QF6.4). `name` is the completed quest's id (or several, joined by main.ts), `amount` the
+  // gold gained, a bigint; every field differs between the two sets.
+  'quest.complete.reward': [
+    { name: 'quest_001', amount: 50n },
+    { name: 'quest_002', amount: 7n },
+  ],
+  'quest.complete.done': [{ name: 'quest_001' }, { name: 'quest_002' }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -845,6 +853,12 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // shown when no quest is active (QF4.2, `#quest-log-empty`): the reason, then the next step.
   'journal.title': 'Journal',
   'journal.empty': 'No active quests yet. Talk to villagers to find out who needs help.',
+  // qf-6 (named intentional change): +3 plain keys here, +2 parameterised ones
+  // (`quest.complete.{reward,done}`) in SAMPLE_PARAMS = 378 keys. A refused advance that ends the
+  // conversation says so and why on the status line (QF6.2), never the raw reducer reason.
+  'dialogue.ended.walkedAway': 'Conversation ended: you moved too far away.',
+  'dialogue.ended.leftZone': 'Conversation ended: you left the area.',
+  'dialogue.ended.npcGone': 'Conversation ended: they are no longer here.',
 };
 
 interface ParamOutputSpec {
@@ -1356,10 +1370,25 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { name: 'Dana' },
     outputB: 'Dana challenges you to a battle',
   },
+  // qf-6 (QF6.4): the quest-completion lines; the gold digits are the bigint's own.
+  'quest.complete.reward': {
+    inputA: { name: 'quest_001', amount: 50n },
+    outputA: 'Quest complete: quest_001. You received 50 gold.',
+    inputB: { name: 'quest_002', amount: 7n },
+    outputB: 'Quest complete: quest_002. You received 7 gold.',
+  },
+  'quest.complete.done': {
+    inputA: { name: 'quest_001' },
+    outputA: 'Quest complete: quest_001.',
+    inputB: { name: 'quest_002' },
+    outputB: 'Quest complete: quest_002.',
+  },
 };
 
-/** The full 373-key roster (qf-4: +`journal.title` +`journal.empty` over the 371-key roster
- *  below; qf-3: +`box.sheet.careCooldown` over the 370-key roster below;
+/** The full 378-key roster (qf-6: +`dialogue.ended.{walkedAway,leftZone,npcGone}`
+ *  +`quest.complete.{reward,done}` over the 373-key roster below; qf-4: +`journal.title`
+ *  +`journal.empty` over the 371-key roster below; qf-3: +`box.sheet.careCooldown` over the
+ *  370-key roster below;
  *  ctl-14: +`help.tab.{screen,controls,goals}`
  *  +`help.goal.{recruit,battle,trade}` +`help.note.keysVsButtons` over the 363-key roster below;
  *  ctl-13: +`chrome.chip.{ok,back,close,view,dismiss,done}`
@@ -1449,7 +1478,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-4 373-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-6 378-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1538,14 +1567,14 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 373 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 378 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (373 keys since qf-4: +2 plain; 371 since
-    // qf-3: +1 parameterised; 370 since ctl-14: +7 plain; 363 since ctl-13: +10 plain, +2
-    // parameterised; was 351 since ctl-12b).
+    // (a) roster is exactly the EXPECTED_KEYS roster (378 keys since qf-6: +3 plain, +2
+    // parameterised; 373 since qf-4: +2 plain; 371 since qf-3: +1 parameterised; 370 since ctl-14:
+    // +7 plain; 363 since ctl-13: +10 plain, +2 parameterised; was 351 since ctl-12b).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-4 roster is 373 keys').toHaveLength(373);
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-6 roster is 378 keys').toHaveLength(378);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -2341,5 +2370,120 @@ describe('qf-3: the care cooldown hint in both catalogs', () => {
       `Pr${QF3_E_CIRCUMFLEX}t dans 12 h 0 min`,
     );
     expect(frFn(spec.inputA), 'a translation, not the English line').not.toBe(spec.outputA);
+  });
+});
+
+// =============================================================================
+// qf-6 (QF6.2, QF6.4): the conversation-ended lines and the quest-completion lines the status line
+// shows, in BOTH catalogs. Every expected byte is typed here (the French glyphs by code point);
+// none is read off the catalog under test.
+// =============================================================================
+
+/** U+00EA (e circumflex) and U+00E7 (c cedilla), built by code point. E_ACUTE, RIGHT_QUOTE and
+ *  NO_BREAK_SPACE are the ones declared above. */
+const QF6_E_CIRCUMFLEX = String.fromCharCode(0x00ea);
+const QF6_C_CEDILLA = String.fromCharCode(0x00e7);
+
+/** The French text before ':' carries the catalog's U+00A0, not a breaking space: true when every
+ *  ':' in `text` is preceded by U+00A0. */
+function noBreakBeforeEveryColon(text: string): boolean {
+  let colons = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) !== 0x3a) continue;
+    colons += 1;
+    if (i === 0 || text.charCodeAt(i - 1) !== 0x00a0) return false;
+  }
+  return colons > 0;
+}
+
+describe('qf-6: the conversation-ended and quest-completion lines in both catalogs', () => {
+  it('each conversation-ended line says the conversation ended and why, in en and fr QF6.2', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot: the refusal reaches
+    // the player as nothing at all); the raw reducer reason as the copy; one generic line for all
+    // three reasons (the player is not told why); a French line left in English; a French colon set
+    // off by a breaking space (the browser may wrap it onto its own line) or glued to its word; an
+    // ASCII apostrophe where the catalog writes U+2019; a decomposed or missing accent.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const ENDED_FR = `Conversation termin${E_ACUTE}e${NO_BREAK_SPACE}: `;
+    const LINES: ReadonlyArray<readonly [string, string, string]> = [
+      [
+        'dialogue.ended.walkedAway',
+        'Conversation ended: you moved too far away.',
+        `${ENDED_FR}vous ${QF6_E_CIRCUMFLEX}tes trop loin.`,
+      ],
+      [
+        'dialogue.ended.leftZone',
+        'Conversation ended: you left the area.',
+        `${ENDED_FR}vous avez quitt${E_ACUTE} la zone.`,
+      ],
+      [
+        'dialogue.ended.npcGone',
+        'Conversation ended: they are no longer here.',
+        `${ENDED_FR}il n${RIGHT_QUOTE}y a plus personne ici.`,
+      ],
+    ];
+    for (const [key, enText, frText] of LINES) {
+      expect(EXPECTED_PLAIN[key], `fixture: ${key} is in the pinned plain roster`).toBe(enText);
+      expect(en[key], `en ${key}`).toBe(enText);
+      expect(fr[key], `fr ${key}`).toBe(frText);
+      expect(noBreakBeforeEveryColon(fr[key] as string), `fr ${key}: U+00A0 before ':'`).toBe(true);
+    }
+    expect((fr['dialogue.ended.npcGone'] as string).includes("'"), 'no ASCII apostrophe').toBe(
+      false,
+    );
+    expect(new Set(LINES.map(([, enText]) => enText)).size, 'three distinct reasons').toBe(3);
+  });
+
+  it('each quest-completion line names the quest, and the reward line the gold received, in en and fr QF6.4', () => {
+    // WRONG IMPL KILLED: a key added to en only; a closure that drops, repeats or hard-codes the
+    // quest name or the amount (the two sample sets differ in both); a gold amount run through a
+    // locale formatter or a Number (9007199254740993 would print grouped or as ...992); the
+    // reward line used where no gold moved (the two keys must differ); a French line left in
+    // English; a French colon off its U+00A0; a decomposed or missing circumflex, acute or cedilla.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    for (const key of ['quest.complete.reward', 'quest.complete.done']) {
+      expect(typeof en[key], `en ${key} is a closure`).toBe('function');
+      expect(typeof fr[key], `fr ${key} is a closure`).toBe('function');
+    }
+    type Reward = (p: { name: string; amount: bigint }) => string;
+    type Done = (p: { name: string }) => string;
+    const enReward = en['quest.complete.reward'] as Reward;
+    const frReward = fr['quest.complete.reward'] as Reward;
+    const enDone = en['quest.complete.done'] as Done;
+    const frDone = fr['quest.complete.done'] as Done;
+    const QUEST_FR = `Qu${QF6_E_CIRCUMFLEX}te termin${E_ACUTE}e${NO_BREAK_SPACE}: `;
+    const RECEIVED_FR = `Vous avez re${QF6_C_CEDILLA}u`;
+    const BIG = 9_007_199_254_740_993n;
+
+    expect(enReward({ name: 'quest_001', amount: 50n })).toBe(
+      'Quest complete: quest_001. You received 50 gold.',
+    );
+    expect(enReward({ name: 'quest_002', amount: 7n })).toBe(
+      'Quest complete: quest_002. You received 7 gold.',
+    );
+    expect(enReward({ name: 'quest_001', amount: BIG })).toBe(
+      'Quest complete: quest_001. You received 9007199254740993 gold.',
+    );
+    expect(frReward({ name: 'quest_001', amount: 50n })).toBe(
+      `${QUEST_FR}quest_001. ${RECEIVED_FR} 50 or.`,
+    );
+    expect(frReward({ name: 'quest_002', amount: 7n })).toBe(
+      `${QUEST_FR}quest_002. ${RECEIVED_FR} 7 or.`,
+    );
+    expect(frReward({ name: 'quest_001', amount: BIG })).toBe(
+      `${QUEST_FR}quest_001. ${RECEIVED_FR} 9007199254740993 or.`,
+    );
+
+    expect(enDone({ name: 'quest_001' })).toBe('Quest complete: quest_001.');
+    expect(enDone({ name: 'quest_002' })).toBe('Quest complete: quest_002.');
+    expect(frDone({ name: 'quest_001' })).toBe(`${QUEST_FR}quest_001.`);
+    expect(frDone({ name: 'quest_002' })).toBe(`${QUEST_FR}quest_002.`);
+
+    expect(noBreakBeforeEveryColon(frReward({ name: 'q', amount: 1n })), 'fr reward U+00A0').toBe(
+      true,
+    );
+    expect(noBreakBeforeEveryColon(frDone({ name: 'q' })), 'fr done U+00A0').toBe(true);
   });
 });
