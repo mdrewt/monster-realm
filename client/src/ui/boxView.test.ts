@@ -4644,3 +4644,160 @@ describe('BoxView polish-1 P2 round 2: exact keep key, throw recovery, locale', 
     }
   });
 });
+
+// =============================================================================
+// qf-2 (QF2.1-QF2.3): the Monsters frame's own OUTCOME line. A care / train answer that comes back
+// to the frame that invoked it is painted on the frame's feedback line through a sink
+// (`feedbackLine()`) bound to the CURRENT open. The sink is the only entry point: the screen's own
+// Move / Fed line (`paint({ feedback })`) is a separate source and wins while it is showing.
+// =============================================================================
+
+const QF2_OK_TEXT = 'Cared!';
+const QF2_ERR_TEXT = 'care: care cooldown not yet elapsed';
+
+/** The `.mr-frame-feedback` lines of the frame that are showing (not hidden, not empty). */
+const qf2Shown = (root: HTMLElement): HTMLElement[] =>
+  [...root.querySelectorAll<HTMLElement>('.mr-frame-feedback')].filter(
+    (el) => !c8bHidden(el, root) && (el.textContent ?? '') !== '',
+  );
+
+describe('BoxView qf-2: the outcome line (QF2.1, QF2.2)', () => {
+  it('QF2-1-VIEW-OUTCOME-LINE: a sink from an open view paints ONE visible .mr-frame-feedback with the exact text and data-feedback ok | error; markup in the message stays literal text', () => {
+    // WRONG IMPL KILLED: no feedbackLine() / a sink that paints nothing (QF2.1: the sheet care
+    // outcome is swallowed); a second feedback element beside the screen's (two lines); a kind
+    // ignored (an error painted data-feedback="ok" gets the green check mark, a success painted
+    // "error" is a red line); a hardcoded text; innerHTML (the server's reason text is
+    // untrusted: "<img>" would become a child element); a line left display:none.
+    const { view, root } = c8bOpen();
+    expect(qf2Shown(root), 'no line before any outcome').toEqual([]);
+    expect(
+      root.querySelectorAll('.mr-frame-feedback'),
+      'one feedback element in the frame',
+    ).toHaveLength(1);
+
+    const sink = view.feedbackLine();
+    sink(QF2_OK_TEXT, 'ok');
+    let lines = qf2Shown(root);
+    expect(lines, 'exactly one visible line').toHaveLength(1);
+    expect((lines[0] as HTMLElement).textContent).toBe(QF2_OK_TEXT);
+    expect((lines[0] as HTMLElement).getAttribute('data-feedback')).toBe('ok');
+
+    sink(QF2_ERR_TEXT, 'error');
+    lines = qf2Shown(root);
+    expect(lines, 'still one visible line').toHaveLength(1);
+    expect((lines[0] as HTMLElement).textContent, 'the later message replaces the earlier').toBe(
+      QF2_ERR_TEXT,
+    );
+    expect((lines[0] as HTMLElement).getAttribute('data-feedback')).toBe('error');
+    expect(root.querySelectorAll('.mr-frame-feedback'), 'and never a second element').toHaveLength(
+      1,
+    );
+
+    const markup = '<img src=x onerror=alert(1)><b>bold</b>';
+    sink(markup, 'error');
+    lines = qf2Shown(root);
+    expect(lines).toHaveLength(1);
+    expect((lines[0] as HTMLElement).textContent, 'the markup is literal text').toBe(markup);
+    expect((lines[0] as HTMLElement).children.length, 'and builds no child element').toBe(0);
+  });
+
+  it('QF2-1-VIEW-HIDDEN-NOOP: a sink called before show() or after hide() paints nothing; hide() clears a painted outcome (a reopen shows none); a sink taken in a previous open no-ops after hide() + show()', () => {
+    // WRONG IMPL KILLED: a sink that stores while hidden (the next show() would show a line the
+    // player never asked for: the raising stale-message guard, lost); a hide() that keeps the
+    // outcome (a reopened Monsters frame opens on last session's "Cared!"); a sink bound to the
+    // view instead of the OPEN (a care sent before Backspace and settled after a reopen paints on
+    // the new session: the stale line); a no-op guard so strong that the CURRENT open's fresh sink
+    // is dead too (control at the end).
+    // Before the first show.
+    const cold = c8bMount();
+    const coldSink = cold.view.feedbackLine();
+    coldSink(QF2_OK_TEXT, 'ok');
+    expect(qf2Shown(cold.root), 'hidden: nothing painted').toEqual([]);
+    cold.view.refresh(c8bParty(), c8bBox());
+    cold.view.show();
+    expect(qf2Shown(cold.root), 'and nothing was stored for the first open').toEqual([]);
+
+    // After hide().
+    const { view, root } = c8bOpen();
+    const sink = view.feedbackLine();
+    view.hide();
+    sink(QF2_ERR_TEXT, 'error');
+    view.show();
+    expect(qf2Shown(root), 'a sink called while hidden stored nothing').toEqual([]);
+
+    // hide() clears a painted outcome.
+    const second = view.feedbackLine();
+    second(QF2_OK_TEXT, 'ok');
+    expect(qf2Shown(root), 'precondition: the outcome shows').toHaveLength(1);
+    view.hide();
+    view.show();
+    expect(qf2Shown(root), 'hide() cleared the outcome: the reopened frame shows no line').toEqual(
+      [],
+    );
+    expect(
+      (root.querySelector('.mr-frame-feedback') as HTMLElement).hasAttribute('data-feedback'),
+      'and no data-feedback is left on the empty line',
+    ).toBe(false);
+
+    // A sink of a previous open: stale after hide() + show().
+    const old = view.feedbackLine();
+    view.hide();
+    view.show();
+    old('stale after reopen', 'error');
+    expect(qf2Shown(root), 'the previous open`s sink no-ops').toEqual([]);
+
+    // Control: this open's sink paints.
+    const fresh = view.feedbackLine();
+    fresh(QF2_OK_TEXT, 'ok');
+    const lines = qf2Shown(root);
+    expect(lines, 'the current open`s sink still paints').toHaveLength(1);
+    expect((lines[0] as HTMLElement).textContent).toBe(QF2_OK_TEXT);
+  });
+
+  it('QF2-1-VIEW-KEPT-AND-CLEARED: refresh() and a paint() with no screen feedback keep the outcome; a paint carrying the screen`s own feedback shows that line instead; clearOutcome() ends the outcome (hidden, empty, no data-feedback) and neither a paint nor a refresh brings it back', () => {
+    // WRONG IMPL KILLED: a paint() or refresh() that clears the outcome (care success rewrites
+    // monster_pub, so the store batch / observe repaint right after the answer would erase it:
+    // the very swallow this slice fixes); an outcome that overrides the screen's own Move / Fed
+    // line (the player would see "Cared!" while the screen says Fed Kip); a clearOutcome() that
+    // only hides the line and lets the next paint redraw the kept outcome (the next button would
+    // not end the line); a clear that leaves the old text or data-feedback in the node.
+    const { view, root } = c8bOpen();
+    const sink = view.feedbackLine();
+    sink(QF2_OK_TEXT, 'ok');
+
+    view.refresh(c8bParty(), c8bBox());
+    let lines = qf2Shown(root);
+    expect(lines, 'refresh() keeps the outcome').toHaveLength(1);
+    expect((lines[0] as HTMLElement).textContent).toBe(QF2_OK_TEXT);
+
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101' }));
+    lines = qf2Shown(root);
+    expect(lines, 'a paint with null feedback keeps the outcome').toHaveLength(1);
+    expect((lines[0] as HTMLElement).textContent).toBe(QF2_OK_TEXT);
+    expect((lines[0] as HTMLElement).getAttribute('data-feedback')).toBe('ok');
+
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101', feedback: { kind: 'movedToBox' } }));
+    lines = qf2Shown(root);
+    expect(lines, 'the screen feedback shows alone: one line').toHaveLength(1);
+    expect((lines[0] as HTMLElement).textContent, 'and wins over the outcome').toBe(
+      c8bT('box.feedback.movedToBox'),
+    );
+    expect((lines[0] as HTMLElement).getAttribute('data-feedback')).toBe('ok');
+
+    // clearOutcome ends it, for good.
+    const cleared = c8bOpen();
+    const clearedSink = cleared.view.feedbackLine();
+    clearedSink(QF2_ERR_TEXT, 'error');
+    expect(qf2Shown(cleared.root), 'precondition: an error outcome shows').toHaveLength(1);
+    cleared.view.clearOutcome();
+    const line = cleared.root.querySelector('.mr-frame-feedback') as HTMLElement;
+    expect(c8bHidden(line, cleared.root), 'the line is hidden').toBe(true);
+    expect(line.textContent, 'its text is emptied').toBe('');
+    expect(line.hasAttribute('data-feedback'), 'and so is its data-feedback').toBe(false);
+    cleared.view.refresh(c8bParty(), c8bBox());
+    expect(qf2Shown(cleared.root), 'a refresh does not bring it back').toEqual([]);
+    cleared.view.paint(c8bPaint({ tab: 'party', activeKey: '100' }));
+    expect(qf2Shown(cleared.root), 'nor does a paint').toEqual([]);
+    expect(() => cleared.view.clearOutcome(), 'clearing again is harmless').not.toThrow();
+  });
+});

@@ -67,6 +67,11 @@ const H = vi.hoisted(() => ({
   /** ctl-10b: what the stubbed wasm `interact_candidates_coded` answers (the interaction RULE is
    *  the stub: `openFaceToFace` installs one that names the faced player). Reset by every boot. */
   interact: ((..._args: unknown[]) => []) as (...args: unknown[]) => unknown,
+  /** qf-2: a per-reducer-name answer hook. When a name has an entry, the reducer's returned promise
+   *  is the entry's (a deferred or rejecting one) instead of the recorded call's already-resolved
+   *  promise; the call itself is still recorded in `calls`. Empty by default and reset by every
+   *  boot, so every case outside the qf-2 block sees the unchanged recording mock. */
+  answer: {} as Record<string, ((args: unknown) => Promise<void>) | undefined>,
 }));
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid.
@@ -78,7 +83,31 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () =>
 
 // The connection: capture the options; enqueueMove never settles, every other reducer records its
 // name and arguments and resolves at once.
-vi.mock('./net/connection', () => connectionRecordingMock(H));
+// qf-2: wrapped locally (test-util stays untouched): the recording mock's reducers proxy is put
+// behind a second proxy that consults `H.answer` per reducer name AFTER the call was recorded.
+vi.mock('./net/connection', () => {
+  const base = connectionRecordingMock(H);
+  return {
+    connect: (connectOpts: ConnectionOptions) => {
+      const conn = base.connect(connectOpts);
+      const live = conn.live() as unknown as {
+        reducers: Record<string, (args: unknown) => Promise<void>>;
+      };
+      const recording = live.reducers;
+      live.reducers = new Proxy(
+        {},
+        {
+          get: (_t, name) => (args: unknown) => {
+            const recordedPromise = recording[String(name)]?.(args);
+            const answer = H.answer[String(name)];
+            return answer === undefined ? recordedPromise : answer(args);
+          },
+        },
+      ) as Record<string, (args: unknown) => Promise<void>>;
+      return conn;
+    },
+  };
+});
 
 vi.mock('./observability/telemetry', async (importOriginal) =>
   telemetryMock(await importOriginal<typeof import('./observability/telemetry')>()),
@@ -129,6 +158,7 @@ async function boot(): Promise<void> {
   H.sends = [];
   H.calls = [];
   H.interact = () => [];
+  H.answer = {};
   clock.t = 1000;
   vi.spyOn(performance, 'now').mockImplementation(() => clock.t);
   recorded = [];
@@ -3364,5 +3394,343 @@ describe('main.ts openFrame: push first, then show (runtime, so-2)', { sequentia
     expect(boxShown(), 'and the box survives it').toBe(true);
     expect(stackNames(), 'its frame is the one left, read at once').toEqual(['world', 'boxView']);
     so2ExpectShownOnStack('after reconnect');
+  });
+});
+
+// ==========================================================================================
+// qf-2: care / train feedback routes to the INVOKING surface (QF2.1 to QF2.3)
+// ==========================================================================================
+//
+// Both care invokers (the Monsters sheet's Care row and the Raising card's Care button) funnel into
+// one `dispatch` arm whose sink used to be `raisingView.showFeedback` alone, which no-ops while
+// raising is hidden: every sheet care outcome (and every sheet train rejection, which went to the
+// global status line under the frame) was swallowed or misplaced. The sink is now chosen at the
+// SEND from the invoking surface: the Monsters frame's own feedback line for a sheet action
+// (`boxView.feedbackLine()`, bound to that open), raising's own line for the raising card.
+//
+// The reducers' outcomes are controlled through `H.answer` (a deferred or rejecting promise per
+// reducer name; the call is still recorded). Every case reads only what a player sees: the
+// Monsters frame's `.mr-frame-feedback` line, raising's `#raising-feedback`, and `#status`.
+
+/** A promise the test settles by hand. */
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+/** A rejection shaped like the SDK's reducer `Err(..)`: classified 'sender' by `err.name`. */
+const senderError = (message: string): Error =>
+  Object.assign(new Error(message), { name: 'SenderError' });
+
+/** The Monsters frame's root, resolved the way boxView builds it (title -> header -> root). */
+const boxFrameRoot = (): HTMLElement => {
+  const root = document.querySelector('[data-testid="box-title"]')?.parentElement?.parentElement;
+  if (root === null || root === undefined) throw new Error('the Monsters frame root is missing');
+  return root;
+};
+/** The one feedback line inside the Monsters frame. */
+const boxLine = (): HTMLElement => {
+  const line = boxFrameRoot().querySelector<HTMLElement>('.mr-frame-feedback');
+  if (line === null) throw new Error('the Monsters frame has no feedback line');
+  return line;
+};
+const boxLineText = (): string => boxLine().textContent ?? '';
+/** Raising's own feedback line (its text, whether or not the view is shown). */
+const raisingLineText = (): string => byId('raising-feedback').textContent ?? '';
+
+/** Boot, seed one own monster, open Monsters (V), its sheet (A) and move the cursor to Care. */
+async function bootAtSheetCare(): Promise<void> {
+  await bootReady();
+  seedWorld(1000);
+  opts.store.upsertMonster(RAISED_MONSTER);
+  server(1010);
+  tap('KeyV', 1020);
+  expect(stackNames(), 'precondition: V opened Monsters over the menu').toEqual([
+    'world',
+    'menuView',
+    'boxView',
+  ]);
+  tap('Enter', 1030); // A on the monster: its sheet, the cursor on Summary
+  tap('ArrowDown', 1040); // Care
+  expect(
+    byId('monstersSheet-root-care').getAttribute('aria-selected'),
+    'precondition: the sheet cursor is on Care',
+  ).toBe('true');
+  expect(boxLineText(), 'precondition: the Monsters line is empty').toBe('');
+  expect(raisingLineText(), 'precondition: raising`s line is empty').toBe('');
+  expect(statusText(), 'precondition: the status line is empty').toBe('');
+}
+
+describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
+  sequential: true,
+}, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    raf.cb = null;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  it('QF2-1-BOOT-SHEET-CARE-OK: Care pressed on the Monsters sheet paints the catalogued success line on the Monsters frame`s own feedback line (data-feedback ok) once the care settles; raising`s line and the status line stay empty', async () => {
+    // WRONG IMPL KILLED: today's sink (`raisingView.showFeedback`, a no-op while raising is
+    // hidden): the sheet care succeeds with no sign at all (pt3-2026-10-048); a sink that paints
+    // BOTH surfaces (raising's hidden line would greet its next open) or the status line; a kind
+    // that is not 'ok' for the success message (the green check mark is keyed on data-feedback);
+    // a success line painted before the reducer settled (optimistic) is not asserted here but by
+    // the deferred cases below; and a Care that no longer reaches its reducer with the monster's
+    // id (the call is asserted, so "no line" cannot pass by doing nothing).
+    await bootAtSheetCare();
+    expect(
+      document.getElementById('raising-feedback'),
+      'precondition: raising`s feedback node exists, so its being empty is a real read',
+    ).not.toBeNull();
+
+    tap('Enter', 1050); // A on Care
+    await flush();
+
+    expect(callsOf('care'), 'Care reached the care reducer once, for the monster').toEqual([
+      { name: 'care', args: { monsterId: 31n } },
+    ]);
+    expect(stackNames(), 'and the Monsters frame is still the top frame').toEqual([
+      'world',
+      'menuView',
+      'boxView',
+    ]);
+    const cared = i18nT('raising.feedback.cared');
+    expect(cared, 'fixture: the success line is real text').not.toBe('');
+    expect(boxLineText(), 'the Monsters frame`s line carries the success line').toBe(cared);
+    expect(isShown(boxLine()), 'and it is showing').toBe(true);
+    expect(boxLine().getAttribute('data-feedback')).toBe('ok');
+    expect(raisingLineText(), 'raising`s hidden line is not painted').toBe('');
+    expect(statusText(), 'nor is the status line').toBe('');
+  });
+
+  it('QF2-2-BOOT-SHEET-CARE-COOLDOWN: a care cooldown rejection for a Monsters-sheet care shows `care: care cooldown not yet elapsed` on the Monsters frame`s line (data-feedback error) and nowhere else', async () => {
+    // WRONG IMPL KILLED: today's swallow (the rejection text goes to raising's hidden line and is
+    // lost: the player pressed Care and saw nothing); a rejection painted as a success (kind ok);
+    // a rejection reported only on the status line; the server's reason replaced by a generic or
+    // literal text (the SenderError message must pass through, `reduceErrorMessage(err, 'care')`);
+    // and a double paint of success then error (the line must read the rejection alone).
+    await bootAtSheetCare();
+    H.answer.care = () => Promise.reject(senderError('care cooldown not yet elapsed'));
+
+    tap('Enter', 1050); // A on Care
+    await flush();
+
+    expect(callsOf('care'), 'Care reached the care reducer once').toHaveLength(1);
+    expect(boxLineText(), 'the cooldown rejection is on the Monsters frame`s line').toBe(
+      'care: care cooldown not yet elapsed',
+    );
+    expect(isShown(boxLine()), 'and it is showing').toBe(true);
+    expect(boxLine().getAttribute('data-feedback')).toBe('error');
+    expect(raisingLineText(), 'raising`s hidden line is not painted').toBe('');
+    expect(statusText(), 'nor is the status line').toBe('');
+  });
+
+  it('QF2-1-BOOT-SHEET-TRAIN-REJECT: a train rejected for a food fed from the Monsters sheet shows `train: <reason>` on the Monsters frame`s line (data-feedback error) INSTEAD of the status line, and is still logged and sent to the error ring', async () => {
+    // WRONG IMPL KILLED: today's route (the rejection lands on `#status` under the frame, away
+    // from the surface the player is looking at); a line painted AND the status line also set; a
+    // rejection that is only painted (console.error / the error ring dropped: the F9 bug bundle
+    // would lose it); a "Fed {name}" success claimed for a rejected feed; and a Feed… path that no
+    // longer reaches the train reducer with the exact food and monster (asserted).
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertMonster(RAISED_MONSTER);
+    opts.store.upsertItemDef({
+      id: 4,
+      name: 'Bait',
+      description: '',
+      recruitBonus: 0,
+      trainStat: 'Attack',
+      trainAmount: 1,
+      sellPrice: 0n,
+      cureStatus: null,
+    });
+    opts.store.reconcileInventoryFromView([
+      { invId: 1n, ownerIdentity: H.identity, itemId: 4, count: 3 },
+    ]);
+    server(1010);
+    H.answer.train = () => Promise.reject(senderError('not enough food'));
+
+    tap('KeyV', 1020);
+    tap('Enter', 1030); // A on the monster: its sheet
+    tap('ArrowDown', 1040); // Care
+    tap('ArrowDown', 1050); // Feed…
+    expect(
+      byId('monstersSheet-root-feed').getAttribute('aria-selected'),
+      'precondition: the sheet cursor is on Feed…',
+    ).toBe('true');
+    tap('Enter', 1060); // A on Feed…: the food list
+    expect(
+      byId('monstersFeed-root-4').getAttribute('aria-selected'),
+      'precondition: the food list is open on the Bait row',
+    ).toBe('true');
+    expect(statusText(), 'precondition: the status line is empty').toBe('');
+    expect(boxLineText(), 'precondition: the Monsters line is empty').toBe('');
+
+    tap('Enter', 1070); // A on the food: train is sent at once
+    await flush();
+
+    expect(callsOf('train'), 'the food reached the train reducer once').toEqual([
+      { name: 'train', args: { monsterId: 31n, foodItemId: 4 } },
+    ]);
+    expect(boxLineText(), 'the rejection is on the Monsters frame`s line').toBe(
+      'train: not enough food',
+    );
+    expect(isShown(boxLine()), 'and it is showing').toBe(true);
+    expect(boxLine().getAttribute('data-feedback')).toBe('error');
+    expect(statusText(), 'and NOT on the status line').toBe('');
+    expect(
+      errorSpy.mock.calls.some((c) => c[0] === '[status]' && c[1] === 'train: not enough food'),
+      'it is still logged through the error path',
+    ).toBe(true);
+  });
+
+  it('QF2-1-BOOT-NEXT-BUTTON-ENDS-LINE-BATCH-KEEPS: the Monsters line shown after a care survives a store batch that changes the monster (and repaints the frame), and the NEXT button press ends it', async () => {
+    // WRONG IMPL KILLED: a line cleared by the repaint a batch causes (care success rewrites
+    // monster_pub, so the observe repaint right after the answer would erase the line in the
+    // common case: the swallow, one tick later); a line that never ends (it would sit under the
+    // next action, claiming a result for the wrong thing); a line cleared by a router that does
+    // not route the button to the screen (the cursor move is asserted as the control); and a
+    // clear that only hides the line but leaves its text or data-feedback behind.
+    await bootAtSheetCare();
+    tap('Enter', 1050); // A on Care
+    await flush();
+    const cared = i18nT('raising.feedback.cared');
+    expect(boxLineText(), 'precondition: the success line shows').toBe(cared);
+
+    // A batch that changes the monster the sheet names.
+    opts.store.upsertMonster({ ...RAISED_MONSTER, nickname: 'renamed' });
+    server(1100);
+    expect(
+      boxFrameRoot().textContent ?? '',
+      'precondition: the batch reached the frame (the new nickname is painted)',
+    ).toContain('renamed');
+    expect(boxLineText(), 'the batch did not end the line').toBe(cared);
+    expect(isShown(boxLine()), 'it is still showing').toBe(true);
+    expect(boxLine().getAttribute('data-feedback')).toBe('ok');
+
+    // The next button ends it.
+    tap('ArrowDown', 1110);
+    expect(
+      byId('monstersSheet-root-feed').getAttribute('aria-selected'),
+      'control: the press reached the Monsters screen (the cursor moved to Feed…)',
+    ).toBe('true');
+    expect(boxLineText(), 'the next button ended the line').toBe('');
+    expect(boxLine().hasAttribute('data-feedback'), 'and left no data-feedback').toBe(false);
+    expect(isShown(boxLine()), 'and the line is hidden').toBe(false);
+  });
+
+  it('QF2-1-BOOT-SINK-FIXED-AT-SEND: the sink is the one open when the care was SENT: a care that settles after the Monsters frame was left paints nothing anywhere, and one that settles after the frame was closed and reopened leaves the reopened frame without a stale line', async () => {
+    // WRONG IMPL KILLED: a sink chosen at SETTLE time (the top frame at settle decides: a reopened
+    // Monsters would inherit the old answer, and a world top would route it to raising); a sink
+    // with no hidden-view guard (the late answer is written into the hidden frame and greets its
+    // next open); a sink bound to the view instead of the open (the reopen below); a late answer
+    // that falls back to raising's line or the status line when the invoking frame is gone.
+    await bootAtSheetCare();
+
+    // (a) Leave the frame before the answer: nothing is painted anywhere.
+    const first = deferred();
+    H.answer.care = () => first.promise;
+    tap('Enter', 1050); // A on Care
+    expect(callsOf('care'), 'precondition: the care was sent').toHaveLength(1);
+    expect(boxLineText(), 'nothing is painted while the care is in flight').toBe('');
+    tap('Escape', 1060); // Start: back to the bare world
+    expect(stackNames(), 'precondition: Monsters was left').toEqual(['world']);
+    first.resolve();
+    await flush();
+    expect(boxLineText(), '(a) the left frame`s line stays empty').toBe('');
+    expect(raisingLineText(), '(a) raising`s line stays empty').toBe('');
+    expect(statusText(), '(a) the status line stays empty').toBe('');
+
+    // (b) Close and reopen before the answer: the reopened frame shows no stale line.
+    tap('KeyV', 1100);
+    tap('Enter', 1110);
+    tap('ArrowDown', 1120);
+    expect(
+      byId('monstersSheet-root-care').getAttribute('aria-selected'),
+      'precondition: back on Care',
+    ).toBe('true');
+    const second = deferred();
+    H.answer.care = () => second.promise;
+    tap('Enter', 1130); // A on Care
+    expect(callsOf('care'), 'precondition: the second care was sent').toHaveLength(2);
+    tap('Escape', 1140);
+    expect(stackNames(), 'precondition: Monsters was left again').toEqual(['world']);
+    tap('KeyV', 1150);
+    expect(stackNames(), 'precondition: Monsters was reopened').toEqual([
+      'world',
+      'menuView',
+      'boxView',
+    ]);
+    second.resolve();
+    await flush();
+    expect(boxLineText(), '(b) the reopened frame carries no stale line').toBe('');
+    expect(boxLine().hasAttribute('data-feedback'), '(b) and no data-feedback').toBe(false);
+    expect(raisingLineText(), '(b) raising`s line stays empty').toBe('');
+    expect(statusText(), '(b) the status line stays empty').toBe('');
+  });
+
+  it('QF2-3-BOOT-RAISING-OWN-LINE: Care pressed on the Raising card still paints `Cared!` on raising`s own line and nothing on the Monsters frame`s line; a care that settles after raising was hidden still paints nothing (the hidden-view guard stays)', async () => {
+    // WRONG IMPL KILLED: a sink selection that routes every care to the Monsters frame (raising`s
+    // card would show nothing: QF2.3 regression); a sink that paints both; a "selection" that
+    // drops raising`s hidden-view no-op guard (the late answer is written into the hidden view
+    // and greets its next open); a selection keyed on the BOX view`s existence or visibility
+    // rather than on the invoking surface (the Monsters frame is hidden here, raising shown); and
+    // a Raising Care that no longer reaches the reducer (asserted).
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertMonster(RAISED_MONSTER);
+    server(1010);
+    tap('KeyI', 1020);
+    expect(shownByTestId('raising-title'), 'precondition: I opened raising').toBe(true);
+    const careButton = (): HTMLButtonElement => {
+      const root = byId('raising-feedback').parentElement;
+      const button = [...(root?.querySelectorAll('button') ?? [])].find(
+        (b) => b.textContent === i18nT('raising.card.care'),
+      );
+      if (button === undefined) throw new Error('raising painted no Care button');
+      return button;
+    };
+    expect(boxLineText(), 'precondition: the Monsters line is empty').toBe('');
+
+    // (a) The answer lands on raising's own line.
+    clock.t = 1030;
+    careButton().click();
+    await flush();
+    expect(callsOf('care'), 'the raising card`s Care reached the reducer').toEqual([
+      { name: 'care', args: { monsterId: 31n } },
+    ]);
+    const cared = i18nT('raising.feedback.cared');
+    expect(cared, 'fixture: the success line is real text').not.toBe('');
+    expect(raisingLineText(), 'raising`s own line carries the success line').toBe(cared);
+    expect(boxLineText(), 'the Monsters frame`s line stays empty').toBe('');
+    expect(statusText(), 'and so does the status line').toBe('');
+
+    // (b) Hidden before the answer: the guard keeps the late answer out.
+    tap('Escape', 1100); // Start: raising closes, the bare world
+    tap('KeyI', 1110);
+    expect(shownByTestId('raising-title'), 'precondition: raising reopened').toBe(true);
+    expect(raisingLineText(), 'precondition: the reopen starts with an empty line').toBe('');
+    const pending = deferred();
+    H.answer.care = () => pending.promise;
+    clock.t = 1120;
+    careButton().click();
+    expect(callsOf('care'), 'precondition: the second care was sent').toHaveLength(2);
+    tap('Escape', 1130);
+    expect(shownByTestId('raising-title'), 'precondition: raising was hidden').toBe(false);
+    pending.resolve();
+    await flush();
+    expect(raisingLineText(), 'the hidden view`s line stays empty').toBe('');
+    expect(boxLineText(), 'the Monsters frame`s line stays empty').toBe('');
+    expect(statusText(), 'the status line stays empty').toBe('');
   });
 });
