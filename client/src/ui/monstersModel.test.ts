@@ -13,6 +13,14 @@
 // `foods` (the data-driven trainable items with stock, by item id) and `evolution` (the evolution
 // port's per-monster view model, never re-derived); `canEvolve` / `isChoice` / `pathLayout` /
 // `firstPathKey` / `foodLayout` / `foodKey` / `pathKey` are the helpers the screen walks them with.
+//
+// qf-3 (QF3.3, QF3.4): the Care row follows the monster's care cooldown. The view model carries
+// `careRemainingMs` (monsterKey -> the remaining cooldown the screen read through the wasm export,
+// 0n = ready), handed in as `buildMonstersVm`'s seventh parameter (default: an empty map);
+// `careRemaining(vm, id)` reads one monster's entry (a missing key is READY: the server's own check
+// stays the authority); `sheetLayout(canFeed, canEvolve, canCare)` disables Care exactly when
+// `canCare` is false; `careCooldownParts(ms)` is the hint's hours and minutes, rounded UP to the
+// minute. NAMED INTENTIONAL CHANGE: CTL8C-1-SHEET-ORDER calls the three-argument `sheetLayout`.
 import { beforeAll, describe, expect, it } from 'vitest';
 import { loadWasmPkg } from '../../test-util/wasmPkg';
 import type {
@@ -28,6 +36,8 @@ import { buildEvolutionViewModel, type EvolutionMonsterViewModel } from './evolu
 import {
   buildMonstersVm,
   canEvolve,
+  careCooldownParts,
+  careRemaining,
   findEvolution,
   findMonster,
   firstPathKey,
@@ -346,7 +356,10 @@ describe('the sheet layout (ctl-8c, CTL8C.1)', () => {
     ];
     for (const [canFeed, canEvolve] of pairs) {
       const label = `canFeed=${canFeed} canEvolve=${canEvolve}`;
-      const layout = sheetLayout(canFeed, canEvolve);
+      // qf-3 (named intentional change): `sheetLayout` takes a third, required `canCare` flag; this
+      // ctl-8c case holds it at true (Care ready) and so pins exactly what it pinned before. The
+      // Care flag itself is pinned over all eight triples by QF3-3-SHEET-CARE-ROW below.
+      const layout = sheetLayout(canFeed, canEvolve, true);
       expect(layout.kind, `${label}: a list`).toBe('list');
       expect(
         layout.items.map((item) => item.key),
@@ -365,6 +378,114 @@ describe('the sheet layout (ctl-8c, CTL8C.1)', () => {
       });
     }
     expect([...SHEET_ACTIONS], 'SHEET_ACTIONS is the layout`s order').toEqual(C8C_SHEET_ORDER);
+  });
+});
+
+// =============================================================================
+// qf-3 (QF3.3, QF3.4): the Care row follows the care cooldown.
+// =============================================================================
+
+describe('the Care row and the cooldown hint (qf-3, QF3.3, QF3.4)', () => {
+  it('sheetLayout over all eight (canFeed, canEvolve, canCare) triples keeps the six rows in the design order, disables Care exactly when canCare is false (still listed, reachable), and leaves Feed and Evolve on their own flags [QF3-3-SHEET-CARE-ROW] [QF3-4-SHEET-CARE-ROW]', () => {
+    // WRONG IMPL KILLED: a two-flag layout that ignores canCare (Care always enabled: A on a
+    // cooling Care would be offered as an action); a Care row DROPPED while cooling instead of
+    // disabled (the player could not read the remaining time, and the Down walk would land on
+    // Feed); canCare wired to the Feed or Evolve row (or canFeed to Care); a cooling Care that also
+    // disables Summary / Nickname / Move; and a layout whose order moves when Care is disabled.
+    const bools = [true, false] as const;
+    let seen = 0;
+    for (const canFeed of bools) {
+      for (const canEvolve of bools) {
+        for (const canCare of bools) {
+          const label = `canFeed=${canFeed} canEvolve=${canEvolve} canCare=${canCare}`;
+          const layout = sheetLayout(canFeed, canEvolve, canCare);
+          expect(layout.kind, `${label}: a list`).toBe('list');
+          expect(
+            layout.items.map((item) => item.key),
+            `${label}: every row, in the design order`,
+          ).toEqual(C8C_SHEET_ORDER);
+          expect(
+            Object.fromEntries(layout.items.map((item) => [item.key, item.enabled])),
+            `${label}: Care, Feed and Evolve each follow their own flag`,
+          ).toEqual({
+            summary: true,
+            care: canCare,
+            feed: canFeed,
+            evolve: canEvolve,
+            nickname: true,
+            move: true,
+          });
+          seen += 1;
+        }
+      }
+    }
+    expect(seen, 'ANTI-VACUITY: all eight triples were laid out').toBe(8);
+  });
+
+  it('careCooldownParts rounds the remaining milliseconds UP to the whole minute and splits it into hours and minutes (as numbers); zero and a negative remaining read 0h 0m [QF3-3-COOLDOWN-PARTS]', () => {
+    // WRONG IMPL KILLED: a hint rounded DOWN or to the nearest minute (1 ms left would read "0h 0m"
+    // on a disabled row, and 59.999 s "0h 0m" too); a rounding that adds a minute on an exact
+    // minute (60 000 ms reading "0h 2m"); minutes not taken modulo 60 (5h 59m reading "5h 359m");
+    // hours rounded up instead of carried from the minutes (3 600 001 ms reading "2h 1m"); bigint
+    // parts where the catalog's params are numbers (toEqual tells 6n from 6); and a negative
+    // remaining (a skewed clock) leaking a negative hint.
+    const table: ReadonlyArray<readonly [bigint, number, number]> = [
+      [1n, 0, 1],
+      [59_999n, 0, 1],
+      [60_000n, 0, 1],
+      [60_001n, 0, 2],
+      [3_600_000n, 1, 0],
+      [3_600_001n, 1, 1],
+      [21_540_000n, 5, 59],
+      [21_540_001n, 6, 0],
+      [21_600_000n, 6, 0],
+      [0n, 0, 0],
+      [-1n, 0, 0],
+    ];
+    for (const [ms, hours, minutes] of table) {
+      expect(careCooldownParts(ms), `${ms} ms`).toEqual({ hours, minutes });
+    }
+  });
+
+  it('careRemaining reads the monster`s own entry of the care map: a present key answers its value, a missing key answers 0n (ready, so the server`s own check decides), another monster`s entry never leaks, and ids past 2^53 stay distinct [QF3-4-CARE-REMAINING] [QF3-3-CARE-REMAINING]', () => {
+    // WRONG IMPL KILLED: a missing key read as cooling (a monster the screen did not map would show
+    // Care disabled forever, with nothing to clear it); a lookup by Number(id) (two ids past 2^53
+    // collide: one monster's cooldown disables the other's Care); a lookup that answers ANY entry
+    // of the map (the first one, or the largest: one cared monster would disable every Care); an
+    // entry dropped by buildMonstersVm (the map not carried on the view model); and undefined in
+    // place of 0n (the screen's `!== 0n` readiness test would read undefined as cooling).
+    const BIG = 9_007_199_254_740_993n;
+    const BIG_NEIGHBOUR = 9_007_199_254_740_992n;
+    const input = [...mixed(), monster(BIG, 1, BOXED), monster(BIG_NEIGHBOUR, 1, BOXED)];
+    const map = new Map<string, bigint>([
+      [monsterKey(11n), 5n],
+      [monsterKey(13n), 21_540_001n],
+      [monsterKey(31n), 0n],
+      [monsterKey(BIG), 7n],
+    ]);
+    const vm = buildMonstersVm(input, SPECIES, SIX, BOXED, [], [], map);
+    expect(vm.careRemainingMs.get(monsterKey(11n)), 'the map rides on the view model').toBe(5n);
+    expect(careRemaining(vm, 11n), 'a present key: its value').toBe(5n);
+    expect(careRemaining(vm, 13n)).toBe(21_540_001n);
+    expect(careRemaining(vm, 31n), 'a present 0n: ready').toBe(0n);
+    expect(careRemaining(vm, 12n), 'a monster with no entry: ready, never 11`s 5n').toBe(0n);
+    expect(careRemaining(vm, 32n), 'another unmapped monster: ready').toBe(0n);
+    expect(careRemaining(vm, 999n), 'a monster in neither list: ready').toBe(0n);
+    expect(careRemaining(vm, BIG), 'past 2^53: its own entry').toBe(7n);
+    expect(careRemaining(vm, BIG_NEIGHBOUR), 'past 2^53: the neighbour is not it').toBe(0n);
+  });
+
+  it('buildMonstersVm`s care map defaults to EMPTY: a view model built without one reads every monster ready [QF3-4-DEFAULT-MAP]', () => {
+    // WRONG IMPL KILLED: no `careRemainingMs` on the view model at all (the screen and the view
+    // would read undefined); a default that fabricates entries (a whole cooldown per monster: every
+    // Care disabled in a frame opened before the screen computed anything); a required seventh
+    // parameter (every existing caller, paths and items defaulted, would stop compiling).
+    const vm = buildMonstersVm(mixed(), SPECIES, SIX, BOXED);
+    expect(vm.careRemainingMs.size, 'no entry by default').toBe(0);
+    expect(careRemaining(vm, 11n), 'and so a party monster is ready').toBe(0n);
+    expect(careRemaining(vm, 31n), 'and a stored one').toBe(0n);
+    const withPaths = buildMonstersVm(mixed(), SPECIES, SIX, BOXED, [], []);
+    expect(withPaths.careRemainingMs.size, 'paths and items given, the map still defaults').toBe(0);
   });
 });
 

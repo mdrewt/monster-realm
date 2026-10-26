@@ -53,8 +53,23 @@
 // exact opening paint and the exact sheet paint gain `canFeed` / `canEvolve` / `feed` / `evolve` /
 // `confirm`; the Move feedback is `{ kind }`; init is checked for `pendingFeed` / `shown`; the
 // viewModel case passes the inventory items to the expected view model.
+//
+// qf-3 (QF3.3, QF3.4): the Care row follows the monster's care cooldown. The view model's care map
+// is built through the REAL wasm export `care_remaining_ms(lastCareAtMs, BigInt(Math.trunc(
+// ctx.wallNowMs())))`, so every expected cooldown here is derived from the export's own whole
+// cooldown (`care_remaining_ms(0n, 0n)`), never spelled. A on a cooling Care is swallowed (the Feed
+// pattern: nothing sent); a ready Care sends `care`; the sheet paint carries `careRemainingMs`; the
+// painted signature holds the hint's hours and minutes, so a batch repaints when the shown minute
+// or the readiness changes and keeps the SAME state otherwise. NAMED INTENTIONAL CHANGES: `ctxOf`
+// gains `wallNowMs` (an epoch-realistic WALL_NOW by default; a 0 clock against the 0n anchors
+// would read every Care as cooling), `vmOf` takes an optional wall clock; the viewModel case's
+// expected view model carries the care map; the three exact sheet paints gain `careRemainingMs: 0n`.
 import { describe, expect, it } from 'vitest';
-import { party_size, party_slot_none } from '../../../../client-wasm/pkg/client_wasm.js';
+import {
+  care_remaining_ms,
+  party_size,
+  party_slot_none,
+} from '../../../../client-wasm/pkg/client_wasm.js';
 import { DEFAULT_BINDINGS } from '../../input/bindings';
 import type { VButton } from '../../input/buttons';
 import type {
@@ -69,6 +84,7 @@ import type {
 import type { BoxView } from '../boxView';
 import {
   buildMonstersVm,
+  careRemaining,
   findEvolution,
   findMonster,
   type MonstersVm,
@@ -87,6 +103,19 @@ const OTHER = 'cd'.repeat(32);
 /** game-core's party size and boxed sentinel: the wasm exports, never literals. */
 const PARTY_SIZE = party_size();
 const NONE = party_slot_none();
+/** qf-3: the wall clock every fixture context reads (`ctx.wallNowMs()`), epoch-realistic. */
+const WALL_NOW = 1_750_000_000_000;
+
+/** qf-3: game-core's whole care cooldown, read from the REAL export: what remains for a monster
+ *  cared this very millisecond (`care_remaining_ms(0n, 0n)`). Never spelled in this file. */
+function fullCooldown(): bigint {
+  const full: unknown = care_remaining_ms(0n, 0n);
+  expect(typeof full, 'fixture: the export answers a bigint (rebuild the pkg: `just wasm`)').toBe(
+    'bigint',
+  );
+  expect((full as bigint) > 120_000n, 'fixture: a whole cooldown is minutes long').toBe(true);
+  return full as bigint;
+}
 
 const ESSENCE_NAMES: readonly AffinityName[] = [
   'Fire',
@@ -272,8 +301,15 @@ const renamed = (w: World, id: bigint, nickname: string): World => ({
   ...w,
   monsters: w.monsters.map((m) => (m.monsterId === id ? { ...m, nickname } : m)),
 });
+/** qf-3: the same world with monster `id`'s care cooldown anchored at `anchor` (server-epoch ms). */
+const caredAt = (w: World, id: bigint, anchor: bigint): World => ({
+  ...w,
+  monsters: w.monsters.map((m) => (m.monsterId === id ? { ...m, lastCareAtMs: anchor } : m)),
+});
 
-function ctxOf(w: World): ScreenContext {
+/** qf-3 (named intentional change): the context reads the wall clock `wallNow` (WALL_NOW unless a
+ *  case passes another, a fractional one included). */
+function ctxOf(w: World, wallNow: number = WALL_NOW): ScreenContext {
   const store = {
     // The player's own monsters only, as the real store filters by identity.
     ownMonsters: (identity: string) =>
@@ -294,13 +330,15 @@ function ctxOf(w: World): ScreenContext {
     identity: ME,
     bindings: DEFAULT_BINDINGS,
     now: () => 0,
+    wallNowMs: () => wallNow,
     shopId: null,
     healLocationId: null,
     reduceMotion: false,
   } as unknown as ScreenContext;
 }
 
-const vmOf = (w: World): MonstersVm => monstersScreen.viewModel(ctxOf(w));
+const vmOf = (w: World, wallNow: number = WALL_NOW): MonstersVm =>
+  monstersScreen.viewModel(ctxOf(w, wallNow));
 
 function at<T>(items: readonly T[], i: number): T {
   const item = items[i];
@@ -466,8 +504,11 @@ describe('monstersScreen — opens on Storage (ctl-8b, CTL8B.4)', () => {
     const vm = vmOf(w);
     // ctl-8c (named intentional change): the expected view model also takes the player's own
     // inventory items (the raising mapping over `ownInventory` + `itemDefs`).
+    // qf-3 (named intentional change): and the care map, one entry per OWN monster, read through
+    // the real export at the context's wall clock (every anchor here is 0n: all ready).
+    const own = w.monsters.filter((m) => m.ownerIdentity === ME);
     const expected = buildMonstersVm(
-      w.monsters.filter((m) => m.ownerIdentity === ME),
+      own,
       new Map(SPECIES.map((s) => [s.id, s])),
       PARTY_SIZE,
       NONE,
@@ -475,6 +516,12 @@ describe('monstersScreen — opens on Storage (ctl-8b, CTL8B.4)', () => {
       buildInventoryItems(
         w.inventory.filter((r) => r.ownerIdentity === ME),
         new Map(w.itemDefs.map((d) => [d.id, d])),
+      ),
+      new Map(
+        own.map((m) => [
+          monsterKey(m.monsterId),
+          care_remaining_ms(m.lastCareAtMs, BigInt(WALL_NOW)),
+        ]),
       ),
     );
     expect(vm).toEqual(expected);
@@ -1136,11 +1183,13 @@ describe('monstersScreen — round 2 gaps (ctl-8b)', () => {
     expect(partyRow.phase).toMatchObject({ kind: 'nickname', monsterId: 12n });
     // ctl-8c (named intentional change): the sheet paint also carries whether Feed… and Evolve…
     // are enabled (the default world holds Bait and no evolution path), exactly.
+    // qf-3 (named intentional change): and the remaining care cooldown (never cared: 0n, ready).
     expect(paintOf(vm, partyRow).sheet).toEqual({
       card: cardOf(vm, 12n),
       action: 'nickname',
       canFeed: true,
       canEvolve: false,
+      careRemainingMs: 0n,
     });
   });
 
@@ -1342,11 +1391,13 @@ describe('monstersScreen — Care and Feed (ctl-8c, CTL8C.1)', () => {
     expect(opened.state.pendingFeed).toBeNull();
     const painted = paintOf(vm, opened.state);
     expect(painted.feed).toEqual({ foods: vm.foods, activeKey: '7' });
+    // qf-3 (named intentional change): the sheet paint carries `careRemainingMs` (0n: ready).
     expect(painted.sheet, 'the sheet stays painted under the list').toEqual({
       card: cardOf(vm, 11n),
       action: 'feed',
       canFeed: true,
       canEvolve: false,
+      careRemainingMs: 0n,
     });
     expect(painted).toMatchObject({
       tab: 'party',
@@ -1691,11 +1742,13 @@ describe('monstersScreen — Evolve (ctl-8c, CTL8C.1)', () => {
       species: 'Duskling',
       yes: false,
     });
+    // qf-3 (named intentional change): the sheet paint carries `careRemainingMs` (0n: ready).
     expect(painted.sheet, 'the sheet stays painted, on Evolve').toEqual({
       card: cardOf(vm, 11n),
       action: 'evolve',
       canFeed: true,
       canEvolve: true,
+      careRemainingMs: 0n,
     });
     expect(painted.feed).toBeNull();
 
@@ -2014,5 +2067,283 @@ describe('monstersScreen — settle and repeats (ctl-8c, CTL8C.1)', () => {
       }
     }
     expect(press(vm, foodList, 'Select').result).toEqual(TOGGLE_HELP);
+  });
+});
+
+// =============================================================================
+// qf-3 (QF3.3, QF3.4): the Care row follows the monster's care cooldown, read through the REAL
+// `care_remaining_ms` export at the context's wall clock.
+// =============================================================================
+
+describe('monstersScreen — the Care cooldown (qf-3, QF3.3, QF3.4)', () => {
+  it('A on Care one millisecond before the care cooldown elapses is swallowed: the exact answer `consumed`, no command, the sheet still on Care with nothing pending, and the paint carries the remaining 1n; a never-cared monster in the same world still cares [QF3-3-CARE-COOLING]', () => {
+    // WRONG IMPL KILLED: today's unconditional Care (A sends `care` while the cooldown runs: the
+    // server refuses it and the player learns nothing until the rejection line); a readiness test
+    // on a strict `>` (or `- 1`) boundary that reads the last millisecond as ready; a cooling A
+    // answered `unhandled` (the page or the legacy ladder would act on the key) or that closes the
+    // sheet, opens a pane or leaves a pending feed or a line behind; a paint without the remaining
+    // time (the view could not disable the row); and a cooldown applied to every monster at once.
+    const full = fullCooldown();
+    const wallNow = BigInt(WALL_NOW);
+    const w = caredAt(world(), 21n, wallNow - full + 1n);
+    const vm = vmOf(w);
+    expect(careRemaining(vm, 21n), 'the screen read the export: 1 ms left').toBe(1n);
+
+    const onCare = swallowed(vm, monstersScreen.init(vm), SHEET_STEPS.care);
+    expect(onCare.phase, 'the walk reaches the cooling Care').toEqual(sheetPhase(21n, 'care'));
+    expect(paintOf(vm, onCare).sheet?.careRemainingMs, 'painted: 1 ms left').toBe(1n);
+
+    const a = press(vm, onCare, 'A');
+    expect(typeof a.result, 'no command object').toBe('string');
+    expect(a.result, 'swallowed').toBe('consumed');
+    expect(a.state.phase, 'still the sheet, on Care').toEqual(sheetPhase(21n, 'care'));
+    expect(a.state.pendingFeed, 'nothing pending').toBeNull();
+    expect(a.state.feedback, 'no line').toBeNull();
+    expect(paintOf(vm, a.state)).toMatchObject({
+      sheet: { card: cardOf(vm, 21n), action: 'care', careRemainingMs: 1n },
+      feed: null,
+      evolve: null,
+      confirm: null,
+      summary: null,
+      nickname: null,
+    });
+    expect(press(vm, a.state, 'A').result, 'a second A: still swallowed').toBe('consumed');
+
+    // CONTROL: Kip (never cared) in the same world is ready.
+    expect(press(vm, kipOn(vm, 'care'), 'A').result).toEqual({ kind: 'care', monsterId: 11n });
+  });
+
+  it('A on Care exactly when the care cooldown has elapsed sends care for that monster and the paint reads 0n (ready) [QF3-4-CARE-READY-AT-BOUNDARY]', () => {
+    // WRONG IMPL KILLED: a boundary read one millisecond late (Care stays disabled at the instant
+    // the server would accept it); a paint that omits `careRemainingMs` or carries the raw anchor
+    // or the elapsed time instead of the remaining one; a cooldown read off the frame clock
+    // (`ctx.now`, 0 here) instead of the wall clock (every anchored Care would read cooling).
+    const full = fullCooldown();
+    const wallNow = BigInt(WALL_NOW);
+    const vm = vmOf(caredAt(world(), 21n, wallNow - full));
+    expect(careRemaining(vm, 21n), 'the screen read the export: ready').toBe(0n);
+    const onCare = swallowed(vm, monstersScreen.init(vm), SHEET_STEPS.care);
+    expect(paintOf(vm, onCare).sheet).toMatchObject({ action: 'care', careRemainingMs: 0n });
+    expect(press(vm, onCare, 'A').result).toEqual({ kind: 'care', monsterId: 21n });
+  });
+
+  it('a never-cared monster (anchor 0n) under a realistic wall clock is ready: every own monster maps to 0n, the paint reads 0n and A on Care sends care [QF3-4-NEVER-CARED]', () => {
+    // WRONG IMPL KILLED: a 0n anchor treated as "unknown, assume cooling" (every new monster's Care
+    // disabled); a care map missing a monster or keyed by something other than `monsterKey`; a
+    // wall clock read as 0 or as the frame clock (care_remaining_ms(0n, 0n) is a whole cooldown).
+    const w = world();
+    expect(
+      w.monsters.every((m) => m.lastCareAtMs === 0n),
+      'fixture: nobody was ever cared for',
+    ).toBe(true);
+    const vm = vmOf(w);
+    for (const m of w.monsters) {
+      expect(careRemaining(vm, m.monsterId), `monster ${m.monsterId} is ready`).toBe(0n);
+      const mapped = vm.careRemainingMs.get(monsterKey(m.monsterId));
+      expect(mapped, `monster ${m.monsterId} is mapped, to 0n`).toBe(0n);
+    }
+    const onCare = swallowed(vm, monstersScreen.init(vm), SHEET_STEPS.care);
+    expect(paintOf(vm, onCare).sheet?.careRemainingMs).toBe(0n);
+    expect(press(vm, onCare, 'A').result).toEqual({ kind: 'care', monsterId: 21n });
+  });
+
+  it('viewModel maps every OWN monster to the export`s answer for its own anchor at the context`s wall clock, and no other identity`s monster [QF3-3-VIEWMODEL-MAP]', () => {
+    // WRONG IMPL KILLED: the arguments swapped (care_remaining_ms(now, last) reads every pair as a
+    // clock behind the anchor: a whole cooldown for all); one anchor (the first monster's) used for
+    // every monster; another identity's monster mapped (a store row that is not the player's);
+    // the wall clock read once at boot instead of per view model (the second clock below).
+    const full = fullCooldown();
+    const wallNow = BigInt(WALL_NOW);
+    const w = caredAt(caredAt(world(), 21n, wallNow - full + 1n), 12n, wallNow - 1n);
+    w.monsters = [...w.monsters, { ...mon(99n, NONE, 1, '', OTHER), lastCareAtMs: wallNow }];
+    const own = w.monsters.filter((m) => m.ownerIdentity === ME);
+    const vm = vmOf(w);
+    expect(
+      [...vm.careRemainingMs.keys()].sort(),
+      'one entry per own monster, keyed by monsterKey',
+    ).toEqual(own.map((m) => monsterKey(m.monsterId)).sort());
+    for (const m of own) {
+      expect(vm.careRemainingMs.get(monsterKey(m.monsterId)), `monster ${m.monsterId}`).toBe(
+        care_remaining_ms(m.lastCareAtMs, wallNow),
+      );
+    }
+    expect(careRemaining(vm, 21n), '1 ms short of the cooldown').toBe(1n);
+    expect(careRemaining(vm, 12n), 'cared 1 ms ago').toBe(full - 1n);
+    expect(careRemaining(vm, 11n), 'never cared').toBe(0n);
+    expect(vm.careRemainingMs.has(monsterKey(99n)), 'another identity`s monster').toBe(false);
+
+    // A later wall clock: the same world reads the time that has passed.
+    const later = vmOf(w, WALL_NOW + 30_000);
+    expect(careRemaining(later, 12n), '30 s later').toBe(full - 30_001n);
+    expect(careRemaining(later, 21n), 'past the cooldown').toBe(0n);
+  });
+
+  it('a monster with no entry in the care map stays ready (A on its Care sends care) while the mapped monster`s Care is swallowed: the screen acts on the view model`s map [QF3-4-MISSING-KEY]', () => {
+    // WRONG IMPL KILLED: a missing entry read as cooling (fail-closed: Care disabled with nothing
+    // the player can do about it; the server is the authority, so the client fails OPEN); an act
+    // that re-reads the store or the clock instead of the view model it was handed (the mapped
+    // monster's 5 ms below would read ready and send); one monster's entry applied to another.
+    const COOLING_ID = 21n;
+    const w = world();
+    const vm = buildMonstersVm(
+      w.monsters,
+      new Map(SPECIES.map((s) => [s.id, s])),
+      PARTY_SIZE,
+      NONE,
+      [],
+      buildInventoryItems(w.inventory, new Map(w.itemDefs.map((d) => [d.id, d]))),
+      new Map([[monsterKey(COOLING_ID), 5n]]),
+    );
+    expect(careRemaining(vm, COOLING_ID), 'fixture: the mapped monster').toBe(5n);
+    expect(careRemaining(vm, 22n), 'fixture: 22 has no entry').toBe(0n);
+
+    const on22 = swallowed(vm, monstersScreen.init(vm), ['Right', ...SHEET_STEPS.care]);
+    expect(on22.phase).toEqual(sheetPhase(22n, 'care'));
+    expect(paintOf(vm, on22).sheet?.careRemainingMs, 'no entry: painted ready').toBe(0n);
+    expect(press(vm, on22, 'A').result, 'no entry: Care sends').toEqual({
+      kind: 'care',
+      monsterId: 22n,
+    });
+
+    const on21 = swallowed(vm, monstersScreen.init(vm), SHEET_STEPS.care);
+    expect(on21.phase).toEqual(sheetPhase(COOLING_ID, 'care'));
+    expect(paintOf(vm, on21).sheet?.careRemainingMs, 'the mapped 5 ms').toBe(5n);
+    expect(press(vm, on21, 'A').result, 'the mapped monster: swallowed').toBe('consumed');
+  });
+
+  it('a fractional wall clock is truncated to the millisecond before it reaches the export: no throw, exactly-at-cooldown reads ready, and one millisecond short reads 1n (truncated, never rounded up) [QF3-3-FRACTIONAL-CLOCK]', () => {
+    // WRONG IMPL KILLED: `BigInt(ctx.wallNowMs())` on a fractional clock (a RangeError thrown in
+    // the view model: the host starves the frame on every button and batch); Math.round or
+    // Math.ceil (….75 read as the next millisecond: Care offered 1 ms before the server takes it).
+    const full = fullCooldown();
+    const wallNow = BigInt(WALL_NOW);
+    const FRACTIONAL = WALL_NOW + 0.75;
+    expect(Number.isInteger(FRACTIONAL), 'fixture: a fractional clock').toBe(false);
+
+    const atCooldown = caredAt(world(), 21n, wallNow - full);
+    const build = (): MonstersVm => vmOf(atCooldown, FRACTIONAL);
+    expect(build, 'a fractional clock does not throw').not.toThrow();
+    const vm = build();
+    expect(careRemaining(vm, 21n), 'truncated: exactly at the cooldown, ready').toBe(0n);
+    const onCare = swallowed(vm, monstersScreen.init(vm), SHEET_STEPS.care);
+    expect(paintOf(vm, onCare).sheet?.careRemainingMs).toBe(0n);
+    expect(press(vm, onCare, 'A').result).toEqual({ kind: 'care', monsterId: 21n });
+
+    const oneShort = vmOf(caredAt(world(), 21n, wallNow - full + 1n), FRACTIONAL);
+    expect(careRemaining(oneShort, 21n), 'truncated, not rounded: still 1 ms left').toBe(1n);
+  });
+
+  it('observe answers a NEW state when the cooling Care`s shown minute changes or it turns ready, the SAME object while the shown minute is unchanged, and the same object for another monster`s cooldown or in the list phase [QF3-3-OBSERVE-REPAINT]', () => {
+    // WRONG IMPL KILLED: a painted signature without the hint (no batch would ever move "Ready in
+    // 5h 50m" or enable the row: the hint freezes at the press); a signature on the raw
+    // milliseconds (a new state, and a repaint, on every batch); a signature over the whole care
+    // map (another monster's cooldown repainting this sheet); and a list phase that repaints for
+    // cooldowns it does not show.
+    const full = fullCooldown();
+    const wallNow = BigInt(WALL_NOW);
+    // Ten and a half minutes in, whatever the whole cooldown is: the remaining time sits mid-minute.
+    const elapsed = ((full - 30_000n) % 60_000n) + 600_000n;
+    const w = caredAt(world(), 21n, wallNow - elapsed);
+    const vm0 = vmOf(w);
+    const r0 = careRemaining(vm0, 21n);
+    expect(r0 % 60_000n, 'fixture: the remaining time is mid-minute').toBe(30_000n);
+    expect(r0 > 120_000n, 'fixture: minutes of cooldown left').toBe(true);
+    const onCare = swallowed(vm0, monstersScreen.init(vm0), SHEET_STEPS.care);
+    expect(onCare.phase).toEqual(sheetPhase(21n, 'care'));
+
+    // One second later: the same shown minute.
+    const later1s = vmOf(w, WALL_NOW + 1_000);
+    expect(careRemaining(later1s, 21n), 'fixture: one second passed').toBe(r0 - 1_000n);
+    expect(observe(later1s, onCare), 'the same minute: the SAME object').toBe(onCare);
+
+    // One minute later: the hint changed.
+    const later1m = vmOf(w, WALL_NOW + 60_000);
+    const repainted = observe(later1m, onCare);
+    expect(repainted, 'the shown minute changed: a NEW state').not.toBe(onCare);
+    expect(repainted.phase, 'still the sheet on Care').toEqual(sheetPhase(21n, 'care'));
+    expect(paintOf(later1m, repainted).sheet?.careRemainingMs).toBe(r0 - 60_000n);
+    expect(observe(vmOf(w, WALL_NOW + 60_000), repainted), 'then settled').toBe(repainted);
+
+    // The clock crosses the boundary: ready.
+    const atReady = vmOf(w, WALL_NOW + Number(r0));
+    const flipped = observe(atReady, repainted);
+    expect(flipped, 'readiness flipped: a NEW state').not.toBe(repainted);
+    expect(paintOf(atReady, flipped).sheet?.careRemainingMs).toBe(0n);
+    expect(press(atReady, flipped, 'A').result).toEqual({ kind: 'care', monsterId: 21n });
+
+    // Kip (never cared) on its own sheet: 21's minute changing is not Kip's to repaint.
+    const kip = kipOn(vm0, 'care');
+    expect(observe(later1m, kip), 'another monster`s cooldown: the same object').toBe(kip);
+    // The list phase paints no cooldown.
+    const list = monstersScreen.init(vm0);
+    expect(observe(later1m, list), 'the list: the same object').toBe(list);
+    expect(observe(atReady, list)).toBe(list);
+  });
+
+  it('Up and Down still land on a cooling Care (disabled, reachable) and walk past it in the design order [QF3-3-CARE-REACHABLE]', () => {
+    // WRONG IMPL KILLED: a cooling Care dropped from the walk (Down from Summary would land on
+    // Feed…: the player could not read why Care is unavailable), or a walk that sticks on it.
+    const full = fullCooldown();
+    const vm = vmOf(caredAt(world(), 21n, BigInt(WALL_NOW) - 1_000n));
+    expect(careRemaining(vm, 21n), 'fixture: cared a second ago').toBe(full - 1_000n);
+    const sheet = swallowed(vm, monstersScreen.init(vm), ['A']);
+    expect(sheet.phase).toEqual(sheetPhase(21n, 'summary'));
+    const onCare = swallowed(vm, sheet, ['Down']);
+    expect(onCare.phase, 'Down from Summary: the cooling Care').toEqual(sheetPhase(21n, 'care'));
+    expect(paintOf(vm, onCare).sheet).toMatchObject({
+      action: 'care',
+      careRemainingMs: full - 1_000n,
+    });
+    expect(swallowed(vm, onCare, ['Down']).phase, 'and on to Feed').toEqual(
+      sheetPhase(21n, 'feed'),
+    );
+    const back = swallowed(vm, sheet, ['Down', 'Down', 'Up']);
+    expect(back.phase, 'Up from Feed: Care again').toEqual(sheetPhase(21n, 'care'));
+    expect(swallowed(vm, back, ['Up']).phase, 'Up from Care: Summary').toEqual(
+      sheetPhase(21n, 'summary'),
+    );
+  });
+
+  it('nothing the client does resets the cooldown: A on a cooling Care leaves the remaining time as it was, a care sent and answered by no batch (the server refused it) leaves Care ready and A sends again, and only a batch that moves the anchor starts the cooldown [QF3-4-NO-CLIENT-RESET]', () => {
+    // WRONG IMPL KILLED: an optimistic local cooldown (A on a ready Care marks the monster cooling
+    // before any batch: a refused care would lock Care for a whole cooldown with nothing on the
+    // server behind it); a swallowed A that restarts the hint (a press while cooling reading a
+    // whole cooldown again); readiness kept in the screen state instead of read from the view model
+    // (the batch that stamps the anchor would never disable Care).
+    const full = fullCooldown();
+    const wallNow = BigInt(WALL_NOW);
+
+    // Cooling, 90 s left: pressing A changes nothing.
+    const cooling = caredAt(world(), 21n, wallNow - full + 90_000n);
+    const vmC = vmOf(cooling);
+    const onCooling = swallowed(vmC, monstersScreen.init(vmC), SHEET_STEPS.care);
+    expect(paintOf(vmC, onCooling).sheet?.careRemainingMs, 'fixture: 90 s left').toBe(90_000n);
+    const pressed = press(vmC, onCooling, 'A');
+    expect(pressed.result).toBe('consumed');
+    expect(paintOf(vmC, pressed.state).sheet?.careRemainingMs, 'unchanged by the press').toBe(
+      90_000n,
+    );
+    expect(careRemaining(vmOf(cooling), 21n), 'and by the rebuilt view model').toBe(90_000n);
+
+    // Ready: a care sent, then a batch that changes nothing (refused).
+    const ready = world();
+    const vmR = vmOf(ready);
+    const onReady = swallowed(vmR, monstersScreen.init(vmR), SHEET_STEPS.care);
+    const sent = press(vmR, onReady, 'A');
+    expect(sent.result).toEqual({ kind: 'care', monsterId: 21n });
+    expect(paintOf(vmR, sent.state).sheet?.careRemainingMs, 'still ready after the send').toBe(0n);
+    const refused = observe(vmOf(ready), sent.state);
+    expect(refused, 'a batch that changed nothing: the same object').toBe(sent.state);
+    expect(press(vmOf(ready), refused, 'A').result, 'A sends again').toEqual({
+      kind: 'care',
+      monsterId: 21n,
+    });
+
+    // Accepted: the batch stamps the anchor (the server's now).
+    const stamped = vmOf(caredAt(ready, 21n, wallNow));
+    const cooled = observe(stamped, sent.state);
+    expect(cooled, 'the anchor moved: a NEW state').not.toBe(sent.state);
+    expect(paintOf(stamped, cooled).sheet?.careRemainingMs, 'a whole cooldown').toBe(full);
+    expect(press(stamped, cooled, 'A').result, 'and Care is swallowed now').toBe('consumed');
   });
 });

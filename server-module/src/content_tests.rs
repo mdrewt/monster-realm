@@ -1798,6 +1798,7 @@ fn rb54_oracle_is_driven_by_the_type_not_the_label() {
 // ===========================================================================
 mod nh_sync {
     use crate::accounts::AccountDeletionReaperSchedule;
+    use crate::marshal::pub_from_monster;
     use crate::movement::MovementTickSchedule;
     use crate::native_host_tests::{fixture, Fixture, Handle};
     use crate::observability::MrHeartbeatSchedule;
@@ -2386,6 +2387,105 @@ mod nh_sync {
                 .find(|r| r.zone_id == z.id)
                 .expect("zone row");
             assert_eq!(bytes(&row), bytes(&base()), "{label} drift repaired");
+        }
+    }
+
+    /// qf-3 (QF3.2, the content-resync leg): the re-derive pass of a stale-version
+    /// sync rewrites every `monster_pub` row through `pub_from_monster`, so each
+    /// pub keeps ITS OWN monster's care cooldown anchor. Two stale monsters with
+    /// distinct nonzero anchors (one negative) are seeded with pubs whose
+    /// `stat_hp` is deliberately wrong (1), then one sync: each pub ends with its
+    /// own monster's anchor and the recomputed `stat_hp`, which proves the pass
+    /// really rewrote the row (so the anchor clauses cannot pass on the seed).
+    ///
+    /// kills: a post-constructor `pub_row.last_care_at_ms = 0;` after the
+    /// `pub_from_monster` call in the re-derive pass (content.rs
+    /// `sync_content_inner`), CI-clean before this test because no content
+    /// fixture seeded a nonzero anchor (every owner's Care would read READY after
+    /// each content resync while the server still refuses it); an anchor taken
+    /// from the other monster's row; and a pass that stops rewriting the pub.
+    /// Passes on the current tree BY CONSTRUCTION (the pass builds the pub through
+    /// `pub_from_monster`, which copies the anchor verbatim): its teeth are the
+    /// planted mutant above, watched failing by the orchestrator, then reverted.
+    #[test]
+    fn nh_sync_content_rederive_preserves_the_care_anchor_on_monster_pub() {
+        const ANCHOR_11: i64 = 1_750_000_000_123;
+        const ANCHOR_12: i64 = -42;
+        let fx = fixture();
+        let w = world(&fx);
+        seed_config(&w, 0);
+        // Idempotent re-registration (native_host_tests `table_keyed`): the very
+        // indexes `world` registered, handed back to seed and read the two tables.
+        let monsters = fx.table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id);
+        let pubs =
+            fx.table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id);
+        let species = game_core::load_species().expect("species RON");
+        assert!(
+            species.iter().any(|s| s.id == 1),
+            "fixture: the shipped species 1 the stale monsters are seeded as must exist, \
+             or the re-derive pass skips them"
+        );
+
+        let mut m11 = super::make_stale_monster(11, owner(), 1);
+        m11.last_care_at_ms = ANCHOR_11;
+        m11.party_slot = 0;
+        let mut m12 = super::make_stale_monster(12, owner(), 1);
+        m12.last_care_at_ms = ANCHOR_12;
+        m12.party_slot = 1;
+        for m in [&m11, &m12] {
+            monsters.seed(m);
+            let mut stale_pub = pub_from_monster(m, 0);
+            stale_pub.stat_hp = 1; // a deliberately wrong derived field
+            pubs.seed(&stale_pub);
+        }
+        let seeded = pubs.rows();
+        assert_eq!(seeded.len(), 2, "fixture: two pubs seeded");
+        assert!(
+            seeded.iter().all(|p| p.stat_hp == 1),
+            "fixture: every seeded pub carries the wrong stat_hp"
+        );
+
+        sync(&fx);
+
+        assert_eq!(
+            version(&w),
+            CONTENT_VERSION,
+            "the stale-version sync stamps CONTENT_VERSION"
+        );
+        let monster_rows = monsters.rows();
+        let pub_rows = pubs.rows();
+        assert_eq!(monster_rows.len(), 2, "still two monster rows");
+        assert_eq!(pub_rows.len(), 2, "still two pub rows (rewritten, not added)");
+        for (id, anchor) in [(11_u64, ANCHOR_11), (12_u64, ANCHOR_12)] {
+            let m = monster_rows
+                .iter()
+                .find(|r| r.monster_id == id)
+                .expect("monster row");
+            let p = pub_rows
+                .iter()
+                .find(|r| r.monster_id == id)
+                .expect("pub row");
+            assert_eq!(
+                m.last_care_at_ms, anchor,
+                "monster {id}: the re-derive pass keeps the private anchor"
+            );
+            assert_ne!(
+                p.stat_hp, 1,
+                "monster {id}: the pass rewrote the pub (its stat_hp is no longer the seeded 1)"
+            );
+            assert_eq!(
+                p.stat_hp, m.stat_hp,
+                "monster {id}: the rewritten pub carries the recomputed stat_hp"
+            );
+            assert_ne!(
+                p.last_care_at_ms, 0,
+                "monster {id}: the rewritten pub's care anchor was zeroed (the owner's Care \
+                 would read ready while the server refuses it)"
+            );
+            assert_eq!(
+                p.last_care_at_ms, anchor,
+                "monster {id}: the rewritten pub carries its OWN monster's anchor"
+            );
         }
     }
 }

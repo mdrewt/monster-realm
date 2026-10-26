@@ -76,13 +76,20 @@ const H = vi.hoisted(() => ({
   /** qf-2: what the connection stub's `linkFrozen()` answers (read live on each call). Reset by
    *  every boot; a case sets it AFTER its setup, right before the press under test. */
   frozen: false,
+  /** qf-3: what the stubbed wasm `care_remaining_ms` answers (0n = ready). Reset by every boot to
+   *  always-ready; the clock-source case swaps in a recorder. */
+  careRemaining: (_last: bigint, _now: bigint): bigint => 0n,
 }));
 
 // wasm pkg: every name main.ts imports. apply_move is a real one-tile step on an open grid.
 // ctl-10b: named fixture change: the interact export is a stub driven by `H.interact` (the trade
 // wizard is now opened face to face, through A, so the rule must be answerable here).
+// qf-3: named fixture change: the care-readiness export is a stub driven by `H.careRemaining`.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () =>
-  wasmPkgWalkingMock({ interact: (...args: unknown[]) => H.interact(...args) }),
+  wasmPkgWalkingMock({
+    interact: (...args: unknown[]) => H.interact(...args),
+    careRemaining: (last: bigint, now: bigint) => H.careRemaining(last, now),
+  }),
 );
 
 // The connection: capture the options; enqueueMove never settles, every other reducer records its
@@ -173,6 +180,7 @@ async function boot(url?: string): Promise<void> {
   H.interact = () => [];
   H.answer = {};
   H.frozen = false;
+  H.careRemaining = () => 0n;
   // qf-2: a case that boots under a locale names its URL; every other boot keeps the bare '/'
   // (afterEach resets it to '/').
   if (url !== undefined) window.history.replaceState(null, '', url);
@@ -4036,5 +4044,115 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
       errorSpy.mock.calls.some((c) => c[0] === '[status]' && c[1] === 'train: not enough food'),
       'and it is logged',
     ).toBe(true);
+  });
+});
+
+// ==========================================================================================
+// qf-3: the Monsters sheet reads care readiness against the WALL clock (QF3.3)
+// ==========================================================================================
+//
+// The sheet's Care row is disabled while the wasm export `care_remaining_ms(lastCareAtMs, now)`
+// (stubbed here through `H.careRemaining`) answers nonzero. `lastCareAtMs` is a server-epoch
+// timestamp, so `now` must be the WALL clock (`Date.now()`, main.ts's `wallNowMs`), never the
+// shell's monotonic frame clock (`performance.now()`, which this harness drives from `clock.t`,
+// about 1000 here): against a performance-clock `now` every cared monster reads a whole cooldown
+// forever.
+
+/** An epoch-realistic wall clock, nowhere near a performance-clock reading. */
+const QF3_WALL = 1_750_000_000_000;
+/** The seeded monster's care anchor: nonzero and distinct from every other figure here. */
+const QF3_ANCHOR = 1_749_999_000_123n;
+
+describe('main.ts care readiness reads the wall clock (runtime, qf-3)', {
+  sequential: true,
+}, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    raf.cb = null;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  it('the booted Monsters sheet asks care_remaining_ms with the monster`s own anchor and BigInt(Date.now()), never the performance clock, read again on every rebuild; a nonzero answer disables the sheet`s Care row with its hint and A on it calls no care reducer [QF3-3-CLOCK-SOURCE]', async () => {
+    // WRONG IMPL KILLED: `ctx.now` (the performance clock) passed as the wall clock (about 1000
+    // against an epoch anchor: every cared monster reads a whole cooldown forever, a hard
+    // lockout); `wallNowMs` left out of main.ts's screen context (the screen would throw on the
+    // first build); a wall clock read once and cached (the second reading below); the anchor
+    // replaced by 0n or another column (the recorded `last`); a `now` handed over as a JS number
+    // (the real i64 export takes a BigInt); a sheet that never asks the export (the anti-vacuity
+    // count); and a disabled row that main.ts still dispatches on A.
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertMonster({ ...RAISED_MONSTER, lastCareAtMs: QF3_ANCHOR });
+    server(1010);
+    const seen: Array<readonly [unknown, unknown]> = [];
+    let answer = 0n;
+    H.careRemaining = (last, now) => {
+      seen.push([last, now]);
+      return answer;
+    };
+    const wall = vi.spyOn(Date, 'now').mockReturnValue(QF3_WALL);
+    try {
+      tap('KeyV', 1020);
+      expect(stackNames(), 'precondition: V opened Monsters over the menu').toEqual([
+        'world',
+        'menuView',
+        'boxView',
+      ]);
+      tap('Enter', 1030); // A on the monster: its sheet, the cursor on Summary
+      tap('ArrowDown', 1040); // Care
+      const care = (): HTMLElement => byId('monstersSheet-root-care');
+      expect(care().getAttribute('aria-selected'), 'precondition: the cursor is on Care').toBe(
+        'true',
+      );
+      expect(
+        care().getAttribute('aria-disabled'),
+        'the stub answers ready: Care enabled',
+      ).toBeNull();
+
+      expect(seen.length, 'ANTI-VACUITY: the sheet asked the export').toBeGreaterThan(0);
+      for (const [last, now] of seen) {
+        expect(typeof last, 'the anchor crosses as a BigInt').toBe('bigint');
+        expect(last, 'the monster`s own anchor').toBe(QF3_ANCHOR);
+        expect(typeof now, 'the clock crosses as a BigInt').toBe('bigint');
+        expect(now, 'the wall clock, not the performance clock').toBe(BigInt(QF3_WALL));
+      }
+
+      // The wall clock moves on: the next build reads it again.
+      const mark = seen.length;
+      wall.mockReturnValue(QF3_WALL + 60_000);
+      tap('ArrowDown', 1050); // Feed…: a button rebuilds the view model
+      expect(
+        byId('monstersSheet-root-feed').getAttribute('aria-selected'),
+        'control: the press reached the screen (the cursor is on Feed…)',
+      ).toBe('true');
+      const after = seen.slice(mark);
+      expect(after.length, 'the rebuild asked the export again').toBeGreaterThan(0);
+      for (const [, now] of after) {
+        expect(now, 'the wall clock, read live').toBe(BigInt(QF3_WALL + 60_000));
+      }
+
+      // A nonzero answer: Care is disabled with its hint, and A on it sends nothing.
+      answer = 60_000n;
+      tap('ArrowUp', 1060); // back to Care: the rebuild reads the new answer
+      expect(care().getAttribute('aria-selected'), 'precondition: back on Care').toBe('true');
+      expect(care().getAttribute('aria-disabled'), 'cooling: Care is disabled').toBe('true');
+      expect(care().classList.contains('is-disabled'), 'and dimmed').toBe(true);
+      expect(care().textContent, 'its label, then the hint').toBe('Care Ready in 0h 1m');
+      tap('Enter', 1070); // A on the cooling Care
+      await flush();
+      expect(callsOf('care'), 'A on a cooling Care calls no care reducer').toEqual([]);
+      expect(stackNames(), 'and the Monsters frame stays on top').toEqual([
+        'world',
+        'menuView',
+        'boxView',
+      ]);
+    } finally {
+      wall.mockRestore();
+    }
   });
 });

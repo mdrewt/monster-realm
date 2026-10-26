@@ -120,6 +120,14 @@
 //   - CTL8B-3-VIEW-ROW: its "Heal Party disabled while the typing row shows, enabled after"
 //     clauses are removed with the button (the c8bHealButton helper goes too); the rest of the
 //     case is unchanged.
+//
+// qf-3 (QF3.3, QF3.4): while a monster's care cooldown runs, the sheet's Care row is disabled with
+// its reason (the Feed… / no-food precedent: aria-disabled, .is-disabled, the catalogued hint after
+// the label). The cases are the describe titled 'BoxView qf-3 ...' at the end of this file
+// (QF3-3-VIEW-* / QF3-4-VIEW-*). NAMED INTENTIONAL CHANGES to pre-existing cases:
+//   - `c8bSheet` takes a fifth parameter, `careRemainingMs`, default 0n (Care ready), so every
+//     existing sheet paint keeps an enabled Care row.
+//   - M24S4_BX_PARAM_KEYS gains `box.sheet.careCooldown`.
 // ---------------------------------------------------------------------------
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readWasmU32Constant } from '../../test-util/wasmPkg';
@@ -1433,6 +1441,7 @@ const M24S4_BX_PLAIN_KEYS = new Set([
 
 // INTENTIONAL CHANGE (ctl-8c): the food row, the Evolve confirm, the fed line, and the reused path
 // heading and ready line.
+// INTENTIONAL CHANGE (qf-3): the cooling Care row's remaining-cooldown hint (hours, minutes).
 const M24S4_BX_PARAM_KEYS = new Set([
   'box.party.emptySlot',
   'box.card.stats',
@@ -1441,6 +1450,7 @@ const M24S4_BX_PARAM_KEYS = new Set([
   'box.feedback.fed',
   'evolution.path.heading',
   'evolution.card.ready',
+  'box.sheet.careCooldown',
 ]);
 
 /** True iff `content` (the text strictly between one `«`/`»` pair) is EXACTLY an
@@ -2131,13 +2141,16 @@ const c8bPaint = (over: Partial<MonstersPaint> = {}): MonstersPaint => ({
   ...over,
 });
 
-/** A sheet paint (ctl-8c): Feed… and Evolve… enabled unless a case says otherwise. */
+/** A sheet paint (ctl-8c): Feed… and Evolve… enabled unless a case says otherwise.
+ *  qf-3 (named intentional change): and the remaining care cooldown, 0n (Care ready) unless a case
+ *  says otherwise. */
 const c8bSheet = (
   card: MonsterCardViewModel,
   action: SheetAction,
   canFeed = true,
   canEvolve = true,
-): NonNullable<MonstersPaint['sheet']> => ({ card, action, canFeed, canEvolve });
+  careRemainingMs = 0n,
+): NonNullable<MonstersPaint['sheet']> => ({ card, action, canFeed, canEvolve, careRemainingMs });
 
 interface C8bMounted {
   parent: HTMLElement;
@@ -4849,5 +4862,189 @@ describe('BoxView qf-2: the outcome line (QF2.1, QF2.2)', () => {
     expect(cold.view.feedbackLine()(QF2_OK_TEXT, 'ok'), 'a never-shown view paints nothing').toBe(
       false,
     );
+  });
+});
+
+// =============================================================================
+// qf-3 (QF3.3, QF3.4): the Care cooldown on the sheet. A paint whose sheet carries a nonzero
+// `careRemainingMs` disables the Care row exactly as a no-food paint disables Feed…: the row is
+// aria-disabled and .is-disabled and its label is followed by the catalogued reason, here
+// `box.sheet.careCooldown` with the remaining time rounded UP to the minute ({hours, minutes}).
+// 0n is ready: the bare label, nothing disabled. Located by the nav kit's row ids, as above.
+// =============================================================================
+
+/** U+00EA (e circumflex), built by code point so the French hint's first word holds no pasted
+ *  glyph. */
+const QF3_E_CIRCUMFLEX = String.fromCharCode(0x00ea);
+
+/** The catalog resolver through a plain-string signature (the new key is not in the typed
+ *  catalog until the specialist ships it); the real resolver, call-through. */
+const qf3Tf = i18nTf as unknown as (key: string, params: Record<string, unknown>) => string;
+
+describe('BoxView qf-3: the Care cooldown on the sheet (QF3.3, QF3.4)', () => {
+  const careRow = (root: Element): HTMLElement => c8cById(root, 'monstersSheet-root-care');
+  const paintCare = (
+    view: BoxView,
+    careRemainingMs: bigint,
+    action: SheetAction = 'care',
+    canFeed = true,
+    canEvolve = true,
+  ): void => {
+    view.paint(
+      c8bPaint({
+        tab: 'party',
+        activeKey: '100',
+        sheet: c8bSheet(C8B_KIP, action, canFeed, canEvolve, careRemainingMs),
+      }),
+    );
+  };
+  const expectCooling = (root: Element, text: string, when: string): void => {
+    expect(careRow(root).getAttribute('aria-disabled'), `${when}: aria-disabled`).toBe('true');
+    expect(careRow(root).classList.contains('is-disabled'), `${when}: .is-disabled`).toBe(true);
+    expect(careRow(root).textContent, `${when}: the label, then the hint`).toBe(text);
+  };
+  const expectReady = (root: Element, when: string): void => {
+    expect(careRow(root).getAttribute('aria-disabled'), `${when}: no aria-disabled`).toBeNull();
+    expect(careRow(root).classList.contains('is-disabled'), `${when}: not .is-disabled`).toBe(
+      false,
+    );
+    expect(careRow(root).textContent, `${when}: the bare label`).toBe(i18nT('box.sheet.care'));
+  };
+
+  it('a cooling Care row is aria-disabled and .is-disabled and reads its label, a space, then the catalogued hint rounded UP to the minute; the other five rows are untouched [QF3-3-VIEW-CARE-DISABLED]', () => {
+    // WRONG IMPL KILLED: a Care row that ignores `careRemainingMs` (enabled while cooling: A on it
+    // does nothing and nothing says why, CTL4.3); a disabled row with no reason, or a reason from
+    // a literal, rounded down ("0h 0m" with a millisecond left), with minutes not taken modulo 60,
+    // or glued to the label; the reason borrowed from Feed's no-food line; a cooldown that also
+    // disables Feed… or Evolve… (or their reasons replacing Care's); and the hint left on
+    // another row.
+    const { root, view } = c8bOpen();
+    const cases: ReadonlyArray<readonly [bigint, string]> = [
+      [21_540_001n, 'Care Ready in 6h 0m'],
+      [21_540_000n, 'Care Ready in 5h 59m'],
+      [3_600_001n, 'Care Ready in 1h 1m'],
+      [60_000n, 'Care Ready in 0h 1m'],
+      [1n, 'Care Ready in 0h 1m'],
+    ];
+    for (const [ms, english] of cases) {
+      paintCare(view, ms);
+      expectCooling(root, english, `${ms} ms`);
+    }
+    // The bytes are the catalog's: the label, one space, the hint.
+    paintCare(view, 21_540_001n);
+    expect(careRow(root).textContent, 'the resolver`s own text').toBe(
+      `${i18nT('box.sheet.care')} ${qf3Tf('box.sheet.careCooldown', { hours: 6, minutes: 0 })}`,
+    );
+    for (const action of ['summary', 'feed', 'evolve', 'nickname', 'move']) {
+      const row = c8cById(root, `monstersSheet-root-${action}`);
+      expect(row.getAttribute('aria-disabled'), `${action} stays enabled`).toBeNull();
+      expect(row.classList.contains('is-disabled'), `${action} stays enabled`).toBe(false);
+      expect(row.textContent ?? '', `${action} carries no hint`).not.toContain('Ready in');
+    }
+
+    // With no food and no path too: each disabled row keeps its own reason.
+    paintCare(view, 60_000n, 'care', false, false);
+    expectCooling(root, 'Care Ready in 0h 1m', 'all three disabled');
+    expect(c8cById(root, 'monstersSheet-root-feed').textContent ?? '').toMatch(/^Feed.*No food$/);
+    expect(c8cById(root, 'monstersSheet-root-evolve').textContent ?? '').toMatch(
+      /^Evolve.*No evolution paths\.$/,
+    );
+  });
+
+  it('under fr the cooling Care row reads the French label and the French hint, with the same rounding [QF3-3-VIEW-CARE-FR]', () => {
+    // WRONG IMPL KILLED: a hint written from an English literal (a French boot reads "Ready in");
+    // a hint resolved once and cached across a locale switch; the French params swapped (minutes
+    // read as hours).
+    const FR = P2_CATALOG_FR as unknown as Record<string, unknown>;
+    expect(FR['box.sheet.care'], 'fixture: the French Care label').toBe('Choyer');
+    const { root, view } = c8bOpen();
+    try {
+      p2SetLocale('fr');
+      paintCare(view, 21_540_001n);
+      expectCooling(root, `Choyer Pr${QF3_E_CIRCUMFLEX}t dans 6 h 0 min`, 'fr, 6h 0m');
+      paintCare(view, 21_540_000n);
+      expectCooling(root, `Choyer Pr${QF3_E_CIRCUMFLEX}t dans 5 h 59 min`, 'fr, 5h 59m');
+      p2SetLocale('en');
+      paintCare(view, 21_540_000n);
+      expectCooling(root, 'Care Ready in 5h 59m', 'back in English');
+    } finally {
+      p2SetLocale('en');
+    }
+  });
+
+  it('a ready Care row (0n) is enabled and reads its bare label; a repaint from cooling to ready clears aria-disabled, .is-disabled and the hint, and a refresh keeps whichever was painted [QF3-4-VIEW-CARE-READY]', () => {
+    // WRONG IMPL KILLED: a Care row disabled whatever the remaining time (0n read as cooling: A on
+    // a ready Care looks refused); a repaint that only ever adds (the hint or the disabled marks
+    // linger after the cooldown ends, so the player never sees Care come back); a batch refresh
+    // that drops the kept paint's Care state.
+    const { root, view } = c8bOpen();
+    paintCare(view, 0n);
+    expectReady(root, 'ready');
+    paintCare(view, 21_540_001n);
+    expectCooling(root, 'Care Ready in 6h 0m', 'cooling');
+    paintCare(view, 0n);
+    expectReady(root, 'ready again');
+    expect(root.textContent ?? '', 'no hint is left anywhere in the frame').not.toContain(
+      'Ready in',
+    );
+
+    paintCare(view, 60_000n, 'summary');
+    view.refresh(c8bParty(), c8bBox());
+    expectCooling(root, 'Care Ready in 0h 1m', 'cooling, after a refresh');
+    paintCare(view, 0n, 'summary');
+    view.refresh(c8bParty(), c8bBox());
+    expectReady(root, 'ready, after a refresh');
+  });
+
+  it('a cooling Care row can be the active row: the painted action `care` marks it is-active and aria-selected while it is aria-disabled [QF3-3-VIEW-CARE-ACTIVE]', () => {
+    // WRONG IMPL KILLED: a cooling Care that cannot carry the cursor (the sheet's cursor would
+    // vanish or jump to Feed… on the very row the player is reading), and an active mark that
+    // clears the disabled one (or the reverse).
+    const { root, view } = c8bOpen();
+    paintCare(view, 21_540_001n, 'care');
+    const list = c8cListOf(root, 'monstersSheet-root-care');
+    expect(c8cActiveIds(list), 'Care is the active row').toEqual(['monstersSheet-root-care']);
+    expect(careRow(root).getAttribute('aria-selected')).toBe('true');
+    expect(list.getAttribute('aria-activedescendant')).toBe('monstersSheet-root-care');
+    expectCooling(root, 'Care Ready in 6h 0m', 'active and cooling');
+    paintCare(view, 21_540_001n, 'feed');
+    expect(c8cActiveIds(list), 'the cursor moves off it').toEqual(['monstersSheet-root-feed']);
+    expectCooling(root, 'Care Ready in 6h 0m', 'inactive and cooling');
+  });
+
+  it('under «key» sentinels the cooling Care row reads «box.sheet.care» then «box.sheet.careCooldown» with its hours and minutes, and no English roster word appears outside a sentinel; a ready Care requests no hint [QF3-3-VIEW-CARE-SENTINEL]', () => {
+    // WRONG IMPL KILLED: the hint written from a literal ("Ready in": it would read English in a
+    // French boot; the roster scan names "Ready "); the hint under another key (Feed's no-food
+    // reason); the params swapped, dropped or passed as bigints; a hint requested for a ready row.
+    const { view, root } = c8bMount();
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      vi.mocked(i18nTf).mockImplementation(
+        (key: string, params: unknown) => `«${key}|${JSON.stringify(params)}»`,
+      );
+      view.refresh(c8bParty(), c8bBox());
+      view.show();
+      paintCare(view, 21_540_000n);
+      let texts = m24s4BxWalkSubtree(root);
+      m24s4BxAssertNoRosterWord(texts, 'a cooling Care');
+      let joined = texts.join('\n');
+      expect(joined).toContain('«box.sheet.care»');
+      expect(c8cSpanParams(joined, 'box.sheet.careCooldown')).toEqual([{ hours: 5, minutes: 59 }]);
+      const sentinelRow = careRow(root).textContent ?? '';
+      expect(
+        sentinelRow.startsWith('«box.sheet.care» «box.sheet.careCooldown|'),
+        `the Care row: its label, one space, then the hint: ${sentinelRow}`,
+      ).toBe(true);
+      expect(sentinelRow.endsWith('»'), 'and nothing after the hint').toBe(true);
+
+      paintCare(view, 0n);
+      texts = m24s4BxWalkSubtree(root);
+      m24s4BxAssertNoRosterWord(texts, 'a ready Care');
+      joined = texts.join('\n');
+      expect(c8cSpanParams(joined, 'box.sheet.careCooldown'), 'ready: no hint').toEqual([]);
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+      vi.mocked(i18nTf).mockRestore();
+    }
   });
 });
