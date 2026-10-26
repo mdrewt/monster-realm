@@ -51,9 +51,10 @@
 // qf-2: a care answer or a train rejection for an action sent FROM this frame comes back to this
 // frame's line (QF2.1), through a sink `feedbackLine()` hands out bound to the current open: a sink
 // called while hidden, or once a later open has started, paints nothing and says so (an answer that
-// settles after the frame was left never reaches the next session). The screen's own Move / Fed line wins while it shows; a
-// batch repaint keeps the outcome (a care rewrites monster_pub, so its own batch repaints the
-// sheet); the next button ends it (`clearOutcome`, main.ts) and so does hide().
+// settles after the frame was left never reaches the next session). The screen's own Move / Fed
+// line wins while it shows; a batch repaint keeps the outcome (a care rewrites monster_pub, so its
+// own batch repaints the sheet); the next button ends it (`clearOutcome`, main.ts) and so does
+// hide().
 import { type MonsterCardViewModel, NEXT_FREE_PARTY_SLOT } from './boxModel';
 import { currentLocale, t, tf } from './i18n/resolver';
 import {

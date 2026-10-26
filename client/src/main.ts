@@ -1625,7 +1625,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
         showFeedback:
           line === undefined
             ? (message) => raisingView?.showFeedback(message)
-            : (message) => void line(message, message === cared ? 'ok' : 'error'),
+            : (message) => line(message, message === cared ? 'ok' : 'error'),
       });
     }
     case 'train': {
@@ -1979,8 +1979,9 @@ let lastBattleVM: BattleViewModel | null = null;
 let statusEl: HTMLElement | undefined;
 
 /** Surface a user-visible failure on `line` (the sending frame's outcome line, qf-2) or, when there
- *  is none or it no longer paints (the frame was left), on the status line: textContent ONLY — server-supplied SenderError text must never become markup
- *  (never innerHTML) — plus console.error for logs and the error ring either way. */
+ *  is none or it no longer paints (the frame was left), on the status line: textContent ONLY —
+ *  server-supplied SenderError text must never become markup (never innerHTML) — plus
+ *  console.error for logs and the error ring either way. */
 function reportError(text: string, line?: OutcomeLine): void {
   if (line?.(text, 'error') !== true && statusEl !== undefined) statusEl.textContent = text;
   console.error('[status]', text);
