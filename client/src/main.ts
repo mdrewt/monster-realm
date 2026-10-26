@@ -105,7 +105,12 @@ import {
 } from './ui/battleModel';
 import { battleButton, battleRefused, continuedBattleId, isBareBattle } from './ui/battlePolicy';
 import type { BattleView } from './ui/battleView';
-import { buildBoxViewModel, buildPartyViewModel, resolvePartySlot } from './ui/boxModel';
+import {
+  buildBoxViewModel,
+  buildMonsterStats,
+  buildPartyViewModel,
+  resolvePartySlot,
+} from './ui/boxModel';
 import type { BoxView, OutcomeLine } from './ui/boxView';
 // F9 bug-bundle observability — session event ring + error ring +
 // pure bundle assembler + error overlay.
@@ -1561,6 +1566,8 @@ const screenCtx: ScreenContext = {
 
 /** A settled promise for the arms that have no reducer promise to hand back. */
 const DONE: Promise<void> = Promise.resolve();
+/** The care in flight per monster (its token), set by the `care` arm of `dispatch`. */
+const careInFlight = new Map<bigint, object>();
 
 // Each feedback sink paints only while its overlay is visible: a late settle must not write a
 // stale line into a closed (and later reopened) overlay.
@@ -1628,17 +1635,27 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
       return DONE;
     case 'care': {
       // The whole decision (frozen gate / await / exactly-one message) lives in the tested
-      // performCare core. The answer goes to the sender's line, else to raising's, whose
-      // showFeedback is a no-op while hidden (stale-message guard).
+      // performCare core. The answer goes to the line of the frame that sent it (the Monsters
+      // sheet's, qf-2; a frame left since paints nothing), or with no such line to the status line.
+      // qf-9: one care in flight per monster: a second A before the answer would flash "Cared!"
+      // then the cooldown.
+      const { monsterId } = command;
+      if (careInFlight.has(monsterId)) return DONE;
       const cared = i18nT('raising.feedback.cared');
+      const token = {};
+      careInFlight.set(monsterId, token);
       return performCare({
-        call: () => liveReducers()?.care({ monsterId: command.monsterId }),
+        call: () => liveReducers()?.care({ monsterId }),
         successMessage: cared,
         where: 'care',
-        showFeedback:
-          line === undefined
-            ? (message) => raisingView?.showFeedback(message)
-            : (message) => line(message, message === cared ? 'ok' : 'error'),
+        showFeedback: (message) => {
+          if (line !== undefined) line(message, message === cared ? 'ok' : 'error');
+          else if (statusEl !== undefined) statusEl.textContent = message;
+        },
+      }).finally(() => {
+        // Only this care's own token releases: a reconnect may have cleared it and a newer care
+        // taken the slot.
+        if (careInFlight.get(monsterId) === token) careInFlight.delete(monsterId);
       });
     }
     case 'train': {
@@ -2867,6 +2884,7 @@ function refreshBox(): void {
   boxView.refresh(
     buildPartyViewModel(monsters, speciesMap, PARTY_SIZE, paths),
     buildBoxViewModel(monsters, speciesMap, PARTY_SLOT_NONE, paths),
+    buildMonsterStats(monsters),
   );
 }
 store.onBatchApplied(() => refreshBox());
@@ -3614,11 +3632,7 @@ async function main(): Promise<void> {
       onPvpAttack: (battleId, skillId) => dispatch({ kind: 'pvpAttack', battleId, skillId }),
       onPvpSwap: (battleId, teamIndex) => dispatch({ kind: 'pvpSwap', battleId, teamIndex }),
     });
-    raisingView = new RaisingViewClass(mount, {
-      onTrain: (monsterId, foodItemId) => dispatch({ kind: 'train', monsterId, foodItemId }),
-      // Returned (not `void`ed) so the view's #pending lock holds until the reducer settles.
-      onCare: (monsterId) => dispatch({ kind: 'care', monsterId }),
-    });
+    raisingView = new RaisingViewClass(mount);
     evolutionView = new EvolutionViewClass(mount, {
       onEvolve: (monsterId, toSpecies) => dispatch({ kind: 'evolve', monsterId, toSpecies }),
     });
@@ -3937,6 +3951,9 @@ async function main(): Promise<void> {
       dismissedRequests.clear();
       announcedRequests.clear();
       answeredRequests.clear();
+      // The SDK never settles a reducer promise after a drop: a care sent before it would hold its
+      // monster's in-flight slot for the life of the page.
+      careInFlight.clear();
       // The "connection lost — reconnecting…" status line is now stale.
       clearStatus();
       // record the reconnect edge as a fresh connect (the refreshed identity).

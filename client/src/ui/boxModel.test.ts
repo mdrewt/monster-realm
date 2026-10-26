@@ -31,6 +31,7 @@ import type {
 } from '../net/store';
 import {
   buildBoxViewModel,
+  buildMonsterStats,
   buildPartyViewModel,
   hpPercent,
   NEXT_FREE_PARTY_SLOT,
@@ -672,5 +673,107 @@ describe('PGCCD-D4 resolvePartySlot', () => {
     expect(resolvePartySlot(NEXT_FREE_PARTY_SLOT, monstersAt(...slots), size)).toStrictEqual({
       kind: 'partyFull',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// qf-9 QF9.1 — buildMonsterStats: the Monsters Summary's full-stats source. A pure projection of
+// my_monster_pub (StoreMonsterPub) keyed by String(monsterId) — boxView's #cards key. Values are
+// copied VERBATIM (server-derived; nothing is recomputed here).
+// ---------------------------------------------------------------------------
+
+describe('QF9-1 buildMonsterStats: the full stats, verbatim, keyed by decimal monster id', () => {
+  it('QF9-1-STATS-VERBATIM-ALL-SIX copies the five stats and trustTier from the matching fields', () => {
+    // WRONG IMPL KILLED: stats copied from the wrong field (every stat is DISTINCT here, so a
+    // swapped attack/defense or spAttack/spDefense pairing, or statHp standing in for one, shows
+    // up); a trustTier hardcoded to 'Neutral' (the fixture default); a recomputed/rounded stat.
+    const m = monster(7n, 1, 0, {
+      statHp: 99,
+      statAttack: 11,
+      statDefense: 22,
+      statSpeed: 33,
+      statSpAttack: 44,
+      statSpDefense: 55,
+      trustTier: 'Devoted',
+    });
+    const stats = buildMonsterStats([m]);
+    expect(stats.size).toBe(1);
+    expect(stats.get('7')).toEqual({
+      trustTier: 'Devoted',
+      statAttack: 11,
+      statDefense: 22,
+      statSpeed: 33,
+      statSpAttack: 44,
+      statSpDefense: 55,
+    });
+  });
+
+  it('QF9-1-STATS-KEYED-PER-MONSTER one row per monster, none cross-wired, order-independent', () => {
+    // WRONG IMPL KILLED: a map that keeps only the first/last monster; a row stamped from the
+    // wrong monster; a key that is the list index or partySlot rather than the monster id.
+    const a = monster(1n, 1, 0, { statAttack: 1, statSpeed: 2, trustTier: 'Wary' });
+    const b = monster(2n, 1, 255, { statAttack: 100, statSpeed: 200, trustTier: 'Devoted' });
+    const fwd = buildMonsterStats([a, b]);
+    const rev = buildMonsterStats([b, a]);
+    for (const stats of [fwd, rev]) {
+      expect([...stats.keys()].sort()).toEqual(['1', '2']);
+      expect(stats.get('1')?.statAttack).toBe(1);
+      expect(stats.get('1')?.statSpeed).toBe(2);
+      expect(stats.get('1')?.trustTier).toBe('Wary');
+      expect(stats.get('2')?.statAttack).toBe(100);
+      expect(stats.get('2')?.statSpeed).toBe(200);
+      expect(stats.get('2')?.trustTier).toBe('Devoted');
+    }
+  });
+
+  it('QF9-1-STATS-KEY-IS-DECIMAL-STRING-PAST-2POW53 a monster id past 2^53 keys by its exact decimal', () => {
+    // WRONG IMPL KILLED: a key built through Number(monsterId) — 2^53 + 1 collapses onto 2^53
+    // there, so the two monsters below would merge into one row.
+    const big = 2n ** 53n + 1n;
+    const near = 2n ** 53n;
+    const stats = buildMonsterStats([
+      monster(big, 1, 0, { statAttack: 61 }),
+      monster(near, 1, 1, { statAttack: 62 }),
+    ]);
+    expect(stats.size).toBe(2);
+    expect(stats.get('9007199254740993')?.statAttack).toBe(61);
+    expect(stats.get('9007199254740992')?.statAttack).toBe(62);
+  });
+
+  it('QF9-1-STATS-TOTAL-EMPTY empty input yields an empty map, and a stat of 0 is kept as 0', () => {
+    // WRONG IMPL KILLED: a throw / undefined on []; a `|| fallback` that turns a real 0 stat into
+    // a default.
+    const empty = buildMonsterStats([]);
+    expect(empty.size).toBe(0);
+    const zero = buildMonsterStats([
+      monster(3n, 1, 0, {
+        statAttack: 0,
+        statDefense: 0,
+        statSpeed: 0,
+        statSpAttack: 0,
+        statSpDefense: 0,
+      }),
+    ]);
+    expect(zero.get('3')).toEqual({
+      trustTier: 'Neutral',
+      statAttack: 0,
+      statDefense: 0,
+      statSpeed: 0,
+      statSpAttack: 0,
+      statSpDefense: 0,
+    });
+  });
+
+  it('QF9-1-STATS-NO-EXTRA-FIELDS a row carries exactly the six summary fields (no HP, no raw row)', () => {
+    // WRONG IMPL KILLED: returning the whole StoreMonsterPub (leaks the row into the view model).
+    const row = buildMonsterStats([monster(4n, 1, 0)]).get('4');
+    expect(Object.keys(row ?? {}).sort()).toEqual([
+      'statAttack',
+      'statDefense',
+      'statSpAttack',
+      'statSpDefense',
+      'statSpeed',
+      'trustTier',
+    ]);
   });
 });

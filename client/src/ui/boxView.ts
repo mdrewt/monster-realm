@@ -55,7 +55,11 @@
 // line wins while it shows; a batch repaint keeps the outcome (a care rewrites monster_pub, so its
 // own batch repaints the sheet); the next button ends it (`clearOutcome`, main.ts) and so does
 // hide().
-import { type MonsterCardViewModel, NEXT_FREE_PARTY_SLOT } from './boxModel';
+import {
+  type MonsterCardViewModel,
+  type MonsterStatsViewModel,
+  NEXT_FREE_PARTY_SLOT,
+} from './boxModel';
 import { currentLocale, t, tf } from './i18n/resolver';
 import {
   cardName,
@@ -200,6 +204,8 @@ export class BoxView {
   readonly #summaryEl: HTMLDivElement;
   readonly #summaryName: HTMLDivElement;
   readonly #summaryStats: HTMLDivElement;
+  /** qf-9: the full stats line (attack … spDefense and trust), the game's only stats display. */
+  readonly #summaryDetail: HTMLDivElement;
   readonly #rowEl: HTMLDivElement;
   readonly #rowLabel: HTMLLabelElement;
   readonly #input: HTMLInputElement;
@@ -208,6 +214,8 @@ export class BoxView {
   /** The live cards of the last `refresh`, by nav key: a kept paint names the monster, the batch
    *  that renamed or healed it since is what shows. */
   #cards = new Map<string, MonsterCardViewModel>();
+  /** The stats of the last `refresh`, by the same key. */
+  #stats: ReadonlyMap<string, MonsterStatsViewModel> = new Map();
   /** The last commit token sent (never reset: a token is sent at most once). */
   #lastCommit: NicknameCommit | null = null;
   /** The typing row's open last prefilled and focused; reset on each open of the frame. */
@@ -261,7 +269,9 @@ export class BoxView {
     this.#summaryEl = document.createElement('div');
     this.#summaryName = document.createElement('div');
     this.#summaryStats = document.createElement('div');
-    this.#summaryEl.append(this.#summaryName, this.#summaryStats);
+    this.#summaryDetail = document.createElement('div');
+    this.#summaryDetail.id = 'monsters-summary-stats';
+    this.#summaryEl.append(this.#summaryName, this.#summaryStats, this.#summaryDetail);
     this.#rowEl = document.createElement('div');
     this.#rowLabel = document.createElement('label');
     this.#rowLabel.htmlFor = 'monsters-nickname-input';
@@ -378,7 +388,9 @@ export class BoxView {
   refresh(
     partySlots: readonly (MonsterCardViewModel | null)[],
     boxMonsters: readonly MonsterCardViewModel[],
+    stats: ReadonlyMap<string, MonsterStatsViewModel> = new Map(),
   ): void {
+    this.#stats = stats;
     this.#renderParty(partySlots);
     this.#renderBox(boxMonsters);
     this.#cards = new Map(
@@ -575,6 +587,19 @@ export class BoxView {
             current: summary.currentHp,
             max: summary.statHp,
             percent: summary.hpPercent,
+          });
+    const detail = summary === null ? undefined : this.#stats.get(String(summary.monsterId));
+    setShown(this.#summaryDetail, detail !== undefined, '');
+    this.#summaryDetail.textContent =
+      detail === undefined
+        ? ''
+        : tf('box.summary.stats', {
+            trust: detail.trustTier,
+            attack: detail.statAttack,
+            defense: detail.statDefense,
+            speed: detail.statSpeed,
+            spAttack: detail.statSpAttack,
+            spDefense: detail.statSpDefense,
           });
 
     const row = p.nickname;

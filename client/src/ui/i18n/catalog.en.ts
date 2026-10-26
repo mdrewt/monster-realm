@@ -605,40 +605,13 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // the monster becomes. Fits a narrow button.
   // evolutionView.ts:272
   'evolution.choice.evolve': (p) => `Evolve into ${p.species}`,
-  // @desc: Heading of the raising overlay, which shows the party monsters' stats with Care/Train
-  // buttons and the player's inventory. One short line.
+  // @desc: Heading of the raising overlay, which shows the player's inventory (the Bag pockets;
+  // monster stats live on the Monsters Summary). One short line.
   // raisingView.ts:104 (resolved in show())
   'raising.title': 'Raising & Inventory',
-  // @desc: Section heading above the monster cards in the raising overlay. One word.
-  // raisingView.ts:124 (resolved in show())
-  'raising.monsters.heading': 'Monsters',
   // @desc: Section heading above the item cards in the raising overlay. One word.
   // raisingView.ts:134 (resolved in show())
   'raising.inventory.heading': 'Inventory',
-  // @desc: Empty-state line of the raising overlay's monster section when the player owns no
-  // monster. One short line.
-  // raisingView.ts:193
-  'raising.monsters.empty': 'No monsters.',
-  // @desc: Status line under a monster's name on its raising card; {level} is the level ("Lv"
-  // abbreviates "Level"), {trust} the trust tier name (e.g. "Friendly") and {current}/{max} its
-  // hit points. One line of small text.
-  // raisingView.ts:209
-  'raising.card.status': (p) => `Lv${p.level} · Trust ${p.trust} · HP ${p.current}/${p.max}`,
-  // @desc: Battle-stat line on a monster's raising card; the five numbers are {attack},
-  // {defense}, {speed}, {spAttack} (special attack) and {spDefense} (special defense), each
-  // prefixed by its abbreviation. One line of small text, about 50 characters wide.
-  // raisingView.ts:214-216
-  'raising.card.stats': (p) =>
-    `ATK ${p.attack} · DEF ${p.defense} · SPD ${p.speed} · SP.ATK ${p.spAttack} · SP.DEF ${p.spDefense}`,
-  // @desc: Button label to care for (tend to) a monster, raising its trust. Short verb, fits a
-  // very narrow button.
-  // raisingView.ts:224
-  'raising.card.care': 'Care',
-  // @desc: Button label to feed a training item to a monster; {name} is the item name and
-  // {count} how many the player carries (the "x" is a plain letter x, not a multiplication
-  // sign). Fits a narrow button.
-  // raisingView.ts:269
-  'raising.card.train': (p) => `Train: ${p.name} (x${p.count})`,
   // @desc: Empty-state line of the raising overlay's inventory section when the player carries
   // nothing. One short line.
   // raisingView.ts:308
@@ -647,9 +620,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // player carries (the "x" is a plain letter x). Bold, one line.
   // raisingView.ts:318
   'raising.inventory.item': (p) => `${p.name} (x${p.count})`,
-  // @desc: Feedback line in the raising overlay after the server accepted a Care action on a
+  // @desc: Feedback line on the Monsters sheet after the server accepted a Care action on a
   // monster. One short line.
-  // main.ts:2615 (onCare adapter; pre-migration careAction.ts CARED_MESSAGE)
+  // main.ts (dispatch, the `care` arm; pre-migration careAction.ts CARED_MESSAGE)
   'raising.feedback.cared': 'Cared!',
   // @desc: Heading of the party & box overlay, where the player arranges which monsters are in
   // the active party and which stay in storage. One short line.
@@ -682,6 +655,13 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // small text.
   // boxView.ts:205
   'box.card.stats': (p) => `${p.species} · Lv${p.level} · HP ${p.current}/${p.max} (${p.percent}%)`,
+  // @desc: The full-stats line of the Monsters Summary pane; {trust} is the server's trust tier
+  // tag, not translated (e.g. "Friendly"), and the five numbers are {attack}, {defense},
+  // {speed}, {spAttack} (special attack) and {spDefense} (special defense), each prefixed by its
+  // abbreviation. One line of small text, about 65 characters wide.
+  // boxView.ts (the Summary part)
+  'box.summary.stats': (p) =>
+    `Trust ${p.trust} · ATK ${p.attack} · DEF ${p.defense} · SPD ${p.speed} · SP.ATK ${p.spAttack} · SP.DEF ${p.spDefense}`,
   // @desc: Badge on a monster card when the monster can evolve but the player must choose a path
   // on the evolution screen first. One short line; carries a leading star and a spaced em dash.
   // boxView.ts:216

@@ -13,14 +13,26 @@
  * listeners recorded and detached per test). Reducer spies return promises the test controls.
  * Table-driven tests boot a fresh app per site (`resetApp()` between rows) inside ONE `it`.
  *
- * OPENING: trade (KeyU), rename (KeyN) and raising (KeyI) open through their real shortcuts;
- * trade-propose opens face to face (A at the world on a faced player, then A on Trade; ctl-10b). Shop is the one documented short-circuit (a real open needs an NPC + dialogue
+ * OPENING: trade (KeyU) and rename (KeyN) open through their real shortcuts; care opens on the
+ * Monsters sheet (V opens Monsters, A on the monster opens its sheet, ArrowDown moves to Care, A
+ * presses it); trade-propose opens face to face (A at the world on a faced player, then A on Trade;
+ * ctl-10b). Shop is the one documented short-circuit (a real open needs an NPC + dialogue
  * round-trip): flip `#shop-overlay`'s display — the flag `ShopView.visible` reads — and flush a
  * store batch so the real listener renders the real Buy/Sell buttons.
  *
- * HIDING: each view's `visible` getter reads its overlay's own `style.display !== 'none'` (raising
- * is not hidden here), so the hidden tests flip exactly that flag. A feedback node still EMPTY
- * after the call settles proves the closure did not paint into a hidden overlay.
+ * qf-9 (named intentional change, QF9.3): the care site used to open the Raising card (KeyI, the
+ * card`s Care button, `#raising-feedback`). The card and its line are deleted (QF9.2), so the site
+ * is rewritten against the Monsters sheet and qf-2`s invoking-surface sink: the answer lands on the
+ * Monsters frame`s own `.mr-frame-feedback` line. Every site now carries a `feedback()` reader (the
+ * other eight read their overlay`s feedback node by id, exactly as before). The Raising card held
+ * the ONLY in-flight lock, so PGCCA-A1-LOCK-HELD on the sheet path needs main.ts`s per-monster care
+ * guard (QF9.3). Intent preserved, not deleted: titles keep their ids and the nine sites.
+ *
+ * HIDING: each view's `visible` getter reads its overlay's own `style.display !== 'none'`, so the
+ * hidden tests flip exactly that flag (care has no hidden test: the Monsters frame`s own sink
+ * guards the hidden case, pinned by main.controls.test.ts QF2-1-BOOT-SINK-FIXED-AT-SEND). A
+ * feedback node still EMPTY after the call settles proves the closure did not paint into a hidden
+ * overlay.
  *
  * Every test asserts the reducer spy's call count, so none can pass with the action never firing.
  *
@@ -30,7 +42,8 @@
  *   PGCCA-A4-WHERE-PER-SITE    a SenderError rejection paints reduceErrorMessage(err, <site tag>)
  *   PGCCA-A1-FROZEN-PER-SITE   a frozen link paints the disconnected line and calls no reducer
  *   PGCCA-A1-LOCK-HELD         the view's in-flight lock holds until the core's promise settles
- *   PGCCA-A4-CARE-BOOT-FR      care's success line is the fr catalog value under `?locale=fr`
+ *   PGCCA-A4-CARE-BOOT-FR      care's success line is the fr catalog value under `?locale=fr`, on the
+ *                              Monsters sheet's own line (qf-9)
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -320,14 +333,28 @@ function monster(monsterId: bigint, partySlot: number): StoreMonsterPub {
 
 type Activate = () => void;
 
+/** The Monsters frame's own feedback line (qf-2's invoking-surface sink), resolved the way boxView
+ *  builds its root (title -> header -> root); '' while the view is not built. */
+function monstersLineText(): string {
+  const root = document.querySelector('[data-testid="box-title"]')?.parentElement?.parentElement;
+  return root?.querySelector('.mr-frame-feedback')?.textContent ?? '';
+}
+
 function openCare(): Activate {
   storeHandle().reconcileMonstersFromView([monster(1n, 0)]);
   storeHandle().flushBatch();
-  // The REAL KeyI shortcut: main.ts toggles the raising overlay and refreshes it from the store.
-  focusCanvasAndPressKey('KeyI');
-  const root = document.getElementById('raising-feedback')?.parentElement;
-  expect(root, 'the raising overlay must be constructed by main.ts').toBeTruthy();
-  return () => clickFirst('button', 'Care', root as HTMLElement);
+  // qf-9 (named intentional change, QF9.3): the Monsters sheet path, with the REAL keys. V opens
+  // Monsters over the menu, A on the monster opens its sheet (the cursor on Summary), ArrowDown
+  // moves to Care; the activation is A on Care. Was: KeyI opened the raising overlay and the
+  // activation clicked its Care button.
+  tapWorldKey('KeyV');
+  tapWorldKey('Enter');
+  tapWorldKey('ArrowDown');
+  expect(
+    document.getElementById('monstersSheet-root-care')?.getAttribute('aria-selected'),
+    'the Monsters sheet`s cursor must be on Care',
+  ).toBe('true');
+  return () => tapWorldKey('Enter');
 }
 
 function openShop(kind: 'buy' | 'sell'): Activate {
@@ -481,7 +508,9 @@ interface Site {
   readonly name: string;
   /** The `reduceErrorMessage` tag the site keeps from before the refactor. */
   readonly tag: string;
-  readonly feedbackId: string;
+  /** What the site's feedback line currently reads: its overlay's feedback node by id (every site
+   *  but care), or the Monsters frame's own line (care, qf-9). */
+  readonly feedback: () => string;
   readonly overlayId: string | undefined;
   readonly reducer: ReducerSpy;
   /** The exact reducer argument (an asymmetric matcher where an SDK object is involved). */
@@ -489,11 +518,17 @@ interface Site {
   readonly open: () => Activate;
 }
 
+/** The reader of a feedback node by id (the eight sites whose line is a node of their own overlay). */
+const feedbackById =
+  (id: string): (() => string) =>
+  () =>
+    textOf(id);
+
 const SITES: readonly Site[] = [
   {
     name: 'care',
     tag: 'care',
-    feedbackId: 'raising-feedback',
+    feedback: monstersLineText,
     overlayId: undefined,
     reducer: H.care,
     args: { monsterId: 1n },
@@ -502,7 +537,7 @@ const SITES: readonly Site[] = [
   {
     name: 'buy',
     tag: 'buy',
-    feedbackId: 'shop-feedback',
+    feedback: feedbackById('shop-feedback'),
     overlayId: 'shop-overlay',
     reducer: H.buy,
     args: { shopId: 1, itemId: 1, qty: 1 },
@@ -511,7 +546,7 @@ const SITES: readonly Site[] = [
   {
     name: 'sell',
     tag: 'sell',
-    feedbackId: 'shop-feedback',
+    feedback: feedbackById('shop-feedback'),
     overlayId: 'shop-overlay',
     reducer: H.sell,
     args: { itemId: 2, qty: 1 },
@@ -520,7 +555,7 @@ const SITES: readonly Site[] = [
   {
     name: 'accept',
     tag: 'respond-trade',
-    feedbackId: 'trade-feedback',
+    feedback: feedbackById('trade-feedback'),
     overlayId: 'trade-overlay',
     reducer: H.respondTrade,
     args: { tradeId: TRADE_ID, accepted: true },
@@ -529,7 +564,7 @@ const SITES: readonly Site[] = [
   {
     name: 'reject',
     tag: 'respond-trade',
-    feedbackId: 'trade-feedback',
+    feedback: feedbackById('trade-feedback'),
     overlayId: 'trade-overlay',
     reducer: H.respondTrade,
     args: { tradeId: TRADE_ID, accepted: false },
@@ -538,7 +573,7 @@ const SITES: readonly Site[] = [
   {
     name: 'confirm',
     tag: 'confirm-trade',
-    feedbackId: 'trade-feedback',
+    feedback: feedbackById('trade-feedback'),
     overlayId: 'trade-overlay',
     reducer: H.confirmTrade,
     args: { tradeId: TRADE_ID },
@@ -547,7 +582,7 @@ const SITES: readonly Site[] = [
   {
     name: 'cancel',
     tag: 'cancel-trade',
-    feedbackId: 'trade-feedback',
+    feedback: feedbackById('trade-feedback'),
     overlayId: 'trade-overlay',
     reducer: H.cancelTrade,
     args: { tradeId: TRADE_ID },
@@ -556,7 +591,7 @@ const SITES: readonly Site[] = [
   {
     name: 'rename',
     tag: 'set-profile-name',
-    feedbackId: 'rename-feedback',
+    feedback: feedbackById('rename-feedback'),
     overlayId: 'rename-overlay',
     reducer: H.setProfileName,
     args: { name: 'NewName' },
@@ -565,7 +600,7 @@ const SITES: readonly Site[] = [
   {
     name: 'propose',
     tag: 'propose-trade',
-    feedbackId: 'tradepropose-feedback',
+    feedback: feedbackById('tradepropose-feedback'),
     overlayId: 'tradepropose-overlay',
     reducer: H.proposeTrade,
     // Every field but `counterparty` (an SDK Identity, checked by its hex in the HIDDEN test).
@@ -598,14 +633,14 @@ async function expectNoPaintWhenHidden(name: string): Promise<readonly unknown[]
   activate();
   expect(site.reducer, `${name}: the action must have reached the reducer`).toHaveBeenCalledOnce();
   expect(site.reducer).toHaveBeenCalledWith(site.args);
-  expect(textOf(site.feedbackId), `${name}: nothing may paint while pending`).toBe('');
+  expect(site.feedback(), `${name}: nothing may paint while pending`).toBe('');
   const calledWith = site.reducer.mock.calls[0] as readonly unknown[];
 
   hideOverlay(site.overlayId as string);
   held.release();
   await settle();
 
-  expect(textOf(site.feedbackId), `${name}: a hidden overlay must not be painted into`).toBe('');
+  expect(site.feedback(), `${name}: a hidden overlay must not be painted into`).toBe('');
   return calledWith;
 }
 
@@ -644,9 +679,11 @@ describe('main.ts feedback sites paint only while their overlay is visible (slic
 });
 
 describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1/A4)', () => {
-  it('PGCCA-A4-WHERE-PER-SITE: a SenderError rejection paints reduceErrorMessage(err, <the site tag>) at all 9 sites', async () => {
+  it('PGCCA-A4-WHERE-PER-SITE: a SenderError rejection paints reduceErrorMessage(err, <the site tag>) at all 9 sites, care on the Monsters sheet`s own line [QF9-3-WHERE-CARE-SHEET]', async () => {
     // WRONG IMPL KILLED: a site passing the wrong `where` (a copy-pasted care/buy tag), or reverted
-    // to an inline pattern that drops the error arm.
+    // to an inline pattern that drops the error arm. qf-9: the care site is the Monsters sheet, its
+    // line the Monsters frame's own `.mr-frame-feedback` (a care rejection painted on the status
+    // line or nowhere reads '' there).
     expect(SITES.length, 'ANTI-VACUITY: all nine sites').toBe(9);
     for (const [i, site] of SITES.entries()) {
       if (i > 0) resetApp();
@@ -660,16 +697,16 @@ describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1
 
       expect(site.reducer, `${site.name}: reducer calls`).toHaveBeenCalledOnce();
       expect(site.reducer, `${site.name}: reducer args`).toHaveBeenCalledWith(site.args);
-      expect(textOf(site.feedbackId), `${site.name}: the error line`).toBe(
+      expect(site.feedback(), `${site.name}: the error line`).toBe(
         reduceErrorMessage(err, site.tag),
       );
-      expect(textOf(site.feedbackId), `${site.name}: the error line, spelled out`).toBe(
+      expect(site.feedback(), `${site.name}: the error line, spelled out`).toBe(
         `${site.tag}: nope`,
       );
     }
   }, 60_000);
 
-  it('PGCCA-A1-FROZEN-PER-SITE: a frozen link paints the disconnected line and calls no reducer at the 7 sites feedbackI18n does not cover', async () => {
+  it('PGCCA-A1-FROZEN-PER-SITE: a frozen link paints the disconnected line and calls no reducer at the 7 sites feedbackI18n does not cover, care on the Monsters sheet`s own line [QF9-3-FROZEN-CARE-SHEET]', async () => {
     // WRONG IMPL KILLED: a site that lost the frozen gate (it would call a dead connection and hang
     // or paint a false success), or one that paints something other than the disconnected line.
     const sites = SITES.filter((s) => s.name !== 'buy' && s.name !== 'accept');
@@ -695,17 +732,21 @@ describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1
         site.reducer,
         `${site.name}: a frozen link must never reach the reducer`,
       ).not.toHaveBeenCalled();
-      expect(textOf(site.feedbackId), `${site.name}: the disconnected line`).toBe(
+      expect(site.feedback(), `${site.name}: the disconnected line`).toBe(
         EN['chrome.feedback.disconnected'],
       );
-      expect(textOf(site.feedbackId)).toBe('disconnected — try again');
+      expect(site.feedback()).toBe('disconnected — try again');
     }
   }, 60_000);
 
-  it('PGCCA-A1-LOCK-HELD: while a reducer promise is pending a second activation does not fire again; after it settles a third does, at all 9 sites', async () => {
+  it('PGCCA-A1-LOCK-HELD: while a reducer promise is pending a second activation does not fire again; after it settles a third does, at all 9 sites, care on the Monsters sheet [QF9-3-LOCK-CARE-SHEET]', async () => {
     // WRONG IMPL KILLED: an adapter that does not RETURN the core's promise (`void performCare(...)`
     // or a pre-resolved stand-in) — the view's in-flight lock would release at once and a second
     // click would double-spend. Every view here locks on the handler's returned promise.
+    // qf-9 (named intentional change): the care site's lock used to be the Raising card's per-monster
+    // lock, deleted with the card. On the Monsters sheet path NOTHING in the view holds one (A on
+    // Care is a keyed screen command), so this row reds until main.ts keeps a per-monster care
+    // guard that releases when the care settles: a second A while pending sends no reducer call.
     for (const [i, site] of SITES.entries()) {
       if (i > 0) resetApp();
       await bootMain('/');
@@ -732,16 +773,19 @@ describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1
 });
 
 describe('main.ts care success line resolves through the catalog under fr (slice pgcc-a, A3 via the real overlay)', () => {
-  it('PGCCA-A4-CARE-BOOT-FR: under ?locale=fr, clicking Care in the real raising overlay shows CATALOG_FR["raising.feedback.cared"], not "Cared!"', async () => {
+  it('PGCCA-A4-CARE-BOOT-FR: under ?locale=fr, pressing Care on the real Monsters sheet shows CATALOG_FR["raising.feedback.cared"] on the Monsters frame`s own line, not "Cared!" [QF9-3-CARE-BOOT-FR]', async () => {
     // WRONG IMPL KILLED: main.ts's care adapter handing the core the hardcoded English "Cared!"
-    // (the pre-pgcc-a defect), or the key present in en only.
+    // (the pre-pgcc-a defect), or the key present in en only. qf-9 (named intentional change): the
+    // press is A on the Monsters sheet's Care row (V, A on the monster, ArrowDown, A) and the line
+    // is the Monsters frame's `.mr-frame-feedback`; the real raising overlay (and its
+    // `#raising-feedback`) no longer has a Care button.
     await bootMain('/?locale=fr');
     const activate = siteNamed('care').open();
 
     activate();
     await vi.waitFor(
       () => {
-        if (textOf('raising-feedback') === '') throw new Error('raising-feedback not painted yet');
+        if (monstersLineText() === '') throw new Error('the Monsters line is not painted yet');
       },
       { timeout: 2_000, interval: 5 },
     );
@@ -753,7 +797,8 @@ describe('main.ts care success line resolves through the catalog under fr (slice
       'CATALOG_FR must define raising.feedback.cared as a plain string',
     ).toBe('string');
     expect(FR['raising.feedback.cared']).not.toBe('Cared!');
-    expect(textOf('raising-feedback')).toBe(FR['raising.feedback.cared']);
-    expect(textOf('raising-feedback')).not.toBe('Cared!');
+    expect(monstersLineText()).toBe(FR['raising.feedback.cared']);
+    expect(monstersLineText()).not.toBe('Cared!');
+    expect(document.getElementById('raising-feedback'), 'qf-9: raising has no line').toBeNull();
   });
 });

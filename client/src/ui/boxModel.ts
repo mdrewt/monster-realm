@@ -5,7 +5,7 @@
 import type { StoreEvolutionPath, StoreMonsterPub, StoreSpeciesRow } from '../net/store';
 // EG4-8 (contract A4/A16): the ONE eligibility predicate, imported — never re-implemented
 // here. House precedent runs the other way too (battleModel.ts imports hpPercent below).
-import { eligibleEvolutionPaths } from './evolutionModel';
+import { eligibleEvolutionPaths, type TrustTierName } from './evolutionModel';
 
 export interface MonsterCardViewModel {
   readonly monsterId: bigint;
@@ -63,6 +63,36 @@ export function buildBoxViewModel(
   return monsters
     .filter((m) => m.partySlot === partySlotNone)
     .map((m) => toCard(m, speciesMap, paths));
+}
+
+/** The Summary's full stats (qf-9): server-derived, copied VERBATIM — never recomputed here. */
+export interface MonsterStatsViewModel {
+  readonly trustTier: TrustTierName;
+  readonly statAttack: number;
+  readonly statDefense: number;
+  readonly statSpeed: number;
+  readonly statSpAttack: number;
+  readonly statSpDefense: number;
+}
+
+/** Each own monster's stats keyed by its decimal id (boxView's card key). A map beside the cards,
+ *  not card fields: the Summary is the only reader. */
+export function buildMonsterStats(
+  monsters: readonly StoreMonsterPub[],
+): ReadonlyMap<string, MonsterStatsViewModel> {
+  return new Map(
+    monsters.map((m) => [
+      String(m.monsterId),
+      {
+        trustTier: m.trustTier,
+        statAttack: m.statAttack,
+        statDefense: m.statDefense,
+        statSpeed: m.statSpeed,
+        statSpAttack: m.statSpAttack,
+        statSpDefense: m.statSpDefense,
+      },
+    ]),
+  );
 }
 
 export function hpPercent(currentHp: number, statHp: number): number {
