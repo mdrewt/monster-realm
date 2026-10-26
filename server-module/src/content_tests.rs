@@ -2417,8 +2417,7 @@ mod nh_sync {
         // Idempotent re-registration (native_host_tests `table_keyed`): the very
         // indexes `world` registered, handed back to seed and read the two tables.
         let monsters = fx.table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id);
-        let pubs =
-            fx.table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id);
+        let pubs = fx.table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id);
         let species = game_core::load_species().expect("species RON");
         assert!(
             species.iter().any(|s| s.id == 1),
@@ -2455,7 +2454,11 @@ mod nh_sync {
         let monster_rows = monsters.rows();
         let pub_rows = pubs.rows();
         assert_eq!(monster_rows.len(), 2, "still two monster rows");
-        assert_eq!(pub_rows.len(), 2, "still two pub rows (rewritten, not added)");
+        assert_eq!(
+            pub_rows.len(),
+            2,
+            "still two pub rows (rewritten, not added)"
+        );
         for (id, anchor) in [(11_u64, ANCHOR_11), (12_u64, ANCHOR_12)] {
             let m = monster_rows
                 .iter()

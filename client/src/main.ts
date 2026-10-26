@@ -1529,6 +1529,9 @@ const screenCtx: ScreenContext = {
     return bindings;
   },
   now: () => performance.now(),
+  // qf-3: the wall clock, for the Monsters sheet's care readiness against the server-epoch
+  // anchor (`performance.now()` is ms since navigation and would read every care as cooling).
+  wallNowMs: () => Date.now(),
   get shopId() {
     return boundShopId;
   },

@@ -229,6 +229,7 @@ export type MessageId =
   | 'box.feed.item'
   | 'box.evolve.confirm'
   | 'box.feedback.fed'
+  | 'box.sheet.careCooldown'
   // Trade.* : the live-trade overlay (tradeView.ts); `tradePropose.*` is the dialog.
   | 'trade.status.none'
   | 'trade.side.offer'
@@ -549,6 +550,7 @@ export interface MessageParams {
   readonly 'box.feed.item': { readonly name: string; readonly count: number };
   readonly 'box.evolve.confirm': { readonly name: string; readonly species: string };
   readonly 'box.feedback.fed': { readonly name: string };
+  readonly 'box.sheet.careCooldown': { readonly hours: number; readonly minutes: number };
   readonly 'trade.side.card': {
     readonly nickname: string;
     readonly species: string;

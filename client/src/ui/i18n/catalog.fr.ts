@@ -774,6 +774,11 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // the screen draws a check mark before it. Short phrase.
   // boxView.ts (the Monsters frame)
   'box.feedback.fed': (p) => `${p.name} nourri`,
+  // @desc: Reason shown after the disabled Care row while the monster's care cooldown runs;
+  // {hours} and {minutes} are the time left, rounded up to the whole minute (1 ms reads 0h 1m).
+  // Short phrase.
+  // boxView.ts (the Monsters frame)
+  'box.sheet.careCooldown': (p) => `Prêt dans ${p.hours} h ${p.minutes} min`,
   // @desc: Status line of the trade overlay when the player is in no trade. One short line.
   // tradeView.ts:93
   'trade.status.none': 'Aucun échange en cours',

@@ -8,6 +8,11 @@
 // an item definition with a `trainStat`), never an id list here. Which evolution paths a monster
 // may CHOOSE is the evolution port's (`EvolutionMonsterViewModel.choices`, non-empty only at 2+
 // eligible paths: at exactly one the server auto-applies it); this file re-derives neither.
+//
+// qf-3: whether Care is READY is game-core's rule, read by the screen through the `care_remaining_ms`
+// wasm export (0n = ready) against the server-epoch anchor `StoreMonsterPub.lastCareAtMs` and the
+// wall clock, and handed in as `careRemainingMs`; this file never compares clocks. The hint's
+// hours and minutes (`careCooldownParts`) are display arithmetic over that remaining time.
 import type { StoreEvolutionPath, StoreMonsterPub, StoreSpeciesRow } from '../net/store';
 import { buildBoxViewModel, buildPartyViewModel, type MonsterCardViewModel } from './boxModel';
 import {
@@ -34,15 +39,30 @@ export const SHEET_ACTIONS: readonly SheetAction[] = [
 /** The Storage grid's columns: the three boxView draws. */
 export const STORAGE_COLS = 3;
 
-/** The sheet's nav list. Feed… is disabled with no food, Evolve… with no outgoing path; a disabled
- *  row stays reachable (the nav kit's rule), so the player can read why. */
-export function sheetLayout(canFeed: boolean, canEvolve: boolean): ItemLayout {
-  return list(
-    SHEET_ACTIONS.map((key) => ({
-      key,
-      enabled: key === 'feed' ? canFeed : key === 'evolve' ? canEvolve : true,
-    })),
-  );
+/** The sheet's nav list. Care is disabled while its cooldown runs (qf-3), Feed… with no food,
+ *  Evolve… with no outgoing path; a disabled row stays reachable (the nav kit's rule), so the
+ *  player can read why. */
+export function sheetLayout(canFeed: boolean, canEvolve: boolean, canCare: boolean): ItemLayout {
+  const enabled: Readonly<Record<SheetAction, boolean>> = {
+    summary: true,
+    care: canCare,
+    feed: canFeed,
+    evolve: canEvolve,
+    nickname: true,
+    move: true,
+  };
+  return list(SHEET_ACTIONS.map((key) => ({ key, enabled: enabled[key] })));
+}
+
+const MINUTE_MS = 60_000n;
+
+/** The "Ready in {hours}h {minutes}m" hint's parts: the remaining care cooldown rounded UP to the
+ *  whole minute (1 ms left reads 0h 1m, never 0h 0m on a disabled row); nothing left reads 0h 0m.
+ *  Display arithmetic only: readiness itself is the export's answer (0n). */
+export function careCooldownParts(remainingMs: bigint): { hours: number; minutes: number } {
+  if (remainingMs <= 0n) return { hours: 0, minutes: 0 };
+  const minutes = (remainingMs + MINUTE_MS - 1n) / MINUTE_MS;
+  return { hours: Number(minutes / 60n), minutes: Number(minutes % 60n) };
 }
 
 /** One food the player can feed: a trainable item with stock. */
@@ -63,6 +83,10 @@ export interface MonstersVm {
   readonly foods: readonly FoodVm[];
   /** The evolution port's view model, one per own monster, in store order. */
   readonly evolution: readonly EvolutionMonsterViewModel[];
+  /** Each own monster's remaining care cooldown in ms by `monsterKey` (0n = Care ready), as the
+   *  screen read it through the `care_remaining_ms` wasm export at the context's wall clock. A
+   *  monster with no entry reads READY (`careRemaining`): the server's own check decides. */
+  readonly careRemainingMs: ReadonlyMap<string, bigint>;
 }
 
 export function buildMonstersVm(
@@ -72,6 +96,7 @@ export function buildMonstersVm(
   partySlotNone: number,
   paths: readonly StoreEvolutionPath[] = [],
   items: readonly InventoryItemViewModel[] = [],
+  careRemainingMs: ReadonlyMap<string, bigint> = new Map(),
 ): MonstersVm {
   return {
     party: buildPartyViewModel(monsters, speciesMap, partySize, paths).filter(
@@ -81,7 +106,13 @@ export function buildMonstersVm(
     partySlotNone,
     foods: foodsOf(items),
     evolution: buildEvolutionViewModel(monsters, speciesMap, paths).monsters,
+    careRemainingMs,
   };
+}
+
+/** A monster's remaining care cooldown (0n = ready); a monster the map does not name is ready. */
+export function careRemaining(vm: MonstersVm, monsterId: bigint): bigint {
+  return vm.careRemainingMs.get(monsterKey(monsterId)) ?? 0n;
 }
 
 /** The trainable items with stock, deduped by item id (the nav kit throws on a duplicate key, and

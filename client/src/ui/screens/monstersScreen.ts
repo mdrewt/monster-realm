@@ -29,8 +29,19 @@
 // only, and the view's batch `refresh` carries cards only, so without it "Bait (x3)" would stay
 // after one was eaten. `observe` answers a new state when it changes, the SAME object otherwise.
 //
+// qf-3. Care follows its cooldown: `viewModel` reads each own monster's remaining time through the
+// `care_remaining_ms` wasm export (game-core's `is_cooldown_ready`; 0n = ready) against the
+// server-epoch anchor and the context's WALL clock (`ctx.wallNowMs`, `Date.now()` in production —
+// never `ctx.now`, the performance clock); a cooling Care is the Feed pattern: disabled, reachable,
+// A acts on nothing (nothing sent), the view says why. `shown` carries the hint's minute, so a
+// batch repaints when the minute or the readiness changes and keeps the SAME state otherwise.
+//
 // The party size and the boxed sentinel are game-core's (wasm exports), never TS literals.
-import { party_size, party_slot_none } from '../../../../client-wasm/pkg/client_wasm.js';
+import {
+  care_remaining_ms,
+  party_size,
+  party_slot_none,
+} from '../../../../client-wasm/pkg/client_wasm.js';
 import type { MonsterCardViewModel } from '../boxModel';
 import type { BoxView } from '../boxView';
 import type { EvolutionMonsterViewModel } from '../evolutionModel';
@@ -38,6 +49,8 @@ import {
   buildMonstersVm,
   canEvolve,
   cardName,
+  careCooldownParts,
+  careRemaining,
   type FoodVm,
   findEvolution,
   findMonster,
@@ -129,6 +142,8 @@ export interface MonstersPaint {
     readonly action: SheetAction;
     readonly canFeed: boolean;
     readonly canEvolve: boolean;
+    /** The monster's remaining care cooldown in ms; 0n = Care ready (qf-3). */
+    readonly careRemainingMs: bigint;
   } | null;
   /** The food list under the sheet. */
   readonly feed: { readonly foods: readonly FoodVm[]; readonly activeKey: string | null } | null;
@@ -171,7 +186,8 @@ const sheet = (monsterId: bigint, action: SheetAction): MonstersPhase => ({
 
 /** The signature of what the view paints from the sheet-derived data for the phase's monster: the
  *  foods (so the disabled Feed… row and the counts), the paths (the disabled Evolve… row, each
- *  row's status and species) and the name the confirm quotes. */
+ *  row's status and species), the name the confirm quotes and the Care hint's parts (0h 0m when
+ *  ready: the disabled Care row and its minute, qf-3). */
 function shownOf(vm: MonstersVm, phase: MonstersPhase): string {
   if (phase.kind === 'list') return '';
   const mon = findEvolution(vm, phase.monsterId);
@@ -186,7 +202,12 @@ function shownOf(vm: MonstersVm, phase: MonstersPhase): string {
           p.toSpeciesName,
         ]);
   const card = findMonster(vm, phase.monsterId)?.card;
-  return JSON.stringify([vm.foods, paths, card === undefined ? null : cardName(card)]);
+  return JSON.stringify([
+    vm.foods,
+    paths,
+    card === undefined ? null : cardName(card),
+    careCooldownParts(careRemaining(vm, phase.monsterId)),
+  ]);
 }
 
 /** The state with its `shown` brought up to `vm`: the SAME object when it already is. */
@@ -263,15 +284,23 @@ function settle(vm: MonstersVm, state: MonstersScreenState): MonstersScreenState
 export const monstersScreen: ScreenAdapter<MonstersVm, MonstersScreenState, BoxView> = {
   nav: true,
 
-  viewModel: (ctx) =>
-    buildMonstersVm(
-      ctx.store.ownMonsters(ctx.identity),
+  viewModel: (ctx) => {
+    const monsters = ctx.store.ownMonsters(ctx.identity);
+    // The wall clock, truncated to the millisecond before it crosses as a BigInt (a fraction
+    // throws); readiness is game-core's through the export, 0n exactly when ready.
+    const wallNow = BigInt(Math.trunc(ctx.wallNowMs()));
+    return buildMonstersVm(
+      monsters,
       ctx.store.speciesMap(),
       party_size(),
       party_slot_none(),
       [...ctx.store.evolutionPaths()],
       buildInventoryItems(ctx.store.ownInventory(ctx.identity), ctx.store.itemDefs()),
-    ),
+      new Map(
+        monsters.map((m) => [monsterKey(m.monsterId), care_remaining_ms(m.lastCareAtMs, wallNow)]),
+      ),
+    );
+  },
 
   // CTL8B.4: the frame opens on Storage, the panel that holds the box root.
   init: (vm) => ({
@@ -343,7 +372,11 @@ export const monstersScreen: ScreenAdapter<MonstersVm, MonstersScreenState, BoxV
             return done({ kind: 'toggleHelp' });
           case 'Up':
           case 'Down': {
-            const layout = sheetLayout(vm.foods.length > 0, mon !== undefined && canEvolve(mon));
+            const layout = sheetLayout(
+              vm.foods.length > 0,
+              mon !== undefined && canEvolve(mon),
+              careRemaining(vm, phase.monsterId) === 0n,
+            );
             const nav = navStep(layout, { tab: null, item: phase.action, perTab: {} }, btn);
             const action = nav.state.item as SheetAction;
             return action === phase.action ? done('consumed') : to({ ...phase, action });
@@ -476,10 +509,11 @@ export const monstersScreen: ScreenAdapter<MonstersVm, MonstersScreenState, BoxV
     const mon = phase.kind === 'list' ? undefined : findEvolution(vm, phase.monsterId);
     const path =
       phase.kind === 'evolveConfirm' && mon !== undefined ? findPath(mon, phase.path) : undefined;
+    const careMs = phase.kind === 'list' ? 0n : careRemaining(vm, phase.monsterId);
     view.paint({
       tab: (state.nav.tab ?? 'storage') as MonstersTab,
       activeKey: state.nav.item,
-      sheet: sheetOf(phase, card, vm.foods.length > 0, mon !== undefined && canEvolve(mon)),
+      sheet: sheetOf(phase, card, vm.foods.length > 0, mon !== undefined && canEvolve(mon), careMs),
       feed: phase.kind === 'feed' ? { foods: vm.foods, activeKey: phase.item } : null,
       evolve: phase.kind === 'evolve' && mon !== undefined ? { mon, activeKey: phase.path } : null,
       confirm:
@@ -498,8 +532,9 @@ function idOfKey(vm: MonstersVm, key: string): bigint | undefined {
   return [...vm.party, ...vm.storage].find((c) => monsterKey(c.monsterId) === key)?.monsterId;
 }
 
-/** A on a sheet action: Summary and Nickname open their pane, Care sends at once, Feed… and
- *  Evolve… open their lists (nothing when disabled), Move sends the monster across. */
+/** A on a sheet action: Summary and Nickname open their pane, Care sends at once when ready (a
+ *  cooling Care acts on nothing, qf-3), Feed… and Evolve… open their lists (nothing when
+ *  disabled), Move sends the monster across. */
 function act(
   state: MonstersScreenState,
   vm: MonstersVm,
@@ -512,6 +547,7 @@ function act(
     case 'summary':
       return [{ ...state, phase: { kind: 'summary', monsterId } }, 'consumed'];
     case 'care':
+      if (careRemaining(vm, monsterId) !== 0n) return [state, 'consumed'];
       return [state, { kind: 'care', monsterId }];
     case 'feed': {
       const first = vm.foods[0];
@@ -547,9 +583,10 @@ function sheetOf(
   card: MonsterCardViewModel | undefined,
   canFeed: boolean,
   canEvolve: boolean,
+  careRemainingMs: bigint,
 ): MonstersPaint['sheet'] {
   if (card === undefined || phase.kind === 'list') return null;
   const action: SheetAction =
     phase.kind === 'sheet' ? phase.action : phase.kind === 'evolveConfirm' ? 'evolve' : phase.kind;
-  return { card, action, canFeed, canEvolve };
+  return { card, action, canFeed, canEvolve, careRemainingMs };
 }
