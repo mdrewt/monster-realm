@@ -1915,6 +1915,90 @@ fn eg1_pub_from_monster_copies_all_eight_essence_columns() {
     );
 }
 
+/// qf-3 (QF3.1/QF3.2): `MonsterPub.last_care_at_ms` is the private row's care
+/// cooldown anchor copied VERBATIM — never derived, never clamped, never taken
+/// from another column — and moving the anchor alone moves nothing else in the
+/// projection.
+///
+/// Every mirror site writes `monster_pub` through this one fn, so this copy is
+/// what keeps the owner's cooldown hint correct after a care, a train, an
+/// evolve, a trade or a content resync.
+///
+/// Kills: `last_care_at_ms: 0` (the column's default — the hint would read every
+/// monster as never cared); a copy from `last_essence_train_at_ms` or
+/// `quality_time_window_start_ms` (both set to other nonzero values); `.max(0)`
+/// on the anchor (the -42 and i64::MIN rows); a truncation through u32/i32 (the
+/// 1.75e12 and i64::MAX rows); and a projection that derives some OTHER public
+/// column from the anchor (the tier/nutrition/trust/quality-time tuple must not
+/// move when only the anchor does).
+#[test]
+fn pub_from_monster_copies_last_care_at_ms_verbatim_qf3() {
+    let mut m = eg1_distinctive_monster_row();
+    m.last_essence_train_at_ms = 1_111_111_111_111;
+    m.quality_time_window_start_ms = 2_222_222_222_222;
+    // A nonzero EV spread (252 + 3 = 255 = half the budget), so nutrition_pct is a
+    // real derived value rather than a default 0 that could not move anyway.
+    m.ev_hp = 252;
+    m.ev_attack = 3;
+    m.last_care_at_ms = 1_750_000_000_123;
+    let baseline = pub_from_monster(&m, 3);
+    assert_eq!(
+        baseline.tier, 3,
+        "fixture: the baseline projection carries the passed tier"
+    );
+    assert_eq!(
+        baseline.nutrition_pct,
+        game_core::nutrition_pct_from_ev_total(255),
+        "fixture: the baseline nutrition_pct is the real derived value for 255 EVs"
+    );
+    assert_eq!(
+        baseline.quality_time_tier,
+        game_core::quality_time_tier_of(33),
+        "fixture: the baseline quality_time_tier is derived from the row's 33 ticks"
+    );
+    assert_eq!(
+        baseline.trust_tier,
+        game_core::trust_tier_of(11, 22),
+        "fixture: the baseline trust tier is derived from the row's 11/22 counters"
+    );
+
+    for anchor in [1_750_000_000_123_i64, -42, i64::MAX, i64::MIN] {
+        m.last_care_at_ms = anchor;
+        let p = pub_from_monster(&m, 3);
+        assert_eq!(
+            p.last_care_at_ms, anchor,
+            "TEETH(qf-3): MonsterPub.last_care_at_ms must be the monster row's care anchor \
+             ({anchor}) verbatim; got {} (0 = never copied; 1111111111111 / 2222222222222 = a \
+             sibling i64 column was copied instead)",
+            p.last_care_at_ms
+        );
+        assert_eq!(
+            p.tier, baseline.tier,
+            "qf-3: changing ONLY the care anchor (to {anchor}) must leave tier as it was"
+        );
+        assert_eq!(
+            p.nutrition_pct, baseline.nutrition_pct,
+            "qf-3: changing ONLY the care anchor (to {anchor}) must leave nutrition_pct alone"
+        );
+        assert_eq!(
+            p.quality_time_tier, baseline.quality_time_tier,
+            "qf-3: changing ONLY the care anchor (to {anchor}) must leave quality_time_tier alone"
+        );
+        assert_eq!(
+            p.trust_tier, baseline.trust_tier,
+            "qf-3: changing ONLY the care anchor (to {anchor}) must leave trust_tier as it was"
+        );
+        assert_eq!(
+            p.monster_id, m.monster_id,
+            "qf-3: the anchor copy must not disturb the monster id"
+        );
+        assert_eq!(
+            p.owner_identity, m.owner_identity,
+            "qf-3: the anchor copy must not disturb the owner"
+        );
+    }
+}
+
 // -------------------------------------------------------------------------
 // species_from_row carries the new tier column
 // -------------------------------------------------------------------------

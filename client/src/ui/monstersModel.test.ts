@@ -13,7 +13,8 @@
 // `foods` (the data-driven trainable items with stock, by item id) and `evolution` (the evolution
 // port's per-monster view model, never re-derived); `canEvolve` / `isChoice` / `pathLayout` /
 // `firstPathKey` / `foodLayout` / `foodKey` / `pathKey` are the helpers the screen walks them with.
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { loadWasmPkg } from '../../test-util/wasmPkg';
 import type {
   AffinityName,
   EssenceByAffinity,
@@ -84,6 +85,7 @@ function monster(
     trustTier: 'Neutral',
     qualityTimeTier: 0,
     nutritionPct: 0,
+    lastCareAtMs: 0n,
     ...overrides,
   };
 }
@@ -548,5 +550,71 @@ describe('the Monsters view model: foods and evolution (ctl-8c, CTL8C.1)', () =>
     expect(foodLayout(bare).items).toEqual([]);
     expect(bare.evolution.map((m) => m.paths.length)).toEqual([0, 0, 0, 0]);
     expect(bare.evolution.map(canEvolve)).toEqual([false, false, false, false]);
+  });
+});
+
+// =============================================================================
+// The care cooldown, read through the client-wasm export `care_remaining_ms(lastCareAtMs, nowMs)`
+// from the BUILT pkg (the value the live client gets): game-core's `is_cooldown_ready` decides
+// readiness and `CARE_COOLDOWN_MS` is the length, so this file never spells the cooldown. Every
+// expected value below is derived from the export's own full-cooldown answer `full`.
+// =============================================================================
+
+let careRemainingExport: unknown;
+
+/** The export, or a failure naming the rebuild (never a skip). */
+function careRemainingMs(lastCareAtMs: bigint, nowMs: bigint): unknown {
+  expect(
+    typeof careRemainingExport,
+    'client-wasm must export care_remaining_ms(last_care_at_ms: i64, now_ms: i64) -> i64; if it ' +
+      'does and this still reads undefined, the pkg is stale: run `just wasm`',
+  ).toBe('function');
+  return (careRemainingExport as (last: bigint, now: bigint) => unknown)(lastCareAtMs, nowMs);
+}
+
+describe('the care_remaining_ms wasm export', () => {
+  // Scoped to this describe so the pure-model cases above never depend on the built pkg.
+  beforeAll(async () => {
+    const pkg = await loadWasmPkg();
+    careRemainingExport = pkg.care_remaining_ms;
+  });
+
+  it('the built pkg exports care_remaining_ms as a bigint-in, bigint-out function whose fresh-anchor answer is a positive full cooldown', () => {
+    // WRONG IMPL KILLED: no export at all; an export returning a JS number (a u32 or f64 return
+    // type: the screen's `=== 0n` readiness test would never be true); an export that returns 0
+    // for a monster cared this very millisecond (Care would never be disabled).
+    const full = careRemainingMs(0n, 0n);
+    expect(typeof full, 'an i64 return crosses as a BigInt').toBe('bigint');
+    expect((full as bigint) > 0n, 'cared just now: a whole cooldown remains').toBe(true);
+  });
+
+  it('care_remaining_ms counts down to exactly 1n one millisecond before the cooldown and is 0n from the cooldown on', () => {
+    // WRONG IMPL KILLED: a strict `>` boundary (0n one millisecond late: Care stays disabled at the
+    // instant the server would accept it); a remaining time that is not `full - elapsed` (the
+    // one-millisecond-in row); a last millisecond rounded to "ready" (1n must stay 1n, never 0n);
+    // and an ignored anchor (the 5n-anchored rows are shifted by 5 against the 0n-anchored one).
+    const full = careRemainingMs(0n, 0n) as bigint;
+    expect(careRemainingMs(0n, full), 'exactly the cooldown elapsed: ready').toBe(0n);
+    expect(careRemainingMs(5n, 5n + full - 1n), 'one millisecond short: 1n').toBe(1n);
+    expect(careRemainingMs(5n, 5n + full), 'anchored at 5: ready at 5 + full').toBe(0n);
+    expect(careRemainingMs(5n, 5n + full + 1n), 'past it: still ready, never negative').toBe(0n);
+    expect(careRemainingMs(5n, 5n + 1n), 'one millisecond in: full - 1').toBe(full - 1n);
+  });
+
+  it('a never-cared anchor (0n) is ready at a realistic wall clock, and a wall clock behind the anchor reads one full cooldown, never more', () => {
+    // WRONG IMPL KILLED: a 0n anchor treated as "unknown, assume cooling" (every never-cared
+    // monster would show Care disabled forever); an unclamped skew (a client clock behind the
+    // server reads `full + skew`, a hint of years); a wrapped or negative answer for a clock behind
+    // the anchor; and swapped arguments (f(now, last) reads the realistic pair as a skew).
+    const full = careRemainingMs(0n, 0n) as bigint;
+    expect(careRemainingMs(0n, 1_750_000_000_000n), 'never cared: ready').toBe(0n);
+    expect(
+      careRemainingMs(1_750_000_000_000n, 0n),
+      'clock behind the anchor: one full cooldown',
+    ).toBe(full);
+    expect(
+      careRemainingMs(1_750_000_000_000n, 1_750_000_000_000n - 1n),
+      'one millisecond behind: still one full cooldown',
+    ).toBe(full);
   });
 });

@@ -43,4 +43,5 @@ export default __t.row({
   },
   qualityTimeTier: __t.u8().name("quality_time_tier"),
   nutritionPct: __t.u8().name("nutrition_pct"),
+  lastCareAtMs: __t.i64().name("last_care_at_ms"),
 });

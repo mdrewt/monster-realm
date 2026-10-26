@@ -241,7 +241,9 @@ pub struct Monster {
     pub party_slot: u8,
     // Per-monster care cooldown anchor: server clock ms of the
     // last successful `care`. Additive. New monsters start at 0 (epoch
-    // ⇒ cooldown elapsed ⇒ first care allowed). Stays OFF monster_pub (YAGNI).
+    // ⇒ cooldown elapsed ⇒ first care allowed). Mirrored verbatim onto
+    // `monster_pub` since qf-3 (the owner's sheet reads readiness from it);
+    // this private row stays the one the `care` reducer checks.
     pub last_care_at_ms: i64,
     // (`bond` and `evolves_to` were removed here by Migration B.
     // A column removal is always rejected by automatic migration.
@@ -355,6 +357,17 @@ pub struct MonsterPub {
     // Derived Nutrition percentage of the 510 EV budget.
     #[default(0)]
     pub nutrition_pct: u8,
+    // qf-3: the care cooldown anchor, copied VERBATIM from `monster` by
+    // `pub_from_monster` so the owner's Monsters sheet can render Care
+    // readiness (through the client-wasm `care_remaining_ms` export, the
+    // only client reading of it). Server-epoch ms of the last successful
+    // care. 0 = never cared, or a row not yet rewritten since qf-3 (reads as
+    // ready; the server's own check on `monster` still rejects an early care).
+    // Appended with a TYPED default: an untyped `0` encodes as 4 bytes and
+    // fails the live publish. Owner-only: `monster_pub` is private behind
+    // `my_monster_pub`.
+    #[default(0i64)]
+    pub last_care_at_ms: i64,
 }
 
 /// Owner-scoped read path for `monster_pub`: each

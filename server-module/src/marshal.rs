@@ -202,6 +202,9 @@ pub(crate) fn wild_battle_monster(
 /// everywhere else (never fabricated; a missing row is the caller's fail-loud
 /// problem). The three history tiers are DERIVED here from the
 /// private counters via the game-core SSOT helpers — pure and infallible.
+/// The care cooldown anchor (`last_care_at_ms`, qf-3) is COPIED verbatim:
+/// every mirror site builds its projection here, so the owner-visible anchor
+/// can never drift from the private one the `care` reducer checks.
 pub(crate) fn pub_from_monster(m: &Monster, tier: u8) -> MonsterPub {
     // Sum the six EV columns in u32 (cannot overflow: 6 * 65535 << u32::MAX),
     // then clamp into the u16 the SSOT helper takes — a corrupt row saturates
@@ -240,6 +243,7 @@ pub(crate) fn pub_from_monster(m: &Monster, tier: u8) -> MonsterPub {
         trust_tier: game_core::trust_tier_of(m.trust_favorable_count, m.trust_unfavorable_count),
         quality_time_tier: game_core::quality_time_tier_of(m.quality_time_ticks_total),
         nutrition_pct: game_core::nutrition_pct_from_ev_total(ev_total),
+        last_care_at_ms: m.last_care_at_ms,
     }
 }
 

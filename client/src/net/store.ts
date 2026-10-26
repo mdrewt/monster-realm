@@ -86,6 +86,11 @@ export type StoreMonsterPub = {
   readonly trustTier: TrustTierName;
   readonly qualityTimeTier: number;
   readonly nutritionPct: number;
+  /** qf-3: the care cooldown anchor — server-epoch ms of the last successful care, copied verbatim
+   *  from the private row (0n = never cared, or not yet rewritten since qf-3). An i64, so a bigint;
+   *  compared with the wall clock ONLY through the client-wasm `care_remaining_ms` export, never
+   *  by TypeScript arithmetic (the cooldown length lives in game-core). */
+  readonly lastCareAtMs: bigint;
 };
 
 /** One entry of an evolution path's ORDERED essence requirement list (contract §B). */

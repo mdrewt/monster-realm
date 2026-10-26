@@ -2666,6 +2666,118 @@ mod nh {
         w.assert_pub_consistent(11);
     }
 
+    /// The monster_pub row of monster 11, read straight from the store (never
+    /// through `pub_from_monster`, which would make an anchor check circular).
+    fn pub11(w: &World<'_>) -> MonsterPub {
+        w.pubs
+            .rows()
+            .into_iter()
+            .find(|p| p.monster_id == 11)
+            .expect("monster_pub row 11")
+    }
+
+    /// qf-3 (QF3.2 / QF3.4): a successful care stamps the OWNER-VISIBLE pub row's
+    /// care anchor with the server clock, and a cooldown rejection leaves the pub
+    /// row byte-identical (reject never burns the cooldown, on the copy the client
+    /// reads either).
+    ///
+    /// Kills: a care that rewrites only the private row (the pub anchor stays T0,
+    /// so the client shows Care disabled for another 6 h after a care it just
+    /// did); a pub write that stamps the anchor with anything but the server clock
+    /// (0, the pre-care value, or the private row's OLD anchor); and a rejection
+    /// that rewrites the pub row on the way out (a refreshed stamp would push the
+    /// client's hint out by a full cooldown on every early press).
+    #[test]
+    fn nh_care_stamps_the_pub_anchor_and_a_reject_leaves_the_pub_row_bytes() {
+        let fx = fixture();
+        let w = world(&fx, true);
+        let mut m = monster(11, a(), 0);
+        m.last_care_at_ms = T0;
+        w.seed_monster(&m);
+        let seeded = pub11(&w);
+        assert_eq!(
+            seeded.last_care_at_ms, T0,
+            "fixture: the seeded pub row carries the monster's anchor T0"
+        );
+        let seeded_bytes = to_vec(&seeded).unwrap();
+
+        let early = T0 + CARE_COOLDOWN_MS - 1;
+        assert_eq!(
+            fx.run_as_at(a(), at(early), |ctx| care(ctx, 11)),
+            Err("care cooldown not yet elapsed".to_string())
+        );
+        let after_reject = pub11(&w);
+        assert_eq!(
+            after_reject.last_care_at_ms, T0,
+            "a rejected care must leave the pub anchor at T0 (reject never burns the cooldown)"
+        );
+        assert_eq!(
+            to_vec(&after_reject).unwrap(),
+            seeded_bytes,
+            "a rejected care must leave the pub row byte-identical"
+        );
+
+        let now = T0 + CARE_COOLDOWN_MS;
+        assert_eq!(fx.run_as_at(a(), at(now), |ctx| care(ctx, 11)), Ok(()));
+        assert_eq!(
+            pub11(&w).last_care_at_ms,
+            now,
+            "a successful care must stamp the PUB row's anchor with the server clock, so the \
+             owner's client sees the new cooldown"
+        );
+        assert_eq!(
+            w.monster(11).last_care_at_ms,
+            now,
+            "and the private row's anchor, which the server's own check reads"
+        );
+        w.assert_pub_consistent(11);
+    }
+
+    /// qf-3 (QF3.2): a mirror site that is NOT care rewrites the pub row and
+    /// PRESERVES the care anchor on both rows.
+    ///
+    /// Kills: a train that rebuilds the pub row by hand with the anchor at 0 (the
+    /// client would read a cooling monster as ready); a train that stamps the care
+    /// anchor (feeding would restart the care cooldown); and a vacuous pass where
+    /// train never rewrote the pub row at all (nutrition_pct must move).
+    #[test]
+    fn nh_train_rewrites_the_pub_and_preserves_the_care_anchor() {
+        let fx = fixture();
+        let w = world(&fx, true);
+        let anchor = T0 - 1_000;
+        let mut m = monster(11, a(), 0);
+        m.last_care_at_ms = anchor;
+        w.seed_monster(&m);
+        w.items.seed(&item(FOOD, Some(StatKind::Attack)));
+        w.stack(a(), FOOD, 3);
+        let seeded = pub11(&w);
+        assert_eq!(
+            seeded.last_care_at_ms, anchor,
+            "fixture: the seeded pub anchor"
+        );
+
+        assert_eq!(
+            fx.run_as_at(a(), at(T0 + 12_345), |ctx| train(ctx, 11, FOOD)),
+            Ok(())
+        );
+        let after = pub11(&w);
+        assert_ne!(
+            after.nutrition_pct, seeded.nutrition_pct,
+            "fixture: train must have REWRITTEN the pub row (its EVs grew, so nutrition_pct \
+             moved), otherwise the anchor check below proves nothing"
+        );
+        assert_eq!(
+            after.last_care_at_ms, anchor,
+            "train rewrote the pub row and must carry the care anchor forward unchanged"
+        );
+        assert_eq!(
+            w.monster(11).last_care_at_ms,
+            anchor,
+            "train never stamps the care anchor on the private row"
+        );
+        w.assert_pub_consistent(11);
+    }
+
     /// train refusals keep the food: a non-food item, a food stack fully
     /// reserved by an active offer, and a caller who owns none (only a stranger
     /// does) — each refused before any write.

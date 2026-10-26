@@ -429,6 +429,7 @@ describe('the Bag layouts, findItem and bagMonsters (ctl-8f)', () => {
       trustTier: 'Neutral',
       qualityTimeTier: 0,
       nutritionPct: 0,
+      lastCareAtMs: 0n,
     });
     const species = (id: number, name: string): StoreSpeciesRow => ({
       id,
@@ -494,6 +495,7 @@ describe('the Bag layouts, findItem and bagMonsters (ctl-8f)', () => {
       trustTier: 'Neutral',
       qualityTimeTier: 0,
       nutritionPct: 0,
+      lastCareAtMs: 0n,
     });
     // Six party slots (0..5, stored in reverse) and three boxed monsters.
     const monsters = [

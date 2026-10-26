@@ -1087,6 +1087,130 @@ fn m22s4_playtest_row(event_id: u64, who: Identity) -> PlaytestEvent {
 }
 
 // ===========================================================================
+// qf-3 (QF3.1) — the care cooldown anchor reaches the OWNER through the
+// owner-scoped `my_monster_pub` view, and nobody else.
+// ===========================================================================
+
+/// A private `monster` row for the qf-3 view test. Every column is explicit (no
+/// spread, so a new column reds this file's build), and the two SIBLING i64
+/// anchors carry values distinct from every care anchor below, so a projection
+/// that copies the wrong i64 column cannot pass.
+fn qf3_monster(monster_id: u64, owner: Identity, last_care_at_ms: i64) -> Monster {
+    Monster {
+        monster_id,
+        owner_identity: owner,
+        species_id: 3,
+        nickname: format!("q{monster_id}"),
+        level: 5,
+        xp: 1234,
+        iv_hp: 11,
+        iv_attack: 12,
+        iv_defense: 13,
+        iv_speed: 14,
+        iv_sp_attack: 15,
+        iv_sp_defense: 16,
+        nature_kind: NatureKind::Sassy,
+        ev_hp: 21,
+        ev_attack: 22,
+        ev_defense: 23,
+        ev_speed: 24,
+        ev_sp_attack: 25,
+        ev_sp_defense: 26,
+        stat_hp: 31,
+        stat_attack: 32,
+        stat_defense: 33,
+        stat_speed: 34,
+        stat_sp_attack: 35,
+        stat_sp_defense: 36,
+        current_hp: 41,
+        party_slot: 2,
+        last_care_at_ms,
+        essence_fire: 51,
+        essence_water: 52,
+        essence_plant: 53,
+        essence_electric: 54,
+        essence_earth: 55,
+        essence_wind: 56,
+        essence_light: 57,
+        essence_dark: 58,
+        trust_favorable_count: 61,
+        trust_unfavorable_count: 62,
+        trust_favorable_battle_day_epoch: 63,
+        quality_time_ticks_total: 64,
+        quality_time_accum_ms: 65,
+        quality_time_window_ms: 66,
+        quality_time_window_start_ms: 1_111_111_111_111,
+        last_essence_train_at_ms: 2_222_222_222_222,
+    }
+}
+
+/// QF3.1: each owner reads EXACTLY its own monsters' care anchors through the
+/// shipped `my_monster_pub` view (run through the runtime's own view entry point
+/// on the native host), each anchor on its own row, and a stranger reads nothing.
+///
+/// The oracle is the anchor written into the seeded MONSTER literals, never the
+/// projection's own output: the pub rows are produced by the shipped
+/// `pub_from_monster`, so comparing against it would be circular.
+///
+/// Kills: a projection that leaves the new column at its default 0 (every anchor
+/// here is nonzero, one is negative); a copy from a sibling i64 column
+/// (`last_essence_train_at_ms` / `quality_time_window_start_ms` differ); anchors
+/// shuffled between a's two rows (compared per monster id); a view that loses the
+/// owner filter (a would see b's row) or returns nothing (a sees no rows).
+#[test]
+fn my_monster_pub_exposes_last_care_at_ms_to_the_owner_only_qf3() {
+    use crate::native_host_tests::{fixture, VIEW_MY_MONSTER_PUB};
+
+    let fx = fixture();
+    let pubs = fx.table::<MonsterPub>("monster_pub", "owner_identity", |r| r.owner_identity);
+    let (a, b, c) = (m22s4_id_a(), m22s4_id_b(), m22s4_id_c());
+    // Seeded out of id order, so the per-id comparison below is not a store-order accident.
+    let monsters = [
+        qf3_monster(301, a, 1_750_000_000_123),
+        qf3_monster(303, b, -42),
+        qf3_monster(302, a, 1_750_000_999_999),
+    ];
+    for m in &monsters {
+        pubs.seed(&crate::marshal::pub_from_monster(m, 2));
+    }
+
+    // (monster_id, last_care_at_ms) of every row the view hands `who`, sorted by id;
+    // every row must also be `who`'s own.
+    let seen = |who: Identity| -> Vec<(u64, i64)> {
+        let mut rows: Vec<(u64, i64)> = fx
+            .call_view::<MonsterPub>(VIEW_MY_MONSTER_PUB, who)
+            .iter()
+            .map(|p| {
+                assert_eq!(
+                    p.owner_identity, who,
+                    "qf3 [QF3.1]: my_monster_pub handed a caller a row it does not own"
+                );
+                (p.monster_id, p.last_care_at_ms)
+            })
+            .collect();
+        rows.sort_unstable();
+        rows
+    };
+
+    assert_eq!(
+        seen(a),
+        vec![(301, 1_750_000_000_123), (302, 1_750_000_999_999)],
+        "qf3 [QF3.1]: the owner's two monsters must each carry the care anchor written on ITS \
+         private monster row, verbatim (0 here means the column was never copied; a sibling i64 \
+         value means the wrong column was)"
+    );
+    assert_eq!(
+        seen(b),
+        vec![(303, -42)],
+        "qf3 [QF3.1]: the second owner sees only its own monster and its own (negative) anchor"
+    );
+    assert!(
+        seen(c).is_empty(),
+        "qf3 [QF3.1]: a player who owns nothing reads no row, and so no care anchor at all"
+    );
+}
+
+// ===========================================================================
 // PRV1-11 / X1 — the seventeen pure per-table serializers.
 // ===========================================================================
 
@@ -1231,7 +1355,10 @@ fn m22s4_serializer_per_table_shape() {
          does not apply), u64/i64 as QUOTED decimal strings, and the nickname escaped."
     );
 
-    // --- monster_pub (26 columns) -------------------------------------------
+    // --- monster_pub (27 columns) -------------------------------------------
+    // qf-3: `last_care_at_ms` is the owner's own care cooldown anchor (i64), so it is exported
+    // like every other i64: a QUOTED decimal. The fixture is NEGATIVE so an `as u64` rendering
+    // (which prints 18446744073709551609) cannot pass.
     let monster_pub = MonsterPub {
         monster_id: 8,
         owner_identity: owner,
@@ -1259,6 +1386,7 @@ fn m22s4_serializer_per_table_shape() {
         trust_tier: TrustTier::Devoted,
         quality_time_tier: 4,
         nutrition_pct: 55,
+        last_care_at_ms: -7,
     };
     let out_monster_pub = super::json_monster_pub(&monster_pub);
     assert_eq!(
@@ -1290,8 +1418,10 @@ fn m22s4_serializer_per_table_shape() {
             ("trust_tier", m22s4_qtxt("Devoted")),
             ("quality_time_tier", m22s4_bare(4)),
             ("nutrition_pct", m22s4_bare(55)),
+            ("last_care_at_ms", m22s4_quoted_num(-7)),
         ]),
-        "m22s4 [X1/monster_pub]: all 26 columns in declaration order. trust_tier is a \
+        "m22s4 [X1/monster_pub]: all 27 columns in declaration order, the i64 care anchor \
+         QUOTED and signed. trust_tier is a \
          five-variant enum whose derived default is the MIDDLE band, so the fixture picks the \
          LAST variant: an encoder collapsed to its first arm, or one that renders the default, \
          fails here."

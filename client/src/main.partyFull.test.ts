@@ -114,6 +114,7 @@ function monster(monsterId: bigint, partySlot: number): StoreMonsterPub {
     trustTier: 'Neutral',
     qualityTimeTier: 0,
     nutritionPct: 0,
+    lastCareAtMs: 0n,
   };
 }
 

@@ -625,6 +625,9 @@ fn json_monster_pub(row: &MonsterPub) -> String {
     json_u8_into(&mut out, row.quality_time_tier);
     json_field_into(&mut out, &mut first, stringify!(nutrition_pct));
     json_u8_into(&mut out, row.nutrition_pct);
+    // qf-3: the owner's own care cooldown anchor — exported (the subject's data).
+    json_field_into(&mut out, &mut first, stringify!(last_care_at_ms));
+    json_i64_into(&mut out, row.last_care_at_ms);
     out.push('}');
     out
 }

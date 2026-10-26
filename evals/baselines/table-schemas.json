@@ -549,7 +549,8 @@
       "essence_dark": "u32",
       "trust_tier": "TrustTier",
       "quality_time_tier": "u8",
-      "nutrition_pct": "u8"
+      "nutrition_pct": "u8",
+      "last_care_at_ms": "i64"
     },
     "order": [
       "monster_id",
@@ -577,7 +578,8 @@
       "essence_dark",
       "trust_tier",
       "quality_time_tier",
-      "nutrition_pct"
+      "nutrition_pct",
+      "last_care_at_ms"
     ],
     "defaults": [
       "tier",
@@ -591,7 +593,8 @@
       "essence_dark",
       "trust_tier",
       "quality_time_tier",
-      "nutrition_pct"
+      "nutrition_pct",
+      "last_care_at_ms"
     ],
     "unique": [],
     "indexes": [

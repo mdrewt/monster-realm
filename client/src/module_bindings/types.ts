@@ -423,6 +423,7 @@ export const MonsterPub = __t.object("MonsterPub", {
   },
   qualityTimeTier: __t.u8(),
   nutritionPct: __t.u8(),
+  lastCareAtMs: __t.i64(),
 });
 export type MonsterPub = __Infer<typeof MonsterPub>;
 

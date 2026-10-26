@@ -1447,6 +1447,7 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
         trustTier: 'Unknown',
         qualityTimeTier: 0,
         nutritionPct: 0,
+        lastCareAtMs: 0n,
       }) as never;
     opts.store.upsertMonster(ownMonster(31n));
     opts.store.upsertMonster(ownMonster(32n));
@@ -1602,6 +1603,7 @@ const RAISED_MONSTER: StoreMonsterPub = {
   trustTier: 'Neutral',
   qualityTimeTier: 0,
   nutritionPct: 0,
+  lastCareAtMs: 0n,
 };
 
 describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () => {

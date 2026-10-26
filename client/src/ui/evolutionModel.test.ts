@@ -85,6 +85,7 @@ function monster(overrides: Partial<StoreMonsterPub> = {}): StoreMonsterPub {
     trustTier: 'Neutral',
     qualityTimeTier: 0,
     nutritionPct: 0,
+    lastCareAtMs: 0n,
     ...overrides,
   };
 }

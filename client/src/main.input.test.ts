@@ -3571,6 +3571,7 @@ function partyMonster(monsterId: bigint, slot: number): StoreMonsterPub {
     trustTier: 'Unknown' as StoreMonsterPub['trustTier'],
     qualityTimeTier: 0,
     nutritionPct: 0,
+    lastCareAtMs: 0n,
   };
 }
 
