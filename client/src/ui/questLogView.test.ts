@@ -68,6 +68,9 @@
 //   - `fallbackFocus` passed as undefined/an element      -> S3-questLogView-HELPER-CALLED (literal null, D8/A6)
 //   - render() stops painting rows / appends instead of rebuilding -> the render-behaviour block
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from './a11yCopy';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
@@ -460,7 +463,7 @@ describe('QuestLogView render(): existing paint behaviour (pinned, not changed b
 // only, so a missing module reds that case alone.
 // ---------------------------------------------------------------------------
 
-import { tf as ctl8fTf } from './i18n/resolver';
+import { tf as ctl8fTf, t as qf4T } from './i18n/resolver';
 
 const ctl8fListEl = (): HTMLElement => document.getElementById('quest-log-list') as HTMLElement;
 /** The list's own <li> children (a nested one, were a detail ever put inside, would not count). */
@@ -787,5 +790,483 @@ describe('QuestLogView ctl-8f: the listbox pointers and names', () => {
     expect(ctl8fListEl().getAttribute('aria-labelledby'), 'the name survives the reopen').toBe(
       'quest-log-overlay',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// qf-4 (QF4.1, QF4.2): the Journal frame's visible title and its empty state.
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-pt3-quickfix.spec.md §qf-4;
+// memory/projects/monster-realm-qf-4-plan.md (design + AMENDMENTS A1-A8, which supersede the body).
+//
+// WHY BOTH ELEMENTS ARE BUILT AT RUNTIME. indexShell.smoke.test.ts exact-pins the set of `[id]`
+// elements inside `#frame-layer` in the static index.html, so neither `#quest-log-title` nor
+// `#quest-log-empty` may be added there; `QuestLogView` constructs them, as it already does for
+// `#quest-log-detail`. This file's fixture (a byte-copy of the shell) therefore needs no change.
+//
+// RED REASON AT HEAD: the view builds no title and no empty element, so every `getElementById` below
+// is null and every assertion on it fails.
+//
+// The catalog keys are added by this slice and are not in the MessageId union at the red phase, so
+// the two literals are cast with `as never`; the runtime resolver is the oracle either way.
+// ---------------------------------------------------------------------------
+
+const qf4TitleText = (): string => qf4T('chrome.journal.title' as never);
+const qf4EmptyText = (): string => qf4T('journal.empty' as never);
+const qf4Title = (): HTMLElement | null => document.getElementById('quest-log-title');
+const qf4Empty = (): HTMLElement | null => document.getElementById('quest-log-empty');
+/** How many elements carry this id (getElementById returns only the first, so a duplicate hides). */
+const qf4IdCount = (id: string): number => document.querySelectorAll(`[id="${id}"]`).length;
+
+describe('QuestLogView qf-4: the Journal title (QF4.1)', () => {
+  it('QF4-1-TITLE-FIRST-CHILD: after a render of any size the overlay holds exactly one #quest-log-title, its first element child, outside the listbox, class exactly mr-frame-title, text exactly the resolver`s chrome.journal.title', () => {
+    // WRONG IMPL KILLED: no title at all; a title appended AFTER the list (list.after) or at the end
+    // of the overlay (it would read below the rows); a title built INSIDE the listbox (it would be a
+    // non-option child painted as a row); a literal `Journal` in the view instead of the catalog
+    // (see the i18n file); an extra class (mr-frame-title plus something) or a different class; a
+    // title that nests an element instead of text; a second title per render.
+    const root = mountQuestLogOverlay();
+    const view = new QuestLogView();
+
+    const expectTitle = (when: string): void => {
+      expect(qf4IdCount('quest-log-title'), `${when}: exactly one title`).toBe(1);
+      const title = qf4Title();
+      expect(title, `${when}: the title exists`).not.toBeNull();
+      expect(root.firstElementChild, `${when}: the overlay's first element child`).toBe(title);
+      expect(ctl8fListEl().contains(title), `${when}: outside the listbox`).toBe(false);
+      expect(title?.className, `${when}: the class, exactly`).toBe('mr-frame-title');
+      expect([...(title?.classList ?? [])], `${when}: one class only`).toEqual(['mr-frame-title']);
+      expect(title?.textContent, `${when}: the resolver's text`).toBe(qf4TitleText());
+      expect((title?.textContent ?? '').length > 0, `${when}: not blank`).toBe(true);
+      expect(title?.children.length, `${when}: text only, no child elements`).toBe(0);
+    };
+
+    view.render(questVm(2));
+    expectTitle('with quests');
+
+    view.render({ active: [] });
+    expectTitle('empty');
+
+    view.render(questVm(3));
+    expectTitle('quests again');
+  });
+
+  it('QF4-1-TITLE-INERT: the title is plain visible text — no hidden, aria-hidden, tabindex or inline style', () => {
+    // WRONG IMPL KILLED: a title hidden from sight or from a screen reader (display none, hidden,
+    // aria-hidden); a title that is a tab stop or a focus anchor (the Journal's initial focus is the
+    // list, overlayRegistry.ts); an inline style standing in for the .mr-frame-title class.
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+    view.render(questVm(2));
+
+    const title = qf4Title() as HTMLElement;
+    expect(title, 'precondition: the title exists').not.toBeNull();
+    expect(title.hasAttribute('hidden')).toBe(false);
+    expect(title.hasAttribute('aria-hidden')).toBe(false);
+    expect(title.hasAttribute('tabindex')).toBe(false);
+    expect(title.hasAttribute('style')).toBe(false);
+    expect(title.style.display).toBe('');
+    expect(title.hidden).toBe(false);
+  });
+
+  it('QF4-1-TITLE-ONE-AFTER-REOPEN: render, hide and render again (and a null render) never leave two titles, and the title stays the first child', () => {
+    // WRONG IMPL KILLED: a title built in render() on every call instead of once in the constructor
+    // (one more title per batch, several a second); a title removed by hide() or render(null) and
+    // not rebuilt; a reopen that moves the title behind the list.
+    const root = mountQuestLogOverlay();
+    const view = new QuestLogView();
+
+    view.render(questVm(2));
+    view.render(questVm(2));
+    view.render(questVm(2));
+    expect(qf4IdCount('quest-log-title'), 'three renders').toBe(1);
+
+    view.hide();
+    view.render(questVm(1));
+    expect(qf4IdCount('quest-log-title'), 'hide then render').toBe(1);
+    expect(root.firstElementChild).toBe(qf4Title());
+
+    view.render(null);
+    view.render({ active: [] });
+    expect(qf4IdCount('quest-log-title'), 'render(null) then render').toBe(1);
+    expect(root.firstElementChild).toBe(qf4Title());
+    expect(qf4Title()?.textContent).toBe(qf4TitleText());
+  });
+
+  it('QF4-1-TITLE-NOT-A-ROW: the title never becomes a list row — the listbox holds exactly one <li> per active quest, none of them the title', () => {
+    // WRONG IMPL KILLED: a title put in the list as an <li> or as any other child (the row count
+    // would be one too many, the cursor fallback rows[0] would land on it, and the "zero <li>s when
+    // empty" pin would break).
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+
+    for (const count of [0, 1, 3]) {
+      view.render(questVm(count));
+      expect(ctl8fListEl().children.length, `${count} quests: the list's children`).toBe(count);
+      expect(ctl8fRows(), `${count} quests: its <li> rows`).toHaveLength(count);
+      for (const row of ctl8fRows()) {
+        expect(row.textContent).not.toBe(qf4TitleText());
+        expect(row.id).not.toBe('quest-log-title');
+      }
+    }
+  });
+
+  it('QF4-1-TITLE-FOCUS-ANCHOR-UNCHANGED: with the title in place the deferred initial focus still lands on #quest-log-list, never on the title', async () => {
+    // WRONG IMPL KILLED: a title that steals the initial focus (a tabindex on it, or focus() called
+    // on it) — the Journal's initial focus anchor is the listbox (overlayRegistry.ts
+    // initialFocusSelector); and a title inserted so the anchor query resolves elsewhere.
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+    view.render(questVm(2));
+    expect(qf4Title(), 'precondition: the title exists').not.toBeNull();
+
+    await flushMacrotask();
+
+    expect(document.activeElement).toBe(ctl8fListEl());
+    expect(document.activeElement).not.toBe(qf4Title());
+  });
+});
+
+describe('QuestLogView qf-4: the Journal empty state (QF4.2)', () => {
+  it('QF4-2-EMPTY-SHOWN: an empty active list shows #quest-log-empty after the list and outside it, with the resolver`s journal.empty text, no <li>, and the listbox described by it', () => {
+    // WRONG IMPL KILLED: no empty state (a blank frame); the message placed INSIDE the listbox as an
+    // <li role=option> (the cursor paint would land on it and "zero <li>s when empty" would break);
+    // a literal English string instead of the catalog; an element that exists but stays hidden; a
+    // listbox with no description, so a screen reader focused on the option-less list hears nothing;
+    // a describedby naming something else.
+    const root = mountQuestLogOverlay();
+    const view = new QuestLogView();
+
+    view.render({ active: [] });
+
+    expect(qf4IdCount('quest-log-empty'), 'exactly one empty element').toBe(1);
+    const empty = qf4Empty() as HTMLElement;
+    expect(empty, 'the empty element exists').not.toBeNull();
+    expect(root.contains(empty), 'inside the overlay').toBe(true);
+    expect(ctl8fListEl().contains(empty), 'never inside the listbox').toBe(false);
+    expect(empty.tagName, 'never a list row').not.toBe('LI');
+    expect(empty.getAttribute('role'), 'never an option').not.toBe('option');
+    const siblings = [...(empty.parentElement?.children ?? [])];
+    expect(
+      siblings.indexOf(ctl8fListEl()) >= 0 &&
+        siblings.indexOf(empty) > siblings.indexOf(ctl8fListEl()),
+      'after the list',
+    ).toBe(true);
+    expect(empty.style.display, 'shown').toBe('');
+    expect(empty.textContent, 'the resolver`s text').toBe(qf4EmptyText());
+    expect((empty.textContent ?? '').length > 0, 'not blank').toBe(true);
+    expect(ctl8fRows(), 'no row for the message').toHaveLength(0);
+    expect(ctl8fListEl().children.length, 'nothing at all inside the list').toBe(0);
+    expect(ctl8fListEl().getAttribute('aria-describedby'), 'the listbox is described by it').toBe(
+      'quest-log-empty',
+    );
+  });
+
+  it('QF4-2-EMPTY-HIDDEN-WITH-QUESTS: with quests the empty element is hidden (display none), its text cleared, and the listbox has no description; going back to empty shows it again', () => {
+    // WRONG IMPL KILLED: an empty state that stays up beside real quests; a hidden element still
+    // carrying its text (a find-in-page and some readers still reach it); a describedby left
+    // pointing at a hidden element; an empty state that never comes back after a quest completes;
+    // a second empty element built per render.
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+
+    view.render({ active: [] });
+    const empty = qf4Empty() as HTMLElement;
+    expect(empty, 'precondition: shown while empty').not.toBeNull();
+    expect(empty.style.display).toBe('');
+
+    view.render(questVm(2));
+    expect(qf4Empty(), 'the same element, not a rebuilt one').toBe(empty);
+    expect(qf4IdCount('quest-log-empty')).toBe(1);
+    expect(empty.style.display, 'hidden beside quests').toBe('none');
+    expect(empty.textContent, 'its text is cleared while hidden').toBe('');
+    expect(ctl8fListEl().hasAttribute('aria-describedby'), 'no description (no detail open)').toBe(
+      false,
+    );
+    expect(ctl8fRows()).toHaveLength(2);
+
+    view.render({ active: [] });
+    expect(qf4Empty()).toBe(empty);
+    expect(qf4IdCount('quest-log-empty')).toBe(1);
+    expect(empty.style.display, 'shown again').toBe('');
+    expect(empty.textContent).toBe(qf4EmptyText());
+    expect(ctl8fListEl().getAttribute('aria-describedby')).toBe('quest-log-empty');
+  });
+
+  it('QF4-2-EMPTY-SET-NOT-TOGGLED: the empty state is SET from the data on every render — empty then empty stays shown, quests then quests stays hidden, and a hide() then an empty render shows it', () => {
+    // WRONG IMPL KILLED: a flip (display = display === none ? "" : none) instead of an assignment —
+    // the second empty render would hide it and the second quest render would show it; an empty
+    // state written only on the null to non-null edge, so a batch that empties the list while the
+    // overlay stays open never shows it; a state that survives a close and reopen.
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+
+    view.render({ active: [] });
+    view.render({ active: [] });
+    expect(qf4Empty()?.style.display, 'empty, empty: still shown').toBe('');
+    expect(qf4Empty()?.textContent).toBe(qf4EmptyText());
+
+    view.render(questVm(2));
+    view.render(questVm(2));
+    expect(qf4Empty()?.style.display, 'quests, quests: still hidden').toBe('none');
+    expect(qf4Empty()?.textContent).toBe('');
+
+    view.hide();
+    view.render({ active: [] });
+    expect(qf4Empty()?.style.display, 'hide, then empty: shown').toBe('');
+    expect(qf4Empty()?.textContent).toBe(qf4EmptyText());
+    expect(ctl8fListEl().getAttribute('aria-describedby')).toBe('quest-log-empty');
+  });
+
+  it('QF4-2-EMPTY-DESCRIBEDBY-SURVIVES-PAINT: a paint after an empty render (even one naming a detail that is not listed) keeps the listbox described by the empty element; with a detail open it names the detail, and closing the detail does not leave the empty one behind', () => {
+    // WRONG IMPL KILLED: a describedby written once in render() and then removed by applyPaint's
+    // existing `removeAttribute` branch on the very next paint (the journal screen paints right after
+    // every render); a description that names the empty element while a quest detail is open
+    // (the detail wins when shown); a stale quest-log-empty left on the list once quests exist.
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+
+    view.render({ active: [] });
+    view.paint({ questId: null, detail: null });
+    expect(ctl8fListEl().getAttribute('aria-describedby'), 'paint after empty').toBe(
+      'quest-log-empty',
+    );
+    view.paint({ questId: null, detail: 'ghost' });
+    expect(ctl8fListEl().getAttribute('aria-describedby'), 'a detail that is not listed').toBe(
+      'quest-log-empty',
+    );
+
+    view.render(questVm(3));
+    view.paint({ questId: 'quest_1', detail: 'quest_1' });
+    expect(ctl8fListEl().getAttribute('aria-describedby'), 'a detail is open').toBe(
+      'quest-log-detail',
+    );
+    view.paint({ questId: 'quest_1', detail: null });
+    expect(
+      ctl8fListEl().hasAttribute('aria-describedby'),
+      'quests listed, no detail: no description',
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// qf-4 (QF4.3): the list-style sweep. Every static <ul> in index.html carries `mr-nav-list`, and
+// styles.css gives that class `list-style: none`, so no overlay list paints a bullet or a stray
+// marker (Rankings showed an inverted one).
+//
+// ORACLE. The REAL client/index.html and the REAL client/src/styles.css are loaded into happy-dom
+// (the overlayA11yWiring.test.ts precedent: the <link rel=stylesheet> is stripped from the text, the
+// css text is installed as a <style>). happy-dom 20.x has NO user-agent default list style (a bare
+// <ul> computes listStyle ''), and does NOT expand the `list-style` shorthand: `.x{list-style:none}`
+// computes listStyle 'none' and listStyleType ''. So the oracle is `listStyle === 'none'` (equality),
+// guarded by sanity probes that show the sheet is parsed and applied and that the class is what does it.
+//
+// HAZARD (measured in overlayA11yWiring.test.ts): happy-dom caches computed style per element, so
+// every element below is read ONCE, and the with-class / class-removed probes are two separate
+// fresh elements.
+//
+// RED REASON AT HEAD: no `<ul>` carries the class and styles.css has no rule for it, so each tooth
+// below fails (the static ULs compute '', the probe `<ul class="mr-nav-list">` computes '').
+// ---------------------------------------------------------------------------
+
+const QF4_UI_DIR = path.dirname(fileURLToPath(import.meta.url));
+const QF4_INDEX_HTML_PATH = path.join(QF4_UI_DIR, '..', '..', 'index.html');
+const QF4_STYLES_CSS_PATH = path.join(QF4_UI_DIR, '..', 'styles.css');
+const QF4_NAV_LIST = 'mr-nav-list';
+
+/** The nine static <ul>s of client/index.html (an exact roster: the census below pins it). */
+const QF4_STATIC_UL_IDS: readonly string[] = [
+  'quest-log-list',
+  'heal-list',
+  'shop-for-sale',
+  'shop-inventory',
+  'pvp-player-list',
+  'leaderboard-list',
+  'help-controls',
+  'help-goals',
+  'menu-rows',
+];
+
+/** Install the REAL index.html body (no <script>, no <link>) into the test document. */
+function qf4AdoptRealIndexHtml(): void {
+  const html = readFileSync(QF4_INDEX_HTML_PATH, 'utf8');
+  const parsed = new DOMParser().parseFromString(
+    html.split('<link rel="stylesheet" href="/src/styles.css" />').join(''),
+    'text/html',
+  );
+  for (const script of Array.from(parsed.querySelectorAll('script'))) script.remove();
+  const adopted = Array.from(parsed.body.childNodes).map((n) => document.adoptNode(n));
+  document.body.replaceChildren(...adopted);
+}
+
+interface Qf4CssRule {
+  readonly selectors: readonly string[];
+  readonly declarations: ReadonlyArray<{ readonly prop: string; readonly value: string }>;
+}
+
+/** The TOP-LEVEL style rules of a stylesheet, comments stripped (a commented-out rule is not a
+ *  rule). At-rule blocks (@media, @supports) are skipped whole: a rule that lives only inside one
+ *  does not apply unconditionally. */
+function qf4TopLevelRules(css: string): Qf4CssRule[] {
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules: Qf4CssRule[] = [];
+  let depth = 0;
+  let head = '';
+  let body = '';
+  for (const ch of stripped) {
+    if (depth === 0) {
+      if (ch === '{') {
+        depth = 1;
+        body = '';
+      } else if (ch === ';') {
+        head = ''; // an at-rule statement such as @import
+      } else {
+        head += ch;
+      }
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+      body += ch;
+    } else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        const selectorText = head.trim();
+        if (!selectorText.startsWith('@')) {
+          rules.push({
+            selectors: selectorText.split(',').map((s) => s.trim()),
+            declarations: body
+              .split(';')
+              .map((d) => {
+                const colon = d.indexOf(':');
+                if (colon === -1) return null;
+                return {
+                  prop: d.slice(0, colon).trim().toLowerCase(),
+                  value: d
+                    .slice(colon + 1)
+                    .replace(/!important/i, '')
+                    .trim()
+                    .toLowerCase(),
+                };
+              })
+              .filter((d): d is { prop: string; value: string } => d !== null),
+          });
+        }
+        head = '';
+      } else {
+        body += ch;
+      }
+    } else {
+      body += ch;
+    }
+  }
+  return rules;
+}
+
+describe('QuestLogView qf-4: the list-style sweep (QF4.3)', () => {
+  const stylesCss = readFileSync(QF4_STYLES_CSS_PATH, 'utf8');
+  let sheet: HTMLStyleElement | null = null;
+
+  // The file-level hooks empty the body before every test; this describe adopts the real markup and
+  // installs the real sheet itself, and removes the sheet again (the body is the file hooks' to clear).
+  beforeEach(() => {
+    qf4AdoptRealIndexHtml();
+    sheet = document.createElement('style');
+    sheet.textContent = stylesCss;
+    document.head.appendChild(sheet);
+  });
+  afterEach(() => {
+    sheet?.remove();
+    sheet = null;
+  });
+
+  it('QF4-3-STATIC-ULS-NO-MARKER: each of the nine static <ul>s carries mr-nav-list, has no inline style, and computes list-style none', () => {
+    // WRONG IMPL KILLED: a sweep that misses one list (the class absent on any of the nine); the
+    // marker removed by an inline style instead of the class (the inline attribute is banned, so the
+    // class is what is being tested); a class on the element but no rule behind it (computes '').
+    for (const id of QF4_STATIC_UL_IDS) {
+      const ul = document.getElementById(id);
+      expect(ul, `#${id} exists in the real index.html`).not.toBeNull();
+      expect(ul?.tagName, `#${id} is a <ul>`).toBe('UL');
+      expect(ul?.classList.contains(QF4_NAV_LIST), `#${id} carries ${QF4_NAV_LIST}`).toBe(true);
+      expect(ul?.hasAttribute('style'), `#${id} has no inline style`).toBe(false);
+      expect(
+        ul === null ? '' : getComputedStyle(ul).listStyle,
+        `#${id} computes list-style none`,
+      ).toBe('none');
+    }
+  });
+
+  it('QF4-3-CENSUS-EVERY-UL: every <ul> in the static index.html carries mr-nav-list (and there are exactly nine)', () => {
+    // WRONG IMPL KILLED: a hand-picked subset of the lists; a tenth <ul> added later without the
+    // class; the census passing vacuously on an empty document (the count and the id roster are
+    // pinned).
+    const uls = [...document.querySelectorAll('ul')];
+    expect(uls, 'ANTI-VACUITY: the nine static lists are in the document').toHaveLength(9);
+    expect(uls.map((u) => u.id).sort()).toEqual([...QF4_STATIC_UL_IDS].sort());
+    const without = uls
+      .filter((u) => !u.classList.contains(QF4_NAV_LIST))
+      .map((u) => u.id || '(no id)');
+    expect(without, `<ul>s without ${QF4_NAV_LIST}`).toEqual([]);
+  });
+
+  it('QF4-3-SANITY-CLASS-DOES-THE-WORK: a fresh <ul class="mr-nav-list"> computes list-style none and the same element with the class removed does not, so the sheet is parsed and applied and the class is the cause', () => {
+    // WRONG IMPL KILLED: a harness whose <style> install is a no-op (every "computes none" tooth
+    // would then be read as "nothing parsed" and every "not none" would pass free); a rule that
+    // matches every <ul> or sets the list style some other way, making the class decorative. Two
+    // separate fresh elements: happy-dom caches computed style per element.
+    const withClass = document.createElement('ul');
+    withClass.className = QF4_NAV_LIST;
+    document.body.appendChild(withClass);
+    expect(getComputedStyle(withClass).listStyle, 'with the class').toBe('none');
+
+    const withoutClass = document.createElement('ul');
+    withoutClass.className = QF4_NAV_LIST;
+    withoutClass.classList.remove(QF4_NAV_LIST);
+    document.body.appendChild(withoutClass);
+    expect(getComputedStyle(withoutClass).listStyle, 'with the class removed').not.toBe('none');
+  });
+
+  it('QF4-3-SHEET-RULE: styles.css has a top-level rule whose selector list includes .mr-nav-list and whose body declares list-style: none, with no #id selector in it (comments do not count)', () => {
+    // WRONG IMPL KILLED: the rule written only inside a comment; an #id selector list
+    // (#quest-log-list, ...) — styles.css bans ids, and that form would not carry to a new list;
+    // list-style: disc/none on the wrong selector; a parser that finds no rules at all (the
+    // .sr-only rule is read first to prove the scan sees real rules).
+    const rules = qf4TopLevelRules(stylesCss);
+    const srOnly = rules.find((r) => r.selectors.includes('.sr-only'));
+    expect(srOnly, 'ANTI-VACUITY: the scan sees the existing .sr-only rule').toBeDefined();
+    expect(srOnly?.declarations.some((d) => d.prop === 'position' && d.value === 'absolute')).toBe(
+      true,
+    );
+
+    const navList = rules.filter((r) => r.selectors.includes(`.${QF4_NAV_LIST}`));
+    expect(navList.length > 0, 'a rule whose selector list includes .mr-nav-list').toBe(true);
+    expect(
+      navList.some((r) =>
+        r.declarations.some((d) => d.prop === 'list-style' && d.value === 'none'),
+      ),
+      'and it declares list-style: none',
+    ).toBe(true);
+    for (const rule of navList) {
+      expect(
+        rule.selectors.every((s) => !s.includes('#')),
+        `no #id selector in the ${QF4_NAV_LIST} rule: ${rule.selectors.join(', ')}`,
+      ).toBe(true);
+    }
+  });
+
+  it('QF4-3-RUNTIME-KEEPS-CLASS: over the real markup, constructing the view and rendering, painting and re-rendering leaves #quest-log-list carrying mr-nav-list and computing list-style none', () => {
+    // WRONG IMPL KILLED: a view that overwrites the list's className (the rows' `mr-nav-item` write
+    // is on the <li>s, but a className assignment on the list would drop the class); a view that
+    // sets an inline list style or replaces the list element; the class lost after the first paint.
+    const view = new QuestLogView();
+    view.render(questVm(2));
+    view.paint({ questId: 'quest_1', detail: 'quest_1' });
+    view.render(questVm(2));
+
+    const list = document.getElementById('quest-log-list') as HTMLElement;
+    expect(list, 'the real #quest-log-list is still the view`s list').not.toBeNull();
+    expect(list.classList.contains(QF4_NAV_LIST), 'the class survives the view').toBe(true);
+    expect(getComputedStyle(list).listStyle, 'and still computes none').toBe('none');
   });
 });
