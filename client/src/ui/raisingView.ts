@@ -3,15 +3,17 @@
 // Renders a RaisingViewModel produced by raisingModel.ts into a DOM overlay.
 // No game logic, no SDK imports, no store writes, no joins/filters/classification
 // (those live in the model) — one-way flow only. The loop calls refresh() on
-// batch-applied; the user triggers reducer intents via callbacks passed at
-// construction (never called directly by this module). Coverage-excluded shell.
+// batch-applied; the Bag's actions go through its screen (screens/bagScreen.ts), never a callback
+// here. Coverage-excluded shell.
+//
+// qf-9: inventory only. The per-monster Care/Train cards are gone (R-ctl-11b-RAISINGCARDS): care and
+// feeding live on the Monsters sheet, whose Summary shows the full stats.
 //
 // Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a catalog key (`raising.*`, and `bag.*` plus a
 // few shared ones for the Bag panel) from ui/i18n/catalog.en.ts;
-// the English bytes are unchanged (the catalog pins them). Model data (nickname, item
-// description, the `showFeedback` message, tiers, stats, names, counts) flow through raw or as
-// params, never as catalog text. Every `t(`/`tf(` first argument is a string LITERAL.
+// the English bytes are unchanged (the catalog pins them). Model data (item names, descriptions
+// and counts) flow through raw or as params, never as catalog text. Every `t(`/`tf(` first argument is a string LITERAL.
 //
 // Overlay a11y wiring. This view is a CONSTRUCTED shell:
 // its root is `document.createElement`'d here and appended into the shared `#app` MOUNT, so unlike
@@ -55,8 +57,7 @@ import type { BagPaint } from './screens/bagScreen';
 // ctl-8f: this root is the Bag frame. `paint(BagPaint)` (screens/bagScreen.ts) draws the pocket
 // tabs, the active pocket's items, the item sheet, the description, the monster picker and the
 // status line over the nav kit. Until the adapter's first paint (the first batch or button after an
-// open) the legacy inventory grid shows instead; `hide()` drops the kept paint. The monster cards
-// above stay as they were.
+// open) the legacy inventory grid shows instead; `hide()` drops the kept paint.
 const POCKET_LABELS: Readonly<Record<Pocket, () => string>> = {
   bait: () => t('bag.pocket.bait'),
   food: () => t('bag.pocket.food'),
@@ -87,72 +88,17 @@ function setShown(el: HTMLElement, shown: boolean): void {
   el.style.display = shown ? '' : 'none';
 }
 
-export interface RaisingViewCallbacks {
-  /**
-   * Called when the user feeds a training item to a monster.
-   *
-   * May return a promise: the per-monster `#pendingTrain` lock is held until it
-   * settles — same contract and same reason as `onCare` below (a `=> void` type would let
-   * a future implementation silently reduce the lock to a one-microtask no-op, and the
-   * server `train` reducer has no idempotency guard: a double-fire spends two food items).
-   */
-  readonly onTrain: (monsterId: bigint, foodItemId: number) => void | Promise<void>;
-  /**
-   * Called when the user clicks the Care button on a monster.
-   *
-   * May return a promise: the `#pending` re-entrancy lock is held until that
-   * promise settles, so the return type must express it. Typing this `=> void`
-   * would let a future implementation type-check cleanly while silently
-   * reducing the lock to a no-op (a double-click would fire two care calls).
-   */
-  readonly onCare: (monsterId: bigint) => void | Promise<void>;
-}
-
 export class RaisingView {
   readonly #root: HTMLDivElement;
   /** The "Raising & Inventory" heading; its text is resolved in show(), not here. */
   readonly #titleEl: HTMLHeadingElement;
-  readonly #feedbackEl: HTMLDivElement;
-  /** The two section headings; text resolved in show() (see show()). */
-  readonly #monstersLabelEl: HTMLHeadingElement;
+  /** The section heading; text resolved in show() (see show()). */
   readonly #inventoryLabelEl: HTMLHeadingElement;
-  readonly #monsterEl: HTMLDivElement;
   readonly #inventoryEl: HTMLDivElement;
-  readonly #callbacks: RaisingViewCallbacks;
   #visible = false;
-  // In-flight lock: prevents a double-click from firing two care calls (whose
-  // contradictory outcomes would flash "Cared!" then "care cooldown not yet
-  // elapsed"). shopView/renameView precedent.
-  //
-  // PER MONSTER, not view-wide: a single shared boolean made a care call in
-  // flight for monster A silently swallow monster B's click (B's own button was
-  // never disabled, so it looked clickable), and had no way to express "A is
-  // still pending" to a mid-flight refresh() that rebuilds every button.
-  //
-  // the VALUE is a generation token, same shape as
-  // #pendingTrain below — `.finally()` releases only if the stored object is still
-  // its own. A membership-keyed release (`Set.delete`) let a STALE promise win: click
-  // → hide() clears the lock → reopen → click again → the FIRST call's `.finally()`
-  // settles, deletes the SECOND click's key, and re-enables the live button while
-  // that second call is still in flight.
-  readonly #pending = new Map<bigint, object>();
-  // The Care button currently on screen for each monster. #renderMonsters
-  // rebuilds every node via replaceChildren(), so the button a click closure
-  // captured can be detached by the time its call settles — re-enabling that
-  // stale node would leave the LIVE one disabled forever.
-  readonly #careButtons = new Map<bigint, HTMLButtonElement>();
-  // The Train in-flight lock — a SIBLING of #pending, not a shared map (D6): a Care
-  // rejection (cooldown) must not block Train and vice versa (different reducers, different
-  // failure modes). Keyed per monster like Care; ALL of a monster's Train buttons (one per
-  // food) disable together, since two different foods in flight is the same double-spend.
-  // Same generation-token release shape as #pending above — see its comment for why.
-  readonly #pendingTrain = new Map<bigint, object>();
-  // The Train buttons currently on screen per monster (same detached-node reason as
-  // #careButtons: a refresh() mid-flight rebuilds every node).
-  readonly #trainButtons = new Map<bigint, HTMLButtonElement[]>();
   // What each list container shows, as a render key (R-ci-fix-20261002T0901Z-RAISINGVIEWREBUILD):
-  // a store batch arrives several times a second, and rebuilding unchanged Care/Train buttons on
-  // each one detached them under a click and dropped keyboard focus.
+  // a store batch arrives several times a second, and the grid must not be rebuilt for an unchanged
+  // view-model on each one.
   readonly #rendered = new Map<HTMLElement, string>();
   // ctl-8f: the Bag panel's parts and the kept paint (null until the adapter paints this open).
   readonly #bagTabs: HTMLDivElement;
@@ -165,9 +111,9 @@ export class RaisingView {
   readonly #bagStatus: HTMLDivElement;
   #bagPaint: BagPaint | null = null;
 
-  constructor(parent: HTMLElement, callbacks: RaisingViewCallbacks) {
-    this.#callbacks = callbacks;
-
+  /** `_retired` is accepted and never read: overlayA11yWiring.test.ts (outside qf-9's touches)
+   *  still passes the deleted cards' `{ onTrain, onCare }` (R-qf-9-RAISINGVESTIGES). */
+  constructor(parent: HTMLElement, _retired?: unknown) {
     this.#root = document.createElement('div');
     // ctl-7b: a class-styled frame. `.mr-shell` places it inside `#game-screen` (the `#app` mount
     // main.ts passes is inside it) and `.mr-frame` paints the frame tokens; inline is only the
@@ -186,26 +132,6 @@ export class RaisingView {
     title.style.cssText = 'margin:0 0 16px;color:#fff;';
     this.#titleEl = title;
     this.#root.appendChild(title);
-
-    // The feedback line lives INSIDE the overlay root. main.ts's
-    // statusEl sits outside it, so this `.mr-shell` frame (z-index 100) paints over every care
-    // message statusEl raises — the player would see nothing.
-    this.#feedbackEl = document.createElement('div');
-    this.#feedbackEl.id = 'raising-feedback';
-    this.#feedbackEl.style.cssText =
-      'min-height:16px;margin:0 0 12px;font-size:12px;color:#ffd479;';
-    this.#root.appendChild(this.#feedbackEl);
-
-    // Its text (`raising.monsters.heading`) is resolved in show(), not here.
-    const monsterLabel = document.createElement('h3');
-    monsterLabel.style.cssText = 'margin:0 0 8px;color:#aaa;';
-    this.#monstersLabelEl = monsterLabel;
-    this.#root.appendChild(monsterLabel);
-
-    this.#monsterEl = document.createElement('div');
-    this.#monsterEl.style.cssText =
-      'display:grid;grid-template-columns:repeat(2,1fr);gap:8px;width:100%;max-width:700px;margin-bottom:16px;';
-    this.#root.appendChild(this.#monsterEl);
 
     // Its text (`raising.inventory.heading`) is resolved in show(), not here.
     const inventoryLabel = document.createElement('h3');
@@ -261,7 +187,6 @@ export class RaisingView {
     // HERE, on EVERY show() — unconditionally, after the `wasVisible` read, before the display
     // write. See evolutionView.show() for the boot-order / locale-switch reasoning.
     this.#titleEl.textContent = t('raising.title');
-    this.#monstersLabelEl.textContent = t('raising.monsters.heading');
     this.#inventoryLabelEl.textContent = t('raising.inventory.heading');
     this.#root.style.display = 'flex';
     if (!wasVisible) openOverlayA11y('raisingView', this.#root);
@@ -270,16 +195,6 @@ export class RaisingView {
   hide(): void {
     this.#visible = false;
     this.#root.style.display = 'none';
-    // A stale "Cared!" must not greet the next open, and the in-flight lock is
-    // released here because the SDK never settles a reducer promise after a link
-    // drop — .finally() may never run (shopView/renameView precedent). Clearing also
-    // makes every in-flight call STALE (its token is gone), so its late settle is a
-    // no-op; the reopen's refresh() (main.ts pairs show() with it) re-derives the buttons.
-    this.#feedbackEl.textContent = '';
-    this.#pending.clear();
-    this.#pendingTrain.clear(); // Same never-settles-after-drop reason as #pending.
-    // The cleared locks leave disabled buttons behind, so the reopen's refresh must rebuild.
-    this.#rendered.clear();
     // The next open shows the legacy grid until its adapter paints.
     this.#bagPaint = null;
     this.#applyBag();
@@ -377,21 +292,8 @@ export class RaisingView {
     return false;
   }
 
-  /** Display a care outcome. textContent ONLY — the message can carry a
-   * server-supplied error reason, so innerHTML would be an injection vector.
-   * No-op while hidden: KeyB/KeyE force-hide this view (hide() clears the line), so a
-   * care that settles afterwards would otherwise leave a stale message for the NEXT
-   * open, with no click behind it. */
-  showFeedback(message: string): void {
-    if (!this.#visible) return;
-    this.#feedbackEl.textContent = message;
-  }
-
+  /** Renders the inventory grid; `vm.monsters` is not read (qf-9: the cards are gone). */
   refresh(vm: RaisingViewModel): void {
-    // The monster cards read the items too (one Train button per trainable food).
-    this.#renderIfChanged(this.#monsterEl, [vm.monsters, vm.items], () =>
-      this.#renderMonsters(vm.monsters, vm.items),
-    );
     this.#renderIfChanged(this.#inventoryEl, [vm.items], () => this.#renderInventory(vm.items));
   }
 
@@ -407,153 +309,6 @@ export class RaisingView {
     this.#rendered.delete(el);
     render();
     this.#rendered.set(el, key);
-  }
-
-  /** A lock-owning release that finds focus stranded on `<body>` re-asserts the
-   *  dialog; the idempotent re-open re-installs the trap and defers focus to the registry anchor.
-   *  `#visible` is load-bearing: re-opening a hidden view would CREATE an open record. */
-  #reanchorStrandedFocus(): void {
-    if (this.#visible && document.activeElement === document.body) {
-      openOverlayA11y('raisingView', this.#root);
-    }
-  }
-
-  #renderMonsters(
-    monsters: RaisingViewModel['monsters'],
-    items: readonly InventoryItemViewModel[],
-  ): void {
-    this.#monsterEl.replaceChildren();
-    this.#careButtons.clear();
-    this.#trainButtons.clear();
-    if (monsters.length === 0) {
-      const empty = document.createElement('div');
-      empty.textContent = t('raising.monsters.empty');
-      // Dimmed by colour, never opacity: #aaa keeps 7:1 (opacity 0.4 fell below AA).
-      empty.style.color = '#aaa';
-      this.#monsterEl.appendChild(empty);
-      return;
-    }
-    for (const mon of monsters) {
-      const el = document.createElement('div');
-      el.style.cssText = 'border:1px solid #444;border-radius:4px;padding:8px;background:#1a1a2e;';
-
-      const nameSpan = document.createElement('div');
-      nameSpan.textContent = mon.nickname;
-      nameSpan.style.fontWeight = 'bold';
-      el.appendChild(nameSpan);
-
-      const info = document.createElement('div');
-      info.style.cssText = 'font-size:12px;margin-top:4px;color:#ccc;';
-      info.textContent = tf('raising.card.status', {
-        level: mon.level,
-        trust: mon.trustTier,
-        current: mon.currentHp,
-        max: mon.statHp,
-      });
-      el.appendChild(info);
-
-      const stats = document.createElement('div');
-      stats.style.cssText = 'font-size:11px;margin-top:4px;color:#9ab;';
-      stats.textContent = tf('raising.card.stats', {
-        attack: mon.statAttack,
-        defense: mon.statDefense,
-        speed: mon.statSpeed,
-        spAttack: mon.statSpAttack,
-        spDefense: mon.statSpDefense,
-      });
-      el.appendChild(stats);
-
-      const actions = document.createElement('div');
-      actions.style.cssText = 'margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;';
-
-      const monsterId = mon.monsterId;
-      const careBtn = document.createElement('button');
-      careBtn.textContent = t('raising.card.care');
-      careBtn.style.cssText = 'font-size:11px;cursor:pointer;';
-      // Re-derive the disabled state from the pending map rather than defaulting
-      // to enabled: refresh() can rebuild this button while THIS monster's care
-      // call is still in flight, and a brand-new enabled-looking button whose
-      // click the lock then swallows is worse than no button at all.
-      careBtn.disabled = this.#pending.has(monsterId);
-      this.#careButtons.set(monsterId, careBtn);
-      // Re-entrancy guard (shopView/renameView precedent): a genuinely
-      // pending care call holds the lock until it settles; .finally() resets on BOTH
-      // arms. Keyed by monsterId, so a sibling monster's Care button stays live.
-      // It carries the Train shape: the release is gated on
-      // this click's own token (see #pending), and the call runs INSIDE the executor —
-      // `Promise.resolve(onCare(id))` evaluates it as an argument, so a synchronous
-      // throw escaped the listener after the lock was taken and stranded it.
-      careBtn.addEventListener('click', () => {
-        if (this.#pending.has(monsterId)) return;
-        const lock = {};
-        this.#pending.set(monsterId, lock);
-        careBtn.disabled = true;
-        void new Promise<void>((resolve) => resolve(this.#callbacks.onCare(monsterId)))
-          .finally(() => {
-            if (this.#pending.get(monsterId) !== lock) return;
-            this.#pending.delete(monsterId);
-            // Re-enable whichever button is on screen NOW: a refresh() during the
-            // call replaces this closure's node, and re-enabling the detached one
-            // would strand the live button disabled forever.
-            const live = this.#careButtons.get(monsterId) ?? careBtn;
-            live.disabled = false;
-            this.#reanchorStrandedFocus();
-          })
-          .catch((err: unknown) => {
-            // Feedback is the caller's responsibility, so this is swallowed to
-            // avoid an unhandled rejection — but a rejecting onCare violates the
-            // contract (performCare never rejects), so log it rather than making
-            // the violation invisible in a coverage-excluded shell.
-            console.error('care click handler error', err);
-          });
-      });
-      actions.appendChild(careBtn);
-
-      // Train and Care carry the SAME lock shape — re-derived disabled
-      // state, the LIVE-button re-enable, the throw-safe `new Promise((resolve) =>
-      // resolve(...))` executor, and the generation-token release — but in SEPARATE
-      // maps (D6: a Care rejection must not block Train and vice versa). Train's one
-      // remaining difference is that it disables ALL of a monster's Train buttons
-      // (one per food) together, since two different foods in flight is the same
-      // double-spend.
-      const trainBtns: HTMLButtonElement[] = [];
-      for (const item of items) {
-        if (item.count > 0 && item.canTrain) {
-          const trainBtn = document.createElement('button');
-          trainBtn.textContent = tf('raising.card.train', { name: item.name, count: item.count });
-          trainBtn.style.cssText = 'font-size:11px;cursor:pointer;';
-          trainBtn.disabled = this.#pendingTrain.has(monsterId);
-          trainBtn.addEventListener('click', () => {
-            if (this.#pendingTrain.has(monsterId)) return;
-            const lock = {};
-            this.#pendingTrain.set(monsterId, lock);
-            for (const b of trainBtns) b.disabled = true;
-            void new Promise<void>((resolve) =>
-              resolve(this.#callbacks.onTrain(monsterId, item.itemId)),
-            )
-              .finally(() => {
-                if (this.#pendingTrain.get(monsterId) !== lock) return;
-                this.#pendingTrain.delete(monsterId);
-                for (const b of this.#trainButtons.get(monsterId) ?? trainBtns) {
-                  b.disabled = false;
-                }
-                this.#reanchorStrandedFocus();
-              })
-              .catch((err: unknown) => {
-                // Feedback is main.ts's job (sendGuarded reported it); swallowed only to
-                // avoid an unhandled rejection, logged so a contract breach stays visible.
-                console.error('train click handler error', err);
-              });
-          });
-          trainBtns.push(trainBtn);
-          actions.appendChild(trainBtn);
-        }
-      }
-      this.#trainButtons.set(monsterId, trainBtns);
-      el.appendChild(actions);
-
-      this.#monsterEl.appendChild(el);
-    }
   }
 
   #renderInventory(items: readonly InventoryItemViewModel[]): void {

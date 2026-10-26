@@ -631,40 +631,13 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // the monster becomes. Fits a narrow button.
   // evolutionView.ts:272
   'evolution.choice.evolve': (p) => `Faire évoluer en ${p.species}`,
-  // @desc: Heading of the raising overlay, which shows the party monsters' stats with Care/Train
-  // buttons and the player's inventory. One short line.
+  // @desc: Heading of the raising overlay, which shows the player's inventory (the Bag pockets;
+  // monster stats live on the Monsters Summary). One short line.
   // raisingView.ts:104 (resolved in show())
   'raising.title': 'Élevage et inventaire',
-  // @desc: Section heading above the monster cards in the raising overlay. One word.
-  // raisingView.ts:124 (resolved in show())
-  'raising.monsters.heading': 'Monstres',
   // @desc: Section heading above the item cards in the raising overlay. One word.
   // raisingView.ts:134 (resolved in show())
   'raising.inventory.heading': 'Inventaire',
-  // @desc: Empty-state line of the raising overlay's monster section when the player owns no
-  // monster. One short line.
-  // raisingView.ts:193
-  'raising.monsters.empty': 'Aucun monstre.',
-  // @desc: Status line under a monster's name on its raising card; {level} is the level ("Niv."
-  // abbreviates "Niveau"), {trust} the trust tier name (e.g. "Amical") and {current}/{max} its
-  // hit points. One line of small text.
-  // raisingView.ts:209
-  'raising.card.status': (p) => `Niv.${p.level} · Confiance ${p.trust} · PV ${p.current}/${p.max}`,
-  // @desc: Battle-stat line on a monster's raising card; the five numbers are {attack},
-  // {defense}, {speed}, {spAttack} (special attack) and {spDefense} (special defense), each
-  // prefixed by its French abbreviation. One line of small text, about 55 characters wide.
-  // raisingView.ts:214-216
-  'raising.card.stats': (p) =>
-    `ATQ ${p.attack} · DÉF ${p.defense} · VIT ${p.speed} · ATQ SPÉ ${p.spAttack} · DÉF SPÉ ${p.spDefense}`,
-  // @desc: Button label to care for (tend to) a monster, raising its trust. Short verb, fits a
-  // very narrow button.
-  // raisingView.ts:224
-  'raising.card.care': 'Choyer',
-  // @desc: Button label to feed a training item to a monster; {name} is the item name and
-  // {count} how many the player carries (the "x" is a plain letter x, not a multiplication
-  // sign). Fits a narrow button.
-  // raisingView.ts:269
-  'raising.card.train': (p) => `Entraîner : ${p.name} (x${p.count})`,
   // @desc: Empty-state line of the raising overlay's inventory section when the player carries
   // nothing. One short line.
   // raisingView.ts:308
@@ -710,6 +683,13 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // boxView.ts:205
   'box.card.stats': (p) =>
     `${p.species} · Niv.${p.level} · PV ${p.current}/${p.max} (${p.percent} %)`,
+  // @desc: The full-stats line of the Monsters Summary pane; {trust} is the trust tier name (e.g.
+  // "Amical") and the five numbers are {attack}, {defense}, {speed}, {spAttack} (special
+  // attack) and {spDefense} (special defense), each prefixed by its French abbreviation. One line
+  // of small text, about 70 characters wide.
+  // boxView.ts (the Summary part)
+  'box.summary.stats': (p) =>
+    `Confiance ${p.trust} · ATQ ${p.attack} · DÉF ${p.defense} · VIT ${p.speed} · ATQ SPÉ ${p.spAttack} · DÉF SPÉ ${p.spDefense}`,
   // @desc: Badge on a monster card when the monster can evolve but the player must choose a path
   // on the evolution screen first. One short line; carries a leading star and a spaced em dash.
   // boxView.ts:216

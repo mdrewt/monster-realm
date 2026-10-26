@@ -193,13 +193,7 @@ export type MessageId =
   | 'evolution.choice.evolve'
   // Raising.* : the raising / inventory screen (raisingView.ts).
   | 'raising.title'
-  | 'raising.monsters.heading'
   | 'raising.inventory.heading'
-  | 'raising.monsters.empty'
-  | 'raising.card.status'
-  | 'raising.card.stats'
-  | 'raising.card.care'
-  | 'raising.card.train'
   | 'raising.inventory.empty'
   | 'raising.inventory.item'
   | 'raising.feedback.cared'
@@ -211,6 +205,7 @@ export type MessageId =
   | 'box.party.emptySlot'
   | 'box.box.empty'
   | 'box.card.stats'
+  | 'box.summary.stats'
   | 'box.card.evolveBadge'
   | 'box.card.toBox'
   | 'box.card.toParty'
@@ -536,20 +531,6 @@ export interface MessageParams {
     readonly required: string;
   };
   readonly 'evolution.choice.evolve': { readonly species: string };
-  readonly 'raising.card.status': {
-    readonly level: number;
-    readonly trust: string;
-    readonly current: number;
-    readonly max: number;
-  };
-  readonly 'raising.card.stats': {
-    readonly attack: number;
-    readonly defense: number;
-    readonly speed: number;
-    readonly spAttack: number;
-    readonly spDefense: number;
-  };
-  readonly 'raising.card.train': { readonly name: string; readonly count: number };
   readonly 'raising.inventory.item': { readonly name: string; readonly count: number };
   readonly 'box.party.emptySlot': { readonly slot: number };
   readonly 'box.card.stats': {
@@ -558,6 +539,14 @@ export interface MessageParams {
     readonly current: number;
     readonly max: number;
     readonly percent: number;
+  };
+  readonly 'box.summary.stats': {
+    readonly trust: string;
+    readonly attack: number;
+    readonly defense: number;
+    readonly speed: number;
+    readonly spAttack: number;
+    readonly spDefense: number;
   };
   readonly 'box.feed.item': { readonly name: string; readonly count: number };
   readonly 'box.evolve.confirm': { readonly name: string; readonly species: string };
