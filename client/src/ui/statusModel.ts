@@ -1,9 +1,11 @@
-// ui/statusModel.ts — pure status-message view model.
+// ui/statusModel.ts — pure status-line view model.
 //
 // Reduces SDK reducer-promise rejections and subscription-error payloads to the
-// user-visible status-line strings. LAYERING NOTE: this is a pure MODEL (no DOM,
-// no SDK import, no timers) — net/connection.ts may import it without creating a
-// net→view dependency; the DOM write (textContent) lives in main.ts's reportError.
+// user-visible status-line strings; since qf-6 also classifies the advance refusals that
+// end a conversation, infers a quest completion (and its reward) from two store snapshots,
+// and schedules status notices for the live region. LAYERING NOTE: this is a pure MODEL (no
+// DOM, no SDK or i18n import, no timers) — net/connection.ts may import it without creating
+// a net→view dependency; the DOM writes (textContent) live in main.ts.
 
 /** The three routing buckets a rejection can land in (internal — unexported). */
 type ErrorKind = 'sender' | 'internal' | 'unknown';
@@ -164,7 +166,9 @@ export interface QuestAck {
  * from `now` while my conversation row is present in `now`": `talk` is the only reducer that
  * completes a quest, and it upserts the conversation row in the same transaction, while the
  * account-deletion cascade removes the quest and conversation rows together (no completion). The
- * reward is the balance gain, which that transaction's only currency write produced.
+ * reward is the balance gain across the batch — the completing transaction's only currency write;
+ * a batch that merged another transaction's wallet write (a partner's trade payout) would
+ * misstate it, which an exact server-side acknowledgement channel would remove.
  */
 export function questCompletionAck(
   prev: QuestAckSnapshot | undefined,
@@ -221,19 +225,13 @@ export function statusNoticeStep(
     case 'frame': {
       const { nowMs } = event;
       if (event.transitionAnnounced) {
-        const clobbered =
-          state.queued === null && state.spoken !== null && nowMs - state.spoken.atMs < windowMs;
-        return {
-          state: {
-            ...state,
-            lastTransitionAtMs: nowMs,
-            queued:
-              clobbered && state.spoken !== null
-                ? { text: state.spoken.text, queuedAtMs: nowMs }
-                : state.queued,
-          },
-          speak: null,
-        };
+        // The transition replaced a notice still pending in the coalescer: say it again later,
+        // unless a newer notice is already waiting.
+        const queued =
+          state.queued === null && state.spoken !== null && nowMs - state.spoken.atMs < windowMs
+            ? { text: state.spoken.text, queuedAtMs: nowMs }
+            : state.queued;
+        return { state: { ...state, lastTransitionAtMs: nowMs, queued }, speak: null };
       }
       if (state.queued === null || nowMs - state.queued.queuedAtMs < windowMs) {
         return { state, speak: null };

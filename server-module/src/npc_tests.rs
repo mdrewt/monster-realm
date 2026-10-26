@@ -245,9 +245,9 @@ fn talk_range_arithmetic_does_not_overflow_extreme_i32_tiles() {
     // The distance far exceeds TALK_RANGE (2): a player at the extreme corner
     // must be rejected. This confirms the range check has the correct semantics.
     assert!(
-        manhattan > super::TALK_RANGE,
+        manhattan > game_core::TALK_RANGE,
         "Extreme distance {manhattan} must exceed TALK_RANGE({}); range check must reject",
-        super::TALK_RANGE
+        game_core::TALK_RANGE
     );
 }
 

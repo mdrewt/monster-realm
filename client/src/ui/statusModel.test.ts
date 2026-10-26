@@ -609,10 +609,12 @@ describe('questCompletionAck: a completing talk acknowledges the quest and its r
 
   it('acknowledges nothing for an identity change, a step advance, a started quest, a wallet-only gain or the deletion cascade QF6.4', () => {
     // Kills: an acknowledgement across a reconnect that minted a new identity; one keyed on a row's
-    // object identity, step or questId instead of its pqId (a step advance keeps the pqId); one
-    // that fires on any quest-set change or on any balance gain (a trade payout, a sale); and one
-    // that ignores the conversation row (account deletion removes the quest AND the conversation
-    // rows together, which is no completion). Each negative is one field from the positive.
+    // object identity instead of its pqId value (the step advance hands over a fresh row object
+    // with the same pqId; it keeps the questId too, so it cannot tell pqId keying from questId
+    // keying: the re-keyed-row test below does); one that fires on any quest-set change or on any
+    // balance gain (a trade payout, a sale); and one that ignores the conversation row (account
+    // deletion removes the quest AND the conversation rows together, which is no completion).
+    // Each negative is one field from the positive.
     const prev = snap([QUEST_001], 30n, false);
     expect(questCompletionAck(prev, snap([], 80n, true)), 'positive control').toEqual({
       name: 'quest_001',
@@ -653,6 +655,17 @@ describe('questCompletionAck: a completing talk acknowledges the quest and its r
       questCompletionAck(snap([], 30n, false), snap([], 80n, true)),
       "another player's row left",
     ).toBeUndefined();
+  });
+
+  it('matches rows by pqId: the same quest id on a new row, while the old row left, is a completion QF6.4', () => {
+    // Kills: rows keyed by questId instead of pqId (the old row's quest id is still present, on the
+    // new row, so a questId-keyed diff sees nothing leave and the completion goes unacknowledged).
+    expect(
+      questCompletionAck(
+        snap([{ pqId: 1n, questId: 'q' }], 30n, false),
+        snap([{ pqId: 2n, questId: 'q' }], 80n, true),
+      ),
+    ).toEqual({ name: 'q', reward: 50n });
   });
 
   it('names every quest that completed in the batch, sorted, and never one still active QF6.4', () => {
@@ -851,6 +864,22 @@ describe('statusNoticeStep: a status notice the live region speaks without losin
     expect(
       spoken([queue('A', 0), queue('B', 300), quiet(500), quiet(799), quiet(800), quiet(2_000)]),
     ).toEqual([null, null, null, null, 'B', null]);
+  });
+
+  it('a transition that clobbers a spoken notice re-queues it only when nothing newer is waiting: the newer notice wins QF6.2', () => {
+    // Kills: a re-queue that overwrites a newer waiting notice (the stale line would be spoken
+    // again and the newer one never).
+    expect(
+      spoken([
+        queue('A', 0),
+        quiet(500),
+        queue('B', 600),
+        transition(700),
+        quiet(1_199),
+        quiet(1_200),
+        quiet(5_000),
+      ]),
+    ).toEqual([null, 'A', null, null, null, 'B', null]);
   });
 
   it('never speaks on a queue or a transition frame, never inside a window after a transition, and never repeats a notice nothing re-armed (fast-check) QF6.2', () => {

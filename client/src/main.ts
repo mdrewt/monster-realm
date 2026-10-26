@@ -1500,7 +1500,7 @@ function applyMenuStep(step: MainMenuStep, monstersTab?: MonstersTab): void {
   // The feedback line is not a live region: a Y description or a disabled entry's reason is said
   // here, once per change of the line.
   const said = feedbackAnnouncement(menuState.feedback, step.state.feedback);
-  if (said !== null) liveRegion.announce(said, performance.now());
+  if (said !== null) announceNow(said);
   menuState = step.state;
   switch (step.effect.kind) {
     case 'none':
@@ -1937,7 +1937,7 @@ function refusedInBattle(command: Command): boolean {
   const reason = i18nT('menu.disabled.inBattle');
   if (statusEl !== undefined) statusEl.textContent = reason;
   shownBattleRefusal = reason;
-  liveRegion.announce(reason, performance.now());
+  announceNow(reason);
   return true;
 }
 
@@ -2036,10 +2036,19 @@ function clearStatus(): void {
 
 // qf-6: a status NOTICE is an outcome that is not an error — a conversation the server ended for
 // a reason, a quest completed. It goes to the status line (textContent only, never markup) and is
-// queued for the live region: spoken on a frame that announced no overlay transition, a full
-// coalescing window after it was queued and after the last transition, so neither it nor the
-// overlay label landing beside it is lost to the region's newest-wins window (statusNoticeStep).
+// queued for the live region, spoken by the frame pump clear of the announcements that land beside
+// it (ui/statusModel.ts statusNoticeStep: why and when).
 let statusNotice: StatusNoticeState = STATUS_NOTICE_INITIAL;
+/** An announcement made outside the frame pump since its last frame: the pump treats it as a
+ *  transition, so a queued notice is held clear of it and a notice it clobbered is said again. */
+let announcedSinceFrame = false;
+
+/** Announce through the live region from outside the frame pump (a refusal, a request line, a
+ *  view's own announcement) and let the pump know. */
+function announceNow(text: string): void {
+  liveRegion.announce(text, performance.now());
+  announcedSinceFrame = true;
+}
 
 /** Show a notice on the status line and queue it for the live region. Not the error ring, not
  *  console.error: nothing failed. */
@@ -3019,12 +3028,9 @@ store.onBatchApplied(() => {
   }
 });
 
-// qf-6 (QF6.4): the quest-completion acknowledgement. The server completes a quest silently — it
-// deletes the player_quest row and credits the reward — so two consecutive batch snapshots are
-// compared (statusModel questCompletionAck): a quest row of mine leaving while my conversation row
-// is present (`talk`, the only completing reducer, upserts it in the same transaction; the
-// deletion cascade removes both rows together) is a completion, and that batch's wallet gain is
-// the reward it names. The baseline is taken only once hydrated and is dropped on reconnect.
+// qf-6 (QF6.4): the quest-completion acknowledgement — two consecutive batch snapshots compared
+// by statusModel questCompletionAck (what counts as a completion, and why, is documented there).
+// The baseline is taken only once hydrated and is dropped on reconnect.
 let questAckBaseline: QuestAckSnapshot | undefined;
 store.onBatchApplied(() => {
   try {
@@ -3140,7 +3146,7 @@ store.onBatchApplied(() => {
     for (const n of pending) {
       if (announcedRequests.has(n.key)) continue;
       announcedRequests.add(n.key);
-      liveRegion.announce(requestLine(n), performance.now());
+      announceNow(requestLine(n));
     }
     const badged = pending.some((n) => !answeredRequests.has(n.key));
     if (badged !== menuBadged) {
@@ -3701,7 +3707,7 @@ async function main(): Promise<void> {
       onClear: (accel) => applyBindings(clearAccel(bindings, accel)),
       onReset: () => applyBindings(DEFAULT_BINDINGS),
       onCancelCapture: cancelControlsCapture,
-      announce: (text) => liveRegion.announce(text, performance.now()),
+      announce: (text) => announceNow(text),
     };
     controlsView = new ControlsViewClass(controlsHandlers);
     tradeProposeView = new TradeProposeViewClass({
@@ -3812,7 +3818,7 @@ async function main(): Promise<void> {
           }),
       ),
     {
-      announce: (m) => liveRegion.announce(m, performance.now()),
+      announce: (m) => announceNow(m),
       returnFocus: () => worldCanvasEl?.focus(),
     },
   );
@@ -4025,13 +4031,19 @@ async function main(): Promise<void> {
         if (a === null || a === document.body || focusInsideHiddenSubtree()) worldCanvasEl?.focus();
       }
       lastA11ySnapshot = nextSnapshot;
-      // qf-6: a queued status notice is spoken clear of the transitions above (statusNoticeStep),
-      // after them in the same pump so the region's newest-wins window never drops either.
+      // qf-6: a queued status notice is spoken clear of the transitions above and of anything
+      // announced outside the pump since the last frame (statusNoticeStep holds it a full
+      // coalescing window past them, and re-queues one they clobbered).
       const notice = statusNoticeStep(
         statusNotice,
-        { kind: 'frame', nowMs: now, transitionAnnounced: edges.length > 0 || worldEdge },
+        {
+          kind: 'frame',
+          nowMs: now,
+          transitionAnnounced: edges.length > 0 || worldEdge || announcedSinceFrame,
+        },
         COALESCE_WINDOW_MS,
       );
+      announcedSinceFrame = false;
       statusNotice = notice.state;
       if (notice.speak !== null) liveRegion.announce(notice.speak, now);
       liveRegion.flush(now);

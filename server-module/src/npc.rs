@@ -10,12 +10,14 @@ use crate::schema::{
     character, npc, player, player_conversation, player_dialogue_state, player_quest,
     PlayerConversation, PlayerDialogueStateRow, PlayerQuestRow,
 };
+use game_core::npc::rules::in_talk_range;
 use game_core::{
     apply_choice, apply_effects, apply_node_auto_effects, find_entry_node, process_trigger,
     DialogueEffect, PlayerDialogueState, PlayerQuestProgress, QuestAdvance, TriggerEvent,
-    TALK_RANGE,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
+
+use crate::marshal::char_state;
 
 /// Emit window for the dangling-`quest_id` warn: at most one `log::warn!` per
 /// 60_000 ms of the caller's injected clock.
@@ -242,9 +244,10 @@ fn apply_quest_trigger(
                 // rows left while my player_conversation row is present in the same batch"
                 // (the wallet gain in that batch is the reward it shows): `talk` is the only
                 // caller and always upserts the conversation row in this transaction, and
-                // the deletion cascade (`erase_npc_state`) removes both rows together. A new
-                // path that removes quest rows inside a talk for any other reason needs a
-                // real acknowledgement channel first.
+                // the deletion cascade (`erase_npc_state`) removes both rows together. ANY
+                // transaction that deletes a player_quest row while the owner's conversation
+                // row survives it would read as a completion — such a path (an abandon, a
+                // reset) needs a real acknowledgement channel first.
                 ctx.db.player_quest().pq_id().delete(row.pq_id);
                 state.active_quests.remove(&row.quest_id);
                 state.done_quests.insert(row.quest_id.clone());
@@ -299,10 +302,8 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
         return Err("npc not in same zone".to_string());
     }
 
-    // Step 5: range check using NPC's CURRENT position (not home_x/home_y)
-    let dx = (i64::from(player_char.tile_x) - i64::from(npc_char.tile_x)).abs();
-    let dy = (i64::from(player_char.tile_y) - i64::from(npc_char.tile_y)).abs();
-    if dx + dy > TALK_RANGE {
+    // Step 5: range check using NPC's CURRENT position (not home_x/home_y) — the game-core rule.
+    if !in_talk_range(char_state(&player_char).pos, char_state(&npc_char).pos) {
         return Err("too far away".to_string());
     }
 
@@ -368,13 +369,11 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
 /// conditions internally. `player_conversation` lookup is PK-scoped to ctx.sender().
 /// Refused during an ongoing battle.
 ///
-/// A refusal writes NOTHING: `Err` aborts the whole transaction, so a delete issued
-/// before it never persisted (the qf-6 WALKEDAWAYROLLBACK wedge: the overlay stayed
-/// open and the log claimed a dismissal). The npc-missing / wrong-zone / walked-away
-/// refusals below are a server→client contract: the client maps each exact string to
-/// catalogued copy and ends the conversation itself with `dismiss_dialogue`, whose
-/// delete is the one that commits (pinned by client statusModel.test.ts, the booted
-/// main.dialogueEnded.test.ts and the dialogue e2e).
+/// A refusal writes NOTHING (`Err` aborts the whole transaction, so no delete issued
+/// before it could ever persist). The npc-missing / wrong-zone / walked-away refusals
+/// below are a server→client contract: the client maps each exact string to catalogued
+/// copy and ends the conversation itself with `dismiss_dialogue`, whose delete commits
+/// (pinned by the client's statusModel and booted main tests and the dialogue e2e).
 #[spacetimedb::reducer]
 pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), String> {
     let me = ctx.sender();
@@ -412,9 +411,7 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
         );
         return Err("no longer in same zone".to_string());
     }
-    let dx = (i64::from(player_char.tile_x) - i64::from(npc_char.tile_x)).abs();
-    let dy = (i64::from(player_char.tile_y) - i64::from(npc_char.tile_y)).abs();
-    if dx + dy > TALK_RANGE {
+    if !in_talk_range(char_state(&player_char).pos, char_state(&npc_char).pos) {
         log::warn!(
             "{{\"evt\":\"advance_dialogue_refused\",\"sender\":\"{me}\",\"reason\":\"walked_away\"}}"
         );

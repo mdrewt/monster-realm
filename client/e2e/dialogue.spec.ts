@@ -6,6 +6,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { readWasmU32Constant } from '../test-util/wasmPkg';
 import { type Dir, interactChip, interactWithNpc, pressAccel, waitForNpcInFront } from './controls';
 
 // M13.5c dialogue lifecycle e2e.
@@ -155,8 +156,9 @@ const MAX_TALK_ATTEMPTS = 20;
  *  re-click. Re-talking is safe precisely because a refused advance never fired
  *  StartQuest — quest_001 only completes on a talk AFTER it was started. */
 const MAX_ADVANCE_ATTEMPTS = 8;
-/** game-core TALK_RANGE: the Manhattan distance within which talk and advance are admitted. */
-const TALK_RANGE = 2;
+/** game-core TALK_RANGE, read from the wasm boundary (the built client-wasm pkg's `talk_range()`
+ *  export), never copied: the Manhattan distance within which talk and advance are admitted. */
+const TALK_RANGE = readWasmU32Constant('talk_range');
 
 /** Manhattan distance between a character row and a tile. */
 const manhattan = (c: { tileX: number; tileY: number }, t: Tile): number =>

@@ -550,6 +550,25 @@ describe('main.ts refused advance and quest completion (runtime, qf-6)', {
     expect(dialogueShown(), 'the new conversation stays').toBe(true);
   });
 
+  it('a walked-away refusal that lands after my conversation with the same NPC moved to another node shows nothing and sends no dismiss QF6.1', async () => {
+    // WRONG IMPL KILLED: a staleness guard that compares only the NPC. The refusal was for the
+    // node the reply was chosen on; the conversation has since moved on (another tab advanced it),
+    // so the line and the dismiss would end a conversation the refusal says nothing about.
+    await bootReady();
+    openConversation(1000);
+    H.manualAdvance = true;
+    clickChoice(2000);
+    expect(H.advancePromises, 'precondition: the advance is in flight').toHaveLength(1);
+    // An unknown node: the overlay may show its fallback or hide; only what the refusal does counts.
+    batch(2100, (s) => s.upsertConversation({ ...conversationWith(), currentNodeId: 'farewell' }));
+
+    H.advancePromises[0]?.reject(senderError('walked too far away'));
+    await settle();
+    expect(statusText(), 'nothing on the status line').toBe('');
+    expect(statusReports(), 'and nothing reported').toEqual([]);
+    expect(dismissCalls(), 'no dismiss').toBe(0);
+  });
+
   it('walking out of talk range ends nothing by itself: no dismiss, the overlay stays QF6.1', async () => {
     // WRONG IMPL KILLED: a client-side range check that ends or hides the conversation when the
     // player walks away. The ending belongs to the server's refusal of a chosen reply.
@@ -638,6 +657,17 @@ describe('main.ts refused advance and quest completion (runtime, qf-6)', {
     ).toBeLessThan(liveWrites.indexOf(QUEST_001_ACK));
   });
 
+  it('a completing talk that moved no gold acknowledges the quest without a reward QF6.4', async () => {
+    // WRONG IMPL KILLED: main.ts always using the reward line ("You received null gold" or "0
+    // gold"), or dropping the acknowledgement when there is no gain.
+    await bootReady();
+    opts.onHydrated();
+    beforeCompletion(1000, 30n);
+    completingTalk(2000, 30n);
+    expect(statusText(), 'the quest, and no gold').toBe('Quest complete: quest_001.');
+    expect(statusReports(), 'an acknowledgement is not an error report').toEqual([]);
+  });
+
   it.each<[string, () => void]>([
     [
       'a batch before the snapshot is hydrated',
@@ -718,8 +748,9 @@ describe('main.ts refused advance and quest completion (runtime, qf-6)', {
     ],
   ])('no quest acknowledgement for %s QF6.4', async (_label, run) => {
     // WRONG IMPL KILLED, row by row: an acknowledgement before hydration (a half-applied store);
-    // one keyed on the step or the quest id instead of the row (a step advance keeps its pqId);
-    // one on any balance gain (a trade payout, a sale); one that ignores the conversation row
+    // one keyed on the step instead of the row (a step advance keeps its pqId, and its questId
+    // too, so it cannot tell pqId keying from questId keying: statusModel.test.ts's re-keyed-row
+    // test does); one on any balance gain (a trade payout, a sale); one that ignores the conversation row
     // (account deletion erases both rows in one transaction); one over every player's quest rows
     // (player_quest is a public table); and a baseline kept across a reconnect (the fresh snapshot
     // would read as a completion of the quest the old one held).

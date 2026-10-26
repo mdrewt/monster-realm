@@ -2424,7 +2424,6 @@ describe('qf-6: the conversation-ended and quest-completion lines in both catalo
       ],
     ];
     for (const [key, enText, frText] of LINES) {
-      expect(EXPECTED_PLAIN[key], `fixture: ${key} is in the pinned plain roster`).toBe(enText);
       expect(en[key], `en ${key}`).toBe(enText);
       expect(fr[key], `fr ${key}`).toBe(frText);
       expect(noBreakBeforeEveryColon(fr[key] as string), `fr ${key}: U+00A0 before ':'`).toBe(true);
