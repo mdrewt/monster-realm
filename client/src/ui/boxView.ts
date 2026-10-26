@@ -48,10 +48,10 @@
 // confirm are parts of this frame under the sheet, and the "Fed {name}" line joins the feedback
 // line. A hidden part is emptied as well as hidden (the e2e text scans read hidden descendants).
 //
-// qf-2: a care or train answer for an action sent FROM this frame comes back to this frame's line
-// (QF2.1), through a sink `feedbackLine()` hands out bound to the current open: a sink called while
-// hidden, or once a later open has started, paints nothing (an answer that settles after the frame
-// was left never reaches the next session). The screen's own Move / Fed line wins while it shows; a
+// qf-2: a care answer or a train rejection for an action sent FROM this frame comes back to this
+// frame's line (QF2.1), through a sink `feedbackLine()` hands out bound to the current open: a sink
+// called while hidden, or once a later open has started, paints nothing and says so (an answer that
+// settles after the frame was left never reaches the next session). The screen's own Move / Fed line wins while it shows; a
 // batch repaint keeps the outcome (a care rewrites monster_pub, so its own batch repaints the
 // sheet); the next button ends it (`clearOutcome`, main.ts) and so does hide().
 import { type MonsterCardViewModel, NEXT_FREE_PARTY_SLOT } from './boxModel';
@@ -140,8 +140,8 @@ function feedbackText(feedback: MonstersFeedback): string {
 }
 
 /** A sink for one action's outcome on this frame's line: its text (textContent only: a rejection
- *  carries the server's reason) and the line's `data-feedback` mark. */
-export type OutcomeLine = (message: string, kind: 'ok' | 'error') => void;
+ *  carries the server's reason) and the line's `data-feedback` mark. True iff it painted. */
+export type OutcomeLine = (message: string, kind: 'ok' | 'error') => boolean;
 
 export interface BoxViewCallbacks {
   /** Called with the nickname field's text when the Monsters screen commits it (CTL8B.3). */
@@ -381,9 +381,10 @@ export class BoxView {
   feedbackLine(): OutcomeLine {
     const open = this.#opens;
     return (message, kind) => {
-      if (!this.#visible || this.#opens !== open) return;
+      if (!this.#visible || this.#opens !== open) return false;
       this.#outcome = { text: message, kind };
       this.#apply();
+      return true;
     };
   }
 

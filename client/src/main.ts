@@ -1625,7 +1625,7 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
         showFeedback:
           line === undefined
             ? (message) => raisingView?.showFeedback(message)
-            : (message) => line(message, message === cared ? 'ok' : 'error'),
+            : (message) => void line(message, message === cared ? 'ok' : 'error'),
       });
     }
     case 'train': {
@@ -1978,12 +1978,11 @@ let lastBattleVM: BattleViewModel | null = null;
 // and the dialogue-choice click handler) report through it too.
 let statusEl: HTMLElement | undefined;
 
-/** Surface a user-visible failure on `line` (the sending frame's outcome line, qf-2) or else the
- *  status line: textContent ONLY — server-supplied SenderError text must never become markup
+/** Surface a user-visible failure on `line` (the sending frame's outcome line, qf-2) or, when there
+ *  is none or it no longer paints (the frame was left), on the status line: textContent ONLY — server-supplied SenderError text must never become markup
  *  (never innerHTML) — plus console.error for logs and the error ring either way. */
 function reportError(text: string, line?: OutcomeLine): void {
-  if (line !== undefined) line(text, 'error');
-  else if (statusEl !== undefined) statusEl.textContent = text;
+  if (line?.(text, 'error') !== true && statusEl !== undefined) statusEl.textContent = text;
   console.error('[status]', text);
   // unify UI/reducer failures into the error ring so the F9 bundle captures them.
   pushError('reducer', text);
@@ -2064,7 +2063,8 @@ window.addEventListener('unhandledrejection', (e) => pushError('unhandledrejecti
  * in-flight lock `return` it so the lock lives exactly until the call settles.
  * `onRejected` threads a settled rejection out to the caller (C5: a rejected challenge
  * answer releases its answeredRequests key); the frozen and dead-handle arms never
- * call it — no reducer ran, nothing settled.
+ * call it — no reducer ran, nothing settled. `line` is the sending frame's outcome line, where
+ * both failure arms report instead of the status line while it still paints (qf-2).
  */
 function sendGuarded(
   where: string,
