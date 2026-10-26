@@ -108,6 +108,8 @@ export type MessageId =
   | 'controls.cancel'
   | 'controls.saveFailed'
   | 'chrome.help.title'
+  // qf-4: not `chrome.journal.title` — resolver.test.ts pins the exact plain `chrome.*` roster.
+  | 'journal.title'
   | 'help.tab.screen'
   | 'help.tab.controls'
   | 'help.tab.goals'
@@ -428,7 +430,8 @@ export type MessageId =
   | 'bag.action.info'
   | 'bag.picker.title'
   | 'bag.feed.noMonsters'
-  | 'journal.detail.step';
+  | 'journal.detail.step'
+  | 'journal.empty';
 
 /** The ONE hand-written parameter table: a key appears here iff its message takes
  *  parameters, and `ParamMessageId` is DERIVED from it — one table, not two lists to keep in

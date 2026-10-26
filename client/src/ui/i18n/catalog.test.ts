@@ -840,6 +840,11 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'notice.sheet.accept': 'Accept',
   'notice.sheet.decline': 'Decline',
   'notice.sheet.view': 'View',
+  // qf-4 (named intentional change): +2 plain keys = 373 keys. `journal.title` is the visible
+  // title of the Journal frame (QF4.1, `#quest-log-title`); `journal.empty` is the empty-state line
+  // shown when no quest is active (QF4.2, `#quest-log-empty`): the reason, then the next step.
+  'journal.title': 'Journal',
+  'journal.empty': 'No active quests yet. Talk to villagers to find out who needs help.',
 };
 
 interface ParamOutputSpec {
@@ -1353,7 +1358,8 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 371-key roster (qf-3: +`box.sheet.careCooldown` over the 370-key roster below;
+/** The full 373-key roster (qf-4: +`journal.title` +`journal.empty` over the 371-key roster
+ *  below; qf-3: +`box.sheet.careCooldown` over the 370-key roster below;
  *  ctl-14: +`help.tab.{screen,controls,goals}`
  *  +`help.goal.{recruit,battle,trade}` +`help.note.keysVsButtons` over the 363-key roster below;
  *  ctl-13: +`chrome.chip.{ok,back,close,view,dismiss,done}`
@@ -1443,7 +1449,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-3 371-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-4 373-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1532,13 +1538,14 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 371 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 373 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (371 keys since qf-3: +1 parameterised; 370
-    // since ctl-14: +7 plain; 363 since ctl-13: +10 plain, +2 parameterised; was 351 since ctl-12b).
+    // (a) roster is exactly the EXPECTED_KEYS roster (373 keys since qf-4: +2 plain; 371 since
+    // qf-3: +1 parameterised; 370 since ctl-14: +7 plain; 363 since ctl-13: +10 plain, +2
+    // parameterised; was 351 since ctl-12b).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-3 roster is 371 keys').toHaveLength(371);
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-4 roster is 373 keys').toHaveLength(373);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(

@@ -17,7 +17,9 @@
 // Do NOT edit these tests to match a buggy implementation — correct them from the plan only.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { tf as i18nTf } from './i18n/resolver';
+import { CATALOG_EN } from './i18n/catalog.en';
+import { CATALOG_FR } from './i18n/catalog.fr';
+import { t as i18nT, tf as i18nTf, setLocale } from './i18n/resolver';
 import { closeOverlayA11y } from './overlayA11y';
 import type { QuestLogViewModel } from './questLogModel';
 import { QuestLogView } from './questLogView';
@@ -166,5 +168,170 @@ describe('m24s5 (ADR-0261): questLogView.ts routes its row through tf()', () => 
     expect(i18nTf('chrome.status.disconnected', { where: 'shop' })).toBe(
       'shop: disconnected — try again',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// qf-4 (QF4.1, QF4.2): the Journal title and the empty-state line are CATALOGUED, not literals.
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-pt3-quickfix.spec.md §qf-4;
+// memory/projects/monster-realm-qf-4-plan.md (design + AMENDMENTS A4-A7).
+//
+// RED REASON AT HEAD: the keys `journal.title` / `journal.empty` are in neither catalog and the
+// view builds neither element, so every getElementById below is null and every catalog read is
+// undefined.
+//
+// The view is constructed BEFORE the resolver is swapped (setLocale runs before construction in
+// main.ts, so production would pass either way): the title and the empty line must be read from the
+// resolver at RENDER time, which a constructor-time write would miss. The sentinel tests also render
+// once with the real resolver and swap it while the Journal stays OPEN, so a write made only on the
+// hidden-to-visible edge is caught.
+// ---------------------------------------------------------------------------
+
+describe('QuestLogView qf-4: the title and empty state go through the i18n resolver', () => {
+  it('QF4-1-TITLE-I18N-SENTINEL: under a «key» sentinel the title text is exactly the resolver output for journal.title, as plain text, written at render time', () => {
+    // WRONG IMPL KILLED: a literal `Journal` in the view (the sentinel never appears); a title
+    // resolved once in the constructor (this view is built BEFORE the swap, so a stale write shows
+    // the real text); a title written only on the hidden-to-visible edge (the first render below
+    // opens the Journal with the real resolver, the swap happens while it stays open, and the
+    // second render is NOT an edge); a title assembled by concatenation or markup around the
+    // resolver output.
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+    const vm = questVm([{ questId: 'quest_lark', stepIndex: 1, displayName: 'quest_lark' }]);
+
+    view.render(vm);
+    expect(view.visible, 'precondition: the Journal is open').toBe(true);
+    expect(
+      document.getElementById('quest-log-title')?.textContent,
+      'precondition: the real resolver wrote the real title',
+    ).toBe('Journal');
+
+    try {
+      vi.mocked(i18nT).mockClear();
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+
+      view.render(vm);
+      expect(view.visible, 'still open: the second render is not an edge').toBe(true);
+      const title = document.getElementById('quest-log-title');
+      expect(title, 'the title exists').not.toBeNull();
+      expect(title?.textContent, 'exactly the resolver output').toBe('«journal.title»');
+      expect(title?.children.length, 'plain text, no child elements').toBe(0);
+      expect(i18nT).toHaveBeenCalledWith('journal.title');
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+    }
+
+    // Post-restore call-through control.
+    expect(i18nT('journal.title')).toBe('Journal');
+  });
+
+  it('QF4-1-TITLE-I18N-LOCALE: after the locale switches to fr the next render writes the fr catalog`s journal.title', () => {
+    // WRONG IMPL KILLED: a title written once and never refreshed (a locale change between
+    // construction and render is not picked up); a title read from the en catalog directly.
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+
+    try {
+      setLocale('fr');
+      view.render(questVm([{ questId: 'quest_lark', stepIndex: 1, displayName: 'quest_lark' }]));
+      const expected = (CATALOG_FR as Record<string, unknown>)['journal.title'];
+      expect(typeof expected, 'the fr catalog carries the key').toBe('string');
+      expect(document.getElementById('quest-log-title')?.textContent).toBe(expected);
+    } finally {
+      setLocale('en');
+    }
+  });
+
+  it('QF4-1-TITLE-CATALOG: both catalogs carry journal.title as a non-empty plain string, and the English one is Journal', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot and the Journal frame
+    // opens blank); an empty or function-valued entry; an English title that is not the menu`s own
+    // `Journal` wording (the menu entry and the frame it opens must agree).
+    const en = (CATALOG_EN as Record<string, unknown>)['journal.title'];
+    const fr = (CATALOG_FR as Record<string, unknown>)['journal.title'];
+    expect(en, 'en').toBe('Journal');
+    expect(en, 'the menu entry and the frame title agree').toBe(
+      (CATALOG_EN as Record<string, unknown>)['menu.journal.title'],
+    );
+    expect(typeof fr, 'fr is a plain string').toBe('string');
+    expect((fr as string).length > 0, 'fr is not blank').toBe(true);
+  });
+
+  it('QF4-2-EMPTY-I18N-SENTINEL: under a «key» sentinel the empty line is exactly the resolver output for journal.empty while the list is empty, and is cleared once quests exist', () => {
+    // WRONG IMPL KILLED: a literal English sentence in the view (the sentinel never appears); an
+    // empty line resolved in the constructor (this view is built BEFORE the swap); the resolved text
+    // left in the hidden element once a quest exists; an empty line written only on the
+    // hidden-to-visible edge (the first render opens the Journal with the real resolver, the swap
+    // happens while it stays open, and the second render is NOT an edge).
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+
+    view.render(questVm([]));
+    expect(view.visible, 'precondition: the Journal is open').toBe(true);
+    expect(
+      document.getElementById('quest-log-empty')?.textContent,
+      'precondition: the real resolver wrote the real line',
+    ).toBe('No active quests yet. Talk to villagers to find out who needs help.');
+
+    try {
+      vi.mocked(i18nT).mockClear();
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+
+      view.render(questVm([]));
+      expect(view.visible, 'still open: the second render is not an edge').toBe(true);
+      const empty = document.getElementById('quest-log-empty');
+      expect(empty, 'the empty element exists').not.toBeNull();
+      expect(empty?.textContent, 'exactly the resolver output').toBe('«journal.empty»');
+      expect(empty?.children.length, 'plain text, no child elements').toBe(0);
+      expect(i18nT).toHaveBeenCalledWith('journal.empty');
+
+      view.render(questVm([{ questId: 'quest_lark', stepIndex: 1, displayName: 'quest_lark' }]));
+      expect(empty?.textContent, 'cleared once a quest exists').toBe('');
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+    }
+
+    // Post-restore call-through control.
+    expect(i18nT('journal.empty')).toBe(
+      'No active quests yet. Talk to villagers to find out who needs help.',
+    );
+  });
+
+  it('QF4-2-EMPTY-I18N-LOCALE: after the locale switches to fr the next empty render writes the fr catalog`s journal.empty, which is not the English line', () => {
+    // WRONG IMPL KILLED: an empty line that ignores the locale; a key added to en only; a French
+    // entry left as the English copy.
+    mountQuestLogOverlay();
+    const view = new QuestLogView();
+
+    try {
+      setLocale('fr');
+      view.render(questVm([]));
+      const fr = (CATALOG_FR as Record<string, unknown>)['journal.empty'];
+      const en = (CATALOG_EN as Record<string, unknown>)['journal.empty'];
+      expect(typeof fr, 'the fr catalog carries the key').toBe('string');
+      expect(document.getElementById('quest-log-empty')?.textContent).toBe(fr);
+      expect(fr, 'a translation, not the English copy').not.toBe(en);
+    } finally {
+      setLocale('en');
+    }
+  });
+
+  it('QF4-2-EMPTY-CATALOG: journal.empty is the exact English line in en (reason, cue and next step, naming no key), and a non-empty plain string in fr', () => {
+    // WRONG IMPL KILLED: a key added to en only; a line that is just "No quests" (no next step), or
+    // one that tells the player to press a named key (bindings are remappable, so the copy names
+    // none); an empty fr entry.
+    const en = (CATALOG_EN as Record<string, unknown>)['journal.empty'];
+    const fr = (CATALOG_FR as Record<string, unknown>)['journal.empty'];
+    expect(en, 'en: the exact line').toBe(
+      'No active quests yet. Talk to villagers to find out who needs help.',
+    );
+    expect(en as string, 'the reason').toMatch(/no active quests/i);
+    expect(en as string, 'the next step').toMatch(/talk/i);
+    expect(en as string, 'no key name (bindings are remappable)').not.toMatch(
+      /\b(press|enter|keys?)\b/i,
+    );
+    expect(typeof fr, 'fr is a plain string').toBe('string');
+    expect((fr as string).length > 0, 'fr is not blank').toBe(true);
+    expect(fr, 'fr is a translation, not the English copy').not.toBe(en);
   });
 });

@@ -26,16 +26,16 @@
           <div id="dialogue-choices"></div>
         </div>
         <div id="quest-log-overlay" class="mr-frame mr-shell" role="dialog" aria-modal="true" style="display:none">
-          <ul id="quest-log-list" tabindex="-1"></ul>
+          <ul id="quest-log-list" class="mr-nav-list" tabindex="-1"></ul>
         </div>
         <div id="heal-overlay" class="mr-frame mr-shell" role="dialog" aria-modal="true" style="display:none">
-          <ul id="heal-list" tabindex="-1"></ul>
+          <ul id="heal-list" class="mr-nav-list" tabindex="-1"></ul>
         </div>
         <!-- M13d shop overlay shell — hidden by default; managed by ShopView. -->
         <div id="shop-overlay" class="mr-frame mr-shell" role="dialog" aria-modal="true" style="display:none">
           <div id="shop-title" tabindex="-1"></div>
-          <ul id="shop-for-sale"></ul>
-          <ul id="shop-inventory"></ul>
+          <ul id="shop-for-sale" class="mr-nav-list"></ul>
+          <ul id="shop-inventory" class="mr-nav-list"></ul>
           <div id="shop-feedback"></div>
         </div>
         <!-- m15b trade overlay shell — hidden by default; managed by TradeView. -->
@@ -51,13 +51,13 @@
           <div id="pvp-challenge-status" tabindex="-1"></div>
           <div id="pvp-challenge-incoming"></div>
           <div id="pvp-challenge-outgoing"></div>
-          <ul id="pvp-player-list"></ul>
+          <ul id="pvp-player-list" class="mr-nav-list"></ul>
           <div id="pvp-challenge-feedback"></div>
         </div>
         <!-- m17b leaderboard overlay shell — hidden by default; managed by LeaderboardView. -->
         <div id="leaderboard-overlay" class="mr-frame mr-shell" role="dialog" aria-modal="true" style="display:none">
           <div id="leaderboard-title" tabindex="-1"></div>
-          <ul id="leaderboard-list"></ul>
+          <ul id="leaderboard-list" class="mr-nav-list"></ul>
         </div>
         <!-- pt-c1b rename overlay shell — hidden by default; managed by RenameView. -->
         <div id="rename-overlay" class="mr-frame mr-shell" role="dialog" aria-modal="true" style="display:none">
@@ -96,8 +96,8 @@
           style="display:none"
         >
           <div id="help-title" tabindex="-1"></div>
-          <ul id="help-controls"></ul>
-          <ul id="help-goals"></ul>
+          <ul id="help-controls" class="mr-nav-list"></ul>
+          <ul id="help-goals" class="mr-nav-list"></ul>
         </div>
         <!-- uxd3: main-menu overlay shell — hidden by default; managed by MenuView, which builds the
              visible ui/frame.ts `.mr-frame` INSIDE it. So this root carries .mr-shell but never
@@ -119,7 +119,7 @@
                this element role="listbox" + aria-activedescendant, which makes it interactive and
                retires this suppression. S6 owns menuView.ts; S2 may not add the role itself.
                biome-ignore lint/a11y/noNoninteractiveTabindex: interactive from S6; see above -->
-          <ul id="menu-rows" tabindex="0"></ul>
+          <ul id="menu-rows" class="mr-nav-list" tabindex="0"></ul>
           <div id="menu-back-hint"></div>
         </div>
       </div>
