@@ -3,12 +3,14 @@
 //! EARS criteria covered:
 //!   Determinism — same (current, home, radius, facing, npc_id, tick, map) → same Option<Direction>
 //!   Outside-radius — deterministic toward-home direction (L1 Manhattan, dominant axis),
-//!                    answered EVERY tick, never None
+//!                    answered EVERY tick per npc_decide call (the server gates call
+//!                    frequency with npc_step_due), never None
 //!   Within-radius / at-boundary — seeded wander (varies over ticks, stays sometimes)
 //!   Known-answer — exact splitmix64 output pinned for several (npc_id, tick, facing) vectors
 //!     G1 — no legal-direction result is ever a wall or outside the radius (headline tooth)
 //!     G2 — continue-facing: a still-legal facing is returned unchanged
-//!     G3 — homing (outside-radius) answers every tick, never None
+//!     G3 — homing (outside-radius) answers every tick per npc_decide call (the
+//!          server gates call frequency with npc_step_due), never None
 //!     G4 — known-answer vectors pin the hash/salt/legality interaction
 //!     G4b — known-answer vectors pin the 1-in-K "continue" re-roll (fixes the
 //!           absorbing-state metronome bug: unconditional continue-when-legal
@@ -18,15 +20,20 @@
 //!     G7 — full-coverage: driven from the real start state, the NPC must visit
 //!          EVERY legal tile, not orbit a subset forever
 //!
-//! qf-5 (QF5.2 / QF5.3) wander cadence — `npc_step_due(npc_id, tick)`:
+//! qf-5 (QF5.2) wander cadence — `npc_step_due(npc_id, tick)`:
 //!   QF5.2 — an NPC SHALL be due to step on exactly one movement tick in every
 //!           window of `NPC_STEP_TICKS` consecutive ticks (5 x STEP_MS 200 ms = 1 s),
 //!           with a phase offset by `npc_id`; the rule is wrapping and deterministic.
-//!   QF5.3 — gated by that cadence, a wandering NPC SHALL stay within its wander
-//!           radius, move at most one tile per due tick and never on a non-due tick.
+//!   (The composed cadence-gated wander is proven by the server-module `nh_qf5_*`
+//!   tests, which own the composition.)
+//!
+//! qf-5 (QF5.1) conversation pin — `in_talk_range(a, b)`:
+//!   QF5.1 — a conversation pins its NPC only while the owner is within
+//!           `TALK_RANGE` (Manhattan 2, inclusive) of it; the range rule lives in
+//!           game-core, exact in i64 (no overflow at i32 extremes).
 
 use crate::npc::npc_decide;
-use crate::npc::rules::{npc_step_due, NPC_STEP_TICKS};
+use crate::npc::rules::{in_talk_range, npc_step_due, NPC_STEP_TICKS};
 use crate::types::{
     dir_from_code, ActionState, CharacterState, Direction, Millis, MoveInput, TilePos,
 };
@@ -1120,137 +1127,88 @@ fn qf5_2_npc_step_due_phase_is_seeded_by_npc_id() {
         due_tick_of_id.len(),
         "ids 0..N must cover N distinct phases, got due ticks {due_tick_of_id:?}"
     );
-
-    // Determinism.
-    for id in [0u64, 7, 901, u64::MAX] {
-        for tick in [0u64, 3, 1_000_003, u64::MAX] {
-            assert_eq!(
-                npc_step_due(id, tick),
-                npc_step_due(id, tick),
-                "npc_step_due({id}, {tick}) must be deterministic"
-            );
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
-// QF5.3 — the cadence-gated wander (npc_step_due gates npc_decide + apply_move,
-// exactly as movement.rs composes them) stays within radius, steps one tile at
-// most, only on due ticks; and the homing branch is gated by the same cadence.
-// kills: a cadence that lets the NPC step on non-due ticks (no gate / wrong
-//        gate), a window with two steps (due twice per window), a gate that
-//        suppresses every step (moved_on_due == 0), a radius escape, a homing
-//        branch that ignores the cadence or never reaches the radius.
+// QF5.1 — `in_talk_range`: inclusive Manhattan distance <= TALK_RANGE (2).
+// kills: strict `<` (boundary offsets (0,2)/(2,0)/(1,1) wrongly false), `<= 3`
+//        (offsets at distance 3 wrongly true), Chebyshev distance ((2,1)/(1,2)
+//        wrongly true), Euclidean/axis-only checks, an asymmetric (non-abs)
+//        difference (negative offsets wrongly true/false), and i32 arithmetic
+//        that overflows (panic) or wraps at the extremes.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn qf5_3_gated_wander_stays_in_radius_one_tile_on_due_ticks_only() {
-    let map = zone_0();
-    let home = pos(5, 5);
-    let radius: u8 = 2;
-    let npc_id: u64 = 7; // 7 % 5 == 2: a non-zero residue, due on tick % 5 == 3
-    assert_ne!(
-        npc_id % NPC_STEP_TICKS,
-        0,
-        "fixture needs a non-zero residue"
-    );
-
-    let manhattan = |a: TilePos, b: TilePos| -> i64 {
-        (i64::from(a.x) - i64::from(b.x)).abs() + (i64::from(a.y) - i64::from(b.y)).abs()
-    };
-    let fresh = |at: TilePos| CharacterState {
-        pos: at,
-        facing: Direction::South,
-        action: ActionState::Idle,
-        move_started_at: Millis(0),
-    };
-
-    // --- wander arm: 500 consecutive ticks from the real start state ---------
-    let mut state = fresh(home);
-    let mut due_count: u64 = 0;
-    let mut moved_on_due: u64 = 0;
-    let mut last_move_tick: Option<u64> = None;
-    for tick in 0u64..500 {
-        let before = state.pos;
-        let due = npc_step_due(npc_id, tick);
-        if due {
-            due_count += 1;
-            if let Some(d) = npc_decide(state.pos, home, radius, state.facing, npc_id, tick, &map) {
-                state = apply_move(&state, MoveInput::Step(d), &map, Millis(0));
-            }
-        }
-        let after = state.pos;
-        if !due {
-            assert_eq!(
-                after, before,
-                "tick {tick} is not due: the NPC must not move"
-            );
-        }
+fn qf5_1_in_talk_range_is_inclusive_manhattan_two() {
+    let a = pos(10, 10);
+    // In range: same tile and every offset with |dx| + |dy| <= 2.
+    for &(dx, dy) in &[
+        (0, 0),
+        (0, 2),
+        (2, 0),
+        (1, 1),
+        (0, 1),
+        (1, 0),
+        (-2, 0),
+        (0, -2),
+        (-1, -1),
+        (1, -1),
+        (-1, 1),
+        (-1, 0),
+        (0, -1),
+    ] {
+        let b = pos(a.x + dx, a.y + dy);
+        assert!(in_talk_range(a, b), "offset ({dx},{dy}) is within range");
         assert!(
-            manhattan(before, after) <= 1,
-            "tick {tick}: moved {} tiles, at most 1 allowed",
-            manhattan(before, after)
+            in_talk_range(b, a),
+            "offset ({dx},{dy}) is symmetric (b, a)"
         );
-        assert!(
-            manhattan(after, home) <= i64::from(radius),
-            "tick {tick}: {after:?} left wander radius {radius} around {home:?}"
-        );
-        if after != before {
-            assert!(due, "tick {tick}: moved on a non-due tick");
-            moved_on_due += 1;
-            if let Some(prev) = last_move_tick {
-                assert!(
-                    tick - prev >= NPC_STEP_TICKS,
-                    "moves at ticks {prev} and {tick} are closer than NPC_STEP_TICKS"
-                );
-            }
-            last_move_tick = Some(tick);
-        }
     }
-    assert_eq!(due_count, 100, "500 ticks hold exactly 100 due ticks");
+    // Out of range: Manhattan distance >= 3 (including Chebyshev-2 corners).
+    for &(dx, dy) in &[
+        (0, 3),
+        (3, 0),
+        (2, 1),
+        (1, 2),
+        (2, 2),
+        (-3, 0),
+        (0, -3),
+        (-2, -1),
+        (-1, -2),
+        (2, -1),
+        (-1, 2),
+        (-2, -2),
+        (5, 0),
+    ] {
+        let b = pos(a.x + dx, a.y + dy);
+        assert!(!in_talk_range(a, b), "offset ({dx},{dy}) is out of range");
+        assert!(
+            !in_talk_range(b, a),
+            "offset ({dx},{dy}) is out of range symmetric (b, a)"
+        );
+    }
+    // Negative absolute coordinates behave identically (no abs-of-sum trick).
     assert!(
-        moved_on_due >= 50,
-        "the NPC must actually wander on due ticks (lower bound); moved only {moved_on_due} of 100"
+        in_talk_range(pos(-5, -5), pos(-4, -4)),
+        "(-5,-5)~(-4,-4) is distance 2"
     );
-    assert!(moved_on_due <= due_count, "at most one move per due tick");
-
-    // --- homing arm: start outside the radius; clear path (8,3)->(7,3)->(6,3)->(6,4) ---
-    let start = pos(8, 3);
-    assert!(manhattan(start, home) > i64::from(radius), "starts outside");
-    let mut state = fresh(start);
-    let mut homing_steps: u64 = 0;
-    for tick in 0u64..215 {
-        let before = state.pos;
-        let outside = manhattan(before, home) > i64::from(radius);
-        let due = npc_step_due(npc_id, tick);
-        if due {
-            if let Some(d) = npc_decide(state.pos, home, radius, state.facing, npc_id, tick, &map) {
-                state = apply_move(&state, MoveInput::Step(d), &map, Millis(0));
-            }
-        }
-        let after = state.pos;
-        if !due {
-            assert_eq!(after, before, "homing tick {tick} is not due: no move");
-        }
-        if outside && due {
-            assert_eq!(
-                manhattan(before, after),
-                1,
-                "tick {tick}: an outside-radius NPC must step toward home on every due tick"
-            );
-            assert!(
-                manhattan(after, home) < manhattan(before, home),
-                "tick {tick}: the homing step must reduce the distance to home"
-            );
-            homing_steps += 1;
-        }
-        // Due ticks for npc 7 are 3, 8, 13: three homing steps bring it inside.
-        if tick >= 13 {
-            assert!(
-                manhattan(after, home) <= i64::from(radius),
-                "tick {tick}: homing must have reached the radius by the third due tick"
-            );
-        }
-    }
-    assert_eq!(homing_steps, 3, "exactly three due-tick homing steps");
+    assert!(
+        !in_talk_range(pos(-5, -5), pos(-4, -3)),
+        "(-5,-5)~(-4,-3) is distance 3"
+    );
+    // Opposite-sign dx and dy must not cancel (|dx| + |dy|, not |dx + dy|).
+    assert!(
+        !in_talk_range(pos(0, 0), pos(2, -1)),
+        "dx=2, dy=-1 must not cancel to 1"
+    );
+    // Extreme coordinates: i64 math, no overflow panic, far apart.
+    assert!(!in_talk_range(pos(i32::MIN, 0), pos(i32::MAX, 0)));
+    assert!(!in_talk_range(pos(i32::MAX, 0), pos(i32::MIN, 0)));
+    assert!(!in_talk_range(
+        pos(i32::MIN, i32::MIN),
+        pos(i32::MAX, i32::MAX)
+    ));
+    // Adjacent at the extreme edge is still in range (no spurious wrap).
+    assert!(in_talk_range(pos(i32::MAX, 0), pos(i32::MAX - 1, 0)));
+    assert!(in_talk_range(pos(i32::MIN, 0), pos(i32::MIN + 2, 0)));
 }

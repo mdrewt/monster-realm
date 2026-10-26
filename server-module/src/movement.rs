@@ -18,10 +18,10 @@ use crate::marshal::{
 use crate::raising::accrue_quality_time;
 use crate::schema::{
     character, encounter, monster, monster_pub, npc, player, player_conversation, species_row,
-    trade_offer, Character, Player,
+    trade_offer, Character, Player, PlayerConversation,
 };
 use crate::{SPRITE_PLAYER, STARTER_SPECIES_ID, ZONE_0};
-use game_core::npc::rules::npc_step_due;
+use game_core::npc::rules::{in_talk_range, npc_step_due};
 use game_core::{
     apply_move, map_for, npc_decide, resolve_encounter, roll_starter, spawn, stepped_onto_grass,
     ActionState, Direction, Millis, MoveInput, StatBlock, TilePos, MOVE_QUEUE_CAP, STEP_MS,
@@ -511,15 +511,17 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         .filter(zone)
         .map(|n| n.entity_id)
         .collect();
-    // QF5.1: an NPC referenced by an active conversation never moves. A full scan:
-    // `npc_entity_id` has no index, and the table holds only live dialogues (one row
-    // per player at most, deleted on disconnect). Skipped when the zone has no NPCs.
+    // QF5.1: an NPC in a live conversation never moves. A full scan: `npc_entity_id`
+    // has no index, and the table holds at most one row per player (deleted on
+    // disconnect). Skipped when the zone has no NPCs.
     let conversing: Vec<u64> = if npc_entity_ids.is_empty() {
         Vec::new()
     } else {
         ctx.db
             .player_conversation()
             .iter()
+            .filter(|c| npc_entity_ids.contains(&c.npc_entity_id))
+            .filter(|c| conversation_is_live(ctx, c, zone))
             .map(|c| c.npc_entity_id)
             .collect()
     };
@@ -562,6 +564,25 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
     }
 
     Ok(())
+}
+
+/// A conversation pins its NPC only while the owner's character is in `zone` and
+/// within talk range of the NPC: a row left behind by a player who walked off (or
+/// idles elsewhere) must not freeze the NPC for everyone.
+fn conversation_is_live(ctx: &ReducerContext, conv: &PlayerConversation, zone: u32) -> bool {
+    let Some(owner) = ctx.db.player().identity().find(conv.owner_identity) else {
+        return false;
+    };
+    let chars = ctx.db.character().entity_id();
+    let (Some(me), Some(npc_ch)) = (chars.find(owner.entity_id), chars.find(conv.npc_entity_id))
+    else {
+        return false;
+    };
+    let at = |c: &Character| TilePos {
+        x: c.tile_x,
+        y: c.tile_y,
+    };
+    me.zone_id == zone && in_talk_range(at(&me), at(&npc_ch))
 }
 
 // movement.rs is a file-module (declared `mod movement;` in `lib.rs`), so a plain

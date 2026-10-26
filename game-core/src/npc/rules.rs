@@ -1,6 +1,7 @@
 //! NPC wander decision rules — pure & deterministic.
 //!
-//! `npc_decide` is the only public entry point. It mixes explicit `npc_id` and
+//! `npc_decide` is the wander decision; the server gates how often it asks with
+//! `npc_step_due` and pins conversing NPCs via `in_talk_range`. `npc_decide` mixes explicit `npc_id` and
 //! `tick` with a non-commutative hash (RT-NPC-01 fix) so that two NPCs with the
 //! same `npc_id + tick` sum produce different outputs. In addition,
 //! the WANDER branch now chooses only LEGAL steps (walkable + inside the radius)
@@ -194,6 +195,14 @@ pub const NPC_STEP_TICKS: u64 = 5;
 #[must_use]
 pub fn npc_step_due(npc_id: u64, tick: u64) -> bool {
     tick.wrapping_add(npc_id).is_multiple_of(NPC_STEP_TICKS)
+}
+
+/// True when `a` and `b` are within [`TALK_RANGE`](super::TALK_RANGE) tiles
+/// (Manhattan, inclusive) — the talk proximity rule. The server uses it to treat a
+/// conversation as live (QF5.1) only while its owner stays in range of the NPC.
+#[must_use]
+pub fn in_talk_range(a: TilePos, b: TilePos) -> bool {
+    manhattan_distance(a, b) <= super::TALK_RANGE
 }
 
 // ===========================================================================
