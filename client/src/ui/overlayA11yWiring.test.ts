@@ -1022,12 +1022,15 @@ const STYLES_CSS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 
 /** The three runtime classes every anchor falls into (see `classifyAnchor`). */
 type AnchorClass = 'heading' | 'nav' | 'native';
 
-/** What an anchor/element paints when focused: the four outline longhands, read once. */
+/** What an element paints when focused: the four outline longhands plus the two properties that
+ *  can hide a ring without touching `outline` (`display: contents`, `clip-path`), read once. */
 interface RingFacts {
   readonly style: string;
   readonly width: string;
   readonly offset: string;
   readonly color: string;
+  readonly display: string;
+  readonly clipPath: string;
 }
 
 /** The `.mr-nav-row > .mr-nav-item.is-active` row: what the container ring must differ from. */
@@ -1054,15 +1057,6 @@ interface Survey {
 
 /** The sweep: everything the focus policy's selectors could possibly match. */
 const SWEEP_SELECTOR = '[tabindex="-1"], [role="listbox"], [role="grid"]';
-
-/** Tags a native anchor may be: the browser paints their ring, so no rule may suppress it. */
-const NATIVE_ANCHOR_TAGS: ReadonlySet<string> = new Set([
-  'INPUT',
-  'SELECT',
-  'TEXTAREA',
-  'BUTTON',
-  'A',
-]);
 
 /**
  * Roles that make an element something a player ACTS on. A `tabindex="-1"` element carrying one is
@@ -1101,7 +1095,8 @@ function classifyAnchor(el: Element): AnchorClass {
   const role = el.getAttribute('role');
   if (role === 'listbox' || role === 'grid') return 'nav';
   if (el.getAttribute('tabindex') === '-1') return 'heading';
-  if (NATIVE_ANCHOR_TAGS.has(el.tagName)) return 'native';
+  // The browser paints a native control's own ring, so no rule may suppress it.
+  if (NATIVE_FOCUSABLE_TAGS.has(el.tagName)) return 'native';
   throw new Error(
     `unclassified anchor <${el.tagName.toLowerCase()} id="${el.id}" role="${role ?? ''}" ` +
       `tabindex="${el.getAttribute('tabindex') ?? ''}">: not a listbox/grid, not tabindex=-1, ` +
@@ -1138,6 +1133,8 @@ function focusAndReadRing(el: HTMLElement): RingFacts | null {
     width: cs.outlineWidth,
     offset: cs.outlineOffset || cs.getPropertyValue('outline-offset'),
     color: cs.outlineColor,
+    display: cs.display,
+    clipPath: cs.clipPath || cs.getPropertyValue('clip-path'),
   };
 }
 
@@ -1148,21 +1145,38 @@ function resolveVars(raw: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim();
 }
 
-/** `#rgb`, `#rrggbb`, `rgb(r, g, b)`, `rgba(...)` and `rgb(r g b / a)` -> [r, g, b]. Throws else. */
+/**
+ * `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb(r, g, b)`, `rgba(...)` and `rgb(r g b / a)` ->
+ * [r, g, b]. THROWS on an unreadable form AND on any alpha below 1: a translucent ring
+ * (`rgba(204, 85, 0, 0)`) passes every other check and paints nothing, and compositing it would
+ * need a backdrop this tier does not have.
+ */
 function parseRgb(raw: string): readonly [number, number, number] {
   const s = resolveVars(raw).trim().toLowerCase();
-  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/.exec(s);
+  const rejectTranslucent = (alpha: number): void => {
+    if (!(alpha >= 1)) throw new Error(`translucent computed colour ${JSON.stringify(raw)}`);
+  };
+  const hex = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(s);
   const digits = hex?.[1];
   if (digits !== undefined) {
-    const full = digits.length === 3 ? [...digits].map((c) => c + c).join('') : digits;
+    const full = digits.length <= 4 ? [...digits].map((c) => c + c).join('') : digits;
+    if (full.length === 8) rejectTranslucent(Number.parseInt(full.slice(6, 8), 16) / 255);
     return [
       Number.parseInt(full.slice(0, 2), 16),
       Number.parseInt(full.slice(2, 4), 16),
       Number.parseInt(full.slice(4, 6), 16),
     ];
   }
-  const fn = /^rgba?\(\s*(\d+(?:\.\d+)?)[\s,]+(\d+(?:\.\d+)?)[\s,]+(\d+(?:\.\d+)?)/.exec(s);
-  if (fn !== null) return [Number(fn[1]), Number(fn[2]), Number(fn[3])];
+  const num = '(\\d+(?:\\.\\d+)?)';
+  const fn = new RegExp(
+    `^rgba?\\(\\s*${num}[\\s,]+${num}[\\s,]+${num}(?:\\s*[,/]\\s*(\\d*\\.?\\d+)(%?))?\\s*\\)$`,
+  ).exec(s);
+  if (fn !== null) {
+    if (fn[4] !== undefined) {
+      rejectTranslucent(fn[5] === '%' ? Number(fn[4]) / 100 : Number(fn[4]));
+    }
+    return [Number(fn[1]), Number(fn[2]), Number(fn[3])];
+  }
   throw new Error(`unparseable computed colour ${JSON.stringify(raw)}`);
 }
 
@@ -1202,26 +1216,50 @@ function readActiveRowProbe(): ActiveRowFacts {
 }
 
 /**
+ * A computed length in whole `px` ("2px", "-2px", "0px") as a number; NaN for any other unit or
+ * keyword. Strict on purpose: a width of `2em` or a unitless value is not what the ring contract
+ * pins, and `parseFloat` would read "2em" as 2.
+ */
+function pxLength(raw: string): number {
+  const m = /^(-?\d+(?:\.\d+)?)px$/.exec(raw.trim());
+  return m === null ? Number.NaN : Number(m[1]);
+}
+
+/**
  * Every way a focused container's ring can fail QF1.2, as human-readable problems ([] = the ring
- * is thick, geometrically inside its clip box, visually distinct from the active row, and legible
- * against BOTH the row's fill and the row's own inset outline — WCAG 1.4.11's 3:1).
+ * is a dashed/dotted line 2-4px thick, sits INSIDE its box by no more than twice its width, is
+ * visually distinct from the active row, is opaque and legible against BOTH the row's fill and the
+ * row's own inset outline — WCAG 1.4.11's 3:1 — and the container is neither `display: contents`
+ * (no box, no outline) nor clipped away).
  */
 function ringProblems(ring: RingFacts | null, probe: ActiveRowFacts): string[] {
   if (ring === null) return ['the element could not take focus'];
   const problems: string[] = [];
-  if (['', 'none', 'auto', 'hidden'].includes(ring.style)) {
-    problems.push(`outline-style ${JSON.stringify(ring.style)} draws no ring`);
+  // An allow-list, not a deny-list: `double` at 2px renders as a solid line (the active row's
+  // look), `groove` / `ridge` as a bevelled one, `inset` / `outset` as a shaded solid.
+  if (!['dashed', 'dotted'].includes(ring.style)) {
+    problems.push(`outline-style ${JSON.stringify(ring.style)} is not dashed or dotted`);
   }
   if (ring.style === probe.style) {
     problems.push(`outline-style ${ring.style} is the same as the is-active row's`);
   }
-  if (!(Number.parseFloat(ring.width) >= 2)) {
-    problems.push(`outline-width ${JSON.stringify(ring.width)} is under 2px`);
+  const width = pxLength(ring.width);
+  if (!(width >= 2 && width <= 4)) {
+    problems.push(`outline-width ${JSON.stringify(ring.width)} is not 2px-4px`);
   }
-  if (!(Number.parseFloat(ring.offset) <= 0)) {
+  // Negative (a zero or positive offset is clipped by .mr-shell, which scrolls and clips its
+  // overflow) but not so negative the ring leaves the box it frames (-1000px).
+  const offset = pxLength(ring.offset);
+  if (!(offset < 0 && offset >= -2 * width)) {
     problems.push(
-      `outline-offset ${JSON.stringify(ring.offset)} is positive or unset: .mr-shell clips overflow`,
+      `outline-offset ${JSON.stringify(ring.offset)} is outside [-2*width, 0): clipped or off-box`,
     );
+  }
+  if (ring.display === 'contents') {
+    problems.push('display: contents gives the container no box, so no outline paints');
+  }
+  if (ring.clipPath !== '' && ring.clipPath !== 'none') {
+    problems.push(`clip-path ${JSON.stringify(ring.clipPath)} can clip the ring away`);
   }
   for (const [name, against] of [
     ['active-row fill', probe.background],
@@ -1263,13 +1301,14 @@ async function survey(): Promise<Survey> {
   const sentinel = installSentinel();
   const targets = new Set<HTMLElement>();
   const anchorEls = new Map<OverlayId, HTMLElement>();
+  /** Elements whose state does not survive their overlay's close: read at their open instead. */
+  const preRead = new Map<HTMLElement, SurveyedEl>();
   for (const id of OVERLAY_IDS) {
     const opened = OPENERS[id]();
     // PRODUCTION RENDERS BEFORE THE DEFERRED FOCUS. The S10 OPENERS call `show()` alone, so the
-    // two nav-container anchors have no role yet when focus lands. In production `openMenu` runs
-    // `renderMenu(); menuView?.show();` (main.ts:1407-1418) and the controls rows are "seated at
-    // the open, so its rows paint then" (`openControls`, main.ts:1253): the role is present at
-    // focus time. Reproduce that order with the REAL `renderNav` on the anchor container, after
+    // two nav-container anchors have no role yet when focus lands. In production main.ts's
+    // `openMenu` runs `renderMenu(); menuView?.show();` and its `openControls` seats the controls
+    // frame so its rows paint at the open: the role is present at focus time. Reproduce that order with the REAL `renderNav` on the anchor container, after
     // the opener and BEFORE the macrotask flush, so the survey sees the production-state anchor
     // (a role-less tabindex=0 container is deliberately NOT accepted by `classifyAnchor`).
     if (id === 'menuView' || id === 'controlsView') {
@@ -1296,6 +1335,40 @@ async function survey(): Promise<Survey> {
     }
     anchorEls.set(id, anchor);
     targets.add(anchor);
+    if (id === 'leaderboardView') {
+      // THE POPULATED RANKINGS STATE. `#leaderboard-list` is a plain `<ul>` until the Social
+      // screen paints Rankings over a populated board: leaderboardView's `#apply` then writes
+      // role=listbox + tabindex=0 on it (and ONLY then — an empty board stays a plain list). A
+      // survey that never reached this state would never see the list as a nav container, so
+      // `#leaderboard-list:focus { outline: none }` would ship green. A second instance over the
+      // same DOM drives the REAL public API (`render` then `paintSocial`; the overlay is visible,
+      // so the paint is kept). Closing the first instance later runs its `#drop`, which strips
+      // these marks again, so the list is focused and read NOW, once, and phase 2 reuses it.
+      const board = new LeaderboardView();
+      const row = (identityHex: string, displayName: string, rating: number) => ({
+        identityHex,
+        displayName,
+        rating,
+        wins: 3,
+        losses: 1,
+        isOwn: false,
+      });
+      board.render({ rows: [row('aa11', 'Ann', 1300), row('bb22', 'Bob', 1200)], isEmpty: false });
+      board.paintSocial({ tab: 'rankings', players: [], cursor: null, walkUp: null });
+      const list = requireElement('leaderboard-list');
+      if (list.getAttribute('role') !== 'listbox' || list.getAttribute('tabindex') !== '0') {
+        throw new Error(
+          'leaderboardView: a populated Rankings paint did not make the list a listbox',
+        );
+      }
+      preRead.set(list, {
+        el: list,
+        label: describeEl(list),
+        tabindex: list.getAttribute('tabindex'),
+        role: list.getAttribute('role'),
+        ring: focusAndReadRing(list),
+      });
+    }
     for (const el of Array.from(document.querySelectorAll<HTMLElement>(SWEEP_SELECTOR))) {
       targets.add(el);
     }
@@ -1311,6 +1384,12 @@ async function survey(): Promise<Survey> {
   const byEl = new Map<HTMLElement, SurveyedEl>();
   for (const el of targets) {
     if (!el.isConnected) continue;
+    const early = preRead.get(el);
+    if (early !== undefined) {
+      elements.push(early);
+      byEl.set(el, early);
+      continue;
+    }
     // Markup state first (focus does not change it), then the single computed-style read.
     const record: SurveyedEl = {
       el,
@@ -1445,9 +1524,11 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     expect(offenders, 'a native-control anchor lost its focus ring').toEqual([]);
   });
 
-  it('QF1-1-SCOPE-SYNTHETIC BITES: a focused native <button> in a dialog, a role=application tabindex=0 node (the canvas shape) and a plain tabindex=0 node do NOT compute outline-style none', () => {
+  it('QF1-1-SCOPE-SYNTHETIC BITES: a focused native <button> in a dialog, a role=application tabindex=0 div and <canvas>, and a plain tabindex=0 node do NOT compute outline-style none', () => {
     // WRONG IMPL KILLED: `*:focus`, `button:focus`, `[tabindex]:focus` (kills tabindex=0 as well
-    // as -1), `[role]:focus` / `[role="application"]:focus` (strips the world canvas's ring).
+    // as -1), `[role]:focus` / `[role="application"]:focus` (strips the world canvas's ring),
+    // `canvas:focus { outline: none }` (the real world canvas is a <canvas role="application"
+    // tabindex="0">; a div stand-in would not be matched by it).
     // Each element is created inside a role=dialog wrapper and read ONCE, after its own focus.
     const wrapper = dialogWrapper();
     const button = document.createElement('button');
@@ -1455,11 +1536,14 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     const canvas = document.createElement('div');
     canvas.setAttribute('role', 'application');
     canvas.setAttribute('tabindex', '0');
+    const realCanvas = document.createElement('canvas');
+    realCanvas.setAttribute('role', 'application');
+    realCanvas.setAttribute('tabindex', '0');
     const plain = document.createElement('div');
     plain.setAttribute('tabindex', '0');
-    wrapper.append(button, canvas, plain);
+    wrapper.append(button, canvas, realCanvas, plain);
     const offenders: string[] = [];
-    for (const el of [button, canvas, plain]) {
+    for (const el of [button, canvas, realCanvas, plain]) {
       const ring = focusAndReadRing(el);
       if (ring === null) offenders.push(`${describeEl(el)} could not take focus`);
       else if (ring.style === 'none') offenders.push(`${describeEl(el)} computes none`);
@@ -1467,6 +1551,81 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     expect(offenders, 'scope leak: a focus-suppression rule matches a non-heading element').toEqual(
       [],
     );
+  });
+
+  it('QF1-1-SCOPE-NATIVE-EVERYWHERE BITES: EVERY natively focusable element of the shipped index.html, plus one input of every type, a select, a textarea, an a[href] and a contenteditable, keeps the browser ring (never computes none)', () => {
+    // WRONG IMPL KILLED: a suppression scoped to one native control family that the four anchors
+    // do not cover — `input[type="number"]:focus { outline: none }` (the two currency inputs are
+    // type=number, the anchors are type=text / select / buttons), `input[type="range"]:focus`,
+    // `textarea:focus`, `a:focus`, `[contenteditable]:focus`, `select:focus`. Each element is read
+    // ONCE, after its own focus (the computed-style cache hazard).
+    const shipped = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'button, input, select, textarea, a[href], [contenteditable]',
+      ),
+    );
+    expect(
+      shipped.length,
+      'the adopted index.html ships eight native controls (rename x2, tradepropose x4, chips x2)',
+    ).toBeGreaterThanOrEqual(8);
+
+    const wrapper = dialogWrapper();
+    const synthetic: HTMLElement[] = [];
+    for (const type of [
+      'text',
+      'search',
+      'tel',
+      'url',
+      'email',
+      'password',
+      'number',
+      'date',
+      'time',
+      'datetime-local',
+      'month',
+      'week',
+      'color',
+      'range',
+      'checkbox',
+      'radio',
+      'file',
+    ]) {
+      const input = document.createElement('input');
+      input.type = type;
+      synthetic.push(input);
+    }
+    synthetic.push(document.createElement('select'), document.createElement('textarea'));
+    const link = document.createElement('a');
+    link.setAttribute('href', '#qf1');
+    synthetic.push(link);
+    const editable = document.createElement('div');
+    editable.setAttribute('contenteditable', 'true');
+    synthetic.push(editable);
+    wrapper.append(...synthetic);
+
+    const offenders: string[] = [];
+    let read = 0;
+    for (const el of [...shipped, ...synthetic]) {
+      const ring = focusAndReadRing(el);
+      // A contenteditable with no tabindex is focusable in a browser; if happy-dom's strict focus
+      // model refuses it there is nothing to read, so it alone is tolerated as unfocusable.
+      if (ring === null) {
+        if (!el.hasAttribute('contenteditable')) offenders.push(`${describeEl(el)} took no focus`);
+        continue;
+      }
+      read++;
+      if (ring.style === 'none') {
+        offenders.push(`${describeEl(el)} type=${el.getAttribute('type') ?? ''} computes none`);
+      }
+    }
+    expect(
+      read,
+      'vacuity guard: the loop must have read the native controls',
+    ).toBeGreaterThanOrEqual(8 + 17 + 3);
+    expect(
+      offenders,
+      'a focus-suppression rule strips the browser ring from a native control',
+    ).toEqual([]);
   });
 
   it('QF1-1-PARTITION-TOTAL BITES: heading + nav + native partition ALL OverlayIds, and an unclassifiable anchor throws', async () => {
@@ -1487,20 +1646,28 @@ describe.sequential('qf-1 focus-ring policy (QF1.1, QF1.2)', () => {
     expect(() => classifyAnchor(document.createElement('span'))).toThrow();
   });
 
-  it('QF1-2-LISTBOX-GRID-RING BITES: EVERY focusable [role="listbox"] / [role="grid"] in any opened overlay — anchor or not — computes a thick, dashed-or-otherwise-distinct, clipped-box-safe, 3:1 ring', async () => {
+  it('QF1-2-LISTBOX-GRID-RING BITES: EVERY focusable [role="listbox"] / [role="grid"] in any opened overlay (anchors, siblings, and the populated Rankings list) computes an opaque dashed/dotted 2-4px inside-offset ring with 3:1 contrast on a box that is neither display:contents nor clipped', async () => {
     // WRONG IMPL KILLED: (1) no ring rule (shipped state: `''`), (2) a ring keyed to the anchors
-    // only, leaving `#heal-options` / `#leaderboard-list`-style siblings bare, (3) a ring in the
-    // SAME style as the is-active row's solid inset outline (indistinguishable from "a row is
-    // selected"), (4) a 1px ring, (5) a POSITIVE outline-offset (clipped by `.mr-shell
-    // { overflow: hidden }`), (6) an fg-coloured ring (#e0e0e0) that vanishes over the fg-filled
-    // active row, or a bg-coloured one that vanishes against the bg-coloured frame, (7) the
-    // blanket `[tabindex="-1"]:focus { outline: none }` winning on `#quest-log-list`, a
-    // tabindex=-1 listbox, because the ring's specificity does not beat the suppression's.
+    // only, leaving `#heal-options` bare, (2b) `#leaderboard-list:focus { outline: none }` — the
+    // list is a listbox only in the populated Rankings state, which the survey now drives,
+    // (3) a ring in the SAME style as the is-active row's solid outline, or in `double` /
+    // `groove` / `ridge` / `inset` / `outset` (not dashed or dotted: `double` at 2px renders solid),
+    // (4) a 1px or `2em` / 8px ring, (5) a zero, positive or -1000px outline-offset (a zero or
+    // positive offset is clipped by `.mr-shell`, which has `overflow: auto`), (6) an
+    // fg-coloured ring (#e0e0e0) that vanishes over the fg-filled active row, a bg-coloured one
+    // that vanishes against the frame, or a fully transparent one (`rgba(204, 85, 0, 0)`),
+    // (7) the blanket `[tabindex="-1"]:focus { outline: none }` winning on `#quest-log-list`, a
+    // tabindex=-1 listbox, because the ring's specificity does not beat the suppression's,
+    // (8) `[role="listbox"]:focus { display: contents }` or a `clip-path` that hides the ring.
     const s = await survey();
     const probe = readActiveRowProbe();
     const containers = s.elements.filter(
       (e) => (e.role === 'listbox' || e.role === 'grid') && e.ring !== null,
     );
+    expect(
+      containers.map((e) => e.el.id),
+      'the populated Rankings list (#leaderboard-list) must be enumerated',
+    ).toContain('leaderboard-list');
     expect(containers, 'menuView anchor (#menu-rows) must be enumerated').toContain(
       anchorFor(s, 'menuView'),
     );
