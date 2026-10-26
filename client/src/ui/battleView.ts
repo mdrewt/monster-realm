@@ -161,7 +161,8 @@ export class BattleView implements BattleOpsView {
   /** The kept cursor. It outlives focus (the menu, <body>) and a re-render of the same turn. */
   #cursor: { list: CursorList; index: number } = { list: 'commands', index: 0 };
   /** The command whose list is open (QF7.2): the bench rows render only while it is Swap. Closed by
-   *  B, by another command, by a new turn or battle, by a PvP wait and by hide(). */
+   *  B, by another command or a bait / cure pick, by a new turn or battle, by a PvP wait, by losing
+   *  the swap and by hide(). */
   #open: BattleCommand | null = null;
   /** The (battle, turn) of the last render: a new one resets the cursor to Fight (CTL8I.1). */
   #turnKey: { readonly battleId: bigint; readonly turnNumber: number } | null = null;
@@ -432,7 +433,8 @@ export class BattleView implements BattleOpsView {
     this.#pick = resolveBattlePick(vm, this.#pick);
     // A new turn starts on Fight; so does a PvP wait, whose grid and bench are not rendered.
     const reset = newTurn || vm.pvpPendingSubmit;
-    if (reset) this.#open = null;
+    // A lost swap closes the list too, so a same-turn swap regained does not reopen it unasked.
+    if (reset || (this.#open === 'swap' && !vm.canSwap)) this.#open = null;
 
     this.#renderWeather(vm);
     // Show opponent name for PvP battles so the player knows who they are fighting. The name is
@@ -814,7 +816,7 @@ export class BattleView implements BattleOpsView {
       this.#renderSwapButtons(vm);
     }
     // Toggled inline so the hint and the swap buttons read the SAME `vm.canSwap`
-    // in the SAME method. The `Ongoing` conjunct is required — canSwap is false on EVERY terminal
+    // in the SAME method (the buttons also need Swap open, so at rest both are absent). The `Ongoing` conjunct is required — canSwap is false on EVERY terminal
     // outcome, so without it the hint would sit beside "Victory!". No isPvp branch.
     this.#swapHintEl.style.display = vm.outcome === 'Ongoing' && !vm.canSwap ? 'block' : 'none';
     // Recruit is wild-only (canRecruit); cure items are offered in any ongoing PvE battle
@@ -844,6 +846,8 @@ export class BattleView implements BattleOpsView {
 
   /** A bait or cure row was pressed: open its second step with the cursor on Yes / the target. */
   #choosePick(pick: BattlePick): void {
+    // The pick's command becomes the open one, so an open Swap list never sits beside its step.
+    this.#open = pick.kind === 'recruitConfirm' ? 'recruit' : 'bag';
     this.#setPick(pick);
     this.#cursor = {
       list: pick.kind === 'recruitConfirm' ? 'recruitConfirm' : 'bagTarget',
@@ -1016,7 +1020,8 @@ export class BattleView implements BattleOpsView {
   }
 
   #renderSwapButtons(vm: BattleViewModel): void {
-    // PvP swap: skip when pvpPendingSubmit (waiting for opponent — no double-send).
+    // PvP swap: skip when pvpPendingSubmit (waiting for opponent — no double-send). A backstop:
+    // refresh() already closes the list on a wait.
     if (vm.isPvp && vm.pvpPendingSubmit) return;
     for (const member of vm.bench) {
       const btn = document.createElement('button');
