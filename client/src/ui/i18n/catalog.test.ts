@@ -202,25 +202,22 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { label: 'Quality time', current: 'Tier 1', required: 'Tier 3' },
   ],
   'evolution.choice.evolve': [{ species: 'Pyrodrake' }, { species: 'Cindermaw' }],
-  // Raising.* (4 ★)
-  'raising.card.status': [
-    { level: 5, trust: 'Neutral', current: 20, max: 20 },
-    { level: 12, trust: 'Friendly', current: 15, max: 30 },
-  ],
-  'raising.card.stats': [
-    { attack: 5, defense: 5, speed: 5, spAttack: 5, spDefense: 5 },
-    { attack: 22, defense: 18, speed: 27, spAttack: 15, spDefense: 19 },
-  ],
-  'raising.card.train': [
-    { name: 'Protein', count: 2 },
-    { name: 'Iron', count: 5 },
-  ],
+  // Raising.* (1 ★). qf-9 (named intentional change, QF9.2): `raising.card.status`,
+  // `raising.card.stats` and `raising.card.train` are RETIRED with the raising screen's monster
+  // cards (catalogParity DEAD-KEY); only the inventory row remains.
   'raising.inventory.item': [
     { name: 'Protein', count: 2 },
     { name: 'Iron', count: 5 },
   ],
   // Box.* (2 ★)
   'box.party.emptySlot': [{ slot: 0 }, { slot: 3 }],
+  // qf-9 (named intentional change, QF9.1): the Monsters Summary's full-stats line (1 ★); trust is
+  // the server-derived tier name, the five stats are numbers, and every field differs between the
+  // two sets.
+  'box.summary.stats': [
+    { trust: 'Wary', attack: 11, defense: 22, speed: 33, spAttack: 44, spDefense: 55 },
+    { trust: 'Devoted', attack: 101, defense: 87, speed: 64, spAttack: 120, spDefense: 99 },
+  ],
   'box.card.stats': [
     { species: 'Sproutle', level: 5, current: 18, max: 20, percent: 90 },
     { species: 'Emberfang', level: 9, current: 21, max: 21, percent: 100 },
@@ -516,13 +513,15 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'evolution.card.noPaths': 'No evolution paths.', // evolutionView.ts
   'evolution.card.choosePrompt': 'Two or more paths are ready — pick one:', // evolutionView.ts
   'evolution.path.allMet': 'All requirements met.', // evolutionView.ts
-  // Raising.* (6 plain)
+  // Raising.* (3 plain)
+  // qf-9 (named intentional change, QF9.2): -3 plain keys here (`raising.monsters.heading`
+  // 'Monsters', `raising.monsters.empty` 'No monsters.', `raising.card.care` 'Care'), RETIRED with
+  // the raising screen's Monsters section, and -3 parameterised ones in SAMPLE_PARAMS
+  // (`raising.card.{status,stats,train}`); +1 parameterised one (`box.summary.stats`, QF9.1) =
+  // 373 keys. Their absence is pinned by the 'qf-9' describe at the end of this file.
   'raising.title': 'Raising & Inventory', // raisingView.ts
-  'raising.monsters.heading': 'Monsters', // raisingView.ts
   'raising.inventory.heading': 'Inventory', // raisingView.ts
-  'raising.monsters.empty': 'No monsters.', // raisingView.ts
   'raising.inventory.empty': 'No items.', // raisingView.ts
-  'raising.card.care': 'Care', // raisingView.ts
   // Box.* (20 plain: 11, -box.card.rename, +7 ctl-8b keys, +4 ctl-8c keys, -box.heal ctl-10a)
   // ctl-10a (named intentional change): `box.heal` ('Heal Party') is DELETED with the Box Heal
   // Party button: healing happens only at a bound healer (CTL10A.4, B13).
@@ -1009,25 +1008,7 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { species: 'Cindermaw' },
     outputB: 'Evolve into Cindermaw',
   },
-  // Raising.* (4 ★)
-  'raising.card.status': {
-    inputA: { level: 5, trust: 'Neutral', current: 20, max: 20 },
-    outputA: 'Lv5 · Trust Neutral · HP 20/20',
-    inputB: { level: 12, trust: 'Friendly', current: 15, max: 30 },
-    outputB: 'Lv12 · Trust Friendly · HP 15/30',
-  },
-  'raising.card.stats': {
-    inputA: { attack: 5, defense: 5, speed: 5, spAttack: 5, spDefense: 5 },
-    outputA: 'ATK 5 · DEF 5 · SPD 5 · SP.ATK 5 · SP.DEF 5',
-    inputB: { attack: 22, defense: 18, speed: 27, spAttack: 15, spDefense: 19 },
-    outputB: 'ATK 22 · DEF 18 · SPD 27 · SP.ATK 15 · SP.DEF 19',
-  },
-  'raising.card.train': {
-    inputA: { name: 'Protein', count: 2 },
-    outputA: 'Train: Protein (x2)',
-    inputB: { name: 'Iron', count: 5 },
-    outputB: 'Train: Iron (x5)',
-  },
+  // Raising.* (1 ★; qf-9 retired `raising.card.{status,stats,train}`)
   'raising.inventory.item': {
     inputA: { name: 'Protein', count: 2 },
     outputA: 'Protein (x2)',
@@ -1046,6 +1027,14 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     outputA: 'Sproutle · Lv5 · HP 18/20 (90%)',
     inputB: { species: 'Emberfang', level: 9, current: 21, max: 21, percent: 100 },
     outputB: 'Emberfang · Lv9 · HP 21/21 (100%)',
+  },
+  // qf-9 (QF9.1): the Summary's full-stats line, the retired raising.card.stats labels plus the
+  // trust tier; the separator is U+00B7 (CELL_DOT), built by code point.
+  'box.summary.stats': {
+    inputA: { trust: 'Wary', attack: 11, defense: 22, speed: 33, spAttack: 44, spDefense: 55 },
+    outputA: `Trust Wary ${CELL_DOT} ATK 11 ${CELL_DOT} DEF 22 ${CELL_DOT} SPD 33 ${CELL_DOT} SP.ATK 44 ${CELL_DOT} SP.DEF 55`,
+    inputB: { trust: 'Devoted', attack: 101, defense: 87, speed: 64, spAttack: 120, spDefense: 99 },
+    outputB: `Trust Devoted ${CELL_DOT} ATK 101 ${CELL_DOT} DEF 87 ${CELL_DOT} SPD 64 ${CELL_DOT} SP.ATK 120 ${CELL_DOT} SP.DEF 99`,
   },
   // ctl-8c: the food row (the raising inventory row's shape), the Evolve confirm, the fed line
   // (the check mark is the CSS ::before of the ok feedback line, so the text carries none).
@@ -1385,7 +1374,8 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 378-key roster (qf-6: +`dialogue.ended.{walkedAway,leftZone,npcGone}`
+/** The full 373-key roster (qf-9: -`raising.monsters.{heading,empty}` -`raising.card.{status,stats,
+ *  care,train}` +`box.summary.stats` over the 378-key roster below; qf-6: +`dialogue.ended.{walkedAway,leftZone,npcGone}`
  *  +`quest.complete.{reward,done}` over the 373-key roster below; qf-4: +`journal.title`
  *  +`journal.empty` over the 371-key roster below; qf-3: +`box.sheet.careCooldown` over the
  *  370-key roster below;
@@ -1478,7 +1468,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-6 378-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-9 373-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1567,14 +1557,16 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 378 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 373 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (378 keys since qf-6: +3 plain, +2
-    // parameterised; 373 since qf-4: +2 plain; 371 since qf-3: +1 parameterised; 370 since ctl-14:
-    // +7 plain; 363 since ctl-13: +10 plain, +2 parameterised; was 351 since ctl-12b).
+    // (a) roster is exactly the EXPECTED_KEYS roster (373 keys since qf-9: -3 plain, -3
+    // parameterised retired with the raising Monsters section, +1 parameterised `box.summary.stats`;
+    // 378 since qf-6: +3 plain, +2 parameterised; 373 since qf-4: +2 plain; 371 since qf-3: +1
+    // parameterised; 370 since ctl-14: +7 plain; 363 since ctl-13: +10 plain, +2 parameterised; was
+    // 351 since ctl-12b).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-6 roster is 378 keys').toHaveLength(378);
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-9 roster is 373 keys').toHaveLength(373);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -2484,5 +2476,137 @@ describe('qf-6: the conversation-ended and quest-completion lines in both catalo
       true,
     );
     expect(noBreakBeforeEveryColon(frDone({ name: 'q' })), 'fr done U+00A0').toBe(true);
+  });
+});
+
+// =============================================================================
+// qf-9 (QF9.1, QF9.2): the Summary's full-stats line in BOTH catalogs (exact bytes, two differing
+// sample sets and a third), and the six raising ids retired with the raising screen's Monsters
+// section. Every expected byte is typed here (the separator and the French capitals by code point);
+// none is read off the catalog under test.
+// =============================================================================
+
+describe('qf-9: the Summary stats line and the retired raising ids', () => {
+  const KEY = 'box.summary.stats';
+  type StatsParams = {
+    trust: string;
+    attack: number;
+    defense: number;
+    speed: number;
+    spAttack: number;
+    spDefense: number;
+  };
+  const SET_A: StatsParams = {
+    trust: 'Wary',
+    attack: 11,
+    defense: 22,
+    speed: 33,
+    spAttack: 44,
+    spDefense: 55,
+  };
+  const SET_B: StatsParams = {
+    trust: 'Devoted',
+    attack: 101,
+    defense: 87,
+    speed: 64,
+    spAttack: 120,
+    spDefense: 99,
+  };
+  /** A third set with zeros: a falsy-fallback closure (`attack || '?'`) would hide here. */
+  const SET_ZERO: StatsParams = {
+    trust: 'Hostile',
+    attack: 0,
+    defense: 0,
+    speed: 0,
+    spAttack: 0,
+    spDefense: 0,
+  };
+  const DOT = String.fromCharCode(0x00b7);
+
+  it('the Summary stats line reads the exact English and French text, each field in its own slot, for three differing sample sets [QF9-1-CATALOG-STATS]', () => {
+    // WRONG IMPL KILLED: a key added to en only (tf() throws in a French boot: the Summary goes
+    // blank); a French line left as the English copy; two labels or two numbers swapped (every
+    // field differs between the sets, and the zero set pins a falsy fallback); the trust tier
+    // dropped or glued to the wrong label; "DEF" where French reads "DÉF" (a missing or
+    // decomposed accent), "ATQ SPÉ" collapsed to "ATQ"; a separator that is a hyphen or a bullet
+    // instead of U+00B7; a stat run through a locale formatter (the 120 would read "120" but a
+    // 1,000-style grouping would show on a larger value; the closures take bare digits).
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    expect(typeof en[KEY], 'en box.summary.stats is a closure').toBe('function');
+    expect(typeof fr[KEY], 'fr box.summary.stats is a closure').toBe('function');
+    const enFn = en[KEY] as (p: StatsParams) => string;
+    const frFn = fr[KEY] as (p: StatsParams) => string;
+
+    expect(enFn(SET_A)).toBe(
+      `Trust Wary ${DOT} ATK 11 ${DOT} DEF 22 ${DOT} SPD 33 ${DOT} SP.ATK 44 ${DOT} SP.DEF 55`,
+    );
+    expect(enFn(SET_B)).toBe(
+      `Trust Devoted ${DOT} ATK 101 ${DOT} DEF 87 ${DOT} SPD 64 ${DOT} SP.ATK 120 ${DOT} SP.DEF 99`,
+    );
+    expect(enFn(SET_ZERO)).toBe(
+      `Trust Hostile ${DOT} ATK 0 ${DOT} DEF 0 ${DOT} SPD 0 ${DOT} SP.ATK 0 ${DOT} SP.DEF 0`,
+    );
+
+    const frLine = (p: StatsParams): string =>
+      `Confiance ${p.trust} ${DOT} ATQ ${p.attack} ${DOT} D${CAPITAL_E_ACUTE}F ${p.defense} ` +
+      `${DOT} VIT ${p.speed} ${DOT} ATQ SP${CAPITAL_E_ACUTE} ${p.spAttack} ` +
+      `${DOT} D${CAPITAL_E_ACUTE}F SP${CAPITAL_E_ACUTE} ${p.spDefense}`;
+    expect(frFn(SET_A)).toBe(frLine(SET_A));
+    expect(frFn(SET_B)).toBe(frLine(SET_B));
+    expect(frFn(SET_ZERO)).toBe(frLine(SET_ZERO));
+    expect(frFn(SET_A), 'the exact French bytes, set A').toBe(
+      `Confiance Wary ${DOT} ATQ 11 ${DOT} D${CAPITAL_E_ACUTE}F 22 ${DOT} VIT 33 ${DOT} ATQ SP${CAPITAL_E_ACUTE} 44 ${DOT} D${CAPITAL_E_ACUTE}F SP${CAPITAL_E_ACUTE} 55`,
+    );
+
+    expect(frFn(SET_A), 'a translation, not the English line').not.toBe(enFn(SET_A));
+    expect(enFn(SET_A), 'the two sample sets differ (en)').not.toBe(enFn(SET_B));
+    expect(frFn(SET_A), 'the two sample sets differ (fr)').not.toBe(frFn(SET_B));
+    // The trust tier is carried verbatim, once, in both languages.
+    for (const set of [SET_A, SET_B, SET_ZERO]) {
+      expect(enFn(set).split(set.trust).length - 1, `en carries ${set.trust} once`).toBe(1);
+      expect(frFn(set).split(set.trust).length - 1, `fr carries ${set.trust} once`).toBe(1);
+    }
+  });
+
+  it('the six raising ids that carried the retired Monsters section are gone from both catalogs, the pinned roster and the sample tables, while the inventory ids stay [QF9-2-CATALOG-RETIRED]', () => {
+    // WRONG IMPL KILLED: a retired id left behind as a dead key in either catalog (catalogParity
+    // DEAD-KEY fires, or worse a surviving requester keeps the removed section half alive); an id
+    // retired from en only (a French boot still carries it); a wholesale `raising.*` deletion (the
+    // kept ids below would go with it); the new id missing from the roster.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const RETIRED = [
+      'raising.monsters.heading',
+      'raising.monsters.empty',
+      'raising.card.status',
+      'raising.card.stats',
+      'raising.card.care',
+      'raising.card.train',
+    ] as const;
+    for (const retired of RETIRED) {
+      expect(Object.hasOwn(en, retired), `en ${retired} is retired`).toBe(false);
+      expect(Object.hasOwn(fr, retired), `fr ${retired} is retired`).toBe(false);
+      expect(EXPECTED_KEYS.includes(retired), `the pinned roster no longer lists ${retired}`).toBe(
+        false,
+      );
+    }
+    expect(RETIRED, 'ANTI-VACUITY: six ids').toHaveLength(6);
+
+    for (const kept of [
+      'raising.title',
+      'raising.inventory.heading',
+      'raising.inventory.empty',
+      'raising.inventory.item',
+      'raising.feedback.cared',
+    ]) {
+      expect(Object.hasOwn(en, kept), `en ${kept} stays`).toBe(true);
+      expect(Object.hasOwn(fr, kept), `fr ${kept} stays`).toBe(true);
+    }
+    expect(Object.hasOwn(en, KEY), 'en carries the new id').toBe(true);
+    expect(Object.hasOwn(fr, KEY), 'fr carries the new id').toBe(true);
+    expect(EXPECTED_KEYS.includes(KEY), 'the pinned roster lists the new id').toBe(true);
+    expect(Object.keys(en).length, 'the English catalog holds exactly 373 keys').toBe(373);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(373);
   });
 });

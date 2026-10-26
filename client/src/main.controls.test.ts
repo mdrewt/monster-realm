@@ -2205,7 +2205,9 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     // through another real view's callback: the Trade view's Accept (`respondTrade`, refused by the
     // same policy). The refusal of `care` itself is the policy row `COMMAND_BATTLE_POLICY.care`
     // (contextStack.ts), driven through the raising card's onCare in main.dispatch.test.ts while the
-    // card still exists (R-ctl-11b-RAISINGCARDS).
+    // card still existed (R-ctl-11b-RAISINGCARDS). qf-9 (named intentional change): the card and its
+    // onCare are deleted; the `care` and `train` refusals are now driven as screen commands by
+    // QF9-3-BOOT-CARE-TRAIN-COMMANDS in main.dispatch.test.ts.
     // WRONG IMPL KILLED: a refusal narrowed to the one command the dialogue issues (`command.kind
     // === 'advanceDialogue'`: respondTrade would still reach its reducer at the battle base); a
     // refusal wired into the dialogue-choice click delegation instead of `dispatch` (a view callback
@@ -3433,11 +3435,18 @@ describe('main.ts openFrame: push first, then show (runtime, so-2)', { sequentia
 // raising is hidden: every sheet care outcome (and every sheet train rejection, which went to the
 // global status line under the frame) was swallowed or misplaced. The sink is now chosen at the
 // SEND from the invoking surface: the Monsters frame's own feedback line for a sheet action
-// (`boxView.feedbackLine()`, bound to that open), raising's own line for the raising card.
+// (`boxView.feedbackLine()`, bound to that open).
+//
+// qf-9 (named intentional change, QF9.2/QF9.3): the raising card and its `#raising-feedback` line
+// are DELETED (the raising screen is the Bag, inventory-only), so the Monsters sheet is the one care
+// invoker. Every `raisingLineText()` read below is removed (the element no longer exists; `byId`
+// would throw), and the raising-card case (QF2-3-BOOT-RAISING-OWN-LINE) becomes a QF9-2 boot row
+// that pins the raising screen's absence of a care surface. The late-answer rows keep their
+// intent through the status-line and Monsters-line reads.
 //
 // The reducers' outcomes are controlled through `H.answer` (a deferred or rejecting promise per
 // reducer name; the call is still recorded). Every case reads only what a player sees: the
-// Monsters frame's `.mr-frame-feedback` line, raising's `#raising-feedback`, and `#status`.
+// Monsters frame's `.mr-frame-feedback` line and `#status`.
 
 /** A promise the test settles by hand. */
 function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
@@ -3465,8 +3474,6 @@ const boxLine = (): HTMLElement => {
   return line;
 };
 const boxLineText = (): string => boxLine().textContent ?? '';
-/** Raising's own feedback line (its text, whether or not the view is shown). */
-const raisingLineText = (): string => byId('raising-feedback').textContent ?? '';
 
 /** Boot, seed one own monster, open Monsters (V), its sheet (A) and move the cursor to Care. */
 async function bootAtSheetCare(url?: string): Promise<void> {
@@ -3487,7 +3494,6 @@ async function bootAtSheetCare(url?: string): Promise<void> {
     'precondition: the sheet cursor is on Care',
   ).toBe('true');
   expect(boxLineText(), 'precondition: the Monsters line is empty').toBe('');
-  expect(raisingLineText(), 'precondition: raising`s line is empty').toBe('');
   expect(statusText(), 'precondition: the status line is empty').toBe('');
 }
 
@@ -3505,7 +3511,7 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
     document.body.replaceChildren();
   });
 
-  it('QF2-1-BOOT-SHEET-CARE-OK: Care pressed on the Monsters sheet paints the catalogued success line on the Monsters frame`s own feedback line (data-feedback ok) once the care settles; raising`s line and the status line stay empty', async () => {
+  it('QF2-1-BOOT-SHEET-CARE-OK: Care pressed on the Monsters sheet paints the catalogued success line on the Monsters frame`s own feedback line (data-feedback ok) once the care settles; the status line stays empty and raising has no feedback node [QF9-2-NO-RAISING-LINE]', async () => {
     // WRONG IMPL KILLED: today's sink (`raisingView.showFeedback`, a no-op while raising is
     // hidden): the sheet care succeeds with no sign at all (pt3-2026-10-048); a sink that paints
     // BOTH surfaces (raising's hidden line would greet its next open) or the status line; a kind
@@ -3514,10 +3520,13 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
     // the deferred cases below; and a Care that no longer reaches its reducer with the monster's
     // id (the call is asserted, so "no line" cannot pass by doing nothing).
     await bootAtSheetCare();
+    // qf-9 (named intentional change, QF9.2): the precondition was "raising`s feedback node exists, so
+    // its being empty is a real read"; the node is deleted with the raising card, so the sheet is the
+    // only care surface and there is no second line a success could leak to.
     expect(
       document.getElementById('raising-feedback'),
-      'precondition: raising`s feedback node exists, so its being empty is a real read',
-    ).not.toBeNull();
+      'QF9-2: the raising screen has no feedback node at all',
+    ).toBeNull();
 
     tap('Enter', 1050); // A on Care
     await flush();
@@ -3535,7 +3544,6 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
     expect(boxLineText(), 'the Monsters frame`s line carries the success line').toBe(cared);
     expect(isShown(boxLine()), 'and it is showing').toBe(true);
     expect(boxLine().getAttribute('data-feedback')).toBe('ok');
-    expect(raisingLineText(), 'raising`s hidden line is not painted').toBe('');
     expect(statusText(), 'nor is the status line').toBe('');
   });
 
@@ -3557,7 +3565,6 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
     );
     expect(isShown(boxLine()), 'and it is showing').toBe(true);
     expect(boxLine().getAttribute('data-feedback')).toBe('error');
-    expect(raisingLineText(), 'raising`s hidden line is not painted').toBe('');
     expect(statusText(), 'nor is the status line').toBe('');
   });
 
@@ -3670,7 +3677,8 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
     // Monsters would inherit the old answer, and a world top would route it to raising); a sink
     // with no hidden-view guard (the late answer is written into the hidden frame and greets its
     // next open); a sink bound to the view instead of the open (the reopen below); a late answer
-    // that falls back to raising's line or the status line when the invoking frame is gone.
+    // that falls back to the status line when the invoking frame is gone (qf-9: raising has no
+    // line to fall back to any more).
     await bootAtSheetCare();
 
     // (a) Leave the frame before the answer: nothing is painted anywhere.
@@ -3684,7 +3692,6 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
     first.resolve();
     await flush();
     expect(boxLineText(), '(a) the left frame`s line stays empty').toBe('');
-    expect(raisingLineText(), '(a) raising`s line stays empty').toBe('');
     expect(statusText(), '(a) the status line stays empty').toBe('');
 
     // (b) Close and reopen before the answer: the reopened frame shows no stale line.
@@ -3711,63 +3718,55 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
     await flush();
     expect(boxLineText(), '(b) the reopened frame carries no stale line').toBe('');
     expect(boxLine().hasAttribute('data-feedback'), '(b) and no data-feedback').toBe(false);
-    expect(raisingLineText(), '(b) raising`s line stays empty').toBe('');
     expect(statusText(), '(b) the status line stays empty').toBe('');
   });
 
-  it('QF2-3-BOOT-RAISING-OWN-LINE: Care pressed on the Raising card still paints `Cared!` on raising`s own line and nothing on the Monsters frame`s line; a care that settles after raising was hidden still paints nothing (the hidden-view guard stays)', async () => {
-    // WRONG IMPL KILLED: a sink selection that routes every care to the Monsters frame (raising`s
-    // card would show nothing: QF2.3 regression); a sink that paints both; a "selection" that
-    // drops raising`s hidden-view no-op guard (the late answer is written into the hidden view
-    // and greets its next open); a selection keyed on the BOX view`s existence or visibility
-    // rather than on the invoking surface (the Monsters frame is hidden here, raising shown); and
-    // a Raising Care that no longer reaches the reducer (asserted).
+  it('QF9-2-BOOT-RAISING-NO-CARE: KeyI opens the raising frame with an own monster and a food in stock: it shows no Care or Train button, no monster card (no nickname, no stats line) and no feedback node, before and after the Bag`s first paint, the food is still listed, and nothing reaches the care or train reducer', async () => {
+    // INTENTIONAL CHANGE (qf-9, QF9.2): this case was QF2-3-BOOT-RAISING-OWN-LINE (Care pressed on the
+    // Raising card paints `Cared!` on raising`s own line, and a late answer stays out of a hidden
+    // raising). The Raising card, its Care and Train buttons and `#raising-feedback` are deleted; the
+    // raising frame is the inventory-only Bag. Its intent survives as the absence of any care surface.
+    // WRONG IMPL KILLED: the shipped raising screen (a monster card per own monster with Care and a
+    // Train button per trainable food, and a `#raising-feedback` line); a Monsters section merely
+    // hidden (its nickname and stats text stay in the root: the e2e text scans read hidden text); a
+    // rewrite that drops the inventory with the cards (the food must still be listed); and a Bag
+    // paint that brings the cards back (the second read is after the first batch).
     await bootReady();
     seedWorld(1000);
-    opts.store.upsertMonster(RAISED_MONSTER);
-    server(1010);
+    seedFood();
     tap('KeyI', 1020);
     expect(shownByTestId('raising-title'), 'precondition: I opened raising').toBe(true);
-    const careButton = (): HTMLButtonElement => {
-      const root = byId('raising-feedback').parentElement;
-      const button = [...(root?.querySelectorAll('button') ?? [])].find(
-        (b) => b.textContent === i18nT('raising.card.care'),
-      );
-      if (button === undefined) throw new Error('raising painted no Care button');
-      return button;
+    expect(stackNames().at(-1), 'precondition: the raising frame is on top').toBe('raisingView');
+    const root = (): HTMLElement => {
+      const title = document.querySelector('[data-testid="raising-title"]');
+      if (title?.parentElement === null || title?.parentElement === undefined) {
+        throw new Error('the raising root is missing');
+      }
+      return title.parentElement;
     };
-    expect(boxLineText(), 'precondition: the Monsters line is empty').toBe('');
+    const expectNoCareSurface = (when: string): void => {
+      expect(
+        root().querySelectorAll('button'),
+        `${when}: no button in the raising root`,
+      ).toHaveLength(0);
+      const text = root().textContent ?? '';
+      for (const word of ['Care', 'Train: ', 'm31', 'ATK ', 'Trust ', 'HP ']) {
+        expect(text.includes(word), `${when}: the raising root has no "${word}"`).toBe(false);
+      }
+      expect(document.getElementById('raising-feedback'), `${when}: no feedback node`).toBeNull();
+    };
+    expectNoCareSurface('opened');
+    expect(
+      byId('raising-inventory').textContent ?? '',
+      'the food is still listed in the inventory grid',
+    ).toContain('Bait (x3)');
 
-    // (a) The answer lands on raising's own line.
-    clock.t = 1030;
-    careButton().click();
-    await flush();
-    expect(callsOf('care'), 'the raising card`s Care reached the reducer').toEqual([
-      { name: 'care', args: { monsterId: 31n } },
-    ]);
-    const cared = i18nT('raising.feedback.cared');
-    expect(cared, 'fixture: the success line is real text').not.toBe('');
-    expect(raisingLineText(), 'raising`s own line carries the success line').toBe(cared);
-    expect(boxLineText(), 'the Monsters frame`s line stays empty').toBe('');
-    expect(statusText(), 'and so does the status line').toBe('');
-
-    // (b) Hidden before the answer: the guard keeps the late answer out.
-    tap('Escape', 1100); // Start: raising closes, the bare world
-    tap('KeyI', 1110);
-    expect(shownByTestId('raising-title'), 'precondition: raising reopened').toBe(true);
-    expect(raisingLineText(), 'precondition: the reopen starts with an empty line').toBe('');
-    const pending = deferred();
-    H.answer.care = () => pending.promise;
-    clock.t = 1120;
-    careButton().click();
-    expect(callsOf('care'), 'precondition: the second care was sent').toHaveLength(2);
-    tap('Escape', 1130);
-    expect(shownByTestId('raising-title'), 'precondition: raising was hidden').toBe(false);
-    pending.resolve();
-    await flush();
-    expect(raisingLineText(), 'the hidden view`s line stays empty').toBe('');
-    expect(boxLineText(), 'the Monsters frame`s line stays empty').toBe('');
-    expect(statusText(), 'the status line stays empty').toBe('');
+    server(1030); // the first batch paints the Bag's pockets
+    expectNoCareSurface('after the first Bag paint');
+    tap('ArrowDown', 1040);
+    expectNoCareSurface('after a Bag button');
+    expect(callsOf('care'), 'raising sent no care').toEqual([]);
+    expect(callsOf('train'), 'and no train').toEqual([]);
   });
 
   // ----------------------------------------------------------------------------------------
@@ -3863,7 +3862,6 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
     );
     expect(isShown(boxLine()), 'and it is showing').toBe(true);
     expect(boxLine().getAttribute('data-feedback')).toBe('error');
-    expect(raisingLineText(), 'raising`s hidden line is not painted').toBe('');
     expect(statusText(), 'nor is the status line').toBe('');
   });
 
@@ -3910,7 +3908,6 @@ describe('main.ts care feedback follows the invoking surface (runtime, qf-2)', {
     expect(boxLineText(), 'the line carries the French success line').toBe(fr);
     expect(isShown(boxLine()), 'and it is showing').toBe(true);
     expect(boxLine().getAttribute('data-feedback')).toBe('ok');
-    expect(raisingLineText(), 'raising`s hidden line is not painted').toBe('');
     expect(statusText(), 'nor is the status line').toBe('');
   });
 
@@ -4399,5 +4396,322 @@ describe('main.ts care readiness reads the wall clock (runtime, qf-3)', {
       'control: with the Monsters frame open, the idle tick asks care_remaining_ms',
     ).toBeGreaterThan(0);
     for (const [last] of ticked) expect(last, 'the monster`s own anchor').toBe(QF3_ANCHOR);
+  });
+});
+
+// ==========================================================================================
+// qf-9: the Monsters Summary shows the full stats (QF9.1) and a care in flight blocks a second one
+// for the same monster (QF9.3)
+// ==========================================================================================
+//
+// QF9.1: the raising cards used to show attack, defense, speed, spAttack, spDefense and trust; they
+// are deleted (QF9.2), so the Monsters Summary pane carries them, from `my_monster_pub` through the
+// store: `#monsters-summary-stats` reads `box.summary.stats` for the summary monster and follows a
+// store batch that changes the monster.
+//
+// QF9.3: the raising card's in-flight lock was the only thing that stopped a double care; the
+// Monsters sheet path has none, so main.ts holds one care guard PER MONSTER: while a care for M is
+// pending another care command for M sends no reducer call, a different monster's care still sends,
+// the guard releases when the care settles (resolved or rejected) and is cleared by a reconnect (the
+// SDK never settles a reducer promise after a link drop).
+
+/** U+00B7 MIDDLE DOT and U+00C9 E acute, by code point (the expected bytes hold no pasted glyph). */
+const Q9_DOT = String.fromCharCode(0x00b7);
+const Q9_E_ACUTE = String.fromCharCode(0x00c9);
+
+/** RAISED_MONSTER with five DISTINCT stats and a non-default trust tier. */
+const Q9_STATS_MONSTER: StoreMonsterPub = {
+  ...RAISED_MONSTER,
+  statAttack: 31,
+  statDefense: 42,
+  statSpeed: 53,
+  statSpAttack: 64,
+  statSpDefense: 75,
+  trustTier: 'Devoted',
+};
+
+/** The English Summary stats line for a monster row, typed here (never read off the catalog). */
+const q9En = (m: StoreMonsterPub): string =>
+  `Trust ${m.trustTier} ${Q9_DOT} ATK ${m.statAttack} ${Q9_DOT} DEF ${m.statDefense} ` +
+  `${Q9_DOT} SPD ${m.statSpeed} ${Q9_DOT} SP.ATK ${m.statSpAttack} ${Q9_DOT} SP.DEF ${m.statSpDefense}`;
+
+/** The French line for the same row. */
+const q9Fr = (m: StoreMonsterPub): string =>
+  `Confiance ${m.trustTier} ${Q9_DOT} ATQ ${m.statAttack} ${Q9_DOT} D${Q9_E_ACUTE}F ${m.statDefense} ` +
+  `${Q9_DOT} VIT ${m.statSpeed} ${Q9_DOT} ATQ SP${Q9_E_ACUTE} ${m.statSpAttack} ` +
+  `${Q9_DOT} D${Q9_E_ACUTE}F SP${Q9_E_ACUTE} ${m.statSpDefense}`;
+
+/** The Summary pane's stats line; the element exists once the Monsters view is built. */
+const q9Line = (): HTMLElement => byId('monsters-summary-stats');
+
+describe('main.ts Monsters Summary stats and the care in-flight guard (runtime, qf-9)', {
+  sequential: true,
+}, () => {
+  afterEach(() => {
+    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+    recorded = [];
+    while (restorers.length > 0) restorers.pop()?.();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    raf.cb = null;
+    window.history.replaceState(null, '', '/');
+    document.body.replaceChildren();
+  });
+
+  /** Boot, seed `monsters` (party order) and open Monsters (V), the first monster's sheet (A) and
+   *  its Summary pane (A on the Summary row). Returns nothing: the pane is up. */
+  async function bootAtSummary(
+    monsters: readonly StoreMonsterPub[],
+    url?: string,
+    downs = 0,
+  ): Promise<void> {
+    await bootReady(url);
+    seedWorld(1000);
+    for (const m of monsters) opts.store.upsertMonster(m);
+    server(1010);
+    tap('KeyV', 1020);
+    expect(stackNames(), 'precondition: V opened Monsters over the menu').toEqual([
+      'world',
+      'menuView',
+      'boxView',
+    ]);
+    let t = 1030;
+    for (let i = 0; i < downs; i += 1) {
+      tap('ArrowDown', t); // step to a later monster
+      t += 20;
+    }
+    tap('Enter', t); // A on the monster: its sheet, the cursor on Summary
+    expect(
+      byId('monstersSheet-root-summary').getAttribute('aria-selected'),
+      'precondition: the sheet cursor is on Summary',
+    ).toBe('true');
+    tap('Enter', t + 20); // A on Summary: the pane
+  }
+
+  it('QF9-1-BOOT-SUMMARY-STATS: the Summary pane of a monster in the store shows the catalogued line with its attack, defense, speed, spAttack, spDefense and trust; the line is empty until the pane opens, and a store batch that changes the monster updates the open pane with no new press', async () => {
+    // WRONG IMPL KILLED: today's frame (no stats line at all: the stats left the raising screen with
+    // QF9.2 and live nowhere); a line fed from the wrong field (every stat differs); a main.ts that
+    // never passes the stats to the Monsters view (the pane would be empty or hidden); a stats map
+    // read once at open (the batch below raises a stat and the trust tier: a stale pane); a map
+    // built from a hand-copied constant instead of the store row; a line on screen before the
+    // pane opens.
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertMonster(Q9_STATS_MONSTER);
+    server(1010);
+    tap('KeyV', 1020);
+    tap('Enter', 1030); // A on the monster: its sheet, the cursor on Summary
+    expect(
+      byId('monstersSheet-root-summary').getAttribute('aria-selected'),
+      'precondition: the sheet cursor is on Summary',
+    ).toBe('true');
+    expect(q9Line().textContent, 'before the pane opens the line is empty').toBe('');
+    expect(isShown(q9Line()), 'and hidden').toBe(false);
+
+    tap('Enter', 1040); // A on Summary: the pane
+    expect(boxFrameRoot().contains(q9Line()), 'the line is inside the Monsters frame').toBe(true);
+    expect(q9Line().textContent, 'the six values of the stored monster').toBe(
+      q9En(Q9_STATS_MONSTER),
+    );
+    expect(q9Line().textContent, 'literal check of the bytes').toBe(
+      `Trust Devoted ${Q9_DOT} ATK 31 ${Q9_DOT} DEF 42 ${Q9_DOT} SPD 53 ${Q9_DOT} SP.ATK 64 ${Q9_DOT} SP.DEF 75`,
+    );
+    expect(isShown(q9Line()), 'and it is showing').toBe(true);
+
+    // A batch changes the monster's stats and trust tier: the open pane follows, with no press.
+    const raised: StoreMonsterPub = {
+      ...Q9_STATS_MONSTER,
+      statAttack: 32,
+      statSpeed: 99,
+      trustTier: 'Friendly',
+    };
+    opts.store.upsertMonster(raised);
+    server(1100);
+    expect(q9Line().textContent, 'the batch`s numbers show with no press').toBe(q9En(raised));
+    expect(q9Line().textContent ?? '', 'the old attack is gone').not.toContain('ATK 31 ');
+    expect(isShown(q9Line()), 'still showing').toBe(true);
+  });
+
+  it('QF9-1-BOOT-SUMMARY-STATS-PER-MONSTER: with two own monsters the Summary of the SECOND shows the second`s own row, not the first`s', async () => {
+    // WRONG IMPL KILLED: a stats map keyed by the party slot or the list index instead of the
+    // monster id (the second pane would show the first monster's numbers); a map holding only the
+    // first row; a pane reading the cursor monster's row instead of the summary monster's.
+    const second: StoreMonsterPub = {
+      ...RAISED_MONSTER,
+      monsterId: 32n,
+      nickname: 'm32',
+      partySlot: 1,
+      statAttack: 7,
+      statDefense: 8,
+      statSpeed: 9,
+      statSpAttack: 10,
+      statSpDefense: 11,
+      trustTier: 'Wary',
+    };
+    await bootAtSummary([Q9_STATS_MONSTER, second], undefined, 1);
+    expect(
+      boxFrameRoot().textContent ?? '',
+      'precondition: the pane is the second monster`s (its nickname is up)',
+    ).toContain('m32');
+    expect(q9Line().textContent, 'the second monster`s own row').toBe(q9En(second));
+    expect(q9Line().textContent ?? '', 'not the first`s').not.toContain('ATK 31');
+  });
+
+  it('QF9-1-BOOT-SUMMARY-STATS-FR: under ?locale=fr the Summary line is the French catalog text with the same six values', async () => {
+    // WRONG IMPL KILLED: a line assembled from English literals in main.ts or boxView (a French boot
+    // would read "Trust ... ATK"); a line resolved at build time and cached across the locale; a
+    // French line that lost its accents.
+    await bootAtSummary([Q9_STATS_MONSTER], '/?locale=fr');
+    expect(q9Line().textContent, 'the French bytes').toBe(q9Fr(Q9_STATS_MONSTER));
+    expect(q9Line().textContent ?? '', 'no English label').not.toContain('Trust');
+    expect(isShown(q9Line())).toBe(true);
+  });
+
+  it('QF9-3-BOOT-CARE-IN-FLIGHT-GUARD: while a care for a monster is pending a second A on Care sends no care reducer call, however long it stays pending; after the care settles RESOLVED the next A sends, and after one settles REJECTED the one after that sends too', async () => {
+    // WRONG IMPL KILLED: no guard on the Monsters sheet path (the raising card`s in-flight lock was
+    // the only one: a second A sends a second care while the first is pending, the contradictory
+    // "Cared!" then "care cooldown not yet elapsed" flash and, for train-like reducers, a double
+    // spend); a guard released at once (a `void` dispatch: the macrotask flush below shows it); a
+    // guard released only on resolve (the rejected phase then stays blocked forever) or only on
+    // reject; a guard never released.
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await bootAtSheetCare();
+    let current = deferred();
+    H.answer.care = () => current.promise;
+
+    tap('Enter', 1050); // A on Care: sent, pending
+    expect(callsOf('care'), 'the first care was sent').toHaveLength(1);
+    tap('Enter', 1060); // A again while pending
+    expect(callsOf('care'), 'a second A while pending sends nothing').toHaveLength(1);
+    await flush();
+    tap('Enter', 1070); // and again after a macrotask: still pending
+    expect(callsOf('care'), 'nor does a later A while it is still pending').toHaveLength(1);
+
+    current.resolve();
+    await flush();
+    current = deferred();
+    tap('Enter', 1080); // A after the resolve
+    expect(callsOf('care'), 'after the settle the next A sends').toHaveLength(2);
+    tap('Enter', 1090);
+    expect(callsOf('care'), 'and that one holds the guard again').toHaveLength(2);
+
+    // A REJECTED care releases the guard too.
+    let rejectIt: () => void = () => undefined;
+    const rejecting = new Promise<void>((_resolve, reject) => {
+      rejectIt = () => reject(senderError('care cooldown not yet elapsed'));
+    });
+    current.resolve();
+    await flush();
+    H.answer.care = () => rejecting;
+    tap('Enter', 1100);
+    expect(callsOf('care'), 'the third care was sent').toHaveLength(3);
+    tap('Enter', 1110);
+    expect(callsOf('care'), 'the guard holds while it is pending').toHaveLength(3);
+    rejectIt();
+    await flush();
+    H.answer.care = undefined;
+    tap('Enter', 1120);
+    expect(callsOf('care'), 'after a REJECTED settle the guard is released').toHaveLength(4);
+    for (const call of callsOf('care')) {
+      expect(call.args, 'every call carried the monster`s id').toEqual({ monsterId: 31n });
+    }
+  });
+
+  it('QF9-3-BOOT-CARE-GUARD-PER-MONSTER: a care pending for one monster does not stop a care for another, but still blocks a second care for itself, and settling frees each monster independently', async () => {
+    // WRONG IMPL KILLED: a view-wide guard (one boolean or one slot for the whole screen: monster
+    // 32`s care would be swallowed while 31`s is pending, the shape the raising card`s C6 bug had);
+    // a guard keyed on something other than the monster id (the cursor, the party slot); a release
+    // of one monster that frees the other (the final phase settles only 31`s).
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertMonster(RAISED_MONSTER); // 31n, party slot 0
+    opts.store.upsertMonster({ ...RAISED_MONSTER, monsterId: 32n, nickname: 'm32', partySlot: 1 });
+    server(1010);
+    const first = deferred();
+    const second = deferred();
+    H.answer.care = (args) =>
+      (args as { monsterId: bigint }).monsterId === 31n ? first.promise : second.promise;
+
+    tap('KeyV', 1020);
+    tap('Enter', 1030); // monster 31's sheet
+    tap('ArrowDown', 1040); // Care
+    tap('Enter', 1050); // care 31: pending
+    expect(callsOf('care'), 'care for 31 sent').toEqual([
+      { name: 'care', args: { monsterId: 31n } },
+    ]);
+
+    tap('Backspace', 1060); // out of the sheet
+    tap('ArrowDown', 1070); // the second monster
+    tap('Enter', 1080); // its sheet, the cursor on Summary
+    tap('ArrowDown', 1090); // Care
+    expect(
+      byId('monstersSheet-root-care').getAttribute('aria-selected'),
+      'precondition: the sheet cursor is on Care',
+    ).toBe('true');
+    tap('Enter', 1100); // care 32 while 31's is pending
+    expect(
+      callsOf('care').map((c) => c.args),
+      'a different monster`s care still sends',
+    ).toEqual([{ monsterId: 31n }, { monsterId: 32n }]);
+
+    // Back to 31: its second care is blocked while its first is pending.
+    tap('Backspace', 1110);
+    tap('ArrowUp', 1120);
+    tap('Enter', 1130);
+    tap('ArrowDown', 1140);
+    tap('Enter', 1150);
+    expect(callsOf('care'), 'a second care for 31 is blocked').toHaveLength(2);
+
+    // Settling 31's alone frees 31, not 32.
+    first.resolve();
+    await flush();
+    H.answer.care = undefined;
+    tap('Enter', 1160);
+    expect(
+      callsOf('care').map((c) => c.args),
+      'after 31`s settle a care for 31 sends',
+    ).toEqual([{ monsterId: 31n }, { monsterId: 32n }, { monsterId: 31n }]);
+    await flush();
+    second.resolve();
+    await flush();
+  });
+
+  it('QF9-3-BOOT-CARE-GUARD-CLEARED-ON-RECONNECT: a care that never settles (the link dropped) does not block the monster for the rest of the session: after a reconnect the next care for it sends', async () => {
+    // WRONG IMPL KILLED: a guard released only by the care`s own settle (the SDK never settles a
+    // reducer promise after a link drop, so the monster could never be cared for again until a
+    // page reload); a guard cleared on every batch (the pending case above would send twice); a
+    // reconnect that clears the screens but not the guard.
+    await bootAtSheetCare();
+    H.answer.care = () => new Promise<void>(() => undefined); // never settles
+    tap('Enter', 1050); // A on Care: sent, pending forever
+    expect(callsOf('care'), 'precondition: the care was sent').toHaveLength(1);
+    tap('Enter', 1060);
+    expect(callsOf('care'), 'precondition: the guard holds before the drop').toHaveLength(1);
+
+    // The link drops and comes back; the store is re-delivered.
+    opts.store.reset(); // the drop edge
+    opts.onReconnect(H.identity);
+    opts.onHydrated();
+    opts.store.upsertMonster(RAISED_MONSTER);
+    server(1100);
+    H.answer.care = undefined;
+    let t = 1110;
+    for (let i = 0; i < 4 && stackNames().length > 1; i += 1) {
+      tap('Escape', t); // Start pops whatever frames are left to the world
+      t += 10;
+    }
+    expect(stackNames(), 'precondition: back at the bare world').toEqual(['world']);
+    tap('KeyV', t);
+    tap('Enter', t + 10); // A on the monster: its sheet
+    tap('ArrowDown', t + 20); // Care
+    expect(
+      byId('monstersSheet-root-care').getAttribute('aria-selected'),
+      'precondition: the sheet cursor is on Care',
+    ).toBe('true');
+    tap('Enter', t + 30); // A on Care after the reconnect
+    expect(
+      callsOf('care'),
+      'the care after the reconnect sends: the guard was cleared',
+    ).toHaveLength(2);
   });
 });

@@ -131,7 +131,7 @@
 // ---------------------------------------------------------------------------
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readWasmU32Constant } from '../../test-util/wasmPkg';
-import type { MonsterCardViewModel } from './boxModel';
+import type { MonsterCardViewModel, MonsterStatsViewModel } from './boxModel';
 import { BoxView, type BoxViewCallbacks } from './boxView';
 import type { EvolutionMonsterViewModel, EvolutionPathViewModel } from './evolutionModel';
 import type { FoodVm, SheetAction } from './monstersModel';
@@ -360,7 +360,8 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
     },
     {
       id: 'raisingView',
-      make: (app) => new RaisingView(app, { onTrain: vi.fn(), onCare: vi.fn() }),
+      // qf-9 (QF9.2): the raising screen is inventory-only, so it takes no callbacks.
+      make: (app) => new RaisingView(app),
     },
     { id: 'evolutionView', make: (app) => new EvolutionView(app, { onEvolve: vi.fn() }) },
   ];
@@ -5038,6 +5039,289 @@ describe('BoxView qf-3: the Care cooldown on the sheet (QF3.3, QF3.4)', () => {
       m24s4BxAssertNoRosterWord(texts, 'a ready Care');
       joined = texts.join('\n');
       expect(c8cSpanParams(joined, 'box.sheet.careCooldown'), 'ready: no hint').toEqual([]);
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+      vi.mocked(i18nTf).mockRestore();
+    }
+  });
+});
+
+// =============================================================================
+// qf-9 (QF9.1): the Monsters Summary pane shows the monster's FULL stats (attack, defense, speed,
+// spAttack, spDefense and trust) from `my_monster_pub`, which the raising screen's cards used to
+// show. `refresh(party, box, stats)` takes a third, optional map (boxModel's buildMonsterStats,
+// keyed by String(monsterId)); the Summary part gains one line `#monsters-summary-stats` reading
+// `tf('box.summary.stats', ...)` for the summary monster from the LATEST refresh's map. A monster
+// with no stats row has the line empty and hidden (the e2e text scans read hidden text).
+// =============================================================================
+
+/** U+00B7 MIDDLE DOT (the stats line's separator) and U+00C9 E acute (the French labels), built by
+ *  code point so the expected bytes hold no pasted glyph. */
+const Q9_DOT = String.fromCharCode(0x00b7);
+const Q9_E_ACUTE = String.fromCharCode(0x00c9);
+
+const q9Stats = (over: Partial<MonsterStatsViewModel> = {}): MonsterStatsViewModel => ({
+  trustTier: 'Devoted',
+  statAttack: 31,
+  statDefense: 42,
+  statSpeed: 53,
+  statSpAttack: 64,
+  statSpDefense: 75,
+  ...over,
+});
+
+/** The English line for a stats row: every number distinct, so a swapped pairing shows. */
+const q9En = (s: MonsterStatsViewModel): string =>
+  `Trust ${s.trustTier} ${Q9_DOT} ATK ${s.statAttack} ${Q9_DOT} DEF ${s.statDefense} ` +
+  `${Q9_DOT} SPD ${s.statSpeed} ${Q9_DOT} SP.ATK ${s.statSpAttack} ${Q9_DOT} SP.DEF ${s.statSpDefense}`;
+
+/** The French line for a stats row. */
+const q9Fr = (s: MonsterStatsViewModel): string =>
+  `Confiance ${s.trustTier} ${Q9_DOT} ATQ ${s.statAttack} ${Q9_DOT} D${Q9_E_ACUTE}F ${s.statDefense} ` +
+  `${Q9_DOT} VIT ${s.statSpeed} ${Q9_DOT} ATQ SP${Q9_E_ACUTE} ${s.statSpAttack} ` +
+  `${Q9_DOT} D${Q9_E_ACUTE}F SP${Q9_E_ACUTE} ${s.statSpDefense}`;
+
+/** Kip (100) and Moss (101) with DIFFERENT rows: a lookup of the wrong monster reads wrong. */
+const q9KipStats = (): MonsterStatsViewModel =>
+  q9Stats({
+    trustTier: 'Wary',
+    statAttack: 11,
+    statDefense: 12,
+    statSpeed: 13,
+    statSpAttack: 14,
+    statSpDefense: 15,
+  });
+const q9MossStats = (): MonsterStatsViewModel => q9Stats();
+const q9Map = (): ReadonlyMap<string, MonsterStatsViewModel> =>
+  new Map([
+    ['100', q9KipStats()],
+    ['101', q9MossStats()],
+  ]);
+
+/** A shown frame whose last refresh carried `stats`. */
+function q9Open(stats?: ReadonlyMap<string, MonsterStatsViewModel>): C8bMounted {
+  const mounted = c8bMount();
+  mounted.view.refresh(c8bParty(), c8bBox(), stats);
+  mounted.view.show();
+  return mounted;
+}
+
+/** The summary stats line; it must exist (it is built once, hidden or not). */
+function q9Line(root: Element): HTMLElement {
+  const el = root.querySelector<HTMLElement>('#monsters-summary-stats');
+  expect(el, 'precondition: #monsters-summary-stats is rendered').not.toBeNull();
+  return el as HTMLElement;
+}
+
+describe('BoxView qf-9: the Summary shows the full stats (QF9.1)', () => {
+  it('QF9-1-VIEW-SUMMARY-STATS: a summary paint shows #monsters-summary-stats reading the en catalog line with the summary monster`s attack, defense, speed, spAttack, spDefense and trust, beside the name and the unchanged HP line, outside both panels', () => {
+    // WRONG IMPL KILLED: no stats line (QF9.1: the stats left the raising screen and live nowhere);
+    // a line with only some of the six; two stats swapped (every number differs); the trust
+    // missing or a literal; the line drawn into a panel grid (a refresh would wipe it); a line
+    // hidden while the summary shows; the summary's name or `box.card.stats` HP line dropped to
+    // make room.
+    const { parent, view, root } = q9Open(q9Map());
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101', summary: C8B_MOSS }));
+    const line = q9Line(root);
+    expect(line.textContent, 'the six values, en bytes').toBe(q9En(q9MossStats()));
+    expect(line.textContent, 'literal check of the bytes').toBe(
+      `Trust Devoted ${Q9_DOT} ATK 31 ${Q9_DOT} DEF 42 ${Q9_DOT} SPD 53 ${Q9_DOT} SP.ATK 64 ${Q9_DOT} SP.DEF 75`,
+    );
+    expect(c8bHidden(line, root), 'the line shows').toBe(false);
+    for (const grid of [partyGridOf(parent), boxGridOf(parent)]) {
+      expect(grid.contains(line), 'the line is not inside a panel grid').toBe(false);
+    }
+    // Same part as the name and HP line (the summary pane), not a loose frame child.
+    const nameEls = c8bOutsidePanels(parent, root).filter(
+      (el) => ctl7bOwnText(el) === 'Mossling' && !c8bHidden(el, root),
+    );
+    expect(nameEls, 'precondition: the summary name shows').toHaveLength(1);
+    expect(line.parentElement, 'the line sits in the Summary part with the name').toBe(
+      (nameEls[0] as HTMLElement).parentElement,
+    );
+    expect(c8bShownText(parent, root, p2Stats(C8B_MOSS)), 'the HP line stays').not.toEqual([]);
+  });
+
+  it('QF9-1-VIEW-SUMMARY-STATS-PER-MONSTER: the line is the SUMMARY monster`s row by id, not the first row, the cursor card`s or the sheet`s: Kip`s summary shows Kip`s numbers and Moss`s shows Moss`s', () => {
+    // WRONG IMPL KILLED: a lookup of the first map entry; a key built from the party slot or the
+    // list index; a line read for the CURSOR monster (activeKey) instead of the summary card; a row
+    // cached from the first summary and never re-looked-up when the pane moves to another monster.
+    const { parent, view, root } = q9Open(q9Map());
+    const line = q9Line(root);
+
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', summary: C8B_KIP }));
+    expect(line.textContent, 'Kip`s row').toBe(q9En(q9KipStats()));
+    expect(line.textContent ?? '', 'Kip`s trust is Wary').toContain('Trust Wary');
+
+    // Cursor on Kip, summary of Moss: the line follows the summary card.
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', summary: C8B_MOSS }));
+    expect(line.textContent, 'Moss`s row under Kip`s cursor').toBe(q9En(q9MossStats()));
+
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101', summary: C8B_KIP }));
+    expect(line.textContent, 'Kip`s row under Moss`s cursor').toBe(q9En(q9KipStats()));
+    expect(c8bHidden(line, root)).toBe(false);
+    expect(partyGridOf(parent).contains(line)).toBe(false);
+  });
+
+  it('QF9-1-VIEW-SUMMARY-STATS-CALL: the line is resolved through tf(box.summary.stats) with trust, attack, defense, speed, spAttack and spDefense each from its own field', () => {
+    // WRONG IMPL KILLED: a hand-assembled English string (a French boot reads English: the
+    // catalog is the only source); a param read from the wrong field (statDefense passed as
+    // attack); trust passed as a number or dropped; a param renamed (the typed catalog closure
+    // would read undefined).
+    const { view } = q9Open(q9Map());
+    vi.mocked(i18nTf).mockClear();
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101', summary: C8B_MOSS }));
+    expect(i18nTf).toHaveBeenCalledWith('box.summary.stats', {
+      trust: 'Devoted',
+      attack: 31,
+      defense: 42,
+      speed: 53,
+      spAttack: 64,
+      spDefense: 75,
+    });
+  });
+
+  it('QF9-1-VIEW-SUMMARY-STATS-LIVE: a later refresh() with changed stats repaints the open summary with no new paint; a refresh with the same stats keeps it; a refresh carrying no stats empties and hides it', () => {
+    // WRONG IMPL KILLED: a line written only when the summary opens (a batch that raises a stat
+    // or trust tier leaves the old numbers on screen until another button is pressed); a line
+    // that reads the paint's own card/the first refresh's map; one that survives a refresh whose
+    // map no longer has the monster (stale numbers shown as current); a third parameter that
+    // is required (the 2-arg refresh of every other caller would throw).
+    const { view, root } = q9Open(q9Map());
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101', summary: C8B_MOSS }));
+    const line = q9Line(root);
+    expect(line.textContent, 'fixture: the first numbers').toBe(q9En(q9MossStats()));
+
+    const raised = q9Stats({ trustTier: 'Friendly', statAttack: 32, statSpDefense: 80 });
+    view.refresh(
+      c8bParty(),
+      c8bBox(),
+      new Map([
+        ['100', q9KipStats()],
+        ['101', raised],
+      ]),
+    );
+    expect(line.textContent, 'the batch`s numbers show with no repaint').toBe(q9En(raised));
+    expect(line.textContent ?? '', 'the old attack is gone').not.toContain('ATK 31');
+    expect(c8bHidden(line, root), 'still showing').toBe(false);
+
+    view.refresh(
+      c8bParty(),
+      c8bBox(),
+      new Map([
+        ['100', q9KipStats()],
+        ['101', raised],
+      ]),
+    );
+    expect(line.textContent, 'an equal batch keeps the line').toBe(q9En(raised));
+
+    // The LATEST refresh is the truth: one with no stats row for Moss empties and hides the line.
+    expect(() => view.refresh(c8bParty(), c8bBox()), 'stats is optional').not.toThrow();
+    expect(line.textContent, 'no row: empty').toBe('');
+    expect(c8bHidden(line, root), 'no row: hidden').toBe(true);
+
+    // And the numbers come back with the next batch that carries them.
+    view.refresh(c8bParty(), c8bBox(), q9Map());
+    expect(line.textContent).toBe(q9En(q9MossStats()));
+    expect(c8bHidden(line, root)).toBe(false);
+  });
+
+  it('QF9-1-VIEW-SUMMARY-STATS-ABSENT: with no stats row for the summary monster (no map, an empty map, or a map of other monsters) the line is empty and hidden by inline display:none while the name and HP line still show', () => {
+    // WRONG IMPL KILLED: a line that prints "undefined"/NaN/zeros for a missing row; one that
+    // shows an empty bordered strip (visible but empty); one that borrows another monster`s row;
+    // a missing-row crash that takes the whole summary pane down with it.
+    const maps: ReadonlyArray<
+      readonly [string, ReadonlyMap<string, MonsterStatsViewModel> | undefined]
+    > = [
+      ['no map', undefined],
+      ['an empty map', new Map()],
+      ['a map without Moss', new Map([['100', q9KipStats()]])],
+    ];
+    for (const [label, stats] of maps) {
+      const { parent, view, root } = q9Open(stats);
+      view.paint(c8bPaint({ tab: 'party', activeKey: '101', summary: C8B_MOSS }));
+      const line = q9Line(root);
+      expect(line.textContent, `${label}: empty`).toBe('');
+      expect(line.style.display, `${label}: hidden by inline display`).toBe('none');
+      expect(c8bShownText(parent, root, 'Mossling'), `${label}: the name still shows`).not.toEqual(
+        [],
+      );
+      expect(c8bShownText(parent, root, p2Stats(C8B_MOSS)), `${label}: the HP line`).not.toEqual(
+        [],
+      );
+    }
+  });
+
+  it('QF9-1-VIEW-SUMMARY-STATS-CLOSED: a null summary leaves the line empty (the e2e text scans read hidden text) and a reopened summary shows it again; a reopened FRAME shows none until a summary is painted', () => {
+    // WRONG IMPL KILLED: a hidden summary that keeps the last monster's numbers in the root text; a
+    // line that never comes back after the pane closed; a frame reopen that keeps last visit's
+    // summary line.
+    const { view, root } = q9Open(q9Map());
+    const line = q9Line(root);
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101', summary: C8B_MOSS }));
+    expect(line.textContent).toBe(q9En(q9MossStats()));
+
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101' }));
+    expect(line.textContent, 'closed: empty').toBe('');
+    expect(c8bHidden(line, root), 'closed: hidden').toBe(true);
+    expect(root.textContent ?? '', 'no stat label lingers in the root').not.toContain('ATK ');
+
+    view.paint(c8bPaint({ tab: 'party', activeKey: '101', summary: C8B_MOSS }));
+    expect(line.textContent, 'reopened pane').toBe(q9En(q9MossStats()));
+
+    view.hide();
+    view.show();
+    expect(line.textContent, 'a reopened frame has no summary yet').toBe('');
+    expect(c8bHidden(line, root)).toBe(true);
+  });
+
+  it('QF9-1-VIEW-SUMMARY-STATS-FR: under fr the line reads the French catalog text, repaints in English after the locale returns, and the English-only roster is not used', () => {
+    // WRONG IMPL KILLED: a line assembled from English literals (a French boot reads "Trust ...
+    // ATK"); a line resolved once and cached across a locale switch; the French labels swapped
+    // (DEF read for SP.DEF); a French string that lost its accents.
+    const { view, root } = q9Open(q9Map());
+    try {
+      p2SetLocale('fr');
+      view.paint(c8bPaint({ tab: 'party', activeKey: '101', summary: C8B_MOSS }));
+      const line = q9Line(root);
+      expect(line.textContent, 'French bytes').toBe(q9Fr(q9MossStats()));
+      expect(line.textContent ?? '', 'no English label left').not.toContain('ATK');
+      expect(line.textContent ?? '', 'no English label left').not.toContain('Trust');
+
+      p2SetLocale('en');
+      view.paint(c8bPaint({ tab: 'party', activeKey: '101', summary: C8B_MOSS }));
+      expect(line.textContent, 'English again').toBe(q9En(q9MossStats()));
+    } finally {
+      p2SetLocale('en');
+    }
+  });
+
+  it('QF9-1-VIEW-SUMMARY-STATS-SENTINEL: under «key» sentinels the stats line is the catalog span and no English label appears outside a sentinel', () => {
+    // WRONG IMPL KILLED: a stats line written from a literal; the numbers or trust interpolated
+    // outside the catalog call (the sentinel span would not carry them).
+    const { view, root } = c8bMount();
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      vi.mocked(i18nTf).mockImplementation(
+        (key: string, params: unknown) => `«${key}|${JSON.stringify(params)}»`,
+      );
+      view.refresh(c8bParty(), c8bBox(), q9Map());
+      view.show();
+      view.paint(c8bPaint({ tab: 'party', activeKey: '101', summary: C8B_MOSS }));
+      const line = q9Line(root);
+      expect(line.textContent ?? '').toMatch(/^«box\.summary\.stats\|\{.*\}»$/);
+      const params = c8cSpanParams(line.textContent ?? '', 'box.summary.stats');
+      expect(params).toEqual([
+        {
+          trust: 'Devoted',
+          attack: 31,
+          defense: 42,
+          speed: 53,
+          spAttack: 64,
+          spDefense: 75,
+        },
+      ]);
+      expect(line.textContent ?? '', 'no raw English label').not.toContain('ATK');
     } finally {
       vi.mocked(i18nT).mockRestore();
       vi.mocked(i18nTf).mockRestore();

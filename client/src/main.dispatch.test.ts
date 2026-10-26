@@ -4,9 +4,10 @@
  * reducer with exactly the arguments the view passed (ctl-6b, CTL6B.1: one exhaustive `dispatch`).
  *
  * main.controls.test.ts proves a handful of arms through real clicks. This file proves ALL of them,
- * by capturing the handler object each view constructor receives: the eleven views that own a
- * callback (box, battle, raising, evolution, shop, trade, pvp, claim, privacy, rename and
- * trade-propose) are replaced by a recording stand-in class, then each handler is invoked with
+ * by capturing the handler object each view constructor receives: the ten views that own a
+ * callback (box, battle, evolution, shop, trade, pvp, claim, privacy, rename and trade-propose;
+ * qf-9: the raising view is built from its mount alone, with no callbacks, so it is replaced too
+ * but owns no row) are replaced by a recording stand-in class, then each handler is invoked with
  * DISTINCT, non-zero, non-empty values per field and the stubbed connection must record exactly one
  * reducer call: its name and its argument object, verbatim. Two arms that were swapped, a field
  * forced to 0 or empty, a dropped argument, a party list that reads the wrong monsters, a promise
@@ -92,6 +93,9 @@ const H = vi.hoisted(() => {
     calls: [] as Array<{ name: string; args: unknown }>,
     /** The handler object each recorded view constructor received, keyed by view class name. */
     handlers: {} as Record<string, Record<string, unknown>>,
+    /** qf-9: EVERY argument each recorded view constructor received, in order, keyed by view class
+     *  name (the raising view is built from its mount alone). */
+    ctorArgs: {} as Record<string, unknown[]>,
     /** The recorded view instances, keyed by view class name. */
     views: {} as Record<string, StubView>,
     /** The stubbed connection's link state. */
@@ -119,6 +123,7 @@ const H = vi.hoisted(() => {
         hosted: unknown[] = [];
         constructor(...args: unknown[]) {
           h.handlers[name] = args[args.length - 1] as Record<string, unknown>;
+          h.ctorArgs[name] = args;
           h.views[name] = this as unknown as StubView;
         }
         show(): void {
@@ -291,6 +296,7 @@ async function boot(beforeImport?: () => void): Promise<void> {
   H.sends = [];
   H.calls = [];
   H.handlers = {};
+  H.ctorArgs = {};
   H.views = {};
   H.frozen = false;
   H.signIns = 0;
@@ -553,24 +559,12 @@ function dispatchRows(): readonly Row[] {
       kind: 'pvpSwap',
       atBattle: 'safe',
     },
-    {
-      label: 'raising train (Feed)',
-      view: 'RaisingView',
-      handler: 'onTrain',
-      args: [71n, 44],
-      expected: [{ name: 'train', args: { monsterId: 71n, foodItemId: 44 } }],
-      kind: 'train',
-      atBattle: 'refuse',
-    },
-    {
-      label: 'raising care (Care)',
-      view: 'RaisingView',
-      handler: 'onCare',
-      args: [72n],
-      expected: [{ name: 'care', args: { monsterId: 72n } }],
-      kind: 'care',
-      atBattle: 'refuse',
-    },
+    // qf-9 (named intentional change, QF9.2): the 'raising train (Feed)' and 'raising care (Care)'
+    // rows are removed with the RaisingView `onTrain` / `onCare` callbacks (the raising screen is
+    // inventory-only and is built with no callbacks). Care and train now reach their reducers only as
+    // screen commands (the Monsters sheet's, the Bag's): QF9-3-BOOT-CARE-TRAIN-COMMANDS below proves
+    // both arms, with their exact reducer arguments and their battle refusal, and
+    // QF9-2-BOOT-RAISING-NO-CALLBACKS proves the raising view is handed no callbacks.
     {
       label: 'evolution evolve (Evolve)',
       view: 'EvolutionView',
@@ -846,6 +840,32 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     }
   });
 
+  it('QF9-2-BOOT-RAISING-NO-CALLBACKS: the RaisingView is built from its mount alone (one constructor argument, the same #app mount as the box), while the box still gets its mount and its callbacks', async () => {
+    // WRONG IMPL KILLED: a main.ts that still hands the raising view a handler object (its Care and
+    // Train callbacks would keep a second, view-owned path to the care and train reducers beside the
+    // Monsters sheet's and the Bag's, and the in-flight lock that lived in the view); a constructor
+    // call that drops the mount; and a control-less check (the box keeps its two arguments, so the
+    // recorder really sees every argument).
+    await bootReady();
+    server(1000);
+    const raising = H.ctorArgs.RaisingView;
+    if (raising === undefined) throw new Error('RaisingView was never constructed by main.ts');
+    expect(raising, 'one constructor argument').toHaveLength(1);
+    expect(raising[0], 'and it is a DOM element, the mount').toBeInstanceOf(HTMLElement);
+    const box = H.ctorArgs.BoxView;
+    if (box === undefined) throw new Error('BoxView was never constructed by main.ts');
+    expect(box, 'control: the box takes its mount and its callbacks').toHaveLength(2);
+    expect(raising[0], 'the raising view is mounted where the box is').toBe(box[0]);
+    expect(
+      Object.hasOwn((H.handlers.RaisingView ?? {}) as object, 'onCare'),
+      'no onCare reaches the raising view',
+    ).toBe(false);
+    expect(
+      Object.hasOwn((H.handlers.RaisingView ?? {}) as object, 'onTrain'),
+      'no onTrain reaches the raising view',
+    ).toBe(false);
+  });
+
   it('dispatch skips: a full party sends nothing for the box slot and says why, and an explicit slot still sends', async () => {
     // WRONG IMPL KILLED: a -1 that sends the box sentinel into a full party (an accepted server
     // no-op the player never sees), a full-party guard that also blocks an explicit slot, and a
@@ -889,7 +909,8 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     const cases: ReadonlyArray<readonly [string, string, readonly unknown[]]> = [
       ['BattleView', 'onAttack', [901n, 33]],
       ['BattleView', 'onPvpAttack', [906n, 37]],
-      ['RaisingView', 'onCare', [72n]],
+      // qf-9 (named intentional change): was ['RaisingView', 'onCare', [72n]]; the callback is gone.
+      // The performCare path is driven through the trade answer, which uses it too.
       ['TradeView', 'onAccept', [81n]],
       // ctl-10b (named intentional change): was ['PvpView', 'onChallenge', [OTHER_IDENTITY]]; the
       // PvpView callback is retired, so the pvp-action path is driven through its Accept instead.
@@ -1059,7 +1080,9 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
         ],
         line('tradePropose.feedback.sent'),
       ],
-      ['RaisingView', 'onCare', [72n], line('raising.feedback.cared')],
+      // qf-9 (named intentional change): the ['RaisingView', 'onCare', [72n], 'Cared!'] row is
+      // removed with the callback. RaisingView stays in `all` below as a control: no action may
+      // paint on it.
     ];
     const feedbackOf = (name: string): string[] => H.views[name]?.feedback ?? [];
 
@@ -1071,14 +1094,12 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
           view.visible = false;
         }
       }
-      // Hidden first: a late settle must not write into a closed overlay (care paints regardless).
-      if (target !== 'RaisingView') {
-        handlerOf(target, name)(...args);
-        await flush();
-        expect(feedbackOf(target), `${target}.${name}: nothing paints while hidden`).toEqual([]);
-        const hiddenView = H.views[target];
-        if (hiddenView !== undefined) hiddenView.visible = true;
-      }
+      // Hidden first: a late settle must not write into a closed overlay.
+      handlerOf(target, name)(...args);
+      await flush();
+      expect(feedbackOf(target), `${target}.${name}: nothing paints while hidden`).toEqual([]);
+      const hiddenView = H.views[target];
+      if (hiddenView !== undefined) hiddenView.visible = true;
       handlerOf(target, name)(...args);
       await flush();
       for (const v of all) {
@@ -1260,7 +1281,7 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     expect(H.calls, 'and export now sends').toEqual([{ name: 'requestDataExport', args: {} }]);
   });
 
-  it('at a battle base every view callback of a command the battle refuses reaches no reducer and shows the reason (Care, Feed, Move, Evolve, challenge Accept, buy and sell among them), the battle actions still reach their reducers, and back at the world each refused callback sends again', async () => {
+  it('at a battle base every view callback of a command the battle refuses reaches no reducer and shows the reason (Move, Evolve, challenge Accept, buy and sell among them), the battle actions still reach their reducers, and back at the world each refused callback sends again', async () => {
     // WRONG IMPL KILLED (red-team F2, measured): a refusal that exempts one command (the spec's
     // acceptChallenge, or buy, sell, setPartySlot, healParty, deleteAccount ...: that row reaches
     // its reducer at the battle base); a refusal narrowed to the two kinds the booted suite drives
@@ -1327,9 +1348,10 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
       }
       expect(isThenable(returned), `${row.label}: the view still gets a promise`).toBe(true);
     }
+    // qf-9 (named intentional change): ['Care', 'care'] and ['Feed', 'train'] leave this list with
+    // the RaisingView callbacks; both kinds move to `noViewCallback` below and are refused at a
+    // battle base by QF9-3-BOOT-CARE-TRAIN-COMMANDS.
     for (const [name, kind] of [
-      ['Care', 'care'],
-      ['Feed', 'train'],
       ['Move', 'setPartySlot'],
       ['Evolve', 'evolve'],
       ['challenge Accept', 'acceptChallenge'],
@@ -1420,7 +1442,15 @@ describe('main.ts view callbacks reach dispatch (ctl-6b)', { sequential: true },
     // Box's Heal Party), so it moves here; CTL7C-3-PRESENT refuses it at a battle base.
     // ctl-10b (named intentional change, CTL10B.2): `challenge` lost its only view callback (PvpView's
     // per-player Challenge buttons), so it moves here.
+    // qf-9 (named intentional change, QF9.2): `care` and `train` lost their only view callbacks
+    // (the raising screen's Care and Train buttons), so they move here.
     const noViewCallback: Readonly<Record<string, string>> = {
+      care:
+        'no view constructor callback since qf-9: the Monsters sheet`s screen adapter dispatches ' +
+        'it, and QF9-3-BOOT-CARE-TRAIN-COMMANDS in this file refuses it at a battle base',
+      train:
+        'no view constructor callback since qf-9: the Bag`s screen adapter dispatches it, and ' +
+        'QF9-3-BOOT-CARE-TRAIN-COMMANDS in this file refuses it at a battle base',
       challenge:
         'no view constructor callback since ctl-10b: the world action sheet`s confirm Yes ' +
         'dispatches it, and main.input.test.ts CTL10B-1-BOOT-CHALLENGE-YES proves that path',
@@ -1732,6 +1762,62 @@ describe('main.ts screen-host commands and views (runtime, ctl-7c)', { sequentia
     await pageUp(1300);
     expect(H.calls, 'with pads loaded nothing is sent either').toEqual([]);
     expect(statusText(), 'and the player is told').toBe(i18n.t('chrome.status.healUnavailable'));
+  });
+
+  it('QF9-3-BOOT-CARE-TRAIN-COMMANDS: the care and train screen commands (the Monsters sheet`s and the Bag`s, no longer any view callback) send exactly their reducer with exactly their arguments at the world, and a battle base refuses both with its reason and sends nothing', async () => {
+    // WRONG IMPL KILLED: a dispatch whose care or train arm lived only behind the deleted RaisingView
+    // callbacks (the screen commands would reach nothing: the Monsters sheet's Care and the Bag's
+    // Feed would be dead buttons); care and train wired to each other's reducer or with swapped
+    // fields (monsterId and foodItemId carry distinct non-zero values); a field forced to 0 or
+    // dropped; and a battle policy that stopped refusing them once the view callbacks, the only
+    // rows that pinned that refusal, were deleted.
+    await bootReady();
+    server(1000);
+    const status = document.getElementById('status');
+    if (status === null) throw new Error('#status must exist once booted');
+    const issue: { command: unknown } = { command: { kind: 'care', monsterId: 72n } };
+    swapAdapter('menuView', commandAdapter(issue));
+    openMenuAtWorld(1010);
+
+    const commands: ReadonlyArray<readonly [string, unknown, { name: string; args: unknown }]> = [
+      ['care', { kind: 'care', monsterId: 72n }, { name: 'care', args: { monsterId: 72n } }],
+      [
+        'train',
+        { kind: 'train', monsterId: 71n, foodItemId: 44 },
+        { name: 'train', args: { monsterId: 71n, foodItemId: 44 } },
+      ],
+    ];
+    let t = 1100;
+    for (const [label, command, expected] of commands) {
+      issue.command = command;
+      H.calls = [];
+      status.textContent = '';
+      const sent = await pageUp(t);
+      t += 100;
+      expect(sent.defaultPrevented, `${label}: the routed press is consumed`).toBe(true);
+      expect(H.calls, `${label}: at the world it reaches exactly its reducer`).toEqual([expected]);
+    }
+
+    // At a battle base both are refused like every other not-battle-safe command.
+    press('Escape', t);
+    expect(stackNow(), 'precondition: Start closed the menu').toEqual([{ kind: 'world' }]);
+    putBattle(BATTLE_ID, t + 100);
+    press('Escape', t + 200);
+    expect(stackNow(), 'precondition: Start opened the menu over the battle').toEqual([
+      { kind: 'battle', battleId: '101' },
+      { kind: 'screen', id: 'menuView', overBattle: '101' },
+    ]);
+    const reason = i18n.t('menu.disabled.inBattle');
+    t += 300;
+    for (const [label, command] of commands) {
+      issue.command = command;
+      H.calls = [];
+      status.textContent = '';
+      await pageUp(t);
+      t += 100;
+      expect(H.calls, `${label}: at a battle base it reaches no reducer`).toEqual([]);
+      expect(statusText(), `${label}: and shows the battle's reason`).toBe(reason);
+    }
   });
 
   it('CTL7C-2-BOOT-VIEWS: every frame id lends ITS OWN view instance to its adapter`s paint: each of the nine recorded stand-in views that back a frame, the real dialogue, quest log, heal, help and menu views, and the Social frame`s composite over the trade and pvp stand-ins and the real leaderboard, each shown alone and sent one routed button', async () => {
