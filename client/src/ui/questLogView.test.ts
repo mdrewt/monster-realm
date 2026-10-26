@@ -811,7 +811,7 @@ describe('QuestLogView ctl-8f: the listbox pointers and names', () => {
 // the two literals are cast with `as never`; the runtime resolver is the oracle either way.
 // ---------------------------------------------------------------------------
 
-const qf4TitleText = (): string => qf4T('chrome.journal.title' as never);
+const qf4TitleText = (): string => qf4T('journal.title' as never);
 const qf4EmptyText = (): string => qf4T('journal.empty' as never);
 const qf4Title = (): HTMLElement | null => document.getElementById('quest-log-title');
 const qf4Empty = (): HTMLElement | null => document.getElementById('quest-log-empty');
@@ -819,7 +819,7 @@ const qf4Empty = (): HTMLElement | null => document.getElementById('quest-log-em
 const qf4IdCount = (id: string): number => document.querySelectorAll(`[id="${id}"]`).length;
 
 describe('QuestLogView qf-4: the Journal title (QF4.1)', () => {
-  it('QF4-1-TITLE-FIRST-CHILD: after a render of any size the overlay holds exactly one #quest-log-title, its first element child, outside the listbox, class exactly mr-frame-title, text exactly the resolver`s chrome.journal.title', () => {
+  it('QF4-1-TITLE-FIRST-CHILD: after a render of any size the overlay holds exactly one #quest-log-title, its first element child, outside the listbox, class exactly mr-frame-title, text exactly the resolver`s journal.title', () => {
     // WRONG IMPL KILLED: no title at all; a title appended AFTER the list (list.after) or at the end
     // of the overlay (it would read below the rows); a title built INSIDE the listbox (it would be a
     // non-option child painted as a row); a literal `Journal` in the view instead of the catalog

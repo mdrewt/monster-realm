@@ -18,9 +18,9 @@
 // guarded -- see the reasoning in `ui/pvpView.ts`'s `hide()`: an unguarded close is the self-healing
 // path, and `closeOverlayA11y` with no open record is a documented no-op.
 //
-// The one string this view owns, the quest row, is resolved through the i18n
-// resolver (`tf('questLog.entry', { name, step })`, ui/i18n/resolver.ts); `name` is the quest's
-// content id and `step` its index — model data, interpolated verbatim.
+// Every string this view writes is resolved through the i18n resolver (ui/i18n/resolver.ts). The
+// quest row is `tf('questLog.entry', { name, step })`; `name` is the quest's content id and `step`
+// its index — model data, interpolated verbatim.
 //
 // ctl-8f: this root is the Journal frame. `paint(JournalPaint)` (screens/journalScreen.ts) is kept
 // and re-applied after every `render(vm)`, which rebuilds the rows each batch: the cursor row
@@ -28,7 +28,12 @@
 // (an e2e pins their text), and `#quest-log-detail`, built here after the list, shows the open
 // quest's name and step. The hidden-to-visible edge resets the paint to the opening (the first row,
 // no detail), so a reopen never shows the last open's place.
-import { tf } from './i18n/resolver';
+//
+// qf-4: the title (`#quest-log-title`, first child) and the empty state (`#quest-log-empty`, after
+// the list) are built here too, never in index.html, whose inner id roster indexShell.smoke.test.ts
+// pins. Both are written on every render, before the a11y open. The empty state sits OUTSIDE the
+// listbox: a row inside it would be painted as the cursor. While it shows, it describes the list.
+import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { QuestLogViewModel } from './questLogModel';
 import type { JournalPaint } from './screens/journalScreen';
@@ -39,6 +44,8 @@ export class QuestLogView {
   private overlay: HTMLElement;
   private list: HTMLElement;
   private detail: HTMLElement;
+  private heading: HTMLElement;
+  private empty: HTMLElement;
   private rendered: QuestLogViewModel = { active: [] };
   private kept: JournalPaint = OPENING;
 
@@ -54,6 +61,14 @@ export class QuestLogView {
     this.detail.id = 'quest-log-detail';
     this.detail.style.display = 'none';
     this.list.after(this.detail);
+    this.heading = document.createElement('div');
+    this.heading.id = 'quest-log-title';
+    this.heading.className = 'mr-frame-title';
+    this.list.before(this.heading);
+    this.empty = document.createElement('div');
+    this.empty.id = 'quest-log-empty';
+    this.empty.style.display = 'none';
+    this.list.after(this.empty);
   }
 
   /** The Journal screen's paint: kept, so the next `render` re-applies it. */
@@ -76,8 +91,9 @@ export class QuestLogView {
 
     const open = this.rendered.active.find((q) => q.questId === this.kept.detail);
     this.detail.style.display = open === undefined ? 'none' : '';
-    if (open === undefined) this.list.removeAttribute('aria-describedby');
-    else this.list.setAttribute('aria-describedby', this.detail.id);
+    const describedBy = open !== undefined ? this.detail : rows.length === 0 ? this.empty : null;
+    if (describedBy === null) this.list.removeAttribute('aria-describedby');
+    else this.list.setAttribute('aria-describedby', describedBy.id);
     this.detail.replaceChildren();
     if (open !== undefined) {
       const name = document.createElement('div');
@@ -97,6 +113,10 @@ export class QuestLogView {
       return;
     }
     this.overlay.style.display = 'block';
+    this.heading.textContent = t('journal.title');
+    const isEmpty = vm.active.length === 0;
+    this.empty.style.display = isEmpty ? '' : 'none';
+    this.empty.textContent = isEmpty ? t('journal.empty') : '';
     this.list.replaceChildren();
     vm.active.forEach((entry, i) => {
       const li = document.createElement('li');

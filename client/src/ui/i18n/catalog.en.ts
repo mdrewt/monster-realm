@@ -279,6 +279,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
   // index.html #help-title (literal removed from index.html; resolved in HelpView show())
   'chrome.help.title': 'Controls & Goals',
+  // @desc: Heading of the Journal overlay listing the player's active quests. One or two words.
+  // questLogView.ts #quest-log-title (resolved in render())
+  'journal.title': 'Journal',
   // @desc: Help tab listing the buttons of the screen Help was opened over. Short (at most 14 characters).
   // ui/helpModel.ts
   'help.tab.screen': 'This screen',
@@ -1405,4 +1408,8 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Journal quest detail line; {step} is the quest's current step number counted from 0.
   // questLogView.ts (the Journal detail)
   'journal.detail.step': (p) => `Step ${p.step}`,
+  // @desc: Journal empty state, shown instead of a blank list when the player has no active
+  // quest: the reason, then where quests come from and what to do next. Names no key or button
+  // (bindings are remappable). One or two short sentences. questLogView.ts #quest-log-empty
+  'journal.empty': 'No active quests yet. Talk to villagers to find out who needs help.',
 } satisfies Catalog);

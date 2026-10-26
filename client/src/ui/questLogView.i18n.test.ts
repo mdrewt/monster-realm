@@ -177,7 +177,7 @@ describe('m24s5 (ADR-0261): questLogView.ts routes its row through tf()', () => 
 // SOURCE OF TRUTH: specs/monster-realm-v2/M-pt3-quickfix.spec.md §qf-4;
 // memory/projects/monster-realm-qf-4-plan.md (design + AMENDMENTS A4-A7).
 //
-// RED REASON AT HEAD: the keys `chrome.journal.title` / `journal.empty` are in neither catalog and the
+// RED REASON AT HEAD: the keys `journal.title` / `journal.empty` are in neither catalog and the
 // view builds neither element, so every getElementById below is null and every catalog read is
 // undefined. The keys are not in the MessageId union yet, so the literals are cast with `as never`.
 //
@@ -187,7 +187,7 @@ describe('m24s5 (ADR-0261): questLogView.ts routes its row through tf()', () => 
 // ---------------------------------------------------------------------------
 
 describe('QuestLogView qf-4: the title and empty state go through the i18n resolver', () => {
-  it('QF4-1-TITLE-I18N-SENTINEL: under a «key» sentinel the title text is exactly the resolver output for chrome.journal.title, as plain text, written at render time', () => {
+  it('QF4-1-TITLE-I18N-SENTINEL: under a «key» sentinel the title text is exactly the resolver output for journal.title, as plain text, written at render time', () => {
     // WRONG IMPL KILLED: a literal `Journal` in the view (the sentinel never appears); a title
     // resolved once in the constructor (this view is built BEFORE the swap, so a stale write shows
     // the real text); a title assembled by concatenation or markup around the resolver output.
@@ -200,18 +200,18 @@ describe('QuestLogView qf-4: the title and empty state go through the i18n resol
       view.render(questVm([{ questId: 'quest_lark', stepIndex: 1, displayName: 'quest_lark' }]));
       const title = document.getElementById('quest-log-title');
       expect(title, 'the title exists').not.toBeNull();
-      expect(title?.textContent, 'exactly the resolver output').toBe('«chrome.journal.title»');
+      expect(title?.textContent, 'exactly the resolver output').toBe('«journal.title»');
       expect(title?.children.length, 'plain text, no child elements').toBe(0);
-      expect(i18nT).toHaveBeenCalledWith('chrome.journal.title');
+      expect(i18nT).toHaveBeenCalledWith('journal.title');
     } finally {
       vi.mocked(i18nT).mockRestore();
     }
 
     // Post-restore call-through control.
-    expect(i18nT('chrome.journal.title' as never)).toBe('Journal');
+    expect(i18nT('journal.title' as never)).toBe('Journal');
   });
 
-  it('QF4-1-TITLE-I18N-LOCALE: after the locale switches to fr the next render writes the fr catalog`s chrome.journal.title', () => {
+  it('QF4-1-TITLE-I18N-LOCALE: after the locale switches to fr the next render writes the fr catalog`s journal.title', () => {
     // WRONG IMPL KILLED: a title written once and never refreshed (a locale change between
     // construction and render is not picked up); a title read from the en catalog directly.
     mountQuestLogOverlay();
@@ -220,7 +220,7 @@ describe('QuestLogView qf-4: the title and empty state go through the i18n resol
     try {
       setLocale('fr');
       view.render(questVm([{ questId: 'quest_lark', stepIndex: 1, displayName: 'quest_lark' }]));
-      const expected = (CATALOG_FR as Record<string, unknown>)['chrome.journal.title'];
+      const expected = (CATALOG_FR as Record<string, unknown>)['journal.title'];
       expect(typeof expected, 'the fr catalog carries the key').toBe('string');
       expect(document.getElementById('quest-log-title')?.textContent).toBe(expected);
     } finally {
@@ -228,12 +228,12 @@ describe('QuestLogView qf-4: the title and empty state go through the i18n resol
     }
   });
 
-  it('QF4-1-TITLE-CATALOG: both catalogs carry chrome.journal.title as a non-empty plain string, and the English one is Journal', () => {
+  it('QF4-1-TITLE-CATALOG: both catalogs carry journal.title as a non-empty plain string, and the English one is Journal', () => {
     // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot and the Journal frame
     // opens blank); an empty or function-valued entry; an English title that is not the menu`s own
     // `Journal` wording (the menu entry and the frame it opens must agree).
-    const en = (CATALOG_EN as Record<string, unknown>)['chrome.journal.title'];
-    const fr = (CATALOG_FR as Record<string, unknown>)['chrome.journal.title'];
+    const en = (CATALOG_EN as Record<string, unknown>)['journal.title'];
+    const fr = (CATALOG_FR as Record<string, unknown>)['journal.title'];
     expect(en, 'en').toBe('Journal');
     expect(en, 'the menu entry and the frame title agree').toBe(
       (CATALOG_EN as Record<string, unknown>)['menu.journal.title'],
