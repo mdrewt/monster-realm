@@ -189,7 +189,7 @@ import {
 } from './ui/interactModel';
 import { buildLeaderboardViewModel } from './ui/leaderboardModel';
 import type { LeaderboardView } from './ui/leaderboardView';
-import { LiveRegion } from './ui/liveRegion';
+import { COALESCE_WINDOW_MS, LiveRegion } from './ui/liveRegion';
 import { type MenuTarget, withRequestBadge } from './ui/menuModel';
 import type { MenuPointerInput, MenuView } from './ui/menuView';
 import type { MonstersTab } from './ui/monstersModel';
@@ -264,7 +264,17 @@ import {
   shopOpenStep,
 } from './ui/shopOpenModel';
 import type { ShopView } from './ui/shopView';
-import { reduceErrorMessage } from './ui/statusModel';
+import {
+  type ConversationEndReason,
+  conversationEndReason,
+  type QuestAckSnapshot,
+  questAckSnapshot,
+  questCompletionAck,
+  reduceErrorMessage,
+  STATUS_NOTICE_INITIAL,
+  type StatusNoticeState,
+  statusNoticeStep,
+} from './ui/statusModel';
 import { buildTradeViewModel } from './ui/tradeModel';
 import { buildProposeLists, type TradeProposeArgs } from './ui/tradeProposeModel';
 import type { TradeProposeView } from './ui/tradeProposeView';
@@ -1490,7 +1500,7 @@ function applyMenuStep(step: MainMenuStep, monstersTab?: MonstersTab): void {
   // The feedback line is not a live region: a Y description or a disabled entry's reason is said
   // here, once per change of the line.
   const said = feedbackAnnouncement(menuState.feedback, step.state.feedback);
-  if (said !== null) liveRegion.announce(said, performance.now());
+  if (said !== null) announceNow(said);
   menuState = step.state;
   switch (step.effect.kind) {
     case 'none':
@@ -1840,7 +1850,34 @@ function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
       });
     case 'advanceDialogue': {
       const { choiceIdx } = command;
-      return sendGuarded('advance', () => conn?.live()?.reducers.advanceDialogue({ choiceIdx }));
+      // qf-6: the server refuses a reply chosen too far from the NPC, in another zone, or with the
+      // NPC gone — and writes nothing (an Err aborts the transaction). The client ends such a
+      // conversation itself: catalogued copy on the status line (QF6.2), then the ONE dismiss path,
+      // whose server-side delete closes the overlay (never hidden locally; QF6.1). Only for the
+      // conversation the reply was sent for (a later talk or another tab is left alone); a dismiss
+      // already in flight closes it and keeps a picked shop. Every other rejection keeps
+      // sendGuarded's report, so a battle-suspended or deletion-gated dialogue is never ended.
+      const sent = store.ownConversation(identity);
+      return sendGuarded('advance', () =>
+        conn
+          ?.live()
+          ?.reducers.advanceDialogue({ choiceIdx })
+          ?.catch((err: unknown) => {
+            const reason = conversationEndReason(err);
+            if (reason === undefined) throw err;
+            const cur = store.ownConversation(identity);
+            if (
+              sent === undefined ||
+              cur === undefined ||
+              cur.npcEntityId !== sent.npcEntityId ||
+              cur.currentNodeId !== sent.currentNodeId
+            ) {
+              return;
+            }
+            showNotice(endedLine(reason));
+            if (!shopOpen.dismissPending) void dispatch({ kind: 'dismissDialogue' });
+          }),
+      );
     }
     case 'dismissDialogue':
       // Ends the conversation and cancels a pending shop open (last intent wins). The client
@@ -1900,7 +1937,7 @@ function refusedInBattle(command: Command): boolean {
   const reason = i18nT('menu.disabled.inBattle');
   if (statusEl !== undefined) statusEl.textContent = reason;
   shownBattleRefusal = reason;
-  liveRegion.announce(reason, performance.now());
+  announceNow(reason);
   return true;
 }
 
@@ -1995,6 +2032,48 @@ function reportError(text: string, line?: OutcomeLine): void {
 /** Clear the status line (on reconnect: the frozen-link message is stale, A8). */
 function clearStatus(): void {
   if (statusEl !== undefined) statusEl.textContent = '';
+}
+
+// qf-6: a status NOTICE is an outcome that is not an error — a conversation the server ended for
+// a reason, a quest completed. It goes to the status line (textContent only, never markup) and is
+// queued for the live region, spoken by the frame pump clear of the announcements that land beside
+// it (ui/statusModel.ts statusNoticeStep: why and when).
+let statusNotice: StatusNoticeState = STATUS_NOTICE_INITIAL;
+/** An announcement made outside the frame pump since its last frame: the pump treats it as a
+ *  transition, so a queued notice is held clear of it and a notice it clobbered is said again. */
+let announcedSinceFrame = false;
+
+/** Announce through the live region from outside the frame pump (a refusal, a request line, a
+ *  view's own announcement) and let the pump know. */
+function announceNow(text: string): void {
+  liveRegion.announce(text, performance.now());
+  announcedSinceFrame = true;
+}
+
+/** Show a notice on the status line and queue it for the live region. Not the error ring, not
+ *  console.error: nothing failed. */
+function showNotice(text: string): void {
+  if (statusEl !== undefined) statusEl.textContent = text;
+  statusNotice = statusNoticeStep(
+    statusNotice,
+    { kind: 'queue', text, nowMs: performance.now() },
+    COALESCE_WINDOW_MS,
+  ).state;
+}
+
+/** The catalogued line for a conversation the server ended on a refused advance (QF6.2): it says
+ *  the conversation ended and why. A literal switch — catalog keys are never built dynamically. */
+function endedLine(reason: ConversationEndReason): string {
+  switch (reason) {
+    case 'walkedAway':
+      return i18nT('dialogue.ended.walkedAway');
+    case 'leftZone':
+      return i18nT('dialogue.ended.leftZone');
+    case 'npcGone':
+      return i18nT('dialogue.ended.npcGone');
+    default:
+      return reason satisfies never;
+  }
 }
 
 // --- F9 bug-bundle observability rings + error overlay -----------
@@ -2949,6 +3028,32 @@ store.onBatchApplied(() => {
   }
 });
 
+// qf-6 (QF6.4): the quest-completion acknowledgement — two consecutive batch snapshots compared
+// by statusModel questCompletionAck (what counts as a completion, and why, is documented there).
+// The baseline is taken only once hydrated and is dropped on reconnect.
+let questAckBaseline: QuestAckSnapshot | undefined;
+store.onBatchApplied(() => {
+  try {
+    const now = questAckSnapshot({
+      ready: hydratedSinceReconnect && identity !== '',
+      identity,
+      quests: store.ownQuests(identity),
+      wallet: store.ownWallet(identity),
+      conversationOpen: store.ownConversation(identity) !== undefined,
+    });
+    const ack = questCompletionAck(questAckBaseline, now);
+    questAckBaseline = now;
+    if (ack === undefined) return;
+    showNotice(
+      ack.reward === null
+        ? tf('quest.complete.done', { name: ack.name })
+        : tf('quest.complete.reward', { name: ack.name, amount: ack.reward }),
+    );
+  } catch (err) {
+    console.error('[qf-6] quest acknowledgement listener error', err);
+  }
+});
+
 store.onBatchApplied(() => {
   // Heal overlay is user-opened (A at a healer); only refresh when
   // already open. While bound, refresh
@@ -3041,7 +3146,7 @@ store.onBatchApplied(() => {
     for (const n of pending) {
       if (announcedRequests.has(n.key)) continue;
       announcedRequests.add(n.key);
-      liveRegion.announce(requestLine(n), performance.now());
+      announceNow(requestLine(n));
     }
     const badged = pending.some((n) => !answeredRequests.has(n.key));
     if (badged !== menuBadged) {
@@ -3602,7 +3707,7 @@ async function main(): Promise<void> {
       onClear: (accel) => applyBindings(clearAccel(bindings, accel)),
       onReset: () => applyBindings(DEFAULT_BINDINGS),
       onCancelCapture: cancelControlsCapture,
-      announce: (text) => liveRegion.announce(text, performance.now()),
+      announce: (text) => announceNow(text),
     };
     controlsView = new ControlsViewClass(controlsHandlers);
     tradeProposeView = new TradeProposeViewClass({
@@ -3713,7 +3818,7 @@ async function main(): Promise<void> {
           }),
       ),
     {
-      announce: (m) => liveRegion.announce(m, performance.now()),
+      announce: (m) => announceNow(m),
       returnFocus: () => worldCanvasEl?.focus(),
     },
   );
@@ -3783,6 +3888,10 @@ async function main(): Promise<void> {
       // hydration flag is cleared UNCONDITIONALLY so the reseed waits for THIS connection's.
       battleEmit = armReseed(battleEmit);
       hydratedSinceReconnect = false;
+      // qf-6: a notice queued for the old link and the quest-acknowledgement baseline are stale;
+      // the next baseline is the first hydrated batch of this connection.
+      statusNotice = STATUS_NOTICE_INITIAL;
+      questAckBaseline = undefined;
       // Clean re-init: the store already dropped stale rows; rebuild prediction and
       // drop the own slide clock so the post-reconnect re-seed starts fresh.
       // Zone state is corrected by the reconcile listener's state-based check on
@@ -3912,14 +4021,31 @@ async function main(): Promise<void> {
       // stack's top frame when there is one (a screen opened over the menu is announced).
       const top = topOverlay();
       const nextSnapshot: A11ySnapshot = { topOverlay: top, message: '' };
-      for (const m of announcementsFor(lastA11ySnapshot, nextSnapshot)) liveRegion.announce(m, now);
-      if (lastA11ySnapshot.topOverlay !== null && top === null) {
+      const edges = announcementsFor(lastA11ySnapshot, nextSnapshot);
+      for (const m of edges) liveRegion.announce(m, now);
+      const worldEdge = lastA11ySnapshot.topOverlay !== null && top === null;
+      if (worldEdge) {
         liveRegion.announce(t('a11y.world.region'), now);
         // Never stolen from a visible control (a chip): only <body> or a hidden subtree's node.
         const a = document.activeElement;
         if (a === null || a === document.body || focusInsideHiddenSubtree()) worldCanvasEl?.focus();
       }
       lastA11ySnapshot = nextSnapshot;
+      // qf-6: a queued status notice is spoken clear of the transitions above and of anything
+      // announced outside the pump since the last frame (statusNoticeStep holds it a full
+      // coalescing window past them, and re-queues one they clobbered).
+      const notice = statusNoticeStep(
+        statusNotice,
+        {
+          kind: 'frame',
+          nowMs: now,
+          transitionAnnounced: edges.length > 0 || worldEdge || announcedSinceFrame,
+        },
+        COALESCE_WINDOW_MS,
+      );
+      announcedSinceFrame = false;
+      statusNotice = notice.state;
+      if (notice.speak !== null) liveRegion.announce(notice.speak, now);
       liveRegion.flush(now);
       // the ticking deletion countdown, ABOVE the render path on purpose — a
       // recurring throw below is swallowed by this frame's catch, and a frozen legal deadline is

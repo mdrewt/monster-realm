@@ -6,6 +6,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { readWasmU32Constant } from '../test-util/wasmPkg';
 import { type Dir, interactChip, interactWithNpc, pressAccel, waitForNpcInFront } from './controls';
 
 // M13.5c dialogue lifecycle e2e.
@@ -33,6 +34,11 @@ import { type Dir, interactChip, interactWithNpc, pressAccel, waitForNpcInFront 
 //   - "B never renders the overlay": an unfiltered view leaking A's row to B
 //     combined with any client keying that surfaces it — end-to-end silence is
 //     asserted via a sticky MutationObserver latch, not spot checks.
+//   - "re-talking completes quest_001" (qf-6, QF6.4): the silent quest-completion
+//     row delete — the status line must acknowledge the quest and its 50 gold.
+//   - "a reply after walking away ends the conversation" (qf-6, QF6.1 + QF6.2):
+//     the delete-then-Err wedge (the refused advance's delete rolled back, the
+//     overlay stuck open forever) and the raw "advance: walked too far away" line.
 //
 // DOCUMENTED CONTENT GAP (not a test weakness — content is outside this
 // client-only chunk): the plan's "advance → text CHANGES and the overlay does NOT
@@ -57,8 +63,12 @@ import { type Dir, interactChip, interactWithNpc, pressAccel, waitForNpcInFront 
 //     "quest_001 (step 0)" (questLogModel displayName = questId verbatim;
 //     questLogView li `${displayName} (step ${stepIndex})`).
 //   - TALK_RANGE = 2 Manhattan. advance_dialogue RE-CHECKS zone+range
-//     and rejects on failure (walked_away, RT-ADV-01 fix) — the
-//     bounded retry loops below exist because the NPC keeps wandering.
+//     and refuses on failure ("walked too far away", RT-ADV-01 fix). A refusal
+//     writes nothing: the conversation row stays server-side, and the client
+//     shows the catalogued reason on #status and sends dismiss_dialogue, whose
+//     delete closes the overlay (qf-6). The bounded retry loops below exist
+//     because the NPC wanders between conversations (qf-5 holds him still only
+//     while a conversation references him).
 //   - Player spawn (1,1), zone 0. Zone-0 map (content/zone_maps/000-core.ron):
 //     grass at (2,2),(3,2),(8,2),(8,3),(3,4),(4,4),(8,4),(7,5),(8,5); interior
 //     walls (4,3),(5,3); WARP TILE at (5,5)→zone 1 — the walk must NEVER step on
@@ -140,11 +150,19 @@ const TALK_FACING: Dir = 'South';
  *  of his 8 wander tiles, so a 20 s poll almost always sees him there, and 20
  *  attempts is a generous ceiling. */
 const MAX_TALK_ATTEMPTS = 20;
-/** Advance retries: a rejected advance (NPC wandered > TALK_RANGE between talk and
- *  click) DELETES the row without applying effects; we re-talk and re-click.
- *  Re-talking is safe precisely because a rejected advance never fired
+/** Advance retries: a refused advance (the parties > TALK_RANGE apart between talk
+ *  and click) applies no effects and keeps the row server-side; the client answers
+ *  it with dismiss_dialogue, whose delete closes the overlay; we re-talk and
+ *  re-click. Re-talking is safe precisely because a refused advance never fired
  *  StartQuest — quest_001 only completes on a talk AFTER it was started. */
 const MAX_ADVANCE_ATTEMPTS = 8;
+/** game-core TALK_RANGE, read from the wasm boundary (the built client-wasm pkg's `talk_range()`
+ *  export), never copied: the Manhattan distance within which talk and advance are admitted. */
+const TALK_RANGE = readWasmU32Constant('talk_range');
+
+/** Manhattan distance between a character row and a tile. */
+const manhattan = (c: { tileX: number; tileY: number }, t: Tile): number =>
+  Math.abs(c.tileX - t.x) + Math.abs(c.tileY - t.y);
 
 /** One step + bounded wait for the authoritative tile to change. The path is
  *  grass-free by construction, so a battle here means the map changed — fail loud
@@ -355,7 +373,8 @@ test.describe
     // overlay MUST close — that assertion kills a never-remove delete gate
     // post-swap. Effect proof: StartQuest("quest_001") fired ⇔ the quest log
     // shows "quest_001 (step 0)" — this distinguishes a successful advance from a
-    // walked-away rejection (which also deletes the row but applies NO effects).
+    // walked-away refusal (which applies NO effects and keeps the row server-side;
+    // the client's dismiss_dialogue then ends the conversation).
     // The "text changes and overlay stays open" update-pair tooth needs a
     // multi-node tree — see DOCUMENTED CONTENT GAP in the header; its trap is
     // unit-gated in viewDelete.test.ts.
@@ -393,8 +412,9 @@ test.describe
             // when a PREVIOUS attempt's slow row-delete finally propagates. That
             // is not a failure — the hidden-wait below picks the flow back up.
           });
-        // Both outcomes delete the row (success: next_node None ends the
-        // dialogue; reject: walked_away) — the overlay must hide either way.
+        // Both outcomes end the conversation (success: next_node None deletes
+        // the row; a walked-away refusal keeps the row server-side and the
+        // client's dismiss_dialogue deletes it) — the overlay must hide either way.
         // Deflake (2026-07-15, flaked twice at 20 s on GHA): subscription
         // propagation has a long tail under CI load. A slow attempt is treated as
         // a FAILED attempt (continue) instead of failing the whole test — the
@@ -451,6 +471,91 @@ test.describe
       ).toBe(true);
       // The single-node dialogue is over: genuine delete ⇒ overlay closed.
       await expect(overlay).toBeHidden();
+    });
+
+    // -------------------------------------------------------------------------
+    // Quest completion is acknowledged (qf-6, QF6.4). quest_001, started by the
+    // advance above, is ONE Talk step at the elder, so the next talk completes it:
+    // that transaction deletes the player_quest row, credits the 50-gold reward
+    // and opens the conversation. The status line must name the quest and the
+    // gold. Kills: the silent row delete (the reward goes unseen), a line without
+    // the amount, and the new balance reported instead of the gain.
+    // The conversation this talk opens is left open for the next test.
+    // -------------------------------------------------------------------------
+    test('re-talking the elder completes quest_001 and the status line acknowledges its 50 gold', async () => {
+      test.setTimeout(120_000);
+      await talkUntilOpen(a, playerEntityIds);
+      await expect(a.locator('#status')).toHaveText(
+        'Quest complete: quest_001. You received 50 gold.',
+        { timeout: 20_000 },
+      );
+      await expect(a.locator('#dialogue-overlay')).toBeVisible();
+    });
+
+    // -------------------------------------------------------------------------
+    // Walked away, then a reply (qf-6, QF6.1 + QF6.2). With the conversation open,
+    // A walks out of talk range and only then chooses "I seek a quest.".
+    // advance_dialogue refuses ("walked too far away") and writes nothing; the
+    // client shows the catalogued reason and sends dismiss_dialogue, whose
+    // server-side delete closes the overlay. The client never hides a dialogue
+    // itself, so the overlay closing proves the dismissal persisted. Kills: the
+    // delete-then-Err wedge (the overlay stays open forever), the raw
+    // "advance: walked too far away" line, and a client-side range check that
+    // ends the conversation before any reply is chosen (the overlay must still be
+    // open after the walk).
+    // -------------------------------------------------------------------------
+    test('choosing a reply after walking out of talk range ends the conversation with its reason and closes the overlay', async () => {
+      test.setTimeout(120_000);
+      const overlay = a.locator('#dialogue-overlay');
+      if (!(await overlay.isVisible())) await talkUntilOpen(a, playerEntityIds);
+      await expect(overlay).toBeVisible();
+
+      // The elder: the one non-player character within TALK_RANGE of the post, read
+      // BEFORE the walk. qf-5 holds him still while the conversation references him;
+      // he is usually on the faced tile (6,4), and a talk that landed just after he
+      // stepped to (5,4) or (6,5) leaves him there, still in range. The zone-1
+      // shopkeeper at (8,1) is Manhattan 4 from the post, so the zone-less list
+      // cannot offer him here.
+      const posted = await snap(a);
+      expect(posted.ownAuthTile, 'A is on the talk post').toEqual(TALK_POST);
+      const inRange = posted.characters.filter(
+        (c) => !playerEntityIds.includes(c.entityId) && manhattan(c, TALK_POST) <= TALK_RANGE,
+      );
+      expect(
+        inRange.map((c) => `${c.entityId}@(${c.tileX},${c.tileY})`),
+        'exactly one non-player character (the elder) is within talk range of the post',
+      ).toHaveLength(1);
+      const [elder] = inRange;
+      if (elder === undefined) throw new Error('unreachable: one elder was asserted above');
+
+      // Two steps North, back along the walk: (6,3) → (6,2) → (6,1).
+      for (let i = 0; i < 2; i++) {
+        const g = await snap(a);
+        if (g.ownAuthTile === null) throw new Error('walk away: lost the own authoritative tile');
+        await stepOne(a, 'North', g.ownAuthTile);
+      }
+      const away = await snap(a);
+      expect(away.ownAuthTile, 'A walked back to (6,1)').toEqual({ x: 6, y: 1 });
+      if (away.ownAuthTile === null) throw new Error('walk away: lost the own authoritative tile');
+      const elderNow = away.characters.find((c) => c.entityId === elder.entityId);
+      expect(elderNow, 'the elder is still listed').toBeDefined();
+      if (elderNow === undefined) throw new Error('unreachable: the elder was asserted above');
+      expect(
+        manhattan(elderNow, away.ownAuthTile),
+        'A is out of talk range of THIS elder (never measured to all characters: zone-less)',
+      ).toBeGreaterThanOrEqual(TALK_RANGE + 1);
+      await expect(overlay, 'walking away ends nothing by itself').toBeVisible();
+
+      await a
+        .locator('#dialogue-choices')
+        .getByText('I seek a quest.', { exact: true })
+        .click({ timeout: 5_000 });
+      const status = a.locator('#status');
+      await expect(status).toHaveText('Conversation ended: you moved too far away.', {
+        timeout: 20_000,
+      });
+      await expect(status).not.toContainText('advance:');
+      await expect(overlay).toBeHidden({ timeout: 20_000 });
     });
 
     // -------------------------------------------------------------------------

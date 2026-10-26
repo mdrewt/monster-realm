@@ -431,7 +431,15 @@ export type MessageId =
   | 'bag.picker.title'
   | 'bag.feed.noMonsters'
   | 'journal.detail.step'
-  | 'journal.empty';
+  | 'journal.empty'
+  // qf-6 (QF6.2): the status line when a refused advance_dialogue ends the conversation —
+  // the parties too far apart, in different zones, or the NPC gone (main.ts endedLine).
+  | 'dialogue.ended.walkedAway'
+  | 'dialogue.ended.leftZone'
+  | 'dialogue.ended.npcGone'
+  // qf-6 (QF6.4): the status line acknowledging a completed quest, with and without gold.
+  | 'quest.complete.reward'
+  | 'quest.complete.done';
 
 /** The ONE hand-written parameter table: a key appears here iff its message takes
  *  parameters, and `ParamMessageId` is DERIVED from it — one table, not two lists to keep in
@@ -632,6 +640,9 @@ export interface MessageParams {
   readonly 'privacy.export.incomplete': { readonly received: number; readonly total: number };
   readonly 'privacy.export.complete': { readonly received: number };
   readonly 'journal.detail.step': { readonly step: number };
+  // qf-6: the completed quest's id (the Journal shows it verbatim too) and the gold gained.
+  readonly 'quest.complete.reward': { readonly name: string; readonly amount: bigint };
+  readonly 'quest.complete.done': { readonly name: string };
   readonly 'social.players.walkUp': { readonly name: string };
 }
 
