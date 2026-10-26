@@ -578,11 +578,7 @@ fn conversation_is_live(ctx: &ReducerContext, conv: &PlayerConversation, zone: u
     else {
         return false;
     };
-    let at = |c: &Character| TilePos {
-        x: c.tile_x,
-        y: c.tile_y,
-    };
-    me.zone_id == zone && in_talk_range(at(&me), at(&npc_ch))
+    me.zone_id == zone && in_talk_range(char_state(&me).pos, char_state(&npc_ch).pos)
 }
 
 // movement.rs is a file-module (declared `mod movement;` in `lib.rs`), so a plain
