@@ -13,8 +13,8 @@ module calls it for truth; the browser runs the same compiled code through the t
 `wasm-bindgen` shell in `client-wasm` for prediction. Constants the client needs
 (`step_ms`, `move_queue_cap`, `party_size`, `party_slot_none`, `talk_range`,
 `max_trade_monsters_per_side`, `deletion_grace_ms_default`) and derived queries
-(`evolution_eligibility`, `interact_candidates_coded`, `zone_map`) are wasm exports
-(`client-wasm/src/lib.rs`), not TypeScript literals.
+(`evolution_eligibility`, `interact_candidates_coded`, `zone_map`, `care_remaining_ms`)
+are wasm exports (`client-wasm/src/lib.rs`), not TypeScript literals.
 
 **Why.** A rule implemented twice drifts, and a drifted movement or battle rule is a
 desync: the client predicts one outcome, the server commits another, and the player
@@ -43,7 +43,9 @@ silently in release (but panics in tests) hides exactly the bugs tests exist to 
 
 **Rules out.** Floats in rules, clock reads in rules, unseeded RNG anywhere in Rust. In
 TypeScript the ban is not mechanical: client code may read `performance.now()` for
-rendering and pacing, but it never feeds a rule decision the server would redo.
+rendering and pacing, and `Date.now()` against a server-epoch column for display or an
+advisory gate whose readiness only a wasm export over the game-core predicate decides
+(`care_remaining_ms` on the Monsters sheet); the server re-decides on its own clock.
 
 ## Integer damage formula with a seeded variance roll
 
