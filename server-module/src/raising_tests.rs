@@ -2681,9 +2681,10 @@ mod nh {
     /// row byte-identical (reject never burns the cooldown, on the copy the client
     /// reads either).
     ///
-    /// Kills: a care that rewrites only the private row (the pub anchor stays T0,
-    /// so the client shows Care disabled for another 6 h after a care it just
-    /// did); a pub write that stamps the anchor with anything but the server clock
+    /// Kills: a care that rewrites only the private row (the pub anchor stays at
+    /// the stale T0, which at now = T0 + CARE_COOLDOWN_MS already reads as
+    /// elapsed, so the client shows Care ENABLED right after the care it just did
+    /// and the server rejects the next press); a pub write that stamps the anchor with anything but the server clock
     /// (0, the pre-care value, or the private row's OLD anchor); and a rejection
     /// that rewrites the pub row on the way out (a refreshed stamp would push the
     /// client's hint out by a full cooldown on every early press).
@@ -3188,6 +3189,100 @@ mod nh {
             "fixture must cross a band"
         );
         assert_eq!(p.quality_time_tier, game_core::quality_time_tier_of(50));
+        w.assert_pub_consistent(11);
+    }
+
+    /// qf-3 (QF3.2): the Quality-Time tail's tier-crossing re-projection of
+    /// monster_pub carries the care anchor forward unchanged, both when the tail
+    /// runs on its own and when it runs as `care`'s tail right after care stamped
+    /// the anchor (care's dual-write, then `accrue_quality_time` re-projecting the
+    /// pub row because the tier crossed a band).
+    ///
+    /// Kills: a re-projection that zeroes the anchor (`new_pub.last_care_at_ms =
+    /// 0;` after `pub_from_monster` in `accrue_quality_time`; it survived every
+    /// other fixture because each one whose accrual crosses a band carries anchor
+    /// 0, while in play the owner's client would read a cooling monster as ready
+    /// and the server would reject the press); a tail that stamps the anchor with
+    /// the accrual clock, on the pub row or the private row (Quality Time accrues
+    /// while walking, so every walk would restart the care cooldown); and a
+    /// vacuous pass where the pub row was never rewritten (the tier must cross
+    /// the 49 -> 50 band and the private row must reach 50 ticks).
+    #[test]
+    fn nh_quality_time_tier_crossing_preserves_the_care_anchor() {
+        // A distinct nonzero anchor: not T0, not 0, not any sibling i64 column.
+        let anchor = T0 - 777_777;
+        let tier_before = game_core::quality_time_tier_of(49);
+
+        // 1. The tail on its own, at the accrual clock T0 + QT_TICK_MS.
+        let fx = fixture();
+        let w = world(&fx, true);
+        let mut m = monster(11, a(), 0);
+        m.quality_time_ticks_total = 49;
+        m.quality_time_window_start_ms = T0;
+        m.last_care_at_ms = anchor;
+        w.seed_monster(&m);
+        let seeded = pub11(&w);
+        assert_eq!(
+            seeded.last_care_at_ms, anchor,
+            "fixture: the seeded pub row carries the anchor"
+        );
+        assert_eq!(
+            seeded.quality_time_tier, tier_before,
+            "fixture: the seeded pub row carries the 49-tick tier"
+        );
+        assert!(
+            accrue_quality_time(&fx.ctx_at(at(T0 + QT_TICK_MS)), 11),
+            "fixture: one full tick of credit advances the counter"
+        );
+        assert_eq!(w.monster(11).quality_time_ticks_total, 50);
+        let after = pub11(&w);
+        assert_ne!(
+            after.quality_time_tier, tier_before,
+            "anti-vacuity: the tier crossed a band, so the tail REWROTE the pub row"
+        );
+        assert_eq!(after.quality_time_tier, game_core::quality_time_tier_of(50));
+        assert_eq!(
+            after.last_care_at_ms, anchor,
+            "the tier-crossing re-projection must carry the care anchor forward on the pub row \
+             (neither 0 nor the accrual clock)"
+        );
+        assert_eq!(
+            w.monster(11).last_care_at_ms,
+            anchor,
+            "Quality-Time accrual never touches the private row's care anchor"
+        );
+        w.assert_pub_consistent(11);
+
+        // 2. The composition every successful care runs: care stamps `now` on both
+        // rows, then its Quality-Time tail credits one tick (window opened exactly
+        // QT_TICK_MS before `now`), crosses the band and re-projects the pub row.
+        // `now` clears the cooldown measured from `anchor`.
+        drop(fx);
+        let fx = fixture();
+        let w = world(&fx, true);
+        let now = T0 + CARE_COOLDOWN_MS;
+        let mut m = monster(11, a(), 0);
+        m.quality_time_ticks_total = 49;
+        m.quality_time_window_start_ms = now - QT_TICK_MS;
+        m.last_care_at_ms = anchor;
+        w.seed_monster(&m);
+        assert_eq!(fx.run_as_at(a(), at(now), |ctx| care(ctx, 11)), Ok(()));
+        assert_eq!(
+            w.monster(11).quality_time_ticks_total,
+            50,
+            "fixture: care's Quality-Time tail credited exactly one tick"
+        );
+        let after = pub11(&w);
+        assert_ne!(
+            after.quality_time_tier, tier_before,
+            "anti-vacuity: care's tail crossed a band, so it RE-PROJECTED the pub row after \
+             care's own dual-write"
+        );
+        assert_eq!(
+            after.last_care_at_ms, now,
+            "the care stamp must survive the tail's re-projection of the pub row"
+        );
+        assert_eq!(w.monster(11).last_care_at_ms, now);
         w.assert_pub_consistent(11);
     }
 

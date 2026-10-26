@@ -242,10 +242,12 @@ pub fn talk_range() -> u32 {
 ///
 /// Readiness is decided ONLY by the predicate — the same one the server's
 /// `care` reducer runs — so `== 0` is the client's one reading of "Care is
-/// enabled"; the subtraction is display arithmetic for the "Ready in …" hint.
-/// The clamp makes `ready ⟺ 0` structural and keeps the hint inside one
-/// cooldown: a client clock behind the server anchor reads a full cooldown,
-/// never a negative or a multi-year figure. `i64` in and out: the anchor is the
+/// enabled" (the early return is what makes `ready ⟺ 0` hold); the
+/// subtraction is display arithmetic for the "Ready in …" hint. The clamp's
+/// ceiling keeps the hint inside one cooldown — a client clock behind the
+/// server anchor reads a full cooldown, never a multi-year figure — and its
+/// floor is defensive only (not-ready means the saturated elapsed is below
+/// the cooldown, so the difference is already >= 1). `i64` in and out: the anchor is the
 /// `monster_pub.last_care_at_ms` column (server-epoch ms, 0 = never cared) and
 /// `now_ms` is the client's wall clock, both `BigInt` in TypeScript (the
 /// `deletion_grace_ms_default` precedent); the cooldown length itself is never

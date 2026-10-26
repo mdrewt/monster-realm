@@ -4157,11 +4157,12 @@ describe('rowConvert: monsterPubRowToStore carries the care cooldown anchor (las
 
   it('the regenerated MonsterPub binding carries the care anchor as its LAST column, and its row type is assignable to SdkMonsterPubRow', () => {
     // A machine-contract check against the GENERATED artifact (module_bindings/types.ts is
-    // `spacetime generate` output): RED until the bindings are regenerated from the new schema.
-    // The column must be appended after nutrition_pct — an automatic migration of a live
-    // database accepts only tail-appended columns. The anti-vacuity line first proves the
-    // product-type walk itself reads the binding (it names nutrition today), so a red on the
-    // second line is the missing column, not a misread shape.
+    // `spacetime generate` output), so it pins the bindings the client actually ships with.
+    // The care anchor must stay the column appended directly after nutrition_pct: an automatic
+    // migration of a live database accepts only tail-appended columns, so a schema that moves,
+    // drops or follows it with another column reds here. The anti-vacuity line first proves the
+    // product-type walk itself reads the binding (nutrition_pct is a column it must find), so a
+    // red on the position lines is a misplaced or missing anchor, not a misread shape.
     const t = (GeneratedTypes as Record<string, unknown>).MonsterPub as
       | { algebraicType?: { tag?: string; value?: { elements?: { name?: string }[] } } }
       | undefined;
@@ -4182,8 +4183,9 @@ describe('rowConvert: monsterPubRowToStore carries the care cooldown anchor (las
     );
 
     // A tsc tooth (the RC-PW-02d / RC-HL-CC-08 precedent): the row the SDK actually delivers must
-    // satisfy the converter's input contract. `just client-typecheck` reds here until the
-    // regenerated binding has `lastCareAtMs: bigint`.
+    // satisfy the converter's input contract. `just client-typecheck` fails on this line if the
+    // generated row type stops being assignable to SdkMonsterPubRow (for example, if
+    // `lastCareAtMs` is no longer a bigint).
     const generatedRowIsAnSdkRow = (row: GeneratedTypes.MonsterPub): SdkMonsterPubRow => row;
     expect(typeof generatedRowIsAnSdkRow).toBe('function');
   });
