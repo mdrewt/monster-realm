@@ -47,6 +47,14 @@
 // path, only the choices enabled, the status line raw from the model's reason) and the Yes / No
 // confirm are parts of this frame under the sheet, and the "Fed {name}" line joins the feedback
 // line. A hidden part is emptied as well as hidden (the e2e text scans read hidden descendants).
+//
+// qf-2: a care answer or a train rejection for an action sent FROM this frame comes back to this
+// frame's line (QF2.1), through a sink `feedbackLine()` hands out bound to the current open: a sink
+// called while hidden, or once a later open has started, paints nothing and says so (an answer that
+// settles after the frame was left never reaches the next session). The screen's own Move / Fed
+// line wins while it shows; a batch repaint keeps the outcome (a care rewrites monster_pub, so its
+// own batch repaints the sheet); the next button ends it (`clearOutcome`, main.ts) and so does
+// hide().
 import { type MonsterCardViewModel, NEXT_FREE_PARTY_SLOT } from './boxModel';
 import { currentLocale, t, tf } from './i18n/resolver';
 import {
@@ -132,6 +140,10 @@ function feedbackText(feedback: MonstersFeedback): string {
   }
 }
 
+/** A sink for one action's outcome on this frame's line: its text (textContent only: a rejection
+ *  carries the server's reason) and the line's `data-feedback` mark. True iff it painted. */
+export type OutcomeLine = (message: string, kind: 'ok' | 'error') => boolean;
+
 export interface BoxViewCallbacks {
   /** Called with the nickname field's text when the Monsters screen commits it (CTL8B.3). */
   readonly onSetNickname: (monsterId: bigint, nickname: string) => void;
@@ -159,6 +171,10 @@ export class BoxView {
   readonly #boxLabelEl: HTMLHeadingElement;
   readonly #callbacks: BoxViewCallbacks;
   #visible = false;
+  /** Bumped on each hidden→visible edge: an outcome sink paints only in the open it was taken in. */
+  #opens = 0;
+  /** The last action's outcome (qf-2), shown while the screen paints no feedback of its own. */
+  #outcome: { readonly text: string; readonly kind: 'ok' | 'error' } | null = null;
   // ctl-8b: the Monsters frame's parts and the kept paint.
   readonly #tabStrip: HTMLDivElement;
   readonly #sheetEl: HTMLDivElement;
@@ -331,6 +347,7 @@ export class BoxView {
     this.#rowLabel.textContent = t('box.rename.prompt');
     this.#root.style.display = 'flex';
     if (wasVisible) return;
+    this.#opens++;
     // A reopened frame starts over: Storage, its first card, no sheet (the screen's `init`). After
     // the display write, so the opening card's scroll lands.
     this.#paint = OPENING;
@@ -342,6 +359,7 @@ export class BoxView {
 
   hide(): void {
     this.#visible = false;
+    this.#outcome = null;
     this.#root.style.display = 'none';
     closeOverlayA11y('boxView', null);
   }
@@ -360,6 +378,24 @@ export class BoxView {
     this.#apply();
   }
 
+  /** A sink for an action sent from this open of the frame (see the header). */
+  feedbackLine(): OutcomeLine {
+    const open = this.#opens;
+    return (message, kind) => {
+      if (!this.#visible || this.#opens !== open) return false;
+      this.#outcome = { text: message, kind };
+      this.#apply();
+      return true;
+    };
+  }
+
+  /** End the outcome line: the next button acts on the frame (main.ts routes it). */
+  clearOutcome(): void {
+    if (this.#outcome === null) return;
+    this.#outcome = null;
+    this.#apply();
+  }
+
   /** The Monsters screen's paint: kept, so the next `refresh` re-applies it. */
   paint(p: MonstersPaint): void {
     this.#paint = p;
@@ -368,7 +404,8 @@ export class BoxView {
 
   /** Apply the kept paint: send a new commit token's text, then the tabs and the panel shown, the
    *  cursor card (class, aria-current and an outline: never colour alone), the sheet, its summary
-   *  and typing row, and the Move line. Focus never stays in a part this hides. */
+   *  and typing row, and the feedback line (the screen's Move / Fed line, else the outcome). Focus
+   *  never stays in a part this hides. */
   #apply(): void {
     const p = this.#paint;
     // First, while the field still holds the text. Recorded BEFORE the callback, which may
@@ -538,11 +575,12 @@ export class BoxView {
       this.#input.focus();
     }
 
-    const feedback = p.feedback;
-    setShown(this.#feedbackEl, feedback !== null, '');
-    this.#feedbackEl.textContent = feedback === null ? '' : feedbackText(feedback);
-    if (feedback === null) this.#feedbackEl.removeAttribute('data-feedback');
-    else this.#feedbackEl.dataset.feedback = 'ok';
+    const line =
+      p.feedback !== null ? { text: feedbackText(p.feedback), kind: 'ok' } : this.#outcome;
+    setShown(this.#feedbackEl, line !== null, '');
+    this.#feedbackEl.textContent = line === null ? '' : line.text;
+    if (line === null) this.#feedbackEl.removeAttribute('data-feedback');
+    else this.#feedbackEl.dataset.feedback = line.kind;
 
     // A part hidden under the focus would strand it (the next key would heal focus to the world,
     // out of the frame): hand it to the frame's anchor.

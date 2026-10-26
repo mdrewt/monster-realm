@@ -151,6 +151,18 @@ const H = vi.hoisted(() => {
         showFeedback(message: string): void {
           this.feedback.push(message);
         }
+        // qf-2 (named intentional change): the Monsters frame's outcome line. main.ts ends it on
+        // every routed button (`clearOutcome`) and takes a sink for a sheet command
+        // (`feedbackLine`); the stand-in's sink records on `feedback`, as `showFeedback` does, so
+        // the existing feedback assertions keep their meaning.
+        clearOutcome(): void {}
+        feedbackLine(): (message: string, kind: string) => boolean {
+          // The sink reports whether it painted (true iff it did): the stand-in always paints.
+          return (message: string): boolean => {
+            this.feedback.push(message);
+            return true;
+          };
+        }
       },
   };
   return h;

@@ -106,7 +106,7 @@ import {
 import { battleButton, battleRefused, continuedBattleId, isBareBattle } from './ui/battlePolicy';
 import type { BattleView } from './ui/battleView';
 import { buildBoxViewModel, buildPartyViewModel, resolvePartySlot } from './ui/boxModel';
-import type { BoxView } from './ui/boxView';
+import type { BoxView, OutcomeLine } from './ui/boxView';
 // F9 bug-bundle observability — session event ring + error ring +
 // pure bundle assembler + error overlay.
 import {
@@ -1573,8 +1573,9 @@ const releaseAnswered = (key: string) => (): void => {
 
 /** Run one command. Not async: each arm hands back its own reducer promise (a view's lock holds
  *  until it settles), and a synchronous throw stays synchronous. No default arm, so a new
- *  `Command` fails client-typecheck here. */
-function dispatch(command: Command): Promise<void> {
+ *  `Command` fails client-typecheck here. `line` is the outcome line of the frame that sent it
+ *  (qf-2: the Monsters sheet's care and train answer there); a view callback passes none. */
+function dispatch(command: Command, line?: OutcomeLine): Promise<void> {
   if (refusedInBattle(command)) return DONE;
   // An answer leaves the request out of the world's notices until the server row changes (ctl-13).
   // The add stays optimistic — on answer, not settle, so the banner never flashes while the answer
@@ -1612,18 +1613,30 @@ function dispatch(command: Command): Promise<void> {
         openHelp();
       }
       return DONE;
-    case 'care':
+    case 'care': {
       // The whole decision (frozen gate / await / exactly-one message) lives in the tested
-      // performCare core. RaisingView.showFeedback is a no-op while hidden (stale-message guard).
+      // performCare core. The answer goes to the sender's line, else to raising's, whose
+      // showFeedback is a no-op while hidden (stale-message guard).
+      const cared = i18nT('raising.feedback.cared');
       return performCare({
         call: () => liveReducers()?.care({ monsterId: command.monsterId }),
-        successMessage: i18nT('raising.feedback.cared'),
+        successMessage: cared,
         where: 'care',
-        showFeedback: (message) => raisingView?.showFeedback(message),
+        showFeedback:
+          line === undefined
+            ? (message) => raisingView?.showFeedback(message)
+            : (message) => line(message, message === cared ? 'ok' : 'error'),
       });
+    }
     case 'train': {
+      // Success is the sheet's own "Fed" line once the batch lands; a failure goes to `line`.
       const { monsterId, foodItemId } = command;
-      return sendGuarded('train', () => conn?.live()?.reducers.train({ monsterId, foodItemId }));
+      return sendGuarded(
+        'train',
+        () => conn?.live()?.reducers.train({ monsterId, foodItemId }),
+        undefined,
+        line,
+      );
     }
     case 'evolve': {
       // The CHOSEN species, from the panel's path picker: the client never resolves an ambiguous
@@ -1965,10 +1978,12 @@ let lastBattleVM: BattleViewModel | null = null;
 // and the dialogue-choice click handler) report through it too.
 let statusEl: HTMLElement | undefined;
 
-/** Surface a user-visible failure: textContent ONLY — server-supplied SenderError
- *  text must never become markup (never innerHTML) — plus console.error for logs. */
-function reportError(text: string): void {
-  if (statusEl !== undefined) statusEl.textContent = text;
+/** Surface a user-visible failure on `line` (the sending frame's outcome line, qf-2) or, when there
+ *  is none or it no longer paints (the frame was left), on the status line: textContent ONLY —
+ *  server-supplied SenderError text must never become markup (never innerHTML) — plus
+ *  console.error for logs and the error ring either way. */
+function reportError(text: string, line?: OutcomeLine): void {
+  if (line?.(text, 'error') !== true && statusEl !== undefined) statusEl.textContent = text;
   console.error('[status]', text);
   // unify UI/reducer failures into the error ring so the F9 bundle captures them.
   pushError('reducer', text);
@@ -2049,21 +2064,23 @@ window.addEventListener('unhandledrejection', (e) => pushError('unhandledrejecti
  * in-flight lock `return` it so the lock lives exactly until the call settles.
  * `onRejected` threads a settled rejection out to the caller (C5: a rejected challenge
  * answer releases its answeredRequests key); the frozen and dead-handle arms never
- * call it — no reducer ran, nothing settled.
+ * call it — no reducer ran, nothing settled. `line` is the sending frame's outcome line, where
+ * both failure arms report instead of the status line while it still paints (qf-2).
  */
 function sendGuarded(
   where: string,
   call: () => Promise<void> | undefined,
   onRejected?: () => void,
+  line?: OutcomeLine,
 ): Promise<void> {
   if (conn === undefined || conn.linkFrozen()) {
-    reportError(tf('chrome.status.disconnected', { where }));
+    reportError(tf('chrome.status.disconnected', { where }), line);
     return Promise.resolve();
   }
   const p = call();
   if (p === undefined) return Promise.resolve();
   return p.catch((err: unknown) => {
-    reportError(reduceErrorMessage(err, where));
+    reportError(reduceErrorMessage(err, where), line);
     onRejected?.();
   });
 }
@@ -2367,6 +2384,8 @@ const routeCtx = (): RouteContext => {
     nav,
     // The battle's own rules first (Start opens the menu over it, A continues its outcome).
     screen: (btn) => {
+      // Every button ends the Monsters frame's last outcome line (qf-2), as it ends the screen's.
+      boxView?.clearOutcome();
       const sheetWas = screenHost.sheetOpen;
       const result =
         battleButton(
@@ -2405,7 +2424,11 @@ const applyRouterEffect = (effect: RouterEffect): void => {
       applyMenuStep(mainMenuStep(menuState, effect.input));
       break;
     case 'command':
-      void dispatch(effect.command);
+      // A screen's command answers on its frame's line: the Monsters sheet's (qf-2).
+      void dispatch(
+        effect.command,
+        upperIds().at(-1) === 'boxView' ? boxView?.feedbackLine() : undefined,
+      );
       break;
     default:
       effect satisfies never;
