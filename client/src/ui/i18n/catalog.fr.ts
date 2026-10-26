@@ -1452,4 +1452,24 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // quest: the reason, then where quests come from and what to do next. Names no key or button
   // (bindings are remappable). One or two short sentences. questLogView.ts #quest-log-empty
   'journal.empty': 'Aucune quête en cours. Parlez aux villageois pour savoir qui a besoin d’aide.',
+  // @desc: Status line when a conversation ended because the player chose a reply after moving
+  // too far from the NPC: says the conversation ended and why. One short sentence.
+  // main.ts endedLine (the refused advance_dialogue, "walked too far away")
+  'dialogue.ended.walkedAway': 'Conversation terminée : vous êtes trop loin.',
+  // @desc: Status line when a conversation ended because the player and the NPC are no longer
+  // in the same zone: says the conversation ended and why. One short sentence.
+  // main.ts endedLine (the refused advance_dialogue, "no longer in same zone")
+  'dialogue.ended.leftZone': 'Conversation terminée : vous avez quitté la zone.',
+  // @desc: Status line when a conversation ended because the NPC is gone: says the conversation
+  // ended and why. One short sentence.
+  // main.ts endedLine (the refused advance_dialogue, "npc not found" / "npc character not found")
+  'dialogue.ended.npcGone': 'Conversation terminée : il n’y a plus personne ici.',
+  // @desc: Status line acknowledging a completed quest and the gold it paid; {name} is the quest
+  // content id shown verbatim (as in the Journal), {amount} the gold gained. One short line.
+  // main.ts (the quest-completion batch listener)
+  'quest.complete.reward': (p) => `Quête terminée : ${p.name}. Vous avez reçu ${p.amount} or.`,
+  // @desc: Status line acknowledging a completed quest that paid no gold; {name} is the quest
+  // content id shown verbatim (as in the Journal). One short line.
+  // main.ts (the quest-completion batch listener)
+  'quest.complete.done': (p) => `Quête terminée : ${p.name}.`,
 } satisfies Catalog);

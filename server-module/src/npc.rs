@@ -238,6 +238,13 @@ fn apply_quest_trigger(
                 ctx.db.player_quest().pq_id().update(updated);
             }
             QuestAdvance::QuestComplete { reward } => {
+                // qf-6: the client acknowledges a completion as "one of my player_quest
+                // rows left while my player_conversation row is present in the same batch"
+                // (the wallet gain in that batch is the reward it shows): `talk` is the only
+                // caller and always upserts the conversation row in this transaction, and
+                // the deletion cascade (`erase_npc_state`) removes both rows together. A new
+                // path that removes quest rows inside a talk for any other reason needs a
+                // real acknowledgement channel first.
                 ctx.db.player_quest().pq_id().delete(row.pq_id);
                 state.active_quests.remove(&row.quest_id);
                 state.done_quests.insert(row.quest_id.clone());
@@ -360,6 +367,14 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
 /// Advance dialogue by selecting a choice. Security gate: `apply_choice` re-checks
 /// conditions internally. `player_conversation` lookup is PK-scoped to ctx.sender().
 /// Refused during an ongoing battle.
+///
+/// A refusal writes NOTHING: `Err` aborts the whole transaction, so a delete issued
+/// before it never persisted (the qf-6 WALKEDAWAYROLLBACK wedge: the overlay stayed
+/// open and the log claimed a dismissal). The npc-missing / wrong-zone / walked-away
+/// refusals below are a server→client contract: the client maps each exact string to
+/// catalogued copy and ends the conversation itself with `dismiss_dialogue`, whose
+/// delete is the one that commits (pinned by client statusModel.test.ts, the booted
+/// main.dialogueEnded.test.ts and the dialogue e2e).
 #[spacetimedb::reducer]
 pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), String> {
     let me = ctx.sender();
@@ -373,7 +388,7 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
     let Some(p) = ctx.db.player().identity().find(me) else {
         return Err("not joined".to_string());
     };
-    // Deletion gate: after the joined check, before the dismissing NPC reads.
+    // Deletion gate: after the joined check, before the NPC reads.
     crate::guards::require_not_deleting(ctx, "advance_dialogue")?;
     // Both-role ongoing-battle guard, ahead of the NPC / zone / range re-checks,
     // so a mid-battle caller always gets this refusal. `dismiss_dialogue` is
@@ -384,27 +399,24 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
     let Some(player_char) = ctx.db.character().entity_id().find(p.entity_id) else {
         return Err("character not found".to_string());
     };
+    // The four conversation-ending refusals (client contract, see the doc comment).
     let Some(npc_row) = ctx.db.npc().entity_id().find(conv.npc_entity_id) else {
-        ctx.db.player_conversation().owner_identity().delete(me);
         return Err("npc not found".to_string());
     };
     let Some(npc_char) = ctx.db.character().entity_id().find(npc_row.entity_id) else {
-        ctx.db.player_conversation().owner_identity().delete(me);
         return Err("npc character not found".to_string());
     };
     if player_char.zone_id != npc_char.zone_id {
-        ctx.db.player_conversation().owner_identity().delete(me);
         log::warn!(
-            "{{\"evt\":\"advance_dialogue_dismissed\",\"sender\":\"{me}\",\"reason\":\"wrong_zone\"}}"
+            "{{\"evt\":\"advance_dialogue_refused\",\"sender\":\"{me}\",\"reason\":\"wrong_zone\"}}"
         );
         return Err("no longer in same zone".to_string());
     }
     let dx = (i64::from(player_char.tile_x) - i64::from(npc_char.tile_x)).abs();
     let dy = (i64::from(player_char.tile_y) - i64::from(npc_char.tile_y)).abs();
     if dx + dy > TALK_RANGE {
-        ctx.db.player_conversation().owner_identity().delete(me);
         log::warn!(
-            "{{\"evt\":\"advance_dialogue_dismissed\",\"sender\":\"{me}\",\"reason\":\"walked_away\"}}"
+            "{{\"evt\":\"advance_dialogue_refused\",\"sender\":\"{me}\",\"reason\":\"walked_away\"}}"
         );
         return Err("walked too far away".to_string());
     }
@@ -510,7 +522,9 @@ pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity
 /// `player_quest` (owner index → collect ids → PK deletes), and the
 /// transient `player_conversation` row (PK point delete). Called only from
 /// `accounts::account_deletion_reaper`; never an
-/// unbounded table iteration.
+/// unbounded table iteration. The quest and conversation rows go in ONE
+/// transaction on purpose: the client reads a quest row leaving while the
+/// conversation row is present as a completion (see `apply_quest_trigger`).
 pub(crate) fn erase_npc_state(ctx: &ReducerContext, owner: Identity) {
     ctx.db
         .player_dialogue_state()

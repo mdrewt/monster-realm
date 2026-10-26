@@ -1412,4 +1412,24 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // quest: the reason, then where quests come from and what to do next. Names no key or button
   // (bindings are remappable). One or two short sentences. questLogView.ts #quest-log-empty
   'journal.empty': 'No active quests yet. Talk to villagers to find out who needs help.',
+  // @desc: Status line when a conversation ended because the player chose a reply after moving
+  // too far from the NPC: says the conversation ended and why. One short sentence.
+  // main.ts endedLine (the refused advance_dialogue, "walked too far away")
+  'dialogue.ended.walkedAway': 'Conversation ended: you moved too far away.',
+  // @desc: Status line when a conversation ended because the player and the NPC are no longer
+  // in the same zone: says the conversation ended and why. One short sentence.
+  // main.ts endedLine (the refused advance_dialogue, "no longer in same zone")
+  'dialogue.ended.leftZone': 'Conversation ended: you left the area.',
+  // @desc: Status line when a conversation ended because the NPC is gone: says the conversation
+  // ended and why. One short sentence.
+  // main.ts endedLine (the refused advance_dialogue, "npc not found" / "npc character not found")
+  'dialogue.ended.npcGone': 'Conversation ended: they are no longer here.',
+  // @desc: Status line acknowledging a completed quest and the gold it paid; {name} is the quest
+  // content id shown verbatim (as in the Journal), {amount} the gold gained. One short line.
+  // main.ts (the quest-completion batch listener)
+  'quest.complete.reward': (p) => `Quest complete: ${p.name}. You received ${p.amount} gold.`,
+  // @desc: Status line acknowledging a completed quest that paid no gold; {name} is the quest
+  // content id shown verbatim (as in the Journal). One short line.
+  // main.ts (the quest-completion batch listener)
+  'quest.complete.done': (p) => `Quest complete: ${p.name}.`,
 } satisfies Catalog);
