@@ -17,10 +17,11 @@ use crate::marshal::{
 };
 use crate::raising::accrue_quality_time;
 use crate::schema::{
-    character, encounter, monster, monster_pub, npc, player, species_row, trade_offer, Character,
-    Player,
+    character, encounter, monster, monster_pub, npc, player, player_conversation, species_row,
+    trade_offer, Character, Player,
 };
 use crate::{SPRITE_PLAYER, STARTER_SPECIES_ID, ZONE_0};
+use game_core::npc::rules::npc_step_due;
 use game_core::{
     apply_move, map_for, npc_decide, resolve_encounter, roll_starter, spawn, stepped_onto_grass,
     ActionState, Direction, Millis, MoveInput, StatBlock, TilePos, MOVE_QUEUE_CAP, STEP_MS,
@@ -500,7 +501,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         }
     }
 
-    // NPC wander: deterministic per-tick wander via game_core::npc_decide.
+    // NPC wander: deterministic, cadence-gated wander via game_core::npc_decide.
     // Tick counter derived from server clock — avoids wall-clock entropy.
     let tick_counter: u64 = now.0.unsigned_abs() / (STEP_MS.unsigned_abs().max(1));
     let npc_entity_ids: Vec<u64> = ctx
@@ -510,7 +511,23 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         .filter(zone)
         .map(|n| n.entity_id)
         .collect();
+    // QF5.1: an NPC referenced by an active conversation never moves. A full scan:
+    // `npc_entity_id` has no index, and the table holds only live dialogues (one row
+    // per player at most, deleted on disconnect). Skipped when the zone has no NPCs.
+    let conversing: Vec<u64> = if npc_entity_ids.is_empty() {
+        Vec::new()
+    } else {
+        ctx.db
+            .player_conversation()
+            .iter()
+            .map(|c| c.npc_entity_id)
+            .collect()
+    };
     for entity_id in npc_entity_ids {
+        // QF5.2: the game-core cadence decides WHEN an NPC may step at all.
+        if !npc_step_due(entity_id, tick_counter) || conversing.contains(&entity_id) {
+            continue;
+        }
         let Some(npc_row) = ctx.db.npc().entity_id().find(entity_id) else {
             continue;
         };
