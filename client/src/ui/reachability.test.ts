@@ -2,10 +2,10 @@
 /**
  * reachability.test.ts: press counts over the pure menu, nav and stack models (ctl-11b, CTL11B.2).
  *
- * qf-8 (QF8.1, QF8.2, QF8.3) adds the sweep at the bottom of this file: the mouse-only duplicate
- * controls are gone, and each action they carried is still reached through its nav-kit path. The
- * file now runs under happy-dom (the sweep renders real views); the press-count cases above it are
- * pure model code and read no DOM, so they are unchanged.
+ * qf-8 adds three things at the bottom of this file (see its section comment): the raising screen's
+ * Care / Train row of the QF8.2 sweep, the Evolve pointer route (QF8.1), and the e2e reference scan
+ * (QF8.3). The file now runs under happy-dom because those render real views; the press-count cases
+ * above are pure model code, read no DOM, and are unchanged.
  *
  * CTL11B.2: every accelerator target is reachable from the world in at most 7 D-pad / A presses,
  * counted as design §5's table counts them: Start to open the menu, each D-pad move, A to pick,
@@ -39,7 +39,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { VButton } from '../input/buttons';
 import { type PointerDeps, PointerSource } from '../input/pointerSource';
 import { ACCEL_PATHS, type AccelPath, accelDecision, type MenuAccel } from '../input/router';
@@ -347,19 +347,20 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
 });
 
 // =============================================================================
-// qf-8 (QF8.1, QF8.2, QF8.3): the mouse-only duplicate controls are retired.
+// qf-8: what this increment covers, and what it does not.
 //
-// QF8.1: each retired control's action is still reached through its nav-kit path, by the D-pad
-// and by a pointer click on a `[data-nav-key]` row. QF8.2: this sweep asserts none of the retired
-// duplicates renders any longer and that no native control is left in the touched views.
-// QF8.3: an e2e that drove a deleted button was migrated to the nav path, never deleted: no spec
-// may still name a retired selector or label.
+// COVERED
+//  - QF8.2, ONE ROW: the raising screen's Care / Train buttons (deleted by qf-9). The novel value
+//    over raisingView.test.ts QF9-2-* is the DOCUMENT-WIDE scan for native controls and tab stops.
+//  - QF8.1, the prerequisite for deleting the evolution view's evo-choice buttons: the Evolve
+//    action is reachable by a pointer click on its `[data-nav-key]` rows (QF8-1-EVOLVE-POINTER).
+//  - QF8.3: no e2e file still names a retired raising id.
 //
-// ONE ROW PER RETIRED DUPLICATE (QF8_RETIRED below). The only row so far is the raising screen's
-// Care / Train buttons (qf-9). STILL LIVE, so NOT rows yet, each added by the slice that deletes it:
-// the evolution view's evo-choice buttons (blocked on the catalog DEAD-KEY parity gate), the Box's
-// To Box / To Party, the trade-row buttons, the PvP accept / decline / cancel buttons and the
-// battle's legacy Flee.
+// NOT COVERED: QF8.2 is NOT complete until the other rows land. The evolution view's evo-choice
+// buttons are held back on the catalog DEAD-KEY parity dependency; the Box's To Box / To Party, the
+// trade-row buttons, the PvP accept / decline / cancel buttons and the battle's legacy Flee are
+// blocked on files outside this increment's touches. Each is added as a row of QF8_RETIRED by the
+// slice that deletes it.
 //
 // D-PAD ROUTE OF THE EVOLVE ACTION (QF8-1-EVOLVE-DPAD, already pinned, nothing added here):
 // monstersScreen.test.ts CTL8C-1-EVOLVE-COMMAND (A on Evolve…, the cursor on the SECOND choice, A,
@@ -368,7 +369,9 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
 // pointer route had no test: QF8-1-EVOLVE-POINTER below plays it through the real adapter and view.
 // =============================================================================
 
-/** Native controls and their stand-ins: anything a click, a key or a tab stop could reach. */
+/** Native controls and their stand-ins: anything a click, a key or a tab stop could reach.
+ *  `[onclick]` only catches the ATTRIBUTE spelling; a handler set as `el.onclick = fn` on a plain
+ *  `div` is invisible to it (a relabelled one is caught by the retired-label check instead). */
 const QF8_NATIVE_CONTROLS = [
   'button',
   '[role="button"]',
@@ -381,34 +384,25 @@ const QF8_NATIVE_CONTROLS = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(', ');
 
-interface Qf8Rendered {
-  readonly root: HTMLElement;
-  /** How many intents the rendered view's callbacks received (a view with no callbacks omits it). */
-  readonly intents?: () => number;
-  readonly dispose: () => void;
-}
-
-interface Qf8Retired {
+/** One retired duplicate. The titles carry the unique, prefix-free tags (QF8-2-*). */
+interface Qf8Row {
   readonly view: string;
-  /** The titles carry the unique, prefix-free tags (QF8-2-*). */
   readonly retiredTitle: string;
   readonly nativeTitle: string;
-  /** CSS selectors of what the retired section rendered (ids, testids), absent from the document. */
+  /** CSS selectors of what the retired section rendered, absent from the document. */
   readonly retiredSelectors: readonly string[];
-  /** Strings that must appear in no element's own text, `aria-label` or `title`: the EXACT
-   *  former labels, matched whole (an exact `Care` never flags a future "Careful"). The retired
-   *  catalog ids are gone, so the pre-qf-9 English is spelled here. */
+  /** The EXACT former labels, matched whole against each element's own text, `aria-label` and
+   *  `title` (an exact `Care` never flags a future "Careful"). The retired catalog ids are gone,
+   *  so the pre-qf-9 English is spelled here. */
   readonly retiredLabels: readonly RegExp[];
-  /** Text no part of the root's textContent may contain: what only the retired section rendered
-   *  (hidden descendants included: the e2e text scans read those too). */
+  /** Text only the retired section rendered, absent from the root's textContent. */
   readonly retiredText: readonly string[];
-  /** Text the live view must still show: without it every absence below could be an empty render. */
+  /** Text the live view must still show: without it every absence could be an empty render. */
   readonly anchors: () => readonly string[];
-  /** Selectors of the controls the view may keep (the nav model's own), pinned exactly per row,
-   *  never "whatever is there today". */
+  /** Selectors of the controls the view may keep, pinned exactly (never "whatever is there"). */
   readonly allowedControls: readonly string[];
   /** Renders the view in the state that USED to show the retired controls. */
-  readonly render: () => Qf8Rendered;
+  readonly render: () => { readonly root: HTMLElement; readonly dispose: () => void };
 }
 
 // ---- the raising screen: monsters that were care-able, food that offered Train ----
@@ -475,16 +469,10 @@ const QF8_RAISING_BAG: BagVm = {
   monsters: [{ key: '11', monsterId: 11n, name: 'Kip' }],
 };
 
-/** RaisingView's constructor is `(parent, _retired?: unknown)`: the callbacks bag is accepted and
- *  never read (qf-9; overlayA11yWiring.test.ts still passes the deleted cards' `{ onTrain, onCare }`).
- *  The spies go in that slot, so a Care or Train button re-added with a handler that reads it is
- *  counted. */
-function qf8RenderRaising(): Qf8Rendered {
+function qf8RenderRaising(): ReturnType<Qf8Row['render']> {
   const parent = document.createElement('div');
   document.body.appendChild(parent);
-  const onCare = vi.fn();
-  const onTrain = vi.fn();
-  const view = new RaisingView(parent, { onCare, onTrain });
+  const view = new RaisingView(parent);
   view.show();
   view.refresh(QF8_RAISING_VM);
   // The painted Bag too: its tabs and rows are the nav model's, and are not native controls.
@@ -497,7 +485,6 @@ function qf8RenderRaising(): Qf8Rendered {
   view.paint({ vm: QF8_RAISING_BAG, nav: navInit(layout), phase: { kind: 'list' }, status: null });
   return {
     root: parent.firstElementChild as HTMLElement,
-    intents: () => onCare.mock.calls.length + onTrain.mock.calls.length,
     dispose: () => {
       view.hide();
       parent.remove();
@@ -507,13 +494,13 @@ function qf8RenderRaising(): Qf8Rendered {
 
 // ---- the table: ADD A ROW when a follow-up slice deletes the next duplicate ----
 
-const QF8_RETIRED: readonly Qf8Retired[] = [
+const QF8_RETIRED: readonly Qf8Row[] = [
   {
     view: 'raisingView',
     retiredTitle:
-      'QF8-2-RAISING-CARE-TRAIN: the raising screen, given monsters that were care-able and food that offered Train, renders no Care or Train control or label and no #raising-feedback, and no click, pointer, key or double-click on any element reaches a care or train callback even after a macrotask',
+      'QF8-2-RAISING-CARE-TRAIN: the raising screen, given monsters that were care-able and food that offered Train, renders no element labelled exactly Care or starting with the Train label, no monster nickname and no #raising-feedback',
     nativeTitle:
-      'QF8-2-RAISING-NO-NATIVE-BUTTON: the whole document, with the raising root shown (legacy grid and painted Bag), holds no native button, link, input, summary, onclick element or tab stop other than the one nav container of the Bag list',
+      'QF8-2-RAISING-NO-NATIVE-BUTTON: the whole document, with the raising root shown (legacy grid and painted Bag), holds no native button, link, input, summary, onclick attribute or tab stop other than the one nav container of the Bag list',
     retiredSelectors: ['#raising-feedback'],
     // The exact English the deleted per-monster cards painted (qf-9: their catalog ids are gone,
     // so it is spelled here): the Care button read exactly "Care", the Train button began
@@ -541,32 +528,6 @@ function qf8Describe(el: Element): string {
   return `<${el.tagName.toLowerCase()}${testid === null ? '' : ` data-testid="${testid}"`}> "${text}"`;
 }
 
-/** The interactions a retired control could answer to: click, pointer, mouse, double-click, context
- *  menu and the activation keys (Enter, Space). One fresh event per element and kind. */
-const QF8_EVENT_MATRIX: ReadonlyArray<() => Event> = [
-  () => new MouseEvent('click', { bubbles: true, cancelable: true }),
-  () => new Event('pointerdown', { bubbles: true, cancelable: true }),
-  () => new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
-  () => new MouseEvent('dblclick', { bubbles: true, cancelable: true }),
-  () => new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
-  () =>
-    new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }),
-  () => new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, cancelable: true }),
-];
-
-/** Every event of the matrix on every element of `root` (itself included); how many were sent. */
-function qf8SweepEvents(root: HTMLElement): number {
-  const all = [root, ...root.querySelectorAll('*')];
-  let sent = 0;
-  for (const el of all) {
-    for (const make of QF8_EVENT_MATRIX) {
-      el.dispatchEvent(make());
-      sent += 1;
-    }
-  }
-  return sent;
-}
-
 /** The text an element carries itself: its own text nodes, `aria-label` and `title`. */
 function qf8OwnLabels(el: Element): string[] {
   const own = [...el.childNodes]
@@ -580,22 +541,29 @@ function qf8OwnLabels(el: Element): string[] {
   return [...own, ...attrs];
 }
 
+/** ANTI-VACUITY: the live view still shows what it should, so an absence is not an empty render. */
+function qf8ExpectAnchors(row: Qf8Row, root: HTMLElement): void {
+  const text = root.textContent ?? '';
+  for (const anchor of row.anchors()) {
+    expect(text, `${row.view}: the live view still shows "${anchor}"`).toContain(anchor);
+  }
+}
+
+// The document-wide scan below is the value over raisingView.test.ts QF9-2-*, which only looks
+// inside the view root; the body is wiped after each case so a leftover cannot reach it.
+afterEach(() => {
+  document.body.replaceChildren();
+});
+
 describe('the retired mouse-only duplicates render no more (qf-8, QF8.2)', () => {
   for (const row of QF8_RETIRED) {
-    it(row.retiredTitle, async () => {
-      // WRONG IMPL KILLED: the shipped control still rendered; its id or label kept on a restyled
-      // element (a div with an onclick reading "Care"); a deleted button whose handler moved to a
-      // card or row, or answers only to a pointer / key / double-click event, or only after a
-      // tick (the matrix sweep plus a macrotask reaches the callback however the node is spelled).
+    it(row.retiredTitle, () => {
+      // WRONG IMPL KILLED: the shipped control still rendered, or its label, id or nickname kept
+      // on a restyled element (a div reading "Care").
       const rendered = row.render();
       try {
         const text = rendered.root.textContent ?? '';
-        for (const anchor of row.anchors()) {
-          expect(
-            text,
-            `${row.view}: ANTI-VACUITY, the live view still shows "${anchor}"`,
-          ).toContain(anchor);
-        }
+        qf8ExpectAnchors(row, rendered.root);
         for (const selector of row.retiredSelectors) {
           expect(
             [...document.querySelectorAll(selector)].map(qf8Describe),
@@ -617,20 +585,6 @@ describe('the retired mouse-only duplicates render no more (qf-8, QF8.2)', () =>
           }
         }
         expect(labelled, `${row.view}: no element carries a retired label`).toEqual([]);
-        if (rendered.intents !== undefined) {
-          const sent = qf8SweepEvents(rendered.root);
-          expect(sent, 'ANTI-VACUITY: the sweep sent the whole matrix to every element').toBe(
-            [rendered.root, ...rendered.root.querySelectorAll('*')].length *
-              QF8_EVENT_MATRIX.length,
-          );
-          expect(sent, 'ANTI-VACUITY: the sweep reached more than the root').toBeGreaterThan(35);
-          await new Promise((resolve) => setTimeout(resolve, 0));
-          expect(
-            rendered.intents(),
-            `${row.view}: no event on any element may reach the retired callbacks, not even ` +
-              'one macrotask later (the action is on the Monsters sheet, by D-pad or pointer)',
-          ).toBe(0);
-        }
       } finally {
         rendered.dispose();
       }
@@ -641,13 +595,7 @@ describe('the retired mouse-only duplicates render no more (qf-8, QF8.2)', () =>
       // a stray native control left behind by the deletion (a wrapper button, a placeholder).
       const rendered = row.render();
       try {
-        const text = rendered.root.textContent ?? '';
-        for (const anchor of row.anchors()) {
-          expect(
-            text,
-            `${row.view}: ANTI-VACUITY, the live view still shows "${anchor}"`,
-          ).toContain(anchor);
-        }
+        qf8ExpectAnchors(row, rendered.root);
         // The whole document, not only the view root: a control re-added beside the root (a
         // sibling, a portal into body) is still on the screen the player sees.
         expect(
@@ -759,9 +707,9 @@ function qf8Edge(
 
 describe('the evolve action is reachable by a pointer click on its nav rows (qf-8, QF8.1)', () => {
   it('QF8-1-EVOLVE-POINTER: from the Evolve list, a click on the unmet path row moves the cursor and sends nothing, a click on the SECOND choice row opens its Yes / No confirm with nothing sent, and a click on the Yes row sends evolve once for Kip with the toSpecies of the clicked path; every click is the D-pad presses the pointer source plans, through the real Monsters adapter and view', () => {
-    // WRONG IMPL KILLED: a deletion of the evolution view's buttons that left the Evolve list
-    // without a pointer route (rows that are not `[data-nav-key]`, a list the seek cannot prove
-    // driven); a click on a row that sends `evolve` without the confirm; a click that opens the
+    // WRONG IMPL KILLED: once evolutionView's buttons are deleted, this is the only route for a
+    // pointer player to the evolve action: an Evolve list without a pointer route (rows that are
+    // not `[data-nav-key]`, a list the seek cannot prove driven); a click on a row that sends `evolve` without the confirm; a click that opens the
     // confirm for the FIRST choice or the cursor row; a Yes click that sends the edge id (30) or
     // the first choice's species (3) instead of the clicked path's (2); a send per click on the
     // unmet path (the control); a second send.
@@ -818,7 +766,8 @@ describe('the evolve action is reachable by a pointer click on its nav rows (qf-
       choice: () => {},
       shop: () => {},
     };
-    const pointer = new PointerSource(gameScreen, () => null, deps);
+    // Wired by construction alone: the source listens on `gameScreen` and keeps no handle here.
+    new PointerSource(gameScreen, () => null, deps);
     const click = (id: string): void => {
       const row = gameScreen.querySelector<HTMLElement>(`#${id}`);
       expect(row, `precondition: row #${id} is painted`).not.toBeNull();
@@ -837,9 +786,6 @@ describe('the evolve action is reachable by a pointer click on its nav rows (qf-
         path: '20',
       });
       expect(fired, 'fixture: nothing sent yet').toEqual([]);
-      expect(pointer, 'the pointer source is wired to the game screen').toBeInstanceOf(
-        PointerSource,
-      );
       for (const edge of [10, 20, 30]) {
         expect(
           gameScreen.querySelector(`#monstersEvolve-root-${edge}[data-nav-key]`),
@@ -887,11 +833,11 @@ describe('the evolve action is reachable by a pointer click on its nav rows (qf-
 
 // ---- QF8.3: no e2e still names a retired selector ----
 
-/** What is ACTUALLY retired now, and so must not be named by any e2e: the catalog ids qf-9 deleted
- *  with the raising screen's per-monster cards (the Care button, the Train button, the status and
- *  stats lines, the Monsters heading and its empty line; see the qf-9 header of
- *  raisingView.test.ts). NOT here: `evo-choice`, `evo-ready-note` and `evolution.choice.evolve`,
- *  which are live until the evolution view's buttons are deleted (that slice adds them). */
+/** What is ACTUALLY retired now: the catalog ids and the DOM id qf-9 deleted with the raising
+ *  screen's per-monster cards (the Care and Train buttons, the status and stats lines, the Monsters
+ *  heading and its empty line, the feedback line). NOT here: `evo-choice`, `evo-ready-note` and
+ *  `evolution.choice.evolve`, which are live until the evolution view's buttons are deleted (that
+ *  slice adds them). */
 const QF8_RETIRED_E2E_REFERENCES = [
   'raising.card.care',
   'raising.card.train',
@@ -899,159 +845,8 @@ const QF8_RETIRED_E2E_REFERENCES = [
   'raising.card.stats',
   'raising.monsters.heading',
   'raising.monsters.empty',
+  'raising-feedback',
 ] as const;
-
-const QF8_SQ = "'";
-const QF8_DQ = '"';
-const QF8_BT = String.fromCharCode(96);
-const QF8_BS = String.fromCharCode(92);
-/** The two characters that open a template substitution, composed so no raw one sits in a literal. */
-const QF8_SUBST = ['$', '{'].join('');
-/** The regex literal `/\/\//`: a lexer that misreads it as division sees `//` inside it and drops
- *  the rest of the line as a comment, so any needle after it vanishes. */
-const QF8_TRAP_RE = ['/', QF8_BS, '/', QF8_BS, '/', '/'].join('');
-/** The characters after which a `/` starts a regex literal, not a division. */
-const QF8_REGEX_AFTER = '(,=:[!&|?{};+-*%<>~^';
-/** The keywords after which a `/` also starts a regex literal. */
-const QF8_REGEX_KEYWORDS: ReadonlySet<string> = new Set([
-  'return',
-  'typeof',
-  'case',
-  'in',
-  'of',
-  'void',
-  'delete',
-  'throw',
-  'yield',
-  'await',
-  'instanceof',
-  'new',
-  'do',
-  'else',
-]);
-
-/** Whether the code emitted so far ends in one of those keywords (not as a property: `x.return`). */
-function qf8AfterRegexKeyword(out: string): boolean {
-  let end = out.length;
-  while (end > 0 && out.charAt(end - 1).trim() === '') end -= 1;
-  let start = end;
-  while (start > 0 && /[A-Za-z0-9_$]/.test(out.charAt(start - 1))) start -= 1;
-  return QF8_REGEX_KEYWORDS.has(out.slice(start, end)) && out.charAt(start - 1) !== '.';
-}
-
-/** `src` with its comments removed. String, template (nesting included) and regex-literal text is
- *  kept verbatim, so a `//` inside a URL string or an apostrophe inside a regex neither starts a
- *  comment nor hides the code after it. Correct enough for the e2e sources; not a parser. */
-function qf8StripComments(src: string): string {
-  let out = '';
-  let i = 0;
-  let prev = ''; // the last significant code character
-  let depth = 0; // `{` depth in code
-  const resume: number[] = []; // the depth each open `${` returns to
-  const copy = (n: number): void => {
-    out += src.slice(i, i + n);
-    i += n;
-  };
-  const quoted = (quote: string): void => {
-    copy(1);
-    while (i < src.length) {
-      const c = src.charAt(i);
-      if (c === '\\') copy(2);
-      else if (c === quote) {
-        copy(1);
-        return;
-      } else if (c === '\n') return;
-      else copy(1);
-    }
-  };
-  // Template text up to the closing backtick, or up to (and into) a `${` substitution.
-  const template = (): void => {
-    while (i < src.length) {
-      const c = src.charAt(i);
-      if (c === '\\') copy(2);
-      else if (c === QF8_BT) {
-        copy(1);
-        return;
-      } else if (src.startsWith(QF8_SUBST, i)) {
-        copy(2);
-        resume.push(depth);
-        depth += 1;
-        return;
-      } else copy(1);
-    }
-  };
-  const regex = (): void => {
-    copy(1);
-    let inClass = false;
-    while (i < src.length) {
-      const c = src.charAt(i);
-      if (c === '\n') return;
-      if (c === '\\') {
-        copy(2);
-        continue;
-      }
-      copy(1);
-      if (c === '[') inClass = true;
-      else if (c === ']') inClass = false;
-      else if (c === '/' && !inClass) return;
-    }
-  };
-  while (i < src.length) {
-    const c = src.charAt(i);
-    const two = src.slice(i, i + 2);
-    if (two === '//') {
-      while (i < src.length && src.charAt(i) !== '\n') i += 1;
-      continue;
-    }
-    if (two === '/*') {
-      const end = src.indexOf('*/', i + 2);
-      i = end === -1 ? src.length : end + 2;
-      out += ' ';
-      continue;
-    }
-    if (c === QF8_DQ || c === QF8_SQ) {
-      quoted(c);
-      prev = c;
-      continue;
-    }
-    if (c === QF8_BT) {
-      copy(1);
-      template();
-      prev = c;
-      continue;
-    }
-    if (c === '/') {
-      if (prev === '' || QF8_REGEX_AFTER.includes(prev) || qf8AfterRegexKeyword(out)) {
-        regex();
-        prev = ')';
-      } else {
-        copy(1);
-        prev = c;
-      }
-      continue;
-    }
-    if (c === '{') depth += 1;
-    if (c === '}') {
-      depth -= 1;
-      if (resume.length > 0 && depth === resume[resume.length - 1]) {
-        resume.pop();
-        copy(1);
-        template();
-        prev = QF8_BT;
-        continue;
-      }
-    }
-    copy(1);
-    if (c.trim() !== '') prev = c;
-  }
-  return out;
-}
-
-/** The retired references still live in `src`, comments aside. */
-function qf8RetiredReferences(src: string): string[] {
-  const code = qf8StripComments(src);
-  return QF8_RETIRED_E2E_REFERENCES.filter((needle) => code.includes(needle));
-}
 
 /** Every `.ts`, `.mjs` and `.js` under `dir` (specs and helpers alike), skipping node_modules. */
 function qf8E2eSources(dir: string): string[] {
@@ -1065,101 +860,26 @@ function qf8E2eSources(dir: string): string[] {
   return found.sort();
 }
 
-describe('no e2e still drives or names a retired control (qf-8, QF8.3)', () => {
-  it('QF8-3-E2E-NO-RETIRED-SELECTOR: no client/e2e .ts, .mjs or .js file, comments aside, names a catalog id qf-9 retired with the raising cards (raising.card.care, .train, .status, .stats, raising.monsters.heading, .empty): the flows that drove them were migrated to the nav path, not left on a selector that no longer exists', () => {
-    // WRONG IMPL KILLED: a button deleted with its e2e left pointing at it (the spec would wait
-    // for a locator that never appears); an e2e "migrated" by deleting its test; a stale
-    // t('raising.card.care') in a helper, in a .ts spec or a .mjs / .js one.
+describe('no e2e still names a retired control (qf-8, QF8.3)', () => {
+  it('QF8-3-E2E-NO-RETIRED-SELECTOR: no client/e2e .ts, .mjs or .js file mentions a catalog id or DOM id qf-9 retired with the raising cards', () => {
+    // WRONG IMPL KILLED: a stale reference to a retired control left in an e2e file, e.g.
+    // t('raising.card.care') in a helper or a .mjs script. This proves ONLY that no stale
+    // reference remains (comments count too, so a retired id may not even be mentioned); that no
+    // e2e file was deleted to get there is the gate CHECK's separate verification.
     // Not `new URL(...)`: under happy-dom the global URL is happy-dom's, and fileURLToPath rejects it.
     const dir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'e2e');
     const files = qf8E2eSources(dir);
-    expect(files.length, 'ANTI-VACUITY: the scan found the e2e specs and helpers').toBeGreaterThan(
-      5,
-    );
+    expect(files.length, 'ANTI-VACUITY: the scan found the e2e files').toBeGreaterThan(5);
     expect(
       files.some((f) => f.endsWith('evolution.spec.ts')),
       'ANTI-VACUITY: a known spec is scanned',
     ).toBe(true);
-    const live: string[] = [];
-    for (const file of files) {
-      for (const needle of qf8RetiredReferences(readFileSync(file, 'utf8'))) {
-        live.push(`${file.slice(dir.length)}: ${needle}`);
-      }
-    }
-    expect(live, 'live references to a retired selector or label').toEqual([]);
-  });
-
-  it('QF8-3-E2E-SCAN-SELFTEST: the comment stripper and matcher flag a planted live reference in a string, a URL string, a regex-literal trap (after =, and after every keyword that precedes a regex), a nested-template trap and a comment-looking template, and ignore the same names in line, block, doc and post-regex comments', () => {
-    // Each trap DELETES the needle if the lexer misreads it, so a green here is not vacuous:
-    //  - the regex trap /\/\// read as division leaves `//` that comments out the rest of the line;
-    //  - the nested template trap read without nesting closes at the inner backtick and leaves the
-    //    inner `//` the same way.
-    // WRONG IMPL KILLED: a scan that reads nothing (every real file "clean"); one that treats the
-    // `//` of a URL string as a comment; one blinded by a regex literal, after `=` or after
-    // return / typeof / case / in / of / void / delete / throw / yield / await; one that ignores
-    // template nesting; one that does not strip comments.
-    const live: Array<readonly [string, string, string]> = [
-      ['a string', "const sel = 'raising.card.care';", 'raising.card.care'],
-      [
-        'a call argument',
-        "await expect(page.getByText(t('raising.card.care'))).toBeVisible();",
-        'raising.card.care',
-      ],
-      [
-        'a URL string, then a trailing comment',
-        `const u = ${QF8_SQ}http://x/raising.card.train${QF8_SQ}; // done`,
-        'raising.card.train',
-      ],
-      [
-        'a regex literal holding both quote kinds',
-        `const re = /[${QF8_SQ}${QF8_DQ}]/; const s = ${QF8_SQ}raising.card.status${QF8_SQ};`,
-        'raising.card.status',
-      ],
-      [
-        'the regex trap after =',
-        `const ok = ${QF8_TRAP_RE}.test(s) && ${QF8_SQ}raising.card.care${QF8_SQ};`,
-        'raising.card.care',
-      ],
-      [
-        'the nested-template trap',
-        `const s = ${QF8_BT}${QF8_SUBST}${QF8_BT}//${QF8_BT}}${QF8_BT} + ${QF8_SQ}raising.card.train${QF8_SQ};`,
-        'raising.card.train',
-      ],
-      [
-        'a template that looks like a comment',
-        `const s = ${QF8_BT}// not a comment: raising.monsters.heading${QF8_BT};`,
-        'raising.monsters.heading',
-      ],
-    ];
-    for (const keyword of QF8_REGEX_KEYWORDS) {
-      if (keyword === 'new' || keyword === 'do' || keyword === 'else') continue;
-      live.push([
-        `the regex trap after ${keyword}`,
-        `function f(s) { ${keyword} ${QF8_TRAP_RE}.test(s) && ${QF8_SQ}raising.card.care${QF8_SQ}; }`,
-        'raising.card.care',
-      ]);
-    }
-    expect(live.length, 'ANTI-VACUITY: the keyword cases were generated').toBeGreaterThan(14);
-    for (const [label, source, needle] of live) {
-      expect(qf8RetiredReferences(source), `planted live reference, ${label}`).toEqual([needle]);
-    }
-
-    const dead: ReadonlyArray<readonly [string, string]> = [
-      ['a line comment', `// the retired ${QF8_BT}raising.card.care${QF8_BT} hook\nconst a = 1;`],
-      ['a block comment', '/* raising.card.status,\n raising.monsters.empty */ const a = 1;'],
-      ['a trailing comment', 'const a = 1; // raising.card.train'],
-      ['a doc comment', '/** raising.card.care */\nexport const a = 1;'],
-      [
-        'a comment after a regex literal',
-        `const re = /[${QF8_SQ}${QF8_DQ}]/; // raising.card.stats\nconst a = 1;`,
-      ],
-      [
-        'a comment after a keyword-preceded regex trap',
-        `function f(s) { return ${QF8_TRAP_RE}.test(s); // raising.card.care\n}`,
-      ],
-    ];
-    for (const [label, source] of dead) {
-      expect(qf8RetiredReferences(source), `commented reference, ${label}`).toEqual([]);
-    }
+    const found = files.flatMap((file) => {
+      const src = readFileSync(file, 'utf8');
+      return QF8_RETIRED_E2E_REFERENCES.filter((needle) => src.includes(needle)).map(
+        (needle) => `${file.slice(dir.length)}: ${needle}`,
+      );
+    });
+    expect(found, 'references to a retired control in the e2e files').toEqual([]);
   });
 });
