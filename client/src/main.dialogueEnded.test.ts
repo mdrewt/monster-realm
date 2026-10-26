@@ -429,6 +429,60 @@ describe('main.ts refused advance and quest completion (runtime, qf-6)', {
     expect(dismissCalls(), 'still exactly one dismiss').toBe(1);
   });
 
+  it('a request announced while the ended line is pending in the live region is said, and the ended line is said again after it QF6.2', async () => {
+    // WRONG IMPL KILLED: the frame pump ignoring announcements made outside it (the "announced
+    // since the last frame" flag never set, or reset before it is read). The request line then
+    // replaces the pending ended line in the coalescer, nothing re-queues it, and the player never
+    // hears why the conversation ended.
+    await bootReady();
+    openConversation(1000);
+    H.advanceRejection = senderError('walked too far away');
+    clickChoice(2000);
+    await settle();
+    endConversation(2150);
+    // The 2200 frame speaks the world label; the 2700 frame (a full window later) hands the ended
+    // line to the live region, where it waits out its own 500 ms window.
+    frames(2200, 2700);
+    expect(liveWrites.at(-1), 'precondition: the world label was said').toBe(WORLD_LABEL);
+
+    // Inside that window a trade offer to me arrives: its request line is announced at once, from
+    // the batch listener, outside the frame pump.
+    batch(2750, (s) => {
+      s.upsertPlayer({
+        identity: OTHER,
+        entityId: 9n,
+        name: 'Dana',
+        online: true,
+        lastInputSeq: 0n,
+      });
+      s.upsertTradeOffer({
+        tradeId: 41n,
+        initiator: OTHER,
+        counterparty: H.identity,
+        initiatorMonsterIds: [],
+        initiatorItems: [],
+        initiatorCurrency: 0n,
+        counterpartyMonsterIds: [],
+        counterpartyItems: [],
+        counterpartyCurrency: 0n,
+        initiatorCards: [],
+        counterpartyCards: [],
+        status: 'Pending',
+        createdAtMs: 0n,
+      });
+    });
+    frames(2800, 4500);
+    expect(liveWrites, 'the request line was said').toContain('Dana wants to trade');
+    expect(liveWrites.at(-1), 'the ended line is said again, last').toBe(ENDED_WALKED_AWAY);
+    expect(
+      liveWrites.lastIndexOf('Dana wants to trade'),
+      'the request line first, then the ended line',
+    ).toBeLessThan(liveWrites.lastIndexOf(ENDED_WALKED_AWAY));
+    expect(statusText(), 'the status line still says why the conversation ended').toBe(
+      ENDED_WALKED_AWAY,
+    );
+  });
+
   it.each<[string, string]>([
     ['no longer in same zone', ENDED_LEFT_ZONE],
     ['npc not found', ENDED_NPC_GONE],
