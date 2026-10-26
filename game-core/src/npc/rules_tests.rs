@@ -17,12 +17,20 @@
 //!     G6 — unchanged contracts (radius=0, determinism, toward_home axis/tiebreak) still hold
 //!     G7 — full-coverage: driven from the real start state, the NPC must visit
 //!          EVERY legal tile, not orbit a subset forever
+//!
+//! qf-5 (QF5.2 / QF5.3) wander cadence — `npc_step_due(npc_id, tick)`:
+//!   QF5.2 — an NPC SHALL be due to step on exactly one movement tick in every
+//!           window of `NPC_STEP_TICKS` consecutive ticks (5 x STEP_MS 200 ms = 1 s),
+//!           with a phase offset by `npc_id`; the rule is wrapping and deterministic.
+//!   QF5.3 — gated by that cadence, a wandering NPC SHALL stay within its wander
+//!           radius, move at most one tile per due tick and never on a non-due tick.
 
 use crate::npc::npc_decide;
+use crate::npc::rules::{npc_step_due, NPC_STEP_TICKS};
 use crate::types::{
     dir_from_code, ActionState, CharacterState, Direction, Millis, MoveInput, TilePos,
 };
-use crate::world::{apply_move, zone_0};
+use crate::world::{apply_move, zone_0, STEP_MS};
 
 use proptest::prelude::*;
 use std::collections::HashSet;
@@ -984,4 +992,265 @@ fn npc_decide_visits_every_legal_tile_from_real_start_state_not_an_absorbing_sta
             visited.len()
         );
     }
+}
+
+// ===========================================================================
+// qf-5 — wander cadence (`npc_step_due`)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// QF5.2 — the cadence window spans one second.
+// kills: NPC_STEP_TICKS changed (e.g. 1, 4, 10) so "walk one tile, pause, repeat"
+//        is no longer ~1 s per step at the 200 ms movement tick.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn qf5_2_npc_step_ticks_span_one_second() {
+    let ticks = i64::try_from(NPC_STEP_TICKS).unwrap();
+    assert_eq!(
+        ticks * STEP_MS,
+        1000,
+        "NPC_STEP_TICKS ({NPC_STEP_TICKS}) x STEP_MS ({STEP_MS} ms) must span exactly 1000 ms"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// QF5.2 — exactly one due tick per NPC_STEP_TICKS-wide window, spaced exactly
+// NPC_STEP_TICKS apart; plus literal known-answer vectors.
+// kills: a rule that is due every tick (cadence ignored), never due, due twice
+//        per window (`% 5 <= 1`), spacing != NPC_STEP_TICKS (e.g. a hash-based
+//        or `tick % 4`), a phase mutant (`% 5 == 1`), `wrapping_sub` / `tick *
+//        npc_id` instead of `wrapping_add`, a non-wrapping `+` (panics under
+//        overflow-checks for npc_id = u64::MAX), a widened (u128) sum that does
+//        not wrap.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn qf5_2_npc_step_due_exactly_once_per_window() {
+    let span: u64 = 200;
+    // Bases start at tick 1: for npc_id = u64::MAX, tick 0 (MAX % 5 == 0) and tick
+    // 1 (wraps to 0) are BOTH due — the single wrap seam — so a window straddling
+    // it is out of scope here and pinned by the explicit vectors below.
+    for &base in &[1u64, 8_750_000_000] {
+        for &id in &[0u64, 1, 3, 4, 5, 901, u64::MAX] {
+            let due: Vec<u64> = (base..base + span)
+                .filter(|&t| npc_step_due(id, t))
+                .collect();
+            for start in base..=(base + span - NPC_STEP_TICKS) {
+                let in_window = (start..start + NPC_STEP_TICKS)
+                    .filter(|&t| npc_step_due(id, t))
+                    .count();
+                assert_eq!(
+                    in_window, 1,
+                    "npc_id={id} window starting at tick {start} must contain exactly one due tick"
+                );
+            }
+            for pair in due.windows(2) {
+                assert_eq!(
+                    pair[1] - pair[0],
+                    NPC_STEP_TICKS,
+                    "npc_id={id}: consecutive due ticks {} and {} must be exactly NPC_STEP_TICKS apart",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            assert_eq!(
+                u64::try_from(due.len()).unwrap(),
+                span / NPC_STEP_TICKS,
+                "npc_id={id}: {span} ticks must hold exactly span/NPC_STEP_TICKS due ticks"
+            );
+        }
+    }
+
+    // Literal known-answer vectors (independent of the formula under test).
+    assert!(npc_step_due(3, 2), "3+2=5 is due");
+    assert!(!npc_step_due(3, 3), "3+3=6 is not due");
+    assert!(npc_step_due(0, 0), "0+0=0 is due");
+    assert!(npc_step_due(0, 5), "0+5=5 is due");
+    assert!(!npc_step_due(0, 1), "0+1=1 is not due");
+    assert!(npc_step_due(901, 4), "901+4=905 is due");
+    assert!(!npc_step_due(901, 0), "901+0=901 is not due");
+    // 2^64-1 is divisible by 5, so (MAX, 0) is due; (MAX, 1) WRAPS to 0, also due.
+    assert!(npc_step_due(u64::MAX, 0), "u64::MAX % 5 == 0 is due");
+    assert!(
+        npc_step_due(u64::MAX, 1),
+        "u64::MAX + 1 wraps to 0 and is due (wrapping add, no panic, no widening)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// QF5.2 — the phase is seeded by npc_id (NPCs do not all step on one tick).
+// kills: a phase that ignores npc_id (`tick % NPC_STEP_TICKS == 0`), which makes
+//        every NPC in a zone step on the same tick; a nondeterministic rule.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn qf5_2_npc_step_due_phase_is_seeded_by_npc_id() {
+    // At any fixed tick, of NPC_STEP_TICKS consecutive ids exactly one is due.
+    for &tick in &[0u64, 1, 2, 3, 4, 1000, 8_750_000_003] {
+        let due_ids: Vec<u64> = (0..NPC_STEP_TICKS)
+            .filter(|&id| npc_step_due(id, tick))
+            .collect();
+        assert_eq!(
+            due_ids.len(),
+            1,
+            "at tick {tick} exactly one of ids 0..NPC_STEP_TICKS is due, got {due_ids:?}"
+        );
+    }
+
+    // Each id's due tick inside 0..NPC_STEP_TICKS is unique, and the set of those
+    // ticks over all ids is pairwise distinct (every phase is used once).
+    let mut due_tick_of_id: Vec<u64> = Vec::new();
+    for id in 0..NPC_STEP_TICKS {
+        let ticks: Vec<u64> = (0..NPC_STEP_TICKS)
+            .filter(|&t| npc_step_due(id, t))
+            .collect();
+        assert_eq!(ticks.len(), 1, "id {id} has exactly one due tick in 0..N");
+        // (id + tick) % N == 0  <=>  tick == (N - id % N) % N
+        assert_eq!(
+            ticks[0],
+            (NPC_STEP_TICKS - id % NPC_STEP_TICKS) % NPC_STEP_TICKS,
+            "id {id}: phase must be offset by npc_id"
+        );
+        due_tick_of_id.push(ticks[0]);
+    }
+    let distinct: HashSet<u64> = due_tick_of_id.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        due_tick_of_id.len(),
+        "ids 0..N must cover N distinct phases, got due ticks {due_tick_of_id:?}"
+    );
+
+    // Determinism.
+    for id in [0u64, 7, 901, u64::MAX] {
+        for tick in [0u64, 3, 1_000_003, u64::MAX] {
+            assert_eq!(
+                npc_step_due(id, tick),
+                npc_step_due(id, tick),
+                "npc_step_due({id}, {tick}) must be deterministic"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// QF5.3 — the cadence-gated wander (npc_step_due gates npc_decide + apply_move,
+// exactly as movement.rs composes them) stays within radius, steps one tile at
+// most, only on due ticks; and the homing branch is gated by the same cadence.
+// kills: a cadence that lets the NPC step on non-due ticks (no gate / wrong
+//        gate), a window with two steps (due twice per window), a gate that
+//        suppresses every step (moved_on_due == 0), a radius escape, a homing
+//        branch that ignores the cadence or never reaches the radius.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn qf5_3_gated_wander_stays_in_radius_one_tile_on_due_ticks_only() {
+    let map = zone_0();
+    let home = pos(5, 5);
+    let radius: u8 = 2;
+    let npc_id: u64 = 7; // 7 % 5 == 2: a non-zero residue, due on tick % 5 == 3
+    assert_ne!(
+        npc_id % NPC_STEP_TICKS,
+        0,
+        "fixture needs a non-zero residue"
+    );
+
+    let manhattan = |a: TilePos, b: TilePos| -> i64 {
+        (i64::from(a.x) - i64::from(b.x)).abs() + (i64::from(a.y) - i64::from(b.y)).abs()
+    };
+    let fresh = |at: TilePos| CharacterState {
+        pos: at,
+        facing: Direction::South,
+        action: ActionState::Idle,
+        move_started_at: Millis(0),
+    };
+
+    // --- wander arm: 500 consecutive ticks from the real start state ---------
+    let mut state = fresh(home);
+    let mut due_count: u64 = 0;
+    let mut moved_on_due: u64 = 0;
+    let mut last_move_tick: Option<u64> = None;
+    for tick in 0u64..500 {
+        let before = state.pos;
+        let due = npc_step_due(npc_id, tick);
+        if due {
+            due_count += 1;
+            if let Some(d) = npc_decide(state.pos, home, radius, state.facing, npc_id, tick, &map) {
+                state = apply_move(&state, MoveInput::Step(d), &map, Millis(0));
+            }
+        }
+        let after = state.pos;
+        if !due {
+            assert_eq!(
+                after, before,
+                "tick {tick} is not due: the NPC must not move"
+            );
+        }
+        assert!(
+            manhattan(before, after) <= 1,
+            "tick {tick}: moved {} tiles, at most 1 allowed",
+            manhattan(before, after)
+        );
+        assert!(
+            manhattan(after, home) <= i64::from(radius),
+            "tick {tick}: {after:?} left wander radius {radius} around {home:?}"
+        );
+        if after != before {
+            assert!(due, "tick {tick}: moved on a non-due tick");
+            moved_on_due += 1;
+            if let Some(prev) = last_move_tick {
+                assert!(
+                    tick - prev >= NPC_STEP_TICKS,
+                    "moves at ticks {prev} and {tick} are closer than NPC_STEP_TICKS"
+                );
+            }
+            last_move_tick = Some(tick);
+        }
+    }
+    assert_eq!(due_count, 100, "500 ticks hold exactly 100 due ticks");
+    assert!(
+        moved_on_due >= 50,
+        "the NPC must actually wander on due ticks (lower bound); moved only {moved_on_due} of 100"
+    );
+    assert!(moved_on_due <= due_count, "at most one move per due tick");
+
+    // --- homing arm: start outside the radius; clear path (8,3)->(7,3)->(6,3)->(6,4) ---
+    let start = pos(8, 3);
+    assert!(manhattan(start, home) > i64::from(radius), "starts outside");
+    let mut state = fresh(start);
+    let mut homing_steps: u64 = 0;
+    for tick in 0u64..215 {
+        let before = state.pos;
+        let outside = manhattan(before, home) > i64::from(radius);
+        let due = npc_step_due(npc_id, tick);
+        if due {
+            if let Some(d) = npc_decide(state.pos, home, radius, state.facing, npc_id, tick, &map) {
+                state = apply_move(&state, MoveInput::Step(d), &map, Millis(0));
+            }
+        }
+        let after = state.pos;
+        if !due {
+            assert_eq!(after, before, "homing tick {tick} is not due: no move");
+        }
+        if outside && due {
+            assert_eq!(
+                manhattan(before, after),
+                1,
+                "tick {tick}: an outside-radius NPC must step toward home on every due tick"
+            );
+            assert!(
+                manhattan(after, home) < manhattan(before, home),
+                "tick {tick}: the homing step must reduce the distance to home"
+            );
+            homing_steps += 1;
+        }
+        // Due ticks for npc 7 are 3, 8, 13: three homing steps bring it inside.
+        if tick >= 13 {
+            assert!(
+                manhattan(after, home) <= i64::from(radius),
+                "tick {tick}: homing must have reached the radius by the third due tick"
+            );
+        }
+    }
+    assert_eq!(homing_steps, 3, "exactly three due-tick homing steps");
 }

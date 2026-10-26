@@ -178,6 +178,24 @@ const DIRECTION_ORDER: [Direction; 4] = [
 /// line-pin in `.cargo/mutants.toml`.
 const NPC_CONTINUE_REROLL: u64 = 6;
 
+/// Wander cadence (QF5.2): an NPC takes at most one step every `NPC_STEP_TICKS`
+/// movement ticks — 5 × `STEP_MS` (200 ms) = one tile per second, walk then pause.
+/// Combined with `npc_decide`'s 1-in-5 stay roll that is ~0.8 steps/s.
+pub const NPC_STEP_TICKS: u64 = 5;
+
+/// True on the movement ticks where NPC `npc_id` may take its wander step.
+///
+/// Exactly one tick in every window of [`NPC_STEP_TICKS`] consecutive ticks is
+/// due. The phase is offset by `npc_id` so a zone's NPCs do not all step on the
+/// same tick. Gates the whole decision, homing included: the server consults
+/// [`npc_decide`] only on a due tick.
+///
+/// Declared BELOW `npc_decide` for the same reason as [`DIRECTION_ORDER`].
+#[must_use]
+pub fn npc_step_due(npc_id: u64, tick: u64) -> bool {
+    tick.wrapping_add(npc_id).is_multiple_of(NPC_STEP_TICKS)
+}
+
 // ===========================================================================
 // in-file tests for the PRIVATE `toward_home` fn.
 //
