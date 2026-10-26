@@ -9497,4 +9497,137 @@ describe('BattleView QF7.2: the swap rows render only while Swap is the open com
     expect(m.callbacks.onSwap, 'one swap goes through once released').toHaveBeenCalledTimes(1);
     expect(m.callbacks.onSwap).toHaveBeenCalledWith(77n, 2);
   });
+
+  it('QF7.2-RUN-CLOSES-LIST: pressing Run over an open Swap list closes the list at once, while the flee is in flight, and it stays closed (no row, enabled or not) after the flee call rejects and settles', async () => {
+    // WRONG IMPL KILLED: a #chooseCommand that sets the open command for every id but Run
+    // (`if (id !== 'run') this.#setOpen(id)`): Run acts at once and leaves the cursor on Run, so
+    // the Swap rows would stay on screen under a flee in flight and come back live when the
+    // rejected call releases the lock (a swap after a flee, two actions in one turn); a close that
+    // only happens on settle; and a close that a rejection undoes.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const d = raDeferred();
+    const m = c8iFresh(c8jVM(), makeRaCallbacks({ onFlee: vi.fn().mockReturnValue(d.promise) }));
+    expect(qf72Open(m), 'precondition: Swap is open').toHaveLength(2);
+    c8iCmd(m.root, 'run').click();
+    expect(m.callbacks.onFlee, 'precondition: Run fled once').toHaveBeenCalledTimes(1);
+    expect(m.callbacks.onFlee).toHaveBeenCalledWith(77n);
+    qf72ExpectClosed(m.root, 'Run, flee in flight');
+
+    d.reject(new Error('QF7.2-RUN-CLOSES-LIST: flee rejected'));
+    await raFlushPromises();
+    qf72ExpectClosed(m.root, 'after the rejected flee settles');
+    expect(c8iDisabled(c8iCmd(m.root, 'swap')), 'the settle releases the Swap command').toBe(false);
+    expect(m.callbacks.onSwap, 'nothing is swapped').not.toHaveBeenCalled();
+    vi.mocked(console.error).mockRestore();
+  });
+
+  it('QF7.2-PVP-SAME-TURN-UNWAIT-CLOSED: in a player battle an open Swap list closed by a wait stays closed when the wait ends on the SAME turn; only a press opens it again', () => {
+    // WRONG IMPL KILLED: an open state that is reset only on a new turn or battle (the wait greys
+    // the Swap command and hides the rows, but the state survives, so an un-wait on the same turn
+    // resurrects the list the player never asked for); a wait that hides the rows without closing
+    // the list.
+    const m = c8iFresh(c8iPvpVM({ turnNumber: 2 }));
+    expect(qf72Open(m), 'precondition: Swap is open').toHaveLength(2);
+    m.view.refresh(c8iPvpVM({ turnNumber: 2, pvpPendingSubmit: true }));
+    qf72ExpectClosed(m.root, 'the wait');
+    m.view.refresh(c8iPvpVM({ turnNumber: 2 }));
+    qf72ExpectClosed(m.root, 'the wait ends on the same turn');
+    expect(c8iDisabled(c8iCmd(m.root, 'swap')), 'the Swap command is live again').toBe(false);
+    expect(
+      qf72Open(m).map((r) => r.textContent),
+      'a press opens it again',
+    ).toEqual([QF72_PVP_MOSS, QF72_PVP_EMBER]);
+    expect(m.callbacks.onPvpSwap, 'nothing is submitted').not.toHaveBeenCalled();
+  });
+
+  it('QF7.2-CANSWAP-LOST-CLOSES-LIST: an open Swap list is closed by a same-turn render with canSwap false (even with a bench), and a later same-turn render with canSwap true does NOT bring it back until Swap is pressed again', () => {
+    // WRONG IMPL KILLED: rows rendered from the open state alone, without canSwap (the list shows
+    // beside the empty-swap hint); and a sticky open state that survives the render which hid the
+    // rows, so the list resurrects when canSwap flips back (rows the player closed by losing the
+    // swap, returning on a later tick with no press).
+    const m = c8iFresh(c8jVM());
+    expect(qf72Open(m), 'precondition: Swap is open').toHaveLength(2);
+    m.view.refresh(c8jVM({ canSwap: false }));
+    qf72ExpectClosed(m.root, 'canSwap false, bench still non-empty');
+    expect(c8iDisabled(c8iCmd(m.root, 'swap')), 'the Swap command is greyed').toBe(true);
+    m.view.refresh(c8jVM());
+    qf72ExpectClosed(m.root, 'canSwap true again on the same turn, no press');
+    expect(c8iDisabled(c8iCmd(m.root, 'swap')), 'the Swap command is live again').toBe(false);
+    expect(
+      qf72Open(m).map((r) => r.textContent),
+      'a press opens it again',
+    ).toEqual([QF72_PVE_MOSS, QF72_PVE_EMBER]);
+    expect(m.callbacks.onSwap, 'nothing is swapped').not.toHaveBeenCalled();
+  });
+
+  it('QF7.2-BACK-UNDER-LOCK-STAYS-LOCKED: with the PvE lock held, B from a (hand-enabled, focused) swap row closes the list and every action-row button left on screen (skills, Flee, bait, cure) is still disabled, the command rows aria-disabled', () => {
+    // WRONG IMPL KILLED: a close that rebuilds the actions row without re-deriving the lock (the
+    // same hazard as CTL8J-1x-LOCK-ACROSS-PICK for a pick change): the rebuilt Flee, bait and cure
+    // rows come back ENABLED while the turn is spent, so a second action can start. If the impl
+    // closes the list when the skill is pressed, there is no row to press B from; the lock census
+    // below holds regardless (the spec is silent on that close).
+    const d = raDeferred();
+    const m = c8iFresh(c8jVM(), makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) }));
+    expect(qf72Open(m), 'precondition: Swap is open').toHaveLength(2);
+    c8iSkills(m.root)[0]?.click(); // takes the lock; the call never settles
+    expect(m.callbacks.onAttack, 'precondition: the attack took the lock').toHaveBeenCalledTimes(1);
+
+    const live = c8jRows(m.root, 'swap');
+    if (live.length > 0) {
+      const row = live[live.length - 1] as HTMLButtonElement;
+      row.disabled = false; // a disabled row cannot take focus: enable it by hand to press B there
+      row.focus();
+      expect(document.activeElement, 'precondition: focus is on the swap row').toBe(row);
+      m.view.applyBattleOp({ kind: 'back' });
+    }
+    qf72ExpectClosed(m.root, 'B from a swap row under the lock');
+    const actionButtons = [...m.root.querySelectorAll<HTMLButtonElement>('button')].filter(
+      (b) => b.getAttribute('data-battle-list') !== 'commands',
+    );
+    expect(
+      actionButtons.length,
+      'non-vacuity: the skills, Flee, three bait rows and two cure rows are on screen',
+    ).toBeGreaterThanOrEqual(8);
+    expect(
+      actionButtons.filter((b) => !b.disabled).map((b) => b.textContent),
+      'every action-row button is still disabled after the close',
+    ).toEqual([]);
+    for (const id of ['fight', 'recruit', 'swap', 'bag', 'run']) {
+      expect(c8iDisabled(c8iCmd(m.root, id)), `${id} is still greyed by the lock`).toBe(true);
+    }
+    expect(m.callbacks.onSwap, 'nothing is swapped').not.toHaveBeenCalled();
+  });
+
+  it('QF7.2-PICK-CLOSES-SWAP: pressing a bait row or a cure row directly (by mouse) over an open Swap list opens its second step AND closes the list, never two second steps at once; B from that step leaves the Swap list closed', () => {
+    // WRONG IMPL KILLED: a pick that renders its confirm / target beside the still-open swap rows
+    // (a Recruit Yes and a swap row live together: two second steps, two possible actions in one
+    // turn); a close of the pick that brings the swap list back (an open state kept under the
+    // pick and restored when it ends).
+    const open = (): C8iMount => {
+      const m = c8iFresh(c8jVM());
+      expect(qf72Open(m), 'precondition: Swap is open').toHaveLength(2);
+      return m;
+    };
+
+    const rec = open();
+    (c8iTestId(rec.root, 'bait-option-none') as HTMLElement).click();
+    expect(c8jConfirm(rec.root), 'the bait row opens the Recruit confirm').not.toBeNull();
+    qf72ExpectClosed(rec.root, 'a bait row pressed over Swap');
+    expect(c8iCurrent(rec.root), 'one cursor').toHaveLength(1);
+    c8jB(rec);
+    expect(c8jConfirm(rec.root), 'B cancels the confirm').toBeNull();
+    qf72ExpectClosed(rec.root, 'after B from the Recruit confirm');
+    expect(rec.callbacks.onRecruit, 'nothing is recruited').not.toHaveBeenCalled();
+
+    const bag = open();
+    (c8jRows(bag.root, 'bag')[0] as HTMLElement).click();
+    expect(c8jTarget(bag.root), 'the cure row opens the Bag target').not.toBeNull();
+    qf72ExpectClosed(bag.root, 'a cure row pressed over Swap');
+    expect(c8iCurrent(bag.root), 'one cursor').toHaveLength(1);
+    c8jB(bag);
+    expect(c8jTarget(bag.root), 'B cancels the target').toBeNull();
+    qf72ExpectClosed(bag.root, 'after B from the Bag target');
+    expect(bag.callbacks.onUseItem, 'nothing is used').not.toHaveBeenCalled();
+    expect(bag.callbacks.onSwap, 'nothing is swapped').not.toHaveBeenCalled();
+  });
 });
