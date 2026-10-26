@@ -3,12 +3,14 @@
 //! EARS criteria covered:
 //!   Determinism — same (current, home, radius, facing, npc_id, tick, map) → same Option<Direction>
 //!   Outside-radius — deterministic toward-home direction (L1 Manhattan, dominant axis),
-//!                    answered EVERY tick, never None
+//!                    answered EVERY tick per npc_decide call (the server gates call
+//!                    frequency with npc_step_due), never None
 //!   Within-radius / at-boundary — seeded wander (varies over ticks, stays sometimes)
 //!   Known-answer — exact splitmix64 output pinned for several (npc_id, tick, facing) vectors
 //!     G1 — no legal-direction result is ever a wall or outside the radius (headline tooth)
 //!     G2 — continue-facing: a still-legal facing is returned unchanged
-//!     G3 — homing (outside-radius) answers every tick, never None
+//!     G3 — homing (outside-radius) answers every tick per npc_decide call (the
+//!          server gates call frequency with npc_step_due), never None
 //!     G4 — known-answer vectors pin the hash/salt/legality interaction
 //!     G4b — known-answer vectors pin the 1-in-K "continue" re-roll (fixes the
 //!           absorbing-state metronome bug: unconditional continue-when-legal
@@ -17,12 +19,25 @@
 //!     G6 — unchanged contracts (radius=0, determinism, toward_home axis/tiebreak) still hold
 //!     G7 — full-coverage: driven from the real start state, the NPC must visit
 //!          EVERY legal tile, not orbit a subset forever
+//!
+//! qf-5 (QF5.2) wander cadence — `npc_step_due(npc_id, tick)`:
+//!   QF5.2 — an NPC SHALL be due to step on exactly one movement tick in every
+//!           window of `NPC_STEP_TICKS` consecutive ticks (5 x STEP_MS 200 ms = 1 s),
+//!           with a phase offset by `npc_id`; the rule is wrapping and deterministic.
+//!   (The composed cadence-gated wander is proven by the server-module `nh_qf5_*`
+//!   tests, which own the composition.)
+//!
+//! qf-5 (QF5.1) conversation pin — `in_talk_range(a, b)`:
+//!   QF5.1 — a conversation pins its NPC only while the owner is within
+//!           `TALK_RANGE` (Manhattan 2, inclusive) of it; the range rule lives in
+//!           game-core, exact in i64 (no overflow at i32 extremes).
 
 use crate::npc::npc_decide;
+use crate::npc::rules::{in_talk_range, npc_step_due, NPC_STEP_TICKS};
 use crate::types::{
     dir_from_code, ActionState, CharacterState, Direction, Millis, MoveInput, TilePos,
 };
-use crate::world::{apply_move, zone_0};
+use crate::world::{apply_move, zone_0, STEP_MS};
 
 use proptest::prelude::*;
 use std::collections::HashSet;
@@ -984,4 +999,216 @@ fn npc_decide_visits_every_legal_tile_from_real_start_state_not_an_absorbing_sta
             visited.len()
         );
     }
+}
+
+// ===========================================================================
+// qf-5 — wander cadence (`npc_step_due`)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// QF5.2 — the cadence window spans one second.
+// kills: NPC_STEP_TICKS changed (e.g. 1, 4, 10) so "walk one tile, pause, repeat"
+//        is no longer ~1 s per step at the 200 ms movement tick.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn qf5_2_npc_step_ticks_span_one_second() {
+    let ticks = i64::try_from(NPC_STEP_TICKS).unwrap();
+    assert_eq!(
+        ticks * STEP_MS,
+        1000,
+        "NPC_STEP_TICKS ({NPC_STEP_TICKS}) x STEP_MS ({STEP_MS} ms) must span exactly 1000 ms"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// QF5.2 — exactly one due tick per NPC_STEP_TICKS-wide window, spaced exactly
+// NPC_STEP_TICKS apart; plus literal known-answer vectors.
+// kills: a rule that is due every tick (cadence ignored), never due, due twice
+//        per window (`% 5 <= 1`), spacing != NPC_STEP_TICKS (e.g. a hash-based
+//        or `tick % 4`), a phase mutant (`% 5 == 1`), `wrapping_sub` / `tick *
+//        npc_id` instead of `wrapping_add`, a non-wrapping `+` (panics under
+//        overflow-checks for npc_id = u64::MAX), a widened (u128) sum that does
+//        not wrap.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn qf5_2_npc_step_due_exactly_once_per_window() {
+    let span: u64 = 200;
+    // Bases start at tick 1: for npc_id = u64::MAX, tick 0 (MAX % 5 == 0) and tick
+    // 1 (wraps to 0) are BOTH due — the single wrap seam — so a window straddling
+    // it is out of scope here and pinned by the explicit vectors below.
+    for &base in &[1u64, 8_750_000_000] {
+        for &id in &[0u64, 1, 3, 4, 5, 901, u64::MAX] {
+            let due: Vec<u64> = (base..base + span)
+                .filter(|&t| npc_step_due(id, t))
+                .collect();
+            for start in base..=(base + span - NPC_STEP_TICKS) {
+                let in_window = (start..start + NPC_STEP_TICKS)
+                    .filter(|&t| npc_step_due(id, t))
+                    .count();
+                assert_eq!(
+                    in_window, 1,
+                    "npc_id={id} window starting at tick {start} must contain exactly one due tick"
+                );
+            }
+            for pair in due.windows(2) {
+                assert_eq!(
+                    pair[1] - pair[0],
+                    NPC_STEP_TICKS,
+                    "npc_id={id}: consecutive due ticks {} and {} must be exactly NPC_STEP_TICKS apart",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            assert_eq!(
+                u64::try_from(due.len()).unwrap(),
+                span / NPC_STEP_TICKS,
+                "npc_id={id}: {span} ticks must hold exactly span/NPC_STEP_TICKS due ticks"
+            );
+        }
+    }
+
+    // Literal known-answer vectors (independent of the formula under test).
+    assert!(npc_step_due(3, 2), "3+2=5 is due");
+    assert!(!npc_step_due(3, 3), "3+3=6 is not due");
+    assert!(npc_step_due(0, 0), "0+0=0 is due");
+    assert!(npc_step_due(0, 5), "0+5=5 is due");
+    assert!(!npc_step_due(0, 1), "0+1=1 is not due");
+    assert!(npc_step_due(901, 4), "901+4=905 is due");
+    assert!(!npc_step_due(901, 0), "901+0=901 is not due");
+    // 2^64-1 is divisible by 5, so (MAX, 0) is due; (MAX, 1) WRAPS to 0, also due.
+    assert!(npc_step_due(u64::MAX, 0), "u64::MAX % 5 == 0 is due");
+    assert!(
+        npc_step_due(u64::MAX, 1),
+        "u64::MAX + 1 wraps to 0 and is due (wrapping add, no panic, no widening)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// QF5.2 — the phase is seeded by npc_id (NPCs do not all step on one tick).
+// kills: a phase that ignores npc_id (`tick % NPC_STEP_TICKS == 0`), which makes
+//        every NPC in a zone step on the same tick; a nondeterministic rule.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn qf5_2_npc_step_due_phase_is_seeded_by_npc_id() {
+    // At any fixed tick, of NPC_STEP_TICKS consecutive ids exactly one is due.
+    for &tick in &[0u64, 1, 2, 3, 4, 1000, 8_750_000_003] {
+        let due_ids: Vec<u64> = (0..NPC_STEP_TICKS)
+            .filter(|&id| npc_step_due(id, tick))
+            .collect();
+        assert_eq!(
+            due_ids.len(),
+            1,
+            "at tick {tick} exactly one of ids 0..NPC_STEP_TICKS is due, got {due_ids:?}"
+        );
+    }
+
+    // Each id's due tick inside 0..NPC_STEP_TICKS is unique, and the set of those
+    // ticks over all ids is pairwise distinct (every phase is used once).
+    let mut due_tick_of_id: Vec<u64> = Vec::new();
+    for id in 0..NPC_STEP_TICKS {
+        let ticks: Vec<u64> = (0..NPC_STEP_TICKS)
+            .filter(|&t| npc_step_due(id, t))
+            .collect();
+        assert_eq!(ticks.len(), 1, "id {id} has exactly one due tick in 0..N");
+        // (id + tick) % N == 0  <=>  tick == (N - id % N) % N
+        assert_eq!(
+            ticks[0],
+            (NPC_STEP_TICKS - id % NPC_STEP_TICKS) % NPC_STEP_TICKS,
+            "id {id}: phase must be offset by npc_id"
+        );
+        due_tick_of_id.push(ticks[0]);
+    }
+    let distinct: HashSet<u64> = due_tick_of_id.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        due_tick_of_id.len(),
+        "ids 0..N must cover N distinct phases, got due ticks {due_tick_of_id:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// QF5.1 — `in_talk_range`: inclusive Manhattan distance <= TALK_RANGE (2).
+// kills: strict `<` (boundary offsets (0,2)/(2,0)/(1,1) wrongly false), `<= 3`
+//        (offsets at distance 3 wrongly true), Chebyshev distance ((2,1)/(1,2)
+//        wrongly true), Euclidean/axis-only checks, an asymmetric (non-abs)
+//        difference (negative offsets wrongly true/false), and i32 arithmetic
+//        that overflows (panic) or wraps at the extremes.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn qf5_1_in_talk_range_is_inclusive_manhattan_two() {
+    let a = pos(10, 10);
+    // In range: same tile and every offset with |dx| + |dy| <= 2.
+    for &(dx, dy) in &[
+        (0, 0),
+        (0, 2),
+        (2, 0),
+        (1, 1),
+        (0, 1),
+        (1, 0),
+        (-2, 0),
+        (0, -2),
+        (-1, -1),
+        (1, -1),
+        (-1, 1),
+        (-1, 0),
+        (0, -1),
+    ] {
+        let b = pos(a.x + dx, a.y + dy);
+        assert!(in_talk_range(a, b), "offset ({dx},{dy}) is within range");
+        assert!(
+            in_talk_range(b, a),
+            "offset ({dx},{dy}) is symmetric (b, a)"
+        );
+    }
+    // Out of range: Manhattan distance >= 3 (including Chebyshev-2 corners).
+    for &(dx, dy) in &[
+        (0, 3),
+        (3, 0),
+        (2, 1),
+        (1, 2),
+        (2, 2),
+        (-3, 0),
+        (0, -3),
+        (-2, -1),
+        (-1, -2),
+        (2, -1),
+        (-1, 2),
+        (-2, -2),
+        (5, 0),
+    ] {
+        let b = pos(a.x + dx, a.y + dy);
+        assert!(!in_talk_range(a, b), "offset ({dx},{dy}) is out of range");
+        assert!(
+            !in_talk_range(b, a),
+            "offset ({dx},{dy}) is out of range symmetric (b, a)"
+        );
+    }
+    // Negative absolute coordinates behave identically (no abs-of-sum trick).
+    assert!(
+        in_talk_range(pos(-5, -5), pos(-4, -4)),
+        "(-5,-5)~(-4,-4) is distance 2"
+    );
+    assert!(
+        !in_talk_range(pos(-5, -5), pos(-4, -3)),
+        "(-5,-5)~(-4,-3) is distance 3"
+    );
+    // Opposite-sign dx and dy must not cancel (|dx| + |dy|, not |dx + dy|).
+    assert!(
+        !in_talk_range(pos(0, 0), pos(2, -1)),
+        "dx=2, dy=-1 must not cancel to 1"
+    );
+    // Extreme coordinates: i64 math, no overflow panic, far apart.
+    assert!(!in_talk_range(pos(i32::MIN, 0), pos(i32::MAX, 0)));
+    assert!(!in_talk_range(pos(i32::MAX, 0), pos(i32::MIN, 0)));
+    assert!(!in_talk_range(
+        pos(i32::MIN, i32::MIN),
+        pos(i32::MAX, i32::MAX)
+    ));
+    // Adjacent at the extreme edge is still in range (no spurious wrap).
+    assert!(in_talk_range(pos(i32::MAX, 0), pos(i32::MAX - 1, 0)));
+    assert!(in_talk_range(pos(i32::MIN, 0), pos(i32::MIN + 2, 0)));
 }

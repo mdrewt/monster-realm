@@ -1000,33 +1000,30 @@ mod nh {
         }
     }
 
-    /// NPC wander runs on the SERVER tick counter `now / STEP_MS`: for a run of
-    /// tick times, a wandering NPC at home ends each tick exactly where
-    /// `game_core::npc_decide` (fed that counter) and `apply_move` put it. The
-    /// sample is self-checked to contain times where `now % STEP_MS` and
-    /// `now * STEP_MS` would decide differently, so the counter is pinned.
+    /// NPC wander runs on the SERVER tick counter `now / STEP_MS`, gated by the
+    /// game-core cadence (QF5.2): for a run of tick times, a wandering NPC at home
+    /// ends each tick exactly where `npc_step_due(NPC, tick)`, `game_core::npc_decide`
+    /// (fed that counter) and `apply_move` put it — it moves iff the tick is due AND
+    /// `npc_decide` answers `Some`. The sample is self-checked to contain times where
+    /// `now % STEP_MS` and `now * STEP_MS` would decide differently, a due tick that
+    /// moves, and a NOT-due tick where `npc_decide` alone would have moved.
     ///
-    /// kills: the tick-counter division replaced by `%` or `*`.
+    /// kills: the tick-counter division replaced by `%` or `*`; the cadence being
+    /// ignored (the NPC steps on every tick `npc_decide` allows); a cadence phase
+    /// that ignores the npc_id (`tick % NPC_STEP_TICKS`; NPC 901 has a non-zero
+    /// residue, so the id-less phase picks different ticks).
     #[test]
     fn nh_movement_tick_npc_wander_uses_the_step_tick_counter() {
-        use crate::schema::Npc;
-        use game_core::{Millis, TilePos, STEP_MS};
-        let zone = 0u32;
+        use game_core::npc::rules::npc_step_due;
+        use game_core::{Millis, STEP_MS};
+        let zone = QF5_ZONE;
         let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
         let map = game_core::map_for(zone, zone_maps).expect("zone 0 map");
-        let dirs = [
-            Direction::North,
-            Direction::South,
-            Direction::East,
-            Direction::West,
-        ];
-        let open = |p: TilePos| map.is_walkable(p) && map.warp_at(p).is_none();
-        let home = (0..map.height)
-            .flat_map(|y| (0..map.width).map(move |x| TilePos { x, y }))
-            .find(|&p| open(p) && dirs.iter().all(|&d| open(p.step(d))))
-            .expect("zone 0 has an open tile with four open neighbours");
-        const NPC: u64 = 900;
-        const RADIUS: u8 = 2;
+        // The first zone-0 tile with four open neighbours (the shared qf5 helper).
+        let (home, _) = qf5_homes();
+        // 901 % NPC_STEP_TICKS == 1 (non-zero): an id-less phase picks other ticks.
+        const NPC: u64 = 901;
+        const RADIUS: u8 = QF5_RADIUS;
         let start = || Character {
             zone_id: zone,
             tile_x: home.x,
@@ -1036,17 +1033,35 @@ mod nh {
         let decide =
             |tick: u64| game_core::npc_decide(home, home, RADIUS, start().facing, NPC, tick, &map);
         let step = STEP_MS.unsigned_abs();
-        let nows: Vec<i64> = (0..24).map(|k| T0 + k * 200 + 37).collect();
+        let nows: Vec<i64> = (0..40).map(|k| T0 + k * 200 + 37).collect();
         let tick = |now: i64| now.unsigned_abs() / step;
+        // What the cadence-gated tick decides: only a due tick consults `npc_decide`.
+        let gated = |t: u64| {
+            if npc_step_due(NPC, t) {
+                decide(t)
+            } else {
+                None
+            }
+        };
         assert!(
             nows.iter()
-                .any(|&n| decide(tick(n)) != decide(n.unsigned_abs() % step)),
+                .any(|&n| gated(tick(n)) != gated(n.unsigned_abs() % step)),
             "the sample must discriminate `/` from `%`"
         );
         assert!(
             nows.iter()
-                .any(|&n| decide(tick(n)) != decide(n.unsigned_abs().wrapping_mul(step))),
+                .any(|&n| gated(tick(n)) != gated(n.unsigned_abs().wrapping_mul(step))),
             "the sample must discriminate `/` from `*`"
+        );
+        assert!(
+            nows.iter()
+                .any(|&n| npc_step_due(NPC, tick(n)) && decide(tick(n)).is_some()),
+            "the sample must contain a DUE tick where the NPC moves"
+        );
+        assert!(
+            nows.iter()
+                .any(|&n| !npc_step_due(NPC, tick(n)) && decide(tick(n)).is_some()),
+            "the sample must contain a NOT-due tick where npc_decide alone would move (the cadence has teeth)"
         );
         let module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
         let sched = || MovementTickSchedule {
@@ -1056,26 +1071,17 @@ mod nh {
         };
         for now in nows {
             let fx = fixture();
-            let w = world(&fx);
-            let npcs = fx.table_keyed::<Npc, u64>("npc", "entity_id", |r| r.entity_id);
-            let _ = fx.table_keyed::<Npc, u32>("npc", "zone_id", |r| r.zone_id);
-            npcs.seed(&Npc {
-                entity_id: NPC,
-                npc_id: "wanderer".to_string(),
-                zone_id: zone,
-                home_x: home.x,
-                home_y: home.y,
-                wander_radius: RADIUS,
-                dialogue_tree_id: String::new(),
-                interaction: game_core::NpcInteraction::Dialogue,
-            });
-            w.chars.seed(&start());
+            // `qf5_world` registers `npc` (both indexes) and a scannable
+            // `player_conversation` (QF5.1); no conversation rows are seeded here.
+            let q = qf5_world(&fx);
+            q.npcs.seed(&qf5_npc_row(NPC, home));
+            q.w.chars.seed(&start());
             assert_eq!(
                 fx.run_as_at(module, at(now), |ctx| movement_tick(ctx, sched())),
                 Ok(())
             );
             let mut want = start();
-            if let Some(d) = decide(tick(now)) {
+            if let Some(d) = gated(tick(now)) {
                 let next = game_core::apply_move(
                     &crate::marshal::char_state(&start()),
                     MoveInput::Step(d),
@@ -1084,11 +1090,751 @@ mod nh {
                 );
                 crate::marshal::apply_state(&mut want, &next);
             }
-            let got = w.character(NPC);
+            let got = q.w.character(NPC);
             assert_eq!(
                 (got.tile_x, got.tile_y, got.facing),
                 (want.tile_x, want.tile_y, want.facing),
                 "NPC position after the tick at {now}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // qf-5 (QF5.1 conversation pin, QF5.2 wander cadence, QF5.3 multi-tick walk)
+    //
+    // EARS criteria covered below:
+    //   QF5.1  WHILE a `player_conversation` row references an NPC's entity id AND
+    //          its owner is a joined player (a `player` row with a `character`) in
+    //          the NPC's zone within `TALK_RANGE` (Manhattan 2) of the NPC,
+    //          `movement_tick` SHALL NOT move that NPC (position AND facing kept);
+    //          a row whose owner left (out of range, another zone, no player row, no
+    //          character) does not pin; an NPC no active row references still wanders.
+    //   QF5.2  `movement_tick` SHALL step an NPC only on the ticks where the
+    //          game-core rule `npc_step_due(entity_id, now / STEP_MS)` holds, and
+    //          SHALL consume that rule rather than re-derive it.
+    //   QF5.3  Over many consecutive ticks an NPC SHALL stay in its home zone,
+    //          within its wander radius, moving at most one tile per tick.
+    // -----------------------------------------------------------------------
+
+    const QF5_ZONE: u32 = 0;
+    const QF5_RADIUS: u8 = 2;
+
+    /// The `npc` role row for NPC `entity_id` wandering around `home` in zone 0.
+    fn qf5_npc_row(entity_id: u64, home: game_core::TilePos) -> crate::schema::Npc {
+        crate::schema::Npc {
+            entity_id,
+            npc_id: format!("qf5-{entity_id}"),
+            zone_id: QF5_ZONE,
+            home_x: home.x,
+            home_y: home.y,
+            wander_radius: QF5_RADIUS,
+            dialogue_tree_id: String::new(),
+            interaction: game_core::NpcInteraction::Dialogue,
+        }
+    }
+
+    /// A live dialogue: `owner_byte` identifies the talking player.
+    fn qf5_conversation(owner_byte: u8, npc_entity_id: u64) -> crate::schema::PlayerConversation {
+        crate::schema::PlayerConversation {
+            owner_identity: Identity::from_byte_array([owner_byte; 32]),
+            npc_entity_id,
+            current_node_id: "greeting".to_string(),
+        }
+    }
+
+    /// The NPC's `character` row, idle at `p` facing South (the `character()` default).
+    fn qf5_char(entity_id: u64, p: game_core::TilePos) -> Character {
+        Character {
+            zone_id: QF5_ZONE,
+            tile_x: p.x,
+            tile_y: p.y,
+            ..character(entity_id, vec![], ActionState::Idle)
+        }
+    }
+
+    fn qf5_pos(c: &Character) -> (i32, i32, Direction) {
+        (c.tile_x, c.tile_y, c.facing)
+    }
+
+    /// Every table the NPC wander block reads: the movement world plus `npc` (both
+    /// indexes) and a SCANNABLE `player_conversation` (the pin's full-table scan).
+    struct Qf5<'a> {
+        w: World<'a>,
+        npcs: Handle<'a, crate::schema::Npc, u64>,
+        conv: Handle<'a, crate::schema::PlayerConversation>,
+    }
+
+    fn qf5_world(fx: &Fixture) -> Qf5<'_> {
+        let w = world(fx);
+        let npcs = fx.table_keyed::<crate::schema::Npc, u64>("npc", "entity_id", |r| r.entity_id);
+        let _ = fx.table_keyed::<crate::schema::Npc, u32>("npc", "zone_id", |r| r.zone_id);
+        let conv = fx
+            .table::<crate::schema::PlayerConversation>(
+                "player_conversation",
+                "owner_identity",
+                |r| r.owner_identity,
+            )
+            .scannable();
+        Qf5 { w, npcs, conv }
+    }
+
+    /// Two distinct shipped zone-0 homes: the first has four open neighbours, the
+    /// second is the farthest other tile with at least three.
+    fn qf5_homes() -> (game_core::TilePos, game_core::TilePos) {
+        let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+        let map = game_core::map_for(QF5_ZONE, zone_maps).expect("zone 0 map");
+        let dirs = [
+            Direction::North,
+            Direction::South,
+            Direction::East,
+            Direction::West,
+        ];
+        let open = |p: game_core::TilePos| map.is_walkable(p) && map.warp_at(p).is_none();
+        let open_neighbours =
+            |p: game_core::TilePos| dirs.iter().filter(|&&d| open(p.step(d))).count();
+        let tiles: Vec<game_core::TilePos> = (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| game_core::TilePos { x, y }))
+            .collect();
+        let first = tiles
+            .iter()
+            .copied()
+            .find(|&p| open(p) && open_neighbours(p) == 4)
+            .expect("zone 0 has an open tile with four open neighbours");
+        let second = tiles
+            .iter()
+            .copied()
+            .filter(|&p| p != first && open(p) && open_neighbours(p) >= 3)
+            .max_by_key(|&p| {
+                (i64::from(p.x) - i64::from(first.x)).abs()
+                    + (i64::from(p.y) - i64::from(first.y)).abs()
+            })
+            .expect("zone 0 has a second open tile with three open neighbours");
+        (first, second)
+    }
+
+    /// The server's tick counter for a scheduler timestamp.
+    fn qf5_tick_of(now: i64) -> u64 {
+        now.unsigned_abs() / game_core::STEP_MS.unsigned_abs()
+    }
+
+    /// The game-core cadence rule, fed the server's tick counter.
+    fn qf5_due(npc: u64, now: i64) -> bool {
+        game_core::npc::rules::npc_step_due(npc, qf5_tick_of(now))
+    }
+
+    /// `npc_decide` alone (no cadence), fed the server's tick counter.
+    fn qf5_decision(
+        from: game_core::TilePos,
+        facing: Direction,
+        npc: u64,
+        home: game_core::TilePos,
+        now: i64,
+    ) -> Option<Direction> {
+        let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+        let map = game_core::map_for(QF5_ZONE, zone_maps).expect("zone 0 map");
+        game_core::npc_decide(from, home, QF5_RADIUS, facing, npc, qf5_tick_of(now), &map)
+    }
+
+    /// Where the cadence-gated rule leaves an idle NPC standing at `from` facing
+    /// `facing`: unchanged unless the tick is due AND `npc_decide` answers `Some`.
+    fn qf5_expected(
+        from: game_core::TilePos,
+        facing: Direction,
+        npc: u64,
+        home: game_core::TilePos,
+        now: i64,
+    ) -> (i32, i32, Direction) {
+        let mut want = Character {
+            facing,
+            ..qf5_char(npc, from)
+        };
+        if qf5_due(npc, now) {
+            if let Some(d) = qf5_decision(from, facing, npc, home, now) {
+                let zone_maps =
+                    crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+                let map = game_core::map_for(QF5_ZONE, zone_maps).expect("zone 0 map");
+                let next = game_core::apply_move(
+                    &crate::marshal::char_state(&want),
+                    MoveInput::Step(d),
+                    &map,
+                    game_core::Millis(now),
+                );
+                crate::marshal::apply_state(&mut want, &next);
+            }
+        }
+        qf5_pos(&want)
+    }
+
+    /// One shipped `movement_tick` for zone 0 at `now`, as the scheduler module.
+    fn qf5_tick(fx: &Fixture, now: i64) {
+        let module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+        let sched = MovementTickSchedule {
+            id: 1,
+            zone_id: QF5_ZONE,
+            scheduled_at: ScheduleAt::Time(at(T0)),
+        };
+        assert_eq!(
+            fx.run_as_at(module, at(now), |ctx| movement_tick(ctx, sched)),
+            Ok(())
+        );
+    }
+
+    /// How the owner of a `player_conversation` row stands in the world. An owner
+    /// that is simply ABSENT from a fixture's owner list has no `player` row at all.
+    #[derive(Clone, Copy)]
+    enum Qf5Owner {
+        /// A joined player (`player` + `character` rows, empty move queue) standing
+        /// in `zone_id` on the tile.
+        Joined(u32, game_core::TilePos),
+        /// A `player` row whose `entity_id` has NO `character` row.
+        PlayerWithoutCharacter,
+    }
+
+    /// One arm of the owner-left test: (label, the owners seeded as `(owner byte,
+    /// standing)`, whether the NPC is expected to stay pinned).
+    type Qf5Arm = (&'static str, Vec<(u8, Qf5Owner)>, bool);
+
+    /// The character entity id of the player whose identity is `[owner_byte; 32]`.
+    fn qf5_owner_entity(owner_byte: u8) -> u64 {
+        5_000 + u64::from(owner_byte)
+    }
+
+    /// The first shipped zone-0 tile (row-major) that is walkable, carries no warp
+    /// and sits at Manhattan distance EXACTLY `dist` from `home`.
+    fn qf5_tile_near(home: game_core::TilePos, dist: i64) -> game_core::TilePos {
+        let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+        let map = game_core::map_for(QF5_ZONE, zone_maps).expect("zone 0 map");
+        (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| game_core::TilePos { x, y }))
+            .find(|&p| {
+                map.is_walkable(p)
+                    && map.warp_at(p).is_none()
+                    && (i64::from(p.x) - i64::from(home.x)).abs()
+                        + (i64::from(p.y) - i64::from(home.y)).abs()
+                        == dist
+            })
+            .expect("zone 0 has an open, warp-free tile at that distance from home")
+    }
+
+    /// A fresh fixture holding NPCs (id, home) at home facing South, the
+    /// conversation rows (owner byte, npc entity id, seeded in the given order) and
+    /// the owners' world state (owner byte, standing); runs ONE tick at `now` and
+    /// returns each NPC's (tile_x, tile_y, facing) afterwards, in input order.
+    /// Owner characters have an empty queue, so they never move or roll encounters.
+    fn qf5_one_tick(
+        npcs: &[(u64, game_core::TilePos)],
+        convs: &[(u8, u64)],
+        owners: &[(u8, Qf5Owner)],
+        now: i64,
+    ) -> Vec<(i32, i32, Direction)> {
+        let fx = fixture();
+        let q = qf5_world(&fx);
+        for &(id, home) in npcs {
+            q.npcs.seed(&qf5_npc_row(id, home));
+            q.w.chars.seed(&qf5_char(id, home));
+        }
+        for &(owner_byte, standing) in owners {
+            let who = Identity::from_byte_array([owner_byte; 32]);
+            let entity_id = qf5_owner_entity(owner_byte);
+            match standing {
+                Qf5Owner::Joined(zone_id, at_tile) => q.w.join(
+                    who,
+                    entity_id,
+                    Character {
+                        zone_id,
+                        tile_x: at_tile.x,
+                        tile_y: at_tile.y,
+                        ..character(entity_id, vec![], ActionState::Idle)
+                    },
+                ),
+                Qf5Owner::PlayerWithoutCharacter => q.w.players.seed(&Player {
+                    identity: who,
+                    entity_id,
+                    name: String::new(),
+                    online: true,
+                    last_input_seq: 0,
+                }),
+            }
+        }
+        for &(owner, npc) in convs {
+            q.conv.seed(&qf5_conversation(owner, npc));
+        }
+        qf5_tick(&fx, now);
+        let out: Vec<(i32, i32, Direction)> = npcs
+            .iter()
+            .map(|&(id, _)| qf5_pos(&q.w.character(id)))
+            .collect();
+        out
+    }
+
+    /// **QF5.1** — an NPC a live conversation references never moves (position
+    /// AND facing), on due ticks where it would otherwise step, while the
+    /// conversation's owner is a joined player in the NPC's zone within talk
+    /// range (here one tile away). Control: the identical fixture (owner present)
+    /// WITHOUT the conversation row steps exactly where the cadence-gated rule says.
+    ///
+    /// kills: the pin deleted; the pin keyed on the wrong column (owner / node id /
+    /// a different NPC id); `||` -> `&&` in the skip predicate (pin only on
+    /// non-due ticks); the scan filtering the wrong table or reading `.next()` of
+    /// an unrelated row; a pin that also freezes unreferenced NPCs (control arm
+    /// still moves); an active-owner check so strict it drops an in-range owner (a
+    /// wrong-column player lookup, a wrong-entity character lookup, a zone or range
+    /// comparison that rejects the owner standing one tile from the NPC). The sample
+    /// is self-checked to hold a due tick with `npc_decide` = Some, so none of those
+    /// can hide behind a no-op tick.
+    #[test]
+    fn nh_qf5_1_npc_in_conversation_never_moves() {
+        // 901 % NPC_STEP_TICKS == 1: non-zero residue. The id is reused by sibling
+        // tests, but every fixture here is fresh (`fixture()` wipes the store).
+        const NPC: u64 = 901;
+        const OWNER: u8 = 0xC3;
+        let (home, _) = qf5_homes();
+        let owners = [(OWNER, Qf5Owner::Joined(QF5_ZONE, qf5_tile_near(home, 1)))];
+        let start = qf5_char(NPC, home);
+        let start_pos = qf5_pos(&start);
+        let nows: Vec<i64> = (0..40).map(|k| T0 + k * 200 + 37).collect();
+        assert!(
+            nows.iter()
+                .any(|&n| qf5_due(NPC, n)
+                    && qf5_decision(home, start.facing, NPC, home, n).is_some()),
+            "the sample must contain a DUE tick where npc_decide moves the NPC"
+        );
+        let mut control_moves = 0usize;
+        for &now in &nows {
+            let pinned = qf5_one_tick(&[(NPC, home)], &[(OWNER, NPC)], &owners, now);
+            assert_eq!(
+                pinned[0], start_pos,
+                "NPC {NPC} is in a conversation: position and facing must not change (tick at {now})"
+            );
+            let control = qf5_one_tick(&[(NPC, home)], &[], &owners, now);
+            assert_eq!(
+                control[0],
+                qf5_expected(home, start.facing, NPC, home, now),
+                "control (no conversation row): the NPC wanders per the cadence rule (tick at {now})"
+            );
+            if control[0] != start_pos {
+                control_moves += 1;
+            }
+        }
+        assert!(
+            control_moves > 0,
+            "the control arm must actually move on some due tick, else the pin proves nothing"
+        );
+    }
+
+    /// **QF5.1** — the pin is per-NPC and survives ANY row position: four
+    /// conversation rows (owner bytes order the primary key, and the seeds go in
+    /// that order) reference, in scan order, pinned NPC 901, the non-NPC id 777, the
+    /// non-NPC id 778, and pinned NPC 903 LAST. Both pinned NPCs (owners joined in
+    /// range, same zone) never move on a due tick where they would otherwise
+    /// step, while the unreferenced NPC 902 still ends every tick exactly where
+    /// `npc_step_due` + `npc_decide` + `apply_move` put it.
+    ///
+    /// kills: a pin that freezes every NPC in the zone whenever any conversation
+    /// row exists (`!is_empty()`); a pin keyed on the owner / node instead of
+    /// `npc_entity_id`; a scan that looks at only a prefix of the rows
+    /// (`.take(1)` / `.take(2)` / `.take(3)` never sees the LAST row's NPC 903),
+    /// that drops the first row (`.skip(1)` leaves NPC 901 unpinned) or that keeps
+    /// only the last (`.last()` leaves NPC 901 unpinned); a pin keyed on only the
+    /// FIRST row (`.next()`); a skip that `break`s the loop instead of
+    /// `continue`ing past a pinned NPC (the NPCs after it would go unvisited).
+    #[test]
+    fn nh_qf5_1_conversation_pins_only_the_referenced_npc() {
+        const PINNED_FIRST: u64 = 901; // 901 % 5 == 1
+        const FREE: u64 = 902; // 902 % 5 == 2
+        const PINNED_LAST: u64 = 903; // 903 % 5 == 3
+        const OWNER_FIRST: u8 = 0x01;
+        const OWNER_LAST: u8 = 0xFE;
+        let (home_first, home_last) = qf5_homes();
+        assert_ne!(home_first, home_last, "the pinned NPCs need distinct homes");
+        let nows: Vec<i64> = (0..40).map(|k| T0 + k * 200 + 37).collect();
+        for (npc, home) in [(PINNED_FIRST, home_first), (PINNED_LAST, home_last)] {
+            assert!(
+                nows.iter().any(|&n| qf5_due(npc, n)
+                    && qf5_decision(home, Direction::South, npc, home, n).is_some()),
+                "the sample must contain a due tick where pinned NPC {npc} would otherwise move"
+            );
+        }
+        assert!(
+            nows.iter().any(|&n| qf5_due(FREE, n)
+                && qf5_decision(home_first, Direction::South, FREE, home_first, n).is_some()),
+            "the sample must contain a due tick where the unpinned NPC moves"
+        );
+        let owners = [
+            (
+                OWNER_FIRST,
+                Qf5Owner::Joined(QF5_ZONE, qf5_tile_near(home_first, 1)),
+            ),
+            (
+                OWNER_LAST,
+                Qf5Owner::Joined(QF5_ZONE, qf5_tile_near(home_last, 1)),
+            ),
+        ];
+        // Ascending owner-byte order: first and last row are the two real pins.
+        let convs = [
+            (OWNER_FIRST, PINNED_FIRST),
+            (0x02, 777),
+            (0x03, 778),
+            (OWNER_LAST, PINNED_LAST),
+        ];
+        let first_start = qf5_pos(&qf5_char(PINNED_FIRST, home_first));
+        let last_start = qf5_pos(&qf5_char(PINNED_LAST, home_last));
+        let free_start = qf5_pos(&qf5_char(FREE, home_first));
+        let mut free_moves = 0usize;
+        for &now in &nows {
+            let got = qf5_one_tick(
+                &[
+                    (PINNED_FIRST, home_first),
+                    (FREE, home_first),
+                    (PINNED_LAST, home_last),
+                ],
+                &convs,
+                &owners,
+                now,
+            );
+            assert_eq!(
+                got[0], first_start,
+                "NPC {PINNED_FIRST} is referenced by the FIRST row and must not move (tick at {now})"
+            );
+            assert_eq!(
+                got[2], last_start,
+                "NPC {PINNED_LAST} is referenced by the LAST row and must not move (tick at {now})"
+            );
+            assert_eq!(
+                got[1],
+                qf5_expected(home_first, free_start.2, FREE, home_first, now),
+                "NPC {FREE} is unreferenced and must wander per the cadence rule (tick at {now})"
+            );
+            if got[1] != free_start {
+                free_moves += 1;
+            }
+        }
+        assert!(
+            free_moves > 0,
+            "the unpinned NPC must actually move on some tick"
+        );
+    }
+
+    /// **QF5.1** — a conversation row pins its NPC only while its owner is still
+    /// there (a joined player in the NPC's zone within `TALK_RANGE` = Manhattan 2):
+    /// an idle client that talks then walks away, changes zone, or never had a
+    /// player row cannot freeze an NPC for everyone. Five arms, each in a fresh
+    /// fixture per tick of a sample that is self-checked to contain a due tick where
+    /// `npc_decide` answers `Some`: (a) owner joined in the same zone at Manhattan 3,
+    /// (b) owner joined at Manhattan 1 by tiles but in a DIFFERENT `zone_id`, (c) no
+    /// `player` row at all, (d) a `player` row whose character row is missing: in all
+    /// four the NPC wanders exactly per the cadence-gated rule (and does move on some
+    /// tick); (e) control: owner at Manhattan exactly 2 (the inclusive boundary) is
+    /// still pinned.
+    ///
+    /// kills: a scan that pins on any row regardless of its owner (a, b, c, d all
+    /// freeze the NPC); one that checks only that a `player` row exists (a, b, d);
+    /// one that ignores the zone (b); one that checks range but not that the
+    /// character exists (d); a range of 1 or an exclusive `< 2` boundary (e fails);
+    /// a range of 3 or more (a fails).
+    #[test]
+    fn nh_qf5_1_conversation_whose_owner_left_does_not_pin() {
+        const NPC: u64 = 901;
+        const OWNER: u8 = 0xC3;
+        let (home, _) = qf5_homes();
+        let start = qf5_char(NPC, home);
+        let start_pos = qf5_pos(&start);
+        let nows: Vec<i64> = (0..40).map(|k| T0 + k * 200 + 37).collect();
+        assert!(
+            nows.iter()
+                .any(|&n| qf5_due(NPC, n)
+                    && qf5_decision(home, start.facing, NPC, home, n).is_some()),
+            "the sample must contain a DUE tick where npc_decide moves the NPC"
+        );
+        let arms: [Qf5Arm; 5] = [
+            (
+                "owner 3 tiles away in the same zone",
+                vec![(OWNER, Qf5Owner::Joined(QF5_ZONE, qf5_tile_near(home, 3)))],
+                false,
+            ),
+            (
+                "owner in range by tiles but in another zone",
+                vec![(
+                    OWNER,
+                    Qf5Owner::Joined(QF5_ZONE + 1, qf5_tile_near(home, 1)),
+                )],
+                false,
+            ),
+            ("owner has no player row", vec![], false),
+            (
+                "owner has a player row but no character row",
+                vec![(OWNER, Qf5Owner::PlayerWithoutCharacter)],
+                false,
+            ),
+            (
+                "control: owner exactly 2 tiles away (the inclusive boundary)",
+                vec![(OWNER, Qf5Owner::Joined(QF5_ZONE, qf5_tile_near(home, 2)))],
+                true,
+            ),
+        ];
+        for (label, owners, pinned) in &arms {
+            let mut moves = 0usize;
+            for &now in &nows {
+                let got = qf5_one_tick(&[(NPC, home)], &[(OWNER, NPC)], owners, now);
+                let want = if *pinned {
+                    start_pos
+                } else {
+                    qf5_expected(home, start.facing, NPC, home, now)
+                };
+                assert_eq!(
+                    got[0], want,
+                    "{label}: NPC {NPC} after the tick at {now} (pinned = {pinned})"
+                );
+                if got[0] != start_pos {
+                    moves += 1;
+                }
+            }
+            if *pinned {
+                assert_eq!(moves, 0, "{label}: a pinned NPC never moves");
+            } else {
+                assert!(
+                    moves > 0,
+                    "{label}: the NPC must actually wander on some tick, else the arm proves nothing"
+                );
+            }
+        }
+    }
+
+    /// **QF5.3** — a single NPC on the shipped zone-0 map over many CONSECUTIVE
+    /// ticks in ONE fixture (state carried tick to tick, as the live scheduler
+    /// does): its `zone_id` never changes, it moves at most one tile per tick,
+    /// stays within its wander radius, moves only on due ticks, matches the
+    /// cadence-gated rule tick by tick, and does move.
+    ///
+    /// kills: an NPC leaving its home zone; a multi-tile step; a radius escape; a
+    /// move on a non-due tick (cadence not consumed); a pin that freezes an
+    /// un-referenced NPC for good (moves == 0); a drifting fixture state (the
+    /// per-tick comparison starts from the STORED row, not a replayed model).
+    #[test]
+    fn nh_qf5_3_npc_multi_tick_walk_stays_home_zone_within_radius() {
+        const NPC: u64 = 902; // 902 % 5 == 2
+        let (home, _) = qf5_homes();
+        let fx = fixture();
+        let q = qf5_world(&fx);
+        q.npcs.seed(&qf5_npc_row(NPC, home));
+        q.w.chars.seed(&qf5_char(NPC, home));
+        let manhattan = |ax: i32, ay: i32, bx: i32, by: i32| {
+            (i64::from(ax) - i64::from(bx)).abs() + (i64::from(ay) - i64::from(by)).abs()
+        };
+        let mut moves = 0usize;
+        let mut due_ticks = 0usize;
+        for k in 0..90i64 {
+            let now = T0 + k * 200 + 37;
+            let before = q.w.character(NPC);
+            qf5_tick(&fx, now);
+            let after = q.w.character(NPC);
+            assert_eq!(
+                after.zone_id, QF5_ZONE,
+                "tick {k}: an NPC stays in its home zone"
+            );
+            assert!(
+                manhattan(before.tile_x, before.tile_y, after.tile_x, after.tile_y) <= 1,
+                "tick {k}: moved {:?} -> {:?}, at most one tile per tick",
+                (before.tile_x, before.tile_y),
+                (after.tile_x, after.tile_y)
+            );
+            assert!(
+                manhattan(after.tile_x, after.tile_y, home.x, home.y) <= i64::from(QF5_RADIUS),
+                "tick {k}: {:?} left wander radius {QF5_RADIUS} around {home:?}",
+                (after.tile_x, after.tile_y)
+            );
+            let due = qf5_due(NPC, now);
+            if due {
+                due_ticks += 1;
+            }
+            let moved = (before.tile_x, before.tile_y) != (after.tile_x, after.tile_y);
+            if moved {
+                moves += 1;
+                assert!(due, "tick {k}: the NPC moved on a NOT-due tick");
+            }
+            if !due {
+                assert_eq!(
+                    qf5_pos(&after),
+                    qf5_pos(&before),
+                    "tick {k}: a not-due tick leaves position and facing untouched"
+                );
+            }
+            assert_eq!(
+                qf5_pos(&after),
+                qf5_expected(
+                    game_core::TilePos {
+                        x: before.tile_x,
+                        y: before.tile_y
+                    },
+                    before.facing,
+                    NPC,
+                    home,
+                    now
+                ),
+                "tick {k}: the stored row follows the cadence-gated rule"
+            );
+        }
+        assert_eq!(
+            due_ticks, 18,
+            "90 consecutive ticks hold exactly 18 due ticks"
+        );
+        assert!(
+            moves >= 5,
+            "the NPC must actually wander over 18 due ticks (lower bound); moved {moves} times"
+        );
+    }
+
+    /// Code-only view of a Rust source: comments (line, nested block) and the
+    /// CONTENT of string / raw-string / char literals are removed and all
+    /// whitespace is squashed, so a needle matches only executable tokens and a
+    /// decoy in a comment or a string cannot forge or hide one.
+    fn qf5_code_view(src: &str) -> String {
+        let b: Vec<char> = src.chars().collect();
+        let n = b.len();
+        let mut out = String::new();
+        let mut i = 0usize;
+        while i < n {
+            let c = b[i];
+            let next = b.get(i + 1).copied();
+            if c == '/' && next == Some('/') {
+                while i < n && b[i] != '\n' {
+                    i += 1;
+                }
+            } else if c == '/' && next == Some('*') {
+                let mut depth = 1usize;
+                i += 2;
+                while i < n && depth > 0 {
+                    if b[i] == '/' && b.get(i + 1) == Some(&'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if b[i] == '*' && b.get(i + 1) == Some(&'/') {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            } else if c == 'r' && (i == 0 || !(b[i - 1].is_alphanumeric() || b[i - 1] == '_')) && {
+                let mut j = i + 1;
+                while j < n && b[j] == '#' {
+                    j += 1;
+                }
+                j < n && b[j] == '"'
+            } {
+                let mut hashes = 0usize;
+                let mut j = i + 1;
+                while b[j] == '#' {
+                    hashes += 1;
+                    j += 1;
+                }
+                j += 1; // opening quote
+                loop {
+                    if j >= n {
+                        break;
+                    }
+                    if b[j] == '"' && (0..hashes).all(|h| b.get(j + 1 + h) == Some(&'#')) {
+                        j += 1 + hashes;
+                        break;
+                    }
+                    j += 1;
+                }
+                out.push_str("\"\"");
+                i = j;
+            } else if c == '"' {
+                i += 1;
+                while i < n && b[i] != '"' {
+                    if b[i] == '\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                i += 1;
+                out.push_str("\"\"");
+            } else if c == '\'' {
+                if next == Some('\\') {
+                    let mut j = i + 3;
+                    while j < n && b[j] != '\'' {
+                        j += 1;
+                    }
+                    i = j + 1;
+                    out.push_str("''");
+                } else if b.get(i + 2) == Some(&'\'') {
+                    i += 3;
+                    out.push_str("''");
+                } else {
+                    out.push(c); // a lifetime tick
+                    i += 1;
+                }
+            } else {
+                if !c.is_whitespace() {
+                    out.push(c);
+                }
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// **QF5.2** — `movement.rs` CONSUMES the game-core cadence rule: exactly one
+    /// `npc_step_due(` call, positioned inside the NPC wander loop (after its
+    /// `for entity_id in npc_entity_ids` header) and BEFORE the `npc_decide(` call
+    /// it gates; and the server does not re-derive the rule (no `NPC_STEP_TICKS`
+    /// token, no `% 5`, no `is_multiple_of(5` / `rem_euclid(5`). The behavioural
+    /// tests above prove the effect; this pins that the rule has ONE home.
+    ///
+    /// kills: a server-side copy of the modulus (`tick % 5`), a second cadence
+    /// call site, the gate placed after `npc_decide` (decide runs on non-due
+    /// ticks), the gate placed outside / above the loop, and the constant being
+    /// re-imported to build a local rule; a server-side re-derivation of the talk
+    /// range (a `TALK_RANGE` token, or no / a second `in_talk_range(` call site).
+    /// Comments and string literals are
+    /// stripped first so a decoy there neither satisfies nor trips a needle.
+    #[test]
+    fn nh_qf5_2_movement_rs_consumes_the_game_core_cadence_rule() {
+        let code = qf5_code_view(include_str!("movement.rs"));
+        assert_eq!(
+            code.matches("npc_step_due(").count(),
+            1,
+            "movement.rs must call game_core's npc_step_due exactly once"
+        );
+        let loop_at = code
+            .find("forentity_idinnpc_entity_ids")
+            .expect("the NPC wander loop header `for entity_id in npc_entity_ids`");
+        let due_at = code.find("npc_step_due(").expect("the cadence call");
+        let decide_at = code.find("npc_decide(").expect("the npc_decide call");
+        assert!(
+            loop_at < due_at,
+            "npc_step_due( ({due_at}) must appear after the wander loop header ({loop_at})"
+        );
+        assert!(
+            due_at < decide_at,
+            "npc_step_due( ({due_at}) must gate, i.e. appear BEFORE, npc_decide( ({decide_at})"
+        );
+        assert!(
+            !code.contains("NPC_STEP_TICKS"),
+            "movement.rs must not name NPC_STEP_TICKS: the cadence lives in game-core"
+        );
+        assert!(
+            !code.contains("is_multiple_of(5") && !code.contains("rem_euclid(5"),
+            "movement.rs must not re-derive the cadence modulus"
+        );
+        assert!(
+            !code.contains("TALK_RANGE"),
+            "movement.rs must not name TALK_RANGE: the range rule lives in game-core's in_talk_range"
+        );
+        assert_eq!(
+            code.matches("in_talk_range(").count(),
+            1,
+            "movement.rs must call game_core's in_talk_range exactly once"
+        );
+        let bytes = code.as_bytes();
+        for (idx, _) in code.match_indices("%5") {
+            let continues_number = bytes
+                .get(idx + 2)
+                .is_some_and(|&d| d.is_ascii_digit() || d == b'_');
+            assert!(
+                continues_number,
+                "movement.rs must not contain a `% 5` cadence modulus (at squashed offset {idx})"
             );
         }
     }
