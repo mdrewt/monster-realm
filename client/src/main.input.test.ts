@@ -118,6 +118,10 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
     move_queue_cap: () => 4,
     party_size: () => 3,
     party_slot_none: () => 255,
+    // qf-3: named fixture change — the care-readiness export the Monsters frame's view model asks
+    // per own monster (`-> i64` crosses as a BigInt; 0n = ready), so a case that opens the box
+    // with a monster in the store does not throw on a missing export.
+    care_remaining_ms: () => 0n,
     max_trade_monsters_per_side: () => 64,
     talk_range: () => 2,
     // ctl-10a: named fixture change — the new interact export
@@ -3571,6 +3575,7 @@ function partyMonster(monsterId: bigint, slot: number): StoreMonsterPub {
     trustTier: 'Unknown' as StoreMonsterPub['trustTier'],
     qualityTimeTier: 0,
     nutritionPct: 0,
+    lastCareAtMs: 0n,
   };
 }
 

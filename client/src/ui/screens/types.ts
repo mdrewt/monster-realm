@@ -111,6 +111,10 @@ export interface ScreenContext {
   readonly identity: string;
   readonly bindings: Bindings;
   readonly now: () => number;
+  /** The wall clock, `Date.now()` in production (qf-3): for comparisons with server-epoch
+   *  columns such as `monster_pub.last_care_at_ms`. `now` stays the monotonic frame clock
+   *  (`performance.now()`, ms since navigation), never comparable with a server instant. */
+  readonly wallNowMs: () => number;
   /** The shop the last greet-then-shop open bound, else null. It keeps its value after the shop
    *  closes (every open rebinds it) and reads null after a reconnect. 0 is a shop id. */
   readonly shopId: number | null;

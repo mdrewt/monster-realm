@@ -112,6 +112,7 @@ function sdkMonsterPub(overrides: Partial<SdkMonsterPubRow> = {}): SdkMonsterPub
     trustTier: { tag: 'Neutral', value: {} },
     qualityTimeTier: 0,
     nutritionPct: 0,
+    lastCareAtMs: 0n,
     ...overrides,
   };
 }
@@ -4076,5 +4077,116 @@ describe('rowConvert: HANDLED_ENUM_VARIANTS mirrors the generated binding enums'
     expect([...HANDLED_ENUM_VARIANTS.TradeStatus, 'Stale']).not.toEqual(generated);
     expect(HANDLED_ENUM_VARIANTS.TradeStatus.slice(1)).not.toEqual(generated);
     expect(generatedVariants('NoSuchEnum')).toBeUndefined();
+  });
+});
+
+// =============================================================================
+// The care cooldown anchor on monster_pub: `last_care_at_ms` (i64, server-epoch ms of the last
+// successful care; 0 = never cared) crosses my_monster_pub into StoreMonsterPub.lastCareAtMs as a
+// bigint, verbatim. The client compares it with the wall clock ONLY through the wasm export
+// `care_remaining_ms` (monstersModel.test.ts), so this converter's whole job is an exact copy.
+// =============================================================================
+
+/** i64 bounds and the first integer a JS number cannot hold, built (not typed) so no digit drifts. */
+const I64_MIN = -(2n ** 63n);
+const I64_MAX = 2n ** 63n - 1n;
+const P53_PLUS_1 = 2n ** 53n + 1n;
+
+describe('rowConvert: monsterPubRowToStore carries the care cooldown anchor (lastCareAtMs)', () => {
+  it('monsterPubRowToStore copies lastCareAtMs as the same bigint across the i64 range, never from another column', () => {
+    // Kills: a dropped field (undefined); `Number(row.lastCareAtMs)` (typeof number, and 2^53+1
+    // rounds down); `BigInt(Number(...))` (the right type with the wrong value past 2^53);
+    // `BigInt.asUintN(64, ...)` (a negative anchor becomes a huge positive one); a clamp of
+    // negatives to 0n; and a copy from the other bigint column (monsterId is a different value in
+    // every row).
+    for (const anchor of [1_750_000_000_123n, -9n, I64_MIN, I64_MAX, P53_PLUS_1]) {
+      const store = monsterPubRowToStore(sdkMonsterPub({ monsterId: 77n, lastCareAtMs: anchor }));
+      expect(typeof store.lastCareAtMs, `anchor ${anchor}`).toBe('bigint');
+      expect(store.lastCareAtMs, `anchor ${anchor}`).toBe(anchor);
+      expect(store.monsterId, `anchor ${anchor}: monsterId is its own column`).toBe(77n);
+    }
+    // The exact outputs of the two lossy mutants, named so a failure says which one it is.
+    expect(monsterPubRowToStore(sdkMonsterPub({ lastCareAtMs: P53_PLUS_1 })).lastCareAtMs).not.toBe(
+      BigInt(Number(P53_PLUS_1)),
+    );
+    expect(monsterPubRowToStore(sdkMonsterPub({ lastCareAtMs: -9n })).lastCareAtMs).not.toBe(
+      BigInt.asUintN(64, -9n),
+    );
+  });
+
+  it('a 0n anchor (never cared) survives as 0n with its key present, not dropped as falsy', () => {
+    // 0n is THE common value (every monster never cared, and every pre-qf-3 row until rewritten).
+    // Kills: `row.lastCareAtMs || undefined`, a truthiness-guarded conditional spread, and a
+    // `?? <now>` style default that would put a never-cared monster on cooldown.
+    const store = monsterPubRowToStore(sdkMonsterPub({ lastCareAtMs: 0n }));
+    expect(Object.hasOwn(store, 'lastCareAtMs'), 'the key is mapped explicitly').toBe(true);
+    expect(store.lastCareAtMs).toBe(0n);
+    expect(typeof store.lastCareAtMs).toBe('bigint');
+  });
+
+  it('the converted row has exactly the twenty StoreMonsterPub keys, lastCareAtMs among them', () => {
+    // Kills: a converter that forgets the new key, and a spread-the-SDK-row converter (it would
+    // also carry essenceFire..essenceDark and the raw trustTier object). The roster is the
+    // owner-scoped projection's whole client surface: nothing hidden may join it.
+    const keys = Object.keys(monsterPubRowToStore(sdkMonsterPub())).sort();
+    expect(keys).toEqual(
+      [
+        'monsterId',
+        'ownerIdentity',
+        'speciesId',
+        'nickname',
+        'level',
+        'xp',
+        'currentHp',
+        'statHp',
+        'statAttack',
+        'statDefense',
+        'statSpeed',
+        'statSpAttack',
+        'statSpDefense',
+        'partySlot',
+        'tier',
+        'essence',
+        'trustTier',
+        'qualityTimeTier',
+        'nutritionPct',
+        'lastCareAtMs',
+      ].sort(),
+    );
+  });
+
+  it('the regenerated MonsterPub binding carries the care anchor as its LAST column, and its row type is assignable to SdkMonsterPubRow', () => {
+    // A machine-contract check against the GENERATED artifact (module_bindings/types.ts is
+    // `spacetime generate` output), so it pins the bindings the client actually ships with.
+    // The care anchor must stay the column appended directly after nutrition_pct: an automatic
+    // migration of a live database accepts only tail-appended columns, so a schema that moves,
+    // drops or follows it with another column reds here. The anti-vacuity line first proves the
+    // product-type walk itself reads the binding (nutrition_pct is a column it must find), so a
+    // red on the position lines is a misplaced or missing anchor, not a misread shape.
+    const t = (GeneratedTypes as Record<string, unknown>).MonsterPub as
+      | { algebraicType?: { tag?: string; value?: { elements?: { name?: string }[] } } }
+      | undefined;
+    expect(t?.algebraicType?.tag, 'module_bindings/types.ts exports a MonsterPub product').toBe(
+      'Product',
+    );
+    const names = (t?.algebraicType?.value?.elements ?? []).map((e) => e.name ?? '');
+    expect(
+      names.some((n) => n === 'nutritionPct' || n === 'nutrition_pct'),
+      `anti-vacuity: the walk reads the binding's columns (got ${names.join(', ')})`,
+    ).toBe(true);
+    expect(
+      ['lastCareAtMs', 'last_care_at_ms'],
+      `the care anchor must be the appended LAST column of the generated MonsterPub (got ${names.join(', ')})`,
+    ).toContain(names[names.length - 1]);
+    expect(['nutritionPct', 'nutrition_pct'], 'directly after nutrition_pct').toContain(
+      names[names.length - 2],
+    );
+
+    // A tsc tooth (the RC-PW-02d / RC-HL-CC-08 precedent): the row the SDK actually delivers must
+    // satisfy the converter's input contract. `just client-typecheck` fails on this line if the
+    // generated row type stops being assignable to SdkMonsterPubRow (for example, if
+    // `lastCareAtMs` is no longer a bigint).
+    const generatedRowIsAnSdkRow = (row: GeneratedTypes.MonsterPub): SdkMonsterPubRow => row;
+    expect(typeof generatedRowIsAnSdkRow).toBe('function');
   });
 });

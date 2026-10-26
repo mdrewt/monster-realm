@@ -49,6 +49,7 @@ function monster(monsterId: bigint, overrides: Partial<StoreMonsterPub> = {}): S
     trustTier: 'Neutral',
     qualityTimeTier: 0,
     nutritionPct: 0,
+    lastCareAtMs: 0n,
     ...overrides,
   };
 }

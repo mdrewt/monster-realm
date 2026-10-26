@@ -75,6 +75,7 @@ function makeMonster(
     trustTier: 'Neutral',
     qualityTimeTier: 0,
     nutritionPct: 0,
+    lastCareAtMs: 0n,
     ...extra,
   };
 }

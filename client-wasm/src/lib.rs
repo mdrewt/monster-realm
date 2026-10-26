@@ -236,6 +236,33 @@ pub fn talk_range() -> u32 {
     game_core::TALK_RANGE as u32
 }
 
+/// How long until a monster's care cooldown elapses (qf-3): `0` when the
+/// SSOT predicate `game_core::is_cooldown_ready` says the owner may care now,
+/// else the remaining ms, bounded to `1..=CARE_COOLDOWN_MS`.
+///
+/// Readiness is decided ONLY by the predicate — the same one the server's
+/// `care` reducer runs — so `== 0` is the client's one reading of "Care is
+/// enabled" (the early return is what makes `ready ⟺ 0` hold); the
+/// subtraction is display arithmetic for the "Ready in …" hint. The clamp's
+/// ceiling keeps the hint inside one cooldown — a client clock behind the
+/// server anchor reads a full cooldown, never a multi-year figure — and its
+/// floor is defensive only (not-ready means the saturated elapsed is below
+/// the cooldown, so the difference is already >= 1). `i64` in and out: the anchor is the
+/// `monster_pub.last_care_at_ms` column (server-epoch ms, 0 = never cared) and
+/// `now_ms` is the client's wall clock, both `BigInt` in TypeScript (the
+/// `deletion_grace_ms_default` precedent); the cooldown length itself is never
+/// restated in TypeScript.
+#[wasm_bindgen]
+#[must_use]
+pub fn care_remaining_ms(last_care_at_ms: i64, now_ms: i64) -> i64 {
+    let cooldown = game_core::CARE_COOLDOWN_MS;
+    if game_core::is_cooldown_ready(last_care_at_ms, now_ms, cooldown) {
+        return 0;
+    }
+    let elapsed = now_ms.saturating_sub(last_care_at_ms);
+    cooldown.saturating_sub(elapsed).clamp(1, cooldown)
+}
+
 /// Marshaling-only input DTO for [`interact_candidates_coded`]: one entity as TS
 /// sends it. `kind` is `"npc"`, `"heal"` or `"player"`; `id` is a decimal string
 /// (a `u64` never crosses as a JS number). No rule lives here.
@@ -550,6 +577,145 @@ mod tests {
     #[test]
     fn talk_range_matches_game_core_const() {
         assert_eq!(i64::from(super::talk_range()), game_core::TALK_RANGE);
+    }
+
+    // CARE COOLDOWN across the wasm boundary (qf-3). `care_remaining_ms(last, now)` is the
+    // client's ONLY reading of care readiness: game_core::is_cooldown_ready decides it (the
+    // answer is 0 exactly when ready) and the remaining time is display arithmetic, bounded to
+    // [0, CARE_COOLDOWN_MS]. Every expectation is derived from the game-core constant and
+    // predicate, never a re-typed 6 h literal.
+    //
+    // Wrong impls killed: a strict `>` boundary (0 one millisecond late); a remaining time that
+    // is not `cooldown - elapsed`; readiness decided by a comparison of its own that disagrees
+    // with the game-core predicate; a never-cared anchor (0) treated as never ready.
+    #[test]
+    fn care_remaining_ms_matches_game_core_predicate_at_the_boundary() {
+        let cd = game_core::CARE_COOLDOWN_MS;
+        for last in [1_750_000_000_000_i64, 7] {
+            assert_eq!(
+                super::care_remaining_ms(last, last + cd - 1),
+                1,
+                "last={last}: one millisecond short of the cooldown leaves exactly 1 ms"
+            );
+            assert_eq!(
+                super::care_remaining_ms(last, last + cd),
+                0,
+                "last={last}: exactly one cooldown elapsed is ready (the predicate is >=)"
+            );
+            assert_eq!(
+                super::care_remaining_ms(last, last + cd + 1),
+                0,
+                "last={last}: past the cooldown stays ready, never negative"
+            );
+            for d in -3_i64..=3 {
+                let now = last + cd + d;
+                let r = super::care_remaining_ms(last, now);
+                let says_ready = r == 0;
+                let ready = game_core::is_cooldown_ready(last, now, cd);
+                assert_eq!(
+                    says_ready, ready,
+                    "last={last} d={d}: 0 exactly when game_core::is_cooldown_ready says ready"
+                );
+                let expected = (-d).clamp(0, cd);
+                assert_eq!(
+                    r, expected,
+                    "last={last} d={d}: remaining = cd - (cd + d), floored at 0 once ready"
+                );
+            }
+        }
+        assert_eq!(
+            super::care_remaining_ms(0, 0),
+            cd,
+            "cared at the epoch and read at the epoch: one full cooldown remains"
+        );
+        assert_eq!(
+            super::care_remaining_ms(0, 1_750_000_000_000),
+            0,
+            "never cared (anchor 0) under a realistic clock: ready, the first care is allowed"
+        );
+    }
+
+    // The same export over the whole i64 range: every cell of the grid answers without a panic,
+    // inside [0, cd], with 0 exactly when the game-core predicate says ready, and equal to an
+    // i128 oracle that cannot overflow. A clock BEHIND the anchor (a skewed client) reads one
+    // full cooldown, never more.
+    //
+    // Wrong impls killed: `wrapping_sub` (MIN..MAX wraps to a small negative elapsed and reads
+    // as cooling while game-core says ready); a plain `-` (overflow-checks panic at the
+    // extremes); `.abs()` on the elapsed time (a skewed clock reads as almost ready); a floor at
+    // 0 with no ceiling (a skew reads as cooldown + skew); swapped arguments; returning the
+    // elapsed time; a `>` boundary.
+    #[test]
+    fn care_remaining_ms_is_bounded_and_saturates_at_the_extremes() {
+        let cd = game_core::CARE_COOLDOWN_MS;
+        let xs = [
+            i64::MIN,
+            i64::MIN + 1,
+            -cd,
+            -1,
+            0,
+            1,
+            cd,
+            1_750_000_000_000,
+            i64::MAX - 1,
+            i64::MAX,
+        ];
+        let mut ready_cells = 0usize;
+        let mut cooling_cells = 0usize;
+        for last in xs {
+            for now in xs {
+                let r = super::care_remaining_ms(last, now);
+                let ready = game_core::is_cooldown_ready(last, now, cd);
+                assert!(
+                    (0..=cd).contains(&r),
+                    "({last}, {now}): {r} is outside [0, {cd}]; a hint never exceeds one cooldown"
+                );
+                let says_ready = r == 0;
+                assert_eq!(
+                    says_ready, ready,
+                    "({last}, {now}): 0 exactly when game_core::is_cooldown_ready says ready"
+                );
+                let elapsed = i128::from(now) - i128::from(last);
+                let oracle = if ready {
+                    0
+                } else {
+                    (i128::from(cd) - elapsed).clamp(1, i128::from(cd))
+                };
+                let got = i128::from(r);
+                assert_eq!(
+                    got, oracle,
+                    "({last}, {now}): remaining must equal the overflow-free i128 oracle"
+                );
+                if ready {
+                    ready_cells += 1;
+                } else {
+                    cooling_cells += 1;
+                }
+            }
+        }
+        assert!(
+            ready_cells > 0 && cooling_cells > 0,
+            "non-vacuity: the grid must hold both verdicts ({ready_cells} ready, {cooling_cells} \
+             cooling)"
+        );
+
+        let anchors = [
+            0_i64,
+            7,
+            cd,
+            1_750_000_000_000,
+            i64::MAX,
+            i64::MIN + 11 * cd,
+        ];
+        for last in anchors {
+            for behind in [1_i64, cd, cd + 1, 10 * cd] {
+                assert_eq!(
+                    super::care_remaining_ms(last, last - behind),
+                    cd,
+                    "last={last}, a clock {behind} ms behind it: exactly one full cooldown"
+                );
+            }
+        }
     }
 
     // INTERACT CANDIDATES marshaling core (CTL9.3). The rule itself is proven in

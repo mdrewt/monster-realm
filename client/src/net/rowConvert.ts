@@ -178,6 +178,8 @@ export interface SdkMonsterPubRow {
   readonly trustTier: SdkEnumTag;
   readonly qualityTimeTier: number;
   readonly nutritionPct: number;
+  /** qf-3: the care cooldown anchor (i64 → bigint), appended last on the server. */
+  readonly lastCareAtMs: bigint;
 }
 
 export interface SdkSpeciesRowRow {
@@ -228,6 +230,8 @@ export function monsterPubRowToStore(row: SdkMonsterPubRow): StoreMonsterPub {
     trustTier: narrowTag(row.trustTier.tag, HANDLED_ENUM_VARIANTS.TrustTier, 'TrustTier'),
     qualityTimeTier: row.qualityTimeTier,
     nutritionPct: row.nutritionPct,
+    // qf-3: copied as the bigint the SDK delivers (never Number(): an i64 does not fit a double).
+    lastCareAtMs: row.lastCareAtMs,
   };
 }
 

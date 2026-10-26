@@ -1529,6 +1529,9 @@ const screenCtx: ScreenContext = {
     return bindings;
   },
   now: () => performance.now(),
+  // qf-3: the wall clock, for the Monsters sheet's care readiness against the server-epoch
+  // anchor (`performance.now()` is ms since navigation and would read every care as cooling).
+  wallNowMs: () => Date.now(),
   get shopId() {
     return boundShopId;
   },
@@ -3135,6 +3138,14 @@ store.onBatchApplied(() => {
   screenHost.observe(contextStack, screenCtx);
 });
 
+// qf-3: the Monsters sheet's Care readiness follows the WALL clock, which no batch or button moves,
+// so while the box frame is open the frame loop re-observes the stack about once a second (the
+// host's same-object contract keeps a still readiness paint-free; a cooldown that just elapsed
+// repaints the row enabled with nobody pressing anything). The per-batch observe above stays the
+// main path; this tick only closes the idle gap.
+const CARE_READINESS_TICK_MS = 1000;
+let lastCareTickAtMs = 0;
+
 // --- DEV introspection hook (e2e asserts on this STATE, never pixels) ------------
 function snapshot() {
   const own = store.ownCharacter(identity);
@@ -3890,6 +3901,10 @@ async function main(): Promise<void> {
       const now = performance.now();
       // Menu auto-repeat: the router synthesizes the held D-pad's repeat edges on this clock.
       for (const effect of inputRouter.tick(routeCtx())) applyRouterEffect(effect);
+      if (now - lastCareTickAtMs >= CARE_READINESS_TICK_MS && upperIds().includes('boxView')) {
+        lastCareTickAtMs = now;
+        screenHost.observe(contextStack, screenCtx);
+      }
       // the ONE announcement edge and the ONE focus return, at the TOP
       // of the frame so a recurring throw further down cannot silence the region. The world
       // branch and announcementsFor are disjoint by construction (the reducer emits only when

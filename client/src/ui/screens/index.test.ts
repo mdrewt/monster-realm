@@ -2343,6 +2343,8 @@ function monstersFlowCtx(): ScreenContext {
     trustTier: 'Neutral',
     qualityTimeTier: 0,
     nutritionPct: 0,
+    // qf-3 (named fixture change): the care cooldown anchor; 0n = never cared (Care ready).
+    lastCareAtMs: 0n,
   });
   const monsters = [row(11n, 0), row(21n, party_slot_none()), row(22n, party_slot_none())];
   const store = {
@@ -2376,6 +2378,9 @@ function monstersFlowCtx(): ScreenContext {
     identity: MONSTERS_ME,
     bindings: DEFAULT_BINDINGS,
     now: () => 0,
+    // qf-3 (named fixture change): the wall clock the Monsters screen compares the care anchors
+    // with, epoch-realistic (a 0 clock against 0n anchors would read every Care as cooling).
+    wallNowMs: () => 1_750_000_000_000,
     shopId: null,
     healLocationId: null,
     reduceMotion: false,

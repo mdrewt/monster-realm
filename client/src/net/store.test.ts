@@ -354,6 +354,7 @@ function monsterPub(monsterId: bigint, ownerIdentity = 'dead', partySlot = 255):
     trustTier: 'Neutral',
     qualityTimeTier: 0,
     nutritionPct: 0,
+    lastCareAtMs: 0n,
     currentHp: 20,
     statHp: 20,
     statAttack: 10,
@@ -571,10 +572,14 @@ describe('AuthoritativeStore M6c: StoreMonsterPub type contract (no hidden field
       'trustTier',
       'qualityTimeTier',
       'nutritionPct',
+      // qf-3: the care cooldown anchor (server-epoch ms, 0n = never cared).
+      'lastCareAtMs',
     ];
     for (const field of required) {
       expect(keys).toContain(field);
     }
+    // The anchor is an i64 column: a bigint, never a number (2^53 would lose the low bits).
+    expect(typeof m.lastCareAtMs).toBe('bigint');
   });
 });
 
@@ -835,6 +840,45 @@ describe('AuthoritativeStore 13r-e: reconcileMonstersFromView post-condition', (
     expect(s.monsterCount).toBe(1);
     expect(s.ownMonsters('alice')).toEqual([]);
     expect(s.ownMonsters('bob').map((m) => m.monsterId)).toEqual([42n]);
+  });
+
+  it('a view row that differs ONLY in lastCareAtMs dirties exactly one batch and stores the new bigint, and an equal row after it dirties nothing', () => {
+    // A successful care changes the owner's monster_pub row in the care anchor and (maybe) the
+    // trust tier; when the tier does not move, the anchor is the ONLY changed field, and the
+    // Monsters sheet's cooldown hint reads it. Kills: change detection over a hand-written key list
+    // that omits lastCareAtMs (the hint freezes at its first value until some unrelated field
+    // moves), a compare that routes bigints through Number() (the 2^53 pair below collapses to one
+    // double), and an insert-if-absent reconcile (the stored anchor never updates).
+    const s = new AuthoritativeStore();
+    s.reconcileMonstersFromView([{ ...monsterPub(1n, 'alice'), lastCareAtMs: 0n }]);
+    s.flushBatch(); // clear dirty from the initial population
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+
+    s.reconcileMonstersFromView([{ ...monsterPub(1n, 'alice'), lastCareAtMs: 1_750_000_000_123n }]);
+    s.flushBatch();
+    expect(cb, 'a changed care anchor alone must mark the batch dirty').toHaveBeenCalledTimes(1);
+    expect(s.ownMonsters('alice')[0]?.lastCareAtMs).toBe(1_750_000_000_123n);
+
+    // The same row again, as a fresh object (what the converter emits on every flush).
+    cb.mockClear();
+    s.reconcileMonstersFromView([{ ...monsterPub(1n, 'alice'), lastCareAtMs: 1_750_000_000_123n }]);
+    s.flushBatch();
+    expect(cb, 'an equal row must not mark the batch dirty').toHaveBeenCalledTimes(0);
+    expect(s.ownMonsters('alice')[0]?.lastCareAtMs).toBe(1_750_000_000_123n);
+
+    // Past 2^53, two anchors one millisecond apart are still two values.
+    s.reconcileMonstersFromView([
+      { ...monsterPub(1n, 'alice'), lastCareAtMs: 9_007_199_254_740_992n },
+    ]);
+    s.flushBatch();
+    cb.mockClear();
+    s.reconcileMonstersFromView([
+      { ...monsterPub(1n, 'alice'), lastCareAtMs: 9_007_199_254_740_993n },
+    ]);
+    s.flushBatch();
+    expect(cb, 'one millisecond past 2^53 is a real change').toHaveBeenCalledTimes(1);
+    expect(s.ownMonsters('alice')[0]?.lastCareAtMs).toBe(9_007_199_254_740_993n);
   });
 });
 

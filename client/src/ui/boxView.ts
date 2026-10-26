@@ -59,6 +59,7 @@ import { type MonsterCardViewModel, NEXT_FREE_PARTY_SLOT } from './boxModel';
 import { currentLocale, t, tf } from './i18n/resolver';
 import {
   cardName,
+  careCooldownParts,
   findPath,
   foodKey,
   foodLayoutOf,
@@ -92,6 +93,16 @@ const SHEET_REASONS: Readonly<Partial<Record<SheetAction, () => string>>> = {
   feed: () => t('box.sheet.feedNone'),
   evolve: () => t('evolution.card.noPaths'),
 };
+
+/** A disabled row's reason: Care's carries the remaining cooldown rounded up to the minute (qf-3,
+ *  the hours and minutes are the model's), the others are the fixed lines above. */
+function sheetReason(
+  key: SheetAction,
+  sheet: NonNullable<MonstersPaint['sheet']>,
+): string | undefined {
+  if (key === 'care') return tf('box.sheet.careCooldown', careCooldownParts(sheet.careRemainingMs));
+  return SHEET_REASONS[key]?.();
+}
 
 /** The Evolve confirm's answers; No is the screen's default. */
 const CONFIRM_YES = 'yes';
@@ -462,7 +473,9 @@ export class BoxView {
     // Rendered empty when there is no sheet, so the hidden list holds no text either.
     renderNav(
       this.#sheetList,
-      sheet === null ? EMPTY_LIST : sheetLayout(sheet.canFeed, sheet.canEvolve),
+      sheet === null
+        ? EMPTY_LIST
+        : sheetLayout(sheet.canFeed, sheet.canEvolve, sheet.careRemainingMs === 0n),
       { tab: null, item: sheet === null ? null : sheet.action, perTab: {} },
       {
         frame: 'monstersSheet',
@@ -472,10 +485,10 @@ export class BoxView {
           el.textContent = SHEET_LABELS[key]();
           // A disabled row says why, after its label (the row itself carries aria-disabled). No
           // inline colour: the cursor row's background is light, and `.is-disabled` dims it.
-          const reason = item.enabled ? undefined : SHEET_REASONS[key];
+          const reason = item.enabled || sheet === null ? undefined : sheetReason(key, sheet);
           if (reason !== undefined) {
             const why = document.createElement('span');
-            why.textContent = ` ${reason()}`;
+            why.textContent = ` ${reason}`;
             el.appendChild(why);
           }
         },

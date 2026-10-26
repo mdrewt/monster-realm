@@ -235,6 +235,12 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { name: 'Sproutle', species: 'Pyroleo' },
   ],
   'box.feedback.fed': [{ name: 'Kip' }, { name: 'Mossling' }],
+  // qf-3: the cooling Care row's remaining-cooldown hint (1 ★); hours and minutes are numbers and
+  // differ between the two sets.
+  'box.sheet.careCooldown': [
+    { hours: 5, minutes: 59 },
+    { hours: 0, minutes: 1 },
+  ],
   // Trade.* (2 ★, side.currency.amount is bigint)
   'trade.side.card': [
     { nickname: 'Sproutle', species: 'Mossback', level: 7, current: 3, max: 9 },
@@ -1042,6 +1048,13 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { name: 'Mossling' },
     outputB: 'Fed Mossling',
   },
+  // qf-3: the cooling Care row's hint, after its label (QF3.3); bare digits, no padding.
+  'box.sheet.careCooldown': {
+    inputA: { hours: 5, minutes: 59 },
+    outputA: 'Ready in 5h 59m',
+    inputB: { hours: 0, minutes: 1 },
+    outputB: 'Ready in 0h 1m',
+  },
   // Trade.* (2 ★)
   'trade.side.card': {
     inputA: { nickname: 'Sproutle', species: 'Mossback', level: 7, current: 3, max: 9 },
@@ -1340,7 +1353,8 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 370-key roster (ctl-14: +`help.tab.{screen,controls,goals}`
+/** The full 371-key roster (qf-3: +`box.sheet.careCooldown` over the 370-key roster below;
+ *  ctl-14: +`help.tab.{screen,controls,goals}`
  *  +`help.goal.{recruit,battle,trade}` +`help.note.keysVsButtons` over the 363-key roster below;
  *  ctl-13: +`chrome.chip.{ok,back,close,view,dismiss,done}`
  *  +`chrome.badge.request` +`notice.sheet.{accept,decline,view}` +`notice.request.{trade,challenge}`
@@ -1429,7 +1443,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the ctl-14 370-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-3 371-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1518,13 +1532,13 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 370 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 371 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (370 keys since ctl-14: +7 plain; 363 since ctl-13: +10 plain, +2
-    // parameterised; was 351 since ctl-12b).
+    // (a) roster is exactly the EXPECTED_KEYS roster (371 keys since qf-3: +1 parameterised; 370
+    // since ctl-14: +7 plain; 363 since ctl-13: +10 plain, +2 parameterised; was 351 since ctl-12b).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the ctl-14 roster is 370 keys').toHaveLength(370);
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-3 roster is 371 keys').toHaveLength(371);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -2277,5 +2291,48 @@ describe('ctl-13: the notice keys in both catalogs', () => {
       'F8',
     );
     expect(` ${String(fr['errorOverlay.footer'])} `, 'and now names B too').toContain(' B ');
+  });
+});
+
+// =============================================================================
+// qf-3 (QF3.3): the remaining-cooldown hint the Monsters sheet shows after a cooling Care row's
+// label, in BOTH catalogs. The English text is pinned above (EXPECTED_PARAM_OUTPUTS); here both
+// closures are fed the same two sample sets and a third, and the French bytes are exact.
+// =============================================================================
+
+/** U+00EA (e circumflex), built by code point so the expected French text holds no pasted glyph. */
+const QF3_E_CIRCUMFLEX = String.fromCharCode(0x00ea);
+
+describe('qf-3: the care cooldown hint in both catalogs', () => {
+  it('the care cooldown hint is catalogued in en and fr with hours/minutes params [QF3-3-CATALOG]', () => {
+    // WRONG IMPL KILLED: a key added to en only (t() throws in a French boot: the cooling Care row
+    // goes blank); a French hint left as the English copy; a closure that hard-codes, drops or
+    // swaps its params (hours read as minutes: both sample sets differ in both fields), pads them
+    // ("05h") or prints a single combined figure; units glued to the digits or set off unlike the
+    // catalog table; and a decomposed or missing circumflex in the French first word.
+    const key = 'box.sheet.careCooldown';
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const spec = EXPECTED_PARAM_OUTPUTS[key] as ParamOutputSpec;
+    expect(spec, 'fixture: the English output pins exist').toBeDefined();
+    expect(SAMPLE_PARAMS[key], 'fixture: the two sample sets').toEqual([
+      { hours: 5, minutes: 59 },
+      { hours: 0, minutes: 1 },
+    ]);
+    expect(typeof en[key], `en ${key} must be a closure`).toBe('function');
+    expect(typeof fr[key], `fr ${key} must be a closure`).toBe('function');
+    const enFn = en[key] as (p: Record<string, unknown>) => string;
+    const frFn = fr[key] as (p: Record<string, unknown>) => string;
+
+    expect(enFn(spec.inputA), 'en, sample A').toBe('Ready in 5h 59m');
+    expect(enFn(spec.inputB), 'en, sample B').toBe('Ready in 0h 1m');
+    expect(frFn(spec.inputA), 'fr, sample A').toBe(`Pr${QF3_E_CIRCUMFLEX}t dans 5 h 59 min`);
+    expect(frFn(spec.inputB), 'fr, sample B').toBe(`Pr${QF3_E_CIRCUMFLEX}t dans 0 h 1 min`);
+    // A third set: two-digit hours, zero minutes.
+    expect(enFn({ hours: 12, minutes: 0 }), 'en, 12h 0m').toBe('Ready in 12h 0m');
+    expect(frFn({ hours: 12, minutes: 0 }), 'fr, 12 h 0 min').toBe(
+      `Pr${QF3_E_CIRCUMFLEX}t dans 12 h 0 min`,
+    );
+    expect(frFn(spec.inputA), 'a translation, not the English line').not.toBe(spec.outputA);
   });
 });

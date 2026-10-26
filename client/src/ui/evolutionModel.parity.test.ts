@@ -114,6 +114,7 @@ function toStoreMonster(m: WasmMonster, r: WasmReport): StoreMonsterPub {
     trustTier: r.trust_tier,
     qualityTimeTier: r.quality_time_tier,
     nutritionPct: r.nutrition_pct,
+    lastCareAtMs: 0n,
   };
 }
 

@@ -81,12 +81,23 @@ export function frame(t: number): void {
 /** What a test file's stubbed wasm `interact_candidates_coded` answers. */
 export type InteractStub = (...args: unknown[]) => unknown;
 
+/** What a test file's stubbed wasm `care_remaining_ms` answers (qf-3). */
+export type CareRemainingStub = (lastCareAtMs: bigint, nowMs: bigint) => bigint;
+
 /**
  * wasm pkg factory: every name main.ts imports. apply_move is a real one-tile step on an open
  * 8x8 grid. `interact` (when given) becomes the `interact_candidates_coded` export; when absent
  * the key is absent, exactly as in the files that predate the ctl-10a interact export.
+ * qf-3: `careRemaining` (when given) becomes the `care_remaining_ms` export, so a boot test can
+ * observe the arguments the Monsters sheet passes it; absent, the export answers 0n (ready).
  */
-export function wasmPkgWalkingMock(opts: { interact?: InteractStub } = {}) {
+export function wasmPkgWalkingMock(
+  opts: {
+    interact?: InteractStub;
+    /** qf-3: the care-readiness export; default always-ready. */
+    careRemaining?: CareRemainingStub;
+  } = {},
+) {
   const SIDE = 8;
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
   const DELTA: Record<string, [number, number]> = {
@@ -112,6 +123,8 @@ export function wasmPkgWalkingMock(opts: { interact?: InteractStub } = {}) {
         move_started_at: stamp,
       };
     },
+    // qf-3: named fixture change: the care-readiness export (`-> i64` crosses as a BigInt).
+    care_remaining_ms: opts.careRemaining ?? ((): bigint => 0n),
     deletion_grace_ms_default: () => 1n,
     move_queue_cap: () => 4,
     party_size: () => 3,
@@ -144,6 +157,8 @@ export function wasmPkgStubMock(opts: { interact?: InteractStub; grace?: () => b
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
   return {
     apply_move: () => ({}),
+    // qf-3: named fixture change: the care-readiness export, always ready (0n).
+    care_remaining_ms: (): bigint => 0n,
     // `-> i64` crosses as a BigInt, so the stub is `1n`, not `1`.
     deletion_grace_ms_default: opts.grace ?? (() => 1n),
     move_queue_cap: () => 4,
@@ -178,6 +193,8 @@ export function wasmPkgIdentityMoveMock(opts: { interact?: InteractStub } = {}) 
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
   return {
     apply_move: (state: unknown) => state,
+    // qf-3: named fixture change: the care-readiness export, always ready (0n).
+    care_remaining_ms: (): bigint => 0n,
     deletion_grace_ms_default: () => 1n,
     move_queue_cap: () => 4,
     party_size: () => 3,
