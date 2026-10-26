@@ -2393,17 +2393,21 @@ mod nh_sync {
     /// qf-3 (QF3.2, the content-resync leg): the re-derive pass of a stale-version
     /// sync rewrites every `monster_pub` row through `pub_from_monster`, so each
     /// pub keeps ITS OWN monster's care cooldown anchor. Two stale monsters with
-    /// distinct nonzero anchors (one negative) are seeded with pubs whose
-    /// `stat_hp` is deliberately wrong (1), then one sync: each pub ends with its
-    /// own monster's anchor and the recomputed `stat_hp`, which proves the pass
-    /// really rewrote the row (so the anchor clauses cannot pass on the seed).
+    /// distinct nonzero anchors (one negative) are seeded with pubs written as if
+    /// before the column existed (anchor 0) and with a deliberately wrong
+    /// `stat_hp` (1), then one sync: each pub ends with its own monster's anchor
+    /// and the recomputed `stat_hp`, which proves the pass really rewrote the row
+    /// and took the anchor FROM THE MONSTER ROW (the legacy-row backfill), so the
+    /// anchor clauses cannot pass on the seed.
     ///
     /// kills: a post-constructor `pub_row.last_care_at_ms = 0;` after the
     /// `pub_from_monster` call in the re-derive pass (content.rs
     /// `sync_content_inner`), CI-clean before this test because no content
     /// fixture seeded a nonzero anchor (every owner's Care would read READY after
     /// each content resync while the server still refuses it); an anchor taken
-    /// from the other monster's row; and a pass that stops rewriting the pub.
+    /// from the other monster's row; a pass that keeps the OLD pub row's anchor
+    /// (`find` then copy) — the pre-column rows would never backfill; and a pass
+    /// that stops rewriting the pub.
     /// Passes on the current tree BY CONSTRUCTION (the pass builds the pub through
     /// `pub_from_monster`, which copies the anchor verbatim): its teeth are the
     /// planted mutant above, watched failing by the orchestrator, then reverted.
@@ -2435,6 +2439,7 @@ mod nh_sync {
             monsters.seed(m);
             let mut stale_pub = pub_from_monster(m, 0);
             stale_pub.stat_hp = 1; // a deliberately wrong derived field
+            stale_pub.last_care_at_ms = 0; // a pub row written before the anchor column existed
             pubs.seed(&stale_pub);
         }
         let seeded = pubs.rows();
@@ -2442,6 +2447,10 @@ mod nh_sync {
         assert!(
             seeded.iter().all(|p| p.stat_hp == 1),
             "fixture: every seeded pub carries the wrong stat_hp"
+        );
+        assert!(
+            seeded.iter().all(|p| p.last_care_at_ms == 0),
+            "fixture: every seeded pub carries the pre-column anchor 0, not its monster's"
         );
 
         sync(&fx);

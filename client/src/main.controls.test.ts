@@ -4266,4 +4266,138 @@ describe('main.ts care readiness reads the wall clock (runtime, qf-3)', {
       wall.mockRestore();
     }
   });
+
+  it('in an idle session a Monsters sheet left where it opens (the cursor on Summary, the cooling Care row right under it) turns its Care row enabled with no press and no batch once Date.now() passes the cooldown, and the cursor stays on Summary [QF3-4-IDLE-FLIP-ON-SUMMARY]', async () => {
+    // WRONG IMPL KILLED: a painted signature that carries the Care readiness only while the cursor
+    // is ON Care (`shownOf` keyed on `phase.kind === 'sheet' && phase.action === 'care'`): the
+    // tick re-reads readiness, the screen answers the SAME state, the host never repaints, and the
+    // row in plain view under the Summary cursor stays "Care Ready in 0h 1m", disabled, after the
+    // cooldown has ended (only a press that walks onto Care would bring it back); a tick that
+    // repaints by moving the cursor (the Summary cursor is asserted after the flip).
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertMonster({ ...RAISED_MONSTER, lastCareAtMs: QF3_ANCHOR });
+    server(1010);
+    /** The wall-clock reading from which the stub answers ready: 5 s after QF3_WALL. */
+    const readyAt = QF3_WALL + 5_000;
+    const seen: Array<readonly [unknown, unknown]> = [];
+    // One minute left before `readyAt`, ready from it: only a re-read at the moved wall clock can
+    // bring Care back.
+    H.careRemaining = (last, now) => {
+      seen.push([last, now]);
+      return now < BigInt(readyAt) ? 60_000n : 0n;
+    };
+    const wall = vi.spyOn(Date, 'now').mockReturnValue(QF3_WALL);
+    try {
+      tap('KeyV', 1020);
+      expect(stackNames(), 'precondition: V opened Monsters over the menu').toEqual([
+        'world',
+        'menuView',
+        'boxView',
+      ]);
+      tap('Enter', 1030); // A on the monster: its sheet, the cursor on Summary, and left there
+      const summary = (): HTMLElement => byId('monstersSheet-root-summary');
+      const care = (): HTMLElement => byId('monstersSheet-root-care');
+      expect(summary().getAttribute('aria-selected'), 'precondition: on Summary').toBe('true');
+      expect(care().getAttribute('aria-selected'), 'precondition: not on Care').not.toBe('true');
+      expect(care().getAttribute('aria-disabled'), 'precondition: Care is cooling').toBe('true');
+      expect(care().textContent, 'precondition: its label, then the hint').toBe(
+        'Care Ready in 0h 1m',
+      );
+
+      // A frame while the cooldown still runs: the row stays disabled.
+      frame(1100);
+      expect(care().getAttribute('aria-disabled'), 'still cooling: Care stays disabled').toBe(
+        'true',
+      );
+
+      // The cooldown ends while nobody presses anything and no batch arrives: only frames run,
+      // for a little over a second of frame-clock time past the last frame (at 1100).
+      const idleMark = seen.length;
+      wall.mockReturnValue(readyAt);
+      for (const at of [1400, 1800, 2200, 2600]) frame(at);
+      const idle = seen.slice(idleMark);
+      expect(
+        idle.length,
+        'ANTI-VACUITY: the frame loop asked care_remaining_ms again, with no press and no batch',
+      ).toBeGreaterThan(0);
+      for (const [last, now] of idle) {
+        expect(last, 'the monster`s own anchor').toBe(QF3_ANCHOR);
+        expect(now, 'the wall clock, read live').toBe(BigInt(readyAt));
+      }
+      expect(care().getAttribute('aria-disabled'), 'ready: the Care row is enabled').toBeNull();
+      expect(care().classList.contains('is-disabled'), 'and no longer dimmed').toBe(false);
+      expect(care().textContent, 'the bare label, the hint gone').toBe(i18nT('box.sheet.care'));
+      expect(summary().getAttribute('aria-selected'), 'still on Summary').toBe('true');
+      expect(care().getAttribute('aria-selected'), 'and not on Care').not.toBe('true');
+      expect(stackNames(), 'the stack is unchanged').toEqual(['world', 'menuView', 'boxView']);
+      expect(callsOf('care'), 'the tick only repaints: no care is sent').toEqual([]);
+    } finally {
+      wall.mockRestore();
+    }
+  });
+
+  it('the 1 Hz care tick re-observes nothing while the Monsters frame is closed, even with another observing frame open: three seconds of idle frames over the Journal never rebuild its view model, and once Monsters is opened the same idle frames ask care_remaining_ms [QF3-4-TICK-ONLY-WITH-MONSTERS-FRAME]', async () => {
+    // WRONG IMPL KILLED: the tick's Monsters-frame guard deleted (the
+    // `&& upperIds().includes('boxView')` clause gone: every open frame's view model is rebuilt
+    // once a second for the life of the page, though only the Monsters sheet moves with the wall
+    // clock); the guard widened to "any frame is open" (`contextStack.length > 1`: the Journal
+    // over the menu is enough to tick it); and, as the control, a guard that never lets the tick
+    // run (the Monsters half below).
+    await bootReady();
+    seedWorld(1000);
+    opts.store.upsertMonster({ ...RAISED_MONSTER, lastCareAtMs: QF3_ANCHOR });
+    server(1010);
+    const seen: Array<readonly [unknown, unknown]> = [];
+    H.careRemaining = (last, now) => {
+      seen.push([last, now]);
+      return 0n;
+    };
+    // The Journal's view model is built from `ownQuests`: each rebuild reads it.
+    const questReads = vi.spyOn(opts.store, 'ownQuests');
+
+    tap('KeyJ', 1020);
+    expect(stackNames(), 'precondition: J opened the Journal over the menu').toEqual([
+      'world',
+      'menuView',
+      'questLogView',
+    ]);
+    const beforeBatch = questReads.mock.calls.length;
+    server(1030);
+    expect(
+      questReads.mock.calls.length,
+      'ANTI-VACUITY: a batch rebuilds the Journal`s view model (the counter sees its reads)',
+    ).toBeGreaterThan(beforeBatch);
+
+    // Idle over the Journal: about three seconds of frames, no press and no batch.
+    const idleMark = questReads.mock.calls.length;
+    for (let i = 0; i < 12; i += 1) frame(1100 + i * 250);
+    expect(
+      questReads.mock.calls.length - idleMark,
+      'no tick re-observed the Journal: no frame rebuilt its view model',
+    ).toBe(0);
+    expect(stackNames(), 'precondition: the Journal stayed open').toEqual([
+      'world',
+      'menuView',
+      'questLogView',
+    ]);
+
+    // Control: the same idle frames with the Monsters frame open DO re-read care readiness.
+    tap('Escape', 4000); // Start: back to the bare world
+    expect(stackNames(), 'precondition: the Journal is closed').toEqual(['world']);
+    tap('KeyV', 4010);
+    expect(stackNames(), 'precondition: V opened Monsters over the menu').toEqual([
+      'world',
+      'menuView',
+      'boxView',
+    ]);
+    const openMark = seen.length;
+    for (let i = 0; i < 12; i += 1) frame(4100 + i * 250);
+    const ticked = seen.slice(openMark);
+    expect(
+      ticked.length,
+      'control: with the Monsters frame open, the idle tick asks care_remaining_ms',
+    ).toBeGreaterThan(0);
+    for (const [last] of ticked) expect(last, 'the monster`s own anchor').toBe(QF3_ANCHOR);
+  });
 });

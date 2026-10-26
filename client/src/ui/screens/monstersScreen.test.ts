@@ -2280,6 +2280,82 @@ describe('monstersScreen — the Care cooldown (qf-3, QF3.3, QF3.4)', () => {
     expect(observe(atReady, list)).toBe(list);
   });
 
+  it('the Care row`s readiness flip and its hint`s minute change repaint the sheet whatever row the cursor is on and under every pane the sheet stays painted beneath: a NEW state on the sheet as it opens (the cursor on Summary) and under the summary, the food list, the Evolve list, the confirm and the typing row, the SAME object while the shown minute holds [QF3-4-REPAINT-OFF-CARE-ROW]', () => {
+    // WRONG IMPL KILLED: a painted signature that carries the Care parts only while the cursor is
+    // ON Care (`shownOf` keyed on `phase.kind === 'sheet' && phase.action === 'care'`): the sheet
+    // opens on Summary with the Care row in plain view right under it, so its hint would freeze
+    // and its readiness never flip until the player walked onto it; one that carries them only in
+    // the bare sheet phase (`phase.kind === 'sheet'`): the sheet stays painted under the summary,
+    // the food and Evolve lists, the confirm and the typing row, and the Care row under any of
+    // them would freeze the same way (no batch and no tick would repaint it).
+    const full = fullCooldown();
+    const wallNow = BigInt(WALL_NOW);
+    // Ten and a half minutes in, whatever the whole cooldown is: the remaining time sits mid-minute.
+    const elapsed = ((full - 30_000n) % 60_000n) + 600_000n;
+    // TWO_MET: monster 21 (species 1) has two choices, so the Evolve list and its confirm open.
+    const w = caredAt(world({ paths: TWO_MET }), 21n, wallNow - elapsed);
+    const vm0 = vmOf(w);
+    const r0 = careRemaining(vm0, 21n);
+    expect(r0 % 60_000n, 'fixture: the remaining time is mid-minute').toBe(30_000n);
+    expect(r0 > 120_000n, 'fixture: minutes of cooldown left').toBe(true);
+    const later1s = vmOf(w, WALL_NOW + 1_000);
+    const later1m = vmOf(w, WALL_NOW + 60_000);
+    const atReady = vmOf(w, WALL_NOW + Number(r0));
+    expect(careRemaining(atReady, 21n), 'fixture: ready at the end of the cooldown').toBe(0n);
+
+    // (a) The sheet as it opens: the cursor on Summary, not on Care.
+    const onSummary = swallowed(vm0, monstersScreen.init(vm0), ['A']);
+    expect(onSummary.phase, 'fixture: the sheet opens on Summary').toEqual(
+      sheetPhase(21n, 'summary'),
+    );
+    expect(paintOf(vm0, onSummary).sheet?.careRemainingMs, 'Summary: the cooling row').toBe(r0);
+    expect(observe(later1s, onSummary), 'Summary: the same minute, SAME').toBe(onSummary);
+    const minuteOn = observe(later1m, onSummary);
+    expect(minuteOn, 'Summary: the shown minute changed, a NEW state').not.toBe(onSummary);
+    expect(minuteOn.phase, 'Summary: the cursor stays on Summary').toEqual(
+      sheetPhase(21n, 'summary'),
+    );
+    expect(paintOf(later1m, minuteOn).sheet?.careRemainingMs, 'Summary: a minute on').toBe(
+      r0 - 60_000n,
+    );
+    const readyOn = observe(atReady, minuteOn);
+    expect(readyOn, 'Summary: readiness flipped, a NEW state').not.toBe(minuteOn);
+    expect(readyOn.phase, 'Summary: the cursor still on Summary').toEqual(
+      sheetPhase(21n, 'summary'),
+    );
+    expect(paintOf(atReady, readyOn).sheet?.careRemainingMs, 'Summary: ready').toBe(0n);
+    expect(observe(atReady, readyOn), 'Summary: then settled').toBe(readyOn);
+
+    // (b) Every pane the sheet stays painted under: its name, the walk that opens it from the
+    // list, the phase it opens, and the part of the paint that is the pane itself.
+    type Pane = readonly [string, readonly Input[], string, (p: MonstersPaint) => unknown];
+    const panes: readonly Pane[] = [
+      ['the summary pane', [...SHEET_STEPS.summary, 'A'], 'summary', (p) => p.summary],
+      ['the food list', [...SHEET_STEPS.feed, 'A'], 'feed', (p) => p.feed],
+      ['the Evolve list', [...SHEET_STEPS.evolve, 'A'], 'evolve', (p) => p.evolve],
+      ['the confirm', [...SHEET_STEPS.evolve, 'A', 'A'], 'evolveConfirm', (p) => p.confirm],
+      ['the typing row', [...SHEET_STEPS.nickname, 'A'], 'nickname', (p) => p.nickname],
+    ];
+    for (const [name, steps, kind, pane] of panes) {
+      const opened = swallowed(vm0, monstersScreen.init(vm0), steps);
+      expect(opened.phase.kind, `fixture: ${name} is open`).toBe(kind);
+      const first = paintOf(vm0, opened);
+      expect(pane(first), `fixture: ${name} is painted`).not.toBeNull();
+      expect(first.sheet?.careRemainingMs, `${name}: the cooling row under it`).toBe(r0);
+      expect(observe(later1s, opened), `${name}: the same minute, SAME`).toBe(opened);
+      const moved = observe(later1m, opened);
+      expect(moved, `${name}: the shown minute changed, a NEW state`).not.toBe(opened);
+      expect(moved.phase, `${name}: still open`).toEqual(opened.phase);
+      const movedPaint = paintOf(later1m, moved);
+      expect(pane(movedPaint), `${name}: still painted`).not.toBeNull();
+      expect(movedPaint.sheet?.careRemainingMs, `${name}: a minute on`).toBe(r0 - 60_000n);
+      const ready = observe(atReady, moved);
+      expect(ready, `${name}: readiness flipped, a NEW state`).not.toBe(moved);
+      expect(ready.phase, `${name}: still open`).toEqual(opened.phase);
+      expect(paintOf(atReady, ready).sheet?.careRemainingMs, `${name}: ready`).toBe(0n);
+    }
+  });
+
   it('Up and Down still land on a cooling Care (disabled, reachable) and walk past it in the design order [QF3-3-CARE-REACHABLE]', () => {
     // WRONG IMPL KILLED: a cooling Care dropped from the walk (Down from Summary would land on
     // Feed…: the player could not read why Care is unavailable), or a walk that sticks on it.
