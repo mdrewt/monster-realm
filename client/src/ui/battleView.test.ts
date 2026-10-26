@@ -1056,6 +1056,29 @@ describe('BattleView m16b RT-PVP-DS-01: double-submit suppression — no buttons
     );
     expect(swapButtons).toHaveLength(0);
 
+    // QF7.2 migration (strengthened): the rows now render only while Swap is the open command, so a
+    // fresh pending VM would pass with no pending guard at all. Pressing the greyed Swap command
+    // opens nothing, and a list that was open on this turn is gone again once the wait begins.
+    const submitSwaps = (): HTMLButtonElement[] =>
+      [...parent.querySelectorAll<HTMLButtonElement>('button')].filter((b) =>
+        b.textContent?.startsWith('Submit Swap:'),
+      );
+    c8iCmd(parent, 'swap').click();
+    expect(
+      submitSwaps(),
+      'a press on the greyed Swap command opens no row while waiting',
+    ).toHaveLength(0);
+    view.refresh({ ...makePvpPendingVM(), pvpPendingSubmit: false });
+    c8iCmd(parent, 'swap').click();
+    expect(submitSwaps(), 'precondition: not waiting, the Swap press opens the row').toHaveLength(
+      1,
+    );
+    view.refresh(makePvpPendingVM());
+    expect(
+      submitSwaps(),
+      'the wait on the same turn removes an open Swap list (the pvpPendingSubmit guard)',
+    ).toHaveLength(0);
+
     document.body.removeChild(parent);
   });
 
@@ -1704,6 +1727,10 @@ describe('BattleView ux4-1: PvE swap buttons — executable repro/refutation (EX
     const view = new BattleView(parent, makeUx4Callbacks());
     view.refresh(makeUx4SwappableVM());
     view.show();
+    // QF7.2 migration: the bench rows exist only while Swap is the open command, so the player
+    // presses the Swap command first (the press the D-pad's A makes too). Every assertion below is
+    // unchanged. Was: the rows were rendered on every ongoing render.
+    c8iCmd(parent, 'swap').click();
 
     // `startsWith('Swap: ')` cannot match the PvP label `Submit Swap: …`, so this
     // filter pins the PvE arm specifically.
@@ -1754,6 +1781,10 @@ describe('BattleView ux4-1: PvE swap buttons — executable repro/refutation (EX
     const view = new BattleView(parent, callbacks);
     view.refresh(makeUx4SwappableVM());
     view.show();
+    // QF7.2 migration: open the Swap list first (the rows are no longer always rendered); the click
+    // below is still the first and only swap action. Was: the rows were rendered on every render.
+    c8iCmd(parent, 'swap').click();
+    expect(callbacks.onSwap, 'opening the Swap list swaps nothing').not.toHaveBeenCalled();
 
     const target = [...parent.querySelectorAll('button')].find((b) =>
       b.textContent?.startsWith('Swap: Emberfang'),
@@ -2536,6 +2567,15 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     // The player's fainted bench monster is revived / a monster is added: canSwap flips
     // true mid-battle. Again NO hide(), NO refresh(null) — this is an ordinary batch tick.
     viewB.refresh(makeUx4SwappableVM({ turnNumber: 7 }));
+    // QF7.2 migration: the "swap buttons arrived" evidence is the Swap command going live AND the
+    // list it opens carrying the bench (the rows are no longer rendered until Swap is pressed).
+    expect(
+      (parentB.querySelector('[data-testid="battle-command-swap"]') as HTMLElement).getAttribute(
+        'aria-disabled',
+      ),
+      'precondition (H7b): the Swap command is live once swapping is possible',
+    ).toBe('false');
+    c8iCmd(parentB, 'swap').click();
 
     const liveSwapButtons = [...parentB.querySelectorAll('button')].filter((b) =>
       b.textContent?.startsWith('Swap: '),
@@ -4527,10 +4567,12 @@ const RA_SKILLS = [
   { id: 2, name: 'Tackle', affinity: 'Normal', power: 35, accuracy: 95 },
 ];
 
-/** An ongoing PvE VM on which ALL FIVE PvE controls render: two skills, Flee, two Swap buttons
- *  (UX4_BENCH), the Recruit list (No bait + one bait row) and the Bag list (one cure row). Eight
- *  buttons, no select (ctl-8j: migrated from the <select> shape (B10); was seven buttons and two
- *  selects, with a Recruit button and a Use Item button). */
+/** An ongoing PvE VM on which ALL FIVE PvE controls are on offer: two skills, Flee, a two-member
+ *  bench (UX4_BENCH), the Recruit list (No bait + one bait row) and the Bag list (one cure row). Six
+ *  buttons render at rest, no select (ctl-8j: migrated from the <select> shape (B10); was seven
+ *  buttons and two selects, with a Recruit button and a Use Item button); the two Swap rows render
+ *  only once the Swap command is pressed (QF7.2: was eight buttons, the swap rows always among
+ *  them). */
 function makeRaVM(overrides: Partial<BattleViewModel> = {}): BattleViewModel {
   return makeUx4VM({
     battleId: RA_BATTLE_ID,
@@ -4585,12 +4627,11 @@ async function raFlushPromises(): Promise<void> {
 }
 
 interface RaControls {
-  /** Every <button> under the mount but the command rows — with makeRaVM that is exactly the eight
-   *  PvE controls (ctl-8j: was seven). */
+  /** Every <button> under the mount but the command rows — with makeRaVM at rest that is exactly
+   *  the six PvE controls (ctl-8j: was seven; QF7.2: was eight, with the two Swap rows). */
   readonly all: readonly HTMLButtonElement[];
   readonly skills: readonly HTMLButtonElement[];
   readonly flee: HTMLButtonElement;
-  readonly swaps: readonly HTMLButtonElement[];
   /** The No bait row — the first step of Recruit (ctl-8j: was the Recruit button). */
   readonly recruit: HTMLButtonElement;
   /** The Lure Berry bait row (ctl-8j). */
@@ -4611,7 +4652,10 @@ function raControls(parent: HTMLElement): RaControls {
   );
   const skills = all.filter((b) => b.getAttribute('data-battle-list') === 'skills');
   const flee = all.find((b) => b.textContent === 'Flee');
-  const swaps = all.filter((b) => (b.textContent ?? '').startsWith('Swap: '));
+  // QF7.2 migration: the Swap rows are NOT part of the resting census any more: they render only
+  // while the Swap command is the open command, so an untouched view must hold none (the Swap lock
+  // is asserted by raExpectSwapLocked, BV-2 and the QF7.2 lock cases). Was: two Swap rows counted.
+  const swaps = all.filter((b) => b.getAttribute('data-battle-list') === 'swap');
   // ctl-8j: migrated from the <select> shape (B10): Recruit and Use Item are the first rows of the
   // recruit and bag lists (their dispatching Yes / target rows exist only after a press), and there
   // is no <select> under the mount at all. Was: the two action buttons by testid and a count of
@@ -4625,24 +4669,49 @@ function raControls(parent: HTMLElement): RaControls {
   );
   expect(skills, '20r-a precondition: two skill buttons must render').toHaveLength(2);
   expect(flee, '20r-a precondition: the Flee button must render').toBeDefined();
-  expect(swaps, '20r-a precondition: two Swap buttons must render').toHaveLength(2);
+  expect(
+    swaps.map((b) => b.textContent),
+    '20r-a precondition (QF7.2): no Swap row renders until the Swap command is pressed',
+  ).toEqual([]);
   expect(recruit, '20r-a precondition: the No bait row must render').not.toBeNull();
   expect(bait, '20r-a precondition: the Lure Berry row must render').not.toBeNull();
   expect(useItem, '20r-a precondition: the cure row must render').not.toBeNull();
   expect(
     all,
-    '20r-a precondition: EXACTLY eight buttons under the mount — 2 skills + Flee + 2 Swap + ' +
-      'No bait + Lure Berry + the cure row. A different count means the census below is about ' +
-      'the wrong nodes (or a confirm / target is open when no press was made)',
-  ).toHaveLength(8);
+    '20r-a precondition: EXACTLY six buttons under the mount — 2 skills + Flee + No bait + ' +
+      'Lure Berry + the cure row (QF7.2: no Swap row until Swap is pressed). A different count ' +
+      'means the census below is about the wrong nodes (or a confirm / target / swap list is open ' +
+      'when no press was made)',
+  ).toHaveLength(6);
   expect(
     parent.querySelectorAll('select'),
     '20r-a precondition: no <select> is left under the mount',
   ).toHaveLength(0);
-  return { all, skills, flee: flee!, swaps, recruit: recruit!, bait: bait!, useItem: useItem! };
+  return { all, skills, flee: flee!, recruit: recruit!, bait: bait!, useItem: useItem! };
 }
 
-/** One census assertion over all seven controls, labelled per button so a failure names the
+/** QF7.2 (migrated from the always-rendered Swap rows of the census): while the PvE lock is held
+ *  the Swap command is greyed, pressing it opens nothing that can be clicked into a second action,
+ *  and no Swap callback has fired. Presses only: it never re-enables a node, so a census taken
+ *  afterwards is unaffected. */
+function raExpectSwapLocked(
+  parent: HTMLElement,
+  callbacks: BattleViewCallbacks,
+  why: string,
+): void {
+  const cmd = c8iCmd(parent, 'swap');
+  expect(c8iDisabled(cmd), `${why}: the lock greys the Swap command`).toBe(true);
+  cmd.click();
+  const live = c8jRows(parent, 'swap');
+  expect(
+    live.filter((b) => !b.disabled).map((b) => b.textContent),
+    `${why}: a press on the locked Swap command leaves no enabled swap row`,
+  ).toEqual([]);
+  for (const row of live) row.click();
+  expect(callbacks.onSwap, `${why}: no swap is sent under the lock`).not.toHaveBeenCalled();
+}
+
+/** One census assertion over all six controls, labelled per button so a failure names the
  *  control that is in the wrong state. */
 function raExpectAll(controls: RaControls, disabled: boolean, why: string): void {
   expect(
@@ -4684,6 +4753,11 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     //   actions row now, so the census below counts them) — a locked turn would still open a
     //   Recruit or Bag step. Was: `querySelectorAll('button, select')`, which disabled the two
     //   <select>s whose value the next click read; no select is left to keep live.
+    // WRONG IMPL KILLED (5) (QF7.2 migration): a lock that leaves the Swap command live, or one
+    //   whose Swap press opens rows that are clickable under the lock. The Swap rows are not in the
+    //   resting census any more (they render only after the Swap press), so the lock on the swap
+    //   path is asserted by raExpectSwapLocked below. Was: the two Swap rows in an eight-control
+    //   census.
     const d = raDeferred();
     const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
     const { parent } = raMount(callbacks);
@@ -4702,9 +4776,14 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     raExpectAll(
       c,
       true,
-      '20r-a BV-1: ALL EIGHT PvE controls must be disabled while any PvE call is pending — the ' +
-        'lock is per BATTLE (D4), not per button, because every one of them acts on the same turn ' +
-        '(ctl-8j: the No bait, bait and cure rows are among them)',
+      '20r-a BV-1: ALL SIX resting PvE controls must be disabled while any PvE call is pending — ' +
+        'the lock is per BATTLE (D4), not per button, because every one of them acts on the same ' +
+        'turn (ctl-8j: the No bait, bait and cure rows are among them)',
+    );
+    raExpectSwapLocked(
+      parent,
+      callbacks,
+      '20r-a BV-1: the Swap path is locked too — a second action in the same turn',
     );
     expect(
       [c.recruit, c.bait, c.useItem].map((b) => b.disabled),
@@ -4753,9 +4832,12 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     c.skills[0]!.click();
     expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
 
+    // QF7.2 migration: the Swap row left this loop. It is not on screen at rest any more, and a
+    // Swap list opened BEFORE the skill may be closed by it or left locked, so a node held from the
+    // resting view is no sibling to assert on; the Swap row's own hostile re-enable has a fresh
+    // mount of its own at the end of this case. Was: `[c.swaps[0]!, callbacks.onSwap, 'Swap']`.
     const siblings: readonly (readonly [HTMLButtonElement, unknown, string])[] = [
       [c.flee, callbacks.onFlee, 'Flee'],
-      [c.swaps[0]!, callbacks.onSwap, 'Swap'],
     ];
     // (The bait and cure rows are locked too — BV-1's census — but a row press only opens a step,
     // it dispatches nothing, so it is not a sibling to hostile-click here: it would leave a confirm
@@ -4851,6 +4933,37 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
       dd.resolve();
       await raFlushPromises();
     }
+
+    // --- QF7.2 migration: the Swap list's rows are locked too (one fresh mount, Swap opened FIRST).
+    // Whatever the lock leaves of the list is disabled, and no node (held from before the lock or
+    // live now) dispatches a swap even after a hostile re-enable: only the shared pending key can
+    // refuse that. Was: `c.swaps[0]` of the always-rendered rows in the sibling loop above.
+    closeOverlayA11y('battleView', null);
+    document.body.replaceChildren();
+    const ds = raDeferred();
+    const cs = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(ds.promise) });
+    const swapMount = raMount(cs);
+    c8iCmd(swapMount.parent, 'swap').click();
+    const heldSwaps = c8jRows(swapMount.parent, 'swap');
+    expect(heldSwaps, '20r-a BV-2 precondition: the Swap press opens the two rows').toHaveLength(2);
+    c8iSkills(swapMount.parent)[0]!.click(); // takes the lock
+    expect(cs.onAttack).toHaveBeenCalledTimes(1);
+    expect(
+      c8jRows(swapMount.parent, 'swap').filter((b) => !b.disabled),
+      '20r-a BV-2: a Swap row still on screen under the lock is disabled',
+    ).toEqual([]);
+    for (const row of [...heldSwaps, ...c8jRows(swapMount.parent, 'swap')]) {
+      row.click(); // swallowed by `disabled` alone
+      row.disabled = false; // HOSTILE re-enable: only the shared pending key can swallow this
+      row.click();
+    }
+    expect(
+      cs.onSwap,
+      "20r-a BV-2: a Swap row's click must be swallowed by the SHARED pending key even after the " +
+        'node is re-enabled by hand — a per-action lock lets this through',
+    ).not.toHaveBeenCalled();
+    ds.resolve();
+    await raFlushPromises();
   });
 
   it('20r-a BV-3 BITES: hostile re-enable — click, set the LIVE button `disabled = false` by hand, click again → still ONE call', async () => {
@@ -5138,6 +5251,10 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     const callbacks = makeRaCallbacks({ onPvpAttack: vi.fn().mockReturnValue(d.promise) });
     const vm: BattleViewModel = { ...makePvpPendingVM(), pvpPendingSubmit: false };
     const { parent } = raMount(callbacks, vm);
+    // QF7.2 migration: the PvP Submit Swap row renders only while Swap is the open command, so it is
+    // opened here before the census is taken (a PvP press opens it with no lock involved). Every
+    // assertion below is unchanged. Was: the row was always rendered.
+    c8iCmd(parent, 'swap').click();
     const all = [...parent.querySelectorAll('button')];
     const submits = all.filter((b) => (b.textContent ?? '').startsWith('Submit: '));
     const swaps = all.filter((b) => (b.textContent ?? '').startsWith('Submit Swap: '));
@@ -5529,6 +5646,10 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
     // --- PvE: every conditional branch present at once ----------------------
     view.refresh(m24s3PveVM());
     view.show();
+    // QF7.2 migration: the swap rows render only while Swap is the open command, so the bench
+    // member's label is resolved (and its button present) only after the Swap press. Every
+    // assertion below is unchanged. Was: the swap row was rendered on every ongoing render.
+    c8iCmd(parent, 'swap').click();
 
     expect(i18nT, 'battle.title resolves in show() (plan R1)').toHaveBeenCalledWith('battle.title');
     expect(i18nT).toHaveBeenCalledWith('battle.continueHint');
@@ -5685,6 +5806,9 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
     // --- PvP: opponentName UNSET -> battle.card.opponent still requested ----
     vi.mocked(i18nT).mockClear();
     view.refresh(m24s3PvpVM({ pvpOpponentName: null, pvpPendingSubmit: false }));
+    // QF7.2 migration: a new battle closes the Swap list, so the PvP swap label is resolved only
+    // after its own Swap press. Was: the PvP swap row was rendered on every ongoing render.
+    c8iCmd(parent, 'swap').click();
     expect(
       i18nT,
       'PvP with no opponent name falls back to battle.card.opponent',
@@ -5757,6 +5881,10 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
 
       view.refresh(m24s3PveVM());
       view.show();
+      // QF7.2 migration: the swap rows render only while Swap is the open command, so the Swap
+      // press (the command's testid, not its sentinel text) comes first and the whole walk below
+      // covers the rows it opens. Was: the rows were rendered on every ongoing render.
+      c8iCmd(parent, 'swap').click();
       let texts = m24s3WalkSubtree(root);
       m24s3AssertNoRosterWord(texts, 'PvE ongoing');
       let joined = texts.join('\n');
@@ -5840,6 +5968,8 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       expect(texts.join('\n')).toContain('«battle.cure.target|{"species":"Sproutle"}»');
 
       view.refresh(m24s3PvpVM({ pvpOpponentName: null, pvpPendingSubmit: false }));
+      // QF7.2 migration: a new battle closes the Swap list; press it again for the PvP rows.
+      c8iCmd(parent, 'swap').click();
       texts = m24s3WalkSubtree(root);
       m24s3AssertNoRosterWord(texts, 'PvP opponentName unset');
       joined = texts.join('\n');
@@ -6820,13 +6950,10 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     // / `use-item-action`), which are the Yes / target rows of the second step now.
     const recruitBtn = c8iTestId<HTMLButtonElement>(root, 'bait-option-none');
     const useBtn = root.querySelector<HTMLButtonElement>('[data-battle-list="bag"]');
-    const swapBtns = [...root.querySelectorAll<HTMLButtonElement>('[data-battle-list="swap"]')];
     expect(recruitBtn?.getAttribute('data-battle-list'), 'Recruit control').toBe('recruit');
     expect(useBtn?.getAttribute('data-battle-list'), 'Use Item control').toBe('bag');
-    expect(
-      swapBtns.map((b) => b.textContent),
-      'the swap buttons, in bench order',
-    ).toEqual(['Swap: Mossling (12/18)', 'Swap: Emberfang (7/21)']);
+    // QF7.2 migration: the swap buttons are rendered by the Swap press (below), not at rest, so
+    // their list membership and bench order are asserted at the Swap step. Was: collected here.
     for (const id of ['bait-selector', 'cure-item-selector']) {
       expect(c8iTestId(root, id)?.hasAttribute('data-battle-list'), `${id} is in no list`).toBe(
         false,
@@ -6845,6 +6972,11 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     c8iExpectCursorOn(root, c8iCmd(root, 'recruit'), 'Back from the Recruit control');
 
     c8iCmd(root, 'swap').click();
+    const swapBtns = [...root.querySelectorAll<HTMLButtonElement>('[data-battle-list="swap"]')];
+    expect(
+      swapBtns.map((b) => b.textContent),
+      'the swap buttons, in bench order',
+    ).toEqual(['Swap: Mossling (12/18)', 'Swap: Emberfang (7/21)']);
     c8iExpectCursorOn(root, swapBtns[0] as Element, 'Swap chosen: the first swap button');
     expect(callbacks.onSwap, 'choosing Swap does not swap').not.toHaveBeenCalled();
     view.applyBattleOp({ kind: 'back' });
@@ -7571,7 +7703,8 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
 //     (`data-battle-list="bagTarget"`, "Use on {active species}"), cursor on it. A uses the item;
 //     B goes back to the cure row. (`use_battle_item` has no target: the server cures the active
 //     monster, so the target step is honest, not a choice.)
-//   * Swap: the bench rows (`data-battle-list="swap"`) are unchanged.
+//   * Swap: the bench rows (`data-battle-list="swap"`) are unchanged, except that (QF7.2) they
+//     render only once the Swap command is pressed, never at rest.
 //   * An id is the NUMBER the model gave the closure that made the press, never text or an
 //     attribute read back from the DOM. The open pick survives same-turn re-renders by identity and
 //     closes on a new (battle, turn), a vanished item, a finished or player battle, and hide().
@@ -8548,6 +8681,11 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
       ).toEqual([]);
     };
 
+    // QF7.2 migration: the Swap list is opened first, so the rows the comment above names still
+    // exist on screen when the lock is taken: whatever the lock leaves of them, and of every
+    // rebuild below, must be disabled. Was: the swap rows were always rendered.
+    c8iCmd(root, 'swap').click();
+
     // The attack comes first: any action closes an open step, so the steps below are opened and
     // closed UNDER the lock, by hand-enabled presses (a disabled button swallows a click).
     c8iSkills(root)[0]?.click(); // takes the lock; the call never settles
@@ -8619,9 +8757,18 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
           [...root.querySelectorAll('button')].find((b) => b.textContent === 'Flee')?.click(),
       },
       {
+        // QF7.2 migration: the swap rows exist only while Swap is the open command, and pressing
+        // the Swap command is itself a command press, which clears an open pick (see
+        // CTL8J-1x-REPLACE-PICK). So the swap action here is the whole player path: the Swap
+        // press, then its first row. Every assertion below is unchanged; the step is closed (by
+        // the Swap press, then for good by the swap) before the held node is tried. Was: the row
+        // was clicked straight away over the open pick.
         label: 'a swap row click',
         cb: 'onSwap',
-        act: (root: Element) => c8jRows(root, 'swap')[0]?.click(),
+        act: (root: Element) => {
+          c8iCmd(root, 'swap').click();
+          c8jRows(root, 'swap')[0]?.click();
+        },
       },
     ] as const;
 
@@ -8737,5 +8884,613 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
     expect(c8jConfirm(a.root)).toBeNull();
     c8jRows(a.root, 'recruit')[0]?.click(); // No bait
     nameOf(a, 'Recruit with no bait?');
+  });
+});
+
+// =============================================================================
+// QF7.2: "THE legacy per-member swap buttons SHALL NOT render — Swap → party picker is the only
+// swap path."
+//
+// THE VIEW'S CONTRACT. The bench rows (`data-battle-list="swap"`; PvE "Swap: <species> (hp/max)",
+// PvP "Submit Swap: <species>") render ONLY while the Swap command is the open command: the same
+// contextual second step as the Recruit confirm and the Bag target. At rest (every first render,
+// every same-turn render, every new turn, a new battle, a hide) there is no swap row and no button
+// whose label starts "Swap: " or "Submit Swap: " anywhere in the view.
+//   * Opening: a press on the Swap command, by mouse or by the D-pad's A, opens exactly one row per
+//     bench member, in bench order, with the cursor (aria-current + focus) on the first row. Opening
+//     swaps nothing.
+//   * A row press swaps once, by the member's TEAM index (never its position), through onSwap in a
+//     wild battle and onPvpSwap in a player battle.
+//   * Closing: B from a row closes the list and seats the cursor on the Swap command; pressing
+//     another command (Fight, Recruit, Bag) closes it; a new turn, a new battle, hide() and a PvP
+//     wait close it. A same-turn re-render keeps it open, with the cursor and focus on the same row.
+//   * A greyed Swap command (no swap on offer; a PvE call in flight; a PvP wait) opens nothing, and
+//     the empty-swap hint stays exactly as it was.
+// NOT asserted either way (a later slice owns them): the skills grid and the bait list stay always
+// visible (QF7.3), the Bag cure list is unchanged, the legacy Flee button stays (QF7.1). And NOT
+// pinned, because the spec is silent: whether a skill press, a bait / cure row press or a lock
+// takes an already-open Swap list away. The lock cases below hold under BOTH answers.
+// =============================================================================
+
+const QF72_PVE_MOSS = 'Swap: Mossling (12/18)';
+const QF72_PVE_EMBER = 'Swap: Emberfang (7/21)';
+const QF72_PVP_MOSS = 'Submit Swap: Mossling';
+const QF72_PVP_EMBER = 'Submit Swap: Emberfang';
+
+/** Every button in the view labelled like a swap row, in either mode. The Swap COMMAND's label is
+ *  the bare word "Swap", which neither prefix matches. */
+function qf72Labelled(root: ParentNode): string[] {
+  return [...root.querySelectorAll<HTMLButtonElement>('button')]
+    .map((b) => b.textContent ?? '')
+    .filter((text) => text.startsWith('Swap: ') || text.startsWith('Submit Swap: '));
+}
+
+/** The label of every swap row on screen, in DOM order. */
+function qf72Texts(root: ParentNode): Array<string | null> {
+  return c8jRows(root, 'swap').map((row) => row.textContent);
+}
+
+/** Press the Swap command with the mouse and return the rows it opened. */
+function qf72Open(m: C8iMount): HTMLButtonElement[] {
+  c8iCmd(m.root, 'swap').click();
+  return c8jRows(m.root, 'swap');
+}
+
+/** No swap row and no swap-labelled button anywhere in the view. */
+function qf72ExpectClosed(root: ParentNode, label: string): void {
+  expect(qf72Texts(root), `${label}: no [data-battle-list="swap"] row`).toEqual([]);
+  expect(qf72Labelled(root), `${label}: no "Swap: " / "Submit Swap: " button anywhere`).toEqual([]);
+}
+
+describe('BattleView QF7.2: the swap rows render only while Swap is the open command', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('QF7.2-NO-ROWS-AT-REST: an ongoing battle with a swappable bench renders no swap row and no "Swap: " or "Submit Swap: " button, PvE and PvP, on the first render, on same-turn re-renders, on the next turn and in a new battle, while the Swap command is live', () => {
+    // WRONG IMPL KILLED: the shipped #renderActions, which renders every bench member's button on
+    // every ongoing render whenever canSwap (the legacy per-member buttons beside the command
+    // list); rows rendered but hidden (display:none still counts: the census is of elements); rows
+    // rendered whenever the cursor rests on any command (it rests on Fight here, so a "rows while
+    // ANY command is open" impl shows them); rows that appear by themselves after a re-render or a
+    // turn change; a PvP-only or PvE-only removal; and a one-member bench that slips through a
+    // `length > 1` special case. The live Swap command is asserted so that "no rows" cannot be
+    // bought by removing the way in.
+    const cases: ReadonlyArray<
+      readonly [string, (o?: Partial<BattleViewModel>) => BattleViewModel]
+    > = [
+      ['PvE', (o = {}) => c8jVM(o)],
+      ['PvE, one bench member', (o = {}) => c8jVM({ bench: [UX4_BENCH[0]], ...o })],
+      ['PvP', (o = {}) => c8iPvpVM(o)],
+      ['PvP, one bench member', (o = {}) => c8iPvpVM({ bench: [UX4_BENCH[0]], ...o })],
+    ];
+    for (const [mode, build] of cases) {
+      const m = c8iFresh(build());
+      qf72ExpectClosed(m.root, `${mode}: the first render`);
+      expect(c8iDisabled(c8iCmd(m.root, 'swap')), `${mode}: the Swap command is live`).toBe(false);
+      expect(
+        c8iCurrent(m.root)[0],
+        `${mode}: the cursor rests on Fight, which is NOT the Swap command`,
+      ).toBe(c8iCmd(m.root, 'fight'));
+
+      m.view.refresh(build());
+      m.view.refresh(build());
+      qf72ExpectClosed(m.root, `${mode}: after same-turn re-renders`);
+      m.view.refresh(build({ turnNumber: 3 }));
+      qf72ExpectClosed(m.root, `${mode}: on the next turn`);
+      m.view.refresh(build({ battleId: 78n }));
+      qf72ExpectClosed(m.root, `${mode}: in a new battle`);
+      expect(m.callbacks.onSwap, `${mode}: rendering swaps nothing`).not.toHaveBeenCalled();
+      expect(m.callbacks.onPvpSwap, `${mode}: rendering swaps nothing`).not.toHaveBeenCalled();
+    }
+  });
+
+  it('QF7.2-CLICK-OPENS-LIST: a mouse press on the Swap command opens exactly one row per bench member, in bench order, labelled for the mode, with the cursor and focus on the first row and nothing swapped by opening', () => {
+    // WRONG IMPL KILLED: a Swap press that opens nothing (the only swap path would be gone); one
+    // that opens the rows but leaves the cursor on the Swap command (the next A presses Swap
+    // again, not a member); one that moves the cursor to a row but not focus; rows for the wrong
+    // members, in the wrong order, or for the first member only; a PvE label in a player battle
+    // or the reverse; a press that SWAPS (the first member) instead of opening the list; and a
+    // list that leaves a second swap-labelled button elsewhere in the view.
+    const cases = [
+      ['PvE', c8jVM(), [QF72_PVE_MOSS, QF72_PVE_EMBER]],
+      ['PvE, one member', c8jVM({ bench: [UX4_BENCH[1]] }), [QF72_PVE_EMBER]],
+      ['PvP', c8iPvpVM(), [QF72_PVP_MOSS, QF72_PVP_EMBER]],
+      ['PvP, one member', c8iPvpVM({ bench: [UX4_BENCH[0]] }), [QF72_PVP_MOSS]],
+    ] as const;
+    for (const [mode, vm, expected] of cases) {
+      const m = c8iFresh(vm);
+      qf72ExpectClosed(m.root, `${mode}: before the press`);
+      const rows = qf72Open(m);
+      expect(
+        rows.map((r) => r.textContent),
+        `${mode}: one row per bench member, in bench order`,
+      ).toEqual([...expected]);
+      expect(qf72Labelled(m.root), `${mode}: and no other swap-labelled button`).toEqual([
+        ...expected,
+      ]);
+      for (const row of rows) {
+        expect(row.tagName, `${mode}: a row is a button`).toBe('BUTTON');
+        expect(row.disabled, `${mode}: and is live`).toBe(false);
+      }
+      c8iExpectCursorOn(m.root, rows[0] as Element, `${mode}: the cursor and focus are on row 0`);
+      expect(m.callbacks.onSwap, `${mode}: opening swaps nothing`).not.toHaveBeenCalled();
+      expect(m.callbacks.onPvpSwap, `${mode}: opening swaps nothing`).not.toHaveBeenCalled();
+    }
+  });
+
+  it('QF7.2-DPAD-OPENS-LIST: the D-pad opens the list the same way (focus the Swap command, A): one row per bench member with the cursor and focus on the first, Down walks the rows, and neither opening nor walking swaps anything', () => {
+    // WRONG IMPL KILLED: a list that only a mouse click can open (the D-pad's A on the Swap
+    // command is `rows[cursor].click()`, a different entry to the same handler); a D-pad open that
+    // leaves the cursor on the command; a first A that also presses the first member (open and
+    // swap in one press); a Down that does not step the opened list.
+    const cases = [
+      ['PvE', c8jVM(), [QF72_PVE_MOSS, QF72_PVE_EMBER]],
+      ['PvP', c8iPvpVM(), [QF72_PVP_MOSS, QF72_PVP_EMBER]],
+    ] as const;
+    for (const [mode, vm, expected] of cases) {
+      const m = c8iFresh(vm);
+      qf72ExpectClosed(m.root, `${mode}: before the A`);
+      c8jEnter(m, 'swap');
+      const rows = c8jRows(m.root, 'swap');
+      expect(
+        rows.map((r) => r.textContent),
+        `${mode}: A on Swap opens one row per bench member`,
+      ).toEqual([...expected]);
+      c8iExpectCursorOn(m.root, rows[0] as Element, `${mode}: A on Swap lands on the first row`);
+      c8jDown(m);
+      c8iExpectCursorOn(m.root, c8jRows(m.root, 'swap')[1] as Element, `${mode}: Down: row 1`);
+      expect(
+        m.callbacks.onSwap,
+        `${mode}: opening and walking swap nothing`,
+      ).not.toHaveBeenCalled();
+      expect(
+        m.callbacks.onPvpSwap,
+        `${mode}: opening and walking swap nothing`,
+      ).not.toHaveBeenCalled();
+    }
+  });
+
+  it('QF7.2-ROW-PRESS-SWAPS-BY-TEAM-INDEX: a row press (mouse, or Down then A) swaps once with that member`s TEAM index, not its position, through onSwap in a wild battle and onPvpSwap in a player battle', () => {
+    // WRONG IMPL KILLED: a swap that sends the row's position (0 / 1) or position + 1, which the
+    // bench below defeats on purpose: team indexes 4 and 2 are neither a position nor a position +
+    // 1 nor in ascending order; the opposite callback (a PvP press through onSwap sends
+    // swap_active into a battle that only takes submit_pvp_action, the reverse sends a wild
+    // battle's swap into the PvP path); a swap sent twice; a row whose listener went with the
+    // rewrite of the render (the legacy rows were wired once, in the always-render path).
+    const bench = [
+      { teamIndex: 4, speciesName: 'Zedmon', currentHp: 9, maxHp: 20 },
+      { teamIndex: 2, speciesName: 'Yanmon', currentHp: 5, maxHp: 15 },
+    ];
+    for (const pvp of [false, true]) {
+      for (const [position, teamIndex] of [
+        [0, 4],
+        [1, 2],
+      ] as const) {
+        for (const how of ['mouse', 'D-pad'] as const) {
+          const label = `${pvp ? 'PvP' : 'PvE'} row ${position} by ${how}`;
+          const m = c8iFresh(pvp ? c8iPvpVM({ bench }) : c8jVM({ bench }));
+          if (how === 'mouse') {
+            const rows = qf72Open(m);
+            expect(rows, `${label}: two rows`).toHaveLength(2);
+            rows[position]?.click();
+          } else {
+            c8jEnter(m, 'swap');
+            c8jDown(m, position);
+            c8jA(m);
+          }
+          const hit = pvp ? m.callbacks.onPvpSwap : m.callbacks.onSwap;
+          const other = pvp ? m.callbacks.onSwap : m.callbacks.onPvpSwap;
+          expect(hit, `${label}: one swap`).toHaveBeenCalledTimes(1);
+          expect(hit, `${label}: the member's team index`).toHaveBeenCalledWith(77n, teamIndex);
+          expect(other, `${label}: never the other mode's callback`).not.toHaveBeenCalled();
+        }
+      }
+    }
+  });
+
+  it('QF7.2-BACK-CLOSES-LIST: B from a swap row (the first or any other) closes the list, seats the cursor and focus on the Swap command and swaps nothing; B again at the command does nothing; Swap opens it again', () => {
+    // WRONG IMPL KILLED: a B that moves the cursor back to the command but leaves the rows on
+    // screen (the shipped behaviour: the rows are always there); a B that closes the list and
+    // drops the cursor on Fight or on nothing; a B that is honoured only from the first row; a B
+    // that swaps; a list that cannot be reopened after a B (a latch); and a second B that
+    // reopens or changes anything.
+    for (const [mode, vm] of [
+      ['PvE', c8jVM()],
+      ['PvP', c8iPvpVM()],
+    ] as const) {
+      const m = c8iFresh(vm);
+      const swapCmd = c8iCmd(m.root, 'swap');
+      const rows = qf72Open(m);
+      expect(rows, `${mode}: precondition: the list is open`).toHaveLength(2);
+      c8iExpectCursorOn(m.root, rows[0] as Element, `${mode}: precondition: on row 0`);
+
+      c8jB(m);
+      qf72ExpectClosed(m.root, `${mode}: B from the first row`);
+      c8iExpectCursorOn(m.root, swapCmd, `${mode}: B seats the Swap command`);
+
+      const again = qf72Open(m);
+      expect(again, `${mode}: Swap opens it again`).toHaveLength(2);
+      c8jDown(m);
+      c8iExpectCursorOn(m.root, again[1] as Element, `${mode}: on the second row`);
+      c8jB(m);
+      qf72ExpectClosed(m.root, `${mode}: B from the second row`);
+      c8iExpectCursorOn(m.root, swapCmd, `${mode}: B from row 1 seats the Swap command too`);
+
+      c8jB(m);
+      qf72ExpectClosed(m.root, `${mode}: a B at the command row changes nothing`);
+      c8iExpectCursorOn(m.root, swapCmd, `${mode}: and the cursor stays on Swap`);
+      expect(m.callbacks.onSwap, `${mode}: B swaps nothing`).not.toHaveBeenCalled();
+      expect(m.callbacks.onPvpSwap, `${mode}: B swaps nothing`).not.toHaveBeenCalled();
+    }
+  });
+
+  it('QF7.2-OTHER-COMMAND-CLOSES-LIST: pressing another command (Fight, Recruit or Bag; by mouse or by the D-pad) closes an open Swap list and puts the cursor in that command`s list; Swap opens it again', () => {
+    // WRONG IMPL KILLED: rows rendered for ANY open command (the rows stay up after Fight, Recruit
+    // or Bag is pressed: two second steps at once); a close that only the mouse does (the D-pad's
+    // A reaches the same handler through `rows[cursor].click()`, but a keyboard-only impl could
+    // fork); a close that forgets the cursor (it must follow the command pressed, not stay in the
+    // list that just vanished); and a latch that stops Swap from opening again.
+    const targets = [
+      ['fight', 'skills'],
+      ['recruit', 'recruit'],
+      ['bag', 'bag'],
+    ] as const;
+    for (const [id, list] of targets) {
+      for (const how of ['a mouse press', 'the D-pad'] as const) {
+        const label = `${id} by ${how}`;
+        const m = c8iFresh(c8jVM());
+        expect(qf72Open(m), `${label}: precondition: Swap is open`).toHaveLength(2);
+        if (how === 'a mouse press') {
+          c8iCmd(m.root, id).click();
+        } else {
+          c8iCmd(m.root, id).focus();
+          m.view.applyBattleOp({ kind: 'activate' });
+        }
+        qf72ExpectClosed(m.root, `${label}: the other command closes the Swap list`);
+        expect(c8iCurrent(m.root), `${label}: one cursor`).toHaveLength(1);
+        expect(
+          c8iCurrent(m.root)[0]?.getAttribute('data-battle-list'),
+          `${label}: the cursor is in the pressed command's list`,
+        ).toBe(list);
+        expect(m.callbacks.onSwap, `${label}: nothing is swapped`).not.toHaveBeenCalled();
+        expect(
+          qf72Open(m).map((r) => r.textContent),
+          `${label}: Swap opens again`,
+        ).toEqual([QF72_PVE_MOSS, QF72_PVE_EMBER]);
+      }
+    }
+    const pvp = c8iFresh(c8iPvpVM());
+    expect(qf72Open(pvp), 'PvP precondition: Swap is open').toHaveLength(2);
+    c8iCmd(pvp.root, 'fight').click();
+    qf72ExpectClosed(pvp.root, 'PvP: Fight closes the Swap list');
+    expect(pvp.callbacks.onPvpSwap, 'PvP: nothing is swapped').not.toHaveBeenCalled();
+  });
+
+  it('QF7.2-SAME-TURN-RERENDER-KEEPS-LIST: an open Swap list survives same-turn re-renders (an equal VM, the same VM object, a bench whose hp changed) with the cursor and focus on the same member row and no focus stolen from a menu over the battle; PvE and PvP', () => {
+    // WRONG IMPL KILLED: a list closed by every re-render (the batch tick the server sends each
+    // time closes the picker under the player's thumb, so the second press never lands); a
+    // re-render that keeps the list but sends the cursor back to the first row or to Fight; one
+    // that drops focus to <body> (the next D-pad press only seats the cursor); one that re-renders
+    // stale rows (the hp change is not shown); a re-render that drags focus out of a menu opened
+    // over the battle; and one that itself calls a swap callback.
+    const m = c8iFresh(c8jVM());
+    qf72Open(m);
+    c8jDown(m);
+    c8iExpectCursorOn(
+      m.root,
+      c8jRows(m.root, 'swap')[1] as Element,
+      'precondition: the cursor is on the second member',
+    );
+
+    const same = c8jVM();
+    for (const [label, vm] of [
+      ['an equal VM', c8jVM()],
+      ['the same VM object', same],
+      ['the same VM object again', same],
+    ] as const) {
+      m.view.refresh(vm);
+      expect(qf72Texts(m.root), `${label}: still open, one row per member`).toEqual([
+        QF72_PVE_MOSS,
+        QF72_PVE_EMBER,
+      ]);
+      c8iExpectCursorOn(
+        m.root,
+        c8jRows(m.root, 'swap')[1] as Element,
+        `${label}: the cursor and focus are on the same member row`,
+      );
+    }
+
+    m.view.refresh(c8jVM({ bench: [{ ...UX4_BENCH[0], currentHp: 9 }, UX4_BENCH[1]] }));
+    expect(qf72Texts(m.root), "a bench member's new hp is shown, the list still open").toEqual([
+      'Swap: Mossling (9/18)',
+      QF72_PVE_EMBER,
+    ]);
+    c8iExpectCursorOn(m.root, c8jRows(m.root, 'swap')[1] as Element, 'and still on the second row');
+
+    const menu = document.createElement('button');
+    document.body.appendChild(menu);
+    menu.focus();
+    m.view.refresh(c8jVM());
+    expect(document.activeElement, 'a re-render steals no focus from a menu over the battle').toBe(
+      menu,
+    );
+    expect(qf72Texts(m.root), 'the list is still open under the menu').toEqual([
+      QF72_PVE_MOSS,
+      QF72_PVE_EMBER,
+    ]);
+    expect(c8iCurrent(m.root)[0], 'and the cursor is still on the second row').toBe(
+      c8jRows(m.root, 'swap')[1],
+    );
+    menu.remove();
+    expect(m.callbacks.onSwap, 'no refresh swaps anything').not.toHaveBeenCalled();
+
+    const pvp = c8iFresh(c8iPvpVM());
+    qf72Open(pvp);
+    pvp.view.refresh(c8iPvpVM({ pvpOpponentName: 'Other' }));
+    expect(qf72Texts(pvp.root), 'PvP: an equal-turn re-render keeps the list').toEqual([
+      QF72_PVP_MOSS,
+      QF72_PVP_EMBER,
+    ]);
+    c8iExpectCursorOn(pvp.root, c8jRows(pvp.root, 'swap')[0] as Element, 'PvP: on row 0 still');
+  });
+
+  it('QF7.2-NEW-TURN-OR-BATTLE-CLOSES-LIST: an open Swap list is closed by a new turn, an earlier turn number, a new battle on the same turn and a new turn seen while focus is on another frame; the cursor goes to Fight, nothing is swapped, and the next press lists the NEW bench', () => {
+    // WRONG IMPL KILLED: a list that survives into the next turn (a stale pick: the player sees a
+    // member the new turn's bench may not contain, and a press swaps on a turn they did not
+    // choose); one that survives into another battle (the rows name another battle's monsters); a
+    // close keyed on the turn number alone (a new battle on the same turn number keeps stale
+    // rows) or only on an increase; a close that needs focus to be inside the view; stale rows
+    // after the close (the reopened list is the old one); and a cursor left on the vanished rows.
+    const next = (o: Partial<BattleViewModel>): BattleViewModel =>
+      c8jVM({ bench: [UX4_BENCH[1]], ...o });
+    const closers: ReadonlyArray<readonly [string, (m: C8iMount) => void]> = [
+      ['a new turn', (m) => m.view.refresh(next({ turnNumber: 3 }))],
+      ['an earlier turn number', (m) => m.view.refresh(next({ turnNumber: 1 }))],
+      ['a new battle on the same turn', (m) => m.view.refresh(next({ battleId: 78n }))],
+      [
+        'a new turn while focus is on another frame',
+        (m) => {
+          const other = document.createElement('button');
+          document.body.appendChild(other);
+          other.focus();
+          m.view.refresh(next({ turnNumber: 3 }));
+          expect(document.activeElement, 'the reset steals no focus from another frame').toBe(
+            other,
+          );
+        },
+      ],
+    ];
+    for (const [label, close] of closers) {
+      const m = c8iFresh(c8jVM());
+      expect(qf72Open(m), `${label}: precondition: Swap is open`).toHaveLength(2);
+      close(m);
+      qf72ExpectClosed(m.root, `${label} closes the list`);
+      expect(c8iCurrent(m.root), `${label}: one cursor`).toHaveLength(1);
+      expect(c8iCurrent(m.root)[0], `${label}: the cursor is back on Fight`).toBe(
+        c8iCmd(m.root, 'fight'),
+      );
+      expect(m.callbacks.onSwap, `${label}: the close swaps nothing`).not.toHaveBeenCalled();
+      expect(
+        qf72Open(m).map((r) => r.textContent),
+        `${label}: a new press lists the new bench, not the old rows`,
+      ).toEqual([QF72_PVE_EMBER]);
+    }
+  });
+
+  it('QF7.2-HIDE-CLOSES-LIST: after hide() (or refresh(null)) a fresh refresh of the SAME battle and turn shows the Swap list closed, and Swap opens it again; PvE and PvP', () => {
+    // WRONG IMPL KILLED: a list state that survives hide(): hide() keeps the DOM and the (battle,
+    // turn) key, so a re-show of the same turn is not a "new turn" and only an explicit close in
+    // hide() (the Escape dismiss, the reconnect hide, the battle-row-gone hide) can reset it; the
+    // same for the refresh(null) teardown; and a close that blocks the list from opening again.
+    for (const [mode, build, expected] of [
+      ['PvE', () => c8jVM(), [QF72_PVE_MOSS, QF72_PVE_EMBER]],
+      ['PvP', () => c8iPvpVM(), [QF72_PVP_MOSS, QF72_PVP_EMBER]],
+    ] as const) {
+      const m = c8iFresh(build());
+      expect(qf72Open(m), `${mode}: precondition: Swap is open`).toHaveLength(2);
+      m.view.hide();
+      m.view.refresh(build());
+      expect(m.view.visible, `${mode}: the refresh re-shows the view`).toBe(true);
+      qf72ExpectClosed(m.root, `${mode}: after hide() and a fresh refresh`);
+      expect(
+        qf72Open(m).map((r) => r.textContent),
+        `${mode}: Swap opens it again`,
+      ).toEqual([...expected]);
+
+      m.view.refresh(null);
+      m.view.refresh(build());
+      qf72ExpectClosed(m.root, `${mode}: after refresh(null) and a fresh refresh`);
+      expect(m.callbacks.onSwap, `${mode}: nothing is swapped`).not.toHaveBeenCalled();
+      expect(m.callbacks.onPvpSwap, `${mode}: nothing is swapped`).not.toHaveBeenCalled();
+    }
+  });
+
+  it('QF7.2-PVP-WAIT-NO-ROWS: in a player battle a swap press removes the list when the wait begins, a greyed Swap command (mouse or D-pad) opens nothing while waiting, and the turn that ends the wait starts with the list closed', () => {
+    // WRONG IMPL KILLED: a wait that leaves an open list live (a second submit in the same turn:
+    // RT-PVP-DS-01); a list that opens while waiting because the press handler ignores the greyed
+    // command; a list that is still open on the turn after the wait (the shipped always-render
+    // shows the rows again at once, and a contextual impl that forgot to close on the new turn
+    // does too).
+    const m = c8iFresh(c8iPvpVM({ turnNumber: 2 }));
+    const swapCmd = c8iCmd(m.root, 'swap');
+    const rows = qf72Open(m);
+    expect(
+      rows.map((r) => r.textContent),
+      'precondition: the list is open',
+    ).toEqual([QF72_PVP_MOSS, QF72_PVP_EMBER]);
+    rows[0]?.click();
+    expect(m.callbacks.onPvpSwap, 'the press submits the swap').toHaveBeenCalledTimes(1);
+    expect(m.callbacks.onPvpSwap).toHaveBeenCalledWith(77n, 1);
+
+    m.view.refresh(c8iPvpVM({ turnNumber: 2, pvpPendingSubmit: true }));
+    qf72ExpectClosed(m.root, 'the wait on the same turn');
+    expect(c8iDisabled(swapCmd), 'the wait greys the Swap command').toBe(true);
+    swapCmd.click();
+    qf72ExpectClosed(m.root, 'a mouse press on the greyed Swap command');
+    swapCmd.focus();
+    m.view.applyBattleOp({ kind: 'activate' });
+    qf72ExpectClosed(m.root, 'A on the greyed Swap command');
+
+    m.view.refresh(c8iPvpVM({ turnNumber: 3 }));
+    qf72ExpectClosed(m.root, 'the turn that ends the wait');
+    expect(c8iDisabled(swapCmd), 'the Swap command is live again').toBe(false);
+    expect(
+      qf72Open(m).map((r) => r.textContent),
+      'and opens the list',
+    ).toEqual([QF72_PVP_MOSS, QF72_PVP_EMBER]);
+    expect(m.callbacks.onPvpSwap, 'only the one press ever swapped').toHaveBeenCalledTimes(1);
+
+    const waiting = c8iFresh(c8iPvpVM({ pvpPendingSubmit: true }));
+    c8iCmd(waiting.root, 'swap').click();
+    qf72ExpectClosed(waiting.root, 'a wait from the first render: a mouse press');
+    c8iCmd(waiting.root, 'swap').focus();
+    waiting.view.applyBattleOp({ kind: 'activate' });
+    qf72ExpectClosed(waiting.root, 'a wait from the first render: A');
+    expect(
+      waiting.callbacks.onPvpSwap,
+      'nothing is submitted while waiting',
+    ).not.toHaveBeenCalled();
+  });
+
+  it('QF7.2-GREYED-SWAP-OPENS-NOTHING: when no swap is on offer (no bench, canSwap false with a bench, a player battle with no bench) a press on the greyed Swap command (mouse or D-pad) opens no row, the cursor stays on that command, and the empty-swap hint shows exactly as before; with a swap on offer the hint stays hidden', () => {
+    // WRONG IMPL KILLED: a list that opens from the model's bench even though canSwap is false
+    // (the H8 shape: the hint says there is no swap, the rows say there is); a press on the greyed
+    // command that opens an empty list and sends the cursor into it (a cursor on nothing); a
+    // greyed command that is `disabled` (focus skips it); and a hint that lost its toggle in the
+    // rewrite (QF7.2 must not touch it: ux4-2 H1-H8 own the copy and the predicate).
+    const shapes = [
+      ['no bench', c8iVM({ canSwap: false, bench: [] })],
+      ['canSwap false with a bench', c8iVM({ canSwap: false, bench: [UX4_BENCH[0]] })],
+      ['PvP with no bench', c8iPvpVM({ canSwap: false, bench: [] })],
+    ] as const;
+    for (const [label, vm] of shapes) {
+      const m = c8iFresh(vm);
+      const swapCmd = c8iCmd(m.root, 'swap');
+      expect(c8iDisabled(swapCmd), `${label}: the Swap command is greyed`).toBe(true);
+      expect(
+        c8iShown(c8iTestId(m.root, 'battle-swap-hint'), m.root),
+        `${label}: the empty-swap hint is shown`,
+      ).toBe(true);
+
+      swapCmd.click();
+      qf72ExpectClosed(m.root, `${label}: a mouse press`);
+      expect(c8iCurrent(m.root), `${label}: one cursor`).toHaveLength(1);
+
+      swapCmd.focus();
+      m.view.applyBattleOp({ kind: 'activate' });
+      qf72ExpectClosed(m.root, `${label}: A`);
+      c8iExpectCursorOn(m.root, swapCmd, `${label}: the cursor rests on the greyed Swap command`);
+      expect(
+        c8iShown(c8iTestId(m.root, 'battle-swap-hint'), m.root),
+        `${label}: the hint is still shown after the presses`,
+      ).toBe(true);
+      expect(m.callbacks.onSwap, `${label}: nothing is swapped`).not.toHaveBeenCalled();
+      expect(m.callbacks.onPvpSwap, `${label}: nothing is swapped`).not.toHaveBeenCalled();
+    }
+    const live = c8iFresh(c8iVM());
+    expect(
+      c8iShown(c8iTestId(live.root, 'battle-swap-hint'), live.root),
+      'with a swap on offer the hint is hidden (the rows are not the reason)',
+    ).toBe(false);
+    qf72Open(live);
+    expect(
+      c8iShown(c8iTestId(live.root, 'battle-swap-hint'), live.root),
+      'and it stays hidden while the list is open',
+    ).toBe(false);
+  });
+
+  it('QF7.2-LOCK-GREYS-SWAP: while a PvE call is in flight the Swap command is greyed and a press on it (mouse or D-pad) leaves no enabled swap row and sends no swap, even from a hand-enabled row; once the call settles Swap opens and swaps normally', async () => {
+    // WRONG IMPL KILLED: a lock that leaves the Swap command live; a press on the locked command
+    // that renders fresh rows ENABLED (a render on open that forgets to re-derive the lock: the
+    // same hazard as the Recruit and Bag steps, CTL8J-1x-LOCK-ACROSS-PICK); a second action in
+    // the turn the first one already spent (a swap after an attack); a swap row whose click
+    // bypasses the shared pending key (the hand-enabled click); and a lock that never releases
+    // for the new open path (the control press at the end). Holds whether the impl opens nothing
+    // under the lock or opens disabled rows: both leave no enabled row.
+    const d = raDeferred();
+    const m = c8iFresh(c8jVM(), makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) }));
+    c8iSkills(m.root)[0]?.click();
+    expect(m.callbacks.onAttack, 'precondition: the attack took the lock').toHaveBeenCalledTimes(1);
+    const swapCmd = c8iCmd(m.root, 'swap');
+    expect(c8iDisabled(swapCmd), 'the lock greys the Swap command').toBe(true);
+
+    const expectNothingLive = (how: string): void => {
+      const live = c8jRows(m.root, 'swap');
+      expect(
+        live.filter((row) => !row.disabled).map((row) => row.textContent),
+        `${how}: no swap row is enabled`,
+      ).toEqual([]);
+      for (const row of live) {
+        row.disabled = false; // HOSTILE re-enable: only the shared pending key can refuse this
+        row.click();
+        row.disabled = true;
+      }
+      expect(m.callbacks.onSwap, `${how}: no swap is sent under the lock`).not.toHaveBeenCalled();
+    };
+    swapCmd.click();
+    expectNothingLive('a mouse press on the locked Swap command');
+    swapCmd.focus();
+    m.view.applyBattleOp({ kind: 'activate' });
+    expectNothingLive('A on the locked Swap command');
+
+    d.resolve();
+    await raFlushPromises();
+    expect(c8iDisabled(swapCmd), 'the settle releases the Swap command').toBe(false);
+    if (c8jRows(m.root, 'swap').length === 0) swapCmd.click();
+    const rows = c8jRows(m.root, 'swap');
+    expect(
+      rows.map((r) => r.textContent),
+      'after the settle Swap lists the bench',
+    ).toEqual([QF72_PVE_MOSS, QF72_PVE_EMBER]);
+    expect(
+      rows.filter((r) => r.disabled),
+      'and every row is live again',
+    ).toEqual([]);
+    rows[1]?.click();
+    expect(m.callbacks.onSwap, 'the released lock lets one swap through').toHaveBeenCalledTimes(1);
+    expect(m.callbacks.onSwap).toHaveBeenCalledWith(77n, 2);
+  });
+
+  it('QF7.2-LOCK-AFTER-OPEN: with the Swap list already open, an attack that takes the lock leaves no enabled swap row, no row (live or held) dispatches a swap even after a hand re-enable, and the settle lets Swap work again', async () => {
+    // WRONG IMPL KILLED: rows rendered on open that the lock never reaches (an attack taken from
+    // the skills grid over an open picker, then a swap in the same turn: two actions); rows that
+    // are rebuilt enabled while the lock is held; a held row node that bypasses the pending key;
+    // and a lock that does not release for rows opened before it. Holds whether a skill press
+    // takes the open list away or leaves it locked (the spec is silent): neither leaves a live row.
+    const d = raDeferred();
+    const m = c8iFresh(c8jVM(), makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) }));
+    const held = qf72Open(m);
+    expect(held, 'precondition: the list is open').toHaveLength(2);
+    c8iSkills(m.root)[0]?.click();
+    expect(m.callbacks.onAttack, 'precondition: the attack took the lock').toHaveBeenCalledTimes(1);
+
+    const live = c8jRows(m.root, 'swap');
+    expect(
+      live.filter((row) => !row.disabled).map((row) => row.textContent),
+      'a swap row still on screen under the lock is disabled',
+    ).toEqual([]);
+    for (const row of [...held, ...live]) {
+      row.click(); // swallowed by `disabled` alone
+      row.disabled = false; // HOSTILE re-enable: only the shared pending key can refuse this
+      row.click();
+    }
+    expect(
+      m.callbacks.onSwap,
+      'no swap is sent in the turn the attack spent',
+    ).not.toHaveBeenCalled();
+
+    d.resolve();
+    await raFlushPromises();
+    expect(c8iDisabled(c8iCmd(m.root, 'swap')), 'the settle releases the Swap command').toBe(false);
+    if (c8jRows(m.root, 'swap').length === 0) c8iCmd(m.root, 'swap').click();
+    const rows = c8jRows(m.root, 'swap');
+    expect(
+      rows.map((r) => r.textContent),
+      'after the settle the list shows the bench',
+    ).toEqual([QF72_PVE_MOSS, QF72_PVE_EMBER]);
+    rows[1]?.click();
+    expect(m.callbacks.onSwap, 'one swap goes through once released').toHaveBeenCalledTimes(1);
+    expect(m.callbacks.onSwap).toHaveBeenCalledWith(77n, 2);
   });
 });
