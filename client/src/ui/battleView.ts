@@ -160,6 +160,10 @@ export class BattleView implements BattleOpsView {
   #commandRows: readonly BattleCommandRow[] = [];
   /** The kept cursor. It outlives focus (the menu, <body>) and a re-render of the same turn. */
   #cursor: { list: CursorList; index: number } = { list: 'commands', index: 0 };
+  /** The command whose list is open (QF7.2): the bench rows render only while it is Swap. Closed by
+   *  B, by another command or a bait / cure pick, by a new turn or battle, by a PvP wait, by losing
+   *  the swap and by hide(). */
+  #open: BattleCommand | null = null;
   /** The (battle, turn) of the last render: a new one resets the cursor to Fight (CTL8I.1). */
   #turnKey: { readonly battleId: bigint; readonly turnNumber: number } | null = null;
   /** The skill each monster (by team slot) last used in this battle (CTL8I.2). */
@@ -382,6 +386,7 @@ export class BattleView implements BattleOpsView {
     // re-greys the command rows.
     this.#pending = null;
     this.#pick = null;
+    this.#open = null;
     closeOverlayA11y('battleView', null);
   }
 
@@ -426,6 +431,10 @@ export class BattleView implements BattleOpsView {
     this.#turnKey = { battleId: vm.battleId, turnNumber: vm.turnNumber };
     this.#vm = vm;
     this.#pick = resolveBattlePick(vm, this.#pick);
+    // A new turn starts on Fight; so does a PvP wait, whose grid and bench are not rendered.
+    const reset = newTurn || vm.pvpPendingSubmit;
+    // A lost swap closes the list too, so a same-turn swap regained does not reopen it unasked.
+    if (reset || (this.#open === 'swap' && !vm.canSwap)) this.#open = null;
 
     this.#renderWeather(vm);
     // Show opponent name for PvP battles so the player knows who they are fighting. The name is
@@ -443,8 +452,6 @@ export class BattleView implements BattleOpsView {
     // a batch can re-render this battle while its call is still in flight, and a fresh
     // enabled-looking button whose click the lock then swallows is worse than no button.
     if (this.#pending?.battleId === vm.battleId) this.#setActionButtonsDisabled(true);
-    // A new turn starts on Fight; so does a PvP wait, whose grid and bench are not rendered.
-    const reset = newTurn || vm.pvpPendingSubmit;
     if (reset) this.#cursor = { list: 'commands', index: 0 };
     this.#paintCursor(reset ? focusHere : onCursor);
   }
@@ -488,6 +495,7 @@ export class BattleView implements BattleOpsView {
         const command = BATTLE_COMMANDS.find((id) => id !== 'run' && SUBLIST[id] === list);
         if (command !== undefined) {
           this.#cursor = { list: 'commands', index: BATTLE_COMMANDS.indexOf(command) };
+          this.#setOpen(null);
         }
         this.#paintCursor(true);
         return;
@@ -525,12 +533,13 @@ export class BattleView implements BattleOpsView {
   }
 
   /** A command row was pressed (a click, native Enter, or the cursor's A). Greyed: nothing. Run
-   *  flees under the shared lock; the others move the cursor into their controls, Fight onto the
-   *  skill this monster last used in this battle. */
+   *  flees under the shared lock; the others open their list and move the cursor into it, Fight
+   *  onto the skill this monster last used in this battle. */
   #chooseCommand(id: BattleCommand, btn: HTMLButtonElement): void {
     const vm = this.#vm;
     if (vm === null || btn.getAttribute('aria-disabled') === 'true') return;
     if (this.#pick !== null) this.#setPick(null);
+    this.#setOpen(id === 'run' ? null : id);
     if (id === 'run') {
       this.#cursor = { list: 'commands', index: BATTLE_COMMANDS.indexOf('run') };
       this.#paintCursor(false);
@@ -803,11 +812,11 @@ export class BattleView implements BattleOpsView {
       );
       this.#actionsEl.appendChild(fleeBtn);
     }
-    if (vm.canSwap) {
+    if (vm.canSwap && this.#open === 'swap') {
       this.#renderSwapButtons(vm);
     }
     // Toggled inline so the hint and the swap buttons read the SAME `vm.canSwap`
-    // in the SAME method. The `Ongoing` conjunct is required — canSwap is false on EVERY terminal
+    // in the SAME method: never both on screen (the buttons also need Swap open). The `Ongoing` conjunct is required — canSwap is false on EVERY terminal
     // outcome, so without it the hint would sit beside "Victory!". No isPvp branch.
     this.#swapHintEl.style.display = vm.outcome === 'Ongoing' && !vm.canSwap ? 'block' : 'none';
     // Recruit is wild-only (canRecruit); cure items are offered in any ongoing PvE battle
@@ -827,8 +836,18 @@ export class BattleView implements BattleOpsView {
     if (this.#pending?.battleId === vm.battleId) this.#setActionButtonsDisabled(true);
   }
 
+  /** Open `command`'s list (null closes it). Only the bench rows depend on it, so the actions row
+   *  is re-rendered only when Swap opens or closes: the other lists keep their nodes. */
+  #setOpen(command: BattleCommand | null): void {
+    const swapChanged = (this.#open === 'swap') !== (command === 'swap');
+    this.#open = command;
+    if (swapChanged) this.#setPick(this.#pick);
+  }
+
   /** A bait or cure row was pressed: open its second step with the cursor on Yes / the target. */
   #choosePick(pick: BattlePick): void {
+    // The pick's command becomes the open one, so an open Swap list never sits beside its step.
+    this.#open = pick.kind === 'recruitConfirm' ? 'recruit' : 'bag';
     this.#setPick(pick);
     this.#cursor = {
       list: pick.kind === 'recruitConfirm' ? 'recruitConfirm' : 'bagTarget',
@@ -1001,7 +1020,8 @@ export class BattleView implements BattleOpsView {
   }
 
   #renderSwapButtons(vm: BattleViewModel): void {
-    // PvP swap: skip when pvpPendingSubmit (waiting for opponent — no double-send).
+    // PvP swap: skip when pvpPendingSubmit (waiting for opponent — no double-send). A backstop:
+    // refresh() already closes the list on a wait.
     if (vm.isPvp && vm.pvpPendingSubmit) return;
     for (const member of vm.bench) {
       const btn = document.createElement('button');
