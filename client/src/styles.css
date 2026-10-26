@@ -2,7 +2,7 @@
  * styles.css — the client's stylesheet (it serves the a11y metadata in
  * ui/overlayRegistry.ts).
  *
- * HARD CONSTRAINT: CLASS and `:root` SELECTORS ONLY — ZERO `#id` SELECTORS, EVER.
+ * HARD CONSTRAINT: CLASS, ATTRIBUTE and `:root` SELECTORS ONLY — ZERO `#id` SELECTORS, EVER.
  * `#build-stamp`'s inline `style` is its complete styling contract, and every overlay shell
  * in `client/index.html` is styled by its classes (ctl-7a), so an id rule here could silently
  * restyle markup that `client/src/indexShell.smoke.test.ts` reads. Criterion A11Y-12 /
@@ -240,6 +240,26 @@
 }
 .mr-nav-item.is-active.is-disabled {
   color: #55556a;
+}
+
+/*
+ * Focus policy (qf-1, QF1.1-QF1.2). The overlay initial-focus anchors stay focusable (the trap and
+ * the screen-reader announcement depend on them, see ui/overlayA11y.ts); only their paint changes.
+ *   - A tabindex=-1 element is a programmatic-only focus target, never a tab stop: no ring. The
+ *     :where() keeps this rule at the lowest specificity so a listbox at tabindex=-1 still rings.
+ *   - A listbox or grid is the nav-kit tab stop (ui/navRender.ts writes the role): a DASHED ring
+ *     around the whole list, unlike the filled, solid-outlined active row. #cc5500 measures 3.8:1
+ *     on --mr-frame-bg and 3.3:1 on --mr-frame-fg, so it stays visible over the active row too. The
+ *     offset is negative because .mr-shell clips its overflow.
+ * Native controls keep the browser ring.
+ */
+:where([tabindex="-1"]):focus {
+  outline: none;
+}
+[role="listbox"]:focus,
+[role="grid"]:focus {
+  outline: 2px dashed #cc5500;
+  outline-offset: -2px;
 }
 
 /*
