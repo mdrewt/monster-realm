@@ -34,7 +34,8 @@ import { closeAll, pressAccel, pressButton } from './controls';
 // allowed — deterministic, no battle RNG.
 //
 // EVOLUTION READOUT (ctl-11a, named intentional change). KeyE used to open the legacy evolution
-// overlay (`evo-ready-note`, `evo-choice`); Q and E are LB and RB now and that overlay has no key.
+// overlay (its ready note and, before qf-8 deleted them, its choice buttons); Q and E are LB and RB
+// now and that overlay has no key.
 // The same facts are read on the Monsters sheet's Evolve list (screens/monstersScreen.ts, ui/boxView.ts):
 // V, A on the starter, Down x3 (Care, Feed…, Evolve…), A. It lists every outgoing path of the species
 // as a `role="option"` row; only a CHOICE (2+ eligible paths) is enabled, and a met path that is no
@@ -173,9 +174,9 @@ test.describe
 
       // The client evaluates the SAME shared eligibility predicate: one ready path, no picker.
       // ctl-11a (named intentional change): KeyE no longer opens the legacy evolution overlay, so
-      // its `evo-ready-note` / `evo-choice` hooks have no key. The same two facts are read on the
-      // Monsters sheet's Evolve list: V (the Party tab), A on the starter (its sheet, on Summary),
-      // Down x3 (Care, Feed…, Evolve…) and A.
+      // its ready note and its (since qf-8 deleted) choice buttons have no key. The same two facts
+      // are read on the Monsters sheet's Evolve list: V (the Party tab), A on the starter (its
+      // sheet, on Summary), Down x3 (Care, Feed…, Evolve…) and A.
       await pressAccel(page, 'V');
       await expect
         .poll(() => overlayText(page, t('box.title')), { timeout: 10_000 })
@@ -198,7 +199,7 @@ test.describe
       await expect(rows).toHaveCount(3);
       await expect(rows.filter({ hasText: readyText })).toHaveCount(1);
       // No picker: with one eligible path the server applies it itself, so no row is an enabled
-      // choice (the retired `evo-choice` count was 0), the ready row included.
+      // choice (the legacy overlay showed no choice button either), the ready row included.
       await expect(rows.filter({ hasText: readyText })).toHaveAttribute('aria-disabled', 'true');
       await expect(evolveList.locator('[role="option"]:not([aria-disabled="true"])')).toHaveCount(
         0,

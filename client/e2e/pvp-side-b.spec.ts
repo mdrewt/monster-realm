@@ -6,7 +6,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll, openFaceToFace, pressAccel } from './controls';
+import { closeAll, openFaceToFace, pressAccel, pressButton } from './controls';
 
 // PvP side-B battle overlay, production path
 //
@@ -42,8 +42,8 @@ import { closeAll, openFaceToFace, pressAccel } from './controls';
 //
 // ZERO USE OF THE DEV TEST HOOK: this spec drives BOTH players through the REAL
 // production DOM only — A on the other player -> the Challenge row -> Yes (ctl-10b: face to
-// face, no PvP-overlay Challenge button) -> the accept button -> the real "Submit: <skill>"
-// buttons. `__game()` is used ONLY for readiness and as a READ-ONLY
+// face, no PvP-overlay Challenge button) -> B's Social sheet Accept (qf-8: the challenge panel's
+// Accept button is deleted) -> the real "Submit: <skill>" buttons. `__game()` is used ONLY for readiness and as a READ-ONLY
 // witness (identity, ongoingBattle.turnNumber/outcome) — never to drive gameplay. The
 // DEV multiplayer test hook the OTHER pvp e2e specs use to read/drive both sides at once
 // must NEVER appear here, in ANY form — not even split across a comment — because using
@@ -70,10 +70,10 @@ import { closeAll, openFaceToFace, pressAccel } from './controls';
 // DEADLINE HEADROOM ARITHMETIC (house style per pvp-full.spec.ts:48-56):
 // PVP_TURN_DEADLINE_MS = 60_000 ms (server constant, server-module/src/pvp.rs) — the
 // server's deadline clock starts at `accept_challenge`. `acceptedAt` is therefore
-// captured immediately AFTER pageB's accept-button click (never before A's challenge
-// click, which would also fold the challenge-button poll into the budget — stricter
-// than intended and a spurious-flake risk). This test asserts the accept-click ->
-// both-players-submitted flow completes within 45_000 ms of THAT click — a hard ceiling
+// captured immediately AFTER pageB's A on the Social sheet's Accept (never before A's
+// challenge, which would also fold the challenge setup into the budget — stricter
+// than intended and a spurious-flake risk). This test asserts the accept ->
+// both-players-submitted flow completes within 45_000 ms of THAT press — a hard ceiling
 // with 15s of headroom under the 60s deadline, so the deadline reaper can never be the
 // reason the turn-advance assertion below passes. The rename steps (below) run BEFORE
 // the challenge and are therefore entirely outside this window.
@@ -307,21 +307,26 @@ test.describe
       // the row is unambiguous) and answers Yes at the confirm (the default).
       await openFaceToFace(pageA, 'Challenge', nameB, pageB);
 
-      // B accepts through the real DOM button. INTENTIONAL CHANGE (ctl-13, CTL13.4): the incoming
+      // B accepts through the Social sheet. INTENTIONAL CHANGE (ctl-13, CTL13.4): the incoming
       // challenge no longer opens the Challenges overlay by itself, so B first sees the banner and
-      // opens Social on Challenges itself (P: the same panel the auto-show used to open, with the
-      // same accept button). Y is not used here on purpose: A stands on B's tile (the face-to-face
-      // start), so for B that player is a TARGET and Y would open the player's sheet, not the
-      // request's (respond-request.spec.ts answers with Y then Enter from a target-free tile).
-      // `acceptedAt` is captured HERE (never
-      // earlier) — the server's PVP_TURN_DEADLINE_MS clock starts at accept_challenge, so
-      // capturing before A's challenge-button poll (or before the rename steps above)
-      // would fold unrelated setup time into the 45s budget asserted below (see the file
+      // opens Social on Challenges itself (P: the same panel the auto-show used to open). Y is not
+      // used here on purpose: A stands on B's tile (the face-to-face start), so for B that player
+      // is a TARGET and Y would open the player's sheet, not the request's (respond-request.spec.ts
+      // answers with Y then Enter from a target-free tile). INTENTIONAL CHANGE (qf-8, QF8.3): the
+      // challenge panel's Accept button is deleted, so B answers on its nav path: the cursor opens
+      // on the request, A opens the sheet on Accept, A accepts.
+      // `acceptedAt` is captured HERE (never earlier) — the server's PVP_TURN_DEADLINE_MS clock
+      // starts at accept_challenge, so capturing before A's challenge (or before the rename steps
+      // above) would fold unrelated setup time into the 45s budget asserted below (see the file
       // header's DEADLINE HEADROOM ARITHMETIC).
       await expect(pageB.locator('#notice-banner')).toBeVisible({ timeout: 15_000 });
       await pressAccel(pageB, 'P');
-      await pageB.waitForSelector('[data-testid="pvp-accept-btn"]', { timeout: 15_000 });
-      await pageB.click('[data-testid="pvp-accept-btn"]');
+      await expect(pageB.locator('#pvp-challenge-incoming[aria-current="true"]')).toBeVisible({
+        timeout: 15_000,
+      });
+      await pressButton(pageB, 'A');
+      await expect(pageB.locator('#social-sheet [aria-selected="true"]')).toHaveText('Accept');
+      await pressButton(pageB, 'A');
       const acceptedAt = Date.now();
 
       // toBeVisible() — never toBeAttached() — is deliberate: battleView's root

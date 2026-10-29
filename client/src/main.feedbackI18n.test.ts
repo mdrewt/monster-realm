@@ -331,7 +331,7 @@ function tapWorldKey(code: string): void {
  *  opens the REAL trade overlay via the REAL `KeyU` shortcut (`main.ts`'s `openSocial('trades')`,
  *  which shows the trade panel of the Social frame, gated by
  *  `overlayVerdict('tradeView').kind === 'allow' && worldHasFocus()`), the same "real input,
- *  no NPC/dialogue" path `main.partyFull.test.ts`'s `openBoxAndFindToParty` uses for Box/KeyB. */
+ *  no NPC/dialogue" path main.partyFull.test.ts uses for the Monsters frame (KeyB). */
 function openTradeWithOffer(opts: {
   readonly viewerIsInitiator: boolean;
   readonly status: 'Pending' | 'ConfirmedByCounterparty';
@@ -357,15 +357,26 @@ function openTradeWithOffer(opts: {
   focusCanvasAndPressKey('KeyU');
 }
 
-function findTradeActionButton(
-  action: 'accept' | 'reject' | 'confirm' | 'cancel',
-): HTMLButtonElement {
-  const btn = document.querySelector(`#trade-actions button[data-action="${action}"]`);
+/** qf-8 (named intentional change, QF8.1): the trade panel's action buttons are deleted; each trade
+ *  action is the player's key sequence over the Social sheet that U opened on the trade row
+ *  (tradeModel.ts's action table; the trade `reject` is the sheet's Decline, and Decline and
+ *  Confirm ask Yes / No on No first). */
+const TRADE_SHEET_KEYS: Readonly<
+  Record<'accept' | 'reject' | 'confirm' | 'cancel', readonly string[]>
+> = {
+  accept: ['Enter', 'Enter'], // the sheet (on Accept), A on Accept
+  reject: ['Enter', 'ArrowDown', 'Enter', 'ArrowUp', 'Enter'], // Decline, its prompt, Yes
+  confirm: ['Enter', 'Enter', 'ArrowUp', 'Enter'], // the sheet (on Confirm), its prompt, Yes
+  cancel: ['Enter', 'Enter'], // the one-row sheet (on Cancel), A on Cancel
+};
+
+/** Answer the seeded offer with `action` on the Social sheet. */
+function answerTradeOnSheet(action: 'accept' | 'reject' | 'confirm' | 'cancel'): void {
   expect(
-    btn,
-    `the trade overlay must render a "${action}" button for the seeded offer`,
-  ).not.toBeNull();
-  return btn as HTMLButtonElement;
+    document.getElementById('trade-status')?.getAttribute('aria-current'),
+    `trade ${action}: the Social cursor must be on the seeded offer`,
+  ).toBe('true');
+  for (const code of TRADE_SHEET_KEYS[action]) tapWorldKey(code);
 }
 
 function tradeFeedbackText(): string {
@@ -516,8 +527,9 @@ describe('main.ts shop feedback routes through the i18n catalog (slice 21r-b, ga
 // TRADE — table-driven over the four actions (red-team S1: accepted<->rejected and
 // completed<->cancelled key swaps survived with every gated test green). Each row opens the
 // REAL trade overlay via the REAL KeyU shortcut (openTradeWithOffer — no NPC/dialogue needed,
-// unlike shop) with a seeded offer shaped so exactly the action under test is available, clicks
-// the REAL button, and asserts the feedback against its OWN fr key — and explicitly against
+// unlike shop) with a seeded offer shaped so exactly the action under test is available, answers
+// it on the REAL Social sheet with the REAL keys (qf-8: the trade panel's buttons are deleted;
+// `answerTradeOnSheet`), and asserts the feedback against its OWN fr key — and explicitly against
 // every SIBLING trade key, so a swap cannot pass by accident — plus the right reducer spy+args.
 // ---------------------------------------------------------------------------
 
@@ -575,7 +587,7 @@ describe('main.ts trade feedback routes through the i18n catalog, per-action (sl
     openTradeWithOffer({ viewerIsInitiator, status });
     H.linkFrozen = false;
 
-    findTradeActionButton(action).click();
+    answerTradeOnSheet(action);
     await waitForNonEmpty(tradeFeedbackText);
 
     expect(tradeFeedbackText(), `${action} must show its OWN fr key`).toBe(FR[frKey]);
@@ -614,7 +626,7 @@ describe('main.ts trade feedback routes through the i18n catalog, per-action (sl
     openTradeWithOffer({ viewerIsInitiator: false, status: 'Pending' });
     H.linkFrozen = true;
 
-    findTradeActionButton('accept').click();
+    answerTradeOnSheet('accept');
     await waitForNonEmpty(tradeFeedbackText);
 
     expect(tradeFeedbackText()).toBe(FR['chrome.feedback.disconnected']);

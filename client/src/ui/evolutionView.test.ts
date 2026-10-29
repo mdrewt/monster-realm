@@ -27,10 +27,9 @@
 //                           carrying BOTH `currentText` and `requiredText`. A row that
 //                           renders only the requirement is EG4-1 with the progress half
 //                           missing (contract A5);
-//   • `evo-choice`        — one selectable control per `mon.choices` entry. By the
-//                           view-model's construction `choices` is non-empty ONLY at
-//                           `eligibleCount >= 2`, so this testid must NEVER appear at 0
-//                           or 1 eligible;
+//   • `evo-choice`        — RETIRED by qf-8 (see below): was one selectable control per
+//                           `mon.choices` entry; it must now NEVER appear, at any eligible
+//                           count (the choice is made on the Monsters sheet's Evolve list);
 //   • `evo-ready-note`    — the `readyPathName` informational copy, present IFF
 //                           `readyPathName !== null`. INFORMATIONAL, never an action (A3).
 //
@@ -54,6 +53,27 @@
 // WHAT THESE CASES CAN AND CANNOT PROVE (same disclosure as boxView.test.ts): happy-dom
 // does no layout, so every assertion proves "the element is PRESENT and is not
 // display:none" — never that it is visible in a viewport.
+//
+// qf-8 (QF8.1, QF8.2) NAMED REMOVALS. The 2+-eligible choice prompt ("Two or more paths are
+// ready — pick one:"), its `evo-choice` "Evolve into X" buttons and their per-monster in-flight
+// lock are DELETED as a mouse-only duplicate of the Monsters sheet's Evolve… list (choice → Yes /
+// No → evolve). The overlay is informational only (the progress panel and the ready note stay).
+// EvolutionView is not opened by any key in production (main.ts only constructs and hides it).
+//   - V3 (one control per choice, the right toSpecies, per-card monsterId) is RETIRED. Survivors:
+//     the choice → evolve(monsterId, toSpecies) command on the sheet, screens/monstersScreen.test.ts
+//     CTL8C-1-EVOLVE-COMMAND (and boxView.test.ts CTL8C-1-VIEW-EVOLVE for the list it paints); the
+//     pointer route, reachability.test.ts QF8-1-EVOLVE-POINTER; the overlay's absence of every
+//     choice control under the spy matrix, reachability.test.ts [QF8-2-EVOLUTION-RETIRED] /
+//     [QF8-2-EVOLUTION-NATIVE]. V2's 0 / 1-eligible "no affordance" teeth stay.
+//   - V4's "at 2+ eligible there is NO ready note" keeps its claim and now also asserts no choice
+//     control; the m23-s9 censuses lose the prompt, the picker and its two buttons (S_CHOICES 20 →
+//     17 text elements, 27 → 23 total) and the X1 comment its Evolve-button example.
+//   - The 20r-a EV-1..EV-5 lock describe and the rb-121 settle re-anchor describe are RETIRED with
+//     the buttons and the lock (same survivors as V3).
+//   - m24s4 EV-01 / EV-02 lose `evolution.card.choosePrompt` and `evolution.choice.evolve` (also
+//     from the sentinel key sets); their two-choice block now asserts the overlay shows no prompt
+//     and no control. The `evolution.hint` byte pin is unchanged (the copy is not reworded, plan
+//     §1.5: the view is never shown).
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
@@ -625,157 +645,18 @@ describe('EvolutionView V2 (EG4-2): at eligibleCount === 1 there is NO clickable
 });
 
 // ===========================================================================
-// V3 — at TWO+ eligible, one control per choice, each sending ITS OWN target
+// V3 — RETIRED by qf-8 (NAMED REMOVAL)
 // ===========================================================================
-
-describe('EvolutionView V3 (EG4-2): 2+ eligible renders one control per choice and sends the RIGHT toSpecies', () => {
-  const TWO_CHOICES: readonly EvolutionPathViewModel[] = [
-    metPathVm({ edgeId: 3, toSpecies: 2, toSpeciesName: 'Pyrodrake' }),
-    metPathVm({ edgeId: 6, toSpecies: 3, toSpeciesName: 'Cindermaw' }),
-  ];
-
-  function mountTwoChoice() {
-    const h = mount();
-    h.view.refresh(
-      viewModel(
-        monsterVm({
-          monsterId: 77n,
-          paths: [...TWO_CHOICES, pathVm({ edgeId: 9, toSpecies: 4, toSpeciesName: 'Emberwing' })],
-          eligibleCount: 2,
-          choices: TWO_CHOICES,
-          readyPathName: null,
-        }),
-      ),
-    );
-    h.view.show();
-    return h;
-  }
-
-  it('★★ BITES: exactly one control PER CHOICE, each naming its own target species', () => {
-    // KILLS (1): a single "Evolve" button for an ambiguous monster — the client would have
-    //   to pick, which is the auto-resolve EG4-2 exists to forbid.
-    // KILLS (2): a control per PATH rather than per CHOICE — the blocked Emberwing edge is
-    //   in `paths` but not in `choices`, so a 3-control render offers the player an
-    //   evolution the server will reject.
-    // KILLS (3): unlabelled controls. Two identical buttons are not a choice; the player
-    //   must be able to tell which one is which BEFORE clicking an irreversible action.
-    const { parent } = mountTwoChoice();
-    const controls = parent.querySelectorAll(CHOICE_SELECTOR);
-    expect(
-      controls.length,
-      'EG4-2 (V3): two eligible paths → exactly two choice controls (the third, blocked, ' +
-        'path must NOT get one)',
-    ).toBe(2);
-    const texts = [...controls].map((c) => c.textContent ?? '');
-    expect(texts.some((t) => t.includes('Pyrodrake'))).toBe(true);
-    expect(texts.some((t) => t.includes('Cindermaw'))).toBe(true);
-    expect(
-      texts.some((t) => t.includes('Emberwing')),
-      'EG4-2 (V3): the blocked path must not be offered as a choice',
-    ).toBe(false);
-  });
-
-  it('★★ BITES: clicking the SECOND choice sends ITS toSpecies — a first-match picker dies here', () => {
-    // ★★ THE `[0]` / `.find()` KILLER. Two DISTINCT targets and the assertion names the
-    //   SECOND one: a picker that forwards `choices[0].toSpecies`, or a shared handler
-    //   closed over the wrong loop variable, sends 2 where the player asked for 3 — and
-    //   evolution is irreversible. A single-choice fixture cannot tell the two apart.
-    // KILLS: forwarding `monsterId` only (the pre-EG4 signature), forwarding the edgeId in
-    //   the toSpecies position (3 vs 6 — distinct on purpose), and calling onEvolve more
-    //   than once per click (a listener registered on every refresh).
-    const { parent, callbacks } = mountTwoChoice();
-    const cindermaw = elementNamed(parent, CHOICE_SELECTOR, 'Cindermaw');
-    cindermaw.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-
-    expect(
-      callbacks.onEvolve,
-      'EG4-2/§F (V3): clicking a choice must invoke onEvolve exactly once, with the ' +
-        "monster's id and the CHOSEN target species — `onEvolve(monsterId, toSpecies)`",
-    ).toHaveBeenCalledTimes(1);
-    expect(callbacks.onEvolve).toHaveBeenCalledWith(77n, 3);
-    // Explicit: not the OTHER choice's species, and not the edgeId (6) either.
-    expect(callbacks.onEvolve).not.toHaveBeenCalledWith(77n, 2);
-    expect(callbacks.onEvolve).not.toHaveBeenCalledWith(77n, 6);
-  });
-
-  it('★ BITES: clicking the FIRST choice sends ITS OWN toSpecies (so the handler is not hard-coded)', () => {
-    // Paired with the case above: together they prove the target is READ from the choice
-    // that was clicked. Either case alone is satisfiable by a constant.
-    const { parent, callbacks } = mountTwoChoice();
-    const pyrodrake = elementNamed(parent, CHOICE_SELECTOR, 'Pyrodrake');
-    pyrodrake.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
-    expect(callbacks.onEvolve).toHaveBeenCalledWith(77n, 2);
-    expect(callbacks.onEvolve).not.toHaveBeenCalledWith(77n, 3);
-  });
-
-  it('★★ BITES: the monsterId is per-card — two ambiguous monsters do not cross-wire', () => {
-    // KILLS: a handler closed over the last-rendered monster (the classic `for`-loop
-    //   capture bug) OR over the first — either one evolves the WRONG monster, and
-    //   evolution is irreversible.
-    //
-    // Both controls are now clicked, in order, and the FULL ordered call list is asserted:
-    // "always the last id" fails on the first call, "always the first id" fails on the
-    // second. Neither can pass.
-    const { parent, view, callbacks } = mount();
-    const choicesFor = (a: string, b: string): readonly EvolutionPathViewModel[] => [
-      metPathVm({ edgeId: 3, toSpecies: 2, toSpeciesName: a }),
-      metPathVm({ edgeId: 6, toSpecies: 3, toSpeciesName: b }),
-    ];
-    view.refresh(
-      viewModel(
-        monsterVm({
-          monsterId: 11n,
-          nickname: 'Alpha',
-          paths: choicesFor('Pyrodrake', 'Cindermaw'),
-          eligibleCount: 2,
-          choices: choicesFor('Pyrodrake', 'Cindermaw'),
-        }),
-        monsterVm({
-          monsterId: 22n,
-          nickname: 'Beta',
-          paths: choicesFor('Emberwing', 'Foreignling'),
-          eligibleCount: 2,
-          choices: choicesFor('Emberwing', 'Foreignling'),
-        }),
-      ),
-    );
-    view.show();
-    expect(parent.querySelectorAll(CARD_SELECTOR)).toHaveLength(2);
-    expect(parent.querySelectorAll(CHOICE_SELECTOR)).toHaveLength(4);
-
-    // overlay-scoped counts alone let a picker hoisted to the
-    // overlay ROOT pass (the same defect the ready-note containment case pins). Two
-    // ambiguous monsters means two INDEPENDENT decisions; a shared picker cannot express
-    // them, and a control the player cannot attribute to a monster is not a choice.
-    const alpha = elementNamed(parent, CARD_SELECTOR, 'Alpha');
-    const beta = elementNamed(parent, CARD_SELECTOR, 'Beta');
-    expect(
-      alpha.querySelectorAll(CHOICE_SELECTOR),
-      'EG4-2 (V3): each card must hold ITS OWN two choice controls — a picker hoisted to ' +
-        'the overlay root is not attributable to a monster',
-    ).toHaveLength(2);
-    expect(beta.querySelectorAll(CHOICE_SELECTOR)).toHaveLength(2);
-
-    // FIRST monster's control, then the SECOND — both target species 3, so the ONLY thing
-    // that can distinguish the two calls is the monsterId each control closed over.
-    elementNamed(parent, CHOICE_SELECTOR, 'Cindermaw').dispatchEvent(
-      new MouseEvent('click', { bubbles: true, cancelable: true }),
-    );
-    elementNamed(parent, CHOICE_SELECTOR, 'Foreignling').dispatchEvent(
-      new MouseEvent('click', { bubbles: true, cancelable: true }),
-    );
-    expect(
-      callbacks.onEvolve.mock.calls,
-      "EG4-2 (V3): each card's choice must carry ITS OWN monsterId. The ordered call list " +
-        'is asserted whole: a handler closed over the LAST rendered monster fails the first ' +
-        'entry ([11n,3] would read [22n,3]); one closed over the FIRST fails the second',
-    ).toEqual([
-      [11n, 3],
-      [22n, 3],
-    ]);
-  });
-});
+//
+// "2+ eligible renders one control per choice and sends the RIGHT toSpecies" (four cases: one
+// control per choice naming its target; the SECOND choice sends its toSpecies; the FIRST sends
+// its own; the monsterId is per card) drove the `evo-choice` buttons, deleted as a mouse-only
+// duplicate of the Monsters sheet's Evolve… list (QF8.1). The irreversible-choice teeth moved
+// with the action: screens/monstersScreen.test.ts CTL8C-1-EVOLVE-COMMAND (the chosen path's
+// toSpecies and the sheet's monster reach evolve, only after Yes) and boxView.test.ts
+// CTL8C-1-VIEW-EVOLVE (only the choices are enabled rows); the pointer route,
+// reachability.test.ts QF8-1-EVOLVE-POINTER; no choice control here at 2+ eligible under the spy
+// matrix, reachability.test.ts [QF8-2-EVOLUTION-RETIRED] / [QF8-2-EVOLUTION-NATIVE], and V4 below.
 
 // ===========================================================================
 // V4 (A3) — readyPathName is rendered, informational, and IFF eligibleCount === 1
@@ -910,9 +791,12 @@ describe('EvolutionView V4 (A3): readyPathName renders as informational copy, an
     ).not.toBe(notReadyText);
   });
 
-  it('★ BITES: at 2+ eligible there is NO ready note (the choice list is the surface)', () => {
+  it('★ BITES: at 2+ eligible there is NO ready note and no choice control (the choice is made on the Monsters sheet), while both met paths still show', () => {
     // KILLS: `eligibleCount >= 1` on the note, which would tell the player "evolves on
     //   your next action" about the one case that will NEVER auto-resolve.
+    // qf-8 (named intentional change): was "(the choice list is the surface)" with two choice
+    //   controls asserted; the controls are deleted (QF8.1), so the count is now zero and the
+    //   two path rows are the anti-vacuity anchor.
     const { parent, view } = mount();
     const choices: readonly EvolutionPathViewModel[] = [
       metPathVm({ edgeId: 3, toSpecies: 2, toSpeciesName: 'Pyrodrake' }),
@@ -923,7 +807,13 @@ describe('EvolutionView V4 (A3): readyPathName renders as informational copy, an
     );
     view.show();
     expect(parent.querySelectorAll(READY_NOTE_SELECTOR)).toHaveLength(0);
-    expect(parent.querySelectorAll(CHOICE_SELECTOR)).toHaveLength(2);
+    expect(parent.querySelectorAll(CHOICE_SELECTOR), 'qf-8: no choice control').toHaveLength(0);
+    expect(
+      [...parent.querySelectorAll(PATH_ROW_SELECTOR)].map((r) =>
+        ['Pyrodrake', 'Cindermaw'].filter((n) => (r.textContent ?? '').includes(n)),
+      ),
+      'ANTI-VACUITY: both met paths render their rows',
+    ).toEqual([['Pyrodrake'], ['Cindermaw']]);
   });
 
   it('★ BITES: the ready note is NOT an action — it is not a button and clicking it does nothing', () => {
@@ -1609,13 +1499,15 @@ const S9_STATES: readonly S9StateName[] = ['S_EMPTY', 'S_NOPATHS', 'S_READY', 'S
 /**
  * Text-element census per state, derived BY HAND from evolutionView.ts's structure (root =
  * title h2 + hint p + list div; a card = name + stats [+ "No evolution paths."] + path rows +
- * [ready note] + [prompt + picker of buttons]; a path row = heading + status + one row per gate;
- * containers — root, list, card, path row, picker — carry no direct text):
+ * [ready note]; a path row = heading + status + one row per gate; containers — root, list,
+ * card, path row — carry no direct text):
  *   S_EMPTY    title, hint, "No monsters yet."                                         = 3
  *   S_NOPATHS  title, hint, name, stats, "No evolution paths."                         = 5
  *   S_READY    title, hint, name, stats, heading, status, gate×2 (met + unmet), ready  = 9
  *   S_CHOICES  title, hint, name, stats, rowA (heading, status, gate) 3, rowB 3,
- *              rowC (heading, status, FIVE_GATES) 7, prompt, button×2                  = 20
+ *              rowC (heading, status, FIVE_GATES) 7                                    = 17
+ * qf-8 (named intentional change): S_CHOICES was 20 — the choice prompt and its two Evolve
+ * buttons are deleted (QF8.1), so the 2+-eligible card is the progress panel alone.
  * A shrunk walk (e.g. `children.length === 0`, which drops nothing here but would drop any
  * future element that carries both text and a child) cannot pass these pins vacuously.
  */
@@ -1623,7 +1515,7 @@ const S9_CENSUS: Readonly<Record<S9StateName, number>> = {
   S_EMPTY: 3,
   S_NOPATHS: 5,
   S_READY: 9,
-  S_CHOICES: 20,
+  S_CHOICES: 17,
 };
 
 /**
@@ -1635,13 +1527,15 @@ const S9_CENSUS: Readonly<Record<S9StateName, number>> = {
  *   S_NOPATHS  root, h2, hint, list, card, name, stats, "No evolution paths."             = 8
  *   S_READY    root, h2, hint, list, card, name, stats, row, heading, status, gate×2, ready = 13
  *   S_CHOICES  root, h2, hint, list, card, name, stats (7); rowA row+heading+status+gate (4);
- *              rowB (4); rowC row+heading+status+5 gates (8); prompt, picker, button×2 (4)  = 27
+ *              rowB (4); rowC row+heading+status+5 gates (8)                               = 23
+ * qf-8 (named intentional change): S_CHOICES was 27 — the prompt, the picker and its two
+ * buttons (4 elements) are deleted.
  */
 const S9_TOTAL_ELEMENTS: Readonly<Record<S9StateName, number>> = {
   S_EMPTY: 5,
   S_NOPATHS: 8,
   S_READY: 13,
-  S_CHOICES: 27,
+  S_CHOICES: 23,
 };
 /** `evo-monster-card` count per state (one monster in every non-empty fixture). */
 const S9_CARD_COUNT: Readonly<Record<S9StateName, number>> = {
@@ -1685,8 +1579,9 @@ function s9StateVm(state: S9StateName): EvolutionViewModel {
         }),
       );
     case 'S_CHOICES': {
-      // Two MET paths offered as choices (two Evolve buttons) plus one UNMET path (unmet heading,
-      // warn status, five unmet gates) — the V3 fixture shape.
+      // Two MET paths offered as choices plus one UNMET path (unmet heading, warn status, five
+      // unmet gates) — the retired V3 fixture shape. qf-8: the choices draw no button any more
+      // (the Monsters sheet's Evolve list is the picker), only their path rows.
       const met: readonly EvolutionPathViewModel[] = [
         metPathVm({ edgeId: 3, toSpecies: 2, toSpeciesName: 'Pyrodrake' }),
         metPathVm({ edgeId: 6, toSpecies: 3, toSpeciesName: 'Cindermaw' }),
@@ -1875,14 +1770,16 @@ function s9AssertCensus(r: S9Render): void {
       break;
     }
     case 'S_CHOICES': {
+      // qf-8 (named intentional change): was "two Evolve buttons, both walked text elements";
+      // the buttons are deleted (QF8.1), so the 2+-eligible card carries none.
       expect(
         r.root.querySelectorAll(CHOICE_SELECTOR),
-        `${r.state}: two Evolve buttons`,
-      ).toHaveLength(2);
+        `${r.state}: qf-8: no Evolve button`,
+      ).toHaveLength(0);
       expect(
-        r.pairs.filter((p) => p.el.matches(CHOICE_SELECTOR)),
-        `${r.state}: both buttons must be walked text elements`,
-      ).toHaveLength(2);
+        r.root.querySelectorAll('button'),
+        `${r.state}: qf-8: no button of any kind`,
+      ).toHaveLength(0);
       const metStatus = r.pairs.filter((p) => p.label.includes('All requirements met.'));
       const unmetStatus = r.pairs.filter((p) => p.label.includes('requires level 20'));
       expect(metStatus, `${r.state}: two met statuses`).toHaveLength(2);
@@ -1988,8 +1885,9 @@ function s9BorderToken(
 describe('EvolutionView — m23-s9 contrast tokens, prefers-contrast: more, em→px', () => {
   it('m23s9 X1 every text element reaches 4.5:1 in the default token scope, over a white and a black page', () => {
     // WRONG IMPLEMENTATIONS KILLED: the shipped `#666` empties (2.2:1 on the worst-case `#333`
-    // the translucent root composites to over white, 2.86:1 on the `#1e1e2e` card); `#fff` on
-    // the `#059669` Evolve button (3.77:1); any palette that only clears 4.5:1 over a black page
+    // the translucent root composites to over white, 2.86:1 on the `#1e1e2e` card); (before
+    // qf-8 deleted the Evolve buttons: `#fff` on their `#059669`, 3.77:1); any palette that only
+    // clears 4.5:1 over a black page
     // (the white page is the worst case for a dark translucent root); a walk that skips nested
     // text; a reader that defaults an unparseable colour. Each per-pair failure names the pair,
     // both resolved operands, the page and the measured ratio.
@@ -2172,408 +2070,17 @@ describe('EvolutionView — m23-s9 contrast tokens, prefers-contrast: more, em�
 });
 
 // ===========================================================================
-// in-flight guard on the EVOLVE choice buttons (plan D3/D7/D8/D11; matrix EV-1..EV-5).
-//
-// THE DEFECT (measured, `#renderChoice`): `btn.disabled = true; // debounce: re-enabled on the
-// next server-tick refresh` followed by a bare `this.#callbacks.onEvolve(...)`. Two things are
-// wrong with it. (1) It disables ONLY the clicked button: the monster's OTHER choice stays live,
-// and a second, DIFFERENT choice mid-flight is the irreversible double-evolve — the server
-// applies whichever it processes first and rejects the other, but the player has now asked for
-// both. (2) "re-enabled on the next server-tick refresh" is false in exactly the case that
-// matters: a REJECTED evolve changes no row, so no batch arrives and the button stays dead for
-// the life of the overlay. EV-1 is the seeded acceptance case for (2); EV-2 pins (1).
-//
-// happy-dom facts, the microtask budget and the hostile-re-enable rationale are stated once in
-// battleView.test.ts's 20r-a header and hold here unchanged. `.click()` is used rather than the
-// file's `dispatchEvent(new MouseEvent(...))` idiom because the D1 disabled-swallow lives in
-// HTMLButtonElement.dispatchEvent, which both routes reach identically.
-//
-// WRONG-IMPL-KILLED index:
-//   EV-1  re-enable-on-next-batch (the shipped code)              -> enabled after rejection, no refresh
-//   EV-2  a per-BUTTON lock / a VIEW-WIDE lock                    -> same-monster sibling dead, other monster live
-//   EV-2b a disabled-only impl (no pending key)                   -> hostile re-enable
-//   EV-3  lost pending on rebuild / re-enabling the detached node -> rebuilt-disabled + live re-enable
-//   EV-3b `Promise.resolve(cb())` — sync throw after the lock     -> click does not throw, re-enabled
-//   EV-4  `.then(() => cb())` deferral                            -> callback called INSIDE .click()
-//   EV-5  a membership-keyed release (D11)                        -> still disabled after the stale settle
+// 20r-a: in-flight guard on the EVOLVE choice buttons (matrix EV-1..EV-5) — RETIRED by qf-8
+// (NAMED REMOVAL). The seven cases (EV-1 release on a rejection with no refresh, EV-2 a
+// per-monster key, EV-2b hostile re-enable, EV-3 the lock over a mid-flight rebuild, EV-3b a
+// synchronous throw, EV-4 the synchronous dispatch, EV-5 a generation-keyed release) clicked the
+// `evo-choice` buttons, deleted with their lock (QF8.1): with no control on this overlay there is
+// no double-evolve for a lock to refuse. The irreversible choice is now the Monsters sheet's
+// Evolve list behind a default-No Yes / No confirm. Survivors: screens/monstersScreen.test.ts
+// CTL8C-1-EVOLVE-COMMAND (one evolve, only after Yes, with the chosen toSpecies);
+// reachability.test.ts [QF8-2-EVOLUTION-RETIRED] / [QF8-2-EVOLUTION-NATIVE] (no choice control,
+// and no event on any element reaches onEvolve).
 // ===========================================================================
-
-interface RaDeferred {
-  readonly promise: Promise<void>;
-  readonly resolve: () => void;
-  readonly reject: (e: unknown) => void;
-}
-
-function raDeferred(): RaDeferred {
-  let resolve!: () => void;
-  let reject!: (e: unknown) => void;
-  const promise = new Promise<void>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-/** Three microtasks — see battleView.test.ts's 20r-a MICROTASK BUDGET note. */
-async function raFlushPromises(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-}
-
-const RA_ALPHA = 11n;
-const RA_BETA = 22n;
-
-/** Two ambiguous monsters (the V3 cross-wire fixture): Alpha offers Pyrodrake(2) / Cindermaw(3),
- *  Beta offers Emberwing(2) / Foreignling(3). Four choice buttons, two per card. */
-function raTwoAmbiguousVm(): EvolutionViewModel {
-  const choicesFor = (a: string, b: string): readonly EvolutionPathViewModel[] => [
-    metPathVm({ edgeId: 3, toSpecies: 2, toSpeciesName: a }),
-    metPathVm({ edgeId: 6, toSpecies: 3, toSpeciesName: b }),
-  ];
-  return viewModel(
-    monsterVm({
-      monsterId: RA_ALPHA,
-      nickname: 'Alpha',
-      paths: choicesFor('Pyrodrake', 'Cindermaw'),
-      eligibleCount: 2,
-      choices: choicesFor('Pyrodrake', 'Cindermaw'),
-    }),
-    monsterVm({
-      monsterId: RA_BETA,
-      nickname: 'Beta',
-      paths: choicesFor('Emberwing', 'Foreignling'),
-      eligibleCount: 2,
-      choices: choicesFor('Emberwing', 'Foreignling'),
-    }),
-  );
-}
-
-interface RaChoices {
-  readonly alpha: readonly [HTMLButtonElement, HTMLButtonElement];
-  readonly beta: readonly [HTMLButtonElement, HTMLButtonElement];
-}
-
-/** The LIVE choice buttons per card (re-query after every refresh). */
-function raChoices(parent: HTMLElement): RaChoices {
-  const alphaCard = elementNamed(parent, CARD_SELECTOR, 'Alpha');
-  const betaCard = elementNamed(parent, CARD_SELECTOR, 'Beta');
-  const alpha = [...alphaCard.querySelectorAll(CHOICE_SELECTOR)] as HTMLButtonElement[];
-  const beta = [...betaCard.querySelectorAll(CHOICE_SELECTOR)] as HTMLButtonElement[];
-  expect(alpha, '20r-a precondition: Alpha has two choice buttons').toHaveLength(2);
-  expect(beta, '20r-a precondition: Beta has two choice buttons').toHaveLength(2);
-  expect(alpha[0]!.textContent, '20r-a precondition: choice order').toContain('Pyrodrake');
-  expect(alpha[1]!.textContent, '20r-a precondition: choice order').toContain('Cindermaw');
-  return { alpha: [alpha[0]!, alpha[1]!], beta: [beta[0]!, beta[1]!] };
-}
-
-function raDisabled(buttons: readonly HTMLButtonElement[]): boolean[] {
-  return buttons.map((b) => b.disabled);
-}
-
-function raMountTwo(): ReturnType<typeof mount> {
-  const h = mount();
-  h.view.refresh(raTwoAmbiguousVm());
-  h.view.show();
-  return h;
-}
-
-describe('★ EvolutionView 20r-a: in-flight guard on the Evolve choice buttons', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('20r-a EV-1 BITES (seed): onEvolve REJECTS → both of Alpha’s choices disabled before the settle, enabled after it WITHOUT any refresh(), and the next click dispatches', async () => {
-    // WRONG IMPL KILLED (1) ★ THE SHIPPED CODE: `btn.disabled = true` with the comment "re-enabled
-    //   on the next server-tick refresh". A rejected evolve changes no row, so no batch arrives
-    //   and no refresh() runs — the control is dead until the player closes the overlay. This
-    //   case never calls refresh() after the click, by design: the release must come from the
-    //   promise settling.
-    // WRONG IMPL KILLED (2): a `.then`-only (resolve-only) release (skipped on rejection;
-    //   `.catch(log).finally(release)` is equivalent to the shipped order and is NOT a defect);
-    //   `.finally` with no trailing `.catch` (vitest fails the run on the unhandled rejection —
-    //   that run-level error is the tooth).
-    // WRONG IMPL KILLED (3): a void-returning dispatch — the post-flush "still disabled" reds.
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { parent, callbacks } = raMountTwo();
-    const d = raDeferred();
-    callbacks.onEvolve.mockReturnValue(d.promise);
-    const { alpha, beta } = raChoices(parent);
-
-    alpha[0].click();
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
-    expect(callbacks.onEvolve).toHaveBeenCalledWith(RA_ALPHA, 2);
-    expect(
-      raDisabled(alpha),
-      "20r-a EV-1: BOTH of Alpha's choices must be disabled while her evolve is in flight — the " +
-        'shipped debounce disables only the clicked node',
-    ).toEqual([true, true]);
-    expect(raDisabled(beta), "20r-a EV-1: Beta's choices are untouched").toEqual([false, false]);
-    await raFlushPromises();
-    expect(raDisabled(alpha), '20r-a EV-1: still disabled while in flight').toEqual([true, true]);
-
-    d.reject(new Error('20r-a EV-1: evolve rejected'));
-    await raFlushPromises();
-    expect(
-      raDisabled(alpha),
-      "20r-a EV-1: after the REJECTION Alpha's choices must be ENABLED with NO refresh() having " +
-        'run — the shipped "re-enabled on the next server-tick refresh" is a control that stays ' +
-        'dead, because a rejected evolve produces no batch',
-    ).toEqual([false, false]);
-    alpha[0].click();
-    expect(
-      callbacks.onEvolve,
-      '20r-a EV-1: dispatches again after the rejection',
-    ).toHaveBeenCalledTimes(2);
-    await raFlushPromises();
-  });
-
-  it('20r-a EV-2 BITES: clicking Alpha’s Pyrodrake disables AND swallows Alpha’s Cindermaw (hostile re-enable included) while Beta’s choices stay enabled and dispatch', async () => {
-    // WRONG IMPL KILLED (1): a PER-BUTTON lock (the shipped one-node debounce) — a second,
-    //   DIFFERENT choice mid-flight is the irreversible double-evolve; the hostile re-enable of
-    //   Cindermaw is what reaches the listener, and only a per-MONSTER key can refuse it.
-    // WRONG IMPL KILLED (2): a VIEW-WIDE lock — Beta's choice below would be disabled / swallowed
-    //   while looking like a different decision entirely (it is: a different monster).
-    const { parent, callbacks } = raMountTwo();
-    const d = raDeferred();
-    callbacks.onEvolve.mockImplementation((monsterId: bigint) =>
-      monsterId === RA_ALPHA ? d.promise : undefined,
-    );
-    const { alpha, beta } = raChoices(parent);
-
-    alpha[0].click();
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
-    expect(
-      alpha[1].disabled,
-      "20r-a EV-2: Alpha's OTHER choice must be disabled while her evolve is in flight",
-    ).toBe(true);
-    alpha[1].click(); // swallowed by disabled
-    alpha[1].disabled = false; // hostile
-    alpha[1].click();
-    expect(
-      callbacks.onEvolve,
-      "20r-a EV-2: a click on Alpha's re-enabled sibling choice must be swallowed by the " +
-        'per-monster key — a second different target mid-flight is the double-evolve',
-    ).toHaveBeenCalledTimes(1);
-    alpha[1].disabled = true;
-
-    expect(raDisabled(beta), "20r-a EV-2: Beta's choices must stay ENABLED").toEqual([
-      false,
-      false,
-    ]);
-    beta[0].click();
-    expect(
-      callbacks.onEvolve,
-      "20r-a EV-2: Beta's choice dispatches (per-monster key)",
-    ).toHaveBeenCalledTimes(2);
-    expect(callbacks.onEvolve).toHaveBeenLastCalledWith(RA_BETA, 2);
-
-    d.resolve();
-    await raFlushPromises();
-    expect(raDisabled(alpha), '20r-a EV-2: Alpha released on settle').toEqual([false, false]);
-    expect(raDisabled(beta), '20r-a EV-2: Beta released on its own (immediate) settle').toEqual([
-      false,
-      false,
-    ]);
-  });
-
-  it('20r-a EV-2b BITES: hostile re-enable — click a choice, set the LIVE button `disabled = false` by hand, click again → still ONE onEvolve', async () => {
-    // WRONG IMPL KILLED: a disabled-only implementation with no pending key (plan D1) — the
-    //   shipped `btn.disabled = true` IS that implementation. happy-dom swallows the click on
-    //   a disabled node, so only a hand re-enable reaches the listener.
-    const { parent, callbacks } = raMountTwo();
-    const d = raDeferred();
-    callbacks.onEvolve.mockReturnValue(d.promise);
-    const { alpha } = raChoices(parent);
-
-    alpha[1].click();
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
-    expect(callbacks.onEvolve).toHaveBeenCalledWith(RA_ALPHA, 3);
-    expect(alpha[1].disabled, '20r-a EV-2b precondition: the lock disabled the button').toBe(true);
-    alpha[1].disabled = false;
-    alpha[1].click();
-    expect(
-      callbacks.onEvolve,
-      '20r-a EV-2b: with the node re-enabled by hand the PENDING KEY must still swallow the click',
-    ).toHaveBeenCalledTimes(1);
-
-    d.resolve();
-    await raFlushPromises();
-    alpha[1].click();
-    expect(
-      callbacks.onEvolve,
-      '20r-a EV-2b: dispatches again after the settle',
-    ).toHaveBeenCalledTimes(2);
-  });
-
-  it('20r-a EV-3 BITES: a mid-flight refresh() rebuilds Alpha’s choices DISABLED (Beta enabled), swallows a click on the new node, and the settle re-enables the LIVE nodes', async () => {
-    // WRONG IMPL KILLED (1): `#renderChoice` building the button with `disabled` at its default
-    //   — a batch tick mid-flight ships an enabled-looking button whose click the key swallows.
-    // WRONG IMPL KILLED (2): the `.finally` re-enabling the closure-captured `btn` — after
-    //   `#listEl.replaceChildren()` it is detached; the LIVE buttons stay disabled. What makes
-    //   the live list reachable from the settle is the `#choiceButtons.set(monsterId, …)` write
-    //   in the render on EVERY rebuild (the `.clear()` at the top of refresh() only drops entries
-    //   for monsters that left the VM).
-    const { parent, view, callbacks } = raMountTwo();
-    const d = raDeferred();
-    callbacks.onEvolve.mockReturnValue(d.promise);
-    const before = raChoices(parent);
-    before.alpha[0].click();
-    expect(raDisabled(before.alpha), '20r-a EV-3 precondition: locked').toEqual([true, true]);
-
-    view.refresh(raTwoAmbiguousVm()); // batch tick while the evolve is in flight
-    const rebuilt = raChoices(parent);
-    expect(rebuilt.alpha[0], '20r-a EV-3 precondition: refresh() rebuilt the node').not.toBe(
-      before.alpha[0],
-    );
-    expect(before.alpha[0].isConnected, '20r-a EV-3 precondition: the old node is detached').toBe(
-      false,
-    );
-    expect(
-      raDisabled(rebuilt.alpha),
-      "20r-a EV-3: Alpha's REBUILT choices must come back DISABLED — `btn.disabled = " +
-        '#pending.has(monsterId)` at build time, not lost on rebuild',
-    ).toEqual([true, true]);
-    expect(raDisabled(rebuilt.beta), "20r-a EV-3: Beta's rebuilt choices are enabled").toEqual([
-      false,
-      false,
-    ]);
-    rebuilt.alpha[1].click(); // swallowed by disabled
-    rebuilt.alpha[1].disabled = false; // hostile
-    rebuilt.alpha[1].click();
-    expect(
-      callbacks.onEvolve,
-      '20r-a EV-3: a click on a rebuilt (and hand re-enabled) choice is swallowed by the key',
-    ).toHaveBeenCalledTimes(1);
-    rebuilt.alpha[1].disabled = true;
-
-    d.resolve();
-    await raFlushPromises();
-    const live = raChoices(parent);
-    expect(live.alpha[0], '20r-a EV-3: a settle does not re-render').toBe(rebuilt.alpha[0]);
-    expect(
-      raDisabled(live.alpha),
-      '20r-a EV-3: the LIVE (rebuilt) choices must be re-enabled on settle — re-enabling the ' +
-        'detached closure node strands the real ones disabled',
-    ).toEqual([false, false]);
-    live.alpha[0].click();
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(2);
-    await raFlushPromises();
-  });
-
-  it('20r-a EV-3b BITES: onEvolve THROWS synchronously → the click does not throw, BOTH of Alpha’s choices are disabled, and after one flush both are enabled and re-clickable', async () => {
-    // WRONG IMPL KILLED ★ MEASURED SURVIVOR (round 2): `Promise.resolve(this.#callbacks.onEvolve(
-    //   …))` instead of `new Promise((resolve) => resolve(…))` (plan D3). `onEvolve` is evaluated
-    //   BEFORE Promise.resolve sees it, so a synchronous throw escapes the listener AFTER the
-    //   per-monster lock was taken and BEFORE any `.finally` exists — Alpha's choices are dead
-    //   until hide(). With happy-dom's error capturing disabled the throw comes straight out of
-    //   `.click()` (first assertion); the correct executor shape converts it into a rejection the
-    //   same `.finally(release).catch(log)` chain handles. Mirrors BV-7 / RV-3b.
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { parent, callbacks } = raMountTwo();
-    callbacks.onEvolve.mockImplementation(() => {
-      throw new Error('20r-a EV-3b: synchronous throw');
-    });
-    const { alpha, beta } = raChoices(parent);
-
-    expect(
-      () => alpha[0].click(),
-      '20r-a EV-3b: a synchronously-throwing onEvolve must NOT throw out of the click',
-    ).not.toThrow();
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
-    expect(
-      raDisabled(alpha),
-      "20r-a EV-3b: BOTH of Alpha's choices were locked before the callback ran (the release is " +
-        'a microtask away, not synchronous)',
-    ).toEqual([true, true]);
-    expect(raDisabled(beta), "20r-a EV-3b: Beta's choices are untouched").toEqual([false, false]);
-
-    await raFlushPromises();
-    expect(
-      raDisabled(alpha),
-      '20r-a EV-3b: the sync throw must settle the chain and RELEASE — `Promise.resolve(cb())` ' +
-        "leaves both of Alpha's choices dead here",
-    ).toEqual([false, false]);
-    alpha[1].click();
-    expect(callbacks.onEvolve, '20r-a EV-3b: re-clickable after the throw').toHaveBeenCalledTimes(
-      2,
-    );
-    expect(callbacks.onEvolve).toHaveBeenLastCalledWith(RA_ALPHA, 3);
-    await raFlushPromises();
-  });
-
-  it('20r-a EV-4 (regression, GREEN by design): onEvolve is invoked SYNCHRONOUSLY inside .click() with (monsterId, toSpecies) — no microtask deferral', () => {
-    // WRONG IMPL KILLED: `Promise.resolve().then(() => cb())` / `queueMicrotask` as the dispatch
-    //   shape (plan D3) — it reds V3's synchronous-after-click assertions above and lets a
-    //   refresh() between the click and the microtask see a lock with no call behind it.
-    const { parent, callbacks } = raMountTwo();
-    const { alpha } = raChoices(parent);
-    alpha[1].click();
-    expect(
-      callbacks.onEvolve,
-      '20r-a EV-4: onEvolve must have been invoked by the time .click() returns',
-    ).toHaveBeenCalledTimes(1);
-    expect(callbacks.onEvolve).toHaveBeenCalledWith(RA_ALPHA, 3);
-  });
-
-  it('20r-a EV-5 BITES: two overlapping generations — click (P1), hide(), re-show + click (P2), settle P1 → STILL disabled and a third click is swallowed; settle P2 → enabled', async () => {
-    // WRONG IMPL KILLED (plan D11): a release keyed by SET MEMBERSHIP (`#pending.delete(
-    //   monsterId)` unconditionally in `.finally`). hide() clears the map, the overlay re-opens,
-    //   a second click adds the SAME monsterId with P2 in flight, then the STALE P1 settles and
-    //   deletes it — P2's buttons come back live and a THIRD evolve is sent. Only a
-    //   `Map<bigint, object>` whose `.finally` checks `get(id) === myToken` refuses it.
-    const { parent, view, callbacks } = raMountTwo();
-    const p1 = raDeferred();
-    const p2 = raDeferred();
-    callbacks.onEvolve.mockReturnValueOnce(p1.promise).mockReturnValueOnce(p2.promise);
-
-    raChoices(parent).alpha[0].click(); // generation 1
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
-    expect(raDisabled(raChoices(parent).alpha), '20r-a EV-5 precondition').toEqual([true, true]);
-
-    view.hide(); // releases generation 1 — P1 still in flight
-    view.show();
-    view.refresh(raTwoAmbiguousVm());
-    const gen2 = raChoices(parent);
-    expect(raDisabled(gen2.alpha), '20r-a EV-5 precondition: hide() released').toEqual([
-      false,
-      false,
-    ]);
-    gen2.alpha[0].click(); // generation 2
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(2);
-    expect(raDisabled(gen2.alpha), '20r-a EV-5 precondition: generation 2 locked').toEqual([
-      true,
-      true,
-    ]);
-
-    p1.resolve(); // the STALE settle
-    await raFlushPromises();
-    const afterStale = raChoices(parent);
-    expect(
-      raDisabled(afterStale.alpha),
-      "20r-a EV-5: generation 1's settle must NOT release generation 2's lock — P2 is still in " +
-        'flight. An unconditional `#pending.delete(monsterId)` clears it here',
-    ).toEqual([true, true]);
-    afterStale.alpha[1].click(); // swallowed by disabled
-    afterStale.alpha[1].disabled = false; // hostile
-    afterStale.alpha[1].click();
-    expect(
-      callbacks.onEvolve,
-      '20r-a EV-5: a third click while P2 is in flight must be swallowed by the pending key',
-    ).toHaveBeenCalledTimes(2);
-    afterStale.alpha[1].disabled = true;
-
-    p2.resolve();
-    await raFlushPromises();
-    expect(
-      raDisabled(raChoices(parent).alpha),
-      "20r-a EV-5: generation 2's OWN settle releases",
-    ).toEqual([false, false]);
-    raChoices(parent).alpha[0].click();
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(3);
-    await raFlushPromises();
-  });
-});
 
 // =============================================================================
 // i18n migration batch B: evolutionView.ts routes its migrated
@@ -2593,7 +2100,8 @@ const M24S4_EV_PLAIN_KEYS = new Set([
   'evolution.hint',
   'evolution.monsters.empty',
   'evolution.card.noPaths',
-  'evolution.card.choosePrompt',
+  // INTENTIONAL CHANGE (qf-8): `evolution.card.choosePrompt` leaves with the choice prompt (a
+  // «evolution.card.choosePrompt» span is now an unexpected sentinel).
   'evolution.path.allMet',
 ]);
 
@@ -2603,7 +2111,7 @@ const M24S4_EV_PARAM_KEYS = new Set([
   'evolution.path.heading',
   'evolution.gate.metRow',
   'evolution.gate.unmetRow',
-  'evolution.choice.evolve',
+  // INTENTIONAL CHANGE (qf-8): `evolution.choice.evolve` leaves with the choice buttons.
 ]);
 
 /** True iff `content` (the text strictly between one `«`/`»` pair) is EXACTLY an
@@ -2779,7 +2287,7 @@ describe('m24s4 (ADR-0260): evolutionView.ts routes its migrated sinks through t
     view.refresh(viewModel(mon));
 
     expect(i18nT).not.toHaveBeenCalledWith('evolution.card.noPaths');
-    expect(i18nT).not.toHaveBeenCalledWith('evolution.card.choosePrompt');
+    // INTENTIONAL CHANGE (qf-8): the "no choosePrompt here" clause leaves with the id.
     expect(i18nT).toHaveBeenCalledWith('evolution.path.allMet');
     expect(i18nTf).toHaveBeenCalledWith('evolution.card.stats', {
       level: 12,
@@ -2833,13 +2341,17 @@ describe('m24s4 (ADR-0260): evolutionView.ts routes its migrated sinks through t
       ),
     );
 
-    expect(i18nT).toHaveBeenCalledWith('evolution.card.choosePrompt');
-    expect(i18nT).not.toHaveBeenCalledWith('evolution.card.ready');
-    expect(i18nTf).toHaveBeenCalledWith('evolution.choice.evolve', { species: 'Pyrodrake' });
-    expect(i18nTf).toHaveBeenCalledWith('evolution.choice.evolve', { species: 'Cindermaw' });
-    const choiceButtons = [...parent.querySelectorAll(CHOICE_SELECTOR)].map((b) => b.textContent);
-    expect(choiceButtons).toContain('Evolve into Pyrodrake');
-    expect(choiceButtons).toContain('Evolve into Cindermaw');
+    // INTENTIONAL CHANGE (qf-8): was "the prompt resolves evolution.card.choosePrompt and each
+    // choice button evolution.choice.evolve (Evolve into Pyrodrake / Cindermaw)"; the prompt, the
+    // buttons and both ids are deleted. The 2+-eligible card is its path rows alone, and (a fix to
+    // a vacuous clause: `evolution.card.ready` is a tf() id, never an i18nT one) it resolves no
+    // ready line either.
+    expect(i18nTf).not.toHaveBeenCalledWith('evolution.card.ready', expect.anything());
+    expect(i18nTf).toHaveBeenCalledWith('evolution.path.heading', { species: 'Pyrodrake' });
+    expect(i18nTf).toHaveBeenCalledWith('evolution.path.heading', { species: 'Cindermaw' });
+    expect(parent.querySelectorAll(CHOICE_SELECTOR), 'qf-8: no choice control').toHaveLength(0);
+    expect(parent.querySelectorAll('button'), 'qf-8: no button at all').toHaveLength(0);
+    expect(cardOf(parent).textContent ?? '', 'qf-8: no choice prompt').not.toContain('pick one:');
 
     // --- no paths ---
     vi.mocked(i18nT).mockClear();
@@ -2959,12 +2471,16 @@ describe('m24s4 (ADR-0260): evolutionView.ts routes its migrated sinks through t
       texts = m24s4EvWalkSubtree(root);
       m24s4EvAssertNoRosterWord(texts, 'two choices');
       joined = texts.join('\n');
-      expect(joined).toContain('«evolution.card.choosePrompt»');
+      // INTENTIONAL CHANGE (qf-8): was "«evolution.card.choosePrompt» and one
+      // «evolution.choice.evolve|…» per choice"; the prompt, the buttons and both ids are deleted
+      // (either span would also be an unexpected sentinel above). The card shows its path rows.
+      expect(joined).not.toContain('«evolution.card.choosePrompt»');
+      expect(joined).not.toContain('«evolution.choice.evolve');
       expect(joined).toContain(
-        `«evolution.choice.evolve|${JSON.stringify({ species: 'Pyrodrake' })}»`,
+        `«evolution.path.heading|${JSON.stringify({ species: 'Pyrodrake' })}»`,
       );
       expect(joined).toContain(
-        `«evolution.choice.evolve|${JSON.stringify({ species: 'Cindermaw' })}»`,
+        `«evolution.path.heading|${JSON.stringify({ species: 'Cindermaw' })}»`,
       );
 
       // --- no paths ---
@@ -3018,292 +2534,6 @@ describe('rb-121 EvolutionView: a settle-released evolve-choice lock re-anchors 
       monsterVm({ monsterId, paths: choices, eligibleCount: 2, choices, readyPathName: null }),
     );
   }
-
-  it('rb121-EVOLUTION-REJECT BITES: onEvolve REJECTS with no refresh() -> one macrotask after the settle, focus lands on the evolutionView anchor (RED on master)', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const d = raDeferred();
-    const { parent, view, callbacks } = mount();
-    callbacks.onEvolve.mockReturnValue(d.promise);
-    view.show();
-    await s4FlushMacrotask();
-    view.refresh(rb121EvoVm(201n));
-    const root = parent.firstElementChild as HTMLElement;
-    const choiceBtn = root.querySelector(CHOICE_SELECTOR) as HTMLButtonElement;
-
-    choiceBtn.focus();
-    choiceBtn.click();
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
-    expect(choiceBtn.disabled, 'precondition: the click took the lock').toBe(true);
-    vi.mocked(openOverlayA11y).mockClear();
-    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
-    document.body.focus();
-    expect(
-      document.activeElement,
-      'precondition: happy-dom does not blur a disabled focused button -- body.focus() models the real fixup',
-    ).toBe(document.body);
-
-    d.reject(new Error('rb121-EVOLUTION-REJECT: onEvolve rejected'));
-    await raFlushPromises();
-    await s4FlushMacrotask();
-
-    const anchor = root.querySelector(S4_META.initialFocusSelector);
-    expect(anchor, 'anti-vacuity').not.toBeNull();
-    expect(
-      document.activeElement,
-      'rb121-EVOLUTION-REJECT: a rejected settle with no refresh() must re-anchor focus',
-    ).toBe(anchor);
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith('evolutionView', root);
-  });
-
-  it('rb121-EVOLUTION-RESOLVE BITES: onEvolve RESOLVES with no refresh() (the dominant sendGuarded no-batch path) -> focus lands on the anchor after one macrotask (RED on master)', async () => {
-    const d = raDeferred();
-    const { parent, view, callbacks } = mount();
-    callbacks.onEvolve.mockReturnValue(d.promise);
-    view.show();
-    await s4FlushMacrotask();
-    view.refresh(rb121EvoVm(202n));
-    const root = parent.firstElementChild as HTMLElement;
-    const choiceBtn = root.querySelector(CHOICE_SELECTOR) as HTMLButtonElement;
-
-    choiceBtn.focus();
-    choiceBtn.click();
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
-    expect(choiceBtn.disabled).toBe(true);
-    vi.mocked(openOverlayA11y).mockClear();
-    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
-    document.body.focus();
-    expect(document.activeElement).toBe(document.body);
-
-    d.resolve();
-    await raFlushPromises();
-    await s4FlushMacrotask();
-
-    const anchor = root.querySelector(S4_META.initialFocusSelector);
-    expect(anchor).not.toBeNull();
-    expect(
-      document.activeElement,
-      'rb121-EVOLUTION-RESOLVE: a resolved settle with no refresh() must re-anchor focus -- the ' +
-        "DOMINANT production path (main.ts's sendGuarded always resolves)",
-    ).toBe(anchor);
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith('evolutionView', root);
-  });
-
-  it('rb121-EVOLUTION-THROW BITES: onEvolve THROWS synchronously -> the auto-converted rejection still re-anchors focus after one macrotask (RED on master)', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { parent, view, callbacks } = mount();
-    callbacks.onEvolve.mockImplementation(() => {
-      throw new Error('rb121-EVOLUTION-THROW: synchronous throw');
-    });
-    view.show();
-    await s4FlushMacrotask();
-    view.refresh(rb121EvoVm(203n));
-    const root = parent.firstElementChild as HTMLElement;
-    const choiceBtn = root.querySelector(CHOICE_SELECTOR) as HTMLButtonElement;
-
-    choiceBtn.focus();
-    expect(
-      () => choiceBtn.click(),
-      'a synchronously-throwing onEvolve must not throw out of the click',
-    ).not.toThrow();
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
-    expect(choiceBtn.disabled, 'precondition: the lock was taken before the throw').toBe(true);
-    vi.mocked(openOverlayA11y).mockClear();
-    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
-    document.body.focus();
-    expect(document.activeElement).toBe(document.body);
-
-    await raFlushPromises();
-    await s4FlushMacrotask();
-
-    const anchor = root.querySelector(S4_META.initialFocusSelector);
-    expect(anchor).not.toBeNull();
-    expect(
-      document.activeElement,
-      'rb121-EVOLUTION-THROW: the auto-converted rejection must re-anchor focus',
-    ).toBe(anchor);
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
-  });
-
-  it('rb121-EVOLUTION-DETACH BITES: a mid-flight refresh() detaches the focused choice node -> the (resolved) settle still re-anchors focus after one macrotask (RED on master)', async () => {
-    const d = raDeferred();
-    const { parent, view, callbacks } = mount();
-    callbacks.onEvolve.mockReturnValue(d.promise);
-    view.show();
-    await s4FlushMacrotask();
-    view.refresh(rb121EvoVm(204n));
-    const root = parent.firstElementChild as HTMLElement;
-    const choiceBtn = root.querySelector(CHOICE_SELECTOR) as HTMLButtonElement;
-
-    choiceBtn.focus();
-    choiceBtn.click();
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
-    expect(choiceBtn.disabled).toBe(true);
-
-    view.refresh(rb121EvoVm(204n)); // mid-flight rebuild detaches the focused node
-    expect(choiceBtn.isConnected, 'precondition: the clicked node is now detached').toBe(false);
-    expect(
-      document.activeElement,
-      'precondition: happy-dom drops activeElement to <body> when the focused node is detached',
-    ).toBe(document.body);
-
-    vi.mocked(openOverlayA11y).mockClear();
-    d.resolve();
-    await raFlushPromises();
-    await s4FlushMacrotask();
-
-    const anchor = root.querySelector(S4_META.initialFocusSelector);
-    expect(anchor).not.toBeNull();
-    expect(
-      document.activeElement,
-      'rb121-EVOLUTION-DETACH: the settle must re-anchor focus even after a mid-flight detach',
-    ).toBe(anchor);
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
-  });
-
-  it('rb121-EVOLUTION-KEEP-INROOT BITES: focus already on a live in-root sentinel survives a settle untouched, and openOverlayA11y is never re-invoked -- kills a guard broader than "focus === document.body"', async () => {
-    const d = raDeferred();
-    const { parent, view, callbacks } = mount();
-    callbacks.onEvolve.mockReturnValue(d.promise);
-    view.show();
-    await s4FlushMacrotask();
-    view.refresh(rb121EvoVm(205n));
-    const root = parent.firstElementChild as HTMLElement;
-    const choiceBtn = root.querySelector(CHOICE_SELECTOR) as HTMLButtonElement;
-
-    choiceBtn.click();
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
-
-    const sentinel = s4InsideSentinel(root);
-    sentinel.focus();
-    expect(document.activeElement).toBe(sentinel);
-    vi.mocked(openOverlayA11y).mockClear();
-
-    d.resolve();
-    await raFlushPromises();
-    await s4FlushMacrotask();
-
-    expect(
-      document.activeElement,
-      'rb121-EVOLUTION-KEEP-INROOT: a settle must NEVER steal focus from a live in-root control',
-    ).toBe(sentinel);
-    expect(vi.mocked(openOverlayA11y)).not.toHaveBeenCalled();
-  });
-
-  it('rb121-EVOLUTION-KEEP-OUTROOT BITES: focus on an element outside the overlay root survives a settle untouched, and openOverlayA11y is never re-invoked', async () => {
-    const d = raDeferred();
-    const { parent, view, callbacks } = mount();
-    callbacks.onEvolve.mockReturnValue(d.promise);
-    view.show();
-    await s4FlushMacrotask();
-    view.refresh(rb121EvoVm(206n));
-    const root = parent.firstElementChild as HTMLElement;
-    const choiceBtn = root.querySelector(CHOICE_SELECTOR) as HTMLButtonElement;
-    choiceBtn.click();
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
-
-    const outside = document.createElement('button');
-    outside.id = 'rb121-evolution-outside-sentinel';
-    document.body.appendChild(outside);
-    outside.focus();
-    expect(document.activeElement).toBe(outside);
-    vi.mocked(openOverlayA11y).mockClear();
-
-    d.resolve();
-    await raFlushPromises();
-    await s4FlushMacrotask();
-
-    expect(
-      document.activeElement,
-      'rb121-EVOLUTION-KEEP-OUTROOT: an out-of-root surface legitimately owns focus and a settle ' +
-        'must never steal it back',
-    ).toBe(outside);
-    expect(vi.mocked(openOverlayA11y)).not.toHaveBeenCalled();
-  });
-
-  it("rb121-EVOLUTION-STALE BITES: a stale generation's settle must not touch focus; the LIVE generation's own settle re-anchors it (RED on master via the positive half)", async () => {
-    const p1 = raDeferred();
-    const p2 = raDeferred();
-    const { parent, view, callbacks } = mount();
-    callbacks.onEvolve.mockReturnValueOnce(p1.promise).mockReturnValueOnce(p2.promise);
-    view.show();
-    await s4FlushMacrotask();
-    view.refresh(rb121EvoVm(207n));
-    const root = parent.firstElementChild as HTMLElement;
-    let choiceBtn = root.querySelector(CHOICE_SELECTOR) as HTMLButtonElement;
-    choiceBtn.focus();
-    choiceBtn.click(); // generation 1
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
-
-    view.hide(); // releases generation 1's lock -- P1 is still in flight
-    view.show();
-    await s4FlushMacrotask(); // flush the reopen's own deferred focus
-    view.refresh(rb121EvoVm(207n));
-    vi.mocked(openOverlayA11y).mockClear();
-
-    choiceBtn = root.querySelector(CHOICE_SELECTOR) as HTMLButtonElement;
-    choiceBtn.focus();
-    choiceBtn.click(); // generation 2 -- a NEW token for the same monster
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(2);
-    expect(choiceBtn.disabled).toBe(true);
-    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
-    document.body.focus();
-    expect(
-      document.activeElement,
-      "precondition: generation 2's click stranded focus on <body>",
-    ).toBe(document.body);
-
-    p1.resolve(); // the STALE settle
-    await raFlushPromises();
-    await s4FlushMacrotask();
-    expect(
-      document.activeElement,
-      "rb121-EVOLUTION-STALE: a stale generation's settle must NOT move focus",
-    ).toBe(document.body);
-    expect(vi.mocked(openOverlayA11y)).not.toHaveBeenCalled();
-
-    p2.resolve(); // the LIVE generation's own settle
-    await raFlushPromises();
-    await s4FlushMacrotask();
-    const anchor = root.querySelector(S4_META.initialFocusSelector);
-    expect(anchor, 'anti-vacuity').not.toBeNull();
-    expect(
-      document.activeElement,
-      "rb121-EVOLUTION-STALE: the LIVE generation's OWN settle must re-anchor focus (RED on master)",
-    ).toBe(anchor);
-    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
-  });
-
-  it('rb121-EVOLUTION-HIDDEN BITES: a lock owned while the view is NOT visible never re-opens the overlay, and the root gains no role="dialog" -- kills a missing #visible guard', async () => {
-    const d = raDeferred();
-    const { parent, view, callbacks } = mount();
-    callbacks.onEvolve.mockReturnValue(d.promise);
-    // Deliberately never call view.show() -- #visible stays false; refresh() alone renders the
-    // choice buttons regardless of visibility (evolutionView.ts's refresh() has no #visible guard).
-    view.refresh(rb121EvoVm(208n));
-    const root = parent.firstElementChild as HTMLElement;
-    expect(view.visible, 'precondition: the view never became visible').toBe(false);
-    const choiceBtn = root.querySelector(CHOICE_SELECTOR) as HTMLButtonElement;
-
-    choiceBtn.click();
-    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
-    expect(choiceBtn.disabled).toBe(true);
-    vi.mocked(openOverlayA11y).mockClear();
-
-    d.resolve();
-    await raFlushPromises();
-    await s4FlushMacrotask();
-
-    expect(
-      vi.mocked(openOverlayA11y),
-      'rb121-EVOLUTION-HIDDEN: the #visible guard must suppress the re-anchor step entirely',
-    ).not.toHaveBeenCalled();
-    expect(
-      root.getAttribute('role'),
-      'rb121-EVOLUTION-HIDDEN: a hidden root must never gain role="dialog"',
-    ).toBeNull();
-  });
 });
 
 // =============================================================================
