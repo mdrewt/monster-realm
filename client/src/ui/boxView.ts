@@ -55,7 +55,7 @@
 // line wins while it shows; a batch repaint keeps the outcome (a care rewrites monster_pub, so its
 // own batch repaints the sheet); the next button ends it (`clearOutcome`, main.ts) and so does
 // hide().
-import { type MonsterCardViewModel, type MonsterStatsViewModel } from './boxModel';
+import type { MonsterCardViewModel, MonsterStatsViewModel } from './boxModel';
 import { currentLocale, t, tf } from './i18n/resolver';
 import {
   cardName,
