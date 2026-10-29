@@ -68,8 +68,10 @@
 //   - V4's "at 2+ eligible there is NO ready note" keeps its claim and now also asserts no choice
 //     control; the m23-s9 censuses lose the prompt, the picker and its two buttons (S_CHOICES 20 →
 //     17 text elements, 27 → 23 total) and the X1 comment its Evolve-button example.
-//   - The 20r-a EV-1..EV-5 lock describe and the rb-121 settle re-anchor describe are RETIRED with
-//     the buttons and the lock (same survivors as V3).
+//   - The 20r-a EV-1..EV-5 lock describe (seven cases) and the rb-121 settle re-anchor describe
+//     (eight rb121-EVOLUTION-* cases) are RETIRED with the buttons and the lock (same survivors as
+//     V3; each removal names them in place). rb121-EVOLUTION-HIDDEN's lock-independent half moves
+//     to V7: "refresh() while hidden never opens the overlay".
 //   - m24s4 EV-01 / EV-02 lose `evolution.card.choosePrompt` and `evolution.choice.evolve` (also
 //     from the sentinel key sets); their two-choice block now asserts the overlay shows no prompt
 //     and no control. The `evolution.hint` byte pin is unchanged (the copy is not reworded, plan
@@ -983,6 +985,59 @@ describe('EvolutionView V7 (totality): show/hide/refresh in any order, no throw'
     expect(parent.querySelectorAll(CARD_SELECTOR)).toHaveLength(0);
     expect(parent.querySelectorAll(CHOICE_SELECTOR)).toHaveLength(0);
     expect(parent.querySelectorAll(READY_NOTE_SELECTOR)).toHaveLength(0);
+  });
+
+  it('BITES: refresh() while hidden never opens the overlay: no openOverlayA11y call and no dialog role on the root, before the first show and after a hide, one macrotask later included', async () => {
+    // qf-8 (named survivor): the lock-independent half of the retired rb121-EVOLUTION-HIDDEN (see
+    //   the rb-121 NAMED REMOVAL below). main.ts refreshes this overlay on every batch while it is
+    //   hidden — in production it is never shown — so a refresh that opened its a11y would give a
+    //   display:none root role="dialog" / aria-modal and pull focus into a closed overlay.
+    // KILLS: an openOverlayA11y (or a re-anchor) in refresh(), synchronous or deferred a macrotask;
+    //   a refresh that flips `visible`.
+    const choices: readonly EvolutionPathViewModel[] = [
+      metPathVm({ edgeId: 3, toSpecies: 2, toSpeciesName: 'Pyrodrake' }),
+      metPathVm({ edgeId: 6, toSpecies: 3, toSpeciesName: 'Cindermaw' }),
+    ];
+    // The state that used to draw the choice controls, beside a ready monster.
+    const rich = viewModel(
+      monsterVm({ monsterId: 11n, paths: choices, eligibleCount: 2, choices }),
+      monsterVm({
+        monsterId: 22n,
+        nickname: 'Beta',
+        paths: [metPathVm()],
+        eligibleCount: 1,
+        choices: [],
+        readyPathName: 'Pyrodrake',
+      }),
+    );
+    const { parent, view } = mount();
+    const root = parent.firstElementChild as HTMLElement;
+
+    view.refresh(rich);
+    await s4FlushMacrotask();
+    expect(view.visible, 'a refresh never shows the overlay').toBe(false);
+    expect(
+      vi.mocked(openOverlayA11y),
+      'a refresh before the first show must never open the overlay',
+    ).not.toHaveBeenCalled();
+    expect(root.getAttribute('role'), 'a hidden root never claims to be a dialog').toBeNull();
+    expect(root.getAttribute('aria-modal')).toBeNull();
+
+    // ANTI-VACUITY: the spy is live — the show() edge does reach it.
+    view.show();
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    view.hide();
+    vi.mocked(openOverlayA11y).mockClear();
+
+    view.refresh(rich);
+    await s4FlushMacrotask();
+    expect(view.visible).toBe(false);
+    expect(
+      vi.mocked(openOverlayA11y),
+      'a refresh after a hide must never re-open the overlay',
+    ).not.toHaveBeenCalled();
+    expect(root.getAttribute('role')).toBeNull();
+    expect(root.getAttribute('aria-modal')).toBeNull();
   });
 });
 
@@ -2501,40 +2556,20 @@ describe('m24s4 (ADR-0260): evolutionView.ts routes its migrated sinks through t
   });
 });
 
-// ---------------------------------------------------------------------------
-// rb-121 (residual R-20r-a-FOCUS) — a settle-released evolve-choice lock
-// re-anchors focus that the no-batch path stranded on <body>, by re-calling
-// openOverlayA11y('evolutionView', root) when the release finds
-// `this.#visible && document.activeElement === document.body`.
-//
-// WRONG-IMPL-KILLED index (one per tooth):
-//   REJECT/RESOLVE/THROW -> a `.catch`-only re-anchor (never fires on the dominant
-//       RESOLVE path); acting only on `.catch` and skipping resolve (-RESOLVE reds);
-//       `Promise.resolve(cb())` instead of the executor-wrap shape for THROW.
-//   DETACH -> a release that forgets to read the LIVE `#root`/`#visible` at settle
-//       time (the anchor is a static node the rebuild never replaces).
-//   KEEP-INROOT/KEEP-OUTROOT -> a condition broader than "focus === document.body".
-//   STALE -> acting in the STALE generation's `.finally()` (no token-gated re-anchor).
-//   HIDDEN -> a missing `#visible` guard.
-// ---------------------------------------------------------------------------
-
-describe('rb-121 EvolutionView: a settle-released evolve-choice lock re-anchors focus the no-batch path stranded on <body> (ADR-0271)', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  /** A single monster with TWO eligible choices, so `choices.length > 0` renders the
-   *  choice picker (EG4-2: choices are non-empty only at eligibleCount >= 2). */
-  function rb121EvoVm(monsterId: bigint): EvolutionViewModel {
-    const choices: readonly EvolutionPathViewModel[] = [
-      metPathVm({ edgeId: 3, toSpecies: 2, toSpeciesName: 'Pyrodrake' }),
-      metPathVm({ edgeId: 6, toSpecies: 3, toSpeciesName: 'Cindermaw' }),
-    ];
-    return viewModel(
-      monsterVm({ monsterId, paths: choices, eligibleCount: 2, choices, readyPathName: null }),
-    );
-  }
-});
+// ===========================================================================
+// rb-121 (residual R-20r-a-FOCUS): a settle-released evolve-choice lock re-anchors focus the
+// no-batch path stranded on <body> (ADR-0271) — RETIRED by qf-8 (NAMED REMOVAL). The eight cases
+// (rb121-EVOLUTION-REJECT / -RESOLVE / -THROW: the re-anchor after each settle shape; -DETACH:
+// after a mid-flight rebuild; -KEEP-INROOT / -KEEP-OUTROOT: focus held elsewhere is never stolen;
+// -STALE: a stale generation's settle; -HIDDEN: no re-open while hidden) each took the lock by
+// clicking an `evo-choice` button. The lock and its settle re-anchor are deleted with the choice
+// buttons (QF8.1): no control on this overlay can take focus or a lock, so no settle can strand
+// focus on <body>. Survivors: reachability.test.ts [QF8-2-EVOLUTION-RETIRED] /
+// [QF8-2-EVOLUTION-NATIVE] (no choice control and no tab stop on the overlay, and no event on any
+// element reaches onEvolve); screens/monstersScreen.test.ts CTL8C-1-EVOLVE-COMMAND (the evolve the
+// lock guarded: one send, only after Yes). -HIDDEN's lock-independent half ("a hidden overlay
+// never opens its a11y") survives in V7 above, "refresh() while hidden never opens the overlay".
+// ===========================================================================
 
 // =============================================================================
 // ctl-7b (CTL7B.1): the evolution root is a class-styled `.mr-frame` shell inside `#game-screen`

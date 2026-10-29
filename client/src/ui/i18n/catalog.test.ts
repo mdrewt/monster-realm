@@ -2620,3 +2620,128 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     expect(Object.keys(fr).length, 'and so does the French one').toBe(362);
   });
 });
+
+// =============================================================================
+// qf-8 (QF8.1): the eleven ids whose only requesters were the four views' mouse-only duplicate
+// controls (the cards' To Box / To Party, the trade row's four buttons, the challenge panel's
+// Accept / Decline / Cancel Challenge, the evolution view's prompt and choice buttons), retired with
+// them, and `box.hint`, which keeps its id and changes VALUE (the spec's values-only rule) to name
+// the Monsters sheet's Move row. Every expected byte is typed here from the qf-8 plan §1.5 (the
+// French glyphs by code point); none is read off the catalog under test. The French quote follows
+// catalog.fr.ts's documented typography: a U+00A0 inside « » guillemets.
+// =============================================================================
+
+/** U+00EA (e circumflex), U+00EE (i circumflex) and the two guillemets U+00AB / U+00BB, built by
+ *  code point. E_ACUTE, RIGHT_QUOTE, NO_BREAK_SPACE and EM_DASH are the ones declared above. */
+const QF8_E_CIRCUMFLEX = String.fromCharCode(0x00ea);
+const QF8_I_CIRCUMFLEX = String.fromCharCode(0x00ee);
+const QF8_LEFT_GUILLEMET = String.fromCharCode(0x00ab);
+const QF8_RIGHT_GUILLEMET = String.fromCharCode(0x00bb);
+
+/** The French Move label `box.hint` quotes (plan §1.5: Move / Déplacer). */
+const QF8_FR_MOVE = `D${E_ACUTE}placer`;
+
+/** The new French `box.hint` (plan §1.5), byte for byte. */
+const QF8_FR_BOX_HINT =
+  `Seuls les monstres de votre ${E_ACUTE}quipe peuvent combattre ou ${QF8_E_CIRCUMFLEX}tre ` +
+  `${E_ACUTE}chang${E_ACUTE}s en cours de combat. Les nouvelles recrues arrivent dans votre ` +
+  `Bo${QF8_I_CIRCUMFLEX}te ${EM_DASH} s${E_ACUTE}lectionnez-en une et choisissez ` +
+  `${QF8_LEFT_GUILLEMET}${NO_BREAK_SPACE}${QF8_FR_MOVE}${NO_BREAK_SPACE}${QF8_RIGHT_GUILLEMET} ` +
+  `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`;
+
+describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint that names Move', () => {
+  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 362 keys each [QF8-1-CATALOG-RETIRED]', () => {
+    // WRONG IMPL KILLED: a retired id left behind as a dead key in either catalog (catalogParity
+    // DEAD-KEY fires, or a surviving requester keeps a deleted control half alive); an id retired
+    // from en only (a French boot still carries it); a wholesale `box.card.*`, `trade.*`,
+    // `pvp.incoming.*`, `pvp.outgoing.*` or `evolution.*` deletion (the kept ids below go with
+    // it); and the Social sheet's answer rows retired with the panel buttons they replace (the nav
+    // path, now the only one, would lose its words).
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const RETIRED = [
+      'box.card.toBox',
+      'box.card.toParty',
+      'trade.action.accept',
+      'trade.action.reject',
+      'trade.action.confirm',
+      'trade.action.cancel',
+      'pvp.incoming.accept',
+      'pvp.incoming.decline',
+      'pvp.outgoing.cancel',
+      'evolution.card.choosePrompt',
+      'evolution.choice.evolve',
+    ] as const;
+    expect(RETIRED, 'ANTI-VACUITY: eleven ids').toHaveLength(11);
+    for (const retired of RETIRED) {
+      expect(Object.hasOwn(en, retired), `en ${retired} is retired`).toBe(false);
+      expect(Object.hasOwn(fr, retired), `fr ${retired} is retired`).toBe(false);
+      expect(EXPECTED_KEYS.includes(retired), `the pinned roster no longer lists ${retired}`).toBe(
+        false,
+      );
+    }
+
+    const KEPT = [
+      // boxView: the hint (a new value), the Move row it quotes, the card's badge and stats.
+      'box.hint',
+      'box.sheet.move',
+      'box.card.evolveBadge',
+      'box.card.stats',
+      // tradeView: the status line and the two side headings.
+      'trade.status.none',
+      'trade.side.offer',
+      'trade.side.receive',
+      // pvpView: the title and the two request labels the Social cursor marks.
+      'pvp.title.challenge',
+      'pvp.incoming.label',
+      'pvp.outgoing.label',
+      // evolutionView: the hint, the ready note and the path heading.
+      'evolution.hint',
+      'evolution.card.ready',
+      'evolution.path.heading',
+      // The Social sheet's rows: where Accept / Decline / Confirm / Cancel live now.
+      'social.action.accept',
+      'social.action.decline',
+      'social.action.confirm',
+      'social.action.cancel',
+    ] as const;
+    for (const kept of KEPT) {
+      expect(Object.hasOwn(en, kept), `en ${kept} stays`).toBe(true);
+      expect(Object.hasOwn(fr, kept), `fr ${kept} stays`).toBe(true);
+      expect(EXPECTED_KEYS.includes(kept), `the pinned roster keeps ${kept}`).toBe(true);
+    }
+    expect(Object.keys(en).length, 'the English catalog holds exactly 362 keys').toBe(362);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(362);
+  });
+
+  it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
+    // WRONG IMPL KILLED: the hint left quoting the retired "To Party" button in either locale (the
+    // player hunts for a control that no longer exists: ux1, ADR-0151); the copy reworded in en
+    // only (a French boot still points at the deleted button); a quoted label that drifted from
+    // the sheet row's own text (box.sheet.move), or the English "Move" inside the French copy; a
+    // French quote in ASCII quotes, or set off by breaking spaces inside « » (catalog.fr.ts's
+    // typography: a browser could wrap a guillemet away from its word); a decomposed or missing
+    // accent; and a renamed id where the spec allows only a new value (the test reads `box.hint`).
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    // The quoted label, each locale's Monsters sheet row (plan §1.5: Move / Déplacer).
+    expect(en['box.sheet.move'], 'fixture: the English Move row').toBe('Move');
+    expect(fr['box.sheet.move'], 'the French Move row').toBe(QF8_FR_MOVE);
+
+    expect(en['box.hint'], 'the exact English copy (plan §1.5)').toBe(EXPECTED_PLAIN['box.hint']);
+    expect(fr['box.hint'], 'the exact French copy (plan §1.5)').toBe(QF8_FR_BOX_HINT);
+
+    const enHint = String(en['box.hint']);
+    const frHint = String(fr['box.hint']);
+    expect(enHint, 'en quotes its own Move row').toContain(`"${String(en['box.sheet.move'])}"`);
+    const frMove = String(fr['box.sheet.move']);
+    expect(frHint, 'fr quotes its own Move row inside guillemets').toContain(
+      `${QF8_LEFT_GUILLEMET}${NO_BREAK_SPACE}${frMove}${NO_BREAK_SPACE}${QF8_RIGHT_GUILLEMET}`,
+    );
+    expect(frHint.includes('"Move"'), 'fr never quotes the English label').toBe(false);
+    for (const retired of ['To Party', 'To Box']) {
+      expect(enHint.includes(retired), `en names no retired "${retired}" button`).toBe(false);
+    }
+    expect(frHint, 'a translation, not the English copy').not.toBe(enHint);
+  });
+});

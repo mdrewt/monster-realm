@@ -3,7 +3,8 @@
 //
 // SOURCE OF TRUTH: M16.5-ninth-review-residuals.spec.md §16.5c-3
 //
-// RED REASON (m16.5c-TV-1 — disabled lock during re-render while #pending):
+// RED REASON (m16.5c-TV-1 — disabled lock during re-render while #pending; RETIRED by qf-8 with
+// the buttons, see the qf-8 NAMED REMOVALS below):
 //   TradeView.#renderActions() recreates buttons via replaceChildren() then createElement.
 //   Each freshly-created button sets btn.disabled = false ONLY in the click handler's
 //   finally block — but the handler never fires during a re-render.  The button is
@@ -33,7 +34,7 @@
 //
 // WRONG IMPL KILLED per test:
 //   TV-1: any impl where #renderActions() creates buttons with disabled=false when
-//         #pending=true — the double-send vector is open.
+//         #pending=true — the double-send vector is open. (RETIRED by qf-8: no button is left.)
 //   TV-2: any impl where render() with a changed statusLabel does NOT clear
 //         #feedbackEl — "Trade accepted!" persists after the server advances the offer.
 //   TV-3: any impl where render() with kind='trade' does NOT clear #feedbackEl when
