@@ -174,10 +174,7 @@ export type MessageId =
   | 'pvp.title.idle'
   | 'pvp.title.challenge'
   | 'pvp.incoming.label'
-  | 'pvp.incoming.accept'
-  | 'pvp.incoming.decline'
   | 'pvp.outgoing.label'
-  | 'pvp.outgoing.cancel'
   // Evolution.* : the evolution screen (evolutionView.ts).
   | 'evolution.title'
   | 'evolution.hint'
@@ -185,12 +182,10 @@ export type MessageId =
   | 'evolution.card.stats'
   | 'evolution.card.noPaths'
   | 'evolution.card.ready'
-  | 'evolution.card.choosePrompt'
   | 'evolution.path.heading'
   | 'evolution.path.allMet'
   | 'evolution.gate.metRow'
   | 'evolution.gate.unmetRow'
-  | 'evolution.choice.evolve'
   // Raising.* : the raising / inventory screen (raisingView.ts).
   | 'raising.title'
   | 'raising.inventory.heading'
@@ -207,8 +202,6 @@ export type MessageId =
   | 'box.card.stats'
   | 'box.summary.stats'
   | 'box.card.evolveBadge'
-  | 'box.card.toBox'
-  | 'box.card.toParty'
   | 'box.rename.prompt'
   | 'box.tab.party'
   | 'box.tab.storage'
@@ -235,10 +228,6 @@ export type MessageId =
   | 'trade.side.card'
   | 'trade.side.currency'
   | 'trade.side.nothing'
-  | 'trade.action.accept'
-  | 'trade.action.reject'
-  | 'trade.action.confirm'
-  | 'trade.action.cancel'
   | 'trade.feedback.accepted'
   | 'trade.feedback.rejected'
   | 'trade.feedback.completed'
@@ -530,7 +519,6 @@ export interface MessageParams {
     readonly current: string;
     readonly required: string;
   };
-  readonly 'evolution.choice.evolve': { readonly species: string };
   readonly 'raising.inventory.item': { readonly name: string; readonly count: number };
   readonly 'box.party.emptySlot': { readonly slot: number };
   readonly 'box.card.stats': {

@@ -55,11 +55,7 @@
 // line wins while it shows; a batch repaint keeps the outcome (a care rewrites monster_pub, so its
 // own batch repaints the sheet); the next button ends it (`clearOutcome`, main.ts) and so does
 // hide().
-import {
-  type MonsterCardViewModel,
-  type MonsterStatsViewModel,
-  NEXT_FREE_PARTY_SLOT,
-} from './boxModel';
+import { type MonsterCardViewModel, type MonsterStatsViewModel } from './boxModel';
 import { currentLocale, t, tf } from './i18n/resolver';
 import {
   cardName,
@@ -162,13 +158,15 @@ export type OutcomeLine = (message: string, kind: 'ok' | 'error') => boolean;
 export interface BoxViewCallbacks {
   /** Called with the nickname field's text when the Monsters screen commits it (CTL8B.3). */
   readonly onSetNickname: (monsterId: bigint, nickname: string) => void;
-  /** Called when the user moves a monster to a party slot (0–5), to the next free slot
-   *  (`NEXT_FREE_PARTY_SLOT`), or to box (`partySlotNone`). */
+  /** Unread since qf-8 (QF8.1): the cards' To Box / To Party buttons that called it were a
+   *  mouse-only duplicate of the Monsters sheet's Move row (ui/screens/monstersScreen.ts, the
+   *  `move` arm, by D-pad and by pointer) and are deleted. main.ts still passes it. */
   readonly onSetPartySlot: (monsterId: bigint, slot: number) => void;
   /** Unread: the Box's Heal Party button is retired (ctl-10a, B13). */
   readonly onHealParty?: () => void;
-  /** The "boxed" party-slot sentinel "To Box" emits: game-core's PARTY_SLOT_NONE, read once
-   *  at boot from the `party_slot_none()` wasm export (main.ts) — never a TS literal. */
+  /** Unread since qf-8: the deleted To Box button emitted it (game-core's PARTY_SLOT_NONE, read
+   *  once at boot from the `party_slot_none()` wasm export); main.ts still passes it, and the
+   *  Monsters screen's view model carries its own copy for the Move row. */
   readonly partySlotNone: number;
 }
 
@@ -254,8 +252,8 @@ export class BoxView {
 
     // ctl-8b: the tabs, the sheet, its summary and typing row and the Move line, all BEFORE the
     // hint and the panels. Typing mode's Escape focuses the frame's first enabled non-text
-    // control: the sheet's nav list (Enter there is the router's A), never a card's To Party /
-    // To Box button.
+    // control: the sheet's nav list (Enter there is the router's A); the cards carry no control
+    // of their own (qf-8).
     this.#tabStrip = document.createElement('div');
     this.#tabStrip.className = 'mr-frame-tabstrip';
     this.#root.appendChild(this.#tabStrip);
@@ -313,8 +311,8 @@ export class BoxView {
     // which only touch #partyEl / #boxEl. A SIBLING of `header`, never wrapping it:
     // three client/e2e/recruit.spec.ts sites resolve this root as
     // h2['Party & Box'].parentElement.parentElement, and a wrapper retargets that chain.
-    // The copy DESCRIBES the "To Party" button (#renderCard) rather than commanding a click —
-    // the empty-box short-circuit below renders no such button in the fresh-player state.
+    // The copy names the Monsters sheet's Move row (`box.sheet.move`, quoted verbatim) and
+    // commands no click: the cards carry no control (qf-8, QF8.1).
     // Its text (`box.hint`) is resolved in show(), not here.
     this.#hintEl = document.createElement('div');
     this.#hintEl.setAttribute('data-testid', 'box-party-hint');
@@ -669,7 +667,7 @@ export class BoxView {
         el.style.color = '#aaa';
       } else {
         el.dataset.navKey = String(card.monsterId);
-        el.appendChild(this.#renderCard(card, true));
+        el.appendChild(this.#renderCard(card));
       }
       this.#partyEl.appendChild(el);
     }
@@ -692,12 +690,12 @@ export class BoxView {
       const el = document.createElement('div');
       el.style.cssText = 'border:1px solid #444;border-radius:4px;padding:8px;background:#1a1a2e;';
       el.dataset.navKey = String(card.monsterId);
-      el.appendChild(this.#renderCard(card, false));
+      el.appendChild(this.#renderCard(card));
       this.#boxEl.appendChild(el);
     }
   }
 
-  #renderCard(card: MonsterCardViewModel, inParty: boolean): HTMLDivElement {
+  #renderCard(card: MonsterCardViewModel): HTMLDivElement {
     const wrap = document.createElement('div');
 
     const nameRow = document.createElement('div');
@@ -733,27 +731,6 @@ export class BoxView {
         'border-radius:3px;padding:1px 4px;display:inline-block;';
       wrap.appendChild(badge);
     }
-
-    const actions = document.createElement('div');
-    actions.style.cssText = 'margin-top:6px;';
-    if (inParty) {
-      const toBoxBtn = document.createElement('button');
-      toBoxBtn.textContent = t('box.card.toBox');
-      toBoxBtn.style.cssText = 'font-size:11px;cursor:pointer;';
-      toBoxBtn.addEventListener('click', () =>
-        this.#callbacks.onSetPartySlot(card.monsterId, this.#callbacks.partySlotNone),
-      );
-      actions.appendChild(toBoxBtn);
-    } else {
-      const toPartyBtn = document.createElement('button');
-      toPartyBtn.textContent = t('box.card.toParty');
-      toPartyBtn.style.cssText = 'font-size:11px;cursor:pointer;';
-      toPartyBtn.addEventListener('click', () =>
-        this.#callbacks.onSetPartySlot(card.monsterId, NEXT_FREE_PARTY_SLOT),
-      );
-      actions.appendChild(toPartyBtn);
-    }
-    wrap.appendChild(actions);
 
     return wrap;
   }

@@ -531,23 +531,14 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // pvpView.ts:142
   'pvp.title.challenge': 'PvP Challenge',
   // @desc: Announcement in the PvP overlay that another player wants to fight; {challenger} is that
-  // player's display name. One line, above the Accept/Decline buttons.
+  // player's display name. One line; the Social sheet's Accept / Decline rows answer it.
   // pvpView.ts:190
   'pvp.incoming.label': (p) => `${p.challenger} has challenged you!`,
-  // @desc: Button label to accept an incoming PvP challenge. Short verb, fits a narrow button.
-  // pvpView.ts:198
-  'pvp.incoming.accept': 'Accept',
-  // @desc: Button label to decline an incoming PvP challenge. Short verb, fits a narrow button.
-  // pvpView.ts:206
-  'pvp.incoming.decline': 'Decline',
   // @desc: Status line while the player's own challenge is pending; {target} is the challenged
-  // player's display name; carries a spaced em dash and an ellipsis. One line, above the Cancel
-  // button.
+  // player's display name; carries a spaced em dash and an ellipsis. One line; the Social
+  // sheet's Cancel row withdraws it.
   // pvpView.ts:221
   'pvp.outgoing.label': (p) => `Challenge sent to ${p.target} — waiting…`,
-  // @desc: Button label to withdraw the challenge the player has sent. Two words, fits a button.
-  // pvpView.ts:226
-  'pvp.outgoing.cancel': 'Cancel Challenge',
   // @desc: Heading of the evolution overlay, listing every party monster's evolution paths.
   // One word, fits a 320px-wide column.
   // evolutionView.ts:102 (resolved in show())
@@ -578,10 +569,6 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // One line; carries a spaced em dash.
   // evolutionView.ts:207
   'evolution.card.ready': (p) => `Ready — evolves into ${p.species} on your next action.`,
-  // @desc: Prompt above the choice buttons when two or more paths are ready and the player must
-  // pick one; ends with a colon because the buttons follow. One line; carries a spaced em dash.
-  // evolutionView.ts:215
-  'evolution.card.choosePrompt': 'Two or more paths are ready — pick one:',
   // @desc: Heading of one evolution path row; {species} is the species this path leads to and
   // the leading arrow means "evolves into". Very short, one line.
   // evolutionView.ts:242
@@ -601,10 +588,6 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // shape as evolution.gate.metRow with a different leading mark. One line of small text.
   // evolutionView.ts:264
   'evolution.gate.unmetRow': (p) => `• ${p.label}: ${p.current} / ${p.required}`,
-  // @desc: Button label to choose one of several ready evolution paths; {species} is the species
-  // the monster becomes. Fits a narrow button.
-  // evolutionView.ts:272
-  'evolution.choice.evolve': (p) => `Evolve into ${p.species}`,
   // @desc: Heading of the raising overlay, which shows the player's inventory (the Bag pockets;
   // monster stats live on the Monsters Summary). One short line.
   // raisingView.ts:104 (resolved in show())
@@ -629,12 +612,12 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // boxView.ts:69 (resolved in show())
   'box.title': 'Party & Box',
   // @desc: Explainer under the heading telling the player that only Party monsters battle and
-  // that new recruits land in the Box; the quoted "To Party" must match the box.card.toParty
-  // button label exactly. Two sentences, wraps freely up to 600px wide; carries a spaced em
-  // dash.
+  // that new recruits land in the Box; the quoted "Move" must match the box.sheet.move row
+  // label exactly (the Monsters sheet's Move row is the one way to move a monster). Two
+  // sentences, wraps freely up to 600px wide; carries a spaced em dash.
   // boxView.ts:94-96 (resolved in show())
   'box.hint':
-    'Only monsters in your Party can battle or be swapped in. New recruits arrive in your Box — each box monster has a "To Party" button that moves it into an open party slot.',
+    'Only monsters in your Party can battle or be swapped in. New recruits arrive in your Box — select one there and choose "Move" to bring it into an open party slot.',
   // @desc: Section heading above the six party slots. One word.
   // boxView.ts:101 (resolved in show())
   'box.section.party': 'Party',
@@ -663,17 +646,10 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'box.summary.stats': (p) =>
     `Trust ${p.trust} · ATK ${p.attack} · DEF ${p.defense} · SPD ${p.speed} · SP.ATK ${p.spAttack} · SP.DEF ${p.spDefense}`,
   // @desc: Badge on a monster card when the monster can evolve but the player must choose a path
-  // on the evolution screen first. One short line; carries a leading star and a spaced em dash.
+  // on the Monsters sheet's Evolve list first. One short line; carries a leading star and a
+  // spaced em dash.
   // boxView.ts:216
   'box.card.evolveBadge': '★ Ready to evolve — choose a path',
-  // @desc: Button on a party monster's card that moves it into the box (storage). Two words,
-  // fits a very narrow button.
-  // boxView.ts:227
-  'box.card.toBox': 'To Box',
-  // @desc: Button on a box monster's card that moves it into an open party slot; quoted verbatim
-  // inside box.hint, so the two must stay identical. Two words, fits a very narrow button.
-  // boxView.ts:235
-  'box.card.toParty': 'To Party',
   // @desc: Label of the in-frame text field asking for a monster's new nickname; the current name
   // is pre-filled. Short, ends with a colon.
   // boxView.ts (the Monsters nickname row)
@@ -690,8 +666,8 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Action on a monster's action sheet that opens a text field to rename it. One word.
   // boxView.ts (the Monsters frame)
   'box.sheet.nickname': 'Nickname',
-  // @desc: Action on a monster's action sheet that moves it between the party and storage.
-  // One word.
+  // @desc: Action on a monster's action sheet that moves it between the party and storage;
+  // quoted verbatim inside box.hint, so the two must stay identical. One word.
   // boxView.ts (the Monsters frame)
   'box.sheet.move': 'Move',
   // @desc: Confirmation line after a monster moved from storage into the party; the screen draws a
@@ -758,22 +734,6 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // parentheses.
   // tradeView.ts:159
   'trade.side.nothing': '(nothing)',
-  // @desc: Button label to accept the trade offered to the player. Short verb, fits a narrow
-  // button.
-  // tradeView.ts:193 (#actionLabel return)
-  'trade.action.accept': 'Accept',
-  // @desc: Button label to reject the trade offered to the player. Short verb, fits a narrow
-  // button.
-  // tradeView.ts:195 (#actionLabel return)
-  'trade.action.reject': 'Reject',
-  // @desc: Button label for the second confirmation step that completes an accepted trade. Two
-  // words, fits a button.
-  // tradeView.ts:197 (#actionLabel return)
-  'trade.action.confirm': 'Confirm Trade',
-  // @desc: Button label to withdraw from a trade the player proposed or accepted. Short verb,
-  // fits a narrow button.
-  // tradeView.ts:199 (#actionLabel return)
-  'trade.action.cancel': 'Cancel',
   // @desc: Feedback line in the live-trade overlay after the player accepted the offer.
   // main.ts:2668
   'trade.feedback.accepted': 'Trade accepted!',

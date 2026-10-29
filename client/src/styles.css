@@ -506,8 +506,8 @@
  * EVERY VALUE IS MEASURED, NOT CHOSEN. `ui/evolutionView.test.ts` (m23s9 X1) renders the view
  * in four states, composites the translucent backdrop over a white AND a black page, and
  * requires ≥ 4.5:1 (WCAG 1.4.3 AA) for every text/background pair it finds. The shipped
- * defaults: fg 9.6:1 on the worst-case backdrop, muted 5.4:1, fg 5.8:1 on the button.
- * The old `#666` empties (2.2:1) and `#fff` on `#059669` (3.8:1) are what this block fixes.
+ * defaults: fg 9.6:1 on the worst-case backdrop, muted 5.4:1. The old `#666` empties (2.2:1)
+ * are what this block fixes (the `#fff`-on-`#059669` Evolve button it also fixed is deleted, qf-8).
  *
  * NO `!important`, NO element selectors, NO `#id` — the same test bans all three sheet-wide
  * because each is a route around the inline colours it measures.
@@ -521,7 +521,6 @@
   --mr-evo-muted: #aaa;
   --mr-evo-ok: #34d399;
   --mr-evo-warn: #f59e0b;
-  --mr-evo-button: #065f46;
 }
 
 /*
@@ -542,6 +541,5 @@
     --mr-evo-muted: #ddd;
     --mr-evo-ok: #6ee7b7;
     --mr-evo-warn: #fcd34d;
-    --mr-evo-button: #022c22;
   }
 }
