@@ -5589,3 +5589,85 @@ describe('AuthoritativeStore rb-53: a value-changing reconcile REPLACES the stor
     ).toBe(RB53_PAYLOAD_A);
   });
 });
+
+// =============================================================================
+// qf-15 (QF15.1): the zone-name map. `zone_def` is a regular public table with a primary key
+// (`zone_id`), so the adapter feeds it row by row (insert, update, delete) like heal_location_row;
+// the store keeps the one fact the zone cue reads: zone id -> display name. The names are content
+// data: they survive a zone warp (`resetCharacters` drops characters only) and go on a reconnect
+// (`reset`, repopulated by the fresh snapshot's insert burst).
+//
+// CONTRACT UNDER TEST (do not invent variants):
+//   upsertZoneName(zoneId: number, name: string): void   — set + mark dirty
+//   removeZoneName(zoneId: number): void                 — mark dirty ONLY if the id existed
+//   zoneName(zoneId: number): string | undefined         — undefined for an unknown id
+// All names below are NON-shipped, so a hard-coded lookup table cannot satisfy them.
+// =============================================================================
+
+describe('AuthoritativeStore qf-15: zone names (zone_def content)', () => {
+  it('a stored zone name reads back by its id, an upsert overwrites, a remove drops only that id, and the names survive resetCharacters but not reset [QF15-1-STORE-ZONE-NAME]', () => {
+    // WRONG IMPL KILLED: a lookup that ignores the id (returns the last name written); an
+    // insert-if-absent upsert (a renamed zone keeps its old name); a falsy-id check (zone 0 is the
+    // spawn zone); a remove that clears every name, or throws on a missing id; a map that
+    // resetCharacters() clears (the cue reads the name AFTER a warp's character flush, so a warp
+    // would announce nothing); a reset() that forgets the map (a reconnect to another build keeps
+    // names for zones that may no longer exist).
+    const s = new AuthoritativeStore();
+    expect(s.zoneName(0), 'an unknown id reads undefined (zone 0)').toBeUndefined();
+    expect(s.zoneName(7), 'an unknown id reads undefined (zone 7)').toBeUndefined();
+
+    s.upsertZoneName(0, 'Cobalt Reach');
+    s.upsertZoneName(7, 'Umber Fen');
+    expect(s.zoneName(0), 'zone 0 keeps its own name').toBe('Cobalt Reach');
+    expect(s.zoneName(7), 'zone 7 keeps its own name').toBe('Umber Fen');
+    expect(s.zoneName(3), 'an id nobody stored is still undefined').toBeUndefined();
+
+    s.upsertZoneName(7, 'Ash Hollow');
+    expect(s.zoneName(7), 'a second upsert for the same id overwrites').toBe('Ash Hollow');
+    expect(s.zoneName(0), 'and leaves the other id alone').toBe('Cobalt Reach');
+
+    s.removeZoneName(7);
+    expect(s.zoneName(7), 'a removed id reads undefined').toBeUndefined();
+    expect(s.zoneName(0), 'a remove drops only its own id').toBe('Cobalt Reach');
+    expect(() => s.removeZoneName(7), 'removing a missing id is a no-op').not.toThrow();
+    expect(() => s.removeZoneName(99), 'removing a never-stored id is a no-op').not.toThrow();
+    expect(s.zoneName(0), 'and still leaves the stored name alone').toBe('Cobalt Reach');
+
+    // A warp flushes the characters, never the content: seed a character so the flush runs.
+    s.upsertZoneName(7, 'Umber Fen');
+    s.upsertCharacter(char(1n, 2, 3), 100);
+    expect(s.characterCount, 'precondition: a character is held').toBe(1);
+    s.resetCharacters();
+    expect(s.characterCount, 'resetCharacters dropped the character').toBe(0);
+    expect(s.zoneName(0), 'zone 0 survives the warp flush').toBe('Cobalt Reach');
+    expect(s.zoneName(7), 'zone 7 survives the warp flush').toBe('Umber Fen');
+
+    s.reset();
+    expect(s.zoneName(0), 'reset() drops zone 0').toBeUndefined();
+    expect(s.zoneName(7), 'reset() drops zone 7').toBeUndefined();
+    s.upsertZoneName(7, 'Ash Hollow');
+    expect(s.zoneName(7), 'the map is usable again after a reset').toBe('Ash Hollow');
+  });
+
+  it('an upsert and a remove of a stored id each mark the batch dirty, and a remove of a missing id marks nothing', () => {
+    // WRONG IMPL KILLED: an upsert that forgets `#dirty = true` (the row lands and no batch
+    // listener hears of it); a remove that always marks dirty (a phantom re-render for an id the
+    // store never held); a remove that never marks dirty (a deleted zone row is invisible).
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+
+    s.upsertZoneName(1, 'Umber Fen');
+    expect(cb, 'not mid-batch: only flushBatch signals').toHaveBeenCalledTimes(0);
+    s.flushBatch();
+    expect(cb, 'the upsert marked the batch dirty').toHaveBeenCalledTimes(1);
+
+    s.removeZoneName(99);
+    s.flushBatch();
+    expect(cb, 'a remove of a missing id marks nothing').toHaveBeenCalledTimes(1);
+
+    s.removeZoneName(1);
+    s.flushBatch();
+    expect(cb, 'a remove of a stored id marks the batch dirty').toHaveBeenCalledTimes(2);
+  });
+});

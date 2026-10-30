@@ -38,9 +38,20 @@ const H = vi.hoisted(() => ({
   /** Per-table SDK cache contents (`conn.db.<name>.iter()`) and registered row callbacks. */
   viewRows: {} as Record<string, unknown[]>,
   rowCbs: {} as Record<string, Cb[]>,
+  /**
+   * qf-15: the same registrations as `rowCbs`, split by event and including onUpdate (which
+   * `rowCbs` never records), so a test can hand each handler the arguments the SDK would: `(ctx,
+   * row)` for insert and delete, `(ctx, oldRow, row)` for update. Additive: `rowCbs` is untouched.
+   */
+  rowEvents: {} as Record<string, { insert: Cb[]; update: Cb[]; delete: Cb[] }>,
 }));
 
 vi.mock('../module_bindings', () => {
+  const eventOf = new Map<string | symbol, 'insert' | 'update' | 'delete'>([
+    ['onInsert', 'insert'],
+    ['onUpdate', 'update'],
+    ['onDelete', 'delete'],
+  ]);
   const tableFor = (name: string) =>
     new Proxy(
       {},
@@ -50,6 +61,15 @@ vi.mock('../module_bindings', () => {
           return (cb: Cb) => {
             if (k === 'onInsert' || k === 'onDelete') {
               H.rowCbs[name] = [...(H.rowCbs[name] ?? []), cb];
+            }
+            const event = eventOf.get(k);
+            if (event !== undefined) {
+              let events = H.rowEvents[name];
+              if (events === undefined) {
+                events = { insert: [], update: [], delete: [] };
+                H.rowEvents[name] = events;
+              }
+              events[event].push(cb);
             }
           };
         },
@@ -161,6 +181,7 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
     H.startGuestClaimImpl = null;
     H.viewRows = {};
     H.rowCbs = {};
+    H.rowEvents = {};
     H.beginSignIn = vi.fn(() => Promise.resolve({ kind: 'transient-error' }));
     sessionStorage.clear();
     localStorage.clear();
@@ -413,6 +434,88 @@ describe('connect() credential wiring (runtime)', { sequential: true }, () => {
     expect(opts.store.ownInventory(me)).toEqual([
       { invId: 1n, ownerIdentity: me, itemId: 5, count: 2 },
     ]);
+  });
+
+  // qf-15 (QF15.1): the zone cue names the destination zone from the `zone_def` content table. It
+  // is a REGULAR public table with a primary key (`zone_id`), so unlike the PK-less views above it
+  // is fed row by row (heal_location_row's idiom) and onUpdate DOES fire.
+  it('the one subscription batch includes the public zone_def table exactly once and adds no other query, 23 in all [QF15-1-SUBSCRIBE-ZONE-DEF]', async () => {
+    // WRONG IMPL KILLED: no subscription (the client never receives a zone name and the cue stays
+    // silent forever); a second subscription call or a duplicate entry (the length pin); a query
+    // for a table nobody named riding along (the length pin: 22 queries before qf-15, plus this
+    // one); the table spelled differently (`zoneDef`, `zone_defs`).
+    const opts = makeOpts();
+    connect(opts);
+    await settle();
+    H.builds[0].onConnect?.(conn0(H.builds[0]), ID, 'anon-tok');
+    const queries = H.builds[0].queries ?? [];
+    expect(queries).toContain('SELECT * FROM zone_def');
+    expect(
+      queries.filter((q) => q === 'SELECT * FROM zone_def'),
+      'zone_def is subscribed once',
+    ).toHaveLength(1);
+    expect(queries, 'the 22 queries that were there, plus zone_def').toHaveLength(23);
+  });
+
+  it('an inserted zone_def row stores its name by zone id, an update replaces it, a delete removes it, and each change flushes one batch [QF15-1-WIRE-ZONE-DEF]', async () => {
+    // WRONG IMPL KILLED: no row handlers on `conn.db.zoneDef` (nothing is ever stored); an
+    // insert-only wiring (a renamed zone keeps its old name: the update leg); an onUpdate that
+    // reads the OLD row (arguments are `(ctx, oldRow, row)`: the update leg expects the new name);
+    // no onDelete (a deleted zone keeps a name); a store key that is not `row.zoneId` (the width
+    // and height differ from the ids on purpose); a handler that stores and never schedules the
+    // batcher (no batch is delivered: the flush counts); a store write that clears the other
+    // zones' names.
+    const opts = makeOpts();
+    connect(opts);
+    await settle();
+    H.builds[0].onConnect?.(conn0(H.builds[0]), ID, 'anon-tok');
+    await settle();
+    const events = H.rowEvents.zoneDef;
+    expect(
+      events,
+      'precondition: connection.ts registered row handlers on conn.db.zoneDef (the camelCase accessor)',
+    ).toBeDefined();
+    expect(events.insert.length, 'an onInsert handler').toBeGreaterThan(0);
+    expect(events.update.length, 'an onUpdate handler').toBeGreaterThan(0);
+    expect(events.delete.length, 'an onDelete handler').toBeGreaterThan(0);
+
+    const flushed = vi.fn();
+    opts.store.onBatchApplied(flushed);
+    const ctx = {};
+    /** NON-shipped ids and names; width and height are neither the id nor each other. */
+    const row = (zoneId: number, name: string) => ({ zoneId, name, width: 11, height: 13 });
+    /** Run every handler of one event with the SDK's arguments, let the microtask batcher flush,
+     *  and report how many batches that delivered. */
+    const fire = async (handlers: Cb[], ...args: unknown[]): Promise<number> => {
+      flushed.mockClear();
+      for (const handler of handlers) handler(ctx, ...args);
+      await settle();
+      return flushed.mock.calls.length;
+    };
+
+    expect(opts.store.zoneName(7), 'nothing is stored before any row').toBeUndefined();
+
+    expect(await fire(events.insert, row(7, 'Cobalt Reach')), 'the insert flushes one batch').toBe(
+      1,
+    );
+    expect(opts.store.zoneName(7), 'the inserted name, by zone id').toBe('Cobalt Reach');
+    expect(opts.store.zoneName(11), 'never keyed by the width').toBeUndefined();
+    expect(opts.store.zoneName(13), 'never keyed by the height').toBeUndefined();
+
+    expect(await fire(events.insert, row(2, 'Ash Hollow')), 'the second insert flushes').toBe(1);
+    expect(opts.store.zoneName(2), 'the second zone has its own name').toBe('Ash Hollow');
+    expect(opts.store.zoneName(7), 'and the first is untouched').toBe('Cobalt Reach');
+
+    expect(
+      await fire(events.update, row(7, 'Cobalt Reach'), row(7, 'Umber Fen')),
+      'the update flushes one batch',
+    ).toBe(1);
+    expect(opts.store.zoneName(7), 'the NEW row wins, not the old one').toBe('Umber Fen');
+    expect(opts.store.zoneName(2), 'an update touches its own zone only').toBe('Ash Hollow');
+
+    expect(await fire(events.delete, row(7, 'Umber Fen')), 'the delete flushes one batch').toBe(1);
+    expect(opts.store.zoneName(7), 'a deleted zone has no name').toBeUndefined();
+    expect(opts.store.zoneName(2), 'a delete removes its own zone only').toBe('Ash Hollow');
   });
 
   it('STALE: a superseded build connecting late cannot save its token or claim the identity', async () => {

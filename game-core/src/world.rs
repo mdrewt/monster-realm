@@ -444,7 +444,7 @@ mod tests {
         apply_move, map_for, spawn, validate_zone_maps, zone_0, TileMap, MOVE_QUEUE_CAP, STEP_MS,
         ZONE_0_ROWS,
     };
-    use crate::content::{WarpDef, ZoneDef, ZoneMapDef};
+    use crate::content::{HealLocationDef, NpcDef, WarpDef, ZoneDef, ZoneMapDef};
     use crate::types::{ActionState, CharacterState, Direction, Millis, MoveInput, TilePos};
     use proptest::prelude::*;
 
@@ -576,12 +576,13 @@ mod tests {
         }
 
         // Warp parity: zone_0() has warps:vec![] (code constant); the RON has the
-        // (5,5)→zone1 warp. Assert that the RON-loaded map carries that warp, and
-        // record the known delta (zone_0() intentionally omits warps — it is a
-        // pre-M11 convenience function; map_for is the authoritative path).
+        // (1,5)→zone1 warp (qf-15 moved it off elder_oak's home tile (5,5)). Assert
+        // that the RON-loaded map carries that warp, and record the known delta
+        // (zone_0() intentionally omits warps — it is a pre-M11 convenience
+        // function; map_for is the authoritative path).
         assert!(
-            via_ron.warp_at(TilePos { x: 5, y: 5 }).is_some(),
-            "the authored RON zone 0 must have a warp at (5,5) — \
+            via_ron.warp_at(TilePos { x: 1, y: 5 }).is_some(),
+            "the authored RON zone 0 must have a warp at (1,5) — \
              kill target: RON that silently removed the zone-crossing warp"
         );
     }
@@ -1277,46 +1278,350 @@ mod tests {
     //
     // These tests use the REAL embedded zone-map content via `load_zone_maps()`
     // to prove the RON content in `content/zone_maps/000-core.ron` correctly
-    // declares mutual warps between zone 0 and zone 1 at tile (5,5). The server
+    // declares mutual warps between zone 0 and zone 1 at tile (1,5) (qf-15 moved
+    // the pair off elder_oak's home tile (5,5)). The server
     // warp runtime (movement_tick) delegates to map_for + warp_at over this
     // real content, so these tests are the integration anchor that proves the
     // data is present before the server logic can be verified.
     //
     // -----------------------------------------------------------------------
 
-    /// Criterion: zone 0 real content has a warp at (5,5) targeting zone 1.
+    /// Criterion: zone 0 real content has a warp at (1,5) targeting zone 1 at (1,5).
     /// Kills: any content edit that removes or changes the zone-0→zone-1 warp
     /// (the movement_tick server runtime reads this warp via map_for + warp_at;
     /// a missing warp means the server can never execute the warp teleport).
     #[test]
-    fn zone_0_real_content_has_warp_at_5_5_to_zone_1() {
+    fn zone_0_real_content_has_warp_at_1_5_to_zone_1() {
         use crate::content::load_zone_maps;
         let maps = load_zone_maps().expect("zone maps must load");
         let m = map_for(0, &maps).expect("map_for(0) must succeed");
         let warp = m
-            .warp_at(TilePos { x: 5, y: 5 })
-            .expect("warp at (5,5) must exist in zone 0");
+            .warp_at(TilePos { x: 1, y: 5 })
+            .expect("warp at (1,5) must exist in zone 0");
         assert_eq!(warp.to_zone, 1, "zone 0 warp must target zone 1");
         assert_eq!(
             warp.to_tile,
-            TilePos { x: 5, y: 5 },
-            "warp to_tile must be (5,5)"
+            TilePos { x: 1, y: 5 },
+            "warp to_tile must be (1,5)"
         );
     }
 
-    /// Criterion: zone 1 real content has a return warp at (5,5) targeting zone 0.
+    /// Criterion: zone 1 real content has a return warp at (1,5) targeting zone 0 at (1,5).
     /// Kills: any content edit that removes the zone-1→zone-0 return warp
     /// (mutual warps are required for round-trip zone traversal; a one-way
-    /// warp traps the player in zone 1 with no server path back).
+    /// warp traps the player in zone 1 with no server path back), or that
+    /// lands the returning player on a different tile than the pair's
+    /// zone-0 endpoint.
     #[test]
-    fn zone_1_real_content_has_return_warp_at_5_5_to_zone_0() {
+    fn zone_1_real_content_has_return_warp_at_1_5_to_zone_0() {
         use crate::content::load_zone_maps;
         let maps = load_zone_maps().expect("zone maps must load");
         let m = map_for(1, &maps).expect("map_for(1) must succeed");
         let warp = m
-            .warp_at(TilePos { x: 5, y: 5 })
-            .expect("warp at (5,5) must exist in zone 1");
+            .warp_at(TilePos { x: 1, y: 5 })
+            .expect("warp at (1,5) must exist in zone 1");
         assert_eq!(warp.to_zone, 0, "zone 1 warp must target zone 0");
+        assert_eq!(
+            warp.to_tile,
+            TilePos { x: 1, y: 5 },
+            "return warp to_tile must be (1,5)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // qf-15 (QF15.2): no warp endpoint may sit where an NPC lives or on the
+    // heal location's tile. (5,5) was BOTH the zone-0<->zone-1 warp and
+    // elder_oak's home, so chasing the quest NPC teleported the player.
+    //
+    // `warp_conflicts` is the pure scan; the real-content test asserts it finds
+    // nothing, and the synthetic-fixture tests prove each arm of the scan bites
+    // (a scan with a dead arm would pass the real-content test vacuously).
+    // -----------------------------------------------------------------------
+
+    fn tp(x: i32, y: i32) -> TilePos {
+        TilePos { x, y }
+    }
+
+    fn warp_def(from: (i32, i32), to_zone: u32, to: (i32, i32)) -> WarpDef {
+        WarpDef {
+            from: tp(from.0, from.1),
+            to_zone,
+            to_tile: tp(to.0, to.1),
+        }
+    }
+
+    /// A map whose art is irrelevant to the scan — only its warps matter.
+    fn map_with(zone_id: u32, warps: Vec<WarpDef>) -> ZoneMapDef {
+        zone_map_def(zone_id, vec!["..."], warps)
+    }
+
+    fn npc_at(zone_id: u32, home: (i32, i32), spawn: (i32, i32), radius: u8) -> NpcDef {
+        NpcDef {
+            id: 1,
+            npc_id: "fixture_npc".to_string(),
+            zone_id,
+            spawn_x: spawn.0,
+            spawn_y: spawn.1,
+            home_x: home.0,
+            home_y: home.1,
+            wander_radius: radius,
+            dialogue_tree_id: "fixture_tree".to_string(),
+            sprite_id: 0,
+            interaction: crate::types::NpcInteraction::default(),
+        }
+    }
+
+    fn heal_at(zone_id: u32, tile: (i32, i32)) -> HealLocationDef {
+        HealLocationDef {
+            location_id: 1,
+            zone_id,
+            tile_x: tile.0,
+            tile_y: tile.1,
+            cost_item_id: None,
+            cost_qty: 0,
+            cooldown_ms: 0,
+            cost_currency: 0,
+        }
+    }
+
+    /// Every collision between a warp endpoint and NPC / heal content, one
+    /// message per hit. BOTH endpoints of EVERY warp are checked —
+    /// `(zone_id, from)` and `(to_zone, to_tile)` — against, in the endpoint's
+    /// OWN zone only (the same coordinates in another zone are a different tile):
+    /// - `npc-home`: an NPC's home tile;
+    /// - `npc-spawn`: an NPC's spawn tile;
+    /// - `npc-wander-disc`: any tile within the NPC's wander radius of its home
+    ///   (Manhattan, inclusive — `npc_decide`'s own metric), because an NPC that
+    ///   can wander onto a warp tile is the same teleport-by-chasing bug;
+    /// - `heal-tile`: a heal location's tile.
+    ///
+    /// Each message starts `"<tag>: endpoint <from|to_tile> "`.
+    fn warp_conflicts(
+        maps: &[ZoneMapDef],
+        npcs: &[NpcDef],
+        heals: &[HealLocationDef],
+    ) -> Vec<String> {
+        let mut conflicts = Vec::new();
+        for map in maps {
+            for warp in &map.warps {
+                let endpoints = [
+                    ("from", map.zone_id, warp.from),
+                    ("to_tile", warp.to_zone, warp.to_tile),
+                ];
+                for (end, zone, tile) in endpoints {
+                    let (x, y) = (tile.x, tile.y);
+                    let mut flag = |tag: &str, who: &str| {
+                        conflicts.push(format!(
+                            "{tag}: endpoint {end} ({x},{y}) in zone {zone} hits {who}"
+                        ));
+                    };
+                    for npc in npcs.iter().filter(|n| n.zone_id == zone) {
+                        let home = tp(npc.home_x, npc.home_y);
+                        let spawn = tp(npc.spawn_x, npc.spawn_y);
+                        let dist = tile.x.abs_diff(home.x) + tile.y.abs_diff(home.y);
+                        if tile == home {
+                            flag("npc-home", &npc.npc_id);
+                        }
+                        if tile == spawn {
+                            flag("npc-spawn", &npc.npc_id);
+                        }
+                        if dist <= u32::from(npc.wander_radius) {
+                            flag("npc-wander-disc", &npc.npc_id);
+                        }
+                    }
+                    for heal in heals.iter().filter(|h| h.zone_id == zone) {
+                        if tile == tp(heal.tile_x, heal.tile_y) {
+                            flag("heal-tile", "the heal location");
+                        }
+                    }
+                }
+            }
+        }
+        conflicts
+    }
+
+    /// `true` iff some conflict carries `tag` for the warp endpoint `end`
+    /// (`"from"` or `"to_tile"`).
+    fn flagged(conflicts: &[String], tag: &str, end: &str) -> bool {
+        let prefix = format!("{tag}: endpoint {end} ");
+        conflicts.iter().any(|c| c.starts_with(&prefix))
+    }
+
+    fn assert_flagged(conflicts: &[String], tag: &str, end: &str) {
+        assert!(
+            flagged(conflicts, tag, end),
+            "expected a `{tag}` conflict on endpoint `{end}`, got: {conflicts:?}"
+        );
+    }
+
+    fn assert_not_flagged(conflicts: &[String], tag: &str, end: &str) {
+        assert!(
+            !flagged(conflicts, tag, end),
+            "unexpected `{tag}` conflict on endpoint `{end}`: {conflicts:?}"
+        );
+    }
+
+    /// Criterion QF15.2: every shipped warp endpoint (both ends of both warps)
+    /// is off every NPC's home / spawn / wander disc and off the heal tile.
+    /// Kills: the pre-qf-15 content, where zone 0's warp (5,5) was elder_oak's
+    /// home tile AND inside her radius-2 wander disc — chasing her teleported
+    /// the player. The anti-vacuity asserts keep a loader that returns nothing
+    /// (or content in disjoint zones) from passing the scan trivially.
+    #[test]
+    fn warps_avoid_npc_homes_and_the_heal_tile() {
+        use crate::content::{load_heal_locations, load_npc_defs, load_zone_maps};
+        let maps = load_zone_maps().expect("zone maps must load");
+        let npcs = load_npc_defs().expect("npc defs must load");
+        let heals = load_heal_locations().expect("heal locations must load");
+
+        let warp_count: usize = maps.iter().map(|m| m.warps.len()).sum();
+        assert!(warp_count >= 1, "no warp examined — vacuous");
+        assert!(!npcs.is_empty(), "no NPC examined — vacuous");
+        assert!(!heals.is_empty(), "no heal location examined — vacuous");
+        let warp_zones: Vec<u32> = maps
+            .iter()
+            .flat_map(|m| m.warps.iter().flat_map(move |w| [m.zone_id, w.to_zone]))
+            .collect();
+        assert!(
+            npcs.iter().any(|n| warp_zones.contains(&n.zone_id)),
+            "no NPC shares a zone with a warp endpoint — the NPC arms compare nothing"
+        );
+        assert!(
+            heals.iter().any(|h| warp_zones.contains(&h.zone_id)),
+            "no heal tile shares a zone with a warp endpoint — the heal arm compares nothing"
+        );
+
+        let conflicts = warp_conflicts(&maps, &npcs, &heals);
+        assert!(
+            conflicts.is_empty(),
+            "warp endpoints collide with NPC / heal content: {conflicts:#?}"
+        );
+    }
+
+    /// Kills: a scan that false-positives — it must be silent for endpoints that
+    /// are close to, but not inside, an NPC's footprint. (4,2) is one tile past
+    /// the radius-1 disc around home (4,4); (5,5) is Manhattan 2 (Chebyshev 1)
+    /// from home, so a Chebyshev disc would wrongly flag it; zone 1 reuses the
+    /// NPC's home coordinates but is a different zone.
+    #[test]
+    fn warp_conflicts_is_empty_for_endpoints_one_tile_past_the_wander_disc() {
+        let first = warp_def((4, 2), 1, (4, 4));
+        let second = warp_def((5, 5), 1, (6, 6));
+        let maps = [map_with(0, vec![first, second])];
+        let npcs = [npc_at(0, (4, 4), (4, 3), 1)];
+        let heals = [heal_at(0, (7, 2))];
+        let conflicts = warp_conflicts(&maps, &npcs, &heals);
+        assert!(conflicts.is_empty(), "false positive: {conflicts:?}");
+    }
+
+    /// Kills: a scan that matches coordinates without the zone — the NPC lives in
+    /// zone 0 and the heal tile is in zone 0, but every endpoint here is in zone
+    /// 1 or 2 at those same coordinates (home (4,4), spawn (4,3), heal (7,2)).
+    #[test]
+    fn warp_conflicts_ignores_identical_coordinates_in_a_different_zone() {
+        let first = warp_def((4, 4), 2, (7, 2));
+        let second = warp_def((4, 3), 2, (5, 4));
+        let maps = [map_with(1, vec![first, second])];
+        let npcs = [npc_at(0, (4, 4), (4, 3), 1)];
+        let heals = [heal_at(0, (7, 2))];
+        let conflicts = warp_conflicts(&maps, &npcs, &heals);
+        assert!(
+            conflicts.is_empty(),
+            "same coordinates in another zone are not a collision: {conflicts:?}"
+        );
+    }
+
+    /// Kills: a scan that never checks the SOURCE endpoint against NPC homes
+    /// (the exact pre-qf-15 shape: zone 0's warp leaves from the NPC's home).
+    #[test]
+    fn warp_conflicts_flags_a_warp_source_on_an_npc_home_tile() {
+        let maps = [map_with(0, vec![warp_def((4, 4), 1, (1, 1))])];
+        let npcs = [npc_at(0, (4, 4), (4, 3), 1)];
+        let conflicts = warp_conflicts(&maps, &npcs, &[]);
+        assert_flagged(&conflicts, "npc-home", "from");
+        assert_not_flagged(&conflicts, "npc-home", "to_tile");
+        assert_not_flagged(&conflicts, "npc-spawn", "from");
+    }
+
+    /// Kills: a scan that never checks the DESTINATION endpoint against NPC
+    /// homes, or that checks it in the source zone instead of `to_zone` (the
+    /// warp lives in zone 1, the NPC in zone 0).
+    #[test]
+    fn warp_conflicts_flags_a_warp_destination_on_an_npc_home_tile() {
+        let maps = [map_with(1, vec![warp_def((1, 1), 0, (4, 4))])];
+        let npcs = [npc_at(0, (4, 4), (4, 3), 1)];
+        let conflicts = warp_conflicts(&maps, &npcs, &[]);
+        assert_flagged(&conflicts, "npc-home", "to_tile");
+        assert_not_flagged(&conflicts, "npc-home", "from");
+    }
+
+    /// Kills: a scan with no spawn arm. Radius 0 collapses the wander disc onto
+    /// home and spawn (4,3) != home (4,4), so ONLY the spawn arm can flag it.
+    #[test]
+    fn warp_conflicts_flags_a_warp_source_on_an_npc_spawn_tile() {
+        let maps = [map_with(0, vec![warp_def((4, 3), 1, (1, 1))])];
+        let npcs = [npc_at(0, (4, 4), (4, 3), 0)];
+        let conflicts = warp_conflicts(&maps, &npcs, &[]);
+        assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+        assert_flagged(&conflicts, "npc-spawn", "from");
+    }
+
+    /// Kills: a spawn arm that only looks at the source endpoint.
+    #[test]
+    fn warp_conflicts_flags_a_warp_destination_on_an_npc_spawn_tile() {
+        let maps = [map_with(1, vec![warp_def((1, 1), 0, (4, 3))])];
+        let npcs = [npc_at(0, (4, 4), (4, 3), 0)];
+        let conflicts = warp_conflicts(&maps, &npcs, &[]);
+        assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+        assert_flagged(&conflicts, "npc-spawn", "to_tile");
+    }
+
+    /// Kills: a scan that checks only home/spawn points and not the wander disc.
+    /// (5,4) is distance 1 from home (4,4) — exactly the radius-1 boundary
+    /// (inclusive) — and is neither home nor spawn (4,3).
+    #[test]
+    fn warp_conflicts_flags_a_warp_source_inside_an_npc_wander_disc() {
+        let maps = [map_with(0, vec![warp_def((5, 4), 1, (1, 1))])];
+        let npcs = [npc_at(0, (4, 4), (4, 3), 1)];
+        let conflicts = warp_conflicts(&maps, &npcs, &[]);
+        assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+        assert_flagged(&conflicts, "npc-wander-disc", "from");
+    }
+
+    /// Kills: a wander-disc arm that only looks at the source endpoint.
+    /// (4,5) is distance 1 from home (4,4), neither home nor spawn (4,3).
+    #[test]
+    fn warp_conflicts_flags_a_warp_destination_inside_an_npc_wander_disc() {
+        let maps = [map_with(1, vec![warp_def((1, 1), 0, (4, 5))])];
+        let npcs = [npc_at(0, (4, 4), (4, 3), 1)];
+        let conflicts = warp_conflicts(&maps, &npcs, &[]);
+        assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+        assert_flagged(&conflicts, "npc-wander-disc", "to_tile");
+    }
+
+    /// Kills: a scan with no heal arm for the source endpoint. The only NPC is
+    /// far away (home (4,4), radius 1), so ONLY the heal arm can flag (7,2).
+    #[test]
+    fn warp_conflicts_flags_a_warp_source_on_the_heal_tile() {
+        let maps = [map_with(0, vec![warp_def((7, 2), 1, (1, 1))])];
+        let npcs = [npc_at(0, (4, 4), (4, 4), 1)];
+        let heals = [heal_at(0, (7, 2))];
+        let conflicts = warp_conflicts(&maps, &npcs, &heals);
+        assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+        assert_flagged(&conflicts, "heal-tile", "from");
+    }
+
+    /// Kills: a heal arm that only looks at the source endpoint, or that checks
+    /// the destination in the source zone (the warp lives in zone 1, the heal
+    /// location in zone 0).
+    #[test]
+    fn warp_conflicts_flags_a_warp_destination_on_the_heal_tile() {
+        let maps = [map_with(1, vec![warp_def((1, 1), 0, (7, 2))])];
+        let npcs = [npc_at(0, (4, 4), (4, 4), 1)];
+        let heals = [heal_at(0, (7, 2))];
+        let conflicts = warp_conflicts(&maps, &npcs, &heals);
+        assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+        assert_flagged(&conflicts, "heal-tile", "to_tile");
     }
 
     // -----------------------------------------------------------------------

@@ -96,16 +96,21 @@ import {
 //     `interaction: Shop(1)`, tree `shopkeeper_greeting` ("Hello, customer!").
 //
 // MAP (game-core/content/zone_maps/000-core.ron) — zones 0 and 1 ship the IDENTICAL 10x7
-//   layout; (4,3)/(5,3) are WALLS so x=6 is the only clean northward lane; warp at
-//   zone 0 (5,5) <-> zone 1 (5,5). Verified tile-by-tile, all grass-free (an encounter roll
-//   happens only on STEPPING ONTO a '~' tile, so a grass-free route cannot start a battle):
+//   layout; (4,3)/(5,3) are WALLS so x=6 is the clean northward lane to the elder post, and
+//   column x=1 is clean floor for y=1..5; warp at zone 0 (1,5) <-> zone 1 (1,5) (qf-15 moved
+//   the pair off elder_oak's home tile (5,5)). Verified tile-by-tile, all grass-free (an
+//   encounter roll happens only on STEPPING ONTO a '~' tile, so a grass-free route cannot
+//   start a battle):
 //     A: zone 0 spawn (1,1) → the elder TALK POST (6,3) = E,E,E,E,E,S,S (facing South)
-//     A: (6,3) → warp = S,S,W onto (5,5). Characters and NPCs do NOT block each other
-//        (game-core/src/world.rs is_walkable is tile-kind only), so a wandering elder_oak
-//        standing on (6,4), (6,5) or the warp cannot stall these steps.
-//     B: zone 0 spawn (1,1) → warp = E,E,E,E,E,S,S,S,S,W
-//     both: zone 1 (5,5) → the SHOP POST (7,1) = N,E,N,N,N,E (the final E step from (6,1)
-//        leaves the character on (7,1) FACING the shopkeeper's tile (8,1)).
+//     A: (6,3) → warp = S,S,W,W,W,W,W onto (1,5): (6,4),(6,5), then west along row y=5
+//        through (5,5),(4,5),(3,5),(2,5) to (1,5) (row y=5 is floor for x=1..6). Characters
+//        and NPCs do NOT block each other (game-core/src/world.rs is_walkable is tile-kind
+//        only), so a wandering elder_oak standing on (6,4), (6,5), (5,5), (4,5) or (3,5) —
+//        all in his disc — cannot stall these steps.
+//     B: zone 0 spawn (1,1) → warp = S,S,S,S (straight down column x=1; the final S IS the warp)
+//     both: zone 1 (1,5) → the SHOP POST (7,1) = N,N,N,N,E,E,E,E,E,E (up column x=1 to
+//        (1,1), then east along row y=1; the final E step from (6,1) leaves the character
+//        on (7,1) FACING the shopkeeper's tile (8,1)).
 //
 // ctl-10a: T retired — A acts on what the character FACES (the tile in front, else the own
 //   tile; game-core interact_candidates); range no longer offers a target. So:
@@ -764,27 +769,43 @@ const A_TO_ELDER: readonly string[] = [
 ];
 const ELDER_POST: Tile = { x: 6, y: 3 };
 const ELDER_FACING: Dir = 'South';
-/** A: (6,3) → (6,4) → (6,5) → (5,5). The final West step IS the warp to zone 1 (5,5). */
-const A_TO_WARP: readonly string[] = ['South', 'South', 'West'];
-/** B: zone 0 spawn (1,1) → the warp tile (5,5). B presses NO key in zone 0 — it must never
- *  talk to elder_oak (a second quest_001 completion would give B 50 gold and destroy the
- *  whole 11r-e-8 premise). */
-const B_TO_WARP: readonly string[] = [
-  'East',
-  'East',
-  'East',
-  'East',
-  'East', // (6,1)
-  'South',
-  'South',
+/** A: (6,3) → (6,4) → (6,5) → west along row y=5 to (1,5). The final West step IS the warp
+ *  to zone 1 (1,5). Row y=5 is floor for x=1..6 (grass starts at x=7), so every step is
+ *  grass-free; a wandering elder_oak in his disc never blocks (characters do not collide). */
+const A_TO_WARP: readonly string[] = [
   'South', // (6,4)
   'South', // (6,5)
-  'West', // (5,5) — WARP → zone 1 (5,5)
+  'West', // (5,5)
+  'West', // (4,5)
+  'West', // (3,5)
+  'West', // (2,5)
+  'West', // (1,5) — WARP → zone 1 (1,5)
 ];
-/** Zone 1: the warp landing (5,5) → the shop post (7,1). Do NOT "simplify" this to
- *  N,N,N,N — (4,3)/(5,3) are WALLS. ctl-10a: T retired — the old stop (6,1) (Manhattan 2) is
- *  no longer interactive; the final East step lands on (7,1) FACING the shopkeeper at (8,1). */
-const ZONE1_TO_SHOPKEEPER: readonly string[] = ['North', 'East', 'North', 'North', 'North', 'East'];
+/** B: zone 0 spawn (1,1) → the warp tile (1,5), straight down column x=1. B presses NO key in
+ *  zone 0 — it must never talk to elder_oak (a second quest_001 completion would give B 50
+ *  gold and destroy the whole 11r-e-8 premise). */
+const B_TO_WARP: readonly string[] = [
+  'South', // (1,2)
+  'South', // (1,3)
+  'South', // (1,4)
+  'South', // (1,5) — WARP → zone 1 (1,5)
+];
+/** Zone 1: the warp landing (1,5) → the shop post (7,1): up column x=1 to (1,1), then east
+ *  along row y=1 (both floor, grass-free). ctl-10a: T retired — the old stop (6,1)
+ *  (Manhattan 2) is no longer interactive; the final East step lands on (7,1) FACING the
+ *  shopkeeper at (8,1). */
+const ZONE1_TO_SHOPKEEPER: readonly string[] = [
+  'North', // (1,4) — off the return-warp tile
+  'North', // (1,3)
+  'North', // (1,2)
+  'North', // (1,1)
+  'East', // (2,1)
+  'East', // (3,1)
+  'East', // (4,1)
+  'East', // (5,1)
+  'East', // (6,1)
+  'East', // (7,1) — facing East, toward the shopkeeper at (8,1)
+];
 const SHOP_TILE: Tile = { x: 7, y: 1 };
 const SHOP_FACING: Dir = 'East';
 /** The seeded npc_id, which the interact chip names (npcs/000-core.ron). */
@@ -1111,13 +1132,13 @@ test.describe
         { timeout: 20_000 },
       );
       const warped = await snap(a);
-      expect(warped.ownAuthTile, 'the warp lands on zone 1 (5,5)').toEqual({ x: 5, y: 5 });
+      expect(warped.ownAuthTile, 'the warp lands on zone 1 (1,5)').toEqual({ x: 1, y: 5 });
       await walk(a, ZONE1_TO_SHOPKEEPER);
       const atShop = await snap(a);
       expect(atShop.ownAuthTile, 'A stands on the shop post beside the shopkeeper').toEqual(
         SHOP_TILE,
       );
-      expect(atShop.map.zone_id, 'the return warp at zone 1 (5,5) must not have re-fired').toBe(1);
+      expect(atShop.map.zone_id, 'the return warp at zone 1 (1,5) must not have re-fired').toBe(1);
       expect(atShop.ongoingBattle, 'the zone-1 leg is grass-free').toBeNull();
 
       // Greet-then-shop: A (facing the shopkeeper; ctl-10a: T retired) sends `talk`; the
