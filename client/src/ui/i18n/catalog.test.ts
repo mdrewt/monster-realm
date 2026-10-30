@@ -451,6 +451,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // (`evolution.choice.evolve`) in SAMPLE_PARAMS, RETIRED with the four views' mouse-only
   // duplicate controls (their only requesters: catalogParity DEAD-KEY otherwise) = 362 keys.
   // `box.hint` changes VALUE only (the id keeps its name): it now names the Monsters sheet's Move.
+  // qf-7c (named intentional change, QF7B.1): -1 plain key (`battle.action.flee`, retired with the
+  // legacy battle Flee button; the command list's Run is the only flee) = 361 keys.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -479,7 +481,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'battle.pvp.waiting': 'Waiting for opponent’s action…', // battleView.ts:347
   'battle.card.you': 'You', // battleView.ts:291
   'battle.card.opponent': 'Opponent', // battleView.ts:289
-  'battle.action.flee': 'Flee', // battleView.ts:470
+  // qf-7c (named intentional change, QF7B.1): `battle.action.flee` ('Flee') is RETIRED with the
+  // legacy battle Flee button (catalogParity DEAD-KEY); the command list's Run is the only flee.
   'battle.recruit.noBait': 'No bait', // battleView.ts:522
   // ctl-8j (named intentional change): `battle.recruit.submit` ('Recruit'), `battle.cure.placeholder`
   // ('Select item') and `battle.cure.submit` ('Use Item') are RETIRED with the two <select>s and
@@ -1374,7 +1377,8 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 362-key roster (qf-8: -`box.card.{toBox,toParty}` -`trade.action.{accept,reject,confirm,
+/** The full 361-key roster (qf-7c: -`battle.action.flee` over the 362-key roster below;
+ *  qf-8: -`box.card.{toBox,toParty}` -`trade.action.{accept,reject,confirm,
  *  cancel}` -`pvp.incoming.{accept,decline}` -`pvp.outgoing.cancel` -`evolution.card.choosePrompt`
  *  -`evolution.choice.evolve` over the 373-key roster below;
  *  qf-9: -`raising.monsters.{heading,empty}` -`raising.card.{status,stats,
@@ -1471,7 +1475,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-8 362-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-7c 361-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1560,17 +1564,18 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 362 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 361 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (362 keys since qf-8: -10 plain, -1
+    // (a) roster is exactly the EXPECTED_KEYS roster (361 keys since qf-7c: -1 plain,
+    // `battle.action.flee`, retired with the legacy battle Flee button; 362 since qf-8: -10 plain, -1
     // parameterised retired with the four views' mouse-only duplicate controls; 373 since qf-9: -3
     // plain, -3 parameterised retired with the raising Monsters section, +1 parameterised
     // `box.summary.stats`; 378 since qf-6: +3 plain, +2 parameterised; 373 since qf-4: +2 plain; 371
     // since qf-3: +1 parameterised; 370 since ctl-14: +7 plain; 363 since ctl-13: +10 plain, +2
     // parameterised; was 351 since ctl-12b).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-8 roster is 362 keys').toHaveLength(362);
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-7c roster is 361 keys').toHaveLength(361);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -2616,8 +2621,10 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     expect(EXPECTED_KEYS.includes(KEY), 'the pinned roster lists the new id').toBe(true);
     // qf-8 (named intentional change): 373 → 362, the eleven ids qf-8 retired with the four views'
     // mouse-only duplicate controls (CAT-01 lists them).
-    expect(Object.keys(en).length, 'the English catalog holds exactly 362 keys').toBe(362);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(362);
+    // qf-7c (named intentional change, QF7B.1): 362 → 361, `battle.action.flee` retired with the
+    // legacy battle Flee button (the command list's Run is the only flee).
+    expect(Object.keys(en).length, 'the English catalog holds exactly 361 keys').toBe(361);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(361);
   });
 });
 
@@ -2650,7 +2657,7 @@ const QF8_FR_BOX_HINT =
   `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`;
 
 describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint that names Move', () => {
-  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 362 keys each [QF8-1-CATALOG-RETIRED]', () => {
+  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 361 keys each [QF8-1-CATALOG-RETIRED]', () => {
     // WRONG IMPL KILLED: a retired id left behind as a dead key in either catalog (catalogParity
     // DEAD-KEY fires, or a surviving requester keeps a deleted control half alive); an id retired
     // from en only (a French boot still carries it); a wholesale `box.card.*`, `trade.*`,
@@ -2710,8 +2717,10 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
       expect(Object.hasOwn(fr, kept), `fr ${kept} stays`).toBe(true);
       expect(EXPECTED_KEYS.includes(kept), `the pinned roster keeps ${kept}`).toBe(true);
     }
-    expect(Object.keys(en).length, 'the English catalog holds exactly 362 keys').toBe(362);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(362);
+    // qf-7c (named intentional change, QF7B.1): 362 → 361, `battle.action.flee` retired with the
+    // legacy battle Flee button.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 361 keys').toBe(361);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(361);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -2833,7 +2842,7 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     const en = scan('en', CATALOG_EN as Record<string, unknown>, EN_NEEDLES);
     const fr = scan('fr', CATALOG_FR as Record<string, unknown>, FR_NEEDLES);
     expect([...en.hits, ...fr.hits], 'no value names a retired control').toEqual([]);
-    // ANTI-VACUITY: every value was read, each closure twice (the 362-key roster is pinned above).
+    // ANTI-VACUITY: every value was read, each closure twice (the 361-key roster is pinned above).
     const expectedTexts =
       Object.keys(EXPECTED_PLAIN).length + 2 * Object.keys(SAMPLE_PARAMS).length;
     expect(en.texts, 'every English value was read').toBe(expectedTexts);

@@ -2307,13 +2307,21 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     //
     // ANCHORS ARE NAMED EXPLICITLY, because a wrong anchor makes this silently vacuous:
     // `#root` is resolved as the outcome banner's parentElement, and `#actionsEl` as the
-    // Flee button's parentElement.
+    // cure list's parentElement (qf-7c (QF7B.1) migration: the legacy Flee button that named it is
+    // gone. Was: the Flee button's parentElement).
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
     const view = new BattleView(parent, makeUx4Callbacks());
-    view.refresh(makeUx4EmptySwapVM());
+    // qf-7c (QF7B.1) migration: the VM carries one cure item, so the cure list (a child of
+    // #actionsEl) can name the container, and the player presses Bag (the command that lists it).
+    // Was: makeUx4EmptySwapVM() bare, #actionsEl named by the Flee button canFlee drew.
+    const h4VM = makeUx4EmptySwapVM({
+      cureItems: [{ itemId: 12, name: 'Antidote', cureStatus: 'Poison', count: 1 }],
+    });
+    view.refresh(h4VM);
     view.show();
+    c8iCmd(parent, 'bag').click();
 
     const outcomeEl = parent.querySelector('[data-testid="outcome-text"]');
     expect(
@@ -2332,17 +2340,19 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
         'containment assertions below would degenerate and could not bite',
     ).not.toBe(parent);
 
-    // #actionsEl, named via the Flee button (canFlee is true on this VM).
-    const fleeBtn = [...parent.querySelectorAll('button')].find((b) => b.textContent === 'Flee');
+    // #actionsEl, named via the cure list (one cure item on this VM). qf-7c (QF7B.1) migration:
+    // the anchor was the legacy Flee button, which no longer renders. Was: the Flee button
+    // (canFlee=true) found by its text, and its parentElement.
+    const cureList = parent.querySelector('[data-testid="cure-item-selector"]');
     expect(
-      fleeBtn,
-      'precondition (H4): the Flee button must exist (canFlee=true) — it is the anchor that ' +
+      cureList,
+      'precondition (H4): the cure list must exist (one cure item) — it is the anchor that ' +
         'identifies #actionsEl, the replaceChildren() container the hint must NOT live inside',
-    ).toBeDefined();
-    const actionsEl = fleeBtn!.parentElement;
+    ).not.toBeNull();
+    const actionsEl = cureList!.parentElement;
     expect(
       actionsEl,
-      'precondition (H4): the Flee button must have a parent element (#actionsEl)',
+      'precondition (H4): the cure list must have a parent element (#actionsEl)',
     ).not.toBeNull();
 
     const el = parent.querySelector(UX4_SWAP_HINT_SELECTOR) as HTMLElement | null;
@@ -2401,8 +2411,10 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
         'client/e2e/recruit.spec.ts:650-655,:688-697 the moment the copy ever carries HP-shaped text',
     ).toBeGreaterThan(Math.max(opponentCardIndex, playerCardIndex));
 
-    // Idempotence: three more refreshes with the SAME VM.
-    const sameVM = makeUx4EmptySwapVM();
+    // Idempotence: three more refreshes with the SAME VM. qf-7c (QF7B.1) migration: the SAME VM
+    // object the case rendered first (it carries the cure item now). Was: a fresh
+    // makeUx4EmptySwapVM().
+    const sameVM = h4VM;
     view.refresh(sameVM);
     view.refresh(sameVM);
     view.refresh(sameVM);
@@ -4563,8 +4575,8 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
 });
 
 // =============================================================================
-// in-flight guards for the FIVE PvE battle controls (skill / Flee / Swap / Recruit /
-// Use Item).
+// in-flight guards for the FIVE PvE battle controls (skill / flee / Swap / Recruit /
+// Use Item; qf-7c: the flee is the command list's Run, the legacy Flee button is gone).
 //
 // THE DEFECT: every PvE listener in battleView.ts is a bare `() => this.#callbacks.onAttack(...)`.
 // Nothing is disabled and nothing is keyed, so a second click while the reducer promise is still in
@@ -4594,7 +4606,7 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
 //
 // WRONG-IMPL-KILLED index (one per row; each `it` repeats its own):
 //   BV-1  no lock at all / a clicked-button-only lock          -> the seven-control disabled census
-//   BV-2  a per-ACTION lock (skill pending, Flee still live)    -> hostile re-enabled sibling clicks
+//   BV-2  a per-ACTION lock (skill pending, Run still live)     -> hostile re-enabled sibling clicks
 //   BV-3  a disabled-only impl with no pending key (D1)         -> hostile re-enable of the clicked button
 //   BV-4  refresh() not re-deriving / releasing the DETACHED node -> rebuilt-disabled + live re-enable
 //   BV-5  a boolean lock / an ANY-pending gate / a stale cross-battle release -> the other battle
@@ -4615,10 +4627,11 @@ const RA_SKILLS = [
   { id: 2, name: 'Tackle', affinity: 'Normal', power: 35, accuracy: 95 },
 ];
 
-/** An ongoing PvE VM on which ALL FIVE PvE controls are on offer: two skills, Flee, a two-member
- *  bench (UX4_BENCH), the Recruit list (No bait + one bait row) and the Bag list (one cure row). No
- *  select (ctl-8j: migrated from the <select> shape (B10); was seven buttons and two selects, with
- *  a Recruit button and a Use Item button). Only Flee and the cure row render at rest: the two
+/** An ongoing PvE VM on which ALL FIVE PvE controls are on offer: two skills, Run (the flee; qf-7c:
+ *  was the legacy Flee button), a two-member bench (UX4_BENCH), the Recruit list (No bait + one
+ *  bait row) and the Bag list (one cure row). No select (ctl-8j: migrated from the <select> shape
+ *  (B10); was seven buttons and two selects, with a Recruit button and a Use Item button). Only the
+ *  cure row renders at rest beside the command list (qf-7c: was Flee and the cure row): the two
  *  Swap rows render only once the Swap command is pressed (QF7.2), the two skill cells only once
  *  Fight is (QF7B), the No bait and bait rows only once Recruit is (QF7B), and only one of those
  *  three lists is on screen at a time (QF7B: was six buttons at rest, the skills and the bait
@@ -4682,13 +4695,15 @@ type RaList = 'fight' | 'recruit';
 
 interface RaControls {
   /** Every <button> under the mount but the command rows — with makeRaVM and one list open that is
-   *  exactly four PvE controls: the two skill cells (Fight open) or the No bait and Lure Berry rows
-   *  (Recruit open), plus Flee and the cure row (QF7B: was six at rest, both lists together;
-   *  ctl-8j: was seven; QF7.2: was eight, with the two Swap rows). */
+   *  exactly three PvE controls: the two skill cells (Fight open) or the No bait and Lure Berry rows
+   *  (Recruit open), plus the cure row (qf-7c (QF7B.1): was four, with the legacy Flee button;
+   *  QF7B: was six at rest, both lists together; ctl-8j: was seven; QF7.2: was eight, with the two
+   *  Swap rows). */
   readonly all: readonly HTMLButtonElement[];
   /** The two skill cells with Fight open; none with Recruit open. */
   readonly skills: readonly HTMLButtonElement[];
-  readonly flee: HTMLButtonElement;
+  // qf-7c (QF7B.1) migration: no `flee` field. The legacy Flee button is gone; the flee is the
+  // command list's Run (BV-2 presses it). Was: `readonly flee: HTMLButtonElement`.
   /** The No bait row — the first step of Recruit (ctl-8j: was the Recruit button); null with Fight
    *  open (QF7B). */
   readonly recruit: HTMLButtonElement | null;
@@ -4717,7 +4732,6 @@ function raControls(parent: HTMLElement, list: RaList = 'fight'): RaControls {
     (b) => b.getAttribute('data-battle-list') !== 'commands',
   );
   const skills = all.filter((b) => b.getAttribute('data-battle-list') === 'skills');
-  const flee = all.find((b) => b.textContent === 'Flee');
   // QF7.2 migration: the Swap rows are NOT part of the resting census any more: they render only
   // while the Swap command is the open command, so an untouched view must hold none (the Swap lock
   // is asserted by raExpectSwapLocked, BV-2 and the QF7.2 lock cases). Was: two Swap rows counted.
@@ -4753,7 +4767,12 @@ function raControls(parent: HTMLElement, list: RaList = 'fight'): RaControls {
       '20r-a precondition: the Lure Berry row must render (Recruit open)',
     ).not.toBeNull();
   }
-  expect(flee, '20r-a precondition: the Flee button must render').toBeDefined();
+  // qf-7c (QF7B.1) migration: the legacy Flee button no longer renders; the command list's Run is
+  // the only flee. Was: `expect(flee).toBeDefined()`, the Flee button found by its text.
+  expect(
+    all.filter((b) => b.textContent === 'Flee').map((b) => b.textContent),
+    '20r-a precondition (qf-7c, QF7B.1): no legacy Flee button renders',
+  ).toEqual([]);
   expect(
     swaps.map((b) => b.textContent),
     '20r-a precondition (QF7.2): no Swap row renders until the Swap command is pressed',
@@ -4761,16 +4780,16 @@ function raControls(parent: HTMLElement, list: RaList = 'fight'): RaControls {
   expect(useItem, '20r-a precondition: the cure row must render').not.toBeNull();
   expect(
     all,
-    '20r-a precondition: EXACTLY four buttons under the mount — the open list (2 skills, or No ' +
-      'bait + Lure Berry) + Flee + the cure row (QF7.2: no Swap row until Swap is pressed; QF7B: ' +
-      'one list at a time). A different count means the census below is about the wrong nodes (or ' +
-      'a confirm / target / swap list is open when no press was made)',
-  ).toHaveLength(4);
+    '20r-a precondition: EXACTLY three buttons under the mount — the open list (2 skills, or No ' +
+      'bait + Lure Berry) + the cure row (qf-7c: was four, with Flee; QF7.2: no Swap row until ' +
+      'Swap is pressed; QF7B: one list at a time). A different count means the census below is ' +
+      'about the wrong nodes (or a confirm / target / swap list is open when no press was made)',
+  ).toHaveLength(3);
   expect(
     parent.querySelectorAll('select'),
     '20r-a precondition: no <select> is left under the mount',
   ).toHaveLength(0);
-  return { all, skills, flee: flee!, recruit, bait, useItem: useItem! };
+  return { all, skills, recruit, bait, useItem: useItem! };
 }
 
 /** QF7B (the raExpectSwapLocked shape, for the list that is NOT open): while the PvE lock is held
@@ -4818,8 +4837,8 @@ function raExpectSwapLocked(
   expect(callbacks.onSwap, `${why}: no swap is sent under the lock`).not.toHaveBeenCalled();
 }
 
-/** One census assertion over all the controls of a census (QF7B: four; was six), labelled per
- *  button so a failure names the control that is in the wrong state. */
+/** One census assertion over all the controls of a census (qf-7c: three; QF7B: four; was six),
+ *  labelled per button so a failure names the control that is in the wrong state. */
 function raExpectAll(controls: RaControls, disabled: boolean, why: string): void {
   expect(
     controls.all.map((b) => `${b.textContent ?? ''}=${String(b.disabled)}`),
@@ -4850,8 +4869,8 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
   it('20r-a BV-1 BITES: two clicks on one skill while onAttack is unsettled → ONE call; all eight PvE controls (the bait and cure rows included) disabled, no <select> anywhere; enabled again on settle', async () => {
     // WRONG IMPL KILLED (1): the shipped code — no lock, two clicks send two submitAttack.
     // WRONG IMPL KILLED (2): a CLICKED-BUTTON-ONLY lock (`btn.disabled = true` on the one node,
-    //   evolutionView.ts's shipped debounce shape) — the other skill, Flee, Swap, Recruit and
-    //   Use Item stay live and the seven-control census reds on them.
+    //   evolutionView.ts's shipped debounce shape) — the other skill, Run (qf-7c: was the Flee
+    //   button), Swap, Recruit and Use Item stay live and the census reds on them.
     // WRONG IMPL KILLED (3): a VOID-returning dispatch (`.then(() => cb())`, or main.ts not
     //   `return`ing sendGuarded) — the lock releases after one microtask; the post-flush
     //   "still disabled" census reds.
@@ -4890,10 +4909,17 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     raExpectAll(
       c,
       true,
-      '20r-a BV-1: ALL FOUR PvE controls on screen (the two cells, Flee, the cure row) must be ' +
+      '20r-a BV-1: ALL THREE PvE controls on screen (the two cells, the cure row) must be ' +
         'disabled while any PvE call is pending — the lock is per BATTLE (D4), not per button, ' +
-        'because every one of them acts on the same turn (ctl-8j: the cure row is among them)',
+        'because every one of them acts on the same turn (ctl-8j: the cure row is among them; ' +
+        'qf-7c: was four, with the legacy Flee button)',
     );
+    // qf-7c (QF7B.1) migration: the flee is the command list's Run, a command row the lock greys
+    // (aria-disabled, never `disabled`). Was: the Flee button inside the census above.
+    expect(
+      c8iDisabled(c8iCmd(parent, 'run')),
+      '20r-a BV-1: Run, the only flee, is greyed while the attack is pending',
+    ).toBe(true);
     raExpectSwapLocked(
       parent,
       callbacks,
@@ -4935,9 +4961,9 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     // --- QF7B: the bait rows under the lock. They are on screen only while Recruit is the open
     // command, which a skill press never is (Fight closed the list), so this lock is taken over the
     // open bait list by the recruit itself (No bait, then Yes), and the same census is taken over it:
-    // No bait, the bait row, Flee and the cure row all disabled, the Fight path locked, the settle
-    // releasing them with the list still open. Was: `[c.recruit, c.bait, c.useItem]` disabled under
-    // the skill's lock, beside the grid.
+    // No bait, the bait row and the cure row all disabled (qf-7c: and Run greyed; the census had
+    // Flee in it), the Fight path locked, the settle releasing them with the list still open. Was:
+    // `[c.recruit, c.bait, c.useItem]` disabled under the skill's lock, beside the grid.
     closeOverlayA11y('battleView', null);
     document.body.replaceChildren();
     const dr = raDeferred();
@@ -4957,9 +4983,16 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     raExpectAll(
       rl,
       true,
-      '20r-a BV-1: with the bait list open, ALL FOUR PvE controls on screen (No bait, the bait ' +
-        'row, Flee, the cure row) must be disabled while the recruit is pending',
+      '20r-a BV-1: with the bait list open, ALL THREE PvE controls on screen (No bait, the bait ' +
+        'row, the cure row) must be disabled while the recruit is pending (qf-7c: was four, with ' +
+        'the legacy Flee button)',
     );
+    // qf-7c (QF7B.1) migration: Run, the only flee, is greyed under the recruit's lock too. Was: the
+    // Flee button inside the census above.
+    expect(
+      c8iDisabled(c8iCmd(rm.parent, 'run')),
+      '20r-a BV-1: Run, the only flee, is greyed while the recruit is pending',
+    ).toBe(true);
     expect(
       [rl.recruit, rl.bait, rl.useItem].map((b) => b?.disabled),
       '20r-a BV-1: the bait and cure rows are disabled by the lock (ctl-8j, plan A4)',
@@ -4984,9 +5017,9 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     );
   });
 
-  it('20r-a BV-2 BITES: a pending SKILL blocks Flee / Swap / an open Recruit Yes / an open Use Item target — each is disabled AND its click is swallowed even after a hostile re-enable', async () => {
+  it('20r-a BV-2 BITES: a pending SKILL blocks Run / Swap / an open Recruit Yes / an open Use Item target — each is disabled AND its click is swallowed even after a hostile re-enable', async () => {
     // WRONG IMPL KILLED: a PER-ACTION lock (`#pendingAttack`, `#pendingFlee`, …) — a skill in
-    //   flight leaves Flee live, so the player flees mid-attack and the server resolves two
+    //   flight leaves Run live, so the player flees mid-attack and the server resolves two
     //   intents for one turn. The hostile `disabled = false` on each sibling is what separates
     //   "disabled because the lock disabled it" from "swallowed because the lock is shared":
     //   a per-action lock with a shared disable pass survives the census and dies on the clicks.
@@ -5016,37 +5049,43 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     // Swap list opened BEFORE the skill may be closed by it or left locked, so a node held from the
     // resting view is no sibling to assert on; the Swap row's own hostile re-enable has a fresh
     // mount of its own at the end of this case. Was: `[c.swaps[0]!, callbacks.onSwap, 'Swap']`.
-    const siblings: readonly (readonly [HTMLButtonElement, unknown, string])[] = [
-      [c.flee, callbacks.onFlee, 'Flee'],
-    ];
+    // qf-7c (QF7B.1) migration: the last sibling, the legacy Flee button, is gone; the flee is the
+    // command list's Run. A command row is greyed by aria-disabled, never `disabled`, so its HOSTILE
+    // un-grey is `aria-disabled="false"` set by hand: only the shared pending key can then refuse
+    // the flee. Was: a one-row sibling loop over `[c.flee, callbacks.onFlee, 'Flee']`, the button
+    // `disabled`, re-enabled by hand and clicked.
     // (The bait and cure rows are locked too — BV-1's census — but a row press only opens a step,
     // it dispatches nothing, so it is not a sibling to hostile-click here: it would leave a confirm
     // open and change the census below. The steps' endpoints are tried at the end of this case.)
-    for (const [btn, spy, label] of siblings) {
-      expect(
-        btn.disabled,
-        `20r-a BV-2: ${label} must be DISABLED while a skill is pending (one battle, one turn)`,
-      ).toBe(true);
-      btn.click(); // swallowed by `disabled` alone (happy-dom, D1)
-      btn.disabled = false; // HOSTILE re-enable: only the shared pending key can swallow this
-      btn.click();
-      expect(
-        spy,
-        `20r-a BV-2: ${label}'s click must be swallowed by the SHARED pending key even after the ` +
-          'node is re-enabled by hand — a per-action lock lets this through',
-      ).not.toHaveBeenCalled();
-      btn.disabled = true; // restore, so the post-settle census below is about the release
-    }
+    const run = c8iCmd(parent, 'run');
+    expect(
+      c8iDisabled(run),
+      '20r-a BV-2: Run must be GREYED while a skill is pending (one battle, one turn)',
+    ).toBe(true);
+    run.click(); // swallowed by the grey alone
+    run.setAttribute('aria-disabled', 'false'); // HOSTILE un-grey: only the shared key can refuse
+    run.click();
+    expect(
+      callbacks.onFlee,
+      "20r-a BV-2: Run's press must be swallowed by the SHARED pending key even after the row is " +
+        'un-greyed by hand — a per-action lock lets this through',
+    ).not.toHaveBeenCalled();
+    run.setAttribute('aria-disabled', 'true'); // restore, so the settle is what releases it
     expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
 
     d.resolve();
     await raFlushPromises();
+    // TRAP (qf-7c): the hostile press above got past the grey, and a command press closes the open
+    // list before the shared key refuses the send, so the grid is closed now: open it again before
+    // the census (raOpen also asserts that the settle released Fight).
+    raOpen(parent, 'fight');
     const after = raControls(parent);
     raExpectAll(after, false, '20r-a BV-2: every control must be re-enabled on settle');
-    after.flee.click();
+    expect(c8iDisabled(c8iCmd(parent, 'run')), '20r-a BV-2: and Run is live again').toBe(false);
+    c8iCmd(parent, 'run').click();
     expect(
       callbacks.onFlee,
-      '20r-a BV-2: once the skill call settles, Flee must dispatch normally',
+      '20r-a BV-2: once the skill call settles, Run must flee normally',
     ).toHaveBeenCalledTimes(1);
     expect(callbacks.onFlee).toHaveBeenCalledWith(RA_BATTLE_ID);
 
@@ -5723,7 +5762,8 @@ const M24S3_BV_PLAIN_KEYS = new Set([
   'battle.pvp.waiting',
   'battle.card.you',
   'battle.card.opponent',
-  'battle.action.flee',
+  // qf-7c (named intentional change, QF7B.1): `battle.action.flee` is retired with the legacy battle
+  // Flee button; the command list's Run (`battle.command.run`, below) is the only flee.
   'battle.recruit.noBait',
   // ctl-8j (named intentional change): `battle.recruit.submit`, `battle.cure.placeholder` and
   // `battle.cure.submit` are retired with the two <select>s; the bait and cure lists' names and the
@@ -5850,6 +5890,7 @@ const M24S3_BV_ROSTER = [
   'Acc ',
   'Submit',
   'Swap',
+  // qf-7c (QF7B.1): no Flee renders any more; the word stays on the roster as an absence check.
   'Flee',
   'No bait',
   'Recruit',
@@ -5916,7 +5957,13 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
     expect(i18nT, 'PvE always resolves battle.card.opponent').toHaveBeenCalledWith(
       'battle.card.opponent',
     );
-    expect(i18nT).toHaveBeenCalledWith('battle.action.flee');
+    // qf-7c (QF7B.1) migration: the legacy Flee button is gone, so nothing resolves its retired key
+    // (read string-typed: the id has left the MessageId union). Was:
+    // `toHaveBeenCalledWith('battle.action.flee')`.
+    expect(
+      vi.mocked(i18nT).mock.calls.some(([key]) => String(key) === 'battle.action.flee'),
+      'battle.action.flee is retired: nothing resolves it any more',
+    ).toBe(false);
     expect(i18nT).toHaveBeenCalledWith('battle.recruit.noBait');
     // INTENTIONAL CHANGE (ctl-8j): the bait and cure <select>s and their submit buttons are gone,
     // so `battle.recruit.submit`, `battle.cure.placeholder` and `battle.cure.submit` are never
@@ -6004,7 +6051,16 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       skillCells.some((b) => b.hasAttribute('title')),
       'no skill cell carries a title any more',
     ).toBe(false);
-    expect(buttons.some((b) => b.textContent === 'Flee')).toBe(true);
+    // qf-7c (QF7B.1) migration: no legacy Flee button renders; the command list's Run is the flee.
+    // Was: `.toBe(true)`, the Flee button present.
+    expect(
+      buttons.some((b) => b.textContent === 'Flee'),
+      'no legacy Flee button renders',
+    ).toBe(false);
+    expect(
+      buttons.some((b) => b.textContent === 'Run'),
+      'the command list`s Run (the only flee) does',
+    ).toBe(true);
     expect(buttons.some((b) => b.textContent === 'Recruit')).toBe(true); // the command row
     expect(buttons.some((b) => b.textContent === 'Swap: Mosshorn (6/10)')).toBe(true);
     // INTENTIONAL CHANGE (ctl-8j): the bait and cure rows are list rows, not <option>s, and there
@@ -6167,7 +6223,10 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       expect(joined).toContain('«battle.swap.hint»');
       expect(joined).toContain('«battle.card.you»');
       expect(joined).toContain('«battle.card.opponent»');
-      expect(joined).toContain('«battle.action.flee»');
+      // qf-7c (QF7B.1) migration: the retired Flee label renders nowhere; Run's label does. Was:
+      // `toContain('«battle.action.flee»')`.
+      expect(joined).not.toContain('«battle.action.flee»');
+      expect(joined).toContain('«battle.command.run»');
       expect(joined).toContain('«battle.recruit.noBait»');
       // INTENTIONAL CHANGE (ctl-8j): the lists are named instead of submitted. Was: the three
       // retired ids `battle.recruit.submit`, `battle.cure.placeholder` and `battle.cure.submit`.
@@ -7038,8 +7097,10 @@ describe('BattleView ctl-7b: the battle root is a class-styled frame, layered by
 //   * Cursor rows carry `data-battle-list`: skill buttons "skills", swap buttons "swap", the bait
 //     rows "recruit", the cure rows "bag" (ctl-8j: migrated from the <select> shape (B10); was
 //     `recruit-action` "recruit" and `use-item-action` "bag", with the bait / cure <select>s in no
-//     list). The two list roots and Flee are in no list. Exactly one element in the root is `aria-current="true"` while the command row
-//     is shown, with an inline outline; when the view moves the cursor it also focuses it.
+//     list). The two list roots are in no list, and every button is in one (qf-7c, QF7B.1: the
+//     legacy Flee button, which was in none, is gone). Exactly one element in the root is
+//     `aria-current="true"` while the command row is shown, with an inline outline; when the view
+//     moves the cursor it also focuses it.
 //   * `applyBattleOp(op)`: a no-op while hidden. If focus is NOT on a root element that has
 //     `data-battle-list`, ANY op only focuses the kept cursor element (A presses nothing, a move
 //     does not step). Otherwise the cursor first syncs to the focused element, then move steps
@@ -7188,7 +7249,8 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     // or two of them (a screen reader announces both), or one with no visible outline; a disabled
     // row that is `disabled` (focus skips it, the cursor cannot rest on it) or that still acts; a
     // Recruit/Swap/Bag press that FIRES the action instead of moving the cursor to its control;
-    // a Back that leaves the cursor in the sub-list; select/Flee wired into a list; a Run that
+    // a Back that leaves the cursor in the sub-list; a select wired into a list, or (qf-7c) a
+    // button left outside every list, as the legacy Flee was; a Run that
     // flees without the shared lock (a double flee); a terminal outcome that still shows
     // commands or a cursor; a PvE lock that leaves command rows live (a second action in the same
     // turn); and a lock that is re-derived on render only (the settle must re-enable the rows).
@@ -7230,7 +7292,7 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     expect(c8iCurrent(root)[0], 'on Fight').toBe(fight);
     expect(fight.style.outline.length, 'with an inline outline (a visible cue)').toBeGreaterThan(0);
 
-    // --- the lists of the controls: the two list roots and Flee are in none ---
+    // --- the lists of the controls: the two list roots are in none, every button is in one ---
     // ctl-8j: migrated from the <select> shape (B10): the cursor enters a list at its first row,
     // the No bait row and the first cure row. Was: the Recruit and Use Item buttons (`recruit-action`
     // / `use-item-action`), which are the Yes / target rows of the second step now.
@@ -7246,9 +7308,15 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
         false,
       );
     }
-    const flee = [...root.querySelectorAll('button')].find((b) => b.textContent === 'Flee');
-    expect(flee, 'precondition: the legacy Flee button is still rendered').toBeDefined();
-    expect(flee?.hasAttribute('data-battle-list'), 'Flee is in no list').toBe(false);
+    // qf-7c (QF7B.1) migration: the legacy Flee button, in no list, is gone, so every button in the
+    // view carries data-battle-list. Was: the Flee button found by its text (a precondition that it
+    // was still rendered) and asserted to be in no list.
+    expect(
+      [...root.querySelectorAll('button')]
+        .filter((b) => !b.hasAttribute('data-battle-list'))
+        .map((b) => b.textContent),
+      'every button in the view carries data-battle-list (no Flee outside the lists)',
+    ).toEqual([]);
 
     // --- choosing Recruit, Swap and Bag moves the cursor, fires nothing; Back returns ---
     fight.focus();
@@ -7350,10 +7418,16 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
       );
     }
     c8iCmd(run.root, 'run').click();
-    const fleeBtn = [...run.root.querySelectorAll('button')].find((b) => b.textContent === 'Flee');
-    (fleeBtn as HTMLButtonElement).disabled = false; // hostile: only the shared lock can refuse
-    (fleeBtn as HTMLButtonElement).click();
-    expect(run.callbacks.onFlee, 'Run and Flee share the one lock').toHaveBeenCalledTimes(1);
+    // qf-7c (QF7B.1) migration: the legacy Flee button is gone, so the second press is a HOSTILE
+    // un-greyed Run (aria-disabled set to "false" by hand), which only the shared lock can refuse.
+    // Was: the Flee button, re-enabled by hand and clicked ("Run and Flee share the one lock").
+    const runRow = c8iCmd(run.root, 'run');
+    runRow.setAttribute('aria-disabled', 'false'); // hostile: only the shared lock can refuse
+    runRow.click();
+    expect(
+      run.callbacks.onFlee,
+      'a re-enabled Run is still refused by the shared lock',
+    ).toHaveBeenCalledTimes(1);
     d.resolve();
     await raFlushPromises();
     for (const id of C8I_IDS) {
@@ -7671,7 +7745,8 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     // WRONG IMPL KILLED: a Fight that opens nothing or fires an attack; a grid that Fight opens
     // hidden or greyed (the mouse and the e2e specs click it; QF7B: was "a grid hidden while the
     // list is commands", which QF7B.2 now requires); an A that presses with focus on
-    // the heading, <body>, Flee or a select (a blind A could attack or flee); a move that steps
+    // the heading, <body>, a button in no list (qf-7c: was the legacy Flee) or a select (a blind A
+    // could attack or flee); a move that steps
     // from a cursor the player is not on; a native held-Enter repeat that chains Fight to an
     // attack to the next turn's Fight; a hidden view that still moves focus (reconnect hide); an A
     // that sends a second action during the lock; and a Fight that opens an empty grid.
@@ -7736,16 +7811,27 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     expect(walk.callbacks.onFlee).toHaveBeenCalledWith(77n);
 
     const stray = c8iFresh(c8iVM());
-    const fleeBtn = [...stray.root.querySelectorAll('button')].find(
-      (b) => b.textContent === 'Flee',
-    ) as HTMLButtonElement;
-    fleeBtn.focus();
+    // qf-7c (QF7B.1) migration: the legacy Flee button (a focusable button in no cursor list) is
+    // gone, so the stray focus is a test-made button in no list, appended to the view root (the
+    // s4InsideSentinel precedent), whose own click is a spy: A with focus there presses nothing and
+    // seats the cursor. It is removed before the bait-root part below. Was: the Flee button, focused.
+    const strayBtn = document.createElement('button');
+    const strayClick = vi.fn();
+    strayBtn.addEventListener('click', strayClick);
+    stray.root.appendChild(strayBtn);
+    strayBtn.focus();
+    expect(document.activeElement, 'precondition: focus is on the stray button').toBe(strayBtn);
     stray.view.applyBattleOp({ kind: 'activate' });
     expect(
+      strayClick,
+      'A with focus on a button in no list does not press it',
+    ).not.toHaveBeenCalled();
+    expect(
       stray.callbacks.onFlee,
-      'A with focus on the legacy Flee button does not press it',
+      'A with focus on a button in no list flees nothing',
     ).not.toHaveBeenCalled();
     expect(document.activeElement, 'it seats the cursor instead').toBe(c8iCmd(stray.root, 'fight'));
+    strayBtn.remove();
     // ctl-8j: migrated from the <select> shape (B10). A select used to be the focus that owned the
     // arrows; the closest list-shape invariant is that focus on the bait LIST ROOT (a group, in no
     // list, made focusable here by hand) is not a cursor row either: a move from it only seats.
@@ -9027,7 +9113,7 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
 
   it('CTL8J-1x-LOCK-ACROSS-PICK: with a never-settling action in flight (an attack taken over the open grid, a recruit taken over the open bait list), opening a bait row or a cure row and closing the confirm with No, each by a hand-enabled click, rebuild the actions row with EVERY button disabled, any open Yes or target included', () => {
     // WRONG IMPL KILLED: a pick change (B, a row press) that re-renders the actions row without
-    // re-deriving the PvE lock: the rebuilt bait rows, cure rows, Flee, swap rows, Yes and target
+    // re-deriving the PvE lock: the rebuilt bait rows, cure rows, swap rows, Yes and target
     // come back enabled while the turn is spent, so a second action can start in the same turn.
     // QF7B migration: a skill is pressed from the grid Fight opens, and the grid and the bait list
     // are never on screen together, so a bait row cannot be pressed under an attack's lock any
@@ -9099,7 +9185,7 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
     expect(callbacks.onAttack).not.toHaveBeenCalled();
   });
 
-  it('CTL8J-1x-ACTION-SPENDS-PICK: taking another action by mouse (a skill, Flee, a swap row) while the Recruit confirm or the Bag target is open closes it at once, and after that action settles on the same turn the held Yes or target and an A at the cursor call nothing', async () => {
+  it('CTL8J-1x-ACTION-SPENDS-PICK: taking another action by mouse (a skill, Run, a swap row) while the Recruit confirm or the Bag target is open closes it at once, and after that action settles on the same turn the held Yes or target and an A at the cursor call nothing', async () => {
     // WRONG IMPL KILLED: a confirm or target that stays open, live, under another action: the
     // action settles with no batch (same turn, no refresh), the lock opens, and the old Yes then
     // spends a second action in the turn the first one already spent (the bait is consumed
@@ -9143,10 +9229,13 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
         },
       },
       {
-        label: 'a Flee click',
+        // qf-7c (QF7B.1) migration: the legacy Flee button is gone; the flee is the command list's
+        // Run. Every assertion below is unchanged. Was: 'a Flee click' on the Flee button.
+        // The Run press clears the pick through #setOpen(null, null) before #dispatch's own clear,
+        // which is now defence in depth only.
+        label: 'a Run press',
         cb: 'onFlee',
-        act: (root: Element) =>
-          [...root.querySelectorAll('button')].find((b) => b.textContent === 'Flee')?.click(),
+        act: (root: Element) => c8iCmd(root, 'run').click(),
       },
       {
         // QF7.2 migration: the swap rows exist only while Swap is the open command, and pressing
@@ -9302,8 +9391,8 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
 //     wait close it. A same-turn re-render keeps it open, with the cursor and focus on the same row.
 //   * A greyed Swap command (no swap on offer; a PvE call in flight; a PvP wait) opens nothing, and
 //     the empty-swap hint stays exactly as it was.
-// NOT asserted either way here: the Bag cure list is unchanged, the legacy Flee button stays
-// (QF7.1). QF7B (the block below) now renders the skills grid and the bait list only while Fight /
+// NOT asserted either way here: the Bag cure list is unchanged; the legacy Flee button is gone
+// (QF7B.1, qf-7c: the block at the end of this file). QF7B (the block below) now renders the skills grid and the bait list only while Fight /
 // Recruit is the open command, one list at a time, so the cases here press Fight where they need a
 // cell and Recruit where they need a bait row (which closes the Swap list). And NOT pinned, because
 // the spec is silent: whether a swap-row press or a lock takes an already-open Swap list away. The
@@ -9960,18 +10049,19 @@ describe('BattleView QF7.2: the swap rows render only while Swap is the open com
     expect(m.callbacks.onSwap, 'nothing is swapped').not.toHaveBeenCalled();
   });
 
-  it('QF7.2-BACK-UNDER-LOCK-STAYS-LOCKED: with the PvE lock held, B from a (hand-enabled, focused) swap row closes the list and every action-row button left on screen (the cure rows, Flee; QF7B: no cell or bait row is on screen at rest) is still disabled, the command rows aria-disabled', () => {
+  it('QF7.2-BACK-UNDER-LOCK-STAYS-LOCKED: with the PvE lock held, B from a (hand-enabled, focused) swap row closes the list and every action-row button left on screen (the cure rows; QF7B: no cell or bait row is on screen at rest) is still disabled, the command rows aria-disabled', () => {
     // WRONG IMPL KILLED: a close that rebuilds the actions row without re-deriving the lock (the
-    // same hazard as CTL8J-1x-LOCK-ACROSS-PICK for a pick change): the rebuilt Flee, bait and cure
-    // rows come back ENABLED while the turn is spent, so a second action can start. If the impl
+    // same hazard as CTL8J-1x-LOCK-ACROSS-PICK for a pick change): the rebuilt bait and cure rows
+    // come back ENABLED while the turn is spent, so a second action can start. If the impl
     // closes the list when the swap is pressed, there is no row to press B from; the lock census
     // below holds regardless (the spec is silent on that close).
     // QF7B migration: a skill is pressed from the grid Fight opens, and Fight closes the Swap list
     // (one list at a time), so a skill can no longer take the lock with the bench on screen. The
     // lock is taken by a swap row itself (onSwap never settles here); the rows the press leaves on
     // screen are disabled, and B from a hand-enabled one closes them. The census is of what is left
-    // at rest: the two cure rows and Flee. Was: a skill took the lock beside the open list, and the
-    // census counted the skills, Flee, three bait rows and two cure rows.
+    // at rest: the two cure rows (qf-7c, QF7B.1: was the two cure rows and Flee). Was: a skill took
+    // the lock beside the open list, and the census counted the skills, Flee, three bait rows and
+    // two cure rows.
     const d = raDeferred();
     const m = c8iFresh(c8jVM(), makeRaCallbacks({ onSwap: vi.fn().mockReturnValue(d.promise) }));
     expect(qf72Open(m), 'precondition: Swap is open').toHaveLength(2);
@@ -10143,8 +10233,8 @@ describe('BattleView QF7.2: the swap rows render only while Swap is the open com
 //   * The PvE lock greys Fight and Recruit like the other commands. A list already open stays on
 //     screen with its rows disabled, no row (live, or held and re-enabled by hand) dispatches, and
 //     the settle re-enables the rows with the list still open and the cursor on its row.
-// NOT asserted here (QF7B.1 / QF7B.3 belong to a later slice): anything about the legacy Flee
-// button.
+// NOT asserted here: anything about the legacy Flee button. qf-7c retired it (QF7B.1: the block at
+// the end of this file); its QF8.2 sweep row (QF7B.3) lives in reachability.test.ts.
 // =============================================================================
 
 /** The PvE label of each C8I_SKILLS cell, in skill order (the ctl-8i grid case pins the shape). */
@@ -11621,4 +11711,315 @@ describe('BattleView QF7B.2: the skill grid and the bait list render only while 
       'after the settle Recruit opens a live list',
     ).toHaveLength(3);
   });
+});
+
+// =============================================================================
+// QF7B.1 (qf-7c): "THE legacy Flee button SHALL NOT render — the command list's Run is the only
+// flee affordance."
+//
+// THE VIEW'S CONTRACT. In every state a wild PvE battle can be in (at rest; Fight open; Recruit open
+// with its confirm; Swap open; the Bag target open; a PvE call in flight):
+//   * no element anywhere in the document reads "Flee" (any case) by its own text, its whole text
+//     or a label attribute (aria-label, title, alt, value, placeholder), read as a player reads it:
+//     NFKC, zero-width characters dropped, a no-break space as a space, whitespace collapsed;
+//   * every button under the view root is a cursor row (`data-battle-list`), and the command list
+//     is exactly Fight, Recruit, Swap, Bag, Run;
+//   * the events the qf-8 sweep's spy matrix dispatches (reachability.test.ts), on any element of
+//     the view but a sender (Run, a skill cell, a swap row, the Recruit confirm's Yes, the Bag
+//     target), reach no onFlee and spend no turn, while Run itself flees, once;
+//   * nothing requests the retired `battle.action.flee` key through t() or tf().
+// The battle's QF8.2 sweep row (QF7B.3) is reachability.test.ts's.
+// =============================================================================
+
+/** The five command rows' test ids, in cursor order. */
+const QF7C_COMMAND_TESTIDS: readonly string[] = C8I_IDS.map((id) => `battle-command-${id}`);
+
+const QF7C_BUBBLES = { bubbles: true, cancelable: true } as const;
+
+/** The qf-8 sweep's spy-matrix events (reachability.test.ts), reproduced here (a test file is never
+ *  imported): a hover, the pointer / mouse / touch press and release, the click family (primary,
+ *  auxiliary, double, context), a focus arriving, and Enter and Space down and up. */
+const QF7C_POKES: ReadonlyArray<() => Event> = [
+  () => new MouseEvent('mouseenter'),
+  () => new MouseEvent('mouseover', QF7C_BUBBLES),
+  () => new PointerEvent('pointerdown', QF7C_BUBBLES),
+  () => new MouseEvent('mousedown', QF7C_BUBBLES),
+  () => new PointerEvent('pointerup', QF7C_BUBBLES),
+  () => new MouseEvent('mouseup', QF7C_BUBBLES),
+  () => new MouseEvent('click', QF7C_BUBBLES),
+  () => new MouseEvent('auxclick', { ...QF7C_BUBBLES, button: 1 }),
+  () => new MouseEvent('dblclick', QF7C_BUBBLES),
+  () => new MouseEvent('contextmenu', { ...QF7C_BUBBLES, button: 2 }),
+  () => new Event('touchstart', QF7C_BUBBLES),
+  () => new Event('touchend', QF7C_BUBBLES),
+  () => new Event('focusin', QF7C_BUBBLES),
+  () => new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', ...QF7C_BUBBLES }),
+  () => new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', ...QF7C_BUBBLES }),
+  () => new KeyboardEvent('keydown', { key: ' ', code: 'Space', ...QF7C_BUBBLES }),
+  () => new KeyboardEvent('keyup', { key: ' ', code: 'Space', ...QF7C_BUBBLES }),
+];
+
+/** U+200B ZERO WIDTH SPACE, U+200C ZERO WIDTH NON-JOINER, U+200D ZERO WIDTH JOINER, U+2060 WORD
+ *  JOINER and U+FEFF ZERO WIDTH NO-BREAK SPACE, built by code point. */
+const QF7C_ZERO_WIDTH = [0x200b, 0x200c, 0x200d, 0x2060, 0xfeff].map((code) =>
+  String.fromCodePoint(code),
+);
+/** U+00A0 NO-BREAK SPACE, by code point. */
+const QF7C_NBSP = String.fromCodePoint(0x00a0);
+
+/** Text as a player reads it (the qf-8 sweep's reading): NFKC, the zero-width characters dropped, a
+ *  no-break space read as a space, every run of whitespace one space, trimmed. Case is kept. */
+function qf7cNormalise(text: string): string {
+  let folded = text.normalize('NFKC');
+  for (const hidden of QF7C_ZERO_WIDTH) folded = folded.split(hidden).join('');
+  folded = folded.split(QF7C_NBSP).join(' ');
+  let out = '';
+  let gap = false;
+  for (const ch of folded) {
+    if (ch.trim() === '') {
+      gap = out !== '';
+      continue;
+    }
+    if (gap) out += ' ';
+    gap = false;
+    out += ch;
+  }
+  return out;
+}
+
+/** The attributes an element can be read by, besides its text. */
+const QF7C_LABEL_ATTRIBUTES = ['aria-label', 'title', 'alt', 'value', 'placeholder'] as const;
+
+/** Every text `el` can be read by, normalised, blanks dropped: each own text node, their
+ *  concatenation (a label split across text nodes), its whole text (a label split across child
+ *  elements) and its label attributes. */
+function qf7cLabels(el: Element): string[] {
+  const own = [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent ?? '');
+  const raw = [
+    ...own,
+    own.join(''),
+    el.textContent ?? '',
+    ...QF7C_LABEL_ATTRIBUTES.map((name) => el.getAttribute(name) ?? ''),
+  ];
+  return [...new Set(raw.map(qf7cNormalise).filter((label) => label !== ''))];
+}
+
+/** Every element of the whole document (`<html>` itself included, so a node beside `<body>` counts)
+ *  that reads "Flee" in any case, shown or hidden. */
+function qf7cFleeLabelled(): string[] {
+  const html = document.documentElement;
+  const out: string[] = [];
+  for (const el of [html, ...html.querySelectorAll('*')]) {
+    for (const label of qf7cLabels(el)) {
+      if (label.toLowerCase() === 'flee')
+        out.push(`<${el.tagName.toLowerCase()}> reads "${label}"`);
+    }
+  }
+  return out;
+}
+
+/** The view root and every element under it, in document order. */
+const qf7cElements = (root: Element): Element[] => [root, ...root.querySelectorAll('*')];
+
+/** An element by its tag, test id and cursor list: on a fresh mount entered into the same state,
+ *  the same index names the same element. */
+const qf7cDescribe = (el: Element): string =>
+  `${el.tagName.toLowerCase()}[data-testid="${el.getAttribute('data-testid') ?? ''}"]` +
+  `[data-battle-list="${el.getAttribute('data-battle-list') ?? ''}"]`;
+
+/** A sender: an element whose press IS a turn's action (Run, a skill cell, a swap row, the Recruit
+ *  confirm's Yes, the Bag target). Every other element must send nothing. */
+function qf7cIsSender(el: Element): boolean {
+  const testid = el.getAttribute('data-testid');
+  const list = el.getAttribute('data-battle-list');
+  return (
+    testid === 'battle-command-run' ||
+    testid === 'recruit-action' ||
+    testid === 'use-item-action' ||
+    list === 'skills' ||
+    list === 'swap'
+  );
+}
+
+/** Every QF7C_POKES event at `el`, then three microtasks and one real macrotask (a send deferred
+ *  to a promise or a timer has landed by then). */
+async function qf7cPoke(el: Element): Promise<void> {
+  for (const make of QF7C_POKES) el.dispatchEvent(make());
+  await raFlushPromises();
+  await s4FlushMacrotask();
+}
+
+describe('Run in the command list is the only flee affordance (QF7B.1, qf-7c)', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('in every state a wild battle can be in (at rest, Fight open, the Recruit confirm open, Swap open, the Bag target open, a PvE call in flight) no element in the document reads Flee by its text or a label attribute, every button in the view is a cursor row, the command list is exactly Fight, Recruit, Swap, Bag, Run, no pointer, mouse, touch, focus or key event on any element of the view but a sender (Run, a skill cell, a swap row, Yes, the Bag target) flees or spends the turn while Run flees once, and nothing requests the retired battle.action.flee key [QF7B-1-NO-FLEE-ANY-STATE]', async () => {
+    // WRONG IMPL KILLED (plan §10, measured against the shipped Flee and its variants): the legacy
+    // Flee button still rendered; rendered hidden (display:none: the scan reads every element, shown
+    // or not), relabelled ("Run away", a second "Run": a button outside every cursor list, or a
+    // sixth command row, whose press still flees) or split across text nodes or child elements; a
+    // Flee rendered only while a list is open, only beside the skill grid, only with the Recruit
+    // confirm or the Bag target up, or only under the lock; a div, a span or a role="button"
+    // element (or a container: the actions row, the root) carrying the flee on a pointerup,
+    // mousedown, touchend or keydown handler instead of a click; and the word kept in an aria-label
+    // or a title. The click half takes a FRESH mount per element: one mount clicked through is
+    // blind, because a press on a command or a cure row rebuilds the actions row and detaches a
+    // Flee before the loop reaches it (measured: onFlee never called on the shipped code).
+    vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
+
+    /** The static half in one state: the document-wide label scan, the cursor-row census of the
+     *  view's buttons and the command list. */
+    const expectNoFlee = (m: C8iMount, state: string): void => {
+      expect(qf7cFleeLabelled(), `${state}: no element in the document reads Flee`).toEqual([]);
+      expect(
+        [...m.root.querySelectorAll('button')]
+          .filter((b) => !b.hasAttribute('data-battle-list'))
+          .map(qf7cDescribe),
+        `${state}: every button in the view is a cursor row (carries data-battle-list)`,
+      ).toEqual([]);
+      expect(
+        [...m.root.querySelectorAll('[data-battle-list="commands"]')].map((el) =>
+          el.getAttribute('data-testid'),
+        ),
+        `${state}: the command list is exactly Fight, Recruit, Swap, Bag, Run`,
+      ).toEqual([...QF7C_COMMAND_TESTIDS]);
+    };
+
+    // makeRaVM: a wild battle with two skills, two healthy bench monsters, one bait and one cure
+    // item, so every state below exists; every command is live at rest.
+    const states: ReadonlyArray<readonly [string, (m: C8iMount) => void]> = [
+      [
+        'at rest',
+        (m) => {
+          expect(c8iCurrent(m.root)[0], 'at rest: precondition, the cursor is on Fight').toBe(
+            c8iCmd(m.root, 'fight'),
+          );
+        },
+      ],
+      [
+        'Fight open',
+        (m) => {
+          c8iCmd(m.root, 'fight').click();
+          expect(c8iSkills(m.root), 'Fight open: precondition, the two skill cells').toHaveLength(
+            2,
+          );
+        },
+      ],
+      [
+        'Recruit open, its confirm open on No bait',
+        (m) => {
+          c8iCmd(m.root, 'recruit').click();
+          c8iTestId<HTMLButtonElement>(m.root, 'bait-option-none')?.click();
+          expect(c8jYes(m.root), 'Recruit confirm: precondition, Yes is on screen').not.toBeNull();
+        },
+      ],
+      [
+        'Swap open',
+        (m) => {
+          c8iCmd(m.root, 'swap').click();
+          expect(
+            c8jRows(m.root, 'swap'),
+            'Swap open: precondition, the two bench rows',
+          ).toHaveLength(2);
+        },
+      ],
+      [
+        'the Bag target open',
+        (m) => {
+          c8iCmd(m.root, 'bag').click();
+          c8jRows(m.root, 'bag')[0]?.click();
+          expect(
+            c8jUse(m.root),
+            'Bag target: precondition, the target is on screen',
+          ).not.toBeNull();
+        },
+      ],
+    ];
+
+    for (const [state, enter] of states) {
+      const ref = c8iFresh(makeRaVM(), makeRaCallbacks());
+      enter(ref);
+      expectNoFlee(ref, state);
+      const reference = qf7cElements(ref.root);
+      const names = reference.map(qf7cDescribe);
+      const senders = reference.map(qf7cIsSender);
+      expect(
+        senders.filter((sender) => !sender).length,
+        `${state}: ANTI-VACUITY, the view has elements to press`,
+      ).toBeGreaterThan(20);
+      expect(
+        names.filter((name, i) => senders[i] === true && name.includes('battle-command-run')),
+        `${state}: ANTI-VACUITY, Run is the one command row among the senders`,
+      ).toHaveLength(1);
+
+      // The click half: a fresh mount per element, entered into the same state.
+      for (const [i, name] of names.entries()) {
+        if (senders[i] === true) continue;
+        const m = c8iFresh(makeRaVM(), makeRaCallbacks());
+        enter(m);
+        const now = qf7cElements(m.root);
+        expect(now.length, `${state}: a fresh mount enters the same state`).toBe(reference.length);
+        const target = now[i] as Element;
+        expect(qf7cDescribe(target), `${state}: element ${i} is the same element`).toBe(name);
+        await qf7cPoke(target);
+        expect(
+          m.callbacks.onFlee,
+          `${state}: no event on ${name} (element ${i}) flees`,
+        ).not.toHaveBeenCalled();
+        expect(
+          C8I_IDS.filter((id) => c8iDisabled(c8iCmd(m.root, id))),
+          `${state}: nor spends the turn on ${name} (element ${i}): every command is still live`,
+        ).toEqual([]);
+        // A Flee built by a hover, a press or a focus (the qf-8 red-team's "button built on hover")
+        // is caught where it appears.
+        expectNoFlee(m, `${state}, after every event on ${name} (element ${i})`);
+      }
+
+      // Run itself flees, once, from this state.
+      const run = c8iFresh(makeRaVM(), makeRaCallbacks());
+      enter(run);
+      await qf7cPoke(c8iCmd(run.root, 'run'));
+      expect(run.callbacks.onFlee, `${state}: Run flees, once`).toHaveBeenCalledTimes(1);
+      expect(run.callbacks.onFlee, `${state}: for this battle`).toHaveBeenCalledWith(RA_BATTLE_ID);
+    }
+
+    // --- under a PvE call in flight: the static half only. The lock swallows every send, a flee
+    // included, so a click half here would pass whatever the view rendered: it is not run. ---
+    const d = raDeferred();
+    const locked = c8iFresh(
+      makeRaVM(),
+      makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) }),
+    );
+    c8iCmd(locked.root, 'fight').click();
+    c8iSkills(locked.root)[0]?.click();
+    expect(
+      locked.callbacks.onAttack,
+      'under the lock: precondition, the attack is in flight',
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      C8I_IDS.filter((id) => !c8iDisabled(c8iCmd(locked.root, id))),
+      'under the lock: precondition, every command is greyed',
+    ).toEqual([]);
+    expectNoFlee(locked, 'under the lock');
+    d.resolve();
+    await raFlushPromises();
+
+    // --- the retired key, read string-typed (the id has left the MessageId union) ---
+    expect(
+      vi.mocked(i18nT).mock.calls.some(([key]) => String(key) === 'battle.command.run'),
+      'ANTI-VACUITY: the resolver spy saw the Run label requested',
+    ).toBe(true);
+    expect(
+      vi.mocked(i18nT).mock.calls.some(([key]) => String(key) === 'battle.action.flee'),
+      'nothing requests the retired battle.action.flee through t()',
+    ).toBe(false);
+    expect(
+      vi.mocked(i18nTf).mock.calls.some(([key]) => String(key) === 'battle.action.flee'),
+      'nothing requests the retired battle.action.flee through tf()',
+    ).toBe(false);
+    // A fresh mount per element of five states (about 170 mounts, each awaiting a real macrotask)
+    // can approach vitest's 5 s default under a loaded CI run, hence the explicit budget.
+  }, 30_000);
 });
