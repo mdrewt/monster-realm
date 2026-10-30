@@ -55,7 +55,7 @@ import type { BattleOp, BattleOpsView } from './screens/battleScreen';
 
 /** The lists the battle cursor walks (ctl-8i, ctl-8j): the command list, the list each command
  *  leads to, and the second step of Recruit (Yes / No) and Bag (the target). Every cursor row
- *  carries its list's name in `data-battle-list`; the legacy Flee button is in none. Every row is a
+ *  carries its list's name in `data-battle-list` (every button in the view is a row). Every row is a
  *  button whose click handler holds the model's id, so no id is ever read back from the DOM (B10). */
 type CursorList =
   | 'commands'
@@ -92,7 +92,7 @@ let promptIds = 0;
 export interface BattleViewCallbacks {
   /** Called when the player selects a skill to attack with (PvE). */
   readonly onAttack: (battleId: bigint, skillId: number) => void | Promise<void>;
-  /** Called when the player clicks the Flee button. */
+  /** Called when the player presses Run in the command list (the only flee path, QF7B.1). */
   readonly onFlee: (battleId: bigint) => void | Promise<void>;
   /** Called when the player selects a team member to swap to (PvE). */
   readonly onSwap: (battleId: bigint, teamIndex: number) => void | Promise<void>;
@@ -235,8 +235,8 @@ export class BattleView implements BattleOpsView {
     // luminance) are deliberately NOT retuned: once the border style carries the distinction
     // hue-free the criterion is met, and the backgrounds are then decoration layered over a
     // channel that already carries the information. Argued dismissal, not an oversight.
-    // Dismissed for 1.4.1, and ONLY for 1.4.1: the #844 border on the Flee button and its
-    // siblings on the Swap / Submit buttons and the bait, cure, Yes / No and target rows (ctl-8j).
+    // Dismissed for 1.4.1, and ONLY for 1.4.1: the borders on the Swap / Submit buttons and the
+    // bait, cure, Yes / No and target rows (ctl-8j).
     // On every one the accessible name IS the information, so hue encodes nothing and they
     // keep their 1px solid rule. NONE of these borders has been measured against 1.4.11 — the
     // floor this slice just invoked to move #844; that gap is real and not claimed closed here.
@@ -311,7 +311,7 @@ export class BattleView implements BattleOpsView {
       'display:grid;grid-template-columns:1fr 1fr;gap:6px;width:100%;max-width:320px;margin-bottom:12px;';
     this.#root.appendChild(this.#skillsEl);
 
-    // Action buttons (flee/swap)
+    // The actions row: the bait list, the bench rows, the cure list and their second steps.
     this.#actionsEl = document.createElement('div');
     this.#actionsEl.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;';
     this.#root.appendChild(this.#actionsEl);
@@ -465,7 +465,7 @@ export class BattleView implements BattleOpsView {
   }
 
   /** One cursor op from the battle screen (CTL8I.1-3). With focus off the cursor rows (the
-   *  heading, the page, Flee, a confirm's prompt) it only seats the kept cursor: an A must never
+   *  heading, the page, a confirm's prompt) it only seats the kept cursor: an A must never
    *  press a row the player is not on. On a row the cursor first follows focus (Tab and the mouse
    *  move it too). */
   applyBattleOp(op: BattleOp): void {
@@ -811,17 +811,6 @@ export class BattleView implements BattleOpsView {
 
   #renderActions(vm: BattleViewModel): void {
     this.#actionsEl.replaceChildren();
-    if (vm.canFlee) {
-      const fleeBtn = document.createElement('button');
-      fleeBtn.style.cssText =
-        'padding:6px 12px;cursor:pointer;font-family:monospace;background:#3a2a2a;' +
-        'color:#e0e0e0;border:1px solid #844;border-radius:3px;';
-      fleeBtn.textContent = t('battle.action.flee');
-      fleeBtn.addEventListener('click', () =>
-        this.#dispatch(vm.battleId, () => this.#callbacks.onFlee(vm.battleId)),
-      );
-      this.#actionsEl.appendChild(fleeBtn);
-    }
     if (vm.canSwap && this.#open === 'swap') {
       this.#renderSwapButtons(vm);
     }
@@ -845,7 +834,7 @@ export class BattleView implements BattleOpsView {
 
   /** Open `command`'s list (null closes it) with `pick` as its second step (null, or one that belongs
    *  to `command`: a step never outlives its list). The grid is rebuilt when Fight opens or closes,
-   *  the actions row (bait, bench, Flee, cure) when Recruit or Swap does or the pick changes, and the
+   *  the actions row (bait, bench, cure) when Recruit or Swap does or the pick changes, and the
    *  PvE lock is re-applied to whatever was rebuilt. */
   #setOpen(command: BattleCommand | null, pick: BattlePick | null): void {
     const was = this.#open;

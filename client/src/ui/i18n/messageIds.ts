@@ -148,7 +148,6 @@ export type MessageId =
   | 'battle.skill.pvpSubmit'
   | 'battle.skill.pveLabel'
   | 'battle.commands.waiting'
-  | 'battle.action.flee'
   | 'battle.recruit.listLabel'
   | 'battle.recruit.noBait'
   | 'battle.recruit.confirm'
