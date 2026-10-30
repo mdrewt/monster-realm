@@ -130,7 +130,7 @@ describe('RaisingView — m23-s4 overlay a11y wiring on the show()/hide()/toggle
     expect(root.getAttribute('aria-label')).toBe(t(S4_META.labelKey));
   });
 
-  it('S4-raisingView-ANCHOR-FOCUS BITES: the anchor resolves to an <h2 tabindex="-1"> with byte-unchanged "Raising & Inventory" text, and focus moves to it after ONE real macrotask (never synchronously)', async () => {
+  it('S4-raisingView-ANCHOR-FOCUS BITES: the anchor resolves to an <h2 tabindex="-1"> reading "Inventory" (qf-10), and focus moves to it after ONE real macrotask (never synchronously)', async () => {
     const { parent, view } = s4Mount();
     const root = overlayRootOf(parent);
     view.show();
@@ -142,11 +142,35 @@ describe('RaisingView — m23-s4 overlay a11y wiring on the show()/hide()/toggle
     ).not.toBeNull();
     expect(anchor!.tagName).toBe('H2');
     expect(anchor!.getAttribute('tabindex')).toBe('-1');
-    expect(anchor!.textContent, 'byte-unchanged overlay title text').toBe('Raising & Inventory');
+    // NAMED INTENTIONAL CHANGE (qf-10, QF10.4): the title reads "Inventory" (was "Raising &
+    // Inventory"); the anchor is the `raising-title` testid heading, not the inventory section's.
+    expect(anchor!.textContent, 'the overlay title text (raising.title)').toBe('Inventory');
+    expect(anchor!.getAttribute('data-testid'), 'it is the overlay title, not a section').toBe(
+      'raising-title',
+    );
 
     expect(document.activeElement, 'not focused synchronously').not.toBe(anchor);
     await s4FlushMacrotask();
     expect(document.activeElement, 'focused by IDENTITY after one real macrotask').toBe(anchor);
+  });
+
+  it('the raising title reads "Inventory" in en (never the legacy "Raising & Inventory") and "Inventaire" in fr after a re-show [QF10-4-RAISING-TITLE-RENDERS]', () => {
+    const { parent, view } = s4Mount();
+    const titleOf = (): string | null =>
+      parent.querySelector<HTMLElement>('[data-testid="raising-title"]')?.textContent ?? null;
+    try {
+      setLocale('en');
+      view.show();
+      expect(titleOf()).toBe('Inventory');
+      expect(titleOf()).not.toBe('Raising & Inventory');
+
+      setLocale('fr');
+      view.hide();
+      view.show();
+      expect(titleOf()).toBe('Inventaire');
+    } finally {
+      setLocale('en');
+    }
   });
 
   it('S4-raisingView-HELPER-CALLED BITES: the view DELEGATES to the S1 helpers with its OWN id, its OWN root, and a literal null fallbackFocus', () => {
@@ -1257,9 +1281,9 @@ describe('m24s4 (ADR-0260): raisingView.ts routes its migrated sinks through t()
     expect(i18nT).toHaveBeenCalledWith('raising.title');
     expect(i18nT).toHaveBeenCalledWith('raising.inventory.heading');
     expect(i18nT).toHaveBeenCalledWith('raising.inventory.empty');
-    expect(root.querySelector('[data-testid="raising-title"]')?.textContent).toBe(
-      'Raising & Inventory',
-    );
+    // NAMED INTENTIONAL CHANGE (qf-10, QF10.4): was 'Raising & Inventory'. Located by testid: the
+    // section heading (raising.inventory.heading) also reads 'Inventory'.
+    expect(root.querySelector('[data-testid="raising-title"]')?.textContent).toBe('Inventory');
     expect(root.textContent ?? '').toContain('No items.');
     expect(root.textContent ?? '', 'no empty-monsters line').not.toContain('No monsters.');
 

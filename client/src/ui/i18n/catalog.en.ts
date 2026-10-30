@@ -388,11 +388,11 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'battle.continueHint': 'Press Enter or Esc to continue',
   // @desc: Explainer shown in place of the swap buttons when the player has no healthy bench
   // monster in this battle; the second sentence tells them how to reach the party screen afterwards
-  // ("Esc" and "B" are keyboard key names; "Party & Box" is that screen's title). Two sentences,
+  // ("Esc" and "B" are keyboard key names; "Monsters" is that screen's title). Two sentences,
   // wraps freely in a 320px-wide column.
   // battleView.ts:216-218 (resolved in show())
   'battle.swap.hint':
-    'No healthy party monster in this battle to swap in. When this battle ends, press Esc, then B for Party & Box.',
+    'No healthy party monster in this battle to swap in. When this battle ends, press Esc, then B for Monsters.',
   // @desc: PvP status banner shown after the player has submitted their move, while the opponent's
   // move is still outstanding; carries a typographic apostrophe and an ellipsis. One line.
   // battleView.ts:347
@@ -455,10 +455,10 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: The Recruit question's other answer: go back to the bait list. One word.
   // battleView.ts (#renderRecruitConfirm)
   'battle.recruit.no': 'No',
-  // @desc: Accessible name of the list of cure items a battle's Bag command opens. Two words.
+  // @desc: Accessible name of the list of cure items a battle's Items command opens. Two words.
   // battleView.ts (#renderCureItems)
   'battle.cure.listLabel': 'Cure items',
-  // @desc: One row of the battle Bag's cure-item list; {name} is the item name, {cureStatus} the
+  // @desc: One row of the battle Items command's cure-item list; {name} is the item name, {cureStatus} the
   // ailment it removes (e.g. "Poison") and {count} how many the player carries. One line in a
   // narrow button.
   // battleView.ts (#renderCureItems)
@@ -502,12 +502,12 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Battle command list entry that moves to the battle items (status cures). One short
   // noun; the five command entries share one narrow row.
   // battleView.ts (#renderCommands)
-  'battle.command.bag': 'Bag',
+  'battle.command.bag': 'Items',
   // @desc: Battle command list entry that runs from a wild battle at once (greyed, with a reason,
   // in a player battle). One short verb; the five command entries share one narrow row.
   // battleView.ts (#renderCommands)
   'battle.command.run': 'Run',
-  // @desc: Accessible name of the battle command list (Fight, Recruit, Swap, Bag, Run), read by a
+  // @desc: Accessible name of the battle command list (Fight, Recruit, Swap, Items, Run), read by a
   // screen reader as the group's label. One word.
   // battleView.ts (#renderCommands)
   'battle.commands.label': 'Commands',
@@ -588,7 +588,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Heading of the raising overlay, which shows the player's inventory (the Bag pockets;
   // monster stats live on the Monsters Summary). One short line.
   // raisingView.ts:104 (resolved in show())
-  'raising.title': 'Raising & Inventory',
+  'raising.title': 'Inventory',
   // @desc: Section heading above the item cards in the raising overlay. One word.
   // raisingView.ts:134 (resolved in show())
   'raising.inventory.heading': 'Inventory',
@@ -604,23 +604,23 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // monster. One short line.
   // main.ts (dispatch, the `care` arm; pre-migration careAction.ts CARED_MESSAGE)
   'raising.feedback.cared': 'Cared!',
-  // @desc: Heading of the party & box overlay, where the player arranges which monsters are in
+  // @desc: Heading of the Monsters overlay, where the player arranges which monsters are in
   // the active party and which stay in storage. One short line.
   // boxView.ts:69 (resolved in show())
-  'box.title': 'Party & Box',
+  'box.title': 'Monsters',
   // @desc: Explainer under the heading telling the player that only Party monsters battle and
-  // that new recruits land in the Box; the quoted "Move" must match the box.sheet.move row
+  // that new recruits land in Storage; the quoted "Move" must match the box.sheet.move row
   // label exactly (the Monsters sheet's Move row is the one way to move a monster). Two
   // sentences, wraps freely up to 600px wide; carries a spaced em dash.
   // boxView.ts:94-96 (resolved in show())
   'box.hint':
-    'Only monsters in your Party can battle or be swapped in. New recruits arrive in your Box — select one there and choose "Move" to bring it into an open party slot.',
+    'Only monsters in your Party can battle or be swapped in. New recruits arrive in Storage — select one there and choose "Move" to bring it into an open party slot.',
   // @desc: Section heading above the six party slots. One word.
   // boxView.ts:101 (resolved in show())
   'box.section.party': 'Party',
-  // @desc: Section heading above the stored (box) monsters. One word.
+  // @desc: Section heading above the stored monsters (Storage). One word.
   // boxView.ts:111 (resolved in show())
-  'box.section.box': 'Box',
+  'box.section.box': 'Storage',
   // @desc: Placeholder text of an unoccupied party slot; {slot} is the slot index as shown today
   // (counted from 0). One short line, dimmed.
   // boxView.ts:160
@@ -628,7 +628,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Empty-state line of the box section when no monster is in storage. One short line,
   // dimmed.
   // boxView.ts:173
-  'box.box.empty': 'No monsters in box.',
+  'box.box.empty': 'No monsters in storage.',
   // @desc: Info line on a monster card in the party or box; {species} is the species name,
   // {level} the level ("Lv" abbreviates "Level"), {current}/{max} its hit points and {percent}
   // the same as a percentage. Keep the "HP {current}/{max}" shape — tests read it. One line of

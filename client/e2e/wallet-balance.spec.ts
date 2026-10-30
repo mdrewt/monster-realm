@@ -8,7 +8,16 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { type Dir, interactChip, interactWithNpc, pressAccel, waitForNpcInFront } from './controls';
+import {
+  type Dir,
+  interactChip,
+  interactWithNpc,
+  pressAccel,
+  WANDER_NPC_MAX_ATTEMPTS,
+  WANDER_OPEN_WAIT_MS,
+  WANDER_TALK_BUDGET_MS,
+  waitForNpcInFront,
+} from './controls';
 
 // owner-scoped wallet readout e2e.
 //
@@ -138,8 +147,8 @@ import { type Dir, interactChip, interactWithNpc, pressAccel, waitForNpcInFront 
 // `STEP_MS = 200` — it does not depend on a player being
 // present in that zone. elder_oak keeps wandering in zone 0 forever, every wander writes a
 // `character` row, the subscription is globally unfiltered, and the M13d shop batch listener
-// re-renders an OPEN overlay on every batch. So an open overlay is
-// re-rendered roughly every 200 ms WITH NO PLAYER INPUT, and a retrying
+// re-renders an OPEN overlay on every batch. So an open overlay is re-rendered about once a
+// second (the elder's post-qf-5 step cadence) WITH NO PLAYER INPUT, and a retrying
 // `toHaveText('Gold: 50')` cannot distinguish a correct implementation from one that
 // patched only the batch-listener call site (:1436) and blanks on open.
 //
@@ -342,12 +351,12 @@ async function walk(p: Page, dirs: readonly string[]): Promise<void> {
 
 /** A-press retries against the wandering elder_oak (ctl-10a: T retired). Each attempt first
  *  POLLS (bounded, no fixed sleep) until he stands on the faced tile (6,4), then presses A
- *  once. A press can still lose the race (he moves on ~4 in 5 of the 200 ms ticks, between
- *  the poll and the keydown), so retries are bounded. SIX, not dialogue.spec.ts's 20:
- *  20 attempts would cost 20 x (20 s poll + 3 s wait) = ~460 s, MORE than the whole 300 s
- *  phase budget, so those attempts could never actually be spent. 6 x 23 s = 138 s is a
- *  bound the enclosing budget can honour. */
-const MAX_TALK_ATTEMPTS = 6;
+ *  once. Since qf-5 he steps about once a second, so a press rarely loses the race; what
+ *  bounds the wait is his walk — (6,4) is a corner he holds ~4% of the time, with visit
+ *  gaps up to ~7 minutes (controls.ts WANDER_NPC_WAIT_MS has the arithmetic; the
+ *  old 6 x 23 s = 138 s bound was PR #608's e2e red, twice). Each talking phase therefore
+ *  runs under TALK_PHASE_TIMEOUT_MS, which covers one worst-case talk. */
+const MAX_TALK_ATTEMPTS = WANDER_NPC_MAX_ATTEMPTS;
 
 /** ctl-10a: T retired — A, facing elder_oak from the post (6,3), until the dialogue opens
  *  (controls.ts interactWithNpc asserts the post and the facing before every press). */
@@ -359,7 +368,7 @@ async function talkToElder(p: Page, playerEntityIds: readonly string[]): Promise
     ignoreEntityIds: playerEntityIds,
     chip: interactChip('Talk', 'elder_oak'),
     maxAttempts: MAX_TALK_ATTEMPTS,
-    openWaitMs: 3_000,
+    openWaitMs: WANDER_OPEN_WAIT_MS,
     label: 'wallet-balance talkToElder',
   });
 }
@@ -791,15 +800,18 @@ const EXPECTED_BALANCE_TEXT = 'Gold: 50';
  *  ADVANCE is rolled back whole, its conversation-row delete included, so the overlay stays
  *  open: that attempt spends its full 20 s hidden-wait, and the next one re-activates the
  *  still-open dialogue without a fresh talk.
- *  ARITHMETIC, stated honestly: an attempt normally costs ~8 s (one talk round trip, one
- *  dismiss, one quest-log read), so the expected phase is ~10-20 s inside a 300 s budget.
- *  Its THEORETICAL worst case — every internal bound below also running to its limit —
- *  is ~233 s (138 s talkToElder + 10 npc-name + 20 elder-in-front + 5 dispatch + 20 hidden +
- *  40 quest log; ctl-10a added the elder-in-front wait), so
- *  a phase in which several attempts fully degrade trips the 300 s TEST timeout rather
- *  than this loop bound. Both are red and neither can false-pass; this bound exists to
- *  give the FAST failure a named diagnosis, not to cap the phase. */
+ *  ARITHMETIC, stated honestly: an attempt normally costs ~10-40 s (the wait for the elder
+ *  on (6,4) — his visit gaps average 28 s since qf-5 — one talk round trip, one dismiss, one
+ *  quest-log read), so the expected phase sits well inside TALK_PHASE_TIMEOUT_MS. Its
+ *  THEORETICAL worst case — every internal bound below running to its limit — is ~576 s for
+ *  ONE attempt of phase (a) (483 s talkToElder + 10 npc-name + 20 elder-in-front + 5 dispatch
+ *  + 20 hidden + 38 quest log) and ~543 s for one of phase (b) (483 + 20 hidden + 40 quest
+ *  log), so a phase in which even one attempt fully degrades trips the TEST timeout rather
+ *  than this loop bound. Both are red and neither can false-pass; this bound exists to give the FAST
+ *  failure a named diagnosis, not to cap the phase. */
 const MAX_QUEST_ATTEMPTS = 5;
+/** Per talking phase: one worst-case talk (WANDER_TALK_BUDGET_MS) plus the phase's own work. */
+const TALK_PHASE_TIMEOUT_MS = WANDER_TALK_BUDGET_MS + 120_000;
 
 test.describe
   .serial('11r-e (ADR-0169) — the shop overlay shows YOUR gold, and only yours', () => {
@@ -912,7 +924,7 @@ test.describe
     // is skipped. (Deviation from plan R9's pure two-loop form, deliberately narrow.)
     // -------------------------------------------------------------------------
     test('precondition (a): A starts quest_001 via the elder_oak dialogue choice', async () => {
-      test.setTimeout(300_000);
+      test.setTimeout(TALK_PHASE_TIMEOUT_MS);
       const overlay = a.locator('#dialogue-overlay');
       let started = false;
       const hiddenWaitMs = 20_000;
@@ -1036,7 +1048,7 @@ test.describe
     // the client render path this whole spec is testing.
     // -------------------------------------------------------------------------
     test('precondition (b): a second talk completes quest_001 ⇒ server-side balance 50', async () => {
-      test.setTimeout(300_000);
+      test.setTimeout(TALK_PHASE_TIMEOUT_MS);
       const overlay = a.locator('#dialogue-overlay');
       let completed = questGrantedDuringRetry;
 
@@ -1285,8 +1297,8 @@ test.describe
     // moved": character rows are written by the row callback directly and main.ts:1429-1452
     // swallows listener throws, so a dead listener still shows movement beside a stale DOM.
     // Batches are guaranteed: movement_tick is scheduled per zone unconditionally at
-    // STEP_MS = 200 and elder_oak wanders forever on the globally
-    // unfiltered `character` subscription — plus B's whole walk just happened.
+    // STEP_MS = 200 and elder_oak wanders forever (about one step a second since qf-5) on the
+    // globally unfiltered `character` subscription — plus B's whole walk just happened.
     // -------------------------------------------------------------------------
     test('11r-e-7: after further batches re-render the OPEN overlay, A still reads "Gold: 50"', async () => {
       test.setTimeout(120_000);
@@ -1339,7 +1351,7 @@ test.describe
       expect(
         everUnknown,
         "A's #shop-balance must NEVER have been written as `unknown` — not on open, not on " +
-          'any of the ~5 re-renders per second the shop batch listener performs while the ' +
+          'any of the roughly once-a-second re-renders the shop batch listener performs while the ' +
           'overlay is up. Any hit here is a call site that omitted store.ownWallet(identity) ' +
           '(ADR-0169 D4). A wallet-owning player never legitimately renders the unknown arm: ' +
           'the my_wallet row arrives with the initial subscription, minutes before this open.',

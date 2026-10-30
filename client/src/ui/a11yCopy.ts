@@ -47,8 +47,8 @@
 export const a11yCopy: Readonly<Record<string, string>> = Object.freeze({
   // Constructed overlays — the wording is the <h2> each view builds today.
   'a11y.overlay.battleView.title': 'Battle', // ui/battleView.ts:60
-  'a11y.overlay.boxView.title': 'Party & Box', // ui/boxView.ts:41
-  'a11y.overlay.raisingView.title': 'Raising & Inventory', // ui/raisingView.ts:56
+  'a11y.overlay.boxView.title': 'Monsters', // ui/boxView.ts:41
+  'a11y.overlay.raisingView.title': 'Inventory', // ui/raisingView.ts:56
   'a11y.overlay.evolutionView.title': 'Evolution', // ui/evolutionView.ts:47
   // Static-shell overlays. Where the shell has a menu leaf, the wording is that leaf's own label
   // (ui/menuModel.ts) so the announced name matches what the player picked to get here.

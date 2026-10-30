@@ -7,7 +7,16 @@ import {
   test,
 } from '@playwright/test';
 import { readWasmU32Constant } from '../test-util/wasmPkg';
-import { type Dir, interactChip, interactWithNpc, pressAccel, waitForNpcInFront } from './controls';
+import {
+  type Dir,
+  interactChip,
+  interactWithNpc,
+  pressAccel,
+  WANDER_NPC_MAX_ATTEMPTS,
+  WANDER_OPEN_WAIT_MS,
+  WANDER_TALK_BUDGET_MS,
+  waitForNpcInFront,
+} from './controls';
 
 // M13.5c dialogue lifecycle e2e.
 //
@@ -54,8 +63,8 @@ import { type Dir, interactChip, interactWithNpc, pressAccel, waitForNpcInFront 
 // WORLD FACTS used below (empirical, this session):
 //   - NPC: npc_id "elder_oak", zone 0, spawn/home (5,5), wander_radius 2,
 //     dialogue_tree_id "elder_oak_talk" (content/npcs/000-core.ron). It wanders:
-//     up to 1 tile per 200ms tick, 4-in-5 move probability (game-core npc_decide),
-//     Manhattan <= 2 of home.
+//     one decision a second since qf-5 (game-core npc_decide gated by NPC_STEP_TICKS = 5,
+//     a 1-in-5 stay), Manhattan <= 2 of home.
 //   - Entry node text "The ancient oak spirit greets you."; npcName renders as
 //     the npcId "elder_oak"; choice text "I seek a quest."
 //     with effects [StartQuest("quest_001")].
@@ -145,11 +154,16 @@ const TALK_POST: Tile = { x: 6, y: 3 };
 const TALK_FACING: Dir = 'South';
 /** A-press retries (ctl-10a: T retired). Each attempt first POLLS (bounded, no
  *  fixed sleeps) until elder_oak stands on the faced tile (6,4), then presses A
- *  once. A press can still lose the race (he moves every ~200 ms tick, 4 in 5
- *  ticks, between the poll and the keydown), so attempts are bounded; (6,4) is 1
- *  of his 8 wander tiles, so a 20 s poll almost always sees him there, and 20
- *  attempts is a generous ceiling. */
-const MAX_TALK_ATTEMPTS = 20;
+ *  once. A press can still lose the race (he steps about once a second since
+ *  qf-5, between the poll and the keydown), so attempts are bounded. The ceiling
+ *  is sized by his walk, not by the race: (6,4) is a corner of his 8 wander
+ *  tiles that he holds ~4% of the time, with visit gaps up to ~7 minutes
+ *  (controls.ts WANDER_NPC_WAIT_MS has the arithmetic; the old 20 s x 20
+ *  inside a 120 s test timeout was the master e2e red on 57cf7b62), so every
+ *  test that may talk runs under TALK_TEST_TIMEOUT_MS. */
+const MAX_TALK_ATTEMPTS = WANDER_NPC_MAX_ATTEMPTS;
+/** One worst-case talk (WANDER_TALK_BUDGET_MS) plus the test's own round trips and reads. */
+const TALK_TEST_TIMEOUT_MS = WANDER_TALK_BUDGET_MS + 120_000;
 /** Advance retries: a refused advance (the parties > TALK_RANGE apart between talk
  *  and click) applies no effects and keeps the row server-side; the client answers
  *  it with dismiss_dialogue, whose delete closes the overlay; we re-talk and
@@ -210,7 +224,7 @@ async function talkUntilOpen(p: Page, playerEntityIds: readonly string[]): Promi
     ignoreEntityIds: playerEntityIds,
     chip: interactChip('Talk', 'elder_oak'),
     maxAttempts: MAX_TALK_ATTEMPTS,
-    openWaitMs: 3_000,
+    openWaitMs: WANDER_OPEN_WAIT_MS,
     label: 'dialogue.spec talkUntilOpen',
   });
 }
@@ -325,7 +339,7 @@ test.describe
     // -------------------------------------------------------------------------
     // ctl-10a: T retired — the talk is A, facing the elder.
     test('13.5c-5: A (facing elder_oak) opens the overlay with the entry-node text; B stays dark', async () => {
-      test.setTimeout(120_000);
+      test.setTimeout(TALK_TEST_TIMEOUT_MS);
       await talkUntilOpen(a, playerEntityIds);
 
       // Entry-node content — EXACT text from content/dialogue_trees/000-core.ron.
@@ -351,7 +365,7 @@ test.describe
     // overlay would stay stuck open here.
     // -------------------------------------------------------------------------
     test('13.5c-5: Escape dismiss hides the overlay; re-talk re-opens it', async () => {
-      test.setTimeout(120_000);
+      test.setTimeout(TALK_TEST_TIMEOUT_MS);
       const overlay = a.locator('#dialogue-overlay');
       await expect(overlay).toBeVisible(); // precondition from the previous test
       await a.keyboard.press('Escape');
@@ -380,7 +394,7 @@ test.describe
     // unit-gated in viewDelete.test.ts.
     // -------------------------------------------------------------------------
     test('13.5c-5: advancing via the real choice applies its effect and ends the dialogue', async () => {
-      test.setTimeout(300_000);
+      test.setTimeout(TALK_TEST_TIMEOUT_MS);
       const overlay = a.locator('#dialogue-overlay');
       const questLog = a.locator('#quest-log-overlay');
       let advanced = false;
@@ -483,7 +497,7 @@ test.describe
     // The conversation this talk opens is left open for the next test.
     // -------------------------------------------------------------------------
     test('re-talking the elder completes quest_001 and the status line acknowledges its 50 gold', async () => {
-      test.setTimeout(120_000);
+      test.setTimeout(TALK_TEST_TIMEOUT_MS);
       await talkUntilOpen(a, playerEntityIds);
       await expect(a.locator('#status')).toHaveText(
         'Quest complete: quest_001. You received 50 gold.',
@@ -505,7 +519,7 @@ test.describe
     // open after the walk).
     // -------------------------------------------------------------------------
     test('choosing a reply after walking out of talk range ends the conversation with its reason and closes the overlay', async () => {
-      test.setTimeout(120_000);
+      test.setTimeout(TALK_TEST_TIMEOUT_MS);
       const overlay = a.locator('#dialogue-overlay');
       if (!(await overlay.isVisible())) await talkUntilOpen(a, playerEntityIds);
       await expect(overlay).toBeVisible();
