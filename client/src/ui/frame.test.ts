@@ -870,6 +870,29 @@ describe('qf-11 (QF11.1): the tab strip never flex-grows vertically', () => {
     expect(qf11Effective(top, strip, 'height'), 'effective height').toBeUndefined();
     expect(qf11Effective(top, strip, 'block-size'), 'effective block-size').toBeUndefined();
 
+    // WRONG IMPL KILLED: `overflow-x: auto` deleted from the strip rule (a strip wider than its row
+    // or its centring column overflows the frame instead of scrolling; every other check here
+    // passes without it); `overflow: hidden` / `visible` / `clip` swapped in (the tabs are cut off
+    // or spill); `min-width: 0` removed or raised (a flex item's automatic minimum is its
+    // content width, so the strip could not shrink below it and never scrolls).
+    const overflowX = (decls: readonly Qf11Decl[]): string | undefined => {
+      let x: string | undefined;
+      for (const d of decls) {
+        if (d.prop === 'overflow-x') x = d.value;
+        else if (d.prop === 'overflow') x = d.value.split(/\s+/)[0];
+      }
+      return x;
+    };
+    let effectiveOverflowX: string | undefined;
+    for (const rule of top) {
+      if (!rule.selectors.includes(strip)) continue;
+      effectiveOverflowX = overflowX(rule.decls) ?? effectiveOverflowX;
+    }
+    expect(effectiveOverflowX, 'effective overflow-x').toBe('auto');
+    expect(['0', '0px', '0rem', '0em', '0%'], 'effective min-width').toContain(
+      qf11Effective(top, strip, 'min-width'),
+    );
+
     const offenders: string[] = [];
     for (const block of blocks) {
       const name = block.selectors.join(', ');
@@ -879,7 +902,14 @@ describe('qf-11 (QF11.1): the tab strip never flex-grows vertically', () => {
       const declared = qf11FlexAfter({ grow: 0, shrink: 1, basis: 'auto' }, block.decls);
       if (declared.grow !== 0) offenders.push(`${name}: flex-grow ${declared.grow}`);
       if (!mentionsStrip) continue;
+      const blockOverflowX = overflowX(block.decls);
+      if (blockOverflowX !== undefined && ['visible', 'hidden', 'clip'].includes(blockOverflowX)) {
+        offenders.push(`${name}: overflow-x ${blockOverflowX}`);
+      }
       for (const d of block.decls) {
+        if (d.prop === 'min-width' && !['0', '0px', '0rem', '0em', '0%'].includes(d.value)) {
+          offenders.push(`${name}: min-width ${d.value}`);
+        }
         if (d.prop === 'height' || d.prop === 'block-size') offenders.push(`${name}: ${d.prop}`);
         if (d.prop === 'flex-direction' && d.value.startsWith('column')) {
           offenders.push(`${name}: flex-direction ${d.value}`);
