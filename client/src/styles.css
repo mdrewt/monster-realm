@@ -176,16 +176,21 @@
 }
 .mr-frame-tabstrip {
   display: flex;
-  flex: 1 1 auto;
+  /* No grow (qf-11): placed straight in a shell's flex column (Monsters, Help, Bag, Controls) a
+   * growing strip stretches vertically to absorb the frame's leftover height. It still shrinks,
+   * so a strip wider than its row scrolls. */
+  flex: 0 1 auto;
   min-width: 0;
-  /* Placed straight in a shell's flex column (the Monsters frame), `overflow-x: auto` would let
-   * the strip shrink to zero height once the frame overflows: its tabs could not be clicked. */
+  /* In that column, `overflow-x: auto` would let the strip shrink to zero height once the frame
+   * overflows: its tabs could not be clicked. */
   min-height: min-content;
   overflow-x: auto;
   gap: 0.25rem;
 }
 .mr-nav-tab {
   padding: 0 0.5rem;
+  /* One line per label, so every tab in a strip has the same height. */
+  white-space: nowrap;
 }
 .mr-nav-tab.is-active {
   background: var(--mr-frame-fg);

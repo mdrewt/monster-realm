@@ -53,6 +53,7 @@ export class HelpView {
     this.#strip.className = 'mr-frame-tabstrip';
     this.#strip.setAttribute('aria-labelledby', 'help-title');
     const screen = ensureChild('help-screen', 'ul', () => this.#strip);
+    screen.className = 'mr-nav-list';
     this.#note = ensureChild('help-note', 'p', () => controls);
     this.#panels = { screen, controls, goals };
   }
