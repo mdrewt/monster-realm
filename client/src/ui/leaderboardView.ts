@@ -20,9 +20,11 @@
 // each batch). A hidden root keeps none: a paint while hidden is not kept, and the hidden-to-visible
 // edge (in `show()`, and in `render()` while hidden) and `hide()` drop it, so with no kept paint the
 // root is exactly the legacy board. Rankings marks the board's `<li>`s by hand with the nav kit's
-// contract (`renderNav` would own the list's children; an empty board stays a plain list); Players
-// hides the board and renders `#leaderboard-players` through the kit, with `#leaderboard-walkup`
-// after it, both built by the first Players paint. A list hidden under the focus hands it to the
+// contract (`renderNav` would own the list's children; an empty board stays a plain list) and
+// marks the list `aria-readonly` (qf-16: A there does nothing, so styles.css keys a display-only
+// cursor row and the list's scroll affordance on it). Players hides the board and renders
+// `#leaderboard-players` through the kit, with `#leaderboard-walkup` after it, both built by the
+// first Players paint. A list hidden under the focus hands it to the
 // root's anchor first (tradeView's rule). Player names stay out of the resolver here too: the
 // walk-up line is resolved around a sentinel and the name goes in a `<bdi>`.
 
@@ -48,7 +50,13 @@ const SOCIAL_FRAME_ID = 'social';
 /** Stands in for the name while the walk-up line is resolved; no catalog text holds a NUL. */
 const NAME_SLOT = String.fromCharCode(0);
 /** The list attributes a Rankings paint writes, removed when the paint is dropped. */
-const LIST_MARKS = ['role', 'tabindex', 'aria-labelledby', 'aria-activedescendant'] as const;
+const LIST_MARKS = [
+  'role',
+  'tabindex',
+  'aria-labelledby',
+  'aria-activedescendant',
+  'aria-readonly',
+] as const;
 const ROW_MARKS = ['id', 'class', 'role', 'aria-selected'] as const;
 
 export class LeaderboardView {
@@ -57,6 +65,9 @@ export class LeaderboardView {
   #kept: SocialRankingsPaint | null = null;
   /** `#leaderboard-players` and `#leaderboard-walkup`, built by the first Players paint. */
   #social: { readonly players: HTMLElement; readonly walkUp: HTMLElement } | null = null;
+  /** The Rankings cursor last scrolled into view (its id and index), so a re-render that leaves
+   *  it in place never re-scrolls, and a re-sort that moves it does. */
+  #scrolledTo: string | null = null;
 
   constructor() {
     const el = document.getElementById('leaderboard-overlay');
@@ -140,6 +151,7 @@ export class LeaderboardView {
       this.#listEl.setAttribute('role', 'listbox');
       this.#listEl.setAttribute('tabindex', '0');
       this.#listEl.setAttribute('aria-labelledby', navTabId(SOCIAL_FRAME_ID, 'rankings'));
+      this.#listEl.setAttribute('aria-readonly', 'true');
       for (const li of ranked) {
         const selected = li === cursor;
         li.id = navItemId(SOCIAL_FRAME_ID, 'rankings', li.dataset.identity ?? '');
@@ -149,7 +161,16 @@ export class LeaderboardView {
       }
       if (cursor === undefined) this.#listEl.removeAttribute('aria-activedescendant');
       else this.#listEl.setAttribute('aria-activedescendant', cursor.id);
+      // aria-activedescendant does not scroll: the cursor is how D-pad Up/Down scroll the list
+      // (navRender's rule — only on a change, and only once attached).
+      const at = cursor === undefined ? null : `${ranked.indexOf(cursor)}:${cursor.id}`;
+      if (cursor !== undefined && at !== this.#scrolledTo && cursor.isConnected) {
+        if (typeof cursor.scrollIntoView === 'function')
+          cursor.scrollIntoView({ block: 'nearest' });
+        this.#scrolledTo = at;
+      }
     } else {
+      this.#scrolledTo = null;
       for (const name of LIST_MARKS) this.#listEl.removeAttribute(name);
       for (const li of rows) for (const name of ROW_MARKS) li.removeAttribute(name);
     }

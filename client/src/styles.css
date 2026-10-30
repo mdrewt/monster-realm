@@ -257,6 +257,35 @@
 .mr-nav-item.is-active.is-disabled {
   color: #55556a;
 }
+/*
+ * The Rankings list (qf-16, QF16.1-QF16.2): a read-only listbox (leaderboardView.ts marks it
+ * aria-readonly) whose cursor only scrolls. Its cursor row drops the actionable fill, outline and
+ * ▶ for a left bar, so it reads as "you are here", not "press A". The list is its own scroller in
+ * the frame's flex column; the `local` covers ride with the content and hide the `scroll` shadows
+ * at an edge with nothing beyond it, so a shadow shows only where there are more rows.
+ */
+.mr-nav-list[aria-readonly="true"] {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  background:
+    linear-gradient(var(--mr-frame-bg) 30%, transparent) top / 100% 2rem no-repeat local,
+    linear-gradient(transparent, var(--mr-frame-bg) 70%) bottom / 100% 2rem no-repeat local,
+    radial-gradient(farthest-side at 50% 0, var(--mr-frame-border), transparent) top / 100% 0.75rem
+    no-repeat scroll,
+    radial-gradient(farthest-side at 50% 100%, var(--mr-frame-border), transparent) bottom / 100%
+    0.75rem no-repeat scroll;
+}
+.mr-nav-list[aria-readonly="true"] > .mr-nav-item.is-active {
+  background: none;
+  color: var(--mr-frame-fg);
+  outline: none;
+  border-left: 0.25rem solid var(--mr-frame-fg);
+  padding-left: 1rem;
+}
+.mr-nav-list[aria-readonly="true"] > .mr-nav-item.is-active::before {
+  content: none;
+}
 
 /*
  * Focus policy (qf-1, QF1.1-QF1.2). The overlay initial-focus anchors stay focusable (the trap and
@@ -488,6 +517,10 @@
 }
 .mr-pointer-hover .mr-nav-item:hover {
   text-decoration: underline;
+}
+/* A Rankings row does nothing on a click either (qf-16, QF16.1): no "clickable" hover cue. */
+.mr-pointer-hover .mr-nav-list[aria-readonly="true"] > .mr-nav-item:hover {
+  text-decoration: none;
 }
 
 /*
