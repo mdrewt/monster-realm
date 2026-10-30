@@ -41,8 +41,10 @@
 // Fixing it needs `claimModel.ts` (a new `ClaimEvent`) or `client/src/main.ts` (route the `KeyC`
 // close through `applyClaim`), both outside this slice's scope and `main.ts` reserved for S5.
 //
-// Button labels are the strings this view owns, resolved through the i18n resolver
-// (`t('claim.privacyButton')` and the five `claim.*Button` action labels) in BOTH open doors —
+// Button labels and the frame title are the strings this view owns, resolved through the i18n
+// resolver (`t('claim.privacyButton')`, the five `claim.*Button` action labels and, since qf-13
+// (QF13.1), the title-bar `t('menu.profile.account.title')`, the Profile menu leaf's own key, so
+// renaming the leaf retitles the frame) in BOTH open doors —
 // `render()` (whose `vm.visible` is the real open edge) and `show()` (`main.ts`'s
 // `onSignInFailed` calls `show()` BEFORE `renderClaim()`) — unconditionally, on every call, never
 // in the constructor (the locale may be negotiated after this view is constructed). The privacy
@@ -51,7 +53,8 @@
 // rule); `render()` writes each one's display, so the initial-focus anchor `#claim-signin-btn`
 // is painted whenever the prompt offers sign-in.
 // The vm strings (`title`, `body`, `nudge`, `feedback`, `confirmPrompt`) are model copy from
-// `claimModel.ts`, rendered raw.
+// `claimModel.ts`, rendered raw; `vm.title` is the phase heading `#claim-title`, below the bar.
+// The shown buttons stack as a column (`.mr-button-rows`, QF13.2), the axis the Up/Down rows walk.
 import type { ClaimActions, ClaimViewModel } from './claimModel';
 import { t } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
@@ -92,8 +95,24 @@ function frameAnchor(): HTMLElement {
   );
 }
 
+/** The frame-chrome title bar (ui/frame.ts, CTL4.6) as `overlay`'s first child, holding the
+ *  `#claim-frame-title` it returns: created once, found by a later construction. */
+function titleBar(overlay: HTMLElement): HTMLElement {
+  const found = document.getElementById('claim-frame-title');
+  if (found) return found;
+  const bar = document.createElement('div');
+  bar.className = 'mr-frame-titlebar';
+  const title = document.createElement('div');
+  title.id = 'claim-frame-title';
+  title.className = 'mr-frame-title';
+  bar.appendChild(title);
+  overlay.prepend(bar);
+  return title;
+}
+
 export class ClaimView {
   readonly #overlay: HTMLElement;
+  readonly #frameTitle: HTMLElement;
   readonly #title: HTMLElement;
   readonly #body: HTMLElement;
   readonly #nudge: HTMLElement;
@@ -106,7 +125,8 @@ export class ClaimView {
 
   constructor(handlers: ClaimViewHandlers) {
     this.#overlay = ensureElement('claim-overlay', 'div', frameAnchor());
-    this.#overlay.classList.add('mr-frame', 'mr-shell');
+    this.#overlay.classList.add('mr-frame', 'mr-shell', 'mr-button-rows');
+    this.#frameTitle = titleBar(this.#overlay);
     this.#title = ensureElement('claim-title', 'h2');
     this.#body = ensureElement('claim-body', 'p');
     this.#nudge = ensureElement('claim-nudge', 'p');
@@ -131,8 +151,9 @@ export class ClaimView {
     this.#privacyBtn.style.display = '';
   }
 
-  /** Write every button label (both open doors, every call — header). */
+  /** Write the frame title and every button label (both open doors, every call — header). */
   #writeLabels(): void {
+    this.#frameTitle.textContent = t('menu.profile.account.title');
     this.#privacyBtn.textContent = t('claim.privacyButton');
     const b = this.#actionBtns;
     b.signIn.textContent = t('claim.signInButton');

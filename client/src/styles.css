@@ -152,6 +152,14 @@
 .mr-frame-title {
   font-weight: bold;
 }
+/* A frame whose native buttons are its D-pad rows (qf-13, QF13.2: Profile › Account): they stack
+ * as a column, the axis the Up/Down rows walk (ui/screens/profileScreen.ts). The view's inline
+ * `display: none` still hides a button. Named outside the `mr-frame`/`mr-shell` family on purpose:
+ * battleView.test.ts CTL7B-1-FRAME-CSS-ROSTER pins that roster. */
+.mr-button-rows > button {
+  display: block;
+  margin: 0.25rem 0;
+}
 .mr-frame-breadcrumb {
   display: flex;
   list-style: none;

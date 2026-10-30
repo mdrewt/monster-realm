@@ -224,3 +224,60 @@ describe('the Profile row adapters (ctl-8h)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// qf-13 (QF13.2): the Account frame lays its buttons out as a COLUMN (CSS, see claimView.test.ts),
+// so the vertical axis is the only one the adapter walks. This pins the existing adapter contract
+// (green at head BY DESIGN: the criterion is that the axis stays Up/Down and Left/Right stay
+// swallowed no-ops, so the CSS fix is not "fixed" by moving the adapter to a horizontal axis).
+// ---------------------------------------------------------------------------
+describe('qf-13 (QF13.2): the Account adapter walks the vertical axis only', () => {
+  it('accountScreen: Up is a move -1 and Down a move +1 (both consumed), Left and Right are consumed with NO token (a horizontal press never moves the cursor), and paint hands the view only the Up/Down tokens [QF13-2-AXIS-UPDOWN]', () => {
+    // WRONG IMPL KILLED: an adapter that turns Left/Right into the row move (the column would be
+    // walked sideways); one that drops Up/Down for Left/Right; a Left/Right that is unhandled (the
+    // arrows would scroll the page) or that carries a leftover token; a Down that moves -1 (axis
+    // inverted); a paint that applies a token for a horizontal press.
+    const adapter = accountScreen as unknown as ProfileAdapter;
+    const vm = adapter.viewModel(NO_CTX);
+    const fresh = adapter.init(vm);
+    const stale: ProfileState = { op: { kind: 'move', delta: 1 } };
+
+    for (const start of [fresh, stale]) {
+      const up = adapter.onButton(vm, start, nav('Up'));
+      expect(up.result, 'Up: consumed').toBe('consumed');
+      expect(up.state.op, 'Up: a move of -1').toEqual({ kind: 'move', delta: -1 });
+
+      const down = adapter.onButton(vm, start, nav('Down'));
+      expect(down.result, 'Down: consumed').toBe('consumed');
+      expect(down.state.op, 'Down: a move of +1').toEqual({ kind: 'move', delta: 1 });
+
+      for (const button of ['Left', 'Right'] as const) {
+        const step = adapter.onButton(vm, start, nav(button));
+        expect(step.result, `${button}: consumed, never unhandled`).toBe('consumed');
+        expect(step.state.op, `${button}: no token, so the cursor never moves`).toBeNull();
+      }
+    }
+
+    const seen: RowOp[] = [];
+    const view: RowsView = {
+      applyRowOp(op) {
+        seen.push(op);
+      },
+    };
+    for (const button of ['Left', 'Right'] as const) {
+      adapter.paint?.(view, vm, adapter.onButton(vm, fresh, nav(button)).state);
+    }
+    expect(seen, 'a horizontal press paints nothing').toEqual([]);
+
+    const upState = adapter.onButton(vm, fresh, nav('Up')).state;
+    const downState = adapter.onButton(vm, fresh, nav('Down')).state;
+    adapter.paint?.(view, vm, upState);
+    adapter.paint?.(view, vm, downState);
+    expect(seen, 'only the Up and Down tokens reach the view, in order').toEqual([
+      { kind: 'move', delta: -1 },
+      { kind: 'move', delta: 1 },
+    ]);
+    expect(seen[0], 'the very Up token object').toBe(upState.op);
+    expect(seen[1], 'the very Down token object').toBe(downState.op);
+  });
+});

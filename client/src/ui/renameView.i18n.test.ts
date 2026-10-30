@@ -15,7 +15,9 @@
 // plan/plan-revisions/ADR-0261 only.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { t as i18nT } from './i18n/resolver';
+import { CATALOG_EN } from './i18n/catalog.en';
+import { CATALOG_FR } from './i18n/catalog.fr';
+import { t as i18nT, setLocale } from './i18n/resolver';
 import { closeOverlayA11y } from './overlayA11y';
 import { OVERLAY_IDS } from './overlayRegistry';
 import { type RenameCallbacks, RenameView } from './renameView';
@@ -77,7 +79,7 @@ function noop(): RenameCallbacks {
 // m24s5 SplitSentinels / WalkSubtree / AssertNoRosterWord trio.
 // ---------------------------------------------------------------------------
 
-const M24S5_RN_PLAIN_KEYS = new Set(['chrome.rename.submit']);
+const M24S5_RN_PLAIN_KEYS = new Set(['chrome.rename.submit', 'menu.profile.name.title']);
 
 function m24s5RnSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
   let out = '';
@@ -198,5 +200,61 @@ describe('m24s5 (ADR-0261): renameView.ts routes chrome.rename.submit through t(
 
     // Post-restore call-through control (an existing S1 key).
     expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+  });
+});
+
+describe('qf-13 (QF13.1): the Name frame title routes menu.profile.name.title through t() in show()', () => {
+  const KEY = 'menu.profile.name.title' as const;
+  const plain = (catalog: object): string => {
+    const entry = (catalog as Record<string, unknown>)[KEY];
+    if (typeof entry !== 'string') throw new Error(`${KEY} must be a plain message`);
+    return entry;
+  };
+
+  it('the key is requested by every show() (a repeat included) and never by the constructor, renders as the «key» sentinel under the sentinel resolver, and shows the French catalogue value under the fr locale [QF13-1-NAME-TITLE-I18N]', () => {
+    // WRONG IMPL KILLED: a title written in the constructor (the locale may be negotiated after
+    // the view is built, so the label would be stale or empty); a write gated on the hidden ->
+    // visible edge (a repeat show() on an open overlay would not re-resolve after a locale
+    // switch); hard-coded English (the sentinel and fr checks below never see a resolver result);
+    // a title that reads the English catalogue directly instead of t().
+    const { overlay } = mount();
+    const view = new RenameView(noop());
+
+    expect(i18nT, 'the constructor must not resolve the title').not.toHaveBeenCalledWith(KEY);
+    const pre = document.getElementById('rename-title');
+    expect(pre, 'ANTI-VACUITY: the bar exists before the first show').not.toBeNull();
+    expect(pre?.textContent, 'and is empty until a show() writes it').toBe('');
+
+    view.show();
+    expect(i18nT, 'the first show() resolves the title').toHaveBeenCalledWith(KEY);
+    const title = document.getElementById('rename-title') as HTMLElement;
+    expect(title.textContent).toBe(plain(CATALOG_EN));
+
+    vi.mocked(i18nT).mockClear();
+    view.show();
+    expect(i18nT, 'a repeat show() on an open overlay re-resolves the title').toHaveBeenCalledWith(
+      KEY,
+    );
+
+    // The French catalogue value under the fr locale, on the very next show().
+    try {
+      setLocale('fr');
+      view.show();
+      expect(title.textContent, 'fr: the French catalogue value').toBe(plain(CATALOG_FR));
+    } finally {
+      setLocale('en');
+    }
+    view.show();
+    expect(title.textContent, 'back to en on the next show()').toBe(plain(CATALOG_EN));
+
+    // Under the «key» sentinel the title shows resolver output and nothing else.
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      view.show();
+      expect(title.textContent, 'the title is exactly the sentinel').toBe(`«${KEY}»`);
+      m24s5RnAssertNoRosterWord(m24s5RnWalkSubtree(overlay), 'after show() under the sentinel');
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+    }
   });
 });

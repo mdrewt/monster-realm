@@ -94,6 +94,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { t } from './a11yCopy';
+import { CATALOG_EN } from './i18n/catalog.en';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 import { RenameView } from './renameView';
@@ -1334,5 +1335,253 @@ describe('RenameView ctl-12b: the submit key shield follows the live table', () 
     for (const code of ['KeyX', 'KeyT', 'KeyN']) {
       expect(reachesWindow(plainBtn, code), `default: ${code} is stopped`).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// qf-13 (QF13.1): the Name frame shows a visible title.
+//
+// EARS: THE Name frame SHALL render a visible frame title. The title is frame chrome (ui/frame.ts
+// createFrame's convention): a `div.mr-frame-titlebar` as the overlay's FIRST element child, holding
+// a `div.mr-frame-title#rename-title` whose text is t('menu.profile.name.title'), resolved in show()
+// on every show (the i18n half is in renameView.i18n.test.ts). #rename-overlay is a static shell in
+// client/index.html, so the view builds the bar in its constructor, over whatever shell it finds.
+// The title is chrome, not a row: it is not focusable, carries no role, and applyRowOp never
+// reaches it.
+// ---------------------------------------------------------------------------
+
+const QF13_STYLES_CSS = readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'styles.css'),
+  'utf8',
+);
+
+/** The English catalogue value of the Name frame's title (a plain string entry). */
+function qf13EnglishNameTitle(): string {
+  const entry = CATALOG_EN['menu.profile.name.title'];
+  if (typeof entry !== 'string') throw new Error('menu.profile.name.title must be a plain message');
+  return entry;
+}
+
+/** A computed style that PAINTS: nothing here makes the element invisible by a route other than
+ *  display / visibility (opacity, a zero font size, a transparent colour, taking it out of flow,
+ *  a clip, a zero box, an off-screen text indent or a collapsing transform). Called on the bar AND
+ *  the title; a property happy-dom does not compute reads '' and passes, so each check is a
+ *  denylist of the exact cheat value. */
+function qf13ExpectPainted(style: CSSStyleDeclaration, label: string): void {
+  expect(['', '1'], `${label}: opacity`).toContain(style.getPropertyValue('opacity'));
+  expect(['0', '0px', '0em', '0rem', '0%'], `${label}: font-size`).not.toContain(style.fontSize);
+  expect(['transparent', 'rgba(0, 0, 0, 0)'], `${label}: colour`).not.toContain(style.color);
+  expect(['absolute', 'fixed'], `${label}: out of flow`).not.toContain(style.position);
+  expect(['', 'none'], `${label}: float`).toContain(style.getPropertyValue('float'));
+  expect(['', 'none'], `${label}: clip-path`).toContain(style.getPropertyValue('clip-path'));
+  expect(['', 'none'], `${label}: transform`).toContain(style.getPropertyValue('transform'));
+  expect(style.getPropertyValue('text-indent').startsWith('-'), `${label}: text-indent`).toBe(
+    false,
+  );
+  for (const prop of ['height', 'max-height', 'width', 'max-width', 'line-height']) {
+    expect(
+      ['0', '0px', '0em', '0rem', '0%'],
+      `${label}: ${prop} is not collapsed to zero`,
+    ).not.toContain(style.getPropertyValue(prop));
+  }
+  expect(style.visibility, `${label}: visibility`).not.toBe('hidden');
+  expect(style.display, `${label}: display`).not.toBe('none');
+}
+
+describe('qf-13 (QF13.1): the Name frame title', () => {
+  beforeEach(() => {
+    mountRenameOverlay();
+  });
+  afterEach(() => {
+    teardown();
+  });
+
+  it('styles.css: the only rules whose selector mentions mr-frame-title are exactly one .mr-frame-titlebar block and one .mr-frame-title block, and the title block declares font-weight only', () => {
+    // WRONG IMPL KILLED: a class-keyed hide of the chrome added to the sheet (for example
+    // `.mr-button-rows > .mr-frame-titlebar { opacity: 0 }` or `.mr-frame-title { font-size: 0 }`
+    // appended as a second block, in a @media block, or in a compound selector): the computed
+    // probes read one DOM, this reads the whole sheet. Compared by selector EQUALITY, not by
+    // substring; comments are stripped first so a decoy in a comment neither hides nor plants one.
+    const stripped = QF13_STYLES_CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    const blocks: Array<{ selectors: string[]; props: string[] }> = [];
+    for (const m of stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const head = (m[1] ?? '').split(';').pop() ?? '';
+      blocks.push({
+        selectors: head.split(',').map((s) => s.trim()),
+        props: (m[2] ?? '')
+          .split(';')
+          .map((d) =>
+            d
+              .slice(0, Math.max(0, d.indexOf(':')))
+              .trim()
+              .toLowerCase(),
+          )
+          .filter((p) => p !== ''),
+      });
+    }
+    expect(
+      blocks.some((b) => b.selectors.includes('.sr-only')),
+      'ANTI-VACUITY: the scan sees the existing .sr-only rule',
+    ).toBe(true);
+    const mentioning = blocks.filter((b) => b.selectors.some((s) => s.includes('mr-frame-title')));
+    expect(
+      mentioning.map((b) => b.selectors.join(', ')).sort(),
+      'every selector list that names the chrome, with multiplicity',
+    ).toEqual(['.mr-frame-title', '.mr-frame-titlebar']);
+    const title = mentioning.find((b) => b.selectors.join(', ') === '.mr-frame-title');
+    expect(title?.props, 'the title rule declares font-weight and nothing else').toEqual([
+      'font-weight',
+    ]);
+  });
+
+  it('after show() the overlay opens with a div.mr-frame-titlebar holding exactly one div.mr-frame-title#rename-title reading the catalogue Name title, on screen all the way up, not focusable, no role, not duplicated by a second view, not a row, and rewritten by every show() [QF13-1-NAME-TITLE]', () => {
+    // WRONG IMPL KILLED: no title at all (today); a title appended AFTER the form controls (the
+    // titlebar must lead the overlay); a bare <div> or <h2> instead of the frame-chrome classes; a
+    // wrong id; hard-coded English instead of the catalogue value; a title created display:none
+    // (ensureElement's default) or under a hidden ancestor; a tabindex or role on the title (it
+    // would join the tab order or be announced as a control); a constructor that prepends a fresh
+    // bar each time (two views over one DOM); a title that is pushed into the applyRowOp rows
+    // (the cursor would land on it); and a title written once in the constructor (a stale or empty
+    // label after a locale switch or a hide/show).
+    const overlay = document.getElementById('rename-overlay') as HTMLElement;
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.show();
+
+    const bar = overlay.firstElementChild;
+    expect(bar, 'the overlay has a first element child').not.toBeNull();
+    expect(bar?.tagName, 'the titlebar is a div').toBe('DIV');
+    expect(
+      [...(bar?.classList ?? [])],
+      'the titlebar carries exactly the frame-chrome class',
+    ).toEqual(['mr-frame-titlebar']);
+    expect(bar?.children.length, 'the titlebar holds exactly one child').toBe(1);
+
+    const titles = overlay.querySelectorAll('#rename-title');
+    expect(titles.length, 'exactly one #rename-title in the overlay').toBe(1);
+    expect(document.querySelectorAll('[id="rename-title"]').length, 'and in the document').toBe(1);
+    const title = titles[0] as HTMLElement;
+    expect(title.parentElement, 'the title sits directly in the titlebar').toBe(bar);
+    expect(title.tagName, 'the title is a div').toBe('DIV');
+    expect([...title.classList], 'the title carries exactly the frame-chrome class').toEqual([
+      'mr-frame-title',
+    ]);
+    const expected = qf13EnglishNameTitle();
+    expect(expected.length, 'ANTI-VACUITY: the catalogue has a Name title to show').toBeGreaterThan(
+      0,
+    );
+    expect(title.textContent, 'the title text is the catalogue value').toBe(expected);
+
+    // On screen: nothing on the chain from the title to the overlay is hidden.
+    for (let node: HTMLElement | null = title; node !== null; node = node.parentElement) {
+      const label = node === title ? '#rename-title' : node.id || node.tagName;
+      expect(node.style.display, `${label}: not display:none`).not.toBe('none');
+      expect(node.hidden, `${label}: not [hidden]`).toBe(false);
+      expect(node.hasAttribute('hidden'), `${label}: no hidden attribute`).toBe(false);
+      if (node === overlay) break;
+    }
+    expect(view.visible, 'ANTI-VACUITY: the overlay is shown').toBe(true);
+
+    // Chrome, not a control.
+    expect(title.hasAttribute('tabindex'), 'the title is not focusable').toBe(false);
+    expect(title.hasAttribute('role'), 'the title carries no role').toBe(false);
+    expect(bar?.hasAttribute('tabindex'), 'the titlebar is not focusable').toBe(false);
+    // Visible to assistive tech too: neither node is aria-hidden or inert.
+    for (const [label, node] of [
+      ['titlebar', bar],
+      ['title', title],
+    ] as const) {
+      expect(node?.getAttribute('aria-hidden'), `${label}: no aria-hidden`).toBeNull();
+      expect(node?.hasAttribute('inert'), `${label}: not inert`).toBe(false);
+    }
+
+    // A second view over the same DOM neither duplicates nor replaces the bar.
+    const second = new RenameView({ onSubmit: async () => {} });
+    second.show();
+    expect(overlay.querySelectorAll('.mr-frame-titlebar').length, 'still one titlebar').toBe(1);
+    expect(overlay.querySelectorAll('.mr-frame-title').length, 'still one title').toBe(1);
+    expect(overlay.firstElementChild, 'the same bar still leads the overlay').toBe(bar);
+    expect(document.getElementById('rename-title'), 'and the same title node').toBe(title);
+
+    // The rows are still exactly [input, submit]: the title is not a row.
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    const submit = document.getElementById('rename-submit') as HTMLButtonElement;
+    const focusedId = (): string => (document.activeElement as HTMLElement | null)?.id ?? '';
+    view.render({ displayCurrentName: 'X', trimmedDraft: 'Bob', canSubmit: true });
+    input.value = 'Bob';
+    input.focus();
+    view.applyRowOp({ kind: 'move', delta: -1 });
+    expect(focusedId(), 'up from the field clamps on the field, never the title').toBe(
+      'rename-input',
+    );
+    view.applyRowOp({ kind: 'move', delta: 1 });
+    expect(focusedId(), 'down from the field: Save').toBe('rename-submit');
+    view.applyRowOp({ kind: 'move', delta: 1 });
+    expect(focusedId(), 'down from Save clamps on Save').toBe('rename-submit');
+    view.applyRowOp({ kind: 'move', delta: -1 });
+    expect(focusedId(), 'up from Save: the field').toBe('rename-input');
+    (document.activeElement as HTMLElement | null)?.blur();
+    view.applyRowOp({ kind: 'move', delta: 1 });
+    expect(focusedId(), 'with nothing focused a move seats the default row, the field').toBe(
+      'rename-input',
+    );
+    expect(document.activeElement, 'and never the title').not.toBe(title);
+    expect(submit.disabled, 'ANTI-VACUITY: Save was a row').toBe(false);
+
+    // Every show() writes the label: a stale text is repaired, and hide() then show() still paints.
+    title.textContent = 'stale';
+    view.show();
+    expect(title.textContent, 'a repeat show() on an open overlay rewrites the title').toBe(
+      expected,
+    );
+    view.hide();
+    expect(overlay.firstElementChild, 'hide() keeps the bar in place').toBe(bar);
+    view.show();
+    expect(title.textContent, 'hide() then show(): the title reads the catalogue value').toBe(
+      expected,
+    );
+    expect(overlay.style.display, 'and the overlay is shown again').not.toBe('none');
+  });
+
+  describe('with the real styles.css', () => {
+    let sheet: HTMLStyleElement | null = null;
+    beforeEach(() => {
+      sheet = document.createElement('style');
+      sheet.textContent = QF13_STYLES_CSS;
+      document.head.appendChild(sheet);
+    });
+    afterEach(() => {
+      sheet?.remove();
+      sheet = null;
+    });
+
+    it('the shown titlebar computes a flex row with a bottom border line and the title computes bold, from the stylesheet and not from inline style [QF13-1-NAME-TITLE-COMPUTED]', () => {
+      // WRONG IMPL KILLED: no bar (today); a wrong class name on the bar or title (the sheet's
+      // .mr-frame-titlebar / .mr-frame-title rules do not reach it: a plain div computes block and
+      // normal weight); an inline style standing in for the class (the check below that the bar
+      // and title carry no inline style); a title hidden by the stylesheet. happy-dom caches the
+      // computed style per element, so each element is read once.
+      const overlay = document.getElementById('rename-overlay') as HTMLElement;
+      const view = new RenameView({ onSubmit: async () => {} });
+      view.show();
+      const bar = overlay.firstElementChild as HTMLElement | null;
+      expect(bar, 'the overlay has a first element child').not.toBeNull();
+      const title = document.getElementById('rename-title') as HTMLElement | null;
+      expect(title, 'the title exists').not.toBeNull();
+      if (bar === null || title === null) return;
+
+      expect(bar.style.cssText, 'the bar carries no inline style').toBe('');
+      expect(title.style.cssText, 'the title carries no inline style').toBe('');
+
+      const barStyle = getComputedStyle(bar);
+      expect(barStyle.display, 'the titlebar is the sheet-driven flex row').toBe('flex');
+      expect(barStyle.display, 'and is displayed').not.toBe('none');
+      expect(barStyle.borderBottomStyle, 'the titlebar has a bottom border line').not.toBe('none');
+      qf13ExpectPainted(barStyle, 'titlebar');
+      const titleStyle = getComputedStyle(title);
+      expect(['bold', '700'], 'the title is bold').toContain(titleStyle.fontWeight);
+      expect(titleStyle.display, 'the title is displayed').not.toBe('none');
+      expect(titleStyle.visibility, 'the title is visible').not.toBe('hidden');
+      qf13ExpectPainted(titleStyle, 'title');
+    });
   });
 });
