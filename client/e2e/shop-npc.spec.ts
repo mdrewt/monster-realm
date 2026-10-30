@@ -62,12 +62,16 @@ import { expectPosted, interactChip, interactWithNpc, pressButton, readWorld } f
 //     y=4  "#..~~...~#"      <- grass at x=3,4,8
 //     y=5  "#......~~#"      <- grass at x=7,8
 //     y=6  "##########"
-//   warps: zone0 (5,5) -> zone1 (5,5)   and   zone1 (5,5) -> zone0 (5,5)
+//   warps: zone0 (1,5) -> zone1 (1,5)   and   zone1 (1,5) -> zone0 (1,5)
+//          (qf-15 moved the pair OFF elder_oak's home tile (5,5): chasing her used to teleport
+//          the player. (1,5) is Manhattan 4 from her home — outside her radius-2 wander disc.)
 //
 // npcs/000-core.ron:
 //   - elder_oak       : zone 0, home (5,5), wander_radius 2, interaction Dialogue.
 //                       IT NEVER ENTERS ZONE 1, so it cannot interfere with any assertion
 //                       made after the warp. (It is also why the zone-0 leg presses no key.)
+//                       The zone-0 leg walks column x=1, far from her disc, and characters
+//                       never block each other or NPCs anyway.
 //   - tideglass_shopkeeper: zone 1, spawn/home (8,1), wander_radius 0 (STATIONARY),
 //                       dialogue_tree_id "shopkeeper_greeting", interaction Shop(1).
 // dialogue_trees/000-core.ron: shopkeeper_greeting = ONE node, text
@@ -84,16 +88,18 @@ import { expectPosted, interactChip, interactWithNpc, pressButton, readWorld } f
 // spec needs no battle-dismiss latch).
 // ---------------------------------------------------------------------------------------
 //   ZONE 0, from spawn (1,1):
-//     E,E,E,E,E -> (2,1)(3,1)(4,1)(5,1)(6,1)   row y=1 is floor for x=1..8   [grass-free]
-//     S,S,S     -> (6,2)(6,3)(6,4)             column x=6 is floor for y=1..5 [grass-free]
-//     S         -> (6,5)                       floor                          [grass-free]
-//     W         -> (5,5) = THE WARP TILE       floor; warps to zone 1 (5,5)
-//   ZONE 1, from the warp landing (5,5):
-//     N -> (5,4)  floor                        (steps OFF the return-warp tile immediately)
-//     E -> (6,4)  floor
-//     N -> (6,3)  floor   <- NOTE (4,3)/(5,3) are WALLS; the x=6 column is the only clean
-//                            northward lane. The naive N,N,N,N from (5,5) bumps the (5,3)
-//                            wall — do not "simplify" this route.
+//     S,S,S     -> (1,2)(1,3)(1,4)             column x=1 is floor for y=1..5 [grass-free]
+//     S         -> (1,5) = THE WARP TILE       floor; warps to zone 1 (1,5)
+//   ZONE 1, from the warp landing (1,5):
+//     E,E,E,E,E -> (2,5)(3,5)(4,5)(5,5)(6,5)   row y=5 is floor for x=1..6 (grass starts at
+//                                              x=7)                            [grass-free]
+//                                              (the first E steps OFF the return-warp tile
+//                                              immediately)
+//     N -> (6,4)  floor
+//     N -> (6,3)  floor   <- NOTE (4,3)/(5,3) are WALLS, so the way north is column x=6 (or
+//                            x=1..3). Ending N,N,N,N up x=6 makes the checkpoint arrive FACING
+//                            NORTH, which negative 1 needs — do not "simplify" this to a
+//                            row-1 walk (N,N,N,N up x=1, then East), which arrives facing East.
 //     N -> (6,2)  floor
 //     N -> (6,1)  floor   <- NEGATIVE 1: Manhattan 2 from (8,1) (the old TALK_RANGE boundary,
 //                            where the old range rule offered the shop), facing North (6,0) —
@@ -193,26 +199,24 @@ async function walk(p: Page, dirs: readonly string[]): Promise<void> {
   }
 }
 
-/** Zone-0 leg: spawn (1,1) -> the warp tile (5,5). The final W step IS the warp. */
+/** Zone-0 leg: spawn (1,1) -> the warp tile (1,5). The final S step IS the warp. */
 const ZONE0_PATH: readonly string[] = [
-  'East',
-  'East',
-  'East',
-  'East',
-  'East', // (6,1)
-  'South',
-  'South',
-  'South', // (6,4)
-  'South', // (6,5)
-  'West', // (5,5) — WARP -> zone 1 (5,5)
+  'South', // (1,2)
+  'South', // (1,3)
+  'South', // (1,4)
+  'South', // (1,5) — WARP -> zone 1 (1,5)
 ];
 
-/** Zone-1 leg: warp landing (5,5) -> (6,1), arriving facing North.
+/** Zone-1 leg: warp landing (1,5) -> (6,1), arriving facing North.
  *  ctl-10a: T retired — the old dist-3 / dist-2 checkpoints tested a RANGE rule that no
  *  longer exists; (6,1) is now the first negative (Manhattan 2, facing away). */
 const ZONE1_TO_RANGE2: readonly string[] = [
-  'North', // (5,4) — off the return-warp tile
-  'East', // (6,4)
+  'East', // (2,5) — off the return-warp tile
+  'East', // (3,5)
+  'East', // (4,5)
+  'East', // (5,5)
+  'East', // (6,5)
+  'North', // (6,4)
   'North', // (6,3)
   'North', // (6,2)
   'North', // (6,1) — Manhattan 2 from the shopkeeper at (8,1), facing North (a wall)
@@ -320,15 +324,15 @@ test.describe
         { timeout: 20_000 },
       );
       const warped = await snap(page);
-      expect(warped.map.zone_id, 'stepping onto (5,5) must warp to zone 1').toBe(1);
-      expect(warped.ownAuthTile, 'the warp lands on zone 1 (5,5)').toEqual({ x: 5, y: 5 });
+      expect(warped.map.zone_id, 'stepping onto (1,5) must warp to zone 1').toBe(1);
+      expect(warped.ownAuthTile, 'the warp lands on zone 1 (1,5)').toEqual({ x: 1, y: 5 });
       expect(warped.ongoingBattle, 'the zone-0 leg is grass-free').toBeNull();
 
       await walk(page, ZONE1_TO_RANGE2);
 
       const done = await snap(page);
       expect(done.ownAuthTile).toEqual(RANGE2_TILE);
-      expect(done.map.zone_id, 'the return warp at zone 1 (5,5) must not have re-fired').toBe(1);
+      expect(done.map.zone_id, 'the return warp at zone 1 (1,5) must not have re-fired').toBe(1);
       expect(done.ongoingBattle, 'the zone-1 leg is grass-free').toBeNull();
     });
 

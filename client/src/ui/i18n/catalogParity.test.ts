@@ -834,6 +834,8 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     // conversation-ended lines a refused advance shows (`dialogue.ended.{walkedAway,leftZone,
     // npcGone}`, through a literal switch) and the two quest-completion lines
     // (`quest.complete.{reward,done}`, each through its own literal `tf` call).
+    // qf-15 (named intentional change, QF15.1): main.ts gains 1 literal key, the zone cue
+    // `chrome.status.zoneEntered` (one literal `tf` call in `switchZone` after a real zone change).
     expect(Array.from(i18nLiteralKeys).sort(), 'main.ts i18n-bound literal keys').toEqual([
       'chrome.chip.ok', // ctl-13: the A chip's verb when A would open a picker
       'chrome.rename.updated',
@@ -844,6 +846,7 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       'chrome.status.healUnavailable',
       'chrome.status.partyFull',
       'chrome.status.privacyOverlayBusy',
+      'chrome.status.zoneEntered', // qf-15: the destination zone's name after a real zone change
       'dialogue.ended.leftZone', // qf-6: a refused advance ends the conversation, and says why
       'dialogue.ended.npcGone',
       'dialogue.ended.walkedAway',

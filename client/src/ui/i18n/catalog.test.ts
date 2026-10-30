@@ -389,6 +389,10 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { name: 'quest_002', amount: 7n },
   ],
   'quest.complete.done': [{ name: 'quest_001' }, { name: 'quest_002' }],
+  // qf-15 (named intentional change, QF15.1): the zone cue on the status line (1 ★). `name` is the
+  // destination zone's display name, content data from the zone_def row, carried verbatim; the two
+  // sets are NON-shipped names that differ.
+  'chrome.status.zoneEntered': [{ name: 'Cobalt Reach' }, { name: 'Umber Fen' }],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -1384,9 +1388,18 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { name: 'quest_002' },
     outputB: 'Quest complete: quest_002.',
   },
+  // qf-15 (QF15.1): the zone cue; the zone name sits once, verbatim, in the text.
+  'chrome.status.zoneEntered': {
+    inputA: { name: 'Cobalt Reach' },
+    outputA: 'Entering Cobalt Reach',
+    inputB: { name: 'Umber Fen' },
+    outputB: 'Entering Umber Fen',
+  },
 };
 
-/** The full 361-key roster (qf-7c: -`battle.action.flee` over the 362-key roster below;
+/** The full 363-key roster (qf-15: +`chrome.status.zoneEntered` over the 362-key roster below;
+ *  qf-14: +`controls.accel.controls` over the 361-key roster below;
+ *  qf-7c: -`battle.action.flee` over the 362-key roster below;
  *  qf-8: -`box.card.{toBox,toParty}` -`trade.action.{accept,reject,confirm,
  *  cancel}` -`pvp.incoming.{accept,decline}` -`pvp.outgoing.cancel` -`evolution.card.choosePrompt`
  *  -`evolution.choice.evolve` over the 373-key roster below;
@@ -1484,7 +1497,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-14 362-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-15 363-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1573,19 +1586,21 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 362 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 363 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (362 keys since qf-14: +1 plain,
-    // `controls.accel.controls`, the label of the Controls accelerator Y; 361 keys since qf-7c: -1 plain,
-    // `battle.action.flee`, retired with the legacy battle Flee button; 362 since qf-8: -10 plain, -1
+    // (a) roster is exactly the EXPECTED_KEYS roster (363 keys since qf-15: +1 parameterised,
+    // `chrome.status.zoneEntered`, the zone cue's announcement template; 362 keys since qf-14: +1
+    // plain, `controls.accel.controls`, the label of the Controls accelerator Y; 361 keys since
+    // qf-7c: -1 plain, `battle.action.flee`, retired with the legacy battle Flee button; 362 since qf-8: -10 plain, -1
     // parameterised retired with the four views' mouse-only duplicate controls; 373 since qf-9: -3
     // plain, -3 parameterised retired with the raising Monsters section, +1 parameterised
     // `box.summary.stats`; 378 since qf-6: +3 plain, +2 parameterised; 373 since qf-4: +2 plain; 371
     // since qf-3: +1 parameterised; 370 since ctl-14: +7 plain; 363 since ctl-13: +10 plain, +2
     // parameterised; was 351 since ctl-12b).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-14 roster is 362 keys').toHaveLength(362);
+    // qf-15 (named intentional change, QF15.1): 362 → 363, +`chrome.status.zoneEntered`.
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-15 roster is 363 keys').toHaveLength(363);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -2635,8 +2650,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // qf-7c (named intentional change, QF7B.1): 362 → 361, `battle.action.flee` retired with the
     // legacy battle Flee button (the command list's Run is the only flee).
     // qf-14 (named intentional change, QF14.1): 361 → 362, +`controls.accel.controls`.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 362 keys').toBe(362);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(362);
+    // qf-15 (named intentional change, QF15.1): 362 → 363, +`chrome.status.zoneEntered`.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 363 keys').toBe(363);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(363);
   });
 });
 
@@ -2670,7 +2686,7 @@ const QF8_FR_BOX_HINT =
   `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`;
 
 describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint that names Move', () => {
-  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 362 keys each [QF8-1-CATALOG-RETIRED]', () => {
+  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 363 keys each [QF8-1-CATALOG-RETIRED]', () => {
     // WRONG IMPL KILLED: a retired id left behind as a dead key in either catalog (catalogParity
     // DEAD-KEY fires, or a surviving requester keeps a deleted control half alive); an id retired
     // from en only (a French boot still carries it); a wholesale `box.card.*`, `trade.*`,
@@ -2733,8 +2749,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // qf-7c (named intentional change, QF7B.1): 362 → 361, `battle.action.flee` retired with the
     // legacy battle Flee button.
     // qf-14 (named intentional change, QF14.1): 361 → 362, +`controls.accel.controls`.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 362 keys').toBe(362);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(362);
+    // qf-15 (named intentional change, QF15.1): 362 → 363, +`chrome.status.zoneEntered`.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 363 keys').toBe(363);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(363);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3003,7 +3020,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     );
   });
 
-  it('the legacy ids keep their names in both catalogs and the roster is still the 362-key one [QF10-4-KEY-IDS-UNCHANGED]', () => {
+  it('the legacy ids keep their names in both catalogs and the roster is still the 363-key one [QF10-4-KEY-IDS-UNCHANGED]', () => {
     // WRONG IMPL KILLED: an id renamed to follow its new value (box.title -> monsters.title, ...)
     // so messageIds.ts and every t() call site would have to move too (the spec allows values
     // only); a retired legacy id (the Party heading, the Bag command); a roster that grew or
@@ -3027,9 +3044,10 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
       expect(EXPECTED_KEYS.includes(id), `the pinned roster keeps ${id}`).toBe(true);
     }
     // qf-14 (named intentional change, QF14.1): 361 → 362, +`controls.accel.controls`.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 362 keys').toBe(362);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(362);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(362);
+    // qf-15 (named intentional change, QF15.1): 362 → 363, +`chrome.status.zoneEntered`.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 363 keys').toBe(363);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(363);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(363);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -3083,5 +3101,66 @@ describe('qf-14: the Controls accelerator label in both catalogs', () => {
     expect(fr['controls.title']).toBe('Commandes');
     expect(en['menu.options.controls.title']).toBe('Controls');
     expect(fr['menu.options.controls.title']).toBe('Commandes');
+  });
+});
+
+// =============================================================================
+// qf-15 (QF15.1): the zone cue's announcement template in BOTH catalogs. The zone's own name is
+// content data (a zone_def row), carried verbatim by the closure and never catalogued; only the
+// sentence around it is. Every expected byte is typed here, and the names are NON-shipped; none is
+// read off the catalog under test.
+// =============================================================================
+
+describe('qf-15: the zone cue template in both catalogs', () => {
+  it('chrome.status.zoneEntered is a closure in both catalogs: Entering X in English and Vous entrez dans X in French, the zone name echoed once and verbatim, for differing names [QF15-1-CATALOG-KEY]', () => {
+    // WRONG IMPL KILLED: a key added to en only (tf() throws in a French boot: the cue never
+    // shows); a plain string where the name must be interpolated; a French line left as the
+    // English copy; a closure that hard-codes a zone name, or drops, repeats or swaps the param
+    // (the three names differ); a name run through a transform (case, trim, escaping); and the key
+    // missing from the pinned roster or the two sample tables.
+    const KEY = 'chrome.status.zoneEntered';
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    expect(Object.hasOwn(en, KEY), 'en carries the key').toBe(true);
+    expect(Object.hasOwn(fr, KEY), 'fr carries the key').toBe(true);
+    expect(typeof en[KEY], 'en is a closure').toBe('function');
+    expect(typeof fr[KEY], 'fr is a closure').toBe('function');
+    const enFn = en[KEY] as (p: { name: string }) => string;
+    const frFn = fr[KEY] as (p: { name: string }) => string;
+
+    type Case = readonly [{ name: string }, string, string];
+    const COBALT: Case = [
+      { name: 'Cobalt Reach' },
+      'Entering Cobalt Reach',
+      'Vous entrez dans Cobalt Reach',
+    ];
+    const UMBER: Case = [{ name: 'Umber Fen' }, 'Entering Umber Fen', 'Vous entrez dans Umber Fen'];
+    const ASH: Case = [
+      { name: 'Ash Hollow' },
+      'Entering Ash Hollow',
+      'Vous entrez dans Ash Hollow',
+    ];
+    const CASES: readonly Case[] = [COBALT, UMBER, ASH];
+    for (const [params, enLine, frLine] of CASES) {
+      expect(enFn(params), `en, ${params.name}`).toBe(enLine);
+      expect(frFn(params), `fr, ${params.name}`).toBe(frLine);
+      expect(frFn(params), `${params.name}: a translation, not the English line`).not.toBe(
+        enFn(params),
+      );
+      expect(enFn(params).split(params.name).length - 1, `en carries ${params.name} once`).toBe(1);
+      expect(frFn(params).split(params.name).length - 1, `fr carries ${params.name} once`).toBe(1);
+    }
+    expect(CASES, 'ANTI-VACUITY: three names').toHaveLength(3);
+    expect(enFn(COBALT[0]), 'the names change the line (en)').not.toBe(enFn(UMBER[0]));
+    expect(frFn(COBALT[0]), 'the names change the line (fr)').not.toBe(frFn(UMBER[0]));
+
+    // The key is in the pinned roster and in both sample tables (the two sample sets are Cobalt
+    // Reach and Umber Fen), so CAT-01's bijection and exact-output checks cover it.
+    expect(EXPECTED_KEYS.includes(KEY), 'the pinned roster lists the key').toBe(true);
+    expect(SAMPLE_PARAMS[KEY], 'the two sample sets').toEqual([COBALT[0], UMBER[0]]);
+    const spec = EXPECTED_PARAM_OUTPUTS[KEY] as ParamOutputSpec;
+    expect(spec, 'the English output pins exist').toBeDefined();
+    expect(spec.outputA).toBe(COBALT[1]);
+    expect(spec.outputB).toBe(UMBER[1]);
   });
 });
