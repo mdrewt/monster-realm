@@ -725,6 +725,30 @@ describe('controlsModel (ctl-12)', () => {
     expect(accelForCode(swap.bindings, 'KeyJ')).toBe('Y');
     expect(accelForCode(swap.bindings, 'KeyY')).toBe('J');
 
+    // Across the namespaces: the accelerator Y and the button Y share an id, not a row. KeyF (the
+    // button's key) captured onto the accelerator swaps with the BUTTON row, and the reverse.
+    const toAccel = swapped(captureKey(frozen, { row: yRow, slot: 0 }, press('KeyF')));
+    expect(toAccel.other, 'the holder is the BUTTON Y, slot 0').toEqual({ row: btn('Y'), slot: 0 });
+    expect(toAccel.code).toBe('KeyF');
+    expect(toAccel.displaced, 'the accelerator`s old key goes to the button').toBe('KeyY');
+    expect(toAccel.bindings).toEqual(table({ Y: ['KeyY'] }, { Y: ['KeyF'] }));
+    expect(toAccel.bindings.buttons.Y, 'button Y ends on KeyY').toEqual(['KeyY']);
+    expect(toAccel.bindings.accels.Y, 'accelerator Y ends on KeyF').toEqual(['KeyF']);
+    expect(accelForCode(toAccel.bindings, 'KeyF')).toBe('Y');
+    expect(buttonForCode(toAccel.bindings, 'KeyF')).toBeUndefined();
+    expect(buttonForCode(toAccel.bindings, 'KeyY')).toBe('Y');
+    expect(accelForCode(toAccel.bindings, 'KeyY')).toBeUndefined();
+    const text = outcomeText(captureKey(frozen, { row: yRow, slot: 0 }, press('KeyF')));
+    expect(text, 'the line names both rows').toContain(rowLabel(btn('Y')));
+    expect(text).toContain(rowLabel(yRow));
+
+    const toButton = swapped(captureKey(frozen, { row: btn('Y'), slot: 0 }, press('KeyY')));
+    expect(toButton.other, 'the holder is the ACCELERATOR Y, slot 0').toEqual({
+      row: yRow,
+      slot: 0,
+    });
+    expect(toButton.bindings).toEqual(table({ Y: ['KeyY'] }, { Y: ['KeyF'] }));
+
     // Clear: both slots empty, the key does nothing, every other row is untouched.
     const cleared = clearAccel(DEFAULT_BINDINGS, 'Y');
     expect(cleared).toEqual(table({}, { Y: [] }));

@@ -519,20 +519,34 @@ function expectBareWorld(label: string): void {
 const callsOf = (name: string): Array<{ name: string; args: unknown }> =>
   H.calls.filter((c) => c.name === name);
 
+/** Detach everything a boot added (the afterEach body, also run between two boots of one test). */
+function teardown(): void {
+  for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
+  recorded = [];
+  while (restorers.length > 0) restorers.pop()?.();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  raf.cb = null;
+  localStorage.removeItem('mr.controls'); // qf-14: a seeded remap must not leak into the next boot
+  window.history.replaceState(null, '', '/');
+  document.body.replaceChildren();
+}
+
+/** Seed `mr.controls` (before the boot imports main.ts) with the default table, `change` applied. */
+function seedBindings(
+  change: (raw: { buttons: Record<string, string[]>; accels: Record<string, string[]> }) => void,
+): void {
+  const raw = JSON.parse(
+    JSON.stringify({ buttons: DEFAULT_BINDINGS.buttons, accels: DEFAULT_BINDINGS.accels }),
+  ) as { buttons: Record<string, string[]>; accels: Record<string, string[]> };
+  change(raw);
+  localStorage.setItem('mr.controls', JSON.stringify({ v: 1, ...raw }));
+}
+
 describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
   sequential: true,
 }, () => {
-  afterEach(() => {
-    for (const r of recorded) r.target.removeEventListener(r.type, r.handler, r.options);
-    recorded = [];
-    while (restorers.length > 0) restorers.pop()?.();
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-    raf.cb = null;
-    localStorage.removeItem('mr.controls'); // qf-14: a seeded remap must not leak into the next boot
-    window.history.replaceState(null, '', '/');
-    document.body.replaceChildren();
-  });
+  afterEach(teardown);
 
   // ------------------------------------------------------------------------------------------
   // CTL11A.1: pop to the base, push the canonical path, the cursor on the leaf
@@ -1417,5 +1431,179 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     );
     expect(cells('Y_clear'), 'and a Clear cell of its own').toHaveLength(1);
     expect(cells('Y_clear')[0]?.textContent, 'which names the shortcut').toContain('Controls');
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // qf-14 round 2: a cleared Y, a pre-Y saved table, and Y over a battle
+  // ------------------------------------------------------------------------------------------
+
+  /** Options > Controls opened by hand (no accelerator): Start, down to Options, A, down to
+   *  Controls, A. Leaves the stack world, menuView, controlsView. */
+  const openControlsByHand = (): void => {
+    press('KeyM');
+    expect(stackNames(), 'precondition: Start opened the menu').toEqual(['world', 'menuView']);
+    for (let i = 0; i < 8 && navActive() !== 'options'; i += 1) press('ArrowDown');
+    expect(navActive(), 'precondition: the cursor is on Options').toBe('options');
+    press('Enter');
+    for (let i = 0; i < 2 && navActive() !== 'controls'; i += 1) press('ArrowDown');
+    expect(navActive(), 'precondition: the cursor is on Controls').toBe('controls');
+    press('Enter');
+    expect(stackNames(), 'precondition: Controls opened above the menu').toEqual([
+      'world',
+      'menuView',
+      'controlsView',
+    ]);
+  };
+  /** The text of the open Controls frame's cell `key` (exactly one must exist). */
+  const controlsCellText = (key: string): string | null | undefined => {
+    const found = Array.from(
+      document.querySelectorAll<HTMLElement>('#controls-rows [data-nav-key]'),
+    ).filter((el) => el.getAttribute('data-nav-key') === key);
+    expect(found, `exactly one ${key} cell`).toHaveLength(1);
+    return found[0]?.textContent;
+  };
+  /** The Shortcuts-tab Controls row's Primary cell for a key text (or none). */
+  const controlsRowText = (key: string): string =>
+    i18nTf('controls.slot.primary', { label: i18nT('controls.accel.controls'), key });
+
+  it('with the Y accelerator cleared in the saved table, KeyY at the world opens nothing and is left to the page, the Controls screen opened by hand shows the Controls row with no key and KeyY inside it does nothing, and J still opens the Journal [QF14-2-CLEARED-BOOT]', async () => {
+    // WRONG IMPL KILLED: a shell that falls back to KeyY when the Y accelerator has no key (a
+    // `?? (code === 'KeyY' && bindings.accels.Y.length === 0 ? 'Y' : undefined)` default beside the
+    // table: Clear would be cosmetic, KeyY would still open Controls after a reload), a cleared
+    // table that fails to parse and resets the player's other remaps, a Controls row that paints
+    // the default key instead of the live (empty) slot, and a cleared Y that disturbs a neighbour.
+    seedBindings((raw) => {
+      raw.accels.Y = [];
+    });
+    await bootReady();
+    server(1000);
+    expectBareWorld('precondition');
+
+    const e = press('KeyY');
+    expectBareWorld('a cleared Y');
+    expect(e.defaultPrevented, 'the unbound KeyY is left to the page').toBe(false);
+    expect(H.calls, 'nothing was sent').toEqual([]);
+
+    openControlsByHand();
+    press('KeyE'); // RB: the Shortcuts tab
+    expect(controlsCellText('Y_0'), 'the Controls row shows no key').toBe(
+      controlsRowText(i18nT('controls.slot.none')),
+    );
+    press('KeyY');
+    expect(stackNames(), 'KeyY inside Controls is no Start either').toEqual([
+      'world',
+      'menuView',
+      'controlsView',
+    ]);
+
+    press('Escape');
+    expectBareWorld('after Start');
+    press('KeyJ');
+    expectLeafOpen(ROW('J'), 'J beside the cleared Y');
+  });
+
+  it('a saved table written before Y existed keeps working: with no Y entry KeyY opens Options > Controls, and when that table gives KeyY to the Journal the Journal keeps it and the Controls accelerator is left unbound, no crash and no reset [QF14-2-MIGRATION-BOOT]', async () => {
+    // WRONG IMPL KILLED: a parse that rejects a table with a missing accelerator row and falls back
+    // to the defaults (every old remap lost on upgrade), a missing Y row that stays dead instead of
+    // taking its default key, a Y that steals KeyY from the Journal (one key, two owners: the
+    // player's mapping must win), a Y default applied after the claim so KeyY opens Controls AND
+    // the Journal, and a clash that resets the neighbours' remaps.
+    // (a) No Y entry at all: the default fills in.
+    seedBindings((raw) => {
+      delete raw.accels.Y;
+    });
+    expect(
+      Object.hasOwn(JSON.parse(localStorage.getItem('mr.controls') ?? '{}').accels, 'Y'),
+      'fixture: the saved table has no Y row',
+    ).toBe(false);
+    await bootReady();
+    server(1000);
+    expectBareWorld('(a) precondition');
+    const a = press('KeyY');
+    expect(a.defaultPrevented, '(a) KeyY is consumed').toBe(true);
+    expectLeafOpen(ROW('Y'), '(a) a pre-Y table');
+    press('KeyE'); // RB: the Shortcuts tab
+    expect(controlsCellText('Y_0'), '(a) the Controls row shows its default key').toBe(
+      controlsRowText('Y'),
+    );
+    press('Escape');
+    press('KeyJ');
+    expectLeafOpen(ROW('J'), '(a) the neighbours are untouched');
+
+    // (b) Journal holds KeyY in the saved table: it wins, Y is left unbound.
+    teardown();
+    seedBindings((raw) => {
+      delete raw.accels.Y;
+      raw.accels.J = ['KeyJ', 'KeyY'];
+    });
+    await bootReady();
+    server(1000);
+    expectBareWorld('(b) precondition');
+    const b = press('KeyY');
+    expect(b.defaultPrevented, '(b) KeyY is consumed').toBe(true);
+    expectLeafOpen(ROW('J'), '(b) KeyY stays the Journal`s, not Controls');
+    expect(openRoots(), '(b) Controls is not open: the Journal alone is shown').toEqual([
+      'questLog',
+    ]);
+    press('Escape');
+    expectBareWorld('(b) after Start');
+    press('KeyJ');
+    expectLeafOpen(ROW('J'), '(b) the Journal`s primary key still works');
+    press('Escape');
+
+    openControlsByHand();
+    press('KeyE'); // RB: the Shortcuts tab
+    expect(controlsCellText('Y_0'), '(b) the Controls row is left without a key').toBe(
+      controlsRowText(i18nT('controls.slot.none')),
+    );
+    expect(controlsCellText('J_1'), '(b) the Journal keeps its second key').toBe(
+      i18nTf('controls.slot.alt', { label: i18nT('controls.accel.journal'), key: 'Y' }),
+    );
+  });
+
+  it('over an Ongoing battle Y opens the read-only menu above the battle, stamped with it, on its Options level with the cursor on the disabled Controls entry and the in-battle reason on the feedback line, opens no screen, and pressed again with the menu open rebuilds the same state [QF14-1-BOOT-BATTLE]', async () => {
+    // WRONG IMPL KILLED: a Y that opens Controls over the battle (the Controls shell is not
+    // battle-safe: it would paint under the battle), a Y that stays on the root level (the path's
+    // group is not entered), one that opens a menu that is not read-only or not stamped with the
+    // battle (the next batch closes it), a dropped reason (a dead key with no word), a second press
+    // that pushes a second menu, and a hidden battle.
+    await bootReady();
+    seedWorld(1000);
+    putBattle(BATTLE_ID, 1100);
+    await flush();
+    const BATTLE_BASE = { kind: 'battle', battleId: '101' };
+    expect(stack(), 'precondition: the base is the battle').toEqual([BATTLE_BASE]);
+    expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
+    const sent = H.sends.length;
+
+    const expectOptionsMenu = (label: string): void => {
+      expect(stack(), `${label}: the battle base, the menu stamped with it`).toEqual([
+        BATTLE_BASE,
+        { kind: 'screen', id: 'menuView', overBattle: '101' },
+      ]);
+      expect(menuShown(), `${label}: the menu is open`).toBe(true);
+      expect(openRoots(), `${label}: no screen opened over the battle`).toEqual([]);
+      expect(battleShown(), `${label}: the battle stays shown`).toBe(true);
+      expect(navActive(), `${label}: the cursor is on controls`).toBe('controls');
+      expect(menuCursor(), `${label}: and the menu paints it on the Options level`).toBe(
+        'menuOptions-root-controls',
+      );
+      expect(menuTitle(), `${label}: the Options level`).toBe(levelTitle('options'));
+      expect(menuCrumbs(), `${label}: and its crumb`).toEqual([i18nT('menu.title')]);
+      expect(menuFeedback(), `${label}: the in-battle reason`).toBe(
+        i18nT('menu.disabled.inBattle'),
+      );
+    };
+
+    const e = press('KeyY');
+    expect(e.defaultPrevented, 'Y: the consumed accelerator is prevented').toBe(true);
+    expectOptionsMenu('Y');
+    press('KeyY');
+    expectOptionsMenu('Y again');
+    press('Escape');
+    expect(stack(), 'Start returns to the bare battle').toEqual([BATTLE_BASE]);
+    expect(battleShown(), 'the battle is still shown after the menu closes').toBe(true);
+    expect(H.sends.length, 'nothing walked over the battle').toBe(sent);
+    expect(H.calls, 'no reducer call was made').toEqual([]);
   });
 });

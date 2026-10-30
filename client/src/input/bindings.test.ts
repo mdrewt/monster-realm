@@ -227,10 +227,18 @@ describe('accelForCode (ctl-11a)', () => {
     // It resolves through the table it is given: a remapped Journal answers its new keys only.
     const custom = {
       buttons: DEFAULT_BINDINGS.buttons,
-      accels: { ...DEFAULT_BINDINGS.accels, J: ['KeyZ', 'KeyY'] },
+      // qf-14: KeyK, not KeyY (the default Y accelerator owns KeyY): the fixture keeps the
+      // one-owner invariant, so no lookup here can pass by table order.
+      accels: { ...DEFAULT_BINDINGS.accels, J: ['KeyZ', 'KeyK'] },
     };
+    const customCodes = [
+      ...Object.values(custom.buttons).flat(),
+      ...Object.values(custom.accels).flat(),
+    ];
+    expect(new Set(customCodes).size, 'fixture: no code has two owners').toBe(customCodes.length);
     expect(accelForCode(custom, 'KeyZ')).toBe('J');
-    expect(accelForCode(custom, 'KeyY')).toBe('J');
+    expect(accelForCode(custom, 'KeyK')).toBe('J');
+    expect(accelForCode(custom, 'KeyY'), 'the default Y accelerator keeps its key').toBe('Y');
     expect(accelForCode(custom, 'KeyJ'), 'the old key no longer fires').toBe(undefined);
     expect(accelForCode(custom, 'KeyB'), 'the others are untouched').toBe('B');
 

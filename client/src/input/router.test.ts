@@ -1873,6 +1873,38 @@ describe('accelerator paths and decisions (ctl-11a)', () => {
       ),
       'Controls over the menu: Start',
     ).toEqual({ kind: 'start' });
+    // Start only when Controls is the TOP frame: buried under another frame, Y opens (a start keyed
+    // to "controlsView is somewhere in the stack" would close the wrong screen).
+    expect(
+      accelDecision(
+        'Y',
+        frozenStack(WORLD_BASE, screenFrame('controlsView'), screenFrame('helpView')),
+      ),
+      'Controls under Help: open, not start',
+    ).toEqual(open);
+    expect(
+      accelDecision(
+        'Y',
+        frozenStack(
+          WORLD_BASE,
+          screenFrame('menuView'),
+          screenFrame('controlsView'),
+          screenFrame('helpView'),
+        ),
+      ),
+      'Controls under Help, over the menu: open, not start',
+    ).toEqual(open);
+    expect(
+      accelDecision(
+        'Y',
+        frozenStack(
+          battleBase('7'),
+          stampedFrame('controlsView', '7'),
+          stampedFrame('helpView', '7'),
+        ),
+      ),
+      'Controls under Help over a battle: open, not start',
+    ).toEqual(open);
     expect(
       accelDecision('Y', frozenStack(WORLD_BASE, textEntryFrame('renameView'))),
       'under a text entry: denied',

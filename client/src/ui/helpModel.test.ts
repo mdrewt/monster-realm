@@ -61,7 +61,7 @@ import {
   type HelpViewModel,
 } from './helpModel';
 import type { HintChip } from './hintBarModel';
-import { t } from './i18n/resolver';
+import { setLocale, t } from './i18n/resolver';
 
 // --- fixtures --------------------------------------------------------------------------------
 
@@ -305,6 +305,21 @@ describe('buildHelpViewModel (ctl-14, CTL14.1)', () => {
     expect(yRows(remapped({ buttons: { Y: ['KeyZ'] } })), 'the Y button is another row').toEqual([
       { keys: ['Y'], action: label },
     ]);
+
+    // The label follows the locale: a hard-coded English 'Controls' for Y would still read it in fr.
+    // (Found by position, since the English label is no longer a handle: Y is the 10th shortcut.)
+    const yAt = VBUTTONS.length + ACCELS.indexOf('Y');
+    try {
+      setLocale('fr');
+      const frRow = tabOf(buildHelpViewModel(WORLD_CHIPS, DEFAULT_BINDINGS), 'controls').rows[yAt];
+      expect(frRow, 'fr: the Y accelerator row, by its live key').toEqual({
+        keys: ['Y'],
+        action: 'Commandes',
+      });
+      expect(frRow?.action, 'fr: not the English label').not.toBe(label);
+    } finally {
+      setLocale('en');
+    }
   });
 
   it('PURE: a fresh object per call — two calls are deeply equal but share nothing, a caller mutating one result cannot change the next, and the binding table is never mutated', () => {
