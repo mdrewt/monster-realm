@@ -11855,6 +11855,24 @@ async function qf7cPoke(el: Element): Promise<void> {
   await s4FlushMacrotask();
 }
 
+/** The static half in one state: the document-wide label scan, the cursor-row census of the view's
+ *  buttons and the command list. */
+function qf7cExpectNoFlee(m: C8iMount, state: string): void {
+  expect(qf7cFleeLabelled(), `${state}: no element in the document reads Flee`).toEqual([]);
+  expect(
+    [...m.root.querySelectorAll('button')]
+      .filter((b) => !b.hasAttribute('data-battle-list'))
+      .map(qf7cDescribe),
+    `${state}: every button in the view is a cursor row (carries data-battle-list)`,
+  ).toEqual([]);
+  expect(
+    [...m.root.querySelectorAll('[data-battle-list="commands"]')].map((el) =>
+      el.getAttribute('data-testid'),
+    ),
+    `${state}: the command list is exactly Fight, Recruit, Swap, Bag, Run`,
+  ).toEqual([...QF7C_COMMAND_TESTIDS]);
+}
+
 describe('Run in the command list is the only flee affordance (QF7B.1, qf-7c)', () => {
   afterEach(() => {
     document.body.replaceChildren();
@@ -11873,24 +11891,6 @@ describe('Run in the command list is the only flee affordance (QF7B.1, qf-7c)', 
     // blind, because a press on a command or a cure row rebuilds the actions row and detaches a
     // Flee before the loop reaches it (measured: onFlee never called on the shipped code).
     // (The resolver spies start this test empty: the file-level beforeEach runs vi.clearAllMocks().)
-
-    /** The static half in one state: the document-wide label scan, the cursor-row census of the
-     *  view's buttons and the command list. */
-    const expectNoFlee = (m: C8iMount, state: string): void => {
-      expect(qf7cFleeLabelled(), `${state}: no element in the document reads Flee`).toEqual([]);
-      expect(
-        [...m.root.querySelectorAll('button')]
-          .filter((b) => !b.hasAttribute('data-battle-list'))
-          .map(qf7cDescribe),
-        `${state}: every button in the view is a cursor row (carries data-battle-list)`,
-      ).toEqual([]);
-      expect(
-        [...m.root.querySelectorAll('[data-battle-list="commands"]')].map((el) =>
-          el.getAttribute('data-testid'),
-        ),
-        `${state}: the command list is exactly Fight, Recruit, Swap, Bag, Run`,
-      ).toEqual([...QF7C_COMMAND_TESTIDS]);
-    };
 
     // makeRaVM: a wild battle with two skills, two healthy bench monsters, one bait and one cure
     // item, so every state below exists; every command is live at rest.
@@ -11946,7 +11946,7 @@ describe('Run in the command list is the only flee affordance (QF7B.1, qf-7c)', 
     for (const [state, enter] of states) {
       const ref = c8iFresh(makeRaVM(), makeRaCallbacks());
       enter(ref);
-      expectNoFlee(ref, state);
+      qf7cExpectNoFlee(ref, state);
       const reference = qf7cElements(ref.root);
       const names = reference.map(qf7cDescribe);
       const senders = reference.map(qf7cIsSender);
@@ -11979,7 +11979,7 @@ describe('Run in the command list is the only flee affordance (QF7B.1, qf-7c)', 
         ).toEqual([]);
         // A Flee built by a hover, a press or a focus (the qf-8 red-team's "button built on hover")
         // is caught where it appears.
-        expectNoFlee(m, `${state}, after every event on ${name} (element ${i})`);
+        qf7cExpectNoFlee(m, `${state}, after every event on ${name} (element ${i})`);
       }
 
       // Run itself flees, once, from this state.
@@ -12007,7 +12007,7 @@ describe('Run in the command list is the only flee affordance (QF7B.1, qf-7c)', 
       C8I_IDS.filter((id) => !c8iDisabled(c8iCmd(locked.root, id))),
       'under the lock: precondition, every command is greyed',
     ).toEqual([]);
-    expectNoFlee(locked, 'under the lock');
+    qf7cExpectNoFlee(locked, 'under the lock');
     d.resolve();
     await raFlushPromises();
 
@@ -12031,4 +12031,71 @@ describe('Run in the command list is the only flee affordance (QF7B.1, qf-7c)', 
     // A fresh mount per element of five states (about 170 mounts, each awaiting a real macrotask)
     // can approach vitest's 5 s default under a loaded CI run, hence the explicit budget.
   }, 30_000);
+
+  it('in every corner a battle renders at rest (with and without skills, a bench, a bait and a cure item, on turns 1, 2 and 9; a player battle, and one waiting on the opponent; each finished outcome; weather; a status badge) no element in the document reads Flee by its text or a label attribute, every button in the view is a cursor row, and the command list is exactly Fight, Recruit, Swap, Bag, Run [QF7B-1-NO-FLEE-STATE-MATRIX]', () => {
+    // WRONG IMPL KILLED (artifact red-team G3, each measured surviving the tooth above, which mounts
+    // one corner: skills, a bench, a bait and a cure item): a flee affordance, "Flee" or a relabelled
+    // "Bail" button outside every cursor list, rendered only in a player battle, only on a finished
+    // outcome, only under weather, only with a cure item and no skill, only with no bench, or only
+    // with no bait. Static only: each corner is a fresh mount at rest, scanned and never pressed.
+    const bait = [{ itemId: 7, name: 'Lure Berry', recruitBonus: 150, count: 2 }];
+    const cure = [{ itemId: RA_CURE_ITEM_ID, name: 'Antidote', cureStatus: 'Poison', count: 1 }];
+    const corners: Array<readonly [string, Partial<BattleViewModel>]> = [];
+    for (const skills of [false, true]) {
+      for (const bench of [false, true]) {
+        for (const baits of [false, true]) {
+          for (const cures of [false, true]) {
+            for (const turnNumber of [1, 2, 9]) {
+              corners.push([
+                `skills ${skills}, bench ${bench}, bait ${baits}, cure ${cures}, turn ${turnNumber}`,
+                {
+                  turnNumber,
+                  skills: skills ? [...RA_SKILLS] : [],
+                  bench: bench ? [...UX4_BENCH] : [],
+                  canSwap: bench,
+                  baitOptions: baits ? [...bait] : [],
+                  canRecruit: baits,
+                  cureItems: cures ? [...cure] : [],
+                },
+              ]);
+            }
+          }
+        }
+      }
+    }
+    // The shapes the model yields: a player battle offers no flee, recruit, bait or cure item; a
+    // finished battle no flee, swap, bench, recruit, bait or cure item.
+    const pvp: Partial<BattleViewModel> = {
+      isPvp: true,
+      pvpOpponentName: 'Rival',
+      canFlee: false,
+      canRecruit: false,
+      baitOptions: [],
+      cureItems: [],
+    };
+    const finished = (outcome: BattleViewModel['outcome']): Partial<BattleViewModel> => ({
+      outcome,
+      canFlee: false,
+      canSwap: false,
+      bench: [],
+      canRecruit: false,
+      baitOptions: [],
+      cureItems: [],
+    });
+    corners.push(
+      ['a player battle', pvp],
+      ['a player battle waiting on the opponent', { ...pvp, pvpPendingSubmit: true }],
+      ['a battle won', finished('SideAWins')],
+      ['a battle lost', finished('SideBWins')],
+      ['a battle fled', finished('Fled')],
+      ['weather', { weather: { label: 'Rain', turnsRemaining: 2 } }],
+      ['a status badge', { playerCard: { ...makeRaVM().playerCard, status: 'PSN' } }],
+    );
+    expect(corners.length, 'ANTI-VACUITY: 48 PvE corners and seven others').toBe(55);
+
+    for (const [corner, overrides] of corners) {
+      const m = c8iFresh(makeRaVM(overrides), makeRaCallbacks());
+      qf7cExpectNoFlee(m, corner);
+    }
+  });
 });
