@@ -11,7 +11,8 @@
  *   opens it on Challenges with the cursor on the request.
  * - CTL8D-2-BOOT-RESPOND: A on the incoming challenge opens a sheet Accept / Decline on Accept;
  *   Decline asks Yes / No on No and sends nothing until Yes; A on Yes sends one declineChallenge;
- *   the legacy Accept button stays clickable; then U, A, A accepts a waiting trade.
+ *   A, A on the request then accepts it with the party ids (qf-8: the challenge panel's legacy
+ *   Accept button is deleted, the sheet is its only Accept); then U, A, A accepts a waiting trade.
  * - CTL8D-3-BOOT-HOTKEYS: with a waiting trade in the store (the waiting-request rule's pick), U,
  *   P and L still open Social on Trades, Challenges and Rankings, each over its own root.
  * - CTL8G-1-BOOT-PLAYERS, on Players the leaderboard root lists the other online players (the
@@ -622,13 +623,18 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     );
   });
 
-  it('CTL8D-2-BOOT-RESPOND: with an incoming challenge, P then A opens a sheet Accept, Decline on Accept; Down, A on Decline asks the catalogued question with No selected and sends nothing; A on No closes the prompt and still sends nothing; A on Decline again, Up to Yes, A sends exactly one declineChallenge for that challenge; the legacy Accept button still sends acceptChallenge; and with a trade offered to the player U, A, A sends exactly one respondTrade accepting it', async () => {
+  it('CTL8D-2-BOOT-RESPOND: with an incoming challenge, P then A opens a sheet Accept, Decline on Accept; Down, A on Decline asks the catalogued question with No selected and sends nothing; A on No closes the prompt and still sends nothing; A on Decline again, Up to Yes, A sends exactly one declineChallenge for that challenge; A, A on the request then sends one acceptChallenge with the party ids; and with a trade offered to the player U, A, A sends exactly one respondTrade accepting it', async () => {
     // WRONG IMPL KILLED: the legacy adapter (A does nothing on the Social frame); a sheet that
     // opens on Decline, or with a single action; a Decline that sends at once (skips the prompt)
     // or whose prompt defaults to Yes; a No that declines anyway; an Up that does not reach Yes;
-    // a decline sent twice, as acceptChallenge or cancelChallenge, or for another id; a Social
-    // frame that disables or swallows the legacy Accept button; and a trade answer sent as
-    // accepted:false, as confirmTrade, for the wrong id, or only after a prompt.
+    // a decline sent twice, as acceptChallenge or cancelChallenge, or for another id; an Accept on
+    // the sheet sent without the player's party ids (the reducer would start a battle with no
+    // team); and a trade answer sent as accepted:false, as confirmTrade, for the wrong id, or only
+    // after a prompt.
+    // qf-8 (named intentional change, QF8.1): the step "the legacy Accept button in the pvp root
+    // stays directly clickable" clicked `[data-testid="pvp-accept-btn"]`; that button is deleted,
+    // so the acceptance (and its partyIds tooth) is the Social sheet's: A on the request, A on
+    // Accept.
     // ctl-11a (named intentional change): RETIRED the stack `[world, social]` after P and after U
     // (`expectSocialOn` reads it); REPLACED by `[world, menuView, social]`. The incoming challenge's
     // auto-show (retired by ctl-13: the incoming challenge opens nothing).
@@ -684,13 +690,14 @@ describe('socialScreen booted through main.ts over the real views and adapter ta
     expect(promptShown(), 'after Yes: the prompt is gone').toBe(false);
     expect(sheetShown(), 'after Yes: back to the list').toBe(false);
 
-    // The legacy Accept button in the pvp root stays directly clickable.
+    // The request is still listed (no batch removed it): A, A on the sheet accepts it, with the
+    // player's party ids.
     H.calls = [];
-    const acceptBtn = document.querySelector<HTMLButtonElement>('[data-testid="pvp-accept-btn"]');
-    if (acceptBtn === null) throw new Error('precondition: the legacy Accept button is rendered');
-    acceptBtn.click();
+    press('Enter', 1280);
+    expectAnswerSheet('A on the request again', 'accept');
+    press('Enter', 1290);
     await flush();
-    expect(H.calls, 'the legacy Accept click sends acceptChallenge').toEqual([
+    expect(H.calls, 'A on Accept sends acceptChallenge with the party ids, once').toEqual([
       {
         name: 'acceptChallenge',
         args: { challengeId: CHALLENGE_ID, partyIds: [PARTY_MONSTER_ID] },

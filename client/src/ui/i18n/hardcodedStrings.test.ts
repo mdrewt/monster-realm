@@ -717,7 +717,7 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     expect(
       SINK_FLOOR,
       'SINK_FLOOR is an anti-vacuity guard, not a ratchet: edit it consciously when UI text legitimately shrinks, never auto-tighten',
-    ).toBe(251);
+    ).toBe(235);
 
     const tree = scan();
     const byFile = new Map(tree.perFile.map((p) => [p.file, p]));

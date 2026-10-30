@@ -473,14 +473,18 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
   // CTL6B.1: one dispatch
   // ------------------------------------------------------------------------------------------
 
-  it('CTL6B-1-MAIN-DISPATCH: view callbacks reach their reducers through the one dispatch with the exact arguments (trade accept vs reject, rename submit, dialogue choices), and a Backspace pop of the dialogue frame dismisses once', async () => {
-    // WRONG IMPL KILLED: a dispatch arm wired to the wrong reducer (accept and reject share one
-    // reducer and differ only by `accepted`: a swapped boolean accepts what the player rejected), an
-    // arm that drops or reshapes an argument (the trade id, the trimmed name, the choice index), a
-    // view callback that no longer reaches its reducer at all (the refactor to one dispatch is
-    // behaviour-preserving, so every arm is pinned by its payload), and a command path (Backspace
-    // over the dialogue frame: router -> pop command -> dispatch -> dismissDialogue) that never
-    // reaches the reducer or reaches it twice.
+  it('CTL6B-1-MAIN-DISPATCH: commands and view callbacks reach their reducers through the one dispatch with the exact arguments (trade accept vs decline from the Social sheet, rename submit, dialogue choices), and a Backspace pop of the dialogue frame dismisses once', async () => {
+    // WRONG IMPL KILLED: a dispatch arm wired to the wrong reducer (accept and decline share one
+    // reducer and differ only by `accepted`: a swapped boolean accepts what the player declined),
+    // an arm that drops or reshapes an argument (the trade id, the trimmed name, the choice index),
+    // a command or view callback that no longer reaches its reducer at all (the refactor to one
+    // dispatch is behaviour-preserving, so every arm is pinned by its payload), and a command path
+    // (Backspace over the dialogue frame: router -> pop command -> dispatch -> dismissDialogue) that
+    // never reaches the reducer or reaches it twice.
+    // qf-8 (named intentional change, QF8.1): the trade panel's Accept / Reject buttons are deleted;
+    // the same pair is answered on the Social sheet with the keys (U, then Enter on the trade row,
+    // Enter on Accept; Enter, ArrowDown to Decline, Enter, ArrowUp to Yes, Enter), and the oracle
+    // (the respondTrade payloads) is unchanged.
     await bootReady();
     seedWorld(1000);
 
@@ -504,19 +508,35 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
     server(1010);
     tap('KeyU', 1020);
     expect(tradeShown(), 'precondition: the trade overlay opened').toBe(true);
-    const accept = document.querySelector('#trade-actions button[data-action="accept"]');
-    const reject = document.querySelector('#trade-actions button[data-action="reject"]');
-    expect(accept, 'precondition: the counterparty is offered Accept').not.toBeNull();
-    expect(reject, 'precondition: and Reject').not.toBeNull();
+    const sheetSelected = (): string | null =>
+      document
+        .querySelector('#social-sheet [aria-selected="true"]')
+        ?.getAttribute('data-nav-key') ?? null;
     expect(callsOf('respondTrade'), 'precondition: nothing sent yet').toEqual([]);
 
-    (accept as HTMLButtonElement).click();
+    tap('Enter', 1030); // A on the offered trade: its sheet, the cursor on Accept
+    expect(sheetSelected(), 'precondition: the counterparty is offered Accept, selected').toBe(
+      'accept',
+    );
+    tap('Enter', 1040); // A on Accept
     expect(callsOf('respondTrade'), 'Accept sends accepted:true for this trade').toEqual([
       { name: 'respondTrade', args: { tradeId: 5n, accepted: true } },
     ]);
     await flush();
-    (reject as HTMLButtonElement).click();
-    expect(callsOf('respondTrade'), 'Reject sends accepted:false for the same trade').toEqual([
+    tap('Enter', 1050); // the sheet again (the offer is still listed: no batch removed it)
+    tap('ArrowDown', 1060); // Decline
+    expect(sheetSelected(), 'precondition: Decline is selected').toBe('decline');
+    tap('Enter', 1070); // Decline asks Yes / No, on No
+    tap('ArrowUp', 1080); // Yes
+    expect(
+      document
+        .querySelector('#social-confirm [aria-selected="true"]')
+        ?.getAttribute('data-nav-key'),
+      'precondition: Yes is selected',
+    ).toBe('yes');
+    expect(callsOf('respondTrade'), 'the question sends nothing').toHaveLength(1);
+    tap('Enter', 1090); // A on Yes
+    expect(callsOf('respondTrade'), 'Decline sends accepted:false for the same trade').toEqual([
       { name: 'respondTrade', args: { tradeId: 5n, accepted: true } },
       { name: 'respondTrade', args: { tradeId: 5n, accepted: false } },
     ]);
@@ -2193,30 +2213,33 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     expect(liveText(), 'the live region announces exactly the catalogued reason').toBe(reason);
   });
 
-  it('CTL6C-3-REFUSE-VIEW-CALLBACK: a second refused command kind, through a real view callback (ctl-11b: via the Monsters sheet and the Trade view): Care pressed on the Monsters sheet reaches care at the world, and a captured Trade Accept button clicked at a battle base reaches no reducer and shows the reason on the status line', async () => {
+  it('Care pressed on the Monsters sheet at the world reaches the care reducer once, with the monster`s id, and reports nothing on the status line (the captured-callback refusal arm is retired with the trade panel`s Accept button, qf-8; the at-battle refusal of a trade answer stays pinned by main.dispatch.test.ts and by this file`s refused-command case) [CTL6C-3-REFUSE-VIEW-CALLBACK]', async () => {
+    // qf-8 (NAMED REMOVAL, protected category: a reviewer adjudicates): the second half of this
+    // case clicked a CAPTURED trade-panel Accept button at a battle base and expected no reducer
+    // and the catalogued reason. The button is deleted (QF8.1): there is no view callback left to
+    // capture, and the Social sheet's Accept is a keyed screen command whose frame cannot be open
+    // over a battle. The behaviour it protected, "the battle refusal is the dispatch-wide
+    // policy, not a guard on one path", stays protected by its survivors: main.dispatch.test.ts's
+    // `respondTrade` row (`atBattle: 'refuse'`: the trade answer reaches no reducer at a battle
+    // base and the status line shows the reason) and CTL6C-3-MAIN-REFUSED-COMMAND in this file (a
+    // refused command, end to end through the booted shell). The Care control stays: it is the
+    // world half of the policy for a keyed command.
     // ctl-11b (named intentional change, residual R-ctl-8f-CTL8F.2): this case used to click the
     // raising view's monster-card Care button, a control the Bag work is retiring. Care is now
     // pressed where a player presses it, on the Monsters sheet (V, A on the monster, Down to Care,
     // A: the adapter's `care` command through `dispatch`). The CAPTURED-CALLBACK refusal arm cannot
     // follow it: the Monsters screen is a keyed adapter, not a DOM callback, and no frame of it can
     // be open over a battle (the batch that brings a battle closes it, and the menu's Monsters entry
-    // is disabled over one), so there is no button to capture. The arm keeps its intent, "the
-    // refusal is the dispatch-wide policy, not a guard on one path", on another command kind
-    // through another real view's callback: the Trade view's Accept (`respondTrade`, refused by the
-    // same policy). The refusal of `care` itself is the policy row `COMMAND_BATTLE_POLICY.care`
-    // (contextStack.ts), driven through the raising card's onCare in main.dispatch.test.ts while the
-    // card still existed (R-ctl-11b-RAISINGCARDS). qf-9 (named intentional change): the card and its
-    // onCare are deleted; the `care` and `train` refusals are now driven as screen commands by
-    // QF9-3-BOOT-CARE-TRAIN-COMMANDS in main.dispatch.test.ts.
-    // WRONG IMPL KILLED: a refusal narrowed to the one command the dialogue issues (`command.kind
-    // === 'advanceDialogue'`: respondTrade would still reach its reducer at the battle base); a
-    // refusal wired into the dialogue-choice click delegation instead of `dispatch` (a view callback
-    // goes straight to dispatch and would bypass it); a refusal that sends and then reports; one
-    // that refuses at the world too (the controls send, for Care through the sheet and for Accept);
-    // and a Monsters-sheet Care that no longer reaches its reducer.
-    // HONEST SCOPE: the refusal arm is not a player-reachable click. The battle's batch closes the
-    // Social frame first (it is not battleSafe, CTL3.2), so the button is captured at the world and
-    // clicked after that close: it drives the real view's real callback into the real `dispatch`.
+    // is disabled over one), so there is no button to capture. The arm then kept its intent on
+    // another command kind through another real view's callback, the Trade view's Accept, until
+    // qf-8 deleted that button too (above). The refusal of `care` itself is the policy row
+    // `COMMAND_BATTLE_POLICY.care` (contextStack.ts), driven through the raising card's onCare in
+    // main.dispatch.test.ts while the card still existed (R-ctl-11b-RAISINGCARDS). qf-9 (named
+    // intentional change): the card and its onCare are deleted; the `care` and `train` refusals are
+    // now driven as screen commands by QF9-3-BOOT-CARE-TRAIN-COMMANDS in main.dispatch.test.ts.
+    // WRONG IMPL KILLED: a refusal that refuses at the world too (Care through the sheet must
+    // send), and a Monsters-sheet Care that no longer reaches its reducer or reports something at
+    // the world.
     await bootReady();
     seedWorld(1000);
     opts.store.upsertMonster(RAISED_MONSTER);
@@ -2244,61 +2267,7 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     await flush();
     tap('Escape', 1060); // Start: back to the bare world
     expect(stackNames(), 'precondition: the bare world').toEqual(['world']);
-
-    // Control 2: the captured callback reaches its reducer at the world.
-    const offer: StoreTradeOffer = {
-      tradeId: 5n,
-      initiator: OTHER_IDENTITY,
-      counterparty: H.identity,
-      initiatorMonsterIds: [],
-      initiatorItems: [],
-      initiatorCurrency: 0n,
-      counterpartyMonsterIds: [],
-      counterpartyItems: [],
-      counterpartyCurrency: 0n,
-      initiatorCards: [],
-      counterpartyCards: [],
-      status: 'Pending',
-      createdAtMs: 0n,
-    };
-    opts.store.upsertTradeOffer(offer);
-    server(1100);
-    tap('KeyU', 1110);
-    expect(tradeShown(), 'precondition: U opened the trade panel').toBe(true);
-    const accept = document.querySelector('#trade-actions button[data-action="accept"]');
-    if (accept === null) throw new Error('the trade view painted no Accept button');
-    expect(callsOf('respondTrade'), 'precondition: nothing sent yet').toEqual([]);
-    clock.t = 1120;
-    (accept as HTMLButtonElement).click();
-    expect(callsOf('respondTrade'), 'control: at the world Accept reaches its reducer').toEqual([
-      { name: 'respondTrade', args: { tradeId: 5n, accepted: true } },
-    ]);
-    expect(statusText(), 'control: nothing is reported at the world').toBe('');
-    await flush(); // the promise settles and the view's in-flight lock releases
-    expect((accept as HTMLButtonElement).disabled, 'precondition: Accept is enabled again').toBe(
-      false,
-    );
-
-    // The battle arrives: its batch closes the Social frame.
-    putBattle(BATTLE_ID, 1200);
-    expect(battleShown(), 'precondition: the battle is on screen').toBe(true);
-    expect(tradeShown(), 'precondition: the battle closed the trade panel').toBe(false);
-    expect(stack(), 'precondition: the bare battle base').toEqual([
-      { kind: 'battle', battleId: '101' },
-    ]);
-
-    clock.t = 1300;
-    (accept as HTMLButtonElement).click();
-    expect(
-      callsOf('respondTrade'),
-      'at a battle base Accept reaches no reducer: still the one world call',
-    ).toHaveLength(1);
-    expect(statusText(), 'the status line shows the catalogued reason').toBe(
-      i18nT('menu.disabled.inBattle'),
-    );
-    await flush();
-    expect(callsOf('respondTrade'), 'nor later, once the refused promise settles').toHaveLength(1);
-    expect(callsOf('care'), 'and the sheet`s one Care call is still the only one').toHaveLength(1);
+    expect(callsOf('care'), 'the sheet`s one Care call is the only one').toHaveLength(1);
   });
 
   it('CTL6C-3-STATUS-CLEARS: the refusal reason stays on the status line while the battle goes on and is cleared when the base returns to the world, whether the battle ends or its row vanishes; an error reported after the refusal is left on it', async () => {

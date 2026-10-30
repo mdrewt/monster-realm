@@ -4,7 +4,7 @@
 //
 // Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `trade.*` key from ui/i18n/catalog.en.ts —
-// the `#renderSide` heading arguments and the `#actionLabel` returns included; the English bytes
+// the `#renderSide` heading arguments included; the English bytes
 // are unchanged (the catalog pins them). The item row `${item.name} ×${item.qty}` is deliberately
 // NOT keyed — a glyph-only compound (tier (e)). `vm.statusLabel` and the
 // `showFeedback` message are model data, rendered raw. Every `t(`/`tf(` first argument is a
@@ -17,13 +17,19 @@
 // the Players placeholder and the trade row's cursor on `#trade-status`: kept only while this root
 // is visible, re-applied after every batch render and dropped by `hide()`. This root's own
 // children stay exactly the shell's: every new part lives in the chrome.
+//
+// NO CONTROL OF ITS OWN (qf-8, QF8.1): the `#trade-actions` buttons (Accept / Reject / Confirm
+// Trade / Cancel) were a mouse-only duplicate of the Social sheet's Trades rows and are deleted,
+// with the in-flight lock that guarded them. A trade is answered on the sheet (accept / decline /
+// confirm / cancel, by D-pad and by pointer). `#trade-actions` stays a part of the static shell
+// (the constructor requires it; Players hides it with the sides) and is never written.
 import { t, tf } from './i18n/resolver';
 import { list, tabs } from './nav';
 import { navTabId, renderNav, renderTabs } from './navRender';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { SocialTab } from './screens/types';
 import { SOCIAL_TABS, type SocialAction } from './socialModel';
-import type { TradeAction, TradeScreenViewModel, TradeSideViewModel } from './tradeModel';
+import type { TradeScreenViewModel, TradeSideViewModel } from './tradeModel';
 
 /** The Yes / No question a Social action asks before it is sent. */
 export type SocialQuestion = 'declineTrade' | 'confirmTrade' | 'declineChallenge';
@@ -140,6 +146,9 @@ function paintSocialChrome(chrome: HTMLElement, p: SocialPaint): void {
   );
 }
 
+/** UNREAD since qf-8 (QF8.1): the trade row's buttons these fed are deleted (see the header).
+ *  Kept, with its shape, so main.ts's construction stays unchanged; nothing in this view calls
+ *  any member. */
 export interface TradeCallbacks {
   readonly onAccept: (tradeId: bigint) => Promise<void>;
   readonly onReject: (tradeId: bigint) => Promise<void>;
@@ -154,9 +163,6 @@ export class TradeView {
   readonly #theirSideEl: HTMLElement;
   readonly #actionsEl: HTMLElement;
   readonly #feedbackEl: HTMLElement;
-  readonly #cbs: TradeCallbacks;
-  // In-flight lock: prevents double-send when a reducer Promise is pending.
-  #pending = false;
   // Tracks the last rendered offer key (tradeId + statusLabel) to detect state
   // changes and clear stale feedback.
   #lastRenderKey: string | null = null;
@@ -165,7 +171,7 @@ export class TradeView {
   #social: SocialPaint | null = null;
   #status = '';
 
-  constructor(cbs: TradeCallbacks) {
+  constructor(_cbs: TradeCallbacks) {
     const el = document.getElementById('trade-overlay');
     if (!el) throw new Error('trade-overlay element not found in DOM');
     this.#overlay = el;
@@ -194,7 +200,6 @@ export class TradeView {
       (() => {
         throw new Error('trade-feedback missing');
       })();
-    this.#cbs = cbs;
   }
 
   get visible(): boolean {
@@ -214,7 +219,6 @@ export class TradeView {
   hide(): void {
     this.#overlay.style.display = 'none';
     this.#feedbackEl.textContent = '';
-    this.#pending = false;
     this.#lastRenderKey = null;
     // A hidden root holds no placeholder, no hidden part and no cursor mark.
     this.#social = null;
@@ -242,7 +246,6 @@ export class TradeView {
       this.#status = t('trade.status.none');
       this.#mySideEl.replaceChildren();
       this.#theirSideEl.replaceChildren();
-      this.#actionsEl.replaceChildren();
       this.#lastRenderKey = null;
       this.#applySocial();
       return;
@@ -260,7 +263,6 @@ export class TradeView {
     this.#status = vm.statusLabel;
     this.#renderSide(this.#mySideEl, vm.mySide, t('trade.side.offer'));
     this.#renderSide(this.#theirSideEl, vm.theirSide, t('trade.side.receive'));
-    this.#renderActions(vm.tradeId, vm.actions);
     this.#applySocial();
   }
 
@@ -282,7 +284,7 @@ export class TradeView {
     const players = p?.tab === 'players';
     this.#statusEl.textContent = players ? t('social.players.placeholder') : this.#status;
     for (const el of [this.#mySideEl, this.#theirSideEl, this.#actionsEl]) {
-      // A part hidden under the focus (a Tab-focused legacy button) would strand it on <body>.
+      // A part hidden while it holds the focus would strand it on <body>.
       if (players && el.contains(document.activeElement)) this.#statusEl.focus();
       el.hidden = players;
     }
@@ -344,58 +346,6 @@ export class TradeView {
       const p = document.createElement('p');
       p.textContent = t('trade.side.nothing');
       el.appendChild(p);
-    }
-  }
-
-  #renderActions(tradeId: bigint, actions: readonly TradeAction[]): void {
-    this.#actionsEl.replaceChildren();
-    for (const action of actions) {
-      const btn = document.createElement('button');
-      btn.dataset.action = action;
-      btn.textContent = this.#actionLabel(action);
-      // Render disabled when in-flight so a mid-flight batch re-render
-      // doesn't re-enable buttons while a reducer Promise is still pending.
-      btn.disabled = this.#pending;
-      btn.addEventListener('click', () => {
-        if (this.#pending) return;
-        this.#pending = true;
-        btn.disabled = true;
-        void Promise.resolve(this.#dispatch(action, tradeId)).finally(() => {
-          this.#pending = false;
-          // Re-enable all live buttons — the captured `btn` closure reference may be
-          // orphaned if render() was called mid-flight (replaceChildren() detaches it).
-          for (const b of this.#actionsEl.querySelectorAll<HTMLButtonElement>('button')) {
-            b.disabled = false;
-          }
-        });
-      });
-      this.#actionsEl.appendChild(btn);
-    }
-  }
-
-  #actionLabel(action: TradeAction): string {
-    switch (action) {
-      case 'accept':
-        return t('trade.action.accept');
-      case 'reject':
-        return t('trade.action.reject');
-      case 'confirm':
-        return t('trade.action.confirm');
-      case 'cancel':
-        return t('trade.action.cancel');
-    }
-  }
-
-  #dispatch(action: TradeAction, tradeId: bigint): Promise<void> {
-    switch (action) {
-      case 'accept':
-        return this.#cbs.onAccept(tradeId);
-      case 'reject':
-        return this.#cbs.onReject(tradeId);
-      case 'confirm':
-        return this.#cbs.onConfirm(tradeId);
-      case 'cancel':
-        return this.#cbs.onCancel(tradeId);
     }
   }
 }

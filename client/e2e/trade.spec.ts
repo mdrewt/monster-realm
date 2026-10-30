@@ -171,8 +171,8 @@ test.describe
       expect(mySideContent.trim()).toBe('');
       expect(theirSideContent.trim()).toBe('');
 
-      // No action buttons when no active trade (tradeView.ts renders no buttons
-      // for the no-trade state).
+      // No action buttons: tradeView.ts renders none in any state since qf-8 (a trade is
+      // answered on the Social sheet), so the actions container stays empty.
       const actionsContent = await page.locator('#trade-actions').innerHTML();
       expect(actionsContent.trim()).toBe('');
 

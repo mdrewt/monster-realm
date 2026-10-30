@@ -33,10 +33,12 @@
 //     `#partyEl`/`#boxEl` (each opens with a `replaceChildren()` on its own container), so a
 //     direct `#root` child cannot be wiped.
 //
-// COPY B (the plan's final wording):
+// COPY B (the plan's final wording; qf-8 rewrote it, see the qf-8 block below):
 //   "Only monsters in your Party can battle or be swapped in. New recruits arrive in your
 //    Box — each box monster has a \"To Party\" button that moves it into an open party slot."
-//   Two measured constraints shape it:
+//   Since qf-8: "... New recruits arrive in your Box — select one there and choose \"Move\" to
+//   bring it into an open party slot." (the quoted label is the Monsters sheet's `box.sheet.move`).
+//   Two measured constraints shaped it:
 //     (1) STATE-NEUTRAL phrasing. `#renderBox`'s empty-box branch short-circuits to
 //         "No monsters in box." and RETURNS, so in the fresh-player state (one starter, empty
 //         box) there is NO "To Party" button on screen at all (measured buttons:
@@ -128,6 +130,33 @@
 //   - `c8bSheet` takes a fifth parameter, `careRemainingMs`, default 0n (Care ready), so every
 //     existing sheet paint keeps an enabled Care row.
 //   - M24S4_BX_PARAM_KEYS gains `box.sheet.careCooldown`.
+//
+// qf-8 (QF8.1, QF8.2): the cards' To Box / To Party buttons are DELETED (a mouse-only duplicate of
+// the Monsters sheet's Move row, the only move path now: screens/monstersScreen.ts's `move` arm,
+// pinned by monstersScreen.test.ts CTL8B-2-MOVE-COMMAND for both sentinels, -1 and the injected
+// `partySlotNone`; the pointer route is reachability.test.ts [QF8-1-MOVE-POINTER]; their absence,
+// document-wide and under the spy matrix, is reachability.test.ts [QF8-2-BOX-RETIRED] /
+// [QF8-2-BOX-NATIVE]). NAMED INTENTIONAL CHANGES to pre-existing cases:
+//   - ux4 X2: the "To Party emits -1, To Box emits 255" half is RETIRED (survivor: CTL8B-2-MOVE-
+//     COMMAND); the box-vs-party render half stays. NEXT_FREE_SLOT_SENTINEL goes with it.
+//   - X2b "To Box emits the INJECTED sentinel": RETIRED (survivor: CTL8B-2-MOVE-COMMAND, whose
+//     Party move, to Storage, sends the view model's `partySlotNone`, the injected wasm value; a
+//     Storage move sends -1).
+//   - ux4 X3 / X6: the hint quotes the sheet's Move label instead of "To Party" (the `box.hint`
+//     value changed, its id did not); X6's "no To Party button / real controls render" pair is now
+//     "no button at all, no retired label in the copy".
+//   - EG4-8 X10: the badged card keeps its name and HP line; its "slot-swap button" clause is
+//     RETIRED (survivor: CTL8B-2-MOVE-COMMAND, the badge does not change the sheet).
+//   - m24s4 BX-01 / BX-02: the `box.card.{toBox,toParty}` expectations leave with the ids (also from
+//     M24S4_BX_PLAIN_KEYS); the frame now renders NO button.
+//   - ctl-8b gap (focus rescue): the focused control inside a hidden panel is the card itself (the
+//     only focusable left in a panel; happy-dom focuses a bare div), not a To Box button.
+//   - CTL10A-4-NO-HEAL-CONTROL: "the frame renders its real buttons" becomes "no button at all".
+//   - polish-1 P2: KEEP-NODES / KEEP-NODES-STORAGE-EMPTY keep a focused CARD (was a button);
+//     CHANGED-REBUILDS-HANDLERS is RETIRED (no handler is left to rebind; the card's key follows the
+//     id: POLISH1-P2-CHANGED-REBUILDS "a monster id changes at the same position"); THROW-RECOVERY
+//     faults the card's name span (each card builds one, as it built one button); LOCALE reads the
+//     empty slot / empty box / stats copy (the button copy is gone).
 // ---------------------------------------------------------------------------
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readWasmU32Constant } from '../../test-util/wasmPkg';
@@ -402,15 +431,9 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
 const BOX_PARTY_HINT_SELECTOR = '[data-testid="box-party-hint"]';
 
 /** The box sentinel injected as `partySlotNone` (main.ts passes the wasm `party_slot_none()`,
- *  pinned === 255 by X2b) and emitted by `#renderCard`'s "To Box" button. */
+ *  pinned === 255 by X2b). qf-8: the view no longer emits it (the "To Box" button is deleted);
+ *  it stays the boxed `partySlot` of the fixtures below. */
 const BOX_SLOT = 255;
-/**
- * The "next free slot, please" sentinel `#renderCard`'s "To Party" button emits.
- * `main.ts:1741-1749` resolves it via `nextFreePartySlot(...) ?? PARTY_SLOT_NONE`.
- * `nextFreePartySlot` itself is already covered (`boxModel.test.ts:199-232`); what is
- * ungated today — and what X2 pins — is boxView's EMISSION of the sentinel.
- */
-const NEXT_FREE_SLOT_SENTINEL = -1;
 
 /** The BoxViewCallbacks callbacks as spies, plus the injected box sentinel. ctl-10a (named
  *  intentional change): no `onHealParty` — the Box Heal Party control is gone (CTL10A.4). */
@@ -571,13 +594,13 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-describe('BoxView ux4 X2: box vs party render + slot-sentinel emission (EXPECTED GREEN)', () => {
-  it('BITES: a box recruit renders in the BOX grid and NOT in the party grid; "To Party" emits -1 and "To Box" emits 255', () => {
-    // KILLS (1): swapped or constant slot arguments — e.g. "To Party" sending 255 (which
-    //   would leave the monster in the box, the exact dead-end the player reported) or
-    //   "To Box" sending -1 (which would silently RE-ADD it to the party).
-    // KILLS (2): a dropped "To Party" control on box rows — with no such button the box
-    //   becomes a one-way trap and there is genuinely no way to switch monsters.
+describe('BoxView ux4 X2: box vs party render (EXPECTED GREEN)', () => {
+  it('BITES: a box recruit renders in the BOX grid and NOT in the party grid', () => {
+    // qf-8 (NAMED REMOVAL): KILLS (1) and (2) of this case pinned the cards' "To Party" (-1) and
+    //   "To Box" (255) buttons, deleted as a mouse-only duplicate of the Monsters sheet's Move.
+    //   Survivor for both sentinels and the box-to-party path: monstersScreen.test.ts
+    //   CTL8B-2-MOVE-COMMAND (Move on a Storage monster sends -1, on a Party one the injected
+    //   `partySlotNone`); its pointer route, reachability.test.ts [QF8-1-MOVE-POINTER].
     // KILLS (3): a SWAPPED-ARGUMENT / swapped-render-call mutant — `#renderParty(box)` +
     //   `#renderBox(party)`, or a `refresh()` that forwards its two arguments the wrong way
     //   round. The box monster would then appear under "Party", telling the player they have
@@ -590,11 +613,7 @@ describe('BoxView ux4 X2: box vs party render + slot-sentinel emission (EXPECTED
     //   yet cannot appear on the battle bench, because side A is built only from
     //   `party_slot != PARTY_SLOT_NONE`. Nothing on the battle screen
     //   explains that today — which is what ux4-2's two hints exist to fix.
-    // SCOPE (do not overclaim): this pins boxView's EMISSION of the sentinels only.
-    //   `nextFreePartySlot`, which main.ts:1741-1749 uses to resolve -1, is covered by
-    //   boxModel.test.ts:199-232; the party-full case where -1 resolves to
-    //   PARTY_SLOT_NONE and the move silently no-ops is deferral D3.
-    const { parent, view, callbacks } = mount();
+    const { parent, view } = mount();
 
     view.refresh(makePartySlots(), [makeBoxRecruitCard()]);
     view.show();
@@ -618,42 +637,6 @@ describe('BoxView ux4 X2: box vs party render + slot-sentinel emission (EXPECTED
       'precondition (X2): the lone starter must render in the party grid — otherwise the ' +
         'not-contains assertion above would pass for the wrong reason (an empty grid)',
     ).toContain('Sproutle');
-
-    // "To Party" on the BOX row.
-    const toParty = [...boxGrid.querySelectorAll('button')].find(
-      (b) => b.textContent === 'To Party',
-    );
-    expect(
-      toParty,
-      'ux4 (X2): every box row must carry a "To Party" button (`#renderCard`, the !inParty ' +
-        'arm) — it is the ONLY path from box to party, and COPY B quotes this exact label',
-    ).toBeDefined();
-    toParty!.click();
-    expect(
-      callbacks.onSetPartySlot,
-      'ux4 (X2): one click on "To Party" must dispatch exactly one intent',
-    ).toHaveBeenCalledTimes(1);
-    expect(
-      callbacks.onSetPartySlot,
-      'ux4 (X2): "To Party" must emit the box monster\'s id with the -1 "next free slot" ' +
-        'sentinel that main.ts:1741-1749 resolves via nextFreePartySlot(...). Emitting 255 ' +
-        'instead would leave the monster in the box — the reported dead-end, with a button ' +
-        'that looks like it worked',
-    ).toHaveBeenCalledWith(200n, NEXT_FREE_SLOT_SENTINEL);
-
-    // "To Box" on the PARTY row.
-    const toBox = [...partyGrid.querySelectorAll('button')].find((b) => b.textContent === 'To Box');
-    expect(
-      toBox,
-      'ux4 (X2): every party row must carry a "To Box" button (`#renderCard`, the inParty arm)',
-    ).toBeDefined();
-    toBox!.click();
-    expect(
-      callbacks.onSetPartySlot,
-      'ux4 (X2): the party row\'s "To Box" must emit the PARTY monster\'s id with 255 ' +
-        '(PARTY_SLOT_NONE). A swapped pair of handlers reads identically in the DOM and is ' +
-        'invisible to a presence-only check',
-    ).toHaveBeenNthCalledWith(2, 100n, BOX_SLOT);
   });
 });
 
@@ -665,31 +648,23 @@ describe('BoxView X2b: the box sentinel is game-core PARTY_SLOT_NONE, injected (
     expect(BOX_SLOT).toBe(255);
   });
 
-  it('BITES: "To Box" emits the INJECTED sentinel — kills a view that re-inlines 255', () => {
-    const parent = document.createElement('div');
-    document.body.appendChild(parent);
-    const callbacks = { ...makeBoxCallbacks(), partySlotNone: 77 };
-    const view = new BoxView(parent, callbacks);
-    view.refresh(makePartySlots(), []);
-    view.show();
-    const toBox = [...partyGridOf(parent).querySelectorAll('button')].find(
-      (b) => b.textContent === 'To Box',
-    );
-    expect(toBox, 'precondition: the party row carries a "To Box" button').toBeDefined();
-    toBox!.click();
-    expect(callbacks.onSetPartySlot).toHaveBeenCalledWith(100n, 77);
-  });
+  // qf-8 (NAMED REMOVAL): 'BITES: "To Box" emits the INJECTED sentinel — kills a view that
+  // re-inlines 255' clicked the deleted "To Box" button. Survivor: monstersScreen.test.ts
+  // CTL8B-2-MOVE-COMMAND (Move on a Party monster sends the view model's `partySlotNone`, the value
+  // the screen reads from the wasm export, never a literal).
 });
 
-describe('BoxView ux4 X3: box-party hint is present, visible, and quotes the real button label', () => {
-  it('BITES: [data-testid="box-party-hint"] exists, is not display:none, and names Party, Box and the literal "To Party"', () => {
+describe('BoxView ux4 X3: box-party hint is present, visible, and quotes the real sheet label', () => {
+  it('BITES: [data-testid="box-party-hint"] exists, is not display:none, names Party and Box, and quotes the Monsters sheet`s Move label verbatim', () => {
     // KILLS (1): no hint / a blank hint — the whole point of the slice is that the
     //   box-vs-party rule is currently stated nowhere in the UI.
     // KILLS (2): a VAGUE hint that never names the two screens ("manage your monsters
     //   here") — it would not tell the player which set can battle.
     // KILLS (3): a hint that DRIFTS from the control it points at (e.g. quoting
-    //   "Add to Party" or "Move to Party" while `#renderCard` renders "To Party").
-    //   Copy that names a button the player cannot find is the ux1 defect again.
+    //   "Move to Party" while the sheet's row reads `box.sheet.move`), or that still names the
+    //   retired "To Party" button (qf-8, named intentional change: the card buttons are deleted and
+    //   the hint now points at the Monsters sheet's Move row). Copy that names a control the
+    //   player cannot find is the ux1 defect again.
     // DISCLOSED (plan §B): X3 has NO rejecting control available, because there is no
     //   state in which this hint should hide — COPY B states a model invariant, not a
     //   conditional fact. X3 is therefore presence-plus-content only, and X5 is a
@@ -718,8 +693,7 @@ describe('BoxView ux4 X3: box-party hint is present, visible, and quotes the rea
     expect(
       text,
       'ux4 (X3): the hint must state WHAT the party is FOR — the semantic content, not just the ' +
-        'word "Party". `toContain(\'Party\')` is subsumed by the "To Party" pin below and was ' +
-        'measured passing the copy "To Party To Box"',
+        'word "Party". `toContain(\'Party\')` alone was measured passing the copy "To Party To Box"',
     ).toMatch(/can battle/i);
     expect(
       text,
@@ -735,41 +709,36 @@ describe('BoxView ux4 X3: box-party hint is present, visible, and quotes the rea
       text,
       'ux4 (X3): the hint must say where new recruits actually GO (taming.rs:163 / ADR-0047 §3) — ' +
         'this is the fact whose absence produced the playtest report. The literal clause pin also ' +
-        'replaces the subsumed toContain(\'Box\'), which the substring inside "To Box" satisfied',
+        'replaces the subsumed toContain(\'Box\'), which a stray "Box" anywhere would satisfy',
     ).toContain('New recruits arrive in your Box');
+    // qf-8 (named intentional change, QF8.1): the quoted control is the Monsters sheet's Move row,
+    // its label read from the catalog (`box.sheet.move`), quoted as the copy quotes it.
+    const moveLabel = i18nT('box.sheet.move');
     expect(
       text,
-      'ux4 (X3): the hint must quote the LITERAL button label "To Party" (`#renderCard`\'s ' +
-        '!inParty arm — the inParty arm renders "To Box"). Copy that names a differently-worded ' +
-        'control sends the player hunting for a button that does not exist (ux1, ADR-0151)',
-    ).toContain('To Party');
-    // asserted as a literal REGEX rather than `toContain('each box monster has a "To Party"
-    // button')` so that either straight (") or typographic (“ ”) quotes satisfy it. The
-    // codebase does use typographic punctuation in UI copy (e.g. `#renderPvpStatus` sets
-    // 'Waiting for opponent’s action…'), so a straight-quote-only `toContain` would red a
-    // substantively-correct implementation over a glyph. The bite is unchanged: the full
-    // clause must be present, in order, naming the label — the RT-3 imperative and the "To
-    // Party To Box" salad both still die here.
-    // The `toContain` is kept anyway (not deleted): it is the assertion that survives if this
-    // clause regex is ever relaxed, and it fails with a far clearer message.
+      'ux4 (X3): the hint must quote the LITERAL label of the sheet row it points at ' +
+        `("${moveLabel}", box.sheet.move). Copy that names a differently-worded control sends ` +
+        'the player hunting for a row that does not exist (ux1, ADR-0151)',
+    ).toContain(`"${moveLabel}"`);
     expect(
       text,
-      'ux4 (X3): the affordance must be DESCRIBED (state-neutral), quoting the label — see X6 for ' +
-        'why an imperative would be a lie in the empty-box state',
-    ).toMatch(/each box monster has a ["“]To Party["”] button/);
+      'ux4 (X3): the hint must tell the player how to reach that row: select the recruit there ' +
+        '(in the Box) and choose the quoted action',
+    ).toContain(`select one there and choose "${moveLabel}"`);
+    expect(text, 'qf-8: the hint names no retired card button').not.toContain('To Party');
+    expect(text, 'qf-8: the hint names no retired card button').not.toContain('To Box');
     // pins COPY B's load-bearing HEDGE. The copy `'…that always moves it into the party.'`
     // survived every other clause here, yet the plan names "an OPEN party slot" as the hedge
-    // against deferral D3: `#renderCard`'s "To Party" emits the -1 sentinel, main.ts resolves it
-    // via `nextFreePartySlot(...) ?? PARTY_SLOT_NONE`, and with a FULL party that resolves to 255
-    // — the move silently no-ops. An unhedged "always moves it into the party" is therefore a
-    // promise the client cannot keep.
+    // against deferral D3: Move on a Storage monster sends the -1 sentinel, main.ts resolves it
+    // to the next free slot, and with a FULL party it refuses the move and says the party is
+    // full. An unhedged "always moves it into the party" is therefore a promise the client
+    // cannot keep.
     expect(
       text,
       'ux4 (X3) D3 HEDGE: the copy must qualify the destination as an "open party slot". With a ' +
-        'full party the -1 sentinel resolves to PARTY_SLOT_NONE (255) and the move silently ' +
-        'no-ops (deferral D3), so an unhedged "moves it into the party" is a false promise — the ' +
-        'ux1 failure mode (ADR-0151) in its subtlest form: a true-sounding claim with a state in ' +
-        'which it does not hold',
+        'full party the -1 sentinel finds no slot and the move is refused (deferral D3), so an ' +
+        'unhedged "moves it into the party" is a false promise — the ux1 failure mode (ADR-0151) ' +
+        'in its subtlest form: a true-sounding claim with a state in which it does not hold',
     ).toContain('open party slot');
     expect(
       text.length,
@@ -942,19 +911,18 @@ describe('BoxView ux4 X5: containment + idempotence forward fence', () => {
 });
 
 describe('BoxView ux4 X6: the hint stays truthful in the fresh-player state (empty box)', () => {
-  it('BITES: with an empty box the hint is still present and visible, while NO "To Party" button exists anywhere under parent', () => {
-    // KILLS: a STATE-DEPENDENT imperative copy. `#renderBox`'s empty-box branch short-circuits
-    //   to "No monsters in box." and RETURNS, so in the fresh-player state (one
-    //   starter, empty box) the rendered buttons are exactly Heal Party / Rename / To Box —
-    //   there is NO "To Party" control. A hint phrased as "click To Party to move a monster
-    //   into your party" therefore names a control the player cannot see, in the single most
-    //   likely state a confused new player reaches. That is precisely the ux1 defect
-    //   (ADR-0151: a badge shipped for an overlay that did not render) and repeating it one
-    //   slice later would be the worst available outcome.
-    // The control half of this case is the second assertion: it PROVES the "To Party" button
-    //   is genuinely absent here, so the descriptive phrasing requirement is not hypothetical.
-    //   COPY B satisfies both by DESCRIBING the affordance ("each box monster has a
-    //   \"To Party\" button …") rather than commanding a click on it.
+  it('BITES: with an empty box the hint is still present and visible, no button renders anywhere under parent, and the copy names no retired card button, only the Move action every monster`s sheet offers', () => {
+    // KILLS: a hint that names a control the player cannot see, in the single most likely state a
+    //   confused new player reaches (one starter, empty box) — the ux1 defect (ADR-0151: a badge
+    //   shipped for an overlay that did not render). Before qf-8 that control was the cards'
+    //   "To Party" button, absent in this state, so the copy had to DESCRIBE it, never command a
+    //   click (the imperative-verb regex this case carried). qf-8 (named intentional change,
+    //   QF8.1) deleted both card buttons: the copy now names the Monsters sheet's Move row, which
+    //   every monster's sheet carries in every state, so the imperative ("select one there and
+    //   choose Move") is true whenever a recruit is in the Box; the regex has no subject left and
+    //   is retired with the button. What stays: the hint is static (the empty-box early return
+    //   cannot suppress it), no card button survives in this state either, and the copy names no
+    //   retired button.
     const { parent, view } = mount();
 
     view.refresh(makePartySlots(), []);
@@ -973,57 +941,28 @@ describe('BoxView ux4 X6: the hint stays truthful in the fresh-player state (emp
         'player who cannot find any way to switch monsters most needs the rule stated',
     ).not.toBe('none');
 
-    const toPartyButtons = [...parent.querySelectorAll('button')].filter(
-      (b) => b.textContent === 'To Party',
-    );
-    expect(
-      toPartyButtons,
-      'CONTROL (X6): with an empty box there must be NO "To Party" button anywhere ' +
-        '(`#renderBox`\'s empty-box branch renders only "No monsters in box." and returns). This ' +
-        'assertion is what makes the state-neutral phrasing requirement REAL, not stylistic: copy ' +
-        'that commands the player to click "To Party" is, right here, advertising a control that ' +
-        'does not exist',
-    ).toHaveLength(0);
     expect(
       [...parent.querySelectorAll('button')].map((b) => b.textContent),
-      'precondition (X6): the fresh-player state must still render its real controls, so the ' +
-        'zero-length assertion above cannot pass because nothing rendered at all',
-    ).toContain('To Box');
+      'CONTROL (X6): the frame renders no button at all in the fresh-player state (qf-8: the ' +
+        'cards carry no To Box / To Party control; a move is the Monsters sheet`s Move row)',
+    ).toEqual([]);
+    expect(
+      partyGridOf(parent).textContent ?? '',
+      'precondition (X6): the fresh-player state still renders its starter, so the empty button ' +
+        'list above is not an empty render',
+    ).toContain('Sproutle');
+    expect(boxGridOf(parent).textContent ?? '', 'precondition (X6): and the empty box line').toBe(
+      i18nT('box.box.empty'),
+    );
 
-    // -----------------------------------------------------------------------
-    // THE COPY HALF. Until now X6 asserted only about the DOM, so its own
-    // docstring's claim — "the copy must be state-neutral" — was backed by NOTHING: the
-    // RT-3 imperative `'Click the "To Party" button under each Box monster now.'` was
-    // measured passing X3 + X4 + X5 + X6. The assertion below is the missing half, made
-    // HERE because this is the state in which such copy is provably false: the control
-    // assertion above has just established that no "To Party" button exists.
-    // The regex requires an imperative verb within 40 non-sentence-ending characters of
-    // the label, so it catches "Click the \"To Party\" button", "press To Party", "use the
-    // To Party button" — while COPY B's descriptive form ("each box monster has a
-    // \"To Party\" button that moves it…") has no such verb before the label and passes.
-    //
-    // the verb list was `click|press|tap|hit|use`, which let the measured imperative `'Select
-    // "To Party" now.'` straight through — the same lie in a different mood. Widened with
-    // select|choose|move|find|open. COPY B still passes:
-    // the only listed verb it contains at all is "open", and that occurs in "an open party
-    // slot" — AFTER the label, so no listed verb precedes `"To Party` within the 40-char window
-    // (the nearest preceding words are "each box monster has a"). "moves" is not matched by
-    // `\bmove\b` and is downstream of the label regardless.
-    // -----------------------------------------------------------------------
+    // THE COPY HALF: the copy names no retired control, and the one it names is the sheet's Move.
     const text = hint!.textContent ?? '';
+    expect(text, 'ux4 (X6): the copy names no retired card button').not.toContain('To Party');
+    expect(text, 'ux4 (X6): the copy names no retired card button').not.toContain('To Box');
     expect(
       text,
-      `ux4 (X6) STATE-NEUTRAL PHRASING: the copy was ${JSON.stringify(text)}. It must DESCRIBE ` +
-        'the "To Party" affordance, never COMMAND a click on it. The control assertion above has ' +
-        'just proved that in this state — one starter, empty box, the single most likely state a ' +
-        'confused new player reaches — `#renderBox`\'s empty-box branch short-circuits to "No ' +
-        'monsters in box." and returns, so the rendered buttons are exactly Heal Party / Rename / ' +
-        'To Box and there is NO "To Party" control. An imperative copy therefore instructs the ' +
-        "player to act on a button that is not on screen: ux1's defect (ADR-0151 — a badge " +
-        'shipped for an overlay that did not render) repeated in the very next slice',
-    ).not.toMatch(
-      /\b(click|press|tap|hit|use|select|choose|move|find|open)\b[^.]{0,40}"?To Party/i,
-    );
+      'ux4 (X6): the action the copy names is the Monsters sheet`s Move row, quoted as it reads',
+    ).toContain(`"${i18nT('box.sheet.move')}"`);
   });
 });
 
@@ -1353,12 +1292,15 @@ describe('BoxView EG4-8 X9: e2e compatibility — inside the card, no header wra
 });
 
 describe("BoxView EG4-8 X10: the badge does not displace the card's existing content", () => {
-  it('BITES: a badged card still renders its name, its HP line, and its slot-swap button', () => {
+  it('BITES: a badged card still renders its name and its HP line', () => {
     // KILLS: a `#renderCard` rewrite that returns EARLY on the pending branch (or replaces
-    //   the card body with the badge). The player would lose the Rename / To Box / To Party
-    //   controls on exactly the monsters that need an action taken — a strictly worse
-    //   dead-end than the one X2 repros.
-    const { parent, view, callbacks } = mount();
+    //   the card body with the badge): the player would lose the name and the HP of exactly
+    //   the monsters that need an action taken.
+    // qf-8 (NAMED REMOVAL): the "and its slot-swap button" clause clicked the badged card's
+    //   "To Party" button (deleted with the card buttons). Survivor: monstersScreen.test.ts
+    //   CTL8B-2-MOVE-COMMAND (the sheet's Move sends for any monster; the badge never reaches the
+    //   sheet's rows).
+    const { parent, view } = mount();
 
     view.refresh(partySlotsWithBadge(true), [
       makeCard({
@@ -1381,21 +1323,6 @@ describe("BoxView EG4-8 X10: the badge does not displace the card's existing con
       .toContain('HP 21/21');
     expect(partyGrid.textContent, 'EG4-8 (X10): the badged party card still names its monster') //
       .toContain('Sproutle');
-
-    const toParty = [...boxGrid.querySelectorAll('button')].find(
-      (b) => b.textContent === 'To Party',
-    );
-    expect(
-      toParty,
-      'EG4-8 (X10): a badged box card must keep its "To Party" control — the badge is a ' +
-        'notification, never a replacement for the row',
-    ).toBeDefined();
-    toParty!.click();
-    expect(
-      callbacks.onSetPartySlot,
-      'EG4-8 (X10): the surviving control must still emit the same intent it does without ' +
-        'the badge (id + the -1 next-free-slot sentinel)',
-    ).toHaveBeenCalledWith(200n, NEXT_FREE_SLOT_SENTINEL);
   });
 });
 
@@ -1417,9 +1344,10 @@ const M24S4_BX_PLAIN_KEYS = new Set([
   // INTENTIONAL CHANGE (ctl-8b): `box.card.rename` leaves this roster (the per-card Rename button
   // and window.prompt are deleted); seven keys join it (the tabs, the action sheet's rows and the
   // two Move feedback lines). `box.rename.prompt` stays: it is the typing row's label now.
+  // INTENTIONAL CHANGE (qf-8): `box.card.toBox` and `box.card.toParty` leave this roster with the
+  // cards' buttons (a «box.card.toBox» span is now an unexpected sentinel); 'To Box' and 'To Party'
+  // stay in M24S4_BX_ROSTER, so they may appear nowhere.
   'box.card.evolveBadge',
-  'box.card.toBox',
-  'box.card.toParty',
   'box.rename.prompt',
   'box.tab.party',
   'box.tab.storage',
@@ -1617,8 +1545,7 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
     expect(i18nT).toHaveBeenCalledWith('box.section.party');
     expect(i18nT).toHaveBeenCalledWith('box.section.box');
     expect(i18nT).toHaveBeenCalledWith('box.box.empty');
-    expect(i18nT).toHaveBeenCalledWith('box.card.toBox');
-    expect(i18nT).not.toHaveBeenCalledWith('box.card.toParty');
+    // INTENTIONAL CHANGE (qf-8): `box.card.toBox` / `box.card.toParty` left with the card buttons.
     expect(i18nT).not.toHaveBeenCalledWith('box.card.evolveBadge');
     expect(i18nTf).toHaveBeenCalledWith('box.party.emptySlot', { slot: 1 });
     expect(i18nTf).toHaveBeenCalledWith('box.card.stats', {
@@ -1631,11 +1558,13 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
 
     expect(root.querySelector('[data-testid="box-title"]')?.textContent).toBe('Party & Box');
     // INTENTIONAL CHANGE (ctl-10a): was "the first button reads 'Heal Party'"; no button does now.
+    // INTENTIONAL CHANGE (qf-8): was "the frame renders its buttons (To Box)"; it renders none.
     const buttonTexts = [...root.querySelectorAll('button')].map((b) => b.textContent);
-    expect(buttonTexts, 'control: the frame renders its buttons').toContain('To Box');
+    expect(buttonTexts, 'qf-8: the frame renders no button at all').toEqual([]);
     expect(buttonTexts, 'ctl-10a: no Heal Party button').not.toContain('Heal Party');
+    // INTENTIONAL CHANGE (qf-8): the hint quotes the Monsters sheet's Move row (was "To Party").
     expect(root.querySelector('[data-testid="box-party-hint"]')?.textContent ?? '').toContain(
-      'To Party',
+      `"${i18nT('box.sheet.move')}"`,
     );
     const partyGrid = partyGridOf(parent);
     expect(partyGrid.textContent ?? '').toContain('Slot 1: (empty)');
@@ -1659,7 +1588,6 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
 
     expect(i18nT).not.toHaveBeenCalledWith('box.box.empty');
     expect(i18nT).toHaveBeenCalledWith('box.card.evolveBadge');
-    expect(i18nT).toHaveBeenCalledWith('box.card.toParty');
     expect(i18nTf).toHaveBeenCalledWith('box.card.stats', {
       species: 'Emberfang',
       level: 9,
@@ -1676,10 +1604,12 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
     // INTENTIONAL CHANGE (ctl-8b): the "Rename prompt" block is DELETED with the per-card Rename
     // button and the window.prompt it opened. `box.rename.prompt` is now the typing row's label
     // (CTL8B-3-VIEW-ROW and the sentinel case below pin it); no card carries a Rename button.
+    // INTENTIONAL CHANGE (qf-8): was "the party card carries To Box and nothing that renames"; the
+    // card carries no button at all now (a move and a rename are both the Monsters sheet's rows).
     expect(
       [...partyGrid.querySelectorAll('button')].map((b) => b.textContent),
-      'ctl-8b: the party card carries To Box and nothing that renames',
-    ).toEqual(['To Box']);
+      'qf-8: the party card carries no button (no To Box, nothing that renames)',
+    ).toEqual([]);
 
     // --- RT2: a repeat show() re-resolves the constructor-time keys ---
     vi.mocked(i18nT).mockClear();
@@ -1727,7 +1657,9 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
       expect(joined).toContain('«box.section.box»');
       expect(joined).toContain('«box.box.empty»');
       // INTENTIONAL CHANGE (ctl-8b): no '«box.card.rename»': the per-card Rename button is gone.
-      expect(joined).toContain('«box.card.toBox»');
+      // INTENTIONAL CHANGE (qf-8): no '«box.card.toBox»' either: the card buttons are gone (the id
+      // left M24S4_BX_PLAIN_KEYS, so such a span would be an unexpected sentinel).
+      expect(joined).not.toContain('«box.card.toBox»');
       expect(joined).toContain(`«box.party.emptySlot|${JSON.stringify({ slot: 1 })}»`);
       expect(joined).toContain(
         `«box.card.stats|${JSON.stringify({
@@ -1755,7 +1687,7 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
       m24s4BxAssertNoRosterWord(texts, 'box card pending evolution');
       joined = texts.join('\n');
       expect(joined).toContain('«box.card.evolveBadge»');
-      expect(joined).toContain('«box.card.toParty»');
+      expect(joined).not.toContain('«box.card.toParty»');
       expect(joined).toContain(
         `«box.card.stats|${JSON.stringify({
           species: 'Emberfang',
@@ -2355,9 +2287,9 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
     // active row ignoring the painted action; a sheet that does not name its monster (the player
     // cannot tell which one A opened), or one that keeps the PREVIOUS monster's name; a sheet
     // placed after the panels (Escape-then-Enter in the typing row focuses the first non-text
-    // control: the To Party / To Box buttons of the panels would win it and a card's Move would
-    // run); a null sheet that leaves the list showing, or removes the element (the focus rescue
-    // and the e2e text scans rely on hide-not-remove).
+    // control: before qf-8 deleted them, the panels' To Party / To Box buttons would have won it;
+    // the sheet still has to come first); a null sheet that leaves the list showing, or removes
+    // the element (the focus rescue and the e2e text scans rely on hide-not-remove).
     const { parent, view, root } = c8bOpen();
     const party = partyGridOf(parent);
     const box = boxGridOf(parent);
@@ -3093,8 +3025,12 @@ describe('BoxView ctl-8b gap: view guards (repaint inside a callback, focus, scr
     // WRONG IMPL KILLED: a paint or refresh that focuses the title anchor unconditionally (a
     // batch arriving while the frame is closed would pull focus out of the world), one that
     // rescues focus without the frame being visible (a closed frame grabs focus from a button the
-    // player is on), and a shown frame with no rescue (focus stays on a To Box button of a panel
-    // the paint just hid: the next key heals focus to the world, out of the frame).
+    // player is on), and a shown frame with no rescue (focus stays on an element of a panel the
+    // paint just hid: the next key heals focus to the world, out of the frame).
+    // qf-8 (named intentional change): the focused element inside the Party panel is its card
+    // (the To Box button it used to be is deleted, and a card is the panel's one node a pointer
+    // lands on). happy-dom focuses a bare div with no tabindex, so the rescue is exercised here as
+    // before; whether a browser would focus the card is not this case's claim.
     const outside = s4OutsideSentinel();
 
     // Mounted, never shown.
@@ -3122,29 +3058,28 @@ describe('BoxView ctl-8b gap: view guards (repaint inside a callback, focus, scr
     shown.view.refresh(c8bParty(), c8bBox());
     expect(document.activeElement, 'a hidden frame leaves focus alone').toBe(outside);
 
-    // A hidden frame also leaves focus on a control INSIDE it (on a part the paint then hides).
+    // A hidden frame also leaves focus on an element INSIDE it (on a part the paint then hides).
     shown.view.paint(c8bPaint({ tab: 'party', activeKey: '100' }));
-    const inside = [...partyGridOf(shown.parent).querySelectorAll('button')].find(
-      (b) => b.textContent === i18nT('box.card.toBox'),
-    ) as HTMLButtonElement;
-    expect(inside, 'precondition: a To Box button in the Party panel').toBeDefined();
-    inside.focus();
-    expect(document.activeElement, 'fixture: focus is on the To Box button').toBe(inside);
+    const inside = partyGridOf(shown.parent).querySelector<HTMLElement>('[data-nav-key="100"]');
+    expect(inside, 'precondition: the Party panel holds the card keyed 100').not.toBeNull();
+    (inside as HTMLElement).focus();
+    expect(document.activeElement, 'fixture: focus is on the Party card').toBe(inside);
     shown.view.paint(c8bPaint({ tab: 'storage', activeKey: '200' }));
     expect(document.activeElement, 'a hidden frame does not rescue focus').toBe(inside);
 
-    // Shown: focus on a To Box button of the Party panel, then Storage is painted.
+    // Shown: focus on a card of the Party panel, then Storage is painted.
     const open = c8bOpen();
     await s4FlushMacrotask();
     open.view.paint(c8bPaint({ tab: 'party', activeKey: '100' }));
-    const toBox = [...partyGridOf(open.parent).querySelectorAll('button')].find(
-      (b) => b.textContent === i18nT('box.card.toBox'),
-    ) as HTMLButtonElement;
-    expect(toBox, 'precondition: a To Box button in the Party panel').toBeDefined();
-    toBox.focus();
-    expect(document.activeElement, 'fixture: the button is focused').toBe(toBox);
+    const card = partyGridOf(open.parent).querySelector<HTMLElement>('[data-nav-key="100"]');
+    expect(card, 'precondition: the Party panel holds the card keyed 100').not.toBeNull();
+    (card as HTMLElement).focus();
+    expect(document.activeElement, 'fixture: the card is focused').toBe(card);
     open.view.paint(c8bPaint({ tab: 'storage', activeKey: '200' }));
-    expect(c8bHidden(toBox, open.root), 'fixture: the Party panel is hidden now').toBe(true);
+    expect(
+      c8bHidden(card as HTMLElement, open.root),
+      'fixture: the Party panel is hidden now',
+    ).toBe(true);
     expect(document.activeElement, 'focus moves to the title anchor').toBe(c8bAnchor(open.root));
   });
 
@@ -3284,7 +3219,8 @@ const c8cActiveIds = (list: Element): string[] =>
     .map((row) => row.id);
 
 /** `el` comes before the hint and both panels in the DOM and is inside none of them (typing
- *  mode's Escape focuses the frame's first enabled non-text control: never a card's button). */
+ *  mode's Escape focuses the frame's first enabled non-text control: never a node inside a
+ *  panel; the cards' buttons this guarded against are deleted by qf-8, the order check stays). */
 function c8cBeforeHintAndPanels(
   parent: HTMLElement,
   root: HTMLElement,
@@ -3465,7 +3401,7 @@ describe('BoxView ctl-8c: Care, Feed and Evolve on the sheet (CTL8C.1)', () => {
     // WRONG IMPL KILLED: no list; rows keyed by index (the screen's cursor key would name no row);
     // a row text from a literal, without the count, or with the wrong food's count; the sheet
     // hidden under the list (its active row, Feed…, is the context); a list placed after the panels
-    // (typing mode's Escape would land on a card's button); a name parsed as HTML; a stale row kept
+    // (typing mode's Escape would land inside a panel); a name parsed as HTML; a stale row kept
     // after its food is gone; a null feed that leaves the list showing, or hidden but still holding
     // "Bait (x3)" (the e2e text scans read hidden text).
     const { parent, view, root } = c8bOpen();
@@ -3869,9 +3805,11 @@ describe('BoxView ctl-10a: no Heal Party control (CTL10A.4)', () => {
     const buttonTexts = (): string[] =>
       [...root.querySelectorAll('button')].map((b) => (b.textContent ?? '').trim());
 
-    expect(buttonTexts(), 'control: the frame renders its real buttons').toEqual(
-      expect.arrayContaining(['To Box', 'To Party']),
-    );
+    // qf-8 (named intentional change): the control was "the frame renders its real buttons" (the
+    // cards' To Box / To Party, now deleted). The control is the drawn frame itself: the Box
+    // recruit's species is in the root, so the absence clauses below read a painted frame.
+    expect(root.textContent ?? '', 'control: the frame drew its lists').toContain('Emberfang');
+    expect(buttonTexts(), 'qf-8: the frame renders no button at all').toEqual([]);
     expect(buttonTexts(), 'no Heal Party button').not.toContain('Heal Party');
     expect(root.textContent ?? '', 'no Heal Party text anywhere in the frame').not.toContain(
       'Heal Party',
@@ -3910,6 +3848,11 @@ describe('BoxView ctl-10a: no Heal Party control (CTL10A.4)', () => {
 // `#renderParty` / `#renderBox`, which `replaceChildren()` their grid and rebuild every card and
 // button, so no node survives a second refresh and a focused button loses focus. The changed-vm
 // cases and the cursor case pass today (they pin what the keep must not break).
+//
+// qf-8 (named intentional change): the cards build no button any more (To Box / To Party are
+// deleted, QF8.1), so "card and button nodes" reads "card nodes" here: the focused node the keep
+// must not drop is a card (happy-dom focuses a bare div), and the handler-rebinding case is
+// retired below with its reason and survivors.
 // =============================================================================
 
 const p2Kip = (over: Partial<MonsterCardViewModel> = {}): MonsterCardViewModel =>
@@ -4049,41 +3992,38 @@ function p2FreshSnapshot(rosters: P2Rosters): { party: string; box: string } {
   return snapshot;
 }
 
-describe('BoxView polish-1 P2: an unchanged view model keeps its card and button nodes', () => {
-  it('POLISH1-P2-KEEP-NODES: refresh() again with FRESH deep-equal rosters keeps every card, slot and button node (the null party slots included), keeps the focused To Box button focused and working, and writes nothing into either grid', async () => {
+describe('BoxView polish-1 P2: an unchanged view model keeps its card nodes', () => {
+  it('POLISH1-P2-KEEP-NODES: refresh() again with FRESH deep-equal rosters keeps every card, slot and element node (the null party slots included), keeps a focused card focused, and writes nothing into either grid', async () => {
     // WRONG IMPL KILLED: the current replaceChildren() + rebuild (no node survives, focus falls to
     // the title anchor); a "keep" that re-appends the same nodes (identity holds but a browser drops
     // focus on remove + insert: caught by the zero DOM-write clause); a keep keyed on the array
     // REFERENCES (main.ts hands new arrays per batch, so it never keeps); a keep for the cards
-    // only that still rebuilds the null slots or the buttons; a kept button whose handler was
-    // dropped or points at the wrong monster.
-    const { parent, view, callbacks } = c8bMount();
+    // only that still rebuilds the null slots or a card's inner lines.
+    // qf-8 (named removal): the "kept To Box / To Party buttons still work for their card's
+    // monster" clauses left with the buttons. Survivor for the move commands:
+    // monstersScreen.test.ts CTL8B-2-MOVE-COMMAND (Move from Storage sends -1, from the Party the
+    // injected `partySlotNone`).
+    const { parent, view } = c8bMount();
     view.refresh(p2Base().party, p2Base().box);
     view.show();
     view.paint(c8bPaint({ tab: 'party' }));
-    await s4FlushMacrotask(); // show()'s deferred anchor focus lands before the player focuses a button
+    await s4FlushMacrotask(); // show()'s deferred anchor focus lands before the player focuses a card
 
     const party = partyGridOf(parent);
     const box = boxGridOf(parent);
     const slotsBefore = [...Array.from(party.children), ...Array.from(box.children)];
     const cardsBefore = [...c8bCards(party), ...c8bCards(box)];
     const elementsBefore = [...p2Elements(party), ...p2Elements(box)];
-    const buttonsBefore = [
-      ...Array.from(party.querySelectorAll('button')),
-      ...Array.from(box.querySelectorAll('button')),
-    ];
     expect(slotsBefore, 'six party slots (two cards, four null) and two box cards').toHaveLength(8);
     expect(cardsBefore, 'four monster cards carry a nav key').toHaveLength(4);
-    expect(buttonsBefore.map((b) => b.textContent)).toEqual([
-      'To Box',
-      'To Box',
-      'To Party',
-      'To Party',
-    ]);
+    expect(
+      [...party.querySelectorAll('button'), ...box.querySelectorAll('button')],
+      'qf-8: no card builds a button',
+    ).toEqual([]);
 
-    const toBox = buttonsBefore[0] as HTMLButtonElement;
-    toBox.focus();
-    expect(document.activeElement, 'precondition: the first To Box button holds focus').toBe(toBox);
+    const focused = cardsBefore[0] as HTMLElement;
+    focused.focus();
+    expect(document.activeElement, 'precondition: the first Party card holds focus').toBe(focused);
 
     const writes = [p2SpyDomWrites(party), p2SpyDomWrites(box)];
     try {
@@ -4105,15 +4045,8 @@ describe('BoxView polish-1 P2: an unchanged view model keeps its card and button
         elements.forEach((el, i) => {
           expect(el, `batch ${batch}: element ${i} is the identical node`).toBe(elementsBefore[i]);
         });
-        const buttons = [
-          ...Array.from(party.querySelectorAll('button')),
-          ...Array.from(box.querySelectorAll('button')),
-        ];
-        buttons.forEach((el, i) => {
-          expect(el, `batch ${batch}: button ${i} is the identical node`).toBe(buttonsBefore[i]);
-        });
-        expect(document.activeElement, `batch ${batch}: the focused button keeps focus`).toBe(
-          toBox,
+        expect(document.activeElement, `batch ${batch}: the focused card keeps focus`).toBe(
+          focused,
         );
       }
       expect(
@@ -4123,22 +4056,14 @@ describe('BoxView polish-1 P2: an unchanged view model keeps its card and button
     } finally {
       for (const w of writes) w.restore();
     }
-
-    // The kept buttons still work, for THEIR card's monster.
-    toBox.click();
-    expect(callbacks.onSetPartySlot).toHaveBeenCalledTimes(1);
-    expect(callbacks.onSetPartySlot).toHaveBeenLastCalledWith(100n, BOX_SLOT);
-    (buttonsBefore[2] as HTMLButtonElement).click();
-    expect(callbacks.onSetPartySlot).toHaveBeenCalledTimes(2);
-    expect(callbacks.onSetPartySlot).toHaveBeenLastCalledWith(200n, NEXT_FREE_SLOT_SENTINEL);
-    (buttonsBefore[3] as HTMLButtonElement).click();
-    expect(callbacks.onSetPartySlot).toHaveBeenLastCalledWith(300n, NEXT_FREE_SLOT_SENTINEL);
   });
 
-  it('POLISH1-P2-KEEP-NODES-STORAGE-EMPTY: on the Storage tab a focused To Party button survives an equal refresh, and an EMPTY box keeps its "no monsters" node across equal refreshes', async () => {
+  it('POLISH1-P2-KEEP-NODES-STORAGE-EMPTY: on the Storage tab a focused Box card survives an equal refresh, and an EMPTY box keeps its "no monsters" node across equal refreshes', async () => {
     // WRONG IMPL KILLED: a keep that only covers the party grid; a keep that skips the box grid's
-    // focused button; an empty-box branch (the early return in #renderBox) that rebuilds its line
+    // focused card; an empty-box branch (the early return in #renderBox) that rebuilds its line
     // on every batch because it sits outside the keep.
+    // qf-8 (named intentional change): the focused node is the second Box card (it was that
+    // card's To Party button, deleted with QF8.1).
     const { parent, view } = c8bMount();
     view.refresh(p2Base().party, p2Base().box);
     view.show();
@@ -4146,19 +4071,20 @@ describe('BoxView polish-1 P2: an unchanged view model keeps its card and button
     await s4FlushMacrotask();
 
     const box = boxGridOf(parent);
-    const buttonsBefore = Array.from(box.querySelectorAll('button'));
-    expect(buttonsBefore.map((b) => b.textContent)).toEqual(['To Party', 'To Party']);
-    const second = buttonsBefore[1] as HTMLButtonElement;
+    const cardsBefore = c8bCards(box);
+    expect(cardsBefore, 'precondition: two Box cards carry a nav key').toHaveLength(2);
+    const second = cardsBefore[1] as HTMLElement;
     second.focus();
-    expect(document.activeElement).toBe(second);
+    expect(document.activeElement, 'precondition: the second Box card holds focus').toBe(second);
 
     const fresh = p2Base();
     view.refresh(fresh.party, fresh.box);
-    const buttonsAfter = Array.from(box.querySelectorAll('button'));
-    buttonsAfter.forEach((el, i) => {
-      expect(el, `box button ${i} is the identical node`).toBe(buttonsBefore[i]);
+    const cardsAfter = c8bCards(box);
+    expect(cardsAfter, 'the Box card count').toHaveLength(cardsBefore.length);
+    cardsAfter.forEach((el, i) => {
+      expect(el, `box card ${i} is the identical node`).toBe(cardsBefore[i]);
     });
-    expect(document.activeElement, 'the focused To Party button keeps focus').toBe(second);
+    expect(document.activeElement, 'the focused Box card keeps focus').toBe(second);
 
     // The empty box: one line, kept across equal refreshes.
     view.refresh(p2Base().party, []);
@@ -4386,22 +4312,12 @@ describe('BoxView polish-1 P2: an unchanged view model keeps its card and button
     c.check({ party: partyGridOf(parent), box: boxGridOf(parent), from: c.from(), to: c.to() });
   });
 
-  it('POLISH1-P2-CHANGED-REBUILDS-HANDLERS: after a card`s monster id changes, its buttons act on the NEW id (the kept view does not keep the old closure)', () => {
-    // WRONG IMPL KILLED: an in-place update of a kept card that rewrites the text but leaves the
-    // button's click handler bound to the previous monster.
-    const { parent, view, callbacks } = c8bMount();
-    view.refresh(p2Base().party, p2Base().box);
-    view.show();
-    view.paint(c8bPaint({ tab: 'party' }));
-    view.refresh(p2Edit('party', { monsterId: 150n }, p2Base()).party, p2Base().box);
-    const toBox = Array.from(partyGridOf(parent).querySelectorAll('button')).find(
-      (b) => b.textContent === 'To Box',
-    );
-    expect(toBox, 'precondition: a To Box button exists').toBeDefined();
-    toBox?.click();
-    expect(callbacks.onSetPartySlot).toHaveBeenCalledTimes(1);
-    expect(callbacks.onSetPartySlot).toHaveBeenCalledWith(150n, BOX_SLOT);
-  });
+  // qf-8 (NAMED REMOVAL): POLISH1-P2-CHANGED-REBUILDS-HANDLERS ("after a card's monster id
+  // changes, its buttons act on the NEW id") is RETIRED: the card's To Box / To Party buttons and
+  // their click closures are deleted (QF8.1), so no per-card handler is left to go stale. What
+  // survives of its claim: the kept card is re-keyed to the new id, POLISH1-P2-CHANGED-REBUILDS
+  // "a monster id changes at the same position" (above); and the Move acts on the monster the
+  // sheet was opened for, monstersScreen.test.ts CTL8B-2-MOVE-COMMAND.
 
   it('POLISH1-P2-CURSOR-SURVIVES: the kept paint (the cursor card`s is-active, aria-current and outline) is still applied after an equal refresh, after a changed one, and for the first-card default', () => {
     // WRONG IMPL KILLED: a keep that skips #apply() after an unchanged refresh and so loses a mark
@@ -4525,8 +4441,11 @@ describe('BoxView polish-1 P2 round 2: exact keep key, throw recovery, locale', 
     expect(p2Snapshot(parent), 'the kept view shows what a fresh view shows').toEqual(expected);
   });
 
-  /** `document.createElement` made to throw on its `nth` call for a <button> (1-based), once. */
-  function p2ThrowOnButton(nth: number): { restore: () => void; thrown: () => boolean } {
+  /** `document.createElement` made to throw on its `nth` call for a <span> (1-based), once.
+   *  qf-8: was the nth <button>; each card built ONE button (To Box / To Party, deleted by QF8.1)
+   *  and builds ONE <span> (its bold name), so the same nth faults the same card mid-build. If a
+   *  card ever stops building a span, the "fixture: the fault fired" clause below goes red. */
+  function p2ThrowOnNameSpan(nth: number): { restore: () => void; thrown: () => boolean } {
     const real = document.createElement.bind(document);
     let seen = 0;
     let thrown = false;
@@ -4534,7 +4453,7 @@ describe('BoxView polish-1 P2 round 2: exact keep key, throw recovery, locale', 
       tag: string,
       options?: ElementCreationOptions,
     ) => {
-      if (tag === 'button') {
+      if (tag === 'span') {
         seen += 1;
         if (seen === nth) {
           thrown = true;
@@ -4570,7 +4489,7 @@ describe('BoxView polish-1 P2 round 2: exact keep key, throw recovery, locale', 
     view.show();
     view.paint(c8bPaint({ tab: 'party' }));
 
-    const fault = p2ThrowOnButton(nth);
+    const fault = p2ThrowOnNameSpan(nth);
     const next = changedRosters();
     try {
       expect(() => view.refresh(next.party, next.box), 'the throw surfaces').toThrow(
@@ -4597,14 +4516,23 @@ describe('BoxView polish-1 P2 round 2: exact keep key, throw recovery, locale', 
     });
   });
 
-  it('POLISH1-P2-LOCALE: after the locale switches, an EQUAL refresh re-renders the card copy (To Box, To Party, empty slot, empty box, stats) in the new language', () => {
+  it('POLISH1-P2-LOCALE: after the locale switches, an EQUAL refresh re-renders the card copy (empty slot, empty box, stats) in the new language', () => {
     // WRONG IMPL KILLED: a key that omits the locale (the equal roster is skipped and every card
-    // keeps its old-language button, empty-slot, empty-box and stats text).
+    // keeps its old-language empty-slot, empty-box and stats text).
+    // qf-8 (named intentional change): the To Box / To Party button copy was this case's party and
+    // box witness; the buttons are deleted (QF8.1), so the empty-slot line (party grid) and the
+    // stats lines (both grids) carry the locale claim, each checked to differ between en and fr.
     const EN = P2_CATALOG_EN as unknown as Record<string, string>;
     const FR = P2_CATALOG_FR as unknown as Record<string, string>;
     const cards = (): P2Rosters => ({
       party: [p2Kip(), null, null, null, null, null],
       box: [p2Ember()],
+    });
+    /** The card copy this roster shows, resolved in the CURRENT locale. */
+    const copy = (): { slot: string; kip: string; ember: string } => ({
+      slot: i18nTf('box.party.emptySlot', { slot: 1 }),
+      kip: p2Stats(p2Kip()),
+      ember: p2Stats(p2Ember()),
     });
     const { parent, view } = c8bMount();
     const first = cards();
@@ -4615,28 +4543,27 @@ describe('BoxView polish-1 P2 round 2: exact keep key, throw recovery, locale', 
     const box = boxGridOf(parent);
     try {
       p2SetLocale('en');
-      expect(
-        Array.from(party.querySelectorAll('button')).map((b) => b.textContent),
-        'precondition: English',
-      ).toEqual([EN['box.card.toBox']]);
+      const en = copy();
+      p2SetLocale('fr');
+      const fr = copy();
+      p2SetLocale('en');
+      for (const k of ['slot', 'kip', 'ember'] as const) {
+        expect(fr[k], `fixture: the ${k} copy differs between fr and en`).not.toBe(en[k]);
+      }
+      expect(FR['box.box.empty'], 'fixture: box.box.empty differs').not.toBe(EN['box.box.empty']);
+      expect(party.textContent ?? '', 'precondition: English empty slot').toContain(en.slot);
+      expect(party.textContent ?? '', 'precondition: English stats').toContain(en.kip);
+      expect(box.textContent ?? '', 'precondition: English stats').toContain(en.ember);
 
       p2SetLocale('fr');
-      for (const key of ['box.card.toBox', 'box.card.toParty', 'box.box.empty']) {
-        expect(FR[key], `fixture: ${key} differs between fr and en`).not.toBe(EN[key]);
-      }
       const second = cards();
       view.refresh(second.party, second.box);
-      expect(Array.from(party.querySelectorAll('button')).map((b) => b.textContent)).toEqual([
-        FR['box.card.toBox'],
-      ]);
-      expect(Array.from(box.querySelectorAll('button')).map((b) => b.textContent)).toEqual([
-        FR['box.card.toParty'],
-      ]);
-      expect(party.textContent ?? '', 'the empty slot copy is French').toContain(
-        i18nTf('box.party.emptySlot', { slot: 1 }),
-      );
-      expect(party.textContent ?? '', 'the stats copy is French').toContain(p2Stats(p2Kip()));
-      expect(box.textContent ?? '').toContain(p2Stats(p2Ember()));
+      expect(party.textContent ?? '', 'the empty slot copy is French').toContain(fr.slot);
+      expect(party.textContent ?? '', 'no English empty slot is left').not.toContain(en.slot);
+      expect(party.textContent ?? '', 'the stats copy is French').toContain(fr.kip);
+      expect(party.textContent ?? '', 'no English stats are left').not.toContain(en.kip);
+      expect(box.textContent ?? '', 'the Box stats copy is French').toContain(fr.ember);
+      expect(box.textContent ?? '', 'no English Box stats are left').not.toContain(en.ember);
 
       // The empty box line: rendered in English first, then an equal refresh under fr.
       p2SetLocale('en');
@@ -4650,9 +4577,8 @@ describe('BoxView polish-1 P2 round 2: exact keep key, throw recovery, locale', 
       p2SetLocale('en');
       view.refresh(cards().party, []);
       expect(box.textContent).toBe(EN['box.box.empty']);
-      expect(Array.from(party.querySelectorAll('button')).map((b) => b.textContent)).toEqual([
-        EN['box.card.toBox'],
-      ]);
+      expect(party.textContent ?? '', 'the empty slot copy is English again').toContain(en.slot);
+      expect(party.textContent ?? '', 'no French empty slot is left').not.toContain(fr.slot);
     } finally {
       p2SetLocale('en');
     }

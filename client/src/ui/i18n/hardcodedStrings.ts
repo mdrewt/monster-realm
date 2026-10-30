@@ -55,9 +55,10 @@
 
 /** Fewer sinks than this across the whole non-test client tree means the scanner stopped
  *  seeing the tree — a scanner failure, never a clean tree (`>=`). An anti-vacuity guard, not a
- *  ratchet: set to the measured total minus a margin of 10 (261 sinks on 2026-10-24); lower it
- *  consciously when UI text legitimately shrinks, never auto-tighten it. */
-export const SINK_FLOOR = 251;
+ *  ratchet: set to the measured total minus a margin of 11 (246 sinks on 2026-10-29, after qf-8
+ *  removed the four views' duplicate controls and their text); lower it consciously when UI text
+ *  legitimately shrinks, never auto-tighten it. */
+export const SINK_FLOOR = 235;
 
 /** The 19 spec-named target files (E6, plan R9), relative to `client/src`, sorted. Each must be
  *  present in the walk and non-empty after comment stripping (I18N-HC-05); a missing one is a

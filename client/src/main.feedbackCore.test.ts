@@ -20,6 +20,12 @@
  * round-trip): flip `#shop-overlay`'s display — the flag `ShopView.visible` reads — and flush a
  * store batch so the real listener renders the real Buy/Sell buttons.
  *
+ * qf-8 (named intentional change, QF8.1): the trade panel's action buttons are deleted. Each trade
+ * site's activation is the player's key sequence over the Social sheet U opened on the trade row
+ * (`TRADE_SHEET_KEYS`: Accept; Decline then Yes for the trade `reject`; Confirm then Yes; Cancel);
+ * the oracles (the reducer, its args, the `#trade-feedback` line) are unchanged. The sheet holds no
+ * in-flight lock by design, so the four trade rows leave PGCCA-A1-LOCK-HELD (named there).
+ *
  * qf-9 (named intentional change, QF9.3): the care site used to open the Raising card (KeyI, the
  * card`s Care button, `#raising-feedback`). The card and its line are deleted (QF9.2), so the site
  * is rewritten against the Monsters sheet and qf-2`s invoking-surface sink: the answer lands on the
@@ -394,6 +400,18 @@ function openShop(kind: 'buy' | 'sell'): Activate {
 
 type TradeAction = 'accept' | 'reject' | 'confirm' | 'cancel';
 
+/** qf-8 (named intentional change, QF8.1): the trade panel's buttons are deleted, so each trade
+ *  action is the key sequence over the Social sheet that U opened on the trade row (tradeModel.ts's
+ *  action table: an offer TO the player reads Accept / Decline, one the player sent reads Cancel,
+ *  one awaiting the player's final Confirm reads Confirm / Cancel; the trade `reject` is the
+ *  sheet's Decline). Decline and Confirm ask Yes / No on No first, so their sequence moves to Yes. */
+const TRADE_SHEET_KEYS: Readonly<Record<TradeAction, readonly string[]>> = {
+  accept: ['Enter', 'Enter'], // the sheet (on Accept), A on Accept
+  reject: ['Enter', 'ArrowDown', 'Enter', 'ArrowUp', 'Enter'], // Decline, its prompt, Yes
+  confirm: ['Enter', 'Enter', 'ArrowUp', 'Enter'], // the sheet (on Confirm), its prompt, Yes
+  cancel: ['Enter', 'Enter'], // the one-row sheet (on Cancel), A on Cancel
+};
+
 function openTrade(action: TradeAction): Activate {
   // Seed an offer shaped so exactly the action under test is available (feedbackI18n's table).
   const viewerIsInitiator = action === 'confirm' || action === 'cancel';
@@ -402,7 +420,13 @@ function openTrade(action: TradeAction): Activate {
     status: action === 'confirm' ? 'ConfirmedByCounterparty' : 'Pending',
   });
   focusCanvasAndPressKey('KeyU');
-  return () => clickFirst(`#trade-actions button[data-action="${action}"]`, `trade ${action}`);
+  expect(
+    document.getElementById('trade-status')?.getAttribute('aria-current'),
+    `trade ${action}: the Social cursor must be on the trade row`,
+  ).toBe('true');
+  return () => {
+    for (const code of TRADE_SHEET_KEYS[action]) tapWorldKey(code);
+  };
 }
 
 function seedOffer(o: {
@@ -739,7 +763,7 @@ describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1
     }
   }, 60_000);
 
-  it('PGCCA-A1-LOCK-HELD: while a reducer promise is pending a second activation does not fire again; after it settles a third does, at all 9 sites, care on the Monsters sheet [QF9-3-LOCK-CARE-SHEET]', async () => {
+  it('PGCCA-A1-LOCK-HELD: while a reducer promise is pending a second activation does not fire again; after it settles a third does, at the 5 sites that keep an in-flight lock (the four trade sites answer on the Social sheet since qf-8), care on the Monsters sheet [QF9-3-LOCK-CARE-SHEET]', async () => {
     // WRONG IMPL KILLED: an adapter that does not RETURN the core's promise (`void performCare(...)`
     // or a pre-resolved stand-in) — the view's in-flight lock would release at once and a second
     // click would double-spend. Every view here locks on the handler's returned promise.
@@ -747,7 +771,24 @@ describe('main.ts feedback sites keep their behaviour per site (slice pgcc-a, A1
     // lock, deleted with the card. On the Monsters sheet path NOTHING in the view holds one (A on
     // Care is a keyed screen command), so this row reds until main.ts keeps a per-monster care
     // guard that releases when the care settles: a second A while pending sends no reducer call.
-    for (const [i, site] of SITES.entries()) {
+    // qf-8 (NAMED REMOVAL of the four trade rows, protected category: a reviewer adjudicates): the
+    // trade sites' lock was the trade panel's own `#pending` over its Accept / Reject / Confirm /
+    // Cancel buttons, deleted with them (QF8.1). The Social sheet sends one command per A and holds
+    // no in-flight lock by design (socialScreen.ts's header: the reducers are the authority and
+    // refuse a duplicate), and main.ts's trade arms keep none, so a second key sequence while the
+    // first answer is pending sends again: there is no lock left to pin. Survivors: one A, one
+    // command, socialScreen.test.ts CTL8D-2-COMMANDS; the trade arms still RETURN the core's promise
+    // and route its outcome, PGCCA-A4-WHERE-PER-SITE (all four trade rows), PGCCA-A1-FROZEN-PER-SITE
+    // (reject, confirm, cancel; accept's frozen line is main.feedbackI18n.test.ts's) and
+    // PGCCA-A4-HIDDEN-TRADE above.
+    const lockSites = SITES.filter(
+      (s) => !['accept', 'reject', 'confirm', 'cancel'].includes(s.name),
+    );
+    expect(
+      lockSites.map((s) => s.name),
+      'the sites whose view (or main.ts) keeps an in-flight lock',
+    ).toEqual(['care', 'buy', 'sell', 'rename', 'propose']);
+    for (const [i, site] of lockSites.entries()) {
       if (i > 0) resetApp();
       await bootMain('/');
       const activate = site.open();

@@ -10,23 +10,27 @@
 //
 // The panel only RESPONDS (ctl-10b, CTL10B.2): a challenge is started face to face from the world
 // (A on the player you face), never from a list here, so `#pvp-player-list` stays empty.
+//
+// NO CONTROL OF ITS OWN (qf-8, QF8.1): the incoming row's Accept / Decline and the outgoing row's
+// Cancel Challenge buttons were a mouse-only duplicate of the Social sheet's rows and are deleted.
+// The panel renders the two request labels; the Social frame (ui/screens/socialScreen.ts) hosts
+// its chrome in this root (`hostChrome`), marks the request's container with its cursor
+// (`paintCursor`) and answers the request from its sheet, by D-pad and by pointer.
 import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { PvpChallengeViewModel, PvpIncomingChallenge, PvpOutgoingChallenge } from './pvpModel';
 
 /**
- * All four may return a promise: the view-wide lifecycle lock is held until it
- * settles, so the return type must express it — a `=> void` type would let a future
- * implementation silently reduce the lock to a one-microtask no-op (raisingView's onCare
- * makes the same argument). The four reducers are duplicate-safe server-side; this is
- * defensive polish so one intent never becomes two calls or a contradictory pair.
+ * UNREAD since qf-8 (QF8.1): the lifecycle buttons these fed are deleted (see the header), and
+ * with them the view-wide in-flight lock that guarded them. Kept, with its shape, so main.ts's
+ * construction stays unchanged; nothing in this view calls any member.
  */
 export interface PvpViewCallbacks {
-  /** Accept an incoming challenge. */
+  /** Unread (qf-8): accepting is the Social sheet's Accept row. */
   readonly onAccept: (challengeId: bigint) => void | Promise<void>;
-  /** Decline an incoming challenge. */
+  /** Unread (qf-8): declining is the Social sheet's Decline row. */
   readonly onDecline: (challengeId: bigint) => void | Promise<void>;
-  /** Cancel an outgoing challenge. */
+  /** Unread (qf-8): withdrawing is the Social sheet's Cancel row. */
   readonly onCancel: (challengeId: bigint) => void | Promise<void>;
   /** UNREAD since ctl-10b (a challenge starts face to face). Optional only because a test
    *  outside the slice's touches still passes it (residual R-ctl-10b-PVPCB). */
@@ -38,24 +42,10 @@ export class PvpView {
   readonly #incomingEl: HTMLElement;
   readonly #outgoingEl: HTMLElement;
   readonly #feedbackEl: HTMLElement;
-  readonly #callbacks: PvpViewCallbacks;
   readonly #root: HTMLElement;
   #visible = false;
-  // ONE view-wide lock for the three lifecycle actions, deliberately not keyed by
-  // challengeId — accept/decline/cancel all mutate the same single challenge
-  // state, and a per-button lock would still admit accept-then-decline on one challenge
-  // (the contradictory-outcome pair). The object is the generation token: `.finally()`
-  // releases only if the stored lock is still its own, so a stale promise (click →
-  // force-hide cleared → re-show → click again → first settles) cannot release the second.
-  #pending: object | null = null;
-  // What each dynamic container shows now, as a render key; no entry = nothing current (hidden,
-  // or the bare shell). main.ts refreshes on every store batch: a container whose key is unchanged
-  // keeps its nodes, so a batch neither drops focus from a control nor loses a click in progress.
-  readonly #rendered = new Map<HTMLElement, string>();
 
-  constructor(callbacks: PvpViewCallbacks) {
-    this.#callbacks = callbacks;
-
+  constructor(_callbacks: PvpViewCallbacks) {
     const root = document.getElementById('pvp-challenge-overlay');
     if (!root) throw new Error('pvpView: #pvp-challenge-overlay element missing from index.html');
     this.#root = root;
@@ -105,13 +95,6 @@ export class PvpView {
     this.#visible = false;
     this.#root.style.display = 'none';
     this.#feedbackEl.textContent = '';
-    // Release the lifecycle lock (tradeProposeView hide()-time precedent): onReconnect
-    // and the battle auto-show force-hide this overlay, and the SDK never settles an in-flight
-    // reducer promise after a link drop — so `.finally()` may never run. No node re-enable:
-    // `show()` is only reached through refresh(), which rebuilds every lifecycle control once
-    // what was rendered is forgotten.
-    this.#pending = null;
-    this.#rendered.clear();
     this.paintCursor(null);
     // DELIBERATELY UNGUARDED, and the asymmetry with the guarded `render(null)` path
     // in the three render-driven views is a decision, not an oversight. `closeOverlayA11y` is a
@@ -157,7 +140,9 @@ export class PvpView {
    * battle or other overlay (mutual exclusivity). main.ts only ever passes
    * true today: what closes the panel is its `hide()`, run by the context stack.
    *
-   * Each container is rebuilt only when what it shows changed (`#renderIfChanged`).
+   * Both containers are rebuilt on every refresh: they hold plain labels (the buttons they
+   * carried are deleted, qf-8), and the Social cursor marks the containers themselves
+   * (`paintCursor`), which outlive the rebuild.
    */
   refresh(vm: PvpChallengeViewModel | null, forceVisible: boolean): void {
     if (!forceVisible) {
@@ -169,81 +154,14 @@ export class PvpView {
 
     if (vm === null) {
       this.#statusEl.textContent = t('pvp.title.idle');
-      this.#incomingEl.replaceChildren();
-      this.#outgoingEl.replaceChildren();
-      this.#rendered.clear();
+      this.#renderIncoming(null);
+      this.#renderOutgoing(null);
       return;
     }
 
     this.#statusEl.textContent = t('pvp.title.challenge');
-    const { incoming, outgoing } = vm;
-    this.#renderIfChanged(
-      this.#incomingEl,
-      incoming && [incoming.challengeId, incoming.challengerName],
-      () => this.#renderIncoming(incoming),
-    );
-    this.#renderIfChanged(
-      this.#outgoingEl,
-      outgoing && [outgoing.challengeId, outgoing.targetName, outgoing.status],
-      () => this.#renderOutgoing(outgoing),
-    );
-    // re-derive the lock on the live controls — a batch can re-render while a
-    // lifecycle call is still in flight.
-    if (this.#pending !== null) this.#setLifecycleDisabled(true);
-  }
-
-  /** Runs `render` for `el` unless `shown` — everything that render reads — is what `el` already
-   *  shows. The key is JSON, never a delimiter join: player names are user-chosen. A render that
-   *  throws leaves `el` with no key, so the next refresh renders it again. */
-  #renderIfChanged(el: HTMLElement, shown: readonly unknown[] | null, render: () => void): void {
-    const key = JSON.stringify(shown, (_, v: unknown) => (typeof v === 'bigint' ? `${v}` : v));
-    if (this.#rendered.get(el) === key) return;
-    this.#rendered.delete(el);
-    render();
-    this.#rendered.set(el, key);
-  }
-
-  /**
-   * Every lifecycle click routes through here — no-op while a call is in flight;
-   * otherwise take the lock, disable the lifecycle controls, and release in `.finally()`
-   * on BOTH arms (a rejected or short-circuited call must never leave a dead control).
-   * `new Promise((resolve) => resolve(run()))` calls `run` synchronously and turns a
-   * synchronous throw into a rejection; `.catch` after `.finally` keeps a rejecting
-   * callback from surfacing as an unhandled rejection (main.ts already reported it).
-   */
-  #dispatch(run: () => void | Promise<void>): void {
-    if (this.#pending !== null) return;
-    const lock = {};
-    this.#pending = lock;
-    this.#setLifecycleDisabled(true);
-    void new Promise<void>((resolve) => resolve(run()))
-      .finally(() => {
-        if (this.#pending !== lock) return;
-        this.#pending = null;
-        // The LIVE nodes: a refresh() mid-flight may have replaced the clicked one.
-        this.#setLifecycleDisabled(false);
-        this.#reanchorStrandedFocus();
-      })
-      .catch((err: unknown) => {
-        console.error('pvp lifecycle handler error', err);
-      });
-  }
-
-  /** A lock-owning release that finds focus stranded on `<body>` re-asserts the
-   *  dialog; the idempotent re-open re-installs the trap and defers focus to the registry anchor.
-   *  `#visible` is load-bearing: re-opening a hidden view would CREATE an open record. */
-  #reanchorStrandedFocus(): void {
-    if (this.#visible && document.activeElement === document.body) {
-      openOverlayA11y('pvpView', this.#root);
-    }
-  }
-
-  /** The two dynamic containers ARE the live-button registry — never `#root`, which
-   *  also holds the static index.html controls (the close button) this lock must not touch. */
-  #setLifecycleDisabled(disabled: boolean): void {
-    for (const el of [this.#incomingEl, this.#outgoingEl]) {
-      for (const btn of el.querySelectorAll('button')) btn.disabled = disabled;
-    }
+    this.#renderIncoming(vm.incoming);
+    this.#renderOutgoing(vm.outgoing);
   }
 
   #renderIncoming(incoming: PvpIncomingChallenge | null): void {
@@ -254,27 +172,6 @@ export class PvpView {
     label.setAttribute('data-testid', 'pvp-incoming-label');
     label.textContent = tf('pvp.incoming.label', { challenger: incoming.challengerName });
     this.#incomingEl.appendChild(label);
-
-    const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex;gap:8px;margin-top:8px;';
-
-    const acceptBtn = document.createElement('button');
-    acceptBtn.setAttribute('data-testid', 'pvp-accept-btn');
-    acceptBtn.textContent = t('pvp.incoming.accept');
-    acceptBtn.addEventListener('click', () =>
-      this.#dispatch(() => this.#callbacks.onAccept(incoming.challengeId)),
-    );
-    btnRow.appendChild(acceptBtn);
-
-    const declineBtn = document.createElement('button');
-    declineBtn.setAttribute('data-testid', 'pvp-decline-btn');
-    declineBtn.textContent = t('pvp.incoming.decline');
-    declineBtn.addEventListener('click', () =>
-      this.#dispatch(() => this.#callbacks.onDecline(incoming.challengeId)),
-    );
-    btnRow.appendChild(declineBtn);
-
-    this.#incomingEl.appendChild(btnRow);
   }
 
   #renderOutgoing(outgoing: PvpOutgoingChallenge | null): void {
@@ -285,13 +182,5 @@ export class PvpView {
     label.setAttribute('data-testid', 'pvp-outgoing-label');
     label.textContent = tf('pvp.outgoing.label', { target: outgoing.targetName });
     this.#outgoingEl.appendChild(label);
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.setAttribute('data-testid', 'pvp-cancel-btn');
-    cancelBtn.textContent = t('pvp.outgoing.cancel');
-    cancelBtn.addEventListener('click', () =>
-      this.#dispatch(() => this.#callbacks.onCancel(outgoing.challengeId)),
-    );
-    this.#outgoingEl.appendChild(cancelBtn);
   }
 }

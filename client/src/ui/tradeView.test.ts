@@ -3,7 +3,8 @@
 //
 // SOURCE OF TRUTH: M16.5-ninth-review-residuals.spec.md §16.5c-3
 //
-// RED REASON (m16.5c-TV-1 — disabled lock during re-render while #pending):
+// RED REASON (m16.5c-TV-1 — disabled lock during re-render while #pending; RETIRED by qf-8 with
+// the buttons, see the qf-8 NAMED REMOVALS below):
 //   TradeView.#renderActions() recreates buttons via replaceChildren() then createElement.
 //   Each freshly-created button sets btn.disabled = false ONLY in the click handler's
 //   finally block — but the handler never fires during a re-render.  The button is
@@ -33,11 +34,26 @@
 //
 // WRONG IMPL KILLED per test:
 //   TV-1: any impl where #renderActions() creates buttons with disabled=false when
-//         #pending=true — the double-send vector is open.
+//         #pending=true — the double-send vector is open. (RETIRED by qf-8: no button is left.)
 //   TV-2: any impl where render() with a changed statusLabel does NOT clear
 //         #feedbackEl — "Trade accepted!" persists after the server advances the offer.
 //   TV-3: any impl where render() with kind='trade' does NOT clear #feedbackEl when
 //         previously in kind='no-trade' — stale cross-session feedback leaks.
+//
+// qf-8 (QF8.1, QF8.2) NAMED REMOVALS: the `#trade-actions` buttons (Accept / Reject / Confirm Trade
+// / Cancel), their `#pending` lock and `#dispatch` are DELETED as a mouse-only duplicate of the
+// Social sheet's Trades rows (screens/socialScreen.ts: accept / decline / confirm / cancel).
+//   - TV-1 and TV-4 (the in-flight lock over those buttons) are RETIRED: no button is left to
+//     double-send. Survivors: the absence of every trade button, document-wide and under the spy
+//     matrix (no click / pointer / key reaches a TradeCallbacks entry), reachability.test.ts
+//     [QF8-2-TRADE-RETIRED] / [QF8-2-TRADE-NATIVE]; the sheet's commands,
+//     screens/socialScreen.test.ts CTL8D-2-COMMANDS; the pointer route,
+//     reachability.test.ts [QF8-1-SOCIAL-TRADE-POINTER].
+//   - X6d keeps "the actions container is empty after no-trade" (now trivially; its "buttons were
+//     there" precondition is dropped); TV-01 / TV-02 lose the `trade.action.*` ids (also from
+//     M24S4_TV_PLAIN_KEYS); CTL8D-1-VIEW-PLACEHOLDER / CTL8D-2-VIEW-SHEET lose the
+//     "a Tab-focused legacy button" strand check (no such button renders).
+// `makeCallbacks` stays: TradeView still takes TradeCallbacks (main.ts constructs it; unread).
 //
 // Pattern follows battleView.test.ts: @vitest-environment happy-dom, DOM set up
 // before construction, vi.fn() callbacks, no SDK/wasm/network.
@@ -172,12 +188,12 @@ function removeOverlay(overlay: HTMLElement): void {
 
 // ---------------------------------------------------------------------------
 // Minimal callbacks factory — TradeCallbacks with vi.fn() stubs.
-// onAccept/onReject/onConfirm/onCancel all return a never-settling Promise so
-// that #pending stays true during the test (simulating an in-flight reducer).
+// onAccept/onReject/onConfirm/onCancel all return a never-settling Promise (an in-flight
+// reducer). qf-8: no control of the view calls them any more (the TV-1 lock they fed is retired).
 // ---------------------------------------------------------------------------
 function makeCallbacks(): TradeCallbacks {
   const pending = new Promise<void>(() => {
-    /* intentionally never resolves — keeps #pending=true for TV-1 */
+    /* intentionally never resolves */
   });
   return {
     onAccept: vi.fn(() => pending),
@@ -211,56 +227,13 @@ function makeNoTradeVM(): TradeScreenViewModel {
 }
 
 // ---------------------------------------------------------------------------
-// [m16.5c-TV-1] BITES: buttons render disabled when #pending is true
-//
-// Procedure:
-//   1. Construct TradeView
-//   2. show() + render() with a trade VM (Pending, actions=['accept','reject'])
-//   3. Verify buttons start with disabled=false (baseline)
-//   4. Click one button — this triggers the click handler → sets #pending=true,
-//      btn.disabled=true, dispatches the never-settling onAccept Promise
-//   5. Call render() again with the same VM (simulating a server batch while in-flight)
-//   6. Assert ALL buttons in #trade-actions are disabled=true
-//
+// [m16.5c-TV-1] RETIRED by qf-8 (NAMED REMOVAL): "re-render while #pending=true must create
+// buttons with disabled=true" locked the `#trade-actions` buttons, which are deleted (QF8.1). With
+// no button there is no double-send vector for a lock to close; the Social sheet sends each
+// command once per A (screens/socialScreen.test.ts CTL8D-2-COMMANDS). Survivors: reachability.test.ts
+// [QF8-2-TRADE-RETIRED] (no trade button anywhere, and no event on any element reaches a
+// TradeCallbacks entry) and [QF8-2-TRADE-NATIVE] (no native control added).
 // ---------------------------------------------------------------------------
-describe('TradeView [m16.5c-TV-1]: buttons render disabled when #pending is true', () => {
-  it('BITES: re-render while #pending=true must create buttons with disabled=true', () => {
-    const overlay = mountTradeOverlay();
-    const cbs = makeCallbacks();
-    const view = new TradeView(cbs);
-
-    view.show();
-    const vm = makePendingTradeVM('Offer received', ['accept', 'reject']);
-
-    // First render: baseline — buttons must exist and be enabled (disabled=false).
-    view.render(vm);
-
-    const actionsEl = document.getElementById('trade-actions')!;
-    const buttonsAfterFirstRender = actionsEl.querySelectorAll('button');
-    expect(buttonsAfterFirstRender.length).toBeGreaterThan(0);
-    for (const btn of buttonsAfterFirstRender) {
-      expect((btn as HTMLButtonElement).disabled).toBe(false);
-    }
-
-    // Click the first button — sets #pending=true inside TradeView.
-    // onAccept returns a never-settling Promise so #pending stays true.
-    (buttonsAfterFirstRender[0] as HTMLButtonElement).click();
-
-    // Now re-render with the same VM while the reducer Promise is still pending.
-    // This simulates a server batch arriving (store flush) while the action is in-flight.
-    view.render(vm);
-
-    // BITES: without the fix, freshly-created buttons default to disabled=false.
-    // After fix: #renderActions detects #pending=true and sets btn.disabled=true.
-    const buttonsAfterSecondRender = actionsEl.querySelectorAll('button');
-    expect(buttonsAfterSecondRender.length).toBeGreaterThan(0);
-    for (const btn of buttonsAfterSecondRender) {
-      expect((btn as HTMLButtonElement).disabled).toBe(true);
-    }
-
-    removeOverlay(overlay);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // [m16.5c-TV-2] BITES: stale feedback cleared on offer-state change (statusLabel changes)
@@ -357,99 +330,13 @@ describe('TradeView [m16.5c-TV-3]: feedback cleared on kind transition no-trade�
 });
 
 // ---------------------------------------------------------------------------
-// [m16.5c-TV-4] BITES: buttons re-enabled after Promise resolves post mid-flight render
-//
-// Invariant: after a reducer Promise settles (success or error), ALL currently
-// visible trade action buttons must be enabled (disabled=false) and #pending must
-// be false.  A mid-flight render() between click and Promise settlement replaces
-// the old button DOM elements with fresh ones (replaceChildren()), so the `finally`
-// block's `btn.disabled = false` targets a DETACHED (orphaned) element and has no
-// effect on the newly-rendered buttons — they remain permanently disabled=true
-// even though #pending has been reset to false.
-//
-// Repro path (normal SpacetimeDB flow):
-//   click → server commit → row update batch → store.flushBatch() → render() [mid-flight]
-//   → Promise resolves → finally() → #pending=false + orphaned btn.disabled=false
-//   → newly-rendered buttons permanently stuck at disabled=true → UI deadlock
-//
-// Procedure:
-//   1. Construct TradeView, show(), render() with ['accept','reject'] buttons.
-//   2. Click the first button.  Callback returns a Promise that we resolve manually.
-//   3. BEFORE resolving, call render() again (simulates mid-flight batch update).
-//   4. Verify new buttons are disabled=true (mid-flight guard, also verified by TV-1).
-//   5. Resolve the callback Promise (simulates server response arriving).
-//   6. Await a microtask flush so finally() runs (Promise.resolve().then().then()
-//      requires two microtask ticks: one for the resolution, one for finally).
-//   7. Assert ALL buttons in #trade-actions are disabled=false and #pending=false.
-//
-// BITES: kills any impl where finally() only resets the captured btn reference
-//   (which is now a detached DOM element) without re-enabling the buttons that
-//   are currently live in the DOM.
+// [m16.5c-TV-4] RETIRED by qf-8 (NAMED REMOVAL): "after a mid-flight render + Promise resolve, live
+// buttons must be disabled=false" pinned the release of the TV-1 lock on the `#trade-actions`
+// buttons; buttons and lock are deleted together (QF8.1), so there is nothing left to stay stuck
+// disabled. The Social sheet holds no lock by design (a repeated A re-sends; the reducers are the
+// authority). Survivors: reachability.test.ts [QF8-2-TRADE-RETIRED] / [QF8-2-TRADE-NATIVE];
+// screens/socialScreen.test.ts CTL8D-2-COMMANDS.
 // ---------------------------------------------------------------------------
-describe('TradeView [m16.5c-TV-4]: buttons re-enabled after Promise resolves post mid-flight render', () => {
-  it('BITES: after mid-flight render + Promise resolve, live buttons must be disabled=false', async () => {
-    const overlay = mountTradeOverlay();
-
-    // A resolvable Promise: we hold the resolve handle to trigger settlement manually.
-    let resolveCallback!: () => void;
-    const resolvablePromise = new Promise<void>((res) => {
-      resolveCallback = res;
-    });
-
-    const cbs: TradeCallbacks = {
-      onAccept: vi.fn(() => resolvablePromise),
-      onReject: vi.fn(() => resolvablePromise),
-      onConfirm: vi.fn(() => resolvablePromise),
-      onCancel: vi.fn(() => resolvablePromise),
-    };
-
-    const view = new TradeView(cbs);
-    view.show();
-
-    const vm = makePendingTradeVM('Offer received', ['accept', 'reject']);
-
-    // Step 1: initial render — buttons start enabled.
-    view.render(vm);
-
-    const actionsEl = document.getElementById('trade-actions')!;
-    const firstButtons = actionsEl.querySelectorAll('button');
-    expect(firstButtons.length).toBeGreaterThan(0);
-
-    // Step 2: click — sets #pending=true, dispatches resolvablePromise.
-    (firstButtons[0] as HTMLButtonElement).click();
-
-    // Step 3: mid-flight render while Promise is still in-flight.
-    // Simulates a store.flushBatch() triggered by the server's row update
-    // arriving before the reducer Promise resolves.
-    view.render(vm);
-
-    // Step 4: new buttons are disabled (TV-1 guard — confirmed).
-    const midFlightButtons = actionsEl.querySelectorAll('button');
-    expect(midFlightButtons.length).toBeGreaterThan(0);
-    for (const btn of midFlightButtons) {
-      expect((btn as HTMLButtonElement).disabled).toBe(true);
-    }
-
-    // Step 5: resolve the Promise (server responded successfully).
-    resolveCallback();
-
-    // Step 6: flush microtasks so finally() runs.
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // Step 7: BITES — without fix, buttons remain disabled=true because finally()
-    // targeted the now-detached first-render button reference.
-    // After fix: finally() re-enables the CURRENTLY LIVE buttons (or triggers
-    // a re-render that creates them with disabled=false).
-    const afterResolveButtons = actionsEl.querySelectorAll('button');
-    expect(afterResolveButtons.length).toBeGreaterThan(0);
-    for (const btn of afterResolveButtons) {
-      expect((btn as HTMLButtonElement).disabled).toBe(false);
-    }
-
-    removeOverlay(overlay);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Overlay a11y wiring on the show()/hide() edge (ADDITIVE; see the file header)
@@ -677,8 +564,11 @@ describe('m24s0 sink elimination (ADR-0255) — tradeView clears', () => {
   });
 
   it('m24s0 X6d: a trade → no-trade transition EMPTIES both sides and the actions container', () => {
-    // Kills: dropping any of the three clears at tradeView.ts:94-96 — a stale populated
-    // side or the stale action buttons would survive the kind transition to 'no-trade'.
+    // Kills: dropping either side's clear at tradeView.ts:94-96 — a stale populated side would
+    // survive the kind transition to 'no-trade'.
+    // qf-8 (named intentional change): the actions container is never filled any more (its buttons
+    // are deleted, QF8.1), so its "buttons were there" precondition is dropped; its emptiness after
+    // no-trade is kept (any child left there would be a stale control or a stray node).
     const overlay = mountTradeOverlay();
     const view = new TradeView(makeCallbacks());
     view.show();
@@ -697,7 +587,6 @@ describe('m24s0 sink elimination (ADR-0255) — tradeView clears', () => {
     const mySide = document.getElementById('trade-my-side') as HTMLElement;
     const theirSide = document.getElementById('trade-their-side') as HTMLElement;
     const actionsEl = document.getElementById('trade-actions') as HTMLElement;
-    expect(actionsEl.querySelectorAll('button').length).toBeGreaterThan(0); // precondition
     expect(mySide.childNodes.length).toBeGreaterThan(0); // precondition
     expect(theirSide.childNodes.length).toBeGreaterThan(0); // precondition
 
@@ -720,8 +609,9 @@ describe('m24s0 sink elimination (ADR-0255) — tradeView clears', () => {
 // =============================================================================
 
 /** RT6: tradeModel's action sets are mutually exclusive — this VM needs an explicit
- *  `actions` argument so TV-01/TV-02 can reach all four `trade.action.*` labels
- *  across two renders (['confirm','cancel'] then ['accept','reject']). Reuses the
+ *  `actions` argument so TV-01/TV-02 render both sets across two renders (['confirm','cancel']
+ *  then ['accept','reject']); since qf-8 neither set draws a control or a `trade.action.*`
+ *  label (the ids are deleted), and the two renders pin that for every action. Reuses the
  *  file's own `makePendingTradeVM` for the statusLabel/tradeId/theirSide/kind
  *  scaffolding and overrides `mySide` with a card + an item + a positive currency
  *  so a single render also reaches trade.side.card/trade.side.currency. Every
@@ -764,10 +654,9 @@ const M24S4_TV_PLAIN_KEYS = new Set([
   'trade.side.offer',
   'trade.side.receive',
   'trade.side.nothing',
-  'trade.action.accept',
-  'trade.action.reject',
-  'trade.action.confirm',
-  'trade.action.cancel',
+  // INTENTIONAL CHANGE (qf-8): the four `trade.action.*` ids leave with the `#trade-actions`
+  // buttons (a «trade.action.accept» span is now an unexpected sentinel). 'Accept', 'Reject',
+  // 'Confirm Trade' and 'Cancel' stay in M24S4_TV_ROSTER, so they may appear nowhere in the root.
 ]);
 
 const M24S4_TV_PARAM_KEYS = new Set(['trade.side.card', 'trade.side.currency']);
@@ -890,8 +779,9 @@ describe('m24s4 (ADR-0260): tradeView.ts routes its migrated sinks through t()/t
     expect(document.getElementById('trade-status')!.textContent).toBe('No active trade');
 
     // (b) active trade, actions=['confirm','cancel'] -- reaches both #renderSide
-    // headings, the card/currency ★ params, the empty (theirSide) nothing branch, and
-    // two of the four trade.action.* labels.
+    // headings, the card/currency ★ params and the empty (theirSide) nothing branch.
+    // INTENTIONAL CHANGE (qf-8): it no longer reaches any trade.action.* label (the buttons and
+    // their ids are deleted); the actions container stays empty whatever `actions` holds.
     vi.mocked(i18nT).mockClear();
     vi.mocked(i18nTf).mockClear();
     const vmA = m24s4TradeVm(['confirm', 'cancel']);
@@ -905,8 +795,6 @@ describe('m24s4 (ADR-0260): tradeView.ts routes its migrated sinks through t()/t
     expect(i18nT, 'theirSide is empty -> trade.side.nothing').toHaveBeenCalledWith(
       'trade.side.nothing',
     );
-    expect(i18nT).toHaveBeenCalledWith('trade.action.confirm');
-    expect(i18nT).toHaveBeenCalledWith('trade.action.cancel');
     expect(i18nTf).toHaveBeenCalledWith('trade.side.card', {
       nickname: 'Sproutle',
       species: 'Mossback',
@@ -931,24 +819,20 @@ describe('m24s4 (ADR-0260): tradeView.ts routes its migrated sinks through t()/t
     expect(theirSide.querySelector('p')?.textContent).toBe('(nothing)');
     expect(document.getElementById('trade-status')!.textContent).toBe(vmA.statusLabel);
     const actionsEl = document.getElementById('trade-actions')!;
-    const btnTextsA = [...actionsEl.querySelectorAll('button')].map((b) => b.textContent);
-    expect(btnTextsA).toContain('Confirm Trade');
-    expect(btnTextsA).toContain('Cancel');
+    expect(actionsEl.childNodes.length, 'qf-8: no Confirm Trade / Cancel control renders').toBe(0);
 
     // Untouched model-data strings must never be requested AS a resolver key.
     expect(i18nT).not.toHaveBeenCalledWith('Charm ×3');
     expect(i18nT).not.toHaveBeenCalledWith(vmA.statusLabel);
     expect(i18nTf).not.toHaveBeenCalledWith('Charm ×3', expect.anything());
 
-    // (c) the remaining two trade.action.* labels (RT6 -- mutually exclusive action sets).
+    // (c) the other action set (RT6 -- mutually exclusive action sets): still no control.
+    // INTENTIONAL CHANGE (qf-8): was "reaches trade.action.accept / .reject and renders Accept /
+    // Reject"; both ids and both buttons are deleted.
     vi.mocked(i18nT).mockClear();
     const vmB = m24s4TradeVm(['accept', 'reject']);
     view.render(vmB);
-    expect(i18nT).toHaveBeenCalledWith('trade.action.accept');
-    expect(i18nT).toHaveBeenCalledWith('trade.action.reject');
-    const btnTextsB = [...actionsEl.querySelectorAll('button')].map((b) => b.textContent);
-    expect(btnTextsB).toContain('Accept');
-    expect(btnTextsB).toContain('Reject');
+    expect(actionsEl.childNodes.length, 'qf-8: no Accept / Reject control renders').toBe(0);
 
     // showFeedback never touches the resolver.
     vi.mocked(i18nT).mockClear();
@@ -989,8 +873,10 @@ describe('m24s4 (ADR-0260): tradeView.ts routes its migrated sinks through t()/t
       expect(joined).toContain('«trade.side.offer»');
       expect(joined).toContain('«trade.side.receive»');
       expect(joined).toContain('«trade.side.nothing»');
-      expect(joined).toContain('«trade.action.confirm»');
-      expect(joined).toContain('«trade.action.cancel»');
+      // INTENTIONAL CHANGE (qf-8): no «trade.action.confirm» / «trade.action.cancel»: the buttons
+      // and their ids are deleted (such a span would now be an unexpected sentinel above).
+      expect(joined).not.toContain('«trade.action.confirm»');
+      expect(joined).not.toContain('«trade.action.cancel»');
       expect(joined).toContain(
         '«trade.side.card|{"nickname":"Sproutle","species":"Mossback","level":7,"current":3,"max":9}»',
       );
@@ -1002,8 +888,10 @@ describe('m24s4 (ADR-0260): tradeView.ts routes its migrated sinks through t()/t
       texts = m24s4TvWalkSubtree(overlay);
       m24s4TvAssertNoRosterWord(texts, 'active trade, accept/reject');
       joined = texts.join('\n');
-      expect(joined).toContain('«trade.action.accept»');
-      expect(joined).toContain('«trade.action.reject»');
+      // INTENTIONAL CHANGE (qf-8): no «trade.action.accept» / «trade.action.reject» either.
+      expect(joined).not.toContain('«trade.action.accept»');
+      expect(joined).not.toContain('«trade.action.reject»');
+      expect(joined, 'the second render drew its sides').toContain('«trade.side.offer»');
 
       view.showFeedback('a raw feedback line');
       texts = m24s4TvWalkSubtree(overlay);
@@ -1167,7 +1055,8 @@ const TRADE_PARTS = [
   'trade-feedback',
 ];
 
-/** What the Players tab hides: both sides and the legacy actions (never the status or feedback). */
+/** What the Players tab hides: both sides and the actions container (never the status or
+ *  feedback). qf-8: the container renders no button any more; it stays a shell part. */
 const PLAYERS_HIDDEN = ['trade-my-side', 'trade-their-side', 'trade-actions'];
 
 /** The cursor mark on a legacy row: the nav-item class, the active class, aria-current. */
@@ -1375,7 +1264,7 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     // the paint); a placeholder that survives the switch to Trades when no render runs between
     // (the status keeps reading "not available" over a live trade); one that survives hide() or a
     // reopen; a Players tab that also hides the feedback line (a trade result vanishes) or the
-    // status (the dialog's focus anchor); a Players tab that hides a focused legacy button and
+    // status (the dialog's focus anchor); a Players tab that hides a part holding the focus and
     // strands the focus on <body>, or pulls the focus from outside the root; a paint kept on a
     // hidden root (a stale placeholder or mark at the next open); and a paint that changes a view
     // nobody painted.
@@ -1404,14 +1293,20 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     const chrome = document.createElement('div');
     view.hostChrome(chrome);
 
-    // Players hides the actions under a Tab-focused legacy button: the focus goes to #trade-status,
-    // the dialog's anchor, never stranded on <body> in a real browser.
-    const legacy = overlay.querySelector<HTMLButtonElement>('#trade-actions button');
-    if (legacy === null) throw new Error('precondition: the legacy trade buttons are rendered');
-    legacy.focus();
-    expect(document.activeElement, 'precondition: a legacy button holds the focus').toBe(legacy);
+    // Players hides a part holding the focus: the focus goes to #trade-status, the dialog's
+    // anchor, never stranded on <body> in a real browser.
+    // qf-8 (named intentional change): the focused element was a Tab-focused legacy button in
+    // #trade-actions, deleted (QF8.1); no control of the view renders in a part Players hides now,
+    // so a test-owned focusable is placed in #trade-my-side (one of the three parts the rescue
+    // covers) to keep the hand-off pinned.
+    const inPart = document.createElement('button');
+    byId('trade-my-side').appendChild(inPart);
+    inPart.focus();
+    expect(document.activeElement, 'precondition: an element in a side holds the focus').toBe(
+      inPart,
+    );
     view.paintSocial(chrome, socialPaint({ tab: 'players' }));
-    expect(document.activeElement, 'Players: the hidden button hands the focus to the anchor').toBe(
+    expect(document.activeElement, 'Players: the hidden part hands the focus to the anchor').toBe(
       status,
     );
     // Control: the same paint with the focus outside the root moves nothing.
@@ -1486,8 +1381,8 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     // (the default-No prompt would read as a default Yes); a question text swapped between the
     // three questions; a closed prompt or sheet that is only hidden and keeps its stale rows; a
     // hidden part that strands the focus inside itself (on <body> in a real browser); a handoff
-    // that pulls the focus to the anchor on every paint (a Tab-focused legacy button would lose
-    // it); a handoff hard-coded to #trade-status (hidden on Challenges: the focus is stranded);
+    // that pulls the focus to the anchor on every paint (an element focused elsewhere in the root
+    // would lose it); a handoff hard-coded to #trade-status (hidden on Challenges: the focus is stranded);
     // and a nameless sheet or Yes / No listbox (no aria-labelledby).
     const overlay = mountTradeOverlay();
     const view = new TradeView(makeCallbacks());
@@ -1634,12 +1529,15 @@ describe('TradeView.paintSocial (ctl-8d, CTL8D.1, CTL8D.2)', () => {
     expect(document.activeElement, 'the closed prompt hands the focus to the anchor').toBe(anchor);
 
     // Control: a part hidden while the focus is elsewhere moves nothing.
-    const legacy = overlay.querySelector<HTMLButtonElement>('#trade-actions button');
-    if (legacy === null) throw new Error('precondition: the legacy trade buttons are rendered');
-    legacy.focus();
-    expect(document.activeElement, 'precondition: a legacy button holds the focus').toBe(legacy);
+    // qf-8 (named intentional change): "elsewhere" was a legacy trade button (deleted, QF8.1); it is
+    // now a test-owned focusable in the same trade root, outside the chrome.
+    const elsewhere = s3InsideSentinel(overlay);
+    elsewhere.focus();
+    expect(document.activeElement, 'precondition: an element in the root holds the focus').toBe(
+      elsewhere,
+    );
     view.paintSocial(chrome, socialPaint({ tab: 'trades' }));
-    expect(document.activeElement, 'focus outside the hidden sheet stays put').toBe(legacy);
+    expect(document.activeElement, 'focus outside the hidden sheet stays put').toBe(elsewhere);
 
     // On another panel the chrome is that panel's root's first child (the pvp shell's shape), so
     // the hand-off goes to THAT root's anchor: #trade-status is hidden there, and focus sent to it

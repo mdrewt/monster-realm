@@ -7,7 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll, openFaceToFace, pressAccel } from './controls';
+import { closeAll, openFaceToFace, pressAccel, pressButton } from './controls';
 
 // Ranked PvP forfeit e2e (RL-18)
 //
@@ -84,24 +84,31 @@ interface GameSnap {
 
 // ---------------------------------------------------------------------------
 // FocusWitness: what step 5b's in-page poll reports back from B's page.
+// qf-8 (named intentional change, QF8.3): the witness used to hold focus on the challenge panel's
+// Accept BUTTON, which is deleted. It now holds focus on the Social sheet's container
+// (`#social-sheet`, renderNav's single tab stop, `tabindex="0"`) with the sheet open on Accept.
 // ---------------------------------------------------------------------------
 interface FocusWitnessArgs {
-  selector: string;
+  sheetSelector: string;
+  acceptKey: string;
   minChanges: number;
   pollMs: number;
   deadlineMs: number;
 }
 
 interface FocusWitness {
-  /** Focus landed on the Accept button when the poll placed it (precondition). */
+  /** Focus landed on the open sheet's container when the poll placed it (precondition). */
   focused: boolean;
   /** How many times `__game().characters` changed while polling (each one is a store batch). */
   changes: number;
-  /** activeElement is still the SAME, connected Accept node when the poll ends. */
+  /** On EVERY tick and at the end: the SAME, connected sheet held focus, was not hidden, and its
+   *  Accept row was the selected one. */
   kept: boolean;
-  /** The change count at which focus was first seen off that node; null = never. */
+  /** The change count at the first tick where that did not hold; null = it always held. */
   lostAfterChanges: number | null;
-  /** activeElement when the poll ends (tag and data-testid), for the failure message. */
+  /** Which part failed first (focus, hidden, selection); null = none. */
+  lostWhy: string | null;
+  /** activeElement when the poll ends (tag, id and data-testid), for the failure message. */
   activeAtEnd: string;
   /** What the poll threw (it then stopped and reported at once); null = it did not throw. */
   error: string | null;
@@ -302,8 +309,8 @@ test.describe
     //   - A delete path (profile row missing after forfeit → hard-fail on sql parse)
     //   - A wrong-winner path (B gets wins=1 instead of A)
     //   - A non-zero-sum path (winner gain ≠ loser loss → sum ≠ 2000)
-    //   - A PvP overlay that replaces its unchanged Accept button on a store batch (step 5b:
-    //     keyboard focus on Accept is lost)
+    //   - A store batch that closes the open Social sheet, moves its cursor off Accept, or pulls
+    //     keyboard focus off it (step 5b; qf-8: was the deleted Accept button's focus)
     //
     // -------------------------------------------------------------------------
     test('ranked forfeit flow: challenge → accept → B-disconnect → A wins; zero-sum profile assertion (RL-18)', async () => {
@@ -337,65 +344,95 @@ test.describe
       // WHAT THIS KILLS: a UI that offers a challenge to A itself (self-challenge), or none at all.
       await openFaceToFace(pageA, 'Challenge', 'Player', pageB);
 
-      // Step 5: B waits for pvp-accept-btn to appear. INTENTIONAL CHANGE (ctl-13, CTL13.2): the
+      // Step 5: B opens the request's Social sheet. INTENTIONAL CHANGE (ctl-13, CTL13.2): the
       // incoming challenge no longer opens the overlay by itself (that auto-show is deleted), so
       // B sees the banner and opens Social on Challenges with P (a bare world base, which is why
       // B ran closeAll in step 2: with Social already up P would close it). Y is not used here:
       // A stands on B's tile, so for B that player is a target (the Y sheet is the player's).
-      // WHAT THIS KILLS: a request that is never announced (no banner), or an accept button that
-      // is absent from the rendered incoming section.
+      // INTENTIONAL CHANGE (qf-8, QF8.3): the challenge panel's Accept button is deleted; B
+      // answers on the nav path: the cursor opens on the request, A opens its sheet on Accept.
+      // WHAT THIS KILLS: a request that is never announced (no banner), a Social frame that puts
+      // no cursor on it, or a sheet that does not open on Accept.
       await expect(pageB.locator('#notice-banner')).toBeVisible({ timeout: 15_000 });
       await pressAccel(pageB, 'P');
-      const acceptSelector = '[data-testid="pvp-accept-btn"]';
-      await pageB.waitForSelector(acceptSelector, { timeout: 15_000 });
+      await expect(pageB.locator('#pvp-challenge-incoming[aria-current="true"]')).toBeVisible({
+        timeout: 15_000,
+      });
+      await pressButton(pageB, 'A');
+      const sheetSelector = '#social-sheet';
+      await expect(pageB.locator(`${sheetSelector} [aria-selected="true"]`)).toHaveText('Accept');
 
-      // Step 5b: keyboard focus placed on B's Accept button is still on it after at least 5 store
-      // batches. main.ts refreshes this overlay on every batch (several a second from NPC wander
-      // alone); a refresh that replaces the button drops focus to <body>, and makes Playwright's
-      // pointer click below retry on a detached node. Witness: each change of
+      // Step 5b: keyboard focus placed on the open sheet (its container is renderNav's single tab
+      // stop, `tabindex="0"`) stays there, the sheet stays open and its Accept row stays selected,
+      // on EVERY poll tick across at least 5 store batches. main.ts refreshes the challenge panel
+      // on every batch (several a second from NPC wander alone), and the Social frame observes
+      // each one; a batch that closed the sheet (a settle that lost the row or its actions), moved
+      // its cursor off Accept, or pulled focus off it (a repeated dialog open re-running the
+      // deferred initial focus, a chrome re-host, a repaint that hid the sheet under the focus)
+      // would leave the player's next Enter acting on something else. Witness: each change of
       // __game().characters means at least one batch was applied. Polled every 100 ms in ONE
       // evaluate (not per frame: __game() builds a large snapshot), bounded at 15 s in the page.
+      // qf-8 (named intentional change): was "focus on the Accept BUTTON survives batches"; that
+      // button is deleted, and the sheet is the surface the player answers on now.
       const minBatchChanges = 5;
       const witness = await pageB.evaluate(
-        ({ selector, minChanges, pollMs, deadlineMs }: FocusWitnessArgs) =>
+        ({ sheetSelector, acceptKey, minChanges, pollMs, deadlineMs }: FocusWitnessArgs) =>
           new Promise<FocusWitness>((resolve) => {
             const describeActive = (): string => {
               const el = document.activeElement;
               if (el === null) return 'nothing';
+              const id = el.id === '' ? '' : `#${el.id}`;
               const testId = el.getAttribute('data-testid');
-              const tag = el.tagName.toLowerCase();
+              const tag = `${el.tagName.toLowerCase()}${id}`;
               return testId === null ? tag : `${tag}[data-testid=${testId}]`;
             };
             let changes = 0;
             let lostAfterChanges: number | null = null;
-            const report = (focused: boolean, kept: boolean, error: string | null): void => {
+            let lostWhy: string | null = null;
+            const report = (focused: boolean, error: string | null): void => {
               resolve({
                 focused,
                 changes,
-                kept,
+                kept: focused && lostAfterChanges === null,
                 lostAfterChanges,
+                lostWhy,
                 activeAtEnd: describeActive(),
                 error,
               });
             };
-            const accept = document.querySelector<HTMLElement>(selector);
-            if (accept === null) {
-              report(false, false, null);
+            const sheet = document.querySelector<HTMLElement>(sheetSelector);
+            if (sheet === null) {
+              report(false, null);
               return;
             }
-            accept.focus();
-            if (document.activeElement !== accept) {
-              report(false, false, null); // no 15 s poll for a focus that never landed
+            sheet.focus();
+            if (document.activeElement !== sheet) {
+              report(false, null); // no 15 s poll for a focus that never landed
               return;
             }
-            const holds = (): boolean => accept.isConnected && document.activeElement === accept;
+            /** What does not hold right now, or null when everything does. */
+            const broken = (): string | null => {
+              if (!sheet.isConnected || document.activeElement !== sheet) return 'focus';
+              if (sheet.hidden) return 'hidden';
+              const selected = sheet.querySelector('[aria-selected="true"]');
+              if (selected?.getAttribute('data-nav-key') !== acceptKey) return 'selection';
+              return null;
+            };
+            const check = (): void => {
+              const why = broken();
+              if (why !== null && lostAfterChanges === null) {
+                lostAfterChanges = changes;
+                lostWhy = why;
+              }
+            };
             const game = (window as unknown as { __game: () => GameSnap }).__game;
             const read = (): string => JSON.stringify(game().characters);
             let last = '';
             try {
               last = read();
             } catch (err) {
-              report(true, holds(), String(err));
+              check();
+              report(true, String(err));
               return;
             }
             const started = performance.now();
@@ -408,17 +445,24 @@ test.describe
                   changes += 1;
                   last = next;
                 }
-                if (lostAfterChanges === null && !holds()) lostAfterChanges = changes;
+                check(); // every tick, not only at the end
                 if (changes < minChanges && performance.now() - started < deadlineMs) return;
                 clearInterval(timer);
-                report(true, holds(), null);
+                report(true, null);
               } catch (err) {
                 clearInterval(timer);
-                report(true, holds(), String(err));
+                check();
+                report(true, String(err));
               }
             }, pollMs);
           }),
-        { selector: acceptSelector, minChanges: minBatchChanges, pollMs: 100, deadlineMs: 15_000 },
+        {
+          sheetSelector,
+          acceptKey: 'accept',
+          minChanges: minBatchChanges,
+          pollMs: 100,
+          deadlineMs: 15_000,
+        },
       );
       expect(
         witness.error,
@@ -426,20 +470,22 @@ test.describe
       ).toBeNull();
       expect(
         witness.focused,
-        `RL-18 step 5b precondition: focus did not land on the Accept button of B (activeElement: ${witness.activeAtEnd})`,
+        `RL-18 step 5b precondition: focus did not land on B's open Social sheet (activeElement: ${witness.activeAtEnd})`,
       ).toBe(true);
       expect(
         witness.changes,
-        `RL-18 step 5b: no store batches observed on B: __game().characters changed ${witness.changes} time(s) in 15 s (need ${minBatchChanges}), so the focus check below would prove nothing`,
+        `RL-18 step 5b: no store batches observed on B: __game().characters changed ${witness.changes} time(s) in 15 s (need ${minBatchChanges}), so the sheet check below would prove nothing`,
       ).toBeGreaterThanOrEqual(minBatchChanges);
       expect(
         witness.kept,
-        `RL-18 step 5b: keyboard focus left the Accept button of B (first seen after ${witness.lostAfterChanges} character change(s); now on ${witness.activeAtEnd}): a store batch rebuilt the unchanged Accept button`,
+        `RL-18 step 5b: B's open sheet did not hold across the batches (first broken by ${witness.lostWhy} after ${witness.lostAfterChanges} character change(s); focus now on ${witness.activeAtEnd})`,
       ).toBe(true);
 
-      // B clicks accept → accept_challenge reducer → ranked battle starts. A real pointer click,
-      // bounded so a starved click fails with Playwright's call log, not a bare test timeout.
-      await pageB.click(acceptSelector, { timeout: 30_000 });
+      // Step 5c: B clicks Accept → accept_challenge reducer → ranked battle starts. A real pointer
+      // click on the sheet's Accept row (qf-8, QF8.1's pointer half: the pointer source turns it
+      // into the seek and the A press), bounded so a starved click fails with Playwright's call
+      // log, not a bare test timeout.
+      await pageB.click(`${sheetSelector} [data-nav-key="accept"]`, { timeout: 30_000 });
 
       // Step 6: assert battle live on A's page (AM-2).
       // __game().ongoingBattle is non-null for the player_identity (side A). As of ADR-0167,

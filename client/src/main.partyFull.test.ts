@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /**
- * main.partyFull.test.ts — runtime gate over the Box "To Party" action in `main.ts`.
+ * main.partyFull.test.ts — runtime gate over moving a boxed monster to the party in `main.ts`.
  *
  * Intended behavior (ADR-0155 D3, first-principles UX): moving a boxed monster to the party
  * either puts it in the first free party slot or TELLS THE PLAYER WHY NOT. With a full party
@@ -11,7 +11,14 @@
  * Harness: the REAL main.ts booted against the REAL index.html shell, the SDK connection
  * mocked (its `live().reducers.setPartySlot` is a spy), the REAL store driven directly
  * (`reconcileMonstersFromView` + `flushBatch`, which is what connection.ts's batch flush does),
- * the box opened with a real KeyB press, and the real To Party button clicked.
+ * and real key taps (keydown, then keyup).
+ *
+ * qf-8 (named intentional change, QF8.1): the Box card's "To Party" button is deleted; the move is
+ * the Monsters sheet's Move row. The path is the player's: KeyB opens the Monsters frame directly
+ * on Storage (`ACCEL_PATHS.B = { tab: 'storage' }`; no RB, which from a fresh Storage would wrap to
+ * Party), the cursor on the boxed monster; Enter (A) opens its sheet on Summary; ArrowDown ×5 walks
+ * Summary, Care, Feed…, Evolve…, Nickname to Move; Enter (A) on Move sends `setPartySlot` with -1,
+ * which main.ts resolves. Both oracles are unchanged.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -134,22 +141,35 @@ function deliverMonsters(rows: readonly StoreMonsterPub[]): void {
   store.flushBatch();
 }
 
-/** Open the box with a real KeyB press (the world canvas holds focus) and return the
- *  To Party button on the boxed monster's card. */
-function openBoxAndFindToParty(): HTMLButtonElement {
+/** A keydown and its keyup at the world (the canvas focused), as a player's tap: the keyboard
+ *  source reads a second non-repeat keydown of a code it holds as a lost keyup. */
+function tap(code: string): void {
   document.querySelector('canvas')?.focus();
-  window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyB', bubbles: true }));
-  const label = t('box.card.toParty');
-  const btn = Array.from(document.querySelectorAll('button')).find((b) => b.textContent === label);
-  expect(btn, `a "${label}" button must be rendered for the boxed monster`).toBeDefined();
-  return btn as HTMLButtonElement;
+  window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true }));
+  window.dispatchEvent(new KeyboardEvent('keyup', { code, bubbles: true, cancelable: true }));
+}
+
+/** Open the Monsters frame on Storage with a real KeyB tap, open the boxed monster's sheet (Enter)
+ *  and walk it to Move (ArrowDown ×5). Pressing Enter then is the move. */
+function openStorageSheetOnMove(boxedNickname: string): void {
+  tap('KeyB');
+  tap('Enter'); // A on the boxed monster (the frame opens on Storage, its first card)
+  expect(
+    document.getElementById('monsters-sheet-name')?.textContent,
+    `precondition: the sheet is the boxed monster's (${boxedNickname})`,
+  ).toBe(boxedNickname);
+  for (let i = 0; i < 5; i += 1) tap('ArrowDown'); // Care, Feed…, Evolve…, Nickname, Move
+  expect(
+    document.getElementById('monstersSheet-root-move')?.getAttribute('aria-selected'),
+    'precondition: the sheet cursor is on Move',
+  ).toBe('true');
 }
 
 function statusText(): string {
   return document.getElementById('status')?.textContent ?? '';
 }
 
-describe('main.ts Box "To Party" (BUG-party-full-to-party-silent-noop)', () => {
+describe('main.ts Monsters sheet Move from Storage (BUG-party-full-to-party-silent-noop)', () => {
   beforeEach(async () => {
     recorded = [];
     H.connectOpts = null;
@@ -181,14 +201,17 @@ describe('main.ts Box "To Party" (BUG-party-full-to-party-silent-noop)', () => {
 
   it('with a free party slot, sends setPartySlot with that slot', () => {
     deliverMonsters([monster(1n, 0), monster(2n, 1), monster(3n, 255)]);
-    openBoxAndFindToParty().click();
+    openStorageSheetOnMove('m3');
+    expect(H.setPartySlot, 'precondition: nothing sent before the Move').not.toHaveBeenCalled();
+    tap('Enter'); // A on Move
     expect(H.setPartySlot).toHaveBeenCalledTimes(1);
     expect(H.setPartySlot).toHaveBeenCalledWith({ monsterId: 3n, slot: 2 });
   });
 
   it('with a FULL party, sends nothing and tells the player the party is full', () => {
     deliverMonsters([monster(1n, 0), monster(2n, 1), monster(3n, 2), monster(4n, 255)]);
-    openBoxAndFindToParty().click();
+    openStorageSheetOnMove('m4');
+    tap('Enter'); // A on Move
     expect(
       H.setPartySlot,
       'a full party must not send the move-to-box fallback slot — the server accepts it as a ' +

@@ -186,7 +186,8 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   ],
   'pvp.incoming.label': [{ challenger: 'Bob' }, { challenger: 'Dana' }],
   'pvp.outgoing.label': [{ target: 'Alice' }, { target: 'Elliot' }],
-  // Evolution.* (6 ★)
+  // Evolution.* (5 ★). qf-8 (named intentional change, QF8.1): `evolution.choice.evolve` is
+  // RETIRED with the evolution view's choice buttons (catalogParity DEAD-KEY).
   'evolution.card.stats': [
     { level: 7, stage: 1, trust: 'Wary', qualityTime: 1, nutrition: 41 },
     { level: 30, stage: 3, trust: 'Devoted', qualityTime: 4, nutrition: 88 },
@@ -201,7 +202,6 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { label: 'Nutrition', current: '41%', required: '60%' },
     { label: 'Quality time', current: 'Tier 1', required: 'Tier 3' },
   ],
-  'evolution.choice.evolve': [{ species: 'Pyrodrake' }, { species: 'Cindermaw' }],
   // Raising.* (1 ★). qf-9 (named intentional change, QF9.2): `raising.card.status`,
   // `raising.card.stats` and `raising.card.train` are RETIRED with the raising screen's monster
   // cards (catalogParity DEAD-KEY); only the inventory row remains.
@@ -445,6 +445,12 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // ctl-10b (named intentional change): -2 plain keys (`pvp.players.{none,heading}`, deleted with
   // the pvpView player list, CTL10B.2) and +2 plain keys (`interact.verb.{trade,challenge}`) here,
   // +1 parameterised one (`interact.confirm.challenge`) in SAMPLE_PARAMS = 293 keys.
+  // qf-8 (named intentional change, QF8.1): -10 plain keys here (`box.card.{toBox,toParty}`,
+  // `trade.action.{accept,reject,confirm,cancel}`, `pvp.incoming.{accept,decline}`,
+  // `pvp.outgoing.cancel`, `evolution.card.choosePrompt`) and -1 parameterised one
+  // (`evolution.choice.evolve`) in SAMPLE_PARAMS, RETIRED with the four views' mouse-only
+  // duplicate controls (their only requesters: catalogParity DEAD-KEY otherwise) = 362 keys.
+  // `box.hint` changes VALUE only (the id keeps its name): it now names the Monsters sheet's Move.
   'chrome.chip.menu': 'Menu',
   'chrome.chip.help': 'Help',
   'chrome.help.title': 'Controls & Goals',
@@ -498,20 +504,20 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'battle.command.runPvpReason': `You can${CURLY_APOSTROPHE}t run from a player battle.`,
   'pvp.title.idle': 'PvP', // pvpView.ts:135
   'pvp.title.challenge': 'PvP Challenge', // pvpView.ts:142
-  'pvp.incoming.accept': 'Accept', // pvpView.ts:198
-  'pvp.incoming.decline': 'Decline', // pvpView.ts:206
-  'pvp.outgoing.cancel': 'Cancel Challenge', // pvpView.ts:226
+  // qf-8 (named intentional change): `pvp.incoming.accept` ('Accept'), `pvp.incoming.decline`
+  // ('Decline') and `pvp.outgoing.cancel` ('Cancel Challenge') are RETIRED with the challenge
+  // panel's buttons (catalogParity DEAD-KEY); the Social sheet's `social.action.*` rows answer.
   // ctl-10b (named intentional change): `pvp.players.none` ('No players online to challenge') and
   // `pvp.players.heading` ('Challenge:') are RETIRED with the pvpView player list (catalogParity
   // DEAD-KEY); their absence is pinned by CTL10B-2-CATALOG.
-  // Evolution.* (6 plain)
+  // Evolution.* (5 plain). qf-8 (named intentional change): `evolution.card.choosePrompt` ('Two or
+  // more paths are ready — pick one:') is RETIRED with the evolution view's choice picker.
   'evolution.title': 'Evolution', // evolutionView.ts
   'evolution.hint':
     'Each path lists what it needs and how close this monster is. When two or more ' +
     'paths are ready at once, you choose which one to take.', // evolutionView.ts
   'evolution.monsters.empty': 'No monsters yet.', // evolutionView.ts
   'evolution.card.noPaths': 'No evolution paths.', // evolutionView.ts
-  'evolution.card.choosePrompt': 'Two or more paths are ready — pick one:', // evolutionView.ts
   'evolution.path.allMet': 'All requirements met.', // evolutionView.ts
   // Raising.* (3 plain)
   // qf-9 (named intentional change, QF9.2): -3 plain keys here (`raising.monsters.heading`
@@ -522,19 +528,21 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'raising.title': 'Raising & Inventory', // raisingView.ts
   'raising.inventory.heading': 'Inventory', // raisingView.ts
   'raising.inventory.empty': 'No items.', // raisingView.ts
-  // Box.* (20 plain: 11, -box.card.rename, +7 ctl-8b keys, +4 ctl-8c keys, -box.heal ctl-10a)
+  // Box.* (18 plain: 11, -box.card.rename, +7 ctl-8b keys, +4 ctl-8c keys, -box.heal ctl-10a,
+  // -box.card.{toBox,toParty} qf-8)
   // ctl-10a (named intentional change): `box.heal` ('Heal Party') is DELETED with the Box Heal
   // Party button: healing happens only at a bound healer (CTL10A.4, B13).
+  // qf-8 (named intentional change, QF8.1): `box.card.toBox` ('To Box') and `box.card.toParty`
+  // ('To Party') are RETIRED with the cards' buttons; a move is the Monsters sheet's Move row, and
+  // `box.hint` (the same id, a new VALUE) now quotes that row's label (`box.sheet.move`) verbatim.
   'box.title': 'Party & Box', // boxView.ts
   'box.hint':
     'Only monsters in your Party can battle or be swapped in. New recruits arrive in your ' +
-    'Box — each box monster has a "To Party" button that moves it into an open party slot.', // boxView.ts
+    `Box ${EM_DASH} select one there and choose "Move" to bring it into an open party slot.`, // boxView.ts
   'box.section.party': 'Party', // boxView.ts
   'box.section.box': 'Box', // boxView.ts
   'box.box.empty': 'No monsters in box.', // boxView.ts
   'box.card.evolveBadge': '★ Ready to evolve — choose a path', // boxView.ts
-  'box.card.toBox': 'To Box', // boxView.ts
-  'box.card.toParty': 'To Party', // boxView.ts
   'box.rename.prompt': 'New nickname:', // boxView.ts (ctl-8b: the typing row's label; was prompt())
   // ctl-8b: the Monsters frame's tab labels, action-sheet rows and Move feedback lines. The check
   // mark of a Move line is the CSS ::before of `.mr-frame-feedback[data-feedback="ok"]`, so the
@@ -552,15 +560,13 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'box.sheet.feed': `Feed${ELLIPSIS}`, // boxView.ts
   'box.sheet.evolve': `Evolve${ELLIPSIS}`, // boxView.ts
   'box.sheet.feedNone': 'No food', // boxView.ts
-  // Trade.* (8 plain)
+  // Trade.* (4 plain). qf-8 (named intentional change): `trade.action.{accept,reject,confirm,
+  // cancel}` ('Accept', 'Reject', 'Confirm Trade', 'Cancel') are RETIRED with the trade row's
+  // buttons; the Social sheet's `social.action.*` rows answer a trade.
   'trade.status.none': 'No active trade', // tradeView.ts
   'trade.side.offer': 'You offer', // tradeView.ts (hoisted, #renderSide heading arg)
   'trade.side.receive': 'You receive', // tradeView.ts (hoisted, #renderSide heading arg)
   'trade.side.nothing': '(nothing)', // tradeView.ts
-  'trade.action.accept': 'Accept', // tradeView.ts (hoisted, #actionLabel)
-  'trade.action.reject': 'Reject', // tradeView.ts (hoisted, #actionLabel)
-  'trade.action.confirm': 'Confirm Trade', // tradeView.ts (hoisted, #actionLabel)
-  'trade.action.cancel': 'Cancel', // tradeView.ts (hoisted, #actionLabel)
   // Shop.* (6 plain)
   'shop.title': 'Shop', // shopView.ts
   'shop.noShop': 'No shop available.', // shopView.ts
@@ -971,7 +977,7 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { target: 'Elliot' },
     outputB: 'Challenge sent to Elliot — waiting…',
   },
-  // Evolution.* (6 ★)
+  // Evolution.* (5 ★; qf-8 retired `evolution.choice.evolve`, 'Evolve into {species}')
   'evolution.card.stats': {
     inputA: { level: 7, stage: 1, trust: 'Wary', qualityTime: 1, nutrition: 41 },
     outputA: 'Lv.7 · Stage 1 · Trust Wary · Quality time 1 · Nutrition 41%',
@@ -1001,12 +1007,6 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     outputA: '• Nutrition: 41% / 60%',
     inputB: { label: 'Quality time', current: 'Tier 1', required: 'Tier 3' },
     outputB: '• Quality time: Tier 1 / Tier 3',
-  },
-  'evolution.choice.evolve': {
-    inputA: { species: 'Pyrodrake' },
-    outputA: 'Evolve into Pyrodrake',
-    inputB: { species: 'Cindermaw' },
-    outputB: 'Evolve into Cindermaw',
   },
   // Raising.* (1 ★; qf-9 retired `raising.card.{status,stats,train}`)
   'raising.inventory.item': {
@@ -1374,7 +1374,10 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
   },
 };
 
-/** The full 373-key roster (qf-9: -`raising.monsters.{heading,empty}` -`raising.card.{status,stats,
+/** The full 362-key roster (qf-8: -`box.card.{toBox,toParty}` -`trade.action.{accept,reject,confirm,
+ *  cancel}` -`pvp.incoming.{accept,decline}` -`pvp.outgoing.cancel` -`evolution.card.choosePrompt`
+ *  -`evolution.choice.evolve` over the 373-key roster below;
+ *  qf-9: -`raising.monsters.{heading,empty}` -`raising.card.{status,stats,
  *  care,train}` +`box.summary.stats` over the 378-key roster below; qf-6: +`dialogue.ended.{walkedAway,leftZone,npcGone}`
  *  +`quest.complete.{reward,done}` over the 373-key roster below; qf-4: +`journal.title`
  *  +`journal.empty` over the 371-key roster below; qf-3: +`box.sheet.careCooldown` over the
@@ -1468,7 +1471,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-9 373-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-8 362-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1557,16 +1560,17 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 373 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 362 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (373 keys since qf-9: -3 plain, -3
-    // parameterised retired with the raising Monsters section, +1 parameterised `box.summary.stats`;
-    // 378 since qf-6: +3 plain, +2 parameterised; 373 since qf-4: +2 plain; 371 since qf-3: +1
-    // parameterised; 370 since ctl-14: +7 plain; 363 since ctl-13: +10 plain, +2 parameterised; was
-    // 351 since ctl-12b).
+    // (a) roster is exactly the EXPECTED_KEYS roster (362 keys since qf-8: -10 plain, -1
+    // parameterised retired with the four views' mouse-only duplicate controls; 373 since qf-9: -3
+    // plain, -3 parameterised retired with the raising Monsters section, +1 parameterised
+    // `box.summary.stats`; 378 since qf-6: +3 plain, +2 parameterised; 373 since qf-4: +2 plain; 371
+    // since qf-3: +1 parameterised; 370 since ctl-14: +7 plain; 363 since ctl-13: +10 plain, +2
+    // parameterised; was 351 since ctl-12b).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-9 roster is 373 keys').toHaveLength(373);
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-8 roster is 362 keys').toHaveLength(362);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -2170,7 +2174,11 @@ describe('ctl-10b: the Trade / Challenge keys in both catalogs', () => {
       );
     }
     // The other pvp keys are untouched (a wholesale `pvp.*` deletion would pass the loop above).
-    expect(en['pvp.incoming.accept']).toBe('Accept');
+    // qf-8 (named intentional change): the control was `pvp.incoming.accept`, retired with the
+    // challenge panel's Accept button; the incoming request's label is a surviving pvp key.
+    expect(
+      (en['pvp.incoming.label'] as (p: Record<string, unknown>) => string)({ challenger: 'Bob' }),
+    ).toBe('Bob has challenged you!');
   });
 });
 
@@ -2606,7 +2614,229 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     expect(Object.hasOwn(en, KEY), 'en carries the new id').toBe(true);
     expect(Object.hasOwn(fr, KEY), 'fr carries the new id').toBe(true);
     expect(EXPECTED_KEYS.includes(KEY), 'the pinned roster lists the new id').toBe(true);
-    expect(Object.keys(en).length, 'the English catalog holds exactly 373 keys').toBe(373);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(373);
+    // qf-8 (named intentional change): 373 → 362, the eleven ids qf-8 retired with the four views'
+    // mouse-only duplicate controls (CAT-01 lists them).
+    expect(Object.keys(en).length, 'the English catalog holds exactly 362 keys').toBe(362);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(362);
+  });
+});
+
+// =============================================================================
+// qf-8 (QF8.1): the eleven ids whose only requesters were the four views' mouse-only duplicate
+// controls (the cards' To Box / To Party, the trade row's four buttons, the challenge panel's
+// Accept / Decline / Cancel Challenge, the evolution view's prompt and choice buttons), retired with
+// them, and `box.hint`, which keeps its id and changes VALUE (the spec's values-only rule) to name
+// the Monsters sheet's Move row. Every expected byte is typed here from the qf-8 plan §1.5 (the
+// French glyphs by code point); none is read off the catalog under test. The French quote follows
+// catalog.fr.ts's documented typography: a U+00A0 inside « » guillemets.
+// =============================================================================
+
+/** U+00EA (e circumflex), U+00EE (i circumflex) and the two guillemets U+00AB / U+00BB, built by
+ *  code point. E_ACUTE, RIGHT_QUOTE, NO_BREAK_SPACE and EM_DASH are the ones declared above. */
+const QF8_E_CIRCUMFLEX = String.fromCharCode(0x00ea);
+const QF8_I_CIRCUMFLEX = String.fromCharCode(0x00ee);
+const QF8_LEFT_GUILLEMET = String.fromCharCode(0x00ab);
+const QF8_RIGHT_GUILLEMET = String.fromCharCode(0x00bb);
+
+/** The French Move label `box.hint` quotes (plan §1.5: Move / Déplacer). */
+const QF8_FR_MOVE = `D${E_ACUTE}placer`;
+
+/** The new French `box.hint` (plan §1.5), byte for byte. */
+const QF8_FR_BOX_HINT =
+  `Seuls les monstres de votre ${E_ACUTE}quipe peuvent combattre ou ${QF8_E_CIRCUMFLEX}tre ` +
+  `${E_ACUTE}chang${E_ACUTE}s en cours de combat. Les nouvelles recrues arrivent dans votre ` +
+  `Bo${QF8_I_CIRCUMFLEX}te ${EM_DASH} s${E_ACUTE}lectionnez-en une et choisissez ` +
+  `${QF8_LEFT_GUILLEMET}${NO_BREAK_SPACE}${QF8_FR_MOVE}${NO_BREAK_SPACE}${QF8_RIGHT_GUILLEMET} ` +
+  `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`;
+
+describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint that names Move', () => {
+  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 362 keys each [QF8-1-CATALOG-RETIRED]', () => {
+    // WRONG IMPL KILLED: a retired id left behind as a dead key in either catalog (catalogParity
+    // DEAD-KEY fires, or a surviving requester keeps a deleted control half alive); an id retired
+    // from en only (a French boot still carries it); a wholesale `box.card.*`, `trade.*`,
+    // `pvp.incoming.*`, `pvp.outgoing.*` or `evolution.*` deletion (the kept ids below go with
+    // it); and the Social sheet's answer rows retired with the panel buttons they replace (the nav
+    // path, now the only one, would lose its words).
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const RETIRED = [
+      'box.card.toBox',
+      'box.card.toParty',
+      'trade.action.accept',
+      'trade.action.reject',
+      'trade.action.confirm',
+      'trade.action.cancel',
+      'pvp.incoming.accept',
+      'pvp.incoming.decline',
+      'pvp.outgoing.cancel',
+      'evolution.card.choosePrompt',
+      'evolution.choice.evolve',
+    ] as const;
+    expect(RETIRED, 'ANTI-VACUITY: eleven ids').toHaveLength(11);
+    for (const retired of RETIRED) {
+      expect(Object.hasOwn(en, retired), `en ${retired} is retired`).toBe(false);
+      expect(Object.hasOwn(fr, retired), `fr ${retired} is retired`).toBe(false);
+      expect(EXPECTED_KEYS.includes(retired), `the pinned roster no longer lists ${retired}`).toBe(
+        false,
+      );
+    }
+
+    const KEPT = [
+      // boxView: the hint (a new value), the Move row it quotes, the card's badge and stats.
+      'box.hint',
+      'box.sheet.move',
+      'box.card.evolveBadge',
+      'box.card.stats',
+      // tradeView: the status line and the two side headings.
+      'trade.status.none',
+      'trade.side.offer',
+      'trade.side.receive',
+      // pvpView: the title and the two request labels the Social cursor marks.
+      'pvp.title.challenge',
+      'pvp.incoming.label',
+      'pvp.outgoing.label',
+      // evolutionView: the hint, the ready note and the path heading.
+      'evolution.hint',
+      'evolution.card.ready',
+      'evolution.path.heading',
+      // The Social sheet's rows: where Accept / Decline / Confirm / Cancel live now.
+      'social.action.accept',
+      'social.action.decline',
+      'social.action.confirm',
+      'social.action.cancel',
+    ] as const;
+    for (const kept of KEPT) {
+      expect(Object.hasOwn(en, kept), `en ${kept} stays`).toBe(true);
+      expect(Object.hasOwn(fr, kept), `fr ${kept} stays`).toBe(true);
+      expect(EXPECTED_KEYS.includes(kept), `the pinned roster keeps ${kept}`).toBe(true);
+    }
+    expect(Object.keys(en).length, 'the English catalog holds exactly 362 keys').toBe(362);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(362);
+  });
+
+  it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
+    // WRONG IMPL KILLED: the hint left quoting the retired "To Party" button in either locale (the
+    // player hunts for a control that no longer exists: ux1, ADR-0151); the copy reworded in en
+    // only (a French boot still points at the deleted button); a quoted label that drifted from
+    // the sheet row's own text (box.sheet.move), or the English "Move" inside the French copy; a
+    // French quote in ASCII quotes, or set off by breaking spaces inside « » (catalog.fr.ts's
+    // typography: a browser could wrap a guillemet away from its word); a decomposed or missing
+    // accent; and a renamed id where the spec allows only a new value (the test reads `box.hint`).
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    // The quoted label, each locale's Monsters sheet row (plan §1.5: Move / Déplacer).
+    expect(en['box.sheet.move'], 'fixture: the English Move row').toBe('Move');
+    expect(fr['box.sheet.move'], 'the French Move row').toBe(QF8_FR_MOVE);
+
+    expect(en['box.hint'], 'the exact English copy (plan §1.5)').toBe(EXPECTED_PLAIN['box.hint']);
+    expect(fr['box.hint'], 'the exact French copy (plan §1.5)').toBe(QF8_FR_BOX_HINT);
+
+    const enHint = String(en['box.hint']);
+    const frHint = String(fr['box.hint']);
+    expect(enHint, 'en quotes its own Move row').toContain(`"${String(en['box.sheet.move'])}"`);
+    const frMove = String(fr['box.sheet.move']);
+    expect(frHint, 'fr quotes its own Move row inside guillemets').toContain(
+      `${QF8_LEFT_GUILLEMET}${NO_BREAK_SPACE}${frMove}${NO_BREAK_SPACE}${QF8_RIGHT_GUILLEMET}`,
+    );
+    expect(frHint.includes('"Move"'), 'fr never quotes the English label').toBe(false);
+    for (const retired of ['To Party', 'To Box']) {
+      expect(enHint.includes(retired), `en names no retired "${retired}" button`).toBe(false);
+    }
+    expect(frHint, 'a translation, not the English copy').not.toBe(enHint);
+  });
+
+  it('no English or French catalog value still names a retired mouse-only control: none carries To Party, To Box, Confirm Trade, Cancel Challenge, Evolve into or the pick-one prompt, nor their French copies, every parameterised value evaluated with both sample sets [QF8-1-CATALOG-NO-RETIRED-COPY]', () => {
+    // WRONG IMPL KILLED (measured, red-team M13): copy that advertises a deleted control from a
+    // KEPT id, which the retired-id checks above never see: the French `pvp.outgoing.label` closure
+    // pointing the player at a Cancel Challenge button below it (FR_NEEDLES[3]), the French
+    // `evolution.hint` telling the player to pick one by clicking an Evolve into button
+    // (FR_NEEDLES[4], FR_NEEDLES[5]); the same words spelled with a zero-width space, a no-break
+    // space or a straight apostrophe; and a closure that says it only for some params (both sample
+    // sets are evaluated). `evolution.hint` itself keeps "you choose which one to take" and its
+    // French twin (plan section 1.5: not reworded): neither is a needle, so no exemption exists.
+    const ZERO_WIDTH = [0x200b, 0x200c, 0x200d, 0x2060, 0xfeff].map((code) =>
+      String.fromCodePoint(code),
+    );
+    const APOSTROPHE = "'";
+    /** As a player reads it: NFKC, zero-width characters dropped, a curly apostrophe (U+2019) read
+     *  as the straight one, every run of whitespace (U+00A0 included) one space. Case is kept:
+     *  "Moved to party" (box.feedback.movedToParty) is live copy, not the retired "To Party". */
+    const normalise = (text: string): string => {
+      let folded = text.normalize('NFKC');
+      for (const hidden of ZERO_WIDTH) folded = folded.split(hidden).join('');
+      folded = folded.split(RIGHT_QUOTE).join(APOSTROPHE);
+      // Whitespace collapsed by a character loop (this file's helpers use no RegExp): `trim()`
+      // reads U+00A0 and every other Unicode space as whitespace.
+      let out = '';
+      let gap = false;
+      for (const ch of folded) {
+        if (ch.trim() === '') {
+          gap = out !== '';
+          continue;
+        }
+        if (gap) out += ' ';
+        gap = false;
+        out += ch;
+      }
+      return out;
+    };
+    const EN_NEEDLES = [
+      'To Party',
+      'To Box',
+      'Confirm Trade',
+      'Cancel Challenge',
+      'Evolve into',
+      'pick one:',
+    ];
+    const FR_NEEDLES = [
+      `Vers l${RIGHT_QUOTE}${E_ACUTE}quipe`,
+      `Vers la bo${QF8_I_CIRCUMFLEX}te`,
+      `Confirmer l${RIGHT_QUOTE}${E_ACUTE}change`,
+      `Annuler le d${E_ACUTE}fi`,
+      `Faire ${E_ACUTE}voluer en`,
+      'choisissez-en une',
+    ];
+    /** Every text `catalog` resolves to: a plain value, or a closure's output for BOTH sample sets
+     *  (a parameterised key with no sample set fails loudly). Returns the hits and the count. */
+    const scan = (
+      locale: string,
+      catalog: Record<string, unknown>,
+      needles: readonly string[],
+    ): { readonly hits: string[]; readonly texts: number } => {
+      const hits: string[] = [];
+      let texts = 0;
+      for (const [key, value] of Object.entries(catalog)) {
+        let resolved: string[];
+        if (typeof value === 'function') {
+          const samples = SAMPLE_PARAMS[key];
+          if (samples === undefined) {
+            throw new Error(`${locale} ${key} is parameterised and has no SAMPLE_PARAMS entry`);
+          }
+          const fn = value as (p: Record<string, unknown>) => string;
+          resolved = samples.map((sample) => fn(sample));
+        } else {
+          resolved = [String(value)];
+        }
+        for (const text of resolved) {
+          texts += 1;
+          const flat = normalise(text);
+          for (const needle of needles) {
+            if (flat.includes(normalise(needle))) {
+              hits.push(`${locale} ${key}: ${JSON.stringify(text)} names "${needle}"`);
+            }
+          }
+        }
+      }
+      return { hits, texts };
+    };
+
+    const en = scan('en', CATALOG_EN as Record<string, unknown>, EN_NEEDLES);
+    const fr = scan('fr', CATALOG_FR as Record<string, unknown>, FR_NEEDLES);
+    expect([...en.hits, ...fr.hits], 'no value names a retired control').toEqual([]);
+    // ANTI-VACUITY: every value was read, each closure twice (the 362-key roster is pinned above).
+    const expectedTexts =
+      Object.keys(EXPECTED_PLAIN).length + 2 * Object.keys(SAMPLE_PARAMS).length;
+    expect(en.texts, 'every English value was read').toBe(expectedTexts);
+    expect(fr.texts, 'every French value was read').toBe(expectedTexts);
   });
 });

@@ -7,7 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
-import { closeAll, openFaceToFace, pressAccel } from './controls';
+import { closeAll, openFaceToFace, pressAccel, pressButton } from './controls';
 
 // monster_pub need-to-know privacy, end to end
 //
@@ -460,14 +460,20 @@ test.describe
       // answers Yes at the confirm.
       await openFaceToFace(pageA, 'Challenge', nameB, pageB);
 
-      // B accepts through the real DOM button. INTENTIONAL CHANGE (ctl-13, CTL13.2): the incoming
+      // B accepts through the Social sheet. INTENTIONAL CHANGE (ctl-13, CTL13.2): the incoming
       // challenge no longer opens the overlay by itself, so B opens Social on Challenges (P) first;
       // the banner is what announces the request. (Y is not used: A stands on B's tile, so for B
-      // that player is a target.)
+      // that player is a target.) INTENTIONAL CHANGE (qf-8, QF8.3): the challenge panel's Accept
+      // button is deleted, so B answers on its nav path: the cursor opens on the request, A opens
+      // the sheet on Accept, A accepts.
       await expect(pageB.locator('#notice-banner')).toBeVisible({ timeout: 15_000 });
       await pressAccel(pageB, 'P');
-      await pageB.waitForSelector('[data-testid="pvp-accept-btn"]', { timeout: 15_000 });
-      await pageB.click('[data-testid="pvp-accept-btn"]');
+      await expect(pageB.locator('#pvp-challenge-incoming[aria-current="true"]')).toBeVisible({
+        timeout: 15_000,
+      });
+      await pressButton(pageB, 'A');
+      await expect(pageB.locator('#social-sheet [aria-selected="true"]')).toHaveText('Accept');
+      await pressButton(pageB, 'A');
 
       // Both overlays must come up (battleView toggles display:none/flex, so
       // toBeVisible is a real layout assertion, not a cosmetic one).

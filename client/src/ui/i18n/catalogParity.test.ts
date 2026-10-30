@@ -1283,17 +1283,29 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
       }
     });
 
-    it("m24s7 FR-03: box.hint quotes its own locale's box.card.toParty; setLocale(fr) redirects t()", () => {
+    it("m24s7 FR-03: box.hint quotes its own locale's box.sheet.move (the Monsters sheet's Move row); setLocale(fr) redirects t()", () => {
+      // qf-8 (named intentional change, QF8.1): the quoted control was the Box card's "To Party"
+      // button (`box.card.toParty`), retired with the button; the hint now names the Monsters
+      // sheet's Move row, so it must quote THAT label, in its own locale.
       try {
         setLocale('fr');
         expect(currentLocale(), 'currentLocale() must reflect the switch').toBe('fr');
         const fr = CATALOGS.fr as unknown as Record<string, unknown>;
+        const en = CATALOG_EN as Record<string, unknown>;
         const boxHint = fr['box.hint'] as string;
-        const toParty = fr['box.card.toParty'] as string;
+        const move = fr['box.sheet.move'] as string;
+        expect(typeof move, "fixture: fr's box.sheet.move is a plain string").toBe('string');
+        expect(move, 'fixture: the French Move label is a translation').not.toBe(
+          en['box.sheet.move'],
+        );
         expect(
-          boxHint.indexOf(toParty) !== -1,
-          "fr's box.hint must quote fr's OWN box.card.toParty verbatim, never the English string",
+          boxHint.indexOf(move) !== -1,
+          "fr's box.hint must quote fr's OWN box.sheet.move verbatim, never the English string",
         ).toBe(true);
+        expect(
+          boxHint.indexOf(en['box.sheet.move'] as string),
+          "fr's box.hint must not quote the English Move label",
+        ).toBe(-1);
         expect(
           t('chrome.help.title' as never),
           't() must read CATALOGS.fr once the locale is switched — a resolver that caches the ' +
