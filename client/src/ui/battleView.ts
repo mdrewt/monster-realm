@@ -1128,13 +1128,14 @@ export class BattleView implements BattleOpsView {
     for (const { name, amount } of rewards.xp) {
       lines.push(tf('battle.rewards.xp', { name, amount }));
     }
-    this.#rewardsEl.replaceChildren(
-      ...lines.map((line) => {
-        const div = document.createElement('div');
-        div.textContent = line;
-        return div;
-      }),
-    );
+    // Built BEFORE the replaceChildren( call: the hardcoded-strings scan reads every literal inside
+    // a sink's call span, and `createElement('div')` is a tag, not player-facing text.
+    const children = lines.map((line) => {
+      const div = document.createElement('div');
+      div.textContent = line;
+      return div;
+    });
+    this.#rewardsEl.replaceChildren(...children);
     this.#rewardsEl.style.display = lines.length === 0 ? 'none' : 'block';
   }
 
