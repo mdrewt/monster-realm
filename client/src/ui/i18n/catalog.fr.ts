@@ -518,6 +518,13 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // short phrase.
   // battleView.ts:635
   'battle.outcome.fled': 'Fuite réussie !',
+  // @desc: Payout line under the Victory banner after a KO win: the gold the wallet gained in the
+  // batch that ended the battle; {amount} is the bigint delta, its digits as they are.
+  'battle.rewards.gold': (p) => `+${p.amount} or`,
+  // @desc: Payout line under the Victory banner: one own monster's XP gain; {name} is its nickname
+  // or species name (model data, carried verbatim), {amount} the XP delta. No-break space before
+  // the colon.
+  'battle.rewards.xp': (p) => `${p.name} : +${p.amount} XP`,
   // @desc: Battle command list entry that opens the skill grid. One short word; the five command
   // entries share one narrow row.
   // battleView.ts (#renderCommands)

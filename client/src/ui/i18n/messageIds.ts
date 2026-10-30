@@ -164,6 +164,9 @@ export type MessageId =
   | 'battle.outcome.victory'
   | 'battle.outcome.defeat'
   | 'battle.outcome.fled'
+  // battle.rewards.* : the KO-win payout lines under the Victory banner (qf-17, QF17.1/QF17.2).
+  | 'battle.rewards.gold'
+  | 'battle.rewards.xp'
   // ctl-8i: the battle command list (battleView.ts).
   | 'battle.command.fight'
   | 'battle.command.recruit'
@@ -491,6 +494,8 @@ export interface MessageParams {
     readonly count: number;
   };
   readonly 'battle.cure.target': { readonly species: string };
+  readonly 'battle.rewards.gold': { readonly amount: bigint };
+  readonly 'battle.rewards.xp': { readonly name: string; readonly amount: number };
   readonly 'battle.swap.pvpSubmit': { readonly species: string };
   readonly 'battle.swap.pveLabel': {
     readonly species: string;

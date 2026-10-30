@@ -1379,3 +1379,46 @@ describe('ShopView — the Buy | Sell frame (ctl-8a, CTL8A.2)', () => {
     removeOverlay(overlay);
   });
 });
+
+// =============================================================================
+// qf-17 (QF17.3): the shop overlay shows the player's current wallet balance and follows it while
+// the shop is open. The readout (`#shop-balance`) shipped with ux2; this is its tagged view
+// contract: a known balance is shown as the model's label, a CHANGED balance replaces the text on
+// the next render, and a dark wallet shows nothing.
+// =============================================================================
+
+describe('ShopView qf-17: the wallet balance in the shop overlay (QF17.3)', () => {
+  it('the open shop shows the known balance inside #shop-overlay, replaces it when a later render carries a new balance, and hides it when the wallet goes dark [QF17-3-VIEW-SHOWN]', () => {
+    // WRONG IMPL KILLED: a readout that is never shown, or shown outside the overlay (an orphaned
+    // node); one that paints the balance once at open and ignores later renders (the player buys
+    // while the number stays frozen); one that renders the amount without the model's label
+    // ("50"); one that keeps the old text when the wallet goes dark (a stale balance the player
+    // would act on); one that leaves `hidden` false, or the state attribute stale, after the
+    // wallet goes dark.
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.show();
+
+    view.render(shopVm(knownBalance(50n)));
+    const el = document.getElementById('shop-balance') as HTMLElement | null;
+    expect(el, 'precondition: #shop-balance exists').not.toBeNull();
+    expect(overlay.contains(el), 'inside #shop-overlay').toBe(true);
+    expect(el?.hidden, 'a known balance is shown').toBe(false);
+    expect(el?.textContent).toBe('Gold: 50');
+    expect(el?.dataset.balanceState).toBe('known');
+
+    // The balance changes while the shop stays open.
+    view.render(shopVm(knownBalance(80n)));
+    expect(el?.textContent, 'the new balance replaces the old one').toBe('Gold: 80');
+    expect(el?.hidden).toBe(false);
+    expect(el?.dataset.balanceState).toBe('known');
+
+    // The wallet goes dark: nothing is shown, nothing stale is left.
+    view.render(shopVm({ kind: 'unknown' }));
+    expect(el?.hidden, 'an unknown balance is hidden').toBe(true);
+    expect(el?.textContent, 'and leaves no stale text').toBe('');
+    expect(el?.dataset.balanceState).toBe('unknown');
+
+    removeOverlay(overlay);
+  });
+});
