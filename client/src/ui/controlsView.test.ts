@@ -18,7 +18,10 @@
 // `aria-label` / `aria-labelledby` override, no `aria-hidden` content).
 //
 // No regex literal, no `innerHTML`: DOM reads are `textContent`, attributes and selectors only.
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { ACCELS, type Accel, VBUTTONS, type VButton } from '../input/buttons';
 import { glyph, resetLearnedKeys } from '../input/glyphs';
@@ -785,5 +788,177 @@ describe('ControlsView — the frame (ctl-12b)', () => {
     expect(hiddenAncestorOf(cell('no')), 'No').toBeNull();
     view.showFeedback(t('controls.bound'));
     expect(hiddenAncestorOf(el(FEEDBACK_ID)), 'the feedback line once written').toBeNull();
+  });
+});
+
+// --- qf-11 (QF11.2, QF11.3): the Controls tabs adopt the shared horizontal tab-strip class --------
+//
+// EARS: THE controls (`#controls-tabs`) tab container SHALL adopt the shared horizontal tab-strip
+// class, so its tab labels lay out horizontally; WHEN qf-11 lands THE tab semantics SHALL be
+// unchanged (LB/RB switching, the active-tab indicator and the nav-tab roles stay as shipped).
+//
+// ORACLE. The REAL styles.css is injected into happy-dom and the strip is read through
+// getComputedStyle. happy-dom caches computed style per element, so each read is a fresh shallow
+// clone (same classes, same parent) taken after the state change under test; the sanity probe drops
+// the class from a clone and must not be a flex row, so the class (not a default) is the cause.
+// Before this slice `#controls-tabs` was a bare `ensureElement` div (computed display `block`).
+
+const QF11_STYLES_CSS = readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'styles.css'),
+  'utf8',
+);
+const QF11_STRIP_CLASS = 'mr-frame-tabstrip';
+
+interface Qf11Snapshot {
+  readonly display: string;
+  readonly flexDirection: string;
+  /** flex-grow as a number; NaN (never 0) when happy-dom exposes neither the longhand nor the
+   *  first token of the shorthand. */
+  readonly grow: number;
+}
+
+/** The computed layout of a fresh shallow clone of `node` (optionally without the strip class). */
+function qf11Probe(node: HTMLElement, dropClass = false): Qf11Snapshot {
+  const probe = node.cloneNode(false) as HTMLElement;
+  probe.removeAttribute('id');
+  if (dropClass) probe.classList.remove(QF11_STRIP_CLASS);
+  (node.parentElement ?? document.body).appendChild(probe);
+  const style = getComputedStyle(probe);
+  const first = style.flex.trim().split(/\s+/)[0] ?? '';
+  let grow = Number.NaN;
+  if (style.flexGrow !== '') grow = Number(style.flexGrow);
+  else if (first === 'none') grow = 0;
+  else if (first !== '') grow = Number(first);
+  const snapshot = { display: style.display, flexDirection: style.flexDirection, grow };
+  probe.remove();
+  return snapshot;
+}
+
+describe('ControlsView qf-11: the Controls tab strip (QF11.2, QF11.3)', () => {
+  let sheet: HTMLStyleElement | null = null;
+  beforeEach(() => {
+    sheet = document.createElement('style');
+    sheet.textContent = QF11_STYLES_CSS;
+    document.head.appendChild(sheet);
+  });
+  afterEach(() => {
+    sheet?.remove();
+    sheet = null;
+  });
+
+  it('#controls-tabs carries mr-frame-tabstrip from construction on and through every show, paint, tab switch, capture, confirm, hide and re-show, and it is the only strip in the frame [QF11-2-CONTROLS-CLASS]', () => {
+    // WRONG IMPL KILLED: the shipped bare `ensureElement` div (no class); the class added only in
+    // show() or the first paint (missing at construction, or lost on the next state); a
+    // renderTabs-style className assignment that wipes the class on a paint; a hide() that resets
+    // it; the class put on the root or on the rows container (the grid would lay out as a row)
+    // instead of on the tab container alone.
+    const { view } = rig();
+    const strip = el(TABS_ID);
+    const root = el(OVERLAY_ID);
+    const expectAdopted = (when: string): void => {
+      expect(el(TABS_ID), `${when}: still the same node`).toBe(strip);
+      expect(strip.classList.contains(QF11_STRIP_CLASS), `${when}: carries the strip class`).toBe(
+        true,
+      );
+      expect(
+        Array.from(document.querySelectorAll(`.${QF11_STRIP_CLASS}`)).map((e) => e.id),
+        `${when}: #controls-tabs is the only tab strip in the document`,
+      ).toEqual([TABS_ID]);
+      expect(root.classList.contains(QF11_STRIP_CLASS), `${when}: not the root`).toBe(false);
+    };
+
+    expectAdopted('constructed');
+    view.show();
+    expectAdopted('shown');
+    view.paint(paintOf());
+    expect(strip.children.length, 'precondition: both tabs rendered').toBe(2);
+    expectAdopted('painted');
+    view.paint(paintOf({ nav: navOn('shortcuts') }));
+    expectAdopted('on Shortcuts');
+    view.paint(paintOf({ capturing: slotOf(btnRow('B'), 1) }));
+    expectAdopted('while capturing');
+    view.paint(paintOf({ nav: navOn('buttons', 'reset'), confirm: confirmOn('no') }));
+    expectAdopted('while confirming');
+    view.hide();
+    expectAdopted('hidden');
+    view.show();
+    view.paint(paintOf());
+    expectAdopted('re-shown and painted');
+  });
+
+  it('#controls-tabs computes as a horizontal flex row that does not grow in the frame column after every state change, and loses that without the class [QF11-2-CONTROLS-HORIZONTAL]', () => {
+    // WRONG IMPL KILLED: the shipped bare div (computed display block: Buttons and Shortcuts stack
+    // on two lines); a class on the element but a sheet that gives it no flex layout; a
+    // flex-direction: column strip; a strip that still grows vertically in the `.mr-frame` column
+    // (grow 1); a layout that holds only on the first paint (probed again after a tab switch and
+    // after a hide / show / paint); a harness whose sheet install is a no-op (the class-less probe
+    // must differ).
+    const { view } = rig();
+    view.show();
+    view.paint(paintOf());
+    const strip = el(TABS_ID);
+    expect(strip.children.length, 'ANTI-VACUITY: both tabs rendered').toBe(2);
+    expect(hiddenAncestorOf(strip), 'ANTI-VACUITY: the strip is on screen').toBeNull();
+    expect(el(OVERLAY_ID).classList.contains('mr-frame'), 'inside a .mr-frame column').toBe(true);
+
+    const expectRow = (when: string): void => {
+      const now = qf11Probe(strip);
+      expect(now.display, `${when}: a flex container`).toBe('flex');
+      expect(now.flexDirection, `${when}: not a column`).not.toBe('column');
+      expect(now.grow, `${when}: flex-grow`).toBe(0);
+    };
+    expectRow('painted');
+    view.paint(paintOf({ nav: navOn('shortcuts') }));
+    expectRow('after switching tab');
+    view.hide();
+    view.show();
+    view.paint(paintOf());
+    expectRow('after hide, show and paint');
+
+    expect(
+      qf11Probe(strip, true).display,
+      'SANITY: without the class it is not a flex row',
+    ).not.toBe('flex');
+  });
+
+  it('with the strip class adopted, the Controls tab semantics are as shipped: tablist, two role=tab children with the nav ids, exactly one aria-selected tab that is also the is-active one, following the nav state [QF11-3-CONTROLS-SEMANTICS]', () => {
+    // WRONG IMPL KILLED: a new tab component or wrapper (the strip would hold something other than
+    // the two tabs, or lose the tablist role); the roles or `aria-selected` dropped while
+    // reshaping; an active mark that is colour-only (`is-active` without aria-selected, or the
+    // reverse); two selected tabs; the selection not following the nav state (LB / RB); tabs turned
+    // into tab stops (the rows container stays the only one); and the class absent (the QF11.2 half
+    // this block ties the semantics to).
+    const { view } = rig();
+    view.show();
+    const walk: ReadonlyArray<readonly [string, string, NavState]> = [
+      ['buttons', TAB_BUTTONS_ID, navOn('buttons')],
+      ['shortcuts', TAB_SHORTCUTS_ID, navOn('shortcuts')],
+      ['buttons', TAB_BUTTONS_ID, navOn('buttons')],
+      ['buttons', TAB_BUTTONS_ID, navOn('buttons', 'reset')],
+    ];
+    for (const [expected, expectedId, nav] of walk) {
+      const when = `${expected} (${nav.item ?? 'no cursor'})`;
+      view.paint(paintOf({ nav }));
+      const strip = el(TABS_ID);
+      const tabs = Array.from(strip.querySelectorAll<HTMLElement>('.mr-nav-tab'));
+      expect(strip.classList.contains(QF11_STRIP_CLASS), `${when}: strip class`).toBe(true);
+      expect(strip.getAttribute('role'), `${when}: tablist`).toBe('tablist');
+      expect(Array.from(strip.children), `${when}: the strip holds only the tabs`).toEqual(tabs);
+      expect(
+        tabs.map((tab) => [tab.getAttribute('role'), tab.id, tab.hasAttribute('tabindex')]),
+        `${when}: role=tab, nav ids, never a tab stop`,
+      ).toEqual([
+        ['tab', TAB_BUTTONS_ID, false],
+        ['tab', TAB_SHORTCUTS_ID, false],
+      ]);
+      expect(
+        tabs.filter((tab) => tab.getAttribute('aria-selected') === 'true').map((x) => x.id),
+        `${when}: exactly one aria-selected tab`,
+      ).toEqual([expectedId]);
+      expect(
+        tabs.filter((tab) => tab.classList.contains('is-active')).map((x) => x.id),
+        `${when}: the is-active tab is the selected one`,
+      ).toEqual([expectedId]);
+    }
   });
 });

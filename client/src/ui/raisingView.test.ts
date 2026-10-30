@@ -36,6 +36,9 @@
 // RaisingView builds its ENTIRE DOM tree in its own constructor, so the fixture is just an empty
 // mount-point `<div>` passed as `parent`.
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RaisingViewModel } from './raisingModel';
 import { RaisingView } from './raisingView';
@@ -2195,6 +2198,200 @@ describe('RaisingView ctl-8f: the Bag panel teeth', () => {
     expect(ctl8fPart('raising-inventory').style.display, 'the legacy grid shows').not.toBe('none');
     for (const id of ['bag-tabs', 'bag-list', 'bag-sheet', 'bag-info', 'bag-picker']) {
       expect(ctl8fShown(id), `#${id} is hidden after the reopen`).toBe(false);
+    }
+  });
+});
+
+// =============================================================================
+// qf-11 (QF11.2, QF11.3): the Bag pocket tabs adopt the shared horizontal tab-strip class.
+//
+// EARS: THE bag (`#bag-tabs`) tab container SHALL adopt the shared horizontal tab-strip class, so
+// its tab labels lay out horizontally; WHEN qf-11 lands THE tab semantics SHALL be unchanged
+// (LB/RB switching, the active-tab indicator and the nav-tab roles stay as shipped: CSS-only
+// reshaping plus class attachment, no new tab component).
+//
+// ORACLE. The REAL styles.css is injected into happy-dom and the strip is read through
+// getComputedStyle. happy-dom caches computed style per element, so each read is a fresh shallow
+// clone (same classes, same parent), taken after the state change under test. With the class the
+// clone is a flex row; the sanity probe drops the class from a clone and must not be one, which
+// proves the class (not a default) is the cause. Before this slice `#bag-tabs` was a plain div
+// (computed display `block`), so every pocket label stacked on its own line.
+// =============================================================================
+
+const QF11_STYLES_CSS = readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'styles.css'),
+  'utf8',
+);
+const QF11_STRIP_CLASS = 'mr-frame-tabstrip';
+
+interface Qf11Snapshot {
+  readonly display: string;
+  readonly flexDirection: string;
+  /** flex-grow as a number; NaN (never 0) when happy-dom exposes neither the longhand nor the
+   *  first token of the shorthand. */
+  readonly grow: number;
+}
+
+/** The computed layout of a fresh shallow clone of `el` (optionally without the strip class). */
+function qf11Probe(el: HTMLElement, dropClass = false): Qf11Snapshot {
+  const probe = el.cloneNode(false) as HTMLElement;
+  probe.removeAttribute('id');
+  if (dropClass) probe.classList.remove(QF11_STRIP_CLASS);
+  (el.parentElement ?? document.body).appendChild(probe);
+  const style = getComputedStyle(probe);
+  const first = style.flex.trim().split(/\s+/)[0] ?? '';
+  let grow = Number.NaN;
+  if (style.flexGrow !== '') grow = Number(style.flexGrow);
+  else if (first === 'none') grow = 0;
+  else if (first !== '') grow = Number(first);
+  const snapshot = { display: style.display, flexDirection: style.flexDirection, grow };
+  probe.remove();
+  return snapshot;
+}
+
+describe('RaisingView qf-11: the Bag tab strip (QF11.2, QF11.3)', () => {
+  let sheet: HTMLStyleElement | null = null;
+  beforeEach(() => {
+    sheet = document.createElement('style');
+    sheet.textContent = QF11_STYLES_CSS;
+    document.head.appendChild(sheet);
+  });
+  afterEach(() => {
+    sheet?.remove();
+    sheet = null;
+  });
+
+  it('#bag-tabs carries mr-frame-tabstrip from construction on and through every show, paint, re-paint, hide and re-show, and it is the only strip in the raising root [QF11-2-BAG-CLASS]', () => {
+    // WRONG IMPL KILLED: the shipped plain `part()` div (no class); the class added only in show()
+    // or only in the first paint (missing at construction, or lost on the next state); a
+    // renderTabs-style className assignment that wipes the class on every paint; a hide() that
+    // resets the class; the class put on the root or on every bag part (the item list would lay out
+    // as a row) instead of on the tab container alone.
+    const { parent, view } = s4Mount();
+    const root = overlayRootOf(parent);
+    const strip = ctl8fPart('bag-tabs');
+    const expectAdopted = (when: string): void => {
+      expect(ctl8fPart('bag-tabs'), `${when}: still the same node`).toBe(strip);
+      expect(strip.classList.contains(QF11_STRIP_CLASS), `${when}: carries the strip class`).toBe(
+        true,
+      );
+      expect(
+        [...root.querySelectorAll(`.${QF11_STRIP_CLASS}`)].map((e) => e.id),
+        `${when}: #bag-tabs is the only tab strip in the root`,
+      ).toEqual(['bag-tabs']);
+      expect(root.classList.contains(QF11_STRIP_CLASS), `${when}: not the root`).toBe(false);
+    };
+
+    expectAdopted('constructed');
+    view.show();
+    expectAdopted('shown');
+    view.refresh(raTrainVm());
+    expectAdopted('refreshed');
+    const vm = ctl8fVm();
+    view.paint(ctl8fPaint(vm));
+    expect(strip.style.display, 'precondition: the strip is shown by the paint').not.toBe('none');
+    expect(strip.children.length, 'precondition: four pocket tabs rendered').toBe(4);
+    expectAdopted('painted');
+    view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB']) }));
+    expectAdopted('re-painted on Food');
+    view.paint(
+      ctl8fPaint(vm, {
+        nav: ctl8fNav(vm, ['RB']),
+        phase: { kind: 'sheet', itemId: 9, action: 'feed' },
+      }),
+    );
+    expectAdopted('painted in the sheet phase');
+    view.hide();
+    expect(strip.style.display, 'precondition: hide() hides the strip').toBe('none');
+    expectAdopted('hidden');
+    view.show();
+    expectAdopted('re-shown');
+    view.paint(ctl8fPaint(vm));
+    expectAdopted('painted after the re-show');
+  });
+
+  it('#bag-tabs computes as a horizontal flex row that does not grow in the frame column after every state change, and loses that without the class [QF11-2-BAG-HORIZONTAL]', () => {
+    // WRONG IMPL KILLED: the shipped plain div (computed display block: the pocket labels stack
+    // vertically); a class added to the element but a sheet that gives it no flex layout; a
+    // flex-direction: column strip; a strip that still grows vertically in the `.mr-frame` column
+    // (grow 1); a layout that holds only on the first paint (the probes run after a tab switch and
+    // after a hide / show / paint); a harness whose sheet install is a no-op (the class-less probe
+    // must differ).
+    const { parent, view } = s4Mount();
+    const root = overlayRootOf(parent);
+    view.show();
+    const vm = ctl8fVm();
+    view.paint(ctl8fPaint(vm));
+    const strip = ctl8fPart('bag-tabs');
+    expect(strip.children.length, 'ANTI-VACUITY: four pocket tabs rendered').toBe(4);
+    expect(root.style.display, 'ANTI-VACUITY: the frame root is shown').toBe('flex');
+
+    const expectRow = (when: string): void => {
+      const now = qf11Probe(strip);
+      expect(now.display, `${when}: a flex container`).toBe('flex');
+      expect(now.flexDirection, `${when}: not a column`).not.toBe('column');
+      expect(now.grow, `${when}: flex-grow`).toBe(0);
+    };
+    expectRow('painted');
+    view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB', 'RB']) }));
+    expectRow('after switching pocket');
+    view.hide();
+    view.show();
+    view.paint(ctl8fPaint(vm));
+    expectRow('after hide, show and paint');
+
+    expect(
+      qf11Probe(strip, true).display,
+      'SANITY: without the class it is not a flex row',
+    ).not.toBe('flex');
+  });
+
+  it('with the strip class adopted, the Bag tab semantics are as shipped: tablist, four role=tab children with the nav ids, exactly one aria-selected tab that is also the is-active one, following LB / RB [QF11-3-BAG-SEMANTICS]', () => {
+    // WRONG IMPL KILLED: a new tab component or wrapper (the strip would hold something other than
+    // the four tabs, or lose the tablist role); the roles or `aria-selected` dropped while
+    // reshaping; an active mark that is colour-only (`is-active` without aria-selected, or the
+    // reverse); two selected tabs; the selection not following LB / RB; tabs turned into tab stops
+    // (the nav container stays the only one); the class adopted by replacing the tab container, which
+    // loses these; and the class absent (the QF11.2 half this block ties the semantics to).
+    const { view } = s4Mount();
+    view.show();
+    const vm = ctl8fVm();
+    const keys = ['bait', 'food', 'medicine', 'other'];
+    const walk: ReadonlyArray<readonly [string, readonly VButton[]]> = [
+      ['bait', []],
+      ['food', ['RB']],
+      ['medicine', ['RB', 'RB']],
+      ['other', ['RB', 'RB', 'RB']],
+      ['medicine', ['RB', 'RB', 'RB', 'LB']],
+      ['food', ['RB', 'RB', 'RB', 'LB', 'LB']],
+      ['bait', ['RB', 'LB']],
+    ];
+    for (const [expected, steps] of walk) {
+      const when = `${expected} after ${steps.join(',') || 'opening'}`;
+      view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, steps) }));
+      const strip = ctl8fPart('bag-tabs');
+      const tabs = ctl8fTabEls();
+      expect(strip.classList.contains(QF11_STRIP_CLASS), `${when}: strip class`).toBe(true);
+      expect(strip.getAttribute('role'), `${when}: tablist`).toBe('tablist');
+      expect([...strip.children], `${when}: the strip holds only the tabs`).toEqual(tabs);
+      expect(
+        tabs.map((tab) => tab.dataset.navTab),
+        `${when}: the four pockets in order`,
+      ).toEqual(keys);
+      expect(
+        tabs.map((tab) => [tab.getAttribute('role'), tab.id, tab.hasAttribute('tabindex')]),
+        `${when}: role=tab, nav ids, never a tab stop`,
+      ).toEqual(keys.map((key) => ['tab', `bag-tab-${key}`, false]));
+      expect(
+        tabs
+          .filter((tab) => tab.getAttribute('aria-selected') === 'true')
+          .map((x) => x.dataset.navTab),
+        `${when}: exactly one aria-selected tab`,
+      ).toEqual([expected]);
+      expect(
+        tabs.filter((tab) => tab.classList.contains('is-active')).map((x) => x.dataset.navTab),
+        `${when}: the is-active tab is the selected one`,
+      ).toEqual([expected]);
     }
   });
 });

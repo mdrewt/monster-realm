@@ -19,8 +19,11 @@
  *
  * Every string below is arbitrary caller text: the kit owns no catalog strings.
  */
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   createFrame,
   type FeedbackEvent,
@@ -543,5 +546,285 @@ describe('feedbackAnnouncement (polish-1 P5)', () => {
       expect(f.feedback.hasAttribute('aria-live'), s.kind).toBe(false);
       expect(f.feedback.hasAttribute('role'), s.kind).toBe(false);
     }
+  });
+});
+
+// --- qf-11 (QF11.1): the tab strip never grows vertically ----------------------------------------
+//
+// EARS: THE `.mr-frame-tabstrip` SHALL NOT flex-grow vertically in column contexts: tab labels
+// render at one fixed, uniform height independent of the active panel's content, in every screen
+// that mounts a tab strip.
+//
+// WHY. `.mr-frame` is a flex COLUMN. The Monsters (boxView) and Help (helpView) frames mount the
+// strip as a DIRECT child of that column, where `flex: 1 1 auto` made it absorb the free height: the
+// tab labels stretched to a height that followed the active panel's content. The strip must keep
+// `flex-grow: 0` (the other mounts, inside the row-flex `.mr-frame-tabs` titlebar, are unaffected),
+// and a tab label is one line (`white-space: nowrap`) so its height is uniform.
+//
+// ORACLES. (1) The REAL styles.css parsed with comments stripped: the EFFECTIVE value is computed
+// across every top-level rule whose selector list is exactly `.mr-frame-tabstrip` (the last
+// declaration wins, inside a rule and across rules), and a separate scan rejects a positive grow on
+// ANY block (an @media block included) whose selector merely mentions the class. No new selector may
+// be added to styles.css (battleView.test.ts pins the top-level roster), so the tests read effective
+// values and never a selector spelling. (2) The same sheet injected into happy-dom and read through
+// getComputedStyle on the REAL createFrame strip, placed both in the titlebar and, as boxView and
+// helpView do, directly under the `.mr-frame` column root. happy-dom caches computed style per
+// element: every element is read once, and the class-is-the-cause probe is a separate clone.
+
+const QF11_STYLES_CSS = readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'styles.css'),
+  'utf8',
+);
+
+interface Qf11Decl {
+  readonly prop: string;
+  readonly value: string;
+}
+interface Qf11Rule {
+  readonly selectors: readonly string[];
+  readonly decls: readonly Qf11Decl[];
+}
+
+function qf11Decls(body: string): Qf11Decl[] {
+  return body
+    .split(';')
+    .map((d) => {
+      const colon = d.indexOf(':');
+      if (colon === -1) return null;
+      return {
+        prop: d.slice(0, colon).trim().toLowerCase(),
+        value: d
+          .slice(colon + 1)
+          .replace(/!important/i, '')
+          .trim()
+          .toLowerCase(),
+      };
+    })
+    .filter((d): d is Qf11Decl => d !== null);
+}
+
+const qf11StripComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, '');
+
+/** The TOP-LEVEL style rules of a stylesheet, comments stripped; at-rule blocks are skipped whole. */
+function qf11TopLevelRules(css: string): Qf11Rule[] {
+  const rules: Qf11Rule[] = [];
+  let depth = 0;
+  let head = '';
+  let body = '';
+  for (const ch of qf11StripComments(css)) {
+    if (depth === 0) {
+      if (ch === '{') {
+        depth = 1;
+        body = '';
+      } else if (ch === ';') {
+        head = '';
+      } else {
+        head += ch;
+      }
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+      body += ch;
+    } else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        const selectorText = head.trim();
+        if (!selectorText.startsWith('@')) {
+          rules.push({
+            selectors: selectorText.split(',').map((s) => s.trim()),
+            decls: qf11Decls(body),
+          });
+        }
+        head = '';
+      } else {
+        body += ch;
+      }
+    } else {
+      body += ch;
+    }
+  }
+  return rules;
+}
+
+/** Every innermost `selector { declarations }` block at ANY depth (a rule inside @media included). */
+function qf11AllBlocks(css: string): Qf11Rule[] {
+  const blocks: Qf11Rule[] = [];
+  for (const m of qf11StripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    blocks.push({
+      selectors: (m[1] ?? '').split(',').map((s) => s.trim()),
+      decls: qf11Decls(m[2] ?? ''),
+    });
+  }
+  return blocks;
+}
+
+/** The grow factor a `flex` shorthand value sets; NaN when it is not a plain number or keyword. */
+function qf11ShorthandGrow(value: string): number {
+  const first = value.split(/\s+/)[0] ?? '';
+  if (first === 'none' || first === 'initial') return 0;
+  if (first === 'auto') return 1;
+  return first === '' ? Number.NaN : Number(first);
+}
+
+/** The grow factor one block's declarations leave in force (the last of `flex` / `flex-grow`), or
+ *  undefined when the block says nothing about grow. */
+function qf11GrowOfDecls(decls: readonly Qf11Decl[]): number | undefined {
+  let grow: number | undefined;
+  for (const d of decls) {
+    if (d.prop === 'flex-grow') grow = d.value === '' ? Number.NaN : Number(d.value);
+    else if (d.prop === 'flex') grow = qf11ShorthandGrow(d.value);
+  }
+  return grow;
+}
+
+/** The effective flex-grow of `selector` across the top-level rules naming it exactly (CSS initial
+ *  value 0 when nothing declares one). NaN is returned, never coerced, for an unreadable value. */
+function qf11EffectiveGrow(rules: readonly Qf11Rule[], selector: string): number {
+  let grow = 0;
+  for (const rule of rules) {
+    if (!rule.selectors.includes(selector)) continue;
+    const declared = qf11GrowOfDecls(rule.decls);
+    if (declared !== undefined) grow = declared;
+  }
+  return grow;
+}
+
+/** The effective value of `prop` across the top-level rules naming `selector` exactly. */
+function qf11Effective(
+  rules: readonly Qf11Rule[],
+  selector: string,
+  prop: string,
+): string | undefined {
+  let value: string | undefined;
+  for (const rule of rules) {
+    if (!rule.selectors.includes(selector)) continue;
+    for (const d of rule.decls) if (d.prop === prop) value = d.value;
+  }
+  return value;
+}
+
+/** A computed style's flex-grow as a number: the longhand if happy-dom expanded the shorthand,
+ *  else the first token of the shorthand. NaN (never 0) when neither is readable. */
+function qf11ComputedGrow(style: CSSStyleDeclaration): number {
+  if (style.flexGrow !== '') return Number(style.flexGrow);
+  const first = style.flex.trim().split(/\s+/)[0] ?? '';
+  if (first === 'none') return 0;
+  return first === '' ? Number.NaN : Number(first);
+}
+
+describe('qf-11 (QF11.1): the tab strip never flex-grows vertically', () => {
+  it('styles.css: the effective flex-grow of .mr-frame-tabstrip is 0 (min-height min-content and display flex kept), and no block mentioning the class grows it anywhere [QF11-1-SHEET-NO-GROW]', () => {
+    // WRONG IMPL KILLED: the shipped `flex: 1 1 auto` left in place (grow 1: the strip absorbs the
+    // column's free height); `flex-grow: 0` written BEFORE the surviving `flex: 1 1 auto` in the
+    // same rule (the shorthand re-sets it); a corrected rule followed by a later duplicate rule that
+    // grows it again; the fix written only inside a comment (a parser that does not strip comments
+    // would read it); a growing override smuggled into an @media block or a compound selector; the
+    // fix made by deleting `min-height: min-content` (the strip could shrink to zero height in a
+    // short frame and its tabs could not be clicked) or `display: flex` (labels stack vertically).
+    const top = qf11TopLevelRules(QF11_STYLES_CSS);
+    const srOnly = top.find((r) => r.selectors.includes('.sr-only'));
+    expect(srOnly, 'ANTI-VACUITY: the scan sees the existing .sr-only rule').toBeDefined();
+    expect(srOnly?.decls.some((d) => d.prop === 'position' && d.value === 'absolute')).toBe(true);
+
+    const strip = top.filter((r) => r.selectors.includes('.mr-frame-tabstrip'));
+    expect(strip.length > 0, 'a top-level rule for exactly .mr-frame-tabstrip').toBe(true);
+    expect(qf11Effective(top, '.mr-frame-tabstrip', 'display'), 'still a flex row').toBe('flex');
+    expect(
+      qf11Effective(top, '.mr-frame-tabstrip', 'min-height'),
+      'min-height min-content kept (the strip cannot collapse)',
+    ).toBe('min-content');
+    expect(qf11EffectiveGrow(top, '.mr-frame-tabstrip'), 'effective flex-grow').toBe(0);
+
+    const growers = qf11AllBlocks(QF11_STYLES_CSS)
+      .filter((b) => b.selectors.some((s) => s.includes('mr-frame-tabstrip')))
+      .filter((b) => {
+        const grow = qf11GrowOfDecls(b.decls);
+        return grow !== undefined && grow !== 0;
+      })
+      .map((b) => b.selectors.join(', '));
+    expect(
+      growers,
+      'no block that mentions .mr-frame-tabstrip may set a positive flex-grow',
+    ).toEqual([]);
+  });
+
+  it('styles.css: a tab label is one line, the effective white-space of .mr-nav-tab is nowrap, so every label has the same height [QF11-1-NAVTAB-NOWRAP]', () => {
+    // WRONG IMPL KILLED: the shipped `.mr-nav-tab` with no white-space rule (a long label wraps to
+    // two lines in a narrow strip, so the tab heights differ between labels and between locales);
+    // `white-space: normal` or `pre-wrap` (wraps); the nowrap written in a comment only, or on a
+    // selector other than the tab's own (the planned fix is on `.mr-nav-tab`).
+    const top = qf11TopLevelRules(QF11_STYLES_CSS);
+    const tab = top.filter((r) => r.selectors.includes('.mr-nav-tab'));
+    expect(tab.length > 0, 'ANTI-VACUITY: a top-level rule for exactly .mr-nav-tab').toBe(true);
+    expect(qf11Effective(top, '.mr-nav-tab', 'white-space')).toBe('nowrap');
+  });
+
+  it('styles.css: the active-tab indicator rule is as shipped (inverted colours and underline) [QF11-3-ACTIVE-INDICATOR-SHEET]', () => {
+    // QF11.3 guard (green at head by design: the criterion is that nothing changes). WRONG IMPL
+    // KILLED: a reshaping that restyles or drops the active mark (the indicator must not be
+    // colour-only, and the underline is its non-colour half).
+    const top = qf11TopLevelRules(QF11_STYLES_CSS);
+    const active = '.mr-nav-tab.is-active';
+    expect(
+      top.some((r) => r.selectors.includes(active)),
+      'the rule exists',
+    ).toBe(true);
+    expect(qf11Effective(top, active, 'background')).toBe('var(--mr-frame-fg)');
+    expect(qf11Effective(top, active, 'color')).toBe('var(--mr-frame-bg)');
+    expect(qf11Effective(top, active, 'text-decoration')).toBe('underline');
+  });
+});
+
+describe('qf-11 (QF11.1): computed style over a real createFrame strip', () => {
+  let sheet: HTMLStyleElement | null = null;
+  beforeEach(() => {
+    sheet = document.createElement('style');
+    sheet.textContent = QF11_STYLES_CSS;
+    document.head.appendChild(sheet);
+  });
+  afterEach(() => {
+    sheet?.remove();
+    sheet = null;
+  });
+
+  it('the strip is a flex row with grow 0 both in the titlebar and directly under the .mr-frame column root, and every tab label is nowrap [QF11-1-FRAME-STRIP-COMPUTED]', () => {
+    // WRONG IMPL KILLED: the shipped sheet (computed flex-grow 1 on the strip); a fix that sets
+    // grow 0 but drops `display: flex` (the labels stack); a fix that reaches only the titlebar
+    // mount and not the strip placed directly in the column (boxView, helpView); labels that still
+    // wrap (white-space normal); and a harness whose sheet install is a no-op (the sanity clone
+    // below proves the class, not an inherited default, produces the flex display).
+    const f = createFrame(document, { id: 'menu', size: 'side' });
+    document.body.appendChild(f.root);
+    renderFrameTabs(f, tabsL(['a', ['a1']], ['b', ['b1']], ['c', ['c1']]), state('a1', 'a'), label);
+    // ANTI-VACUITY: a shown strip with three rendered tabs, placed in a column root.
+    expect(f.tabBar.hidden).toBe(false);
+    expect(f.tabStrip.getAttribute('role')).toBe('tablist');
+    expect(f.tabStrip.classList.contains('mr-frame-tabstrip')).toBe(true);
+    expect(f.tabStrip.children.length).toBe(3);
+    expect(getComputedStyle(f.root).flexDirection, 'precondition: .mr-frame is a column').toBe(
+      'column',
+    );
+
+    const inBar = getComputedStyle(f.tabStrip);
+    expect(inBar.display, 'titlebar strip: a flex row').toBe('flex');
+    expect(qf11ComputedGrow(inBar), 'titlebar strip: flex-grow').toBe(0);
+
+    // The boxView / helpView mount: the strip is a DIRECT child of the `.mr-frame` column root.
+    const direct = document.createElement('div');
+    direct.className = 'mr-frame-tabstrip';
+    f.root.appendChild(direct);
+    const inColumn = getComputedStyle(direct);
+    expect(inColumn.display, 'column-root strip: a flex row').toBe('flex');
+    expect(qf11ComputedGrow(inColumn), 'column-root strip: flex-grow (no vertical growth)').toBe(0);
+
+    for (const tab of Array.from(f.tabStrip.children)) {
+      expect(getComputedStyle(tab).whiteSpace, `tab ${tab.id}: one line`).toBe('nowrap');
+    }
+
+    // SANITY: the same element without the class is not a flex row, so the class does the work.
+    const bare = document.createElement('div');
+    f.root.appendChild(bare);
+    expect(getComputedStyle(bare).display, 'a plain div is not display:flex').not.toBe('flex');
   });
 });
