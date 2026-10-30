@@ -167,8 +167,9 @@ export function coerceRow(raw) {
 // ---------------------------------------------------------------------------
 // Sort coerced rows ascending by event_id. `aggregateReport`'s per-group
 // `group[0]` = the FIRST recruit attempt (the H1 weaken-first proxy), so this
-// ordering must be applied before calling it — the pinned 2.8.1 CLI's SQL
-// dialect STILL rejects `ORDER BY` (re-verified live 2026-08-22:
+// ordering must be applied before calling it — the pinned 2.11.0 CLI's SQL
+// dialect STILL rejects `ORDER BY` (re-verified live on 2.8.1 2026-08-22 and on
+// 2.11.0 2026-10-15:
 // "Error: Unsupported: SELECT ... ORDER BY ..." → 400 Bad Request; first
 // confirmed at 2.6.0 on 2026-07-25), so the ordering guarantee (PT-B2-RT-01)
 // is enforced client-side instead of in the query. Pure + exported so it has
@@ -184,9 +185,10 @@ export function sortByEventId(rows) {
 // Decode the JSON output mode of the `spacetime` SQL CLI into an array of row
 // objects keyed by column name, in wire order (sorting is sortByEventId's job).
 //
-// The pinned 2.8.1 CLI (.github/workflows/{ci,nightly}.yml pin
-// `spacetime version use 2.8.1`) has a `--format json` mode — verified live
-// 2026-08-22 — which prints the RAW HTTP response body verbatim on stdout (the
+// The pinned 2.11.0 CLI (.github/workflows/{ci,nightly}.yml pin
+// `spacetime version use 2.11.0`) has a `--format json` mode — verified live
+// 2026-08-22 on 2.8.1 and re-verified 2026-10-15 on 2.11.0 (same envelope) —
+// which prints the RAW HTTP response body verbatim on stdout (the
 // `WARNING: UNSTABLE` banner stays on stderr). The envelope, verified rather
 // than assumed:
 //
@@ -200,7 +202,8 @@ export function sortByEventId(rows) {
 //
 // WHY JSON and not the default text output: the text form is a human DISPLAY
 // format rendered through the CLI's PsqlWrapper with no stability contract.
-// 2.8.1 silently changed sum-variant rendering from `Mild` to `mild`,
+// 2.8.1 silently changed sum-variant rendering from `Mild` to `mild`
+// (a 2.x-era change that could recur in any later CLI),
 // and a display-format change like that is invisible to every gate
 // this repo has. The JSON body is the wire shape the server actually returns.
 //
@@ -322,9 +325,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const db = process.env.MR_PLAYTEST_DB || 'monster-realm-playtest';
 
   // event_id is selected (not just used to order) because ordering is enforced
-  // client-side by sortByEventId — the pinned 2.8.1 CLI's SQL dialect still
-  // rejects ORDER BY (re-verified live 2026-08-22: "Unsupported: ...ORDER
-  // BY..." 400 Bad Request).
+  // client-side by sortByEventId — the pinned 2.11.0 CLI's SQL dialect still
+  // rejects ORDER BY (re-verified live 2026-08-22 on 2.8.1 and 2026-10-15 on
+  // 2.11.0: "Unsupported: ...ORDER BY...").
   const query =
     'SELECT event_id, kind, identity, species_id, hp_permille, bait_item_id, success FROM playtest_event';
 

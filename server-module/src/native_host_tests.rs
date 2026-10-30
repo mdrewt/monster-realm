@@ -3,7 +3,7 @@
 //! so the SHIPPED reducer-side helpers can run against REAL rows inside an
 //! ordinary native `cargo test` binary.
 //!
-//! HOW THE PIECES FIT. `spacetimedb::ReducerContext::__dummy()` (crate 2.8.1,
+//! HOW THE PIECES FIT. `spacetimedb::ReducerContext::__dummy()` (crate 2.11.0,
 //! `src/lib.rs:1043`, `#[doc(hidden)] pub`) yields a context whose `db` is the
 //! real `Local {}` accessor type, so `ctx.db.<table>().<index>().find(..)` in a
 //! production helper compiles and runs unchanged. That generated code bottoms
@@ -252,7 +252,7 @@ impl<R: Serialize, K: Serialize> Handle<'_, R, K> {
 }
 
 // ---------------------------------------------------------------------------
-// The host ABI. Signatures mirror the `spacetimedb-bindings-sys` 2.8.1 raw
+// The host ABI. Signatures mirror the `spacetimedb-bindings-sys` 2.11.0 raw
 // externs with the `repr(transparent)` `TableId` / `IndexId` / `RowIter`
 // newtypes spelled as the `u32` they wrap. Every one is `unsafe`: it
 // dereferences raw pointers handed over by the bindings, which own the
@@ -472,11 +472,11 @@ unsafe extern "C" fn datastore_delete_by_index_scan_point_bsatn(
 // THE WIRE FORMAT. Each side of a range arrives as the BSATN of a `Bound<T>`:
 // tag byte 0 `Included` followed by the BSATN of the payload, 1 `Excluded`
 // followed by the payload, 2 `Unbounded` with no payload at all
-// (`spacetimedb-sats-2.8.1/src/ser/impls.rs:124-128`). The bindings pack both
+// (`spacetimedb-sats-2.11.0/src/ser/impls.rs:124-128`). The bindings pack both
 // sides into one buffer and hand out two slices over it
-// (`spacetimedb-2.8.1/src/table.rs:1069-1078`), and `prefix_elems` is a
+// (`spacetimedb-2.11.0/src/table.rs:1069-1078`), and `prefix_elems` is a
 // `repr(transparent)` `ColId(pub u16)`, so the raw parameter is a `u16`
-// (`spacetimedb-primitives-2.8.1/src/ids.rs:125`). The parse is an EXPLICIT tag
+// (`spacetimedb-primitives-2.11.0/src/ids.rs:125`). The parse is an EXPLICIT tag
 // match: an empty slice, an unknown tag and trailing bytes after tag 2 are each
 // an ERROR, never a quiet `Unbounded`. A bound this host misreads is a window
 // the caller never asked for, and every count taken over it would be true about
@@ -692,7 +692,7 @@ impl Fixture {
 //   no transaction rollback is modelled: a reducer that errors after a write
 //   leaves that write in the store.
 // * A SETTABLE CALLER. `Fixture::run_as(_at)` runs a closure inside the SHIPPED
-//   `__call_reducer__` entry point (spacetimedb 2.8.1 `rt.rs:1035`), which is
+//   `__call_reducer__` entry point (spacetimedb 2.11.0 `rt.rs:1118`), which is
 //   the only code that builds a `ReducerContext` with a chosen sender (the
 //   constructor is private, `lib.rs:1058`). A trampoline reducer is registered
 //   once per process through the public `rt::register_reducer` and published
@@ -1010,9 +1010,9 @@ const DESCRIBE_SINK: u32 = 0xD5C1;
 const ERROR_SINK: u32 = 0xE551;
 
 unsafe extern "C" {
-    /// spacetimedb 2.8.1 `rt.rs:978` (`#[unsafe(no_mangle)]`).
+    /// spacetimedb 2.11.0 `rt.rs:1061` (`#[unsafe(no_mangle)]`).
     fn __describe_module__(description: u32);
-    /// spacetimedb 2.8.1 `rt.rs:1035` (`#[unsafe(no_mangle)]`).
+    /// spacetimedb 2.11.0 `rt.rs:1118` (`#[unsafe(no_mangle)]`).
     fn __call_reducer__(
         id: usize,
         sender_0: u64,
@@ -1090,7 +1090,7 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_inventory, public)]` in schema.rs.
     #[link_name = "__preinit__20_register_describer_my_inventory"]
     fn register_view_my_inventory();
-    /// spacetimedb 2.8.1 `rt.rs:1267` (`#[unsafe(no_mangle)]`).
+    /// spacetimedb 2.11.0 `rt.rs:1350` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
         sender_0: u64,

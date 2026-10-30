@@ -2883,7 +2883,7 @@ describe('rowConvert 11r-e: playerWalletRowToStore — totality (RC-PW-05)', () 
     // The property also carries the "byte-identical for ANY u64" half of EARS 11r-e-2:
     // a Number() round trip fails here for every value above 2^53.
     fc.assert(
-      fc.property(fc.bigUintN(64), fc.string(), (balance, ownerHex) => {
+      fc.property(fc.bigInt({ min: 0n, max: 2n ** 64n - 1n }), fc.string(), (balance, ownerHex) => {
         // Block body (not expression body): fast-check reads an expression-bodied
         // matcher's return value as a `false` predicate and fails spuriously.
         const stored = playerWalletRowToStore(makeSdkWalletRow(ownerHex, balance));
@@ -3098,7 +3098,7 @@ describe('rowConvert 12r-d [E1]: healLocationRowToStore — costCurrency is a pa
     // matcher's return value as a `false` predicate and fails spuriously.
     fc.assert(
       fc.property(
-        fc.bigUintN(64),
+        fc.bigInt({ min: 0n, max: 2n ** 64n - 1n }),
         fc.integer({ min: 0, max: 9999 }),
         (costCurrency, locationId) => {
           const store = healLocationRowToStore(makeSdkHealRow(costCurrency, locationId));
@@ -3402,8 +3402,8 @@ describe('rowConvert M21b-2: accountRowToStore — totality (RC-AC-05)', () => {
     // expression-bodied matcher's return value as a `false` predicate and fails spuriously.
     fc.assert(
       fc.property(
-        fc.bigIntN(64),
-        fc.bigIntN(64),
+        fc.bigInt({ min: -(2n ** 63n), max: 2n ** 63n - 1n }),
+        fc.bigInt({ min: -(2n ** 63n), max: 2n ** 63n - 1n }),
         fc.string(),
         (createdAtMs, lastLoginAtMs, issuer) => {
           const stored = accountRowToStore(
@@ -3763,8 +3763,8 @@ describe('rowConvert rb-53: exportChunkRowToStore — u64/i64 stay bigint, u32 s
     // expression-bodied matcher's return value as a `false` predicate and fails spuriously.
     fc.assert(
       fc.property(
-        fc.bigUintN(64),
-        fc.bigUintN(64),
+        fc.bigInt({ min: 0n, max: 2n ** 64n - 1n }),
+        fc.bigInt({ min: 0n, max: 2n ** 64n - 1n }),
         fc.integer({ min: 0, max: 4095 }),
         (chunkId, requestId, chunkIndex) => {
           const stored = rowConvertModule.exportChunkRowToStore(

@@ -376,7 +376,7 @@ describe('deriveDeletionCountdown (PRV1-1): the grace window', () => {
     // arrow — fast-check reads an expression-bodied matcher's return as a `false` predicate
     // and fails spuriously (repo convention, rowConvert.test.ts:3025).
     const clockArb = fc.oneof(
-      fc.bigIntN(64),
+      fc.bigInt({ min: -(2n ** 63n), max: 2n ** 63n - 1n }),
       fc.constantFrom(
         undefined as unknown as bigint,
         null as unknown as bigint,
@@ -393,8 +393,8 @@ describe('deriveDeletionCountdown (PRV1-1): the grace window', () => {
           fc.constant(undefined),
           fc.string(),
         ),
-        fc.option(fc.bigIntN(64), { nil: undefined }),
-        fc.option(fc.bigIntN(64), { nil: undefined }),
+        fc.option(fc.bigInt({ min: -(2n ** 63n), max: 2n ** 63n - 1n }), { nil: undefined }),
+        fc.option(fc.bigInt({ min: -(2n ** 63n), max: 2n ** 63n - 1n }), { nil: undefined }),
         clockArb,
         clockArb,
         (status, deletionRequestedAtMs, terminalAtMs, nowMs, graceMs) => {

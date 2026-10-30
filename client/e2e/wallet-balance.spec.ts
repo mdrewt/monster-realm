@@ -561,7 +561,9 @@ const readBalance = (p: Page): Promise<BalanceReading> =>
     return {
       state: bal === null ? null : bal.getAttribute('data-balance-state'),
       text: bal === null ? '' : (bal.textContent ?? ''),
-      hidden: bal === null ? true : bal.hidden,
+      // TS 6 lib.dom types `hidden` as boolean | 'until-found'; the app only ever
+      // assigns booleans, and 'until-found' still means not-shown, so coerce.
+      hidden: bal === null ? true : bal.hidden !== false,
       overlayText: ov === null ? '' : (ov.textContent ?? ''),
     };
   });

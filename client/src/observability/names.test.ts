@@ -197,7 +197,11 @@ describe('names.ts (T-A1): the value predicates mirror config.alloy:156-158 fixt
     // The property states the RULE, not a sample of it: any string of 1-4 ASCII digits is
     // accepted, and any string containing a non-digit is rejected regardless of length.
     // WRONG IMPL KILLED: a length-only check (`s.length <= 4`) — 'abcd' would pass it.
-    const digits = fc.stringOf(fc.constantFrom('0', '1', '5', '9'), { minLength: 1, maxLength: 4 });
+    const digits = fc.string({
+      unit: fc.constantFrom('0', '1', '5', '9'),
+      minLength: 1,
+      maxLength: 4,
+    });
     fc.assert(
       fc.property(digits, (s) => {
         expect(isValidZoneId(s)).toBe(true);
@@ -205,7 +209,7 @@ describe('names.ts (T-A1): the value predicates mirror config.alloy:156-158 fixt
       { seed: 20250809, numRuns: 200 },
     );
 
-    const tooLong = fc.stringOf(fc.constantFrom('0', '7'), { minLength: 5, maxLength: 12 });
+    const tooLong = fc.string({ unit: fc.constantFrom('0', '7'), minLength: 5, maxLength: 12 });
     fc.assert(
       fc.property(tooLong, (s) => {
         expect(isValidZoneId(s)).toBe(false);
@@ -218,7 +222,7 @@ describe('names.ts (T-A1): the value predicates mirror config.alloy:156-158 fixt
     // WRONG IMPL KILLED: an impl that accepts uppercase hex (a `toLowerCase()` before the scan).
     // Alloy would delete such a key, so the client would ship a doomed label.
     const hexChar = fc.constantFrom('0', '3', '9', 'a', 'c', 'f');
-    const okSha = fc.stringOf(hexChar, { minLength: 7, maxLength: 40 });
+    const okSha = fc.string({ unit: hexChar, minLength: 7, maxLength: 40 });
     fc.assert(
       fc.property(okSha, (s) => {
         expect(isValidBuildSha(s)).toBe(true);
@@ -228,7 +232,7 @@ describe('names.ts (T-A1): the value predicates mirror config.alloy:156-158 fixt
 
     const upperHex = fc.constantFrom('A', 'B', 'C', 'D', 'E', 'F');
     const badSha = fc
-      .tuple(fc.stringOf(hexChar, { minLength: 6, maxLength: 39 }), upperHex)
+      .tuple(fc.string({ unit: hexChar, minLength: 6, maxLength: 39 }), upperHex)
       .map(([body, upper]) => `${body}${upper}`);
     fc.assert(
       fc.property(badSha, (s) => {

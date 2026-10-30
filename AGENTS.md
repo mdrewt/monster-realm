@@ -7,10 +7,9 @@ Project rules for coding agents. Inherits the workspace `AGENTS.md`. Architectur
 
 | Tool | Version | Pin |
 |---|---|---|
-| Rust | 1.96.0 + `wasm32-unknown-unknown`, clippy, rustfmt | `rust-toolchain.toml` |
-| spacetime CLI / host + `spacetimedb` crate | 2.8.1, always equal | root `Cargo.toml`; `Pin spacetime` steps in `.github/workflows/{ci,nightly}.yml` (`spacetime version use 2.8.1`) |
-| npm `spacetimedb` SDK | 2.6.0 | `client/package-lock.json` |
-| Node | 24.13.1 (`>=24.13.1 <25`) | `client/package.json` `engines`, workflows |
+| Rust | 1.99.0 + `wasm32-unknown-unknown`, clippy, rustfmt | `rust-toolchain.toml` |
+| spacetime CLI / host + `spacetimedb` crate + npm SDK | 2.11.0, always equal (SDK joined the lockstep 2026-10-15, see `docs/DECISIONS.md`) | root `Cargo.toml`; `Pin spacetime` steps in `.github/workflows/{ci,nightly}.yml` (`spacetime version use 2.11.0`); `client/package-lock.json` |
+| Node | 24.22.0 (`>=24.13.1 <25`) | `client/package.json` `engines`, workflows |
 | wasm-pack | 0.15.0 | workflows |
 
 ## Run

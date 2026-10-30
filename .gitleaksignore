@@ -2,3 +2,7 @@
 # ctl-5: generic-api-key matched a comma-separated test-id roster comment (MV-KEYNAV-*-01) in
 # commit 438a185a; the comment was reworded at the branch head, this clears the historical commit.
 438a185a5f8f194476f29c3940ef749b01fc034e:client/src/ui/menuView.test.ts:generic-api-key:48
+# deps-s1: gitleaks 8.30.1 (bundled by gitleaks-action v3) newly matches a comma-separated
+# test-id roster line in a historical WIP commit (same ctl-5 false-positive class as above);
+# the file was deleted before HEAD, so only the historical commit needs clearing.
+1a7eb453929681496db520fdf238c9e89efab9e4:evals/adr-backlink-integrity.eval.mjs:generic-api-key:80

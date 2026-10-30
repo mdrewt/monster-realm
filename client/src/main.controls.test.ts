@@ -1366,30 +1366,41 @@ describe('main.ts Start / B / Select / typing mode (runtime, ctl-6b)', { sequent
       'menuView',
       'questLogView',
     ]);
+    // happy-dom 20.14.x made `el.style` a Proxy whose defineProperty trap REFUSES to
+    // redefine CSS properties (measured: "'defineProperty' on proxy: trap returned
+    // falsish for property 'display'"), so the old record-through-the-prototype-accessor
+    // wrap is impossible, and its MutationObserver replacement is unsound here too
+    // (measured: happy-dom 20.14.6 returns takeRecords() grouped by OBSERVE order, not
+    // write order). Shadow each overlay ELEMENT's `style` getter instead: the element is
+    // not a proxy, so an own accessor can hand back a recording Proxy that forwards every
+    // write to the real declaration — the same record-on-set('none') semantics as before.
     const order: string[] = [];
+    const unshadow: Array<() => void> = [];
     for (const [name, id] of [
       ['menu', 'menu-overlay'],
       ['quest', 'quest-log-overlay'],
     ] as const) {
-      const style = byId(id).style;
-      const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(style), 'display');
-      if (desc?.get === undefined || desc.set === undefined) {
-        throw new Error('the style prototype has no display accessor to record through');
-      }
-      const { get, set } = desc;
-      Object.defineProperty(style, 'display', {
+      const el = byId(id);
+      const real = el.style;
+      const recording = new Proxy(real, {
+        set(target, prop, value) {
+          if (prop === 'display' && value === 'none') order.push(name);
+          Reflect.set(target, prop, value);
+          return true;
+        },
+      });
+      Object.defineProperty(el, 'style', {
         configurable: true,
-        get() {
-          return get.call(this);
-        },
-        set(value: string) {
-          if (value === 'none') order.push(name);
-          set.call(this, value);
-        },
+        get: () => recording,
+      });
+      unshadow.push(() => {
+        Reflect.deleteProperty(el, 'style');
       });
     }
 
     tap('Escape', 1500);
+    for (const restore of unshadow) restore();
+
     expect(order.indexOf('quest'), 'the Journal was hidden').toBeGreaterThanOrEqual(0);
     expect(order.indexOf('menu'), 'the menu was hidden').toBeGreaterThanOrEqual(0);
     expect(order.indexOf('quest'), 'the Journal is hidden before the menu').toBeLessThan(

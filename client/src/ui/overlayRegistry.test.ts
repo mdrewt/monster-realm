@@ -948,6 +948,10 @@ function compileA11yProbe(file: string): A11yProbeResult {
       '--moduleResolution',
       'bundler',
       '--skipLibCheck',
+      // tsc 7 (TS5112): explicit file args now REFUSE a discoverable tsconfig.json instead
+      // of silently ignoring it — the flag states this spawn's existing "no tsconfig
+      // lookup" contract (see the doc comment above).
+      '--ignoreConfig',
       file,
     ],
     // A hung child is NOT bounded by the `it()` timeout: spawnSync blocks the event loop where

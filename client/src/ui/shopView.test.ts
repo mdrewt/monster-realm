@@ -578,7 +578,8 @@ describe('m24s0 I18N-5 (ADR-0255 D5)', () => {
     // Installed AFTER mount + construction + the populated render, so ONLY the
     // no-shop render below is observed.
     const spy = vi.spyOn(document, 'createElement');
-    // vitest 4.1.10: spy.mockRestore() CLEARS spy.mock.calls, so the filtered
+    // vitest 4.1.x (measured on 4.1.10; the 4.1.11/4.1.12 patches touch only the
+    // module mocker): spy.mockRestore() CLEARS spy.mock.calls, so the filtered
     // result must be captured INSIDE the try block, before restore runs — not
     // read back off `spy.mock.calls` afterward (that would read `[]` for every
     // implementation, including a correct one, and the tooth would be unsatisfiable).

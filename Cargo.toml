@@ -46,7 +46,16 @@ console_error_panic_hook = "0.1"
 #   ctx.identity()          -> ctx.database_identity()  (the former is deprecated)
 # When bumping again, remember the gates move too: ~21 Rust source-scanning teeth
 # tests and several evals/ scanners encode this attribute syntax literally.
-spacetimedb = "2.8.1"
+#
+# 2026-10-15: bumped 2.8.1 -> 2.11.0 alongside the CLI (deps-s3). Clears the
+# publicly disclosed JWT-impersonation vulnerability patched in 2.10.0
+# (clockworklabs/SpacetimeDB#5866, disclosed with v2.11.0). No macro/attribute
+# syntax changes 2.8.1->2.11.0; the one ABI addition is the `env_get` extern
+# (wasm_import_module "spacetime_10.6") mirrored in native_host_tests.rs if
+# reachable. 2.12.0 (test_utils, HS256 rejection) is deferred: its npm SDK
+# twin clears the 7-day cooldown ~2026-10-20 and its crate needs rustc >= 1.97
+# (satisfied since the deps-s2 1.99.0 bump).
+spacetimedb = "2.11.0"
 # Content: serde derive + RON parser (pure; safe under the determinism guard).
 serde = { version = "1", features = ["derive"] }
 ron = "0.8"

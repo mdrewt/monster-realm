@@ -18,9 +18,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable # stable
       - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-nightly }
-      - uses: taiki-e/install-action@v2 # v2
-        with: { tool: cargo-mutants }
-      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with: { tool: cargo-mutants@27.1.0 }
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with: { just-version: '1.58.0' }
       - run: just mutate-core
       # always(): the survivor list matters most on the nights the gate fails.
       - name: Upload mutants.out
@@ -40,11 +41,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable # stable
       - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-nightly-server }
-      - uses: taiki-e/install-action@v2 # v2
-        with: { tool: cargo-mutants }
-      - uses: taiki-e/install-action@v2 # v2
-        with: { tool: cargo-nextest }
-      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with: { tool: cargo-mutants@27.1.0 }
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with: { tool: cargo-nextest@0.9.148 }
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with: { just-version: '1.58.0' }
       - run: just mutate-server
       - name: Upload mutants.out
         if: always()
@@ -68,10 +70,11 @@ jobs:
         with: { version: 'v0.15.0' }
       - uses: actions/setup-node@v7 # v7
         with:
-          node-version: '24.13.1'
+          node-version: '24.22.0'
           cache: npm
           cache-dependency-path: client/package-lock.json
-      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with: { just-version: '1.58.0' }
       - run: just coverage
       - name: Upload coverage summary
         if: always()
@@ -90,7 +93,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable # stable
       - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-perf }
-      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with: { just-version: '1.58.0' }
       - run: just perf-budget
 
   # Republish over live data without --delete-data; data must survive and re-seed.
@@ -103,16 +107,17 @@ jobs:
         with: { targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-smoke }
-      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with: { just-version: '1.58.0' }
       - name: Install SpacetimeDB CLI
         run: |
           curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
           sh /tmp/spacetime-install.sh --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Pin spacetime 2.8.1
+      - name: Pin spacetime 2.11.0
         run: |
-          spacetime version install 2.8.1
-          spacetime version use 2.8.1
+          spacetime version install 2.11.0
+          spacetime version use 2.11.0
           spacetime --version
       - name: Start SpacetimeDB
         run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb-smoke.log 2>&1 &

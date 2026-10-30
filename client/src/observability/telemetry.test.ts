@@ -280,7 +280,7 @@ describe('startClientTelemetry (OBS-16): the exporter carries NO credential and 
     // so `rate(mr_client_reconcile[5m])` would read a sawtooth as a stream of counter RESETS —
     // producing plausible-looking but meaningless divergence and reject rates (§4's whole point).
     // WRONG IMPL KILLED: leaving `temporality` unset and inheriting whatever the exporter
-    // package defaults to in the version the lockfile happens to resolve (AM6 pins 0.221.0 today;
+    // package defaults to in the version the lockfile happens to resolve (AM6 pins 0.223.0 today;
     // the default has changed across 0.x releases).
     const harness = makeHarness();
     await startWith(harness);

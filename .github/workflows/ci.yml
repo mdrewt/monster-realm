@@ -17,7 +17,7 @@ jobs:
       # fetch-depth 0 so gitleaks can diff the PR commit range.
       - uses: actions/checkout@v6 # v6
         with: { fetch-depth: 0 }
-      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # Best-effort (needs the repo's dependency graph); cargo audit below is the blocking SCA gate.
@@ -33,12 +33,13 @@ jobs:
         with: { version: 'v0.15.0' }
       - uses: actions/setup-node@v7 # v7
         with:
-          node-version: '24.13.1'
+          node-version: '24.22.0'
           cache: npm
           cache-dependency-path: client/package-lock.json
-      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
-      - uses: taiki-e/install-action@v2 # v2
-        with: { tool: cargo-nextest }
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with: { just-version: '1.58.0' }
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with: { tool: cargo-nextest@0.9.148 }
       - run: just setup
       # Pinned spacetime CLI so the bindings-drift eval runs a real `spacetime generate`.
       # `--yes`: the installer aborts on a non-tty runner without it.
@@ -47,10 +48,10 @@ jobs:
           curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
           sh /tmp/spacetime-install.sh --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Pin spacetime 2.8.1
+      - name: Pin spacetime 2.11.0
         run: |
-          spacetime version install 2.8.1
-          spacetime version use 2.8.1
+          spacetime version install 2.11.0
+          spacetime version use 2.11.0
           spacetime --version
       - run: just lint
       - run: just typecheck
@@ -62,8 +63,8 @@ jobs:
       - run: just client-test
       - run: just client-verify-build
       - run: just observability-validate
-      - uses: taiki-e/install-action@v2 # v2
-        with: { tool: cargo-audit }
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with: { tool: cargo-audit@0.22.2 }
       - name: SCA (cargo audit)
         run: cargo audit --file Cargo.lock
 
@@ -80,19 +81,20 @@ jobs:
         with: { version: 'v0.15.0' }
       - uses: actions/setup-node@v7 # v7
         with:
-          node-version: '24.13.1'
+          node-version: '24.22.0'
           cache: npm
           cache-dependency-path: client/package-lock.json
-      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with: { just-version: '1.58.0' }
       - name: Install SpacetimeDB CLI
         run: |
           curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
           sh /tmp/spacetime-install.sh --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Pin spacetime 2.8.1
+      - name: Pin spacetime 2.11.0
         run: |
-          spacetime version install 2.8.1
-          spacetime version use 2.8.1
+          spacetime version install 2.11.0
+          spacetime version use 2.11.0
           spacetime --version
       # The e2e suite needs the dev_reducers build; `publish` has no feature passthrough, so
       # global-setup publishes this prebuilt artifact via --bin-path. The committed
