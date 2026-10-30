@@ -33,7 +33,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BattleViewModel } from './battleModel';
-import { BattleView, type BattleViewCallbacks } from './battleView';
+import { type BattleRewardsVM, BattleView, type BattleViewCallbacks } from './battleView';
 
 // ---------------------------------------------------------------------------
 // Overlay a11y wiring for BattleView (constructed-shell, #app-mounted).
@@ -2756,8 +2756,12 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
 /** Root child indices, from the BattleView constructor's append order. INTENTIONAL CHANGE (ctl-8i,
  *  CTL8I.1): 11 children, not 10: the command group (`battle-commands`, which holds the five
  *  command buttons, the Run reason and the waiting caption) sits between the player card and the
- *  skills grid. The cards stay at indices 2 and 3. */
-const RM3_ROOT_CHILDREN = 11;
+ *  skills grid. The cards stay at indices 2 and 3.
+ *  INTENTIONAL CHANGE (qf-17, QF17.1/QF17.2): 12 children, not 11: the reward-lines element
+ *  (`battle-rewards`, the KO-win gold and per-monster XP lines) is a SIBLING appended right after
+ *  the outcome banner and right before the continue hint. It comes AFTER the cards, so they stay
+ *  at indices 2 and 3 (the qf-17 describe at the end of this file pins its exact position). */
+const RM3_ROOT_CHILDREN = 12;
 const RM3_OPPONENT_INDEX = 2;
 const RM3_PLAYER_INDEX = 3;
 /** `#renderMonsterCard` child order: [0] header, [1] hpBar, [2] hpText, [3] status (conditional). */
@@ -2793,7 +2797,7 @@ function rm3ResolveFill(parent: HTMLElement, childIndex: number, label: string):
     root!.children.length,
     `RM3 precondition: #root must hold exactly ${RM3_ROOT_CHILDREN} children in the constructor's ` +
       'documented order (title, weather, opponent card, player card, commands, skills, actions, ' +
-      'swap hint, pvp status, outcome, continue hint). A different count means the positional ' +
+      'swap hint, pvp status, outcome, rewards, continue hint). A different count means the positional ' +
       'walk below is ' +
       'reading some other element, and every assertion made on it would be about the wrong node',
   ).toBe(RM3_ROOT_CHILDREN);
@@ -3842,7 +3846,7 @@ function rb59Cards(parent: HTMLElement): Rb59CardPair {
     root!.children.length,
     `rb59 WALK: #root must hold exactly ${RM3_ROOT_CHILDREN} children in the constructor's ` +
       'documented order (title, weather, opponent card, player card, commands, skills, ' +
-      'actions, swap hint, pvp status, outcome, continue hint). A different count means the ' +
+      'actions, swap hint, pvp status, outcome, rewards, continue hint). A different count means the ' +
       'positional walk below is reading some other element, and every border assertion made on it ' +
       'would be about the wrong node',
   ).toBe(RM3_ROOT_CHILDREN);
@@ -12182,6 +12186,261 @@ describe('Run in the command list is the only flee affordance (QF7B.1, qf-7c)', 
     for (const [corner, overrides] of corners) {
       const m = c8iFresh(makeRaVM(overrides), makeRaCallbacks());
       qf7cExpectNoFlee(m, corner);
+    }
+  });
+});
+
+// =============================================================================
+// qf-17 (QF17.1, QF17.2): the KO-win payout lines under the outcome banner.
+//
+// THE VIEW'S CONTRACT. `refresh(vm, rewards)` takes the payout main.ts computed (a delta of the
+// store's wallet and monster rows across the batch that ended the battle). The view owns ONE
+// decision: show the lines only for a won battle (`vm.outcome === 'SideAWins'`) whose id is the
+// payout's (`rewards.battleId === vm.battleId`, bigint equality). Anything else — an Ongoing,
+// lost or fled battle, another battle's payout, no payout, no battle at all — shows nothing.
+// The lines live in their OWN `data-testid="battle-rewards"` element, a SIBLING appended right
+// after the outcome banner and right before the continue hint: three e2e specs read the outcome
+// banner as exactly `Victory!`, so the lines may never enter its text or its subtree.
+//
+// The fixtures use the REAL resolver and catalog (the file-level resolver mock is a call-through
+// spy), so the asserted bytes are the catalogued English: `+30 gold`, `Sparky +12 XP`.
+// =============================================================================
+
+/** 2^53 and 2^53 + 1: two distinct bigints that one `Number()` coercion collapses to the same
+ *  double, so an id compare that goes through Number() cannot tell the battles apart. */
+const QF17_ID_LOW = 9007199254740992n;
+const QF17_ID_HIGH = 9007199254740993n;
+const QF17_REWARDS = '[data-testid="battle-rewards"]';
+
+/** A VM for battle `battleId` in the given outcome (the shared factories fix id 1n). */
+function qf17Vm(
+  outcome: 'Ongoing' | 'SideAWins' | 'SideBWins' | 'Fled',
+  battleId: bigint,
+): BattleViewModel {
+  return outcome === 'Ongoing'
+    ? makeRecruitVM({ battleId })
+    : { ...makeTerminalVM(outcome), battleId };
+}
+
+function qf17Mount(): { parent: HTMLElement; view: BattleView; root: HTMLElement } {
+  const parent = document.createElement('div');
+  document.body.appendChild(parent);
+  const view = new BattleView(parent, makeCallbacks());
+  return { parent, view, root: parent.firstElementChild as HTMLElement };
+}
+
+/** The reward element, failing loud (with the reason) when the view has not built it. */
+function qf17El(parent: HTMLElement): HTMLElement {
+  const el = parent.querySelector<HTMLElement>(QF17_REWARDS);
+  expect(el, `precondition: the view builds ${QF17_REWARDS}`).not.toBeNull();
+  return el as HTMLElement;
+}
+
+/** One entry per line the element shows, as the player reads it. */
+function qf17Lines(el: HTMLElement): string[] {
+  return [...el.children].map((line) => line.textContent ?? '');
+}
+
+describe('BattleView qf-17: payout lines under the KO-win outcome (QF17.1, QF17.2)', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('a KO win with a gold payout shows the catalogued "+30 gold" line, as a block element with no opacity, position or visibility override [QF17-1-RENDER-GOLD]', () => {
+    // RED REASON: the shipped view has no `battle-rewards` element and `refresh` ignores a second
+    // argument, so the precondition (the element exists) fails.
+    // WRONG IMPL KILLED: a gold line that never renders; one that renders the amount through
+    // Number() (a 2^53 + 1 payout loses its last digit); one that renders the raw bigint with no
+    // catalogued wording ("30"); a line that is not a child <div> of the element; an element that
+    // hides its text with opacity/visibility or is lifted out of flow with position (the CTL7B
+    // inline-style sweep refuses all three on a view of this family).
+    const { parent, view } = qf17Mount();
+    view.refresh(qf17Vm('SideAWins', 7n), { battleId: 7n, gold: 30n, xp: [] });
+
+    const el = qf17El(parent);
+    expect(el.style.display, 'the lines are shown').toBe('block');
+    expect(el.children.length, 'exactly one line: gold, no xp entries').toBe(1);
+    expect(el.children[0]?.tagName, 'a line is a <div> child').toBe('DIV');
+    expect(qf17Lines(el)).toEqual(['+30 gold']);
+    expect(el.textContent).toBe('+30 gold');
+    expect(el.style.opacity, 'no opacity override').toBe('');
+    expect(el.style.position, 'no position override').toBe('');
+    expect(el.style.visibility, 'no visibility override').toBe('');
+
+    // A payout above 2^53 survives digit-for-digit (the amount is a bigint end to end).
+    const big = qf17Mount();
+    big.view.refresh(qf17Vm('SideAWins', 8n), {
+      battleId: 8n,
+      gold: QF17_ID_HIGH,
+      xp: [],
+    });
+    expect(qf17Lines(qf17El(big.parent))).toEqual(['+9007199254740993 gold']);
+  });
+
+  it('the outcome banner still reads exactly "Victory!" with nothing inside it, the lines sit in the very next sibling just before the continue hint, and a repeat refresh does not stack a second gold line [QF17-1-RENDER-OUTCOME-INTACT]', () => {
+    // RED REASON: no `battle-rewards` element exists, so the sibling-position assertions fail.
+    // WRONG IMPL KILLED: reward text written into #outcomeEl (three e2e specs use getByText
+    // ('Victory!', { exact: true }) and would stop matching); a rewards element appended INSIDE the
+    // banner; one appended after the continue hint or at the end of the root; a render that appends
+    // instead of rebuilding (two identical refreshes show the gold line twice); a constructor
+    // that forgets to bump the root's child count (RM3_ROOT_CHILDREN is 12).
+    const { parent, view, root } = qf17Mount();
+    const vm = qf17Vm('SideAWins', 7n);
+    const rewards: BattleRewardsVM = {
+      battleId: 7n,
+      gold: 30n,
+      xp: [{ name: 'Sparky', amount: 12 }],
+    };
+    view.refresh(vm, rewards);
+
+    const outcome = parent.querySelector<HTMLElement>('[data-testid="outcome-text"]');
+    const hint = parent.querySelector<HTMLElement>('[data-testid="battle-continue-hint"]');
+    const el = qf17El(parent);
+    expect(outcome, 'precondition: the outcome banner').not.toBeNull();
+    expect(hint, 'precondition: the continue hint').not.toBeNull();
+    expect(outcome?.textContent, 'the banner text is untouched').toBe('Victory!');
+    expect(outcome?.children.length, 'nothing was appended inside the banner').toBe(0);
+    expect(outcome?.contains(el), 'the lines are not inside the banner').toBe(false);
+    expect(el.parentElement, 'a sibling of the banner').toBe(outcome?.parentElement);
+    expect(el.parentElement, 'in the view root').toBe(root);
+    expect(outcome?.nextElementSibling, 'the very next element after the banner').toBe(el);
+    expect(el.nextElementSibling, 'and right before the continue hint').toBe(hint);
+    expect(root.children.length, 'the root holds RM3_ROOT_CHILDREN (12) children').toBe(
+      RM3_ROOT_CHILDREN,
+    );
+
+    // An identical second refresh rebuilds the lines instead of stacking them.
+    view.refresh(vm, rewards);
+    expect(qf17Lines(qf17El(parent))).toEqual(['+30 gold', 'Sparky +12 XP']);
+    expect(
+      qf17Lines(qf17El(parent)).filter((line) => line === '+30 gold'),
+      'exactly one gold line after two identical refreshes',
+    ).toHaveLength(1);
+    expect(outcome?.textContent, 'the banner is still exactly Victory!').toBe('Victory!');
+  });
+
+  it('the lines show only for a won battle with its own payout: Ongoing, lost and fled battles, and another battle whose id differs by one past 2^53, show nothing [QF17-1-RENDER-ONLY-ON-WIN]', () => {
+    // RED REASON: no `battle-rewards` element exists, so every per-outcome precondition fails.
+    // WRONG IMPL KILLED: a view that shows a payout on any terminal outcome (a loss "earns" gold)
+    // or on an Ongoing battle; one that ignores the battle id (a stale payout wears the next
+    // battle's Victory); one that compares ids through Number() (2^53 and 2^53 + 1 are equal as
+    // doubles); one that never shows (the positive control in each fixture).
+    for (const outcome of ['Ongoing', 'SideBWins', 'Fled'] as const) {
+      const { parent, view } = qf17Mount();
+      view.refresh(qf17Vm(outcome, 7n), { battleId: 7n, gold: 30n, xp: [] });
+      const el = qf17El(parent);
+      expect(el.style.display, `${outcome}: hidden`).toBe('none');
+      expect(el.textContent, `${outcome}: no text`).toBe('');
+      expect(el.children.length, `${outcome}: no lines`).toBe(0);
+
+      // Positive control in the same fixture: the same payout on a win shows.
+      view.refresh(qf17Vm('SideAWins', 7n), { battleId: 7n, gold: 30n, xp: [] });
+      expect(el.style.display, `${outcome}: control, the win shows`).toBe('block');
+      expect(el.textContent, `${outcome}: control text`).toBe('+30 gold');
+    }
+
+    // Another battle's payout: the ids differ by 1 above 2^53.
+    const { parent, view } = qf17Mount();
+    view.refresh(qf17Vm('SideAWins', QF17_ID_LOW), { battleId: QF17_ID_HIGH, gold: 30n, xp: [] });
+    const el = qf17El(parent);
+    expect(el.style.display, 'a payout for battle 2^53 + 1 is not battle 2^53 payout').toBe('none');
+    expect(el.textContent).toBe('');
+    view.refresh(qf17Vm('SideAWins', QF17_ID_HIGH), { battleId: QF17_ID_HIGH, gold: 30n, xp: [] });
+    expect(el.style.display, 'control: the same id shows').toBe('block');
+    expect(el.textContent).toBe('+30 gold');
+
+    // The next battle's win, still handed the previous battle's payout, drops the lines.
+    view.refresh(qf17Vm('SideAWins', 8n), { battleId: QF17_ID_HIGH, gold: 30n, xp: [] });
+    expect(el.style.display, 'a new battle with the old battle payout').toBe('none');
+    expect(el.textContent).toBe('');
+  });
+
+  it('shown lines clear again on refresh(vm, null), on an Ongoing refresh with no second argument and on refresh(null) [QF17-1-RENDER-NULL-CLEARS]', () => {
+    // RED REASON: no `battle-rewards` element exists, so the shown-state precondition fails.
+    // WRONG IMPL KILLED: a view that sets the lines once and never clears them (they follow the
+    // player into the next battle's screen); one that clears on a win-without-payout but not on
+    // an Ongoing refresh or on the null (battle gone) branch; one that hides the element but
+    // leaves the old text in it for assistive tech.
+    const { parent, view } = qf17Mount();
+    const win = qf17Vm('SideAWins', 7n);
+    const rewards: BattleRewardsVM = { battleId: 7n, gold: 30n, xp: [] };
+    const show = (): HTMLElement => {
+      view.refresh(win, rewards);
+      const el = qf17El(parent);
+      expect(el.style.display, 'precondition: the lines are shown').toBe('block');
+      expect(el.textContent, 'precondition: the gold line').toBe('+30 gold');
+      return el;
+    };
+
+    const afterNoPayout = show();
+    view.refresh(win, null);
+    expect(afterNoPayout.style.display, 'refresh(win, null)').toBe('none');
+    expect(afterNoPayout.textContent).toBe('');
+    expect(afterNoPayout.children.length).toBe(0);
+
+    const afterOngoing = show();
+    view.refresh(qf17Vm('Ongoing', 8n));
+    expect(afterOngoing.style.display, 'refresh(ongoing), second argument omitted').toBe('none');
+    expect(afterOngoing.textContent).toBe('');
+    expect(afterOngoing.children.length).toBe(0);
+
+    const afterGone = show();
+    view.refresh(null);
+    expect(afterGone.style.display, 'refresh(null)').toBe('none');
+    expect(afterGone.textContent).toBe('');
+    expect(afterGone.children.length).toBe(0);
+  });
+
+  it('a gold payout and two monsters gaining XP show gold first, then one line per monster in the given order, with a markup-like nickname rendered as text [QF17-2-RENDER-XP]', () => {
+    // RED REASON: no `battle-rewards` element exists, so the line assertions fail.
+    // WRONG IMPL KILLED: xp lines that never render; lines in a different order (gold after the
+    // xp lines, or the xp entries sorted by name: "<b>x</b>" sorts before "Sparky"); one line that
+    // joins every monster; a nickname written through innerHTML (a `<b>` element appears, and a
+    // hostile nickname becomes live markup).
+    const { parent, view, root } = qf17Mount();
+    view.refresh(qf17Vm('SideAWins', 7n), {
+      battleId: 7n,
+      gold: 30n,
+      xp: [
+        { name: 'Sparky', amount: 12 },
+        { name: '<b>x</b>', amount: 5 },
+      ],
+    });
+
+    const el = qf17El(parent);
+    expect(el.style.display).toBe('block');
+    expect(qf17Lines(el)).toEqual(['+30 gold', 'Sparky +12 XP', '<b>x</b> +5 XP']);
+    expect(
+      [...el.children].map((line) => line.tagName),
+      'every line is a <div>',
+    ).toEqual(['DIV', 'DIV', 'DIV']);
+    expect(el.querySelector('b'), 'the nickname is text, not an element').toBeNull();
+    expect(root.querySelector('b'), 'and no <b> anywhere in the view').toBeNull();
+    expect(el.children[2]?.children.length, 'the nickname line holds no child element').toBe(0);
+  });
+
+  it('with no gold payout the lines are only the XP lines: no line says "null" or "gold" [QF17-2-RENDER-XP-ONLY]', () => {
+    // RED REASON: no `battle-rewards` element exists, so the line assertions fail.
+    // WRONG IMPL KILLED: a gold line rendered for a null gold ("+null gold", "+0 gold"); an empty
+    // placeholder <div> left where the gold line would be; an xp-only payout that shows nothing
+    // because the view required a gold amount to show.
+    const { parent, view } = qf17Mount();
+    view.refresh(qf17Vm('SideAWins', 7n), {
+      battleId: 7n,
+      gold: null,
+      xp: [
+        { name: 'Sparky', amount: 12 },
+        { name: 'Bolt', amount: 3 },
+      ],
+    });
+
+    const el = qf17El(parent);
+    expect(el.style.display, 'an XP-only payout is shown').toBe('block');
+    expect(qf17Lines(el)).toEqual(['Sparky +12 XP', 'Bolt +3 XP']);
+    expect(el.children.length, 'no placeholder line for the absent gold').toBe(2);
+    for (const line of qf17Lines(el)) {
+      expect(line.toLowerCase(), `line "${line}"`).not.toContain('null');
+      expect(line.toLowerCase(), `line "${line}"`).not.toContain('gold');
     }
   });
 });

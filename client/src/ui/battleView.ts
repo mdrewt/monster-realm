@@ -53,6 +53,15 @@ import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { BattleOp, BattleOpsView } from './screens/battleScreen';
 
+/** What a won battle paid (qf-17, QF17.1/QF17.2): the wallet's rise and each own monster's XP gain,
+ *  read by main.ts off the batch that ended the battle. `gold` null = the wallet did not rise; an
+ *  empty `xp` = no own monster's xp rose. Shown only under this battle's own Victory. */
+export interface BattleRewardsVM {
+  readonly battleId: bigint;
+  readonly gold: bigint | null;
+  readonly xp: readonly { readonly name: string; readonly amount: number }[];
+}
+
 /** The lists the battle cursor walks (ctl-8i, ctl-8j): the command list, the list each command
  *  leads to, and the second step of Recruit (Yes / No) and Bag (the target). Every cursor row
  *  carries its list's name in `data-battle-list` (every button in the view is a row). Every row is a
@@ -128,6 +137,8 @@ export class BattleView implements BattleOpsView {
   /** Empty-swap explainer; shown only on an ongoing battle with no swap. */
   readonly #swapHintEl: HTMLDivElement;
   readonly #outcomeEl: HTMLDivElement;
+  /** The payout lines under the Victory banner (qf-17): one child <div> per line. */
+  readonly #rewardsEl: HTMLDivElement;
   /** PvP status banner ("Waiting for opponent…" / ""); hidden when not in PvP. */
   readonly #pvpStatusEl: HTMLDivElement;
   /** "Press Enter or Esc to continue" hint; shown only on a terminal outcome. */
@@ -345,6 +356,15 @@ export class BattleView implements BattleOpsView {
     this.#outcomeEl.style.cssText = 'font-size:18px;font-weight:bold;color:#ffd700;display:none;';
     this.#root.appendChild(this.#outcomeEl);
 
+    // qf-17 (QF17.1, QF17.2): the payout lines — a SIBLING right after #outcomeEl (never inside it:
+    // three e2e specs pin its exact text) and before the continue hint. One child <div> per line,
+    // rebuilt by #renderRewards on every render; hidden and emptied whenever there is nothing to
+    // show. The inline style stays within the audited palette (no opacity/position/visibility).
+    this.#rewardsEl = document.createElement('div');
+    this.#rewardsEl.setAttribute('data-testid', 'battle-rewards');
+    this.#rewardsEl.style.cssText = 'margin-top:6px;font-size:13px;color:#aab;display:none;';
+    this.#root.appendChild(this.#rewardsEl);
+
     // The battle-result exit affordance. A SIBLING of #outcomeEl — never its
     // child (#renderOutcome writes #outcomeEl.textContent, which would wipe a child every render)
     // and never merged into its text (three e2e specs use getByText('Victory!', {exact:true})).
@@ -394,8 +414,10 @@ export class BattleView implements BattleOpsView {
     closeOverlayA11y('battleView', null);
   }
 
-  refresh(vm: BattleViewModel | null): void {
+  /** Render `vm`; `rewards` (qf-17) is what the batch that ended this battle paid, or null. */
+  refresh(vm: BattleViewModel | null, rewards: BattleRewardsVM | null = null): void {
     if (!vm) {
+      this.#clearRewards();
       this.#weatherEl.style.display = 'none';
       this.#weatherEl.textContent = '';
       this.#pvpStatusEl.style.display = 'none';
@@ -455,7 +477,7 @@ export class BattleView implements BattleOpsView {
     this.#renderCommands(vm);
     this.#renderSkills(vm);
     this.#renderActions(vm);
-    this.#renderOutcome(vm);
+    this.#renderOutcome(vm, rewards);
     // re-derive the lock on the rebuilt controls rather than defaulting to enabled —
     // a batch can re-render this battle while its call is still in flight, and a fresh
     // enabled-looking button whose click the lock then swallows is worse than no button.
@@ -1059,10 +1081,11 @@ export class BattleView implements BattleOpsView {
     }
   }
 
-  #renderOutcome(vm: BattleViewModel): void {
+  #renderOutcome(vm: BattleViewModel, rewards: BattleRewardsVM | null): void {
     if (vm.outcome === 'Ongoing') {
       this.#outcomeEl.style.display = 'none';
       this.#continueHintEl.style.display = 'none';
+      this.#clearRewards();
       return;
     }
     this.#outcomeEl.style.display = 'block';
@@ -1090,5 +1113,33 @@ export class BattleView implements BattleOpsView {
       }
     }
     this.#outcomeEl.textContent = text;
+    this.#renderRewards(vm, rewards);
+  }
+
+  /** The payout lines (qf-17): only under THIS battle's own Victory, gold first, then one line per
+   *  monster in the given order. Rebuilt from scratch (never appended), text-only children. */
+  #renderRewards(vm: BattleViewModel, rewards: BattleRewardsVM | null): void {
+    if (vm.outcome !== 'SideAWins' || rewards === null || rewards.battleId !== vm.battleId) {
+      this.#clearRewards();
+      return;
+    }
+    const lines: string[] = [];
+    if (rewards.gold !== null) lines.push(tf('battle.rewards.gold', { amount: rewards.gold }));
+    for (const { name, amount } of rewards.xp) {
+      lines.push(tf('battle.rewards.xp', { name, amount }));
+    }
+    this.#rewardsEl.replaceChildren(
+      ...lines.map((line) => {
+        const div = document.createElement('div');
+        div.textContent = line;
+        return div;
+      }),
+    );
+    this.#rewardsEl.style.display = lines.length === 0 ? 'none' : 'block';
+  }
+
+  #clearRewards(): void {
+    this.#rewardsEl.replaceChildren();
+    this.#rewardsEl.style.display = 'none';
   }
 }

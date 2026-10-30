@@ -393,6 +393,15 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   // destination zone's display name, content data from the zone_def row, carried verbatim; the two
   // sets are NON-shipped names that differ.
   'chrome.status.zoneEntered': [{ name: 'Cobalt Reach' }, { name: 'Umber Fen' }],
+  // qf-17 (named intentional change, QF17.1/QF17.2): 363 → 365, +battle.rewards.gold,
+  // +battle.rewards.xp (2 ★), the KO-win payout lines under the outcome banner. `amount` of the gold
+  // line is the wallet delta, a bigint; the xp line's `name` is a monster nickname or species name
+  // (model data, carried verbatim) and its `amount` a number; every field differs between the sets.
+  'battle.rewards.gold': [{ amount: 30n }, { amount: 7n }],
+  'battle.rewards.xp': [
+    { name: 'Sparky', amount: 12 },
+    { name: 'Bolt', amount: 3 },
+  ],
 };
 
 /** ctl-8a's description "none" mark: U+2014 EM DASH, built by code point (never a pasted glyph). */
@@ -1395,9 +1404,24 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { name: 'Umber Fen' },
     outputB: 'Entering Umber Fen',
   },
+  // qf-17 (QF17.1, QF17.2): the KO-win payout lines; the gold digits are the bigint's own, and the
+  // monster name sits once, verbatim, in its xp line.
+  'battle.rewards.gold': {
+    inputA: { amount: 30n },
+    outputA: '+30 gold',
+    inputB: { amount: 7n },
+    outputB: '+7 gold',
+  },
+  'battle.rewards.xp': {
+    inputA: { name: 'Sparky', amount: 12 },
+    outputA: 'Sparky +12 XP',
+    inputB: { name: 'Bolt', amount: 3 },
+    outputB: 'Bolt +3 XP',
+  },
 };
 
-/** The full 363-key roster (qf-15: +`chrome.status.zoneEntered` over the 362-key roster below;
+/** The full 365-key roster (qf-17: +`battle.rewards.{gold,xp}` over the 363-key roster below;
+ *  qf-15: +`chrome.status.zoneEntered` over the 362-key roster below;
  *  qf-14: +`controls.accel.controls` over the 361-key roster below;
  *  qf-7c: -`battle.action.flee` over the 362-key roster below;
  *  qf-8: -`box.card.{toBox,toParty}` -`trade.action.{accept,reject,confirm,
@@ -1497,7 +1521,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-15 363-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-17 365-key roster (qf-17, named intentional change, QF17.1/QF17.2: 363 → 365, +battle.rewards.gold, +battle.rewards.xp), and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1586,10 +1610,11 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 363 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 365 keys (qf-17, named intentional change, QF17.1/QF17.2: 363 → 365, +battle.rewards.gold, +battle.rewards.xp), SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (363 keys since qf-15: +1 parameterised,
+    // (a) roster is exactly the EXPECTED_KEYS roster (365 keys since qf-17: +2 parameterised,
+    // `battle.rewards.gold` and `battle.rewards.xp`, the KO-win payout lines; 363 keys since qf-15: +1 parameterised,
     // `chrome.status.zoneEntered`, the zone cue's announcement template; 362 keys since qf-14: +1
     // plain, `controls.accel.controls`, the label of the Controls accelerator Y; 361 keys since
     // qf-7c: -1 plain, `battle.action.flee`, retired with the legacy battle Flee button; 362 since qf-8: -10 plain, -1
@@ -1599,8 +1624,9 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // since qf-3: +1 parameterised; 370 since ctl-14: +7 plain; 363 since ctl-13: +10 plain, +2
     // parameterised; was 351 since ctl-12b).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
-    // qf-15 (named intentional change, QF15.1): 362 → 363, +`chrome.status.zoneEntered`.
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-15 roster is 363 keys').toHaveLength(363);
+    // qf-17 (named intentional change, QF17.1/QF17.2): 363 → 365, +battle.rewards.gold,
+    // +battle.rewards.xp. (qf-15 had taken 362 → 363, +`chrome.status.zoneEntered`.)
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-17 roster is 365 keys').toHaveLength(365);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -2651,8 +2677,10 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // legacy battle Flee button (the command list's Run is the only flee).
     // qf-14 (named intentional change, QF14.1): 361 → 362, +`controls.accel.controls`.
     // qf-15 (named intentional change, QF15.1): 362 → 363, +`chrome.status.zoneEntered`.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 363 keys').toBe(363);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(363);
+    // qf-17 (named intentional change, QF17.1/QF17.2): 363 → 365, +battle.rewards.gold,
+    // +battle.rewards.xp.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 365 keys').toBe(365);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(365);
   });
 });
 
@@ -2686,7 +2714,7 @@ const QF8_FR_BOX_HINT =
   `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`;
 
 describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint that names Move', () => {
-  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 363 keys each [QF8-1-CATALOG-RETIRED]', () => {
+  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 365 keys each (qf-17, named intentional change, QF17.1/QF17.2: 363 → 365, +battle.rewards.gold, +battle.rewards.xp) [QF8-1-CATALOG-RETIRED]', () => {
     // WRONG IMPL KILLED: a retired id left behind as a dead key in either catalog (catalogParity
     // DEAD-KEY fires, or a surviving requester keeps a deleted control half alive); an id retired
     // from en only (a French boot still carries it); a wholesale `box.card.*`, `trade.*`,
@@ -2750,8 +2778,10 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     // legacy battle Flee button.
     // qf-14 (named intentional change, QF14.1): 361 → 362, +`controls.accel.controls`.
     // qf-15 (named intentional change, QF15.1): 362 → 363, +`chrome.status.zoneEntered`.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 363 keys').toBe(363);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(363);
+    // qf-17 (named intentional change, QF17.1/QF17.2): 363 → 365, +battle.rewards.gold,
+    // +battle.rewards.xp.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 365 keys').toBe(365);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(365);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -3020,7 +3050,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     );
   });
 
-  it('the legacy ids keep their names in both catalogs and the roster is still the 363-key one [QF10-4-KEY-IDS-UNCHANGED]', () => {
+  it('the legacy ids keep their names in both catalogs and the roster is still the 365-key one (qf-17, named intentional change, QF17.1/QF17.2: 363 → 365, +battle.rewards.gold, +battle.rewards.xp) [QF10-4-KEY-IDS-UNCHANGED]', () => {
     // WRONG IMPL KILLED: an id renamed to follow its new value (box.title -> monsters.title, ...)
     // so messageIds.ts and every t() call site would have to move too (the spec allows values
     // only); a retired legacy id (the Party heading, the Bag command); a roster that grew or
@@ -3045,9 +3075,11 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     }
     // qf-14 (named intentional change, QF14.1): 361 → 362, +`controls.accel.controls`.
     // qf-15 (named intentional change, QF15.1): 362 → 363, +`chrome.status.zoneEntered`.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 363 keys').toBe(363);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(363);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(363);
+    // qf-17 (named intentional change, QF17.1/QF17.2): 363 → 365, +battle.rewards.gold,
+    // +battle.rewards.xp.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 365 keys').toBe(365);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(365);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(365);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
@@ -3162,5 +3194,142 @@ describe('qf-15: the zone cue template in both catalogs', () => {
     expect(spec, 'the English output pins exist').toBeDefined();
     expect(spec.outputA).toBe(COBALT[1]);
     expect(spec.outputB).toBe(UMBER[1]);
+  });
+});
+
+// =============================================================================
+// qf-17 (QF17.1, QF17.2): the KO-win payout lines in BOTH catalogs. The gold line carries the wallet
+// delta, a bigint; the xp line carries a monster's display name (a nickname or a species name, model
+// data, never catalogued) and its XP gain, a number. Every expected byte is typed here, the names
+// are NON-shipped, and none is read off the catalog under test. The French xp line puts a U+00A0
+// before its colon (catalog.fr.ts's documented typography), asserted by code point.
+// =============================================================================
+
+/** U+00A0 NO-BREAK SPACE, built by code point (never a pasted invisible character). */
+const QF17_NBSP = String.fromCharCode(0x00a0);
+
+describe('qf-17: the KO-win payout lines in both catalogs', () => {
+  it('battle.rewards.gold is a closure in both catalogs: +N gold in English and +N or in French, the bigint amount echoed once and digit-for-digit, for differing amounts [QF17-1-CATALOG-GOLD]', () => {
+    // WRONG IMPL KILLED: a key added to en only (tf() throws in a French boot: the gold line never
+    // shows); a plain string where the amount must be interpolated; a French line left as the
+    // English copy; a closure that drops or repeats the amount, or hard-codes one; an amount run
+    // through Number() or a locale formatter (past 2^53 the last digit changes, and 1157 becomes
+    // "1,157"); a sign dropped; the key missing from the pinned roster or the two sample tables.
+    const KEY = 'battle.rewards.gold';
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    expect(Object.hasOwn(en, KEY), 'en carries the key').toBe(true);
+    expect(Object.hasOwn(fr, KEY), 'fr carries the key').toBe(true);
+    expect(typeof en[KEY], 'en is a closure').toBe('function');
+    expect(typeof fr[KEY], 'fr is a closure').toBe('function');
+    const enFn = en[KEY] as (p: { amount: bigint }) => string;
+    const frFn = fr[KEY] as (p: { amount: bigint }) => string;
+
+    type Case = readonly [bigint, string, string];
+    const CASES: readonly Case[] = [
+      [30n, '+30 gold', '+30 or'],
+      [7n, '+7 gold', '+7 or'],
+      [1157n, '+1157 gold', '+1157 or'],
+      [9_007_199_254_740_993n, '+9007199254740993 gold', '+9007199254740993 or'],
+    ];
+    for (const [amount, enLine, frLine] of CASES) {
+      expect(enFn({ amount }), `en, ${amount}`).toBe(enLine);
+      expect(frFn({ amount }), `fr, ${amount}`).toBe(frLine);
+      expect(frFn({ amount }), `${amount}: a translation, not the English line`).not.toBe(
+        enFn({ amount }),
+      );
+      expect(enFn({ amount }).split(String(amount)).length - 1, `en carries ${amount} once`).toBe(
+        1,
+      );
+      expect(frFn({ amount }).split(String(amount)).length - 1, `fr carries ${amount} once`).toBe(
+        1,
+      );
+    }
+    expect(CASES, 'ANTI-VACUITY: four amounts').toHaveLength(4);
+    expect(enFn({ amount: 30n }), 'the amounts change the line (en)').not.toBe(
+      enFn({ amount: 7n }),
+    );
+    expect(frFn({ amount: 30n }), 'the amounts change the line (fr)').not.toBe(
+      frFn({ amount: 7n }),
+    );
+
+    // The key is in the pinned roster and in both sample tables, so CAT-01's bijection and
+    // exact-output checks cover it.
+    expect(EXPECTED_KEYS.includes(KEY), 'the pinned roster lists the key').toBe(true);
+    expect(SAMPLE_PARAMS[KEY], 'the two sample sets').toEqual([{ amount: 30n }, { amount: 7n }]);
+    const spec = EXPECTED_PARAM_OUTPUTS[KEY] as ParamOutputSpec;
+    expect(spec, 'the English output pins exist').toBeDefined();
+    expect(spec.outputA).toBe('+30 gold');
+    expect(spec.outputB).toBe('+7 gold');
+  });
+
+  it('battle.rewards.xp is a closure in both catalogs: Name +N XP in English and Name, a no-break space, a colon, +N XP in French, the name echoed once and verbatim, for differing names and amounts [QF17-2-CATALOG-XP]', () => {
+    // WRONG IMPL KILLED: a key added to en only (tf() throws in a French boot: the xp line never
+    // shows); a French line left as the English copy; the French colon preceded by a breaking space
+    // or by nothing (a browser can strand the colon on the next line; catalog.fr.ts spaces every
+    // colon with U+00A0); a closure that swaps, drops or repeats a param; a name run through a
+    // transform (case, trim, escaping: `<b>x</b>` must stay as typed); an amount run through a
+    // locale formatter (1000000 becomes "1,000,000"); the key missing from the pinned roster or the
+    // two sample tables.
+    const KEY = 'battle.rewards.xp';
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    expect(Object.hasOwn(en, KEY), 'en carries the key').toBe(true);
+    expect(Object.hasOwn(fr, KEY), 'fr carries the key').toBe(true);
+    expect(typeof en[KEY], 'en is a closure').toBe('function');
+    expect(typeof fr[KEY], 'fr is a closure').toBe('function');
+    type Params = { name: string; amount: number };
+    const enFn = en[KEY] as (p: Params) => string;
+    const frFn = fr[KEY] as (p: Params) => string;
+
+    type Case = readonly [Params, string, string];
+    const SPARKY: Case = [
+      { name: 'Sparky', amount: 12 },
+      'Sparky +12 XP',
+      `Sparky${QF17_NBSP}: +12 XP`,
+    ];
+    const BOLT: Case = [{ name: 'Bolt', amount: 3 }, 'Bolt +3 XP', `Bolt${QF17_NBSP}: +3 XP`];
+    const MARKUP: Case = [
+      { name: '<b>x</b>', amount: 1_000_000 },
+      '<b>x</b> +1000000 XP',
+      `<b>x</b>${QF17_NBSP}: +1000000 XP`,
+    ];
+    const CASES: readonly Case[] = [SPARKY, BOLT, MARKUP];
+    for (const [params, enLine, frLine] of CASES) {
+      expect(enFn(params), `en, ${params.name}`).toBe(enLine);
+      expect(frFn(params), `fr, ${params.name}`).toBe(frLine);
+      expect(frFn(params), `${params.name}: a translation, not the English line`).not.toBe(
+        enFn(params),
+      );
+      expect(enFn(params).split(params.name).length - 1, `en carries ${params.name} once`).toBe(1);
+      expect(frFn(params).split(params.name).length - 1, `fr carries ${params.name} once`).toBe(1);
+      expect(
+        enFn(params).split(String(params.amount)).length - 1,
+        `en carries ${params.amount} once`,
+      ).toBe(1);
+      expect(
+        frFn(params).split(String(params.amount)).length - 1,
+        `fr carries ${params.amount} once`,
+      ).toBe(1);
+
+      // The space before the French colon is U+00A0 and nothing else, by code point.
+      const frText = frFn(params);
+      const at = params.name.length;
+      expect(frText.charCodeAt(at), `fr ${params.name}: the space before the colon`).toBe(0x00a0);
+      expect(frText.charAt(at + 1), `fr ${params.name}: then the colon`).toBe(':');
+      expect(frText.includes(`${params.name} :`), 'no breaking space before the colon').toBe(false);
+    }
+    expect(CASES, 'ANTI-VACUITY: three names').toHaveLength(3);
+    expect(enFn(SPARKY[0]), 'the params change the line (en)').not.toBe(enFn(BOLT[0]));
+    expect(frFn(SPARKY[0]), 'the params change the line (fr)').not.toBe(frFn(BOLT[0]));
+
+    // The key is in the pinned roster and in both sample tables (the two sample sets are Sparky and
+    // Bolt), so CAT-01's bijection and exact-output checks cover it.
+    expect(EXPECTED_KEYS.includes(KEY), 'the pinned roster lists the key').toBe(true);
+    expect(SAMPLE_PARAMS[KEY], 'the two sample sets').toEqual([SPARKY[0], BOLT[0]]);
+    const spec = EXPECTED_PARAM_OUTPUTS[KEY] as ParamOutputSpec;
+    expect(spec, 'the English output pins exist').toBeDefined();
+    expect(spec.outputA).toBe(SPARKY[1]);
+    expect(spec.outputB).toBe(BOLT[1]);
   });
 });

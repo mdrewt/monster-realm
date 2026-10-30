@@ -104,7 +104,7 @@ import {
   shouldSkipBattleRefresh,
 } from './ui/battleModel';
 import { battleButton, battleRefused, continuedBattleId, isBareBattle } from './ui/battlePolicy';
-import type { BattleView } from './ui/battleView';
+import type { BattleRewardsVM, BattleView } from './ui/battleView';
 import {
   buildBoxViewModel,
   buildMonsterStats,
@@ -2215,6 +2215,7 @@ function resetPredictionState(): void {
   dismissedBattleId = null;
   battleSynced = false;
   lastBattleVM = null;
+  lastPayout = null;
   // Pending PvP submit state must be cleared on reconnect/zone-switch — the
   // server will have GC'd the old battle and any pending action is no longer relevant.
   pvpPendingTurnNumber = null;
@@ -2956,13 +2957,138 @@ function refreshBattle(): void {
     // while hidden, so a re-show always triggers a full render. The lastBattleVM = null
     // reset in closeFrame (the outcome continue) is invariant hygiene on top.
     if (shouldSkipBattleRefresh(battleView.visible, lastBattleVM, vm)) return;
-    battleView.refresh(vm);
+    battleView.refresh(vm, lastPayout);
     lastBattleVM = vm;
   } else if (battleView.visible) {
     battleView.hide();
     lastBattleVM = null;
   }
 }
+// --- qf-17: the KO-win payout lines (QF17.1, QF17.2) ---------------------------------------
+// The server pays a win silently, in the ONE transaction that also flips the battle row terminal
+// (write_back_battle_results: grant_currency, then the winners' xp), and the client folds a
+// transaction's rows into ONE batch — so the payout is the difference between the batch that
+// ended the battle and the batch before it, read off the own-wallet and own-monster rows the store
+// already holds (the qf-6 quest-ack precedent). No new server data. The rules live here, not in a
+// model file: ui/battleView.ts is lazily imported and stubbed away by boot tests, so main.ts may
+// import nothing but types from it.
+interface PayoutMonster {
+  readonly monsterId: bigint;
+  readonly xp: number;
+  readonly nickname: string;
+  readonly speciesId: number;
+  readonly partySlot: number;
+}
+interface PayoutSnapshot {
+  readonly identity: string;
+  /** The RAW latest battle (never the own-perspective one): the server pays `playerIdentity`. */
+  readonly battle:
+    | { readonly battleId: bigint; readonly outcome: string; readonly playerIdentity: string }
+    | undefined;
+  /** Once hydrated an absent wallet row is 0n: grant_currency inserts it lazily on the first win. */
+  readonly balance: bigint;
+  readonly monsters: readonly PayoutMonster[];
+}
+/** This batch's snapshot, or undefined while the store is not hydrated (no baseline is taken from
+ *  a partial store) or a present wallet row carries no bigint balance. */
+function payoutSnapshot(i: {
+  readonly ready: boolean;
+  readonly identity: string;
+  readonly battle: PayoutSnapshot['battle'];
+  readonly wallet: { readonly balance: unknown } | undefined;
+  readonly monsters: readonly PayoutMonster[];
+}): PayoutSnapshot | undefined {
+  if (!i.ready || i.identity === '') return undefined;
+  const balance = i.wallet === undefined ? 0n : i.wallet.balance;
+  if (typeof balance !== 'bigint') return undefined;
+  return {
+    identity: i.identity,
+    battle: i.battle,
+    balance,
+    monsters: i.monsters.map((m) => ({
+      monsterId: m.monsterId,
+      xp: m.xp,
+      nickname: m.nickname,
+      speciesId: m.speciesId,
+      partySlot: m.partySlot,
+    })),
+  };
+}
+/** What `now` paid over `prev`: only when the same battle went Ongoing → SideAWins in this batch
+ *  and the player is its `playerIdentity` (the side the server pays). Gold is the wallet's rise;
+ *  xp lists each own monster present in both snapshots whose xp rose, party slot first, then id. */
+function payoutBetween(
+  prev: PayoutSnapshot | undefined,
+  now: PayoutSnapshot | undefined,
+  speciesName: (id: number) => string | undefined,
+): BattleRewardsVM | undefined {
+  if (prev === undefined || now === undefined || prev.identity !== now.identity) return undefined;
+  const won = now.battle;
+  if (won === undefined || won.outcome !== 'SideAWins' || won.playerIdentity !== now.identity) {
+    return undefined;
+  }
+  const before = prev.battle;
+  if (before === undefined || before.battleId !== won.battleId || before.outcome !== 'Ongoing') {
+    return undefined;
+  }
+  const gold = now.balance > prev.balance ? now.balance - prev.balance : null;
+  const xpBefore = new Map(prev.monsters.map((m) => [m.monsterId, m.xp]));
+  const risen: { readonly m: PayoutMonster; readonly amount: number }[] = [];
+  for (const m of now.monsters) {
+    const was = xpBefore.get(m.monsterId);
+    if (was === undefined || !(m.xp > was)) continue;
+    risen.push({ m, amount: m.xp - was });
+  }
+  risen.sort(
+    (a, b) =>
+      a.m.partySlot - b.m.partySlot ||
+      (a.m.monsterId < b.m.monsterId ? -1 : a.m.monsterId > b.m.monsterId ? 1 : 0),
+  );
+  const xp = risen.map(({ m, amount }) => ({
+    name: m.nickname || speciesName(m.speciesId) || `#${m.monsterId}`,
+    amount,
+  }));
+  if (gold === null && xp.length === 0) return undefined;
+  return { battleId: won.battleId, gold, xp };
+}
+/** The previous batch's snapshot (undefined until hydrated, dropped on reconnect). */
+let payoutBaseline: PayoutSnapshot | undefined;
+/** The payout the battle view shows under its Victory, until another battle is the latest. */
+let lastPayout: BattleRewardsVM | null = null;
+// Its OWN listener, registered AHEAD of refreshBattle's: the baseline advances exactly once per
+// batch, never from the out-of-band refreshes (a reducer failure path refreshes between the SDK's
+// eager wallet upsert and the flush). MUST be total: a throw is logged and drops the baseline (the
+// next batch re-takes it), never the battle screen.
+store.onBatchApplied(() => {
+  try {
+    const latest = store.latestPlayerBattle(identity);
+    const now = payoutSnapshot({
+      ready: hydratedSinceReconnect,
+      identity,
+      battle:
+        latest === undefined
+          ? undefined
+          : {
+              battleId: latest.battleId,
+              outcome: latest.outcome,
+              playerIdentity: latest.playerIdentity,
+            },
+      wallet: store.ownWallet(identity),
+      monsters: store.ownMonsters(identity),
+    });
+    const paid = payoutBetween(payoutBaseline, now, (id) => store.species(id)?.name);
+    payoutBaseline = now;
+    if (paid !== undefined) {
+      lastPayout = paid;
+      lastBattleVM = null; // the VM-compare must not skip the render that shows the lines
+    } else if (lastPayout !== null && latest?.battleId !== lastPayout.battleId) {
+      lastPayout = null;
+    }
+  } catch (err) {
+    console.error('[qf-17] payout listener', err);
+    payoutBaseline = undefined;
+  }
+});
 store.onBatchApplied(() => refreshBattle());
 
 // --- dialogue dismiss + deferred shop open (ui/shopOpenModel.ts) ----------------------
@@ -3922,6 +4048,7 @@ async function main(): Promise<void> {
       // the next baseline is the first hydrated batch of this connection.
       statusNotice = STATUS_NOTICE_INITIAL;
       questAckBaseline = undefined;
+      payoutBaseline = undefined;
       // Clean re-init: the store already dropped stale rows; rebuild prediction and
       // drop the own slide clock so the post-reconnect re-seed starts fresh.
       // Zone state is corrected by the reconcile listener's state-based check on
