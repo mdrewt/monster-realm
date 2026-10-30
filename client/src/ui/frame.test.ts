@@ -651,12 +651,62 @@ function qf11TopLevelRules(css: string): Qf11Rule[] {
 function qf11AllBlocks(css: string): Qf11Rule[] {
   const blocks: Qf11Rule[] = [];
   for (const m of qf11StripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    // An at-rule statement (`@import ...;`) before the block belongs to no selector: keep only the
+    // text after the last `;`.
+    const head = (m[1] ?? '').split(';').pop() ?? '';
     blocks.push({
-      selectors: (m[1] ?? '').split(',').map((s) => s.trim()),
+      selectors: head.split(',').map((s) => s.trim()),
       decls: qf11Decls(m[2] ?? ''),
     });
   }
   return blocks;
+}
+
+interface Qf11Flex {
+  readonly grow: number;
+  readonly shrink: number;
+  readonly basis: string;
+}
+
+/** CSS initial values of flex-grow, flex-shrink and flex-basis. */
+const QF11_FLEX_INITIAL: Qf11Flex = { grow: 0, shrink: 1, basis: 'auto' };
+
+/** The three longhands a `flex` shorthand sets (an omitted basis is 0%, per the spec). */
+function qf11ParseFlex(value: string): Qf11Flex {
+  if (value === 'none') return { grow: 0, shrink: 0, basis: 'auto' };
+  if (value === 'auto') return { grow: 1, shrink: 1, basis: 'auto' };
+  if (value === 'initial') return QF11_FLEX_INITIAL;
+  const nums: number[] = [];
+  let basis = '0%';
+  for (const token of value.split(/\s+/)) {
+    if (/^[+-]?(\d+\.?\d*|\.\d+)$/.test(token) && nums.length < 2) nums.push(Number(token));
+    else basis = token;
+  }
+  return { grow: nums[0] ?? 1, shrink: nums[1] ?? 1, basis };
+}
+
+/** `start` after `decls` (in order): `flex` sets all three, the longhands one each. */
+function qf11FlexAfter(start: Qf11Flex, decls: readonly Qf11Decl[]): Qf11Flex {
+  let state = start;
+  for (const d of decls) {
+    if (d.prop === 'flex') state = qf11ParseFlex(d.value);
+    else if (d.prop === 'flex-grow') {
+      state = { ...state, grow: d.value === '' ? Number.NaN : Number(d.value) };
+    } else if (d.prop === 'flex-shrink') {
+      state = { ...state, shrink: d.value === '' ? Number.NaN : Number(d.value) };
+    } else if (d.prop === 'flex-basis') state = { ...state, basis: d.value };
+  }
+  return state;
+}
+
+/** The effective flex (grow, shrink, basis) of `selector` over the top-level rules naming it
+ *  exactly, in source order. */
+function qf11EffectiveFlex(rules: readonly Qf11Rule[], selector: string): Qf11Flex {
+  let state = QF11_FLEX_INITIAL;
+  for (const rule of rules) {
+    if (rule.selectors.includes(selector)) state = qf11FlexAfter(state, rule.decls);
+  }
+  return state;
 }
 
 /** The grow factor a `flex` shorthand value sets; NaN when it is not a plain number or keyword. */
@@ -713,6 +763,40 @@ function qf11ComputedGrow(style: CSSStyleDeclaration): number {
   return first === '' ? Number.NaN : Number(first);
 }
 
+/** Inline properties that could stretch, stack or freeze a strip. */
+const QF11_BANNED_INLINE: readonly string[] = [
+  'flex',
+  'flex-grow',
+  'flex-shrink',
+  'flex-basis',
+  'flex-direction',
+  'flex-flow',
+  'height',
+  'block-size',
+  'min-height',
+  'max-height',
+  'width',
+  'min-width',
+  'max-width',
+];
+
+/** The banned layout properties `el` sets inline, read from the style attribute and from the style
+ *  object (so `style.flexGrow = '1'`, `style.flex = ...` and cssText are all seen). */
+function qf11InlineLayout(el: Element): string[] {
+  const found = new Set<string>();
+  for (const part of (el.getAttribute('style') ?? '').split(';')) {
+    const colon = part.indexOf(':');
+    if (colon === -1) continue;
+    const prop = part.slice(0, colon).trim().toLowerCase();
+    if (QF11_BANNED_INLINE.includes(prop)) found.add(prop);
+  }
+  const style = (el as HTMLElement).style;
+  for (const prop of QF11_BANNED_INLINE) {
+    if (style.getPropertyValue(prop) !== '') found.add(prop);
+  }
+  return [...found];
+}
+
 describe('qf-11 (QF11.1): the tab strip never flex-grows vertically', () => {
   it('styles.css: the effective flex-grow of .mr-frame-tabstrip is 0 (min-height min-content and display flex kept), and no block mentioning the class grows it anywhere [QF11-1-SHEET-NO-GROW]', () => {
     // WRONG IMPL KILLED: the shipped `flex: 1 1 auto` left in place (grow 1: the strip absorbs the
@@ -747,6 +831,85 @@ describe('qf-11 (QF11.1): the tab strip never flex-grows vertically', () => {
       growers,
       'no block that mentions .mr-frame-tabstrip may set a positive flex-grow',
     ).toEqual([]);
+  });
+
+  it('styles.css: the strip rule cannot stretch the strip by any other route: basis auto or content, no height, no column direction, shrink at least 1, max-width 100% (on the effective rule and on every block that mentions the class or a tablist) [QF11-1-SHEET-NO-STRETCH]', () => {
+    // WRONG IMPL KILLED: C1 `flex: 0 1 100%` (grow 0 but the basis fills the column, so the strip
+    // is as tall as its container: measured 19px -> 558px in a 600px column); C2 `height: 100%`
+    // (or `block-size`) added to the strip rule; C3 `flex-direction: column` (or `flex-flow:
+    // column`) on the strip, which stacks the labels; C6 `flex: 0 0 auto` (no shrink: a strip wider
+    // than its row never scrolls, it overflows); a missing `max-width: 100%` (reviewer finding: in
+    // the Bag root, `align-items: center` makes a nowrap strip fit-content wide, so it can overflow
+    // the frame instead of scrolling; RED until the rule gains it); a growth rule aimed at the strip
+    // through its tablist role instead of its class.
+    const top = qf11TopLevelRules(QF11_STYLES_CSS);
+    const blocks = qf11AllBlocks(QF11_STYLES_CSS);
+    expect(
+      blocks.some((b) => b.selectors.includes('.sr-only')),
+      'ANTI-VACUITY: the block scan sees the existing .sr-only rule',
+    ).toBe(true);
+    const strip = '.mr-frame-tabstrip';
+    expect(
+      top.some((r) => r.selectors.includes(strip)),
+      'a top-level rule for exactly .mr-frame-tabstrip',
+    ).toBe(true);
+
+    const flex = qf11EffectiveFlex(top, strip);
+    expect(['auto', 'content'], 'effective flex-basis').toContain(flex.basis);
+    expect(
+      flex.shrink,
+      'effective flex-shrink (the strip must still shrink and scroll)',
+    ).toBeGreaterThanOrEqual(1);
+    expect(flex.grow, 'effective flex-grow').toBe(0);
+    const direction = qf11Effective(top, strip, 'flex-direction');
+    expect(
+      direction === undefined || direction.startsWith('row'),
+      `effective flex-direction is a row (or unset), got ${direction}`,
+    ).toBe(true);
+    expect(qf11Effective(top, strip, 'max-width'), 'effective max-width').toBe('100%');
+    expect(qf11Effective(top, strip, 'height'), 'effective height').toBeUndefined();
+    expect(qf11Effective(top, strip, 'block-size'), 'effective block-size').toBeUndefined();
+
+    const offenders: string[] = [];
+    for (const block of blocks) {
+      const name = block.selectors.join(', ');
+      const mentionsStrip = block.selectors.some((s) => s.includes('mr-frame-tabstrip'));
+      const mentionsTablist = block.selectors.some((s) => s.includes('tablist'));
+      if (!mentionsStrip && !mentionsTablist) continue;
+      const declared = qf11FlexAfter({ grow: 0, shrink: 1, basis: 'auto' }, block.decls);
+      if (declared.grow !== 0) offenders.push(`${name}: flex-grow ${declared.grow}`);
+      if (!mentionsStrip) continue;
+      for (const d of block.decls) {
+        if (d.prop === 'height' || d.prop === 'block-size') offenders.push(`${name}: ${d.prop}`);
+        if (d.prop === 'flex-direction' && d.value.startsWith('column')) {
+          offenders.push(`${name}: flex-direction ${d.value}`);
+        }
+        if (d.prop === 'flex-flow' && d.value.includes('column')) {
+          offenders.push(`${name}: flex-flow ${d.value}`);
+        }
+      }
+      if (!['auto', 'content'].includes(declared.basis)) {
+        offenders.push(`${name}: flex-basis ${declared.basis}`);
+      }
+      if (!(declared.shrink >= 1)) offenders.push(`${name}: flex-shrink ${declared.shrink}`);
+    }
+    expect(offenders, 'no block may stretch, stack or freeze the strip').toEqual([]);
+  });
+
+  it('styles.css declares no #id selector at all, at any depth (a rule keyed on #help-tabs, #bag-tabs or #controls-tabs would restore the growth the class probes cannot see) [QF11-1-NO-ID-SELECTORS]', () => {
+    // WRONG IMPL KILLED: C4 a new id rule `#help-tabs, #bag-tabs, #controls-tabs { flex: 1 1 auto }`
+    // (the class-based scans never read it and the computed probes drop the id from their clones);
+    // the same rule hidden inside an @media or @supports block; any id-keyed override of the strip.
+    // The stylesheet bans id selectors (the qf-4 doctrine), so this holds for the whole sheet.
+    const blocks = qf11AllBlocks(QF11_STYLES_CSS);
+    expect(
+      blocks.length > 20 && blocks.some((b) => b.selectors.includes('.mr-frame-tabstrip')),
+      'ANTI-VACUITY: the scan parsed the sheet, the strip rule included',
+    ).toBe(true);
+    const ids = blocks
+      .flatMap((b) => b.selectors)
+      .filter((s) => s.replace(/"[^"]*"|'[^']*'/g, '').includes('#'));
+    expect(ids, 'selectors containing an #id').toEqual([]);
   });
 
   it('styles.css: a tab label is one line, the effective white-space of .mr-nav-tab is nowrap, so every label has the same height [QF11-1-NAVTAB-NOWRAP]', () => {
@@ -809,6 +972,14 @@ describe('qf-11 (QF11.1): computed style over a real createFrame strip', () => {
     const inBar = getComputedStyle(f.tabStrip);
     expect(inBar.display, 'titlebar strip: a flex row').toBe('flex');
     expect(qf11ComputedGrow(inBar), 'titlebar strip: flex-grow').toBe(0);
+    // WRONG IMPL KILLED: C3 flex-direction: column on the strip; C1 a basis that fills the column
+    // (`flex: 0 1 100%`); the reviewer finding (no `max-width: 100%`: a nowrap strip in an
+    // align-items:center column is fit-content wide and overflows instead of scrolling).
+    expect(inBar.flexDirection, 'titlebar strip: not a column').not.toBe('column');
+    expect(inBar.flexBasis, 'titlebar strip: no length or percentage basis').not.toMatch(/[\d%]/);
+    expect(inBar.maxWidth, 'titlebar strip: max-width').toBe('100%');
+    expect(qf11InlineLayout(f.tabStrip), 'titlebar strip: no inline layout style').toEqual([]);
+    expect(f.tabStrip.style.flexGrow, 'C9: no inline flex-grow').toBe('');
 
     // The boxView / helpView mount: the strip is a DIRECT child of the `.mr-frame` column root.
     const direct = document.createElement('div');
@@ -817,6 +988,11 @@ describe('qf-11 (QF11.1): computed style over a real createFrame strip', () => {
     const inColumn = getComputedStyle(direct);
     expect(inColumn.display, 'column-root strip: a flex row').toBe('flex');
     expect(qf11ComputedGrow(inColumn), 'column-root strip: flex-grow (no vertical growth)').toBe(0);
+    expect(inColumn.flexDirection, 'column-root strip: not a column').not.toBe('column');
+    expect(inColumn.flexBasis, 'column-root strip: no length or percentage basis').not.toMatch(
+      /[\d%]/,
+    );
+    expect(inColumn.maxWidth, 'column-root strip: max-width').toBe('100%');
 
     for (const tab of Array.from(f.tabStrip.children)) {
       expect(getComputedStyle(tab).whiteSpace, `tab ${tab.id}: one line`).toBe('nowrap');

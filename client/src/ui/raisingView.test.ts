@@ -2227,15 +2227,51 @@ const QF11_STRIP_CLASS = 'mr-frame-tabstrip';
 interface Qf11Snapshot {
   readonly display: string;
   readonly flexDirection: string;
+  readonly flexBasis: string;
+  readonly maxWidth: string;
   /** flex-grow as a number; NaN (never 0) when happy-dom exposes neither the longhand nor the
    *  first token of the shorthand. */
   readonly grow: number;
 }
 
-/** The computed layout of a fresh shallow clone of `el` (optionally without the strip class). */
+/** Inline properties that could stretch, stack or freeze a strip. */
+const QF11_BANNED_INLINE: readonly string[] = [
+  'flex',
+  'flex-grow',
+  'flex-shrink',
+  'flex-basis',
+  'flex-direction',
+  'flex-flow',
+  'height',
+  'block-size',
+  'min-height',
+  'max-height',
+  'width',
+  'min-width',
+  'max-width',
+];
+
+/** The banned layout properties `el` sets inline, read from the style attribute and from the style
+ *  object (so `style.flexGrow = '1'`, `style.flex = ...` and cssText are all seen). */
+function qf11InlineLayout(el: Element): string[] {
+  const found = new Set<string>();
+  for (const part of (el.getAttribute('style') ?? '').split(';')) {
+    const colon = part.indexOf(':');
+    if (colon === -1) continue;
+    const prop = part.slice(0, colon).trim().toLowerCase();
+    if (QF11_BANNED_INLINE.includes(prop)) found.add(prop);
+  }
+  const style = (el as HTMLElement).style;
+  for (const prop of QF11_BANNED_INLINE) {
+    if (style.getPropertyValue(prop) !== '') found.add(prop);
+  }
+  return [...found];
+}
+
+/** The computed layout of a fresh shallow clone of `el` (optionally without the strip class). The
+ *  clone KEEPS the id, so an id-keyed rule (C4) would still match it. */
 function qf11Probe(el: HTMLElement, dropClass = false): Qf11Snapshot {
   const probe = el.cloneNode(false) as HTMLElement;
-  probe.removeAttribute('id');
   if (dropClass) probe.classList.remove(QF11_STRIP_CLASS);
   (el.parentElement ?? document.body).appendChild(probe);
   const style = getComputedStyle(probe);
@@ -2244,7 +2280,13 @@ function qf11Probe(el: HTMLElement, dropClass = false): Qf11Snapshot {
   if (style.flexGrow !== '') grow = Number(style.flexGrow);
   else if (first === 'none') grow = 0;
   else if (first !== '') grow = Number(first);
-  const snapshot = { display: style.display, flexDirection: style.flexDirection, grow };
+  const snapshot = {
+    display: style.display,
+    flexDirection: style.flexDirection,
+    flexBasis: style.flexBasis,
+    maxWidth: style.maxWidth,
+    grow,
+  };
   probe.remove();
   return snapshot;
 }
@@ -2331,6 +2373,12 @@ describe('RaisingView qf-11: the Bag tab strip (QF11.2, QF11.3)', () => {
       expect(now.display, `${when}: a flex container`).toBe('flex');
       expect(now.flexDirection, `${when}: not a column`).not.toBe('column');
       expect(now.grow, `${when}: flex-grow`).toBe(0);
+      // WRONG IMPL KILLED: C1 `flex: 0 1 100%` (a basis that fills the column; the probe keeps the
+      // id so an id-keyed rule, C4, would also be seen); C9 an inline flex-grow / flex / height /
+      // flex-direction written by the view (the probe is a clone, so the live strip is checked too).
+      expect(now.flexBasis, `${when}: no length or percentage basis`).not.toMatch(/[\d%]/);
+      expect(qf11InlineLayout(strip), `${when}: no inline layout style on the strip`).toEqual([]);
+      expect(strip.style.flexGrow, `${when}: no inline flex-grow`).toBe('');
     };
     expectRow('painted');
     view.paint(ctl8fPaint(vm, { nav: ctl8fNav(vm, ['RB', 'RB']) }));
@@ -2344,6 +2392,23 @@ describe('RaisingView qf-11: the Bag tab strip (QF11.2, QF11.3)', () => {
       qf11Probe(strip, true).display,
       'SANITY: without the class it is not a flex row',
     ).not.toBe('flex');
+  });
+
+  it('#bag-tabs computes max-width 100% inside the align-items:center column root, so a nowrap strip scrolls inside the frame instead of overflowing it [QF11-2-BAG-MAXWIDTH]', () => {
+    // WRONG IMPL KILLED: the reviewer finding (RED until the strip rule gains `max-width: 100%`):
+    // the Bag root is `align-items: center` column, so a flex item with `white-space: nowrap` tabs is
+    // fit-content wide and, with four pockets in a narrow frame, wider than the frame (the
+    // `overflow-x: auto` never engages because the strip itself grows to its content); a max-width
+    // set on another selector or only inline; a max-width in px / vw (it must follow the frame).
+    const { parent, view } = s4Mount();
+    const root = overlayRootOf(parent);
+    view.show();
+    view.paint(ctl8fPaint(ctl8fVm()));
+    expect(root.style.alignItems, 'ANTI-VACUITY: the root centres its items').toBe('center');
+    const strip = ctl8fPart('bag-tabs');
+    expect(strip.children.length, 'ANTI-VACUITY: four pocket tabs rendered').toBe(4);
+    expect(qf11Probe(strip).maxWidth, 'computed max-width').toBe('100%');
+    expect(qf11Probe(strip, true).maxWidth, 'SANITY: not from a default').not.toBe('100%');
   });
 
   it('with the strip class adopted, the Bag tab semantics are as shipped: tablist, four role=tab children with the nav ids, exactly one aria-selected tab that is also the is-active one, following LB / RB [QF11-3-BAG-SEMANTICS]', () => {

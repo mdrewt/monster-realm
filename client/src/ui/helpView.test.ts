@@ -817,15 +817,52 @@ const QF11_STYLES_CSS = readFileSync(
 interface Qf11Snapshot {
   readonly display: string;
   readonly listStyle: string;
+  readonly flexDirection: string;
+  readonly flexBasis: string;
+  readonly maxWidth: string;
   /** flex-grow as a number; NaN (never 0) when happy-dom exposes neither the longhand nor the
    *  first token of the shorthand. */
   readonly grow: number;
 }
 
-/** The computed layout of a fresh shallow clone of `node` (optionally with one class removed). */
+/** Inline properties that could stretch, stack or freeze a strip. */
+const QF11_BANNED_INLINE: readonly string[] = [
+  'flex',
+  'flex-grow',
+  'flex-shrink',
+  'flex-basis',
+  'flex-direction',
+  'flex-flow',
+  'height',
+  'block-size',
+  'min-height',
+  'max-height',
+  'width',
+  'min-width',
+  'max-width',
+];
+
+/** The banned layout properties `el` sets inline, read from the style attribute and from the style
+ *  object (so `style.flexGrow = '1'`, `style.flex = ...` and cssText are all seen). */
+function qf11InlineLayout(el: Element): string[] {
+  const found = new Set<string>();
+  for (const part of (el.getAttribute('style') ?? '').split(';')) {
+    const colon = part.indexOf(':');
+    if (colon === -1) continue;
+    const prop = part.slice(0, colon).trim().toLowerCase();
+    if (QF11_BANNED_INLINE.includes(prop)) found.add(prop);
+  }
+  const style = (el as HTMLElement).style;
+  for (const prop of QF11_BANNED_INLINE) {
+    if (style.getPropertyValue(prop) !== '') found.add(prop);
+  }
+  return [...found];
+}
+
+/** The computed layout of a fresh shallow clone of `node` (optionally with one class removed). The
+ *  clone KEEPS the id, so an id-keyed rule (C4) would still match it. */
 function qf11Probe(node: HTMLElement, dropClass?: string): Qf11Snapshot {
   const probe = node.cloneNode(false) as HTMLElement;
-  probe.removeAttribute('id');
   if (dropClass !== undefined) probe.classList.remove(dropClass);
   (node.parentElement ?? document.body).appendChild(probe);
   const style = getComputedStyle(probe);
@@ -834,7 +871,14 @@ function qf11Probe(node: HTMLElement, dropClass?: string): Qf11Snapshot {
   if (style.flexGrow !== '') grow = Number(style.flexGrow);
   else if (first === 'none') grow = 0;
   else if (first !== '') grow = Number(first);
-  const snapshot = { display: style.display, listStyle: style.listStyle, grow };
+  const snapshot = {
+    display: style.display,
+    listStyle: style.listStyle,
+    flexDirection: style.flexDirection,
+    flexBasis: style.flexBasis,
+    maxWidth: style.maxWidth,
+    grow,
+  };
   probe.remove();
   return snapshot;
 }
@@ -930,6 +974,15 @@ describe('HelpView qf-11: the strip does not grow, the runtime list has no marke
       const now = qf11Probe(strip);
       expect(now.display, `${when}: a flex container`).toBe('flex');
       expect(now.grow, `${when}: flex-grow`).toBe(0);
+      // WRONG IMPL KILLED: C3 flex-direction: column on the strip (only the Bag and Controls tests
+      // checked the direction before); C1 `flex: 0 1 100%` (the probe keeps the id, so an id-keyed
+      // rule, C4, would also be seen); C9 an inline flex-grow / flex / height / flex-direction (the
+      // probe is a clone, so the live strip is checked too); a max-width other than 100%.
+      expect(now.flexDirection, `${when}: not a column`).not.toBe('column');
+      expect(now.flexBasis, `${when}: no length or percentage basis`).not.toMatch(/[\d%]/);
+      expect(now.maxWidth, `${when}: max-width`).toBe('100%');
+      expect(qf11InlineLayout(strip), `${when}: no inline layout style on the strip`).toEqual([]);
+      expect(strip.style.flexGrow, `${when}: no inline flex-grow`).toBe('');
     };
     expectRow('painted');
     view.paint({ layout: HELP_LAYOUT, nav: stateOn('controls') });

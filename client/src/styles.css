@@ -176,11 +176,13 @@
 }
 .mr-frame-tabstrip {
   display: flex;
-  /* No grow (qf-11): placed straight in a shell's flex column (Monsters, Help, Bag, Controls) a
-   * growing strip stretches vertically to absorb the frame's leftover height. It still shrinks,
-   * so a strip wider than its row scrolls. */
+  /* No grow (qf-11): placed straight in a shell's flex column (boxView, helpView, raisingView,
+   * controlsView) a growing strip stretches vertically to absorb the frame's leftover height. It
+   * still shrinks in a row, and `max-width` caps it in a centring column, so a strip wider than
+   * its container scrolls instead of overflowing. */
   flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
   /* In that column, `overflow-x: auto` would let the strip shrink to zero height once the frame
    * overflows: its tabs could not be clicked. */
   min-height: min-content;

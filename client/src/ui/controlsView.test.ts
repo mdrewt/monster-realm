@@ -812,15 +812,51 @@ const QF11_STRIP_CLASS = 'mr-frame-tabstrip';
 interface Qf11Snapshot {
   readonly display: string;
   readonly flexDirection: string;
+  readonly flexBasis: string;
+  readonly maxWidth: string;
   /** flex-grow as a number; NaN (never 0) when happy-dom exposes neither the longhand nor the
    *  first token of the shorthand. */
   readonly grow: number;
 }
 
-/** The computed layout of a fresh shallow clone of `node` (optionally without the strip class). */
+/** Inline properties that could stretch, stack or freeze a strip. */
+const QF11_BANNED_INLINE: readonly string[] = [
+  'flex',
+  'flex-grow',
+  'flex-shrink',
+  'flex-basis',
+  'flex-direction',
+  'flex-flow',
+  'height',
+  'block-size',
+  'min-height',
+  'max-height',
+  'width',
+  'min-width',
+  'max-width',
+];
+
+/** The banned layout properties `el` sets inline, read from the style attribute and from the style
+ *  object (so `style.flexGrow = '1'`, `style.flex = ...` and cssText are all seen). */
+function qf11InlineLayout(el: Element): string[] {
+  const found = new Set<string>();
+  for (const part of (el.getAttribute('style') ?? '').split(';')) {
+    const colon = part.indexOf(':');
+    if (colon === -1) continue;
+    const prop = part.slice(0, colon).trim().toLowerCase();
+    if (QF11_BANNED_INLINE.includes(prop)) found.add(prop);
+  }
+  const style = (el as HTMLElement).style;
+  for (const prop of QF11_BANNED_INLINE) {
+    if (style.getPropertyValue(prop) !== '') found.add(prop);
+  }
+  return [...found];
+}
+
+/** The computed layout of a fresh shallow clone of `node` (optionally without the strip class). The
+ *  clone KEEPS the id, so an id-keyed rule (C4) would still match it. */
 function qf11Probe(node: HTMLElement, dropClass = false): Qf11Snapshot {
   const probe = node.cloneNode(false) as HTMLElement;
-  probe.removeAttribute('id');
   if (dropClass) probe.classList.remove(QF11_STRIP_CLASS);
   (node.parentElement ?? document.body).appendChild(probe);
   const style = getComputedStyle(probe);
@@ -829,7 +865,13 @@ function qf11Probe(node: HTMLElement, dropClass = false): Qf11Snapshot {
   if (style.flexGrow !== '') grow = Number(style.flexGrow);
   else if (first === 'none') grow = 0;
   else if (first !== '') grow = Number(first);
-  const snapshot = { display: style.display, flexDirection: style.flexDirection, grow };
+  const snapshot = {
+    display: style.display,
+    flexDirection: style.flexDirection,
+    flexBasis: style.flexBasis,
+    maxWidth: style.maxWidth,
+    grow,
+  };
   probe.remove();
   return snapshot;
 }
@@ -906,6 +948,14 @@ describe('ControlsView qf-11: the Controls tab strip (QF11.2, QF11.3)', () => {
       expect(now.display, `${when}: a flex container`).toBe('flex');
       expect(now.flexDirection, `${when}: not a column`).not.toBe('column');
       expect(now.grow, `${when}: flex-grow`).toBe(0);
+      // WRONG IMPL KILLED: C1 `flex: 0 1 100%` (the probe keeps the id, so an id-keyed rule, C4,
+      // would also be seen); C9 an inline flex-grow / flex / height / flex-direction written by the
+      // view (the probe is a clone, so the live strip is checked too); a max-width that is not
+      // 100% (the strip must scroll inside the frame instead of overflowing it).
+      expect(now.flexBasis, `${when}: no length or percentage basis`).not.toMatch(/[\d%]/);
+      expect(now.maxWidth, `${when}: max-width`).toBe('100%');
+      expect(qf11InlineLayout(strip), `${when}: no inline layout style on the strip`).toEqual([]);
+      expect(strip.style.flexGrow, `${when}: no inline flex-grow`).toBe('');
     };
     expectRow('painted');
     view.paint(paintOf({ nav: navOn('shortcuts') }));
