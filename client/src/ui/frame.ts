@@ -66,6 +66,9 @@ export function createFrame(
   tabStrip.setAttribute('role', 'tablist');
   buttonSlot(doc, tabBar, 'RB');
 
+  const body = part(doc, root, 'mr-frame-body');
+  const feedback = part(doc, root, 'mr-frame-feedback');
+  feedback.hidden = true;
   return {
     id: opts.id,
     root,
@@ -73,8 +76,8 @@ export function createFrame(
     breadcrumb,
     tabBar,
     tabStrip,
-    body: part(doc, root, 'mr-frame-body'),
-    feedback: part(doc, root, 'mr-frame-feedback'),
+    body,
+    feedback,
     hintSlot: part(doc, root, 'mr-frame-hints'),
   };
 }
@@ -142,7 +145,10 @@ export function feedbackAnnouncement(prev: FeedbackState, next: FeedbackState): 
   return next.text;
 }
 
+/** An empty line is `hidden` (qf-12, QF12.1): its border would otherwise paint a bare strip. The
+ *  class declares no `display`, so the UA `[hidden]` rule collapses it. */
 export function renderFeedback(f: FrameChrome, s: FeedbackState): void {
+  f.feedback.hidden = s.kind === 'none';
   if (s.kind === 'none') {
     delete f.feedback.dataset.feedback;
     f.feedback.textContent = '';
