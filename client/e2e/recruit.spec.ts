@@ -266,7 +266,7 @@ function parseHpLine(text: string): { cur: number; max: number; affinity: string
 
 // ---------------------------------------------------------------------------
 // waitForBattleCleared: wait until ongoingBattle is null (battle row GC'd or
-// fled).  Used after Flee to confirm the overlay is gone.
+// fled).  Used after Run (the command list's flee) to confirm the overlay is gone.
 // ---------------------------------------------------------------------------
 async function waitForBattleCleared(p: Page): Promise<void> {
   await p.waitForFunction(
@@ -274,6 +274,49 @@ async function waitForBattleCleared(p: Page): Promise<void> {
     null,
     { timeout: 15_000 },
   );
+}
+
+// ---------------------------------------------------------------------------
+// THE COMMAND LIST FIRST (qf-7b, QF7B.2). The battle's command list
+// (data-testid="battle-commands"; rows battle-command-fight|recruit|swap|bag|run) is the first
+// step of every action: the skill grid renders only after Fight is pressed, the bait list only
+// after Recruit is pressed, and every new turn closes both again (CTL8I.1: a new turn starts on
+// Fight). So EVERY attack presses Fight and EVERY recruit attempt presses Recruit. Run is the
+// sanctioned flee path (QF7.4); the legacy Flee button is not used here. A command row is a
+// <button> that is aria-disabled="true" while greyed (the PvE in-flight lock between an action
+// and its settle, a finished battle), and pressing a greyed row does nothing, so every press
+// first waits for its row to be live.
+// ---------------------------------------------------------------------------
+
+/** Presses the Recruit or Run command once it is live; fails when it does not go live in 5 s. */
+async function pressCommand(p: Page, id: 'recruit' | 'run'): Promise<void> {
+  const row = p.getByTestId(`battle-command-${id}`);
+  await expect(row, `the ${id} command goes live`).toHaveAttribute('aria-disabled', 'false', {
+    timeout: 5_000,
+  });
+  await row.click({ timeout: 5_000 });
+}
+
+/** The first PvE skill cell: a row of the skills list (`data-battle-list="skills"`) whose label is
+ *  `<name> (<power>) · <affinity> · Acc n%` (catalog battle.skill.pveLabel), hence the "(" text
+ *  marker. */
+const skillCell = (p: Page) => p.locator('button[data-battle-list="skills"]:has-text("(")').first();
+
+/** Presses Fight once it is live and waits for a skill cell. Returns false — never throws — when
+ *  Fight does not go live or the grid does not open within its bound (the battle ended): the
+ *  attack loop's "skills not visible -> break". */
+async function openSkillGrid(p: Page): Promise<boolean> {
+  const fight = p.locator('[data-testid="battle-command-fight"][aria-disabled="false"]');
+  const live = await fight
+    .waitFor({ state: 'visible', timeout: 5_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!live) return false;
+  await fight.click({ timeout: 3_000 }).catch(() => undefined);
+  return skillCell(p)
+    .waitFor({ state: 'visible', timeout: 5_000 })
+    .then(() => true)
+    .catch(() => false);
 }
 
 // ---------------------------------------------------------------------------
@@ -541,10 +584,11 @@ test.describe
     // R1 (EARS 13.5h-1, criterion 1):
     //   WHEN the player walks onto a grass tile, a wild battle MAY start.
     //   THE recruit-action button SHALL be visible while the battle is Ongoing.
-    //   THE bait-selector SHALL be present AND contain ZERO options with
+    //   THE bait-selector SHALL be ABSENT until the Recruit command is pressed
+    //   (qf-7b, QF7B.2), then present AND contain ZERO options with
     //   data-recruit-bonus (no bait in a fresh inventory — classify-by-data
     //   negative half).
-    //   The test flees after assertions to leave a clean state for R2.
+    //   The test flees (Run) after assertions to leave a clean state for R2.
     // -------------------------------------------------------------------------
     test('R1: recruit-action visible + bait-selector has no bait options in fresh inventory', async () => {
       test.setTimeout(120_000);
@@ -578,10 +622,19 @@ test.describe
       }
       expect(s.ongoingBattle.outcome).toBe('Ongoing');
 
+      // qf-7b (QF7B.2) NEW-CONTRACT WITNESS: the bait list renders ONLY after the Recruit command
+      // is pressed, so before the press no bait list is attached at all. ANTI-VACUITY: the
+      // Recruit row is on screen first, and the command list and the actions row (where the bait
+      // list lives) render in the same refresh, so the absence is the closed list, not an
+      // overlay that has not painted yet.
+      const baitSel = page.locator('[data-testid="bait-selector"]');
+      await expect(page.getByTestId('battle-command-recruit')).toBeVisible({ timeout: 5_000 });
+      await expect(baitSel, 'no bait list before Recruit is pressed').toHaveCount(0);
+      await pressCommand(page, 'recruit');
+
       // ctl-8j: the bait <select> became a list (B10); Recruit now asks Yes/No.
       // Bait list must be present (data-testid="bait-selector", now a role=group of rows) with its
       // No bait row (data-testid="bait-option-none") first.
-      const baitSel = page.locator('[data-testid="bait-selector"]');
       await expect(baitSel).toBeVisible({ timeout: 5_000 });
       const noBaitRow = page.locator('[data-testid="bait-option-none"]');
       await expect(noBaitRow).toBeVisible({ timeout: 5_000 });
@@ -606,10 +659,8 @@ test.describe
       // (itemDef.recruitBonus is not exposed in the GameSnap; classify-by-data is
       // enforced at the DOM level via data-recruit-bonus — ADR-0047.)
 
-      // Flee to clean up for R2.
-      // Source: battleView.ts:164 Flee button textContent = 'Flee'.
-      const fleeBtn = page.getByText('Flee', { exact: true });
-      await fleeBtn.click({ timeout: 5_000 });
+      // Flee to clean up for R2, with the command list's Run (QF7.4: the sanctioned flee path).
+      await pressCommand(page, 'run');
       await waitForBattleCleared(page);
     });
 
@@ -728,9 +779,8 @@ test.describe
         );
 
         if (opponentHp && opponentHp.affinity === 'Water') {
-          // Flee immediately — Water wipe risk.
-          const fleeBtn = page.getByText('Flee', { exact: true });
-          await fleeBtn.click({ timeout: 5_000 });
+          // Flee immediately (Run, QF7.4) — Water wipe risk.
+          await pressCommand(page, 'run');
           await waitForBattleCleared(page);
           winningBattleId = null; // encounter did not proceed to recruit
           console.log(`R2 enc ${enc + 1}: fled Water type`);
@@ -771,10 +821,9 @@ test.describe
           const ownPct =
             ownHpInfo && ownHpInfo.max > 0 ? (ownHpInfo.cur / ownHpInfo.max) * 100 : 100;
 
-          // Flee if own HP critically low from wild counterattacks.
+          // Flee (Run, QF7.4) if own HP critically low from wild counterattacks.
           if (ownPct <= OWN_HP_FLEE_THRESHOLD_PCT) {
-            const fleeBtn = page.getByText('Flee', { exact: true });
-            await fleeBtn.click({ timeout: 5_000 });
+            await pressCommand(page, 'run');
             await waitForBattleCleared(page);
             winningBattleId = null;
             // Explicit flee: party HP was > OWN_HP_FLEE_THRESHOLD_PCT before flee click;
@@ -786,12 +835,13 @@ test.describe
           // Wild is sufficiently weakened OR own HP is marginal — stop attacking.
           if (oppPct <= WEAKEN_STOP_PCT || ownPct <= OWN_HP_ATTACK_MIN_PCT) break;
 
-          // Click the first available skill button.
-          // Source: battleView.ts:149 textContent `${skill.name} (${skill.power})`.
-          // No testid — locate by text pattern.
-          const skillBtn = page.locator('button:has-text("(")').first();
-          if (await skillBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
-            await skillBtn.click({ timeout: 3_000 });
+          // Click the first available skill cell. qf-7b (QF7B.2): the grid renders only after
+          // Fight is pressed and every new turn closes it again, so EVERY attack presses Fight
+          // first and waits for a cell (openSkillGrid). The cell is skillCell: a
+          // data-battle-list="skills" row labelled `<name> (<power>) · <affinity> · Acc n%`
+          // (battleView.ts #renderSkills, catalog battle.skill.pveLabel).
+          if (await openSkillGrid(page)) {
+            await skillCell(page).click({ timeout: 3_000 });
             // Wait for the turn to complete (turnNumber increments OR battle ends).
             const beforeTurn = await snap(page);
             const tn = beforeTurn.ongoingBattle?.turnNumber ?? -1;
@@ -808,7 +858,8 @@ test.describe
               )
               .catch(() => null); // tolerate if battle ended before waitForFunction resolved
           } else {
-            // Skills not visible (battle may have ended) — break.
+            // Skills not visible (Fight never went live or the grid never opened: the battle
+            // may have ended) — break.
             break;
           }
 
@@ -889,9 +940,8 @@ test.describe
             ownHpNow && ownHpNow.max > 0 ? (ownHpNow.cur / ownHpNow.max) * 100 : 100;
 
           if (ownPctNow <= OWN_HP_FLEE_THRESHOLD_PCT) {
-            // Too risky — flee before the wild can KO us.
-            const fleeBtn = page.getByText('Flee', { exact: true });
-            await fleeBtn.click({ timeout: 5_000 });
+            // Too risky — flee (Run, QF7.4) before the wild can KO us.
+            await pressCommand(page, 'run');
             await waitForBattleCleared(page);
             winningBattleId = null;
             // battleEndedWithPartyAlive not needed: the post-weaken null check (above)
@@ -900,12 +950,17 @@ test.describe
             break;
           }
 
-          // Click recruit: No bait, then Yes (data-testid="recruit-action").
-          // ctl-8j: the bait <select> became a list (B10); Recruit now asks Yes/No. The No bait
-          // click is INSIDE the per-attempt loop on purpose: a failed attempt advances the turn,
-          // which closes the confirm, so every attempt asks again.
+          // Click recruit: the Recruit command, No bait, then Yes (data-testid="recruit-action").
+          // ctl-8j: the bait <select> became a list (B10); Recruit now asks Yes/No. qf-7b
+          // (QF7B.2): the bait list renders only after the Recruit command is pressed. The
+          // Recruit press and the No bait click are INSIDE the per-attempt loop on purpose: a
+          // failed attempt advances the turn, which closes the bait list and the confirm, so
+          // every attempt presses Recruit and asks again.
           recruitClicksUsed++;
-          await page.locator('[data-testid="bait-option-none"]').click({ timeout: 5_000 });
+          await pressCommand(page, 'recruit');
+          const noBaitRow = page.locator('[data-testid="bait-option-none"]');
+          await expect(noBaitRow, 'Recruit opens the bait list').toBeVisible({ timeout: 5_000 });
+          await noBaitRow.click({ timeout: 5_000 });
           const recruitBtn = page.locator('[data-testid="recruit-action"]');
           await recruitBtn.click({ timeout: 5_000 });
 
@@ -1087,7 +1142,9 @@ test.describe
       //   Requires __game().grantBait(itemId, qty) on the snapshot — not yet exposed.
       //   See re-anchor reason above.
       // STEP 2: trigger a wild battle (grass walk as in R1).
-      // STEP 3: the bait list (data-testid="bait-selector", a group of rows) must be visible.
+      // STEP 3: press the Recruit command (qf-7b: the bait list renders only after it, as in R1);
+      //   the bait list (data-testid="bait-selector", a group of rows) must then be visible.
+      //   await pressCommand(page, 'recruit');
       //   const selector = page.locator('[data-testid="bait-selector"]');
       //   await expect(selector).toBeVisible({ timeout: 5_000 });
       // STEP 4: assert ≥1 row with data-recruit-bonus.
@@ -1103,6 +1160,6 @@ test.describe
       // STEP 6: assert no non-bait items appear in the list.
       //   (Every row except the "No bait" row, data-testid="bait-option-none", must have
       //   data-recruit-bonus > 0.)
-      // Clean up: Flee.
+      // Clean up: flee with the command list's Run (QF7.4), as in R1.
     });
   });

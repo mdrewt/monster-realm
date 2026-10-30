@@ -252,6 +252,22 @@ async function renamePlayer(page: Page, name: string): Promise<void> {
   await closeAll(page);
 }
 
+/**
+ * Presses `page`'s Fight command through the production DOM (qf-7b, QF7B.2; the shape of the
+ * pvp-side-b.spec.ts helper, with this file's 20 s overlay budget — do NOT cross-import). The
+ * battle's command list is the first step of every action: the skill grid (the "Submit: <skill>"
+ * buttons in PvP) renders only after Fight is pressed. A greyed command row (aria-disabled="true":
+ * a PvP move waiting on the opponent, a finished battle) does nothing when pressed, so the press
+ * waits for Fight to be live.
+ */
+async function pressFight(page: Page): Promise<void> {
+  const fight = page.getByTestId('battle-command-fight');
+  await expect(fight, 'Fight is live').toHaveAttribute('aria-disabled', 'false', {
+    timeout: 20_000,
+  });
+  await fight.click({ timeout: 10_000 });
+}
+
 // ---------------------------------------------------------------------------
 // Inventory privacy (BUG-inventory-world-readable). Stacks are seeded by owner SQL
 // (the CLI runs as the module OWNER, which can write the private table — the
@@ -476,7 +492,14 @@ test.describe
       await pressButton(pageB, 'A');
 
       // Both overlays must come up (battleView toggles display:none/flex, so
-      // toBeVisible is a real layout assertion, not a cosmetic one).
+      // toBeVisible is a real layout assertion, not a cosmetic one): each side's command list
+      // is on screen. qf-7b (QF7B.2): the skill grid renders only after Fight is pressed, so
+      // each side presses its own Fight, and both sides' "Submit: <skill>" buttons must then
+      // render.
+      await expect(pageA.getByTestId('battle-commands')).toBeVisible({ timeout: 20_000 });
+      await expect(pageB.getByTestId('battle-commands')).toBeVisible({ timeout: 20_000 });
+      await pressFight(pageA);
+      await pressFight(pageB);
       await expect(pageA.getByRole('button', { name: /^Submit: / }).first()).toBeVisible({
         timeout: 20_000,
       });

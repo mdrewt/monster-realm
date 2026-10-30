@@ -6,13 +6,16 @@
  * in). An Ongoing wild PvE battle row is seeded into the store like main.battle-reseed.test.ts
  * seeds one, with four skill rows, so the real `refreshBattle` builds the view model.
  *
- * One case (its tag is the title's first word): at the battle the D-pad (dispatched on
+ * The first case (its tag is the title's first word): at the battle the D-pad (dispatched on
  * `document.activeElement`, like a browser) reaches the view through the router, the host and the
  * battle adapter: the first press only seats the cursor, Enter on Fight opens the skill grid, a
  * move walks to the last cell. Escape opens the main menu OVER the battle and Backspace (then
  * Escape) closes it again: the stack is back to the bare battle, the same skill still carries
  * aria-current, and Enter (after at most one seating press) calls `submit_attack` once with THAT
  * skill's id.
+ *
+ * A second case (qf-7b, QF7B.2) proves on the same boot that the grid and the bait list are not
+ * rendered at rest: Enter on Fight opens the four cells, and Enter on a chosen cell submits it once.
  *
  * EVERY key is dispatched ON `document.activeElement` (bubbling, like a browser), and a focused
  * <button> is CLICKED on Enter's keydown when the page did not prevent it: happy-dom does not
@@ -383,7 +386,9 @@ describe('the battle booted through main.ts over the real view and adapter table
     seedBattle();
     await settle();
     expect(stackNames(), 'the seeded Ongoing battle is the stack base').toEqual(['battle']);
-    expect(skillCells(), 'the four skills are cells of the grid').toHaveLength(SKILL_IDS.length);
+    // QF7B migration: the cells render only once Fight is pressed (QF7B.2), so the four-cell check
+    // moved after Enter on Fight below. Was: four cells at the open.
+    expect(skillCells(), 'no skill cell before Fight is pressed').toHaveLength(0);
     expect(cursorEls(), 'one cursor at the open').toHaveLength(1);
     expect(cursorEls()[0], 'on Fight').toBe(command('fight'));
 
@@ -394,6 +399,7 @@ describe('the battle booted through main.ts over the real view and adapter table
 
     // --- Enter on Fight (a native click) opens the grid on the first skill ---
     press('Enter');
+    expect(skillCells(), 'the four skills are cells of the grid').toHaveLength(SKILL_IDS.length);
     expectCursorOn(skillCells()[0] as HTMLElement, 'Enter on Fight');
     expect(callsOf('submitAttack'), 'opening the grid attacks nothing').toEqual([]);
 
@@ -440,6 +446,51 @@ describe('the battle booted through main.ts over the real view and adapter table
     press('Enter');
     expect(callsOf('submitAttack'), 'Enter submits the remembered skill once').toEqual([
       { name: 'submitAttack', args: { battleId: BATTLE_ID, skillId: SKILL_IDS[3] } },
+    ]);
+    await settle();
+    expect(callsOf('submitAttack'), 'and only once').toHaveLength(1);
+  });
+
+  it('booted through main.ts, an Ongoing wild battle shows no skill cell and no bait row at rest; Enter on Fight opens the four cells in skill order with the cursor on the first, and Enter on the chosen cell submits THAT skill once [QF7B-2-BOOT-GRID-AFTER-FIGHT]', async () => {
+    // WRONG IMPL KILLED: a grid (or a bait list) rendered at rest by the real refreshBattle path,
+    // i.e. from the view model the real store builds rather than a test fixture; a Fight that the
+    // router, the host or the battle adapter swallows, so the grid never opens; a seating press
+    // that opens it; a grid opened in another order or labelled from the wrong rows; and a cell
+    // press that submits another skill (the first, or the cursor's old one) or submits twice.
+    await bootReady();
+    server();
+    seedBattle();
+    await settle();
+    expect(stackNames(), 'the seeded Ongoing battle is the stack base').toEqual(['battle']);
+    expect(skillCells(), 'no skill cell at rest').toHaveLength(0);
+    expect(
+      battleRoot().querySelectorAll(
+        '[data-testid="bait-selector"], [data-battle-list="recruit"], [data-recruit-bonus]',
+      ),
+      'and no bait list at rest (the battle is wild: Recruit is on offer)',
+    ).toHaveLength(0);
+    expect(command('recruit').getAttribute('aria-disabled'), 'Recruit is live').toBe('false');
+    expect(cursorEls(), 'one cursor at the open').toHaveLength(1);
+    expect(cursorEls()[0], 'on Fight').toBe(command('fight'));
+
+    (document.querySelector('[data-testid="battle-title"]') as HTMLElement).focus();
+    press('ArrowDown');
+    expectCursorOn(command('fight'), 'ArrowDown from the heading only seats Fight');
+    expect(skillCells(), 'seating opens nothing').toHaveLength(0);
+
+    press('Enter');
+    expect(
+      skillCells().map((cell) => cell.textContent?.split(' ')[0]),
+      'Enter on Fight opens one cell per skill, in skill order',
+    ).toEqual(SKILL_IDS.map((id) => `Move-${id}`));
+    expectCursorOn(skillCells()[0] as HTMLElement, 'Enter on Fight lands on the first cell');
+    expect(callsOf('submitAttack'), 'opening the grid attacks nothing').toEqual([]);
+
+    press('KeyS'); // Down, in the 2x2 grid: the third cell
+    expectCursorOn(skillCells()[2] as HTMLElement, 'KeyS steps down to the third cell');
+    press('Enter');
+    expect(callsOf('submitAttack'), 'Enter submits the chosen skill once').toEqual([
+      { name: 'submitAttack', args: { battleId: BATTLE_ID, skillId: SKILL_IDS[2] } },
     ]);
     await settle();
     expect(callsOf('submitAttack'), 'and only once').toHaveLength(1);

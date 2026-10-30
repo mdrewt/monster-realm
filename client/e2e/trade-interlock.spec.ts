@@ -341,7 +341,7 @@ test.describe
     //        The battle interlock guard (G6: reject_if_in_battle) must reject the call.
     //   (e)  Settle window: poll allTradeOffers() for 5s to confirm count stays 0.
     //   (f)  Authoritative spacetime sql absence assertion scoped to (A,B) pair.
-    //   (g)  A flees (waitForBattleCleared).
+    //   (g)  A flees with Run (waitForBattleCleared).
     //
     // WHAT THIS KILLS:
     //   Step (d) row appearing → reject_if_in_battle was deleted or never implemented.
@@ -676,10 +676,14 @@ test.describe
       ).toBe(0);
 
       // -----------------------------------------------------------------------
-      // (g) Cleanup: A flees the battle (so afterAll can close the browser cleanly).
+      // (g) Cleanup: A flees the battle (so afterAll can close the browser cleanly) with the
+      //     command list's Run (qf-7b, QF7.4: the sanctioned flee path). A greyed command row
+      //     (aria-disabled="true") does nothing when pressed, so the press waits for Run to be
+      //     live first.
       // -----------------------------------------------------------------------
-      const fleeBtn = pageA.getByText('Flee', { exact: true });
-      await fleeBtn.click({ timeout: 5_000 });
+      const runBtn = pageA.getByTestId('battle-command-run');
+      await expect(runBtn).toHaveAttribute('aria-disabled', 'false', { timeout: 5_000 });
+      await runBtn.click({ timeout: 5_000 });
       await waitForBattleCleared(pageA);
     });
   });
