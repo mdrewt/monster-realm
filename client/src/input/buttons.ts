@@ -20,8 +20,8 @@ export const VBUTTONS = [
 export type VButton = (typeof VBUTTONS)[number];
 
 /** Optional, remappable shortcuts that open a canonical menu path (design §3). Named by
- *  their default key: the accelerator `B` (Storage) is not the button `B` (Backspace). */
-export const ACCELS = ['B', 'I', 'V', 'J', 'U', 'P', 'L', 'N', 'C', 'F9', 'F8'] as const;
+ *  their default key: the accelerator `B` (Storage) is not the button `B` (Backspace), nor the accelerator `Y` (Controls) the button `Y` (KeyF). */
+export const ACCELS = ['B', 'I', 'V', 'J', 'U', 'P', 'L', 'N', 'C', 'Y', 'F9', 'F8'] as const;
 export type Accel = (typeof ACCELS)[number];
 
 /** One press (`down: true`) or release of a virtual button, from any source. */

@@ -208,6 +208,9 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Name of the shortcut that opens Profile › Account, a row of the Shortcuts tab in Options
   // › Controls. One short word. ui/controlsModel.ts
   'controls.accel.account': 'Account',
+  // @desc: Name of the shortcut that opens Options › Controls, a row of the Shortcuts tab in
+  // Options › Controls. One short word. ui/controlsModel.ts
+  'controls.accel.controls': 'Controls',
   // @desc: Name of the shortcut that saves the local bug-report bundle, a row of the Shortcuts tab
   // in Options › Controls. ui/controlsModel.ts
   'controls.accel.bugReport': 'Save bug report',

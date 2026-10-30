@@ -39,6 +39,7 @@ export const DEFAULT_BINDINGS: Bindings = Object.freeze({
     L: codes('KeyL'),
     N: codes('KeyN'),
     C: codes('KeyC'),
+    Y: codes('KeyY'),
     F9: codes('F9'),
     F8: codes('F8'),
   }),
