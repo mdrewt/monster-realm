@@ -508,22 +508,28 @@ export async function openFaceToFace(
   }
 }
 
-/** The wait a WANDERING NPC gets at a post (dialogue.spec and wallet-balance.spec talk to
- *  elder_oak from (6,3), facing (6,4)). qf-5 (#599) slowed wanderers to one decision a second
- *  (game-core NPC_STEP_TICKS = 5, a 1-in-5 stay), so his deterministic walk over the 8-tile
- *  disc (game_core::npc_decide; (6,4) is a dead-end corner entered only from (6,5) or (5,4))
- *  stands him on (6,4) about 4% of the time, and the gaps between visits are heavy-tailed:
- *  replaying npc_decide for 2e6 decisions gives a mean of 28 s, p99 174 s, p99.9 271 s and a
- *  max of 430 s (sampling the live server for 223 s showed a max of 80 s). A random 138 s
- *  window — the old 6 attempts x (20 s poll + 3 s open wait) — misses him 3.6% of the time at
- *  design cadence and 18% when a loaded CI scheduler halves it; those were the master e2e red
- *  on 57cf7b62 (dialogue.spec 13.5c-5, 120 s timeout) and PR #608's two wallet-balance reds.
- *  21 x 20 s = 420 s of polling misses 0.001% / 0.65%. Every caller's test timeout must cover
- *  WANDER_TALK_BUDGET_MS plus its own work. */
+/** How long a WANDERING NPC gets to reach the faced tile, per attempt (dialogue.spec and
+ *  wallet-balance.spec talk to elder_oak from (6,3), facing (6,4)). qf-5 (#599) slowed
+ *  wanderers to one decision a second (game-core NPC_STEP_TICKS = 5, a 1-in-5 stay), so his
+ *  deterministic walk over the 8-tile disc (game_core::npc_decide; (6,4) is a corner whose only
+ *  in-disc neighbours are (6,5) and (5,4)) stands him on (6,4) about 4% of the time, and the
+ *  gaps between visits are heavy-tailed: replaying npc_decide for 2e6 decisions gives gaps with
+ *  a mean of 28 s, p99 174 s, p99.9 271 s and a max of 430 s (sampling the live server for
+ *  223 s showed a max of 80 s). A random 138 s window — wallet-balance's old 6 attempts x
+ *  (20 s poll + 3 s open wait) — misses him 3.6% of the time at design cadence and 18% when a
+ *  loaded CI scheduler halves it; dialogue.spec's old 120 s test timeout was tighter still.
+ *  Those were PR #608's two wallet-balance e2e reds and master 57cf7b62's dialogue.spec
+ *  13.5c-5 red. 21 x 20 s = 420 s of polling misses 0.001% / 0.65%. */
 export const WANDER_NPC_WAIT_MS = 20_000;
+/** Attempts per talk to a wanderer; each polls for WANDER_NPC_WAIT_MS (the arithmetic above). */
 export const WANDER_NPC_MAX_ATTEMPTS = 21;
-/** One `interactWithNpc` call against a wanderer, bounded: attempts x (poll + 3 s open wait). */
-export const WANDER_TALK_BUDGET_MS = WANDER_NPC_MAX_ATTEMPTS * (WANDER_NPC_WAIT_MS + 3_000);
+/** After an A press, how long `opened` may take (a server round trip): the one source for the
+ *  budget below, `interactWithNpc`'s default and both wanderer callers. */
+export const WANDER_OPEN_WAIT_MS = 3_000;
+/** One `interactWithNpc` call against a wanderer, bounded: attempts x (poll + open wait) = 483 s.
+ *  Every caller's test timeout must cover this plus its own work. */
+export const WANDER_TALK_BUDGET_MS =
+  WANDER_NPC_MAX_ATTEMPTS * (WANDER_NPC_WAIT_MS + WANDER_OPEN_WAIT_MS);
 
 export interface InFrontOpts {
   /** The tile the character holds. */
@@ -617,7 +623,7 @@ export interface InteractOpts {
  *  poll and the keydown, so attempts are bounded by `maxAttempts`. Returns the attempts used. */
 export async function interactWithNpc(page: Page, o: InteractOpts): Promise<number> {
   const npcWaitMs = o.npcWaitMs ?? WANDER_NPC_WAIT_MS;
-  const openWaitMs = o.openWaitMs ?? 3_000;
+  const openWaitMs = o.openWaitMs ?? WANDER_OPEN_WAIT_MS;
   for (let attempt = 1; attempt <= o.maxAttempts; attempt++) {
     // A slow open from the previous attempt may have landed: never press A into it.
     if (await o.opened.isVisible()) return attempt - 1;

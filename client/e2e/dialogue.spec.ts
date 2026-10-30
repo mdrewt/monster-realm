@@ -13,6 +13,7 @@ import {
   interactWithNpc,
   pressAccel,
   WANDER_NPC_MAX_ATTEMPTS,
+  WANDER_OPEN_WAIT_MS,
   WANDER_TALK_BUDGET_MS,
   waitForNpcInFront,
 } from './controls';
@@ -62,8 +63,8 @@ import {
 // WORLD FACTS used below (empirical, this session):
 //   - NPC: npc_id "elder_oak", zone 0, spawn/home (5,5), wander_radius 2,
 //     dialogue_tree_id "elder_oak_talk" (content/npcs/000-core.ron). It wanders:
-//     up to 1 tile per 200ms tick, 4-in-5 move probability (game-core npc_decide),
-//     Manhattan <= 2 of home.
+//     one decision a second since qf-5 (game-core npc_decide gated by NPC_STEP_TICKS = 5,
+//     a 1-in-5 stay), Manhattan <= 2 of home.
 //   - Entry node text "The ancient oak spirit greets you."; npcName renders as
 //     the npcId "elder_oak"; choice text "I seek a quest."
 //     with effects [StartQuest("quest_001")].
@@ -155,9 +156,9 @@ const TALK_FACING: Dir = 'South';
  *  fixed sleeps) until elder_oak stands on the faced tile (6,4), then presses A
  *  once. A press can still lose the race (he steps about once a second since
  *  qf-5, between the poll and the keydown), so attempts are bounded. The ceiling
- *  is sized by his walk, not by the race: (6,4) is a dead-end corner of his 8
- *  wander tiles that he holds ~4% of the time, with visit gaps up to ~7 minutes
- *  (controls.ts WANDER_NPC_MAX_ATTEMPTS has the arithmetic; the old 20 s x 20
+ *  is sized by his walk, not by the race: (6,4) is a corner of his 8 wander
+ *  tiles that he holds ~4% of the time, with visit gaps up to ~7 minutes
+ *  (controls.ts WANDER_NPC_WAIT_MS has the arithmetic; the old 20 s x 20
  *  inside a 120 s test timeout was the master e2e red on 57cf7b62), so every
  *  test that may talk runs under TALK_TEST_TIMEOUT_MS. */
 const MAX_TALK_ATTEMPTS = WANDER_NPC_MAX_ATTEMPTS;
@@ -223,7 +224,7 @@ async function talkUntilOpen(p: Page, playerEntityIds: readonly string[]): Promi
     ignoreEntityIds: playerEntityIds,
     chip: interactChip('Talk', 'elder_oak'),
     maxAttempts: MAX_TALK_ATTEMPTS,
-    openWaitMs: 3_000,
+    openWaitMs: WANDER_OPEN_WAIT_MS,
     label: 'dialogue.spec talkUntilOpen',
   });
 }
