@@ -518,6 +518,10 @@
 .mr-pointer-hover .mr-nav-item:hover {
   text-decoration: underline;
 }
+/* A Rankings row does nothing on a click either (qf-16, QF16.1): no "clickable" hover cue. */
+.mr-pointer-hover .mr-nav-list[aria-readonly="true"] > .mr-nav-item:hover {
+  text-decoration: none;
+}
 
 /*
  * Frame colour tokens (CTL7A.3). fg on bg measures 12.6:1 (WCAG 1.4.3 AA needs 4.5:1); the bg is

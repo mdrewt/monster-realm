@@ -65,7 +65,8 @@ export class LeaderboardView {
   #kept: SocialRankingsPaint | null = null;
   /** `#leaderboard-players` and `#leaderboard-walkup`, built by the first Players paint. */
   #social: { readonly players: HTMLElement; readonly walkUp: HTMLElement } | null = null;
-  /** The Rankings row last scrolled into view, so a re-render of the same cursor never re-scrolls. */
+  /** The Rankings cursor last scrolled into view (its id and index), so a re-render that leaves
+   *  it in place never re-scrolls, and a re-sort that moves it does. */
   #scrolledTo: string | null = null;
 
   constructor() {
@@ -162,10 +163,11 @@ export class LeaderboardView {
       else this.#listEl.setAttribute('aria-activedescendant', cursor.id);
       // aria-activedescendant does not scroll: the cursor is how D-pad Up/Down scroll the list
       // (navRender's rule — only on a change, and only once attached).
-      if (cursor !== undefined && cursor.id !== this.#scrolledTo && cursor.isConnected) {
+      const at = cursor === undefined ? null : `${ranked.indexOf(cursor)}:${cursor.id}`;
+      if (cursor !== undefined && at !== this.#scrolledTo && cursor.isConnected) {
         if (typeof cursor.scrollIntoView === 'function')
           cursor.scrollIntoView({ block: 'nearest' });
-        this.#scrolledTo = cursor.id;
+        this.#scrolledTo = at;
       }
     } else {
       this.#scrolledTo = null;
