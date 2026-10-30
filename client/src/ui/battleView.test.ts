@@ -11811,13 +11811,19 @@ function qf7cLabels(el: Element): string[] {
 }
 
 /** Every element of the whole document (`<html>` itself included, so a node beside `<body>` counts)
- *  that reads "Flee" in any case, shown or hidden. */
+ *  that reads "Flee" in any case, shown or hidden: the label, or a whole word of it ("Retry Flee"
+ *  too; "fled" and "fleet" are other words). */
 function qf7cFleeLabelled(): string[] {
   const html = document.documentElement;
   const out: string[] = [];
   for (const el of [html, ...html.querySelectorAll('*')]) {
     for (const label of qf7cLabels(el)) {
-      if (label.toLowerCase() === 'flee')
+      if (
+        label
+          .toLowerCase()
+          .split(/[^a-z]+/)
+          .includes('flee')
+      )
         out.push(`<${el.tagName.toLowerCase()}> reads "${label}"`);
     }
   }
@@ -11878,7 +11884,7 @@ describe('Run in the command list is the only flee affordance (QF7B.1, qf-7c)', 
     document.body.replaceChildren();
   });
 
-  it('in every state a wild battle can be in (at rest, Fight open, the Recruit confirm open, Swap open, the Bag target open, a PvE call in flight) no element in the document reads Flee by its text or a label attribute, every button in the view is a cursor row, the command list is exactly Fight, Recruit, Swap, Bag, Run, no pointer, mouse, touch, focus or key event on any element of the view but a sender (Run, a skill cell, a swap row, Yes, the Bag target) flees or spends the turn while Run flees once, and nothing requests the retired battle.action.flee key [QF7B-1-NO-FLEE-ANY-STATE]', async () => {
+  it('in every state a wild battle can be in (at rest, Fight open, the Recruit confirm open, Swap open, the Bag target open, a PvE call in flight, Run`s flee call settled or rejected) no element in the document reads Flee by its text or a label attribute, every button in the view is a cursor row, the command list is exactly Fight, Recruit, Swap, Bag, Run, no pointer, mouse, touch, focus or key event on any element of the view but a sender (Run, a skill cell, a swap row, Yes, the Bag target) flees or spends the turn while Run flees once, and nothing requests the retired battle.action.flee key [QF7B-1-NO-FLEE-ANY-STATE]', async () => {
     // WRONG IMPL KILLED (plan §10, measured against the shipped Flee and its variants): the legacy
     // Flee button still rendered; rendered hidden (display:none: the scan reads every element, shown
     // or not), relabelled ("Run away", a second "Run": a button outside every cursor list, or a
@@ -11889,7 +11895,9 @@ describe('Run in the command list is the only flee affordance (QF7B.1, qf-7c)', 
     // mousedown, touchend or keydown handler instead of a click; and the word kept in an aria-label
     // or a title. The click half takes a FRESH mount per element: one mount clicked through is
     // blind, because a press on a command or a cure row rebuilds the actions row and detaches a
-    // Flee before the loop reaches it (measured: onFlee never called on the shipped code).
+    // Flee before the loop reaches it (measured: onFlee never called on the shipped code). And a
+    // retry-flee control built after a rejected flee settles (the verifier's mutant: a "Retry Flee"
+    // button appended to the actions row by a catch on Run's dispatch).
     // (The resolver spies start this test empty: the file-level beforeEach runs vi.clearAllMocks().)
 
     // makeRaVM: a wild battle with two skills, two healthy bench monsters, one bait and one cure
@@ -12010,6 +12018,31 @@ describe('Run in the command list is the only flee affordance (QF7B.1, qf-7c)', 
     qf7cExpectNoFlee(locked, 'under the lock');
     d.resolve();
     await raFlushPromises();
+
+    // --- Run pressed and its flee call settled with no batch, resolved and then rejected: the static
+    // half on what the release leaves on screen, and the five commands live again. The view logs a
+    // rejection to console.error (silenced here, as BV-6 does; the chain's own catch handles it). ---
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const [how, onFlee] of [
+        ['resolved', vi.fn().mockResolvedValue(undefined)],
+        ['rejected', vi.fn().mockRejectedValue(new Error('qf-7c: flee refused'))],
+      ] as const) {
+        const state = `Run pressed, the flee call ${how} and settled`;
+        const fled = c8iFresh(makeRaVM(), makeRaCallbacks({ onFlee }));
+        c8iCmd(fled.root, 'run').click();
+        expect(onFlee, `${state}: precondition, one flee`).toHaveBeenCalledTimes(1);
+        await raFlushPromises();
+        await s4FlushMacrotask(); // a control built after the settle is on screen by now
+        qf7cExpectNoFlee(fled, state);
+        expect(
+          C8I_IDS.filter((id) => c8iDisabled(c8iCmd(fled.root, id))),
+          `${state}: the release leaves the five commands live`,
+        ).toEqual([]);
+      }
+    } finally {
+      vi.mocked(console.error).mockRestore();
+    }
 
     // --- the retired key, read string-typed (the id has left the MessageId union) ---
     expect(
