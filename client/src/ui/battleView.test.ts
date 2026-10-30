@@ -10785,7 +10785,7 @@ describe('BattleView QF7B.2: the skill grid and the bait list render only while 
     expect(m.callbacks.onRecruit, 'nothing is recruited').not.toHaveBeenCalled();
   });
 
-  it('another command switches the open list (Recruit over the grid, Fight over the bait list, Swap over either, Bag over either, by the mouse or by A) so that exactly one of the grid, the bait list and the bench rows is on screen; Run closes the open list and flees once; a cure-row press over an open grid or bait list closes it and opens the Bag target; a bait row held from a closed list does nothing [QF7B-2-OTHER-COMMAND-SWITCHES]', async () => {
+  it('another command switches the open list (Recruit over the grid, Fight over the bait list, Swap over either, Bag over either, by the mouse or by A) so that exactly one of the grid, the bait list and the bench rows is on screen; Run closes the open list and flees once; a cure-row press over an open grid or bait list closes it and opens the Bag target; a bait row held from a closed list does nothing; re-pressing Recruit or Bag over its own open second step drops the step, keeps the list and seats the cursor on its first row [QF7B-2-OTHER-COMMAND-SWITCHES]', async () => {
     // WRONG IMPL KILLED: a grid or a bait list opened for ANY command press (Recruit opens the bait
     // list and leaves the grid up: two lists, two possible actions in one turn); a switch the mouse
     // makes and the D-pad does not (A reaches the same handler through `rows[cursor].click()`, but a
@@ -10915,6 +10915,96 @@ describe('BattleView QF7B.2: the skill grid and the bait list render only while 
       expect(m.callbacks.onAttack, `${from}: nothing is attacked`).not.toHaveBeenCalled();
       expect(m.callbacks.onRecruit, `${from}: nothing is recruited`).not.toHaveBeenCalled();
       expect(m.callbacks.onUseItem, `${from}: nothing is used`).not.toHaveBeenCalled();
+    }
+
+    // --- re-pressing the command whose own second step is open drops the step, keeps the list ---
+    // WRONG IMPL KILLED (round 3, the verifier's mutant): a #chooseCommand that keeps the pick when
+    // the pressed command is already the open one (`#setOpen(id, id === this.#open ? this.#pick :
+    // null)`): re-pressing Recruit over its open Yes / No (or Bag over its open Use-item target)
+    // leaves that step on screen and the held Yes / target still live, so the press the player made
+    // to start over spends the old choice instead. A command press always drops the pick: the step
+    // goes, the list stays open, and the cursor and focus land on the list's first row (No bait, or
+    // the first cure row), not on the row that was picked. (The ctl-8j replace-pick case presses
+    // Fight only, so it never saw this.)
+    for (const how of QF7B_HOWS) {
+      // Recruit: the Sweet Bait confirm (not the first row) is open, then Recruit again.
+      const r = c8iFresh(c8jVM());
+      qf7bPress(r, 'recruit', 'mouse');
+      c8jRows(r.root, 'recruit')[2]?.click();
+      const heldYes = c8jYes(r.root) as HTMLButtonElement;
+      expect(heldYes, `Recruit again by ${how}: precondition, the confirm is open`).not.toBeNull();
+      c8iExpectCursorOn(r.root, heldYes, `Recruit again by ${how}: precondition, on Yes`);
+      qf7bPress(r, 'recruit', how);
+      expect(
+        r.root.querySelector('[data-testid="recruit-confirm"]'),
+        `Recruit again by ${how}: the confirm is gone`,
+      ).toBeNull();
+      expect(
+        c8jRows(r.root, 'recruitConfirm').map((row) => row.textContent),
+        `Recruit again by ${how}: no Yes / No row is left`,
+      ).toEqual([]);
+      expect(qf7bOpen(r.root), `Recruit again by ${how}: the bait list stays open`).toEqual([
+        'bait',
+      ]);
+      expect(
+        c8jRows(r.root, 'recruit').map((row) => row.textContent),
+        `Recruit again by ${how}: with all its rows`,
+      ).toEqual([...QF7B_BAITS]);
+      c8iExpectCursorOn(
+        r.root,
+        c8jRows(r.root, 'recruit')[0] as Element,
+        `Recruit again by ${how}: the cursor and focus are on No bait`,
+      );
+      expect(
+        r.callbacks.onRecruit,
+        `Recruit again by ${how}: nothing is recruited`,
+      ).not.toHaveBeenCalled();
+      heldYes.click();
+      expect(
+        r.callbacks.onRecruit,
+        `Recruit again by ${how}: the held Yes recruits nothing afterwards`,
+      ).not.toHaveBeenCalled();
+      expect(
+        r.root.querySelector('[data-testid="recruit-confirm"]'),
+        `Recruit again by ${how}: nor brings the confirm back`,
+      ).toBeNull();
+
+      // Bag: the Salve target (not the first cure row) is open, then Bag again.
+      const b = c8iFresh(c8jVM());
+      const cures = c8jRows(b.root, 'bag').map((row) => row.textContent);
+      qf7bPress(b, 'bag', 'mouse');
+      c8jRows(b.root, 'bag')[1]?.click();
+      const heldUse = c8jUse(b.root) as HTMLButtonElement;
+      expect(heldUse, `Bag again by ${how}: precondition, the target is open`).not.toBeNull();
+      c8iExpectCursorOn(b.root, heldUse, `Bag again by ${how}: precondition, on the target`);
+      qf7bPress(b, 'bag', how);
+      expect(
+        b.root.querySelector('[data-testid="cure-target"]'),
+        `Bag again by ${how}: the target is gone`,
+      ).toBeNull();
+      expect(
+        c8jRows(b.root, 'bagTarget').map((row) => row.textContent),
+        `Bag again by ${how}: no target row is left`,
+      ).toEqual([]);
+      expect(
+        c8jRows(b.root, 'bag').map((row) => row.textContent),
+        `Bag again by ${how}: the cure list is still there`,
+      ).toEqual(cures);
+      c8iExpectCursorOn(
+        b.root,
+        c8jRows(b.root, 'bag')[0] as Element,
+        `Bag again by ${how}: the cursor and focus are on the first cure row`,
+      );
+      expect(b.callbacks.onUseItem, `Bag again by ${how}: nothing is used`).not.toHaveBeenCalled();
+      heldUse.click();
+      expect(
+        b.callbacks.onUseItem,
+        `Bag again by ${how}: the held target uses nothing afterwards`,
+      ).not.toHaveBeenCalled();
+      expect(
+        b.root.querySelector('[data-testid="cure-target"]'),
+        `Bag again by ${how}: nor brings the target back`,
+      ).toBeNull();
     }
   });
 
