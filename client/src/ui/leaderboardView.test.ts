@@ -1394,3 +1394,596 @@ describe('LeaderboardView — the Rankings list and the kept paint (ctl-8g, CTL8
     expect(byId('leaderboard-walkup')?.textContent).toBe('Walk up to Carol and press A');
   });
 });
+
+// ==========================================================================================
+// qf-16 (QF16.1, QF16.2): the Rankings list is display-only and scrolls with its cursor.
+//
+// EARS. QF16.1: the ranking rows render as display-only: a read-only selected-row treatment
+// visually distinct from the actionable nav rows' active style, implying no A-press affordance.
+// QF16.2: when the ranking list overflows it shows a visible scroll affordance, and D-pad Up/Down
+// still scroll it (the cursor-as-scroll mechanism stays).
+//
+// CONTRACT. A populated Rankings paint also writes `aria-readonly="true"` on `#leaderboard-list`
+// (a LIST mark: removed whenever that paint is not applied; row classes are UNCHANGED). A cursor
+// row whose id differs from the one last scrolled to is scrolled into view, once
+// (`scrollIntoView({ block: 'nearest' })`); a re-render with the same cursor never re-scrolls.
+// styles.css undoes the actionable treatment on the read-only cursor row, and makes the list its
+// own scroll container with overflow-only scroll shadows.
+//
+// SELECTORS ARE NOT PINNED. styles.css bans every `#id` selector (its header, [A11Y-07]), so the
+// stylesheet cannot say `#leaderboard-list[...]`. These tests therefore read what the sheet DOES to
+// the real elements: getComputedStyle for the properties happy-dom computes, and a small cascade
+// (executable `el.matches` + specificity + source order) for the two things it cannot compute:
+// the `::before` content and a multi-layer `background-attachment`.
+//
+// RED REASONS (against the code before this slice):
+//   QF16-1-READONLY-MARK     the list never gets aria-readonly.
+//   QF16-1-COMPUTED-DISTINCT the Rankings cursor row computes exactly the actionable row's
+//                            inverted fill, text colour, outline and ▶ (no read-only treatment).
+//   QF16-2-SCROLL-ON-STEP    nothing scrolls the cursor row (scrollIntoView is never called).
+//   QF16-2-OVERFLOW-AFFORDANCE  the list computes overflow-y visible, min-height auto and has no
+//                            background layers at all.
+//
+// WRONG IMPLS KILLED: the row class swapped or dropped (READONLY-MARK pins the exact classes, the
+// boot pin keeps is-active); the mark on the rows instead of the list; the mark left behind by
+// hide, a Players paint, an empty board, a hidden render or the re-open edge; the mark on the
+// legacy board; a CSS rule keyed on a selector that never matches the row; a rule that changes only
+// the outline and keeps the inverted fill; the ▶ left on; scroll on every render (the board is
+// re-rendered each store batch, so it would yank); scroll keyed on the row node instead of its id;
+// scroll that is not reset after a hide or a Players tab; an unguarded scrollIntoView call (a
+// detached list, or no such method); overflow set on the parent only; no min-height (a flex item
+// never shrinks below its content, so never scrolls); an always-on shadow (no `local` layer).
+// ==========================================================================================
+
+const QF16_STYLES_CSS = readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'styles.css'),
+  'utf8',
+);
+const QF16_ARROW = String.fromCodePoint(0x25b6);
+
+interface Qf16Decl {
+  readonly prop: string;
+  readonly value: string;
+  readonly important: boolean;
+}
+interface Qf16Rule {
+  readonly selector: string;
+  readonly specificity: readonly [number, number, number];
+  readonly order: number;
+  readonly decls: readonly Qf16Decl[];
+}
+
+function qf16Decls(body: string): Qf16Decl[] {
+  const out: Qf16Decl[] = [];
+  for (const part of body.split(';')) {
+    const colon = part.indexOf(':');
+    if (colon === -1) continue;
+    const raw = part.slice(colon + 1).trim();
+    out.push({
+      prop: part.slice(0, colon).trim().toLowerCase(),
+      value: raw
+        .replace(/!\s*important\s*$/i, '')
+        .trim()
+        .toLowerCase(),
+      important: /!\s*important\s*$/i.test(raw),
+    });
+  }
+  return out;
+}
+
+/** (ids, classes + attributes + pseudo-classes, types + pseudo-elements) of one simple selector. */
+function qf16Specificity(selector: string): readonly [number, number, number] {
+  let s = selector.replace(/:where\((?:[^()]|\([^()]*\))*\)/g, ' ');
+  s = s.replace(/"[^"]*"|'[^']*'/g, '""');
+  const ids = (s.match(/#[\w-]+/g) ?? []).length;
+  s = s.replace(/#[\w-]+/g, ' ');
+  const pseudoElements = (s.match(/::[\w-]+/g) ?? []).length;
+  s = s.replace(/::[\w-]+/g, ' ');
+  const attrs = (s.match(/\[[^\]]*\]/g) ?? []).length;
+  s = s.replace(/\[[^\]]*\]/g, ' ');
+  const classes = (s.match(/\.[\w-]+/g) ?? []).length;
+  s = s.replace(/\.[\w-]+/g, ' ');
+  const pseudoClasses = (s.match(/:[\w-]+(?:\([^()]*\))?/g) ?? []).length;
+  s = s.replace(/:[\w-]+(?:\([^()]*\))?/g, ' ');
+  const types = (s.match(/(?:^|[\s>+~])[a-z][\w-]*/gi) ?? []).length;
+  return [ids, classes + attrs + pseudoClasses, types + pseudoElements];
+}
+
+/** Every innermost `selector { declarations }` block of the sheet (an @media rule's inner blocks
+ *  included), one entry per selector of a comma list, comments stripped, in source order. */
+function qf16Rules(css: string): Qf16Rule[] {
+  const rules: Qf16Rule[] = [];
+  let order = 0;
+  for (const m of css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const head = (m[1] ?? '').split(';').pop() ?? '';
+    const decls = qf16Decls(m[2] ?? '');
+    for (const raw of head.split(',')) {
+      const selector = raw.trim();
+      if (selector === '' || selector.startsWith('@')) continue;
+      rules.push({ selector, specificity: qf16Specificity(selector), order, decls });
+      order += 1;
+    }
+  }
+  return rules;
+}
+
+const QF16_RULES = qf16Rules(QF16_STYLES_CSS);
+
+function qf16Matches(el: Element, selector: string): boolean {
+  try {
+    return el.matches(selector);
+  } catch {
+    return false;
+  }
+}
+
+function qf16Outranks(a: readonly number[], b: readonly number[]): boolean {
+  for (let i = 0; i < a.length; i += 1) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return false;
+}
+
+/** The declaration of one of `props` that wins the cascade for `el` (or its `::before`): the
+ *  highest of !important, specificity, source order, position in the block. Inline style and the
+ *  UA sheet are not modelled. */
+function qf16Winner(
+  el: Element,
+  props: readonly string[],
+  pseudo: '' | '::before',
+): Qf16Decl | undefined {
+  let best: Qf16Decl | undefined;
+  let bestRank: readonly number[] = [];
+  for (const rule of QF16_RULES) {
+    let base = rule.selector;
+    if (pseudo === '::before') {
+      if (!base.endsWith('::before')) continue;
+      base = base.slice(0, -'::before'.length) || '*';
+    } else if (base.includes('::')) {
+      continue;
+    }
+    if (!qf16Matches(el, base)) continue;
+    rule.decls.forEach((decl, j) => {
+      if (!props.includes(decl.prop)) return;
+      const rank = [decl.important ? 1 : 0, ...rule.specificity, rule.order, j];
+      if (best === undefined || qf16Outranks(rank, bestRank)) {
+        best = decl;
+        bestRank = rank;
+      }
+    });
+  }
+  return best;
+}
+
+/** The attachment of each background layer the winning declaration sets (a layer that names none
+ *  of local / scroll / fixed is `scroll`, the CSS initial value). */
+function qf16Attachments(win: Qf16Decl | undefined): string[] {
+  if (win === undefined) return [];
+  const layers: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of win.value) {
+    if (ch === '(') depth += 1;
+    if (ch === ')') depth -= 1;
+    if (ch === ',' && depth === 0) {
+      layers.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  layers.push(current);
+  return layers.map((layer) => {
+    const text = layer.trim();
+    if (win.prop === 'background-attachment') return text;
+    return /(?:^|\s)(local|scroll|fixed)(?=\s|$)/.exec(text)?.[1] ?? 'scroll';
+  });
+}
+
+const qf16Fill = (cs: CSSStyleDeclaration): string =>
+  cs.backgroundColor !== '' ? cs.backgroundColor : cs.background;
+
+/** Is a visible outline drawn? (style set and not none, width not zero) */
+function qf16OutlineOn(cs: CSSStyleDeclaration): boolean {
+  const style =
+    cs.outlineStyle !== ''
+      ? cs.outlineStyle
+      : (/\b(solid|dashed|dotted|double|groove|ridge|inset|outset|auto)\b/.exec(cs.outline)?.[1] ??
+        'none');
+  return style !== 'none' && cs.outlineWidth !== '0' && cs.outlineWidth !== '0px';
+}
+
+/** The non-fill selected-row cue: a left border, or an inset box-shadow bar. */
+function qf16HasCue(cs: CSSStyleDeclaration): boolean {
+  const border =
+    cs.borderLeftStyle !== '' &&
+    cs.borderLeftStyle !== 'none' &&
+    cs.borderLeftWidth !== '0' &&
+    cs.borderLeftWidth !== '0px';
+  return border || /\binset\b/.test(cs.boxShadow);
+}
+
+function qf16OverflowY(cs: CSSStyleDeclaration): string {
+  if (cs.overflowY !== '') return cs.overflowY;
+  const tokens = cs.overflow.trim().split(/\s+/);
+  return tokens[1] ?? tokens[0] ?? '';
+}
+
+interface Qf16Scroll {
+  readonly el: HTMLElement;
+  readonly arg: unknown;
+  /** Called on a node inside `#leaderboard-list` (the Players list scrolls through the kit). */
+  readonly inBoard: boolean;
+}
+
+/** Replace `scrollIntoView` (happy-dom may lack it) with a recorder, until `restore()`. */
+function qf16StubScroll(): { calls: Qf16Scroll[]; restore: () => void } {
+  const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
+  const own = Object.getOwnPropertyDescriptor(proto, 'scrollIntoView');
+  const calls: Qf16Scroll[] = [];
+  Object.defineProperty(proto, 'scrollIntoView', {
+    configurable: true,
+    writable: true,
+    value(this: HTMLElement, arg?: unknown): void {
+      calls.push({ el: this, arg, inBoard: this.closest('#leaderboard-list') !== null });
+    },
+  });
+  return {
+    calls,
+    restore: () => {
+      if (own !== undefined) Object.defineProperty(proto, 'scrollIntoView', own);
+      else Reflect.deleteProperty(proto, 'scrollIntoView');
+    },
+  };
+}
+
+describe('LeaderboardView — the Rankings rows are display-only (qf-16, QF16.1)', () => {
+  it('a populated Rankings paint marks the board list aria-readonly=true while every ranked row keeps mr-nav-item and only the cursor row is-active + selected; the mark is gone on the legacy board and whenever the paint is not applied: hide, a Players paint, an empty board, a hidden render, the re-open edge [QF16-1-READONLY-MARK]', () => {
+    // WRONG IMPL KILLED: no mark at all (RED today); the mark on the rows or the overlay instead of
+    // the list; the mark written by render() with no paint (the legacy board would claim to be
+    // read-only); the mark left behind by hide(), a Players paint, an empty board, a render while
+    // hidden, a paint made while hidden, or a root closed behind the view's back and re-opened; a
+    // mark that sticks after the board empties (never comes back with rows); the readonly
+    // treatment bought by renaming or dropping the row classes (the exact class strings are pinned,
+    // and the boot test pins is-active on the cursor row).
+    const { overlay } = mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    const list = byId('leaderboard-list') as HTMLElement;
+    const readonly = (): string | null => list.getAttribute('aria-readonly');
+
+    view.render(makeVm(BOARD));
+    expect(readonly(), 'a hidden legacy board').toBeNull();
+    view.show();
+    view.render(makeVm(BOARD));
+    expect(readonly(), 'a shown legacy board with no paint').toBeNull();
+
+    view.paintSocial(rankingsPaint('bb'));
+    expect(readonly(), 'a Rankings paint over rows').toBe('true');
+    expect(list.getAttribute('role'), 'still the listbox').toBe('listbox');
+    const items = rowsOf();
+    expect(
+      items.map((li) => li.className),
+      'row classes are unchanged: the cursor row is still is-active',
+    ).toEqual(['mr-nav-item', 'mr-nav-item is-active', 'mr-nav-item']);
+    expect(items.map((li) => li.getAttribute('aria-selected'))).toEqual(['false', 'true', 'false']);
+    expect(
+      items.some((li) => li.hasAttribute('aria-readonly')),
+      'a list mark, not a row mark',
+    ).toBe(false);
+    expect(overlay.hasAttribute('aria-readonly'), 'and not on the dialog root').toBe(false);
+
+    // The cursor moving keeps the mark (it is the list's, not the cursor row's).
+    view.paintSocial(rankingsPaint('cc'));
+    expect(readonly(), 'a repaint with a new cursor').toBe('true');
+
+    // hide() drops it.
+    view.hide();
+    expect(readonly(), 'after hide()').toBeNull();
+
+    // A render while hidden, and a paint made while hidden, carry none.
+    view.render(makeVm(BOARD));
+    expect(readonly(), 'a render while hidden').toBeNull();
+    view.paintSocial(rankingsPaint('bb'));
+    expect(readonly(), 'a paint made while hidden is not kept').toBeNull();
+
+    // A Players paint drops it, and Rankings brings it back.
+    view.show();
+    view.render(makeVm(BOARD));
+    view.paintSocial(rankingsPaint('bb'));
+    expect(readonly(), 'Rankings again after the re-open').toBe('true');
+    const rows: readonly SocialPlayerRow[] = [{ key: 'bb', name: 'Bob', nearby: false }];
+    view.paintSocial(playersPaint(rows, 'bb'));
+    expect(readonly(), 'a Players paint').toBeNull();
+    view.paintSocial(rankingsPaint('bb'));
+    expect(readonly(), 'back on Rankings').toBe('true');
+
+    // The empty board is a plain list, painted or not, and the mark returns with the rows.
+    view.render(makeVm([]));
+    expect(readonly(), 'an empty board under a kept Rankings paint').toBeNull();
+    view.paintSocial(rankingsPaint('bb'));
+    expect(readonly(), 'a Rankings paint over the empty board').toBeNull();
+    view.render(makeVm(BOARD));
+    expect(readonly(), 'rows arrive again').toBe('true');
+    view.render(makeVm([]));
+    expect(readonly(), 'emptied again').toBeNull();
+
+    // The hidden -> visible edge drops a paint the view never saw closing.
+    view.render(makeVm(BOARD));
+    view.paintSocial(rankingsPaint('bb'));
+    expect(readonly(), 'fixture: marked').toBe('true');
+    overlay.style.display = 'none';
+    view.show();
+    expect(readonly(), 'the re-open edge').toBeNull();
+  });
+});
+
+describe('LeaderboardView — the Rankings cursor row scrolls into view (qf-16, QF16.2)', () => {
+  it('a Rankings paint scrolls the cursor row into view once per change of cursor row (block nearest, called on that row), never on a re-render or repaint of the same cursor, again after a hide or a Players tab, never on a detached list, and tolerates a missing scrollIntoView [QF16-2-SCROLL-ON-STEP]', () => {
+    // WRONG IMPL KILLED: no scroll at all (RED today: Rankings marks rows by hand, so the nav kit's
+    // scroll rule never runs for it); a scroll on the legacy board or on every render/paint (main
+    // re-renders the board each store batch: the list would be yanked back while the player reads);
+    // a "last scrolled" kept as the row NODE instead of its id (a re-render replaces every <li>, so
+    // the same cursor would re-scroll); one that tracks the paint's cursor key instead of the row
+    // shown (an unknown cursor or a vanished row falls back to the first row: that is a new row);
+    // the memory not reset by a hide() or a Players paint (the next visit would not scroll the
+    // cursor into view); a scroll with other options (`center` would recentre the list on every
+    // step); a call on the list or another node instead of the cursor <li>; an unguarded call on a
+    // detached list or where scrollIntoView does not exist.
+    const stub = qf16StubScroll();
+    try {
+      mountLeaderboardOverlay();
+      const view = new LeaderboardView();
+      const boardIds = (): string[] => stub.calls.filter((c) => c.inBoard).map((c) => c.el.id);
+      const last = (): Qf16Scroll => stub.calls[stub.calls.length - 1] as Qf16Scroll;
+
+      view.show();
+      view.render(makeVm(BOARD));
+      expect(stub.calls.length, 'the legacy board scrolls nothing').toBe(0);
+
+      // First paint: the cursor row, once, on that <li>, with { block: 'nearest' }.
+      view.paintSocial(rankingsPaint('bb'));
+      expect(boardIds(), 'the first Rankings paint scrolls the cursor row').toEqual([
+        'social-rankings-bb',
+      ]);
+      expect(last().arg, 'nearest, nothing else').toEqual({ block: 'nearest' });
+      expect(last().el, 'called ON the cursor row').toBe(rowsOf()[1]);
+
+      // The same cursor, however it arrives: nothing more.
+      view.render(makeVm(BOARD));
+      view.render(makeVm(BOARD));
+      view.paintSocial(rankingsPaint('bb'));
+      view.paintSocial(rankingsPaint('bb'));
+      expect(boardIds(), 're-render / repaint of the same cursor: no new scroll').toEqual([
+        'social-rankings-bb',
+      ]);
+
+      // The cursor steps: the NEW row, once each.
+      view.paintSocial(rankingsPaint('cc'));
+      expect(boardIds()).toEqual(['social-rankings-bb', 'social-rankings-cc']);
+      expect(last().arg).toEqual({ block: 'nearest' });
+      expect(last().el, 'called on the new cursor row').toBe(rowsOf()[2]);
+
+      // An unknown cursor falls back to the first row: that is a change of row, scrolled once...
+      view.paintSocial(rankingsPaint('nobody'));
+      expect(boardIds().slice(2), 'unknown cursor: the fallback row').toEqual([
+        'social-rankings-aa',
+      ]);
+      expect(last().el).toBe(rowsOf()[0]);
+      // ...and a null or another unknown cursor naming the same fallback row is not.
+      view.paintSocial(rankingsPaint(null));
+      view.paintSocial(rankingsPaint('nobody'));
+      expect(boardIds().length, 'the fallback row again: no scroll').toBe(3);
+
+      // Back to cc, then the cursor row vanishes from the board: the first row, scrolled once.
+      view.paintSocial(rankingsPaint('cc'));
+      expect(boardIds().slice(3)).toEqual(['social-rankings-cc']);
+      view.render(makeVm(BOARD.slice(0, 1)));
+      expect(boardIds().slice(4), 'the cursor row left the board').toEqual(['social-rankings-aa']);
+      view.render(makeVm(BOARD));
+      expect(boardIds().slice(5), 'and came back').toEqual(['social-rankings-cc']);
+      expect(boardIds().length, 'one scroll per change, no more').toBe(6);
+
+      // A Players tab scrolls no board row; the next Rankings paint scrolls the cursor again, even
+      // though its id is the one last scrolled to.
+      const rows: readonly SocialPlayerRow[] = [{ key: 'bb', name: 'Bob', nearby: false }];
+      view.paintSocial(playersPaint(rows, 'bb'));
+      expect(boardIds().length, 'a Players paint scrolls no ranking row').toBe(6);
+      view.paintSocial(rankingsPaint('cc'));
+      expect(boardIds().slice(6), 'Rankings after Players: scrolled again').toEqual([
+        'social-rankings-cc',
+      ]);
+      expect(last().el).toBe(rowsOf()[2]);
+
+      // hide() then show(): the next Rankings paint scrolls again (same cursor id).
+      view.hide();
+      view.show();
+      view.render(makeVm(BOARD));
+      view.paintSocial(rankingsPaint('cc'));
+      expect(boardIds().slice(7), 'after a hide and a re-open: scrolled again').toEqual([
+        'social-rankings-cc',
+      ]);
+      expect(boardIds().length).toBe(8);
+
+      // A detached list scrolls nothing (the view is built while attached, as its constructor needs).
+      view.hide();
+      const { overlay: detached } = mountLeaderboardOverlay();
+      const orphan = new LeaderboardView();
+      orphan.show();
+      orphan.render(makeVm(BOARD));
+      detached.remove();
+      const before = stub.calls.length;
+      orphan.paintSocial(rankingsPaint('bb'));
+      expect(stub.calls.length, 'a detached list: no scroll').toBe(before);
+      orphan.hide();
+
+      // Where scrollIntoView does not exist the paint still lands.
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+        configurable: true,
+        writable: true,
+        value: undefined,
+      });
+      mountLeaderboardOverlay();
+      const bare = new LeaderboardView();
+      bare.show();
+      bare.render(makeVm(BOARD));
+      expect(() => bare.paintSocial(rankingsPaint('bb'))).not.toThrow();
+      expect(
+        rowsOf().map((li) => li.getAttribute('aria-selected')),
+        'the marks still land',
+      ).toEqual(['false', 'true', 'false']);
+    } finally {
+      stub.restore();
+    }
+  });
+});
+
+describe('LeaderboardView — the real stylesheet on the Rankings list (qf-16, QF16.1, QF16.2)', () => {
+  let sheet: HTMLStyleElement | null = null;
+  beforeEach(() => {
+    sheet = document.createElement('style');
+    // The REAL sheet, then two reference classes carrying the shipped actionable declarations
+    // (`background: var(--mr-frame-fg)`, `color: var(--mr-frame-bg)`) through the same mechanism as
+    // `.mr-nav-item.is-active`, so a comparison holds whether or not happy-dom resolves var().
+    sheet.textContent = `${QF16_STYLES_CSS}\n.qf16-ref-fill { background: var(--mr-frame-fg); }\n.qf16-ref-text { color: var(--mr-frame-bg); }\n`;
+    document.head.appendChild(sheet);
+  });
+  afterEach(() => {
+    sheet?.remove();
+    sheet = null;
+  });
+
+  /** The shell as client/index.html:58-60 ships it, painted on Rankings with the cursor on `bb`. */
+  function qf16Shell(): { overlay: HTMLElement; list: HTMLElement } {
+    const { overlay, list } = mountLeaderboardOverlay();
+    overlay.className = 'mr-frame mr-shell';
+    list.className = 'mr-nav-list';
+    const view = new LeaderboardView();
+    view.show();
+    view.render(makeVm(BOARD));
+    view.paintSocial(rankingsPaint('bb'));
+    return { overlay, list };
+  }
+
+  const div = (parent: HTMLElement, className: string): HTMLElement => {
+    const el = document.createElement('div');
+    el.className = className;
+    parent.appendChild(el);
+    return el;
+  };
+
+  it('the Rankings cursor row computes no inverted fill, no inverted text colour, no outline and no ▶, and carries a non-fill cue the other ranking rows lack, while an actionable nav row in the same sheet keeps all of them [QF16-1-COMPUTED-DISTINCT]', () => {
+    // WRONG IMPL KILLED: today's code (the cursor row computes exactly the actionable row's fill,
+    // text colour, outline and ▶); a rule keyed on a selector that never matches the row (an
+    // `[aria-readonly]` test on the <li>, or on the wrong ancestor): the fill and ▶ stay; a rule
+    // that changes only the outline and keeps the inverted fill (or only the fill); the ▶ left on;
+    // a cue on every ranking row instead of the selected one; a treatment bought by changing the
+    // actionable `.mr-nav-item.is-active` rule itself (the probe row below is that rule).
+    qf16Shell();
+    const [other, cursor] = rowsOf() as [HTMLElement, HTMLElement, HTMLElement];
+
+    const frame = div(document.body, 'mr-frame');
+    const ul = document.createElement('ul');
+    ul.className = 'mr-nav-list';
+    const active = document.createElement('li');
+    active.className = 'mr-nav-item is-active';
+    const plain = document.createElement('li');
+    plain.className = 'mr-nav-item';
+    ul.append(active, plain);
+    frame.appendChild(ul);
+    const fillRef = div(frame, 'qf16-ref-fill');
+    const textRef = div(frame, 'qf16-ref-text');
+
+    // happy-dom caches computed style per element: every element is read once.
+    const onCursor = getComputedStyle(cursor);
+    const onOther = getComputedStyle(other);
+    const onActive = getComputedStyle(active);
+    const onPlain = getComputedStyle(plain);
+    const fill = getComputedStyle(fillRef);
+    const text = getComputedStyle(textRef);
+
+    // ANTI-VACUITY: the sheet parsed, and the actionable probe really computes the treatment the
+    // ranking row must not have.
+    expect(QF16_RULES.length > 0, 'the cascade scan sees rules').toBe(true);
+    expect(qf16Fill(onActive), 'probe: the actionable active row has a fill').not.toBe('');
+    expect(qf16Fill(onActive), 'probe: its fill is the frame fg token').toBe(qf16Fill(fill));
+    expect(qf16Fill(onPlain), 'probe: a plain row has a different fill').not.toBe(
+      qf16Fill(onActive),
+    );
+    expect(onActive.color, 'probe: its text is the frame bg token').toBe(text.color);
+    expect(onPlain.color, 'probe: a plain row has a different text colour').not.toBe(
+      onActive.color,
+    );
+    expect(qf16OutlineOn(onActive), 'probe: the actionable row is outlined').toBe(true);
+    expect(qf16OutlineOn(onPlain), 'probe: a plain row is not').toBe(false);
+    expect(qf16HasCue(onActive), 'probe: the actionable row has no read-only cue').toBe(false);
+    expect(
+      qf16Winner(active, ['content'], '::before')?.value.includes(QF16_ARROW),
+      'probe: the actionable row has the ▶ (the ::before scan sees the shipped rule)',
+    ).toBe(true);
+    expect(cursor.className, 'fixture: the cursor row is still is-active').toBe(
+      'mr-nav-item is-active',
+    );
+
+    // The read-only cursor row.
+    expect(qf16Fill(onCursor), 'no inverted fill').not.toBe(qf16Fill(fill));
+    expect(onCursor.color, 'no inverted text colour').not.toBe(text.color);
+    expect(qf16OutlineOn(onCursor), 'no outline').toBe(false);
+    expect(
+      qf16Winner(cursor, ['content'], '::before')?.value.includes(QF16_ARROW) ?? false,
+      'no ▶ marker',
+    ).toBe(false);
+    expect(
+      qf16HasCue(onCursor),
+      'a read-only cue in place of the fill (left border / inset bar)',
+    ).toBe(true);
+    expect(qf16HasCue(onOther), 'and only the selected row carries it').toBe(false);
+  });
+
+  it('the Rankings list is its own scroll container in the flex-column overlay: overflow-y auto, min-height 0, shrinkable, with background layers that are both local and scroll (overflow-only scroll shadows) [QF16-2-OVERFLOW-AFFORDANCE]', () => {
+    // WRONG IMPL KILLED: today's code (the list computes overflow-y visible and min-height auto,
+    // and has no background layers); overflow set on the overlay or `.mr-frame-body` only (the
+    // list never becomes the scroller); no min-height: 0 (a flex item cannot shrink below its
+    // content, so it grows with the rows and never scrolls); `flex: none` / shrink 0; overflow
+    // `hidden` or `visible` (clipped or unbounded); an always-on shadow (only `scroll` layers: it
+    // shows at both edges even with nothing to scroll to) or covers without shadows (only `local`);
+    // a later rule that resets the overflow.
+    const { overlay, list } = qf16Shell();
+    const frame = div(document.body, 'mr-frame');
+    const body = div(frame, 'mr-frame-body');
+    const bare = div(frame, '');
+
+    const shell = getComputedStyle(overlay);
+    const onList = getComputedStyle(list);
+    const bodyControl = getComputedStyle(body);
+    const bareControl = getComputedStyle(bare);
+
+    // ANTI-VACUITY: happy-dom computes overflow-y from this sheet at all (an existing rule), a
+    // classless block is not a scroller, and the overlay is the flex column the min-height is for.
+    expect(qf16OverflowY(bodyControl), 'control: .mr-frame-body scrolls').toBe('auto');
+    expect(['auto', 'scroll'], 'control: a bare block is not a scroller').not.toContain(
+      qf16OverflowY(bareControl),
+    );
+    expect(shell.display, 'the overlay is a flex container').toBe('flex');
+    expect(shell.flexDirection, 'a column').toBe('column');
+
+    expect(['auto', 'scroll'], 'the list scrolls its own overflow').toContain(
+      qf16OverflowY(onList),
+    );
+    expect(['0', '0px'], 'min-height 0 lets the flex item shrink below its rows').toContain(
+      onList.minHeight,
+    );
+    expect(
+      onList.flexShrink === '' || Number(onList.flexShrink) > 0,
+      `the list can shrink (flex-shrink ${onList.flexShrink})`,
+    ).toBe(true);
+
+    const layers = qf16Attachments(qf16Winner(list, ['background', 'background-attachment'], ''));
+    expect(layers, 'the list paints background layers').not.toEqual([]);
+    expect(layers, 'cover layers that move with the content (overflow-only shadows)').toContain(
+      'local',
+    );
+    expect(layers, 'shadow layers fixed to the box edges').toContain('scroll');
+  });
+});
