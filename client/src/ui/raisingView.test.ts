@@ -154,6 +154,25 @@ describe('RaisingView — m23-s4 overlay a11y wiring on the show()/hide()/toggle
     expect(document.activeElement, 'focused by IDENTITY after one real macrotask').toBe(anchor);
   });
 
+  it('the raising title reads "Inventory" in en (never the legacy "Raising & Inventory") and "Inventaire" in fr after a re-show [QF10-4-RAISING-TITLE-RENDERS]', () => {
+    const { parent, view } = s4Mount();
+    const titleOf = (): string | null =>
+      parent.querySelector<HTMLElement>('[data-testid="raising-title"]')?.textContent ?? null;
+    try {
+      setLocale('en');
+      view.show();
+      expect(titleOf()).toBe('Inventory');
+      expect(titleOf()).not.toBe('Raising & Inventory');
+
+      setLocale('fr');
+      view.hide();
+      view.show();
+      expect(titleOf()).toBe('Inventaire');
+    } finally {
+      setLocale('en');
+    }
+  });
+
   it('S4-raisingView-HELPER-CALLED BITES: the view DELEGATES to the S1 helpers with its OWN id, its OWN root, and a literal null fallbackFocus', () => {
     const { parent, view } = s4Mount();
     const root = overlayRootOf(parent);
