@@ -341,7 +341,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // but every party slot is taken; nothing is moved.
   'chrome.status.partyFull': 'party is full — move a monster to the box first',
   // @desc: Status-line notice, also spoken by the live region, when the player's own character
-  // enters another zone; {name} is the destination zone's content-sourced display name (qf-15).
+  // enters another zone; {name} is the destination zone's content-sourced display name.
   'chrome.status.zoneEntered': (p) => `Entering ${p.name}`,
   // @desc: Feedback line inside an overlay (shop, trade, trade offer, rename, care, session) when
   // the player acted while the connection was down, so nothing was sent. Same wording as

@@ -2268,14 +2268,18 @@ function switchZone(newZoneId: number): void {
     }
   }
   // qf-15 (QF15.1): name the zone the SERVER put the character in — status line + live region
-  // (showNotice) — only after a committed switch, and outside the try so a cue failure can never be
-  // logged as a zone-sync failure. Both warp paths (onOwnWarp, the reconcile listener) converge here
-  // and the guard above makes one real zone change exactly one cue. The name is content (zone_def
-  // rows in the store); an unknown zone announces nothing. A rejoin that lands in a zone other than
-  // the client's current map announces too: the server did change the zone.
-  if (switched) {
+  // (showNotice) — only after a committed switch. Its own try keeps switchZone total (onOwnWarp calls
+  // it unguarded, before the warped row is ingested) and keeps a cue failure out of the zone-sync
+  // failure streak. Both warp paths (onOwnWarp, the reconcile listener) converge here and the guard
+  // above makes one real zone change exactly one cue. The name is content (zone_def rows in the
+  // store); an unknown zone announces nothing. A rejoin whose character is in a zone other than the
+  // map the client shows announces too.
+  if (!switched) return;
+  try {
     const name = store.zoneName(newZoneId);
     if (name !== undefined) showNotice(tf('chrome.status.zoneEntered', { name }));
+  } catch (err) {
+    console.error('[zone-cue] announcing zone %s failed', newZoneId, err);
   }
 }
 
