@@ -61,7 +61,7 @@ import {
   type HelpViewModel,
 } from './helpModel';
 import type { HintChip } from './hintBarModel';
-import { t } from './i18n/resolver';
+import { setLocale, t } from './i18n/resolver';
 
 // --- fixtures --------------------------------------------------------------------------------
 
@@ -182,13 +182,15 @@ describe('buildHelpViewModel (ctl-14, CTL14.1)', () => {
     // dropped (a two-key row reads one key) or an unbound Alt rendered as '' / 'undefined' (the
     // Select row below has one key); a cleared shortcut whose row vanishes (F9 would be
     // undiscoverable) or keeps its old key; rows in another order, buttons after shortcuts, a
-    // button or an accelerator missing or listed twice (23 rows exactly); an action that is a
+    // button or an accelerator missing or listed twice (24 rows exactly: qf-14, 23 -> 24 with the
+    // Controls accelerator Y, 11 -> 12 shortcuts); an action that is a
     // literal instead of rowLabel() (it would not follow the locale); and keys that are raw
     // codes ('KeyR') instead of glyphs ('R').
     const vm = buildHelpViewModel(WORLD_CHIPS, DEFAULT_BINDINGS);
     const controls = tabOf(vm, 'controls').rows;
 
-    expect(ROWS.length, 'fixture: 12 buttons then 11 shortcuts').toBe(
+    // qf-14: 11 -> 12 shortcuts with Y (Controls).
+    expect(ROWS.length, 'fixture: 12 buttons then 12 shortcuts').toBe(
       VBUTTONS.length + ACCELS.length,
     );
     expect(controls, 'the default table, every row once, buttons then shortcuts').toEqual(
@@ -206,7 +208,8 @@ describe('buildHelpViewModel (ctl-14, CTL14.1)', () => {
     expect(start?.keys, 'Start: Esc then M').toEqual([t('key.escape'), 'M']);
     const back = controls.find((r) => r.action === label({ kind: 'button', id: 'B' }));
     expect(back?.keys, 'B: one key, no empty alt slot').toEqual([t('key.backspace')]);
-    expect(controls.length, 'exactly 23 rows').toBe(23);
+    // qf-14: 23 -> 24 rows with Y (Controls).
+    expect(controls.length, 'exactly 24 rows').toBe(24);
 
     // A remap shows: Select to H alone, Start to G + M, F9 cleared, accelerator B moved to Z.
     const live = remapped({
@@ -226,7 +229,7 @@ describe('buildHelpViewModel (ctl-14, CTL14.1)', () => {
     expect(f9After?.keys, 'with no key').toEqual([]);
     const storageAfter = after.find((r) => r.action === label({ kind: 'accel', id: 'B' }));
     expect(storageAfter?.keys, 'a two-key shortcut reads both').toEqual(['Z', 'X']);
-    expect(after.length, 'a remap adds and removes no row').toBe(23);
+    expect(after.length, 'a remap adds and removes no row').toBe(24); // qf-14: 23 -> 24
     expect(after, 'and the remap really changed the tab').not.toEqual(controls);
   });
 
@@ -263,6 +266,60 @@ describe('buildHelpViewModel (ctl-14, CTL14.1)', () => {
     expect(Object.keys(helpModule), 'the generated API is exported').toEqual(
       expect.arrayContaining(['buildHelpViewModel', 'HELP_TABS']),
     );
+  });
+
+  it('the generated All controls tab carries a Controls row for the Y accelerator, keyed by its live binding (Y by default, the new key after a remap, no key once cleared), with no hand-written row [QF14-2-HELP-ROW]', () => {
+    // WRONG IMPL KILLED: a Y accelerator the generated tab does not list (the player could never
+    // learn the shortcut from Help), a hand-written Controls row beside the generated one (two rows,
+    // and the literal would not follow a remap), a row keyed by the default code instead of the live
+    // table (a remap would still read Y), a cleared shortcut whose row vanishes, a row sitting among
+    // the buttons, and a label that is the Y BUTTON's (the namespaces mixed).
+    const label = rowLabel({ kind: 'accel', id: 'Y' });
+    expect(label, 'the Controls shortcut label').toBe('Controls');
+    expect(label, 'not the Y button`s label').not.toBe(rowLabel({ kind: 'button', id: 'Y' }));
+
+    const yRows = (b: Bindings): HelpRow[] =>
+      tabOf(buildHelpViewModel(WORLD_CHIPS, b), 'controls').rows.filter((r) => r.action === label);
+
+    expect(yRows(DEFAULT_BINDINGS), 'exactly one Controls row, keyed by the live Y').toEqual([
+      { keys: ['Y'], action: 'Controls' },
+    ]);
+    const rows = tabOf(buildHelpViewModel(WORLD_CHIPS, DEFAULT_BINDINGS), 'controls').rows;
+    expect(
+      rows.findIndex((r) => r.action === label),
+      'it sits among the shortcuts, after the twelve buttons',
+    ).toBeGreaterThanOrEqual(VBUTTONS.length);
+
+    // A remap shows the new key and not the old one.
+    expect(yRows(remapped({ accels: { Y: ['KeyK'] } })), 'remapped to K').toEqual([
+      { keys: ['K'], action: label },
+    ]);
+    expect(yRows(remapped({ accels: { Y: ['KeyK', 'KeyG'] } })), 'a second key reads too').toEqual([
+      { keys: ['K', 'G'], action: label },
+    ]);
+    // Cleared: the row stays, with no key.
+    expect(yRows(remapped({ accels: { Y: [] } })), 'cleared keeps its row').toEqual([
+      { keys: [], action: label },
+    ]);
+    // The remap of the Y BUTTON does not touch the accelerator row.
+    expect(yRows(remapped({ buttons: { Y: ['KeyZ'] } })), 'the Y button is another row').toEqual([
+      { keys: ['Y'], action: label },
+    ]);
+
+    // The label follows the locale: a hard-coded English 'Controls' for Y would still read it in fr.
+    // (Found by position, since the English label is no longer a handle: Y is the 10th shortcut.)
+    const yAt = VBUTTONS.length + ACCELS.indexOf('Y');
+    try {
+      setLocale('fr');
+      const frRow = tabOf(buildHelpViewModel(WORLD_CHIPS, DEFAULT_BINDINGS), 'controls').rows[yAt];
+      expect(frRow, 'fr: the Y accelerator row, by its live key').toEqual({
+        keys: ['Y'],
+        action: 'Commandes',
+      });
+      expect(frRow?.action, 'fr: not the English label').not.toBe(label);
+    } finally {
+      setLocale('en');
+    }
   });
 
   it('PURE: a fresh object per call — two calls are deeply equal but share nothing, a caller mutating one result cannot change the next, and the binding table is never mutated', () => {

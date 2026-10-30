@@ -133,6 +133,7 @@ export const ACCEL_PATHS: Readonly<Record<MenuAccel, AccelPath>> = {
   L: { menu: ['social', 'rankings'], frame: 'social' },
   N: { menu: ['profile', 'name'], frame: 'renameView' },
   C: { menu: ['profile', 'account'], frame: 'claimView' },
+  Y: { menu: ['options', 'controls'], frame: 'controlsView' },
 };
 
 export type AccelDecision =

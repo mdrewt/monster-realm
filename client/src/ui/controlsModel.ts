@@ -85,6 +85,7 @@ const ACCEL_LABELS: Readonly<Record<Accel, () => string>> = {
   L: () => t('controls.accel.rankings'),
   N: () => t('controls.accel.name'),
   C: () => t('controls.accel.account'),
+  Y: () => t('controls.accel.controls'),
   F9: () => t('controls.accel.bugReport'),
   F8: () => t('controls.accel.dismissError'),
 };

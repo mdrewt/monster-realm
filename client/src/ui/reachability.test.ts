@@ -107,8 +107,11 @@ import { type TradeCallbacks, TradeView } from './tradeView';
  *  §5 counts them) from the world to any accelerator target. */
 const MAX_PRESSES = 7;
 
-/** The accelerators that open a menu path (F8 and F9 are the shell's own keys). */
-const MENU_ACCELS: readonly MenuAccel[] = ['B', 'I', 'V', 'J', 'U', 'P', 'L', 'N', 'C'];
+/** The accelerators that open a menu path (F8 and F9 are the shell's own keys). A HAND-WRITTEN
+ *  manifest, edited by hand when an accelerator joins: qf-14 (named intentional change, QF14.3) adds
+ *  'Y' (Options > Controls), 9 -> 10 menu accelerators. The QF14-3-REACH-MANIFEST case below holds it
+ *  equal to the keys of `ACCEL_PATHS`, so it cannot drift from the router. */
+const MENU_ACCELS: readonly MenuAccel[] = ['B', 'I', 'V', 'J', 'U', 'P', 'L', 'N', 'C', 'Y'];
 
 type MenuPress = Extract<VButton, 'Up' | 'Down' | 'Left' | 'Right' | 'A' | 'B'>;
 const MENU_PRESSES: readonly MenuPress[] = ['Up', 'Down', 'Left', 'Right', 'A', 'B'];
@@ -244,7 +247,7 @@ function stackAfterLeaf(target: MenuTarget): Stack {
 }
 
 describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)', () => {
-  it('CTL11B-2-REACH-TABLE: Start opens the menu, every accelerator target (B, I, V, J, U, P, L, N, C) and every other menu leaf is at most 7 presses from the world, the design`s own counts hold (party 2, storage 3, bag 3, journal 4, rename 6, Social > Challenges 7), and each path lands on its accelerator`s frame', () => {
+  it('CTL11B-2-REACH-TABLE: Start opens the menu, every accelerator target (B, I, V, J, U, P, L, N, C, Y) and every other menu leaf is at most 7 presses from the world, the design`s own counts hold (party 2, storage 3, bag 3, journal 4, rename 6, Social > Challenges 7), and each path lands on its accelerator`s frame', () => {
     // WRONG IMPL KILLED: a menu grown or re-ordered so a target passes 7 presses (an entry added
     // ahead of Social: Challenges reads 8), a menu that no longer wraps (the upward routes to Profile
     // and Close vanish: Rename reads 7), a Monsters entry that opens Storage first (storage reads 2,
@@ -374,6 +377,37 @@ describe('press counts from the world over the pure models (ctl-11b, CTL11B.2)',
       }),
       { numRuns: 60 },
     );
+  });
+
+  it('the hand-written MENU_ACCELS manifest is exactly the menu accelerators the router declares (ten, Y included), and the Controls accelerator Y reaches Options > Controls in 6 presses from the world, within the bound, landing on controlsView [QF14-3-REACH-MANIFEST]', () => {
+    // WRONG IMPL KILLED: a manifest that forgot Y (every CTL11B-2 case above would silently skip the
+    // new target: the bound would be unchecked for the one accelerator qf-14 adds), a manifest
+    // with a stale entry the router no longer has, a Y path naming a menu leaf that does not
+    // exist (the search throws) or one whose leaf opens another frame (the stack check), and a
+    // menu grown so Options > Controls passes the bound (Start, Up, Up, A, Down, A = 6).
+    const declared = Object.keys(ACCEL_PATHS).sort();
+    expect([...MENU_ACCELS].sort(), 'the manifest is every ACCEL_PATHS key').toEqual(declared);
+    expect(new Set(MENU_ACCELS).size, 'and lists none twice').toBe(MENU_ACCELS.length);
+    // qf-14 (named intentional change): 9 -> 10 menu accelerators with Y (Controls).
+    expect(MENU_ACCELS, 'ANTI-VACUITY: ten menu accelerators').toHaveLength(10);
+    expect(MENU_ACCELS, 'Y (Controls) is in the manifest').toContain('Y');
+
+    const reach = searchMenu(openMainMenu(EMPTY_NAV_MEMORY));
+    const path = pathOf('Y');
+    expect(path.menu, 'the Controls path').toEqual(['options', 'controls']);
+    expect(leafOfPath(path)).toBe('options/controls');
+    const leaf = reach.get('options/controls');
+    expect(leaf?.target, 'the leaf opens the Controls view').toBe('controlsView');
+    const count = pressesTo('Y', reach);
+    expect(count, 'Start, Up, Up (wrap to Options), A, Down (Controls), A').toBe(6);
+    expect(count, 'Y: within the bound').toBeLessThanOrEqual(MAX_PRESSES);
+
+    const stack = stackAfterLeaf((leaf as Reach).target);
+    const top = stack[stack.length - 1];
+    expect(top.kind === 'screen' ? top.id : top.kind, 'Y: the frame it lands on').toBe(
+      'controlsView',
+    );
+    expect(accelDecision('Y', stack).kind, 'Y: its own screen on top is Start').toBe('start');
   });
 });
 

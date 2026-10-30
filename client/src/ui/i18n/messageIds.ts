@@ -83,6 +83,7 @@ export type MessageId =
   | 'controls.accel.rankings'
   | 'controls.accel.name'
   | 'controls.accel.account'
+  | 'controls.accel.controls'
   | 'controls.accel.bugReport'
   | 'controls.accel.dismissError'
   | 'controls.capture.prompt'

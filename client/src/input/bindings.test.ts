@@ -39,6 +39,8 @@ const EXPECTED_ACCELS: Readonly<Record<string, readonly string[]>> = {
   L: ['KeyL'],
   N: ['KeyN'],
   C: ['KeyC'],
+  // qf-14 (named intentional change): Y opens Options > Controls. 11 -> 12 accelerators.
+  Y: ['KeyY'],
   F9: ['F9'],
   F8: ['F8'],
 };
@@ -225,10 +227,18 @@ describe('accelForCode (ctl-11a)', () => {
     // It resolves through the table it is given: a remapped Journal answers its new keys only.
     const custom = {
       buttons: DEFAULT_BINDINGS.buttons,
-      accels: { ...DEFAULT_BINDINGS.accels, J: ['KeyZ', 'KeyY'] },
+      // qf-14: KeyK, not KeyY (the default Y accelerator owns KeyY): the fixture keeps the
+      // one-owner invariant, so no lookup here can pass by table order.
+      accels: { ...DEFAULT_BINDINGS.accels, J: ['KeyZ', 'KeyK'] },
     };
+    const customCodes = [
+      ...Object.values(custom.buttons).flat(),
+      ...Object.values(custom.accels).flat(),
+    ];
+    expect(new Set(customCodes).size, 'fixture: no code has two owners').toBe(customCodes.length);
     expect(accelForCode(custom, 'KeyZ')).toBe('J');
-    expect(accelForCode(custom, 'KeyY')).toBe('J');
+    expect(accelForCode(custom, 'KeyK')).toBe('J');
+    expect(accelForCode(custom, 'KeyY'), 'the default Y accelerator keeps its key').toBe('Y');
     expect(accelForCode(custom, 'KeyJ'), 'the old key no longer fires').toBe(undefined);
     expect(accelForCode(custom, 'KeyB'), 'the others are untouched').toBe('B');
 
@@ -271,5 +281,48 @@ describe('accelForCode (ctl-11a)', () => {
         accelForCode(DEFAULT_BINDINGS, code),
       ),
     ).toEqual(['B', 'I', 'V', 'J', 'U', 'P', 'L', 'N', 'C']);
+  });
+});
+
+// ==========================================================================================
+// qf-14: the Controls accelerator (QF14.1)
+// ==========================================================================================
+//
+// The accelerator `Y` opens Options > Controls directly. Its id shares a spelling with the virtual
+// button `Y` (default KeyF), as the accelerator `B` (KeyB) shares one with the button `B`
+// (Backspace): the two live in separate tables, and a code resolves to one or the other.
+
+describe('the Controls accelerator (qf-14)', () => {
+  it('binds the Controls accelerator Y by default to KeyY alone: not Tab, no reserved code, held by no other button or accelerator, resolved as accelerator Y and not as the button Y, and listed once in ACCELS [QF14-1-DEFAULT-KEY]', () => {
+    // WRONG IMPL KILLED: a Y row that is missing from the table or from ACCELS (the Controls screen
+    // has no shortcut), a default of Tab (the browser's focus key: bindings may never claim it) or
+    // any other reserved code, a default that collides with a code another owner already holds
+    // (one key, two actions), a lookup that resolves KeyY as the VIRTUAL button Y (the namespaces
+    // would be confused: KeyF is the button Y, KeyY is the accelerator Y), the button Y moved off
+    // KeyF to make room, and a roster that lists Y twice.
+    expect(DEFAULT_BINDINGS.accels.Y).toEqual(['KeyY']);
+    expect(DEFAULT_BINDINGS.accels.Y).not.toContain('Tab');
+    for (const reserved of RESERVED_CODES) {
+      expect(DEFAULT_BINDINGS.accels.Y, `${reserved} is reserved`).not.toContain(reserved);
+    }
+
+    // No other owner holds KeyY.
+    const owners = flat()
+      .filter((e) => e.code === 'KeyY')
+      .map((e) => e.owner);
+    expect(owners, 'KeyY has exactly one owner: the accelerator Y').toEqual(['accel:Y']);
+
+    // The namespaces: KeyY is the accelerator Y and no button; KeyF stays the button Y and no accelerator.
+    expect(accelForCode(DEFAULT_BINDINGS, 'KeyY')).toBe('Y');
+    expect(buttonForCode(DEFAULT_BINDINGS, 'KeyY'), 'KeyY is no virtual button').toBeUndefined();
+    expect(buttonForCode(DEFAULT_BINDINGS, 'KeyF'), 'KeyF is still the button Y').toBe('Y');
+    expect(accelForCode(DEFAULT_BINDINGS, 'KeyF'), 'KeyF is no accelerator').toBeUndefined();
+
+    // The roster lists it exactly once, between C and the F-keys.
+    expect(ACCELS.filter((a) => a === 'Y')).toHaveLength(1);
+    expect([...ACCELS]).toEqual(['B', 'I', 'V', 'J', 'U', 'P', 'L', 'N', 'C', 'Y', 'F9', 'F8']);
+    expect(Object.isFrozen(DEFAULT_BINDINGS.accels.Y), 'accels.Y is frozen like its siblings').toBe(
+      true,
+    );
   });
 });

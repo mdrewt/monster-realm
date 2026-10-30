@@ -36,6 +36,7 @@ import {
   type Slot,
   slots,
 } from './controlsModel';
+import { setLocale } from './i18n/resolver';
 
 // --- fixtures --------------------------------------------------------------------------------
 
@@ -668,6 +669,94 @@ describe('controlsModel (ctl-12)', () => {
       kind: 'bound',
       bindings: table({ X: ['Space', 'KeyJ'] }, { J: [] }),
     });
+  });
+
+  // ---- qf-14 (QF14.2): the Controls accelerator is an ordinary, remappable shortcut -------------
+
+  it('lists the Controls accelerator Y among the Shortcuts rows with its own label (en Controls, fr Commandes), and rebinding or clearing it moves or unbinds KeyY like any other shortcut, leaving the Y button alone [QF14-2-REMAP-MODEL]', () => {
+    // WRONG IMPL KILLED: a Y row missing from the Shortcuts tab (the generated surface would never
+    // list it), a label that is another row's (two rows a player cannot tell apart) or the Y
+    // BUTTON's label (the namespaces mixed), a hard-coded English label (fr would read English),
+    // a rebind that leaves KeyY bound as well (the old key still opens Controls), a rebind or
+    // clear that writes the button Y (KeyF) instead of the accelerator, a Y that cannot be cleared
+    // (every other shortcut can), a swap that strands KeyJ, and a table mutated in place.
+    const yRow = acc('Y');
+    expect(controlsRows('shortcuts')).toContainEqual({ kind: 'accel', id: 'Y' });
+    expect(controlsRows('buttons'), 'Y is a shortcut row, not a new button row').not.toContainEqual(
+      {
+        kind: 'accel',
+        id: 'Y',
+      },
+    );
+    expect(
+      controlsRows('shortcuts').filter((r) => r.kind === 'accel' && r.id === 'Y'),
+    ).toHaveLength(1);
+    expect(rowLabel(yRow)).toBe('Controls');
+    expect(rowLabel(yRow), 'not the Y button`s label').not.toBe(rowLabel(btn('Y')));
+    expect(slots(DEFAULT_BINDINGS, yRow)).toEqual(['KeyY', undefined]);
+    expect(slots(DEFAULT_BINDINGS, btn('Y')), 'the button Y is still KeyF').toEqual([
+      'KeyF',
+      undefined,
+    ]);
+    expect(capturePrompt(yRow)).toContain('Controls');
+    try {
+      setLocale('fr');
+      expect(rowLabel(yRow), 'the label follows the locale').toBe('Commandes');
+    } finally {
+      setLocale('en');
+    }
+
+    // Rebind to a free key: the new code opens it, KeyY no longer does.
+    const frozen = deepFreeze(table());
+    const moved = captureKey(frozen, { row: yRow, slot: 0 }, press('KeyK'));
+    expect(moved).toEqual({ kind: 'bound', bindings: table({}, { Y: ['KeyK'] }) });
+    const after = resultOf(moved);
+    expect(accelForCode(after, 'KeyK')).toBe('Y');
+    expect(accelForCode(after, 'KeyY'), 'the old key is free again').toBeUndefined();
+    expect(buttonForCode(after, 'KeyY')).toBeUndefined();
+    expect(after.buttons.Y, 'the Y button is untouched').toEqual(['KeyF']);
+    expect(frozen, 'the input table is untouched').toEqual(DEFAULT_BINDINGS);
+    expectSane(after);
+
+    // Take another shortcut's key: the two trade.
+    const swap = swapped(captureKey(frozen, { row: yRow, slot: 0 }, press('KeyJ')));
+    expect(swap.bindings).toEqual(table({}, { Y: ['KeyJ'], J: ['KeyY'] }));
+    expect(swap.other).toEqual({ row: acc('J'), slot: 0 });
+    expect(accelForCode(swap.bindings, 'KeyJ')).toBe('Y');
+    expect(accelForCode(swap.bindings, 'KeyY')).toBe('J');
+
+    // Across the namespaces: the accelerator Y and the button Y share an id, not a row. KeyF (the
+    // button's key) captured onto the accelerator swaps with the BUTTON row, and the reverse.
+    const toAccel = swapped(captureKey(frozen, { row: yRow, slot: 0 }, press('KeyF')));
+    expect(toAccel.other, 'the holder is the BUTTON Y, slot 0').toEqual({ row: btn('Y'), slot: 0 });
+    expect(toAccel.code).toBe('KeyF');
+    expect(toAccel.displaced, 'the accelerator`s old key goes to the button').toBe('KeyY');
+    expect(toAccel.bindings).toEqual(table({ Y: ['KeyY'] }, { Y: ['KeyF'] }));
+    expect(toAccel.bindings.buttons.Y, 'button Y ends on KeyY').toEqual(['KeyY']);
+    expect(toAccel.bindings.accels.Y, 'accelerator Y ends on KeyF').toEqual(['KeyF']);
+    expect(accelForCode(toAccel.bindings, 'KeyF')).toBe('Y');
+    expect(buttonForCode(toAccel.bindings, 'KeyF')).toBeUndefined();
+    expect(buttonForCode(toAccel.bindings, 'KeyY')).toBe('Y');
+    expect(accelForCode(toAccel.bindings, 'KeyY')).toBeUndefined();
+    const text = outcomeText(captureKey(frozen, { row: yRow, slot: 0 }, press('KeyF')));
+    expect(text, 'the line names both rows').toContain(rowLabel(btn('Y')));
+    expect(text).toContain(rowLabel(yRow));
+
+    const toButton = swapped(captureKey(frozen, { row: btn('Y'), slot: 0 }, press('KeyY')));
+    expect(toButton.other, 'the holder is the ACCELERATOR Y, slot 0').toEqual({
+      row: yRow,
+      slot: 0,
+    });
+    expect(toButton.bindings).toEqual(table({ Y: ['KeyY'] }, { Y: ['KeyF'] }));
+
+    // Clear: both slots empty, the key does nothing, every other row is untouched.
+    const cleared = clearAccel(DEFAULT_BINDINGS, 'Y');
+    expect(cleared).toEqual(table({}, { Y: [] }));
+    expect(slots(cleared, yRow)).toEqual([undefined, undefined]);
+    expect(accelForCode(cleared, 'KeyY')).toBeUndefined();
+    expect(buttonForCode(cleared, 'KeyY')).toBeUndefined();
+    expect(allCodes(cleared)).not.toContain('KeyY');
+    expect(accelForCode(cleared, 'KeyC'), 'a neighbour still fires').toBe('C');
   });
 
   it('the NBSP and Space characters are not codes: a code with an NBSP is refused', () => {
