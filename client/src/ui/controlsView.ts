@@ -111,6 +111,7 @@ export class ControlsView implements ControlsScreenView {
     this.#overlay.classList.add('mr-frame', 'mr-shell');
     this.#title = ensureElement('controls-title', 'h2');
     this.#tabs = ensureElement('controls-tabs');
+    this.#tabs.classList.add('mr-frame-tabstrip');
     this.#question = ensureElement('controls-question', 'p');
     this.#rows = ensureElement('controls-rows');
     this.#capture = ensureElement('controls-capture', 'p');

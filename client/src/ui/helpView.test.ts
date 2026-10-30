@@ -102,6 +102,9 @@
 //   show() / hide() / toggle() / visible / ctor throws on a missing #help-overlay: unchanged.
 // "Visible text" below = the overlay's text with every `hidden` subtree skipped, so the note may live
 // anywhere (inside the controls panel or a sibling the view hides) without this suite caring.
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from './a11yCopy';
 import { HELP_TABS, type HelpViewModel } from './helpModel';
@@ -786,5 +789,211 @@ describe('HelpView — overlay a11y wiring on the show/hide edge (m23-s3)', () =
     view.hide();
     view.hide();
     expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// qf-11 (QF11.1) and the residual R-qf-4-HELPSCREENUL.
+//
+// QF11.1: the Help tab strip (`#help-tabs`, mounted as a direct child of the `.mr-frame` column
+// root) never flex-grows vertically, and its tab labels are one line.
+//
+// R-qf-4-HELPSCREENUL (handed to qf-11 by the qf-4 build note): qf-4 gave every STATIC `<ul>` in
+// index.html the `mr-nav-list` class (styles.css: `list-style: none`), but `#help-screen` is built at
+// runtime by this view, so it painted the UA list markers. The runtime `<ul>` must carry the class.
+//
+// ORACLE. The REAL styles.css is injected into happy-dom and read through getComputedStyle.
+// happy-dom has no user-agent list style (a bare <ul> computes listStyle '') and does not expand the
+// `list-style` shorthand, so `none` is an equality oracle (the qf-4 precedent in questLogView.test.ts).
+// happy-dom caches computed style per element, so each read is a fresh shallow clone (same classes,
+// same parent) taken after the state change under test.
+// ---------------------------------------------------------------------------
+
+const QF11_STYLES_CSS = readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'styles.css'),
+  'utf8',
+);
+
+interface Qf11Snapshot {
+  readonly display: string;
+  readonly listStyle: string;
+  readonly flexDirection: string;
+  readonly flexBasis: string;
+  readonly maxWidth: string;
+  /** flex-grow as a number; NaN (never 0) when happy-dom exposes neither the longhand nor the
+   *  first token of the shorthand. */
+  readonly grow: number;
+}
+
+/** Inline properties that could stretch, stack or freeze a strip. */
+const QF11_BANNED_INLINE: readonly string[] = [
+  'flex',
+  'flex-grow',
+  'flex-shrink',
+  'flex-basis',
+  'flex-direction',
+  'flex-flow',
+  'height',
+  'block-size',
+  'min-height',
+  'max-height',
+  'width',
+  'min-width',
+  'max-width',
+];
+
+/** The banned layout properties `el` sets inline, read from the style attribute and from the style
+ *  object (so `style.flexGrow = '1'`, `style.flex = ...` and cssText are all seen). */
+function qf11InlineLayout(el: Element): string[] {
+  const found = new Set<string>();
+  for (const part of (el.getAttribute('style') ?? '').split(';')) {
+    const colon = part.indexOf(':');
+    if (colon === -1) continue;
+    const prop = part.slice(0, colon).trim().toLowerCase();
+    if (QF11_BANNED_INLINE.includes(prop)) found.add(prop);
+  }
+  const style = (el as HTMLElement).style;
+  for (const prop of QF11_BANNED_INLINE) {
+    if (style.getPropertyValue(prop) !== '') found.add(prop);
+  }
+  return [...found];
+}
+
+/** The computed layout of a fresh shallow clone of `node` (optionally with one class removed). The
+ *  clone KEEPS the id, so an id-keyed rule (C4) would still match it. */
+function qf11Probe(node: HTMLElement, dropClass?: string): Qf11Snapshot {
+  const probe = node.cloneNode(false) as HTMLElement;
+  if (dropClass !== undefined) probe.classList.remove(dropClass);
+  (node.parentElement ?? document.body).appendChild(probe);
+  const style = getComputedStyle(probe);
+  const first = style.flex.trim().split(/\s+/)[0] ?? '';
+  let grow = Number.NaN;
+  if (style.flexGrow !== '') grow = Number(style.flexGrow);
+  else if (first === 'none') grow = 0;
+  else if (first !== '') grow = Number(first);
+  const snapshot = {
+    display: style.display,
+    listStyle: style.listStyle,
+    flexDirection: style.flexDirection,
+    flexBasis: style.flexBasis,
+    maxWidth: style.maxWidth,
+    grow,
+  };
+  probe.remove();
+  return snapshot;
+}
+
+describe('HelpView qf-11: the strip does not grow, the runtime list has no markers', () => {
+  let sheet: HTMLStyleElement | null = null;
+  beforeEach(() => {
+    mountHelpOverlay();
+    sheet = document.createElement('style');
+    sheet.textContent = QF11_STYLES_CSS;
+    document.head.appendChild(sheet);
+  });
+  afterEach(() => {
+    sheet?.remove();
+    sheet = null;
+    teardown();
+  });
+
+  it('the runtime #help-screen <ul> carries mr-nav-list, no inline style, and computes list-style none through construction, render, every paint, a hide / show and a second construction [QF4R-HELPSCREEN-NAVLIST]', () => {
+    // WRONG IMPL KILLED: the shipped `ensureChild('help-screen', 'ul', ...)` with no class (the UA
+    // paints a disc marker per row, and the inverted active colour hides the one on the selected
+    // row); the marker removed by an inline style instead of the class; the class added to a
+    // static list only (`#help-controls` / `#help-goals` in the shell) and not to the runtime one;
+    // the class lost when render() or paint() rewrites the list's className or replaces the
+    // element; a class set only on the creating branch so a second construction over the same shell
+    // (which reuses the element by id) loses it; a class with no rule behind it (computes '').
+    const view = new HelpView();
+    const live = (): HTMLElement => {
+      const ul = document.getElementById('help-screen');
+      expect(ul, '#help-screen exists').not.toBeNull();
+      return ul as HTMLElement;
+    };
+    const screen = live();
+    const expectSwept = (when: string): void => {
+      expect(live(), `${when}: still the same list`).toBe(screen);
+      expect(screen.tagName, `${when}: a <ul>`).toBe('UL');
+      expect(screen.classList.contains('mr-nav-list'), `${when}: carries mr-nav-list`).toBe(true);
+      expect(screen.hasAttribute('style'), `${when}: no inline style`).toBe(false);
+      expect(qf11Probe(screen).listStyle, `${when}: computes list-style none`).toBe('none');
+    };
+
+    expectSwept('constructed');
+    view.render(SAMPLE_VM);
+    expect(rowsOf(SCREEN_PANEL), 'precondition: the list holds rows').toHaveLength(2);
+    expectSwept('rendered');
+    view.paint({ layout: HELP_LAYOUT, nav: stateOn('screen') });
+    expectSwept('painted on This screen');
+    view.show();
+    view.paint({ layout: HELP_LAYOUT, nav: stateOn('goals') });
+    expectSwept('painted on Goals (the list is hidden)');
+    view.hide();
+    view.show();
+    view.paint({ layout: HELP_LAYOUT, nav: stateOn('screen') });
+    expectSwept('after hide, show and paint');
+    view.render({
+      ...SAMPLE_VM,
+      tabs: SAMPLE_VM.tabs.map((x) => (x.tab === 'screen' ? { ...x, rows: [] } : x)),
+    });
+    expectSwept('re-rendered empty');
+    new HelpView();
+    expectSwept('after a second construction over the same shell');
+
+    // SANITY: the sheet is parsed and applied, and the class is what does it (two fresh elements).
+    const withClass = document.createElement('ul');
+    withClass.className = 'mr-nav-list';
+    document.body.appendChild(withClass);
+    expect(getComputedStyle(withClass).listStyle, 'a classed <ul> computes none').toBe('none');
+    const bare = document.createElement('ul');
+    document.body.appendChild(bare);
+    expect(getComputedStyle(bare).listStyle, 'a bare <ul> does not').not.toBe('none');
+  });
+
+  it('the Help strip is a flex row that does not grow in the .mr-frame column, its tabs are one line, and it loses the layout without the class [QF11-1-HELP-STRIP-COMPUTED]', () => {
+    // WRONG IMPL KILLED: the shipped sheet (computed flex-grow 1 on `#help-tabs`, a direct child of
+    // the column root, so the tab labels stretch with the active panel); a fix that sets grow 0 but
+    // drops `display: flex` (labels stack); labels that still wrap (white-space normal: heights
+    // differ per label and per locale); a strip that loses its class when paint() rewrites it; a
+    // harness whose sheet install is a no-op (the class-less probe must differ).
+    const { overlay } = mountHelpOverlay();
+    overlay.classList.add('mr-frame');
+    const view = new HelpView();
+    view.render(SAMPLE_VM);
+    view.show();
+    view.paint({ layout: HELP_LAYOUT, nav: stateOn('screen') });
+
+    const strip = document.getElementById('help-tabs') as HTMLElement;
+    expect(strip, 'ANTI-VACUITY: the strip exists').not.toBeNull();
+    expect(strip.parentElement, 'a direct child of the frame root').toBe(overlay);
+    expect(strip.getAttribute('role')).toBe('tablist');
+    expect(strip.children.length, 'ANTI-VACUITY: three tabs rendered').toBe(3);
+
+    const expectRow = (when: string): void => {
+      const now = qf11Probe(strip);
+      expect(now.display, `${when}: a flex container`).toBe('flex');
+      expect(now.grow, `${when}: flex-grow`).toBe(0);
+      // WRONG IMPL KILLED: C3 flex-direction: column on the strip (only the Bag and Controls tests
+      // checked the direction before); C1 `flex: 0 1 100%` (the probe keeps the id, so an id-keyed
+      // rule, C4, would also be seen); C9 an inline flex-grow / flex / height / flex-direction (the
+      // probe is a clone, so the live strip is checked too); a max-width other than 100%.
+      expect(now.flexDirection, `${when}: not a column`).not.toBe('column');
+      expect(now.flexBasis, `${when}: no length or percentage basis`).not.toMatch(/[\d%]/);
+      expect(now.maxWidth, `${when}: max-width`).toBe('100%');
+      expect(qf11InlineLayout(strip), `${when}: no inline layout style on the strip`).toEqual([]);
+      expect(strip.style.flexGrow, `${when}: no inline flex-grow`).toBe('');
+    };
+    expectRow('painted');
+    view.paint({ layout: HELP_LAYOUT, nav: stateOn('controls') });
+    expectRow('after switching tab');
+
+    for (const tab of Array.from(strip.children)) {
+      expect(getComputedStyle(tab).whiteSpace, `tab ${tab.id}: one line`).toBe('nowrap');
+    }
+    expect(
+      qf11Probe(strip, 'mr-frame-tabstrip').display,
+      'SANITY: without the class it is not a flex row',
+    ).not.toBe('flex');
   });
 });

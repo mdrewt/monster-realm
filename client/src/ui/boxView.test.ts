@@ -175,6 +175,9 @@
 // New cases: QF10-4-BOX-TITLE-RENDERS, QF10-3-HINT-BELOW-PANELS, QF10-3-HINT-NOT-AT-SEAM (end of
 // file).
 // ---------------------------------------------------------------------------
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readWasmU32Constant } from '../../test-util/wasmPkg';
 import type { MonsterCardViewModel, MonsterStatsViewModel } from './boxModel';
@@ -2472,6 +2475,137 @@ describe('BoxView ctl-8b: the action sheet, the summary and the Move line (CTL8B
     expect(c8bShownText(parent, root, 'Mossling'), 'a batch render keeps it').not.toEqual([]);
     view.paint(c8bPaint({ tab: 'party', activeKey: '101' }));
     expect(c8bShownText(parent, root, 'Mossling'), 'a null summary hides it').toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// qf-11 (QF11.1): the Monsters tab strip is a direct child of the `.mr-frame` column root, the one
+// mount where `flex: 1 1 auto` made it absorb the frame's free height. The REAL view is mounted,
+// shown and painted through several states, the REAL styles.css is injected into happy-dom, and the
+// LIVE strip (not a clone) is read once through getComputedStyle at the end (happy-dom caches
+// computed style per element), so an inline style the view writes itself is seen by the oracle.
+// ---------------------------------------------------------------------------
+
+const QF11_STYLES_CSS = readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'styles.css'),
+  'utf8',
+);
+
+/** Inline properties that could stretch, stack or freeze a strip. */
+const QF11_BANNED_INLINE: readonly string[] = [
+  'flex',
+  'flex-grow',
+  'flex-shrink',
+  'flex-basis',
+  'flex-direction',
+  'flex-flow',
+  'height',
+  'block-size',
+  'min-height',
+  'max-height',
+  'width',
+  'min-width',
+  'max-width',
+];
+
+/** The banned layout properties `el` sets inline, read from the style attribute and from the style
+ *  object (so `style.flexGrow = '1'`, `style.flex = ...` and cssText are all seen). */
+function qf11InlineLayout(el: Element): string[] {
+  const found = new Set<string>();
+  for (const part of (el.getAttribute('style') ?? '').split(';')) {
+    const colon = part.indexOf(':');
+    if (colon === -1) continue;
+    const prop = part.slice(0, colon).trim().toLowerCase();
+    if (QF11_BANNED_INLINE.includes(prop)) found.add(prop);
+  }
+  const style = (el as HTMLElement).style;
+  for (const prop of QF11_BANNED_INLINE) {
+    if (style.getPropertyValue(prop) !== '') found.add(prop);
+  }
+  return [...found];
+}
+
+describe('BoxView qf-11: the Monsters tab strip (QF11.1)', () => {
+  let sheet: HTMLStyleElement | null = null;
+  const installSheet = (): void => {
+    sheet = document.createElement('style');
+    sheet.textContent = QF11_STYLES_CSS;
+    document.head.appendChild(sheet);
+  };
+  afterEach(() => {
+    sheet?.remove();
+    sheet = null;
+  });
+
+  it('the real Monsters strip is a direct child of the frame column carrying mr-frame-tabstrip, writes no inline layout style in any state, and computes a flex row with grow 0, no column direction, no length basis and max-width 100% [QF11-1-BOX-STRIP-COMPUTED]', () => {
+    // WRONG IMPL KILLED: C9 `this.#tabStrip.style.flexGrow = '1'` (or `style.flex`, `style.height`,
+    // `style.flexDirection`, or a cssText) written by boxView.ts: the stylesheet scans and the other
+    // views' tests never mount a BoxView, so the growth came back for this one screen only;
+    // C3 flex-direction: column; C1 a basis that fills the column; the class dropped from the strip;
+    // the strip moved out of the column root; a strip that loses the class or gains an inline style
+    // only after a paint, a tab switch or a batch refresh (checked after all of them).
+    installSheet();
+    const { view, root } = c8bOpen();
+    const stripOf = (): HTMLElement => {
+      const found = root.querySelector<HTMLElement>('[role="tablist"]');
+      expect(found, 'the Monsters tab strip exists').not.toBeNull();
+      return found as HTMLElement;
+    };
+    const expectClean = (when: string): void => {
+      const strip = stripOf();
+      expect(
+        strip.classList.contains('mr-frame-tabstrip'),
+        `${when}: carries the strip class`,
+      ).toBe(true);
+      expect(qf11InlineLayout(strip), `${when}: no inline layout style on the strip`).toEqual([]);
+      for (const prop of [
+        'flex',
+        'flexGrow',
+        'flexShrink',
+        'flexBasis',
+        'height',
+        'flexDirection',
+      ]) {
+        expect(
+          (strip.style as unknown as Record<string, string>)[prop],
+          `${when}: style.${prop} is empty`,
+        ).toBe('');
+      }
+    };
+
+    view.paint(c8bPaint({ tab: 'party' }));
+    expectClean('painted on Party');
+    view.paint(c8bPaint({ tab: 'storage' }));
+    expectClean('painted on Storage');
+    view.refresh(c8bParty(), c8bBox());
+    expectClean('after a batch refresh');
+    view.paint(c8bPaint({ tab: 'party', activeKey: '100', sheet: c8bSheet(C8B_KIP, 'summary') }));
+    expectClean('with the sheet open');
+    view.hide();
+    view.show();
+    view.paint(c8bPaint({ tab: 'party' }));
+    expectClean('after hide, show and paint');
+
+    // ANTI-VACUITY: the strip is the painted, two-tab tablist in the column root.
+    const strip = stripOf();
+    expect(strip.parentElement, 'a direct child of the frame root').toBe(root);
+    expect(root.classList.contains('mr-frame'), 'inside a .mr-frame column').toBe(true);
+    expect(c8bTabs(root), 'two tabs rendered').toHaveLength(2);
+
+    const computed = getComputedStyle(strip);
+    expect(computed.display, 'a flex row').toBe('flex');
+    expect(computed.flexDirection, 'not a column').not.toBe('column');
+    const first = computed.flex.trim().split(/\s+/)[0] ?? '';
+    let grow = Number.NaN;
+    if (computed.flexGrow !== '') grow = Number(computed.flexGrow);
+    else if (first === 'none') grow = 0;
+    else if (first !== '') grow = Number(first);
+    expect(grow, 'flex-grow (no vertical growth)').toBe(0);
+    expect(computed.flexBasis, 'no length or percentage basis').not.toMatch(/[\d%]/);
+    expect(computed.maxWidth, 'max-width').toBe('100%');
+    for (const tab of c8bTabs(root)) {
+      expect(getComputedStyle(tab).whiteSpace, `tab ${tab.id}: one line`).toBe('nowrap');
+    }
   });
 });
 

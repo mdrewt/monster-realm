@@ -147,6 +147,7 @@ export class RaisingView {
       return el;
     };
     this.#bagTabs = part('bag-tabs');
+    this.#bagTabs.className = 'mr-frame-tabstrip';
     this.#bagList = part('bag-list');
     this.#bagEmpty = part('bag-empty');
     this.#bagSheet = part('bag-sheet');
