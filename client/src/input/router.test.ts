@@ -1488,7 +1488,8 @@ describe('InputRouter under a nav-capable screen (ctl-7c)', () => {
 // ctl-11a: accelerators move to the router (CTL11A.1, CTL11A.2, CTL11A.3)
 // ==========================================================================================
 //
-// `ACCEL_PATHS` is the canonical menu path of each of the nine menu accelerators (F8 and F9 stay
+// `ACCEL_PATHS` is the canonical menu path of each of the ten menu accelerators (qf-14: nine -> ten
+// with Y, Options > Controls; F8 and F9 stay
 // the shell's own): the main-menu entry keys, root first, the frame the leaf opens, and (Monsters
 // only) the tab. `accelDecision(accel, stack)` is the pure verdict on one accelerator press:
 // `denied` while the top frame is server-owned, a textEntry or a prompt (`acceleratorsDenied`),
@@ -1512,6 +1513,8 @@ const EXPECTED_PATHS: Readonly<Record<MenuAccel, PathRow>> = {
   L: { menu: ['social', 'rankings'], frame: 'social' },
   N: { menu: ['profile', 'name'], frame: 'renameView' },
   C: { menu: ['profile', 'account'], frame: 'claimView' },
+  // qf-14 (named intentional change): Y opens Options > Controls directly. 9 -> 10 menu accelerators.
+  Y: { menu: ['options', 'controls'], frame: 'controlsView' },
 };
 const MENU_ACCELS: readonly MenuAccel[] = ACCELS.filter(
   (a): a is MenuAccel => a !== 'F8' && a !== 'F9',
@@ -1575,7 +1578,7 @@ function leafOf(menu: readonly string[]): MenuEntry | undefined {
 }
 
 describe('accelerator paths and decisions (ctl-11a)', () => {
-  it('CTL11A-1-PATHS: ACCEL_PATHS is exactly the nine canonical paths (B and V share the Monsters frame and differ in the tab), its keys are every accelerator but F8 and F9, and each path walks the real menu table to a leaf that opens that frame', () => {
+  it('CTL11A-1-PATHS: ACCEL_PATHS is exactly the ten canonical paths (B and V share the Monsters frame and differ in the tab), its keys are every accelerator but F8 and F9, and each path walks the real menu table to a leaf that opens that frame', () => {
     // WRONG IMPL KILLED: a swapped tab (B on Party, V on Storage), a swapped pair of keys
     // (J -> Bag), a path through a group that does not exist (the picks would be no-ops: the menu
     // opens and nothing shows), a leaf key that is not a leaf of that group (`name` under Social),
@@ -1586,7 +1589,8 @@ describe('accelerator paths and decisions (ctl-11a)', () => {
     expect(Object.keys(ACCEL_PATHS).sort(), 'every accelerator but F8 and F9').toEqual(
       ACCELS.filter((a) => a !== 'F8' && a !== 'F9').sort(),
     );
-    expect(Object.keys(ACCEL_PATHS), 'ANTI-VACUITY: nine paths').toHaveLength(9);
+    // qf-14: 9 -> 10 paths with Y (Controls).
+    expect(Object.keys(ACCEL_PATHS), 'ANTI-VACUITY: ten paths').toHaveLength(10);
     expect(Object.keys(ACCEL_PATHS), 'F8 and F9 are the shell`s own').not.toContain('F8');
     expect(Object.keys(ACCEL_PATHS)).not.toContain('F9');
     for (const accel of MENU_ACCELS) {
@@ -1827,6 +1831,56 @@ describe('accelerator paths and decisions (ctl-11a)', () => {
         `${code}: a command passes through`,
       ).toEqual({ consumed: true, effects: [commandEffect(CMD)] });
     }
+  });
+
+  it('opens Options > Controls directly: ACCEL_PATHS.Y is the options/controls path onto controlsView with no tab, and the accelerator verdict for Y is that path at the world, a start with Controls on top and denied under a text entry [QF14-1-ACCEL-PATH]', () => {
+    // WRONG IMPL KILLED: a Y row that is missing (accelDecision reads an undefined path), a path
+    // through the wrong leaf (`help` instead of `controls`: the Help screen would open), a path
+    // whose frame is not the leaf's overlay (the own-screen Start test would never fire, and a
+    // second Y would stack another Controls view), a stray Monsters `tab` on a screen that has none,
+    // a Y that is denied at the world, and a Y that re-opens instead of acting as Start when the
+    // Controls view is already on top.
+    const Y_PATH: PathRow = { menu: ['options', 'controls'], frame: 'controlsView' };
+    expect(ACCEL_PATHS.Y).toEqual(Y_PATH);
+    expect(ACCEL_PATHS.Y?.tab, 'Controls has no tab').toBeUndefined();
+
+    // The path walks the real menu table to the leaf that opens controlsView.
+    const leaf = leafOf(Y_PATH.menu);
+    expect(leaf?.kind, 'options > controls ends on an open leaf').toBe('open');
+    expect(leaf?.kind === 'open' ? leaf.target : undefined, 'and opens the Controls view').toBe(
+      'controlsView',
+    );
+
+    const open: AccelDecision = { kind: 'open', path: Y_PATH };
+    expect(accelDecision('Y', frozenStack(WORLD_BASE)), 'at the world').toEqual(open);
+    expect(accelDecision('Y', frozenStack(battleBase('7'))), 'at a battle base').toEqual(open);
+    expect(
+      accelDecision('Y', frozenStack(WORLD_BASE, screenFrame('helpView'))),
+      'over Help',
+    ).toEqual(open);
+    expect(
+      accelDecision('Y', frozenStack(WORLD_BASE, screenFrame('menuView'), screenFrame('boxView'))),
+      'over the menu then the Monsters frame',
+    ).toEqual(open);
+    expect(
+      accelDecision('Y', frozenStack(WORLD_BASE, screenFrame('controlsView'))),
+      'Controls on top: Start',
+    ).toEqual({ kind: 'start' });
+    expect(
+      accelDecision(
+        'Y',
+        frozenStack(WORLD_BASE, screenFrame('menuView'), screenFrame('controlsView')),
+      ),
+      'Controls over the menu: Start',
+    ).toEqual({ kind: 'start' });
+    expect(
+      accelDecision('Y', frozenStack(WORLD_BASE, textEntryFrame('renameView'))),
+      'under a text entry: denied',
+    ).toEqual({ kind: 'denied' });
+    expect(
+      accelDecision('Y', frozenStack(WORLD_BASE, screenFrame('dialogueView'))),
+      'under a dialogue: denied',
+    ).toEqual({ kind: 'denied' });
   });
 });
 

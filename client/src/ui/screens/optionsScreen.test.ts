@@ -217,7 +217,9 @@ describe('controlsScreen — the layout (ctl-12b, CTL12B.1)', () => {
         decoded += 1;
       }
     }
-    expect(decoded, 'ANTI-VACUITY: 25 + 34 items').toBe(59);
+    // qf-14 (named intentional change): the Shortcuts tab gains the Controls accelerator Y, one
+    // more row of three cells: 25 + 34 = 59 becomes 25 + 37 = 62 items.
+    expect(decoded, 'ANTI-VACUITY: 25 + 37 items').toBe(62);
 
     // Anything else is undefined.
     const unknown: ReadonlyArray<readonly [string | null, string]> = [
@@ -266,6 +268,54 @@ describe('controlsScreen — the layout (ctl-12b, CTL12B.1)', () => {
     expect(back.nav.item, 'the Buttons cursor is remembered across a tab switch').toBe('A_1');
   });
 
+  it('the Shortcuts tab lists the Controls accelerator Y as its own row (Primary, Alt and Clear cells between Account and the F-keys), each cell decoding to the accelerator and not the Y button, and the Buttons tab keeps its single Y button row [QF14-2-SHORTCUTS-ROW]', () => {
+    // WRONG IMPL KILLED: a Shortcuts tab built from a hand list that forgot Y (the new shortcut
+    // could not be rebound or cleared), a Y row out of ACCELS order, a row missing its Clear cell, a
+    // decode that reads the Y BUTTON for the accelerator (`Y_0` on Shortcuts is the Controls
+    // shortcut, on Buttons the Y button), a Clear that names no accelerator or the wrong one, a Y
+    // cell leaked onto the Buttons tab twice, and a cursor that cannot reach the new row.
+    const shortcuts = tabLayout('shortcuts');
+    const keys = shortcuts.items.map((i) => i.key);
+    const at = keys.indexOf('Y_0');
+    expect(at, 'the Controls row is on the Shortcuts tab').toBeGreaterThanOrEqual(0);
+    expect(keys.slice(at, at + 3), 'Primary, Alt, Clear in a row').toEqual([
+      'Y_0',
+      'Y_1',
+      'Y_clear',
+    ]);
+    expect(at % 3, 'the row starts a grid row (three columns)').toBe(0);
+    expect(keys.slice(at - 3, at), 'after the Account row (C)').toEqual(['C_0', 'C_1', 'C_clear']);
+    expect(keys.slice(at + 3, at + 6), 'before the F9 row').toEqual(['F9_0', 'F9_1', 'F9_clear']);
+    expect(keys.filter((k) => k.startsWith('Y_')).length, 'exactly one Y row').toBe(3);
+
+    expect(controlsItem('shortcuts', 'Y_0')).toEqual({
+      kind: 'slot',
+      target: slotOf(accRow('Y'), 0),
+    });
+    expect(controlsItem('shortcuts', 'Y_1')).toEqual({
+      kind: 'slot',
+      target: slotOf(accRow('Y'), 1),
+    });
+    expect(controlsItem('shortcuts', 'Y_clear')).toEqual({ kind: 'clear', accel: 'Y' });
+    // The other namespace: on the Buttons tab `Y_0` is still the Y BUTTON, and it has no Clear.
+    expect(controlsItem('buttons', 'Y_0')).toEqual({
+      kind: 'slot',
+      target: slotOf(btnRow('Y'), 0),
+    });
+    expect(controlsItem('buttons', 'Y_clear')).toBeUndefined();
+    expect(
+      tabLayout('buttons').items.filter((i) => i.key.startsWith('Y_')).length,
+      'the Buttons tab keeps its one Y button row',
+    ).toBe(2);
+
+    // Real presses reach the row: A on Y_0 captures the accelerator's Primary slot, A on Y_clear
+    // asks to clear the Controls accelerator.
+    const onPrimary = walkTo('shortcuts', 'Y_0');
+    expect(press(onPrimary, 'A').state.capturing).toEqual(slotOf(accRow('Y'), 0));
+    const onClear = walkTo('shortcuts', 'Y_clear');
+    expect(press(onClear, 'A').state.request).toEqual({ kind: 'clear', accel: 'Y' });
+  });
+
   it('init opens on the Buttons tab, first cell, nothing capturing, no confirm, no request; the view model is null and the screen is nav-capable', () => {
     // WRONG IMPL KILLED: a screen that opens on Shortcuts or on Reset all, one that opens already
     // capturing (the first key pressed would be bound) or with the confirm up, a stale request
@@ -301,7 +351,8 @@ describe('controlsScreen — the layout (ctl-12b, CTL12B.1)', () => {
         walked += 1;
       }
     }
-    expect(walked, 'ANTI-VACUITY: every cell of both tabs').toBe(59);
+    // qf-14: 25 + 34 = 59 -> 25 + 37 = 62 cells with the Controls accelerator Y.
+    expect(walked, 'ANTI-VACUITY: every cell of both tabs').toBe(62);
     // From the first cell, a fresh Up wraps straight onto it.
     expect(walk(fresh(), ['Up']).nav.item, 'Up from the first cell wraps to Reset all').toBe(
       'reset',

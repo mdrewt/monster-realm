@@ -41,9 +41,10 @@ import {
   worldRendererMock,
 } from '../test-util/mainBootHarness';
 import type { WasmMoveInput } from './convert/convert';
+import { DEFAULT_BINDINGS } from './input/bindings';
 import type { Connection, ConnectionOptions } from './net/connection';
 import type { StoreBattle, StoreBattleMonster, StoreMonsterPub } from './net/store';
-import { t as i18nT } from './ui/i18n/resolver';
+import { t as i18nT, tf as i18nTf } from './ui/i18n/resolver';
 
 const H = vi.hoisted(() => ({
   identity: 'ab'.repeat(32),
@@ -367,6 +368,15 @@ const LEAF_ROOTS: ReadonlyArray<readonly [string, () => boolean]> = [
   ['rename', () => shownById('rename-overlay')],
   ['claim', () => shownById('claim-overlay')],
   ['help', () => shownById('help-overlay')],
+  // qf-14: Options > Controls (the Y accelerator's leaf). Looked up tolerantly, so a shell that
+  // constructs the Controls frame lazily reads as "not shown" until it is first opened.
+  [
+    'controls',
+    () => {
+      const el = document.getElementById('controls-overlay');
+      return el !== null && isShown(el);
+    },
+  ],
 ];
 const openRoots = (): string[] => LEAF_ROOTS.filter(([, shown]) => shown()).map(([name]) => name);
 
@@ -398,18 +408,22 @@ const menuCrumbs = (): string[] =>
 const menuFeedback = (): string =>
   byId('menu-overlay').querySelector('.mr-frame-feedback')?.textContent ?? '';
 
-type Level = 'root' | 'social' | 'profile';
+// qf-14: the `options` level joins (Options > Controls is the Y accelerator's path).
+type Level = 'root' | 'social' | 'profile' | 'options';
 const CURSOR_PREFIX: Readonly<Record<Level, string>> = {
   root: 'menu',
   social: 'menuSocial',
   profile: 'menuProfile',
+  options: 'menuOptions',
 };
 const levelTitle = (level: Level): string =>
   level === 'root'
     ? i18nT('menu.title')
     : level === 'social'
       ? i18nT('menu.social.title')
-      : i18nT('menu.profile.title');
+      : level === 'profile'
+        ? i18nT('menu.profile.title')
+        : i18nT('menu.options.title');
 
 /** One accelerator and where its canonical path lands (spelled out here, never read from the
  *  module under test). */
@@ -454,6 +468,15 @@ const ROWS: readonly Row[] = [
     root: 'claim',
     key: 'account',
     level: 'profile',
+  },
+  // qf-14 (named intentional change): Y opens Options > Controls. 9 -> 10 accelerator rows.
+  {
+    accel: 'Y',
+    code: 'KeyY',
+    frame: 'controlsView',
+    root: 'controls',
+    key: 'controls',
+    level: 'options',
   },
 ];
 const ROW = (accel: string): Row => {
@@ -506,6 +529,7 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     raf.cb = null;
+    localStorage.removeItem('mr.controls'); // qf-14: a seeded remap must not leak into the next boot
     window.history.replaceState(null, '', '/');
     document.body.replaceChildren();
   });
@@ -514,12 +538,12 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
   // CTL11A.1: pop to the base, push the canonical path, the cursor on the leaf
   // ------------------------------------------------------------------------------------------
 
-  it('CTL11A-1-BOOT-PATHS: each of B, I, V, J, U, P, L, N and C pressed at the world is consumed and leaves the stack the world, the menu, then that leaf, with exactly the leaf`s root shown and the menu painted on the leaf`s level with its cursor on the leaf', async () => {
+  it('CTL11A-1-BOOT-PATHS: each of B, I, V, J, U, P, L, N, C and Y pressed at the world is consumed and leaves the stack the world, the menu, then that leaf, with exactly the leaf`s root shown and the menu painted on the leaf`s level with its cursor on the leaf', async () => {
     // WRONG IMPL KILLED: today's ladder (J and V are not keys at all; B, I, N, C, U, P and L open
     // the bare overlay with no menu beneath it, so Backspace could never back out into it), a
     // path that opens the leaf's frame but not the menu (the stack lacks `menuView`), a menu opened
     // on the first entry (the cursor is not on the leaf), a cursor remembered from the previous
-    // accelerator instead of picked (the nine run in one session, so the memory is stale each time),
+    // accelerator instead of picked (the ten run in one session, so the memory is stale each time),
     // a menu opened at the group's sub-level but with the root painted (U, P, L, N and C: the title,
     // crumb and cursor id name the level), a picked group that is not entered (the cursor stays on
     // Social), a swapped pair of leaves (P opens Rankings, L Challenges), a leaf that is not the one
@@ -584,7 +608,7 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     expectLeafOpen(ROW('J'), 'J from a menu left on the Social level');
   });
 
-  it('CTL11A-1-BOOT-OWN-START: an accelerator pressed while its own screen is on top acts as Start and returns the stack to the bare world, for all nine, and for the accelerators that share a frame (B with V, U with P with L)', async () => {
+  it('CTL11A-1-BOOT-OWN-START: an accelerator pressed while its own screen is on top acts as Start and returns the stack to the bare world, for all ten, and for the accelerators that share a frame (B with V, U with P with L)', async () => {
     // WRONG IMPL KILLED: a toggle that closes only the leaf and leaves the menu open beneath it
     // (the stack ends [world, menuView]: Start pops everything), a press that re-opens the same
     // path (the Journal rebuilt, nothing closes), a `start` keyed to the key instead of the frame
@@ -738,7 +762,7 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
   // CTL11A.2: denied over server-owned frames, typing fields and the session gate
   // ------------------------------------------------------------------------------------------
 
-  it('CTL11A-2-BOOT-DIALOGUE: with a conversation open (at the world, and suspended under a battle) none of the nine accelerators changes anything or sends a dismiss; once the conversation ends J opens the Journal', async () => {
+  it('CTL11A-2-BOOT-DIALOGUE: with a conversation open (at the world, and suspended under a battle) none of the ten accelerators changes anything or sends a dismiss; once the conversation ends J opens the Journal', async () => {
     // WRONG IMPL KILLED: an accelerator that pops to the base over a dialogue (the server
     // conversation row is stranded: it would send dismissDialogue or leave a hidden dialogue the
     // server still holds), one that opens the menu over the dialogue (a player frame over a
@@ -829,7 +853,7 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     expectLeafOpen(ROW('J'), 'J once focus left the field');
   });
 
-  it('CTL11A-2-BOOT-SESSION-GATE: while the session gate blocks, none of the nine accelerators does anything at the world, and with the Journal open neither J (its own Start) nor U (a replace) does; once the gate clears they work again', async () => {
+  it('CTL11A-2-BOOT-SESSION-GATE: while the session gate blocks, none of the ten accelerators does anything at the world, and with the Journal open neither J (its own Start) nor U (a replace) does; once the gate clears they work again', async () => {
     // WRONG IMPL KILLED: an accelerator decided before the session gate (the session terminal owns
     // the screen: a menu or a leaf would open behind it), a gate that is checked on `open` but not
     // on `start` (J over the Journal would still pop to the world beneath the terminal), one that
@@ -1183,7 +1207,7 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     }
   });
 
-  it('CTL11A-ACCEL-REPEAT-IGNORED: an OS key-repeat of an accelerator is ignored, so a held key leaves its leaf open, for all nine', async () => {
+  it('CTL11A-ACCEL-REPEAT-IGNORED: an OS key-repeat of an accelerator is ignored, so a held key leaves its leaf open, for all ten', async () => {
     // WRONG IMPL KILLED: a repeat guard that lets accelerator codes through, where a held J opens,
     // closes (its own screen: Start) and reopens the Journal on every OS repeat.
     await bootReady();
@@ -1274,5 +1298,124 @@ describe('main.ts accelerators over the real shell (runtime, ctl-11a)', {
     expectBareWorld('after Start');
     press('KeyJ');
     expectLeafOpen(ROW('J'), 'J from the bare world');
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // qf-14: the Controls accelerator (Y opens Options > Controls)
+  // ------------------------------------------------------------------------------------------
+
+  it('Y at the world opens Options > Controls directly: the key is consumed, the stack is the world, the menu, then the Controls frame, with the menu on its Options level and its cursor on Controls, Controls alone is shown, a second Y returns to the bare world, and the Y BUTTON key (KeyF) opens nothing [QF14-1-BOOT-OPENS-CONTROLS]', async () => {
+    // WRONG IMPL KILLED: a Y accelerator that is missing from the shell (the key is dead), one
+    // that opens the Help leaf beside it (the Options list has Help first), one that pushes the
+    // Controls frame with no menu beneath it (Backspace could never back out into the menu), a
+    // menu left on its root (the cursor is not on the leaf), a key that is not prevented, a second
+    // Y that re-opens the screen instead of acting as Start, a Y that does not replace another open
+    // screen, and the two namespaces mixed up (KeyF is the Y BUTTON; it must not open Controls, and
+    // KeyY is the accelerator and must not act as the Y button).
+    await bootReady();
+    server(1000);
+    expectBareWorld('precondition');
+
+    const e = press('KeyY');
+    expect(e.defaultPrevented, 'Y: the consumed accelerator is prevented').toBe(true);
+    expectLeafOpen(ROW('Y'), 'Y');
+    expect(stackNames(), 'Y: the menu, then the Controls frame').toEqual([
+      'world',
+      'menuView',
+      'controlsView',
+    ]);
+    expect(shownById('controls-overlay'), 'Y: the Controls frame is shown').toBe(true);
+    expect(byId('controls-title').textContent, 'Y: with its own title').toBe(
+      i18nT('controls.title'),
+    );
+    expect(shownById('help-overlay'), 'Y: not Help, the leaf above it').toBe(false);
+
+    // A second Y: the accelerator acts as Start from its own screen.
+    press('KeyY');
+    expectBareWorld('Y twice');
+
+    // Y replaces whatever screen is open.
+    press('KeyJ');
+    expectLeafOpen(ROW('J'), 'J');
+    press('KeyY');
+    expectLeafOpen(ROW('Y'), 'Y over the Journal');
+    expect(questLogShown(), 'Y over the Journal: the Journal is closed').toBe(false);
+    press('Escape');
+    expectBareWorld('after Start');
+
+    // The Y button's own key is not the accelerator.
+    press('KeyF');
+    expectBareWorld('KeyF is the Y button, not the Controls accelerator');
+    expect(H.sends, 'no accelerator walks the character').toHaveLength(0);
+    expect(H.calls, 'no accelerator sends a reducer call').toEqual([]);
+  });
+
+  it('with the Y accelerator remapped to K in the saved table, K opens Options > Controls (and K again closes it) while the old KeyY opens nothing and is left unprevented to the page [QF14-2-REMAP-BOOT]', async () => {
+    // WRONG IMPL KILLED: a Y accelerator whose key is hard-coded in the shell (the remap would be
+    // cosmetic: KeyY would still open Controls), a remap that adds the new key and keeps the old
+    // (both open it), a new key that opens nothing (the saved table is not what the router reads),
+    // a stored table that fails to parse once it carries a Y row (every remap is lost on boot), and
+    // an old key that is still consumed after the remap (the page would lose its key for nothing).
+    const raw = JSON.parse(
+      JSON.stringify({ buttons: DEFAULT_BINDINGS.buttons, accels: DEFAULT_BINDINGS.accels }),
+    ) as { buttons: Record<string, string[]>; accels: Record<string, string[]> };
+    raw.accels.Y = ['KeyK'];
+    localStorage.setItem('mr.controls', JSON.stringify({ v: 1, ...raw }));
+
+    await bootReady();
+    server(1000);
+    expectBareWorld('precondition');
+
+    const old = press('KeyY');
+    expectBareWorld('the old key after the remap');
+    expect(old.defaultPrevented, 'the freed KeyY is left to the page').toBe(false);
+
+    const e = press('KeyK');
+    expect(e.defaultPrevented, 'the new key is consumed').toBe(true);
+    expectLeafOpen(ROW('Y'), 'the remapped key');
+    press('KeyK');
+    expectBareWorld('the remapped key twice');
+
+    // The neighbours kept their keys: J still opens the Journal from the same saved table.
+    press('KeyJ');
+    expectLeafOpen(ROW('J'), 'J beside the remapped Y');
+  });
+
+  it('the Controls screen opened by Y paints the Controls shortcut on its Shortcuts tab as the Y row (label Controls, key Y), apart from the Y button`s own row on the Buttons tab (qf-14)', async () => {
+    // WRONG IMPL KILLED: a Shortcuts tab without the Controls row (the player could not rebind the
+    // new shortcut), a row labelled with the Y BUTTON's label or keyed with its KeyF (the two
+    // namespaces share the id `Y`), a row keyed by a hard-coded letter instead of the live table,
+    // and a Buttons tab that lost its own Y row.
+    await bootReady();
+    server(1000);
+    press('KeyY');
+    expectLeafOpen(ROW('Y'), 'Y');
+
+    const cells = (key: string): HTMLElement[] =>
+      Array.from(document.querySelectorAll<HTMLElement>('#controls-rows [data-nav-key]')).filter(
+        (el) => el.getAttribute('data-nav-key') === key,
+      );
+    const primary = (label: string, key: string): string =>
+      i18nTf('controls.slot.primary', { label, key });
+
+    // Buttons tab (the first): Y_0 is the Y BUTTON, on its own key.
+    expect(cells('Y_0'), 'the Buttons tab has one Y_0 cell').toHaveLength(1);
+    expect(cells('Y_0')[0]?.textContent, 'it is the Y button, KeyF').toBe(
+      primary(i18nT('controls.button.y'), 'F'),
+    );
+
+    // RB: the Shortcuts tab. Y_0 is now the Controls accelerator, keyed Y.
+    press('KeyE');
+    expect(stackNames(), 'RB is the screen`s: the stack is unchanged').toEqual([
+      'world',
+      'menuView',
+      'controlsView',
+    ]);
+    expect(cells('Y_0'), 'the Shortcuts tab has one Y_0 cell').toHaveLength(1);
+    expect(cells('Y_0')[0]?.textContent, 'it is the Controls shortcut, key Y').toBe(
+      primary('Controls', 'Y'),
+    );
+    expect(cells('Y_clear'), 'and a Clear cell of its own').toHaveLength(1);
+    expect(cells('Y_clear')[0]?.textContent, 'which names the shortcut').toContain('Controls');
   });
 });

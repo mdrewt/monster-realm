@@ -827,6 +827,9 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'controls.accel.account': 'Account',
   'controls.accel.bugReport': 'Save bug report',
   'controls.accel.dismissError': 'Dismiss error',
+  // qf-14 (named intentional change, QF14.1): +1 plain key, the Shortcuts-tab / Help label of the
+  // Controls accelerator Y = 362 keys (the French text, 'Commandes', is pinned at the file's end).
+  'controls.accel.controls': 'Controls',
   'controls.refused.reserved': 'That key belongs to the browser and cannot be bound.',
   'controls.refused.protected': 'Movement, Confirm, Back and Menu must always keep a key.',
   'controls.cancelled': 'Unchanged.',
@@ -1481,7 +1484,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-7c 361-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the qf-14 362-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -1570,10 +1573,11 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 //
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 361 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3/21r-b/21r-b2 CAT-01 [21R-B2-ROSTER-178]: the roster is exactly 362 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the EXPECTED_KEYS roster (361 keys since qf-7c: -1 plain,
+    // (a) roster is exactly the EXPECTED_KEYS roster (362 keys since qf-14: +1 plain,
+    // `controls.accel.controls`, the label of the Controls accelerator Y; 361 keys since qf-7c: -1 plain,
     // `battle.action.flee`, retired with the legacy battle Flee button; 362 since qf-8: -10 plain, -1
     // parameterised retired with the four views' mouse-only duplicate controls; 373 since qf-9: -3
     // plain, -3 parameterised retired with the raising Monsters section, +1 parameterised
@@ -1581,7 +1585,7 @@ describe('m24s3 (ADR-0259): catalog.en.ts — full roster, SAMPLE_PARAMS bijecti
     // since qf-3: +1 parameterised; 370 since ctl-14: +7 plain; 363 since ctl-13: +10 plain, +2
     // parameterised; was 351 since ctl-12b).
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
-    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-7c roster is 361 keys').toHaveLength(361);
+    expect(EXPECTED_KEYS, 'ANTI-VACUITY: the qf-14 roster is 362 keys').toHaveLength(362);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(
@@ -2630,8 +2634,9 @@ describe('qf-9: the Summary stats line and the retired raising ids', () => {
     // mouse-only duplicate controls (CAT-01 lists them).
     // qf-7c (named intentional change, QF7B.1): 362 → 361, `battle.action.flee` retired with the
     // legacy battle Flee button (the command list's Run is the only flee).
-    expect(Object.keys(en).length, 'the English catalog holds exactly 361 keys').toBe(361);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(361);
+    // qf-14 (named intentional change, QF14.1): 361 → 362, +`controls.accel.controls`.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 362 keys').toBe(362);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(362);
   });
 });
 
@@ -2665,7 +2670,7 @@ const QF8_FR_BOX_HINT =
   `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`;
 
 describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint that names Move', () => {
-  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 361 keys each [QF8-1-CATALOG-RETIRED]', () => {
+  it('the eleven ids that labelled the four views` mouse-only duplicate controls are gone from both catalogs and the pinned roster, while the views` surviving ids and the Social sheet`s answer rows stay, 362 keys each [QF8-1-CATALOG-RETIRED]', () => {
     // WRONG IMPL KILLED: a retired id left behind as a dead key in either catalog (catalogParity
     // DEAD-KEY fires, or a surviving requester keeps a deleted control half alive); an id retired
     // from en only (a French boot still carries it); a wholesale `box.card.*`, `trade.*`,
@@ -2727,8 +2732,9 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     }
     // qf-7c (named intentional change, QF7B.1): 362 → 361, `battle.action.flee` retired with the
     // legacy battle Flee button.
-    expect(Object.keys(en).length, 'the English catalog holds exactly 361 keys').toBe(361);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(361);
+    // qf-14 (named intentional change, QF14.1): 361 → 362, +`controls.accel.controls`.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 362 keys').toBe(362);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(362);
   });
 
   it('box.hint names the Monsters sheet`s Move row in both catalogs: the exact en and fr copy, each quoting its own locale`s box.sheet.move, the French quote inside guillemets with no-break spaces [QF8-1-CATALOG-BOX-HINT]', () => {
@@ -2850,7 +2856,7 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     const en = scan('en', CATALOG_EN as Record<string, unknown>, EN_NEEDLES);
     const fr = scan('fr', CATALOG_FR as Record<string, unknown>, FR_NEEDLES);
     expect([...en.hits, ...fr.hits], 'no value names a retired control').toEqual([]);
-    // ANTI-VACUITY: every value was read, each closure twice (the 361-key roster is pinned above).
+    // ANTI-VACUITY: every value was read, each closure twice (the 362-key roster is pinned above).
     const expectedTexts =
       Object.keys(EXPECTED_PLAIN).length + 2 * Object.keys(SAMPLE_PARAMS).length;
     expect(en.texts, 'every English value was read').toBe(expectedTexts);
@@ -2997,7 +3003,7 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
     );
   });
 
-  it('the legacy ids keep their names in both catalogs and the roster is still the 361-key one [QF10-4-KEY-IDS-UNCHANGED]', () => {
+  it('the legacy ids keep their names in both catalogs and the roster is still the 362-key one [QF10-4-KEY-IDS-UNCHANGED]', () => {
     // WRONG IMPL KILLED: an id renamed to follow its new value (box.title -> monsters.title, ...)
     // so messageIds.ts and every t() call site would have to move too (the spec allows values
     // only); a retired legacy id (the Party heading, the Bag command); a roster that grew or
@@ -3020,13 +3026,62 @@ describe('qf-10: the Monsters / Storage / Inventory / Items wording in both cata
       expect(Object.hasOwn(fr, id), `fr keeps ${id}`).toBe(true);
       expect(EXPECTED_KEYS.includes(id), `the pinned roster keeps ${id}`).toBe(true);
     }
-    expect(Object.keys(en).length, 'the English catalog holds exactly 361 keys').toBe(361);
-    expect(Object.keys(fr).length, 'and so does the French one').toBe(361);
-    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(361);
+    // qf-14 (named intentional change, QF14.1): 361 → 362, +`controls.accel.controls`.
+    expect(Object.keys(en).length, 'the English catalog holds exactly 362 keys').toBe(362);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(362);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(362);
     expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
       EXPECTED_KEYS,
     );
     // The Party heading is deliberately NOT revalued (the Party panel keeps its name).
     expect(en['box.section.party'], 'en box.section.party is untouched').toBe('Party');
+  });
+});
+
+// =============================================================================
+// qf-14 (QF14.2): the label of the Controls accelerator Y, in BOTH catalogs. Every expected byte is
+// typed here; none is read off the catalog under test.
+// =============================================================================
+
+describe('qf-14: the Controls accelerator label in both catalogs', () => {
+  it('controls.accel.controls is the plain string Controls in English and Commandes in French, a new id beside the other accelerator labels, with the Controls view`s title and the menu leaf unchanged [QF14-2-CATALOG-LABEL]', () => {
+    // WRONG IMPL KILLED: a key added to en only (rowLabel throws in a French boot: the Controls
+    // screen's Shortcuts tab and the generated Help go blank); a French label left as the English
+    // copy; a label that is a closure (rowLabel reads it with t()); the label missing from the
+    // pinned roster; a new id that reuses an existing accelerator label's wording (two rows a
+    // player cannot tell apart); and the existing Controls wordings (the frame title and the
+    // Options leaf) edited on the way.
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const KEY = 'controls.accel.controls';
+    expect(en[KEY], 'the English label').toBe('Controls');
+    expect(fr[KEY], 'the French label').toBe('Commandes');
+    expect(fr[KEY], 'a translation, not the English copy').not.toBe(en[KEY]);
+    expect(EXPECTED_PLAIN[KEY], 'the pinned roster lists it as a plain key').toBe('Controls');
+    expect(EXPECTED_KEYS.includes(KEY), 'and in the roster').toBe(true);
+    // The siblings keep their own distinct labels.
+    const SIBLINGS = [
+      'controls.accel.storage',
+      'controls.accel.bag',
+      'controls.accel.party',
+      'controls.accel.journal',
+      'controls.accel.trades',
+      'controls.accel.challenges',
+      'controls.accel.rankings',
+      'controls.accel.name',
+      'controls.accel.account',
+      'controls.accel.bugReport',
+      'controls.accel.dismissError',
+    ] as const;
+    for (const sibling of SIBLINGS) {
+      expect(en[sibling], `en ${sibling} differs from the Controls label`).not.toBe(en[KEY]);
+      expect(fr[sibling], `fr ${sibling} differs from the Controls label`).not.toBe(fr[KEY]);
+    }
+    expect(SIBLINGS, 'ANTI-VACUITY: the eleven other accelerator labels').toHaveLength(11);
+    // The frame title and the Options leaf already read Controls / Commandes and stay so.
+    expect(en['controls.title']).toBe('Controls');
+    expect(fr['controls.title']).toBe('Commandes');
+    expect(en['menu.options.controls.title']).toBe('Controls');
+    expect(fr['menu.options.controls.title']).toBe('Commandes');
   });
 });

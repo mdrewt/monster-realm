@@ -351,7 +351,8 @@ describe('main.ts generated Help over the real shell (runtime, ctl-14)', {
 
     // --- All controls: every row, the live keys, F9 and F8 ------------------------------------
     const controls = rowTexts(CONTROLS_PANEL);
-    expect(controls, '12 buttons then 11 shortcuts').toHaveLength(23);
+    // qf-14: 11 -> 12 shortcuts with Y (Controls), so 23 -> 24 rows.
+    expect(controls, '12 buttons then 12 shortcuts').toHaveLength(24);
     const rowFor = (label: string): string => {
       const row = controls.find((text) => text.includes(label));
       if (row === undefined) throw new Error(`no All controls row for ${label}`);
@@ -674,7 +675,7 @@ describe('main.ts Help: what a stale or short-cut implementation gets wrong (rou
     expect(stackNames(), 'Select closes it, the battle stays').toEqual(['battle']);
   }, 120_000);
 
-  it('clicking the Select chip at the world opens the same Help as the key: This screen is the world`s two chips (no Close, Back or OK), All controls has 23 rows and Goals 3', async () => {
+  it('clicking the Select chip at the world opens the same Help as the key: This screen is the world`s two chips (no Close, Back or OK), All controls has 24 rows and Goals 3', async () => {
     // WRONG IMPL KILLED: a launcher path that shows Help before reading the chips (or reads the
     // stack WITH the help frame: Close / Back / OK); a launcher that never renders (empty panels).
     await bootReady();
@@ -690,7 +691,8 @@ describe('main.ts Help: what a stale or short-cut implementation gets wrong (rou
         i18nT(own),
       );
     }
-    expect(rowTexts(CONTROLS_PANEL), 'All controls is populated').toHaveLength(23);
+    // qf-14: 23 -> 24 rows with Y (Controls).
+    expect(rowTexts(CONTROLS_PANEL), 'All controls is populated').toHaveLength(24);
     expect(rowTexts(GOALS_PANEL), 'Goals is populated').toHaveLength(3);
   }, 120_000);
 
