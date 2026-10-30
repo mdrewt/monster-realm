@@ -1362,12 +1362,76 @@ function qf13EnglishNameTitle(): string {
   return entry;
 }
 
+/** A computed style that PAINTS: nothing here makes the element invisible by a route other than
+ *  display / visibility (opacity, a zero font size, a transparent colour, taking it out of flow,
+ *  a clip, a zero box, an off-screen text indent or a collapsing transform). Called on the bar AND
+ *  the title; a property happy-dom does not compute reads '' and passes, so each check is a
+ *  denylist of the exact cheat value. */
+function qf13ExpectPainted(style: CSSStyleDeclaration, label: string): void {
+  expect(['', '1'], `${label}: opacity`).toContain(style.getPropertyValue('opacity'));
+  expect(['0', '0px', '0em', '0rem', '0%'], `${label}: font-size`).not.toContain(style.fontSize);
+  expect(['transparent', 'rgba(0, 0, 0, 0)'], `${label}: colour`).not.toContain(style.color);
+  expect(['absolute', 'fixed'], `${label}: out of flow`).not.toContain(style.position);
+  expect(['', 'none'], `${label}: float`).toContain(style.getPropertyValue('float'));
+  expect(['', 'none'], `${label}: clip-path`).toContain(style.getPropertyValue('clip-path'));
+  expect(['', 'none'], `${label}: transform`).toContain(style.getPropertyValue('transform'));
+  expect(style.getPropertyValue('text-indent').startsWith('-'), `${label}: text-indent`).toBe(
+    false,
+  );
+  for (const prop of ['height', 'max-height', 'width', 'max-width', 'line-height']) {
+    expect(
+      ['0', '0px', '0em', '0rem', '0%'],
+      `${label}: ${prop} is not collapsed to zero`,
+    ).not.toContain(style.getPropertyValue(prop));
+  }
+  expect(style.visibility, `${label}: visibility`).not.toBe('hidden');
+  expect(style.display, `${label}: display`).not.toBe('none');
+}
+
 describe('qf-13 (QF13.1): the Name frame title', () => {
   beforeEach(() => {
     mountRenameOverlay();
   });
   afterEach(() => {
     teardown();
+  });
+
+  it('styles.css: the only rules whose selector mentions mr-frame-title are exactly one .mr-frame-titlebar block and one .mr-frame-title block, and the title block declares font-weight only', () => {
+    // WRONG IMPL KILLED: a class-keyed hide of the chrome added to the sheet (for example
+    // `.mr-button-rows > .mr-frame-titlebar { opacity: 0 }` or `.mr-frame-title { font-size: 0 }`
+    // appended as a second block, in a @media block, or in a compound selector): the computed
+    // probes read one DOM, this reads the whole sheet. Compared by selector EQUALITY, not by
+    // substring; comments are stripped first so a decoy in a comment neither hides nor plants one.
+    const stripped = QF13_STYLES_CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    const blocks: Array<{ selectors: string[]; props: string[] }> = [];
+    for (const m of stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const head = (m[1] ?? '').split(';').pop() ?? '';
+      blocks.push({
+        selectors: head.split(',').map((s) => s.trim()),
+        props: (m[2] ?? '')
+          .split(';')
+          .map((d) =>
+            d
+              .slice(0, Math.max(0, d.indexOf(':')))
+              .trim()
+              .toLowerCase(),
+          )
+          .filter((p) => p !== ''),
+      });
+    }
+    expect(
+      blocks.some((b) => b.selectors.includes('.sr-only')),
+      'ANTI-VACUITY: the scan sees the existing .sr-only rule',
+    ).toBe(true);
+    const mentioning = blocks.filter((b) => b.selectors.some((s) => s.includes('mr-frame-title')));
+    expect(
+      mentioning.map((b) => b.selectors.join(', ')).sort(),
+      'every selector list that names the chrome, with multiplicity',
+    ).toEqual(['.mr-frame-title', '.mr-frame-titlebar']);
+    const title = mentioning.find((b) => b.selectors.join(', ') === '.mr-frame-title');
+    expect(title?.props, 'the title rule declares font-weight and nothing else').toEqual([
+      'font-weight',
+    ]);
   });
 
   it('after show() the overlay opens with a div.mr-frame-titlebar holding exactly one div.mr-frame-title#rename-title reading the catalogue Name title, on screen all the way up, not focusable, no role, not duplicated by a second view, not a row, and rewritten by every show() [QF13-1-NAME-TITLE]', () => {
@@ -1421,6 +1485,14 @@ describe('qf-13 (QF13.1): the Name frame title', () => {
     expect(title.hasAttribute('tabindex'), 'the title is not focusable').toBe(false);
     expect(title.hasAttribute('role'), 'the title carries no role').toBe(false);
     expect(bar?.hasAttribute('tabindex'), 'the titlebar is not focusable').toBe(false);
+    // Visible to assistive tech too: neither node is aria-hidden or inert.
+    for (const [label, node] of [
+      ['titlebar', bar],
+      ['title', title],
+    ] as const) {
+      expect(node?.getAttribute('aria-hidden'), `${label}: no aria-hidden`).toBeNull();
+      expect(node?.hasAttribute('inert'), `${label}: not inert`).toBe(false);
+    }
 
     // A second view over the same DOM neither duplicates nor replaces the bar.
     const second = new RenameView({ onSubmit: async () => {} });
@@ -1504,10 +1576,12 @@ describe('qf-13 (QF13.1): the Name frame title', () => {
       expect(barStyle.display, 'the titlebar is the sheet-driven flex row').toBe('flex');
       expect(barStyle.display, 'and is displayed').not.toBe('none');
       expect(barStyle.borderBottomStyle, 'the titlebar has a bottom border line').not.toBe('none');
+      qf13ExpectPainted(barStyle, 'titlebar');
       const titleStyle = getComputedStyle(title);
       expect(['bold', '700'], 'the title is bold').toContain(titleStyle.fontWeight);
       expect(titleStyle.display, 'the title is displayed').not.toBe('none');
       expect(titleStyle.visibility, 'the title is visible').not.toBe('hidden');
+      qf13ExpectPainted(titleStyle, 'title');
     });
   });
 });

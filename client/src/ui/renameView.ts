@@ -25,15 +25,15 @@
 // The submit label and the frame title (qf-13, QF13.1) are the strings this view owns. They are
 // resolved through the i18n resolver (`t('chrome.rename.submit')`, `t('menu.profile.name.title')`,
 // ui/i18n/resolver.ts) in show(), on every show(); `index.html` ships neither, so both are EMPTY
-// until the first show(). The current display name is model data, rendered raw.
+// until the first show(). The title borrows the Profile menu leaf's key on purpose (a new key would
+// move the pinned catalogue roster), so renaming the leaf retitles the frame: one decision, not two.
+// The current display name is model data, rendered raw.
 import { type Bindings, DEFAULT_BINDINGS } from '../input/bindings';
 import { t } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { buildRenameViewModel, type RenameViewModel } from './renameModel';
 import { type RowOp, rowStep } from './screens/profileScreen';
 
-/** Whether `code` leaves the focused submit button for the router: only the keys `b` binds to the
- *  D-pad and B do. */
 /** The frame-chrome title bar (ui/frame.ts, CTL4.6) as `overlay`'s first child, holding the
  *  `#rename-title` it returns: index.html ships none, so it is created once and found after. */
 function titleBar(overlay: HTMLElement): HTMLElement {
@@ -49,6 +49,8 @@ function titleBar(overlay: HTMLElement): HTMLElement {
   return title;
 }
 
+/** Whether `code` leaves the focused submit button for the router: only the keys `b` binds to the
+ *  D-pad and B do. */
 const routedOnSubmit = (b: Bindings, code: string): boolean =>
   (['Up', 'Down', 'Left', 'Right', 'B'] as const).some((button) =>
     b.buttons[button].includes(code),

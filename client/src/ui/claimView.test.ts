@@ -1107,6 +1107,32 @@ function qf13Fresh(): { view: ClaimView; overlay: HTMLElement; handlers: ClaimVi
   return { view, overlay: document.getElementById('claim-overlay') as HTMLElement, handlers };
 }
 
+/** A computed style that PAINTS: nothing here makes the element invisible by a route other than
+ *  display / visibility (opacity, a zero font size, a transparent colour, taking it out of flow,
+ *  a clip, a zero box, an off-screen text indent or a collapsing transform). Called on the bar AND
+ *  the title; a property happy-dom does not compute reads '' and passes, so each check is a
+ *  denylist of the exact cheat value. */
+function qf13ExpectPainted(style: CSSStyleDeclaration, label: string): void {
+  expect(['', '1'], `${label}: opacity`).toContain(style.getPropertyValue('opacity'));
+  expect(['0', '0px', '0em', '0rem', '0%'], `${label}: font-size`).not.toContain(style.fontSize);
+  expect(['transparent', 'rgba(0, 0, 0, 0)'], `${label}: colour`).not.toContain(style.color);
+  expect(['absolute', 'fixed'], `${label}: out of flow`).not.toContain(style.position);
+  expect(['', 'none'], `${label}: float`).toContain(style.getPropertyValue('float'));
+  expect(['', 'none'], `${label}: clip-path`).toContain(style.getPropertyValue('clip-path'));
+  expect(['', 'none'], `${label}: transform`).toContain(style.getPropertyValue('transform'));
+  expect(style.getPropertyValue('text-indent').startsWith('-'), `${label}: text-indent`).toBe(
+    false,
+  );
+  for (const prop of ['height', 'max-height', 'width', 'max-width', 'line-height']) {
+    expect(
+      ['0', '0px', '0em', '0rem', '0%'],
+      `${label}: ${prop} is not collapsed to zero`,
+    ).not.toContain(style.getPropertyValue(prop));
+  }
+  expect(style.visibility, `${label}: visibility`).not.toBe('hidden');
+  expect(style.display, `${label}: display`).not.toBe('none');
+}
+
 /** The structural contract of the Account title bar, asserted on the overlay as it stands. Returns
  *  the title node. */
 function qf13AssertAccountBar(label: string, overlay: HTMLElement): HTMLElement {
@@ -1136,6 +1162,14 @@ function qf13AssertAccountBar(label: string, overlay: HTMLElement): HTMLElement 
   expect(title.hasAttribute('role'), `${label}: the title carries no role`).toBe(false);
   expect(bar?.hasAttribute('tabindex'), `${label}: the titlebar is not focusable`).toBe(false);
   expect(title.closest('button'), `${label}: the title is not inside a button`).toBeNull();
+  // Visible to assistive tech too: neither node is aria-hidden or inert.
+  for (const [what, node] of [
+    ['titlebar', bar],
+    ['title', title],
+  ] as const) {
+    expect(node?.getAttribute('aria-hidden'), `${label}: ${what} has no aria-hidden`).toBeNull();
+    expect(node?.hasAttribute('inert'), `${label}: ${what} is not inert`).toBe(false);
+  }
   for (let node: HTMLElement | null = title; node !== null; node = node.parentElement) {
     const where = node === title ? '#claim-frame-title' : node.id || node.tagName;
     expect(node.hidden, `${label}: ${where} is not [hidden]`).toBe(false);
@@ -1264,10 +1298,12 @@ describe('qf-13 (QF13.1): the Account frame title', () => {
           'flex',
         );
         expect(barStyle.borderBottomStyle, `${label}: a bottom border line`).not.toBe('none');
+        qf13ExpectPainted(barStyle, `${label}: titlebar`);
         const titleStyle = getComputedStyle(title);
         expect(['bold', '700'], `${label}: the title is bold`).toContain(titleStyle.fontWeight);
         expect(titleStyle.display, `${label}: the title is displayed`).not.toBe('none');
         expect(titleStyle.visibility, `${label}: the title is visible`).not.toBe('hidden');
+        qf13ExpectPainted(titleStyle, `${label}: title`);
       }
     });
 
@@ -1278,7 +1314,14 @@ describe('qf-13 (QF13.1): the Account frame title', () => {
       // rule that also un-hides the hidden actions (an `!important` display, or one that targets
       // every button whatever its inline state). happy-dom caches computed style per element: the
       // overlay and each button are read once, from a brand new DOM per phase.
-      const BLOCK_LEVEL = ['block', 'flex', 'grid', 'table', 'list-item'];
+      const ALL_BUTTONS = [
+        'claim-signin-btn',
+        'claim-join-btn',
+        'claim-decline-btn',
+        'claim-decline-confirm-btn',
+        'claim-decline-cancel-btn',
+        'claim-privacy-btn',
+      ];
       const cases: ReadonlyArray<{
         label: string;
         vm: ClaimViewModel;
@@ -1297,7 +1340,17 @@ describe('qf-13 (QF13.1): the Account frame title', () => {
           shown: ['claim-decline-confirm-btn', 'claim-decline-cancel-btn', 'claim-privacy-btn'],
           hidden: ['claim-signin-btn', 'claim-join-btn', 'claim-decline-btn'],
         },
+        // EVERY visible claim phase (a rule or class that applies in some phases only fails here).
+        ...CLAIM_PHASES.map(({ label, state, rows }) => ({
+          label: `phase: ${label}`,
+          vm: buildClaimViewModel(state),
+          shown: rows,
+          hidden: ALL_BUTTONS.filter((id) => !rows.includes(id)),
+        })),
       ];
+      expect(cases.length, 'ANTI-VACUITY: the two named cases plus every phase').toBe(
+        2 + CLAIM_PHASES.length,
+      );
       for (const { label, vm, shown, hidden } of cases) {
         freshVisible(vm);
         const overlay = document.getElementById('claim-overlay') as HTMLElement;
@@ -1312,21 +1365,115 @@ describe('qf-13 (QF13.1): the Account frame title', () => {
           `${label}: ANTI-VACUITY: the phase shows exactly the expected buttons`,
         ).toEqual(shown);
 
-        const overlayIsColumn = overlayStyle.display === 'flex';
-        if (!overlayIsColumn) {
-          for (const id of shown) {
-            const el = document.getElementById(id) as HTMLElement;
-            expect(
-              BLOCK_LEVEL,
-              `${label}: #${id} is stacked, not inline (the overlay computes ${overlayStyle.display})`,
-            ).toContain(getComputedStyle(el).display);
-          }
+        // ANTI-VACUITY: the view writes the overlay's inline display 'block' (so the overlay is NOT
+        // itself a flex column here), which is why the buttons need a rule of their own. With the
+        // overlay block, the per-button check below always runs.
+        expect(overlayStyle.display, `${label}: the overlay computes block`).toBe('block');
+        for (const id of shown) {
+          const style = getComputedStyle(document.getElementById(id) as HTMLElement);
+          expect(style.display, `${label}: #${id} stacks as a block`).toBe('block');
+          expect(['', 'none'], `${label}: #${id} float`).toContain(style.getPropertyValue('float'));
+          expect(['absolute', 'fixed'], `${label}: #${id} stays in flow`).not.toContain(
+            style.position,
+          );
         }
         for (const id of hidden) {
           const el = document.getElementById(id) as HTMLElement;
           expect(getComputedStyle(el).display, `${label}: hidden #${id} stays none`).toBe('none');
         }
       }
+
+      // The class that stacks the buttons is on from construction: show() alone (no render at all)
+      // already stacks the one always-shown button.
+      const opened = qf13Fresh();
+      opened.view.show();
+      const privacy = document.getElementById('claim-privacy-btn') as HTMLElement;
+      expect(
+        getComputedStyle(privacy).display,
+        'show() alone: the privacy button stacks as a block',
+      ).toBe('block');
+
+      // The rule must not leak: buttons outside the Account overlay keep the UA default.
+      freshVisible(PROMPT_VM);
+      const plain = document.createElement('button');
+      const framedShell = document.createElement('div');
+      framedShell.className = 'mr-frame mr-shell';
+      const inShell = document.createElement('button');
+      framedShell.appendChild(inShell);
+      const framed = document.createElement('div');
+      framed.className = 'mr-frame';
+      const inFrame = document.createElement('button');
+      framed.appendChild(inFrame);
+      document.body.append(plain, framedShell, framed);
+      expect(
+        getComputedStyle(document.getElementById('claim-signin-btn') as HTMLElement).display,
+        'ANTI-VACUITY: in the same document the claim button does stack',
+      ).toBe('block');
+      for (const [what, el] of [
+        ['a plain button on the body', plain],
+        ['a button in a .mr-frame.mr-shell that is not the claim overlay', inShell],
+        ['a button in a .mr-frame that is not the claim overlay', inFrame],
+      ] as const) {
+        expect(getComputedStyle(el).display, `${what} keeps the UA default`).not.toBe('block');
+      }
+    });
+
+    it('claimView.ts writes no markup from strings: no innerHTML, insertAdjacentHTML or outerHTML in its comment-stripped source', () => {
+      // WRONG IMPL KILLED: a title or label written through an HTML sink (the vm strings are model
+      // copy and the catalogue is translator-supplied: textContent only, the discipline of
+      // renameView's RT-RN-07). Comments are stripped first so the header prose does not trip it.
+      const src = readFileSync(
+        path.join(path.dirname(fileURLToPath(import.meta.url)), 'claimView.ts'),
+        'utf8',
+      );
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1');
+      expect(
+        code.includes('textContent') && code.includes('class ClaimView'),
+        'ANTI-VACUITY: the stripped source still holds the view',
+      ).toBe(true);
+      for (const sink of ['innerHTML', 'insertAdjacentHTML', 'outerHTML']) {
+        expect(code.includes(sink), `claimView.ts must not use ${sink}`).toBe(false);
+      }
+    });
+
+    it('styles.css: the only rules whose selector mentions mr-frame-title are exactly one .mr-frame-titlebar block and one .mr-frame-title block, and the title block declares font-weight only', () => {
+      // WRONG IMPL KILLED: a class-keyed hide of the chrome added to the sheet (for example
+      // `.mr-button-rows > .mr-frame-titlebar { opacity: 0 }` or `.mr-frame-title { font-size: 0 }`
+      // appended as a second block, in a @media block, or in a compound selector): the computed
+      // probes read one DOM, this reads the whole sheet. Compared by selector EQUALITY, not by
+      // substring; comments are stripped first so a decoy in a comment neither hides nor plants one.
+      const stripped = QF13_STYLES_CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+      const blocks: Array<{ selectors: string[]; props: string[] }> = [];
+      for (const m of stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        const head = (m[1] ?? '').split(';').pop() ?? '';
+        blocks.push({
+          selectors: head.split(',').map((s) => s.trim()),
+          props: (m[2] ?? '')
+            .split(';')
+            .map((d) =>
+              d
+                .slice(0, Math.max(0, d.indexOf(':')))
+                .trim()
+                .toLowerCase(),
+            )
+            .filter((p) => p !== ''),
+        });
+      }
+      expect(
+        blocks.some((b) => b.selectors.includes('.sr-only')),
+        'ANTI-VACUITY: the scan sees the existing .sr-only rule',
+      ).toBe(true);
+      const mentioning = blocks.filter((b) =>
+        b.selectors.some((s) => s.includes('mr-frame-title')),
+      );
+      expect(
+        mentioning.map((b) => b.selectors.join(', ')).sort(),
+        'every selector list that names the chrome, with multiplicity',
+      ).toEqual(['.mr-frame-title', '.mr-frame-titlebar']);
+      const title = mentioning.find((b) => b.selectors.join(', ') === '.mr-frame-title');
+      expect(title?.props, 'the title rule declares font-weight and nothing else').toEqual([
+        'font-weight',
+      ]);
     });
   });
 });

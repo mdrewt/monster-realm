@@ -43,7 +43,8 @@
 //
 // Button labels and the frame title are the strings this view owns, resolved through the i18n
 // resolver (`t('claim.privacyButton')`, the five `claim.*Button` action labels and, since qf-13
-// (QF13.1), the title-bar `t('menu.profile.account.title')`) in BOTH open doors —
+// (QF13.1), the title-bar `t('menu.profile.account.title')`, the Profile menu leaf's own key, so
+// renaming the leaf retitles the frame) in BOTH open doors —
 // `render()` (whose `vm.visible` is the real open edge) and `show()` (`main.ts`'s
 // `onSignInFailed` calls `show()` BEFORE `renderClaim()`) — unconditionally, on every call, never
 // in the constructor (the locale may be negotiated after this view is constructed). The privacy
