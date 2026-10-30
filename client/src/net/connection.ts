@@ -537,6 +537,20 @@ export function connect(opts: ConnectionOptions): Connection {
       batcher.schedule();
     });
 
+    // zone_def (public content, PK zone_id): the client's only zone-name source, read by main.ts's
+    // zone cue (qf-15). A regular table, so onUpdate fires — the heal_location_row per-row idiom,
+    // not the PK-less view rebuild.
+    const ingestZoneName = (row: { zoneId: number; name: string }): void => {
+      store.upsertZoneName(row.zoneId, row.name);
+      batcher.schedule();
+    };
+    conn.db.zoneDef.onInsert((_ctx, row) => ingestZoneName(row));
+    conn.db.zoneDef.onUpdate((_ctx, _old, row) => ingestZoneName(row));
+    conn.db.zoneDef.onDelete((_ctx, row) => {
+      store.removeZoneName(row.zoneId);
+      batcher.schedule();
+    });
+
     type SdkNpcRow = {
       entityId: bigint;
       npcId: string;
@@ -852,6 +866,7 @@ export function connect(opts: ConnectionOptions): Connection {
             'SELECT * FROM player_quest',
             'SELECT * FROM heal_location_row',
             'SELECT * FROM npc',
+            'SELECT * FROM zone_def',
             // shop catalog (public content).
             'SELECT * FROM shop_row',
             'SELECT * FROM shop_item_row',

@@ -127,6 +127,7 @@ export type MessageId =
   | 'chrome.status.bugBundleBlocked'
   | 'chrome.status.healUnavailable'
   | 'chrome.status.partyFull'
+  | 'chrome.status.zoneEntered'
   | 'chrome.feedback.disconnected'
   | 'chrome.rename.updated'
   | 'chrome.session.expired.title'
@@ -431,6 +432,7 @@ export type MessageId =
  *  indexing, so no separate subset assert is needed. */
 export interface MessageParams {
   readonly 'chrome.status.disconnected': { readonly where: string };
+  readonly 'chrome.status.zoneEntered': { readonly name: string };
   readonly 'interact.chip': { readonly key: string; readonly verb: string; readonly name: string };
   readonly 'notice.request.trade': { readonly name: string };
   readonly 'notice.request.challenge': { readonly name: string };

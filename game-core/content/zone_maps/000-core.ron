@@ -15,8 +15,9 @@
             "##########",
         ],
         warps: [
-            // (5,5) in zone 0 is '.' (floor) — walkable warp to Tideglass Cove.
-            (from: (x: 5, y: 5), to_zone: 1, to_tile: (x: 5, y: 5)),
+            // (1,5) in zone 0 is '.' (floor) — walkable warp to Tideglass Cove. Off elder_oak's
+            // home (5,5) and outside its wander disc, and not the heal tile (8,3) (qf-15).
+            (from: (x: 1, y: 5), to_zone: 1, to_tile: (x: 1, y: 5)),
         ],
     ),
     (
@@ -32,8 +33,8 @@
         ],
         warps: [
             // Return warp from Tideglass Cove back to Verdant Hollow.
-            // (5,5) in zone 1 is '.' (floor) — walkable.
-            (from: (x: 5, y: 5), to_zone: 0, to_tile: (x: 5, y: 5)),
+            // (1,5) in zone 1 is '.' (floor) — walkable; not the shopkeeper's home (8,1).
+            (from: (x: 1, y: 5), to_zone: 0, to_tile: (x: 1, y: 5)),
         ],
     ),
 ]

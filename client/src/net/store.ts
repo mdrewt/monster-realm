@@ -449,6 +449,9 @@ export class AuthoritativeStore {
   readonly #conversations = new Map<string, StorePlayerConversation>();
   readonly #quests = new Map<bigint, StorePlayerQuest>();
   readonly #healLocations = new Map<number, StoreHealLocationRow>();
+  /** Zone display names from `zone_def` (public content), keyed by zone id — the client's only
+   *  zone-name source (qf-15). Content: cleared by `reset()`, kept by `resetCharacters()`. */
+  readonly #zoneNames = new Map<number, string>();
   readonly #npcs = new Map<bigint, StoreNpcRow>();
   readonly #npcsByNpcId = new Map<string, StoreNpcRow>();
   // shop content tables
@@ -758,6 +761,19 @@ export class AuthoritativeStore {
     if (this.#healLocations.delete(locationId)) this.#dirty = true;
   }
 
+  upsertZoneName(zoneId: number, name: string): void {
+    this.#zoneNames.set(zoneId, name);
+    this.#dirty = true;
+  }
+
+  removeZoneName(zoneId: number): void {
+    if (this.#zoneNames.delete(zoneId)) this.#dirty = true;
+  }
+
+  zoneName(zoneId: number): string | undefined {
+    return this.#zoneNames.get(zoneId);
+  }
+
   /** Upsert an NPC row into both the primary map (keyed by entityId) and the secondary
    *  npcId index. CRITICAL: purge the OLD npcId from the secondary index first if the
    *  entityId already exists (handles re-upsert where npcId changes). */
@@ -830,6 +846,7 @@ export class AuthoritativeStore {
     this.#conversations.clear();
     this.#quests.clear();
     this.#healLocations.clear();
+    this.#zoneNames.clear();
     this.#npcs.clear();
     this.#npcsByNpcId.clear();
     // shop content maps — cleared on disconnect; repopulated from the

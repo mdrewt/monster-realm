@@ -365,6 +365,9 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Status-strip error shown when the player moves a monster from the box to the party
   // but every party slot is taken; nothing is moved.
   'chrome.status.partyFull': 'équipe complète — placez d’abord un monstre dans la boîte',
+  // @desc: Status-line notice, also spoken by the live region, when the player's own character
+  // enters another zone; {name} is the destination zone's content-sourced display name (qf-15).
+  'chrome.status.zoneEntered': (p) => `Vous entrez dans ${p.name}`,
   // @desc: Feedback line inside an overlay (shop, trade, trade offer, rename, care, session) when
   // the player acted while the connection was down, so nothing was sent. Same wording as
   // chrome.status.disconnected without its {where} prefix.
