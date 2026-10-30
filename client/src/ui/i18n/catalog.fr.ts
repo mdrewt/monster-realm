@@ -458,9 +458,6 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // abbreviates "Précision"). Keep {name} first. Fits a half-width button.
   // battleView.ts (#renderSkills)
   'battle.skill.pveLabel': (p) => `${p.name} (${p.power}) · ${p.affinity} · Préc. ${p.accuracy} %`,
-  // @desc: Button label to run from an ongoing PvE battle. Short verb, fits a narrow button.
-  // battleView.ts:470
-  'battle.action.flee': 'Fuir',
   // @desc: Accessible name of the bait list a wild battle's Recruit command opens (a group of
   // buttons: No bait, then one per bait item). One word.
   // battleView.ts (#renderRecruit)
