@@ -73,6 +73,9 @@ const SUBLIST: Readonly<Record<Exclude<BattleCommand, 'run'>, CursorList>> = {
   swap: 'swap',
   bag: 'bag',
 };
+/** The command whose list a pick's second step belongs to (CTL8J.1). */
+const pickCommand = (pick: BattlePick): 'recruit' | 'bag' =>
+  pick.kind === 'recruitConfirm' ? 'recruit' : 'bag';
 /** The visible cue on the cursor row: focus alone is lost to the menu and to <body>. */
 const CURSOR_OUTLINE = '2px solid #ffd700';
 let runReasonIds = 0;
@@ -160,9 +163,10 @@ export class BattleView implements BattleOpsView {
   #commandRows: readonly BattleCommandRow[] = [];
   /** The kept cursor. It outlives focus (the menu, <body>) and a re-render of the same turn. */
   #cursor: { list: CursorList; index: number } = { list: 'commands', index: 0 };
-  /** The command whose list is open (QF7.2): the bench rows render only while it is Swap. Closed by
-   *  B, by another command or a bait / cure pick, by a new turn or battle, by a PvP wait, by losing
-   *  the swap and by hide(). */
+  /** The command whose list is open (QF7.2, QF7B.2): the skill grid renders only while it is Fight,
+   *  the bait list only while it is Recruit, the bench rows only while it is Swap. Closed by B, by
+   *  another command, by a new turn or battle, by a PvP wait, by losing the command and by hide(). A
+   *  pick's second step belongs to its command's list and never outlives it. */
   #open: BattleCommand | null = null;
   /** The (battle, turn) of the last render: a new one resets the cursor to Fight (CTL8I.1). */
   #turnKey: { readonly battleId: bigint; readonly turnNumber: number } | null = null;
@@ -431,10 +435,14 @@ export class BattleView implements BattleOpsView {
     this.#turnKey = { battleId: vm.battleId, turnNumber: vm.turnNumber };
     this.#vm = vm;
     this.#pick = resolveBattlePick(vm, this.#pick);
-    // A new turn starts on Fight; so does a PvP wait, whose grid and bench are not rendered.
+    // A new turn starts on Fight; so does a PvP wait, whose grid and bench are not rendered. A command
+    // this render's model no longer offers closes its list too, so a same-turn command regained does
+    // not reopen it unasked; a pick never outlives its list.
     const reset = newTurn || vm.pvpPendingSubmit;
-    // A lost swap closes the list too, so a same-turn swap regained does not reopen it unasked.
-    if (reset || (this.#open === 'swap' && !vm.canSwap)) this.#open = null;
+    const open = this.#open;
+    const offered = battleCommands(vm).some((row) => row.id === open && row.enabled);
+    if (reset || !offered) this.#open = null;
+    if (this.#pick !== null && pickCommand(this.#pick) !== this.#open) this.#pick = null;
 
     this.#renderWeather(vm);
     // Show opponent name for PvP battles so the player knows who they are fighting. The name is
@@ -495,7 +503,7 @@ export class BattleView implements BattleOpsView {
         const command = BATTLE_COMMANDS.find((id) => id !== 'run' && SUBLIST[id] === list);
         if (command !== undefined) {
           this.#cursor = { list: 'commands', index: BATTLE_COMMANDS.indexOf(command) };
-          this.#setOpen(null);
+          this.#setOpen(null, null);
         }
         this.#paintCursor(true);
         return;
@@ -538,8 +546,8 @@ export class BattleView implements BattleOpsView {
   #chooseCommand(id: BattleCommand, btn: HTMLButtonElement): void {
     const vm = this.#vm;
     if (vm === null || btn.getAttribute('aria-disabled') === 'true') return;
-    if (this.#pick !== null) this.#setPick(null);
-    this.#setOpen(id === 'run' ? null : id);
+    // A command press closes any second step, then opens its own list (Run acts at once).
+    this.#setOpen(id === 'run' ? null : id, null);
     if (id === 'run') {
       this.#cursor = { list: 'commands', index: BATTLE_COMMANDS.indexOf('run') };
       this.#paintCursor(false);
@@ -744,8 +752,9 @@ export class BattleView implements BattleOpsView {
   #renderSkills(vm: BattleViewModel): void {
     this.#skillsEl.replaceChildren();
     const ongoing = vm.outcome === 'Ongoing';
-    // Hide skill buttons when pending a PvP submission (waiting for opponent — no double-send).
-    if (!ongoing || vm.skills.length === 0 || vm.pvpPendingSubmit) return;
+    // The grid is Fight's list (QF7B.2): nothing until Fight opens it. Hidden too while a PvP
+    // submission waits on the opponent (no double-send).
+    if (!ongoing || vm.skills.length === 0 || vm.pvpPendingSubmit || this.#open !== 'fight') return;
 
     for (const skill of vm.skills) {
       const btn = document.createElement('button');
@@ -762,7 +771,8 @@ export class BattleView implements BattleOpsView {
       // would be a second SSOT with no parity oracle. APPEND only — never prepend or
       // infix: `e2e/pvp-side-b.spec.ts` matches `/^Submit: /` (start-anchored),
       // `e2e/my-battle-privacy.spec.ts` and `e2e/recruit.spec.ts` match
-      // `button:has-text("(")`, and this file's own test filters on `startsWith('Submit:')`.
+      // `button[data-battle-list="skills"]:has-text("(")`, and this file's own test filters on
+      // `startsWith('Submit:')`.
       // PvP still says "Submit:" to distinguish it from PvE "use now" semantics.
       // The two label shapes live in ui/i18n/catalog.en.ts (`battle.skill.pvpSubmit` /
       // `battle.skill.pveLabel`) — the ordering constraint above now binds THOSE entries.
@@ -819,35 +829,46 @@ export class BattleView implements BattleOpsView {
     // in the SAME method: never both on screen (the buttons also need Swap open). The `Ongoing` conjunct is required — canSwap is false on EVERY terminal
     // outcome, so without it the hint would sit beside "Victory!". No isPvp branch.
     this.#swapHintEl.style.display = vm.outcome === 'Ongoing' && !vm.canSwap ? 'block' : 'none';
-    // Recruit is wild-only (canRecruit); cure items are offered in any ongoing PvE battle
+    // Recruit is wild-only (canRecruit) and the bait list is Recruit's list (QF7B.2: rendered only
+    // while Recruit is the open command); cure items are offered in any ongoing PvE battle
     // (cureItems is [] otherwise, so length is the sole render condition).
     this.#baitRows = new Map();
-    if (vm.canRecruit) this.#renderRecruit(vm);
+    if (vm.canRecruit && this.#open === 'recruit') this.#renderRecruit(vm);
     this.#cureRows = new Map();
     if (vm.cureItems.length > 0) this.#renderCureItems(vm);
   }
 
-  /** Re-render the actions row for a pick change, keeping the PvE lock on the new nodes. */
+  /** A pick change: a pick opens its own command's list; null keeps the open list and drops the step. */
   #setPick(pick: BattlePick | null): void {
+    this.#setOpen(pick === null ? this.#open : pickCommand(pick), pick);
+  }
+
+  /** Open `command`'s list (null closes it) with `pick` as its second step (null, or one that belongs
+   *  to `command`: a step never outlives its list). The grid is rebuilt when Fight opens or closes,
+   *  the actions row (bait, bench, Flee, cure) when Recruit or Swap does or the pick changes, and the
+   *  PvE lock is re-applied to whatever was rebuilt. */
+  #setOpen(command: BattleCommand | null, pick: BattlePick | null): void {
+    const was = this.#open;
+    const gridChanged = (was === 'fight') !== (command === 'fight');
+    const actionsChanged =
+      (was === 'recruit') !== (command === 'recruit') ||
+      (was === 'swap') !== (command === 'swap') ||
+      pick !== this.#pick;
+    this.#open = command;
     this.#pick = pick;
     const vm = this.#vm;
     if (vm === null) return;
-    this.#renderActions(vm);
-    if (this.#pending?.battleId === vm.battleId) this.#setActionButtonsDisabled(true);
+    if (gridChanged) this.#renderSkills(vm);
+    if (actionsChanged) this.#renderActions(vm);
+    if ((gridChanged || actionsChanged) && this.#pending?.battleId === vm.battleId) {
+      this.#setActionButtonsDisabled(true);
+    }
   }
 
-  /** Open `command`'s list (null closes it). Only the bench rows depend on it, so the actions row
-   *  is re-rendered only when Swap opens or closes: the other lists keep their nodes. */
-  #setOpen(command: BattleCommand | null): void {
-    const swapChanged = (this.#open === 'swap') !== (command === 'swap');
-    this.#open = command;
-    if (swapChanged) this.#setPick(this.#pick);
-  }
-
-  /** A bait or cure row was pressed: open its second step with the cursor on Yes / the target. */
+  /** A bait or cure row was pressed: open its second step with the cursor on Yes / the target. A
+   *  bait row held from a closed list is refused: that list is the step's only live home. */
   #choosePick(pick: BattlePick): void {
-    // The pick's command becomes the open one, so an open Swap list never sits beside its step.
-    this.#open = pick.kind === 'recruitConfirm' ? 'recruit' : 'bag';
+    if (pick.kind === 'recruitConfirm' && this.#open !== 'recruit') return;
     this.#setPick(pick);
     this.#cursor = {
       list: pick.kind === 'recruitConfirm' ? 'recruitConfirm' : 'bagTarget',
