@@ -302,21 +302,52 @@ async function pressCommand(p: Page, id: 'recruit' | 'run'): Promise<void> {
  *  marker. */
 const skillCell = (p: Page) => p.locator('button[data-battle-list="skills"]:has-text("(")').first();
 
-/** Presses Fight once it is live and waits for a skill cell. Returns false — never throws — when
- *  Fight does not go live or the grid does not open within its bound (the battle ended): the
- *  attack loop's "skills not visible -> break". */
+/** Presses Fight once it is live and waits for a skill cell; true when the grid is open. Returns
+ *  false ONLY when the battle has ended (a fresh snap reads `ongoingBattle === null`): the attack
+ *  loop's "skills not visible -> break". In a battle that is still ongoing every failure THROWS,
+ *  naming it — Fight that never goes live, a press that fails, and above all a live Fight whose
+ *  press does not open the grid — so a grid regression fails HERE rather than surfacing ~30 min
+ *  later as "did not recruit within MAX_ENCOUNTERS" on an unweakened wild. The 5 s live wait is
+ *  the bounded retry for the brief lock window (Fight greyed while the previous call settles). */
 async function openSkillGrid(p: Page): Promise<boolean> {
+  /** The battle still on, as "battle <id>, turn <n>" for the failure message; null once ended. */
+  const stillOn = async (): Promise<string | null> => {
+    const b = (await snap(p)).ongoingBattle;
+    return b === null ? null : `battle ${b.battleId}, turn ${b.turnNumber}`;
+  };
   const fight = p.locator('[data-testid="battle-command-fight"][aria-disabled="false"]');
   const live = await fight
     .waitFor({ state: 'visible', timeout: 5_000 })
     .then(() => true)
     .catch(() => false);
-  if (!live) return false;
-  await fight.click({ timeout: 3_000 }).catch(() => undefined);
-  return skillCell(p)
+  if (!live) {
+    const notLive = await stillOn();
+    if (notLive === null) return false; // the battle ended: the command list is gone
+    throw new Error(
+      `openSkillGrid: Fight did not go live within 5 s in an ongoing battle (${notLive})`,
+    );
+  }
+  try {
+    await fight.click({ timeout: 3_000 });
+  } catch (err) {
+    const pressFailed = await stillOn();
+    if (pressFailed === null) return false; // the battle ended before the press landed
+    throw new Error(
+      `openSkillGrid: pressing a live Fight failed in an ongoing battle (${pressFailed}): ` +
+        (err as Error).message,
+    );
+  }
+  const open = await skillCell(p)
     .waitFor({ state: 'visible', timeout: 5_000 })
     .then(() => true)
     .catch(() => false);
+  if (open) return true;
+  const noGrid = await stillOn();
+  if (noGrid === null) return false; // the battle ended right after the press
+  throw new Error(
+    'openSkillGrid: Fight was live but the skill grid did not open in an ongoing battle ' +
+      `(${noGrid}): no data-battle-list="skills" cell within 5 s of the Fight press`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -858,8 +889,9 @@ test.describe
               )
               .catch(() => null); // tolerate if battle ended before waitForFunction resolved
           } else {
-            // Skills not visible (Fight never went live or the grid never opened: the battle
-            // may have ended) — break.
+            // Skills not visible because the battle has ended — openSkillGrid returns false ONLY
+            // then (in a battle still on it throws, naming the grid failure) — break; the
+            // post-weaken check below sorts out how it ended.
             break;
           }
 

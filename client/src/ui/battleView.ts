@@ -437,12 +437,12 @@ export class BattleView implements BattleOpsView {
     this.#pick = resolveBattlePick(vm, this.#pick);
     // A new turn starts on Fight; so does a PvP wait, whose grid and bench are not rendered. A command
     // this render's model no longer offers closes its list too, so a same-turn command regained does
-    // not reopen it unasked; a pick never outlives its list.
+    // not reopen it unasked. (The pick needs no such rule: resolveBattlePick above already dropped any
+    // pick whose command this model stopped offering.)
     const reset = newTurn || vm.pvpPendingSubmit;
     const open = this.#open;
     const offered = battleCommands(vm).some((row) => row.id === open && row.enabled);
     if (reset || !offered) this.#open = null;
-    if (this.#pick !== null && pickCommand(this.#pick) !== this.#open) this.#pick = null;
 
     this.#renderWeather(vm);
     // Show opponent name for PvP battles so the player knows who they are fighting. The name is

@@ -10309,7 +10309,7 @@ describe('BattleView QF7B.2: the skill grid and the bait list render only while 
     }
   });
 
-  it('Fight, by a mouse press or by A on the focused command, opens exactly one cell per skill in skill order, labelled for the mode, on screen and live, with the cursor and focus on the first cell (or on the skill this monster last used in this battle), and attacks nothing, opens no bait list, no swap row and no second step [QF7B-2-FIGHT-OPENS-GRID]', async () => {
+  it('Fight, by a mouse press or by A on the focused command, opens exactly one cell per skill in skill order, labelled for the mode, on screen and live, with the cursor and focus on the first cell (or on the skill this monster last used in this battle), and attacks nothing, opens no bait list, no swap row and no second step; a second Fight press keeps the same cells open and re-seats the cursor there [QF7B-2-FIGHT-OPENS-GRID]', async () => {
     // WRONG IMPL KILLED: a Fight that opens nothing (no way left to attack); a grid opened but left
     // hidden (display:none on a cell or on its container); a Fight that attacks the first skill
     // instead of opening; a Fight that moves the cursor but not focus, or neither (the next A presses
@@ -10353,6 +10353,33 @@ describe('BattleView QF7B.2: the skill grid and the bait list render only while 
         qf7bExpectNoBaitList(m.root, `${label}: Fight opens no bait list`);
         qf72ExpectClosed(m.root, `${label}: Fight opens no swap row`);
         expect(c8jConfirm(m.root) ?? c8jTarget(m.root), `${label}: and no second step`).toBeNull();
+
+        // WRONG IMPL KILLED (round 2, mutant MT): a second Fight press that toggles the open grid
+        // closed (or rebuilds it), and one that leaves the cursor where it was instead of seating it
+        // on the first cell again. A second press, by the mouse and then by A, keeps the SAME cells
+        // and re-seats the cursor and focus on cell 0, attacking nothing.
+        for (const again of QF7B_HOWS) {
+          const twice = `${label}, Fight again by ${again}`;
+          if (cells.length > 1) {
+            qf7bRight(m);
+            c8iExpectCursorOn(m.root, cells[1] as Element, `${twice}: precondition, off cell 0`);
+          }
+          qf7bPress(m, 'fight', again);
+          const now = c8iSkills(m.root);
+          expect(now, `${twice}: the grid is still open`).toHaveLength(cells.length);
+          for (const [i, cell] of now.entries()) {
+            expect(cell, `${twice}: cell ${i} is the same node (not rebuilt)`).toBe(cells[i]);
+          }
+          c8iExpectCursorOn(m.root, cells[0] as Element, `${twice}: re-seated on cell 0`);
+        }
+        expect(
+          m.callbacks.onAttack,
+          `${label}: pressing Fight again attacks nothing`,
+        ).not.toHaveBeenCalled();
+        expect(
+          m.callbacks.onPvpAttack,
+          `${label}: pressing Fight again submits nothing`,
+        ).not.toHaveBeenCalled();
       }
     }
 
@@ -10377,6 +10404,26 @@ describe('BattleView QF7B.2: the skill grid and the bait list render only while 
           m.root,
           c8iSkills(m.root)[used] as Element,
           `${label}: lands on the skill used last turn`,
+        );
+        // Round 2 (mutant MT): a second Fight press keeps the same cells and re-seats the cursor on
+        // the remembered skill, not on the first cell or where the cursor was moved to.
+        const opened = c8iSkills(m.root);
+        qf7bUp(m);
+        c8iExpectCursorOn(
+          m.root,
+          opened[used - 2] as Element,
+          `${label}: precondition, moved off the remembered cell`,
+        );
+        qf7bPress(m, 'fight', how);
+        const now = c8iSkills(m.root);
+        expect(now, `${label}, Fight again: the grid is still open`).toHaveLength(opened.length);
+        for (const [i, cell] of now.entries()) {
+          expect(cell, `${label}, Fight again: cell ${i} is the same node`).toBe(opened[i]);
+        }
+        c8iExpectCursorOn(
+          m.root,
+          opened[used] as Element,
+          `${label}, Fight again: re-seated on the remembered skill`,
         );
         expect(hit, `${label}: and attacks nothing more`).toHaveBeenCalledTimes(1);
       }
@@ -11003,7 +11050,7 @@ describe('BattleView QF7B.2: the skill grid and the bait list render only while 
     expect(pvp.callbacks.onPvpAttack, 'PvP: no re-render submits').not.toHaveBeenCalled();
   });
 
-  it('an open grid or bait list is closed by a new turn, an earlier turn number, a new battle on the same turn, hide() or refresh(null) then a re-show, a new turn seen while focus is on another frame, and a same-turn render that loses its command (no skills; canRecruit false); the cursor is back in the command list, nothing is sent, regaining the command on the same turn does not reopen it, and the next press lists the NEW rows; in a player battle a wait removes the grid and the turn that ends it starts closed [QF7B-2-NEW-TURN-WAIT-HIDE-CLOSE]', () => {
+  it('an open grid or bait list is closed by a new turn, an earlier turn number, a new battle on the same turn, hide() or refresh(null) then a re-show, a new turn seen while focus is on another frame, a finished battle on the same turn (the same turn Ongoing again does not reopen it), and a same-turn render that loses its command (no skills; canRecruit false); the cursor is back in the command list, nothing is sent, regaining the command on the same turn does not reopen it, and the next press lists the NEW rows; in a player battle a wait removes the grid and resets the cursor to Fight with focus taken from the page, and the turn that ends it starts closed [QF7B-2-NEW-TURN-WAIT-HIDE-CLOSE]', () => {
     // WRONG IMPL KILLED: a list that survives into the next turn (stale cells or baits the new turn
     // may not offer, pressed on a turn the player did not choose); one that survives into another
     // battle; a close keyed on the turn number alone, or only on an increase; a list state that
@@ -11062,6 +11109,19 @@ describe('BattleView QF7B.2: the skill grid and the bait list render only while 
           );
         },
       ],
+      [
+        // WRONG IMPL KILLED (round 2, mutant MH): "is the open command still offered" hand-rolled
+        // from the per-command flags (skills, canRecruit, ...) instead of the model's command rows:
+        // a finished battle keeps those flags (the skills and the bait are still listed) but offers
+        // nothing, so the hand-rolled check keeps the list open through the terminal render and the
+        // same turn rendered Ongoing again shows it unasked. The precedent is the pick, which a
+        // finished battle closes for good (CTL8J PICK-ACROSS-RENDERS).
+        'a finished battle on the same turn, then the same turn Ongoing again',
+        (m, l) => {
+          m.view.refresh(l.next({ outcome: 'SideAWins' }));
+          m.view.refresh(l.next());
+        },
+      ],
     ];
     for (const l of lists) {
       for (const [label, close] of closers) {
@@ -11111,13 +11171,27 @@ describe('BattleView QF7B.2: the skill grid and the bait list render only while 
     const p = c8iFresh(c8iPvpVM({ turnNumber: 2 }));
     const fight = c8iCmd(p.root, 'fight');
     qf7bPress(p, 'fight', 'mouse');
-    c8iSkills(p.root)[1]?.click();
+    const pressed = c8iSkills(p.root)[1] as HTMLButtonElement;
+    pressed.focus();
+    pressed.click();
     expect(p.callbacks.onPvpAttack, 'PvP: precondition, the cell submitted').toHaveBeenCalledWith(
       77n,
       12,
     );
+    // WRONG IMPL KILLED (round 2, mutant MPvpLeakNoReset): a `reset` that leaves out the PvP wait.
+    // The grid still closes (the wait greys every command), but the cursor is not reset, so with
+    // focus on the page (here: the focused cell blurred, as the submit's batch can leave it) the
+    // cursor falls back to Fight WITHOUT focus, and the next D-pad press only seats it. CTL8I.1: a
+    // wait resets to Fight and takes focus from the page.
+    pressed.blur();
+    expect(document.activeElement, 'PvP: precondition, focus is on the page').toBe(document.body);
     p.view.refresh(c8iPvpVM({ turnNumber: 2, pvpPendingSubmit: true }));
     qf7bExpectNoGrid(p.root, 'PvP: the wait on the same turn');
+    expect(c8iCurrent(p.root), 'PvP: one cursor while waiting').toHaveLength(1);
+    expect(c8iCurrent(p.root)[0], 'PvP: the wait resets the cursor to Fight').toBe(fight);
+    expect(document.activeElement, 'PvP: and the reset takes focus from the page onto Fight').toBe(
+      fight,
+    );
     expect(c8iDisabled(fight), 'PvP: the wait greys Fight').toBe(true);
     fight.click();
     qf7bExpectNoGrid(p.root, 'PvP: a mouse press on the greyed Fight');
@@ -11140,7 +11214,7 @@ describe('BattleView QF7B.2: the skill grid and the bait list render only while 
     );
   });
 
-  it('a greyed Fight or Recruit (no skills; canRecruit false; a player battle; a PvP wait; a PvE call in flight) opens nothing by the mouse or by A; with a PvE call in flight an open grid or bait list stays on screen with every row disabled, no row (live, or held and re-enabled by hand) sends anything, and the settle re-enables the rows with the list still open and the cursor on its row [QF7B-2-LOCK-AND-GREYED]', async () => {
+  it('a greyed Fight or Recruit (no skills; canRecruit false; a player battle; a PvP wait; a PvE call in flight) opens nothing by the mouse or by A, and one un-greyed by hand under the lock renders only disabled rows that send nothing; with a PvE call in flight an open grid or bait list stays on screen with every row disabled, no row (live, or held and re-enabled by hand) sends anything, and the settle re-enables the rows with the list still open and the cursor on its row [QF7B-2-LOCK-AND-GREYED]', async () => {
     // WRONG IMPL KILLED: a list opened from the model (the skills, the baits) although its command
     // is greyed; a press on a greyed command that opens an empty or disabled list and sends the
     // cursor into it; a lock that leaves Fight or Recruit live (a second action in the turn the first
@@ -11197,6 +11271,43 @@ describe('BattleView QF7B.2: the skill grid and the bait list render only while 
     }
     expect(u.callbacks.onAttack, 'nothing is attacked under the lock').not.toHaveBeenCalled();
     expect(u.callbacks.onRecruit, 'nothing is recruited under the lock').not.toHaveBeenCalled();
+    // WRONG IMPL KILLED (round 2, mutants MD2 and its Recruit twin MD3): a list opened under the lock
+    // that the lock never reaches, e.g. the lock re-applied to the actions row only and not to the
+    // grid (or the reverse) when a command opens its list. The view refuses a press on a greyed
+    // command, so a HOSTILE un-grey (aria-disabled set to "false" by hand) is the only way to make it
+    // render a list under the lock: whatever it renders must come out disabled, and no row, pressed
+    // as it is or re-enabled by hand, may send anything.
+    for (const [id, list] of [
+      ['fight', 'skills'],
+      ['recruit', 'recruit'],
+    ] as const) {
+      const cmd = c8iCmd(u.root, id);
+      cmd.setAttribute('aria-disabled', 'false'); // HOSTILE un-grey of the locked command
+      cmd.click();
+      const rendered = c8jRows(u.root, list);
+      expect(
+        rendered.filter((row) => !row.disabled).map((row) => row.textContent),
+        `a hand-un-greyed ${id} renders no enabled row under the lock`,
+      ).toEqual([]);
+      for (const row of rendered) {
+        row.click(); // swallowed by `disabled` alone
+        row.disabled = false; // HOSTILE re-enable: only the shared pending key can refuse this
+        row.click();
+        const yes = u.root.querySelector<HTMLButtonElement>('[data-testid="recruit-action"]');
+        if (yes !== null) {
+          yes.disabled = false;
+          yes.click();
+        }
+      }
+      expect(
+        u.callbacks.onAttack,
+        `after the hand-un-greyed ${id}: no row it rendered attacks under the lock`,
+      ).not.toHaveBeenCalled();
+      expect(
+        u.callbacks.onRecruit,
+        `after the hand-un-greyed ${id}: no row it rendered recruits under the lock`,
+      ).not.toHaveBeenCalled();
+    }
     du.resolve();
     await raFlushPromises();
     expect(c8iDisabled(c8iCmd(u.root, 'fight')), 'the settle releases Fight').toBe(false);
