@@ -480,10 +480,10 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: The Recruit question's other answer: go back to the bait list. One word.
   // battleView.ts (#renderRecruitConfirm)
   'battle.recruit.no': 'Non',
-  // @desc: Accessible name of the list of cure items a battle's Bag command opens. Two words.
+  // @desc: Accessible name of the list of cure items a battle's Items command opens. Two words.
   // battleView.ts (#renderCureItems)
   'battle.cure.listLabel': 'Objets de soin',
-  // @desc: One row of the battle Bag's cure-item list; {name} is the item name, {cureStatus} the
+  // @desc: One row of the battle Items command's cure-item list; {name} is the item name, {cureStatus} the
   // ailment it removes (e.g. "Poison") and {count} how many the player carries. One line in a
   // narrow button.
   // battleView.ts (#renderCureItems)
@@ -532,7 +532,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // in a player battle). One short verb; the five command entries share one narrow row.
   // battleView.ts (#renderCommands)
   'battle.command.run': 'Fuir',
-  // @desc: Accessible name of the battle command list (Fight, Recruit, Swap, Bag, Run), read by a
+  // @desc: Accessible name of the battle command list (Fight, Recruit, Swap, Items, Run), read by a
   // screen reader as the group's label. One word.
   // battleView.ts (#renderCommands)
   'battle.commands.label': 'Commandes',
