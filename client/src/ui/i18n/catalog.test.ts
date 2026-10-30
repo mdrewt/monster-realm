@@ -2744,4 +2744,99 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
     }
     expect(frHint, 'a translation, not the English copy').not.toBe(enHint);
   });
+
+  it('no English or French catalog value still names a retired mouse-only control: none carries To Party, To Box, Confirm Trade, Cancel Challenge, Evolve into or the pick-one prompt, nor their French copies, every parameterised value evaluated with both sample sets [QF8-1-CATALOG-NO-RETIRED-COPY]', () => {
+    // WRONG IMPL KILLED (measured, red-team M13): copy that advertises a deleted control from a
+    // KEPT id, which the retired-id checks above never see: the French `pvp.outgoing.label` closure
+    // pointing the player at a Cancel Challenge button below it (FR_NEEDLES[3]), the French
+    // `evolution.hint` telling the player to pick one by clicking an Evolve into button
+    // (FR_NEEDLES[4], FR_NEEDLES[5]); the same words spelled with a zero-width space, a no-break
+    // space or a straight apostrophe; and a closure that says it only for some params (both sample
+    // sets are evaluated). `evolution.hint` itself keeps "you choose which one to take" and its
+    // French twin (plan section 1.5: not reworded): neither is a needle, so no exemption exists.
+    const ZERO_WIDTH = [0x200b, 0x200c, 0x200d, 0x2060, 0xfeff].map((code) =>
+      String.fromCodePoint(code),
+    );
+    const APOSTROPHE = "'";
+    /** As a player reads it: NFKC, zero-width characters dropped, a curly apostrophe (U+2019) read
+     *  as the straight one, every run of whitespace (U+00A0 included) one space. Case is kept:
+     *  "Moved to party" (box.feedback.movedToParty) is live copy, not the retired "To Party". */
+    const normalise = (text: string): string => {
+      let folded = text.normalize('NFKC');
+      for (const hidden of ZERO_WIDTH) folded = folded.split(hidden).join('');
+      folded = folded.split(RIGHT_QUOTE).join(APOSTROPHE);
+      // Whitespace collapsed by a character loop (this file's helpers use no RegExp): `trim()`
+      // reads U+00A0 and every other Unicode space as whitespace.
+      let out = '';
+      let gap = false;
+      for (const ch of folded) {
+        if (ch.trim() === '') {
+          gap = out !== '';
+          continue;
+        }
+        if (gap) out += ' ';
+        gap = false;
+        out += ch;
+      }
+      return out;
+    };
+    const EN_NEEDLES = [
+      'To Party',
+      'To Box',
+      'Confirm Trade',
+      'Cancel Challenge',
+      'Evolve into',
+      'pick one:',
+    ];
+    const FR_NEEDLES = [
+      `Vers l${RIGHT_QUOTE}${E_ACUTE}quipe`,
+      `Vers la bo${QF8_I_CIRCUMFLEX}te`,
+      `Confirmer l${RIGHT_QUOTE}${E_ACUTE}change`,
+      `Annuler le d${E_ACUTE}fi`,
+      `Faire ${E_ACUTE}voluer en`,
+      'choisissez-en une',
+    ];
+    /** Every text `catalog` resolves to: a plain value, or a closure's output for BOTH sample sets
+     *  (a parameterised key with no sample set fails loudly). Returns the hits and the count. */
+    const scan = (
+      locale: string,
+      catalog: Record<string, unknown>,
+      needles: readonly string[],
+    ): { readonly hits: string[]; readonly texts: number } => {
+      const hits: string[] = [];
+      let texts = 0;
+      for (const [key, value] of Object.entries(catalog)) {
+        let resolved: string[];
+        if (typeof value === 'function') {
+          const samples = SAMPLE_PARAMS[key];
+          if (samples === undefined) {
+            throw new Error(`${locale} ${key} is parameterised and has no SAMPLE_PARAMS entry`);
+          }
+          const fn = value as (p: Record<string, unknown>) => string;
+          resolved = samples.map((sample) => fn(sample));
+        } else {
+          resolved = [String(value)];
+        }
+        for (const text of resolved) {
+          texts += 1;
+          const flat = normalise(text);
+          for (const needle of needles) {
+            if (flat.includes(normalise(needle))) {
+              hits.push(`${locale} ${key}: ${JSON.stringify(text)} names "${needle}"`);
+            }
+          }
+        }
+      }
+      return { hits, texts };
+    };
+
+    const en = scan('en', CATALOG_EN as Record<string, unknown>, EN_NEEDLES);
+    const fr = scan('fr', CATALOG_FR as Record<string, unknown>, FR_NEEDLES);
+    expect([...en.hits, ...fr.hits], 'no value names a retired control').toEqual([]);
+    // ANTI-VACUITY: every value was read, each closure twice (the 362-key roster is pinned above).
+    const expectedTexts =
+      Object.keys(EXPECTED_PLAIN).length + 2 * Object.keys(SAMPLE_PARAMS).length;
+    expect(en.texts, 'every English value was read').toBe(expectedTexts);
+    expect(fr.texts, 'every French value was read').toBe(expectedTexts);
+  });
 });

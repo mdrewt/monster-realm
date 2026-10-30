@@ -636,7 +636,7 @@ export class BoxView {
   }
 
   /** Runs `render` for a grid unless `shown` — every card it draws — is what the grid already
-   *  shows (the pvpView shape): `refresh` runs on every store batch, and a rebuild drops focus and
+   *  shows (a keyed render): `refresh` runs on every store batch, and a rebuild drops focus and
    *  the press in flight. The locale is in the key: the cards' copy is resolved at render. JSON,
    *  never a delimiter join: nicknames are user-chosen. A render that throws leaves the grid with
    *  no key, so the next refresh renders it again. */

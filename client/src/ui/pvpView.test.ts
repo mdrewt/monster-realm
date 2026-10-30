@@ -820,16 +820,19 @@ describe('m24s3 (ADR-0259): pvpView.ts routes its migrated sinks through t()/tf(
 // half dropped), the null shell, and recovery after a render that threw. That a container keeps
 // the cursor mark across refreshes is CTL8D-2-VIEW-CHALLENGE-CURSOR below.
 //
-// WRONG-IMPL-KILLED index:
-//   an equal batch that drops / duplicates a label -> SAME-VALUE-KEEPS-NODES
-//   never re-render after the first render        -> INCOMING-RENAMED-AND-CLEARED, OUTGOING-SECTION
-//   incoming key on the challengeId alone         -> INCOMING-RENAMED-AND-CLEARED
-//   outgoing key without status (or id / target)  -> OUTGOING-SECTION
-//   a hide() that empties rows nothing rebuilds   -> HIDE-RESETS
-//   no reset on the null shell path               -> NULL-SHELL-RESETS
-//   key kept over a render that threw after       -> THROW-RECOVERS-PREVIOUS
-//     emptying its container
-//   key recorded before the render runs           -> THROW-RECOVERS-SAME
+// WRONG-IMPL-KILLED index. The view keeps no render key since qf-8 (every refresh rebuilds both
+// containers' labels), so the rows below are what a label must show after each event, against a
+// regression that brings a "skip if unchanged" render back or breaks the rebuild:
+//   an equal batch that drops / duplicates a label  -> SAME-VALUE-KEEPS-NODES
+//   never re-render after the first render          -> INCOMING-RENAMED-AND-CLEARED, OUTGOING-SECTION
+//   a skip comparing the incoming challengeId alone -> INCOMING-RENAMED-AND-CLEARED
+//   a skip ignoring the outgoing status or target   -> OUTGOING-SECTION
+//   a hide() that empties rows a skip never refills -> HIDE-RESETS
+//   a skip the null shell does not clear            -> NULL-SHELL-RESETS
+//   a "last shown" record kept over a render that   -> THROW-RECOVERS-PREVIOUS
+//     threw after emptying its container
+//   a "last shown" record taken before the render   -> THROW-RECOVERS-SAME
+//     runs
 // ---------------------------------------------------------------------------
 
 /** Store rows the way main.ts's batch listener reads them: an incoming challenge from Bob, a
@@ -881,13 +884,14 @@ function cifixIncomingVm(challengerName: string): PvpChallengeViewModel {
 const CIFIX_TF_THROW = 'cifix0901: the incoming label render throws once';
 
 describe('cifix0901 PvpView refresh(vm, true): each container shows what the view model holds', () => {
-  it('cifix0901-PVP-SAME-VALUE-KEEPS-NODES BITES: two buildPvpChallengeViewModel() calls over the same store rows (main.ts per-batch path) show the same incoming and outgoing labels, each in its own shell container (the nodes the Social cursor marks), and no lifecycle control on any batch', () => {
+  it('cifix0901-PVP-SAME-VALUE-KEEPS-NODES BITES: equal batches (two buildPvpChallengeViewModel() calls over the same store rows, main.ts`s per-batch path) show the same incoming and outgoing labels, each inside its own shell container; the two containers stay the same nodes (the ones the Social cursor marks), and no batch renders a lifecycle control', () => {
     // NAMED INTENTIONAL CHANGE (ctl-10b, CTL10B.2): retargeted from five controls to three (the
     // per-player Challenge buttons are deleted).
     // NAMED INTENTIONAL CHANGE (qf-8): was "keep Accept, Decline and Cancel as the same connected
-    // nodes, and focus on Accept stays there". The buttons and the keyed render are deleted (plan
-    // §1.3), so the node-identity and focus clauses are retired with them; this per-batch path now
-    // pins what the real builder's view model shows: both labels, in their containers, no control.
+    // nodes, and focus on Accept stays there". The buttons are deleted, and with them the render
+    // key that kept them (plan §1.3): every refresh now rebuilds both containers' children, so
+    // the nodes an equal batch must keep are the CONTAINERS (the Social cursor's mark lives on
+    // them) and what it must keep showing is the label text; button identity and focus are retired.
     // WRONG IMPL KILLED: an equal batch that drops, duplicates or swaps a label; a label written
     // outside its container (the cursor mark would sit on an empty row); a container replaced by a
     // refresh (the mark would be lost); a lifecycle control rebuilt on the per-batch path.
@@ -940,7 +944,8 @@ describe('cifix0901 PvpView refresh(vm, true): each container shows what the vie
   // [QF8-2-PVP-RETIRED].
 
   it('cifix0901-PVP-INCOMING-RENAMED-AND-CLEARED BITES: the same incoming id with a new challenger name relabels the incoming section, and incoming going null removes the label', () => {
-    // WRONG IMPL KILLED: an incoming key on the challengeId alone; never re-rendering.
+    // WRONG IMPL KILLED: a refresh that skips when the incoming challengeId is unchanged (the
+    // renamed challenger never shows); never re-rendering.
     // qf-8 (named intentional change): "removes the label, Accept and Decline" reads "removes the
     // label": the two buttons are deleted (their absence in every state: [QF8-2-PVP-RETIRED]).
     mountPvpOverlay();
@@ -970,8 +975,9 @@ describe('cifix0901 PvpView refresh(vm, true): each container shows what the vie
   });
 
   it('cifix0901-PVP-OUTGOING-SECTION BITES: an outgoing challenge appearing adds its label and disappearing removes it; a new target name relabels it; a new id keeps it shown; a status leaving Pending removes it', () => {
-    // WRONG IMPL KILLED: never re-rendering; an outgoing key without the target name, without
-    // the challengeId, or without status (an Accepted outgoing would keep reading "waiting").
+    // WRONG IMPL KILLED: never re-rendering; a refresh that skips the outgoing section while only
+    // its target name or only its status changed (an Accepted outgoing would keep reading
+    // "waiting").
     // qf-8 (named intentional change): the section's presence is read off its label, not the
     // deleted Cancel Challenge button; "Cancel dispatches a new id" is RETIRED with the button
     // (survivor: screens/socialScreen.test.ts CTL8D-2-COMMANDS, the sheet's cancel sends the
@@ -1019,9 +1025,11 @@ describe('cifix0901 PvpView refresh(vm, true): each container shows what the vie
   // -HEADING-FOLLOWS-ACTIVE and -EMPTY-ROSTER-NONE-LINE tested only the deleted player list (its
   // buttons, onChallenge identity, heading and "none" line). Survivor: CTL10B-2-PVP-NO-INITIATE.
 
-  it('cifix0901-PVP-HIDE-RESETS BITES: hide() called DIRECTLY (reconnect / KeyP / force-hide), then an equal view-model re-shown: both request labels show again', () => {
-    // WRONG IMPL KILLED: a hide() that empties the containers with nothing to rebuild them on an
-    // equal view-model (the re-shown overlay reads blank).
+  it('cifix0901-PVP-HIDE-RESETS BITES: after hide() called DIRECTLY (reconnect / KeyP / force-hide), an equal view model shown again shows both request labels again', () => {
+    // WRONG IMPL KILLED: a hide() that empties the containers while the next refresh skips a view
+    // model equal to the last one shown (a "skip if unchanged" record that outlives the hide): the
+    // re-shown overlay reads blank. The view keeps no such record since qf-8 (every refresh
+    // rebuilds both containers); this pins the label behaviour for any render that brings one back.
     // qf-8 (named intentional change): the lock half ("a lock taken ... every lifecycle control
     // is ENABLED and Accept dispatches") is RETIRED with the buttons and the lock; the re-show half
     // is read off the labels.
@@ -1041,8 +1049,9 @@ describe('cifix0901 PvpView refresh(vm, true): each container shows what the vie
     ]);
   });
 
-  it('cifix0901-PVP-NULL-SHELL-RESETS BITES: vm, then refresh(null, true), then an equal view-model renders every section again', () => {
-    // WRONG IMPL KILLED: no reset on the null shell path — the emptied containers stay empty.
+  it('cifix0901-PVP-NULL-SHELL-RESETS BITES: after refresh(null, true) empties both rows, an equal view model shows both request labels again', () => {
+    // WRONG IMPL KILLED: a refresh that skips a view model equal to the last non-null one shown,
+    // with a "last shown" record the null shell does not clear: the emptied rows stay empty.
     // qf-8 (named intentional change): read off the labels (was "Accept, Decline and Cancel
     // render, and Accept dispatches"; those buttons are deleted).
     mountPvpOverlay();
@@ -1067,10 +1076,10 @@ describe('cifix0901 PvpView refresh(vm, true): each container shows what the vie
   // NAMED REMOVALS (ctl-10b, CTL10B.2): cifix0901-PVP-ROSTER-THIRD-ADDED, -ROSTER-THIRD-RENAMED,
   // -ROSTER-THIRD-SAME-NAME-NEW-IDENTITY and -ROSTER-REORDERED tested only the deleted player list.
 
-  it('cifix0901-PVP-THROW-RECOVERS-PREVIOUS BITES: Bob, then a refresh for Robert whose incoming render throws (main.ts catches and logs it), then Bob again: the incoming section shows Bob again', () => {
-    // WRONG IMPL KILLED: a container key left at its LAST SUCCESSFUL render while the render that
-    // threw had already emptied the container — the key still says Bob, Bob's batch is skipped
-    // and the row never comes back.
+  it('cifix0901-PVP-THROW-RECOVERS-PREVIOUS BITES: after Bob is shown and a refresh for Robert throws mid-render (main.ts catches and logs it), the next refresh for Bob shows Bob`s incoming label again', () => {
+    // WRONG IMPL KILLED: a refresh that skips a view model equal to the last one it finished
+    // showing, while the render that threw had already emptied the container: the record still
+    // says Bob, Bob's batch is skipped and the label never comes back.
     // qf-8 (named intentional change): the row's presence is read off its label (was its deleted
     // Accept button).
     mountPvpOverlay();
@@ -1097,9 +1106,10 @@ describe('cifix0901 PvpView refresh(vm, true): each container shows what the vie
     ).toBe(i18nTf('pvp.incoming.label', { challenger: 'Bob' }));
   });
 
-  it('cifix0901-PVP-THROW-RECOVERS-SAME BITES: a first refresh whose incoming render throws, then the SAME view-model again: the incoming section renders', () => {
-    // WRONG IMPL KILLED: a key recorded before the render runs — the throw leaves "Bob is shown"
-    // over an empty container and every later Bob batch is skipped.
+  it('cifix0901-PVP-THROW-RECOVERS-SAME BITES: after a first refresh whose incoming render throws, the SAME view model again shows the incoming label', () => {
+    // WRONG IMPL KILLED: a refresh that records its view model as shown before the render runs:
+    // the throw leaves "Bob is shown" over an empty container and every later equal batch is
+    // skipped.
     mountPvpOverlay();
     const view = new PvpView(makeCallbacks());
     try {

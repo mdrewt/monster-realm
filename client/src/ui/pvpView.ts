@@ -154,8 +154,8 @@ export class PvpView {
 
     if (vm === null) {
       this.#statusEl.textContent = t('pvp.title.idle');
-      this.#incomingEl.replaceChildren();
-      this.#outgoingEl.replaceChildren();
+      this.#renderIncoming(null);
+      this.#renderOutgoing(null);
       return;
     }
 

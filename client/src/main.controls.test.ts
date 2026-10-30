@@ -2213,12 +2213,12 @@ describe('main.ts battle semantics (runtime, ctl-6c)', { sequential: true }, () 
     expect(liveText(), 'the live region announces exactly the catalogued reason').toBe(reason);
   });
 
-  it('CTL6C-3-REFUSE-VIEW-CALLBACK: Care pressed on the Monsters sheet reaches care at the world (qf-8: the captured Trade Accept arm is retired with the button; the at-battle refusal of respondTrade stays pinned by main.dispatch.test.ts `respondTrade` atBattle refuse and CTL6C-3-MAIN-REFUSED-COMMAND)', async () => {
+  it('Care pressed on the Monsters sheet at the world reaches the care reducer once, with the monster`s id, and reports nothing on the status line (the captured-callback refusal arm is retired with the trade panel`s Accept button, qf-8; the at-battle refusal of a trade answer stays pinned by main.dispatch.test.ts and by this file`s refused-command case) [CTL6C-3-REFUSE-VIEW-CALLBACK]', async () => {
     // qf-8 (NAMED REMOVAL, protected category: a reviewer adjudicates): the second half of this
     // case clicked a CAPTURED trade-panel Accept button at a battle base and expected no reducer
     // and the catalogued reason. The button is deleted (QF8.1): there is no view callback left to
-    // capture, and the Social sheet's Accept is a keyed screen command, which no frame of can be
-    // open over a battle. The behaviour it protected, "the battle refusal is the dispatch-wide
+    // capture, and the Social sheet's Accept is a keyed screen command whose frame cannot be open
+    // over a battle. The behaviour it protected, "the battle refusal is the dispatch-wide
     // policy, not a guard on one path", stays protected by its survivors: main.dispatch.test.ts's
     // `respondTrade` row (`atBattle: 'refuse'`: the trade answer reaches no reducer at a battle
     // base and the status line shows the reason) and CTL6C-3-MAIN-REFUSED-COMMAND in this file (a

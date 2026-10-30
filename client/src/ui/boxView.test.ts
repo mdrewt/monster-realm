@@ -140,7 +140,8 @@
 //   - ux4 X2: the "To Party emits -1, To Box emits 255" half is RETIRED (survivor: CTL8B-2-MOVE-
 //     COMMAND); the box-vs-party render half stays. NEXT_FREE_SLOT_SENTINEL goes with it.
 //   - X2b "To Box emits the INJECTED sentinel": RETIRED (survivor: CTL8B-2-MOVE-COMMAND, whose
-//     Storage move sends the view model's `partySlotNone`, the injected wasm value).
+//     Party move, to Storage, sends the view model's `partySlotNone`, the injected wasm value; a
+//     Storage move sends -1).
 //   - ux4 X3 / X6: the hint quotes the sheet's Move label instead of "To Party" (the `box.hint`
 //     value changed, its id did not); X6's "no To Party button / real controls render" pair is now
 //     "no button at all, no retired label in the copy".
