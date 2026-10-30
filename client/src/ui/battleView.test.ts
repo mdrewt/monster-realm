@@ -371,9 +371,12 @@ describe('BattleView e-1: bait selection preserved across re-renders (same VM)',
     const view = new BattleView(parent, makeCallbacks());
     const vm = makeRecruitVM();
 
-    // First render: creates the bait list
+    // First render. QF7B migration: the bait list renders only once the Recruit command is pressed
+    // (QF7B.2), so the player presses it first. Every assertion below is unchanged. Was: the first
+    // render created the bait list.
     view.refresh(vm);
     view.show();
+    c8iCmd(parent, 'recruit').click();
 
     const baitList = parent.querySelector('[data-testid="bait-selector"]');
     expect(baitList).not.toBeNull();
@@ -413,6 +416,8 @@ describe('BattleView e-1: bait selection preserved across re-renders (same VM)',
 
     view.refresh(vm);
     view.show();
+    // QF7B migration: the bait list renders only once Recruit is pressed. Was: at rest.
+    c8iCmd(parent, 'recruit').click();
 
     // User presses the second bait row (itemId=9, "Sweet Bait")
     const sweet = parent.querySelector<HTMLElement>(
@@ -454,6 +459,8 @@ describe('BattleView e-1: bait-selector data-testid set exactly ONCE via one mec
     const view = new BattleView(parent, makeCallbacks());
     view.refresh(makeRecruitVM());
     view.show();
+    // QF7B migration: the bait list renders only once Recruit is pressed. Was: at rest.
+    c8iCmd(parent, 'recruit').click();
 
     // ctl-8j: migrated from the <select> shape (B10): the bait-selector is the bait list root now.
     const sel = parent.querySelector<HTMLElement>('[data-testid="bait-selector"]');
@@ -479,6 +486,8 @@ describe('BattleView e-1: bait-selector data-testid set exactly ONCE via one mec
     const view = new BattleView(parent, makeCallbacks());
     view.refresh(makeRecruitVM());
     view.show();
+    // QF7B migration: the bait list renders only once Recruit is pressed. Was: at rest.
+    c8iCmd(parent, 'recruit').click();
 
     const selectors = parent.querySelectorAll('[data-testid="bait-selector"]');
     // Must be exactly ONE element with data-testid=bait-selector.
@@ -506,6 +515,11 @@ describe('BattleView e-1: bait-selector data-testid set exactly ONCE via one mec
     view.show();
 
     expect(c8jConfirm(parent), 'no question is asked before a bait row is pressed').toBeNull();
+    // QF7B migration: the bait list (and so its No bait row) renders only once Recruit is pressed;
+    // the press opens the list and asks nothing, so the assertion above still holds after it too.
+    // Was: the No bait row at rest.
+    c8iCmd(parent, 'recruit').click();
+    expect(c8jConfirm(parent), 'opening the list asks nothing either').toBeNull();
     const none = parent.querySelector<HTMLElement>('[data-testid="bait-option-none"]');
     expect(none, 'the No bait row').not.toBeNull();
     none!.click();
@@ -1027,6 +1041,27 @@ describe('BattleView m16b RT-PVP-DS-01: double-submit suppression — no buttons
     );
     expect(buttons).toHaveLength(0);
 
+    // QF7B migration (strengthened): the cells now render only once Fight is pressed, so a fresh
+    // pending VM would pass with no pending guard at all. Pressing the greyed Fight command opens
+    // nothing, and a grid opened on this turn is gone again once the wait begins.
+    const submits = (): HTMLButtonElement[] =>
+      [...parent.querySelectorAll<HTMLButtonElement>('button')].filter((b) =>
+        b.textContent?.startsWith('Submit:'),
+      );
+    c8iCmd(parent, 'fight').click();
+    expect(
+      submits(),
+      'a press on the greyed Fight command opens no cell while waiting',
+    ).toHaveLength(0);
+    view.refresh({ ...makePvpPendingVM(), pvpPendingSubmit: false });
+    c8iCmd(parent, 'fight').click();
+    expect(submits(), 'precondition: not waiting, the Fight press opens the cells').toHaveLength(2);
+    view.refresh(makePvpPendingVM());
+    expect(
+      submits(),
+      'the wait on the same turn removes an open grid (the pvpPendingSubmit guard)',
+    ).toHaveLength(0);
+
     document.body.removeChild(parent);
   });
 
@@ -1128,9 +1163,13 @@ describe('BattleView m16b RT-PVP-DS-01: double-submit suppression — no buttons
     const view = new BattleView(parent, callbacks);
 
     // Phase 1: pending=false → buttons shown
+    // QF7B migration: the cells render only while Fight is the open command, so Fight is pressed
+    // in phase 1 and again in phase 3 (the wait closed the grid, and a same-turn un-wait does not
+    // reopen it unasked). Every assertion is unchanged. Was: the cells rendered on every render.
     const vmNotPending: BattleViewModel = { ...makePvpPendingVM(), pvpPendingSubmit: false };
     view.refresh(vmNotPending);
     view.show();
+    c8iCmd(parent, 'fight').click();
     const buttonsBeforePending = [...parent.querySelectorAll('button')].filter((b) =>
       b.textContent?.startsWith('Submit:'),
     );
@@ -1145,6 +1184,7 @@ describe('BattleView m16b RT-PVP-DS-01: double-submit suppression — no buttons
 
     // Phase 3: pending=false again (server resolved turn) → buttons back
     view.refresh(vmNotPending);
+    c8iCmd(parent, 'fight').click();
     const buttonsAfterResolution = [...parent.querySelectorAll('button')].filter((b) =>
       b.textContent?.startsWith('Submit:'),
     );
@@ -3335,6 +3375,9 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
     const view = new BattleView(parent, makeUx4Callbacks());
     view.refresh(makeUx4VM({ skills: RB56_SKILLS, canFlee: false }));
     view.show();
+    // QF7B migration: the cells render only once Fight is pressed (QF7B.2). Every assertion below
+    // is unchanged. Was: the cells were read at rest.
+    c8iCmd(parent, 'fight').click();
 
     const buttons = [...parent.querySelectorAll<HTMLButtonElement>('[data-battle-list="skills"]')];
     expect(
@@ -3410,6 +3453,8 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
     const view = new BattleView(parent, makeUx4Callbacks());
     view.refresh(makeUx4VM({ skills: RB56_SKILLS, canFlee: false, isPvp: true }));
     view.show();
+    // QF7B migration: the cells render only once Fight is pressed. Was: read at rest.
+    c8iCmd(parent, 'fight').click();
 
     const buttons = [...parent.querySelectorAll<HTMLButtonElement>('[data-battle-list="skills"]')];
     expect(
@@ -4571,11 +4616,13 @@ const RA_SKILLS = [
 ];
 
 /** An ongoing PvE VM on which ALL FIVE PvE controls are on offer: two skills, Flee, a two-member
- *  bench (UX4_BENCH), the Recruit list (No bait + one bait row) and the Bag list (one cure row). Six
- *  buttons render at rest, no select (ctl-8j: migrated from the <select> shape (B10); was seven
- *  buttons and two selects, with a Recruit button and a Use Item button); the two Swap rows render
- *  only once the Swap command is pressed (QF7.2: was eight buttons, the swap rows always among
- *  them). */
+ *  bench (UX4_BENCH), the Recruit list (No bait + one bait row) and the Bag list (one cure row). No
+ *  select (ctl-8j: migrated from the <select> shape (B10); was seven buttons and two selects, with
+ *  a Recruit button and a Use Item button). Only Flee and the cure row render at rest: the two
+ *  Swap rows render only once the Swap command is pressed (QF7.2), the two skill cells only once
+ *  Fight is (QF7B), the No bait and bait rows only once Recruit is (QF7B), and only one of those
+ *  three lists is on screen at a time (QF7B: was six buttons at rest, the skills and the bait
+ *  rows always among them). */
 function makeRaVM(overrides: Partial<BattleViewModel> = {}): BattleViewModel {
   return makeUx4VM({
     battleId: RA_BATTLE_ID,
@@ -4629,22 +4676,38 @@ async function raFlushPromises(): Promise<void> {
   await Promise.resolve();
 }
 
+/** The list a 20r-a census is taken over (QF7B: the grid and the bait list are each on screen only
+ *  while their command is open, and never together). */
+type RaList = 'fight' | 'recruit';
+
 interface RaControls {
-  /** Every <button> under the mount but the command rows — with makeRaVM at rest that is exactly
-   *  the six PvE controls (ctl-8j: was seven; QF7.2: was eight, with the two Swap rows). */
+  /** Every <button> under the mount but the command rows — with makeRaVM and one list open that is
+   *  exactly four PvE controls: the two skill cells (Fight open) or the No bait and Lure Berry rows
+   *  (Recruit open), plus Flee and the cure row (QF7B: was six at rest, both lists together;
+   *  ctl-8j: was seven; QF7.2: was eight, with the two Swap rows). */
   readonly all: readonly HTMLButtonElement[];
+  /** The two skill cells with Fight open; none with Recruit open. */
   readonly skills: readonly HTMLButtonElement[];
   readonly flee: HTMLButtonElement;
-  /** The No bait row — the first step of Recruit (ctl-8j: was the Recruit button). */
-  readonly recruit: HTMLButtonElement;
-  /** The Lure Berry bait row (ctl-8j). */
-  readonly bait: HTMLButtonElement;
+  /** The No bait row — the first step of Recruit (ctl-8j: was the Recruit button); null with Fight
+   *  open (QF7B). */
+  readonly recruit: HTMLButtonElement | null;
+  /** The Lure Berry bait row (ctl-8j); null with Fight open (QF7B). */
+  readonly bait: HTMLButtonElement | null;
   /** The cure row — the first step of Bag (ctl-8j: was the Use Item button). */
   readonly useItem: HTMLButtonElement;
 }
 
-/** Resolve the LIVE controls (re-query after every refresh — replaceChildren rebuilds them). */
-function raControls(parent: HTMLElement): RaControls {
+/** QF7B: open the list a census is taken over, by a mouse press on its (live) command. */
+function raOpen(parent: HTMLElement, list: RaList): void {
+  const cmd = c8iCmd(parent, list);
+  expect(c8iDisabled(cmd), `20r-a precondition (QF7B): the ${list} command is live`).toBe(false);
+  cmd.click();
+}
+
+/** Resolve the LIVE controls (re-query after every refresh — replaceChildren rebuilds them), with
+ *  `list` open (QF7B: Fight's grid by default, or Recruit's bait list). */
+function raControls(parent: HTMLElement, list: RaList = 'fight'): RaControls {
   // INTENTIONAL CHANGE (ctl-8i, CTL8I.1-2): the command row's five buttons are `aria-disabled`,
   // never `disabled`, and are not among the seven PvE action controls this census counts, so the
   // census leaves the `commands` list out (the command rows' own lock is asserted in ctl-8i's
@@ -4670,27 +4733,68 @@ function raControls(parent: HTMLElement): RaControls {
   const useItem = parent.querySelector<HTMLButtonElement>(
     '[data-testid="cure-item-selector"] [data-battle-list="bag"]',
   );
-  expect(skills, '20r-a precondition: two skill buttons must render').toHaveLength(2);
+  // QF7B migration: the census is taken with ONE list open — the two skill cells with Fight open,
+  // or the No bait and Lure Berry rows with Recruit open — and the other list must be absent (only
+  // one is ever on screen). Was: both lists at rest, in one six-button census.
+  if (list === 'fight') {
+    expect(skills, '20r-a precondition: two skill buttons must render (Fight open)').toHaveLength(
+      2,
+    );
+    expect(recruit, '20r-a precondition (QF7B): no No bait row beside the grid').toBeNull();
+    expect(bait, '20r-a precondition (QF7B): no bait row beside the grid').toBeNull();
+  } else {
+    expect(skills, '20r-a precondition (QF7B): no skill cell beside the bait list').toHaveLength(0);
+    expect(
+      recruit,
+      '20r-a precondition: the No bait row must render (Recruit open)',
+    ).not.toBeNull();
+    expect(
+      bait,
+      '20r-a precondition: the Lure Berry row must render (Recruit open)',
+    ).not.toBeNull();
+  }
   expect(flee, '20r-a precondition: the Flee button must render').toBeDefined();
   expect(
     swaps.map((b) => b.textContent),
     '20r-a precondition (QF7.2): no Swap row renders until the Swap command is pressed',
   ).toEqual([]);
-  expect(recruit, '20r-a precondition: the No bait row must render').not.toBeNull();
-  expect(bait, '20r-a precondition: the Lure Berry row must render').not.toBeNull();
   expect(useItem, '20r-a precondition: the cure row must render').not.toBeNull();
   expect(
     all,
-    '20r-a precondition: EXACTLY six buttons under the mount — 2 skills + Flee + No bait + ' +
-      'Lure Berry + the cure row (QF7.2: no Swap row until Swap is pressed). A different count ' +
-      'means the census below is about the wrong nodes (or a confirm / target / swap list is open ' +
-      'when no press was made)',
-  ).toHaveLength(6);
+    '20r-a precondition: EXACTLY four buttons under the mount — the open list (2 skills, or No ' +
+      'bait + Lure Berry) + Flee + the cure row (QF7.2: no Swap row until Swap is pressed; QF7B: ' +
+      'one list at a time). A different count means the census below is about the wrong nodes (or ' +
+      'a confirm / target / swap list is open when no press was made)',
+  ).toHaveLength(4);
   expect(
     parent.querySelectorAll('select'),
     '20r-a precondition: no <select> is left under the mount',
   ).toHaveLength(0);
-  return { all, skills, flee: flee!, recruit: recruit!, bait: bait!, useItem: useItem! };
+  return { all, skills, flee: flee!, recruit, bait, useItem: useItem! };
+}
+
+/** QF7B (the raExpectSwapLocked shape, for the list that is NOT open): while the PvE lock is held
+ *  the command is greyed, pressing it opens nothing that can be clicked into a second action, and
+ *  that list's callback has not fired. Presses only: it never re-enables a node. */
+function raExpectListLocked(
+  parent: HTMLElement,
+  callbacks: BattleViewCallbacks,
+  list: RaList,
+  why: string,
+): void {
+  const cmd = c8iCmd(parent, list);
+  expect(c8iDisabled(cmd), `${why}: the lock greys the ${list} command`).toBe(true);
+  cmd.click();
+  const live = c8jRows(parent, list === 'fight' ? 'skills' : 'recruit');
+  expect(
+    live.filter((b) => !b.disabled).map((b) => b.textContent),
+    `${why}: a press on the locked ${list} command leaves no enabled row`,
+  ).toEqual([]);
+  for (const row of live) row.click();
+  expect(
+    list === 'fight' ? callbacks.onAttack : callbacks.onRecruit,
+    `${why}: nothing is sent through the locked ${list} command`,
+  ).not.toHaveBeenCalled();
 }
 
 /** QF7.2 (migrated from the always-rendered Swap rows of the census): while the PvE lock is held
@@ -4714,8 +4818,8 @@ function raExpectSwapLocked(
   expect(callbacks.onSwap, `${why}: no swap is sent under the lock`).not.toHaveBeenCalled();
 }
 
-/** One census assertion over all six controls, labelled per button so a failure names the
- *  control that is in the wrong state. */
+/** One census assertion over all the controls of a census (QF7B: four; was six), labelled per
+ *  button so a failure names the control that is in the wrong state. */
 function raExpectAll(controls: RaControls, disabled: boolean, why: string): void {
   expect(
     controls.all.map((b) => `${b.textContent ?? ''}=${String(b.disabled)}`),
@@ -4761,9 +4865,16 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     //   resting census any more (they render only after the Swap press), so the lock on the swap
     //   path is asserted by raExpectSwapLocked below. Was: the two Swap rows in an eight-control
     //   census.
+    // WRONG IMPL KILLED (6) (QF7B migration): a lock that leaves the Recruit command live while the
+    //   grid is open (a recruit in the turn the attack spent), and one that leaves the bait rows
+    //   live when the lock is taken over the open bait list. The skills and the bait rows are never
+    //   on screen together any more, so the census is taken over the grid (Fight open) for the
+    //   attack, and over the bait list (Recruit open) for a recruit taken by its own Yes at the end
+    //   of this case. Was: one six-control census at rest, the skills and bait rows together.
     const d = raDeferred();
     const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
     const { parent } = raMount(callbacks);
+    raOpen(parent, 'fight');
     const c = raControls(parent);
     raExpectAll(c, false, '20r-a BV-1 precondition: every control starts enabled');
 
@@ -4779,19 +4890,25 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     raExpectAll(
       c,
       true,
-      '20r-a BV-1: ALL SIX resting PvE controls must be disabled while any PvE call is pending — ' +
-        'the lock is per BATTLE (D4), not per button, because every one of them acts on the same ' +
-        'turn (ctl-8j: the No bait, bait and cure rows are among them)',
+      '20r-a BV-1: ALL FOUR PvE controls on screen (the two cells, Flee, the cure row) must be ' +
+        'disabled while any PvE call is pending — the lock is per BATTLE (D4), not per button, ' +
+        'because every one of them acts on the same turn (ctl-8j: the cure row is among them)',
     );
     raExpectSwapLocked(
       parent,
       callbacks,
       '20r-a BV-1: the Swap path is locked too — a second action in the same turn',
     );
+    raExpectListLocked(
+      parent,
+      callbacks,
+      'recruit',
+      '20r-a BV-1 (QF7B): the Recruit path is locked too — a second action in the same turn',
+    );
     expect(
-      [c.recruit, c.bait, c.useItem].map((b) => b.disabled),
-      '20r-a BV-1: the bait and cure rows are disabled by the lock (ctl-8j, plan A4)',
-    ).toEqual([true, true, true]);
+      [c.useItem].map((b) => b.disabled),
+      '20r-a BV-1: the cure row is disabled by the lock (ctl-8j, plan A4; the bait rows: below)',
+    ).toEqual([true]);
     expect(
       parent.querySelectorAll('select'),
       'ctl-8j: no <select> exists to leave live',
@@ -4814,6 +4931,57 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
       callbacks.onAttack,
       '20r-a BV-1: after the settle the next click must dispatch again (no dead button)',
     ).toHaveBeenCalledTimes(2);
+
+    // --- QF7B: the bait rows under the lock. They are on screen only while Recruit is the open
+    // command, which a skill press never is (Fight closed the list), so this lock is taken over the
+    // open bait list by the recruit itself (No bait, then Yes), and the same census is taken over it:
+    // No bait, the bait row, Flee and the cure row all disabled, the Fight path locked, the settle
+    // releasing them with the list still open. Was: `[c.recruit, c.bait, c.useItem]` disabled under
+    // the skill's lock, beside the grid.
+    closeOverlayA11y('battleView', null);
+    document.body.replaceChildren();
+    const dr = raDeferred();
+    const rcb = makeRaCallbacks({ onRecruit: vi.fn().mockReturnValue(dr.promise) });
+    const rm = raMount(rcb);
+    raOpen(rm.parent, 'recruit');
+    const r = raControls(rm.parent, 'recruit');
+    raExpectAll(r, false, '20r-a BV-1 precondition: every bait-list control starts enabled');
+    r.recruit!.click();
+    rm.parent.querySelector<HTMLButtonElement>('[data-testid="recruit-action"]')!.click();
+    expect(
+      rcb.onRecruit,
+      '20r-a BV-1 precondition: the recruit took the lock',
+    ).toHaveBeenCalledTimes(1);
+    expect(rcb.onRecruit).toHaveBeenCalledWith(RA_BATTLE_ID, undefined);
+    const rl = raControls(rm.parent, 'recruit'); // the commit rebuilt the rows
+    raExpectAll(
+      rl,
+      true,
+      '20r-a BV-1: with the bait list open, ALL FOUR PvE controls on screen (No bait, the bait ' +
+        'row, Flee, the cure row) must be disabled while the recruit is pending',
+    );
+    expect(
+      [rl.recruit, rl.bait, rl.useItem].map((b) => b?.disabled),
+      '20r-a BV-1: the bait and cure rows are disabled by the lock (ctl-8j, plan A4)',
+    ).toEqual([true, true, true]);
+    raExpectListLocked(
+      rm.parent,
+      rcb,
+      'fight',
+      '20r-a BV-1 (QF7B): the Fight path is locked too — a second action in the same turn',
+    );
+    raExpectSwapLocked(
+      rm.parent,
+      rcb,
+      '20r-a BV-1: the Swap path is locked during the recruit too',
+    );
+    dr.resolve();
+    await raFlushPromises();
+    raExpectAll(
+      raControls(rm.parent, 'recruit'),
+      false,
+      '20r-a BV-1: every bait-list control is re-enabled once the recruit settles, the list open',
+    );
   });
 
   it('20r-a BV-2 BITES: a pending SKILL blocks Flee / Swap / an open Recruit Yes / an open Use Item target — each is disabled AND its click is swallowed even after a hostile re-enable', async () => {
@@ -4827,9 +4995,18 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     //   Yes and target rows, which exist only after a press. The second half of this case opens
     //   each step FIRST, then takes the lock with a skill, then tries the open step's endpoint.
     //   Was: a cure item selected in the <select> so that an unblocked Use Item would dispatch.
+    // QF7B migration: a skill is pressed from the grid Fight opens (raOpen), and Fight is a command
+    //   press, which closes an open step (CTL8J-1x-REPLACE-PICK) and the bait list. So in the second
+    //   half the step is opened first, then Fight closes it and a cell takes the lock; the held
+    //   endpoint is a node of that closed step. The Use Item target is re-opened from its cure row
+    //   (the cure list stays on screen); the Recruit confirm cannot be: its list is closed, the
+    //   Recruit command is greyed by the lock, and a bait row held from the closed list does nothing,
+    //   so that re-open is asserted NOT to happen. Every dispatch assertion is kept. Was: the step
+    //   was open beside the grid, the cell closed it, and both steps re-opened from live rows.
     const d = raDeferred();
     const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
     const { parent } = raMount(callbacks);
+    raOpen(parent, 'fight');
     const c = raControls(parent);
 
     c.skills[0]!.click();
@@ -4875,8 +5052,23 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
 
     // --- ctl-8j: the open step's endpoint is locked too (one fresh mount per step) ---
     const steps = [
-      { label: 'Recruit Yes', open: (x: RaControls) => x.recruit, endpoint: 'recruit-action' },
-      { label: 'Use Item target', open: (x: RaControls) => x.useItem, endpoint: 'use-item-action' },
+      {
+        label: 'Recruit Yes',
+        // QF7B: the No bait row is on screen only once Recruit is pressed.
+        row: (p: HTMLElement): HTMLButtonElement | null => {
+          c8iCmd(p, 'recruit').click();
+          return p.querySelector<HTMLButtonElement>('[data-testid="bait-option-none"]');
+        },
+        endpoint: 'recruit-action',
+      },
+      {
+        label: 'Use Item target',
+        row: (p: HTMLElement): HTMLButtonElement | null =>
+          p.querySelector<HTMLButtonElement>(
+            '[data-testid="cure-item-selector"] [data-battle-list="bag"]',
+          ),
+        endpoint: 'use-item-action',
+      },
     ] as const;
     for (const step of steps) {
       closeOverlayA11y('battleView', null);
@@ -4884,8 +5076,9 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
       const dd = raDeferred();
       const cb = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(dd.promise) });
       const mounted = raMount(cb);
-      const cc = raControls(mounted.parent);
-      step.open(cc).click();
+      const row = step.row(mounted.parent);
+      expect(row, `20r-a BV-2 precondition: the ${step.label} row exists`).not.toBeNull();
+      row!.click();
       const endpoint = mounted.parent.querySelector<HTMLButtonElement>(
         `[data-testid="${step.endpoint}"]`,
       );
@@ -4893,9 +5086,11 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
       expect(cb.onRecruit).not.toHaveBeenCalled();
       expect(cb.onUseItem).not.toHaveBeenCalled();
 
+      raOpen(mounted.parent, 'fight'); // QF7B: the grid, which closes the open step
+      const cc = raControls(mounted.parent);
       cc.skills[0]!.click(); // takes the lock
       expect(cb.onAttack).toHaveBeenCalledTimes(1);
-      // The skill is the action taken: it closes the open step at once (the held node is detached).
+      // The step is closed before the skill holds the turn (the held node is detached).
       expect(
         c8jConfirm(mounted.parent) ?? c8jTarget(mounted.parent),
         `20r-a BV-2: an open ${step.label} is closed once a skill holds the turn`,
@@ -4912,23 +5107,37 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
 
       // Re-open the step by a hand-enabled row press (the rows are locked), then press its
       // endpoint hand-enabled too: only the shared pending key can still refuse the dispatch.
-      const row = mounted.parent.querySelector<HTMLButtonElement>(
-        step.endpoint === 'recruit-action'
-          ? '[data-testid="bait-option-none"]'
-          : '[data-testid="cure-item-selector"] [data-battle-list="bag"]',
-      );
-      expect(row, `20r-a BV-2 precondition: the ${step.label} row exists`).not.toBeNull();
-      row!.disabled = false;
-      row!.click();
-      const reopened = mounted.parent.querySelector<HTMLButtonElement>(
-        `[data-testid="${step.endpoint}"]`,
-      );
-      expect(
-        reopened,
-        `20r-a BV-2 precondition: the row press re-opened the ${step.label}`,
-      ).not.toBeNull();
-      reopened!.disabled = false;
-      reopened!.click();
+      if (step.endpoint === 'use-item-action') {
+        const live = mounted.parent.querySelector<HTMLButtonElement>(
+          '[data-testid="cure-item-selector"] [data-battle-list="bag"]',
+        );
+        expect(live, `20r-a BV-2 precondition: the ${step.label} row exists`).not.toBeNull();
+        live!.disabled = false;
+        live!.click();
+        const reopened = mounted.parent.querySelector<HTMLButtonElement>(
+          `[data-testid="${step.endpoint}"]`,
+        );
+        expect(
+          reopened,
+          `20r-a BV-2 precondition: the row press re-opened the ${step.label}`,
+        ).not.toBeNull();
+        reopened!.disabled = false;
+        reopened!.click();
+      } else {
+        // QF7B: the bait list is closed and the lock greys Recruit, so the only node left is the No
+        // bait row held from the closed list; hand-enabled and pressed, it must re-open nothing.
+        const recruitCmd = c8iCmd(mounted.parent, 'recruit');
+        expect(c8iDisabled(recruitCmd), '20r-a BV-2: the lock greys the Recruit command').toBe(
+          true,
+        );
+        recruitCmd.click();
+        row!.disabled = false;
+        row!.click();
+        expect(
+          mounted.parent.querySelector('[data-testid="recruit-action"]'),
+          `20r-a BV-2: no ${step.label} re-opens while the skill call is pending`,
+        ).toBeNull();
+      }
       expect(
         calls(),
         `20r-a BV-2: a re-opened ${step.label} must not dispatch while the skill call is pending`,
@@ -4949,6 +5158,10 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     c8iCmd(swapMount.parent, 'swap').click();
     const heldSwaps = c8jRows(swapMount.parent, 'swap');
     expect(heldSwaps, '20r-a BV-2 precondition: the Swap press opens the two rows').toHaveLength(2);
+    // QF7B migration: the cell is on screen only once Fight is pressed, and Fight closes the Swap
+    // list (one list at a time), so the held rows are rows of a list closed before the lock. Was:
+    // the cell was pressed beside the open Swap list.
+    raOpen(swapMount.parent, 'fight');
     c8iSkills(swapMount.parent)[0]!.click(); // takes the lock
     expect(cs.onAttack).toHaveBeenCalledTimes(1);
     expect(
@@ -4979,6 +5192,7 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     const d = raDeferred();
     const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
     const { parent } = raMount(callbacks);
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const c = raControls(parent);
 
     c.skills[1]!.click();
@@ -5016,11 +5230,13 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     const d = raDeferred();
     const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
     const { parent, view } = raMount(callbacks);
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const before = raControls(parent);
     before.skills[0]!.click();
     raExpectAll(before, true, '20r-a BV-4 precondition: the lock disabled the first render');
 
-    // An ordinary batch tick while the call is in flight: same battle, same VM shape.
+    // An ordinary batch tick while the call is in flight: same battle, same VM shape (the same turn,
+    // so the grid stays open: QF7B).
     view.refresh(makeRaVM());
     const rebuilt = raControls(parent);
     expect(
@@ -5084,12 +5300,17 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     );
     const callbacks = makeRaCallbacks({ onAttack });
     const { parent, view } = raMount(callbacks);
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const first = raControls(parent);
     first.skills[0]!.click();
     expect(onAttack).toHaveBeenCalledTimes(1);
     raExpectAll(first, true, '20r-a BV-5 precondition: battle 77 is locked');
 
     view.refresh(makeRaVM({ battleId: RA_OTHER_BATTLE_ID }));
+    // QF7B migration: a new battle starts with the grid closed, so battle 78's Fight is pressed
+    // (raOpen also asserts that Fight is live: battle 77's lock does not grey it). Was: battle 78's
+    // cells rendered at once.
+    raOpen(parent, 'fight');
     const other = raControls(parent);
     raExpectAll(
       other,
@@ -5140,6 +5361,7 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     const d = raDeferred();
     const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
     const { parent } = raMount(callbacks);
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const c = raControls(parent);
 
     c.skills[0]!.click();
@@ -5182,6 +5404,7 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     });
     const callbacks = makeRaCallbacks({ onAttack });
     const { parent } = raMount(callbacks);
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const c = raControls(parent);
 
     expect(
@@ -5218,6 +5441,7 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     const d = raDeferred(); // deliberately never settled
     const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
     const { parent, view } = raMount(callbacks);
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const c = raControls(parent);
     c.skills[0]!.click();
     raExpectAll(c, true, '20r-a BV-8 precondition: the lock disabled every control');
@@ -5230,6 +5454,9 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     ).toHaveBeenCalledTimes(1);
     view.refresh(makeRaVM()); // the surviving battle re-shows on the next batch
     expect(view.visible, '20r-a BV-8 precondition: refresh(vm) re-shows').toBe(true);
+    // QF7B migration: hide() closes the grid, so the re-shown battle's Fight is pressed (raOpen
+    // asserts it is live: hide() released the lock). Was: the cells re-rendered at once.
+    raOpen(parent, 'fight');
     const after = raControls(parent);
     raExpectAll(
       after,
@@ -5254,15 +5481,16 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     const callbacks = makeRaCallbacks({ onPvpAttack: vi.fn().mockReturnValue(d.promise) });
     const vm: BattleViewModel = { ...makePvpPendingVM(), pvpPendingSubmit: false };
     const { parent } = raMount(callbacks, vm);
-    // QF7.2 migration: the PvP Submit Swap row renders only while Swap is the open command, so it is
-    // opened here before the census is taken (a PvP press opens it with no lock involved). Every
-    // assertion below is unchanged. Was: the row was always rendered.
-    c8iCmd(parent, 'swap').click();
+    // QF7B migration: the Submit cells render only while Fight is the open command and the Submit
+    // Swap row only while Swap is (QF7.2), and the two lists are never on screen together, so the
+    // two PvP paths are taken in turn: Fight's cells first (their census, the unsettled submit, the
+    // second submit), then the Swap row, whose own census is taken after the unsettled submit. Every
+    // assertion is kept; the first census also covers the five command rows. Was: the cells and the
+    // Swap row were on screen together after one Swap press.
+    c8iCmd(parent, 'fight').click();
     const all = [...parent.querySelectorAll('button')];
     const submits = all.filter((b) => (b.textContent ?? '').startsWith('Submit: '));
-    const swaps = all.filter((b) => (b.textContent ?? '').startsWith('Submit Swap: '));
     expect(submits, '20r-a BV-9 precondition: two PvP Submit buttons').toHaveLength(2);
-    expect(swaps, '20r-a BV-9 precondition: one PvP Submit Swap button').toHaveLength(1);
 
     submits[0]!.click();
     expect(callbacks.onPvpAttack).toHaveBeenCalledTimes(1);
@@ -5271,8 +5499,21 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
       '20r-a BV-9: NO PvP control may be disabled by an unsettled onPvpAttack — the PvP lock is ' +
         'the VM flag, never the promise',
     ).toEqual(all.map((b) => `${b.textContent ?? ''}=false`));
+    expect(
+      all.filter((b) => b.getAttribute('aria-disabled') === 'true').map((b) => b.textContent),
+      '20r-a BV-9: and no command row is greyed by it but the PvP-greyed Recruit, Bag and Run',
+    ).toEqual(['Recruit', 'Bag', 'Run']);
 
     submits[1]!.click();
+    c8iCmd(parent, 'swap').click();
+    const swaps = [...parent.querySelectorAll<HTMLButtonElement>('button')].filter((b) =>
+      (b.textContent ?? '').startsWith('Submit Swap: '),
+    );
+    expect(swaps, '20r-a BV-9 precondition: one PvP Submit Swap button').toHaveLength(1);
+    expect(
+      swaps.map((b) => b.disabled),
+      '20r-a BV-9: the Swap row is not disabled by the unsettled onPvpAttack either',
+    ).toEqual([false]);
     swaps[0]!.click();
     expect(callbacks.onPvpAttack).toHaveBeenCalledTimes(2);
     expect(callbacks.onPvpSwap).toHaveBeenCalledTimes(1);
@@ -5288,6 +5529,7 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     //   click and the microtask observe a lock with no call behind it.
     const callbacks = makeRaCallbacks();
     const { parent } = raMount(callbacks);
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const c = raControls(parent);
 
     c.skills[0]!.click();
@@ -5311,6 +5553,7 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     const onAttack = vi.fn().mockReturnValueOnce(p1.promise).mockReturnValueOnce(p2.promise);
     const callbacks = makeRaCallbacks({ onAttack });
     const { parent, view } = raMount(callbacks);
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
 
     raControls(parent).skills[0]!.click(); // generation 1
     expect(onAttack).toHaveBeenCalledTimes(1);
@@ -5318,6 +5561,7 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
 
     view.hide(); // releases generation 1's lock (BV-8) — P1 is still in flight
     view.refresh(makeRaVM()); // re-show + rebuild, same battle
+    raOpen(parent, 'fight'); // QF7B migration: hide() closed the grid; Fight is live again
     const gen2 = raControls(parent);
     raExpectAll(gen2, false, '20r-a BV-11 precondition: hide() released generation 1');
 
@@ -5649,6 +5893,17 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
     // --- PvE: every conditional branch present at once ----------------------
     view.refresh(m24s3PveVM());
     view.show();
+    // QF7B migration: the skill cells render only while Fight is the open command and the bait list
+    // only while Recruit is, and (with the bench) only one of the three lists is on screen at a
+    // time. So the player presses Fight (the cells are kept for the DOM checks below), then Recruit,
+    // then Swap: the resolver calls asserted below accumulate across the three presses, and Recruit
+    // is pressed again before the bait list's own DOM checks. Every assertion below is unchanged.
+    // Was: the cells and the bait list were rendered on every ongoing render.
+    c8iCmd(parent, 'fight').click();
+    const skillCells = [
+      ...parent.querySelectorAll<HTMLButtonElement>('[data-battle-list="skills"]'),
+    ];
+    c8iCmd(parent, 'recruit').click();
     // QF7.2 migration: the swap rows render only while Swap is the open command, so the bench
     // member's label is resolved (and its button present) only after the Swap press. Every
     // assertion below is unchanged. Was: the swap row was rendered on every ongoing render.
@@ -5740,15 +5995,13 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
     expect(hpTexts).toContain('HP 5/12 · Fire');
     const buttons = [...parent.querySelectorAll('button')];
     // INTENTIONAL CHANGE (ctl-8i): the accuracy is read from the visible label, not from a title.
-    const skillLabels = buttons
-      .filter((b) => b.getAttribute('data-battle-list') === 'skills')
-      .map((b) => b.textContent);
+    // QF7B migration: read from the cells the Fight press opened (above). Was: `buttons` filtered to
+    // the skills list, the cells being on screen at rest.
+    const skillLabels = skillCells.map((b) => b.textContent);
     expect(skillLabels).toContain(`Vine Lash (40) ${C8I_DOT} Plant ${C8I_DOT} Acc 95%`);
     expect(skillLabels).toContain(`Ember Jab (35) ${C8I_DOT} Fire ${C8I_DOT} Acc 90%`);
     expect(
-      buttons.some(
-        (b) => b.getAttribute('data-battle-list') === 'skills' && b.hasAttribute('title'),
-      ),
+      skillCells.some((b) => b.hasAttribute('title')),
       'no skill cell carries a title any more',
     ).toBe(false);
     expect(buttons.some((b) => b.textContent === 'Flee')).toBe(true);
@@ -5765,6 +6018,9 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       parent.querySelector('[data-testid="cure-item-selector"] [data-cure-status="Poison"]')
         ?.textContent,
     ).toBe('Tonic (cures Poison) ×1');
+    // QF7B migration: the bait list is on screen again only once Recruit is pressed (the Swap press
+    // above replaced it). Was: the bait list was always on screen.
+    c8iCmd(parent, 'recruit').click();
     // Untouched glyph-only bait row (plan: "Untouched (passing, glyph-only, tier-(e))") — a
     // sanity precondition only, never an i18n key.
     expect(
@@ -5809,6 +6065,9 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
     // --- PvP: opponentName UNSET -> battle.card.opponent still requested ----
     vi.mocked(i18nT).mockClear();
     view.refresh(m24s3PvpVM({ pvpOpponentName: null, pvpPendingSubmit: false }));
+    // QF7B migration: a new battle starts with every list closed, so the PvP skill label is resolved
+    // only after a Fight press. Was: the PvP cells were rendered on every ongoing render.
+    c8iCmd(parent, 'fight').click();
     // QF7.2 migration: a new battle closes the Swap list, so the PvP swap label is resolved only
     // after its own Swap press. Was: the PvP swap row was rendered on every ongoing render.
     c8iCmd(parent, 'swap').click();
@@ -5887,10 +6146,22 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       // QF7.2 migration: the swap rows render only while Swap is the open command, so the Swap
       // press (the command's testid, not its sentinel text) comes first and the whole walk below
       // covers the rows it opens. Was: the rows were rendered on every ongoing render.
+      // QF7B migration: the cells and the bait list render only while Fight / Recruit is the open
+      // command, and only one of the three lists is on screen at a time, so the subtree is walked
+      // with each open in turn (Fight, then Swap, then Recruit, which stays open for the bait
+      // list's name and the confirm below); every walk is roster-scanned and `joined` is their
+      // union. Every assertion below is unchanged. Was: one walk after the Swap press, the cells and
+      // the bait list being always rendered.
+      c8iCmd(parent, 'fight').click();
+      const fightTexts = m24s3WalkSubtree(root);
+      m24s3AssertNoRosterWord(fightTexts, 'PvE ongoing, Fight open');
       c8iCmd(parent, 'swap').click();
+      const swapTexts = m24s3WalkSubtree(root);
+      m24s3AssertNoRosterWord(swapTexts, 'PvE ongoing, Swap open');
+      c8iCmd(parent, 'recruit').click();
       let texts = m24s3WalkSubtree(root);
       m24s3AssertNoRosterWord(texts, 'PvE ongoing');
-      let joined = texts.join('\n');
+      let joined = [...fightTexts, ...swapTexts, ...texts].join('\n');
       expect(joined).toContain('«battle.title»');
       expect(joined).toContain('«battle.continueHint»');
       expect(joined).toContain('«battle.swap.hint»');
@@ -5971,11 +6242,16 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       expect(texts.join('\n')).toContain('«battle.cure.target|{"species":"Sproutle"}»');
 
       view.refresh(m24s3PvpVM({ pvpOpponentName: null, pvpPendingSubmit: false }));
+      // QF7B migration: a new battle starts with every list closed; the PvP cells are walked with
+      // Fight open, then the swap row with Swap open, and `joined` is the union of both walks.
+      c8iCmd(parent, 'fight').click();
+      const pvpFightTexts = m24s3WalkSubtree(root);
+      m24s3AssertNoRosterWord(pvpFightTexts, 'PvP opponentName unset, Fight open');
       // QF7.2 migration: a new battle closes the Swap list; press it again for the PvP rows.
       c8iCmd(parent, 'swap').click();
       texts = m24s3WalkSubtree(root);
       m24s3AssertNoRosterWord(texts, 'PvP opponentName unset');
-      joined = texts.join('\n');
+      joined = [...pvpFightTexts, ...texts].join('\n');
       expect(joined).toContain('«battle.card.opponent»');
       expect(joined).toContain(
         '«battle.skill.pvpSubmit|{"name":"Vine Lash","power":40,"affinity":"Plant","accuracy":95}»',
@@ -6067,6 +6343,7 @@ describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus 
     const { parent } = raMount(callbacks);
     await s4FlushMacrotask();
     const root = parent.firstElementChild as HTMLElement;
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const c = raControls(parent);
 
     c.skills[0]!.focus();
@@ -6101,6 +6378,7 @@ describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus 
     const { parent } = raMount(callbacks);
     await s4FlushMacrotask();
     const root = parent.firstElementChild as HTMLElement;
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const c = raControls(parent);
 
     c.skills[0]!.focus();
@@ -6137,6 +6415,7 @@ describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus 
     const { parent } = raMount(callbacks);
     await s4FlushMacrotask();
     const root = parent.firstElementChild as HTMLElement;
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const c = raControls(parent);
 
     c.skills[0]!.focus();
@@ -6169,6 +6448,7 @@ describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus 
     const { parent, view } = raMount(callbacks);
     await s4FlushMacrotask();
     const root = parent.firstElementChild as HTMLElement;
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const c = raControls(parent);
 
     c.skills[0]!.focus();
@@ -6203,6 +6483,7 @@ describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus 
     const { parent } = raMount(callbacks);
     await s4FlushMacrotask();
     const root = parent.firstElementChild as HTMLElement;
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const c = raControls(parent);
 
     c.skills[0]!.click();
@@ -6229,6 +6510,7 @@ describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus 
     const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
     const { parent } = raMount(callbacks);
     await s4FlushMacrotask();
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const c = raControls(parent);
     c.skills[0]!.click();
     expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
@@ -6258,6 +6540,7 @@ describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus 
     const { parent, view } = raMount(callbacks);
     await s4FlushMacrotask();
     const root = parent.firstElementChild as HTMLElement;
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     let c = raControls(parent);
     c.skills[0]!.focus();
     c.skills[0]!.click(); // generation 1
@@ -6268,6 +6551,7 @@ describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus 
     await s4FlushMacrotask(); // flush the re-show's own deferred focus
     vi.mocked(openOverlayA11y).mockClear();
 
+    raOpen(parent, 'fight'); // QF7B migration: hide() closed the grid; Fight is live again
     c = raControls(parent);
     c.skills[0]!.focus();
     c.skills[0]!.click(); // generation 2 -- a NEW token, same battleId
@@ -6307,6 +6591,7 @@ describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus 
     const { parent, view } = raMount(callbacks);
     await s4FlushMacrotask();
     const root = parent.firstElementChild as HTMLElement;
+    raOpen(parent, 'fight'); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const c = raControls(parent);
 
     view.hide(); // #visible -> false; the still-rendered skill buttons remain in the DOM
@@ -6915,11 +7200,9 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     expect(group.getAttribute('aria-label'), 'its accessible name').toBe('Commands');
     expect(group.parentElement, 'a direct child of the battle root').toBe(root);
     const kids = [...root.children];
-    const gridEl = c8iSkills(root)[0]?.parentElement;
-    expect(gridEl, 'precondition: the skill grid exists').toBeTruthy();
-    expect(kids.indexOf(group), 'the group sits above the skills grid').toBeLessThan(
-      kids.indexOf(gridEl as Element),
-    );
+    // QF7B migration: the cells render only once Fight is pressed, so "the group sits above the
+    // skills grid" is asserted after the Bag step below, where this view's cursor cases are done
+    // and Fight can be pressed. Was: the grid's first cell, read at rest.
     expect(kids.indexOf(group), 'and below the cards').toBeGreaterThan(
       kids.findIndex((c) => c.textContent?.includes('You: ') === true),
     );
@@ -6951,13 +7234,14 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     // ctl-8j: migrated from the <select> shape (B10): the cursor enters a list at its first row,
     // the No bait row and the first cure row. Was: the Recruit and Use Item buttons (`recruit-action`
     // / `use-item-action`), which are the Yes / target rows of the second step now.
-    const recruitBtn = c8iTestId<HTMLButtonElement>(root, 'bait-option-none');
+    // QF7B migration: the bait list (the No bait row and the bait-selector root) renders only once
+    // Recruit is pressed, so its two list-membership checks are made at the Recruit step below.
+    // Was: both read here, at rest.
     const useBtn = root.querySelector<HTMLButtonElement>('[data-battle-list="bag"]');
-    expect(recruitBtn?.getAttribute('data-battle-list'), 'Recruit control').toBe('recruit');
     expect(useBtn?.getAttribute('data-battle-list'), 'Use Item control').toBe('bag');
     // QF7.2 migration: the swap buttons are rendered by the Swap press (below), not at rest, so
     // their list membership and bench order are asserted at the Swap step. Was: collected here.
-    for (const id of ['bait-selector', 'cure-item-selector']) {
+    for (const id of ['cure-item-selector']) {
       expect(c8iTestId(root, id)?.hasAttribute('data-battle-list'), `${id} is in no list`).toBe(
         false,
       );
@@ -6969,6 +7253,12 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     // --- choosing Recruit, Swap and Bag moves the cursor, fires nothing; Back returns ---
     fight.focus();
     c8iCmd(root, 'recruit').click();
+    const recruitBtn = c8iTestId<HTMLButtonElement>(root, 'bait-option-none');
+    expect(recruitBtn?.getAttribute('data-battle-list'), 'Recruit control').toBe('recruit');
+    expect(
+      c8iTestId(root, 'bait-selector')?.hasAttribute('data-battle-list'),
+      'bait-selector is in no list',
+    ).toBe(false);
     c8iExpectCursorOn(root, recruitBtn as Element, 'Recruit chosen');
     expect(callbacks.onRecruit, 'choosing Recruit does not recruit').not.toHaveBeenCalled();
     view.applyBattleOp({ kind: 'back' });
@@ -6996,6 +7286,15 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     c8iExpectCursorOn(root, c8iCmd(root, 'bag'), 'Back from the Use Item control');
     view.applyBattleOp({ kind: 'back' });
     c8iExpectCursorOn(root, c8iCmd(root, 'bag'), 'Back at the command row does nothing');
+
+    // --- the group sits above the skills grid (QF7B: the grid is read once Fight opened it) ---
+    c8iCmd(root, 'fight').click();
+    const kidsNow = [...root.children];
+    const gridEl = c8iSkills(root)[0]?.parentElement;
+    expect(gridEl, 'precondition: the skill grid exists').toBeTruthy();
+    expect(kidsNow.indexOf(group), 'the group sits above the skills grid').toBeLessThan(
+      kidsNow.indexOf(gridEl as Element),
+    );
 
     // --- a disabled row: aria-disabled, focusable, a cursor stop, and inert ---
     const trainer = c8iFresh(
@@ -7070,6 +7369,7 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
       c8iVM(),
       makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(e.promise) }),
     );
+    c8iCmd(locked.root, 'fight').click(); // QF7B migration: the cells render once Fight is pressed
     c8iSkills(locked.root)[0]?.click();
     expect(locked.callbacks.onAttack).toHaveBeenCalledTimes(1);
     for (const id of C8I_IDS) {
@@ -7305,6 +7605,7 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
 
     // A click on a PvP skill cell (focus is on it), then the wait: focus follows the cursor to Fight.
     const click = c8iFresh(c8iPvpVM({ turnNumber: 1 }));
+    c8iCmd(click.root, 'fight').click(); // QF7B migration: the cells render once Fight is pressed
     const cell = c8iSkills(click.root)[0] as HTMLButtonElement;
     cell.focus();
     cell.click();
@@ -7337,6 +7638,8 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
       const { root } = c8iFresh(
         pvp ? c8iPvpVM({ skills, canFlee: false }) : c8iVM({ skills, canFlee: false }),
       );
+      // QF7B migration: the cells render once Fight is pressed. Was: read at rest.
+      c8iCmd(root, 'fight').click();
       const cells = c8iSkills(root);
       const mode = pvp ? 'PvP' : 'PvE';
       expect(
@@ -7364,9 +7667,10 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     }
   });
 
-  it('CTL8I-2-FIGHT-OPENS-GRID: Fight (a click or A) puts the cursor and focus on the first skill; the grid is on screen and clickable while the command list is up; an op while focus is off the view only seats the cursor; a held Enter on a view button is prevented; a hidden view ignores ops; a lock swallows A; Fight with no skill does nothing', async () => {
-    // WRONG IMPL KILLED: a Fight that opens nothing or fires an attack; a grid hidden while the
-    // list is commands (the mouse and six e2e specs click it); an A that presses with focus on
+  it('CTL8I-2-FIGHT-OPENS-GRID: Fight (a click or A) puts the cursor and focus on the first skill; the grid is on screen and clickable once Fight opened it (QF7B: no cell while the command list is up); an op while focus is off the view only seats the cursor; a held Enter on a view button is prevented; a hidden view ignores ops; a lock swallows A; Fight with no skill does nothing', async () => {
+    // WRONG IMPL KILLED: a Fight that opens nothing or fires an attack; a grid that Fight opens
+    // hidden or greyed (the mouse and the e2e specs click it; QF7B: was "a grid hidden while the
+    // list is commands", which QF7B.2 now requires); an A that presses with focus on
     // the heading, <body>, Flee or a select (a blind A could attack or flee); a move that steps
     // from a cursor the player is not on; a native held-Enter repeat that chains Fight to an
     // attack to the next turn's Fight; a hidden view that still moves focus (reconnect hide); an A
@@ -7384,17 +7688,24 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     c8iExpectCursorOn(op.root, c8iSkills(op.root)[0] as Element, 'A on Fight');
     expect(op.callbacks.onAttack, 'A on Fight attacks nothing').not.toHaveBeenCalled();
 
-    // --- the grid is on screen and clickable while the command list is up ---
+    // --- the grid is on screen and clickable once Fight opened it ---
+    // QF7B (corrected from the spec, QF7B.2: "THE skills/move list SHALL render only after Fight is
+    // selected"): no cell is on screen while the command list is up; Fight opens the grid, every
+    // cell is then on screen and live, and a mouse click on ANY cell (here the third, not the
+    // cursor's first) attacks with that cell's id. Was: four live cells beside the command list at
+    // rest, the cursor on Fight, and a click on the third attacking.
     const cmds = c8iFresh(c8iVM());
+    expect(c8iSkills(cmds.root), 'no cell while the command list is up').toHaveLength(0);
+    expect(c8iCurrent(cmds.root)[0], 'the cursor is on the command list').toBe(
+      c8iCmd(cmds.root, 'fight'),
+    );
+    c8iCmd(cmds.root, 'fight').click();
     const cells = c8iSkills(cmds.root);
     expect(cells, 'four cells').toHaveLength(4);
     for (const cell of cells) {
       expect(c8iShown(cell, cmds.root), 'the cell is on screen').toBe(true);
       expect(c8iDisabled(cell), 'and not greyed').toBe(false);
     }
-    expect(c8iCurrent(cmds.root)[0], 'the cursor is on the command list').toBe(
-      c8iCmd(cmds.root, 'fight'),
-    );
     cells[2]?.click();
     expect(cmds.callbacks.onAttack, 'a click on a cell attacks').toHaveBeenCalledWith(77n, 13);
 
@@ -7438,6 +7749,11 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     // ctl-8j: migrated from the <select> shape (B10). A select used to be the focus that owned the
     // arrows; the closest list-shape invariant is that focus on the bait LIST ROOT (a group, in no
     // list, made focusable here by hand) is not a cursor row either: a move from it only seats.
+    // QF7B migration: the bait list renders only once Recruit is pressed, so Recruit is pressed
+    // first; the kept cursor is then the list's first row (No bait), so the seat lands there and the
+    // step goes to the next row (Lure Berry). Was: the list root at rest, the kept cursor on Fight,
+    // the seat on Fight and the step to Recruit.
+    c8iCmd(stray.root, 'recruit').click();
     const baitRoot = c8iTestId(stray.root, 'bait-selector') as HTMLElement;
     baitRoot.tabIndex = -1;
     baitRoot.focus();
@@ -7445,11 +7761,15 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
     stray.view.applyBattleOp({ kind: 'move', dir: 'Down' });
     c8iExpectCursorOn(
       stray.root,
-      c8iCmd(stray.root, 'fight'),
+      c8jRows(stray.root, 'recruit')[0] as Element,
       'a move from the list root only seats',
     );
     stray.view.applyBattleOp({ kind: 'move', dir: 'Down' });
-    c8iExpectCursorOn(stray.root, c8iCmd(stray.root, 'recruit'), 'the next move steps');
+    c8iExpectCursorOn(
+      stray.root,
+      c8jRows(stray.root, 'recruit')[1] as Element,
+      'the next move steps',
+    );
 
     // --- a held Enter or Space on a button inside the view is prevented ---
     const held = c8iFresh(c8iVM());
@@ -7472,6 +7792,7 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
       return event;
     };
     const aFight = c8iCmd(held.root, 'fight');
+    aFight.click(); // QF7B migration: the cells render once Fight is pressed (was: at rest)
     const aSkill = c8iSkills(held.root)[0] as Element;
     expect(keydown(aFight, 'Enter', 'Enter', true).defaultPrevented, 'held Enter on Fight').toBe(
       true,
@@ -7604,6 +7925,7 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
 
     // A press the lock swallowed is not remembered; the accepted one is.
     turn(6, 0);
+    c8iCmd(root, 'fight').click(); // QF7B migration: the new turn closed the grid (was: at rest)
     const d = raDeferred();
     onAttack.mockReturnValueOnce(d.promise);
     const callsBefore = onAttack.mock.calls.length;
@@ -7703,7 +8025,8 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
 //     `[data-testid="recruit-confirm"]`: the question ("Recruit with {bait}?" / "Recruit with no
 //     bait?"), then Yes (`recruit-action`) and No (`recruit-cancel`), both
 //     `data-battle-list="recruitConfirm"`. The cursor lands on Yes. Yes recruits; No and B close
-//     the confirm and put the cursor back on the pressed row.
+//     the confirm and put the cursor back on the pressed row. (QF7B: the list renders only while
+//     the Recruit command is the open command, so the cases below press Recruit first.)
 //   * Bag: `[data-testid="cure-item-selector"]` is a group named "Cure items" of
 //     `data-battle-list="bag"` rows (`data-cure-status`, text `Name (cures X) ×count`). Pressing one
 //     opens `[data-testid="cure-target"]` with ONE row, `use-item-action`
@@ -7815,6 +8138,11 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
     expect(root.querySelectorAll('option'), 'and no <option>').toHaveLength(0);
 
     // --- the bait list ---
+    // QF7B migration: the bait list renders only once Recruit is pressed (QF7B.2), so the mouse
+    // presses Recruit first; every assertion on the list below is unchanged. Was: read at rest.
+    c8iCmd(root, 'recruit').click();
+    expect(root.querySelectorAll('select'), 'still no <select> with the list open').toHaveLength(0);
+    expect(root.querySelectorAll('option'), 'and no <option>').toHaveLength(0);
     expect(
       root.querySelectorAll('[data-testid="bait-selector"]'),
       'one bait list root',
@@ -7883,16 +8211,34 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
     expect(c8jUse(root)).toBeNull();
 
     // --- DOM order: the skill grid comes first (recruit.spec clicks the first "(" button) ---
+    // QF7B migration: the grid and the bait list are never on screen together, so the order is read
+    // in two steps: with Fight open, the first cell precedes every cure row; then, once Recruit
+    // replaced the grid, the grid's container still precedes every bait and cure row. Was: the
+    // first cell and every bait and cure row, all on screen at rest.
+    c8iCmd(root, 'fight').click();
     const firstSkill = c8iSkills(root)[0] as HTMLElement;
-    for (const row of [...baitRows, ...cureRows]) {
+    const gridEl = firstSkill.parentElement as HTMLElement;
+    for (const row of c8jRows(root, 'bag')) {
       expect(
         firstSkill.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING,
+        'the first cell precedes every cure row',
+      ).toBeGreaterThan(0);
+    }
+    c8iCmd(root, 'recruit').click();
+    const orderedRows = [...c8jRows(root, 'recruit'), ...c8jRows(root, 'bag')];
+    expect(orderedRows, 'precondition: the bait and cure rows are on screen').toHaveLength(
+      baitRows.length + cureRows.length,
+    );
+    for (const row of orderedRows) {
+      expect(
+        gridEl.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING,
         'the skill grid precedes every bait and cure row',
       ).toBeGreaterThan(0);
     }
 
     // --- a wild battle with no bait still offers a bare attempt ---
     const bare = c8iFresh(c8jVM({ baitOptions: [] }));
+    c8iCmd(bare.root, 'recruit').click(); // QF7B migration: the list renders once Recruit is pressed
     expect(c8jRows(bare.root, 'recruit').map((r) => r.getAttribute('data-testid'))).toEqual([
       'bait-option-none',
     ]);
@@ -7903,13 +8249,17 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
     expect(c8iTestId(bare.root, 'bait-selector'), 'the list root is still there').not.toBeNull();
 
     // --- not wild / no cure items / a player battle ---
+    // QF7B migration (strengthened): no battle shows a bait list at rest any more, so the trainer
+    // and player battles also press their greyed Recruit, which must open nothing.
     const trainer = c8iFresh(c8jVM({ canRecruit: false, baitOptions: [], cureItems: [] }));
+    c8iCmd(trainer.root, 'recruit').click();
     expect(
       c8iTestId(trainer.root, 'bait-selector'),
       'a trainer battle has no bait list',
     ).toBeNull();
     expect(c8iTestId(trainer.root, 'cure-item-selector'), 'no cure items, no cure list').toBeNull();
     const pvp = c8iFresh(c8iPvpVM());
+    c8iCmd(pvp.root, 'recruit').click();
     expect(c8jRows(pvp.root, 'recruit'), 'no Recruit rows in a player battle').toHaveLength(0);
     expect(c8jRows(pvp.root, 'bag'), 'no Bag rows in a player battle').toHaveLength(0);
     expect(pvp.root.querySelectorAll('select')).toHaveLength(0);
@@ -8472,6 +8822,7 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
     // the bait row, or two aria-current elements, or focus on <body>, so the next Enter presses
     // the wrong control).
     const m = c8iMount(c8jVM());
+    c8iCmd(m.root, 'recruit').click(); // QF7B migration: the list renders once Recruit is pressed
     c8jRows(m.root, 'recruit')[2]?.click();
     c8iExpectCursorOn(m.root, c8jYes(m.root) as Element, 'a click on a bait row seats Yes');
     expect(c8jConfirm(m.root)?.textContent).toContain('Recruit with Sweet Bait?');
@@ -8480,6 +8831,7 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
     expect(m.callbacks.onRecruit).toHaveBeenCalledWith(77n, 9);
 
     const bare = c8iFresh(c8jVM());
+    c8iCmd(bare.root, 'recruit').click(); // QF7B migration: the list renders once Recruit is pressed
     (c8iTestId(bare.root, 'bait-option-none') as HTMLElement).click();
     c8iExpectCursorOn(bare.root, c8jYes(bare.root) as Element, 'a click on No bait seats Yes');
     (c8jYes(bare.root) as HTMLElement).click();
@@ -8527,7 +8879,9 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
     // WRONG IMPL KILLED: a second press that is ignored (Yes sends the first bait while the player
     // saw the second); two picks open at once (a Recruit Yes and a Bag target on screen together,
     // each live); and a confirm that outlives a trip back to the command list.
+    // QF7B migration: each bait list below renders once Recruit is pressed (was: at rest).
     const m = c8iMount(c8jVM());
+    c8iCmd(m.root, 'recruit').click();
     c8jRows(m.root, 'recruit')[1]?.click();
     expect(c8jConfirm(m.root)?.textContent).toContain('Recruit with Lure Berry?');
     c8jRows(m.root, 'recruit')[2]?.click();
@@ -8544,6 +8898,7 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
     );
 
     const both = c8iFresh(c8jVM());
+    c8iCmd(both.root, 'recruit').click();
     c8jRows(both.root, 'recruit')[1]?.click();
     expect(c8jConfirm(both.root)).not.toBeNull();
     const staleYes = c8jYes(both.root) as HTMLButtonElement;
@@ -8557,6 +8912,7 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
     ).not.toHaveBeenCalled();
 
     const cmd = c8iFresh(c8jVM());
+    c8iCmd(cmd.root, 'recruit').click();
     c8jRows(cmd.root, 'recruit')[1]?.click();
     const heldYes = c8jYes(cmd.root) as HTMLButtonElement;
     c8iCmd(cmd.root, 'fight').click();
@@ -8669,58 +9025,78 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
     }
   });
 
-  it('CTL8J-1x-LOCK-ACROSS-PICK: with a never-settling attack in flight, opening a bait row or a cure row and closing the confirm with No, each by a hand-enabled click, rebuild the actions row with EVERY button disabled, any open Yes or target included', () => {
+  it('CTL8J-1x-LOCK-ACROSS-PICK: with a never-settling action in flight (an attack taken over the open grid, a recruit taken over the open bait list), opening a bait row or a cure row and closing the confirm with No, each by a hand-enabled click, rebuild the actions row with EVERY button disabled, any open Yes or target included', () => {
     // WRONG IMPL KILLED: a pick change (B, a row press) that re-renders the actions row without
     // re-deriving the PvE lock: the rebuilt bait rows, cure rows, Flee, swap rows, Yes and target
     // come back enabled while the turn is spent, so a second action can start in the same turn.
+    // QF7B migration: a skill is pressed from the grid Fight opens, and the grid and the bait list
+    // are never on screen together, so a bait row cannot be pressed under an attack's lock any
+    // more. The steps are taken under two locks: an attack over the open grid (the cure row opens
+    // the target), and a recruit over the open bait list, taken by its own Yes (a bait row opens
+    // the confirm, No closes it, the cure row opens the target). Every census is unchanged. Was: one
+    // attack lock, with the Swap list opened first and the bait rows always on screen.
     const never = new Promise<void>(() => {});
-    const m = c8iMount(c8jVM(), makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(never) }));
-    const { root, callbacks } = m;
-    const actionButtons = (): HTMLButtonElement[] =>
+    const actionButtons = (root: Element): HTMLButtonElement[] =>
       [...root.querySelectorAll<HTMLButtonElement>('button')].filter(
         (b) => b.getAttribute('data-battle-list') !== 'commands',
       );
-    const expectAllLocked = (label: string): void => {
-      const open = actionButtons().filter((b) => !b.disabled);
+    const expectAllLocked = (root: Element, label: string): void => {
+      const open = actionButtons(root).filter((b) => !b.disabled);
       expect(
         open.map((b) => b.textContent),
         `${label}: every button of the skills and actions rows is disabled`,
       ).toEqual([]);
     };
 
-    // QF7.2 migration: the Swap list is opened first, so the rows the comment above names still
-    // exist on screen when the lock is taken: whatever the lock leaves of them, and of every
-    // rebuild below, must be disabled. Was: the swap rows were always rendered.
-    c8iCmd(root, 'swap').click();
-
+    // --- an attack over the open grid ---
+    const a = c8iMount(c8jVM(), makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(never) }));
     // The attack comes first: any action closes an open step, so the steps below are opened and
     // closed UNDER the lock, by hand-enabled presses (a disabled button swallows a click).
-    c8iSkills(root)[0]?.click(); // takes the lock; the call never settles
-    expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
-    expectAllLocked('the attack lock');
+    c8iCmd(a.root, 'fight').click();
+    c8iSkills(a.root)[0]?.click(); // takes the lock; the call never settles
+    expect(a.callbacks.onAttack).toHaveBeenCalledTimes(1);
+    expectAllLocked(a.root, 'the attack lock');
+
+    const cureA = c8jRows(a.root, 'bag')[0] as HTMLButtonElement;
+    cureA.disabled = false;
+    cureA.click();
+    expect(c8jUse(a.root), 'precondition: the cure press opened the target').not.toBeNull();
+    expectAllLocked(a.root, 'an open target under the attack lock');
+    expect(a.callbacks.onRecruit).not.toHaveBeenCalled();
+    expect(a.callbacks.onUseItem).not.toHaveBeenCalled();
+    expect(a.callbacks.onAttack).toHaveBeenCalledTimes(1);
+
+    // --- a recruit over the open bait list ---
+    const m = c8iFresh(c8jVM(), makeRaCallbacks({ onRecruit: vi.fn().mockReturnValue(never) }));
+    const { root, callbacks } = m;
+    c8iCmd(root, 'recruit').click();
+    c8jRows(root, 'recruit')[0]?.click();
+    (c8jYes(root) as HTMLButtonElement).click(); // takes the lock; the call never settles
+    expect(callbacks.onRecruit).toHaveBeenCalledTimes(1);
+    expectAllLocked(root, 'the recruit lock');
 
     const bait = c8jRows(root, 'recruit')[1] as HTMLButtonElement;
     bait.disabled = false;
     bait.click();
     expect(c8jYes(root), 'precondition: the bait press opened the confirm').not.toBeNull();
-    expectAllLocked('an open Yes');
+    expectAllLocked(root, 'an open Yes');
 
     // Closing the confirm rebuilds the row again: still locked.
     const no = c8jNo(root) as HTMLButtonElement;
     no.disabled = false;
     no.click();
     expect(c8jConfirm(root), 'precondition: No closed the confirm').toBeNull();
-    expectAllLocked('after No');
+    expectAllLocked(root, 'after No');
 
     const cure = c8jRows(root, 'bag')[0] as HTMLButtonElement;
     cure.disabled = false;
     cure.click();
     expect(c8jUse(root), 'precondition: the cure press opened the target').not.toBeNull();
-    expectAllLocked('an open target');
+    expectAllLocked(root, 'an open target');
 
-    expect(callbacks.onRecruit).not.toHaveBeenCalled();
+    expect(callbacks.onRecruit).toHaveBeenCalledTimes(1);
     expect(callbacks.onUseItem).not.toHaveBeenCalled();
-    expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
+    expect(callbacks.onAttack).not.toHaveBeenCalled();
   });
 
   it('CTL8J-1x-ACTION-SPENDS-PICK: taking another action by mouse (a skill, Flee, a swap row) while the Recruit confirm or the Bag target is open closes it at once, and after that action settles on the same turn the held Yes or target and an A at the cursor call nothing', async () => {
@@ -8753,9 +9129,18 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
     ] as const;
     const actions = [
       {
+        // QF7B migration: the cells exist only while Fight is the open command, and pressing Fight
+        // is itself a command press, which clears an open pick (see CTL8J-1x-REPLACE-PICK). So the
+        // skill action here is the whole player path: the Fight press, then its first cell. Every
+        // assertion below is unchanged; the step is closed (by the Fight press, then for good by
+        // the attack) before the held node is tried. Was: the cell was clicked straight away over
+        // the open pick.
         label: 'a skill click',
         cb: 'onAttack',
-        act: (root: Element) => c8iSkills(root)[0]?.click(),
+        act: (root: Element) => {
+          c8iCmd(root, 'fight').click();
+          c8iSkills(root)[0]?.click();
+        },
       },
       {
         label: 'a Flee click',
@@ -8827,6 +9212,7 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
 
     // No, in the open confirm (the cursor is on Yes).
     const m = c8iMount(c8jVM());
+    c8iCmd(m.root, 'recruit').click(); // QF7B migration: the list renders once Recruit is pressed
     c8jRows(m.root, 'recruit')[1]?.click();
     const no = c8jNo(m.root) as HTMLButtonElement;
     no.focus();
@@ -8864,6 +9250,9 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
     // and one fixed id shared by every view (two views then name each other's confirm).
     const a = c8iMount(c8jVM());
     const b = c8iMount(c8jVM());
+    // QF7B migration: each bait list renders once its Recruit is pressed (was: at rest).
+    c8iCmd(a.root, 'recruit').click();
+    c8iCmd(b.root, 'recruit').click();
     c8jRows(a.root, 'recruit')[1]?.click(); // Lure Berry
     c8jRows(b.root, 'recruit')[2]?.click(); // Sweet Bait
 
@@ -8913,10 +9302,12 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
 //     wait close it. A same-turn re-render keeps it open, with the cursor and focus on the same row.
 //   * A greyed Swap command (no swap on offer; a PvE call in flight; a PvP wait) opens nothing, and
 //     the empty-swap hint stays exactly as it was.
-// NOT asserted either way (a later slice owns them): the skills grid and the bait list stay always
-// visible (QF7.3), the Bag cure list is unchanged, the legacy Flee button stays (QF7.1). And NOT
-// pinned, because the spec is silent: whether a skill press, a bait / cure row press or a lock
-// takes an already-open Swap list away. The lock cases below hold under BOTH answers.
+// NOT asserted either way here: the Bag cure list is unchanged, the legacy Flee button stays
+// (QF7.1). QF7B (the block below) now renders the skills grid and the bait list only while Fight /
+// Recruit is the open command, one list at a time, so the cases here press Fight where they need a
+// cell and Recruit where they need a bait row (which closes the Swap list). And NOT pinned, because
+// the spec is silent: whether a swap-row press or a lock takes an already-open Swap list away. The
+// lock cases below hold under BOTH answers.
 // =============================================================================
 
 const QF72_PVE_MOSS = 'Swap: Mossling (12/18)';
@@ -9417,6 +9808,7 @@ describe('BattleView QF7.2: the swap rows render only while Swap is the open com
     // under the lock or opens disabled rows: both leave no enabled row.
     const d = raDeferred();
     const m = c8iFresh(c8jVM(), makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) }));
+    c8iCmd(m.root, 'fight').click(); // QF7B migration: the cells render once Fight is pressed
     c8iSkills(m.root)[0]?.click();
     expect(m.callbacks.onAttack, 'precondition: the attack took the lock').toHaveBeenCalledTimes(1);
     const swapCmd = c8iCmd(m.root, 'swap');
@@ -9469,6 +9861,11 @@ describe('BattleView QF7.2: the swap rows render only while Swap is the open com
     const m = c8iFresh(c8jVM(), makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) }));
     const held = qf72Open(m);
     expect(held, 'precondition: the list is open').toHaveLength(2);
+    // QF7B migration: the cell is on screen only once Fight is pressed, and Fight closes the Swap
+    // list (one list at a time), so the attack path here is Fight, then the first cell; the held
+    // rows are rows of a list closed before the lock was taken. Every assertion below is kept. Was:
+    // the cell was pressed beside the open list.
+    c8iCmd(m.root, 'fight').click();
     c8iSkills(m.root)[0]?.click();
     expect(m.callbacks.onAttack, 'precondition: the attack took the lock').toHaveBeenCalledTimes(1);
 
@@ -9563,17 +9960,23 @@ describe('BattleView QF7.2: the swap rows render only while Swap is the open com
     expect(m.callbacks.onSwap, 'nothing is swapped').not.toHaveBeenCalled();
   });
 
-  it('QF7.2-BACK-UNDER-LOCK-STAYS-LOCKED: with the PvE lock held, B from a (hand-enabled, focused) swap row closes the list and every action-row button left on screen (skills, Flee, bait, cure) is still disabled, the command rows aria-disabled', () => {
+  it('QF7.2-BACK-UNDER-LOCK-STAYS-LOCKED: with the PvE lock held, B from a (hand-enabled, focused) swap row closes the list and every action-row button left on screen (the cure rows, Flee; QF7B: no cell or bait row is on screen at rest) is still disabled, the command rows aria-disabled', () => {
     // WRONG IMPL KILLED: a close that rebuilds the actions row without re-deriving the lock (the
     // same hazard as CTL8J-1x-LOCK-ACROSS-PICK for a pick change): the rebuilt Flee, bait and cure
     // rows come back ENABLED while the turn is spent, so a second action can start. If the impl
-    // closes the list when the skill is pressed, there is no row to press B from; the lock census
+    // closes the list when the swap is pressed, there is no row to press B from; the lock census
     // below holds regardless (the spec is silent on that close).
+    // QF7B migration: a skill is pressed from the grid Fight opens, and Fight closes the Swap list
+    // (one list at a time), so a skill can no longer take the lock with the bench on screen. The
+    // lock is taken by a swap row itself (onSwap never settles here); the rows the press leaves on
+    // screen are disabled, and B from a hand-enabled one closes them. The census is of what is left
+    // at rest: the two cure rows and Flee. Was: a skill took the lock beside the open list, and the
+    // census counted the skills, Flee, three bait rows and two cure rows.
     const d = raDeferred();
-    const m = c8iFresh(c8jVM(), makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) }));
+    const m = c8iFresh(c8jVM(), makeRaCallbacks({ onSwap: vi.fn().mockReturnValue(d.promise) }));
     expect(qf72Open(m), 'precondition: Swap is open').toHaveLength(2);
-    c8iSkills(m.root)[0]?.click(); // takes the lock; the call never settles
-    expect(m.callbacks.onAttack, 'precondition: the attack took the lock').toHaveBeenCalledTimes(1);
+    c8jRows(m.root, 'swap')[0]?.click(); // takes the lock; the call never settles
+    expect(m.callbacks.onSwap, 'precondition: the swap took the lock').toHaveBeenCalledTimes(1);
 
     const live = c8jRows(m.root, 'swap');
     if (live.length > 0) {
@@ -9589,8 +9992,9 @@ describe('BattleView QF7.2: the swap rows render only while Swap is the open com
     );
     expect(
       actionButtons.length,
-      'non-vacuity: the skills, Flee, three bait rows and two cure rows are on screen',
-    ).toBeGreaterThanOrEqual(8);
+      'non-vacuity: at least the two cure rows are on screen (QF7B: was the skills, Flee, three ' +
+        'bait rows and two cure rows)',
+    ).toBeGreaterThanOrEqual(2);
     expect(
       actionButtons.filter((b) => !b.disabled).map((b) => b.textContent),
       'every action-row button is still disabled after the close',
@@ -9598,10 +10002,13 @@ describe('BattleView QF7.2: the swap rows render only while Swap is the open com
     for (const id of ['fight', 'recruit', 'swap', 'bag', 'run']) {
       expect(c8iDisabled(c8iCmd(m.root, id)), `${id} is still greyed by the lock`).toBe(true);
     }
-    expect(m.callbacks.onSwap, 'nothing is swapped').not.toHaveBeenCalled();
+    expect(
+      m.callbacks.onSwap,
+      'nothing more is swapped (the one call is the lock)',
+    ).toHaveBeenCalledTimes(1);
   });
 
-  it('QF7.2-PICK-CLOSES-SWAP: pressing a bait row or a cure row directly (by mouse) over an open Swap list opens its second step AND closes the list, never two second steps at once; B from that step leaves the Swap list closed', () => {
+  it('QF7.2-PICK-CLOSES-SWAP: pressing a cure row directly (by mouse) over an open Swap list opens its second step AND closes the list, and a bait row held from a closed bait list opens nothing over it (QF7B), never two second steps at once; B leaves the Swap list closed', () => {
     // WRONG IMPL KILLED: a pick that renders its confirm / target beside the still-open swap rows
     // (a Recruit Yes and a swap row live together: two second steps, two possible actions in one
     // turn); a close of the pick that brings the swap list back (an open state kept under the
@@ -9612,14 +10019,29 @@ describe('BattleView QF7.2: the swap rows render only while Swap is the open com
       return m;
     };
 
-    const rec = open();
-    (c8iTestId(rec.root, 'bait-option-none') as HTMLElement).click();
-    expect(c8jConfirm(rec.root), 'the bait row opens the Recruit confirm').not.toBeNull();
-    qf72ExpectClosed(rec.root, 'a bait row pressed over Swap');
+    // QF7B migration: a bait row is on screen only while Recruit is the open command, and the
+    // Recruit press closes the Swap list itself (another command closes it, as pinned above), so a
+    // LIVE bait row can no longer be pressed over an open Swap list. The bait half now holds the No bait row of a
+    // bait list that the Swap press closed and presses it over the open Swap list: it must open no
+    // Recruit confirm beside the swap rows (a Recruit pick arriving while Recruit is not the open
+    // command is ignored) and leave the list as it was; B then closes the list. The cure half is
+    // unchanged. Was: the live No bait row pressed over the open Swap list opened the confirm and
+    // closed the list.
+    const rec = c8iFresh(c8jVM());
+    c8iCmd(rec.root, 'recruit').click();
+    const heldBait = c8iTestId(rec.root, 'bait-option-none') as HTMLElement;
+    expect(heldBait, 'precondition: Recruit opened the bait list').not.toBeNull();
+    expect(qf72Open(rec), 'precondition: Swap is open (it replaced the bait list)').toHaveLength(2);
+    heldBait.click();
+    expect(c8jConfirm(rec.root), 'a held bait row opens no Recruit confirm over Swap').toBeNull();
+    expect(qf72Texts(rec.root), 'and leaves the Swap list as it was').toEqual([
+      QF72_PVE_MOSS,
+      QF72_PVE_EMBER,
+    ]);
     expect(c8iCurrent(rec.root), 'one cursor').toHaveLength(1);
     c8jB(rec);
-    expect(c8jConfirm(rec.root), 'B cancels the confirm').toBeNull();
-    qf72ExpectClosed(rec.root, 'after B from the Recruit confirm');
+    expect(c8jConfirm(rec.root), 'still no confirm').toBeNull();
+    qf72ExpectClosed(rec.root, 'after B from the swap row');
     expect(rec.callbacks.onRecruit, 'nothing is recruited').not.toHaveBeenCalled();
 
     const bag = open();
@@ -9643,7 +10065,11 @@ describe('BattleView QF7.2: the swap rows render only while Swap is the open com
     const picks = [
       {
         label: 'Recruit confirm',
-        open: (root: Element) => (c8iTestId(root, 'bait-option-none') as HTMLElement).click(),
+        // QF7B migration: the No bait row renders once Recruit is pressed (was: at rest).
+        open: (root: Element) => {
+          c8iCmd(root, 'recruit').click();
+          (c8iTestId(root, 'bait-option-none') as HTMLElement).click();
+        },
         shown: (root: ParentNode) => c8jConfirm(root),
       },
       {
@@ -9685,5 +10111,1514 @@ describe('BattleView QF7.2: the swap rows render only while Swap is the open com
         expect(m.callbacks.onSwap, `${label}: nothing is swapped`).not.toHaveBeenCalled();
       }
     }
+  });
+});
+
+// =============================================================================
+// QF7B.2: "THE skills/move list SHALL render only after Fight is selected, and THE bait list only
+// after Recruit is selected (extending the `#open` command state from qf-7)."
+//
+// THE VIEW'S CONTRACT (the command-first model the QF7.2 block above began with Swap):
+//   * At rest (the first render of a battle, every same-turn re-render, a new turn, a new battle, a
+//     render after hide() or refresh(null)) there is no skill cell (`data-battle-list="skills"`), no
+//     button labelled like a skill (PvE: name, power, affinity and accuracy; PvP: the same after
+//     "Submit: "), no `bait-selector`, no `data-battle-list="recruit"` row, no `bait-option-none`, no
+//     `data-recruit-bonus` element and no "No bait" button anywhere in the view. The census counts
+//     elements, so a list rendered and then hidden with display:none still counts.
+//   * Fight (a mouse press or the D-pad's A) opens the grid: one cell per skill, in skill order,
+//     labelled for the mode, the cursor and focus on the skill this monster last used in this battle
+//     (CTL8I.2), else on the first. Recruit opens the bait list: No bait, then one
+//     data-recruit-bonus row per bait, the cursor and focus on No bait. Opening sends nothing.
+//   * Exactly one of {the grid, the bait list, the bench rows} is on screen at a time. Another
+//     command switches; Bag closes the grid and the bait list (its cure list is not gated by this
+//     slice); Run closes them and flees; a cure-row press closes them and opens the Bag target. A
+//     pick's second step appears only beside its own list, and a row held from a bait list that has
+//     closed does nothing (a Recruit pick arriving while Recruit is not the open command is ignored).
+//   * B from a cell closes the grid and seats Fight; B from a bait row closes the list and seats
+//     Recruit; B from the Recruit confirm returns to its bait row with the list kept.
+//   * A same-turn re-render keeps the open list and the cursor on the same row. A new turn, an
+//     earlier turn, a new battle, hide() / refresh(null), a PvP wait and a same-turn render that
+//     loses the command (no skills; canRecruit false) close it; regaining the command on the same
+//     turn does not reopen it.
+//   * The PvE lock greys Fight and Recruit like the other commands. A list already open stays on
+//     screen with its rows disabled, no row (live, or held and re-enabled by hand) dispatches, and
+//     the settle re-enables the rows with the list still open and the cursor on its row.
+// NOT asserted here (QF7B.1 / QF7B.3 belong to a later slice): anything about the legacy Flee
+// button.
+// =============================================================================
+
+/** The PvE label of each C8I_SKILLS cell, in skill order (the ctl-8i grid case pins the shape). */
+const QF7B_PVE: readonly string[] = [
+  `Vine Whip (40) ${C8I_DOT} Plant ${C8I_DOT} Acc 100%`,
+  `Thunder Fang (35) ${C8I_DOT} Electric ${C8I_DOT} Acc 95%`,
+  `Ember Jab (25) ${C8I_DOT} Fire ${C8I_DOT} Acc 90%`,
+  `Tide Slam (55) ${C8I_DOT} Water ${C8I_DOT} Acc 80%`,
+];
+/** The same cells in a player battle. */
+const QF7B_PVP: readonly string[] = QF7B_PVE.map((label) => `Submit: ${label}`);
+/** The c8jVM bait list in order: No bait, then each bait (name, bonus, count). */
+const QF7B_BAITS: readonly string[] = [
+  'No bait',
+  `Lure Berry (+150${C8J_PERMILLE}) ${C8J_TIMES}2`,
+  `Sweet Bait (+250${C8J_PERMILLE}) ${C8J_TIMES}1`,
+];
+
+type Qf7bHow = 'mouse' | 'D-pad';
+const QF7B_HOWS: readonly Qf7bHow[] = ['mouse', 'D-pad'];
+
+/** Press a command row with the mouse, or as the D-pad does (focus it, then A). */
+function qf7bPress(m: C8iMount, id: (typeof C8I_IDS)[number], how: Qf7bHow): void {
+  const row = c8iCmd(m.root, id);
+  if (how === 'mouse') {
+    row.click();
+    return;
+  }
+  row.focus();
+  m.view.applyBattleOp({ kind: 'activate' });
+}
+
+const qf7bRight = (m: C8iMount): void => m.view.applyBattleOp({ kind: 'move', dir: 'Right' });
+const qf7bUp = (m: C8iMount): void => m.view.applyBattleOp({ kind: 'move', dir: 'Up' });
+
+/** The text of every button in the view labelled like a skill cell, in either mode. A swap row
+ *  ("Submit Swap: ...") and a command row ("Fight") match neither test. */
+function qf7bSkillLabelled(root: ParentNode): string[] {
+  return [...root.querySelectorAll<HTMLButtonElement>('button')]
+    .map((b) => b.textContent ?? '')
+    .filter((text) => text.includes(` ${C8I_DOT} Acc `) || text.startsWith('Submit: '));
+}
+
+/** No skill cell and no skill-labelled button anywhere in the view. */
+function qf7bExpectNoGrid(root: Element, label: string): void {
+  expect(
+    c8iSkills(root).map((cell) => cell.textContent),
+    `${label}: no [data-battle-list="skills"] cell`,
+  ).toEqual([]);
+  expect(qf7bSkillLabelled(root), `${label}: no skill-labelled button anywhere`).toEqual([]);
+}
+
+/** No part of the bait list, and no Recruit confirm, anywhere in the view. */
+function qf7bExpectNoBaitList(root: Element, label: string): void {
+  expect(
+    {
+      selector: root.querySelectorAll('[data-testid="bait-selector"]').length,
+      rows: c8jRows(root, 'recruit').map((row) => row.textContent),
+      noBaitRow: root.querySelectorAll('[data-testid="bait-option-none"]').length,
+      noBaitButton: [...root.querySelectorAll('button')].filter((b) => b.textContent === 'No bait')
+        .length,
+      recruitBonus: root.querySelectorAll('[data-recruit-bonus]').length,
+      confirm: root.querySelectorAll('[data-testid="recruit-confirm"]').length,
+    },
+    `${label}: no bait-selector, recruit row, No bait row or button, data-recruit-bonus element ` +
+      'or Recruit confirm',
+  ).toEqual({ selector: 0, rows: [], noBaitRow: 0, noBaitButton: 0, recruitBonus: 0, confirm: 0 });
+}
+
+/** Which of the three lists are on screen, by element census, in a fixed order. */
+function qf7bOpen(root: Element): string[] {
+  const open: string[] = [];
+  if (c8iSkills(root).length > 0 || qf7bSkillLabelled(root).length > 0) open.push('grid');
+  if (
+    root.querySelector('[data-testid="bait-selector"]') !== null ||
+    c8jRows(root, 'recruit').length > 0 ||
+    root.querySelector('[data-recruit-bonus]') !== null
+  ) {
+    open.push('bait');
+  }
+  if (c8jRows(root, 'swap').length > 0 || qf72Labelled(root).length > 0) open.push('bench');
+  return open;
+}
+
+/** Every button under the root but the command rows: what a census of the PvE lock covers. */
+function qf7bActionButtons(root: Element): HTMLButtonElement[] {
+  return [...root.querySelectorAll<HTMLButtonElement>('button')].filter(
+    (b) => b.getAttribute('data-battle-list') !== 'commands',
+  );
+}
+
+/** One list Fight or Recruit opens, as the closing cases below drive it. */
+interface Qf7bList {
+  readonly name: string;
+  readonly cmd: 'fight' | 'recruit';
+  /** The text of the list's rows on screen. */
+  readonly rows: (root: Element) => Array<string | null>;
+  /** The VM a closer renders: it offers fewer rows, so a reopened list must show the new ones. */
+  readonly next: (o?: Partial<BattleViewModel>) => BattleViewModel;
+  readonly nextRows: readonly string[];
+  /** A same-turn change that takes the command away. */
+  readonly lose: Partial<BattleViewModel>;
+}
+
+describe('BattleView QF7B.2: the skill grid and the bait list render only while Fight / Recruit is the open command', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('an ongoing battle renders no skill cell and no skill-labelled button until Fight is pressed, PvE and PvP, on the first render, on same-turn re-renders, on the next turn, in a new battle and on a re-show after hide() or refresh(null), while Fight is live [QF7B-2-NO-SKILLS-AT-REST]', () => {
+    // WRONG IMPL KILLED: the shipped #renderSkills, which renders one cell per skill on every
+    // ongoing render (the grid beside the command list, pressable with no Fight); cells rendered but
+    // hidden (display:none still counts: the census is of elements); cells that dropped their
+    // data-battle-list but kept their label (the label census still sees them); a gate on the PvE
+    // grid only, or on the PvP one only; a one-skill grid that slips through a `length > 1` special
+    // case; and cells that come back by themselves on a re-render, a turn change, a new battle or a
+    // re-show. The live Fight command with the cursor resting on it is asserted, so "no cell" cannot
+    // be bought by greying or removing the way in.
+    const cases: ReadonlyArray<
+      readonly [string, (o?: Partial<BattleViewModel>) => BattleViewModel]
+    > = [
+      ['PvE', (o = {}) => c8jVM(o)],
+      ['PvE, one skill', (o = {}) => c8jVM({ skills: C8I_SKILLS.slice(2, 3), ...o })],
+      ['PvP', (o = {}) => c8iPvpVM(o)],
+      ['PvP, one skill', (o = {}) => c8iPvpVM({ skills: C8I_SKILLS.slice(0, 1), ...o })],
+    ];
+    for (const [mode, build] of cases) {
+      const m = c8iFresh(build());
+      qf7bExpectNoGrid(m.root, `${mode}: the first render`);
+      expect(c8iDisabled(c8iCmd(m.root, 'fight')), `${mode}: the Fight command is live`).toBe(
+        false,
+      );
+      expect(c8iCurrent(m.root), `${mode}: one cursor`).toHaveLength(1);
+      expect(c8iCurrent(m.root)[0], `${mode}: resting on the Fight command`).toBe(
+        c8iCmd(m.root, 'fight'),
+      );
+
+      const same = build();
+      const hurt = build({ playerCard: { ...build().playerCard, currentHp: 9, hpPercent: 41 } });
+      for (const [label, vm] of [
+        ['an equal VM', build()],
+        ['the same VM object', same],
+        ['the same VM object again', same],
+        ['an hp change', hurt],
+      ] as const) {
+        m.view.refresh(vm);
+        qf7bExpectNoGrid(m.root, `${mode}: ${label}, same turn`);
+      }
+      m.view.refresh(build({ turnNumber: 3 }));
+      qf7bExpectNoGrid(m.root, `${mode}: the next turn`);
+      m.view.refresh(build({ battleId: 78n }));
+      qf7bExpectNoGrid(m.root, `${mode}: a new battle`);
+      m.view.hide();
+      m.view.refresh(build({ battleId: 78n }));
+      qf7bExpectNoGrid(m.root, `${mode}: a re-show after hide()`);
+      m.view.refresh(null);
+      m.view.refresh(build({ battleId: 78n }));
+      qf7bExpectNoGrid(m.root, `${mode}: a re-show after refresh(null)`);
+      expect(c8iDisabled(c8iCmd(m.root, 'fight')), `${mode}: Fight is still live`).toBe(false);
+      expect(m.callbacks.onAttack, `${mode}: rendering attacks nothing`).not.toHaveBeenCalled();
+      expect(m.callbacks.onPvpAttack, `${mode}: rendering submits nothing`).not.toHaveBeenCalled();
+    }
+  });
+
+  it('Fight, by a mouse press or by A on the focused command, opens exactly one cell per skill in skill order, labelled for the mode, on screen and live, with the cursor and focus on the first cell (or on the skill this monster last used in this battle), and attacks nothing, opens no bait list, no swap row and no second step; a second Fight press keeps the same cells open and re-seats the cursor there [QF7B-2-FIGHT-OPENS-GRID]', async () => {
+    // WRONG IMPL KILLED: a Fight that opens nothing (no way left to attack); a grid opened but left
+    // hidden (display:none on a cell or on its container); a Fight that attacks the first skill
+    // instead of opening; a Fight that moves the cursor but not focus, or neither (the next A presses
+    // Fight again); cells for the wrong skills, in the wrong order, or for the first skill only; a
+    // PvE label in a player battle or the reverse; a Fight that also opens the bait list or the
+    // bench (two lists, two possible actions in one turn); a D-pad path that forks from the mouse
+    // path; and a grid that forgets the CTL8I.2 memory and lands on the first cell after a skill
+    // was used.
+    const cases = [
+      ['PvE', c8jVM(), QF7B_PVE],
+      ['PvE, one skill', c8jVM({ skills: C8I_SKILLS.slice(3) }), QF7B_PVE.slice(3)],
+      ['PvP', c8iPvpVM(), QF7B_PVP],
+      ['PvP, one skill', c8iPvpVM({ skills: C8I_SKILLS.slice(1, 2) }), QF7B_PVP.slice(1, 2)],
+    ] as const;
+    for (const [mode, vm, expected] of cases) {
+      for (const how of QF7B_HOWS) {
+        const label = `${mode}, Fight by ${how}`;
+        const m = c8iFresh(vm);
+        qf7bExpectNoGrid(m.root, `${label}: precondition, before the press`);
+        qf7bPress(m, 'fight', how);
+        const cells = c8iSkills(m.root);
+        expect(
+          cells.map((cell) => cell.textContent),
+          `${label}: one cell per skill, in skill order, labelled for the mode`,
+        ).toEqual([...expected]);
+        expect(qf7bSkillLabelled(m.root), `${label}: and no other skill-labelled button`).toEqual([
+          ...expected,
+        ]);
+        for (const cell of cells) {
+          expect(cell.tagName, `${label}: a cell is a button`).toBe('BUTTON');
+          expect(cell.disabled, `${label}: and is live`).toBe(false);
+          expect(c8iShown(cell, m.root), `${label}: and is on screen`).toBe(true);
+        }
+        c8iExpectCursorOn(
+          m.root,
+          cells[0] as Element,
+          `${label}: the cursor and focus are on cell 0`,
+        );
+        expect(m.callbacks.onAttack, `${label}: opening attacks nothing`).not.toHaveBeenCalled();
+        expect(m.callbacks.onPvpAttack, `${label}: opening submits nothing`).not.toHaveBeenCalled();
+        qf7bExpectNoBaitList(m.root, `${label}: Fight opens no bait list`);
+        qf72ExpectClosed(m.root, `${label}: Fight opens no swap row`);
+        expect(c8jConfirm(m.root) ?? c8jTarget(m.root), `${label}: and no second step`).toBeNull();
+
+        // WRONG IMPL KILLED (round 2, mutant MT): a second Fight press that toggles the open grid
+        // closed (or rebuilds it), and one that leaves the cursor where it was instead of seating it
+        // on the first cell again. A second press, by the mouse and then by A, keeps the SAME cells
+        // and re-seats the cursor and focus on cell 0, attacking nothing.
+        for (const again of QF7B_HOWS) {
+          const twice = `${label}, Fight again by ${again}`;
+          if (cells.length > 1) {
+            qf7bRight(m);
+            c8iExpectCursorOn(m.root, cells[1] as Element, `${twice}: precondition, off cell 0`);
+          }
+          qf7bPress(m, 'fight', again);
+          const now = c8iSkills(m.root);
+          expect(now, `${twice}: the grid is still open`).toHaveLength(cells.length);
+          for (const [i, cell] of now.entries()) {
+            expect(cell, `${twice}: cell ${i} is the same node (not rebuilt)`).toBe(cells[i]);
+          }
+          c8iExpectCursorOn(m.root, cells[0] as Element, `${twice}: re-seated on cell 0`);
+        }
+        expect(
+          m.callbacks.onAttack,
+          `${label}: pressing Fight again attacks nothing`,
+        ).not.toHaveBeenCalled();
+        expect(
+          m.callbacks.onPvpAttack,
+          `${label}: pressing Fight again submits nothing`,
+        ).not.toHaveBeenCalled();
+      }
+    }
+
+    // --- the cursor lands on the skill this monster last used in this battle (CTL8I.2) ---
+    const memory = [
+      ['PvE', (o: Partial<BattleViewModel>) => c8jVM(o), 2, 13],
+      ['PvP', (o: Partial<BattleViewModel>) => c8iPvpVM(o), 3, 14],
+    ] as const;
+    for (const [mode, build, used, id] of memory) {
+      for (const how of QF7B_HOWS) {
+        const label = `${mode}, the next turn's Fight by ${how}`;
+        const m = c8iFresh(build({ turnNumber: 2 }));
+        qf7bPress(m, 'fight', 'mouse');
+        c8iSkills(m.root)[used]?.click();
+        const hit = mode === 'PvE' ? m.callbacks.onAttack : m.callbacks.onPvpAttack;
+        expect(hit, `${label}: precondition, the cell was used`).toHaveBeenCalledWith(77n, id);
+        await raFlushPromises(); // the PvE call settles: its lock is released
+        m.view.refresh(build({ turnNumber: 3 }));
+        qf7bExpectNoGrid(m.root, `${label}: precondition, the next turn starts closed`);
+        qf7bPress(m, 'fight', how);
+        c8iExpectCursorOn(
+          m.root,
+          c8iSkills(m.root)[used] as Element,
+          `${label}: lands on the skill used last turn`,
+        );
+        // Round 2 (mutant MT): a second Fight press keeps the same cells and re-seats the cursor on
+        // the remembered skill, not on the first cell or where the cursor was moved to.
+        const opened = c8iSkills(m.root);
+        qf7bUp(m);
+        c8iExpectCursorOn(
+          m.root,
+          opened[used - 2] as Element,
+          `${label}: precondition, moved off the remembered cell`,
+        );
+        qf7bPress(m, 'fight', how);
+        const now = c8iSkills(m.root);
+        expect(now, `${label}, Fight again: the grid is still open`).toHaveLength(opened.length);
+        for (const [i, cell] of now.entries()) {
+          expect(cell, `${label}, Fight again: cell ${i} is the same node`).toBe(opened[i]);
+        }
+        c8iExpectCursorOn(
+          m.root,
+          opened[used] as Element,
+          `${label}, Fight again: re-seated on the remembered skill`,
+        );
+        expect(hit, `${label}: and attacks nothing more`).toHaveBeenCalledTimes(1);
+      }
+    }
+  });
+
+  it('a wild battle offering baits renders no bait list (no bait-selector, no recruit row, no No bait row or button, no data-recruit-bonus element) until Recruit is pressed, on the first render, on same-turn re-renders (a bait recount included), on the next turn, in a new battle and on a re-show after hide() or refresh(null), while Recruit is live [QF7B-2-NO-BAIT-AT-REST]', () => {
+    // WRONG IMPL KILLED: the shipped #renderActions, which renders the bait list on every render of
+    // a wild battle; a list rendered but hidden (display:none counts: the census is of elements);
+    // the grid gated and the bait list forgotten (the reverse of the grid tooth); a gate keyed on
+    // the bait count (No bait is offered with no bait held, so a bare-attempt list slips through);
+    // and rows that come back by themselves on a re-render, a recount, a turn change, a new battle
+    // or a re-show. The live Recruit command is asserted, so "no list" cannot be bought by greying
+    // Recruit.
+    const recount = [
+      { ...C8J_BAITS[0], count: 1 } as (typeof C8J_BAITS)[number],
+      C8J_BAITS[1] as (typeof C8J_BAITS)[number],
+    ];
+    const cases: ReadonlyArray<
+      readonly [string, (o?: Partial<BattleViewModel>) => BattleViewModel]
+    > = [
+      ['two baits', (o = {}) => c8jVM(o)],
+      ['one bait', (o = {}) => c8jVM({ baitOptions: C8J_BAITS.slice(1), ...o })],
+      ['no bait held (No bait alone)', (o = {}) => c8jVM({ baitOptions: [], ...o })],
+    ];
+    for (const [mode, build] of cases) {
+      const m = c8iFresh(build());
+      qf7bExpectNoBaitList(m.root, `${mode}: the first render`);
+      expect(c8iDisabled(c8iCmd(m.root, 'recruit')), `${mode}: the Recruit command is live`).toBe(
+        false,
+      );
+      expect(c8iCurrent(m.root)[0], `${mode}: the cursor rests on Fight`).toBe(
+        c8iCmd(m.root, 'fight'),
+      );
+
+      const same = build();
+      for (const [label, vm] of [
+        ['an equal VM', build()],
+        ['the same VM object', same],
+        ['the same VM object again', same],
+        ['a bait recount', build({ baitOptions: recount })],
+        ['the first count again', build()],
+      ] as const) {
+        m.view.refresh(vm);
+        qf7bExpectNoBaitList(m.root, `${mode}: ${label}, same turn`);
+      }
+      m.view.refresh(build({ turnNumber: 3 }));
+      qf7bExpectNoBaitList(m.root, `${mode}: the next turn`);
+      m.view.refresh(build({ battleId: 78n }));
+      qf7bExpectNoBaitList(m.root, `${mode}: a new battle`);
+      m.view.hide();
+      m.view.refresh(build({ battleId: 78n }));
+      qf7bExpectNoBaitList(m.root, `${mode}: a re-show after hide()`);
+      m.view.refresh(null);
+      m.view.refresh(build({ battleId: 78n }));
+      qf7bExpectNoBaitList(m.root, `${mode}: a re-show after refresh(null)`);
+      expect(c8iDisabled(c8iCmd(m.root, 'recruit')), `${mode}: Recruit is still live`).toBe(false);
+      expect(m.callbacks.onRecruit, `${mode}: rendering recruits nothing`).not.toHaveBeenCalled();
+    }
+  });
+
+  it('Recruit, by a mouse press or by A on the focused command, opens the bait list (No bait first, then one data-recruit-bonus row per bait in model order) on screen and live, with the cursor and focus on No bait, sends nothing, and closes an open grid or Swap list [QF7B-2-RECRUIT-OPENS-BAIT-LIST]', () => {
+    // WRONG IMPL KILLED: a Recruit that opens nothing (no way left to recruit); a list opened but
+    // hidden; a list that lost its No bait row or moved it (a bare attempt becomes impossible, or
+    // the default becomes a real bait); bait rows without data-recruit-bonus (the classify-by-data
+    // surface e2e/recruit.spec reads), out of model order, or one per count; a cursor or focus left
+    // on the command (the next A presses Recruit again) or landing on the first bait; a Recruit
+    // press that recruits, or opens the confirm, at once; and a list that opens BESIDE an open grid
+    // or bench (two lists, two possible actions in one turn).
+    for (const how of QF7B_HOWS) {
+      const label = `Recruit by ${how}`;
+      const m = c8iFresh(c8jVM());
+      qf7bExpectNoBaitList(m.root, `${label}: precondition, before the press`);
+      qf7bPress(m, 'recruit', how);
+      const lists = m.root.querySelectorAll<HTMLElement>('[data-testid="bait-selector"]');
+      expect(lists, `${label}: one bait list`).toHaveLength(1);
+      const list = lists[0] as HTMLElement;
+      expect(c8iShown(list, m.root), `${label}: on screen`).toBe(true);
+      const rows = c8jRows(m.root, 'recruit');
+      expect(
+        rows.map((row) => row.textContent),
+        `${label}: No bait, then one row per bait in model order`,
+      ).toEqual([...QF7B_BAITS]);
+      expect(rows[0]?.getAttribute('data-testid'), `${label}: the first row is No bait`).toBe(
+        'bait-option-none',
+      );
+      expect(
+        rows.map((row) => row.getAttribute('data-recruit-bonus')),
+        `${label}: each bait row carries its bonus, No bait none`,
+      ).toEqual([null, '150', '250']);
+      expect(
+        m.root.querySelectorAll('[data-recruit-bonus]'),
+        `${label}: exactly the baits carry data-recruit-bonus`,
+      ).toHaveLength(2);
+      for (const row of rows) {
+        expect(row.tagName, `${label}: a row is a button`).toBe('BUTTON');
+        expect(row.disabled, `${label}: and is live`).toBe(false);
+        expect(list.contains(row), `${label}: inside the bait list`).toBe(true);
+        expect(c8iShown(row, m.root), `${label}: and on screen`).toBe(true);
+      }
+      c8iExpectCursorOn(
+        m.root,
+        rows[0] as Element,
+        `${label}: the cursor and focus are on No bait`,
+      );
+      expect(c8jConfirm(m.root), `${label}: no question is asked yet`).toBeNull();
+      expect(m.callbacks.onRecruit, `${label}: opening recruits nothing`).not.toHaveBeenCalled();
+      qf7bExpectNoGrid(m.root, `${label}: Recruit opens no grid`);
+      qf72ExpectClosed(m.root, `${label}: Recruit opens no swap row`);
+    }
+
+    const bare = c8iFresh(c8jVM({ baitOptions: [] }));
+    qf7bPress(bare, 'recruit', 'mouse');
+    expect(
+      c8jRows(bare.root, 'recruit').map((row) => row.getAttribute('data-testid')),
+      'no bait held: Recruit opens the bare attempt alone',
+    ).toEqual(['bait-option-none']);
+    c8iExpectCursorOn(
+      bare.root,
+      c8jRows(bare.root, 'recruit')[0] as Element,
+      'no bait held: the cursor and focus are on No bait',
+    );
+
+    // --- over an open grid or an open Swap list, Recruit replaces it ---
+    for (const [from, id, was] of [
+      ['the grid', 'fight', 'grid'],
+      ['the Swap list', 'swap', 'bench'],
+    ] as const) {
+      for (const how of QF7B_HOWS) {
+        const label = `Recruit by ${how} over ${from}`;
+        const m = c8iFresh(c8jVM());
+        qf7bPress(m, id, 'mouse');
+        expect(qf7bOpen(m.root), `${label}: precondition, ${from} is open`).toEqual([was]);
+        qf7bPress(m, 'recruit', how);
+        expect(qf7bOpen(m.root), `${label}: only the bait list is on screen`).toEqual(['bait']);
+        c8iExpectCursorOn(
+          m.root,
+          c8jRows(m.root, 'recruit')[0] as Element,
+          `${label}: the cursor and focus are on No bait`,
+        );
+        expect(m.callbacks.onAttack, `${label}: nothing is attacked`).not.toHaveBeenCalled();
+        expect(m.callbacks.onSwap, `${label}: nothing is swapped`).not.toHaveBeenCalled();
+        expect(m.callbacks.onRecruit, `${label}: nothing is recruited`).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it('a cell of the grid Fight opened, pressed with the mouse or by A, attacks once with THAT skill`s id (onAttack in a wild battle, onPvpAttack in a player battle); a bait row of the list Recruit opened opens the Recruit confirm beside the still-open list, No returns the cursor to that row with the list kept, and Yes recruits once with that bait`s id (undefined for No bait) [QF7B-2-SKILL-AND-BAIT-ACT-ONCE]', () => {
+    // WRONG IMPL KILLED: cells whose press sends the first skill, the cursor's skill or the cell's
+    // position instead of the pressed cell's id; a press that attacks twice; the other mode's
+    // callback (a player battle through onAttack, a wild one through onPvpAttack); cells whose
+    // listeners were lost in the move off the always-render path (the grid is built on open now); a
+    // bait row that recruits at once (no question) or whose confirm replaces the list (No would then
+    // land nowhere); a No that closes the list or seats the cursor elsewhere; and a Yes that sends
+    // the wrong bait, a string, or 0 / "" for No bait.
+    const walk = (m: C8iMount, index: number): void => {
+      if (index % 2 === 1) qf7bRight(m);
+      if (index >= 2) c8jDown(m);
+    };
+    for (const pvp of [false, true]) {
+      for (const [index, skill] of C8I_SKILLS.entries()) {
+        for (const how of QF7B_HOWS) {
+          const label = `${pvp ? 'PvP' : 'PvE'} cell ${index} by ${how}`;
+          const m = c8iFresh(pvp ? c8iPvpVM() : c8jVM());
+          qf7bExpectNoGrid(m.root, `${label}: precondition, no cell before Fight`);
+          qf7bPress(m, 'fight', how);
+          if (how === 'mouse') {
+            c8iSkills(m.root)[index]?.click();
+          } else {
+            walk(m, index);
+            c8iExpectCursorOn(
+              m.root,
+              c8iSkills(m.root)[index] as Element,
+              `${label}: the D-pad walked to the cell`,
+            );
+            c8jA(m);
+          }
+          const hit = pvp ? m.callbacks.onPvpAttack : m.callbacks.onAttack;
+          const other = pvp ? m.callbacks.onAttack : m.callbacks.onPvpAttack;
+          expect(hit, `${label}: one attack`).toHaveBeenCalledTimes(1);
+          expect(hit, `${label}: with that skill's id`).toHaveBeenCalledWith(77n, skill.id);
+          expect(other, `${label}: never the other mode's callback`).not.toHaveBeenCalled();
+          expect(m.callbacks.onRecruit, `${label}: nothing is recruited`).not.toHaveBeenCalled();
+        }
+      }
+    }
+
+    // --- a bait row: the confirm opens beside the list, No returns to the row, Yes recruits once ---
+    for (const how of QF7B_HOWS) {
+      const label = `a bait row by ${how}`;
+      const m = c8iFresh(c8jVM());
+      qf7bExpectNoBaitList(m.root, `${label}: precondition, no row before Recruit`);
+      qf7bPress(m, 'recruit', how);
+      if (how === 'mouse') {
+        c8jRows(m.root, 'recruit')[2]?.click();
+      } else {
+        c8jDown(m, 2);
+        c8jA(m);
+      }
+      expect(c8jConfirm(m.root)?.textContent, `${label}: the Sweet Bait confirm`).toContain(
+        'Recruit with Sweet Bait?',
+      );
+      expect(
+        c8jRows(m.root, 'recruit').map((row) => row.textContent),
+        `${label}: beside the still-open bait list`,
+      ).toEqual([...QF7B_BAITS]);
+      c8iExpectCursorOn(m.root, c8jYes(m.root) as Element, `${label}: Yes is the default`);
+      expect(
+        m.callbacks.onRecruit,
+        `${label}: the row press recruits nothing`,
+      ).not.toHaveBeenCalled();
+
+      if (how === 'mouse') {
+        (c8jNo(m.root) as HTMLButtonElement).click();
+      } else {
+        c8jDown(m);
+        c8jA(m);
+      }
+      expect(c8jConfirm(m.root), `${label}: No closes the confirm`).toBeNull();
+      expect(
+        c8jRows(m.root, 'recruit').map((row) => row.textContent),
+        `${label}: and keeps the list`,
+      ).toEqual([...QF7B_BAITS]);
+      c8iExpectCursorOn(
+        m.root,
+        c8jRows(m.root, 'recruit')[2] as Element,
+        `${label}: No returns the cursor and focus to the Sweet Bait row`,
+      );
+      expect(m.callbacks.onRecruit, `${label}: No recruits nothing`).not.toHaveBeenCalled();
+
+      if (how === 'mouse') {
+        c8jRows(m.root, 'recruit')[1]?.click();
+        (c8jYes(m.root) as HTMLButtonElement).click();
+      } else {
+        qf7bUp(m);
+        c8jA(m);
+        c8jA(m);
+      }
+      expect(m.callbacks.onRecruit, `${label}: Yes recruits once`).toHaveBeenCalledTimes(1);
+      expect(m.callbacks.onRecruit, `${label}: with the Lure Berry id`).toHaveBeenCalledWith(
+        77n,
+        7,
+      );
+    }
+    for (const how of QF7B_HOWS) {
+      const label = `No bait by ${how}`;
+      const m = c8iFresh(c8jVM());
+      qf7bPress(m, 'recruit', how);
+      if (how === 'mouse') {
+        c8jRows(m.root, 'recruit')[0]?.click();
+        (c8jYes(m.root) as HTMLButtonElement).click();
+      } else {
+        c8jA(m);
+        c8jA(m);
+      }
+      expect(m.callbacks.onRecruit, `${label}: Yes recruits once`).toHaveBeenCalledTimes(1);
+      const call = vi.mocked(m.callbacks.onRecruit).mock.calls[0] as unknown[];
+      expect(call, `${label}: the call carries the bait slot`).toHaveLength(2);
+      expect(call[0], `${label}: for this battle`).toBe(77n);
+      expect(call[1], `${label}: a bare attempt is exactly undefined`).toBeUndefined();
+    }
+  });
+
+  it('B from a cell closes the grid and seats the cursor and focus on Fight; B from a bait row closes the bait list and seats Recruit; B from the Recruit confirm returns to its bait row with the list kept; B from a bait row while the confirm is open closes both; B sends nothing, and a row held from the closed bait list does nothing [QF7B-2-BACK-CLOSES]', () => {
+    // WRONG IMPL KILLED: a B that moves the cursor to the command but leaves the grid or the list on
+    // screen (the shipped behaviour: both are always there); a B from the bait list that seats Fight
+    // (or nothing); a B honoured only from the first row; a B that attacks or recruits; a latch that
+    // stops Fight or Recruit from opening again; a B from the confirm that also closes the list (the
+    // player loses the row they were choosing from); a B from a bait row that hides the list but
+    // keeps the confirm's pick, so the held Yes still recruits (or the pick comes back); and a row
+    // held from the closed list whose press reopens the list and its confirm (a Recruit pick arriving
+    // while Recruit is not the open command must be ignored).
+    // --- the grid, PvE and PvP ---
+    for (const [mode, vm] of [
+      ['PvE', c8jVM()],
+      ['PvP', c8iPvpVM()],
+    ] as const) {
+      const m = c8iFresh(vm);
+      const fight = c8iCmd(m.root, 'fight');
+      qf7bPress(m, 'fight', 'mouse');
+      expect(c8iSkills(m.root), `${mode}: precondition, the grid is open`).toHaveLength(4);
+      c8jB(m);
+      qf7bExpectNoGrid(m.root, `${mode}: B from the first cell`);
+      c8iExpectCursorOn(m.root, fight, `${mode}: B seats Fight`);
+
+      qf7bPress(m, 'fight', 'D-pad');
+      expect(c8iSkills(m.root), `${mode}: Fight opens it again`).toHaveLength(4);
+      qf7bRight(m);
+      c8jDown(m);
+      c8iExpectCursorOn(m.root, c8iSkills(m.root)[3] as Element, `${mode}: on the last cell`);
+      c8jB(m);
+      qf7bExpectNoGrid(m.root, `${mode}: B from the last cell`);
+      c8iExpectCursorOn(m.root, fight, `${mode}: B from the last cell seats Fight too`);
+
+      c8jB(m);
+      qf7bExpectNoGrid(m.root, `${mode}: a B at the command row changes nothing`);
+      c8iExpectCursorOn(m.root, fight, `${mode}: and the cursor stays on Fight`);
+      expect(m.callbacks.onAttack, `${mode}: B attacks nothing`).not.toHaveBeenCalled();
+      expect(m.callbacks.onPvpAttack, `${mode}: B submits nothing`).not.toHaveBeenCalled();
+    }
+
+    // --- the bait list ---
+    const m = c8iFresh(c8jVM());
+    const recruit = c8iCmd(m.root, 'recruit');
+    qf7bPress(m, 'recruit', 'mouse');
+    const held = c8jRows(m.root, 'recruit');
+    expect(
+      held.map((row) => row.textContent),
+      'precondition: the bait list is open',
+    ).toEqual([...QF7B_BAITS]);
+    c8jDown(m);
+    c8iExpectCursorOn(m.root, c8jRows(m.root, 'recruit')[1] as Element, 'on the Lure Berry row');
+    c8jB(m);
+    qf7bExpectNoBaitList(m.root, 'B from a bait row');
+    c8iExpectCursorOn(m.root, recruit, 'B from the bait list seats Recruit');
+
+    for (const row of held) row.click();
+    qf7bExpectNoBaitList(m.root, 'a press on a row held from the closed list');
+    expect(c8iCurrent(m.root), 'one cursor').toHaveLength(1);
+    expect(c8iCurrent(m.root)[0], 'and it is still on Recruit').toBe(recruit);
+
+    // --- B from the confirm returns to its row, the list kept; B again closes the list ---
+    qf7bPress(m, 'recruit', 'D-pad');
+    c8jDown(m, 2);
+    c8jA(m);
+    expect(c8jConfirm(m.root)?.textContent, 'precondition: the Sweet Bait confirm').toContain(
+      'Recruit with Sweet Bait?',
+    );
+    c8jB(m);
+    expect(c8jConfirm(m.root), 'B closes the confirm').toBeNull();
+    expect(
+      c8jRows(m.root, 'recruit').map((row) => row.textContent),
+      'and keeps the list',
+    ).toEqual([...QF7B_BAITS]);
+    c8iExpectCursorOn(
+      m.root,
+      c8jRows(m.root, 'recruit')[2] as Element,
+      'B from the confirm returns to the Sweet Bait row',
+    );
+    c8jB(m);
+    qf7bExpectNoBaitList(m.root, 'B again closes the list');
+    c8iExpectCursorOn(m.root, recruit, 'and seats Recruit');
+
+    // --- B from a bait row (focused by Tab) while the confirm is open: the list and its step close
+    // together, and the held Yes recruits nothing ---
+    qf7bPress(m, 'recruit', 'mouse');
+    c8jRows(m.root, 'recruit')[1]?.click();
+    const heldYes = c8jYes(m.root) as HTMLButtonElement;
+    expect(heldYes, 'precondition: the Lure Berry confirm is open').not.toBeNull();
+    const tabbed = c8jRows(m.root, 'recruit')[2] as HTMLButtonElement;
+    tabbed.focus();
+    expect(document.activeElement, 'precondition: focus is on a bait row').toBe(tabbed);
+    c8jB(m);
+    qf7bExpectNoBaitList(m.root, 'B from a bait row with the confirm open');
+    c8iExpectCursorOn(m.root, recruit, 'B from that row seats Recruit');
+    heldYes.click();
+    qf7bPress(m, 'recruit', 'mouse');
+    expect(c8jConfirm(m.root), 'Recruit reopens the list with no confirm').toBeNull();
+    expect(m.callbacks.onRecruit, 'nothing is recruited').not.toHaveBeenCalled();
+  });
+
+  it('another command switches the open list (Recruit over the grid, Fight over the bait list, Swap over either, Bag over either, by the mouse or by A) so that exactly one of the grid, the bait list and the bench rows is on screen; Run closes the open list and flees once; a cure-row press over an open grid or bait list closes it and opens the Bag target; a bait row held from a closed list does nothing; re-pressing Recruit or Bag over its own open second step drops the step, keeps the list and seats the cursor on its first row [QF7B-2-OTHER-COMMAND-SWITCHES]', async () => {
+    // WRONG IMPL KILLED: a grid or a bait list opened for ANY command press (Recruit opens the bait
+    // list and leaves the grid up: two lists, two possible actions in one turn); a switch the mouse
+    // makes and the D-pad does not (A reaches the same handler through `rows[cursor].click()`, but a
+    // keyboard-only fork could differ); a Bag that leaves the grid or the bait list beside the cure
+    // list; a #chooseCommand that sets the open command for every id but Run (the grid stays up under
+    // a flee in flight and comes back live when the call settles); a cure press that opens the
+    // target beside a stale grid or bait list; and a bait row held from a list another command
+    // closed whose press reopens its confirm.
+    const steps = [
+      ['fight', ['grid'], 'skills'],
+      ['recruit', ['bait'], 'recruit'],
+      ['fight', ['grid'], 'skills'],
+      ['swap', ['bench'], 'swap'],
+      ['recruit', ['bait'], 'recruit'],
+      ['swap', ['bench'], 'swap'],
+      ['fight', ['grid'], 'skills'],
+      ['bag', [], 'bag'],
+      ['recruit', ['bait'], 'recruit'],
+      ['bag', [], 'bag'],
+    ] as const;
+    for (const how of QF7B_HOWS) {
+      const m = c8iFresh(c8jVM());
+      const cures = c8jRows(m.root, 'bag').map((row) => row.textContent);
+      expect(cures, `${how}: precondition, the Bag offers two cure rows`).toHaveLength(2);
+      for (const [i, [id, open, list]] of steps.entries()) {
+        const label = `${how}, press ${i + 1} (${id})`;
+        qf7bPress(m, id, how);
+        expect(qf7bOpen(m.root), `${label}: exactly the list of ${id} is on screen`).toEqual([
+          ...open,
+        ]);
+        expect(c8iCurrent(m.root), `${label}: one cursor`).toHaveLength(1);
+        expect(
+          c8iCurrent(m.root)[0]?.getAttribute('data-battle-list'),
+          `${label}: in that command's list`,
+        ).toBe(list);
+        expect(
+          c8jRows(m.root, 'bag').map((row) => row.textContent),
+          `${label}: the cure list is unchanged`,
+        ).toEqual(cures);
+      }
+      expect(m.callbacks.onAttack, `${how}: switching attacks nothing`).not.toHaveBeenCalled();
+      expect(m.callbacks.onRecruit, `${how}: switching recruits nothing`).not.toHaveBeenCalled();
+      expect(m.callbacks.onSwap, `${how}: switching swaps nothing`).not.toHaveBeenCalled();
+      expect(m.callbacks.onUseItem, `${how}: switching uses nothing`).not.toHaveBeenCalled();
+      expect(m.callbacks.onFlee, `${how}: switching flees nothing`).not.toHaveBeenCalled();
+    }
+
+    // --- a bait row held from a list another command closed does nothing ---
+    for (const [closer, now] of [
+      ['fight', 'grid'],
+      ['swap', 'bench'],
+    ] as const) {
+      const m = c8iFresh(c8jVM());
+      qf7bPress(m, 'recruit', 'mouse');
+      const held = c8jRows(m.root, 'recruit');
+      expect(held, 'precondition: the bait list is open').toHaveLength(3);
+      qf7bPress(m, closer, 'mouse');
+      expect(qf7bOpen(m.root), `precondition: ${closer} replaced the bait list`).toEqual([now]);
+      const cursor = c8iCurrent(m.root)[0];
+      for (const row of held) row.click();
+      expect(qf7bOpen(m.root), `after ${closer}: a held bait row reopens nothing`).toEqual([now]);
+      expect(
+        m.root.querySelector('[data-testid="recruit-confirm"]'),
+        `after ${closer}: and opens no confirm`,
+      ).toBeNull();
+      expect(c8iCurrent(m.root)[0], `after ${closer}: nor moves the cursor`).toBe(cursor);
+      expect(m.callbacks.onRecruit, `after ${closer}: nothing is recruited`).not.toHaveBeenCalled();
+    }
+
+    // --- Run closes the open list and flees once; the list stays closed after the flee settles ---
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    for (const id of ['fight', 'recruit'] as const) {
+      const d = raDeferred();
+      const m = c8iFresh(c8jVM(), makeRaCallbacks({ onFlee: vi.fn().mockReturnValue(d.promise) }));
+      qf7bPress(m, id, 'mouse');
+      expect(qf7bOpen(m.root), `precondition: ${id} opened its list`).toHaveLength(1);
+      qf7bPress(m, 'run', 'mouse');
+      expect(m.callbacks.onFlee, `Run over the ${id} list flees once`).toHaveBeenCalledTimes(1);
+      expect(m.callbacks.onFlee).toHaveBeenCalledWith(77n);
+      expect(qf7bOpen(m.root), `Run closes the ${id} list, the flee in flight`).toEqual([]);
+      d.reject(new Error('QF7B: flee rejected'));
+      await raFlushPromises();
+      expect(qf7bOpen(m.root), `the ${id} list stays closed after the flee settles`).toEqual([]);
+      expect(c8iDisabled(c8iCmd(m.root, id)), `the settle releases ${id}`).toBe(false);
+      expect(
+        m.callbacks.onAttack,
+        `Run over the ${id} list attacks nothing`,
+      ).not.toHaveBeenCalled();
+      expect(
+        m.callbacks.onRecruit,
+        `Run over the ${id} list recruits nothing`,
+      ).not.toHaveBeenCalled();
+    }
+    vi.mocked(console.error).mockRestore();
+
+    // --- a cure-row press over an open grid or bait list closes it and opens the Bag target ---
+    for (const [from, id, was] of [
+      ['the grid', 'fight', 'grid'],
+      ['the bait list (its confirm open)', 'recruit', 'bait'],
+    ] as const) {
+      const m = c8iFresh(c8jVM());
+      qf7bPress(m, id, 'mouse');
+      let heldYes: HTMLButtonElement | null = null;
+      if (id === 'recruit') {
+        c8jRows(m.root, 'recruit')[1]?.click();
+        heldYes = c8jYes(m.root);
+        expect(heldYes, `${from}: precondition, the confirm is open`).not.toBeNull();
+      }
+      expect(qf7bOpen(m.root), `${from}: precondition, it is open`).toEqual([was]);
+      c8jRows(m.root, 'bag')[1]?.click();
+      expect(c8jTarget(m.root), `${from}: the cure row opens the Bag target`).not.toBeNull();
+      expect(qf7bOpen(m.root), `${from}: and closes the open list`).toEqual([]);
+      expect(
+        m.root.querySelector('[data-testid="recruit-confirm"]'),
+        `${from}: one second step at a time`,
+      ).toBeNull();
+      c8iExpectCursorOn(m.root, c8jUse(m.root) as Element, `${from}: the cursor is on the target`);
+      heldYes?.click();
+      c8jB(m);
+      expect(c8jTarget(m.root), `${from}: B cancels the target`).toBeNull();
+      expect(qf7bOpen(m.root), `${from}: and leaves the list closed`).toEqual([]);
+      c8iExpectCursorOn(
+        m.root,
+        c8jRows(m.root, 'bag')[1] as Element,
+        `${from}: B returns to the pressed cure row`,
+      );
+      expect(m.callbacks.onAttack, `${from}: nothing is attacked`).not.toHaveBeenCalled();
+      expect(m.callbacks.onRecruit, `${from}: nothing is recruited`).not.toHaveBeenCalled();
+      expect(m.callbacks.onUseItem, `${from}: nothing is used`).not.toHaveBeenCalled();
+    }
+
+    // --- re-pressing the command whose own second step is open drops the step, keeps the list ---
+    // WRONG IMPL KILLED (round 3, the verifier's mutant): a #chooseCommand that keeps the pick when
+    // the pressed command is already the open one (`#setOpen(id, id === this.#open ? this.#pick :
+    // null)`): re-pressing Recruit over its open Yes / No (or Bag over its open Use-item target)
+    // leaves that step on screen and the held Yes / target still live, so the press the player made
+    // to start over spends the old choice instead. A command press always drops the pick: the step
+    // goes, the list stays open, and the cursor and focus land on the list's first row (No bait, or
+    // the first cure row), not on the row that was picked. (The ctl-8j replace-pick case presses
+    // Fight only, so it never saw this.)
+    for (const how of QF7B_HOWS) {
+      // Recruit: the Sweet Bait confirm (not the first row) is open, then Recruit again.
+      const r = c8iFresh(c8jVM());
+      qf7bPress(r, 'recruit', 'mouse');
+      c8jRows(r.root, 'recruit')[2]?.click();
+      const heldYes = c8jYes(r.root) as HTMLButtonElement;
+      expect(heldYes, `Recruit again by ${how}: precondition, the confirm is open`).not.toBeNull();
+      c8iExpectCursorOn(r.root, heldYes, `Recruit again by ${how}: precondition, on Yes`);
+      qf7bPress(r, 'recruit', how);
+      expect(
+        r.root.querySelector('[data-testid="recruit-confirm"]'),
+        `Recruit again by ${how}: the confirm is gone`,
+      ).toBeNull();
+      expect(
+        c8jRows(r.root, 'recruitConfirm').map((row) => row.textContent),
+        `Recruit again by ${how}: no Yes / No row is left`,
+      ).toEqual([]);
+      expect(qf7bOpen(r.root), `Recruit again by ${how}: the bait list stays open`).toEqual([
+        'bait',
+      ]);
+      expect(
+        c8jRows(r.root, 'recruit').map((row) => row.textContent),
+        `Recruit again by ${how}: with all its rows`,
+      ).toEqual([...QF7B_BAITS]);
+      c8iExpectCursorOn(
+        r.root,
+        c8jRows(r.root, 'recruit')[0] as Element,
+        `Recruit again by ${how}: the cursor and focus are on No bait`,
+      );
+      expect(
+        r.callbacks.onRecruit,
+        `Recruit again by ${how}: nothing is recruited`,
+      ).not.toHaveBeenCalled();
+      heldYes.click();
+      expect(
+        r.callbacks.onRecruit,
+        `Recruit again by ${how}: the held Yes recruits nothing afterwards`,
+      ).not.toHaveBeenCalled();
+      expect(
+        r.root.querySelector('[data-testid="recruit-confirm"]'),
+        `Recruit again by ${how}: nor brings the confirm back`,
+      ).toBeNull();
+
+      // Bag: the Salve target (not the first cure row) is open, then Bag again.
+      const b = c8iFresh(c8jVM());
+      const cures = c8jRows(b.root, 'bag').map((row) => row.textContent);
+      qf7bPress(b, 'bag', 'mouse');
+      c8jRows(b.root, 'bag')[1]?.click();
+      const heldUse = c8jUse(b.root) as HTMLButtonElement;
+      expect(heldUse, `Bag again by ${how}: precondition, the target is open`).not.toBeNull();
+      c8iExpectCursorOn(b.root, heldUse, `Bag again by ${how}: precondition, on the target`);
+      qf7bPress(b, 'bag', how);
+      expect(
+        b.root.querySelector('[data-testid="cure-target"]'),
+        `Bag again by ${how}: the target is gone`,
+      ).toBeNull();
+      expect(
+        c8jRows(b.root, 'bagTarget').map((row) => row.textContent),
+        `Bag again by ${how}: no target row is left`,
+      ).toEqual([]);
+      expect(
+        c8jRows(b.root, 'bag').map((row) => row.textContent),
+        `Bag again by ${how}: the cure list is still there`,
+      ).toEqual(cures);
+      c8iExpectCursorOn(
+        b.root,
+        c8jRows(b.root, 'bag')[0] as Element,
+        `Bag again by ${how}: the cursor and focus are on the first cure row`,
+      );
+      expect(b.callbacks.onUseItem, `Bag again by ${how}: nothing is used`).not.toHaveBeenCalled();
+      heldUse.click();
+      expect(
+        b.callbacks.onUseItem,
+        `Bag again by ${how}: the held target uses nothing afterwards`,
+      ).not.toHaveBeenCalled();
+      expect(
+        b.root.querySelector('[data-testid="cure-target"]'),
+        `Bag again by ${how}: nor brings the target back`,
+      ).toBeNull();
+    }
+  });
+
+  it('an open grid and an open bait list (and its confirm) survive same-turn re-renders (an equal VM, the same VM object, an hp change, a bait recount) with the cursor and focus on the same cell or row and no other list opened, and a re-render steals no focus from a menu over the battle; PvE and PvP [QF7B-2-SAME-TURN-RERENDER-KEEPS]', () => {
+    // WRONG IMPL KILLED: a list closed by every re-render (each server batch closes the grid under
+    // the player's thumb, so the second press never lands); a re-render that keeps the list but
+    // sends the cursor back to its first row or to the command; one that drops focus to <body> (the
+    // next D-pad press only seats the cursor); one that re-renders the actions row and loses the open
+    // bait list or its confirm; one that shows stale rows (the recount is not shown); a re-render that
+    // opens a second list beside the first; one that drags focus out of a menu opened over the
+    // battle; and a re-render that itself sends anything.
+    // --- the grid ---
+    const m = c8iFresh(c8jVM());
+    qf7bPress(m, 'fight', 'mouse');
+    qf7bRight(m);
+    c8jDown(m);
+    c8iExpectCursorOn(m.root, c8iSkills(m.root)[3] as Element, 'precondition: on the last cell');
+    const same = c8jVM();
+    for (const [label, vm] of [
+      ['an equal VM', c8jVM()],
+      ['the same VM object', same],
+      ['the same VM object again', same],
+      [
+        'an hp change',
+        c8jVM({ playerCard: { ...c8jVM().playerCard, currentHp: 9, hpPercent: 41 } }),
+      ],
+    ] as const) {
+      m.view.refresh(vm);
+      expect(qf7bOpen(m.root), `grid, ${label}: still exactly the grid`).toEqual(['grid']);
+      expect(
+        c8iSkills(m.root).map((cell) => cell.textContent),
+        `grid, ${label}: one cell per skill`,
+      ).toEqual([...QF7B_PVE]);
+      c8iExpectCursorOn(
+        m.root,
+        c8iSkills(m.root)[3] as Element,
+        `grid, ${label}: the cursor and focus are on the same cell`,
+      );
+    }
+    const menu = document.createElement('button');
+    document.body.appendChild(menu);
+    menu.focus();
+    m.view.refresh(c8jVM());
+    expect(document.activeElement, 'grid: a re-render steals no focus from a menu').toBe(menu);
+    expect(qf7bOpen(m.root), 'grid: the grid is still open under the menu').toEqual(['grid']);
+    expect(c8iCurrent(m.root)[0], 'grid: and the cursor is still on the last cell').toBe(
+      c8iSkills(m.root)[3],
+    );
+    menu.remove();
+    expect(m.callbacks.onAttack, 'grid: no re-render attacks').not.toHaveBeenCalled();
+
+    // --- the bait list ---
+    const b = c8iFresh(c8jVM());
+    qf7bPress(b, 'recruit', 'mouse');
+    c8jDown(b, 2);
+    c8iExpectCursorOn(
+      b.root,
+      c8jRows(b.root, 'recruit')[2] as Element,
+      'precondition: on the Sweet Bait row',
+    );
+    const sameB = c8jVM();
+    for (const [label, vm] of [
+      ['an equal VM', c8jVM()],
+      ['the same VM object', sameB],
+      ['the same VM object again', sameB],
+      [
+        'an hp change',
+        c8jVM({ playerCard: { ...c8jVM().playerCard, currentHp: 9, hpPercent: 41 } }),
+      ],
+    ] as const) {
+      b.view.refresh(vm);
+      expect(qf7bOpen(b.root), `bait, ${label}: still exactly the bait list`).toEqual(['bait']);
+      expect(
+        c8jRows(b.root, 'recruit').map((row) => row.textContent),
+        `bait, ${label}: the same rows`,
+      ).toEqual([...QF7B_BAITS]);
+      c8iExpectCursorOn(
+        b.root,
+        c8jRows(b.root, 'recruit')[2] as Element,
+        `bait, ${label}: the cursor and focus are on the same row`,
+      );
+    }
+    b.view.refresh(
+      c8jVM({
+        baitOptions: [
+          { ...C8J_BAITS[0], count: 1 } as (typeof C8J_BAITS)[number],
+          C8J_BAITS[1] as (typeof C8J_BAITS)[number],
+        ],
+      }),
+    );
+    expect(
+      c8jRows(b.root, 'recruit').map((row) => row.textContent),
+      'bait: a recount is shown, the list still open',
+    ).toEqual([QF7B_BAITS[0], `Lure Berry (+150${C8J_PERMILLE}) ${C8J_TIMES}1`, QF7B_BAITS[2]]);
+    c8iExpectCursorOn(
+      b.root,
+      c8jRows(b.root, 'recruit')[2] as Element,
+      'bait: still on Sweet Bait',
+    );
+    const menuB = document.createElement('button');
+    document.body.appendChild(menuB);
+    menuB.focus();
+    b.view.refresh(c8jVM());
+    expect(document.activeElement, 'bait: a re-render steals no focus from a menu').toBe(menuB);
+    expect(qf7bOpen(b.root), 'bait: the list is still open under the menu').toEqual(['bait']);
+    expect(c8iCurrent(b.root)[0], 'bait: and the cursor is still on Sweet Bait').toBe(
+      c8jRows(b.root, 'recruit')[2],
+    );
+    menuB.remove();
+
+    // the open confirm, beside its list
+    c8jRows(b.root, 'recruit')[1]?.click();
+    c8iExpectCursorOn(b.root, c8jYes(b.root) as Element, 'precondition: the Lure Berry confirm');
+    b.view.refresh(c8jVM());
+    expect(c8jConfirm(b.root)?.textContent, 'bait: the confirm survives').toContain(
+      'Recruit with Lure Berry?',
+    );
+    expect(qf7bOpen(b.root), 'bait: beside the still-open list').toEqual(['bait']);
+    c8iExpectCursorOn(b.root, c8jYes(b.root) as Element, 'bait: the cursor and focus are on Yes');
+    expect(b.callbacks.onRecruit, 'bait: no re-render recruits').not.toHaveBeenCalled();
+
+    // --- PvP ---
+    const pvp = c8iFresh(c8iPvpVM());
+    qf7bPress(pvp, 'fight', 'mouse');
+    qf7bRight(pvp);
+    pvp.view.refresh(c8iPvpVM({ pvpOpponentName: 'Other' }));
+    expect(qf7bOpen(pvp.root), 'PvP: a same-turn re-render keeps the grid').toEqual(['grid']);
+    expect(
+      c8iSkills(pvp.root).map((cell) => cell.textContent),
+      'PvP: one cell per skill',
+    ).toEqual([...QF7B_PVP]);
+    c8iExpectCursorOn(pvp.root, c8iSkills(pvp.root)[1] as Element, 'PvP: still on cell 1');
+    expect(pvp.callbacks.onPvpAttack, 'PvP: no re-render submits').not.toHaveBeenCalled();
+  });
+
+  it('an open grid or bait list is closed by a new turn, an earlier turn number, a new battle on the same turn, hide() or refresh(null) then a re-show, a new turn seen while focus is on another frame, a finished battle on the same turn (the same turn Ongoing again does not reopen it), and a same-turn render that loses its command (no skills; canRecruit false); the cursor is back in the command list, nothing is sent, regaining the command on the same turn does not reopen it, and the next press lists the NEW rows; in a player battle a wait removes the grid and resets the cursor to Fight with focus taken from the page, and the turn that ends it starts closed [QF7B-2-NEW-TURN-WAIT-HIDE-CLOSE]', () => {
+    // WRONG IMPL KILLED: a list that survives into the next turn (stale cells or baits the new turn
+    // may not offer, pressed on a turn the player did not choose); one that survives into another
+    // battle; a close keyed on the turn number alone, or only on an increase; a list state that
+    // survives hide() (a re-show of the same turn is not a new turn, so only an explicit close in
+    // hide() resets it); a close that needs focus inside the view; a list that renders beside its
+    // greyed command (no skills; canRecruit false, even with baits still listed); a sticky open state
+    // that resurrects the list when the command comes back on the same turn; stale rows after the
+    // close; and a PvP wait that leaves a live grid (a second submit in one turn, RT-PVP-DS-01) or
+    // a grid still open on the turn after the wait, or after an un-wait on the same turn.
+    const lists: readonly Qf7bList[] = [
+      {
+        name: 'the grid',
+        cmd: 'fight',
+        rows: (root) => c8iSkills(root).map((cell) => cell.textContent),
+        next: (o = {}) => c8jVM({ skills: C8I_SKILLS.slice(0, 2), ...o }),
+        nextRows: QF7B_PVE.slice(0, 2),
+        lose: { skills: [] },
+      },
+      {
+        name: 'the bait list',
+        cmd: 'recruit',
+        rows: (root) => c8jRows(root, 'recruit').map((row) => row.textContent),
+        next: (o = {}) => c8jVM({ baitOptions: C8J_BAITS.slice(1), ...o }),
+        nextRows: [QF7B_BAITS[0] as string, QF7B_BAITS[2] as string],
+        // canRecruit alone: the VM still lists both baits, so a list keyed on the bait count stays.
+        lose: { canRecruit: false },
+      },
+    ];
+    const closers: ReadonlyArray<readonly [string, (m: C8iMount, l: Qf7bList) => void]> = [
+      ['a new turn', (m, l) => m.view.refresh(l.next({ turnNumber: 3 }))],
+      ['an earlier turn number', (m, l) => m.view.refresh(l.next({ turnNumber: 1 }))],
+      ['a new battle on the same turn', (m, l) => m.view.refresh(l.next({ battleId: 78n }))],
+      [
+        'hide() then a re-show of the same turn',
+        (m, l) => {
+          m.view.hide();
+          m.view.refresh(l.next());
+        },
+      ],
+      [
+        'refresh(null) then a re-show of the same turn',
+        (m, l) => {
+          m.view.refresh(null);
+          m.view.refresh(l.next());
+        },
+      ],
+      [
+        'a new turn seen while focus is on another frame',
+        (m, l) => {
+          const other = document.createElement('button');
+          document.body.appendChild(other);
+          other.focus();
+          m.view.refresh(l.next({ turnNumber: 3 }));
+          expect(document.activeElement, 'the close steals no focus from another frame').toBe(
+            other,
+          );
+        },
+      ],
+      [
+        // WRONG IMPL KILLED (round 2, mutant MH): "is the open command still offered" hand-rolled
+        // from the per-command flags (skills, canRecruit, ...) instead of the model's command rows:
+        // a finished battle keeps those flags (the skills and the bait are still listed) but offers
+        // nothing, so the hand-rolled check keeps the list open through the terminal render and the
+        // same turn rendered Ongoing again shows it unasked. The precedent is the pick, which a
+        // finished battle closes for good (CTL8J PICK-ACROSS-RENDERS).
+        'a finished battle on the same turn, then the same turn Ongoing again',
+        (m, l) => {
+          m.view.refresh(l.next({ outcome: 'SideAWins' }));
+          m.view.refresh(l.next());
+        },
+      ],
+    ];
+    for (const l of lists) {
+      for (const [label, close] of closers) {
+        const at = `${l.name}, ${label}`;
+        const m = c8iFresh(c8jVM());
+        qf7bPress(m, l.cmd, 'mouse');
+        expect(l.rows(m.root).length, `${at}: precondition, the list is open`).toBeGreaterThan(0);
+        close(m, l);
+        expect(qf7bOpen(m.root), `${at}: closed`).toEqual([]);
+        expect(c8iCurrent(m.root), `${at}: one cursor`).toHaveLength(1);
+        expect(c8iCurrent(m.root)[0], `${at}: the cursor is back on Fight`).toBe(
+          c8iCmd(m.root, 'fight'),
+        );
+        expect(m.callbacks.onAttack, `${at}: the close attacks nothing`).not.toHaveBeenCalled();
+        expect(m.callbacks.onRecruit, `${at}: the close recruits nothing`).not.toHaveBeenCalled();
+        qf7bPress(m, l.cmd, 'mouse');
+        expect(l.rows(m.root), `${at}: a new press lists the NEW rows`).toEqual([...l.nextRows]);
+      }
+    }
+
+    // --- a same-turn render that loses the command closes the list; regaining it does not reopen ---
+    for (const l of lists) {
+      const m = c8iFresh(c8jVM());
+      const cmd = c8iCmd(m.root, l.cmd);
+      qf7bPress(m, l.cmd, 'mouse');
+      expect(l.rows(m.root).length, `${l.name}: precondition, the list is open`).toBeGreaterThan(0);
+      m.view.refresh(c8jVM(l.lose));
+      expect(qf7bOpen(m.root), `${l.name}: losing ${l.cmd} on the same turn closes it`).toEqual([]);
+      expect(c8iDisabled(cmd), `${l.name}: the ${l.cmd} command is greyed`).toBe(true);
+      expect(
+        c8iCurrent(m.root)[0]?.getAttribute('data-battle-list'),
+        `${l.name}: the cursor is back in the command list`,
+      ).toBe('commands');
+      m.view.refresh(c8jVM());
+      expect(
+        qf7bOpen(m.root),
+        `${l.name}: regaining ${l.cmd} on the same turn does not reopen it`,
+      ).toEqual([]);
+      expect(c8iDisabled(cmd), `${l.name}: the ${l.cmd} command is live again`).toBe(false);
+      qf7bPress(m, l.cmd, 'mouse');
+      expect(l.rows(m.root).length, `${l.name}: a press opens it again`).toBeGreaterThan(0);
+      expect(m.callbacks.onAttack, `${l.name}: nothing is attacked`).not.toHaveBeenCalled();
+      expect(m.callbacks.onRecruit, `${l.name}: nothing is recruited`).not.toHaveBeenCalled();
+    }
+
+    // --- PvP: a wait removes the grid; an un-wait on the same turn and the next turn start closed ---
+    const p = c8iFresh(c8iPvpVM({ turnNumber: 2 }));
+    const fight = c8iCmd(p.root, 'fight');
+    qf7bPress(p, 'fight', 'mouse');
+    const pressed = c8iSkills(p.root)[1] as HTMLButtonElement;
+    pressed.focus();
+    pressed.click();
+    expect(p.callbacks.onPvpAttack, 'PvP: precondition, the cell submitted').toHaveBeenCalledWith(
+      77n,
+      12,
+    );
+    // WRONG IMPL KILLED (round 2, mutant MPvpLeakNoReset): a `reset` that leaves out the PvP wait.
+    // The grid still closes (the wait greys every command), but the cursor is not reset, so with
+    // focus on the page (here: the focused cell blurred, as the submit's batch can leave it) the
+    // cursor falls back to Fight WITHOUT focus, and the next D-pad press only seats it. CTL8I.1: a
+    // wait resets to Fight and takes focus from the page.
+    pressed.blur();
+    expect(document.activeElement, 'PvP: precondition, focus is on the page').toBe(document.body);
+    p.view.refresh(c8iPvpVM({ turnNumber: 2, pvpPendingSubmit: true }));
+    qf7bExpectNoGrid(p.root, 'PvP: the wait on the same turn');
+    expect(c8iCurrent(p.root), 'PvP: one cursor while waiting').toHaveLength(1);
+    expect(c8iCurrent(p.root)[0], 'PvP: the wait resets the cursor to Fight').toBe(fight);
+    expect(document.activeElement, 'PvP: and the reset takes focus from the page onto Fight').toBe(
+      fight,
+    );
+    expect(c8iDisabled(fight), 'PvP: the wait greys Fight').toBe(true);
+    fight.click();
+    qf7bExpectNoGrid(p.root, 'PvP: a mouse press on the greyed Fight');
+    fight.focus();
+    p.view.applyBattleOp({ kind: 'activate' });
+    qf7bExpectNoGrid(p.root, 'PvP: A on the greyed Fight');
+    p.view.refresh(c8iPvpVM({ turnNumber: 2 }));
+    qf7bExpectNoGrid(p.root, 'PvP: the wait ends on the same turn');
+    p.view.refresh(c8iPvpVM({ turnNumber: 3 }));
+    qf7bExpectNoGrid(p.root, 'PvP: the turn after the wait');
+    expect(c8iCurrent(p.root)[0], 'PvP: the cursor is on Fight').toBe(fight);
+    expect(c8iDisabled(fight), 'PvP: Fight is live again').toBe(false);
+    qf7bPress(p, 'fight', 'mouse');
+    expect(
+      c8iSkills(p.root).map((cell) => cell.textContent),
+      'PvP: and Fight opens the grid again',
+    ).toEqual([...QF7B_PVP]);
+    expect(p.callbacks.onPvpAttack, 'PvP: only the one press ever submitted').toHaveBeenCalledTimes(
+      1,
+    );
+  });
+
+  it('a greyed Fight or Recruit (no skills; canRecruit false; a player battle; a PvP wait; a PvE call in flight) opens nothing by the mouse or by A, and one un-greyed by hand under the lock renders only disabled rows that send nothing; with a PvE call in flight an open grid or bait list stays on screen with every row disabled, no row (live, or held and re-enabled by hand) sends anything, and the settle re-enables the rows with the list still open and the cursor on its row [QF7B-2-LOCK-AND-GREYED]', async () => {
+    // WRONG IMPL KILLED: a list opened from the model (the skills, the baits) although its command
+    // is greyed; a press on a greyed command that opens an empty or disabled list and sends the
+    // cursor into it; a lock that leaves Fight or Recruit live (a second action in the turn the first
+    // one spent); an open list closed by the lock (the player loses the row they were on) or rebuilt
+    // ENABLED under it; a cell or a Yes that bypasses the shared pending key once re-enabled by hand;
+    // a settle that leaves the rows dead, closes the list or moves the cursor; and a lock whose
+    // release never reaches the commands (Fight opens nothing after the settle).
+    // --- greyed commands open nothing ---
+    const greyed = [
+      ['Fight with no skills', c8jVM({ skills: [] }), 'fight'],
+      ['Fight in a PvP wait', c8iPvpVM({ pvpPendingSubmit: true }), 'fight'],
+      [
+        'Recruit with canRecruit false (baits still listed)',
+        c8jVM({ canRecruit: false }),
+        'recruit',
+      ],
+      ['Recruit in a player battle', c8iPvpVM(), 'recruit'],
+    ] as const;
+    for (const [shape, vm, id] of greyed) {
+      for (const how of QF7B_HOWS) {
+        const label = `${shape}, by ${how}`;
+        const m = c8iFresh(vm);
+        expect(c8iDisabled(c8iCmd(m.root, id)), `${label}: the command is greyed`).toBe(true);
+        qf7bPress(m, id, how);
+        qf7bExpectNoGrid(m.root, label);
+        qf7bExpectNoBaitList(m.root, label);
+        expect(c8iCurrent(m.root), `${label}: one cursor`).toHaveLength(1);
+        expect(
+          c8iCurrent(m.root)[0]?.getAttribute('data-battle-list'),
+          `${label}: still in the command list`,
+        ).toBe('commands');
+        expect(m.callbacks.onAttack, `${label}: nothing is attacked`).not.toHaveBeenCalled();
+        expect(m.callbacks.onPvpAttack, `${label}: nothing is submitted`).not.toHaveBeenCalled();
+        expect(m.callbacks.onRecruit, `${label}: nothing is recruited`).not.toHaveBeenCalled();
+      }
+    }
+
+    // --- a PvE call in flight with no list open: Fight and Recruit are greyed and open nothing ---
+    const du = raDeferred();
+    const u = c8iFresh(
+      c8jVM(),
+      makeRaCallbacks({ onUseItem: vi.fn().mockReturnValue(du.promise) }),
+    );
+    c8jRows(u.root, 'bag')[0]?.click();
+    (c8jUse(u.root) as HTMLButtonElement).click(); // a Bag use takes the lock
+    expect(u.callbacks.onUseItem, 'precondition: the use took the lock').toHaveBeenCalledTimes(1);
+    for (const id of ['fight', 'recruit'] as const) {
+      expect(c8iDisabled(c8iCmd(u.root, id)), `the lock greys ${id}`).toBe(true);
+      for (const how of QF7B_HOWS) {
+        qf7bPress(u, id, how);
+        qf7bExpectNoGrid(u.root, `${id} by ${how} under the lock`);
+        qf7bExpectNoBaitList(u.root, `${id} by ${how} under the lock`);
+      }
+    }
+    expect(u.callbacks.onAttack, 'nothing is attacked under the lock').not.toHaveBeenCalled();
+    expect(u.callbacks.onRecruit, 'nothing is recruited under the lock').not.toHaveBeenCalled();
+    // WRONG IMPL KILLED (round 2, mutants MD2 and its Recruit twin MD3): a list opened under the lock
+    // that the lock never reaches, e.g. the lock re-applied to the actions row only and not to the
+    // grid (or the reverse) when a command opens its list. The view refuses a press on a greyed
+    // command, so a HOSTILE un-grey (aria-disabled set to "false" by hand) is the only way to make it
+    // render a list under the lock: whatever it renders must come out disabled, and no row, pressed
+    // as it is or re-enabled by hand, may send anything.
+    for (const [id, list] of [
+      ['fight', 'skills'],
+      ['recruit', 'recruit'],
+    ] as const) {
+      const cmd = c8iCmd(u.root, id);
+      cmd.setAttribute('aria-disabled', 'false'); // HOSTILE un-grey of the locked command
+      cmd.click();
+      const rendered = c8jRows(u.root, list);
+      expect(
+        rendered.filter((row) => !row.disabled).map((row) => row.textContent),
+        `a hand-un-greyed ${id} renders no enabled row under the lock`,
+      ).toEqual([]);
+      for (const row of rendered) {
+        row.click(); // swallowed by `disabled` alone
+        row.disabled = false; // HOSTILE re-enable: only the shared pending key can refuse this
+        row.click();
+        const yes = u.root.querySelector<HTMLButtonElement>('[data-testid="recruit-action"]');
+        if (yes !== null) {
+          yes.disabled = false;
+          yes.click();
+        }
+      }
+      expect(
+        u.callbacks.onAttack,
+        `after the hand-un-greyed ${id}: no row it rendered attacks under the lock`,
+      ).not.toHaveBeenCalled();
+      expect(
+        u.callbacks.onRecruit,
+        `after the hand-un-greyed ${id}: no row it rendered recruits under the lock`,
+      ).not.toHaveBeenCalled();
+    }
+    du.resolve();
+    await raFlushPromises();
+    expect(c8iDisabled(c8iCmd(u.root, 'fight')), 'the settle releases Fight').toBe(false);
+    qf7bPress(u, 'fight', 'mouse');
+    expect(
+      c8iSkills(u.root)
+        .filter((cell) => !cell.disabled)
+        .map((cell) => cell.textContent),
+      'after the settle Fight opens a live grid',
+    ).toEqual([...QF7B_PVE]);
+
+    // --- the lock over an open grid ---
+    const d = raDeferred();
+    const g = c8iFresh(c8jVM(), makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) }));
+    qf7bPress(g, 'fight', 'D-pad');
+    qf7bRight(g);
+    const held = c8iSkills(g.root);
+    c8jA(g); // A on cell 1: the attack takes the lock
+    expect(g.callbacks.onAttack, 'precondition: one attack').toHaveBeenCalledTimes(1);
+    expect(g.callbacks.onAttack).toHaveBeenCalledWith(77n, 12);
+    expect(
+      c8iSkills(g.root).map((cell) => cell.textContent),
+      'the grid stays on screen under the lock',
+    ).toEqual([...QF7B_PVE]);
+    expect(
+      c8iSkills(g.root)
+        .filter((cell) => !cell.disabled)
+        .map((cell) => cell.textContent),
+      'with every cell disabled',
+    ).toEqual([]);
+    expect(c8iCurrent(g.root)[0], 'the cursor stays on the pressed cell').toBe(
+      c8iSkills(g.root)[1],
+    );
+    for (const id of C8I_IDS) {
+      expect(c8iDisabled(c8iCmd(g.root, id)), `the lock greys ${id}`).toBe(true);
+    }
+    c8iCmd(g.root, 'recruit').click();
+    expect(qf7bOpen(g.root), 'a press on the greyed Recruit changes nothing').toEqual(['grid']);
+    const live = c8iSkills(g.root);
+    for (const cell of [...held, ...live]) {
+      cell.click(); // swallowed by `disabled` alone
+      cell.disabled = false; // HOSTILE re-enable: only the shared pending key can refuse this
+      cell.click();
+    }
+    for (const cell of live) cell.disabled = true; // restore, so the settle is what re-enables them
+    expect(
+      g.callbacks.onAttack,
+      'no cell, live or held, attacks again under the lock',
+    ).toHaveBeenCalledTimes(1);
+    d.resolve();
+    await raFlushPromises();
+    const after = c8iSkills(g.root);
+    expect(
+      after.map((cell) => cell.textContent),
+      'after the settle the grid is still open',
+    ).toEqual([...QF7B_PVE]);
+    expect(
+      after.filter((cell) => cell.disabled).map((cell) => cell.textContent),
+      'and every cell is live again',
+    ).toEqual([]);
+    expect(c8iCurrent(g.root)[0], 'with the cursor still on the pressed cell').toBe(after[1]);
+    expect(c8iDisabled(c8iCmd(g.root, 'recruit')), 'the settle releases Recruit').toBe(false);
+    after[3]?.click();
+    expect(g.callbacks.onAttack, 'the released grid attacks again').toHaveBeenCalledTimes(2);
+    expect(g.callbacks.onAttack).toHaveBeenLastCalledWith(77n, 14);
+
+    // --- the lock over an open bait list (taken by its own Yes) ---
+    const dr = raDeferred();
+    const r = c8iFresh(
+      c8jVM(),
+      makeRaCallbacks({ onRecruit: vi.fn().mockReturnValue(dr.promise) }),
+    );
+    qf7bPress(r, 'recruit', 'D-pad');
+    c8jDown(r);
+    c8jA(r); // the Lure Berry confirm
+    const heldYes = c8jYes(r.root) as HTMLButtonElement;
+    expect(heldYes, 'precondition: the confirm is open').not.toBeNull();
+    c8jA(r); // Yes: the recruit takes the lock
+    expect(r.callbacks.onRecruit, 'precondition: one recruit').toHaveBeenCalledTimes(1);
+    expect(r.callbacks.onRecruit).toHaveBeenCalledWith(77n, 7);
+    const rows = c8jRows(r.root, 'recruit');
+    expect(
+      rows.map((row) => row.textContent),
+      'the bait list stays on screen under the lock',
+    ).toEqual([...QF7B_BAITS]);
+    expect(
+      rows.filter((row) => !row.disabled).map((row) => row.textContent),
+      'with every row disabled',
+    ).toEqual([]);
+    expect(c8iCurrent(r.root)[0], 'the cursor is on the picked row').toBe(rows[1]);
+    for (const id of C8I_IDS) {
+      expect(c8iDisabled(c8iCmd(r.root, id)), `the lock greys ${id}`).toBe(true);
+    }
+    c8iCmd(r.root, 'fight').click();
+    expect(qf7bOpen(r.root), 'a press on the greyed Fight changes nothing').toEqual(['bait']);
+    heldYes.disabled = false; // HOSTILE re-enable of the spent Yes
+    heldYes.click();
+    expect(r.callbacks.onRecruit, 'the held Yes recruits nothing more').toHaveBeenCalledTimes(1);
+    dr.resolve();
+    await raFlushPromises();
+    const afterRows = c8jRows(r.root, 'recruit');
+    expect(
+      afterRows.map((row) => row.textContent),
+      'after the settle the list is still open',
+    ).toEqual([...QF7B_BAITS]);
+    expect(
+      afterRows.filter((row) => row.disabled).map((row) => row.textContent),
+      'and every row is live again',
+    ).toEqual([]);
+    expect(c8iCurrent(r.root)[0], 'with the cursor still on the picked row').toBe(afterRows[1]);
+    afterRows[2]?.click();
+    expect(c8jConfirm(r.root)?.textContent, 'a row opens the confirm again').toContain(
+      'Recruit with Sweet Bait?',
+    );
+    expect(r.callbacks.onRecruit, 'and recruits nothing by itself').toHaveBeenCalledTimes(1);
+
+    // --- under the lock no bait row pressed by hand gets a second recruit through ---
+    const de = raDeferred();
+    const e = c8iFresh(
+      c8jVM(),
+      makeRaCallbacks({ onRecruit: vi.fn().mockReturnValue(de.promise) }),
+    );
+    qf7bPress(e, 'recruit', 'mouse');
+    c8jRows(e.root, 'recruit')[0]?.click();
+    (c8jYes(e.root) as HTMLButtonElement).click(); // a bare attempt takes the lock
+    expect(e.callbacks.onRecruit, 'precondition: one recruit').toHaveBeenCalledTimes(1);
+    for (const row of c8jRows(e.root, 'recruit')) {
+      row.disabled = false; // HOSTILE: a row may open a confirm under the lock, never a recruit
+      row.click();
+      const yes = e.root.querySelector<HTMLButtonElement>('[data-testid="recruit-action"]');
+      if (yes !== null) {
+        yes.disabled = false;
+        yes.click();
+      }
+    }
+    expect(
+      e.callbacks.onRecruit,
+      'no hand-enabled row or Yes recruits again under the lock',
+    ).toHaveBeenCalledTimes(1);
+    de.resolve();
+    await raFlushPromises();
+  });
+
+  it('with the PvE lock held, B from a hand-enabled, focused skill cell closes the grid, and B from a hand-enabled, focused bait row closes the bait list, while every button left on screen stays disabled and every command greyed until the settle [QF7B-2-LOCKED-BACK-KEEPS-LOCK]', async () => {
+    // WRONG IMPL KILLED: a close that rebuilds the actions row (or the grid) without re-deriving the
+    // lock (the hazard the QF7.2 block pins for B from a bench row, here for the two new lists): the
+    // cure rows come back ENABLED while the turn is spent, so a second action can start; a B that the
+    // lock swallows (the list stays up); and a lock whose settle never releases the closed list's
+    // command (Fight / Recruit dead afterwards).
+    // --- the grid ---
+    const d = raDeferred();
+    const g = c8iFresh(c8jVM(), makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) }));
+    qf7bPress(g, 'fight', 'mouse');
+    c8iSkills(g.root)[0]?.click(); // takes the lock
+    expect(g.callbacks.onAttack, 'precondition: the attack took the lock').toHaveBeenCalledTimes(1);
+    const cell = c8iSkills(g.root)[3] as HTMLButtonElement;
+    expect(cell, 'precondition: the grid is on screen under the lock').toBeDefined();
+    cell.disabled = false; // a disabled cell cannot take focus: enable it by hand to press B there
+    cell.focus();
+    expect(document.activeElement, 'precondition: focus is on the cell').toBe(cell);
+    g.view.applyBattleOp({ kind: 'back' });
+    qf7bExpectNoGrid(g.root, 'B from a cell under the lock');
+    const leftG = qf7bActionButtons(g.root);
+    expect(
+      leftG.length,
+      'non-vacuity: the two cure rows are still on screen',
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      leftG.filter((b) => !b.disabled).map((b) => b.textContent),
+      'every button left on screen is still disabled',
+    ).toEqual([]);
+    for (const id of C8I_IDS) {
+      expect(c8iDisabled(c8iCmd(g.root, id)), `${id} is still greyed by the lock`).toBe(true);
+    }
+    expect(g.callbacks.onAttack, 'B attacks nothing more').toHaveBeenCalledTimes(1);
+    d.resolve();
+    await raFlushPromises();
+    qf7bPress(g, 'fight', 'mouse');
+    expect(
+      c8iSkills(g.root).filter((c) => !c.disabled),
+      'after the settle Fight opens a live grid',
+    ).toHaveLength(4);
+
+    // --- the bait list (the lock taken by its own Yes) ---
+    const dr = raDeferred();
+    const r = c8iFresh(
+      c8jVM(),
+      makeRaCallbacks({ onRecruit: vi.fn().mockReturnValue(dr.promise) }),
+    );
+    qf7bPress(r, 'recruit', 'mouse');
+    c8jRows(r.root, 'recruit')[0]?.click();
+    (c8jYes(r.root) as HTMLButtonElement).click(); // takes the lock
+    expect(r.callbacks.onRecruit, 'precondition: the recruit took the lock').toHaveBeenCalledTimes(
+      1,
+    );
+    const row = c8jRows(r.root, 'recruit')[2] as HTMLButtonElement;
+    expect(row, 'precondition: the bait list is on screen under the lock').toBeDefined();
+    row.disabled = false;
+    row.focus();
+    expect(document.activeElement, 'precondition: focus is on the bait row').toBe(row);
+    r.view.applyBattleOp({ kind: 'back' });
+    qf7bExpectNoBaitList(r.root, 'B from a bait row under the lock');
+    const leftR = qf7bActionButtons(r.root);
+    expect(
+      leftR.length,
+      'non-vacuity: the two cure rows are still on screen',
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      leftR.filter((b) => !b.disabled).map((b) => b.textContent),
+      'every button left on screen is still disabled',
+    ).toEqual([]);
+    for (const id of C8I_IDS) {
+      expect(c8iDisabled(c8iCmd(r.root, id)), `${id} is still greyed by the lock`).toBe(true);
+    }
+    expect(r.callbacks.onRecruit, 'B recruits nothing more').toHaveBeenCalledTimes(1);
+    dr.resolve();
+    await raFlushPromises();
+    qf7bPress(r, 'recruit', 'mouse');
+    expect(
+      c8jRows(r.root, 'recruit').filter((b) => !b.disabled),
+      'after the settle Recruit opens a live list',
+    ).toHaveLength(3);
   });
 });

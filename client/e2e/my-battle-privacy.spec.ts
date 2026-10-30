@@ -151,7 +151,7 @@ const STEP_WAIT_MS = 8_000;
  *  the observed subscription-burst latency in this suite (see the 15 s waits used
  *  for first delivery elsewhere). */
 const LEAK_WINDOW_MS = 5_000;
-/** Max attempts to find + click a skill button once the overlay is up. */
+/** Max attempts to open the skill grid (Fight) and click a skill cell once the overlay is up. */
 const MAX_SKILL_CLICK_TRIES = 10;
 
 // ---------------------------------------------------------------------------
@@ -477,14 +477,28 @@ test.describe
         'A must be able to read the battle`s turn number before advancing it',
       ).toBeGreaterThanOrEqual(0);
 
-      // Click the first available skill button. Source: battleView.ts:149 renders
-      // each skill as `${skill.name} (${skill.power})`, so the parenthesis is the
-      // stable text marker. Bounded retry covers the overlay
-      // still painting; it never waits on server state.
-      const skillBtn = pageA.locator('button:has-text("(")').first();
+      // Click the first available skill cell. qf-7b (QF7B.2): the skill grid renders only
+      // after the Fight command is pressed, so each try first presses A's Fight
+      // (battle-command-fight) when the grid is not open yet — only once Fight is live, since a
+      // greyed row (aria-disabled="true") does nothing when pressed — then waits for a cell.
+      // A cell is a row of the skills list (data-battle-list="skills"); battleView.ts
+      // #renderSkills labels it `<name> (<power>) · <affinity> · Acc n%` (catalog
+      // battle.skill.pveLabel), so the parenthesis is the stable text marker. Bounded retry
+      // covers the overlay still painting; it never waits on server state.
+      const liveFight = pageA.locator(
+        '[data-testid="battle-command-fight"][aria-disabled="false"]',
+      );
+      const skillBtn = pageA.locator('button[data-battle-list="skills"]:has-text("(")').first();
       let clicked = false;
       for (let i = 0; i < MAX_SKILL_CLICK_TRIES && !clicked; i++) {
-        if (await skillBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
+        if (!(await skillBtn.isVisible()) && (await liveFight.isVisible())) {
+          await liveFight.click({ timeout: 3_000 }).catch(() => undefined);
+        }
+        const shown = await skillBtn
+          .waitFor({ state: 'visible', timeout: 2_000 })
+          .then(() => true)
+          .catch(() => false);
+        if (shown) {
           await skillBtn.click({ timeout: 3_000 });
           clicked = true;
         }
@@ -492,8 +506,9 @@ test.describe
       expect(
         clicked,
         `A must be able to submit an attack within ${MAX_SKILL_CLICK_TRIES} attempts — the ` +
-          'battle overlay must be rendering its skill buttons. Without a submitted turn there ' +
-          'is no state change for the store to survive, and this clause would be vacuous',
+          'battle overlay must render its skill buttons once Fight is pressed. Without a ' +
+          'submitted turn there is no state change for the store to survive, and this clause ' +
+          'would be vacuous',
       ).toBe(true);
 
       await pageA.waitForFunction(

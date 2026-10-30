@@ -43,7 +43,8 @@ import { closeAll, openFaceToFace, pressAccel, pressButton } from './controls';
 // ZERO USE OF THE DEV TEST HOOK: this spec drives BOTH players through the REAL
 // production DOM only — A on the other player -> the Challenge row -> Yes (ctl-10b: face to
 // face, no PvP-overlay Challenge button) -> B's Social sheet Accept (qf-8: the challenge panel's
-// Accept button is deleted) -> the real "Submit: <skill>" buttons. `__game()` is used ONLY for readiness and as a READ-ONLY
+// Accept button is deleted) -> the real Fight command (qf-7b: the skill grid renders only after
+// it) -> the real "Submit: <skill>" buttons. `__game()` is used ONLY for readiness and as a READ-ONLY
 // witness (identity, ongoingBattle.turnNumber/outcome) — never to drive gameplay. The
 // DEV multiplayer test hook the OTHER pvp e2e specs use to read/drive both sides at once
 // must NEVER appear here, in ANY form — not even split across a comment — because using
@@ -193,6 +194,21 @@ async function readHookCallCount(page: Page): Promise<number> {
 }
 
 /**
+ * Presses `page`'s Fight command through the REAL production DOM (qf-7b, QF7B.2). The battle's
+ * command list is the first step of every action: the skill grid (the "Submit: <skill>" buttons
+ * in PvP) renders only after Fight is pressed, and every new turn and every PvP wait close it
+ * again. A greyed command row (aria-disabled="true": a PvP move waiting on the opponent, a
+ * finished battle) does nothing when pressed, so the press waits for Fight to be live first.
+ */
+async function pressFight(page: Page): Promise<void> {
+  const fight = page.getByTestId('battle-command-fight');
+  await expect(fight, 'Fight is live').toHaveAttribute('aria-disabled', 'false', {
+    timeout: 10_000,
+  });
+  await fight.click({ timeout: 10_000 });
+}
+
+/**
  * Renames `page`'s own player through the REAL production UI (closeAll -> N ->
  * rename-input -> rename-submit), copied from rename.spec.ts:228-245. This is
  * the half-fix discriminator setup — see the file header. Leaves NO overlay open on exit
@@ -329,9 +345,14 @@ test.describe
       await pressButton(pageB, 'A');
       const acceptedAt = Date.now();
 
-      // toBeVisible() — never toBeAttached() — is deliberate: battleView's root
-      // toggles display:none/flex and real chromium does layout, so visibility here is
-      // a meaningful assertion, not merely a cosmetic one.
+      // The overlay came up on B: its command list is on screen. toBeVisible() — never
+      // toBeAttached() — is deliberate: battleView's root toggles display:none/flex and real
+      // chromium does layout, so visibility here is a meaningful assertion, not merely a
+      // cosmetic one.
+      await expect(pageB.getByTestId('battle-commands')).toBeVisible({ timeout: 15_000 });
+      // qf-7b (QF7B.2): the skill grid renders only after Fight is pressed, so B presses its OWN
+      // Fight, and B's own "Submit: <skill>" buttons must then render.
+      await pressFight(pageB);
       await expect(pageB.getByRole('button', { name: /^Submit: / }).first()).toBeVisible({
         timeout: 15_000,
       });
@@ -357,7 +378,8 @@ test.describe
       // biome-ignore lint/style/noNonNullAssertion: null-checked immediately above
       const turnNumber0 = snapB0!.turnNumber;
 
-      // B submits through its own real Submit button.
+      // B submits through its own real Submit button (the grid B opened above is still open:
+      // nothing has been submitted and the turn has not changed).
       await pageB
         .getByRole('button', { name: /^Submit: / })
         .first()
@@ -366,7 +388,8 @@ test.describe
         timeout: 10_000,
       });
 
-      // A submits through its own real Submit button.
+      // A submits through its own real Submit button, after pressing its own Fight (qf-7b).
+      await pressFight(pageA);
       await pageA
         .getByRole('button', { name: /^Submit: / })
         .first()
@@ -398,7 +421,21 @@ test.describe
         '11r-b: accept -> both-submit flow must finish well inside PVP_TURN_DEADLINE_MS=60s',
       ).toBeLessThan(45_000);
 
-      // Witness: side B is not frozen — its Submit buttons are visible again next turn.
+      // Witness: side B is not frozen — its Submit buttons are visible again next turn. qf-7b
+      // (QF7B.2, CTL8I.1): the next turn starts CLOSED — B's Fight is live again (it was greyed
+      // while B waited on A) and no Submit button is rendered until B presses Fight; pressing it
+      // shows them again. The live Fight is asserted first, so the closed grid is read on the
+      // rendered next turn, not on the waiting frame (which renders no grid either).
+      await expect(pageB.getByTestId('battle-command-fight')).toHaveAttribute(
+        'aria-disabled',
+        'false',
+        { timeout: 10_000 },
+      );
+      await expect(
+        pageB.getByRole('button', { name: /^Submit: / }),
+        'the next turn starts with the skill grid closed',
+      ).toHaveCount(0);
+      await pressFight(pageB);
       await expect(pageB.getByRole('button', { name: /^Submit: / }).first()).toBeVisible({
         timeout: 10_000,
       });

@@ -14,9 +14,9 @@ import { pressAccel, pressButton } from './controls';
 // encounter-battle.spec.ts — walk into grass, meet a wild monster, fight it to a WIN (de-bloat
 // Phase 3 gameplay smoke).
 //
-// WHAT THIS ADDS OVER recruit.spec.ts. recruit R1 already proves grass -> encounter -> recruit
-// button -> Flee, and R2 weakens + recruits; its R3 sees "Victory!" only when a win happened by
-// accident. Nothing asserts that an attack's HP drop RENDERS, that a win GRANTS anything, or that
+// WHAT THIS ADDS OVER recruit.spec.ts. recruit R1 already proves grass -> encounter -> Recruit ->
+// recruit button -> Run, and R2 weakens + recruits; its R3 sees "Victory!" only when a win
+// happened by accident. Nothing asserts that an attack's HP drop RENDERS, that a win GRANTS anything, or that
 // the world RESUMES after the terminal frame is dismissed. Those three are this file's tests.
 // E0 (ctl-6c) runs first, on the very battle E1 then fights: it reads PAINT ORDER (a hit-test with
 // `inert` lifted, plus the computed z-index ordering) to check that the main menu Start opens over
@@ -32,8 +32,13 @@ import { pressAccel, pressButton } from './controls';
 // several hits and E1 sees an intermediate HP frame. Level 8 stays far below every evolution gate
 // out of species 1 (min_level 20 / essence gates), so no evolution can fire here.
 //
-// Water wilds (Tidalin) resist Fire and are fled, exactly as recruit.spec does — bounded.
+// Water wilds (Tidalin) resist Fire and are fled with Run, exactly as recruit.spec does — bounded.
 // No millisecond-class assertions: every wait is a multi-second waitForFunction.
+//
+// THE COMMAND LIST FIRST (qf-7b, QF7B.2). The battle's command list (battle-command-fight|...|run)
+// is the first step of every action: the skill grid renders only after Fight is pressed and every
+// new turn closes it again (CTL8I.1), so every attack presses Fight; Run is the sanctioned flee
+// (QF7.4). E1 also witnesses the closed grid before the first Fight and after the attack.
 //
 // CLEANUP. One browser/context/identity; afterAll closes the browser (on_disconnect deletes the
 // player row before golden.spec's presenceCount === 2).
@@ -160,7 +165,21 @@ async function battleHp(p: Page): Promise<{ cur: number; max: number; affinity: 
   });
 }
 
-/** Walk the shuttle until a non-Water wild battle is ongoing (Water wilds are fled). */
+/** qf-7b: presses a battle command row (`battle-command-<id>`) once it is live. A greyed row is
+ *  aria-disabled="true" (the PvE in-flight lock between an action and its settle, a finished
+ *  battle) and pressing it does nothing, so the press waits for the row to go live first. */
+async function pressCommand(p: Page, id: 'fight' | 'run'): Promise<void> {
+  const row = p.getByTestId(`battle-command-${id}`);
+  await expect(row, `the ${id} command goes live`).toHaveAttribute('aria-disabled', 'false', {
+    timeout: 10_000,
+  });
+  await row.click({ timeout: 10_000 });
+}
+
+/** Every rendered skill cell (a row of the skills list); none while the grid is closed. */
+const skillCells = (p: Page) => p.locator('[data-battle-list="skills"]');
+
+/** Walk the shuttle until a non-Water wild battle is ongoing (Water wilds are fled with Run). */
 async function huntNonWaterEncounter(p: Page): Promise<void> {
   for (let enc = 0; enc < MAX_ENCOUNTERS; enc++) {
     let found = false;
@@ -177,7 +196,7 @@ async function huntNonWaterEncounter(p: Page): Promise<void> {
     await expect.poll(async () => (await battleHp(p)).length, { timeout: 10_000 }).toBe(2);
     const [opp] = await battleHp(p);
     if (opp?.affinity !== 'Water') return;
-    await p.getByRole('button', { name: t('battle.action.flee'), exact: true }).click();
+    await pressCommand(p, 'run'); // the command list's Run (QF7.4), not the legacy Flee button
     await p.waitForFunction(
       () => (window as unknown as Win).__game().ongoingBattle === null,
       null,
@@ -189,16 +208,19 @@ async function huntNonWaterEncounter(p: Page): Promise<void> {
   throw new Error(`hunt: only Water wilds in ${MAX_ENCOUNTERS} encounters`);
 }
 
-/** Click the first PvE skill button ("<name> (<power>) · <affinity>") and wait for the turn to
- *  advance or the battle to end. */
+/** Press Fight, click the first PvE skill cell ("<name> (<power>) · <affinity> · Acc n%") and
+ *  wait for the turn to advance or the battle to end. qf-7b (QF7B.2): the grid renders only after
+ *  Fight and every new turn closes it again (CTL8I.1), so every attack presses Fight first. */
 async function attackOnce(p: Page): Promise<void> {
   const before = (await snap(p)).ongoingBattle;
   if (before === null) throw new Error('attackOnce: no ongoing battle');
-  await p
+  await pressCommand(p, 'fight');
+  const cell = p
     .locator('button:visible')
     .filter({ hasText: /\(\d+\) · / })
-    .first()
-    .click({ timeout: 10_000 });
+    .first();
+  await expect(cell, 'Fight opens the skill grid').toBeVisible({ timeout: 10_000 });
+  await cell.click({ timeout: 10_000 });
   await p.waitForFunction(
     (prev: number) => {
       const b = (window as unknown as Win).__game().ongoingBattle;
@@ -512,6 +534,12 @@ test.describe
       await expect(
         page.getByRole('heading', { name: t('battle.title'), exact: true }),
       ).toBeVisible();
+      // qf-7b (QF7B.2): the skill grid is closed until Fight is pressed (E0's presses all went to
+      // the menu and help above this battle, never to the battle itself). ANTI-VACUITY: the Fight
+      // row is on screen first, and the command list and the grid render in the same refresh, so
+      // no cell means a closed grid, not an unpainted one.
+      await expect(page.getByTestId('battle-command-fight')).toBeVisible({ timeout: 5_000 });
+      await expect(skillCells(page), 'no skill cell before Fight is pressed').toHaveCount(0);
 
       const [oppBefore] = await battleHp(page);
       if (!oppBefore) throw new Error('E1: opponent HP line missing');
@@ -520,6 +548,9 @@ test.describe
       await expect
         .poll(async () => (await battleHp(page))[0]?.cur ?? Number.NaN, { timeout: 10_000 })
         .toBeLessThan(oppBefore.cur);
+      // qf-7b (QF7B.2, CTL8I.1): the attack's new turn starts closed again (and a battle the
+      // attack finished renders no grid at all), so either way no cell is left on screen.
+      await expect(skillCells(page), 'the grid closes after the attack').toHaveCount(0);
     });
 
     test('E2: fighting on to a win shows Victory!, grants XP (visible level-up in the box) and currency (server wallet)', async () => {

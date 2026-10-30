@@ -27,6 +27,11 @@ import { pressButton } from './controls';
 // (`turnNumber` up, or the battle gone) and the continue (a loop that presses only while the stack
 // is above its base, because the first A inside the 400 ms grace of an outcome is ignored).
 //
+// THE COMMAND LIST FIRST (qf-7b, QF7B.2). The skill grid renders only after Fight is pressed and
+// the bait list only after Recruit is pressed, and every new turn closes them again (CTL8I.1). No
+// step here reads a list before its command: `fightToOutcome` walks to Fight and presses A on it
+// for every attack, and the Recruit case presses A on Recruit before it reads the No bait row.
+//
 // SEEDING (owner SQL, the encounter-battle.spec precedent). The starter's defense, attack and HP
 // columns are raised. Measured: with only defense raised the starter FAINTED in the first battle
 // (current_hp 0), and an all-fainted party gets no encounter, so the second battle's hunt found
