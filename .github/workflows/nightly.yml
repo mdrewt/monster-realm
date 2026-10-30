@@ -70,7 +70,7 @@ jobs:
         with: { version: 'v0.15.0' }
       - uses: actions/setup-node@v7 # v7
         with:
-          node-version: '24.13.1'
+          node-version: '24.22.0'
           cache: npm
           cache-dependency-path: client/package-lock.json
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
