@@ -4,8 +4,9 @@
  *
  * qf-8 adds three things at the bottom of this file (see its section comment): the QF8.2 sweep of the
  * retired mouse-only duplicates (the raising Care / Train row, the Box's To Box / To Party, the trade
- * row's buttons, the PvP Accept / Decline / Cancel, the evolution choice buttons, and the Social
- * sheet that now owns the Accept / Decline words), the pointer routes to each deleted action (QF8.1:
+ * row's buttons, the PvP Accept / Decline / Cancel, the evolution choice buttons, the battle's legacy
+ * Flee (its row added by qf-7c, QF7B.3), and the Social sheet that now owns the Accept / Decline
+ * words), the pointer routes to each deleted action (QF8.1:
  * Evolve, Move, the Social sheet's trade and challenge answers), and the e2e reference scan (QF8.3).
  * The file runs under happy-dom because those render real views; the press-count cases above are
  * pure model code, read no DOM, and are unchanged.
@@ -1864,6 +1865,17 @@ function qf8RenderBattle(): Qf8Rendered {
       {
         name: 'the next battle, wild (two skills, two healthy bench monsters, a bait, no cure item), its Run pressed and the flee in flight',
         apply: () => {
+          // The practice battle fled at most once, and only for itself: the retired test's spy
+          // matrix presses its live Run once and the lock that press takes greys Run for every later
+          // synchronous event of the pass (the native test runs no matrix: no flee at all).
+          expect(
+            fleeSends.filter((id) => id !== 77n),
+            'the practice battle is the only battle fled from so far',
+          ).toEqual([]);
+          expect(
+            fleeSends.length,
+            'the practice battle fled at most once (the lock held for every later event)',
+          ).toBeLessThanOrEqual(1);
           view.refresh(wild);
           expect(
             greyed(),

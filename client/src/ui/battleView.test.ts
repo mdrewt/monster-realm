@@ -2314,7 +2314,8 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
 
     const view = new BattleView(parent, makeUx4Callbacks());
     // qf-7c (QF7B.1) migration: the VM carries one cure item, so the cure list (a child of
-    // #actionsEl) can name the container, and the player presses Bag (the command that lists it).
+    // #actionsEl) can name the container. The cure list renders at rest today (R-qf-7b-CURELIST);
+    // the Bag press is forward compatibility only, for when it renders only under Bag.
     // Was: makeUx4EmptySwapVM() bare, #actionsEl named by the Flee button canFlee drew.
     const h4VM = makeUx4EmptySwapVM({
       cureItems: [{ itemId: 12, name: 'Antidote', cureStatus: 'Poison', count: 1 }],
@@ -5357,6 +5358,8 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
       "20r-a BV-5: a DIFFERENT battle's controls must not inherit battle 77's pending lock — the " +
         'key carries the battleId (plan D11: `{ readonly battleId }`), never a bare boolean',
     );
+    // qf-7c: Run (the only flee) is a command row outside this census; battle 78's is live too.
+    expect(c8iDisabled(c8iCmd(parent, 'run')), "20r-a BV-5: battle 78's Run is live").toBe(false);
 
     // Battle 78 acts while 77's call is STILL in flight.
     other.skills[0]!.click();
@@ -5618,6 +5621,8 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
         'flight. A membership/equality-keyed `.finally` clears it here (same battleId), which is ' +
         'the cross-generation clobber the identity token exists to refuse',
     );
+    // qf-7c: Run (the only flee) is a command row outside this census; it stays greyed too.
+    expect(c8iDisabled(c8iCmd(parent, 'run')), '20r-a BV-11: Run is still greyed').toBe(true);
     afterStale.skills[1]!.click(); // swallowed by disabled
     afterStale.skills[1]!.disabled = false; // hostile
     afterStale.skills[1]!.click();
@@ -7428,6 +7433,9 @@ describe('BattleView ctl-8i: the command list, the skill grid and the cursor', (
       run.callbacks.onFlee,
       'a re-enabled Run is still refused by the shared lock',
     ).toHaveBeenCalledTimes(1);
+    // Restore the grey: nothing re-greys a refused Run, so the release check below must not read
+    // the test's own hand edit.
+    runRow.setAttribute('aria-disabled', 'true');
     d.resolve();
     await raFlushPromises();
     for (const id of C8I_IDS) {
@@ -9392,11 +9400,11 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
 //   * A greyed Swap command (no swap on offer; a PvE call in flight; a PvP wait) opens nothing, and
 //     the empty-swap hint stays exactly as it was.
 // NOT asserted either way here: the Bag cure list is unchanged; the legacy Flee button is gone
-// (QF7B.1, qf-7c: the block at the end of this file). QF7B (the block below) now renders the skills grid and the bait list only while Fight /
-// Recruit is the open command, one list at a time, so the cases here press Fight where they need a
-// cell and Recruit where they need a bait row (which closes the Swap list). And NOT pinned, because
-// the spec is silent: whether a swap-row press or a lock takes an already-open Swap list away. The
-// lock cases below hold under BOTH answers.
+// (QF7B.1, qf-7c: the block at the end of this file). QF7B (the block below) now renders the skills
+// grid and the bait list only while Fight / Recruit is the open command, one list at a time, so the
+// cases here press Fight where they need a cell and Recruit where they need a bait row (which
+// closes the Swap list). And NOT pinned, because the spec is silent: whether a swap-row press or a
+// lock takes an already-open Swap list away. The lock cases below hold under BOTH answers.
 // =============================================================================
 
 const QF72_PVE_MOSS = 'Swap: Mossling (12/18)';
@@ -11764,15 +11772,13 @@ const QF7C_POKES: ReadonlyArray<() => Event> = [
 const QF7C_ZERO_WIDTH = [0x200b, 0x200c, 0x200d, 0x2060, 0xfeff].map((code) =>
   String.fromCodePoint(code),
 );
-/** U+00A0 NO-BREAK SPACE, by code point. */
-const QF7C_NBSP = String.fromCodePoint(0x00a0);
 
-/** Text as a player reads it (the qf-8 sweep's reading): NFKC, the zero-width characters dropped, a
- *  no-break space read as a space, every run of whitespace one space, trimmed. Case is kept. */
+/** Text as a player reads it (the qf-8 sweep's reading): NFKC (which also folds a no-break space
+ *  to a space), the zero-width characters dropped, every run of whitespace one space, trimmed.
+ *  Case is kept. */
 function qf7cNormalise(text: string): string {
   let folded = text.normalize('NFKC');
   for (const hidden of QF7C_ZERO_WIDTH) folded = folded.split(hidden).join('');
-  folded = folded.split(QF7C_NBSP).join(' ');
   let out = '';
   let gap = false;
   for (const ch of folded) {
@@ -11866,8 +11872,7 @@ describe('Run in the command list is the only flee affordance (QF7B.1, qf-7c)', 
     // or a title. The click half takes a FRESH mount per element: one mount clicked through is
     // blind, because a press on a command or a cure row rebuilds the actions row and detaches a
     // Flee before the loop reaches it (measured: onFlee never called on the shipped code).
-    vi.mocked(i18nT).mockClear();
-    vi.mocked(i18nTf).mockClear();
+    // (The resolver spies start this test empty: the file-level beforeEach runs vi.clearAllMocks().)
 
     /** The static half in one state: the document-wide label scan, the cursor-row census of the
      *  view's buttons and the command list. */
@@ -11985,8 +11990,8 @@ describe('Run in the command list is the only flee affordance (QF7B.1, qf-7c)', 
       expect(run.callbacks.onFlee, `${state}: for this battle`).toHaveBeenCalledWith(RA_BATTLE_ID);
     }
 
-    // --- under a PvE call in flight: the static half only. The lock swallows every send, a flee
-    // included, so a click half here would pass whatever the view rendered: it is not run. ---
+    // --- under a PvE call in flight: the static half only. The five states above already poke every
+    // element of the view; the lock state adds the scan of what renders while the turn is spent. ---
     const d = raDeferred();
     const locked = c8iFresh(
       makeRaVM(),
@@ -12010,6 +12015,10 @@ describe('Run in the command list is the only flee affordance (QF7B.1, qf-7c)', 
     expect(
       vi.mocked(i18nT).mock.calls.some(([key]) => String(key) === 'battle.command.run'),
       'ANTI-VACUITY: the resolver spy saw the Run label requested',
+    ).toBe(true);
+    expect(
+      vi.mocked(i18nTf).mock.calls.some(([key]) => String(key) === 'battle.skill.pveLabel'),
+      'ANTI-VACUITY: the tf() spy saw a skill cell label requested (Fight was opened)',
     ).toBe(true);
     expect(
       vi.mocked(i18nT).mock.calls.some(([key]) => String(key) === 'battle.action.flee'),
