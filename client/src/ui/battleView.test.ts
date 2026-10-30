@@ -50,7 +50,7 @@ import { BattleView, type BattleViewCallbacks } from './battleView';
 
 import { beforeEach } from 'vitest';
 import { t } from './a11yCopy';
-import { t as i18nT, tf as i18nTf } from './i18n/resolver';
+import { t as i18nT, tf as i18nTf, setLocale as qf10SetLocale } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
@@ -1863,7 +1863,7 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     document.body.replaceChildren();
   });
 
-  it('BITES: H1 ongoing + canSwap=false + empty bench → zero swap buttons AND a visible hint naming "Party & Box", with the timing clause BEFORE the key name', () => {
+  it('BITES: H1 ongoing + canSwap=false + empty bench → zero swap buttons AND a visible hint naming "Monsters", with the timing clause BEFORE the key name', () => {
     // KILLS (1): no hint at all — the element lookup below is UNCONDITIONAL (no
     //   `if (el !== null)` wrapper), so deleting the element FAILS this case rather
     //   than passing vacuously.
@@ -1968,13 +1968,15 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
 
     const text = el!.textContent ?? '';
 
-    // (c) names the literal h2 the player will actually see (boxView's constructor title).
+    // (c) names the literal h2 the player will actually see (boxView's title, `box.title`).
+    // NAMED INTENTIONAL CHANGE (qf-10, QF10.4): the screen is named "Monsters" (was "Party & Box").
     expect(
       text,
-      'ux4-2 (H1c): the hint must name the literal "Party & Box" screen (the title h2 boxView\'s ' +
-        'constructor puts in its header row) — a vague "your team" sends the player looking for a ' +
+      'ux4-2 (H1c): the hint must name the literal "Monsters" screen (the title h2 boxView ' +
+        'shows) — a vague "your team" sends the player looking for a ' +
         'screen that does not exist under that name',
-    ).toContain('Party & Box');
+    ).toContain('Monsters');
+    expect(text, 'qf-10: and no longer the legacy name').not.toContain('Party & Box');
 
     // (d) ORDER, not presence. A timing qualifier must come FIRST, then the key name.
     //
@@ -2077,7 +2079,7 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
       'ux4-2 (H1f): the hint must carry the remedy as ONE readable clause in the mandated order — ' +
         'timing, then Esc, then B, then the screen name. This is the literal form of the ordering ' +
         'constraint asserted by index above',
-    ).toContain('When this battle ends, press Esc, then B for Party & Box');
+    ).toContain('When this battle ends, press Esc, then B for Monsters');
 
     // -----------------------------------------------------------------------
     // (g) REASON BEFORE REMEDY — a SECOND, INDEPENDENT ordering property.
@@ -5543,8 +5545,8 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     ).toEqual(all.map((b) => `${b.textContent ?? ''}=false`));
     expect(
       all.filter((b) => b.getAttribute('aria-disabled') === 'true').map((b) => b.textContent),
-      '20r-a BV-9: and no command row is greyed by it but the PvP-greyed Recruit, Bag and Run',
-    ).toEqual(['Recruit', 'Bag', 'Run']);
+      '20r-a BV-9: and no command row is greyed by it but the PvP-greyed Recruit, Items and Run',
+    ).toEqual(['Recruit', 'Items', 'Run']);
 
     submits[1]!.click();
     c8iCmd(parent, 'swap').click();
@@ -7125,7 +7127,9 @@ const C8I_ELLIPSIS = String.fromCharCode(0x2026);
 const C8I_APOSTROPHE = String.fromCharCode(0x2019);
 
 const C8I_IDS = ['fight', 'recruit', 'swap', 'bag', 'run'] as const;
-const C8I_LABELS = ['Fight', 'Recruit', 'Swap', 'Bag', 'Run'] as const;
+// NAMED INTENTIONAL CHANGE (qf-10, QF10.5): the fourth command reads "Items" (was "Bag"); its id,
+// `battle-command-bag`, and the catalog id `battle.command.bag` are unchanged.
+const C8I_LABELS = ['Fight', 'Recruit', 'Swap', 'Items', 'Run'] as const;
 
 /** Four skills: a two-column grid with a full second row (cells 0 1 / 2 3). */
 const C8I_SKILLS = [
@@ -9377,6 +9381,55 @@ describe('BattleView ctl-8j: Recruit, Swap and Bag as nav lists', () => {
     expect(c8jConfirm(a.root)).toBeNull();
     c8jRows(a.root, 'recruit')[0]?.click(); // No bait
     nameOf(a, 'Recruit with no bait?');
+  });
+});
+
+// =============================================================================
+// qf-10 (QF10.5): the fourth command reads "Items" (fr "Objets"); its testid stays
+// `battle-command-bag` and the catalog id `battle.command.bag` is unchanged (values only).
+// =============================================================================
+
+describe('BattleView qf-10: the Items command (QF10.5)', () => {
+  afterEach(() => {
+    qf10SetLocale('en');
+    document.body.replaceChildren();
+  });
+
+  it('the command list renders Fight, Recruit, Swap, Items, Run in order and the fourth button keeps the battle-command-bag testid [QF10-5-ITEMS-COMMAND-EN]', () => {
+    // WRONG IMPL KILLED: the shipped "Bag" label; a label typed into the view instead of read from
+    // the catalog; the testid renamed with the label (every e2e and unit locator keys on
+    // battle-command-bag); the command moved out of the fourth place.
+    const { root } = c8iFresh(c8iVM());
+    const rows = [...c8iGroup(root).querySelectorAll('button')];
+    expect(
+      rows.map((b) => b.textContent),
+      'the five command labels',
+    ).toEqual(['Fight', 'Recruit', 'Swap', 'Items', 'Run']);
+    expect(
+      rows.map((b) => b.getAttribute('data-testid')),
+      'the testids are unchanged',
+    ).toEqual([
+      'battle-command-fight',
+      'battle-command-recruit',
+      'battle-command-swap',
+      'battle-command-bag',
+      'battle-command-run',
+    ]);
+    expect(c8iCmd(root, 'bag').textContent, 'the bag command reads Items').toBe('Items');
+    expect(root.textContent ?? '', 'no "Bag" command label is left').not.toContain('Bag');
+  });
+
+  it('under the French locale the fourth command reads Objets and keeps its testid [QF10-5-ITEMS-COMMAND-FR]', () => {
+    // WRONG IMPL KILLED: a French catalog entry left on "Sac" while English moved; a label resolved
+    // once at construction (a locale switch before the first refresh leaves English); the English
+    // word in a French boot.
+    qf10SetLocale('fr');
+    const { root } = c8iFresh(c8iVM());
+    const bag = c8iCmd(root, 'bag');
+    expect(bag.textContent, 'the French bag command').toBe('Objets');
+    expect(bag.getAttribute('data-testid')).toBe('battle-command-bag');
+    expect(bag.textContent, 'not the English word').not.toBe('Items');
+    expect(bag.textContent, 'not the legacy French word').not.toBe('Sac');
   });
 });
 

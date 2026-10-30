@@ -477,7 +477,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'battle.continueHint': 'Press Enter or Esc to continue', // battleView.ts:243
   'battle.swap.hint':
     'No healthy party monster in this battle to swap in. ' +
-    'When this battle ends, press Esc, then B for Party & Box.', // battleView.ts:216-218
+    // qf-10 (named intentional change, QF10.4): was '... then B for Party & Box.'.
+    'When this battle ends, press Esc, then B for Monsters.', // battleView.ts:216-218
   'battle.pvp.waiting': 'Waiting for opponent’s action…', // battleView.ts:347
   'battle.card.you': 'You', // battleView.ts:291
   'battle.card.opponent': 'Opponent', // battleView.ts:289
@@ -501,7 +502,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'battle.command.fight': 'Fight',
   'battle.command.recruit': 'Recruit',
   'battle.command.swap': 'Swap',
-  'battle.command.bag': 'Bag',
+  // qf-10 (named intentional change, QF10.5): the value was 'Bag'; the id is unchanged.
+  'battle.command.bag': 'Items',
   'battle.command.run': 'Run',
   'battle.commands.label': 'Commands',
   'battle.command.runPvpReason': `You can${CURLY_APOSTROPHE}t run from a player battle.`,
@@ -528,7 +530,8 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // the raising screen's Monsters section, and -3 parameterised ones in SAMPLE_PARAMS
   // (`raising.card.{status,stats,train}`); +1 parameterised one (`box.summary.stats`, QF9.1) =
   // 373 keys. Their absence is pinned by the 'qf-9' describe at the end of this file.
-  'raising.title': 'Raising & Inventory', // raisingView.ts
+  // qf-10 (named intentional change, QF10.4): the value was 'Raising & Inventory'; the id is unchanged.
+  'raising.title': 'Inventory', // raisingView.ts
   'raising.inventory.heading': 'Inventory', // raisingView.ts
   'raising.inventory.empty': 'No items.', // raisingView.ts
   // Box.* (18 plain: 11, -box.card.rename, +7 ctl-8b keys, +4 ctl-8c keys, -box.heal ctl-10a,
@@ -538,13 +541,16 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // qf-8 (named intentional change, QF8.1): `box.card.toBox` ('To Box') and `box.card.toParty`
   // ('To Party') are RETIRED with the cards' buttons; a move is the Monsters sheet's Move row, and
   // `box.hint` (the same id, a new VALUE) now quotes that row's label (`box.sheet.move`) verbatim.
-  'box.title': 'Party & Box', // boxView.ts
+  // qf-10 (named intentional change, QF10.4): VALUES only, the legacy ids are kept: `box.title`
+  // was 'Party & Box', `box.section.box` 'Box', `box.box.empty` 'No monsters in box.', and
+  // `box.hint` said 'arrive in your Box'.
+  'box.title': 'Monsters', // boxView.ts
   'box.hint':
-    'Only monsters in your Party can battle or be swapped in. New recruits arrive in your ' +
-    `Box ${EM_DASH} select one there and choose "Move" to bring it into an open party slot.`, // boxView.ts
+    'Only monsters in your Party can battle or be swapped in. New recruits arrive in Storage ' +
+    `${EM_DASH} select one there and choose "Move" to bring it into an open party slot.`, // boxView.ts
   'box.section.party': 'Party', // boxView.ts
-  'box.section.box': 'Box', // boxView.ts
-  'box.box.empty': 'No monsters in box.', // boxView.ts
+  'box.section.box': 'Storage', // boxView.ts
+  'box.box.empty': 'No monsters in storage.', // boxView.ts
   'box.card.evolveBadge': '★ Ready to evolve — choose a path', // boxView.ts
   'box.rename.prompt': 'New nickname:', // boxView.ts (ctl-8b: the typing row's label; was prompt())
   // ctl-8b: the Monsters frame's tab labels, action-sheet rows and Move feedback lines. The check
@@ -2128,7 +2134,8 @@ describe('ctl-10a: the interaction keys in both catalogs', () => {
     expect(EXPECTED_KEYS.includes('box.heal'), 'the pinned roster no longer lists it').toBe(false);
     // The other Box keys are untouched (a wholesale `box.*` deletion would also pass the three
     // lines above).
-    expect((CATALOG_EN as Record<string, unknown>)['box.title']).toBe('Party & Box');
+    // qf-10 (named intentional change, QF10.4): the value was 'Party & Box'; the id stays.
+    expect((CATALOG_EN as Record<string, unknown>)['box.title']).toBe('Monsters');
   });
 });
 
@@ -2648,11 +2655,12 @@ const QF8_RIGHT_GUILLEMET = String.fromCharCode(0x00bb);
 /** The French Move label `box.hint` quotes (plan §1.5: Move / Déplacer). */
 const QF8_FR_MOVE = `D${E_ACUTE}placer`;
 
-/** The new French `box.hint` (plan §1.5), byte for byte. */
+/** The French `box.hint`, byte for byte (qf-8 plan §1.5). NAMED INTENTIONAL CHANGE (qf-10, QF10.4):
+ *  the destination reads "le Stockage" (was "votre Boîte"); every other byte is unchanged. */
 const QF8_FR_BOX_HINT =
   `Seuls les monstres de votre ${E_ACUTE}quipe peuvent combattre ou ${QF8_E_CIRCUMFLEX}tre ` +
-  `${E_ACUTE}chang${E_ACUTE}s en cours de combat. Les nouvelles recrues arrivent dans votre ` +
-  `Bo${QF8_I_CIRCUMFLEX}te ${EM_DASH} s${E_ACUTE}lectionnez-en une et choisissez ` +
+  `${E_ACUTE}chang${E_ACUTE}s en cours de combat. Les nouvelles recrues arrivent dans le ` +
+  `Stockage ${EM_DASH} s${E_ACUTE}lectionnez-en une et choisissez ` +
   `${QF8_LEFT_GUILLEMET}${NO_BREAK_SPACE}${QF8_FR_MOVE}${NO_BREAK_SPACE}${QF8_RIGHT_GUILLEMET} ` +
   `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`;
 
@@ -2847,5 +2855,178 @@ describe('qf-8: the ids retired with the mouse-only duplicates, and the box hint
       Object.keys(EXPECTED_PLAIN).length + 2 * Object.keys(SAMPLE_PARAMS).length;
     expect(en.texts, 'every English value was read').toBe(expectedTexts);
     expect(fr.texts, 'every French value was read').toBe(expectedTexts);
+  });
+});
+
+// =============================================================================
+// qf-10 (QF10.4, QF10.5): the frame is named Monsters, its Box panel Storage, the raising screen
+// Inventory and the battle Bag command Items, in BOTH catalogs. VALUES only: every legacy id keeps
+// its name (the spec's values-only rule; messageIds.ts is untouched). Every expected byte is typed
+// here (the French glyphs by code point); none is read off the catalog under test.
+// =============================================================================
+
+/** The seven keys qf-10 revalues, with their exact English text. */
+const QF10_EN: Record<string, string> = {
+  'box.title': 'Monsters',
+  'box.hint':
+    'Only monsters in your Party can battle or be swapped in. New recruits arrive in Storage ' +
+    `${EM_DASH} select one there and choose "Move" to bring it into an open party slot.`,
+  'box.section.box': 'Storage',
+  'box.box.empty': 'No monsters in storage.',
+  'battle.swap.hint':
+    'No healthy party monster in this battle to swap in. ' +
+    'When this battle ends, press Esc, then B for Monsters.',
+  'raising.title': 'Inventory',
+  'battle.command.bag': 'Items',
+};
+
+/** U+00C0 (A grave) opens "À la fin du combat". */
+const QF10_A_GRAVE_CAP = String.fromCharCode(0x00c0);
+
+/** The seven keys qf-10 revalues, with their exact French text. The apostrophe is U+2019 and the
+ *  quote is a guillemet pair with U+00A0 inside, as catalog.fr.ts documents; the dash is U+2014. */
+const QF10_FR: Record<string, string> = {
+  'box.title': 'Monstres',
+  'box.hint':
+    `Seuls les monstres de votre ${E_ACUTE}quipe peuvent combattre ou ${QF8_E_CIRCUMFLEX}tre ` +
+    `${E_ACUTE}chang${E_ACUTE}s en cours de combat. Les nouvelles recrues arrivent dans le ` +
+    `Stockage ${EM_DASH} s${E_ACUTE}lectionnez-en une et choisissez ` +
+    `${QF8_LEFT_GUILLEMET}${NO_BREAK_SPACE}D${E_ACUTE}placer${NO_BREAK_SPACE}${QF8_RIGHT_GUILLEMET} ` +
+    `pour la placer dans un emplacement libre de l${RIGHT_QUOTE}${E_ACUTE}quipe.`,
+  'box.section.box': 'Stockage',
+  'box.box.empty': 'Aucun monstre dans le stockage.',
+  'battle.swap.hint':
+    `Aucun monstre de l${RIGHT_QUOTE}${E_ACUTE}quipe en ${E_ACUTE}tat de combattre ne peut ` +
+    `entrer dans ce combat. ${QF10_A_GRAVE_CAP} la fin du combat, appuyez sur Esc, puis sur B ` +
+    'pour Monstres.',
+  'raising.title': 'Inventaire',
+  'battle.command.bag': 'Objets',
+};
+
+/** The six values that named the Box / Raising screens (the bag command is not among them). */
+const QF10_NAMING_KEYS = [
+  'box.title',
+  'box.hint',
+  'box.section.box',
+  'box.box.empty',
+  'battle.swap.hint',
+  'raising.title',
+] as const;
+
+/** True iff `word` occurs in `text` bounded on both sides by a non-letter, non-digit (or an edge):
+ *  a hand-rolled scan (this file's helpers use no RegExp). A letter is ASCII or any code point
+ *  above U+007F that is not whitespace, so an accented letter never splits a word. */
+function hasWholeWord(text: string, word: string): boolean {
+  const isWordChar = (ch: string | undefined): boolean => {
+    if (ch === undefined) return false;
+    const c = ch.charCodeAt(0);
+    if (c > 0x7f) return ch.trim() !== '';
+    return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
+  };
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(word, from);
+    if (at === -1) return false;
+    if (!isWordChar(text[at - 1]) && !isWordChar(text[at + word.length])) return true;
+    from = at + 1;
+  }
+}
+
+describe('qf-10: the Monsters / Storage / Inventory / Items wording in both catalogs', () => {
+  it('the English catalog carries the seven qf-10 values exactly and the legacy Party & Box, Raising & Inventory and Box wording is gone from the naming values [QF10-4-EN-VALUES]', () => {
+    // WRONG IMPL KILLED: a value left on the shipped 'Party & Box' / 'Raising & Inventory' /
+    // 'Box' / 'No monsters in box.' / 'Bag'; the hint still saying 'arrive in your Box'; the swap
+    // hint still pointing at 'Party & Box'; a reworded value (every byte is pinned); and a value
+    // that keeps the legacy word in a new sentence (the absence scan reads whole words, so
+    // 'Boxes' is not a false hit but 'a Box' is).
+    const en = CATALOG_EN as Record<string, unknown>;
+    for (const [key, expected] of Object.entries(QF10_EN)) {
+      expect(en[key], `en ${key}: the exact qf-10 text`).toBe(expected);
+    }
+    expect(Object.keys(QF10_EN), 'ANTI-VACUITY: seven keys').toHaveLength(7);
+    for (const key of QF10_NAMING_KEYS) {
+      const value = String(en[key]);
+      expect(value.includes('Party & Box'), `en ${key} no longer says "Party & Box"`).toBe(false);
+      expect(
+        value.includes('Raising & Inventory'),
+        `en ${key} no longer says "Raising & Inventory"`,
+      ).toBe(false);
+      expect(hasWholeWord(value, 'Box'), `en ${key} has no whole word "Box"`).toBe(false);
+      expect(hasWholeWord(value, 'box'), `en ${key} has no whole word "box"`).toBe(false);
+    }
+    // Control: the scan does see a whole word, and does not see one inside another word.
+    expect(hasWholeWord('arrive in your Box.', 'Box'), 'control: a whole word is found').toBe(true);
+    expect(hasWholeWord('Boxes and sandbox', 'Box'), 'control: a substring is not').toBe(false);
+  });
+
+  it('the French catalog carries the seven qf-10 values exactly and the legacy Equipe et boite, boite, Elevage and Sac wording is gone from the naming values [QF10-4-FR-VALUES]', () => {
+    // WRONG IMPL KILLED: a French value left on 'Équipe et boîte' / 'Boîte' / 'Élevage' / 'Sac'
+    // while the English moved (a French boot keeps the old names); the hint still saying
+    // 'votre Boîte'; a reworded value or a lost accent / U+2019 / U+00A0 (every byte is pinned); a
+    // plain apostrophe or a plain space inside the guillemets.
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const BOITE = `bo${QF8_I_CIRCUMFLEX}te`;
+    const BOITE_CAP = `Bo${QF8_I_CIRCUMFLEX}te`;
+    const EQUIPE_ET_BOITE = `${CAPITAL_E_ACUTE}quipe et ${BOITE}`;
+    const ELEVAGE = `${CAPITAL_E_ACUTE}levage`;
+    for (const [key, expected] of Object.entries(QF10_FR)) {
+      expect(fr[key], `fr ${key}: the exact qf-10 text`).toBe(expected);
+    }
+    expect(Object.keys(QF10_FR), 'ANTI-VACUITY: seven keys').toHaveLength(7);
+    for (const key of QF10_NAMING_KEYS) {
+      const value = String(fr[key]);
+      expect(value.includes(EQUIPE_ET_BOITE), `fr ${key} no longer says "${EQUIPE_ET_BOITE}"`).toBe(
+        false,
+      );
+      expect(value.includes(BOITE), `fr ${key} has no "${BOITE}"`).toBe(false);
+      expect(value.includes(BOITE_CAP), `fr ${key} has no "${BOITE_CAP}"`).toBe(false);
+      expect(value.includes(ELEVAGE), `fr ${key} has no "${ELEVAGE}"`).toBe(false);
+      expect(hasWholeWord(value, 'Sac'), `fr ${key} has no whole word "Sac"`).toBe(false);
+    }
+    // The bag command is French too, and is not the English word.
+    expect(fr['battle.command.bag'], 'fr battle.command.bag is not the English copy').not.toBe(
+      (CATALOG_EN as Record<string, unknown>)['battle.command.bag'],
+    );
+    // Every guillemet in the hint is padded by U+00A0, never a breaking space.
+    const hint = String(fr['box.hint']);
+    expect(hint.includes(`${QF8_LEFT_GUILLEMET} `), 'no breaking space after the opening «').toBe(
+      false,
+    );
+    expect(hint.includes(` ${QF8_RIGHT_GUILLEMET}`), 'no breaking space before the closing »').toBe(
+      false,
+    );
+  });
+
+  it('the legacy ids keep their names in both catalogs and the roster is still the 361-key one [QF10-4-KEY-IDS-UNCHANGED]', () => {
+    // WRONG IMPL KILLED: an id renamed to follow its new value (box.title -> monsters.title, ...)
+    // so messageIds.ts and every t() call site would have to move too (the spec allows values
+    // only); a retired legacy id (the Party heading, the Bag command); a roster that grew or
+    // shrank (an id added beside the old one instead of revalued).
+    const en = CATALOG_EN as Record<string, unknown>;
+    const fr = CATALOG_FR as Record<string, unknown>;
+    const LEGACY_IDS = [
+      'box.title',
+      'box.hint',
+      'box.section.party',
+      'box.section.box',
+      'box.box.empty',
+      'battle.swap.hint',
+      'raising.title',
+      'battle.command.bag',
+    ] as const;
+    expect(LEGACY_IDS, 'ANTI-VACUITY: eight ids').toHaveLength(8);
+    for (const id of LEGACY_IDS) {
+      expect(Object.hasOwn(en, id), `en keeps ${id}`).toBe(true);
+      expect(Object.hasOwn(fr, id), `fr keeps ${id}`).toBe(true);
+      expect(EXPECTED_KEYS.includes(id), `the pinned roster keeps ${id}`).toBe(true);
+    }
+    expect(Object.keys(en).length, 'the English catalog holds exactly 361 keys').toBe(361);
+    expect(Object.keys(fr).length, 'and so does the French one').toBe(361);
+    expect(EXPECTED_KEYS, 'and the pinned roster').toHaveLength(361);
+    expect(Object.keys(en).slice().sort(), 'en and the pinned roster are the same ids').toEqual(
+      EXPECTED_KEYS,
+    );
+    // The Party heading is deliberately NOT revalued (the Party panel keeps its name).
+    expect(en['box.section.party'], 'en box.section.party is untouched').toBe('Party');
   });
 });

@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { a11yCopy, t } from './a11yCopy';
+import { CATALOG_EN } from './i18n/catalog.en';
 import { OVERLAY_A11Y, OVERLAY_IDS } from './overlayRegistry';
 
 const A11Y_KEY_SHAPE_RE = /^a11y\.[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*$/;
@@ -264,5 +265,37 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
       'a caller must not be able to inject a brand-new catalog key at runtime',
     ).toBe(false);
     expect(() => t('a11y.injected.key'), 'the injected key must still be a miss').toThrow();
+  });
+});
+
+// qf-10 (QF10.4): the accessible names of the Monsters and Inventory overlays follow their visible
+// titles. The Help overlay's name is deliberately NOT moved here (its wording is a separate,
+// deferred change), so every existing 'Controls & Goals' pin stays.
+describe('a11yCopy — qf-10: the overlay names match the visible titles', () => {
+  it('the boxView and raisingView accessible names read Monsters and Inventory and equal the visible titles; the helpView name is unchanged [QF10-4-A11Y-TITLES]', () => {
+    // WRONG IMPL KILLED: names left on the shipped 'Party & Box' / 'Raising & Inventory' (a screen
+    // reader announces a dialog the sighted player no longer sees named that); names typed here
+    // that drift from the catalog titles the views draw (box.title, raising.title); and a
+    // sweeping change that also renames the Help overlay (deferred).
+    expect(a11yCopy['a11y.overlay.boxView.title'], 'boxView accessible name').toBe('Monsters');
+    expect(a11yCopy['a11y.overlay.raisingView.title'], 'raisingView accessible name').toBe(
+      'Inventory',
+    );
+    const en = CATALOG_EN as Record<string, unknown>;
+    expect(
+      a11yCopy['a11y.overlay.boxView.title'],
+      'the boxView name equals the visible title (box.title)',
+    ).toBe(en['box.title']);
+    expect(
+      a11yCopy['a11y.overlay.raisingView.title'],
+      'the raisingView name equals the visible title (raising.title)',
+    ).toBe(en['raising.title']);
+    expect(t('a11y.overlay.boxView.title'), 't() resolves the boxView name').toBe('Monsters');
+    expect(t('a11y.overlay.raisingView.title'), 't() resolves the raisingView name').toBe(
+      'Inventory',
+    );
+    expect(a11yCopy['a11y.overlay.helpView.title'], 'helpView name is not part of qf-10').toBe(
+      'Controls & Goals',
+    );
   });
 });

@@ -157,6 +157,23 @@
 //     id: POLISH1-P2-CHANGED-REBUILDS "a monster id changes at the same position"); THROW-RECOVERY
 //     faults the card's name span (each card builds one, as it built one button); LOCALE reads the
 //     empty slot / empty box / stats copy (the button copy is gone).
+//
+// qf-10 (QF10.3, QF10.4, QF10.5): the frame is named Monsters (box.title), the Box panel is
+// Storage (box.section.box, box.box.empty), and the hint (box.hint) moves BELOW both panels. NAMED
+// INTENTIONAL CHANGES to pre-existing cases (the key ids are unchanged; only values move):
+//   - 'Party & Box' -> 'Monsters' (the title anchor, every findByTag(.., 'h2', ..) lookup);
+//     the Box h3 -> 'Storage' (boxGridOf, CTL8B-1-VIEW-TABS); 'No monsters in box.' ->
+//     'No monsters in storage.' (BX-01, CTL7B-1-NO-OPACITY-DIM-BOX); X3's recruits clause reads
+//     'New recruits arrive in Storage'.
+//   - ux4 X4 INSERTION POINT: the hint used to be pinned BETWEEN the header and the Party h3
+//     (immediately before it). QF10.3 replaces that position: it is now the LAST child of #root,
+//     after the Storage grid. The header-first half of the pin is unchanged.
+//   - the e2e chain comments: client/e2e/recruit.spec.ts no longer resolves the root as
+//     h2['Party & Box'].parentElement.parentElement; it locates `[data-testid="box-title"]` and
+//     takes `.closest('.mr-frame')`, so the title text is not an e2e contract any more.
+//   - M24S4_BX_ROSTER gains the three new English strings.
+// New cases: QF10-4-BOX-TITLE-RENDERS, QF10-3-HINT-BELOW-PANELS, QF10-3-HINT-NOT-AT-SEAM (end of
+// file).
 // ---------------------------------------------------------------------------
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readWasmU32Constant } from '../../test-util/wasmPkg';
@@ -250,7 +267,7 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
     expect(root.getAttribute('aria-label')).toBe(t(S4_META.labelKey));
   });
 
-  it('S4-boxView-ANCHOR-FOCUS BITES: the anchor resolves to an <h2 tabindex="-1"> with byte-unchanged "Party & Box" text, and focus moves to it after ONE real macrotask (never synchronously)', async () => {
+  it('S4-boxView-ANCHOR-FOCUS BITES: the anchor resolves to an <h2 tabindex="-1"> reading "Monsters" (qf-10), and focus moves to it after ONE real macrotask (never synchronously)', async () => {
     const { parent, view } = mount();
     const root = s4BoxRootOf(parent);
     view.show();
@@ -270,8 +287,9 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
     ).toBe('-1');
     expect(
       anchor!.textContent,
-      'byte-unchanged — client/e2e/recruit.spec.ts resolves the box root off this exact text',
-    ).toBe('Party & Box');
+      'qf-10 (named intentional change): was "Party & Box"; client/e2e/recruit.spec.ts locates ' +
+        'this heading by its data-testid, so the text is the catalog value `box.title`',
+    ).toBe('Monsters');
 
     expect(document.activeElement, 'not focused synchronously').not.toBe(anchor);
     await s4FlushMacrotask();
@@ -532,32 +550,36 @@ function partyGridOf(parent: HTMLElement): HTMLElement {
 }
 
 function boxGridOf(parent: HTMLElement): HTMLElement {
-  const label = findByTag(parent, 'h3', 'Box');
+  // qf-10 (named intentional change): the h3 reads "Storage" (was "Box").
+  const label = findByTag(parent, 'h3', 'Storage');
   const grid = label.nextElementSibling;
-  expect(grid, 'precondition: the "Box" h3 must be immediately followed by #boxEl').not.toBeNull();
+  expect(
+    grid,
+    'precondition: the "Storage" h3 must be immediately followed by #boxEl',
+  ).not.toBeNull();
   assertNotTheHint(grid as Element, '#boxEl');
   return grid as HTMLElement;
 }
 
-/** The header row (the `Party & Box` h2's parent) — anchor for the insertion-point pins. */
+/** The header row (the `Monsters` h2's parent) — anchor for the insertion-point pins. */
 function headerRowOf(parent: HTMLElement): HTMLElement {
-  const title = findByTag(parent, 'h2', 'Party & Box');
+  const title = findByTag(parent, 'h2', 'Monsters');
   const header = title.parentElement;
   expect(
     header,
-    'precondition: the "Party & Box" h2 must have a parent (the header row holding it and the ' +
-      '"Heal Party" button)',
+    'precondition: the "Monsters" h2 must have a parent (the header row holding it)',
   ).not.toBeNull();
   return header as HTMLElement;
 }
 
-/** BoxView's `#root`, resolved exactly the way the e2e specs resolve it. */
+/** BoxView's `#root`, resolved title -> header -> root (the shape the structural pins below use;
+ *  client/e2e/recruit.spec.ts now takes `[data-testid="box-title"]`.closest('.mr-frame')). */
 function e2eBoxRootOf(parent: HTMLElement): HTMLElement {
-  const title = findByTag(parent, 'h2', 'Party & Box');
+  const title = findByTag(parent, 'h2', 'Monsters');
   const header = title.parentElement;
   expect(
     header,
-    'precondition: the "Party & Box" h2 must have a parent (the header row)',
+    'precondition: the "Monsters" h2 must have a parent (the header row)',
   ).not.toBeNull();
   const root = header!.parentElement;
   expect(root, "precondition: the header row must have a parent (BoxView's #root)").not.toBeNull();
@@ -710,7 +732,9 @@ describe('BoxView ux4 X3: box-party hint is present, visible, and quotes the rea
       'ux4 (X3): the hint must say where new recruits actually GO (taming.rs:163 / ADR-0047 §3) — ' +
         'this is the fact whose absence produced the playtest report. The literal clause pin also ' +
         'replaces the subsumed toContain(\'Box\'), which a stray "Box" anywhere would satisfy',
-    ).toContain('New recruits arrive in your Box');
+    ).toContain('New recruits arrive in Storage');
+    // qf-10 (named intentional change, QF10.4): was 'New recruits arrive in your Box'.
+    expect(text, 'qf-10: the legacy Box wording is gone').not.toMatch(/\bBox\b/);
     // qf-8 (named intentional change, QF8.1): the quoted control is the Monsters sheet's Move row,
     // its label read from the catalog (`box.sheet.move`), quoted as the copy quotes it.
     const moveLabel = i18nT('box.sheet.move');
@@ -752,9 +776,9 @@ describe('BoxView ux4 X3: box-party hint is present, visible, and quotes the rea
 
 describe('BoxView ux4 X4: e2e compatibility — sibling of header, no HP-shaped copy', () => {
   it('BITES: the e2e box-root chain still resolves to the hint\'s parent AND contains both grids, and the copy carries no "HP n/n"', () => {
-    // KILLS (1): WRAPPING `header` in a new div. All three e2e sites resolve the box root
-    //   as h2[textContent==='Party & Box'].parentElement.parentElement, so a wrapper
-    //   retargets that chain to the wrapper.
+    // KILLS (1): WRAPPING `header` in a new div. This case resolves the box root as
+    //   h2['Monsters'].parentElement.parentElement (the e2e specs locate the title by its testid
+    //   and take .closest('.mr-frame')), so a wrapper retargets that chain to the wrapper.
     //   *** THE "contains both grids" CLAUSE IS THE LOAD-BEARING ONE. *** Under the
     //   header-wrapping mutant the parent-identity clause ALONE PASSES: the chain resolves
     //   to the wrapper, and the wrapper IS the hint's parent. Only the containment clauses
@@ -790,8 +814,8 @@ describe('BoxView ux4 X4: e2e compatibility — sibling of header, no HP-shaped 
         `containsPartyGrid=${String(containsPartyGrid)} ` +
         `containsBoxGrid=${String(containsBoxGrid)}. ` +
         'The hint must be a SIBLING of `header` inside #root, never a wrapper around it: ' +
-        "client/e2e/recruit.spec.ts resolves the box root as h2['Party & Box']" +
-        '.parentElement.parentElement at three sites. Under a header-wrapping mutant the ' +
+        "this case resolves the box root as h2['Monsters'].parentElement.parentElement. " +
+        'Under a header-wrapping mutant the ' +
         'parent-identity clause alone still passes (the chain resolves to the wrapper, which IS ' +
         "the hint's parent) — only the two containment clauses catch that the resolved node no " +
         'longer holds #partyEl / #boxEl, the grids those helpers read HP text out of',
@@ -800,31 +824,31 @@ describe('BoxView ux4 X4: e2e compatibility — sibling of header, no HP-shaped 
     // -----------------------------------------------------------------------
     // MANDATED INSERTION POINT. The clauses above accept the hint ANYWHERE
     // under #root; the red-team's control implementation drifted to #root's FIRST child —
-    // above the "Party & Box" title — with the entire suite green. The plan requires the
-    // hint BETWEEN the constructor's `header` block (the `Party & Box` h2 + `Heal Party`
-    // button) and its `partyLabel` (`Party` h3), which these two assertions pin exactly:
-    //   • `header` stays #root's first element  ⇒ the hint is not above the title;
-    //   • the hint is immediately followed by the `Party` h3 ⇒ it is not below the grids
-    //     and not between a label and its grid (which would also break the anchor
-    //     helpers — see assertNotTheHint).
-    // The `Party` h3 is resolved by textContent, never by index.
+    // above the title — with the entire suite green.
+    // NAMED INTENTIONAL CHANGE (qf-10, QF10.3): the ux4 plan pinned the hint BETWEEN the header
+    // and the `Party` h3 (immediately before it). QF10.3 explicitly replaces that position: the
+    // hint is now BELOW both panels, the LAST child of #root. The two assertions pin that:
+    //   • `header` stays #root's first element  ⇒ the hint is not above the title (unchanged);
+    //   • the hint has no next sibling and follows the Storage grid ⇒ it is not at the seam
+    //     between the tab strip and the panels, and not between a label and its grid (which
+    //     would also break the anchor helpers — see assertNotTheHint).
     // -----------------------------------------------------------------------
     const header = headerRowOf(parent);
     expect(
       header.previousElementSibling,
-      'ux4 (X4) INSERTION POINT: the header row (h2 "Party & Box" + "Heal Party") must remain ' +
+      'ux4 (X4) INSERTION POINT: the header row (h2 "Monsters") must remain ' +
         "#root's FIRST element child. A hint inserted ABOVE the title passes every containment " +
         "clause in this case — the red-team's control impl drifted exactly there with the whole " +
         "suite green — while putting explanatory small print above the screen's own heading",
     ).toBeNull();
     expect(
       hint!.nextElementSibling,
-      'ux4 (X4) INSERTION POINT: the hint must sit immediately BEFORE the "Party" h3 — i.e. ' +
-        'between the header block and the party label, exactly where the plan puts it. Anywhere ' +
-        'else either buries the rule below the grids the player is already confused by, or (if ' +
-        'placed between a label and its grid) silently retargets the nextElementSibling anchors ' +
-        'this file resolves the grids through',
-    ).toBe(findByTag(parent, 'h3', 'Party'));
+      'ux4 (X4) INSERTION POINT (qf-10): the hint is the LAST child of #root, below both panels',
+    ).toBeNull();
+    expect(
+      boxGrid.compareDocumentPosition(hint!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      'ux4 (X4) INSERTION POINT (qf-10): the hint follows the Storage grid',
+    ).not.toBe(0);
 
     const text = hint!.textContent ?? '';
     expect(
@@ -900,7 +924,7 @@ describe('BoxView ux4 X5: containment + idempotence forward fence', () => {
       hint.parentElement,
       'ux4 (X5): the hint must NOT live inside #boxEl — `#renderBox` opens by clearing that ' +
         'container with replaceChildren() on every refresh, and its empty-box branch returns ' +
-        'early after appending only "No monsters in box."',
+        'early after appending only "No monsters in storage."',
     ).not.toBe(boxGridOf(parent));
     expect(
       hint.parentElement,
@@ -1185,9 +1209,10 @@ describe('BoxView EG4-8 X8: the badge is per-card and renders in the BOX grid to
 describe('BoxView EG4-8 X9: e2e compatibility — inside the card, no header wrapper, no HP-shaped copy', () => {
   it("BITES: the badge does not wrap the header, is not a direct #root child, and the box root's HP scan still reads clean", () => {
     // KILLS (1): a badge (or a badge wrapper) placed around `header`. All five
-    //   `client/e2e/recruit.spec.ts` sites resolve the box root as
-    //   h2['Party & Box'].parentElement.parentElement — a wrapper silently retargets that
-    //   chain and `healViaBox` / `restoreHpBeforeEncounter` then read HP text out of the
+    //   `client/e2e/recruit.spec.ts` sites read HP text from the box root (the `.mr-frame`
+    //   holding the box-title testid); this case resolves it as
+    //   h2['Monsters'].parentElement.parentElement — a wrapper silently retargets that
+    //   chain and the HP-scan helpers then read HP text out of the
     //   wrong node. As in X4, the CONTAINMENT clauses are the load-bearing ones: under the
     //   wrapping mutant an identity-only check still passes.
     // KILLS (2): HP-shaped badge copy. `healViaBox` uses
@@ -1229,7 +1254,7 @@ describe('BoxView EG4-8 X9: e2e compatibility — inside the card, no header wra
     expect(
       badge!.contains(header),
       'EG4-8 (X9): the badge must never WRAP the header row — recruit.spec.ts resolves the ' +
-        "box root as h2['Party & Box'].parentElement.parentElement at five sites",
+        "box root as h2['Monsters'].parentElement.parentElement in this file's helpers",
     ).toBe(false);
     expect(
       header.querySelectorAll(EVO_BADGE_SELECTOR),
@@ -1457,6 +1482,8 @@ function m24s4BxWalkSubtree(root: HTMLElement): string[] {
 
 const M24S4_BX_ROSTER = [
   'Party & Box',
+  // qf-10: the new Monsters / Storage wording must not appear outside a sentinel either.
+  'Monsters',
   'Heal Party',
   'Party',
   'Box',
@@ -1464,6 +1491,8 @@ const M24S4_BX_ROSTER = [
   'To Box',
   'To Party',
   'No monsters in box.',
+  'No monsters in storage.',
+  'New recruits arrive in Storage',
   '★ Ready to evolve',
   'Slot ',
   '(empty)',
@@ -1556,7 +1585,8 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
       percent: 75,
     });
 
-    expect(root.querySelector('[data-testid="box-title"]')?.textContent).toBe('Party & Box');
+    // INTENTIONAL CHANGE (qf-10, QF10.4): was 'Party & Box'.
+    expect(root.querySelector('[data-testid="box-title"]')?.textContent).toBe('Monsters');
     // INTENTIONAL CHANGE (ctl-10a): was "the first button reads 'Heal Party'"; no button does now.
     // INTENTIONAL CHANGE (qf-8): was "the frame renders its buttons (To Box)"; it renders none.
     const buttonTexts = [...root.querySelectorAll('button')].map((b) => b.textContent);
@@ -1569,7 +1599,8 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
     const partyGrid = partyGridOf(parent);
     expect(partyGrid.textContent ?? '').toContain('Slot 1: (empty)');
     const boxGrid = boxGridOf(parent);
-    expect(boxGrid.textContent ?? '').toContain('No monsters in box.');
+    // INTENTIONAL CHANGE (qf-10, QF10.4): was 'No monsters in box.'.
+    expect(boxGrid.textContent ?? '').toContain('No monsters in storage.');
 
     // --- box now holds a card pending an evolution choice ---
     vi.mocked(i18nT).mockClear();
@@ -1898,8 +1929,8 @@ describe('BoxView ctl-7b: the box root is a class-styled frame, inline only for 
     expect(title, 'precondition: the title anchor exists').not.toBeNull();
     expect(
       title?.parentElement?.parentElement,
-      'the root is the header\'s parent — the "Party & Box" h2 -> header -> root chain that ' +
-        'client/e2e/recruit.spec.ts resolves it by',
+      "the root is the header's parent — the title h2 -> header -> root chain (the e2e specs " +
+        "locate the title by its testid and take .closest('.mr-frame'))",
     ).toBe(root);
     expect(
       ctl7bClasses(root),
@@ -1977,7 +2008,7 @@ describe('BoxView ctl-7b: the box root is a class-styled frame, inline only for 
 
     const empties = [...root.querySelectorAll('*')].filter((el) => {
       const own = ctl7bOwnText(el);
-      return own.includes('(empty)') || own.includes('No monsters in box.');
+      return own.includes('(empty)') || own.includes('No monsters in storage.');
     });
     expect(
       empties.map((el) => ctl7bOwnText(el)),
@@ -2177,7 +2208,8 @@ describe('BoxView ctl-8b: the tabs and the cursor (CTL8B.1)', () => {
     const party = partyGridOf(parent);
     const box = boxGridOf(parent);
     const partyHeading = findByTag(parent, 'h3', 'Party');
-    const boxHeading = findByTag(parent, 'h3', 'Box');
+    // INTENTIONAL CHANGE (qf-10, QF10.4): the Box panel's heading reads "Storage" (was "Box").
+    const boxHeading = findByTag(parent, 'h3', 'Storage');
 
     view.paint(c8bPaint({ tab: 'party' }));
     const tabs = c8bTabs(root);
@@ -5270,5 +5302,114 @@ describe('BoxView qf-9: the Summary shows the full stats (QF9.1)', () => {
       vi.mocked(i18nT).mockRestore();
       vi.mocked(i18nTf).mockRestore();
     }
+  });
+});
+
+// =============================================================================
+// qf-10 (QF10.3, QF10.4): the frame is named Monsters, its Box panel is Storage, and the
+// explainer hint sits BELOW both panels (the last child of the frame root). Real DOM, the real
+// BoxView, the real catalog: nothing here reimplements view logic.
+// =============================================================================
+
+describe('BoxView qf-10: the Monsters title and the Storage wording (QF10.4)', () => {
+  it('the title anchor reads Monsters in English and Monstres after a French show(); the Storage empty line reads its qf-10 copy in both languages [QF10-4-BOX-TITLE-RENDERS]', () => {
+    // WRONG IMPL KILLED: the shipped 'Party & Box' / 'Equipe et boite' titles (values not
+    // changed); a title resolved once in the constructor (a locale switch leaves the old name); the
+    // empty line left on 'No monsters in box.' / 'Aucun monstre dans la boite.'.
+    const { parent, view } = mount();
+    view.refresh(makePartySlots(), []);
+    view.show();
+    const title = parent.querySelector('[data-testid="box-title"]') as HTMLElement | null;
+    expect(title, 'precondition: the title anchor exists').not.toBeNull();
+    const grid = boxGridOf(parent);
+    try {
+      p2SetLocale('en');
+      view.show();
+      expect(title!.textContent, 'English title').toBe('Monsters');
+      expect(grid.textContent, 'English empty Storage line').toBe('No monsters in storage.');
+
+      p2SetLocale('fr');
+      view.show();
+      view.refresh(makePartySlots(), []);
+      expect(title!.textContent, 'French title').toBe('Monstres');
+      expect(grid.textContent, 'French empty Storage line').toBe('Aucun monstre dans le stockage.');
+    } finally {
+      p2SetLocale('en');
+    }
+  });
+});
+
+describe('BoxView qf-10: the hint sits below the panels (QF10.3)', () => {
+  it('the hint is a direct child of the frame root, follows both h3 headings and both grids, and is the root`s last element child, on the Party tab and on the Storage tab [QF10-3-HINT-BELOW-PANELS]', () => {
+    // WRONG IMPL KILLED: the hint left between the tab strip / sheet parts and the panels (the
+    // shipped position); a hint moved above only ONE panel (after the Party grid but before
+    // Storage); a hint appended to the caller's parent or inside a grid (a refresh wipes it); a
+    // hint followed by another child (the feedback line or a part appended after it); and a
+    // position that is only right for the opening tab.
+    const { parent, view } = mount();
+    view.refresh(makePartySlots(), [makeBoxRecruitCard()]);
+    view.show();
+    const root = s4BoxRootOf(parent);
+
+    for (const tab of ['party', 'storage'] as const) {
+      view.paint(c8bPaint({ tab }));
+      const hint = root.querySelector(BOX_PARTY_HINT_SELECTOR) as HTMLElement | null;
+      expect(hint, `${tab}: the hint exists`).not.toBeNull();
+      expect(hint!.parentElement, `${tab}: a direct child of the frame root`).toBe(root);
+      expect(hint!.textContent, `${tab}: it reads box.hint`).toBe(i18nT('box.hint'));
+
+      const partyGrid = partyGridOf(parent);
+      const boxGrid = boxGridOf(parent);
+      const partyHeading = partyGrid.previousElementSibling as HTMLElement;
+      const boxHeading = boxGrid.previousElementSibling as HTMLElement;
+      expect(partyHeading.tagName, `${tab}: the Party grid follows its h3`).toBe('H3');
+      expect(boxHeading.tagName, `${tab}: the Storage grid follows its h3`).toBe('H3');
+      for (const [name, el] of [
+        ['the Party heading', partyHeading],
+        ['the Party grid', partyGrid],
+        ['the Storage heading', boxHeading],
+        ['the Storage grid', boxGrid],
+      ] as const) {
+        expect(
+          el.compareDocumentPosition(hint!) & Node.DOCUMENT_POSITION_FOLLOWING,
+          `${tab}: the hint comes after ${name}`,
+        ).not.toBe(0);
+        expect(el.contains(hint!), `${tab}: the hint is not inside ${name}`).toBe(false);
+      }
+      expect(root.lastElementChild, `${tab}: the hint is the root's last element child`).toBe(hint);
+    }
+  });
+
+  it('no element between the tab strip and the first panel heading is the hint, and the hint comes after that heading [QF10-3-HINT-NOT-AT-SEAM]', () => {
+    // WRONG IMPL KILLED: the shipped position, where the hint sits between the tab strip /
+    // sheet parts and the Party h3 (the seam a player reads first, which pushed the cards below
+    // the fold). Controls: the strip, the first h3 and the hint are all found, in the order
+    // strip < first h3 < hint, so an empty slice cannot pass for the right reason.
+    const { parent, view } = mount();
+    view.refresh(makePartySlots(), [makeBoxRecruitCard()]);
+    view.show();
+    const root = s4BoxRootOf(parent);
+
+    const strip = root.querySelector('.mr-frame-tabstrip') as HTMLElement | null;
+    const firstHeading = root.querySelector('h3') as HTMLElement | null;
+    const hint = root.querySelector(BOX_PARTY_HINT_SELECTOR) as HTMLElement | null;
+    expect(strip, 'precondition: the tab strip exists').not.toBeNull();
+    expect(firstHeading, 'precondition: a panel heading exists').not.toBeNull();
+    expect(hint, 'precondition: the hint exists').not.toBeNull();
+
+    const kids = [...root.children];
+    const at = (el: Element | null): number => kids.indexOf(el as Element);
+    expect(at(strip), 'the strip is a root child').toBeGreaterThanOrEqual(0);
+    expect(at(firstHeading), 'the first h3 is a root child after the strip').toBeGreaterThan(
+      at(strip),
+    );
+    const between = kids.slice(at(strip) + 1, at(firstHeading));
+    expect(
+      between.map((el) => el.getAttribute('data-testid')),
+      'nothing between the tab strip and the first panel heading is the hint',
+    ).not.toContain('box-party-hint');
+    expect(at(hint), 'the hint comes after the first panel heading').toBeGreaterThan(
+      at(firstHeading),
+    );
   });
 });
