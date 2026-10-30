@@ -1063,13 +1063,40 @@ describe('qf-11 (QF11.1): computed style over a real createFrame strip', () => {
 // copy of the three shipped declarations, so happy-dom's unit/var() handling cancels out. happy-dom
 // caches computed style per element: every element is read once, on its own frame.
 
-/** Every non-none state the line can paint: one per kind, plus Y-description shaped info text. */
-const QF12_SHOWN: readonly FeedbackState[] = [
+type Qf12Shown = Exclude<FeedbackState, { readonly kind: 'none' }>;
+
+/** Every non-none state the line can paint: one per kind. */
+const QF12_SHOWN: readonly Qf12Shown[] = [
   { kind: 'pending', token: 1, text: 'Saving the game' },
   { kind: 'ok', text: 'Saved' },
   { kind: 'error', text: 'It failed' },
   { kind: 'info', text: 'Review your quests' },
 ];
+
+/** The attribute names of `el`, sorted: the whole attribute surface, not a blacklist of known ones. */
+const qf12Attrs = (el: Element): string[] => [...el.getAttributeNames()].sort();
+
+/** The rest of the chrome is untouched by the line's state (S3, S5): the root still holds exactly
+ *  the four shipped children (title bar, body, feedback line, hint slot) in order, so no extra
+ *  sibling can paint a strip while the line is hidden, no part of the chrome is hidden, and
+ *  neither the root nor any of its children carries an inline style. */
+function qf12ExpectChrome(f: FrameChrome, when: string): void {
+  const kids = Array.from(f.root.children);
+  expect(kids.length, `${when}: the root holds exactly the four shipped children`).toBe(4);
+  expect(kids[0], `${when}: child 0 is the title bar`).toBe(f.titleEl.parentElement);
+  expect(kids[1], `${when}: child 1 is the body`).toBe(f.body);
+  expect(kids[2], `${when}: child 2 is the feedback line`).toBe(f.feedback);
+  expect(kids[3], `${when}: child 3 is the hint slot`).toBe(f.hintSlot);
+  for (const el of [f.root, ...kids]) {
+    expect(el.hasAttribute('style'), `${when}: no inline style on ${el.className}`).toBe(false);
+  }
+  for (const part of [f.hintSlot, f.body, f.root]) {
+    expect(part.hidden, `${when}: ${part.className} is not hidden`).toBe(false);
+    expect(part.hasAttribute('hidden'), `${when}: ${part.className} has no hidden attr`).toBe(
+      false,
+    );
+  }
+}
 
 /** The line is in the none state: still the SAME node, still in the root, restyled not deleted. */
 function qf12ExpectNone(f: FrameChrome, node: HTMLElement, when: string): void {
@@ -1079,11 +1106,36 @@ function qf12ExpectNone(f: FrameChrome, node: HTMLElement, when: string): void {
   expect(f.root.querySelectorAll('.mr-frame-feedback').length, `${when}: exactly one line`).toBe(1);
   expect(node.hidden, `${when}: hidden`).toBe(true);
   expect(node.hasAttribute('hidden'), `${when}: hidden attribute`).toBe(true);
+  // S1: the boolean attribute, empty. `hidden="until-found"` paints (display:block) in Chromium.
+  expect(node.getAttribute('hidden'), `${when}: hidden attribute value is empty`).toBe('');
+  // S4: nothing but the class and the boolean attribute (no style, no extra attribute).
+  expect(qf12Attrs(node), `${when}: attribute surface`).toEqual(['class', 'hidden']);
+  expect(node.className, `${when}: class list`).toBe('mr-frame-feedback');
   expect(node.textContent, `${when}: empty`).toBe('');
   expect(node.hasAttribute('data-feedback'), `${when}: no data-feedback`).toBe(false);
+  qf12ExpectChrome(f, when);
 }
 
-const QF12_UA_HIDDEN = '[hidden] { display: none; }\n';
+/** The line painted `s` exactly as before: unhidden, kind + text written, and nothing else. */
+function qf12ExpectShown(f: FrameChrome, node: HTMLElement, s: Qf12Shown, when: string): void {
+  expect(f.feedback, `${when}: same feedback node`).toBe(node);
+  expect(f.root.contains(node), `${when}: in root`).toBe(true);
+  expect(node.hidden, `${when}: not hidden`).toBe(false);
+  expect(node.hasAttribute('hidden'), `${when}: no hidden attribute`).toBe(false);
+  expect(node.textContent, `${when}: text`).toBe(s.text);
+  expect(node.getAttribute('data-feedback'), `${when}: data-feedback`).toBe(s.kind);
+  // S4: inline-style drift (opacity, visibility, transparent colours, margin, position, height,
+  // background, text-align) and an extra class would all hide or restyle a painted line.
+  expect(qf12Attrs(node), `${when}: attribute surface`).toEqual(['class', 'data-feedback']);
+  expect(node.className, `${when}: class list`).toBe('mr-frame-feedback');
+  qf12ExpectChrome(f, when);
+}
+
+// The UA `[hidden] { display: none }` rule. `:where()` gives it specificity 0 (a real UA rule
+// loses to every author rule); happy-dom 20.14.6's SelectorItem supports :where with weight 0
+// (read from its source; its cascade engine was not read, so if the computed tests go red on the
+// none state alone the plain `[hidden]` spelling is the fallback, with the same author-wins limit).
+const QF12_UA_HIDDEN = ':where([hidden]) { display: none; }\n';
 
 describe('qf-12 (QF12.1, QF12.2): the feedback line hides while empty and paints as before', () => {
   it('the feedback line is hidden, empty and unmarked in the none state (fresh, and after every kind is cleared), as the same node still in the root [QF12-1-NONE-HIDDEN]', () => {
@@ -1093,6 +1145,12 @@ describe('qf-12 (QF12.1, QF12.2): the feedback line hides while empty and paints
     // reappears after the first message clears); hidden set on clear for some kinds only; the
     // element deleted or replaced on none (a held `f.feedback` goes stale, or the next paint has
     // nowhere to land); the class dropped; hidden set on the wrong part (hint slot, body, root).
+    // Red-team survivors (measured, some in real Chromium): S1 `setAttribute('hidden', 'until-found')`
+    // (happy-dom reads it as hidden, Chromium paints a 34px bordered block: the attribute value
+    // must be empty); S3 an extra sibling div with an inline border painting the strip while the
+    // real line is hidden (the root keeps exactly its four children, none with a style attribute);
+    // S4 inline-style or extra-class drift on the none line (the attribute surface is exactly
+    // class + hidden); S5 the none state also hiding or styling the hint slot, body or root.
     const fresh = createFrame(document, { id: 'menu', size: 'side' });
     document.body.appendChild(fresh.root);
     const freshNode = fresh.feedback;
@@ -1113,7 +1171,7 @@ describe('qf-12 (QF12.1, QF12.2): the feedback line hides while empty and paints
       document.body.appendChild(a.root);
       const aNode = a.feedback;
       renderFeedback(a, shown);
-      expect(aNode.hidden, `${shown.kind}: shown while painted`).toBe(false);
+      qf12ExpectShown(a, aNode, shown, `${shown.kind}: shown while painted`);
       renderFeedback(a, NO_FEEDBACK);
       qf12ExpectNone(a, aNode, `${shown.kind} -> NO_FEEDBACK`);
 
@@ -1129,7 +1187,7 @@ describe('qf-12 (QF12.1, QF12.2): the feedback line hides while empty and paints
 
       // a cycle: none -> X -> none -> X -> none ends hidden again, then X shows again
       renderFeedback(b, shown);
-      expect(bNode.hidden, `${shown.kind}: shown again after a clear`).toBe(false);
+      qf12ExpectShown(b, bNode, shown, `${shown.kind}: shown again after a clear`);
       renderFeedback(b, NO_FEEDBACK);
       qf12ExpectNone(b, bNode, `${shown.kind} second clear`);
     }
@@ -1142,7 +1200,8 @@ describe('qf-12 (QF12.1, QF12.2): the feedback line hides while empty and paints
     for (const e of [begin(5, 'Saving'), resolved(5, 'Saved')]) {
       s = feedbackStep(s, e);
       renderFeedback(m, s);
-      expect(mNode.hidden, `machine ${s.kind}`).toBe(false);
+      if (s.kind === 'none') throw new Error('begin/resolved never yields none');
+      qf12ExpectShown(m, mNode, s, `machine ${s.kind}`);
     }
     renderFeedback(m, feedbackStep(s, CLEAR));
     qf12ExpectNone(m, mNode, 'begin -> resolved -> clear');
@@ -1154,8 +1213,12 @@ describe('qf-12 (QF12.1, QF12.2): the feedback line hides while empty and paints
     qf12ExpectNone(other, otherNode, 'a sibling frame');
     renderFeedback(other, { kind: 'info', text: 'only on other' });
     renderFeedback(m, NO_FEEDBACK);
-    expect(otherNode.hidden, 'a sibling frame stays shown while this one clears').toBe(false);
-    expect(otherNode.textContent).toBe('only on other');
+    qf12ExpectShown(
+      other,
+      otherNode,
+      { kind: 'info', text: 'only on other' },
+      'a sibling frame stays shown while this one clears',
+    );
   });
 
   it('a state that paints (pending, ok, error, info incl. an empty-text info) un-hides the line and writes it exactly as before [QF12-2-PAINT-SHOWN]', () => {
@@ -1165,8 +1228,13 @@ describe('qf-12 (QF12.1, QF12.2): the feedback line hides while empty and paints
     // or role added to the line to compensate (the page's one live region speaks); a shown state
     // that also keeps `aria-hidden`; an implementation that hides on empty TEXT instead of on kind
     // none (feedbackStep can produce an info with ''; the contract is kind != 'none' => shown).
-    const ydescription: FeedbackState = { kind: 'info', text: 'Heal your monsters for free' };
-    const cases: readonly FeedbackState[] = [
+    // Red-team survivors S4 (inline-style drift on the painted line: opacity:0, visibility:hidden,
+    // transparent color / border-color, margin, position, height:0, background, text-align, or an
+    // extra class: the attribute surface is exactly class + data-feedback and the class list is
+    // exactly mr-frame-feedback), S3 (an extra sibling child of the root) and S5 (a paint that
+    // hides or styles the hint slot, body or root) are killed by the shown-state helper.
+    const ydescription: Qf12Shown = { kind: 'info', text: 'Heal your monsters for free' };
+    const cases: readonly Qf12Shown[] = [
       ...QF12_SHOWN,
       ydescription,
       { kind: 'info', text: '' }, // contract: kind != 'none' is shown, even with no words
@@ -1175,13 +1243,10 @@ describe('qf-12 (QF12.1, QF12.2): the feedback line hides while empty and paints
       const f = createFrame(document, { id: 'menu', size: 'side' });
       document.body.appendChild(f.root);
       const node = f.feedback;
-      const expectedText = shown.kind === 'none' ? '' : shown.text;
+      const expectedText = shown.text;
       renderFeedback(f, shown);
       const when = `${shown.kind} ${JSON.stringify(expectedText)}`;
-      expect(node.hidden, `${when}: not hidden`).toBe(false);
-      expect(node.hasAttribute('hidden'), `${when}: no hidden attribute`).toBe(false);
-      expect(node.textContent, `${when}: text`).toBe(expectedText);
-      expect(node.getAttribute('data-feedback'), `${when}: data-feedback`).toBe(shown.kind);
+      qf12ExpectShown(f, node, shown, when);
       expect(node.hasAttribute('aria-live'), `${when}: no aria-live`).toBe(false);
       expect(node.hasAttribute('role'), `${when}: no role`).toBe(false);
       expect(node.hasAttribute('aria-hidden'), `${when}: no aria-hidden`).toBe(false);
@@ -1205,9 +1270,7 @@ describe('qf-12 (QF12.1, QF12.2): the feedback line hides while empty and paints
       { kind: 'info', text: 'e' },
     ] as const) {
       renderFeedback(f, shown);
-      expect(node.hidden, `${shown.kind} after another shown state`).toBe(false);
-      expect(node.textContent).toBe(shown.text);
-      expect(node.getAttribute('data-feedback')).toBe(shown.kind);
+      qf12ExpectShown(f, node, shown, `${shown.kind} after another shown state`);
     }
 
     // property: after every render, hidden is exactly "the state is kind none"
@@ -1227,10 +1290,8 @@ describe('qf-12 (QF12.1, QF12.2): the feedback line hides while empty and paints
         const gNode = g.feedback;
         for (const st of states) {
           renderFeedback(g, st);
-          expect(gNode.hidden).toBe(st.kind === 'none');
-          expect(gNode.hasAttribute('hidden')).toBe(st.kind === 'none');
-          expect(gNode.hasAttribute('data-feedback')).toBe(st.kind !== 'none');
-          expect(gNode.textContent).toBe(st.kind === 'none' ? '' : st.text);
+          if (st.kind === 'none') qf12ExpectNone(g, gNode, 'property: none');
+          else qf12ExpectShown(g, gNode, st, `property: ${st.kind}`);
         }
       }),
       { numRuns: 200 },
@@ -1242,7 +1303,7 @@ describe('qf-12 (QF12.1, QF12.2): computed style of the real feedback line', () 
   let sheet: HTMLStyleElement | null = null;
   beforeEach(() => {
     sheet = document.createElement('style');
-    // UA `[hidden]` rule first (it loses to any author rule), then the REAL sheet, then a
+    // UA `:where([hidden])` rule first (specificity 0: it loses to any author rule), then the REAL sheet, then a
     // reference class carrying the three shipped declarations the as-before test compares against.
     sheet.textContent = `${QF12_UA_HIDDEN}${QF11_STYLES_CSS}\n.qf12-ref { min-height: 1.5em; padding: 0.25rem 0.5rem; border-top: 2px solid var(--mr-frame-border); }\n`;
     document.head.appendChild(sheet);
@@ -1259,6 +1320,17 @@ describe('qf-12 (QF12.1, QF12.2): computed style of the real feedback line', () 
     // selector; the empty state restyled with visibility/height tricks instead of hidden (display
     // not none); hidden missing after a clear (the second frame below); a harness whose sheet
     // install or [hidden] handling is a no-op (the probe below proves the attribute is the cause).
+    // Red-team survivor S2 (measured in Chromium): `@layer qf { div[class$="back"] { display:
+    // block } }` appended to styles.css re-paints the strip, but happy-dom ignores @layer rules
+    // so no computed-style probe can see it; the sheet may therefore hold no @layer (nor @scope,
+    // which happy-dom does not model either) at all, and the block scans below see every
+    // top-level and @media-nested rule that names the class.
+    const sheetText = qf11StripComments(QF11_STYLES_CSS);
+    expect(sheetText.includes('{'), 'ANTI-VACUITY: the comment-stripped sheet has rules').toBe(
+      true,
+    );
+    expect(sheetText, 'no @layer anywhere in styles.css').not.toMatch(/@layer\b/i);
+    expect(sheetText, 'no @scope anywhere in styles.css').not.toMatch(/@scope\b/i);
     const blocks = qf11AllBlocks(QF11_STYLES_CSS);
     expect(
       blocks.some((b) => b.selectors.includes('.mr-frame-feedback')),
@@ -1299,10 +1371,12 @@ describe('qf-12 (QF12.1, QF12.2): computed style of the real feedback line', () 
     const ref = document.createElement('div');
     ref.className = 'qf12-ref';
     probe.root.appendChild(ref);
+    const want = getComputedStyle(ref);
     expect(open.borderTopWidth, 'probe: carries the shipped 2px top border').toBe(
-      getComputedStyle(ref).borderTopWidth,
+      want.borderTopWidth,
     );
-    expect(open.minHeight, 'probe: carries the shipped min-height').not.toBe('');
+    expect(want.minHeight, 'ANTI-VACUITY: the reference has a min-height').not.toBe('');
+    expect(open.minHeight, 'probe: carries the shipped min-height').toBe(want.minHeight);
   });
 
   it('a painted line computes as before: display not none, min-height 1.5em, padding 0.25rem 0.5rem, 2px solid top border; and the class block declares exactly those three values [QF12-2-COMPUTED-AS-BEFORE]', () => {
