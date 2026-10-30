@@ -172,7 +172,7 @@ export interface BoxViewCallbacks {
 
 export class BoxView {
   readonly #root: HTMLDivElement;
-  /** The "Party & Box" heading; its text is resolved in show(), not here (see show()). */
+  /** The "Monsters" heading; its text is resolved in show(), not here (see show()). */
   readonly #titleEl: HTMLHeadingElement;
   readonly #partyEl: HTMLDivElement;
   readonly #boxEl: HTMLDivElement;
@@ -251,7 +251,7 @@ export class BoxView {
     this.#root.appendChild(header);
 
     // ctl-8b: the tabs, the sheet, its summary and typing row and the Move line, all BEFORE the
-    // hint and the panels. Typing mode's Escape focuses the frame's first enabled non-text
+    // panels and the hint. Typing mode's Escape focuses the frame's first enabled non-text
     // control: the sheet's nav list (Enter there is the router's A); the cards carry no control
     // of their own (qf-8).
     this.#tabStrip = document.createElement('div');
@@ -282,7 +282,7 @@ export class BoxView {
     this.#rowEl.append(this.#rowLabel, this.#input);
     this.#sheetEl.append(this.#sheetName, this.#sheetList);
     // ctl-8c: the lists and the confirm sit right under the sheet, before the summary and the
-    // typing row (and so before the hint and the panels, for the typing-mode Escape rule above).
+    // typing row (and so before the panels and the hint, for the typing-mode Escape rule above).
     this.#feedList = document.createElement('div');
     this.#feedList.style.cssText = PART_STYLE;
     this.#evolveList = document.createElement('div');
@@ -307,18 +307,6 @@ export class BoxView {
     this.#feedbackEl.className = 'mr-frame-feedback';
     this.#root.appendChild(this.#feedbackEl);
 
-    // A direct #root child, so it cannot be wiped by #renderParty / #renderBox,
-    // which only touch #partyEl / #boxEl. A SIBLING of `header`, never wrapping it:
-    // three client/e2e/recruit.spec.ts sites resolve this root as
-    // h2['Party & Box'].parentElement.parentElement, and a wrapper retargets that chain.
-    // The copy names the Monsters sheet's Move row (`box.sheet.move`, quoted verbatim) and
-    // commands no click: the cards carry no control (qf-8, QF8.1).
-    // Its text (`box.hint`) is resolved in show(), not here.
-    this.#hintEl = document.createElement('div');
-    this.#hintEl.setAttribute('data-testid', 'box-party-hint');
-    this.#hintEl.style.cssText = 'max-width:600px;margin:0 0 12px;font-size:12px;color:#aaa;';
-    this.#root.appendChild(this.#hintEl);
-
     // Its text (`box.section.party`) is resolved in show(), not here.
     const partyLabel = document.createElement('h3');
     partyLabel.style.cssText = 'margin:0 0 8px;color:#aaa;';
@@ -341,6 +329,17 @@ export class BoxView {
     this.#boxEl.style.cssText =
       'display:grid;grid-template-columns:repeat(3,1fr);gap:8px;width:100%;max-width:600px;';
     this.#root.appendChild(this.#boxEl);
+
+    // qf-10 (QF10.3): the hint sits BELOW the panels, the root's last child — never on the seam
+    // between the tab strip and the tab contents. A direct #root child, so it cannot be wiped by
+    // #renderParty / #renderBox, which only touch #partyEl / #boxEl; a sibling of `header`, never
+    // wrapping it (the frame root is the title's grandparent). The copy names the Monsters
+    // sheet's Move row (`box.sheet.move`, quoted verbatim) and commands no click: the cards carry
+    // no control (qf-8, QF8.1). Its text (`box.hint`) is resolved in show(), not here.
+    this.#hintEl = document.createElement('div');
+    this.#hintEl.setAttribute('data-testid', 'box-party-hint');
+    this.#hintEl.style.cssText = 'max-width:600px;margin:12px 0 0;font-size:12px;color:#aaa;';
+    this.#root.appendChild(this.#hintEl);
 
     parent.appendChild(this.#root);
   }
@@ -719,9 +718,9 @@ export class BoxView {
 
     // The evolution-choice badge. Built INSIDE the card (so it is per-monster and
     // is cleared by #buildParty/#buildBox's replaceChildren), never wrapping `header`
-    // and never a #root child: five client/e2e/recruit.spec.ts sites resolve the box root
-    // as h2['Party & Box'].parentElement.parentElement, and those helpers scan the root's
-    // text for an `HP cur/max` shape — so this copy carries NO "HP " token.
+    // and never a #root child: the client/e2e/recruit.spec.ts helpers find the box title by
+    // its data-testid, take its frame root, and scan the root's text for an `HP cur/max`
+    // shape — so this copy carries NO "HP " token.
     if (card.evolutionChoicePending) {
       const badge = document.createElement('div');
       badge.setAttribute('data-testid', 'evo-choice-badge');

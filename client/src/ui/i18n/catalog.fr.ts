@@ -413,11 +413,11 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'battle.continueHint': 'Appuyez sur Entrée ou Esc pour continuer',
   // @desc: Explainer shown in place of the swap buttons when the player has no healthy bench
   // monster in this battle; the second sentence tells them how to reach the party screen afterwards
-  // ("Esc" and "B" are keyboard key names; "Équipe et boîte" is that screen's title, box.title).
+  // ("Esc" and "B" are keyboard key names; "Monstres" is that screen's title, box.title).
   // Two sentences, wraps freely in a 320px-wide column.
   // battleView.ts:216-218 (resolved in show())
   'battle.swap.hint':
-    'Aucun monstre de l’équipe en état de combattre ne peut entrer dans ce combat. À la fin du combat, appuyez sur Esc, puis sur B pour Équipe et boîte.',
+    'Aucun monstre de l’équipe en état de combattre ne peut entrer dans ce combat. À la fin du combat, appuyez sur Esc, puis sur B pour Monstres.',
   // @desc: PvP status banner shown after the player has submitted their move, while the opponent's
   // move is still outstanding; carries a typographic apostrophe and an ellipsis. One line.
   // battleView.ts:347
@@ -527,7 +527,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Battle command list entry that moves to the battle items (status cures). One short
   // noun; the five command entries share one narrow row.
   // battleView.ts (#renderCommands)
-  'battle.command.bag': 'Sac',
+  'battle.command.bag': 'Objets',
   // @desc: Battle command list entry that runs from a wild battle at once (greyed, with a reason,
   // in a player battle). One short verb; the five command entries share one narrow row.
   // battleView.ts (#renderCommands)
@@ -613,7 +613,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Heading of the raising overlay, which shows the player's inventory (the Bag pockets;
   // monster stats live on the Monsters Summary). One short line.
   // raisingView.ts:104 (resolved in show())
-  'raising.title': 'Élevage et inventaire',
+  'raising.title': 'Inventaire',
   // @desc: Section heading above the item cards in the raising overlay. One word.
   // raisingView.ts:134 (resolved in show())
   'raising.inventory.heading': 'Inventaire',
@@ -630,23 +630,23 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // monster. One short line.
   // main.ts (dispatch, the `care` arm; pre-migration careAction.ts CARED_MESSAGE)
   'raising.feedback.cared': 'Choyé !',
-  // @desc: Heading of the party & box overlay, where the player arranges which monsters are in
+  // @desc: Heading of the Monsters overlay, where the player arranges which monsters are in
   // the active party and which stay in storage; quoted inside battle.swap.hint. One short line.
   // boxView.ts:69 (resolved in show())
-  'box.title': 'Équipe et boîte',
+  'box.title': 'Monstres',
   // @desc: Explainer under the heading telling the player that only Party monsters battle and
-  // that new recruits land in the Box; the quoted « Déplacer » must match the box.sheet.move
+  // that new recruits land in Storage; the quoted « Déplacer » must match the box.sheet.move
   // row label exactly (the Monsters sheet's Move row is the one way to move a monster). Two
   // sentences, wraps freely up to 600px wide; carries a spaced em dash.
   // boxView.ts:94-96 (resolved in show())
   'box.hint':
-    'Seuls les monstres de votre équipe peuvent combattre ou être échangés en cours de combat. Les nouvelles recrues arrivent dans votre Boîte — sélectionnez-en une et choisissez « Déplacer » pour la placer dans un emplacement libre de l’équipe.',
+    'Seuls les monstres de votre équipe peuvent combattre ou être échangés en cours de combat. Les nouvelles recrues arrivent dans le Stockage — sélectionnez-en une et choisissez « Déplacer » pour la placer dans un emplacement libre de l’équipe.',
   // @desc: Section heading above the six party slots. One word.
   // boxView.ts:101 (resolved in show())
   'box.section.party': 'Équipe',
-  // @desc: Section heading above the stored (box) monsters. One word.
+  // @desc: Section heading above the stored monsters (Storage). One word.
   // boxView.ts:111 (resolved in show())
-  'box.section.box': 'Boîte',
+  'box.section.box': 'Stockage',
   // @desc: Placeholder text of an unoccupied party slot; {slot} is the slot index as shown today
   // (counted from 0). One short line, dimmed.
   // boxView.ts:160
@@ -654,7 +654,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Empty-state line of the box section when no monster is in storage. One short line,
   // dimmed.
   // boxView.ts:173
-  'box.box.empty': 'Aucun monstre dans la boîte.',
+  'box.box.empty': 'Aucun monstre dans le stockage.',
   // @desc: Info line on a monster card in the party or box; {species} is the species name,
   // {level} the level ("Niv." abbreviates "Niveau"), {current}/{max} its hit points and
   // {percent} the same as a percentage. Keep the "PV {current}/{max}" shape. One line of small
