@@ -59,10 +59,10 @@ pub enum Role {
     Artillery,
 }
 
-/// Who a battle item may target. `Ally` includes the user itself.
+/// Who a battle item may target. `Ally` includes the user itself. Append-only: a new variant
+/// arrives with the first item content that needs it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ItemTarget {
-    SelfOnly,
     Ally,
 }
 
@@ -360,6 +360,11 @@ pub fn dmg_ref(skill: &SkillTactics, level: u8) -> u16 {
 /// `LongRangeMin`, `AllNeedsTargetOrigin`), then the species sidecar (duplicate → unknown → missing
 /// → per-row dormant levers, kit tier, weather setter). Returns one [`SpeciesTactics`] per
 /// `tactics_species` row, in that order.
+///
+/// An unknown kit skill id is a [`TacticsContentError::KitTier`] (it is neither a Light nor a
+/// Heavy). NOT checked yet: kit ⊆ the species' `learnable_skill_ids` (spec BT6.2) — deferred
+/// until the species registry gains Water / Dark / Earth / Wind Heavies; the provisional kits are
+/// listed in `tactics_species/000-core.ron` and pinned by `kit_outside_learnable_set_is_pinned_bt6_2`.
 ///
 /// # Errors
 /// The first violation as a [`TacticsContentError`].
