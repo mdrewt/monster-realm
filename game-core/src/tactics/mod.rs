@@ -20,10 +20,18 @@
 //! - `events`     — the `battle_event` payload enum + the §9.4 presentation caps.
 //! - `clock`      — the idle clock: pure window / pad / reset / strike arithmetic.
 //! - `queue`      — `TacticalBattle`: submit gate, `validate_at_pop`, the executor (halt-and-return), the chain rule.
+//! - `ai`         — the wild planner: the three stances + Exhausted, seed-free (a pure function of the public board).
+//! - `encounter`  — multi-wild generation: the pack roll, the clamp, per-wild seeds, the map pick, `spawn_b` placement.
 
+pub mod ai;
+#[cfg(test)]
+mod ai_tests;
 pub mod clock;
 #[cfg(test)]
 mod clock_tests;
+pub mod encounter;
+#[cfg(test)]
+mod encounter_tests;
 pub mod economy;
 #[cfg(test)]
 mod economy_tests;
@@ -64,7 +72,12 @@ pub mod upkeep;
 #[cfg(test)]
 mod upkeep_tests;
 
+pub use ai::{is_exhausted, plan, Stance};
 pub use clock::{ClockError, ClockState, Expiry, Window};
+pub use encounter::{
+    effective_pack, generate_encounter, pick_map_index, roll_pack_size, spawn_tiles, wild_seed,
+    Encounter, EncounterError, PackWeights, MAX_PACK,
+};
 pub use economy::{
     apply_flank, apply_guard, cost, guard_granted, plan_cost, spend, EconomyError, Entry, Tier,
     TurnBudget, TurnEndCause,

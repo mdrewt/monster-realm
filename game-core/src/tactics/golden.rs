@@ -15,6 +15,7 @@ use crate::combat::type_chart::TypeChart;
 use crate::combat::types::{BattleOutcome, StatusEffect};
 use crate::content::load_type_chart;
 
+use super::ai::{plan, Stance};
 use super::economy::{plan_cost, EconomyError, Entry, TurnBudget};
 use super::geometry::{
     is_adjacent, is_flanked, line_of_sight, manhattan, target_set, Board, BoardUnit, Cell,
@@ -30,6 +31,7 @@ use super::resolve::{
     damage_pipeline, draw_rolls, validate_unit, PipelineTrace, RollPair, SkillTactics,
     TacticalState, TacticalUnit,
 };
+use super::types::QueuedAction;
 use super::tuning::{BattleKind, TacticsTuning};
 use super::upkeep::{status_tick_damage, surge_damage};
 
@@ -132,6 +134,18 @@ pub enum GoldenCase {
         seed: u64,
         round: u16,
     },
+    /// `ai::plan` on a frozen board (BT4.8): `rows` as in [`GoldenBoard`], the units as the
+    /// `battle_unit` rows, the secret stream AS GIVEN (the planner must ignore it), at the design
+    /// tuning. A malformed `rows` is a `BadCase` with the [`GoldenBoard`] texts.
+    AiPlan {
+        rows: Vec<String>,
+        units: Vec<TacticalUnit>,
+        seed: u64,
+        action_seq: u64,
+        unit: u32,
+        stance: Stance,
+        spawn: Cell,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +167,7 @@ pub enum GoldenResult {
     Priority(Side),
     Pipeline(PipelineTrace),
     Adjudicate((Side, Adjudication)),
+    AiPlan(Vec<QueuedAction>),
     BadCase(String),
 }
 
@@ -279,6 +294,18 @@ fn run_case(case: &GoldenCase) -> Result<GoldenResult, String> {
             seed,
             round,
         } => GoldenResult::Adjudicate(adjudicate(snapshot, *attack_damage_dealt, *seed, *round)),
+        GoldenCase::AiPlan {
+            rows,
+            units,
+            seed,
+            action_seq,
+            unit,
+            stance,
+            spawn,
+        } => {
+            let _ = (rows, units, seed, action_seq, unit, stance, spawn, plan);
+            todo!("bt-4 skeleton")
+        }
     })
 }
 
