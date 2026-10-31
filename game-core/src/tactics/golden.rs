@@ -4,19 +4,34 @@
 //! shared fixture `game-core/tests/fixtures/tactics_golden.json` is asserted natively
 //! (`golden_tests.rs`) and through the `tactics_golden` wasm export
 //! (`client/src/tactics/golden.parity.test.ts`); both compare the same canonical JSON.
-//! Every later tactics module adds its case kinds here (BT2.5, BT4.8, BT11.7). No rule
-//! lives in this file — it only adapts fixture data to the rule functions.
+//! Every later tactics module adds its case kinds here (bt-2 joined with the roll stream, economy,
+//! initiative, priority, pipeline, Surge/status-tick and adjudication kinds; BT4.8, BT11.7 follow). No rule lives in this
+//! file — it only adapts fixture data to the rule functions. Every result value is ≤ u32 so the JS
+//! side compares exact Numbers; u64 INPUTS (seeds) stay below 2^53 in the fixture.
 
 use serde::{Deserialize, Serialize};
 
+use crate::combat::type_chart::TypeChart;
+use crate::combat::types::{BattleOutcome, StatusEffect};
+use crate::content::load_type_chart;
+
+use super::economy::{plan_cost, EconomyError, Entry, TurnBudget};
 use super::geometry::{
     is_adjacent, is_flanked, line_of_sight, manhattan, target_set, Board, BoardUnit, Cell,
-    GeometryError, SkillGeometry,
+    GeometryError, Side, SkillGeometry,
 };
+use super::initiative::{order, priority_for_round, round1_priority, Contender};
 use super::movement::{
     disengage_taxed, find_path, stride_for_base_speed, terrain_weight, MoveClass, Path, PathError,
     Terrain,
 };
+use super::outcome::{adjudicate, Adjudication, StepSnapshot};
+use super::resolve::{
+    damage_pipeline, draw_rolls, validate_unit, PipelineTrace, RollPair, SkillTactics,
+    TacticalState, TacticalUnit,
+};
+use super::tuning::{BattleKind, TacticsTuning};
+use super::upkeep::{status_tick_damage, surge_damage};
 
 /// A compact board: `rows[y]` chars `.` Plain, `r` Rough, `w` Water, `#` Blocked.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +84,54 @@ pub enum GoldenCase {
         mover: u32,
         start: Cell,
     },
+    /// `draws` consecutive (accuracy, variance) pairs from `splitmix64(seed ^ action_seq)`.
+    Rolls {
+        seed: u64,
+        action_seq: u64,
+        draws: u8,
+    },
+    /// `economy::plan_cost` from `start` at the design tuning.
+    Economy {
+        start: TurnBudget,
+        entries: Vec<Entry>,
+    },
+    /// `upkeep::surge_damage` at the design tuning.
+    SurgeDamage {
+        max_hp: u16,
+        round: u16,
+    },
+    /// `upkeep::status_tick_damage`.
+    StatusTick {
+        status: StatusEffect,
+        max_hp: u16,
+    },
+    /// `initiative::order`.
+    Initiative {
+        contenders: Vec<Contender>,
+        priority: Side,
+    },
+    /// `priority_for_round(round1_priority(kind, seed), round)`.
+    Priority {
+        kind: BattleKind,
+        seed: u64,
+        round: u16,
+    },
+    /// `resolve::damage_pipeline` with the embedded type chart (both units pass `validate_unit`,
+    /// else `BadCase`).
+    Pipeline {
+        attacker: TacticalUnit,
+        target: TacticalUnit,
+        skill: SkillTactics,
+        flank: bool,
+        rolls: RollPair,
+    },
+    /// `outcome::adjudicate` over explicit tuple inputs.
+    Adjudicate {
+        snapshot: StepSnapshot,
+        attack_damage_dealt: [u32; 2],
+        seed: u64,
+        round: u16,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +145,14 @@ pub enum GoldenResult {
     Weight(Option<u8>),
     Path(Result<Path, PathError>),
     Disengage(Result<bool, PathError>),
+    Rolls(Vec<RollPair>),
+    Economy(Result<u8, EconomyError>),
+    SurgeDamage(Option<u16>),
+    StatusTick(Option<u16>),
+    Initiative(Vec<u32>),
+    Priority(Side),
+    Pipeline(PipelineTrace),
+    Adjudicate((Side, Adjudication)),
     BadCase(String),
 }
 
@@ -158,7 +229,76 @@ fn run_case(case: &GoldenCase) -> Result<GoldenResult, String> {
             mover,
             start,
         } => GoldenResult::Disengage(disengage_taxed(&board.to_board()?, *mover, *start)),
+        GoldenCase::Rolls {
+            seed,
+            action_seq,
+            draws,
+        } => {
+            let mut stream = roll_stream(*seed, *action_seq);
+            GoldenResult::Rolls((0..*draws).map(|_| draw_rolls(&mut stream)).collect())
+        }
+        GoldenCase::Economy { start, entries } => {
+            GoldenResult::Economy(plan_cost(start, entries, &TacticsTuning::DESIGN))
+        }
+        GoldenCase::SurgeDamage { max_hp, round } => {
+            GoldenResult::SurgeDamage(surge_damage(*max_hp, *round, &TacticsTuning::DESIGN))
+        }
+        GoldenCase::StatusTick { status, max_hp } => {
+            GoldenResult::StatusTick(status_tick_damage(status, *max_hp))
+        }
+        GoldenCase::Initiative {
+            contenders,
+            priority,
+        } => GoldenResult::Initiative(order(contenders, *priority)),
+        GoldenCase::Priority { kind, seed, round } => {
+            GoldenResult::Priority(priority_for_round(round1_priority(*kind, *seed), *round))
+        }
+        GoldenCase::Pipeline {
+            attacker,
+            target,
+            skill,
+            flank,
+            rolls,
+        } => {
+            validate_unit(attacker).map_err(|e| format!("invalid unit: {e:?}"))?;
+            validate_unit(target).map_err(|e| format!("invalid unit: {e:?}"))?;
+            let chart = TypeChart::new(&load_type_chart().map_err(|e| format!("type chart: {e}"))?);
+            GoldenResult::Pipeline(damage_pipeline(
+                attacker,
+                target,
+                skill,
+                &chart,
+                *flank,
+                *rolls,
+                &TacticsTuning::DESIGN,
+            ))
+        }
+        GoldenCase::Adjudicate {
+            snapshot,
+            attack_damage_dealt,
+            seed,
+            round,
+        } => GoldenResult::Adjudicate(adjudicate(snapshot, *attack_damage_dealt, *seed, *round)),
     })
+}
+
+/// A unit-less battle carrying only the private stream, for the `Rolls` kind.
+fn roll_stream(seed: u64, action_seq: u64) -> TacticalState {
+    TacticalState {
+        kind: BattleKind::Pvp,
+        seed,
+        action_seq,
+        round: 1,
+        width: 1,
+        height: 1,
+        terrain: vec![Terrain::Plain],
+        blocks_los: vec![false],
+        units: Vec::new(),
+        initiative: Vec::new(),
+        queued: Vec::new(),
+        attack_damage_dealt: [0, 0],
+        outcome: BattleOutcome::Ongoing,
+    }
 }
 
 /// Evaluate every case, in order — one result per case. A malformed board yields

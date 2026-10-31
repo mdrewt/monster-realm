@@ -1,5 +1,6 @@
 //! bt-1 gating tests — BT1.9 (`tactics::golden`): the native half of the native = wasm
-//! byte-identity harness.
+//! byte-identity harness — plus bt-2's BT2.5 additions (the roll stream, economy, Surge, status
+//! tick, initiative, priority, pipeline and adjudication kinds join the same fixture).
 //!
 //! The fixture `game-core/tests/fixtures/tactics_golden.json` is `{"cases": [...], "expected":
 //! [...]}` (serde EXTERNALLY tagged, plan A10). Every `expected` entry was hand-derived from the
@@ -8,25 +9,96 @@
 //! `tactics_golden` wasm export; both halves compare the CANONICAL form (compact JSON with
 //! object keys sorted recursively, plan A1) so a key-order or number-format drift is caught.
 //!
-//! Names start `bt1_9_` — the acceptance ledger's CHECKs filter on that prefix.
+//! Names start `bt1_9_` (BT1.9) or end `_bt2_5` (BT2.5) — the acceptance ledgers' CHECKs filter
+//! on those tags.
+//!
+//! # How the bt-2 expected values were derived
+//!
+//! Rolls: the stream is `splitmix64(seed ^ seq)`. The known outputs used are `splitmix64(0)` =
+//! 0xE220_A839_7B1D_CDAF (`tick_seed(0, 0, 0)`), `splitmix64(1)` = 0x910A_2DEC_8902_5CC1 (worked
+//! by hand through the three mix steps, and the published seed-1 first output), `splitmix64(6)`
+//! = 0xBD64_A5D9_ADEF_E000 (`tick_seed(1, 2, 3)`) and `splitmix64(0x1_8B9E_F457)` =
+//! 0x3FDF_67C5_BA9F_477A (`tick_seed(0xDEAD_BEEF, 0x1234_5678, 0x9ABC_DEF0)`). Their residues,
+//! by summing hex digits against 16^k mod 100 (1, 16, 56, 96, 36, 76, then 16, 56, … repeating):
+//!
+//! ```text
+//! splitmix64(0)  mod 100 = 35   mod 16 = 15   low bit 1
+//! splitmix64(1)  mod 100 = 65   mod 16 = 1    low bit 1
+//! splitmix64(6)  mod 100 = 92   mod 16 = 0    low bit 0
+//! splitmix64(0x1_8B9E_F457)     low bit 0
+//! ```
+//!
+//! So `Rolls { seed 0, seq 0 }` draws x = 0 then x = 1 → (35, 85 + 1 = 86); `{ seed 2, seq 2 }`
+//! draws 2^2 = 0 then 2^3 = 1 → (35, 86) again (an additive `seed + seq` would not); `{ seed 7,
+//! seq 6 }` draws 7^6 = 1 then 7^7 = 0 → (65, 85 + 15 = 100).
+//!
+//! `Rolls { seed 5, seq 9, draws 3 }` draws x = 5^9, 5^10, …, 5^14 = 12, 15, 14, 9, 8, 11. For
+//! a small x the first step is linear: x + γ differs from γ = 0x9E37_79B9_7F4A_7C15 only in its
+//! low byte, so after `^ (>> 30)` the state is v(0) + b with b = (0x15 + x) ^ 0xE5, and the first
+//! product is w(x) = w(0) + (b − 0xF0)·C1, w(0) = 0x6F68_261B_57E7_A770 (the x = 0 step that
+//! reproduces 0xE220_A839_7B1D_CDAF, and x = 1 the 0x910A… value). Worked by hand from there:
+//!
+//! ```text
+//! x  b     w(x)                    splitmix64(x)            used
+//! 12 0xC4  0x8C3B_DF5A_6090_2BA4   0x943F_F9FC_99DE_8F03    mod 100 = 23
+//! 15 0xC1  0x4E33_0913_09E1_7A79   …… low nibble 5          mod 16  = 5  → 90
+//! 14 0xC6  0x0AEC_6E34_9A59_F716   0x6AA9_D614_35DB_E63E    mod 100 = 38
+//!  9 0xFB  0xA833_37CB_95BD_8663   …… low nibble 4          mod 16  = 4  → 89
+//!  8 0xF8  0x6A2A_6184_3F0E_D538   0x9E56_51B0_EF95_3636    mod 100 = 22
+//! 11 0xC5  0x4B94_26C7_7D75_115D   …… low nibble 13         mod 16  = 13 → 98
+//! ```
+//!
+//! (for the three variance draws only z mod 2^35 of the second product is needed: the output's
+//! low nibble is z's bits 0..3 XOR bits 31..34) → `[(23, 90), (38, 89), (22, 98)]`.
+//!
+//! Priority seeds 24 301 (0x5EED),
+//! 24 300 (0x5EEC) and 24 299 (0x5EEB) salt to x = 0, 1 and 6 (B, B, A); 6 637 398 714
+//! (0x1_8B9E_AABA) salts to 0x1_8B9E_F457 (A). Adjudication coins use seed ^ round = 0, 6, 1
+//! and 0x1_8B9E_F457 (seed 6 637 417 560, round 15).
+//!
+//! Pipeline (carried `calc_damage`, weather None; `base = (2·L/5 + 2)·P·A/D/50 + 2`):
+//!
+//! ```text
+//! Water L5 A40 → Wind D40, Fire P40, v100: base 5, no STAB, ×10/10 = 5;
+//!     flank 25/4 = 6, Guard 18/4 = 4 (Guard first: 15/4 = 3, 15/4 = 3)
+//! Fire L5 A40 → Plant D40, Fire P40, v100: base 5, STAB 7, ×20/10 = 14; flank 70/4 = 17,
+//!     Guard 51/4 = 12; at v85: 14·85/100 = 11
+//! Water L5 A10 → Water D100, Fire P20, v85: base 2, ×5/10 = 1, ×85/100 = 0 → floor 1;
+//!     flank 5/4 = 1, Guard max(1, 3/4) = 1
+//! Fire L50 A120 → Earth D80, Fire P75, v92: 22·75·120/80/50 = 49, base 51, STAB 76,
+//!     ×5/10 = 38, ×92/100 = 34; flank 170/4 = 42
+//! First-Stand: d3 ≥ hp saves at 1 HP and applies hp − 1 (14 into 14 → 13; 12 into 12 → 11);
+//!     d3 14 into 15 HP is an ordinary hit to 1 (applied 14, no save)
+//! ```
+//!
+//! An invalid Pipeline unit is `BadCase("invalid unit: {DeployError:?}")`, the attacker
+//! validated before the target.
 
 use serde_json::Value;
 
+use crate::combat::types::{Effectiveness, StatusEffect};
+
+use super::economy::{EconomyError, Entry, Tier, TurnBudget};
 use super::geometry::{BoardUnit, Cell, FfFilter, Origin, Shape, Side, SkillGeometry};
 use super::golden::{run_golden, GoldenBoard, GoldenCase, GoldenResult};
+use super::initiative::Contender;
 use super::movement::{MoveClass, Path, PathError, Terrain};
+use super::outcome::{Adjudication, StepSnapshot};
+use super::resolve::{PipelineTrace, RollPair, TacticalUnit};
+use super::resolve_tests as rt;
+use super::tuning::BattleKind;
 
 const FIXTURE: &str = include_str!("../../tests/fixtures/tactics_golden.json");
 
 /// The pinned size of the fixture. Growing it (BT2.5, BT4.8, BT11.7 join the harness) is a
 /// deliberate edit here AND in the vitest.
-const CASE_COUNT: usize = 196;
-/// Cases whose board is malformed (no rows / too large / ragged / bad glyph): they must come
-/// back `BadCase`.
-const BAD_CASE_COUNT: usize = 13;
+const CASE_COUNT: usize = 286;
+/// Cases that must come back `BadCase`: a malformed board (no rows / too large / ragged / bad
+/// glyph) or, since bt-2, a Pipeline unit that fails `validate_unit`.
+const BAD_CASE_COUNT: usize = 17;
 
 /// Every `GoldenCase` kind. Each must appear in the fixture at least once.
-const KINDS: [&str; 9] = [
+const KINDS: [&str; 17] = [
     "Distance",
     "Adjacent",
     "TargetSet",
@@ -36,6 +108,26 @@ const KINDS: [&str; 9] = [
     "Weight",
     "Path",
     "Disengage",
+    "Rolls",
+    "Economy",
+    "SurgeDamage",
+    "StatusTick",
+    "Initiative",
+    "Priority",
+    "Pipeline",
+    "Adjudicate",
+];
+
+/// The kinds bt-2 added (BT2.5).
+const BT2_KINDS: [&str; 8] = [
+    "Rolls",
+    "Economy",
+    "SurgeDamage",
+    "StatusTick",
+    "Initiative",
+    "Priority",
+    "Pipeline",
+    "Adjudicate",
 ];
 
 fn fixture() -> Value {
@@ -170,10 +262,12 @@ fn bt1_9_bad_cases_are_exactly_the_malformed_boards() {
     let mut bad = Vec::new();
     for (i, g) in got.iter().enumerate() {
         if kind_of(g) == "BadCase" {
-            // Only board-carrying kinds can be malformed.
+            // Only board-carrying kinds can be malformed — and, since bt-2, a Pipeline case
+            // whose unit fails `validate_unit`.
             assert!(
-                ["TargetSet", "Los", "Path", "Disengage"].contains(&case_kinds[i].as_str()),
-                "case #{i} ({}) cannot carry a board",
+                ["TargetSet", "Los", "Path", "Disengage", "Pipeline"]
+                    .contains(&case_kinds[i].as_str()),
+                "case #{i} ({}) cannot be malformed",
                 case_kinds[i]
             );
             bad.push(
@@ -203,6 +297,15 @@ fn bt1_9_bad_cases_are_exactly_the_malformed_boards() {
     want.push(format!("bad terrain '{}' at (1,0)", e_acute()));
     want.push("bad terrain 'x' at (0,0)".to_string());
     want.push("ragged row 1".to_string());
+    // bt-2 (BT2.5): Pipeline units failing `validate_unit`, the attacker checked first.
+    for text in [
+        "invalid unit: Fainted { id: 7 }",
+        "invalid unit: HpAboveMax { id: 8, cur_hp: 101, max_hp: 100 }",
+        "invalid unit: ZeroDefense { id: 8 }",
+        "invalid unit: ZeroDefense { id: 7 }",
+    ] {
+        want.push(text.to_string());
+    }
     assert_eq!(bad, want);
 }
 
@@ -590,4 +693,217 @@ fn bt1_9_bad_case_counts_characters_not_bytes() {
         bad_results(&["..", one_e.as_str()]),
         all_bad("ragged row 1")
     );
+}
+
+// ===========================================================================
+// BT2.5 — the bt-2 kinds join the harness
+// ===========================================================================
+
+/// BT2.5: every bt-2 kind is in the fixture (at least twice) and each of its cases reproduces
+/// its hand-derived expected value (module doc) in canonical form — the native half of the
+/// "golden vectors pin the order natively and in wasm" clause.
+/// Kills: a bt-2 rule left out of the golden join; any drift in a bt-2 kind's answer.
+#[test]
+fn every_bt2_golden_kind_reproduces_its_hand_derived_fixture_values_bt2_5() {
+    let fx = fixture();
+    let cases = cases_array(&fx);
+    let expected = expected_array(&fx);
+    let got = run_fixture();
+    assert_eq!(got.len(), cases.len());
+    for kind in BT2_KINDS {
+        let idx: Vec<usize> = cases
+            .iter()
+            .enumerate()
+            .filter(|(_, case)| kind_of(case) == kind)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(idx.len() >= 2, "{kind}: {} fixture cases", idx.len());
+        for i in idx {
+            assert_eq!(
+                canon(&got[i]),
+                canon(&expected[i]),
+                "case #{i}: {}",
+                canon(&cases[i])
+            );
+        }
+    }
+}
+
+/// BT2.5: `run_golden` answers each bt-2 kind with its rule (values hand-derived in the module
+/// doc): the seed-0 roll pair (35, 86); Heavy + Light refused with 2 AP left; Surge 5 for 19 HP
+/// at round 14; Burn 10 of 160; the tie-rank order; the wild round-2 priority B; the
+/// flank-then-Guard trace 5 → 6 → 4; the HP-percent adjudication.
+/// Kills: a kind dispatched to the wrong rule; a rule run at a tuning other than the design's.
+#[test]
+fn run_golden_answers_every_bt2_kind_with_its_rule_bt2_5() {
+    let fresh = TurnBudget {
+        ap: 6,
+        strides_used: 0,
+        attacks: 0,
+        last: None,
+    };
+    let mut guarded = rt::wind_target(100);
+    guarded.guard = true;
+    let tie = |id: u32, side: Side, slot: u8| Contender {
+        id,
+        side,
+        slot,
+        eff_speed: 50,
+        base_speed: 50,
+    };
+    assert_eq!(
+        run_golden(&[
+            GoldenCase::Rolls {
+                seed: 0,
+                action_seq: 0,
+                draws: 1
+            },
+            GoldenCase::Economy {
+                start: fresh,
+                entries: vec![Entry::Attack(Tier::Heavy), Entry::Attack(Tier::Light)],
+            },
+            GoldenCase::SurgeDamage {
+                max_hp: 19,
+                round: 14
+            },
+            GoldenCase::StatusTick {
+                status: StatusEffect::Burn,
+                max_hp: 160
+            },
+            GoldenCase::Initiative {
+                contenders: vec![tie(1, Side::A, 0), tie(2, Side::B, 1)],
+                priority: Side::B,
+            },
+            GoldenCase::Priority {
+                kind: BattleKind::Wild,
+                seed: 0x5EED,
+                round: 2
+            },
+            GoldenCase::Pipeline {
+                attacker: rt::water_attacker(),
+                target: guarded,
+                skill: rt::fire40(),
+                flank: true,
+                rolls: rt::SURE,
+            },
+            GoldenCase::Adjudicate {
+                snapshot: StepSnapshot {
+                    hp_pct: [150, 149],
+                    conscious: [1, 3]
+                },
+                attack_damage_dealt: [0, 900],
+                seed: 0,
+                round: 1,
+            },
+        ]),
+        vec![
+            GoldenResult::Rolls(vec![RollPair {
+                accuracy: 35,
+                variance: 86
+            }]),
+            GoldenResult::Economy(Err(EconomyError::Unaffordable { cost: 4, ap: 2 })),
+            GoldenResult::SurgeDamage(Some(5)),
+            GoldenResult::StatusTick(Some(10)),
+            GoldenResult::Initiative(vec![2, 1]),
+            GoldenResult::Priority(Side::B),
+            GoldenResult::Pipeline(PipelineTrace {
+                hit: true,
+                d0: 5,
+                d1: 6,
+                d2: 4,
+                d3: 4,
+                effectiveness: Some(Effectiveness::Neutral),
+                applied: 4,
+                hp_after: 96,
+                stood_ground: false,
+            }),
+            GoldenResult::Adjudicate((Side::A, Adjudication::HpPercent)),
+        ]
+    );
+}
+
+/// BT2.5 (plan A4): a Pipeline case whose unit fails `validate_unit` comes back
+/// `BadCase("invalid unit: {DeployError:?}")` — never a panic, never a clamped unit — with the
+/// attacker validated before the target; a valid pair beside them still resolves.
+/// Kills: `calc_damage` reached with defence 0 (a divide-by-zero panic); a 0-HP or over-max
+/// unit clamped and resolved; the target checked first.
+#[test]
+fn an_invalid_pipeline_unit_is_a_bad_case_naming_its_deploy_error_bt2_5() {
+    let ok_attacker = rt::fire_attacker();
+    let ok_target = rt::plant_target(30);
+    let mut fainted = rt::fire_attacker();
+    fainted.id = 7;
+    fainted.cur_hp = 0;
+    let mut soft_attacker = rt::fire_attacker();
+    soft_attacker.id = 7;
+    soft_attacker.kit.stats.defense = 0;
+    let mut over = rt::plant_target(100);
+    over.id = 8;
+    over.cur_hp = 101;
+    let mut soft = rt::plant_target(30);
+    soft.id = 8;
+    soft.kit.stats.defense = 0;
+    let mut dead_target = rt::plant_target(30);
+    dead_target.id = 8;
+    dead_target.cur_hp = 0;
+    let case = |attacker: &TacticalUnit, target: &TacticalUnit| GoldenCase::Pipeline {
+        attacker: attacker.clone(),
+        target: target.clone(),
+        skill: rt::fire40(),
+        flank: false,
+        rolls: rt::SURE,
+    };
+    let bad = |text: &str| GoldenResult::BadCase(text.to_string());
+    assert_eq!(
+        run_golden(&[
+            case(&fainted, &ok_target),
+            case(&ok_attacker, &over),
+            case(&ok_attacker, &soft),
+            case(&soft_attacker, &dead_target),
+            case(&ok_attacker, &ok_target),
+        ]),
+        vec![
+            bad("invalid unit: Fainted { id: 7 }"),
+            bad("invalid unit: HpAboveMax { id: 8, cur_hp: 101, max_hp: 100 }"),
+            bad("invalid unit: ZeroDefense { id: 8 }"),
+            bad("invalid unit: ZeroDefense { id: 7 }"),
+            GoldenResult::Pipeline(PipelineTrace {
+                hit: true,
+                d0: 14,
+                d1: 14,
+                d2: 14,
+                d3: 14,
+                effectiveness: Some(Effectiveness::SuperEffective),
+                applied: 14,
+                hp_after: 16,
+                stood_ground: false,
+            }),
+        ]
+    );
+}
+
+/// BT2.5: the golden `Rolls` kind is the per-target stream — pair i is the accuracy from
+/// `splitmix64(seed ^ (seq + 2i))` then the variance from `splitmix64(seed ^ (seq + 2i + 1))`
+/// (recomputed here with `tick_seed`) — and 0 draws is an empty stream.
+/// Kills: a golden adapter that draws one value per pair or restarts the stream for each pair.
+#[test]
+fn golden_rolls_are_the_per_target_stream_from_seed_xor_action_seq_bt2_5() {
+    for (seed, seq, draws) in [
+        (0xDEAD_BEEF_u64, 0x0F0F_u64, 3u8),
+        (1 << 52, 99, 2),
+        (0x5EED, 0, 0),
+    ] {
+        let want: Vec<RollPair> = (0..u64::from(draws))
+            .map(|i| rt::rolls_at(seed, seq + 2 * i))
+            .collect();
+        assert_eq!(
+            run_golden(&[GoldenCase::Rolls {
+                seed,
+                action_seq: seq,
+                draws
+            }]),
+            vec![GoldenResult::Rolls(want)],
+            "seed {seed:#x} seq {seq}"
+        );
+    }
 }
