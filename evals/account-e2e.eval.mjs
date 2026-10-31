@@ -126,11 +126,15 @@ export const TOMBSTONE_IDENTITY_HEX_E2E =
 // Erase/Anonymize entries MUST carry >=1 column (red-team CRITICAL-1: a
 // zero-column entry is an UNATTEMPTED table, invisible to the vacuity list).
 export const M22S9_MANIFEST_TRANSCRIPTION =
-  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_wild:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
+  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_clock:Erase:player:0|battle_deploy:Erase:owner:0|battle_event:ViaJoin(battle)::0|battle_queue:Erase:owner:0|battle_secret:ViaJoin(battle)::0|battle_summary:Anonymize:opponent_identity+player_identity:0|battle_tactical:ViaJoin(battle)::0|battle_unit:Erase:owner:0|battle_wild:ViaJoin(battle)::0|battle_wild_unit:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_formation:Erase:owner_identity:0|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
 
 // Tables that may legitimately hold ZERO A-scoped rows at the pre-cascade
-// snapshot, each with its measured reason. HARD-CAPPED — a fourth entry is a
-// seeding regression, not an allowlist edit (red-team MEDIUM-8).
+// snapshot, each with its measured reason. HARD-CAPPED — an entry beyond the cap
+// is a seeding regression, not an allowlist edit (red-team MEDIUM-8). The seven
+// `(until bt-8)` rows are bt-7's schema-only tactical tables: their columns are
+// enums, Vecs or Options (not DML-expressible on this CLI) and their only
+// organic writers are bt-8's reducers — bt-8 MUST seed them through those
+// reducers and retire these rows (grep "until bt-8").
 export const S9_VACUITY_ALLOWLIST = [
   [
     'battle_action',
@@ -144,8 +148,39 @@ export const S9_VACUITY_ALLOWLIST = [
     'player_dialogue_state',
     'Vec<String> columns are not expressible in 2.8.1 SQL DML (probed: 400) and no zone-0 organic writer fits the e2e budget',
   ],
+  [
+    'battle_tactical',
+    'enum columns (kind, phase, turn_state) are not DML-expressible; the organic writer is bt-8 start_wild_tactical (until bt-8)',
+  ],
+  [
+    'battle_unit',
+    'enum and Vec columns (affinity, status, state, skill_ids) are not DML-expressible; the organic writer is bt-8 deploy materialisation (until bt-8)',
+  ],
+  [
+    'battle_queue',
+    'Vec<QueuedAction> is not DML-expressible; the organic writer is bt-8 submit_queue (until bt-8)',
+  ],
+  [
+    'battle_deploy',
+    'Vec<DeployPick> is not DML-expressible; the organic writer is bt-8 deploy_units (until bt-8)',
+  ],
+  [
+    'battle_clock',
+    'Option<i64> columns are not DML-expressible; the organic writer is bt-8 window arming (until bt-8)',
+  ],
+  [
+    'battle_event',
+    'the EventPayload enum column is not DML-expressible; the organic writer is bt-8 execution (until bt-8)',
+  ],
+  [
+    'player_formation',
+    'Vec<u64> is not DML-expressible; the organic writer is bt-12 formation editing via a bt-8 reducer (until bt-8)',
+  ],
 ];
-export const S9_VACUITY_ALLOWLIST_CAP = 3;
+export const S9_VACUITY_ALLOWLIST_CAP = 10;
+// Erase-policy identity columns that are `Option<Identity>` (a sum type): the
+// snapshot counts them by battle reachability, never by an identity WHERE.
+export const S9_OPTION_IDENTITY_COLS = [['battle_unit', 'owner']];
 // Independent seeded-rows floor: >500 playtest_event rows plus the rest of the
 // loaded account. A run that seeded nothing cannot reach this sum.
 export const S9_SEEDED_FLOOR = 520;
@@ -1094,9 +1129,9 @@ export function checkExportAssembly(chunks, expected) {
 export function checkCascadeTruth(input) {
   const { entries, pre, post, allowlist, allowlistCap, seededFloor, graceMs } = input;
   const fail = (reason) => ({ ok: false, reason, vacuous: [], detail: '' });
-  if (!Array.isArray(entries) || entries.length !== 43) {
+  if (!Array.isArray(entries) || entries.length !== 53) {
     return fail(
-      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 43',
+      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 53',
     );
   }
   if (!Array.isArray(allowlist) || allowlist.length > allowlistCap) {
@@ -1110,7 +1145,7 @@ export function checkCascadeTruth(input) {
   const allowed = new Set(allowlist.map(([t]) => t));
   const vacuous = [];
   let seededSum = 0;
-  const anonymizeHandled = new Set(['account', 'player', 'profile', 'battle']);
+  const anonymizeHandled = new Set(['account', 'player', 'profile', 'battle', 'battle_summary']);
 
   for (const e of entries) {
     if (e.policy === 'Erase') {
@@ -1243,6 +1278,37 @@ export function checkCascadeTruth(input) {
     );
   }
 
+  // bt-7 `battle_summary` (Anonymize): telemetry rows are never deleted (the
+  // total row count is unchanged across the cascade) and no surviving row names
+  // the deleted identity on either side (both columns swapped to the tombstone).
+  // Until bt-8 writes summaries the counts are 0 == 0 and 0: the assert is
+  // live, the fixture is not — bt-8's organic summary writer makes it bite.
+  if (
+    !pre.battleSummary ||
+    !post.battleSummary ||
+    typeof pre.battleSummary.total !== 'number' ||
+    typeof post.battleSummary.total !== 'number' ||
+    typeof post.battleSummary.aRows !== 'number'
+  ) {
+    return fail('[s9/summary-unattempted] no battle_summary census was taken pre and post');
+  }
+  if (post.battleSummary.total !== pre.battleSummary.total) {
+    return fail(
+      '[s9/summary-anonymize-gone] battle_summary rows changed count across the cascade (' +
+        pre.battleSummary.total +
+        ' -> ' +
+        post.battleSummary.total +
+        ') — Anonymize must never delete',
+    );
+  }
+  if (post.battleSummary.aRows !== 0) {
+    return fail(
+      '[s9/summary-anonymize-side] ' +
+        post.battleSummary.aRows +
+        ' battle_summary row(s) still name the deleted identity on a side',
+    );
+  }
+
   // NotOwned world content must SURVIVE (an erase-everything cascade would
   // otherwise pass every A-scoped zero-count above).
   if (
@@ -1295,7 +1361,7 @@ export function checkCascadeTruth(input) {
   }
   return {
     ok: true,
-    reason: 'cascade truth held over 43 classified entries',
+    reason: 'cascade truth held over 53 classified entries',
     vacuous,
     detail: 'seeded=' + seededSum + ' vacuous=[' + vacuous.join(',') + ']',
   };
@@ -1320,9 +1386,14 @@ export function checkCascadeTruth(input) {
  * table can carry a pre-cascade row at all (the vacuity allowlist is
  * hard-capped at 3 and full).
  */
-export function buildSeedStatements(aHex, playtestRows, baseMs, aMonsterId) {
+export function buildSeedStatements(aHex, playtestRows, baseMs, aMonsterId, battle1Id) {
   if (typeof aHex !== 'string' || !/^0x[0-9a-f]{64}$/.test(aHex)) {
     throw new Error('[s9/seed-build] subject identity is not 0x + 64 lowercase hex: ' + aHex);
+  }
+  if (typeof battle1Id !== 'string' || !/^[1-9][0-9]*$/.test(battle1Id)) {
+    throw new Error(
+      '[s9/seed-build] battle1 id must be a positive decimal string, got ' + battle1Id,
+    );
   }
   if (typeof aMonsterId !== 'string' || !/^[1-9][0-9]*$/.test(aMonsterId)) {
     throw new Error(
@@ -1395,6 +1466,17 @@ export function buildSeedStatements(aHex, playtestRows, baseMs, aMonsterId) {
   // 0 unfavorable events read as 83% = Devoted, comfortably past Friendly's
   // 60% floor. Two single-assignment UPDATEs rather than one two-assignment
   // statement: the single-column form is the one this rig has measured.
+  // bt-7: the two scalar-only tactical join tables are seeded under the
+  // subject's terminal PvP battle, so their ViaJoin(battle) sweep is proven on
+  // real rows (the enum / Vec / Option tables are on the vacuity allowlist).
+  stmts.push(
+    'INSERT INTO battle_secret (battle_id, seed, action_seq) VALUES (' + battle1Id + ', 7, 0)',
+  );
+  stmts.push(
+    'INSERT INTO battle_wild_unit (wild_unit_id, battle_id, wild_index, species_id, level, individuality_seed) VALUES (0, ' +
+      battle1Id +
+      ', 0, 1, 5, 99)',
+  );
   stmts.push('UPDATE monster SET essence_fire = 150 WHERE monster_id = ' + aMonsterId);
   stmts.push('UPDATE monster SET trust_favorable_count = 40 WHERE monster_id = ' + aMonsterId);
   const batch = 50;
@@ -2175,10 +2257,23 @@ async function runLivePhase() {
       const refs = s9.refs;
       const aCounts = {};
       const viaJoin = {};
+      // bt-7: every tactical row hangs off a battle the subject is a side of,
+      // and the subject's battles are PINNED (battle1 + the wild battle) before
+      // the pre pass, so both passes ask about the same rows.
+      const tacticalReach = (table) =>
+        cnt('SELECT COUNT(*) AS n FROM ' + table + ' WHERE battle_id = ' + refs.battle1Id) +
+        cnt('SELECT COUNT(*) AS n FROM ' + table + ' WHERE battle_id = ' + refs.wildId);
       for (const e of entries) {
         if (e.policy !== 'Erase') continue;
         aCounts[e.table] = {};
         for (const c of e.cols) {
+          if (S9_OPTION_IDENTITY_COLS.some(([t, col]) => t === e.table && col === c)) {
+            // A sum-typed Option<Identity> column cannot be WHERE-matched on
+            // this CLI (400, the account.claimed_from precedent); its erase
+            // proof is reachability through the subject's pinned battles.
+            aCounts[e.table][c] = tacticalReach(e.table);
+            continue;
+          }
           aCounts[e.table][c] = cnt(
             'SELECT COUNT(*) AS n FROM ' + e.table + ' WHERE ' + c + ' = ' + refs.aHex,
           );
@@ -2220,6 +2315,9 @@ async function runLivePhase() {
       viaJoin.pvp_deadline_schedule =
         cnt('SELECT COUNT(*) AS n FROM pvp_deadline_schedule WHERE battle_id = ' + refs.wildId) +
         cnt('SELECT COUNT(*) AS n FROM pvp_deadline_schedule WHERE battle_id = ' + refs.battle1Id);
+      for (const t of ['battle_tactical', 'battle_secret', 'battle_wild_unit', 'battle_event']) {
+        viaJoin[t] = tacticalReach(t);
+      }
       let chalSched = 0;
       for (const id of refs.challengeIds) {
         chalSched += cnt(
@@ -2251,6 +2349,12 @@ async function runLivePhase() {
         config: cnt('SELECT COUNT(*) AS n FROM config'),
       };
       const snap = { aCounts, viaJoin, dCounts, world };
+      snap.battleSummary = { total: cnt('SELECT COUNT(*) AS n FROM battle_summary') };
+      if (phase === 'post') {
+        snap.battleSummary.aRows =
+          cnt('SELECT COUNT(*) AS n FROM battle_summary WHERE player_identity = ' + refs.aHex) +
+          cnt('SELECT COUNT(*) AS n FROM battle_summary WHERE opponent_identity = ' + refs.aHex);
+      }
       if (phase === 'pre') {
         const sqlCounts = {};
         for (const e of entries) {
@@ -2366,7 +2470,13 @@ async function runLivePhase() {
           guestClaim: sqlTable(dbUrl, 'SELECT guest_identity, code FROM guest_claim', s9G22Raw),
           monster: sqlTable(dbUrl, 'SELECT owner_identity FROM monster', s9G22Raw),
         };
-        for (const stmt of buildSeedStatements(s9.refs.aHex, 501, Date.now(), s9.refs.aMonsterId))
+        for (const stmt of buildSeedStatements(
+          s9.refs.aHex,
+          501,
+          Date.now(),
+          s9.refs.aMonsterId,
+          s9.refs.battle1Id,
+        ))
           sqlDml(stmt);
         writeGo(1);
         const evSeed = await waitEvent('S9-seed-ready', 240_000);
