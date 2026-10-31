@@ -710,6 +710,25 @@ fn preflight_and_resolve_refuse_alike_and_leave_the_state_untouched_bt5_1() {
     }
 }
 
+/// BT5.1: `recruit_preflight` does NOT check the recruiter's consciousness - the turn machine's
+/// `can_act` owns that, written once. A Fainted recruiter and an Active one at 0 HP, aimed at a
+/// conscious adjacent wild with no bait, pass.
+/// Kills: a recruiter-consciousness check duplicated into the preflight.
+#[test]
+fn preflight_does_not_check_the_recruiters_consciousness_bt5_1() {
+    let mut fainted = raw_state(7);
+    {
+        let r = fainted.unit_mut(1).expect("unit 1");
+        r.state = UnitState::Fainted;
+        r.cur_hp = 0;
+    }
+    assert_eq!(recruit_preflight(&fainted, 1, 11, 0), Ok(()), "Fainted");
+
+    let mut zero_hp = raw_state(7);
+    zero_hp.unit_mut(1).expect("unit 1").cur_hp = 0;
+    assert_eq!(recruit_preflight(&zero_hp, 1, 11, 0), Ok(()), "0 HP");
+}
+
 // ===========================================================================
 // BT5.2 - the forecast line items, the roll, the single draw
 // ===========================================================================
@@ -770,6 +789,41 @@ fn odds_line_items_match_hand_computed_vectors_bt5_2() {
             recruit_odds(max_hp, hp, bait),
             Err(RecruitError::BaitBonus { bait_bonus: bait }),
             "bait {bait} is rejected, never clamped"
+        );
+    }
+}
+
+/// BT5.2: full HP is never "one HP down", however small `max_hp` is (the missing-HP bonus is
+/// `500 * (max - hp) / max` permille, so a mis-treated full HP only shows for a small max): every
+/// full-HP row is {8, 8, 0, 0}; small-max weakened rows are hand-computed (max 2, hp 1: 80 + 250 =
+/// 330 permille -> {33, 8, 0, 25}; max 5, hp 4: 80 + 100 = 180 -> {18, 8, 0, 10}) and equal to
+/// `recruit_chance / 10`.
+/// Kills: forecasting a full-HP target as `hp.min(max_hp - 1)`.
+#[test]
+fn full_hp_odds_are_base_only_for_small_max_hp_bt5_2() {
+    let o = |pct: u8, base: u8, bait: u8, weakened: u8| RecruitOdds {
+        pct,
+        base,
+        bait,
+        weakened,
+    };
+    for max_hp in [1u16, 2, 5, 10, 20, 50, 80] {
+        assert_eq!(
+            recruit_odds(max_hp, max_hp, 0),
+            Ok(o(8, 8, 0, 0)),
+            "full HP at max {max_hp}"
+        );
+        assert_eq!(recruit_chance(max_hp, max_hp, RECRUIT_BASE_RATE, 0), 80);
+    }
+    for (max_hp, hp, want) in [(2u16, 1u16, o(33, 8, 0, 25)), (5, 4, o(18, 8, 0, 10))] {
+        assert_eq!(
+            recruit_odds(max_hp, hp, 0),
+            Ok(want),
+            "max {max_hp}, hp {hp}"
+        );
+        assert_eq!(
+            u16::from(want.pct),
+            recruit_chance(max_hp, hp, RECRUIT_BASE_RATE, 0) / 10
         );
     }
 }

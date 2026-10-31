@@ -7,8 +7,8 @@
 //!
 //! - [`recruit_odds`] — the carried `recruit_chance` (‰, unchanged) quantized to whole percent so
 //!   the forecast shown is the chance rolled, split into line items that always sum;
-//! - [`recruit_preflight`] — the checks the turn machine cannot make (the bait's bonus, the bound
-//!   ids). The shell calls it from `Hooks::validate_delegated`, so a bad bait row halts the entry
+//! - [`recruit_preflight`] — the checks the turn machine does not make (the bait's bonus, the bound
+//!   ids; the target's consciousness again, defensively). The shell calls it from `Hooks::validate_delegated`, so a bad bait row halts the entry
 //!   BEFORE the bait is debited (R-21r-a-CONTENTLOAD) and [`resolve_recruit`] cannot fail after it;
 //! - [`resolve_recruit`] — one roll from the private stream; success removes the wild from the
 //!   board and the initiative (`Recruited` is terminal: it never acts, is never swept as a KO and
@@ -79,14 +79,19 @@ pub fn recruit_odds(max_hp: u16, hp: u16, bait_bonus: u16) -> Result<RecruitOdds
     })
 }
 
-/// Whether `roll` succeeds against `pct`: `roll % 100 < pct`.
+/// Whether `roll` succeeds against `pct`: `roll % 100 < pct` — whole percent, so the chance shown
+/// is the chance rolled (the 1v1 path's `taming::rules::attempt_recruit` rolls per-mille and retires
+/// with it).
 #[must_use]
 pub fn recruit_roll_succeeds(pct: u8, roll: u64) -> bool {
     roll % 100 < u64::from(pct)
 }
 
 /// The checks behind the turn machine's gate, pure: the bait bonus (`BaitBonus`), the recruiter
-/// (`UnknownUnit`), the target (`UnknownUnit`, then `TargetGone` unless conscious).
+/// (`UnknownUnit`), the target (`UnknownUnit`, then `TargetGone` unless conscious — a defensive
+/// repeat of the pop gate's check, so the roll never reads a gone target). Legality (wild battle,
+/// ownership, adjacency, headroom, budget, alone-ness, a recruiter able to act) is the turn
+/// machine's, checked once there.
 ///
 /// # Errors
 /// See [`RecruitError`].
@@ -96,19 +101,7 @@ pub fn recruit_preflight(
     target: u32,
     bait_bonus: u16,
 ) -> Result<(), RecruitError> {
-    if bait_bonus > MAX_BAIT_BONUS {
-        return Err(RecruitError::BaitBonus { bait_bonus });
-    }
-    state
-        .unit(unit)
-        .ok_or(RecruitError::UnknownUnit { id: unit })?;
-    let wild = state
-        .unit(target)
-        .ok_or(RecruitError::UnknownUnit { id: target })?;
-    if !wild.is_conscious() {
-        return Err(RecruitError::TargetGone { id: target });
-    }
-    Ok(())
+    preflight_odds(state, unit, target, bait_bonus).map(|_| ())
 }
 
 /// Resolve a validated, paid Recruit entry: [`recruit_preflight`], then EXACTLY ONE draw from the
@@ -124,11 +117,7 @@ pub fn resolve_recruit(
     target: u32,
     bait_bonus: u16,
 ) -> Result<RecruitResultEvent, RecruitError> {
-    recruit_preflight(state, unit, target, bait_bonus)?;
-    let wild = state
-        .unit(target)
-        .ok_or(RecruitError::UnknownUnit { id: target })?;
-    let odds = recruit_odds(wild.max_hp(), wild.cur_hp, bait_bonus)?;
+    let odds = preflight_odds(state, unit, target, bait_bonus)?;
     let success = recruit_roll_succeeds(odds.pct, draw(state));
     if success {
         if let Some(wild) = state.unit_mut(target) {
@@ -142,6 +131,28 @@ pub fn resolve_recruit(
         success,
         pct: odds.pct,
     })
+}
+
+/// [`recruit_preflight`]'s checks, in order, yielding the target's live odds.
+fn preflight_odds(
+    state: &TacticalState,
+    unit: u32,
+    target: u32,
+    bait_bonus: u16,
+) -> Result<RecruitOdds, RecruitError> {
+    if bait_bonus > MAX_BAIT_BONUS {
+        return Err(RecruitError::BaitBonus { bait_bonus });
+    }
+    state
+        .unit(unit)
+        .ok_or(RecruitError::UnknownUnit { id: unit })?;
+    let wild = state
+        .unit(target)
+        .ok_or(RecruitError::UnknownUnit { id: target })?;
+    if !wild.is_conscious() {
+        return Err(RecruitError::TargetGone { id: target });
+    }
+    recruit_odds(wild.max_hp(), wild.cur_hp, bait_bonus)
 }
 
 /// The monster a successful recruit grants: the wild rebuilt from its per-wild `seed`

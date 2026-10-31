@@ -685,6 +685,42 @@ fn pay_sums_per_unit_and_affinity_and_pays_only_the_conscious_bt5_7() {
     assert_eq!(pay(&Ledger::default(), &pay_state()), Payout::default());
 }
 
+/// BT5.7: awards come out in ascending unit id even when the ledger is not in id order (in play the
+/// killer is written first, so killer 6 with teammates 2 and 7 gives a non-ascending ledger). Credits
+/// arrive for units 6, 2, 7, 1 with xp 30 / 10 / 50 / 20, so the id order [1, 2, 6, 7] differs from
+/// the ledger order [6, 2, 7, 1], its reverse-insertion order [1, 7, 2, 6], the xp-descending order
+/// [7, 6, 1, 2] and the xp-ascending order [2, 1, 6, 7].
+/// Kills: inserting each new award at the end or at the front; a final sort by xp.
+#[test]
+fn awards_are_listed_in_ascending_unit_id_for_a_non_ascending_ledger_bt5_7() {
+    let ledger = Ledger {
+        credits: vec![
+            cr(6, 11, 30, 3, Affinity::Fire),
+            cr(2, 11, 10, 4, Affinity::Water),
+            cr(7, 11, 50, 5, Affinity::Earth),
+            cr(1, 11, 20, 2, Affinity::Dark),
+        ],
+        currency: 0,
+    };
+    let award = |unit: u32, xp: u32, affinity: Affinity, essence: u32| Award {
+        unit,
+        xp,
+        essence: vec![(affinity, essence)],
+    };
+    assert_eq!(
+        pay(&ledger, &pay_state()),
+        Payout {
+            awards: vec![
+                award(1, 20, Affinity::Dark, 2),
+                award(2, 10, Affinity::Water, 4),
+                award(6, 30, Affinity::Fire, 3),
+                award(7, 50, Affinity::Earth, 5),
+            ],
+            currency: 0,
+        }
+    );
+}
+
 /// BT5.7: a Fainted killer forfeits its credit and the teammates are NOT topped up; conscious
 /// ones keep exactly what was recorded. (Control: the same ledger with the killer conscious pays
 /// all three.)

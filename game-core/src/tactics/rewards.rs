@@ -1,15 +1,15 @@
 //! Rewards — design §7: one KO hook writes an in-battle ledger, paid once at battle end.
 //!
-//! [`on_unit_defeated`] runs after the KO sweep for every `Ko` (never for a recruit: a
-//! `Recruited` victim is refused, so a recruited wild earns nobody anything). The carried amounts
-//! are called by value: `battle_xp_reward` (wild battles, split), `essence_battle_reward` (to the
-//! killer) and `battle_currency_reward` (wild battles, to the player). There are no mid-battle stat
-//! changes. [`pay`] reads only the ledger and the final state — never the outcome — so win, loss,
+//! The shell calls [`on_unit_defeated`] after the KO sweep with the attributed killer (never for a
+//! recruit: a `Recruited` victim is refused, so a recruited wild earns nobody anything). The carried
+//! amounts are called by value: `battle_xp_reward` (wild battles, split), `essence_battle_reward`
+//! (to the killer) and `battle_currency_reward` (wild battles, to the player). Nothing is applied
+//! mid-battle, so no stat block changes under a queued plan or a forecast. [`pay`] reads only the ledger and the final state — never the outcome — so win, loss,
 //! Flee, auto-flee and disconnect pay by the same rule: a monster's share is paid only if it is
 //! conscious at the end (fainted shares are forfeited, not redistributed; benched monsters are not
 //! in the battle and earn nothing).
 //!
-//! Who earns (the design leaves these to the rule; recorded in the PR):
+//! Who earns (cases the design table leaves open):
 //! - Practice (self vs self) pays nothing (design §6.1, "no rewards").
 //! - A KO of a same-side unit pays nothing, and in a wild battle only a player-owned killer of a
 //!   wild earns; a wild's kills earn nothing.
