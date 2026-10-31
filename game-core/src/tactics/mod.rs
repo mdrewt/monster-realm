@@ -96,8 +96,9 @@ pub use outcome::{
     StepSnapshot,
 };
 pub use queue::{
-    is_player_owned, min_action_cost, validate_at_pop, Advancing, Battle, CancelError, ExpireError,
-    HaltReason, Hooks, PlanOrigin, ReadyPlan, Rules, StepResult, SubmitError, Validated,
+    is_player_owned, min_action_cost, status_blocks_turn, validate_at_pop, AdvancePin, CancelError,
+    ConcludeError, ExpireError, HaltReason, Hooks, ReadyPlan, Rules, StepError, StepResult,
+    SubmitError, TacticalBattle, Validated,
 };
 pub use resolve::{
     can_act, damage_pipeline, deploy_unit, draw_rolls, resolve_attack, splitmix64, turn_end,

@@ -88,6 +88,8 @@ pub enum HaltKind {
     NoHeadroom,
     ItemNotHeld,
     Unaffordable,
+    /// A unit row or tuning the rules cannot run on (the bt-2 hostile-state guards).
+    BadState,
 }
 
 /// `PlanHalted{unit, idx, reason_kind}`: entry `idx` (0-based) and everything after it was wasted.
@@ -96,7 +98,7 @@ pub enum HaltKind {
 pub struct PlanHaltedEvent {
     pub unit: u32,
     pub idx: u8,
-    pub reason: HaltKind,
+    pub reason_kind: HaltKind,
 }
 
 /// A READY plan was deleted without executing (KO, recruit, battle end, turn-skip status).

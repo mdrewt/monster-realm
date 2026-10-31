@@ -52,6 +52,8 @@ pub enum ClockError {
     WindowCap { windows: u8, cap: u8 },
     /// `accept_submit` / `expire` with no open window.
     NoWindow,
+    /// `expire` before the deadline (a premature fire).
+    NotDue { deadline_ms: i64 },
 }
 
 /// What an expired window does to the battle (the explicit input game-core receives, §2.2).
@@ -84,8 +86,9 @@ pub fn begin_unit_turn(clock: &mut ClockState) {
     todo!("bt-3 skeleton")
 }
 
-/// Open a window at `now_ms + min(pad_ms, pad_cap_ms)` with `deadline = opens_at + budget`,
-/// advancing `window_seq` and `windows_this_unit_turn`.
+/// Open a window at `now_ms + min(pad_ms, pad_cap_ms)` with `deadline = opens_at + budget`
+/// (saturating i64 arithmetic), advancing `window_seq` and `windows_this_unit_turn`. The pad
+/// cap is applied here, once.
 ///
 /// # Errors
 /// `AlreadyOpen` when a window is open; `WindowCap` when `windows_this_unit_turn ≥
@@ -102,7 +105,9 @@ pub fn open_window(
 }
 
 /// An accepted submit at `now_ms` closes the window and books `max(0, now − opens_at)` as idle
-/// (saturating into `idle_ms_total`); returns the idle booked.
+/// (i128 difference, saturating into `u64` and into `idle_ms_total`); returns the idle booked. A
+/// submit after the deadline is still accepted — the submit and the fire race, and whichever
+/// transaction commits first wins (the fire then finds the window closed: stale, a no-op).
 ///
 /// # Errors
 /// `NoWindow` when none is open (the clock is untouched).
@@ -111,16 +116,19 @@ pub fn accept_submit(clock: &mut ClockState, now_ms: i64) -> Result<u64, ClockEr
     todo!("bt-3 skeleton")
 }
 
-/// The open window expired: closes it; under the PvP ruleset `autopass_count += 1` (saturating)
-/// and `AutoPass { strike: count, forfeit: count ≥ autopass_forfeit }`; wild → `AutoFlee`.
+/// The open window expired at `now_ms`: closes it; under the PvP ruleset `autopass_count += 1`
+/// (saturating) and `AutoPass { strike: count, forfeit: count ≥ autopass_forfeit }`; wild →
+/// `AutoFlee`.
 ///
 /// # Errors
-/// `NoWindow` when none is open (the clock is untouched).
+/// `NoWindow` when none is open; `NotDue` when `now_ms < deadline_ms` (a premature fire) — the
+/// clock is untouched on `Err`.
 pub fn expire(
     clock: &mut ClockState,
+    now_ms: i64,
     kind: BattleKind,
     t: &TacticsTuning,
 ) -> Result<Expiry, ClockError> {
-    let _ = (clock, kind, t);
+    let _ = (clock, now_ms, kind, t);
     todo!("bt-3 skeleton")
 }
