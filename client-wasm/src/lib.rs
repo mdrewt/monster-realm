@@ -472,6 +472,23 @@ pub fn zone_map(zone_id: u32) -> Result<JsValue, JsValue> {
     zone_map_ok(&tile_map)
 }
 
+/// The tactics golden harness across the wasm boundary: runs game-core's
+/// `tactics::run_golden` over the shared fixture's `cases` so
+/// `client/src/tactics/golden.parity.test.ts` can assert the wasm build answers
+/// byte-identically to the native `golden_tests.rs` run of the same JSON. A
+/// determinism test hook: no production caller.
+///
+/// # Errors
+/// Returns a JS error if `cases` does not deserialize as `Vec<GoldenCase>`.
+#[wasm_bindgen]
+pub fn tactics_golden(cases: JsValue) -> Result<JsValue, JsValue> {
+    use serde::Serialize as _;
+    let cases: Vec<game_core::tactics::GoldenCase> = serde_wasm_bindgen::from_value(cases)?;
+    let results = game_core::run_golden(&cases);
+    let serializer = serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true);
+    Ok(results.serialize(&serializer)?)
+}
+
 /// Install a browser panic hook so a Rust panic surfaces as a readable
 /// `console.error` instead of an opaque `unreachable`. Runs once on module init.
 #[wasm_bindgen(start)]
