@@ -26,7 +26,10 @@ impl BattleKind {
     /// Pvp and Practice (design §6.1: Practice uses the PvP ruleset). Wild never.
     #[must_use]
     pub fn uses_pvp_rules(self) -> bool {
-        todo!("bt-2 tuning: BattleKind::uses_pvp_rules")
+        match self {
+            BattleKind::Wild => false,
+            BattleKind::Pvp | BattleKind::Practice => true,
+        }
     }
 }
 
@@ -136,6 +139,15 @@ impl TacticsTuning {
     /// # Errors
     /// See [`TuningError`].
     pub fn validate(&self) -> Result<(), TuningError> {
-        todo!("bt-2 tuning: TacticsTuning::validate")
+        if self.guard_den == 0 {
+            return Err(TuningError::ZeroGuardDen);
+        }
+        if self.flank_den == 0 {
+            return Err(TuningError::ZeroFlankDen);
+        }
+        if self.ap_turn == 0 {
+            return Err(TuningError::ZeroApTurn);
+        }
+        Ok(())
     }
 }

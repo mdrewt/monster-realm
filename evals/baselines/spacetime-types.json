@@ -384,5 +384,21 @@
       "Shop",
       "Heal"
     ]
+  },
+  "UnitState": {
+    "kind": "enum",
+    "variants": [
+      "Active",
+      "Fainted",
+      "Recruited"
+    ]
+  },
+  "BattleKind": {
+    "kind": "enum",
+    "variants": [
+      "Wild",
+      "Pvp",
+      "Practice"
+    ]
   }
 }

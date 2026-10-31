@@ -55,8 +55,12 @@ impl TurnBudget {
     /// The budget at a unit's TurnStart: `ap_turn` AP, nothing used, no last action.
     #[must_use]
     pub fn fresh(t: &TacticsTuning) -> Self {
-        let _ = t;
-        todo!("bt-2 economy: TurnBudget::fresh")
+        TurnBudget {
+            ap: t.ap_turn,
+            strides_used: 0,
+            attacks: 0,
+            last: None,
+        }
     }
 }
 
@@ -90,7 +94,10 @@ impl TurnEndCause {
     /// Player commitment: everything except a timeout auto-pass.
     #[must_use]
     pub fn committed(self) -> bool {
-        todo!("bt-2 economy: TurnEndCause::committed")
+        match self {
+            TurnEndCause::EndTurn | TurnEndCause::PreQueuedDrain | TurnEndCause::AiEnd => true,
+            TurnEndCause::AutoPass => false,
+        }
     }
 }
 
@@ -98,8 +105,24 @@ impl TurnEndCause {
 /// into the u8 result.
 #[must_use]
 pub fn cost(entry: Entry, budget: &TurnBudget, t: &TacticsTuning) -> u8 {
-    let _ = (entry, budget, t);
-    todo!("bt-2 economy: cost")
+    let exert = if budget.attacks >= 1 {
+        u16::from(t.exert_surcharge)
+    } else {
+        0
+    };
+    let total: u16 = match entry {
+        Entry::Move { strides, taxed } => {
+            let tax = if taxed { u16::from(t.disengage_tax) } else { 0 };
+            u16::from(strides) * u16::from(t.move_stride_cost) + tax
+        }
+        Entry::Attack(Tier::Light) => u16::from(t.light_cost) + exert,
+        Entry::Attack(Tier::Heavy) => u16::from(t.heavy_cost) + exert,
+        Entry::Item => u16::from(t.item_cost),
+        Entry::Recruit => u16::from(t.recruit_cost),
+        Entry::Flee => u16::from(t.flee_cost),
+        Entry::EndTurn => u16::from(t.end_turn_cost),
+    };
+    u8::try_from(total).unwrap_or(u8::MAX)
 }
 
 /// Spend `entry` from `budget`, returning the AP charged. Checks, first failure wins:
@@ -111,8 +134,44 @@ pub fn cost(entry: Entry, budget: &TurnBudget, t: &TacticsTuning) -> u8 {
 /// # Errors
 /// See [`EconomyError`].
 pub fn spend(budget: &mut TurnBudget, entry: Entry, t: &TacticsTuning) -> Result<u8, EconomyError> {
-    let _ = (budget, entry, t);
-    todo!("bt-2 economy: spend")
+    if let Entry::Move { strides, .. } = entry {
+        if strides == 0 {
+            return Err(EconomyError::ZeroStrides);
+        }
+        let used = budget.strides_used;
+        if u16::from(used) + u16::from(strides) > u16::from(t.max_strides_per_turn) {
+            return Err(EconomyError::StrideCap {
+                used,
+                requested: strides,
+                cap: t.max_strides_per_turn,
+            });
+        }
+    }
+    if matches!(entry, Entry::Recruit | Entry::Flee) && budget.ap != t.ap_turn {
+        return Err(EconomyError::NeedsFullBudget {
+            ap: budget.ap,
+            required: t.ap_turn,
+        });
+    }
+    let charged = cost(entry, budget, t);
+    if charged > budget.ap {
+        return Err(EconomyError::Unaffordable {
+            cost: charged,
+            ap: budget.ap,
+        });
+    }
+    budget.ap -= charged;
+    match entry {
+        Entry::Move { strides, .. } => {
+            budget.strides_used = budget.strides_used.saturating_add(strides);
+        }
+        Entry::Attack(_) => budget.attacks = budget.attacks.saturating_add(1),
+        Entry::Item | Entry::Recruit | Entry::Flee | Entry::EndTurn => {}
+    }
+    if entry != Entry::EndTurn {
+        budget.last = Some(entry);
+    }
+    Ok(charged)
 }
 
 /// The total cost of `entries` spent in order from `start` (a fresh budget for a pre-queue, the
@@ -125,29 +184,40 @@ pub fn plan_cost(
     entries: &[Entry],
     t: &TacticsTuning,
 ) -> Result<u8, EconomyError> {
-    let _ = (start, entries, t);
-    todo!("bt-2 economy: plan_cost")
+    let mut budget = *start;
+    let mut total: u16 = 0;
+    for entry in entries {
+        total += u16::from(spend(&mut budget, *entry, t)?);
+    }
+    Ok(u8::try_from(total).unwrap_or(u8::MAX))
 }
 
 /// Design §2.1.2: Guard iff the end was committed AND no attack executed AND
 /// `ap ≥ guard_min_ap` AND `budget.last` is not Recruit or Flee.
 #[must_use]
 pub fn guard_granted(cause: TurnEndCause, budget: &TurnBudget, t: &TacticsTuning) -> bool {
-    let _ = (cause, budget, t);
-    todo!("bt-2 economy: guard_granted")
+    cause.committed()
+        && budget.attacks == 0
+        && budget.ap >= t.guard_min_ap
+        && !matches!(budget.last, Some(Entry::Recruit | Entry::Flee))
 }
 
 /// Guard on incoming ATTACK damage: `damage × guard_num / guard_den`, floor, min 1 — except
-/// that 0 damage (an immune hit) stays 0. Status ticks and Surge never call this.
+/// that 0 damage (an immune hit) stays 0. Status ticks and Surge never call this. Precondition:
+/// `t.validate()` passed (`guard_den ≥ 1`).
 #[must_use]
 pub fn apply_guard(damage: u16, t: &TacticsTuning) -> u16 {
-    let _ = (damage, t);
-    todo!("bt-2 economy: apply_guard")
+    if damage == 0 {
+        return 0;
+    }
+    let scaled = u32::from(damage) * u32::from(t.guard_num) / u32::from(t.guard_den);
+    u16::try_from(scaled.max(1)).unwrap_or(u16::MAX)
 }
 
 /// Flank on attack damage: `damage × flank_num / flank_den`, floor (saturating at `u16::MAX`).
+/// Precondition: `t.validate()` passed (`flank_den ≥ 1`).
 #[must_use]
 pub fn apply_flank(damage: u16, t: &TacticsTuning) -> u16 {
-    let _ = (damage, t);
-    todo!("bt-2 economy: apply_flank")
+    let scaled = u32::from(damage) * u32::from(t.flank_num) / u32::from(t.flank_den);
+    u16::try_from(scaled).unwrap_or(u16::MAX)
 }

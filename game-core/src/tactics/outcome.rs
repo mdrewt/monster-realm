@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::combat::types::BattleOutcome;
 
 use super::geometry::Side;
-use super::resolve::{TacticalEvent, TacticalState};
+use super::resolve::{side_index, splitmix64, TacticalEvent, TacticalState, UnitState};
 
 /// The adjudication inputs frozen at the START of a resolution or upkeep step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,8 +30,20 @@ impl StepSnapshot {
     /// Capture the tuple inputs from `state` as it stands now.
     #[must_use]
     pub fn capture(state: &TacticalState) -> Self {
-        let _ = state;
-        todo!("bt-2 outcome: StepSnapshot::capture")
+        let mut snap = StepSnapshot {
+            hp_pct: [0, 0],
+            conscious: [0, 0],
+        };
+        for unit in state.units.iter().filter(|u| u.state == UnitState::Active) {
+            let idx = side_index(unit.side);
+            snap.hp_pct[idx] += (u32::from(unit.cur_hp) * 100)
+                .checked_div(u32::from(unit.max_hp()))
+                .unwrap_or(0);
+            if unit.is_conscious() {
+                snap.conscious[idx] = snap.conscious[idx].saturating_add(1);
+            }
+        }
+        snap
     }
 }
 
@@ -66,16 +78,56 @@ pub fn adjudicate(
     seed: u64,
     round: u16,
 ) -> (Side, Adjudication) {
-    let _ = (snap, attack_damage_dealt, seed, round);
-    todo!("bt-2 outcome: adjudicate")
+    let higher = |a: u32, b: u32| if a > b { Side::A } else { Side::B };
+    if snap.hp_pct[0] != snap.hp_pct[1] {
+        return (
+            higher(snap.hp_pct[0], snap.hp_pct[1]),
+            Adjudication::HpPercent,
+        );
+    }
+    if snap.conscious[0] != snap.conscious[1] {
+        return (
+            higher(u32::from(snap.conscious[0]), u32::from(snap.conscious[1])),
+            Adjudication::Conscious,
+        );
+    }
+    if attack_damage_dealt[0] != attack_damage_dealt[1] {
+        return (
+            higher(attack_damage_dealt[0], attack_damage_dealt[1]),
+            Adjudication::DamageDealt,
+        );
+    }
+    let coin = if splitmix64(seed ^ u64::from(round)) & 1 == 0 {
+        Side::A
+    } else {
+        Side::B
+    };
+    (coin, Adjudication::Coin)
 }
 
 /// The KO sweep, once for every cause: each unit with `state == Active` and `cur_hp == 0` (in the
 /// canonical `units` order) becomes `Fainted`, leaves the initiative (and the queued ids), and
 /// emits `Ko` then `QueueVoided` iff it held a READY plan.
 pub fn sweep_kos(state: &mut TacticalState) -> Vec<TacticalEvent> {
-    let _ = state;
-    todo!("bt-2 outcome: sweep_kos")
+    let fallen: Vec<u32> = state
+        .units
+        .iter()
+        .filter(|u| u.state == UnitState::Active && u.cur_hp == 0)
+        .map(|u| u.id)
+        .collect();
+    let mut events = Vec::new();
+    for id in fallen {
+        if let Some(unit) = state.unit_mut(id) {
+            unit.state = UnitState::Fainted;
+        }
+        let was_queued = state.queued.contains(&id);
+        state.remove_from_initiative(id);
+        events.push(TacticalEvent::Ko { unit: id });
+        if was_queued {
+            events.push(TacticalEvent::QueueVoided { unit: id });
+        }
+    }
+    events
 }
 
 /// The battle-end check. `None` while both sides have a conscious unit; one side empty → the
@@ -86,8 +138,26 @@ pub fn check_battle_end(
     state: &TacticalState,
     snap: &StepSnapshot,
 ) -> Option<(BattleOutcome, BattleEndHow)> {
-    let _ = (state, snap);
-    todo!("bt-2 outcome: check_battle_end")
+    let alive = |side: Side| {
+        state
+            .units
+            .iter()
+            .any(|u| u.side == side && u.is_conscious())
+    };
+    match (alive(Side::A), alive(Side::B)) {
+        (true, true) => None,
+        (true, false) => Some((BattleOutcome::SideAWins, BattleEndHow::SideEmpty)),
+        (false, true) => Some((BattleOutcome::SideBWins, BattleEndHow::SideEmpty)),
+        (false, false) => {
+            if state.kind.uses_pvp_rules() {
+                let (winner, why) =
+                    adjudicate(snap, state.attack_damage_dealt, state.seed, state.round);
+                Some((winner_outcome(winner), BattleEndHow::Adjudicated(why)))
+            } else {
+                Some((BattleOutcome::SideBWins, BattleEndHow::FixedOrder))
+            }
+        }
+    }
 }
 
 /// Record a decided outcome (a decided battle is never overwritten) and return the event.
@@ -96,13 +166,31 @@ pub fn end_battle(
     outcome: BattleOutcome,
     how: BattleEndHow,
 ) -> TacticalEvent {
-    let _ = (state, outcome, how);
-    todo!("bt-2 outcome: end_battle")
+    if state.outcome == BattleOutcome::Ongoing {
+        state.outcome = outcome;
+    }
+    TacticalEvent::BattleEnd {
+        outcome: state.outcome,
+        how,
+    }
 }
 
 /// The ONE terminal-sweep site: [`sweep_kos`], then [`check_battle_end`] against `snap`, then
 /// [`end_battle`] when it decides. Returns the events in that order.
 pub fn settle(state: &mut TacticalState, snap: &StepSnapshot) -> Vec<TacticalEvent> {
-    let _ = (state, snap);
-    todo!("bt-2 outcome: settle")
+    let mut events = sweep_kos(state);
+    if state.outcome == BattleOutcome::Ongoing {
+        if let Some((outcome, how)) = check_battle_end(state, snap) {
+            events.push(end_battle(state, outcome, how));
+        }
+    }
+    events
+}
+
+/// `Side::A → SideAWins`, `Side::B → SideBWins`.
+pub(crate) fn winner_outcome(side: Side) -> BattleOutcome {
+    match side {
+        Side::A => BattleOutcome::SideAWins,
+        Side::B => BattleOutcome::SideBWins,
+    }
 }

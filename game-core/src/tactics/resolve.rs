@@ -24,24 +24,30 @@
 use serde::{Deserialize, Serialize};
 
 use crate::combat::ability::StatusKind;
+use crate::combat::damage::{accuracy_check, calc_damage};
 use crate::combat::type_chart::TypeChart;
-use crate::combat::types::{BattleOutcome, Effectiveness, StatusEffect};
+use crate::combat::types::{BattleMonster, BattleOutcome, Effectiveness, StatusEffect};
+use crate::content::SkillDef;
 use crate::monster::types::{Affinity, StatBlock};
 
-use super::economy::{EconomyError, Tier, TurnBudget, TurnEndCause};
-use super::geometry::{Board, Cell, GeometryError, Side, SkillGeometry};
-use super::initiative::Contender;
+use super::economy::{
+    apply_flank, apply_guard, guard_granted, spend, EconomyError, Entry, Tier, TurnBudget,
+    TurnEndCause,
+};
+use super::geometry::{
+    is_flanked, target_set, Board, BoardUnit, Cell, GeometryError, Side, SkillGeometry,
+};
+use super::initiative::{order, priority_for_round, round1_priority, Contender};
 use super::map::BattleMapDef;
-use super::movement::{MoveClass, Terrain};
-use super::outcome::BattleEndHow;
+use super::movement::{stride_for_base_speed, MoveClass, Terrain};
+use super::outcome::{settle, BattleEndHow, StepSnapshot};
 use super::tuning::{BattleKind, TacticsTuning};
 
 /// The canonical splitmix64 output for state `x` (`crate::tick_seed(x, 0, 0)`):
 /// `splitmix64(0) == 0xE220_A839_7B1D_CDAF`. Every tactics roll and coin is one of these.
 #[must_use]
 pub fn splitmix64(x: u64) -> u64 {
-    let _ = x;
-    todo!("bt-2 resolve: splitmix64")
+    crate::tick_seed(x, 0, 0)
 }
 
 /// Unit lifecycle (stored in `battle_unit.state`). Append-only.
@@ -99,19 +105,19 @@ impl TacticalUnit {
     /// `kit.stats.hp`.
     #[must_use]
     pub fn max_hp(&self) -> u16 {
-        todo!("bt-2 resolve: TacticalUnit::max_hp")
+        self.kit.stats.hp
     }
 
     /// `state == Active && cur_hp > 0`.
     #[must_use]
     pub fn is_conscious(&self) -> bool {
-        todo!("bt-2 resolve: TacticalUnit::is_conscious")
+        self.state == UnitState::Active && self.cur_hp > 0
     }
 
     /// `movement::stride_for_base_speed(kit.base_speed)`.
     #[must_use]
     pub fn stride(&self) -> u8 {
-        todo!("bt-2 resolve: TacticalUnit::stride")
+        stride_for_base_speed(self.kit.base_speed)
     }
 }
 
@@ -141,8 +147,21 @@ pub enum DeployError {
 /// # Errors
 /// `Fainted`, `HpAboveMax`, `ZeroDefense` in that order.
 pub fn validate_unit(unit: &TacticalUnit) -> Result<(), DeployError> {
-    let _ = unit;
-    todo!("bt-2 resolve: validate_unit")
+    let id = unit.id;
+    if unit.cur_hp == 0 {
+        return Err(DeployError::Fainted { id });
+    }
+    if unit.cur_hp > unit.max_hp() {
+        return Err(DeployError::HpAboveMax {
+            id,
+            cur_hp: unit.cur_hp,
+            max_hp: unit.max_hp(),
+        });
+    }
+    if unit.kit.stats.defense == 0 {
+        return Err(DeployError::ZeroDefense { id });
+    }
+    Ok(())
 }
 
 /// Deploy a conscious unit: `first_stand = true`, `state = Active`, no Guard, no status, an idle
@@ -158,8 +177,21 @@ pub fn deploy_unit(
     kit: UnitKit,
     cur_hp: u16,
 ) -> Result<TacticalUnit, DeployError> {
-    let _ = (id, side, slot, pos, kit, cur_hp);
-    todo!("bt-2 resolve: deploy_unit")
+    let unit = TacticalUnit {
+        id,
+        side,
+        slot,
+        kit,
+        pos,
+        cur_hp,
+        status: None,
+        budget: TurnBudget::default(),
+        guard: false,
+        first_stand: true,
+        state: UnitState::Active,
+    };
+    validate_unit(&unit)?;
+    Ok(unit)
 }
 
 /// The whole tactical battle as the rules see it (the server composes it from its rows).
@@ -200,51 +232,113 @@ impl TacticalState {
         kind: BattleKind,
         seed: u64,
         map: &BattleMapDef,
-        units: Vec<TacticalUnit>,
+        mut units: Vec<TacticalUnit>,
     ) -> Result<Self, DeployError> {
-        let _ = (kind, seed, map, units);
-        todo!("bt-2 resolve: TacticalState::new")
+        for unit in &units {
+            validate_unit(unit)?;
+        }
+        for (i, unit) in units.iter().enumerate() {
+            if units[..i].iter().any(|u| u.id == unit.id) {
+                return Err(DeployError::DuplicateId { id: unit.id });
+            }
+        }
+        for (i, unit) in units.iter().enumerate() {
+            if units[..i]
+                .iter()
+                .any(|u| u.side == unit.side && u.slot == unit.slot)
+            {
+                return Err(DeployError::DuplicateSlot {
+                    side: unit.side,
+                    slot: unit.slot,
+                });
+            }
+        }
+        for (i, unit) in units.iter().enumerate() {
+            let off_map = unit.pos.x >= map.width || unit.pos.y >= map.height;
+            if off_map || units[..i].iter().any(|u| u.pos == unit.pos) {
+                return Err(DeployError::BadPosition { id: unit.id });
+            }
+        }
+        for side in [Side::A, Side::B] {
+            if !units.iter().any(|u| u.side == side) {
+                return Err(DeployError::EmptySide { side });
+            }
+        }
+        units.sort_by_key(|u| (side_index(u.side), u.slot));
+        let mut state = TacticalState {
+            kind,
+            seed,
+            action_seq: 0,
+            round: 1,
+            width: map.width,
+            height: map.height,
+            terrain: map.tiles.iter().map(|t| t.terrain).collect(),
+            units,
+            initiative: Vec::new(),
+            queued: Vec::new(),
+            attack_damage_dealt: [0, 0],
+            outcome: BattleOutcome::Ongoing,
+        };
+        state.rebuild_initiative();
+        Ok(state)
     }
 
     /// The geometry/movement view: no LoS blockers in P1; `alive = is_conscious()`.
     #[must_use]
     pub fn board(&self) -> Board {
-        todo!("bt-2 resolve: TacticalState::board")
+        Board {
+            width: self.width,
+            height: self.height,
+            terrain: self.terrain.clone(),
+            blocks_los: vec![false; self.terrain.len()],
+            units: self.units.iter().map(board_unit_of).collect(),
+        }
     }
 
     #[must_use]
     pub fn unit(&self, id: u32) -> Option<&TacticalUnit> {
-        let _ = id;
-        todo!("bt-2 resolve: TacticalState::unit")
+        self.units.iter().find(|u| u.id == id)
     }
 
     pub fn unit_mut(&mut self, id: u32) -> Option<&mut TacticalUnit> {
-        let _ = id;
-        todo!("bt-2 resolve: TacticalState::unit_mut")
+        self.units.iter_mut().find(|u| u.id == id)
     }
 
     /// `priority_for_round(round1_priority(kind, seed), round)`.
     #[must_use]
     pub fn tie_priority(&self) -> Side {
-        todo!("bt-2 resolve: TacticalState::tie_priority")
+        priority_for_round(round1_priority(self.kind, self.seed), self.round)
     }
 
-    /// The conscious units as comparator inputs.
+    /// The conscious units as comparator inputs (`eff_speed` = the carried `stats.speed`; M14 has
+    /// no speed-modifying status — a future modifier is applied here, once).
     #[must_use]
     pub fn contenders(&self) -> Vec<Contender> {
-        todo!("bt-2 resolve: TacticalState::contenders")
+        self.units
+            .iter()
+            .filter(|u| u.is_conscious())
+            .map(|u| Contender {
+                id: u.id,
+                side: u.side,
+                slot: u.slot,
+                eff_speed: u.kit.stats.speed,
+                base_speed: u.kit.base_speed,
+            })
+            .collect()
     }
 
     /// `initiative = order(contenders, tie_priority)`.
     pub fn rebuild_initiative(&mut self) {
-        todo!("bt-2 resolve: TacticalState::rebuild_initiative")
+        self.initiative = order(&self.contenders(), self.tie_priority());
     }
 
     /// Drop `id` from `initiative` and `queued` (the only mid-round edits; a recruit removal
     /// calls this too). Returns whether `id` was in the initiative.
     pub fn remove_from_initiative(&mut self, id: u32) -> bool {
-        let _ = id;
-        todo!("bt-2 resolve: TacticalState::remove_from_initiative")
+        let present = self.initiative.contains(&id);
+        self.initiative.retain(|&u| u != id);
+        self.queued.retain(|&u| u != id);
+        present
     }
 }
 
@@ -263,8 +357,16 @@ pub enum ActError {
 /// # Errors
 /// See [`ActError`].
 pub fn can_act(state: &TacticalState, id: u32) -> Result<(), ActError> {
-    let _ = (state, id);
-    todo!("bt-2 resolve: can_act")
+    if state.outcome != BattleOutcome::Ongoing {
+        return Err(ActError::BattleOver);
+    }
+    let unit = state.unit(id).ok_or(ActError::UnknownUnit(id))?;
+    match unit.state {
+        UnitState::Recruited => Err(ActError::Recruited(id)),
+        UnitState::Fainted => Err(ActError::Fainted(id)),
+        UnitState::Active if unit.cur_hp == 0 => Err(ActError::Fainted(id)),
+        UnitState::Active => Ok(()),
+    }
 }
 
 /// TurnStart: a fresh budget, Guard off, First-Stand cleared (an auto-pass still activates).
@@ -272,8 +374,12 @@ pub fn can_act(state: &TacticalState, id: u32) -> Result<(), ActError> {
 /// # Errors
 /// [`can_act`]'s.
 pub fn turn_start(state: &mut TacticalState, id: u32, t: &TacticsTuning) -> Result<(), ActError> {
-    let _ = (state, id, t);
-    todo!("bt-2 resolve: turn_start")
+    can_act(state, id)?;
+    let unit = state.unit_mut(id).ok_or(ActError::UnknownUnit(id))?;
+    unit.budget = TurnBudget::fresh(t);
+    unit.guard = false;
+    unit.first_stand = false;
+    Ok(())
 }
 
 /// TurnEnd: sets the unit's Guard per `economy::guard_granted` (read from its budget), then
@@ -288,8 +394,12 @@ pub fn turn_end(
     cause: TurnEndCause,
     t: &TacticsTuning,
 ) -> Result<bool, ActError> {
-    let _ = (state, id, cause, t);
-    todo!("bt-2 resolve: turn_end")
+    can_act(state, id)?;
+    let unit = state.unit_mut(id).ok_or(ActError::UnknownUnit(id))?;
+    let guard = guard_granted(cause, &unit.budget, t);
+    unit.guard = guard;
+    unit.budget = TurnBudget::default();
+    Ok(guard)
 }
 
 /// One target's outcome inside `Executed` (bt-3's `Executed{per-target dmg, hit, flank, guard}`).
@@ -362,8 +472,11 @@ pub struct RollPair {
 /// Draw one target's [`RollPair`] from `splitmix64(seed ^ action_seq)`, advancing `action_seq`
 /// (wrapping) once per value: accuracy = `% 100` first, then variance = `85 + % 16`.
 pub fn draw_rolls(state: &mut TacticalState) -> RollPair {
-    let _ = state;
-    todo!("bt-2 resolve: draw_rolls")
+    let accuracy = (splitmix64(state.seed ^ state.action_seq) % 100) as u8;
+    state.action_seq = state.action_seq.wrapping_add(1);
+    let variance = 85 + (splitmix64(state.seed ^ state.action_seq) % 16) as u8;
+    state.action_seq = state.action_seq.wrapping_add(1);
+    RollPair { accuracy, variance }
 }
 
 /// Every intermediate of the pipeline for one target (the golden vectors pin the order).
@@ -392,8 +505,51 @@ pub fn damage_pipeline(
     rolls: RollPair,
     t: &TacticsTuning,
 ) -> PipelineTrace {
-    let _ = (attacker, target, skill, chart, flank, rolls, t);
-    todo!("bt-2 resolve: damage_pipeline")
+    if !accuracy_check(skill.accuracy, rolls.accuracy) {
+        return PipelineTrace {
+            hit: false,
+            d0: 0,
+            d1: 0,
+            d2: 0,
+            d3: 0,
+            effectiveness: None,
+            applied: 0,
+            hp_after: target.cur_hp,
+            stood_ground: false,
+        };
+    }
+    let (d0, effectiveness) = calc_damage(
+        &battle_monster_of(attacker),
+        &battle_monster_of(target),
+        &skill_def_of(skill),
+        chart,
+        rolls.variance,
+        None,
+    );
+    let d1 = if flank { apply_flank(d0, t) } else { d0 };
+    let d2 = if target.guard { apply_guard(d1, t) } else { d1 };
+    let d3 = if effectiveness == Effectiveness::Immune {
+        0
+    } else {
+        d2.max(1)
+    };
+    let (applied, hp_after, stood_ground) = if d3 > 0 && target.first_stand && d3 >= target.cur_hp {
+        (target.cur_hp - 1, 1, true)
+    } else {
+        let applied = d3.min(target.cur_hp);
+        (applied, target.cur_hp - applied, false)
+    };
+    PipelineTrace {
+        hit: true,
+        d0,
+        d1,
+        d2,
+        d3,
+        effectiveness: Some(effectiveness),
+        applied,
+        hp_after,
+        stood_ground,
+    }
 }
 
 /// Why an attack entry is INVALID (0 AP, no rolls drawn, state untouched).
@@ -432,6 +588,154 @@ pub fn resolve_attack(
     chart: &TypeChart,
     t: &TacticsTuning,
 ) -> Result<AttackOutcome, ResolveError> {
-    let _ = (state, attacker, skill_id, aim, chart, t);
-    todo!("bt-2 resolve: resolve_attack")
+    let snap = StepSnapshot::capture(state);
+    can_act(state, attacker).map_err(ResolveError::Act)?;
+    let actor = state
+        .unit(attacker)
+        .ok_or(ResolveError::Act(ActError::UnknownUnit(attacker)))?
+        .clone();
+    let skill = actor
+        .kit
+        .skills
+        .iter()
+        .find(|s| s.skill_id == skill_id)
+        .cloned()
+        .ok_or(ResolveError::UnknownSkill {
+            unit: attacker,
+            skill_id,
+        })?;
+    let board = state.board();
+    let targets =
+        target_set(&skill.geometry, attacker, aim, &board).map_err(ResolveError::Geometry)?;
+    let ap_spent = {
+        let unit = state
+            .unit_mut(attacker)
+            .ok_or(ResolveError::Act(ActError::UnknownUnit(attacker)))?;
+        spend(&mut unit.budget, Entry::Attack(skill.tier), t).map_err(ResolveError::Economy)?
+    };
+
+    let mut results = Vec::with_capacity(targets.len());
+    let mut details = Vec::new();
+    for target_id in targets {
+        let rolls = draw_rolls(state);
+        let Some(target) = state.unit(target_id).cloned() else {
+            continue;
+        };
+        let flank = is_flanked(attacker, target.pos, &board.units);
+        let trace = damage_pipeline(&actor, &target, &skill, chart, flank, rolls, t);
+        if !trace.hit {
+            results.push(TargetResult {
+                unit: target_id,
+                hit: false,
+                damage: 0,
+                effectiveness: None,
+                flank: false,
+                guard: false,
+                ko: false,
+            });
+            details.push(TacticalEvent::Missed {
+                attacker,
+                target: target_id,
+            });
+            continue;
+        }
+        let ko = trace.hp_after == 0;
+        if let Some(unit) = state.unit_mut(target_id) {
+            unit.cur_hp = trace.hp_after;
+            if trace.stood_ground {
+                unit.first_stand = false;
+                details.push(TacticalEvent::StoodGround { unit: target_id });
+            }
+            let immune = trace.effectiveness == Some(Effectiveness::Immune);
+            if !immune && !ko && unit.status.is_none() {
+                if let Some(kind) = skill.applies_status {
+                    let status = status_of(kind);
+                    unit.status = Some(status);
+                    details.push(TacticalEvent::StatusApplied {
+                        unit: target_id,
+                        status,
+                    });
+                }
+            }
+        }
+        if target.side != actor.side {
+            state.attack_damage_dealt[side_index(actor.side)] += u32::from(trace.applied);
+        }
+        results.push(TargetResult {
+            unit: target_id,
+            hit: true,
+            damage: trace.applied,
+            effectiveness: trace.effectiveness,
+            flank,
+            guard: target.guard,
+            ko,
+        });
+    }
+
+    let mut events = vec![TacticalEvent::Executed {
+        attacker,
+        skill_id,
+        results,
+    }];
+    events.extend(details);
+    events.extend(settle(state, &snap));
+    Ok(AttackOutcome { events, ap_spent })
+}
+
+/// The carried status a skill inflicts (`combat::resolve`: Sleep arrives with 3 turns).
+fn status_of(kind: StatusKind) -> StatusEffect {
+    match kind {
+        StatusKind::Poison => StatusEffect::Poison,
+        StatusKind::Burn => StatusEffect::Burn,
+        StatusKind::Paralysis => StatusEffect::Paralysis,
+        StatusKind::Sleep => StatusEffect::Sleep { turns_remaining: 3 },
+        StatusKind::Freeze => StatusEffect::Freeze,
+    }
+}
+
+/// The carried `BattleMonster` view of a unit for `calc_damage` (by value, no rule copied).
+fn battle_monster_of(unit: &TacticalUnit) -> BattleMonster {
+    BattleMonster {
+        species_id: unit.kit.species_id,
+        affinity: unit.kit.affinity,
+        level: unit.kit.level,
+        current_hp: unit.cur_hp,
+        max_hp: unit.max_hp(),
+        stats: unit.kit.stats,
+        known_skill_ids: Vec::new(),
+        status: unit.status,
+    }
+}
+
+/// The carried `SkillDef` view of a tactical skill for `calc_damage`.
+fn skill_def_of(skill: &SkillTactics) -> SkillDef {
+    SkillDef {
+        id: skill.skill_id,
+        name: String::new(),
+        affinity: skill.affinity,
+        power: skill.power,
+        accuracy: skill.accuracy,
+        pp: 0,
+        sets_weather: None,
+        applies_status: skill.applies_status,
+    }
+}
+
+/// The `BoardUnit` of a unit (`alive = is_conscious()`).
+fn board_unit_of(unit: &TacticalUnit) -> BoardUnit {
+    BoardUnit {
+        id: unit.id,
+        side: unit.side,
+        pos: unit.pos,
+        alive: unit.is_conscious(),
+        class: unit.kit.class,
+    }
+}
+
+/// Side → adjudication/damage array index (A = 0, B = 1).
+pub(crate) fn side_index(side: Side) -> usize {
+    match side {
+        Side::A => 0,
+        Side::B => 1,
+    }
 }

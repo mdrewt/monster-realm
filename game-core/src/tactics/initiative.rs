@@ -17,6 +17,7 @@ use std::cmp::Ordering;
 use serde::{Deserialize, Serialize};
 
 use super::geometry::Side;
+use super::resolve::splitmix64;
 use super::tuning::BattleKind;
 
 /// The salt XOR'd into the battle seed for the round-1 PvP tie coin (design §2.2).
@@ -36,29 +37,51 @@ pub struct Contender {
 /// PvP ruleset `splitmix64(seed ^ TIE_SALT) & 1` — 0 → A, 1 → B.
 #[must_use]
 pub fn round1_priority(kind: BattleKind, seed: u64) -> Side {
-    let _ = (kind, seed);
-    todo!("bt-2 initiative: round1_priority")
+    if !kind.uses_pvp_rules() {
+        return Side::A;
+    }
+    if splitmix64(seed ^ TIE_SALT) & 1 == 0 {
+        Side::A
+    } else {
+        Side::B
+    }
+}
+
+fn other(side: Side) -> Side {
+    match side {
+        Side::A => Side::B,
+        Side::B => Side::A,
+    }
 }
 
 /// Priority alternates each round: round 1 → `round1`, round 2 → the other side, and so on.
 /// Round 0 is treated as round 1.
 #[must_use]
 pub fn priority_for_round(round1: Side, round: u16) -> Side {
-    let _ = (round1, round);
-    todo!("bt-2 initiative: priority_for_round")
+    if (round.max(1) - 1).is_multiple_of(2) {
+        round1
+    } else {
+        other(round1)
+    }
 }
 
 /// The design comparator: `eff_speed` desc, `base_speed` desc, tie_rank asc (0 = `priority`
 /// side), `slot` asc, then `id` asc.
 #[must_use]
 pub fn compare(a: &Contender, b: &Contender, priority: Side) -> Ordering {
-    let _ = (a, b, priority);
-    todo!("bt-2 initiative: compare")
+    let tie_rank = |c: &Contender| u8::from(c.side != priority);
+    b.eff_speed
+        .cmp(&a.eff_speed)
+        .then(b.base_speed.cmp(&a.base_speed))
+        .then(tie_rank(a).cmp(&tie_rank(b)))
+        .then(a.slot.cmp(&b.slot))
+        .then(a.id.cmp(&b.id))
 }
 
 /// The round's initiative list: every contender's id sorted by [`compare`].
 #[must_use]
 pub fn order(contenders: &[Contender], priority: Side) -> Vec<u32> {
-    let _ = (contenders, priority);
-    todo!("bt-2 initiative: order")
+    let mut sorted = contenders.to_vec();
+    sorted.sort_by(|a, b| compare(a, b, priority));
+    sorted.iter().map(|c| c.id).collect()
 }
