@@ -23,6 +23,8 @@
 //! - `queue`      — `TacticalBattle`: submit gate, `validate_at_pop`, the executor (halt-and-return), the chain rule.
 //! - `ai`         — the wild planner: the three stances + Exhausted, seed-free (a pure function of the public board).
 //! - `encounter`  — multi-wild generation: the pack roll, the clamp, per-wild seeds, the map pick, `spawn_b` placement.
+//! - `recruit`    — the recruit rules behind the turn machine's gate: quantized odds + line items, preflight, the roll, the rebuild.
+//! - `rewards`    — the KO hook's in-battle ledger (XP split, essence, currency) and the battle-end payout.
 
 pub mod ai;
 #[cfg(test)]
@@ -117,12 +119,17 @@ pub use queue::{
     AdvancePin, CancelError, ConcludeError, ExpireError, HaltReason, Hooks, ReadyPlan, Rules,
     StepError, StepResult, SubmitError, TacticalBattle, Validated,
 };
+pub use recruit::{
+    rebuild_recruited, recruit_odds, recruit_preflight, recruit_roll_succeeds, resolve_recruit,
+    RecruitError, RecruitOdds,
+};
 pub use resolve::{
     can_act, damage_pipeline, deploy_unit, draw_rolls, resolve_attack, splitmix64, turn_end,
     turn_start, validate_unit, ActError, AttackOutcome, DeployError, PipelineTrace, ResolveError,
     RollPair, SkillTactics, TacticalEvent, TacticalState, TacticalUnit, TargetResult, UnitKit,
     UnitState,
 };
+pub use rewards::{on_unit_defeated, pay, Award, Credit, Ledger, Payout, RewardError};
 pub use tuning::{BattleKind, TacticsTuning, TuningError};
 pub use types::{
     ActionKind, ActionTarget, ItemAction, MoveAction, Phase, QueuedAction, RecruitAction,
