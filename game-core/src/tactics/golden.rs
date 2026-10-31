@@ -176,36 +176,44 @@ impl GoldenBoard {
     /// malformed board, first match wins: empty, too large (> 255 rows or columns),
     /// then row by row a ragged row before an unknown terrain glyph.
     fn to_board(&self) -> Result<Board, String> {
-        let width = self.rows.first().map_or(0, |r| r.chars().count());
-        if width == 0 {
-            return Err("empty board".to_owned());
-        }
-        let (Ok(w), Ok(h)) = (u8::try_from(width), u8::try_from(self.rows.len())) else {
-            return Err("board too large".to_owned());
-        };
-        let mut terrain = Vec::with_capacity(width * self.rows.len());
-        for (y, row) in self.rows.iter().enumerate() {
-            if row.chars().count() != width {
-                return Err(format!("ragged row {y}"));
-            }
-            for (x, c) in row.chars().enumerate() {
-                terrain.push(match c {
-                    '.' => Terrain::Plain,
-                    'r' => Terrain::Rough,
-                    'w' => Terrain::Water,
-                    '#' => Terrain::Blocked,
-                    other => return Err(format!("bad terrain '{other}' at ({x},{y})")),
-                });
-            }
-        }
+        let (width, height, terrain) = parse_rows(&self.rows)?;
         Ok(Board {
-            width: w,
-            height: h,
+            width,
+            height,
             blocks_los: vec![false; terrain.len()],
             terrain,
             units: self.units.clone(),
         })
     }
+}
+
+/// The row grammar shared by [`GoldenBoard`] and the `AiPlan` kind: `(width, height, row-major
+/// terrain)`, or the `BadCase` message, first match wins — empty, too large (> 255 rows or
+/// columns), then row by row a ragged row before an unknown terrain glyph.
+fn parse_rows(rows: &[String]) -> Result<(u8, u8, Vec<Terrain>), String> {
+    let width = rows.first().map_or(0, |r| r.chars().count());
+    if width == 0 {
+        return Err("empty board".to_owned());
+    }
+    let (Ok(w), Ok(h)) = (u8::try_from(width), u8::try_from(rows.len())) else {
+        return Err("board too large".to_owned());
+    };
+    let mut terrain = Vec::with_capacity(width * rows.len());
+    for (y, row) in rows.iter().enumerate() {
+        if row.chars().count() != width {
+            return Err(format!("ragged row {y}"));
+        }
+        for (x, c) in row.chars().enumerate() {
+            terrain.push(match c {
+                '.' => Terrain::Plain,
+                'r' => Terrain::Rough,
+                'w' => Terrain::Water,
+                '#' => Terrain::Blocked,
+                other => return Err(format!("bad terrain '{other}' at ({x},{y})")),
+            });
+        }
+    }
+    Ok((w, h, terrain))
 }
 
 fn run_case(case: &GoldenCase) -> Result<GoldenResult, String> {
@@ -303,8 +311,23 @@ fn run_case(case: &GoldenCase) -> Result<GoldenResult, String> {
             stance,
             spawn,
         } => {
-            let _ = (rows, units, seed, action_seq, unit, stance, spawn, plan);
-            todo!("bt-4 skeleton")
+            let (width, height, terrain) = parse_rows(rows)?;
+            let state = TacticalState {
+                kind: BattleKind::Wild,
+                seed: *seed,
+                action_seq: *action_seq,
+                round: 1,
+                width,
+                height,
+                blocks_los: vec![false; terrain.len()],
+                terrain,
+                units: units.clone(),
+                initiative: Vec::new(),
+                queued: Vec::new(),
+                attack_damage_dealt: [0, 0],
+                outcome: BattleOutcome::Ongoing,
+            };
+            GoldenResult::AiPlan(plan(&state, *unit, *stance, *spawn, &TacticsTuning::DESIGN))
         }
     })
 }

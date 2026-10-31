@@ -6,15 +6,20 @@
 //! (`pack_weights`, `battle_map_pool`). Species and levels per slot stay with the carried pool
 //! rules (`taming::rules`); this module exposes no species or level API. Reject, never clamp — except
 //! the design's own clamp `effective = min(rolled, 3, conscious_party_count)`, which is the rule.
+//! Every modulus is taken in u64 and narrowed afterwards: the server runs on wasm32.
 
 use serde::{Deserialize, Serialize};
 
 use super::geometry::Cell;
 use super::map::BattleMapDef;
+use super::resolve::splitmix64;
 
 /// The most wilds an encounter fields (design §3.4 `min(rolled, 3, …)`; every validated map has
 /// three `spawn_b` slots).
 pub const MAX_PACK: u8 = 3;
+
+/// The per-mille scale the weights are expressed in (the carried `roll % 1000 < threshold` idiom).
+const PER_MILLE: u64 = 1000;
 
 /// Per-mille pack-size weights (the zone's `pack_weights`, bt-6). Must sum to 1000.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,12 +38,17 @@ impl PackWeights {
         three: 100,
     };
 
-    /// The weights must sum to exactly 1000 (u32 sum).
+    /// The weights must sum to exactly 1000 (u32 sum — a u16 sum could wrap to 1000).
     ///
     /// # Errors
     /// [`EncounterError::BadWeights`] with the actual sum.
     pub fn validate(&self) -> Result<(), EncounterError> {
-        todo!("bt-4 skeleton")
+        let sum = u32::from(self.one) + u32::from(self.two) + u32::from(self.three);
+        if u64::from(sum) == PER_MILLE {
+            Ok(())
+        } else {
+            Err(EncounterError::BadWeights { sum })
+        }
     }
 }
 
@@ -64,7 +74,15 @@ pub enum EncounterError {
 /// # Errors
 /// [`PackWeights::validate`]'s.
 pub fn roll_pack_size(weights: &PackWeights, encounter_seed: u64) -> Result<u8, EncounterError> {
-    todo!("bt-4 skeleton")
+    weights.validate()?;
+    let r = encounter_seed % PER_MILLE;
+    if r < u64::from(weights.one) {
+        Ok(1)
+    } else if r < u64::from(weights.one) + u64::from(weights.two) {
+        Ok(2)
+    } else {
+        Ok(3)
+    }
 }
 
 /// Design §3.4: `min(rolled, MAX_PACK, conscious_party_count)`.
@@ -73,14 +91,21 @@ pub fn roll_pack_size(weights: &PackWeights, encounter_seed: u64) -> Result<u8, 
 /// `conscious_party_count == 0` → [`EncounterError::NoConsciousParty`]; then `rolled == 0` →
 /// [`EncounterError::BadPackSize`].
 pub fn effective_pack(rolled: u8, conscious_party_count: u8) -> Result<u8, EncounterError> {
-    todo!("bt-4 skeleton")
+    if conscious_party_count == 0 {
+        return Err(EncounterError::NoConsciousParty);
+    }
+    if rolled == 0 {
+        return Err(EncounterError::BadPackSize { rolled });
+    }
+    Ok(rolled.min(MAX_PACK).min(conscious_party_count))
 }
 
 /// Wild `index`'s individuality seed: `splitmix64(encounter_seed ^ index) as u32` (truncating) —
 /// what `roll_individuality` rebuilds that exact wild from at recruit.
 #[must_use]
 pub fn wild_seed(encounter_seed: u64, index: u8) -> u32 {
-    todo!("bt-4 skeleton")
+    // The truncating cast IS the rule (design §3.4): the low 32 bits.
+    (splitmix64(encounter_seed ^ u64::from(index)) & 0xFFFF_FFFF) as u32
 }
 
 /// The pool index of the battle map: `encounter_seed % pool_len`, computed in u64 and narrowed
@@ -89,7 +114,12 @@ pub fn wild_seed(encounter_seed: u64, index: u8) -> u32 {
 /// # Errors
 /// `pool_len == 0` → [`EncounterError::EmptyMapPool`].
 pub fn pick_map_index(pool_len: usize, encounter_seed: u64) -> Result<usize, EncounterError> {
-    todo!("bt-4 skeleton")
+    let len = u64::try_from(pool_len).map_err(|_| EncounterError::EmptyMapPool)?;
+    if len == 0 {
+        return Err(EncounterError::EmptyMapPool);
+    }
+    // `encounter_seed % len < len ≤ usize::MAX`, so the narrowing cannot fail.
+    usize::try_from(encounter_seed % len).map_err(|_| EncounterError::EmptyMapPool)
 }
 
 /// The wilds' tiles: `map.spawn_b[..pack]` in slot order (wild `i` deploys on side-B slot `i`).
@@ -97,7 +127,14 @@ pub fn pick_map_index(pool_len: usize, encounter_seed: u64) -> Result<usize, Enc
 /// # Errors
 /// Fewer `spawn_b` slots than `pack` → [`EncounterError::SpawnSlots`].
 pub fn spawn_tiles(map: &BattleMapDef, pack: u8) -> Result<Vec<Cell>, EncounterError> {
-    todo!("bt-4 skeleton")
+    let want = usize::from(pack);
+    if map.spawn_b.len() < want {
+        return Err(EncounterError::SpawnSlots {
+            got: map.spawn_b.len(),
+            want: pack,
+        });
+    }
+    Ok(map.spawn_b[..want].to_vec())
 }
 
 /// A generated encounter: the picked map and one individuality seed per wild. `seeds.len()` is the
@@ -120,5 +157,10 @@ pub fn generate_encounter(
     encounter_seed: u64,
     conscious_party_count: u8,
 ) -> Result<Encounter, EncounterError> {
-    todo!("bt-4 skeleton")
+    weights.validate()?;
+    let map_index = pick_map_index(pool_len, encounter_seed)?;
+    let rolled = roll_pack_size(weights, encounter_seed)?;
+    let pack = effective_pack(rolled, conscious_party_count)?;
+    let seeds = (0..pack).map(|i| wild_seed(encounter_seed, i)).collect();
+    Ok(Encounter { map_index, seeds })
 }
