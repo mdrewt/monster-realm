@@ -342,7 +342,7 @@ on a player's unit; each accepted submit for it closes the window, and re-enteri
 opens a fresh full one after the capped presentation pad. A live submit whose first entry
 fails is refused (`InvalidNow`) and changes nothing, clock included. The AP floor bounds a
 unit-turn to 3 windows (6 → 4 → 2). PvP-ruleset expiry auto-passes without Guard and the 4th
-strike of the match forfeits; wild expiry auto-flees. The planner, inventory, recruit headroom
+strike against one side forfeits; wild expiry auto-flees. The planner, inventory, recruit headroom
 and Item/Recruit/Flee resolution reach the executor only through the `Hooks` trait; a hook
 may add only `RecruitResult`, `Awards` and `Status` events and never decides the outcome (the
 terminal sweep does; a flee is `Fled` whatever the hook did). Clocks and strike counts are
@@ -359,7 +359,7 @@ no later slice's `touches:`, so later rules arrive as hooks the server implement
 cumulative per-unit-turn clock (§12 Q1's); skipping past an invalid entry (conditional
 scripting); trusting a client-sent tile (a Skill re-aims at its bound unit, a Move re-paths);
 wiring a rule into the executor except through `Hooks`. Accepted reveals: `reason_kind` names
-the kind of the first discarded entry, and `QueueVoided` shows that a plan existed.
+the failure kind of the first discarded entry, and `QueueVoided` shows that a plan existed.
 
 ## Tactical rule conventions carried from bt-2
 
