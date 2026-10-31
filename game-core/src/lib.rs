@@ -88,8 +88,11 @@ pub use raising::{
 };
 pub use ranking::{apply_elo, compute_rating_update, INITIAL_RATING};
 pub use tactics::{
-    find_path, parse_battle_map, resolve_attack, run_golden, run_upkeep, target_set, EventPayload,
-    QueuedAction, TacticalBattle, TacticsTuning,
+    find_path, load_battle_maps, load_tactics_items, load_tactics_skills, load_tactics_species,
+    load_tactics_tuning, load_tactics_zones, parse_battle_map, resolve_attack, run_golden,
+    run_upkeep, target_set, validate_tactics_content, BattleMapEntry, EventPayload, QueuedAction,
+    TacticalBattle, TacticsItemDef, TacticsRegistries, TacticsSkillDef, TacticsSpeciesDef,
+    TacticsTuning, TacticsZoneDef,
 };
 pub use taming::{
     attempt_recruit, encounter_triggers, recruit_chance, resolve_encounter, roll_encounter,

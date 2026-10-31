@@ -283,7 +283,7 @@ include!(concat!(env!("OUT_DIR"), "/content_parts.rs"));
 /// re-sorting); a malformed part is rejected loudly, naming the offending file.
 /// `label` is the registry's error-message prefix, so the message reads
 /// `"<label> parse error in <file>: <e>"`.
-fn parse_parts<T>(parts: &[(&str, &str)], label: &str) -> Result<Vec<T>, String>
+pub(crate) fn parse_parts<T>(parts: &[(&str, &str)], label: &str) -> Result<Vec<T>, String>
 where
     T: for<'de> serde::Deserialize<'de>,
 {
