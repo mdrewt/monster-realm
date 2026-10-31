@@ -1,10 +1,11 @@
 //! Wild AI — design §4.2: the three stances + the universal Exhausted rule, **seed-free**.
 //!
 //! [`plan`] is a pure function of the public board. It takes no RNG and no seed parameter (the
-//! compile shape); every rule below it reads a private `View` that carries no `seed`, `action_seq`
-//! or budget (so a new stance has nothing secret to reach for), and it costs from a fresh budget —
-//! so the client's intent chip (the same wasm build on the shared provisional board) and the
-//! server's TurnStart plan can never disagree. A stance that wants randomness cannot compile
+//! compile shape); every rule below it reads a private `View` that carries no `seed` or
+//! `action_seq` (so a new stance has nothing secret to reach for), and it costs every plan from a
+//! fresh budget, never the actor's stored one — so the client's intent chip (the same wasm build on
+//! the shared provisional board, where budgets are idle) and the server's TurnStart plan can never
+//! disagree. A stance that wants randomness cannot compile
 //! against a seed; it must move its telegraph into server-pushed `battle_event`s. Every choice is
 //! one `min_by_key` over an explicit tuple, so native and wasm agree byte for byte.
 //!
@@ -110,8 +111,9 @@ struct Candidate<'a> {
     aim: ActionTarget,
 }
 
-/// The public board as the planner reads it — deliberately without `seed`, `action_seq` or the
-/// actor's stored budget: every helper takes this, never the state.
+/// The public board as the planner reads it — deliberately without `seed` or `action_seq`: every
+/// helper takes this, never the state. (`actor.budget` stays reachable through `&TacticalUnit`;
+/// `admissible` costs from `TurnBudget::fresh` and the blindness tests pin that.)
 struct View<'a> {
     board: Board,
     units: &'a [TacticalUnit],
