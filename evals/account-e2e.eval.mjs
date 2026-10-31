@@ -2209,9 +2209,18 @@ async function runLivePhase() {
     const s9Sql = [];
     const s9T0 = Date.now();
     const s9G22Raw = [];
+    // bt-7, measured: with the ten tactical tables the pre-cascade snapshot is
+    // ~75 back-to-back CLI calls, and under that cadence the host's auth path
+    // ("Getting validator for issuer https://auth.spacetimedb.com") once
+    // stalled for 62 s with no key fetch, then served every later call. A 60 s
+    // per-call cap turned that stall into a SIGTERM/ETIMEDOUT failure four
+    // runs out of four; the cap now clears it, and the error carries the spawn
+    // status, signal, code and timing so a real rejection is never confused
+    // with a stall.
+    const SQL_CALL_TIMEOUT_MS = 150_000;
     const sqlJsonRows = (query) => {
       const res = run('spacetime', ['sql', '--format', 'json', '-s', dbUrl, DB_NAME, query], {
-        timeout: 60_000,
+        timeout: SQL_CALL_TIMEOUT_MS,
       });
       if (!res.ok)
         throw new Error(
@@ -2244,7 +2253,9 @@ async function runLivePhase() {
       return decodeSqlJson(res.stdout);
     };
     const sqlDml = (stmt) => {
-      const res = run('spacetime', ['sql', '-s', dbUrl, DB_NAME, stmt], { timeout: 60_000 });
+      const res = run('spacetime', ['sql', '-s', dbUrl, DB_NAME, stmt], {
+        timeout: SQL_CALL_TIMEOUT_MS,
+      });
       if (!res.ok) throw new Error('sql-dml failed (' + stmt.slice(0, 120) + '): ' + res.stderr);
     };
     const cnt = (q) => countFromRows(sqlJsonRows(q));
