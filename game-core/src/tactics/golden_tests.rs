@@ -92,13 +92,13 @@ const FIXTURE: &str = include_str!("../../tests/fixtures/tactics_golden.json");
 
 /// The pinned size of the fixture. Growing it (BT2.5, BT4.8, BT11.7 join the harness) is a
 /// deliberate edit here AND in the vitest.
-const CASE_COUNT: usize = 286;
+const CASE_COUNT: usize = 304;
 /// Cases that must come back `BadCase`: a malformed board (no rows / too large / ragged / bad
 /// glyph) or, since bt-2, a Pipeline unit that fails `validate_unit`.
 const BAD_CASE_COUNT: usize = 17;
 
 /// Every `GoldenCase` kind. Each must appear in the fixture at least once.
-const KINDS: [&str; 17] = [
+const KINDS: [&str; 18] = [
     "Distance",
     "Adjacent",
     "TargetSet",
@@ -116,6 +116,7 @@ const KINDS: [&str; 17] = [
     "Priority",
     "Pipeline",
     "Adjudicate",
+    "AiPlan",
 ];
 
 /// The kinds bt-2 added (BT2.5).
@@ -906,4 +907,524 @@ fn golden_rolls_are_the_per_target_stream_from_seed_xor_action_seq_bt2_5() {
             "seed {seed:#x} seq {seq}"
         );
     }
+}
+
+// ===========================================================================
+// BT4.8 — the wild planner joins the harness (intent-chip parity)
+// ===========================================================================
+//
+// The 18 AiPlan fixture cases (#286..=#303, in this order) and how each expected plan was derived.
+// All run at the DESIGN tuning on 7×7 boards; the wild is unit 11 (side B, levelled speed 80, base
+// speed 30 = stride 2 unless stated, 100/100 HP unless stated), players are side A. The arithmetic
+// is `ai_tests.rs`'s module doc: 6 AP; Move 2 AP per stride (+1 when an enemy is adjacent to the
+// wild's tile), Light 2, Heavy 4, End 0, ≤ 2 strides; Walk pays 1 per Plain, 2 per Rough; tile key
+// `(primary, path cost, y, x)`, target key `(distance, cur_hp, slot, y, x)`.
+//
+//  1 Aggressive, melee kit, W (3,3), P1 (4,3) adjacent: Heavy from its own tile (4 AP)
+//    → [Skill 20 → 1, End]
+//  2 Aggressive, J9 kit (Light r1–3, Heavy melee), W (1,3), P1 (4,3): a stationary Light exists,
+//    but Heavy after one stride to (3,3) (cost 2, 6 AP) wins — tier before tile
+//    → [Move (3,3) ×1, Skill 20 → 1, End]
+//  3 Aggressive, ranged kit (both r2–3), W (3,3), P1 adjacent: the taxed one-stride Heavy is 7
+//    (refused), the taxed one-stride Light 5; cost-1 tiles 2 from P1: (3,2), (2,3), (3,4)
+//    → lowest y → [Move (3,2) ×1, Skill 10 → 1, End]
+//  4 Aggressive, melee, W (0,3), P1 (6,3), Rough (2,3): no attack in reach; (4,3) (d 2) costs
+//    1+2+1+1 = 5 > 4; (3,3) (d 3) costs 4 → [Move (3,3) ×2, End]
+//  5 Aggressive, melee, W (3,3), P1 (3,0), row 2 Blocked: P1's side is unreachable; every
+//    reachable tile has d ≥ 3 = d(own tile) → [End]
+//  6 Territorial (spawn (6,3)), melee, W (4,3), P1 (1,3): the attack tiles (2,3), (1,2), (1,4)
+//    are 4–6 from the spawn → no attack → [End]
+//  7 Territorial (spawn (6,3)), melee, W (5,3), P1 (6,1): one-stride Heavy tiles (5,1) (3 from
+//    the spawn: refused) and (6,2) (1 from it), both cost 2 → [Move (6,2) ×1, Skill 20 → 1, End]
+//  8 Skittish, ranged kit, W (3,2), P1 (3,0): Heavy tiles at the farthest d 3, all cost 1:
+//    (2,2), (4,2), (3,3) → (2,2) → [Move (2,2) ×1, Skill 20 → 1, End]
+//  9 Skittish, melee (band 1 + 2 = 3), W (0,2), P1 (0,0), (0,1) Blocked: (1,0) costs 3, no
+//    Heavy; farthest in band d 3: (1,2) cost 1 beats (0,3) cost 1 (y) and (2,1) cost 3
+//    → [Move (1,2) ×1, End]
+// 10 Skittish, melee (band 3), W (6,6), P1 (0,0): no in-band tile in reach → approach; d 8 at
+//    (2,6), (3,5), (4,4), (5,3), (6,2), all cost 4 → [Move (6,2) ×2, End]
+// 11 Aggressive, J9 kit, W (1,3) at 24/100 (96 < 100: Exhausted), P1 (4,3): its own tile only,
+//    the Light reaches (3 away) → [Skill 10 → 1, End]
+// 12 the same at 25/100 (100 is not below 100): not Exhausted → case 2's plan
+// 13 Skittish, melee, W (1,3) at 24/100, P1 (4,3): Exhausted, nothing in range from its tile
+//    → [End]
+// 14 Aggressive, Light r1–3 + Heavy lance r1–2, W (3,3); P1 (slot 0, 90 HP) at (3,1) and P2
+//    (slot 1, 40 HP) at (5,3), both 2 away → the lower cur_hp, P2, Heavy from its own tile
+//    → [Skill 20 → 2, End]
+// 15 Aggressive, Light melee + Heavy 30 Caster Burst(1), W (1,3), P1 (4,3): the ring holds P1
+//    from (3,3), one stride → [Move (3,3) ×1, Skill 30 → SelfTarget, End]
+// 16 Aggressive, melee, base speed 95 (stride 4; the levelled speed 80 would give 3), W (0,3),
+//    P1 (5,3): (4,3) costs 4 = one stride → Heavy (6 AP) → [Move (4,3) ×1, Skill 20 → 1, End]
+// 17 case 2 with seed 9 007 199 254 740 991 and action_seq 7 → case 2's plan (seed-blind)
+// 18 case 2 with the wild's stored budget fresh (ap 6) instead of idle → case 2's plan (J14)
+
+use crate::combat::types::BattleOutcome;
+use crate::monster::types::Affinity;
+
+use super::ai::Stance;
+use super::economy::spend;
+use super::events::EventPayload;
+use super::queue::{validate_at_pop, HaltReason, Hooks, Validated};
+use super::resolve::{SkillTactics, TacticalState};
+use super::tuning::TacticsTuning;
+use super::types::{ActionTarget, MoveAction, QueuedAction, SkillAction};
+
+/// The AiPlan cases the fixture carries (the bt-4 matrix above).
+const AI_PLAN_CASES: usize = 18;
+
+/// The gate's hooks for Move / Skill / EndTurn entries (none of those reads a hook).
+struct NoHooks;
+
+impl Hooks for NoHooks {
+    fn item_count(&self, _unit: u32, _item_id: u32) -> u32 {
+        0
+    }
+
+    fn take_item(&mut self, _unit: u32, _item_id: u32) -> bool {
+        false
+    }
+
+    fn recruit_headroom(&self, _unit: u32) -> bool {
+        false
+    }
+
+    fn plan_ai(&self, _state: &TacticalState, _unit: u32) -> Vec<QueuedAction> {
+        vec![QueuedAction::EndTurn]
+    }
+
+    fn validate_delegated(
+        &self,
+        _state: &TacticalState,
+        _unit: u32,
+        _validated: &Validated,
+    ) -> Result<(), HaltReason> {
+        Ok(())
+    }
+
+    fn resolve_delegated(
+        &mut self,
+        _state: &mut TacticalState,
+        _unit: u32,
+        _validated: &Validated,
+    ) -> Vec<EventPayload> {
+        Vec::new()
+    }
+}
+
+/// The fixture indices of the AiPlan cases.
+fn ai_case_indices(fx: &Value) -> Vec<usize> {
+    cases_array(fx)
+        .iter()
+        .enumerate()
+        .filter(|(_, case)| kind_of(case) == "AiPlan")
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// The plan inside an `{"AiPlan": [...]}` result.
+fn ai_plan_of(result: &Value) -> Vec<QueuedAction> {
+    serde_json::from_value(result["AiPlan"].clone())
+        .unwrap_or_else(|e| panic!("not an AiPlan result {result}: {e}"))
+}
+
+fn shape_of(plan: &[QueuedAction]) -> &'static str {
+    match plan {
+        [QueuedAction::Skill(_), QueuedAction::EndTurn] => "[Skill, End]",
+        [QueuedAction::Move(_), QueuedAction::Skill(_), QueuedAction::EndTurn] => {
+            "[Move, Skill, End]"
+        }
+        [QueuedAction::Move(_), QueuedAction::EndTurn] => "[Move, End]",
+        [QueuedAction::EndTurn] => "[End]",
+        _ => "another shape",
+    }
+}
+
+/// The battle an AiPlan case describes (kind Wild, round 1, the units and the secret stream AS
+/// GIVEN), rebuilt here from the rows independently of the adapter.
+fn ai_board_state(
+    rows: &[String],
+    units: &[TacticalUnit],
+    seed: u64,
+    action_seq: u64,
+) -> TacticalState {
+    let height = u8::try_from(rows.len()).expect("fixture boards fit u8");
+    let width =
+        u8::try_from(rows.first().map_or(0, |r| r.chars().count())).expect("fixture boards fit u8");
+    let terrain: Vec<Terrain> = rows
+        .iter()
+        .flat_map(|r| r.chars())
+        .map(|ch| match ch {
+            '.' => Terrain::Plain,
+            'r' => Terrain::Rough,
+            'w' => Terrain::Water,
+            '#' => Terrain::Blocked,
+            other => panic!("fixture glyph {other:?}"),
+        })
+        .collect();
+    let n = terrain.len();
+    TacticalState {
+        kind: BattleKind::Wild,
+        seed,
+        action_seq,
+        round: 1,
+        width,
+        height,
+        terrain,
+        blocks_los: vec![false; n],
+        units: units.to_vec(),
+        initiative: Vec::new(),
+        queued: Vec::new(),
+        attack_damage_dealt: [0, 0],
+        outcome: BattleOutcome::Ongoing,
+    }
+}
+
+/// Replay `plan` for `actor` as the executor would — the actor's budget fresh (TurnStart), each
+/// entry through `validate_at_pop` on the board as it then stands, the costed entry spent on the
+/// budget (the trailing EndTurn included) and the actor relocated after a Move. The first refusal,
+/// as text.
+fn gate_replay(mut state: TacticalState, actor: u32, plan: &[QueuedAction]) -> Result<(), String> {
+    let t = TacticsTuning::DESIGN;
+    if plan.last() != Some(&QueuedAction::EndTurn) {
+        return Err("the plan does not end with EndTurn".to_owned());
+    }
+    state
+        .unit_mut(actor)
+        .ok_or_else(|| format!("no unit {actor}"))?
+        .budget = TurnBudget::fresh(&t);
+    for (k, action) in plan.iter().enumerate() {
+        let validated = validate_at_pop(&state, actor, action, &NoHooks, &t)
+            .map_err(|e| format!("entry {k} {action:?} refused: {e:?}"))?;
+        let entry = match &validated {
+            Validated::Move { entry, .. } => *entry,
+            Validated::Skill { skill_id, .. } => {
+                let tier = state
+                    .unit(actor)
+                    .and_then(|u| u.kit.skills.iter().find(|s| s.skill_id == *skill_id))
+                    .map(|s| s.tier)
+                    .ok_or_else(|| format!("entry {k}: skill {skill_id} is not in the kit"))?;
+                Entry::Attack(tier)
+            }
+            Validated::EndTurn => Entry::EndTurn,
+            other => return Err(format!("entry {k}: {other:?} is not a planner entry")),
+        };
+        let u = state
+            .unit_mut(actor)
+            .ok_or_else(|| format!("entry {k}: unit {actor} is gone"))?;
+        spend(&mut u.budget, entry, &t)
+            .map_err(|e| format!("entry {k} {action:?} unaffordable: {e:?}"))?;
+        if let QueuedAction::Move(m) = action {
+            u.pos = m.dest();
+        }
+    }
+    Ok(())
+}
+
+/// The wild of the inline cases: unit 11, side B, slot 0, 100/100 HP, levelled speed 80, base 30.
+fn golden_wild(x: u8, y: u8, skills: Vec<SkillTactics>) -> TacticalUnit {
+    rt::unit(
+        11,
+        Side::B,
+        0,
+        c(x, y),
+        rt::kit(
+            2,
+            Affinity::Water,
+            5,
+            rt::stat_block(100, 10, rt::CHIP_DEF, 80),
+            30,
+            MoveClass::Walk,
+            skills,
+        ),
+        100,
+    )
+}
+
+/// A side-A player: 100/100 HP, speed 30, no skills.
+fn golden_player(id: u32, x: u8, y: u8) -> TacticalUnit {
+    rt::unit(
+        id,
+        Side::A,
+        0,
+        c(x, y),
+        rt::water(100, rt::CHIP_DEF, 30, Vec::new()),
+        100,
+    )
+}
+
+/// BT4.8: every AiPlan fixture case (at least the 18 above) reproduces its hand-derived plan in
+/// canonical form — the native half of the intent-chip parity (the vitest compares the SAME
+/// expected values through the wasm `tactics_golden`).
+/// Kills: any drift in the planner's answer on a frozen board; an AiPlan dispatched elsewhere.
+#[test]
+fn every_ai_plan_fixture_case_reproduces_its_hand_derived_plan_bt4_8() {
+    let fx = fixture();
+    let cases = cases_array(&fx);
+    let expected = expected_array(&fx);
+    let got = run_fixture();
+    let idx = ai_case_indices(&fx);
+    assert!(
+        idx.len() >= AI_PLAN_CASES,
+        "{} AiPlan cases in the fixture",
+        idx.len()
+    );
+    for i in idx {
+        assert_eq!(kind_of(&expected[i]), "AiPlan", "expected #{i}");
+        assert_eq!(
+            canon(&got[i]),
+            canon(&expected[i]),
+            "case #{i}: {}",
+            canon(&cases[i])
+        );
+    }
+}
+
+/// BT4.8: on the fixture boards the planner answers every plan shape — `[Skill, End]`,
+/// `[Move, Skill, End]`, `[Move, End]`, `[End]` — and no other.
+/// Kills: a planner (or an adapter) that collapses to one shape; an extra entry.
+#[test]
+fn the_planner_answers_every_plan_shape_on_the_fixture_boards_bt4_8() {
+    let fx = fixture();
+    let got = run_fixture();
+    let shapes: Vec<&str> = ai_case_indices(&fx)
+        .into_iter()
+        .map(|i| shape_of(&ai_plan_of(&got[i])))
+        .collect();
+    for want in ["[Skill, End]", "[Move, Skill, End]", "[Move, End]", "[End]"] {
+        assert!(shapes.contains(&want), "no {want} plan among {shapes:?}");
+    }
+    assert!(!shapes.contains(&"another shape"), "{shapes:?}");
+}
+
+/// BT4.8: the execution gate is the independent oracle — every AiPlan the planner answers on a
+/// fixture board, and every hand-derived expected plan, passes `queue::validate_at_pop` entry by
+/// entry on its own board (the actor relocated and the entry spent on a budget copy between
+/// entries, the trailing EndTurn affordable) — so an intent chip can never show a plan the
+/// server would halt.
+/// Kills: a planned Move the gate re-paths as TooFar / unreachable; an aim the gate's
+/// `target_set` refuses; an unaffordable sequence.
+#[test]
+fn every_fixture_ai_plan_is_accepted_by_the_execution_gate_entry_by_entry_bt4_8() {
+    let fx = fixture();
+    let expected = expected_array(&fx);
+    let got = run_fixture();
+    let cases = fixture_cases(&fx);
+    let idx = ai_case_indices(&fx);
+    assert!(idx.len() >= AI_PLAN_CASES);
+    for i in idx {
+        let GoldenCase::AiPlan {
+            rows,
+            units,
+            seed,
+            action_seq,
+            unit,
+            ..
+        } = &cases[i]
+        else {
+            panic!("case #{i} is an AiPlan case");
+        };
+        for (label, value) in [("planned", &got[i]), ("expected", &expected[i])] {
+            let plan = ai_plan_of(value);
+            let state = ai_board_state(rows, units, *seed, *action_seq);
+            if let Err(why) = gate_replay(state, *unit, &plan) {
+                panic!("case #{i}, {label} {plan:?}: {why}");
+            }
+        }
+    }
+}
+
+/// BT4.8: a malformed `rows` in an AiPlan case is a `BadCase` with the `GoldenBoard` texts, first
+/// match wins (no rows / an empty first row → "empty board"; ragged rows 1 and 2; a bad glyph at
+/// (1,1); 256 columns or 256 rows → "board too large") — and a well-formed board beside them
+/// plans: on `...` the melee wild at (0,0) faces P1 at (1,0) → `[Skill 20 → 1, End]`.
+/// Kills: a second row parser with other texts; a panic on a malformed board.
+#[test]
+fn a_malformed_ai_plan_board_is_a_bad_case_with_the_golden_board_texts_bt4_8() {
+    let melee = || {
+        vec![
+            rt::light(10, Affinity::Fire, rt::melee()),
+            rt::heavy(20, Affinity::Fire, 65, rt::melee()),
+        ]
+    };
+    let ai = |rows: Vec<String>| GoldenCase::AiPlan {
+        rows,
+        units: vec![golden_player(1, 1, 0), golden_wild(0, 0, melee())],
+        seed: 0,
+        action_seq: 0,
+        unit: 11,
+        stance: Stance::Aggressive,
+        spawn: c(0, 0),
+    };
+    let lines = |r: &[&str]| -> Vec<String> { r.iter().map(|s| (*s).to_string()).collect() };
+    let bad = |text: &str| GoldenResult::BadCase(text.to_string());
+    assert_eq!(
+        run_golden(&[
+            ai(Vec::new()),
+            ai(lines(&[""])),
+            ai(lines(&["...", "..", "..."])),
+            ai(lines(&["..", "..", "."])),
+            ai(lines(&["..", ".x"])),
+            ai(vec![".".repeat(256)]),
+            ai(vec![".".to_string(); 256]),
+            ai(lines(&["..."])),
+        ]),
+        vec![
+            bad("empty board"),
+            bad("empty board"),
+            bad("ragged row 1"),
+            bad("ragged row 2"),
+            bad("bad terrain 'x' at (1,1)"),
+            bad("board too large"),
+            bad("board too large"),
+            GoldenResult::AiPlan(vec![
+                QueuedAction::Skill(SkillAction {
+                    skill_id: 20,
+                    target: ActionTarget::Unit(1),
+                }),
+                QueuedAction::EndTurn,
+            ]),
+        ]
+    );
+}
+
+/// BT4.8: the seed twin (case 17: seed 2^53 − 1, action_seq 7) and the budget twin (case 18: the
+/// wild's stored budget fresh) each have a base board in the fixture (the same case with the
+/// secret stream zeroed and every budget idle — case 2), and twin and base have identical
+/// expected AND identical planned answers.
+/// Kills: a planner whose answer moves with the secret stream or the stored budget.
+#[test]
+fn the_seed_twin_and_the_budget_twin_plan_exactly_like_their_base_board_bt4_8() {
+    let fx = fixture();
+    let expected = expected_array(&fx);
+    let got = run_fixture();
+    let cases = fixture_cases(&fx);
+    let ai = ai_case_indices(&fx);
+    let base_of = |case: &GoldenCase| -> GoldenCase {
+        let mut base = case.clone();
+        if let GoldenCase::AiPlan {
+            units,
+            seed,
+            action_seq,
+            ..
+        } = &mut base
+        {
+            *seed = 0;
+            *action_seq = 0;
+            for u in units.iter_mut() {
+                u.budget = TurnBudget::default();
+            }
+        }
+        base
+    };
+    let seed_twin = ai
+        .iter()
+        .copied()
+        .find(|&i| {
+            matches!(
+                &cases[i],
+                GoldenCase::AiPlan {
+                    seed: 9_007_199_254_740_991,
+                    action_seq: 7,
+                    ..
+                }
+            )
+        })
+        .expect("the fixture has the seed twin (seed 2^53 - 1, action_seq 7)");
+    let budget_twin = ai
+        .iter()
+        .copied()
+        .find(|&i| {
+            matches!(
+                &cases[i],
+                GoldenCase::AiPlan { units, .. }
+                    if units.iter().any(|u| u.budget != TurnBudget::default())
+            )
+        })
+        .expect("the fixture has the budget twin (a stored budget that is not idle)");
+    for (label, twin) in [("seed", seed_twin), ("budget", budget_twin)] {
+        let base = base_of(&cases[twin]);
+        let b = ai
+            .iter()
+            .copied()
+            .find(|&i| i != twin && cases[i] == base)
+            .unwrap_or_else(|| {
+                panic!("the {label} twin #{twin} has its base board in the fixture")
+            });
+        assert_eq!(
+            canon(&expected[twin]),
+            canon(&expected[b]),
+            "{label} twin #{twin} vs base #{b}: expected"
+        );
+        assert_eq!(
+            canon(&got[twin]),
+            canon(&got[b]),
+            "{label} twin #{twin} vs base #{b}: planned"
+        );
+        assert_eq!(
+            canon(&got[twin]),
+            canon(&expected[twin]),
+            "{label} twin #{twin}"
+        );
+    }
+}
+
+/// BT4.8: `run_golden` answers an inline AiPlan case with `ai::plan` at the design tuning and the
+/// case's stance and spawn. The J9 board (Light r1–3 + Heavy melee wild at (1,3), P1 at (4,3);
+/// seed 5, action_seq 3): Aggressive → `[Move (3,3) ×1, Skill 20 → 1, End]` (case 2);
+/// Territorial with spawn (6,3) — (3,3) is 3 from the spawn and no other attack tile in reach is
+/// within 2 of it — → the stationary Light `[Skill 10 → 1, End]`.
+/// Kills: the stance or spawn dropped by the adapter; a tuning other than DESIGN.
+#[test]
+fn run_golden_answers_an_inline_ai_plan_with_the_planner_at_the_design_tuning_bt4_8() {
+    let reach = vec![
+        rt::light(
+            10,
+            Affinity::Fire,
+            SkillGeometry {
+                range_min: 1,
+                range_max: 3,
+                origin: Origin::TargetUnit,
+                shape: Shape::Single,
+                radius: 0,
+                ff_filter: FfFilter::Enemies,
+            },
+        ),
+        rt::heavy(20, Affinity::Fire, 65, rt::melee()),
+    ];
+    let case = |stance: Stance, spawn: Cell| GoldenCase::AiPlan {
+        rows: vec![".......".to_string(); 7],
+        units: vec![golden_player(1, 4, 3), golden_wild(1, 3, reach.clone())],
+        seed: 5,
+        action_seq: 3,
+        unit: 11,
+        stance,
+        spawn,
+    };
+    assert_eq!(
+        run_golden(&[
+            case(Stance::Aggressive, c(1, 3)),
+            case(Stance::Territorial, c(6, 3)),
+        ]),
+        vec![
+            GoldenResult::AiPlan(vec![
+                QueuedAction::Move(MoveAction {
+                    x: 3,
+                    y: 3,
+                    strides: 1,
+                }),
+                QueuedAction::Skill(SkillAction {
+                    skill_id: 20,
+                    target: ActionTarget::Unit(1),
+                }),
+                QueuedAction::EndTurn,
+            ]),
+            GoldenResult::AiPlan(vec![
+                QueuedAction::Skill(SkillAction {
+                    skill_id: 10,
+                    target: ActionTarget::Unit(1),
+                }),
+                QueuedAction::EndTurn,
+            ]),
+        ]
+    );
 }

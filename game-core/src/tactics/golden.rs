@@ -31,8 +31,8 @@ use super::resolve::{
     damage_pipeline, draw_rolls, validate_unit, PipelineTrace, RollPair, SkillTactics,
     TacticalState, TacticalUnit,
 };
-use super::types::QueuedAction;
 use super::tuning::{BattleKind, TacticsTuning};
+use super::types::QueuedAction;
 use super::upkeep::{status_tick_damage, surge_damage};
 
 /// A compact board: `rows[y]` chars `.` Plain, `r` Rough, `w` Water, `#` Blocked.

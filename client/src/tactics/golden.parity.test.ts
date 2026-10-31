@@ -14,6 +14,9 @@
 // BT11.7) is a deliberate edit to these literals AND to the matching constants in
 // golden_tests.rs. The BT2.5 block below is the wasm half of bt-2's golden join: the roll
 // stream, economy, Surge, status tick, initiative, priority, pipeline and adjudication kinds.
+// The BT4.8 block is the wasm half of bt-4's join: the wild planner's `AiPlan` kind on frozen
+// boards (the client's intent chip runs this same wasm `ai::plan`), compared case by case
+// against the hand-derived plans (no TypeScript planner, no inline probes).
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -27,7 +30,7 @@ const FIXTURE_PATH = path.join(
 );
 
 /** The pinned fixture size (keep equal to CASE_COUNT in golden_tests.rs). */
-const CASE_COUNT = 286;
+const CASE_COUNT = 304;
 /** Cases that must come back as `{"BadCase": "<text>"}`: malformed boards, invalid Pipeline units. */
 const BAD_CASE_COUNT = 17;
 /** U+00E9, built from its code point (never a pasted or escaped literal). */
@@ -51,6 +54,7 @@ const KINDS = [
   'Priority',
   'Pipeline',
   'Adjudicate',
+  'AiPlan',
 ] as const;
 /** The kinds bt-2 added (BT2.5). */
 const BT2_KINDS = [
@@ -283,6 +287,16 @@ const FIRE_40 = {
 
 const SURE = { accuracy: 0, variance: 100 };
 
+/** The AiPlan cases the fixture carries (bt-4's matrix; keep equal to AI_PLAN_CASES in golden_tests.rs). */
+const AI_PLAN_CASES = 18;
+
+/** The entry tags of an `{"AiPlan": [...]}` result (`"EndTurn"` is a bare string), comma-joined. */
+function planShape(result: unknown): string {
+  const entries = (result as { AiPlan?: unknown }).AiPlan;
+  expect(Array.isArray(entries), `not an AiPlan result: ${canon(result)}`).toBe(true);
+  return (entries as unknown[]).map((e) => (typeof e === 'string' ? e : kindOf(e))).join(',');
+}
+
 describe('BT2.5 tactics golden: the bt-2 rules answer byte-identically in wasm', () => {
   it('BT2.5 the fixture carries every bt-2 case kind', () => {
     const kinds = fixture.cases.map(kindOf);
@@ -410,5 +424,33 @@ describe('BT2.5 tactics golden: the bt-2 rules answer byte-identically in wasm',
       canon({ BadCase: 'invalid unit: Fainted { id: 7 }' }),
       canon({ BadCase: 'invalid unit: ZeroDefense { id: 8 }' }),
     ]);
+  });
+});
+
+describe('BT4.8 tactics golden: the wasm wild planner plans byte-identically to the native one', () => {
+  it('BT4.8 every AiPlan fixture case is canonically byte-identical through tactics_golden', () => {
+    const results = runWasm();
+    let checked = 0;
+    fixture.cases.forEach((c, i) => {
+      if (kindOf(c) === 'AiPlan') {
+        expect(kindOf(fixture.expected[i]), `expected #${i} kind`).toBe('AiPlan');
+        expect(canon(results[i]), `case #${i}: ${canon(c)}`).toBe(canon(fixture.expected[i]));
+        checked += 1;
+      }
+    });
+    expect(checked).toBeGreaterThanOrEqual(AI_PLAN_CASES);
+  });
+
+  it('BT4.8 the wasm planner answers every plan shape on the fixture boards', () => {
+    const results = runWasm();
+    const shapes = new Set<string>();
+    fixture.cases.forEach((c, i) => {
+      if (kindOf(c) === 'AiPlan') shapes.add(planShape(results[i]));
+    });
+    const seen = Array.from(shapes).join(' | ');
+    for (const want of ['Skill,EndTurn', 'Move,Skill,EndTurn', 'Move,EndTurn', 'EndTurn']) {
+      expect(shapes.has(want), `no ${want} plan among the wasm AiPlan results: ${seen}`).toBe(true);
+    }
+    expect(shapes.size, `only the four contract shapes: ${seen}`).toBe(4);
   });
 });

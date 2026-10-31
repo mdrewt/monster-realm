@@ -29,12 +29,12 @@ mod ai_tests;
 pub mod clock;
 #[cfg(test)]
 mod clock_tests;
-pub mod encounter;
-#[cfg(test)]
-mod encounter_tests;
 pub mod economy;
 #[cfg(test)]
 mod economy_tests;
+pub mod encounter;
+#[cfg(test)]
+mod encounter_tests;
 pub mod events;
 #[cfg(test)]
 mod events_tests;
@@ -74,13 +74,13 @@ mod upkeep_tests;
 
 pub use ai::{is_exhausted, plan, Stance};
 pub use clock::{ClockError, ClockState, Expiry, Window};
-pub use encounter::{
-    effective_pack, generate_encounter, pick_map_index, roll_pack_size, spawn_tiles, wild_seed,
-    Encounter, EncounterError, PackWeights, MAX_PACK,
-};
 pub use economy::{
     apply_flank, apply_guard, cost, guard_granted, plan_cost, spend, EconomyError, Entry, Tier,
     TurnBudget, TurnEndCause,
+};
+pub use encounter::{
+    effective_pack, generate_encounter, pick_map_index, roll_pack_size, spawn_tiles, wild_seed,
+    Encounter, EncounterError, PackWeights, MAX_PACK,
 };
 pub use events::{
     payload_of, presentation_cap_ms, AutoPassEvent, AwardsEvent, BattleEndEvent,
