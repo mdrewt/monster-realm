@@ -495,6 +495,7 @@ pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) ->
         || crate::ranking::profile_exists(ctx, identity)
         || crate::npc::has_quest_or_dialogue_state(ctx, identity)
         || crate::raising::has_heal_cooldown(ctx, identity)
+        || has_formation(ctx, identity)
 }
 
 /// Re-key every REKEY-policy table from `from` onto `to`, one delegated helper
@@ -515,7 +516,50 @@ pub(crate) fn rekey_all(ctx: &ReducerContext, from: Identity, to: Identity) -> R
     crate::raising::rekey_heal_cooldown(ctx, from, to);
     crate::economy::rekey_wallet(ctx, from, to);
     crate::ranking::rekey_profile(ctx, from, to);
+    rekey_formation(ctx, from, to);
     Ok(())
+}
+
+// --- tactical tables (bt-7): cascade + claim-flow helpers ---------------------
+//
+// The tactical tables (schema.rs, M-battle-tactics bt-7) have no owning domain
+// module until bt-8 lands `tactics.rs`; until then the three per-table helpers
+// the accounts paths need live here, next to the cascade that calls them, and
+// bt-8 re-homes them with the reducers.
+
+/// True if `identity` owns a `player_formation` row (a REKEY-policy table, so
+/// it counts as game data for `account_has_game_data`).
+pub(crate) fn has_formation(ctx: &ReducerContext, identity: Identity) -> bool {
+    // RED-PHASE STUB (bt-7).
+    let _ = (ctx, identity);
+    false
+}
+
+/// Re-key the guest's `player_formation` row onto the claimer (PK-on-owner:
+/// find, delete, insert under `to`). A claimer that already owns a row keeps
+/// it only if the guest has none (the claim flow refuses a destination that
+/// already plays, so both rows never coexist).
+pub(crate) fn rekey_formation(ctx: &ReducerContext, from: Identity, to: Identity) {
+    // RED-PHASE STUB (bt-7).
+    let _ = (ctx, from, to);
+}
+
+/// The tactical half of the deletion cascade. Runs BEFORE
+/// `battle::anonymize_battles` (after it the owner's battles are no longer
+/// findable by identity). (1) Every battle the owner is a side of (the
+/// `anonymize_battles` two-index chain): delete its `battle_tactical`,
+/// `battle_secret`, `battle_wild_unit`, `battle_event`, `battle_unit`,
+/// `battle_queue`, `battle_deploy` and `battle_clock` rows by `battle_id` —
+/// this is the ONLY path to a `battle_unit` row (its `owner` is a sum type
+/// with no index) and to the four join-only tables. (2) Owner-keyed
+/// defence-in-depth deletes for the rows that carry the identity directly
+/// (`battle_queue.owner`, `battle_deploy.owner`, `battle_clock.player`,
+/// `player_formation`). (3) `battle_summary` rows naming the owner on either
+/// side are UPDATED with `TOMBSTONE_IDENTITY` on the matching column(s) and
+/// survive (telemetry; the Anonymize policy).
+pub(crate) fn erase_tactical_rows(ctx: &ReducerContext, owner: Identity) {
+    // RED-PHASE STUB (bt-7).
+    let _ = (ctx, owner);
 }
 
 // --- Claim / reaper lifecycle helpers -----------------------------------------
@@ -1041,6 +1085,7 @@ pub fn account_deletion_reaper(
     crate::erase_character_rows(ctx, args.account_identity);
     crate::erase_player_sessions(ctx, args.account_identity);
     crate::ranking::anonymize_display_names(ctx, args.account_identity);
+    erase_tactical_rows(ctx, args.account_identity);
     crate::battle::anonymize_battles(ctx, args.account_identity);
     ctx.db
         .account()

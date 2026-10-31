@@ -1090,6 +1090,27 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_inventory, public)]` in schema.rs.
     #[link_name = "__preinit__20_register_describer_my_inventory"]
     fn register_view_my_inventory();
+    /// `#[spacetimedb::view(accessor = my_tactical_battle, public)]` in schema.rs (bt-7).
+    #[link_name = "__preinit__20_register_describer_my_tactical_battle"]
+    fn register_view_my_tactical_battle();
+    /// `#[spacetimedb::view(accessor = my_battle_units, public)]` in schema.rs (bt-7).
+    #[link_name = "__preinit__20_register_describer_my_battle_units"]
+    fn register_view_my_battle_units();
+    /// `#[spacetimedb::view(accessor = my_battle_events, public)]` in schema.rs (bt-7).
+    #[link_name = "__preinit__20_register_describer_my_battle_events"]
+    fn register_view_my_battle_events();
+    /// `#[spacetimedb::view(accessor = my_battle_clock, public)]` in schema.rs (bt-7).
+    #[link_name = "__preinit__20_register_describer_my_battle_clock"]
+    fn register_view_my_battle_clock();
+    /// `#[spacetimedb::view(accessor = my_battle_queue, public)]` in schema.rs (bt-7).
+    #[link_name = "__preinit__20_register_describer_my_battle_queue"]
+    fn register_view_my_battle_queue();
+    /// `#[spacetimedb::view(accessor = my_battle_deploy, public)]` in schema.rs (bt-7).
+    #[link_name = "__preinit__20_register_describer_my_battle_deploy"]
+    fn register_view_my_battle_deploy();
+    /// `#[spacetimedb::view(accessor = my_formation, public)]` in schema.rs (bt-7).
+    #[link_name = "__preinit__20_register_describer_my_formation"]
+    fn register_view_my_formation();
     /// spacetimedb 2.11.0 `rt.rs:1350` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
@@ -1103,7 +1124,7 @@ unsafe extern "C" {
 }
 
 /// Registered in this order, so a view's `VIEWS` id is its index here.
-const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 8] = [
+const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 15] = [
     register_view_my_wallet,
     register_view_my_account,
     register_view_my_conversation,
@@ -1112,6 +1133,13 @@ const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 8] = [
     register_view_my_pending_evolution_notices,
     register_view_my_export_bundle,
     register_view_my_inventory,
+    register_view_my_tactical_battle,
+    register_view_my_battle_units,
+    register_view_my_battle_events,
+    register_view_my_battle_clock,
+    register_view_my_battle_queue,
+    register_view_my_battle_deploy,
+    register_view_my_formation,
 ];
 
 /// `VIEWS` id of `my_wallet` (its index in [`VIEW_DESCRIBERS`]).
@@ -1137,6 +1165,33 @@ pub(crate) const VIEW_MY_EXPORT_BUNDLE: usize = 6;
 
 /// `VIEWS` id of `my_inventory` (its index in [`VIEW_DESCRIBERS`]).
 pub(crate) const VIEW_MY_INVENTORY: usize = 7;
+
+/// `VIEWS` id of `my_tactical_battle` (its index in [`VIEW_DESCRIBERS`]; bt-7).
+pub(crate) const VIEW_MY_TACTICAL_BATTLE: usize = 8;
+
+/// `VIEWS` id of `my_battle_units` (bt-7).
+pub(crate) const VIEW_MY_BATTLE_UNITS: usize = 9;
+
+/// `VIEWS` id of `my_battle_events` (bt-7).
+pub(crate) const VIEW_MY_BATTLE_EVENTS: usize = 10;
+
+/// `VIEWS` id of `my_battle_clock` (bt-7).
+pub(crate) const VIEW_MY_BATTLE_CLOCK: usize = 11;
+
+/// `VIEWS` id of `my_battle_queue` (bt-7).
+pub(crate) const VIEW_MY_BATTLE_QUEUE: usize = 12;
+
+/// `VIEWS` id of `my_battle_deploy` (bt-7).
+pub(crate) const VIEW_MY_BATTLE_DEPLOY: usize = 13;
+
+/// `VIEWS` id of `my_formation` (bt-7).
+pub(crate) const VIEW_MY_FORMATION: usize = 14;
+
+/// The bytes `__describe_module__` wrote to [`DESCRIBE_SINK`]: the generated
+/// `RawModuleDef` (V10 on 2.11.0), captured once per process so a test can read
+/// table access, keys, indexes and the exact view roster from the artifact the
+/// host itself consumes — never from source text.
+static DESCRIBE_OUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 const VIEW_SINK: u32 = 0x71E5;
 
@@ -1172,6 +1227,27 @@ impl Fixture {
         );
         bsatn::from_slice::<Vec<R>>(&out[1..])
             .expect("native_host_tests: view rows must decode as Vec<R>")
+    }
+}
+
+impl Fixture {
+    /// The generated module definition, decoded from the bytes the shipped
+    /// `__describe_module__` wrote (a V10 def on 2.11.0; any other version is a
+    /// toolchain hop this harness must be re-pointed at, so it panics by name).
+    pub(crate) fn module_def(
+        &self,
+    ) -> spacetimedb::spacetimedb_lib::db::raw_def::v10::RawModuleDefV10 {
+        ensure_run_as_registered();
+        let bytes = DESCRIBE_OUT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        match bsatn::from_slice::<spacetimedb::spacetimedb_lib::RawModuleDef>(&bytes)
+            .expect("native_host_tests: the describe bytes must decode as a RawModuleDef")
+        {
+            spacetimedb::spacetimedb_lib::RawModuleDef::V10(def) => def,
+            other => panic!("native_host_tests: expected a V10 module def, got {other:?}"),
+        }
     }
 }
 
@@ -1369,7 +1445,15 @@ unsafe extern "C" fn bytes_sink_write(
     len_ptr: *mut usize,
 ) -> u16 {
     // Returning 0 leaves `*len_ptr` at the full buffer length: all consumed.
-    if sink == DESCRIBE_SINK || sink == ERROR_SINK {
+    if sink == DESCRIBE_SINK {
+        // SAFETY: the runtime hands a valid `buffer_ptr[..*len_ptr]`.
+        let bytes = unsafe { std::slice::from_raw_parts(buffer_ptr, *len_ptr) };
+        DESCRIBE_OUT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend_from_slice(bytes);
+        0
+    } else if sink == ERROR_SINK {
         0
     } else if sink == VIEW_SINK {
         // SAFETY: the runtime hands a valid `buffer_ptr[..*len_ptr]`.
