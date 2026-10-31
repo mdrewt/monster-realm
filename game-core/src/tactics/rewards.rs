@@ -112,9 +112,8 @@ pub fn on_unit_defeated(
         && match state.kind {
             BattleKind::Practice => false,
             BattleKind::Pvp => true,
-            BattleKind::Wild => {
-                is_player_owned(state.kind, k.side) && !is_player_owned(state.kind, v.side)
-            }
+            // Two sides: a killer opposite a wild is the player's.
+            BattleKind::Wild => !is_player_owned(state.kind, v.side),
         };
     if !earns {
         return Ok(());
