@@ -387,6 +387,31 @@ variant); one roll shared by an attack's targets, or no variance draw on a miss;
 after an earlier KO in the same AoE; a second RNG stream for status rolls; `round ==
 wild_round_cap` (the spec's wording); a First-Stand that survives its own save.
 
+## Wild AI plans are a pure function of the public board
+
+**Decision.** `tactics::ai::plan(state, unit, stance, spawn, t)` takes no RNG or seed parameter;
+`ai_tests.rs` pins the signature as a `fn` pointer type. `View::of` builds a private `View` with
+no `seed`, `action_seq` or budget field, every stance helper reads only it, and `admissible`
+costs every candidate plan from `TurnBudget::fresh(t)`, never `actor.budget`. The executor hands
+`Hooks::plan_ai` the `public_view` (`seed`, `action_seq` zeroed), halts anything but
+`Move`/`Skill`/`EndTurn` as `BadShape`, and runs every entry, the trailing `EndTurn` included,
+through `validate_at_pop` like a player plan (`queue.rs` `start_turn`, `execute`). The planner
+therefore calls the gate's own functions (`find_path`, `target_set`, `disengage_taxed`,
+`stride_points`, `validate_unit`; `plan_cost` folds the gate's `spend`) and restates no rule. A
+stance that needs randomness must move it into server-pushed `battle_event`s. The compile shape
+forbids the parameter and the View keeps `seed`/`action_seq` out by structure; its units are
+`&TacticalUnit`, so `budget` stays reachable, and the seed/budget-blindness tests and the
+executor proptest (no `PlanHalted` on generated battles) are what catch a regression.
+
+**Why.** Design §4.2 has the client compute each intent chip with the same wasm `plan` on the
+shared provisional board, so chips and forecasts never contradict each other. That board has no
+seed and shows stored budgets, while the server plans just after `turn_start` refreshes the
+wild's; reading neither keeps chip and execution equal on an unchanged board. A refused entry
+ends the wild's turn at `PlanHalted` (the `Hooks` seam: "Queued actions halt-and-return…").
+
+**Rules out.** A seed or RNG parameter; reading `state.seed`, `action_seq` or `actor.budget`;
+a hidden PRNG; a TypeScript planner; range, cost or stride math re-implemented in the planner.
+
 ## Accounts, guest identity and the claim flow
 
 **Decision.** Anonymous play is first-class: every connection gets a SpacetimeDB

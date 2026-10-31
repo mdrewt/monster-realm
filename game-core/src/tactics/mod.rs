@@ -9,7 +9,8 @@
 //! - `geometry`   — Manhattan metric, line of sight, the skill target set, flank.
 //! - `movement`   — stride bands, terrain × class weights, Dijkstra pathing, disengage.
 //! - `map`        — the battle-map RON schema and its validator.
-//! - `tuning`     — `TacticsTuning` (every design constant, read by every rule below) + `BattleKind`.
+//! - `tuning`     — `TacticsTuning` (the design's economy, clock and upkeep constants, read by every rule
+//!   below; the bt-4 stance numbers and the pack constants live beside their rules) + `BattleKind`.
 //! - `economy`    — AP costs, Exert, the stride cap, Guard eligibility and multiplier.
 //! - `initiative` — the round comparator and the tie-priority coin.
 //! - `resolve`    — the battle model (`TacticalState`, events) and the §2.4 damage pipeline.
@@ -20,13 +21,21 @@
 //! - `events`     — the `battle_event` payload enum + the §9.4 presentation caps.
 //! - `clock`      — the idle clock: pure window / pad / reset / strike arithmetic.
 //! - `queue`      — `TacticalBattle`: submit gate, `validate_at_pop`, the executor (halt-and-return), the chain rule.
+//! - `ai`         — the wild planner: the three stances + Exhausted, seed-free (a pure function of the public board).
+//! - `encounter`  — multi-wild generation: the pack roll, the clamp, per-wild seeds, the map pick, `spawn_b` placement.
 
+pub mod ai;
+#[cfg(test)]
+mod ai_tests;
 pub mod clock;
 #[cfg(test)]
 mod clock_tests;
 pub mod economy;
 #[cfg(test)]
 mod economy_tests;
+pub mod encounter;
+#[cfg(test)]
+mod encounter_tests;
 pub mod events;
 #[cfg(test)]
 mod events_tests;
@@ -64,10 +73,15 @@ pub mod upkeep;
 #[cfg(test)]
 mod upkeep_tests;
 
+pub use ai::{is_exhausted, plan, Stance};
 pub use clock::{ClockError, ClockState, Expiry, Window};
 pub use economy::{
     apply_flank, apply_guard, cost, guard_granted, plan_cost, spend, EconomyError, Entry, Tier,
     TurnBudget, TurnEndCause,
+};
+pub use encounter::{
+    effective_pack, generate_encounter, pick_map_index, roll_pack_size, spawn_tiles, wild_seed,
+    Encounter, EncounterError, PackWeights, MAX_PACK,
 };
 pub use events::{
     payload_of, presentation_cap_ms, AutoPassEvent, AwardsEvent, BattleEndEvent,

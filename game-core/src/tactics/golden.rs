@@ -5,7 +5,7 @@
 //! (`golden_tests.rs`) and through the `tactics_golden` wasm export
 //! (`client/src/tactics/golden.parity.test.ts`); both compare the same canonical JSON.
 //! Every later tactics module adds its case kinds here (bt-2 joined with the roll stream, economy,
-//! initiative, priority, pipeline, Surge/status-tick and adjudication kinds; BT4.8, BT11.7 follow). No rule lives in this
+//! initiative, priority, pipeline, Surge/status-tick and adjudication kinds; bt-4 with the `AiPlan` kind; BT11.7 follows). No rule lives in this
 //! file — it only adapts fixture data to the rule functions. Every result value is ≤ u32 so the JS
 //! side compares exact Numbers; u64 INPUTS (seeds) stay below 2^53 in the fixture.
 
@@ -15,6 +15,7 @@ use crate::combat::type_chart::TypeChart;
 use crate::combat::types::{BattleOutcome, StatusEffect};
 use crate::content::load_type_chart;
 
+use super::ai::{plan, Stance};
 use super::economy::{plan_cost, EconomyError, Entry, TurnBudget};
 use super::geometry::{
     is_adjacent, is_flanked, line_of_sight, manhattan, target_set, Board, BoardUnit, Cell,
@@ -31,6 +32,7 @@ use super::resolve::{
     TacticalState, TacticalUnit,
 };
 use super::tuning::{BattleKind, TacticsTuning};
+use super::types::QueuedAction;
 use super::upkeep::{status_tick_damage, surge_damage};
 
 /// A compact board: `rows[y]` chars `.` Plain, `r` Rough, `w` Water, `#` Blocked.
@@ -132,6 +134,18 @@ pub enum GoldenCase {
         seed: u64,
         round: u16,
     },
+    /// `ai::plan` on a frozen board (BT4.8): `rows` as in [`GoldenBoard`], the units as the
+    /// `battle_unit` rows, the secret stream AS GIVEN (the planner must ignore it), at the design
+    /// tuning. A malformed `rows` is a `BadCase` with the [`GoldenBoard`] texts.
+    AiPlan {
+        rows: Vec<String>,
+        units: Vec<TacticalUnit>,
+        seed: u64,
+        action_seq: u64,
+        unit: u32,
+        stance: Stance,
+        spawn: Cell,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +167,7 @@ pub enum GoldenResult {
     Priority(Side),
     Pipeline(PipelineTrace),
     Adjudicate((Side, Adjudication)),
+    AiPlan(Vec<QueuedAction>),
     BadCase(String),
 }
 
@@ -161,36 +176,44 @@ impl GoldenBoard {
     /// malformed board, first match wins: empty, too large (> 255 rows or columns),
     /// then row by row a ragged row before an unknown terrain glyph.
     fn to_board(&self) -> Result<Board, String> {
-        let width = self.rows.first().map_or(0, |r| r.chars().count());
-        if width == 0 {
-            return Err("empty board".to_owned());
-        }
-        let (Ok(w), Ok(h)) = (u8::try_from(width), u8::try_from(self.rows.len())) else {
-            return Err("board too large".to_owned());
-        };
-        let mut terrain = Vec::with_capacity(width * self.rows.len());
-        for (y, row) in self.rows.iter().enumerate() {
-            if row.chars().count() != width {
-                return Err(format!("ragged row {y}"));
-            }
-            for (x, c) in row.chars().enumerate() {
-                terrain.push(match c {
-                    '.' => Terrain::Plain,
-                    'r' => Terrain::Rough,
-                    'w' => Terrain::Water,
-                    '#' => Terrain::Blocked,
-                    other => return Err(format!("bad terrain '{other}' at ({x},{y})")),
-                });
-            }
-        }
+        let (width, height, terrain) = parse_rows(&self.rows)?;
         Ok(Board {
-            width: w,
-            height: h,
+            width,
+            height,
             blocks_los: vec![false; terrain.len()],
             terrain,
             units: self.units.clone(),
         })
     }
+}
+
+/// The row grammar shared by [`GoldenBoard`] and the `AiPlan` kind: `(width, height, row-major
+/// terrain)`, or the `BadCase` message, first match wins — empty, too large (> 255 rows or
+/// columns), then row by row a ragged row before an unknown terrain glyph.
+fn parse_rows(rows: &[String]) -> Result<(u8, u8, Vec<Terrain>), String> {
+    let width = rows.first().map_or(0, |r| r.chars().count());
+    if width == 0 {
+        return Err("empty board".to_owned());
+    }
+    let (Ok(w), Ok(h)) = (u8::try_from(width), u8::try_from(rows.len())) else {
+        return Err("board too large".to_owned());
+    };
+    let mut terrain = Vec::with_capacity(width * rows.len());
+    for (y, row) in rows.iter().enumerate() {
+        if row.chars().count() != width {
+            return Err(format!("ragged row {y}"));
+        }
+        for (x, c) in row.chars().enumerate() {
+            terrain.push(match c {
+                '.' => Terrain::Plain,
+                'r' => Terrain::Rough,
+                'w' => Terrain::Water,
+                '#' => Terrain::Blocked,
+                other => return Err(format!("bad terrain '{other}' at ({x},{y})")),
+            });
+        }
+    }
+    Ok((w, h, terrain))
 }
 
 fn run_case(case: &GoldenCase) -> Result<GoldenResult, String> {
@@ -279,6 +302,33 @@ fn run_case(case: &GoldenCase) -> Result<GoldenResult, String> {
             seed,
             round,
         } => GoldenResult::Adjudicate(adjudicate(snapshot, *attack_damage_dealt, *seed, *round)),
+        GoldenCase::AiPlan {
+            rows,
+            units,
+            seed,
+            action_seq,
+            unit,
+            stance,
+            spawn,
+        } => {
+            let (width, height, terrain) = parse_rows(rows)?;
+            let state = TacticalState {
+                kind: BattleKind::Wild,
+                seed: *seed,
+                action_seq: *action_seq,
+                round: 1,
+                width,
+                height,
+                blocks_los: vec![false; terrain.len()],
+                terrain,
+                units: units.clone(),
+                initiative: Vec::new(),
+                queued: Vec::new(),
+                attack_damage_dealt: [0, 0],
+                outcome: BattleOutcome::Ongoing,
+            };
+            GoldenResult::AiPlan(plan(&state, *unit, *stance, *spawn, &TacticsTuning::DESIGN))
+        }
     })
 }
 
